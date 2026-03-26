@@ -32,10 +32,13 @@ SLICC runs inside a browser. This creates specific constraints that affect how A
 - `X-API-Key` and other custom headers work
 - **Cookie headers are silently stripped** — the browser Fetch spec forbids setting `Cookie` on requests. This is not an error; the header is just removed.
 - **Set-Cookie response headers are also stripped** — you can't capture session cookies from API responses
+- **Origin is always `http://localhost:...`** — the browser sets Origin automatically and it can't be overridden. APIs that validate Origin (many do) will reject requests from localhost.
 - `User-Agent` cannot be overridden (also a forbidden header)
-- Requests include `Origin` and `Sec-Fetch-*` headers from the SLICC page
+- Requests include `Sec-Fetch-*` headers from the SLICC page
 
-**Implication for auth strategy:** Token-based auth (Bearer, API key) works through fetch(). Cookie-based auth does not. For cookie-dependent APIs, use `playwright-cli eval` to make requests from within the page context where the browser automatically includes cookies for that origin.
+**Implication for auth strategy:** Even token-based auth may fail if the API validates the Origin header. In practice, **`playwright-cli eval` is the most reliable approach** for any API that serves a web app — it makes requests from the real page context with the correct origin, cookies, and all browser state. Direct fetch() from .jsh scripts works only when the API doesn't check Origin (public APIs, developer APIs with explicit token auth like GitHub's REST API with a PAT).
+
+**Rule of thumb:** If the API is designed for third-party integrations (documented, uses API keys/PATs), fetch() works. If the API is the web app's own backend (discovered via HAR), use page-context fetch.
 
 **exec() works reliably.** Returns `{stdout, stderr, exitCode}`. Use it to call `playwright-cli`, `webhook`, and other shell commands from .jsh scripts.
 
@@ -128,7 +131,11 @@ For each API endpoint found:
 - **Query parameters** — filtering, sorting, pagination params
 - **Rate limit headers** — X-RateLimit-Remaining, Retry-After
 
-Group related endpoints by resource (e.g., all `/users/*` endpoints together). Identify CRUD patterns. For GraphQL apps, look for a single `/graphql` endpoint and capture different queries/mutations to map the schema.
+Group related endpoints by resource (e.g., all `/users/*` endpoints together). Identify CRUD patterns.
+
+For GraphQL apps, look for a single `/graphql` endpoint and capture different queries/mutations to map the schema. **Caveat:** Some apps (notably GitHub) use pre-registered query IDs — their internal GraphQL rejects arbitrary queries. If you see errors like "No query with given identifier known," the GraphQL is locked down and you'll need to extract the specific query IDs from the app's JavaScript, or use the public REST API instead.
+
+Also check **cookie domain scoping** — a session cookie on `example.com` won't be sent to `api.example.com` unless the cookie domain is `.example.com`. This is a common reason why API calls fail from a different subdomain.
 
 ## Phase 2: Authentication and defenses
 
@@ -155,20 +162,45 @@ playwright-cli sessionstorage-list
 
 | Auth type | Detection | How to use in .jsh |
 |-----------|-----------|-------------------|
-| Bearer/JWT in localStorage | Token in `localStorage` under a key like `access_token` | Extract via `exec('playwright-cli localstorage-get TOKEN_KEY')`, use in `fetch()` Authorization header |
-| Bearer/JWT in cookie | Cookie named `token`, `jwt`, `access_token` | Extract via `exec('playwright-cli cookie-get TOKEN_NAME')`, use in Authorization header |
-| API key in header | `X-API-Key` or similar in HAR | Extract from localStorage/cookie/env, pass as custom header in fetch() |
-| Cookie-based session | `sessionid`, `connect.sid`, `PHPSESSID` in cookies | **Cannot use fetch()** — use `playwright-cli eval` to make requests from page context |
+| Personal access token (PAT) | User provides it, or app has a "tokens" settings page | Store in a config file, use in Authorization header via fetch() — this is the most reliable path for public APIs |
+| Bearer/JWT in localStorage | Token in `localStorage` under key like `access_token` | Extract via `exec('playwright-cli localstorage-get KEY')`, use in Authorization header |
+| Clerk/Auth0/Firebase JWT | `__session` cookie containing a JWT, audience claim pointing to an API | Extract via `exec('playwright-cli cookie-get __session')`, use as Bearer token — but check if Origin validation blocks direct fetch |
+| API key in header | `X-API-Key` or similar in HAR | Pass as custom header in fetch() |
+| Cookie-based session | `sessionid`, `connect.sid`, `PHPSESSID` in cookies | Use `playwright-cli eval` from page context |
+| Origin-validated API | HAR shows Bearer auth, but direct fetch returns 401 while page-context fetch works | Use `playwright-cli eval` from page context — the API checks Origin |
 | OAuth via `oauth-token` | Provider supported by SLICC's OAuth | Use `exec('oauth-token <provider>')` to get a fresh token |
-| CSRF token | `X-CSRF-Token` header, `csrftoken` cookie | Extract from cookie via `exec('playwright-cli cookie-get csrftoken')`, add as header on mutating requests |
+| CSRF token | `X-CSRF-Token` header, `csrftoken` cookie | Extract from cookie, add as header on mutating requests |
 
-### The cookie-auth workaround
+### When to ask the user for a token
 
-Since fetch() can't send Cookie headers, cookie-authenticated APIs need a different approach. Use `playwright-cli eval` to run fetch from within the page context:
+Some apps (GitHub, GitLab, Atlassian, etc.) have public APIs designed for third-party integrations that work with personal access tokens. If the session auth is impractical (cookies scoped to a different domain, internal GraphQL with pre-registered queries), the cleanest path is to ask the user to create a PAT in the app's settings and provide it. Store it in a config file at `/workspace/skills/{app-name}/.config` and read it from the .jsh script.
+
+### Additional required headers
+
+HAR analysis often reveals custom headers beyond auth that the API requires:
+- **Anti-replay tokens** — e.g., `Browser-Token: {"token":"base64(timestamp)"}` — generate fresh on each request
+- **Device/client IDs** — e.g., `Device-Id: <uuid>` — generate once and reuse
+- **Challenge tokens** — Cloudflare Turnstile, reCAPTCHA — these are hard to replicate; prefer page-context approach
+
+Always check the HAR for headers that appear on every API request. If the API rejects calls without them, replicate them in the generated skill.
+
+### The page-context fetch pattern
+
+Since fetch() can't send Cookie headers and the Origin is always localhost, many web-app APIs need requests made from within the page context. Use `playwright-cli eval` for this:
 
 ```javascript
-// In a .jsh script
-async function apiCall(path, options = {}) {
+// In a .jsh script — page-context API helper
+// Note: playwright-cli always requires --tab in .jsh/.bsh scripts and in scoops.
+// Capture the targetId when opening the tab and pass it to every command.
+
+async function openApp(url) {
+  const r = await exec(`playwright-cli open ${url}`);
+  // Extract targetId from output like: "Opened ... [targetId: ABC123]"
+  const match = r.stdout.match(/targetId:\s*(\S+)\]/);
+  return match ? match[1] : null;
+}
+
+async function apiCall(tabId, path, options = {}) {
   const method = options.method || 'GET';
   const body = options.body ? JSON.stringify(options.body) : undefined;
   
@@ -182,13 +214,15 @@ async function apiCall(path, options = {}) {
     }).then(r => r.json()).then(d => JSON.stringify(d))
   `;
   
-  const result = await exec(`playwright-cli eval "${expr.replace(/"/g, '\\"')}"`);
+  const result = await exec(`playwright-cli eval "${expr.replace(/"/g, '\\"')}" --tab=${tabId}`);
   if (result.exitCode !== 0) throw new Error(result.stderr);
   return JSON.parse(result.stdout.trim());
 }
 ```
 
-For larger payloads or complex request logic, use `playwright-cli eval-file` with a JS file that contains the request code.
+For larger payloads or complex request logic, use `playwright-cli eval-file` with a JS file that contains the request code. Always pass `--tab=<targetId>`.
+
+**Important:** `playwright-cli` commands (eval, snapshot, screenshot, goto, etc.) always require `--tab=<targetId>` when called from .jsh scripts or scoops. Only the cone's interactive shell auto-selects the current tab. Always capture the targetId from `playwright-cli open` output and thread it through your script.
 
 ### Handling token expiry
 
@@ -313,10 +347,18 @@ Example — `/shared/-.app-name.com.bsh`:
 ```javascript
 // @match *://*.app-name.com/*
 
-// Inject the observer into the page context
-const result = await exec('playwright-cli eval-file /shared/skills/app-name/assets/observer.js');
-if (result.exitCode !== 0) {
-  console.error('[BSH] Observer injection failed:', result.stderr);
+// Find the tab that triggered this .bsh (it's the one that just navigated)
+const list = await exec('playwright-cli tab-list');
+const match = list.stdout.match(/\[([A-F0-9]+)\]\s+https?:\/\/[^\s]*app-name\.com/);
+const tabId = match ? match[1] : null;
+
+if (tabId) {
+  const result = await exec(`playwright-cli eval-file /shared/skills/app-name/assets/observer.js --tab=${tabId}`);
+  if (result.exitCode !== 0) {
+    console.error('[BSH] Observer injection failed:', result.stderr);
+  }
+} else {
+  console.error('[BSH] Could not find app tab');
 }
 ```
 
@@ -436,18 +478,47 @@ Generated `.jsh` scripts should follow this pattern:
 const APP_DOMAIN = '{domain}';
 const BASE_URL = '{base_url}';
 
+// --- Tab management ---
+// playwright-cli requires --tab=<targetId> in .jsh scripts.
+// We find an existing app tab or open one.
+
+let _tabId = null;
+
+async function ensureTab() {
+  if (_tabId) return _tabId;
+  
+  // Check if the app is already open
+  const list = await exec('playwright-cli tab-list');
+  const match = list.stdout.match(new RegExp(`\\[([A-F0-9]+)\\]\\s+https?://[^\\s]*${APP_DOMAIN}`));
+  if (match) {
+    _tabId = match[1];
+    return _tabId;
+  }
+  
+  // Open the app
+  const r = await exec(`playwright-cli open https://${APP_DOMAIN}`);
+  const m = r.stdout.match(/targetId:\s*(\S+)\]/);
+  _tabId = m ? m[1] : null;
+  if (!_tabId) { console.error('Failed to open app tab'); process.exit(1); }
+  
+  // Wait for page to load
+  await new Promise(r => setTimeout(r, 2000));
+  return _tabId;
+}
+
 // --- Auth ---
 
 async function getAuth() {
   // Token-based: extract from localStorage or cookies
-  const r = await exec(`playwright-cli localstorage-get access_token 2>/dev/null`);
+  const tabId = await ensureTab();
+  const r = await exec(`playwright-cli localstorage-get access_token --tab=${tabId} 2>/dev/null`);
   const token = r.stdout.trim();
   if (token && token !== 'null' && token !== 'undefined') {
     return { Authorization: `Bearer ${token}` };
   }
   
   // Fallback: try cookie
-  const r2 = await exec(`playwright-cli cookie-get auth_token 2>/dev/null`);
+  const r2 = await exec(`playwright-cli cookie-get auth_token --tab=${tabId} 2>/dev/null`);
   const cookieToken = r2.stdout.trim();
   if (cookieToken) {
     return { Authorization: `Bearer ${cookieToken}` };
@@ -457,7 +528,7 @@ async function getAuth() {
   process.exit(1);
 }
 
-// --- API ---
+// --- API (direct fetch — for APIs that accept any Origin) ---
 
 async function api(method, path, body) {
   const headers = await getAuth();
@@ -476,7 +547,6 @@ async function api(method, path, body) {
   }
   
   if (resp.status === 401 || resp.status === 403) {
-    // Try to refresh auth
     console.error(`Auth failed (${resp.status}). Log into ${APP_DOMAIN} in your browser and try again.`);
     process.exit(1);
   }
@@ -490,22 +560,30 @@ async function api(method, path, body) {
   return resp.json();
 }
 
-// For cookie-based APIs, use this instead:
+// --- API via page context (for Origin-validated or cookie-based APIs) ---
+
 async function apiViaBrowser(path, options = {}) {
+  const tabId = await ensureTab();
   const method = options.method || 'GET';
   const bodyStr = options.body ? JSON.stringify(options.body) : 'undefined';
   const expr = `
-    fetch('${BASE_URL}${path}', {
-      method: '${method}',
-      credentials: 'include',
-      headers: {'Content-Type':'application/json'},
-      body: ${bodyStr}
-    }).then(r=>r.json()).then(d=>JSON.stringify(d))
-  `.replace(/\n/g, ' ');
+    (async()=>{
+      const r = await fetch('${BASE_URL}${path}', {
+        method: '${method}',
+        credentials: 'include',
+        headers: {'Content-Type':'application/json'},
+        body: ${bodyStr}
+      });
+      if (!r.ok) return JSON.stringify({__error: r.status, detail: await r.text()});
+      return JSON.stringify(await r.json());
+    })()
+  `.replace(/\n/g, ' ').replace(/"/g, '\\"');
   
-  const result = await exec(`playwright-cli eval "${expr.replace(/"/g, '\\"')}"`);
+  const result = await exec(`playwright-cli eval "${expr}" --tab=${tabId}`);
   if (result.exitCode !== 0) throw new Error(result.stderr);
-  return JSON.parse(result.stdout.trim());
+  const parsed = JSON.parse(result.stdout.trim());
+  if (parsed.__error) throw new Error(`API error ${parsed.__error}: ${parsed.detail}`);
+  return parsed;
 }
 
 // --- Commands ---
@@ -586,21 +664,23 @@ Before the skill is done, verify:
 ```
 User wants to automate {app}
 │
-├─ Is there a known public API?
-│  ├─ Yes → dry-run with browser session
-│  │  ├─ Token-based auth → use fetch() directly
-│  │  ├─ Cookie-based auth → use playwright-cli eval
-│  │  ├─ Works → skip to Phase 4 (compile skill)
-│  │  └─ Fails → investigate auth (Phase 2)
+├─ Is there a known public API with PAT/API key support?
+│  ├─ Yes (GitHub, GitLab, Atlassian, etc.)
+│  │  ├─ Ask user for PAT → use fetch() with Authorization header
+│  │  ├─ Dry-run → works → skip to Phase 4
+│  │  └─ No PAT available → try session-based approach below
 │  │
-│  └─ Not sure → check if model knows the API
-│     ├─ Confident guess → dry-run to validate
+│  └─ Not a well-known API → check if model can guess endpoints
+│     ├─ Confident guess → dry-run from page context via eval
 │     └─ No idea → HAR capture (Phase 1)
 │
-├─ HAR capture reveals API?
-│  ├─ Clean REST/GraphQL with token auth → extract, compile
-│  ├─ Cookie-based API → use page-context fetch pattern
-│  └─ Heavily protected → fall back to DOM observation
+├─ HAR capture or guess reveals API?
+│  ├─ Dry-run via fetch() → 200 → great, use fetch() in .jsh
+│  ├─ Dry-run via fetch() → 401 (Origin rejected)
+│  │  └─ Dry-run via page-context eval → 200 → use eval pattern in .jsh
+│  ├─ Cookie-scoped to different domain → page-context eval
+│  ├─ Pre-registered GraphQL → use public REST API or extract query IDs
+│  └─ Heavily protected (Turnstile, captcha) → page-context eval or DOM
 │
 └─ Does the user need to watch for changes?
    ├─ Yes → set up webhook + observer
