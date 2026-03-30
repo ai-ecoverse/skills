@@ -194,7 +194,7 @@ echo "$RESPONSE"
 Extract the task ID and polling URL from the response:
 
 ```bash
-TASK_ID=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.loads(sys.stdin.read())['data']['id'])")
+TASK_ID=$(echo "$RESPONSE" | jq -r '.data.id')
 ```
 
 ### Sync Mode Shortcut
@@ -209,15 +209,16 @@ for slow models, so set an appropriate curl timeout (e.g. `--max-time 120`).
 Poll the result endpoint until the status is `completed` or `failed`:
 
 ```bash
-while true; do
+SECONDS=0
+while [ $SECONDS -lt 300 ]; do
   RESULT=$(curl -s \
     -H "Authorization: Bearer $WAVESPEED_API_KEY" \
     "https://api.wavespeed.ai/api/v3/predictions/$TASK_ID")
 
-  STATUS=$(echo "$RESULT" | python3 -c "import sys,json; print(json.loads(sys.stdin.read())['data']['status'])")
+  STATUS=$(echo "$RESULT" | jq -r '.data.status')
 
   if [ "$STATUS" = "completed" ]; then
-    echo "$RESULT" | python3 -c "import sys,json; [print(u) for u in json.loads(sys.stdin.read())['data']['outputs']]"
+    echo "$RESULT" | jq -r '.data.outputs[]'
     break
   elif [ "$STATUS" = "failed" ]; then
     echo "Task failed:"
@@ -227,6 +228,9 @@ while true; do
 
   sleep 2
 done
+if [ "$STATUS" != "completed" ] && [ "$STATUS" != "failed" ]; then
+  echo "Timed out after 300 seconds"
+fi
 ```
 
 Use a 2-second polling interval. For video generation (which can take minutes), 5 seconds is fine.
@@ -267,19 +271,23 @@ RESPONSE=$(curl -s -X POST \
   -d '{"prompt": "A cat wearing a space suit, photorealistic", "size": "1024*1024", "num_inference_steps": 28}' \
   "https://api.wavespeed.ai/api/v3/wavespeed-ai/flux-dev")
 
-TASK_ID=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.loads(sys.stdin.read())['data']['id'])")
+TASK_ID=$(echo "$RESPONSE" | jq -r '.data.id')
 
 # 2. Poll
-while true; do
+SECONDS=0
+while [ $SECONDS -lt 300 ]; do
   RESULT=$(curl -s -H "Authorization: Bearer $WAVESPEED_API_KEY" \
     "https://api.wavespeed.ai/api/v3/predictions/$TASK_ID")
-  STATUS=$(echo "$RESULT" | python3 -c "import sys,json; print(json.loads(sys.stdin.read())['data']['status'])")
+  STATUS=$(echo "$RESULT" | jq -r '.data.status')
   [ "$STATUS" = "completed" ] || [ "$STATUS" = "failed" ] && break
   sleep 2
 done
+if [ "$STATUS" != "completed" ] && [ "$STATUS" != "failed" ]; then
+  echo "Timed out after 300 seconds"
+fi
 
 # 3. Get output
-echo "$RESULT" | python3 -c "import sys,json; d=json.loads(sys.stdin.read())['data']; [print(u) for u in d.get('outputs',[])]"
+echo "$RESULT" | jq -r '.data.outputs[]'
 ```
 
 ## Complete Example: Image-to-Video
@@ -288,10 +296,10 @@ echo "$RESULT" | python3 -c "import sys,json; d=json.loads(sys.stdin.read())['da
 # 1. Upload source image
 UPLOAD=$(curl -s -X POST \
   -H "Authorization: Bearer $WAVESPEED_API_KEY" \
-  -F "file=@source.jpg" \
+  -F "file=@/workspace/source.jpg" \
   "https://api.wavespeed.ai/api/v3/media/upload/binary")
 
-IMAGE_URL=$(echo "$UPLOAD" | python3 -c "import sys,json; print(json.loads(sys.stdin.read())['data']['download_url'])")
+IMAGE_URL=$(echo "$UPLOAD" | jq -r '.data.download_url')
 
 # 2. Submit video generation
 RESPONSE=$(curl -s -X POST \
@@ -300,16 +308,20 @@ RESPONSE=$(curl -s -X POST \
   -d "{\"prompt\": \"Slowly panning across the scene\", \"image\": \"$IMAGE_URL\", \"duration\": 5}" \
   "https://api.wavespeed.ai/api/v3/alibaba/wan-2.6/image-to-video")
 
-TASK_ID=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.loads(sys.stdin.read())['data']['id'])")
+TASK_ID=$(echo "$RESPONSE" | jq -r '.data.id')
 
 # 3. Poll (longer interval for video)
-while true; do
+SECONDS=0
+while [ $SECONDS -lt 300 ]; do
   RESULT=$(curl -s -H "Authorization: Bearer $WAVESPEED_API_KEY" \
     "https://api.wavespeed.ai/api/v3/predictions/$TASK_ID")
-  STATUS=$(echo "$RESULT" | python3 -c "import sys,json; print(json.loads(sys.stdin.read())['data']['status'])")
+  STATUS=$(echo "$RESULT" | jq -r '.data.status')
   [ "$STATUS" = "completed" ] || [ "$STATUS" = "failed" ] && break
   sleep 5
 done
+if [ "$STATUS" != "completed" ] && [ "$STATUS" != "failed" ]; then
+  echo "Timed out after 300 seconds"
+fi
 
-echo "$RESULT" | python3 -c "import sys,json; d=json.loads(sys.stdin.read())['data']; [print(u) for u in d.get('outputs',[])]"
+echo "$RESULT" | jq -r '.data.outputs[]'
 ```
