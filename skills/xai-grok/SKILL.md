@@ -99,7 +99,7 @@ curl https://api.x.ai/v1/responses \
 
 ### Function Calling (Custom Tools)
 
-Use the Chat Completions endpoint with OpenAI-format tool definitions:
+Use the Chat Completions endpoint with standard tool definitions:
 ```bash
 curl https://api.x.ai/v1/chat/completions \
   -H "Content-Type: application/json" \
@@ -228,30 +228,6 @@ Add `"stream": true` to any request. Response comes as SSE (`data: {...}` chunks
     "type": "json_object"
   }
 }
-```
-
-### JavaScript SDK (optional)
-
-> **Note:** This section requires `npm install openai`. It is optional — all core functionality above works with `curl` alone.
-
-Use with `node -e` for quick inline calls:
-
-```bash
-node -e '
-const OpenAI = require("openai");
-const client = new OpenAI({
-  apiKey: process.env.XAI_API_KEY,
-  baseURL: "https://api.x.ai/v1",
-});
-
-(async () => {
-  const completion = await client.chat.completions.create({
-    model: "grok-4",
-    messages: [{ role: "user", content: "Hello Grok!" }],
-  });
-  console.log(completion.choices[0].message.content);
-})();
-'
 ```
 
 ## Pricing Summary
