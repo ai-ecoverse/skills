@@ -3,33 +3,18 @@
 // Usage: check-ai-words <file> [multiplier]
 // Default multiplier: 3 (flag words appearing 3x more than expected)
 
-// AI word base rates (per million words) — source: ngrams.dev English corpus
-const WORD_RATES = {
-  delve:0.64, reimagine:0.05, demystify:0.10, orchestrate:0.21, captivate:0.24,
-  unveil:0.31, spearhead:0.42, groundbreaking:0.44, uncharted:0.42, unleash:0.43,
-  kaleidoscope:0.43, showcase:1.01, underscore:1.00, immerse:0.60, resonate:0.58,
-  nuanced:0.70, multifaceted:0.78, evocative:0.75, permeate:0.74, symbiosis:0.70,
-  synergy:0.79, savvy:0.77, indelible:0.80, hurdles:0.90, redefine:0.83,
-  tapestry:1.72, streamline:1.17, insightful:1.05, plethora:1.03, unlock:1.04,
-  grapple:1.10, foundational:1.12, enigma:1.17, ethereal:1.31, poignant:1.31,
-  meticulous:1.35, cornerstone:1.53, seamless:1.53, nexus:1.57, prowess:1.65,
-  elucidate:1.61, bolster:1.68, vigilant:1.76, vibrant:1.79, empower:1.84,
-  illuminate:1.85, lucid:1.90, navigate:1.95, optimize:1.84, stunning:2.05,
-  align:2.06, transformative:1.01, pivotal:2.17, holistic:2.22, embark:2.20,
-  resilience:2.22, zenith:2.25, thriving:2.25, sentinel:2.14, myriad:2.58,
-  pioneering:2.61, repertoire:2.63, elevate:2.03, facet:2.08, mitigate:2.91,
-  tailored:3.00, exemplary:3.21, luminous:3.53, leverage:3.61, renowned:3.77,
-  beacon:4.26, intricate:4.05, equip:3.99, harness:4.32, evolving:4.34,
-  cultivate:4.74, exquisite:5.05, symphony:5.75, paramount:5.94, paradigm:6.28,
-  potent:6.19, fascinating:6.53, catalyst:6.79, robust:6.86, vivid:6.90,
-  imperative:7.91, innovative:8.30, utilize:8.39, indispensable:8.23, intrinsic:8.57,
-  embrace:9.83, subtle:10.24, inevitably:10.93, realm:12.64, enhance:14.06,
-  explore:14.19, profound:14.22, craft:14.54, testament:16.62, crucial:16.85,
-  facilitate:17.01, implement:17.35, integral:17.54, venture:17.02, landscape:19.88,
-  foster:20.05, revolutionary:20.23, undoubtedly:20.44, spectrum:26.05, dynamic:27.27,
-  journey:28.17, vital:28.92, comprehensive:34.75, vast:33.84, ensure:41.82,
-  substantial:49.66,
-};
+const args = process.argv.slice(2);
+
+// Load AI word base rates from reference file (../references/ai_word_rates.txt)
+const _scriptDir = process.argv[1].substring(0, process.argv[1].lastIndexOf('/'));
+const _ratesText = await fs.readFile(_scriptDir + '/../references/ai_word_rates.txt', 'utf8');
+const WORD_RATES = {};
+for (const line of _ratesText.split('\n')) {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith('#')) continue;
+  const [word, rate] = trimmed.split(':');
+  if (word && rate) WORD_RATES[word.trim()] = parseFloat(rate.trim());
+}
 
 const filePath = args[0];
 const multiplier = parseFloat(args[1]) || 3;
@@ -42,6 +27,11 @@ if (!filePath) {
 const content = await fs.readFile(filePath, 'utf8');
 const lowercase = content.toLowerCase();
 const totalWords = content.split(/\s+/).filter(w => w.length > 0).length;
+
+if (totalWords === 0) {
+  process.stdout.write('Input file is empty or contains only whitespace; no analysis to perform.\n');
+  process.exit(0);
+}
 
 if (totalWords < 100) {
   process.stderr.write(`Warning: File has only ${totalWords} words. Results may be unreliable.\n`);
