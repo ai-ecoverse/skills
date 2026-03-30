@@ -151,7 +151,7 @@ Or:
 "When his son's birthday wish magically comes true, a fast-talking lawyer is forced to tell only the truth for 24 hours - on the most important day of his legal career."
 
 **Jaws:**
-"When a great white shark attacks a summer resort town, a hydrophobic police chief must overcome his fears to stop the killings before the tourist season is ruined and more people die."
+"When a great white shark attacks a summer resort town, a police chief afraid of water must overcome his fears to stop the killings before the tourist season is ruined and more people die."
 
 ---
 
