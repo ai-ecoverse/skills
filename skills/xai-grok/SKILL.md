@@ -11,15 +11,10 @@ allowed-tools: bash
 Before any xAI API call, retrieve the key:
 
 ```bash
-echo $XAI_API_KEY
+[ -n "$XAI_API_KEY" ] && echo "✓ XAI_API_KEY is set" || echo "✗ XAI_API_KEY is not set — run: export XAI_API_KEY=<your-key>"
 ```
 
-If the variable is empty, tell the user to set it:
-```bash
-export XAI_API_KEY=<your-xai-api-key>
-```
-
-Store the returned value and use it as `Authorization: Bearer $XAI_API_KEY` in all subsequent API calls.
+Use the `XAI_API_KEY` environment variable directly as `Authorization: Bearer $XAI_API_KEY` in all subsequent API calls.
 
 Base URL for all REST calls: `https://api.x.ai/v1`
 
@@ -134,9 +129,16 @@ curl https://api.x.ai/v1/chat/completions \
 ```
 
 **Multi-turn function call loop:**
-1. Send request → model returns `tool_calls` in response
+1. Send request → model returns an assistant message containing `tool_calls`
 2. Execute the function locally
-3. Send result back as `{"role": "tool", "tool_call_id": "<id>", "content": "<result>"}`
+3. Send follow-up request with **all** messages: the original messages, the assistant message (including its `tool_calls`), and the tool result message:
+   ```json
+   [
+     ...original_messages,
+     {"role": "assistant", "tool_calls": [{"id": "<id>", "type": "function", "function": {"name": "get_weather", "arguments": "{...}"}}]},
+     {"role": "tool", "tool_call_id": "<id>", "content": "<result>"}
+   ]
+   ```
 4. Model generates final answer
 
 ### Image Generation
@@ -228,7 +230,9 @@ Add `"stream": true` to any request. Response comes as SSE (`data: {...}` chunks
 }
 ```
 
-## SDK Example (JavaScript / Node.js via OpenAI SDK)
+### JavaScript SDK (optional)
+
+> **Note:** This section requires `npm install openai`. It is optional — all core functionality above works with `curl` alone.
 
 Use with `node -e` for quick inline calls:
 
@@ -249,8 +253,6 @@ const client = new OpenAI({
 })();
 '
 ```
-
-> **Note:** Requires `openai` npm package installed. Prefer `curl` examples for standalone use.
 
 ## Pricing Summary
 
