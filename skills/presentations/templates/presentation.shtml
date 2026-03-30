@@ -8,14 +8,27 @@
   <!-- reveal.js core CSS -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5/dist/reset.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5/dist/reveal.css">
-  <!-- Default theme — agent can swap this via update-theme -->
-  <link id="reveal-theme" rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5/dist/theme/black.css">
+  <!-- Custom theme CSS injected by the agent via update-theme or full content push -->
+  <style id="custom-theme">
+    /* Default dark theme — overridden when agent sends themeCSS */
+    :root {
+      --r-background-color: #111;
+      --r-main-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      --r-main-font-size: 42px;
+      --r-main-color: #eee;
+      --r-heading-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      --r-heading-color: #fff;
+      --r-link-color: #42affa;
+      --r-link-color-hover: #8dcffc;
+    }
+    .reveal { background: var(--r-background-color); }
+  </style>
 
   <style>
     /* ========================================================================
        SPRINKLE CHROME — uses S2 theme tokens injected by the parent page.
        S2 tokens are available as CSS custom properties (--s2-*).
-       We use them for toolbar/controls only — slide content uses reveal themes.
+       We use them for toolbar/controls only — slide content uses custom theme CSS.
        ======================================================================== */
 
     * { box-sizing: border-box; }
@@ -26,9 +39,9 @@
       width: 100%;
       height: 100%;
       overflow: hidden;
-      font-family: var(--s2-font-sans, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
-      background: var(--s2-color-background, #0a0a0a);
-      color: var(--s2-color-text, #e0e0e0);
+      font-family: var(--s2-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
+      background: var(--s2-bg-base, #0a0a0a);
+      color: var(--s2-content-default, #e0e0e0);
     }
 
     /* --- Three-state containers --- */
@@ -49,7 +62,7 @@
     }
     #state-empty .message {
       font-size: 18px;
-      color: var(--s2-color-text-muted, #888);
+      color: var(--s2-content-secondary, #888);
       animation: pulse 2s ease-in-out infinite;
     }
     @keyframes pulse {
@@ -66,19 +79,19 @@
     }
     #state-loading .message {
       font-size: 18px;
-      color: var(--s2-color-text-muted, #888);
+      color: var(--s2-content-secondary, #888);
     }
     .progress-bar {
       width: 200px;
       height: 3px;
-      background: var(--s2-color-border, #333);
+      background: var(--s2-border-default, #333);
       border-radius: 2px;
       overflow: hidden;
     }
     .progress-bar-inner {
       width: 40%;
       height: 100%;
-      background: var(--s2-color-accent, #4f8ff7);
+      background: var(--s2-accent, #4f8ff7);
       border-radius: 2px;
       animation: loading 1.5s ease-in-out infinite;
     }
@@ -105,16 +118,16 @@
       align-items: center;
       gap: 4px;
       padding: 4px 8px;
-      background: var(--s2-color-surface, #1a1a1a);
-      border-top: 1px solid var(--s2-color-border, #333);
+      background: var(--s2-bg-layer-1, #1a1a1a);
+      border-top: 1px solid var(--s2-border-default, #333);
       flex-shrink: 0;
       min-height: 36px;
     }
 
     .sprinkle-btn {
       background: transparent;
-      border: 1px solid var(--s2-color-border, #444);
-      color: var(--s2-color-text, #ccc);
+      border: 1px solid var(--s2-border-default, #444);
+      color: var(--s2-content-default, #ccc);
       padding: 4px 10px;
       border-radius: 4px;
       font-size: 13px;
@@ -124,11 +137,11 @@
       font-family: inherit;
     }
     .sprinkle-btn:hover {
-      background: var(--s2-color-surface-hover, #2a2a2a);
-      border-color: var(--s2-color-accent, #4f8ff7);
+      background: var(--s2-bg-layer-2, #2a2a2a);
+      border-color: var(--s2-accent, #4f8ff7);
     }
     .sprinkle-btn:active {
-      background: var(--s2-color-surface-active, #333);
+      background: var(--s2-bg-elevated, #333);
     }
     .sprinkle-btn.icon-btn {
       padding: 4px 8px;
@@ -139,14 +152,14 @@
     .toolbar-spacer { flex: 1; }
     .slide-counter {
       font-size: 12px;
-      color: var(--s2-color-text-muted, #888);
+      color: var(--s2-content-secondary, #888);
       padding: 0 8px;
       user-select: none;
     }
     .toolbar-separator {
       width: 1px;
       height: 18px;
-      background: var(--s2-color-border, #333);
+      background: var(--s2-border-default, #333);
       margin: 0 4px;
     }
 
@@ -239,7 +252,7 @@
    * DATA CONTRACT — JSON format for sprinkle send
    * ==========================================================================
    *
-   * Full content push:
+   * Full content push (includes optional themeCSS for custom styling):
    * {
    *   "slides": [
    *     {
@@ -258,8 +271,13 @@
    *     }
    *   ],
    *   "theme": "midnight-aurora",
+   *   "themeCSS": "@import url(...); :root { --r-background-color: ... } ...",
    *   "transition": "slide" | "fade" | "convex" | "none"
    * }
+   *
+   * The themeCSS field contains the full custom CSS for the theme (fonts, colors,
+   * gradients). When provided, it replaces the default theme CSS entirely. When
+   * omitted, a simple dark/light fallback is used based on the theme name.
    *
    * State transitions (before content is ready):
    * {
@@ -274,10 +292,11 @@
    *   "slide": { ... single slide object ... }
    * }
    *
-   * Theme change:
+   * Theme change (with full custom CSS):
    * {
    *   "action": "update-theme",
-   *   "theme": "theme-name"
+   *   "theme": "midnight-aurora",
+   *   "themeCSS": "@import url(...); :root { --r-background-color: ... } ..."
    * }
    *
    * ==========================================================================
@@ -299,27 +318,38 @@
   let currentTransition = 'slide';
   let revealInstance = null;
 
-  // Theme name → reveal.js CDN theme CSS file
-  const REVEAL_THEMES = {
-    'black': 'black.css',
-    'white': 'white.css',
-    'league': 'league.css',
-    'beige': 'beige.css',
-    'night': 'night.css',
-    'serif': 'serif.css',
-    'simple': 'simple.css',
-    'solarized': 'solarized.css',
-    'moon': 'moon.css',
-    'dracula': 'dracula.css',
-    'sky': 'sky.css',
-    'blood': 'blood.css',
-    // Custom theme aliases — agent can map creative names to reveal themes
-    'midnight-aurora': 'night.css',
-    'clean-light': 'simple.css',
-    'warm-serif': 'serif.css',
-    'dark-modern': 'black.css',
-    'ocean-blue': 'moon.css',
-  };
+  // Fallback CSS for when themeCSS is not provided by the agent.
+  // Uses simple dark/light defaults based on theme name keywords.
+  const FALLBACK_DARK_CSS = [
+    ':root {',
+    '  --r-background-color: #111;',
+    '  --r-main-font: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;',
+    '  --r-main-font-size: 42px;',
+    '  --r-main-color: #eee;',
+    '  --r-heading-font: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;',
+    '  --r-heading-color: #fff;',
+    '  --r-link-color: #42affa;',
+    '  --r-link-color-hover: #8dcffc;',
+    '}',
+    '.reveal { background: var(--r-background-color); }',
+  ].join('\n');
+
+  const FALLBACK_LIGHT_CSS = [
+    ':root {',
+    '  --r-background-color: #fff;',
+    '  --r-main-font: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;',
+    '  --r-main-font-size: 42px;',
+    '  --r-main-color: #222;',
+    '  --r-heading-font: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;',
+    '  --r-heading-color: #111;',
+    '  --r-link-color: #2a76dd;',
+    '  --r-link-color-hover: #6ca0e8;',
+    '}',
+    '.reveal { background: var(--r-background-color); }',
+  ].join('\n');
+
+  // Light-themed keywords — if the theme name contains any of these, use light fallback
+  const LIGHT_THEME_KEYWORDS = ['light', 'white', 'clean', 'beige', 'serif', 'simple', 'solarized'];
 
   // --- Helpers ---
   function setState(name) {
@@ -440,11 +470,19 @@
     }
   }
 
-  function applyTheme(themeName) {
-    var cssFile = REVEAL_THEMES[themeName] || REVEAL_THEMES['black'];
-    document.getElementById('reveal-theme').href =
-      'https://cdn.jsdelivr.net/npm/reveal.js@5/dist/theme/' + cssFile;
-    currentTheme = themeName;
+  function applyTheme(themeName, themeCSS) {
+    var styleEl = document.getElementById('custom-theme');
+    if (themeCSS) {
+      // Use the full custom CSS provided by the agent
+      styleEl.textContent = themeCSS;
+    } else if (themeName && themeName !== currentTheme) {
+      // No custom CSS — use a simple dark/light fallback based on the name
+      var isLight = LIGHT_THEME_KEYWORDS.some(function(kw) {
+        return themeName.toLowerCase().indexOf(kw) !== -1;
+      });
+      styleEl.textContent = isLight ? FALLBACK_LIGHT_CSS : FALLBACK_DARK_CSS;
+    }
+    currentTheme = themeName || currentTheme;
   }
 
   function updateSlideCounter() {
@@ -465,7 +503,7 @@
 
     // Theme change action
     if (data.action === 'update-theme' && data.theme) {
-      applyTheme(data.theme);
+      applyTheme(data.theme, data.themeCSS);
       return;
     }
 
@@ -487,7 +525,7 @@
     // Full content push — build the entire presentation
     if (data.slides && Array.isArray(data.slides)) {
       currentSlides = data.slides;
-      if (data.theme) applyTheme(data.theme);
+      if (data.theme) applyTheme(data.theme, data.themeCSS);
       if (data.transition) currentTransition = data.transition;
       setState('ready');
       buildPresentation(currentSlides, currentTransition);
