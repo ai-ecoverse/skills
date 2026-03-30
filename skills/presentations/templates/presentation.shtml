@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Presentation</title>
+
+  <!-- reveal.js core CSS -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5/dist/reset.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5/dist/reveal.css">
+  <!-- Default theme — agent can swap this via update-theme -->
+  <link id="reveal-theme" rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5/dist/theme/black.css">
+
+  <style>
+    /* ========================================================================
+       SPRINKLE CHROME — uses S2 theme tokens injected by the parent page.
+       S2 tokens are available as CSS custom properties (--s2-*).
+       We use them for toolbar/controls only — slide content uses reveal themes.
+       ======================================================================== */
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      font-family: var(--s2-font-sans, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
+      background: var(--s2-color-background, #0a0a0a);
+      color: var(--s2-color-text, #e0e0e0);
+    }
+
+    /* --- Three-state containers --- */
+    #state-empty, #state-loading, #state-ready {
+      display: none;
+      width: 100%;
+      height: 100%;
+    }
+    #state-empty.active, #state-loading.active { display: flex; }
+    #state-ready.active { display: flex; flex-direction: column; }
+
+    /* Empty state */
+    #state-empty {
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 16px;
+    }
+    #state-empty .message {
+      font-size: 18px;
+      color: var(--s2-color-text-muted, #888);
+      animation: pulse 2s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 0.5; }
+      50% { opacity: 1; }
+    }
+
+    /* Loading state */
+    #state-loading {
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 20px;
+    }
+    #state-loading .message {
+      font-size: 18px;
+      color: var(--s2-color-text-muted, #888);
+    }
+    .progress-bar {
+      width: 200px;
+      height: 3px;
+      background: var(--s2-color-border, #333);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    .progress-bar-inner {
+      width: 40%;
+      height: 100%;
+      background: var(--s2-color-accent, #4f8ff7);
+      border-radius: 2px;
+      animation: loading 1.5s ease-in-out infinite;
+    }
+    @keyframes loading {
+      0% { transform: translateX(-100%); }
+      100% { transform: translateX(350%); }
+    }
+
+    /* Ready state layout */
+    #presentation-container {
+      flex: 1;
+      min-height: 0;
+      position: relative;
+    }
+
+    /* reveal.js sizing override for sprinkle panels */
+    .reveal {
+      height: 100% !important;
+    }
+
+    /* --- Toolbar --- */
+    #toolbar {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px 8px;
+      background: var(--s2-color-surface, #1a1a1a);
+      border-top: 1px solid var(--s2-color-border, #333);
+      flex-shrink: 0;
+      min-height: 36px;
+    }
+
+    .sprinkle-btn {
+      background: transparent;
+      border: 1px solid var(--s2-color-border, #444);
+      color: var(--s2-color-text, #ccc);
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-size: 13px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.15s, border-color 0.15s;
+      font-family: inherit;
+    }
+    .sprinkle-btn:hover {
+      background: var(--s2-color-surface-hover, #2a2a2a);
+      border-color: var(--s2-color-accent, #4f8ff7);
+    }
+    .sprinkle-btn:active {
+      background: var(--s2-color-surface-active, #333);
+    }
+    .sprinkle-btn.icon-btn {
+      padding: 4px 8px;
+      font-size: 15px;
+      min-width: 30px;
+      text-align: center;
+    }
+    .toolbar-spacer { flex: 1; }
+    .slide-counter {
+      font-size: 12px;
+      color: var(--s2-color-text-muted, #888);
+      padding: 0 8px;
+      user-select: none;
+    }
+    .toolbar-separator {
+      width: 1px;
+      height: 18px;
+      background: var(--s2-color-border, #333);
+      margin: 0 4px;
+    }
+
+    /* --- Slide content styling defaults --- */
+    .reveal .slides section {
+      text-align: left;
+    }
+    .reveal .slides section.title-slide {
+      text-align: center;
+    }
+    .reveal .slides section.section-slide {
+      text-align: center;
+      display: flex !important;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+    }
+    .reveal .slides section.quote-slide blockquote {
+      border-left: 4px solid var(--r-link-color, #42affa);
+      padding: 10px 20px;
+      margin: 20px 0;
+      font-style: italic;
+      font-size: 0.9em;
+    }
+    .reveal .slides section.quote-slide .attribution {
+      text-align: right;
+      font-size: 0.7em;
+      opacity: 0.7;
+      margin-top: 10px;
+    }
+    .reveal .slides section .slide-subtitle {
+      font-size: 0.6em;
+      opacity: 0.7;
+      margin-top: 10px;
+    }
+  </style>
+</head>
+<body>
+
+
+  <!-- ===================== THREE-STATE UI ===================== -->
+
+  <!-- EMPTY STATE: shown before any content arrives -->
+  <div id="state-empty" class="active">
+    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3">
+      <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>
+    </svg>
+    <div class="message">Waiting for content…</div>
+  </div>
+
+  <!-- LOADING STATE: agent is analyzing / building -->
+  <div id="state-loading">
+    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.5">
+      <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>
+    </svg>
+    <div class="message">Building your presentation…</div>
+    <div class="progress-bar"><div class="progress-bar-inner"></div></div>
+  </div>
+
+  <!-- READY STATE: full reveal.js presentation + toolbar -->
+  <div id="state-ready">
+    <div id="presentation-container">
+      <div class="reveal">
+        <div class="slides" id="slides-container">
+          <!-- Slides are injected here by the update handler -->
+        </div>
+      </div>
+    </div>
+
+    <!-- Toolbar -->
+    <div id="toolbar">
+      <button class="sprinkle-btn icon-btn" id="btn-edit" title="Edit current slide">✏️</button>
+      <button class="sprinkle-btn icon-btn" id="btn-add" title="Add slide after current">＋</button>
+      <button class="sprinkle-btn icon-btn" id="btn-delete" title="Delete current slide">🗑</button>
+      <div class="toolbar-separator"></div>
+      <button class="sprinkle-btn" id="btn-theme" title="Change theme">Theme</button>
+      <div class="toolbar-spacer"></div>
+      <span class="slide-counter" id="slide-counter">0 / 0</span>
+      <div class="toolbar-separator"></div>
+      <button class="sprinkle-btn" id="btn-export" title="Export standalone HTML">Export</button>
+    </div>
+  </div>
+
+  <!-- reveal.js core JS -->
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5/dist/reveal.js"></script>
+
+  <script>
+  /*
+   * ==========================================================================
+   * DATA CONTRACT — JSON format for sprinkle send
+   * ==========================================================================
+   *
+   * Full content push:
+   * {
+   *   "slides": [
+   *     {
+   *       "type": "title" | "content" | "code" | "quote" | "image" | "section",
+   *       "title": "Slide Title",
+   *       "subtitle": "Optional subtitle",
+   *       "content": "HTML content or markdown",
+   *       "bullets": ["bullet 1", "bullet 2"],
+   *       "code": "code block content",
+   *       "language": "js",
+   *       "quote": "Quote text",
+   *       "attribution": "Quote author",
+   *       "background": "#hex or image URL",
+   *       "notes": "Speaker notes",
+   *       "fragments": true  // animate bullets one by one
+   *     }
+   *   ],
+   *   "theme": "midnight-aurora",
+   *   "transition": "slide" | "fade" | "convex" | "none"
+   * }
+   *
+   * State transitions (before content is ready):
+   * {
+   *   "status": "analyzing" | "empty",
+   *   "url": "optional source URL"
+   * }
+   *
+   * Partial update — replace a single slide:
+   * {
+   *   "action": "update-slide",
+   *   "index": 0,
+   *   "slide": { ... single slide object ... }
+   * }
+   *
+   * Theme change:
+   * {
+   *   "action": "update-theme",
+   *   "theme": "theme-name"
+   * }
+   *
+   * ==========================================================================
+   * BRIDGE API — lick events sent TO the agent
+   * ==========================================================================
+   *
+   * slicc.lick({ action: 'edit-slide',   data: { index, content } })
+   * slicc.lick({ action: 'add-slide',    data: { afterIndex } })
+   * slicc.lick({ action: 'delete-slide', data: { index } })
+   * slicc.lick({ action: 'change-theme', data: { current } })
+   * slicc.lick({ action: 'export-html' })
+   *
+   * ==========================================================================
+   */
+
+  // --- State management ---
+  let currentSlides = [];
+  let currentTheme = 'black';
+  let currentTransition = 'slide';
+  let revealInstance = null;
+
+  // Theme name → reveal.js CDN theme CSS file
+  const REVEAL_THEMES = {
+    'black': 'black.css',
+    'white': 'white.css',
+    'league': 'league.css',
+    'beige': 'beige.css',
+    'night': 'night.css',
+    'serif': 'serif.css',
+    'simple': 'simple.css',
+    'solarized': 'solarized.css',
+    'moon': 'moon.css',
+    'dracula': 'dracula.css',
+    'sky': 'sky.css',
+    'blood': 'blood.css',
+    // Custom theme aliases — agent can map creative names to reveal themes
+    'midnight-aurora': 'night.css',
+    'clean-light': 'simple.css',
+    'warm-serif': 'serif.css',
+    'dark-modern': 'black.css',
+    'ocean-blue': 'moon.css',
+  };
+
+  // --- Helpers ---
+  function setState(name) {
+    document.querySelectorAll('#state-empty, #state-loading, #state-ready')
+      .forEach(function(el) { el.classList.remove('active'); });
+    var el = document.getElementById('state-' + name);
+    if (el) el.classList.add('active');
+  }
+
+  function escHtml(str) {
+    if (!str) return '';
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;')
+              .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  // --- Slide rendering ---
+  // Converts a slide object from the DATA CONTRACT into a <section> HTML string.
+  function renderBullets(bullets, fragments) {
+    if (!bullets || !bullets.length) return '';
+    var items = bullets.map(function(b) {
+      return '<li' + (fragments ? ' class="fragment"' : '') + '>' + escHtml(b) + '</li>';
+    }).join('\n          ');
+    return '<ul>\n          ' + items + '\n        </ul>';
+  }
+
+  function renderSlide(slide) {
+    var bg = '';
+    if (slide.background) {
+      if (slide.background.charAt(0) === '#' || slide.background.indexOf('rgb') === 0) {
+        bg = ' data-background-color="' + slide.background + '"';
+      } else {
+        bg = ' data-background-image="' + slide.background + '" data-background-size="cover"';
+      }
+    }
+    var notes = slide.notes
+      ? '<aside class="notes">' + escHtml(slide.notes) + '</aside>'
+      : '';
+
+    switch (slide.type) {
+      case 'title':
+        return '<section class="title-slide"' + bg + '>'
+          + '<h1>' + escHtml(slide.title || '') + '</h1>'
+          + (slide.subtitle ? '<p class="slide-subtitle">' + escHtml(slide.subtitle) + '</p>' : '')
+          + notes + '</section>';
+
+      case 'section':
+        return '<section class="section-slide"' + bg + '>'
+          + '<h2>' + escHtml(slide.title || '') + '</h2>'
+          + (slide.subtitle ? '<p class="slide-subtitle">' + escHtml(slide.subtitle) + '</p>' : '')
+          + notes + '</section>';
+
+      case 'content':
+        return '<section' + bg + '>'
+          + (slide.title ? '<h2>' + escHtml(slide.title) + '</h2>' : '')
+          + (slide.content ? '<div>' + slide.content + '</div>' : '')
+          + (slide.bullets ? renderBullets(slide.bullets, slide.fragments) : '')
+          + notes + '</section>';
+
+      case 'code':
+        return '<section' + bg + '>'
+          + (slide.title ? '<h2>' + escHtml(slide.title) + '</h2>' : '')
+          + '<pre><code class="' + (slide.language || '') + '" data-trim data-noescape>'
+          + escHtml(slide.code || '') + '</code></pre>'
+          + notes + '</section>';
+
+      case 'quote':
+        return '<section class="quote-slide"' + bg + '>'
+          + (slide.title ? '<h2>' + escHtml(slide.title) + '</h2>' : '')
+          + '<blockquote>' + escHtml(slide.quote || '') + '</blockquote>'
+          + (slide.attribution ? '<p class="attribution">— ' + escHtml(slide.attribution) + '</p>' : '')
+          + notes + '</section>';
+
+      case 'image':
+        return '<section' + bg + '>'
+          + (slide.title ? '<h2>' + escHtml(slide.title) + '</h2>' : '')
+          + (slide.content ? '<div>' + slide.content + '</div>' : '')
+          + notes + '</section>';
+
+      default:
+        // Fallback: treat as generic content slide
+        return '<section' + bg + '>'
+          + (slide.title ? '<h2>' + escHtml(slide.title) + '</h2>' : '')
+          + (slide.content ? '<div>' + slide.content + '</div>' : '')
+          + (slide.bullets ? renderBullets(slide.bullets, slide.fragments) : '')
+          + notes + '</section>';
+    }
+  }
+
+  // --- Presentation lifecycle ---
+  function buildPresentation(slides, transition) {
+    var container = document.getElementById('slides-container');
+    container.innerHTML = slides.map(renderSlide).join('\n');
+
+    if (revealInstance) {
+      // Sync existing instance with new DOM
+      revealInstance.sync();
+      revealInstance.slide(0);
+      updateSlideCounter();
+    } else {
+      revealInstance = new Reveal({
+        hash: false,
+        history: false,
+        controls: true,
+        progress: true,
+        center: true,
+        transition: transition || 'slide',
+        width: '100%',
+        height: '100%',
+        margin: 0.04,
+        minScale: 0.2,
+        maxScale: 2.0,
+        embedded: true,  // critical for sprinkle panel embedding
+      });
+      revealInstance.initialize().then(function() {
+        revealInstance.on('slidechanged', updateSlideCounter);
+        updateSlideCounter();
+      });
+    }
+  }
+
+  function applyTheme(themeName) {
+    var cssFile = REVEAL_THEMES[themeName] || REVEAL_THEMES['black'];
+    document.getElementById('reveal-theme').href =
+      'https://cdn.jsdelivr.net/npm/reveal.js@5/dist/theme/' + cssFile;
+    currentTheme = themeName;
+  }
+
+  function updateSlideCounter() {
+    if (!revealInstance) return;
+    var indices = revealInstance.getIndices();
+    var total = revealInstance.getTotalSlides();
+    document.getElementById('slide-counter').textContent =
+      ((indices.h || 0) + 1) + ' / ' + total;
+  }
+
+  // --- Update handler — processes incoming data from the agent ---
+  function handleUpdate(data) {
+    if (!data) return;
+
+    // State transitions (pre-content)
+    if (data.status === 'analyzing') { setState('loading'); return; }
+    if (data.status === 'empty')     { setState('empty');   return; }
+
+    // Theme change action
+    if (data.action === 'update-theme' && data.theme) {
+      applyTheme(data.theme);
+      return;
+    }
+
+    // Partial slide update — replace one slide in place
+    if (data.action === 'update-slide' && data.slide != null && data.index != null) {
+      if (data.index >= 0 && data.index < currentSlides.length) {
+        currentSlides[data.index] = data.slide;
+        var sections = document.querySelectorAll('#slides-container > section');
+        if (sections[data.index]) {
+          var temp = document.createElement('div');
+          temp.innerHTML = renderSlide(data.slide);
+          sections[data.index].replaceWith(temp.firstElementChild);
+          if (revealInstance) revealInstance.sync();
+        }
+      }
+      return;
+    }
+
+    // Full content push — build the entire presentation
+    if (data.slides && Array.isArray(data.slides)) {
+      currentSlides = data.slides;
+      if (data.theme) applyTheme(data.theme);
+      if (data.transition) currentTransition = data.transition;
+      setState('ready');
+      buildPresentation(currentSlides, currentTransition);
+    }
+  }
+
+  // --- Bridge API integration ---
+  function initBridge() {
+    if (typeof slicc === 'undefined') {
+      // Not running inside SLICC — standalone preview mode
+      console.warn('[presentation] slicc bridge not available — standalone mode');
+      return;
+    }
+    slicc.on('update', function(data) { handleUpdate(data); });
+  }
+
+  // --- Toolbar event handlers ---
+  function initToolbar() {
+    document.getElementById('btn-edit').addEventListener('click', function() {
+      if (!revealInstance || typeof slicc === 'undefined') return;
+      var idx = revealInstance.getIndices().h || 0;
+      var section = document.querySelectorAll('#slides-container > section')[idx];
+      slicc.lick({
+        action: 'edit-slide',
+        data: { index: idx, content: section ? section.innerHTML : '' }
+      });
+    });
+
+    document.getElementById('btn-add').addEventListener('click', function() {
+      if (!revealInstance || typeof slicc === 'undefined') return;
+      slicc.lick({ action: 'add-slide', data: { afterIndex: revealInstance.getIndices().h || 0 } });
+    });
+
+    document.getElementById('btn-delete').addEventListener('click', function() {
+      if (!revealInstance || typeof slicc === 'undefined') return;
+      slicc.lick({ action: 'delete-slide', data: { index: revealInstance.getIndices().h || 0 } });
+    });
+
+    document.getElementById('btn-theme').addEventListener('click', function() {
+      if (typeof slicc === 'undefined') return;
+      slicc.lick({ action: 'change-theme', data: { current: currentTheme } });
+    });
+
+    document.getElementById('btn-export').addEventListener('click', function() {
+      if (typeof slicc === 'undefined') return;
+      slicc.lick({ action: 'export-html' });
+    });
+  }
+
+  // --- Init on DOM ready ---
+  document.addEventListener('DOMContentLoaded', function() {
+    setState('empty');
+    initToolbar();
+    initBridge();
+  });
+  </script>
+</body>
+</html>
