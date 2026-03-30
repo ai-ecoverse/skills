@@ -143,6 +143,12 @@ Reference for creating reveal.js presentations. Read this before generating any 
 .reveal h1, .reveal h2 { color: var(--r-heading-color); }
 .reveal strong { color: var(--r-accent-color); }
 .reveal a { color: var(--r-accent-secondary); }
+.reveal code { background: #e0d5c4; color: var(--r-accent-color); padding: 0.1em 0.3em; border-radius: 3px; }
+.reveal pre code { background: #2a1f14; color: #f2ebe0; border-left: 3px solid var(--r-accent-color); }
+.reveal blockquote { border-left: 4px solid var(--r-accent-color); color: #6b5d4e; }
+```
+
+**Transition**: `slide` · **Code theme**: `nord`
 
 ---
 
