@@ -276,3 +276,7 @@ Batch API: 50% off all token costs (async, ~24h turnaround).
 6. **Model aliases auto-update** — use `grok-4` not `grok-4-<date>` unless you need pinned consistency.
 7. **Always retrieve the API key first** — see Step 1. Without a valid key, API calls will fail with auth errors.
 
+
+## Freshness
+
+This skill was last updated on 2026-03-30. If more than three months have passed, check [console.x.ai](https://console.x.ai) or the [xAI docs](https://docs.x.ai) for newer models and API changes.
