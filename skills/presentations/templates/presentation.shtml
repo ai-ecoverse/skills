@@ -231,15 +231,15 @@
 
     <!-- Toolbar -->
     <div id="toolbar">
-      <button class="sprinkle-btn icon-btn" id="btn-edit" title="Edit current slide">✏️</button>
-      <button class="sprinkle-btn icon-btn" id="btn-add" title="Add slide after current">＋</button>
-      <button class="sprinkle-btn icon-btn" id="btn-delete" title="Delete current slide">🗑</button>
+      <button class="sprinkle-btn icon-btn" id="btn-edit" type="button" title="Edit current slide" aria-label="Edit current slide">✏️</button>
+      <button class="sprinkle-btn icon-btn" id="btn-add" type="button" title="Add slide after current" aria-label="Add slide after current">＋</button>
+      <button class="sprinkle-btn icon-btn" id="btn-delete" type="button" title="Delete current slide" aria-label="Delete current slide">🗑</button>
       <div class="toolbar-separator"></div>
-      <button class="sprinkle-btn" id="btn-theme" title="Change theme">Theme</button>
+      <button class="sprinkle-btn" id="btn-theme" type="button" title="Change theme">Theme</button>
       <div class="toolbar-spacer"></div>
       <span class="slide-counter" id="slide-counter">0 / 0</span>
       <div class="toolbar-separator"></div>
-      <button class="sprinkle-btn" id="btn-export" title="Export standalone HTML">Export</button>
+      <button class="sprinkle-btn" id="btn-export" type="button" title="Export standalone HTML">Export</button>
     </div>
   </div>
 
@@ -425,6 +425,7 @@
       case 'image':
         return '<section' + bg + '>'
           + (slide.title ? '<h2>' + escHtml(slide.title) + '</h2>' : '')
+          + (slide.src ? '<img src="' + escHtml(slide.src) + '" alt="' + escHtml(slide.alt || slide.title || '') + '" style="max-height: 60vh; max-width: 90%; object-fit: contain;">' : '')
           + (slide.content ? '<div>' + slide.content + '</div>' : '')
           + notes + '</section>';
 
