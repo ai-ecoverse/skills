@@ -90,8 +90,8 @@ Example structure:
 ## Platform Output
 
 Present the completed mixtape as:
-- A markdown table with Title, Artist, and Note columns
-- Offer to create an inline sprinkle card (```shtml) showing the playlist as a styled, shareable card
+- A markdown table with Artist, Title, and Note columns
+- Offer to create an inline sprinkle card (`shtml`) showing the playlist as a styled, shareable card
 
 ## Process
 
