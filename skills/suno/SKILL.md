@@ -1,6 +1,6 @@
 ---
 name: suno
-description: Write song lyrics formatted for Suno AI music generation. Use when the user wants to create a song, write lyrics, compose music with AI, or asks for help with Suno. Triggers on requests like "write me a song", "create lyrics about...", "help me with Suno", "compose a track", "song about...".
+description: Write song lyrics formatted for Suno AI V5.5 music generation. Use when the user wants to create a song, write lyrics, compose music with AI, or asks for help with Suno. Triggers on requests like "write me a song", "create lyrics about...", "help me with Suno", "compose a track", "song about...".
 ---
 
 # Suno Songwriting Assistant
@@ -45,19 +45,18 @@ Closing lines or instrumental fade
 
 ### 2. Style Prompt
 
-Short, ~120 characters max:
+Up to ~1,000 characters in V5.5. Aim for 4–7 descriptors (~60–200 chars) for cleanest results; longer prompts give more control but risk competing descriptors:
 ```
 Genre, mood descriptor, vocal type, key instruments
 ```
 
-### 3. Advanced Settings (when relevant)
+### 3. Creative Sliders (when relevant)
 
 Suggest values for Suno's Custom Mode sliders:
 ```
-Weirdness: 50%        (0=safe/conventional, 100=chaos/experimental)
-Style Influence: 70%  (0=loose interpretation, 100=strict adherence)
-Exclude: no guitars   (optional negative prompt)
-Vocal: Male/Female    (or leave unset for AI choice)
+Weirdness: 50%           (0=conventional/radio-safe, 100=experimental/chaotic)
+Style Influence: 70%     (0=loose interpretation, 100=strict adherence to style prompt)
+Audio Influence: 50%     (only with reference audio; 0=inspiration only, 100=close mirror)
 ```
 
 ## Formatting Rules
@@ -70,6 +69,23 @@ Vocal: Male/Female    (or leave unset for AI choice)
 [Outro]       [Hook]        [Break]
 [Fade Out]    [Instrumental]
 ```
+
+### Parameterized Metatags (V5+)
+
+Combine section tags with per-section production cues using colon syntax:
+
+```
+[Verse 1: whispered vocals, acoustic guitar only]
+Lyrics here...
+
+[Chorus: full band, anthemic, layered harmonies]
+Hook lyrics...
+
+[Bridge: piano only, vulnerable vocals, half-tempo]
+Contrasting lyrics...
+```
+
+This gives per-section control over instrumentation, vocal style, and energy without putting production notes in the style prompt.
 
 ### Vocal/Performance Tags
 
@@ -178,7 +194,7 @@ Before delivering lyrics:
 - [ ] Chorus rhymes and repeats exactly
 - [ ] Metatags in square brackets
 - [ ] Background vocals in parentheses
-- [ ] Style prompt under 120 characters
+- [ ] Style prompt is focused (4–7 descriptors, avoid competing directions)
 - [ ] Genre-appropriate energy tags (ALL CAPS only where fitting)
 
 ## Handling User Input
@@ -254,6 +270,27 @@ Bavarian, klezmer
 ```
 Rap Battle, male vocals, aggressive, metaphysical
 ```
+
+## V5.5 Features
+
+This skill is optimized for Suno V5.5 (March 2026), which produces 48kHz broadcast-quality audio.
+
+### Key V5.5 Capabilities
+
+- **Persona Voices**: Create reusable vocal identities for consistent sound across songs (Pro/Premier)
+- **Voice Cloning**: Clone your own voice with a verification process (Pro/Premier)
+- **Custom Models**: Train up to 3 personalized models from your song library (Pro/Premier)
+- **My Taste**: Adaptive preference system that learns from your generation history (all users)
+- **Song Editor**: Replace sections, extend, crop, and fade for iterative refinement
+- **Creative Sliders**: Weirdness, Style Influence, and Audio Influence for fine-tuning generation personality
+- **12-stem separation**: Export individual instrument stems for DAW mixing (Pro/Premier)
+
+### Tips for V5.5
+
+- Style prompts can now be up to ~1,000 characters — use the extra space for detailed instrumentation and production notes when needed
+- Parameterized metatags (`[Verse: descriptor]` syntax) are more reliably followed in V5.5
+- Use Persona Voices for consistency when generating multiple songs for the same "artist"
+- The Song Editor is more cost-efficient than regenerating entire songs — fix weak sections instead
 
 ## Full Song Examples
 

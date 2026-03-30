@@ -4,8 +4,8 @@
 
 | Field | Limit |
 |-------|-------|
-| Lyrics | ~1250 characters (slightly more in v5) |
-| Style prompt | ~100-120 characters |
+| Lyrics | ~1,250 characters (slightly more in V5+) |
+| Style prompt | Up to ~1,000 characters (V5.5); 4–7 descriptors recommended for cleanest results |
 
 ## Structure Tags
 
@@ -14,7 +14,7 @@
 [Intro]         [Verse]         [Verse 1]       [Verse 2]
 [Pre-Chorus]    [Chorus]        [Post-Chorus]   [Hook]
 [Bridge]        [Break]         [Outro]         [Instrumental]
-[Fade Out]      [Fade In]
+[Fade Out]      [Fade In]       [Build-Up]      [End]
 ```
 
 ### Dynamic Markers
@@ -90,6 +90,20 @@ Hook lyrics...
 [Mood: Defiant]     [Mood: Melancholic]
 [BPM: 120]
 ```
+
+### Parameterized Metatags (V5+)
+
+Combine section tags with inline descriptors for per-section production control:
+```
+[Verse 1: whispered vocals, acoustic guitar only]
+[Chorus: full band, anthemic, layered harmonies]
+[Bridge: piano only, vulnerable vocals, half-tempo]
+[Outro: fade out, ambient reprise, reverb-heavy]
+[Intro: atmospheric, slow build, synth pads]
+[Break: percussion only, tribal drums]
+```
+
+More reliable in V5/V5.5 than earlier versions. Use this instead of placing production notes as separate inline modifier tags.
 
 ### Ad-libs and Background Vocals
 
@@ -226,7 +240,7 @@ Set to Male, Female, or leave unset for AI choice.
 - Keep tags short (1-3 words)
 
 ### Quality Tips
-- Shorter style prompts = cleaner audio quality
+- Focused style prompts (4–7 descriptors) = cleanest audio quality; V5.5 supports up to ~1,000 chars but more isn't always better
 - Genre mashups risk quality degradation
 - Specific instruments can conflict—test combinations
 - Let AI fill creative gaps when unsure
@@ -252,3 +266,5 @@ with Indonesian gamelan and Swedish death metal growls
 - [Jack Righteous - Advanced Sliders Guide](https://jackrighteous.com/en-us/blogs/guides-using-suno-ai-music-creation/how-to-use-suno-s-advanced-sliders-weirdness-style-audio-influence)
 - [Jack Righteous - Negative Prompting in v5](https://jackrighteous.com/en-us/blogs/guides-using-suno-ai-music-creation/negative-prompting-suno-v5-guide)
 - [Sound on Sound - Understanding & Writing Lyrics Part 3](https://www.soundonsound.com/techniques/understanding-writing-lyrics-part-3)
+- [Blake Crosley - Suno V5.5 Definitive Reference](https://blakecrosley.com/guides/suno)
+- [Suno Help - V4.5 Better Prompts](https://help.suno.com/en/articles/5782977)
