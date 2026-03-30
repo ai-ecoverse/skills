@@ -120,6 +120,22 @@ These are common across many models, but always prefer the llms.txt values when 
 **Text-to-speech models** typically accept:
 - `text` (string) — content to speak
 - `voice_id` (string) — which voice to use
+- `speed` (number) — speaking rate
+- `emotion` (string) — emotional tone
+
+## Step 4: Upload Files (When Needed)
+
+For tasks that require an input file (image-to-video, voice cloning, etc.), upload the file first:
+
+```bash
+curl -s -X POST \
+  -H "Authorization: Bearer $WAVESPEED_API_KEY" \
+  -F "file=@/workspace/source.jpg" \
+  https://api.wavespeed.ai/api/v3/media/upload/binary
+```
+
+The response includes a `download_url` — use this URL as the `image` or `audio` parameter
+in the generation request. Uploaded files expire after 7 days.
 
 ## Step 5: Enhance the Prompt
 
@@ -229,7 +245,7 @@ If the output is a single image URL, download it and open it:
 
 ```bash
 curl -s -o /workspace/wavespeed_output.png "<output-url>"
-open /workspace/wavespeed_output.png
+open --view /workspace/wavespeed_output.png
 ```
 
 ## Error Handling
