@@ -21,7 +21,7 @@ Your hero must be ACTIVE, not passive. Ask these questions:
 - **Passive:** Reacts, waits, follows
 
 ### 4. Does the hero tell others what to do, or ask questions?
-- **Heroes never ask questions!** They command. They know.
+- **Strong heroes discover answers through action, not by asking other characters for information.** They command. They know.
 - Exception: Rhetorical questions or interrogating villains
 
 **If your hero fails this test:** Rewrite scenes so the hero drives action instead of witnessing it.
@@ -64,7 +64,7 @@ Characters should speak from their own wants, not yours. Ask:
 
 ### Why It Matters:
 - Stronger villain = greater heroics
-- They're often two halves of the same persona (light and dark)
+- They're often opposing reflections of the same core conflict (light and dark)
 - The hero must be the underdog
 
 ### How to Make the Bad Guy Badder:
@@ -185,7 +185,7 @@ List the emotional beats of your screenplay. If they're all the same color, add 
 Start the hero as FAR BACK as possible to give them the longest arc.
 
 ### Drawing the Bow:
-Like an arrow, draw the bow back to its very end for the strongest flight.
+Think of a rubber band — the further you stretch it back, the more powerful the snap forward.
 
 ### Common Mistake:
 Protecting the hero from their full flaw. Making them "too good" at the start.
@@ -229,11 +229,11 @@ Once established, reference the trait throughout to cement the character.
 **The Test:** Are your characters motivated by primal drives?
 
 ### The Primal Drives:
-- Survival
-- Hunger
-- Sex
-- Protection of loved ones
 - Fear of death
+- Protecting loved ones
+- The drive to find a mate
+- Hunger
+- Basic survival
 
 ### Sophisticated vs. Primal:
 **Sophisticated:** "I want to get the promotion."

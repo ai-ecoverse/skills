@@ -213,12 +213,12 @@ If your beat is late, the audience feels it even if they cannot explain why.
 
 **Purpose:** Execute the new plan and prove change.
 
-**Structure:**
-1. Gather the team
-2. Execute the plan
-3. High tower surprise
-4. Dig deep down
-5. Execute the new plan
+**Structure** *(this five-part framework comes from the broader Save the Cat methodology, not just the original 2005 book)*:
+1. Rally the allies
+2. Launch the plan
+3. The unexpected twist at the top
+4. Reach for the deepest reserves
+5. Launch the revised plan
 
 **Must show:**
 - Bad guys dispatched (henchmen -> boss)

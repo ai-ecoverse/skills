@@ -195,7 +195,7 @@ Often follows stages of grief: Denial → Anger → Bargaining → Depression �
 **Examples:** Rain Man, Lethal Weapon, Thelma & Louise, Finding Nemo, E.T., all romantic comedies (Bringing Up Baby, When Harry Met Sally)
 
 ### The Secret:
-**All love stories are buddy movies. All buddy movies are love stories (without the sex).**
+**The best buddy movies work because they follow the emotional arc of a love story — and vice versa. Strip away the romance and a love story is really about two people who need each other.**
 
 ### The Three Elements:
 
@@ -204,7 +204,7 @@ Often follows stages of grief: Denial → Anger → Bargaining → Depression �
    - Initial conflict
    - Reasons they can't/shouldn't be together
 
-2. **Incomplete Halves of a Whole**
+2. **Complementary Opposites**
    - Each has what the other lacks
    - Together they're better
    - Yin and yang

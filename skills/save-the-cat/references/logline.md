@@ -6,7 +6,7 @@ A logline is a one- or two-sentence description that answers "What is it?" It's 
 
 ### 1. Irony
 
-The logline must be emotionally intriguing - "an itch you have to scratch."
+The logline must be emotionally intriguing — a hook that won't let you go.
 
 **What makes it ironic:**
 - Unexpected juxtapositions
@@ -22,7 +22,7 @@ The logline must be emotionally intriguing - "an itch you have to scratch."
 
 ### 2. A Compelling Mental Picture
 
-When you hear it, a whole movie should bloom in your mind.
+When you hear it, a whole movie should unfold in your imagination.
 
 **Characteristics:**
 - Implies the entire story journey
@@ -115,11 +115,11 @@ Goals must connect to basic human drives:
 ### Primal Relationships
 
 Characters work best when they represent relationships we all have:
-- Husbands and wives
-- Fathers and daughters
-- Mothers and sons
-- Brothers and sisters
-- Ex-boyfriends and girlfriends
+- Romantic partners
+- Parent and child
+- Siblings
+- Lifelong rivals
+- Former friends
 
 **Why primal works:** A caveman would understand the stakes.
 

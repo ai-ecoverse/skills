@@ -3,6 +3,8 @@ name: save-the-cat
 description: Screenwriting assistant using Blake Snyder's Save the Cat! methodology. Helps with high-concept ideas, loglines, hero design, the 15-beat Beat Sheet (BS2), the Board, story genres, and diagnostics. Use when writing screenplays, developing movie structure, creating beat sheets, crafting loglines, building a board, or analyzing script structure.
 ---
 
+> **Attribution**: This skill provides original reference guides inspired by Blake Snyder's *Save the Cat!* methodology. It is not affiliated with or endorsed by Blake Snyder Enterprises. For the complete methodology, please refer to the original *Save the Cat!* books. All content in these files is an independent summary intended for educational use.
+
 # Save the Cat! Screenwriting Assistant
 
 A comprehensive screenwriting tool based on Blake Snyder's "Save the Cat!" methodology - the industry-standard approach to crafting commercial, audience-pleasing screenplays.
