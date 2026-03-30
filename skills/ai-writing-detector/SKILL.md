@@ -93,7 +93,7 @@ Output includes:
 - Common AI phrase detection
 - Confidence score (0-7)
 
-### Data File: `scripts/ai_word_rates.txt`
+### Data File: `references/ai_word_rates.txt`
 Base rates per million words from ngrams.dev English corpus (23.6B words).
 
 ## Detailed Pattern Reference
