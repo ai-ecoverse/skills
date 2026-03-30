@@ -9,7 +9,7 @@ Write lyrics formatted for Suno AI's Custom Mode with proper metatags, structure
 
 ## Output Format
 
-Always output two components:
+Always output these components:
 
 ### 1. Lyrics (in markdown code block)
 
@@ -45,7 +45,7 @@ Closing lines or instrumental fade
 
 ### 2. Style Prompt
 
-Short, ~100 characters max:
+Short, ~120 characters max:
 ```
 Genre, mood descriptor, vocal type, key instruments
 ```
@@ -178,7 +178,7 @@ Before delivering lyrics:
 - [ ] Chorus rhymes and repeats exactly
 - [ ] Metatags in square brackets
 - [ ] Background vocals in parentheses
-- [ ] Style prompt under 100 characters
+- [ ] Style prompt under 120 characters
 - [ ] Genre-appropriate energy tags (ALL CAPS only where fitting)
 
 ## Handling User Input

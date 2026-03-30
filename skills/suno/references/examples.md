@@ -373,7 +373,7 @@ Wilson's theorem draws the prime design
 **Style**: `Rap Battle, male vocals, aggressive, metaphysical`
 
 ```
-Verse 1 — ARISTOTLE
+[Verse 1 — Aristotle]
 
 Prime mover on the mic, I define every form,
 Essence in my Categories — that's the culinary norm.
@@ -384,7 +384,7 @@ Four causes bring order; you just play with family trees.
 
 ⸻
 
-Verse 2 — LATE WITTGENSTEIN
+[Verse 2 — Late Wittgenstein]
 
 Hold up, Ari-old-school, your marble mind's brittle —
 I smash those rigid essences like queso in the griddle.
@@ -395,7 +395,7 @@ Family resemblances, overlapping names.
 
 ⸻
 
-FINAL VERSE — SLAVOJ ŽIŽEK
+[Verse 3 — Slavoj Žižek]
 
 ŽIŽEK here — I break through like cream filling oozing:
 Both of you miss how ideology is choosing.
