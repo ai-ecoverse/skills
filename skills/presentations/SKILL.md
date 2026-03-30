@@ -42,7 +42,7 @@ One scoop per presentation. The scoop owns the sprinkle and stays alive for edit
 scoop_scoop("quarterly-review")
 feed_scoop("quarterly-review", "You own the sprinkle 'quarterly-review'. Your job:
 1. Read style guide: read_file /workspace/skills/presentations/style-guide.md
-2. Create the .shtml file at /shared/sprinkles/quarterly-review/quarterly-review.shtml using the template from /workspace/skills/presentations/template.shtml
+2. Create the .shtml file at /shared/sprinkles/quarterly-review/quarterly-review.shtml using the template from /workspace/skills/presentations/templates/presentation.shtml
 3. Run: sprinkle open quarterly-review
 4. Push initial content: sprinkle send quarterly-review '<slide-data-json>'
 5. Stay alive — wait for lick events. Do NOT exit while the sprinkle is open.")
@@ -71,9 +71,10 @@ Push slide content via `sprinkle send <name> '<json>'`:
 {
   "slides": [
     {"type": "title", "title": "...", "subtitle": "...", "background": "#hex"},
+    {"type": "section", "title": "...", "subtitle": "..."},
     {"type": "content", "title": "...", "bullets": ["..."], "notes": "speaker notes"},
     {"type": "code", "title": "...", "code": "...", "language": "js"},
-    {"type": "quote", "text": "...", "attribution": "...", "background": "#hex"},
+    {"type": "quote", "quote": "...", "attribution": "...", "background": "#hex"},
     {"type": "image", "title": "...", "src": "url-or-description", "alt": "..."}
   ],
   "theme": "midnight-aurora",
@@ -89,8 +90,8 @@ The sprinkle emits lick events via `slicc.lick({action, data})`. Handle these:
 
 | Action | Data | Response |
 |--------|------|----------|
-| `edit-slide` | `{index, instruction}` | Regenerate that slide, push full deck |
-| `add-slide` | `{afterIndex, instruction}` | Generate new slide, insert, push full deck |
+| `edit-slide` | `{index, content}` | Ask user what to change, regenerate that slide, push full deck |
+| `add-slide` | `{afterIndex}` | Generate new slide, insert, push full deck |
 | `delete-slide` | `{index}` | Remove slide, push full deck |
 | `change-theme` | `{theme}` | Update theme in data, push full deck |
 | `export-html` | `{}` | Write standalone HTML to VFS, tell user the path |
