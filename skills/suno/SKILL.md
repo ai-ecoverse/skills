@@ -1,6 +1,6 @@
 ---
 name: suno
-description: Write song lyrics formatted for Suno AI V5.5 music generation and submit them to suno.com. Use when the user wants to create a song, write lyrics, compose music with AI, or asks for help with Suno. Triggers on requests like "write me a song", "create lyrics about...", "help me with Suno", "compose a track", "song about...".
+description: Write song lyrics formatted for Suno AI V5.5 music generation and submit them via direct API or browser automation. Includes `suno-api` CLI for generating songs, listing personas/voices, managing clips, and checking credits. Use when the user wants to create a song, write lyrics, compose music with AI, submit to Suno, list Suno personas, check Suno credits, or asks for help with Suno. Triggers on requests like "write me a song", "create lyrics about...", "help me with Suno", "compose a track", "song about...", "suno api", "suno credits", "suno personas".
 allowed-tools: bash
 ---
 
@@ -475,11 +475,53 @@ This skill is optimized for Suno V5.5 (March 2026), which produces 48kHz broadca
 - Use Persona Voices for consistency when generating multiple songs for the same "artist"
 - The Song Editor is more cost-efficient than regenerating entire songs — fix weak sections instead
 
-## Submitting Songs to Suno
+## Suno API (Direct)
 
-After writing lyrics, you can automate submission to Suno's Create page using `playwright-cli`. The workflow: navigate to the Create page, select Custom mode, optionally choose a persona, fill in lyrics and styles, set the title, configure advanced options, and click Create.
+The `suno-api` and `suno-token` shell commands provide direct API access to Suno, bypassing the UI entirely. Requires a suno.com tab open and authenticated in the browser.
 
-For the complete step-by-step guide with commands and examples, see [references/suno-ui-automation.md](references/suno-ui-automation.md).
+### Quick start
+
+```bash
+# Check credits
+suno-api credits
+
+# List personas/voices
+suno-api personas
+
+# Generate a song (custom mode)
+suno-api generate --lyrics "[Verse]\nHello world" --tags "rock, indie" --title "My Song"
+
+# Generate with a persona
+suno-api generate --lyrics "..." --tags "..." --title "..." --persona <persona-id>
+
+# Generate (simple mode — AI writes lyrics)
+suno-api generate --simple "a funky disco track about robots"
+
+# List recent songs
+suno-api feed
+
+# Poll for completion
+suno-api poll <clip_id> --wait
+
+# Search
+suno-api search "indie rock" --type=public_song
+```
+
+### Authentication
+
+Uses Clerk JWT obtained from the browser via `suno-token`. Requires a suno.com tab open and logged in. Tokens auto-refresh on 401.
+
+### All commands
+
+`generate`, `poll`, `feed`, `clip`, `search`, `lyrics`, `lyrics-status`, `trash`, `credits`, `rename`, `visibility`, `extend`, `tags`, `playlists`, `projects`, `personas`, `voices`, `me`
+
+Run `suno-api help` for full usage, or see [references/endpoints.md](references/endpoints.md) for the complete API reference.
+
+## Submitting Songs via UI Automation
+
+For UI-based submission (as fallback or when the API isn't available), use `playwright-cli` to automate the Create page. Navigate to Create, select Custom mode, optionally choose a persona, fill in lyrics and styles, set the title, configure advanced options, and click Create.
+
+For the complete step-by-step guide, see [references/suno-ui-automation.md](references/suno-ui-automation.md).
 
 ## Full Song Examples
 
