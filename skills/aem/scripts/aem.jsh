@@ -2,6 +2,10 @@
 // Accepts full EDS URLs: https://main--repo--org.aem.page/path
 // Auth via oauth-token adobe (user OAuth, no manual config needed)
 
+const minimist = require('minimist');
+const { quote: shellQuote } = require('shell-quote');
+const mime = require('mime-types');
+
 const DA_ADMIN_BASE = 'https://admin.da.live';
 const AEM_ADMIN_BASE = 'https://admin.hlx.page';
 
@@ -14,20 +18,8 @@ function parseAemUrl(url) {
 }
 
 function resolveTarget(args) {
-  // Find the first positional arg (not a flag)
-  let urlOrPath = null;
-  let org = null, repo = null, ref = 'main';
-  const positional = [];
-
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--org' && args[i + 1]) { org = args[++i]; continue; }
-    if (args[i] === '--repo' && args[i + 1]) { repo = args[++i]; continue; }
-    if (args[i] === '--ref' && args[i + 1]) { ref = args[++i]; continue; }
-    if (args[i] === '--output' || args[i] === '-o') { i++; continue; }
-    if (!args[i].startsWith('--')) positional.push(args[i]);
-  }
-
-  urlOrPath = positional[0] || null;
+  const argv = minimist(args);
+  const urlOrPath = argv._[0] || null;
   if (!urlOrPath) return null;
 
   // Try parsing as EDS URL
@@ -37,17 +29,14 @@ function resolveTarget(args) {
   }
 
   // Fall back to flags
+  const org = argv.org || null;
+  const repo = argv.repo || null;
+  const ref = argv.ref || 'main';
   if (org && repo) {
     const path = urlOrPath.replace(/^\//, '');
     return { org, repo, ref, path };
   }
 
-  return null;
-}
-
-function getFlag(args, flag) {
-  const idx = args.indexOf(flag);
-  if (idx >= 0 && args[idx + 1]) return args[idx + 1];
   return null;
 }
 
@@ -65,13 +54,6 @@ async function getToken() {
 
 // ── HTTP ───────────────────────────────────────────────────────
 
-function shellQuote(a) {
-  if (/[^a-zA-Z0-9_.\/:\-=]/.test(a)) {
-    return "'" + a.replace(/'/g, "'\\''") + "'";
-  }
-  return a;
-}
-
 async function aemFetch(method, url, token, extraArgs) {
   const args = [
     'curl', '-sS', '-X', method,
@@ -79,7 +61,7 @@ async function aemFetch(method, url, token, extraArgs) {
   ];
   if (extraArgs) args.push(...extraArgs);
   args.push(url);
-  const cmd = args.map(shellQuote).join(' ');
+  const cmd = shellQuote(args);
   const r = await exec(cmd);
   const body = r.stdout;
   // Check auth errors BEFORE exit code — curl returns 0 on HTTP 401
@@ -141,7 +123,8 @@ async function cmdGet(args) {
   const url = `${DA_ADMIN_BASE}/source/${target.org}/${target.repo}/${path}`;
   const html = await aemFetch('GET', url, token);
 
-  const outputPath = getFlag(args, '--output') || getFlag(args, '-o');
+  const argv = minimist(args, { alias: { o: 'output' } });
+  const outputPath = argv.output || null;
   if (outputPath) {
     await fs.writeFile(outputPath, html);
     process.stdout.write(`Saved to ${outputPath} (${html.length} bytes)\n`);
@@ -153,8 +136,7 @@ async function cmdGet(args) {
 async function cmdPut(args) {
   const target = resolveTarget(args);
   // Second positional arg is the VFS file
-  const positional = args.filter(a => !a.startsWith('--'));
-  const vfsFile = positional[1] || null;
+  const vfsFile = minimist(args)._[1] || null;
 
   if (!target || !vfsFile) {
     process.stderr.write('Usage: aem put <eds-url-or-path> <vfs-file>\n');
@@ -219,19 +201,19 @@ async function cmdPublish(args) {
 }
 
 async function cmdUpload(args) {
-  const positional = args.filter(a => !a.startsWith('--'));
-  const vfsFile = positional[0] || null;
+  const argv = minimist(args);
+  const vfsFile = argv._[0] || null;
   // The second positional is the EDS URL or path
-  const targetArgs = positional.slice(1);
+  const targetArgs = argv._.slice(1);
 
   if (!vfsFile || targetArgs.length === 0) {
     process.stderr.write('Usage: aem upload <vfs-file> <eds-url-or-path>\n');
     process.exit(1);
   }
 
-  const target = resolveTarget(targetArgs.concat(
-    args.filter(a => a.startsWith('--'))
-  ));
+  // Reconstruct args for resolveTarget with flags preserved
+  const flagArgs = Object.entries(argv).filter(([k]) => k !== '_').flatMap(([k, v]) => v === true ? [`--${k}`] : [`--${k}`, String(v)]);
+  const target = resolveTarget(targetArgs.concat(flagArgs));
   if (!target) {
     process.stderr.write('Usage: aem upload <vfs-file> <eds-url-or-path> [--org <org> --repo <repo>]\n');
     process.exit(1);
@@ -241,17 +223,11 @@ async function cmdUpload(args) {
   const token = await getToken();
   const aemPath = target.path.replace(/^\//, '');
 
-  // Guess MIME type from extension
-  const ext = filePath.split('.').pop().toLowerCase();
-  const mimeMap = {
-    'png': 'image/png', 'jpg': 'image/jpeg', 'jpeg': 'image/jpeg',
-    'gif': 'image/gif', 'svg': 'image/svg+xml', 'webp': 'image/webp',
-    'pdf': 'application/pdf', 'mp4': 'video/mp4',
-  };
-  const mime = mimeMap[ext] || 'application/octet-stream';
+  // Detect MIME type from extension
+  const mimeType = mime.lookup(filePath) || 'application/octet-stream';
 
   const url = `${DA_ADMIN_BASE}/source/${target.org}/${target.repo}/${aemPath}`;
-  await aemFetch('PUT', url, token, ['-F', `data=@${filePath};type=${mime}`]);
+  await aemFetch('PUT', url, token, ['-F', `data=@${filePath};type=${mimeType}`]);
 
   process.stdout.write(`Uploaded: ${filePath} -> ${aemPath}\n`);
 }

@@ -3,6 +3,8 @@
 // Usage: suno-api <command> [args...]
 // Commands: generate, poll, feed, search, lyrics, trash, credits, clip, rename, visibility
 
+const minimist = require('minimist');
+
 const BASE_URL = 'https://studio-api-prod.suno.com';
 const DOMAIN = 'suno.com';
 const DEFAULT_MODEL = 'chirp-fenix';
@@ -79,11 +81,11 @@ const commands = {
 
   // --- Generate a song ---
   async generate(...args) {
-    const flags = parseFlags(args);
+    const flags = minimist(args);
 
     // Simple mode: suno-api generate --simple "description text"
     if (flags.simple !== undefined) {
-      const description = typeof flags.simple === 'string' ? flags.simple : args.filter(a => !a.startsWith('--')).join(' ');
+      const description = typeof flags.simple === 'string' ? flags.simple : flags._.join(' ');
       if (!description) {
         console.error('Usage: suno-api generate --simple "a funky disco track about robots"');
         process.exit(1);
@@ -133,8 +135,8 @@ const commands = {
 
   // --- Poll clip status ---
   async poll(...args) {
-    const ids = args.filter(a => !a.startsWith('--'));
-    const flags = parseFlags(args);
+    const flags = minimist(args);
+    const ids = flags._;
     if (ids.length === 0) {
       console.error('Usage: suno-api poll <clip_id> [clip_id2...] [--wait] [--timeout=300]');
       process.exit(1);
@@ -176,7 +178,7 @@ const commands = {
 
   // --- Get feed ---
   async feed(...args) {
-    const flags = parseFlags(args);
+    const flags = minimist(args);
     const page = parseInt(flags.page || '0', 10);
     const result = await api('POST', '/api/feed/v3', { page });
     const clips = result.clips || [];
@@ -199,7 +201,7 @@ const commands = {
 
   // --- Get a single clip ---
   async clip(...args) {
-    const id = args.find(a => !a.startsWith('--'));
+    const id = minimist(args)._[0];
     if (!id) {
       console.error('Usage: suno-api clip <clip_id>');
       process.exit(1);
@@ -209,8 +211,8 @@ const commands = {
 
   // --- Search ---
   async search(...args) {
-    const flags = parseFlags(args);
-    const term = args.filter(a => !a.startsWith('--')).join(' ');
+    const flags = minimist(args);
+    const term = flags._.join(' ');
     if (!term) {
       console.error('Usage: suno-api search "query" [--type=public_song]');
       process.exit(1);
@@ -223,8 +225,8 @@ const commands = {
 
   // --- Generate lyrics ---
   async lyrics(...args) {
-    const flags = parseFlags(args);
-    const prompt = args.filter(a => !a.startsWith('--')).join(' ');
+    const flags = minimist(args);
+    const prompt = flags._.join(' ');
     if (!prompt) {
       console.error('Usage: suno-api lyrics "a sad ballad about rain" [--wait]');
       process.exit(1);
@@ -271,8 +273,8 @@ const commands = {
 
   // --- Trash/untrash clips ---
   async trash(...args) {
-    const flags = parseFlags(args);
-    const ids = args.filter(a => !a.startsWith('--'));
+    const flags = minimist(args);
+    const ids = flags._;
     if (ids.length === 0) {
       console.error('Usage: suno-api trash <clip_id> [clip_id2...] [--restore]');
       process.exit(1);
@@ -298,8 +300,8 @@ const commands = {
 
   // --- Rename a clip ---
   async rename(...args) {
-    const flags = parseFlags(args);
-    const id = args.find(a => !a.startsWith('--'));
+    const flags = minimist(args);
+    const id = flags._[0];
     const title = flags.title;
     if (!id || !title) {
       console.error('Usage: suno-api rename <clip_id> --title "New Title"');
@@ -310,8 +312,8 @@ const commands = {
 
   // --- Set visibility ---
   async visibility(...args) {
-    const flags = parseFlags(args);
-    const id = args.find(a => !a.startsWith('--'));
+    const flags = minimist(args);
+    const id = flags._[0];
     const pub = flags.public;
     if (!id || pub === undefined) {
       console.error('Usage: suno-api visibility <clip_id> --public=true|false');
@@ -324,8 +326,8 @@ const commands = {
 
   // --- Extend/continue a clip ---
   async extend(...args) {
-    const flags = parseFlags(args);
-    const id = args.find(a => !a.startsWith('--'));
+    const flags = minimist(args);
+    const id = flags._[0];
     if (!id) {
       console.error('Usage: suno-api extend <clip_id> [--infill]');
       process.exit(1);
@@ -338,7 +340,7 @@ const commands = {
 
   // --- Get tag recommendations ---
   async tags(...args) {
-    const tags = args.filter(a => !a.startsWith('--'));
+    const tags = minimist(args)._;
     if (tags.length === 0) {
       // Return recommended styles
       return api('GET', '/api/generate/get_recommend_styles');
@@ -358,8 +360,8 @@ const commands = {
 
   // --- Get user personas/voices ---
   async personas(...args) {
-    const flags = parseFlags(args);
-    const term = args.filter(a => !a.startsWith('--')).join(' ') || '';
+    const flags = minimist(args);
+    const term = flags._.join(' ') || '';
     const searchType = flags.favorites ? 'public_persona' : 'library_persona';
     const result = await api('POST', '/api/search/', {
       search_queries: [{ term, search_type: searchType }]
@@ -381,23 +383,6 @@ const commands = {
     return api('GET', '/api/user/me');
   }
 };
-
-// --- Flag parser ---
-
-function parseFlags(args) {
-  const flags = {};
-  for (const arg of args) {
-    if (arg.startsWith('--')) {
-      const eq = arg.indexOf('=');
-      if (eq > 0) {
-        flags[arg.slice(2, eq)] = arg.slice(eq + 1);
-      } else {
-        flags[arg.slice(2)] = true;
-      }
-    }
-  }
-  return flags;
-}
 
 // --- Main ---
 
