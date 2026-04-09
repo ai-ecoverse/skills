@@ -20,7 +20,8 @@ context (same-origin) with the user's `xoxc-*` token from `localStorage`.
 slack history C087NCG774J
 
 # Post a message to Slackbot (safe — never messages real people)
-slack post D12AKTSDC "Hello from SLICC!"
+# Use "slack slackbot" to find your DM channel ID first
+slack post <slackbot_dm_id> "Hello from SLICC!"
 
 # Search for channels
 slack channels --search=one-aem
@@ -49,9 +50,10 @@ Fetch recent messages from a channel. Default limit is 20.
 
 ### slack post \<channel_id\> \<message\>
 
-Post a message to a channel. The Slackbot DM channel is `D12AKTSDC`. For safety,
-posting is restricted to the Slackbot DM only — attempts to post to other channels
-are blocked unless `--force` is passed.
+Post a message to a channel. Use `slack slackbot` to find the Slackbot DM channel ID.
+For safety, posting is restricted to the Slackbot DM only — attempts to post to other
+channels are blocked unless `--force` is passed. The Slackbot DM ID is resolved
+dynamically via the `conversations.open` API.
 
 ### slack channels [--search=term]
 

@@ -13,8 +13,7 @@ All requests include:
 Token extraction:
 ```javascript
 const cfg = JSON.parse(localStorage.getItem('localConfig_v2'));
-const token = cfg.teams['E23RE8G4F'].token;  // xoxc-71864288151-...
-const userId = 'W5BPKRLUA';  // Lars Trieloff
+const token = cfg.teams['E23RE8G4F'].token;  // xoxc-…
 ```
 
 ## Endpoints

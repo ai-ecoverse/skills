@@ -2,7 +2,6 @@
 // Uses XHR from the Slack page context (same-origin) for all API calls.
 
 const ENTERPRISE_ID = 'E23RE8G4F';
-const SLACKBOT_DM = 'D12AKTSDC';
 const SLACK_DOMAIN = 'app.slack.com';
 
 // --- Tab management ---
@@ -13,6 +12,13 @@ async function findSlackTab() {
   if (_tabId) return _tabId;
 
   const list = await exec('playwright-cli tab-list');
+  if (list.exitCode !== 0) {
+    console.error('Error: Failed to list browser tabs with `playwright-cli tab-list`.');
+    if (list.stderr && list.stderr.trim()) {
+      console.error(list.stderr.trim());
+    }
+    process.exit(1);
+  }
   // Match any tab on app.slack.com — handle both local and remote (follower/leader) tab IDs
   const lines = list.stdout.split('\n');
   for (const line of lines) {
@@ -43,11 +49,17 @@ async function slackApi(method, params) {
   // The eval expression: extract token from localStorage, build XHR, return response
   const expr = `
 (async () => {
-  const cfg = JSON.parse(localStorage.getItem('localConfig_v2'));
-  if (!cfg || !cfg.teams || !cfg.teams['${ENTERPRISE_ID}']) {
+  let token;
+  try {
+    const rawCfg = localStorage.getItem('localConfig_v2');
+    const cfg = JSON.parse(rawCfg);
+    if (!cfg || !cfg.teams || !cfg.teams['${ENTERPRISE_ID}'] || !cfg.teams['${ENTERPRISE_ID}'].token) {
+      return JSON.stringify({ ok: false, error: 'token_not_found' });
+    }
+    token = cfg.teams['${ENTERPRISE_ID}'].token;
+  } catch (e) {
     return JSON.stringify({ ok: false, error: 'token_not_found' });
   }
-  const token = cfg.teams['${ENTERPRISE_ID}'].token;
   const params = new URLSearchParams();
   params.append('token', token);
   const entries = ${paramJson};
@@ -70,8 +82,10 @@ async function slackApi(method, params) {
   const tmpFile = '/shared/.slack_eval_' + Date.now() + '.js';
   await fs.writeFile(tmpFile, expr);
   const result = await exec(`playwright-cli eval-file ${tmpFile} --tab=${tabId}`);
-  // Clean up temp file (VFS doesn't have unlink, use writeFile to overwrite with empty)
-  await fs.writeFile(tmpFile, '').catch(() => {});
+  // Clean up temp file; fall back to truncation if deletion is unsupported
+  await fs.rm(tmpFile).catch(async () => {
+    await fs.writeFile(tmpFile, '').catch(() => {});
+  });
 
   if (result.exitCode !== 0) {
     console.error('Eval failed:', result.stderr);
@@ -80,7 +94,15 @@ async function slackApi(method, params) {
 
   let data;
   try {
-    data = JSON.parse(result.stdout.trim());
+    const stdout = result.stdout.trim();
+    data = JSON.parse(stdout);
+    // Handle double-encoded JSON (eval-file sometimes returns a JSON string)
+    if (typeof data === 'string') {
+      data = JSON.parse(data);
+    }
+    if (!data || typeof data !== 'object') {
+      throw new Error('API response was not an object');
+    }
   } catch (e) {
     console.error('Failed to parse API response:', result.stdout.substring(0, 200));
     process.exit(1);
@@ -105,13 +127,20 @@ async function slackApi(method, params) {
 function parseArgs(args) {
   const flags = {};
   const positional = [];
-  for (const arg of args) {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
     if (arg.startsWith('--')) {
       const eq = arg.indexOf('=');
       if (eq > 0) {
         flags[arg.substring(2, eq)] = arg.substring(eq + 1);
       } else {
-        flags[arg.substring(2)] = true;
+        const name = arg.substring(2);
+        // Peek at next arg: if it exists and isn't a flag, treat it as the value
+        if (i + 1 < args.length && !args[i + 1].startsWith('--')) {
+          flags[name] = args[++i];
+        } else {
+          flags[name] = true;
+        }
       }
     } else {
       positional.push(arg);
@@ -175,15 +204,19 @@ const commands = {
 
     if (!channel || !message) {
       console.error('Usage: slack post <channel_id> <message>');
-      console.error(`Slackbot DM channel: ${SLACKBOT_DM}`);
+      console.error('Use "slack slackbot" to find your Slackbot DM channel ID.');
       process.exit(1);
     }
 
     // Safety: only allow posting to Slackbot DM unless --force
-    if (channel !== SLACKBOT_DM && !flags.force) {
-      console.error(`Safety: posting is restricted to Slackbot DM (${SLACKBOT_DM}).`);
-      console.error('Use --force to override (use with caution — this messages real people).');
-      process.exit(1);
+    if (!flags.force) {
+      const sbData = await slackApi('conversations.open', { users: 'USLACKBOT', return_im: 'true' });
+      const slackbotDm = sbData.ok ? sbData.channel.id : null;
+      if (channel !== slackbotDm) {
+        console.error(`Safety: posting is restricted to Slackbot DM (${slackbotDm || 'unknown'}).`);
+        console.error('Use --force to override (use with caution — this messages real people).');
+        process.exit(1);
+      }
     }
 
     const params = { channel, text: message };
@@ -362,7 +395,7 @@ if (!cmd || cmd === 'help' || cmd === '--help') {
   console.log('  user <user_id>                            Look up user info');
   console.log('  info <channel_id>                         Get channel info');
   console.log('  slackbot                                  Find Slackbot DM channel');
-  console.log(`\nSlackbot DM channel: ${SLACKBOT_DM}`);
+  console.log(`\nUse "slack slackbot" to find your Slackbot DM channel ID.`);
   process.exit(0);
 }
 
