@@ -435,8 +435,17 @@ const commands = {
     };
     await fs.writeFile(stateFile, JSON.stringify(state, null, 2));
 
-    // Inject WebSocket interceptor into Slack tab
-    await injectWsInterceptor([state]);
+    // Inject interceptor with the full watch set so all watches stay active
+    const allStates = await loadAllWatchStates();
+    try {
+      await injectWsInterceptor(allStates);
+    } catch (e) {
+      // Roll back: remove state file and delete webhook on injection failure
+      await fs.rm(stateFile).catch(() => {});
+      await exec(`slicc webhook delete ${webhook.id}`).catch(() => {});
+      console.error('Failed to inject interceptor — watch rolled back:', e.message || e);
+      process.exit(1);
+    }
 
     console.log(`Watching ${watchId} → scoop "${scoop}"`);
     console.log(`  Webhook: ${webhook.id}`);
@@ -471,6 +480,15 @@ const commands = {
 
     // Remove state file
     await fs.rm(stateFile).catch(() => {});
+
+    // Reinject with remaining watches so the in-page interceptor is updated
+    const remainingStates = await loadAllWatchStates();
+    if (remainingStates.length > 0) {
+      await injectWsInterceptor(remainingStates).catch(() => {});
+    } else {
+      // No watches left — clear the in-page watch list
+      await injectWsInterceptor([]).catch(() => {});
+    }
 
     console.log(`Stopped watching ${watchId} (was → scoop "${state.scoop}").`);
   },
@@ -521,7 +539,24 @@ const commands = {
   },
 };
 
+// --- Watch state helpers ---
+
+async function loadAllWatchStates() {
+  const globResult = await exec('ls /workspace/skills/slack/.watch-*.json 2>/dev/null');
+  if (globResult.exitCode !== 0 || !globResult.stdout.trim()) return [];
+  const files = globResult.stdout.trim().split('\n');
+  const states = [];
+  for (const file of files) {
+    try {
+      states.push(JSON.parse(await fs.readFile(file.trim(), 'utf8')));
+    } catch (_) {}
+  }
+  return states;
+}
+
 // --- WebSocket interceptor injection ---
+// Uses window.__slackWatchWatches as a mutable list so the watch set can be
+// updated without re-wrapping already-intercepted WebSocket connections.
 
 async function injectWsInterceptor(watchStates) {
   const tabId = await findSlackTab();
@@ -537,9 +572,13 @@ async function injectWsInterceptor(watchStates) {
 
   const interceptorCode = `
 (async () => {
-  const WATCHES = ${JSON.stringify(watchConfig)};
+  // Update the mutable watch list on window — existing wrapped connections
+  // read from this list on every message, so changes take effect immediately.
+  window.__slackWatchWatches = ${JSON.stringify(watchConfig)};
 
-  // Wrap an existing WebSocket connection's onmessage to filter and forward events
+  // Only install the WebSocket interceptor once
+  if (window.__slackWatchInstalled) return 'watches_updated';
+
   function wrapConnection(ws) {
     if (ws.__slackWatchWrapped) return;
     ws.__slackWatchWrapped = true;
@@ -552,7 +591,9 @@ async function injectWsInterceptor(watchStates) {
         const data = JSON.parse(event.data);
         if (data.type !== 'message') return;
 
-        for (const w of WATCHES) {
+        // Read the current watch list from window at dispatch time
+        const watches = window.__slackWatchWatches || [];
+        for (const w of watches) {
           if (data.channel !== w.channel) continue;
           if (w.thread_ts && data.thread_ts !== w.thread_ts) continue;
 
@@ -585,8 +626,10 @@ async function injectWsInterceptor(watchStates) {
     return origSend.call(this, data);
   };
 
-  // Also scan any already-opened WebSocket connections that we can find
-  // (Slack's ping keepalives will trigger send within ~10s)
+  window.__slackWatchInstalled = true;
+
+  // Slack sends ping keepalives every ~10s, so existing connections
+  // are discovered within one ping cycle.
 
   return 'interceptor_installed';
 })()
@@ -600,8 +643,7 @@ async function injectWsInterceptor(watchStates) {
   });
 
   if (result.exitCode !== 0) {
-    console.error('Failed to inject interceptor:', result.stderr);
-    process.exit(1);
+    throw new Error(result.stderr || 'eval failed');
   }
 }
 

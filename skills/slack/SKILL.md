@@ -137,7 +137,7 @@ Stop watching a channel or thread. Deletes the webhook and removes the watch sta
 
 ### slack watches
 
-List all active Slack watches with their targets, scoops, and delivery stats.
+List all active Slack watches with their targets and scoops.
 
 ### slack reinject
 
