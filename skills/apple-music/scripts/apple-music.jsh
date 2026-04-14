@@ -4,6 +4,8 @@
  * Manages Apple Music library and catalog operations via the Apple Music web API.
  * Uses page-context fetch through playwright-cli eval to handle authentication.
  *
+ * @requires minimist
+ *
  * Usage:
  *   apple-music search <query> [--type songs|albums|artists|playlists] [--limit N]
  *   apple-music playlists
@@ -18,6 +20,7 @@
 
 // ─── Argument Parsing ────────────────────────────────────────────────────────
 
+const minimist = require('minimist');
 const args = process.argv.slice(2);
 
 if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
@@ -34,27 +37,8 @@ const subcommand = args[0];
  * Returns { flags: {key: value}, positional: [remaining args] }
  */
 function parseFlags(argsSlice) {
-  const flags = {};
-  const positional = [];
-  let i = 0;
-  while (i < argsSlice.length) {
-    const arg = argsSlice[i];
-    if (arg.startsWith('--')) {
-      const eqIdx = arg.indexOf('=');
-      if (eqIdx !== -1) {
-        flags[arg.slice(2, eqIdx)] = arg.slice(eqIdx + 1);
-      } else if (i + 1 < argsSlice.length && !argsSlice[i + 1].startsWith('--')) {
-        flags[arg.slice(2)] = argsSlice[i + 1];
-        i++;
-      } else {
-        flags[arg.slice(2)] = true;
-      }
-    } else {
-      positional.push(arg);
-    }
-    i++;
-  }
-  return { flags, positional };
+  const { _, ...flags } = minimist(argsSlice);
+  return { flags, positional: _ };
 }
 
 function printUsage() {
