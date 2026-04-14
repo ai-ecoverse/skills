@@ -44,4 +44,4 @@ grep 'ingest' wiki/log.md
 
 ## Optional: YAML frontmatter on wiki pages
 
-If the schema allows, use frontmatter for `date`, `tags`, `sources`—enables Dataview-style queries in Obsidian and similar tools. Do not require it unless the schema says so.
+If the schema allows, use frontmatter for `date`, `tags`, `sources`—enables structured queries across wiki pages. Do not require it unless the schema says so.

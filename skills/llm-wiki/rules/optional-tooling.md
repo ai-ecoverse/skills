@@ -1,6 +1,6 @@
 ---
 name: optional-tooling
-description: Optional local search, Obsidian-adjacent tools, and git—never assumed by default
+description: Optional local search, markdown tools, and git—never assumed by default
 ---
 
 # Optional tooling
@@ -13,15 +13,15 @@ When the index is no longer sufficient, use a **local** search tool (hybrid keyw
 
 **Rule:** Search complements the index; it does not replace **updating the index** after ingests unless the user explicitly runs a search-only workflow.
 
-## Obsidian (optional)
+## Markdown editors (optional)
 
-If the user uses Obsidian:
+If the user has a preferred markdown editor or wiki tool, lean into its strengths:
 
-- **Graph view** surfaces hubs, orphans, and link structure—useful after large ingests or for lint.
-- **Web Clipper** helps capture raw sources as markdown.
-- **Marp** / **Dataview** plugins: useful when the schema includes slide decks or frontmatter queries.
+- **Graph views** surface hubs, orphans, and link structure—useful after large ingests or for lint.
+- **Web clippers** help capture raw sources as markdown.
+- **Frontmatter query plugins** are useful when the schema includes structured metadata.
 
-**Do not assume** Obsidian unless the user says so—plain markdown in git is enough.
+**Do not assume** any specific editor—plain markdown in git is enough.
 
 ## Version control
 

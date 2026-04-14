@@ -3,7 +3,7 @@ name: llm-wiki
 description: "Compiles and maintains a persistent LLM-written markdown wiki between immutable raw sources and answers—the Karpathy LLM Knowledge Base pattern."
 metadata:
   version: "2.0.0"
-  tags: knowledge-base, wiki, markdown, obsidian, ingest, rag-alternative, personal-kb
+  tags: knowledge-base, wiki, markdown, ingest, rag-alternative, personal-kb
 ---
 
 # llm-wiki
