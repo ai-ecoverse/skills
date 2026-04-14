@@ -59,5 +59,3 @@ The body of `SKILL.md` contains the full skill definition — instructions, exam
 
 Apache 2.0 — see [LICENSE](LICENSE).
 
-**Exception:** `skills/llm-wiki/` is MIT-licensed (upstream origin). See [skills/llm-wiki/LICENSE](skills/llm-wiki/LICENSE).
-
