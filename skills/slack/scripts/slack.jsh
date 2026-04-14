@@ -378,7 +378,274 @@ const commands = {
     console.log(`Slackbot DM channel: ${ch.id}`);
     if (data.already_open) console.log('  (already open)');
   },
+
+  async watch(args) {
+    const { flags, positional } = parseArgs(args);
+    const channel = positional[0];
+    const scoop = flags.scoop;
+    const threadTs = flags.thread || null;
+
+    if (!channel || !scoop) {
+      console.error('Usage: slack watch <channel_id> --scoop=<name> [--thread=<ts>] [--force]');
+      process.exit(1);
+    }
+
+    const watchId = threadTs ? `${channel}-${threadTs}` : channel;
+    const stateFile = `/workspace/skills/slack/.watch-${watchId}.json`;
+
+    // Check for existing watch
+    try {
+      const existing = JSON.parse(await fs.readFile(stateFile, 'utf8'));
+      if (!flags.force) {
+        console.error(`Already watching ${watchId} (scoop: ${existing.scoop}).`);
+        console.error('Use --force to replace.');
+        process.exit(1);
+      }
+      // Clean up old webhook
+      if (existing.webhookId) {
+        await exec(`slicc webhook delete ${existing.webhookId}`).catch(() => {});
+      }
+    } catch (_) {
+      // No existing watch — proceed
+    }
+
+    // Create SLICC webhook routed to target scoop
+    const whResult = await exec(`slicc webhook create --scoop=${scoop} --format=json`);
+    if (whResult.exitCode !== 0) {
+      console.error('Failed to create webhook:', whResult.stderr);
+      process.exit(1);
+    }
+    let webhook;
+    try {
+      webhook = JSON.parse(whResult.stdout.trim());
+    } catch (e) {
+      console.error('Failed to parse webhook response:', whResult.stdout.substring(0, 200));
+      process.exit(1);
+    }
+
+    // Save watch state
+    const state = {
+      watchId,
+      channel,
+      thread_ts: threadTs,
+      scoop,
+      webhookId: webhook.id,
+      webhookUrl: webhook.url,
+      createdAt: new Date().toISOString(),
+    };
+    await fs.writeFile(stateFile, JSON.stringify(state, null, 2));
+
+    // Inject interceptor with the full watch set so all watches stay active
+    const allStates = await loadAllWatchStates();
+    try {
+      await injectWsInterceptor(allStates);
+    } catch (e) {
+      // Roll back: remove state file and delete webhook on injection failure
+      await fs.rm(stateFile).catch(() => {});
+      await exec(`slicc webhook delete ${webhook.id}`).catch(() => {});
+      console.error('Failed to inject interceptor — watch rolled back:', e.message || e);
+      process.exit(1);
+    }
+
+    console.log(`Watching ${watchId} → scoop "${scoop}"`);
+    console.log(`  Webhook: ${webhook.id}`);
+    if (threadTs) console.log(`  Thread: ${threadTs}`);
+  },
+
+  async unwatch(args) {
+    const { flags, positional } = parseArgs(args);
+    const channel = positional[0];
+    const threadTs = flags.thread || null;
+
+    if (!channel) {
+      console.error('Usage: slack unwatch <channel_id> [--thread=<ts>]');
+      process.exit(1);
+    }
+
+    const watchId = threadTs ? `${channel}-${threadTs}` : channel;
+    const stateFile = `/workspace/skills/slack/.watch-${watchId}.json`;
+
+    let state;
+    try {
+      state = JSON.parse(await fs.readFile(stateFile, 'utf8'));
+    } catch (_) {
+      console.error(`No active watch for ${watchId}.`);
+      process.exit(1);
+    }
+
+    // Delete webhook
+    if (state.webhookId) {
+      await exec(`slicc webhook delete ${state.webhookId}`).catch(() => {});
+    }
+
+    // Remove state file
+    await fs.rm(stateFile).catch(() => {});
+
+    // Reinject with remaining watches so the in-page interceptor is updated
+    const remainingStates = await loadAllWatchStates();
+    if (remainingStates.length > 0) {
+      await injectWsInterceptor(remainingStates).catch(() => {});
+    } else {
+      // No watches left — clear the in-page watch list
+      await injectWsInterceptor([]).catch(() => {});
+    }
+
+    console.log(`Stopped watching ${watchId} (was → scoop "${state.scoop}").`);
+  },
+
+  async watches() {
+    const globResult = await exec('ls /workspace/skills/slack/.watch-*.json 2>/dev/null');
+    if (globResult.exitCode !== 0 || !globResult.stdout.trim()) {
+      console.log('No active watches.');
+      return;
+    }
+
+    const files = globResult.stdout.trim().split('\n');
+    console.log(`Active watches (${files.length}):\n`);
+    for (const file of files) {
+      try {
+        const state = JSON.parse(await fs.readFile(file.trim(), 'utf8'));
+        const thread = state.thread_ts ? ` thread=${state.thread_ts}` : '';
+        console.log(`  ${state.watchId}${thread} → scoop "${state.scoop}" (webhook: ${state.webhookId})`);
+        console.log(`    Created: ${state.createdAt}`);
+      } catch (_) {
+        console.log(`  (corrupt state file: ${file})`);
+      }
+    }
+  },
+
+  async reinject() {
+    const globResult = await exec('ls /workspace/skills/slack/.watch-*.json 2>/dev/null');
+    if (globResult.exitCode !== 0 || !globResult.stdout.trim()) {
+      console.log('No active watches to reinject.');
+      return;
+    }
+
+    const files = globResult.stdout.trim().split('\n');
+    const states = [];
+    for (const file of files) {
+      try {
+        states.push(JSON.parse(await fs.readFile(file.trim(), 'utf8')));
+      } catch (_) {}
+    }
+
+    if (states.length === 0) {
+      console.log('No valid watch states found.');
+      return;
+    }
+
+    await injectWsInterceptor(states);
+    console.log(`Re-injected interceptor with ${states.length} watch(es).`);
+  },
 };
+
+// --- Watch state helpers ---
+
+async function loadAllWatchStates() {
+  const globResult = await exec('ls /workspace/skills/slack/.watch-*.json 2>/dev/null');
+  if (globResult.exitCode !== 0 || !globResult.stdout.trim()) return [];
+  const files = globResult.stdout.trim().split('\n');
+  const states = [];
+  for (const file of files) {
+    try {
+      states.push(JSON.parse(await fs.readFile(file.trim(), 'utf8')));
+    } catch (_) {}
+  }
+  return states;
+}
+
+// --- WebSocket interceptor injection ---
+// Uses window.__slackWatchWatches as a mutable list so the watch set can be
+// updated without re-wrapping already-intercepted WebSocket connections.
+
+async function injectWsInterceptor(watchStates) {
+  const tabId = await findSlackTab();
+
+  // Build watch config as JSON for injection
+  const watchConfig = watchStates.map(s => ({
+    watchId: s.watchId,
+    channel: s.channel,
+    thread_ts: s.thread_ts,
+    webhookUrl: s.webhookUrl,
+    scoop: s.scoop,
+  }));
+
+  const interceptorCode = `
+(async () => {
+  // Update the mutable watch list on window — existing wrapped connections
+  // read from this list on every message, so changes take effect immediately.
+  window.__slackWatchWatches = ${JSON.stringify(watchConfig)};
+
+  // Only install the WebSocket interceptor once
+  if (window.__slackWatchInstalled) return 'watches_updated';
+
+  function wrapConnection(ws) {
+    if (ws.__slackWatchWrapped) return;
+    ws.__slackWatchWrapped = true;
+
+    const origOnMessage = ws.onmessage;
+    ws.onmessage = function(event) {
+      if (origOnMessage) origOnMessage.call(ws, event);
+
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type !== 'message') return;
+
+        // Read the current watch list from window at dispatch time
+        const watches = window.__slackWatchWatches || [];
+        for (const w of watches) {
+          if (data.channel !== w.channel) continue;
+          if (w.thread_ts && data.thread_ts !== w.thread_ts) continue;
+
+          const payload = {
+            type: 'slack-watch',
+            watchId: w.watchId,
+            channel: data.channel,
+            thread_ts: w.thread_ts,
+            ts: data.ts,
+            user: data.user,
+            text: data.text,
+            subtype: data.subtype || null,
+            event: data,
+          };
+
+          fetch(w.webhookUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          }).catch(() => {});
+        }
+      } catch (_) {}
+    };
+  }
+
+  // Patch WebSocket.prototype.send to discover existing connections
+  const origSend = WebSocket.prototype.send;
+  WebSocket.prototype.send = function(data) {
+    wrapConnection(this);
+    return origSend.call(this, data);
+  };
+
+  window.__slackWatchInstalled = true;
+
+  // Slack sends ping keepalives every ~10s, so existing connections
+  // are discovered within one ping cycle.
+
+  return 'interceptor_installed';
+})()
+  `.trim().replace(/\n/g, ' ');
+
+  const tmpFile = '/shared/.slack_ws_intercept_' + Date.now() + '.js';
+  await fs.writeFile(tmpFile, interceptorCode);
+  const result = await exec(`playwright-cli eval-file ${tmpFile} --tab=${tabId}`);
+  await fs.rm(tmpFile).catch(async () => {
+    await fs.writeFile(tmpFile, '').catch(() => {});
+  });
+
+  if (result.exitCode !== 0) {
+    throw new Error(result.stderr || 'eval failed');
+  }
+}
 
 // --- Main ---
 
@@ -395,6 +662,10 @@ if (!cmd || cmd === 'help' || cmd === '--help') {
   console.log('  user <user_id>                            Look up user info');
   console.log('  info <channel_id>                         Get channel info');
   console.log('  slackbot                                  Find Slackbot DM channel');
+  console.log('  watch <channel_id> --scoop=<name>         Watch channel for new messages');
+  console.log('  unwatch <channel_id> [--thread=<ts>]      Stop watching a channel');
+  console.log('  watches                                   List active watches');
+  console.log('  reinject                                  Re-inject WebSocket interceptor');
   console.log(`\nUse "slack slackbot" to find your Slackbot DM channel ID.`);
   process.exit(0);
 }
