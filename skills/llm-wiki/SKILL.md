@@ -1,16 +1,20 @@
 ---
 name: llm-wiki
-description: "Compiles and maintains a persistent LLM-written markdown wiki between immutable raw sources and answers—the Karpathy LLM Knowledge Base pattern."
-metadata:
-  version: "2.0.0"
-  tags: knowledge-base, wiki, markdown, ingest, rag-alternative, personal-kb
+description: Build and maintain a persistent, interlinked markdown wiki knowledge base
+  from raw sources. Use when the user wants to create a knowledge base, build a wiki,
+  ingest articles or papers into a KB, query accumulated knowledge, organize research
+  notes, or lint a wiki for broken links and orphan pages. Triggers on mentions of
+  knowledge base, wiki, KB, ingest, research notes, or personal wiki.
 ---
 
-# llm-wiki
+# LLM Wiki
 
-Build and maintain a **structured, interlinked markdown wiki** that sits between curated **raw sources** and **questions**. The agent compiles source material into wiki pages—summaries, entity pages, cross-links—so knowledge **compounds** instead of being rediscovered every query. The human curates sources; the agent writes and maintains the wiki.
+Persistent markdown wiki that sits between curated **raw sources** and **questions**.
+Compile source material into wiki pages — summaries, entity pages, cross-links — so
+knowledge compounds instead of being rediscovered every query.
 
-Directory layout is defined by the user's schema (e.g. `WIKI.md`). This skill defines **behaviors**, not fixed paths—always read the schema first.
+Directory layout is defined by the user's schema (e.g. `WIKI.md`). This skill defines
+**behaviors**, not fixed paths — always read the schema first.
 
 **Companion rules:** [index-log conventions](./rules/index-log-conventions.md), [optional tooling](./rules/optional-tooling.md).
 
@@ -53,33 +57,34 @@ Add to the cone's CLAUDE.md:
 4. **Flag contradictions explicitly.** Update pages and record conflicts with dates.
 5. **On query:** Read `index.md` first to discover pages. Synthesize with citations. File the answer as a durable wiki page.
 6. **On lint:** Find stale claims, orphan pages, missing pages, broken links, gaps.
-7. **Log keywords are exactly `ingest`, `query`, or `lint`**—never synonyms. Format: `## [YYYY-MM-DD] ingest | <title>`
+7. **Log keywords are exactly `ingest`, `query`, or `lint`** — never synonyms. Format: `## [YYYY-MM-DD] ingest | <title>`
 
 ## The three layers
 
 | Layer | Role | Who edits |
 |-------|------|-----------|
-| **Raw sources** | Articles, papers, repos, datasets—evidence | Human curates; agent reads only |
+| **Raw sources** | Articles, papers, repos, datasets — evidence | Human curates; agent reads only |
 | **Wiki** | Summaries, entity/topic pages, synthesis, backlinks | Agent writes; human reviews |
 | **Schema** | Where things live, naming, categories, workflows | Human and agent co-evolve |
 
-## Process
+## Ingest
 
-### Ingest
 1. Locate the new source. Read it (do not edit).
 2. Extract entities, claims, relationships; map to existing wiki pages.
 3. Create or update affected wiki pages with outbound and inbound links.
 4. Update the **index** (one-line blurbs, categories, links).
 5. Append to **log** with keyword `ingest`.
 
-### Query
-1. **Read `index.md` first**—discover which pages exist.
+## Query
+
+1. **Read `index.md` first** — discover which pages exist.
 2. Read relevant topic pages; follow cross-links.
 3. Synthesize with **wiki-backed citations** (page paths or section anchors).
 4. **File the answer as a wiki page.** Update index. Produce standalone output if also requested.
 5. Append to **log** with keyword `query`.
 
-### Lint
+## Lint
+
 1. Scan for contradictions, stale claims, orphan pages, missing pages, broken links.
 2. Identify interesting connections and suggest further questions.
 3. Present findings or apply fixes per user instruction.
@@ -87,14 +92,14 @@ Add to the cone's CLAUDE.md:
 
 ## Anti-patterns
 
-- **RAG-only mindset:** Retrieving chunks without updating the wiki—knowledge does not compound.
-- **Editing raw sources** to "fix" typos—violates the evidence layer.
-- **Skipping index or log** after ingest—breaks navigation and history.
+- **RAG-only mindset:** Retrieving chunks without updating the wiki — knowledge does not compound.
+- **Editing raw sources** to "fix" typos — violates the evidence layer.
+- **Skipping index or log** after ingest — breaks navigation and history.
 - **Chat-only answers** with no durable wiki page when building a knowledge base.
 - **Silent merges:** Hiding contradictions instead of surfacing them.
 - **Schema blindness:** Creating paths that contradict the user's wiki config.
 
-## SLICC Integration
+## SLICC integration
 
 ### Sprinkle
 The `llm-wiki.shtml` sprinkle provides a visual wiki browser with sidebar navigation, markdown rendering with clickable wikilinks, search across note titles, Query Wiki dialog (sends `query-submit` lick), and Ingest Source dialog (sends `ingest-submit` lick). It reads files via `slicc.readDir()` and `slicc.readFile()` which return `{name, type}` objects and strings respectively.
@@ -107,7 +112,3 @@ The `wiki.jsh` command provides: search, list, read, stats, links, orphans, rece
 - **wiki-ops scoop** reads wiki pages, synthesizes answers, pushes results back via `sprinkle send`
 - **Cone** handles log.md writes (scoops cannot write to mounted paths)
 - **wiki.jsh** CLI available to all agents for quick lookups
-
-## Attribution
-
-Based on the [llm-wiki skill](https://github.com/kvokov/oh-my-ai) by DK (MIT License), inspired by [Andrej Karpathy's LLM Wiki pattern](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f). Extended with SLICC sprinkle browser, wiki CLI, and ops scoop architecture.
