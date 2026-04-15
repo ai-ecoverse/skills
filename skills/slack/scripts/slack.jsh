@@ -95,7 +95,7 @@ async function resolveWorkspace(globalFlags) {
 // Executes Slack Web API calls via XHR from the Slack page context.
 // This ensures same-origin cookies are included and the xoxc token works.
 
-async function slackApi(method, params, workspaceId) {
+async function slackApi(method, params, workspaceId, { fatal = true } = {}) {
   const tabId = await findSlackTab();
 
   // Build the param entries as a JSON array to pass into eval
@@ -144,6 +144,7 @@ async function slackApi(method, params, workspaceId) {
   });
 
   if (result.exitCode !== 0) {
+    if (!fatal) return { ok: false, error: 'eval_failed' };
     console.error('Eval failed:', result.stderr);
     process.exit(1);
   }
@@ -160,17 +161,20 @@ async function slackApi(method, params, workspaceId) {
       throw new Error('API response was not an object');
     }
   } catch (e) {
+    if (!fatal) return { ok: false, error: 'parse_failed' };
     console.error('Failed to parse API response:', result.stdout.substring(0, 200));
     process.exit(1);
   }
 
   if (!data.ok) {
     if (data.error === 'invalid_auth' || data.error === 'token_not_found') {
+      if (!fatal) return data;
       console.error('Auth failed. Log into Slack at app.slack.com in your browser and try again.');
       if (data.detail) console.error('Detail:', data.detail);
       process.exit(1);
     }
     if (data.error === 'ratelimited') {
+      if (!fatal) return data;
       console.error('Rate limited by Slack. Wait a moment and try again.');
       process.exit(1);
     }
@@ -683,7 +687,7 @@ const commands = {
 
     // Map --type filter to activity.feed types
     const typeMap = {
-      all: 'generic_system_alert,bot_dm_bundle,at_user,at_user_group,at_channel,at_everyone,unjoined_channel_mention,thread_v2,message_reaction,internal_channel_invite,external_channel_invite',
+      all: 'generic_system_alert,bot_dm_bundle,at_user,at_user_group,at_channel,at_everyone,unjoined_channel_mention,thread_v2,message_reaction,internal_channel_invite,external_channel_invite,list_record_edited,list_record_assigned,list_user_mentioned,list_todo_notification,list_approval_request,list_approval_reviewed',
       admin: 'generic_system_alert',
       mentions: 'at_user,at_user_group,at_channel,at_everyone,unjoined_channel_mention',
       threads: 'thread_v2',
@@ -740,20 +744,16 @@ const commands = {
       if (i.invite_info?.inviter_user_id) userIds.add(i.invite_info.inviter_user_id);
     }
 
-    // Resolve names (best-effort, don't fail on individual lookups)
+    // Resolve names (best-effort, non-fatal — rate limits or errors won't kill the command)
     const userNames = {};
     for (const uid of userIds) {
-      try {
-        const u = await slackApi('users.info', { user: uid }, wsId);
-        if (u.ok) userNames[uid] = u.user.real_name || u.user.name || uid;
-      } catch (_) {}
+      const u = await slackApi('users.info', { user: uid }, wsId, { fatal: false });
+      if (u.ok) userNames[uid] = u.user.real_name || u.user.name || uid;
     }
     const channelNames = {};
     for (const cid of channelIds) {
-      try {
-        const c = await slackApi('conversations.info', { channel: cid }, wsId);
-        if (c.ok) channelNames[cid] = '#' + (c.channel.name || cid);
-      } catch (_) {}
+      const c = await slackApi('conversations.info', { channel: cid }, wsId, { fatal: false });
+      if (c.ok) channelNames[cid] = '#' + (c.channel.name || cid);
     }
 
     function resolveName(uid) { return userNames[uid] || uid; }
@@ -766,8 +766,8 @@ const commands = {
       if (i.type === 'bot_dm_bundle') {
         const ch = i.bundle_info?.payload?.message?.channel;
         if (ch && !botDmMessages[ch]) {
-          try {
-            const hist = await slackApi('conversations.history', { channel: ch, limit: '5' }, wsId);
+          {
+            const hist = await slackApi('conversations.history', { channel: ch, limit: '5' }, wsId, { fatal: false });
             if (hist.ok && hist.messages?.length > 0) {
               // Get latest messages, most recent first
               botDmMessages[ch] = hist.messages.slice(0, 3).map(m => {
@@ -778,7 +778,7 @@ const commands = {
                 return `${name}: ${text}`;
               });
             }
-          } catch (_) {}
+          }
         }
       }
     }
@@ -827,7 +827,7 @@ const commands = {
 
       } else if (i.type === 'bot_dm_bundle') {
         const ch = i.bundle_info?.payload?.message?.channel;
-        const count = i.bundle_info?.unread_count || '?';
+        const count = i.bundle_info?.unread_count ?? '?';
         const msgs = botDmMessages[ch];
         if (msgs && msgs.length > 0) {
           console.log(`[${ts}] App DM (${count} unread): ${msgs[0].substring(0, 200)}${unread}`);
@@ -998,7 +998,7 @@ if (!cmd || cmd === 'help' || cmd === '--help') {
   console.log('                                           Auto-detects from active Slack tab if omitted\n');
   console.log('Commands:');
   console.log('  workspaces                               List all available workspaces');
-  console.log('  activity [--type=TYPE] [--unread] [--limit=N]');
+  console.log('  activity [--type=TYPE] [--unread] [--limit=N] [--cursor=CURSOR]');
   console.log('                                           View activity feed (notifications)');
   console.log('           Types: all, admin, mentions, threads, reactions, invites, apps');
   console.log('  history <channel_id> [--limit=N]          Read channel messages');
