@@ -223,6 +223,55 @@ Search for channels by name. Replaces `conversations.list` which is blocked on E
 }
 ```
 
+### POST /api/chat.attachmentAction
+
+Execute an interactive message button action (approve/deny). This is the internal
+API that Slack calls when a user clicks an action button in an attachment.
+
+**Parameters (FormData, not URL-encoded):**
+| Param | Required | Description |
+|-------|----------|-------------|
+| token | yes | xoxc token |
+| payload | yes | JSON string (see below) |
+| service_id | yes | `B01` (Slack's internal bot service) |
+| bot_user_id | yes | `USLACKBOT` |
+| client_token | no | `web-{timestamp}` (dedup token) |
+
+**Payload JSON structure:**
+```json
+{
+  "actions": [
+    {
+      "id": "1",
+      "name": "approve",
+      "text": "Approve",
+      "type": "button",
+      "value": "",
+      "style": "primary"
+    }
+  ],
+  "attachment_id": "2",
+  "callback_id": "sharedchannelinviterequests_Ir0AP9AV1A8M_T0AKE3C1LAX",
+  "channel_id": "D06V5UBEZML",
+  "message_ts": "1774846849.585479",
+  "prompt_app_install": false
+}
+```
+
+**Key fields:**
+- `actions` — array with one action object matching the button clicked
+- `callback_id` — from the message attachment (identifies the handler)
+- `attachment_id` — the attachment id from the message attachment object's `id` field
+- `channel_id` — channel where the message lives
+- `message_ts` — timestamp of the message
+
+**Response:** `{"ok": true}` on success. Note: expired actions may return `ok: true`
+but show an error in the UI as a follow-up message.
+
+**Common callback_id patterns:**
+- `sharedchannelinviterequests_<invite_id>_<team_id>` — Slack Connect invite
+- Workspace invite requests use different callback IDs with `value` containing the invite request ID
+
 ## Enterprise Grid Restrictions
 
 Some Slack workspaces use Enterprise Grid. The following standard Web API methods

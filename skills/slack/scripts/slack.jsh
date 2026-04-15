@@ -91,13 +91,45 @@ async function resolveWorkspace(globalFlags) {
   process.exit(1);
 }
 
+// --- Eval helper ---
+// Evaluates a JavaScript expression in the Slack browser tab and returns parsed JSON.
+// Handles temp file creation, cleanup, double-encoded JSON, and error handling.
+
+async function evalInSlackTab(expr, { fatal = true } = {}) {
+  const tabId = await findSlackTab();
+  const tmpFile = '/shared/.slack_eval_' + Date.now() + '.js';
+  await fs.writeFile(tmpFile, expr.trim().replace(/\n/g, ' '));
+  const result = await exec(`playwright-cli eval-file ${tmpFile} --tab=${tabId}`);
+  await fs.rm(tmpFile).catch(async () => {
+    await fs.writeFile(tmpFile, '').catch(() => {});
+  });
+
+  if (result.exitCode !== 0) {
+    if (!fatal) return { ok: false, error: 'eval_failed' };
+    console.error('Eval failed:', result.stderr);
+    process.exit(1);
+  }
+
+  let data;
+  try {
+    const stdout = result.stdout.trim();
+    data = JSON.parse(stdout);
+    if (typeof data === 'string') data = JSON.parse(data);
+    if (!data || typeof data !== 'object') throw new Error('API response was not an object');
+  } catch (e) {
+    if (!fatal) return { ok: false, error: 'parse_failed' };
+    console.error('Failed to parse API response:', result.stdout.substring(0, 200));
+    process.exit(1);
+  }
+
+  return data;
+}
+
 // --- API helper ---
 // Executes Slack Web API calls via XHR from the Slack page context.
 // This ensures same-origin cookies are included and the xoxc token works.
 
 async function slackApi(method, params, workspaceId, { fatal = true } = {}) {
-  const tabId = await findSlackTab();
-
   // Build the param entries as a JSON array to pass into eval
   const paramEntries = Object.entries(params);
   const paramJson = JSON.stringify(paramEntries);
@@ -132,39 +164,9 @@ async function slackApi(method, params, workspaceId, { fatal = true } = {}) {
     xhr.send(params.toString());
   });
 })()
-  `.trim().replace(/\n/g, ' ');
+  `;
 
-  // Write the expression to a temp file to avoid shell escaping issues
-  const tmpFile = '/shared/.slack_eval_' + Date.now() + '.js';
-  await fs.writeFile(tmpFile, expr);
-  const result = await exec(`playwright-cli eval-file ${tmpFile} --tab=${tabId}`);
-  // Clean up temp file; fall back to truncation if deletion is unsupported
-  await fs.rm(tmpFile).catch(async () => {
-    await fs.writeFile(tmpFile, '').catch(() => {});
-  });
-
-  if (result.exitCode !== 0) {
-    if (!fatal) return { ok: false, error: 'eval_failed' };
-    console.error('Eval failed:', result.stderr);
-    process.exit(1);
-  }
-
-  let data;
-  try {
-    const stdout = result.stdout.trim();
-    data = JSON.parse(stdout);
-    // Handle double-encoded JSON (eval-file sometimes returns a JSON string)
-    if (typeof data === 'string') {
-      data = JSON.parse(data);
-    }
-    if (!data || typeof data !== 'object') {
-      throw new Error('API response was not an object');
-    }
-  } catch (e) {
-    if (!fatal) return { ok: false, error: 'parse_failed' };
-    console.error('Failed to parse API response:', result.stdout.substring(0, 200));
-    process.exit(1);
-  }
+  const data = await evalInSlackTab(expr, { fatal });
 
   if (!data.ok) {
     if (data.error === 'invalid_auth' || data.error === 'token_not_found') {
@@ -853,7 +855,276 @@ const commands = {
       console.log(`\n--- More items available. Use --cursor=${data.response_metadata.next_cursor} ---`);
     }
   },
+
+  async pending(args, globalFlags) {
+    const { flags } = parseArgs(args);
+    const wsId = await resolveWorkspace(globalFlags);
+    const maxPages = parseInt(flags.pages || '10', 10);
+    const format = flags.json ? 'json' : 'table';
+
+    // Resolve Slackbot DM channel
+    let channel = flags.channel;
+    if (!channel) {
+      const sb = await slackApi('conversations.open', { users: 'USLACKBOT', return_im: 'true' }, wsId);
+      if (!sb.ok) { console.error('Error: Could not resolve Slackbot DM channel.'); process.exit(1); }
+      channel = sb.channel.id;
+    }
+
+    // Page through the Slackbot DM looking for messages with action buttons
+    let cursor = null;
+    const pending = [];
+
+    for (let page = 0; page < maxPages; page++) {
+      const params = { channel, limit: '100' };
+      if (cursor) params.cursor = cursor;
+
+      const hist = await slackApi('conversations.history', params, wsId);
+      if (!hist.ok) {
+        console.error('Error fetching history:', hist.error);
+        process.exit(1);
+      }
+
+      for (const msg of hist.messages) {
+        const text = msg.text || '';
+        const attachText = (msg.attachments || []).map(a => (a.text || '') + (a.fallback || '')).join(' ');
+        const allText = text + ' ' + attachText;
+
+        // Only look at invite/approval messages
+        if (!allText.includes('requested to invite') &&
+            !allText.includes('Request to join') &&
+            !allText.includes('Request to add')) continue;
+
+        // Skip already-processed
+        const isProcessed = allText.includes('approved') || allText.includes('white_check_mark') ||
+                            allText.includes('denied') || allText.includes('no_entry_sign') ||
+                            allText.includes('Declined') || allText.includes('joined the workspace');
+        if (isProcessed) continue;
+
+        // Must have action buttons
+        const hasActions = (msg.attachments || []).some(a => a.actions && a.actions.length > 0);
+        if (!hasActions) continue;
+
+        // Parse details
+        let requestType = 'unknown';
+        let invitee = '';
+        let org = '';
+        let channelName = '';
+        let email = '';
+        let reason = '';
+
+        if (text.includes('Request to join')) requestType = 'join';
+        else if (text.includes('Request to add')) requestType = 'add';
+        else if (text.includes('requested to invite')) requestType = 'invite';
+
+        const addMatch = text.match(/invited \*(.+?)\*/);
+        if (addMatch) invitee = addMatch[1];
+
+        const joinMatch = text.match(/<@(\w+)> was invited to join/);
+        if (joinMatch) invitee = joinMatch[1];
+
+        const orgMatch = text.match(/from (.+?) to join/);
+        if (orgMatch) org = orgMatch[1];
+        const joinOrgMatch = text.match(/join \*(.+?)'s\*/);
+        if (joinOrgMatch) org = joinOrgMatch[1];
+
+        for (const att of (msg.attachments || [])) {
+          const at = att.text || '';
+          const emailMatch = at.match(/\*Email\*:\s*<mailto:([^|]+)\|/);
+          if (emailMatch) email = emailMatch[1];
+          const chMatch = at.match(/\*Channel:\*\s*<#\w+\|([^>]+)>/);
+          if (chMatch) channelName = chMatch[1];
+          const chMatch2 = at.match(/\*Channel\*\n(.+)/);
+          if (chMatch2 && !channelName) channelName = chMatch2[1].trim();
+          const reasonMatch = at.match(/\*Reason for Request\*:\n(.+)/);
+          if (reasonMatch) reason = reasonMatch[1].trim();
+        }
+
+        pending.push({
+          ts: msg.ts,
+          date: new Date(parseFloat(msg.ts) * 1000).toISOString().split('T')[0],
+          type: requestType,
+          invitee: invitee || '?',
+          org: org || '',
+          channel: channelName || '(private)',
+          email: email || '',
+          reason: reason || '',
+        });
+      }
+
+      if (!hist.has_more || !hist.response_metadata?.next_cursor) break;
+      cursor = hist.response_metadata.next_cursor;
+    }
+
+    if (pending.length === 0) {
+      console.log('No pending approval requests found.');
+      return;
+    }
+
+    if (format === 'json') {
+      console.log(JSON.stringify(pending, null, 2));
+      return;
+    }
+
+    // Table output
+    console.log(`Pending approval requests (${pending.length}):\n`);
+
+    // Calculate column widths
+    const typeW = Math.max(4, ...pending.map(p => p.type.length));
+    const invW = Math.min(25, Math.max(7, ...pending.map(p => p.invitee.length)));
+    const orgW = Math.min(25, Math.max(4, ...pending.map(p => p.org.length)));
+    const chW = Math.min(30, Math.max(7, ...pending.map(p => p.channel.length)));
+
+    console.log(`  ${'Date'.padEnd(12)}${'Type'.padEnd(typeW + 2)}${'Invitee'.padEnd(invW + 2)}${'From'.padEnd(orgW + 2)}${'Channel'.padEnd(chW + 2)}Timestamp`);
+    console.log(`  ${'─'.repeat(12)}${'─'.repeat(typeW + 2)}${'─'.repeat(invW + 2)}${'─'.repeat(orgW + 2)}${'─'.repeat(chW + 2)}${'─'.repeat(22)}`);
+
+    for (const p of pending) {
+      const inv = p.invitee.length > invW ? p.invitee.substring(0, invW - 1) + '…' : p.invitee;
+      const o = p.org.length > orgW ? p.org.substring(0, orgW - 1) + '…' : p.org;
+      const ch = p.channel.length > chW ? p.channel.substring(0, chW - 1) + '…' : p.channel;
+      console.log(`  ${p.date.padEnd(12)}${p.type.padEnd(typeW + 2)}${inv.padEnd(invW + 2)}${o.padEnd(orgW + 2)}${ch.padEnd(chW + 2)}${p.ts}`);
+    }
+
+    console.log(`\nTo act on a request:`);
+    console.log(`  slack approve <timestamp>`);
+    console.log(`  slack deny <timestamp>`);
+  },
+
+  async approve(args, globalFlags) {
+    const { flags, positional } = parseArgs(args);
+    const messageTs = positional[0];
+    if (!messageTs) {
+      console.error('Usage: slack approve <message_ts> [--channel=<id>]');
+      console.error('Approves an interactive action button (e.g. Slack Connect invite request).');
+      console.error('The message_ts is the timestamp of the Slackbot notification message.');
+      process.exit(1);
+    }
+    const wsId = await resolveWorkspace(globalFlags);
+    let channel = flags.channel;
+    if (!channel) {
+      const sb = await slackApi('conversations.open', { users: 'USLACKBOT', return_im: 'true' }, wsId);
+      if (!sb.ok) { console.error('Error: Could not resolve Slackbot DM channel.'); process.exit(1); }
+      channel = sb.channel.id;
+    }
+    await executeAttachmentAction(wsId, channel, messageTs, 'approve');
+  },
+
+  async deny(args, globalFlags) {
+    const { flags, positional } = parseArgs(args);
+    const messageTs = positional[0];
+    if (!messageTs) {
+      console.error('Usage: slack deny <message_ts> [--channel=<id>]');
+      console.error('Denies an interactive action button (e.g. Slack Connect invite request).');
+      console.error('The message_ts is the timestamp of the Slackbot notification message.');
+      process.exit(1);
+    }
+    const wsId = await resolveWorkspace(globalFlags);
+    let channel = flags.channel;
+    if (!channel) {
+      const sb = await slackApi('conversations.open', { users: 'USLACKBOT', return_im: 'true' }, wsId);
+      if (!sb.ok) { console.error('Error: Could not resolve Slackbot DM channel.'); process.exit(1); }
+      channel = sb.channel.id;
+    }
+    await executeAttachmentAction(wsId, channel, messageTs, 'deny');
+  },
 };
+
+// --- Attachment action helper ---
+// Executes interactive message button actions (approve/deny) via chat.attachmentAction.
+// Used for Slack Connect invite requests and workspace invite approvals.
+
+async function executeAttachmentAction(wsId, channel, messageTs, actionName) {
+  const tabId = await findSlackTab();
+
+  // First, fetch the message to get the callback_id and attachment structure
+  const hist = await slackApi('conversations.history', {
+    channel,
+    oldest: messageTs,
+    latest: messageTs,
+    inclusive: 'true',
+    limit: '1',
+  }, wsId);
+
+  if (!hist.ok || !hist.messages?.length) {
+    console.error(`Error: Message ${messageTs} not found in channel ${channel}.`);
+    process.exit(1);
+  }
+
+  const msg = hist.messages[0];
+
+  // Find the attachment with action buttons
+  let targetAttachment = null;
+  let targetAction = null;
+  for (const att of (msg.attachments || [])) {
+    if (!att.actions) continue;
+    const action = att.actions.find(a => a.name === actionName);
+    if (action) {
+      targetAttachment = att;
+      targetAction = action;
+      break;
+    }
+  }
+
+  if (!targetAttachment || !targetAction) {
+    console.error(`Error: No "${actionName}" button found on message ${messageTs}.`);
+    console.error('Available actions:', (msg.attachments || []).flatMap(a => (a.actions || []).map(act => act.name)).join(', ') || 'none');
+    process.exit(1);
+  }
+
+  // Build the payload matching Slack's interactive message format
+  const payload = JSON.stringify({
+    actions: [targetAction],
+    attachment_id: String(targetAttachment.id),
+    callback_id: targetAttachment.callback_id,
+    channel_id: channel,
+    message_ts: messageTs,
+    prompt_app_install: false,
+  });
+
+  // Execute via eval in the Slack tab (needs FormData, not URLSearchParams)
+  const payloadJson = JSON.stringify(payload);
+  const expr = `
+(async () => {
+  let token;
+  try {
+    const rawCfg = localStorage.getItem('localConfig_v2');
+    const cfg = JSON.parse(rawCfg);
+    if (!cfg || !cfg.teams || !cfg.teams['${wsId}'] || !cfg.teams['${wsId}'].token) {
+      return JSON.stringify({ ok: false, error: 'token_not_found' });
+    }
+    token = cfg.teams['${wsId}'].token;
+  } catch (e) {
+    return JSON.stringify({ ok: false, error: 'token_not_found' });
+  }
+  const fd = new FormData();
+  fd.append('token', token);
+  fd.append('payload', ${payloadJson});
+  fd.append('service_id', 'B01');
+  fd.append('bot_user_id', 'USLACKBOT');
+  fd.append('client_token', 'web-' + Date.now());
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/chat.attachmentAction', true);
+    xhr.withCredentials = true;
+    xhr.onload = () => resolve(xhr.responseText);
+    xhr.onerror = () => resolve(JSON.stringify({ ok: false, error: 'xhr_error' }));
+    xhr.send(fd);
+  });
+})()
+  `;
+
+  const data = await evalInSlackTab(expr);
+
+  if (!data.ok) {
+    console.error(`Error: ${data.error}`);
+    process.exit(1);
+  }
+
+  const verb = actionName === 'approve' ? 'Approved' : 'Denied';
+  const text = (msg.text || '').substring(0, 150).replace(/\n/g, ' ');
+  console.log(`${verb}: ${text}`);
+  console.log(`  Message: ${messageTs} in ${channel}`);
+  console.log(`  Callback: ${targetAttachment.callback_id}`);
+}
 
 // --- Watch state helpers ---
 
@@ -1001,6 +1272,9 @@ if (!cmd || cmd === 'help' || cmd === '--help') {
   console.log('  activity [--type=TYPE] [--unread] [--limit=N] [--cursor=CURSOR]');
   console.log('                                           View activity feed (notifications)');
   console.log('           Types: all, admin, mentions, threads, reactions, invites, apps');
+  console.log('  pending [--pages=N] [--json]             List pending approval requests');
+  console.log('  approve <message_ts> [--channel=<id>]    Approve an interactive action (e.g. invite request)');
+  console.log('  deny <message_ts> [--channel=<id>]       Deny an interactive action (e.g. invite request)');
   console.log('  history <channel_id> [--limit=N]          Read channel messages');
   console.log('  post <channel_id> <message> [--force]     Post a message (Slackbot DM only by default)');
   console.log('  channels --search=<term>                  Search for channels');

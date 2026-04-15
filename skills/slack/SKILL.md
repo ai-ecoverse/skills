@@ -36,6 +36,13 @@ slack activity --type=mentions --unread
 # App DMs (invite requests, Google Drive, etc.)
 slack activity --type=apps
 
+# List pending approval requests
+slack --ws=E06V3987PMY pending
+
+# Approve or deny a request by timestamp
+slack --ws=E06V3987PMY approve 1774846849.585479
+slack --ws=E06V3987PMY deny 1770698762.931619
+
 # Read recent messages from a channel (uses active workspace)
 slack history C087NCG774J
 
@@ -134,6 +141,31 @@ messages from the DM channel to show actual content.
 ```
 
 Items marked with `*` are unread.
+
+### slack pending [--pages=N] [--json] [--channel=\<id\>]
+
+List pending approval requests (Slack Connect invites, workspace invites) that have
+live Approve/Deny action buttons. Pages through the Slackbot DM history, filters
+out already-processed requests, and shows a formatted table with timestamps you can
+pass directly to `slack approve` or `slack deny`.
+
+**Flags:**
+- `--pages=N` — max pages to search (default 10, each page is 100 messages)
+- `--json` — output raw JSON instead of a table
+- `--channel=<id>` — override the Slackbot DM channel (auto-detected by default)
+
+### slack approve \<message_ts\> [--channel=\<id\>]
+
+Approve an interactive message action (e.g. Slack Connect invite request, workspace
+invite). The `message_ts` is the timestamp of the Slackbot notification message
+containing the Approve/Deny buttons. Defaults to the Slackbot DM channel; use
+`--channel` to override.
+
+Uses the `chat.attachmentAction` API to programmatically click the Approve button.
+
+### slack deny \<message_ts\> [--channel=\<id\>]
+
+Deny an interactive message action. Same as `approve` but clicks the Deny button.
 
 ### slack history \<channel_id\> [--limit=N]
 
