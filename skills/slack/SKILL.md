@@ -1,12 +1,13 @@
 ---
 name: slack
 description: Interact with Slack via its Web API — read messages, post to channels,
-  search channels, read threads, look up users, and watch channels for new messages
-  in real time. Supports multiple workspaces with auto-detection from the active tab.
-  Use when the user wants to check Slack messages, post a Slack message,
-  search Slack channels, read Slack threads, get Slack user info, watch a channel for
-  updates, or automate any Slack task. Triggers on mentions of Slack, channels, DMs,
-  threads, messages, Slackbot, or watching/monitoring.
+  search channels, read threads, look up users, view activity/notifications, and watch
+  channels for new messages in real time. Supports multiple workspaces with auto-detection
+  from the active tab. Use when the user wants to check Slack messages, post a Slack
+  message, search Slack channels, read Slack threads, get Slack user info, view Slack
+  notifications or activity feed, watch a channel for updates, or automate any Slack task.
+  Triggers on mentions of Slack, channels, DMs, threads, messages, Slackbot,
+  notifications, activity, or watching/monitoring.
 allowed-tools: bash
 ---
 
@@ -22,6 +23,18 @@ or can be specified explicitly with `--workspace`.
 ```bash
 # List available workspaces
 slack workspaces
+
+# View activity feed (notifications)
+slack activity
+
+# Admin notifications only (channel archiving, etc.)
+slack --ws=E06V3987PMY activity --type=admin
+
+# Unread mentions
+slack activity --type=mentions --unread
+
+# App DMs (invite requests, Google Drive, etc.)
+slack activity --type=apps
 
 # Read recent messages from a channel (uses active workspace)
 slack history C087NCG774J
@@ -92,6 +105,35 @@ slack history C087NCG774J --workspace=E23RE8G4F
 
 List all workspaces the user is signed into. Shows the workspace ID, name, and
 domain. The currently active workspace (from the tab URL) is marked with `*`.
+
+### slack activity [--type=TYPE] [--unread] [--limit=N] [--cursor=CURSOR]
+
+View the activity feed (notifications). Resolves user and channel names inline.
+For app DM bundles (invite requests, Google Drive, etc.), fetches the latest
+messages from the DM channel to show actual content.
+
+**Type filters:**
+- `all` (default) — everything
+- `admin` — system alerts (channel archived, workspace changes)
+- `mentions` — @user, @usergroup, @channel, @everyone, unjoined channel mentions
+- `threads` — thread replies
+- `reactions` — emoji reactions on your messages
+- `invites` — channel invitations (internal and Slack Connect)
+- `apps` — bot/app DM bundles (invite requests, Google Drive, etc.)
+
+**Flags:**
+- `--unread` — show only unread items
+- `--limit=N` — number of items (default 20)
+- `--cursor=CURSOR` — pagination cursor for next page
+
+**Output format:**
+```
+[2026-04-15 16:19:41 UTC] ADMIN: Amol Anand archived the channel #aem-volvo-redesign *
+[2026-04-15 15:54:02 UTC] App DM (5 unread): slackbot: Request to join a Slack Connect channel... *
+[2026-04-13 16:24:47 UTC] @mention by Stefan Guggisberg in #mpdm-roman-...
+```
+
+Items marked with `*` are unread.
 
 ### slack history \<channel_id\> [--limit=N]
 
