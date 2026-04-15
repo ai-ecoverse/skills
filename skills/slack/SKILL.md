@@ -2,7 +2,8 @@
 name: slack
 description: Interact with Slack via its Web API — read messages, post to channels,
   search channels, read threads, look up users, and watch channels for new messages
-  in real time. Use when the user wants to check Slack messages, post a Slack message,
+  in real time. Supports multiple workspaces with auto-detection from the active tab.
+  Use when the user wants to check Slack messages, post a Slack message,
   search Slack channels, read Slack threads, get Slack user info, watch a channel for
   updates, or automate any Slack task. Triggers on mentions of Slack, channels, DMs,
   threads, messages, Slackbot, or watching/monitoring.
@@ -12,13 +13,24 @@ allowed-tools: bash
 # Slack
 
 Direct API access to Slack via the browser session. Uses XHR from the Slack page
-context (same-origin) with the user's `xoxc-*` token from `localStorage`.
+context (same-origin) with the user's `xoxc-*` token from `localStorage`. Supports
+multiple workspaces — the active workspace is auto-detected from the Slack tab URL,
+or can be specified explicitly with `--workspace`.
 
 ## Quick start
 
 ```bash
-# Read recent messages from a channel
+# List available workspaces
+slack workspaces
+
+# Read recent messages from a channel (uses active workspace)
 slack history C087NCG774J
+
+# Use a specific workspace
+slack --workspace=T06DUTYDQ channels --search=helix
+
+# Shorthand
+slack --ws=T06DUTYDQ history C06ABC123
 
 # Post a message to Slackbot (safe — never messages real people)
 slack post <slackbot_dm_id> "Hello from SLICC!"
@@ -48,13 +60,38 @@ slack unwatch C087NCG774J
 ## Authentication
 
 The token is extracted automatically from `localStorage` key `localConfig_v2` in
-the Slack browser tab. The enterprise ID is `E23RE8G4F` (Adobe). All API calls
-execute via XHR from the Slack page context so cookies are included automatically.
+the Slack browser tab. The workspace ID (team or enterprise ID) determines which
+token to use. The `localConfig_v2.teams` object maps workspace IDs to
+`{ name, domain, url, token }` — keys are either enterprise IDs (`E...`) or
+team IDs (`T...`).
 
-Requires an open Slack tab at `app.slack.com`. If no Slack tab is found, the script
-reports an error and asks the user to open Slack.
+Workspace resolution order:
+1. `--workspace=<ID>` or `--ws=<ID>` flag if provided
+2. Auto-detected from the active Slack tab URL (`/client/<ID>/...`)
+
+All API calls execute via XHR from the Slack page context so cookies are included
+automatically. Requires an open Slack tab at `app.slack.com`. If no Slack tab is
+found, the script reports an error and asks the user to open Slack.
+
+## Global flags
+
+### --workspace=\<ID\>, --ws=\<ID\>
+
+Specify which workspace to use by team or enterprise ID. If omitted, the workspace
+is auto-detected from the currently active Slack tab URL. Run `slack workspaces` to
+see all available IDs. The flag can appear before or after the command name:
+
+```bash
+slack --ws=E23RE8G4F history C087NCG774J
+slack history C087NCG774J --workspace=E23RE8G4F
+```
 
 ## Available commands
+
+### slack workspaces
+
+List all workspaces the user is signed into. Shows the workspace ID, name, and
+domain. The currently active workspace (from the tab URL) is marked with `*`.
 
 ### slack history \<channel_id\> [--limit=N]
 
@@ -177,12 +214,11 @@ connections are discovered within one ping cycle.
 
 ## Enterprise grid notes
 
-Adobe's Slack is an Enterprise Grid (enterprise ID `E23RE8G4F`). The gateway
-WebSocket for the enterprise org is on `gateway_server=T23RE8G4F-*`. Some
+Some Slack workspaces use Enterprise Grid (e.g. Adobe's `E23RE8G4F`). Some
 standard Web API methods like `conversations.list` and `users.conversations`
-return `enterprise_is_restricted`. The skill uses `search.modules`
-(module=channels) for channel discovery and `conversations.open` for DM
-channel lookup instead.
+return `enterprise_is_restricted` on these workspaces. The skill uses
+`search.modules` (module=channels) for channel discovery and `conversations.open`
+for DM channel lookup instead.
 
 ## Endpoints reference
 

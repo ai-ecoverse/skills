@@ -1,7 +1,7 @@
 # Slack Web API Endpoints
 
 Base URL: `/api/` (same-origin XHR from `app.slack.com`)
-Auth: `xoxc-*` token from `localStorage` key `localConfig_v2` → `.teams['E23RE8G4F'].token`
+Auth: `xoxc-*` token from `localStorage` key `localConfig_v2` → `.teams[<workspaceId>].token`
 Transport: XHR with `Content-Type: application/x-www-form-urlencoded` and `withCredentials: true`
 
 ## Authentication
@@ -10,11 +10,19 @@ All requests include:
 - `token` parameter in the POST body (URL-encoded)
 - Browser cookies (automatic via `withCredentials: true`)
 
-Token extraction:
+Token extraction (workspace ID determined dynamically):
 ```javascript
 const cfg = JSON.parse(localStorage.getItem('localConfig_v2'));
-const token = cfg.teams['E23RE8G4F'].token;  // xoxc-…
+const token = cfg.teams[workspaceId].token;  // xoxc-…
 ```
+
+The workspace ID (team or enterprise ID, e.g. `E23RE8G4F`, `T06DUTYDQ`) is resolved
+in this order:
+1. `--workspace=<ID>` or `--ws=<ID>` flag if provided
+2. Auto-detected from the active Slack tab URL: `https://app.slack.com/client/<ID>/...`
+
+The `localConfig_v2.teams` object maps workspace IDs to `{ name, domain, url, token }`.
+Keys are either enterprise IDs (`E...`) or team IDs (`T...`).
 
 ## Endpoints
 
@@ -217,8 +225,8 @@ Search for channels by name. Replaces `conversations.list` which is blocked on E
 
 ## Enterprise Grid Restrictions
 
-Adobe's Slack uses Enterprise Grid (enterprise ID `E23RE8G4F`). The following
-standard Web API methods return `enterprise_is_restricted`:
+Some Slack workspaces use Enterprise Grid. The following standard Web API methods
+return `enterprise_is_restricted` on those workspaces:
 
 - `conversations.list`
 - `users.conversations`
@@ -243,4 +251,5 @@ Common errors:
 - `not_in_channel` — User is not a member of the channel
 - `enterprise_is_restricted` — Method blocked on Enterprise Grid
 - `invalid_auth` — Token expired or invalid
+- `token_not_found` — No token found for the specified workspace ID
 - `ratelimited` — Rate limited; check `Retry-After` header
