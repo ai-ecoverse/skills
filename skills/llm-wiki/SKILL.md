@@ -27,7 +27,6 @@ Ask the user where their knowledge base lives (e.g. `/mnt/kb`). If they have an 
 
 ### 2. Install the sprinkle
 ```
-cp /workspace/skills/llm-wiki/llm-wiki.shtml /shared/sprinkles/llm-wiki/llm-wiki.shtml
 sprinkle open llm-wiki
 ```
 
