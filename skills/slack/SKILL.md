@@ -135,6 +135,19 @@ messages from the DM channel to show actual content.
 
 Items marked with `*` are unread.
 
+### slack approve \<message_ts\> [--channel=\<id\>]
+
+Approve an interactive message action (e.g. Slack Connect invite request, workspace
+invite). The `message_ts` is the timestamp of the Slackbot notification message
+containing the Approve/Deny buttons. Defaults to the Slackbot DM channel; use
+`--channel` to override.
+
+Uses the `chat.attachmentAction` API to programmatically click the Approve button.
+
+### slack deny \<message_ts\> [--channel=\<id\>]
+
+Deny an interactive message action. Same as `approve` but clicks the Deny button.
+
 ### slack history \<channel_id\> [--limit=N]
 
 Fetch recent messages from a channel. Default limit is 20.

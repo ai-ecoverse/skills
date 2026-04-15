@@ -853,7 +853,153 @@ const commands = {
       console.log(`\n--- More items available. Use --cursor=${data.response_metadata.next_cursor} ---`);
     }
   },
+
+  async approve(args, globalFlags) {
+    const { flags, positional } = parseArgs(args);
+    const messageTs = positional[0];
+    if (!messageTs) {
+      console.error('Usage: slack approve <message_ts> [--channel=<id>]');
+      console.error('Approves an interactive action button (e.g. Slack Connect invite request).');
+      console.error('The message_ts is the timestamp of the Slackbot notification message.');
+      process.exit(1);
+    }
+    const wsId = await resolveWorkspace(globalFlags);
+    const channel = flags.channel || 'D06V5UBEZML'; // default to Slackbot DM
+    await executeAttachmentAction(wsId, channel, messageTs, 'approve');
+  },
+
+  async deny(args, globalFlags) {
+    const { flags, positional } = parseArgs(args);
+    const messageTs = positional[0];
+    if (!messageTs) {
+      console.error('Usage: slack deny <message_ts> [--channel=<id>]');
+      console.error('Denies an interactive action button (e.g. Slack Connect invite request).');
+      console.error('The message_ts is the timestamp of the Slackbot notification message.');
+      process.exit(1);
+    }
+    const wsId = await resolveWorkspace(globalFlags);
+    const channel = flags.channel || 'D06V5UBEZML'; // default to Slackbot DM
+    await executeAttachmentAction(wsId, channel, messageTs, 'deny');
+  },
 };
+
+// --- Attachment action helper ---
+// Executes interactive message button actions (approve/deny) via chat.attachmentAction.
+// Used for Slack Connect invite requests and workspace invite approvals.
+
+async function executeAttachmentAction(wsId, channel, messageTs, actionName) {
+  const tabId = await findSlackTab();
+
+  // First, fetch the message to get the callback_id and attachment structure
+  const hist = await slackApi('conversations.history', {
+    channel,
+    oldest: messageTs,
+    latest: messageTs,
+    inclusive: 'true',
+    limit: '1',
+  }, wsId);
+
+  if (!hist.ok || !hist.messages?.length) {
+    console.error(`Error: Message ${messageTs} not found in channel ${channel}.`);
+    process.exit(1);
+  }
+
+  const msg = hist.messages[0];
+
+  // Find the attachment with action buttons
+  let targetAttachment = null;
+  let targetAction = null;
+  for (const att of (msg.attachments || [])) {
+    if (!att.actions) continue;
+    const action = att.actions.find(a => a.name === actionName);
+    if (action) {
+      targetAttachment = att;
+      targetAction = action;
+      break;
+    }
+  }
+
+  if (!targetAttachment || !targetAction) {
+    console.error(`Error: No "${actionName}" button found on message ${messageTs}.`);
+    console.error('Available actions:', (msg.attachments || []).flatMap(a => (a.actions || []).map(act => act.name)).join(', ') || 'none');
+    process.exit(1);
+  }
+
+  // Build the payload matching Slack's interactive message format
+  const payload = JSON.stringify({
+    actions: [targetAction],
+    attachment_id: String(targetAttachment.id),
+    callback_id: targetAttachment.callback_id,
+    channel_id: channel,
+    message_ts: messageTs,
+    prompt_app_install: false,
+  });
+
+  // Execute via eval in the Slack tab (needs FormData, not URLSearchParams)
+  const payloadJson = JSON.stringify(payload);
+  const expr = `
+(async () => {
+  let token;
+  try {
+    const rawCfg = localStorage.getItem('localConfig_v2');
+    const cfg = JSON.parse(rawCfg);
+    if (!cfg || !cfg.teams || !cfg.teams['${wsId}'] || !cfg.teams['${wsId}'].token) {
+      return JSON.stringify({ ok: false, error: 'token_not_found' });
+    }
+    token = cfg.teams['${wsId}'].token;
+  } catch (e) {
+    return JSON.stringify({ ok: false, error: 'token_not_found' });
+  }
+  const fd = new FormData();
+  fd.append('token', token);
+  fd.append('payload', ${payloadJson});
+  fd.append('service_id', 'B01');
+  fd.append('bot_user_id', 'USLACKBOT');
+  fd.append('client_token', 'web-' + Date.now());
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/chat.attachmentAction', true);
+    xhr.withCredentials = true;
+    xhr.onload = () => resolve(xhr.responseText);
+    xhr.onerror = () => resolve(JSON.stringify({ ok: false, error: 'xhr_error' }));
+    xhr.send(fd);
+  });
+})()
+  `.trim().replace(/\n/g, ' ');
+
+  const tmpFile = '/shared/.slack_eval_' + Date.now() + '.js';
+  await fs.writeFile(tmpFile, expr);
+  const result = await exec(`playwright-cli eval-file ${tmpFile} --tab=${tabId}`);
+  await fs.rm(tmpFile).catch(async () => {
+    await fs.writeFile(tmpFile, '').catch(() => {});
+  });
+
+  if (result.exitCode !== 0) {
+    console.error('Eval failed:', result.stderr);
+    process.exit(1);
+  }
+
+  let data;
+  try {
+    const stdout = result.stdout.trim();
+    data = JSON.parse(stdout);
+    if (typeof data === 'string') data = JSON.parse(data);
+  } catch (e) {
+    console.error('Failed to parse response:', result.stdout.substring(0, 200));
+    process.exit(1);
+  }
+
+  if (!data.ok) {
+    console.error(`Error: ${data.error}`);
+    process.exit(1);
+  }
+
+  const verb = actionName === 'approve' ? 'Approved' : 'Denied';
+  const text = (msg.text || '').substring(0, 150).replace(/\n/g, ' ');
+  console.log(`${verb}: ${text}`);
+  console.log(`  Message: ${messageTs} in ${channel}`);
+  console.log(`  Callback: ${targetAttachment.callback_id}`);
+}
 
 // --- Watch state helpers ---
 
@@ -1001,6 +1147,8 @@ if (!cmd || cmd === 'help' || cmd === '--help') {
   console.log('  activity [--type=TYPE] [--unread] [--limit=N] [--cursor=CURSOR]');
   console.log('                                           View activity feed (notifications)');
   console.log('           Types: all, admin, mentions, threads, reactions, invites, apps');
+  console.log('  approve <message_ts> [--channel=<id>]    Approve an interactive action (e.g. invite request)');
+  console.log('  deny <message_ts> [--channel=<id>]       Deny an interactive action (e.g. invite request)');
   console.log('  history <channel_id> [--limit=N]          Read channel messages');
   console.log('  post <channel_id> <message> [--force]     Post a message (Slackbot DM only by default)');
   console.log('  channels --search=<term>                  Search for channels');
