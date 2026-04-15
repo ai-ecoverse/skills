@@ -928,7 +928,7 @@ const commands = {
         if (joinOrgMatch) org = joinOrgMatch[1];
 
         for (const att of (msg.attachments || [])) {
-          const at = att.text || '';
+          const at = (att.text || '') + ' ' + (att.fallback || '');
           const emailMatch = at.match(/\*Email\*:\s*<mailto:([^|]+)\|/);
           if (emailMatch) email = emailMatch[1];
           const chMatch = at.match(/\*Channel:\*\s*<#\w+\|([^>]+)>/);
@@ -938,6 +938,9 @@ const commands = {
           const reasonMatch = at.match(/\*Reason for Request\*:\n(.+)/);
           if (reasonMatch) reason = reasonMatch[1].trim();
         }
+
+        // Clean up Slack markup from channel names
+        channelName = channelName.replace(/<#\w+\|([^>]+)>/g, '#$1');
 
         pending.push({
           ts: msg.ts,
