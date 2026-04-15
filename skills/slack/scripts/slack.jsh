@@ -21,18 +21,35 @@ async function findSlackTab() {
     process.exit(1);
   }
   // Match any tab on app.slack.com — handle both local and remote (follower/leader) tab IDs
+  // Prefer tabs with /client/<ID>/ in the URL (actual workspace views) over login/help pages
   const lines = list.stdout.split('\n');
+  let fallbackTabId = null;
+  let fallbackTabUrl = null;
   for (const line of lines) {
     if (line.includes(SLACK_DOMAIN)) {
       const m = line.match(/^\[([^\]]+)\]/);
       if (m) {
-        _tabId = m[1];
-        // Capture the URL from the tab-list line
         const urlMatch = line.match(/https?:\/\/\S+/);
-        if (urlMatch) _tabUrl = urlMatch[0];
-        return _tabId;
+        const url = urlMatch ? urlMatch[0] : null;
+        // Prefer tabs with a workspace URL (/client/<ID>/...)
+        if (url && /\/client\/[A-Z0-9]+/.test(url)) {
+          _tabId = m[1];
+          _tabUrl = url;
+          return _tabId;
+        }
+        // Keep the first Slack tab as fallback
+        if (!fallbackTabId) {
+          fallbackTabId = m[1];
+          fallbackTabUrl = url;
+        }
       }
     }
+  }
+  // No tab with /client/ URL found — use the first Slack tab as fallback
+  if (fallbackTabId) {
+    _tabId = fallbackTabId;
+    _tabUrl = fallbackTabUrl;
+    return _tabId;
   }
 
   console.error('Error: No Slack tab found. Open app.slack.com in your browser and try again.');
@@ -48,10 +65,18 @@ function getActiveWorkspaceFromTabUrl() {
   return m ? m[1] : null;
 }
 
+function validateWorkspaceId(id) {
+  if (!/^[A-Z0-9]+$/.test(id)) {
+    console.error(`Error: Invalid workspace ID "${id}". Expected format: alphanumeric (e.g. E23RE8G4F, T06DUTYDQ).`);
+    process.exit(1);
+  }
+  return id;
+}
+
 async function resolveWorkspace(globalFlags) {
   // 1. Explicit flag takes priority
   if (globalFlags.workspace) {
-    return globalFlags.workspace;
+    return validateWorkspaceId(globalFlags.workspace);
   }
 
   // 2. Auto-detect from the active Slack tab URL
@@ -768,11 +793,17 @@ const filteredArgs = [];
 for (let i = 0; i < rawArgs.length; i++) {
   const arg = rawArgs[i];
   if (arg.startsWith('--workspace=')) {
-    globalFlags.workspace = arg.split('=')[1];
+    const val = arg.slice('--workspace='.length);
+    if (!val) { console.error('Error: --workspace requires a non-empty workspace ID.'); process.exit(1); }
+    globalFlags.workspace = val;
   } else if (arg.startsWith('--ws=')) {
-    globalFlags.workspace = arg.split('=')[1];
+    const val = arg.slice('--ws='.length);
+    if (!val) { console.error('Error: --ws requires a non-empty workspace ID.'); process.exit(1); }
+    globalFlags.workspace = val;
   } else if (arg === '--workspace' || arg === '--ws') {
-    globalFlags.workspace = rawArgs[++i];
+    const val = rawArgs[++i];
+    if (!val) { console.error(`Error: ${arg} requires a non-empty workspace ID.`); process.exit(1); }
+    globalFlags.workspace = val;
   } else {
     filteredArgs.push(arg);
   }
