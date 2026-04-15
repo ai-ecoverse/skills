@@ -854,6 +854,139 @@ const commands = {
     }
   },
 
+  async pending(args, globalFlags) {
+    const { flags } = parseArgs(args);
+    const wsId = await resolveWorkspace(globalFlags);
+    const maxPages = parseInt(flags.pages || '10', 10);
+    const format = flags.json ? 'json' : 'table';
+
+    // Resolve Slackbot DM channel
+    let channel = flags.channel;
+    if (!channel) {
+      const sb = await slackApi('conversations.open', { users: 'USLACKBOT', return_im: 'true' }, wsId);
+      if (!sb.ok) { console.error('Error: Could not resolve Slackbot DM channel.'); process.exit(1); }
+      channel = sb.channel.id;
+    }
+
+    // Page through the Slackbot DM looking for messages with action buttons
+    let cursor = null;
+    const pending = [];
+
+    for (let page = 0; page < maxPages; page++) {
+      const params = { channel, limit: '100' };
+      if (cursor) params.cursor = cursor;
+
+      const hist = await slackApi('conversations.history', params, wsId);
+      if (!hist.ok) {
+        console.error('Error fetching history:', hist.error);
+        process.exit(1);
+      }
+
+      for (const msg of hist.messages) {
+        const text = msg.text || '';
+        const attachText = (msg.attachments || []).map(a => (a.text || '') + (a.fallback || '')).join(' ');
+        const allText = text + ' ' + attachText;
+
+        // Only look at invite/approval messages
+        if (!allText.includes('requested to invite') &&
+            !allText.includes('Request to join') &&
+            !allText.includes('Request to add')) continue;
+
+        // Skip already-processed
+        const isProcessed = allText.includes('approved') || allText.includes('white_check_mark') ||
+                            allText.includes('denied') || allText.includes('no_entry_sign') ||
+                            allText.includes('Declined') || allText.includes('joined the workspace');
+        if (isProcessed) continue;
+
+        // Must have action buttons
+        const hasActions = (msg.attachments || []).some(a => a.actions && a.actions.length > 0);
+        if (!hasActions) continue;
+
+        // Parse details
+        let requestType = 'unknown';
+        let invitee = '';
+        let org = '';
+        let channelName = '';
+        let email = '';
+        let reason = '';
+
+        if (text.includes('Request to join')) requestType = 'join';
+        else if (text.includes('Request to add')) requestType = 'add';
+        else if (text.includes('requested to invite')) requestType = 'invite';
+
+        const addMatch = text.match(/invited \*(.+?)\*/);
+        if (addMatch) invitee = addMatch[1];
+
+        const joinMatch = text.match(/<@(\w+)> was invited to join/);
+        if (joinMatch) invitee = joinMatch[1];
+
+        const orgMatch = text.match(/from (.+?) to join/);
+        if (orgMatch) org = orgMatch[1];
+        const joinOrgMatch = text.match(/join \*(.+?)'s\*/);
+        if (joinOrgMatch) org = joinOrgMatch[1];
+
+        for (const att of (msg.attachments || [])) {
+          const at = att.text || '';
+          const emailMatch = at.match(/\*Email\*:\s*<mailto:([^|]+)\|/);
+          if (emailMatch) email = emailMatch[1];
+          const chMatch = at.match(/\*Channel:\*\s*<#\w+\|([^>]+)>/);
+          if (chMatch) channelName = chMatch[1];
+          const chMatch2 = at.match(/\*Channel\*\n(.+)/);
+          if (chMatch2 && !channelName) channelName = chMatch2[1].trim();
+          const reasonMatch = at.match(/\*Reason for Request\*:\n(.+)/);
+          if (reasonMatch) reason = reasonMatch[1].trim();
+        }
+
+        pending.push({
+          ts: msg.ts,
+          date: new Date(parseFloat(msg.ts) * 1000).toISOString().split('T')[0],
+          type: requestType,
+          invitee: invitee || '?',
+          org: org || '',
+          channel: channelName || '(private)',
+          email: email || '',
+          reason: reason || '',
+        });
+      }
+
+      if (!hist.has_more || !hist.response_metadata?.next_cursor) break;
+      cursor = hist.response_metadata.next_cursor;
+    }
+
+    if (pending.length === 0) {
+      console.log('No pending approval requests found.');
+      return;
+    }
+
+    if (format === 'json') {
+      console.log(JSON.stringify(pending, null, 2));
+      return;
+    }
+
+    // Table output
+    console.log(`Pending approval requests (${pending.length}):\n`);
+
+    // Calculate column widths
+    const typeW = Math.max(4, ...pending.map(p => p.type.length));
+    const invW = Math.min(25, Math.max(7, ...pending.map(p => p.invitee.length)));
+    const orgW = Math.min(25, Math.max(4, ...pending.map(p => p.org.length)));
+    const chW = Math.min(30, Math.max(7, ...pending.map(p => p.channel.length)));
+
+    console.log(`  ${'Date'.padEnd(12)}${'Type'.padEnd(typeW + 2)}${'Invitee'.padEnd(invW + 2)}${'From'.padEnd(orgW + 2)}${'Channel'.padEnd(chW + 2)}Timestamp`);
+    console.log(`  ${'─'.repeat(12)}${'─'.repeat(typeW + 2)}${'─'.repeat(invW + 2)}${'─'.repeat(orgW + 2)}${'─'.repeat(chW + 2)}${'─'.repeat(22)}`);
+
+    for (const p of pending) {
+      const inv = p.invitee.length > invW ? p.invitee.substring(0, invW - 1) + '…' : p.invitee;
+      const o = p.org.length > orgW ? p.org.substring(0, orgW - 1) + '…' : p.org;
+      const ch = p.channel.length > chW ? p.channel.substring(0, chW - 1) + '…' : p.channel;
+      console.log(`  ${p.date.padEnd(12)}${p.type.padEnd(typeW + 2)}${inv.padEnd(invW + 2)}${o.padEnd(orgW + 2)}${ch.padEnd(chW + 2)}${p.ts}`);
+    }
+
+    console.log(`\nTo act on a request:`);
+    console.log(`  slack approve <timestamp>`);
+    console.log(`  slack deny <timestamp>`);
+  },
+
   async approve(args, globalFlags) {
     const { flags, positional } = parseArgs(args);
     const messageTs = positional[0];
@@ -1157,6 +1290,7 @@ if (!cmd || cmd === 'help' || cmd === '--help') {
   console.log('  activity [--type=TYPE] [--unread] [--limit=N] [--cursor=CURSOR]');
   console.log('                                           View activity feed (notifications)');
   console.log('           Types: all, admin, mentions, threads, reactions, invites, apps');
+  console.log('  pending [--pages=N] [--json]             List pending approval requests');
   console.log('  approve <message_ts> [--channel=<id>]    Approve an interactive action (e.g. invite request)');
   console.log('  deny <message_ts> [--channel=<id>]       Deny an interactive action (e.g. invite request)');
   console.log('  history <channel_id> [--limit=N]          Read channel messages');
