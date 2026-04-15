@@ -261,7 +261,7 @@ API that Slack calls when a user clicks an action button in an attachment.
 **Key fields:**
 - `actions` — array with one action object matching the button clicked
 - `callback_id` — from the message attachment (identifies the handler)
-- `attachment_id` — the attachment index containing the actions
+- `attachment_id` — the attachment id from the message attachment object's `id` field
 - `channel_id` — channel where the message lives
 - `message_ts` — timestamp of the message
 

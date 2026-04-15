@@ -91,13 +91,45 @@ async function resolveWorkspace(globalFlags) {
   process.exit(1);
 }
 
+// --- Eval helper ---
+// Evaluates a JavaScript expression in the Slack browser tab and returns parsed JSON.
+// Handles temp file creation, cleanup, double-encoded JSON, and error handling.
+
+async function evalInSlackTab(expr, { fatal = true } = {}) {
+  const tabId = await findSlackTab();
+  const tmpFile = '/shared/.slack_eval_' + Date.now() + '.js';
+  await fs.writeFile(tmpFile, expr.trim().replace(/\n/g, ' '));
+  const result = await exec(`playwright-cli eval-file ${tmpFile} --tab=${tabId}`);
+  await fs.rm(tmpFile).catch(async () => {
+    await fs.writeFile(tmpFile, '').catch(() => {});
+  });
+
+  if (result.exitCode !== 0) {
+    if (!fatal) return { ok: false, error: 'eval_failed' };
+    console.error('Eval failed:', result.stderr);
+    process.exit(1);
+  }
+
+  let data;
+  try {
+    const stdout = result.stdout.trim();
+    data = JSON.parse(stdout);
+    if (typeof data === 'string') data = JSON.parse(data);
+    if (!data || typeof data !== 'object') throw new Error('API response was not an object');
+  } catch (e) {
+    if (!fatal) return { ok: false, error: 'parse_failed' };
+    console.error('Failed to parse API response:', result.stdout.substring(0, 200));
+    process.exit(1);
+  }
+
+  return data;
+}
+
 // --- API helper ---
 // Executes Slack Web API calls via XHR from the Slack page context.
 // This ensures same-origin cookies are included and the xoxc token works.
 
 async function slackApi(method, params, workspaceId, { fatal = true } = {}) {
-  const tabId = await findSlackTab();
-
   // Build the param entries as a JSON array to pass into eval
   const paramEntries = Object.entries(params);
   const paramJson = JSON.stringify(paramEntries);
@@ -132,39 +164,9 @@ async function slackApi(method, params, workspaceId, { fatal = true } = {}) {
     xhr.send(params.toString());
   });
 })()
-  `.trim().replace(/\n/g, ' ');
+  `;
 
-  // Write the expression to a temp file to avoid shell escaping issues
-  const tmpFile = '/shared/.slack_eval_' + Date.now() + '.js';
-  await fs.writeFile(tmpFile, expr);
-  const result = await exec(`playwright-cli eval-file ${tmpFile} --tab=${tabId}`);
-  // Clean up temp file; fall back to truncation if deletion is unsupported
-  await fs.rm(tmpFile).catch(async () => {
-    await fs.writeFile(tmpFile, '').catch(() => {});
-  });
-
-  if (result.exitCode !== 0) {
-    if (!fatal) return { ok: false, error: 'eval_failed' };
-    console.error('Eval failed:', result.stderr);
-    process.exit(1);
-  }
-
-  let data;
-  try {
-    const stdout = result.stdout.trim();
-    data = JSON.parse(stdout);
-    // Handle double-encoded JSON (eval-file sometimes returns a JSON string)
-    if (typeof data === 'string') {
-      data = JSON.parse(data);
-    }
-    if (!data || typeof data !== 'object') {
-      throw new Error('API response was not an object');
-    }
-  } catch (e) {
-    if (!fatal) return { ok: false, error: 'parse_failed' };
-    console.error('Failed to parse API response:', result.stdout.substring(0, 200));
-    process.exit(1);
-  }
+  const data = await evalInSlackTab(expr, { fatal });
 
   if (!data.ok) {
     if (data.error === 'invalid_auth' || data.error === 'token_not_found') {
@@ -1108,29 +1110,9 @@ async function executeAttachmentAction(wsId, channel, messageTs, actionName) {
     xhr.send(fd);
   });
 })()
-  `.trim().replace(/\n/g, ' ');
+  `;
 
-  const tmpFile = '/shared/.slack_eval_' + Date.now() + '.js';
-  await fs.writeFile(tmpFile, expr);
-  const result = await exec(`playwright-cli eval-file ${tmpFile} --tab=${tabId}`);
-  await fs.rm(tmpFile).catch(async () => {
-    await fs.writeFile(tmpFile, '').catch(() => {});
-  });
-
-  if (result.exitCode !== 0) {
-    console.error('Eval failed:', result.stderr);
-    process.exit(1);
-  }
-
-  let data;
-  try {
-    const stdout = result.stdout.trim();
-    data = JSON.parse(stdout);
-    if (typeof data === 'string') data = JSON.parse(data);
-  } catch (e) {
-    console.error('Failed to parse response:', result.stdout.substring(0, 200));
-    process.exit(1);
-  }
+  const data = await evalInSlackTab(expr);
 
   if (!data.ok) {
     console.error(`Error: ${data.error}`);
