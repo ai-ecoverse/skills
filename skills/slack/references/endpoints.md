@@ -236,6 +236,76 @@ Use these alternatives:
 - DM channel lookup: `conversations.open` with target user IDs
 - Channel info: `conversations.info` with a known channel ID
 
+### POST /api/activity.feed
+
+Get the activity feed (notifications). This is an undocumented internal API used
+by Slack's Activity tab.
+
+**Parameters:**
+| Param | Required | Description |
+|-------|----------|-------------|
+| token | yes | xoxc token |
+| types | yes | Comma-separated activity types (see below) |
+| mode | yes | `chrono_reads_and_unreads` or `priority_reads_and_unreads_v1` |
+| limit | no | Number of items (default 20) |
+| unread_only | no | `true` or `false` (default `false`) |
+| archive_only | no | `true` or `false` (default `false`) |
+| priority_only | no | `true` or `false` (default `false`) |
+| cursor | no | Pagination cursor from `response_metadata.next_cursor` |
+
+**Activity types:**
+- `generic_system_alert` — admin events (channel archived, workspace changes)
+- `bot_dm_bundle` — grouped bot/app DMs (invite requests, Google Drive, etc.)
+- `at_user` — direct @mention
+- `at_user_group` — @usergroup mention
+- `at_channel` — @channel mention
+- `at_everyone` — @everyone mention
+- `unjoined_channel_mention` — @mention in a channel you haven't joined
+- `thread_v2` — thread reply
+- `message_reaction` — emoji reaction on your message
+- `internal_channel_invite` — invited to a channel
+- `external_channel_invite` — Slack Connect invite
+- `list_record_edited`, `list_record_assigned`, `list_user_mentioned` — list items
+- `list_todo_notification`, `list_approval_request`, `list_approval_reviewed` — list workflows
+
+**Response:**
+```json
+{
+  "ok": true,
+  "items": [
+    {
+      "is_unread": true,
+      "feed_ts": "1776269981.932928",
+      "key": "generic_system_alert.1776269981932928",
+      "item": {
+        "type": "generic_system_alert",
+        "generic_system_alert_payload": {
+          "category": "CHANNEL",
+          "blocks": [{ "type": "rich_text", "elements": [...] }],
+          "click_target_id": "C05JRAM3A1H"
+        }
+      }
+    }
+  ],
+  "response_metadata": {
+    "next_cursor": "YWN0aXZpdHk6..."
+  }
+}
+```
+
+**Item type shapes:**
+- `generic_system_alert` → `.item.generic_system_alert_payload.{category, blocks[], reason, click_target_id}`
+- `bot_dm_bundle` → `.item.bundle_info.{unread_count, payload.message.{ts, channel}}`
+- `at_user` → `.item.message.{ts, channel, author_user_id, is_broadcast}`
+- `internal_channel_invite` → `.item.invite_info.{channel_id, inviter_user_id}`
+
+**Notes:**
+- This endpoint works cross-workspace: use the target workspace's token even if the
+  active Slack tab is on a different workspace.
+- The `mode` parameter determines sort order. `chrono_reads_and_unreads` returns items
+  in reverse chronological order. `priority_reads_and_unreads_v1` uses Slack's priority
+  ranking (used by the "All" tab).
+
 ## Error Handling
 
 All responses include `"ok": true|false`. On error:

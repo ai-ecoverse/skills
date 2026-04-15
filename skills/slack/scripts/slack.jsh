@@ -673,6 +673,186 @@ const commands = {
     await injectWsInterceptor(states);
     console.log(`Re-injected interceptor with ${states.length} watch(es).`);
   },
+
+  async activity(args, globalFlags) {
+    const { flags } = parseArgs(args);
+    const wsId = await resolveWorkspace(globalFlags);
+    const limit = flags.limit || '20';
+    const unreadOnly = flags.unread === true || flags.unread === 'true';
+    const cursor = flags.cursor || null;
+
+    // Map --type filter to activity.feed types
+    const typeMap = {
+      all: 'generic_system_alert,bot_dm_bundle,at_user,at_user_group,at_channel,at_everyone,unjoined_channel_mention,thread_v2,message_reaction,internal_channel_invite,external_channel_invite',
+      admin: 'generic_system_alert',
+      mentions: 'at_user,at_user_group,at_channel,at_everyone,unjoined_channel_mention',
+      threads: 'thread_v2',
+      reactions: 'message_reaction',
+      invites: 'internal_channel_invite,external_channel_invite',
+      apps: 'bot_dm_bundle',
+    };
+    const typeFilter = flags.type || 'all';
+    const types = typeMap[typeFilter];
+    if (!types) {
+      console.error(`Unknown --type "${typeFilter}". Valid types: ${Object.keys(typeMap).join(', ')}`);
+      process.exit(1);
+    }
+
+    const params = {
+      limit,
+      types,
+      mode: 'chrono_reads_and_unreads',
+      archive_only: 'false',
+      unread_only: String(unreadOnly),
+      priority_only: 'false',
+    };
+    if (cursor) params.cursor = cursor;
+
+    const data = await slackApi('activity.feed', params, wsId);
+    if (!data.ok) {
+      console.error('Error:', data.error);
+      process.exit(1);
+    }
+
+    if (!data.items || data.items.length === 0) {
+      console.log('No activity items found.');
+      return;
+    }
+
+    // Collect user and channel IDs to resolve in batch
+    const userIds = new Set();
+    const channelIds = new Set();
+    for (const item of data.items) {
+      const i = item.item;
+      if (i.type === 'generic_system_alert') {
+        for (const b of (i.generic_system_alert_payload?.blocks || [])) {
+          for (const el of (b.elements || [])) {
+            for (const sub of (el.elements || [])) {
+              if (sub.type === 'user') userIds.add(sub.user_id);
+              if (sub.type === 'channel') channelIds.add(sub.channel_id);
+            }
+          }
+        }
+      }
+      if (i.message?.author_user_id) userIds.add(i.message.author_user_id);
+      if (i.message?.channel) channelIds.add(i.message.channel);
+      if (i.invite_info?.channel_id) channelIds.add(i.invite_info.channel_id);
+      if (i.invite_info?.inviter_user_id) userIds.add(i.invite_info.inviter_user_id);
+    }
+
+    // Resolve names (best-effort, don't fail on individual lookups)
+    const userNames = {};
+    for (const uid of userIds) {
+      try {
+        const u = await slackApi('users.info', { user: uid }, wsId);
+        if (u.ok) userNames[uid] = u.user.real_name || u.user.name || uid;
+      } catch (_) {}
+    }
+    const channelNames = {};
+    for (const cid of channelIds) {
+      try {
+        const c = await slackApi('conversations.info', { channel: cid }, wsId);
+        if (c.ok) channelNames[cid] = '#' + (c.channel.name || cid);
+      } catch (_) {}
+    }
+
+    function resolveName(uid) { return userNames[uid] || uid; }
+    function resolveChannel(cid) { return channelNames[cid] || cid; }
+
+    // For bot_dm_bundle items, fetch the latest message from the DM channel
+    const botDmMessages = {};
+    for (const item of data.items) {
+      const i = item.item;
+      if (i.type === 'bot_dm_bundle') {
+        const ch = i.bundle_info?.payload?.message?.channel;
+        if (ch && !botDmMessages[ch]) {
+          try {
+            const hist = await slackApi('conversations.history', { channel: ch, limit: '5' }, wsId);
+            if (hist.ok && hist.messages?.length > 0) {
+              // Get latest messages, most recent first
+              botDmMessages[ch] = hist.messages.slice(0, 3).map(m => {
+                const name = m.bot_profile?.name || m.username || m.user || 'bot';
+                let text = m.text || '';
+                // Compact multi-line text
+                text = text.replace(/\n+/g, ' ').substring(0, 200);
+                return `${name}: ${text}`;
+              });
+            }
+          } catch (_) {}
+        }
+      }
+    }
+
+    // Format and print
+    for (const item of data.items) {
+      const i = item.item;
+      const ts = formatTimestamp(item.feed_ts);
+      const unread = item.is_unread ? ' *' : '';
+
+      if (i.type === 'generic_system_alert') {
+        const payload = i.generic_system_alert_payload || {};
+        const texts = [];
+        for (const b of (payload.blocks || [])) {
+          for (const el of (b.elements || [])) {
+            for (const sub of (el.elements || [])) {
+              if (sub.type === 'text') texts.push(sub.text);
+              if (sub.type === 'user') texts.push(resolveName(sub.user_id));
+              if (sub.type === 'channel') texts.push(resolveChannel(sub.channel_id));
+              if (sub.type === 'link') texts.push(sub.text || sub.url);
+            }
+          }
+        }
+        console.log(`[${ts}] ADMIN: ${texts.join('')}${unread}`);
+
+      } else if (i.type === 'at_user' || i.type === 'at_user_group') {
+        const author = resolveName(i.message?.author_user_id);
+        const ch = resolveChannel(i.message?.channel);
+        console.log(`[${ts}] @mention by ${author} in ${ch}${unread}`);
+
+      } else if (i.type === 'at_channel' || i.type === 'at_everyone') {
+        const author = resolveName(i.message?.author_user_id);
+        const ch = resolveChannel(i.message?.channel);
+        console.log(`[${ts}] @${i.type === 'at_channel' ? 'channel' : 'everyone'} by ${author} in ${ch}${unread}`);
+
+      } else if (i.type === 'unjoined_channel_mention') {
+        console.log(`[${ts}] Mentioned in unjoined channel${unread}`);
+
+      } else if (i.type === 'internal_channel_invite') {
+        const inviter = resolveName(i.invite_info?.inviter_user_id);
+        const ch = resolveChannel(i.invite_info?.channel_id);
+        console.log(`[${ts}] Invited to ${ch} by ${inviter}${unread}`);
+
+      } else if (i.type === 'external_channel_invite') {
+        console.log(`[${ts}] Slack Connect invite${unread}`);
+
+      } else if (i.type === 'bot_dm_bundle') {
+        const ch = i.bundle_info?.payload?.message?.channel;
+        const count = i.bundle_info?.unread_count || '?';
+        const msgs = botDmMessages[ch];
+        if (msgs && msgs.length > 0) {
+          console.log(`[${ts}] App DM (${count} unread): ${msgs[0].substring(0, 200)}${unread}`);
+          for (const m of msgs.slice(1)) {
+            console.log(`         ${m.substring(0, 200)}`);
+          }
+        } else {
+          console.log(`[${ts}] App DM (${count} unread)${unread}`);
+        }
+
+      } else if (i.type === 'thread_v2') {
+        console.log(`[${ts}] Thread reply${unread}`);
+
+      } else if (i.type === 'message_reaction') {
+        console.log(`[${ts}] Reaction${unread}`);
+
+      } else {
+        console.log(`[${ts}] ${i.type}${unread}`);
+      }
+    }
+
+    if (data.response_metadata?.next_cursor) {
+      console.log(`\n--- More items available. Use --cursor=${data.response_metadata.next_cursor} ---`);
+    }
+  },
 };
 
 // --- Watch state helpers ---
@@ -818,6 +998,9 @@ if (!cmd || cmd === 'help' || cmd === '--help') {
   console.log('                                           Auto-detects from active Slack tab if omitted\n');
   console.log('Commands:');
   console.log('  workspaces                               List all available workspaces');
+  console.log('  activity [--type=TYPE] [--unread] [--limit=N]');
+  console.log('                                           View activity feed (notifications)');
+  console.log('           Types: all, admin, mentions, threads, reactions, invites, apps');
   console.log('  history <channel_id> [--limit=N]          Read channel messages');
   console.log('  post <channel_id> <message> [--force]     Post a message (Slackbot DM only by default)');
   console.log('  channels --search=<term>                  Search for channels');
