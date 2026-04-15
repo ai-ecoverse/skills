@@ -864,7 +864,12 @@ const commands = {
       process.exit(1);
     }
     const wsId = await resolveWorkspace(globalFlags);
-    const channel = flags.channel || 'D06V5UBEZML'; // default to Slackbot DM
+    let channel = flags.channel;
+    if (!channel) {
+      const sb = await slackApi('conversations.open', { users: 'USLACKBOT', return_im: 'true' }, wsId);
+      if (!sb.ok) { console.error('Error: Could not resolve Slackbot DM channel.'); process.exit(1); }
+      channel = sb.channel.id;
+    }
     await executeAttachmentAction(wsId, channel, messageTs, 'approve');
   },
 
@@ -878,7 +883,12 @@ const commands = {
       process.exit(1);
     }
     const wsId = await resolveWorkspace(globalFlags);
-    const channel = flags.channel || 'D06V5UBEZML'; // default to Slackbot DM
+    let channel = flags.channel;
+    if (!channel) {
+      const sb = await slackApi('conversations.open', { users: 'USLACKBOT', return_im: 'true' }, wsId);
+      if (!sb.ok) { console.error('Error: Could not resolve Slackbot DM channel.'); process.exit(1); }
+      channel = sb.channel.id;
+    }
     await executeAttachmentAction(wsId, channel, messageTs, 'deny');
   },
 };
