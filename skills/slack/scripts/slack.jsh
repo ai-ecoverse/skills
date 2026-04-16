@@ -338,25 +338,25 @@ const commands = {
     const message = positional.slice(1).join(' ');
 
     if (!channel || !message) {
-      console.error('Usage: slack post <channel_id> <message>');
-      console.error('Use "slack slackbot" to find your Slackbot DM channel ID.');
+      console.error('Usage: slack post <channel_or_user_id> <message> [--thread_ts=TS]');
+      console.error('Accepts a conversation ID (C.../G.../D...), or user ID (U.../W... — opens a DM automatically).');
       process.exit(1);
     }
 
     const wsId = await resolveWorkspace(globalFlags);
 
-    // Safety: only allow posting to Slackbot DM unless --force
-    if (!flags.force) {
-      const sbData = await slackApi('conversations.open', { users: 'USLACKBOT', return_im: 'true' }, wsId);
-      const slackbotDm = sbData.ok ? sbData.channel.id : null;
-      if (channel !== slackbotDm) {
-        console.error(`Safety: posting is restricted to Slackbot DM (${slackbotDm || 'unknown'}).`);
-        console.error('Use --force to override (use with caution — this messages real people).');
+    // Resolve channel: if it looks like a user ID (U/W prefix), open a DM first
+    let targetChannel = channel;
+    if (/^[UW][A-Z0-9]+$/.test(channel)) {
+      const dmData = await slackApi('conversations.open', { users: channel, return_im: 'true' }, wsId);
+      if (!dmData.ok) {
+        console.error(`Error opening DM with ${channel}:`, dmData.error);
         process.exit(1);
       }
+      targetChannel = dmData.channel.id;
     }
 
-    const params = { channel, text: message };
+    const params = { channel: targetChannel, text: message };
     if (flags.thread_ts) params.thread_ts = flags.thread_ts;
 
     const data = await slackApi('chat.postMessage', params, wsId);
@@ -365,7 +365,10 @@ const commands = {
       process.exit(1);
     }
 
-    console.log(`Message sent to ${channel} at ${formatTimestamp(data.ts)}`);
+    console.log(`Message sent to ${targetChannel} at ${formatTimestamp(data.ts)}`);
+    if (targetChannel !== channel) {
+      console.log(`  (DM opened with user ${channel})`);
+    }
     if (data.message) {
       console.log(`Text: ${data.message.text}`);
     }
@@ -1279,7 +1282,7 @@ if (!cmd || cmd === 'help' || cmd === '--help') {
   console.log('  approve <message_ts> [--channel=<id>]    Approve an interactive action (e.g. invite request)');
   console.log('  deny <message_ts> [--channel=<id>]       Deny an interactive action (e.g. invite request)');
   console.log('  history <channel_id> [--limit=N]          Read channel messages');
-  console.log('  post <channel_id> <message> [--force]     Post a message (Slackbot DM only by default)');
+  console.log('  post <id> <message> [--thread_ts=TS]      Post a message to any channel, DM, or user');
   console.log('  channels --search=<term>                  Search for channels');
   console.log('  thread <channel_id> <thread_ts> [--limit] Read thread replies');
   console.log('  user <user_id>                            Look up user info');

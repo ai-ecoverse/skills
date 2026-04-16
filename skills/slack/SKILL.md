@@ -52,8 +52,11 @@ slack --workspace=T06DUTYDQ channels --search=helix
 # Shorthand
 slack --ws=T06DUTYDQ history C06ABC123
 
-# Post a message to Slackbot (safe — never messages real people)
-slack post <slackbot_dm_id> "Hello from SLICC!"
+# Post a message to a channel
+slack post C087NCG774J "Hello from SLICC!"
+
+# DM a user directly (opens DM automatically)
+slack post W5BPKRLUA "Hey, quick question..."
 
 # Search for channels
 slack channels --search=one-aem
@@ -171,12 +174,21 @@ Deny an interactive message action. Same as `approve` but clicks the Deny button
 
 Fetch recent messages from a channel. Default limit is 20.
 
-### slack post \<channel_id\> \<message\>
+### slack post \<channel_or_user_id\> \<message\>
 
-Post a message to a channel. Use `slack slackbot` to find the Slackbot DM channel ID.
-For safety, posting is restricted to the Slackbot DM only — attempts to post to other
-channels are blocked unless `--force` is passed. The Slackbot DM ID is resolved
-dynamically via the `conversations.open` API.
+Post a message to a channel, DM, or user. Accepts channel IDs (`C...`, `D...`, `G...`) directly,
+or user IDs (`U...`, `W...`) — in which case a DM is opened automatically.
+
+```bash
+# Post to a channel
+slack post C087NCG774J "Hello channel!"
+
+# DM a user by user ID (opens DM automatically)
+slack post W5BPKRLUA "Hey, quick question..."
+
+# Reply in a thread
+slack post C087NCG774J "Got it" --thread_ts=1774539502.747989
+```
 
 ### slack channels [--search=term]
 
