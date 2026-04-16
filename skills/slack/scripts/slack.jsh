@@ -339,7 +339,7 @@ const commands = {
 
     if (!channel || !message) {
       console.error('Usage: slack post <channel_or_user_id> <message> [--thread_ts=TS]');
-      console.error('Accepts a channel ID (C...), DM ID (D...), or user ID (U.../W... — opens a DM automatically).');
+      console.error('Accepts a conversation ID (C.../G.../D...), or user ID (U.../W... — opens a DM automatically).');
       process.exit(1);
     }
 
@@ -1282,7 +1282,7 @@ if (!cmd || cmd === 'help' || cmd === '--help') {
   console.log('  approve <message_ts> [--channel=<id>]    Approve an interactive action (e.g. invite request)');
   console.log('  deny <message_ts> [--channel=<id>]       Deny an interactive action (e.g. invite request)');
   console.log('  history <channel_id> [--limit=N]          Read channel messages');
-  console.log('  post <channel_or_user_id> <message>        Post a message to any channel, DM, or user');
+  console.log('  post <id> <message> [--thread_ts=TS]      Post a message to any channel, DM, or user');
   console.log('  channels --search=<term>                  Search for channels');
   console.log('  thread <channel_id> <thread_ts> [--limit] Read thread replies');
   console.log('  user <user_id>                            Look up user info');

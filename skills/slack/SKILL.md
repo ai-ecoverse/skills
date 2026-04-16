@@ -176,7 +176,7 @@ Fetch recent messages from a channel. Default limit is 20.
 
 ### slack post \<channel_or_user_id\> \<message\>
 
-Post a message to a channel, DM, or user. Accepts channel IDs (`C...`, `D...`) directly,
+Post a message to a channel, DM, or user. Accepts channel IDs (`C...`, `D...`, `G...`) directly,
 or user IDs (`U...`, `W...`) — in which case a DM is opened automatically.
 
 ```bash
