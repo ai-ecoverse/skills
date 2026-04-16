@@ -1,13 +1,14 @@
 ---
 name: slack
 description: Interact with Slack via its Web API — read messages, post to channels,
-  search channels, read threads, look up users, view activity/notifications, and watch
-  channels for new messages in real time. Supports multiple workspaces with auto-detection
-  from the active tab. Use when the user wants to check Slack messages, post a Slack
-  message, search Slack channels, read Slack threads, get Slack user info, view Slack
-  notifications or activity feed, watch a channel for updates, or automate any Slack task.
+  search channels, read threads, look up users, view activity/notifications, manage
+  Slack support requests, and watch channels for new messages in real time. Supports
+  multiple workspaces with auto-detection from the active tab. Use when the user wants
+  to check Slack messages, post a Slack message, search Slack channels, read Slack
+  threads, get Slack user info, view Slack notifications or activity feed, manage Slack
+  support tickets/help requests, watch a channel for updates, or automate any Slack task.
   Triggers on mentions of Slack, channels, DMs, threads, messages, Slackbot,
-  notifications, activity, or watching/monitoring.
+  notifications, activity, support requests, help requests, or watching/monitoring.
 allowed-tools: bash
 ---
 
@@ -305,6 +306,66 @@ standard Web API methods like `conversations.list` and `users.conversations`
 return `enterprise_is_restricted` on these workspaces. The skill uses
 `search.modules` (module=channels) for channel discovery and `conversations.open`
 for DM channel lookup instead.
+
+## Slack Support Portal
+
+The `slack-support` script manages help requests on Adobe's Slack Support Portal
+(`adobe-dx-support.enterprise.slack.com`). It scrapes the server-rendered portal
+using `playwright-cli` — no REST API is available. Requires an open browser tab
+at the support portal domain.
+
+### Quick start
+
+```bash
+# List all help requests
+slack-support list
+
+# List only open requests
+slack-support list --status=open
+
+# View a specific request with comments
+slack-support view 6750592
+
+# Reply to a request
+slack-support reply 6750592 "Thanks, that fixed it."
+
+# Create a new request
+slack-support create --topic=slack-connect --title="Connect issue" "Cannot invite external user"
+
+# Resolve a request
+slack-support resolve 6750592
+```
+
+### Available commands
+
+#### slack-support list [--status=open|closed|all]
+
+List help requests. Default shows all. Displays request ID, status, title, topic,
+and date.
+
+#### slack-support view \<id\>
+
+View a request's details and comment thread.
+
+#### slack-support reply \<id\> \<message\>
+
+Add a reply to an existing request.
+
+#### slack-support create --topic=\<topic\> --title=\<title\> \<message\>
+
+Create a new help request. Available topics: `audio-video`, `billing-plans`,
+`connection-trouble`, `managing-channels`, `managing-members`, `notifications`,
+`signing-in`, `slack-connect`, `workflow-builder`, `workspace-migration`.
+
+#### slack-support resolve \<id\>
+
+Mark a request as resolved.
+
+### Authentication
+
+Uses cookie-based auth via the existing browser session at
+`adobe-dx-support.enterprise.slack.com`. No separate token is needed — the
+`playwright-cli` commands execute in the browser tab context.
 
 ## Endpoints reference
 
