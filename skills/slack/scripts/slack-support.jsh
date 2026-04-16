@@ -101,10 +101,10 @@ async function evalInSupportTab(jsCode, { navigate = null, fatal = true } = {}) 
     }
   }
 
-  const tmpFile = '/tmp/slack_support_' + Date.now() + '_' + Math.random().toString(36).slice(2) + '.js';
+  const tmpFile = '/shared/.slack_support_' + Date.now() + '_' + Math.random().toString(36).slice(2) + '.js';
   await fs.writeFile(tmpFile, jsCode);
 
-  const result = await exec(`playwright-cli eval-file ${tmpFile} --tab=${tabId}`);
+  const result = await exec(`playwright-cli eval-file "${tmpFile}" --tab=${tabId}`);
   await fs.rm(tmpFile).catch(() => {});
 
   if (result.exitCode !== 0) {
@@ -396,13 +396,21 @@ function makeCreateJs(topicId, title, message) {
 `;
 }
 
+function validateRequestId(id) {
+  if (!/^\d+$/.test(id)) {
+    console.error(`Error: Invalid request ID "${id}". Expected a numeric ID (e.g. 6750592).`);
+    process.exit(1);
+  }
+  return id;
+}
+
 // --- Commands ---
 
 const commands = {
 
   async list(args) {
     const { flags } = parseArgs(args);
-    const status = (flags.status || 'all').toLowerCase();
+    const status = (typeof flags.status === 'string' ? flags.status : 'all').toLowerCase();
 
     if (!['open', 'closed', 'all'].includes(status)) {
       console.error('Error: --status must be "open", "closed", or "all".');
@@ -458,6 +466,7 @@ const commands = {
       console.error('Usage: slack-support view <request_id>');
       process.exit(1);
     }
+    validateRequestId(id);
 
     const detailUrl = `${REQUESTS_URL}/${id}`;
     const data = await evalInSupportTab(makeScrapeDetailJs(id), { navigate: detailUrl });
@@ -555,8 +564,10 @@ const commands = {
       console.log(`Request created: #${data.newId}`);
       console.log(`  URL: ${REQUESTS_URL}/${data.newId}`);
     } else {
-      console.log('Request created.');
-      if (data.url) console.log(`  URL: ${data.url}`);
+      console.error('Warning: Request may not have been created — no request ID returned.');
+      console.error('Check the support portal manually.');
+      if (data.url) console.error(`  Response URL: ${data.url}`);
+      process.exit(1);
     }
     console.log(`  Topic: ${topic} (${topicId})`);
     console.log(`  Title: ${title}`);

@@ -340,8 +340,8 @@ slack-support resolve 6750592
 
 #### slack-support list [--status=open|closed|all]
 
-List help requests. Default shows all. Displays request ID, status, title, topic,
-and date.
+List help requests. Default shows all. Displays request ID, status, title,
+and last updated date.
 
 #### slack-support view \<id\>
 
