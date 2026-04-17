@@ -1,10 +1,22 @@
 ---
 name: pptx
-description: Create, read, and edit PowerPoint presentations (.pptx) in SLICC. Fully self-contained — no npm, no pip, no external skills required. Ships pptx-lib.jsh for creating presentations with images, themes, and positioning.
+description: Generate, read, and edit PowerPoint files (.pptx). Fully self-contained — no npm, no pip, no external skills required. Ships pptx-lib.jsh for creating presentations with images, themes, and positioning.
 allowed-tools: bash
+trigger-phrases:
+  - create a pptx
+  - generate pptx file
+  - make powerpoint file
+  - export to pptx
+  - read pptx
+  - edit pptx
+  - extract text from pptx
+  - add slide to pptx
+  - pptx with images
 ---
 
 # PPTX Skill
+
+> **Note**: This skill generates `.pptx` files. For content strategy and presentation structure guidance, see the `presentations` skill.
 
 Four operations: **Create**, **Images**, **Read**, **Edit**. No dependencies on other skills.
 
