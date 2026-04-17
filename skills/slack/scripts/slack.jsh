@@ -335,7 +335,10 @@ const commands = {
   async post(args, globalFlags) {
     const { flags, positional } = parseArgs(args);
     const channel = positional[0];
-    const message = positional.slice(1).join(' ');
+    // Filter out shell redirect tokens (e.g. 2>&1, >&2, 2>/dev/null) that leak
+    // through when scoops call `exec('slack post ... 2>&1')` without proper quoting
+    const shellRedirectRe = /^[012]?>{1,2}&?[012]?$|^[012]?>(?:\/\S+)$/;
+    const message = positional.slice(1).filter(t => !shellRedirectRe.test(t)).join(' ');
 
     if (!channel || !message) {
       console.error('Usage: slack post <channel_or_user_id> <message> [--thread_ts=TS]');
