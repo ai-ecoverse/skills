@@ -1,0 +1,980 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Strudel Music</title>
+  <script src="https://unpkg.com/@strudel/web@1.3.0" onerror="document.getElementById('statusText').textContent='Failed to load Strudel library from unpkg';document.getElementById('statusText').classList.add('error-text');window.__strudelLoadFailed=true;"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      height: 100%;
+      overflow: hidden;
+      font-family: var(--s2-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
+      font-size: 13px;
+      color: var(--s2-text-primary, #e0e0e0);
+      background: var(--s2-bg-base, #1a1a1a);
+    }
+
+    #app {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+
+    /* Toolbar */
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: var(--s2-spacing-200, 12px);
+      padding: 8px var(--s2-spacing-300, 16px);
+      background: var(--s2-bg-layer-1, #252525);
+      border-bottom: 1px solid var(--s2-border-default, #333);
+      flex-shrink: 0;
+      min-height: 48px;
+    }
+
+    .toolbar-title {
+      font-weight: 700;
+      font-size: 14px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-right: auto;
+    }
+
+    .toolbar-title svg { opacity: 0.7; }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      border: none;
+      border-radius: var(--s2-radius-pill, 9999px);
+      padding: 6px 14px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      white-space: nowrap;
+    }
+
+    .btn svg { width: 14px; height: 14px; }
+
+    .btn-play {
+      background: var(--s2-positive, #0a0);
+      color: var(--s2-gray-25, #fff);
+    }
+    .btn-play:hover { filter: brightness(1.15); }
+
+    .btn-stop {
+      background: var(--s2-negative, #d00);
+      color: var(--s2-gray-25, #fff);
+    }
+    .btn-stop:hover { filter: brightness(1.15); }
+
+    .btn-icon {
+      background: transparent;
+      border: 1px solid var(--s2-border-default, #444);
+      color: var(--s2-text-primary, #ccc);
+      padding: 6px;
+      width: 32px;
+      height: 32px;
+    }
+    .btn-icon:hover { background: var(--s2-bg-layer-2, #333); }
+
+    .tempo-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-left: 4px;
+    }
+
+    .tempo-label {
+      font-size: 11px;
+      color: var(--s2-text-secondary, #999);
+      font-weight: 500;
+    }
+
+    .tempo-value {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--s2-text-primary, #ccc);
+      min-width: 28px;
+      text-align: center;
+    }
+
+    input[type="range"] {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 80px;
+      height: 4px;
+      background: var(--s2-bg-layer-2, #444);
+      border-radius: 2px;
+      outline: none;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--s2-accent, #39f);
+      cursor: pointer;
+    }
+    input[type="range"]::-moz-range-thumb {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--s2-accent, #39f);
+      cursor: pointer;
+      border: none;
+    }
+
+    /* Main area */
+    .main {
+      display: flex;
+      flex: 1;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    /* Left pane — editor */
+    .editor-pane {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      border-right: 1px solid var(--s2-border-default, #333);
+    }
+
+    .editor-pane-header {
+      padding: 8px var(--s2-spacing-300, 16px);
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--s2-text-secondary, #888);
+      background: var(--s2-bg-layer-1, #252525);
+      border-bottom: 1px solid var(--s2-border-default, #333);
+      flex-shrink: 0;
+    }
+
+    .editor-wrap {
+      flex: 1;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .editor-wrap slicc-editor {
+      width: 100%;
+      height: 100%;
+    }
+
+    /* Right pane — presets */
+    .presets-pane {
+      width: 260px;
+      flex-shrink: 0;
+      display: flex;
+      flex-direction: column;
+      background: var(--s2-bg-layer-1, #252525);
+      overflow: hidden;
+    }
+
+    .presets-header {
+      padding: 8px var(--s2-spacing-300, 16px);
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--s2-text-secondary, #888);
+      border-bottom: 1px solid var(--s2-border-default, #333);
+      flex-shrink: 0;
+    }
+
+    .presets-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: var(--s2-spacing-100, 8px);
+    }
+
+    .presets-list::-webkit-scrollbar { width: 6px; }
+    .presets-list::-webkit-scrollbar-track { background: transparent; }
+    .presets-list::-webkit-scrollbar-thumb { background: var(--s2-bg-layer-2, #444); border-radius: 3px; }
+
+    .preset-category {
+      margin-bottom: var(--s2-spacing-200, 12px);
+    }
+
+    .preset-category-label {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--s2-text-secondary, #777);
+      padding: 4px 8px;
+      margin-bottom: 4px;
+    }
+
+    .preset-card {
+      padding: 8px 10px;
+      border-radius: var(--s2-radius-default, 8px);
+      cursor: pointer;
+      transition: background 0.12s ease;
+      margin-bottom: 2px;
+    }
+
+    .preset-card:hover {
+      background: var(--s2-bg-layer-2, #333);
+    }
+
+    .preset-card.active {
+      background: color-mix(in srgb, var(--s2-accent, #39f) 15%, transparent);
+    }
+
+    .preset-card-name {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--s2-text-primary, #ddd);
+    }
+
+    .preset-card-desc {
+      font-size: 10px;
+      color: var(--s2-text-secondary, #888);
+      margin-top: 2px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* Status bar */
+    .status-bar {
+      display: flex;
+      align-items: center;
+      gap: var(--s2-spacing-200, 12px);
+      padding: 4px var(--s2-spacing-300, 16px);
+      background: var(--s2-bg-layer-1, #252525);
+      border-top: 1px solid var(--s2-border-default, #333);
+      font-size: 11px;
+      color: var(--s2-text-secondary, #888);
+      flex-shrink: 0;
+      min-height: 28px;
+    }
+
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--s2-text-secondary, #666);
+      flex-shrink: 0;
+    }
+
+    .status-dot.playing {
+      background: var(--s2-positive, #0a0);
+      animation: pulse-dot 1.5s ease-in-out infinite;
+    }
+
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    .status-text { flex: 1; }
+    .status-info { color: var(--s2-text-secondary, #777); }
+
+    .error-text { color: var(--s2-negative, #e44); }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <!-- Toolbar -->
+    <div class="toolbar">
+      <div class="toolbar-title">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+        Strudel Music
+      </div>
+      <button class="btn btn-play" id="playBtn" onclick="handlePlay()">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="5,3 19,12 5,21"/></svg>
+        Play
+      </button>
+      <button class="btn btn-stop" id="stopBtn" onclick="handleStop()">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
+        Stop
+      </button>
+      <div class="tempo-group">
+        <span class="tempo-label">BPM</span>
+        <input type="range" id="tempoSlider" min="60" max="200" value="120" oninput="handleTempo(this.value)">
+        <span class="tempo-value" id="tempoValue">120</span>
+      </div>
+    </div>
+
+    <!-- Main area -->
+    <div class="main">
+      <!-- Editor pane -->
+      <div class="editor-pane">
+        <div class="editor-pane-header">Editor</div>
+        <div class="editor-wrap">
+          <slicc-editor id="codeEditor" line-numbers>// Write Strudel patterns here, then click Play
+// Or choose a preset from the right panel
+
+note("<c3 eb3 g3 bb3>(3,8)")
+  .s("sawtooth")
+  .lpf(sine.range(200, 4000).slow(4))
+  .room(0.5)
+  .delay(0.25)</slicc-editor>
+        </div>
+      </div>
+
+      <!-- Presets pane -->
+      <div class="presets-pane">
+        <div class="presets-header">Presets</div>
+        <div class="presets-list" id="presetsList"></div>
+      </div>
+    </div>
+
+    <!-- Status bar -->
+    <div class="status-bar">
+      <div class="status-dot" id="statusDot"></div>
+      <span class="status-text" id="statusText">Stopped</span>
+      <span class="status-info" id="statusInfo"></span>
+    </div>
+  </div>
+
+  <script>
+    // ── Diagnostics: Log Strudel load status ──
+    console.log('[strudel] Script loaded:', typeof initStrudel);
+    console.log('[strudel] AudioContext available:', typeof (window.AudioContext || window.webkitAudioContext));
+    if (window.__strudelLoadFailed) {
+      console.error('[strudel] Script failed to load from unpkg');
+    }
+
+    // ── Presets data ──
+    // Synth-based presets (no samples needed) come first in each category
+    var PRESETS = [
+      {
+        category: 'Melodic',
+        items: [
+          {
+            name: 'Arpeggio',
+            code: 'note("<c3 eb3 g3 bb3>(3,8)")\n  .s("sawtooth")\n  .lpf(sine.range(200, 4000).slow(4))\n  .room(0.5)\n  .delay(0.25)',
+            desc: 'Filter sweep arp (synth)',
+            needsSamples: false
+          },
+          {
+            name: 'Chord Pad',
+            code: 'note("<[c3,e3,g3] [a2,c3,e3] [f2,a2,c3] [g2,b2,d3]>")\n  .s("triangle")\n  .room(2)\n  .lpf(2000)\n  .slow(2)',
+            desc: 'Lush chord progression (synth)',
+            needsSamples: false
+          },
+          {
+            name: 'Scale Run',
+            code: 'n("0 1 2 3 4 5 6 7")\n  .scale("C:minor")\n  .s("sawtooth")\n  .lpf(1200)\n  .room(0.3)',
+            desc: 'C minor scale (synth)',
+            needsSamples: false
+          }
+        ]
+      },
+      {
+        category: 'Ambient',
+        items: [
+          {
+            name: 'Dreamscape',
+            code: 'note("c3 [eb3 g3] <bb3 ab3> f3")\n  .s("sine")\n  .room(4)\n  .delay(0.6)\n  .lpf(1200)\n  .slow(2)\n  .jux(x => x.add(note("7")).slow(1.5))',
+            desc: 'Ethereal textures (synth)',
+            needsSamples: false
+          },
+          {
+            name: 'Drone',
+            code: 'note("[c2,g2,c3]")\n  .s("sawtooth")\n  .lpf(sine.range(100, 800).slow(8))\n  .room(3)\n  .gain(0.4)\n  .slow(4)',
+            desc: 'Deep evolving drone (synth)',
+            needsSamples: false
+          }
+        ]
+      },
+      {
+        category: 'Beats',
+        items: [
+          {
+            name: 'TR-808 Groove',
+            code: 'stack(\n  sound("808bd*4"),\n  sound("[~ cp]*2"),\n  sound("808hc*8").gain(0.5),\n  sound("[~ 808oh]*4").gain(0.4)\n)',
+            desc: '808 drum machine',
+            needsSamples: false
+          },
+          {
+            name: 'Four on the Floor',
+            code: 'stack(\n  sound("bd*4"),\n  sound("[~ cp]*2"),\n  sound("hh*8").gain(0.5)\n)',
+            desc: 'Classic dance beat',
+            needsSamples: false
+          },
+          {
+            name: 'Breakbeat',
+            code: 'stack(\n  sound("bd [~ bd] sd [bd ~]"),\n  sound("hh*8").gain(0.4)\n)',
+            desc: 'Syncopated break',
+            needsSamples: false
+          },
+          {
+            name: 'Euclidean',
+            code: 'stack(\n  sound("bd(3,8)"),\n  sound("sd(5,8,2)").gain(0.6),\n  sound("hh(7,16)").gain(0.4)\n)',
+            desc: 'Euclidean polyrhythm',
+            needsSamples: false
+          }
+        ]
+      },
+      {
+        category: 'Experimental',
+        items: [
+          {
+            name: 'Glitch',
+            code: 'stack(\n  sound("808bd*4"),\n  sound("sd(3,8)"),\n  sound("808hc*16?").gain(0.4)\n).sometimes(x => x.speed("2 -1 0.5")).jux(rev)',
+            desc: 'Glitchy percussion',
+            needsSamples: false
+          },
+          {
+            name: 'Polyrhythm',
+            code: 'stack(\n  sound("bd(3,8)").gain(0.8),\n  sound("cp(5,8,1)").gain(0.5),\n  sound("808hc(7,16)").gain(0.3),\n  n("0 3 5 7").scale("C:minor").s("triangle").gain(0.4).room(0.5)\n)',
+            desc: 'Layered rhythms + melody',
+            needsSamples: false
+          }
+        ]
+      }
+    ];
+
+    // ── State ──
+    var isPlaying = false;
+    var currentPreset = null;
+    var strudelReady = false;
+    var strudelInitPromise = null;  // the promise from initStrudel
+    var samplesLoaded = false;
+    var editor = document.getElementById('codeEditor');
+    var testAudioCtx = null;
+
+    // ── Do NOT call initStrudel() on page load ──
+    // It MUST run inside a user-gesture (click) call stack so the
+    // browser allows AudioContext creation/resumption.
+
+    // Check if Strudel script loaded at all
+    if (typeof initStrudel === 'undefined') {
+      setStatus('Strudel library not loaded — check network', true);
+      console.error('[strudel] initStrudel is undefined — script did not load');
+    } else {
+      setStatus('Ready — click Play or choose a preset');
+    }
+
+    // ── Ensure AudioContext inside user gesture ──
+    function ensureAudioContext() {
+      var ACtor = window.AudioContext || window.webkitAudioContext;
+      if (!ACtor) {
+        console.error('[strudel] No AudioContext constructor available');
+        setStatus('AudioContext not supported in this browser', true);
+        return false;
+      }
+
+      // Test-create an AudioContext to check sandbox permissions
+      if (!testAudioCtx) {
+        try {
+          testAudioCtx = new ACtor();
+          console.log('[strudel] AudioContext created, state:', testAudioCtx.state);
+        } catch (e) {
+          console.error('[strudel] AudioContext creation failed:', e);
+          setStatus('AudioContext blocked — sandbox restriction: ' + e.message, true);
+          return false;
+        }
+      }
+
+      // Resume if suspended (must be in click handler call stack)
+      if (testAudioCtx.state === 'suspended') {
+        console.log('[strudel] AudioContext suspended, calling resume()...');
+        try {
+          testAudioCtx.resume();
+          console.log('[strudel] AudioContext resume() called, state now:', testAudioCtx.state);
+        } catch (e) {
+          console.error('[strudel] AudioContext resume failed:', e);
+        }
+      }
+
+      return true;
+    }
+
+    // ── Init Strudel on first user click ──
+    // Called from the synchronous click handler. Kicks off initStrudel()
+    // (which starts AudioContext in the gesture stack) and stores the
+    // promise so handlePlay can await the async part (sample loading).
+    function ensureStrudel() {
+      // Already fully ready
+      if (strudelReady) return true;
+
+      // Already started init — let handlePlay await the promise
+      if (strudelInitPromise) return true;
+
+      if (typeof initStrudel === 'undefined') {
+        setStatus('Strudel library not loaded — cannot play', true);
+        console.error('[strudel] Cannot init: initStrudel is undefined');
+        return false;
+      }
+
+      // First ensure AudioContext works
+      if (!ensureAudioContext()) return false;
+
+      console.log('[strudel] Calling initStrudel() inside user gesture...');
+      setStatus('Initializing audio & loading samples...');
+
+      try {
+        // initStrudel() creates AudioContext synchronously (in gesture stack)
+        // and returns a promise that resolves when setup is complete.
+        // prebake loads the standard TidalCycles sample pack.
+        var result = initStrudel({
+          prebake: async function() {
+            console.log('[strudel] prebake: loading local samples manifest...');
+            try {
+              var manifestJson = await slicc.readFile('/shared/sprinkles/strudel-music/samples-manifest.json');
+              var manifest = JSON.parse(manifestJson);
+              var catCount = Object.keys(manifest).filter(function(k) { return k !== '_base'; }).length;
+              console.log('[strudel] Loaded manifest with', catCount, 'categories');
+              window.__strudelSampleCount = catCount;
+              return samples(manifest);
+            } catch(e) {
+              console.error('[strudel] Failed to load local manifest, trying GitHub fallback:', e);
+              try {
+                return samples('https://raw.githubusercontent.com/tidalcycles/Dirt-Samples/master/strudel.json');
+              } catch(e2) {
+                console.error('[strudel] GitHub fallback also failed:', e2);
+              }
+            }
+          }
+        });
+
+        // Check what we got back
+        console.log('[strudel] initStrudel returned:', typeof result, result);
+
+        // Check if evaluate is already global (synchronous path)
+        if (typeof window.evaluate === 'function') {
+          console.log('[strudel] evaluate is already global');
+          strudelReady = true;
+        }
+
+        // Handle promise (async path — sample loading etc.)
+        if (result && typeof result.then === 'function') {
+          console.log('[strudel] initStrudel returned a promise, awaiting...');
+          strudelInitPromise = result.then(function(resolved) {
+            console.log('[strudel] initStrudel promise resolved:', typeof resolved, resolved);
+
+            // Capture evaluate and hush from resolved result if not already global
+            if (resolved && typeof resolved === 'object') {
+              if (typeof window.evaluate !== 'function' && typeof resolved.evaluate === 'function') {
+                window.evaluate = resolved.evaluate;
+                console.log('[strudel] Captured evaluate from promise result');
+              }
+              if (typeof window.hush !== 'function' && typeof resolved.hush === 'function') {
+                window.hush = resolved.hush;
+                console.log('[strudel] Captured hush from promise result');
+              }
+            }
+
+            // Also check if they appeared as globals during async init
+            console.log('[strudel] Post-resolve globals — evaluate:', typeof window.evaluate, 'hush:', typeof window.hush);
+
+            strudelReady = true;
+            samplesLoaded = true;
+            console.log('[strudel] Fully initialized. evaluate:', typeof window.evaluate, 'hush:', typeof window.hush);
+            var catCount = window.__strudelSampleCount || '?';
+            console.log('[strudel] Samples status: prebake completed,', catCount, 'categories');
+            setStatus('Ready — ' + catCount + ' sample categories loaded');
+            return resolved;
+          }).catch(function(err) {
+            console.error('[strudel] initStrudel promise rejected:', err);
+            setStatus('Strudel init error: ' + (err.message || err), true);
+            strudelInitPromise = null;
+          });
+        } else if (result && typeof result.evaluate === 'function') {
+          // Synchronous result object
+          console.log('[strudel] initStrudel returned sync result with evaluate');
+          if (typeof window.evaluate !== 'function') {
+            window.evaluate = result.evaluate;
+          }
+          if (typeof window.hush !== 'function' && typeof result.hush === 'function') {
+            window.hush = result.hush;
+          }
+          strudelReady = true;
+        }
+
+        // Final check
+        console.log('[strudel] After init — evaluate:', typeof window.evaluate, 'hush:', typeof window.hush);
+        return true;
+
+      } catch (e) {
+        strudelInitPromise = null;
+        console.error('[strudel] initStrudel() threw:', e);
+        setStatus('Strudel init failed: ' + e.message, true);
+        return false;
+      }
+    }
+
+    // ── Syntax highlighter ──
+    (function setupHighlighter() {
+      if (!editor || !editor.setHighlighter) {
+        setTimeout(setupHighlighter, 100);
+        return;
+      }
+      editor.setHighlighter({
+        token: function(stream) {
+          if (stream.match(/^\/\/.*/)) return 'comment';
+          if (stream.match(/^"(?:[^"\\]|\\.)*"/)) return 'string';
+          if (stream.match(/^-?\d+\.?\d*/)) return 'number';
+          if (stream.match(/^(?:stack|cat|seq|silence|sine|cosine|saw|tri|rand|perlin|irand|rev|hush|evaluate|setcps|setcpm|initStrudel)\b/)) return 'keyword';
+          if (stream.match(/^\$:/)) return 'keyword';
+          if (stream.match(/^\.(?:note|sound|s|n|lpf|hpf|vowel|gain|pan|delay|room|speed|shape|fm|adsr|slow|fast|rev|euclid|ply|iter|palindrome|swing|jux|every|sometimes|off|scale|struct|add|range|bank|play)\b/)) return 'def';
+          if (stream.match(/^=>/)) return 'keyword';
+          if (stream.match(/^[(){}\[\],;]/)) return 'bracket';
+          stream.next();
+          return null;
+        }
+      });
+    })();
+
+    // ── Render presets ──
+    function renderPresets() {
+      var list = document.getElementById('presetsList');
+      var html = '';
+      for (var i = 0; i < PRESETS.length; i++) {
+        var cat = PRESETS[i];
+        html += '<div class="preset-category">';
+        html += '<div class="preset-category-label">' + cat.category + '</div>';
+        for (var j = 0; j < cat.items.length; j++) {
+          var p = cat.items[j];
+          var id = cat.category + '-' + j;
+          html += '<div class="preset-card" data-cat="' + i + '" data-idx="' + j + '" id="preset-' + id + '" onclick="loadPreset(' + i + ',' + j + ')">';
+          html += '<div class="preset-card-name">' + p.name + '</div>';
+          html += '<div class="preset-card-desc">' + p.desc + '</div>';
+          html += '</div>';
+        }
+        html += '</div>';
+      }
+      list.innerHTML = html;
+    }
+
+    // ── Load a preset (runs in click handler) ──
+    async function loadPreset(catIdx, itemIdx) {
+      var preset = PRESETS[catIdx].items[itemIdx];
+      editor.value = preset.code;
+      currentPreset = preset.name;
+
+      // Persist to VFS
+      saveCode();
+
+      // Update active state
+      var cards = document.querySelectorAll('.preset-card');
+      for (var i = 0; i < cards.length; i++) cards[i].classList.remove('active');
+      var activeCard = document.getElementById('preset-' + PRESETS[catIdx].category + '-' + itemIdx);
+      if (activeCard) activeCard.classList.add('active');
+
+      // Auto-play (handlePlay sends the lick event)
+      await handlePlay();
+    }
+
+    // ── Play (async — awaits initStrudel promise if needed) ──
+    // IMPORTANT: ensureStrudel() is called first synchronously so that
+    // initStrudel() runs in the user-gesture call stack (AudioContext).
+    // Then we await the promise for the async part (sample loading).
+    async function handlePlay() {
+      console.log('[strudel] handlePlay() called');
+
+      // Check Strudel script loaded
+      if (window.__strudelLoadFailed) {
+        setStatus('Strudel library failed to load', true);
+        return;
+      }
+
+      var code = editor.value;
+      if (!code.trim()) {
+        setStatus('Nothing to play — write some code first', true);
+        return;
+      }
+
+      // SYNCHRONOUS: kick off initStrudel in the gesture call stack
+      if (!ensureStrudel()) {
+        return;
+      }
+
+      // ASYNC: if initStrudel returned a promise, await it
+      if (strudelInitPromise && !strudelReady) {
+        console.log('[strudel] Awaiting initStrudel promise...');
+        setStatus('Initializing audio & loading samples...');
+        try {
+          await strudelInitPromise;
+          console.log('[strudel] Init promise resolved, evaluate:', typeof window.evaluate);
+        } catch (e) {
+          console.error('[strudel] Init promise failed:', e);
+          setStatus('Strudel init error: ' + (e.message || e), true);
+          return;
+        }
+      }
+
+      // Even if strudelReady, the promise might still be resolving samples
+      // Wait for it if it exists
+      if (strudelInitPromise) {
+        try {
+          await strudelInitPromise;
+        } catch (e) {
+          // Already handled above
+        }
+      }
+
+      // Verify evaluate exists
+      if (typeof window.evaluate !== 'function') {
+        console.error('[strudel] evaluate still not available after init!');
+        console.log('[strudel] Checking window globals...');
+        var globals = ['evaluate', 'hush', 'note', 'sound', 's', 'stack', 'cat', 'setcps'];
+        globals.forEach(function(g) {
+          console.log('[strudel]   window.' + g + ':', typeof window[g]);
+        });
+        setStatus('Error: evaluate() not available — Strudel may not have initialized correctly', true);
+        return;
+      }
+
+      // Resume AudioContext if needed
+      if (testAudioCtx && testAudioCtx.state === 'suspended') {
+        try {
+          await testAudioCtx.resume();
+          console.log('[strudel] AudioContext resumed, state:', testAudioCtx.state);
+        } catch (e) {
+          console.error('[strudel] AudioContext resume error:', e);
+        }
+      }
+
+      // Resume AudioContext if it was suspended by stop
+      try {
+        if (testAudioCtx && testAudioCtx.state === 'suspended') {
+          await testAudioCtx.resume();
+          console.log('[strudel] Resumed testAudioCtx for play, state:', testAudioCtx.state);
+        }
+        var ctx2 = window.getAudioContext ? window.getAudioContext() : null;
+        if (ctx2 && ctx2.state === 'suspended') {
+          await ctx2.resume();
+          console.log('[strudel] Resumed getAudioContext() for play, state:', ctx2.state);
+        }
+      } catch(e) { console.log('[strudel] AudioContext resume before play error:', e); }
+
+      console.log('[strudel] AudioContext state before evaluate:', testAudioCtx ? testAudioCtx.state : 'no test ctx');
+
+      try {
+        console.log('[strudel] Calling evaluate(), code length:', code.length);
+        await evaluate(code);
+        isPlaying = true;
+        setStatus('Playing' + (currentPreset ? ' — ' + currentPreset : ''));
+        updatePlayState();
+        console.log('[strudel] evaluate() succeeded, playing');
+        if (window.slicc) {
+          slicc.lick({ action: 'play', data: { code: code } });
+        }
+      } catch (e) {
+        console.error('[strudel] evaluate() threw:', e);
+        setStatus('Error: ' + e.message, true);
+      }
+    }
+
+    // ── Stop ──
+    async function handleStop() {
+      console.log('[strudel] handleStop() called');
+      console.log('[strudel] Available globals — hush:', typeof window.hush, 'evaluate:', typeof window.evaluate);
+
+      // Try ALL stop methods — don't skip any
+
+      // Method 1: hush()
+      try {
+        if (typeof window.hush === 'function') {
+          window.hush();
+          console.log('[strudel] hush() called successfully');
+        }
+      } catch (e) { console.log('[strudel] hush() error:', e); }
+
+      // Method 2: evaluate silence pattern
+      try {
+        if (typeof window.evaluate === 'function') {
+          await window.evaluate('silence');
+          console.log('[strudel] evaluate("silence") called successfully');
+        }
+      } catch (e) { console.log('[strudel] evaluate(silence) error:', e); }
+
+      // Method 3: evaluate hush as code string
+      try {
+        if (typeof window.evaluate === 'function') {
+          await window.evaluate('hush()');
+          console.log('[strudel] evaluate("hush()") called successfully');
+        }
+      } catch (e) { console.log('[strudel] evaluate(hush()) error:', e); }
+
+      // Method 4: Try to find and stop the cyclist/scheduler directly
+      try {
+        if (window.__strudelScheduler) {
+          window.__strudelScheduler.stop();
+          console.log('[strudel] Scheduler stopped directly');
+        }
+      } catch (e) { console.log('[strudel] scheduler stop error:', e); }
+
+      // Method 5: Suspend AudioContext as nuclear option
+      try {
+        if (testAudioCtx && testAudioCtx.state === 'running') {
+          await testAudioCtx.suspend();
+          console.log('[strudel] AudioContext suspended');
+        }
+      } catch (e) { console.log('[strudel] AudioContext suspend error:', e); }
+
+      // Method 6: Find ANY AudioContext on the window and suspend it
+      try {
+        var ctx = window.getAudioContext ? window.getAudioContext() : null;
+        if (ctx && ctx.state === 'running') {
+          await ctx.suspend();
+          console.log('[strudel] getAudioContext() suspended');
+        }
+      } catch (e) { console.log('[strudel] getAudioContext suspend error:', e); }
+
+      isPlaying = false;
+      setStatus('Stopped');
+      updatePlayState();
+
+      if (window.slicc) {
+        slicc.lick({ action: 'stop' });
+      }
+    }
+
+    // ── Tempo ──
+    function handleTempo(val) {
+      document.getElementById('tempoValue').textContent = val;
+      if (typeof window.setcps !== 'function') return;
+      try {
+        var cps = val / 120 / 2;
+        setcps(cps);
+        console.log('[strudel] Tempo set:', val, 'BPM, cps:', cps);
+      } catch(e) {
+        console.error('[strudel] setcps error:', e);
+      }
+    }
+
+    // ── Update UI play/stop state ──
+    function updatePlayState() {
+      var dot = document.getElementById('statusDot');
+      if (isPlaying) {
+        dot.classList.add('playing');
+      } else {
+        dot.classList.remove('playing');
+      }
+    }
+
+    // ── Set status bar ──
+    function setStatus(msg, isError) {
+      var el = document.getElementById('statusText');
+      el.textContent = msg;
+      if (isError) {
+        el.classList.add('error-text');
+      } else {
+        el.classList.remove('error-text');
+      }
+    }
+
+    // ── Handle updates from scoop ──
+    if (window.slicc) {
+      slicc.on('update', function(data) {
+        if (data.action === 'load-code') {
+          editor.value = data.code || '';
+          // Persist to VFS
+          saveCode();
+          // Can't autoplay from scoop update — no user gesture
+          setStatus('Code loaded — click Play to start');
+        }
+        if (data.action === 'stop') {
+          handleStop();
+        }
+        if (data.action === 'set-tempo') {
+          var slider = document.getElementById('tempoSlider');
+          slider.value = data.bpm;
+          handleTempo(data.bpm);
+        }
+      });
+    }
+
+    // ── VFS persistence ──
+    var SAVE_PATH = '/shared/sprinkles/strudel-music/.last-code.txt';
+    var saveTimer = null;
+
+    function saveCode() {
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(function() {
+        if (window.slicc && slicc.writeFile) {
+          var code = editor.value;
+          slicc.writeFile(SAVE_PATH, code).then(function() {
+            console.log('[strudel] Saved code to VFS');
+          }).catch(function(e) {
+            console.log('[strudel] VFS save error:', e);
+          });
+        }
+      }, 1000);
+    }
+
+    // Restore saved code on load
+    async function restoreCode() {
+      // Wait for editor to be ready
+      if (!editor || typeof editor.value === 'undefined') {
+        setTimeout(restoreCode, 100);
+        return;
+      }
+      try {
+        if (window.slicc && slicc.exists) {
+          var exists = await slicc.exists(SAVE_PATH);
+          if (exists) {
+            var saved = await slicc.readFile(SAVE_PATH);
+            if (saved && saved.trim()) {
+              editor.value = saved;
+              console.log('[strudel] Restored saved code from VFS');
+            }
+          } else {
+            console.log('[strudel] No saved code found, using default');
+          }
+        }
+      } catch (e) {
+        console.log('[strudel] Could not restore saved code:', e);
+      }
+    }
+
+    // ── Live code update + VFS save on editor change ──
+    var debounceTimer = null;
+    (function setupEditorListeners() {
+      if (!editor || !editor.addEventListener) {
+        setTimeout(setupEditorListeners, 100);
+        return;
+      }
+
+      // Live playback re-evaluation (500ms debounce)
+      editor.addEventListener('change', function(e) {
+        if (isPlaying && strudelReady && typeof window.evaluate === 'function') {
+          clearTimeout(debounceTimer);
+          debounceTimer = setTimeout(async function() {
+            var code = editor.value;
+            if (!code.trim()) return;
+            try {
+              console.log('[strudel] Live update: re-evaluating...');
+              await evaluate(code);
+              setStatus('Playing (live update)' + (currentPreset ? ' — ' + currentPreset : ''));
+              console.log('[strudel] Live update succeeded');
+            } catch (err) {
+              console.error('[strudel] Live update error:', err);
+              setStatus('Error: ' + err.message, true);
+            }
+          }, 500);
+        }
+      });
+
+      // VFS save (1000ms debounce, separate timer)
+      editor.addEventListener('change', function(e) {
+        saveCode();
+      });
+
+      console.log('[strudel] Editor listeners attached (live update + VFS save)');
+    })();
+
+    // ── Initialize UI ──
+    restoreCode();
+    renderPresets();
+  </script>
+</body>
+</html>
