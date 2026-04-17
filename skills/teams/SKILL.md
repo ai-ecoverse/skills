@@ -88,9 +88,14 @@ extraction is usually all you need.
 > extracts its `secret` field. A `sessionStorage` fallback exists for older
 > Teams versions.
 
-**Prerequisite:** Teams must be open and loaded in the browser. If it isn't:
+**Prerequisite:** Teams must be open and loaded in the browser. Check for an existing tab
+before opening a new one to avoid duplicates:
 
 ```bash
+# Check whether a Teams tab is already open
+playwright-cli tab-list | grep teams.microsoft.com
+
+# Only open a new tab if the above returns nothing
 open https://teams.microsoft.com
 ```
 
@@ -142,12 +147,10 @@ Fetch recent top-level messages from a channel (replies are not inlined — use
 
 **Alias:** `teams messages` / `teams msgs` also route to `history`.
 
-### teams activity [--since=DURATION]
+### teams activity [--since=DURATION] [--max-teams=N]
 
 Messages that mention or involve the current user. Default window is the last
-7 days. Uses the Graph Search API (`/search/query`, beta) for speed. If
-Search is unavailable, the command falls back to scanning recent messages
-across the user's teams/channels for @-mentions or name matches.
+7 days. See the full description in the **Available commands** section below.
 
 **Alias:** `teams mentions` also routes to `activity`.
 
@@ -200,7 +203,21 @@ dates, body previews, and `webUrl`.
 List top-level messages in a channel that have zero replies. Default window
 is the last 48 hours. Useful for surfacing forgotten questions.
 
-### teams digest [--since=DURATION]
+### teams activity [--since=DURATION] [--max-teams=N]
+
+Messages that mention or involve the current user. Default window is the last
+24 hours. Uses the Graph Search API (`/search/query`, beta) for speed. If
+Search returns 403 (common with delegated browser tokens that lack the
+`chatMessage` search scope), the command automatically falls back to scanning
+recent messages across the first `--max-teams` teams (default 5) × 3 channels
+each, with early exit once `--top` results are found.
+
+> **Large tenants:** With 100+ teams the fallback scan can exceed the 30s
+> runner timeout. Use `--max-teams=3` to cap the scan to the first 3 teams.
+
+**Alias:** `teams mentions` also routes to `activity`.
+
+### teams digest [--since=DURATION] [--max-teams=N]
 
 Cross-team / cross-channel activity digest. For each channel with recent
 activity in the window (default 24h), returns:
@@ -210,18 +227,25 @@ activity in the window (default 24h), returns:
 - reaction summary (reaction type → count)
 - top 3 messages (author + date + preview)
 
-Sorted by message count descending.
+Sorted by message count descending. Scans up to `--max-teams` teams (default
+20). Progress is printed to stderr so you can see which team is being scanned.
+
+> **Large tenants:** With 175+ teams the default cap of 20 keeps the scan
+> within the 30s runner budget. Lower it further with `--max-teams=5` if
+> needed.
 
 ## Troubleshooting
 
 | Problem | Fix |
 |---|---|
-| `No Teams tab found` | Open Teams: `open https://teams.microsoft.com`, wait for the page to load, then retry `teams auth`. |
+| `No Teams tab found` | First check if a tab is already open: `playwright-cli tab-list`. If a Teams URL appears, run `teams auth` directly. Only open a new tab (`open https://teams.microsoft.com`) if nothing is listed. |
 | `No MSAL token found` | Modern Teams (v2) stores tokens in `localStorage`, not `sessionStorage`. If extraction fails, reload the Teams tab and wait for it to fully render before retrying. |
 | `401 Unauthorized` | Token expired. Run `teams auth` again — the Teams web app will have already refreshed the token silently. |
 | `403 Forbidden on message reads` | You're hitting the v1.0 `/messages` endpoint, which requires `ChannelMessage.Read.All` (a scope the delegated browser token lacks). The script already uses the beta endpoint; if you see this, confirm you're on an up-to-date version of `teams.jsh`. |
 | `Team/channel not found` | Run `teams teams` or `teams channels <team>` to list the exact names/IDs available to the current token. |
-| Search API returns empty / 403 | `teams activity` will auto-fallback to a channel scan. For `teams search`, ensure the token has `Chat.Read` scope. |
+| Search API returns empty / 403 | `teams activity` auto-falls back to a channel scan (delegated tokens often lack the chatMessage search scope). For `teams search`, ensure the token has `Chat.Read` scope. |
+| `digest` or `activity` times out | Use `--max-teams=5` to limit the scan. The .jsh runner has a ~30s budget; large tenants need a smaller cap. |
+| 429 rate-limit errors | The script automatically retries with the `Retry-After` delay (up to 3 times). If you still see 429s, wait a minute and retry. |
 
 ## Endpoints reference
 

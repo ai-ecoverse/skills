@@ -94,7 +94,7 @@ async function saveToken(token) {
 // Graph API client
 // ---------------------------------------------------------------------------
 
-async function graphGet(token, path, params) {
+async function graphGet(token, path, params, retries = 3) {
   let url = path.startsWith('http') ? path : `${GRAPH_BASE}${path}`;
   if (params) {
     const qs = new URLSearchParams(params).toString();
@@ -110,6 +110,14 @@ async function graphGet(token, path, params) {
     die(
       '403 Forbidden — insufficient permissions. The token may lack required Graph API scopes. See reference.md.'
     );
+  }
+  if (resp.status === 429) {
+    if (retries > 0) {
+      const retryAfter = Math.min(parseInt(resp.headers.get('Retry-After') || '5', 10), 30);
+      await new Promise((r) => setTimeout(r, retryAfter * 1000));
+      return graphGet(token, path, params, retries - 1);
+    }
+    die('429 Too Many Requests — rate limited. Wait a moment and retry.');
   }
   if (!resp.ok) {
     const body = await resp.text();
@@ -137,6 +145,23 @@ async function graphPost(token, path, body) {
     die(`Graph API error ${resp.status}: ${text}`);
   }
   return resp.json();
+}
+
+// Non-fatal POST — returns {ok, status, data} instead of calling die().
+// Used for optional endpoints (Search API) where failure should trigger a fallback.
+async function graphPostSafe(token, path, body) {
+  const url = path.startsWith('http') ? path : `${GRAPH_BETA}${path}`;
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) return { ok: false, status: resp.status, data: null };
+  return { ok: true, status: resp.status, data: await resp.json() };
 }
 
 async function graphGetAllPages(token, path, params, maxPages, useBeta) {
@@ -286,7 +311,7 @@ async function findTeamsTab() {
     );
   }
 
-  const idMatch = teamsLine.match(/\[targetId:\s*([^\]]+)\]/) || teamsLine.match(/^(\S+)/);
+  const idMatch = teamsLine.match(/\[targetId:\s*([^\]]+)\]/) || teamsLine.match(/^\[([^\]]+)\]/);
   if (!idMatch) die('Could not parse Teams tab ID from tab-list output.');
   return idMatch[1].trim();
 }
@@ -545,46 +570,52 @@ async function cmdActivity() {
     ],
   };
 
-  try {
-    const result = await graphPost(token, '/search/query', searchBody);
-    const hits = result.value?.[0]?.hitsContainers?.[0]?.hits || [];
+  const searchResult = await graphPostSafe(token, '/search/query', searchBody);
 
-    const mentions = hits
-      .map((hit) => {
-        const resource = hit.resource || {};
-        return {
-          summary: hit.summary || '',
-          from: resource.from?.emailAddress?.name || 'unknown',
-          date: resource.createdDateTime || resource.lastModifiedDateTime || '',
-          body: resource.body?.content ? stripHtml(resource.body.content).slice(0, 500) : hit.summary || '',
-          channelName: resource.channelIdentity?.channelId || '',
-          teamName: resource.channelIdentity?.teamId || '',
-          webUrl: resource.webUrl || '',
-        };
-      })
-      .filter((m) => {
-        if (!sinceDuration && !m.date) return true;
-        if (!m.date) return true;
-        return new Date(m.date).getTime() >= new Date(since).getTime();
-      });
-
-    out(mentions);
-  } catch (e) {
-    // Fallback: if search API is not available, scan channels manually
+  if (!searchResult.ok) {
     console.error(
-      'Search API failed (may require additional permissions). Falling back to channel scan...'
+      `Search API returned ${searchResult.status} (delegated tokens often lack chatMessage search scope). Falling back to channel scan...`
     );
     await cmdActivityFallback(token, me, since);
+    return;
   }
+
+  const hits = searchResult.data?.value?.[0]?.hitsContainers?.[0]?.hits || [];
+  const mentions = hits
+    .map((hit) => {
+      const resource = hit.resource || {};
+      return {
+        summary: hit.summary || '',
+        from: resource.from?.emailAddress?.name || 'unknown',
+        date: resource.createdDateTime || resource.lastModifiedDateTime || '',
+        body: resource.body?.content ? stripHtml(resource.body.content).slice(0, 500) : hit.summary || '',
+        channelName: resource.channelIdentity?.channelId || '',
+        teamName: resource.channelIdentity?.teamId || '',
+        webUrl: resource.webUrl || '',
+      };
+    })
+    .filter((m) => {
+      if (!sinceDuration && !m.date) return true;
+      if (!m.date) return true;
+      return new Date(m.date).getTime() >= new Date(since).getTime();
+    });
+
+  out(mentions);
 }
 
 async function cmdActivityFallback(token, me, since) {
+  const maxTeams = parseInt(flags['max-teams'] || '5', 10);
+  const limit = topN || 25;
   const teams = await getTeams(token);
   const mentions = [];
+  const cutoff = new Date(since).getTime();
 
-  for (const team of teams.slice(0, 10)) {
+  console.error(`[activity] Scanning up to ${maxTeams} teams (use --max-teams=N to adjust)...`);
+
+  for (const team of teams.slice(0, maxTeams)) {
+    console.error(`[activity] ${team.displayName}...`);
     const channels = await getChannels(token, team.id);
-    for (const channel of channels.slice(0, 10)) {
+    for (const channel of channels.slice(0, 3)) {
       try {
         const messages = await graphGetAllPages(
           token,
@@ -593,7 +624,6 @@ async function cmdActivityFallback(token, me, since) {
           2,
           true  // use beta endpoint
         );
-        const cutoff = new Date(since).getTime();
         for (const m of messages) {
           if (m.messageType !== 'message') continue;
           if (new Date(m.createdDateTime).getTime() < cutoff) continue;
@@ -614,7 +644,15 @@ async function cmdActivityFallback(token, me, since) {
       } catch {
         // Skip channels we can't read
       }
+      if (mentions.length >= limit) break;
     }
+    if (mentions.length >= limit) break;
+  }
+
+  if (teams.length > maxTeams) {
+    console.error(
+      `[activity] Scanned ${maxTeams} of ${teams.length} teams. Use --max-teams=N to scan more.`
+    );
   }
 
   out(mentions);
@@ -712,10 +750,15 @@ async function cmdDigest() {
   const token = await readToken();
   const since = sinceDate(sinceDuration, 24);
   const cutoff = new Date(since).getTime();
-  const teams = await getTeams(token);
+  const maxTeams = parseInt(flags['max-teams'] || '20', 10);
+  const allTeams = await getTeams(token);
+  const teamsToScan = allTeams.slice(0, maxTeams);
   const digest = [];
 
-  for (const team of teams) {
+  console.error(`[digest] Scanning ${teamsToScan.length} of ${allTeams.length} teams (use --max-teams=N to adjust)...`);
+
+  for (const team of teamsToScan) {
+    console.error(`[digest] ${team.displayName}...`);
     let channels;
     try {
       channels = await getChannels(token, team.id);
@@ -766,6 +809,13 @@ async function cmdDigest() {
 
   // Sort by message count descending
   digest.sort((a, b) => b.messageCount - a.messageCount);
+
+  if (allTeams.length > maxTeams) {
+    console.error(
+      `[digest] Results cover ${maxTeams} of ${allTeams.length} teams. Use --max-teams=N to scan more.`
+    );
+  }
+
   out(digest);
 }
 
@@ -784,7 +834,7 @@ function countOccurrences(arr) {
 function showHelp() {
   console.log(`teams — Microsoft Teams channel access via Graph API
 
-Usage: teams <command> [args] [--since=<duration>] [--top=<n>]
+Usage: teams <command> [args] [--since=<duration>] [--top=<n>] [--max-teams=<n>]
 
 Commands:
   auth                              Extract auth token from Teams browser session
@@ -801,12 +851,16 @@ Commands:
   info <team> <channel>             Channel metadata
   search <query>                    Full-text search across Teams messages
   unanswered <team> <channel>       Messages with no replies (default: --since=48h)
-  digest                            Activity summary across all teams (default: --since=24h)
+  digest                            Activity summary across all teams (default: --since=24h, --max-teams=20)
 
 Aliases: messages/msgs → history, mentions → activity
 
 Duration format: <number><unit> where unit is m(inutes), h(ours), d(ays), w(eeks)
   Examples: 30m, 24h, 7d, 2w
+
+--max-teams=N  Limit digest/activity fallback to N teams (default: digest=20, activity=5).
+               Use a smaller value (e.g. --max-teams=5) in large tenants to stay within the
+               30s runner timeout.
 
 Team and channel arguments accept display names (case-insensitive partial match) or IDs.`);
 }
