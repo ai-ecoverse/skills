@@ -356,7 +356,18 @@ const commands = {
       targetChannel = dmData.channel.id;
     }
 
-    const params = { channel: targetChannel, text: message };
+    // Convert non-Slack emoji shortcodes to Unicode before sending.
+    // Loads a comprehensive 2,100+ entry map from emoji-map.json (iamcal/emoji-data + Gemoji aliases).
+    // Slack only renders its own canonical shortcodes — unknown aliases are converted to Unicode.
+    let emojiMap = {};
+    try {
+      emojiMap = JSON.parse(await fs.readFile('/workspace/skills/slack/scripts/emoji-map.json', 'utf8'));
+    } catch (e) {
+      // If map fails to load, continue without emoji conversion
+    }
+    const sanitizedMessage = message.replace(/:[a-z0-9_+-]+:/g, (match) => emojiMap[match] || match);
+
+    const params = { channel: targetChannel, text: sanitizedMessage };
     if (flags.thread_ts) params.thread_ts = flags.thread_ts;
 
     const data = await slackApi('chat.postMessage', params, wsId);
