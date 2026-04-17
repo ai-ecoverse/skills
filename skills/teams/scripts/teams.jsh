@@ -70,6 +70,21 @@ function out(data) {
   console.log(JSON.stringify(data, null, 2));
 }
 
+// Runs an array of async factory functions with bounded concurrency.
+// Returns results in the same order as the input array.
+async function pooled(concurrency, fns) {
+  const results = new Array(fns.length);
+  let next = 0;
+  async function worker() {
+    while (next < fns.length) {
+      const i = next++;
+      results[i] = await fns[i]();
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, fns.length) }, worker));
+  return results;
+}
+
 // ---------------------------------------------------------------------------
 // Token management
 // ---------------------------------------------------------------------------
@@ -553,7 +568,7 @@ function stripHtml(html) {
 
 async function cmdActivity() {
   const token = await readToken();
-  const since = sinceDate(sinceDuration, 168); // default 7 days
+  const since = sinceDate(sinceDuration, 24); // default 24h
 
   // Use the Search API (beta) to find messages mentioning the current user
   const me = await graphGet(token, '/me');
@@ -604,54 +619,72 @@ async function cmdActivity() {
 }
 
 async function cmdActivityFallback(token, me, since) {
-  const maxTeams = parseInt(flags['max-teams'] || '5', 10);
+  const maxTeams = parseInt(flags['max-teams'] || '10', 10);
+  const concurrency = parseInt(flags['concurrency'] || '5', 10);
   const limit = topN || 25;
-  const teams = await getTeams(token);
-  const mentions = [];
   const cutoff = new Date(since).getTime();
+  const allTeams = await getTeams(token);
+  const teamsToScan = allTeams.slice(0, maxTeams);
 
-  console.error(`[activity] Scanning up to ${maxTeams} teams (use --max-teams=N to adjust)...`);
+  console.error(`[activity] Fetching channels for ${teamsToScan.length} teams in parallel...`);
 
-  for (const team of teams.slice(0, maxTeams)) {
-    console.error(`[activity] ${team.displayName}...`);
-    const channels = await getChannels(token, team.id);
-    for (const channel of channels.slice(0, 3)) {
+  // Fetch all channels in parallel
+  const teamChannels = await pooled(concurrency, teamsToScan.map((team) => async () => {
+    try {
+      const channels = await getChannels(token, team.id);
+      return { team, channels: channels.slice(0, 3) };
+    } catch {
+      return { team, channels: [] };
+    }
+  }));
+
+  // Fetch messages for all channels in parallel
+  const channelTasks = teamChannels.flatMap(({ team, channels }) =>
+    channels.map((channel) => async () => {
       try {
         const messages = await graphGetAllPages(
           token,
           `/teams/${team.id}/channels/${channel.id}/messages`,
-          { $top: '50' },
-          2,
+          { $top: '25' },
+          1,
           true  // use beta endpoint
         );
-        for (const m of messages) {
-          if (m.messageType !== 'message') continue;
-          if (new Date(m.createdDateTime).getTime() < cutoff) continue;
-          const hasMention = (m.mentions || []).some(
-            (mention) => mention.mentioned?.user?.id === me.id
-          );
-          const bodyText = m.body?.content ? stripHtml(m.body.content) : '';
-          if (hasMention || bodyText.toLowerCase().includes(me.displayName.toLowerCase())) {
-            mentions.push({
-              from: m.from?.user?.displayName || 'unknown',
-              date: m.createdDateTime,
-              body: bodyText.slice(0, 500),
-              team: team.displayName,
-              channel: channel.displayName,
-            });
-          }
-        }
+        return { team, channel, messages };
       } catch {
-        // Skip channels we can't read
+        return { team, channel, messages: [] };
       }
-      if (mentions.length >= limit) break;
+    })
+  );
+
+  console.error(`[activity] Scanning ${channelTasks.length} channels in parallel...`);
+  const channelResults = await pooled(concurrency, channelTasks);
+
+  const mentions = [];
+  for (const { team, channel, messages } of channelResults) {
+    for (const m of messages) {
+      if (m.messageType !== 'message') continue;
+      if (new Date(m.createdDateTime).getTime() < cutoff) continue;
+      const hasMention = (m.mentions || []).some(
+        (mention) => mention.mentioned?.user?.id === me.id
+      );
+      const bodyText = m.body?.content ? stripHtml(m.body.content) : '';
+      if (hasMention || bodyText.toLowerCase().includes(me.displayName.toLowerCase())) {
+        mentions.push({
+          from: m.from?.user?.displayName || 'unknown',
+          date: m.createdDateTime,
+          body: bodyText.slice(0, 500),
+          team: team.displayName,
+          channel: channel.displayName,
+        });
+        if (mentions.length >= limit) break;
+      }
     }
     if (mentions.length >= limit) break;
   }
 
-  if (teams.length > maxTeams) {
+  if (allTeams.length > maxTeams) {
     console.error(
-      `[activity] Scanned ${maxTeams} of ${teams.length} teams. Use --max-teams=N to scan more.`
+      `[activity] Scanned ${maxTeams} of ${allTeams.length} teams. Use --max-teams=N to scan more.`
     );
   }
 
@@ -681,7 +714,7 @@ async function cmdSearch() {
   const result = await graphPost(token, '/search/query', searchBody);
   const hits = result.value?.[0]?.hitsContainers?.[0]?.hits || [];
 
-  const since = sinceDuration ? sinceDate(sinceDuration, 168) : null;
+  const since = sinceDuration ? sinceDate(sinceDuration, 24) : null;
 
   const results = hits
     .map((hit) => {
@@ -750,64 +783,73 @@ async function cmdDigest() {
   const token = await readToken();
   const since = sinceDate(sinceDuration, 24);
   const cutoff = new Date(since).getTime();
-  const maxTeams = parseInt(flags['max-teams'] || '20', 10);
+  const maxTeams = parseInt(flags['max-teams'] || '10', 10);
+  const concurrency = parseInt(flags['concurrency'] || '5', 10);
   const allTeams = await getTeams(token);
   const teamsToScan = allTeams.slice(0, maxTeams);
-  const digest = [];
 
-  console.error(`[digest] Scanning ${teamsToScan.length} of ${allTeams.length} teams (use --max-teams=N to adjust)...`);
+  console.error(`[digest] Fetching channels for ${teamsToScan.length} of ${allTeams.length} teams in parallel...`);
 
-  for (const team of teamsToScan) {
-    console.error(`[digest] ${team.displayName}...`);
-    let channels;
+  // Step 1: fetch all channels in parallel
+  const teamChannels = await pooled(concurrency, teamsToScan.map((team) => async () => {
     try {
-      channels = await getChannels(token, team.id);
+      const channels = await getChannels(token, team.id);
+      return { team, channels };
     } catch {
-      continue;
+      return { team, channels: [] };
     }
+  }));
 
-    for (const channel of channels) {
+  // Step 2: fetch messages for all channels in parallel (1 page of 25 for speed)
+  const channelTasks = teamChannels.flatMap(({ team, channels }) =>
+    channels.map((channel) => async () => {
       try {
         const messages = await graphGetAllPages(
           token,
           `/teams/${team.id}/channels/${channel.id}/messages`,
-          { $top: '50' },
-          2,
+          { $top: '25' },
+          1,
           true  // use beta endpoint
         );
-
-        const recent = messages.filter(
-          (m) => m.messageType === 'message' && new Date(m.createdDateTime).getTime() >= cutoff
-        );
-
-        if (recent.length === 0) continue;
-
-        const authors = new Set(recent.map((m) => m.from?.user?.displayName || 'unknown'));
-        const hasAttachments = recent.some((m) => (m.attachments || []).length > 0);
-        const allReactions = recent.flatMap((m) => (m.reactions || []).map((r) => r.reactionType));
-        const topMessages = recent.slice(0, 3).map((m) => ({
-          from: m.from?.user?.displayName || 'unknown',
-          date: m.createdDateTime,
-          preview: m.body?.content ? stripHtml(m.body.content).slice(0, 200) : '',
-        }));
-
-        digest.push({
-          team: team.displayName,
-          channel: channel.displayName,
-          messageCount: recent.length,
-          uniqueAuthors: authors.size,
-          authors: [...authors],
-          hasAttachments,
-          reactionSummary: countOccurrences(allReactions),
-          topMessages,
-        });
+        return { team, channel, messages };
       } catch {
-        // Skip channels we can't access
+        return { team, channel, messages: [] };
       }
-    }
+    })
+  );
+
+  console.error(`[digest] Fetching messages for ${channelTasks.length} channels in parallel...`);
+  const channelResults = await pooled(concurrency, channelTasks);
+
+  // Step 3: build digest from results
+  const digest = [];
+  for (const { team, channel, messages } of channelResults) {
+    const recent = messages.filter(
+      (m) => m.messageType === 'message' && new Date(m.createdDateTime).getTime() >= cutoff
+    );
+    if (recent.length === 0) continue;
+
+    const authors = new Set(recent.map((m) => m.from?.user?.displayName || 'unknown'));
+    const hasAttachments = recent.some((m) => (m.attachments || []).length > 0);
+    const allReactions = recent.flatMap((m) => (m.reactions || []).map((r) => r.reactionType));
+    const topMessages = recent.slice(0, 3).map((m) => ({
+      from: m.from?.user?.displayName || 'unknown',
+      date: m.createdDateTime,
+      preview: m.body?.content ? stripHtml(m.body.content).slice(0, 200) : '',
+    }));
+
+    digest.push({
+      team: team.displayName,
+      channel: channel.displayName,
+      messageCount: recent.length,
+      uniqueAuthors: authors.size,
+      authors: [...authors],
+      hasAttachments,
+      reactionSummary: countOccurrences(allReactions),
+      topMessages,
+    });
   }
 
-  // Sort by message count descending
   digest.sort((a, b) => b.messageCount - a.messageCount);
 
   if (allTeams.length > maxTeams) {
@@ -843,7 +885,7 @@ Commands:
   channels <team> --search=term     Filter channels by name
   channels --search=term            Search channels across all teams
   history <team> <channel>          Fetch recent messages (default: --since=24h)
-  activity                          Messages mentioning/involving me (default: --since=7d)
+  activity                          Messages mentioning/involving me (default: --since=24h)
   post <team> <channel> <message>   Post a message to a channel
   post ... --reply-to=<msg-id>      Reply in a thread
   thread <team> <channel> <msg-id>  Read replies to a message
@@ -851,16 +893,15 @@ Commands:
   info <team> <channel>             Channel metadata
   search <query>                    Full-text search across Teams messages
   unanswered <team> <channel>       Messages with no replies (default: --since=48h)
-  digest                            Activity summary across all teams (default: --since=24h, --max-teams=20)
+  digest                            Activity summary across all teams (default: --since=24h, --max-teams=10)
 
 Aliases: messages/msgs → history, mentions → activity
 
 Duration format: <number><unit> where unit is m(inutes), h(ours), d(ays), w(eeks)
   Examples: 30m, 24h, 7d, 2w
 
---max-teams=N  Limit digest/activity fallback to N teams (default: digest=20, activity=5).
-               Use a smaller value (e.g. --max-teams=5) in large tenants to stay within the
-               30s runner timeout.
+--max-teams=N    Cap digest/activity to N teams (default: digest=10, activity=10).
+--concurrency=N  Parallel API requests for digest/activity (default: 5, max: 10).
 
 Team and channel arguments accept display names (case-insensitive partial match) or IDs.`);
 }

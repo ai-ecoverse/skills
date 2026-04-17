@@ -37,9 +37,9 @@ teams channels --search=release
 teams history "My Team" "General"
 teams history "My Team" "General" --since=7d --top=100
 
-# Messages mentioning/involving me (default: last 7 days)
+# Messages mentioning/involving me (default: last 24h)
 teams activity
-teams activity --since=30d
+teams activity --since=7d
 
 # Post a message to a channel
 teams post "My Team" "General" "Hello from SLICC!"
@@ -147,10 +147,10 @@ Fetch recent top-level messages from a channel (replies are not inlined — use
 
 **Alias:** `teams messages` / `teams msgs` also route to `history`.
 
-### teams activity [--since=DURATION] [--max-teams=N]
+### teams activity [--since=DURATION] [--max-teams=N] [--concurrency=N]
 
 Messages that mention or involve the current user. Default window is the last
-7 days. See the full description in the **Available commands** section below.
+24 hours. See the full description in the **Available commands** section below.
 
 **Alias:** `teams mentions` also routes to `activity`.
 
@@ -203,21 +203,22 @@ dates, body previews, and `webUrl`.
 List top-level messages in a channel that have zero replies. Default window
 is the last 48 hours. Useful for surfacing forgotten questions.
 
-### teams activity [--since=DURATION] [--max-teams=N]
+### teams activity [--since=DURATION] [--max-teams=N] [--concurrency=N]
 
 Messages that mention or involve the current user. Default window is the last
 24 hours. Uses the Graph Search API (`/search/query`, beta) for speed. If
 Search returns 403 (common with delegated browser tokens that lack the
 `chatMessage` search scope), the command automatically falls back to scanning
-recent messages across the first `--max-teams` teams (default 5) × 3 channels
-each, with early exit once `--top` results are found.
+the first `--max-teams` teams (default 10) × 3 channels each in parallel
+(5 concurrent requests by default), with early exit once `--top` results are
+found.
 
-> **Large tenants:** With 100+ teams the fallback scan can exceed the 30s
-> runner timeout. Use `--max-teams=3` to cap the scan to the first 3 teams.
+> **Large tenants:** The parallel fetch keeps most scans within 30s. If you
+> still hit timeouts, lower `--max-teams` (e.g. `--max-teams=5`).
 
 **Alias:** `teams mentions` also routes to `activity`.
 
-### teams digest [--since=DURATION] [--max-teams=N]
+### teams digest [--since=DURATION] [--max-teams=N] [--concurrency=N]
 
 Cross-team / cross-channel activity digest. For each channel with recent
 activity in the window (default 24h), returns:
@@ -227,12 +228,13 @@ activity in the window (default 24h), returns:
 - reaction summary (reaction type → count)
 - top 3 messages (author + date + preview)
 
-Sorted by message count descending. Scans up to `--max-teams` teams (default
-20). Progress is printed to stderr so you can see which team is being scanned.
+Sorted by message count descending. Fetches channels and messages for all
+teams in parallel (5 concurrent requests by default), then aggregates.
+Scans up to `--max-teams` teams (default 10). Progress is printed to stderr.
 
-> **Large tenants:** With 175+ teams the default cap of 20 keeps the scan
-> within the 30s runner budget. Lower it further with `--max-teams=5` if
-> needed.
+> **Large tenants:** With the parallel fetch, 10 teams × N channels typically
+> completes in under 15s. Use `--max-teams=20` if you want broader coverage
+> and have headroom. Lower to `--max-teams=5` if you see timeouts.
 
 ## Troubleshooting
 
