@@ -400,7 +400,17 @@ const commands = {
     } catch (e) {
       // custom emoji cache unavailable — continue with static map only
     }
-    const sanitizedMessage = message.replace(/:[a-z0-9_+-]+:/g, (match) => emojiMap[match] || match);
+    const unresolved = [];
+    const sanitizedMessage = message.replace(/:[a-z0-9_+-]+:/g, (match) => {
+      if (emojiMap[match]) return emojiMap[match];
+      unresolved.push(match);
+      return match;
+    });
+    if (unresolved.length > 0) {
+      console.error(`Error: emoji shortcode(s) could not be resolved: ${unresolved.join(', ')}`);
+      console.error(`Please resend the message without those emoji shortcodes.`);
+      process.exit(1);
+    }
 
     const params = { channel: targetChannel, text: sanitizedMessage };
     if (flags.thread_ts) params.thread_ts = flags.thread_ts;
