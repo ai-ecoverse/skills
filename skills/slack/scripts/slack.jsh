@@ -357,13 +357,48 @@ const commands = {
     }
 
     // Convert non-Slack emoji shortcodes to Unicode before sending.
-    // Loads a comprehensive 2,100+ entry map from emoji-map.json (iamcal/emoji-data + Gemoji aliases).
-    // Slack only renders its own canonical shortcodes — unknown aliases are converted to Unicode.
+    // Layer 1: static map (emoji-map.json) — 2,100+ entries from iamcal/emoji-data + Gemoji aliases.
+    // Layer 2: workspace custom emoji from emoji.list API (cached for 1 hour in emoji-cache.json).
+    // Unknown shortcodes that aren't in either map pass through unchanged.
     let emojiMap = {};
     try {
       emojiMap = JSON.parse(await fs.readFile('/workspace/skills/slack/scripts/emoji-map.json', 'utf8'));
     } catch (e) {
-      // If map fails to load, continue without emoji conversion
+      // static map unavailable — continue
+    }
+    // Merge workspace custom emoji (cached, refreshed every hour)
+    try {
+      const cacheFile = '/workspace/skills/slack/scripts/emoji-cache.json';
+      let cache = null;
+      try {
+        cache = JSON.parse(await fs.readFile(cacheFile, 'utf8'));
+      } catch (_) {}
+      const now = Date.now();
+      const TTL = 60 * 60 * 1000; // 1 hour
+      if (!cache || !cache.ts || (now - cache.ts) > TTL) {
+        // Fetch fresh custom emoji from Slack API
+        const emojiData = await slackApi('emoji.list', {}, wsId, { fatal: false });
+        if (emojiData && emojiData.ok && emojiData.emoji) {
+          // Custom emoji values are either URLs (uploaded images) or "alias:other_name"
+          // For aliases, resolve to the aliased name's Unicode if possible
+          const customMap = {};
+          for (const [name, val] of Object.entries(emojiData.emoji)) {
+            const key = `:${name}:`;
+            if (val.startsWith('alias:')) {
+              // It's an alias — resolve to Unicode via the static map if possible
+              const aliasKey = `:${val.slice(6)}:`;
+              if (emojiMap[aliasKey]) customMap[key] = emojiMap[aliasKey];
+              // else leave unmapped — Slack renders custom aliases natively
+            }
+            // URL entries are uploaded images — Slack renders them natively, no conversion needed
+          }
+          cache = { ts: now, map: customMap };
+          await fs.writeFile(cacheFile, JSON.stringify(cache)).catch(() => {});
+        }
+      }
+      if (cache && cache.map) Object.assign(emojiMap, cache.map);
+    } catch (e) {
+      // custom emoji cache unavailable — continue with static map only
     }
     const sanitizedMessage = message.replace(/:[a-z0-9_+-]+:/g, (match) => emojiMap[match] || match);
 
