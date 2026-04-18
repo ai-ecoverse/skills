@@ -1,4 +1,4 @@
-// teams.jsh â€” Microsoft Teams channel scanner via Graph API
+// teams.jsh  Microsoft Teams channel scanner via Graph API
 // Auto-discovered as `teams` shell command in SLICC.
 //
 // Usage: teams <subcommand> [args] [--since=<duration>] [--top=<n>]
@@ -10,7 +10,9 @@ const GRAPH_BETA = 'https://graph.microsoft.com/beta';
 // browser session does not include ChannelMessage.Read.All, so the v1.0 messages endpoint
 // returns 403. The beta endpoint works with the scopes the Teams session provides.
 const TOKEN_PATH = '/workspace/.teams-token';
+const SUBSTRATE_TOKEN_PATH = '/workspace/.teams-substrate-token';
 const TEAMS_CACHE_PATH = '/workspace/.teams-cache.json';
+const SUBSTRATE_SEARCH_URL = 'https://substrate.office.com/search/api/v2/query';
 
 // ---------------------------------------------------------------------------
 // Argument parsing
@@ -105,6 +107,20 @@ async function saveToken(token) {
   await fs.writeFile(TOKEN_PATH, token);
 }
 
+async function readSubstrateToken() {
+  try {
+    const token = (await fs.readFile(SUBSTRATE_TOKEN_PATH)).trim();
+    if (!token) return null;
+    return token;
+  } catch {
+    return null;
+  }
+}
+
+async function saveSubstrateToken(token) {
+  await fs.writeFile(SUBSTRATE_TOKEN_PATH, token);
+}
+
 // ---------------------------------------------------------------------------
 // Graph API client
 // ---------------------------------------------------------------------------
@@ -119,11 +135,11 @@ async function graphGet(token, path, params, retries = 3) {
     headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
   });
   if (resp.status === 401) {
-    die('401 Unauthorized â€” token expired. Run `teams auth` to refresh.');
+    die('401 Unauthorized  token expired. Run `teams auth` to refresh.');
   }
   if (resp.status === 403) {
     die(
-      '403 Forbidden â€” insufficient permissions. The token may lack required Graph API scopes. See reference.md.'
+      '403 Forbidden  insufficient permissions. The token may lack required Graph API scopes. See reference.md.'
     );
   }
   if (resp.status === 429) {
@@ -132,7 +148,7 @@ async function graphGet(token, path, params, retries = 3) {
       await new Promise((r) => setTimeout(r, retryAfter * 1000));
       return graphGet(token, path, params, retries - 1);
     }
-    die('429 Too Many Requests â€” rate limited. Wait a moment and retry.');
+    die('429 Too Many Requests  rate limited. Wait a moment and retry.');
   }
   if (!resp.ok) {
     const body = await resp.text();
@@ -153,7 +169,7 @@ async function graphPost(token, path, body) {
     body: JSON.stringify(body),
   });
   if (resp.status === 401) {
-    die('401 Unauthorized â€” token expired. Run `teams auth` to refresh.');
+    die('401 Unauthorized  token expired. Run `teams auth` to refresh.');
   }
   if (!resp.ok) {
     const text = await resp.text();
@@ -162,7 +178,7 @@ async function graphPost(token, path, body) {
   return resp.json();
 }
 
-// Non-fatal POST â€” returns {ok, status, data} instead of calling die().
+// Non-fatal POST  returns {ok, status, data} instead of calling die().
 // Used for optional endpoints (Search API) where failure should trigger a fallback.
 async function graphPostSafe(token, path, body) {
   const url = path.startsWith('http') ? path : `${GRAPH_BETA}${path}`;
@@ -177,6 +193,38 @@ async function graphPostSafe(token, path, body) {
   });
   if (!resp.ok) return { ok: false, status: resp.status, data: null };
   return { ok: true, status: resp.status, data: await resp.json() };
+}
+
+// Generic safe POST for any bearer-token API (e.g. substrate search).
+async function apiPostSafe(token, url, body) {
+  try {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) return { ok: false, status: resp.status, data: null };
+    return { ok: true, status: resp.status, data: await resp.json() };
+  } catch {
+    return { ok: false, status: 0, data: null };
+  }
+}
+
+// Generic safe GET for any bearer-token API.
+async function apiGetSafe(token, url) {
+  try {
+    const resp = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+    });
+    if (!resp.ok) return { ok: false, status: resp.status, data: null };
+    return { ok: true, status: resp.status, data: await resp.json() };
+  } catch {
+    return { ok: false, status: 0, data: null };
+  }
 }
 
 async function graphGetAllPages(token, path, params, maxPages, useBeta) {
@@ -199,7 +247,7 @@ async function graphGetAllPages(token, path, params, maxPages, useBeta) {
 }
 
 // ---------------------------------------------------------------------------
-// Teams/channel resolution (name â†’ ID)
+// Teams/channel resolution (name ’ ID)
 // ---------------------------------------------------------------------------
 
 async function getTeams(token) {
@@ -234,7 +282,7 @@ async function resolveChannel(token, teamId, nameOrId) {
 }
 
 // ---------------------------------------------------------------------------
-// Auth subcommand â€” extract MSAL token from Teams browser tab
+// Auth subcommand  extract MSAL token from Teams browser tab
 // ---------------------------------------------------------------------------
 
 async function cmdAuth() {
@@ -247,9 +295,12 @@ async function cmdAuth() {
   // localStorage, NOT sessionStorage. We search localStorage for the freshest
   // Graph token (key contains "accesstoken" + "graph.microsoft.com"), falling
   // back to sessionStorage for older Teams versions.
+  //
+  // We also extract the substrate.office.com token for Substrate Search API
+  // access (the internal search engine Teams v2 uses for message search).
   const extractScript = [
     '(function(){',
-    // Primary: localStorage (Teams v2)
+    // --- Graph token ---
     'var best=null,bestExp=0;',
     'var lkeys=Object.keys(localStorage);',
     'for(var i=0;i<lkeys.length;i++){',
@@ -258,7 +309,19 @@ async function cmdAuth() {
     'try{var e=JSON.parse(localStorage.getItem(k));',
     'var exp=parseInt(e.expiresOn||e.expires_on||0);',
     'if(e&&e.secret&&exp>bestExp){best=e;bestExp=exp;}}catch(x){}}',
-    'if(best)return JSON.stringify({token:best.secret,expiresOn:best.expiresOn||best.expires_on});',
+    // --- Substrate token ---
+    'var sBest=null,sBestExp=0;',
+    'for(var s=0;s<lkeys.length;s++){',
+    'var sk=lkeys[s];',
+    'if(sk.indexOf("accesstoken")===-1||sk.indexOf("substrate.office.com")===-1)continue;',
+    'try{var se=JSON.parse(localStorage.getItem(sk));',
+    'var sexp=parseInt(se.expiresOn||se.expires_on||0);',
+    'if(se&&se.secret&&sexp>sBestExp){sBest=se;sBestExp=sexp;}}catch(sx){}}',
+    // Build result
+    'var result={};',
+    'if(best){result.token=best.secret;result.expiresOn=best.expiresOn||best.expires_on;}',
+    'if(sBest){result.substrateToken=sBest.secret;result.substrateExpiresOn=sBest.expiresOn||sBest.expires_on;}',
+    'if(result.token)return JSON.stringify(result);',
     // Fallback: sessionStorage (older Teams)
     'for(var j=0;j<sessionStorage.length;j++){',
     'var k2=sessionStorage.key(j);',
@@ -302,6 +365,12 @@ async function cmdAuth() {
 
   await saveToken(tokenData.token);
 
+  // Save substrate token if available
+  const hasSubstrate = !!(tokenData.substrateToken);
+  if (hasSubstrate) {
+    await saveSubstrateToken(tokenData.substrateToken);
+  }
+
   // Verify token by fetching user profile
   const me = await graphGet(tokenData.token, '/me');
   out({
@@ -310,6 +379,8 @@ async function cmdAuth() {
     email: me.mail || me.userPrincipalName,
     id: me.id,
     expiresOn: tokenData.expiresOn || 'unknown',
+    substrateSearch: hasSubstrate ? 'available' : 'not found',
+    substrateExpiresOn: tokenData.substrateExpiresOn || undefined,
   });
 }
 
@@ -395,7 +466,7 @@ async function cmdHistory() {
     `/teams/${team.id}/channels/${channel.id}/messages`,
     { $top: String(top) },
     5,
-    true  // use beta endpoint â€” v1.0 requires ChannelMessage.Read.All which the delegated token lacks
+    true  // use beta endpoint  v1.0 requires ChannelMessage.Read.All which the delegated token lacks
   );
 
   const cutoff = new Date(since).getTime();
@@ -569,53 +640,49 @@ function stripHtml(html) {
 async function cmdActivity() {
   const token = await readToken();
   const since = sinceDate(sinceDuration, 24); // default 24h
+  const limit = topN || 25;
 
-  // Use the Search API (beta) to find messages mentioning the current user
   const me = await graphGet(token, '/me');
   const displayName = me.displayName;
 
-  const searchBody = {
-    requests: [
-      {
-        entityTypes: ['chatMessage'],
-        query: { queryString: displayName },
-        from: 0,
-        size: topN || 25,
-      },
-    ],
-  };
-
-  const searchResult = await graphPostSafe(token, '/search/query', searchBody);
-
-  if (!searchResult.ok) {
-    console.error(
-      `Search API returned ${searchResult.status} (delegated tokens often lack chatMessage search scope). Falling back to channel scan...`
+  // 1. Try Substrate Search first (Teams internal search  most reliable)
+  console.error('[activity] Trying Substrate Search API...');
+  const substrate = await trySubstrateSearch(displayName, limit);
+  if (substrate.ok && substrate.results.length > 0) {
+    console.error(`[activity] Substrate Search returned ${substrate.results.length} results.`);
+    const sinceMs = new Date(since).getTime();
+    const filtered = substrate.results.filter(
+      (m) => !m.date || new Date(m.date).getTime() >= sinceMs
     );
-    await cmdActivityFallback(token, me, since);
+    out(filtered);
     return;
   }
+  if (!substrate.ok) {
+    console.error('[activity] Substrate Search unavailable.');
+  } else {
+    console.error('[activity] Substrate Search returned no results.');
+  }
 
-  const hits = searchResult.data?.value?.[0]?.hitsContainers?.[0]?.hits || [];
-  const mentions = hits
-    .map((hit) => {
-      const resource = hit.resource || {};
-      return {
-        summary: hit.summary || '',
-        from: resource.from?.emailAddress?.name || 'unknown',
-        date: resource.createdDateTime || resource.lastModifiedDateTime || '',
-        body: resource.body?.content ? stripHtml(resource.body.content).slice(0, 500) : hit.summary || '',
-        channelName: resource.channelIdentity?.channelId || '',
-        teamName: resource.channelIdentity?.teamId || '',
-        webUrl: resource.webUrl || '',
-      };
-    })
-    .filter((m) => {
-      if (!sinceDuration && !m.date) return true;
-      if (!m.date) return true;
-      return new Date(m.date).getTime() >= new Date(since).getTime();
-    });
+  // 2. Try Graph Search API
+  console.error('[activity] Trying Graph Search API...');
+  const graph = await tryGraphSearch(token, displayName, limit);
+  if (graph.ok && graph.results.length > 0) {
+    console.error(`[activity] Graph Search returned ${graph.results.length} results.`);
+    const sinceMs = new Date(since).getTime();
+    const filtered = graph.results.filter(
+      (m) => !m.date || new Date(m.date).getTime() >= sinceMs
+    );
+    out(filtered);
+    return;
+  }
+  if (!graph.ok) {
+    console.error('[activity] Graph Search API returned error. Falling back to scan...');
+  } else {
+    console.error('[activity] Graph Search returned no results. Falling back to scan...');
+  }
 
-  out(mentions);
+  // 3. Fall back to channel scan + chat scan in parallel
+  await cmdActivityFallback(token, me, since);
 }
 
 async function cmdActivityFallback(token, me, since) {
@@ -623,10 +690,35 @@ async function cmdActivityFallback(token, me, since) {
   const concurrency = parseInt(flags['concurrency'] || '5', 10);
   const limit = topN || 25;
   const cutoff = new Date(since).getTime();
+
+  // Run channel scan and chat scan in parallel
+  const [channelMentions, chatMentions] = await Promise.all([
+    scanChannelsForMentions(token, me, cutoff, limit, maxTeams, concurrency),
+    scanChatsForMentions(token, me, cutoff, limit, concurrency),
+  ]);
+
+  // Merge, deduplicate by date+from, sort by date descending
+  const allMentions = [...channelMentions, ...chatMentions];
+  allMentions.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+  // Deduplicate by date + from (rough)
+  const seen = new Set();
+  const deduped = allMentions.filter((m) => {
+    const key = `${m.date}|${m.from}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  out(deduped.slice(0, limit));
+}
+
+// Scan team channels for mentions of the current user.
+async function scanChannelsForMentions(token, me, cutoff, limit, maxTeams, concurrency) {
   const allTeams = await getTeams(token);
   const teamsToScan = allTeams.slice(0, maxTeams);
 
-  console.error(`[activity] Fetching channels for ${teamsToScan.length} teams in parallel...`);
+  console.error(`[activity] Scanning channels in ${teamsToScan.length} teams...`);
 
   // Fetch all channels in parallel
   const teamChannels = await pooled(concurrency, teamsToScan.map((team) => async () => {
@@ -675,6 +767,7 @@ async function cmdActivityFallback(token, me, since) {
           body: bodyText.slice(0, 500),
           team: team.displayName,
           channel: channel.displayName,
+          source: 'channel-scan',
         });
         if (mentions.length >= limit) break;
       }
@@ -688,50 +781,284 @@ async function cmdActivityFallback(token, me, since) {
     );
   }
 
-  out(mentions);
+  return mentions;
+}
+
+// Scan 1:1 and group chats for mentions of the current user.
+// Uses /me/chats + /me/chats/{id}/messages (requires Chat.Read scope).
+async function scanChatsForMentions(token, me, cutoff, limit, concurrency) {
+  console.error('[activity] Scanning chats/DMs...');
+
+  // Fetch recent chats (ordered by last message)
+  const chatsResult = await apiGetSafe(
+    token,
+    `${GRAPH_BASE}/me/chats?$top=50&$orderby=lastMessagePreview/createdDateTime desc&$expand=lastMessagePreview`
+  );
+
+  if (!chatsResult.ok) {
+    console.error(`[activity] Chat scan unavailable (${chatsResult.status}). Skipping DMs.`);
+    return [];
+  }
+
+  const chats = (chatsResult.data?.value || []).filter((chat) => {
+    // Only scan chats that had recent activity within our time window
+    const lastMsg = chat.lastMessagePreview?.createdDateTime;
+    if (!lastMsg) return false;
+    return new Date(lastMsg).getTime() >= cutoff;
+  });
+
+  if (chats.length === 0) {
+    console.error('[activity] No recent chat activity in time window.');
+    return [];
+  }
+
+  console.error(`[activity] Scanning ${chats.length} recent chats for mentions...`);
+
+  // Fetch messages for each chat in parallel
+  const chatTasks = chats.map((chat) => async () => {
+    try {
+      const url = `${GRAPH_BASE}/me/chats/${chat.id}/messages?$top=25`;
+      const resp = await apiGetSafe(token, url);
+      if (!resp.ok) return { chat, messages: [] };
+      return { chat, messages: resp.data?.value || [] };
+    } catch {
+      return { chat, messages: [] };
+    }
+  });
+
+  const chatResults = await pooled(concurrency, chatTasks);
+
+  const mentions = [];
+  for (const { chat, messages } of chatResults) {
+    for (const m of messages) {
+      if (m.messageType !== 'message') continue;
+      if (new Date(m.createdDateTime).getTime() < cutoff) continue;
+      // Skip messages from self
+      if (m.from?.user?.id === me.id) continue;
+      const hasMention = (m.mentions || []).some(
+        (mention) => mention.mentioned?.user?.id === me.id
+      );
+      const bodyText = m.body?.content ? stripHtml(m.body.content) : '';
+      const mentionsMe = hasMention || bodyText.toLowerCase().includes(me.displayName.toLowerCase());
+      // In DMs/group chats, all messages are implicitly "to" you, so include all
+      // unless the user specifically asked for @mentions only
+      if (mentionsMe || chat.chatType === 'oneOnOne') {
+        const chatLabel = chat.topic || chat.chatType === 'oneOnOne' ? 'DM' : 'Group Chat';
+        mentions.push({
+          from: m.from?.user?.displayName || 'unknown',
+          date: m.createdDateTime,
+          body: bodyText.slice(0, 500),
+          chat: chat.topic || chatLabel,
+          chatType: chat.chatType,
+          source: 'chat-scan',
+        });
+        if (mentions.length >= limit) break;
+      }
+    }
+    if (mentions.length >= limit) break;
+  }
+
+  console.error(`[activity] Found ${mentions.length} mentions in chats/DMs.`);
+  return mentions;
 }
 
 // ---------------------------------------------------------------------------
-// Search subcommand
+// Substrate Search helper
 // ---------------------------------------------------------------------------
 
-async function cmdSearch() {
-  if (!positional[0]) die('Usage: teams search <query> [--since=7d]');
-  const token = await readToken();
-  const query = positional.join(' ');
+// Try Substrate Search API (the internal search engine Teams v2 uses).
+// Returns { ok, results } where results is an array of normalized hits.
+async function trySubstrateSearch(query, size) {
+  const subToken = await readSubstrateToken();
+  if (!subToken) return { ok: false, results: [] };
 
+  const body = {
+    EntityRequests: [
+      {
+        entityType: 'Message',
+        query: { queryString: query },
+        from: 0,
+        size: size || 25,
+      },
+    ],
+  };
+
+  const result = await apiPostSafe(subToken, SUBSTRATE_SEARCH_URL, body);
+  if (!result.ok) return { ok: false, results: [] };
+
+  // Substrate response shape: { EntitySets: [{ ResultSets: [{ Results: [...] }] }] }
+  const entitySets = result.data?.EntitySets || result.data?.entitySets || [];
+  const resultSets = entitySets[0]?.ResultSets || entitySets[0]?.resultSets || [];
+  const hits = resultSets[0]?.Results || resultSets[0]?.results || [];
+
+  const results = hits.map((hit) => {
+    const source = hit.Source || hit.source || {};
+    return {
+      summary: hit.HitHighlightedSummary || hit.Summary || '',
+      from: source.From || source.from || source.Creator || source.creator || 'unknown',
+      date: source.ItemDate || source.LastModifiedTime || source.itemDate || '',
+      body: (source.Preview || source.preview || hit.HitHighlightedSummary || '').slice(0, 500),
+      webUrl: source.WebUrl || source.webUrl || source.Path || '',
+      source: 'substrate',
+    };
+  });
+
+  return { ok: true, results };
+}
+
+// Try Graph Search API with chatMessage entity type.
+// Returns { ok, results } where results is an array of normalized hits.
+async function tryGraphSearch(token, query, size) {
   const searchBody = {
     requests: [
       {
         entityTypes: ['chatMessage'],
         query: { queryString: query },
         from: 0,
-        size: topN || 25,
+        size: size || 25,
       },
     ],
   };
 
-  const result = await graphPost(token, '/search/query', searchBody);
-  const hits = result.value?.[0]?.hitsContainers?.[0]?.hits || [];
+  const searchResult = await graphPostSafe(token, '/search/query', searchBody);
+  if (!searchResult.ok) return { ok: false, results: [] };
 
-  const since = sinceDuration ? sinceDate(sinceDuration, 24) : null;
+  const hits = searchResult.data?.value?.[0]?.hitsContainers?.[0]?.hits || [];
+  const results = hits.map((hit) => {
+    const resource = hit.resource || {};
+    return {
+      summary: hit.summary || '',
+      from: resource.from?.emailAddress?.name || 'unknown',
+      date: resource.createdDateTime || resource.lastModifiedDateTime || '',
+      body: resource.body?.content ? stripHtml(resource.body.content).slice(0, 500) : hit.summary || '',
+      webUrl: resource.webUrl || '',
+      source: 'graph',
+    };
+  });
 
-  const results = hits
-    .map((hit) => {
-      const resource = hit.resource || {};
-      return {
-        summary: hit.summary || '',
-        from: resource.from?.emailAddress?.name || 'unknown',
-        date: resource.createdDateTime || resource.lastModifiedDateTime || '',
-        body: resource.body?.content ? stripHtml(resource.body.content).slice(0, 500) : hit.summary || '',
-        webUrl: resource.webUrl || '',
-      };
+  return { ok: true, results };
+}
+
+// Channel scan fallback for search: scan channels and filter client-side by query.
+async function searchChannelFallback(token, query, since) {
+  const maxTeams = parseInt(flags['max-teams'] || '10', 10);
+  const concurrency = parseInt(flags['concurrency'] || '5', 10);
+  const limit = topN || 25;
+  const cutoff = since ? new Date(since).getTime() : 0;
+  const queryLower = query.toLowerCase();
+  const allTeams = await getTeams(token);
+  const teamsToScan = allTeams.slice(0, maxTeams);
+
+  console.error(`[search] Falling back to channel scan across ${teamsToScan.length} teams...`);
+
+  // Fetch all channels in parallel
+  const teamChannels = await pooled(concurrency, teamsToScan.map((team) => async () => {
+    try {
+      const channels = await getChannels(token, team.id);
+      return { team, channels: channels.slice(0, 3) };
+    } catch {
+      return { team, channels: [] };
+    }
+  }));
+
+  // Fetch messages for all channels in parallel
+  const channelTasks = teamChannels.flatMap(({ team, channels }) =>
+    channels.map((channel) => async () => {
+      try {
+        const messages = await graphGetAllPages(
+          token,
+          `/teams/${team.id}/channels/${channel.id}/messages`,
+          { $top: '25' },
+          1,
+          true
+        );
+        return { team, channel, messages };
+      } catch {
+        return { team, channel, messages: [] };
+      }
     })
-    .filter((m) => {
-      if (!since || !m.date) return true;
-      return new Date(m.date).getTime() >= new Date(since).getTime();
-    });
+  );
 
+  console.error(`[search] Scanning ${channelTasks.length} channels...`);
+  const channelResults = await pooled(concurrency, channelTasks);
+
+  const results = [];
+  for (const { team, channel, messages } of channelResults) {
+    for (const m of messages) {
+      if (m.messageType !== 'message') continue;
+      if (cutoff && new Date(m.createdDateTime).getTime() < cutoff) continue;
+      const bodyText = m.body?.content ? stripHtml(m.body.content) : '';
+      if (bodyText.toLowerCase().includes(queryLower)) {
+        results.push({
+          from: m.from?.user?.displayName || 'unknown',
+          date: m.createdDateTime,
+          body: bodyText.slice(0, 500),
+          team: team.displayName,
+          channel: channel.displayName,
+          source: 'channel-scan',
+        });
+        if (results.length >= limit) break;
+      }
+    }
+    if (results.length >= limit) break;
+  }
+
+  if (allTeams.length > maxTeams) {
+    console.error(
+      `[search] Scanned ${maxTeams} of ${allTeams.length} teams. Use --max-teams=N to scan more.`
+    );
+  }
+
+  return results;
+}
+
+// ---------------------------------------------------------------------------
+// Search subcommand  cascading: substrate ’ Graph ’ channel scan fallback
+// ---------------------------------------------------------------------------
+
+async function cmdSearch() {
+  if (!positional[0]) die('Usage: teams search <query> [--since=7d]');
+  const token = await readToken();
+  const query = positional.join(' ');
+  const since = sinceDuration ? sinceDate(sinceDuration, 24) : null;
+  const size = topN || 25;
+
+  // 1. Try Substrate Search (Teams internal search engine)
+  console.error('[search] Trying Substrate Search API...');
+  const substrate = await trySubstrateSearch(query, size);
+  if (substrate.ok && substrate.results.length > 0) {
+    console.error(`[search] Substrate Search returned ${substrate.results.length} results.`);
+    const filtered = since
+      ? substrate.results.filter((m) => !m.date || new Date(m.date).getTime() >= new Date(since).getTime())
+      : substrate.results;
+    out(filtered);
+    return;
+  }
+  if (!substrate.ok) {
+    console.error('[search] Substrate Search unavailable (no token or API error).');
+  } else {
+    console.error('[search] Substrate Search returned no results.');
+  }
+
+  // 2. Try Graph Search API
+  console.error('[search] Trying Graph Search API...');
+  const graph = await tryGraphSearch(token, query, size);
+  if (graph.ok && graph.results.length > 0) {
+    console.error(`[search] Graph Search returned ${graph.results.length} results.`);
+    const filtered = since
+      ? graph.results.filter((m) => !m.date || new Date(m.date).getTime() >= new Date(since).getTime())
+      : graph.results;
+    out(filtered);
+    return;
+  }
+  if (!graph.ok) {
+    console.error('[search] Graph Search API returned error (likely missing chatMessage search scope).');
+  } else {
+    console.error('[search] Graph Search returned no results.');
+  }
+
+  // 3. Fall back to channel scan
+  const results = await searchChannelFallback(token, query, since);
   out(results);
 }
 
@@ -874,12 +1201,12 @@ function countOccurrences(arr) {
 // ---------------------------------------------------------------------------
 
 function showHelp() {
-  console.log(`teams â€” Microsoft Teams channel access via Graph API
+  console.log(`teams  Microsoft Teams access via Graph API + Substrate Search
 
 Usage: teams <command> [args] [--since=<duration>] [--top=<n>] [--max-teams=<n>]
 
 Commands:
-  auth                              Extract auth token from Teams browser session
+  auth                              Extract auth tokens from Teams browser session
   teams                             List joined teams
   channels <team>                   List channels in a team
   channels <team> --search=term     Filter channels by name
@@ -895,15 +1222,19 @@ Commands:
   unanswered <team> <channel>       Messages with no replies (default: --since=48h)
   digest                            Activity summary across all teams (default: --since=24h, --max-teams=10)
 
-Aliases: messages/msgs â†’ history, mentions â†’ activity
+Aliases: messages/msgs ’ history, mentions ’ activity
 
 Duration format: <number><unit> where unit is m(inutes), h(ours), d(ays), w(eeks)
   Examples: 30m, 24h, 7d, 2w
 
---max-teams=N    Cap digest/activity to N teams (default: digest=10, activity=10).
---concurrency=N  Parallel API requests for digest/activity (default: 5, max: 10).
+--max-teams=N    Cap digest/activity/search scan to N teams (default: 10).
+--concurrency=N  Parallel API requests for digest/activity/search (default: 5, max: 10).
 
-Team and channel arguments accept display names (case-insensitive partial match) or IDs.`);
+Team and channel arguments accept display names (case-insensitive partial match) or IDs.
+
+Search cascade: Substrate Search ’ Graph Search API ’ channel scan fallback.
+Activity cascade: Substrate Search ’ Graph Search ’ channel scan + chat/DM scan.
+Auth extracts both Graph and Substrate tokens from the Teams browser session.`);
 }
 
 // ---------------------------------------------------------------------------
