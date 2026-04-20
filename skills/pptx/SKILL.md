@@ -38,8 +38,8 @@ Each presentation gets a random color theme. Access via `T.xxx` for dark slides:
 - `T.dark`, `T.dark2` — dark backgrounds
 - `T.accentBar`, `T.highlightBar` — accent colors
 - `T.textLight`, `T.textMutedDark` — text on dark backgrounds
-- `T.cardDark`, `T.cardBorderDark` — cards on dark backgrounds
-- `T.good`, `T.poor`, `T.warning`, `T.info`, `T.purple` — semantic colors
+- `T.cardBg`, `T.cardBorder` — cards on dark backgrounds
+- `T.good`, `T.poor`, `T.warning`, `T.neutral`, `T.purple` — semantic colors
 
 For light slides, use `T.light.xxx`:
 - `T.light.bg`, `T.light.bg2` — light backgrounds
@@ -67,8 +67,8 @@ slides.push(slideXml(T.light.bg, [
 ].join('')));
 
 var zipData = assemblePptx(slides, {title: 'My Presentation'});
-var b64 = toB64Safe(zipData);
-require('fs').promises.writeFile('/tmp/output.b64', b64).then(function(){ console.log('done'); });
+await writePptx(zipData, '/mnt/my-presentation.pptx');
+await exec('open --download /mnt/my-presentation.pptx');
 "
 ```
 
@@ -98,8 +98,9 @@ Use `picShape(x, y, w, h, rId)` to place images at specific positions without st
 ```bash
 node -e "$(cat /workspace/skills/pptx/scripts/pptx-lib.jsh)
 
-// Load image
-const imgBytes = new Uint8Array(require('fs').readFileSync('/tmp/photo.jpg'));
+// Load image (read b64 file saved by fetchImageB64, then decode)
+var b64str = await fs.readFile('/tmp/photo.b64');
+var imgBytes = Uint8Array.from(atob(b64str.trim()), function(c){ return c.charCodeAt(0); });
 
 var slides = [];
 
@@ -121,8 +122,8 @@ var images = [
 ];
 
 var zipData = assemblePptxWithImages(slides, images, {title: 'Photo Deck'});
-var b64 = toB64Safe(zipData);
-require('fs').promises.writeFile('/tmp/output.b64', b64).then(function(){ console.log('done'); });
+await writePptx(zipData, '/mnt/photo-deck.pptx');
+await exec('open --download /mnt/photo-deck.pptx');
 "
 ```
 
@@ -133,7 +134,8 @@ Use `imageSlideXml(caption)` for images that fill the entire slide (may stretch)
 ```bash
 node -e "$(cat /workspace/skills/pptx/scripts/pptx-lib.jsh)
 
-const imgBytes = new Uint8Array(require('fs').readFileSync('/tmp/photo.jpg'));
+var b64str = await fs.readFile('/tmp/photo.b64');
+var imgBytes = Uint8Array.from(atob(b64str.trim()), function(c){ return c.charCodeAt(0); });
 
 var slides = [];
 slides.push(slideXml(T.dark, [
@@ -148,8 +150,8 @@ var images = [
 ];
 
 var zipData = assemblePptxWithImages(slides, images, {title: 'Deck'});
-var b64 = toB64Safe(zipData);
-require('fs').promises.writeFile('/tmp/output.b64', b64).then(function(){ console.log('done'); });
+await writePptx(zipData, '/mnt/deck.pptx');
+await exec('open --download /mnt/deck.pptx');
 "
 ```
 
@@ -166,8 +168,8 @@ console.log('done');
 
 Then load the b64 file and decode:
 ```javascript
-const b64 = require('fs').readFileSync('/tmp/img1.b64', 'utf8');
-const imgBytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+var b64 = await fs.readFile('/tmp/img1.b64');
+var imgBytes = Uint8Array.from(atob(b64.trim()), function(c){ return c.charCodeAt(0); });
 ```
 
 ### Image formats
@@ -195,7 +197,7 @@ for i, path in enumerate(slides, 1):
     print(f'Slide {i}: {" | ".join(t.strip() for t in texts if t.strip())}')
 print(f'Total: {len(slides)} slides')
 EOF
-python3 /tmp/read_pptx.py /path/to/file.pptx
+python3 /tmp/read_pptx.py /mnt/file.pptx
 ```
 
 ---
@@ -220,7 +222,8 @@ with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as out:
 open(dst, 'wb').write(buf.getvalue())
 print(f'Saved: {dst}')
 EOF
-python3 /tmp/edit_pptx.py input.pptx output.pptx "Old Title" "New Title"
+python3 /tmp/edit_pptx.py /mnt/input.pptx /mnt/output.pptx "Old Title" "New Title"
+open --download /mnt/output.pptx
 ```
 
 ### Add a text slide
@@ -273,38 +276,22 @@ with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as out:
 open(dst, 'wb').write(buf.getvalue())
 print(f'Added slide {new_num}: "{title}" -> {dst}')
 EOF
-python3 /tmp/add_slide.py input.pptx output.pptx "Slide Title" "Body text"
+python3 /tmp/add_slide.py /mnt/input.pptx /mnt/output.pptx "Slide Title" "Body text"
+open --download /mnt/output.pptx
 ```
 
 ---
 
 ## Downloading the result
 
-**Never use `open --download file.pptx`** — the VFS corrupts binary files. Always deliver via a base64 decoder script.
+Use `writePptx()` to write the file, then `open --download` to deliver it. Write to `/mnt/` paths — binary output to `/tmp/` is not reliable.
 
-**From node** (after `assemblePptx` or `assemblePptxWithImages`):
 ```javascript
-var b64 = toB64Safe(zipData);
-await require('fs').promises.writeFile('/tmp/output.b64', b64);
+await writePptx(zipData, '/mnt/my-deck.pptx');
+await exec('open --download /mnt/my-deck.pptx');
 ```
 
-**Then verify and package for download:**
-```bash
-cat > /tmp/make_decoder.py << 'EOF'
-import base64, io, zipfile
-b64 = open('/tmp/output.b64').read().strip()
-data = base64.b64decode(b64)
-zf = zipfile.ZipFile(io.BytesIO(data))
-print(f'Valid: {len(zf.namelist())} files, {len(data):,} bytes')
-script = f'import base64; open("output.pptx","wb").write(base64.b64decode("{b64}")); print("Saved: output.pptx")'
-open('/tmp/decode_output.py', 'w').write(script)
-print('Ready: /tmp/decode_output.py')
-EOF
-python3 /tmp/make_decoder.py
-open --download /tmp/decode_output.py
-```
-
-User runs `python3 decode_output.py` locally to get the `.pptx` file.
+`writePptx` handles the base64 encode/decode internally — no manual `toB64Safe` or shell piping needed.
 
 ---
 
