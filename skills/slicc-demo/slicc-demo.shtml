@@ -892,7 +892,10 @@
     </div>
 
     <footer class="page-footer">
-      SLICC &mdash; Self-Licking Ice Cream Cone
+      SLICC &mdash; Self-Licking Ice Cream Cone<br>
+      <a href="https://www.sliccy.com" target="_blank" style="color: inherit; text-decoration: underline;">www.sliccy.com</a>
+      &nbsp;&bull;&nbsp;
+      <a href="https://github.com/ai-ecoverse/slicc" target="_blank" style="color: inherit; text-decoration: underline;">GitHub</a>
     </footer>
   </div>
 

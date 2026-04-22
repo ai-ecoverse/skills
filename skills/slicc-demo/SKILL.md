@@ -127,3 +127,8 @@ Use this content as a reference for each concept:
 **Secret Sauce**: The `secret-sauce` skill teaches agents to reverse-engineer web app APIs. Record a HAR file, let the agent analyze the network traffic, and it produces a reusable `.jsh` script that calls the API directly — bypassing the UI forever.
 
 **Wildcard**: The game-show card. Runs a Fisher-Yates shuffle and elimination animation in the browser, knocking out cards one by one until two survive. Reports the forced combination back to the cone, who must build something combining both.
+
+## Learn More
+
+- **Website**: [www.sliccy.com](https://www.sliccy.com)
+- **GitHub**: [github.com/ai-ecoverse/slicc](https://github.com/ai-ecoverse/slicc)
