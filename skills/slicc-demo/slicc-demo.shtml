@@ -882,7 +882,7 @@
           <i data-lucide="sparkles" style="width:20px;height:20px;"></i>
         </div>
         <div class="card-title">The Wildcard</div>
-        <div class="card-teaser">Surprise me. The cone picks two or three concepts at random and builds something unexpected.</div>
+        <div class="card-teaser">Surprise me. The cone picks two concepts at random and builds something unexpected.</div>
         <button class="card-btn-wildcard" id="wildcard-btn" onclick="runWildcard()">
           <i data-lucide="shuffle" style="width:15px;height:15px;"></i>
           Surprise me
@@ -908,7 +908,7 @@
           <i data-lucide="cpu" style="width:18px;height:18px;" id="drawer-icon-el"></i>
         </div>
         <span class="detail-drawer-title" id="drawer-title">Loading…</span>
-        <button class="detail-close-btn" onclick="closeDetail()">
+        <button class="detail-close-btn" type="button" aria-label="Close details" onclick="closeDetail()">
           <i data-lucide="x" style="width:16px;height:16px;"></i>
         </button>
       </div>
@@ -1021,7 +1021,6 @@
       var drawerTitle = document.getElementById('drawer-title');
       var drawerLoading = document.getElementById('drawer-loading');
       var drawerContent = document.getElementById('drawer-content');
-      var drawerIconWrap = document.getElementById('drawer-icon');
       var drawerIconEl = document.getElementById('drawer-icon-el');
 
       // Set accent
@@ -1029,7 +1028,11 @@
 
       // Set icon
       drawerIconEl.setAttribute('data-lucide', currentIcon);
-      LucideIcons.render();
+      if (window.LucideIcons && typeof window.LucideIcons.render === 'function') {
+        window.LucideIcons.render();
+      } else {
+        drawerIconEl.textContent = '';
+      }
 
       // Set title
       drawerTitle.textContent = topic;

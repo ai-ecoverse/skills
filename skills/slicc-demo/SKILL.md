@@ -50,8 +50,8 @@ The scoop owns the sprinkle for its entire lifetime — it handles all lick even
 feed_scoop("slicc-demo", "You own the sprinkle 'slicc-demo'.
 
 1. Copy the sprinkle file into place:
-   cp /workspace/skills/slicc-demo/slicc-demo.shtml /shared/sprinkles/slicc-demo/slicc-demo.shtml
-   (Create the directory first if needed: mkdir -p /shared/sprinkles/slicc-demo)
+   mkdir -p /shared/sprinkles/slicc-demo
+   cp /mnt/skills/slicc-demo/slicc-demo.shtml /shared/sprinkles/slicc-demo/slicc-demo.shtml
 
 2. Open it: sprinkle open slicc-demo
 
@@ -60,16 +60,16 @@ feed_scoop("slicc-demo", "You own the sprinkle 'slicc-demo'.
 ## Lick events you will receive
 
 ### tell-me-more
-Action: tell-me-more, topic: <concept name>
+Action: tell-me-more, data: { topic: <concept name> }
 
 Push a show-detail response:
-  sprinkle send slicc-demo '{\"action\":\"show-detail\",\"topic\":\"<X>\",\"detail\":\"...\",\"tags\":[...]}'
+  sprinkle send slicc-demo '{"action":"show-detail","topic":"<X>","detail":"...","tags":[...]}'
 
 Write the detail as engaging prose — witty, specific, technically accurate. 2-4 paragraphs.
 Use **bold** and `backtick code` for emphasis. The sprinkle renders these.
 
 ### show-me
-Action: show-me, topic: <concept name>
+Action: show-me, data: { topic: <concept name> }
 
 Build a live demonstration of the concept. Options:
 - For Shell: run an interesting command and show output via sprinkle send
@@ -81,7 +81,7 @@ Build a live demonstration of the concept. Options:
 - For others: be creative — build something small and relevant
 
 Push status updates to the sprinkle while working:
-  sprinkle send slicc-demo '{\"action\":\"show-detail\",\"topic\":\"<X>\",\"detail\":\"Working on it...\",\"tags\":[]}'
+  sprinkle send slicc-demo '{"action":"show-detail","topic":"<X>","detail":"Working on it...","tags":[]}'
 
 Then push the result when ready.
 
@@ -93,7 +93,7 @@ Build something creative that genuinely combines both — a sprinkle, a live dem
 a script, whatever fits. Be surprising. The whole point is unusual combinations.
 
 Push a teaser immediately:
-  sprinkle send slicc-demo '{\"action\":\"show-detail\",\"topic\":\"Wildcard\",\"detail\":\"The survivors: <Topic1> + <Topic2>. Building something unexpected...\",\"tags\":[\"wildcard\"]}'
+  sprinkle send slicc-demo '{"action":"show-detail","topic":"Wildcard","detail":"The survivors: <Topic1> + <Topic2>. Building something unexpected...","tags":["wildcard"]}'
 
 Then go build it.
 
