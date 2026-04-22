@@ -1,0 +1,1227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SLICC — An AI agent that lives in your browser</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: var(--s2-font-family, system-ui, sans-serif);
+      background: #0d0f14;
+      color: var(--s2-gray-25, #f5f5f5);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ── Ambient background particles ── */
+    #bg-canvas {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 0;
+      opacity: 0.45;
+    }
+
+    /* ── Layout ── */
+    .page {
+      position: relative;
+      z-index: 1;
+      max-width: 960px;
+      margin: 0 auto;
+      padding: var(--s2-spacing-600, 40px) var(--s2-spacing-400, 24px) 80px;
+    }
+
+    /* ── Header ── */
+    .hero {
+      text-align: center;
+      margin-bottom: 56px;
+    }
+
+    .hero-wordmark {
+      display: inline-flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: var(--s2-spacing-300, 16px);
+    }
+
+    .hero-logo {
+      width: 52px;
+      height: 52px;
+      border-radius: var(--s2-radius-l, 10px);
+      background: linear-gradient(135deg, #7c6bf8 0%, #3ecfcf 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 0 32px color-mix(in srgb, #7c6bf8 50%, transparent);
+      flex-shrink: 0;
+    }
+
+    .hero-title {
+      font-size: 3.5rem;
+      font-weight: 800;
+      letter-spacing: -0.04em;
+      background: linear-gradient(135deg, #c4baff 0%, #3ecfcf 60%, #a0f0a0 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      line-height: 1;
+    }
+
+    .hero-tagline {
+      font-size: 1.15rem;
+      color: color-mix(in srgb, var(--s2-gray-25, #f5f5f5) 60%, transparent);
+      font-weight: 400;
+      letter-spacing: 0.01em;
+      margin-bottom: var(--s2-spacing-400, 24px);
+    }
+
+    .hero-subtitle {
+      font-size: 0.9rem;
+      color: color-mix(in srgb, var(--s2-gray-25, #f5f5f5) 38%, transparent);
+      max-width: 480px;
+      margin: 0 auto;
+      line-height: 1.6;
+    }
+
+    /* ── Section label ── */
+    .section-label {
+      text-align: center;
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: color-mix(in srgb, var(--s2-gray-25, #f5f5f5) 35%, transparent);
+      margin-bottom: var(--s2-spacing-400, 24px);
+    }
+
+    /* ── Concept grid ── */
+    .concept-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: var(--s2-spacing-300, 16px);
+    }
+
+    /* ── Concept card ── */
+    .concept-card {
+      position: relative;
+      background: color-mix(in srgb, #1a1d26 90%, transparent);
+      border: 1px solid color-mix(in srgb, var(--card-accent, #7c6bf8) 22%, transparent);
+      border-radius: var(--s2-radius-xl, 16px);
+      padding: var(--s2-spacing-400, 24px);
+      cursor: default;
+      transition: transform 0.22s cubic-bezier(.22,1,.36,1),
+                  border-color 0.22s ease,
+                  box-shadow 0.22s ease;
+      overflow: hidden;
+      isolation: isolate;
+    }
+
+    /* Glow orb behind card */
+    .concept-card::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+      background: radial-gradient(ellipse at 30% 0%, color-mix(in srgb, var(--card-accent, #7c6bf8) 18%, transparent) 0%, transparent 65%);
+      opacity: 0;
+      transition: opacity 0.3s ease;
+      pointer-events: none;
+      z-index: -1;
+    }
+
+    /* Shimmer sweep */
+    .concept-card::after {
+      content: '';
+      position: absolute;
+      top: -60%;
+      left: -60%;
+      width: 60%;
+      height: 200%;
+      background: linear-gradient(105deg, transparent 40%, color-mix(in srgb, var(--s2-gray-25, #f5f5f5) 5%, transparent) 50%, transparent 60%);
+      transform: skewX(-15deg);
+      transition: none;
+      pointer-events: none;
+      z-index: 1;
+    }
+
+    .concept-card:hover {
+      transform: translateY(-4px) scale(1.012);
+      border-color: color-mix(in srgb, var(--card-accent, #7c6bf8) 60%, transparent);
+      box-shadow:
+        0 12px 40px color-mix(in srgb, var(--card-accent, #7c6bf8) 20%, transparent),
+        0 2px 8px rgba(0,0,0,0.4);
+    }
+
+    .concept-card:hover::before {
+      opacity: 1;
+    }
+
+    .concept-card:hover::after {
+      left: 130%;
+      transition: left 0.55s ease;
+    }
+
+    /* Card accent pulse on hover */
+    @keyframes accent-pulse {
+      0%, 100% { opacity: 0.7; }
+      50% { opacity: 1; }
+    }
+
+    .concept-card:hover .card-icon-wrap {
+      animation: accent-pulse 2s ease infinite;
+    }
+
+    /* Icon wrapper */
+    .card-icon-wrap {
+      width: 44px;
+      height: 44px;
+      border-radius: var(--s2-radius-l, 10px);
+      background: color-mix(in srgb, var(--card-accent, #7c6bf8) 16%, transparent);
+      border: 1px solid color-mix(in srgb, var(--card-accent, #7c6bf8) 35%, transparent);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: var(--s2-spacing-200, 12px);
+      color: var(--card-accent, #7c6bf8);
+      flex-shrink: 0;
+      transition: background 0.2s, box-shadow 0.2s;
+    }
+
+    .concept-card:hover .card-icon-wrap {
+      background: color-mix(in srgb, var(--card-accent, #7c6bf8) 26%, transparent);
+      box-shadow: 0 0 16px color-mix(in srgb, var(--card-accent, #7c6bf8) 35%, transparent);
+    }
+
+    .card-title {
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: var(--s2-gray-25, #f5f5f5);
+      margin-bottom: 6px;
+      letter-spacing: -0.01em;
+    }
+
+    .card-teaser {
+      font-size: 0.84rem;
+      line-height: 1.55;
+      color: color-mix(in srgb, var(--s2-gray-25, #f5f5f5) 55%, transparent);
+      margin-bottom: var(--s2-spacing-300, 16px);
+      min-height: 2.6em;
+    }
+
+    /* Card button row */
+    .card-btn-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      position: relative;
+      z-index: 2;
+    }
+
+    /* Tell me more button (primary) */
+    .card-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 14px;
+      border-radius: var(--s2-radius-pill, 9999px);
+      border: 1.5px solid color-mix(in srgb, var(--card-accent, #7c6bf8) 55%, transparent);
+      background: color-mix(in srgb, var(--card-accent, #7c6bf8) 10%, transparent);
+      color: var(--card-accent, #7c6bf8);
+      font-size: 0.78rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.18s, border-color 0.18s, box-shadow 0.18s, transform 0.18s;
+      letter-spacing: 0.01em;
+    }
+
+    .card-btn:hover {
+      background: color-mix(in srgb, var(--card-accent, #7c6bf8) 22%, transparent);
+      border-color: color-mix(in srgb, var(--card-accent, #7c6bf8) 80%, transparent);
+      box-shadow: 0 0 14px color-mix(in srgb, var(--card-accent, #7c6bf8) 30%, transparent);
+      transform: scale(1.04);
+    }
+
+    .card-btn:active {
+      transform: scale(0.97);
+    }
+
+    /* Show me button (secondary) */
+    .card-btn-secondary {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 14px;
+      border-radius: var(--s2-radius-pill, 9999px);
+      border: 1.5px solid rgba(255,255,255,0.12);
+      background: rgba(255,255,255,0.04);
+      color: color-mix(in srgb, var(--s2-gray-25, #f5f5f5) 60%, transparent);
+      font-size: 0.78rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.18s, border-color 0.18s, color 0.18s, transform 0.18s;
+      letter-spacing: 0.01em;
+    }
+
+    .card-btn-secondary:hover {
+      background: rgba(255,255,255,0.09);
+      border-color: rgba(255,255,255,0.28);
+      color: var(--s2-gray-25, #f5f5f5);
+      transform: scale(1.04);
+    }
+
+    .card-btn-secondary:active {
+      transform: scale(0.97);
+    }
+
+    /* ── Detail drawer overlay ── */
+    .detail-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.25s ease;
+    }
+
+    .detail-overlay.open {
+      pointer-events: all;
+      opacity: 1;
+    }
+
+    .detail-backdrop {
+      position: absolute;
+      inset: 0;
+      background: rgba(5, 6, 10, 0.72);
+      backdrop-filter: blur(6px);
+      cursor: pointer;
+    }
+
+    .detail-drawer {
+      position: relative;
+      z-index: 1;
+      width: 100%;
+      max-width: 680px;
+      max-height: 72vh;
+      background: #161920;
+      border: 1px solid color-mix(in srgb, var(--drawer-accent, #7c6bf8) 30%, transparent);
+      border-radius: var(--s2-radius-xl, 16px) var(--s2-radius-xl, 16px) 0 0;
+      box-shadow:
+        0 -8px 48px color-mix(in srgb, var(--drawer-accent, #7c6bf8) 18%, transparent),
+        0 -2px 16px rgba(0,0,0,0.5);
+      overflow: hidden;
+      transform: translateY(100%);
+      transition: transform 0.32s cubic-bezier(.22,1,.36,1);
+    }
+
+    .detail-overlay.open .detail-drawer {
+      transform: translateY(0);
+    }
+
+    .detail-drawer-header {
+      display: flex;
+      align-items: center;
+      gap: var(--s2-spacing-200, 12px);
+      padding: var(--s2-spacing-300, 16px) var(--s2-spacing-400, 24px);
+      border-bottom: 1px solid rgba(255,255,255,0.07);
+      background: color-mix(in srgb, var(--drawer-accent, #7c6bf8) 8%, #161920);
+    }
+
+    .detail-drawer-icon {
+      width: 36px;
+      height: 36px;
+      border-radius: var(--s2-radius-default, 8px);
+      background: color-mix(in srgb, var(--drawer-accent, #7c6bf8) 20%, transparent);
+      border: 1px solid color-mix(in srgb, var(--drawer-accent, #7c6bf8) 40%, transparent);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--drawer-accent, #7c6bf8);
+      flex-shrink: 0;
+    }
+
+    .detail-drawer-title {
+      flex: 1;
+      font-size: 1rem;
+      font-weight: 700;
+      color: var(--s2-gray-25, #f5f5f5);
+      letter-spacing: -0.01em;
+    }
+
+    .detail-close-btn {
+      width: 32px;
+      height: 32px;
+      border-radius: var(--s2-radius-pill, 9999px);
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(255,255,255,0.05);
+      color: color-mix(in srgb, var(--s2-gray-25, #f5f5f5) 55%, transparent);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.1rem;
+      line-height: 1;
+      transition: background 0.15s, color 0.15s;
+    }
+
+    .detail-close-btn:hover {
+      background: rgba(255,255,255,0.12);
+      color: var(--s2-gray-25, #f5f5f5);
+    }
+
+    .detail-drawer-body {
+      padding: var(--s2-spacing-400, 24px);
+      overflow-y: auto;
+      max-height: calc(72vh - 72px);
+    }
+
+    .detail-loading {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: var(--s2-spacing-300, 16px);
+      padding: var(--s2-spacing-600, 40px) 0;
+      color: color-mix(in srgb, var(--s2-gray-25, #f5f5f5) 45%, transparent);
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .detail-spinner {
+      width: 28px;
+      height: 28px;
+      border: 2.5px solid rgba(255,255,255,0.1);
+      border-top-color: var(--drawer-accent, #7c6bf8);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    .detail-content {
+      font-size: 0.9rem;
+      line-height: 1.7;
+      color: color-mix(in srgb, var(--s2-gray-25, #f5f5f5) 80%, transparent);
+    }
+
+    .detail-content p { margin-bottom: var(--s2-spacing-200, 12px); }
+    .detail-content p:last-child { margin-bottom: 0; }
+
+    .detail-content strong {
+      color: var(--s2-gray-25, #f5f5f5);
+      font-weight: 600;
+    }
+
+    .detail-content code {
+      background: rgba(255,255,255,0.07);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: var(--s2-radius-s, 4px);
+      padding: 1px 6px;
+      font-family: 'Fira Code', 'Cascadia Code', monospace;
+      font-size: 0.82em;
+      color: var(--drawer-accent, #7c6bf8);
+    }
+
+    .detail-tag-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: var(--s2-spacing-300, 16px);
+    }
+
+    .detail-tag {
+      padding: 4px 12px;
+      border-radius: var(--s2-radius-pill, 9999px);
+      background: color-mix(in srgb, var(--drawer-accent, #7c6bf8) 14%, transparent);
+      border: 1px solid color-mix(in srgb, var(--drawer-accent, #7c6bf8) 30%, transparent);
+      font-size: 0.76rem;
+      font-weight: 600;
+      color: var(--drawer-accent, #7c6bf8);
+      letter-spacing: 0.02em;
+    }
+
+    /* ── Footer ── */
+    .page-footer {
+      text-align: center;
+      margin-top: 64px;
+      color: color-mix(in srgb, var(--s2-gray-25, #f5f5f5) 28%, transparent);
+      font-size: 0.78rem;
+      letter-spacing: 0.04em;
+    }
+
+    /* ── Pulse entrance animation ── */
+    @keyframes card-enter {
+      from { opacity: 0; transform: translateY(16px) scale(0.97); }
+      to   { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    .concept-card {
+      animation: card-enter 0.45s cubic-bezier(.22,1,.36,1) both;
+    }
+    .concept-card:nth-child(1)  { animation-delay: 0.05s; }
+    .concept-card:nth-child(2)  { animation-delay: 0.11s; }
+    .concept-card:nth-child(3)  { animation-delay: 0.17s; }
+    .concept-card:nth-child(4)  { animation-delay: 0.23s; }
+    .concept-card:nth-child(5)  { animation-delay: 0.29s; }
+    .concept-card:nth-child(6)  { animation-delay: 0.35s; }
+    .concept-card:nth-child(7)  { animation-delay: 0.41s; }
+    .concept-card:nth-child(8)  { animation-delay: 0.47s; }
+    .concept-card:nth-child(9)  { animation-delay: 0.53s; }
+    .concept-card:nth-child(10) { animation-delay: 0.59s; }
+    .concept-card:nth-child(11) { animation-delay: 0.65s; }
+    .concept-card:nth-child(12) { animation-delay: 0.71s; }
+
+    /* ── Wildcard card ── */
+    .concept-card--wildcard {
+      --card-accent: #a78bfa;
+      position: relative;
+      background: color-mix(in srgb, #1a1d26 90%, transparent);
+      border: none;
+      border-radius: var(--s2-radius-xl, 16px);
+    }
+
+    /* Rainbow animated border via pseudo-element */
+    .concept-card--wildcard::before {
+      content: '';
+      position: absolute;
+      inset: -1.5px;
+      border-radius: calc(var(--s2-radius-xl, 16px) + 1.5px);
+      background: conic-gradient(
+        from var(--angle, 0deg),
+        #a78bfa, #f472b6, #fbbf24, #34d399, #38bdf8, #fb923c, #e879f9, #a78bfa
+      );
+      z-index: -2;
+      opacity: 0.85;
+      animation: rainbow-spin 4s linear infinite;
+    }
+
+    /* Dark fill behind border */
+    .concept-card--wildcard::after {
+      content: '';
+      position: absolute;
+      inset: 1.5px;
+      border-radius: calc(var(--s2-radius-xl, 16px) - 1px);
+      background: #161920;
+      z-index: -1;
+    }
+
+    @property --angle {
+      syntax: '<angle>';
+      initial-value: 0deg;
+      inherits: false;
+    }
+
+    @keyframes rainbow-spin {
+      to { --angle: 360deg; }
+    }
+
+    .concept-card--wildcard:hover {
+      transform: translateY(-4px) scale(1.012);
+      box-shadow: 0 12px 48px rgba(167,139,250,0.22), 0 0 32px rgba(244,114,182,0.15), 0 2px 8px rgba(0,0,0,0.4);
+    }
+
+    /* Wildcard icon: rotating rainbow gradient */
+    .concept-card--wildcard .card-icon-wrap {
+      background: linear-gradient(135deg,
+        color-mix(in srgb, #a78bfa 20%, transparent),
+        color-mix(in srgb, #f472b6 20%, transparent)
+      );
+      border-color: color-mix(in srgb, #a78bfa 45%, transparent);
+      color: #c4baff;
+    }
+
+    .concept-card--wildcard:hover .card-icon-wrap {
+      background: linear-gradient(135deg,
+        color-mix(in srgb, #a78bfa 32%, transparent),
+        color-mix(in srgb, #f472b6 32%, transparent)
+      );
+      box-shadow: 0 0 20px color-mix(in srgb, #a78bfa 40%, transparent);
+      animation: none;
+    }
+
+    /* Surprise me button */
+    .card-btn-wildcard {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      width: 100%;
+      padding: 10px 20px;
+      border-radius: var(--s2-radius-pill, 9999px);
+      border: none;
+      background: linear-gradient(90deg, #a78bfa, #f472b6, #fbbf24, #34d399, #38bdf8, #a78bfa);
+      background-size: 300% 100%;
+      color: #0d0f14;
+      font-size: 0.88rem;
+      font-weight: 700;
+      cursor: pointer;
+      letter-spacing: 0.02em;
+      transition: transform 0.18s, box-shadow 0.18s;
+      animation: gradient-shift 3s linear infinite;
+      position: relative;
+      z-index: 2;
+    }
+
+    @keyframes gradient-shift {
+      0%   { background-position: 0% 50%; }
+      100% { background-position: 300% 50%; }
+    }
+
+    .card-btn-wildcard:hover {
+      transform: scale(1.04);
+      box-shadow: 0 0 24px rgba(167,139,250,0.45), 0 0 12px rgba(244,114,182,0.3);
+    }
+
+    .card-btn-wildcard:active {
+      transform: scale(0.97);
+    }
+
+    @keyframes hero-enter {
+      from { opacity: 0; transform: translateY(-12px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .hero { animation: hero-enter 0.5s cubic-bezier(.22,1,.36,1) both; }
+
+    /* ── Wildcard elimination animations ── */
+    @keyframes card-shake {
+      0%   { transform: translateX(0)   rotate(0deg);   }
+      15%  { transform: translateX(-8px) rotate(-2deg); }
+      30%  { transform: translateX(8px)  rotate(2deg);  }
+      45%  { transform: translateX(-6px) rotate(-1.5deg); }
+      60%  { transform: translateX(6px)  rotate(1.5deg);  }
+      75%  { transform: translateX(-3px) rotate(-0.5deg); }
+      90%  { transform: translateX(3px)  rotate(0.5deg);  }
+      100% { transform: translateX(0)   rotate(0deg);   }
+    }
+
+    @keyframes card-flash {
+      0%, 100% { filter: brightness(1); }
+      25%       { filter: brightness(2.2) saturate(1.8); }
+      50%       { filter: brightness(0.6); }
+      75%       { filter: brightness(1.8) saturate(1.5); }
+    }
+
+    .card-eliminating {
+      animation: card-shake 0.35s ease, card-flash 0.35s ease !important;
+      pointer-events: none;
+    }
+
+    .card-eliminated {
+      opacity: 0 !important;
+      transform: scale(0.6) !important;
+      transition: opacity 0.3s ease, transform 0.3s cubic-bezier(.55,0,.7,.5) !important;
+      pointer-events: none;
+    }
+
+    .card-gone {
+      visibility: hidden;
+      pointer-events: none;
+    }
+
+    @keyframes card-survivor-pulse {
+      0%   { box-shadow: 0 0 0px transparent; transform: scale(1); }
+      35%  { box-shadow: 0 0 40px color-mix(in srgb, var(--card-accent, #7c6bf8) 70%, transparent), 0 0 80px color-mix(in srgb, var(--card-accent, #7c6bf8) 35%, transparent); transform: scale(1.06); }
+      65%  { box-shadow: 0 0 24px color-mix(in srgb, var(--card-accent, #7c6bf8) 50%, transparent); transform: scale(1.03); }
+      100% { box-shadow: 0 0 16px color-mix(in srgb, var(--card-accent, #7c6bf8) 30%, transparent); transform: scale(1); }
+    }
+
+    .card-survivor {
+      animation: card-survivor-pulse 0.8s cubic-bezier(.22,1,.36,1) both !important;
+      border-color: color-mix(in srgb, var(--card-accent, #7c6bf8) 80%, transparent) !important;
+    }
+
+    @keyframes card-restore {
+      from { opacity: 0; transform: scale(0.85) translateY(10px); }
+      to   { opacity: 1; transform: scale(1) translateY(0); }
+    }
+
+    .card-restoring {
+      animation: card-restore 0.4s cubic-bezier(.22,1,.36,1) both !important;
+    }
+
+    /* Dim non-wildcard buttons during animation */
+    .wildcard-running button,
+    .wildcard-running .card-btn,
+    .wildcard-running .card-btn-secondary {
+      opacity: 0.35;
+      pointer-events: none;
+      cursor: default;
+    }
+
+    /* Keep wildcard button readable but disabled during run */
+    .wildcard-running .card-btn-wildcard {
+      opacity: 0.5;
+      cursor: wait;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="bg-canvas"></canvas>
+
+  <div class="page">
+    <!-- Hero -->
+    <header class="hero">
+      <div class="hero-wordmark">
+        <div class="hero-logo">
+          <i data-lucide="cpu" style="width:26px;height:26px;color:#fff;"></i>
+        </div>
+        <h1 class="hero-title">SLICC</h1>
+      </div>
+      <p class="hero-tagline">An AI agent that lives in your browser.</p>
+      <p class="hero-subtitle">Click any concept below to go deeper — the AI will explain it to you.</p>
+    </header>
+
+    <!-- Grid -->
+    <p class="section-label">Anatomy</p>
+    <div class="concept-grid" id="concept-grid">
+
+      <div class="concept-card" data-topic="Cone" style="--card-accent: #a78bfa;">
+        <div class="card-icon-wrap">
+          <i data-lucide="cpu" style="width:20px;height:20px;"></i>
+        </div>
+        <div class="card-title">The Cone</div>
+        <div class="card-teaser">The main AI brain. Talks to you, remembers everything, and conducts the orchestra.</div>
+        <div class="card-btn-row">
+          <button class="card-btn" onclick="askMore('Cone', '#a78bfa', 'cpu')">
+            <i data-lucide="sparkles" style="width:13px;height:13px;"></i>
+            Tell me more
+          </button>
+          <button class="card-btn-secondary" onclick="slicc.lick({action:'show-me',data:{topic:'Cone'}})">
+            <i data-lucide="play" style="width:13px;height:13px;"></i>
+            Show me
+          </button>
+        </div>
+      </div>
+
+      <div class="concept-card" data-topic="Scoops" style="--card-accent: #34d399;">
+        <div class="card-icon-wrap">
+          <i data-lucide="git-fork" style="width:20px;height:20px;"></i>
+        </div>
+        <div class="card-title">Scoops</div>
+        <div class="card-teaser">Isolated sub-agents that do the heavy lifting — in parallel, sandboxed, and disposable.</div>
+        <div class="card-btn-row">
+          <button class="card-btn" onclick="askMore('Scoops', '#34d399', 'git-fork')">
+            <i data-lucide="sparkles" style="width:13px;height:13px;"></i>
+            Tell me more
+          </button>
+          <button class="card-btn-secondary" onclick="slicc.lick({action:'show-me',data:{topic:'Scoops'}})">
+            <i data-lucide="play" style="width:13px;height:13px;"></i>
+            Show me
+          </button>
+        </div>
+      </div>
+
+      <div class="concept-card" data-topic="Sprinkles" style="--card-accent: #f472b6;">
+        <div class="card-icon-wrap">
+          <i data-lucide="layers" style="width:20px;height:20px;"></i>
+        </div>
+        <div class="card-title">Sprinkles</div>
+        <div class="card-teaser">Interactive UI panels — dashboards, editors, and yes, this very screen you're reading.</div>
+        <div class="card-btn-row">
+          <button class="card-btn" onclick="askMore('Sprinkles', '#f472b6', 'layers')">
+            <i data-lucide="sparkles" style="width:13px;height:13px;"></i>
+            Tell me more
+          </button>
+          <button class="card-btn-secondary" onclick="slicc.lick({action:'show-me',data:{topic:'Sprinkles'}})">
+            <i data-lucide="play" style="width:13px;height:13px;"></i>
+            Show me
+          </button>
+        </div>
+      </div>
+
+      <div class="concept-card" data-topic="Licks" style="--card-accent: #fbbf24;">
+        <div class="card-icon-wrap">
+          <i data-lucide="zap" style="width:20px;height:20px;"></i>
+        </div>
+        <div class="card-title">Licks</div>
+        <div class="card-teaser">Events that wake agents up — webhooks, cron jobs, or you pressing a button.</div>
+        <div class="card-btn-row">
+          <button class="card-btn" onclick="askMore('Licks', '#fbbf24', 'zap')">
+            <i data-lucide="sparkles" style="width:13px;height:13px;"></i>
+            Tell me more
+          </button>
+          <button class="card-btn-secondary" onclick="slicc.lick({action:'show-me',data:{topic:'Licks'}})">
+            <i data-lucide="play" style="width:13px;height:13px;"></i>
+            Show me
+          </button>
+        </div>
+      </div>
+
+      <div class="concept-card" data-topic="Skills" style="--card-accent: #38bdf8;">
+        <div class="card-icon-wrap">
+          <i data-lucide="book-open" style="width:20px;height:20px;"></i>
+        </div>
+        <div class="card-title">Skills</div>
+        <div class="card-teaser">Markdown playbooks that teach agents new tricks without a single line of server code.</div>
+        <div class="card-btn-row">
+          <button class="card-btn" onclick="askMore('Skills', '#38bdf8', 'book-open')">
+            <i data-lucide="sparkles" style="width:13px;height:13px;"></i>
+            Tell me more
+          </button>
+          <button class="card-btn-secondary" onclick="slicc.lick({action:'show-me',data:{topic:'Skills'}})">
+            <i data-lucide="play" style="width:13px;height:13px;"></i>
+            Show me
+          </button>
+        </div>
+      </div>
+
+      <div class="concept-card" data-topic="Shell" style="--card-accent: #fb923c;">
+        <div class="card-icon-wrap">
+          <i data-lucide="terminal" style="width:20px;height:20px;"></i>
+        </div>
+        <div class="card-title">The Shell</div>
+        <div class="card-teaser">UNIX commands, git, browsers — all wired in. If you can script it, SLICC can run it.</div>
+        <div class="card-btn-row">
+          <button class="card-btn" onclick="askMore('Shell', '#fb923c', 'terminal')">
+            <i data-lucide="sparkles" style="width:13px;height:13px;"></i>
+            Tell me more
+          </button>
+          <button class="card-btn-secondary" onclick="slicc.lick({action:'show-me',data:{topic:'Shell'}})">
+            <i data-lucide="play" style="width:13px;height:13px;"></i>
+            Show me
+          </button>
+        </div>
+      </div>
+
+      <div class="concept-card" data-topic="Trays" style="--card-accent: #e879f9;">
+        <div class="card-icon-wrap">
+          <i data-lucide="monitor" style="width:20px;height:20px;"></i>
+        </div>
+        <div class="card-title">Trays</div>
+        <div class="card-teaser">Remote runtimes. Run agents in the cloud or on another machine, browser included.</div>
+        <div class="card-btn-row">
+          <button class="card-btn" onclick="askMore('Trays', '#e879f9', 'monitor')">
+            <i data-lucide="sparkles" style="width:13px;height:13px;"></i>
+            Tell me more
+          </button>
+          <button class="card-btn-secondary" onclick="slicc.lick({action:'show-me',data:{topic:'Trays'}})">
+            <i data-lucide="play" style="width:13px;height:13px;"></i>
+            Show me
+          </button>
+        </div>
+      </div>
+
+      <div class="concept-card" data-topic="Inline Sprinkles" style="--card-accent: #4ade80;">
+        <div class="card-icon-wrap">
+          <i data-lucide="layout-template" style="width:20px;height:20px;"></i>
+        </div>
+        <div class="card-title">Inline Sprinkles</div>
+        <div class="card-teaser">Mini UI cards that appear right inside the chat. Buttons, tables, pickers — no sidebar needed.</div>
+        <div class="card-btn-row">
+          <button class="card-btn" onclick="askMore('Inline Sprinkles', '#4ade80', 'layout-template')">
+            <i data-lucide="sparkles" style="width:13px;height:13px;"></i>
+            Tell me more
+          </button>
+          <button class="card-btn-secondary" onclick="slicc.lick({action:'show-me',data:{topic:'Inline Sprinkles'}})">
+            <i data-lucide="play" style="width:13px;height:13px;"></i>
+            Show me
+          </button>
+        </div>
+      </div>
+
+      <div class="concept-card" data-topic="Electron App" style="--card-accent: #f87171;">
+        <div class="card-icon-wrap">
+          <i data-lucide="app-window" style="width:20px;height:20px;"></i>
+        </div>
+        <div class="card-title">Electron App</div>
+        <div class="card-teaser">SLICC as a desktop app. Full browser automation, local file access, no extension required.</div>
+        <div class="card-btn-row">
+          <button class="card-btn" onclick="askMore('Electron App', '#f87171', 'app-window')">
+            <i data-lucide="sparkles" style="width:13px;height:13px;"></i>
+            Tell me more
+          </button>
+          <button class="card-btn-secondary" onclick="slicc.lick({action:'show-me',data:{topic:'Electron App'}})">
+            <i data-lucide="play" style="width:13px;height:13px;"></i>
+            Show me
+          </button>
+        </div>
+      </div>
+
+      <div class="concept-card" data-topic="Teleportation" style="--card-accent: #67e8f9;">
+        <div class="card-icon-wrap">
+          <i data-lucide="shuffle" style="width:20px;height:20px;"></i>
+        </div>
+        <div class="card-title">Teleportation</div>
+        <div class="card-teaser">Log in once on your screen. SLICC captures the session and beams it to an agent running elsewhere.</div>
+        <div class="card-btn-row">
+          <button class="card-btn" onclick="askMore('Teleportation', '#67e8f9', 'shuffle')">
+            <i data-lucide="sparkles" style="width:13px;height:13px;"></i>
+            Tell me more
+          </button>
+          <button class="card-btn-secondary" onclick="slicc.lick({action:'show-me',data:{topic:'Teleportation'}})">
+            <i data-lucide="play" style="width:13px;height:13px;"></i>
+            Show me
+          </button>
+        </div>
+      </div>
+
+      <div class="concept-card" data-topic="Secret Sauce" style="--card-accent: #fde68a;">
+        <div class="card-icon-wrap">
+          <i data-lucide="flask-conical" style="width:20px;height:20px;"></i>
+        </div>
+        <div class="card-title">Secret Sauce</div>
+        <div class="card-teaser">Reverse-engineer any web app's API. One HAR file. One skill. Zero UI friction forever.</div>
+        <div class="card-btn-row">
+          <button class="card-btn" onclick="askMore('Secret Sauce', '#fde68a', 'flask-conical')">
+            <i data-lucide="sparkles" style="width:13px;height:13px;"></i>
+            Tell me more
+          </button>
+          <button class="card-btn-secondary" onclick="slicc.lick({action:'show-me',data:{topic:'Secret Sauce'}})">
+            <i data-lucide="play" style="width:13px;height:13px;"></i>
+            Show me
+          </button>
+        </div>
+      </div>
+
+      <div class="concept-card concept-card--wildcard">
+        <div class="card-icon-wrap">
+          <i data-lucide="sparkles" style="width:20px;height:20px;"></i>
+        </div>
+        <div class="card-title">The Wildcard</div>
+        <div class="card-teaser">Surprise me. The cone picks two or three concepts at random and builds something unexpected.</div>
+        <button class="card-btn-wildcard" id="wildcard-btn" onclick="runWildcard()">
+          <i data-lucide="shuffle" style="width:15px;height:15px;"></i>
+          Surprise me
+        </button>
+      </div>
+
+    </div>
+
+    <footer class="page-footer">
+      SLICC &mdash; Self-Licking Ice Cream Cone
+    </footer>
+  </div>
+
+  <!-- Detail drawer overlay -->
+  <div class="detail-overlay" id="detail-overlay">
+    <div class="detail-backdrop" onclick="closeDetail()"></div>
+    <div class="detail-drawer" id="detail-drawer">
+      <div class="detail-drawer-header">
+        <div class="detail-drawer-icon" id="drawer-icon">
+          <i data-lucide="cpu" style="width:18px;height:18px;" id="drawer-icon-el"></i>
+        </div>
+        <span class="detail-drawer-title" id="drawer-title">Loading…</span>
+        <button class="detail-close-btn" onclick="closeDetail()">
+          <i data-lucide="x" style="width:16px;height:16px;"></i>
+        </button>
+      </div>
+      <div class="detail-drawer-body" id="drawer-body">
+        <div class="detail-loading" id="drawer-loading">
+          <div class="detail-spinner"></div>
+          <span>Asking the cone…</span>
+        </div>
+        <div class="detail-content" id="drawer-content" style="display:none;"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ── Ambient particle canvas ──
+    (function () {
+      var canvas = document.getElementById('bg-canvas');
+      var ctx = canvas.getContext('2d');
+      var W, H;
+      var particles = [];
+      var COLORS = ['#7c6bf8', '#3ecfcf', '#f472b6', '#34d399', '#fbbf24', '#38bdf8'];
+
+      function resize() {
+        W = canvas.width = window.innerWidth;
+        H = canvas.height = window.innerHeight;
+      }
+
+      function Particle() {
+        this.x = Math.random() * W;
+        this.y = Math.random() * H;
+        this.r = Math.random() * 1.8 + 0.4;
+        this.vx = (Math.random() - 0.5) * 0.28;
+        this.vy = (Math.random() - 0.5) * 0.28;
+        this.color = COLORS[Math.floor(Math.random() * COLORS.length)];
+        this.alpha = Math.random() * 0.5 + 0.15;
+      }
+
+      function init() {
+        particles = [];
+        for (var i = 0; i < 90; i++) particles.push(new Particle());
+      }
+
+      function draw() {
+        ctx.clearRect(0, 0, W, H);
+        for (var i = 0; i < particles.length; i++) {
+          var p = particles[i];
+          p.x += p.vx;
+          p.y += p.vy;
+          if (p.x < -4) p.x = W + 4;
+          if (p.x > W + 4) p.x = -4;
+          if (p.y < -4) p.y = H + 4;
+          if (p.y > H + 4) p.y = -4;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+          ctx.fillStyle = p.color;
+          ctx.globalAlpha = p.alpha;
+          ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+        requestAnimationFrame(draw);
+      }
+
+      resize();
+      init();
+      draw();
+      window.addEventListener('resize', function () { resize(); init(); });
+    })();
+
+    // ── Concept data ──
+    var currentTopic = null;
+    var currentAccent = '#7c6bf8';
+    var currentIcon = 'cpu';
+
+    var iconMap = {
+      'Cone': 'cpu',
+      'Scoops': 'git-fork',
+      'Sprinkles': 'layers',
+      'Licks': 'zap',
+      'Skills': 'book-open',
+      'Shell': 'terminal',
+      'Trays': 'monitor',
+      'Inline Sprinkles': 'layout-template',
+      'Electron App': 'app-window',
+      'Teleportation': 'shuffle',
+      'Secret Sauce': 'flask-conical'
+    };
+
+    var accentMap = {
+      'Cone': '#a78bfa',
+      'Scoops': '#34d399',
+      'Sprinkles': '#f472b6',
+      'Licks': '#fbbf24',
+      'Skills': '#38bdf8',
+      'Shell': '#fb923c',
+      'Trays': '#e879f9',
+      'Inline Sprinkles': '#4ade80',
+      'Electron App': '#f87171',
+      'Teleportation': '#67e8f9',
+      'Secret Sauce': '#fde68a'
+    };
+
+    // ── Open drawer and fire lick ──
+    function askMore(topic, accent, icon) {
+      currentTopic = topic;
+      currentAccent = accent || accentMap[topic] || '#7c6bf8';
+      currentIcon = icon || iconMap[topic] || 'cpu';
+
+      var overlay = document.getElementById('detail-overlay');
+      var drawer = document.getElementById('detail-drawer');
+      var drawerTitle = document.getElementById('drawer-title');
+      var drawerLoading = document.getElementById('drawer-loading');
+      var drawerContent = document.getElementById('drawer-content');
+      var drawerIconWrap = document.getElementById('drawer-icon');
+      var drawerIconEl = document.getElementById('drawer-icon-el');
+
+      // Set accent
+      drawer.style.setProperty('--drawer-accent', currentAccent);
+
+      // Set icon
+      drawerIconEl.setAttribute('data-lucide', currentIcon);
+      LucideIcons.render();
+
+      // Set title
+      drawerTitle.textContent = topic;
+
+      // Show loading, hide content
+      drawerLoading.style.display = 'flex';
+      drawerContent.style.display = 'none';
+      drawerContent.innerHTML = '';
+
+      // Open
+      overlay.classList.add('open');
+
+      // Fire lick
+      slicc.lick({ action: 'tell-me-more', data: { topic: topic } });
+    }
+
+    function closeDetail() {
+      document.getElementById('detail-overlay').classList.remove('open');
+      currentTopic = null;
+    }
+
+    // Close on Escape
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') closeDetail();
+    });
+
+    // ── Receive detail from cone ──
+    slicc.on('update', function (data) {
+      if (data.action === 'show-detail') {
+        var drawerLoading = document.getElementById('drawer-loading');
+        var drawerContent = document.getElementById('drawer-content');
+        var drawerTitle = document.getElementById('drawer-title');
+        var drawer = document.getElementById('detail-drawer');
+        var drawerIconEl = document.getElementById('drawer-icon-el');
+        var overlay = document.getElementById('detail-overlay');
+
+        var topic = data.topic || currentTopic || '';
+        var accent = accentMap[topic] || currentAccent || '#7c6bf8';
+        var icon = iconMap[topic] || currentIcon || 'cpu';
+
+        drawer.style.setProperty('--drawer-accent', accent);
+        drawerIconEl.setAttribute('data-lucide', icon);
+        drawerTitle.textContent = topic;
+
+        // Make sure drawer is open
+        overlay.classList.add('open');
+
+        // Render detail text
+        var detail = data.detail || '';
+        var html = '<div class="detail-content">' + formatDetail(detail) + '</div>';
+
+        // Tags
+        if (data.tags && data.tags.length) {
+          html += '<div class="detail-tag-row">';
+          data.tags.forEach(function (t) {
+            html += '<span class="detail-tag">' + escHtml(t) + '</span>';
+          });
+          html += '</div>';
+        }
+
+        drawerContent.innerHTML = html;
+        drawerContent.style.display = 'block';
+        drawerLoading.style.display = 'none';
+
+        LucideIcons.render();
+      }
+    });
+
+    // Format detail: turn **bold** and `code` and newlines into HTML
+    function formatDetail(text) {
+      if (!text) return '';
+      // Escape first
+      var s = escHtml(text);
+      // **bold**
+      s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+      // `code`
+      s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+      // Paragraphs: double newline → </p><p>
+      s = '<p>' + s.replace(/\n\n+/g, '</p><p>').replace(/\n/g, '<br>') + '</p>';
+      return s;
+    }
+
+    function escHtml(s) {
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    // ── Init icons ──
+    LucideIcons.render();
+
+    // ── Wildcard elimination game ──
+    function sleep(ms) {
+      return new Promise(function(resolve) { setTimeout(resolve, ms); });
+    }
+
+    function fisherYates(arr) {
+      var a = arr.slice();
+      for (var i = a.length - 1; i > 0; i--) {
+        var j = Math.floor(Math.random() * (i + 1));
+        var tmp = a[i]; a[i] = a[j]; a[j] = tmp;
+      }
+      return a;
+    }
+
+    async function runWildcard() {
+      var grid = document.getElementById('concept-grid');
+      var btn  = document.getElementById('wildcard-btn');
+
+      // Collect all non-wildcard cards
+      var allCards = Array.from(grid.querySelectorAll('.concept-card:not(.concept-card--wildcard)'));
+      if (allCards.length < 3) return;
+
+      // Lock UI
+      grid.classList.add('wildcard-running');
+      btn.disabled = true;
+
+      // Shuffle
+      var pool = fisherYates(allCards);
+      var survivors = pool.slice(pool.length - 2); // last 2 will survive
+      var losers    = pool.slice(0, pool.length - 2);
+
+      // Stagger eliminations — faster for early evictions, slow down for drama at the end
+      var baseDelay = 260;
+      for (var i = 0; i < losers.length; i++) {
+        var card = losers[i];
+        // Speed ramps: first ~60% fast, last 3 slower
+        var remaining = losers.length - i;
+        var wait = remaining <= 3 ? 700 : (remaining <= 6 ? 480 : baseDelay);
+
+        await sleep(wait);
+        await eliminateCard(card);
+      }
+
+      // Brief suspense pause
+      await sleep(380);
+
+      // Triumph!
+      survivors.forEach(function(card) {
+        card.classList.add('card-survivor');
+      });
+
+      await sleep(900);
+
+      // Fire lick with surviving topics
+      var topics = survivors.map(function(c) { return c.dataset.topic; });
+      slicc.lick({ action: 'wildcard', data: { topics: topics } });
+
+      // Wait a moment then restore all cards
+      await sleep(1800);
+      await restoreAllCards(allCards, survivors);
+
+      // Unlock UI
+      grid.classList.remove('wildcard-running');
+      btn.disabled = false;
+    }
+
+    async function eliminateCard(card) {
+      return new Promise(function(resolve) {
+        // Phase 1: shake + flash
+        card.classList.add('card-eliminating');
+
+        setTimeout(function() {
+          card.classList.remove('card-eliminating');
+          // Phase 2: shrink + fade
+          card.classList.add('card-eliminated');
+
+          setTimeout(function() {
+            // Phase 3: remove from flow
+            card.classList.add('card-gone');
+            card.classList.remove('card-eliminated');
+            resolve();
+          }, 320);
+        }, 360);
+      });
+    }
+
+    async function restoreAllCards(allCards, survivors) {
+      // Remove survivor glow
+      survivors.forEach(function(c) { c.classList.remove('card-survivor'); });
+
+      // Restore all hidden cards with staggered fade-in
+      var hidden = allCards.filter(function(c) { return c.classList.contains('card-gone'); });
+      for (var i = 0; i < hidden.length; i++) {
+        var card = hidden[i];
+        card.classList.remove('card-gone');
+        card.classList.add('card-restoring');
+        (function(c) {
+          setTimeout(function() { c.classList.remove('card-restoring'); }, 420);
+        })(card);
+        await sleep(55);
+      }
+    }
+  </script>
+</body>
+</html>
