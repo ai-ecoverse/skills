@@ -15,10 +15,11 @@ const BROKER_URL = process.env.AS_A_BOT_URL || 'https://as-bot-worker.minivelos.
 const BOT_CACHE = '/.cache/ai-aligned-gh/token';
 
 const WRITE_OPS = {
-  pr:      ['merge','comment','create','edit','close','review'],
-  issue:   ['create','edit','close','comment'],
-  vars:    ['set'],
-  release: ['create','upload','delete'],
+  pr:            ['merge','comment','create','edit','close','review'],
+  issue:         ['create','edit','close','comment'],
+  vars:          ['set'],
+  release:       ['create','upload','delete'],
+  notifications: ['read'],
 };
 
 function isMutating(cmd, sub) {
@@ -443,6 +444,108 @@ async function releaseList(args) {
   console.log(table(rows, [26, 56]));
 }
 
+// ─── notifications list ───────────────────────────────────────────────────────
+
+const NOTIF_TYPE_SYM = {
+  PullRequest: C.cyan('PR'),
+  Issue:       C.green('IS'),
+  Release:     C.yellow('RL'),
+  Commit:      C.gray('CM'),
+  Discussion:  C.cyan('DS'),
+  CheckSuite:  C.gray('CS'),
+  RepositoryVulnerabilityAlert: C.red('VA'),
+};
+
+function notifTypeSym(t) { return NOTIF_TYPE_SYM[t] || C.gray(t.slice(0,2).toUpperCase()); }
+
+const NOTIF_REASON_COLOR = {
+  mention:       C.yellow,
+  author:        C.cyan,
+  comment:       C.gray,
+  review_requested: C.yellow,
+  assign:        C.cyan,
+  subscribed:    C.gray,
+  team_mention:  C.yellow,
+  ci_activity:   C.gray,
+  security_alert: C.red,
+};
+
+function reasonStr(r) {
+  const fn = NOTIF_REASON_COLOR[r] || C.gray;
+  return fn(r.replace('_', ' '));
+}
+
+async function notificationsList(args) {
+  // Parse flags
+  let participating = false, repoFilter = null, showAll = false, limit = 30;
+  const rest = [];
+  for (const a of args) {
+    if (a === '--participating' || a === '-p') participating = true;
+    else if (a === '--all' || a === '-a') showAll = true;
+    else if (a.startsWith('--repo=')) repoFilter = a.slice(7);
+    else if (a.startsWith('-n')) limit = parseInt(a.slice(2)) || 30;
+    else rest.push(a);
+  }
+  if (rest[0] && rest[0].includes('/')) repoFilter = rest[0];
+
+  const qs = new URLSearchParams({
+    all: showAll ? 'true' : 'false',
+    participating: participating ? 'true' : 'false',
+    per_page: String(Math.min(limit, 50)),
+  });
+
+  let notifs;
+  try {
+    const endpoint = repoFilter
+      ? `/repos/${repoFilter}/notifications?${qs}`
+      : `/notifications?${qs}`;
+    notifs = await api(endpoint);
+  } catch (e) { fail('notifications list', e); }
+
+  if (!notifs.length) { console.log(C.gray('No notifications.')); return; }
+
+  // Group by repo for readability
+  const byRepo = {};
+  for (const n of notifs) {
+    const repo = n.repository.full_name;
+    if (!byRepo[repo]) byRepo[repo] = [];
+    byRepo[repo].push(n);
+  }
+
+  for (const [repo, items] of Object.entries(byRepo)) {
+    console.log('\n' + C.bold(repo));
+    for (const n of items) {
+      const type   = notifTypeSym(n.subject.type);
+      const title  = trunc(n.subject.title, 60);
+      const reason = reasonStr(n.reason);
+      const date   = C.gray(fmtDate(n.updated_at));
+      const unread = n.unread ? C.yellow('•') : ' ';
+      // Extract PR/issue number from URL if present
+      const numMatch = n.subject.url?.match(/\/(pulls|issues)\/(\d+)$/);
+      const num = numMatch ? C.gray('#' + numMatch[2]) : '   ';
+      console.log('  ' + unread + ' ' + type + ' ' + pad(num, 7) + pad(title, 62) + '  ' + pad(reason, 18) + '  ' + date);
+    }
+  }
+  console.log('');
+}
+
+async function notificationsRead(args) {
+  // Mark notifications as read — all or for a specific repo
+  let repoFilter = null;
+  for (const a of args) {
+    if (a.includes('/')) repoFilter = a;
+    else if (a.startsWith('--repo=')) repoFilter = a.slice(7);
+  }
+
+  try {
+    const endpoint = repoFilter
+      ? `/repos/${repoFilter}/notifications`
+      : `/notifications`;
+    await api(endpoint, { method: 'PUT', body: JSON.stringify({ read: true }) });
+    console.log(sym('success') + ' Marked ' + (repoFilter ? C.cyan(repoFilter) : 'all') + ' notifications as read');
+  } catch (e) { fail('notifications read', e); }
+}
+
 // ─── search prs ──────────────────────────────────────────────────────────────
 
 async function searchPrs(args) {
@@ -572,7 +675,9 @@ function showHelp() {
   console.log('  ' + C.cyan('release list') + '  [repo]                       List recent releases');
   console.log('  ' + C.cyan('search prs') + '    <query> [repo]               Search PRs by keyword');
   console.log('  ' + C.cyan('vars list') + '     [repo]                       List Actions variables');
-  console.log('  ' + C.cyan('vars set') + '      <name> <value> [repo]        Set an Actions variable\n');
+  console.log('  ' + C.cyan('vars set') + '      <name> <value> [repo]        Set an Actions variable');
+  console.log('  ' + C.cyan('notifications list') + '  [--all] [-p] [--repo=r] [-nN]  List notifications');
+  console.log('  ' + C.cyan('notifications read') + '  [--repo=r]              Mark notifications as read\n');
   console.log(C.bold('AUTH'));
   console.log('  git config github.token <PAT>');
   console.log('  — or: export GITHUB_TOKEN=<PAT>\n');
@@ -602,6 +707,7 @@ const dispatch = {
   release: { list: () => releaseList(rest) },
   search:  { prs:  () => searchPrs(rest) },
   vars:    { list: () => varsList(rest),    set:  () => varsSet(rest) },
+  notifications: { list: () => notificationsList(rest), read: () => notificationsRead(rest) },
 };
 
 if (!dispatch[cmd]) die("unknown command: '" + cmd + "'. Run gh --help for usage.");
