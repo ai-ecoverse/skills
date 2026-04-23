@@ -6,6 +6,80 @@
 const _tokenResult = await exec('git config github.token 2>/dev/null');
 const token = _tokenResult.stdout.trim() || process.env.GITHUB_TOKEN || '';
 
+// ─── AI attribution (ai-aligned-gh) ──────────────────────────────────────────
+
+const isAI = !!(process.env.CLAUDECODE || process.env.CLAUDE_CODE_ENTRYPOINT
+  || process.env.GEMINI_CLI || process.env.CODEX_CLI || process.env.CURSOR_AGENT);
+
+const BROKER_URL = process.env.AS_A_BOT_URL || 'https://as-bot-worker.minivelos.workers.dev';
+const BOT_CACHE = '/.cache/ai-aligned-gh/token';
+
+const WRITE_OPS = {
+  pr:      ['merge','comment','create','edit','close','review'],
+  issue:   ['create','edit','close','comment'],
+  vars:    ['set'],
+  release: ['create','upload','delete'],
+};
+
+function isMutating(cmd, sub) {
+  return WRITE_OPS[cmd]?.includes(sub);
+}
+
+async function getAttributedToken() {
+  // 1. Check cache
+  try {
+    const cached = (await fs.readFile(BOT_CACHE)).trim();
+    if (cached) {
+      const check = await fetch('https://api.github.com/user', {
+        headers: { 'Authorization': `Bearer ${cached}`, 'User-Agent': 'gh.jsh/1.0' }
+      });
+      if (check.ok) return cached;
+    }
+  } catch {}
+
+  // 2. Start device flow
+  let flow;
+  try {
+    const r = await fetch(`${BROKER_URL}/user-token/start`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scopes: 'repo' })
+    });
+    flow = await r.json();
+  } catch { return token; } // broker unreachable, fall back
+
+  if (!flow.device_code) return token;
+
+  console.error(`\n⚡ AI attribution required — authorize as-a-bot:\n`);
+  console.error(`   Visit: ${flow.verification_uri}`);
+  console.error(`   Code:  ${flow.user_code}\n`);
+
+  // 3. Poll
+  const interval = (flow.interval || 5) * 1000;
+  const expires  = Date.now() + (flow.expires_in || 900) * 1000;
+  while (Date.now() < expires) {
+    await new Promise(r => setTimeout(r, interval));
+    try {
+      const p = await fetch(`${BROKER_URL}/user-token/poll`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ device_code: flow.device_code })
+      });
+      const result = await p.json();
+      if (result.access_token) {
+        await fs.writeFile(BOT_CACHE, result.access_token);
+        console.error(`✓ Authenticated — actions will appear as you via as-a-bot.\n`);
+        return result.access_token;
+      }
+      if (result.error && result.error !== 'authorization_pending' && result.error !== 'slow_down') break;
+    } catch { break; }
+  }
+  return token; // timed out, fall back
+}
+
+async function resolveToken(cmd, sub) {
+  if (isAI && isMutating(cmd, sub)) return getAttributedToken();
+  return token;
+}
+
 // ─── Repo inference ───────────────────────────────────────────────────────────
 
 async function inferRepo() {
@@ -61,9 +135,12 @@ const GH_BASE = 'https://api.github.com';
 async function api(path, opts) {
   opts = opts || {};
   const url = path.startsWith('http') ? path : GH_BASE + path;
+  // Use attributed token for mutating requests when running as AI agent
+  const isWrite = opts.method && opts.method !== 'GET';
+  const activeToken = (isWrite && isAI) ? await getAttributedToken() : token;
   const res = await fetch(url, Object.assign({}, opts, {
     headers: Object.assign({
-      'Authorization': token ? `Bearer ${token}` : '',
+      'Authorization': activeToken ? `Bearer ${activeToken}` : '',
       'Accept': 'application/vnd.github+json',
       'X-GitHub-Api-Version': '2022-11-28',
       'Content-Type': 'application/json',
@@ -430,6 +507,51 @@ async function varsSet(args) {
   } catch (e) { fail('vars set', e); }
 }
 
+// ─── auth status ─────────────────────────────────────────────────────────────
+
+async function authStatus() {
+  const src = _tokenResult.stdout.trim() ? 'git config github.token' : 'env $GITHUB_TOKEN';
+  const preview = token ? token.slice(0, 8) + '…' : C.red('(not set)');
+  let username = C.gray('(unverified)');
+  if (token) {
+    try {
+      const u = await api('/user', { headers: { 'Authorization': `Bearer ${token}` } });
+      username = u.login;
+    } catch { username = C.red('(invalid token)'); }
+  }
+
+  let botStatus = C.gray('not cached — will prompt on first write op');
+  try {
+    const cached = (await fs.readFile(BOT_CACHE)).trim();
+    if (cached) {
+      const check = await fetch('https://api.github.com/user', {
+        headers: { 'Authorization': `Bearer ${cached}`, 'User-Agent': 'gh.jsh/1.0' }
+      });
+      if (check.ok) {
+        const bu = await check.json();
+        botStatus = C.green('valid') + ' — acting as ' + C.cyan(bu.login);
+      } else {
+        botStatus = C.yellow('cached but expired — will re-auth on next write op');
+      }
+    }
+  } catch {}
+
+  const writeList = Object.entries(WRITE_OPS)
+    .flatMap(([k, vs]) => vs.map(v => `${k}:${v}`)).join(', ');
+
+  console.log(C.bold('\nPersonal token'));
+  console.log('  Source:  ' + C.gray(src));
+  console.log('  Token:   ' + C.cyan(preview));
+  console.log('  User:    ' + C.cyan(username));
+  console.log(C.bold('\nAI attribution'));
+  console.log('  Enabled: ' + (isAI ? C.green('yes') : C.gray('no (not running as AI agent)')));
+  console.log('  Broker:  ' + C.gray(BROKER_URL));
+  console.log('  Bot token: ' + botStatus);
+  console.log(C.bold('\nWrite operations that trigger attribution:'));
+  console.log('  ' + C.gray(writeList));
+  console.log('');
+}
+
 // ─── help ────────────────────────────────────────────────────────────────────
 
 function showHelp() {
@@ -469,6 +591,8 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
   showHelp();
   process.exit(0);
 }
+
+if (cmd === 'auth') { await authStatus(); process.exit(0); }
 
 const dispatch = {
   pr:      { list: () => prList(rest),      view: () => prView(rest),    merge: () => prMerge(rest), comment: () => prComment(rest), checkout: () => prCheckout(rest) },
