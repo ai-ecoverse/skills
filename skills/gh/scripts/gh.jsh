@@ -91,10 +91,43 @@ async function inferRepo() {
 }
 
 async function resolveRepo(arg) {
-  if (arg && arg.includes('/')) return arg;
+  if (arg && arg.includes('/')) return validateRepo(arg);
   const inferred = await inferRepo();
   if (inferred) return inferred;
   die('No repo specified and could not infer from git remote. Pass owner/repo explicitly.');
+}
+
+// ─── Input validation ────────────────────────────────────────────────────────
+
+function validateNum(val, name) {
+  const n = parseInt(val, 10);
+  if (!val || isNaN(n) || n <= 0 || String(n) !== String(val).trim()) {
+    die(`Invalid ${name}: must be a positive integer (got: ${JSON.stringify(val)})`);
+  }
+  return n;
+}
+
+function validateRepo(val) {
+  if (!val) return val;
+  if (!/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/.test(val)) {
+    die(`Invalid repo format: expected owner/repo with alphanumeric, hyphens, dots (got: ${JSON.stringify(val)})`);
+  }
+  return val;
+}
+
+function validateVarName(val) {
+  if (!val || !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(val)) {
+    die(`Invalid variable name: must match [a-zA-Z_][a-zA-Z0-9_]* (got: ${JSON.stringify(val)})`);
+  }
+  return val;
+}
+
+function sanitizeBranch(branch) {
+  const safe = branch.replace(/[^a-zA-Z0-9/_.\-]/g, '_');
+  if (safe !== branch) {
+    console.warn(C.yellow('⚠ Branch name contained unsafe characters — sanitized for display'));
+  }
+  return safe;
 }
 
 // ─── ANSI colors ─────────────────────────────────────────────────────────────
@@ -217,9 +250,10 @@ async function prList(args) {
 
 async function prView(args) {
   if (!args[0]) die('pr view: PR number required');
+  const num = validateNum(args[0], 'PR number');
   const repo = await resolveRepo(args[1]);
   let pr, checks;
-  try { pr = await api(`/repos/${repo}/pulls/${args[0]}`); }
+  try { pr = await api(`/repos/${repo}/pulls/${num}`); }
   catch (e) { fail('pr view', e); }
   try { checks = await api(`/repos/${repo}/commits/${pr.head.sha}/check-runs?per_page=30`); }
   catch { checks = { check_runs: [] }; }
@@ -256,6 +290,7 @@ async function prView(args) {
 
 async function prMerge(args) {
   if (!args[0]) die('pr merge: PR number required');
+  const num = validateNum(args[0], 'PR number');
   let method = 'merge';
   const rest = [];
   for (const a of args.slice(1)) {
@@ -266,11 +301,11 @@ async function prMerge(args) {
   }
   const repo = await resolveRepo(rest[0]);
   try {
-    const res = await api(`/repos/${repo}/pulls/${args[0]}/merge`, {
+    const res = await api(`/repos/${repo}/pulls/${num}/merge`, {
       method: 'PUT',
       body: JSON.stringify({ merge_method: method }),
     });
-    console.log(sym('merged') + ' ' + C.green('Merged') + ' PR #' + args[0] + ' via ' + method + (res.message ? ' — ' + res.message : ''));
+    console.log(sym('merged') + ' ' + C.green('Merged') + ' PR #' + num + ' via ' + method + (res.message ? ' — ' + res.message : ''));
   } catch (e) { fail('pr merge', e); }
 }
 
@@ -278,10 +313,11 @@ async function prMerge(args) {
 
 async function prComment(args) {
   if (!args[0]) die('pr comment: PR number required');
+  const num = validateNum(args[0], 'PR number');
   if (!args[1]) die('pr comment: message required');
   const repo = await resolveRepo(args[2]);
   try {
-    const res = await api(`/repos/${repo}/issues/${args[0]}/comments`, {
+    const res = await api(`/repos/${repo}/issues/${num}/comments`, {
       method: 'POST',
       body: JSON.stringify({ body: args[1] }),
     });
@@ -293,12 +329,13 @@ async function prComment(args) {
 
 async function prCheckout(args) {
   if (!args[0]) die('pr checkout: PR number required');
+  const num = validateNum(args[0], 'PR number');
   const repo = await resolveRepo(args[1]);
   let pr;
-  try { pr = await api(`/repos/${repo}/pulls/${args[0]}`); }
+  try { pr = await api(`/repos/${repo}/pulls/${num}`); }
   catch (e) { fail('pr checkout', e); }
 
-  const branch = pr.head.ref;
+  const branch = sanitizeBranch(pr.head.ref);
   const remoteUrl = pr.head.repo ? pr.head.repo.clone_url : `https://github.com/${repo}.git`;
   console.log(C.gray('# Run these commands to check out this PR:'));
   console.log('git fetch ' + remoteUrl + ' ' + branch);
@@ -328,9 +365,10 @@ async function issueList(args) {
 
 async function issueView(args) {
   if (!args[0]) die('issue view: issue number required');
+  const num = validateNum(args[0], 'issue number');
   const repo = await resolveRepo(args[1]);
   let issue;
-  try { issue = await api(`/repos/${repo}/issues/${args[0]}`); }
+  try { issue = await api(`/repos/${repo}/issues/${num}`); }
   catch (e) { fail('issue view', e); }
 
   const stateStr = issue.state === 'open' ? C.green('open') : C.red('closed');
@@ -395,11 +433,12 @@ async function runList(args) {
 
 async function runView(args) {
   if (!args[0]) die('run view: run ID required');
+  const runId = validateNum(args[0], 'run ID');
   const repo = await resolveRepo(args[1]);
   let run, jobsData;
-  try { run = await api(`/repos/${repo}/actions/runs/${args[0]}`); }
+  try { run = await api(`/repos/${repo}/actions/runs/${runId}`); }
   catch (e) { fail('run view', e); }
-  try { jobsData = await api(`/repos/${repo}/actions/runs/${args[0]}/jobs`); }
+  try { jobsData = await api(`/repos/${repo}/actions/runs/${runId}/jobs`); }
   catch { jobsData = { jobs: [] }; }
 
   const statusStr = run.status === 'completed'
@@ -591,7 +630,7 @@ async function varsSet(args) {
   if (!args[0]) die('vars set: name required');
   if (args[1] === undefined) die('vars set: value required');
   const repo = await resolveRepo(args[2]);
-  const name = args[0], value = args[1];
+  const name = validateVarName(args[0]), value = args[1];
 
   let exists = false;
   try { await api(`/repos/${repo}/actions/variables/${name}`); exists = true; } catch {}
