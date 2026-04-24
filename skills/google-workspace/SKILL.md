@@ -215,10 +215,13 @@ browser sessions, custom scripts) can call Google APIs with the same refresh
 token without re-running OAuth.
 
 To drive an HTTP call from the shell that benefits from the SLICC fetch proxy
-injection, pass the mask through as a normal env var:
+injection, pass the mask through as a normal env var. Set the form
+content-type explicitly — the just-bash `curl` shim does not auto-add it
+the way real curl does for `-d`:
 
 ```bash
 curl -sS -X POST https://oauth2.googleapis.com/token \
+  -H "Content-Type: application/x-www-form-urlencoded" \
   -d "client_id=$GWS_CLIENT_ID" \
   -d "client_secret=$GWS_CLIENT_SECRET" \
   -d "refresh_token=$GWS_REFRESH_TOKEN" \
@@ -227,6 +230,18 @@ curl -sS -X POST https://oauth2.googleapis.com/token \
 
 The proxy unmasks each `$GWS_*` variable because the request hostname
 (`oauth2.googleapis.com`) is in every entry's domain allowlist.
+
+Sanity-check what masked values the shell actually holds (the masked
+hex changes whenever the server is restarted):
+
+```bash
+curl -sS http://localhost:${SLICC_PORT:-5710}/api/secrets/masked \
+  | jq '.[] | select(.name|startswith("GWS_")) | {name, domains}'
+```
+
+If `$GWS_CLIENT_ID` printed in the shell does not match the
+`maskedValue` for `GWS_CLIENT_ID` in that response, the shell env is
+stale — reload the page so `fetchSecretEnvVars()` repopulates.
 
 ## 7. Rotating / revoking
 
@@ -243,7 +258,27 @@ The proxy unmasks each `$GWS_*` variable because the request hostname
   Upgrade `gws` (`npm i -g @googleworkspace/cli@latest` or re-download the
   release).
 - **Secret shows up in `GET /api/secrets` but isn't injected** — you added it
-  while the server was running. Restart swift-server / node-server.
+  while the server was running. Restart swift-server / node-server, _then
+  reload the webapp_ so the shell repopulates `$GWS_*` with the new masks
+  (the values are session-scoped HMACs and change on every server start).
+- **Google replies `400 invalid_client` / "The OAuth client was not found."**
+  — the credentials reaching Google are still the masked hex, i.e. the proxy
+  did not unmask them. Causes, in order of likelihood:
+    1. Stale shell env (added/changed secrets after the page loaded). Reload.
+    2. `_DOMAINS` doesn't cover the host. Use
+       `oauth2.googleapis.com,accounts.google.com,*.googleapis.com,www.googleapis.com`.
+       Note that `*.googleapis.com` matches `oauth2.googleapis.com` but not
+       the bare `googleapis.com`.
+    3. The credentials really are wrong (re-run `gws auth login`).
+  Compare `echo "$GWS_CLIENT_ID"` to the `maskedValue` returned by
+  `/api/secrets/masked` — they must match before the proxy can find anything
+  to substitute.
+- **`curl: (1) [object Object]`** — pre-fix slicc bug: the SecureFetch in
+  `wasm-shell.ts` (and friends) treated upstream 4xx as a proxy
+  infrastructure failure and stringified an object-shaped error field.
+  Update slicc to a build that includes the
+  [`X-Proxy-Error` marker fix](https://github.com/ai-ecoverse/slicc/pull/487)
+  — the curl shim will then surface Google's real error body verbatim.
 - **`domainBlocked` in fetch proxy logs** — the request hostname isn't in the
   secret's `_DOMAINS` list. Either expand the allowlist or point the request at
   an allowed host.
