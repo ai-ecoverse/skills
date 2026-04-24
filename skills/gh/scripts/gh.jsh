@@ -694,6 +694,130 @@ async function authStatus() {
   console.log('');
 }
 
+// ─── monday protocol ─────────────────────────────────────────────────────────
+
+function parseMondayFlags(args) {
+  const flags = { limit: 50, depth: 5, date: '7d' };
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--limit' && args[i+1]) { flags.limit = parseInt(args[i+1]); i++; }
+    if (args[i] === '--depth' && args[i+1]) { flags.depth = parseInt(args[i+1]); i++; }
+    if (args[i] === '--date' && args[i+1]) { flags.date = args[i+1]; i++; }
+  }
+  return flags;
+}
+
+function parseDateFlag(dateStr) {
+  const match = dateStr.match(/^(\d+)(d|w)$/);
+  if (!match) return new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  const n = parseInt(match[1]);
+  const unit = match[2];
+  const ms = unit === 'w' ? n * 7 * 24 * 60 * 60 * 1000 : n * 24 * 60 * 60 * 1000;
+  return new Date(Date.now() - ms);
+}
+
+async function mondayGh(args) {
+  const flags = parseMondayFlags(args);
+  const since = parseDateFlag(flags.date);
+  const sinceISO = since.toISOString();
+
+  // Resolve current user login for search queries
+  let username = 'trieloff';
+  try {
+    const user = await api('/user');
+    username = user.login;
+  } catch {}
+
+  const items = [];
+  const seen = new Set();
+
+  function addItem(item) {
+    if (seen.has(item.id)) return;
+    seen.add(item.id);
+    items.push(item);
+  }
+
+  // 1. Notifications
+  try {
+    const qs = new URLSearchParams({
+      all: 'false',
+      participating: 'true',
+      since: sinceISO,
+      per_page: String(Math.min(flags.limit, 50)),
+    });
+    const notifs = await api(`/notifications?${qs}`);
+    for (const n of notifs) {
+      const repo = n.repository.full_name;
+      const numMatch = n.subject.url?.match(/\/(\d+)$/);
+      const num = numMatch ? numMatch[1] : '';
+      const subjectType = n.subject.type;
+      const type = subjectType === 'PullRequest' ? 'pr'
+        : subjectType === 'Issue' ? 'issue'
+        : 'notification';
+      const htmlUrl = num
+        ? `https://github.com/${repo}/${subjectType === 'PullRequest' ? 'pull' : 'issues'}/${num}`
+        : `https://github.com/${repo}`;
+      addItem({
+        id: `gh-notif-${n.id}`,
+        source: 'gh',
+        type,
+        title: n.subject.title,
+        subtitle: num ? `${repo} #${num}` : repo,
+        url: htmlUrl,
+        ts: n.updated_at,
+        body: `${n.reason.replace(/_/g, ' ')} — ${n.subject.title}`.slice(0, 500),
+        participants: [],
+        meta: { reason: n.reason, unread: n.unread },
+      });
+    }
+  } catch {}
+
+  // 2. PRs needing review
+  try {
+    const q = `is:pr is:open review-requested:${username}`;
+    const data = await api(`/search/issues?q=${encodeURIComponent(q)}&per_page=${Math.min(flags.limit, 50)}`);
+    for (const pr of (data.items || [])) {
+      const repoUrl = pr.repository_url.replace('https://api.github.com/repos/', '');
+      addItem({
+        id: `gh-pr-${pr.id}`,
+        source: 'gh',
+        type: 'pr',
+        title: pr.title,
+        subtitle: `${repoUrl} #${pr.number}`,
+        url: pr.html_url,
+        ts: pr.updated_at,
+        body: (pr.body || '').slice(0, 500),
+        participants: [pr.user.login, ...(pr.assignees || []).map(a => a.login)].filter((v, i, a) => a.indexOf(v) === i),
+        meta: { state: pr.state, draft: pr.draft || false },
+      });
+    }
+  } catch {}
+
+  // 3. Assigned issues
+  try {
+    const q = `is:issue is:open assignee:${username}`;
+    const data = await api(`/search/issues?q=${encodeURIComponent(q)}&per_page=${Math.min(flags.limit, 50)}`);
+    for (const issue of (data.items || [])) {
+      const repoUrl = issue.repository_url.replace('https://api.github.com/repos/', '');
+      addItem({
+        id: `gh-issue-${issue.id}`,
+        source: 'gh',
+        type: 'issue',
+        title: issue.title,
+        subtitle: `${repoUrl} #${issue.number}`,
+        url: issue.html_url,
+        ts: issue.updated_at,
+        body: (issue.body || '').slice(0, 500),
+        participants: [issue.user.login, ...(issue.assignees || []).map(a => a.login)].filter((v, i, a) => a.indexOf(v) === i),
+        meta: { state: issue.state, labels: (issue.labels || []).map(l => l.name) },
+      });
+    }
+  } catch {}
+
+  // Trim to limit and output
+  const output = items.slice(0, flags.limit);
+  console.log(JSON.stringify(output));
+}
+
 // ─── help ────────────────────────────────────────────────────────────────────
 
 function showHelp() {
@@ -716,7 +840,8 @@ function showHelp() {
   console.log('  ' + C.cyan('vars list') + '     [repo]                       List Actions variables');
   console.log('  ' + C.cyan('vars set') + '      <name> <value> [repo]        Set an Actions variable');
   console.log('  ' + C.cyan('notifications list') + '  [--all] [-p] [--repo=r] [-nN]  List notifications');
-  console.log('  ' + C.cyan('notifications read') + '  [--repo=r]              Mark notifications as read\n');
+  console.log('  ' + C.cyan('notifications read') + '  [--repo=r]              Mark notifications as read');
+  console.log('  ' + C.cyan('monday') + '            [--limit N] [--date Nd]    Monday protocol inbox (JSON)\n');
   console.log(C.bold('AUTH'));
   console.log('  git config github.token <PAT>');
   console.log('  — or: export GITHUB_TOKEN=<PAT>\n');
@@ -737,6 +862,7 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
 }
 
 if (cmd === 'auth') { await authStatus(); process.exit(0); }
+if (cmd === 'monday') { await mondayGh(argv.slice(2)); process.exit(0); }
 
 const dispatch = {
   pr:      { list: () => prList(rest),      view: () => prView(rest),    merge: () => prMerge(rest), comment: () => prComment(rest), checkout: () => prCheckout(rest) },
