@@ -247,7 +247,7 @@ async function graphGetAllPages(token, path, params, maxPages, useBeta) {
 }
 
 // ---------------------------------------------------------------------------
-// Teams/channel resolution (name ’ ID)
+// Teams/channel resolution (name ï¿½ ID)
 // ---------------------------------------------------------------------------
 
 async function getTeams(token) {
@@ -1013,7 +1013,7 @@ async function searchChannelFallback(token, query, since) {
 }
 
 // ---------------------------------------------------------------------------
-// Search subcommand  cascading: substrate ’ Graph ’ channel scan fallback
+// Search subcommand  cascading: substrate ï¿½ Graph ï¿½ channel scan fallback
 // ---------------------------------------------------------------------------
 
 async function cmdSearch() {
@@ -1197,6 +1197,218 @@ function countOccurrences(arr) {
 }
 
 // ---------------------------------------------------------------------------
+// monday protocol
+// ---------------------------------------------------------------------------
+
+function parseMondayFlags() {
+  const raw = process.argv.slice(3); // skip node, script, 'monday'
+  const f = { limit: 50, depth: 5, date: '7d' };
+  for (let i = 0; i < raw.length; i++) {
+    const a = raw[i];
+    if (a.startsWith('--')) {
+      const eq = a.indexOf('=');
+      if (eq !== -1) {
+        f[a.slice(2, eq)] = a.slice(eq + 1);
+      } else if (i + 1 < raw.length && !raw[i + 1].startsWith('--')) {
+        f[a.slice(2)] = raw[i + 1];
+        i++;
+      }
+    }
+  }
+  return { limit: parseInt(f.limit, 10), depth: parseInt(f.depth, 10), date: String(f.date) };
+}
+
+async function fetchMondayMentions(token, me, cutoff, limit) {
+  const maxTeams = parseInt(flags['max-teams'] || '10', 10);
+  const concurrency = parseInt(flags['concurrency'] || '5', 10);
+
+  let hits = [];
+
+  const sub = await trySubstrateSearch(me.displayName, limit);
+  if (sub.ok && sub.results.length > 0) {
+    hits = sub.results;
+  } else {
+    const gs = await tryGraphSearch(token, me.displayName, limit);
+    if (gs.ok && gs.results.length > 0) {
+      hits = gs.results;
+    } else {
+      const [channelMentions, chatMentions] = await Promise.all([
+        scanChannelsForMentions(token, me, cutoff, limit, maxTeams, concurrency).catch(() => []),
+        scanChatsForMentions(token, me, cutoff, limit, concurrency).catch(() => []),
+      ]);
+      hits = [...channelMentions, ...chatMentions];
+    }
+  }
+
+  return hits
+    .filter(h => !h.date || new Date(h.date).getTime() >= cutoff)
+    .slice(0, limit)
+    .map((h, idx) => {
+      const msgId = h.webUrl
+        ? h.webUrl.split('/').pop().split('?')[0]
+        : `${Date.now()}-${idx}`;
+      return {
+        id: `teams-mention-${msgId}`,
+        source: 'teams',
+        type: 'mention',
+        title: `@mention from ${h.from || 'unknown'}`,
+        subtitle: h.team && h.channel ? `${h.team} > ${h.channel}` : (h.chat || 'Teams'),
+        url: h.webUrl || '',
+        ts: h.date ? new Date(h.date).toISOString() : new Date().toISOString(),
+        body: (h.body || h.summary || '').slice(0, 500),
+        participants: [h.from || 'unknown'],
+        meta: { source: h.source },
+      };
+    });
+}
+
+async function fetchMondayDMs(token, me, cutoff, limit, depth) {
+  const chatsResult = await apiGetSafe(
+    token,
+    `${GRAPH_BASE}/me/chats?$top=${Math.min(limit, 50)}&$orderby=lastMessagePreview/createdDateTime desc&$expand=lastMessagePreview`
+  );
+  if (!chatsResult.ok) {
+    console.error(`[monday] DMs unavailable (${chatsResult.status})`);
+    return [];
+  }
+
+  const recentChats = (chatsResult.data?.value || []).filter(chat => {
+    const lastMsg = chat.lastMessagePreview?.createdDateTime;
+    return lastMsg && new Date(lastMsg).getTime() >= cutoff;
+  });
+
+  const items = await Promise.all(recentChats.slice(0, 20).map(async chat => {
+    let messages = [];
+    if (depth > 0) {
+      const hist = await apiGetSafe(token, `${GRAPH_BASE}/me/chats/${chat.id}/messages?$top=${Math.min(depth, 50)}`);
+      messages = hist.ok ? (hist.data?.value || []).filter(m => m.messageType === 'message') : [];
+    }
+
+    const preview = chat.lastMessagePreview;
+    const latestMsg = messages[0];
+    const sender = latestMsg?.from?.user?.displayName
+      || preview?.from?.user?.displayName
+      || 'unknown';
+    const bodyText = messages.length > 0
+      ? messages.slice().reverse()
+          .map(m => `${m.from?.user?.displayName || ''}: ${stripHtml(m.body?.content || '').slice(0, 300)}`)
+          .join('\n\n').slice(0, 1000)
+      : (preview?.body?.content ? stripHtml(preview.body.content).slice(0, 300) : '');
+    const ts = latestMsg?.createdDateTime || preview?.createdDateTime || new Date().toISOString();
+    const participants = [...new Set(messages.map(m => m.from?.user?.displayName).filter(Boolean))];
+
+    return {
+      id: `teams-dm-${chat.id}`,
+      source: 'teams',
+      type: 'dm',
+      title: `DM from ${sender}: ${bodyText.slice(0, 60)}`,
+      subtitle: chat.chatType === 'oneOnOne' ? `DM from ${sender}` : (chat.topic || 'Group Chat'),
+      url: `https://teams.microsoft.com/l/chat/${encodeURIComponent(chat.id)}/0`,
+      ts: new Date(ts).toISOString(),
+      body: bodyText,
+      participants,
+      meta: { chatType: chat.chatType, chatId: chat.id },
+    };
+  }));
+
+  return items.filter(Boolean);
+}
+
+async function fetchMondayThreads(token, me, cutoff, limit, depth) {
+  if (depth === 0) return [];
+
+  const upn = me.userPrincipalName || me.mail || me.displayName;
+  const searchBody = {
+    requests: [{
+      entityTypes: ['chatMessage'],
+      query: { queryString: `from:${upn}` },
+      from: 0,
+      size: Math.min(limit, 25),
+    }],
+  };
+
+  const searchResult = await graphPostSafe(token, '/search/query', searchBody);
+  if (!searchResult.ok) {
+    console.error(`[monday] thread search unavailable (${searchResult.status})`);
+    return [];
+  }
+
+  const hits = searchResult.data?.value?.[0]?.hitsContainers?.[0]?.hits || [];
+  const items = await Promise.all(hits.map(async hit => {
+    const resource = hit.resource || {};
+    const teamId = resource.channelIdentity?.teamId;
+    const channelId = resource.channelIdentity?.channelId;
+    const msgId = resource.id;
+    if (!teamId || !channelId || !msgId) return null;
+
+    const msgDate = new Date(resource.createdDateTime || '').getTime();
+    if (!msgDate || msgDate < cutoff) return null;
+
+    let replies = [];
+    try {
+      const repliesResult = await apiGetSafe(
+        token,
+        `${GRAPH_BETA}/teams/${teamId}/channels/${channelId}/messages/${msgId}/replies?$top=${Math.min(depth, 50)}`
+      );
+      if (repliesResult.ok) {
+        replies = (repliesResult.data?.value || [])
+          .filter(r => r.messageType === 'message' && new Date(r.createdDateTime).getTime() > msgDate);
+      }
+    } catch {}
+
+    if (replies.length === 0) return null;
+
+    const latestReply = replies[0];
+    const originalBody = resource.body?.content ? stripHtml(resource.body.content).slice(0, 200) : '';
+    const replyPreview = latestReply?.body?.content ? stripHtml(latestReply.body.content).slice(0, 200) : '';
+    const participants = [
+      resource.from?.emailAddress?.name || 'unknown',
+      ...replies.map(r => r.from?.user?.displayName).filter(Boolean),
+    ];
+
+    return {
+      id: `teams-thread-${msgId}`,
+      source: 'teams',
+      type: 'thread',
+      title: `Thread reply: ${originalBody.slice(0, 60)}`,
+      subtitle: 'Thread in Teams',
+      url: resource.webUrl || '',
+      ts: new Date(latestReply.createdDateTime).toISOString(),
+      body: `[Thread] ${originalBody}\n\nLatest reply: ${replyPreview}`,
+      participants: [...new Set(participants)],
+      meta: { teamId, channelId, messageId: msgId, replyCount: replies.length },
+    };
+  }));
+
+  return items.filter(Boolean);
+}
+
+async function cmdTeamsMonday() {
+  const mf = parseMondayFlags();
+  const since = sinceDate(mf.date, 168);
+  const cutoff = new Date(since).getTime();
+  const token = await readToken();
+  const me = await graphGet(token, '/me');
+
+  const [mentionItems, dmItems, threadItems] = await Promise.all([
+    fetchMondayMentions(token, me, cutoff, mf.limit)
+      .catch(e => { console.error('[monday] mentions:', e.message); return []; }),
+    fetchMondayDMs(token, me, cutoff, mf.limit, mf.depth)
+      .catch(e => { console.error('[monday] DMs:', e.message); return []; }),
+    fetchMondayThreads(token, me, cutoff, mf.limit, mf.depth)
+      .catch(e => { console.error('[monday] threads:', e.message); return []; }),
+  ]);
+
+  const seen = new Set();
+  const result = [...mentionItems, ...dmItems, ...threadItems]
+    .filter(item => { if (seen.has(item.id)) return false; seen.add(item.id); return true; })
+    .sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime())
+    .slice(0, mf.limit);
+
+  console.log(JSON.stringify(result));
+}
+
+// ---------------------------------------------------------------------------
 // Help
 // ---------------------------------------------------------------------------
 
@@ -1221,8 +1433,9 @@ Commands:
   search <query>                    Full-text search across Teams messages
   unanswered <team> <channel>       Messages with no replies (default: --since=48h)
   digest                            Activity summary across all teams (default: --since=24h, --max-teams=10)
+  monday [--limit N] [--depth N] [--date Nd]  Inbox items for monday protocol (JSON)
 
-Aliases: messages/msgs ’ history, mentions ’ activity
+Aliases: messages/msgs ï¿½ history, mentions ï¿½ activity
 
 Duration format: <number><unit> where unit is m(inutes), h(ours), d(ays), w(eeks)
   Examples: 30m, 24h, 7d, 2w
@@ -1232,8 +1445,8 @@ Duration format: <number><unit> where unit is m(inutes), h(ours), d(ays), w(eeks
 
 Team and channel arguments accept display names (case-insensitive partial match) or IDs.
 
-Search cascade: Substrate Search ’ Graph Search API ’ channel scan fallback.
-Activity cascade: Substrate Search ’ Graph Search ’ channel scan + chat/DM scan.
+Search cascade: Substrate Search ï¿½ Graph Search API ï¿½ channel scan fallback.
+Activity cascade: Substrate Search ï¿½ Graph Search ï¿½ channel scan + chat/DM scan.
 Auth extracts both Graph and Substrate tokens from the Teams browser session.`);
 }
 
@@ -1280,6 +1493,9 @@ switch (subcommand) {
     break;
   case 'digest':
     await cmdDigest();
+    break;
+  case 'monday':
+    await cmdTeamsMonday();
     break;
   case '--help':
   case '-h':
