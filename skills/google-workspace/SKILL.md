@@ -106,6 +106,17 @@ Naming convention used by this skill: uppercase, `GWS_` prefix.
 Export credentials to a temp file, import each entry without echoing the value,
 then delete the temp file.
 
+The `-A` flag below tells `security` that any application running as the user
+may read the entry — so `slicc-server` doesn't get a per-secret Keychain
+access dialog on every restart. Without `-A`, macOS prompts once per secret
+("`slicc-server` wants to use your confidential information stored in
+`GWS_CLIENT_ID`...") until the user clicks _Always Allow_; with four `GWS_*`
+entries that means four dialogs on first launch. macOS Keychain Services has
+no way to coalesce those prompts ([Apple Security framework, `kSecMatchItemList`
+must use `kSecMatchLimitOne`](https://developer.apple.com/documentation/security/ksecmatchitemlist)),
+so the only way to suppress them is at write time via `-A`. Drop the `-A`
+flag if you'd rather be prompted on each new install.
+
 ```bash
 TMP=$(mktemp)
 gws auth export --unmasked > "$TMP"
@@ -122,6 +133,7 @@ for k, v in d.items():
         "-a", name,
         "-w", v,
         "-U",
+        "-A",
         "-C", "note",
         "-j", domains,
     ], check=True)
@@ -149,6 +161,12 @@ security delete-generic-password -s ai.sliccy.slicc -a GWS_REFRESH_TOKEN
 session cache at startup and generates deterministic masked values once. Adding
 or deleting entries while the server is running will not take effect until the
 process is restarted. Stop and relaunch `slicc-server` after every change.
+
+**Re-importing existing entries with `-A`:** If you already imported `GWS_*`
+entries without `-A` and want to silence the prompts, re-run the recipe above
+exactly as written. `security add-generic-password -U` overwrites the
+existing item _and_ rewrites its ACL, so the new entries become accessible
+without a dialog. Restart `slicc-server` afterwards.
 
 ### 4b. Env file (node-server)
 
