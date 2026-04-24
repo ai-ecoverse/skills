@@ -736,6 +736,20 @@ async function mondayGh(args) {
     items.push(item);
   }
 
+  // Helper: fetch up to `depth` comments for a PR or issue and append to body
+  async function fetchThread(repo, num, type, currentBody, depth) {
+    if (depth <= 0) return currentBody;
+    try {
+      const endpoint = `/repos/${repo}/issues/${num}/comments?per_page=${Math.min(depth, 100)}&sort=created&direction=asc`;
+      const comments = await api(endpoint);
+      if (!Array.isArray(comments) || comments.length === 0) return currentBody;
+      const thread = comments.map(c => `@${c.user.login}: ${(c.body || '').slice(0, 300)}`).join('\n\n');
+      return (currentBody ? currentBody + '\n\n---\n' : '') + thread;
+    } catch {
+      return currentBody;
+    }
+  }
+
   // 1. Notifications
   try {
     const qs = new URLSearchParams({
@@ -756,6 +770,10 @@ async function mondayGh(args) {
       const htmlUrl = num
         ? `https://github.com/${repo}/${subjectType === 'PullRequest' ? 'pull' : 'issues'}/${num}`
         : `https://github.com/${repo}`;
+      const baseBody = `${n.reason.replace(/_/g, ' ')} — ${n.subject.title}`.slice(0, 500);
+      const body = (num && flags.depth > 0)
+        ? await fetchThread(repo, num, type, baseBody, flags.depth)
+        : baseBody;
       addItem({
         id: `gh-notif-${n.id}`,
         source: 'gh',
@@ -764,7 +782,7 @@ async function mondayGh(args) {
         subtitle: num ? `${repo} #${num}` : repo,
         url: htmlUrl,
         ts: n.updated_at,
-        body: `${n.reason.replace(/_/g, ' ')} — ${n.subject.title}`.slice(0, 500),
+        body,
         participants: [],
         meta: { reason: n.reason, unread: n.unread },
       });
@@ -777,6 +795,10 @@ async function mondayGh(args) {
     const data = await api(`/search/issues?q=${encodeURIComponent(q)}&per_page=${Math.min(flags.limit, 50)}`);
     for (const pr of (data.items || [])) {
       const repoUrl = pr.repository_url.replace('https://api.github.com/repos/', '');
+      const baseBody = (pr.body || '').slice(0, 500);
+      const body = flags.depth > 0
+        ? await fetchThread(repoUrl, pr.number, 'pr', baseBody, flags.depth)
+        : baseBody;
       addItem({
         id: `gh-pr-${pr.id}`,
         source: 'gh',
@@ -785,7 +807,7 @@ async function mondayGh(args) {
         subtitle: `${repoUrl} #${pr.number}`,
         url: pr.html_url,
         ts: pr.updated_at,
-        body: (pr.body || '').slice(0, 500),
+        body,
         participants: [pr.user.login, ...(pr.assignees || []).map(a => a.login)].filter((v, i, a) => a.indexOf(v) === i),
         meta: { state: pr.state, draft: pr.draft || false },
       });
@@ -798,6 +820,10 @@ async function mondayGh(args) {
     const data = await api(`/search/issues?q=${encodeURIComponent(q)}&per_page=${Math.min(flags.limit, 50)}`);
     for (const issue of (data.items || [])) {
       const repoUrl = issue.repository_url.replace('https://api.github.com/repos/', '');
+      const baseBody = (issue.body || '').slice(0, 500);
+      const body = flags.depth > 0
+        ? await fetchThread(repoUrl, issue.number, 'issue', baseBody, flags.depth)
+        : baseBody;
       addItem({
         id: `gh-issue-${issue.id}`,
         source: 'gh',
@@ -806,7 +832,7 @@ async function mondayGh(args) {
         subtitle: `${repoUrl} #${issue.number}`,
         url: issue.html_url,
         ts: issue.updated_at,
-        body: (issue.body || '').slice(0, 500),
+        body,
         participants: [issue.user.login, ...(issue.assignees || []).map(a => a.login)].filter((v, i, a) => a.indexOf(v) === i),
         meta: { state: issue.state, labels: (issue.labels || []).map(l => l.name) },
       });
