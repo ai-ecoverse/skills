@@ -1091,6 +1091,209 @@ const commands = {
     }
     await executeAttachmentAction(wsId, channel, messageTs, 'deny');
   },
+
+  async monday(args, globalFlags) {
+    // --- Flag parsing ---
+    function parseMondayFlags(args) {
+      const flags = { limit: 50, depth: 5, date: '7d' };
+      for (let i = 0; i < args.length; i++) {
+        if (args[i] === '--limit' && args[i+1]) flags.limit = parseInt(args[i+1]);
+        if (args[i] === '--depth' && args[i+1]) flags.depth = parseInt(args[i+1]);
+        if (args[i] === '--date' && args[i+1]) flags.date = args[i+1];
+        // Also support --limit=N style
+        if (args[i].startsWith('--limit=')) flags.limit = parseInt(args[i].split('=')[1]);
+        if (args[i].startsWith('--depth=')) flags.depth = parseInt(args[i].split('=')[1]);
+        if (args[i].startsWith('--date=')) flags.date = args[i].split('=')[1];
+      }
+      return flags;
+    }
+
+    const mFlags = parseMondayFlags(args);
+
+    // Parse --date into a Unix timestamp (seconds) for the oldest cutoff
+    function dateToOldest(dateStr) {
+      const m = dateStr.match(/^(\d+)([dwh])$/);
+      if (!m) return Math.floor(Date.now() / 1000) - 7 * 86400; // default 7d
+      const n = parseInt(m[1]);
+      const unit = m[2];
+      const multiplier = unit === 'w' ? 7 * 86400 : unit === 'h' ? 3600 : 86400;
+      return Math.floor(Date.now() / 1000) - n * multiplier;
+    }
+    const oldest = dateToOldest(mFlags.date);
+
+    // Convert Slack ts (epoch.microseconds string) to ISO8601
+    function tsToISO(ts) {
+      if (!ts) return new Date().toISOString();
+      return new Date(parseFloat(ts) * 1000).toISOString();
+    }
+
+    const wsId = await resolveWorkspace(globalFlags);
+    const items = [];
+
+    // --- 1. Fetch unread mentions from activity.feed ---
+    try {
+      const mentionTypes = 'at_user,at_user_group,at_channel,at_everyone,unjoined_channel_mention';
+      const mentionData = await slackApi('activity.feed', {
+        limit: String(mFlags.limit),
+        types: mentionTypes,
+        mode: 'chrono_reads_and_unreads',
+        archive_only: 'false',
+        unread_only: 'true',
+        priority_only: 'false',
+      }, wsId, { fatal: false });
+
+      if (mentionData && mentionData.ok && mentionData.items) {
+        for (const entry of mentionData.items) {
+          const i = entry.item;
+          const msg = i.message || {};
+          const feedTs = entry.feed_ts;
+
+          // Skip items older than the date cutoff
+          if (feedTs && parseFloat(feedTs) < oldest) continue;
+
+          const channelId = msg.channel || '';
+          const authorId = msg.author_user_id || '';
+          const text = (msg.text || '').substring(0, 500);
+          const threadTs = msg.thread_ts || null;
+          const msgTs = msg.ts || feedTs || '';
+
+          items.push({
+            id: `slack-mention-${channelId}-${msgTs}`.replace(/\./g, ''),
+            source: 'slack',
+            type: 'mention',
+            title: `Mention in ${channelId}`,
+            subtitle: `#${channelId}`,
+            url: `slack://channel/${channelId}/${msgTs ? 'p' + msgTs.replace('.', '') : ''}`,
+            ts: tsToISO(feedTs || msgTs),
+            body: text,
+            participants: authorId ? [authorId] : [],
+            meta: { channel: channelId, thread_ts: threadTs },
+          });
+        }
+      }
+    } catch (e) {
+      // Non-fatal: continue with other sources
+    }
+
+    // --- 2. Fetch unread DM conversations ---
+    try {
+      // Get list of IM channels the user has
+      const imList = await slackApi('conversations.list', {
+        types: 'im',
+        limit: '100',
+        exclude_archived: 'true',
+      }, wsId, { fatal: false });
+
+      if (imList && imList.ok && imList.channels) {
+        // Filter to channels with unread messages
+        const unreadIms = imList.channels.filter(ch => ch.is_open || (ch.unread_count && ch.unread_count > 0));
+
+        // Limit how many DMs we actually fetch history for
+        const dmLimit = Math.min(unreadIms.length, 20);
+        for (let idx = 0; idx < dmLimit; idx++) {
+          const im = unreadIms[idx];
+          try {
+            const hist = await slackApi('conversations.history', {
+              channel: im.id,
+              limit: '3',
+              oldest: String(oldest),
+            }, wsId, { fatal: false });
+
+            if (hist && hist.ok && hist.messages && hist.messages.length > 0) {
+              // Only include if there are actual messages in the window
+              for (const msg of hist.messages) {
+                // Skip messages from the current user (we want incoming DMs)
+                const text = (msg.text || '').substring(0, 500);
+                const userId = im.user || msg.user || '';
+                const msgTs = msg.ts || '';
+                const displayName = msg.user_profile?.display_name || msg.user_profile?.real_name || userId;
+
+                items.push({
+                  id: `slack-dm-${im.id}-${msgTs}`.replace(/\./g, ''),
+                  source: 'slack',
+                  type: 'dm',
+                  title: `DM from ${displayName}`,
+                  subtitle: `DM from @${displayName}`,
+                  url: `slack://channel/${im.id}/${msgTs ? 'p' + msgTs.replace('.', '') : ''}`,
+                  ts: tsToISO(msgTs),
+                  body: text,
+                  participants: userId ? [userId] : [],
+                  meta: { channel: im.id, thread_ts: null },
+                });
+              }
+            }
+          } catch (e) {
+            // Skip this DM channel on error
+          }
+        }
+      }
+    } catch (e) {
+      // Non-fatal: continue with other sources
+    }
+
+    // --- 3. Fetch thread replies from activity.feed ---
+    try {
+      const threadData = await slackApi('activity.feed', {
+        limit: String(mFlags.limit),
+        types: 'thread_v2',
+        mode: 'chrono_reads_and_unreads',
+        archive_only: 'false',
+        unread_only: 'true',
+        priority_only: 'false',
+      }, wsId, { fatal: false });
+
+      if (threadData && threadData.ok && threadData.items) {
+        for (const entry of threadData.items) {
+          const i = entry.item;
+          const msg = i.message || {};
+          const feedTs = entry.feed_ts;
+
+          // Skip items older than the date cutoff
+          if (feedTs && parseFloat(feedTs) < oldest) continue;
+
+          const channelId = msg.channel || '';
+          const authorId = msg.author_user_id || '';
+          const text = (msg.text || '').substring(0, 500);
+          const threadTs = msg.thread_ts || msg.ts || '';
+          const msgTs = msg.ts || feedTs || '';
+
+          items.push({
+            id: `slack-thread-${channelId}-${msgTs}`.replace(/\./g, ''),
+            source: 'slack',
+            type: 'thread',
+            title: `Thread reply in ${channelId}`,
+            subtitle: `#${channelId}`,
+            url: `slack://channel/${channelId}/${msgTs ? 'p' + msgTs.replace('.', '') : ''}`,
+            ts: tsToISO(feedTs || msgTs),
+            body: text,
+            participants: authorId ? [authorId] : [],
+            meta: { channel: channelId, thread_ts: threadTs },
+          });
+        }
+      }
+    } catch (e) {
+      // Non-fatal: continue
+    }
+
+    // --- Deduplicate by id ---
+    const seen = new Set();
+    const unique = [];
+    for (const item of items) {
+      if (!seen.has(item.id)) {
+        seen.add(item.id);
+        unique.push(item);
+      }
+    }
+
+    // --- Sort by ts descending ---
+    unique.sort((a, b) => (b.ts > a.ts ? 1 : b.ts < a.ts ? -1 : 0));
+
+    // --- Slice to limit ---
+    const result = unique.slice(0, mFlags.limit);
+
+    // --- Output ---
+    console.log(JSON.stringify(result));
+  },
 };
 
 // --- Attachment action helper ---
@@ -1351,6 +1554,7 @@ if (!cmd || cmd === 'help' || cmd === '--help') {
   console.log('  unwatch <channel_id> [--thread=<ts>]      Stop watching a channel');
   console.log('  watches                                   List active watches');
   console.log('  reinject                                  Re-inject WebSocket interceptor');
+  console.log('  monday [--limit=N] [--depth=N] [--date=Nd] Monday protocol: fetch inbox as JSON');
   console.log(`\nUse "slack workspaces" to list available workspaces and their IDs.`);
   console.log(`Use "slack slackbot" to find your Slackbot DM channel ID.`);
   process.exit(0);
