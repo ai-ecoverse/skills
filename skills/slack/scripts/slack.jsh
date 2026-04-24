@@ -1275,6 +1275,39 @@ const commands = {
       // Non-fatal: continue
     }
 
+    // --- Fetch full threads for depth > 0 ---
+    if (mFlags.depth > 0) {
+      // For each item that has a thread_ts (mentions, thread replies), pull the conversation
+      await Promise.all(items.map(async (item) => {
+        const { channel, thread_ts } = item.meta || {};
+        if (!channel || !thread_ts) return;
+        try {
+          const replies = await slackApi('conversations.replies', {
+            channel,
+            ts: thread_ts,
+            limit: String(Math.min(mFlags.depth, 100)),
+          }, wsId, { fatal: false });
+          if (replies && replies.ok && replies.messages && replies.messages.length > 0) {
+            const thread = replies.messages
+              .map(m => {
+                const user = m.user_profile?.display_name || m.user_profile?.real_name || m.user || '';
+                return `${user ? '@' + user + ': ' : ''}${(m.text || '').slice(0, 300)}`;
+              })
+              .join('\n\n');
+            item.body = thread;
+            // Collect all participants from the thread
+            const participants = new Set(item.participants);
+            for (const m of replies.messages) {
+              if (m.user) participants.add(m.user);
+            }
+            item.participants = [...participants];
+          }
+        } catch {
+          // Non-fatal: keep original body
+        }
+      }));
+    }
+
     // --- Deduplicate by id ---
     const seen = new Set();
     const unique = [];
