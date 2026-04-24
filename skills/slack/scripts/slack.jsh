@@ -1091,6 +1091,263 @@ const commands = {
     }
     await executeAttachmentAction(wsId, channel, messageTs, 'deny');
   },
+
+  async monday(args, globalFlags) {
+    // --- Flag parsing ---
+    function parseMondayFlags(args) {
+      const flags = { limit: 50, depth: 5, date: '7d' };
+      for (let i = 0; i < args.length; i++) {
+        if (args[i] === '--limit' && args[i+1]) flags.limit = parseInt(args[i+1]);
+        if (args[i] === '--depth' && args[i+1]) flags.depth = parseInt(args[i+1]);
+        if (args[i] === '--date' && args[i+1]) flags.date = args[i+1];
+        // Also support --limit=N style
+        if (args[i].startsWith('--limit=')) flags.limit = parseInt(args[i].split('=')[1]);
+        if (args[i].startsWith('--depth=')) flags.depth = parseInt(args[i].split('=')[1]);
+        if (args[i].startsWith('--date=')) flags.date = args[i].split('=')[1];
+      }
+      return flags;
+    }
+
+    const mFlags = parseMondayFlags(args);
+
+    // Parse --date into a Unix timestamp (seconds) for the oldest cutoff
+    function dateToOldest(dateStr) {
+      const m = dateStr.match(/^(\d+)([dwh])$/);
+      if (!m) return Math.floor(Date.now() / 1000) - 7 * 86400; // default 7d
+      const n = parseInt(m[1]);
+      const unit = m[2];
+      const multiplier = unit === 'w' ? 7 * 86400 : unit === 'h' ? 3600 : 86400;
+      return Math.floor(Date.now() / 1000) - n * multiplier;
+    }
+    const oldest = dateToOldest(mFlags.date);
+
+    // Convert Slack ts (epoch.microseconds string) to ISO8601
+    function tsToISO(ts) {
+      if (!ts) return new Date().toISOString();
+      return new Date(parseFloat(ts) * 1000).toISOString();
+    }
+
+    const wsId = await resolveWorkspace(globalFlags);
+    const items = [];
+
+    // --- 1. Fetch unread mentions from activity.feed ---
+    try {
+      const mentionTypes = 'at_user,at_user_group,at_channel,at_everyone,unjoined_channel_mention';
+      const mentionData = await slackApi('activity.feed', {
+        limit: String(mFlags.limit),
+        types: mentionTypes,
+        mode: 'chrono_reads_and_unreads',
+        archive_only: 'false',
+        unread_only: 'true',
+        priority_only: 'false',
+      }, wsId, { fatal: false });
+
+      if (mentionData && mentionData.ok && mentionData.items) {
+        for (const entry of mentionData.items) {
+          const i = entry.item;
+          // activity.feed at_user items: .item.message.{ts, channel, author_user_id}
+          // NOTE: no .text or .thread_ts in the feed — must fetch the actual message for body
+          const msg = i.message || {};
+          const feedTs = entry.feed_ts;
+
+          // Skip items older than the date cutoff
+          if (feedTs && parseFloat(feedTs) < oldest) continue;
+
+          const channelId = msg.channel || '';
+          const authorId = msg.author_user_id || '';
+          // msg.ts is the message ts; also the thread root ts if msg is in a thread
+          const msgTs = msg.ts || feedTs || '';
+          // thread_ts: if msg has thread_ts it's a reply, else msgTs is the root
+          const threadTs = msg.thread_ts || msgTs;
+
+          items.push({
+            id: `slack-mention-${channelId}-${msgTs}`.replace(/\./g, ''),
+            source: 'slack',
+            type: 'mention',
+            title: `Mention in ${channelId}`,
+            subtitle: `#${channelId}`,
+            url: `slack://channel/${channelId}/${msgTs ? 'p' + msgTs.replace('.', '') : ''}`,
+            ts: tsToISO(feedTs || msgTs),
+            body: '',  // filled by depth fetch below
+            participants: authorId ? [authorId] : [],
+            meta: { channel: channelId, thread_ts: threadTs, msg_ts: msgTs },
+          });
+        }
+      }
+    } catch (e) {
+      // Non-fatal: continue with other sources
+    }
+
+    // --- 2. Fetch unread DM conversations ---
+    try {
+      // Get list of IM channels the user has
+      const imList = await slackApi('conversations.list', {
+        types: 'im',
+        limit: '100',
+        exclude_archived: 'true',
+      }, wsId, { fatal: false });
+
+      if (imList && imList.ok && imList.channels) {
+        // Filter to channels with unread messages
+        const unreadIms = imList.channels.filter(ch => ch.is_open || (ch.unread_count && ch.unread_count > 0));
+
+        // Limit how many DMs we actually fetch history for
+        const dmLimit = Math.min(unreadIms.length, 20);
+        for (let idx = 0; idx < dmLimit; idx++) {
+          const im = unreadIms[idx];
+          try {
+            const hist = await slackApi('conversations.history', {
+              channel: im.id,
+              limit: String(Math.max(1, mFlags.depth)),
+              oldest: String(oldest),
+            }, wsId, { fatal: false });
+
+            if (hist && hist.ok && hist.messages && hist.messages.length > 0) {
+              // One item per DM conversation — use the most recent message for metadata,
+              // concatenate up to `depth` messages for body (most recent last)
+              const msgs = hist.messages.slice(0, Math.max(1, mFlags.depth));
+              const latestMsg = hist.messages[0];
+              const userId = im.user || latestMsg.user || '';
+              const msgTs = latestMsg.ts || '';
+              const displayName = latestMsg.user_profile?.display_name || latestMsg.user_profile?.real_name || userId;
+              // Reverse so oldest is first in body
+              const body = msgs.slice().reverse().map(m => {
+                const u = m.user_profile?.display_name || m.user_profile?.real_name || m.user || '';
+                return `${u ? '@' + u + ': ' : ''}${(m.text || '').slice(0, 400)}`;
+              }).join('\n\n').substring(0, 2000);
+
+              const participants = [...new Set(msgs.map(m => m.user).filter(Boolean))];
+
+              items.push({
+                id: `slack-dm-${im.id}`,
+                source: 'slack',
+                type: 'dm',
+                title: `DM from ${displayName}`,
+                subtitle: `DM from @${displayName}`,
+                url: `slack://channel/${im.id}/${msgTs ? 'p' + msgTs.replace('.', '') : ''}`,
+                ts: tsToISO(msgTs),
+                body,
+                participants,
+                meta: { channel: im.id, thread_ts: null },
+              });
+            }
+          } catch (e) {
+            // Skip this DM channel on error
+          }
+        }
+      }
+    } catch (e) {
+      // Non-fatal: continue with other sources
+    }
+
+    // --- 3. Fetch thread replies from activity.feed ---
+    try {
+      const threadData = await slackApi('activity.feed', {
+        limit: String(mFlags.limit),
+        types: 'thread_v2',
+        mode: 'chrono_reads_and_unreads',
+        archive_only: 'false',
+        unread_only: 'true',
+        priority_only: 'false',
+      }, wsId, { fatal: false });
+
+      if (threadData && threadData.ok && threadData.items) {
+        for (const entry of threadData.items) {
+          const i = entry.item;
+          const feedTs = entry.feed_ts;
+
+          // Skip items older than the date cutoff
+          if (feedTs && parseFloat(feedTs) < oldest) continue;
+
+          // thread_v2 shape is undocumented — probe multiple known paths
+          // Common shapes seen: i.message.{ts,channel}, i.subscription.{thread_ts,channel_id},
+          // i.thread.{root_ts,channel}, i.channel + i.thread_ts
+          const msg = i.message || {};
+          const sub = i.subscription || {};
+          const thr = i.thread || {};
+
+          const channelId = msg.channel || sub.channel_id || thr.channel || i.channel || '';
+          const authorId = msg.author_user_id || sub.user_id || '';
+          // thread_ts is the root message — check all known paths
+          const threadTs = msg.thread_ts || sub.thread_ts || thr.root_ts || i.thread_ts || msg.ts || feedTs || '';
+          const msgTs = msg.ts || feedTs || '';
+
+          if (!channelId) continue; // can't fetch without channel
+
+          items.push({
+            id: `slack-thread-${channelId}-${threadTs}`.replace(/\./g, ''),
+            source: 'slack',
+            type: 'thread',
+            title: `Thread reply in ${channelId}`,
+            subtitle: `#${channelId}`,
+            url: `slack://channel/${channelId}/${threadTs ? 'p' + threadTs.replace('.', '') : ''}`,
+            ts: tsToISO(feedTs || msgTs),
+            body: '',  // filled by depth fetch below
+            participants: authorId ? [authorId] : [],
+            meta: { channel: channelId, thread_ts: threadTs, msg_ts: msgTs },
+          });
+        }
+      }
+    } catch (e) {
+      // Non-fatal: continue
+    }
+
+    // --- Fetch full threads for depth > 0 ---
+    if (mFlags.depth > 0) {
+      // For each item that has a channel + thread_ts, pull conversations.replies.
+      // For non-threaded mentions, thread_ts === msg_ts (the message itself is root).
+      // conversations.replies with ts=root always returns the root + any replies.
+      await Promise.all(items.map(async (item) => {
+        const { channel, thread_ts } = item.meta || {};
+        if (!channel || !thread_ts) return;
+        if (item.source !== 'slack') return;
+        if (item.type === 'dm') return; // DMs already have body from conversations.history
+        try {
+          const replies = await slackApi('conversations.replies', {
+            channel,
+            ts: thread_ts,
+            limit: String(Math.min(mFlags.depth + 1, 100)), // +1 to include root
+          }, wsId, { fatal: false });
+          if (replies && replies.ok && replies.messages && replies.messages.length > 0) {
+            const thread = replies.messages
+              .map(m => {
+                const user = m.user_profile?.display_name || m.user_profile?.real_name || m.user || '';
+                return `${user ? '@' + user + ': ' : ''}${(m.text || '').slice(0, 400)}`;
+              })
+              .join('\n\n');
+            item.body = thread;
+            // Collect all participants from the thread
+            const participants = new Set(item.participants);
+            for (const m of replies.messages) {
+              if (m.user) participants.add(m.user);
+            }
+            item.participants = [...participants];
+          }
+        } catch {
+          // Non-fatal: keep original body
+        }
+      }));
+    }
+
+    // --- Deduplicate by id ---
+    const seen = new Set();
+    const unique = [];
+    for (const item of items) {
+      if (!seen.has(item.id)) {
+        seen.add(item.id);
+        unique.push(item);
+      }
+    }
+
+    // --- Sort by ts descending ---
+    unique.sort((a, b) => (b.ts > a.ts ? 1 : b.ts < a.ts ? -1 : 0));
+
+    // --- Slice to limit ---
+    const result = unique.slice(0, mFlags.limit);
+
+    // --- Output ---
+    console.log(JSON.stringify(result));
+  },
 };
 
 // --- Attachment action helper ---
@@ -1351,6 +1608,7 @@ if (!cmd || cmd === 'help' || cmd === '--help') {
   console.log('  unwatch <channel_id> [--thread=<ts>]      Stop watching a channel');
   console.log('  watches                                   List active watches');
   console.log('  reinject                                  Re-inject WebSocket interceptor');
+  console.log('  monday [--limit=N] [--depth=N] [--date=Nd] Monday protocol: fetch inbox as JSON');
   console.log(`\nUse "slack workspaces" to list available workspaces and their IDs.`);
   console.log(`Use "slack slackbot" to find your Slackbot DM channel ID.`);
   process.exit(0);
