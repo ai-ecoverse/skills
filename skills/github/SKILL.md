@@ -1,5 +1,5 @@
 ---
-name: gh
+name: github
 description: >
   Interact with GitHub via gh.jsh — a lightweight GitHub CLI for SLICC agents.
   Use this skill for any GitHub task: listing or viewing pull requests, merging PRs,
@@ -29,7 +29,7 @@ Or set `GITHUB_TOKEN` as an environment variable. The token is read automaticall
 ## Running the script
 
 ```bash
-/workspace/skills/gh/gh.jsh <command> <subcommand> [args]
+/workspace/skills/github/gh.jsh <command> <subcommand> [args]
 ```
 
 All commands follow the pattern: `gh.jsh <noun> <verb> [positional args] [owner/repo]`
@@ -197,23 +197,23 @@ Missing required arguments exit with a usage hint.
 
 ```bash
 # Check what PRs are waiting for review
-/workspace/skills/gh/gh.jsh pr list ai-ecoverse/slicc
+/workspace/skills/github/gh.jsh pr list ai-ecoverse/slicc
 
 # Inspect a specific PR before merging
-/workspace/skills/gh/gh.jsh pr view 42 ai-ecoverse/slicc
+/workspace/skills/github/gh.jsh pr view 42 ai-ecoverse/slicc
 
 # Merge after review
-/workspace/skills/gh/gh.jsh pr merge 42 --squash ai-ecoverse/slicc
+/workspace/skills/github/gh.jsh pr merge 42 --squash ai-ecoverse/slicc
 
 # Post a status comment
-/workspace/skills/gh/gh.jsh pr comment 42 "Automated: all checks passed, merging." ai-ecoverse/slicc
+/workspace/skills/github/gh.jsh pr comment 42 "Automated: all checks passed, merging." ai-ecoverse/slicc
 
 # Check CI for a repo
-/workspace/skills/gh/gh.jsh run list ai-ecoverse/slicc
+/workspace/skills/github/gh.jsh run list ai-ecoverse/slicc
 
 # Diagnose a failed run
-/workspace/skills/gh/gh.jsh run view 14567890123 ai-ecoverse/slicc
+/workspace/skills/github/gh.jsh run view 14567890123 ai-ecoverse/slicc
 
 # Find PRs related to a feature
-/workspace/skills/gh/gh.jsh search prs "auth token" ai-ecoverse/slicc
+/workspace/skills/github/gh.jsh search prs "auth token" ai-ecoverse/slicc
 ```
