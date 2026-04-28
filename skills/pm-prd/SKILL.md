@@ -1,6 +1,6 @@
 ---
 name: pm-prd
-description: Write a structured Product Requirements Document (PRD) for any product or feature. Use when a product manager needs to define objectives, gather requirements, set an MVP goal, plan a roadmap, or draft a go-to-market strategy. Triggers on phrases like "write a PRD", "create a spec", "define requirements", "what should we build", "MVP for X", "roadmap for X", "GTM plan", "launch plan", "product spec", or "I need to document this feature". Also use when the user wants to publish a PRD to GitHub.
+description: Write a structured Product Requirements Document (PRD) for any product or feature. Use when a product manager needs to define objectives, gather requirements, set an MVP goal, plan a roadmap, or draft a go-to-market strategy. Triggers on phrases like "write a PRD", "create a spec", "define requirements", "what should we build", "MVP for X", "roadmap for X", "GTM plan", "launch plan", "product spec", or "I need to document this feature".
 ---
 
 # PM PRD
@@ -23,7 +23,7 @@ If the user is in a hurry or says "just draft it", make reasonable assumptions, 
 
 ### Step 2: Draft the PRD
 
-Use the template in `references/prd-template.md`. Always write all five sections. Mark unknowns as `TBD` rather than skipping them.
+Use the template in `references/prd-template.md`. Always include all five pillars. Mark unknowns as `TBD` rather than skipping them.
 
 ### Step 3: Review and iterate
 
@@ -32,10 +32,6 @@ Present the draft. Ask: "Does this capture what you had in mind? Anything to adj
 ### Step 4: Save
 
 Write to `product-docs/prds/active/<feature-name>-prd.md`. Create the directory if it doesn't exist.
-
-### Step 5: Publish (optional)
-
-If the user wants to publish to GitHub, read `references/github-publish.md` for instructions.
 
 ---
 
@@ -92,4 +88,3 @@ Five elements:
 ## References
 
 - `references/prd-template.md` — Full PRD template to copy and fill
-- `references/github-publish.md` — How to push the PRD skill to a GitHub repo
