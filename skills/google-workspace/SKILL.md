@@ -117,6 +117,13 @@ must use `kSecMatchLimitOne`](https://developer.apple.com/documentation/security
 so the only way to suppress them is at write time via `-A`. Drop the `-A`
 flag if you'd rather be prompted on each new install.
 
+**Important — `-U` does *not* rewrite the ACL.** `security add-generic-password
+-U` updates only the password and attributes; if the item already exists with
+the default (no-`-A`) ACL, the prompts will keep firing. To switch an existing
+entry to `-A`, you must `delete-generic-password` and then re-add it. The
+recipe below does that unconditionally so re-imports always end up with a
+fresh `-A` ACL.
+
 ```bash
 TMP=$(mktemp)
 gws auth export --unmasked > "$TMP"
@@ -127,12 +134,16 @@ d = json.load(open(path))
 domains = "oauth2.googleapis.com,accounts.google.com,*.googleapis.com,www.googleapis.com"
 for k, v in d.items():
     name = f"GWS_{k.upper()}"
+    # Delete first so the new entry's ACL is fresh; -U keeps the old ACL.
+    subprocess.run([
+        "security", "delete-generic-password",
+        "-s", "ai.sliccy.slicc", "-a", name,
+    ], capture_output=True)
     subprocess.run([
         "security", "add-generic-password",
         "-s", "ai.sliccy.slicc",
         "-a", name,
         "-w", v,
-        "-U",
         "-A",
         "-C", "note",
         "-j", domains,
@@ -163,10 +174,10 @@ or deleting entries while the server is running will not take effect until the
 process is restarted. Stop and relaunch `slicc-server` after every change.
 
 **Re-importing existing entries with `-A`:** If you already imported `GWS_*`
-entries without `-A` and want to silence the prompts, re-run the recipe above
-exactly as written. `security add-generic-password -U` overwrites the
-existing item _and_ rewrites its ACL, so the new entries become accessible
-without a dialog. Restart `slicc-server` afterwards.
+entries without `-A` and want to silence the prompts, re-run the recipe
+above. The recipe deletes each entry first and re-adds it with `-A` because
+`security add-generic-password -U` only updates the password — it does *not*
+rewrite the ACL of an existing item. Restart `slicc-server` afterwards.
 
 ### 4b. Env file (node-server)
 
