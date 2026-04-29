@@ -11,10 +11,13 @@ the bet is real, then capture answers and open questions.
 
 ## Operating principle
 
-**Refuse to draft until the bet is real.** When the user says "write a PRD
-for X", do not start writing prose. Conduct a gated interview across the
-five decision clusters below. Mark unresolved cells `OPEN QUESTION` rather
-than fabricating answers.
+**Refuse to draft until the bet is real.** Conduct a gated interview across
+the six decision clusters below. Mark unresolved cells `OPEN QUESTION`
+rather than fabricating answers.
+
+**Use above everything (meta-gate).** Success must be expressible as
+*unprompted use*. A PRD whose definition of done would still be a win when
+shipped-but-unused is not a PRD.
 
 Refusal patterns:
 - "Users want this feature" → ask Customer & Job questions; do not paraphrase the feature into a problem statement.
@@ -22,15 +25,16 @@ Refusal patterns:
 - "Just draft it" → draft, but prepend an `Open Questions & Unverified Claims` callout before section 1 and tag unverified claims as assumptions (Phase 4).
 - "Make it sound better" → never. Ambiguity is signal, not wording.
 
-## The five decision clusters
+## The six decision clusters
 
 If a cluster is empty or vague, the PRD is not ready — keep interviewing.
 
 1. **Customer & Job** — who the customer is, the moment of struggle, the progress they're making, the trigger, and what holds them back.
 2. **The Bet** — diagnosis of what's actually going on, the crux constraint, opportunity size, why this team can act now.
-3. **Assumptions, Hypotheses & Risks** — for each of the four product risks (value, usability, feasibility, business viability): a falsifiable claim, its evidence, its invalidator, and the cheapest test.
-4. **Success That Can Fail** — observable aha moment, one primary metric, guardrails, and a mandatory kill criterion.
+3. **Assumptions, Hypotheses & Risks** — for each of the five product risks (value, usability, feasibility, business viability, **adoption / org readiness**): a falsifiable claim, its evidence, its invalidator, and the cheapest test. Adoption is distinct from feasibility and viability — see [references/decision-forcing-questions.md](references/decision-forcing-questions.md).
+4. **Success That Can Fail** — aha moment as unprompted use, one primary usage metric, guardrails, and a mandatory kill criterion.
 5. **Cost of Delay & Smallest Learnable Bet** — what waiting costs, the smallest experiment that disambiguates the riskiest assumption, and an explicit not-building list.
+6. **Pricing & Value Capture** — the willingness-to-pay shape and where it breaks: price-to-value, hard choices, customer → segmentation → self-segmentation, point of diminishing returns. Cost-plus and competition-minus are disqualified.
 
 Full question bank: [references/decision-forcing-questions.md](references/decision-forcing-questions.md). Quote it when the PM is stuck.
 
@@ -47,13 +51,13 @@ Ask in one batch:
 
 **Gate**: a one-paragraph moment-of-struggle story, a one-sentence diagnosis, and an "only we can" claim with at least one piece of evidence. Otherwise log as open questions and only proceed with explicit user approval.
 
-### Phase 2 — Surface assumptions and define success
+### Phase 2 — Surface assumptions, define success, set price
 
-For each of the four product risks (value, usability, feasibility, business viability), force at least one assumption stated as a falsifiable claim, with: supporting evidence, what would invalidate it, and the cheapest test runnable before code is written.
+For each of the **five** product risks (value, usability, feasibility, business viability, **adoption / org readiness**), force one falsifiable claim with evidence, invalidator, and cheapest test.
 
-Then force: the aha moment (observable user behavior), one primary outcome metric, guardrail metrics, the **kill criterion**, and 30 / 60 / 90-day signals.
+Then force the aha moment (unprompted use, not a notification click), one primary usage metric, guardrails, the **kill criterion**, 30 / 60 / 90-day signals, and the pricing shape (cluster 6).
 
-**Gate**: every risk has at least one assumption with an invalidator, and a kill criterion exists. No kill criterion = wish-list, not a bet.
+**Gate**: 5/5 risks have an assumption with an invalidator; kill criterion exists; price is tied to value (not cost-plus, not competition-minus); success metric measures *use*.
 
 ### Phase 3 — Define the smallest learnable bet
 
@@ -68,7 +72,7 @@ Force:
 
 ### Phase 4 — Draft
 
-Use [references/prd-template.md](references/prd-template.md). Section order is intentional: bet → customer → assumptions → success-and-kill → smallest learnable bet → roadmap → GTM. Features are a *consequence*, not the headline. Mark unresolved cells `OPEN QUESTION`; never invent values. The full list of open questions also lives in the appendix.
+Use [references/prd-template.md](references/prd-template.md). Section order is intentional: bet → customer → assumptions (5 risks) → success-and-kill → smallest learnable bet → roadmap → requirements (FFOB) → pricing → GTM. Features are a *consequence*, not the headline. Each requirement is rendered as Feature → Function (proof) → Outcome (first-order quantified) → Benefits (plural). Mark unresolved cells `OPEN QUESTION`; never invent values. The full list of open questions also lives in the appendix.
 
 **If the user bypassed the gates** ("just draft it"): keep the template's section order, but prepend an `## Open Questions & Unverified Claims` callout *before* section 1 that lists every gate that wasn't passed and every fabricated value. The reader must see the gaps before the bet.
 
@@ -79,6 +83,8 @@ Ask in order:
 2. Which assumption are you least sure about, and is its invalidator one we'd actually accept?
 3. If the kill criterion fired in 60 days, would we actually pull back? If not, the kill criterion is wrong.
 4. Is the smallest learnable bet really the smallest?
+5. **Use above everything check**: if this shipped exactly as written but no customer used it on their own initiative, would we still call it a win? If yes, the success definition is wrong.
+6. Pricing check: is the price tied to value or to cost? If cost, redo cluster 6.
 
 Revise specific sections; do not rewrite for tone.
 

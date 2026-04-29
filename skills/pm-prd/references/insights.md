@@ -2,12 +2,27 @@
 
 This skill is built on the conviction that a PRD is a forcing function for
 decisions, not a polished artifact. It is informed by recurring patterns
-across the canonical product-management bookshelf.
+across the canonical product-management bookshelf and four in-house
+frameworks.
 
-The synthesis below explains *why* the skill is structured around five
-decision clusters, and credits the frameworks each cluster draws from.
+The synthesis below explains *why* the skill is structured around six
+decision clusters and a "use above everything" meta-gate, and credits the
+frameworks each cluster draws from.
 
-## The five decision clusters and where they come from
+## The "use above everything" meta-gate
+
+Before any cluster passes review, the skill applies a meta-gate drawn from
+**Nuescheler's Helix design principles** (captured 2024-11-04): "Use above
+everything." A PRD whose success condition reduces to "shipped" is not a
+PRD. Every cluster must express success as observed *usage on the
+customer's own initiative*. If a draft would still be considered a win when
+shipped-but-unused, the bet is not real yet.
+
+This converts ship metrics, click-through rates on our own notifications,
+and adoption forced by rollout policy into red flags. The aha moment must
+be something the customer does without prompting from us.
+
+## The six decision clusters and where they come from
 
 ### Cluster 1 — Customer & Job
 
@@ -59,6 +74,15 @@ The core cognitive move of modern product work is making leaps of faith
   it out?), **feasibility risk** (can engineering build it?), and
   **business viability risk** (does it work for sales, marketing,
   finance, legal, support, partners?).
+- **Trieloff, *Performance Culture* (CMS Summit 2025)** — adds a fifth
+  axis: **adoption / org-readiness risk**. Technology alone does not
+  deliver outcomes. The behavior shift required of procurement, sales,
+  support, ops, partners, and the customer's own organization is a
+  distinct risk from feasibility (engineering can build it) and from
+  business viability (the company can sell it). The "fast-fashion site
+  case" — where moving from middling to high performance dropped
+  conversion rate because the new organic traffic didn't come for the
+  niche product — is a textbook example of adoption-risk surprise.
 - Ries (*The Lean Startup*) — **leap-of-faith assumptions** are
   identified explicitly and tested with the cheapest experiment that
   disambiguates them; **value hypothesis** vs **growth hypothesis** must
@@ -99,14 +123,67 @@ disambiguates the riskiest assumption.
 - Pichler (*Agile Product Management with Scrum*) — release plans and
   sprint goals are the operational unit of "smaller, sooner".
 
+### Cluster 6 — Pricing & Value Capture
+
+Pricing is decision-forcing in the same shape as Rumelt's
+diagnosis-crux-action: it requires hard choices and disqualifies defaults.
+Collapsing it into one row in business-viability risk reduces pricing to
+"fits our model y/n". The cluster-level question is the willingness-to-pay
+shape of the bet and where it breaks.
+
+- **Trieloff, *Eleven Pricing Aphorisms* (ProductCamp Berlin,
+  2014-09-13)** — price-to-value (#1); freemium is neither a word nor a
+  strategy (#2); the price list is the bad cop to the AE's good cop (#3);
+  start small to get a foot in the door (#4); be the filet mignon, not
+  the steak knife (#5); good pricing is data-driven (#6, #11);
+  cost-plus and competition-minus are a rock and a hard place (#7);
+  customer-pricing → segmentation → self-segmentation (#8); find the
+  point of diminishing returns and price to it (#9); no pricing without
+  hard choices (#10).
+- **Trieloff, *Gain-Sharing Pricing Model* (Apple Notes, 2014-10-29)** —
+  concrete model: 10 % of profit lift, 1 % of revenue lift, price-tier
+  relief on the upside, *only* for established solutions (not platforms),
+  *only* on data already in the system. Five operative rules, all
+  disqualifying.
+
+The cluster's load-bearing decisions: which segment we deliberately don't
+serve at this price, which adjacent feature we could legitimately charge
+for separately but won't, where the point of diminishing returns is, and
+which segmentation level (customer / segmentation / self-segmentation)
+we're operating at.
+
+### Requirements: FFOB
+
+Once the six clusters pass review, requirements render as **Feature →
+Function → Outcome → Benefits**, not as a flat capability list.
+
+- **Trieloff, *FFOB Framework* (Apple Notes, 2014-06-17)** —
+  - **Feature** is the short customer-facing name.
+  - **Function** is the proof of viability — demo, diagram, screenshot,
+    or one-line technical proof. *Skipping the Function column collapses
+    to FAB and lets "advantage" become a watered-down benefit.*
+  - **Outcome** is the first-order quantified result that solves the
+    customer's problem (what FAB calls "advantage", but with a clearer
+    name aligned to job-stories and product discovery).
+  - **Benefits** are higher-order, plural, stacking up through Maslow-
+    style chains toward wealth, power, or status.
+
+Function and Outcome are two distinct bridge pillars between Feature and
+Benefits — the "how" and the "and then". Both are load-bearing in
+high-technology products. Skipping either column produces a FAB-shaped
+requirements list that hides risk.
+
 ## How the workflow operationalises this
 
 The skill is structured as a gated interview:
 
 - **Phase 1** gates on a real Customer & Job and a real Bet (Clusters 1 and 2).
-- **Phase 2** gates on assumptions per risk + a kill criterion (Clusters 3 and 4).
+- **Phase 2** gates on assumptions per risk (5/5), a kill criterion measured in *use*, and the pricing shape (Clusters 3, 4, and 6).
 - **Phase 3** gates on the smallest learnable bet (Cluster 5).
-- **Phases 4–6** draft, review, and save.
+- **Phases 4–6** draft, review (with explicit "use above everything" + pricing-not-cost-plus checks), and save.
+
+The "use above everything" meta-gate runs across every phase: success that
+isn't measured in unprompted use is treated as success-theatre.
 
 The gates are the point. A PRD that is "polished" past empty clusters is
 worse than a PRD that names them as open. The whole skill is a refusal to
@@ -126,8 +203,27 @@ help the user feel finished before the team is actually informed.
   indicator before any roadmap.
 - "We're confident" — the skill rephrases as a falsifiable claim with an
   invalidator. "Confident" is not an assumption.
+- "Engineering can build it" — that's feasibility, fine; but the skill
+  separately demands an adoption / org-readiness assumption naming who
+  has to change behavior post-launch.
+- "Match the competitor's price" — competition-minus is disqualified;
+  the skill demands a price-to-value statement.
+- "Success = launch" — fails the "use above everything" meta-gate. The
+  skill demands an unprompted-use metric.
+- "Support feature X" as a requirement — that's a Feature with no
+  Function and no Outcome. The skill demands proof of viability and the
+  first-order quantified result.
 
 ## Bibliography
+
+### In-house frameworks
+
+- Trieloff, Lars. *FFOB — Feature / Function / Outcome / Benefits* (Apple Notes, 2014-06-17).
+- Trieloff, Lars. *Eleven Pricing Aphorisms* (ProductCamp Berlin, 2014-09-13) and *Gain-Sharing Pricing Model* (Apple Notes, 2014-10-29).
+- Trieloff, Lars. *Performance Culture* (CMS Summit, 2025).
+- Nuescheler, David. *Helix Design Principles — "Use above everything / Uptime / Simple, fast, reliable, secure / Less is more"* (captured 2024-11-04).
+
+### Canonical bibliography
 
 - Cagan, Marty. *Inspired: How to Create Products Customers Love.*
 - Christensen, Clayton M., Taddy Hall, Karen Dillon, and David S. Duncan. *Competing Against Luck.*

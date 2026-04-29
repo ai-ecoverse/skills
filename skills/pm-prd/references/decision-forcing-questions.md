@@ -1,12 +1,21 @@
 # Decision-Forcing Questions
 
-Question banks for each of the five decision clusters. Use these to
+Question banks for each of the six decision clusters. Use these to
 interview the PM when the answers in a draft PRD are vague. Quote the
 questions in this document directly when the user is stuck; do not quote
 the original sources verbatim.
 
 The questions are paraphrased and grouped by decision cluster. Original
 sources are listed at the end of each section so the PM can read further.
+
+**Meta-gate — "Use above everything" (Nuescheler)**
+
+Before any cluster passes review, ask:
+- Would we still call this a win if it shipped exactly as written but no
+  customer used it on their own initiative? If yes, the bet is not real.
+- Is the success metric in cluster 4 a *use* metric or a *ship* metric?
+- Does the aha moment require us to push, prompt, or notify the user — or
+  is it something they do unprompted?
 
 ---
 
@@ -104,7 +113,8 @@ Neumeier — *ZAG*.
 
 ## Cluster 3 — Assumptions, Hypotheses & Risks
 
-Use Cagan's four product risks to force at least one assumption per category.
+Use Cagan's four product risks **plus a fifth axis (adoption / org
+readiness)** to force at least one assumption per category.
 
 ### Value risk — will customers buy or use this?
 
@@ -132,8 +142,22 @@ Use Cagan's four product risks to force at least one assumption per category.
 
 - Does this fit our business model, or does it require a new one?
 - What does sales, marketing, finance, legal, support, and partner functions need to have in place?
-- What pricing or packaging would make this economically rational? What would invalidate it?
 - What is the unit economics story, and where is it most fragile?
+- *(Pricing decisions are their own cluster — see Cluster 6. Don't collapse them into a single B-row.)*
+
+### Adoption / Org-readiness risk — who has to change behavior post-launch?
+
+> Distinct from feasibility (engineering can build it) and business
+> viability (the company can sell it). Names the behavior shift required
+> on the customer side and inside our own org for the bet to pay off.
+> Technology alone does not deliver outcomes — the cultural shift is
+> usually the harder part.
+
+- Who has to change behavior for this to deliver the outcome — procurement, sales, support, ops, partners, the customer's IT, the customer's end users?
+- For each group: what specifically has to change, what's in it for them, and what is the cost of staying with the current behavior?
+- What evidence do we have that they actually will change, and what would invalidate that evidence?
+- What enablement is required — training, documentation, change management, incentive realignment? Who owns it, and is it staffed?
+- What second- and third-order effects of the new behavior could surprise us? (E.g. higher organic traffic that drops conversion rate because the new traffic doesn't come for the niche product.)
 
 ### Cross-cutting questions for every assumption
 
@@ -151,7 +175,10 @@ is almost never true.
 
 **Sources**: Cagan — *Inspired* (four product risks); Ries — *The Lean
 Startup* (leap-of-faith assumptions, value vs growth hypothesis,
-build-measure-learn); Christensen — *The Innovator's Dilemma*.
+build-measure-learn); Christensen — *The Innovator's Dilemma*. Adoption /
+org-readiness risk is added as a fifth axis from Trieloff,
+*Performance Culture* (CMS Summit 2025) — "technology alone doesn't
+deliver outcomes; the cultural shift is the harder part."
 
 ---
 
@@ -162,6 +189,8 @@ build-measure-learn); Christensen — *The Innovator's Dilemma*.
 - What user-visible behavior should we see in real usage data when this works?
 - What is the "aha moment" — the single observable signal that the job was actually done?
 - Which behavior, if absent, tells us users got the feature but not the value?
+- **Use above everything**: Is the aha moment something the customer does *on their own initiative*, or something we have to push, prompt, or notify them into?
+- If we removed every notification, banner, and email about this feature, would usage still grow? If no, we're measuring obedience, not value.
 
 ### Metrics
 
@@ -195,7 +224,8 @@ not a bet. If success is unfalsifiable, this cluster is empty.
 **Sources**: Olson — *The Product-Led Organization* (aha moment, observable
 usage); Reeves — *Building Products for the Enterprise* (rollout
 sequencing); Ulwick — *Jobs to Be Done: Theory to Practice* (outcomes); Ries
-— *The Lean Startup* (innovation accounting).
+— *The Lean Startup* (innovation accounting). The "use above everything"
+meta-gate is Nuescheler's Helix design principles, captured 2024-11-04.
 
 ---
 
@@ -237,6 +267,62 @@ build-measure-learn); Pichler — *Agile Product Management with Scrum*.
 
 ---
 
+## Cluster 6 — Pricing & Value Capture
+
+> Pricing is decision-forcing in the same shape as Rumelt's
+> diagnosis-crux-action: it requires hard choices and disqualifies
+> defaults. Collapsing it into a row in business-viability risk reduces
+> pricing to "fits our model y/n". The cluster-level question is: what's
+> the willingness-to-pay shape of this bet, and where does it break?
+
+### Price-to-value
+
+- What is the quantified outcome (from Cluster 4 and the Outcome column of section 7) that justifies the price?
+- Stated as one sentence: "[customer] pays [amount] because they get [outcome] worth [value]."
+- If we couldn't quantify the outcome, we cannot price to value. What's the experiment that would let us quantify it?
+
+### Hard choices
+
+- Which segment are we deliberately *not* serving at this price, and why is that the right trade?
+- Which feature(s) we could legitimately charge for separately, but won't — and why?
+- Where is the **point of diminishing returns** for the customer? Have we set the price *at* that point, or somewhere arbitrary?
+
+### Segmentation ladder
+
+- Customer pricing → segmentation → self-segmentation: which level are we at? What gets us to the next?
+- If tiered, what is the *self-segmenting* feature gate (a feature only the higher-need segment will care about), not just feature count or volume cap?
+- Are we accidentally training every customer to land on the lowest tier?
+
+### Disqualified defaults
+
+- Are we cost-plus (price = cost × markup)? If yes, redo from price-to-value.
+- Are we competition-minus (price = competitor − δ)? If yes, redo from price-to-value.
+- Are we "freemium" without a defined paid-upgrade trigger? If yes, define the trigger or drop the free tier.
+
+### Gain-sharing — only if all five are true
+
+- Is this an established solution (not a platform, not a v1 bet)?
+- Is the data we'd measure outcomes against *already in our system*?
+- Can we agree with the customer on the baseline before we start?
+- Is there a defined upside split (e.g. % of profit lift, % of revenue lift)?
+- Is there a price-tier-relief floor so the customer doesn't lose on the upside path?
+
+If any answer is no, gain-sharing is the wrong model right now.
+
+### Test
+
+If "pricing" reduces to "matches what competitors charge" or "covers our
+costs", this cluster is empty. The PRD is selling on price, not on value.
+
+**Sources**: Trieloff, *Eleven Pricing Aphorisms* (ProductCamp Berlin,
+2014-09-13) and *Gain-Sharing Pricing* (2014-10-29). Specific aphorisms
+referenced: price-to-value (#1), no-pricing-without-hard-choices (#10),
+customer-pricing → segmentation → self-segmentation (#8), point of
+diminishing returns (#9), cost-plus / competition-minus disqualified (#7),
+gain-sharing constraints (#11 + 2014-10-29 model).
+
+---
+
 ## Quick reference — when the user gets stuck
 
 | If the PM says… | Quote back this question |
@@ -249,10 +335,24 @@ build-measure-learn); Pichler — *Agile Product Management with Scrum*.
 | "MVP is just fewer features." | "Which assumption is riskiest? What is the smallest experiment that disambiguates *that* assumption?" |
 | "We don't have time to test it." | "What does waiting cost us? And what is the cheapest experiment that could run this week?" |
 | "Just draft it." | "I'll draft it — but every unverified claim will be marked as an assumption with an open invalidator. Is that OK?" |
+| "Engineering can build it." | "That's feasibility — fine. Who has to *change behavior* post-launch for the bet to pay off? That's adoption / org-readiness, a separate axis." |
+| "We'll just match the competitor's price." | "That's competition-minus, which is disqualified. What is the quantified outcome and what is it worth to the customer?" |
+| "Pricing is sales' problem." | "Pricing is the willingness-to-pay shape of the bet. Which segment do we deliberately not serve at this price, and why?" |
+| "Success = launch." | "Use above everything: would we still call this a win if it shipped exactly as written but no customer used it on their own initiative?" |
+| "We'll requirement it as 'support feature X'." | "That's a Feature with no Function and no Outcome. Show me the proof of viability (demo / diagram) and the first-order quantified result." |
 
 ---
 
 ## Bibliography
+
+### In-house frameworks
+
+- Trieloff, Lars. *FFOB — Feature / Function / Outcome / Benefits* (Apple Notes, 2014-06-17). Distinguishes Function (proof-of-viability — demo, diagram, screenshot) from Outcome (first-order quantifiable result), preventing the FAB→FFB collapse where "advantage" becomes a watered-down benefit.
+- Trieloff, Lars. *Eleven Pricing Aphorisms* (ProductCamp Berlin, 2014-09-13) and *Gain-Sharing Pricing Model* (Apple Notes, 2014-10-29). Pricing as a decision cluster: price-to-value, hard choices, segmentation ladder, disqualified defaults, gain-sharing constraints.
+- Trieloff, Lars. *Performance Culture* (CMS Summit, 2025). Source for the adoption / org-readiness risk axis: technology alone does not deliver outcomes; the organizational and cultural shift is the harder part.
+- Nuescheler, David. *Helix Design Principles* (captured 2024-11-04). Source for the "use above everything" meta-gate: usage trumps everything, including theoretical correctness.
+
+### Canonical bibliography
 
 - Cagan, Marty. *Inspired: How to Create Products Customers Love.*
 - Christensen, Clayton M., Taddy Hall, Karen Dillon, and David S. Duncan. *Competing Against Luck: The Story of Innovation and Customer Choice.*
