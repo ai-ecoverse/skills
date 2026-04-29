@@ -1,8 +1,9 @@
 # Decision-Forcing Questions
 
 Question banks for each of the five decision clusters. Use these to
-interview the PM when the answers in a draft PRD are vague. Quote them
-directly when the user is stuck.
+interview the PM when the answers in a draft PRD are vague. Quote the
+questions in this document directly when the user is stuck; do not quote
+the original sources verbatim.
 
 The questions are paraphrased and grouped by decision cluster. Original
 sources are listed at the end of each section so the PM can read further.

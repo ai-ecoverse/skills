@@ -1,6 +1,7 @@
 ---
 name: pm-prd
 description: Interview a product manager until the bet is real, then capture it as a Product Requirements Document. Use when a PM asks to write a PRD, define requirements, scope an MVP, plan a roadmap, or draft a launch plan. Triggers on phrases like "write a PRD", "create a spec", "define requirements", "what should we build", "MVP for X", "roadmap for X", "GTM plan", "launch plan", "product spec", or "I need to document this feature".
+allowed-tools: bash
 ---
 
 # PM PRD
@@ -16,10 +17,10 @@ five decision clusters below. Mark unresolved cells `OPEN QUESTION` rather
 than fabricating answers.
 
 Refusal patterns:
-- "Users want this feature" → ask the **Customer & Job** questions; do not paraphrase the feature into a problem statement.
-- "Improve retention" → ask for the moment of struggle and the leading indicator before any roadmap.
-- "Just draft it" → draft, but the first section is the unanswered questions and every unverified claim is tagged as an assumption.
-- "Make it sound better" → never. Ambiguity is signal, not a wording problem.
+- "Users want this feature" → ask Customer & Job questions; do not paraphrase the feature into a problem statement.
+- "Improve retention" → demand the moment of struggle and the leading indicator before any roadmap.
+- "Just draft it" → draft, but prepend an `Open Questions & Unverified Claims` callout before section 1 and tag unverified claims as assumptions (Phase 4).
+- "Make it sound better" → never. Ambiguity is signal, not wording.
 
 ## The five decision clusters
 
@@ -67,7 +68,9 @@ Force:
 
 ### Phase 4 — Draft
 
-Use [references/prd-template.md](references/prd-template.md). Section order is intentional: bet → customer → assumptions → success-and-kill → smallest learnable bet → roadmap → GTM. Features are a *consequence*, not the headline. Mark unresolved cells `OPEN QUESTION`; never invent values.
+Use [references/prd-template.md](references/prd-template.md). Section order is intentional: bet → customer → assumptions → success-and-kill → smallest learnable bet → roadmap → GTM. Features are a *consequence*, not the headline. Mark unresolved cells `OPEN QUESTION`; never invent values. The full list of open questions also lives in the appendix.
+
+**If the user bypassed the gates** ("just draft it"): keep the template's section order, but prepend an `## Open Questions & Unverified Claims` callout *before* section 1 that lists every gate that wasn't passed and every fabricated value. The reader must see the gaps before the bet.
 
 ### Phase 5 — Review
 
@@ -81,15 +84,19 @@ Revise specific sections; do not rewrite for tone.
 
 ### Phase 6 — Save
 
-Write to `product-docs/prds/active/<feature-name>-prd.md`. Create the directory if needed.
+Ask the user where to save before writing any files. Suggest, in order:
+1. `product-docs/prds/active/<feature-name>-prd.md` if the repo already has a `product-docs/` convention.
+2. `docs/prds/<feature-name>-prd.md` if the repo has a `docs/` directory.
+3. Otherwise `<feature-name>-prd.md` in the current working directory.
+
+Create the target directory only after the user confirms the location.
 
 ## Writing principles
 
 - **Diagnosis before solution.** If the diagnosis is one line and the feature list is two pages, the PRD is upside down.
-- **One bet per PRD.** A PRD with three bets is three PRDs. Split them.
+- **One bet per PRD.** Three bets = three PRDs.
 - **Specific over vague.** "Fast" → "loads in under 200 ms." "Better retention" → "D30 from 28 % to 38 %."
-- **Unanswered is fine; fabricated is not.** Mark unknowns as `OPEN QUESTION` with an owner. Never write a confident sentence where a question belongs.
-- **Living document.** Version, last-updated date, change-log.
+- **Unanswered is fine; fabricated is not.** Mark unknowns `OPEN QUESTION` with an owner.
 
 ## References
 
