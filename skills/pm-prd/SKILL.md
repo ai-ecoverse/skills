@@ -5,126 +5,75 @@ description: Interview a product manager until the bet is real, then capture it 
 
 # PM PRD
 
-A PRD is a forcing function for decisions, not a polished artifact. The job
-of this skill is to interview the product manager hard enough that the
-unanswered questions surface, *then* capture the answers (and the open
-questions) in a document the team can actually act on.
-
-A PRD that polishes an unrefined idea hides risk. A PRD that surfaces the
-unanswered questions reduces it.
+Treat the PRD as a forcing function for decisions. Interview the PM until
+the bet is real, then capture answers and open questions.
 
 ## Operating principle
 
 **Refuse to draft until the bet is real.** When the user says "write a PRD
-for X", do not start writing prose. Conduct a structured interview across
-five decision clusters (below). Only when each cluster has at least a
-provisional answer do you draft the document — and even then, mark
-unresolved cells `OPEN QUESTION` rather than fabricating answers.
+for X", do not start writing prose. Conduct a gated interview across the
+five decision clusters below. Mark unresolved cells `OPEN QUESTION` rather
+than fabricating answers.
 
-Anti-patterns to refuse:
-- "Users want this feature" → respond with the **Customer & Job** questions; do not paraphrase the feature into a problem statement.
+Refusal patterns:
+- "Users want this feature" → ask the **Customer & Job** questions; do not paraphrase the feature into a problem statement.
 - "Improve retention" → ask for the moment of struggle and the leading indicator before any roadmap.
-- "Just draft it" → draft a PRD whose first visible section lists the unanswered questions, with each unverified claim explicitly marked as an assumption.
+- "Just draft it" → draft, but the first section is the unanswered questions and every unverified claim is tagged as an assumption.
 - "Make it sound better" → never. Ambiguity is signal, not a wording problem.
 
 ## The five decision clusters
 
-Each cluster names a class of decision the PRD must capture explicitly. If a
-cluster is empty or vague, the PRD is not ready and the skill keeps interviewing.
+If a cluster is empty or vague, the PRD is not ready — keep interviewing.
 
-1. **Customer & Job** — who the customer is, the moment of struggle, the
-   progress they're trying to make, what triggers them today, and what holds
-   them back.
-2. **The Bet** — the diagnosis of what's actually going on, the crux
-   constraint, the opportunity size, and why this team is best suited to
-   take the bet now.
-3. **Assumptions, Hypotheses & Risks** — the leap-of-faith claims surfaced
-   for each of the four product risks (value, usability, feasibility,
-   business viability), each with its evidence, its invalidator, and the
-   cheapest test that could falsify it before code is written.
-4. **Success That Can Fail** — the observable signal that the user's job
-   was done, the primary outcome metric, the guardrails, and (mandatory)
-   the kill criterion.
-5. **Cost of Delay & Smallest Learnable Bet** — what waiting costs, the
-   smallest experiment that disambiguates the riskiest assumption, and an
-   explicit list of what we are *not* building.
+1. **Customer & Job** — who the customer is, the moment of struggle, the progress they're making, the trigger, and what holds them back.
+2. **The Bet** — diagnosis of what's actually going on, the crux constraint, opportunity size, why this team can act now.
+3. **Assumptions, Hypotheses & Risks** — for each of the four product risks (value, usability, feasibility, business viability): a falsifiable claim, its evidence, its invalidator, and the cheapest test.
+4. **Success That Can Fail** — observable aha moment, one primary metric, guardrails, and a mandatory kill criterion.
+5. **Cost of Delay & Smallest Learnable Bet** — what waiting costs, the smallest experiment that disambiguates the riskiest assumption, and an explicit not-building list.
 
-The full question bank for each cluster lives in
-[references/decision-forcing-questions.md](references/decision-forcing-questions.md).
-Quote from it directly when the PM is stuck.
+Full question bank: [references/decision-forcing-questions.md](references/decision-forcing-questions.md). Quote it when the PM is stuck.
 
 ## Workflow
 
 ### Phase 1 — Frame the bet
 
-Goal: get a real customer-and-job statement and a real diagnosis.
-
-Ask, in one batch:
-1. Who is the customer? Describe them by the problem they're in, not their job title or demographics.
-2. Walk me through the last time someone you know hit this problem. What were they doing, what triggered them to look for a solution, what did they try first, and what was frustrating about it?
-3. What is *actually going on* in this market or workflow? What's the underlying knot? (Not the symptom — the cause.)
-4. Of the things that make this hard, which one, if it relaxed, would unlock the rest?
+Ask in one batch:
+1. Who is the customer? Describe by problem, not job title or demographics.
+2. Walk me through the last time someone hit this problem. What were they doing, what triggered them, what did they try first, what was frustrating?
+3. What is actually going on in this market or workflow? What's the underlying knot, not the symptom?
+4. Of the things that make this hard, which one, if relaxed, unlocks the rest?
 5. Why is this team uniquely able to act on this now?
 
-Gate: do not advance to Phase 2 until you can write a one-paragraph story
-naming a real moment of struggle, a one-sentence diagnosis of the underlying
-cause, and an "only we can" claim with at least one piece of evidence. If the
-PM cannot supply these, log them as open questions and proceed only on
-explicit user approval.
+**Gate**: a one-paragraph moment-of-struggle story, a one-sentence diagnosis, and an "only we can" claim with at least one piece of evidence. Otherwise log as open questions and only proceed with explicit user approval.
 
 ### Phase 2 — Surface assumptions and define success
 
-Goal: make the leap-of-faith assumptions visible and define a kill criterion.
+For each of the four product risks (value, usability, feasibility, business viability), force at least one assumption stated as a falsifiable claim, with: supporting evidence, what would invalidate it, and the cheapest test runnable before code is written.
 
-For each of the four product risks (value, usability, feasibility, business
-viability):
-- Force at least one assumption stated as a falsifiable claim.
-- For each assumption, capture: supporting evidence, what would invalidate
-  it, and the cheapest test that could run *before* the team builds.
+Then force: the aha moment (observable user behavior), one primary outcome metric, guardrail metrics, the **kill criterion**, and 30 / 60 / 90-day signals.
 
-Then force:
-- The observable user behavior that means the job was done (the "aha moment").
-- The primary outcome metric — exactly one.
-- The guardrail metrics that must not regress.
-- The **kill criterion**: what data would make us pull this back.
-- 30 / 60 / 90-day signals.
-
-Gate: do not advance to Phase 3 until every risk category has at least one
-assumption with an invalidator, and a kill criterion exists. A PRD with no
-condition under which the work would be killed is a wish-list, not a bet.
+**Gate**: every risk has at least one assumption with an invalidator, and a kill criterion exists. No kill criterion = wish-list, not a bet.
 
 ### Phase 3 — Define the smallest learnable bet
 
-Goal: scope an MVP that resolves the riskiest assumption, not the smallest
-buildable thing.
-
 Force:
-- What does waiting another quarter cost us? (Customers, revenue, learning, optionality.)
-- Which assumption is riskiest? What is the smallest experiment that disambiguates it?
-- Is that experiment a build, a prototype, a concierge, a wizard-of-oz, or something else?
-- What are we explicitly *not* building, and why is now not the time?
-- What is the rollback path if the signal is bad?
+- What does waiting another quarter cost (customers, revenue, learning, optionality)?
+- Which assumption is riskiest? What's the smallest experiment that disambiguates *it*?
+- What form: build, prototype, concierge, wizard-of-oz, landing page?
+- What are we explicitly *not* building, and why now is not the time?
+- Rollback path if the signal is bad?
 
-Gate: the MVP description must name the riskiest assumption and explain how
-the MVP tests it. "MVP = a smaller version of what we want to build
-eventually" is not sufficient.
+**Gate**: the MVP names the riskiest assumption and explains how it tests it. "Smaller version of the eventual product" is not sufficient.
 
-### Phase 4 — Draft the PRD
+### Phase 4 — Draft
 
-Use [references/prd-template.md](references/prd-template.md). The order of
-sections is intentional: bet → customer in context → assumptions →
-success-and-kill criteria → smallest learnable bet → roadmap → GTM. The
-feature list is a *consequence* of the earlier sections, not the headline.
-
-Mark unresolved cells `OPEN QUESTION` and list them in the appendix. Never
-invent values. A PRD with five honest open questions is more useful than a
-PRD with thirty fabricated certainties.
+Use [references/prd-template.md](references/prd-template.md). Section order is intentional: bet → customer → assumptions → success-and-kill → smallest learnable bet → roadmap → GTM. Features are a *consequence*, not the headline. Mark unresolved cells `OPEN QUESTION`; never invent values.
 
 ### Phase 5 — Review
 
-Present the draft. Ask, in this order:
+Ask in order:
 1. Does the diagnosis ring true? Is the crux right?
-2. Which assumption are you least sure about, and is its invalidator something we'd actually accept?
+2. Which assumption are you least sure about, and is its invalidator one we'd actually accept?
 3. If the kill criterion fired in 60 days, would we actually pull back? If not, the kill criterion is wrong.
 4. Is the smallest learnable bet really the smallest?
 
@@ -132,28 +81,15 @@ Revise specific sections; do not rewrite for tone.
 
 ### Phase 6 — Save
 
-Write to `product-docs/prds/active/<feature-name>-prd.md`. Create the
-directory if it doesn't exist.
+Write to `product-docs/prds/active/<feature-name>-prd.md`. Create the directory if needed.
 
 ## Writing principles
 
-- **Diagnosis before solution.** Spend more words on what's actually going on
-  than on what we'll build. If the diagnosis is one line and the feature
-  list is two pages, the PRD is upside down.
+- **Diagnosis before solution.** If the diagnosis is one line and the feature list is two pages, the PRD is upside down.
 - **One bet per PRD.** A PRD with three bets is three PRDs. Split them.
-- **Every assumption has an invalidator.** If a claim has no condition under
-  which it could be wrong, it is not an assumption — it's faith.
-- **Specific over vague.** "Fast" → "loads in under 200 ms." "Better
-  retention" → "D30 retention from 28 % to 38 %."
-- **Out of scope is mandatory.** What we are *not* building is as
-  load-bearing as what we are.
-- **Kill criterion is mandatory.** If there is no result that would cause us
-  to pull this back, success is unfalsifiable.
-- **Unanswered is fine; fabricated is not.** Mark unknowns as
-  `OPEN QUESTION` and assign an owner. Never write a confident sentence
-  where you should write a question.
-- **Living document.** Version, last-updated date, change-log. A PRD that
-  never changes was never read.
+- **Specific over vague.** "Fast" → "loads in under 200 ms." "Better retention" → "D30 from 28 % to 38 %."
+- **Unanswered is fine; fabricated is not.** Mark unknowns as `OPEN QUESTION` with an owner. Never write a confident sentence where a question belongs.
+- **Living document.** Version, last-updated date, change-log.
 
 ## References
 
