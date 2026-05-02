@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Strudel Music</title>
+  <link rel="icon" href="music" />
   <script src="https://unpkg.com/@strudel/web@1.3.0" onerror="document.getElementById('statusText').textContent='Failed to load Strudel library from unpkg';document.getElementById('statusText').classList.add('error-text');window.__strudelLoadFailed=true;"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
