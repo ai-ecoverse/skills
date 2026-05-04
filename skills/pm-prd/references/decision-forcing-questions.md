@@ -182,6 +182,56 @@ deliver outcomes; the cultural shift is the harder part."
 
 ---
 
+## Discovery Artifact — designing the experiment
+
+> Building is now cheap; shipping is still expensive. Each Cluster 3
+> assumption — except those in the *what vibe coding cannot test* set
+> below — should be tested by a vibe-coded artifact before the PRD is
+> written. The artifact is a discovery instrument, not the product.
+
+### Choosing the form
+
+- Can the riskiest assumption be tested by a runnable artifact (web app, script, API stub, data pipeline) that could be vibe-coded in under one day?
+- If yes: vibe-code it. The artifact replaces wishful claims in the Cluster 3 *Cheapest test* column with actual observed behavior.
+- If no (hardware, regulated, compliance, network-effects-only-at-scale, on-prem deployment): fall back, in order, to concierge → wizard-of-oz → landing page → sales pitch.
+
+### Designing the experiment
+
+- For each Cluster 3 assumption, what observable user behavior in the artifact would invalidate the claim? Be specific — "they don't use it" is too vague; "5/5 fail to complete the primary action without prompting" is testable.
+- What is the minimum artifact that could surface that observable behavior? Strip everything else.
+- Who will see it — three to five named real customers, or the hardest internal critic of the bet? Neither one alone will produce honest signal.
+- What is the *what surprised me* log going to capture? If the answer is "we'll know when we see it", you will only see what you already expected.
+
+### Reading the artifact
+
+- For each assumption, did the artifact validate it (Y), refute it (N), partially address it (partial), or sit in the *cannot test* set (not testable)?
+- Three things must have surprised you. If nothing surprised, the artifact wasn't probing the right edge — redesign and re-run.
+- Distinguish "users smiled" from "users used unprompted." A polite reaction is not validation; unprompted return on day 2 is.
+
+### What vibe coding cannot test
+
+> A working artifact validated by five happy users does NOT validate the
+> following. Treat each as ship debt (Cluster 5), not as validated.
+
+- **Scale** — concurrent users, p95 latency under load, queue depth, tail behavior.
+- **Security** — attack surface, secrets handling, auth bypass, multi-tenant isolation, supply chain.
+- **Long-term retention** — anything beyond the artifact's observation window (typically <2 weeks).
+- **Network effects** — cold-start dynamics, marketplace liquidity, two-sided incentive alignment.
+- **Compliance / regulatory** — GDPR, HIPAA, SOC2, FedRAMP, accessibility (WCAG), regional law, financial reporting.
+- **Edge-case data** — Unicode pathologies, time zones, large file sizes, malformed inputs at scale.
+- **Operations & observability** — logging, metrics, alerting, on-call rotation, SLO budgets, change management.
+- **Billing & support** — refunds, dunning, fraud, dispute resolution, support escalation paths, knowledge-base coverage.
+
+For an assumption that falls into any of these categories, mark Cluster 3's *Artifact-validated?* column as **not testable** and move the validation work to Cluster 5's ship-debt list with a real owner and a real cost.
+
+### Test
+
+If the PRD doesn't link a runnable artifact (or a recorded concierge run), Cluster 3's *Artifact-validated?* column will be empty across the board, and the bet is being validated on vibes.
+
+**Sources**: Karpathy, Andrej. *Vibe Coding* (X.com, 2025-02-02) — "fully give in to the vibes, embrace exponentials, and forget that the code even exists." Huesler, Cedric. *Build first, then align* (Slack, AEM PM thread, 2026-04-29) — alignment is downstream of evidence, not upstream of it.
+
+---
+
 ## Cluster 4 — Success That Can Fail
 
 ### Observable behavior
@@ -229,20 +279,25 @@ meta-gate is Nuescheler's Helix design principles, captured 2024-11-04.
 
 ---
 
-## Cluster 5 — Cost of Delay & Smallest Learnable Bet
+## Cluster 5 — Cost of Delay & Smallest Shippable Bet
+
+> The discovery artifact (preceding section) already did the *learning*.
+> This cluster answers: given the artifact's evidence, what's the
+> smallest *shippable* version, and what new risks does shipping
+> introduce that the artifact did not test?
 
 ### Cost of delay
 
 - What does waiting another quarter cost us in customers, revenue, learning, or optionality?
 - Is the cost of delay linear, accelerating, or step-shaped (a window we miss)?
-- What is the cheapest unit of progress we can make this week?
+- What is the cheapest unit of progress we can ship this week?
 
-### Smallest learnable bet
+### Smallest shippable bet
 
-- Of the assumptions in Cluster 3, which is the riskiest right now?
-- What is the smallest experiment that disambiguates *that* assumption — not the smallest buildable thing?
-- Is the right form a build, a prototype, a concierge, a wizard-of-oz, a landing page, or a sales pitch?
-- What is the *learning goal*, stated as the question the experiment answers?
+- Of the assumptions the artifact validated, which one(s) make a shippable bet?
+- What is the smallest *shippable* version that captures the validated value at ship-quality? Not the artifact in production; not the artifact plus everything else.
+- What new risks does shipping introduce that the artifact did not test? List them as **ship debt** — see *what vibe coding cannot test* above.
+- For each ship-debt item: who owns paying it down, by when, and at what cost? Or — explicitly — is it being shipped as known risk?
 
 ### Sequencing & queues
 
@@ -252,18 +307,21 @@ meta-gate is Nuescheler's Helix design principles, captured 2024-11-04.
 
 ### Explicit deferrals
 
-- What are we explicitly *not* building in v1, and why is now not the time?
+- What are we explicitly *not* shipping in v1, and why is now not the time?
 - Which capabilities will be tempting to add mid-flight? What's our rule for resisting them?
 
 ### Test
 
-If "MVP" is "fewer features", this cluster is empty. The MVP must be the
-leanest experiment that disambiguates the riskiest assumption — and must
-explain *which* assumption.
+If "shippable bet" is "the artifact, in production", this cluster is empty.
+The shippable bet must (a) capture the artifact-validated value and (b)
+name the ship debt that shipping introduces, with owners.
 
 **Sources**: Reinertsen — *The Principles of Product Development Flow*
 (cost of delay, queues, batch size); Ries — *The Lean Startup* (MVP,
 build-measure-learn); Pichler — *Agile Product Management with Scrum*.
+The smallest-*shippable* (vs. learnable) framing follows from Karpathy +
+Huesler — the artifact does the learning, the shippable bet captures
+the value, and ship debt is what's left to pay before launch.
 
 ---
 
@@ -340,6 +398,10 @@ gain-sharing constraints (#11 + 2014-10-29 model).
 | "Pricing is sales' problem." | "Pricing is the willingness-to-pay shape of the bet. Which segment do we deliberately not serve at this price, and why?" |
 | "Success = launch." | "Use above everything: would we still call this a win if it shipped exactly as written but no customer used it on their own initiative?" |
 | "We'll requirement it as 'support feature X'." | "That's a Feature with no Function and no Outcome. Show me the proof of viability (demo / diagram) and the first-order quantified result." |
+| "We need an eng estimate first." | "The build estimate is for shipping. Vibe-code an artifact this afternoon to test the assumption — that's a different cost." |
+| "Let's spec it first." | "The spec emerges from the artifact. Build a discovery version, then write the spec around what it surprised you with." |
+| "The prototype validated it, ship it." | "The artifact tested value and usability. Did it test scale, security, retention, compliance, billing, or support? Those are ship debt — list them with owners." |
+| "We need cross-functional alignment first." | "Alignment is downstream of evidence. Show the artifact, then align." |
 
 ---
 
@@ -351,9 +413,11 @@ gain-sharing constraints (#11 + 2014-10-29 model).
 - Trieloff, Lars. *Eleven Pricing Aphorisms* (ProductCamp Berlin, 2014-09-13) and *Gain-Sharing Pricing Model* (Apple Notes, 2014-10-29). Pricing as a decision cluster: price-to-value, hard choices, segmentation ladder, disqualified defaults, gain-sharing constraints.
 - Trieloff, Lars. *Performance Culture* (CMS Summit, 2025). Source for the adoption / org-readiness risk axis: technology alone does not deliver outcomes; the organizational and cultural shift is the harder part.
 - Nuescheler, David. *Helix Design Principles* (captured 2024-11-04). Source for the "use above everything" meta-gate: usage trumps everything, including theoretical correctness.
+- Huesler, Cedric. *Build first, then align* (Slack, AEM PM thread, 2026-04-29). Source for the "build before align, ship after learn" operating principle: alignment artifacts (decks, sign-offs, SLC checklists) are downstream of the discovery artifact's evidence, not upstream of it.
 
 ### Canonical bibliography
 
+- Karpathy, Andrej. *Vibe Coding* (X.com, 2025-02-02). The frame for treating coding agents as a discovery instrument. Building becomes cheap; shipping remains expensive. Source for the Phase 2 vibe-coded artifact and for the *what vibe coding cannot test* set.
 - Cagan, Marty. *Inspired: How to Create Products Customers Love.*
 - Christensen, Clayton M., Taddy Hall, Karen Dillon, and David S. Duncan. *Competing Against Luck: The Story of Innovation and Customer Choice.*
 - Christensen, Clayton M. *The Innovator's Dilemma: When New Technologies Cause Great Firms to Fail.*

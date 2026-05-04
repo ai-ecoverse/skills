@@ -66,35 +66,75 @@ doing what, with what trigger, with what frustration.
 
 ---
 
-## 3. Assumptions, Hypotheses & Risks
+## 3. Discovery Artifact
 
-> Every claim has an invalidator and a cheapest test. Faith is not an assumption.
+> Building is cheap; shipping is expensive. The artifact is a *discovery
+> instrument*, not the product. The act of building it surfaces
+> assumptions the PM could not articulate alone, and gives section 4 a
+> validation column instead of a wish-list.
+
+**Artifact** — link to the runnable thing (URL, repo, binary, recorded concierge run).
+
+**Form** — vibe-coded prototype / concierge / wizard-of-oz / landing page / sales pitch / other.
+
+**Built with** — coding agent or method (Cursor / Claude Code / Replit / v0 / Bolt / Lovable / Windsurf / hand-coded / non-code).
+
+**Time to build** — [hours / days].
+
+**Audience** — who saw it (3–5 real customers, or hardest internal critic). Names where possible.
+
+**What we expected they'd do** — one paragraph.
+
+**What surprised us** — minimum three items. If nothing surprised, the artifact wasn't probing the right edge.
+
+| # | What we expected | What actually happened | Implication for the bet |
+|---|---|---|---|
+| S1 | | | |
+| S2 | | | |
+| S3 | | | |
+
+**Assumptions the artifact validated** — list claim IDs from section 4.
+
+**Assumptions the artifact refuted or weakened** — list claim IDs from section 4.
+
+**Assumptions the artifact could not test** — list claim IDs that fall in the *what vibe coding cannot test* set (section 6).
+
+---
+
+## 4. Assumptions, Hypotheses & Risks
+
+> Every claim has an invalidator and a cheapest test. Faith is not an
+> assumption. The **Artifact-validated?** column links each claim back to
+> the discovery artifact (section 3): *Y* (the artifact tested it and the
+> claim held), *N* (the artifact tested it and refuted it), *partial*
+> (the artifact tested some of it), or *not testable* (the claim sits
+> in the *what vibe coding cannot test* set — see section 6).
 
 For each of the **five** product risks, list at least one assumption.
 
 ### Value risk — will customers buy or use this?
 
-| # | Claim | Evidence today | Invalidator | Cheapest test |
-|---|---|---|---|---|
-| V1 | [falsifiable claim] | [what we know] | [what would prove it wrong] | [experiment runnable before code] |
+| # | Claim | Evidence today | Invalidator | Cheapest test | Artifact-validated? |
+|---|---|---|---|---|---|
+| V1 | [falsifiable claim] | [what we know] | [what would prove it wrong] | [experiment runnable before code] | [Y / N / partial / not testable] |
 
 ### Usability risk — can users figure out how to use it?
 
-| # | Claim | Evidence today | Invalidator | Cheapest test |
-|---|---|---|---|---|
-| U1 | | | | |
+| # | Claim | Evidence today | Invalidator | Cheapest test | Artifact-validated? |
+|---|---|---|---|---|---|
+| U1 | | | | | |
 
 ### Feasibility risk — can our engineers build this with the time, skills, and tech we have?
 
-| # | Claim | Evidence today | Invalidator | Cheapest test |
-|---|---|---|---|---|
-| F1 | | | | |
+| # | Claim | Evidence today | Invalidator | Cheapest test | Artifact-validated? |
+|---|---|---|---|---|---|
+| F1 | | | | | |
 
 ### Business viability risk — does this work for sales, marketing, finance, legal, partners, support?
 
-| # | Claim | Evidence today | Invalidator | Cheapest test |
-|---|---|---|---|---|
-| B1 | | | | |
+| # | Claim | Evidence today | Invalidator | Cheapest test | Artifact-validated? |
+|---|---|---|---|---|---|
+| B1 | | | | | |
 
 ### Adoption / Org-readiness risk — who has to change behavior post-launch?
 
@@ -103,13 +143,13 @@ For each of the **five** product risks, list at least one assumption.
 > behavior shift required for the bet to pay off. Technology alone does
 > not deliver outcomes; the cultural shift is usually the harder part.
 
-| # | Who must change behavior | What must change | Evidence they will | Invalidator | Enablement plan |
-|---|---|---|---|---|---|
-| A1 | | | | | |
+| # | Who must change behavior | What must change | Evidence they will | Invalidator | Enablement plan | Artifact-validated? |
+|---|---|---|---|---|---|---|
+| A1 | | | | | | |
 
 ---
 
-## 4. Success That Can Fail
+## 5. Success That Can Fail
 
 > If there's no result that would cause us to abandon this work, the success
 > definition is unfalsifiable. **Use above everything**: success is measured
@@ -138,32 +178,45 @@ For each of the **five** product risks, list at least one assumption.
 
 ---
 
-## 5. The Smallest Learnable Bet (MVP)
+## 6. The Smallest Shippable Bet
 
-> The smallest experiment that disambiguates the riskiest assumption — not
-> the smallest buildable thing.
+> The discovery artifact (section 3) already did the *learning*. This
+> section answers: given the artifact's evidence, what's the smallest
+> *shippable* version, and what new risks does shipping introduce that
+> the artifact did not test?
 
-**Riskiest assumption** — name it (refer to a row in section 3).
+**Validated value to ship** — the assumption(s) the artifact validated, and the value those validations capture (refer to artifact-validated rows in section 4).
 
-**Why an MVP and not a prototype** — or vice versa. What form (build,
-prototype, concierge, wizard-of-oz, landing page, sales pitch) actually tests
-the assumption fastest?
+**Smallest shippable scope** — 2 to 3 sentences. The minimum that captures the validated value at ship-quality. Not the artifact in production; not the artifact plus everything else.
 
-**MVP definition** — 2 to 3 sentences describing the minimum viable scope.
+> **What vibe coding cannot test**: scale (concurrent users, p95 latency
+> under load), security (attack surface, secrets handling, auth bypass),
+> long-term retention (>30 days), network effects (cold-start dynamics),
+> compliance / regulatory, edge-case data, ops observability, billing /
+> refunds, support load. A working artifact validated by five happy
+> users does not validate any of these. Treat them as **ship debt** to
+> pay before going live, not as validated.
 
-**What the MVP tests, exactly** — the falsifiable claim it resolves.
+**Ship debt** — the work the artifact did *not* do that must be paid before launch (or accepted as known risk).
 
-**What we are explicitly NOT building in v1**
+| # | Ship-debt item | Why it must be paid (or accepted) | Owner | Due |
+|---|---|---|---|---|
+| SD1 | [scale / security / retention / compliance / billing / support / observability / other] | | | |
+| SD2 | | | | |
+| SD3 | | | | |
+
+**What we are explicitly NOT shipping in v1**
 
 - [Excluded item] — [why now is not the time]
 - [Excluded item] — [why now is not the time]
 
-**Cost of delay** — what does waiting another quarter cost us in customers,
-revenue, learning, or optionality?
+**Cost of delay** — what does waiting another quarter cost us in customers, revenue, learning, or optionality?
+
+**Rollback path** — how we pull back if the ship-debt items reveal unexpected risk in production.
 
 ---
 
-## 6. Roadmap
+## 7. Roadmap
 
 > Phases, not dates. Each phase has an entry point, exit criteria, and a
 > rollback trigger.
@@ -191,7 +244,7 @@ revenue, learning, or optionality?
 
 ---
 
-## 7. Requirements (FFOB)
+## 8. Requirements (FFOB)
 
 > Listed *after* the bet, the customer, and the assumptions — because
 > requirements are a consequence of those, not the headline.
@@ -206,7 +259,7 @@ revenue, learning, or optionality?
 
 | # | Feature | Function (proof of viability) | Outcome (first-order, quantified) | Benefits (higher-order, plural) | Acceptance | Tied to assumption |
 |---|---|---|---|---|---|---|
-| R1 | [short customer-facing name] | [demo / diagram / screenshot / 1-line technical proof] | [measurable result, e.g. "page loads ≤ 200 ms"] | [stack of higher-order desirables, e.g. better SEO → more organic traffic → more revenue] | [verifier] | [V1 / U1 / F1 / B1 / A1] |
+| R1 | [short customer-facing name] | [link to discovery artifact / demo / diagram / 1-line technical proof] | [measurable result, e.g. "page loads ≤ 200 ms"] | [stack of higher-order desirables, e.g. better SEO → more organic traffic → more revenue] | [verifier] | [V1 / U1 / F1 / B1 / A1] |
 
 ### Should-have (v1.1+)
 
@@ -220,13 +273,13 @@ revenue, learning, or optionality?
 
 ---
 
-## 8. Pricing & Value Capture
+## 9. Pricing & Value Capture
 
 > Pricing is a decision cluster, not a footnote in business viability.
 > Cost-plus and competition-minus are explicitly disqualified. Force the
 > hard choices early; pricing without hard choices is a wish-list.
 
-**Price-to-value statement** — one sentence: "[customer] pays [amount / structure] because they get [quantified outcome from section 7] worth [value]."
+**Price-to-value statement** — one sentence: "[customer] pays [amount / structure] because they get [quantified outcome from section 8] worth [value]."
 
 **Willingness-to-pay shape**
 
@@ -262,7 +315,7 @@ revenue, learning, or optionality?
 
 ---
 
-## 9. Go-to-Market
+## 10. Go-to-Market
 
 ### Target segment
 

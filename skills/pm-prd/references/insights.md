@@ -22,6 +22,56 @@ This converts ship metrics, click-through rates on our own notifications,
 and adoption forced by rollout policy into red flags. The aha moment must
 be something the customer does without prompting from us.
 
+## The build-before-align, ship-after-learn principle
+
+A second principle, drawn from **Cedric Huesler's "build first, then
+align"** (Slack, AEM PM thread, 2026-04-29) and **Andrej Karpathy's
+*Vibe Coding*** (X.com, 2025-02-02), inverts the canonical bookshelf's
+implicit assumption that *building is expensive*.
+
+For most of product management's history, building was expensive — weeks
+of engineering time, queues, and hand-offs — and the canonical texts
+(Cagan, Ulwick, Ries, Christensen, Reinertsen) accordingly optimized the
+discovery process around *not building*. Concierge, wizard-of-oz,
+landing pages, and prototypes were a hierarchy of not-building, ordered
+by cost.
+
+Vibe coding inverts that economics. Building is now cheap — a working
+artifact is one afternoon away — while *shipping* (auth, billing, scale,
+security, support, compliance, ops) remains expensive. The skill
+therefore inserts **Phase 2: Build the discovery artifact** before risk
+articulation. The artifact is a discovery instrument, not the product.
+The act of building it surfaces assumptions the PM could not articulate
+alone, and gives Cluster 3 a real validation column instead of a
+wish-list of "cheapest tests".
+
+This produces three downstream consequences:
+
+1. **Cluster 5 is renamed** from *Smallest Learnable Bet* to
+   *Smallest Shippable Bet*. The discovery artifact already did the
+   learning; Cluster 5's job is to identify what shipping introduces
+   that the artifact did not test (ship debt) and what the smallest
+   shippable version of the validated value is.
+2. **Cluster 3's risk weights shift.** Cagan's feasibility risk ("can
+   engineering build it?") shrinks dramatically — the answer is
+   usually yes, by Tuesday. What replaces it is a *shipping* risk:
+   scale, security, retention >30 days, network effects, compliance,
+   ops. These remain off-limits to the artifact and become first-class
+   items in Cluster 5's ship-debt list.
+3. **Cross-functional alignment becomes downstream of evidence.**
+   Alignment artifacts (decks, sign-offs, SLC checklists) sit *after*
+   the artifact's evidence, not *before* it. Treating alignment as
+   upstream of evidence is the failure mode Huesler's principle
+   diagnoses: elaborate stakeholder rituals conducted on a bet that no
+   one has touched in any reality-checking way.
+
+The skill enforces this by refusing to draft the PRD until either (a) a
+runnable artifact exists with a *what surprised me* log of at least
+three items, or (b) the bet is explicitly in the not-vibe-codable set
+(hardware, regulated, network-effects-only-at-scale, on-prem) and a
+fallback discovery instrument (concierge, wizard-of-oz, landing page,
+sales pitch) has run.
+
 ## The six decision clusters and where they come from
 
 ### Cluster 1 — Customer & Job
@@ -108,20 +158,29 @@ criterion is the load-bearing element.
 - Ulwick (*Jobs to Be Done*) — the customer's outcome statements are
   the right unit of success, not internal feature deltas.
 
-### Cluster 5 — Cost of Delay & Smallest Learnable Bet
+### Cluster 5 — Cost of Delay & Smallest Shippable Bet
 
-"MVP" is widely abused to mean "the smallest thing the team can build
-quickly". The discipline is the opposite: the leanest experiment that
-disambiguates the riskiest assumption.
+The discovery artifact (Phase 2) already did the *learning*. This
+cluster answers: given the artifact's evidence, what is the smallest
+*shippable* version, and what risks does shipping introduce that the
+artifact could not test?
 
 - Reinertsen (*The Principles of Product Development Flow*) — **cost of
   delay** quantifies what waiting costs; **queues** and **batch size**
   govern how fast a team learns; small batches are economically
   superior under uncertainty.
-- Ries (*The Lean Startup*) — the MVP is defined by the *learning goal*,
-  not the feature set.
+- Ries (*The Lean Startup*) — the canonical MVP framing assumed
+  building was expensive; with vibe coding, the MVP becomes the
+  smallest *shippable* unit, while Ries's original learning purpose
+  moves upstream into the discovery artifact.
 - Pichler (*Agile Product Management with Scrum*) — release plans and
   sprint goals are the operational unit of "smaller, sooner".
+
+The cluster's load-bearing decisions: what was validated by the
+artifact, what's on the ship-debt list (scale, security, retention >30
+days, network effects, compliance, billing, support, ops, edge-case
+data), who owns paying it down, and what's explicitly not shipping in
+v1.
 
 ### Cluster 6 — Pricing & Value Capture
 
@@ -178,16 +237,21 @@ requirements list that hides risk.
 The skill is structured as a gated interview:
 
 - **Phase 1** gates on a real Customer & Job and a real Bet (Clusters 1 and 2).
-- **Phase 2** gates on assumptions per risk (5/5), a kill criterion measured in *use*, and the pricing shape (Clusters 3, 4, and 6).
-- **Phase 3** gates on the smallest learnable bet (Cluster 5).
-- **Phases 4–6** draft, review (with explicit "use above everything" + pricing-not-cost-plus checks), and save.
+- **Phase 2** gates on a runnable discovery artifact with a *what surprised me* log of at least three items — the build-before-align principle in operating form.
+- **Phase 3** gates on assumptions per risk (5/5), each with the artifact-validated column filled, a kill criterion measured in *use*, and the pricing shape (Clusters 3, 4, and 6).
+- **Phase 4** gates on the smallest *shippable* bet, naming the artifact-validated value and the ship debt that shipping introduces (Cluster 5).
+- **Phases 5–7** draft, review (with explicit "use above everything", pricing-not-cost-plus, and ship-debt checks), and save.
 
-The "use above everything" meta-gate runs across every phase: success that
-isn't measured in unprompted use is treated as success-theatre.
+The "use above everything" meta-gate runs across every phase: success
+that isn't measured in unprompted use is treated as success-theatre.
+The "build before align, ship after learn" principle runs alongside it:
+a PRD whose Cluster 3 was filled without an artifact's evidence is
+being validated on vibes.
 
-The gates are the point. A PRD that is "polished" past empty clusters is
-worse than a PRD that names them as open. The whole skill is a refusal to
-help the user feel finished before the team is actually informed.
+The gates are the point. A PRD that is "polished" past empty clusters
+or an empty Phase 2 is worse than a PRD that names them as open. The
+whole skill is a refusal to help the user feel finished before the
+team is actually informed.
 
 ## Anti-patterns the skill is specifically designed to refuse
 
@@ -213,6 +277,18 @@ help the user feel finished before the team is actually informed.
 - "Support feature X" as a requirement — that's a Feature with no
   Function and no Outcome. The skill demands proof of viability and the
   first-order quantified result.
+- "We need an eng estimate first" — the skill flips it: the eng
+  estimate is for *shipping*, not for learning. Vibe-code an artifact
+  this afternoon to test the assumption.
+- "We need cross-functional alignment first" — alignment is downstream
+  of evidence. The skill refuses to draft alignment-shape artifacts
+  until a discovery artifact exists.
+- "Five users said they liked it, ship it" — five happy users do not
+  validate scale, security, compliance, or retention. The skill
+  demands ship-debt items with owners.
+- "Let's spec it first" — the spec emerges from the artifact. The
+  skill refuses to write a forward-spec without the artifact's
+  surprises.
 
 ## Bibliography
 
@@ -222,9 +298,11 @@ help the user feel finished before the team is actually informed.
 - Trieloff, Lars. *Eleven Pricing Aphorisms* (ProductCamp Berlin, 2014-09-13) and *Gain-Sharing Pricing Model* (Apple Notes, 2014-10-29).
 - Trieloff, Lars. *Performance Culture* (CMS Summit, 2025).
 - Nuescheler, David. *Helix Design Principles — "Use above everything / Uptime / Simple, fast, reliable, secure / Less is more"* (captured 2024-11-04).
+- Huesler, Cedric. *Build first, then align* (Slack, AEM PM thread, 2026-04-29). Operating principle: alignment artifacts (decks, sign-offs, SLC checklists) sit downstream of the discovery artifact's evidence, not upstream of it.
 
 ### Canonical bibliography
 
+- Karpathy, Andrej. *Vibe Coding* (X.com, 2025-02-02). The frame for treating coding agents as a discovery instrument: building becomes cheap, shipping remains expensive.
 - Cagan, Marty. *Inspired: How to Create Products Customers Love.*
 - Christensen, Clayton M., Taddy Hall, Karen Dillon, and David S. Duncan. *Competing Against Luck.*
 - Christensen, Clayton M. *The Innovator's Dilemma.*
