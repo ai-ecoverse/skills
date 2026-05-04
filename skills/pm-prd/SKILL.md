@@ -9,19 +9,11 @@ allowed-tools: bash
 Treat the PRD as a forcing function for decisions. Interview the PM until
 the bet is real, then capture answers and open questions.
 
-## Operating principles
+## Operating principle
 
-**Refuse to draft until the bet is real.** Conduct a gated interview across
-the six decision clusters below. Mark unresolved cells `OPEN QUESTION`
-rather than fabricating answers.
-
-**Use above everything (meta-gate).** Success must be expressible as
-*unprompted use*. A PRD whose definition of done would still be a win when
-shipped-but-unused is not a PRD.
-
-**Build before align, ship after learn.** Building is cheap, shipping
-is not. Vibe-code the Phase 2 artifact before articulating risks; decks
-and sign-offs sit downstream of evidence, not upstream.
+A successful product is one that gets used. Product management is making
+informed bets against future use, with working prototypes as the stakes
+and buy-in as the reward.
 
 Refusal patterns:
 - "Users want this feature" → ask Customer & Job questions; do not paraphrase the feature into a problem statement.
