@@ -29,6 +29,7 @@ Conversational. Skip questions the user already answered.
    - **traditional** — paced sequence of slides (default). User advances manually.
    - **zoom** — big-picture-first; an overview slide names regions and each subsequent slide zooms into one. Uses vertical sub-slides under a `zoom-overview` parent.
    - **rapid** — Lessig-style. 100 slides, ≤20 sec each, single word or sentence per slide. Auto-advances. Most slides should be `big-word` type. Ban bullet lists.
+   - **scroll** — built-in reveal v5 scroll-doc view. Deck becomes a vertically-scrolling page. Best when sharing the URL after a talk. Adds a CSS-only progress bar at the top.
 3. **Length** — 5–10 slides, 10–20, 20+ (rapid implies 50+; warn if user pairs rapid with <30 slides)
 4. **Content readiness** — ready content, or just a topic?
 5. **Narrative shape** — pick from `references/storytelling.md`. Default by purpose:

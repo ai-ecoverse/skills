@@ -1020,6 +1020,178 @@
     }
 
     /* ========================================================================
+       VIEW TRANSITIONS — same-document API (Baseline since Oct 2025)
+       Browsers with support animate matched elements between slide changes.
+       Each named element class gets a unique view-transition-name; if the
+       same name appears on the next slide, the browser morphs old → new
+       (size, position, opacity). Falls back gracefully when unsupported.
+       ======================================================================== */
+
+    @supports (view-transition-name: a) {
+      .reveal .slides section.title-slide h1 { view-transition-name: deck-headline; }
+      .reveal .slides section.section-slide h2 { view-transition-name: deck-headline; }
+      .reveal .slides section.metric-slide .metric-value { view-transition-name: deck-metric; }
+      .reveal .slides section.big-word-slide .big-word { view-transition-name: deck-bigword; }
+      .reveal .slides section.recap-slide { view-transition-name: deck-recap; }
+      .reveal .slides section h2 { view-transition-name: slide-h2; }
+      /* Custom keyframes — slow + ease for cinematic feel */
+      ::view-transition-old(deck-headline),
+      ::view-transition-new(deck-headline),
+      ::view-transition-old(deck-metric),
+      ::view-transition-new(deck-metric),
+      ::view-transition-old(deck-bigword),
+      ::view-transition-new(deck-bigword) {
+        animation-duration: 0.55s;
+        animation-timing-function: cubic-bezier(0.2, 0.8, 0.2, 1);
+      }
+    }
+
+    /* Per-element opt-in via data-vt-name="..." — agent can match any two
+       elements across slides for custom morphs. */
+    @supports (view-transition-name: a) {
+      [data-vt-name] { view-transition-name: attr(data-vt-name type(<custom-ident>), none); }
+    }
+
+    /* ========================================================================
+       SCROLL-DRIVEN PROGRESS BAR — pure CSS, no JS, no IntersectionObserver
+       Visible at the top of the deck in scroll view mode; signals deck length.
+       ======================================================================== */
+
+    @supports (animation-timeline: scroll()) {
+      .reveal[data-mode="scroll"] .deck-progress {
+        position: fixed;
+        top: 0; left: 0;
+        height: 3px;
+        background: var(--r-accent-color, #36d6a8);
+        transform-origin: left center;
+        animation: deck-progress-fill linear;
+        animation-timeline: scroll(root block);
+        z-index: 10000;
+      }
+      @keyframes deck-progress-fill {
+        from { transform: scaleX(0); }
+        to   { transform: scaleX(1); }
+      }
+    }
+    /* Hide by default; only the scroll mode shows it */
+    .deck-progress {
+      position: fixed;
+      top: 0; left: 0;
+      height: 0;
+      width: 100%;
+      background: transparent;
+      pointer-events: none;
+      z-index: 10000;
+    }
+
+    /* ========================================================================
+       ANCHOR-POSITIONED CALLOUTS — declarative tooltips/asides that
+       auto-flip when they would overflow. Pairs with the Popover API for
+       click-to-reveal. Particularly valuable for `definition` and
+       `diagram` slides. Falls back to position: absolute on older browsers.
+       ======================================================================== */
+
+    .reveal .anchor {
+      color: var(--r-accent-color);
+      text-decoration: underline dotted;
+      cursor: help;
+    }
+
+    @supports (anchor-name: --x) {
+      .reveal .anchor[id] { anchor-name: var(--anchor-name, --auto); }
+      .reveal .callout {
+        position: absolute;
+        position-anchor: var(--anchor);
+        top: anchor(bottom);
+        left: anchor(center);
+        translate: -50% 8px;
+        position-try-fallbacks: flip-block, flip-inline;
+        max-width: 28ch;
+        padding: 0.5em 0.8em;
+        background: var(--r-background-color);
+        color: var(--r-main-color);
+        border: 1px solid var(--r-accent-color);
+        border-radius: 4px;
+        font-size: 0.6em;
+        line-height: 1.4;
+        z-index: 100;
+      }
+    }
+
+    /* Popover-API variant — click an .anchor with popovertarget to reveal */
+    .reveal [popover] {
+      border: 1px solid var(--r-accent-color);
+      background: var(--r-background-color);
+      color: var(--r-main-color);
+      padding: 0.6em 0.9em;
+      border-radius: 4px;
+      max-width: 32ch;
+      font-size: 0.65em;
+    }
+    .reveal [popover]::backdrop { background: rgba(0,0,0,0.4); }
+
+    /* ========================================================================
+       RECAP SLIDE — closing-screen "3 takeaways + CTA" (the new normal
+       because decks are shared async after the talk).
+       ======================================================================== */
+
+    .reveal .slides section.recap-slide {
+      text-align: left;
+    }
+    .reveal .slides section.recap-slide .recap-grid {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 2em;
+      align-items: stretch;
+    }
+    .reveal .slides section.recap-slide .recap-takeaways {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      counter-reset: recap;
+    }
+    .reveal .slides section.recap-slide .recap-takeaways li {
+      counter-increment: recap;
+      padding: 0.6em 0 0.6em 2.2em;
+      position: relative;
+      font-size: 0.78em;
+      border-bottom: 1px solid color-mix(in oklab, var(--r-main-color) 20%, transparent);
+    }
+    .reveal .slides section.recap-slide .recap-takeaways li:last-child {
+      border-bottom: none;
+    }
+    .reveal .slides section.recap-slide .recap-takeaways li::before {
+      content: counter(recap);
+      position: absolute;
+      left: 0;
+      top: 0.5em;
+      font-family: var(--r-heading-font);
+      font-size: 1.6em;
+      color: var(--r-accent-color);
+      line-height: 1;
+    }
+    .reveal .slides section.recap-slide .recap-cta {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: 1em;
+      background: color-mix(in oklab, var(--r-accent-color) 12%, transparent);
+      border-left: 3px solid var(--r-accent-color);
+    }
+    .reveal .slides section.recap-slide .recap-cta-label {
+      font-family: var(--r-heading-font);
+      font-size: 0.55em;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--r-accent-color);
+      margin-bottom: 0.4em;
+    }
+    .reveal .slides section.recap-slide .recap-cta-text {
+      font-size: 0.82em;
+      line-height: 1.4;
+    }
+
+    /* ========================================================================
        END BESPOKE EFFECTS LAYER
        ======================================================================== */
   </style>
@@ -1178,15 +1350,17 @@
    *
    * Full content push (includes optional themeCSS for custom styling):
    * {
-   *   "mode": "traditional" | "zoom" | "rapid",
+   *   "mode": "traditional" | "zoom" | "rapid" | "scroll",
    *           // traditional = default; zoom = big-picture-first with vertical
-   *           // detail slides; rapid = Lessig-style auto-advance ≤20s/slide.
+   *           // detail slides; rapid = Lessig-style auto-advance ≤20s/slide;
+   *           // scroll = built-in reveal v5 scroll-doc view, scrolls vertically
+   *           // through every slide. Adds a CSS-only top progress bar.
    *   "slides": [
    *     {
    *       "type": "title" | "content" | "code" | "quote" | "image" | "section"
    *             | "big-word" | "metric" | "comparison" | "process"
    *             | "timeline" | "definition" | "cards" | "diagram"
-   *             | "zoom-overview" | "zoom-detail" | "html",
+   *             | "zoom-overview" | "zoom-detail" | "recap" | "html",
    *
    *       // Common fields:
    *       "title": "Slide Title",
@@ -1223,6 +1397,8 @@
    *                  // pass through and execute. Trust model: agent
    *                  // writes the deck. Scripts are rehydrated post-
    *                  // innerHTML so they actually run.
+   *       "takeaways": ["...", "...", "..."],                            // recap — 3 takeaway lines
+   *       "cta": { "label": "...", "text": "..." },                      // recap — closing call-to-action
    *
    *       // Builds: optional staged element-reveal beyond simple fragments.
    *       // The renderer applies data-fragment-index attributes to children
@@ -1627,6 +1803,24 @@
             )
           + notes + '</section>';
 
+      case 'recap':
+        // Closing-screen recap: 3 takeaways + a single call-to-action.
+        var takeawayItems = Array.isArray(slide.takeaways) ? slide.takeaways : [];
+        var ctaBlock = slide.cta
+          ? '<div class="recap-cta">'
+            + (slide.cta.label ? '<div class="recap-cta-label">' + escHtml(slide.cta.label) + '</div>' : '')
+            + (slide.cta.text  ? '<div class="recap-cta-text">'  + escHtml(slide.cta.text)  + '</div>' : '')
+            + '</div>'
+          : '';
+        return wrap('recap-slide',
+          '<div class="recap-grid">'
+          + '<ol class="recap-takeaways">'
+          + takeawayItems.map(function(t) { return '<li>' + escHtml(t) + '</li>'; }).join('')
+          + '</ol>'
+          + ctaBlock
+          + '</div>'
+        );
+
       case 'html':
         // Plain-HTML escape hatch. FULL PASS-THROUGH — no sanitizer.
         // Agent-supplied <script>, <style>, <iframe>, on*= handlers, and
@@ -1676,10 +1870,38 @@
   function applyMode(mode) {
     var revealEl = document.querySelector('.reveal');
     if (!revealEl) return;
-    var validModes = ['traditional', 'zoom', 'rapid'];
+    var validModes = ['traditional', 'zoom', 'rapid', 'scroll'];
     var m = validModes.indexOf(mode) >= 0 ? mode : 'traditional';
     revealEl.setAttribute('data-mode', m);
     currentMode = m;
+    // Add the progress bar element in scroll mode (no-op if already present)
+    if (m === 'scroll' && !document.querySelector('.deck-progress')) {
+      var bar = document.createElement('div');
+      bar.className = 'deck-progress';
+      document.body.appendChild(bar);
+    } else if (m !== 'scroll') {
+      var existing = document.querySelector('.deck-progress');
+      if (existing) existing.remove();
+    }
+  }
+
+  // Wraps a slide-change navigation in the View Transitions API when supported.
+  // We can't intercept reveal's native slidechanged BEFORE the DOM change, so
+  // we hook the keyboard / nav-button events that drive reveal and wrap the
+  // call. Falls through cleanly when the API isn't available.
+  function setupViewTransitions() {
+    if (typeof document.startViewTransition !== 'function') return;
+    if (!revealInstance) return;
+    var origNext = revealInstance.next.bind(revealInstance);
+    var origPrev = revealInstance.prev.bind(revealInstance);
+    revealInstance.next = function() {
+      try { document.startViewTransition(function() { origNext(); }); }
+      catch (e) { origNext(); }
+    };
+    revealInstance.prev = function() {
+      try { document.startViewTransition(function() { origPrev(); }); }
+      catch (e) { origPrev(); }
+    };
   }
 
   // In rapid mode, default each slide that lacks an explicit autoslide to 20s.
@@ -1739,7 +1961,7 @@
       var present = revealInstance.getSlides()[idx.h] || null;
       if (present) animateCounters(present);
     } else {
-      revealInstance = new Reveal({
+      var revealConfig = {
         hash: false,
         history: false,
         controls: true,
@@ -1754,9 +1976,18 @@
         embedded: true,                 // critical for sprinkle panel embedding
         autoSlide: 0,                   // honor per-slide data-autoslide
         autoSlideStoppable: true,
-      });
+      };
+      // Scroll view mode is built into reveal.js v5 — turn the deck into a
+      // scrollable doc. The agent picks this via mode: "scroll".
+      if (currentMode === 'scroll') {
+        revealConfig.view = 'scroll';
+        revealConfig.scrollProgress = 'auto';
+        revealConfig.scrollSnap = 'mandatory';
+      }
+      revealInstance = new Reveal(revealConfig);
       revealInstance.initialize().then(function() {
         revealInstance.on('slidechanged', onSlideChanged);
+        setupViewTransitions();
         updateSlideCounter();
         var first = document.querySelector('#slides-container > section.present');
         if (first) animateCounters(first);

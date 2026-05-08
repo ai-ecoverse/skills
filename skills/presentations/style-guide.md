@@ -440,6 +440,7 @@ Bullet-list `content` slides are **one of fourteen types**, not the default. A d
 | `code` | Code block, 8–10 lines, syntax-highlighted. | `code`, `language` |
 | `content` | Bulleted list. **Use sparingly** — most lists are better as `cards` or `process`. | `bullets`, optional `title`, optional `content` HTML |
 | `html` | **Full-power escape hatch** — agent-controlled HTML with no sanitizer. `<script>`, `<style>`, `<iframe>`, `on*=` handlers, animated SVG, custom canvas/WebGL, third-party widgets all work. Scripts are rehydrated post-render so they actually execute. For one-off interactive scenes, slide-scoped CSS, embedded demos, or anything the type catalog doesn't cover. | `html: "<style>...</style><script>...</script><div>...</div>"` |
+| `recap` | **Closing slide.** 3 takeaways + 1 CTA, two-column layout. End-screen for an async-shared deck. | `takeaways: [string, string, string]`, `cta: { label, text }` |
 | `zoom-overview` | Mode=zoom only. Names regions to zoom into; renders as labeled chips or supplied diagram. | `regions: [{ id, label }]` or `diagram` |
 | `zoom-detail` | Mode=zoom only. Sits as a vertical sub-slide under a `zoom-overview`. | `regionId` (links back), plus content of choice |
 
@@ -524,7 +525,7 @@ These are auto-suppressed in **rapid** mode (slides too short for animations to 
 
 ## Presentation modes
 
-Three modes; pick one per deck via the data contract's `mode` field.
+Four modes; pick one per deck via the data contract's `mode` field.
 
 ### traditional
 
@@ -562,6 +563,77 @@ section[type=section] (next chapter)
 - No build sequences. The audience sees the slide for 20 sec; staged reveals don't have time.
 
 **Voice in rapid mode**: terse. Each slide is a beat. The audience reads the slide in 2 seconds and listens to the speaker for the rest.
+
+### scroll — share-friendly scrolling deck
+
+Reveal.js v5's built-in `view: 'scroll'` mode. The deck becomes a vertically-scrolling document — each slide is a viewport-sized section. Best for decks shared as URLs after a talk, where the viewer wants to skim. Auto-adds a scroll-driven CSS-only progress bar at the top (no JS, uses `animation-timeline: scroll(root block)`).
+
+**Tips**:
+- Pair with the `recap` slide type at the end — async readers go straight there.
+- Effects layer still applies, but `effect-3d-flip-in`-style entrance animations don't fire in scroll view (no slide-change events).
+- Use `effect-snap-carousel` on `cards` slides for horizontal sub-flow within a section.
+
+---
+
+## View Transitions and cross-slide morphs
+
+The template auto-applies `view-transition-name` to key elements (h1 in title slides, h2 across slides, `.metric-value`, `.big-word`). On browsers that support the View Transitions API (Baseline since Oct 2025), the browser morphs same-named elements between slide changes — a metric value can morph in size and position into a big-word headline on the next slide, the deck headline persists as a slide changes, etc.
+
+### How to opt elements in
+
+Two ways:
+
+1. **Implicit** — use the slide types and the template handles it. h1 in `title-slide`/`section-slide` shares the `deck-headline` name across slides, so it morphs.
+
+2. **Explicit `data-vt-name`** — for custom morphs across non-matching types, add the same `data-vt-name="my-thing"` to two elements on adjacent slides:
+
+```json
+{ "type": "html", "html": "<svg data-vt-name='hero-shape'>...</svg>" },
+{ "type": "html", "html": "<svg data-vt-name='hero-shape'>...</svg>" }
+```
+
+The browser will morph the SVG between the two states.
+
+### The `data-id` auto-animate technique (reveal.js native)
+
+Separately from View Transitions, reveal.js's auto-animate matches by `data-id` across adjacent sections with `data-auto-animate`:
+
+```html
+<section data-auto-animate>
+  <h1 data-id="hero">Before</h1>
+  <p data-id="ratio" style="font-size: 30px;">10%</p>
+</section>
+<section data-auto-animate>
+  <h1 data-id="hero">After</h1>
+  <p data-id="ratio" style="font-size: 200px;">94%</p>
+</section>
+```
+
+Reveal animates every CSS property between the two `data-id="hero"` and `data-id="ratio"` pairs. Use this for: a number that grows, an icon that travels across the slide, a card that morphs into a chart. The two morphing techniques (View Transitions and auto-animate) compose: VT handles cross-slide morphs declaratively; auto-animate handles per-property tweens with explicit `data-id` matching.
+
+---
+
+## Anchor-positioned callouts
+
+For tooltips, footnotes, and term-definition asides on `definition` and `diagram` slides:
+
+```html
+<p>The <span class="anchor" id="zenith" style="--anchor: --zenith">zenith</span> is the highest point...</p>
+<aside class="callout" style="--anchor: --zenith">
+  Astronomy: the point on the celestial sphere directly above the observer.
+</aside>
+```
+
+CSS handles the rest — the callout positions below the anchor, flips above when it would overflow the viewport (`position-try-fallbacks: flip-block, flip-inline`).
+
+For click-to-reveal popovers, use the Popover API:
+
+```html
+<button popovertarget="def-zenith" class="anchor">zenith</button>
+<aside id="def-zenith" popover>
+  Astronomy: the point on the celestial sphere directly above the observer.
+</aside>
+```
 
 ---
 
