@@ -892,6 +892,44 @@
       text-align: initial;
     }
 
+    /* chart — live charts via Mermaid (default), Chart.js, or Observable Plot.
+       Engine is loaded on demand from CDN; never blocks the initial deck load.
+       Theme-aware: each engine's render call reads the current --r-* tokens. */
+    .reveal .slides section.chart-slide {
+      text-align: center;
+    }
+    .reveal .slides section.chart-slide .chart-content {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      max-height: 65vh;
+      margin: 1em auto;
+      width: min(100%, 1100px);
+      min-height: 300px;
+    }
+    .reveal .slides section.chart-slide .chart-content canvas,
+    .reveal .slides section.chart-slide .chart-content svg {
+      max-width: 100%;
+      max-height: 65vh;
+    }
+    .reveal .slides section.chart-slide .chart-loading {
+      font-style: italic;
+      opacity: 0.5;
+      font-size: 0.6em;
+    }
+    .reveal .slides section.chart-slide .chart-caption {
+      font-family: var(--r-main-font);
+      font-style: italic;
+      font-size: 0.5em;
+      opacity: 0.7;
+      margin-top: 0.4em;
+    }
+    /* Mermaid theme: ensure Mermaid SVG inherits stardust colors */
+    .reveal .slides section.chart-slide pre.mermaid {
+      background: transparent;
+      text-align: center;
+    }
+
     /* diagram — agent-supplied SVG/HTML, centered with consistent caption styling */
     .reveal .slides section.diagram-slide {
       text-align: center;
@@ -1360,7 +1398,7 @@
    *       "type": "title" | "content" | "code" | "quote" | "image" | "section"
    *             | "big-word" | "metric" | "comparison" | "process"
    *             | "timeline" | "definition" | "cards" | "diagram"
-   *             | "zoom-overview" | "zoom-detail" | "recap" | "html",
+   *             | "chart"  | "zoom-overview" | "zoom-detail" | "recap" | "html",
    *
    *       // Common fields:
    *       "title": "Slide Title",
@@ -1389,6 +1427,8 @@
    *                  "items": [ { "icon": "✱", "title": "...", "description": "..." } ] },
    *       "diagram": "<svg>...</svg> | <div>...</div>",                  // diagram inner HTML
    *       "caption": "...",                                              // diagram caption
+   *       "engine": "mermaid" | "chartjs" | "plot",                      // chart — engine choice (default: mermaid)
+   *       "chart": "graph TD; A-->B" | { type: "bar", data: {...} },    // chart — string for mermaid, object for chartjs/plot
    *       "regions": [ { "id": "north", "label": "..." } ],              // zoom-overview
    *       "regionId": "north",                                           // zoom-detail (links to overview region)
    *       "html": "<style>...</style><script>...</script><div>...</div>",
@@ -1642,6 +1682,149 @@
       + (slide.caption ? '<div class="diagram-caption">' + escHtml(slide.caption) + '</div>' : '');
   }
 
+  // chart slide renderer — emits a placeholder + a marker the post-build
+  // script picks up to lazy-load the right engine and render. The marker
+  // carries the engine name and the JSON-encoded spec as data-* attrs so
+  // each chart is self-contained.
+  function renderChart(slide) {
+    var engine = ['mermaid', 'chartjs', 'plot'].indexOf(slide.engine) >= 0 ? slide.engine : 'mermaid';
+    var spec = '';
+    if (engine === 'mermaid') {
+      spec = typeof slide.chart === 'string' ? slide.chart : '';
+    } else {
+      try { spec = JSON.stringify(slide.chart || {}); } catch (e) { spec = '{}'; }
+    }
+    var encoded = encodeURIComponent(spec);
+    var loadingMsg = '<div class="chart-loading">rendering ' + escHtml(engine) + '…</div>';
+    return '<div class="chart-content">'
+      + '<div class="chart-target" data-engine="' + escHtml(engine) + '" data-spec="' + encoded + '">'
+      + loadingMsg
+      + '</div>'
+      + '</div>'
+      + (slide.caption ? '<div class="chart-caption">' + escHtml(slide.caption) + '</div>' : '');
+  }
+
+  // Engine loaders — cached promises so each library loads at most once
+  // per session. CDN-loaded; no impact on cold start when no chart slides
+  // are in the deck.
+  var __engineLoaders = {
+    mermaid: null,
+    chartjs: null,
+    plot: null
+  };
+
+  function loadScript(src, asModule) {
+    return new Promise(function(resolve, reject) {
+      var s = document.createElement('script');
+      s.src = src;
+      if (asModule) s.type = 'module';
+      s.onload = function() { resolve(); };
+      s.onerror = function() { reject(new Error('failed to load ' + src)); };
+      document.head.appendChild(s);
+    });
+  }
+
+  function loadEngine(engine) {
+    if (__engineLoaders[engine]) return __engineLoaders[engine];
+    if (engine === 'mermaid') {
+      __engineLoaders.mermaid = import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs')
+        .then(function(mod) {
+          var bg = getComputedStyle(document.documentElement).getPropertyValue('--r-background-color').trim() || '#0a0a0a';
+          var fg = getComputedStyle(document.documentElement).getPropertyValue('--r-main-color').trim() || '#eee';
+          var accent = getComputedStyle(document.documentElement).getPropertyValue('--r-accent-color').trim() || '#36d6a8';
+          mod.default.initialize({
+            startOnLoad: false,
+            theme: 'base',
+            themeVariables: {
+              background: bg, primaryColor: accent, primaryTextColor: fg,
+              lineColor: fg, secondaryColor: accent, tertiaryColor: bg,
+              fontFamily: getComputedStyle(document.documentElement).getPropertyValue('--r-main-font').trim() || 'sans-serif'
+            }
+          });
+          return mod.default;
+        });
+      return __engineLoaders.mermaid;
+    }
+    if (engine === 'chartjs') {
+      __engineLoaders.chartjs = loadScript('https://cdn.jsdelivr.net/npm/chart.js@4')
+        .then(function() { return window.Chart; });
+      return __engineLoaders.chartjs;
+    }
+    if (engine === 'plot') {
+      __engineLoaders.plot = Promise.all([
+        import('https://cdn.jsdelivr.net/npm/d3@7/+esm'),
+        import('https://cdn.jsdelivr.net/npm/@observablehq/plot@0.6/+esm')
+      ]).then(function(mods) { return mods[1]; });
+      return __engineLoaders.plot;
+    }
+    return Promise.reject(new Error('unknown engine: ' + engine));
+  }
+
+  function renderChartTarget(targetEl) {
+    if (!targetEl || targetEl.dataset.rendered === '1') return;
+    var engine = targetEl.dataset.engine;
+    var spec;
+    try { spec = decodeURIComponent(targetEl.dataset.spec || ''); } catch (e) { spec = ''; }
+    targetEl.dataset.rendered = '1';
+    loadEngine(engine).then(function(lib) {
+      try {
+        if (engine === 'mermaid') {
+          var id = 'mmd-' + Math.random().toString(36).slice(2, 9);
+          return lib.render(id, spec).then(function(r) {
+            targetEl.innerHTML = r.svg;
+          });
+        }
+        if (engine === 'chartjs') {
+          var conf = JSON.parse(spec);
+          targetEl.innerHTML = '<canvas></canvas>';
+          var canvas = targetEl.querySelector('canvas');
+          var accent = getComputedStyle(document.documentElement).getPropertyValue('--r-accent-color').trim() || '#36d6a8';
+          var fg = getComputedStyle(document.documentElement).getPropertyValue('--r-main-color').trim() || '#eee';
+          // Theme defaults if user didn't supply
+          conf.options = conf.options || {};
+          conf.options.color = conf.options.color || fg;
+          conf.options.plugins = conf.options.plugins || {};
+          conf.options.plugins.legend = conf.options.plugins.legend || {};
+          conf.options.plugins.legend.labels = conf.options.plugins.legend.labels || { color: fg };
+          conf.options.scales = conf.options.scales || {};
+          ['x','y','r'].forEach(function(k) {
+            if (conf.options.scales[k]) {
+              conf.options.scales[k].ticks = conf.options.scales[k].ticks || { color: fg };
+              conf.options.scales[k].grid = conf.options.scales[k].grid || { color: 'rgba(127,127,127,0.2)' };
+            }
+          });
+          // Default dataset color if missing
+          (conf.data && conf.data.datasets || []).forEach(function(d) {
+            if (!d.backgroundColor && !d.borderColor) {
+              d.backgroundColor = accent + '88';
+              d.borderColor = accent;
+            }
+          });
+          new lib(canvas.getContext('2d'), conf);
+        }
+        if (engine === 'plot') {
+          var plotSpec = JSON.parse(spec);
+          var fgColor = getComputedStyle(document.documentElement).getPropertyValue('--r-main-color').trim() || '#eee';
+          plotSpec.style = plotSpec.style || {};
+          plotSpec.style.color = plotSpec.style.color || fgColor;
+          plotSpec.style.background = plotSpec.style.background || 'transparent';
+          targetEl.innerHTML = '';
+          targetEl.appendChild(lib.plot(plotSpec));
+        }
+      } catch (err) {
+        targetEl.innerHTML = '<div class="chart-loading">chart error: ' + escHtml(err.message || String(err)) + '</div>';
+        console.error('[chart] render failed', err);
+      }
+    }).catch(function(err) {
+      targetEl.innerHTML = '<div class="chart-loading">load error: ' + escHtml(err.message) + '</div>';
+    });
+  }
+
+  function renderAllChartTargets(container) {
+    var targets = container.querySelectorAll('.chart-target');
+    Array.prototype.forEach.call(targets, renderChartTarget);
+  }
+
   function renderZoomOverview(slide) {
     var regions = Array.isArray(slide.regions) ? slide.regions : [];
     var inner = slide.diagram
@@ -1786,6 +1969,9 @@
 
       case 'diagram':
         return wrap('diagram-slide', renderDiagram(slide));
+
+      case 'chart':
+        return wrap('chart-slide', renderChart(slide));
 
       case 'zoom-overview':
         return '<section class="' + classOf('zoom-overview') + '"' + bg + '>'
@@ -1944,6 +2130,7 @@
     var container = document.getElementById('slides-container');
     container.innerHTML = slides.map(renderSlide).join('\n');
     rehydrateHtmlSlideScripts(container);
+    renderAllChartTargets(container);
     applyRapidAutoslide();
 
     if (revealInstance) {
@@ -2046,6 +2233,11 @@
           if (fresh && fresh.classList && fresh.classList.contains('html-slide')) {
             var container = document.getElementById('slides-container');
             rehydrateHtmlSlideScripts(container);
+          }
+          // Render any chart-target inside the new slide
+          if (fresh) {
+            var newCharts = fresh.querySelectorAll('.chart-target');
+            Array.prototype.forEach.call(newCharts, renderChartTarget);
           }
           if (revealInstance) revealInstance.sync();
         }

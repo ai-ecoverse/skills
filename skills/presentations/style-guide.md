@@ -435,6 +435,7 @@ Bullet-list `content` slides are **one of fourteen types**, not the default. A d
 | `definition` | Term + meaning, dictionary-entry style. Manifesto, glossary, "what we mean by X". | `definition: { term, pos?, pronunciation?, meanings: [...] }` |
 | `cards` | 2x2, 3x2, or 3x3 grid of mini-cards with icon + title + body. Feature list, principles, team. | `cards: { layout, items: [{ icon, title, description }] }` |
 | `diagram` | Agent-supplied SVG or HTML. Architecture, flow, map. | `diagram: "<svg>...</svg>"`, optional `caption` |
+| `chart` | **Live data viz.** Three engines: `mermaid` (flowcharts/sequence/state — default), `chartjs` (bar/line/donut), `plot` (Observable Plot grammar-of-graphics). Engine library is loaded lazily from CDN on first use; stardust accent/text colors auto-applied. | `engine: "mermaid"\|"chartjs"\|"plot"`, `chart: <string\|object>`, optional `caption` |
 | `quote` | Single quote, max 3 lines. | `quote`, optional `attribution` |
 | `image` | Hero image + heading + optional caption. | `src`, `alt` |
 | `code` | Code block, 8–10 lines, syntax-highlighted. | `code`, `language` |
@@ -445,6 +446,61 @@ Bullet-list `content` slides are **one of fourteen types**, not the default. A d
 | `zoom-detail` | Mode=zoom only. Sits as a vertical sub-slide under a `zoom-overview`. | `regionId` (links back), plus content of choice |
 
 **Picking rule of thumb**: if you reach for bullets, ask first whether the items are (a) a temporal sequence → `process` or `timeline`, (b) two opposing groups → `comparison`, (c) parallel categories → `cards`, (d) a definition → `definition`, (e) a single magnitude → `metric`. Bullets are the *fallback*.
+
+### The `chart` slide — live data viz
+
+The `chart` type loads its rendering engine lazily from CDN on first use. Each engine reads stardust's `--r-accent-color` and `--r-main-color` so charts theme themselves automatically.
+
+**Mermaid (default)** — for flowcharts, sequence diagrams, state machines, gantts, ERD, mindmaps. Pass the Mermaid source as a string:
+
+```json
+{
+  "type": "chart",
+  "title": "Pipeline",
+  "engine": "mermaid",
+  "chart": "graph LR\n  A[Capture] --> B[Diagnose]\n  B --> C[Patch]\n  C --> D[Ship]"
+}
+```
+
+**Chart.js** — for bar / line / donut / radar / scatter. Pass a Chart.js config object:
+
+```json
+{
+  "type": "chart",
+  "title": "Quarterly ARR",
+  "engine": "chartjs",
+  "chart": {
+    "type": "bar",
+    "data": {
+      "labels": ["Q1", "Q2", "Q3", "Q4"],
+      "datasets": [{ "label": "ARR ($M)", "data": [4.2, 6.8, 9.1, 12.4] }]
+    },
+    "options": { "responsive": true, "maintainAspectRatio": false }
+  }
+}
+```
+
+(Dataset color falls back to `--r-accent-color` when not supplied. Legend, tick, and axis colors default to `--r-main-color`.)
+
+**Observable Plot** — for grammar-of-graphics; richer than Chart.js for statistical viz. Pass a Plot spec:
+
+```json
+{
+  "type": "chart",
+  "engine": "plot",
+  "chart": {
+    "marks": [
+      { "type": "ruleY", "data": [0] },
+      { "type": "barY", "data": [{"k": "A", "v": 10}, {"k": "B", "v": 24}], "options": { "x": "k", "y": "v" } }
+    ]
+  }
+}
+```
+
+**When to pick which**:
+- Static structural diagram (flow, sequence, state, gantt) → mermaid.
+- Quick bar / line / donut with stardust theming → chartjs.
+- Anything statistical, faceted, or with multiple mark layers → plot.
 
 ### The `html` escape hatch — full power
 
@@ -723,6 +779,7 @@ Maximum content per slide type. **Never exceed these limits.**
 | `definition` | 1 term + 1–3 meanings + optional pronunciation/POS |
 | `cards` | 1 heading + 4 cards (2×2) or 6 cards (3×2) or 9 cards (3×3) |
 | `diagram` | 1 heading + 1 diagram + optional caption |
+| `chart` | 1 heading + 1 chart (≤8 series, ≤20 categories before axis becomes unreadable) + optional caption |
 | `content` | 1 heading + 4–6 bullets OR 2 short paragraphs |
 | `code` | 1 heading + 8–12 lines of code |
 | `quote` | 1 quote (max 3 lines) + attribution |
