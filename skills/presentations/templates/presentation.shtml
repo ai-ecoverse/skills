@@ -885,6 +885,13 @@
       color: var(--r-accent-color);
     }
 
+    /* html — plain-HTML escape hatch. No imposed layout; agent supplies markup
+       and styles inline. The section gets effects + bg but no text-align,
+       no padding, no auto title. */
+    .reveal .slides section.html-slide {
+      text-align: initial;
+    }
+
     /* diagram — agent-supplied SVG/HTML, centered with consistent caption styling */
     .reveal .slides section.diagram-slide {
       text-align: center;
@@ -1179,7 +1186,7 @@
    *       "type": "title" | "content" | "code" | "quote" | "image" | "section"
    *             | "big-word" | "metric" | "comparison" | "process"
    *             | "timeline" | "definition" | "cards" | "diagram"
-   *             | "zoom-overview" | "zoom-detail",
+   *             | "zoom-overview" | "zoom-detail" | "html",
    *
    *       // Common fields:
    *       "title": "Slide Title",
@@ -1210,6 +1217,12 @@
    *       "caption": "...",                                              // diagram caption
    *       "regions": [ { "id": "north", "label": "..." } ],              // zoom-overview
    *       "regionId": "north",                                           // zoom-detail (links to overview region)
+   *       "html": "<style>...</style><script>...</script><div>...</div>",
+   *                  // html — full section body, no chrome, NO SANITIZER.
+   *                  // <script>, <style>, <iframe>, on*= handlers all
+   *                  // pass through and execute. Trust model: agent
+   *                  // writes the deck. Scripts are rehydrated post-
+   *                  // innerHTML so they actually run.
    *
    *       // Builds: optional staged element-reveal beyond simple fragments.
    *       // The renderer applies data-fragment-index attributes to children
@@ -1614,6 +1627,17 @@
             )
           + notes + '</section>';
 
+      case 'html':
+        // Plain-HTML escape hatch. FULL PASS-THROUGH — no sanitizer.
+        // Agent-supplied <script>, <style>, <iframe>, on*= handlers, and
+        // animated SVG all work. Trust model: the agent writes the deck;
+        // the deck author controls what runs. Use this when you need a
+        // custom mini-component, embedded widget, slide-scoped CSS, or
+        // a one-off animated scene. Builds still apply if requested.
+        return '<section class="' + classOf('html-slide') + '"' + bg + '>'
+          + withBuilds(slide.html || '')
+          + notes + '</section>';
+
       default:
         return '<section' + (fx ? ' class="' + fx + '"' : '') + bg + '>'
           + (slide.title ? '<h2' + titleAttrs + '>' + escHtml(slide.title) + '</h2>' : '')
@@ -1674,9 +1698,30 @@
     if (event && event.currentSlide) animateCounters(event.currentSlide);
   }
 
+  // Scripts inserted via innerHTML don't execute. After building the deck,
+  // walk every .html-slide section and re-create any <script> elements as
+  // fresh nodes so the browser actually runs them. Inline <style> blocks
+  // do apply via innerHTML — no special handling needed.
+  function rehydrateHtmlSlideScripts(container) {
+    var sections = container.querySelectorAll('section.html-slide');
+    Array.prototype.forEach.call(sections, function(sec) {
+      var scripts = sec.querySelectorAll('script');
+      Array.prototype.forEach.call(scripts, function(oldScript) {
+        var fresh = document.createElement('script');
+        // Copy attributes (src, type, async, defer, etc.)
+        Array.prototype.forEach.call(oldScript.attributes, function(a) {
+          try { fresh.setAttribute(a.name, a.value); } catch (e) {}
+        });
+        if (oldScript.textContent) fresh.textContent = oldScript.textContent;
+        oldScript.parentNode.replaceChild(fresh, oldScript);
+      });
+    });
+  }
+
   function buildPresentation(slides, transition) {
     var container = document.getElementById('slides-container');
     container.innerHTML = slides.map(renderSlide).join('\n');
+    rehydrateHtmlSlideScripts(container);
     applyRapidAutoslide();
 
     if (revealInstance) {
@@ -1764,7 +1809,13 @@
         if (sections[data.index]) {
           var temp = document.createElement('div');
           temp.innerHTML = renderSlide(data.slide);
-          sections[data.index].replaceWith(temp.firstElementChild);
+          var fresh = temp.firstElementChild;
+          sections[data.index].replaceWith(fresh);
+          // Rehydrate scripts if this slide is an html-slide
+          if (fresh && fresh.classList && fresh.classList.contains('html-slide')) {
+            var container = document.getElementById('slides-container');
+            rehydrateHtmlSlideScripts(container);
+          }
           if (revealInstance) revealInstance.sync();
         }
       }

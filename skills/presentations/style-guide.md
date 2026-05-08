@@ -439,10 +439,49 @@ Bullet-list `content` slides are **one of fourteen types**, not the default. A d
 | `image` | Hero image + heading + optional caption. | `src`, `alt` |
 | `code` | Code block, 8–10 lines, syntax-highlighted. | `code`, `language` |
 | `content` | Bulleted list. **Use sparingly** — most lists are better as `cards` or `process`. | `bullets`, optional `title`, optional `content` HTML |
+| `html` | **Full-power escape hatch** — agent-controlled HTML with no sanitizer. `<script>`, `<style>`, `<iframe>`, `on*=` handlers, animated SVG, custom canvas/WebGL, third-party widgets all work. Scripts are rehydrated post-render so they actually execute. For one-off interactive scenes, slide-scoped CSS, embedded demos, or anything the type catalog doesn't cover. | `html: "<style>...</style><script>...</script><div>...</div>"` |
 | `zoom-overview` | Mode=zoom only. Names regions to zoom into; renders as labeled chips or supplied diagram. | `regions: [{ id, label }]` or `diagram` |
 | `zoom-detail` | Mode=zoom only. Sits as a vertical sub-slide under a `zoom-overview`. | `regionId` (links back), plus content of choice |
 
 **Picking rule of thumb**: if you reach for bullets, ask first whether the items are (a) a temporal sequence → `process` or `timeline`, (b) two opposing groups → `comparison`, (c) parallel categories → `cards`, (d) a definition → `definition`, (e) a single magnitude → `metric`. Bullets are the *fallback*.
+
+### The `html` escape hatch — full power
+
+The `html` slide type passes the agent's HTML through verbatim — no sanitizer. `<script>`, `<style>`, `<iframe>`, animated SVG, canvas/WebGL, third-party CDN widgets all work. Scripts are rehydrated after innerHTML insertion so they execute.
+
+**Use when** the type catalog doesn't fit:
+- Interactive demos (a working calculator, a live data visualization, a tiny game)
+- Slide-scoped CSS that needs `@keyframes` or pseudo-element artistry beyond the effects layer
+- Embedded third-party widgets (CodePen, Observable, GitHub gists, video players)
+- Custom canvas/WebGL scenes
+- Multi-step animated sequences with their own JS state machine
+
+**Example — slide-scoped CSS animation:**
+
+```json
+{
+  "type": "html",
+  "effects": ["effect-aurora-bg"],
+  "html": "<style>.orbit{position:relative;width:60vmin;height:60vmin;margin:auto;animation:spin 24s linear infinite}.orbit .planet{position:absolute;inset:0;animation:orbit 12s linear infinite}.orbit .planet b{display:block;width:2vmin;height:2vmin;border-radius:50%;background:var(--r-accent-color);transform:translate(28vmin,0)}@keyframes spin{to{transform:rotate(360deg)}}@keyframes orbit{to{transform:rotate(-360deg)}}</style><div class='orbit'><div class='planet'><b></b></div></div>"
+}
+```
+
+**Example — embedded interactive (script tag rehydrates):**
+
+```json
+{
+  "type": "html",
+  "html": "<div id='counter' style='font-size:30vmin;text-align:center;font-family:var(--r-heading-font)'>0</div><script>let n=0;setInterval(()=>{n++;document.getElementById('counter').textContent=n},100)</script>"
+}
+```
+
+**Trust model.** The deck is agent-authored. Scripts run with the privileges of the sprinkle iframe. Don't put untrusted user input into the `html` field — the agent is the trusted authority.
+
+**Constraints**:
+- Inline `<style>` is slide-scoped *by convention* — wrap rules in a unique class so they don't bleed into other slides.
+- Inline `<script>` runs on slide load (when innerHTML is set + rehydrated). It does NOT re-run on slide re-show. If you need per-show side effects, listen for `slidechanged` from the parent.
+- The `effects` array still works — you can layer the bespoke effects on top of an `html` slide.
+- The `builds` array still works — pass selectors that match elements inside your HTML for staged reveals.
 
 ---
 
@@ -618,6 +657,7 @@ Maximum content per slide type. **Never exceed these limits.**
 | `image` | 1 heading + 1 image + optional caption |
 | `zoom-overview` | 1 heading + 3–5 regions |
 | `zoom-detail` | Same as the underlying type it carries |
+| `html` | Agent's responsibility — no enforced limit, but the *one idea per slide* rule still applies |
 
 If content overflows, **split into multiple slides** — never shrink font size. Bullet points are sentence fragments, not paragraphs. Code blocks show the essential 8–12 lines, not full files. One idea per slide.
 
