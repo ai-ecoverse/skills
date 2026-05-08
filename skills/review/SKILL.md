@@ -73,6 +73,8 @@ feed_scoop("review", "Lick event on YOUR sprinkle: { action: 'publish', data: { 
 Execute the publish action, then push status update: sprinkle send review '{\"action\":\"update-status\",\"id\":\"page-1\",\"status\":\"published\"}'")
 ```
 
+**`publish` and `defer` show an in-flight indicator until the cone confirms.** When the user clicks one of those actions the card pulses with an "acting" state and the buttons disable. The scoop **must** push an `update-status` message (success → `published`/`deferred`, failure → back to `pending`) — otherwise the card stays stuck in flight. This protects against silently leaving the UI claiming a publish that never happened.
+
 For `submit-revisions`, the scoop should apply the annotations (edit the file, open a PR, post a comment) and confirm back.
 
 ## Item Schema
@@ -96,7 +98,16 @@ The sprinkle persists via `slicc.setState`:
 - Active document path
 - In-progress annotations
 
-State survives panel close/reopen.
+State survives panel close/reopen. Annotations are preserved when re-opening the same document path; switching to a different path clears them.
+
+## Document Sanitization
+
+Both markdown and HTML documents are sanitized before rendering:
+
+- **Markdown** is escape-first: raw HTML in source becomes inert text. Link URLs are protocol-whitelisted (`http(s):`, `mailto:`, `#`, `/`); other schemes (notably `javascript:`) render as plain labels.
+- **HTML/HTM** files are parsed via `<template>` (inert — no images load, no scripts run) and walked to strip `<script>`, `<iframe>`, `<object>`, `<embed>`, `<link>`, `<meta>`, `<style>`, `<base>`, all `on*` event handlers, `srcdoc`, and `javascript:` / `data:` / `vbscript:` URLs in `href`/`src`.
+
+This protects the sprinkle context (which has VFS read/write through `slicc`) when reviewing untrusted documents.
 
 ## Template
 

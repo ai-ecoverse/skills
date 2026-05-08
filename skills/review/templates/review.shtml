@@ -545,9 +545,6 @@
       flex-shrink: 0;
     }
 
-    /* ── Scrollbar in queue ── */
-    #queue-scroll::-webkit-scrollbar { width: 4px; }
-
     /* ── Loading state ── */
     .doc-loading {
       display: flex;
@@ -569,6 +566,18 @@
       100% { transform: scale(1); }
     }
     .status-dot.animating { animation: dotPulse 0.4s ease; }
+
+    /* ── Acting (in-flight) state ── */
+    @keyframes dotBlink {
+      0%, 100% { opacity: 0.45; }
+      50%      { opacity: 1; }
+    }
+    .status-dot.acting {
+      background: color-mix(in srgb, var(--s2-accent) 60%, transparent);
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--s2-accent) 18%, transparent);
+      animation: dotBlink 1s ease-in-out infinite;
+    }
+    .queue-item.acting { opacity: 0.85; }
   </style>
 </head>
 <body>
@@ -642,15 +651,50 @@
 
 <script>
 // ═══════════════════════════════════════════════════
-//  MARKDOWN → HTML CONVERTER
+//  ESCAPING / URL HELPERS
 // ═══════════════════════════════════════════════════
-function mdToHtml(md) {
-  let html = md;
+function escHtml(str) {
+  return String(str ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function escAttr(str) {
+  return String(str ?? '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+}
+function isSafeUrl(url) {
+  return /^(https?:|mailto:|#|\/)/i.test(String(url || '').trim());
+}
 
-  // Fenced code blocks
-  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) =>
-    `<pre><code class="lang-${lang}">${escHtml(code.trim())}</code></pre>`
-  );
+// ═══════════════════════════════════════════════════
+//  MARKDOWN → HTML CONVERTER (escape-first; safe against
+//  raw HTML / event handlers / javascript: URLs in source)
+// ═══════════════════════════════════════════════════
+const MD_SENT = ''; // SOH — won't appear in markdown source
+
+function mdToHtml(md) {
+  // Normalize line endings
+  md = String(md ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+  // Extract fenced code blocks to sentinel placeholders (escaped now, restored at end)
+  const codeBlocks = [];
+  md = md.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+    const i = codeBlocks.length;
+    codeBlocks.push(
+      '<pre><code class="lang-' + escAttr(lang) + '">' +
+      escHtml(code.replace(/\n$/, '')) +
+      '</code></pre>'
+    );
+    return MD_SENT + 'CB' + i + MD_SENT;
+  });
+
+  // Extract inline code to sentinel placeholders
+  const inlineCode = [];
+  md = md.replace(/`([^`\n]+)`/g, (_, code) => {
+    const i = inlineCode.length;
+    inlineCode.push('<code>' + escHtml(code) + '</code>');
+    return MD_SENT + 'IC' + i + MD_SENT;
+  });
+
+  // Escape ALL remaining markup (raw HTML in source becomes inert text)
+  let html = escHtml(md);
 
   // Horizontal rules
   html = html.replace(/^---+$/gm, '<hr>');
@@ -663,8 +707,8 @@ function mdToHtml(md) {
   html = html.replace(/^##\s+(.+)$/gm,     '<h2>$1</h2>');
   html = html.replace(/^#\s+(.+)$/gm,      '<h1>$1</h1>');
 
-  // Blockquotes
-  html = html.replace(/^>\s+(.+)$/gm, '<blockquote>$1</blockquote>');
+  // Blockquotes (note: '>' was escaped to '&gt;')
+  html = html.replace(/^&gt;\s+(.+)$/gm, '<blockquote>$1</blockquote>');
 
   // Unordered lists — group consecutive items
   html = html.replace(/((?:^[ \t]*[-*+]\s+.+\n?)+)/gm, (block) => {
@@ -678,9 +722,6 @@ function mdToHtml(md) {
     return '<ol>' + items.map(i => `<li>${i.replace(/^\d+\.\s+/, '')}</li>`).join('') + '</ol>';
   });
 
-  // Inline code (must come after fenced blocks)
-  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-
   // Bold + italic
   html = html.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
   html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
@@ -688,35 +729,85 @@ function mdToHtml(md) {
   html = html.replace(/__(.+?)__/g,     '<strong>$1</strong>');
   html = html.replace(/_(.+?)_/g,       '<em>$1</em>');
 
-  // Links
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  // Links — protocol whitelist; unsafe URLs render as plain label
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => {
+    if (isSafeUrl(url)) {
+      return '<a href="' + escAttr(url) + '" target="_blank" rel="noopener noreferrer">' + label + '</a>';
+    }
+    return label;
+  });
 
-  // Paragraphs — wrap non-tagged lines
+  // Restore inline code BEFORE paragraph wrap (so they stay inline)
+  const inlineRe = new RegExp(MD_SENT + 'IC(\\d+)' + MD_SENT, 'g');
+  html = html.replace(inlineRe, (_, i) => inlineCode[+i] ?? '');
+
+  // Paragraphs — wrap non-tagged lines; sentinel-only lines stay block-level
+  const cbLineRe = new RegExp('^' + MD_SENT + 'CB\\d+' + MD_SENT + '$');
   const lines = html.split('\n');
   const out = [];
-  let inPre = false;
   for (const line of lines) {
-    if (line.startsWith('<pre')) inPre = true;
-    if (line.startsWith('</pre')) inPre = false;
-    if (inPre) { out.push(line); continue; }
     const trimmed = line.trim();
     if (!trimmed) { out.push(''); continue; }
+    if (cbLineRe.test(trimmed)) { out.push(trimmed); continue; }
     if (/^<(h[1-6]|ul|ol|li|hr|blockquote|pre|p)/.test(trimmed)) {
       out.push(trimmed);
     } else {
       out.push(`<p>${trimmed}</p>`);
     }
   }
-  return out.join('\n');
+  let result = out.join('\n');
+
+  // Restore fenced code blocks last
+  const cbRe = new RegExp(MD_SENT + 'CB(\\d+)' + MD_SENT, 'g');
+  result = result.replace(cbRe, (_, i) => codeBlocks[+i] ?? '');
+
+  return result;
 }
 
-function escHtml(str) {
-  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+// ═══════════════════════════════════════════════════
+//  HTML SANITIZER (for .html/.htm document content)
+//  <template> parses content inertly — no images load,
+//  no scripts run. We strip dangerous tags + attrs
+//  before letting the cleaned tree touch a live DOM.
+// ═══════════════════════════════════════════════════
+const DANGEROUS_TAGS = new Set([
+  'script', 'iframe', 'object', 'embed', 'link', 'meta', 'style', 'base'
+]);
+const DANGEROUS_URL_RE = /^(javascript|data|vbscript):/i;
+
+function sanitizeHtml(html) {
+  const tpl = document.createElement('template');
+  tpl.innerHTML = String(html ?? '');
+  cleanNodes(tpl.content);
+  return tpl.innerHTML;
+}
+
+function cleanNodes(root) {
+  for (const node of Array.from(root.childNodes)) {
+    if (node.nodeType !== 1) continue;
+    const tag = node.tagName.toLowerCase();
+    if (DANGEROUS_TAGS.has(tag)) {
+      node.remove();
+      continue;
+    }
+    for (const attr of Array.from(node.attributes)) {
+      const name = attr.name.toLowerCase();
+      const val = attr.value || '';
+      if (name.startsWith('on')) {
+        node.removeAttribute(attr.name);
+      } else if ((name === 'href' || name === 'src' || name === 'xlink:href') && DANGEROUS_URL_RE.test(val.trim())) {
+        node.removeAttribute(attr.name);
+      } else if (name === 'srcdoc') {
+        node.removeAttribute(attr.name);
+      }
+    }
+    cleanNodes(node);
+  }
 }
 
 // Strip full HTML doc to body content
 function extractBody(html) {
-  const m = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+  const m = String(html ?? '').match(/<body[^>]*>([\s\S]*?)<\/body>/i);
   return m ? m[1] : html;
 }
 
@@ -764,7 +855,16 @@ function showView(which) {
 
 // ═══════════════════════════════════════════════════
 //  QUEUE RENDERING
+//
+//  Cards are built via DOM APIs so user-controlled
+//  fields (title, id, URLs) can never inject HTML or
+//  break attribute parsing. Live element refs live in
+//  cardElements, keyed by item.id — that avoids any
+//  CSS-selector or getElementById lookups against ids
+//  that may contain unsafe characters.
 // ═══════════════════════════════════════════════════
+const cardElements = new Map(); // id -> { card, dot, label, commentRow, commentInput }
+
 function renderQueue() {
   const scroll = document.getElementById('queue-scroll');
   const empty  = document.getElementById('empty-state');
@@ -775,6 +875,7 @@ function renderQueue() {
 
   // Remove existing cards (keep empty state node)
   [...scroll.querySelectorAll('.queue-item')].forEach(el => el.remove());
+  cardElements.clear();
 
   if (state.items.length === 0) {
     empty.style.display = 'flex';
@@ -789,75 +890,104 @@ function renderQueue() {
   renderIcons();
 }
 
+function makeIconLink(href, icon, label) {
+  const a = document.createElement('a');
+  a.className = 'item-link';
+  a.href = href;
+  a.target = '_blank';
+  a.rel = 'noopener noreferrer';
+  // Icon is a constant string from us — safe to use innerHTML for the <i>.
+  a.innerHTML = '<i data-lucide="' + escAttr(icon) + '" class="sprinkle-icon sm"></i>';
+  a.appendChild(document.createTextNode(label));
+  return a;
+}
+
 function createItemCard(item) {
   const div = document.createElement('div');
   div.className = 'queue-item';
-  div.dataset.id = item.id;
 
   const statusLabel = item.status || 'pending';
-  const previewLink = item.previewUrl
-    ? `<a href="${item.previewUrl}" target="_blank" class="item-link"><i data-lucide="eye" class="sprinkle-icon sm"></i>Preview</a>`
-    : '';
-  const liveLink = item.liveUrl
-    ? `<a href="${item.liveUrl}" target="_blank" class="item-link"><i data-lucide="external-link" class="sprinkle-icon sm"></i>Live</a>`
-    : '';
-  const pathLink = item.path
-    ? `<a href="#" class="item-link open-doc-link" data-path="${item.path}" data-title="${item.title || ''}"><i data-lucide="file-text" class="sprinkle-icon sm"></i>Review</a>`
-    : '';
 
-  div.innerHTML = `
-    <div class="item-main">
-      <div class="item-header">
-        <div class="status-dot ${statusLabel}" id="dot-${item.id}"></div>
-        <div class="item-title">${item.title || item.id}</div>
-      </div>
-      ${(previewLink || liveLink || pathLink) ? `<div class="item-links">${previewLink}${liveLink}${pathLink}</div>` : ''}
-      <div class="item-actions">
-        <button class="sprinkle-btn sprinkle-btn--positive action-btn" data-action="publish" data-id="${item.id}">
-          <i data-lucide="check-circle" class="sprinkle-icon sm"></i> Publish
-        </button>
-        <button class="sprinkle-btn sprinkle-btn--notice action-btn" data-action="comment" data-id="${item.id}">
-          <i data-lucide="message-circle" class="sprinkle-icon sm"></i> Comment
-        </button>
-        <button class="sprinkle-btn sprinkle-btn--secondary action-btn" data-action="defer" data-id="${item.id}">
-          <i data-lucide="clock" class="sprinkle-icon sm"></i> Defer
-        </button>
-        <span class="item-status-label ${statusLabel}">${statusLabel}</span>
-      </div>
-    </div>
-    <div class="comment-row" id="comment-row-${item.id}">
-      <div class="comment-inner">
-        <textarea class="comment-input" id="comment-input-${item.id}" placeholder="Add a comment…" rows="2"></textarea>
-        <button class="sprinkle-btn sprinkle-btn--primary send-comment-btn" data-id="${item.id}">
-          <i data-lucide="send" class="sprinkle-icon sm"></i>
-        </button>
-      </div>
-    </div>
-  `;
+  // Static structural HTML — no user-controlled values inlined.
+  div.innerHTML =
+    '<div class="item-main">' +
+      '<div class="item-header">' +
+        '<div class="status-dot"></div>' +
+        '<div class="item-title"></div>' +
+      '</div>' +
+      '<div class="item-links" hidden></div>' +
+      '<div class="item-actions">' +
+        '<button class="sprinkle-btn sprinkle-btn--positive action-btn" data-action="publish">' +
+          '<i data-lucide="check-circle" class="sprinkle-icon sm"></i> Publish' +
+        '</button>' +
+        '<button class="sprinkle-btn sprinkle-btn--notice action-btn" data-action="comment">' +
+          '<i data-lucide="message-circle" class="sprinkle-icon sm"></i> Comment' +
+        '</button>' +
+        '<button class="sprinkle-btn sprinkle-btn--secondary action-btn" data-action="defer">' +
+          '<i data-lucide="clock" class="sprinkle-icon sm"></i> Defer' +
+        '</button>' +
+        '<span class="item-status-label"></span>' +
+      '</div>' +
+    '</div>' +
+    '<div class="comment-row">' +
+      '<div class="comment-inner">' +
+        '<textarea class="comment-input" placeholder="Add a comment…" rows="2"></textarea>' +
+        '<button class="sprinkle-btn sprinkle-btn--primary send-comment-btn">' +
+          '<i data-lucide="send" class="sprinkle-icon sm"></i>' +
+        '</button>' +
+      '</div>' +
+    '</div>';
 
-  // Action buttons
+  const dot         = div.querySelector('.status-dot');
+  const titleEl     = div.querySelector('.item-title');
+  const linksEl     = div.querySelector('.item-links');
+  const labelEl     = div.querySelector('.item-status-label');
+  const commentRow  = div.querySelector('.comment-row');
+  const commentInput = div.querySelector('.comment-input');
+
+  // User-controlled values — assigned via safe APIs (textContent / element props).
+  dot.classList.add(statusLabel);
+  titleEl.textContent = item.title || item.id || '';
+
+  if (item.previewUrl && isSafeUrl(item.previewUrl)) {
+    linksEl.appendChild(makeIconLink(item.previewUrl, 'eye', 'Preview'));
+  }
+  if (item.liveUrl && isSafeUrl(item.liveUrl)) {
+    linksEl.appendChild(makeIconLink(item.liveUrl, 'external-link', 'Live'));
+  }
+  if (item.path) {
+    const reviewLink = document.createElement('a');
+    reviewLink.className = 'item-link';
+    reviewLink.href = '#';
+    reviewLink.innerHTML = '<i data-lucide="file-text" class="sprinkle-icon sm"></i>';
+    reviewLink.appendChild(document.createTextNode('Review'));
+    reviewLink.addEventListener('click', (e) => {
+      e.preventDefault();
+      openDocument(item.path, item.title || null);
+    });
+    linksEl.appendChild(reviewLink);
+  }
+  linksEl.hidden = linksEl.childNodes.length === 0;
+
+  labelEl.classList.add(statusLabel);
+  labelEl.textContent = statusLabel;
+
   div.querySelectorAll('.action-btn').forEach(btn => {
     btn.addEventListener('click', () => handleItemAction(btn.dataset.action, item.id));
   });
 
-  // Open doc links
-  div.querySelectorAll('.open-doc-link').forEach(link => {
-    link.addEventListener('click', (e) => {
-      e.preventDefault();
-      openDocument(link.dataset.path, link.dataset.title || null);
-    });
-  });
-
-  // Send comment
   div.querySelector('.send-comment-btn').addEventListener('click', () => {
-    const input = document.getElementById(`comment-input-${item.id}`);
-    const comment = input.value.trim();
+    const comment = commentInput.value.trim();
     if (!comment) return;
-    slicc.lick({ action: 'comment', data: { id: item.id, path: item.path, url: item.liveUrl || item.previewUrl || '', comment } });
-    input.value = '';
-    collapseComment(item.id);
+    slicc.lick({
+      action: 'comment',
+      data: { id: item.id, path: item.path, url: item.liveUrl || item.previewUrl || '', comment }
+    });
+    commentInput.value = '';
+    commentRow.classList.remove('open');
   });
 
+  cardElements.set(item.id, { card: div, dot, label: labelEl, commentRow, commentInput });
   return div;
 }
 
@@ -865,15 +995,24 @@ function handleItemAction(action, id) {
   const item = state.items.find(i => i.id === id);
   if (!item) return;
 
-  if (action === 'publish') {
-    updateItemStatus(id, 'published');
-    slicc.lick({ action: 'publish', data: { id, path: item.path, url: item.liveUrl || item.previewUrl || '' } });
-  } else if (action === 'defer') {
-    updateItemStatus(id, 'deferred');
-    slicc.lick({ action: 'defer', data: { id, path: item.path, url: item.liveUrl || item.previewUrl || '' } });
+  if (action === 'publish' || action === 'defer') {
+    // Mark as in-flight; the cone is expected to confirm via `update-status`.
+    setItemActing(id, true);
+    slicc.lick({
+      action,
+      data: { id, path: item.path, url: item.liveUrl || item.previewUrl || '' }
+    });
   } else if (action === 'comment') {
     toggleComment(id);
   }
+}
+
+function setItemActing(id, acting) {
+  const el = cardElements.get(id);
+  if (!el) return;
+  el.card.classList.toggle('acting', acting);
+  el.dot.classList.toggle('acting', acting);
+  el.card.querySelectorAll('.action-btn').forEach(b => { b.disabled = acting; });
 }
 
 function updateItemStatus(id, status) {
@@ -882,22 +1021,17 @@ function updateItemStatus(id, status) {
   item.status = status;
   saveState();
 
-  // Update dot
-  const dot = document.getElementById(`dot-${id}`);
-  if (dot) {
-    dot.className = `status-dot ${status}`;
-    dot.classList.add('animating');
-    setTimeout(() => dot.classList.remove('animating'), 400);
-  }
+  const el = cardElements.get(id);
+  if (el) {
+    el.card.classList.remove('acting');
+    el.card.querySelectorAll('.action-btn').forEach(b => { b.disabled = false; });
 
-  // Update status label
-  const card = document.querySelector(`.queue-item[data-id="${id}"]`);
-  if (card) {
-    const label = card.querySelector('.item-status-label');
-    if (label) {
-      label.className = `item-status-label ${status}`;
-      label.textContent = status;
-    }
+    el.dot.className = `status-dot ${status}`;
+    el.dot.classList.add('animating');
+    setTimeout(() => el.dot.classList.remove('animating'), 400);
+
+    el.label.className = `item-status-label ${status}`;
+    el.label.textContent = status;
   }
 
   // Update pending badge
@@ -908,36 +1042,37 @@ function updateItemStatus(id, status) {
 }
 
 function toggleComment(id) {
-  const row = document.getElementById(`comment-row-${id}`);
-  if (!row) return;
-  const isOpen = row.classList.contains('open');
-  // Close all others
-  document.querySelectorAll('.comment-row.open').forEach(r => r.classList.remove('open'));
+  const target = cardElements.get(id);
+  if (!target) return;
+  const isOpen = target.commentRow.classList.contains('open');
+  cardElements.forEach(({ commentRow }) => commentRow.classList.remove('open'));
   if (!isOpen) {
-    row.classList.add('open');
-    setTimeout(() => document.getElementById(`comment-input-${id}`)?.focus(), 50);
+    target.commentRow.classList.add('open');
+    setTimeout(() => target.commentInput.focus(), 50);
   }
-}
-
-function collapseComment(id) {
-  document.getElementById(`comment-row-${id}`)?.classList.remove('open');
 }
 
 // ═══════════════════════════════════════════════════
 //  DOCUMENT VIEW
 // ═══════════════════════════════════════════════════
 async function openDocument(path, title) {
+  // Only reset annotations when switching to a *different* document.
+  // Re-opening the same path (e.g. on session restore) preserves them.
+  const isNewDoc = state.docPath !== path;
   state.docPath = path;
   state.docTitle = title || path.split('/').pop();
-  state.annotations = [];
+  if (isNewDoc) {
+    state.annotations = [];
+  }
   saveState();
 
+  const docContent = document.getElementById('doc-content');
   document.getElementById('doc-filename').textContent = state.docTitle;
-  document.getElementById('doc-content').innerHTML = `
-    <div class="doc-loading">
-      <i data-lucide="loader" class="sprinkle-icon spin" style="width:24px;height:24px"></i>
-      <span class="sprinkle-detail">Loading…</span>
-    </div>`;
+  docContent.innerHTML =
+    '<div class="doc-loading">' +
+      '<i data-lucide="loader" class="sprinkle-icon spin" style="width:24px;height:24px"></i>' +
+      '<span class="sprinkle-detail">Loading…</span>' +
+    '</div>';
   renderAnnotationsList();
   updateSubmitBtn();
   showView('document');
@@ -946,14 +1081,22 @@ async function openDocument(path, title) {
     const raw = await slicc.readFile(path);
     let html;
     if (path.endsWith('.html') || path.endsWith('.htm')) {
-      html = /<!DOCTYPE|<html/i.test(raw) ? extractBody(raw) : raw;
+      const body = /<!DOCTYPE|<html/i.test(raw) ? extractBody(raw) : raw;
+      html = sanitizeHtml(body);
     } else {
       html = mdToHtml(raw);
     }
-    document.getElementById('doc-content').innerHTML = html;
+    docContent.innerHTML = html;
   } catch (err) {
-    document.getElementById('doc-content').innerHTML =
-      `<div class="doc-loading"><i data-lucide="alert-circle" class="sprinkle-icon" style="width:24px;height:24px;color:var(--s2-negative)"></i><span class="sprinkle-detail">Failed to load: ${err.message || err}</span></div>`;
+    docContent.innerHTML = '';
+    const wrap = document.createElement('div');
+    wrap.className = 'doc-loading';
+    wrap.innerHTML = '<i data-lucide="alert-circle" class="sprinkle-icon" style="width:24px;height:24px;color:var(--s2-negative)"></i>';
+    const span = document.createElement('span');
+    span.className = 'sprinkle-detail';
+    span.textContent = 'Failed to load: ' + ((err && err.message) ? err.message : String(err));
+    wrap.appendChild(span);
+    docContent.appendChild(wrap);
   }
   renderIcons();
 }
@@ -990,16 +1133,19 @@ function showPopup(rect, text) {
   document.getElementById('annotation-note').value = '';
   popup.classList.add('visible');
 
-  // Position: above selection, horizontally centered
-  const pw = 260;
-  let left = rect.left + rect.width / 2 - pw / 2;
-  let top  = rect.top - popup.offsetHeight - 8;
-  if (left < 4) left = 4;
-  if (left + pw > window.innerWidth - 4) left = window.innerWidth - pw - 4;
-  if (top < 4) top = rect.bottom + 8;
-
-  popup.style.left = left + 'px';
-  popup.style.top  = top  + 'px';
+  // Position after layout has settled — reading offsetHeight on the same
+  // frame we toggled `display: flex` returns 0 on the very first reveal.
+  requestAnimationFrame(() => {
+    const pw = popup.offsetWidth || 260;
+    const ph = popup.offsetHeight;
+    let left = rect.left + rect.width / 2 - pw / 2;
+    let top  = rect.top - ph - 8;
+    if (left < 4) left = 4;
+    if (left + pw > window.innerWidth - 4) left = window.innerWidth - pw - 4;
+    if (top < 4) top = rect.bottom + 8;
+    popup.style.left = left + 'px';
+    popup.style.top  = top  + 'px';
+  });
   setTimeout(() => document.getElementById('annotation-note').focus(), 60);
   renderIcons();
 }
@@ -1045,14 +1191,15 @@ function renderAnnotationsList() {
   state.annotations.forEach((ann, idx) => {
     const item = document.createElement('div');
     item.className = 'annotation-item';
-    item.innerHTML = `
-      <div class="annotation-body">
-        <div class="annotation-selected sprinkle-detail">"${ann.text.length > 60 ? ann.text.slice(0, 60) + '…' : ann.text}"</div>
-        <div class="annotation-note-text sprinkle-body">${escHtml(ann.note)}</div>
-      </div>
-      <button class="annotation-remove" data-idx="${idx}" title="Remove annotation">
-        <i data-lucide="x" class="sprinkle-icon sm"></i>
-      </button>`;
+    const truncated = ann.text.length > 60 ? ann.text.slice(0, 60) + '…' : ann.text;
+    item.innerHTML =
+      '<div class="annotation-body">' +
+        '<div class="annotation-selected sprinkle-detail">"' + escHtml(truncated) + '"</div>' +
+        '<div class="annotation-note-text sprinkle-body">' + escHtml(ann.note) + '</div>' +
+      '</div>' +
+      '<button class="annotation-remove" title="Remove annotation">' +
+        '<i data-lucide="x" class="sprinkle-icon sm"></i>' +
+      '</button>';
     item.querySelector('.annotation-remove').addEventListener('click', () => removeAnnotation(idx));
     list.appendChild(item);
   });
