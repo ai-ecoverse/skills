@@ -1,0 +1,1306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Review</title>
+  <link rel="icon" href="clipboard-check" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: var(--s2-font-family, system-ui, sans-serif);
+      background: var(--s2-bg-base);
+      color: var(--s2-fg);
+      font-size: 13px;
+      line-height: 1.5;
+      overflow-x: hidden;
+    }
+
+    /* ── Layout shells ── */
+    #app {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* ── Views ── */
+    .view {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      transition: opacity 0.22s ease, transform 0.22s ease;
+    }
+    .view.hidden {
+      opacity: 0;
+      pointer-events: none;
+      transform: translateX(20px);
+    }
+    .view.visible {
+      opacity: 1;
+      pointer-events: auto;
+      transform: translateX(0);
+    }
+
+    /* ── Top bar ── */
+    .top-bar {
+      display: flex;
+      align-items: center;
+      gap: var(--s2-spacing-100, 8px);
+      padding: 10px var(--s2-spacing-200, 12px);
+      background: var(--s2-bg-elevated);
+      border-bottom: 1px solid color-mix(in srgb, var(--s2-fg) 8%, transparent);
+      flex-shrink: 0;
+      min-height: 44px;
+    }
+    .top-bar-title {
+      font-weight: 600;
+      font-size: 13px;
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: var(--s2-fg);
+    }
+    .top-bar-meta {
+      font-size: 11px;
+      color: var(--s2-color-detail, rgba(128,128,128,0.8));
+    }
+
+    /* ── Pill badge ── */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 18px;
+      height: 18px;
+      padding: 0 5px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 700;
+      background: color-mix(in srgb, var(--s2-accent) 15%, transparent);
+      color: var(--s2-accent);
+      line-height: 1;
+      flex-shrink: 0;
+    }
+    .badge.zero { display: none; }
+
+    /* ── Buttons ── */
+    .sprinkle-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      border-radius: var(--s2-radius-pill, 999px);
+      border: none;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 500;
+      padding: 5px 11px;
+      transition: opacity 0.15s, background 0.15s, box-shadow 0.15s;
+      white-space: nowrap;
+      line-height: 1.3;
+    }
+    .sprinkle-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    .sprinkle-btn--primary {
+      background: var(--s2-accent);
+      color: var(--s2-bg-base);
+    }
+    .sprinkle-btn--primary:not(:disabled):hover { opacity: 0.88; }
+    .sprinkle-btn--secondary {
+      background: color-mix(in srgb, var(--s2-fg) 8%, transparent);
+      color: var(--s2-fg);
+    }
+    .sprinkle-btn--secondary:not(:disabled):hover {
+      background: color-mix(in srgb, var(--s2-fg) 14%, transparent);
+    }
+    .sprinkle-btn--positive {
+      background: color-mix(in srgb, var(--s2-positive) 12%, transparent);
+      color: var(--s2-positive);
+    }
+    .sprinkle-btn--positive:not(:disabled):hover {
+      background: color-mix(in srgb, var(--s2-positive) 22%, transparent);
+    }
+    .sprinkle-btn--notice {
+      background: color-mix(in srgb, var(--s2-notice) 12%, transparent);
+      color: var(--s2-notice);
+    }
+    .sprinkle-btn--notice:not(:disabled):hover {
+      background: color-mix(in srgb, var(--s2-notice) 22%, transparent);
+    }
+    .sprinkle-btn--negative {
+      background: color-mix(in srgb, var(--s2-negative) 12%, transparent);
+      color: var(--s2-negative);
+    }
+    .sprinkle-btn--negative:not(:disabled):hover {
+      background: color-mix(in srgb, var(--s2-negative) 22%, transparent);
+    }
+    .sprinkle-btn--ghost {
+      background: transparent;
+      color: var(--s2-fg-secondary, var(--s2-fg));
+      padding: 4px 6px;
+    }
+    .sprinkle-btn--ghost:not(:disabled):hover {
+      background: color-mix(in srgb, var(--s2-fg) 8%, transparent);
+    }
+    .sprinkle-btn--icon {
+      padding: 5px;
+      min-width: 28px;
+      min-height: 28px;
+    }
+
+    /* ── Icons ── */
+    .sprinkle-icon {
+      width: 14px;
+      height: 14px;
+      stroke-width: 2;
+      flex-shrink: 0;
+    }
+    .sprinkle-icon.sm { width: 12px; height: 12px; }
+    .sprinkle-icon.lg { width: 16px; height: 16px; }
+
+    /* ── Typography ── */
+    .sprinkle-heading {
+      font-weight: 600;
+      font-size: 13px;
+      color: var(--s2-fg);
+    }
+    .sprinkle-body {
+      font-size: 13px;
+      color: var(--s2-fg);
+    }
+    .sprinkle-detail {
+      font-size: 11px;
+      color: var(--s2-color-detail, rgba(128,128,128,0.8));
+    }
+
+    /* ══════════════════════════════════
+       QUEUE VIEW
+    ══════════════════════════════════ */
+    #queue-view {
+      overflow: hidden;
+    }
+    #queue-scroll {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    #queue-scroll::-webkit-scrollbar { width: 4px; }
+    #queue-scroll::-webkit-scrollbar-track { background: transparent; }
+    #queue-scroll::-webkit-scrollbar-thumb {
+      background: color-mix(in srgb, var(--s2-fg) 15%, transparent);
+      border-radius: 2px;
+    }
+
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 40px 20px;
+      color: var(--s2-fg-secondary, var(--s2-fg));
+      opacity: 0.5;
+      text-align: center;
+    }
+    .empty-state .sprinkle-icon { width: 32px; height: 32px; opacity: 0.4; }
+
+    /* ── Queue item card ── */
+    .queue-item {
+      background: var(--s2-bg-elevated);
+      border-radius: var(--s2-radius-default, 8px);
+      box-shadow: var(--s2-shadow-container);
+      overflow: hidden;
+      transition: box-shadow 0.15s;
+    }
+    .queue-item:hover { box-shadow: var(--s2-shadow-elevated); }
+
+    .item-main {
+      padding: 10px 12px 8px;
+    }
+    .item-header {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+
+    /* Status dot */
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      margin-top: 4px;
+      transition: background 0.4s ease;
+    }
+    .status-dot.pending  { background: var(--s2-notice); box-shadow: 0 0 0 2px color-mix(in srgb, var(--s2-notice) 20%, transparent); }
+    .status-dot.published { background: var(--s2-positive); box-shadow: 0 0 0 2px color-mix(in srgb, var(--s2-positive) 20%, transparent); }
+    .status-dot.deferred { background: color-mix(in srgb, var(--s2-fg) 35%, transparent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--s2-fg) 8%, transparent); }
+
+    .item-title {
+      font-weight: 600;
+      font-size: 12.5px;
+      flex: 1;
+      color: var(--s2-fg);
+      line-height: 1.35;
+    }
+
+    .item-links {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 8px;
+      flex-wrap: wrap;
+    }
+    .item-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      color: var(--s2-accent);
+      text-decoration: none;
+      padding: 2px 6px;
+      border-radius: var(--s2-radius-pill, 999px);
+      background: color-mix(in srgb, var(--s2-accent) 8%, transparent);
+      transition: background 0.15s;
+    }
+    .item-link:hover { background: color-mix(in srgb, var(--s2-accent) 16%, transparent); }
+
+    .item-actions {
+      display: flex;
+      gap: 5px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .item-status-label {
+      margin-left: auto;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 2px 7px;
+      border-radius: var(--s2-radius-pill, 999px);
+    }
+    .item-status-label.pending {
+      background: color-mix(in srgb, var(--s2-notice) 10%, transparent);
+      color: var(--s2-notice);
+    }
+    .item-status-label.published {
+      background: color-mix(in srgb, var(--s2-positive) 10%, transparent);
+      color: var(--s2-positive);
+    }
+    .item-status-label.deferred {
+      background: color-mix(in srgb, var(--s2-fg) 8%, transparent);
+      color: var(--s2-fg-secondary, var(--s2-fg));
+    }
+
+    /* Comment expand */
+    .comment-row {
+      overflow: hidden;
+      max-height: 0;
+      transition: max-height 0.25s ease, padding 0.25s ease;
+      padding: 0 12px;
+      background: color-mix(in srgb, var(--s2-bg-layer-1, var(--s2-bg-base)) 60%, transparent);
+    }
+    .comment-row.open {
+      max-height: 90px;
+      padding: 8px 12px;
+    }
+    .comment-inner {
+      display: flex;
+      gap: 6px;
+      align-items: flex-end;
+    }
+    .comment-input {
+      flex: 1;
+      background: var(--s2-bg-base);
+      border: 1px solid color-mix(in srgb, var(--s2-fg) 12%, transparent);
+      border-radius: var(--s2-radius-default, 8px);
+      color: var(--s2-fg);
+      font-family: inherit;
+      font-size: 12px;
+      padding: 6px 9px;
+      resize: none;
+      height: 54px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .comment-input:focus {
+      border-color: var(--s2-accent);
+    }
+
+    /* ══════════════════════════════════
+       DOCUMENT VIEW
+    ══════════════════════════════════ */
+    #doc-view {
+      overflow: hidden;
+    }
+
+    #doc-scroll {
+      flex: 1;
+      overflow-y: auto;
+      padding: 14px 14px 80px;
+    }
+    #doc-scroll::-webkit-scrollbar { width: 4px; }
+    #doc-scroll::-webkit-scrollbar-track { background: transparent; }
+    #doc-scroll::-webkit-scrollbar-thumb {
+      background: color-mix(in srgb, var(--s2-fg) 15%, transparent);
+      border-radius: 2px;
+    }
+
+    /* Doc rendered content */
+    #doc-content {
+      line-height: 1.65;
+      font-size: 13px;
+      color: var(--s2-fg);
+    }
+    #doc-content h1 { font-size: 1.4em; font-weight: 700; margin: 0 0 0.6em; line-height: 1.25; }
+    #doc-content h2 { font-size: 1.2em; font-weight: 700; margin: 1.1em 0 0.45em; }
+    #doc-content h3 { font-size: 1.05em; font-weight: 600; margin: 1em 0 0.4em; }
+    #doc-content h4, #doc-content h5, #doc-content h6 { font-size: 0.95em; font-weight: 600; margin: 0.9em 0 0.35em; }
+    #doc-content p { margin: 0 0 0.75em; }
+    #doc-content ul, #doc-content ol { margin: 0 0 0.75em 1.3em; }
+    #doc-content li { margin-bottom: 0.25em; }
+    #doc-content code {
+      font-family: ui-monospace, 'Fira Code', monospace;
+      font-size: 0.88em;
+      background: color-mix(in srgb, var(--s2-fg) 8%, transparent);
+      padding: 1px 5px;
+      border-radius: 4px;
+    }
+    #doc-content pre {
+      background: color-mix(in srgb, var(--s2-fg) 6%, transparent);
+      border: 1px solid color-mix(in srgb, var(--s2-fg) 10%, transparent);
+      border-radius: var(--s2-radius-default, 8px);
+      padding: 10px 12px;
+      overflow-x: auto;
+      margin: 0 0 0.75em;
+    }
+    #doc-content pre code { background: none; padding: 0; }
+    #doc-content a { color: var(--s2-accent); text-decoration: underline; }
+    #doc-content hr {
+      border: none;
+      border-top: 1px solid color-mix(in srgb, var(--s2-fg) 12%, transparent);
+      margin: 1em 0;
+    }
+    #doc-content blockquote {
+      border-left: 3px solid var(--s2-accent);
+      padding-left: 10px;
+      margin: 0 0 0.75em;
+      color: var(--s2-fg-secondary, var(--s2-fg));
+      opacity: 0.85;
+    }
+    #doc-content strong { font-weight: 700; }
+    #doc-content em { font-style: italic; }
+
+    /* Text highlight from selection */
+    .doc-highlight {
+      background: color-mix(in srgb, var(--s2-accent) 22%, transparent);
+      border-radius: 2px;
+      cursor: pointer;
+    }
+
+    /* ── Annotation popup ── */
+    #annotation-popup {
+      position: fixed;
+      z-index: 1000;
+      background: var(--s2-bg-elevated);
+      border: 1px solid color-mix(in srgb, var(--s2-fg) 12%, transparent);
+      border-radius: var(--s2-radius-l, 10px);
+      box-shadow: var(--s2-shadow-elevated);
+      padding: 10px;
+      width: 260px;
+      display: none;
+      flex-direction: column;
+      gap: 7px;
+      transition: opacity 0.15s;
+    }
+    #annotation-popup.visible { display: flex; }
+    #annotation-popup-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--s2-fg-secondary, var(--s2-fg));
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    #annotation-selected-text {
+      font-size: 11px;
+      color: var(--s2-fg);
+      background: color-mix(in srgb, var(--s2-accent) 8%, transparent);
+      border-radius: 5px;
+      padding: 5px 7px;
+      max-height: 48px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+    }
+    #annotation-note {
+      background: var(--s2-bg-base);
+      border: 1px solid color-mix(in srgb, var(--s2-fg) 12%, transparent);
+      border-radius: var(--s2-radius-default, 8px);
+      color: var(--s2-fg);
+      font-family: inherit;
+      font-size: 12px;
+      padding: 6px 8px;
+      resize: none;
+      height: 56px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    #annotation-note:focus { border-color: var(--s2-accent); }
+    #annotation-note::placeholder { color: color-mix(in srgb, var(--s2-fg) 35%, transparent); }
+    .popup-actions { display: flex; gap: 6px; }
+
+    /* ── Annotations list ── */
+    #annotations-section {
+      flex-shrink: 0;
+      border-top: 1px solid color-mix(in srgb, var(--s2-fg) 8%, transparent);
+      background: var(--s2-bg-elevated);
+    }
+    .annotations-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 12px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .annotations-header:hover { background: color-mix(in srgb, var(--s2-fg) 4%, transparent); }
+    .annotations-title {
+      font-size: 12px;
+      font-weight: 600;
+      flex: 1;
+      color: var(--s2-fg);
+    }
+    .annotations-chevron {
+      transition: transform 0.2s;
+      color: var(--s2-fg-secondary, var(--s2-fg));
+    }
+    .annotations-chevron.open { transform: rotate(180deg); }
+    #annotations-list {
+      overflow: hidden;
+      max-height: 0;
+      transition: max-height 0.3s ease;
+    }
+    #annotations-list.open { max-height: 300px; overflow-y: auto; }
+    #annotations-list::-webkit-scrollbar { width: 3px; }
+    #annotations-list::-webkit-scrollbar-thumb {
+      background: color-mix(in srgb, var(--s2-fg) 15%, transparent);
+      border-radius: 2px;
+    }
+
+    .annotation-item {
+      padding: 7px 12px;
+      border-top: 1px solid color-mix(in srgb, var(--s2-fg) 6%, transparent);
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+    }
+    .annotation-body { flex: 1; min-width: 0; }
+    .annotation-selected {
+      font-size: 10.5px;
+      color: var(--s2-fg-secondary, var(--s2-fg));
+      background: color-mix(in srgb, var(--s2-accent) 8%, transparent);
+      border-radius: 4px;
+      padding: 2px 6px;
+      margin-bottom: 3px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .annotation-note-text {
+      font-size: 12px;
+      color: var(--s2-fg);
+    }
+    .annotation-remove {
+      color: var(--s2-negative);
+      opacity: 0.6;
+      cursor: pointer;
+      flex-shrink: 0;
+      background: none;
+      border: none;
+      padding: 2px;
+      display: flex;
+      border-radius: 4px;
+      transition: opacity 0.15s, background 0.15s;
+    }
+    .annotation-remove:hover { opacity: 1; background: color-mix(in srgb, var(--s2-negative) 10%, transparent); }
+
+    /* Submit row */
+    #submit-row {
+      padding: 8px 12px 10px;
+      background: var(--s2-bg-elevated);
+      border-top: 1px solid color-mix(in srgb, var(--s2-fg) 8%, transparent);
+      flex-shrink: 0;
+    }
+
+    /* ── Loading state ── */
+    .doc-loading {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 40px;
+      color: var(--s2-fg-secondary, var(--s2-fg));
+      opacity: 0.6;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spin { animation: spin 1s linear infinite; display: inline-block; }
+
+    /* ── Dot pulse animation ── */
+    @keyframes dotPulse {
+      0% { transform: scale(1); }
+      50% { transform: scale(1.5); }
+      100% { transform: scale(1); }
+    }
+    .status-dot.animating { animation: dotPulse 0.4s ease; }
+
+    /* ── Acting (in-flight) state ── */
+    @keyframes dotBlink {
+      0%, 100% { opacity: 0.45; }
+      50%      { opacity: 1; }
+    }
+    .status-dot.acting {
+      background: color-mix(in srgb, var(--s2-accent) 60%, transparent);
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--s2-accent) 18%, transparent);
+      animation: dotBlink 1s ease-in-out infinite;
+    }
+    .queue-item.acting { opacity: 0.85; }
+  </style>
+</head>
+<body>
+<div id="app">
+  <!-- ════════════════════════════
+       QUEUE VIEW
+  ════════════════════════════ -->
+  <div id="queue-view" class="view hidden">
+    <div class="top-bar">
+      <i data-lucide="clipboard-list" class="sprinkle-icon lg"></i>
+      <span class="top-bar-title sprinkle-heading">Review Queue</span>
+      <span id="queue-count-badge" class="badge zero">0</span>
+    </div>
+    <div id="queue-scroll">
+      <div class="empty-state" id="empty-state">
+        <i data-lucide="inbox" class="sprinkle-icon"></i>
+        <span class="sprinkle-detail">No items in the queue</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════
+       DOCUMENT VIEW
+  ════════════════════════════ -->
+  <div id="doc-view" class="view hidden">
+    <div class="top-bar">
+      <button class="sprinkle-btn sprinkle-btn--ghost sprinkle-btn--icon" id="back-btn" title="Back to queue">
+        <i data-lucide="arrow-left" class="sprinkle-icon"></i>
+      </button>
+      <span class="top-bar-title sprinkle-detail" id="doc-filename">document.md</span>
+    </div>
+
+    <div id="doc-scroll">
+      <div id="doc-content"></div>
+    </div>
+
+    <!-- Annotations panel -->
+    <div id="annotations-section">
+      <div class="annotations-header" id="annotations-toggle">
+        <i data-lucide="message-square-text" class="sprinkle-icon sm"></i>
+        <span class="annotations-title">Annotations</span>
+        <span id="ann-count-badge" class="badge zero">0</span>
+        <i data-lucide="chevron-up" class="sprinkle-icon sm annotations-chevron" id="ann-chevron"></i>
+      </div>
+      <div id="annotations-list"></div>
+    </div>
+
+    <div id="submit-row">
+      <button class="sprinkle-btn sprinkle-btn--primary" id="submit-btn" style="width:100%" disabled>
+        <i data-lucide="send" class="sprinkle-icon"></i>
+        Submit Revisions
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Annotation popup ── -->
+<div id="annotation-popup">
+  <div id="annotation-popup-label">Add annotation</div>
+  <div id="annotation-selected-text"></div>
+  <textarea id="annotation-note" placeholder="Enter your revision note…"></textarea>
+  <div class="popup-actions">
+    <button class="sprinkle-btn sprinkle-btn--primary" id="popup-save-btn" style="flex:1">
+      <i data-lucide="check" class="sprinkle-icon"></i> Save
+    </button>
+    <button class="sprinkle-btn sprinkle-btn--secondary" id="popup-cancel-btn">
+      Cancel
+    </button>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════
+//  ESCAPING / URL HELPERS
+// ═══════════════════════════════════════════════════
+function escHtml(str) {
+  return String(str ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function escAttr(str) {
+  return String(str ?? '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+}
+function isSafeUrl(url) {
+  return /^(https?:|mailto:|#|\/)/i.test(String(url || '').trim());
+}
+
+// ═══════════════════════════════════════════════════
+//  MARKDOWN → HTML CONVERTER (escape-first; safe against
+//  raw HTML / event handlers / javascript: URLs in source)
+// ═══════════════════════════════════════════════════
+const MD_SENT = ''; // SOH — won't appear in markdown source
+
+function mdToHtml(md) {
+  // Normalize line endings
+  md = String(md ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+  // Extract fenced code blocks to sentinel placeholders (escaped now, restored at end)
+  const codeBlocks = [];
+  md = md.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+    const i = codeBlocks.length;
+    codeBlocks.push(
+      '<pre><code class="lang-' + escAttr(lang) + '">' +
+      escHtml(code.replace(/\n$/, '')) +
+      '</code></pre>'
+    );
+    return MD_SENT + 'CB' + i + MD_SENT;
+  });
+
+  // Extract inline code to sentinel placeholders
+  const inlineCode = [];
+  md = md.replace(/`([^`\n]+)`/g, (_, code) => {
+    const i = inlineCode.length;
+    inlineCode.push('<code>' + escHtml(code) + '</code>');
+    return MD_SENT + 'IC' + i + MD_SENT;
+  });
+
+  // Escape ALL remaining markup (raw HTML in source becomes inert text)
+  let html = escHtml(md);
+
+  // Horizontal rules
+  html = html.replace(/^---+$/gm, '<hr>');
+
+  // Headings
+  html = html.replace(/^######\s+(.+)$/gm, '<h6>$1</h6>');
+  html = html.replace(/^#####\s+(.+)$/gm,  '<h5>$1</h5>');
+  html = html.replace(/^####\s+(.+)$/gm,   '<h4>$1</h4>');
+  html = html.replace(/^###\s+(.+)$/gm,    '<h3>$1</h3>');
+  html = html.replace(/^##\s+(.+)$/gm,     '<h2>$1</h2>');
+  html = html.replace(/^#\s+(.+)$/gm,      '<h1>$1</h1>');
+
+  // Blockquotes (note: '>' was escaped to '&gt;')
+  html = html.replace(/^&gt;\s+(.+)$/gm, '<blockquote>$1</blockquote>');
+
+  // Unordered lists — group consecutive items
+  html = html.replace(/((?:^[ \t]*[-*+]\s+.+\n?)+)/gm, (block) => {
+    const items = block.match(/^[ \t]*[-*+]\s+(.+)$/gm) || [];
+    return '<ul>' + items.map(i => `<li>${i.replace(/^[ \t]*[-*+]\s+/, '')}</li>`).join('') + '</ul>';
+  });
+
+  // Ordered lists
+  html = html.replace(/((?:^\d+\.\s+.+\n?)+)/gm, (block) => {
+    const items = block.match(/^\d+\.\s+(.+)$/gm) || [];
+    return '<ol>' + items.map(i => `<li>${i.replace(/^\d+\.\s+/, '')}</li>`).join('') + '</ol>';
+  });
+
+  // Bold + italic
+  html = html.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\*(.+?)\*/g,     '<em>$1</em>');
+  html = html.replace(/__(.+?)__/g,     '<strong>$1</strong>');
+  html = html.replace(/_(.+?)_/g,       '<em>$1</em>');
+
+  // Links — protocol whitelist; unsafe URLs render as plain label
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => {
+    if (isSafeUrl(url)) {
+      return '<a href="' + escAttr(url) + '" target="_blank" rel="noopener noreferrer">' + label + '</a>';
+    }
+    return label;
+  });
+
+  // Restore inline code BEFORE paragraph wrap (so they stay inline)
+  const inlineRe = new RegExp(MD_SENT + 'IC(\\d+)' + MD_SENT, 'g');
+  html = html.replace(inlineRe, (_, i) => inlineCode[+i] ?? '');
+
+  // Paragraphs — wrap non-tagged lines; sentinel-only lines stay block-level
+  const cbLineRe = new RegExp('^' + MD_SENT + 'CB\\d+' + MD_SENT + '$');
+  const lines = html.split('\n');
+  const out = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) { out.push(''); continue; }
+    if (cbLineRe.test(trimmed)) { out.push(trimmed); continue; }
+    if (/^<(h[1-6]|ul|ol|li|hr|blockquote|pre|p)/.test(trimmed)) {
+      out.push(trimmed);
+    } else {
+      out.push(`<p>${trimmed}</p>`);
+    }
+  }
+  let result = out.join('\n');
+
+  // Restore fenced code blocks last
+  const cbRe = new RegExp(MD_SENT + 'CB(\\d+)' + MD_SENT, 'g');
+  result = result.replace(cbRe, (_, i) => codeBlocks[+i] ?? '');
+
+  return result;
+}
+
+// ═══════════════════════════════════════════════════
+//  HTML SANITIZER (for .html/.htm document content)
+//  <template> parses content inertly — no images load,
+//  no scripts run. We strip dangerous tags + attrs
+//  before letting the cleaned tree touch a live DOM.
+// ═══════════════════════════════════════════════════
+const DANGEROUS_TAGS = new Set([
+  'script', 'iframe', 'object', 'embed', 'link', 'meta', 'style', 'base'
+]);
+const DANGEROUS_URL_RE = /^(javascript|data|vbscript):/i;
+
+function sanitizeHtml(html) {
+  const tpl = document.createElement('template');
+  tpl.innerHTML = String(html ?? '');
+  cleanNodes(tpl.content);
+  return tpl.innerHTML;
+}
+
+function cleanNodes(root) {
+  for (const node of Array.from(root.childNodes)) {
+    if (node.nodeType !== 1) continue;
+    const tag = node.tagName.toLowerCase();
+    if (DANGEROUS_TAGS.has(tag)) {
+      node.remove();
+      continue;
+    }
+    for (const attr of Array.from(node.attributes)) {
+      const name = attr.name.toLowerCase();
+      const val = attr.value || '';
+      if (name.startsWith('on')) {
+        node.removeAttribute(attr.name);
+      } else if ((name === 'href' || name === 'src' || name === 'xlink:href') && DANGEROUS_URL_RE.test(val.trim())) {
+        node.removeAttribute(attr.name);
+      } else if (name === 'srcdoc') {
+        node.removeAttribute(attr.name);
+      }
+    }
+    cleanNodes(node);
+  }
+}
+
+// Strip full HTML doc to body content
+function extractBody(html) {
+  const m = String(html ?? '').match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+  return m ? m[1] : html;
+}
+
+// ═══════════════════════════════════════════════════
+//  STATE
+// ═══════════════════════════════════════════════════
+let state = {
+  view: 'queue',            // 'queue' | 'document'
+  items: [],
+  docPath: null,
+  docTitle: null,
+  annotations: [],
+  annotationsOpen: false,
+};
+
+function loadState() {
+  const saved = slicc.getState();
+  if (saved && typeof saved === 'object') {
+    state = Object.assign(state, saved);
+  }
+}
+
+function saveState() {
+  slicc.setState({ ...state });
+}
+
+// ═══════════════════════════════════════════════════
+//  VIEW TRANSITIONS
+// ═══════════════════════════════════════════════════
+const queueView = document.getElementById('queue-view');
+const docView   = document.getElementById('doc-view');
+
+function showView(which) {
+  state.view = which;
+  saveState();
+  if (which === 'queue') {
+    queueView.classList.remove('hidden'); queueView.classList.add('visible');
+    docView.classList.remove('visible');  docView.classList.add('hidden');
+  } else {
+    docView.classList.remove('hidden');   docView.classList.add('visible');
+    queueView.classList.remove('visible'); queueView.classList.add('hidden');
+  }
+  renderIcons();
+}
+
+// ═══════════════════════════════════════════════════
+//  QUEUE RENDERING
+//
+//  Cards are built via DOM APIs so user-controlled
+//  fields (title, id, URLs) can never inject HTML or
+//  break attribute parsing. Live element refs live in
+//  cardElements, keyed by item.id — that avoids any
+//  CSS-selector or getElementById lookups against ids
+//  that may contain unsafe characters.
+// ═══════════════════════════════════════════════════
+const cardElements = new Map(); // id -> { card, dot, label, commentRow, commentInput }
+
+function renderQueue() {
+  const scroll = document.getElementById('queue-scroll');
+  const empty  = document.getElementById('empty-state');
+  const badge  = document.getElementById('queue-count-badge');
+  const pendingCount = state.items.filter(i => i.status === 'pending').length;
+  badge.textContent = pendingCount;
+  badge.className = 'badge' + (pendingCount === 0 ? ' zero' : '');
+
+  // Remove existing cards (keep empty state node)
+  [...scroll.querySelectorAll('.queue-item')].forEach(el => el.remove());
+  cardElements.clear();
+
+  if (state.items.length === 0) {
+    empty.style.display = 'flex';
+    return;
+  }
+  empty.style.display = 'none';
+
+  state.items.forEach(item => {
+    const card = createItemCard(item);
+    scroll.appendChild(card);
+  });
+  renderIcons();
+}
+
+function makeIconLink(href, icon, label) {
+  const a = document.createElement('a');
+  a.className = 'item-link';
+  a.href = href;
+  a.target = '_blank';
+  a.rel = 'noopener noreferrer';
+  // Icon is a constant string from us — safe to use innerHTML for the <i>.
+  a.innerHTML = '<i data-lucide="' + escAttr(icon) + '" class="sprinkle-icon sm"></i>';
+  a.appendChild(document.createTextNode(label));
+  return a;
+}
+
+function createItemCard(item) {
+  const div = document.createElement('div');
+  div.className = 'queue-item';
+
+  const statusLabel = item.status || 'pending';
+
+  // Static structural HTML — no user-controlled values inlined.
+  div.innerHTML =
+    '<div class="item-main">' +
+      '<div class="item-header">' +
+        '<div class="status-dot"></div>' +
+        '<div class="item-title"></div>' +
+      '</div>' +
+      '<div class="item-links" hidden></div>' +
+      '<div class="item-actions">' +
+        '<button class="sprinkle-btn sprinkle-btn--positive action-btn" data-action="publish">' +
+          '<i data-lucide="check-circle" class="sprinkle-icon sm"></i> Publish' +
+        '</button>' +
+        '<button class="sprinkle-btn sprinkle-btn--notice action-btn" data-action="comment">' +
+          '<i data-lucide="message-circle" class="sprinkle-icon sm"></i> Comment' +
+        '</button>' +
+        '<button class="sprinkle-btn sprinkle-btn--secondary action-btn" data-action="defer">' +
+          '<i data-lucide="clock" class="sprinkle-icon sm"></i> Defer' +
+        '</button>' +
+        '<span class="item-status-label"></span>' +
+      '</div>' +
+    '</div>' +
+    '<div class="comment-row">' +
+      '<div class="comment-inner">' +
+        '<textarea class="comment-input" placeholder="Add a comment…" rows="2"></textarea>' +
+        '<button class="sprinkle-btn sprinkle-btn--primary send-comment-btn">' +
+          '<i data-lucide="send" class="sprinkle-icon sm"></i>' +
+        '</button>' +
+      '</div>' +
+    '</div>';
+
+  const dot         = div.querySelector('.status-dot');
+  const titleEl     = div.querySelector('.item-title');
+  const linksEl     = div.querySelector('.item-links');
+  const labelEl     = div.querySelector('.item-status-label');
+  const commentRow  = div.querySelector('.comment-row');
+  const commentInput = div.querySelector('.comment-input');
+
+  // User-controlled values — assigned via safe APIs (textContent / element props).
+  dot.classList.add(statusLabel);
+  titleEl.textContent = item.title || item.id || '';
+
+  if (item.previewUrl && isSafeUrl(item.previewUrl)) {
+    linksEl.appendChild(makeIconLink(item.previewUrl, 'eye', 'Preview'));
+  }
+  if (item.liveUrl && isSafeUrl(item.liveUrl)) {
+    linksEl.appendChild(makeIconLink(item.liveUrl, 'external-link', 'Live'));
+  }
+  if (item.path) {
+    const reviewLink = document.createElement('a');
+    reviewLink.className = 'item-link';
+    reviewLink.href = '#';
+    reviewLink.innerHTML = '<i data-lucide="file-text" class="sprinkle-icon sm"></i>';
+    reviewLink.appendChild(document.createTextNode('Review'));
+    reviewLink.addEventListener('click', (e) => {
+      e.preventDefault();
+      openDocument(item.path, item.title || null);
+    });
+    linksEl.appendChild(reviewLink);
+  }
+  linksEl.hidden = linksEl.childNodes.length === 0;
+
+  labelEl.classList.add(statusLabel);
+  labelEl.textContent = statusLabel;
+
+  div.querySelectorAll('.action-btn').forEach(btn => {
+    btn.addEventListener('click', () => handleItemAction(btn.dataset.action, item.id));
+  });
+
+  div.querySelector('.send-comment-btn').addEventListener('click', () => {
+    const comment = commentInput.value.trim();
+    if (!comment) return;
+    slicc.lick({
+      action: 'comment',
+      data: { id: item.id, path: item.path, url: item.liveUrl || item.previewUrl || '', comment }
+    });
+    commentInput.value = '';
+    commentRow.classList.remove('open');
+  });
+
+  cardElements.set(item.id, { card: div, dot, label: labelEl, commentRow, commentInput });
+  return div;
+}
+
+function handleItemAction(action, id) {
+  const item = state.items.find(i => i.id === id);
+  if (!item) return;
+
+  if (action === 'publish' || action === 'defer') {
+    // Mark as in-flight; the cone is expected to confirm via `update-status`.
+    setItemActing(id, true);
+    slicc.lick({
+      action,
+      data: { id, path: item.path, url: item.liveUrl || item.previewUrl || '' }
+    });
+  } else if (action === 'comment') {
+    toggleComment(id);
+  }
+}
+
+function setItemActing(id, acting) {
+  const el = cardElements.get(id);
+  if (!el) return;
+  el.card.classList.toggle('acting', acting);
+  el.dot.classList.toggle('acting', acting);
+  el.card.querySelectorAll('.action-btn').forEach(b => { b.disabled = acting; });
+}
+
+function updateItemStatus(id, status) {
+  const item = state.items.find(i => i.id === id);
+  if (!item) return;
+  item.status = status;
+  saveState();
+
+  const el = cardElements.get(id);
+  if (el) {
+    el.card.classList.remove('acting');
+    el.card.querySelectorAll('.action-btn').forEach(b => { b.disabled = false; });
+
+    el.dot.className = `status-dot ${status}`;
+    el.dot.classList.add('animating');
+    setTimeout(() => el.dot.classList.remove('animating'), 400);
+
+    el.label.className = `item-status-label ${status}`;
+    el.label.textContent = status;
+  }
+
+  // Update pending badge
+  const pendingCount = state.items.filter(i => i.status === 'pending').length;
+  const badge = document.getElementById('queue-count-badge');
+  badge.textContent = pendingCount;
+  badge.className = 'badge' + (pendingCount === 0 ? ' zero' : '');
+}
+
+function toggleComment(id) {
+  const target = cardElements.get(id);
+  if (!target) return;
+  const isOpen = target.commentRow.classList.contains('open');
+  cardElements.forEach(({ commentRow }) => commentRow.classList.remove('open'));
+  if (!isOpen) {
+    target.commentRow.classList.add('open');
+    setTimeout(() => target.commentInput.focus(), 50);
+  }
+}
+
+// ═══════════════════════════════════════════════════
+//  DOCUMENT VIEW
+// ═══════════════════════════════════════════════════
+async function openDocument(path, title) {
+  // Only reset annotations when switching to a *different* document.
+  // Re-opening the same path (e.g. on session restore) preserves them.
+  const isNewDoc = state.docPath !== path;
+  state.docPath = path;
+  state.docTitle = title || path.split('/').pop();
+  if (isNewDoc) {
+    state.annotations = [];
+  }
+  saveState();
+
+  const docContent = document.getElementById('doc-content');
+  document.getElementById('doc-filename').textContent = state.docTitle;
+  docContent.innerHTML =
+    '<div class="doc-loading">' +
+      '<i data-lucide="loader" class="sprinkle-icon spin" style="width:24px;height:24px"></i>' +
+      '<span class="sprinkle-detail">Loading…</span>' +
+    '</div>';
+  renderAnnotationsList();
+  updateSubmitBtn();
+  showView('document');
+
+  try {
+    const raw = await slicc.readFile(path);
+    let html;
+    if (path.endsWith('.html') || path.endsWith('.htm')) {
+      const body = /<!DOCTYPE|<html/i.test(raw) ? extractBody(raw) : raw;
+      html = sanitizeHtml(body);
+    } else {
+      html = mdToHtml(raw);
+    }
+    docContent.innerHTML = html;
+  } catch (err) {
+    docContent.innerHTML = '';
+    const wrap = document.createElement('div');
+    wrap.className = 'doc-loading';
+    wrap.innerHTML = '<i data-lucide="alert-circle" class="sprinkle-icon" style="width:24px;height:24px;color:var(--s2-negative)"></i>';
+    const span = document.createElement('span');
+    span.className = 'sprinkle-detail';
+    span.textContent = 'Failed to load: ' + ((err && err.message) ? err.message : String(err));
+    wrap.appendChild(span);
+    docContent.appendChild(wrap);
+  }
+  renderIcons();
+}
+
+// ── Text selection → annotation popup ──
+let pendingSelection = null;
+
+document.addEventListener('mouseup', (e) => {
+  if (!document.getElementById('doc-view').classList.contains('visible')) return;
+  // Don't trigger inside the popup itself
+  if (e.target.closest('#annotation-popup')) return;
+
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.toString().trim()) {
+    // If clicking outside popup, hide it
+    if (!e.target.closest('#annotation-popup')) hidePopup();
+    return;
+  }
+
+  const selectedText = sel.toString().trim();
+  const docContent = document.getElementById('doc-content');
+  if (!docContent.contains(sel.anchorNode)) return;
+
+  pendingSelection = { text: selectedText, range: sel.getRangeAt(0).cloneRange() };
+
+  // Position popup above selection
+  const rect = sel.getRangeAt(0).getBoundingClientRect();
+  showPopup(rect, selectedText);
+});
+
+function showPopup(rect, text) {
+  const popup = document.getElementById('annotation-popup');
+  document.getElementById('annotation-selected-text').textContent = text;
+  document.getElementById('annotation-note').value = '';
+  popup.classList.add('visible');
+
+  // Position after layout has settled — reading offsetHeight on the same
+  // frame we toggled `display: flex` returns 0 on the very first reveal.
+  requestAnimationFrame(() => {
+    const pw = popup.offsetWidth || 260;
+    const ph = popup.offsetHeight;
+    let left = rect.left + rect.width / 2 - pw / 2;
+    let top  = rect.top - ph - 8;
+    if (left < 4) left = 4;
+    if (left + pw > window.innerWidth - 4) left = window.innerWidth - pw - 4;
+    if (top < 4) top = rect.bottom + 8;
+    popup.style.left = left + 'px';
+    popup.style.top  = top  + 'px';
+  });
+  setTimeout(() => document.getElementById('annotation-note').focus(), 60);
+  renderIcons();
+}
+
+function hidePopup() {
+  document.getElementById('annotation-popup').classList.remove('visible');
+  pendingSelection = null;
+}
+
+document.getElementById('popup-cancel-btn').addEventListener('click', hidePopup);
+
+document.getElementById('popup-save-btn').addEventListener('click', () => {
+  const note = document.getElementById('annotation-note').value.trim();
+  if (!note || !pendingSelection) return;
+
+  // Highlight selected text
+  try {
+    const span = document.createElement('span');
+    span.className = 'doc-highlight';
+    span.title = note;
+    pendingSelection.range.surroundContents(span);
+  } catch (_) { /* cross-node selections — skip highlight */ }
+
+  state.annotations.push({ text: pendingSelection.text, note, id: Date.now() });
+  saveState();
+  hidePopup();
+  window.getSelection()?.removeAllRanges();
+  renderAnnotationsList();
+  updateSubmitBtn();
+  // Auto-open annotations panel
+  if (!state.annotationsOpen) toggleAnnotationsPanel(true);
+});
+
+// ── Annotations list ──
+function renderAnnotationsList() {
+  const list  = document.getElementById('annotations-list');
+  const badge = document.getElementById('ann-count-badge');
+  const count = state.annotations.length;
+  badge.textContent = count;
+  badge.className   = 'badge' + (count === 0 ? ' zero' : '');
+
+  list.innerHTML = '';
+  state.annotations.forEach((ann, idx) => {
+    const item = document.createElement('div');
+    item.className = 'annotation-item';
+    const truncated = ann.text.length > 60 ? ann.text.slice(0, 60) + '…' : ann.text;
+    item.innerHTML =
+      '<div class="annotation-body">' +
+        '<div class="annotation-selected sprinkle-detail">"' + escHtml(truncated) + '"</div>' +
+        '<div class="annotation-note-text sprinkle-body">' + escHtml(ann.note) + '</div>' +
+      '</div>' +
+      '<button class="annotation-remove" title="Remove annotation">' +
+        '<i data-lucide="x" class="sprinkle-icon sm"></i>' +
+      '</button>';
+    item.querySelector('.annotation-remove').addEventListener('click', () => removeAnnotation(idx));
+    list.appendChild(item);
+  });
+  renderIcons();
+}
+
+function removeAnnotation(idx) {
+  state.annotations.splice(idx, 1);
+  saveState();
+  renderAnnotationsList();
+  updateSubmitBtn();
+}
+
+function updateSubmitBtn() {
+  const btn = document.getElementById('submit-btn');
+  btn.disabled = state.annotations.length === 0;
+}
+
+document.getElementById('submit-btn').addEventListener('click', () => {
+  if (state.annotations.length === 0) return;
+  slicc.lick({
+    action: 'submit-revisions',
+    data: { path: state.docPath, revisions: state.annotations.map(a => ({ text: a.text, note: a.note })) }
+  });
+});
+
+// ── Annotations panel toggle ──
+document.getElementById('annotations-toggle').addEventListener('click', () => toggleAnnotationsPanel());
+
+function toggleAnnotationsPanel(forceOpen) {
+  const list    = document.getElementById('annotations-list');
+  const chevron = document.getElementById('ann-chevron');
+  if (forceOpen !== undefined) {
+    state.annotationsOpen = forceOpen;
+  } else {
+    state.annotationsOpen = !state.annotationsOpen;
+  }
+  saveState();
+  list.classList.toggle('open', state.annotationsOpen);
+  chevron.classList.toggle('open', state.annotationsOpen);
+}
+
+// ── Back button ──
+document.getElementById('back-btn').addEventListener('click', () => {
+  hidePopup();
+  showView('queue');
+});
+
+// ═══════════════════════════════════════════════════
+//  SLICC EVENTS
+// ═══════════════════════════════════════════════════
+slicc.on('update', async (msg) => {
+  if (!msg || !msg.action) return;
+
+  if (msg.action === 'load-items') {
+    state.items = msg.items || [];
+    saveState();
+    renderQueue();
+    if (state.view !== 'document') showView('queue');
+  }
+
+  else if (msg.action === 'update-status') {
+    updateItemStatus(msg.id, msg.status);
+  }
+
+  else if (msg.action === 'open-file') {
+    await openDocument(msg.path, msg.title || null);
+  }
+});
+
+// ═══════════════════════════════════════════════════
+//  ICON RENDER HELPER
+// ═══════════════════════════════════════════════════
+function renderIcons() {
+  if (typeof LucideIcons !== 'undefined') LucideIcons.render();
+}
+
+// ═══════════════════════════════════════════════════
+//  INIT
+// ═══════════════════════════════════════════════════
+(async function init() {
+  loadState();
+
+  // Restore annotations panel state
+  if (state.annotationsOpen) {
+    document.getElementById('annotations-list').classList.add('open');
+    document.getElementById('ann-chevron').classList.add('open');
+  }
+
+  if (state.view === 'document' && state.docPath) {
+    // Restore doc view
+    document.getElementById('doc-filename').textContent = state.docTitle || state.docPath.split('/').pop();
+    renderAnnotationsList();
+    updateSubmitBtn();
+    showView('document');
+    await openDocument(state.docPath, state.docTitle);
+  } else {
+    renderQueue();
+    showView('queue');
+  }
+})();
+</script>
+</body>
+</html>
