@@ -2,30 +2,160 @@
 
 Reference for creating reveal.js presentations. Read this before generating any slide deck.
 
+This guide is structured in three layers:
+
+1. **Stardust integration** — when `DESIGN.json` exists, pull tokens dynamically. This is the preferred path.
+2. **Anchor moods** — eight starting positions for when stardust is not in play. Each one is a *starting point*, not a finished design.
+3. **Bespoke effects layer** — SVG filters, CSS shader patterns, 3D animations. Mandatory on every deck regardless of mode.
+
+Plus: anti-tells, content density rules, and the data contract for the per-slide `effects` array.
+
 ---
 
 ## Design Principles
 
-1. **No AI slop** — No generic gradients-on-white, no "corporate futurism," no stock-art energy
-2. **No overused fonts** — Never use Inter, Roboto, Arial, Helvetica, Open Sans, or system fonts
-3. **Bold choices** — Every theme must feel like a human designer made it with intention
-4. **Typography first** — Font pairing drives the mood more than color
-5. **Restraint** — One accent color used purposefully beats a rainbow
-6. **Contrast matters** — Text must always be effortlessly readable
+1. **No AI slop** — no generic gradients-on-white, no "corporate futurism," no stock-art energy
+2. **No banned fonts** — never use Inter, Roboto, Arial, Helvetica, Open Sans, or system fonts as primary heading/body
+3. **Bold choices** — every deck must feel like a human designer made it with intention
+4. **Typography first** — font pairing drives the mood more than color
+5. **Restraint with effects** — one effect per slide, used purposefully. Three competing effects = chaos
+6. **Contrast matters** — text must always be effortlessly readable. WCAG AA minimum (4.5:1 body, 3:1 large)
 
 ---
 
-## Theme Presets
+## Stardust integration (preferred mode)
 
-### 1. Midnight Aurora
+When `DESIGN.json` exists at the project root, **generate the theme dynamically** rather than picking a preset. Stardust's `DESIGN.json` carries the resolved brand tokens for the target site/brand; the presentation should use them so the deck feels native to the brand, not pasted into it.
 
-**Mood**: Deep, dramatic, cinematic. For keynotes, product launches, high-stakes pitches.
+### Reading DESIGN.json
 
-**Fonts**: Heading: `Space Grotesk` (700) · Body: `Source Serif 4` (400, 400i)
+Key paths to extract:
+
+| DESIGN.json path | Reveal.js token | Notes |
+|---|---|---|
+| `colors.<background-role>.hex` | `--r-background-color` | The brand's ground (often non-cream — respect `extensions.divergence.seed.ground_family`) |
+| `colors.<text-primary-role>.hex` | `--r-main-color` | Body text |
+| `colors.<heading-role>.hex` | `--r-heading-color` | Heading. Often = `--r-main-color` for cohesion. |
+| `colors.<accent-role>.hex` | `--r-accent-color` | Pop. Used for `strong`, link, code, callout |
+| `colors.<accent-secondary-role>.hex` | `--r-accent-secondary` | Optional second accent |
+| `typography.<headingRole>.fontFamily` | `--r-heading-font` | Brand-native role name like `display-archivist`, `Pomodoro Slab`, etc. |
+| `typography.<bodyRole>.fontFamily` | `--r-main-font` | Body face |
+| `typography.<headingRole>.fontWeight` | `--r-heading-font-weight` | Weight number, e.g. 700 |
+| `typography.<bodyRole>.lineHeight` | line-height on `.reveal` | Body line height |
+| `extensions.divergence.font_deck` | @import URL list | Map deck name → Google Fonts URL list (table below) |
+| `extensions.divergence.seed.craft` | effects layer keying | Letterpress → ink-bleed; Riso → off-register; folded-paper → fold shadows |
+| `extensions.divergence.seed.ground_family` | overall mood key | `dark`, `cream`, `stark-white`, `pale-gray`, `saturated`, `monochrome-tint` |
+| `extensions.divergence.seed.decade` | type idiom | 1970s → magazine slab; 1990s → rough early-web; 2025-now → current editorial |
+
+### Font deck → Google Fonts URLs
+
+| Deck | @import URL |
+|---|---|
+| `editorial-archival` | `https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,400;0,700;1,700&family=Big+Shoulders+Stencil+Display:wght@700&family=JetBrains+Mono:wght@500;700&display=swap` |
+| `tactile-humanist` | `https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;800&family=Geist+Mono:wght@400;500&display=swap` |
+| `retro-italian` | `https://fonts.googleapis.com/css2?family=Alfa+Slab+One&family=Yeseva+One&family=VT323&display=swap` |
+| `zine-maximalist` | `https://fonts.googleapis.com/css2?family=Homemade+Apple&family=Special+Elite&family=Abril+Fatface&family=Bungee+Shade&family=DM+Serif+Display&display=swap` |
+| `swiss-modernist` | `https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;700;900&family=Iosevka:wght@400;700&display=swap` |
+| `bauhaus-functional` | `https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Martian+Mono:wght@400;600&family=Roboto+Slab:wght@400;700&display=swap` |
+| `serif-luxury` | `https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Sans:wght@400;500&display=swap` |
+| `bureaucratic` | `https://fonts.googleapis.com/css2?family=IBM+Plex+Serif:wght@400;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@400;700&display=swap` |
+| `broadcast` | `https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;700&family=Courier+Prime:wght@400;700&family=Georgia&display=swap` |
+| `handmade-signwriter` | `https://fonts.googleapis.com/css2?family=Rubik+Wet+Paint&family=Libre+Caslon+Text:ital,wght@0,400;1,400&family=Syne+Mono&display=swap` |
+
+### Craft → effects-layer key
+
+The seed's `craft` tradition keys the dominant effect on the deck. Pick one effect class per craft and apply it via the `effects` array on slides where it serves narrative.
+
+| Craft seed | Dominant effect class | What it does |
+|---|---|---|
+| Letterpress | `effect-ink-bleed` | feTurbulence + feDisplacementMap, low scale (0.5) — kiss-impression headline |
+| Riso print | `effect-misregister` | Dual-color heading offset 2–3px with mix-blend-mode multiply |
+| Embossed leather | `effect-emboss` | feSpecularLighting + feComposite — lit chunky heading |
+| Woodblock poster | `effect-grain-knockout` | feTurbulence at scale 4, baseFrequency 0.9, used as alpha mask on heading |
+| Terrazzo | `effect-speckled-bg` | Animated radial-gradient mosaic on background |
+| Enamel sign | `effect-glossy-stroke` | text-stroke + feSpecularLighting + drop-shadow accent |
+| Ceramic transfer | `effect-decal-edge` | clip-path with slight irregularity + drop-shadow |
+| Cross-stitch sampler | `effect-grid-overlay` | repeating-linear-gradient grid mask |
+| Technical illustration | `effect-blueprint` | feColorMatrix to cyan-on-blueprint + line-art borders |
+| Field guide | `effect-marginalia` | small italic captions in margins, dotted leader lines |
+| Map engraving | `effect-contour` | layered text-shadows simulating engraved relief |
+| Tailor's pattern paper | `effect-pattern-stitch` | dashed-border outlines, perforation marks |
+| Wood-veneer marquetry | `effect-veneer` | feDisplacementMap with woodgrain turbulence |
+| Folded-paper ephemera | `effect-fold-shadow` | clip-path triangles + linear-gradient shadow simulating creases |
+| Neon bending | `effect-neon-glow` | filter: drop-shadow stack at 4 levels (glow + bleed) |
+| Photogram | `effect-silhouette` | feColorMatrix to high-contrast B&W + feGaussianBlur halo |
+| Plaster cast | `effect-plaster-relief` | feSpecularLighting + low-saturation tone |
+| Mosaic tile | `effect-tessellate` | clip-path + grid mask pattern |
+
+### Ground family → effect intensity
+
+The `ground_family` seed determines effect intensity AND color choice for shaders:
+
+- `dark` — full intensity. Glows, neon bleeds, chromatic aberration, scanlines all welcome.
+- `cream` — restrained. Ink-bleed and grain only. No glow. (Note: cream grounds are rare per stardust's enforcement; only justified for printing/paper-goods brands.)
+- `stark-white` — high contrast. Sharp shadows, no glow, hard-edged shaders only.
+- `pale-gray` — medium contrast. Grain and texture welcome, no glow.
+- `saturated` — the brand's accent color is the ground. Effects must use the contrast complement, not deepen the same hue.
+- `monochrome-tint` — low saturation tinted neutral. Subtle grain, soft shadows, restrained motion.
+
+### Worked example: stardust-derived theme CSS
+
+Given DESIGN.json with: `ground_family: dark`, `craft: Riso print`, `font_deck: tactile-humanist`, palette roles {`Vault: #0d0d12`, `Bone: #f4f1e8`, `Pomodoro: #d83a2a`, `Verdigris: #2ea693`}:
 
 ```css
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Source+Serif+4:ital,wght@0,400;0,600;1,400&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;800&family=Geist+Mono:wght@400;500&display=swap');
 
+:root {
+  /* Vault */    --r-background-color: #0d0d12;
+  /* Bone */     --r-main-color:       #f4f1e8;
+  /* Bone */     --r-heading-color:    #f4f1e8;
+  /* Pomodoro */ --r-accent-color:     #d83a2a;
+  /* Verdigris */--r-accent-secondary: #2ea693;
+  --r-heading-font: 'Plus Jakarta Sans', sans-serif;
+  --r-heading-font-weight: 800;
+  --r-main-font: 'Plus Jakarta Sans', sans-serif;
+  --r-mono-font: 'Geist Mono', monospace;
+  --r-heading-text-transform: none;
+}
+.reveal { background: var(--r-background-color); }
+.reveal h1, .reveal h2 { color: var(--r-heading-color); }
+.reveal strong, .reveal b { color: var(--r-accent-color); }
+.reveal a { color: var(--r-accent-secondary); }
+
+/* Riso misregister effect — dual-color heading */
+.reveal .effect-misregister h1,
+.reveal .effect-misregister h2 {
+  position: relative;
+  color: var(--r-heading-color);
+}
+.reveal .effect-misregister h1::before,
+.reveal .effect-misregister h2::before {
+  content: attr(data-text);
+  position: absolute;
+  inset: 0;
+  color: var(--r-accent-color);
+  transform: translate(2px, -2px);
+  mix-blend-mode: screen;
+  z-index: -1;
+}
+```
+
+Note the brand-native role-name comments above each token. Stardust's role-naming rule (Pomodoro, Vault, Verdigris) carries through to the comments — never strip them.
+
+---
+
+## Anchor moods (fallback mode)
+
+When stardust is not in play, pick from these eight anchor moods. Each is a *starting point*: layer the bespoke effects on top, push beyond the baseline.
+
+### 1. Midnight Aurora · cinematic, dramatic, keynote
+
+**Fonts**: Heading `Space Grotesk` (700) · Body `Source Serif 4` (400, 400i) · Mono `JetBrains Mono`
+
+**Default effect**: `effect-aurora-bg` (animated conic-gradient + feGaussianBlur), `effect-displaced-heading` (subtle feTurbulence on h1)
+
+```css
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Source+Serif+4:ital,wght@0,400;0,600;1,400&family=JetBrains+Mono:wght@500&display=swap');
 :root {
   --r-background-color: #0b1120;
   --r-main-color: #c8d6e5;
@@ -35,30 +165,20 @@ Reference for creating reveal.js presentations. Read this before generating any 
   --r-heading-font: 'Space Grotesk', sans-serif;
   --r-main-font: 'Source Serif 4', serif;
   --r-heading-font-weight: 700;
-  --r-heading-text-transform: none;
 }
 .reveal { background: radial-gradient(ellipse at 30% 80%, #0f1f3d 0%, #0b1120 70%); }
-.reveal h1, .reveal h2 { color: var(--r-heading-color); }
-.reveal strong, .reveal b { color: var(--r-accent-color); }
-.reveal a { color: var(--r-accent-secondary); }
-.reveal code { background: #152238; color: var(--r-accent-color); padding: 0.1em 0.3em; border-radius: 3px; }
-.reveal pre code { background: #0d1a2d; border-left: 3px solid var(--r-accent-color); }
-.reveal blockquote { border-left: 4px solid var(--r-accent-secondary); color: #8fa5c0; }
 ```
 
 **Transition**: `fade` · **Code theme**: `atom-one-dark`
 
----
+### 2. Paper & Ink · warm, editorial, literary
 
-### 2. Paper & Ink
+**Fonts**: Heading `Playfair Display` (700, 700i) · Body `Libre Baskerville` (400, 400i)
 
-**Mood**: Warm, editorial, literary. For academic talks, essays, storytelling.
-
-**Fonts**: Heading: `Playfair Display` (700, 700i) · Body: `Libre Baskerville` (400, 400i)
+**Default effect**: `effect-ink-bleed` on display headings, `effect-grain-overlay` on backgrounds
 
 ```css
 @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;1,700&family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&display=swap');
-
 :root {
   --r-background-color: #f5f0e8;
   --r-main-color: #2c2416;
@@ -67,32 +187,20 @@ Reference for creating reveal.js presentations. Read this before generating any 
   --r-accent-secondary: #3d6b5e;
   --r-heading-font: 'Playfair Display', serif;
   --r-main-font: 'Libre Baskerville', serif;
-  --r-heading-font-weight: 700;
-  --r-heading-text-transform: none;
 }
 .reveal { background: #f5f0e8; }
-.reveal h1, .reveal h2 { color: var(--r-heading-color); letter-spacing: -0.02em; }
-.reveal h1 { font-style: italic; }
-.reveal strong { color: var(--r-accent-color); }
-.reveal a { color: var(--r-accent-secondary); text-decoration: underline; }
-.reveal code { background: #e8e0d4; color: var(--r-accent-color); padding: 0.1em 0.3em; border-radius: 2px; }
-.reveal pre code { background: #2c2416; color: #f5f0e8; border: none; }
-.reveal blockquote { border-left: 3px solid var(--r-accent-color); font-style: italic; color: #5a4e3c; }
 ```
 
-**Transition**: `slide` · **Code theme**: `github-light` (inline), `monokai` (blocks)
+**Transition**: `slide` · **Code theme**: `monokai` (blocks)
 
----
+### 3. Electric Signal · high-energy, technical, cutting-edge
 
-### 3. Electric Signal
+**Fonts**: Heading `JetBrains Mono` (700) · Body `DM Sans`
 
-**Mood**: High-energy, technical, cutting-edge. For developer talks, tech demos, launch events.
-
-**Fonts**: Heading: `JetBrains Mono` (700) · Body: `DM Sans` (400, 500)
+**Default effect**: `effect-chromatic-aberration` on h1 (RGB-split text-shadow), `effect-grid-bg` (40px subtle grid)
 
 ```css
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;700&family=DM+Sans:wght@400;500;700&display=swap');
-
 :root {
   --r-background-color: #0a0a0f;
   --r-main-color: #b0b8c8;
@@ -101,33 +209,22 @@ Reference for creating reveal.js presentations. Read this before generating any 
   --r-accent-secondary: #00d4aa;
   --r-heading-font: 'JetBrains Mono', monospace;
   --r-main-font: 'DM Sans', sans-serif;
-  --r-heading-font-weight: 700;
   --r-heading-text-transform: uppercase;
   --r-heading-letter-spacing: 0.08em;
 }
 .reveal { background: #0a0a0f; }
-.reveal h1, .reveal h2 { color: var(--r-heading-color); font-size: 1.8em; }
-.reveal strong { color: var(--r-accent-color); }
-.reveal a { color: var(--r-accent-secondary); }
-.reveal code { background: #1a1a2e; color: var(--r-accent-color); font-family: 'JetBrains Mono', monospace; padding: 0.1em 0.3em; }
-.reveal pre code { background: #12121f; border: 1px solid #2a2a3e; }
-.reveal blockquote { border-left: 3px solid var(--r-accent-color); color: #7a8298; }
-.reveal .slide-number { color: var(--r-accent-secondary); }
 ```
 
 **Transition**: `none` · **Code theme**: `dracula`
 
----
+### 4. Dune · organic, grounded, warm
 
-### 4. Dune
+**Fonts**: Heading `Fraunces` (700) · Body `Outfit` (300, 400)
 
-**Mood**: Organic, grounded, warm. For sustainability, nature, culture, design talks.
-
-**Fonts**: Heading: `Fraunces` (700) · Body: `Outfit` (300, 400)
+**Default effect**: `effect-emboss` on headings, `effect-grain-overlay` low-intensity
 
 ```css
 @import url('https://fonts.googleapis.com/css2?family=Fraunces:wght@700;900&family=Outfit:wght@300;400;600&display=swap');
-
 :root {
   --r-background-color: #f2ebe0;
   --r-main-color: #3d3228;
@@ -136,31 +233,20 @@ Reference for creating reveal.js presentations. Read this before generating any 
   --r-accent-secondary: #4a7c6f;
   --r-heading-font: 'Fraunces', serif;
   --r-main-font: 'Outfit', sans-serif;
-  --r-heading-font-weight: 700;
-  --r-heading-text-transform: none;
 }
 .reveal { background: linear-gradient(170deg, #f2ebe0 0%, #e8ddd0 100%); }
-.reveal h1, .reveal h2 { color: var(--r-heading-color); }
-.reveal strong { color: var(--r-accent-color); }
-.reveal a { color: var(--r-accent-secondary); }
-.reveal code { background: #e0d5c4; color: var(--r-accent-color); padding: 0.1em 0.3em; border-radius: 3px; }
-.reveal pre code { background: #2a1f14; color: #f2ebe0; border-left: 3px solid var(--r-accent-color); }
-.reveal blockquote { border-left: 4px solid var(--r-accent-color); color: #6b5d4e; }
 ```
 
 **Transition**: `slide` · **Code theme**: `nord`
 
----
+### 5. Phosphor · retro-terminal, nostalgic, hacker
 
-### 5. Phosphor
+**Fonts**: Heading `IBM Plex Mono` (600) · Body `IBM Plex Mono` (400, 400i)
 
-**Mood**: Retro-terminal, nostalgic, hacker. For security talks, CLI demos, retro computing.
-
-**Fonts**: Heading: `IBM Plex Mono` (600) · Body: `IBM Plex Mono` (400, 400i)
+**Default effect**: `effect-scanlines` (built into mood), `effect-neon-glow` on h1, `effect-crt-warp` on `.reveal`
 
 ```css
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,600;1,400&display=swap');
-
 :root {
   --r-background-color: #0c1014;
   --r-main-color: #33cc66;
@@ -169,33 +255,22 @@ Reference for creating reveal.js presentations. Read this before generating any 
   --r-accent-secondary: #33cc66;
   --r-heading-font: 'IBM Plex Mono', monospace;
   --r-main-font: 'IBM Plex Mono', monospace;
-  --r-heading-font-weight: 600;
-  --r-heading-text-transform: none;
 }
 .reveal { background: #0c1014; }
 .reveal::after { content: ''; position: fixed; inset: 0; background: repeating-linear-gradient(transparent, transparent 2px, rgba(0,0,0,0.15) 2px, rgba(0,0,0,0.15) 4px); pointer-events: none; z-index: 9999; }
 .reveal h1, .reveal h2 { color: var(--r-heading-color); text-shadow: 0 0 8px rgba(68,238,119,0.3); }
-.reveal strong { color: var(--r-accent-color); }
-.reveal a { color: var(--r-accent-color); }
-.reveal code { background: transparent; color: var(--r-accent-color); }
-.reveal pre code { background: #0a0e12; border: 1px solid #1a3a1a; color: var(--r-main-color); }
-.reveal blockquote { border-left: 2px solid var(--r-accent-color); color: #228844; }
-.reveal .slide-number { font-family: 'IBM Plex Mono', monospace; color: #228844; }
 ```
 
 **Transition**: `none` · **Code theme**: `monokai`
 
----
+### 6. Nordic Frost · clean, airy, minimal
 
-### 6. Nordic Frost
+**Fonts**: Heading `Manrope` (700, 800) · Body `Karla` (400, 400i)
 
-**Mood**: Clean, airy, minimal. For product design, UX talks, corporate strategy.
-
-**Fonts**: Heading: `Manrope` (700, 800) · Body: `Karla` (400, 400i)
+**Default effect**: `effect-mix-blend-headings` (difference blend on h1 over secondary band), `effect-soft-shadow-card`
 
 ```css
 @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@700;800&family=Karla:ital,wght@0,400;0,500;1,400&display=swap');
-
 :root {
   --r-background-color: #f8fafb;
   --r-main-color: #2d3748;
@@ -205,31 +280,20 @@ Reference for creating reveal.js presentations. Read this before generating any 
   --r-heading-font: 'Manrope', sans-serif;
   --r-main-font: 'Karla', sans-serif;
   --r-heading-font-weight: 800;
-  --r-heading-text-transform: none;
 }
 .reveal { background: #f8fafb; }
-.reveal h1, .reveal h2 { color: var(--r-heading-color); letter-spacing: -0.03em; }
-.reveal strong { color: var(--r-accent-color); }
-.reveal a { color: var(--r-accent-color); text-decoration: none; border-bottom: 2px solid var(--r-accent-secondary); }
-.reveal code { background: #edf2f7; color: #6b21a8; padding: 0.15em 0.35em; border-radius: 4px; font-size: 0.85em; }
-.reveal pre code { background: #1e293b; color: #e2e8f0; border-radius: 8px; }
-.reveal blockquote { border-left: 4px solid var(--r-accent-color); background: #eef4ff; padding: 0.5em 1em; border-radius: 0 6px 6px 0; }
-.reveal ul li::marker { color: var(--r-accent-color); }
 ```
 
-**Transition**: `slide` · **Code theme**: `github-light` (inline), `one-dark` (blocks)
+**Transition**: `slide` · **Code theme**: `one-dark`
 
----
+### 7. Oxide · bold, high-contrast, industrial
 
-### 7. Oxide
+**Fonts**: Heading `Archivo Black` · Body `Work Sans`
 
-**Mood**: Bold, high-contrast, industrial. For data science, infra, systems engineering.
-
-**Fonts**: Heading: `Archivo Black` (400) · Body: `Work Sans` (400, 500)
+**Default effect**: `effect-3d-flip-in` on title slides, `effect-hard-stroke` on headings
 
 ```css
 @import url('https://fonts.googleapis.com/css2?family=Archivo+Black&family=Work+Sans:wght@400;500;600&display=swap');
-
 :root {
   --r-background-color: #18181b;
   --r-main-color: #d4d4d8;
@@ -238,33 +302,21 @@ Reference for creating reveal.js presentations. Read this before generating any 
   --r-accent-secondary: #06b6d4;
   --r-heading-font: 'Archivo Black', sans-serif;
   --r-main-font: 'Work Sans', sans-serif;
-  --r-heading-font-weight: 400;
   --r-heading-text-transform: uppercase;
-  --r-heading-letter-spacing: 0.04em;
 }
 .reveal { background: #18181b; }
-.reveal h1 { font-size: 2.2em; line-height: 1.1; color: var(--r-accent-color); }
-.reveal h2 { color: var(--r-heading-color); }
-.reveal strong { color: var(--r-accent-color); }
-.reveal a { color: var(--r-accent-secondary); }
-.reveal code { background: #27272a; color: var(--r-accent-color); font-size: 0.85em; padding: 0.1em 0.3em; border-radius: 3px; }
-.reveal pre code { background: #09090b; border: 1px solid #3f3f46; }
-.reveal blockquote { border-left: 4px solid var(--r-accent-color); color: #a1a1aa; }
 ```
 
 **Transition**: `fade` · **Code theme**: `vitesse-dark`
 
----
+### 8. Rose Quartz · soft, modern, approachable
 
-### 8. Rose Quartz
+**Fonts**: Heading `Sora` (600, 700) · Body `Nunito`
 
-**Mood**: Soft, modern, approachable. For workshops, education, creative briefs, community talks.
-
-**Fonts**: Heading: `Sora` (600, 700) · Body: `Nunito` (400, 400i)
+**Default effect**: `effect-conic-bg` (slow conic-gradient @property animation), `effect-holographic` on h1
 
 ```css
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@600;700&family=Nunito:ital,wght@0,400;0,600;1,400&display=swap');
-
 :root {
   --r-background-color: #fef7f7;
   --r-main-color: #3d2c3e;
@@ -273,30 +325,87 @@ Reference for creating reveal.js presentations. Read this before generating any 
   --r-accent-secondary: #7c3aed;
   --r-heading-font: 'Sora', sans-serif;
   --r-main-font: 'Nunito', sans-serif;
-  --r-heading-font-weight: 700;
-  --r-heading-text-transform: none;
 }
 .reveal { background: linear-gradient(135deg, #fef7f7 0%, #f5eef8 50%, #eef0fb 100%); }
-.reveal h1, .reveal h2 { color: var(--r-heading-color); }
-.reveal strong { color: var(--r-accent-color); }
-.reveal a { color: var(--r-accent-secondary); }
-.reveal code { background: #f0e4f0; color: var(--r-accent-color); padding: 0.1em 0.3em; border-radius: 6px; }
-.reveal pre code { background: #2a1a2c; color: #f0e4f0; border-radius: 8px; }
-.reveal blockquote { border-left: 4px solid var(--r-accent-secondary); background: rgba(124,58,237,0.05); padding: 0.5em 1em; border-radius: 0 8px 8px 0; }
-.reveal ul li::marker { color: var(--r-accent-color); }
 ```
 
-**Transition**: `convex` · **Code theme**: `github-light` (inline), `panda` (blocks)
-
+**Transition**: `convex` · **Code theme**: `panda`
 
 ---
 
-## Mood → Theme Mapping
+## Bespoke effects layer (mandatory)
 
-Pick the theme based on the presentation's emotional register:
+Every deck applies effects from this catalog via the per-slide `effects` array. Effects are CSS classes the template applies to the slide's `<section>`. Reuse the inline SVG filter library defined in the template — don't redefine filters per deck.
 
-| Mood / Context | Theme |
-|---------------|-------|
+### Effects vocabulary
+
+#### Background effects (apply to slide section)
+
+| Class | What it does | Mode |
+|---|---|---|
+| `effect-aurora-bg` | Animated conic-gradient (45s rotation) + feGaussianBlur halo. Uses `--r-accent-color` and `--r-accent-secondary`. | dark |
+| `effect-grid-bg` | 40px repeating-linear-gradient grid at 0.04 alpha | dark, mono |
+| `effect-grain-overlay` | feTurbulence baseFrequency 0.65 as alpha mask, opacity 0.08 | any |
+| `effect-scanlines` | repeating-linear-gradient horizontal lines at 4px stride | dark only |
+| `effect-conic-bg` | `@property --rot` 60deg/sec conic-gradient with 8 stops | light, gradient |
+| `effect-speckled-bg` | radial-gradient mosaic, pseudo-random distribution via box-shadow stack | light, terrazzo |
+| `effect-blueprint-bg` | feColorMatrix to cyan-on-blueprint + line-art `radial-gradient` overlay | dark |
+
+#### Heading effects (apply to slide section, target h1/h2)
+
+| Class | What it does | Mode |
+|---|---|---|
+| `effect-displaced-heading` | feTurbulence + feDisplacementMap (scale 1.5) on h1 | any |
+| `effect-chromatic-aberration` | text-shadow stack: red −2px, cyan +2px on h1 | dark |
+| `effect-misregister` | Riso-style dual-color offset heading via ::before with mix-blend-screen | dark, mono |
+| `effect-ink-bleed` | feTurbulence + feDisplacementMap (scale 0.5) — kiss impression | light, paper |
+| `effect-emboss` | feSpecularLighting + feComposite — lit relief heading | any |
+| `effect-glossy-stroke` | text-stroke + drop-shadow accent ring | any |
+| `effect-neon-glow` | drop-shadow stack at 4 levels (close glow + far bleed) using `--r-accent-color` | dark |
+| `effect-holographic` | conic-gradient text fill via background-clip + animation | light, gradient |
+| `effect-hard-stroke` | text-stroke 2px + offset hard drop-shadow | any |
+
+#### Slide-level effects (entrance / transform)
+
+| Class | What it does | When |
+|---|---|---|
+| `effect-3d-flip-in` | rotateY(60deg) → 0 on slide entry, 0.6s | title, section |
+| `effect-3d-tilt-in` | rotateX(20deg) translateZ(-100px) → 0, 0.5s | title |
+| `effect-zoom-blur` | scale(1.5) + filter:blur(20px) → 1, 0.7s | dramatic reveal |
+| `effect-slide-stack` | child elements slide in from below at 80ms stagger | content slides |
+| `effect-mix-blend-headings` | h1 gets mix-blend-mode: difference over a colored band ::before | content |
+
+#### Per-element decorations
+
+| Class | What it does | Apply to |
+|---|---|---|
+| `effect-fold-shadow` | clip-path triangle + linear-gradient shadow on container | sections, blockquote |
+| `effect-pattern-stitch` | dashed-border around block elements | callouts |
+| `effect-marginalia` | small italic captions positioned absolute in margins | optional |
+| `effect-decal-edge` | irregular clip-path + drop-shadow | images, cards |
+
+### Effect composition rules
+
+1. **One background effect per slide.** Don't stack `effect-aurora-bg` with `effect-conic-bg` — pick one. They fight.
+2. **One heading effect per slide.** `effect-misregister` and `effect-chromatic-aberration` are the same idea expressed differently — don't stack.
+3. **Slide-level entrance + heading effect = OK.** They run at different times.
+4. **Skip effects on text-dense content slides.** A 6-bullet content slide doesn't need `effect-zoom-blur` — readability wins. Reserve dramatic effects for title and section slides.
+5. **Skip ALL effects on the last slide.** Land softly. The audience is scanning for the takeaway, not admiring shaders.
+
+### How effects are wired
+
+The template (`templates/presentation.shtml`) ships an inline `<svg>` defs block with named filters: `#filter-displace-soft`, `#filter-displace-strong`, `#filter-emboss`, `#filter-grain`, `#filter-glow`, `#filter-blueprint`, `#filter-photogram`, `#filter-veneer`. CSS classes reference these via `filter: url(#filter-displace-soft)`.
+
+The data contract's `effects` array on each slide becomes a space-joined `class=""` on the rendered `<section>`. The template's CSS contains the rules for every `.effect-*` class.
+
+---
+
+## Mood → Anchor mapping (fallback only)
+
+Pick the anchor mood based on the deck's emotional register when stardust is not in play:
+
+| Mood / Context | Anchor |
+|---|---|
 | Cinematic, dramatic, keynote | **Midnight Aurora** |
 | Academic, literary, storytelling | **Paper & Ink** |
 | Technical, developer-focused, high-energy | **Electric Signal** |
@@ -306,7 +415,37 @@ Pick the theme based on the presentation's emotional register:
 | Infrastructure, systems, data-heavy | **Oxide** |
 | Friendly, educational, workshop | **Rose Quartz** |
 
-**When the user specifies a mood**, match to the closest theme. When they specify a theme name, use it directly. When neither is specified, default to **Midnight Aurora** for dark or **Nordic Frost** for light.
+When the user specifies a mood, match to the closest anchor. When nothing is specified, default to **Midnight Aurora** for dark or **Nordic Frost** for light. Whichever you pick, the effects layer is still mandatory.
+
+---
+
+## Anti-tells (banned moves)
+
+Per stardust's divergence toolkit. These are the assistant's recurring defaults — banned outright on this skill except with a **brand-specific written justification** (the kind that wouldn't transfer to another brand unchanged).
+
+**Visual:**
+- Cream-family page ground (any color where HSL-L is 80–97, R−B ≥ 5, S < 40%) — banned unless the brand's category is literally printing/publishing/paper-goods.
+- 45° hazard stripes (yellow + ink, two-tone alternation).
+- Hard non-blur drop shadow on display headings (offset 6–14px) without a craft justification.
+- Rotated circular stamps with perimeter text.
+- Stat-callout bar (3–4 large numbers + all-caps labels in a horizontal trust strip).
+- Generic-2026-SaaS hero silhouette — oversized clamp() sans + two-button CTA pair + sticky top-nav.
+- Hero text on photographic background without ≥0.4 contrast scrim.
+
+**Type:**
+- Stencil display (Big Shoulders Stencil) used for non-archival/industrial brands.
+- UPPERCASE condensed sans as primary display register without justification.
+- Italic expressive serif single-word accents (Fraunces italic, etc.) used as a visual gimmick.
+
+**Voice / copy:**
+- Triplet-cadence headlines: "Same press. Same shop. Same eight years." — at most ONE per deck.
+- Editorial vocabulary on non-editorial brands: "atelier", "the journal", "dispatches", "manifesto", "field guide" applied to product/services/B2B/healthcare.
+- Quartermaster/curator/examiner register as default voice.
+
+**Fabricated content:**
+- Invented stats, addresses, named-customer logos, named-person quotes, dollar amounts, percentages, dates that don't appear in the user's brief or in stardust's `current/pages/<slug>.json`. Use `data-placeholder="true"` with a visible signature treatment instead.
+
+If a draft hits any of these, rewrite. "Feels right for the brand" is not a justification.
 
 ---
 
@@ -315,7 +454,7 @@ Pick the theme based on the presentation's emotional register:
 Maximum content per slide type. **Never exceed these limits.**
 
 | Slide Type | Maximum Content |
-|-----------|----------------|
+|---|---|
 | Title slide | 1 heading + 1 subtitle + optional tagline |
 | Content slide | 1 heading + 4–6 bullet points OR 1 heading + 2 short paragraphs |
 | Feature grid | 1 heading + 4–6 cards (2×2 or 2×3 layout) |
@@ -324,13 +463,9 @@ Maximum content per slide type. **Never exceed these limits.**
 | Image slide | 1 heading + 1 image + optional caption |
 | Section divider | 1 large heading + optional subtitle |
 | Comparison | 1 heading + 2 columns with 3–4 points each |
-| Stats / metrics | 1 heading + 3–4 large numbers with labels |
+| Stats / metrics | 1 heading + 3–4 large numbers with labels (avoid; this is the stat-callout anti-tell) |
 
-**Rules**:
-- If content overflows, **split into multiple slides** — never shrink font size
-- Bullet points should be sentence fragments, not paragraphs
-- Code blocks should show the essential 8–12 lines, not full files
-- One idea per slide. If you're tempted to say "also," it's a new slide
+If content overflows, **split into multiple slides** — never shrink font size. Bullet points are sentence fragments, not paragraphs. Code blocks show the essential 8–12 lines, not full files. One idea per slide.
 
 ---
 
@@ -338,46 +473,38 @@ Maximum content per slide type. **Never exceed these limits.**
 
 ### Transitions (between slides)
 
-| Theme | Default Transition | Rationale |
-|-------|-------------------|-----------|
-| Midnight Aurora | `fade` | Cinematic dissolve matches the mood |
-| Paper & Ink | `slide` | Page-turning feel |
-| Electric Signal | `none` | Instant cuts feel technical and fast |
-| Dune | `slide` | Natural, physical movement |
-| Phosphor | `none` | Terminal screens don't transition |
-| Nordic Frost | `slide` | Clean, predictable |
-| Oxide | `fade` | Dramatic reveals |
-| Rose Quartz | `convex` | Playful, dimensional |
+Mood defaults from the anchor moods table above. Stardust mode: pick `fade` for `dark` ground, `slide` for `cream`/`stark-white`/`pale-gray`, `convex` for `monochrome-tint`, `none` for retro/terminal registers, `fade` for `saturated`.
 
 ### Fragments (within slides)
 
-Use fragments sparingly. Rules:
+Use sparingly. Rules:
 
-1. **Bullet lists**: Reveal one at a time ONLY for suspense/punchlines. Default: show all at once
-2. **Feature grids**: Never fragment — show the full grid immediately
-3. **Code blocks**: Never fragment — code needs full context
-4. **Quotes**: Never fragment
-5. **Images**: Fade-in is acceptable for dramatic reveal
-6. **Stats/metrics**: Can fragment to build narrative ("We went from X → Y → Z")
+1. **Bullet lists**: reveal one at a time ONLY for suspense/punchlines. Default: show all at once.
+2. **Feature grids**: never fragment.
+3. **Code blocks**: never fragment — code needs full context.
+4. **Quotes**: never fragment.
+5. **Images**: fade-in is acceptable for dramatic reveal.
+6. **Stats**: can fragment to build narrative ("X → Y → Z").
 
-**Fragment styles** by theme family:
-- Dark themes (Aurora, Signal, Phosphor, Oxide): `fade-up` or `fade-in`
-- Light themes (Paper, Dune, Frost, Rose): `fade-in` only — no directional movement
+**Fragment styles:**
+- Dark grounds: `fade-up` or `fade-in`
+- Light grounds: `fade-in` only — no directional movement
 
 ### Timing
 
 - Never auto-advance slides
 - Fragment animation duration: 0.3s (fast) to 0.5s (dramatic)
-- Avoid animation on the first and last slides
+- Effect-layer entrance animations 0.5s–0.7s; cap at 0.7s to keep pacing
+- Skip effect entrances on the first and last slides
 
 ---
 
 ## Code Syntax Highlighting
 
-Each theme specifies a recommended highlight.js theme. Summary:
+Per anchor / stardust mode:
 
-| Theme | Inline Code Style | Block Code Theme |
-|-------|-------------------|-----------------|
+| Mode | Inline Code Style | Block Code Theme |
+|---|---|---|
 | Midnight Aurora | Teal on dark blue | `atom-one-dark` |
 | Paper & Ink | Burgundy on parchment | `monokai` (blocks only) |
 | Electric Signal | Pink on near-black | `dracula` |
@@ -386,8 +513,11 @@ Each theme specifies a recommended highlight.js theme. Summary:
 | Nordic Frost | Purple on light gray | `one-dark` |
 | Oxide | Orange on dark zinc | `vitesse-dark` |
 | Rose Quartz | Rose on lavender | `panda` |
+| Stardust dark ground | Accent-color on bg layer | `atom-one-dark` or `vitesse-dark` |
+| Stardust light ground | Accent-color on bg layer-1 | `github-light` or `nord` |
+| Stardust saturated | Inverted (light on accent) | `monokai` |
 
-**Rules**:
+**Rules:**
 - Always wrap code in `<pre><code>` with a language class
 - Use `data-trim` and `data-noescape` on code blocks
 - Tab size: 2 spaces
@@ -396,23 +526,12 @@ Each theme specifies a recommended highlight.js theme. Summary:
 
 ---
 
-## Background Effects
+## Background Effects (legacy, see Bespoke effects layer above for the canonical list)
 
-Subtle background treatments per theme. Apply to `.reveal` or individual slides.
+The 8 anchor moods carry default backgrounds (radial gradient, flat near-black, scanline overlay, etc.). The effects-layer classes above are *additions* on top of the mood baseline — they are not replacements for the mood's background. Don't apply two background effects to the same slide.
 
-| Theme | Background Effect |
-|-------|------------------|
-| Midnight Aurora | Radial gradient from deep navy center, optional subtle star-field dots |
-| Paper & Ink | Flat cream. Optional: faint paper texture via CSS noise |
-| Electric Signal | Flat near-black. Optional: subtle grid pattern (`background-size: 40px 40px`) |
-| Dune | Gentle warm gradient (cream → sand) |
-| Phosphor | Flat black + CRT scanline overlay (built into theme CSS) |
-| Nordic Frost | Flat cool white. Optional: very faint blue tint on section dividers |
-| Oxide | Flat dark zinc. Optional: diagonal hatching on section dividers |
-| Rose Quartz | Soft multi-stop gradient (pink → lavender → blue-white) |
-
-**Rules**:
-- Never use background images on content slides (they fight with text)
-- Background effects should be barely noticeable — atmosphere, not decoration
-- Section divider slides can have slightly stronger background treatment
+**Rules:**
+- Never use background images on content slides (they fight with text and any heading effect)
+- Background effects should be barely noticeable as decoration — atmosphere, not foreground
+- Section divider slides can carry stronger background treatment
 - Title slides can use a unique background variant from the same palette

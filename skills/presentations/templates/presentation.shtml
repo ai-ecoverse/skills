@@ -19,6 +19,8 @@
       --r-main-color: #eee;
       --r-heading-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       --r-heading-color: #fff;
+      --r-accent-color: #36d6a8;
+      --r-accent-secondary: #5b8af5;
       --r-link-color: #42affa;
       --r-link-color-hover: #8dcffc;
     }
@@ -111,6 +113,10 @@
     /* reveal.js sizing override for sprinkle panels */
     .reveal {
       height: 100% !important;
+      perspective: 1600px;
+    }
+    .reveal .slides {
+      transform-style: preserve-3d;
     }
 
     /* --- Toolbar --- */
@@ -179,7 +185,7 @@
       flex-direction: column;
     }
     .reveal .slides section.quote-slide blockquote {
-      border-left: 4px solid var(--r-link-color, #42affa);
+      border-left: 4px solid var(--r-accent-color, #42affa);
       padding: 10px 20px;
       margin: 20px 0;
       font-style: italic;
@@ -196,10 +202,438 @@
       opacity: 0.7;
       margin-top: 10px;
     }
+
+    /* ========================================================================
+       BESPOKE EFFECTS LAYER
+       SVG filters, CSS shaders, 3D animations.
+       Triggered by space-separated class names on <section> from the
+       per-slide `effects` array. See style-guide.md § Effects vocabulary.
+       Effects layer on top of theme tokens; theme tokens layer on the moods.
+       ======================================================================== */
+
+    /* Animated CSS variables (Houdini @property) for shader-style effects.
+       Browsers without @property support degrade gracefully — the gradient
+       still paints, just without animation. */
+    @property --aurora-rot { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
+    @property --conic-rot  { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
+    @property --holo-shift { syntax: '<percentage>'; inherits: false; initial-value: 0%; }
+
+    /* --- Backgrounds --- */
+
+    .reveal .effect-aurora-bg {
+      position: relative;
+      overflow: hidden;
+      isolation: isolate;
+    }
+    .reveal .effect-aurora-bg::before {
+      content: '';
+      position: absolute;
+      inset: -50%;
+      background: conic-gradient(
+        from var(--aurora-rot),
+        var(--r-accent-color, #36d6a8) 0deg,
+        var(--r-background-color, #0b1120) 80deg,
+        var(--r-accent-secondary, #5b8af5) 160deg,
+        var(--r-background-color, #0b1120) 260deg,
+        var(--r-accent-color, #36d6a8) 360deg
+      );
+      filter: blur(80px) saturate(1.3);
+      opacity: 0.55;
+      animation: aurora-rotate 45s linear infinite;
+      z-index: -1;
+      pointer-events: none;
+    }
+    @keyframes aurora-rotate { to { --aurora-rot: 360deg; } }
+
+    .reveal .effect-conic-bg {
+      position: relative;
+      overflow: hidden;
+      isolation: isolate;
+    }
+    .reveal .effect-conic-bg::before {
+      content: '';
+      position: absolute;
+      inset: -25%;
+      background: conic-gradient(
+        from var(--conic-rot),
+        var(--r-accent-color, #d64077) 0deg,
+        var(--r-accent-secondary, #7c3aed) 90deg,
+        var(--r-background-color, #fef7f7) 180deg,
+        var(--r-accent-color, #d64077) 270deg,
+        var(--r-accent-secondary, #7c3aed) 360deg
+      );
+      filter: blur(60px);
+      opacity: 0.4;
+      animation: conic-spin 60s linear infinite;
+      z-index: -1;
+      pointer-events: none;
+    }
+    @keyframes conic-spin { to { --conic-rot: 360deg; } }
+
+    .reveal .effect-grid-bg {
+      background-image:
+        linear-gradient(to right, rgba(255,255,255,0.04) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(255,255,255,0.04) 1px, transparent 1px);
+      background-size: 40px 40px;
+    }
+
+    .reveal .effect-grain-overlay {
+      position: relative;
+      isolation: isolate;
+    }
+    .reveal .effect-grain-overlay::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.7 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+      opacity: 0.08;
+      mix-blend-mode: overlay;
+      z-index: 1;
+    }
+
+    .reveal .effect-scanlines {
+      position: relative;
+    }
+    .reveal .effect-scanlines::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background: repeating-linear-gradient(
+        transparent 0,
+        transparent 2px,
+        rgba(0,0,0,0.18) 2px,
+        rgba(0,0,0,0.18) 4px
+      );
+      mix-blend-mode: multiply;
+      z-index: 2;
+    }
+
+    .reveal .effect-speckled-bg {
+      background-image:
+        radial-gradient(circle at 12% 23%, var(--r-accent-color, #c4652a) 0 6px, transparent 7px),
+        radial-gradient(circle at 78% 63%, var(--r-accent-secondary, #4a7c6f) 0 4px, transparent 5px),
+        radial-gradient(circle at 33% 71%, var(--r-accent-color, #c4652a) 0 3px, transparent 4px),
+        radial-gradient(circle at 88% 18%, var(--r-accent-secondary, #4a7c6f) 0 5px, transparent 6px),
+        radial-gradient(circle at 51% 39%, var(--r-accent-color, #c4652a) 0 2px, transparent 3px);
+      background-size: 240px 240px;
+      background-color: var(--r-background-color);
+    }
+
+    .reveal .effect-blueprint-bg {
+      background:
+        radial-gradient(ellipse at center, rgba(91,138,245,0.12) 0%, transparent 70%),
+        repeating-linear-gradient(45deg, transparent 0 20px, rgba(91,138,245,0.05) 20px 21px),
+        var(--r-background-color);
+    }
+
+    /* --- Heading effects --- */
+
+    .reveal .effect-displaced-heading h1,
+    .reveal .effect-displaced-heading h2 {
+      filter: url(#filter-displace-soft);
+    }
+
+    .reveal .effect-ink-bleed h1,
+    .reveal .effect-ink-bleed h2 {
+      filter: url(#filter-displace-bleed);
+    }
+
+    .reveal .effect-emboss h1,
+    .reveal .effect-emboss h2 {
+      filter: url(#filter-emboss);
+    }
+
+    .reveal .effect-photogram img,
+    .reveal .effect-photogram h1 {
+      filter: url(#filter-photogram);
+    }
+
+    .reveal .effect-veneer h1,
+    .reveal .effect-veneer h2 {
+      filter: url(#filter-veneer);
+    }
+
+    .reveal .effect-chromatic-aberration h1,
+    .reveal .effect-chromatic-aberration h2 {
+      text-shadow:
+        -2px 0 0 rgba(255,61,113,0.85),
+         2px 0 0 rgba(0,212,170,0.85);
+      animation: chroma-jitter 4s steps(8) infinite;
+    }
+    @keyframes chroma-jitter {
+      0%, 100% { transform: translate(0, 0); }
+      50%      { transform: translate(0.5px, -0.5px); }
+    }
+
+    .reveal .effect-misregister h1,
+    .reveal .effect-misregister h2 {
+      position: relative;
+      color: var(--r-heading-color);
+    }
+    .reveal .effect-misregister h1::before,
+    .reveal .effect-misregister h2::before {
+      content: attr(data-text);
+      position: absolute;
+      inset: 0;
+      color: var(--r-accent-color);
+      transform: translate(3px, -3px);
+      mix-blend-mode: screen;
+      pointer-events: none;
+    }
+
+    .reveal .effect-neon-glow h1,
+    .reveal .effect-neon-glow h2 {
+      color: var(--r-heading-color);
+      text-shadow:
+        0 0 4px var(--r-accent-color),
+        0 0 12px var(--r-accent-color),
+        0 0 28px var(--r-accent-color),
+        0 0 60px var(--r-accent-color);
+    }
+
+    .reveal .effect-glossy-stroke h1,
+    .reveal .effect-glossy-stroke h2 {
+      -webkit-text-stroke: 1.5px var(--r-accent-color);
+      color: transparent;
+      filter: drop-shadow(0 4px 12px rgba(0,0,0,0.4));
+    }
+
+    .reveal .effect-hard-stroke h1,
+    .reveal .effect-hard-stroke h2 {
+      -webkit-text-stroke: 2px var(--r-heading-color);
+      color: var(--r-background-color);
+      text-shadow: 8px 8px 0 var(--r-accent-color);
+    }
+
+    .reveal .effect-holographic h1,
+    .reveal .effect-holographic h2 {
+      background: linear-gradient(
+        90deg,
+        var(--r-accent-color, #d64077) 0%,
+        var(--r-accent-secondary, #7c3aed) 25%,
+        var(--r-heading-color, #2a1a2c) 50%,
+        var(--r-accent-secondary, #7c3aed) 75%,
+        var(--r-accent-color, #d64077) 100%
+      );
+      background-size: 200% 100%;
+      background-position: var(--holo-shift) 0;
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      animation: holo-shift 6s linear infinite;
+    }
+    @keyframes holo-shift { to { --holo-shift: 200%; } }
+
+    .reveal .effect-mix-blend-headings {
+      position: relative;
+      isolation: isolate;
+    }
+    .reveal .effect-mix-blend-headings::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 30%;
+      height: 30%;
+      background: var(--r-accent-color);
+      z-index: -1;
+      opacity: 0.85;
+    }
+    .reveal .effect-mix-blend-headings h1,
+    .reveal .effect-mix-blend-headings h2 {
+      mix-blend-mode: difference;
+      color: white;
+    }
+
+    /* --- Slide-level entrance / 3D --- */
+
+    .reveal .slides section.effect-3d-flip-in.present {
+      animation: flip-in-3d 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
+    }
+    @keyframes flip-in-3d {
+      from { opacity: 0; transform: perspective(1600px) rotateY(60deg); }
+      to   { opacity: 1; transform: perspective(1600px) rotateY(0); }
+    }
+
+    .reveal .slides section.effect-3d-tilt-in.present {
+      animation: tilt-in-3d 0.55s cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
+    }
+    @keyframes tilt-in-3d {
+      from { opacity: 0; transform: perspective(1600px) rotateX(20deg) translateZ(-100px); }
+      to   { opacity: 1; transform: perspective(1600px) rotateX(0) translateZ(0); }
+    }
+
+    .reveal .slides section.effect-zoom-blur.present {
+      animation: zoom-blur 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
+    }
+    @keyframes zoom-blur {
+      from { opacity: 0; transform: scale(1.5); filter: blur(20px); }
+      to   { opacity: 1; transform: scale(1); filter: blur(0); }
+    }
+
+    .reveal .slides section.effect-slide-stack.present > * {
+      animation: stack-in 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
+    }
+    .reveal .slides section.effect-slide-stack.present > *:nth-child(1) { animation-delay: 0.0s; }
+    .reveal .slides section.effect-slide-stack.present > *:nth-child(2) { animation-delay: 0.08s; }
+    .reveal .slides section.effect-slide-stack.present > *:nth-child(3) { animation-delay: 0.16s; }
+    .reveal .slides section.effect-slide-stack.present > *:nth-child(4) { animation-delay: 0.24s; }
+    .reveal .slides section.effect-slide-stack.present > *:nth-child(5) { animation-delay: 0.32s; }
+    .reveal .slides section.effect-slide-stack.present > *:nth-child(6) { animation-delay: 0.40s; }
+    @keyframes stack-in {
+      from { opacity: 0; transform: translateY(24px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* --- Per-element decorations --- */
+
+    .reveal .effect-fold-shadow blockquote,
+    .reveal .effect-fold-shadow .card {
+      position: relative;
+      clip-path: polygon(0 0, 100% 0, 100% calc(100% - 24px), calc(100% - 24px) 100%, 0 100%);
+      background: linear-gradient(135deg, transparent 0, transparent 70%, rgba(0,0,0,0.15) 100%);
+    }
+
+    .reveal .effect-pattern-stitch blockquote,
+    .reveal .effect-pattern-stitch .card,
+    .reveal .effect-pattern-stitch pre {
+      border: 1.5px dashed var(--r-accent-color);
+      border-radius: 0;
+    }
+
+    .reveal .effect-decal-edge img,
+    .reveal .effect-decal-edge .card {
+      clip-path: polygon(2% 0, 100% 1%, 99% 100%, 0 98%);
+      filter: drop-shadow(0 6px 24px rgba(0,0,0,0.35));
+    }
+
+    .reveal .effect-marginalia {
+      position: relative;
+    }
+    .reveal .effect-marginalia .marginalia-note {
+      position: absolute;
+      right: 2%;
+      font-style: italic;
+      font-size: 0.5em;
+      opacity: 0.6;
+      max-width: 18%;
+      text-align: left;
+    }
+
+    .reveal .effect-marginalia .marginalia-note::before {
+      content: '';
+      display: block;
+      border-top: 1px dotted currentColor;
+      width: 100%;
+      margin-bottom: 4px;
+    }
+
+    /* ========================================================================
+       END BESPOKE EFFECTS LAYER
+       ======================================================================== */
   </style>
 </head>
 <body>
 
+
+  <!-- ===================== INLINE SVG FILTER LIBRARY =====================
+       Reusable filter primitives. Referenced from CSS via filter: url(#name).
+       Keep ids stable — style-guide.md § Bespoke effects layer documents them.
+       ===================================================================== -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <!-- Soft displacement: subtle ripple, good for kiss-impression / ink-bleed -->
+      <filter id="filter-displace-soft" x="-5%" y="-5%" width="110%" height="110%">
+        <feTurbulence type="fractalNoise" baseFrequency="0.02 0.04" numOctaves="2" seed="7" result="noise"/>
+        <feDisplacementMap in="SourceGraphic" in2="noise" scale="1.5" xChannelSelector="R" yChannelSelector="G"/>
+      </filter>
+
+      <!-- Strong displacement: organic warp, useful on display headings -->
+      <filter id="filter-displace-strong" x="-10%" y="-10%" width="120%" height="120%">
+        <feTurbulence type="fractalNoise" baseFrequency="0.012" numOctaves="3" seed="3" result="noise"/>
+        <feDisplacementMap in="SourceGraphic" in2="noise" scale="6" xChannelSelector="R" yChannelSelector="G"/>
+      </filter>
+
+      <!-- Letterpress kiss-impression bleed -->
+      <filter id="filter-displace-bleed" x="-5%" y="-5%" width="110%" height="110%">
+        <feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="2" seed="11" result="bleed"/>
+        <feDisplacementMap in="SourceGraphic" in2="bleed" scale="0.6" xChannelSelector="R" yChannelSelector="G"/>
+      </filter>
+
+      <!-- Lit relief / emboss -->
+      <filter id="filter-emboss" x="-5%" y="-5%" width="110%" height="110%">
+        <feGaussianBlur in="SourceAlpha" stdDeviation="1.5" result="blur"/>
+        <feSpecularLighting in="blur" surfaceScale="3" specularConstant="0.9" specularExponent="20" lighting-color="white" result="light">
+          <feDistantLight azimuth="135" elevation="60"/>
+        </feSpecularLighting>
+        <feComposite in="light" in2="SourceAlpha" operator="in" result="lit"/>
+        <feMerge>
+          <feMergeNode in="SourceGraphic"/>
+          <feMergeNode in="lit"/>
+        </feMerge>
+      </filter>
+
+      <!-- High-contrast B&W with halo (photogram) -->
+      <filter id="filter-photogram" x="-5%" y="-5%" width="110%" height="110%">
+        <feColorMatrix type="matrix" values="0.4 0.4 0.4 0 0
+                                              0.4 0.4 0.4 0 0
+                                              0.4 0.4 0.4 0 0
+                                              0   0   0   1 0"/>
+        <feComponentTransfer>
+          <feFuncR type="discrete" tableValues="0 1"/>
+          <feFuncG type="discrete" tableValues="0 1"/>
+          <feFuncB type="discrete" tableValues="0 1"/>
+        </feComponentTransfer>
+        <feGaussianBlur stdDeviation="0.3" result="halo"/>
+        <feMerge>
+          <feMergeNode in="halo"/>
+          <feMergeNode in="SourceGraphic"/>
+        </feMerge>
+      </filter>
+
+      <!-- Wood-veneer marquetry -->
+      <filter id="filter-veneer" x="-5%" y="-5%" width="110%" height="110%">
+        <feTurbulence type="turbulence" baseFrequency="0.04 0.5" numOctaves="2" seed="19" result="grain"/>
+        <feColorMatrix in="grain" type="matrix" values="0 0 0 0 0.4
+                                                         0 0 0 0 0.25
+                                                         0 0 0 0 0.1
+                                                         0 0 0 0.4 0" result="wood"/>
+        <feComposite in="wood" in2="SourceAlpha" operator="in" result="grainedFill"/>
+        <feMerge>
+          <feMergeNode in="SourceGraphic"/>
+          <feMergeNode in="grainedFill"/>
+        </feMerge>
+      </filter>
+
+      <!-- Blueprint cyan tint -->
+      <filter id="filter-blueprint">
+        <feColorMatrix type="matrix" values="0   0   0   0 0
+                                              0.2 0.6 1   0 0.05
+                                              0.4 0.8 1   0 0.1
+                                              0   0   0   1 0"/>
+      </filter>
+
+      <!-- Generic glow halo -->
+      <filter id="filter-glow" x="-30%" y="-30%" width="160%" height="160%">
+        <feGaussianBlur stdDeviation="6" result="glow"/>
+        <feMerge>
+          <feMergeNode in="glow"/>
+          <feMergeNode in="SourceGraphic"/>
+        </feMerge>
+      </filter>
+
+      <!-- Grain texture (used as background pattern via feImage in CSS) -->
+      <filter id="filter-grain">
+        <feTurbulence type="fractalNoise" baseFrequency="0.65" numOctaves="2" stitchTiles="stitch"/>
+        <feColorMatrix values="0 0 0 0 0
+                               0 0 0 0 0
+                               0 0 0 0 0
+                               0 0 0 0.7 0"/>
+      </filter>
+    </defs>
+  </svg>
 
   <!-- ===================== THREE-STATE UI ===================== -->
 
@@ -268,10 +702,13 @@
    *       "attribution": "Quote author",
    *       "background": "#hex or image URL",
    *       "notes": "Speaker notes",
-   *       "fragments": true  // animate bullets one by one
+   *       "fragments": true,         // animate bullets one by one
+   *       "effects": ["effect-aurora-bg", "effect-displaced-heading", "effect-3d-flip-in"]
+   *                                  // space-joined onto the section's class.
+   *                                  // see style-guide.md § Effects vocabulary.
    *     }
    *   ],
-   *   "theme": "midnight-aurora",
+   *   "theme": "stardust-derived",
    *   "themeCSS": "@import url(...); :root { --r-background-color: ... } ...",
    *   "transition": "slide" | "fade" | "convex" | "none"
    * }
@@ -296,7 +733,7 @@
    * Theme change (with full custom CSS):
    * {
    *   "action": "update-theme",
-   *   "theme": "midnight-aurora",
+   *   "theme": "stardust-derived",
    *   "themeCSS": "@import url(...); :root { --r-background-color: ... } ..."
    * }
    *
@@ -329,6 +766,8 @@
     '  --r-main-color: #eee;',
     '  --r-heading-font: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;',
     '  --r-heading-color: #fff;',
+    '  --r-accent-color: #36d6a8;',
+    '  --r-accent-secondary: #5b8af5;',
     '  --r-link-color: #42affa;',
     '  --r-link-color-hover: #8dcffc;',
     '}',
@@ -343,6 +782,8 @@
     '  --r-main-color: #222;',
     '  --r-heading-font: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;',
     '  --r-heading-color: #111;',
+    '  --r-accent-color: #d64077;',
+    '  --r-accent-secondary: #7c3aed;',
     '  --r-link-color: #2a76dd;',
     '  --r-link-color-hover: #6ca0e8;',
     '}',
@@ -350,7 +791,7 @@
   ].join('\n');
 
   // Light-themed keywords — if the theme name contains any of these, use light fallback
-  const LIGHT_THEME_KEYWORDS = ['light', 'white', 'clean', 'beige', 'serif', 'simple', 'solarized'];
+  const LIGHT_THEME_KEYWORDS = ['light', 'white', 'clean', 'beige', 'serif', 'simple', 'solarized', 'paper', 'dune', 'frost', 'rose', 'cream'];
 
   // --- Helpers ---
   function setState(name) {
@@ -364,6 +805,14 @@
     if (!str) return '';
     return str.replace(/&/g, '&amp;').replace(/</g, '&lt;')
               .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  // Safe class string from slide.effects array (validates against known prefix).
+  function effectClasses(effects) {
+    if (!effects || !Array.isArray(effects)) return '';
+    return effects
+      .filter(function(e) { return typeof e === 'string' && /^effect-[a-z0-9-]+$/.test(e); })
+      .join(' ');
   }
 
   // --- Slide rendering ---
@@ -389,51 +838,59 @@
       ? '<aside class="notes">' + escHtml(slide.notes) + '</aside>'
       : '';
 
+    var fx = effectClasses(slide.effects);
+    // data-text on h1/h2 enables effect-misregister's ::before to mirror the heading
+    var titleAttrs = slide.title ? ' data-text="' + escHtml(slide.title) + '"' : '';
+
+    function classOf(base) {
+      return (base + (fx ? ' ' + fx : '')).trim();
+    }
+
     switch (slide.type) {
       case 'title':
-        return '<section class="title-slide"' + bg + '>'
-          + '<h1>' + escHtml(slide.title || '') + '</h1>'
+        return '<section class="' + classOf('title-slide') + '"' + bg + '>'
+          + '<h1' + titleAttrs + '>' + escHtml(slide.title || '') + '</h1>'
           + (slide.subtitle ? '<p class="slide-subtitle">' + escHtml(slide.subtitle) + '</p>' : '')
           + notes + '</section>';
 
       case 'section':
-        return '<section class="section-slide"' + bg + '>'
-          + '<h2>' + escHtml(slide.title || '') + '</h2>'
+        return '<section class="' + classOf('section-slide') + '"' + bg + '>'
+          + '<h2' + titleAttrs + '>' + escHtml(slide.title || '') + '</h2>'
           + (slide.subtitle ? '<p class="slide-subtitle">' + escHtml(slide.subtitle) + '</p>' : '')
           + notes + '</section>';
 
       case 'content':
-        return '<section' + bg + '>'
-          + (slide.title ? '<h2>' + escHtml(slide.title) + '</h2>' : '')
+        return '<section' + (fx ? ' class="' + fx + '"' : '') + bg + '>'
+          + (slide.title ? '<h2' + titleAttrs + '>' + escHtml(slide.title) + '</h2>' : '')
           + (slide.content ? '<div>' + slide.content + '</div>' : '')
           + (slide.bullets ? renderBullets(slide.bullets, slide.fragments) : '')
           + notes + '</section>';
 
       case 'code':
-        return '<section' + bg + '>'
-          + (slide.title ? '<h2>' + escHtml(slide.title) + '</h2>' : '')
+        return '<section' + (fx ? ' class="' + fx + '"' : '') + bg + '>'
+          + (slide.title ? '<h2' + titleAttrs + '>' + escHtml(slide.title) + '</h2>' : '')
           + '<pre><code class="' + (slide.language || '') + '" data-trim data-noescape>'
           + escHtml(slide.code || '') + '</code></pre>'
           + notes + '</section>';
 
       case 'quote':
-        return '<section class="quote-slide"' + bg + '>'
-          + (slide.title ? '<h2>' + escHtml(slide.title) + '</h2>' : '')
+        return '<section class="' + classOf('quote-slide') + '"' + bg + '>'
+          + (slide.title ? '<h2' + titleAttrs + '>' + escHtml(slide.title) + '</h2>' : '')
           + '<blockquote>' + escHtml(slide.quote || '') + '</blockquote>'
           + (slide.attribution ? '<p class="attribution">— ' + escHtml(slide.attribution) + '</p>' : '')
           + notes + '</section>';
 
       case 'image':
-        return '<section' + bg + '>'
-          + (slide.title ? '<h2>' + escHtml(slide.title) + '</h2>' : '')
+        return '<section' + (fx ? ' class="' + fx + '"' : '') + bg + '>'
+          + (slide.title ? '<h2' + titleAttrs + '>' + escHtml(slide.title) + '</h2>' : '')
           + (slide.src ? '<img src="' + escHtml(slide.src) + '" alt="' + escHtml(slide.alt || slide.title || '') + '" style="max-height: 60vh; max-width: 90%; object-fit: contain;">' : '')
           + (slide.content ? '<div>' + slide.content + '</div>' : '')
           + notes + '</section>';
 
       default:
         // Fallback: treat as generic content slide
-        return '<section' + bg + '>'
-          + (slide.title ? '<h2>' + escHtml(slide.title) + '</h2>' : '')
+        return '<section' + (fx ? ' class="' + fx + '"' : '') + bg + '>'
+          + (slide.title ? '<h2' + titleAttrs + '>' + escHtml(slide.title) + '</h2>' : '')
           + (slide.content ? '<div>' + slide.content + '</div>' : '')
           + (slide.bullets ? renderBullets(slide.bullets, slide.fragments) : '')
           + notes + '</section>';
