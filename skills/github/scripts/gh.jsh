@@ -364,20 +364,24 @@ async function issueList(args) {
 // ─── issue create ────────────────────────────────────────────────────────────
 
 async function issueCreate(args) {
-  const labels = [];
+  const usage = 'usage: gh issue create <title> <body> [--label=L]... [--labels=a,b] [repo]';
+  const labelSet = new Set();
   const positional = [];
   for (const a of args) {
-    if (a.startsWith('--label=')) labels.push(a.slice(8));
-    else if (a.startsWith('--labels=')) labels.push(...a.slice(9).split(',').map(s => s.trim()).filter(Boolean));
-    else positional.push(a);
+    if (a.startsWith('--label=')) {
+      const v = a.slice(8).trim();
+      if (v) labelSet.add(v);
+    } else if (a.startsWith('--labels=')) {
+      for (const v of a.slice(9).split(',').map(s => s.trim()).filter(Boolean)) labelSet.add(v);
+    } else positional.push(a);
   }
-  if (!positional[0]) die('issue create: title required');
-  if (positional[1] === undefined) die('issue create: body required');
+  if (!positional[0]) die('issue create: title required\n' + usage);
+  if (positional[1] === undefined) die('issue create: body required\n' + usage);
   const [title, body] = positional;
   const repo = await resolveRepo(positional[2]);
 
   const payload = { title, body };
-  if (labels.length) payload.labels = labels;
+  if (labelSet.size) payload.labels = [...labelSet];
 
   try {
     const res = await api(`/repos/${repo}/issues`, {
@@ -885,7 +889,7 @@ function showHelp() {
   console.log('  ' + C.cyan('pr checkout') + '   <num> [repo]                 Print checkout commands');
   console.log('  ' + C.cyan('issue list') + '    [repo]                       List open issues');
   console.log('  ' + C.cyan('issue view') + '    <num> [repo]                 View issue details');
-  console.log('  ' + C.cyan('issue create') + '  <title> <body> [--label=L]... [repo]  Create a new issue');
+  console.log('  ' + C.cyan('issue create') + '  <title> <body> [--label=L]... [--labels=a,b] [repo]  Create issue');
   console.log('  ' + C.cyan('repo view') + '     [repo]                       Show repository info');
   console.log('  ' + C.cyan('run list') + '      [repo]                       List recent workflow runs');
   console.log('  ' + C.cyan('run view') + '      <run_id> [repo]              View run details and jobs');
