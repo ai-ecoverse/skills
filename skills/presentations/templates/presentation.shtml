@@ -547,7 +547,9 @@
     .reveal .effect-speckled-bg h1,
     .reveal .effect-speckled-bg h2,
     .reveal .effect-blueprint-bg h1,
-    .reveal .effect-blueprint-bg h2 {
+    .reveal .effect-blueprint-bg h2,
+    .reveal .effect-shader-bg h1,
+    .reveal .effect-shader-bg h2 {
       text-shadow:
         0 0 14px var(--r-background-color),
         0 0 28px var(--r-background-color);
@@ -558,7 +560,9 @@
     .reveal .effect-conic-bg p,
     .reveal .effect-conic-bg li,
     .reveal .effect-speckled-bg p,
-    .reveal .effect-speckled-bg li {
+    .reveal .effect-speckled-bg li,
+    .reveal .effect-shader-bg p,
+    .reveal .effect-shader-bg li {
       text-shadow:
         0 0 8px var(--r-background-color),
         0 0 16px var(--r-background-color);
@@ -890,6 +894,47 @@
        no padding, no auto title. */
     .reveal .slides section.html-slide {
       text-align: initial;
+    }
+
+    /* effect-shader-bg — Paper Shaders WebGL backgrounds.
+       Set effect-shader-bg on the section and data-shader="meshGradient
+       |dithering|voronoi|smokeRing|metaballs|neuroNoise|grainGradient" on
+       the section. The runtime mounts a full-bleed canvas behind the slide
+       content, themed from stardust tokens. Replaces several CSS-only bg
+       effects with a unified WebGL pipeline (~30KB tree-shaken). */
+    .reveal .slides section.effect-shader-bg {
+      position: relative;
+      isolation: isolate;
+      overflow: hidden;
+    }
+    .reveal .slides section.effect-shader-bg > .shader-canvas {
+      position: absolute;
+      inset: 0;
+      z-index: -1;
+      pointer-events: none;
+    }
+
+    /* code-magic — Shiki Magic Move slide variant. Token-level FLIP
+       between successive code states. The slide carries a steps array;
+       reveal fragments advance from one state to the next. */
+    .reveal .slides section.code-magic-slide {
+      text-align: left;
+    }
+    .reveal .slides section.code-magic-slide .magic-stage {
+      font-family: var(--r-mono-font, var(--r-main-font));
+      font-size: 0.7em;
+      line-height: 1.5;
+      background: color-mix(in oklab, var(--r-background-color) 80%, black);
+      border-radius: 6px;
+      padding: 0.8em 1em;
+      max-width: 92%;
+      margin: 1em auto;
+      overflow: hidden;
+      position: relative;
+    }
+    .reveal .slides section.code-magic-slide .magic-loading {
+      opacity: 0.5;
+      font-style: italic;
     }
 
     /* chart — live charts via Mermaid (default), Chart.js, or Observable Plot.
@@ -1398,7 +1443,8 @@
    *       "type": "title" | "content" | "code" | "quote" | "image" | "section"
    *             | "big-word" | "metric" | "comparison" | "process"
    *             | "timeline" | "definition" | "cards" | "diagram"
-   *             | "chart"  | "zoom-overview" | "zoom-detail" | "recap" | "html",
+   *             | "chart"  | "code-magic" | "zoom-overview" | "zoom-detail"
+   *             | "recap"  | "html",
    *
    *       // Common fields:
    *       "title": "Slide Title",
@@ -1429,6 +1475,13 @@
    *       "caption": "...",                                              // diagram caption
    *       "engine": "mermaid" | "chartjs" | "plot",                      // chart — engine choice (default: mermaid)
    *       "chart": "graph TD; A-->B" | { type: "bar", data: {...} },    // chart — string for mermaid, object for chartjs/plot
+   *       "steps": ["const x = 1", "const x = 1\\nconst y = x + 1"],    // code-magic — successive code states; click advances step
+   *       "language": "javascript",                                      // code-magic / code — Shiki lang id
+   *       "codeTheme": "github-dark-default",                            // code-magic — Shiki theme id
+   *       "shader": "meshGradient",                                      // effect-shader-bg — Paper Shaders name
+   *                  // (meshGradient | dithering | voronoi | smokeRing
+   *                  //  | metaballs | neuroNoise | grainGradient)
+   *       "shaderConfig": { "speed": 0.4, "scale": 1.2 },                // optional per-shader options
    *       "regions": [ { "id": "north", "label": "..." } ],              // zoom-overview
    *       "regionId": "north",                                           // zoom-detail (links to overview region)
    *       "html": "<style>...</style><script>...</script><div>...</div>",
@@ -1825,6 +1878,158 @@
     Array.prototype.forEach.call(targets, renderChartTarget);
   }
 
+  // ===== Paper Shaders backgrounds =====
+  // Lazy-loaded; mounts a canvas inside any section.effect-shader-bg.
+  // The shader name is read from data-shader; an opt-in data-shader-config
+  // attribute can pass JSON to override defaults (speed, scale, colors).
+  var __shaderLib = null;
+  function loadShaderLib() {
+    if (__shaderLib) return __shaderLib;
+    __shaderLib = import('https://esm.sh/@paper-design/shaders@0.0.51')
+      .catch(function() {
+        // Fallback CDN
+        return import('https://cdn.jsdelivr.net/npm/@paper-design/shaders@0.0.51/+esm');
+      });
+    return __shaderLib;
+  }
+
+  function shaderColorsFromTokens() {
+    var s = getComputedStyle(document.documentElement);
+    return [
+      s.getPropertyValue('--r-accent-color').trim() || '#36d6a8',
+      s.getPropertyValue('--r-accent-secondary').trim() || '#5b8af5',
+      s.getPropertyValue('--r-background-color').trim() || '#0a0a0a',
+    ];
+  }
+
+  function mountShaderBg(section) {
+    if (!section || section.dataset.shaderMounted === '1') return;
+    var name = section.dataset.shader || 'meshGradient';
+    section.dataset.shaderMounted = '1';
+    var canvas = document.createElement('canvas');
+    canvas.className = 'shader-canvas';
+    canvas.width = 1280; canvas.height = 720;
+    section.insertBefore(canvas, section.firstChild);
+
+    loadShaderLib().then(function(lib) {
+      var Ctor = lib && (lib[name] || (lib.default && lib.default[name]));
+      if (!Ctor) {
+        console.warn('[shader] unknown shader', name, '— available:', lib && Object.keys(lib));
+        return;
+      }
+      var colors = shaderColorsFromTokens();
+      var defaults = { colors: colors, speed: 0.4, scale: 1.0 };
+      var userConfig = {};
+      try { userConfig = JSON.parse(section.dataset.shaderConfig || '{}'); } catch (e) {}
+      var config = Object.assign({}, defaults, userConfig);
+      try {
+        var instance = new Ctor(canvas, config);
+        if (instance && typeof instance.start === 'function') instance.start();
+        section.__shaderInstance = instance;
+      } catch (err) {
+        console.error('[shader] init failed', err);
+      }
+    }).catch(function(err) {
+      console.error('[shader] load failed', err);
+    });
+  }
+
+  function mountAllShaderBgs(container) {
+    var sections = container.querySelectorAll('section.effect-shader-bg');
+    Array.prototype.forEach.call(sections, mountShaderBg);
+  }
+
+  // ===== Shiki Magic Move — token-level code morphs =====
+  // Slide carries steps: [code1, code2, code3]. Each click advances to the
+  // next state; the FLIP animation morphs tokens between states. The agent
+  // can also set `lang` and `theme` (default reads from --r-* tokens).
+  var __magicMoveLib = null;
+  function loadMagicMove() {
+    if (__magicMoveLib) return __magicMoveLib;
+    __magicMoveLib = Promise.all([
+      import('https://esm.sh/shiki@1.22.2'),
+      import('https://esm.sh/shiki-magic-move@0.5.0/renderer')
+    ]).then(function(mods) {
+      return { shiki: mods[0], magic: mods[1] };
+    });
+    return __magicMoveLib;
+  }
+
+  function mountMagicMoveSlide(section) {
+    if (!section || section.dataset.magicMounted === '1') return;
+    section.dataset.magicMounted = '1';
+    var stage = section.querySelector('.magic-stage');
+    if (!stage) return;
+    var steps;
+    try { steps = JSON.parse(stage.dataset.steps || '[]'); } catch (e) { steps = []; }
+    var lang = stage.dataset.lang || 'javascript';
+    var theme = stage.dataset.theme || 'github-dark-default';
+    if (!steps.length) {
+      stage.innerHTML = '<div class="magic-loading">no steps supplied</div>';
+      return;
+    }
+    var stepIdx = 0;
+    loadMagicMove().then(function(libs) {
+      var shiki = libs.shiki;
+      var magic = libs.magic;
+      return shiki.createHighlighter({
+        themes: [theme],
+        langs: [lang]
+      }).then(function(highlighter) {
+        var renderer = magic.createMagicMoveRenderer(stage);
+        function showStep(i) {
+          if (i < 0 || i >= steps.length) return;
+          var tokens = magic.codeToKeyedTokens(highlighter, steps[i], { lang: lang, theme: theme });
+          renderer.render(tokens, { duration: 600 });
+        }
+        showStep(0);
+        // Wire reveal.js fragmentshown to advance steps
+        if (revealInstance) {
+          revealInstance.on('fragmentshown', function(ev) {
+            if (!section.contains(ev.fragment)) return;
+            stepIdx = Math.min(stepIdx + 1, steps.length - 1);
+            showStep(stepIdx);
+          });
+          revealInstance.on('fragmenthidden', function(ev) {
+            if (!section.contains(ev.fragment)) return;
+            stepIdx = Math.max(stepIdx - 1, 0);
+            showStep(stepIdx);
+          });
+        }
+        // Insert hidden fragment markers so reveal advances click-by-click
+        for (var k = 1; k < steps.length; k++) {
+          var f = document.createElement('span');
+          f.className = 'fragment';
+          f.style.display = 'none';
+          f.setAttribute('data-fragment-index', k);
+          stage.appendChild(f);
+        }
+      });
+    }).catch(function(err) {
+      stage.innerHTML = '<div class="magic-loading">magic-move failed: ' + escHtml(err.message) + '</div>';
+      console.error('[magic-move] failed', err);
+    });
+  }
+
+  function mountAllMagicMoveSlides(container) {
+    var sections = container.querySelectorAll('section.code-magic-slide');
+    Array.prototype.forEach.call(sections, mountMagicMoveSlide);
+  }
+
+  function renderCodeMagic(slide) {
+    var steps = Array.isArray(slide.steps) ? slide.steps : [];
+    var lang = typeof slide.language === 'string' ? slide.language : 'javascript';
+    var theme = typeof slide.codeTheme === 'string' ? slide.codeTheme : 'github-dark-default';
+    var stepsJson = '';
+    try { stepsJson = JSON.stringify(steps); } catch (e) { stepsJson = '[]'; }
+    return '<div class="magic-stage" '
+      + 'data-steps="' + escHtml(stepsJson) + '" '
+      + 'data-lang="' + escHtml(lang) + '" '
+      + 'data-theme="' + escHtml(theme) + '">'
+      + '<div class="magic-loading">loading magic-move…</div>'
+      + '</div>';
+  }
+
   function renderZoomOverview(slide) {
     var regions = Array.isArray(slide.regions) ? slide.regions : [];
     var inner = slide.diagram
@@ -1875,6 +2080,14 @@
     }
     if (typeof slide.autoslide === 'number' && slide.autoslide > 0) {
       bg += ' data-autoslide="' + (slide.autoslide | 0) + '"';
+    }
+    // effect-shader-bg wiring: pass data-shader / data-shader-config through
+    if (slide.shader && /^[a-zA-Z]+$/.test(slide.shader)) {
+      bg += ' data-shader="' + slide.shader + '"';
+    }
+    if (slide.shaderConfig && typeof slide.shaderConfig === 'object') {
+      try { bg += ' data-shader-config="' + escHtml(JSON.stringify(slide.shaderConfig)) + '"'; }
+      catch (e) {}
     }
     var notes = slide.notes
       ? '<aside class="notes">' + escHtml(slide.notes) + '</aside>'
@@ -1972,6 +2185,9 @@
 
       case 'chart':
         return wrap('chart-slide', renderChart(slide));
+
+      case 'code-magic':
+        return wrap('code-magic-slide', renderCodeMagic(slide));
 
       case 'zoom-overview':
         return '<section class="' + classOf('zoom-overview') + '"' + bg + '>'
@@ -2131,6 +2347,8 @@
     container.innerHTML = slides.map(renderSlide).join('\n');
     rehydrateHtmlSlideScripts(container);
     renderAllChartTargets(container);
+    mountAllShaderBgs(container);
+    mountAllMagicMoveSlides(container);
     applyRapidAutoslide();
 
     if (revealInstance) {
@@ -2238,6 +2456,14 @@
           if (fresh) {
             var newCharts = fresh.querySelectorAll('.chart-target');
             Array.prototype.forEach.call(newCharts, renderChartTarget);
+            // Mount shader bg if applicable
+            if (fresh.classList && fresh.classList.contains('effect-shader-bg')) {
+              mountShaderBg(fresh);
+            }
+            // Mount magic-move if applicable
+            if (fresh.classList && fresh.classList.contains('code-magic-slide')) {
+              mountMagicMoveSlide(fresh);
+            }
           }
           if (revealInstance) revealInstance.sync();
         }

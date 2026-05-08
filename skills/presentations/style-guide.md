@@ -350,6 +350,7 @@ Every deck applies effects from this catalog via the per-slide `effects` array. 
 | `effect-conic-bg` | `@property --rot` 60deg/sec conic-gradient with 8 stops | light, gradient |
 | `effect-speckled-bg` | radial-gradient mosaic, pseudo-random distribution via box-shadow stack | light, terrazzo |
 | `effect-blueprint-bg` | feColorMatrix to cyan-on-blueprint + line-art `radial-gradient` overlay | dark |
+| `effect-shader-bg` | **WebGL background via Paper Shaders.** Set `data-shader="meshGradient\|dithering\|voronoi\|smokeRing\|metaballs\|neuroNoise\|grainGradient"` on the section. Optional `data-shader-config="<json>"` for `speed`, `scale`, custom `colors`. ~30 KB tree-shaken; loaded lazily. Replaces several CSS-only bg effects with one unified pipeline. | dark or light |
 
 #### Heading effects (apply to slide section, target h1/h2)
 
@@ -436,6 +437,7 @@ Bullet-list `content` slides are **one of fourteen types**, not the default. A d
 | `cards` | 2x2, 3x2, or 3x3 grid of mini-cards with icon + title + body. Feature list, principles, team. | `cards: { layout, items: [{ icon, title, description }] }` |
 | `diagram` | Agent-supplied SVG or HTML. Architecture, flow, map. | `diagram: "<svg>...</svg>"`, optional `caption` |
 | `chart` | **Live data viz.** Three engines: `mermaid` (flowcharts/sequence/state — default), `chartjs` (bar/line/donut), `plot` (Observable Plot grammar-of-graphics). Engine library is loaded lazily from CDN on first use; stardust accent/text colors auto-applied. | `engine: "mermaid"\|"chartjs"\|"plot"`, `chart: <string\|object>`, optional `caption` |
+| `code-magic` | **Token-level code morph (Shiki Magic Move).** Pass an array of successive code states; clicking advances to the next, with smooth FLIP between tokens. The audience sees a function refactor itself in real time. Lazy-loads Shiki + magic-move from CDN. | `steps: [string, string, ...]`, optional `language` (default `javascript`), optional `codeTheme` (default `github-dark-default`) |
 | `quote` | Single quote, max 3 lines. | `quote`, optional `attribution` |
 | `image` | Hero image + heading + optional caption. | `src`, `alt` |
 | `code` | Code block, 8–10 lines, syntax-highlighted. | `code`, `language` |
@@ -501,6 +503,45 @@ The `chart` type loads its rendering engine lazily from CDN on first use. Each e
 - Static structural diagram (flow, sequence, state, gantt) → mermaid.
 - Quick bar / line / donut with stardust theming → chartjs.
 - Anything statistical, faceted, or with multiple mark layers → plot.
+
+### The `code-magic` slide — token-level code morphs
+
+Shiki Magic Move animates between successive code states at the token level — function refactors play out as a smooth FLIP animation. Best for talks where you teach by transformation: refactoring, optimisation passes, or "before / after this change" code reveals.
+
+```json
+{
+  "type": "code-magic",
+  "title": "Extracting the helper",
+  "language": "typescript",
+  "steps": [
+    "function compute(items) {\n  return items.reduce((a, x) => a + x.price * x.qty, 0);\n}",
+    "function compute(items) {\n  return items.reduce((a, x) => a + lineTotal(x), 0);\n}\n\nfunction lineTotal(item) {\n  return item.price * item.qty;\n}",
+    "function compute(items) {\n  return items.reduce((a, x) => a + lineTotal(x), 0);\n}\n\nfunction lineTotal({ price, qty }) {\n  return price * qty;\n}"
+  ]
+}
+```
+
+Each click advances one step; clicking back walks the morph in reverse. Cap at 6 steps per slide — beyond that the audience loses the thread.
+
+### The `effect-shader-bg` — WebGL backgrounds
+
+Paper Shaders ([shaders.paper.design](https://shaders.paper.design/)) gives us seven WebGL backgrounds in ~30 KB: `meshGradient`, `dithering`, `voronoi`, `smokeRing`, `metaballs`, `neuroNoise`, `grainGradient`. Each is themed automatically from `--r-accent-color`, `--r-accent-secondary`, `--r-background-color`.
+
+Use the data-contract `shader` and `shaderConfig` fields together with `effect-shader-bg` in the `effects` array. The renderer copies them onto the section as `data-shader` and `data-shader-config`; mountShaderBg picks them up and inserts a full-bleed canvas behind the slide content.
+
+```json
+{
+  "type": "big-word",
+  "word": "FLOW",
+  "effects": ["effect-shader-bg"],
+  "shader": "meshGradient",
+  "shaderConfig": { "speed": 0.3, "scale": 1.2 }
+}
+```
+
+Works with any slide type — title, big-word, metric, quote, html. The `shaderConfig` is optional (sane defaults derived from stardust tokens). Available shaders: `meshGradient`, `dithering`, `voronoi`, `smokeRing`, `metaballs`, `neuroNoise`, `grainGradient`.
+
+Pair carefully with text effects: shader backgrounds are busy. The contrast-protection layer auto-applies text-shadow halos on h1/h2/p/li when `effect-shader-bg` is present, but for `effect-holographic` or `effect-chromatic-aberration` headings, also add `text-protect` class to the heading container.
 
 ### The `html` escape hatch — full power
 
@@ -780,6 +821,7 @@ Maximum content per slide type. **Never exceed these limits.**
 | `cards` | 1 heading + 4 cards (2×2) or 6 cards (3×2) or 9 cards (3×3) |
 | `diagram` | 1 heading + 1 diagram + optional caption |
 | `chart` | 1 heading + 1 chart (≤8 series, ≤20 categories before axis becomes unreadable) + optional caption |
+| `code-magic` | 2–6 steps (each ≤12 lines). Beyond 6 steps, the audience loses the thread; split into multiple slides. |
 | `content` | 1 heading + 4–6 bullets OR 2 short paragraphs |
 | `code` | 1 heading + 8–12 lines of code |
 | `quote` | 1 quote (max 3 lines) + attribution |
