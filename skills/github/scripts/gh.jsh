@@ -361,6 +361,33 @@ async function issueList(args) {
   console.log(table(rows, [6, 62]));
 }
 
+// ─── issue create ────────────────────────────────────────────────────────────
+
+async function issueCreate(args) {
+  const labels = [];
+  const positional = [];
+  for (const a of args) {
+    if (a.startsWith('--label=')) labels.push(a.slice(8));
+    else if (a.startsWith('--labels=')) labels.push(...a.slice(9).split(',').map(s => s.trim()).filter(Boolean));
+    else positional.push(a);
+  }
+  if (!positional[0]) die('issue create: title required');
+  if (positional[1] === undefined) die('issue create: body required');
+  const [title, body] = positional;
+  const repo = await resolveRepo(positional[2]);
+
+  const payload = { title, body };
+  if (labels.length) payload.labels = labels;
+
+  try {
+    const res = await api(`/repos/${repo}/issues`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    console.log(sym('success') + ' Created issue ' + C.cyan('#' + res.number) + ' — ' + res.html_url);
+  } catch (e) { fail('issue create', e); }
+}
+
 // ─── issue view ──────────────────────────────────────────────────────────────
 
 async function issueView(args) {
@@ -858,6 +885,7 @@ function showHelp() {
   console.log('  ' + C.cyan('pr checkout') + '   <num> [repo]                 Print checkout commands');
   console.log('  ' + C.cyan('issue list') + '    [repo]                       List open issues');
   console.log('  ' + C.cyan('issue view') + '    <num> [repo]                 View issue details');
+  console.log('  ' + C.cyan('issue create') + '  <title> <body> [--label=L]... [repo]  Create a new issue');
   console.log('  ' + C.cyan('repo view') + '     [repo]                       Show repository info');
   console.log('  ' + C.cyan('run list') + '      [repo]                       List recent workflow runs');
   console.log('  ' + C.cyan('run view') + '      <run_id> [repo]              View run details and jobs');
@@ -869,8 +897,9 @@ function showHelp() {
   console.log('  ' + C.cyan('notifications read') + '  [--repo=r]              Mark notifications as read');
   console.log('  ' + C.cyan('monday') + '            [--limit N] [--date Nd]    Monday protocol inbox (JSON)\n');
   console.log(C.bold('AUTH'));
-  console.log('  git config github.token <PAT>');
-  console.log('  — or: export GITHUB_TOKEN=<PAT>\n');
+  console.log('  export GITHUB_TOKEN=$(oauth-token github)   # preferred for SLICC agents');
+  console.log('  git config github.token <PAT>               # persistent PAT');
+  console.log('  export GITHUB_TOKEN=<PAT>                   # session PAT\n');
   console.log(C.bold('REPO'));
   console.log('  Defaults to current git remote origin. Pass owner/repo to override.');
 }
@@ -892,7 +921,7 @@ if (cmd === 'monday') { await mondayGh(argv.slice(2)); process.exit(0); }
 
 const dispatch = {
   pr:      { list: () => prList(rest),      view: () => prView(rest),    merge: () => prMerge(rest), comment: () => prComment(rest), checkout: () => prCheckout(rest) },
-  issue:   { list: () => issueList(rest),   view: () => issueView(rest) },
+  issue:   { list: () => issueList(rest),   view: () => issueView(rest), create: () => issueCreate(rest) },
   repo:    { view: () => repoView(rest) },
   run:     { list: () => runList(rest),     view: () => runView(rest) },
   release: { list: () => releaseList(rest) },

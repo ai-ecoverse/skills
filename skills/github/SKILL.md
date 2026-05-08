@@ -18,11 +18,19 @@ allowed_tools:
 
 ## Setup
 
-**Authentication** — store your PAT in git config:
+**Authentication** — preferred: use SLICC's OAuth provider:
 ```bash
-git config github.token <YOUR_PAT>
+export GITHUB_TOKEN=$(oauth-token github)
 ```
-Or set `GITHUB_TOKEN` as an environment variable. The token is read automatically on every invocation.
+This works out of the box for SLICC agents — no manual PAT needed. Run `oauth-token github` once interactively if not yet authorized.
+
+Alternatives (in precedence order: git config wins, then env var):
+```bash
+git config github.token <YOUR_PAT>     # persisted across shells
+export GITHUB_TOKEN=<YOUR_PAT>          # session-scoped
+```
+
+**AI attribution** — when running as an AI agent (`CLAUDECODE`, `CURSOR_AGENT`, etc.), mutating operations (`pr create/merge/comment/edit/close/review`, `issue create/edit/close/comment`, `vars set`, `release create/upload/delete`, `notifications read`) auto-trigger a device-flow auth via `as-a-bot-worker` so the action is attributed to the human user, not a bot account. The first such call prints a verification URL + code to stderr; the resulting token is cached at `/.cache/ai-aligned-gh/token`. Run `gh.jsh auth` to inspect status.
 
 **Repo defaults** — if you omit `owner/repo`, the script infers it from the current directory's `git remote get-url origin`. Pass it explicitly to override.
 
@@ -91,6 +99,15 @@ gh.jsh issue view 123
 gh.jsh issue view 123 owner/repo
 ```
 Shows title, author, URL, labels, body preview.
+
+**Create an issue**
+```bash
+gh.jsh issue create "Title" "Body text"
+gh.jsh issue create "Title" "Body text" --label=bug
+gh.jsh issue create "Title" "Body text" --label=bug --label=triage owner/repo
+gh.jsh issue create "Title" "Body text" --labels=bug,triage owner/repo
+```
+Returns the new issue number and URL. `--label=` may be repeated; `--labels=` accepts a comma-separated list. Title and body are required positional args; pass `""` for an empty body.
 
 ---
 
