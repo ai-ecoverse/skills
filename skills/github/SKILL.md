@@ -30,8 +30,6 @@ git config github.token <YOUR_PAT>     # persisted across shells
 export GITHUB_TOKEN=<YOUR_PAT>          # session-scoped
 ```
 
-**AI attribution** — when running as an AI agent (`CLAUDECODE`, `CURSOR_AGENT`, etc.), mutating operations (`pr create/merge/comment/edit/close/review`, `issue create/edit/close/comment`, `vars set`, `release create/upload/delete`, `notifications read`) auto-trigger a device-flow auth via `as-a-bot-worker` so the action is attributed to the human user, not a bot account. The first such call prints a verification URL + code to stderr; the resulting token is cached at `/.cache/ai-aligned-gh/token`. Run `gh.jsh auth` to inspect status.
-
 **Repo defaults** — if you omit `owner/repo`, the script infers it from the current directory's `git remote get-url origin`. Pass it explicitly to override.
 
 ## Running the script
