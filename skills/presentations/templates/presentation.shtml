@@ -1484,12 +1484,15 @@
    *       "shaderConfig": { "speed": 0.4, "scale": 1.2 },                // optional per-shader options
    *       "regions": [ { "id": "north", "label": "..." } ],              // zoom-overview
    *       "regionId": "north",                                           // zoom-detail (links to overview region)
-   *       "html": "<style>...</style><script>...</script><div>...</div>",
+   *       "html": "<style>...<\/style><script>...<\/script><div>...<\/div>",
    *                  // html — full section body, no chrome, NO SANITIZER.
    *                  // <script>, <style>, <iframe>, on*= handlers all
    *                  // pass through and execute. Trust model: agent
    *                  // writes the deck. Scripts are rehydrated post-
    *                  // innerHTML so they actually run.
+   *                  // (the </ in this docstring is escaped as <\/ so the
+   *                  //  HTML parser doesn't see a script-end inside the
+   *                  //  inline <script> block this whole comment lives in.)
    *       "takeaways": ["...", "...", "..."],                            // recap — 3 takeaway lines
    *       "cta": { "label": "...", "text": "..." },                      // recap — closing call-to-action
    *
