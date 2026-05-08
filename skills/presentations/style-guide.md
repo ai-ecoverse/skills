@@ -419,6 +419,147 @@ When the user specifies a mood, match to the closest anchor. When nothing is spe
 
 ---
 
+## Bespoke slide types
+
+Bullet-list `content` slides are **one of fourteen types**, not the default. A deck made of bullet slides is the bland-deck failure mode the skill exists to prevent. Pick the type that matches the *informational shape* of the slide.
+
+| Type | When to use | Required fields |
+|---|---|---|
+| `title` | Opening slide. One headline. | `title`, optional `subtitle` |
+| `section` | Act / chapter divider. Single bold headline, centered. | `title`, optional `subtitle` |
+| `big-word` | One word or short phrase fills the screen (clamp 64–220px). Default for rapid mode. | `word`, optional `accent` (substring), optional `subtitle` |
+| `metric` | Single huge number + label + optional delta. Replaces stat-callout bars. | `metric: { value, label, delta?, direction? }` |
+| `comparison` | Two columns separated by a vertical "VS". Then/now, us/them, problem/solution. | `comparison: { left, right, vs? }` where each side is `{ title, items?, content? }` |
+| `process` | Numbered horizontal steps with arrow connectors. Workflow, recipe, methodology. | `steps: [{ title, description }]` |
+| `timeline` | Vertical timeline with dated events. Roadmap, history, retrospective. | `events: [{ date, title, description }]` |
+| `definition` | Term + meaning, dictionary-entry style. Manifesto, glossary, "what we mean by X". | `definition: { term, pos?, pronunciation?, meanings: [...] }` |
+| `cards` | 2x2, 3x2, or 3x3 grid of mini-cards with icon + title + body. Feature list, principles, team. | `cards: { layout, items: [{ icon, title, description }] }` |
+| `diagram` | Agent-supplied SVG or HTML. Architecture, flow, map. | `diagram: "<svg>...</svg>"`, optional `caption` |
+| `quote` | Single quote, max 3 lines. | `quote`, optional `attribution` |
+| `image` | Hero image + heading + optional caption. | `src`, `alt` |
+| `code` | Code block, 8–10 lines, syntax-highlighted. | `code`, `language` |
+| `content` | Bulleted list. **Use sparingly** — most lists are better as `cards` or `process`. | `bullets`, optional `title`, optional `content` HTML |
+| `zoom-overview` | Mode=zoom only. Names regions to zoom into; renders as labeled chips or supplied diagram. | `regions: [{ id, label }]` or `diagram` |
+| `zoom-detail` | Mode=zoom only. Sits as a vertical sub-slide under a `zoom-overview`. | `regionId` (links back), plus content of choice |
+
+**Picking rule of thumb**: if you reach for bullets, ask first whether the items are (a) a temporal sequence → `process` or `timeline`, (b) two opposing groups → `comparison`, (c) parallel categories → `cards`, (d) a definition → `definition`, (e) a single magnitude → `metric`. Bullets are the *fallback*.
+
+---
+
+## Builds (staged element reveals)
+
+Beyond reveal.js fragments, slides take a `builds` array that maps CSS selectors to staged reveals. The renderer adds `class="fragment"` and `data-fragment-index` to matched children.
+
+```json
+"builds": [
+  { "selector": ".card", "stagger": true },        // each card reveals one after the next
+  { "selector": "h3", "at": 1 },                    // h3 reveals at fragment index 1
+  { "selector": ".timeline-event", "stagger": true }
+]
+```
+
+**Allowed selectors**: any CSS selector, but stick to class names and tag names; complex selectors get fragile across renders.
+
+**Stagger vs at**: `stagger: true` indexes matches 0, 1, 2, … so each one steps in. `at: <n>` reveals the matched elements at a specific fragment index — useful when multiple staged reveals should fire together.
+
+**When to use**:
+- `cards` — almost always stagger, so the audience absorbs each one.
+- `process`, `timeline` — stagger to match the temporal narrative.
+- `metric` — never. The number lands in one moment.
+- `quote` — never. A quote arrives whole or not at all.
+- `big-word` — never. The point of `big-word` is the impact of one beat.
+
+**Mini-animations** (CSS classes the agent can add to children for richer entrance):
+
+| Class | Effect |
+|---|---|
+| `typewriter` | Types text out character by character on slide entry. Use on `<span>` inside a heading. |
+| `counter-up` | Animates a number from 0 to its `data-target` value over 1.2s. Use `data-format="int"` for integers, `data-suffix="%"` for units. |
+| `draw-line` | Animates an SVG path's `stroke-dashoffset` to 0 — line draws itself. Use on a `<line>` or `<path>` inside a `diagram`. |
+| `flip-card` | Element flips in 3D on entrance. Use on a `cards` child. |
+| `[data-from="left\|right\|top\|bottom"]` | Element slides in from that direction on entrance. Use sparingly. |
+
+These are auto-suppressed in **rapid** mode (slides too short for animations to land).
+
+---
+
+## Presentation modes
+
+Three modes; pick one per deck via the data contract's `mode` field.
+
+### traditional
+
+Default. Manual advance. All slide types, all effects, all builds available.
+
+### zoom — big picture first, then zoom into parts
+
+A `zoom-overview` slide names regions of a larger whole; each subsequent vertical sub-slide is a `zoom-detail` that drills into one region. The detail slide entry runs an `effect-zoom-blur`-like animation by default.
+
+**Composition pattern**:
+```
+section[type=zoom-overview] (regions: north, south, east, west)
+  ↓ vertical
+  section[type=zoom-detail, regionId=north]
+  section[type=zoom-detail, regionId=south]
+  section[type=zoom-detail, regionId=east]
+  section[type=zoom-detail, regionId=west]
+section[type=section] (next chapter)
+```
+
+**Tips**:
+- Provide a `diagram` on the overview so regions sit in a real spatial layout — not just a chip list.
+- Each detail's `regionId` must match an overview region. Renderer uses this to apply the zoom transition.
+- Cap at 5 regions per overview. More than 5 and the audience loses track.
+
+### rapid — Lessig-style, ≤20 sec/slide
+
+100 slides, single word or sentence per slide. Auto-advances. Effects and entrance animations are suppressed (too short to land).
+
+**Hard rules in rapid mode**:
+- Each slide ≤20 sec auto-advance (default 20000ms; per-slide override allowed).
+- Slide types: `big-word` (default), `metric`, `image`, single-sentence `content`. **Bullets banned.**
+- Total slide count: 50+ minimum (warn the user otherwise — sub-50 isn't really rapid).
+- No `effect-aurora-bg` / `effect-conic-bg` (too slow). Static backgrounds only.
+- No build sequences. The audience sees the slide for 20 sec; staged reveals don't have time.
+
+**Voice in rapid mode**: terse. Each slide is a beat. The audience reads the slide in 2 seconds and listens to the speaker for the rest.
+
+---
+
+## Contrast guarantees
+
+Dark backgrounds with bespoke effects can wreck contrast. The template ships an **automatic protection layer** that you must respect:
+
+### Auto-applied (don't undo)
+
+The template adds text-shadow halos to headings and body text on slides carrying any of: `effect-aurora-bg`, `effect-conic-bg`, `effect-speckled-bg`, `effect-blueprint-bg`. The shadow is tinted to the background color so headings stay readable as the conic gradient passes underneath.
+
+### Heading effects + busy backgrounds
+
+Two heading effects degrade contrast on busy bgs:
+
+- **`effect-holographic`** — text fill is a moving gradient, low contrast against patterned grounds. Combine only with flat backgrounds (`#hex` background only) or pair with `text-protect` on the heading.
+- **`effect-chromatic-aberration`** — the text-shadow stack at red/cyan offsets reduces effective contrast. Template forces the heading core to white when this effect is on. Don't override.
+
+### The `text-protect` utility
+
+Add the `text-protect` class to any element sitting over a busy region. It renders a soft radial darken behind the element keyed to `--r-background-color`.
+
+```html
+<h1 class="text-protect">Statement that needs to be readable</h1>
+```
+
+Use sparingly — overuse = visual noise.
+
+### Hard contrast minimums
+
+- Body text: ≥4.5:1 against rendered background (WCAG AA)
+- Large text (≥24px): ≥3:1
+- The 8 anchor moods all pass these; the bespoke-effects layer is what threatens them.
+- When in doubt, drop the effect rather than the readability.
+
+---
+
 ## Anti-tells (banned moves)
 
 Per stardust's divergence toolkit. These are the assistant's recurring defaults — banned outright on this skill except with a **brand-specific written justification** (the kind that wouldn't transfer to another brand unchanged).
@@ -445,6 +586,12 @@ Per stardust's divergence toolkit. These are the assistant's recurring defaults 
 **Fabricated content:**
 - Invented stats, addresses, named-customer logos, named-person quotes, dollar amounts, percentages, dates that don't appear in the user's brief or in stardust's `current/pages/<slug>.json`. Use `data-placeholder="true"` with a visible signature treatment instead.
 
+**Bland-deck patterns:**
+- **Bullet-list deck** — more than 40% of slides are `content` type with bullets. Test from draft: `(count(slides[type='content' and bullets]) / total) > 0.4` is the failure. Replace bullet slides with `metric`, `comparison`, `process`, `timeline`, `cards`, `definition`, or `big-word` per the informational shape.
+- **Title-then-bullets-then-title** — every non-title slide is `<h2>` + `<ul>`. Even when the bullet count is reasonable, the *rhythm* is dead. At least every third content-bearing slide should be a non-bullet type.
+- **Wall-of-text content slide** — bullets that are full sentences with sub-clauses. Bullets are sentence fragments. If a bullet has >12 words, split the slide or move to `quote` / `definition`.
+- **No builds** — multi-element slides (cards, process, timeline) without a `builds` array. The audience sees everything at once and tunes out. Stagger them.
+
 If a draft hits any of these, rewrite. "Feels right for the brand" is not a justification.
 
 ---
@@ -455,15 +602,22 @@ Maximum content per slide type. **Never exceed these limits.**
 
 | Slide Type | Maximum Content |
 |---|---|
-| Title slide | 1 heading + 1 subtitle + optional tagline |
-| Content slide | 1 heading + 4–6 bullet points OR 1 heading + 2 short paragraphs |
-| Feature grid | 1 heading + 4–6 cards (2×2 or 2×3 layout) |
-| Code slide | 1 heading + 8–12 lines of code |
-| Quote slide | 1 quote (max 3 lines) + attribution |
-| Image slide | 1 heading + 1 image + optional caption |
-| Section divider | 1 large heading + optional subtitle |
-| Comparison | 1 heading + 2 columns with 3–4 points each |
-| Stats / metrics | 1 heading + 3–4 large numbers with labels (avoid; this is the stat-callout anti-tell) |
+| `title` | 1 heading + 1 subtitle + optional tagline |
+| `section` | 1 large heading + optional subtitle |
+| `big-word` | 1 word OR 1 short phrase (≤6 words). Optional 1-line subtitle. |
+| `metric` | 1 number + 1 label + optional delta. Never two metrics on one slide. |
+| `comparison` | 1 heading + 2 columns × 3–4 points each |
+| `process` | 1 heading + 3–5 steps (4 is the sweet spot) |
+| `timeline` | 1 heading + 4–6 events (more = fragment with builds) |
+| `definition` | 1 term + 1–3 meanings + optional pronunciation/POS |
+| `cards` | 1 heading + 4 cards (2×2) or 6 cards (3×2) or 9 cards (3×3) |
+| `diagram` | 1 heading + 1 diagram + optional caption |
+| `content` | 1 heading + 4–6 bullets OR 2 short paragraphs |
+| `code` | 1 heading + 8–12 lines of code |
+| `quote` | 1 quote (max 3 lines) + attribution |
+| `image` | 1 heading + 1 image + optional caption |
+| `zoom-overview` | 1 heading + 3–5 regions |
+| `zoom-detail` | Same as the underlying type it carries |
 
 If content overflows, **split into multiple slides** — never shrink font size. Bullet points are sentence fragments, not paragraphs. Code blocks show the essential 8–12 lines, not full files. One idea per slide.
 

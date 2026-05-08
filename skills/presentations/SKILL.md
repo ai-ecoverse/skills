@@ -25,18 +25,22 @@ test -f DESIGN.json && echo "stardust present"
 Conversational. Skip questions the user already answered.
 
 1. **Purpose** — pitch, teaching, conference talk, internal update, workshop, retrospective, post-mortem
-2. **Length** — 5–10 slides, 10–20, 20+
-3. **Content readiness** — ready content, or just a topic?
-4. **Narrative shape** — pick from `references/storytelling.md`. Default by purpose:
+2. **Mode** — pick one:
+   - **traditional** — paced sequence of slides (default). User advances manually.
+   - **zoom** — big-picture-first; an overview slide names regions and each subsequent slide zooms into one. Uses vertical sub-slides under a `zoom-overview` parent.
+   - **rapid** — Lessig-style. 100 slides, ≤20 sec each, single word or sentence per slide. Auto-advances. Most slides should be `big-word` type. Ban bullet lists.
+3. **Length** — 5–10 slides, 10–20, 20+ (rapid implies 50+; warn if user pairs rapid with <30 slides)
+4. **Content readiness** — ready content, or just a topic?
+5. **Narrative shape** — pick from `references/storytelling.md`. Default by purpose:
    - Keynote, founder story, mission talk, education → **Hero's Journey** (Campbell)
    - Pitch, persuasion, vision talk, change initiative → **Sparkline / contrast** (Duarte)
    - Retrospective, post-mortem, lessons-learned → **Man-in-Hole** (Vonnegut)
    - Product launch, success story → **Cinderella** (Vonnegut)
    - Wake-up call, pre-mortem, risk talk → **From Bad to Worse** (Vonnegut)
    - Technical deep-dive with no narrative arc → no shape, just structure
-5. **Brand context** (only if no stardust) — "any brand or URL this should evoke?" (a yes opens the door to running stardust)
+6. **Brand context** (only if no stardust) — "any brand or URL this should evoke?" (a yes opens the door to running stardust)
 
-If the user gives a clear brief ("10-slide pitch deck about our Q3 results"), pick the shape from purpose without asking.
+If the user gives a clear brief ("10-slide pitch deck about our Q3 results"), pick the shape and mode from purpose without asking.
 
 ## Phase 2 — Style discovery
 
@@ -88,27 +92,27 @@ No local dependencies needed.
 
 ## Data Contract
 
-Push slide content via `sprinkle send <name> '<json>'`:
+Push via `sprinkle send <name> '<json>'`. Top-level shape:
 
 ```json
 {
-  "slides": [
-    {"type": "title", "title": "...", "subtitle": "...", "background": "#hex", "effects": ["effect-aurora-bg", "effect-displaced-heading"]},
-    {"type": "section", "title": "...", "subtitle": "...", "effects": ["effect-3d-flip-in"]},
-    {"type": "content", "title": "...", "bullets": ["..."], "notes": "speaker notes", "effects": ["effect-mix-blend-headings"]},
-    {"type": "code", "title": "...", "code": "...", "language": "js", "effects": ["effect-scanlines"]},
-    {"type": "quote", "quote": "...", "attribution": "...", "background": "#hex", "effects": ["effect-chromatic-aberration"]},
-    {"type": "image", "title": "...", "src": "url-or-description", "alt": "...", "effects": ["effect-holographic"]}
-  ],
+  "mode": "traditional|zoom|rapid",
   "theme": "stardust-derived",
-  "themeCSS": "@import url(...); :root { ... } /* full theme CSS */",
-  "transition": "slide"
+  "themeCSS": "@import url(...); :root { ... }",
+  "transition": "slide|fade|convex|none",
+  "slides": [ /* ... */ ]
 }
 ```
 
-`effects` is per-slide — values are CSS class hooks the template applies. Renderer validates against `/^effect-[a-z0-9-]+$/`. Full vocabulary in `style-guide.md` § *Effects vocabulary*.
+Each slide is `{type, ...}`. The 16 types and their per-type fields are documented in `style-guide.md` § *Bespoke slide types* — `title`, `section`, `big-word`, `metric`, `comparison`, `process`, `timeline`, `definition`, `cards`, `diagram`, `quote`, `image`, `code`, `content`, `zoom-overview`, `zoom-detail`. Common per-slide fields:
 
-Send the full slides array on every update — the sprinkle replaces all content on each push.
+- `effects` — array of class hooks. Renderer validates `/^effect-[a-z0-9-]+$/`. See `style-guide.md` § *Effects vocabulary*.
+- `builds` — staged element reveals: `[{selector, stagger?, at?}]`. See `style-guide.md` § *Builds*.
+- `autoslide` — ms before auto-advance. Rapid mode defaults to 20000ms.
+- `background` — `"#hex"`, `"rgb(...)"`, or image URL.
+- `notes` — speaker notes.
+
+The full slides array replaces all content on every push.
 
 ## Lick events
 
@@ -129,15 +133,7 @@ feed_scoop("quarterly-review", "Lick event on YOUR sprinkle: Action: 'edit-slide
 
 ## Content density limits
 
-| Slide Type | Max Content |
-|---|---|
-| **Title** | 1 heading + 1 subtitle |
-| **Content** | 1 heading + 4–6 bullets OR 2 short paragraphs |
-| **Code** | 1 heading + 8–10 lines of code |
-| **Quote** | 1 quote (max 3 lines) + attribution |
-| **Image** | 1 heading + 1 image |
-
-If content exceeds these limits, split into multiple slides. Sparse beats clever.
+Sparse beats clever. Per-type maxima in `style-guide.md` § *Content Density Rules*. If content overflows, split into multiple slides — never shrink font size.
 
 ## Hard rules (single source of truth)
 
@@ -147,9 +143,18 @@ These are the only rules the skill enforces. The style guide elaborates; this li
 2. **Distinctive typography.** Banned as primary heading or body face: Inter, Roboto, Arial, Helvetica, Open Sans, system-ui. Use a stardust-derived font deck or one from `style-guide.md` § *Font decks*.
 3. **Bold color.** Dark with vibrant accents, striking monochrome, or saturated ground. Never default blue-on-white. Cream-family grounds (HSL-L 80–97, R−B ≥ 5, S < 40%) only when the brand category is literally printing/publishing/paper goods.
 4. **Effects layer is mandatory.** Every deck applies at least one SVG-filter or shader background AND one of {3D entrance, animated mask/clip, mix-blend layer, scanline/grain overlay} per `style-guide.md` § *Bespoke effects layer*.
-5. **Narrative shape is mandatory** (except for technical-reference decks). Pick one from `references/storytelling.md` in Phase 1; compose slides to match its arc.
-6. **No AI tells.** No triplet-cadence headlines beyond one per deck. No "atelier"/"the journal"/"dispatches" editorial vocabulary on non-editorial brands. No stat-callout bars, generic-2026-SaaS hero silhouettes, fabricated stats or named-person quotes. Full anti-tells list in `style-guide.md` § *Anti-tells*.
-7. **No effects on the last slide.** Land softly — the audience is scanning for the takeaway, not admiring shaders.
+5. **No bullet-list decks.** Bullet lists are one slide type among ~14, not the default. A deck where >40% of slides are `content` with bullets is wrong — replace bullet slides with `metric`, `comparison`, `process`, `timeline`, `definition`, `cards`, `diagram`, `big-word`, or `quote`. Full type catalog in `style-guide.md` § *Bespoke slide types*.
+6. **Builds, not paragraphs.** Slides with multiple ideas reveal them in stages via the `builds` array (or per-slide `effects: ["effect-slide-stack"]`), not as a wall of text.
+7. **Contrast guarantee.** Body text ≥4.5:1, large text ≥3:1 against the rendered background. The template auto-applies text-shadow plates over busy backgrounds (`effect-aurora-bg`, `effect-conic-bg`, `effect-speckled-bg`, `effect-blueprint-bg`); do not undo them. When using `effect-holographic` or `effect-chromatic-aberration` on a busy background, add `text-protect` to the heading container or pick a flat background.
+8. **Narrative shape is mandatory** (except for technical-reference decks). Pick one from `references/storytelling.md` in Phase 1; compose slides to match its arc.
+9. **No AI tells.** No triplet-cadence headlines beyond one per deck. No "atelier"/"the journal"/"dispatches" editorial vocabulary on non-editorial brands. No stat-callout bars, generic-2026-SaaS hero silhouettes, fabricated stats or named-person quotes. Full anti-tells list in `style-guide.md` § *Anti-tells*.
+10. **No effects on the last slide.** Land softly — the audience is scanning for the takeaway, not admiring shaders.
+
+### Mode-specific rules
+
+- **rapid** — bullet lists are banned. Each slide is `big-word`, `metric`, single-image, or one-sentence `content`. No effects with entrance animations >0.3s. Total slides 50+ (warn user otherwise).
+- **zoom** — every `zoom-detail` slide must reference a `regionId` that exists in the preceding `zoom-overview`. Use vertical sub-slides under reveal.js.
+- **traditional** — no special constraints beyond the global rules.
 
 ## References
 

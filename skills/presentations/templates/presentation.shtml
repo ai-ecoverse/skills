@@ -531,6 +531,488 @@
     }
 
     /* ========================================================================
+       CONTRAST PROTECTION
+       Auto-applies behind text on slides with busy backgrounds (any
+       effect-*-bg class except flat ones). Two complementary mechanisms:
+       (1) text-shadow halo in the background color — keeps headings legible
+           when conic/aurora gradients pass behind them.
+       (2) optional .text-protect element — a soft radial mask between bg
+           and text content for very busy compositions.
+       ======================================================================== */
+
+    .reveal .effect-aurora-bg h1,
+    .reveal .effect-aurora-bg h2,
+    .reveal .effect-conic-bg h1,
+    .reveal .effect-conic-bg h2,
+    .reveal .effect-speckled-bg h1,
+    .reveal .effect-speckled-bg h2,
+    .reveal .effect-blueprint-bg h1,
+    .reveal .effect-blueprint-bg h2 {
+      text-shadow:
+        0 0 14px var(--r-background-color),
+        0 0 28px var(--r-background-color);
+    }
+
+    .reveal .effect-aurora-bg p,
+    .reveal .effect-aurora-bg li,
+    .reveal .effect-conic-bg p,
+    .reveal .effect-conic-bg li,
+    .reveal .effect-speckled-bg p,
+    .reveal .effect-speckled-bg li {
+      text-shadow:
+        0 0 8px var(--r-background-color),
+        0 0 16px var(--r-background-color);
+    }
+
+    /* When chromatic aberration is on, force the heading itself to high-contrast
+       white/near-white so the offset RGB shadows read as decoration around a
+       readable core letter, not a low-contrast smear. */
+    .reveal .effect-chromatic-aberration h1,
+    .reveal .effect-chromatic-aberration h2 {
+      color: #fff;
+    }
+
+    /* Holographic text-fill produces low contrast on any heavy bg.
+       Auto-add a text-protect plate when both are on. */
+    .reveal .effect-aurora-bg.effect-holographic h1::after,
+    .reveal .effect-conic-bg.effect-holographic h1::after {
+      content: '';
+      position: absolute;
+      inset: -0.2em -0.4em;
+      background: var(--r-background-color);
+      opacity: 0.5;
+      filter: blur(24px);
+      z-index: -1;
+    }
+
+    /* Explicit utility — agent can add `text-protect` on any element that
+       sits over a busy region. Renders a soft radial darken behind it. */
+    .reveal .text-protect {
+      position: relative;
+      isolation: isolate;
+    }
+    .reveal .text-protect::before {
+      content: '';
+      position: absolute;
+      inset: -0.5em -1em;
+      background: radial-gradient(
+        ellipse at center,
+        var(--r-background-color) 0%,
+        var(--r-background-color) 50%,
+        transparent 100%
+      );
+      opacity: 0.85;
+      z-index: -1;
+      pointer-events: none;
+    }
+
+    /* ========================================================================
+       BESPOKE SLIDE TYPES
+       Replacements for bullet-list slides. Each type expresses a distinct
+       informational shape — comparison, process, metric, timeline, etc. —
+       with HTML structure that earns the screen real-estate.
+       ======================================================================== */
+
+    /* big-word — single phrase fills the screen. Default for rapid mode. */
+    .reveal .slides section.big-word-slide {
+      text-align: center;
+    }
+    .reveal .slides section.big-word-slide .big-word {
+      font-family: var(--r-heading-font);
+      font-weight: var(--r-heading-font-weight, 800);
+      font-size: clamp(64px, 14vw, 220px);
+      line-height: 0.95;
+      letter-spacing: -0.03em;
+      color: var(--r-heading-color);
+      margin: 0;
+    }
+    .reveal .slides section.big-word-slide .big-word-sub {
+      font-family: var(--r-main-font);
+      font-size: 0.32em;
+      opacity: 0.7;
+      margin-top: 0.5em;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .reveal .slides section.big-word-slide .big-word .accent {
+      color: var(--r-accent-color);
+    }
+
+    /* metric — one huge number + label + optional delta */
+    .reveal .slides section.metric-slide {
+      text-align: center;
+    }
+    .reveal .slides section.metric-slide .metric-value {
+      font-family: var(--r-heading-font);
+      font-weight: var(--r-heading-font-weight, 800);
+      font-size: clamp(80px, 18vw, 280px);
+      line-height: 1;
+      color: var(--r-accent-color);
+      letter-spacing: -0.04em;
+      font-variant-numeric: tabular-nums;
+      display: block;
+    }
+    .reveal .slides section.metric-slide .metric-label {
+      font-family: var(--r-main-font);
+      font-size: 0.42em;
+      opacity: 0.85;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      margin-top: 0.6em;
+      color: var(--r-main-color);
+    }
+    .reveal .slides section.metric-slide .metric-delta {
+      display: inline-block;
+      margin-left: 0.4em;
+      font-size: 0.45em;
+      padding: 0.1em 0.4em;
+      border-radius: 4px;
+      vertical-align: middle;
+    }
+    .reveal .slides section.metric-slide .metric-delta.up   { color: #2ea693; }
+    .reveal .slides section.metric-slide .metric-delta.down { color: #d83a2a; }
+
+    /* comparison — two columns separated by a vs */
+    .reveal .slides section.comparison-slide .comparison-grid {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      gap: 0;
+      align-items: stretch;
+      margin-top: 1em;
+    }
+    .reveal .slides section.comparison-slide .comparison-col {
+      padding: 0 1.2em;
+    }
+    .reveal .slides section.comparison-slide .comparison-col h3 {
+      font-family: var(--r-heading-font);
+      font-size: 1.1em;
+      margin-bottom: 0.6em;
+      letter-spacing: -0.01em;
+    }
+    .reveal .slides section.comparison-slide .comparison-col.left h3  { color: var(--r-accent-color); }
+    .reveal .slides section.comparison-slide .comparison-col.right h3 { color: var(--r-accent-secondary); }
+    .reveal .slides section.comparison-slide .comparison-col p,
+    .reveal .slides section.comparison-slide .comparison-col li {
+      font-size: 0.72em;
+      line-height: 1.5;
+    }
+    .reveal .slides section.comparison-slide .comparison-vs {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--r-heading-font);
+      font-size: 1.2em;
+      color: var(--r-main-color);
+      opacity: 0.4;
+      writing-mode: vertical-rl;
+      letter-spacing: 0.1em;
+      padding: 0 0.4em;
+      border-left: 1px solid currentColor;
+      border-right: 1px solid currentColor;
+    }
+
+    /* process — numbered horizontal steps with arrow connectors */
+    .reveal .slides section.process-slide .process-steps {
+      display: flex;
+      gap: 0;
+      align-items: stretch;
+      margin-top: 1em;
+      counter-reset: step;
+    }
+    .reveal .slides section.process-slide .process-step {
+      flex: 1;
+      padding: 0.8em 1em;
+      position: relative;
+      counter-increment: step;
+    }
+    .reveal .slides section.process-slide .process-step::before {
+      content: counter(step, decimal-leading-zero);
+      display: block;
+      font-family: var(--r-heading-font);
+      font-size: 0.7em;
+      color: var(--r-accent-color);
+      letter-spacing: 0.1em;
+      margin-bottom: 0.3em;
+    }
+    .reveal .slides section.process-slide .process-step h3 {
+      font-size: 0.9em;
+      margin: 0 0 0.4em 0;
+      letter-spacing: -0.01em;
+    }
+    .reveal .slides section.process-slide .process-step p {
+      font-size: 0.6em;
+      line-height: 1.45;
+      opacity: 0.85;
+    }
+    .reveal .slides section.process-slide .process-step:not(:last-child)::after {
+      content: '→';
+      position: absolute;
+      right: -0.5em;
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 1.4em;
+      opacity: 0.35;
+      color: var(--r-accent-color);
+    }
+
+    /* timeline — vertical events with date marker */
+    .reveal .slides section.timeline-slide .timeline-events {
+      list-style: none;
+      padding: 0;
+      margin: 1em 0 0 0;
+      position: relative;
+    }
+    .reveal .slides section.timeline-slide .timeline-events::before {
+      content: '';
+      position: absolute;
+      left: 0.5em;
+      top: 0.4em;
+      bottom: 0.4em;
+      width: 2px;
+      background: var(--r-accent-color);
+      opacity: 0.4;
+    }
+    .reveal .slides section.timeline-slide .timeline-event {
+      padding: 0.6em 0 0.6em 2em;
+      position: relative;
+      font-size: 0.74em;
+    }
+    .reveal .slides section.timeline-slide .timeline-event::before {
+      content: '';
+      position: absolute;
+      left: 0.2em;
+      top: 0.85em;
+      width: 0.6em;
+      height: 0.6em;
+      border-radius: 50%;
+      background: var(--r-accent-color);
+      box-shadow: 0 0 0 4px var(--r-background-color);
+    }
+    .reveal .slides section.timeline-slide .timeline-event time {
+      display: block;
+      font-family: var(--r-heading-font);
+      font-size: 0.85em;
+      color: var(--r-accent-color);
+      letter-spacing: 0.04em;
+    }
+    .reveal .slides section.timeline-slide .timeline-event h3 {
+      font-size: 1em;
+      margin: 0.1em 0;
+    }
+    .reveal .slides section.timeline-slide .timeline-event p {
+      font-size: 0.85em;
+      opacity: 0.8;
+      margin: 0;
+    }
+
+    /* definition — term + meaning, dictionary-entry style */
+    .reveal .slides section.definition-slide {
+      text-align: left;
+    }
+    .reveal .slides section.definition-slide .def-term {
+      font-family: var(--r-heading-font);
+      font-size: 2.2em;
+      letter-spacing: -0.02em;
+      color: var(--r-heading-color);
+      display: inline-block;
+      padding-bottom: 0.05em;
+      border-bottom: 3px solid var(--r-accent-color);
+      margin-bottom: 0.3em;
+    }
+    .reveal .slides section.definition-slide .def-pronunciation {
+      font-style: italic;
+      opacity: 0.5;
+      font-size: 0.45em;
+      margin-left: 0.4em;
+    }
+    .reveal .slides section.definition-slide .def-pos {
+      font-style: italic;
+      opacity: 0.6;
+      font-size: 0.5em;
+      letter-spacing: 0.05em;
+      display: block;
+      margin: 0.4em 0 0.3em 0;
+    }
+    .reveal .slides section.definition-slide .def-meaning {
+      font-size: 0.78em;
+      line-height: 1.5;
+      max-width: 80%;
+    }
+    .reveal .slides section.definition-slide .def-meaning + .def-meaning {
+      margin-top: 0.4em;
+    }
+    .reveal .slides section.definition-slide .def-meaning::before {
+      content: counter(def-counter) '. ';
+      counter-increment: def-counter;
+      font-family: var(--r-heading-font);
+      color: var(--r-accent-color);
+      margin-right: 0.4em;
+    }
+    .reveal .slides section.definition-slide {
+      counter-reset: def-counter;
+    }
+
+    /* cards — grid of mini-cards. Use .card-2x2 / .card-3x2 / .card-3x3. */
+    .reveal .slides section.cards-slide .card-grid {
+      display: grid;
+      gap: 0.6em;
+      margin-top: 1em;
+    }
+    .reveal .slides section.cards-slide .card-grid.card-2x2 { grid-template-columns: 1fr 1fr; }
+    .reveal .slides section.cards-slide .card-grid.card-3x2 { grid-template-columns: 1fr 1fr 1fr; }
+    .reveal .slides section.cards-slide .card-grid.card-3x3 { grid-template-columns: 1fr 1fr 1fr; }
+    .reveal .slides section.cards-slide .card {
+      padding: 0.8em 0.9em;
+      background: rgba(127,127,127,0.08);
+      border-left: 3px solid var(--r-accent-color);
+      border-radius: 2px;
+    }
+    .reveal .slides section.cards-slide .card h3 {
+      font-size: 0.78em;
+      margin: 0 0 0.3em 0;
+      letter-spacing: -0.01em;
+      color: var(--r-heading-color);
+    }
+    .reveal .slides section.cards-slide .card p {
+      font-size: 0.55em;
+      line-height: 1.5;
+      margin: 0;
+      opacity: 0.85;
+    }
+    .reveal .slides section.cards-slide .card .card-icon {
+      font-size: 1.4em;
+      margin-bottom: 0.2em;
+      color: var(--r-accent-color);
+    }
+
+    /* diagram — agent-supplied SVG/HTML, centered with consistent caption styling */
+    .reveal .slides section.diagram-slide {
+      text-align: center;
+    }
+    .reveal .slides section.diagram-slide .diagram-content {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      max-height: 65vh;
+      margin: 1em auto;
+    }
+    .reveal .slides section.diagram-slide .diagram-content > svg,
+    .reveal .slides section.diagram-slide .diagram-content > * {
+      max-width: 90%;
+      max-height: 65vh;
+    }
+    .reveal .slides section.diagram-slide .diagram-caption {
+      font-family: var(--r-main-font);
+      font-style: italic;
+      font-size: 0.5em;
+      opacity: 0.7;
+      margin-top: 0.4em;
+    }
+
+    /* ========================================================================
+       MINI-ANIMATIONS — element-level effects for staged builds
+       ======================================================================== */
+
+    /* typewriter — types text out character by character on slide entry */
+    .reveal .slides section.present .typewriter {
+      display: inline-block;
+      overflow: hidden;
+      white-space: nowrap;
+      border-right: 2px solid currentColor;
+      animation:
+        typewriter 1.6s steps(30, end) backwards,
+        blink 0.7s step-end infinite;
+      animation-delay: 0.2s, 1.8s;
+    }
+    @keyframes typewriter { from { width: 0; } to { width: 100%; } }
+    @keyframes blink { 50% { border-color: transparent; } }
+
+    /* counter-up — populated by JS; CSS reserves the visual */
+    .reveal .slides section.present .counter-up { font-variant-numeric: tabular-nums; }
+
+    /* draw-line — animates an SVG path's stroke-dashoffset to 0 */
+    .reveal .slides section.present .draw-line {
+      stroke-dasharray: 1000;
+      stroke-dashoffset: 1000;
+      animation: draw 1.4s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+      animation-delay: 0.3s;
+    }
+    @keyframes draw { to { stroke-dashoffset: 0; } }
+
+    /* flip-card — element flips on entrance */
+    .reveal .slides section.present .flip-card {
+      animation: flip-in 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
+      backface-visibility: hidden;
+      transform-style: preserve-3d;
+    }
+    @keyframes flip-in {
+      from { transform: perspective(800px) rotateY(180deg); opacity: 0; }
+      to   { transform: perspective(800px) rotateY(0); opacity: 1; }
+    }
+
+    /* slide-in-from — directional entrance for any element with data-from="left|right|top|bottom" */
+    .reveal .slides section.present [data-from="left"]   { animation: slide-from-left 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) backwards; }
+    .reveal .slides section.present [data-from="right"]  { animation: slide-from-right 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) backwards; }
+    .reveal .slides section.present [data-from="top"]    { animation: slide-from-top 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) backwards; }
+    .reveal .slides section.present [data-from="bottom"] { animation: slide-from-bottom 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) backwards; }
+    @keyframes slide-from-left   { from { opacity: 0; transform: translateX(-40px); } to { opacity: 1; transform: translateX(0); } }
+    @keyframes slide-from-right  { from { opacity: 0; transform: translateX(40px); }  to { opacity: 1; transform: translateX(0); } }
+    @keyframes slide-from-top    { from { opacity: 0; transform: translateY(-30px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes slide-from-bottom { from { opacity: 0; transform: translateY(30px); }  to { opacity: 1; transform: translateY(0); } }
+
+    /* ========================================================================
+       MODES — traditional, zoom, rapid
+       Set on the .reveal element via data-mode. The agent passes mode at
+       deck creation; the renderer wires up mode-specific behaviors.
+       ======================================================================== */
+
+    /* rapid mode — Lessig style. Suppress entrance effects (slides too short
+       for animations to land). Force big-word visual register on any slide
+       that doesn't explicitly pick a type. */
+    .reveal[data-mode="rapid"] .slides section {
+      transition: none;
+    }
+    .reveal[data-mode="rapid"] .effect-aurora-bg::before,
+    .reveal[data-mode="rapid"] .effect-conic-bg::before {
+      animation-duration: 240s; /* slow background to imperceptible */
+      opacity: 0.25;
+    }
+    .reveal[data-mode="rapid"] .slides section.present .typewriter {
+      animation: none;
+      border-right: none;
+    }
+    /* In rapid mode, default content slides should look big-word-ish */
+    .reveal[data-mode="rapid"] .slides section:not(.title-slide):not(.section-slide):not(.metric-slide):not(.comparison-slide):not(.process-slide):not(.timeline-slide):not(.definition-slide):not(.cards-slide):not(.diagram-slide):not(.code-slide):not(.quote-slide):not(.image-slide):not(.big-word-slide) {
+      text-align: center;
+    }
+    .reveal[data-mode="rapid"] .slides section h2 {
+      font-size: clamp(54px, 10vw, 160px);
+      line-height: 1;
+    }
+
+    /* zoom mode — vertical sub-slides scale into different regions of the
+       parent overview. Each detail slide gets effect-zoom-blur entry and
+       a subtle scale for context-loss feel. */
+    .reveal[data-mode="zoom"] .slides > section.zoom-overview {
+      text-align: center;
+    }
+    .reveal[data-mode="zoom"] .slides > section.zoom-overview .zoom-region {
+      cursor: default;
+      transition: transform 0.4s, box-shadow 0.4s;
+      padding: 0.6em 0.9em;
+      border-radius: 4px;
+      border: 2px solid var(--r-accent-color);
+      background: rgba(127,127,127,0.06);
+    }
+    .reveal[data-mode="zoom"] .slides > section.zoom-detail.present {
+      animation: zoom-in 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
+    }
+    @keyframes zoom-in {
+      from { opacity: 0; transform: scale(0.6) translateY(40px); filter: blur(8px); }
+      to   { opacity: 1; transform: scale(1) translateY(0);    filter: blur(0); }
+    }
+
+    /* ========================================================================
        END BESPOKE EFFECTS LAYER
        ======================================================================== */
   </style>
@@ -689,23 +1171,53 @@
    *
    * Full content push (includes optional themeCSS for custom styling):
    * {
+   *   "mode": "traditional" | "zoom" | "rapid",
+   *           // traditional = default; zoom = big-picture-first with vertical
+   *           // detail slides; rapid = Lessig-style auto-advance ≤20s/slide.
    *   "slides": [
    *     {
-   *       "type": "title" | "content" | "code" | "quote" | "image" | "section",
+   *       "type": "title" | "content" | "code" | "quote" | "image" | "section"
+   *             | "big-word" | "metric" | "comparison" | "process"
+   *             | "timeline" | "definition" | "cards" | "diagram"
+   *             | "zoom-overview" | "zoom-detail",
+   *
+   *       // Common fields:
    *       "title": "Slide Title",
    *       "subtitle": "Optional subtitle",
-   *       "content": "HTML content or markdown",
-   *       "bullets": ["bullet 1", "bullet 2"],
-   *       "code": "code block content",
-   *       "language": "js",
-   *       "quote": "Quote text",
-   *       "attribution": "Quote author",
    *       "background": "#hex or image URL",
    *       "notes": "Speaker notes",
-   *       "fragments": true,         // animate bullets one by one
-   *       "effects": ["effect-aurora-bg", "effect-displaced-heading", "effect-3d-flip-in"]
-   *                                  // space-joined onto the section's class.
-   *                                  // see style-guide.md § Effects vocabulary.
+   *       "fragments": true,           // animate bullets/children one by one
+   *       "effects": ["effect-..."],   // see style-guide.md § Effects vocabulary
+   *       "autoslide": 12000,          // ms; rapid-mode default = 20000
+   *
+   *       // Per-type fields:
+   *       "content": "<p>HTML</p>",                       // content
+   *       "bullets": ["b1", "b2"],                        // content
+   *       "code": "...", "language": "js",                // code
+   *       "quote": "...", "attribution": "...",           // quote
+   *       "src": "url", "alt": "...",                     // image
+   *       "word": "TRANSFORM", "accent": "FORM",          // big-word (accent is highlighted substring)
+   *       "metric": { "value": "73%", "label": "...", "delta": "+12", "direction": "up" },
+   *       "comparison": { "left":  { "title": "Today",     "items": ["..."] },
+   *                       "right": { "title": "Tomorrow",  "items": ["..."] }, "vs": "VS" },
+   *       "steps": [ { "title": "...", "description": "..." }, ... ],   // process
+   *       "events": [ { "date": "2024", "title": "...", "description": "..." }, ... ],  // timeline
+   *       "definition": { "term": "...", "pronunciation": "/.../", "pos": "noun",
+   *                       "meanings": ["...", "..."] },
+   *       "cards": { "layout": "card-2x2"|"card-3x2"|"card-3x3",
+   *                  "items": [ { "icon": "✱", "title": "...", "description": "..." } ] },
+   *       "diagram": "<svg>...</svg> | <div>...</div>",                  // diagram inner HTML
+   *       "caption": "...",                                              // diagram caption
+   *       "regions": [ { "id": "north", "label": "..." } ],              // zoom-overview
+   *       "regionId": "north",                                           // zoom-detail (links to overview region)
+   *
+   *       // Builds: optional staged element-reveal beyond simple fragments.
+   *       // The renderer applies data-fragment-index attributes to children
+   *       // matching the selector. Reveal.js handles the actual reveal.
+   *       "builds": [
+   *         { "selector": ".card", "stagger": true },          // reveal cards one by one
+   *         { "selector": "h3", "at": 1 }                      // reveal h3 at fragment index 1
+   *       ]
    *     }
    *   ],
    *   "theme": "stardust-derived",
@@ -754,6 +1266,7 @@
   let currentSlides = [];
   let currentTheme = 'black';
   let currentTransition = 'slide';
+  let currentMode = 'traditional';
   let revealInstance = null;
 
   // Fallback CSS for when themeCSS is not provided by the agent.
@@ -815,14 +1328,168 @@
       .join(' ');
   }
 
+  // Allowlist of inline tags + attrs we accept inside diagram HTML and content fields.
+  // Strips <script>, on*= handlers, and javascript: URLs.
+  function sanitizeRichHtml(html) {
+    if (typeof html !== 'string') return '';
+    return html
+      .replace(/<script\b[\s\S]*?<\/script\s*>/gi, '')
+      .replace(/<\/?(?:iframe|object|embed|link|meta|style|form)\b[^>]*>/gi, '')
+      .replace(/\s(on[a-z]+)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+      .replace(/(href|xlink:href|src)\s*=\s*("|')\s*javascript:[^"']*\2/gi, '$1=$2#$2');
+  }
+
   // --- Slide rendering ---
-  // Converts a slide object from the DATA CONTRACT into a <section> HTML string.
   function renderBullets(bullets, fragments) {
     if (!bullets || !bullets.length) return '';
     var items = bullets.map(function(b) {
       return '<li' + (fragments ? ' class="fragment"' : '') + '>' + escHtml(b) + '</li>';
     }).join('\n          ');
     return '<ul>\n          ' + items + '\n        </ul>';
+  }
+
+  // Splits a phrase into a leading and accent span when slide.accent is a substring of slide.word.
+  function renderBigWord(slide) {
+    var word = slide.word || slide.title || '';
+    var accent = slide.accent;
+    if (!accent || word.indexOf(accent) === -1) {
+      return '<p class="big-word">' + escHtml(word) + '</p>';
+    }
+    var parts = word.split(accent);
+    return '<p class="big-word">' + escHtml(parts[0])
+      + '<span class="accent">' + escHtml(accent) + '</span>'
+      + escHtml(parts.slice(1).join(accent)) + '</p>';
+  }
+
+  function renderMetric(slide) {
+    var m = slide.metric || {};
+    var deltaCls = (m.direction === 'down') ? 'down' : (m.direction === 'up' ? 'up' : '');
+    var arrow = (m.direction === 'down') ? '▼' : (m.direction === 'up' ? '▲' : '');
+    return '<div class="metric-value">' + escHtml(m.value || '')
+      + (m.delta ? '<span class="metric-delta ' + deltaCls + '">' + arrow + ' ' + escHtml(m.delta) + '</span>' : '')
+      + '</div>'
+      + (m.label ? '<div class="metric-label">' + escHtml(m.label) + '</div>' : '');
+  }
+
+  function renderComparisonCol(col, side) {
+    if (!col) return '';
+    var items = '';
+    if (Array.isArray(col.items)) {
+      items = '<ul>' + col.items.map(function(i) {
+        return '<li>' + escHtml(i) + '</li>';
+      }).join('') + '</ul>';
+    }
+    return '<div class="comparison-col ' + side + '">'
+      + (col.title ? '<h3>' + escHtml(col.title) + '</h3>' : '')
+      + items
+      + (col.content ? '<p>' + escHtml(col.content) + '</p>' : '')
+      + '</div>';
+  }
+
+  function renderComparison(slide) {
+    var c = slide.comparison || {};
+    return '<div class="comparison-grid">'
+      + renderComparisonCol(c.left, 'left')
+      + '<div class="comparison-vs">' + escHtml(c.vs || 'VS') + '</div>'
+      + renderComparisonCol(c.right, 'right')
+      + '</div>';
+  }
+
+  function renderProcess(slide) {
+    if (!Array.isArray(slide.steps)) return '';
+    return '<div class="process-steps">'
+      + slide.steps.map(function(s) {
+        return '<div class="process-step">'
+          + (s.title ? '<h3>' + escHtml(s.title) + '</h3>' : '')
+          + (s.description ? '<p>' + escHtml(s.description) + '</p>' : '')
+          + '</div>';
+      }).join('')
+      + '</div>';
+  }
+
+  function renderTimeline(slide) {
+    if (!Array.isArray(slide.events)) return '';
+    return '<ul class="timeline-events">'
+      + slide.events.map(function(e) {
+        return '<li class="timeline-event">'
+          + (e.date ? '<time>' + escHtml(e.date) + '</time>' : '')
+          + (e.title ? '<h3>' + escHtml(e.title) + '</h3>' : '')
+          + (e.description ? '<p>' + escHtml(e.description) + '</p>' : '')
+          + '</li>';
+      }).join('')
+      + '</ul>';
+  }
+
+  function renderDefinition(slide) {
+    var d = slide.definition || {};
+    var meanings = Array.isArray(d.meanings) ? d.meanings : [];
+    return '<div class="def-term">' + escHtml(d.term || '')
+      + (d.pronunciation ? '<span class="def-pronunciation">' + escHtml(d.pronunciation) + '</span>' : '')
+      + '</div>'
+      + (d.pos ? '<span class="def-pos">' + escHtml(d.pos) + '</span>' : '')
+      + meanings.map(function(m) {
+        return '<p class="def-meaning">' + escHtml(m) + '</p>';
+      }).join('');
+  }
+
+  function renderCards(slide) {
+    var c = slide.cards || {};
+    var layout = ['card-2x2','card-3x2','card-3x3'].indexOf(c.layout) >= 0 ? c.layout : 'card-2x2';
+    var items = Array.isArray(c.items) ? c.items : [];
+    return '<div class="card-grid ' + layout + '">'
+      + items.map(function(item) {
+        return '<div class="card">'
+          + (item.icon ? '<div class="card-icon">' + escHtml(item.icon) + '</div>' : '')
+          + (item.title ? '<h3>' + escHtml(item.title) + '</h3>' : '')
+          + (item.description ? '<p>' + escHtml(item.description) + '</p>' : '')
+          + '</div>';
+      }).join('')
+      + '</div>';
+  }
+
+  function renderDiagram(slide) {
+    var inner = sanitizeRichHtml(slide.diagram || '');
+    return '<div class="diagram-content">' + inner + '</div>'
+      + (slide.caption ? '<div class="diagram-caption">' + escHtml(slide.caption) + '</div>' : '');
+  }
+
+  function renderZoomOverview(slide) {
+    var regions = Array.isArray(slide.regions) ? slide.regions : [];
+    var inner = slide.diagram
+      ? '<div class="diagram-content">' + sanitizeRichHtml(slide.diagram) + '</div>'
+      : ('<div style="display:flex; gap:1em; flex-wrap:wrap; justify-content:center;">'
+          + regions.map(function(r) {
+            return '<div class="zoom-region" data-region-id="' + escHtml(r.id || '') + '">'
+              + escHtml(r.label || r.id || '') + '</div>';
+          }).join('')
+          + '</div>');
+    return inner;
+  }
+
+  // Apply builds: assign data-fragment-index to matching children for staged reveals.
+  // builds = [{ selector, stagger?: bool, at?: number }]
+  function applyBuilds(html, builds) {
+    if (!Array.isArray(builds) || !builds.length) return html;
+    var temp = document.createElement('div');
+    temp.innerHTML = html;
+    builds.forEach(function(b) {
+      if (!b || !b.selector) return;
+      var matches;
+      try { matches = temp.querySelectorAll(b.selector); }
+      catch (e) { return; }
+      if (b.stagger) {
+        Array.prototype.forEach.call(matches, function(el, i) {
+          el.classList.add('fragment');
+          el.setAttribute('data-fragment-index', i);
+        });
+      } else {
+        Array.prototype.forEach.call(matches, function(el) {
+          el.classList.add('fragment');
+          if (typeof b.at === 'number') el.setAttribute('data-fragment-index', b.at);
+        });
+      }
+    });
+    return temp.innerHTML;
   }
 
   function renderSlide(slide) {
@@ -834,16 +1501,31 @@
         bg = ' data-background-image="' + slide.background + '" data-background-size="cover"';
       }
     }
+    if (typeof slide.autoslide === 'number' && slide.autoslide > 0) {
+      bg += ' data-autoslide="' + (slide.autoslide | 0) + '"';
+    }
     var notes = slide.notes
       ? '<aside class="notes">' + escHtml(slide.notes) + '</aside>'
       : '';
 
     var fx = effectClasses(slide.effects);
-    // data-text on h1/h2 enables effect-misregister's ::before to mirror the heading
     var titleAttrs = slide.title ? ' data-text="' + escHtml(slide.title) + '"' : '';
 
     function classOf(base) {
       return (base + (fx ? ' ' + fx : '')).trim();
+    }
+
+    function withBuilds(innerHtml) {
+      return applyBuilds(innerHtml, slide.builds);
+    }
+
+    function wrap(extraClass, innerHtml) {
+      var cls = classOf(extraClass);
+      return '<section class="' + cls + '"' + bg + '>'
+        + (slide.title && extraClass !== 'title-slide' && extraClass !== 'section-slide' && extraClass !== 'big-word-slide'
+            ? '<h2' + titleAttrs + '>' + escHtml(slide.title) + '</h2>' : '')
+        + withBuilds(innerHtml)
+        + notes + '</section>';
     }
 
     switch (slide.type) {
@@ -862,12 +1544,14 @@
       case 'content':
         return '<section' + (fx ? ' class="' + fx + '"' : '') + bg + '>'
           + (slide.title ? '<h2' + titleAttrs + '>' + escHtml(slide.title) + '</h2>' : '')
-          + (slide.content ? '<div>' + slide.content + '</div>' : '')
-          + (slide.bullets ? renderBullets(slide.bullets, slide.fragments) : '')
+          + withBuilds(
+              (slide.content ? '<div>' + sanitizeRichHtml(slide.content) + '</div>' : '')
+              + (slide.bullets ? renderBullets(slide.bullets, slide.fragments) : '')
+            )
           + notes + '</section>';
 
       case 'code':
-        return '<section' + (fx ? ' class="' + fx + '"' : '') + bg + '>'
+        return '<section class="' + classOf('code-slide') + '"' + bg + '>'
           + (slide.title ? '<h2' + titleAttrs + '>' + escHtml(slide.title) + '</h2>' : '')
           + '<pre><code class="' + (slide.language || '') + '" data-trim data-noescape>'
           + escHtml(slide.code || '') + '</code></pre>'
@@ -881,32 +1565,134 @@
           + notes + '</section>';
 
       case 'image':
-        return '<section' + (fx ? ' class="' + fx + '"' : '') + bg + '>'
+        return '<section class="' + classOf('image-slide') + '"' + bg + '>'
           + (slide.title ? '<h2' + titleAttrs + '>' + escHtml(slide.title) + '</h2>' : '')
           + (slide.src ? '<img src="' + escHtml(slide.src) + '" alt="' + escHtml(slide.alt || slide.title || '') + '" style="max-height: 60vh; max-width: 90%; object-fit: contain;">' : '')
-          + (slide.content ? '<div>' + slide.content + '</div>' : '')
+          + (slide.content ? '<div>' + sanitizeRichHtml(slide.content) + '</div>' : '')
+          + notes + '</section>';
+
+      case 'big-word':
+        return '<section class="' + classOf('big-word-slide') + '"' + bg + '>'
+          + renderBigWord(slide)
+          + (slide.subtitle ? '<p class="big-word-sub">' + escHtml(slide.subtitle) + '</p>' : '')
+          + notes + '</section>';
+
+      case 'metric':
+        return wrap('metric-slide', renderMetric(slide));
+
+      case 'comparison':
+        return wrap('comparison-slide', renderComparison(slide));
+
+      case 'process':
+        return wrap('process-slide', renderProcess(slide));
+
+      case 'timeline':
+        return wrap('timeline-slide', renderTimeline(slide));
+
+      case 'definition':
+        return wrap('definition-slide', renderDefinition(slide));
+
+      case 'cards':
+        return wrap('cards-slide', renderCards(slide));
+
+      case 'diagram':
+        return wrap('diagram-slide', renderDiagram(slide));
+
+      case 'zoom-overview':
+        return '<section class="' + classOf('zoom-overview') + '"' + bg + '>'
+          + (slide.title ? '<h2' + titleAttrs + '>' + escHtml(slide.title) + '</h2>' : '')
+          + withBuilds(renderZoomOverview(slide))
+          + notes + '</section>';
+
+      case 'zoom-detail':
+        return '<section class="' + classOf('zoom-detail') + '"' + bg
+          + (slide.regionId ? ' data-region-id="' + escHtml(slide.regionId) + '"' : '') + '>'
+          + (slide.title ? '<h2' + titleAttrs + '>' + escHtml(slide.title) + '</h2>' : '')
+          + withBuilds(
+              (slide.content ? '<div>' + sanitizeRichHtml(slide.content) + '</div>' : '')
+              + (slide.bullets ? renderBullets(slide.bullets, slide.fragments) : '')
+            )
           + notes + '</section>';
 
       default:
-        // Fallback: treat as generic content slide
         return '<section' + (fx ? ' class="' + fx + '"' : '') + bg + '>'
           + (slide.title ? '<h2' + titleAttrs + '>' + escHtml(slide.title) + '</h2>' : '')
-          + (slide.content ? '<div>' + slide.content + '</div>' : '')
-          + (slide.bullets ? renderBullets(slide.bullets, slide.fragments) : '')
+          + withBuilds(
+              (slide.content ? '<div>' + sanitizeRichHtml(slide.content) + '</div>' : '')
+              + (slide.bullets ? renderBullets(slide.bullets, slide.fragments) : '')
+            )
           + notes + '</section>';
     }
   }
 
+  // Animate any .counter-up element on slide entry: counts from 0 to its
+  // final numeric value over ~1.2s. Final value is read from data-target.
+  function animateCounters(section) {
+    if (!section) return;
+    var els = section.querySelectorAll('.counter-up');
+    Array.prototype.forEach.call(els, function(el) {
+      var target = parseFloat(el.getAttribute('data-target') || el.textContent);
+      if (isNaN(target)) return;
+      var start = performance.now();
+      var duration = 1200;
+      var fmt = el.getAttribute('data-format') || '';
+      var suffix = el.getAttribute('data-suffix') || '';
+      function tick(now) {
+        var t = Math.min(1, (now - start) / duration);
+        var eased = 1 - Math.pow(1 - t, 3);
+        var val = target * eased;
+        el.textContent = (fmt === 'int' ? Math.round(val) : val.toFixed(1)) + suffix;
+        if (t < 1) requestAnimationFrame(tick);
+      }
+      requestAnimationFrame(tick);
+    });
+  }
+
   // --- Presentation lifecycle ---
+  function applyMode(mode) {
+    var revealEl = document.querySelector('.reveal');
+    if (!revealEl) return;
+    var validModes = ['traditional', 'zoom', 'rapid'];
+    var m = validModes.indexOf(mode) >= 0 ? mode : 'traditional';
+    revealEl.setAttribute('data-mode', m);
+    currentMode = m;
+  }
+
+  // In rapid mode, default each slide that lacks an explicit autoslide to 20s.
+  function applyRapidAutoslide() {
+    if (currentMode !== 'rapid') return;
+    var sections = document.querySelectorAll('#slides-container > section');
+    Array.prototype.forEach.call(sections, function(s) {
+      if (!s.hasAttribute('data-autoslide')) {
+        s.setAttribute('data-autoslide', '20000');
+      }
+    });
+  }
+
+  function onSlideChanged(event) {
+    updateSlideCounter();
+    if (event && event.currentSlide) animateCounters(event.currentSlide);
+  }
+
   function buildPresentation(slides, transition) {
     var container = document.getElementById('slides-container');
     container.innerHTML = slides.map(renderSlide).join('\n');
+    applyRapidAutoslide();
 
     if (revealInstance) {
       // Sync existing instance with new DOM
+      revealInstance.configure({
+        transition: transition || currentTransition || 'slide',
+        autoSlide: 0,                   // per-slide data-autoslide overrides
+        autoSlideStoppable: true,
+      });
       revealInstance.sync();
       revealInstance.slide(0);
       updateSlideCounter();
+      // Fire counter animation on the now-current slide
+      var idx = revealInstance.getIndices();
+      var present = revealInstance.getSlides()[idx.h] || null;
+      if (present) animateCounters(present);
     } else {
       revealInstance = new Reveal({
         hash: false,
@@ -920,11 +1706,15 @@
         margin: 0.04,
         minScale: 0.2,
         maxScale: 2.0,
-        embedded: true,  // critical for sprinkle panel embedding
+        embedded: true,                 // critical for sprinkle panel embedding
+        autoSlide: 0,                   // honor per-slide data-autoslide
+        autoSlideStoppable: true,
       });
       revealInstance.initialize().then(function() {
-        revealInstance.on('slidechanged', updateSlideCounter);
+        revealInstance.on('slidechanged', onSlideChanged);
         updateSlideCounter();
+        var first = document.querySelector('#slides-container > section.present');
+        if (first) animateCounters(first);
       });
     }
   }
@@ -986,6 +1776,7 @@
       currentSlides = data.slides;
       if (data.theme) applyTheme(data.theme, data.themeCSS);
       if (data.transition) currentTransition = data.transition;
+      applyMode(data.mode || 'traditional');
       setState('ready');
       buildPresentation(currentSlides, currentTransition);
     }
