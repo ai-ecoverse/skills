@@ -84,6 +84,18 @@ List your open tickets. Supports filtering by state and table.
 States: `new` (1), `in-progress` (2), `on-hold` (3), `resolved` (6), `closed` (7), `all`
 Tables: `incident` (default), `sc_req_item`, `sc_request`
 
+### servicenow monday [--limit N] [--date Nd]
+
+Output tickets in the monday aggregator protocol format. Compatible with the `monday` dispatcher for unified inbox/todo aggregation across services.
+
+```bash
+# Used automatically by the monday aggregator:
+monday servicenow gh slack
+
+# Or standalone:
+servicenow monday --limit 20 --date 7d
+```
+
 ## Incident management (pagerduty replacement)
 
 Incidents use the same `incident` table as regular tickets. To acknowledge/update an incident:
