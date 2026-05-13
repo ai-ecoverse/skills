@@ -610,6 +610,90 @@ async function cmdKbArticle(kbNumber) {
   console.log(JSON.stringify(result, null, 2));
 }
 
+async function cmdMonday(args) {
+  await ensureAuth();
+  var userSysId = getUserSysId();
+  var domain = getDomain();
+
+  // Parse monday protocol flags
+  var limit = 50;
+  var date = '7d';
+  for (var i = 0; i < args.length; i++) {
+    if (args[i] === '--limit' && args[i + 1]) { limit = parseInt(args[i + 1]); i++; }
+    if (args[i] === '--date' && args[i + 1]) { date = args[i + 1]; i++; }
+    if (args[i].startsWith('--limit=')) limit = parseInt(args[i].split('=')[1]);
+    if (args[i].startsWith('--date=')) date = args[i].split('=')[1];
+  }
+
+  // Parse date filter (e.g. "7d" -> 7 days ago)
+  var daysBack = 7;
+  var dateMatch = date.match(/^(\d+)d$/);
+  if (dateMatch) daysBack = parseInt(dateMatch[1]);
+  var cutoff = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000);
+  var cutoffStr = cutoff.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
+
+  var items = [];
+  var halfLimit = Math.ceil(limit / 2);
+
+  // Fetch incidents (open + recently updated)
+  var incQuery = 'caller_id=' + userSysId + '^sys_updated_on>=' + cutoffStr + '^ORDERBYDESCsys_updated_on';
+  var incFields = 'number,short_description,state,priority,sys_id,sys_created_on,sys_updated_on,assignment_group,comments';
+  var incidents = await tableGet('incident', incQuery, incFields, halfLimit);
+
+  var stateLabels = { '1': 'New', '2': 'In Progress', '3': 'On Hold', '6': 'Resolved', '7': 'Closed' };
+
+  for (var inc of incidents) {
+    items.push({
+      id: 'sn-inc-' + inc.sys_id,
+      source: 'servicenow',
+      type: 'incident',
+      title: inc.short_description || inc.number,
+      subtitle: inc.number + ' (' + (stateLabels[inc.state] || inc.state) + ')',
+      url: 'https://' + domain + '/esc?id=ticket&table=incident&sys_id=' + inc.sys_id,
+      ts: inc.sys_updated_on ? inc.sys_updated_on.replace(' ', 'T') + 'Z' : inc.sys_created_on.replace(' ', 'T') + 'Z',
+      body: inc.short_description || '',
+      participants: [],
+      meta: {
+        state: stateLabels[inc.state] || inc.state,
+        priority: inc.priority,
+        number: inc.number
+      }
+    });
+  }
+
+  // Fetch open request items (recently updated)
+  var ritmQuery = 'request.requested_for=' + userSysId + '^sys_updated_on>=' + cutoffStr + '^ORDERBYDESCsys_updated_on';
+  var ritmFields = 'number,short_description,state,sys_id,sys_created_on,sys_updated_on';
+  var ritms = await tableGet('sc_req_item', ritmQuery, ritmFields, halfLimit);
+
+  for (var ritm of ritms) {
+    var ritmState = ritm.state === '1' ? 'Open' : ritm.state === '2' ? 'Work in Progress' : ritm.state === '3' ? 'Closed Complete' : ritm.state;
+    items.push({
+      id: 'sn-ritm-' + ritm.sys_id,
+      source: 'servicenow',
+      type: 'request',
+      title: ritm.short_description || ritm.number,
+      subtitle: ritm.number + ' (' + ritmState + ')',
+      url: 'https://' + domain + '/esc?id=ticket&table=sc_req_item&sys_id=' + ritm.sys_id,
+      ts: ritm.sys_updated_on ? ritm.sys_updated_on.replace(' ', 'T') + 'Z' : ritm.sys_created_on.replace(' ', 'T') + 'Z',
+      body: ritm.short_description || '',
+      participants: [],
+      meta: {
+        state: ritmState,
+        number: ritm.number
+      }
+    });
+  }
+
+  // Sort by ts descending and limit
+  items.sort(function(a, b) {
+    return new Date(b.ts).getTime() - new Date(a.ts).getTime();
+  });
+  items = items.slice(0, limit);
+
+  console.log(JSON.stringify(items, null, 2));
+}
+
 function showHelp() {
   console.log('ServiceNow — API client\n');
   console.log('Setup:');
@@ -624,6 +708,9 @@ function showHelp() {
   console.log('Knowledge Base:');
   console.log('  kb <QUERY>                   Search Knowledge Base');
   console.log('  kb-article <KB_NUMBER>       Get full KB article content\n');
+  console.log('Monday Protocol:');
+  console.log('  monday [--limit N] [--date Nd]');
+  console.log('                               Output items in monday aggregator format\n');
   console.log('States: new, in-progress, on-hold, resolved, closed, all');
   console.log('Default domain: ' + DEFAULTS.domain);
   console.log('');
@@ -635,6 +722,7 @@ function showHelp() {
   console.log('  servicenow comment INC3616952 "Please provide an update"');
   console.log('  servicenow kb "VPN GlobalProtect"');
   console.log('  servicenow kb-article KB0023295');
+  console.log('  servicenow monday --limit 20 --date 7d');
 }
 
 // --- Main ---
@@ -674,6 +762,9 @@ switch (cmd) {
     break;
   case 'kb-article':
     await cmdKbArticle(args[0]);
+    break;
+  case 'monday':
+    await cmdMonday(args);
     break;
   default:
     console.error('Unknown command: ' + cmd);
