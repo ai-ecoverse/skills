@@ -76,7 +76,7 @@ const hasRating = !!(rateImportance || rateUrgency || rateSummary);
 
 // ─── Known Monday-Compatible Commands ────────────────────────────────────────
 
-const KNOWN_COMMANDS = ['gh', 'slack', 'teams', 'outlook', 'gmail'];  // 'monday' itself intentionally excluded
+const KNOWN_COMMANDS = ['gh', 'slack', 'teams', 'outlook', 'gmail', 'servicenow'];  // 'monday' itself intentionally excluded
 
 /**
  * Discover which known commands are available on PATH.
