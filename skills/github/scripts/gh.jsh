@@ -325,6 +325,42 @@ async function prComment(args) {
   } catch (e) { fail('pr comment', e); }
 }
 
+// ─── pr create ───────────────────────────────────────────────────────────────
+
+async function prCreate(args) {
+  const usage = 'usage: gh pr create <title> <body> <head-branch> [--base=<base>] [--draft] [repo]';
+  let base = null, draft = false;
+  const positional = [];
+  for (const a of args) {
+    if (a.startsWith('--base=')) base = a.slice(7).trim();
+    else if (a === '--draft') draft = true;
+    else positional.push(a);
+  }
+  if (!positional[0]) die('pr create: title required\n' + usage);
+  if (positional[1] === undefined) die('pr create: body required\n' + usage);
+  if (!positional[2]) die('pr create: head branch required\n' + usage);
+  const [title, body, head] = positional;
+  const repo = await resolveRepo(positional[3]);
+
+  // Default base to the repo's default branch if not specified
+  if (!base) {
+    try {
+      const r = await api(`/repos/${repo}`);
+      base = r.default_branch || 'main';
+    } catch { base = 'main'; }
+  }
+
+  try {
+    const res = await api(`/repos/${repo}/pulls`, {
+      method: 'POST',
+      body: JSON.stringify({ title, body, head, base, draft }),
+    });
+    console.log(sym('success') + ' Created PR ' + C.cyan('#' + res.number) + ': ' + res.title);
+    console.log(C.gray('Branch:') + '  ' + res.head.ref + ' → ' + res.base.ref);
+    console.log(C.gray('URL:') + '     ' + res.html_url);
+  } catch (e) { fail('pr create', e); }
+}
+
 // ─── pr checkout ─────────────────────────────────────────────────────────────
 
 async function prCheckout(args) {
@@ -884,6 +920,7 @@ function showHelp() {
   console.log(C.bold('COMMANDS'));
   console.log('  ' + C.cyan('pr list') + '       [repo]                       List open pull requests');
   console.log('  ' + C.cyan('pr view') + '       <num> [repo]                 View PR details and checks');
+  console.log('  ' + C.cyan('pr create') + '     <title> <body> <head> [--base=<base>] [--draft] [repo]  Open a PR');
   console.log('  ' + C.cyan('pr merge') + '      <num> [--squash|--rebase] [repo]  Merge a PR');
   console.log('  ' + C.cyan('pr comment') + '    <num> <message> [repo]       Post a comment');
   console.log('  ' + C.cyan('pr checkout') + '   <num> [repo]                 Print checkout commands');
@@ -924,7 +961,7 @@ if (cmd === 'auth') { await authStatus(); process.exit(0); }
 if (cmd === 'monday') { await mondayGh(argv.slice(2)); process.exit(0); }
 
 const dispatch = {
-  pr:      { list: () => prList(rest),      view: () => prView(rest),    merge: () => prMerge(rest), comment: () => prComment(rest), checkout: () => prCheckout(rest) },
+  pr:      { list: () => prList(rest),      view: () => prView(rest),    merge: () => prMerge(rest), comment: () => prComment(rest), checkout: () => prCheckout(rest), create: () => prCreate(rest) },
   issue:   { list: () => issueList(rest),   view: () => issueView(rest), create: () => issueCreate(rest) },
   repo:    { view: () => repoView(rest) },
   run:     { list: () => runList(rest),     view: () => runView(rest) },

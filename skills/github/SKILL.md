@@ -60,6 +60,15 @@ gh.jsh pr view 42 owner/repo
 ```
 Shows title, author, branch, URL, check summary (passed/failed/pending), and body preview (first 400 chars).
 
+**Create a PR**
+```bash
+gh.jsh pr create "My title" "PR body text" my-feature-branch
+gh.jsh pr create "My title" "PR body" my-branch --base=develop
+gh.jsh pr create "My title" "PR body" my-branch --draft
+gh.jsh pr create "My title" "PR body" my-branch owner/repo
+```
+`head` is the branch to merge from. `--base` defaults to the repo's default branch. Returns the PR number and URL.
+
 **Merge a PR**
 ```bash
 gh.jsh pr merge 42                        # default: merge commit
