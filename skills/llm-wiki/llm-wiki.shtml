@@ -10,10 +10,11 @@
 
   html, body {
     height: 100%;
+    color-scheme: light dark;
     font-family: var(--s2-font-family, system-ui, -apple-system, sans-serif);
     font-size: 14px;
-    color: var(--s2-color, #1a1a1a);
-    background: var(--s2-bg-base);
+    color: light-dark(#111111, #e8e8e8);
+    background: light-dark(#ffffff, #1c1c1e);
   }
 
   .app {
@@ -26,8 +27,8 @@
   .topbar {
     display: none; /* shown via media query below */
     flex-direction: column;
-    background: var(--s2-bg-layer-1);
-    border-bottom: 1px solid color-mix(in srgb, var(--s2-color) 8%, transparent);
+    background: light-dark(#f5f5f7, #242426);
+    border-bottom: 1px solid light-dark(rgba(0,0,0,0.08), rgba(255,255,255,0.08));
     flex-shrink: 0;
     z-index: 10;
   }
@@ -44,6 +45,7 @@
     font-weight: 700;
     letter-spacing: -0.02em;
     flex: 1;
+    color: light-dark(#111111, #f0f0f0);
   }
 
   .topbar-row2 {
@@ -70,12 +72,12 @@
     gap: 4px;
     padding: 4px 12px;
     border-radius: var(--s2-radius-pill);
-    border: 1px solid color-mix(in srgb, var(--s2-color) 14%, transparent);
+    border: 1px solid light-dark(rgba(0,0,0,0.12), rgba(255,255,255,0.14));
     background: transparent;
     font-size: 12.5px;
     font-weight: 500;
     cursor: pointer;
-    color: color-mix(in srgb, var(--s2-color) 75%, transparent);
+    color: light-dark(#444444, #c0c0c0);
     transition: background 0.12s, border-color 0.12s, color 0.12s;
     user-select: none;
     margin-right: 6px;
@@ -85,14 +87,14 @@
   .pill:last-child { margin-right: 0; }
 
   .pill:hover {
-    background: color-mix(in srgb, var(--s2-color) 6%, transparent);
-    color: var(--s2-color);
+    background: light-dark(rgba(0,0,0,0.05), rgba(255,255,255,0.07));
+    color: light-dark(#111111, #f0f0f0);
   }
 
   .pill.active {
-    background: color-mix(in srgb, var(--s2-accent) 12%, transparent);
-    border-color: color-mix(in srgb, var(--s2-accent) 40%, transparent);
-    color: var(--s2-accent);
+    background: light-dark(rgba(66,133,244,0.12), rgba(99,153,255,0.2));
+    border-color: light-dark(rgba(66,133,244,0.4), rgba(99,153,255,0.5));
+    color: light-dark(#1a6fe8, #7aadff);
     font-weight: 600;
   }
 
@@ -101,21 +103,21 @@
     font-weight: 600;
     padding: 1px 5px;
     border-radius: var(--s2-radius-pill);
-    background: color-mix(in srgb, var(--s2-color) 8%, transparent);
-    color: color-mix(in srgb, var(--s2-color) 50%, transparent);
+    background: light-dark(rgba(0,0,0,0.07), rgba(255,255,255,0.1));
+    color: light-dark(#666666, #aaaaaa);
   }
 
   .pill.active .pill-count {
-    background: color-mix(in srgb, var(--s2-accent) 15%, transparent);
-    color: var(--s2-accent);
+    background: light-dark(rgba(66,133,244,0.15), rgba(99,153,255,0.25));
+    color: light-dark(#1a6fe8, #7aadff);
   }
 
   /* ── Sidebar (wide only) ── */
   .sidebar {
     width: 260px;
     min-width: 260px;
-    background: var(--s2-bg-layer-1);
-    border-right: 1px solid color-mix(in srgb, var(--s2-color) 10%, transparent);
+    background: light-dark(#f5f5f7, #242426);
+    border-right: 1px solid light-dark(rgba(0,0,0,0.08), rgba(255,255,255,0.08));
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -268,26 +270,30 @@
     border-radius: var(--s2-radius-default);
     cursor: pointer;
     transition: background 0.1s;
-    border-bottom: 1px solid color-mix(in srgb, var(--s2-color) 5%, transparent);
+    border-bottom: 1px solid light-dark(rgba(0,0,0,0.06), rgba(255,255,255,0.06));
   }
 
   .note-row:hover {
-    background: color-mix(in srgb, var(--s2-color) 4%, transparent);
+    background: light-dark(rgba(0,0,0,0.03), rgba(255,255,255,0.05));
   }
 
   .note-row-title {
     font-weight: 600;
     font-size: 14px;
-    white-space: nowrap;
+    color: light-dark(#111111, #efefef);
+    white-space: normal;
+    word-break: break-word;
     min-width: 0;
     flex-shrink: 0;
+    flex-basis: 100%;
   }
 
   .note-row-summary {
     flex: 1;
+    flex-basis: 100%;
     font-size: 13px;
-    color: color-mix(in srgb, var(--s2-color) 55%, transparent);
-    white-space: nowrap;
+    color: light-dark(#555555, #a0a0a0);
+    white-space: normal;
     overflow: hidden;
     text-overflow: ellipsis;
     min-width: 0;
@@ -302,16 +308,16 @@
     flex-shrink: 0;
   }
 
-  .cat-badge--people   { background: color-mix(in srgb, var(--s2-informative) 12%, transparent); color: var(--s2-informative); }
-  .cat-badge--work     { background: color-mix(in srgb, var(--s2-accent) 10%, transparent); color: var(--s2-accent); }
-  .cat-badge--creative { background: color-mix(in srgb, var(--s2-notice) 12%, transparent); color: var(--s2-notice); }
-  .cat-badge--tech     { background: color-mix(in srgb, var(--s2-positive) 12%, transparent); color: var(--s2-positive); }
-  .cat-badge--taste    { background: color-mix(in srgb, var(--s2-negative) 10%, transparent); color: var(--s2-negative); }
-  .cat-badge--life     { background: color-mix(in srgb, var(--s2-informative) 12%, transparent); color: var(--s2-informative); }
-  .cat-badge--events   { background: color-mix(in srgb, var(--s2-notice) 12%, transparent); color: var(--s2-notice); }
-  .cat-badge--places   { background: color-mix(in srgb, var(--s2-positive) 12%, transparent); color: var(--s2-positive); }
-  .cat-badge--_raw     { background: color-mix(in srgb, var(--s2-color) 8%, transparent); color: color-mix(in srgb, var(--s2-color) 60%, transparent); }
-  .cat-badge--raw      { background: color-mix(in srgb, var(--s2-color) 8%, transparent); color: color-mix(in srgb, var(--s2-color) 60%, transparent); }
+  .cat-badge--people   { background: light-dark(#dbeafe, #1e3a5f); color: light-dark(#1d4ed8, #7ab8ff); }
+  .cat-badge--work     { background: light-dark(#e0e7ff, #1e2a5f); color: light-dark(#4338ca, #a5b4fc); }
+  .cat-badge--creative { background: light-dark(#fef9c3, #3b2e00); color: light-dark(#854d0e, #fcd34d); }
+  .cat-badge--tech     { background: light-dark(#dcfce7, #0f2e1a); color: light-dark(#15803d, #4ade80); }
+  .cat-badge--taste    { background: light-dark(#fee2e2, #3b1212); color: light-dark(#b91c1c, #fca5a5); }
+  .cat-badge--life     { background: light-dark(#dbeafe, #1e3a5f); color: light-dark(#1d4ed8, #7ab8ff); }
+  .cat-badge--events   { background: light-dark(#fef3c7, #2e1f00); color: light-dark(#92400e, #fbbf24); }
+  .cat-badge--places   { background: light-dark(#dcfce7, #0f2e1a); color: light-dark(#15803d, #4ade80); }
+  .cat-badge--_raw     { background: light-dark(#f3f4f6, #2a2a2e); color: light-dark(#374151, #9ca3af); }
+  .cat-badge--raw      { background: light-dark(#f3f4f6, #2a2a2e); color: light-dark(#374151, #9ca3af); }
 
   /* ── Note detail ── */
   .note-detail {
@@ -490,7 +496,7 @@
   .dialog-overlay[hidden] { display: none; }
 
   .dialog-box {
-    background: var(--s2-bg-elevated, #fff);
+    background: var(--s2-bg-elevated, var(--s2-bg-layer-1));
     border-radius: var(--s2-radius-xl);
     box-shadow: var(--s2-shadow-elevated);
     max-width: 560px;
@@ -542,11 +548,11 @@
     gap: 20px;
     padding: 12px 0 16px;
     font-size: 12px;
-    color: color-mix(in srgb, var(--s2-color) 50%, transparent);
+    color: light-dark(#666666, #909090);
   }
 
   .stats-bar strong {
-    color: var(--s2-color);
+    color: light-dark(#111111, #efefef);
   }
 
   /* ── Scrollbars ── */
@@ -626,8 +632,14 @@
       gap: 12px;
     }
 
+    .note-row-title {
+      white-space: nowrap;
+      flex-basis: auto;
+    }
+
     .note-row-summary {
       flex-basis: auto;
+      white-space: nowrap;
     }
   }
 </style>
