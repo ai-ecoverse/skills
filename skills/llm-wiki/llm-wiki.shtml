@@ -22,7 +22,95 @@
     overflow: hidden;
   }
 
-  /* Sidebar */
+  /* ── Topbar (narrow/mobile) ── */
+  .topbar {
+    display: none; /* shown via media query below */
+    flex-direction: column;
+    background: var(--s2-bg-layer-1);
+    border-bottom: 1px solid color-mix(in srgb, var(--s2-color) 8%, transparent);
+    flex-shrink: 0;
+    z-index: 10;
+  }
+
+  .topbar-row1 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px 6px;
+  }
+
+  .topbar-title {
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    flex: 1;
+  }
+
+  .topbar-row2 {
+    padding: 0 12px 8px;
+  }
+
+  .topbar-row2 input {
+    width: 100%;
+  }
+
+  .topbar-pills {
+    padding: 0 12px 10px;
+    overflow-x: auto;
+    white-space: nowrap;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  .topbar-pills::-webkit-scrollbar { display: none; }
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 12px;
+    border-radius: var(--s2-radius-pill);
+    border: 1px solid color-mix(in srgb, var(--s2-color) 14%, transparent);
+    background: transparent;
+    font-size: 12.5px;
+    font-weight: 500;
+    cursor: pointer;
+    color: color-mix(in srgb, var(--s2-color) 75%, transparent);
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+    user-select: none;
+    margin-right: 6px;
+    white-space: nowrap;
+  }
+
+  .pill:last-child { margin-right: 0; }
+
+  .pill:hover {
+    background: color-mix(in srgb, var(--s2-color) 6%, transparent);
+    color: var(--s2-color);
+  }
+
+  .pill.active {
+    background: color-mix(in srgb, var(--s2-accent) 12%, transparent);
+    border-color: color-mix(in srgb, var(--s2-accent) 40%, transparent);
+    color: var(--s2-accent);
+    font-weight: 600;
+  }
+
+  .pill-count {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 1px 5px;
+    border-radius: var(--s2-radius-pill);
+    background: color-mix(in srgb, var(--s2-color) 8%, transparent);
+    color: color-mix(in srgb, var(--s2-color) 50%, transparent);
+  }
+
+  .pill.active .pill-count {
+    background: color-mix(in srgb, var(--s2-accent) 15%, transparent);
+    color: var(--s2-accent);
+  }
+
+  /* ── Sidebar (wide only) ── */
   .sidebar {
     width: 260px;
     min-width: 260px;
@@ -112,13 +200,14 @@
     background: color-mix(in srgb, var(--s2-accent) 15%, transparent);
   }
 
-  /* Main content */
+  /* ── Main content ── */
   .main {
     flex: 1;
     display: flex;
     flex-direction: column;
     overflow: hidden;
     background: var(--s2-bg-base);
+    min-width: 0;
   }
 
   .toolbar {
@@ -129,6 +218,7 @@
     border-bottom: 1px solid color-mix(in srgb, var(--s2-color) 8%, transparent);
     background: var(--s2-bg-layer-1);
     min-height: 48px;
+    flex-shrink: 0;
   }
 
   .toolbar-title {
@@ -143,7 +233,7 @@
     padding: 24px;
   }
 
-  /* Loading */
+  /* ── Loading ── */
   .loading-state {
     display: flex;
     flex-direction: column;
@@ -165,7 +255,7 @@
 
   @keyframes spin { to { transform: rotate(360deg); } }
 
-  /* Note list */
+  /* ── Note list ── */
   .note-list {
     max-width: 860px;
   }
@@ -212,17 +302,18 @@
     flex-shrink: 0;
   }
 
-  .cat-badge--people { background: color-mix(in srgb, var(--s2-informative) 12%, transparent); color: var(--s2-informative); }
-  .cat-badge--work { background: color-mix(in srgb, var(--s2-accent) 10%, transparent); color: var(--s2-accent); }
+  .cat-badge--people   { background: color-mix(in srgb, var(--s2-informative) 12%, transparent); color: var(--s2-informative); }
+  .cat-badge--work     { background: color-mix(in srgb, var(--s2-accent) 10%, transparent); color: var(--s2-accent); }
   .cat-badge--creative { background: color-mix(in srgb, var(--s2-notice) 12%, transparent); color: var(--s2-notice); }
-  .cat-badge--tech { background: color-mix(in srgb, var(--s2-positive) 12%, transparent); color: var(--s2-positive); }
-  .cat-badge--taste { background: color-mix(in srgb, var(--s2-negative) 10%, transparent); color: var(--s2-negative); }
-  .cat-badge--life { background: color-mix(in srgb, var(--s2-informative) 12%, transparent); color: var(--s2-informative); }
-  .cat-badge--events { background: color-mix(in srgb, var(--s2-notice) 12%, transparent); color: var(--s2-notice); }
-  .cat-badge--places { background: color-mix(in srgb, var(--s2-positive) 12%, transparent); color: var(--s2-positive); }
-  .cat-badge--raw { background: color-mix(in srgb, var(--s2-color) 8%, transparent); color: color-mix(in srgb, var(--s2-color) 60%, transparent); }
+  .cat-badge--tech     { background: color-mix(in srgb, var(--s2-positive) 12%, transparent); color: var(--s2-positive); }
+  .cat-badge--taste    { background: color-mix(in srgb, var(--s2-negative) 10%, transparent); color: var(--s2-negative); }
+  .cat-badge--life     { background: color-mix(in srgb, var(--s2-informative) 12%, transparent); color: var(--s2-informative); }
+  .cat-badge--events   { background: color-mix(in srgb, var(--s2-notice) 12%, transparent); color: var(--s2-notice); }
+  .cat-badge--places   { background: color-mix(in srgb, var(--s2-positive) 12%, transparent); color: var(--s2-positive); }
+  .cat-badge--_raw     { background: color-mix(in srgb, var(--s2-color) 8%, transparent); color: color-mix(in srgb, var(--s2-color) 60%, transparent); }
+  .cat-badge--raw      { background: color-mix(in srgb, var(--s2-color) 8%, transparent); color: color-mix(in srgb, var(--s2-color) 60%, transparent); }
 
-  /* Note detail */
+  /* ── Note detail ── */
   .note-detail {
     max-width: 720px;
   }
@@ -252,7 +343,7 @@
     font-family: monospace;
   }
 
-  /* Markdown content */
+  /* ── Markdown content ── */
   .md-content {
     font-size: 15px;
     line-height: 1.6;
@@ -337,7 +428,7 @@
     background: color-mix(in srgb, var(--s2-color) 4%, transparent);
   }
 
-  /* Wikilinks */
+  /* ── Wikilinks ── */
   .wikilink {
     color: var(--s2-accent);
     font-weight: 600;
@@ -365,7 +456,7 @@
     margin-left: 1px;
   }
 
-  /* Empty state */
+  /* ── Empty state ── */
   .empty-state {
     display: flex;
     flex-direction: column;
@@ -385,7 +476,7 @@
     font-size: 12px;
   }
 
-  /* Dialog */
+  /* ── Dialog ── */
   .dialog-overlay {
     position: fixed;
     inset: 0;
@@ -445,7 +536,7 @@
     gap: 8px;
   }
 
-  /* Stats bar */
+  /* ── Stats bar ── */
   .stats-bar {
     display: flex;
     gap: 20px;
@@ -458,7 +549,7 @@
     color: var(--s2-color);
   }
 
-  /* Scrollbar */
+  /* ── Scrollbars ── */
   .sidebar-nav::-webkit-scrollbar,
   .content::-webkit-scrollbar {
     width: 6px;
@@ -469,12 +560,101 @@
     background: color-mix(in srgb, var(--s2-color) 15%, transparent);
     border-radius: 3px;
   }
+
+  /* ── Default (narrow): topbar, single column ── */
+  .app {
+    flex-direction: column;
+  }
+
+  .sidebar {
+    display: none;
+  }
+
+  .topbar {
+    display: flex;
+  }
+
+  .toolbar {
+    display: none;
+  }
+
+  .content {
+    padding: 12px;
+  }
+
+  .note-detail-title {
+    font-size: 19px;
+  }
+
+  .note-row {
+    flex-wrap: wrap;
+    gap: 4px 10px;
+  }
+
+  .note-row-summary {
+    flex-basis: 100%;
+  }
+
+  /* ── Wide layout (≥640px): sidebar + two-column ── */
+  @media (min-width: 640px) {
+    .app {
+      flex-direction: row;
+    }
+
+    .topbar {
+      display: none;
+    }
+
+    .sidebar {
+      display: flex;
+    }
+
+    .toolbar {
+      display: flex;
+    }
+
+    .content {
+      padding: 24px;
+    }
+
+    .note-detail-title {
+      font-size: 24px;
+    }
+
+    .note-row {
+      flex-wrap: nowrap;
+      gap: 12px;
+    }
+
+    .note-row-summary {
+      flex-basis: auto;
+    }
+  }
 </style>
 </head>
 <body>
 
 <div class="app">
-  <!-- Sidebar -->
+
+  <!-- Topbar (narrow only) -->
+  <div class="topbar">
+    <!-- Row 1: title + action buttons -->
+    <div class="topbar-row1">
+      <span class="topbar-title">LLM Wiki</span>
+      <button class="sprinkle-btn sprinkle-btn--secondary" style="font-size:12px;padding:4px 10px" onclick="queryWiki()">Query</button>
+      <button class="sprinkle-btn sprinkle-btn--secondary" style="font-size:12px;padding:4px 10px" onclick="ingestSource()">Ingest</button>
+    </div>
+    <!-- Row 2: search -->
+    <div class="topbar-row2">
+      <input type="text" class="sprinkle-text-field" placeholder="Search notes..." id="topbarSearchInput" oninput="handleSearch(this.value)">
+    </div>
+    <!-- Row 3: category pills -->
+    <div class="topbar-pills" id="topbarPills">
+      <!-- Populated by renderTopbar() -->
+    </div>
+  </div>
+
+  <!-- Sidebar (wide only) -->
   <div class="sidebar">
     <div class="sidebar-header">
       <div class="sidebar-title">LLM Wiki</div>
@@ -576,16 +756,16 @@
   var searchQuery = '';
 
   var CATEGORIES = [
-    { id: 'all', label: 'All Notes', icon: '' },
-    { id: 'people', label: 'People' },
-    { id: 'work', label: 'Work' },
+    { id: 'all',      label: 'All Notes' },
+    { id: 'people',   label: 'People' },
+    { id: 'work',     label: 'Work' },
     { id: 'creative', label: 'Creative' },
-    { id: 'tech', label: 'Tech' },
-    { id: 'taste', label: 'Taste' },
-    { id: 'life', label: 'Life' },
-    { id: 'events', label: 'Events' },
-    { id: 'places', label: 'Places' },
-    { id: '_raw', label: 'Raw Conversations' }
+    { id: 'tech',     label: 'Tech' },
+    { id: 'taste',    label: 'Taste' },
+    { id: 'life',     label: 'Life' },
+    { id: 'events',   label: 'Events' },
+    { id: 'places',   label: 'Places' },
+    { id: '_raw',     label: 'Raw' }
   ];
 
   var CAT_DIRS = ['people', 'work', 'creative', 'tech', 'taste', 'life', 'events', 'places'];
@@ -640,7 +820,7 @@
     noteIndex = [];
     indexByFilename = {};
 
-    // Set up a 10-second timeout fallback
+    // 10-second timeout fallback
     var timedOut = false;
     var timeoutId = setTimeout(function() {
       if (noteIndex.length === 0) {
@@ -650,7 +830,6 @@
       }
     }, 10000);
 
-    // Scan categories sequentially for progress feedback
     for (var ci = 0; ci < CAT_DIRS.length; ci++) {
       var cat = CAT_DIRS[ci];
       updateLoadingStatus('Scanning ' + cat + '... (' + noteIndex.length + ' notes found)');
@@ -677,17 +856,14 @@
       } catch(e) {
         console.warn('LLM Wiki: failed to read /mnt/kb/' + cat, e);
       }
-      // Update count after each category
       updateLoadingStatus('Scanning... (' + noteIndex.length + ' notes found)');
     }
 
     clearTimeout(timeoutId);
-    if (timedOut) return; // already showed error state
+    if (timedOut) return;
 
-    // Sort alphabetically
     noteIndex.sort(function(a, b) { return a.title.localeCompare(b.title); });
 
-    // Build raw index (just filenames, no content)
     updateLoadingStatus('Scanning raw conversations...');
     try {
       var rawEntries = await slicc.readDir('/mnt/kb/_raw');
@@ -701,7 +877,7 @@
           var summary = dateMatch ? dateMatch[1] : '';
           return { title: title, filename: filename, path: '/mnt/kb/_raw/' + fname, category: '_raw', summary: summary };
         });
-      rawIndex.sort(function(a, b) { return b.path.localeCompare(a.path); }); // newest first
+      rawIndex.sort(function(a, b) { return b.path.localeCompare(a.path); });
       console.log('LLM Wiki: scanned _raw, found ' + rawIndex.length + ' files');
     } catch(e) {
       console.warn('LLM Wiki: failed to read /mnt/kb/_raw', e);
@@ -719,7 +895,6 @@
       if (line.startsWith('#')) continue;
       if (line.startsWith('---')) continue;
       if (line.startsWith('>')) {
-        // Use blockquote content as summary
         return line.replace(/^>\s*/, '').replace(/\*\*/g, '');
       }
       return line.replace(/\*\*/g, '').replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, function(m, target, display) {
@@ -727,6 +902,25 @@
       });
     }
     return '';
+  }
+
+  // ── Topbar pills (narrow) ──
+  function renderTopbar() {
+    var html = '';
+    CATEGORIES.forEach(function(cat) {
+      var count = 0;
+      if (cat.id === 'all') count = noteIndex.length;
+      else if (cat.id === '_raw') count = rawIndex.length;
+      else count = noteIndex.filter(function(n) { return n.category === cat.id; }).length;
+
+      var active = currentCategory === cat.id ? ' active' : '';
+      html += '<span class="pill' + active + '" onclick="selectCategory(\'' + cat.id + '\')">';
+      html += escapeHtml(cat.label);
+      html += '<span class="pill-count">' + count + '</span>';
+      html += '</span>';
+    });
+    var pillsEl = document.getElementById('topbarPills');
+    if (pillsEl) pillsEl.innerHTML = html;
   }
 
   // ── Sidebar ──
@@ -740,18 +934,25 @@
 
       var active = currentCategory === cat.id ? ' active' : '';
       html += '<div class="nav-item' + active + '" onclick="selectCategory(\'' + cat.id + '\')">';
-      html += '<span>' + cat.label + '</span>';
+      html += '<span>' + escapeHtml(cat.label) + '</span>';
       html += '<span class="nav-count">' + count + '</span>';
       html += '</div>';
     });
-    document.getElementById('sidebarNav').innerHTML = html;
+    var navEl = document.getElementById('sidebarNav');
+    if (navEl) navEl.innerHTML = html;
+
+    // Keep topbar pills in sync
+    renderTopbar();
   }
 
   function selectCategory(cat) {
     currentCategory = cat;
     currentView = 'list';
     searchQuery = '';
-    document.getElementById('searchInput').value = '';
+    var si = document.getElementById('searchInput');
+    if (si) si.value = '';
+    var ti = document.getElementById('topbarSearchInput');
+    if (ti) ti.value = '';
     renderSidebar();
     renderList();
     updateToolbar();
@@ -768,7 +969,8 @@
       var cat = CATEGORIES.find(function(c) { return c.id === currentCategory; });
       title = cat ? cat.label : 'All Notes';
     }
-    document.getElementById('toolbarTitle').textContent = title;
+    var ttEl = document.getElementById('toolbarTitle');
+    if (ttEl) ttEl.textContent = title;
   }
 
   // ── List View ──
@@ -792,7 +994,7 @@
       html += '<div class="note-row" onclick="openNote(\'' + escapeAttr(note.path) + '\')">';
       html += '<span class="note-row-title">' + escapeHtml(note.title) + '</span>';
       html += '<span class="note-row-summary">' + escapeHtml(note.summary) + '</span>';
-      html += '<span class="cat-badge cat-badge--' + note.category + '">' + note.category + '</span>';
+      html += '<span class="cat-badge cat-badge--' + note.category + '">' + escapeHtml(note.category) + '</span>';
       html += '</div>';
     });
     html += '</div>';
@@ -811,7 +1013,6 @@
 
     if (searchQuery) {
       var q = searchQuery.toLowerCase();
-      // When searching, search across all curated notes regardless of category
       if (currentCategory !== '_raw') {
         notes = noteIndex;
       }
@@ -853,7 +1054,7 @@
     html += '<div style="margin-bottom:8px"><button class="sprinkle-btn sprinkle-btn--secondary" onclick="goBack()" style="font-size:12px">Back to list</button></div>';
     html += '<div class="note-detail-title">' + escapeHtml(note.title) + '</div>';
     html += '<div class="note-detail-meta">';
-    html += '<span class="cat-badge cat-badge--' + note.category + '">' + note.category + '</span>';
+    html += '<span class="cat-badge cat-badge--' + note.category + '">' + escapeHtml(note.category) + '</span>';
     html += '<span class="note-path">' + escapeHtml(note.path) + '</span>';
     html += '</div>';
     html += '</div>';
@@ -881,10 +1082,8 @@
 
   // ── Markdown Renderer ──
   function renderMarkdown(text) {
-    // Normalize line endings
     text = text.replace(/\r\n/g, '\n');
 
-    // Handle fenced code blocks first (protect from other parsing)
     var codeBlocks = [];
     text = text.replace(/```(\w*)\n([\s\S]*?)```/g, function(match, lang, code) {
       var idx = codeBlocks.length;
@@ -892,7 +1091,6 @@
       return '\x00CODE' + idx + '\x00';
     });
 
-    // Handle tables
     text = text.replace(/(\|.+\|)\n(\|[-| :]+\|)\n((?:\|.+\|\n?)+)/g, function(match, headerLine, sepLine, bodyLines) {
       var headers = headerLine.split('|').filter(function(c) { return c.trim(); });
       var rows = bodyLines.trim().split('\n');
@@ -916,7 +1114,6 @@
     while (i < lines.length) {
       var line = lines[i];
 
-      // Code block placeholder
       var codeMatch = line.match(/^\x00CODE(\d+)\x00$/);
       if (codeMatch) {
         result.push(codeBlocks[parseInt(codeMatch[1])]);
@@ -924,7 +1121,6 @@
         continue;
       }
 
-      // Headings
       var headingMatch = line.match(/^(#{1,4})\s+(.+)$/);
       if (headingMatch) {
         var level = headingMatch[1].length;
@@ -933,14 +1129,12 @@
         continue;
       }
 
-      // Horizontal rule
       if (/^(-{3,}|_{3,}|\*{3,})$/.test(line.trim())) {
         result.push('<hr>');
         i++;
         continue;
       }
 
-      // Blockquote
       if (line.match(/^>\s?/)) {
         var bqLines = [];
         while (i < lines.length) {
@@ -960,7 +1154,6 @@
         continue;
       }
 
-      // Unordered list
       if (line.match(/^[\s]*[-*]\s+/)) {
         var listItems = [];
         while (i < lines.length && lines[i].match(/^[\s]*[-*]\s+/)) {
@@ -971,7 +1164,6 @@
         continue;
       }
 
-      // Ordered list
       if (line.match(/^\d+\.\s+/)) {
         var olItems = [];
         while (i < lines.length && lines[i].match(/^\d+\.\s+/)) {
@@ -982,13 +1174,11 @@
         continue;
       }
 
-      // Empty line
       if (line.trim() === '') {
         i++;
         continue;
       }
 
-      // Paragraph — collect contiguous non-blank non-special lines
       var paraLines = [];
       while (i < lines.length && lines[i].trim() !== '' && !lines[i].match(/^#{1,4}\s/) && !lines[i].match(/^[\s]*[-*]\s+/) && !lines[i].match(/^\d+\.\s+/) && !lines[i].match(/^>\s?/) && !lines[i].match(/^\x00CODE/) && !lines[i].match(/^(-{3,}|_{3,}|\*{3,})$/) && !lines[i].match(/^<(table|thead|tbody|tr|th|td)/)) {
         paraLines.push(lines[i]);
@@ -1003,10 +1193,8 @@
   }
 
   function inlineMarkdown(text) {
-    // Escape raw HTML
     text = escapeHtml(text);
 
-    // Wikilinks: [[File|Display]] or [[File]]
     text = text.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, function(match, target, display) {
       var displayText = display || target.replace(/-/g, ' ');
       var key = target.toLowerCase();
@@ -1017,16 +1205,10 @@
       }
     });
 
-    // Bold
     text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-
-    // Italic (but not inside HTML attributes)
     text = text.replace(/(?<!\w)\*([^*]+?)\*(?!\w)/g, '<em>$1</em>');
-
-    // Inline code
     text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
 
-    // Links [text](url)
     text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function(match, label, url) {
       if (/^(https?:|mailto:|#)/.test(url)) {
         return '<a href="' + escapeHtml(url) + '" target="_blank" rel="noopener">' + label + '</a>';
@@ -1034,7 +1216,6 @@
       return label + ' (' + escapeHtml(url) + ')';
     });
 
-    // Line breaks within paragraphs
     text = text.replace(/\n/g, '<br>');
 
     return text;
@@ -1053,6 +1234,12 @@
   // ── Search ──
   function handleSearch(value) {
     searchQuery = value.trim();
+    // Keep both inputs in sync
+    var si = document.getElementById('searchInput');
+    if (si && si.value !== value) si.value = value;
+    var ti = document.getElementById('topbarSearchInput');
+    if (ti && ti.value !== value) ti.value = value;
+
     if (currentView === 'detail') {
       currentView = 'list';
       currentNote = null;
@@ -1066,7 +1253,6 @@
     showQueryInputDialog();
   }
 
-  // ── Query Input Dialog ──
   function showQueryInputDialog() {
     document.getElementById('queryInput').value = '';
     document.getElementById('askBtn').disabled = true;
@@ -1087,17 +1273,18 @@
     if (!query) return;
     slicc.lick({ action: 'query-submit', data: { query: query } });
     closeQueryInputDialog();
-    // Show querying indicator in toolbar
-    document.getElementById('toolbarTitle').innerHTML =
-      '<span style="display:inline-flex;align-items:center;gap:8px">' +
-      '<span class="spinner" style="width:14px;height:14px;border-width:2px"></span> Querying...</span>';
+    var ttEl = document.getElementById('toolbarTitle');
+    if (ttEl) {
+      ttEl.innerHTML =
+        '<span style="display:inline-flex;align-items:center;gap:8px">' +
+        '<span class="spinner" style="width:14px;height:14px;border-width:2px"></span> Querying...</span>';
+    }
   }
 
   function ingestSource() {
     showIngestDialog();
   }
 
-  // ── Ingest Dialog ──
   function showIngestDialog() {
     document.getElementById('ingestUrl').value = '';
     document.getElementById('ingestText').value = '';
@@ -1117,7 +1304,6 @@
     closeIngestDialog();
   }
 
-  // ── Dialog ──
   function showDialog(title, bodyHtml) {
     document.querySelector('#queryDialog .dialog-header span').textContent = title;
     document.getElementById('queryDialogBody').innerHTML = bodyHtml;
@@ -1143,11 +1329,9 @@
     }
 
     if (data.type === 'note-updated' && data.path) {
-      // Reload note if currently displayed
       if (currentNote && currentNote.path === data.path) {
         openNote(data.path);
       }
-      // Also refresh summary in index
       slicc.readFile(data.path).then(function(content) {
         var note = noteIndex.find(function(n) { return n.path === data.path; });
         if (note) {
