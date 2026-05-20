@@ -173,8 +173,8 @@ node -e "
 **For cookie-based APIs** — use playwright-cli eval from within the page:
 
 ```bash
-# Navigate to the app first (so cookies are in scope)
-playwright-cli open https://app.example.com
+# Navigate to the app first (so cookies are in scope), capture the tab ID
+tabId=$(playwright-cli open https://app.example.com)
 
 # Make the API call from the page context where cookies are automatic
 playwright-cli eval --tab=$tabId "
@@ -314,7 +314,7 @@ async function apiCall(tabId, path, options = {}) {
     }).then(r => r.json()).then(d => JSON.stringify(d))
   `;
   
-  const result = await exec(`playwright-cli eval --tab=$tabId "${expr.replace(/"/g, '\\"')}" --tab=${tabId}`);
+  const result = await exec(`playwright-cli eval --tab=${tabId} "${expr.replace(/"/g, '\\"')}"`);
   if (result.exitCode !== 0) throw new Error(result.stderr);
   return JSON.parse(result.stdout.trim());
 }
@@ -679,7 +679,7 @@ async function apiViaBrowser(path, options = {}) {
     })()
   `.replace(/\n/g, ' ').replace(/"/g, '\\"');
   
-  const result = await exec(`playwright-cli eval --tab=$tabId "${expr}" --tab=${tabId}`);
+  const result = await exec(`playwright-cli eval --tab=${tabId} "${expr}"`);
   if (result.exitCode !== 0) throw new Error(result.stderr);
   const parsed = JSON.parse(result.stdout.trim());
   if (parsed.__error) throw new Error(`API error ${parsed.__error}: ${parsed.detail}`);
