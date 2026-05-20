@@ -6,6 +6,8 @@ allowed-tools: bash
 
 # Secret Sauce
 
+> **Updated for [ai-ecoverse/slicc#666](https://github.com/ai-ecoverse/slicc/pull/666)** — improved playwright-cli tab handling, lick payload shape (`{action, data}`), and `.jsh` generation patterns.
+
 Turn any web app into a direct API integration. Instead of clicking through UIs with playwright-cli every time, discover the underlying API, validate it works, and compile the findings into a reusable site-specific skill with `.jsh` scripts.
 
 ## When to use this
@@ -78,7 +80,7 @@ node -e "
 playwright-cli open https://app.example.com
 
 # Make the API call from the page context where cookies are automatic
-playwright-cli eval "
+playwright-cli eval --tab=$tabId "
   fetch('/api/v1/me', { credentials: 'include' })
     .then(r => r.json())
     .then(d => JSON.stringify(d))
@@ -215,7 +217,7 @@ async function apiCall(tabId, path, options = {}) {
     }).then(r => r.json()).then(d => JSON.stringify(d))
   `;
   
-  const result = await exec(`playwright-cli eval "${expr.replace(/"/g, '\\"')}" --tab=${tabId}`);
+  const result = await exec(`playwright-cli eval --tab=$tabId "${expr.replace(/"/g, '\\"')}" --tab=${tabId}`);
   if (result.exitCode !== 0) throw new Error(result.stderr);
   return JSON.parse(result.stdout.trim());
 }
@@ -580,7 +582,7 @@ async function apiViaBrowser(path, options = {}) {
     })()
   `.replace(/\n/g, ' ').replace(/"/g, '\\"');
   
-  const result = await exec(`playwright-cli eval "${expr}" --tab=${tabId}`);
+  const result = await exec(`playwright-cli eval --tab=$tabId "${expr}" --tab=${tabId}`);
   if (result.exitCode !== 0) throw new Error(result.stderr);
   const parsed = JSON.parse(result.stdout.trim());
   if (parsed.__error) throw new Error(`API error ${parsed.__error}: ${parsed.detail}`);
