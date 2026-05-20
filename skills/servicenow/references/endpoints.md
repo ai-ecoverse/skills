@@ -7,8 +7,8 @@
 
 ## Important notes
 
-- The standard ServiceNow Table API (`/api/now/table/*`) is **blocked** from the ESC portal — requests hang indefinitely.
-- All data access goes through the **Service Portal (SP) API** which is accessible via Angular's `$http` injector from the page context.
+- The standard ServiceNow Table API (`/api/now/table/*`) is **blocked for direct fetch/XHR** from the SLICC page — those requests hang indefinitely. However, it **works when called via Angular's `$http` injector** from the page context (which is what this skill does via `evalInPage`).
+- All data access goes through Angular's `$http` injector running inside the ServiceNow page context.
 - The `X-UserToken` header (value from `window.g_ck`) is required but Angular adds it automatically.
 - Knowledge Base search is powered by **Coveo** (separate API, token-based).
 
@@ -97,7 +97,7 @@ Body: {
       "stream": {
         "number": "INC3616952",
         "entries": [{
-          "name": "Lars Trieloff",
+          "name": "Jane Employee",
           "sys_created_on_adjusted": "05-13-2026 12:30:12",
           "value": "<p>Comment text...</p>",
           "field_label": "Additional comments (Customer Visible)",
@@ -146,7 +146,7 @@ Available in ticket page response. Contains:
     { "name": "state", "display_value": "New", "value": "1" }
   ],
   "fields": [
-    { "name": "caller_id", "display_value": "Lars Trieloff", "label": "Caller" },
+    { "name": "caller_id", "display_value": "Jane Employee", "label": "Caller" },
     { "name": "priority", "display_value": "3 - Moderate", "label": "Priority" },
     { "name": "assignment_group", "display_value": "SD-Global", "label": "Assignment Group" },
     { "name": "cmdb_ci", "display_value": "AnyConnect", "label": "Configuration item" }
@@ -197,7 +197,7 @@ Available in ticket page response. Contains:
 
 | Entity | sys_id |
 |--------|--------|
-| User (Lars Trieloff) | `a3b27bff3755df8047afc8cfc3990e7c` |
+| User (current user) | stored in `.config.json` after `servicenow login` |
 | Portal (ESC) | `70cd9f3b734b13001fdae9c54cf6a72f` |
 | Ticket conversation widget | `a54beb3a87f10010e0ef0cf888cb0bba` |
 

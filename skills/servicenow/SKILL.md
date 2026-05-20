@@ -73,7 +73,7 @@ Fetch a specific KB article's full content (issue, solution, additional info).
 - **Ticket conversation widget:** `a54beb3a87f10010e0ef0cf888cb0bba`
 - **Coveo org:** `adobev2prod9e382h1q`
 - **Coveo search hub:** `ServiceNowESC_MainSearch`
-- **User sys_id:** `a3b27bff3755df8047afc8cfc3990e7c`
+- **User sys_id:** resolved dynamically at login and stored in `.config.json`
 
 All SP API calls go through Angular's `$http` to inherit session state. The `.jsh` script uses `playwright-cli eval` targeting a ServiceNow tab.
 

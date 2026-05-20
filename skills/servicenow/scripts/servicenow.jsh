@@ -2,7 +2,7 @@
 // Uses eval-file pattern for page-context API calls via Angular $http
 // Dynamic user resolution — run `servicenow login` to authenticate.
 
-const CONFIG_FILE = '/workspace/skills/servicenow/.config.json';
+const CONFIG_FILE = '/shared/servicenow/.config.json';
 const TICKET_WIDGET = 'a54beb3a87f10010e0ef0cf888cb0bba';
 
 // Defaults (can be overridden in config)
@@ -55,23 +55,31 @@ function getUserSysId() {
 
 async function ensureTab() {
   const domain = getDomain();
-  if (_tabId) {
-    const list = await exec('playwright-cli tab-list');
-    if (list.stdout.includes(_tabId)) return _tabId;
-    _tabId = null;
-  }
   const list = await exec('playwright-cli tab-list');
-  const re = new RegExp('\\[([A-F0-9]+)\\]\\s+https?://[^\\s]*' + domain.replace(/\./g, '\\.'));
+  if (list.exitCode !== 0) {
+    console.error('Failed to list browser tabs: ' + list.stderr);
+    process.exit(1);
+  }
+
+  if (_tabId && list.stdout.includes(_tabId)) return _tabId;
+  _tabId = null;
+
+  const re = new RegExp('\\[([^\\]]+)\\]\\s+https?://[^\\s]*' + domain.replace(/\./g, '\\.'));
   const match = list.stdout.match(re);
   if (match) {
     _tabId = match[1];
     return _tabId;
   }
+
   const r = await exec('playwright-cli open https://' + domain + '/esc');
-  const m = r.stdout.match(/targetId:\s*(\S+)\]/);
+  if (r.exitCode !== 0) {
+    console.error('Failed to open ServiceNow tab: ' + r.stderr);
+    process.exit(1);
+  }
+  const m = r.stdout.match(/\[([^\]]+)\]/);
   _tabId = m ? m[1] : null;
   if (!_tabId) {
-    console.error('Failed to open ServiceNow tab.');
+    console.error('Could not determine tab ID from: ' + r.stdout);
     process.exit(1);
   }
   await new Promise(resolve => setTimeout(resolve, 4000));
@@ -283,7 +291,13 @@ async function coveoSearch(query, numResults) {
 // Resolve INC/RITM/REQ number to sys_id via Table API
 async function resolveNumber(numberOrId) {
   if (/^[a-f0-9]{32}$/i.test(numberOrId)) {
-    return { sys_id: numberOrId, table: 'incident' };
+    // sys_id without a ticket number — try each table in order
+    for (const table of ['incident', 'sc_req_item', 'sc_request']) {
+      const results = await tableGet(table, 'sys_id=' + numberOrId, 'sys_id', 1);
+      if (results.length > 0) return { sys_id: numberOrId, table };
+    }
+    console.error('Could not find a record for sys_id ' + numberOrId + '. Use a ticket number (INC/RITM/REQ) for reliable lookup.');
+    process.exit(1);
   }
   var table = 'incident';
   if (numberOrId.startsWith('RITM')) table = 'sc_req_item';
@@ -331,6 +345,10 @@ async function cmdLogin(args) {
     if (args[i].startsWith('--domain=')) {
       domain = args[i].split('=')[1];
     }
+  }
+  if (!/^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/.test(domain)) {
+    console.error('Invalid domain: "' + domain + '". Provide a plain hostname like "mycompany.service-now.com".');
+    process.exit(1);
   }
 
   // Save domain early so ensureTab uses it
@@ -417,12 +435,14 @@ async function cmdTickets(args) {
 
   // Parse flags
   var stateFilter = '1,2,3'; // Default: New, In Progress, On Hold
+  var stateExplicit = false;
   var tableFilter = null; // null means show both incidents + requests
   for (var i = 0; i < args.length; i++) {
     if (args[i].startsWith('--state=')) {
       var stateMap = { 'new': '1', 'in-progress': '2', 'on-hold': '3', 'resolved': '6', 'closed': '7', 'all': '1,2,3,6,7' };
       var val = args[i].split('=')[1];
       stateFilter = stateMap[val] || val;
+      stateExplicit = true;
     }
     if (args[i] === '--incidents') tableFilter = 'incident';
     if (args[i] === '--requests') tableFilter = 'sc_req_item';
@@ -452,7 +472,8 @@ async function cmdTickets(args) {
 
   // Request Items
   if (!tableFilter || tableFilter === 'sc_req_item') {
-    var ritmQuery = 'request.requested_for=' + userSysId + '^stateNOT IN3,4,7^ORDERBYDESCsys_created_on';
+    var ritmStateClause = stateExplicit ? '^stateIN' + stateFilter : '^stateNOT IN3,4,7';
+    var ritmQuery = 'request.requested_for=' + userSysId + ritmStateClause + '^ORDERBYDESCsys_created_on';
     var ritmFields = 'number,short_description,state,sys_id,sys_created_on';
     var ritms = await tableGet('sc_req_item', ritmQuery, ritmFields, 20);
     ritms.forEach(function(r) {
@@ -624,6 +645,10 @@ async function cmdMonday(args) {
     if (args[i].startsWith('--limit=')) limit = parseInt(args[i].split('=')[1]);
     if (args[i].startsWith('--date=')) date = args[i].split('=')[1];
   }
+  if (isNaN(limit) || limit < 1) {
+    console.error('--limit must be a positive integer');
+    process.exit(1);
+  }
 
   // Parse date filter (e.g. "7d" -> 7 days ago)
   var daysBack = 7;
@@ -633,12 +658,12 @@ async function cmdMonday(args) {
   var cutoffStr = cutoff.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
 
   var items = [];
-  var halfLimit = Math.ceil(limit / 2);
 
+  // Fetch up to the full limit from each source; merge and slice after sorting
   // Fetch incidents (open + recently updated)
   var incQuery = 'caller_id=' + userSysId + '^sys_updated_on>=' + cutoffStr + '^ORDERBYDESCsys_updated_on';
   var incFields = 'number,short_description,state,priority,sys_id,sys_created_on,sys_updated_on,assignment_group,comments';
-  var incidents = await tableGet('incident', incQuery, incFields, halfLimit);
+  var incidents = await tableGet('incident', incQuery, incFields, limit);
 
   var stateLabels = { '1': 'New', '2': 'In Progress', '3': 'On Hold', '6': 'Resolved', '7': 'Closed' };
 
@@ -664,7 +689,7 @@ async function cmdMonday(args) {
   // Fetch open request items (recently updated)
   var ritmQuery = 'request.requested_for=' + userSysId + '^sys_updated_on>=' + cutoffStr + '^ORDERBYDESCsys_updated_on';
   var ritmFields = 'number,short_description,state,sys_id,sys_created_on,sys_updated_on';
-  var ritms = await tableGet('sc_req_item', ritmQuery, ritmFields, halfLimit);
+  var ritms = await tableGet('sc_req_item', ritmQuery, ritmFields, limit);
 
   for (var ritm of ritms) {
     var ritmState = ritm.state === '1' ? 'Open' : ritm.state === '2' ? 'Work in Progress' : ritm.state === '3' ? 'Closed Complete' : ritm.state;
