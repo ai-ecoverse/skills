@@ -45,6 +45,103 @@ SLICC runs inside a browser. This creates specific constraints that affect how A
 
 **exec() works reliably.** Returns `{stdout, stderr, exitCode}`. Use it to call `playwright-cli`, `webhook`, and other shell commands from .jsh scripts.
 
+## OAuth Interception with `oauth-token --intercept`
+
+When a web app only exposes its functionality through an authenticated web session (no public API, or the public API is limited), the most reliable way to get stable, long-lived credentials is to intercept its OAuth flow using SLICC's built-in `oauth-token --intercept` tool.
+
+This is especially powerful because SLICC controls the browser via CDP — you can intercept redirects even to production callback URLs or custom schemes that normal tools cannot reach.
+
+### When to reach for it
+
+- You need a refresh token for a SaaS app (Gmail, Slack, Linear, Notion, etc.)
+- The only way to get a token is through the official OAuth consent screen
+- You want the generated skill to be able to re-authenticate without the user being present
+- You have discovered API endpoints via HAR but they require a Bearer token or session cookie that you want to automate
+
+### Two ways to use the tool
+
+**1. Ad-hoc (fast exploration)**
+```bash
+oauth-token --intercept \
+  --authorize-url 'https://accounts.google.com/o/oauth2/v2/auth?client_id=...&redirect_uri=...&...' \
+  --redirect-pattern 'http://localhost/*'
+```
+
+**2. Reusable config (`--from-file`)**
+Create a JSON file (e.g. `/shared/skills/myapp/oauth.json`):
+
+```json
+{
+  "authorizeUrl": "https://...",
+  "redirectUriPattern": "http://localhost/*",
+  "rewrite": [],
+  "onCapture": "exchange-code"
+}
+```
+
+Then:
+```bash
+oauth-token --from-file /shared/skills/myapp/oauth.json
+```
+
+### Finding valid `client_id` + `redirect_uri` pairs
+
+This is the key research step. Common successful techniques:
+
+1. **HAR capture during normal login**
+   - `playwright-cli record https://app.example.com`
+   - Look for the initial request to `/oauth/authorize` or `/auth`.
+   - The `client_id` and `redirect_uri` are almost always in the query string.
+
+2. **Public / open-source client IDs**
+   - Thunderbird’s Gmail client:
+     - `client_id`: `406964657835-aq8lmia8j95dhl1a2bvharmfk3t1hgqj.apps.googleusercontent.com`
+     - Works with `redirect_uri=http://localhost/`
+   - Many other open-source email/CLI tools publish their IDs.
+
+3. **Binary / app analysis (desktop clients)**
+   - On macOS: `strings /Applications/Mimestream.app/Contents/MacOS/Mimestream | grep -i 'googleusercontent\|client_id'`
+   - Look for long strings ending in `.apps.googleusercontent.com`.
+
+4. **GitHub + web searches**
+   - Search for the app name + `client_id` or `oauth2` in public repos.
+   - Search issues and discussions.
+
+5. **Google’s own “out-of-band” flow**
+   - Some clients still accept `urn:ietf:wg:oauth:2.0:oob`.
+
+### Constructing the authorize URL
+
+Typical minimal parameters:
+- `client_id`
+- `redirect_uri` (must be one the client has registered)
+- `response_type=code`
+- `scope=...` (use the broadest the app normally requests)
+- `access_type=offline` (for refresh tokens)
+- `prompt=consent`
+
+### After capture
+
+The tool returns the full redirect URL containing the `code`. Exchange it immediately:
+
+```bash
+curl -X POST https://oauth2.googleapis.com/token \
+  -d "code=4/0Aeo...&client_id=...&client_secret=...&redirect_uri=...&grant_type=authorization_code"
+```
+
+Store the `refresh_token` securely (in the skill’s config or user secrets).
+
+### CDP advantage
+
+Because interception happens via Chrome DevTools Protocol (not a simple local HTTP server), you can capture redirects that go to:
+- Production domains the app has registered
+- Custom URL schemes (with some additional work)
+- Non-localhost addresses
+
+This dramatically increases the number of apps you can successfully intercept compared to traditional CLI OAuth tools.
+
+Add any new reliable `client_id` + `redirect_uri` pairs you discover to the skill’s `assets/` directory so future invocations can reuse them.
+
 ## Phase 1: Discovery
 
 ### Strategy: guess first, verify always
