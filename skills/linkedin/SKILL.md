@@ -1,21 +1,22 @@
 ---
 name: linkedin
-description: Manage the AI Ecoverse LinkedIn company page — publish posts with
-  consistent brand voice, grow engagement, respond to comments, analyze performance,
-  preview profiles, and aggregate engagement for the monday dispatcher. Maintains
-  a knowledge base of content ideas, audience insights, and brand guidelines. Use
-  when the user wants to publish a LinkedIn post, draft LinkedIn content, check
-  LinkedIn comments, respond to engagement, plan content strategy, review brand voice,
-  view a LinkedIn profile, or manage the ai-ecoverse company page. Activate on
-  mentions of LinkedIn, LinkedIn post, company page, social media, content calendar,
-  engagement, brand voice, or audience growth.
+description: Manage a LinkedIn company page — publish posts with consistent brand
+  voice, grow engagement, respond to comments, analyze performance, preview profiles,
+  and aggregate engagement for the monday dispatcher. Maintains a knowledge base of
+  content ideas, audience insights, and brand guidelines. Use when the user wants to
+  publish a LinkedIn post, draft LinkedIn content, check LinkedIn comments, respond
+  to engagement, plan content strategy, review brand voice, view a LinkedIn profile,
+  or manage a company page. Activate on mentions of LinkedIn, LinkedIn post, company
+  page, social media, content calendar, engagement, brand voice, or audience growth.
 allowed-tools: bash
 ---
 
-# LinkedIn (AI Ecoverse Company Page)
+# LinkedIn Company Page Management
 
-Complete LinkedIn presence management for the AI Ecoverse company page.
+Complete LinkedIn presence management for any company page.
 Combines API automation with content strategy, brand voice, and engagement growth.
+
+Configure your page with `linkedin setup <companyId> --name="Your Company"`.
 
 ## Quick start
 
@@ -46,7 +47,7 @@ The skill maintains a brand knowledge base at `/workspace/skills/linkedin/brand/
 
 ### Brand Voice (`brand/voice.md`)
 
-Defines how AI Ecoverse speaks on LinkedIn. Updated by the user or inferred from
+Defines how your company speaks on LinkedIn. Updated by the user or inferred from
 successful posts. The voice guide covers:
 - Tone and register (technical but approachable)
 - Vocabulary preferences and avoidances
@@ -57,7 +58,7 @@ When drafting posts, **always read `brand/voice.md` first** and conform to it.
 
 ### Content Pillars (`brand/pillars.md`)
 
-The recurring themes that define AI Ecoverse's LinkedIn presence:
+The recurring themes that define your LinkedIn presence:
 - What topics we cover
 - What angle we take on each
 - What we never post about
@@ -65,7 +66,7 @@ The recurring themes that define AI Ecoverse's LinkedIn presence:
 
 ### Audience Insights (`brand/audience.md`)
 
-Who follows and engages with AI Ecoverse:
+Who follows and engages with your page:
 - Demographics and roles observed from commenters/reactors
 - What content gets the most engagement
 - Which profiles are VIPs (frequent engagers, industry voices)
@@ -147,7 +148,7 @@ This enables:
 
 ### linkedin post \<text\>
 
-Publish a text post to the AI Ecoverse company page.
+Publish a text post to the configured company page.
 - Posts as the company page (not personal profile)
 - Visibility: Anyone (public)
 - Include #hashtags and https://links inline
@@ -162,7 +163,8 @@ View comments on a specific post.
 
 ### linkedin comment \<activityId\> \<text\>
 
-Reply to a post as the AI Ecoverse company page.
+Add a top-level comment on a post as the company page. (Does not reply to
+a specific comment — it posts a new comment on the activity thread.)
 
 ### linkedin reactions \<activityId\>
 

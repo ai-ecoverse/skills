@@ -63,6 +63,26 @@ for (var i = 1; i < rawArgs.length; i++) {
   }
 }
 
+// ─── Input Validation ────────────────────────────────────────────────────────
+
+function validateActivityId(id) {
+  // Accept "7463311119181312000" or "urn:li:activity:7463311119181312000"
+  if (/^\d+$/.test(id)) return 'urn:li:activity:' + id;
+  if (/^urn:li:activity:\d+$/.test(id)) return id;
+  console.error('Invalid activityId: must be digits or urn:li:activity:<digits>');
+  process.exit(1);
+}
+
+function validateVanityName(name) {
+  // LinkedIn vanity names: alphanumeric, hyphens, underscores, dots
+  if (/^[A-Za-z0-9._-]+$/.test(name)) return name;
+  // If it looks like a member URN, allow it
+  if (/^ACoA[A-Za-z0-9_-]+$/.test(name)) return name;
+  if (/^urn:li:/.test(name)) return name;
+  console.error('Invalid profile identifier: must be a vanity name (alphanumeric/hyphens) or member URN');
+  process.exit(1);
+}
+
 // ─── Tab Management ──────────────────────────────────────────────────────────
 
 var _tabId = null;
@@ -71,14 +91,23 @@ async function ensureTab() {
   if (_tabId) return _tabId;
 
   var list = await exec('playwright-cli tab-list');
-  var match = list.stdout.match(/\[([A-F0-9]+)\]\s+https?:\/\/[^\s]*linkedin\.com/);
+  if (list.exitCode !== 0) {
+    console.error('Failed to list browser tabs. Ensure the browser is running.');
+    process.exit(1);
+  }
+  // Match tab IDs (hex or other formats)
+  var match = list.stdout.match(/\[([^\]]+)\]\s+https?:\/\/[^\s]*linkedin\.com/);
   if (match) {
     _tabId = match[1];
     return _tabId;
   }
 
   var r = await exec('playwright-cli open https://www.linkedin.com/company/' + COMPANY_ID + '/admin/page-posts/published/');
-  var m = r.stdout.match(/targetId:\s*(\S+)\]/);
+  if (r.exitCode !== 0) {
+    console.error('Failed to open LinkedIn tab:', r.stderr || 'unknown error');
+    process.exit(1);
+  }
+  var m = r.stdout.match(/targetId:\s*([^\s\]]+)/);
   _tabId = m ? m[1] : null;
   if (!_tabId) {
     console.error('Failed to open LinkedIn tab. Ensure LinkedIn is accessible.');
@@ -93,6 +122,11 @@ async function ensureTab() {
 
 async function getCsrfToken(tabId) {
   var r = await exec('playwright-cli cookie-get JSESSIONID --tab=' + tabId);
+  if (r.exitCode !== 0) {
+    console.error('Failed to read LinkedIn cookies. Is the LinkedIn tab still open?');
+    if (r.stderr) console.error('  ' + r.stderr.trim());
+    process.exit(1);
+  }
   var raw = r.stdout.trim();
   var match = raw.match(/JSESSIONID="([^"]+)"/);
   var token = match ? match[1] : raw.replace(/^"|"$/g, '');
@@ -136,13 +170,27 @@ async function pageContextFetch(tabId, csrfToken, url, options) {
     throw new Error('Eval failed: ' + result.stderr);
   }
 
-  var parsed = JSON.parse(result.stdout.trim());
+  var raw = result.stdout.trim();
+  var parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    // Non-JSON response — likely a login wall or HTML error page
+    var preview = raw.substring(0, 200);
+    if (preview.includes('<html') || preview.includes('<!DOCTYPE')) {
+      console.error('LinkedIn returned HTML instead of JSON. Session may have expired.');
+      console.error('Please log into LinkedIn in your browser and try again.');
+      process.exit(1);
+    }
+    throw new Error('Unexpected response (not JSON): ' + preview);
+  }
+
   if (parsed && parsed.__error) {
     if (parsed.__error === 401 || parsed.__error === 403) {
       console.error('Auth failed (' + parsed.__error + '). Please log into LinkedIn in your browser.');
       process.exit(1);
     }
-    throw new Error('API error ' + parsed.__error + ': ' + parsed.detail);
+    throw new Error('API error ' + parsed.__error + ': ' + (parsed.detail || '').substring(0, 200));
   }
 
   return parsed;
@@ -177,7 +225,18 @@ async function createPost(text) {
   var shareData = data && data.data && data.data.data && data.data.data.createContentcreationDashShares;
   var shareUrn = (shareData && (shareData.resourceKey || shareData['*entity'])) || 'unknown';
 
-  return { success: true, shareUrn: shareUrn, url: 'https://www.linkedin.com/feed/update/' + shareUrn };
+  // Extract numeric activity ID for use with comments/reactions commands
+  var activityMatch = shareUrn.match(/urn:li:share:(\d+)/);
+  var activityId = activityMatch ? activityMatch[1] : null;
+  // LinkedIn share URN maps to activity URN with same or adjacent ID
+  // The activity ID is typically share ID + 1 (or same), exposed in feed listing
+  return {
+    success: true,
+    shareUrn: shareUrn,
+    activityId: activityId,
+    url: 'https://www.linkedin.com/feed/update/' + shareUrn,
+    note: 'Use "linkedin list" to find the activityId for comments/reactions commands'
+  };
 }
 
 // --- LIST ---
@@ -248,10 +307,7 @@ async function getComments(activityId) {
   var tabId = await ensureTab();
   var csrfToken = await getCsrfToken(tabId);
 
-  // Normalize activity ID — accept "7463311119181312000" or "urn:li:activity:7463311119181312000"
-  if (!activityId.startsWith('urn:li:activity:')) {
-    activityId = 'urn:li:activity:' + activityId;
-  }
+  activityId = validateActivityId(activityId);
 
   // LinkedIn RESTLI format: outer parens/commas are literal, but URN colons and inner parens are percent-encoded
   var encodedActivity = activityId.replace(/:/g, '%3A');
@@ -299,9 +355,7 @@ async function addComment(activityId, text) {
   var tabId = await ensureTab();
   var csrfToken = await getCsrfToken(tabId);
 
-  if (!activityId.startsWith('urn:li:activity:')) {
-    activityId = 'urn:li:activity:' + activityId;
-  }
+  activityId = validateActivityId(activityId);
 
   var payload = {
     commentary: {
@@ -326,9 +380,7 @@ async function getReactions(activityId) {
   var tabId = await ensureTab();
   var csrfToken = await getCsrfToken(tabId);
 
-  if (!activityId.startsWith('urn:li:activity:')) {
-    activityId = 'urn:li:activity:' + activityId;
-  }
+  activityId = validateActivityId(activityId);
 
   // Reactions are included in the feed listing data via socialActivityCounts
   // For detailed per-reactor breakdown, we use the reactors endpoint
@@ -378,6 +430,8 @@ async function getProfile(identifier) {
   var tabId = await ensureTab();
   var csrfToken = await getCsrfToken(tabId);
 
+  identifier = validateVanityName(identifier);
+
   // If it's a URN, use directly. If it's a vanity name, navigate and extract.
   if (identifier.startsWith('ACoA') || identifier.startsWith('urn:li:')) {
     // It's a member URN — query directly
@@ -386,8 +440,8 @@ async function getProfile(identifier) {
   }
 
   // It's a vanity name — navigate to the profile and extract data from the page
-  var profileUrl = 'https://www.linkedin.com/in/' + identifier + '/';
-  await exec('playwright-cli goto ' + profileUrl + ' --tab=' + tabId);
+  var profileUrl = 'https://www.linkedin.com/in/' + encodeURIComponent(identifier) + '/';
+  await exec('playwright-cli goto ' + JSON.stringify(profileUrl) + ' --tab=' + tabId);
   await new Promise(function(resolve) { setTimeout(resolve, 3000); });
 
   // Get the snapshot for structured data
@@ -490,6 +544,7 @@ async function monday() {
   var csrfToken = await getCsrfToken(tabId);
 
   var items = [];
+  var companyName = config.companyName || 'Company page';
 
   // Fetch recent posts with engagement
   try {
@@ -498,6 +553,9 @@ async function monday() {
       var post = postData.posts[k];
       // Include posts that have new comments or reactions
       if (post.comments > 0 || post.likes > 0 || post.reposts > 0) {
+        var itemDate = new Date().toISOString();
+        // Skip items older than cutoff (use current time as proxy since LinkedIn
+        // feed listing doesn't return exact timestamps — only relative "3m ago")
         items.push({
           source: 'linkedin',
           type: 'engagement',
@@ -505,8 +563,9 @@ async function monday() {
           title: 'LinkedIn post engagement: ' + post.comments + ' comments, ' + post.likes + ' likes, ' + post.reposts + ' reposts',
           body: post.text,
           url: post.url,
-          from: 'AI Ecoverse page',
-          date: new Date().toISOString(),
+          from: companyName,
+          date: itemDate,
+          ts: itemDate,
           comments: post.comments,
           likes: post.likes,
           reposts: post.reposts
@@ -526,15 +585,22 @@ async function monday() {
         var commentsData = await getComments(p.activityUrn);
         for (var c = 0; c < commentsData.comments.length; c++) {
           var comment = commentsData.comments[c];
+          var commentDate = comment.createdAt ? new Date(comment.createdAt).toISOString() : new Date().toISOString();
+          var commentMs = comment.createdAt ? new Date(comment.createdAt).getTime() : Date.now();
+
+          // Apply --date cutoff: skip comments older than the window
+          if (commentMs < cutoffMs) continue;
+
           items.push({
             source: 'linkedin',
             type: 'comment',
             id: 'linkedin-comment-' + (comment.commentUrn || c),
-            title: 'Comment on AI Ecoverse post from ' + (comment.commenter || 'someone'),
+            title: 'Comment on ' + companyName + ' post from ' + (comment.commenter || 'someone'),
             body: comment.text,
             url: p.url,
             from: comment.commenter || 'unknown',
-            date: comment.createdAt ? new Date(comment.createdAt).toISOString() : new Date().toISOString()
+            date: commentDate,
+            ts: commentDate
           });
         }
       }
