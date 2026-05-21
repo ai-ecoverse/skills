@@ -1,6 +1,6 @@
 # Storytelling Frameworks for Presentation Design
 
-Reference for an LLM agent generating reveal.js slide decks. Three narrative shapes, when to use each, and how each beat maps to slide types. Consult this before drafting deck outlines.
+Reference for narrative structure in presentations. Three frameworks, when to use each, and how beats map to slides. Consult this before drafting deck outlines.
 
 ---
 
@@ -225,5 +225,5 @@ A fortune curve is drawn or implied over content that doesn't actually rise or f
 
 - Pick one framework per deck. Mixing Campbell and Duarte produces mush.
 - The S.T.A.R. moment, the Revelation beat, and the inflection point of a Vonnegut curve are the same slide in different vocabularies — there should be exactly one per deck.
-- Section dividers in reveal.js are the natural home for act/phase transitions; use vertical slides for the beats inside an act.
+- Section dividers are the natural home for act/phase transitions.
 - If the user cannot articulate a transformation, a contrast, or a curve in one sentence, the deck does not need a narrative framework — it needs a clean outline.
