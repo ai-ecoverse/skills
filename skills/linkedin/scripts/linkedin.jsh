@@ -14,14 +14,28 @@
 //   linkedin monday [--limit N] [--date Nd]  Monday protocol aggregation
 //   linkedin help                      Show this help
 
-const COMPANY_URN = 'urn:li:fsd_company:122314561';
-const COMPANY_ID = '122314561';
+// ─── Configuration ───────────────────────────────────────────────────────────
+
+const CONFIG_FILE = '/workspace/skills/linkedin/.config';
 const LINKEDIN_DOMAIN = 'www.linkedin.com';
 const GRAPHQL_CREATE_QUERY_ID = 'voyagerContentcreationDashShares.279996efa5064c01775d5aff003d9377';
 const GRAPHQL_LIST_QUERY_ID = 'voyagerFeedDashOrganizationalPageAdminUpdates.96fdd4f5900fb8a434c2a3286b1952c2';
 const GRAPHQL_COMMENTS_QUERY_ID = 'voyagerSocialDashComments.afec6d88d7810d45548797a8dac4fb87';
 const COMMENT_CREATE_DECORATION = 'com.linkedin.voyager.dash.deco.social.NormComment-43';
 const PROFILE_DECORATION = 'com.linkedin.voyager.dash.deco.identity.profile.FullProfileWithEntities-118';
+
+// Load config — contains company info, OAuth credentials, and auth mode
+var config = {};
+try {
+  var configResult = await exec('cat ' + CONFIG_FILE);
+  if (configResult.exitCode === 0 && configResult.stdout.trim()) {
+    config = JSON.parse(configResult.stdout.trim());
+  }
+} catch (_) {}
+
+var COMPANY_URN = config.companyUrn || 'urn:li:fsd_company:122314561';
+var COMPANY_ID = config.companyId || '122314561';
+var AUTH_MODE = config.auth || 'session'; // 'session' or 'oauth'
 
 // ─── Argument Parsing ────────────────────────────────────────────────────────
 
@@ -718,25 +732,34 @@ async function pollForNewComments() {
 if (!cmd || cmd === 'help') {
   console.log('Usage: linkedin <command> [args] [--flags]');
   console.log('');
-  console.log('Commands:');
-  console.log('  post <text>                  Publish a text post to the AI Ecoverse company page');
+  console.log('Setup:');
+  console.log('  setup <companyId> [--name=N]  Configure which company page to manage');
+  console.log('  auth setup --client-id=... --client-secret=...   Configure OAuth credentials');
+  console.log('  auth login                   Initiate OAuth flow (enables headless operation)');
+  console.log('  auth status                  Show current auth configuration');
+  console.log('');
+  console.log('Posting & content:');
+  console.log('  post <text>                  Publish a text post to the company page');
   console.log('  list [--limit N]             List recent posts with engagement stats');
+  console.log('');
+  console.log('Engagement:');
   console.log('  comments <activityId>        View comments on a post');
   console.log('  comment <activityId> <text>  Reply to a post as the company page');
   console.log('  reactions <activityId>       View reactions/likes on a post');
   console.log('  profile <vanityName|urn>     Quick preview of a LinkedIn profile');
-  console.log('  watch --scoop=<name>         Watch for new comments (polls every 5m, fires webhook)');
+  console.log('');
+  console.log('Monitoring:');
+  console.log('  watch --scoop=<name>         Watch for new comments (polls, fires webhook)');
   console.log('  unwatch                      Stop watching for comments');
   console.log('  watches                      Show active watch status');
   console.log('  monday [--limit N] [--date]  Monday protocol: fetch inbox as JSON');
-  console.log('  help                         Show this help');
   console.log('');
   console.log('Examples:');
+  console.log('  linkedin setup 122314561 --name="AI Ecoverse"');
   console.log('  linkedin post "Hello world! #AIEcoverse"');
   console.log('  linkedin list --limit 5');
   console.log('  linkedin comments 7463311119181312000');
   console.log('  linkedin comment 7463311119181312000 "Thanks for the feedback!"');
-  console.log('  linkedin reactions 7463311119181312000');
   console.log('  linkedin profile klimetschek');
   console.log('  linkedin watch --scoop=linkedin-responder');
   console.log('  linkedin monday --limit 20 --date 3d');
@@ -785,6 +808,106 @@ if (cmd === 'post') {
   result = await pollForNewComments();
 } else if (cmd === 'monday') {
   result = await monday();
+} else if (cmd === 'setup') {
+  // Interactive setup: configure company page and auth
+  var companyId = positional[0] || flags['company-id'];
+  var companyName = flags['name'] || '';
+  if (!companyId) {
+    console.error('Usage: linkedin setup <companyId> [--name="Company Name"]');
+    console.error('');
+    console.error('Find your company ID: go to your LinkedIn page admin URL');
+    console.error('  https://www.linkedin.com/company/XXXXX/admin/ ← XXXXX is the ID');
+    process.exit(1);
+  }
+  config.companyId = companyId;
+  config.companyUrn = 'urn:li:fsd_company:' + companyId;
+  if (companyName) config.companyName = companyName;
+  config.auth = config.auth || 'session';
+  await fs.writeFile(CONFIG_FILE, JSON.stringify(config, null, 2));
+  result = { configured: true, companyId: companyId, companyUrn: config.companyUrn, auth: config.auth };
+} else if (cmd === 'auth') {
+  // OAuth configuration
+  var subCmd = positional[0];
+  if (subCmd === 'setup') {
+    var clientId = flags['client-id'];
+    var clientSecret = flags['client-secret'];
+    if (!clientId || !clientSecret) {
+      console.error('Usage: linkedin auth setup --client-id=<ID> --client-secret=<SECRET>');
+      console.error('');
+      console.error('Register an app at https://www.linkedin.com/developers/apps');
+      console.error('Request "Community Management API" product for company page posting.');
+      process.exit(1);
+    }
+    config.oauth = config.oauth || {};
+    config.oauth.clientId = clientId;
+    config.oauth.clientSecret = clientSecret;
+    await fs.writeFile(CONFIG_FILE, JSON.stringify(config, null, 2));
+    result = { oauth: 'configured', clientId: clientId, nextStep: 'Run: linkedin auth login' };
+  } else if (subCmd === 'login') {
+    // Initiate OAuth flow using oauth-token --intercept
+    var oauthConfig = config.oauth || {};
+    if (!oauthConfig.clientId) {
+      console.error('No OAuth client configured. Run: linkedin auth setup --client-id=... --client-secret=...');
+      process.exit(1);
+    }
+    var scopes = 'w_member_social openid profile';
+    if (oauthConfig.scopes && oauthConfig.scopes.includes('w_organization_social')) {
+      scopes += ' w_organization_social r_organization_social';
+    }
+    var authUrl = 'https://www.linkedin.com/oauth/v2/authorization?response_type=code&client_id=' + oauthConfig.clientId + '&redirect_uri=http://localhost/callback&scope=' + encodeURIComponent(scopes) + '&state=slicc_linkedin';
+    
+    console.log('Initiating OAuth flow...');
+    console.log('Authorize URL: ' + authUrl);
+    
+    var interceptResult = await exec('oauth-token --intercept --authorize-url ' + JSON.stringify(authUrl) + ' --redirect-pattern "http://localhost/*"');
+    if (interceptResult.exitCode !== 0) {
+      console.error('OAuth intercept failed:', interceptResult.stderr);
+      process.exit(1);
+    }
+    
+    // Extract the code from the redirect URL
+    var redirectUrl = interceptResult.stdout.trim();
+    var codeMatch = redirectUrl.match(/[?&]code=([^&]+)/);
+    if (!codeMatch) {
+      console.error('No authorization code in redirect:', redirectUrl);
+      process.exit(1);
+    }
+    
+    // Exchange code for token
+    var tokenResp = await fetch('https://www.linkedin.com/oauth/v2/accessToken', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'grant_type=authorization_code&code=' + codeMatch[1] + '&redirect_uri=http://localhost/callback&client_id=' + oauthConfig.clientId + '&client_secret=' + oauthConfig.clientSecret
+    });
+    
+    if (!tokenResp.ok) {
+      var errText = await tokenResp.text();
+      console.error('Token exchange failed:', errText);
+      process.exit(1);
+    }
+    
+    var tokenData = await tokenResp.json();
+    config.oauth.accessToken = tokenData.access_token;
+    config.oauth.refreshToken = tokenData.refresh_token || null;
+    config.oauth.tokenExpiry = Date.now() + (tokenData.expires_in * 1000);
+    config.auth = 'oauth';
+    await fs.writeFile(CONFIG_FILE, JSON.stringify(config, null, 2));
+    
+    result = { authenticated: true, expiresIn: tokenData.expires_in + 's', mode: 'oauth' };
+  } else if (subCmd === 'status') {
+    result = {
+      mode: config.auth || 'session',
+      oauth: config.oauth ? {
+        clientId: config.oauth.clientId || null,
+        hasToken: !!config.oauth.accessToken,
+        tokenExpiry: config.oauth.tokenExpiry ? new Date(config.oauth.tokenExpiry).toISOString() : null,
+        scopes: config.oauth.scopes || []
+      } : null
+    };
+  } else {
+    console.error('Usage: linkedin auth <setup|login|status>');
+    process.exit(1);
+  }
 } else {
   console.error('Unknown command: ' + cmd);
   console.error('Run "linkedin help" for usage.');
