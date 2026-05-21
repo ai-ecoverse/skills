@@ -225,18 +225,69 @@ async function createPost(text) {
   var shareData = data && data.data && data.data.data && data.data.data.createContentcreationDashShares;
   var shareUrn = (shareData && (shareData.resourceKey || shareData['*entity'])) || 'unknown';
 
-  // Extract numeric activity ID for use with comments/reactions commands
-  var activityMatch = shareUrn.match(/urn:li:share:(\d+)/);
-  var activityId = activityMatch ? activityMatch[1] : null;
-  // LinkedIn share URN maps to activity URN with same or adjacent ID
-  // The activity ID is typically share ID + 1 (or same), exposed in feed listing
-  return {
+  // Resolve the real activity URN. Strategy:
+  //   1. Walk data.included for any entityUrn matching urn:li:activity:<digits>,
+  //      preferring the one nearest (by array index) to the new share URN entry.
+  //   2. Fallback: query listPosts(5) and match by exact text.
+  var activityUrn = null;
+  if (data && Array.isArray(data.included)) {
+    var shareIdx = -1;
+    for (var ii = 0; ii < data.included.length; ii++) {
+      var ent = data.included[ii] && data.included[ii].entityUrn;
+      if (ent && ent.indexOf(shareUrn) !== -1) { shareIdx = ii; break; }
+    }
+    var candidates = [];
+    for (var ij = 0; ij < data.included.length; ij++) {
+      var entJ = data.included[ij] && data.included[ij].entityUrn;
+      if (!entJ) continue;
+      var am = entJ.match(/urn:li:activity:\d+/);
+      if (am) candidates.push({ idx: ij, urn: am[0] });
+    }
+    if (candidates.length === 1) {
+      activityUrn = candidates[0].urn;
+    } else if (candidates.length > 1) {
+      if (shareIdx >= 0) {
+        candidates.sort(function(a, b) { return Math.abs(a.idx - shareIdx) - Math.abs(b.idx - shareIdx); });
+      }
+      activityUrn = candidates[0].urn;
+    }
+  }
+
+  // Fallback: look up via listPosts. Never let lookup failure break success path.
+  if (!activityUrn) {
+    try {
+      var listed = await listPosts(5);
+      var match = null;
+      if (listed && Array.isArray(listed.posts)) {
+        for (var lp = 0; lp < listed.posts.length; lp++) {
+          var p = listed.posts[lp];
+          if (p && p.text === text && p.activityUrn) { match = p; break; }
+        }
+      }
+      if (match) activityUrn = match.activityUrn;
+    } catch (_) {}
+  }
+
+  var activityId = null;
+  if (activityUrn) {
+    var actMatch = activityUrn.match(/urn:li:activity:(\d+)/);
+    if (actMatch) activityId = actMatch[1];
+  }
+
+  var resp = {
     success: true,
     shareUrn: shareUrn,
-    activityId: activityId,
-    url: 'https://www.linkedin.com/feed/update/' + shareUrn,
-    note: 'Use "linkedin list" to find the activityId for comments/reactions commands'
+    url: activityUrn
+      ? 'https://www.linkedin.com/feed/update/' + activityUrn
+      : 'https://www.linkedin.com/feed/update/' + shareUrn
   };
+  if (activityUrn) {
+    resp.activityUrn = activityUrn;
+    resp.activityId = activityId;
+  } else {
+    resp.note = "Could not resolve activity ID — run 'linkedin list' to find it.";
+  }
+  return resp;
 }
 
 // --- LIST ---
@@ -286,12 +337,37 @@ async function listPosts(limit) {
 
         var stats = activityCounts[activityUrn] || {};
 
+        // Resolve a published timestamp. Check the post item first, then walk
+        // included for related update/share/activity entries.
+        function pickTs(o) {
+          if (!o) return null;
+          if (typeof o.firstPublishedAt === 'number') return o.firstPublishedAt;
+          if (typeof o.publishedAt === 'number') return o.publishedAt;
+          if (typeof o.createdAt === 'number') return o.createdAt;
+          if (typeof o.createdTime === 'number') return o.createdTime;
+          return null;
+        }
+        var publishedAt = pickTs(item);
+        if (publishedAt === null && activityUrn && data.included) {
+          for (var ri = 0; ri < data.included.length; ri++) {
+            var rel = data.included[ri];
+            if (!rel || !rel.entityUrn) continue;
+            if (rel.entityUrn === item.entityUrn) continue;
+            if (rel.entityUrn.indexOf(activityUrn) === -1) continue;
+            var t = pickTs(rel);
+            if (t !== null) { publishedAt = t; break; }
+          }
+        }
+        var publishedAtIso = publishedAt !== null ? new Date(publishedAt).toISOString() : null;
+
         posts.push({
           activityUrn: activityUrn,
           text: text,
           comments: stats.comments || 0,
           reposts: stats.reposts || 0,
           likes: stats.likes || 0,
+          publishedAt: publishedAt,
+          publishedAtIso: publishedAtIso,
           url: activityUrn ? 'https://www.linkedin.com/feed/update/' + activityUrn : ''
         });
       }
@@ -553,9 +629,8 @@ async function monday() {
       var post = postData.posts[k];
       // Include posts that have new comments or reactions
       if (post.comments > 0 || post.likes > 0 || post.reposts > 0) {
-        var itemDate = new Date().toISOString();
-        // Skip items older than cutoff (use current time as proxy since LinkedIn
-        // feed listing doesn't return exact timestamps — only relative "3m ago")
+        if (typeof post.publishedAt === 'number' && post.publishedAt < cutoffMs) continue;
+        var itemDate = post.publishedAtIso || null;
         items.push({
           source: 'linkedin',
           type: 'engagement',
@@ -818,7 +893,7 @@ if (!cmd || cmd === 'help') {
   console.log('  watch --scoop=<name>         Watch for new comments (polls, fires webhook)');
   console.log('  unwatch                      Stop watching for comments');
   console.log('  watches                      Show active watch status');
-  console.log('  monday [--limit N] [--date]  Monday protocol: fetch inbox as JSON');
+  console.log('  monday [--limit N] [--date Nd|Nw|Nh]  Monday protocol: fetch inbox (filters comments and dated posts)');
   console.log('');
   console.log('Examples:');
   console.log('  linkedin setup 122314561 --name="AI Ecoverse"');
