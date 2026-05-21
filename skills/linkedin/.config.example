@@ -1,0 +1,14 @@
+{
+  "companyUrn": "urn:li:fsd_company:YOUR_COMPANY_ID",
+  "companyId": "YOUR_COMPANY_ID",
+  "companyName": "Your Company Name",
+  "oauth": {
+    "clientId": null,
+    "clientSecret": null,
+    "scopes": [],
+    "accessToken": null,
+    "refreshToken": null,
+    "tokenExpiry": null
+  },
+  "auth": "session"
+}
