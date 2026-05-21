@@ -1,4 +1,4 @@
-# Foursquare API v2  Endpoint Reference
+# Foursquare API v2 â€” Endpoint Reference
 
 Base URL: `https://api.foursquare.com/v2/`
 
@@ -19,8 +19,8 @@ User's check-in history.
 |------------|--------|---------|------------------------------|
 | limit      | int    | 20      | Number of results (max 250)  |
 | offset     | int    | 0       | Pagination offset            |
-| categoryId | string |        | Filter by category ID        |
-| v          | string |        | API version (YYYYMMDD)       |
+| categoryId | string | -       | Filter by category ID        |
+| v          | string | -       | API version (YYYYMMDD)       |
 
 ### Example Request
 
@@ -43,9 +43,9 @@ GET /users/self/checkins?v=20231001&limit=5&offset=0
           "type": "checkin",
           "venue": {
             "id": "4b5a0c05f964a5200a4f28e3",
-            "name": "Café Einstein",
+            "name": "CafÃ© Einstein",
             "location": {
-              "address": "Kurfürstenstr. 58",
+              "address": "KurfÃ¼rstenstr. 58",
               "city": "Berlin",
               "state": "Berlin",
               "country": "Germany",
@@ -55,7 +55,7 @@ GET /users/self/checkins?v=20231001&limit=5&offset=0
             "categories": [
               {
                 "id": "4bf58dd8d48988d16d941735",
-                "name": "Café",
+                "name": "CafÃ©",
                 "primary": true
               }
             ]
@@ -99,7 +99,7 @@ GET /users/self/venuehistory?v=20231001
           "beenHere": 47,
           "venue": {
             "id": "4b5a0c05f964a5200a4f28e3",
-            "name": "Café Einstein",
+            "name": "CafÃ© Einstein",
             "location": {
               "city": "Berlin",
               "country": "Germany",
@@ -109,7 +109,7 @@ GET /users/self/venuehistory?v=20231001
             "categories": [
               {
                 "id": "4bf58dd8d48988d16d941735",
-                "name": "Café"
+                "name": "CafÃ©"
               }
             ]
           }
@@ -197,11 +197,11 @@ GET /venues/4b5a0c05f964a5200a4f28e3?v=20231001
   "response": {
     "venue": {
       "id": "4b5a0c05f964a5200a4f28e3",
-      "name": "Café Einstein",
+      "name": "CafÃ© Einstein",
       "url": "https://cafeeinstein.com",
       "rating": 8.7,
       "location": {
-        "address": "Kurfürstenstr. 58",
+        "address": "KurfÃ¼rstenstr. 58",
         "city": "Berlin",
         "state": "Berlin",
         "country": "Germany",
@@ -211,7 +211,7 @@ GET /venues/4b5a0c05f964a5200a4f28e3?v=20231001
       "categories": [
         {
           "id": "4bf58dd8d48988d16d941735",
-          "name": "Café",
+          "name": "CafÃ©",
           "primary": true
         }
       ],
@@ -236,7 +236,7 @@ GET /venues/4b5a0c05f964a5200a4f28e3?v=20231001
 |------------|----------------------------------|
 | Sushi      | `4bf58dd8d48988d1d2941735`       |
 | Japanese   | `4bf58dd8d48988d111941735`       |
-| Café       | `4bf58dd8d48988d16d941735`       |
+| CafÃ©       | `4bf58dd8d48988d16d941735`       |
 | Bar        | `4bf58dd8d48988d116941735`       |
 | Restaurant | `4bf58dd8d48988d1c4941735`       |
 | Hotel      | `4bf58dd8d48988d1fa931735`       |
