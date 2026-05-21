@@ -8,6 +8,9 @@
 //   linkedin comment <activityId> <text>  Reply to a post as the company page
 //   linkedin reactions <activityId>    View reactions on a post
 //   linkedin profile <vanityName>      Quick preview of a LinkedIn profile
+//   linkedin watch --scoop=<name>      Watch for new comments (creates cron poller)
+//   linkedin unwatch                   Stop watching for comments
+//   linkedin watches                   List active watches
 //   linkedin monday [--limit N] [--date Nd]  Monday protocol aggregation
 //   linkedin help                      Show this help
 
@@ -529,6 +532,187 @@ async function monday() {
   return items;
 }
 
+// ─── Watch (cron-based comment polling) ──────────────────────────────────────
+
+const WATCH_STATE_FILE = '/workspace/skills/linkedin/.watch-state.json';
+const WATCH_CONFIG_FILE = '/workspace/skills/linkedin/.watch-config.json';
+
+async function loadWatchState() {
+  try {
+    var r = await exec('cat ' + WATCH_STATE_FILE);
+    if (r.exitCode === 0 && r.stdout.trim()) return JSON.parse(r.stdout.trim());
+  } catch (_) {}
+  return { commentCounts: {}, lastCheck: null };
+}
+
+async function saveWatchState(state) {
+  await fs.writeFile(WATCH_STATE_FILE, JSON.stringify(state, null, 2));
+}
+
+async function loadWatchConfig() {
+  try {
+    var r = await exec('cat ' + WATCH_CONFIG_FILE);
+    if (r.exitCode === 0 && r.stdout.trim()) return JSON.parse(r.stdout.trim());
+  } catch (_) {}
+  return null;
+}
+
+async function saveWatchConfig(config) {
+  await fs.writeFile(WATCH_CONFIG_FILE, JSON.stringify(config, null, 2));
+}
+
+async function setupWatch(scoop, interval) {
+  var cronInterval = interval || '*/5 * * * *'; // default: every 5 minutes
+
+  // Check for existing watch
+  var existing = await loadWatchConfig();
+  if (existing && !flags.force) {
+    console.error('Already watching (scoop: ' + existing.scoop + ', cron: ' + existing.cronId + ').');
+    console.error('Use --force to replace.');
+    process.exit(1);
+  }
+
+  // Clean up old cron if exists
+  if (existing && existing.cronId) {
+    await exec('crontask delete ' + existing.cronId).catch(function() {});
+  }
+
+  // Create SLICC webhook routed to target scoop
+  var whResult = await exec('webhook create --scoop=' + scoop + ' --name=linkedin-comments');
+  if (whResult.exitCode !== 0) {
+    console.error('Failed to create webhook:', whResult.stderr);
+    process.exit(1);
+  }
+  var webhookInfo = whResult.stdout.trim();
+  var webhookUrl = '';
+  var webhookId = '';
+  try {
+    var parsed = JSON.parse(webhookInfo);
+    webhookUrl = parsed.url;
+    webhookId = parsed.id;
+  } catch (_) {
+    // Try to extract URL from output
+    var urlMatch = webhookInfo.match(/https?:\/\/\S+/);
+    webhookUrl = urlMatch ? urlMatch[0] : webhookInfo;
+    webhookId = webhookInfo;
+  }
+
+  // Create a cron task that runs linkedin _poll
+  var cronResult = await exec('crontask create --name=linkedin-comment-poll --scoop=' + scoop + ' --cron="' + cronInterval + '"');
+  var cronId = '';
+  if (cronResult.exitCode === 0) {
+    try {
+      var cronParsed = JSON.parse(cronResult.stdout.trim());
+      cronId = cronParsed.id || cronResult.stdout.trim();
+    } catch (_) {
+      cronId = cronResult.stdout.trim();
+    }
+  }
+
+  var config = {
+    scoop: scoop,
+    webhookUrl: webhookUrl,
+    webhookId: webhookId,
+    cronId: cronId,
+    cronInterval: cronInterval,
+    createdAt: new Date().toISOString()
+  };
+  await saveWatchConfig(config);
+
+  // Initialize state with current comment counts
+  var postData = await listPosts(10);
+  var commentCounts = {};
+  postData.posts.forEach(function(p) {
+    if (p.activityUrn) commentCounts[p.activityUrn] = p.comments;
+  });
+  await saveWatchState({ commentCounts: commentCounts, lastCheck: new Date().toISOString() });
+
+  return config;
+}
+
+async function teardownWatch() {
+  var config = await loadWatchConfig();
+  if (!config) {
+    console.error('No active watch.');
+    process.exit(1);
+  }
+
+  // Delete webhook
+  if (config.webhookId) {
+    await exec('webhook delete ' + config.webhookId).catch(function() {});
+  }
+
+  // Delete cron task
+  if (config.cronId) {
+    await exec('crontask delete ' + config.cronId).catch(function() {});
+  }
+
+  // Remove config and state files
+  await fs.rm(WATCH_CONFIG_FILE).catch(function() {});
+  await fs.rm(WATCH_STATE_FILE).catch(function() {});
+
+  return { stopped: true, was: config };
+}
+
+async function pollForNewComments() {
+  // Called by the cron task — checks for new comments and fires webhooks
+  var config = await loadWatchConfig();
+  if (!config) return { skipped: true, reason: 'no watch configured' };
+
+  var state = await loadWatchState();
+  var postData = await listPosts(10);
+  var newComments = [];
+
+  for (var idx = 0; idx < postData.posts.length; idx++) {
+    var post = postData.posts[idx];
+    if (!post.activityUrn) continue;
+
+    var prevCount = state.commentCounts[post.activityUrn] || 0;
+    var currentCount = post.comments;
+
+    if (currentCount > prevCount) {
+      // New comments detected — fetch them
+      try {
+        var commentsData = await getComments(post.activityUrn);
+        // Take only the new ones (assume they're at the top)
+        var newCount = currentCount - prevCount;
+        var recent = commentsData.comments.slice(0, newCount);
+        recent.forEach(function(c) {
+          newComments.push({
+            activityUrn: post.activityUrn,
+            postText: post.text.substring(0, 100),
+            postUrl: post.url,
+            commentText: c.text,
+            commenter: c.commenter,
+            commentUrn: c.commentUrn
+          });
+        });
+      } catch (e) {
+        console.error('[linkedin poll] Failed to fetch comments for ' + post.activityUrn + ': ' + e.message);
+      }
+    }
+
+    state.commentCounts[post.activityUrn] = currentCount;
+  }
+
+  state.lastCheck = new Date().toISOString();
+  await saveWatchState(state);
+
+  // Fire webhook for each new comment
+  if (newComments.length > 0 && config.webhookUrl) {
+    for (var ci = 0; ci < newComments.length; ci++) {
+      var payload = {
+        type: 'linkedin-comment',
+        event: 'new-comment',
+        data: newComments[ci]
+      };
+      await exec('curl -s -X POST -H "Content-Type: application/json" -d ' + JSON.stringify(JSON.stringify(payload)) + ' ' + JSON.stringify(config.webhookUrl)).catch(function() {});
+    }
+  }
+
+  return { checked: postData.posts.length, newComments: newComments.length, comments: newComments };
+}
+
 // ─── CLI Dispatch ────────────────────────────────────────────────────────────
 
 if (!cmd || cmd === 'help') {
@@ -541,6 +725,9 @@ if (!cmd || cmd === 'help') {
   console.log('  comment <activityId> <text>  Reply to a post as the company page');
   console.log('  reactions <activityId>       View reactions/likes on a post');
   console.log('  profile <vanityName|urn>     Quick preview of a LinkedIn profile');
+  console.log('  watch --scoop=<name>         Watch for new comments (polls every 5m, fires webhook)');
+  console.log('  unwatch                      Stop watching for comments');
+  console.log('  watches                      Show active watch status');
   console.log('  monday [--limit N] [--date]  Monday protocol: fetch inbox as JSON');
   console.log('  help                         Show this help');
   console.log('');
@@ -551,6 +738,7 @@ if (!cmd || cmd === 'help') {
   console.log('  linkedin comment 7463311119181312000 "Thanks for the feedback!"');
   console.log('  linkedin reactions 7463311119181312000');
   console.log('  linkedin profile klimetschek');
+  console.log('  linkedin watch --scoop=linkedin-responder');
   console.log('  linkedin monday --limit 20 --date 3d');
   process.exit(cmd === 'help' ? 0 : 1);
 }
@@ -580,6 +768,21 @@ if (cmd === 'post') {
   var ident = positional[0];
   if (!ident) { console.error('Usage: linkedin profile <vanityName|memberUrn>'); process.exit(1); }
   result = await getProfile(ident);
+} else if (cmd === 'watch') {
+  var scoop = flags['scoop'] || positional[0];
+  if (!scoop) { console.error('Usage: linkedin watch --scoop=<name> [--interval="*/5 * * * *"]'); process.exit(1); }
+  var interval = flags['interval'] || null;
+  result = await setupWatch(scoop, interval);
+} else if (cmd === 'unwatch') {
+  result = await teardownWatch();
+} else if (cmd === 'watches') {
+  var config = await loadWatchConfig();
+  if (!config) { console.log('No active watches.'); process.exit(0); }
+  var state = await loadWatchState();
+  result = { config: config, state: { lastCheck: state.lastCheck, trackedPosts: Object.keys(state.commentCounts).length } };
+} else if (cmd === '_poll') {
+  // Internal: called by cron task to check for new comments
+  result = await pollForNewComments();
 } else if (cmd === 'monday') {
   result = await monday();
 } else {

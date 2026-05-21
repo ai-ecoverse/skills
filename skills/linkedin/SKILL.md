@@ -85,6 +85,21 @@ or a member URN. Returns name, headline, location, summary, and current position
 Useful for understanding who is commenting on or reacting to your posts before
 crafting a response.
 
+### linkedin watch --scoop=\<name\> [--interval="cron"]
+
+Start watching for new comments. Creates a cron poller that checks for new comments
+and fires a webhook to the specified scoop when new ones arrive.
+
+Default interval: every 5 minutes (`*/5 * * * *`).
+
+### linkedin unwatch
+
+Stop the comment watcher and clean up cron task + webhook.
+
+### linkedin watches
+
+Show the current watch configuration and status.
+
 ### linkedin monday [--limit N] [--date Nd]
 
 Monday protocol aggregation. Produces a JSON array of actionable items:
@@ -94,21 +109,48 @@ Monday protocol aggregation. Produces a JSON array of actionable items:
 Each item includes `source: "linkedin"`, `type` (engagement/comment), `id`, `title`,
 `body`, `url`, `from`, and `date`.
 
-## Webhook support for new comments
+## Watching for new comments
 
-To get notified when new comments arrive, set up a cron-based polling watcher:
+Real-time comment notifications via cron-based polling with state diffing:
 
 ```bash
-# Create a cron task that checks for new comments every 5 minutes
-crontask create --name linkedin-comments --scoop linkedin-watcher \
-  --cron "*/5 * * * *"
+# Start watching — polls every 5 minutes, fires webhook to scoop on new comments
+linkedin watch --scoop=linkedin-responder
+
+# Check watch status
+linkedin watches
+
+# Stop watching
+linkedin unwatch
 ```
 
-The `linkedin-watcher` scoop should:
-1. Run `linkedin list --limit 5` to get recent posts
-2. Run `linkedin comments <activityId>` for posts with new comment counts
-3. Compare with previous state (stored in `/shared/.linkedin-comment-state.json`)
-4. If new comments found, take action (notify, delegate to a response scoop, etc.)
+When a new comment is detected, a webhook fires to the specified scoop with payload:
+```json
+{
+  "type": "linkedin-comment",
+  "event": "new-comment",
+  "data": {
+    "activityUrn": "urn:li:activity:...",
+    "postText": "Original post text (truncated)...",
+    "postUrl": "https://www.linkedin.com/feed/update/...",
+    "commentText": "The new comment text",
+    "commenter": "Commenter Name",
+    "commentUrn": "urn:li:fsd_comment:..."
+  }
+}
+```
+
+The receiving scoop can then use `linkedin profile <commenter>` to understand who
+commented, and `linkedin comment <activityId> <text>` to reply.
+
+**Custom interval:**
+```bash
+linkedin watch --scoop=my-scoop --interval="*/2 * * * *"  # every 2 minutes
+```
+
+**Note:** LinkedIn doesn't support WebSocket-based real-time for company pages.
+Polling is the only reliable approach. The watcher maintains state between polls
+and only fires for genuinely new comments.
 
 ## How it works
 
