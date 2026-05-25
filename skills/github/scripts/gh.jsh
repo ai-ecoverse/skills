@@ -911,6 +911,155 @@ async function mondayGh(args) {
   console.log(JSON.stringify(output));
 }
 
+// ─── repo archive ────────────────────────────────────────────────────────────
+
+async function repoArchive(args) {
+  const repo = await resolveRepo(args[0]);
+  try {
+    await api(`/repos/${repo}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ archived: true }),
+    });
+    console.log(sym('success') + ' Archived ' + C.cyan(repo));
+  } catch (e) { fail('repo archive', e); }
+}
+
+// ─── branch create ───────────────────────────────────────────────────────────
+
+async function branchCreate(args) {
+  const usage = 'usage: gh branch create <name> [--from=<ref>] [repo]';
+  let from = null;
+  const positional = [];
+  for (const a of args) {
+    if (a.startsWith('--from=')) from = a.slice(7).trim();
+    else positional.push(a);
+  }
+  if (!positional[0]) die('branch create: branch name required\n' + usage);
+  const branchName = positional[0];
+  const repo = await resolveRepo(positional[1]);
+
+  // Resolve the SHA to branch from
+  if (!from) {
+    try {
+      const r = await api(`/repos/${repo}`);
+      from = r.default_branch || 'main';
+    } catch { from = 'main'; }
+  }
+
+  let sha;
+  try {
+    const ref = await api(`/repos/${repo}/git/ref/heads/${from}`);
+    sha = ref.object.sha;
+  } catch {
+    // Maybe it's a raw SHA already
+    if (/^[0-9a-f]{40}$/.test(from)) sha = from;
+    else die(`branch create: could not resolve ref '${from}'`);
+  }
+
+  try {
+    await api(`/repos/${repo}/git/refs`, {
+      method: 'POST',
+      body: JSON.stringify({ ref: `refs/heads/${branchName}`, sha }),
+    });
+    console.log(sym('success') + ' Created branch ' + C.cyan(branchName) + ' from ' + C.gray(sha.slice(0, 7)) + ' in ' + repo);
+  } catch (e) { fail('branch create', e); }
+}
+
+// ─── branch delete ───────────────────────────────────────────────────────────
+
+async function branchDelete(args) {
+  if (!args[0]) die('branch delete: branch name required');
+  const branchName = args[0];
+  const repo = await resolveRepo(args[1]);
+  try {
+    await api(`/repos/${repo}/git/refs/heads/${branchName}`, { method: 'DELETE' });
+    console.log(sym('success') + ' Deleted branch ' + C.cyan(branchName) + ' from ' + repo);
+  } catch (e) { fail('branch delete', e); }
+}
+
+// ─── content put ─────────────────────────────────────────────────────────────
+
+async function contentPut(args) {
+  const usage = 'usage: gh content put <path> <local-file> <message> [--branch=<branch>] [repo]';
+  let branch = null;
+  const positional = [];
+  for (const a of args) {
+    if (a.startsWith('--branch=')) branch = a.slice(9).trim();
+    else positional.push(a);
+  }
+  if (!positional[0]) die('content put: file path required\n' + usage);
+  if (!positional[1]) die('content put: local file required\n' + usage);
+  if (!positional[2]) die('content put: commit message required\n' + usage);
+  const [filePath, localFile, message] = positional;
+  const repo = await resolveRepo(positional[3]);
+
+  // Read local file and base64-encode
+  let content;
+  try {
+    const raw = await fs.readFile(localFile);
+    content = btoa(raw);
+  } catch (e) { die('content put: could not read local file: ' + e.message); }
+
+  // Check if file exists (to get SHA for update)
+  const qs = branch ? `?ref=${encodeURIComponent(branch)}` : '';
+  let sha = null;
+  try {
+    const existing = await api(`/repos/${repo}/contents/${encodeURIComponent(filePath)}${qs}`);
+    sha = existing.sha;
+  } catch {}
+
+  const payload = { message, content };
+  if (branch) payload.branch = branch;
+  if (sha) payload.sha = sha;
+
+  try {
+    const res = await api(`/repos/${repo}/contents/${encodeURIComponent(filePath)}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+    const verb = sha ? 'Updated' : 'Created';
+    console.log(sym('success') + ' ' + verb + ' ' + C.cyan(filePath) + ' — ' + C.gray(res.commit.sha.slice(0, 7)));
+  } catch (e) { fail('content put', e); }
+}
+
+// ─── api (raw passthrough) ───────────────────────────────────────────────────
+
+async function apiPassthrough(args) {
+  const usage = 'usage: gh api <path> [-X METHOD] [--field key=value]... [--jq <expr>]';
+  if (!args[0]) die(usage);
+  let method = 'GET', jqExpr = null;
+  const fields = {};
+  const positional = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '-X' && args[i+1]) { method = args[++i].toUpperCase(); }
+    else if (args[i] === '--jq' && args[i+1]) { jqExpr = args[++i]; }
+    else if ((args[i] === '-f' || args[i] === '--field') && args[i+1]) {
+      const [k, ...vParts] = args[++i].split('=');
+      fields[k] = vParts.join('=');
+    }
+    else positional.push(args[i]);
+  }
+
+  const path = positional[0];
+  const opts = { method };
+  if (method !== 'GET' && Object.keys(fields).length) {
+    opts.body = JSON.stringify(fields);
+  }
+
+  try {
+    const result = await api(path, opts);
+    if (jqExpr && typeof result === 'object') {
+      // Simple jq: support .key and .key.subkey
+      const keys = jqExpr.replace(/^\./, '').split('.');
+      let val = result;
+      for (const k of keys) { val = val?.[k]; }
+      console.log(typeof val === 'string' ? val : JSON.stringify(val, null, 2));
+    } else {
+      console.log(JSON.stringify(result, null, 2));
+    }
+  } catch (e) { fail('api ' + path, e); }
+}
+
 // ─── help ────────────────────────────────────────────────────────────────────
 
 function showHelp() {
@@ -934,6 +1083,11 @@ function showHelp() {
   console.log('  ' + C.cyan('search prs') + '    <query> [repo]               Search PRs by keyword');
   console.log('  ' + C.cyan('vars list') + '     [repo]                       List Actions variables');
   console.log('  ' + C.cyan('vars set') + '      <name> <value> [repo]        Set an Actions variable');
+  console.log('  ' + C.cyan('repo archive') + '  [repo]                       Archive a repository');
+  console.log('  ' + C.cyan('branch create') + ' <name> [--from=<ref>] [repo]  Create a branch');
+  console.log('  ' + C.cyan('branch delete') + ' <name> [repo]                 Delete a branch');
+  console.log('  ' + C.cyan('content put') + '   <path> <local-file> <msg> [--branch=<b>] [repo]  Create/update a file');
+  console.log('  ' + C.cyan('api') + '           <path> [-X METHOD] [-f key=val]... [--jq <expr>]  Raw API call');
   console.log('  ' + C.cyan('notifications list') + '  [--all] [-p] [--repo=r] [-nN]  List notifications');
   console.log('  ' + C.cyan('notifications read') + '  [--repo=r]              Mark notifications as read');
   console.log('  ' + C.cyan('monday') + '            [--limit N] [--date Nd]    Monday protocol inbox (JSON)\n');
@@ -958,12 +1112,15 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
 }
 
 if (cmd === 'auth') { await authStatus(); process.exit(0); }
+if (cmd === 'api') { await apiPassthrough(argv.slice(1)); process.exit(0); }
 if (cmd === 'monday') { await mondayGh(argv.slice(2)); process.exit(0); }
 
 const dispatch = {
   pr:      { list: () => prList(rest),      view: () => prView(rest),    merge: () => prMerge(rest), comment: () => prComment(rest), checkout: () => prCheckout(rest), create: () => prCreate(rest) },
   issue:   { list: () => issueList(rest),   view: () => issueView(rest), create: () => issueCreate(rest) },
-  repo:    { view: () => repoView(rest) },
+  repo:    { view: () => repoView(rest), archive: () => repoArchive(rest) },
+  branch:  { create: () => branchCreate(rest), delete: () => branchDelete(rest) },
+  content: { put: () => contentPut(rest) },
   run:     { list: () => runList(rest),     view: () => runView(rest) },
   release: { list: () => releaseList(rest) },
   search:  { prs:  () => searchPrs(rest) },
