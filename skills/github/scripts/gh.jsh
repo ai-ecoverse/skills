@@ -993,11 +993,16 @@ async function contentPut(args) {
   const [filePath, localFile, message] = positional;
   const repo = await resolveRepo(positional[3]);
 
-  // Read local file and base64-encode
+  // Read local file and base64-encode (unicode-safe)
   let content;
   try {
     const raw = await fs.readFile(localFile);
-    content = btoa(raw);
+    // btoa() only handles Latin-1, so we encode UTF-8 bytes manually
+    const encoder = new TextEncoder();
+    const bytes = encoder.encode(raw);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    content = btoa(binary);
   } catch (e) { die('content put: could not read local file: ' + e.message); }
 
   // Check if file exists (to get SHA for update)
