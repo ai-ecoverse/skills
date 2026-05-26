@@ -67,6 +67,36 @@ Most resources are addressed by short hash IDs:
 `<rev>` arguments accept either a real revision hash or the literal string
 `latest`. Geometry is one of `voyager`, `moonlander`, `ergodox_ez`, etc.
 
+## Coordinates
+
+Refer to keys by side / row-relative-to-home / finger instead of opaque
+position numbers (Voyager only for now):
+
+```
+oryx grid                       # print the position grid + finger map
+oryx where 16                   # pos → coord  (16 → L.home.idx)
+oryx where L.home.idx           # coord → pos  (= 16)
+```
+
+Coord syntax: `<side>.<row>.<finger>`
+
+| field   | values                                                   |
+|---------|----------------------------------------------------------|
+| side    | `L` \| `R`                                               |
+| row     | `top` \| `upper` \| `home` \| `lower` \| `thumb`         |
+| finger  | `pky-out` \| `pky` \| `rng` \| `mid` \| `idx` \| `idx-in` |
+|         | `in` \| `out` (thumb keys)                               |
+
+Most commands that take `--pos=N` also accept `--at=<coord>`:
+
+```bash
+oryx key-update <layerHashId> --at=L.upper.pky --json='{...}'
+oryx key-update <layerHashId> --at=R.thumb.in --json='{...}'
+```
+
+`oryx keys --layer=N` decorates every key with its coord, so you never
+have to count.
+
 ## Read commands
 
 ```bash
@@ -145,3 +175,8 @@ oryx schema [--type=Query|Mutation|<TypeName>]        # introspect a type
 - The `keys` Json blob per layer is an *array* indexed by physical key
   position. Length equals the keyboard's key count (52 for Voyager,
   76 for Moonlander, 80 for ErgoDox EZ).
+- **Layer hashes rotate** whenever Oryx creates a new draft revision,
+  which it does on any auto-save (e.g. when the configurator tab is
+  open and you click around). Always re-fetch the current layer hash
+  with `oryx layers <hashId>` immediately before any mutation —
+  stale layer hashes return `Unauthorized`, not `Not Found`.
