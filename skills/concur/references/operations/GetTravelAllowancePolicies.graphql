@@ -1,0 +1,6 @@
+query GetTravelAllowancePolicies {
+  travelAllowancePolicies {
+    newTravelAllowanceEnabled
+    __typename
+  }
+}

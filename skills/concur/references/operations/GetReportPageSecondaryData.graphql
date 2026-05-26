@@ -1,0 +1,152 @@
+fragment CashAdvanceFragment on CashAdvance {
+  exchangeRate {
+    operation
+    value
+    __typename
+  }
+  id
+  name
+  issuedDate
+  requestedAmount {
+    currencyCode
+    value
+    __typename
+  }
+  startingBalance {
+    currencyCode
+    value
+    __typename
+  }
+  unsubmittedBalance {
+    currencyCode
+    value
+    __typename
+  }
+  unsubmittedBalanceInRequestedCurrency {
+    currencyCode
+    value
+    __typename
+  }
+  reimbursementCurrency
+  __typename
+}
+
+fragment CashAdvanceForReportFragment on CashAdvancesForReportResponse {
+  cashAdvances {
+    ...CashAdvanceFragment
+    __typename
+  }
+  totalRemaining {
+    currencyCode
+    value
+    __typename
+  }
+  totalRequested {
+    currencyCode
+    value
+    __typename
+  }
+  __typename
+}
+
+fragment TravelRequestFragment on TravelRequest {
+  requestUUID
+  id
+  arName
+  canceled
+  closed
+  postedAmount
+  approvedAmount
+  remainingAmount
+  arCrnCode
+  startDate
+  endDate
+  __typename
+}
+
+fragment TravelAllowanceViewFragment on TravelAllowanceView {
+  hasLegacyItinerary
+  legacyTAConfigAssigned
+  newTAConfigAssigned
+  multipleItinerariesEnabled
+  hasItinerary
+  singleModeItineraryId
+  hasLegacyReimbursableMeals
+  hasLegacyReimbursableLodging
+  taMenuActive
+  addTAMenuItemActive
+  editTAMenuItemActive
+  editAdjustmentsMenuItemActive
+  deleteTAMenuItemActive
+  reimbursableAllowancesSummaryMenuItemActive
+  viewTAMenuItemActive
+  viewAdjustmentsMenuItemActive
+  manageLegacyTAMenuItemActive
+  viewLegacyTAMenuItemActive
+  __typename
+}
+
+fragment PrintFormatFragment on PolicyPrintFormat {
+  configurationCode
+  configurationName
+  __typename
+}
+
+fragment CommentFragment on Comment {
+  author {
+    firstName
+    lastName
+    preferredName
+    __typename
+  }
+  comment
+  createdForEmployeeId
+  __typename
+}
+
+query GetReportPageSecondaryData($userId: String!, $reportId: String!, $contextRole: ContextRoleType!, $includeCashAdvances: Boolean!, $includeRequests: Boolean!, $includeTravelAllowance: Boolean!, $includePrintFormats: Boolean!, $includeComments: Boolean!) {
+  employee(userId: $userId, contextRole: $contextRole) {
+    userId
+    contextRole
+    expenseReport(reportId: $reportId) {
+      reportId
+      reportDetails {
+        id
+        aiAssistedExpenseCount
+        meta {
+          hasRequest @include(if: $includeRequests)
+          hasCashAdvance @include(if: $includeCashAdvances)
+          hasExpenses
+          __typename
+        }
+        travelAllowanceView @include(if: $includeTravelAllowance) {
+          ...TravelAllowanceViewFragment
+          __typename
+        }
+        printFormats @include(if: $includePrintFormats) {
+          ...PrintFormatFragment
+          __typename
+        }
+        comments @include(if: $includeComments) {
+          ...CommentFragment
+          __typename
+        }
+        __typename
+      }
+      cashAdvances @include(if: $includeCashAdvances) {
+        ...CashAdvanceForReportFragment
+        __typename
+      }
+      requests @include(if: $includeRequests) {
+        ...TravelRequestFragment
+        __typename
+      }
+      __typename
+    }
+    __typename
+  }
+  unusedCashAdvances(userId: $userId) @include(if: $includeCashAdvances) {
+    ...CashAdvanceFragment
+    __typename
+  }
+}

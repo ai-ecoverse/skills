@@ -1,0 +1,22 @@
+query GetFormListItems($sessionId: ID, $listInformation: CDS_InputListInformation!, $includeTotalPages: Boolean = true) {
+  CDS_spend {
+    list(sessionId: $sessionId, listInformation: $listInformation) {
+      isExternal
+      page @include(if: $includeTotalPages) {
+        totalPages
+        __typename
+      }
+      items {
+        id
+        matchValue
+        serviceVersion
+        code
+        shortCode
+        value
+        __typename
+      }
+      __typename
+    }
+    __typename
+  }
+}

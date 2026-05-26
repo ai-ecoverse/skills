@@ -1,0 +1,246 @@
+fragment AmountValueFragment on AmountValue {
+  amountValue: value {
+    value
+    currencyCode
+    __typename
+  }
+  __typename
+}
+
+fragment BooleanValueFragment on BooleanValue {
+  booleanValue: value
+  isValid
+  __typename
+}
+
+fragment DateValueFragment on DateValue {
+  dateValue: value
+  isValid
+  __typename
+}
+
+fragment ExchangeRateValueFragment on ExchangeRateValue {
+  value
+  operation
+  __typename
+}
+
+fragment ExpenseAmountFragment on ExpenseAmount {
+  expenseAmountValue: value
+  __typename
+}
+
+fragment FloatValueFragment on FloatValue {
+  floatValue: value
+  __typename
+}
+
+fragment IntegerValueFragment on IntegerValue {
+  integerValue: value
+  __typename
+}
+
+fragment ListItemValueFragment on ListItemValue {
+  code
+  id
+  listItemValue: value
+  __typename
+}
+
+fragment ListValueFragment on ListValue {
+  isValid
+  listValue: value {
+    code
+    id
+    value
+    __typename
+  }
+  __typename
+}
+
+fragment LocationValueFragment on LocationListValue {
+  isValid
+  locationValue: value {
+    id
+    name
+    city
+    value
+    countryCode
+    countrySubDivisionCode
+    __typename
+  }
+  __typename
+}
+
+fragment StringValueFragment on StringValue {
+  stringValue: value
+  __typename
+}
+
+fragment FormFieldFragment on FormField {
+  id
+  label
+  formFieldId
+  value {
+    ...AmountValueFragment
+    ...BooleanValueFragment
+    ...DateValueFragment
+    ...ExchangeRateValueFragment
+    ...ExpenseAmountFragment
+    ...FloatValueFragment
+    ...IntegerValueFragment
+    ...ListItemValueFragment
+    ...ListValueFragment
+    ...LocationValueFragment
+    ...StringValueFragment
+    __typename
+  }
+  accessMode
+  control
+  dataType
+  defaultValue {
+    value
+    code
+    listItemId
+    isValid
+    __typename
+  }
+  sequence
+  maximumLength
+  tooltip
+  hasLineSeparator
+  isCopyDownSource
+  itemizationCopyDownAction
+  isExternalList
+  targetFieldSettings {
+    action
+    formFieldId
+    lhsOperandSource
+    operator
+    rhsOperand
+    __typename
+  }
+  comments {
+    comment
+    creationDate
+    isLatest
+    createdForUserId
+    author {
+      first
+      last
+      preferred
+      __typename
+    }
+    __typename
+  }
+  options {
+    id
+    code
+    value
+    __typename
+  }
+  isRequired
+  list {
+    id
+    level
+    parentId
+    displayFormat
+    defaultSearchBy: searchCriteria
+    __typename
+  }
+  dataValidator {
+    validationExpression
+    failureMessage
+    __typename
+  }
+  requiredForSave
+  taxAuthorityId
+  taxFormId
+  showFieldForCountryCode
+  __typename
+}
+
+fragment JptRouteSummaryFragment on JptRouteSummary {
+  assignment
+  companyId
+  creationDateTime
+  currencyCode
+  distanceUnit
+  documentId
+  entryId
+  eReceiptId
+  fromLocation
+  hasCommuterPassDeduction
+  hasIcCard
+  id
+  isCheap
+  isEasy
+  isFast
+  isExpress
+  isIcTicket
+  isLegacyData
+  isRoundTrip
+  lastModifiedDateTime
+  originType
+  routeUUID
+  seatType
+  toLocation
+  totalAdditionalAmount
+  totalAmount
+  totalDistance
+  transactionDate
+  transactionId
+  userId
+  __typename
+}
+
+fragment ExistingExpenseFormFragment on ExistingExpenseForm {
+  expenseId
+  expenseTypeId
+  travelRequestEntries {
+    entries {
+      id
+      value
+      __typename
+    }
+    __typename
+  }
+  mainForm {
+    attendeesLinkAccessMode
+    calculateTaxLinkAccessMode
+    fields {
+      ...FormFieldFragment
+      __typename
+    }
+    isFormEditable
+    __typename
+  }
+  meta {
+    canAllocate
+    canDelete
+    hasMixedAllocations
+    hasXmlReceipt
+    __typename
+  }
+  backendMileageConfigs
+  expenseTypeDetails {
+    expenseTypeId
+    quickTips
+    __typename
+  }
+  jptRouteSummary {
+    ...JptRouteSummaryFragment
+    __typename
+  }
+  __typename
+}
+
+query GetExistingItemizationForm($itemizationId: ID!, $reportId: ID!, $userId: ID!, $contextRole: ContextRoleType!, $expenseTypeChangeContext: ExpenseTypeChangeExistingExpenseContext) {
+  existingExpenseForm(
+    dataContext: {expenseId: $itemizationId, reportId: $reportId, expenseTypeChangeContext: $expenseTypeChangeContext}
+    userContext: {userId: $userId, contextType: $contextRole}
+  ) {
+    ...ExistingExpenseFormFragment
+    __typename
+  }
+}

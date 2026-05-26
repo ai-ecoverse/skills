@@ -1,0 +1,565 @@
+fragment CostObjectFragment on CostObject {
+  approvedAmount {
+    value
+    currencyCode
+    __typename
+  }
+  approver {
+    firstName
+    lastName
+    middleInitial
+    __typename
+  }
+  claimedAmount {
+    value
+    currencyCode
+    __typename
+  }
+  costObjectExpenseIds {
+    expenseId
+    allocationIds
+    __typename
+  }
+  hierarchyNodeId
+  name
+  isCostObjectOwnedByUser
+  __typename
+}
+
+fragment ExpenseEntrySummaryFragment on ExpenseEntrySummary {
+  allocationState
+  approvedAmount {
+    value
+    currencyCode
+    __typename
+  }
+  attendeeCount
+  claimedAmount {
+    value
+    currencyCode
+    __typename
+  }
+  eReceiptImageId
+  expenseSourceIdentifiers {
+    eReceiptId
+    expenseCaptureImageId
+    jptRouteId
+    personalCardTransactionId
+    quickExpenseId
+    segmentId
+    segmentTypeId
+    tripId
+    creditCardTransaction {
+      id
+      type
+      __typename
+    }
+    __typename
+  }
+  expenseType {
+    id
+    code
+    name
+    meta {
+      isJapanPublicTransportation
+      __typename
+    }
+    __typename
+  }
+  id
+  isImageRequired
+  isPaperReceiptRequired
+  isPersonalExpense
+  jptRouteId
+  location {
+    city
+    countryCode
+    countrySubDivisionCode
+    id
+    name
+    __typename
+  }
+  meta {
+    canDelete
+    hasAffidavit
+    hasAllocation
+    hasAttendees
+    hasBlockingExceptions
+    hasComments
+    hasExceptions
+    hasItemizations
+    hasReceiptImage
+    hasSource
+    hasXmlReceipt
+    hasSourceCreditCard
+    hasSourceEReceipt
+    hasSourceItinerary
+    hasSourceExpenseIt
+    hasSourceMobile
+    hasSourcePersonalCard
+    __typename
+  }
+  parentExpenseId
+  paymentType {
+    id
+    code
+    name
+    __typename
+  }
+  receiptImageId
+  rpeKey
+  transactionAmount {
+    value
+    currencyCode
+    __typename
+  }
+  postedAmount {
+    value
+    currencyCode
+    __typename
+  }
+  transactionDate
+  vendor {
+    id
+    description
+    name
+    __typename
+  }
+  __typename
+}
+
+fragment AmountValueFragment on AmountValue {
+  amountValue: value {
+    value
+    currencyCode
+    __typename
+  }
+  __typename
+}
+
+fragment BooleanValueFragment on BooleanValue {
+  booleanValue: value
+  isValid
+  __typename
+}
+
+fragment DateValueFragment on DateValue {
+  dateValue: value
+  isValid
+  __typename
+}
+
+fragment ExchangeRateValueFragment on ExchangeRateValue {
+  value
+  operation
+  __typename
+}
+
+fragment ExpenseAmountFragment on ExpenseAmount {
+  expenseAmountValue: value
+  __typename
+}
+
+fragment FloatValueFragment on FloatValue {
+  floatValue: value
+  __typename
+}
+
+fragment IntegerValueFragment on IntegerValue {
+  integerValue: value
+  __typename
+}
+
+fragment ListItemValueFragment on ListItemValue {
+  code
+  id
+  listItemValue: value
+  __typename
+}
+
+fragment ListValueFragment on ListValue {
+  isValid
+  listValue: value {
+    code
+    id
+    value
+    __typename
+  }
+  __typename
+}
+
+fragment LocationValueFragment on LocationListValue {
+  isValid
+  locationValue: value {
+    id
+    name
+    city
+    value
+    countryCode
+    countrySubDivisionCode
+    __typename
+  }
+  __typename
+}
+
+fragment StringValueFragment on StringValue {
+  stringValue: value
+  __typename
+}
+
+fragment EntryDetailsForList on ReportEntryDetails {
+  expenseId
+  summary {
+    ...ExpenseEntrySummaryFragment
+    __typename
+  }
+  values {
+    fieldName
+    formFieldId
+    value {
+      ...AmountValueFragment
+      ...BooleanValueFragment
+      ...DateValueFragment
+      ...ExchangeRateValueFragment
+      ...ExpenseAmountFragment
+      ...FloatValueFragment
+      ...IntegerValueFragment
+      ...ListItemValueFragment
+      ...ListValueFragment
+      ...LocationValueFragment
+      ...StringValueFragment
+      __typename
+    }
+    __typename
+  }
+  __typename
+}
+
+fragment EntriesAndColumnsFragment on ReportEntriesDetails {
+  reportId
+  columns {
+    formFieldId
+    dataType
+    fieldName
+    __typename
+  }
+  entries {
+    ...EntryDetailsForList
+    __typename
+  }
+  __typename
+}
+
+fragment EntryExceptionFragment on ExpenseEntryException {
+  allocationId
+  exceptionCode
+  expenseId
+  isBlocking
+  message
+  parentExpenseId
+  parameters {
+    entryExceptionAttendees {
+      lastName
+      firstName
+      entryAmount
+      crnCode
+      totalExpensed
+      totalAuthorized
+      __typename
+    }
+    missingFields {
+      missingSpecialParentField
+      fields
+      fieldIds
+      __typename
+    }
+    __typename
+  }
+  __typename
+}
+
+fragment EntryExceptionsFragment on EntryExceptions {
+  reportId
+  expenseId
+  attendeesExceptionLevel
+  countOfExceptions
+  transactionAmount {
+    value
+    currencyCode
+    __typename
+  }
+  transactionDate
+  expenseType {
+    id
+    code
+    name
+    meta {
+      isJapanPublicTransportation
+      __typename
+    }
+    __typename
+  }
+  entryExceptions {
+    ...EntryExceptionFragment
+    __typename
+  }
+  itemizations {
+    reportId
+    expenseId
+    attendeesExceptionLevel
+    countOfExceptions
+    transactionAmount {
+      value
+      currencyCode
+      __typename
+    }
+    transactionDate
+    expenseType {
+      id
+      code
+      name
+      meta {
+        isJapanPublicTransportation
+        __typename
+      }
+      __typename
+    }
+    entryExceptions {
+      ...EntryExceptionFragment
+      __typename
+    }
+    itemizations {
+      expenseId
+      __typename
+    }
+    __typename
+  }
+  __typename
+}
+
+fragment ReportExceptionsFragment on ReportExceptions {
+  reportId
+  countOfExceptions
+  hasBlockingExceptions
+  reportExceptions {
+    allocationId
+    exceptionCode
+    expenseId
+    parentExpenseId
+    isBlocking
+    message
+    parameters {
+      entryExceptionAttendees {
+        lastName
+        firstName
+        entryAmount
+        crnCode
+        totalExpensed
+        totalAuthorized
+        __typename
+      }
+      missingFields {
+        missingSpecialParentField
+        fields
+        fieldIds
+        __typename
+      }
+      __typename
+    }
+    __typename
+  }
+  entryExceptions {
+    ...EntryExceptionsFragment
+    __typename
+  }
+  __typename
+}
+
+fragment GroupSettingsFragment on GroupSettings {
+  reportOwnerUserId
+  groupConfigId
+  digitizationCountryCode
+  allowXmlReceiptImport
+  allowMultipleCashAdvancesOnReport
+  allowCashAdvancesOnMatchingCurrenciesOnly
+  allowCashAdvanceExchangeRateOverEntry
+  allowEReceiptImageGeneration
+  __typename
+}
+
+fragment ReportDetailsFragment on ExpenseReportDetails {
+  id
+  userId
+  name
+  employee {
+    firstName
+    lastName
+    preferredName
+    __typename
+  }
+  meta {
+    isApproved
+    isAiAssisted
+    isSubmitted
+    isReopened
+    isSentForPayment
+    isNotPaid
+    isReceiptImageAvailable
+    isSentBack
+    isPendingDelegatorReview
+    hasExpenses
+    isPaperReceiptRequired
+    canDisplayReportPayments
+    canRecall
+    canAddExpense
+    canReopen
+    canShowUnusedCashAdvanceMessage
+    hasLegacyTravelAllowance
+    __typename
+  }
+  currencyCode
+  claimedAmount {
+    value
+    currencyCode
+    __typename
+  }
+  approvedAmount {
+    value
+    currencyCode
+    __typename
+  }
+  reportTotal {
+    value
+    currencyCode
+    __typename
+  }
+  policyId
+  reportNumber
+  reportType
+  startDate
+  endDate
+  submitDate
+  approvalStatus
+  paymentStatus
+  countryCode
+  reportOwnerUserId
+  allAiAssistedExpenseCount
+  allAiAssistedFieldsCount
+  __typename
+}
+
+fragment ReportPolicyFragment on ExpensePolicy {
+  id
+  receiptImaging {
+    receiptImagingId
+    enableImageUpload
+    allowImagesOnReport
+    __typename
+  }
+  allocationFormId
+  allocationScreenPrintFormatCode
+  allocationScreenPrintFormatName
+  allocationSeparator
+  isTravelDiaryEnabled
+  isRedirectFundsEnabled
+  allowReceiptAffidavits
+  disableTravelAllowance
+  receiptAffidavitAcceptance
+  receiptAffidavitExplanation
+  receiptText
+  expenseListDetailFormId
+  shouldRestrictNonSubmitPrint
+  meta {
+    canShowReceipts
+    canUploadImagesToExpenses
+    canUploadImagesToReport
+    __typename
+  }
+  workflowProcess {
+    workflowProcessId
+    allowAdhocStepsBy
+    confirmationIdApprover
+    confirmationIdSubmit
+    __typename
+  }
+  __typename
+}
+
+fragment WorkflowFragment on Workflow {
+  stepInstances {
+    stepId
+    __typename
+  }
+  processInstanceId
+  currentSequence
+  __typename
+}
+
+fragment WorkflowTransitionFragment on WorkflowTransition {
+  actionText
+  description
+  name
+  statusId
+  __typename
+}
+
+query GetReportPageData($userId: String!, $reportId: String!, $contextRole: ContextRoleType!, $includeWorkflows: Boolean!, $includeCostObjects: Boolean!, $includeSummary: Boolean!, $includePolicy: Boolean!, $includeEntries: Boolean!, $includeExceptions: Boolean!, $includeGroupSettings: Boolean!, $includeDetails: String, $includeDetailItemizations: Boolean!, $includeSiteSettings: Boolean!, $shouldChangeWarningAlertsToInformation: Boolean) {
+  employee(userId: $userId, contextRole: $contextRole) {
+    userId
+    contextRole
+    expenseReport(reportId: $reportId) {
+      reportId
+      rptKey
+      reportDetails @include(if: $includeSummary) {
+        ...ReportDetailsFragment
+        policy @include(if: $includePolicy) {
+          ...ReportPolicyFragment
+          __typename
+        }
+        groupSettings @include(if: $includeGroupSettings) {
+          ...GroupSettingsFragment
+          __typename
+        }
+        __typename
+      }
+      workflow @include(if: $includeWorkflows) {
+        ...WorkflowFragment
+        __typename
+      }
+      workflowTransitions @include(if: $includeWorkflows) {
+        ...WorkflowTransitionFragment
+        __typename
+      }
+      costObjects @include(if: $includeCostObjects) {
+        ...CostObjectFragment
+        __typename
+      }
+      __typename
+    }
+    __typename
+  }
+  reportEntriesDetails(
+    userId: $userId
+    reportId: $reportId
+    contextRole: $contextRole
+    expenseListDetailFormId: $includeDetails
+    includeDetailItemizations: $includeDetailItemizations
+  ) @include(if: $includeEntries) {
+    ...EntriesAndColumnsFragment
+    __typename
+  }
+  reportExceptions(
+    reportId: $reportId
+    userId: $userId
+    contextRole: $contextRole
+    shouldChangeWarningAlertsToInformation: $shouldChangeWarningAlertsToInformation
+  ) @include(if: $includeExceptions) {
+    ...ReportExceptionsFragment
+    __typename
+  }
+  siteSettings @include(if: $includeSiteSettings) {
+    allowMultipleUseOfSingleReceipt
+    isMultipleRequestsAllowed
+    __typename
+  }
+}

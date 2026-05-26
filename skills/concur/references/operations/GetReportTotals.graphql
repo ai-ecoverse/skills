@@ -1,0 +1,122 @@
+fragment CDSExpenseAmountFragment on CDS_ExpenseAmount {
+  currency {
+    code
+    name
+    __typename
+  }
+  value
+  __typename
+}
+
+query GetReportTotals($contextRole: CDS_InputExpenseTypes, $reportId: ID!, $userId: ID) {
+  CDS_expense {
+    report(contextType: $contextRole, id: $reportId, userId: $userId) {
+      reportTotals {
+        reportTotal {
+          ...CDSExpenseAmountFragment
+          __typename
+        }
+        redirectFund {
+          amount {
+            currency {
+              code
+              name
+              __typename
+            }
+            value
+            __typename
+          }
+          creditCardId
+          __typename
+        }
+        personalAmount {
+          ...CDSExpenseAmountFragment
+          __typename
+        }
+        cashAdvanceReturnsAmount {
+          ...CDSExpenseAmountFragment
+          __typename
+        }
+        claimedAmount {
+          ...CDSExpenseAmountFragment
+          __typename
+        }
+        rejectedAmount {
+          ...CDSExpenseAmountFragment
+          __typename
+        }
+        approvedAmount {
+          ...CDSExpenseAmountFragment
+          __typename
+        }
+        companyDisbursements {
+          amountDueToEmployee {
+            ...CDSExpenseAmountFragment
+            __typename
+          }
+          cashAdvanceUtilized {
+            ...CDSExpenseAmountFragment
+            __typename
+          }
+          totalPaidByCompany {
+            ...CDSExpenseAmountFragment
+            __typename
+          }
+          totalUtilizedBalanceDue {
+            ...CDSExpenseAmountFragment
+            __typename
+          }
+          totalOtherDisbursements {
+            ...CDSExpenseAmountFragment
+            __typename
+          }
+          otherDisbursements {
+            payeeName
+            amount {
+              ...CDSExpenseAmountFragment
+              __typename
+            }
+            __typename
+          }
+          __typename
+        }
+        employeeDisbursements {
+          totalOwedByEmployee {
+            ...CDSExpenseAmountFragment
+            __typename
+          }
+          dueCompany {
+            ...CDSExpenseAmountFragment
+            __typename
+          }
+          employeePaysCompany {
+            ...CDSExpenseAmountFragment
+            __typename
+          }
+          otherDisbursements {
+            payeeName
+            amount {
+              ...CDSExpenseAmountFragment
+              __typename
+            }
+            __typename
+          }
+          __typename
+        }
+        utilizedBalanceDues {
+          reportId
+          reportNumber
+          amount {
+            ...CDSExpenseAmountFragment
+            __typename
+          }
+          __typename
+        }
+        isCashAdvanceReturnedOnCard
+        __typename
+      }
+      __typename
+    }
+    __typename
+  }
+}

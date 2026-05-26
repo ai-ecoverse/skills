@@ -1,0 +1,8 @@
+query GetPaymentTypes($reportOwnerUserId: String) {
+  paymentTypes(reportOwnerUserId: $reportOwnerUserId) {
+    paymentTypeId
+    paymentTypeName
+    isPrePopulatedOnly
+    __typename
+  }
+}

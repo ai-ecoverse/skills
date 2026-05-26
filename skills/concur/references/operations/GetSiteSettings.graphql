@@ -1,0 +1,8 @@
+query GetSiteSettings {
+  siteSettings {
+    useExchangeRates
+    isMileageServiceEnabled
+    allowJptPublicSectorEnhancement
+    __typename
+  }
+}

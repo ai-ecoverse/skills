@@ -1,0 +1,22 @@
+query GetRecentLocations($maxResults: Int) {
+  CDS_recentLocations(maxResults: $maxResults, forExpense: true) {
+    id
+    locationId
+    name
+    preferredDisplay
+    legacyKey
+    country {
+      code
+      name
+      currencyCode
+      currencyName
+      __typename
+    }
+    subdivision {
+      code
+      name
+      __typename
+    }
+    __typename
+  }
+}

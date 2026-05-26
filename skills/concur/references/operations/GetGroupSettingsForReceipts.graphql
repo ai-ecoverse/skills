@@ -1,0 +1,19 @@
+query GetGroupSettingsForReceipts($userId: String!, $reportOwnerUserId: String, $contextRole: ContextRoleType!, $includeSiteSettings: Boolean!) {
+  employee(userId: $userId, contextRole: $contextRole) {
+    userId
+    contextRole
+    groupSettings(reportOwnerUserId: $reportOwnerUserId) {
+      reportOwnerUserId
+      groupConfigId
+      allowXmlReceiptImport
+      digitizationCountryCode
+      allowEReceiptImageGeneration
+      __typename
+    }
+    __typename
+  }
+  siteSettings @include(if: $includeSiteSettings) {
+    allowMultipleUseOfSingleReceipt
+    __typename
+  }
+}

@@ -1,0 +1,38 @@
+query GetExistingExpenseEntryForReceipts($userId: String!, $contextRole: ContextRoleType!, $reportId: String!, $expenseId: String!, $skipCctReceiptImageId: Boolean = false) {
+  employee(userId: $userId, contextRole: $contextRole) {
+    userId
+    contextRole
+    expenseReport(reportId: $reportId) {
+      reportId
+      reportDetails {
+        id
+        userId
+        policy {
+          id
+          allowReceiptAffidavits
+          receiptAffidavitExplanation
+          receiptAffidavitAcceptance
+          __typename
+        }
+        countryCode
+        __typename
+      }
+      entry(expenseId: $expenseId) {
+        id
+        receiptImageId
+        cctReceiptImageId @skip(if: $skipCctReceiptImageId)
+        eReceiptImageId
+        isImageRequired
+        isPaperReceiptRequired
+        meta {
+          hasAffidavit
+          hasReceiptImage
+          __typename
+        }
+        __typename
+      }
+      __typename
+    }
+    __typename
+  }
+}

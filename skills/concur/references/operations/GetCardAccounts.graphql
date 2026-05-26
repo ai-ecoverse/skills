@@ -1,0 +1,24 @@
+query GetCardAccounts($userId: String!, $contextRole: ContextRoleType!) {
+  employee(userId: $userId, contextRole: $contextRole) {
+    userId
+    contextRole
+    cardAccounts {
+      id
+      accountCurrency
+      accountTypeCode
+      isDeleted
+      isPersonalCard
+      isCBSAccount
+      lastSegment
+      name
+      paymentType {
+        id
+        name
+        code
+        __typename
+      }
+      __typename
+    }
+    __typename
+  }
+}

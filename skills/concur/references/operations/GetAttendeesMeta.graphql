@@ -1,0 +1,17 @@
+query GetAttendeesMeta($reportId: String!, $expenseId: String!, $rptKey: String!, $userId: String!, $contextRole: ContextRoleType!) {
+  attendeesMetaData(
+    rptKey: $rptKey
+    expenseId: $expenseId
+    reportId: $reportId
+    userId: $userId
+    contextRole: $contextRole
+  ) {
+    rpeKey
+    crnKey
+    areKey
+    uiParentRpeKey
+    canCopyFromRequest
+    showCopyFromRequest
+    __typename
+  }
+}

@@ -1,0 +1,39 @@
+query GetRecentLists($mruArray: [CDS_MruListInput]) {
+  CDS_spend {
+    recentLists(listInput: $mruArray) {
+      lists {
+        formFieldId
+        listId
+        items {
+          id
+          value
+          code
+          shortCode
+          __typename
+        }
+        __typename
+      }
+      connectedLists {
+        formFieldId
+        listId
+        items {
+          itemPath
+          value
+          code
+          shortCode
+          connectedLists {
+            id
+            value
+            code
+            shortCode
+            __typename
+          }
+          __typename
+        }
+        __typename
+      }
+      __typename
+    }
+    __typename
+  }
+}

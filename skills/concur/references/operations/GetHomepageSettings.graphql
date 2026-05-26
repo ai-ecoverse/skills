@@ -1,0 +1,50 @@
+fragment GroupSettingsFragment on GroupSettings {
+  reportOwnerUserId
+  groupConfigId
+  digitizationCountryCode
+  allowXmlReceiptImport
+  allowMultipleCashAdvancesOnReport
+  allowCashAdvancesOnMatchingCurrenciesOnly
+  allowCashAdvanceExchangeRateOverEntry
+  allowEReceiptImageGeneration
+  __typename
+}
+
+query GetHomepageSettings($reportOwnerUserId: ID!, $userId: String!, $contextRole: ContextRoleType!) {
+  expensePolicies(
+    reportOwnerUserId: $reportOwnerUserId
+    userId: $userId
+    contextRole: $contextRole
+  ) {
+    meta {
+      shouldShowReceipts
+      __typename
+    }
+    __typename
+  }
+  employee(userId: $userId, contextRole: $contextRole) {
+    userId
+    contextRole
+    expenseAssistant {
+      profileSetting
+      groupSetting
+      __typename
+    }
+    groupSettings(reportOwnerUserId: $userId) {
+      ...GroupSettingsFragment
+      __typename
+    }
+    __typename
+  }
+  siteSettings {
+    isCardsDeleteAPIEnabled
+    isCBCPTransactionsDeleteProhibited
+    isNegativeAmountCardTransactionsDeleteProhibited
+    isDeleteCardTransactionsAllowed
+    isDeleteEReceiptsEnabled
+    isDeleteTripSegmentsEnabled
+    allowSearchByEmployeeId
+    allowMultipleUseOfSingleReceipt
+    __typename
+  }
+}

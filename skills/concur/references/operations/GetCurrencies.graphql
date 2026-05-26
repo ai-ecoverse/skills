@@ -1,0 +1,7 @@
+query GetCurrencies {
+  currencies {
+    code
+    name
+    __typename
+  }
+}

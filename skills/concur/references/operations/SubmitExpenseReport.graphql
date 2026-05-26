@@ -1,0 +1,19 @@
+mutation SubmitExpenseReport($contextRole: CDS_SmartExpenseContextTypes!, $reportId: ID!, $userId: ID, $reportSource: CDS_ReportSource, $validate: Boolean, $approverValidated: Boolean) {
+  CDS_expense {
+    report {
+      submit(
+        contextType: $contextRole
+        id: $reportId
+        userId: $userId
+        validate: $validate
+        reportSource: $reportSource
+        approverValidated: $approverValidated
+      ) {
+        status
+        __typename
+      }
+      __typename
+    }
+    __typename
+  }
+}

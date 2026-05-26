@@ -1,0 +1,56 @@
+mutation FindMatchingAvailableExpenses($userId: String!, $contextRole: ContextRoleType!, $reportId: String!, $expenseId: String!) {
+  employee(userId: $userId, contextRole: $contextRole) {
+    findAvailableExpenseMatchingExpense(reportId: $reportId, expenseId: $expenseId) {
+      match {
+        id
+        reportId
+        expenseId
+        expenseEntry {
+          id
+          expenseType {
+            id
+            name
+            __typename
+          }
+          transactionAmount {
+            value
+            currencyCode
+            __typename
+          }
+          transactionDate
+          __typename
+        }
+        availableExpense {
+          id
+          expenseType {
+            id
+            name
+            __typename
+          }
+          transactionAmount {
+            value
+            currencyCode
+            __typename
+          }
+          transactionDate
+          vendor
+          meta {
+            hasSourceCreditCard
+            hasSourcePersonalCard
+            hasSourceEReceipt
+            hasSourceAttendees
+            hasSourceExpenseIt
+            hasSourceItinerary
+            hasSourceMobile
+            hasSource
+            __typename
+          }
+          __typename
+        }
+        __typename
+      }
+      __typename
+    }
+    __typename
+  }
+}

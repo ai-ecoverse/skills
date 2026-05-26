@@ -1,0 +1,6 @@
+mutation CreateReportHeader($userId: String!, $contextRole: ContextRoleType!, $fields: CreateReportFieldsInput!) {
+  createReport(contextRole: $contextRole, fields: $fields, userId: $userId) {
+    reportId
+    __typename
+  }
+}

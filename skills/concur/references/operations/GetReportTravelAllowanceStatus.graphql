@@ -1,0 +1,6 @@
+query GetReportTravelAllowanceStatus($reportId: ID!) {
+  CDS_expense {
+    reportTravelAllowanceStatus(reportId: $reportId)
+    __typename
+  }
+}

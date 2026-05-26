@@ -1,0 +1,53 @@
+fragment LegacyReceiptMetadataFragment on LegacyReceiptMetadata {
+  isEbunshoReceipt
+  canAppendReceipt
+  canDetachReceipt
+  canReplaceReceipt
+  canDownloadReceipt
+  canDeleteReceipt
+  canSaveReceiptRotation
+  isAllowedForMultipleUse
+  __typename
+}
+
+fragment EbunshoTimestampFragment on EbunshoTimestamp {
+  status
+  resolution
+  colorDepth
+  timestampDate
+  __typename
+}
+
+fragment LegacyReceiptFragment on LegacyReceipt {
+  imageId
+  receiptId
+  fileType
+  imageDate
+  fileName
+  imageOrigin
+  imageUrl
+  thumbUrl
+  timestamp {
+    ...EbunshoTimestampFragment
+    __typename
+  }
+  receiptDigitizationStatus
+  complianceCountryCode
+  meta {
+    ...LegacyReceiptMetadataFragment
+    __typename
+  }
+  __typename
+}
+
+query GetAvailableReceipts($userId: String!, $contextRole: ContextRoleType!, $deleteEbunshoFlagEnabled: Boolean) {
+  employee(userId: $userId, contextRole: $contextRole) {
+    userId
+    contextRole
+    availableReceipts(deleteEbunshoFlagEnabled: $deleteEbunshoFlagEnabled) {
+      ...LegacyReceiptFragment
+      __typename
+    }
+    __typename
+  }
+}
