@@ -354,10 +354,7 @@ const commands = {
     if (!hashId) { console.error('Usage: oryx fork <revisionHashId>'); process.exit(1); }
     const data = await gql(`
       mutation ($hashId: String!) {
-        forkRevision(hashId: $hashId) {
-          revision { hashId title }
-          errors
-        }
+        forkRevision(hashId: $hashId) { hashId }
       }`, { hashId });
     out(data.forkRevision);
   },
@@ -370,8 +367,8 @@ const commands = {
     const data = await gql(`
       mutation ($title: String!, $rev: String!, $parent: String, $geom: String) {
         createLayout(title: $title, revisionHashId: $rev, parentHashId: $parent, geometry: $geom) {
-          layout { hashId title }
-          errors
+          hashId
+          revision { hashId }
         }
       }`,
       { title, rev: parentHashId, parent: parentHashId, geom: flags.geom || null }
@@ -388,10 +385,7 @@ const commands = {
     const privacy = mode === 'private';
     const data = await gql(`
       mutation ($hashId: String!, $privacy: Boolean!) {
-        updateLayoutPrivacy(hashId: $hashId, privacy: $privacy) {
-          layout { hashId privacy }
-          errors
-        }
+        updateLayoutPrivacy(hashId: $hashId, privacy: $privacy) { hashId privacy }
       }`, { hashId, privacy });
     out(data.updateLayoutPrivacy);
   },
@@ -402,10 +396,7 @@ const commands = {
     if (!hashId || !newTitle) { console.error('Usage: oryx title <hashId> <new-title>'); process.exit(1); }
     const data = await gql(`
       mutation ($hashId: String!, $title: String!) {
-        updateLayoutTitle(hashId: $hashId, title: $title) {
-          layout { hashId title }
-          errors
-        }
+        updateLayoutTitle(hashId: $hashId, title: $title) { hashId title }
       }`, { hashId, title: newTitle });
     out(data.updateLayoutTitle);
   },
@@ -416,10 +407,7 @@ const commands = {
     if (!hashId) { console.error('Usage: oryx layout-tags <hashId> <tagId1,tagId2,...>'); process.exit(1); }
     const data = await gql(`
       mutation ($hashId: String!, $tagIds: [String!]!) {
-        updateLayoutTags(hashId: $hashId, tagIds: $tagIds) {
-          layout { hashId tags { hashId name } }
-          errors
-        }
+        updateLayoutTags(hashId: $hashId, tagIds: $tagIds) { hashId }
       }`, { hashId, tagIds });
     out(data.updateLayoutTags);
   },
@@ -430,8 +418,7 @@ const commands = {
     const data = await gql(`
       mutation ($hashId: String!) {
         compileRevision(hashId: $hashId) {
-          revision { hashId hexUrl zipUrl md5 }
-          errors
+          hexUrl zipUrl md5 qmkVersion qmkUptodate buildErrorLog
         }
       }`, { hashId });
     out(data.compileRevision);
@@ -442,7 +429,7 @@ const commands = {
     if (!hashId) { console.error('Usage: oryx delete-layout <hashId>'); process.exit(1); }
     const data = await gql(`
       mutation ($hashId: String!) {
-        deleteLayout(hashId: $hashId) { errors }
+        deleteLayout(hashId: $hashId) { __typename }
       }`, { hashId });
     out(data.deleteLayout);
   },
@@ -458,7 +445,7 @@ const commands = {
     if (flags.title)  { q += `, $title: String`;  args += `, title: $title`;     vars.title = flags.title; }
     if (flags.color)  { q += `, $color: String`;  args += `, color: $color`;     vars.color = flags.color; }
     if (flags.pos !== undefined) { q += `, $pos: Int`; args += `, position: $pos`; vars.pos = parseInt(flags.pos, 10); }
-    q += `) { updateLayer(${args}) { layer { hashId title color position } errors } }`;
+    q += `) { updateLayer(${args}) { hashId } }`;
     const data = await gql(q, vars);
     out(data.updateLayer);
   },
@@ -469,10 +456,7 @@ const commands = {
     if (!hashId || !color) { console.error('Usage: oryx layer-color <layerHashId> <#hex>'); process.exit(1); }
     const data = await gql(`
       mutation ($hashId: String!, $color: String) {
-        updateLayerColor(hashId: $hashId, color: $color) {
-          layer { hashId color }
-          errors
-        }
+        updateLayerColor(hashId: $hashId, color: $color) { hashId }
       }`, { hashId, color });
     out(data.updateLayerColor);
   },
@@ -481,7 +465,7 @@ const commands = {
     const hashId = positional[0];
     if (!hashId) { console.error('Usage: oryx layer-delete <layerHashId>'); process.exit(1); }
     const data = await gql(`
-      mutation ($hashId: String!) { deleteLayer(hashId: $hashId) { errors } }`, { hashId });
+      mutation ($hashId: String!) { deleteLayer(hashId: $hashId) { hashId } }`, { hashId });
     out(data.deleteLayer);
   },
 
@@ -501,10 +485,7 @@ const commands = {
     const newKeys = flags.keys ? parseJsonArg('keys') : [];
     const data = await gql(`
       mutation ($rev: String!, $newKeys: Json!, $position: Int!, $title: String) {
-        createLayer(revisionHashId: $rev, newKeys: $newKeys, position: $position, title: $title) {
-          layer { hashId title position }
-          errors
-        }
+        createLayer(revisionHashId: $rev, newKeys: $newKeys, position: $position, title: $title) { hashId }
       }`,
       { rev: revisionHashId, newKeys, position: parseInt(flags.pos, 10), title: flags.title || null }
     );
@@ -521,10 +502,7 @@ const commands = {
     const keyData = parseJsonArg('json');
     const data = await gql(`
       mutation ($hashId: String!, $keyData: Json!, $position: Int!) {
-        updateKey(hashId: $hashId, keyData: $keyData, position: $position) {
-          layer { hashId position }
-          errors
-        }
+        updateKey(hashId: $hashId, keyData: $keyData, position: $position) { status }
       }`,
       { hashId, keyData, position: parseInt(flags.pos, 10) }
     );
@@ -542,7 +520,7 @@ const commands = {
     if (flags['dst-pos'] !== undefined) { argDecl += `, $tp: Int`; argList += `, targetPosition: $tp`; vars.tp = parseInt(flags['dst-pos'], 10); }
     const data = await gql(`
       mutation (${argDecl}) {
-        swapKeys(${argList}) { errors }
+        swapKeys(${argList}) { __typename }
       }`, vars);
     out(data.swapKeys);
   },
@@ -559,8 +537,7 @@ const commands = {
     const data = await gql(`
       mutation ($rev: String!, $name: String!, $layerIdx: Int!, $keyIndices: [Int!]!, $trigger: Json!) {
         upsertCombo(revisionHashId: $rev, name: $name, layerIdx: $layerIdx, keyIndices: $keyIndices, trigger: $trigger) {
-          combo { name layerIdx keyIndices }
-          errors
+          comboIdx
         }
       }`,
       { rev: revisionHashId, name: flags.name, layerIdx: parseInt(flags.layer, 10), keyIndices: indices, trigger }
@@ -575,7 +552,7 @@ const commands = {
     }
     const data = await gql(`
       mutation ($rev: String!, $idx: Int!) {
-        deleteCombo(revisionHashId: $rev, comboIdx: $idx) { errors }
+        deleteCombo(revisionHashId: $rev, comboIdx: $idx) { comboIdx }
       }`,
       { rev: revisionHashId, idx: parseInt(flags.idx, 10) }
     );
