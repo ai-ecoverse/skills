@@ -37,6 +37,14 @@
 //   oryx combo-add <revisionHashId> --layer=I --indices=1,2,3 --name=Foo --trigger=<json>
 //   oryx combo-delete <revisionHashId> --idx=N
 //
+//   oryx grid [voyager]                            Print the position grid + finger map
+//   oryx where <pos | coord> [--geom=voyager]      Translate a position to a coord (or vice versa)
+//                                                  Coord: <side>.<row>.<finger>
+//                                                    side    L | R
+//                                                    row     top | upper | home | lower | thumb
+//                                                    finger  pky-out | pky | rng | mid | idx | idx-in
+//                                                            (or in / out for thumbs)
+//
 //   oryx gql <query> [--vars=<json>]               Run an arbitrary GraphQL query
 //   oryx schema [--type=Query|Mutation|<name>]     Print schema fields
 //
@@ -132,6 +140,145 @@ async function authHeaders() {
     'Accept': 'application/json',
     'Authorization': 'Bearer ' + token,
   };
+}
+
+// ─── Geometry / coordinate system ─────────────────────────────────────────
+//
+// Refer to keys by   <side>.<row>.<finger>   instead of opaque position
+// numbers. Row is named relative to the home row.
+//
+//   side    L | R
+//   row     top   (-2)
+//           upper (-1)
+//           home  ( 0)
+//           lower (+1)
+//           thumb
+//   finger  pky-out, pky, rng, mid, idx, idx-in    (alphas)
+//           in, out                                (thumbs)
+//
+// Examples for the Voyager:
+//   L.home.idx       = pos 16  (left index home — Dvorak `u`)
+//   R.upper.mid      = pos 35  (right middle upper — Dvorak `c`)
+//   L.upper.pky-out  = pos 6   (the `~` key, leftmost upper-row left half)
+//   L.thumb.in       = pos 25
+//   R.lower.pky-out  = pos 49
+
+const GEOMETRIES = {
+  voyager: {
+    rows: ['top', 'upper', 'home', 'lower'],
+    cols: 6,
+    leftFinger:  ['pky-out', 'pky', 'rng', 'mid', 'idx', 'idx-in'],
+    rightFinger: ['idx-in', 'idx', 'mid', 'rng', 'pky', 'pky-out'],
+    leftBase: 0,
+    rightBase: 26,
+    leftThumbs:  { out: 24, in: 25 },
+    rightThumbs: { in: 50, out: 51 },
+    homeRowIdx: 2,
+    total: 52,
+  },
+  // moonlander, ergodox_ez TBD — left for the day they're needed
+};
+
+function geom(name) {
+  const g = GEOMETRIES[name || 'voyager'];
+  if (!g) throw new Error(`Unknown geometry: ${name}. Known: ${Object.keys(GEOMETRIES).join(', ')}`);
+  return g;
+}
+
+const ROW_ALIASES = {
+  // row name → row index (0..3 for alphas; 'thumb' handled separately)
+  top: 0, upper: 1, home: 2, lower: 3, bottom: 3,
+  '-2': 0, '-1': 1, '0': 2, '+1': 3, '1': 3,
+  r0: 0, r1: 1, r2: 2, r3: 3,
+};
+
+function normSide(s) {
+  if (!s) return null;
+  const t = s.toLowerCase();
+  if (t === 'l' || t === 'left') return 'L';
+  if (t === 'r' || t === 'right') return 'R';
+  return null;
+}
+
+function resolveCoord(coord, geometry) {
+  const g = geom(geometry);
+  // Allow a bare number — passthrough.
+  if (/^\d+$/.test(coord)) return parseInt(coord, 10);
+  const parts = coord.split(/[.\s/:_-]+(?![a-z])/i)
+    .map(p => p.trim()).filter(Boolean);
+  // Reassemble dashed finger names like "pky-out" that got split by `-`.
+  // Simpler: split only on `.` and `:` and `/`.
+  const parts2 = coord.split(/[.:/]+/).map(p => p.trim()).filter(Boolean);
+  if (parts2.length < 3) throw new Error(`Bad coord '${coord}'. Expected <side>.<row>.<finger>`);
+  const [sideStr, rowStr, ...fingerParts] = parts2;
+  const side = normSide(sideStr);
+  if (!side) throw new Error(`Bad side in '${coord}': ${sideStr}`);
+  const finger = fingerParts.join('-').toLowerCase();
+  const row = rowStr.toLowerCase();
+
+  // Thumbs
+  if (row === 'thumb' || row === 't') {
+    const map = side === 'L' ? g.leftThumbs : g.rightThumbs;
+    if (!(finger in map)) throw new Error(`Bad thumb finger '${finger}'. Use in|out`);
+    return map[finger];
+  }
+
+  const rowIdx = ROW_ALIASES[row];
+  if (rowIdx === undefined) throw new Error(`Bad row '${rowStr}'. Use top|upper|home|lower|thumb`);
+  const fingerArr = side === 'L' ? g.leftFinger : g.rightFinger;
+  const colIdx = fingerArr.indexOf(finger);
+  if (colIdx === -1) throw new Error(`Bad finger '${finger}'. Use ${fingerArr.join('|')}`);
+  const base = side === 'L' ? g.leftBase : g.rightBase;
+  return base + rowIdx * g.cols + colIdx;
+}
+
+function coordOfPos(pos, geometry) {
+  const g = geom(geometry);
+  if (pos === g.leftThumbs.out)  return 'L.thumb.out';
+  if (pos === g.leftThumbs.in)   return 'L.thumb.in';
+  if (pos === g.rightThumbs.in)  return 'R.thumb.in';
+  if (pos === g.rightThumbs.out) return 'R.thumb.out';
+  let side, base, fingerArr;
+  if (pos >= g.rightBase) { side = 'R'; base = g.rightBase; fingerArr = g.rightFinger; }
+  else                    { side = 'L'; base = g.leftBase;  fingerArr = g.leftFinger; }
+  const local = pos - base;
+  const rowIdx = Math.floor(local / g.cols);
+  const colIdx = local % g.cols;
+  if (rowIdx < 0 || rowIdx >= g.rows.length) return `pos:${pos}`;
+  return `${side}.${g.rows[rowIdx]}.${fingerArr[colIdx]}`;
+}
+
+function gridString(geometry) {
+  const g = geom(geometry);
+  const lines = [];
+  lines.push(`# ${(geometry || 'voyager').toUpperCase()} — physical positions and coords`);
+  lines.push('');
+  // Header for finger columns
+  const lf = g.leftFinger.map(f => f.padStart(7)).join(' ');
+  const rf = g.rightFinger.map(f => f.padStart(7)).join(' ');
+  lines.push('LEFT half'.padEnd(50) + 'RIGHT half');
+  lines.push(' '.repeat(8) + lf + '   |   ' + rf);
+  for (let r = 0; r < g.rows.length; r++) {
+    const left = [];
+    for (let c = 0; c < g.cols; c++) left.push(String(g.leftBase  + r*g.cols + c).padStart(7));
+    const right = [];
+    for (let c = 0; c < g.cols; c++) right.push(String(g.rightBase + r*g.cols + c).padStart(7));
+    const isHome = r === g.homeRowIdx;
+    const tag = (g.rows[r] + (isHome ? ' *' : '')).padEnd(8);
+    lines.push(tag + left.join(' ') + '   |   ' + right.join(' '));
+  }
+  lines.push('');
+  lines.push(`thumbs   L: ${g.leftThumbs.out}=L.thumb.out  ${g.leftThumbs.in}=L.thumb.in    R: ${g.rightThumbs.in}=R.thumb.in  ${g.rightThumbs.out}=R.thumb.out`);
+  lines.push('');
+  lines.push('* = home row. Coord:  <side>.<row>.<finger>   (e.g. L.home.idx)');
+  return lines.join('\n');
+}
+
+// Resolve --pos / --at into a numeric position. --at takes precedence.
+function resolvePosFlag(geometry) {
+  if (flags.at) return resolveCoord(flags.at, geometry);
+  if (flags.pos !== undefined) return parseInt(flags.pos, 10);
+  return null;
 }
 
 // ─── GraphQL ──────────────────────────────────────────────────────────────
@@ -281,21 +428,23 @@ const commands = {
 
   async keys() {
     const hashId = positional[0];
-    if (!hashId) { console.error('Usage: oryx keys <hashId> --layer=N [--rev=latest]'); process.exit(1); }
+    if (!hashId) { console.error('Usage: oryx keys <hashId> --layer=N [--rev=latest] [--geom=voyager] [--raw]'); process.exit(1); }
     if (flags.layer === undefined) { console.error('--layer=N required'); process.exit(1); }
     const layerIdx = parseInt(flags.layer, 10);
     const data = await gql(`
       query ($hashId: String!, $rev: String!) {
         layout(hashId: $hashId, revisionId: $rev) {
+          geometry
           revision { layers { position title keys } }
         }
       }`,
       { hashId, rev: flags.rev || 'latest' }
     );
+    const geometry = flags.geom || data.layout.geometry || 'voyager';
     const layer = data.layout.revision.layers.find(l => l.position === layerIdx);
     if (!layer) { console.error(`No layer at position ${layerIdx}`); process.exit(1); }
     if (flags.raw) { out(layer.keys); return; }
-    // Compact view: position + tap code + hold + double-tap
+    // Compact view: position + coord + tap code + hold + double-tap
     const compact = layer.keys.map((k, i) => {
       const codes = [];
       if (k.tap?.code) codes.push('tap=' + k.tap.code + (k.tap.modifiers ? '/' + JSON.stringify(k.tap.modifiers) : ''));
@@ -304,9 +453,9 @@ const commands = {
       if (k.doubleTap?.code) codes.push('dt=' + k.doubleTap.code);
       if (k.customLabel) codes.push('label="' + k.customLabel + '"');
       if (k.glowColor) codes.push('glow=' + k.glowColor);
-      return { i, ...(codes.length ? { code: codes.join(' ') } : { code: '(empty)' }) };
+      return { i, at: coordOfPos(i, geometry), ...(codes.length ? { code: codes.join(' ') } : { code: '(empty)' }) };
     });
-    out({ layer: layerIdx, title: layer.title, count: compact.length, keys: compact });
+    out({ layer: layerIdx, title: layer.title, geometry, count: compact.length, keys: compact });
   },
 
   async combos() {
@@ -496,17 +645,18 @@ const commands = {
 
   async 'key-update'() {
     const hashId = positional[0];
-    if (!hashId || flags.pos === undefined || !flags.json) {
-      console.error('Usage: oryx key-update <layerHashId> --pos=N --json=<keydata>'); process.exit(1);
+    const pos = resolvePosFlag(flags.geom || 'voyager');
+    if (!hashId || pos === null || !flags.json) {
+      console.error('Usage: oryx key-update <layerHashId> (--pos=N | --at=L.home.idx) --json=<keydata> [--geom=voyager]'); process.exit(1);
     }
     const keyData = parseJsonArg('json');
     const data = await gql(`
       mutation ($hashId: String!, $keyData: Json!, $position: Int!) {
         updateKey(hashId: $hashId, keyData: $keyData, position: $position) { status }
       }`,
-      { hashId, keyData, position: parseInt(flags.pos, 10) }
+      { hashId, keyData, position: pos }
     );
-    out(data.updateKey);
+    out({ position: pos, ...data.updateKey });
   },
 
   async 'swap-keys'() {
@@ -557,6 +707,26 @@ const commands = {
       { rev: revisionHashId, idx: parseInt(flags.idx, 10) }
     );
     out(data.deleteCombo);
+  },
+
+  // ─── Geometry ───────────────────────────────────────────────────────────
+
+  async grid() {
+    const geometry = positional[0] || 'voyager';
+    console.log(gridString(geometry));
+  },
+
+  async where() {
+    const arg = positional[0];
+    if (!arg) { console.error('Usage: oryx where <coord-or-pos> [--geom=voyager]'); process.exit(1); }
+    const geometry = flags.geom || 'voyager';
+    if (/^\d+$/.test(arg)) {
+      const pos = parseInt(arg, 10);
+      out({ pos, coord: coordOfPos(pos, geometry), geometry });
+    } else {
+      const pos = resolveCoord(arg, geometry);
+      out({ coord: arg, pos, roundtrip: coordOfPos(pos, geometry), geometry });
+    }
   },
 
   // ─── Escape hatches ─────────────────────────────────────────────────────
