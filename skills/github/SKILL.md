@@ -4,9 +4,11 @@ description: >
   Interact with GitHub via gh.jsh — a lightweight GitHub CLI for SLICC agents.
   Use this skill for any GitHub task: listing or viewing pull requests, merging PRs,
   posting comments, checking out branches, viewing issues, inspecting workflow runs,
-  listing releases, searching PRs, or managing Actions variables. Trigger on requests
-  like "list open PRs", "check CI status", "merge this PR", "what issues are open",
-  "show the latest release", "post a comment on PR #42", "set a repo variable",
+  listing releases, searching PRs, managing Actions variables, creating branches,
+  pushing file content, archiving repos, or calling any GitHub API endpoint directly.
+  Trigger on requests like "list open PRs", "check CI status", "merge this PR",
+  "what issues are open", "show the latest release", "post a comment on PR #42",
+  "set a repo variable", "archive this repo", "create a branch", "push this file",
   or any task involving a GitHub repository.
 allowed_tools:
   - bash
@@ -126,6 +128,57 @@ gh.jsh repo view
 gh.jsh repo view owner/repo
 ```
 Shows description, stars, forks, default branch, language, topics, last push, URL.
+
+---
+
+### Repository Management
+
+**Archive a repo**
+```bash
+gh.jsh repo archive owner/repo
+```
+Archives the repository (irreversible without admin unarchive). Useful after retiring a project.
+
+---
+
+### Branches
+
+**Create a branch**
+```bash
+gh.jsh branch create my-feature
+gh.jsh branch create my-feature --from=develop
+gh.jsh branch create my-feature --from=abc1234... owner/repo
+```
+Creates a branch from the default branch (or `--from` ref/SHA). Use this before `content put` to prepare a PR branch.
+
+**Delete a branch**
+```bash
+gh.jsh branch delete my-feature
+gh.jsh branch delete my-feature owner/repo
+```
+
+---
+
+### File Content (Contents API)
+
+**Create or update a file**
+```bash
+gh.jsh content put README.md ./local-readme.md "Update README" --branch=my-feature
+gh.jsh content put src/index.js ./index.js "Add entry point" --branch=my-feature owner/repo
+```
+Reads a local VFS file, base64-encodes it, and creates/updates it on the specified branch via the GitHub Contents API. Handles SHA lookup for existing files automatically. This is the way to "push" file changes without git clone + push.
+
+---
+
+### Raw API Passthrough
+
+**Call any GitHub API endpoint**
+```bash
+gh.jsh api /repos/owner/repo
+gh.jsh api /repos/owner/repo/git/ref/heads/main --jq .object.sha
+gh.jsh api /repos/owner/repo/git/refs -X POST -f ref=refs/heads/new-branch -f sha=abc123
+```
+Generic passthrough for any GitHub REST API endpoint. Supports `-X METHOD`, `-f key=value` (sent as JSON body on non-GET), and `--jq .path.to.field` for simple field extraction.
 
 ---
 
