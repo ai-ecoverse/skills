@@ -71,8 +71,24 @@ async function readFile(p) {
 }
 
 async function writeFile(p, s) {
+  // Heredoc has an effective argv-size cap (~1 MB on this runtime), so for
+  // large content we base64-pipe it through stdin instead. Encoding inflates
+  // by ~33% so we keep a margin.
   const tmp = `/tmp/.concur-write-${Date.now()}.tmp`;
-  await exec(`cat > "${tmp}" <<'____CONCUR_EOF____'\n${s}\n____CONCUR_EOF____`);
+  if (s.length < 600_000) {
+    await exec(`cat > "${tmp}" <<'____CONCUR_EOF____'\n${s}\n____CONCUR_EOF____`);
+  } else {
+    // Chunk-stream via base64 so the shell never sees the raw payload as argv.
+    const chunkSize = 400_000; // ~400 KB raw → ~540 KB base64 per chunk
+    await exec(`: > "${tmp}"`);
+    for (let i = 0; i < s.length; i += chunkSize) {
+      const chunk = s.slice(i, i + chunkSize);
+      const b64 = btoa(String.fromCharCode(...new TextEncoder().encode(chunk)));
+      // Single arg of ~540 KB is safe (well below 1 MB cap).
+      const r = await exec(`printf %s '${b64}' | base64 -d >> "${tmp}"`);
+      if (r.exitCode !== 0) throw new Error(`writeFile chunk failed at offset ${i}: ${r.stderr}`);
+    }
+  }
   await exec(`mkdir -p "$(dirname "${p}")" && mv "${tmp}" "${p}"`);
 }
 
@@ -172,6 +188,341 @@ async function graphql(surface, body) {
 async function callOp(opName, variables = {}, surface = 'spend') {
   const query = await loadOp(opName);
   return graphql(surface, { operationName: opName, query, variables });
+}
+
+// Lookup a single report's status in the user's report list.
+// Returns { reportId, name, approvalStatus, approvalStatusId, isLocked, ... }
+// where isLocked === true means the report rejects mutations (Approved,
+// Pending Audit Review, Submitted, Paid, etc.). Throws if the report is
+// not found in the user's active list.
+async function getReportStatus(reportId) {
+  const userId = await getUserId();
+  const data = await callOp('GetReportsForUser', {
+    isAiUser: false, filterByStatus: 'ACTIVE', dateRange: null,
+    paging: { page: 1, size: 200 }, sortBy: null, sortDirection: null,
+    userId, contextRole: 'TRAVELER',
+  });
+  const list = data?.employee?.reportsForUser?.list || [];
+  const r = list.find((x) => x.reportId === reportId);
+  if (!r) {
+    // Try the SUBMITTED filter as a fallback so we can surface "submitted but
+    // not approved" reports rather than just claiming they don't exist.
+    const subm = await callOp('GetReportsForUser', {
+      isAiUser: false, filterByStatus: 'SUBMITTED', dateRange: null,
+      paging: { page: 1, size: 200 }, sortBy: null, sortDirection: null,
+      userId, contextRole: 'TRAVELER',
+    });
+    const r2 = (subm?.employee?.reportsForUser?.list || []).find((x) => x.reportId === reportId);
+    if (r2) return { ...r2, isLocked: true };
+    throw new Error(`Report ${reportId} not found in your active or submitted lists.`);
+  }
+  // "Not Submitted" / "Sent Back to Employee" / "Recalled" are mutable.
+  // Anything else (Pending Approval, Approved, Pending Audit Review, Paid, …)
+  // rejects mutations on Adobe's tenant.
+  const mutableStatuses = new Set(['Not Submitted', 'Sent Back to Employee', 'Recalled']);
+  return { ...r, isLocked: !mutableStatuses.has(r.approvalStatus) };
+}
+
+// Throw a friendly Error if the report is locked.
+async function assertReportMutable(reportId, action = 'mutate') {
+  const r = await getReportStatus(reportId);
+  if (r.isLocked) {
+    throw new Error(
+      `Report ${reportId} ("${r.name}") is "${r.approvalStatus}" and cannot ${action}. ` +
+      `Only "Not Submitted", "Sent Back to Employee", or "Recalled" reports accept mutations.`
+    );
+  }
+  return r;
+}
+
+// ----------------- itemize helpers -----------------
+
+// Resolve the parent expense entry: lets us validate the itemization total
+// matches the entry amount, and surfaces the currency / parent expenseId.
+async function getEntrySummary(reportId, expenseId) {
+  // Pull the report's full entries list and pick the one we need. We avoid
+  // GetExistingExpenseEntry because pageFetch process.exit(1)s on HTTP errors
+  // and that op rejects partially-loaded entries with a generic 400.
+  const userId = await getUserId();
+  const list = await callOp('GetReportExceptionsAndEntries', {
+    reportId, userId, contextRole: 'TRAVELER',
+    expenseListDetailFormId: null, includeDetailItemizations: true,
+  });
+  const entries = list?.reportEntriesDetails?.entries
+              || list?.employee?.expenseReport?.reportEntryDetails
+              || [];
+  const found = entries.find((e) => e.expenseId === expenseId)
+            || entries.find((e) => e.summary?.id === expenseId);
+  if (!found) return null;
+  const s = found.summary || {};
+  return {
+    id: s.id || expenseId,
+    expenseId: s.id || expenseId,
+    transactionAmount: s.transactionAmount,
+    transactionDate: s.transactionDate,
+    expenseTypeId: s.expenseType?.id,
+    expenseType: s.expenseType,
+    vendor: s.vendor,
+    location: s.location,
+  };
+}
+
+// List itemization expense types available for an entry. Returns a
+// flat array of { id, code, name, parentName, itemizationType }.
+async function itemizeTypes(reportId, expenseId) {
+  if (!reportId || !expenseId) {
+    console.error('Usage: concur itemize types <reportId> <expenseId>');
+    process.exit(1);
+  }
+  const userId = await getUserId();
+  const entry = await getEntrySummary(reportId, expenseId);
+  const parentTypeId = entry?.expenseTypeId || entry?.expenseType?.id || 'LODNG';
+  const data = await callOp('GetNewItemizationExpenseTypesForm', {
+    dataContext: { reportId, expenseTypeId: parentTypeId },
+    userContext: { userId, contextType: 'TRAVELER' },
+  });
+  // The form has a "Expense Type" listOptions field (code-based), and the
+  // GraphQL also exposes the parent's expenseTypes list under reportDetails;
+  // we surface whatever we found.
+  const fields = data?.expenseTypesForm?.fields || [];
+  const typeField = fields.find((f) => /expense.?type/i.test(f.label) || f.formFieldId === 'ExpKey');
+  const opts = typeField?.options || [];
+  return {
+    parent: { reportId, expenseId, expenseTypeId: parentTypeId },
+    count: opts.length,
+    types: opts.map((o) => ({ id: o.id, code: o.code, name: o.value })),
+  };
+}
+
+// Adobe (us2.concursolutions.com) policy 23DB999B33CC4B28B692AB90112EB86F
+// requires these "custom" fields on every SaveNewItemization. They're
+// listItem ID references whose human meaning lives in Concur's lookup tables.
+// Without them the API returns a generic HTTP 400 "An error occurred".
+//
+// custom8  → Travel-related Y/N flag (always set).
+// custom24 → Personal Use flag.
+// custom5  → Optional sub-category (left null is fine).
+//
+// Override these via bill.json customFields if your tenant uses different IDs.
+const ADOBE_INTL_POLICY = {
+  policyId: '23DB999B33CC4B28B692AB90112EB86F',
+  custom8:  { listItemId: '3981FF8FF4CEEC4A9960A22023335A9F', value: '3981FF8FF4CEEC4A9960A22023335A9F' },
+  custom24: { listItemId: 'D85857556CF1E24B88AB7B438221B177', value: 'D85857556CF1E24B88AB7B438221B177' },
+  custom5:  { listItemId: null, value: null },
+  taxRateLocation: 'HOME',
+  receiptTypeId: 'R',
+};
+
+// Build the SaveNewItemization `fields` payload for an itemization line,
+// inheriting locationId / exchangeRate from the parent entry and merging in
+// the policy's required custom fields. Bill-level overrides take priority.
+function buildItemizationFields(line, parentEntry, currency, overrides = {}) {
+  const fields = {
+    parentExpenseId: line.parentExpenseId,
+    expenseTypeId: line.typeId,
+    transactionDate: line.date,
+    transactionAmount: { value: line.amount, currencyCode: currency },
+    isExpensePartOfTravelAllowance: false,
+    isPersonalExpense: false,
+    taxRateLocation: overrides.taxRateLocation || ADOBE_INTL_POLICY.taxRateLocation,
+    receiptTypeId:   overrides.receiptTypeId   || ADOBE_INTL_POLICY.receiptTypeId,
+    custom8:  overrides.custom8  || ADOBE_INTL_POLICY.custom8,
+    custom24: overrides.custom24 || ADOBE_INTL_POLICY.custom24,
+    custom5:  overrides.custom5  || ADOBE_INTL_POLICY.custom5,
+  };
+  // Inherit locationId from the parent entry if known, or accept a bill override.
+  const locationId = overrides.locationId || parentEntry?.location?.id;
+  if (locationId) fields.locationId = locationId;
+  // Exchange rate: required by Adobe policy. Inherit from the parent entry's
+  // ratio of approvedAmount (EUR home) to transactionAmount (USD/etc.) if we
+  // can compute it, otherwise accept an override, otherwise fall back to 1.
+  let xr = overrides.exchangeRate;
+  if (!xr && parentEntry?.approvedAmount?.value && parentEntry?.transactionAmount?.value) {
+    const ratio = parentEntry.approvedAmount.value / parentEntry.transactionAmount.value;
+    if (isFinite(ratio) && ratio > 0) {
+      xr = { operation: 'MULTIPLY', value: ratio };
+    }
+  }
+  if (xr) fields.exchangeRate = xr;
+  if (line.comment) fields.comment = line.comment;
+  return fields;
+}
+
+// Add one itemization line via SaveNewItemization.
+async function itemizeAdd(reportId, parentExpenseId, typeId, amountStr, dateStr, ...rest) {
+  if (!reportId || !parentExpenseId || !typeId || !amountStr) {
+    console.error('Usage: concur itemize add <reportId> <parentExpenseId> <typeId> <amount> [date] [comment] [--currency=USD]');
+    process.exit(1);
+  }
+  const opts = parseFlags(rest, { currency: '', policy: '' });
+  const comment = rest.filter((a) => !a.startsWith('--')).join(' ') || null;
+  const amount = parseFloat(amountStr);
+  if (!isFinite(amount) || amount <= 0) {
+    console.error(`Invalid amount: ${amountStr}`);
+    process.exit(1);
+  }
+  await assertReportMutable(reportId, 'add itemizations');
+  const userId = await getUserId();
+  // Resolve the entry so we can default currency / date / policy from it.
+  const entry = await getEntrySummary(reportId, parentExpenseId);
+  const currency = opts.currency || entry?.transactionAmount?.currencyCode || 'USD';
+  const date = dateStr || entry?.transactionDate || new Date().toISOString().slice(0, 10);
+  const policyId = opts.policy || entry?.policy?.id || entry?.policyId || ADOBE_INTL_POLICY.policyId;
+
+  const fields = buildItemizationFields(
+    { parentExpenseId, typeId, date, amount, comment },
+    entry, currency,
+  );
+
+  const result = await callOp('SaveNewItemization', {
+    taxFields: null,
+    shouldIncludeRpeKey: false,
+    userId,
+    contextRole: 'TRAVELER',
+    isTrexEnabled: true,
+    expenseListDetailFormId: null,
+    reportId,
+    fields,
+    expenseTypeId: typeId,
+    policyId,
+  });
+  const newId = result?.createExpense?.id || null;
+  return { id: newId, ok: !!newId, raw: result };
+}
+
+// Direct CreateSame/Different room-rate wrapper.
+async function itemizeRoomRate(reportId, expenseId, ratesJson) {
+  if (!reportId || !expenseId || !ratesJson) {
+    console.error('Usage: concur itemize room-rate <reportId> <expenseId> <rates.json>');
+    console.error('rates.json: {"roomRate":160,"taxRate":21.41} OR [{...},{...},…]');
+    process.exit(1);
+  }
+  await assertReportMutable(reportId, 'create room-rate itemizations');
+  const userId = await getUserId();
+  const txt = await readFile(ratesJson);
+  const rates = JSON.parse(txt);
+  const isArray = Array.isArray(rates);
+  const opName = isArray ? 'CreateDifferentRoomRateMutation' : 'CreateSameRoomRateMutation';
+  const result = await callOp(opName, {
+    taxFields: null,
+    userId,
+    contextRole: 'TRAVELER',
+    isTrexEnabled: true,
+    expenseListDetailFormId: null,
+    reportId,
+    expenseId,
+    roomRateObject: rates,
+    roomRateExpenseTypeId: 'LODNG',
+  });
+  const root = result?.employee?.expenseReport
+    || result?.createSameRoomRateItemizations
+    || result?.createDifferentRoomRateItemizations
+    || null;
+  return { mutation: opName, success: root?.status?.success ?? null, root };
+}
+
+// Hotel folio itemization: one SaveNewItemization per line (Lodging room
+// + Hotel Tax per night, plus any extras). We deliberately avoid the
+// CreateSame/Different RoomRate mutations because Adobe's tenant has
+// combineRoomRateAndTaxes = "NEVR" and silently rejects them.
+async function itemizeHotel(reportId, expenseId, billJson) {
+  if (!reportId || !expenseId || !billJson) {
+    console.error('Usage: concur itemize hotel <reportId> <expenseId> <bill.json>');
+    console.error('bill.json shape:');
+    console.error('  { "currency":"USD",');
+    console.error('    "nights":[ {"roomRate":160,"roomTax":21.41,"date":"2026-04-19"}, … ],');
+    console.error('    "extras":[ {"typeId":"01022","amount":41.95,"date":"2026-04-19","comment":"Resort Fee"}, … ],');
+    console.error('    "roomTypeId":"LODNG", "roomTaxTypeId":"LODTX" }');
+    process.exit(1);
+  }
+  await assertReportMutable(reportId, 'itemize this hotel entry');
+
+  const txt = await readFile(billJson);
+  const bill = JSON.parse(txt);
+  const nights = Array.isArray(bill.nights) ? bill.nights : [];
+  const extras = Array.isArray(bill.extras) ? bill.extras : [];
+  const roomTypeId    = bill.roomTypeId    || 'LODNG';
+  const roomTaxTypeId = bill.roomTaxTypeId || 'LODTX';
+
+  const entry = await getEntrySummary(reportId, expenseId);
+  if (!entry) throw new Error(`Entry ${expenseId} on report ${reportId} not found.`);
+  const entryTotal = entry?.transactionAmount?.value;
+  const currency = bill.currency || entry?.transactionAmount?.currencyCode || 'USD';
+  const checkin = bill.checkin || entry?.transactionDate;
+
+  // Compute night dates (one per night, starting at checkin) if not given.
+  function addDays(d, n) {
+    const dt = new Date(d + 'T00:00:00Z');
+    dt.setUTCDate(dt.getUTCDate() + n);
+    return dt.toISOString().slice(0, 10);
+  }
+  const nightLines = nights.flatMap((n, i) => {
+    const date = n.date || (checkin ? addDays(checkin, i) : new Date().toISOString().slice(0, 10));
+    const out = [];
+    if (n.roomRate) out.push({ typeId: roomTypeId,    amount: n.roomRate, date, comment: n.comment || `Room night ${i + 1}` });
+    if (n.roomTax)  out.push({ typeId: roomTaxTypeId, amount: n.roomTax,  date, comment: n.taxComment || `Hotel tax night ${i + 1}` });
+    return out;
+  });
+  const allLines = [...nightLines, ...extras.map((e) => ({
+    typeId: e.typeId,
+    amount: e.amount,
+    date: e.date || checkin,
+    comment: e.comment,
+  }))];
+
+  const sum = allLines.reduce((acc, l) => acc + (l.amount || 0), 0);
+  const round = (x) => Math.round(x * 100) / 100;
+  if (entryTotal != null && Math.abs(round(sum) - round(entryTotal)) > 0.02) {
+    throw new Error(
+      `Itemization sum ${round(sum)} ${currency} does not match entry total ` +
+      `${round(entryTotal)} ${currency}. Adjust bill.json so the totals match (within $0.02).`
+    );
+  }
+
+  const userId = await getUserId();
+  const policyId = bill.policyId || ADOBE_INTL_POLICY.policyId;
+  const overrides = bill.customFields || {};
+  const results = [];
+  for (let i = 0; i < allLines.length; i++) {
+    const l = allLines[i];
+    if (!l.typeId || !l.amount) {
+      results.push({ idx: i, skipped: true, reason: 'missing typeId or amount', line: l });
+      continue;
+    }
+    const fields = buildItemizationFields(
+      { parentExpenseId: expenseId, typeId: l.typeId, date: l.date, amount: l.amount, comment: l.comment },
+      entry, currency, overrides,
+    );
+    const res = await callOp('SaveNewItemization', {
+      taxFields: null,
+      shouldIncludeRpeKey: false,
+      userId,
+      contextRole: 'TRAVELER',
+      isTrexEnabled: true,
+      expenseListDetailFormId: null,
+      reportId,
+      fields,
+      expenseTypeId: l.typeId,
+      policyId,
+    });
+    const newId = res?.createExpense?.id || null;
+    results.push({
+      idx: i,
+      typeId: l.typeId,
+      amount: l.amount,
+      date: l.date,
+      id: newId,
+      ok: !!newId,
+    });
+  }
+  return {
+    parentExpense: { reportId, expenseId, total: entryTotal, currency },
+    summed: round(sum),
+    nights: nights.length,
+    extras: extras.length,
+    lines: allLines.length,
+    results,
+  };
 }
 
 // ----------------- commands -----------------
@@ -415,21 +766,36 @@ const commands = {
 
   async 'attach-receipt'(reportId, expenseId, localPath, ...args) {
     if (!reportId || !expenseId || !localPath) {
-      console.error('Usage: concur attach-receipt <reportId> <expenseId> <localPath>');
+      console.error('Usage: concur attach-receipt <reportId> <expenseId> <localPath> [--no-convert] [--max-bytes=N]');
       console.error('Image is auto-converted to JPEG via ImageMagick if it is not already.');
+      console.error('Files larger than --max-bytes (default 800000) are auto-downscaled to a 1800px JPEG q=75.');
       process.exit(1);
     }
-    const opts = parseFlags(args, { 'no-convert': '' });
+    const opts = parseFlags(args, { 'no-convert': '', 'max-bytes': '800000' });
+    const maxBytes = parseInt(opts['max-bytes'], 10) || 800_000;
+
+    // Pre-flight: refuse early if the report is locked. Saves a 4 MB upload
+    // round-trip when the AttachImage mutation would have rejected anyway
+    // ("reports.expenses.associateImageFailedForSubmittedReports").
+    await assertReportMutable(reportId, 'attach receipts');
 
     // Stat the file
     const stat = await exec(`test -f "${localPath}" && stat -c %s "${localPath}" 2>/dev/null || stat -f %z "${localPath}"`);
     if (stat.exitCode !== 0) { console.error('File not found:', localPath); process.exit(1); }
+    const inputBytes = parseInt((stat.stdout || '').trim(), 10) || 0;
 
-    // Convert to JPEG unless told otherwise. magick is on PATH; ffmpeg WASM doesn't handle HEIC.
+    // Convert to JPEG unless told otherwise. magick is on PATH; ffmpeg WASM
+    // doesn't handle HEIC. We also auto-downscale anything larger than
+    // maxBytes — base64'd 4 MB JPEGs blow past the page-context eval-file
+    // argv limit and the upload silently fails.
     let jpgPath = localPath;
-    if (opts['no-convert'] !== 'true' && !/\.jpe?g$/i.test(localPath)) {
+    const needConvert = opts['no-convert'] !== 'true' && !/\.jpe?g$/i.test(localPath);
+    const needShrink  = opts['no-convert'] !== 'true' && inputBytes > maxBytes;
+    if (needConvert || needShrink) {
       jpgPath = `/tmp/.concur-receipt-${Date.now()}.jpg`;
-      const conv = await exec(`magick "${localPath}" -auto-orient -resize '2048x2048>' -quality 85 "${jpgPath}"`);
+      const dim = needShrink ? '1800x1800>' : '2048x2048>';
+      const q   = needShrink ? '75' : '85';
+      const conv = await exec(`magick "${localPath}" -resize '${dim}' -quality ${q} "${jpgPath}"`);
       if (conv.exitCode !== 0) {
         console.error('magick conversion failed:', conv.stderr);
         process.exit(1);
@@ -488,6 +854,55 @@ const commands = {
       uploaded: { imageId, href: upBody.href },
       attached: attachRes?.employee?.expenseReport?.entry?.attachImage,
     };
+  },
+
+  // -----------------------------------------------------------------
+  // itemize: split a single expense entry into multiple itemization
+  // lines (e.g. hotel folio → Lodging + Hotel Tax + Resort Fee).
+  //
+  // Subcommands:
+  //   concur itemize types  <reportId> <expenseId>
+  //       List the expense types valid for itemizing this entry.
+  //
+  //   concur itemize add    <reportId> <parentExpenseId> <typeId>
+  //                          <amount> [date] [comment] [--currency=USD]
+  //       Add a single itemization line via SaveNewItemization.
+  //
+  //   concur itemize room-rate <reportId> <expenseId> <rates.json>
+  //       Direct wrapper around CreateSame/DifferentRoomRateMutation.
+  //       rates.json is either {roomRate,taxRate} or [{roomRate,taxRate},…]
+  //
+  //   concur itemize hotel  <reportId> <expenseId> <bill.json>
+  //       High-level hotel-folio itemization. bill.json shape:
+  //       {
+  //         "currency": "USD",
+  //         "nights": [{ "roomRate": 160, "roomTax": 21.41 }, …],
+  //         "extras": [
+  //           { "typeId": "RESRT", "amount": 41.95,
+  //             "date": "2026-04-19", "comment": "Resort Fee" }, …
+  //         ]
+  //       }
+  //       The sum of (room+tax) per night plus all extras must equal
+  //       the parent entry's transactionAmount; the command refuses
+  //       otherwise.
+  // -----------------------------------------------------------------
+  async itemize(sub, ...rest) {
+    if (!sub || sub === 'help' || sub === '-h') {
+      console.error([
+        'Usage:',
+        '  concur itemize types     <reportId> <expenseId>',
+        '  concur itemize add       <reportId> <parentExpenseId> <typeId> <amount> [date] [comment] [--currency=USD]',
+        '  concur itemize room-rate <reportId> <expenseId> <rates.json>',
+        '  concur itemize hotel     <reportId> <expenseId> <bill.json>',
+      ].join('\n'));
+      process.exit(sub ? 0 : 1);
+    }
+    if (sub === 'types')     return await itemizeTypes(...rest);
+    if (sub === 'add')       return await itemizeAdd(...rest);
+    if (sub === 'room-rate') return await itemizeRoomRate(...rest);
+    if (sub === 'hotel')     return await itemizeHotel(...rest);
+    console.error(`Unknown itemize subcommand: ${sub}`);
+    process.exit(1);
   },
 
   async submit(reportId, ...args) {

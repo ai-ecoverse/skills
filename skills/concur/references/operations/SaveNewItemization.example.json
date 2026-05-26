@@ -1,0 +1,42 @@
+{
+  "taxFields": null,
+  "shouldIncludeRpeKey": false,
+  "userId": "00000000-0000-0000-0000-000000000000",
+  "contextRole": "TRAVELER",
+  "isTrexEnabled": true,
+  "expenseListDetailFormId": null,
+  "reportId": "B1B2C3D4E5F60718293B",
+  "fields": {
+    "parentExpenseId": "F000000000000000000000000000000F",
+    "expenseTypeId": "BRKFT",
+    "transactionDate": "2026-05-11",
+    "custom8": {
+      "listItemId": "3981FF8FF4CEEC4A9960A22023335A9F",
+      "value": "3981FF8FF4CEEC4A9960A22023335A9F"
+    },
+    "locationId": "5C9B14BA8754475780AD109CB95A4719",
+    "transactionAmount": {
+      "value": 68.42,
+      "currencyCode": "CHF"
+    },
+    "exchangeRate": {
+      "operation": "MULTIPLY",
+      "value": 1.11000850581231
+    },
+    "taxRateLocation": "HOME",
+    "comment": "SemRush Intro",
+    "receiptTypeId": "R",
+    "isExpensePartOfTravelAllowance": false,
+    "isPersonalExpense": false,
+    "custom5": {
+      "listItemId": null,
+      "value": null
+    },
+    "custom24": {
+      "listItemId": "D85857556CF1E24B88AB7B438221B177",
+      "value": "D85857556CF1E24B88AB7B438221B177"
+    }
+  },
+  "expenseTypeId": "BRKFT",
+  "policyId": "23DB999B33CC4B28B692AB90112EB86F"
+}

@@ -1,0 +1,20 @@
+{
+  "taxFields": null,
+  "userId": "00000000-0000-0000-0000-000000000000",
+  "contextRole": "TRAVELER",
+  "parentExpenseId": "F000000000000000000000000000000F",
+  "isTrexEnabled": true,
+  "expenseListDetailFormId": null,
+  "reportId": "B1B2C3D4E5F60718293B",
+  "fields": {
+    "isExpensePartOfTravelAllowance": true,
+    "taxTransactionAmount1": {
+      "value": null,
+      "taxAuthorityId": "256A2566BB59E94EA8D0B9858A3117AC"
+    }
+  },
+  "expenseId": "0BD4EB7BDAE3054EAF9F7CD30A02530B",
+  "expenseTypeId": "",
+  "policyId": "23DB999B33CC4B28B692AB90112EB86F",
+  "updateRecentExpenseType": false
+}
