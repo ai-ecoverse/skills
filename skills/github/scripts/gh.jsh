@@ -1006,10 +1006,12 @@ async function contentPut(args) {
   } catch (e) { die('content put: could not read local file: ' + e.message); }
 
   // Check if file exists (to get SHA for update)
+  // Encode each path segment individually, preserving slashes for the Contents API
+  const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
   const qs = branch ? `?ref=${encodeURIComponent(branch)}` : '';
   let sha = null;
   try {
-    const existing = await api(`/repos/${repo}/contents/${encodeURIComponent(filePath)}${qs}`);
+    const existing = await api(`/repos/${repo}/contents/${encodedPath}${qs}`);
     sha = existing.sha;
   } catch {}
 
@@ -1018,7 +1020,7 @@ async function contentPut(args) {
   if (sha) payload.sha = sha;
 
   try {
-    const res = await api(`/repos/${repo}/contents/${encodeURIComponent(filePath)}`, {
+    const res = await api(`/repos/${repo}/contents/${encodedPath}`, {
       method: 'PUT',
       body: JSON.stringify(payload),
     });
