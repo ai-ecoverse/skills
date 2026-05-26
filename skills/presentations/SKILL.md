@@ -228,7 +228,7 @@ The sprinkle bridge allows the user to interact:
 | Change style | `{action:'change-style', data:{instruction}}` | Revise CSS, push updated file |
 | Export | `{action:'export-html'}` | Write standalone HTML to `/shared/exports/` |
 
-For edits, the scoop rewrites the `.shtml` file (or the relevant section) and runs `sprinkle push <name>` to refresh the panel.
+For edits, the scoop rewrites the `.shtml` file (or the relevant section) and runs `sprinkle send <name> '{}'` to refresh the panel.
 
 ## References
 

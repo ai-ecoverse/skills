@@ -42,7 +42,7 @@ If the extracted font (e.g., "Gartner Sans Var") isn't publicly available:
 - Good substitutes for common proprietary fonts:
   - Geometric sans → DM Sans, Plus Jakarta Sans, Outfit
   - Humanist sans → Source Sans 3, Nunito Sans
-  - Neo-grotesque → Inter Tight, Albert Sans (note: Inter itself is banned as primary)
+  - Neo-grotesque → Albert Sans, Figtree, Barlow
   - Serif → Source Serif 4, Literata, Lora
 
 ---
