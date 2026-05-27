@@ -38,6 +38,16 @@ outlook calendar
 # View calendar for the next week
 outlook calendar --date 7d
 
+# Accept/decline calendar events by ID
+outlook accept <event-id>
+outlook decline <event-id> --comment "Conflict"
+
+# Accept all pending events
+outlook accept --all
+
+# Decline all pending in the next week
+outlook decline --all --date 7d
+
 # View a single message
 outlook view <message-id>
 
@@ -87,6 +97,27 @@ List upcoming calendar events with time, organizer, location, and response statu
 ### outlook view \<message-id\>
 
 View a single email message with full headers and body text.
+
+### outlook accept|decline|tentative \<event-id\> [...] [options]
+
+Respond to one or more calendar events. Get event IDs from `outlook calendar --json`.
+
+**Options:**
+- `--comment TEXT` — optional message to the organizer
+- `--silent` — don't send a response notification to the organizer
+- `--all` — respond to all `NotResponded` events in the date range
+- `--date PERIOD` — date range for `--all` (default: `2d`)
+
+```bash
+# Accept a single event
+outlook accept AAMkADQ...
+
+# Decline multiple events
+outlook decline AAMk...1 AAMk...2 --comment "Schedule conflict"
+
+# Tentatively accept all pending
+outlook tentative --all --date 7d
+```
 
 ### outlook send --to EMAIL --subject TEXT --body TEXT
 

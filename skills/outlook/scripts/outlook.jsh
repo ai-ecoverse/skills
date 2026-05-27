@@ -494,6 +494,74 @@ async function cmdView() {
   }
 }
 
+// ─── Calendar Response Commands ──────────────────────────────────────────────
+
+async function cmdRespond(action) {
+  const token = await getToken();
+  const comment = flags.comment || flags.message || '';
+  const silent = flags.silent === true || flags.silent === 'true';
+
+  // Collect event IDs: positional args or --all pending events
+  let eventIds = [...positional];
+
+  if (eventIds.length === 0 && flags.all) {
+    // Respond to all pending events in the calendar window
+    const date = flags.date || '2d';
+    const range = futureRange(date, 2);
+    const data = await owaGet(token, '/me/calendarview', {
+      '$top': '50',
+      'startDateTime': range.start,
+      'endDateTime': range.end,
+      '$select': 'Id,Subject,ResponseStatus',
+    });
+    const events = (data.value || []).filter(
+      ev => ev.ResponseStatus?.Response === 'NotResponded'
+    );
+    if (events.length === 0) {
+      console.log('No pending events to respond to.');
+      return;
+    }
+    eventIds = events.map(ev => ev.Id);
+    console.log(`${C.bold(action)}ing ${events.length} pending event(s)...\n`);
+  }
+
+  if (eventIds.length === 0) {
+    die(`outlook ${action}: provide one or more event IDs, or use --all`);
+  }
+
+  const body = { SendResponse: !silent };
+  if (comment) body.Comment = comment;
+
+  let success = 0;
+  let failed = 0;
+
+  for (const id of eventIds) {
+    try {
+      await owaPost(token, `/me/events/${encodeURIComponent(id)}/${action}`, body);
+      success++;
+      // Try to get the event subject for feedback
+      try {
+        const ev = await owaGet(token, `/me/events/${encodeURIComponent(id)}`, { '$select': 'Subject' });
+        const verb = action === 'accept' ? 'Accepted' : action === 'decline' ? 'Declined' : 'Tentative';
+        console.log(`  ${C.green('✓')} ${verb}: ${ev.Subject}`);
+      } catch {
+        const verb = action === 'accept' ? 'Accepted' : action === 'decline' ? 'Declined' : 'Tentative';
+        console.log(`  ${C.green('✓')} ${verb}: ${id.slice(0, 20)}...`);
+      }
+    } catch (e) {
+      failed++;
+      const msg = e.message || '';
+      if (msg.includes('organizer') || msg.includes('response')) {
+        console.log(`  ${C.yellow('⚠')} Skipped (no response allowed): ${id.slice(0, 20)}...`);
+      } else {
+        console.log(`  ${C.red('✗')} Failed: ${msg}`);
+      }
+    }
+  }
+
+  console.log(`\n${success} responded, ${failed} failed/skipped.`);
+}
+
 function showHelp() {
   console.log(`outlook — Microsoft Outlook CLI for SLICC
 
@@ -502,6 +570,9 @@ Usage: outlook <command> [options]
 Commands:
   mail       List inbox messages
   calendar   List calendar events
+  accept     Accept calendar event(s)
+  decline    Decline calendar event(s)
+  tentative  Tentatively accept calendar event(s)
   send       Send an email
   view       View a single message
   monday     Aggregated inbox items for monday dispatcher
@@ -517,6 +588,15 @@ Calendar options:
   --limit N          Number of events (default: 20)
   --date PERIOD      How far ahead to look (default: 2d)
   --json             Output raw JSON
+
+Respond options (accept/decline/tentative):
+  outlook accept <event-id> [<event-id>...]
+  outlook decline <event-id> --comment "Can't make it"
+  outlook accept --all              Accept all pending events
+  outlook decline --all --date 7d   Decline all pending in next week
+  --comment TEXT    Optional message to organizer
+  --silent          Don't send response to organizer
+  --all             Act on all NotResponded events in date range
 
 Send options:
   --to EMAIL         Recipient(s), comma-separated
@@ -548,6 +628,16 @@ try {
     case 'calendar':
     case 'cal':
       await cmdCalendar();
+      break;
+    case 'accept':
+      await cmdRespond('accept');
+      break;
+    case 'decline':
+      await cmdRespond('decline');
+      break;
+    case 'tentative':
+    case 'maybe':
+      await cmdRespond('tentativelyaccept');
       break;
     case 'send':
       await cmdSend();
