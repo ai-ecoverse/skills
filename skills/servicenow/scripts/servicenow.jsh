@@ -68,6 +68,12 @@ async function ensureTab() {
   const match = list.stdout.match(re);
   if (match) {
     _tabId = match[1];
+    // Check if the tab is on the ESC portal (has Angular). If not, navigate there.
+    const angularCheck = await exec('playwright-cli eval "typeof angular" --tab=' + _tabId);
+    if (angularCheck.stdout.trim() !== 'object') {
+      await exec('playwright-cli navigate "https://' + domain + '/esc" --tab=' + _tabId);
+      await new Promise(resolve => setTimeout(resolve, 4000));
+    }
     return _tabId;
   }
 
@@ -719,6 +725,126 @@ async function cmdMonday(args) {
   console.log(JSON.stringify(items, null, 2));
 }
 
+async function cmdCreate(args) {
+  await ensureAuth();
+  var userSysId = getUserSysId();
+
+  // Parse flags
+  var title = '';
+  var description = '';
+  var category = '';
+  var subcategory = '';
+  var attachments = [];
+
+  for (var i = 0; i < args.length; i++) {
+    if (args[i] === '--title' && args[i + 1]) { title = args[++i]; continue; }
+    if (args[i].startsWith('--title=')) { title = args[i].split('=').slice(1).join('='); continue; }
+    if (args[i] === '--description' && args[i + 1]) { description = args[++i]; continue; }
+    if (args[i].startsWith('--description=')) { description = args[i].split('=').slice(1).join('='); continue; }
+    if (args[i] === '--category' && args[i + 1]) { category = args[++i]; continue; }
+    if (args[i].startsWith('--category=')) { category = args[i].split('=').slice(1).join('='); continue; }
+    if (args[i] === '--subcategory' && args[i + 1]) { subcategory = args[++i]; continue; }
+    if (args[i].startsWith('--subcategory=')) { subcategory = args[i].split('=').slice(1).join('='); continue; }
+    if (args[i] === '--attach' && args[i + 1]) { attachments.push(args[++i]); continue; }
+    if (args[i].startsWith('--attach=')) { attachments.push(args[i].split('=').slice(1).join('=')); continue; }
+    // Positional: first is title, rest is description
+    if (!title) { title = args[i]; continue; }
+    if (!description) { description = args.slice(i).join(' '); break; }
+  }
+
+  if (!title) {
+    console.error('Usage: servicenow create --title "Short description" [--description "Details"] [--category Software] [--subcategory Email] [--attach /path/to/file]');
+    process.exit(1);
+  }
+
+  var payload = {
+    caller_id: userSysId,
+    short_description: title
+  };
+  if (description) payload.description = description;
+  if (category) payload.category = category;
+  if (subcategory) payload.subcategory = subcategory;
+
+  var code = [
+    'new Promise(function(resolve) {',
+    '  var h = angular.element(document.body).injector().get("$http");',
+    '  h.post("/api/now/table/incident", ' + JSON.stringify(payload).replace(/\\/g, '\\\\').replace(/'/g, "\\'") + ').then(function(resp) {',
+    '    resolve(JSON.stringify({number: resp.data.result.number, sys_id: resp.data.result.sys_id}));',
+    '  }).catch(function(e) {',
+    '    resolve(JSON.stringify({__error: e.status || 500, detail: e.data || "unknown"}));',
+    '  });',
+    '})'
+  ].join('\n');
+
+  var result = await evalInPage(code);
+  if (result && result.__error) {
+    console.error('Failed to create incident: ' + JSON.stringify(result));
+    process.exit(1);
+  }
+
+  console.log('Created ' + result.number + ' — ' + title);
+
+  // Attach files if specified
+  for (var file of attachments) {
+    await attachFile(result.sys_id, 'incident', file);
+    var fileName = file.split('/').pop();
+    console.log('  Attached: ' + fileName);
+  }
+
+  console.log(JSON.stringify(result, null, 2));
+}
+
+async function attachFile(sysId, table, filePath) {
+  var fileName = filePath.split('/').pop();
+  var ext = fileName.split('.').pop().toLowerCase();
+  var mimeMap = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', pdf: 'application/pdf', txt: 'text/plain' };
+  var mime = mimeMap[ext] || 'application/octet-stream';
+
+  var code = [
+    '(async function() {',
+    '  var h = angular.element(document.body).injector().get("$http");',
+    '  var resp = await fetch("' + filePath.replace(/"/g, '\\"') + '");',
+    '  if (!resp.ok) return JSON.stringify({__error: "fetch_failed", status: resp.status});',
+    '  var blob = await resp.blob();',
+    '  var result = await h({',
+    '    method: "POST",',
+    '    url: "/api/now/attachment/file?table_name=' + table + '&table_sys_id=' + sysId + '&file_name=' + encodeURIComponent(fileName) + '",',
+    '    headers: { "Content-Type": "' + mime + '" },',
+    '    data: blob,',
+    '    transformRequest: angular.identity',
+    '  });',
+    '  return JSON.stringify({ok: true, sys_id: result.data.result.sys_id});',
+    '})()'
+  ].join('\n');
+
+  var result = await evalInPage(code);
+  if (result && result.__error) {
+    console.error('Failed to attach ' + fileName + ': ' + JSON.stringify(result));
+  }
+  return result;
+}
+
+async function cmdAttach(args) {
+  if (args.length < 2) {
+    console.error('Usage: servicenow attach <NUMBER> <FILE_PATH> [<FILE_PATH>...]');
+    process.exit(1);
+  }
+  await ensureAuth();
+  var numberOrId = args[0];
+  var files = args.slice(1);
+  var resolved = await resolveNumber(numberOrId);
+
+  for (var file of files) {
+    var result = await attachFile(resolved.sys_id, resolved.table, file);
+    var fileName = file.split('/').pop();
+    if (result && result.ok) {
+      console.log('Attached ' + fileName + ' to ' + numberOrId);
+    } else {
+      console.error('Failed to attach ' + fileName);
+    }
+  }
+}
+
 function showHelp() {
   console.log('ServiceNow — API client\n');
   console.log('Setup:');
@@ -727,9 +853,12 @@ function showHelp() {
   console.log('Tickets:');
   console.log('  tickets [--incidents|--requests] [--state=STATE]');
   console.log('                               List your open tickets');
+  console.log('  create --title "..." [--description "..."] [--category ...] [--attach FILE]');
+  console.log('                               Create a new incident');
   console.log('  get <NUMBER>                 Get ticket details + comments');
   console.log('  comment <NUMBER> <MSG>       Post a customer-visible comment');
-  console.log('  worknote <NUMBER> <MSG>      Post an internal work note\n');
+  console.log('  worknote <NUMBER> <MSG>      Post an internal work note');
+  console.log('  attach <NUMBER> <FILE> [...] Attach file(s) to a ticket\n');
   console.log('Knowledge Base:');
   console.log('  kb <QUERY>                   Search Knowledge Base');
   console.log('  kb-article <KB_NUMBER>       Get full KB article content\n');
@@ -743,7 +872,9 @@ function showHelp() {
   console.log('  servicenow login');
   console.log('  servicenow login --domain=mycompany.service-now.com');
   console.log('  servicenow tickets');
+  console.log('  servicenow create --title "VPN broken" --description "Details..." --attach /tmp/screenshot.png');
   console.log('  servicenow get INC3616952');
+  console.log('  servicenow attach INC3616952 /path/to/screenshot.png');
   console.log('  servicenow comment INC3616952 "Please provide an update"');
   console.log('  servicenow kb "VPN GlobalProtect"');
   console.log('  servicenow kb-article KB0023295');
@@ -787,6 +918,13 @@ switch (cmd) {
     break;
   case 'kb-article':
     await cmdKbArticle(args[0]);
+    break;
+  case 'create':
+  case 'new':
+    await cmdCreate(args);
+    break;
+  case 'attach':
+    await cmdAttach(args);
     break;
   case 'monday':
     await cmdMonday(args);
