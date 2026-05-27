@@ -868,6 +868,412 @@ async function pollForNewComments() {
   return { checked: postData.posts.length, newComments: newComments.length, comments: newComments };
 }
 
+// ─── Messaging Commands ──────────────────────────────────────────────────────
+
+const MAILBOX_URN = 'urn:li:fsd_profile:ACoAAAAyzagBI3CieVJqv511Ft1kEK2TRvcjuHM';
+const INBOX_QUERY_ID = 'messengerConversations.0d5e6781bbee71c3e51c8843c6519f48';
+const MESSAGES_QUERY_ID = 'messengerMessages.5846eeb71c981f11e0134cb6626cc314';
+const SEARCH_CONTACTS_QUERY_ID = 'voyagerMessagingDashMessagingTypeahead.7f566173ac0c94b510b3dc2b2a6763d4';
+const FIND_CONVERSATION_QUERY_ID = 'messengerConversations.9c3ab648b616451570c715e4a184465e';
+
+function generateUUID() {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    var r = Math.random() * 16 | 0;
+    var v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+}
+
+function generateTrackingId() {
+  var bytes = [];
+  for (var i = 0; i < 16; i++) bytes.push(Math.floor(Math.random() * 256));
+  var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  var trackResult = '';
+  for (var j = 0; j < bytes.length; j += 3) {
+    var b1 = bytes[j], b2 = bytes[j+1] || 0, b3 = bytes[j+2] || 0;
+    trackResult += chars[b1 >> 2] + chars[((b1 & 3) << 4) | (b2 >> 4)] + chars[((b2 & 0xf) << 2) | (b3 >> 6)] + chars[b3 & 0x3f];
+  }
+  return trackResult;
+}
+
+function formatTimestamp(ms) {
+  if (!ms) return '';
+  var d = new Date(ms);
+  var now = new Date();
+  var diffMs = now - d;
+  var diffMins = Math.floor(diffMs / 60000);
+  if (diffMins < 1) return 'just now';
+  if (diffMins < 60) return diffMins + 'm ago';
+  var diffHours = Math.floor(diffMins / 60);
+  if (diffHours < 24) return diffHours + 'h ago';
+  var diffDays = Math.floor(diffHours / 24);
+  if (diffDays < 7) return diffDays + 'd ago';
+  return d.toISOString().split('T')[0];
+}
+
+async function messagingFetch(tabId, csrfToken, url, options) {
+  var method = (options && options.method) || 'GET';
+  var body = (options && options.body) ? JSON.stringify(options.body) : 'undefined';
+
+  var jsCode = [
+    '(async () => {',
+    '  var opts = {',
+    '    method: "' + method + '",',
+    '    credentials: "include",',
+    '    headers: {',
+    '      "csrf-token": "' + csrfToken + '",',
+    '      "x-restli-protocol-version": "2.0.0",',
+    '      "accept": "' + ((options && options.accept) || (method === 'POST' ? 'application/json' : 'application/graphql')) + '",',
+    '      "x-li-lang": "en_US"',
+    method === 'POST' ? '      ,"content-type": "application/json; charset=UTF-8"' : '',
+    method === 'POST' ? '      ,"x-li-page-instance": "urn:li:page:d_flagship3_messaging;slicc"' : '',
+    method === 'POST' ? '      ,"x-li-track": "{\\"clientVersion\\":\\"1.13.44376\\",\\"mpVersion\\":\\"1.13.44376\\",\\"osName\\":\\"web\\",\\"timezoneOffset\\":2,\\"timezone\\":\\"Europe/Berlin\\",\\"deviceFormFactor\\":\\"DESKTOP\\",\\"mpName\\":\\"voyager-web\\"}"' : '',
+    '    }',
+    body !== 'undefined' ? '    ,body: ' + JSON.stringify(body) : '',
+    '  };',
+    '  var resp = await fetch("' + url.replace(/"/g, '\\"') + '", opts);',
+    '  var text = await resp.text();',
+    '  if (!resp.ok) return JSON.stringify({ __error: resp.status, detail: text.substring(0, 500) });',
+    '  return text;',
+    '})()'
+  ].join(' ');
+
+  var evalResult = await exec('playwright-cli eval --tab=' + tabId + ' ' + JSON.stringify(jsCode));
+  if (evalResult.exitCode !== 0) {
+    throw new Error('Eval failed: ' + evalResult.stderr);
+  }
+
+  var raw = evalResult.stdout.trim();
+  var parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    var preview = raw.substring(0, 200);
+    if (preview.includes('<html') || preview.includes('<!DOCTYPE')) {
+      console.error('LinkedIn returned HTML instead of JSON. Session may have expired.');
+      process.exit(1);
+    }
+    throw new Error('Unexpected response (not JSON): ' + preview);
+  }
+
+  if (parsed && parsed.__error) {
+    if (parsed.__error === 401 || parsed.__error === 403) {
+      console.error('Auth failed (' + parsed.__error + '). Please log into LinkedIn in your browser.');
+      process.exit(1);
+    }
+    throw new Error('API error ' + parsed.__error + ': ' + (parsed.detail || '').substring(0, 200));
+  }
+
+  return parsed;
+}
+
+// --- INBOX ---
+
+async function getInbox(options) {
+  var tabId = await ensureTab();
+  var csrfToken = await getCsrfToken(tabId);
+  var limit = (options && options.limit) || 20;
+  var unreadOnly = (options && options.unread) || false;
+
+  var encodedMailbox = encodeURIComponent(MAILBOX_URN);
+  var url = '/voyager/api/voyagerMessagingGraphQL/graphql?queryId=' + INBOX_QUERY_ID + '&variables=(mailboxUrn:' + encodedMailbox + ')';
+
+  var data = await messagingFetch(tabId, csrfToken, url);
+
+  var conversations = [];
+  var elements = [];
+
+  // Navigate response structure
+  if (data && data.data && data.data.messengerConversationsBySyncToken && data.data.messengerConversationsBySyncToken.elements) {
+    elements = data.data.messengerConversationsBySyncToken.elements;
+  }
+
+  for (var ci = 0; ci < elements.length && conversations.length < limit; ci++) {
+    var conv = elements[ci];
+    if (!conv) continue;
+
+    var isUnread = conv.read === false || (conv.unreadCount && conv.unreadCount > 0);
+    if (unreadOnly && !isUnread) continue;
+
+    // Extract participants
+    var participants = [];
+    if (conv.conversationParticipants && Array.isArray(conv.conversationParticipants)) {
+      conv.conversationParticipants.forEach(function(p) {
+        if (p && p.participantType && p.participantType.member) {
+          var member = p.participantType.member;
+          var name = '';
+          if (member.firstName && member.firstName.text) name += member.firstName.text;
+          if (member.lastName && member.lastName.text) name += (name ? ' ' : '') + member.lastName.text;
+          if (name) participants.push(name);
+        }
+      });
+    }
+
+    // Extract last message preview
+    var lastMessage = '';
+    var lastSender = '';
+    if (conv.messages && Array.isArray(conv.messages) && conv.messages.length > 0) {
+      var lastMsg = conv.messages[0];
+      if (lastMsg && lastMsg.body && lastMsg.body.text) lastMessage = lastMsg.body.text;
+      if (lastMsg && lastMsg.sender && lastMsg.sender.participantType && lastMsg.sender.participantType.member) {
+        var senderMember = lastMsg.sender.participantType.member;
+        if (senderMember.firstName && senderMember.firstName.text) lastSender = senderMember.firstName.text;
+      }
+    }
+
+    conversations.push({
+      conversationUrn: conv.entityUrn || '',
+      participants: participants,
+      lastMessage: lastMessage.substring(0, 120),
+      lastSender: lastSender,
+      unread: isUnread,
+      unreadCount: conv.unreadCount || 0,
+      lastActivityAt: conv.lastActivityAt || null,
+      lastActivityAgo: formatTimestamp(conv.lastActivityAt)
+    });
+  }
+
+  if (flags['json'] === 'true') {
+    return { total: conversations.length, conversations: conversations };
+  }
+
+  // Human-readable output
+  var output = [];
+  output.push('\x1b[1mInbox' + (unreadOnly ? ' (unread only)' : '') + '\x1b[0m  \u2014  ' + conversations.length + ' conversations\n');
+  conversations.forEach(function(c) {
+    var unreadMarker = c.unread ? '\x1b[33m\u25cf\x1b[0m ' : '  ';
+    var names = c.participants.join(', ') || '(unknown)';
+    var preview = c.lastMessage ? (c.lastSender ? c.lastSender + ': ' : '') + c.lastMessage : '(no messages)';
+    output.push(unreadMarker + '\x1b[1m' + names + '\x1b[0m  \x1b[2m' + c.lastActivityAgo + '\x1b[0m');
+    output.push('  ' + preview);
+    output.push('  \x1b[2m' + c.conversationUrn + '\x1b[0m');
+    output.push('');
+  });
+
+  console.log(output.join('\n'));
+  return null; // already printed
+}
+
+// --- MESSAGES ---
+
+async function getMessages(conversationUrn, options) {
+  var tabId = await ensureTab();
+  var csrfToken = await getCsrfToken(tabId);
+  var limit = (options && options.limit) || 20;
+
+  // LinkedIn requires (, ), and , to be percent-encoded inside variable values
+  var encodedConv = encodeURIComponent(conversationUrn).replace(/\(/g, '%28').replace(/\)/g, '%29').replace(/,/g, '%2C').replace(/=/g, '%3D');
+  var url = '/voyager/api/voyagerMessagingGraphQL/graphql?queryId=' + MESSAGES_QUERY_ID + '&variables=(conversationUrn:' + encodedConv + ')';
+
+  var data = await messagingFetch(tabId, csrfToken, url);
+
+  var messages = [];
+  var elements = [];
+
+  if (data && data.data && data.data.messengerMessagesBySyncToken && data.data.messengerMessagesBySyncToken.elements) {
+    elements = data.data.messengerMessagesBySyncToken.elements;
+  }
+
+  for (var mi = 0; mi < elements.length && messages.length < limit; mi++) {
+    var msg = elements[mi];
+    if (!msg) continue;
+
+    var senderName = '';
+    if (msg.sender && msg.sender.participantType && msg.sender.participantType.member) {
+      var member = msg.sender.participantType.member;
+      if (member.firstName && member.firstName.text) senderName += member.firstName.text;
+      if (member.lastName && member.lastName.text) senderName += (senderName ? ' ' : '') + member.lastName.text;
+    }
+
+    var msgText = '';
+    if (msg.body && msg.body.text) msgText = msg.body.text;
+
+    messages.push({
+      sender: senderName,
+      text: msgText,
+      deliveredAt: msg.deliveredAt || null,
+      deliveredAgo: formatTimestamp(msg.deliveredAt)
+    });
+  }
+
+  // Messages come newest-first from API; reverse for chronological display
+  messages.reverse();
+
+  if (flags['json'] === 'true') {
+    return { conversationUrn: conversationUrn, total: messages.length, messages: messages };
+  }
+
+  // Human-readable output
+  var output = [];
+  output.push('\x1b[1mConversation\x1b[0m  \x1b[2m' + conversationUrn + '\x1b[0m\n');
+  messages.forEach(function(m) {
+    output.push('\x1b[1m' + (m.sender || 'Unknown') + '\x1b[0m  \x1b[2m' + m.deliveredAgo + '\x1b[0m');
+    output.push('  ' + m.text);
+    output.push('');
+  });
+
+  console.log(output.join('\n'));
+  return null; // already printed
+}
+
+// --- SEND MESSAGE ---
+
+async function sendMessage(conversationUrn, messageText) {
+  var tabId = await ensureTab();
+  var csrfToken = await getCsrfToken(tabId);
+
+  var payload = {
+    message: {
+      body: { attributes: [], text: messageText },
+      renderContentUnions: [],
+      conversationUrn: conversationUrn,
+      originToken: generateUUID()
+    },
+    mailboxUrn: MAILBOX_URN,
+    dedupeByClientGeneratedToken: false
+  };
+
+  var url = '/voyager/api/voyagerMessagingDashMessengerMessages?action=createMessage';
+  var data = await messagingFetch(tabId, csrfToken, url, { method: 'POST', body: payload });
+
+  return { success: true, conversationUrn: conversationUrn, message: messageText.substring(0, 80) };
+}
+
+// --- SEARCH CONTACTS ---
+
+async function searchContacts(query) {
+  var tabId = await ensureTab();
+  var csrfToken = await getCsrfToken(tabId);
+
+  var encodedQuery = encodeURIComponent(query);
+  var url = '/voyager/api/graphql?includeWebMetadata=true&variables=(keyword:' + encodedQuery + ',types:List(CONNECTIONS,GROUP_THREADS,PEOPLE,COWORKERS))&queryId=' + SEARCH_CONTACTS_QUERY_ID;
+
+  var data = await messagingFetch(tabId, csrfToken, url, { accept: "application/vnd.linkedin.normalized+json+2.1" });
+
+  var contacts = [];
+
+  // Navigate the GraphQL response  look for typeahead results in included or data
+  if (data && data.included && Array.isArray(data.included)) {
+    data.included.forEach(function(item) {
+      if (!item) return;
+      // Look for profile-like items with firstName/lastName
+      if (item.firstName && item.lastName && item.entityUrn && item.entityUrn.includes('fsd_profile')) {
+        contacts.push({
+          name: item.firstName + ' ' + item.lastName,
+          profileUrn: item.entityUrn,
+          headline: item.headline || ''
+        });
+      }
+      // Also handle items with title.text pattern (typeahead results)
+      if (item.title && item.title.text && item.entityUrn) {
+        var urn = '';
+        if (item.entityUrn.includes('fsd_profile')) {
+          urn = item.entityUrn;
+        } else if (item.memberProfileUrn) {
+          urn = item.memberProfileUrn;
+        } else if (item.targetUrn) {
+          urn = item.targetUrn;
+        }
+        if (urn && !contacts.find(function(c) { return c.profileUrn === urn; })) {
+          contacts.push({
+            name: item.title.text,
+            profileUrn: urn,
+            headline: (item.subtitle && item.subtitle.text) || ''
+          });
+        }
+      }
+    });
+  }
+
+  // Also check data.data structure for typeahead results
+  if (data && data.data) {
+    var walkTypeahead = function(obj) {
+      if (!obj || typeof obj !== 'object') return;
+      if (Array.isArray(obj)) { obj.forEach(walkTypeahead); return; }
+      if (obj.title && obj.title.text && (obj.memberProfileUrn || obj.targetUrn || obj.entityUrn)) {
+        var pUrn = obj.memberProfileUrn || obj.targetUrn || obj.entityUrn;
+        if (!contacts.find(function(c) { return c.profileUrn === pUrn; })) {
+          contacts.push({
+            name: obj.title.text,
+            profileUrn: pUrn,
+            headline: (obj.subtitle && obj.subtitle.text) || ''
+          });
+        }
+      }
+      Object.keys(obj).forEach(function(k) { walkTypeahead(obj[k]); });
+    };
+    walkTypeahead(data.data);
+  }
+
+  if (flags['json'] === 'true') {
+    return { query: query, total: contacts.length, contacts: contacts };
+  }
+
+  // Human-readable output
+  var output = [];
+  output.push('\x1b[1mSearch results for "' + query + '"\x1b[0m  \u2014  ' + contacts.length + ' contacts\n');
+  contacts.forEach(function(c) {
+    output.push('  \x1b[1m' + c.name + '\x1b[0m' + (c.headline ? '  \x1b[2m' + c.headline + '\x1b[0m' : ''));
+    output.push('  \x1b[2m' + c.profileUrn + '\x1b[0m');
+    output.push('');
+  });
+
+  console.log(output.join('\n'));
+  return null; // already printed
+}
+
+// --- DM (find or create conversation + send) ---
+
+async function directMessage(profileUrn, messageText) {
+  var tabId = await ensureTab();
+  var csrfToken = await getCsrfToken(tabId);
+
+  // Normalize the profile URN
+  if (!profileUrn.startsWith('urn:li:')) {
+    profileUrn = 'urn:li:fsd_profile:' + profileUrn;
+  }
+
+  // Find or create the conversation
+  var encodedMailbox = encodeURIComponent(MAILBOX_URN);
+  var encodedRecipient = encodeURIComponent(profileUrn);
+  var url = '/voyager/api/voyagerMessagingGraphQL/graphql?queryId=' + FIND_CONVERSATION_QUERY_ID + '&variables=(mailboxUrn:' + encodedMailbox + ',recipients:List(' + encodedRecipient + '))';
+
+  var data = await messagingFetch(tabId, csrfToken, url);
+
+  // Extract the conversation URN from the response
+  var conversationUrn = null;
+  if (data && data.data) {
+    var walkForConv = function(obj) {
+      if (conversationUrn) return;
+      if (!obj || typeof obj !== 'object') return;
+      if (Array.isArray(obj)) { obj.forEach(walkForConv); return; }
+      if (obj.entityUrn && obj.entityUrn.includes('msg_conversation')) {
+        conversationUrn = obj.entityUrn;
+        return;
+      }
+      Object.keys(obj).forEach(function(k) { walkForConv(obj[k]); });
+    };
+    walkForConv(data.data);
+  }
+  // Also check included
+  if (!conversationUrn && data && data.included) {
+    for (var di = 0; di < data.included.length; di++) {
+      if (data.included[di] && data.included[di].entityUrn && data.included[di].entityUrn.includes('msg_conversation')) {
+        conversationUrn = data.included[di].entityUrn;
+        break;
+      }
+    }
+  }
+
+  if (!conversationUrn) {
+    throw new Error('Could not find or create conversation with ' + profileUrn + '. They may not accept messages.');
+  }
+
+  // Now send the message
+  await sendMessage(conversationUrn, messageText);
+  return { success: true, conversationUrn: conversationUrn, profileUrn: profileUrn, message: messageText.substring(0, 80) };
+}
+
 // ─── CLI Dispatch ────────────────────────────────────────────────────────────
 
 if (!cmd || cmd === 'help') {
@@ -889,6 +1295,13 @@ if (!cmd || cmd === 'help') {
   console.log('  reactions <activityId>       View reactions/likes on a post');
   console.log('  profile <vanityName|urn>     Quick preview of a LinkedIn profile');
   console.log('');
+  console.log('Messaging:');
+  console.log('  inbox [--unread] [--limit N]              List recent conversations');
+  console.log('  messages <conversationUrn> [--limit N]    Show messages in a thread');
+  console.log('  send <conversationUrn> <text>             Send a message to a conversation');
+  console.log('  search-contacts <query>                   Search for messaging recipients');
+  console.log('  dm <profileUrn> <text>                    DM a person (find/create conversation)');
+  console.log('');
   console.log('Monitoring:');
   console.log('  watch --scoop=<name>         Watch for new comments (polls, fires webhook)');
   console.log('  unwatch                      Stop watching for comments');
@@ -904,6 +1317,11 @@ if (!cmd || cmd === 'help') {
   console.log('  linkedin profile klimetschek');
   console.log('  linkedin watch --scoop=linkedin-responder');
   console.log('  linkedin monday --limit 20 --date 3d');
+  console.log('  linkedin inbox --unread');
+  console.log('  linkedin messages "urn:li:msg_conversation:..."');
+  console.log('  linkedin send "urn:li:msg_conversation:..." "Hello!"');
+  console.log('  linkedin search-contacts "karl"');
+  console.log('  linkedin dm "urn:li:fsd_profile:ACoAA..." "Hey, quick question..."');
   process.exit(cmd === 'help' ? 0 : 1);
 }
 
@@ -932,6 +1350,26 @@ if (cmd === 'post') {
   var ident = positional[0];
   if (!ident) { console.error('Usage: linkedin profile <vanityName|memberUrn>'); process.exit(1); }
   result = await getProfile(ident);
+} else if (cmd === 'inbox') {
+  result = await getInbox({ limit: parseInt(flags['limit'] || '20'), unread: flags['unread'] === 'true' });
+} else if (cmd === 'messages') {
+  var convUrn = positional[0];
+  if (!convUrn) { console.error('Usage: linkedin messages <conversationUrn> [--limit N]'); process.exit(1); }
+  result = await getMessages(convUrn, { limit: parseInt(flags['limit'] || '20') });
+} else if (cmd === 'send') {
+  var sendConvUrn = positional[0];
+  var sendText = positional.slice(1).join(' ');
+  if (!sendConvUrn || !sendText) { console.error('Usage: linkedin send <conversationUrn> "message text"'); process.exit(1); }
+  result = await sendMessage(sendConvUrn, sendText);
+} else if (cmd === 'search-contacts') {
+  var searchQuery = positional.join(' ');
+  if (!searchQuery) { console.error('Usage: linkedin search-contacts <query>'); process.exit(1); }
+  result = await searchContacts(searchQuery);
+} else if (cmd === 'dm') {
+  var dmProfileUrn = positional[0];
+  var dmText = positional.slice(1).join(' ');
+  if (!dmProfileUrn || !dmText) { console.error('Usage: linkedin dm <profileUrn> "message text"'); process.exit(1); }
+  result = await directMessage(dmProfileUrn, dmText);
 } else if (cmd === 'watch') {
   var scoop = flags['scoop'] || positional[0];
   if (!scoop) { console.error('Usage: linkedin watch --scoop=<name> [--interval="*/5 * * * *"]'); process.exit(1); }
@@ -940,10 +1378,10 @@ if (cmd === 'post') {
 } else if (cmd === 'unwatch') {
   result = await teardownWatch();
 } else if (cmd === 'watches') {
-  var config = await loadWatchConfig();
-  if (!config) { console.log('No active watches.'); process.exit(0); }
-  var state = await loadWatchState();
-  result = { config: config, state: { lastCheck: state.lastCheck, trackedPosts: Object.keys(state.commentCounts).length } };
+  var watchCfg = await loadWatchConfig();
+  if (!watchCfg) { console.log('No active watches.'); process.exit(0); }
+  var watchState = await loadWatchState();
+  result = { config: watchCfg, state: { lastCheck: watchState.lastCheck, trackedPosts: Object.keys(watchState.commentCounts).length } };
 } else if (cmd === '_poll') {
   // Internal: called by cron task to check for new comments
   result = await pollForNewComments();
@@ -957,7 +1395,7 @@ if (cmd === 'post') {
     console.error('Usage: linkedin setup <companyId> [--name="Company Name"]');
     console.error('');
     console.error('Find your company ID: go to your LinkedIn page admin URL');
-    console.error('  https://www.linkedin.com/company/XXXXX/admin/ ← XXXXX is the ID');
+    console.error('  https://www.linkedin.com/company/XXXXX/admin/ \u2190 XXXXX is the ID');
     process.exit(1);
   }
   config.companyId = companyId;
@@ -1055,4 +1493,6 @@ if (cmd === 'post') {
   process.exit(1);
 }
 
-console.log(JSON.stringify(result, null, 2));
+if (result !== null && result !== undefined) {
+  console.log(JSON.stringify(result, null, 2));
+}
