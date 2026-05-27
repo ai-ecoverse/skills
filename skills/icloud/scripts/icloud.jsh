@@ -6,6 +6,8 @@
  *
  * Usage:
  *   icloud calendar [--date 2d|7d|14d|30d] [--json]
+ *   icloud calendar create --title "..." --start "..." --end "..." [--location "..."]
+ *   icloud calendar create --from-json   # reads shared-schema JSON from stdin
  *   icloud notes [--search "query"] [--json]
  *   icloud notes read <note-id> [--json]
  *   icloud --help
@@ -49,20 +51,34 @@ function parseFlags(argsSlice) {
 }
 
 function printUsage() {
-  console.log(`icloud — iCloud Calendar, Notes & Reminders CLI for SLICC
+  console.log(`icloud — iCloud Calendar & Notes CLI for SLICC
 
 Usage:
   icloud calendar [--date 2d|7d|14d|30d] [--json]
+  icloud calendar create --title "..." --start "..." --end "..." [--location "..."]
+  icloud calendar create --from-json [FILE]
   icloud notes [--search "query"] [--json]
   icloud notes read <note-id> [--json]
-  icloud reminders [--list "name"] [--completed] [--json]
-  icloud monday [--limit N] [--date Nd]
   icloud --help
 
 Calendar:
   Lists upcoming events. Default range is 7 days.
   --date    Range: 1d, 2d, 7d, 14d, 30d (default: 7d)
-  --json    Output raw JSON
+  --json    Output shared-schema JSON
+  --raw-json Output raw iCloud API JSON
+
+Calendar create:
+  --title TEXT       Event title
+  --start DATETIME   Start (e.g. 2026-05-28T15:00)
+  --end DATETIME     End (e.g. 2026-05-28T16:00)
+  --location TEXT    Optional location
+  --calendar NAME    Calendar name (default: first/home calendar)
+  --block            Privacy mode: title="Blocked"
+  --from-json [FILE] Read events from stdin or file (shared schema)
+
+Piping:
+  outlook calendar --json | icloud calendar create --from-json
+  icloud calendar --json | outlook calendar create --from-json --block
 
 Notes:
   Lists recent notes (title + snippet).
@@ -70,18 +86,7 @@ Notes:
   --json    Output raw JSON
 
   icloud notes read <note-id>
-    Reads the full content of a note by its ID.
-
-Reminders:
-  Lists incomplete reminders across all lists.
-  --list      Filter to a specific list by name
-  --completed Show completed reminders instead
-  --json      Output raw JSON
-
-Monday:
-  Output items in monday aggregator protocol format.
-  --limit N   Max items (default: 50)
-  --date Nd   How far ahead for calendar (default: 7d)`);
+    Reads the full content of a note by its ID.`);
 }
 
 function col(str, width) {
@@ -117,6 +122,40 @@ function fmtTimestamp(ts) {
   if (!ts) return '';
   const d = new Date(ts);
   return d.toISOString().replace('T', ' ').slice(0, 16);
+}
+
+function normalizeDateTime(dt) {
+  if (!dt) return '';
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(dt)) dt += ':00';
+  return dt;
+}
+
+// ─── Shared Event Schema ─────────────────────────────────────────────────────
+
+function icloudEventToShared(ev) {
+  const startArr = ev.localStartDate || ev.startDate || [];
+  const endArr = ev.localEndDate || ev.endDate || [];
+
+  function arrToISO(arr) {
+    if (!arr || arr.length < 5) return '';
+    const y = arr[1];
+    const m = String(arr[2]).padStart(2, '0');
+    const d = String(arr[3]).padStart(2, '0');
+    const h = String(arr[4]).padStart(2, '0');
+    const min = String(arr[5] || 0).padStart(2, '0');
+    const sec = String(arr[6] || 0).padStart(2, '0');
+    return `${y}-${m}-${d}T${h}:${min}:${sec}`;
+  }
+
+  return {
+    title: ev.title || '',
+    start: arrToISO(startArr),
+    end: arrToISO(endArr),
+    location: ev.location || '',
+    allDay: !!ev.allDay,
+    description: ev.description || '',
+    busy: true, // iCloud doesn't expose free/busy easily; default busy
+  };
 }
 
 // ─── iCloud Tab Management ───────────────────────────────────────────────────
@@ -156,7 +195,6 @@ async function getSession(tabId) {
         return JSON.stringify({
           dsid: data.dsInfo ? data.dsInfo.dsid : null,
           calendarUrl: data.webservices && data.webservices.calendar ? data.webservices.calendar.url : null,
-          remindersUrl: data.webservices && data.webservices.reminders ? data.webservices.reminders.url : null,
           ckdbUrl: data.webservices && data.webservices.ckdatabasews ? data.webservices.ckdatabasews.url : null
         });
       } catch(e) {
@@ -253,8 +291,16 @@ async function icloudFetch(tabId, url, options = {}) {
 // ─── Calendar Commands ───────────────────────────────────────────────────────
 
 async function cmdCalendar() {
-  const { flags } = parseFlags(args.slice(1));
+  const { flags, positional } = parseFlags(args.slice(1));
+
+  // Check for "create" subcommand
+  if (positional[0] === 'create') {
+    await cmdCalendarCreate(flags, positional.slice(1));
+    return;
+  }
+
   const jsonOutput = !!flags.json;
+  const rawJson = !!flags['raw-json'];
 
   // Parse date range
   const rangeStr = flags.date || '7d';
@@ -284,8 +330,15 @@ async function cmdCalendar() {
 
   const events = (resp.data && resp.data.Event) || [];
 
-  if (jsonOutput) {
+  if (rawJson) {
     console.log(JSON.stringify(events, null, 2));
+    return;
+  }
+
+  if (jsonOutput) {
+    // Output in shared schema format
+    const shared = events.map(icloudEventToShared);
+    console.log(JSON.stringify(shared, null, 2));
     return;
   }
 
@@ -323,6 +376,236 @@ async function cmdCalendar() {
   }
 
   console.log(`\n${events.length} event${events.length !== 1 ? 's' : ''}.`);
+}
+
+// ─── Calendar Create ─────────────────────────────────────────────────────────
+
+async function cmdCalendarCreate(flags, positional) {
+  const tabId = await getICloudTab();
+  const session = await getSession(tabId);
+
+  // Discover calendars via /ca/allcollections to get GUIDs and ctags
+  const calendarName = flags.calendar || null;
+  let calendarGuid = null;
+  let calendarCtag = null;
+
+  const now = new Date();
+  const colStart = now.toISOString().slice(0, 10);
+  const colEnd = new Date(now.getTime() + 7 * 86400000).toISOString().slice(0, 10);
+  const collectionsUrl = `${session.calendarUrl}/ca/allcollections?startDate=${colStart}&endDate=${colEnd}&usertz=Europe%2FBerlin&lang=en-US&clientVersion=6.0&requestID=1&clientBuildNumber=2618Build21&clientMasteringNumber=2618Build21&clientId=slicc-icloud-skill&dsid=${session.dsid}`;
+  const colResp = await icloudFetch(tabId, collectionsUrl);
+
+  if (colResp.ok && colResp.data && colResp.data.Collection) {
+    const collections = colResp.data.Collection;
+    if (calendarName) {
+      const match = collections.find(c => c.title && c.title.toLowerCase().includes(calendarName.toLowerCase()));
+      if (match) { calendarGuid = match.guid; calendarCtag = match.ctag || ''; }
+    }
+    if (!calendarGuid) {
+      // Default to "work" or first non-delegate
+      const work = collections.find(c => c.guid === 'work');
+      const fallback = work || collections[0];
+      if (fallback) { calendarGuid = fallback.guid; calendarCtag = fallback.ctag || ''; }
+    }
+  }
+
+  if (!calendarGuid) {
+    console.error('Could not determine target calendar. Ensure iCloud Calendar is accessible.');
+    process.exit(1);
+  }
+
+  // Determine event source: --from-json or flags
+  let events = [];
+
+  if (flags['from-json'] !== undefined) {
+    let jsonInput = '';
+    if (typeof flags['from-json'] === 'string' && flags['from-json'] !== 'true') {
+      try {
+        jsonInput = await fs.readFile(flags['from-json']);
+      } catch (e) {
+        console.error(`icloud calendar create: cannot read file "${flags['from-json']}": ${e.message}`);
+        process.exit(1);
+      }
+    } else {
+      // Read from stdin
+      try {
+        jsonInput = await new Promise((resolve, reject) => {
+          let data = '';
+          process.stdin.on('data', chunk => { data += chunk; });
+          process.stdin.on('end', () => resolve(data));
+          process.stdin.on('error', reject);
+          setTimeout(() => resolve(data), 5000);
+        });
+      } catch (e) {
+        console.error(`icloud calendar create: failed to read stdin: ${e.message}`);
+        process.exit(1);
+      }
+    }
+
+    if (!jsonInput.trim()) {
+      console.error('icloud calendar create: no JSON input received');
+      process.exit(1);
+    }
+
+    try {
+      const parsed = JSON.parse(jsonInput.trim());
+      events = Array.isArray(parsed) ? parsed : [parsed];
+    } catch (e) {
+      console.error(`icloud calendar create: invalid JSON: ${e.message}`);
+      process.exit(1);
+    }
+  } else {
+    // Single event from flags
+    const title = flags.title;
+    const start = flags.start;
+    const end = flags.end;
+
+    if (!title) { console.error('icloud calendar create: --title is required'); process.exit(1); }
+    if (!start) { console.error('icloud calendar create: --start is required'); process.exit(1); }
+    if (!end) { console.error('icloud calendar create: --end is required'); process.exit(1); }
+
+    events = [{
+      title,
+      start,
+      end,
+      location: flags.location || '',
+      description: flags.body || '',
+      allDay: flags['all-day'] === true || flags['all-day'] === 'true',
+    }];
+  }
+
+  const blockMode = !!flags.block;
+  let created = 0;
+  let skipped = 0;
+
+  // Check for duplicates: fetch events in the date range
+  let existingEvents = [];
+  if (events.length > 0) {
+    const allStarts = events.map(e => normalizeDateTime(e.start)).filter(Boolean);
+    if (allStarts.length > 0) {
+      const minDate = allStarts.sort()[0].split('T')[0];
+      const maxEnd = events.map(e => normalizeDateTime(e.end)).filter(Boolean).sort().pop() || minDate;
+      const maxDate = maxEnd.split('T')[0];
+
+      const checkUrl = `${session.calendarUrl}/ca/events?startDate=${minDate}&endDate=${maxDate}&lang=en-us&usertz=Europe%2FBerlin&clientBuildNumber=2618Build21&clientMasteringNumber=2618Build21&clientId=slicc-icloud-skill&dsid=${session.dsid}`;
+      const checkResp = await icloudFetch(tabId, checkUrl);
+      if (checkResp.ok && checkResp.data && checkResp.data.Event) {
+        existingEvents = checkResp.data.Event;
+      }
+    }
+  }
+
+  for (const ev of events) {
+    const startDt = normalizeDateTime(ev.start);
+    const endDt = normalizeDateTime(ev.end);
+
+    if (!startDt || !endDt) {
+      console.error(`Skipping event "${ev.title}": missing start/end`);
+      skipped++;
+      continue;
+    }
+
+    const eventTitle = blockMode ? 'Blocked' : (ev.title || 'Untitled');
+
+    // Duplicate check against fetched events
+    const isDup = existingEvents.some(existing => {
+      const exTitle = existing.title || '';
+      const exStart = icloudEventToShared(existing).start;
+      return exTitle === eventTitle && exStart === startDt;
+    });
+
+    if (isDup) {
+      console.log(`⊘ Skipped duplicate: "${eventTitle}" at ${startDt}`);
+      skipped++;
+      continue;
+    }
+
+    // Generate a new event GUID
+    const newGuid = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
+    // Parse start/end into date arrays for iCloud API
+    // Format: [yyyymmdd, yyyy, mm, dd, hh, mm, minutesFromMidnight] — 7-element array
+    function parseToDateArr(dtStr) {
+      const match = dtStr.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+      if (!match) return null;
+      const [, y, mo, d, h, mi] = match;
+      const dateNum = parseInt(y + mo + d);
+      const minsFromMidnight = parseInt(h) * 60 + parseInt(mi);
+      return [dateNum, parseInt(y), parseInt(mo), parseInt(d), parseInt(h), parseInt(mi), minsFromMidnight];
+    }
+
+    const startArr = parseToDateArr(startDt);
+    const endArr = parseToDateArr(endDt);
+
+    if (!startArr || !endArr) {
+      console.error(`Skipping event "${eventTitle}": invalid date format`);
+      skipped++;
+      continue;
+    }
+
+    // Duration in minutes
+    const durationMins = (endArr[6] - startArr[6]) || 60;
+    const now = new Date();
+    const nowArr = [parseInt(now.toISOString().slice(0,10).replace(/-/g,'')), now.getFullYear(), now.getMonth()+1, now.getDate(), now.getHours(), now.getMinutes(), now.getHours()*60+now.getMinutes()];
+
+    // Build the iCloud event payload (matches HAR-captured format)
+    const eventPayload = {
+      Event: {
+        guid: newGuid,
+        etag: '',
+        title: eventTitle,
+        location: (!blockMode && ev.location) ? ev.location : '',
+        description: (!blockMode && ev.description) ? ev.description : '',
+        allDay: !!ev.allDay,
+        startDate: startArr,
+        endDate: endArr,
+        localStartDate: startArr,
+        localEndDate: endArr,
+        duration: durationMins,
+        pGuid: calendarGuid,
+        tz: 'Europe/Berlin',
+        extendedDetailsAreIncluded: true,
+        icon: 0,
+        readOnly: false,
+        birthdayIsYearlessBday: false,
+        birthdayShowAsCompany: false,
+        shouldShowJunkUIWhenAppropriate: false,
+        recurrenceException: false,
+        recurrenceMaster: false,
+        hasAttachments: false,
+        attachments: [],
+        alarms: [],
+        transparent: false,
+        createdDate: nowArr,
+        lastModifiedDate: nowArr,
+      },
+      Invitee: [],
+      Alarm: [],
+      ClientState: {
+        Collection: [{
+          guid: calendarGuid,
+          ctag: calendarCtag || ''
+        }]
+      }
+    };
+
+    // POST to create event
+    const createUrl = `${session.calendarUrl}/ca/events/${calendarGuid}/${newGuid}?startDate=${colStart}&endDate=${colEnd}&lang=en-US&usertz=Europe%2FBerlin&requestID=${created + skipped + 2}&clientBuildNumber=2618Build21&clientMasteringNumber=2618Build21&clientId=slicc-icloud-skill&dsid=${session.dsid}`;
+
+    const createResp = await icloudFetch(tabId, createUrl, {
+      method: 'POST',
+      body: eventPayload
+    });
+
+    if (createResp.ok || createResp.status === 200 || createResp.status === 201) {
+      console.log(`✓ Created: "${eventTitle}" ${startDt} → ${endDt}`);
+      created++;
+    } else {
+      console.error(`✗ Failed to create "${eventTitle}" (HTTP ${createResp.status}): ${JSON.stringify(createResp.data).slice(0, 200)}`);
+    }
+  }
+
+  console.log(`\nDone. Created: ${created}, Skipped: ${skipped}`);
 }
 
 // ─── Notes Commands ──────────────────────────────────────────────────────────
@@ -685,171 +968,6 @@ async function cmdNoteRead(noteId, jsonOutput) {
   console.log(result.content || '(empty)');
 }
 
-// ─── Reminders Command ───────────────────────────────────────────────────────
-
-async function cmdReminders() {
-  const { flags } = parseFlags(args.slice(1));
-  const tabId = await getICloudTab();
-  const session = await getSession(tabId);
-  const showCompleted = flags.completed === true || flags.completed === 'true';
-  const filterList = flags.list || null;
-
-  const remBase = session.remindersUrl || session.calendarUrl.replace('calendarws', 'remindersws');
-  const endpoint = showCompleted ? 'completed' : 'startup';
-  const url = `${remBase}/rd/${endpoint}?clientBuildNumber=2618Build21&clientMasteringNumber=2618Build21&clientId=slicc-icloud-skill&dsid=${session.dsid}&lang=en-us&usertz=Europe/Berlin`;
-
-  const resp = await icloudFetch(tabId, url);
-
-  if (!resp.ok) {
-    console.error('Reminders API error: ' + JSON.stringify(resp));
-    process.exit(1);
-  }
-
-  const data = resp.data || {};
-  const collections = data.Collections || [];
-  const reminders = data.Reminders || [];
-
-  // Build collection lookup
-  const colMap = {};
-  for (const c of collections) {
-    colMap[c.guid] = c.title || 'Untitled';
-  }
-
-  // Filter by list name if specified
-  let filtered = reminders;
-  if (filterList) {
-    const lower = filterList.toLowerCase();
-    const matchGuids = collections
-      .filter(c => (c.title || '').toLowerCase().includes(lower))
-      .map(c => c.guid);
-    filtered = reminders.filter(r => matchGuids.includes(r.pGuid));
-  }
-
-  if (flags.json === true || flags.json === 'true') {
-    const output = filtered.map(r => ({
-      id: r.guid,
-      title: r.title || '',
-      list: colMap[r.pGuid] || r.pGuid,
-      dueDate: r.dueDate ? `${r.dueDate[1]}-${String(r.dueDate[2]).padStart(2,'0')}-${String(r.dueDate[3]).padStart(2,'0')}` : null,
-      completed: !!r.completedDate,
-      description: r.description || '',
-      priority: r.priority || 0
-    }));
-    console.log(JSON.stringify(output, null, 2));
-    return;
-  }
-
-  if (filtered.length === 0) {
-    console.log(showCompleted ? 'No completed reminders.' : 'No open reminders.');
-    return;
-  }
-
-  // Print collections summary
-  if (!filterList && collections.length > 0) {
-    console.log('Lists: ' + collections.map(c => c.title).join(', '));
-    console.log('');
-  }
-
-  console.log(`${showCompleted ? 'Completed' : 'Open'} reminders: ${filtered.length}\n`);
-  console.log(col('List', 20) + col('Title', 45) + 'Due');
-  console.log('-'.repeat(80));
-
-  for (const r of filtered) {
-    const list = (colMap[r.pGuid] || '').replace(/ ⚠️/g, '');
-    const title = r.title || '(untitled)';
-    let due = '';
-    if (r.dueDate) {
-      due = `${r.dueDate[1]}-${String(r.dueDate[2]).padStart(2,'0')}-${String(r.dueDate[3]).padStart(2,'0')}`;
-    }
-    console.log(col(list, 20) + col(title, 45) + due);
-  }
-}
-
-// ─── Monday Protocol Command ─────────────────────────────────────────────────
-
-async function cmdMonday() {
-  const { flags } = parseFlags(args.slice(1));
-  const tabId = await getICloudTab();
-  const session = await getSession(tabId);
-  const limit = parseInt(flags.limit || '50', 10);
-  const dateRange = flags.date || '7d';
-
-  const items = [];
-
-  // 1. Get calendar events
-  const days = parseInt(dateRange) || 7;
-  const now = new Date();
-  const start = now.toISOString().slice(0, 10);
-  const end = new Date(now.getTime() + days * 86400000).toISOString().slice(0, 10);
-  const calUrl = `${session.calendarUrl}/ca/events?startDate=${start}&endDate=${end}&lang=en-us&usertz=Europe%2FBerlin&clientBuildNumber=2618Build21&clientMasteringNumber=2618Build21&clientId=slicc-icloud-skill&dsid=${session.dsid}`;
-
-  try {
-    const calResp = await icloudFetch(tabId, calUrl);
-    const calData = calResp.data || {};
-    const events = calData.Event || calData.Events || calData.events || [];
-    for (const ev of events) {
-      const startDt = ev.startDate ? `${ev.startDate[1]}-${String(ev.startDate[2]).padStart(2,'0')}-${String(ev.startDate[3]).padStart(2,'0')}T${String(ev.startDate[4]||0).padStart(2,'0')}:${String(ev.startDate[5]||0).padStart(2,'0')}:00Z` : '';
-      items.push({
-        id: 'icloud-cal-' + (ev.guid || ev.pGuid || Math.random().toString(36).slice(2)),
-        source: 'icloud',
-        type: 'calendar',
-        title: ev.title || '(no title)',
-        subtitle: ev.location || '',
-        url: 'https://www.icloud.com/calendar',
-        ts: startDt,
-        body: ev.description || '',
-        participants: [],
-        meta: { allDay: !!ev.allDay, location: ev.location || '' }
-      });
-    }
-  } catch (e) {
-    // Calendar fetch failed, continue with reminders
-  }
-
-  // 2. Get reminders
-  const remBase = session.remindersUrl || session.calendarUrl.replace('calendarws', 'remindersws');
-  const remUrl = `${remBase}/rd/startup?clientBuildNumber=2618Build21&clientMasteringNumber=2618Build21&clientId=slicc-icloud-skill&dsid=${session.dsid}&lang=en-us&usertz=Europe/Berlin`;
-
-  try {
-    const remResp = await icloudFetch(tabId, remUrl);
-    const remData = remResp.data || {};
-    const reminders = remData.Reminders || [];
-    const collections = remData.Collections || [];
-    const colMap = {};
-    for (const c of collections) colMap[c.guid] = c.title || '';
-
-    for (const r of reminders) {
-      items.push({
-        id: 'icloud-rem-' + r.guid,
-        source: 'icloud',
-        type: 'reminder',
-        title: r.title || '(untitled)',
-        subtitle: (colMap[r.pGuid] || '').replace(/ ⚠️/g, ''),
-        url: 'https://www.icloud.com/reminders',
-        ts: r.dueDate ? `${r.dueDate[1]}-${String(r.dueDate[2]).padStart(2,'0')}-${String(r.dueDate[3]).padStart(2,'0')}T00:00:00Z` : new Date(r.createdDateExtended * 1000 + Date.UTC(2001, 0, 1)).toISOString(),
-        body: r.description || '',
-        participants: [],
-        meta: { list: (colMap[r.pGuid] || '').replace(/ ⚠️/g, ''), priority: r.priority || 0 }
-      });
-    }
-  } catch (e) {
-    // Reminders fetch failed, continue
-  }
-
-  // Sort by ts descending and limit
-  items.sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime());
-  console.log(JSON.stringify(items.slice(0, limit), null, 2));
-}
-
-// ─── Helper ──────────────────────────────────────────────────────────────────
-
-function col(str, width) {
-  if (str == null) str = '';
-  str = String(str);
-  if (str.length > width - 1) return str.slice(0, width - 2) + '… ';
-  return str.padEnd(width);
-}
-
 // ─── Dispatch ────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -859,12 +977,6 @@ async function main() {
       break;
     case 'notes':
       await cmdNotes();
-      break;
-    case 'reminders':
-      await cmdReminders();
-      break;
-    case 'monday':
-      await cmdMonday();
       break;
     default:
       console.error(`Unknown command: ${subcommand}`);
