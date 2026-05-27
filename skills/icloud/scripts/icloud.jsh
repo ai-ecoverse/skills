@@ -49,12 +49,14 @@ function parseFlags(argsSlice) {
 }
 
 function printUsage() {
-  console.log(`icloud — iCloud Calendar & Notes CLI for SLICC
+  console.log(`icloud — iCloud Calendar, Notes & Reminders CLI for SLICC
 
 Usage:
   icloud calendar [--date 2d|7d|14d|30d] [--json]
   icloud notes [--search "query"] [--json]
   icloud notes read <note-id> [--json]
+  icloud reminders [--list "name"] [--completed] [--json]
+  icloud monday [--limit N] [--date Nd]
   icloud --help
 
 Calendar:
@@ -68,7 +70,18 @@ Notes:
   --json    Output raw JSON
 
   icloud notes read <note-id>
-    Reads the full content of a note by its ID.`);
+    Reads the full content of a note by its ID.
+
+Reminders:
+  Lists incomplete reminders across all lists.
+  --list      Filter to a specific list by name
+  --completed Show completed reminders instead
+  --json      Output raw JSON
+
+Monday:
+  Output items in monday aggregator protocol format.
+  --limit N   Max items (default: 50)
+  --date Nd   How far ahead for calendar (default: 7d)`);
 }
 
 function col(str, width) {
@@ -143,6 +156,7 @@ async function getSession(tabId) {
         return JSON.stringify({
           dsid: data.dsInfo ? data.dsInfo.dsid : null,
           calendarUrl: data.webservices && data.webservices.calendar ? data.webservices.calendar.url : null,
+          remindersUrl: data.webservices && data.webservices.reminders ? data.webservices.reminders.url : null,
           ckdbUrl: data.webservices && data.webservices.ckdatabasews ? data.webservices.ckdatabasews.url : null
         });
       } catch(e) {
@@ -671,6 +685,171 @@ async function cmdNoteRead(noteId, jsonOutput) {
   console.log(result.content || '(empty)');
 }
 
+// ─── Reminders Command ───────────────────────────────────────────────────────
+
+async function cmdReminders() {
+  const { flags } = parseFlags(args.slice(1));
+  const tabId = await getICloudTab();
+  const session = await getSession(tabId);
+  const showCompleted = flags.completed === true || flags.completed === 'true';
+  const filterList = flags.list || null;
+
+  const remBase = session.remindersUrl || session.calendarUrl.replace('calendarws', 'remindersws');
+  const endpoint = showCompleted ? 'completed' : 'startup';
+  const url = `${remBase}/rd/${endpoint}?clientBuildNumber=2618Build21&clientMasteringNumber=2618Build21&clientId=slicc-icloud-skill&dsid=${session.dsid}&lang=en-us&usertz=Europe/Berlin`;
+
+  const resp = await icloudFetch(tabId, url);
+
+  if (!resp.ok) {
+    console.error('Reminders API error: ' + JSON.stringify(resp));
+    process.exit(1);
+  }
+
+  const data = resp.data || {};
+  const collections = data.Collections || [];
+  const reminders = data.Reminders || [];
+
+  // Build collection lookup
+  const colMap = {};
+  for (const c of collections) {
+    colMap[c.guid] = c.title || 'Untitled';
+  }
+
+  // Filter by list name if specified
+  let filtered = reminders;
+  if (filterList) {
+    const lower = filterList.toLowerCase();
+    const matchGuids = collections
+      .filter(c => (c.title || '').toLowerCase().includes(lower))
+      .map(c => c.guid);
+    filtered = reminders.filter(r => matchGuids.includes(r.pGuid));
+  }
+
+  if (flags.json === true || flags.json === 'true') {
+    const output = filtered.map(r => ({
+      id: r.guid,
+      title: r.title || '',
+      list: colMap[r.pGuid] || r.pGuid,
+      dueDate: r.dueDate ? `${r.dueDate[1]}-${String(r.dueDate[2]).padStart(2,'0')}-${String(r.dueDate[3]).padStart(2,'0')}` : null,
+      completed: !!r.completedDate,
+      description: r.description || '',
+      priority: r.priority || 0
+    }));
+    console.log(JSON.stringify(output, null, 2));
+    return;
+  }
+
+  if (filtered.length === 0) {
+    console.log(showCompleted ? 'No completed reminders.' : 'No open reminders.');
+    return;
+  }
+
+  // Print collections summary
+  if (!filterList && collections.length > 0) {
+    console.log('Lists: ' + collections.map(c => c.title).join(', '));
+    console.log('');
+  }
+
+  console.log(`${showCompleted ? 'Completed' : 'Open'} reminders: ${filtered.length}\n`);
+  console.log(col('List', 20) + col('Title', 45) + 'Due');
+  console.log('-'.repeat(80));
+
+  for (const r of filtered) {
+    const list = (colMap[r.pGuid] || '').replace(/ ⚠️/g, '');
+    const title = r.title || '(untitled)';
+    let due = '';
+    if (r.dueDate) {
+      due = `${r.dueDate[1]}-${String(r.dueDate[2]).padStart(2,'0')}-${String(r.dueDate[3]).padStart(2,'0')}`;
+    }
+    console.log(col(list, 20) + col(title, 45) + due);
+  }
+}
+
+// ─── Monday Protocol Command ─────────────────────────────────────────────────
+
+async function cmdMonday() {
+  const { flags } = parseFlags(args.slice(1));
+  const tabId = await getICloudTab();
+  const session = await getSession(tabId);
+  const limit = parseInt(flags.limit || '50', 10);
+  const dateRange = flags.date || '7d';
+
+  const items = [];
+
+  // 1. Get calendar events
+  const days = parseInt(dateRange) || 7;
+  const now = new Date();
+  const start = now.toISOString().slice(0, 10);
+  const end = new Date(now.getTime() + days * 86400000).toISOString().slice(0, 10);
+  const calUrl = `${session.calendarUrl}/ca/events?startDate=${start}&endDate=${end}&lang=en-us&usertz=Europe%2FBerlin&clientBuildNumber=2618Build21&clientMasteringNumber=2618Build21&clientId=slicc-icloud-skill&dsid=${session.dsid}`;
+
+  try {
+    const calResp = await icloudFetch(tabId, calUrl);
+    const calData = calResp.data || {};
+    const events = calData.Event || calData.Events || calData.events || [];
+    for (const ev of events) {
+      const startDt = ev.startDate ? `${ev.startDate[1]}-${String(ev.startDate[2]).padStart(2,'0')}-${String(ev.startDate[3]).padStart(2,'0')}T${String(ev.startDate[4]||0).padStart(2,'0')}:${String(ev.startDate[5]||0).padStart(2,'0')}:00Z` : '';
+      items.push({
+        id: 'icloud-cal-' + (ev.guid || ev.pGuid || Math.random().toString(36).slice(2)),
+        source: 'icloud',
+        type: 'calendar',
+        title: ev.title || '(no title)',
+        subtitle: ev.location || '',
+        url: 'https://www.icloud.com/calendar',
+        ts: startDt,
+        body: ev.description || '',
+        participants: [],
+        meta: { allDay: !!ev.allDay, location: ev.location || '' }
+      });
+    }
+  } catch (e) {
+    // Calendar fetch failed, continue with reminders
+  }
+
+  // 2. Get reminders
+  const remBase = session.remindersUrl || session.calendarUrl.replace('calendarws', 'remindersws');
+  const remUrl = `${remBase}/rd/startup?clientBuildNumber=2618Build21&clientMasteringNumber=2618Build21&clientId=slicc-icloud-skill&dsid=${session.dsid}&lang=en-us&usertz=Europe/Berlin`;
+
+  try {
+    const remResp = await icloudFetch(tabId, remUrl);
+    const remData = remResp.data || {};
+    const reminders = remData.Reminders || [];
+    const collections = remData.Collections || [];
+    const colMap = {};
+    for (const c of collections) colMap[c.guid] = c.title || '';
+
+    for (const r of reminders) {
+      items.push({
+        id: 'icloud-rem-' + r.guid,
+        source: 'icloud',
+        type: 'reminder',
+        title: r.title || '(untitled)',
+        subtitle: (colMap[r.pGuid] || '').replace(/ ⚠️/g, ''),
+        url: 'https://www.icloud.com/reminders',
+        ts: r.dueDate ? `${r.dueDate[1]}-${String(r.dueDate[2]).padStart(2,'0')}-${String(r.dueDate[3]).padStart(2,'0')}T00:00:00Z` : new Date(r.createdDateExtended * 1000 + Date.UTC(2001, 0, 1)).toISOString(),
+        body: r.description || '',
+        participants: [],
+        meta: { list: (colMap[r.pGuid] || '').replace(/ ⚠️/g, ''), priority: r.priority || 0 }
+      });
+    }
+  } catch (e) {
+    // Reminders fetch failed, continue
+  }
+
+  // Sort by ts descending and limit
+  items.sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime());
+  console.log(JSON.stringify(items.slice(0, limit), null, 2));
+}
+
+// ─── Helper ──────────────────────────────────────────────────────────────────
+
+function col(str, width) {
+  if (str == null) str = '';
+  str = String(str);
+  if (str.length > width - 1) return str.slice(0, width - 2) + '… ';
+  return str.padEnd(width);
+}
+
 // ─── Dispatch ────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -680,6 +859,12 @@ async function main() {
       break;
     case 'notes':
       await cmdNotes();
+      break;
+    case 'reminders':
+      await cmdReminders();
+      break;
+    case 'monday':
+      await cmdMonday();
       break;
     default:
       console.error(`Unknown command: ${subcommand}`);
