@@ -180,8 +180,11 @@ silently no-op. Always verify by re-listing pending requests after acting:
 # 1. List pending requests — note the timestamp of the target
 slack --ws=E06V3987PMY pending
 
-# 2. Approve (or deny) by timestamp
+# 2. Approve by timestamp
 slack --ws=E06V3987PMY approve 1774846849.585479
+
+# 2b. Or deny by timestamp (use the full command form, not just `deny <ts>`)
+slack --ws=E06V3987PMY deny 1770698762.931619
 
 # 3. Verify — the entry should no longer appear in pending
 slack --ws=E06V3987PMY pending
