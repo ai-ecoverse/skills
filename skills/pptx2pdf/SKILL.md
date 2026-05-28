@@ -34,8 +34,9 @@ open('/shared/deck.pdf', '--download');
 After conversion, confirm the output file exists and is non-trivially sized:
 
 ```js
-var stat = await fs.stat('/shared/deck.pdf');
-if (!stat || stat.size < 1024) {
+var check = await exec('wc -c "/shared/deck.pdf"');
+var bytes = parseInt((check.stdout || '0').trim().split(/\s+/)[0], 10);
+if (!bytes || bytes < 1024) {
   console.error('PDF may be empty or conversion failed — check that the input path is correct and the file is a valid PPTX.');
 }
 ```
