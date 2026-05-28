@@ -12,7 +12,7 @@ Create playlists that reward the attentive listener—privileging originals over
 
 Every mixtape produces three artifacts:
 
-1. **Song List** - 15-25 tracks with artist and title
+1. **Song List** - 15–25 tracks with artist and title
 2. **Description** - Playlist copy in music journalist voice
 3. **Cover Prompt** - Image generation prompt for artwork
 
@@ -28,22 +28,15 @@ Every mixtape produces three artifacts:
 
 ### Thematic Architecture
 
-Build dialectical structures within playlists:
-- Bow Wow Wow's "I Want Candy" (feral wanting) answered by Jagger's "You Can't Always Get What You Want" (philosophical resignation)
-- Hidden producer lineages (Steinman connections)
-- Genre conversations across decades
+Build dialectical structures: Bow Wow Wow's "I Want Candy" (feral wanting) answered by Jagger's "You Can't Always Get What You Want" (philosophical resignation). Surface hidden producer lineages (Steinman connections) and genre conversations across decades.
 
 ### Research Sources
 
-Consult in order:
-1. User's Last.fm history - See [references/lastfm.md](references/lastfm.md)
-2. secondhandsongs.com for cover genealogies - See [references/secondhandsongs.md](references/secondhandsongs.md)
-3. Apple Music catalog for availability
-4. Discogs for obscure pressings and foreign releases
+Consult in order: user's Last.fm history → secondhandsongs.com for cover genealogies → Apple Music catalog for availability → Discogs for obscure pressings and foreign releases.
 
 ## Output Formats
 
-### Song List Format
+### Song List
 
 ```
 # [PLAYLIST TITLE]
@@ -53,36 +46,25 @@ Consult in order:
 | Artist Name | Song Title | Brief connection explanation |
 ```
 
-### Description Style
+### Description
 
-Write as a music journalist who aspired to Rolling Stone but got stuck titling Apple Music "essentials" playlists. Voice should be:
-- Wry but not cynical
-- Erudite without showing off
-- Acknowledging hidden architecture without over-explaining
+Voice: wry but not cynical, erudite without showing off. Use the structure below:
 
-Template structure:
 ```
 [TITLE]
 [Category] • [Song Count] Songs • Updated [Year]
 
 [Opening hook about what the playlist reveals]
-
-[Middle paragraph on selection methodology - originals, adaptations, roads less traveled]
-
-[Thematic architecture - the dialectic, the hidden connections]
+[Selection methodology — originals, adaptations, roads less traveled]
+[Thematic architecture — the dialectic, the hidden connections]
 
 Pairs well with: [ironic pairing suggestions]
 ```
 
-### Cover Art Prompt Format
+### Cover Art Prompt
 
-Prompts should be "artsy fartsy with emphasis on fartsy":
-- Reference art history (Dutch Golden Age vanitas, Codex Manesse, Waldorf watercolors)
-- Include unexpected juxtapositions
-- Specify "aspect ratio 1:1" at end
-- Embrace the absurd
+Reference art history with unexpected juxtapositions and self-aware absurdist tone. Include: art movement/period, lighting, symbolic elements, color palette, brief artistic commentary, and `aspect ratio 1:1`. Draw from: Dutch Golden Age vanitas, Codex Manesse, Waldorf watercolors, etc.
 
-Example structure:
 ```
 [Primary subject] in the style of [art movement/period], [lighting description], [symbolic elements], [color palette], [self-aware artistic commentary], aspect ratio 1:1
 ```
@@ -98,41 +80,55 @@ Present the completed mixtape as:
 1. **Understand the theme** - Ask clarifying questions if theme is ambiguous
 2. **Research user taste** - If Last.fm username known, fetch top artists/tracks to anchor selections
 3. **Research genealogies** - For candidate songs, check secondhandsongs.com for originals and foreign versions
-4. **Build song list** - Apply selection hierarchy, aim for 15-25 tracks
-5. **Find the dialectic** - Identify thematic tensions and hidden connections
-6. **Write description** - Music journalist voice, acknowledge the architecture
-7. **Create cover prompt** - Art historical absurdism
-8. **Present to user** - Offer refinements, substitutions, additions
+4. **Build song list** - Apply selection hierarchy, aim for 15–25 tracks
+5. **Validate song list** - Confirm track count is within 15–25 range; verify originals and foreign-language versions via SecondHandSongs before proceeding; add or cut tracks as needed
+6. **Find the dialectic** - Identify thematic tensions and hidden connections
+7. **Write description** - Music journalist voice, acknowledge the architecture
+8. **Create cover prompt** - Art historical absurdism
+9. **Present to user** - Offer refinements, substitutions, additions
 
 ## Research Quick Reference
+
+> **Note:** All scraping snippets are heuristic and depend on site markup. If parsing fails, ask the user to paste their top artists/tracks directly, or verify results against the rendered page.
 
 ### Last.fm
 
 Ask the user for their Last.fm username, or check memory/global memory for a previously stored one.
 
-Fetch taste profile:
-```
-https://www.last.fm/user/{USERNAME}/library/artists
-https://www.last.fm/user/{USERNAME}/library/tracks
+```bash
+curl -s "https://www.last.fm/user/{USERNAME}/library/artists" > /tmp/lastfm_artists.html
+
+python3 - <<'EOF'
+import re
+html = open('/tmp/lastfm_artists.html').read()
+artists = re.findall(r'class="link-block-target">([^<]+)', html)
+counts = re.findall(r'class="chartlist-count-bar-value">\s*(\S+) scrobbles', html)
+for a, c in zip(artists, counts):
+    print(f"{c:>10}  {a}")
+EOF
 ```
 
-Key data points:
-- Top artists (overall and by period)
-- Total scrobbles per artist (indicates depth of fandom)
-- Recent listening for current mood
+Key data points: top artists overall and by period, scrobble depth per artist, recent listening for current mood.
 
 ### SecondHandSongs
 
-For each candidate song:
-```
-https://secondhandsongs.com/search/work?title={SONG}
+Substitute `{SONG}` with the candidate title and URL-encode it (titles with spaces or reserved characters will otherwise reject the curl request):
+
+```bash
+SONG="Sweet Jane"
+curl -sG "https://secondhandsongs.com/search/work" --data-urlencode "title=${SONG}" > /tmp/shs_results.html
+
+python3 - <<'EOF'
+import re
+html = open('/tmp/shs_results.html').read()
+works = re.findall(r'href="(/work/[^"]+)"[^>]*>([^<]+)</a>', html)
+badges = re.findall(r'class="[^"]*badge[^"]*">([^<]+)</span>', html)
+for w in works: print(w)
+for b in badges: print(b.strip())
+EOF
 ```
 
-On work pages, look for:
-- "Original" badges with dates
-- Foreign language versions (different titles)
-- Unexpected cover artists
-- Cover chains (A covered by B covered by C)
+On work pages, look for: "Original" badges with dates, foreign-language versions, unexpected cover artists, and cover chains (A covered by B covered by C).
 
 ### Research Decision Tree
 
@@ -149,4 +145,3 @@ Is the obvious version by a mega-star?
   → Find the deep cut, live version, or earlier recording
   → Check if a beloved artist from user's Last.fm covered it
 ```
-
