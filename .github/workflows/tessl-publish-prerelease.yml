@@ -1,11 +1,9 @@
 name: Tessl Tile Publish (Pre-release)
 
-# Publishes both tiles from the `pre-release` branch with whatever version
-# is in tiles/*/tile.json — bump the `-beta.N` / `-rc.N` suffix yourself
-# when you want a new pre-release. The `patch-version-publish` action will
-# publish the local version as-is when it is ahead of the registry; if the
-# exact pre-release version already exists, it will auto-bump the patch
-# component (e.g. 0.2.0-beta.1 → 0.2.1).
+# Publishes both tiles from the `pre-release` branch using whatever version
+# is in tiles/*/tile.json — bump the version (e.g. 0.2.0-beta.1 → 0.2.0-beta.2)
+# manually before pushing. This workflow does NOT auto-bump, because the
+# patch-version-publish action does not support semver pre-release tags.
 
 on:
   push:
@@ -16,9 +14,7 @@ on:
       - '.tileignore'
 
 permissions:
-  contents: write
-  id-token: write
-  pull-requests: write
+  contents: read
 
 jobs:
   publish:
@@ -26,22 +22,19 @@ jobs:
     if: "!contains(github.event.head_commit.message, '[skip ci]')"
     strategy:
       fail-fast: false
-      max-parallel: 1
       matrix:
         tile: [basic, advanced]
     steps:
       - uses: actions/checkout@v6
-        with:
-          ref: ${{ github.ref }}
 
-      # Pick up any [skip ci] bump commit from a previous matrix job
-      # so our own push isn't rejected as non-fast-forward.
-      - name: Pull latest from branch
-        run: |
-          git fetch origin "${GITHUB_REF#refs/heads/}"
-          git reset --hard "origin/${GITHUB_REF#refs/heads/}"
-
-      - uses: tesslio/patch-version-publish@v1
+      - uses: tesslio/setup-tessl@v2
         with:
           token: ${{ secrets.TESSLIO_TOKEN }}
-          path: tiles/${{ matrix.tile }}
+
+      - name: Publish tile (pre-release version from tile.json)
+        run: |
+          TILE="tiles/${{ matrix.tile }}"
+          NAME=$(jq -r .name "$TILE/tile.json")
+          VERSION=$(jq -r .version "$TILE/tile.json")
+          echo "Publishing $NAME@$VERSION from $TILE"
+          tessl tile publish "$TILE"
