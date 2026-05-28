@@ -6,10 +6,6 @@ allowed-tools: bash
 
 # FluffyJaws
 
-Direct API access to Adobe FluffyJaws (a.k.a. Mr. FluffyJaws) — Adobe's internal AI assistant
-that ships streaming chat over Server-Sent Events, FluffyPacks (curated AI agents
-with tool/source bundles), and a JSON-RPC MCP endpoint.
-
 Use the bundled `fj` shell command instead of opening
 [https://fluffyjaws.adobe.com](https://fluffyjaws.adobe.com).
 
@@ -18,6 +14,7 @@ Use the bundled `fj` shell command instead of opening
 ```bash
 # Confirm you are signed in (uses the existing fluffyjaws.adobe.com browser tab).
 fj me
+# Verify the identity printed before issuing further commands.
 
 # One-shot question. Streams to stdout, prints final answer + responseId.
 fj ask "Summarize the last AEM Cloud Service release notes."
@@ -40,6 +37,7 @@ fj search "release notes"
 
 # Talk to the FluffyJaws MCP endpoint (JSON-RPC over HTTP).
 fj mcp init
+# Verify: confirm a session id was stored before continuing.
 fj mcp tools
 fj mcp call google_web_search '{"query":"AEM release notes"}'
 
@@ -50,26 +48,9 @@ fj docs api        # show full API doc
 
 ## Authentication
 
-FluffyJaws is gated by Adobe Okta SSO. The public API also supports Okta
-client_credentials service tokens, but for an interactive SLICC session the
-**browser session** path is what works without any extra setup.
+`fj` authenticates via your existing `fluffyjaws.adobe.com` browser session cookie. It finds (or opens) a tab on that host and proxies every API call through it so the `fjv3_session` cookie is sent automatically.
 
-**How `fj` authenticates**: it finds (or opens) a tab on
-`https://fluffyjaws.adobe.com` and runs every API call from that page's context
-via `playwright-cli eval`, so the request carries the user's `fjv3_session`
-cookie automatically.
-
-Why not direct fetch from the SLICC sandbox?
-
-- The browser-fetch in SLICC always sends `Origin: http://localhost:...`.
-- FluffyJaws's `api.fluffyjaws.adobe.com` host enforces CORS against registered
-  origins; localhost is rejected.
-- The same-origin UI host (`fluffyjaws.adobe.com`) accepts the cookie session.
-- So `fj` always proxies through a `fluffyjaws.adobe.com` tab.
-
-If the session is expired you will see a redirect to `adobe.okta.com`. In that
-case re-sign-in once in the FluffyJaws tab (in the foreground browser) and
-retry.
+If the session is expired you will see a redirect to `adobe.okta.com`. Re-sign-in once in the FluffyJaws tab (in the foreground browser) and retry.
 
 ## Available commands
 
@@ -77,7 +58,7 @@ All commands print structured output. JSON commands print pretty-printed JSON;
 streaming commands print incremental text and a final summary line.
 
 ### `fj me`
-Prints the signed-in identity from `/api/auth/me`.
+Prints the signed-in identity from `/api/auth/me`. Confirm the identity is correct before issuing `fj ask` or other commands.
 
 ### `fj ask <prompt> [options]`
 Stream a single chat turn. Prints assistant text as it arrives, then prints a
@@ -127,7 +108,7 @@ Direct JSON-RPC client for `/api/v1/mcp`. Stores the negotiated
 `Mcp-Session-Id` in `~/.config/fj/mcp-session.txt` so subcommands chain.
 
 Subcommands:
-- `fj mcp init` — call `initialize`, store session id
+- `fj mcp init` — call `initialize`, store session id. **Verify the session id was stored (`fj mcp session`) before calling tools.**
 - `fj mcp ping` — call `ping`
 - `fj mcp tools` — call `tools/list`
 - `fj mcp call <name> <args-json>` — call a tool, prints JSON result
@@ -156,6 +137,15 @@ pages.
 `--raw` skips parsing and dumps every SSE line. `--json` emits one parsed JSON
 event per line for piping into `jq`.
 
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| Redirect to `adobe.okta.com` | Expired browser session | Re-sign-in at `fluffyjaws.adobe.com`, then retry |
+| `fj mcp call` returns session error | MCP session timed out or never initialised | Run `fj mcp init`, confirm session id with `fj mcp session`, then retry |
+| `fj pack <uuid>` returns 404 | Invalid or inaccessible pack UUID | Run `fj packs` or `fj explore` to find valid UUIDs |
+| `fj ask` exits with status 1 | `response.failed` or stream error | Check stderr for the error message; retry or adjust options |
+
 ## Endpoints reference
 
 For the full endpoint catalog with request/response schemas, see
@@ -163,17 +153,7 @@ For the full endpoint catalog with request/response schemas, see
 
 ## Caveats
 
-- The skill calls every endpoint via the same-origin **UI host**
-  (`https://fluffyjaws.adobe.com`), not `api.fluffyjaws.adobe.com`. Both serve
-  the same `/api/v1/*` contract, but only the UI host accepts the cookie
-  session you already have.
-- Inline file uploads (`input_file`) and reusable `fileIds` are not currently
-  exposed by `fj ask`. Add them when you need them.
-- The public `/api/v1/conversation/*` surface intentionally exposes only
-  metadata reads and `create`. There is **no public message-save** route, so
-  streamed turns done via `fj ask` are not persisted in the FluffyJaws web UI's
-  conversation history. If you need durable history, store the
-  `responseId` chain yourself.
-- Service-token / on-behalf-of-user auth is documented in
-  `references/endpoints.md` but is not exercised by `fj` because the SLICC
-  fetch sandbox cannot present the right Origin to `api.fluffyjaws.adobe.com`.
+- All API calls go through the UI host (`https://fluffyjaws.adobe.com`), not `api.fluffyjaws.adobe.com`. Only the UI host accepts the cookie session you already have.
+- Inline file uploads (`input_file`) and reusable `fileIds` are not currently exposed by `fj ask`.
+- The `/api/v1/conversation/*` surface exposes only metadata reads and `create`. There is **no public message-save** route, so streamed turns via `fj ask` are not persisted in the FluffyJaws web UI's conversation history. Store the `responseId` chain yourself if you need durable history.
+- Service-token / on-behalf-of-user auth is documented in `references/endpoints.md` but is not exercised by `fj` because the SLICC fetch sandbox cannot present the right Origin to `api.fluffyjaws.adobe.com`.
