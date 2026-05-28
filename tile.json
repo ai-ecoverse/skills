@@ -76,9 +76,6 @@
     "slack": {
       "path": "skills/slack/SKILL.md"
     },
-    "slicc-demo": {
-      "path": "skills/slicc-demo/SKILL.md"
-    },
     "strudel-music": {
       "path": "skills/strudel-music/SKILL.md"
     },
