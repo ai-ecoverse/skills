@@ -1,6 +1,6 @@
 ---
 name: pdf
-description: Read, create, merge, split, rotate, and extract text from PDF files. Uses SLICC's built-in pdftk and convert commands. No Python required.
+description: Read, create, merge, split, rotate, and extract text from PDF files using SLICC's built-in pdftk and convert commands. No Python required. Use when the user asks to work with PDFs or .pdf files, needs to combine, merge, split, rotate, or extract text/pages from documents, wants to check page count or metadata, or needs to convert a PDF page to an image.
 triggers:
   - "extract text from pdf"
   - "extract text from this pdf"
@@ -8,9 +8,11 @@ triggers:
   - "merge pdfs"
   - "merge these pdfs"
   - "combine pdfs"
+  - "combine these pdfs"
   - "split pdf"
   - "split this pdf"
   - "extract pages from pdf"
+  - "page extraction"
   - "rotate pdf"
   - "rotate pages"
   - "create a pdf"
@@ -20,6 +22,8 @@ triggers:
   - "how many pages in this pdf"
   - "pdf metadata"
   - "burst pdf into pages"
+  - "document merging"
+  - ".pdf file"
 ---
 
 # PDF Skill
@@ -59,6 +63,11 @@ console.log(r.stdout);
 ```js
 // Assign handle labels A, B, C — then cat them in order
 await exec('pdftk A=/mnt/a.pdf B=/mnt/b.pdf C=/mnt/c.pdf cat A B C output /shared/merged.pdf');
+
+// Verify: confirm page count matches sum of inputs
+var check = await exec('pdftk /shared/merged.pdf dump_data');
+console.log(check.stdout); // Look for NumberOfPages
+
 open('/shared/merged.pdf', '--download');
 ```
 
@@ -72,12 +81,20 @@ await exec('pdftk /mnt/file.pdf cat 3 output /shared/page3.pdf');
 
 // Extract from page 4 to the end
 await exec('pdftk /mnt/file.pdf cat 4-end output /shared/from4.pdf');
+
+// Verify the output page count
+var check = await exec('pdftk /shared/pages2to5.pdf dump_data');
+console.log(check.stdout); // Should show NumberOfPages: 4
 ```
 
 ### Split — every page into its own file
 ```js
 // Creates /shared/page_01.pdf, /shared/page_02.pdf, etc.
 await exec('pdftk /mnt/file.pdf burst output /shared/page_%02d.pdf');
+
+// Verify by listing produced files
+var ls = await exec('ls /shared/page_*.pdf');
+console.log(ls.stdout);
 ```
 
 ### Rotate pages
@@ -111,11 +128,17 @@ await exec('convert /mnt/file.pdf[0] /shared/page1.png');
 open('/shared/page1.png', '--view');
 ```
 
+## Error Handling
+
+- **File not found**: If `pdftk` reports a file error, double-check the path — uploaded files are typically at `/mnt/<filename>`, not `/tmp/` or relative paths.
+- **Page range out of bounds**: If a requested page range exceeds the document's page count, run `pdftk /mnt/file.pdf dump_data` first to confirm `NumberOfPages`, then adjust the range accordingly.
+- **Empty stdout**: If `dump_data_utf8` returns nothing, the PDF may have no embedded text (e.g., it is a scanned image). OCR is not available in the current SLICC environment.
+- **convert not available**: The `convert` (ImageMagick) command requires a tray runtime; it is not available in the browser-only float.
+
 ## Notes
 
 - All output files should go to `/shared/` or `/mnt/` — not `/tmp/`.
 - `pdftk cat` page ranges are 1-based. `end` means last page: `3-end`.
 - `pdftk burst` zero-pads page numbers — use `%02d` or `%03d` in the output pattern.
-- `convert` (ImageMagick) requires a tray runtime; not available in the browser-only float.
 - OCR and PDF form filling are not available in the current SLICC environment.
 - For PPTX → PDF conversion with font embedding and layout fidelity, use the `pptx2pdf` skill.
