@@ -30,9 +30,29 @@ When the user asks to set up an LLM wiki, or when this skill is first activated:
 ### 1. Locate or create the wiki root
 Ask the user where their knowledge base lives (e.g. `/mnt/kb`). If they have an existing wiki, use it. If starting fresh, create `<root>/WIKI.md` (schema), `<root>/index.md` (empty catalog), and `<root>/log.md` (empty log).
 
+### 2. Install the SLICC sprinkle (optional, when running under SLICC)
+```
+sprinkle open llm-wiki
+```
+
+### 3. Create the wiki-ops scoop
+```
+scoop_scoop("wiki-ops")
+feed_scoop("wiki-ops", <contents of wiki-ops-brief.md, with WIKI_ROOT replaced>)
+```
+
+### 4. Wire the sprinkle route
+```
+sprinkle route llm-wiki --scoop wiki-ops
+```
+Routes `query-submit`, `ingest-submit`, and `lint-wiki` licks straight to wiki-ops.
+
+### 5. Update cone memory
+Add to the cone's CLAUDE.md: the `wiki-ops` scoop handles query / ingest / lint events; the `wiki` CLI (`wiki.jsh`) is available for quick lookups; the cone must perform `log.md` appends because scoops cannot write to mounted paths.
+
 ### Minimal WIKI.md schema template
 
-When creating a fresh wiki, use this as the default `WIKI.md` unless the user specifies otherwise:
+When creating a fresh wiki, use this as the default `WIKI.md` unless the user specifies otherwise. The directory layout matches the bundled `wiki.jsh` CLI and `wiki-ops` scoop so commands like `wiki list`, `wiki search`, and `wiki recent` work without configuration:
 
 ```markdown
 # Wiki Schema
@@ -43,16 +63,17 @@ When creating a fresh wiki, use this as the default `WIKI.md` unless the user sp
 ## Directory Layout
 - `index.md` — master catalog of all pages (one-line blurbs, categories, links)
 - `log.md` — append-only operation log (ingest / query / lint entries)
-- `wiki/` — topic pages (one concept per file)
-- `wiki/queries/` — filed answers to queries
-- `sources/` — raw sources (read-only; never edited by the wiki layer)
+- `people/`, `work/`, `creative/`, `tech/`, `taste/`, `life/`, `events/`, `places/` — topic pages by category (one concept per file)
+- `_raw/` — raw sources (read-only; never edited by the wiki layer)
 
 ## Conventions
 - Wikilinks: `[[page-name]]`
-- Citations: `([source: filename])` inline, pointing to a file in `sources/`
+- Citations: `([source: filename])` inline, pointing to a file in `_raw/`
 - Contradiction marker: `> ⚠ CONFLICT [YYYY-MM-DD]: <description>`
 - Categories: comma-separated tags in index blurbs, e.g. `(ML, architecture)`
 ```
+
+If the user prefers a different layout, update `wiki.jsh`'s `CATS` / `RAW_DIR` constants and `wiki-ops-brief.md` to match — otherwise the bundled tooling will see an empty wiki.
 
 ## Wikilink Validation
 
@@ -80,7 +101,7 @@ Pages created: transformer-attention. Pages updated: bert, self-attention. New l
 
 ### Example wiki page (condensed)
 
-`wiki/transformer-attention.md`:
+`tech/transformer-attention.md`:
 ```markdown
 # Transformer Attention
 
@@ -89,12 +110,12 @@ attention runs h parallel heads then concatenates. ([source: vaswani-2017.pdf])
 
 ## Related
 - [[self-attention]] — single-sequence variant
-- [[bert]] — applies masked attention for pretraining
+- [[bert]] — applies bidirectional self-attention for masked-LM pretraining
 ```
 
 `index.md` entry:
 ```markdown
-- [transformer-attention](wiki/transformer-attention.md) — scaled dot-product & multi-head attention mechanism (ML, architecture)
+- [transformer-attention](tech/transformer-attention.md) — scaled dot-product & multi-head attention mechanism (ML, architecture)
 ```
 
 ## Query
@@ -110,19 +131,22 @@ attention runs h parallel heads then concatenates. ([source: vaswani-2017.pdf])
 
 ```markdown
 ## [2024-06-11] query | How does BERT use attention?
-Pages read: bert, transformer-attention, self-attention. Pages created: queries/bert-attention-usage. Citations: 2. Missing pages flagged: 0.
+Pages read: bert, transformer-attention, self-attention. Pages created: tech/bert-attention-usage. Citations: 2. Missing pages flagged: 0.
 ```
 
 ### Example query page (condensed)
 
-`wiki/queries/bert-attention-usage.md`:
+`tech/bert-attention-usage.md`:
 ```markdown
 # How Does BERT Use Attention?
 
-BERT applies **masked self-attention** during pretraining: tokens attend only to
-non-masked positions. It inherits the multi-head mechanism from the Transformer
-encoder ([transformer-attention](../transformer-attention.md)), running 12 heads
-in the base model. ([source: bert.md, transformer-attention.md])
+BERT uses **bidirectional self-attention**: every token attends to every other
+token in the sequence (subject only to padding masks). During masked-LM
+pretraining, ~15% of input tokens are replaced with `[MASK]` and the encoder
+must predict them from the surrounding bidirectional context. It inherits the
+multi-head mechanism from the Transformer encoder
+([transformer-attention](transformer-attention.md)), running 12 heads in the
+base model. ([source: bert.md, transformer-attention.md])
 
 ## Related
 - [[transformer-attention]] — underlying attention mechanism
