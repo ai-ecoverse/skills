@@ -378,6 +378,19 @@ async function prCheckout(args) {
   console.log('git checkout -b ' + branch + ' FETCH_HEAD');
 }
 
+// ─── pr close ────────────────────────────────────────────────────────────────
+
+async function prClose(args) {
+  if (!args[0]) die('pr close: PR number required');
+  const num = validateNum(args[0], 'PR number');
+  const repo = await resolveRepo(args[1]);
+  try {
+    const res = await api(`/repos/${repo}/pulls/${num}`, { method: 'PATCH', body: JSON.stringify({ state: 'closed' }) });
+    console.log(sym('closed') + ' Closed PR ' + C.cyan('#' + num) + ': ' + res.title);
+    console.log(C.gray('URL:') + '     ' + res.html_url);
+  } catch (e) { fail('pr close', e); }
+}
+
 // ─── issue list ──────────────────────────────────────────────────────────────
 
 async function issueList(args) {
@@ -1078,6 +1091,7 @@ function showHelp() {
   console.log('  ' + C.cyan('pr view') + '       <num> [repo]                 View PR details and checks');
   console.log('  ' + C.cyan('pr create') + '     <title> <body> <head> [--base=<base>] [--draft] [repo]  Open a PR');
   console.log('  ' + C.cyan('pr merge') + '      <num> [--squash|--rebase] [repo]  Merge a PR');
+  console.log('  ' + C.cyan('pr close') + '      <num> [repo]                 Close a PR without merging');
   console.log('  ' + C.cyan('pr comment') + '    <num> <message> [repo]       Post a comment');
   console.log('  ' + C.cyan('pr checkout') + '   <num> [repo]                 Print checkout commands');
   console.log('  ' + C.cyan('issue list') + '    [repo]                       List open issues');
@@ -1123,7 +1137,7 @@ if (cmd === 'api') { await apiPassthrough(argv.slice(1)); process.exit(0); }
 if (cmd === 'monday') { await mondayGh(argv.slice(2)); process.exit(0); }
 
 const dispatch = {
-  pr:      { list: () => prList(rest),      view: () => prView(rest),    merge: () => prMerge(rest), comment: () => prComment(rest), checkout: () => prCheckout(rest), create: () => prCreate(rest) },
+  pr:      { list: () => prList(rest),      view: () => prView(rest),    merge: () => prMerge(rest), close: () => prClose(rest), comment: () => prComment(rest), checkout: () => prCheckout(rest), create: () => prCreate(rest) },
   issue:   { list: () => issueList(rest),   view: () => issueView(rest), create: () => issueCreate(rest) },
   repo:    { view: () => repoView(rest), archive: () => repoArchive(rest) },
   branch:  { create: () => branchCreate(rest), delete: () => branchDelete(rest) },
