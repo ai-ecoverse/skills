@@ -18,7 +18,7 @@ Cross-tool inbox aggregator. Runs each available source skill's `monday` sub-com
 in parallel, merges the JSON results, optionally rates each item with an AI agent,
 and prints a sorted JSON array on stdout. Progress messages go to stderr.
 
-**Source skills:** `gmail` · `slack` · `teams` · `outlook` · `github` (as `gh`) · `servicenow` — each must be installed separately and expose its own `<cmd> monday` sub-command.
+**Source skills:** `gmail` · `slack` · `teams` · `outlook` · `github` (as `gh`) · `servicenow` — each must be installed separately and expose its own `[cmd] monday` sub-command.
 
 ## Quick start
 
@@ -40,10 +40,10 @@ monday gh --rate-importance 8-3 --rate-model claude-haiku-4-5 --rate-context /wo
 
 The `monday` command executes the following steps in order:
 
-1. **Discover sources** — with no positional args, run `which <cmd>` for each name in `KNOWN_COMMANDS` and keep those found on PATH; otherwise use the names supplied as positional args.
-2. **Invoke in parallel** — call `<cmd> monday --limit N --depth N --date Nd` for every discovered source concurrently.
+1. **Discover sources** — with no positional args, run `which [cmd]` for each name in `KNOWN_COMMANDS` and keep those found on PATH; otherwise use the names supplied as positional args.
+2. **Invoke in parallel** — call `[cmd] monday --limit N --depth N --date Nd` for every discovered source concurrently.
 3. **Collect and validate JSON** — read each source's stdout; any source that exits non-zero, produces empty output, or emits invalid JSON is logged to stderr and dropped. Aggregation continues with remaining sources.
-4. **Deduplicate by `id`** — merge all item arrays; when two items share the same `id`, keep the one with the later `ts`.
+4. **Deduplicate by `id`** — merge all item arrays in source order; when two items share the same `id`, the first occurrence wins and later duplicates are dropped (so positional arg order determines precedence for overlapping sources).
 5. **Optionally rate** — if any `--rate-*` flag is set, submit each item to the rating agent (model: `--rate-model`; optional context: `--rate-context`) to assign `importance`, `urgency`, and `summary` fields. Rating failures fall back to the unrated item; aggregation still completes.
 6. **Sort and output** — if rated, sort by `urgency × importance` descending (ties broken by `ts` descending); otherwise sort by `ts` descending. Write the final JSON array to stdout.
 
@@ -66,10 +66,10 @@ the known source list and uses whichever are found on PATH.
 
 ## Source protocol
 
-A command is "monday-compatible" when it accepts `<cmd> monday --limit N --depth N --date Nd` and writes a JSON array of items to stdout. Each item must include `id` (stable unique string for deduplication), `ts` (ISO timestamp for sorting), and any other fields (title, url, participants, body, etc.) which are passed through unchanged.
+A command is "monday-compatible" when it accepts `[cmd] monday --limit N --depth N --date Nd` and writes a JSON array of items to stdout. Each item must include `id` (stable unique string for deduplication), `ts` (ISO timestamp for sorting), and any other fields (title, url, participants, body, etc.) which are passed through unchanged.
 
 To add a new source, implement the protocol above and invoke it explicitly:
-`monday <newcmd> gh slack`. To register it for auto-discovery, add the command name
+`monday [newcmd] gh slack`. To register it for auto-discovery, add the command name
 to the `KNOWN_COMMANDS` list in the aggregator script.
 
 ## Output
