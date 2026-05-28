@@ -1,6 +1,6 @@
 ---
 name: pptx
-description: Generates, reads, and edits PowerPoint files (.pptx). Handles full presentations with text, images, themes, and precise slide positioning. Use when the user asks to create, build, or generate a PowerPoint presentation, slide deck, or .pptx file; when they want to read, extract text from, or inspect an existing .pptx; when they need to edit, update, or add slides to a PowerPoint file; or when they mention slides, ppt, slide layouts, or speaker notes in the context of a file export.
+description: Generates, reads, and edits PowerPoint files (.pptx). Handles full presentations with text, images, themes, and precise slide positioning. Use when the user asks to create, build, or generate a PowerPoint presentation, slide deck, or .pptx file; when they want to read, extract text from, or inspect an existing .pptx; when they need to edit, update, replace text in, or add slides to a PowerPoint file; or when they mention slides, ppt, slide deck export, or pptx output. Does not generate speaker notes or custom slide layouts.
 allowed-tools: bash
 trigger-phrases:
   - create a pptx
@@ -97,9 +97,16 @@ var b64 = await fs.readFile('/tmp/img1.b64');
 var imgBytes = Uint8Array.from(atob(b64.trim()), function(c){ return c.charCodeAt(0); });
 ```
 
-**Error handling**: If `fetchImageB64` fails (network error, bad URL, unsupported format), the b64 file will be absent or empty. Check for a non-empty file before proceeding, and fall back to a placeholder `rectShape` if the image cannot be loaded.
+**Error handling**: `fetchImageB64` validates the HTTP response (uses `curl --fail`) and checks the file's magic bytes for PNG (`89 50 4E 47`) or JPEG (`FF D8 FF`). On any failure — network error, non-2xx status, HTML error page, or unsupported format like SVG/WebP/GIF — it deletes the output file and returns `null`. Check the return value (and that the file exists) before reading it, and fall back to a placeholder `rectShape` if the image cannot be loaded:
 
-**Image formats**: Supported: PNG (`ext: 'png'`) and JPEG (`ext: 'jpeg'`). The skill auto-detects and sets Content-Types.
+```javascript
+var ok = await fetchImageB64('https://example.com/photo.jpg', '/tmp/img1.b64');
+if (!ok) {
+  // fall back to a placeholder shape instead of embedding a broken image
+}
+```
+
+**Image formats**: Only PNG (`ext: 'png'`) and JPEG (`ext: 'jpeg'`) are supported. SVG, WebP, GIF, and other formats are rejected by `fetchImageB64` and must be converted upstream.
 
 ### Positioned images (recommended)
 

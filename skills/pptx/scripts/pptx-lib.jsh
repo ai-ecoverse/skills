@@ -297,12 +297,29 @@ var imageSlideXml = function(caption) {
 </p:sld>`;
 }
 
-// Download an image URL and save as base64 to a file (avoids binary VFS corruption)
+// Download an image URL and save as base64 to a file (avoids binary VFS corruption).
+// Validates HTTP success and PNG/JPEG magic bytes; on failure removes outPath and
+// returns null so callers can fall back to a placeholder shape.
 var fetchImageB64 = async function(url, outPath) {
   var tmp = outPath + '.raw';
-  await exec('curl -sL "' + url + '" -o "' + tmp + '"');
-  await exec('base64 "' + tmp + '" > "' + outPath + '"');
-  return outPath;
+  var q = function(s){ return "'" + String(s).replace(/'/g, "'\\''") + "'"; };
+  try {
+    await exec('curl --fail -sL -o ' + q(tmp) + ' ' + q(url));
+    var head = await exec('head -c 4 ' + q(tmp) + ' | xxd -p');
+    var sig = String(head || '').trim().toLowerCase();
+    var isPng  = sig.indexOf('89504e47') === 0;
+    var isJpeg = sig.indexOf('ffd8ff')   === 0;
+    if (!isPng && !isJpeg) {
+      await exec('rm -f ' + q(tmp) + ' ' + q(outPath));
+      return null;
+    }
+    await exec('base64 ' + q(tmp) + ' > ' + q(outPath));
+    await exec('rm -f ' + q(tmp));
+    return outPath;
+  } catch (e) {
+    await exec('rm -f ' + q(tmp) + ' ' + q(outPath));
+    return null;
+  }
 }
 
 // Build PPTX with embedded images
