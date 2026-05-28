@@ -1,6 +1,6 @@
 {
   "name": "ai-ecoverse/skills",
-  "version": "0.2.0-beta.1",
+  "version": "0.2.0-beta.2",
   "private": false,
   "summary": "Collection of agent skills for SLICC and Tessl-compatible runtimes — productivity, creative, document, and integration skills.",
   "skills": {
@@ -75,6 +75,9 @@
     },
     "strudel-music": {
       "path": "skills/strudel-music/SKILL.md"
+    },
+    "suno": {
+      "path": "skills/suno/SKILL.md"
     },
     "swarm": {
       "path": "skills/swarm/SKILL.md"

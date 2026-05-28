@@ -1,14 +1,11 @@
 {
   "name": "ai-ecoverse/advanced-skills",
-  "version": "0.2.0-beta.1",
+  "version": "0.2.0-beta.2",
   "private": false,
-  "summary": "Quarantined high-risk skills (browser session capture, token extraction, WebSocket interception) for Slack, Suno, and Microsoft Teams. Install only after reviewing the security implications.",
+  "summary": "Quarantined high-risk skills (browser session capture, WebSocket interception) for Slack and Microsoft Teams. Install only after reviewing the security implications.",
   "skills": {
     "slack": {
       "path": "skills/slack/SKILL.md"
-    },
-    "suno": {
-      "path": "skills/suno/SKILL.md"
     },
     "teams": {
       "path": "skills/teams/SKILL.md"

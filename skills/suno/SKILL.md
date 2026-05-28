@@ -1,6 +1,6 @@
 ---
 name: suno
-description: Write song lyrics formatted for Suno AI V5.5 music generation and submit them via direct API or browser automation. Includes `suno-api` CLI for generating songs, listing personas/voices, managing clips, and checking credits. Use when the user wants to create a song, write lyrics, compose music with AI, submit to Suno, list Suno personas, check Suno credits, or asks for help with Suno. Triggers on requests like "write me a song", "create lyrics about...", "help me with Suno", "compose a track", "song about...", "suno api", "suno credits", "suno personas".
+description: Write song lyrics formatted for Suno AI V5.5 music generation and submit them via the `suno` CLI, which drives Suno through the user's own logged-in browser session on suno.com. Use when the user wants to create a song, write lyrics, compose music with AI, submit to Suno, list Suno personas, check Suno credits, or asks for help with Suno. Triggers on requests like "write me a song", "create lyrics about...", "help me with Suno", "compose a track", "song about...", "suno credits", "suno personas".
 allowed-tools: bash
 ---
 
@@ -15,9 +15,9 @@ Write lyrics formatted for Suno AI's Custom Mode with proper metatags, structure
 3. **Write style prompt** — structured colon format or producer run-on sentence
 4. **Run prosody audit** — line-by-line syllable counts, rhyme scheme map, singability check
 5. **Suggest sliders** — Weirdness, Style Influence, Audio Influence values
-6. **Confirm before submitting** — show the user the final lyrics, style prompt, sliders, and target persona, then **wait for explicit user approval**. `suno-api generate` and UI submission consume paid Suno credits, so never submit on your own initiative
-7. **Submit** — only after explicit approval, via `suno-api` CLI (preferred) or UI automation fallback
-8. **Poll and iterate** — `suno-api poll <clip_id> --wait`, then refine weak sections with Song Editor
+6. **Confirm before submitting** — show the user the final lyrics, style prompt, sliders, and target persona, then **wait for explicit user approval**. `suno generate` and UI submission consume paid Suno credits, so never submit on your own initiative
+7. **Submit** — only after explicit approval, via `suno` CLI (preferred) or UI automation fallback
+8. **Poll and iterate** — `suno poll <clip_id> --wait`, then refine weak sections with Song Editor
 
 ## How Suno Actually Works
 
@@ -385,49 +385,69 @@ This skill is optimized for Suno V5.5 (March 2026), which produces 48kHz broadca
 - Use Persona Voices for consistency when generating multiple songs for the same "artist"
 - The Song Editor is more cost-efficient than regenerating entire songs — fix weak sections instead
 
-## Suno API (Direct)
+## Suno API (via `suno` CLI)
 
-The `suno-api` and `suno-token` shell commands provide direct API access to Suno, bypassing the UI entirely. Requires a suno.com tab open and authenticated in the browser.
+The `suno` shell command drives Suno through the user's own browser session on suno.com. It is a convenience wrapper around the same web API the suno.com UI uses.
 
-**Credit safety**: `suno-api generate` (and the UI automation fallback) spends real Suno credits on every call. Always present the final lyrics, style prompt, sliders, and persona to the user and wait for explicit approval before invoking `generate`. Read-only commands like `credits`, `feed`, `personas`, `voices`, `poll`, `search`, and `clip` are safe to run without confirmation.
+### Prerequisites — user actions, not agent actions
+
+Before you can call `suno`, the **user** must:
+
+1. Open https://suno.com in their own browser.
+2. Sign in with their Suno account.
+3. Keep the tab open while the skill is in use.
+
+The agent must never bypass these steps, prompt the user for a password, or attempt to log in on the user's behalf.
+
+### How authentication works
+
+The script runs `fetch()` calls **inside the suno.com page** via `playwright-cli eval`. The session token is read from the page and consumed by `fetch()` in the same evaluation block — it is never printed, stored, copied to the agent's context, or written to disk. Only the API response payload leaves the browser.
+
+If the user is not logged in, the script exits with a clear error directing them to sign in.
+
+### Credit safety
+
+`suno generate` and `suno extend` spend real Suno credits on every call. Always:
+
+- Present the final lyrics, style prompt, sliders, and persona to the user.
+- Wait for **explicit user approval** in the conversation.
+- Then invoke the command.
+
+Read-only commands (`credits`, `feed`, `personas`, `voices`, `poll`, `search`, `clip`, `playlists`, `projects`, `me`) are safe to run without confirmation.
 
 ### Quick start
 
 ```bash
 # Check credits
-suno-api credits
+suno credits
 
 # List personas/voices
-suno-api personas
+suno personas
 
-# Generate a song (custom mode)
-suno-api generate --lyrics "[Verse]\nHello world" --tags "rock, indie" --title "My Song"
+# Generate a song (custom mode) — REQUIRES USER APPROVAL
+suno generate --lyrics "[Verse]\nHello world" --tags "rock, indie" --title "My Song"
 
-# Generate with a persona
-suno-api generate --lyrics "..." --tags "..." --title "..." --persona <persona-id>
+# Generate with a persona — REQUIRES USER APPROVAL
+suno generate --lyrics "..." --tags "..." --title "..." --persona <persona-id>
 
-# Generate (simple mode — AI writes lyrics)
-suno-api generate --simple "a funky disco track about robots"
+# Generate (simple mode — AI writes lyrics) — REQUIRES USER APPROVAL
+suno generate --simple "a funky disco track about robots"
 
 # List recent songs
-suno-api feed
+suno feed
 
 # Poll for completion
-suno-api poll <clip_id> --wait
+suno poll <clip_id> --wait
 
 # Search
-suno-api search "indie rock" --type=public_song
+suno search "indie rock" --type=public_song
 ```
-
-### Authentication
-
-Uses Clerk JWT obtained from the browser via `suno-token`. Requires a suno.com tab open and logged in. Tokens auto-refresh on 401.
 
 ### All commands
 
 `generate`, `poll`, `feed`, `clip`, `search`, `lyrics`, `lyrics-status`, `trash`, `credits`, `rename`, `visibility`, `extend`, `tags`, `playlists`, `projects`, `personas`, `voices`, `me`
 
-Run `suno-api help` for full usage, or see [references/endpoints.md](references/endpoints.md) for the complete API reference.
+Run `suno help` for full usage, or see [references/endpoints.md](references/endpoints.md) for the complete API reference.
 
 ## Submitting Songs via UI Automation
 
