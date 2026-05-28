@@ -870,11 +870,27 @@ async function pollForNewComments() {
 
 // ─── Messaging Commands ──────────────────────────────────────────────────────
 
-const MAILBOX_URN = 'urn:li:fsd_profile:ACoAAAAyzagBI3CieVJqv511Ft1kEK2TRvcjuHM';
 const INBOX_QUERY_ID = 'messengerConversations.0d5e6781bbee71c3e51c8843c6519f48';
 const MESSAGES_QUERY_ID = 'messengerMessages.5846eeb71c981f11e0134cb6626cc314';
 const SEARCH_CONTACTS_QUERY_ID = 'voyagerMessagingDashMessagingTypeahead.7f566173ac0c94b510b3dc2b2a6763d4';
 const FIND_CONVERSATION_QUERY_ID = 'messengerConversations.9c3ab648b616451570c715e4a184465e';
+
+// Cache for the signed-in viewer's profile URN (used as mailboxUrn for messaging)
+var _viewerProfileUrn = null;
+
+async function getMailboxUrn(tabId, csrfToken) {
+  if (_viewerProfileUrn) return _viewerProfileUrn;
+
+  var data = await pageContextFetch(tabId, csrfToken, '/voyager/api/me');
+  var miniUrn = data && data.miniProfile && data.miniProfile.entityUrn;
+  if (!miniUrn || typeof miniUrn !== 'string') {
+    console.error('Could not determine viewer profile URN from /voyager/api/me. Please log into LinkedIn in your browser.');
+    process.exit(1);
+  }
+  // fs_miniProfile and fsd_profile use the same identity token after the colon
+  _viewerProfileUrn = miniUrn.replace('urn:li:fs_miniProfile:', 'urn:li:fsd_profile:');
+  return _viewerProfileUrn;
+}
 
 function generateUUID() {
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
@@ -882,18 +898,6 @@ function generateUUID() {
     var v = c === 'x' ? r : (r & 0x3 | 0x8);
     return v.toString(16);
   });
-}
-
-function generateTrackingId() {
-  var bytes = [];
-  for (var i = 0; i < 16; i++) bytes.push(Math.floor(Math.random() * 256));
-  var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-  var trackResult = '';
-  for (var j = 0; j < bytes.length; j += 3) {
-    var b1 = bytes[j], b2 = bytes[j+1] || 0, b3 = bytes[j+2] || 0;
-    trackResult += chars[b1 >> 2] + chars[((b1 & 3) << 4) | (b2 >> 4)] + chars[((b2 & 0xf) << 2) | (b3 >> 6)] + chars[b3 & 0x3f];
-  }
-  return trackResult;
 }
 
 function formatTimestamp(ms) {
@@ -927,7 +931,6 @@ async function messagingFetch(tabId, csrfToken, url, options) {
     '      "x-li-lang": "en_US"',
     method === 'POST' ? '      ,"content-type": "application/json; charset=UTF-8"' : '',
     method === 'POST' ? '      ,"x-li-page-instance": "urn:li:page:d_flagship3_messaging;slicc"' : '',
-    method === 'POST' ? '      ,"x-li-track": "{\\"clientVersion\\":\\"1.13.44376\\",\\"mpVersion\\":\\"1.13.44376\\",\\"osName\\":\\"web\\",\\"timezoneOffset\\":2,\\"timezone\\":\\"Europe/Berlin\\",\\"deviceFormFactor\\":\\"DESKTOP\\",\\"mpName\\":\\"voyager-web\\"}"' : '',
     '    }',
     body !== 'undefined' ? '    ,body: ' + JSON.stringify(body) : '',
     '  };',
@@ -975,7 +978,8 @@ async function getInbox(options) {
   var limit = (options && options.limit) || 20;
   var unreadOnly = (options && options.unread) || false;
 
-  var encodedMailbox = encodeURIComponent(MAILBOX_URN);
+  var mailboxUrn = await getMailboxUrn(tabId, csrfToken);
+  var encodedMailbox = encodeURIComponent(mailboxUrn);
   var url = '/voyager/api/voyagerMessagingGraphQL/graphql?queryId=' + INBOX_QUERY_ID + '&variables=(mailboxUrn:' + encodedMailbox + ')';
 
   var data = await messagingFetch(tabId, csrfToken, url);
@@ -1121,6 +1125,7 @@ async function getMessages(conversationUrn, options) {
 async function sendMessage(conversationUrn, messageText) {
   var tabId = await ensureTab();
   var csrfToken = await getCsrfToken(tabId);
+  var mailboxUrn = await getMailboxUrn(tabId, csrfToken);
 
   var payload = {
     message: {
@@ -1129,12 +1134,12 @@ async function sendMessage(conversationUrn, messageText) {
       conversationUrn: conversationUrn,
       originToken: generateUUID()
     },
-    mailboxUrn: MAILBOX_URN,
+    mailboxUrn: mailboxUrn,
     dedupeByClientGeneratedToken: false
   };
 
   var url = '/voyager/api/voyagerMessagingDashMessengerMessages?action=createMessage';
-  var data = await messagingFetch(tabId, csrfToken, url, { method: 'POST', body: payload });
+  await messagingFetch(tabId, csrfToken, url, { method: 'POST', body: payload });
 
   return { success: true, conversationUrn: conversationUrn, message: messageText.substring(0, 80) };
 }
@@ -1152,7 +1157,7 @@ async function searchContacts(query) {
 
   var contacts = [];
 
-  // Navigate the GraphQL response  look for typeahead results in included or data
+  // Navigate the GraphQL response — look for typeahead results in included or data
   if (data && data.included && Array.isArray(data.included)) {
     data.included.forEach(function(item) {
       if (!item) return;
@@ -1227,6 +1232,7 @@ async function searchContacts(query) {
 async function directMessage(profileUrn, messageText) {
   var tabId = await ensureTab();
   var csrfToken = await getCsrfToken(tabId);
+  var mailboxUrn = await getMailboxUrn(tabId, csrfToken);
 
   // Normalize the profile URN
   if (!profileUrn.startsWith('urn:li:')) {
@@ -1234,7 +1240,7 @@ async function directMessage(profileUrn, messageText) {
   }
 
   // Find or create the conversation
-  var encodedMailbox = encodeURIComponent(MAILBOX_URN);
+  var encodedMailbox = encodeURIComponent(mailboxUrn);
   var encodedRecipient = encodeURIComponent(profileUrn);
   var url = '/voyager/api/voyagerMessagingGraphQL/graphql?queryId=' + FIND_CONVERSATION_QUERY_ID + '&variables=(mailboxUrn:' + encodedMailbox + ',recipients:List(' + encodedRecipient + '))';
 
