@@ -16,6 +16,12 @@ Direct API access to Adobe's ServiceNow Employee Service Center (ESC) at `adobe.
 # List your open incidents
 servicenow tickets
 
+# Create a new incident with attachment
+servicenow create --title "VPN broken on Mac" --description "Details..." --attach /tmp/screenshot.png
+
+# Attach a file to an existing ticket
+servicenow attach INC3616952 /path/to/screenshot.png
+
 # Get details and comments for a specific ticket
 servicenow get INC3616952
 
@@ -50,6 +56,18 @@ States: `new` (1), `in-progress` (2), `on-hold` (3), `resolved` (6), `closed` (7
 Get full details of a ticket including metadata, state, assignment group, and all comments/work notes.
 
 NUMBER can be an INC number (e.g., INC3616952) or a sys_id.
+
+### servicenow create --title "..." [--description "..."] [--category ...] [--subcategory ...] [--attach FILE]
+
+Create a new incident. Returns the INC number and sys_id. Multiple `--attach` flags supported.
+
+```bash
+servicenow create --title "Outlook unable to sign in" --description "Native app fails at Okta SSO" --category Software --subcategory Email --attach /tmp/error.png
+```
+
+### servicenow attach <NUMBER> <FILE> [<FILE>...]
+
+Attach one or more files to an existing ticket. Supports INC, RITM, and REQ numbers.
 
 ### servicenow comment <NUMBER> <MESSAGE>
 
