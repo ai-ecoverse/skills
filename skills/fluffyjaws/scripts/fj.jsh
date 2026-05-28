@@ -376,14 +376,20 @@ session cookie. If a tab is not open, fj opens one for you. Sign in there once.
     let failed = null;
 
     function handleEvent(payload, type) {
+      const t = payload.type || type;
+      // Always track metadata so --json / --raw callers still see responseId
+      // and a non-zero exit on failure.
+      if (t === 'response.created' || t === 'response.completed') {
+        if (payload.response && payload.response.id) responseId = payload.response.id;
+      }
+      if (t === 'response.failed' || t === 'error') {
+        failed = payload.error || payload;
+      }
       if (opts.json) {
         console.log(JSON.stringify(payload));
         return;
       }
-      const t = payload.type || type;
-      if (t === 'response.created' || t === 'response.completed') {
-        if (payload.response && payload.response.id) responseId = payload.response.id;
-      }
+      if (opts.raw) return; // raw bytes already written in processBuffer
       if (t === 'response.output_text.delta') {
         if (typeof payload.delta === 'string') process.stdout.write(payload.delta);
       } else if (t === 'tool_executing') {
@@ -392,8 +398,6 @@ session cookie. If a tab is not open, fj opens one for you. Sign in there once.
       } else if (t === 'tool_complete') {
         const name = payload.name || (payload.tool && payload.tool.name) || '?';
         process.stderr.write(`[tool] ${name} done\n`);
-      } else if (t === 'response.failed' || t === 'error') {
-        failed = payload.error || payload;
       }
     }
 
@@ -401,7 +405,6 @@ session cookie. If a tab is not open, fj opens one for you. Sign in there once.
       pending += text;
       if (opts.raw) {
         process.stdout.write(text);
-        // still parse to track responseId
       }
       const { events, rest } = parseSSE(pending);
       pending = rest;
@@ -410,8 +413,7 @@ session cookie. If a tab is not open, fj opens one for you. Sign in there once.
         if (!data || data === '[DONE]') continue;
         let payload;
         try { payload = JSON.parse(data); } catch (_) { continue; }
-        if (!opts.raw) handleEvent(payload, ev.event);
-        else if (opts.json) console.log(JSON.stringify(payload));
+        handleEvent(payload, ev.event);
       }
     }
 
@@ -609,13 +611,22 @@ session cookie. If a tab is not open, fj opens one for you. Sign in there once.
 
   async docs(page) {
     const dir = `${SKILL_ROOT}/references/docs`;
+    const lsRes = await exec(`ls ${dir} 2>/dev/null`);
+    const files = (lsRes.stdout || '').trim().split(/\s+/).filter(Boolean);
+    const pages = files
+      .filter(f => /\.(md|txt)$/.test(f))
+      .map(f => f.replace(/\.(md|txt)$/, ''));
     if (!page) {
-      const r = await exec(`ls ${dir} 2>/dev/null`);
       console.log('Pages:');
-      const files = (r.stdout || '').trim().split(/\s+/).filter(Boolean);
-      for (const f of files) console.log('  ' + f.replace(/\.md$/, ''));
+      for (const p of pages) console.log('  ' + p);
       console.log('\nUsage: fj docs <page>');
       return;
+    }
+    // Strict allowlist: page must be a simple identifier (no shell metacharacters,
+    // no path separators) and must already exist in the docs directory listing.
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(page) || !pages.includes(page)) {
+      console.error(`fj: no docs page named ${page}`);
+      process.exit(1);
     }
     const r = await exec(`cat ${dir}/${page}.md 2>/dev/null || cat ${dir}/${page}.txt 2>/dev/null`);
     if (!r.stdout) { console.error(`fj: no docs page named ${page}`); process.exit(1); }
