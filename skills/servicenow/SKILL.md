@@ -99,33 +99,33 @@ servicenow monday --limit 20 --date 7d
 
 ## Incident management (pagerduty replacement)
 
-Incidents use the same `incident` table as regular tickets. Follow this workflow for end-to-end incident handling:
+Incidents use the same `incident` table as regular tickets. This skill posts customer comments and internal work notes; it does not change the `state` field. Any state transitions depend on ServiceNow-side business rules or assignment-group workflows reacting to those entries.
 
-**1. Acknowledge**
+**1. Acknowledge (post customer-visible comment)**
 ```bash
 servicenow comment INC3616952 "Acknowledged. Investigating."
 ```
 
-**2. Verify state change**
+**2. Verify the comment was recorded**
 ```bash
 servicenow get INC3616952
-# Confirm state shows: In Progress (2)
+# Confirm the comment appears in the journal; state only changes if a ServiceNow rule promotes it.
 ```
 
-**3. Investigate and update**
+**3. Investigate and log internal progress**
 ```bash
 servicenow worknote INC3616952 "Root cause identified: ..."
 ```
 
-**4. Resolve and confirm**
+**4. Document resolution**
 ```bash
 servicenow comment INC3616952 "Issue resolved. Root cause was X; fix applied Y."
 servicenow get INC3616952
-# Confirm state shows: Resolved (6)
+# Confirm the resolution comment was posted. Moving the incident to Resolved (6) must be done in the ServiceNow UI or by a configured workflow.
 ```
 
-State field values: New (1), In Progress (2), On Hold (3), Resolved (6), Closed (7).
+State field values for reference: New (1), In Progress (2), On Hold (3), Resolved (6), Closed (7).
 
 ## Architecture
 
-All API calls execute through a page-context session targeting a ServiceNow browser tab. Internal configuration constants (portal ID, widget IDs, Coveo org and search hub) are maintained in `CONFIG.md`.
+All API calls execute through a page-context session targeting a ServiceNow browser tab. Internal configuration constants (portal ID, widget IDs, Coveo org and search hub) and endpoint details are documented in `references/endpoints.md`.
