@@ -32,12 +32,12 @@ git config github.token <YOUR_PAT>     # persisted across shells
 export GITHUB_TOKEN=<YOUR_PAT>          # session-scoped
 ```
 
-**Repo defaults** — all commands accept an optional trailing `owner/repo` argument. If omitted, the script infers it from the current directory's `git remote get-url origin`. Pass it explicitly to override. The examples below show the short form; append `owner/repo` to any command to target a different repo.
+**Repo defaults** — most subcommands that act on a repo (e.g. `pr`, `issue`, `branch`, `content`, `run`, `release`, `search`, `vars`, `repo`) accept an optional trailing `owner/repo` argument. If omitted, the script infers it from the current directory's `git remote get-url origin`. Pass it explicitly to override. The `api` passthrough and utility commands like `auth` do **not** take a trailing repo — `api` requires a full REST path. The examples below show the short form; append `owner/repo` to repo-scoped commands to target a different repo.
 
 ## Running the script
 
 ```bash
-/workspace/skills/github/gh.jsh <command> <subcommand> [args] [owner/repo]
+/workspace/skills/github/scripts/gh.jsh <command> <subcommand> [args] [owner/repo]
 ```
 
 ---
@@ -46,43 +46,45 @@ export GITHUB_TOKEN=<YOUR_PAT>          # session-scoped
 
 ### Create a PR from scratch
 
-This is the most common multi-step flow. Follow these steps in order, validating each before proceeding:
+This is the most common multi-step flow. Follow these steps in order, validating each before proceeding. **Important:** `pr create` returns a PR number — capture it and use that exact value in later steps. Do not hard-code the example number `<PR_NUMBER>` shown below; replace it with the number printed by step 3 in your own session.
 
 ```bash
 # 1. Create the branch
-/workspace/skills/github/gh.jsh branch create my-feature owner/repo
+/workspace/skills/github/scripts/gh.jsh branch create my-feature owner/repo
 
 # 2. Push file changes to that branch
-/workspace/skills/github/gh.jsh content put src/index.js ./index.js "Add entry point" --branch=my-feature owner/repo
+/workspace/skills/github/scripts/gh.jsh content put src/index.js ./index.js "Add entry point" --branch=my-feature owner/repo
 
-# 3. Open the PR
-/workspace/skills/github/gh.jsh pr create "My title" "PR body" my-feature owner/repo
-# → note the returned PR number (e.g. 42)
+# 3. Open the PR — note the returned PR number, e.g. "Created PR #123"
+/workspace/skills/github/scripts/gh.jsh pr create "My title" "PR body" my-feature owner/repo
 
-# 4. Verify CI has started (wait for status to move past 'queued')
-/workspace/skills/github/gh.jsh run list owner/repo
+# 4. Verify CI has started for that PR (substitute the real number for <PR_NUMBER>)
+/workspace/skills/github/scripts/gh.jsh pr view <PR_NUMBER> owner/repo
+/workspace/skills/github/scripts/gh.jsh run list owner/repo
 
-# 5. Once CI is green, merge
-/workspace/skills/github/gh.jsh pr merge 42 --squash owner/repo
+# 5. Once CI is green, merge that same PR number
+/workspace/skills/github/scripts/gh.jsh pr merge <PR_NUMBER> --squash owner/repo
 ```
 
 **Validation checkpoints:**
 - After `branch create`: confirm no error output before pushing content.
-- After `pr create`: capture the PR number for subsequent steps.
-- After `run list`: check that all jobs show `✓` (success) before merging. If any show `✗` (failure), inspect with `run view <id>` before proceeding.
+- After `pr create`: capture the new PR number from the command's output and reuse it in steps 4 and 5 — never reuse a number from another PR.
+- After `pr view`: read the `Checks:` line in the output (e.g. `Checks:  3 passed`) — only proceed to merge when there are no `failed` or `pending` entries. If any check failed, inspect with `run view <id>` before proceeding.
 
 ### Review and merge an existing PR
 
-```bash
-# Inspect the PR and its checks
-/workspace/skills/github/gh.jsh pr view 42 owner/repo
+Substitute `<PR_NUMBER>` with the actual PR number you intend to act on.
 
-# Confirm CI is passing
-/workspace/skills/github/gh.jsh run list owner/repo
+```bash
+# Inspect the PR and its checks (look at the 'Checks:' line in the output)
+/workspace/skills/github/scripts/gh.jsh pr view <PR_NUMBER> owner/repo
+
+# Confirm CI is passing (cross-check the per-job status from 'run list')
+/workspace/skills/github/scripts/gh.jsh run list owner/repo
 
 # Post a comment then merge
-/workspace/skills/github/gh.jsh pr comment 42 "Automated: all checks passed, merging." owner/repo
-/workspace/skills/github/gh.jsh pr merge 42 --squash owner/repo
+/workspace/skills/github/scripts/gh.jsh pr comment <PR_NUMBER> "Automated: all checks passed, merging." owner/repo
+/workspace/skills/github/scripts/gh.jsh pr merge <PR_NUMBER> --squash owner/repo
 ```
 
 ---
