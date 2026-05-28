@@ -112,8 +112,11 @@ Key data points: top artists overall and by period, scrobble depth per artist, r
 
 ### SecondHandSongs
 
+Substitute `{SONG}` with the candidate title and URL-encode it (titles with spaces or reserved characters will otherwise reject the curl request):
+
 ```bash
-curl -s "https://secondhandsongs.com/search/work?title={SONG}" > /tmp/shs_results.html
+SONG="Sweet Jane"
+curl -sG "https://secondhandsongs.com/search/work" --data-urlencode "title=${SONG}" > /tmp/shs_results.html
 
 python3 - <<'EOF'
 import re
