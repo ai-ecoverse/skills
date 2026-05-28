@@ -1,36 +1,31 @@
 ---
 name: review
-description: Track review items (publish/comment/defer) and annotate documents with text highlighting. Use when the user has content to review, approve, or annotate — pages pending publish, PRs needing signoff, documents to mark up. Triggers on requests like "review queue", "what's pending", "annotate this doc", "mark up this file", "review dashboard", "publish queue".
+description: "Track review items (publish/comment/defer) and annotate documents with text highlighting via a sprinkle dashboard. Use when the user has content to review, approve, or annotate — pages pending publish, PRs needing signoff, documents to mark up. Triggers on requests like 'review queue', 'what's pending', 'annotate this doc', 'mark up this file', 'review dashboard', 'publish queue'. Distinct from code review tools: this skill manages a persistent UI queue with in-flight publish tracking and inline text selection annotations."
 allowed-tools: bash
 ---
 
 # Review
 
-A combined review queue and document annotation sprinkle. Default view shows a queue of items with publish/comment/defer actions. Opening a VFS file switches to a document view with text selection annotations.
+## Quick-Start Workflow
 
-## Architecture
+1. **Create the scoop** — `scoop_scoop("review")`
+2. **Copy and open the template:**
+   ```
+   feed_scoop("review", "Copy template: cp /workspace/skills/review/templates/review.shtml /shared/sprinkles/review/review.shtml\nRun: sprinkle refresh && sprinkle open review\nConfirm the sprinkle panel is visible before proceeding.")
+   ```
+3. **Verify the sprinkle opened** — wait for the scoop to confirm the panel is active before sending items.
+4. **Instruct the scoop to stay alive** for lick events:
+   ```
+   feed_scoop("review", "Stay alive for lick events.")
+   ```
+5. **Load items** — send a `load-items` payload (see [Loading items](#loading-items)).
+6. **Handle lick events** — forward each lick to the scoop and push a matching `update-status` response.
 
-Two views in one sprinkle:
-
-1. **Queue view** — Cards with status dots (pending/published/deferred), preview/live links, action buttons. Comment expands inline.
-2. **Document view** — Renders markdown or HTML files with text selection → annotation popup. Annotations collected at bottom in collapsible panel. "Submit Revisions" fires all annotations as a lick.
-
-The sprinkle runs at ~400px sidebar width. No horizontal splits.
+> **Template file:** The sprinkle HTML template lives at `/workspace/skills/review/templates/review.shtml`. Inspect that file directly for markup structure, CSS variables, and advanced configuration options.
 
 ## Scoop Workflow
 
-One scoop named `review` owns the sprinkle.
-
-### Creating
-
-```
-scoop_scoop("review")
-feed_scoop("review", "You own the 'review' sprinkle.
-1. Copy template: cp /workspace/skills/review/templates/review.shtml /shared/sprinkles/review/review.shtml
-2. Run: sprinkle refresh && sprinkle open review
-3. Load initial items via: sprinkle send review '<json>'
-4. Stay alive for lick events.")
-```
+One scoop named `review` owns the sprinkle. Follow the Quick-Start Workflow above to initialise it.
 
 ### Loading items
 
@@ -66,58 +61,22 @@ The sprinkle fires these licks back to the cone:
 
 ### Handling licks (cone)
 
-Always forward lick events to the owning scoop:
+Forward lick events to the owning scoop using this pattern:
 
 ```
-feed_scoop("review", "Lick event on YOUR sprinkle: { action: 'publish', data: { id: 'page-1', path: '/shared/security.md', url: 'https://...' } }. 
-Execute the publish action, then push status update: sprinkle send review '{\"action\":\"update-status\",\"id\":\"page-1\",\"status\":\"published\"}'")
+feed_scoop("review", "Lick event on YOUR sprinkle: { action: '<ACTION>', data: <DATA> }.
+Execute the action, then push status update: sprinkle send review '{\"action\":\"update-status\",\"id\":\"<ID>\",\"status\":\"<STATUS>\"}'") 
 ```
 
-**`publish` and `defer` show an in-flight indicator until the cone confirms.** When the user clicks one of those actions the card pulses with an "acting" state and the buttons disable. The scoop **must** push an `update-status` message (success → `published`/`deferred`, failure → back to `pending`) — otherwise the card stays stuck in flight. This protects against silently leaving the UI claiming a publish that never happened.
+A `publish` lick resolves to `"status":"published"`; `defer` resolves to `"status":"deferred"`; `comment` needs no status update.
 
-For `submit-revisions`, the scoop should apply the annotations (edit the file, open a PR, post a comment) and confirm back.
+### In-flight indicators and failure recovery
 
-## Item Schema
+`publish` and `defer` show a pulsing in-flight indicator and disable action buttons until the cone sends a matching `update-status`. The template supports three statuses: `pending`, `published`, `deferred`.
 
-```typescript
-interface ReviewItem {
-  id: string;        // Unique identifier
-  title: string;     // Display title
-  path?: string;     // VFS path for document review (enables "Review" link)
-  previewUrl?: string; // Preview URL (shown as "Preview" link)
-  liveUrl?: string;  // Live URL (shown as "Live" link)
-  status: 'pending' | 'published' | 'deferred';
-}
-```
-
-## State Persistence
-
-The sprinkle persists via `slicc.setState`:
-- Queue items and their statuses
-- Current view (queue/document)
-- Active document path
-- In-progress annotations
-
-State survives panel close/reopen. Annotations are preserved when re-opening the same document path; switching to a different path clears them.
-
-## Document Sanitization
-
-Both markdown and HTML documents are sanitized before rendering:
-
-- **Markdown** is escape-first: raw HTML in source becomes inert text. Link URLs are protocol-whitelisted (`http(s):`, `mailto:`, `#`, `/`); other schemes (notably `javascript:`) render as plain labels.
-- **HTML/HTM** files are parsed via `<template>` (inert — no images load, no scripts run) and walked to strip `<script>`, `<iframe>`, `<object>`, `<embed>`, `<link>`, `<meta>`, `<style>`, `<base>`, all `on*` event handlers, `srcdoc`, and `javascript:` / `data:` / `vbscript:` URLs in `href`/`src`.
-
-This protects the sprinkle context (which has VFS read/write through `slicc`) when reviewing untrusted documents.
-
-## Template
-
-The full sprinkle template is at `templates/review.shtml`. Copy it to `/shared/sprinkles/review/review.shtml` before opening.
-
-## Design
-
-Uses Spectrum 2 tokens exclusively. Status colors:
-- Pending: `var(--s2-notice)` (amber)
-- Published: `var(--s2-positive)` (green)
-- Deferred: `var(--s2-fg)` at 35% (gray)
-
-Annotations use `var(--s2-accent)` highlight tint. All buttons use pill radius. No emoji — Lucide icons only.
+- **Success** — send `update-status` with `"published"` or `"deferred"` to clear the indicator.
+- **Failure** — send `update-status` with `"status":"pending"` to revert the card so the user can retry. Report the failure detail to the user via the cone (not via the sprinkle message field, which is not rendered):
+  ```bash
+  sprinkle send review '{"action":"update-status","id":"page-1","status":"pending"}'
+  ```
+- **Timeout** — if the scoop does not respond in time, push `"status":"pending"` to avoid a stuck UI.
