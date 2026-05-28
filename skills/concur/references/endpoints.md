@@ -82,7 +82,7 @@ Common Data Service GraphQL — much smaller surface, used for on-screen help an
 
 ### `POST https://www-us2.api.concursolutions.com/spend-graphql/upload`
 
-Multipart file upload for receipt images. **Not yet wrapped by this skill** — call via `pageFetch` if needed.
+Multipart file upload for receipt images. Wrapped by `concur attach-receipt`, which converts/downscales the image, POSTs the multipart `FormData` here to get an `imageId`, and then runs the `AttachImage` mutation to bind it to a specific expense entry. Call via `pageFetch` directly if you need raw upload behavior.
 
 ## REST endpoints
 

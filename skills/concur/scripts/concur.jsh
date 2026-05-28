@@ -9,8 +9,13 @@ const APP_DOMAIN = 'concursolutions.com';
 const HOME_URL   = 'https://us2.concursolutions.com/home';
 const HOST_WEB   = 'https://us2.concursolutions.com';
 const HOST_API   = 'https://www-us2.api.concursolutions.com';
-const OPS_DIR    = '/workspace/skills/concur/references/operations';
-const PERSIST    = '/workspace/skills/concur/.session.json';
+// Resolve operations + session paths relative to this script so the skill
+// works regardless of where it is installed (e.g. /workspace/skills/concur,
+// /shared/skills/concur, or any other prefix).
+const _SCRIPT_DIR = process.argv[1].substring(0, process.argv[1].lastIndexOf('/'));
+const SKILL_DIR   = _SCRIPT_DIR.replace(/\/scripts$/, '');
+const OPS_DIR     = `${SKILL_DIR}/references/operations`;
+const PERSIST     = `${SKILL_DIR}/.session.json`;
 
 // ----------------- tab management -----------------
 
@@ -73,17 +78,28 @@ async function readFile(p) {
 async function writeFile(p, s) {
   // Heredoc has an effective argv-size cap (~1 MB on this runtime), so for
   // large content we base64-pipe it through stdin instead. Encoding inflates
-  // by ~33% so we keep a margin.
-  const tmp = `/tmp/.concur-write-${Date.now()}.tmp`;
+  // by ~33% so we keep a margin. Use /shared for the temp file so a
+  // sibling Playwright process running in a different container/namespace
+  // can still see it if the caller later moves it under /shared.
+  const tmp = `/shared/.concur-write-${Date.now()}.tmp`;
   if (s.length < 600_000) {
     await exec(`cat > "${tmp}" <<'____CONCUR_EOF____'\n${s}\n____CONCUR_EOF____`);
   } else {
     // Chunk-stream via base64 so the shell never sees the raw payload as argv.
     const chunkSize = 400_000; // ~400 KB raw → ~540 KB base64 per chunk
     await exec(`: > "${tmp}"`);
+    // Build the base64 string in small sub-chunks to avoid spreading a huge
+    // typed-array into String.fromCharCode (which hits arg-limit / is slow).
+    const encoder = new TextEncoder();
+    const subChunk = 8_192;
     for (let i = 0; i < s.length; i += chunkSize) {
       const chunk = s.slice(i, i + chunkSize);
-      const b64 = btoa(String.fromCharCode(...new TextEncoder().encode(chunk)));
+      const bytes = encoder.encode(chunk);
+      let bin = '';
+      for (let j = 0; j < bytes.length; j += subChunk) {
+        bin += String.fromCharCode.apply(null, bytes.subarray(j, j + subChunk));
+      }
+      const b64 = btoa(bin);
       // Single arg of ~540 KB is safe (well below 1 MB cap).
       const r = await exec(`printf %s '${b64}' | base64 -d >> "${tmp}"`);
       if (r.exitCode !== 0) throw new Error(`writeFile chunk failed at offset ${i}: ${r.stderr}`);
@@ -110,7 +126,10 @@ async function pageFetch(url, options = {}) {
     body: options.body ?? null,
     headers: options.headers || {},
   };
-  const evalFile = `/tmp/.concur-fetch-${Date.now()}-${Math.random().toString(36).slice(2,8)}.js`;
+  // Playwright runs in a separate container/namespace and reliably sees
+  // /shared but not /tmp; other skills in this repo use /shared for the
+  // same eval-file pattern.
+  const evalFile = `/shared/.concur-fetch-${Date.now()}-${Math.random().toString(36).slice(2,8)}.js`;
   const script = `
 (async () => {
   const p = ${JSON.stringify(payload)};
@@ -349,13 +368,26 @@ function buildItemizationFields(line, parentEntry, currency, overrides = {}) {
 }
 
 // Add one itemization line via SaveNewItemization.
-async function itemizeAdd(reportId, parentExpenseId, typeId, amountStr, dateStr, ...rest) {
+async function itemizeAdd(reportId, parentExpenseId, typeId, amountStr, ...tail) {
   if (!reportId || !parentExpenseId || !typeId || !amountStr) {
     console.error('Usage: concur itemize add <reportId> <parentExpenseId> <typeId> <amount> [date] [comment] [--currency=USD]');
     process.exit(1);
   }
-  const opts = parseFlags(rest, { currency: '', policy: '' });
-  const comment = rest.filter((a) => !a.startsWith('--')).join(' ') || null;
+  // The [date] positional is optional. Treat any leading `--flag` as a flag
+  // rather than the date so users can omit the date without losing
+  // subsequent options (e.g. `... 12.50 --currency=EUR`).
+  let dateStr = null;
+  const positionals = [];
+  const flags = [];
+  for (const a of tail) {
+    if (typeof a === 'string' && a.startsWith('--')) flags.push(a);
+    else positionals.push(a);
+  }
+  if (positionals.length && /^\d{4}-\d{2}-\d{2}$/.test(positionals[0])) {
+    dateStr = positionals.shift();
+  }
+  const opts = parseFlags(flags, { currency: '', policy: '' });
+  const comment = positionals.join(' ') || null;
   const amount = parseFloat(amountStr);
   if (!isFinite(amount) || amount <= 0) {
     console.error(`Invalid amount: ${amountStr}`);
@@ -792,7 +824,7 @@ const commands = {
     const needConvert = opts['no-convert'] !== 'true' && !/\.jpe?g$/i.test(localPath);
     const needShrink  = opts['no-convert'] !== 'true' && inputBytes > maxBytes;
     if (needConvert || needShrink) {
-      jpgPath = `/tmp/.concur-receipt-${Date.now()}.jpg`;
+      jpgPath = `/shared/.concur-receipt-${Date.now()}.jpg`;
       const dim = needShrink ? '1800x1800>' : '2048x2048>';
       const q   = needShrink ? '75' : '85';
       const conv = await exec(`magick "${localPath}" -resize '${dim}' -quality ${q} "${jpgPath}"`);
@@ -809,7 +841,7 @@ const commands = {
 
     // Upload via page-context fetch with multipart FormData
     const tabId = await ensureTab();
-    const evalFile = `/tmp/.concur-upload-${Date.now()}.js`;
+    const evalFile = `/shared/.concur-upload-${Date.now()}.js`;
     const filename = jpgPath.split('/').pop();
     const uploadScript = `
 (async () => {
@@ -972,7 +1004,19 @@ const commands = {
 
   async 'recent-types'(...args) {
     const opts = parseFlags(args, { policy: '' });
-    return callOp('GetRecentExpenseTypes', { policyId: opts.policy || null });
+    // GetRecentExpenseTypes declares $policyId: ID! (non-null), so resolve
+    // a default from GetPolicies when --policy is omitted (same auto-discover
+    // strategy as `change-type`).
+    let policyId = opts.policy;
+    if (!policyId) {
+      const userId = await getUserId();
+      const policies = await callOp('GetPolicies', { userId, contextRole: 'TRAVELER' });
+      const list = policies?.employee?.expensePolicies?.policies || [];
+      const def = list.find((p) => p.isDefault) || list[0];
+      if (!def) { console.error('No expense policies found; pass --policy=<id>'); process.exit(1); }
+      policyId = def.id;
+    }
+    return callOp('GetRecentExpenseTypes', { policyId });
   },
 
   async cards() {

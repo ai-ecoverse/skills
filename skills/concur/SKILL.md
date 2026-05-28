@@ -19,7 +19,7 @@ concur report A1B2C3D4E5F60718293A         # full detail for a single report
 concur expenses A1B2C3D4E5F60718293A       # line items + exceptions
 concur available-receipts                  # receipts not yet attached to a report
 concur smartexpenses                       # SmartExpense queue
-concur homepage                            # alerts, approvals, notes, recent reports
+concur reports-v3                          # full historical report list (REST v3)
 concur ops                                 # list every callable GraphQL operation
 ```
 
@@ -28,7 +28,7 @@ concur ops                                 # list every callable GraphQL operati
 Concur authenticates with cookies on `*.concursolutions.com`. SLICC's localhost-origin `fetch` cannot send those cookies, so this skill **always issues requests from the page context** of an existing Concur tab via `playwright-cli eval-file`.
 
 - The first time you run any command, the skill looks for an open tab on `concursolutions.com`. If none exists, it opens `https://us2.concursolutions.com/home` — you will need to log in (Adobe SSO) before the next call succeeds.
-- The user UUID is auto-discovered via `GetUserPermissions` and cached at `/workspace/skills/concur/.session.json`. Delete that file to force re-discovery if you switch accounts.
+- The user UUID is auto-discovered via `GetUserPermissions` and cached at `<skill-dir>/.session.json` (next to `SKILL.md`). Delete that file to force re-discovery if you switch accounts.
 - A 401/403 from any call means the session expired — log in again in the Concur tab and retry.
 
 ## Available commands
@@ -53,7 +53,7 @@ The skill exposes two parallel surfaces — pick by use case:
 | `concur available-receipts` | GraphQL: receipts not yet attached. |
 | `concur smartexpenses [--size=25]` | REST `/smartexpense/v4`: SmartExpense queue. |
 | `concur policies` | GraphQL: available expense policies. |
-| `concur recent-types [--policy=<id>]` | GraphQL: recent expense types. |
+| `concur recent-types [--policy=<id>]` | GraphQL: recent expense types. `--policy` is optional; when omitted the default (or first) policy from `concur policies` is used. |
 | `concur cards` | GraphQL: corporate card accounts. |
 | `concur messages` | REST `/messagenexus/v1`: system messages. |
 
@@ -136,7 +136,7 @@ For the few operations on the `cds` surface (e.g. `GetOnScreenHelpData`), pass `
 ## Notes & caveats
 
 - **Cookie auth requires an open Concur tab.** The skill auto-finds the first `concursolutions.com` tab; pass a different one by closing extras or by opening the desired tab first.
-- **Single-user scope.** Cached `userId` is per-skill-install. Delete `/workspace/skills/concur/.session.json` after switching SSO identities.
+- **Single-user scope.** Cached `userId` is per-skill-install. Delete `<skill-dir>/.session.json` after switching SSO identities.
 - **GraphQL operations were captured in batched form.** The web app sometimes sends multiple operations in one POST as a JSON array; this skill always sends a single operation per request, which Concur accepts.
 - **Mutations are real.** `UpdateExistingExpenseEntry`, `CreateReportHeader`, `MoveAvailableExpensesToReport`, `SaveExpenseAttendees`, `SubmitExpenseReport`, `AttachImage`, `MoveExpense` modify state. They are exposed via `concur graphql <op>` rather than a top-level command, so you can't fire them by accident — but they will work.
 
