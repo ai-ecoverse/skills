@@ -152,8 +152,9 @@ gmail view MESSAGE_ID
 gmail send --to sender@example.com --subject "Re: Topic" --body "Following up on this."
 ```
 
-> **Tip:** Always run `gmail view` before `gmail reply` or `gmail send` to confirm
-> you have the correct message and recipient.
+> **Tip:** When replying to or following up on an existing thread, run
+> `gmail view MESSAGE_ID` first to confirm the recipient, subject, and context.
+> For brand-new outbound mail (no prior message), use `gmail send` directly.
 
 ## Error handling
 
