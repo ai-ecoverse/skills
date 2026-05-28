@@ -171,6 +171,29 @@ Uses the `chat.attachmentAction` API to programmatically click the Approve butto
 
 Deny an interactive message action. Same as `approve` but clicks the Deny button.
 
+### Approve/deny workflow
+
+Action buttons expire (often within minutes to hours) and expired clicks may
+silently no-op. Always verify by re-listing pending requests after acting:
+
+```bash
+# 1. List pending requests — note the timestamp of the target
+slack --ws=E06V3987PMY pending
+
+# 2. Approve by timestamp
+slack --ws=E06V3987PMY approve 1774846849.585479
+
+# 2b. Or deny by timestamp (use the full command form, not just `deny <ts>`)
+slack --ws=E06V3987PMY deny 1770698762.931619
+
+# 3. Verify — the entry should no longer appear in pending
+slack --ws=E06V3987PMY pending
+```
+
+If step 3 still shows the same entry, the action button has expired. Re-trigger
+the request from the original source (e.g. ask the inviter to resend) rather
+than retrying the same `message_ts`.
+
 ### slack history \<channel_id\> [--limit=N]
 
 Fetch recent messages from a channel. Default limit is 20.
@@ -271,8 +294,6 @@ the interceptor with the full watch list.
 
 ## Watch architecture
 
-The watch system taps directly into Slack's real-time WebSocket infrastructure:
-
 ```
 Slack servers → wss://wss-primary.slack.com/ → Browser WebSocket
     ↓
@@ -283,21 +304,10 @@ fetch() POST to SLICC webhook URL
 SLICC delivers lick event to target scoop
 ```
 
-**Key components:**
-- **WebSocket interceptor** — patches `WebSocket.prototype.send` to discover
-  existing connections, then wraps `onmessage` on each to filter events
-- **SLICC webhook** — one per watch, routes events to the target scoop
-- **State files** — at `/workspace/skills/slack/.watch-<id>.json`, track webhook
-  IDs and watch configuration
-
-**Why WebSocket interception?** Slack maintains persistent WebSocket connections
-to `wss://wss-primary.slack.com/` (one per workspace/team). All real-time events
-flow through these connections. By intercepting at the WebSocket level, we get
-sub-second latency with zero additional API calls or polling.
-
-**Connection discovery:** The interceptor patches `WebSocket.prototype.send`.
-Since Slack sends `{"type":"ping"}` keepalives every ~10 seconds, existing
-connections are discovered within one ping cycle.
+**Operational notes:**
+- State files: `/workspace/skills/slack/.watch-<id>.json` (webhook IDs + config)
+- One SLICC webhook per watch routes events to the target scoop
+- After a page reload, run `slack reinject` to re-attach the interceptor
 
 ## Enterprise grid notes
 
