@@ -31,6 +31,15 @@ jobs:
         tile: [basic, advanced]
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.ref }}
+
+      # Pick up any [skip ci] bump commit from a previous matrix job
+      # so our own push isn't rejected as non-fast-forward.
+      - name: Pull latest from branch
+        run: |
+          git fetch origin "${GITHUB_REF#refs/heads/}"
+          git reset --hard "origin/${GITHUB_REF#refs/heads/}"
 
       - uses: tesslio/patch-version-publish@v1
         with:
