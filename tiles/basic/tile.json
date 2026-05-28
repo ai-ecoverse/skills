@@ -1,6 +1,6 @@
 {
   "name": "ai-ecoverse/skills",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": false,
   "summary": "Collection of agent skills for SLICC and Tessl-compatible runtimes — productivity, creative, document, and integration skills.",
   "skills": {
@@ -81,6 +81,9 @@
     },
     "swarm": {
       "path": "skills/swarm/SKILL.md"
+    },
+    "teams": {
+      "path": "skills/teams/SKILL.md"
     },
     "wavespeed": {
       "path": "skills/wavespeed/SKILL.md"

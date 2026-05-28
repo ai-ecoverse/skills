@@ -12,17 +12,30 @@ allowed-tools: bash
 
 # Teams
 
-Direct API access to Microsoft Teams via the Microsoft Graph API. Uses the
-user's live Teams browser session to extract a delegated access token from
-MSAL's `localStorage` cache. No client credentials, no secrets — auth is
-zero-config as long as Teams is open in the browser.
+Direct API access to Microsoft Teams via the Microsoft Graph + Substrate
+Search APIs. Every request runs **inside the Teams browser tab** through
+`playwright-cli eval`: the MSAL delegated access token is read from
+`localStorage` and consumed by `fetch()` in the same eval block — it never
+leaves the page context, is never printed, and is never written to disk.
+
+## Prerequisites
+
+The user must log into Teams in their own browser first. The script will not
+authenticate on the user's behalf; it only piggybacks on a tab the user has
+already signed into.
+
+1. Open https://teams.microsoft.com in the browser and sign in.
+2. Wait until the Teams web client is fully loaded.
+3. Then run any `teams` command — the script discovers the tab automatically
+   via `playwright-cli tab-list`.
+
+If no Teams tab is found, the script exits with a clear error asking the user
+to open and sign in to Teams. No `teams auth` step exists — the page-context
+model makes it unnecessary.
 
 ## Quick start
 
 ```bash
-# Extract a fresh token from the open Teams tab
-teams auth
-
 # List joined teams
 teams teams
 
@@ -69,28 +82,25 @@ teams digest --since=7d
 
 ## Authentication
 
-Run `teams auth` to extract and store API tokens from the open Teams browser
-tab. The command:
+Authentication is implicit: every API call runs inside the open Teams tab via
+`playwright-cli eval`. The MSAL access token is located in `localStorage`
+(keys containing `accesstoken` + `graph.microsoft.com` for Graph, or
+`accesstoken` + `substrate.office.com` for Substrate Search), the entry with
+the highest `expiresOn` is picked, and its `secret` field is consumed by
+`fetch()` in the same eval. The token value never crosses the process
+boundary — the script process only sees the JSON response body.
 
-1. Finds the Teams tab via `playwright-cli tab-list`
-2. Reads the MSAL token cache from **`localStorage`** via `playwright-cli eval`
-3. Stores the Graph API token at `/workspace/.teams-token`
-4. Stores the Substrate Search token (if available) at `/workspace/.teams-substrate-token`
-5. Prints the authenticated user's name, email, ID, and substrate search availability
-
-If the token expires (you see `401 Unauthorized`), re-run `teams auth`. The
-Teams web client silently refreshes the token in the background, so a fresh
-extraction is usually all you need.
+If the Teams web client silently refreshes the token in the background, the
+next command picks up the fresh one automatically. If you see
+`401 Unauthorized` repeatedly, refresh the Teams tab in the browser and
+retry.
 
 > **Implementation note:** The Teams web client (v2, `teams.microsoft.com/v2/`)
-> stores MSAL tokens in `localStorage`, not `sessionStorage`. The auth command
-> searches `localStorage` for the key containing both `accesstoken` and
-> `graph.microsoft.com`, picks the entry with the highest `expiresOn`, and
-> extracts its `secret` field. A `sessionStorage` fallback exists for older
-> Teams versions.
+> stores MSAL tokens in `localStorage`, not `sessionStorage`. A
+> `sessionStorage` fallback exists for older Teams versions.
 
-**Prerequisite:** Teams must be open and loaded in the browser. Check for an existing tab
-before opening a new one to avoid duplicates:
+**Before running any command,** check for an existing Teams tab and only open
+a new one if necessary:
 
 ```bash
 # Check whether a Teams tab is already open
@@ -100,7 +110,7 @@ playwright-cli tab-list | grep teams.microsoft.com
 open https://teams.microsoft.com
 ```
 
-Wait for the page to fully load before running `teams auth`.
+Wait for the page to fully load before running any `teams` command.
 
 ## API Endpoint Note
 
@@ -117,7 +127,8 @@ The `search` and `activity` commands use a cascading search strategy:
 
 1. **Substrate Search** (`substrate.office.com/search/api/v2/query`) — The
    internal search engine that Teams v2 itself uses. Fastest and most
-   comprehensive. Requires the substrate token extracted during `teams auth`.
+   comprehensive. Uses the substrate access token discovered in `localStorage`
+   alongside the Graph token.
 2. **Graph Search API** (`/search/query` with `chatMessage`) — The official
    public API. Often fails with delegated browser tokens (400/403) due to
    missing scopes.
@@ -131,12 +142,6 @@ For `activity`, the fallback additionally scans **1:1 and group chats** via
 
 All commands output JSON to stdout (one top-level object or array per
 invocation). Parse the output to answer the user's question.
-
-### teams auth
-
-Extract and store a Graph API token from the open Teams browser tab. Prints
-the authenticated user's `displayName`, `email`, `id`, and the token's
-`expiresOn` timestamp.
 
 ### teams teams
 
@@ -257,9 +262,9 @@ Scans up to `--max-teams` teams (default 10). Progress is printed to stderr.
 
 | Problem | Fix |
 |---|---|
-| `No Teams tab found` | First check if a tab is already open: `playwright-cli tab-list`. If a Teams URL appears, run `teams auth` directly. Only open a new tab (`open https://teams.microsoft.com`) if nothing is listed. |
-| `No MSAL token found` | Modern Teams (v2) stores tokens in `localStorage`, not `sessionStorage`. If extraction fails, reload the Teams tab and wait for it to fully render before retrying. |
-| `401 Unauthorized` | Token expired. Run `teams auth` again — the Teams web app will have already refreshed the token silently. |
+| `No Teams tab found` | First check if a tab is already open: `playwright-cli tab-list`. If no Teams URL appears, open one (`open https://teams.microsoft.com`) and sign in, then retry. |
+| `No Graph access token in Teams localStorage` | Modern Teams (v2) stores tokens in `localStorage`, not `sessionStorage`. If extraction fails, reload the Teams tab and wait for it to fully render before retrying. |
+| `401 Unauthorized` | Teams session expired. Refresh the Teams tab in the browser; the next command will pick up the new token automatically. |
 | `403 Forbidden on message reads` | You're hitting the v1.0 `/messages` endpoint, which requires `ChannelMessage.Read.All` (a scope the delegated browser token lacks). The script already uses the beta endpoint; if you see this, confirm you're on an up-to-date version of `teams.jsh`. |
 | `Team/channel not found` | Run `teams teams` or `teams channels <team>` to list the exact names/IDs available to the current token. |
 | Search API returns empty / 403 | `teams activity` auto-falls back to a channel scan (delegated tokens often lack the chatMessage search scope). For `teams search`, ensure the token has `Chat.Read` scope. |
