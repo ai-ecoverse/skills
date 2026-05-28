@@ -15,8 +15,9 @@ Write lyrics formatted for Suno AI's Custom Mode with proper metatags, structure
 3. **Write style prompt** — structured colon format or producer run-on sentence
 4. **Run prosody audit** — line-by-line syllable counts, rhyme scheme map, singability check
 5. **Suggest sliders** — Weirdness, Style Influence, Audio Influence values
-6. **Submit** — via `suno-api` CLI (preferred) or UI automation fallback
-7. **Poll and iterate** — `suno-api poll <clip_id> --wait`, then refine weak sections with Song Editor
+6. **Confirm before submitting** — show the user the final lyrics, style prompt, sliders, and target persona, then **wait for explicit user approval**. `suno-api generate` and UI submission consume paid Suno credits, so never submit on your own initiative
+7. **Submit** — only after explicit approval, via `suno-api` CLI (preferred) or UI automation fallback
+8. **Poll and iterate** — `suno-api poll <clip_id> --wait`, then refine weak sections with Song Editor
 
 ## How Suno Actually Works
 
@@ -387,6 +388,8 @@ This skill is optimized for Suno V5.5 (March 2026), which produces 48kHz broadca
 ## Suno API (Direct)
 
 The `suno-api` and `suno-token` shell commands provide direct API access to Suno, bypassing the UI entirely. Requires a suno.com tab open and authenticated in the browser.
+
+**Credit safety**: `suno-api generate` (and the UI automation fallback) spends real Suno credits on every call. Always present the final lyrics, style prompt, sliders, and persona to the user and wait for explicit approval before invoking `generate`. Read-only commands like `credits`, `feed`, `personas`, `voices`, `poll`, `search`, and `clip` are safe to run without confirmation.
 
 ### Quick start
 
