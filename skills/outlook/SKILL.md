@@ -12,8 +12,9 @@ allowed-tools: bash
 
 # Outlook
 
-Direct API access to Microsoft Outlook via the browser session. Requires an open
-Outlook tab at `outlook.office.com` — the token is extracted automatically.
+Direct API access to Microsoft Outlook via Microsoft Graph. The CLI extracts an
+MSAL token from an open `outlook.office.com` browser tab when available, and
+falls back to a saved token file so commands keep working without a tab open.
 
 ## Quick start
 
@@ -104,10 +105,10 @@ outlook tentative --all --date 7d
 ```
 
 **Batch accept/decline workflow:**
-1. List pending events and review: `outlook calendar --date 7d --json`
-2. Identify `NotResponded` events by ID.
-3. Respond: `outlook accept --all --date 7d` (or target specific IDs).
-4. Verify: `outlook calendar --date 7d --json` — confirm response status updated.
+1. List events in the window with a high enough limit: `outlook calendar --date 7d --limit 100 --json`.
+2. Filter for items where `response` is `NotResponded` and collect their `id` values for the ones you actually want to act on.
+3. Respond to those specific IDs: `outlook accept <id1> <id2> ...` (or `decline` / `tentative`). Only use `--all --date 7d` when every `NotResponded` event in the window should receive the same response.
+4. Verify: `outlook calendar --date 7d --limit 100 --json` — confirm `response` updated for the targeted IDs.
 
 ### outlook send --to EMAIL --subject TEXT --body TEXT
 
