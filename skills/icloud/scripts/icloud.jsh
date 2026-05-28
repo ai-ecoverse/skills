@@ -170,8 +170,8 @@ async function getICloudTab() {
   const lines = listResult.stdout.trim().split('\n');
   for (const line of lines) {
     if (line.includes('icloud.com')) {
-      const match = line.match(/^\[([^\]]+)\]/);
-      if (match) return match[1];
+      const match = line.match(/\[targetId:\s*([^\]]+)\]/) || line.match(/^\[([^\]]+)\]/);
+      if (match) return match[1].trim();
     }
   }
 
