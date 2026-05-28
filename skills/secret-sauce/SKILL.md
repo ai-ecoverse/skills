@@ -33,18 +33,20 @@ SLICC fetch() routes through the browser Fetch API:
 ```bash
 playwright-cli localstorage-list          # find JWTs/tokens
 playwright-cli cookie-get auth_token      # or from cookies
-node -e "
+node -e "(async () => {
   const r = await fetch('https://api.example.com/v1/me', {
     headers: { 'Authorization': 'Bearer TOKEN_HERE' }
   });
   console.log('Status:', r.status);
   if (r.ok) console.log(await r.json());
-"
+})()"
 ```
 
 **Cookie-based APIs:**
 ```bash
-tabId=$(playwright-cli open https://app.example.com)
+# playwright-cli open prints human-readable output containing a targetId line.
+# Parse the targetId before passing it to --tab:
+tabId=$(playwright-cli open https://app.example.com | grep -oE 'targetId[: =]+[A-F0-9-]+' | grep -oE '[A-F0-9-]+$')
 playwright-cli eval --tab=$tabId "
   fetch('/api/v1/me', { credentials: 'include' })
     .then(r => r.json()).then(d => JSON.stringify(d))
@@ -56,10 +58,13 @@ If 200 → move to Phase 4. If 401/403 → dig into auth. If 404 → HAR capture
 ### HAR capture
 
 ```bash
-playwright-cli record https://app.example.com --filter="<see references/har-filter.md>"
+# Paste the JS filter expression from references/har-filter.md in place of <FILTER>.
+# Minimal working filter (keeps JSON/API responses, drops static assets):
+playwright-cli record https://app.example.com \
+  --filter="(e) => e.response && /application\/(json|graphql)/.test(e.response.headers['content-type'] || '')"
 ```
 
-The full annotated filter (drops static assets and analytics, keeps JSON/form/API-path responses) is in `references/har-filter.md`. Copy it verbatim for a clean capture.
+The full annotated filter (drops static assets and analytics, keeps JSON/form/API-path responses) is in `references/har-filter.md`. Copy it verbatim for a more thorough capture.
 
 Tell the user to perform the actions they want to automate, then:
 ```bash
