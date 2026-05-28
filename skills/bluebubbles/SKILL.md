@@ -22,17 +22,17 @@ bluebubbles_url: http://localhost:1234
 bluebubbles_password: <user's password>
 ```
 
-**Test the connection:**
+**Test the connection** (substitute `SERVER_URL` with the stored `bluebubbles_url` and `PASSWORD` with the stored `bluebubbles_password`):
 
 ```bash
-curl -s "http://localhost:1234/api/v1/server/info?password=PASSWORD" | jq '.status'
+curl -s "SERVER_URL/api/v1/server/info?password=PASSWORD" | jq '.status'
 ```
 
 Returns `200` if the connection works.
 
 ## Authentication
 
-All endpoints require `?password=PASSWORD` as a query parameter.
+All endpoints require `?password=PASSWORD` as a query parameter. Throughout this skill, `SERVER_URL` is the value of `bluebubbles_url` and `PASSWORD` is the value of `bluebubbles_password` from memory — substitute them in every curl command.
 
 ## IMPORTANT: Use POST /query endpoints
 
@@ -109,11 +109,13 @@ curl -s -X POST "SERVER_URL/api/v1/message/query?password=PASSWORD" \
 
 ## Get Messages from a Specific Chat
 
+Use the exact `guid` value returned by `/chat/query` (e.g. `any;-;user@example.com` or `iMessage;+;chat12345`). Do not hand-construct a GUID for message queries — look it up first via the chat-filtering step above.
+
 ```bash
 curl -s -X POST "SERVER_URL/api/v1/message/query?password=PASSWORD" \
   -H "Content-Type: application/json" \
   -d '{
-    "chatGuid": "any;-;user@example.com",
+    "chatGuid": "<guid from /chat/query>",
     "limit": 10
   }' | jq '.data[] | {text, isFromMe, dateCreated}'
 ```
