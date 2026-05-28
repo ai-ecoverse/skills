@@ -14,8 +14,81 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - uses: tesslio/setup-tessl@v2
 
-      - name: Lint root tile
+      - name: Detect changed skills
+        id: detect
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            CHANGED_FILES=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
+          else
+            CHANGED_FILES=$(git diff --name-only "${{ github.event.before }}..${{ github.sha }}" 2>/dev/null || echo "")
+          fi
+
+          # If tile.json or .tileignore changed, lint the whole tile
+          if echo "$CHANGED_FILES" | grep -qE '^(tile\.json|\.tileignore)$'; then
+            echo "scope=full" >> "$GITHUB_OUTPUT"
+            echo "Tile manifest changed — linting full tile."
+            exit 0
+          fi
+
+          # Find unique skill directories with changes
+          SKILLS=$(echo "$CHANGED_FILES" | grep -E '^skills/[^/]+/' | awk -F/ '{print $2}' | sort -u | xargs)
+
+          if [ -z "$SKILLS" ]; then
+            echo "scope=none" >> "$GITHUB_OUTPUT"
+            echo "No skill files changed — nothing to lint."
+          else
+            echo "scope=subset" >> "$GITHUB_OUTPUT"
+            echo "skills=$SKILLS" >> "$GITHUB_OUTPUT"
+            echo "Changed skills: $SKILLS"
+          fi
+
+      - name: Skip summary
+        if: steps.detect.outputs.scope == 'none'
+        run: |
+          {
+            echo "## Tessl Skill Lint"
+            echo ""
+            echo "No skill files changed — lint skipped."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Lint full tile
+        if: steps.detect.outputs.scope == 'full'
         run: tessl skill lint .
+
+      - name: Lint changed skills only
+        if: steps.detect.outputs.scope == 'subset'
+        run: |
+          TMP=$(mktemp -d)
+          mkdir -p "$TMP/skills"
+
+          # Build a minimal tile.json containing only the changed skills,
+          # symlink only those skill dirs so orphan-file warnings stay clean.
+          SKILLS_JSON="{}"
+          for skill in ${{ steps.detect.outputs.skills }}; do
+            if [ ! -f "skills/$skill/SKILL.md" ]; then
+              echo "::warning::skills/$skill has no SKILL.md — skipping"
+              continue
+            fi
+            ln -sfn "$PWD/skills/$skill" "$TMP/skills/$skill"
+            SKILLS_JSON=$(echo "$SKILLS_JSON" | jq --arg k "$skill" \
+              '. + {($k): {"path": ("skills/" + $k + "/SKILL.md")}}')
+          done
+
+          jq -n --arg name "$(jq -r .name tile.json)" \
+                --arg version "$(jq -r .version tile.json)" \
+                --arg summary "$(jq -r .summary tile.json)" \
+                --argjson private "$(jq .private tile.json)" \
+                --argjson skills "$SKILLS_JSON" \
+                '{name: $name, version: $version, private: $private, summary: $summary, skills: $skills}' \
+            > "$TMP/tile.json"
+
+          echo "::group::Subset tile.json"
+          cat "$TMP/tile.json"
+          echo "::endgroup::"
+
+          tessl skill lint "$TMP"

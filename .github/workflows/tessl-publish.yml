@@ -23,4 +23,4 @@ jobs:
 
       - uses: tesslio/patch-version-publish@v1
         with:
-          token: ${{ secrets.TESSL_TOKEN }}
+          token: ${{ secrets.TESSLIO_TOKEN }}
