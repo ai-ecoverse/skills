@@ -496,33 +496,52 @@ async function cmdView() {
 
 // ─── Calendar Response Commands ──────────────────────────────────────────────
 
+const RESPOND_LABELS = {
+  accept: { progressive: 'Accepting', past: 'Accepted' },
+  decline: { progressive: 'Declining', past: 'Declined' },
+  tentativelyAccept: { progressive: 'Tentatively accepting', past: 'Tentative' },
+};
+
 async function cmdRespond(action) {
   const token = await getToken();
   const comment = flags.comment || flags.message || '';
   const silent = flags.silent === true || flags.silent === 'true';
+  const labels = RESPOND_LABELS[action];
 
   // Collect event IDs: positional args or --all pending events
   let eventIds = [...positional];
+  const subjectsById = new Map();
 
   if (eventIds.length === 0 && flags.all) {
-    // Respond to all pending events in the calendar window
+    // Respond to all pending events in the calendar window, paging through results
     const date = flags.date || '2d';
     const range = futureRange(date, 2);
-    const data = await owaGet(token, '/me/calendarview', {
+    let page = await owaGet(token, '/me/calendarview', {
       '$top': '50',
       'startDateTime': range.start,
       'endDateTime': range.end,
       '$select': 'Id,Subject,ResponseStatus',
     });
-    const events = (data.value || []).filter(
-      ev => ev.ResponseStatus?.Response === 'NotResponded'
-    );
-    if (events.length === 0) {
+    const pending = [];
+    while (true) {
+      for (const ev of page.value || []) {
+        if (ev.ResponseStatus?.Response === 'NotResponded') {
+          pending.push(ev);
+        }
+      }
+      const next = page['@odata.nextLink'];
+      if (!next) break;
+      page = await owaGet(token, next);
+    }
+    if (pending.length === 0) {
       console.log('No pending events to respond to.');
       return;
     }
-    eventIds = events.map(ev => ev.Id);
-    console.log(`${C.bold(action)}ing ${events.length} pending event(s)...\n`);
+    for (const ev of pending) {
+      eventIds.push(ev.Id);
+      if (ev.Subject) subjectsById.set(ev.Id, ev.Subject);
+    }
+    console.log(`${C.bold(labels.progressive)} ${pending.length} pending event(s)...\n`);
   }
 
   if (eventIds.length === 0) {
@@ -539,15 +558,16 @@ async function cmdRespond(action) {
     try {
       await owaPost(token, `/me/events/${encodeURIComponent(id)}/${action}`, body);
       success++;
-      // Try to get the event subject for feedback
-      try {
-        const ev = await owaGet(token, `/me/events/${encodeURIComponent(id)}`, { '$select': 'Subject' });
-        const verb = action === 'accept' ? 'Accepted' : action === 'decline' ? 'Declined' : 'Tentative';
-        console.log(`  ${C.green('✓')} ${verb}: ${ev.Subject}`);
-      } catch {
-        const verb = action === 'accept' ? 'Accepted' : action === 'decline' ? 'Declined' : 'Tentative';
-        console.log(`  ${C.green('✓')} ${verb}: ${id.slice(0, 20)}...`);
+      // Use the subject from the initial fetch when available; fall back to a lookup otherwise
+      let subject = subjectsById.get(id);
+      if (!subject) {
+        try {
+          const ev = await owaGet(token, `/me/events/${encodeURIComponent(id)}`, { '$select': 'Subject' });
+          subject = ev.Subject;
+        } catch { /* ignore */ }
       }
+      const display = subject || `${id.slice(0, 20)}...`;
+      console.log(`  ${C.green('✓')} ${labels.past}: ${display}`);
     } catch (e) {
       failed++;
       const msg = e.message || '';
@@ -597,6 +617,7 @@ Respond options (accept/decline/tentative):
   --comment TEXT    Optional message to organizer
   --silent          Don't send response to organizer
   --all             Act on all NotResponded events in date range
+  --date PERIOD     With --all, calendar window to scan (default: 2d)
 
 Send options:
   --to EMAIL         Recipient(s), comma-separated
@@ -637,7 +658,7 @@ try {
       break;
     case 'tentative':
     case 'maybe':
-      await cmdRespond('tentativelyaccept');
+      await cmdRespond('tentativelyAccept');
       break;
     case 'send':
       await cmdSend();
