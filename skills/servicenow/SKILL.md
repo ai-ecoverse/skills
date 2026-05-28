@@ -8,8 +8,6 @@ allowed-tools: bash
 
 Direct API access to Adobe's ServiceNow Employee Service Center (ESC) at `adobe.service-now.com`. Bypasses the slow portal UI.
 
-**Important:** All requests must be made from the page context via Angular's `$http` service (which adds the `X-UserToken` CSRF header and session cookies automatically). Both the Table API (`/api/now/table/...`) and the Service Portal API (`/api/now/sp/...`) work through this channel. Raw `fetch()` or `XMLHttpRequest` from the page will hang — Angular's interceptors are required.
-
 ## Quick start
 
 ```bash
@@ -37,19 +35,21 @@ servicenow kb-article KB0023295
 
 ## Authentication
 
-Session-based via Okta SSO cookies. The user must be logged into `adobe.service-now.com` in a browser tab. The skill uses Angular's `$http` injector from the page context, which automatically includes the `X-UserToken` (CSRF) and session cookies.
+Session-based via Okta SSO cookies. The user must be logged into `adobe.service-now.com` in a browser tab.
 
 If the session has expired, the user will see: "Session expired — log into adobe.service-now.com and try again."
 
-For KB search, a Coveo JWT token is extracted from the portal page data. This token expires after ~24h and is refreshed automatically by loading the portal page.
+KB search uses a Coveo JWT token extracted from the portal page. This token expires after ~24h and is refreshed automatically by loading the portal page.
 
 ## Available commands
 
-### servicenow tickets [--state=STATE]
+### servicenow tickets [--state=STATE] [--table=TABLE]
 
 List your open tickets (incidents and requests). Default: open states (New, In Progress, On Hold).
 
-States: `new` (1), `in-progress` (2), `on-hold` (3), `resolved` (6), `closed` (7)
+States: `new` (1), `in-progress` (2), `on-hold` (3), `resolved` (6), `closed` (7), `all`
+
+Tables: `incident` (default), `sc_req_item`, `sc_request`
 
 ### servicenow get <NUMBER>
 
@@ -85,23 +85,6 @@ Search the Knowledge Base using Coveo. Returns titles, article numbers, and exce
 
 Fetch a specific KB article's full content (issue, solution, additional info).
 
-## Architecture
-
-- **Portal ID:** `70cd9f3b734b13001fdae9c54cf6a72f`
-- **Ticket conversation widget:** `a54beb3a87f10010e0ef0cf888cb0bba`
-- **Coveo org:** `adobev2prod9e382h1q`
-- **Coveo search hub:** `ServiceNowESC_MainSearch`
-- **User sys_id:** resolved dynamically at login and stored in `.config.json`
-
-All SP API calls go through Angular's `$http` to inherit session state. The `.jsh` script uses `playwright-cli eval` targeting a ServiceNow tab.
-
-### servicenow tickets [--state=STATE] [--table=TABLE]
-
-List your open tickets. Supports filtering by state and table.
-
-States: `new` (1), `in-progress` (2), `on-hold` (3), `resolved` (6), `closed` (7), `all`
-Tables: `incident` (default), `sc_req_item`, `sc_request`
-
 ### servicenow monday [--limit N] [--date Nd]
 
 Output tickets in the monday aggregator protocol format. Compatible with the `monday` dispatcher for unified inbox/todo aggregation across services.
@@ -116,11 +99,33 @@ servicenow monday --limit 20 --date 7d
 
 ## Incident management (pagerduty replacement)
 
-Incidents use the same `incident` table as regular tickets. To acknowledge/update an incident:
+Incidents use the same `incident` table as regular tickets. Follow this workflow for end-to-end incident handling:
 
+**1. Acknowledge**
 ```bash
 servicenow comment INC3616952 "Acknowledged. Investigating."
-servicenow get INC3616952
 ```
 
-The state field in ticket details shows: New (1), In Progress (2), On Hold (3), Resolved (6), Closed (7).
+**2. Verify state change**
+```bash
+servicenow get INC3616952
+# Confirm state shows: In Progress (2)
+```
+
+**3. Investigate and update**
+```bash
+servicenow worknote INC3616952 "Root cause identified: ..."
+```
+
+**4. Resolve and confirm**
+```bash
+servicenow comment INC3616952 "Issue resolved. Root cause was X; fix applied Y."
+servicenow get INC3616952
+# Confirm state shows: Resolved (6)
+```
+
+State field values: New (1), In Progress (2), On Hold (3), Resolved (6), Closed (7).
+
+## Architecture
+
+All API calls execute through a page-context session targeting a ServiceNow browser tab. Internal configuration constants (portal ID, widget IDs, Coveo org and search hub) are maintained in `CONFIG.md`.
