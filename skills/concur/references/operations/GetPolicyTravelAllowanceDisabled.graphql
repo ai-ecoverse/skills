@@ -1,0 +1,7 @@
+query GetPolicyTravelAllowanceDisabled($policyId: ID!, $userId: String!, $contextRole: ContextRoleType!) {
+  expensePolicy(policyId: $policyId, userId: $userId, contextRole: $contextRole) {
+    disableTravelAllowance
+    id
+    __typename
+  }
+}

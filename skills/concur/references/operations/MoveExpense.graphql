@@ -1,0 +1,35 @@
+mutation MoveExpense($contextRole: CDS_ExpenseAllocationType, $userId: ID, $fromReportId: ID!, $toReportId: ID!, $expenseIds: [String]) {
+  CDS_expense {
+    move(
+      contextType: $contextRole
+      userId: $userId
+      fromReportId: $fromReportId
+      toReportId: $toReportId
+      expenseIds: $expenseIds
+    ) {
+      success
+      response {
+        success {
+          id
+          uri
+          __typename
+        }
+        error {
+          id
+          errorId
+          errorMessage
+          validationErrors {
+            id
+            message
+            source
+            __typename
+          }
+          __typename
+        }
+        __typename
+      }
+      __typename
+    }
+    __typename
+  }
+}

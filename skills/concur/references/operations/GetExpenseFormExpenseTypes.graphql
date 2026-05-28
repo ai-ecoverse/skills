@@ -1,0 +1,23 @@
+query GetExpenseFormExpenseTypes($userId: String!, $contextRole: ContextRoleType!, $policyId: String!, $filterBy: InputFilterExpenseTypeBy!, $reportOwnerUserId: String!, $parentExpenseTypeId: String = null) {
+  employee(userId: $userId, contextRole: $contextRole) {
+    userId
+    contextRole
+    expenseTypes(
+      policyId: $policyId
+      filterBy: $filterBy
+      reportOwnerUserId: $reportOwnerUserId
+      parentExpenseTypeId: $parentExpenseTypeId
+    ) {
+      id
+      name
+      description
+      quickTips
+      parentName
+      text
+      header
+      visibilityCode
+      __typename
+    }
+    __typename
+  }
+}

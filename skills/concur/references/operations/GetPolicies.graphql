@@ -1,0 +1,20 @@
+query GetPolicies($userId: String, $contextRole: ContextRoleType) {
+  employee(userId: $userId, contextRole: $contextRole) {
+    userId
+    contextRole
+    expensePolicies {
+      policies {
+        allowReceiptAffidavits
+        id
+        isDefault
+        receiptAffidavitAcceptance
+        name: policyName
+        receiptAffidavitExplanation
+        disableTravelAllowance
+        __typename
+      }
+      __typename
+    }
+    __typename
+  }
+}

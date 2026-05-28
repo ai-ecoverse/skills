@@ -1,0 +1,797 @@
+mutation SaveNewItemization($userId: ID!, $reportId: ID!, $contextRole: ContextRoleType!, $fields: CreateExpenseFieldsInput!, $taxFields: [TaxField!] = null, $expenseTypeId: String!, $policyId: String!, $shouldIncludeRpeKey: Boolean = false, $expenseListDetailFormId: String, $isTrexEnabled: Boolean!) {
+  createExpense(
+    dataContext: {reportId: $reportId, fields: $fields, taxFields: $taxFields, expenseListDetailFormId: $expenseListDetailFormId}
+    userContext: {userId: $userId, contextType: $contextRole}
+  ) {
+    id
+    rpeKey @include(if: $shouldIncludeRpeKey)
+    reportDetails @include(if: $isTrexEnabled) {
+      ...ExpenseReportDetailsFragment
+      __typename
+    }
+    entry @include(if: $isTrexEnabled) {
+      ...EreExpenseEntrySummaryFragment
+      __typename
+    }
+    existingItemizationForm: existingExpenseForm @include(if: $isTrexEnabled) {
+      ...ExistingExpenseFormFragment
+      __typename
+    }
+    entryExceptions @include(if: $isTrexEnabled) {
+      ...EreEntryExceptionsFragment
+      __typename
+    }
+    expenseTypeFilters @include(if: $isTrexEnabled) {
+      shouldFilterCashAdvanceExpenseTypes
+      shouldFilterCompanyCarExpenseType
+      shouldFilterPersonalCarExpenseType
+      __typename
+    }
+    reportEntryDetails @include(if: $isTrexEnabled) {
+      ...EntryDetailsForList
+      __typename
+    }
+    reportExceptions @include(if: $isTrexEnabled) {
+      ...ReportExceptionsFragment
+      __typename
+    }
+    itemizationDetails @include(if: $isTrexEnabled) {
+      ...ItemizationDetailsFragment
+      __typename
+    }
+    __typename
+  }
+  CDS_addRecentExpenseTypes(policyId: $policyId, expenseTypeId: $expenseTypeId)
+}
+
+fragment EreEntryExceptionsFragment on EntryExceptions {
+  reportId
+  expenseId
+  attendeesExceptionLevel
+  transactionAmount {
+    value
+    currencyCode
+    __typename
+  }
+  transactionDate
+  expenseType {
+    id
+    code
+    name
+    meta {
+      isJapanPublicTransportation
+      __typename
+    }
+    __typename
+  }
+  countOfExceptions
+  hasBlockingExceptions
+  entryExceptions {
+    allocationId
+    exceptionCode
+    expenseId
+    isBlocking
+    message
+    parameters {
+      entryExceptionAttendees {
+        lastName
+        firstName
+        entryAmount
+        crnCode
+        totalExpensed
+        totalAuthorized
+        __typename
+      }
+      missingFields {
+        missingSpecialParentField
+        fields
+        fieldIds
+        __typename
+      }
+      __typename
+    }
+    parentExpenseId
+    __typename
+  }
+  itemizationsExceptions {
+    reportId
+    expenseId
+    attendeesExceptionLevel
+    itemizationId
+    transactionAmount {
+      value
+      currencyCode
+      __typename
+    }
+    transactionDate
+    expenseType {
+      id
+      code
+      name
+      meta {
+        isJapanPublicTransportation
+        __typename
+      }
+      __typename
+    }
+    countOfExceptions
+    hasBlockingExceptions
+    exceptions {
+      allocationId
+      exceptionCode
+      expenseId
+      isBlocking
+      message
+      parameters {
+        entryExceptionAttendees {
+          lastName
+          firstName
+          entryAmount
+          crnCode
+          totalExpensed
+          totalAuthorized
+          __typename
+        }
+        missingFields {
+          missingSpecialParentField
+          fields
+          fieldIds
+          __typename
+        }
+        __typename
+      }
+      parentExpenseId
+      __typename
+    }
+    __typename
+  }
+  __typename
+}
+
+fragment ExpenseEntrySummaryFragment on ExpenseEntrySummary {
+  allocationState
+  approvedAmount {
+    value
+    currencyCode
+    __typename
+  }
+  attendeeCount
+  claimedAmount {
+    value
+    currencyCode
+    __typename
+  }
+  eReceiptImageId
+  expenseSourceIdentifiers {
+    eReceiptId
+    expenseCaptureImageId
+    jptRouteId
+    personalCardTransactionId
+    quickExpenseId
+    segmentId
+    segmentTypeId
+    tripId
+    creditCardTransaction {
+      id
+      type
+      __typename
+    }
+    __typename
+  }
+  expenseType {
+    id
+    code
+    name
+    meta {
+      isJapanPublicTransportation
+      __typename
+    }
+    __typename
+  }
+  id
+  isImageRequired
+  isPaperReceiptRequired
+  isPersonalExpense
+  jptRouteId
+  location {
+    city
+    countryCode
+    countrySubDivisionCode
+    id
+    name
+    __typename
+  }
+  meta {
+    canDelete
+    hasAffidavit
+    hasAllocation
+    hasAttendees
+    hasBlockingExceptions
+    hasComments
+    hasExceptions
+    hasItemizations
+    hasReceiptImage
+    hasSource
+    hasXmlReceipt
+    hasSourceCreditCard
+    hasSourceEReceipt
+    hasSourceItinerary
+    hasSourceExpenseIt
+    hasSourceMobile
+    hasSourcePersonalCard
+    __typename
+  }
+  parentExpenseId
+  paymentType {
+    id
+    code
+    name
+    __typename
+  }
+  receiptImageId
+  rpeKey
+  transactionAmount {
+    value
+    currencyCode
+    __typename
+  }
+  postedAmount {
+    value
+    currencyCode
+    __typename
+  }
+  transactionDate
+  vendor {
+    id
+    description
+    name
+    __typename
+  }
+  __typename
+}
+
+fragment AmountValueFragment on AmountValue {
+  amountValue: value {
+    value
+    currencyCode
+    __typename
+  }
+  __typename
+}
+
+fragment BooleanValueFragment on BooleanValue {
+  booleanValue: value
+  isValid
+  __typename
+}
+
+fragment DateValueFragment on DateValue {
+  dateValue: value
+  isValid
+  __typename
+}
+
+fragment ExchangeRateValueFragment on ExchangeRateValue {
+  value
+  operation
+  __typename
+}
+
+fragment ExpenseAmountFragment on ExpenseAmount {
+  expenseAmountValue: value
+  __typename
+}
+
+fragment FloatValueFragment on FloatValue {
+  floatValue: value
+  __typename
+}
+
+fragment IntegerValueFragment on IntegerValue {
+  integerValue: value
+  __typename
+}
+
+fragment ListItemValueFragment on ListItemValue {
+  code
+  id
+  listItemValue: value
+  __typename
+}
+
+fragment ListValueFragment on ListValue {
+  isValid
+  listValue: value {
+    code
+    id
+    value
+    __typename
+  }
+  __typename
+}
+
+fragment LocationValueFragment on LocationListValue {
+  isValid
+  locationValue: value {
+    id
+    name
+    city
+    value
+    countryCode
+    countrySubDivisionCode
+    __typename
+  }
+  __typename
+}
+
+fragment StringValueFragment on StringValue {
+  stringValue: value
+  __typename
+}
+
+fragment EntryDetailsForList on ReportEntryDetails {
+  expenseId
+  summary {
+    ...ExpenseEntrySummaryFragment
+    __typename
+  }
+  values {
+    fieldName
+    formFieldId
+    value {
+      ...AmountValueFragment
+      ...BooleanValueFragment
+      ...DateValueFragment
+      ...ExchangeRateValueFragment
+      ...ExpenseAmountFragment
+      ...FloatValueFragment
+      ...IntegerValueFragment
+      ...ListItemValueFragment
+      ...ListValueFragment
+      ...LocationValueFragment
+      ...StringValueFragment
+      __typename
+    }
+    __typename
+  }
+  __typename
+}
+
+fragment EntryExceptionFragment on ExpenseEntryException {
+  allocationId
+  exceptionCode
+  expenseId
+  isBlocking
+  message
+  parentExpenseId
+  parameters {
+    entryExceptionAttendees {
+      lastName
+      firstName
+      entryAmount
+      crnCode
+      totalExpensed
+      totalAuthorized
+      __typename
+    }
+    missingFields {
+      missingSpecialParentField
+      fields
+      fieldIds
+      __typename
+    }
+    __typename
+  }
+  __typename
+}
+
+fragment EntryExceptionsFragment on EntryExceptions {
+  reportId
+  expenseId
+  attendeesExceptionLevel
+  countOfExceptions
+  transactionAmount {
+    value
+    currencyCode
+    __typename
+  }
+  transactionDate
+  expenseType {
+    id
+    code
+    name
+    meta {
+      isJapanPublicTransportation
+      __typename
+    }
+    __typename
+  }
+  entryExceptions {
+    ...EntryExceptionFragment
+    __typename
+  }
+  itemizations {
+    reportId
+    expenseId
+    attendeesExceptionLevel
+    countOfExceptions
+    transactionAmount {
+      value
+      currencyCode
+      __typename
+    }
+    transactionDate
+    expenseType {
+      id
+      code
+      name
+      meta {
+        isJapanPublicTransportation
+        __typename
+      }
+      __typename
+    }
+    entryExceptions {
+      ...EntryExceptionFragment
+      __typename
+    }
+    itemizations {
+      expenseId
+      __typename
+    }
+    __typename
+  }
+  __typename
+}
+
+fragment ReportExceptionsFragment on ReportExceptions {
+  reportId
+  countOfExceptions
+  hasBlockingExceptions
+  reportExceptions {
+    allocationId
+    exceptionCode
+    expenseId
+    parentExpenseId
+    isBlocking
+    message
+    parameters {
+      entryExceptionAttendees {
+        lastName
+        firstName
+        entryAmount
+        crnCode
+        totalExpensed
+        totalAuthorized
+        __typename
+      }
+      missingFields {
+        missingSpecialParentField
+        fields
+        fieldIds
+        __typename
+      }
+      __typename
+    }
+    __typename
+  }
+  entryExceptions {
+    ...EntryExceptionsFragment
+    __typename
+  }
+  __typename
+}
+
+fragment EreExpenseEntrySummaryFragment on ExpenseEntrySummary {
+  ...ExpenseEntrySummaryFragment
+  cctReceiptImageId
+  travel {
+    hotelCheckinDate
+    hotelCheckoutDate
+    __typename
+  }
+  itemizations {
+    id
+    attendeeCount
+    allocationState
+    isPersonalExpense
+    approvedAmount {
+      value
+      currencyCode
+      __typename
+    }
+    meta {
+      canDelete
+      hasAllocation
+      hasAttendees
+      hasComments
+      hasExceptions
+      hasBlockingExceptions
+      __typename
+    }
+    expenseType {
+      id
+      code
+      name
+      __typename
+    }
+    rpeKey
+    transactionAmount {
+      value
+      currencyCode
+      __typename
+    }
+    transactionDate
+    __typename
+  }
+  __typename
+}
+
+fragment FormFieldFragment on FormField {
+  id
+  label
+  formFieldId
+  value {
+    ...AmountValueFragment
+    ...BooleanValueFragment
+    ...DateValueFragment
+    ...ExchangeRateValueFragment
+    ...ExpenseAmountFragment
+    ...FloatValueFragment
+    ...IntegerValueFragment
+    ...ListItemValueFragment
+    ...ListValueFragment
+    ...LocationValueFragment
+    ...StringValueFragment
+    __typename
+  }
+  accessMode
+  control
+  dataType
+  defaultValue {
+    value
+    code
+    listItemId
+    isValid
+    __typename
+  }
+  sequence
+  maximumLength
+  tooltip
+  hasLineSeparator
+  isCopyDownSource
+  itemizationCopyDownAction
+  isExternalList
+  targetFieldSettings {
+    action
+    formFieldId
+    lhsOperandSource
+    operator
+    rhsOperand
+    __typename
+  }
+  comments {
+    comment
+    creationDate
+    isLatest
+    createdForUserId
+    author {
+      first
+      last
+      preferred
+      __typename
+    }
+    __typename
+  }
+  options {
+    id
+    code
+    value
+    __typename
+  }
+  isRequired
+  list {
+    id
+    level
+    parentId
+    displayFormat
+    defaultSearchBy: searchCriteria
+    __typename
+  }
+  dataValidator {
+    validationExpression
+    failureMessage
+    __typename
+  }
+  requiredForSave
+  taxAuthorityId
+  taxFormId
+  showFieldForCountryCode
+  __typename
+}
+
+fragment JptRouteSummaryFragment on JptRouteSummary {
+  assignment
+  companyId
+  creationDateTime
+  currencyCode
+  distanceUnit
+  documentId
+  entryId
+  eReceiptId
+  fromLocation
+  hasCommuterPassDeduction
+  hasIcCard
+  id
+  isCheap
+  isEasy
+  isFast
+  isExpress
+  isIcTicket
+  isLegacyData
+  isRoundTrip
+  lastModifiedDateTime
+  originType
+  routeUUID
+  seatType
+  toLocation
+  totalAdditionalAmount
+  totalAmount
+  totalDistance
+  transactionDate
+  transactionId
+  userId
+  __typename
+}
+
+fragment ExistingExpenseFormFragment on ExistingExpenseForm {
+  expenseId
+  expenseTypeId
+  travelRequestEntries {
+    entries {
+      id
+      value
+      __typename
+    }
+    __typename
+  }
+  mainForm {
+    attendeesLinkAccessMode
+    calculateTaxLinkAccessMode
+    fields {
+      ...FormFieldFragment
+      __typename
+    }
+    isFormEditable
+    __typename
+  }
+  meta {
+    canAllocate
+    canDelete
+    hasMixedAllocations
+    hasXmlReceipt
+    __typename
+  }
+  backendMileageConfigs
+  expenseTypeDetails {
+    expenseTypeId
+    quickTips
+    __typename
+  }
+  jptRouteSummary {
+    ...JptRouteSummaryFragment
+    __typename
+  }
+  __typename
+}
+
+fragment ExpenseTypeFragment on ExpenseType {
+  id
+  name
+  itemizationType
+  text
+  header
+  parentName
+  code
+  visibilityCode
+  itemizeStyle
+  shouldAddUserAsDefaultAttendee
+  allowEditAttendeeAmount
+  allowEditAttendeeCount
+  shouldDisplayAttendeeAmounts
+  itemizationWizardId
+  meta {
+    isTravelAllowanceExpense
+    canCombineExpense
+    isItemizationAllowed
+    isItemizationRequired
+    hasItemizationWizard
+    isJapanPublicTransportation
+    __typename
+  }
+  __typename
+}
+
+fragment ExpenseReportDetailsFragment on ExpenseReportDetails {
+  id
+  allocationFormId
+  reportType
+  userId
+  policy {
+    id
+    allowReceiptAffidavits
+    receiptAffidavitExplanation
+    receiptAffidavitAcceptance
+    expenseListDetailFormId
+    meta {
+      canShowReceipts
+      canUploadImagesToExpenses
+      __typename
+    }
+    __typename
+  }
+  expenseTypes {
+    ...ExpenseTypeFragment
+    __typename
+  }
+  meta {
+    isApproved
+    canReopen
+    isReopened
+    isSubmitted
+    canAddExpense
+    canAllocateExpenses
+    isReceiptImageAvailable
+    __typename
+  }
+  name
+  claimedAmount {
+    value
+    currencyCode
+    __typename
+  }
+  approvedAmount {
+    value
+    currencyCode
+    __typename
+  }
+  reportTotal {
+    value
+    currencyCode
+    __typename
+  }
+  currencyCode
+  countryCode
+  taxConfigId
+  __typename
+}
+
+fragment ItemizationDetailsFragment on ExpenseEntryItemizationSummary {
+  id
+  expenseType {
+    id
+    name
+    code
+    __typename
+  }
+  transactionDate
+  transactionAmount {
+    value
+    currencyCode
+    __typename
+  }
+  approvedAmount {
+    value
+    currencyCode
+    __typename
+  }
+  meta {
+    hasExceptions
+    hasBlockingExceptions
+    hasAllocation
+    hasAttendees
+    hasComments
+    __typename
+  }
+  __typename
+}

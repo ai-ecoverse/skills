@@ -1,0 +1,32 @@
+query GetTravelAllowanceConfig($taParams: CDS_TravelAllowanceParams!, $issSource: CDS_ItinerarySyncServiceSource, $issSourceIds: [ID!], $shouldIncludeIssSource: Boolean!) {
+  CDS_expense {
+    travelAllowance(params: $taParams) {
+      userEnabled
+      multipleItinerariesEnabled
+      itineraries {
+        id
+        configuration {
+          actualVersusLimitEnabled
+          __typename
+        }
+        __typename
+      }
+      configurations {
+        isDefault
+        displayWizardConfig
+        displayWizardDescription
+        __typename
+      }
+      autoGenerationPossible(source: $issSource, sourceIds: $issSourceIds) @include(if: $shouldIncludeIssSource)
+      __typename
+    }
+    __typename
+  }
+  legacyTravelAllowanceConfig {
+    isEnabled
+    showOnHeader
+    claimTADefault
+    helpText
+    __typename
+  }
+}

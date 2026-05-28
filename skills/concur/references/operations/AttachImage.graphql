@@ -1,0 +1,16 @@
+mutation AttachImage($userId: String!, $contextRole: ContextRoleType!, $reportId: String!, $expenseId: String!, $imageId: String!) {
+  employee(userId: $userId, contextRole: $contextRole) {
+    expenseReport(reportId: $reportId) {
+      entry(expenseId: $expenseId) {
+        attachImage(imageId: $imageId) {
+          id
+          receiptImageId
+          __typename
+        }
+        __typename
+      }
+      __typename
+    }
+    __typename
+  }
+}

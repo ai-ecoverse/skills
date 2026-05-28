@@ -1,0 +1,90 @@
+query GetExpenseProviderData($reportId: String!, $userId: String!, $contextRole: ContextRoleType!) {
+  empKey
+  attendeeSettings {
+    enableMyTeamFeature
+    useAtnRequiredFieldCheck
+    useSystemEmployeeAttendee
+    showUserRating
+    __typename
+  }
+  employee(userId: $userId, contextRole: $contextRole) {
+    userId
+    contextRole
+    expenseReport(reportId: $reportId) {
+      reportId
+      rptKey
+      reportDetails {
+        id
+        currencyCode
+        policyId
+        meta {
+          isSubmitted
+          __typename
+        }
+        expenseTypes {
+          id
+          name
+          itemizationType
+          text
+          header
+          parentName
+          code
+          visibilityCode
+          itemizeStyle
+          shouldAddUserAsDefaultAttendee
+          allowEditAttendeeAmount
+          allowEditAttendeeCount
+          shouldDisplayAttendeeAmounts
+          itemizationWizardId
+          meta {
+            isTravelAllowanceExpense
+            canCombineExpense
+            isItemizationAllowed
+            isItemizationRequired
+            hasItemizationWizard
+            isJapanPublicTransportation
+            __typename
+          }
+          __typename
+        }
+        __typename
+      }
+      legacyReportDetails {
+        policyKey
+        currencyKey
+        employeeKey
+        policyExpenseTypes {
+          expenseTypesList {
+            access
+            allowEditAtnAmt
+            allowEditAtnCount
+            allowNoShows
+            defaultAtnTypeKey
+            displayAtnAmounts
+            expCode
+            expKey
+            hasPostAmtCalc
+            isCategoryHeader
+            isMRU
+            itcKey
+            itemizationUnallowExpKeys
+            itemizeFormKey
+            itemizeStyle
+            itemizeType
+            name
+            parentExpKey
+            parentName
+            unallowAtnTypeKeys
+            vendorListKey
+            visibilityCode
+            __typename
+          }
+          __typename
+        }
+        __typename
+      }
+      __typename
+    }
+    __typename
+  }
+}

@@ -1,0 +1,8 @@
+query GetUserAIPermissions($checkIsBondUser: Boolean!, $checkisVerifyAIUser: Boolean!) {
+  userPermissions {
+    isBondUser @include(if: $checkIsBondUser)
+    isVerifyAIUser @include(if: $checkisVerifyAIUser)
+    disableAgenticReportUntil @include(if: $checkIsBondUser)
+    __typename
+  }
+}

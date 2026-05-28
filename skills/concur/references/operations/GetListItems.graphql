@@ -1,0 +1,22 @@
+query GetListItems($listInformation: CDS_InputListInformation!) {
+  CDS_spend {
+    list(listInformation: $listInformation) {
+      page {
+        totalPages
+        __typename
+      }
+      isExternal
+      items {
+        code
+        id
+        matchValue
+        serviceVersion
+        shortCode
+        value
+        __typename
+      }
+      __typename
+    }
+    __typename
+  }
+}

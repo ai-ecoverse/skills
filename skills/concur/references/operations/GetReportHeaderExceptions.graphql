@@ -1,0 +1,39 @@
+query GetReportHeaderExceptions($reportId: String!, $userId: String!, $contextRole: ContextRoleType!) {
+  reportExceptions(
+    reportId: $reportId
+    userId: $userId
+    contextRole: $contextRole
+  ) {
+    reportId
+    countOfExceptions
+    hasBlockingExceptions
+    reportExceptions {
+      allocationId
+      exceptionCode
+      expenseId
+      parentExpenseId
+      isBlocking
+      message
+      parameters {
+        entryExceptionAttendees {
+          lastName
+          firstName
+          entryAmount
+          crnCode
+          totalExpensed
+          totalAuthorized
+          __typename
+        }
+        missingFields {
+          missingSpecialParentField
+          fields
+          fieldIds
+          __typename
+        }
+        __typename
+      }
+      __typename
+    }
+    __typename
+  }
+}

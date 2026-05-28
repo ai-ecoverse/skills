@@ -1,0 +1,9 @@
+query GetCountries {
+  countries: CDS_countries {
+    code
+    name
+    currencyCode
+    currencyName
+    __typename
+  }
+}

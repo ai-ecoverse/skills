@@ -1,0 +1,99 @@
+fragment EntryExceptionFragment on ExpenseEntryException {
+  allocationId
+  exceptionCode
+  expenseId
+  isBlocking
+  message
+  parentExpenseId
+  parameters {
+    entryExceptionAttendees {
+      lastName
+      firstName
+      entryAmount
+      crnCode
+      totalExpensed
+      totalAuthorized
+      __typename
+    }
+    missingFields {
+      missingSpecialParentField
+      fields
+      fieldIds
+      __typename
+    }
+    __typename
+  }
+  __typename
+}
+
+fragment EntryExceptionsFragment on EntryExceptions {
+  reportId
+  expenseId
+  attendeesExceptionLevel
+  countOfExceptions
+  transactionAmount {
+    value
+    currencyCode
+    __typename
+  }
+  transactionDate
+  expenseType {
+    id
+    code
+    name
+    meta {
+      isJapanPublicTransportation
+      __typename
+    }
+    __typename
+  }
+  entryExceptions {
+    ...EntryExceptionFragment
+    __typename
+  }
+  itemizations {
+    reportId
+    expenseId
+    attendeesExceptionLevel
+    countOfExceptions
+    transactionAmount {
+      value
+      currencyCode
+      __typename
+    }
+    transactionDate
+    expenseType {
+      id
+      code
+      name
+      meta {
+        isJapanPublicTransportation
+        __typename
+      }
+      __typename
+    }
+    entryExceptions {
+      ...EntryExceptionFragment
+      __typename
+    }
+    itemizations {
+      expenseId
+      __typename
+    }
+    __typename
+  }
+  __typename
+}
+
+query GetExistingEntryExceptions($expenseId: String!, $reportId: String!, $userId: String!, $contextRole: ContextRoleType!, $shouldChangeWarningAlertsToInformation: Boolean) {
+  entryExceptions(
+    expenseId: $expenseId
+    reportId: $reportId
+    userId: $userId
+    contextRole: $contextRole
+    shouldChangeWarningAlertsToInformation: $shouldChangeWarningAlertsToInformation
+  ) {
+    ...EntryExceptionsFragment
+    __typename
+  }
+}

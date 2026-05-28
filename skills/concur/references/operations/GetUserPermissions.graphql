@@ -1,0 +1,11 @@
+query GetUserPermissions {
+  userPermissions {
+    userId
+    isRequestTraveler
+    isCashAdvanceUser
+    isExpenseItEnabled
+    isBondUser
+    isVerifyAIUser
+    __typename
+  }
+}

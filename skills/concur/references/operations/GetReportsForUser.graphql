@@ -1,0 +1,82 @@
+fragment PaginationFragment on PaginationResponse {
+  number
+  size
+  totalElements
+  totalPages
+  __typename
+}
+
+query GetReportsForUser($contextRole: ContextRoleType!, $dateRange: InputDateRange, $filterByStatus: InputFilterBy, $paging: InputPagination, $sortBy: InputSortBy, $sortDirection: InputSortDirection, $userId: String!, $isAiUser: Boolean = false) {
+  employee(contextRole: $contextRole, userId: $userId) {
+    userId
+    contextRole
+    mostRecentAgenticReport @include(if: $isAiUser)
+    reportsForUser(
+      input: {dateRange: $dateRange, filterByStatus: $filterByStatus, paging: $paging, sortBy: $sortBy, sortDirection: $sortDirection}
+    ) {
+      list {
+        reportId: id
+        aiAssistedExpenseCount
+        allAiAssistedExpenseCount
+        approvedAmount {
+          currencyCode
+          value
+          __typename
+        }
+        approvalStatus
+        approvalStatusId
+        approver {
+          firstName: first
+          lastName: last
+          preferredName
+          __typename
+        }
+        claimedAmount {
+          currencyCode
+          value
+          __typename
+        }
+        endDate
+        exceptionLevel
+        wasSentForPayment: isSentForPayment
+        meta {
+          canAddExpense
+          isMarkedForReviewByDelegate
+          isApproved
+          isPendingApproval
+          isSentBack
+          isSubmitted
+          isReopened
+          isAiAssisted @include(if: $isAiUser)
+          __typename
+        }
+        name
+        paymentStatus
+        reportNumber
+        reportDate
+        reportTotal {
+          currencyCode
+          value
+          __typename
+        }
+        reportType
+        sentBackDate
+        startDate
+        submitDate
+        rptKey
+        totalAmountDueEmployee {
+          currencyCode
+          value
+          __typename
+        }
+        __typename
+      }
+      pagination {
+        ...PaginationFragment
+        __typename
+      }
+      __typename
+    }
+    __typename
+  }
+}

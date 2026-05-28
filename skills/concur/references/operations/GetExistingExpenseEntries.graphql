@@ -1,0 +1,65 @@
+query GetExistingExpenseEntries($userId: String!, $reportId: String!, $contextRole: ContextRoleType!) {
+  reportEntriesDetails(
+    userId: $userId
+    reportId: $reportId
+    contextRole: $contextRole
+  ) {
+    reportId
+    entries {
+      expenseId
+      summary {
+        id
+        parentExpenseId
+        expenseType {
+          id
+          code
+          name
+          __typename
+        }
+        isImageRequired
+        isPaperReceiptRequired
+        receiptImageId
+        eReceiptImageId
+        transactionAmount {
+          value
+          currencyCode
+          __typename
+        }
+        transactionDate
+        vendor {
+          id
+          description
+          name
+          __typename
+        }
+        meta {
+          hasAffidavit
+          hasReceiptImage
+          hasSourceCreditCard
+          hasSourceEReceipt
+          hasSourceItinerary
+          __typename
+        }
+        expenseSourceIdentifiers {
+          jptRouteId
+          expenseCaptureImageId
+          quickExpenseId
+          personalCardTransactionId
+          eReceiptId
+          segmentId
+          segmentTypeId
+          tripId
+          creditCardTransaction {
+            id
+            type
+            __typename
+          }
+          __typename
+        }
+        __typename
+      }
+      __typename
+    }
+    __typename
+  }
+}

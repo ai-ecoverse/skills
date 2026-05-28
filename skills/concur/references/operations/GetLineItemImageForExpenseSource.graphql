@@ -1,0 +1,40 @@
+query GetLineItemImageForExpenseSource($userId: String!, $contextRole: ContextRoleType!, $imageId: String!) {
+  employee(userId: $userId, contextRole: $contextRole) {
+    userId
+    contextRole
+    lineItemImage(imageId: $imageId) {
+      imageId
+      receiptId
+      fileType
+      imageType
+      imageDate
+      fileName
+      imageOrigin
+      imageUrl
+      protImageId
+      thumbUrl
+      timestamp {
+        status
+        resolution
+        colorDepth
+        timestampDate
+        __typename
+      }
+      receiptDigitizationStatus
+      complianceCountryCode
+      meta {
+        isEbunshoReceipt
+        canAppendReceipt
+        canDetachReceipt
+        canReplaceReceipt
+        canDownloadReceipt
+        canDeleteReceipt
+        canSaveReceiptRotation
+        isAllowedForMultipleUse
+        __typename
+      }
+      __typename
+    }
+    __typename
+  }
+}

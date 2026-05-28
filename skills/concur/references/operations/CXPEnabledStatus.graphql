@@ -1,0 +1,12 @@
+query CXPEnabledStatus {
+  userPermissions {
+    isCXPEnabledStatus {
+      showCXPBanner
+      isCXPEnabled
+      app
+      appCenterUrl
+      __typename
+    }
+    __typename
+  }
+}

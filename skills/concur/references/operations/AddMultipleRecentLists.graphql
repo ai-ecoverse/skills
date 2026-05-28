@@ -1,0 +1,7 @@
+mutation AddMultipleRecentLists($mruInput: [CDS_MruMutationInput]!, $hasMruToSave: Boolean!, $hasLocationToSave: Boolean!, $locationId: ID!) {
+  CDS_addMultipleRecentLists(mruInput: $mruInput) @include(if: $hasMruToSave) {
+    status
+    __typename
+  }
+  CDS_addRecentLocation(locationId: $locationId) @include(if: $hasLocationToSave)
+}

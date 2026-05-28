@@ -1,0 +1,123 @@
+fragment AvailableExpensesFragment on AvailableExpenseSummary {
+  id
+  confirmationCode
+  exchangeRate
+  expenseType {
+    id
+    name
+    code
+    meta {
+      isJapanPublicTransportation
+      __typename
+    }
+    __typename
+  }
+  location {
+    id
+    name
+    city
+    countrySubDivisionCode
+    countryCode
+    __typename
+  }
+  paymentType {
+    id
+    name
+    code
+    __typename
+  }
+  transactionDate
+  vendor
+  estimatedAmount {
+    currencyCode
+    value
+    __typename
+  }
+  postedAmount {
+    currencyCode
+    value
+    __typename
+  }
+  transactionAmount {
+    currencyCode
+    value
+    __typename
+  }
+  creditCard {
+    cardLastSegment
+    hasRichData
+    creditCardAccountId
+    creditCardTransactionId
+    isCBSAccount
+    __typename
+  }
+  eReceipt {
+    eReceiptId
+    receiptImageId
+    __typename
+  }
+  personalCard {
+    personalCardAccountId
+    personalCardTransactionId
+    __typename
+  }
+  quickExpense {
+    quickExpenseId
+    __typename
+  }
+  receiptCapture {
+    receiptCaptureId
+    __typename
+  }
+  tripSegment {
+    confirmationCode
+    segmentId
+    segmentType
+    tripId
+    __typename
+  }
+  receiptImageId
+  unifiedReceiptImageId
+  meta {
+    canUnmatch
+    hasEditableFields
+    hasSourceCreditCard
+    hasSourcePersonalCard
+    hasSourceEReceipt
+    hasSourceAttendees
+    hasSourceExpenseIt
+    hasSourceItinerary
+    hasSourceMobile
+    hasSource
+    missingData
+    __typename
+  }
+  isRTA
+  __typename
+}
+
+query GetAvailableExpenses($userId: String!, $contextRole: ContextRoleType!, $page: Int, $size: Int, $params: AvailableExpensesQueryParams) {
+  employee(userId: $userId, contextRole: $contextRole) {
+    userId
+    contextRole
+    availableExpensesWithPagination(
+      pagination: {size: $size, page: $page}
+      params: $params
+    ) {
+      availableExpenses {
+        ...AvailableExpensesFragment
+        __typename
+      }
+      pagination {
+        number
+        size
+        totalElements
+        totalPages
+        __typename
+      }
+      hasCBSAccount
+      __typename
+    }
+    __typename
+  }
+}

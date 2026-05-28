@@ -1,0 +1,8 @@
+query GetProcessingReceipts($userId: String!, $reportId: String, $expenseId: String) {
+  processingReceipts(userId: $userId, reportId: $reportId, expenseId: $expenseId) {
+    receiptId
+    fileName
+    status
+    __typename
+  }
+}

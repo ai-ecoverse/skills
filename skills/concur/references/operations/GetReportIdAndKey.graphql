@@ -1,0 +1,12 @@
+query GetReportIdAndKey($userId: String, $contextRole: ContextRoleType, $rptKey: String, $reportId: String) {
+  employee(userId: $userId, contextRole: $contextRole) {
+    userId
+    contextRole
+    expenseReport(reportId: $reportId, rptKey: $rptKey) {
+      reportId
+      rptKey
+      __typename
+    }
+    __typename
+  }
+}

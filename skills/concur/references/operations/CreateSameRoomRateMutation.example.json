@@ -1,0 +1,14 @@
+{
+  "taxFields": null,
+  "userId": "00000000-0000-0000-0000-000000000000",
+  "contextRole": "TRAVELER",
+  "isTrexEnabled": true,
+  "expenseListDetailFormId": null,
+  "reportId": "B1B2C3D4E5F60718293B",
+  "expenseId": "F000000000000000000000000000000F",
+  "roomRateObject": {
+    "roomRate": 139,
+    "taxRate": 4.2
+  },
+  "roomRateExpenseTypeId": "LODNG"
+}

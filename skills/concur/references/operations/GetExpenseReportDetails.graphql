@@ -1,0 +1,31 @@
+query GetExpenseReportDetails($reportId: String, $userId: String, $contextRole: ContextRoleType) {
+  employee(userId: $userId, contextRole: $contextRole) {
+    userId
+    contextRole
+    expenseReport(reportId: $reportId) {
+      reportId
+      reportDetails {
+        id
+        meta {
+          isReopened
+          isSubmitted
+          hasExpenses
+          hasLegacyTravelAllowance
+          isAiAssisted
+          __typename
+        }
+        name
+        currencyCode
+        approvedAmount {
+          value
+          __typename
+        }
+        userId
+        __typename
+      }
+      rptKey
+      __typename
+    }
+    __typename
+  }
+}

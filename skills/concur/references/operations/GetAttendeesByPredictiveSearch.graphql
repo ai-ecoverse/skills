@@ -1,0 +1,166 @@
+fragment AttendeeDetailsFragment on AttendeeDetails {
+  atnKey
+  atnTypeKey
+  atnTypeId
+  atnTypeName
+  atnTypeCode
+  id
+  lastName
+  company
+  firstName
+  mi
+  preferredName
+  emailAddress
+  rowKey
+  title
+  suffix
+  crnKey
+  isDeleted
+  externalId
+  hasExceptionsYtd
+  hasExceptionsPrevYear
+  totalAmountYtd
+  totalAmountPrevYear
+  isAllowedOnExpenseType(allowedAtnTypeKeys: $allowedAtnTypeKeys)
+  ownerId
+  custom1
+  custom1Name
+  custom1ListItemId
+  custom2
+  custom2Name
+  custom2ListItemId
+  custom3
+  custom3Name
+  custom3ListItemId
+  custom4
+  custom4Name
+  custom4ListItemId
+  custom5
+  custom5Name
+  custom5ListItemId
+  custom6
+  custom6Name
+  custom6ListItemId
+  custom7
+  custom7Name
+  custom7ListItemId
+  custom8
+  custom8Name
+  custom8ListItemId
+  custom9
+  custom9Name
+  custom9ListItemId
+  custom10
+  custom10Name
+  custom10ListItemId
+  custom11
+  custom11Name
+  custom11ListItemId
+  custom12
+  custom12Name
+  custom12ListItemId
+  custom13
+  custom13Name
+  custom13ListItemId
+  custom14
+  custom14Name
+  custom14ListItemId
+  custom15
+  custom15Name
+  custom15ListItemId
+  custom16
+  custom16Name
+  custom16ListItemId
+  custom17
+  custom17Name
+  custom17ListItemId
+  custom18
+  custom18Name
+  custom18ListItemId
+  custom19
+  custom19Name
+  custom19ListItemId
+  custom20
+  custom20Name
+  custom20ListItemId
+  custom21
+  custom21Name
+  custom21ListItemId
+  custom22
+  custom22Name
+  custom22ListItemId
+  custom23
+  custom23Name
+  custom23ListItemId
+  custom24
+  custom24Name
+  custom24ListItemId
+  custom25
+  custom25Name
+  custom25ListItemId
+  __typename
+}
+
+fragment CompactAttendeeFragment on CompactAttendee {
+  atnKey
+  atnTypeKey
+  atnTypeId
+  atnTypeName
+  atnTypeCode
+  id
+  lastName
+  company
+  firstName
+  mi
+  preferredName
+  emailAddress
+  title
+  suffix
+  isFavorite
+  details(userId: $userId) @include(if: $includeAttendeeDetails) {
+    ...AttendeeDetailsFragment
+    __typename
+  }
+  __typename
+}
+
+fragment AttendeeGroupDetailsFragment on GroupDetails {
+  id
+  category
+  name
+  count
+  grpKey
+  rowKey
+  attendeeDetails {
+    ...AttendeeDetailsFragment
+    __typename
+  }
+  __typename
+}
+
+fragment AttendeeGroupFragment on AttendeeGroup {
+  id
+  name
+  category
+  details(userId: $userId) @include(if: $includeAttendeeDetails) {
+    ...AttendeeGroupDetailsFragment
+    __typename
+  }
+  __typename
+}
+
+query GetAttendeesByPredictiveSearch($searchTerms: String!, $includeInactiveEmp: Boolean!, $includeAtnTypeKeys: [Int!]!, $allowedAtnTypeKeys: [Int!]!, $excludeKeys: [String!]!, $includeAttendeeDetails: Boolean = false, $userId: String = "") {
+  attendeesByPredictiveSearch(
+    searchTerms: $searchTerms
+    includeInactiveEmp: $includeInactiveEmp
+    includeAtnTypeKeys: $includeAtnTypeKeys
+    excludeKeys: $excludeKeys
+  ) {
+    attendees {
+      ...CompactAttendeeFragment
+      ...AttendeeGroupFragment
+      __typename
+    }
+    __typename
+  }
+}

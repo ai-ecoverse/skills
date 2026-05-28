@@ -1,0 +1,9 @@
+query GetRecentExpenseTypes($policyId: ID!) {
+  CDS_expense {
+    recentExpenseTypes(policyId: $policyId) {
+      id
+      __typename
+    }
+    __typename
+  }
+}
