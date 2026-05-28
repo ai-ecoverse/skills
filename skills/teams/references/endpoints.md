@@ -34,9 +34,12 @@ Each value is JSON along the lines of:
 }
 ```
 
-`teams auth` searches for keys containing both `accesstoken` and
+The page-context fetch searches for keys containing both `accesstoken` and
 `graph.microsoft.com`, picks the entry with the highest `expiresOn` /
-`expires_on`, and extracts the `secret` field.
+`expires_on`, and uses the `secret` field as the bearer token. Substrate
+Search calls use the same lookup against `substrate.office.com`. All of this
+runs inside the Teams tab via `playwright-cli eval`; the token value never
+leaves the browser context.
 
 ### Required scopes
 
@@ -44,7 +47,7 @@ The Teams web app requests broad scopes. This skill uses:
 
 | Scope | Used by |
 |---|---|
-| `User.Read` | `auth` (verify token via `/me`), `user` |
+| `User.Read` | `activity` (resolve `/me`), `user` |
 | `User.ReadBasic.All` | `user` (lookup by name / UPN) |
 | `Team.ReadBasic.All` | `teams`, name → ID resolution |
 | `Channel.ReadBasic.All` | `channels`, `info`, channel name → ID resolution |
@@ -61,7 +64,8 @@ Tokens typically expire after 60–90 minutes. The Teams web app silently
 refreshes them. When a token expires:
 
 1. `teams` commands fail with `401 Unauthorized`.
-2. Re-run `teams auth` — the browser cache will already hold a fresh token.
+2. Refresh the Teams tab in the browser. The next command picks up the new
+   token automatically — there is no separate auth step to run.
 
 ## Graph API base URLs
 
@@ -79,8 +83,8 @@ metadata uses **v1.0**.
 GET https://graph.microsoft.com/v1.0/me
 ```
 
-Returns `displayName`, `mail`, `userPrincipalName`, `id`. Used by `teams auth`
-to verify the token.
+Returns `displayName`, `mail`, `userPrincipalName`, `id`. Used by
+`teams activity` to resolve the current user for mention matching.
 
 ### List joined teams
 
@@ -245,7 +249,7 @@ limits. If you hit throttling, wait per the `Retry-After` header and retry.
 
 | Status | Meaning | Resolution |
 |---|---|---|
-| 401 | Token expired or invalid | Run `teams auth` |
+| 401 | Token expired or invalid | Refresh the Teams tab in the browser; next command auto-picks up the new token |
 | 403 | Insufficient permissions | Token lacks a required scope. Confirm you're on the **beta** endpoint for message reads. |
 | 404 | Resource not found | Team / channel / message ID is wrong |
 | 429 | Throttled | Wait per `Retry-After` header |

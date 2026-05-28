@@ -1,18 +1,26 @@
-// teams.jsh  Microsoft Teams channel scanner via Graph API
+// teams.jsh â€” Microsoft Teams access via Graph + Substrate Search APIs
 // Auto-discovered as `teams` shell command in SLICC.
 //
+// Operates against the authenticated browser session on teams.microsoft.com via
+// page-context fetch through playwright-cli eval. The user must be logged into
+// Teams in their browser; the script never reads, prints, or stores the MSAL
+// session token â€” every API call runs inside the page and only the API response
+// leaves the browser context.
+//
 // Usage: teams <subcommand> [args] [--since=<duration>] [--top=<n>]
-// Subcommands: auth, teams, channels, history, activity, post, thread, user, info, search, unanswered, digest
+// Subcommands: teams, channels, history, activity, post, thread, user, info, search, unanswered, digest
 
+const TEAMS_DOMAIN_PRIMARY = 'teams.microsoft.com';
+const TEAMS_DOMAIN_SECONDARY = 'teams.live.com';
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
 const GRAPH_BETA = 'https://graph.microsoft.com/beta';
 // NOTE: Channel message reads must use GRAPH_BETA. The delegated token from the Teams
 // browser session does not include ChannelMessage.Read.All, so the v1.0 messages endpoint
 // returns 403. The beta endpoint works with the scopes the Teams session provides.
-const TOKEN_PATH = '/workspace/.teams-token';
-const SUBSTRATE_TOKEN_PATH = '/workspace/.teams-substrate-token';
-const TEAMS_CACHE_PATH = '/workspace/.teams-cache.json';
 const SUBSTRATE_SEARCH_URL = 'https://substrate.office.com/search/api/v2/query';
+// Audience markers used to locate the right MSAL access token in localStorage.
+const GRAPH_AUDIENCE = 'graph.microsoft.com';
+const SUBSTRATE_AUDIENCE = 'substrate.office.com';
 
 // ---------------------------------------------------------------------------
 // Argument parsing
@@ -88,146 +96,180 @@ async function pooled(concurrency, fns) {
 }
 
 // ---------------------------------------------------------------------------
-// Token management
+// Tab discovery + page-context fetch
 // ---------------------------------------------------------------------------
+//
+// All API calls run inside the Teams tab via playwright-cli eval. The MSAL
+// access token is located in localStorage and consumed by fetch() in the
+// same eval block â€” the token never leaves the browser context.
 
-async function readToken() {
-  try {
-    const token = (await fs.readFile(TOKEN_PATH)).trim();
-    if (!token) throw new Error('empty');
-    return token;
-  } catch {
+let _tabId = null;
+
+async function findTeamsTab() {
+  const tabListResult = await exec('playwright-cli tab-list');
+  if (tabListResult.exitCode !== 0) {
+    die('playwright-cli tab-list failed: ' + (tabListResult.stderr || tabListResult.stdout));
+  }
+  const tabLines = tabListResult.stdout.split('\n');
+  const teamsLine = tabLines.find(
+    (l) => l.includes(TEAMS_DOMAIN_PRIMARY) || l.includes(TEAMS_DOMAIN_SECONDARY)
+  );
+  if (!teamsLine) {
     die(
-      'No auth token found. Run `teams auth` first to extract a token from your Teams browser session.'
+      'No Teams tab found. Open Teams first:\n  open https://teams.microsoft.com\nWait for it to load and sign in, then retry.'
     );
   }
+  const idMatch = teamsLine.match(/\[targetId:\s*([^\]]+)\]/) || teamsLine.match(/^\[([^\]]+)\]/);
+  if (!idMatch) die('Could not parse Teams tab ID from tab-list output.');
+  return idMatch[1].trim();
 }
 
-async function saveToken(token) {
-  await fs.writeFile(TOKEN_PATH, token);
+async function ensureTab() {
+  if (!_tabId) _tabId = await findTeamsTab();
+  return _tabId;
 }
 
-async function readSubstrateToken() {
-  try {
-    const token = (await fs.readFile(SUBSTRATE_TOKEN_PATH)).trim();
-    if (!token) return null;
-    return token;
-  } catch {
-    return null;
+async function teamsFetch(method, url, body, audience) {
+  const tabId = await ensureTab();
+  const aud = audience || GRAPH_AUDIENCE;
+  const jsCode = `
+    (async () => {
+      try {
+        const aud = ${JSON.stringify(aud)};
+        let best = null, bestExp = 0;
+        const lkeys = Object.keys(localStorage);
+        for (let i = 0; i < lkeys.length; i++) {
+          const k = lkeys[i];
+          if (k.indexOf('accesstoken') === -1 || k.indexOf(aud) === -1) continue;
+          try {
+            const e = JSON.parse(localStorage.getItem(k));
+            const exp = parseInt(e.expiresOn || e.expires_on || 0);
+            if (e && e.secret && exp > bestExp) { best = e; bestExp = exp; }
+          } catch (x) {}
+        }
+        if (!best) {
+          for (let j = 0; j < sessionStorage.length; j++) {
+            const k2 = sessionStorage.key(j);
+            if (!k2) continue;
+            const lc = k2.toLowerCase();
+            if (lc.indexOf('accesstoken') === -1 || lc.indexOf(aud) === -1) continue;
+            try {
+              const e2 = JSON.parse(sessionStorage.getItem(k2));
+              if (e2 && e2.secret) { best = e2; break; }
+            } catch (x2) {}
+          }
+        }
+        if (!best) return JSON.stringify({ error: 'NOT_AUTHENTICATED' });
+        const opts = {
+          method: ${JSON.stringify(method)},
+          headers: {
+            'Authorization': 'Bearer ' + best.secret,
+            'Accept': 'application/json'
+          }
+        };
+        ${body !== undefined && body !== null ? `opts.headers['Content-Type'] = 'application/json'; opts.body = ${JSON.stringify(JSON.stringify(body))};` : ''}
+        const resp = await fetch(${JSON.stringify(url)}, opts);
+        const text = await resp.text();
+        let data = null;
+        try { data = JSON.parse(text); } catch (e) { data = text; }
+        return JSON.stringify({ status: resp.status, ok: resp.ok, data });
+      } catch (e) {
+        return JSON.stringify({ error: 'FETCH_ERROR', message: e.message });
+      }
+    })()
+  `.trim();
+  const escaped = jsCode.replace(/'/g, "'\\''");
+  const result = await exec(`playwright-cli eval --tab=${tabId} '${escaped}'`);
+  if (result.exitCode !== 0) {
+    die('eval failed: ' + (result.stderr || result.stdout));
   }
-}
-
-async function saveSubstrateToken(token) {
-  await fs.writeFile(SUBSTRATE_TOKEN_PATH, token);
+  const raw = result.stdout.trim();
+  let parsed;
+  try { parsed = JSON.parse(raw); }
+  catch (e) {
+    try { parsed = JSON.parse(JSON.parse(raw)); }
+    catch (e2) {
+      die('Failed to parse response: ' + raw.slice(0, 500));
+    }
+  }
+  return parsed;
 }
 
 // ---------------------------------------------------------------------------
-// Graph API client
+// Graph API client (page-context)
 // ---------------------------------------------------------------------------
 
-async function graphGet(token, path, params, retries = 3) {
+async function graphGet(path, params, retries) {
+  if (retries === undefined) retries = 3;
   let url = path.startsWith('http') ? path : `${GRAPH_BASE}${path}`;
   if (params) {
     const qs = new URLSearchParams(params).toString();
     url += (url.includes('?') ? '&' : '?') + qs;
   }
-  const resp = await fetch(url, {
-    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
-  });
-  if (resp.status === 401) {
-    die('401 Unauthorized  token expired. Run `teams auth` to refresh.');
+  const r = await teamsFetch('GET', url, null, GRAPH_AUDIENCE);
+  if (r.error === 'NOT_AUTHENTICATED') {
+    die('No Graph access token in Teams localStorage. Make sure Teams is fully loaded and signed in.');
   }
-  if (resp.status === 403) {
-    die(
-      '403 Forbidden  insufficient permissions. The token may lack required Graph API scopes. See reference.md.'
-    );
+  if (r.error === 'FETCH_ERROR') die('Page fetch error: ' + r.message);
+  if (r.status === 401) {
+    die('401 Unauthorized â€” Teams session expired. Refresh the Teams tab and sign in again.');
   }
-  if (resp.status === 429) {
+  if (r.status === 403) {
+    die('403 Forbidden â€” insufficient permissions. The Teams session token lacks required Graph scopes. See reference.md.');
+  }
+  if (r.status === 429) {
     if (retries > 0) {
-      const retryAfter = Math.min(parseInt(resp.headers.get('Retry-After') || '5', 10), 30);
-      await new Promise((r) => setTimeout(r, retryAfter * 1000));
-      return graphGet(token, path, params, retries - 1);
+      await new Promise((rs) => setTimeout(rs, 5000));
+      return graphGet(path, params, retries - 1);
     }
-    die('429 Too Many Requests  rate limited. Wait a moment and retry.');
+    die('429 Too Many Requests â€” rate limited. Wait a moment and retry.');
   }
-  if (!resp.ok) {
-    const body = await resp.text();
-    die(`Graph API error ${resp.status}: ${body}`);
+  if (!r.ok) {
+    die(`Graph API error ${r.status}: ${typeof r.data === 'string' ? r.data : JSON.stringify(r.data)}`);
   }
-  return resp.json();
+  return r.data;
 }
 
-async function graphPost(token, path, body) {
+async function graphPost(path, body) {
   const url = path.startsWith('http') ? path : `${GRAPH_BETA}${path}`;
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
-  if (resp.status === 401) {
-    die('401 Unauthorized  token expired. Run `teams auth` to refresh.');
+  const r = await teamsFetch('POST', url, body, GRAPH_AUDIENCE);
+  if (r.error === 'NOT_AUTHENTICATED') {
+    die('No Graph access token in Teams localStorage. Make sure Teams is fully loaded and signed in.');
   }
-  if (!resp.ok) {
-    const text = await resp.text();
-    die(`Graph API error ${resp.status}: ${text}`);
+  if (r.error === 'FETCH_ERROR') die('Page fetch error: ' + r.message);
+  if (r.status === 401) {
+    die('401 Unauthorized â€” Teams session expired. Refresh the Teams tab and sign in again.');
   }
-  return resp.json();
+  if (!r.ok) {
+    die(`Graph API error ${r.status}: ${typeof r.data === 'string' ? r.data : JSON.stringify(r.data)}`);
+  }
+  return r.data;
 }
 
-// Non-fatal POST  returns {ok, status, data} instead of calling die().
-// Used for optional endpoints (Search API) where failure should trigger a fallback.
-async function graphPostSafe(token, path, body) {
+// Non-fatal POST â€” returns {ok, status, data} instead of die(). Used for
+// optional endpoints (Search API) where failure should trigger a fallback.
+async function graphPostSafe(path, body) {
   const url = path.startsWith('http') ? path : `${GRAPH_BETA}${path}`;
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
-  if (!resp.ok) return { ok: false, status: resp.status, data: null };
-  return { ok: true, status: resp.status, data: await resp.json() };
+  const r = await teamsFetch('POST', url, body, GRAPH_AUDIENCE);
+  if (r.error || !r.ok) return { ok: false, status: r.status || 0, data: null };
+  return { ok: true, status: r.status, data: r.data };
 }
 
-// Generic safe POST for any bearer-token API (e.g. substrate search).
-async function apiPostSafe(token, url, body) {
-  try {
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
-    if (!resp.ok) return { ok: false, status: resp.status, data: null };
-    return { ok: true, status: resp.status, data: await resp.json() };
-  } catch {
-    return { ok: false, status: 0, data: null };
-  }
+// Generic safe POST for any bearer-token API (substrate search).
+async function apiPostSafe(url, body, audience) {
+  const r = await teamsFetch('POST', url, body, audience || GRAPH_AUDIENCE);
+  if (r.error || !r.ok) return { ok: false, status: r.status || 0, data: null };
+  return { ok: true, status: r.status, data: r.data };
 }
 
 // Generic safe GET for any bearer-token API.
-async function apiGetSafe(token, url) {
-  try {
-    const resp = await fetch(url, {
-      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
-    });
-    if (!resp.ok) return { ok: false, status: resp.status, data: null };
-    return { ok: true, status: resp.status, data: await resp.json() };
-  } catch {
-    return { ok: false, status: 0, data: null };
-  }
+async function apiGetSafe(url, audience) {
+  const r = await teamsFetch('GET', url, null, audience || GRAPH_AUDIENCE);
+  if (r.error || !r.ok) return { ok: false, status: r.status || 0, data: null };
+  return { ok: true, status: r.status, data: r.data };
 }
 
-async function graphGetAllPages(token, path, params, maxPages, useBeta) {
+async function graphGetAllPages(path, params, maxPages, useBeta) {
   maxPages = maxPages || 10;
   const base = useBeta ? GRAPH_BETA : GRAPH_BASE;
   const results = [];
@@ -238,7 +280,7 @@ async function graphGetAllPages(token, path, params, maxPages, useBeta) {
   }
   let pages = 0;
   while (url && pages < maxPages) {
-    const data = await graphGet(token, url);
+    const data = await graphGet(url);
     if (data.value) results.push(...data.value);
     url = data['@odata.nextLink'] || null;
     pages++;
@@ -247,15 +289,15 @@ async function graphGetAllPages(token, path, params, maxPages, useBeta) {
 }
 
 // ---------------------------------------------------------------------------
-// Teams/channel resolution (name ’ ID)
+// Teams/channel resolution (name â†’ ID)
 // ---------------------------------------------------------------------------
 
-async function getTeams(token) {
-  return graphGetAllPages(token, '/me/joinedTeams');
+async function getTeams() {
+  return graphGetAllPages('/me/joinedTeams');
 }
 
-async function resolveTeam(token, nameOrId) {
-  const teams = await getTeams(token);
+async function resolveTeam(nameOrId) {
+  const teams = await getTeams();
   const lower = nameOrId.toLowerCase();
   const exact = teams.find((t) => t.id === nameOrId);
   if (exact) return exact;
@@ -264,12 +306,12 @@ async function resolveTeam(token, nameOrId) {
   return match;
 }
 
-async function getChannels(token, teamId) {
-  return graphGetAllPages(token, `/teams/${teamId}/channels`);
+async function getChannels(teamId) {
+  return graphGetAllPages(`/teams/${teamId}/channels`);
 }
 
-async function resolveChannel(token, teamId, nameOrId) {
-  const channels = await getChannels(token, teamId);
+async function resolveChannel(teamId, nameOrId) {
+  const channels = await getChannels(teamId);
   const lower = nameOrId.toLowerCase();
   const exact = channels.find((c) => c.id === nameOrId);
   if (exact) return exact;
@@ -282,133 +324,11 @@ async function resolveChannel(token, teamId, nameOrId) {
 }
 
 // ---------------------------------------------------------------------------
-// Auth subcommand  extract MSAL token from Teams browser tab
-// ---------------------------------------------------------------------------
-
-async function cmdAuth() {
-  const tabId = await findTeamsTab();
-
-  // Write the token-extraction script to a temp VFS file so we avoid
-  // shell-quoting headaches with the long JS expression.
-  //
-  // IMPORTANT: Modern Teams (v2, teams.microsoft.com/v2/) stores MSAL tokens in
-  // localStorage, NOT sessionStorage. We search localStorage for the freshest
-  // Graph token (key contains "accesstoken" + "graph.microsoft.com"), falling
-  // back to sessionStorage for older Teams versions.
-  //
-  // We also extract the substrate.office.com token for Substrate Search API
-  // access (the internal search engine Teams v2 uses for message search).
-  const extractScript = [
-    '(function(){',
-    // --- Graph token ---
-    'var best=null,bestExp=0;',
-    'var lkeys=Object.keys(localStorage);',
-    'for(var i=0;i<lkeys.length;i++){',
-    'var k=lkeys[i];',
-    'if(k.indexOf("accesstoken")===-1||k.indexOf("graph.microsoft.com")===-1)continue;',
-    'try{var e=JSON.parse(localStorage.getItem(k));',
-    'var exp=parseInt(e.expiresOn||e.expires_on||0);',
-    'if(e&&e.secret&&exp>bestExp){best=e;bestExp=exp;}}catch(x){}}',
-    // --- Substrate token ---
-    'var sBest=null,sBestExp=0;',
-    'for(var s=0;s<lkeys.length;s++){',
-    'var sk=lkeys[s];',
-    'if(sk.indexOf("accesstoken")===-1||sk.indexOf("substrate.office.com")===-1)continue;',
-    'try{var se=JSON.parse(localStorage.getItem(sk));',
-    'var sexp=parseInt(se.expiresOn||se.expires_on||0);',
-    'if(se&&se.secret&&sexp>sBestExp){sBest=se;sBestExp=sexp;}}catch(sx){}}',
-    // Build result
-    'var result={};',
-    'if(best){result.token=best.secret;result.expiresOn=best.expiresOn||best.expires_on;}',
-    'if(sBest){result.substrateToken=sBest.secret;result.substrateExpiresOn=sBest.expiresOn||sBest.expires_on;}',
-    'if(result.token)return JSON.stringify(result);',
-    // Fallback: sessionStorage (older Teams)
-    'for(var j=0;j<sessionStorage.length;j++){',
-    'var k2=sessionStorage.key(j);',
-    'if(k2&&k2.toLowerCase().indexOf("accesstoken")!==-1&&k2.toLowerCase().indexOf("graph.microsoft.com")!==-1){',
-    'try{var e2=JSON.parse(sessionStorage.getItem(k2));',
-    'if(e2&&e2.secret)return JSON.stringify({token:e2.secret,expiresOn:e2.expires_on||e2.expiresOn})}catch(x2){}}',
-    '}',
-    'return null})()',
-  ].join('');
-
-  await fs.writeFile('/tmp/.teams-scout-eval.js', extractScript);
-  const scriptContent = await fs.readFile('/tmp/.teams-scout-eval.js');
-
-  // Pass the single-line expression through exec; JSON.stringify adds safe quoting
-  const evalResult = await exec(
-    'playwright-cli eval --tab=' + tabId + ' ' + JSON.stringify(scriptContent)
-  );
-  const evalOutput = evalResult.stdout.trim();
-
-  if (!evalOutput || evalOutput === 'null' || evalOutput === 'undefined') {
-    die(
-      'No MSAL token found in Teams session storage. Make sure Teams is fully loaded and you are logged in. Try refreshing the page.'
-    );
-  }
-
-  let tokenData;
-  try {
-    let parsed = evalOutput;
-    // The eval output may be double-stringified
-    if (parsed.startsWith('"') && parsed.endsWith('"')) {
-      parsed = JSON.parse(parsed);
-    }
-    tokenData = typeof parsed === 'string' ? JSON.parse(parsed) : parsed;
-  } catch (e) {
-    die('Failed to parse token data: ' + evalOutput);
-  }
-
-  if (!tokenData || !tokenData.token) {
-    die('Token extraction returned empty data. Teams may not be fully loaded.');
-  }
-
-  await saveToken(tokenData.token);
-
-  // Save substrate token if available
-  const hasSubstrate = !!(tokenData.substrateToken);
-  if (hasSubstrate) {
-    await saveSubstrateToken(tokenData.substrateToken);
-  }
-
-  // Verify token by fetching user profile
-  const me = await graphGet(tokenData.token, '/me');
-  out({
-    status: 'authenticated',
-    user: me.displayName,
-    email: me.mail || me.userPrincipalName,
-    id: me.id,
-    expiresOn: tokenData.expiresOn || 'unknown',
-    substrateSearch: hasSubstrate ? 'available' : 'not found',
-    substrateExpiresOn: tokenData.substrateExpiresOn || undefined,
-  });
-}
-
-async function findTeamsTab() {
-  const tabListResult = await exec('playwright-cli tab-list');
-  const lines = tabListResult.stdout.split('\n');
-  const teamsLine = lines.find(
-    (l) => l.includes('teams.microsoft.com') || l.includes('teams.live.com')
-  );
-
-  if (!teamsLine) {
-    die(
-      'No Teams tab found. Open Teams first:\n  open https://teams.microsoft.com\nWait for it to load, then retry `teams auth`.'
-    );
-  }
-
-  const idMatch = teamsLine.match(/\[targetId:\s*([^\]]+)\]/) || teamsLine.match(/^\[([^\]]+)\]/);
-  if (!idMatch) die('Could not parse Teams tab ID from tab-list output.');
-  return idMatch[1].trim();
-}
-
-// ---------------------------------------------------------------------------
 // Teams subcommand
 // ---------------------------------------------------------------------------
 
 async function cmdTeams() {
-  const token = await readToken();
-  const teams = await getTeams(token);
+  const teams = await getTeams();
   out(
     teams.map((t) => ({
       id: t.id,
@@ -423,7 +343,6 @@ async function cmdTeams() {
 // ---------------------------------------------------------------------------
 
 async function cmdChannels() {
-  const token = await readToken();
   const term = flags.search ? flags.search.toLowerCase() : null;
 
   if (!positional[0] && !term) {
@@ -431,16 +350,16 @@ async function cmdChannels() {
   }
 
   if (positional[0]) {
-    const team = await resolveTeam(token, positional[0]);
-    let channels = await getChannels(token, team.id);
+    const team = await resolveTeam(positional[0]);
+    let channels = await getChannels(team.id);
     if (term) channels = channels.filter(c => c.displayName.toLowerCase().includes(term));
     out(channels.map((c) => ({ id: c.id, name: c.displayName, description: c.description || '', membershipType: c.membershipType, team: team.displayName })));
   } else {
-    const teams = await getTeams(token);
+    const teams = await getTeams();
     const results = [];
     for (const t of teams) {
       try {
-        const channels = await getChannels(token, t.id);
+        const channels = await getChannels(t.id);
         const matched = channels.filter(c => c.displayName.toLowerCase().includes(term));
         results.push(...matched.map(c => ({ id: c.id, name: c.displayName, description: c.description || '', membershipType: c.membershipType, team: t.displayName })));
       } catch { /* skip inaccessible teams */ }
@@ -455,15 +374,12 @@ async function cmdChannels() {
 
 async function cmdHistory() {
   if (positional.length < 2) die('Usage: teams history <team> <channel> [--since=24h] [--top=50]');
-  const token = await readToken();
-  const team = await resolveTeam(token, positional[0]);
-  const channel = await resolveChannel(token, team.id, positional[1]);
+  const team = await resolveTeam(positional[0]);
+  const channel = await resolveChannel(team.id, positional[1]);
   const since = sinceDate(sinceDuration, 24);
   const top = topN || 50;
 
-  const messages = await graphGetAllPages(
-    token,
-    `/teams/${team.id}/channels/${channel.id}/messages`,
+  const messages = await graphGetAllPages(`/teams/${team.id}/channels/${channel.id}/messages`,
     { $top: String(top) },
     5,
     true  // use beta endpoint  v1.0 requires ChannelMessage.Read.All which the delegated token lacks
@@ -497,9 +413,8 @@ async function cmdHistory() {
 
 async function cmdPost() {
   if (positional.length < 3) die('Usage: teams post <team> <channel> <message> [--reply-to=<message-id>]');
-  const token = await readToken();
-  const team = await resolveTeam(token, positional[0]);
-  const channel = await resolveChannel(token, team.id, positional[1]);
+  const team = await resolveTeam(positional[0]);
+  const channel = await resolveChannel(team.id, positional[1]);
   const message = positional.slice(2).join(' ');
   const replyTo = flags['reply-to'] || null;
 
@@ -513,7 +428,7 @@ async function cmdPost() {
       body
     );
   } else {
-    result = await graphPost(token, `/teams/${team.id}/channels/${channel.id}/messages`, body);
+    result = await graphPost(`/teams/${team.id}/channels/${channel.id}/messages`, body);
   }
 
   out({
@@ -534,15 +449,12 @@ async function cmdPost() {
 
 async function cmdThread() {
   if (positional.length < 3) die('Usage: teams thread <team> <channel> <message-id> [--top=50]');
-  const token = await readToken();
-  const team = await resolveTeam(token, positional[0]);
-  const channel = await resolveChannel(token, team.id, positional[1]);
+  const team = await resolveTeam(positional[0]);
+  const channel = await resolveChannel(team.id, positional[1]);
   const messageId = positional[2];
   const top = topN || 50;
 
-  const replies = await graphGetAllPages(
-    token,
-    `/teams/${team.id}/channels/${channel.id}/messages/${messageId}/replies`,
+  const replies = await graphGetAllPages(`/teams/${team.id}/channels/${channel.id}/messages/${messageId}/replies`,
     { $top: String(top) },
     5,
     true
@@ -567,14 +479,13 @@ async function cmdThread() {
 
 async function cmdUser() {
   if (!positional[0]) die('Usage: teams user <user-id-or-display-name>');
-  const token = await readToken();
   const query = positional.join(' ');
 
   let user;
   if (query.match(/^[0-9a-f-]{36}$/i) || query.includes('@')) {
-    user = await graphGet(token, `/users/${encodeURIComponent(query)}`);
+    user = await graphGet(`/users/${encodeURIComponent(query)}`);
   } else {
-    const results = await graphGet(token, '/users', {
+    const results = await graphGet('/users', {
       $filter: `startswith(displayName,'${query.replace(/'/g, "''")}')`,
       $top: '5',
       $select: 'id,displayName,mail,userPrincipalName,jobTitle,department,officeLocation',
@@ -604,11 +515,10 @@ async function cmdUser() {
 
 async function cmdInfo() {
   if (positional.length < 2) die('Usage: teams info <team> <channel>');
-  const token = await readToken();
-  const team = await resolveTeam(token, positional[0]);
-  const channel = await resolveChannel(token, team.id, positional[1]);
+  const team = await resolveTeam(positional[0]);
+  const channel = await resolveChannel(team.id, positional[1]);
 
-  const info = await graphGet(token, `/teams/${team.id}/channels/${channel.id}`);
+  const info = await graphGet(`/teams/${team.id}/channels/${channel.id}`);
   out({
     id: info.id,
     name: info.displayName,
@@ -638,11 +548,10 @@ function stripHtml(html) {
 // ---------------------------------------------------------------------------
 
 async function cmdActivity() {
-  const token = await readToken();
   const since = sinceDate(sinceDuration, 24); // default 24h
   const limit = topN || 25;
 
-  const me = await graphGet(token, '/me');
+  const me = await graphGet('/me');
   const displayName = me.displayName;
 
   // 1. Try Substrate Search first (Teams internal search  most reliable)
@@ -665,7 +574,7 @@ async function cmdActivity() {
 
   // 2. Try Graph Search API
   console.error('[activity] Trying Graph Search API...');
-  const graph = await tryGraphSearch(token, displayName, limit);
+  const graph = await tryGraphSearch(displayName, limit);
   if (graph.ok && graph.results.length > 0) {
     console.error(`[activity] Graph Search returned ${graph.results.length} results.`);
     const sinceMs = new Date(since).getTime();
@@ -682,10 +591,10 @@ async function cmdActivity() {
   }
 
   // 3. Fall back to channel scan + chat scan in parallel
-  await cmdActivityFallback(token, me, since);
+  await cmdActivityFallback(me, since);
 }
 
-async function cmdActivityFallback(token, me, since) {
+async function cmdActivityFallback(me, since) {
   const maxTeams = parseInt(flags['max-teams'] || '10', 10);
   const concurrency = parseInt(flags['concurrency'] || '5', 10);
   const limit = topN || 25;
@@ -693,8 +602,8 @@ async function cmdActivityFallback(token, me, since) {
 
   // Run channel scan and chat scan in parallel
   const [channelMentions, chatMentions] = await Promise.all([
-    scanChannelsForMentions(token, me, cutoff, limit, maxTeams, concurrency),
-    scanChatsForMentions(token, me, cutoff, limit, concurrency),
+    scanChannelsForMentions(me, cutoff, limit, maxTeams, concurrency),
+    scanChatsForMentions(me, cutoff, limit, concurrency),
   ]);
 
   // Merge, deduplicate by date+from, sort by date descending
@@ -714,8 +623,8 @@ async function cmdActivityFallback(token, me, since) {
 }
 
 // Scan team channels for mentions of the current user.
-async function scanChannelsForMentions(token, me, cutoff, limit, maxTeams, concurrency) {
-  const allTeams = await getTeams(token);
+async function scanChannelsForMentions(me, cutoff, limit, maxTeams, concurrency) {
+  const allTeams = await getTeams();
   const teamsToScan = allTeams.slice(0, maxTeams);
 
   console.error(`[activity] Scanning channels in ${teamsToScan.length} teams...`);
@@ -723,7 +632,7 @@ async function scanChannelsForMentions(token, me, cutoff, limit, maxTeams, concu
   // Fetch all channels in parallel
   const teamChannels = await pooled(concurrency, teamsToScan.map((team) => async () => {
     try {
-      const channels = await getChannels(token, team.id);
+      const channels = await getChannels(team.id);
       return { team, channels: channels.slice(0, 3) };
     } catch {
       return { team, channels: [] };
@@ -734,9 +643,7 @@ async function scanChannelsForMentions(token, me, cutoff, limit, maxTeams, concu
   const channelTasks = teamChannels.flatMap(({ team, channels }) =>
     channels.map((channel) => async () => {
       try {
-        const messages = await graphGetAllPages(
-          token,
-          `/teams/${team.id}/channels/${channel.id}/messages`,
+        const messages = await graphGetAllPages(`/teams/${team.id}/channels/${channel.id}/messages`,
           { $top: '25' },
           1,
           true  // use beta endpoint
@@ -786,13 +693,11 @@ async function scanChannelsForMentions(token, me, cutoff, limit, maxTeams, concu
 
 // Scan 1:1 and group chats for mentions of the current user.
 // Uses /me/chats + /me/chats/{id}/messages (requires Chat.Read scope).
-async function scanChatsForMentions(token, me, cutoff, limit, concurrency) {
+async function scanChatsForMentions(me, cutoff, limit, concurrency) {
   console.error('[activity] Scanning chats/DMs...');
 
   // Fetch recent chats (ordered by last message)
-  const chatsResult = await apiGetSafe(
-    token,
-    `${GRAPH_BASE}/me/chats?$top=50&$orderby=lastMessagePreview/createdDateTime desc&$expand=lastMessagePreview`
+  const chatsResult = await apiGetSafe(`${GRAPH_BASE}/me/chats?$top=50&$orderby=lastMessagePreview/createdDateTime desc&$expand=lastMessagePreview`
   );
 
   if (!chatsResult.ok) {
@@ -818,7 +723,7 @@ async function scanChatsForMentions(token, me, cutoff, limit, concurrency) {
   const chatTasks = chats.map((chat) => async () => {
     try {
       const url = `${GRAPH_BASE}/me/chats/${chat.id}/messages?$top=25`;
-      const resp = await apiGetSafe(token, url);
+      const resp = await apiGetSafe(url);
       if (!resp.ok) return { chat, messages: [] };
       return { chat, messages: resp.data?.value || [] };
     } catch {
@@ -869,8 +774,6 @@ async function scanChatsForMentions(token, me, cutoff, limit, concurrency) {
 // Try Substrate Search API (the internal search engine Teams v2 uses).
 // Returns { ok, results } where results is an array of normalized hits.
 async function trySubstrateSearch(query, size) {
-  const subToken = await readSubstrateToken();
-  if (!subToken) return { ok: false, results: [] };
 
   const body = {
     EntityRequests: [
@@ -883,7 +786,7 @@ async function trySubstrateSearch(query, size) {
     ],
   };
 
-  const result = await apiPostSafe(subToken, SUBSTRATE_SEARCH_URL, body);
+  const result = await apiPostSafe(SUBSTRATE_SEARCH_URL, body, SUBSTRATE_AUDIENCE);
   if (!result.ok) return { ok: false, results: [] };
 
   // Substrate response shape: { EntitySets: [{ ResultSets: [{ Results: [...] }] }] }
@@ -908,7 +811,7 @@ async function trySubstrateSearch(query, size) {
 
 // Try Graph Search API with chatMessage entity type.
 // Returns { ok, results } where results is an array of normalized hits.
-async function tryGraphSearch(token, query, size) {
+async function tryGraphSearch(query, size) {
   const searchBody = {
     requests: [
       {
@@ -920,7 +823,7 @@ async function tryGraphSearch(token, query, size) {
     ],
   };
 
-  const searchResult = await graphPostSafe(token, '/search/query', searchBody);
+  const searchResult = await graphPostSafe('/search/query', searchBody);
   if (!searchResult.ok) return { ok: false, results: [] };
 
   const hits = searchResult.data?.value?.[0]?.hitsContainers?.[0]?.hits || [];
@@ -940,13 +843,13 @@ async function tryGraphSearch(token, query, size) {
 }
 
 // Channel scan fallback for search: scan channels and filter client-side by query.
-async function searchChannelFallback(token, query, since) {
+async function searchChannelFallback(query, since) {
   const maxTeams = parseInt(flags['max-teams'] || '10', 10);
   const concurrency = parseInt(flags['concurrency'] || '5', 10);
   const limit = topN || 25;
   const cutoff = since ? new Date(since).getTime() : 0;
   const queryLower = query.toLowerCase();
-  const allTeams = await getTeams(token);
+  const allTeams = await getTeams();
   const teamsToScan = allTeams.slice(0, maxTeams);
 
   console.error(`[search] Falling back to channel scan across ${teamsToScan.length} teams...`);
@@ -954,7 +857,7 @@ async function searchChannelFallback(token, query, since) {
   // Fetch all channels in parallel
   const teamChannels = await pooled(concurrency, teamsToScan.map((team) => async () => {
     try {
-      const channels = await getChannels(token, team.id);
+      const channels = await getChannels(team.id);
       return { team, channels: channels.slice(0, 3) };
     } catch {
       return { team, channels: [] };
@@ -965,9 +868,7 @@ async function searchChannelFallback(token, query, since) {
   const channelTasks = teamChannels.flatMap(({ team, channels }) =>
     channels.map((channel) => async () => {
       try {
-        const messages = await graphGetAllPages(
-          token,
-          `/teams/${team.id}/channels/${channel.id}/messages`,
+        const messages = await graphGetAllPages(`/teams/${team.id}/channels/${channel.id}/messages`,
           { $top: '25' },
           1,
           true
@@ -1013,12 +914,11 @@ async function searchChannelFallback(token, query, since) {
 }
 
 // ---------------------------------------------------------------------------
-// Search subcommand  cascading: substrate ’ Graph ’ channel scan fallback
+// Search subcommand  cascading: substrate ï¿½ Graph ï¿½ channel scan fallback
 // ---------------------------------------------------------------------------
 
 async function cmdSearch() {
   if (!positional[0]) die('Usage: teams search <query> [--since=7d]');
-  const token = await readToken();
   const query = positional.join(' ');
   const since = sinceDuration ? sinceDate(sinceDuration, 24) : null;
   const size = topN || 25;
@@ -1042,7 +942,7 @@ async function cmdSearch() {
 
   // 2. Try Graph Search API
   console.error('[search] Trying Graph Search API...');
-  const graph = await tryGraphSearch(token, query, size);
+  const graph = await tryGraphSearch(query, size);
   if (graph.ok && graph.results.length > 0) {
     console.error(`[search] Graph Search returned ${graph.results.length} results.`);
     const filtered = since
@@ -1058,7 +958,7 @@ async function cmdSearch() {
   }
 
   // 3. Fall back to channel scan
-  const results = await searchChannelFallback(token, query, since);
+  const results = await searchChannelFallback(query, since);
   out(results);
 }
 
@@ -1068,14 +968,11 @@ async function cmdSearch() {
 
 async function cmdUnanswered() {
   if (positional.length < 2) die('Usage: teams unanswered <team> <channel> [--since=48h]');
-  const token = await readToken();
-  const team = await resolveTeam(token, positional[0]);
-  const channel = await resolveChannel(token, team.id, positional[1]);
+  const team = await resolveTeam(positional[0]);
+  const channel = await resolveChannel(team.id, positional[1]);
   const since = sinceDate(sinceDuration, 48);
 
-  const messages = await graphGetAllPages(
-    token,
-    `/teams/${team.id}/channels/${channel.id}/messages`,
+  const messages = await graphGetAllPages(`/teams/${team.id}/channels/${channel.id}/messages`,
     { $top: '50', $expand: 'replies($top=1)' },
     5,
     true  // use beta endpoint
@@ -1107,12 +1004,11 @@ async function cmdUnanswered() {
 // ---------------------------------------------------------------------------
 
 async function cmdDigest() {
-  const token = await readToken();
   const since = sinceDate(sinceDuration, 24);
   const cutoff = new Date(since).getTime();
   const maxTeams = parseInt(flags['max-teams'] || '10', 10);
   const concurrency = parseInt(flags['concurrency'] || '5', 10);
-  const allTeams = await getTeams(token);
+  const allTeams = await getTeams();
   const teamsToScan = allTeams.slice(0, maxTeams);
 
   console.error(`[digest] Fetching channels for ${teamsToScan.length} of ${allTeams.length} teams in parallel...`);
@@ -1120,7 +1016,7 @@ async function cmdDigest() {
   // Step 1: fetch all channels in parallel
   const teamChannels = await pooled(concurrency, teamsToScan.map((team) => async () => {
     try {
-      const channels = await getChannels(token, team.id);
+      const channels = await getChannels(team.id);
       return { team, channels };
     } catch {
       return { team, channels: [] };
@@ -1131,9 +1027,7 @@ async function cmdDigest() {
   const channelTasks = teamChannels.flatMap(({ team, channels }) =>
     channels.map((channel) => async () => {
       try {
-        const messages = await graphGetAllPages(
-          token,
-          `/teams/${team.id}/channels/${channel.id}/messages`,
+        const messages = await graphGetAllPages(`/teams/${team.id}/channels/${channel.id}/messages`,
           { $top: '25' },
           1,
           true  // use beta endpoint
@@ -1206,7 +1100,6 @@ function showHelp() {
 Usage: teams <command> [args] [--since=<duration>] [--top=<n>] [--max-teams=<n>]
 
 Commands:
-  auth                              Extract auth tokens from Teams browser session
   teams                             List joined teams
   channels <team>                   List channels in a team
   channels <team> --search=term     Filter channels by name
@@ -1222,7 +1115,7 @@ Commands:
   unanswered <team> <channel>       Messages with no replies (default: --since=48h)
   digest                            Activity summary across all teams (default: --since=24h, --max-teams=10)
 
-Aliases: messages/msgs ’ history, mentions ’ activity
+Aliases: messages/msgs ï¿½ history, mentions ï¿½ activity
 
 Duration format: <number><unit> where unit is m(inutes), h(ours), d(ays), w(eeks)
   Examples: 30m, 24h, 7d, 2w
@@ -1232,9 +1125,12 @@ Duration format: <number><unit> where unit is m(inutes), h(ours), d(ays), w(eeks
 
 Team and channel arguments accept display names (case-insensitive partial match) or IDs.
 
-Search cascade: Substrate Search ’ Graph Search API ’ channel scan fallback.
-Activity cascade: Substrate Search ’ Graph Search ’ channel scan + chat/DM scan.
-Auth extracts both Graph and Substrate tokens from the Teams browser session.`);
+Search cascade: Substrate Search ï¿½ Graph Search API ï¿½ channel scan fallback.
+Activity cascade: Substrate Search ï¿½ Graph Search ï¿½ channel scan + chat/DM scan.
+
+Authentication: API calls run inside the Teams tab via playwright-cli eval,
+so the MSAL session token is consumed in-page and never written to disk.
+Requires an authenticated Teams tab open at https://teams.microsoft.com.`);
 }
 
 // ---------------------------------------------------------------------------
@@ -1242,9 +1138,6 @@ Auth extracts both Graph and Substrate tokens from the Teams browser session.`);
 // ---------------------------------------------------------------------------
 
 switch (subcommand) {
-  case 'auth':
-    await cmdAuth();
-    break;
   case 'teams':
     await cmdTeams();
     break;
