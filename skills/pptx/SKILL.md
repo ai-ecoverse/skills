@@ -1,6 +1,6 @@
 ---
 name: pptx
-description: Generate, read, and edit PowerPoint files (.pptx). Fully self-contained — no npm, no pip, no external skills required. Ships pptx-lib.jsh for creating presentations with images, themes, and positioning.
+description: Generates, reads, and edits PowerPoint files (.pptx). Handles full presentations with text, images, themes, and precise slide positioning. Use when the user asks to create, build, or generate a PowerPoint presentation, slide deck, or .pptx file; when they want to read, extract text from, or inspect an existing .pptx; when they need to edit, update, or add slides to a PowerPoint file; or when they mention slides, ppt, slide layouts, or speaker notes in the context of a file export.
 allowed-tools: bash
 trigger-phrases:
   - create a pptx
@@ -78,27 +78,37 @@ await exec('open --download /mnt/my-presentation.pptx');
 
 Two approaches: **full-bleed background** or **positioned image**.
 
-### When to use which
-
-| Use Case | Function | Notes |
-|----------|----------|-------|
-| Hero/cover image that fills the slide | `imageSlideXml()` | May stretch non-16:9 images |
-| Photo gallery or product shots | `picShape()` | Preserves aspect ratio |
-| Screenshot with surrounding text | `picShape()` | Position anywhere on slide |
-| Cinematic/visual impact slide | `imageSlideXml()` | Best with 16:9 landscape images |
-| Logo or icon placement | `picShape()` | Control exact size and position |
-| Infographic with annotations | `picShape()` | Combine with textBox, rectShape |
-
 **Rule of thumb**: Use `imageSlideXml()` for dramatic full-slide visuals. Use `picShape()` for everything else.
+
+### Fetching images from URLs
+
+Use `fetchImageB64()` to download images (avoids VFS binary corruption):
+
+```bash
+node -e "$(cat /workspace/skills/pptx/scripts/pptx-lib.jsh)
+await fetchImageB64('https://example.com/photo.jpg', '/tmp/img1.b64');
+console.log('done');
+"
+```
+
+Load and decode the b64 file (use this pattern whenever reading a saved b64 file):
+```javascript
+var b64 = await fs.readFile('/tmp/img1.b64');
+var imgBytes = Uint8Array.from(atob(b64.trim()), function(c){ return c.charCodeAt(0); });
+```
+
+**Error handling**: If `fetchImageB64` fails (network error, bad URL, unsupported format), the b64 file will be absent or empty. Check for a non-empty file before proceeding, and fall back to a placeholder `rectShape` if the image cannot be loaded.
+
+**Image formats**: Supported: PNG (`ext: 'png'`) and JPEG (`ext: 'jpeg'`). The skill auto-detects and sets Content-Types.
 
 ### Positioned images (recommended)
 
-Use `picShape(x, y, w, h, rId)` to place images at specific positions without stretching:
+Use `picShape(x, y, w, h, rId)` to place images at specific positions without stretching. Use `slideWithImagesXml` for any slide containing `picShape` elements:
 
 ```bash
 node -e "$(cat /workspace/skills/pptx/scripts/pptx-lib.jsh)
 
-// Load image (read b64 file saved by fetchImageB64, then decode)
+// Load image using the b64 decode pattern above
 var b64str = await fs.readFile('/tmp/photo.b64');
 var imgBytes = Uint8Array.from(atob(b64str.trim()), function(c){ return c.charCodeAt(0); });
 
@@ -109,7 +119,7 @@ slides.push(slideXml(T.dark, [
   textBox(1, 2, 11, 1, para(textRun('My Deck', {size:4000, color:'FFFFFF', bold:true}), {align:'center'})),
 ].join('')));
 
-// Slide with positioned image — use slideWithImagesXml for slides containing picShape
+// Slide with positioned image
 slides.push(slideWithImagesXml(T.light.bg, [
   textBox(0.6, 0.5, 12, 0.6, para(textRun('Photo Gallery', {size:2400, color:T.light.text, bold:true}))),
   picShape(4, 1.5, 5, 4, 'rId2'),  // centered 5x4 inch image
@@ -134,6 +144,7 @@ Use `imageSlideXml(caption)` for images that fill the entire slide (may stretch)
 ```bash
 node -e "$(cat /workspace/skills/pptx/scripts/pptx-lib.jsh)
 
+// Load image using the b64 decode pattern above
 var b64str = await fs.readFile('/tmp/photo.b64');
 var imgBytes = Uint8Array.from(atob(b64str.trim()), function(c){ return c.charCodeAt(0); });
 
@@ -154,27 +165,6 @@ await writePptx(zipData, '/mnt/deck.pptx');
 await exec('open --download /mnt/deck.pptx');
 "
 ```
-
-### Fetching images from URLs
-
-Use `fetchImageB64()` to download images (avoids VFS binary corruption):
-
-```bash
-node -e "$(cat /workspace/skills/pptx/scripts/pptx-lib.jsh)
-await fetchImageB64('https://example.com/photo.jpg', '/tmp/img1.b64');
-console.log('done');
-"
-```
-
-Then load the b64 file and decode:
-```javascript
-var b64 = await fs.readFile('/tmp/img1.b64');
-var imgBytes = Uint8Array.from(atob(b64.trim()), function(c){ return c.charCodeAt(0); });
-```
-
-### Image formats
-
-Supported: PNG (`ext: 'png'`) and JPEG (`ext: 'jpeg'`). The skill auto-detects and sets Content-Types.
 
 ---
 
@@ -204,6 +194,8 @@ python3 /tmp/read_pptx.py /mnt/file.pptx
 
 ## Edit an existing .pptx
 
+> **Important**: Edit operations manipulate ZIP/XML internals directly. Always verify the output by reading it back (slide count, key text) before delivering it. If the output looks malformed, re-run the read operation against the output file to confirm integrity.
+
 ### Replace text
 
 ```bash
@@ -225,6 +217,8 @@ EOF
 python3 /tmp/edit_pptx.py /mnt/input.pptx /mnt/output.pptx "Old Title" "New Title"
 open --download /mnt/output.pptx
 ```
+
+**Verify after replace**: Run the read script against `/mnt/output.pptx` to confirm the replacement took effect and the file is still readable.
 
 ### Add a text slide
 
@@ -279,6 +273,8 @@ EOF
 python3 /tmp/add_slide.py /mnt/input.pptx /mnt/output.pptx "Slide Title" "Body text"
 open --download /mnt/output.pptx
 ```
+
+**Verify after adding a slide**: Run the read script against `/mnt/output.pptx` and confirm the slide count increased by one and the new slide title appears in the output.
 
 ---
 
