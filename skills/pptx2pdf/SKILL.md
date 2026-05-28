@@ -11,35 +11,11 @@ description: |
 
 # pptx2pdf
 
-Convert a PPTX file to a PDF, preserving slide backgrounds, text, font styles, colors, alignment, word-wrap, and embedded PNG/JPEG images. No external tools or packages required — uses `pdf-lib` (via esm.sh) and the pre-loaded `JSZip`.
-
-## Triggers
-
-Use this skill when the user says things like:
-- "convert ppt to pdf"
-- "convert pptx to pdf"
-- "export presentation as pdf"
-- "turn this pptx into a pdf"
-- "save slides as pdf"
-- "make a pdf from my presentation"
-- "download as pdf"
-- "export ppt as pdf"
-
-## What it preserves
-
-- Slide backgrounds (solid color from slide, layout, or master)
-- Text content, font size, bold, italic, color, alignment (left/center/right)
-- Word-wrapped text — long text reflows to fit its box, no ellipsis truncation
-- Embedded PNG and JPEG images at correct position and size
-- Slide order and dimensions (960×540pt widescreen)
-
-## What it skips
-
-Charts, SmartArt, grouped shapes, custom fonts (mapped to Helvetica), gradients, and shadows.
+Convert a PPTX file to a PDF using `pdf-lib` (via esm.sh) and the pre-loaded `JSZip` — no external tools or packages required. Preserves slide backgrounds, text styling (bold, italic, color, alignment, word-wrap), and embedded PNG/JPEG images. Slide order and dimensions (960×540pt widescreen) are maintained. Unsupported: charts, SmartArt, grouped shapes, gradients, custom fonts (mapped to Helvetica).
 
 ## Usage
 
-Load the library via `new Function` — required because `eval()` in SLICC's strict-mode async context does not hoist `var` declarations to the caller's scope.
+Load the library via `new Function` — required to correctly scope the loaded code:
 
 ```js
 var libCode = await fs.readFile('/workspace/skills/pptx2pdf/scripts/pptx2pdf-lib.jsh');
@@ -53,9 +29,31 @@ await pptx2pdf.convertPptxToPdf('/mnt/deck.pptx', '/shared/deck.pdf');
 open('/shared/deck.pdf', '--download');
 ```
 
+### Verifying output
+
+After conversion, confirm the output file exists and is non-trivially sized:
+
+```js
+var stat = await fs.stat('/shared/deck.pdf');
+if (!stat || stat.size < 1024) {
+  console.error('PDF may be empty or conversion failed — check that the input path is correct and the file is a valid PPTX.');
+}
+```
+
+Common failure modes: invalid or password-protected PPTX, unreadable input path, or write permission issues on the output path.
+
 ## Notes
+
+### Paths
 
 - Input path: any readable path (`/mnt/`, `/shared/`, `/workspace/`)
 - Output path: use `/shared/` — reliable for binary writes from scoops
+
+### Text encoding
+
 - Unicode symbols outside WinAnsi (e.g. ▶ ● ✓) are substituted with ASCII equivalents
 - HTML entities in text (`&amp;`, `&quot;`, `&#x2026;`) are decoded automatically
+
+### Debugging edge cases
+
+For unexpected rendering, missing images, or unsupported shape types, inspect `/workspace/skills/pptx2pdf/scripts/pptx2pdf-lib.jsh` directly to understand how individual slide elements are parsed and rendered. This file is the single source of truth for all conversion logic.
