@@ -12,10 +12,8 @@ allowed-tools: bash
 
 # Outlook
 
-Direct API access to Microsoft Outlook via the browser session. Extracts an MSAL
-access token from the Outlook tab's localStorage and calls the Outlook REST API v2
-(`outlook.office.com/api/v2.0`). Requires an open Outlook tab at
-`outlook.office.com`.
+Direct API access to Microsoft Outlook via the browser session. Requires an open
+Outlook tab at `outlook.office.com` — the token is extracted automatically.
 
 ## Quick start
 
@@ -57,20 +55,6 @@ outlook send --to user@example.com --subject "Hello" --body "Message body"
 # Monday aggregation (unread mail + upcoming calendar)
 outlook monday --limit 20
 ```
-
-## Authentication
-
-The token is extracted automatically from `localStorage` in the Outlook browser tab.
-The script looks for MSAL access tokens (keys containing `accesstoken` and
-`outlook.office.com`) and selects the one with the most scopes (which includes
-`mail.readwrite`, `calendars.readwrite`, `mail.send`, etc.).
-
-If no browser tab is found, the script falls back to a saved token at
-`/shared/.outlook-token`.
-
-Token refresh is automatic — every invocation re-extracts the freshest token from
-the browser. MSAL tokens typically expire after ~1 hour but are refreshed silently
-by the Outlook web app.
 
 ## Commands
 
@@ -119,6 +103,12 @@ outlook decline AAMk...1 AAMk...2 --comment "Schedule conflict"
 outlook tentative --all --date 7d
 ```
 
+**Batch accept/decline workflow:**
+1. List pending events and review: `outlook calendar --date 7d --json`
+2. Identify `NotResponded` events by ID.
+3. Respond: `outlook accept --all --date 7d` (or target specific IDs).
+4. Verify: `outlook calendar --date 7d --json` — confirm response status updated.
+
 ### outlook send --to EMAIL --subject TEXT --body TEXT
 
 Send an email. Multiple recipients can be comma-separated in `--to`.
@@ -136,23 +126,3 @@ and optional fields like `importance`, `location`, and `response`.
 - `email` — unread inbox message
 - `calendar` — calendar event (already responded to)
 - `meeting` — calendar event awaiting response
-
-## API reference
-
-Uses the Outlook REST API v2 at `https://outlook.office.com/api/v2.0`:
-
-| Endpoint | Description |
-|----------|-------------|
-| `GET /me/mailFolders/inbox/messages` | Inbox messages |
-| `GET /me/messages` | All messages (with `$search`) |
-| `GET /me/messages/{id}` | Single message |
-| `GET /me/calendarview` | Calendar events in range |
-| `POST /me/sendMail` | Send email |
-
-## Error handling
-
-If the token cannot be extracted (no Outlook tab open, expired session), the script
-prints: `Could not extract Outlook token. Open Outlook at https://outlook.office.com
-in your browser and try again.` and exits with code 1.
-
-API errors include the HTTP status and error message from Microsoft.
