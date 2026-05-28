@@ -1,0 +1,21 @@
+name: Tessl Skill Lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: tesslio/setup-tessl@v2
+
+      - name: Lint root tile
+        run: tessl skill lint .
