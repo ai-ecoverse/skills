@@ -13,8 +13,10 @@ Comprehensive reference for the Strudel music library. Read the main SKILL.md fi
 7. [Pattern modifiers reference](#pattern-modifiers-reference)
 8. [Scales and chords](#scales-and-chords)
 9. [Sample banks](#sample-banks)
-10. [Continuous signals](#continuous-signals)
-11. [Multi-pattern playback](#multi-pattern-playback)
+10. [Drum sound codes](#drum-sound-codes)
+11. [Samples manifest](#samples-manifest)
+12. [Continuous signals](#continuous-signals)
+13. [Multi-pattern playback](#multi-pattern-playback)
 
 ## Initialization
 
@@ -286,6 +288,74 @@ sound("gm_synth_strings_1")
 sound("gm_lead_6_voice")
 ```
 
+## Drum sound codes
+
+Common dirt-sample drum names usable directly with `sound("...")`:
+
+| Code | Drum | Code | Drum |
+|------|------|------|------|
+| `bd` | Bass drum | `oh` | Open hi-hat |
+| `sd` | Snare | `cp` | Clap |
+| `hh` | Hi-hat | `rim` | Rimshot |
+| `lt` | Low tom | `mt` | Mid tom |
+| `ht` | High tom | `rd` | Ride |
+| `cr` | Crash | | |
+
+808 variants: `808bd`, `808sd`, `808cy`, `808hc`, `808ht`, `808lt`, `808mt`, `808oh` — separate sample names, not banks.
+
+## Samples manifest
+
+### Manifest structure
+
+`samples()` takes a JSON object mapping category names to arrays of WAV file paths, plus a `_base` URL prefix. When a pattern references a sound name like `bd` or `808bd`, Strudel fetches the WAV from `_base + path` on demand.
+
+```json
+{
+  "_base": "https://raw.githubusercontent.com/tidalcycles/dirt-samples/master/",
+  "bd": ["bd/BT0A0A7.wav", "bd/BT0A0D0.wav"],
+  "808bd": ["808bd/BD0000.WAV", "808bd/BD0010.WAV"]
+}
+```
+
+### Included categories
+
+The curated manifest at `/shared/sprinkles/strudel-music/samples-manifest.json` contains 44 categories / ~223 samples:
+
+| Type | Categories |
+|------|-----------|
+| Standard drums | `bd`, `sd`, `hh`, `cp`, `oh`, `ho`, `hc`, `lt`, `mt`, `ht`, `cr`, `rm`, `rs`, `cb` |
+| 808 drum machine | `808`, `808bd`, `808sd`, `808cy`, `808hc`, `808ht`, `808lt`, `808mt`, `808oh` |
+| 909 | `909` |
+| Drum kits | `drumtraks`, `electro1`, `gretsch`, `house`, `jazz`, `jungle`, `tech`, `feel`, `clubkick` |
+| Melodic/tonal | `arpy`, `bass`, `jvbass`, `casio`, `moog`, `juno`, `pad`, `pluck`, `sitar`, `stab`, `rave` |
+| Percussion | `tabla` |
+
+### Adding more samples
+
+To expand the curated manifest, download the full dirt-samples manifest and add categories:
+
+```bash
+# Download the complete dirt-samples manifest
+curl -sL "https://raw.githubusercontent.com/tidalcycles/dirt-samples/master/strudel.json" > /tmp/strudel-samples.json
+
+# Then use node to merge new categories into the curated manifest:
+node -e "
+const full = JSON.parse(await fs.readFile('/tmp/strudel-samples.json'));
+const curated = JSON.parse(await fs.readFile('/shared/sprinkles/strudel-music/samples-manifest.json'));
+
+// Add new categories (up to 6 samples each)
+var newCats = ['piano', 'flick', 'mouth', 'wind', 'birds', 'metal'];
+for (var k of newCats) {
+  if (full[k]) curated[k] = full[k].slice(0, 6);
+}
+
+await fs.writeFile('/shared/sprinkles/strudel-music/samples-manifest.json', JSON.stringify(curated));
+console.log('Updated manifest');
+"
+```
+
+The full dirt-samples repo has 218 categories / 2038 samples. The curated manifest keeps only the most useful subset to avoid unnecessary network requests.
+
 ## Continuous signals
 
 All signals oscillate from 0 to 1 over one cycle (bipolar variants from -1 to 1):
@@ -340,4 +410,40 @@ stack(
   sound("bd*4, [~ sd]*2, hh*8").bank("RolandTR909"),
   n("0 2 4 6").scale("C:minor").s("triangle").room(0.5)
 ).play()
+```
+
+## More example patterns
+
+**Ambient generative:**
+```js
+note("c3 [eb3 g3] <bb3 ab3> f3")
+  .s("sine")
+  .room(4)
+  .delay(0.6)
+  .lpf(1200)
+  .slow(2)
+  .jux(x => x.add(note("7")).slow(1.5))
+```
+
+**Euclidean polyrhythm:**
+```js
+stack(
+  sound("808bd(3,8)"),
+  sound("sd(5,8,2)").gain(0.6),
+  sound("hh(7,16)").gain(0.4)
+)
+```
+
+**Multi-sample showcase (arpy, moog, jvbass, juno, pluck):**
+```js
+stack(
+  note("e4 e4 f#4 g4").sound("arpy").room(0.3).gain(0.7),
+  note("e3 ~ f#3 ~").sound("moog").lpf(1200).gain(0.3),
+  note("d2 g2 a2 d2").sound("jvbass").gain(0.5).lpf(500),
+  note("[d3,f#3,a3]").sound("juno").gain(0.15).room(2),
+  note("[~ d5 ~ a4]").sound("pluck").gain(0.2).delay(0.3),
+  sound("808bd(3,8)").gain(0.5),
+  sound("[~ gretsch:2]*2").gain(0.4),
+  sound("808hc*8").gain(0.25)
+)
 ```
