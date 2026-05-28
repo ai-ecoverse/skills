@@ -12,8 +12,7 @@ allowed-tools: bash
 # Gmail
 
 Direct API access to Gmail via OAuth2 refresh token flow. Uses the `GWS_CLIENT_ID`,
-`GWS_CLIENT_SECRET`, and `GWS_REFRESH_TOKEN` environment variables to obtain a
-fresh access token from `https://oauth2.googleapis.com/token`. No browser tab needed.
+`GWS_CLIENT_SECRET`, and `GWS_REFRESH_TOKEN` environment variables.
 
 ## Quick start
 
@@ -48,7 +47,7 @@ gmail monday --limit 20 --date 1d
 
 ## Authentication
 
-The script uses three environment variables injected by SLICC's fetch proxy:
+Required environment variables:
 
 | Variable | Description |
 |----------|-------------|
@@ -56,11 +55,6 @@ The script uses three environment variables injected by SLICC's fetch proxy:
 | `GWS_CLIENT_SECRET` | OAuth2 client secret |
 | `GWS_REFRESH_TOKEN` | Long-lived refresh token |
 | `GWS_TYPE` | Literal `authorized_user` (not used by the script) |
-
-On every invocation the script POSTs to `https://oauth2.googleapis.com/token` with
-`grant_type=refresh_token` to obtain a fresh access token. The token is cached
-in-process for the duration of the command. No browser, no MSAL, no `gws` binary
-needed.
 
 ## Commands
 
@@ -77,14 +71,11 @@ List inbox messages with sender, subject, date, and snippet.
 
 ### gmail view \<message-id\>
 
-View a single email message with full headers and decoded body text. Decodes
-base64url MIME parts, preferring text/plain and falling back to text/html with
-tag stripping. Recurses into multipart/* structures.
+View a single email message with full headers and decoded body text.
 
 ### gmail send --to EMAIL --subject TEXT --body TEXT [--html]
 
-Send an email. Builds an RFC 5322 message, base64url-encodes it, and POSTs to
-the Gmail send endpoint.
+Send an email to one or more recipients.
 
 **Options:**
 - `--to EMAIL` — recipient(s), comma-separated (required)
@@ -96,8 +87,7 @@ the Gmail send endpoint.
 
 ### gmail reply --id MESSAGE\_ID --body TEXT [--html]
 
-Reply to a message. Fetches the original to set `In-Reply-To`, `References`,
-and `threadId` so the reply threads correctly in Gmail.
+Reply to a message, threading it correctly in Gmail.
 
 **Options:**
 - `--id MESSAGE_ID` — message to reply to (required)
@@ -134,18 +124,36 @@ array to stdout (no other output on stdout).
 }
 ```
 
-## Gmail API endpoints
+## Common workflows
 
-Base URL: `https://gmail.googleapis.com/gmail/v1/users/me`
+### Search, review, then reply
 
-| Endpoint | Description |
-|----------|-------------|
-| `GET /messages?maxResults=N&q=QUERY` | List messages matching search query |
-| `GET /messages/{id}?format=full` | Get message with full MIME body |
-| `GET /messages/{id}?format=metadata` | Get message with headers and snippet |
-| `POST /messages/send` | Send message (`{ raw: base64url }`) |
+```bash
+# 1. Search for messages on a topic
+gmail mail --search "project proposal" --limit 10
 
-Message web URL: `https://mail.google.com/mail/u/0/#inbox/{id}`
+# 2. View the most relevant message to confirm it's the right one
+gmail view MESSAGE_ID
+
+# 3. Confirm subject and sender before replying, then reply
+gmail reply --id MESSAGE_ID --body "Thanks for the proposal, I'll review it shortly."
+```
+
+### Check unread, read, then follow up
+
+```bash
+# 1. List unread messages from the last day
+gmail mail --unread --date 1d
+
+# 2. View the full body of a message before acting on it
+gmail view MESSAGE_ID
+
+# 3. Send a follow-up if needed — verify recipient and subject before sending
+gmail send --to sender@example.com --subject "Re: Topic" --body "Following up on this."
+```
+
+> **Tip:** Always run `gmail view` before `gmail reply` or `gmail send` to confirm
+> you have the correct message and recipient.
 
 ## Error handling
 
