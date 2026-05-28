@@ -1,52 +1,23 @@
 ---
 name: slack
 description: Interact with Slack via its Web API — read messages, post to channels,
-  search channels, read threads, look up users, view activity/notifications, and
-  manage Slack support requests. Supports multiple workspaces with auto-detection
-  from the active tab. Use when the user wants to check Slack messages, post a
-  Slack message, search Slack channels, read Slack threads, get Slack user info,
-  view Slack notifications or activity feed, or manage Slack support tickets and
-  help requests. Triggers on mentions of Slack, channels, DMs, threads, messages,
-  Slackbot, notifications, activity, support requests, or help requests.
+  search channels, read threads, look up users, view activity/notifications, manage
+  Slack support requests, and watch channels for new messages in real time. Supports
+  multiple workspaces with auto-detection from the active tab. Use when the user wants
+  to check Slack messages, post a Slack message, search Slack channels, read Slack
+  threads, get Slack user info, view Slack notifications or activity feed, manage Slack
+  support tickets/help requests, watch a channel for updates, or automate any Slack task.
+  Triggers on mentions of Slack, channels, DMs, threads, messages, Slackbot,
+  notifications, activity, support requests, help requests, or watching/monitoring.
 allowed-tools: bash
 ---
 
 # Slack
 
-Drives Slack through the user's own logged-in browser session at `app.slack.com`.
-Supports multiple workspaces — the active workspace is auto-detected from the
-Slack tab URL, or can be specified explicitly with `--workspace`.
-
-### Prerequisites — user actions, not agent actions
-
-Before you can call `slack`, the **user** must:
-
-1. Open https://app.slack.com in their own browser.
-2. Sign in to the workspace(s) they want to access.
-3. Keep the tab open while the skill is in use.
-
-The agent must never bypass these steps, prompt the user for a password, or
-attempt to log in on the user's behalf.
-
-### How authentication works
-
-All API calls run **inside the Slack page** via `playwright-cli eval`. The
-workspace token is read from the page session and consumed by the API request
-in the same evaluation block — it is never printed, stored, copied to the
-agent's context, or written to disk. Only the API response payload leaves
-the browser.
-
-If no Slack tab is open, the script exits with a clear error directing the
-user to sign in.
-
-### Action safety
-
-Read-only commands (`workspaces`, `activity`, `pending`, `history`, `channels`,
-`thread`, `user`, `info`, `slackbot`, `monday`) are safe to run on the user's
-behalf. Commands that send messages or take actions on behalf of the user
-(`post`, `approve`, `deny`) should be confirmed with the user **before**
-invocation — always present the target channel/message and the exact text or
-action to the user and wait for explicit approval.
+Direct API access to Slack via the browser session. Uses XHR from the Slack page
+context (same-origin) with the user's `xoxc-*` token from `localStorage`. Supports
+multiple workspaces — the active workspace is auto-detected from the Slack tab URL,
+or can be specified explicitly with `--workspace`.
 
 ## Quick start
 
@@ -96,16 +67,35 @@ slack thread C087NCG774J 1774539502.747989
 
 # Look up a user
 slack user W5BPKRLUA
+
+# Watch a channel for new messages (real-time!)
+slack watch C087NCG774J --scoop=my-monitor
+
+# Watch a specific thread
+slack watch C087NCG774J --scoop=my-monitor --thread=1774539502.747989
+
+# List active watches
+slack watches
+
+# Stop watching
+slack unwatch C087NCG774J
 ```
 
-## Workspace resolution
+## Authentication
+
+The token is extracted automatically from `localStorage` key `localConfig_v2` in
+the Slack browser tab. The workspace ID (team or enterprise ID) determines which
+token to use. The `localConfig_v2.teams` object maps workspace IDs to
+`{ name, domain, url, token }` — keys are either enterprise IDs (`E...`) or
+team IDs (`T...`).
 
 Workspace resolution order:
 1. `--workspace=<ID>` or `--ws=<ID>` flag if provided
 2. Auto-detected from the active Slack tab URL (`/client/<ID>/...`)
 
-Run `slack workspaces` to list all signed-in workspaces and their IDs. The
-active workspace (from the tab URL) is marked with `*`.
+All API calls execute via XHR from the Slack page context so cookies are included
+automatically. Requires an open Slack tab at `app.slack.com`. If no Slack tab is
+found, the script reports an error and asks the user to open Slack.
 
 ## Global flags
 
@@ -247,6 +237,77 @@ Get channel metadata (name, purpose, topic, member count).
 ### slack slackbot
 
 Opens/finds the Slackbot DM channel and prints its ID.
+
+### slack watch \<channel_id\> --scoop=\<name\> [--thread=\<ts\>] [--force]
+
+Watch a channel or thread for new messages **in real time**. Each new message is
+delivered as a lick event to the specified scoop within seconds.
+
+**Options:**
+- `--scoop=<name>` — **(required)** the scoop that receives lick events
+- `--thread=<thread_ts>` — watch a specific thread instead of the whole channel
+- `--force` — replace an existing watch on the same target
+
+**How it works:**
+1. Creates a SLICC webhook routed to the target scoop
+2. Injects a WebSocket interceptor into the Slack browser tab
+3. Slack's existing `wss://wss-primary.slack.com/` connections carry all real-time
+   events (messages, typing indicators, etc.)
+4. The interceptor filters for `type: "message"` events matching the watched
+   channel (and thread if specified)
+5. Matching events are POSTed to the webhook → delivered as licks to the scoop
+
+**Lick payload:**
+```json
+{
+  "type": "slack-watch",
+  "watchId": "C087NCG774J",
+  "channel": "C087NCG774J",
+  "thread_ts": null,
+  "ts": "1776097845.451319",
+  "user": "W5BPKRLUA",
+  "text": "Hello world!",
+  "subtype": null,
+  "event": { /* full Slack WebSocket message event */ }
+}
+```
+
+**Duplicate prevention:** The watch ID is deterministic from channel + thread.
+You cannot create two watches on the same target without `--force`.
+
+**Durability:** The interceptor lives in the Slack tab's page context. If the
+page reloads, use `slack reinject` to re-attach the interceptor.
+
+### slack unwatch \<channel_id\> [--thread=\<thread_ts\>]
+
+Stop watching a channel or thread. Deletes the webhook and removes the watch state.
+
+### slack watches
+
+List all active Slack watches with their targets and scoops.
+
+### slack reinject
+
+Re-inject the WebSocket interceptor into the Slack tab. Use after a page reload
+or if watches stop firing. This reads all active watch state files and re-installs
+the interceptor with the full watch list.
+
+## Watch architecture
+
+```
+Slack servers → wss://wss-primary.slack.com/ → Browser WebSocket
+    ↓
+Injected interceptor (filters for watched channels)
+    ↓
+fetch() POST to SLICC webhook URL
+    ↓
+SLICC delivers lick event to target scoop
+```
+
+**Operational notes:**
+- State files: `/workspace/skills/slack/.watch-<id>.json` (webhook IDs + config)
+- One SLICC webhook per watch routes events to the target scoop
+- After a page reload, run `slack reinject` to re-attach the interceptor
 
 ## Enterprise grid notes
 
