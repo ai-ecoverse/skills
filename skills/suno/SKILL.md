@@ -8,26 +8,28 @@ allowed-tools: bash
 
 Write lyrics formatted for Suno AI's Custom Mode with proper metatags, structure, and style prompts.
 
+## End-to-End Workflow
+
+1. **Clarify** — ask about genre, mood, theme, and vocal preference if not provided
+2. **Draft lyrics** — use metatags, parameterized section headers, correct meter and rhyme
+3. **Write style prompt** — structured colon format or producer run-on sentence
+4. **Run prosody audit** — line-by-line syllable counts, rhyme scheme map, singability check
+5. **Suggest sliders** — Weirdness, Style Influence, Audio Influence values
+6. **Confirm before submitting** — show the user the final lyrics, style prompt, sliders, and target persona, then **wait for explicit user approval**. `suno-api generate` and UI submission consume paid Suno credits, so never submit on your own initiative
+7. **Submit** — only after explicit approval, via `suno-api` CLI (preferred) or UI automation fallback
+8. **Poll and iterate** — `suno-api poll <clip_id> --wait`, then refine weak sections with Song Editor
+
 ## How Suno Actually Works
 
-**Critical insight**: Suno does not read prompts like a human. It maps text into a probabilistic style-mesh, blending co-occurring musical concepts from training data.
+**Critical insight**: Suno maps text into a probabilistic style-mesh rather than reading prompts literally.
 
-### Genre Clouds
+### Genre Defaults and Escaping Pop Gravity
 
-Genres cluster based on training co-occurrence:
-- **Rap Cloud**: rap, trap, bass, hip hop, beat (asking for "boom bap" still pulls trap)
-- **Orchestral Cloud**: orchestral, epic, cinematic, dramatic, piano
-- **Indie Cloud**: indie, pop, acoustic, dreamy, psychedelic
-- **Dark Electronic Cloud**: dark, synth, electro, synthwave, futuristic
+Nearly every genre gravitates toward "pop" unless actively countered (rock→pop, funk→pop, emo→pop). Genre clusters also blur: asking for "boom bap" still pulls trap elements due to training co-occurrence.
 
-### The Pop Gravity Well
-
-Nearly every genre gravitates toward "pop" unless actively countered. Rock→pop (315B links), funk→pop (116B links), even emo→pop (12.2B links). Exclusions and unusual genre pairings help escape this pull.
-
-### Escaping Default Behaviors
-
+**Escape strategies:**
 1. **Explicit exclusions**: "no trap", "no pop"
-2. **Force weird combinations**: "emo industrial", "math rock gospel"
+2. **Force unusual combinations**: "emo industrial", "math rock gospel"
 3. **Strategic contrast**: emphasize elements that naturally oppose unwanted defaults
 
 ## Output Format
@@ -98,11 +100,13 @@ Style Influence: 70%     (0=loose interpretation, 100=strict adherence to style 
 Audio Influence: 50%     (only with reference audio; 0=inspiration only, 100=close mirror)
 ```
 
-## Critical Formatting Rules
+## Style Prompt Formatting Rules
 
-### Use Periods, Not Commas
+These rules apply to every style prompt you write.
 
-Suno sees commas as opportunities to skip what follows. Use "and" and "with" to create run-on sentences:
+### Use Periods and "and/with", Not Commas
+
+Suno sees commas as opportunities to skip what follows. Use "and" and "with" to create run-on sentences, and use periods to end conceptual units.
 
 **Wrong:**
 ```
@@ -113,10 +117,6 @@ acoustic guitar, male vocals, emotional, reverb
 ```
 acoustic guitar with male vocals and emotional delivery and reverb-heavy production.
 ```
-
-### Periods End Conceptual Units
-
-Periods signal you are done with one instruction. Without them, instructions blend together.
 
 ### Avoid Lyric Bleed
 
@@ -131,6 +131,17 @@ Suno performs soft classification between conditioning text and performable text
 - Rhythmic prose
 
 **Keep style prompts metadata-like and dense**: technical descriptions do not scan as lyrics.
+
+### Never Use Artist Names
+
+Suno rejects prompts containing artist names (e.g., "Vangelis", "Beatles", "Billie Eilish"). Instead, describe the sonic characteristics:
+
+| Instead of | Use |
+|------------|-----|
+| "Vangelis style" | "80s synth soundtrack, lush pads, cinematic, orchestral electronics" |
+| "Beatles style" | "60s British Invasion, jangly guitars, vocal harmonies, Merseybeat" |
+| "Billie Eilish style" | "dark pop, whispered vocals, minimal bass-heavy production" |
+| "Johnny Cash style" | "sparse country, baritone vocals, acoustic guitar, train beat" |
 
 ## Formatting Rules
 
@@ -207,132 +218,44 @@ style tags: "tape saturation, close-mic presence, small room acoustics, handheld
 
 **Note**: MAX Mode has minimal effect on electronic/trap/hip-hop/synthwave—use structural prompting for those.
 
-## Realism Descriptors (Acoustic Music)
+## Realism and Synthesis Descriptors
 
-For organic genres, use **recording-engineer language** instead of abstract vibes:
+For detailed descriptor vocabulary, see [references/descriptors.md](references/descriptors.md). Key principles:
 
-**Acoustic Realism:**
-- Small room acoustics, room tone (air, faint hiss)
-- Close mic presence, off-axis mic placement, proximity effect
-- Single-mic capture, one-take performance
-- Natural timing drift, natural dynamics (no brickwall)
-- Breath detail (inhales, exhales)
+**Acoustic/organic genres**: use **recording-engineer language** (e.g., "close mic presence", "natural timing drift", "tape saturation", "short room reverb") instead of abstract vibes. Describe the recording environment and performance artifacts.
 
-**Performance Detail:**
-- Mouth noise (lip noise, saliva clicks)
-- Pick noise (attack, scrape), fret squeak, finger movement noise
-- Chair creak and body shift
-
-**Analog Character:**
-- Tape saturation, analog warmth, harmonic grit
-- Slight wow and flutter, gentle preamp drive
-
-**Spatial:**
-- Limited stereo (mono or narrow image)
-- Short room reverb, early reflections emphasized
-- Background noise floor consistent (not dead-silent)
-
-## Synthesis Descriptors (Electronic Music)
-
-For electronic genres, shift away from "realism" toward synthesis and modulation language:
-
-**Instead of "big bass" request:**
-- FM synthesis bass, wavetable movement, formant-driven bass
-- Evolving modulation, LFO-driven movement, dynamic harmonic motion
-- Resonant bandpass motion, sub-driven design with clean punch
-
-**Avoiding Generic Sawtooth Synth:**
-- Describe motion: "evolving modulation, non-repeating harmonic cycles"
-- Shape harmonics: "rounded harmonic profile, odd-harmonic emphasis"
-- Control high end: "smooth top end, clean high frequency rolloff"
-- Kill stereo width: "center-focused bass, mono-stable low end"
+**Electronic genres**: shift away from "realism" toward synthesis and modulation language (e.g., "FM synthesis bass", "LFO-driven movement", "resonant bandpass motion", "mono-stable low end"). Describe motion, harmonic shape, and stereo control rather than size or weight.
 
 ## Writing Guidelines
 
-### Meter and Stress Patterns
+### Meter and Prosody (Suno-Specific)
 
-**Prosody**: Align stressed syllables with musical beats. The natural stress of words must match the rhythm.
+**Key principle for Suno**: stressed syllables must fall on musical beats for Suno to render words correctly. Unstressed syllables between beats can vary — this creates natural flow. When the natural word stress conflicts with the beat, Suno will mispronounce or mangle the line.
 
-**Common meters**:
-- **Iambic** (da-DUM): unstressed-stressed — most natural for English
-  ```
-  a-LONE / to-NIGHT / I WALK / the STREET
-  ```
-- **Trochaic** (DUM-da): stressed-unstressed — more forceful, march-like
-  ```
-  WAL-king / THROUGH the / EMP-ty / CI-ty
-  ```
-- **Anapestic** (da-da-DUM): two unstressed, one stressed — galloping feel
-  ```
-  in the DARK / of the NIGHT / I a-WAKE
-  ```
+- Keep syllable counts consistent within sections (e.g., all verse lines at 8 syllables)
+- Mark stresses when drafting to verify alignment: `da-DUM da-DUM da-DUM da-DUM`
+- Avoid padding with filler words ("it", "just", "so") to hit counts — restructure instead
+- Genre affects expected meter: NDW/industrial favors 8–12 syllables, punchy and staccato; French chanson favors octosyllabic or alexandrine lines
 
-**Key principle**: Stressed syllables must fall on the beat. Unstressed syllables between them can vary—this creates natural flow without rigid counting.
+### Rhyme
 
-**Avoid**:
-- Padding lines with filler words ("it", "just", "so") to hit syllable counts
-- Unnatural word order solely to fit meter
-- Placing unstressed syllables on downbeats (sounds awkward)
-
-### Syllable Counting
-
-Count syllables per line. Keep consistent within sections:
-```
-I walk a-LONE down emp-ty STREETS  (8 syllables, 4 stresses)
-The ci-ty LIGHTS re-flect my DREAMS (8 syllables, 4 stresses)
-```
-
-Mark stresses when drafting to verify alignment:
-```
-da-DUM da-DUM da-DUM da-DUM
-```
-
-### Rhyme Schemes
-
-**Chorus**: Must rhyme — this creates the hook.
-
-**Common schemes**:
-- **ABAB** (alternating): Lines 1&3 rhyme, 2&4 rhyme
-- **AABB** (couplets): Adjacent lines rhyme
-- **ABCB** (loose): Only 2&4 rhyme — conversational feel
-- **XAXA** (minimal): Only even lines rhyme
-
-**Rhyme types**:
-- **Perfect rhyme**: "night/light" — strongest, use in choruses
-- **Slant rhyme**: "home/alone" — softer, good for verses
-- **Internal rhyme**: Rhymes within a line — creates hooks
-
-**Advanced schemes** for memorability:
-- **AABBA** (limerick-like)
-- **ABCCAB** (wrap-around)
-- **AAAB/CCCB** (builds tension, releases on B)
-
-### The One Metaphor Rule
-
-Pick one metaphor and go deep. Stacking unrelated imagery ("neon skies, electric hearts, endless dreams") signals AI-generated lyrics. One image, many facets.
+- **Chorus must rhyme** — this creates the hook. Use perfect rhymes ("night/light") for maximum impact.
+- **Verses** can use slant rhyme ("home/alone") for a conversational feel.
+- **Chorus consistency**: always repeat the chorus identically unless the user requests variation. Copy-paste, don't paraphrase.
 
 ### Contrast Between Sections
 
-Verses: Longer lines, more unstressed syllables, conversational
-Chorus: Shorter lines, more stresses, punchy and direct
+Verses: longer lines, more unstressed syllables, conversational.
+Chorus: shorter lines, more stresses, punchy and direct.
 
-Example shift (like "Lucy in the Sky"):
-- Verse: da-da-DUM da-da-DUM (relaxed, 2 unstressed per stress)
-- Chorus: DUM-da DUM-da (forceful, 1 unstressed per stress)
+### Suno-Specific Anti-patterns
 
-### Chorus Consistency
-
-**Always repeat the chorus identically** unless user requests variation. Copy-paste, don't paraphrase.
-
-## Creative Anti-patterns
-
-**Avoid at all costs:**
-- Cliché and lazy phrasing — if you've heard it before, rewrite it
-- Phrases masquerading as arguments (e.g., jargon that gestures at meaning without earning it)
-- Being too on the nose — trust the listener
-- Essays with line breaks instead of challenging poetry — if it could be prose, make it prose; if it's verse, make it earn the form
-
-**Variation principle**: When writing multiple songs, don't repeat the same themes, imagery, or biographical details. Variation is exciting; repetition is boring. A character's backstory informs how they *see* the world — their undertone and sensibility — but should not appear as literal content in every song. Show the worldview operating on *new* material.
+- **Lyric bleed** in style prompts — the most common mistake (see Style Prompt Formatting Rules above)
+- **Commas in style prompts** — use periods and "and/with" instead (see Style Prompt Formatting Rules above)
+- **Artist names** — Suno rejects them; describe sonic characteristics instead
+- **Stacking unrelated imagery** ("neon skies, electric hearts, endless dreams") — signals AI-generated lyrics; pick one metaphor and develop it
+- **Paraphrasing the chorus** — always copy-paste it exactly
+- **Padding lines** with filler words to hit syllable count — restructure instead
 
 ## Emphasis and Dynamics
 
@@ -363,7 +286,7 @@ Detached, passionate, vulnerable, aggressive
 Reference points that give Suno a clear target — describe the sonic quality rather than naming artists
 
 **Example:**
-> Female contralto, androgynous, cold, monotone delivery, sharp enunciation, emotionally numb, sinister tone, industrial darkwave atmosphere with HEALTH-like crushing bass.
+> Female contralto, androgynous, cold, monotone delivery, sharp enunciation, emotionally numb, sinister tone, industrial darkwave atmosphere with crushing bass and high-harmonic distortion.
 
 Use the persona consistently across style prompts for a coherent "artist" sound. Suno's Persona Voices feature (V5.5) can lock this in for reuse.
 
@@ -405,20 +328,7 @@ The audit must include:
 3. Draft lyrics with proper formatting
 4. Provide matching style prompt
 
-## Style Prompt Rules
-
-### Never Use Artist Names
-
-Suno rejects prompts containing artist names (e.g., "Vangelis", "Beatles", "Billie Eilish"). Instead, describe the sonic characteristics:
-
-| Instead of | Use |
-|------------|-----|
-| "Vangelis style" | "80s synth soundtrack, lush pads, cinematic, orchestral electronics" |
-| "Beatles style" | "60s British Invasion, jangly guitars, vocal harmonies, Merseybeat" |
-| "Billie Eilish style" | "dark pop, whispered vocals, minimal bass-heavy production" |
-| "Johnny Cash style" | "sparse country, baritone vocals, acoustic guitar, train beat" |
-
-### Style Prompt Examples
+## Style Prompt Examples
 
 ```
 genre: "operatic rockabilly, fast-paced, upbeat"
@@ -479,6 +389,8 @@ This skill is optimized for Suno V5.5 (March 2026), which produces 48kHz broadca
 
 The `suno-api` and `suno-token` shell commands provide direct API access to Suno, bypassing the UI entirely. Requires a suno.com tab open and authenticated in the browser.
 
+**Credit safety**: `suno-api generate` (and the UI automation fallback) spends real Suno credits on every call. Always present the final lyrics, style prompt, sliders, and persona to the user and wait for explicit approval before invoking `generate`. Read-only commands like `credits`, `feed`, `personas`, `voices`, `poll`, `search`, and `clip` are safe to run without confirmation.
+
 ### Quick start
 
 ```bash
@@ -530,3 +442,5 @@ See [references/examples.md](references/examples.md) for complete lyrics with fo
 ## Reference
 
 For detailed metatag lists and advanced techniques, see [references/metatags.md](references/metatags.md)
+
+For detailed realism and synthesis descriptor vocabulary, see [references/descriptors.md](references/descriptors.md)
