@@ -341,3 +341,28 @@ stack(
   n("0 2 4 6").scale("C:minor").s("triangle").room(0.5)
 ).play()
 ```
+
+## More example patterns
+
+**Euclidean polyrhythm:**
+```js
+stack(
+  sound("808bd(3,8)"),
+  sound("sd(5,8,2)").gain(0.6),
+  sound("hh(7,16)").gain(0.4)
+)
+```
+
+**Multi-sample showcase (arpy, moog, jvbass, juno, pluck):**
+```js
+stack(
+  note("e4 e4 f#4 g4").sound("arpy").room(0.3).gain(0.7),
+  note("e3 ~ f#3 ~").sound("moog").lpf(1200).gain(0.3),
+  note("d2 g2 a2 d2").sound("jvbass").gain(0.5).lpf(500),
+  note("[d3,f#3,a3]").sound("juno").gain(0.15).room(2),
+  note("[~ d5 ~ a4]").sound("pluck").gain(0.2).delay(0.3),
+  sound("808bd(3,8)").gain(0.5),
+  sound("[~ gretsch:2]*2").gain(0.4),
+  sound("808hc*8").gain(0.25)
+)
+```
