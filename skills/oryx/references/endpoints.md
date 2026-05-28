@@ -87,9 +87,11 @@ Admin / power-user analytics export.
 
 ## Mutations
 
-Each mutation returns a payload object containing the affected resource(s)
-plus an `errors: [String!]` field. Treat a non-empty `errors` array as a
-failure even when the HTTP status is 200.
+Each mutation returns a payload object containing the affected resource(s).
+Mutation payloads do **not** expose a per-payload `errors` field — failures
+surface as the top-level GraphQL `errors` array on the response (alongside
+`data`), which the CLI already handles. Check that array (or HTTP status)
+rather than selecting a non-existent `errors` field on the payload type.
 
 ### Layout
 
@@ -130,7 +132,7 @@ failure even when the HTTP status is 200.
 | `updateLayer(hashId, newKeys, position, title, color)`                         | Patch (any subset of fields) |
 | `updateLayerColor(hashId, color)`                                              | Convenience |
 | `deleteLayer(hashId)` / `restoreLayer(layerHashId)`                            | Soft-delete + restore |
-| `reorderLayers(hashId, direction)`                                             | `direction: UP|DOWN` |
+| `reorderLayers(hashId, direction)`                                             | `direction: left \| right \| beginning \| end` (enum `LayerReorderDirection`) |
 | `swapKeys(targetLayerId, sourceLayerId, targetPosition, sourcePosition)`       | Swap one or all keys between layers |
 | `updateKey(hashId, keyData, position)`                                         | Patch a single key (`hashId` here is the **layer** id) |
 

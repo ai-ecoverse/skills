@@ -185,6 +185,13 @@ function geom(name) {
   return g;
 }
 
+// Like `geom()` but returns null instead of throwing — for callers that
+// want a graceful fallback (e.g. compact key view on moonlander/ergodox_ez,
+// for which no coord map is defined yet).
+function geomMaybe(name) {
+  return GEOMETRIES[name || 'voyager'] || null;
+}
+
 const ROW_ALIASES = {
   // row name → row index (0..3 for alphas; 'thumb' handled separately)
   top: 0, upper: 1, home: 2, lower: 3, bottom: 3,
@@ -233,7 +240,10 @@ function resolveCoord(coord, geometry) {
 }
 
 function coordOfPos(pos, geometry) {
-  const g = geom(geometry);
+  // Geometries without a coord map (currently moonlander / ergodox_ez)
+  // fall back to numeric positions so the compact key view still works.
+  const g = geomMaybe(geometry);
+  if (!g) return `pos:${pos}`;
   if (pos === g.leftThumbs.out)  return 'L.thumb.out';
   if (pos === g.leftThumbs.in)   return 'L.thumb.in';
   if (pos === g.rightThumbs.in)  return 'R.thumb.in';
@@ -487,7 +497,7 @@ const commands = {
     );
     const url = type === 'zip' ? data.layout.revision.zipUrl : data.layout.revision.hexUrl;
     if (!url) { console.error(`No ${type}Url available — try compiling first: oryx compile ${data.layout.revision.hashId}`); process.exit(1); }
-    const outPath = flags.o || `./zsa_${data.layout.geometry}_${hashId}_${data.layout.revision.hashId}.${type === 'zip' ? 'zip' : 'bin'}`;
+    const outPath = flags.o || `./zsa_${data.layout.geometry}_${hashId}_${data.layout.revision.hashId}.${type === 'zip' ? 'zip' : 'hex'}`;
     // Use curl for binary download — SLICC jsh runtime doesn't have node fs.
     const r = await exec(`curl -sSL -o '${outPath.replace(/'/g, "'\\''")}' '${url.replace(/'/g, "'\\''")}'`);
     if (r.exitCode !== 0) { console.error('Download failed: ' + (r.stderr || r.stdout)); process.exit(1); }
@@ -552,8 +562,13 @@ const commands = {
 
   async 'layout-tags'() {
     const hashId = positional[0];
-    const tagIds = (positional[1] || '').split(',').map(s => s.trim()).filter(Boolean);
-    if (!hashId) { console.error('Usage: oryx layout-tags <hashId> <tagId1,tagId2,...>'); process.exit(1); }
+    const rawTags = positional[1];
+    if (!hashId || rawTags === undefined) {
+      console.error('Usage: oryx layout-tags <hashId> <tagId1,tagId2,...>');
+      console.error('To clear all tags, pass an empty quoted string: oryx layout-tags <hashId> ""');
+      process.exit(1);
+    }
+    const tagIds = rawTags.split(',').map(s => s.trim()).filter(Boolean);
     const data = await gql(`
       mutation ($hashId: String!, $tagIds: [String!]!) {
         updateLayoutTags(hashId: $hashId, tagIds: $tagIds) { hashId }

@@ -158,10 +158,10 @@ oryx schema [--type=Query|Mutation|<TypeName>]        # introspect a type
 
 - `scripts/oryx.jsh` — the CLI itself (auto-registered as `/usr/bin/oryx`).
 - `references/endpoints.md` — full GraphQL endpoint catalog with examples.
-- `references/keycodes.md` — common QMK keycode references for editing.
 - `assets/schema.json` — cached introspection result for offline reference.
-- `.config` (gitignored) — `{"jwtToken":"..."}` if you want to bypass the
-  browser dependency.
+- `.config.example` — template for `.config`.
+- `.config` (gitignored via `skills/oryx/.config`) — `{"jwtToken":"..."}`
+  if you want to bypass the browser dependency.
 
 ## Notes
 
