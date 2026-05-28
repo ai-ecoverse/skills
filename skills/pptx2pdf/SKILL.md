@@ -1,3 +1,14 @@
+---
+name: pptx2pdf
+description: |
+  Convert PPTX files to PDF, preserving slide backgrounds, text styles, colors,
+  alignment, word-wrap, and embedded PNG/JPEG images. No external tools required —
+  uses pdf-lib via esm.sh and the pre-loaded JSZip.
+  Use when the user asks to convert a presentation to PDF, export slides as PDF,
+  or download a PPTX as PDF. Triggers on phrases like "convert ppt to pdf",
+  "export presentation as pdf", "turn this pptx into a pdf", "save slides as pdf".
+---
+
 # pptx2pdf
 
 Convert a PPTX file to a PDF, preserving slide backgrounds, text, font styles, colors, alignment, word-wrap, and embedded PNG/JPEG images. No external tools or packages required — uses `pdf-lib` (via esm.sh) and the pre-loaded `JSZip`.
