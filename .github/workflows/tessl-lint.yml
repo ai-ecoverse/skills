@@ -28,10 +28,17 @@ jobs:
             CHANGED_FILES=$(git diff --name-only "${{ github.event.before }}..${{ github.sha }}" 2>/dev/null || echo "")
           fi
 
-          # If tile.json or .tileignore changed, lint the whole tile
-          if echo "$CHANGED_FILES" | grep -qE '^(tile\.json|\.tileignore)$'; then
+          # If any tile manifest or .tileignore changed, lint all affected tiles in full.
+          CHANGED_TILES=$(echo "$CHANGED_FILES" \
+            | grep -E '^tiles/[^/]+/tile\.json$' \
+            | awk -F/ '{print $2}' | sort -u | xargs)
+          if [ -n "$CHANGED_TILES" ] || echo "$CHANGED_FILES" | grep -qE '^\.tileignore$'; then
+            if [ -z "$CHANGED_TILES" ]; then
+              CHANGED_TILES="basic advanced"
+            fi
             echo "scope=full" >> "$GITHUB_OUTPUT"
-            echo "Tile manifest changed — linting full tile."
+            echo "tiles=$CHANGED_TILES" >> "$GITHUB_OUTPUT"
+            echo "Tile manifest(s) changed — linting full tile(s): $CHANGED_TILES"
             exit 0
           fi
 
@@ -56,39 +63,59 @@ jobs:
             echo "No skill files changed — lint skipped."
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Lint full tile
+      - name: Lint full tile(s)
         if: steps.detect.outputs.scope == 'full'
-        run: tessl skill lint .
+        run: |
+          for t in ${{ steps.detect.outputs.tiles }}; do
+            echo "::group::Lint tile $t"
+            tessl skill lint "tiles/$t"
+            echo "::endgroup::"
+          done
 
       - name: Lint changed skills only
         if: steps.detect.outputs.scope == 'subset'
         run: |
-          TMP=$(mktemp -d)
-          mkdir -p "$TMP/skills"
+          # Group changed skills by their owning tile (basic|advanced),
+          # build one minimal subset tile per group, then lint each.
+          declare -A TILE_OF
+          for tile in basic advanced; do
+            for k in $(jq -r '.skills | keys[]' "tiles/$tile/tile.json"); do
+              TILE_OF[$k]=$tile
+            done
+          done
 
-          # Build a minimal tile.json containing only the changed skills,
-          # symlink only those skill dirs so orphan-file warnings stay clean.
-          SKILLS_JSON="{}"
+          declare -A SUBSET
           for skill in ${{ steps.detect.outputs.skills }}; do
             if [ ! -f "skills/$skill/SKILL.md" ]; then
               echo "::warning::skills/$skill has no SKILL.md — skipping"
               continue
             fi
-            ln -sfn "$PWD/skills/$skill" "$TMP/skills/$skill"
-            SKILLS_JSON=$(echo "$SKILLS_JSON" | jq --arg k "$skill" \
-              '. + {($k): {"path": ("skills/" + $k + "/SKILL.md")}}')
+            t="${TILE_OF[$skill]:-}"
+            if [ -z "$t" ]; then
+              echo "::notice::$skill is not in any tile.json — skipping"
+              continue
+            fi
+            SUBSET[$t]="${SUBSET[$t]:-} $skill"
           done
 
-          jq -n --arg name "$(jq -r .name tile.json)" \
-                --arg version "$(jq -r .version tile.json)" \
-                --arg summary "$(jq -r .summary tile.json)" \
-                --argjson private "$(jq .private tile.json)" \
-                --argjson skills "$SKILLS_JSON" \
-                '{name: $name, version: $version, private: $private, summary: $summary, skills: $skills}' \
-            > "$TMP/tile.json"
-
-          echo "::group::Subset tile.json"
-          cat "$TMP/tile.json"
-          echo "::endgroup::"
-
-          tessl skill lint "$TMP"
+          for tile in "${!SUBSET[@]}"; do
+            TMP=$(mktemp -d)
+            mkdir -p "$TMP/skills"
+            SKILLS_JSON="{}"
+            for skill in ${SUBSET[$tile]}; do
+              ln -sfn "$PWD/skills/$skill" "$TMP/skills/$skill"
+              SKILLS_JSON=$(echo "$SKILLS_JSON" | jq --arg k "$skill" \
+                '. + {($k): {"path": ("skills/" + $k + "/SKILL.md")}}')
+            done
+            jq -n --arg name "$(jq -r .name tiles/$tile/tile.json)" \
+                  --arg version "$(jq -r .version tiles/$tile/tile.json)" \
+                  --arg summary "$(jq -r .summary tiles/$tile/tile.json)" \
+                  --argjson private "$(jq .private tiles/$tile/tile.json)" \
+                  --argjson skills "$SKILLS_JSON" \
+                  '{name: $name, version: $version, private: $private, summary: $summary, skills: $skills}' \
+              > "$TMP/tile.json"
+            echo "::group::Subset tile.json for $tile"
+            cat "$TMP/tile.json"
+            echo "::endgroup::"
+            tessl skill lint "$TMP"
+          done

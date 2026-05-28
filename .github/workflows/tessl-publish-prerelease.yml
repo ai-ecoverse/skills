@@ -1,8 +1,15 @@
-name: Tessl Tile Publish
+name: Tessl Tile Publish (Pre-release)
+
+# Publishes both tiles from the `pre-release` branch with whatever version
+# is in tiles/*/tile.json — bump the `-beta.N` / `-rc.N` suffix yourself
+# when you want a new pre-release. The `patch-version-publish` action will
+# publish the local version as-is when it is ahead of the registry; if the
+# exact pre-release version already exists, it will auto-bump the patch
+# component (e.g. 0.2.0-beta.1 → 0.2.1).
 
 on:
   push:
-    branches: [main]
+    branches: [pre-release]
     paths:
       - 'tiles/**'
       - 'skills/**'
@@ -16,12 +23,9 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    # Skip the bot's own version-bump commits
     if: "!contains(github.event.head_commit.message, '[skip ci]')"
     strategy:
       fail-fast: false
-      # Serialize so two parallel `git push` of bumped tile.json files
-      # don't race on the same branch HEAD.
       max-parallel: 1
       matrix:
         tile: [basic, advanced]

@@ -32,14 +32,20 @@ jobs:
             | awk -F/ '{print $2}' \
             | sort -u)
 
-          # Keep only skills that are listed in tile.json and have a SKILL.md
+          # Keep only skills that are listed in some tile.json and have a SKILL.md
           KEPT=""
           for skill in $CHANGED_SKILLS; do
-            if jq -e --arg k "$skill" '.skills[$k]' tile.json >/dev/null 2>&1 \
-               && [ -f "skills/$skill/SKILL.md" ]; then
+            IN_TILE=false
+            for tile in tiles/basic/tile.json tiles/advanced/tile.json; do
+              if jq -e --arg k "$skill" '.skills[$k]' "$tile" >/dev/null 2>&1; then
+                IN_TILE=true
+                break
+              fi
+            done
+            if [ "$IN_TILE" = "true" ] && [ -f "skills/$skill/SKILL.md" ]; then
               KEPT="$KEPT $skill"
             else
-              echo "::notice::Skipping review for $skill (not in tile.json or no SKILL.md)"
+              echo "::notice::Skipping review for $skill (not in any tile.json or no SKILL.md)"
             fi
           done
 
