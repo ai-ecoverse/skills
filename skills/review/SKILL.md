@@ -70,13 +70,13 @@ Execute the action, then push status update: sprinkle send review '{\"action\":\
 
 A `publish` lick resolves to `"status":"published"`; `defer` resolves to `"status":"deferred"`; `comment` needs no status update.
 
-### In-flight indicators and error recovery
+### In-flight indicators and failure recovery
 
-`publish` and `defer` show a pulsing in-flight indicator and disable action buttons until the cone sends a matching `update-status`.
+`publish` and `defer` show a pulsing in-flight indicator and disable action buttons until the cone sends a matching `update-status`. The template supports three statuses: `pending`, `published`, `deferred`.
 
 - **Success** — send `update-status` with `"published"` or `"deferred"` to clear the indicator.
-- **Failure** — send `update-status` with `"status":"error"` and an optional `"message"`. The card surfaces the message and re-enables buttons for retry:
+- **Failure** — send `update-status` with `"status":"pending"` to revert the card so the user can retry. Report the failure detail to the user via the cone (not via the sprinkle message field, which is not rendered):
   ```bash
-  sprinkle send review '{"action":"update-status","id":"page-1","status":"error","message":"Publish failed: upstream returned 503. Retry or check the deployment log."}'
+  sprinkle send review '{"action":"update-status","id":"page-1","status":"pending"}'
   ```
-- **Timeout** — if the scoop does not respond in time, push an error status to avoid a stuck UI (same `update-status` shape with `"status":"error"` and a timeout message).
+- **Timeout** — if the scoop does not respond in time, push `"status":"pending"` to avoid a stuck UI.
