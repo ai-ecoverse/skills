@@ -1,0 +1,84 @@
+name: Tessl Skill Review
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'skills/**'
+      - '.github/workflows/tessl-review.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      skills: ${{ steps.detect.outputs.skills }}
+      has_skills: ${{ steps.detect.outputs.has_skills }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed skills in tile
+        id: detect
+        run: |
+          CHANGED_FILES=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
+
+          # Unique skill dirs touched in this PR
+          CHANGED_SKILLS=$(echo "$CHANGED_FILES" \
+            | grep -E '^skills/[^/]+/' \
+            | awk -F/ '{print $2}' \
+            | sort -u)
+
+          # Keep only skills that are listed in tile.json and have a SKILL.md
+          KEPT=""
+          for skill in $CHANGED_SKILLS; do
+            if jq -e --arg k "$skill" '.skills[$k]' tile.json >/dev/null 2>&1 \
+               && [ -f "skills/$skill/SKILL.md" ]; then
+              KEPT="$KEPT $skill"
+            else
+              echo "::notice::Skipping review for $skill (not in tile.json or no SKILL.md)"
+            fi
+          done
+
+          # shellcheck disable=SC2086
+          set -- $KEPT
+          if [ "$#" -eq 0 ]; then
+            echo "has_skills=false" >> "$GITHUB_OUTPUT"
+            echo "skills=[]" >> "$GITHUB_OUTPUT"
+            echo "No tile skills changed — review skipped."
+          else
+            JSON=$(printf '%s\n' "$@" | jq -R . | jq -sc .)
+            echo "has_skills=true" >> "$GITHUB_OUTPUT"
+            echo "skills=$JSON" >> "$GITHUB_OUTPUT"
+            echo "Skills to review: $JSON"
+          fi
+
+      - name: Skip summary
+        if: steps.detect.outputs.has_skills == 'false'
+        run: |
+          {
+            echo "## Tessl Skill Review"
+            echo ""
+            echo "No tile skills changed — review skipped."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  review:
+    needs: detect
+    if: needs.detect.outputs.has_skills == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        skill: ${{ fromJSON(needs.detect.outputs.skills) }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: tesslio/setup-tessl@v2
+        with:
+          token: ${{ secrets.TESSLIO_TOKEN }}
+
+      - name: Review skill (threshold 90%)
+        run: tessl skill review "skills/${{ matrix.skill }}" --threshold 90
