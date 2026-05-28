@@ -132,7 +132,8 @@ open('/shared/page1.png', '--view');
 
 - **File not found**: If `pdftk` reports a file error, double-check the path — uploaded files are typically at `/mnt/<filename>`, not `/tmp/` or relative paths.
 - **Page range out of bounds**: If a requested page range exceeds the document's page count, run `pdftk /mnt/file.pdf dump_data` first to confirm `NumberOfPages`, then adjust the range accordingly.
-- **Empty stdout**: If `dump_data_utf8` returns nothing, the PDF may have no embedded text (e.g., it is a scanned image). OCR is not available in the current SLICC environment.
+- **Empty stdout from `dump_data_utf8`**: If the command returns nothing at all, treat it as a command/file problem first (wrong path, malformed PDF, or `pdftk` error) — even a scanned PDF normally emits metadata such as `NumberOfPages`. Check the path and any stderr before assuming OCR is needed.
+- **No extractable text**: If `dump_data_utf8` runs cleanly but yields no usable text (or only metadata with no page text), the PDF is likely a scanned image with no embedded text layer. OCR is not available in the current SLICC environment.
 - **convert not available**: The `convert` (ImageMagick) command requires a tray runtime; it is not available in the browser-only float.
 
 ## Notes
