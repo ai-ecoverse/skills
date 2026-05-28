@@ -1,6 +1,6 @@
 ---
 name: bluebubbles
-description: Send and receive iMessages via BlueBubbles REST API
+description: Sends and receives iMessages via the BlueBubbles REST API. Use when the user wants to send a text message, iMessage, or SMS, read or search message history, find contacts, list conversations, or interact with their iPhone messages from the desktop. Capabilities include sending direct messages and group chats, querying message history, finding contacts by name, searching existing chat threads, distinguishing direct vs group conversations, and verifying message delivery. Requires a running BlueBubbles server.
 allowed-tools: bash
 ---
 
@@ -22,25 +22,36 @@ bluebubbles_url: http://localhost:1234
 bluebubbles_password: <user's password>
 ```
 
-**Test the connection:**
+**Test the connection** (substitute `SERVER_URL` with the stored `bluebubbles_url` and `PASSWORD` with the stored `bluebubbles_password`):
 
 ```bash
-curl -s "http://localhost:1234/api/v1/server/info?password=PASSWORD" | jq '.status'
+curl -s "SERVER_URL/api/v1/server/info?password=PASSWORD" | jq '.status'
 ```
 
-If this returns `200`, the connection works.
+Returns `200` if the connection works.
 
 ## Authentication
 
-All endpoints require `?password=PASSWORD` as a query parameter. Replace `PASSWORD` with the value from memory.
+All endpoints require `?password=PASSWORD` as a query parameter. Throughout this skill, `SERVER_URL` is the value of `bluebubbles_url` and `PASSWORD` is the value of `bluebubbles_password` from memory — substitute them in every curl command.
 
 ## IMPORTANT: Use POST /query endpoints
 
 Most endpoints use POST with `/query` suffix. GET endpoints may return 404.
 
+## Chat GUID Format
+
+| Prefix | Meaning |
+| --- | --- |
+| `iMessage;-;` | Direct message — **use this to SEND** to a phone/email |
+| `any;-;` | Existing 1:1 chat (returned by chat queries) |
+| `any;+;` | **Group chat** — do NOT use for personal messages |
+
+- Phone: `iMessage;-;+1234567890` (include country code)
+- Email: `iMessage;-;user@example.com`
+
 ## Send a Message
 
-**Use `--max-time 5` to prevent blocking** - the API waits for delivery confirmation which can take 30+ seconds.
+**Use `--max-time 5`** — the API waits for delivery confirmation (can take 30+ seconds). A timeout does NOT mean failure; verify delivery afterward (see Verify section).
 
 ```bash
 curl -s --max-time 5 -X POST "SERVER_URL/api/v1/message/text?password=PASSWORD" \
@@ -54,49 +65,29 @@ curl -s --max-time 5 -X POST "SERVER_URL/api/v1/message/text?password=PASSWORD" 
 
 **Required Parameters:**
 
-- `chatGuid`: Chat identifier (see Chat GUID Format below)
+- `chatGuid`: Chat identifier (see Chat GUID Format above)
 - `message`: Text content to send
-- `tempGuid`: **Required** - A unique temporary ID. Use `temp-$(date +%s)`
-
-**Important**: A timeout does NOT mean failure - verify delivery by querying recent messages.
-
-## Chat GUID Format - IMPORTANT
-
-There are THREE different GUID prefixes with different meanings:
-
-| Prefix        | Meaning               | Use Case                                            |
-| ------------- | --------------------- | --------------------------------------------------- |
-| `iMessage;-;` | Direct message format | **Use this to SEND messages** to a phone/email      |
-| `any;-;`      | Existing 1:1 chat     | Returned by chat queries for existing conversations |
-| `any;+;`      | **Group chat**        | Multiple participants - be careful!                 |
-
-**To send a direct message to someone**: Always use `iMessage;-;address` format:
-
-- Phone: `iMessage;-;+1234567890` (include country code)
-- Email: `iMessage;-;user@example.com`
-
-**Do NOT use `any;+;` GUIDs** - those are group chats with multiple participants!
+- `tempGuid`: A unique temporary ID — use `temp-$(date +%s)`
 
 ## Find a Contact by Name
-
-Chats don't store contact names - use the Contacts API:
 
 ```bash
 curl -s "SERVER_URL/api/v1/contact?password=PASSWORD" \
   | jq '.data[] | select(.displayName != null) | select(.displayName | test("Name"; "i")) | {displayName, phoneNumbers, emails}'
 ```
 
-## Find Existing Chats with a Contact
+## Find and Filter Chats with a Contact
 
-**Step 1**: Find chats containing a specific address:
+Query all chats, then filter by address and participant count:
 
 ```bash
+# All chats involving an address
 curl -s -X POST "SERVER_URL/api/v1/chat/query?password=PASSWORD" \
   -H "Content-Type: application/json" \
   -d '{"limit": 200}' | jq '.data[] | select(.participants[] | .address == "user@example.com") | {guid, participantCount: (.participants | length), participants: [.participants[] | .address]}'
 ```
 
-**Step 2**: Filter to ONLY direct chats (1 participant):
+**Filter to direct chats only** (1 participant) before sending a personal message:
 
 ```bash
 curl -s -X POST "SERVER_URL/api/v1/chat/query?password=PASSWORD" \
@@ -104,18 +95,9 @@ curl -s -X POST "SERVER_URL/api/v1/chat/query?password=PASSWORD" \
   -d '{"limit": 200}' | jq '.data[] | select(.participants | length == 1) | select(.participants[0].address == "user@example.com") | {guid, participant: .participants[0].address}'
 ```
 
-**If no direct chat exists**: Create one by sending with `iMessage;-;address` format.
-
-## Distinguish Direct vs Group Chats
-
-Check the participant count before sending:
-
-```bash
-# This returns group chats (2+ participants) - DON'T send personal messages here!
-curl -s -X POST "SERVER_URL/api/v1/chat/query?password=PASSWORD" \
-  -H "Content-Type: application/json" \
-  -d '{"limit": 200}' | jq '.data[] | select(.participants | length > 1) | {guid, participantCount: (.participants | length), participants: [.participants[] | .address]}'
-```
+- `participantCount == 1` → direct chat (safe to use)
+- `participantCount > 1` → group chat — do NOT use for personal messages
+- If no direct chat exists, send with `iMessage;-;address` format to create one.
 
 ## Get Recent Messages
 
@@ -127,20 +109,20 @@ curl -s -X POST "SERVER_URL/api/v1/message/query?password=PASSWORD" \
 
 ## Get Messages from a Specific Chat
 
-Use the `chatGuid` parameter in message query:
+For message queries, pass the exact `guid` string returned by `/chat/query` (the `.data[].guid` field). Do not hand-construct a GUID here — look it up first via the chat-filtering step above and copy the value verbatim.
 
 ```bash
 curl -s -X POST "SERVER_URL/api/v1/message/query?password=PASSWORD" \
   -H "Content-Type: application/json" \
   -d '{
-    "chatGuid": "any;-;user@example.com",
+    "chatGuid": "<guid from /chat/query>",
     "limit": 10
   }' | jq '.data[] | {text, isFromMe, dateCreated}'
 ```
 
 ## Verify Message Was Sent
 
-After sending (even if timed out), check if message appears:
+After sending (even after a timeout), confirm the message appears in recent outbound messages:
 
 ```bash
 curl -s -X POST "SERVER_URL/api/v1/message/query?password=PASSWORD" \
@@ -150,7 +132,6 @@ curl -s -X POST "SERVER_URL/api/v1/message/query?password=PASSWORD" \
 
 ## Error Handling
 
-- A 400 error means the message was NOT sent - check the error message
-- A timeout does NOT mean failure - the message may still be sending
-- Always verify by querying recent messages after sending
+- A 400 error means the message was NOT sent — check the error message
+- A timeout is not an error — verify with the query above
 - If you get connection errors, ask the user to verify the BlueBubbles server URL and password
