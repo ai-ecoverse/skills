@@ -6,8 +6,6 @@ allowed-tools: bash
 
 # AI Writing Pattern Detector
 
-Analyze text for telltale patterns of AI-generated content. Returns specific findings with line references and confidence indicators.
-
 ## Analysis Workflow
 
 1. **Read the target file** to analyze
@@ -16,15 +14,19 @@ Analyze text for telltale patterns of AI-generated content. Returns specific fin
    - Structural patterns (em-dashes, rule of three, parallelisms)
    - Content patterns (legacy puffery, superficial analysis, hedging)
    - Style patterns (vague attribution, elegant variation)
-3. **Report findings** with:
+3. **Validate findings** before reporting:
+   - If confidence is Medium, examine context around flagged passages to rule out false positives (e.g., a single `delve` in an otherwise clean document may be coincidental)
+   - Check whether flagged patterns cluster in one section or spread across the text — clustering reduces false-positive risk
+   - For borderline cases, note ambiguity explicitly in the output rather than rounding up to High
+4. **Report findings** with:
    - Pattern counts by category
    - Specific flagged passages with line numbers
    - Overall confidence assessment
 
 ## Pattern Categories
 
-### High-Signal Vocabulary (124+ words)
-Top indicators with usage increases: `delve` (25x), `showcasing` (9x), `underscore` (9x), `tapestry`, `landscape`, `realm`, `multifaceted`, `pivotal`, `meticulous`, `comprehensive`, `vibrant`, `foster`, `intricate`, `testament`, `beacon`, `symbiosis`, `holistic`, `myriad`
+### High-Signal Vocabulary
+Top indicators (see full 124-word list in [references/patterns.md](references/patterns.md)): `delve` (25x corpus increase), `showcasing` (9x), `underscore` (9x), `tapestry`, `pivotal`, `meticulous`, `testament`
 
 ### Structural Tells
 - **Em-dash overuse**: More than 1 per 200 words
@@ -33,16 +35,14 @@ Top indicators with usage increases: `delve` (25x), `showcasing` (9x), `undersco
 - **Inline-header lists**: Bullet points with **bolded headers:** followed by text
 
 ### Content Patterns
-- **Legacy/symbolism puffery**: "stands as a testament", "enduring legacy", "pivotal role"
-- **Superficial "-ing" analyses**: Sentences ending with "...reflecting its importance" or "...highlighting the significance"
-- **Challenges sections**: "Despite its [positive], [subject] faces challenges..."
-- **Hedging preambles**: "It's important to note", "worth mentioning"
+Top indicators (see full examples in [references/patterns.md](references/patterns.md)):
+- **Legacy/symbolism puffery**: "stands as a testament", "enduring legacy"
+- **Superficial "-ing" analyses**: Sentences ending with "...reflecting its importance"
 
 ### Style Markers
-- **Vague attribution**: "Experts argue", "Observers note", "Industry reports suggest"
-- **Elegant variation**: Avoiding word repetition by cycling synonyms unnaturally
-- **Promotional tone**: "groundbreaking", "stunning", "nestled in the heart of"
-- **Hydrogen Jukebox**: Abstract/concrete "eyeball kicks" crammed into every phrase (nostalgebraist, 2024)
+Top indicators (see full examples in [references/patterns.md](references/patterns.md)):
+- **Vague attribution**: "Experts argue", "Observers note"
+- **Promotional tone**: "groundbreaking", "nestled in the heart of"
 
 ## Output Format
 
@@ -72,6 +72,8 @@ Top indicators with usage increases: `delve` (25x), `showcasing` (9x), `undersco
 
 ## Scripts
 
+The scripts `check-ai-words` and `check-ai-patterns` must be available on `PATH`; if absent, fall back to manual grep-based analysis using the pattern categories above.
+
 ### Quick Check: `check-ai-words`
 Vocabulary-only analysis with rate comparison.
 
@@ -94,11 +96,11 @@ Output includes:
 - Confidence score (0-7)
 
 ### Data File: `references/ai_word_rates.txt`
-Base rates per million words from ngrams.dev English corpus (23.6B words).
+Base rates per million words from ngrams.dev English corpus (23.6B words). This file is expected to be present in the skill bundle's `references/` directory alongside `references/patterns.md`.
 
 ## Detailed Pattern Reference
 
-For comprehensive pattern lists with examples, see [references/patterns.md](references/patterns.md).
+For comprehensive pattern lists with examples, see [references/patterns.md](references/patterns.md). If this file is not present in the bundle, use the inline examples and vocabulary markers listed above as the primary reference.
 
 ## Confidence Calibration
 
@@ -110,4 +112,3 @@ For comprehensive pattern lists with examples, see [references/patterns.md](refe
 | Multiple categories | Higher | Cross-category patterns more telling |
 
 Single patterns are weak signals. Clusters of patterns, especially across categories, indicate AI generation.
-
