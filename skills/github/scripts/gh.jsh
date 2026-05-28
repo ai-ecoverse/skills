@@ -387,7 +387,7 @@ async function prClose(args) {
   try {
     const res = await api(`/repos/${repo}/pulls/${num}`, { method: 'PATCH', body: JSON.stringify({ state: 'closed' }) });
     console.log(sym('closed') + ' Closed PR ' + C.cyan('#' + num) + ': ' + res.title);
-    console.log(C.gray('URL:') + '  ' + res.html_url);
+    console.log(C.gray('URL:') + '     ' + res.html_url);
   } catch (e) { fail('pr close', e); }
 }
 
