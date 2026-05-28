@@ -21,6 +21,7 @@
     "pdf": { "path": "skills/pdf/SKILL.md" },
     "pm-prd": { "path": "skills/pm-prd/SKILL.md" },
     "pptx": { "path": "skills/pptx/SKILL.md" },
+    "pptx2pdf": { "path": "skills/pptx2pdf/SKILL.md" },
     "presentations": { "path": "skills/presentations/SKILL.md" },
     "review": { "path": "skills/review/SKILL.md" },
     "save-the-cat": { "path": "skills/save-the-cat/SKILL.md" },
