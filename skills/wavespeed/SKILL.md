@@ -188,6 +188,21 @@ open --view /workspace/wavespeed_output.png
 ## Complete Example: Text-to-Image
 
 ```bash
+# Prerequisite: define wavespeed_poll (see Step 6) once per shell session.
+wavespeed_poll() {
+  local task_id="$1" interval="${2:-2}" timeout="${3:-300}" status result
+  SECONDS=0
+  while [ $SECONDS -lt "$timeout" ]; do
+    result=$(curl -s -H "Authorization: Bearer $WAVESPEED_API_KEY" \
+      "https://api.wavespeed.ai/api/v3/predictions/$task_id")
+    status=$(echo "$result" | jq -r '.data.status')
+    if [ "$status" = "completed" ]; then echo "$result" | jq -r '.data.outputs[]'; return 0
+    elif [ "$status" = "failed" ]; then echo "Task failed:"; echo "$result"; return 1; fi
+    sleep "$interval"
+  done
+  echo "Timed out after ${timeout}s"; return 2
+}
+
 # 1. Submit
 RESPONSE=$(curl -s -X POST \
   -H "Authorization: Bearer $WAVESPEED_API_KEY" \
@@ -197,13 +212,17 @@ RESPONSE=$(curl -s -X POST \
 
 TASK_ID=$(echo "$RESPONSE" | jq -r '.data.id')
 
-# 2. Poll and get output
+# 2. Poll and get output (uses wavespeed_poll defined above)
 wavespeed_poll "$TASK_ID"
 ```
 
 ## Complete Example: Image-to-Video
 
 ```bash
+# Prerequisite: requires wavespeed_poll from Step 6 (or the Text-to-Image example above)
+# to be defined in the current shell session. If running this block standalone, copy the
+# wavespeed_poll definition from Step 6 first.
+
 # 1. Upload source image
 UPLOAD=$(curl -s -X POST \
   -H "Authorization: Bearer $WAVESPEED_API_KEY" \
