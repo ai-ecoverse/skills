@@ -109,7 +109,7 @@ curl -s -X POST "SERVER_URL/api/v1/message/query?password=PASSWORD" \
 
 ## Get Messages from a Specific Chat
 
-Use the exact `guid` value returned by `/chat/query` (e.g. `any;-;user@example.com` or `iMessage;+;chat12345`). Do not hand-construct a GUID for message queries — look it up first via the chat-filtering step above.
+For message queries, pass the exact `guid` string returned by `/chat/query` (the `.data[].guid` field). Do not hand-construct a GUID here — look it up first via the chat-filtering step above and copy the value verbatim.
 
 ```bash
 curl -s -X POST "SERVER_URL/api/v1/message/query?password=PASSWORD" \
