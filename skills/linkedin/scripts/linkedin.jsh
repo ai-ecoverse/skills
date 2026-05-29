@@ -303,8 +303,9 @@ async function listPosts(limit) {
 
   var posts = [];
   var activityCounts = {};
+  var analyticsMap = {};
 
-  // Extract social activity counts
+  // Extract social activity counts and organic analytics
   if (data.included) {
     data.included.forEach(function(item) {
       if (item.entityUrn && item.entityUrn.startsWith('urn:li:fsd_socialActivityCounts:')) {
@@ -315,6 +316,18 @@ async function listPosts(limit) {
           likes: item.numLikes || 0,
           reactions: item.reactionTypeCounts || []
         };
+      }
+      // Extract organic analytics (impressions, clicks, engagement rate)
+      if (item.organicAnalytics && item.entityUrn) {
+        var analyticsMatch = item.entityUrn.match(/urn:li:activity:\d+/);
+        if (analyticsMatch) {
+          analyticsMap[analyticsMatch[0]] = {
+            impressions: item.organicAnalytics.impressions || 0,
+            clicks: item.organicAnalytics.clicks || 0,
+            clickThroughRate: item.organicAnalytics.clickThroughRate || 0,
+            engagementRate: item.organicAnalytics.engagementRate || 0
+          };
+        }
       }
     });
 
@@ -360,12 +373,18 @@ async function listPosts(limit) {
         }
         var publishedAtIso = publishedAt !== null ? new Date(publishedAt).toISOString() : null;
 
+        var analytics = analyticsMap[activityUrn] || {};
+
         posts.push({
           activityUrn: activityUrn,
           text: text,
           comments: stats.comments || 0,
           reposts: stats.reposts || 0,
           likes: stats.likes || 0,
+          impressions: analytics.impressions || null,
+          clicks: analytics.clicks || null,
+          clickThroughRate: analytics.clickThroughRate || null,
+          engagementRate: analytics.engagementRate || null,
           publishedAt: publishedAt,
           publishedAtIso: publishedAtIso,
           url: activityUrn ? 'https://www.linkedin.com/feed/update/' + activityUrn : ''
