@@ -10,8 +10,8 @@
 // │    `fmt.table`                                                              │
 // │  • Date formatting: Custom fmtDate() → `fmt.date(s, 'short')`              │
 // │  • Error handling: Custom die() → `cli.die()`                              │
-// │  • API calls: Custom api() fetch wrapper → `http.client()` (two clients:   │
-// │    readApi for GET, writeApi for mutations with attributed token)           │
+// │  • API calls: Custom api() fetch wrapper → single `http.client()` with     │
+// │    context-aware token function (req.method for read/write routing)         │
 // │  • Token resolution: Manual exec/env → `skill.token('github')` with        │
 // │    fallback to env var / git config for backward compat                     │
 // │  • Flag parsing: parseMondayFlags() → `process.argv.parseFlags()` used     │
@@ -21,36 +21,21 @@
 // │  • Help: console.log → `cli.help()` (exits 0 automatically)               │
 // │  • Output: JSON output → `cli.out()` for structured data                   │
 // │                                                                             │
-// │ What couldn't be migrated (API feedback):                                   │
-// │  1. `http.client` has a fixed token function — no per-request token         │
-// │     switching. Workaround: two client instances (readApi, writeApi).        │
-// │     Ideal: token function receives request context (method, path).          │
-// │  2. `process.argv.parseFlags()` only extracts one `subcommand`. This        │
-// │     script uses 2-level routing (cmd + sub). parseFlags is used for         │
-// │     top-level only; sub-level args are passed as positional.                │
-// │  3. `fmt.date` doesn't support locale-style "May 29, 2026" formatting.     │
-// │     The original used toLocaleDateString. Using fmt.date(s,'short') gives   │
-// │     "2026-05-29" which is acceptable but different from original output.    │
-// │  4. `http.client` throws on non-2xx — several places (vars set existence   │
-// │     check, checks fetch, etc.) intentionally call API expecting 404.        │
-// │     Requires try/catch wrapping. Suggestion: add `{ okStatus: [404] }`     │
-// │     option to suppress throws for expected statuses.                        │
-// │  5. `http.client` doesn't expose response headers — can't do pagination    │
-// │     via Link header or read rate-limit headers. Not needed here but would   │
-// │     be for larger scripts.                                                  │
-// │  6. No `http.client` support for non-JSON responses (e.g. text/plain).     │
-// │     The original handled content-type checking. Assuming the new client     │
-// │     auto-parses JSON and returns text otherwise.                            │
-// │  7. `pool()` not used here but would be useful for monday protocol's       │
-// │     parallel thread fetching — kept sequential for simplicity.             │
-// │  8. `cli.out()` pretty-prints JSON — but monday protocol needs raw JSON    │
-// │     (no colors/formatting) for machine consumption. Using console.log       │
-// │     with JSON.stringify there instead.                                      │
-// │  9. `time.parseDuration` uses unit specs like "7d" — but the original      │
-// │     parseDateFlag also supported "w" (weeks). Assuming time.parseDuration   │
-// │     handles "w" per the spec (it does: w is listed).                        │
-// │ 10. No way to set User-Agent globally on http.client config — would be     │
-// │     nice for the bot-token validation fetch that uses raw fetch().          │
+// │ Resolved after initial port (fixes in c4411949/f99c0395):                   │
+// │  • Token function now receives request context → single api client          │
+// │  • cli.die supports { prefix: 'gh' } → domain-specific error output        │
+// │  • fmt.date('locale') → "May 29, 2026" style available                     │
+// │  • http.client opts.raw:true → access response headers for pagination      │
+// │  • http.client timeoutMs → per-attempt timeout support                      │
+// │                                                                             │
+// │ Remaining patterns that stay manual:                                        │
+// │  • 2-level command routing (parseFlags gives positional[0] as subcommand    │
+// │    but we need cmd+sub, so routing is explicit)                            │
+// │  • http.client throws on non-2xx — vars set existence check uses           │
+// │    try/catch for expected 404                                              │
+// │  • AI attribution device flow — too specialized for any runtime API        │
+// │  • Monday protocol outputs raw JSON (cli.out pretty-prints; using          │
+// │    console.log + JSON.stringify instead)                                    │
 // └─────────────────────────────────────────────────────────────────────────────┘
 
 // ─── Auth ────────────────────────────────────────────────────────────────────
@@ -134,27 +119,21 @@ async function getAttributedToken() {
   return personalToken; // timed out, fall back
 }
 
-// ─── HTTP Clients ────────────────────────────────────────────────────────────
-// Two clients: readApi (personal token, for GETs) and writeApi (attributed token, for mutations)
+// ─── HTTP Client ─────────────────────────────────────────────────────────────
+// Single client with context-aware token (req.method available since fix c4411949)
 
-const readApi = http.client({
+const api = http.client({
   baseUrl: 'https://api.github.com',
-  token: () => personalToken,
+  token: (req) => {
+    if (isAI && req && req.method !== 'GET') return getAttributedToken();
+    return personalToken;
+  },
   headers: {
     'Accept': 'application/vnd.github+json',
     'X-GitHub-Api-Version': '2022-11-28',
   },
   retry: { on: [429, 503], maxAttempts: 3 },
-});
-
-const writeApi = http.client({
-  baseUrl: 'https://api.github.com',
-  token: () => isAI ? getAttributedToken() : Promise.resolve(personalToken),
-  headers: {
-    'Accept': 'application/vnd.github+json',
-    'X-GitHub-Api-Version': '2022-11-28',
-  },
-  retry: { on: [429, 503], maxAttempts: 3 },
+  timeoutMs: 30000,
 });
 
 // ─── Symbols ─────────────────────────────────────────────────────────────────
@@ -233,13 +212,13 @@ function sanitizeBranch(branch) {
 
 function fmtDate(s) {
   if (!s) return '';
-  return fmt.date(s, 'short');
+  return fmt.date(s, 'locale');
 }
 
 // ─── Error helper ────────────────────────────────────────────────────────────
 
 function fail(cmd, err) {
-  cli.die(cmd + ' failed: ' + (err.body?.message || err.message));
+  cli.die(cmd + ' failed: ' + (err.body?.message || err.message), { prefix: 'gh' });
 }
 
 // ─── pr list ─────────────────────────────────────────────────────────────────
@@ -247,7 +226,7 @@ function fail(cmd, err) {
 async function prList(args) {
   const repo = await resolveRepo(args[0]);
   let prs;
-  try { prs = await readApi.get(`/repos/${repo}/pulls`, { params: { state: 'open', per_page: 30 } }); }
+  try { prs = await api.get(`/repos/${repo}/pulls`, { params: { state: 'open', per_page: 30 } }); }
   catch (e) { fail('pr list', e); }
 
   if (!prs.length) { console.log(c.gray('No open pull requests.')); return; }
@@ -268,9 +247,9 @@ async function prView(args) {
   const num = validateNum(args[0], 'PR number');
   const repo = await resolveRepo(args[1]);
   let pr, checks;
-  try { pr = await readApi.get(`/repos/${repo}/pulls/${num}`); }
+  try { pr = await api.get(`/repos/${repo}/pulls/${num}`); }
   catch (e) { fail('pr view', e); }
-  try { checks = await readApi.get(`/repos/${repo}/commits/${pr.head.sha}/check-runs`, { params: { per_page: 30 } }); }
+  try { checks = await api.get(`/repos/${repo}/commits/${pr.head.sha}/check-runs`, { params: { per_page: 30 } }); }
   catch { checks = { check_runs: [] }; }
 
   const statusStr = pr.merged ? sym('merged') + ' ' + c.green('merged')
@@ -316,7 +295,7 @@ async function prMerge(args) {
   }
   const repo = await resolveRepo(rest[0]);
   try {
-    const res = await writeApi.put(`/repos/${repo}/pulls/${num}/merge`, {
+    const res = await api.put(`/repos/${repo}/pulls/${num}/merge`, {
       body: { merge_method: method },
     });
     console.log(sym('merged') + ' ' + c.green('Merged') + ' PR #' + num + ' via ' + method + (res.message ? ' — ' + res.message : ''));
@@ -331,7 +310,7 @@ async function prComment(args) {
   if (!args[1]) cli.die('pr comment: message required');
   const repo = await resolveRepo(args[2]);
   try {
-    const res = await writeApi.post(`/repos/${repo}/issues/${num}/comments`, {
+    const res = await api.post(`/repos/${repo}/issues/${num}/comments`, {
       body: { body: args[1] },
     });
     console.log(sym('success') + ' Comment posted: ' + res.html_url);
@@ -358,13 +337,13 @@ async function prCreate(args) {
   // Default base to the repo's default branch if not specified
   if (!base) {
     try {
-      const r = await readApi.get(`/repos/${repo}`);
+      const r = await api.get(`/repos/${repo}`);
       base = r.default_branch || 'main';
     } catch { base = 'main'; }
   }
 
   try {
-    const res = await writeApi.post(`/repos/${repo}/pulls`, {
+    const res = await api.post(`/repos/${repo}/pulls`, {
       body: { title, body, head, base, draft },
     });
     console.log(sym('success') + ' Created PR ' + c.cyan('#' + res.number) + ': ' + res.title);
@@ -380,7 +359,7 @@ async function prCheckout(args) {
   const num = validateNum(args[0], 'PR number');
   const repo = await resolveRepo(args[1]);
   let pr;
-  try { pr = await readApi.get(`/repos/${repo}/pulls/${num}`); }
+  try { pr = await api.get(`/repos/${repo}/pulls/${num}`); }
   catch (e) { fail('pr checkout', e); }
 
   const branch = sanitizeBranch(pr.head.ref);
@@ -397,7 +376,7 @@ async function prClose(args) {
   const num = validateNum(args[0], 'PR number');
   const repo = await resolveRepo(args[1]);
   try {
-    const res = await writeApi.patch(`/repos/${repo}/pulls/${num}`, {
+    const res = await api.patch(`/repos/${repo}/pulls/${num}`, {
       body: { state: 'closed' },
     });
     console.log(sym('closed') + ' Closed PR ' + c.cyan('#' + num) + ': ' + res.title);
@@ -410,7 +389,7 @@ async function prClose(args) {
 async function issueList(args) {
   const repo = await resolveRepo(args[0]);
   let issues;
-  try { issues = await readApi.get(`/repos/${repo}/issues`, { params: { state: 'open', per_page: 30 } }); }
+  try { issues = await api.get(`/repos/${repo}/issues`, { params: { state: 'open', per_page: 30 } }); }
   catch (e) { fail('issue list', e); }
 
   const filtered = issues.filter(i => !i.pull_request);
@@ -447,7 +426,7 @@ async function issueCreate(args) {
   if (labelSet.size) payload.labels = [...labelSet];
 
   try {
-    const res = await writeApi.post(`/repos/${repo}/issues`, { body: payload });
+    const res = await api.post(`/repos/${repo}/issues`, { body: payload });
     console.log(sym('success') + ' Created issue ' + c.cyan('#' + res.number) + ' — ' + res.html_url);
   } catch (e) { fail('issue create', e); }
 }
@@ -459,7 +438,7 @@ async function issueView(args) {
   const num = validateNum(args[0], 'issue number');
   const repo = await resolveRepo(args[1]);
   let issue;
-  try { issue = await readApi.get(`/repos/${repo}/issues/${num}`); }
+  try { issue = await api.get(`/repos/${repo}/issues/${num}`); }
   catch (e) { fail('issue view', e); }
 
   const stateStr = issue.state === 'open' ? c.green('open') : c.red('closed');
@@ -478,7 +457,7 @@ async function issueView(args) {
 async function repoView(args) {
   const repo = await resolveRepo(args[0]);
   let r;
-  try { r = await readApi.get(`/repos/${repo}`); }
+  try { r = await api.get(`/repos/${repo}`); }
   catch (e) { fail('repo view', e); }
 
   console.log(c.bold(r.full_name));
@@ -499,7 +478,7 @@ async function runList(args) {
   const repo = await resolveRepo(args[0]);
   let runs;
   try {
-    const data = await readApi.get(`/repos/${repo}/actions/runs`, { params: { per_page: 20 } });
+    const data = await api.get(`/repos/${repo}/actions/runs`, { params: { per_page: 20 } });
     runs = data.workflow_runs;
   } catch (e) { fail('run list', e); }
 
@@ -527,9 +506,9 @@ async function runView(args) {
   const runId = validateNum(args[0], 'run ID');
   const repo = await resolveRepo(args[1]);
   let run, jobsData;
-  try { run = await readApi.get(`/repos/${repo}/actions/runs/${runId}`); }
+  try { run = await api.get(`/repos/${repo}/actions/runs/${runId}`); }
   catch (e) { fail('run view', e); }
-  try { jobsData = await readApi.get(`/repos/${repo}/actions/runs/${runId}/jobs`); }
+  try { jobsData = await api.get(`/repos/${repo}/actions/runs/${runId}/jobs`); }
   catch { jobsData = { jobs: [] }; }
 
   const statusStr = run.status === 'completed'
@@ -561,7 +540,7 @@ async function runView(args) {
 async function releaseList(args) {
   const repo = await resolveRepo(args[0]);
   let releases;
-  try { releases = await readApi.get(`/repos/${repo}/releases`, { params: { per_page: 15 } }); }
+  try { releases = await api.get(`/repos/${repo}/releases`, { params: { per_page: 15 } }); }
   catch (e) { fail('release list', e); }
 
   if (!releases.length) { console.log(c.gray('No releases.')); return; }
@@ -628,7 +607,7 @@ async function notificationsList(args) {
     const endpoint = repoFilter
       ? `/repos/${repoFilter}/notifications`
       : `/notifications`;
-    notifs = await readApi.get(endpoint, { params });
+    notifs = await api.get(endpoint, { params });
   } catch (e) { fail('notifications list', e); }
 
   if (!notifs.length) { console.log(c.gray('No notifications.')); return; }
@@ -668,7 +647,7 @@ async function notificationsRead(args) {
     const endpoint = repoFilter
       ? `/repos/${repoFilter}/notifications`
       : `/notifications`;
-    await writeApi.put(endpoint, { body: { read: true } });
+    await api.put(endpoint, { body: { read: true } });
     console.log(sym('success') + ' Marked ' + (repoFilter ? c.cyan(repoFilter) : 'all') + ' notifications as read');
   } catch (e) { fail('notifications read', e); }
 }
@@ -681,7 +660,7 @@ async function searchPrs(args) {
   const q = args[0] + ' type:pr' + (repo ? ' repo:' + repo : '');
   let results;
   try {
-    const data = await readApi.get('/search/issues', { params: { q, per_page: 20 } });
+    const data = await api.get('/search/issues', { params: { q, per_page: 20 } });
     results = data.items;
   } catch (e) { fail('search prs', e); }
 
@@ -702,7 +681,7 @@ async function varsList(args) {
   const repo = await resolveRepo(args[0]);
   let vars;
   try {
-    const data = await readApi.get(`/repos/${repo}/actions/variables`, { params: { per_page: 30 } });
+    const data = await api.get(`/repos/${repo}/actions/variables`, { params: { per_page: 30 } });
     vars = data.variables;
   } catch (e) { fail('vars list', e); }
 
@@ -722,15 +701,15 @@ async function varsSet(args) {
 
   // Check if variable exists (expecting 404 if not — http.client throws on non-2xx)
   let exists = false;
-  try { await readApi.get(`/repos/${repo}/actions/variables/${name}`); exists = true; } catch {}
+  try { await api.get(`/repos/${repo}/actions/variables/${name}`); exists = true; } catch {}
 
   try {
     if (exists) {
-      await writeApi.patch(`/repos/${repo}/actions/variables/${name}`, {
+      await api.patch(`/repos/${repo}/actions/variables/${name}`, {
         body: { name, value },
       });
     } else {
-      await writeApi.post(`/repos/${repo}/actions/variables`, {
+      await api.post(`/repos/${repo}/actions/variables`, {
         body: { name, value },
       });
     }
@@ -745,7 +724,7 @@ async function authStatus() {
   let username = c.gray('(unverified)');
   if (personalToken) {
     try {
-      const u = await readApi.get('/user');
+      const u = await api.get('/user');
       username = u.login;
     } catch { username = c.red('(invalid token)'); }
   }
@@ -803,7 +782,7 @@ async function mondayGh(args) {
   // Resolve current user login for search queries
   let username = 'trieloff';
   try {
-    const user = await readApi.get('/user');
+    const user = await api.get('/user');
     username = user.login;
   } catch {}
 
@@ -820,7 +799,7 @@ async function mondayGh(args) {
   async function fetchThread(repo, num, type, currentBody, threadDepth) {
     if (threadDepth <= 0) return currentBody;
     try {
-      const comments = await readApi.get(`/repos/${repo}/issues/${num}/comments`, {
+      const comments = await api.get(`/repos/${repo}/issues/${num}/comments`, {
         params: { per_page: Math.min(threadDepth, 100), sort: 'created', direction: 'asc' },
       });
       if (!Array.isArray(comments) || comments.length === 0) return currentBody;
@@ -833,7 +812,7 @@ async function mondayGh(args) {
 
   // 1. Notifications
   try {
-    const notifs = await readApi.get('/notifications', {
+    const notifs = await api.get('/notifications', {
       params: {
         all: 'false',
         participating: 'true',
@@ -874,7 +853,7 @@ async function mondayGh(args) {
   // 2. PRs needing review
   try {
     const q = `is:pr is:open review-requested:${username}`;
-    const data = await readApi.get('/search/issues', { params: { q, per_page: Math.min(limit, 50) } });
+    const data = await api.get('/search/issues', { params: { q, per_page: Math.min(limit, 50) } });
     for (const pr of (data.items || [])) {
       const repoUrl = pr.repository_url.replace('https://api.github.com/repos/', '');
       const baseBody = (pr.body || '').slice(0, 500);
@@ -899,7 +878,7 @@ async function mondayGh(args) {
   // 3. Assigned issues
   try {
     const q = `is:issue is:open assignee:${username}`;
-    const data = await readApi.get('/search/issues', { params: { q, per_page: Math.min(limit, 50) } });
+    const data = await api.get('/search/issues', { params: { q, per_page: Math.min(limit, 50) } });
     for (const issue of (data.items || [])) {
       const repoUrl = issue.repository_url.replace('https://api.github.com/repos/', '');
       const baseBody = (issue.body || '').slice(0, 500);
@@ -931,7 +910,7 @@ async function mondayGh(args) {
 async function repoArchive(args) {
   const repo = await resolveRepo(args[0]);
   try {
-    await writeApi.patch(`/repos/${repo}`, { body: { archived: true } });
+    await api.patch(`/repos/${repo}`, { body: { archived: true } });
     console.log(sym('success') + ' Archived ' + c.cyan(repo));
   } catch (e) { fail('repo archive', e); }
 }
@@ -953,14 +932,14 @@ async function branchCreate(args) {
   // Resolve the SHA to branch from
   if (!from) {
     try {
-      const r = await readApi.get(`/repos/${repo}`);
+      const r = await api.get(`/repos/${repo}`);
       from = r.default_branch || 'main';
     } catch { from = 'main'; }
   }
 
   let sha;
   try {
-    const ref = await readApi.get(`/repos/${repo}/git/ref/heads/${from}`);
+    const ref = await api.get(`/repos/${repo}/git/ref/heads/${from}`);
     sha = ref.object.sha;
   } catch {
     if (/^[0-9a-f]{40}$/.test(from)) sha = from;
@@ -968,7 +947,7 @@ async function branchCreate(args) {
   }
 
   try {
-    await writeApi.post(`/repos/${repo}/git/refs`, {
+    await api.post(`/repos/${repo}/git/refs`, {
       body: { ref: `refs/heads/${branchName}`, sha },
     });
     console.log(sym('success') + ' Created branch ' + c.cyan(branchName) + ' from ' + c.gray(sha.slice(0, 7)) + ' in ' + repo);
@@ -982,7 +961,7 @@ async function branchDelete(args) {
   const branchName = args[0];
   const repo = await resolveRepo(args[1]);
   try {
-    await writeApi.delete(`/repos/${repo}/git/refs/heads/${branchName}`);
+    await api.delete(`/repos/${repo}/git/refs/heads/${branchName}`);
     console.log(sym('success') + ' Deleted branch ' + c.cyan(branchName) + ' from ' + repo);
   } catch (e) { fail('branch delete', e); }
 }
@@ -1019,7 +998,7 @@ async function contentPut(args) {
   let sha = null;
   try {
     const params = branch ? { ref: branch } : {};
-    const existing = await readApi.get(`/repos/${repo}/contents/${encodedPath}`, { params });
+    const existing = await api.get(`/repos/${repo}/contents/${encodedPath}`, { params });
     sha = existing.sha;
   } catch {}
 
@@ -1028,7 +1007,7 @@ async function contentPut(args) {
   if (sha) payload.sha = sha;
 
   try {
-    const res = await writeApi.put(`/repos/${repo}/contents/${encodedPath}`, { body: payload });
+    const res = await api.put(`/repos/${repo}/contents/${encodedPath}`, { body: payload });
     const verb = sha ? 'Updated' : 'Created';
     console.log(sym('success') + ' ' + verb + ' ' + c.cyan(filePath) + ' — ' + c.gray(res.commit.sha.slice(0, 7)));
   } catch (e) { fail('content put', e); }
@@ -1053,23 +1032,21 @@ async function apiPassthrough(args) {
   }
 
   const path = positional[0];
-  const isWrite = method !== 'GET';
-  const client = isWrite ? writeApi : readApi;
 
   try {
     const opts = {};
-    if (isWrite && Object.keys(fields).length) {
+    if (method !== 'GET' && Object.keys(fields).length) {
       opts.body = fields;
     }
 
     let result;
     switch (method) {
-      case 'GET':    result = await client.get(path, opts); break;
-      case 'POST':   result = await client.post(path, opts); break;
-      case 'PUT':    result = await client.put(path, opts); break;
-      case 'PATCH':  result = await client.patch(path, opts); break;
-      case 'DELETE': result = await client.delete(path, opts); break;
-      default:       result = await client.get(path, opts); break;
+      case 'GET':    result = await api.get(path, opts); break;
+      case 'POST':   result = await api.post(path, opts); break;
+      case 'PUT':    result = await api.put(path, opts); break;
+      case 'PATCH':  result = await api.patch(path, opts); break;
+      case 'DELETE': result = await api.delete(path, opts); break;
+      default:       result = await api.get(path, opts); break;
     }
 
     if (jqExpr && typeof result === 'object') {
@@ -1162,5 +1139,6 @@ if (!sub || !dispatch[cmd][sub]) cli.die("unknown subcommand: '" + cmd + ' ' + (
 try {
   await dispatch[cmd][sub]();
 } catch (err) {
-  cli.die(cmd + ' ' + sub + ' failed: ' + (err.body?.message || err.message));
+  if (err.name === 'NodeExitError') throw err; // re-throw exit signals
+  cli.die(cmd + ' ' + sub + ' failed: ' + (err.body?.message || err.message), { prefix: 'gh' });
 }
