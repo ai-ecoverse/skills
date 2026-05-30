@@ -67,7 +67,7 @@ jobs:
         if: steps.detect.outputs.scope == 'full'
         run: |
           # tessl >=0.81 rejects symlinks for security. The repo uses symlinks
-          # in tiles/*/skills/ pointing to ../../skills/*. Dereference them into
+          # in tiles/*/skills/ pointing to ../../../skills/*. Dereference them into
           # a concrete temp copy before linting.
           for t in ${{ steps.detect.outputs.tiles }}; do
             echo "::group::Lint tile $t"
