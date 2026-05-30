@@ -1,8 +1,7 @@
-// Garmin Connect CLI — DI OAuth2 Bearer token flow against connectapi.garmin.com
+// garmin.jsh — Garmin Connect CLI (DI OAuth2 Bearer token against connectapi.garmin.com)
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const GARMIN_GUID = '46e3c0a0-f68d-4267-9eb2-7e66865424c5';
 const CLIENT_ID   = 'GARMIN_CONNECT_MOBILE_ANDROID_DI_2025Q2';
 const TOKEN_URL   = 'https://diauth.garmin.com/di-oauth2-service/oauth/token';
 const API_BASE    = 'https://connectapi.garmin.com';
@@ -189,13 +188,25 @@ async function cmdLogin() {
 
   const tok = await exchangeTicket(ticket);
 
-  await saveConfig({
+  const updates = {
     access_token:              tok.access_token,
     refresh_token:             tok.refresh_token,
     expires_at:                Date.now() + (tok.expires_in  || 93600) * 1000,
     refresh_token_expires_at:  Date.now() + 30 * 24 * 60 * 60 * 1000,
-    garmin_guid:               GARMIN_GUID,
-  });
+  };
+
+  // Fetch the user's social profile GUID for later use
+  try {
+    const client = http.client({
+      baseUrl: API_BASE,
+      headers: { Authorization: `Bearer ${tok.access_token}`, Accept: 'application/json', NK: 'NT' },
+    });
+    const profile = await client.get('/userprofile-service/socialProfile');
+    if (profile?.userProfileId) updates.garmin_guid = String(profile.userProfileId);
+    else if (profile?.displayName) updates.garmin_guid = profile.displayName;
+  } catch { /* non-fatal — profile commands will prompt */ }
+
+  await saveConfig(updates);
 
   console.log(c.green('✓ Logged in to Garmin Connect'));
   console.log(c.dim(`  Access token valid for ~${Math.round((tok.expires_in || 93600) / 3600)} hours`));
@@ -337,7 +348,8 @@ async function cmdDevices(flags) {
 
 async function cmdProfile(flags) {
   const cfg    = await loadConfig();
-  const guid   = cfg.garmin_guid || GARMIN_GUID;
+  const guid   = cfg.garmin_guid;
+  if (!guid) cli.die('No profile GUID stored. Run: garmin login', { prefix: 'garmin' });
   const client = await apiClient();
 
   const [social, personal] = await Promise.all([
@@ -444,13 +456,11 @@ try {
       break;
 
     case 'activities':
+      await cmdActivities(flags);
+      break;
+
     case 'activity':
-      if (cmd === 'activity') {
-        const id = positional[1] || positional[0];  // positional[0] is 'activity', [1] is the id
-        await cmdActivity(positional[1], flags);
-      } else {
-        await cmdActivities(flags);
-      }
+      await cmdActivity(positional[1], flags);
       break;
 
     case 'devices':

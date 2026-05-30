@@ -1,53 +1,55 @@
 ---
 name: garmin
 description: >
-  Interact with Garmin Connect — list Garmin activities, view Garmin fitness data, inspect Garmin
-  health stats, browse Garmin devices, and manage your Garmin profile. Use this skill whenever the
-  user mentions Garmin, Garmin Connect, Garmin activities, Garmin fitness tracking, Garmin health
-  data, Garmin running, Garmin cycling, Garmin swimming, Garmin workouts, Garmin GPS watch,
-  Garmin devices, Garmin Forerunner, Garmin Fenix, Garmin Vivoactive, activity history on Garmin,
-  fitness stats from Garmin, heart rate from Garmin, steps from Garmin, or wants to query, list,
-  or explore any data from connect.garmin.com. Activate on phrases like "my Garmin activities",
-  "Garmin workout history", "list my runs on Garmin", "show my Garmin data", "Garmin fitness
-  summary", "check my Garmin", "recent activities from Garmin", "my Garmin devices", or anything
-  requesting Garmin health metrics, Garmin running stats, Garmin cycling data, Garmin step counts,
-  Garmin heart rate zones, or Garmin device registration information.
+  Interact with Garmin Connect — list activities, view fitness data, inspect health stats,
+  browse devices, and check your profile. Use when the user mentions Garmin, Garmin Connect,
+  activities, fitness tracking, health data, running, cycling, swimming, workouts, GPS watch,
+  devices, activity history, fitness stats, heart rate, steps, or wants to query data from
+  connect.garmin.com. Triggers on phrases like "my Garmin activities", "workout history",
+  "list my runs", "show my Garmin data", "fitness summary", "check my Garmin", "recent
+  activities", "my Garmin devices", or anything requesting health metrics, running stats,
+  cycling data, step counts, heart rate zones, or device information.
 allowed-tools: bash
+command: garmin
+script: scripts/garmin.jsh
 ---
 
 # Garmin Connect Skill
 
-Provides CLI access to Garmin Connect via the DI OAuth2 Bearer token flow against
+CLI access to Garmin Connect via the DI OAuth2 Bearer token flow against
 `connectapi.garmin.com`. Bypasses the Cloudflare-protected `gc-api` endpoint entirely.
 
-## Commands
+## Usage
 
 ```
-garmin login                          # Authenticate via SSO intercept + ticket exchange
-garmin activities [--limit N] [--start N] [--json]   # List recent Garmin activities
-garmin activity <id>                  # Single Garmin activity detail
-garmin devices                        # List registered Garmin devices
-garmin profile                        # Show Garmin user profile
-garmin --help                         # Show help
+garmin login                                         Authenticate via SSO intercept
+garmin activities [--limit N] [--start N] [--json]   List recent activities
+garmin activity <id> [--json]                        Single activity detail
+garmin devices [--json]                              List registered devices
+garmin profile [--json]                              Show user profile
+garmin --help                                        Show help
 ```
 
-## Auth Flow
+## Requirements
 
-Run `garmin login` once. Tokens are stored in skill config and auto-refreshed:
+Run `garmin login` once. A browser tab opens for Garmin SSO — sign in, and the
+session ticket is captured automatically. Tokens are stored in skill config and
+auto-refreshed:
+
 - Access token: ~26 hours
 - Refresh token: 30 days
 
 If the refresh token expires, run `garmin login` again.
 
-The login opens a browser tab via `oauth-token --intercept`. Sign in, and the ticket is
-extracted from the redirect URL automatically.
+## Auth Flow
 
-## Implementation
+1. `garmin login` opens Garmin SSO via `oauth-token --intercept`
+2. User signs in → redirect captured with `?ticket=ST-...`
+3. Ticket exchanged for Bearer token at `diauth.garmin.com/di-oauth2-service/oauth/token`
+4. Token stored; API calls go directly to `connectapi.garmin.com` (no Cloudflare)
 
-All logic lives in `scripts/garmin.jsh`. Invoke via:
+## Flags
 
-```bash
-jsh /shared/skills/garmin/scripts/garmin.jsh <subcommand> [args]
-```
-
-Or register as a shell command: create an alias or wrapper that calls the above.
+- `--limit N` — number of activities to fetch (default 20)
+- `--start N` — pagination offset (default 0)
+- `--json` — output raw JSON instead of formatted text
