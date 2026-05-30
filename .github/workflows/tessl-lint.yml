@@ -66,9 +66,14 @@ jobs:
       - name: Lint full tile(s)
         if: steps.detect.outputs.scope == 'full'
         run: |
+          # tessl >=0.81 rejects symlinks for security. The repo uses symlinks
+          # in tiles/*/skills/ pointing to ../../../skills/*. Dereference them into
+          # a concrete temp copy before linting.
           for t in ${{ steps.detect.outputs.tiles }}; do
             echo "::group::Lint tile $t"
-            tessl skill lint "tiles/$t"
+            TMP=$(mktemp -d)
+            cp -rL "tiles/$t" "$TMP/$t"
+            tessl skill lint "$TMP/$t"
             echo "::endgroup::"
           done
 
@@ -103,7 +108,7 @@ jobs:
             mkdir -p "$TMP/skills"
             SKILLS_JSON="{}"
             for skill in ${SUBSET[$tile]}; do
-              ln -sfn "$PWD/skills/$skill" "$TMP/skills/$skill"
+              cp -rL "$PWD/skills/$skill" "$TMP/skills/$skill"
               SKILLS_JSON=$(echo "$SKILLS_JSON" | jq --arg k "$skill" \
                 '. + {($k): {"path": ("skills/" + $k + "/SKILL.md")}}')
             done
