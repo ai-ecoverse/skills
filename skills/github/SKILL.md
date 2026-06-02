@@ -18,19 +18,79 @@ allowed_tools:
 
 `gh.jsh` is a Node.js GitHub CLI that wraps the GitHub REST API with clean formatted output, ANSI color, and sensible defaults. No `curl | jq` pipelines.
 
-## Setup
+## Authentication
 
-**Authentication** — preferred: use SLICC's OAuth provider:
-```bash
-export GITHUB_TOKEN=$(oauth-token github)
-```
-This works out of the box for SLICC agents — no manual PAT needed. Run `oauth-token github` once interactively if not yet authorized.
+Three tools, one token source. `oauth-token github` is the single entry point for GitHub credentials in SLICC.
 
-Alternatives (in precedence order: git config wins, then env var):
+### Token basics
+
 ```bash
-git config github.token <YOUR_PAT>     # persisted across shells
-export GITHUB_TOKEN=<YOUR_PAT>          # session-scoped
+oauth-token github                       # default scopes (repo, read:org)
+oauth-token github --scope workflow       # add workflow scope (for .github/workflows/)
+oauth-token github --scope workflow,repo  # multiple extra scopes
 ```
+
+Returns a fresh OAuth token string. Use it with any of the three GitHub tools:
+
+### With `gh` (this skill's CLI)
+
+`gh` reads the token from `git config github.token` automatically. Set it once:
+
+```bash
+git config github.token "$(oauth-token github)"
+```
+
+Then all `gh` commands authenticate transparently:
+```bash
+gh pr list ai-ecoverse/skills
+gh content put README.md ./local.md "update" --branch=feat ai-ecoverse/skills
+```
+
+### With `git` (push/pull)
+
+Same config key — `git push`/`pull` use the token from `git config github.token`:
+
+```bash
+git config github.token "$(oauth-token github)"
+git push origin my-branch
+```
+
+For pushing workflow files (`.github/workflows/`), GitHub requires the `workflow` scope:
+```bash
+git config github.token "$(oauth-token github --scope workflow)"
+git push origin my-branch   # now allowed to push workflow changes
+```
+
+### With raw `fetch`/`curl` (API calls)
+
+For direct GitHub REST API calls outside of `gh`:
+```bash
+TOKEN=$(oauth-token github)
+curl -H "Authorization: Bearer $TOKEN" https://api.github.com/repos/owner/repo
+```
+
+### Scope escalation
+
+The default token covers most operations. Request additional scopes when needed:
+
+| Scope | When needed |
+|-------|-------------|
+| `workflow` | Pushing/modifying `.github/workflows/` files |
+| `delete_repo` | Deleting repositories |
+| `admin:org` | Managing organization settings |
+
+```bash
+# Escalate for workflow file changes
+git config github.token "$(oauth-token github --scope workflow)"
+
+# Multiple scopes
+TOKEN=$(oauth-token github --scope workflow,admin:org)
+```
+
+### Precedence
+
+1. `git config github.token` (checked first by `gh` and `git push`)
+2. `GITHUB_TOKEN` environment variable (fallback)
 
 **Repo defaults** — most subcommands that act on a repo (e.g. `pr`, `issue`, `branch`, `content`, `run`, `release`, `search`, `vars`, `repo`) accept an optional trailing `owner/repo` argument. If omitted, the script infers it from the current directory's `git remote get-url origin`. Pass it explicitly to override. The `api` passthrough and utility commands like `auth` do **not** take a trailing repo — `api` requires a full REST path. The examples below show the short form; append `owner/repo` to repo-scoped commands to target a different repo.
 
