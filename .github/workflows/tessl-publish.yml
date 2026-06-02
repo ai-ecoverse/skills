@@ -37,6 +37,24 @@ jobs:
           git fetch origin "${GITHUB_REF#refs/heads/}"
           git reset --hard "origin/${GITHUB_REF#refs/heads/}"
 
+      - name: Dereference skill symlinks
+        run: |
+          # tessl >=0.81 rejects symlinks for security. The repo uses symlinks
+          # in tiles/*/skills/ pointing to ../../../skills/*. Replace each
+          # top-level symlink with a real copy of its target, in place, so the
+          # published manifest ships concrete files. Done in-place (not a temp
+          # dir) so the action's tile.json commit-back still targets the repo.
+          SKILLS_DIR="tiles/${{ matrix.tile }}/skills"
+          if [ -d "$SKILLS_DIR" ]; then
+            for link in "$SKILLS_DIR"/*; do
+              if [ -L "$link" ]; then
+                target=$(readlink -f "$link")
+                rm "$link"
+                cp -rL "$target" "$link"
+              fi
+            done
+          fi
+
       - uses: tesslio/patch-version-publish@v1
         with:
           token: ${{ secrets.TESSLIO_TOKEN }}

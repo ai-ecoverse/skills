@@ -37,4 +37,9 @@ jobs:
           NAME=$(jq -r .name "$TILE/tile.json")
           VERSION=$(jq -r .version "$TILE/tile.json")
           echo "Publishing $NAME@$VERSION from $TILE"
-          tessl tile publish "$TILE"
+          # tessl >=0.81 rejects symlinks for security. Dereference the tile
+          # into a concrete temp copy (mirrors tessl-lint.yml) so the published
+          # tile ships real files instead of rejected symlinks.
+          TMP=$(mktemp -d)
+          cp -rL "$TILE" "$TMP/${{ matrix.tile }}"
+          tessl tile publish "$TMP/${{ matrix.tile }}"
