@@ -171,7 +171,9 @@ initStrudel({
 
 ### Synth voices
 
-Beyond the standard `sawtooth/triangle/sine/square` synths and the curated `arpy/bass/jvbass/casio/moog/juno/pad/pluck/sitar/stab/rave` melodic samples, the dirt-samples repo ships with a wide cast of vintage and chip-style synth voices. They're all reachable via the GitHub fallback — no manifest edit needed. Used with `note()` they re-pitch from their root sample.
+Beyond the standard `sawtooth/triangle/sine/square` synths and the curated `arpy/bass/jvbass/casio/moog/juno/pad/pluck/sitar/stab/rave` melodic samples, the dirt-samples repo ships with a wide cast of vintage and chip-style synth voices. Used with `note()` they re-pitch from their root sample.
+
+> **Important — the curated manifest does NOT include these.** The categories below ship with `tidalcycles/Dirt-Samples` but are **not** in `samples-manifest.json`. To use them you must either (a) load the full GitHub manifest directly with `samples('https://raw.githubusercontent.com/tidalcycles/Dirt-Samples/master/strudel.json')` (or `samples('github:tidalcycles/dirt-samples')`), or (b) extend `samples-manifest.json` with the categories you want. The bundled sprinkle's `prebake` automatically falls back to the GitHub manifest only when the local file is **missing or unreadable** — so simply having the curated manifest installed will hide these voices. If you need them, skip the local install or extend the manifest.
 
 | Sample | Character | Good for |
 |--|--|--|
@@ -238,7 +240,7 @@ n("<0 2 4 5 7 9 7 4>").scale("A:minor:pentatonic").s("sine").fm(3)
 note("<[a3,c4,e4] [f3,a3,c4] [c4,e4,g4] [g3,b3,d4]>").s("juno")
   .lpf(perlin.range(400, 1800).slow(11))      // organic filter sweep
   .pan(cosine.range(0.2, 0.8).slow(13))       // slow stereo drift
-  .vowel("<o a e i>".slow(20))                // 20-cycle vowel morph
+  .vowel("<o a e i>/20")                      // 20-cycle vowel morph (mini-notation /n)
   .gain(sine.range(0.12, 0.20).slow(8))       // gentle volume breathing
 ```
 
@@ -252,7 +254,7 @@ Triads (`[a3,c4,e4]`) sound thin; five-note voicings with extensions (`[a3,c4,e4
 
 `.shape(0.1)` to `.shape(0.3)` reads as soft tape saturation / analog warmth on basses and kicks. Higher values cross into distortion. Pairs well with low-pass filtering — saturate first, filter second.
 
-
+## Example patterns
 
 **808 drum groove:**
 ```js
