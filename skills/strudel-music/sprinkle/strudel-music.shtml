@@ -5,16 +5,41 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Strudel Music</title>
   <link rel="icon" href="music" />
+  <!--
+    Layout: single vertical column (toolbar / editor / presets / status) per
+    sprinkle layout rules. Multi-column was removed because the rail viewport
+    is ~360 px and iOS / Chrome side panel are also single-column.
+
+    Presets pattern: horizontally-scrolling chip strip grouped by category.
+    Each category is a small label followed by inline chips that wrap to the
+    next row when the strip is wider than the rail; the whole strip is
+    height-capped and y-scrolls if the user has many presets. Picked over an
+    accordion because at 360 px the chip strip stays one tap from any preset
+    without an expand/collapse step, and the editor still owns most of the
+    vertical space.
+  -->
   <script src="https://unpkg.com/@strudel/web@1.3.0" onerror="document.getElementById('statusText').textContent='Failed to load Strudel library from unpkg';document.getElementById('statusText').classList.add('error-text');window.__strudelLoadFailed=true;"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /*
+      Color strategy: documented S2 tokens (--s2-bg-base/layer-1/layer-2,
+      --s2-accent, --s2-positive, --s2-negative, --s2-gray-25) for fills, and
+      light-dark() for any text / border that previously relied on the
+      undocumented --s2-text-primary / --s2-text-secondary / --s2-border-default
+      tokens. Those tokens resolved fine in dark mode (their fallbacks were
+      light grays) but produced invisible light-gray-on-white text in light
+      mode — that's the contrast bug the user reported. light-dark() requires
+      color-scheme: light dark on an ancestor; we set it on :root.
+    */
+    :root { color-scheme: light dark; }
 
     html, body {
       height: 100%;
       overflow: hidden;
       font-family: var(--s2-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
       font-size: 13px;
-      color: var(--s2-text-primary, #e0e0e0);
+      color: light-dark(#1a1a1a, #e8e8e8);
       background: var(--s2-bg-base, #1a1a1a);
     }
 
@@ -31,7 +56,7 @@
       gap: var(--s2-spacing-200, 12px);
       padding: 8px var(--s2-spacing-300, 16px);
       background: var(--s2-bg-layer-1, #252525);
-      border-bottom: 1px solid var(--s2-border-default, #333);
+      border-bottom: 1px solid light-dark(#d8d8d8, #3a3a3a);
       flex-shrink: 0;
       min-height: 48px;
     }
@@ -78,8 +103,8 @@
 
     .btn-icon {
       background: transparent;
-      border: 1px solid var(--s2-border-default, #444);
-      color: var(--s2-text-primary, #ccc);
+      border: 1px solid light-dark(#d0d0d0, #444);
+      color: light-dark(#1a1a1a, #e8e8e8);
       padding: 6px;
       width: 32px;
       height: 32px;
@@ -95,14 +120,14 @@
 
     .tempo-label {
       font-size: 11px;
-      color: var(--s2-text-secondary, #999);
+      color: light-dark(#444, #b0b0b0);
       font-weight: 500;
     }
 
     .tempo-value {
       font-size: 12px;
       font-weight: 700;
-      color: var(--s2-text-primary, #ccc);
+      color: light-dark(#1a1a1a, #e8e8e8);
       min-width: 28px;
       text-align: center;
     }
@@ -133,121 +158,150 @@
       border: none;
     }
 
-    /* Main area */
+    /* Main area — single vertical column (toolbar / editor / presets / status) */
     .main {
       display: flex;
+      flex-direction: column;
       flex: 1;
       min-height: 0;
       overflow: hidden;
     }
 
-    /* Left pane — editor */
+    /* Editor pane (top, takes most vertical space) */
     .editor-pane {
       flex: 1;
       display: flex;
       flex-direction: column;
       min-width: 0;
-      border-right: 1px solid var(--s2-border-default, #333);
+      min-height: 0;
     }
 
     .editor-pane-header {
       padding: 8px var(--s2-spacing-300, 16px);
       font-size: 11px;
-      font-weight: 600;
+      font-weight: 700;
       text-transform: uppercase;
       letter-spacing: 0.5px;
-      color: var(--s2-text-secondary, #888);
+      color: light-dark(#444, #b0b0b0);
       background: var(--s2-bg-layer-1, #252525);
-      border-bottom: 1px solid var(--s2-border-default, #333);
+      border-bottom: 1px solid light-dark(#d8d8d8, #3a3a3a);
       flex-shrink: 0;
     }
 
+    /*
+      Editor scroll fix: the previous wrapper had overflow:hidden and the
+      inner <slicc-editor> sat at 100%/100% with no internal scroller exposed,
+      so long programs clipped silently. CodeMirror 6 (inside the shadow DOM)
+      *does* render its own .cm-scroller, but only when the host element has
+      a constrained height. We give .editor-wrap a constrained flex height
+      and make slicc-editor a block element that fills it; CM6 then takes
+      over and provides vertical + horizontal scroll inside the shadow DOM.
+      The wrapper itself stays overflow:auto as a belt-and-suspenders so
+      anything CM6 lets through still scrolls instead of clipping.
+    */
     .editor-wrap {
       flex: 1;
       min-height: 0;
-      overflow: hidden;
+      overflow: auto;
+      display: flex;
     }
 
     .editor-wrap slicc-editor {
-      width: 100%;
-      height: 100%;
-    }
-
-    /* Right pane — presets */
-    .presets-pane {
-      width: 260px;
-      flex-shrink: 0;
-      display: flex;
-      flex-direction: column;
-      background: var(--s2-bg-layer-1, #252525);
-      overflow: hidden;
-    }
-
-    .presets-header {
-      padding: 8px var(--s2-spacing-300, 16px);
-      font-size: 11px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      color: var(--s2-text-secondary, #888);
-      border-bottom: 1px solid var(--s2-border-default, #333);
-      flex-shrink: 0;
-    }
-
-    .presets-list {
+      display: block;
       flex: 1;
-      overflow-y: auto;
-      padding: var(--s2-spacing-100, 8px);
+      width: 100%;
+      min-height: 100%;
     }
 
-    .presets-list::-webkit-scrollbar { width: 6px; }
-    .presets-list::-webkit-scrollbar-track { background: transparent; }
-    .presets-list::-webkit-scrollbar-thumb { background: var(--s2-bg-layer-2, #444); border-radius: 3px; }
+    /* Presets strip (bottom, full-width, height-capped, chips wrap) */
+    .presets-strip {
+      flex-shrink: 0;
+      min-height: 80px;
+      max-height: 30vh;
+      overflow-y: auto;
+      background: var(--s2-bg-layer-1, #252525);
+      border-top: 1px solid light-dark(#d8d8d8, #3a3a3a);
+      padding: var(--s2-spacing-100, 8px) var(--s2-spacing-200, 12px);
+    }
+
+    .presets-strip::-webkit-scrollbar { width: 6px; }
+    .presets-strip::-webkit-scrollbar-track { background: transparent; }
+    .presets-strip::-webkit-scrollbar-thumb { background: var(--s2-bg-layer-2, #444); border-radius: 3px; }
+
+    .presets-strip-header {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: light-dark(#444, #b0b0b0);
+      padding: 2px 0 6px;
+    }
 
     .preset-category {
-      margin-bottom: var(--s2-spacing-200, 12px);
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 0;
     }
 
     .preset-category-label {
       font-size: 10px;
       font-weight: 700;
       text-transform: uppercase;
-      letter-spacing: 0.8px;
-      color: var(--s2-text-secondary, #777);
-      padding: 4px 8px;
-      margin-bottom: 4px;
+      letter-spacing: 0.6px;
+      color: light-dark(#555, #a0a0a0);
+      margin-right: 2px;
+      flex-shrink: 0;
     }
 
+    /* Chip-shaped preset pills.
+       Inactive: bg-elevated fill + visible border so the chip outline is
+       always present (the previous bg-layer-2 alone was indistinguishable
+       from the strip's bg-layer-1 in light mode). Active: solid accent
+       + gray-25 text — matches the Play/Stop button pattern that already
+       reads correctly in both themes. Hover keeps the same dark-on-light /
+       light-on-dark text contrast — no inversion. */
     .preset-card {
-      padding: 8px 10px;
-      border-radius: var(--s2-radius-default, 8px);
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 10px;
+      border-radius: var(--s2-radius-pill, 9999px);
+      background: var(--s2-bg-elevated, light-dark(#fff, #2a2a2a));
+      border: 1px solid light-dark(#c8c8c8, #3a3a3a);
+      color: light-dark(#1a1a1a, #e8e8e8);
+      font-size: 12px;
+      font-weight: 600;
       cursor: pointer;
-      transition: background 0.12s ease;
-      margin-bottom: 2px;
+      transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+      white-space: nowrap;
+      user-select: none;
     }
 
     .preset-card:hover {
-      background: var(--s2-bg-layer-2, #333);
+      background: light-dark(#f0f0f0, #383838);
+      border-color: light-dark(#a0a0a0, #555);
+      color: light-dark(#1a1a1a, #e8e8e8);
     }
 
     .preset-card.active {
-      background: color-mix(in srgb, var(--s2-accent, #39f) 15%, transparent);
+      background: var(--s2-accent, #39f);
+      border-color: var(--s2-accent, #39f);
+      color: var(--s2-gray-25, #fff);
+    }
+
+    .preset-card.active:hover {
+      filter: brightness(1.08);
+      color: var(--s2-gray-25, #fff);
     }
 
     .preset-card-name {
       font-size: 12px;
       font-weight: 600;
-      color: var(--s2-text-primary, #ddd);
     }
 
-    .preset-card-desc {
-      font-size: 10px;
-      color: var(--s2-text-secondary, #888);
-      margin-top: 2px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
+    /* Description hidden visually — preserved as title= tooltip on the chip */
+    .preset-card-desc { display: none; }
 
     /* Status bar */
     .status-bar {
@@ -256,9 +310,9 @@
       gap: var(--s2-spacing-200, 12px);
       padding: 4px var(--s2-spacing-300, 16px);
       background: var(--s2-bg-layer-1, #252525);
-      border-top: 1px solid var(--s2-border-default, #333);
+      border-top: 1px solid light-dark(#d8d8d8, #3a3a3a);
       font-size: 11px;
-      color: var(--s2-text-secondary, #888);
+      color: light-dark(#444, #b0b0b0);
       flex-shrink: 0;
       min-height: 28px;
     }
@@ -267,7 +321,7 @@
       width: 7px;
       height: 7px;
       border-radius: 50%;
-      background: var(--s2-text-secondary, #666);
+      background: light-dark(#666, #888);
       flex-shrink: 0;
     }
 
@@ -282,7 +336,7 @@
     }
 
     .status-text { flex: 1; }
-    .status-info { color: var(--s2-text-secondary, #777); }
+    .status-info { color: light-dark(#555, #a0a0a0); }
 
     .error-text { color: var(--s2-negative, #e44); }
   </style>
@@ -310,14 +364,14 @@
       </div>
     </div>
 
-    <!-- Main area -->
+    <!-- Main area: vertical stack -->
     <div class="main">
-      <!-- Editor pane -->
+      <!-- Editor pane (top) -->
       <div class="editor-pane">
         <div class="editor-pane-header">Editor</div>
         <div class="editor-wrap">
           <slicc-editor id="codeEditor" line-numbers>// Write Strudel patterns here, then click Play
-// Or choose a preset from the right panel
+// Or pick a preset from the strip below
 
 note("<c3 eb3 g3 bb3>(3,8)")
   .s("sawtooth")
@@ -327,10 +381,10 @@ note("<c3 eb3 g3 bb3>(3,8)")
         </div>
       </div>
 
-      <!-- Presets pane -->
-      <div class="presets-pane">
-        <div class="presets-header">Presets</div>
-        <div class="presets-list" id="presetsList"></div>
+      <!-- Presets strip (bottom, full-width chip wrap) -->
+      <div class="presets-strip">
+        <div class="presets-strip-header">Presets</div>
+        <div id="presetsList"></div>
       </div>
     </div>
 
@@ -633,7 +687,7 @@ note("<c3 eb3 g3 bb3>(3,8)")
       });
     })();
 
-    // ── Render presets ──
+    // ── Render presets (chip strip) ──
     function renderPresets() {
       var list = document.getElementById('presetsList');
       var html = '';
@@ -644,9 +698,9 @@ note("<c3 eb3 g3 bb3>(3,8)")
         for (var j = 0; j < cat.items.length; j++) {
           var p = cat.items[j];
           var id = cat.category + '-' + j;
-          html += '<div class="preset-card" data-cat="' + i + '" data-idx="' + j + '" id="preset-' + id + '" onclick="loadPreset(' + i + ',' + j + ')">';
-          html += '<div class="preset-card-name">' + p.name + '</div>';
-          html += '<div class="preset-card-desc">' + p.desc + '</div>';
+          var tip = (p.name + ' — ' + p.desc).replace(/"/g, '&quot;');
+          html += '<div class="preset-card" data-cat="' + i + '" data-idx="' + j + '" id="preset-' + id + '" title="' + tip + '" onclick="loadPreset(' + i + ',' + j + ')">';
+          html += '<span class="preset-card-name">' + p.name + '</span>';
           html += '</div>';
         }
         html += '</div>';
