@@ -168,7 +168,11 @@ const GH_BASE = 'https://api.github.com';
 
 async function api(path, opts) {
   opts = opts || {};
-  const url = path.startsWith('http') ? path : GH_BASE + path;
+  // Normalize path: ensure leading slash so users can pass either "user" or "/user"
+  // without producing "https://api.github.comuser".
+  const url = path.startsWith('http')
+    ? path
+    : GH_BASE + (path.startsWith('/') ? path : '/' + path);
   // Use attributed token for mutating requests when running as AI agent
   const isWrite = opts.method && opts.method !== 'GET';
   const activeToken = (isWrite && isAI) ? await getAttributedToken() : token;
