@@ -335,11 +335,18 @@ async function registerVideoUpload(tabId, csrfToken, fileSize, filename) {
 // base64-inlined into a temp .js file and decoded into a Blob in-browser.
 // Works fine for ~3.4MB; for larger payloads consider MULTIPART (out of scope).
 async function uploadVideoBytes(tabId, csrfToken, singleUploadUrl, videoPath, singleUploadHeaders) {
-  var b64Result = await exec('cat ' + JSON.stringify(videoPath) + ' | base64 -w0');
-  if (b64Result.exitCode !== 0) {
-    throw new Error('Failed to read video file: ' + (b64Result.stderr || videoPath));
+  // Read bytes via fs (returns a latin-1 binary string in this runtime) and
+  // base64-encode in-process. Avoids the GNU-only `base64 -w0` shell-out.
+  var binStr;
+  try {
+    binStr = await fs.readFile(videoPath);
+  } catch (e) {
+    throw new Error('Failed to read video file ' + videoPath + ': ' + (e && e.message ? e.message : e));
   }
-  var b64 = b64Result.stdout.trim();
+  if (typeof binStr !== 'string') {
+    throw new Error('fs.readFile did not return a binary string for ' + videoPath);
+  }
+  var b64 = btoa(binStr);
 
   var extraHeaders = {};
   if (singleUploadHeaders && typeof singleUploadHeaders === 'object') {
@@ -363,8 +370,11 @@ async function uploadVideoBytes(tabId, csrfToken, singleUploadUrl, videoPath, si
   ].join('\n');
 
   // Write the script to a temp file and run via eval-file — keeps the giant
-  // base64 blob out of the shell argv length budget.
-  var tmpPath = '/tmp/linkedin-video-upload-' + Date.now() + '.js';
+  // base64 blob out of the shell argv length budget. Use /shared (VFS) so the
+  // playwright-cli runner can read the file regardless of host /tmp scoping.
+  var tmpDir = '/shared/.cache/linkedin';
+  await exec('mkdir -p ' + JSON.stringify(tmpDir));
+  var tmpPath = tmpDir + '/video-upload-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8) + '.js';
   await fs.writeFile(tmpPath, script);
   var r = await exec('playwright-cli eval-file ' + JSON.stringify(tmpPath) + ' --tab=' + tabId);
   await exec('rm -f ' + JSON.stringify(tmpPath)).catch(function() {});
@@ -375,7 +385,9 @@ async function uploadVideoBytes(tabId, csrfToken, singleUploadUrl, videoPath, si
   try { parsed = JSON.parse(r.stdout.trim()); } catch (e) {
     throw new Error('uploadVideoBytes: unexpected eval output: ' + r.stdout.substring(0, 200));
   }
-  if (parsed.status !== 201) {
+  // LinkedIn's dms-uploads PUT may return 200 or 201 depending on the storage
+  // backend variant — accept any 2xx (resp.ok in the eval payload).
+  if (!parsed.ok) {
     throw new Error('Video PUT failed with status ' + parsed.status);
   }
   return parsed;
