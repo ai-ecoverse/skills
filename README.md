@@ -1,6 +1,6 @@
 # ai-ecoverse/skills
 
-![ai-ecoverse/skills — a collection of installable agent skills](hero-banner.png)
+![ai-ecoverse/skills — a collection of installable agent skills](hero-banner.jpg)
 
 A collection of agent skills for [SLICC](https://github.com/ai-ecoverse/slicc), installable via [upskill](https://github.com/ai-ecoverse/upskill).
 
