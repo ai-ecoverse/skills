@@ -146,7 +146,7 @@ This enables:
 
 ## Available commands
 
-### linkedin post \<text\> [--video=\<path\>]
+### linkedin post \<text\> [--video=\<path\> | --image=\<path\> [--alt="..."]]
 
 Publish a post to the configured company page.
 - Posts as the company page (not personal profile)
@@ -157,11 +157,20 @@ Publish a post to the configured company page.
   (register → PUT bytes → createShare with media). SINGLE-part uploads only
   for now; LinkedIn switches to MULTIPART for very large videos (not yet
   supported — the helper raises a clear error in that case).
+- With `--image=<path>`, attaches an image (jpg/jpeg/png/gif/webp). Equivalent
+  to `linkedin image <path> "<text>"`. Uses the same Voyager pipeline as video
+  with `mediaUploadType: IMAGE_SHARING`. Add `--alt="<altText>"` to set the
+  image's accessibility alt text. Cannot be combined with `--video`.
 
 ### linkedin video \<path\> "\<text\>"
 
 Alt form of `linkedin post --video=`. Posts a video update with the given
 caption.
+
+### linkedin image \<path\> "\<text\>" [--alt="..."]
+
+Alt form of `linkedin post --image=`. Posts an image update with the given
+caption and optional alt text.
 
 ### linkedin list [--limit N]
 
@@ -257,10 +266,13 @@ See `references/endpoints.md` for the full API documentation.
 
 ## Limitations
 
-- Image posts require OAuth (separate upload flow); video posts work via the
-  session-based Voyager pipeline (`linkedin post --video=...`)
-- Large videos that LinkedIn marks as MULTIPART chunked uploads are not yet
+- Both image and video posts work via the session-based Voyager pipeline
+  (`linkedin post --image=...` / `--video=...`); OAuth is not required
+- Large media that LinkedIn marks as MULTIPART chunked uploads is not yet
   supported (SINGLE-part only — covers everything ~3-5 MB and short clips)
+- Multi-image carousel posts (up to 20 images) are not yet supported — only
+  one media item per post
+- Click-to-tag-people on images (`tapTargets`) is not yet supported
 - The Voyager API is undocumented and may change; queryIds are version-pinned
 - Rate limits are unknown; use reasonable intervals for polling
 - Profile lookup by vanity name requires page navigation (slower than URN lookup)
