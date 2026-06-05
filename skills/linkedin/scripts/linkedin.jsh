@@ -431,12 +431,17 @@ async function createVideoPost(text, videoPath) {
   var tabId = await ensureTab();
   var csrfToken = await getCsrfToken(tabId);
 
-  // Resolve absolute path + size + basename
-  var statResult = await exec('stat -c "%s" ' + JSON.stringify(videoPath) + ' 2>/dev/null || stat -f "%z" ' + JSON.stringify(videoPath));
-  if (statResult.exitCode !== 0 || !statResult.stdout.trim()) {
-    throw new Error('Cannot stat video file: ' + videoPath);
+  // Resolve size + basename via fs.stat — no shell-out, so the path is never
+  // interpreted by bash (avoids $(...) command-substitution risk on hostile
+  // paths like '/shared/$(rm -rf).mp4').
+  var fileSize;
+  try {
+    var st = await fs.stat(videoPath);
+    if (!st || !st.isFile) throw new Error('not a regular file');
+    fileSize = st.size;
+  } catch (e) {
+    throw new Error('Cannot stat video file ' + videoPath + ': ' + (e && e.message ? e.message : e));
   }
-  var fileSize = parseInt(statResult.stdout.trim(), 10);
   if (!fileSize || fileSize <= 0) throw new Error('Invalid file size for ' + videoPath);
   var filename = videoPath.split('/').pop();
 
@@ -485,11 +490,17 @@ async function createImagePost(text, imagePath, options) {
 
   var contentType = detectImageContentType(imagePath);
 
-  var statResult = await exec('stat -c "%s" ' + JSON.stringify(imagePath) + ' 2>/dev/null || stat -f "%z" ' + JSON.stringify(imagePath));
-  if (statResult.exitCode !== 0 || !statResult.stdout.trim()) {
-    throw new Error('Cannot stat image file: ' + imagePath);
+  // Resolve size + basename via fs.stat — no shell-out, so the path is never
+  // interpreted by bash (avoids $(...) command-substitution risk on hostile
+  // paths like '/shared/$(rm -rf).jpg').
+  var fileSize;
+  try {
+    var st = await fs.stat(imagePath);
+    if (!st || !st.isFile) throw new Error('not a regular file');
+    fileSize = st.size;
+  } catch (e) {
+    throw new Error('Cannot stat image file ' + imagePath + ': ' + (e && e.message ? e.message : e));
   }
-  var fileSize = parseInt(statResult.stdout.trim(), 10);
   if (!fileSize || fileSize <= 0) throw new Error('Invalid file size for ' + imagePath);
   var filename = imagePath.split('/').pop();
 
