@@ -315,6 +315,57 @@
       max-height: 90px;
       padding: 8px 12px;
     }
+
+    /* Comments log */
+    .comments-log {
+      padding: 0 12px 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .comments-log:empty { display: none; }
+    .comment-entry {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      padding: 5px 8px;
+      background: color-mix(in srgb, var(--s2-accent) 6%, transparent);
+      border-radius: var(--s2-radius-default, 8px);
+      border-left: 2px solid color-mix(in srgb, var(--s2-accent) 40%, transparent);
+    }
+    .comment-entry-text {
+      flex: 1;
+      font-size: 11.5px;
+      color: var(--s2-fg);
+      line-height: 1.4;
+    }
+    .comment-entry-time {
+      font-size: 10px;
+      color: var(--s2-color-detail, rgba(128,128,128,0.8));
+      white-space: nowrap;
+      margin-top: 1px;
+    }
+    .comment-entry.done .comment-entry-text { text-decoration: line-through; opacity: 0.55; }
+    .comment-entry.done { opacity: 0.7; }
+    .comment-entry-done-btn {
+      background: none; border: none; cursor: pointer; padding: 2px;
+      color: var(--s2-color-detail, rgba(128,128,128,0.8));
+      display: flex; align-items: center; border-radius: 4px; flex-shrink: 0;
+      transition: color 0.15s, background 0.15s;
+    }
+    .comment-entry-done-btn:hover { color: var(--s2-positive); background: color-mix(in srgb, var(--s2-positive) 12%, transparent); }
+    .comment-entry.done .comment-entry-done-btn { color: var(--s2-positive); }
+    #review-mode-btn.active {
+      background: var(--s2-accent);
+      color: var(--s2-bg-base);
+    }
+    #review-mode-btn.active:hover { opacity: 0.88; }
+    #speck-btn.active {
+      background: #7c3aed;
+      color: #fff;
+    }
+    #speck-btn.active:hover { opacity: 0.88; }
+
     .comment-inner {
       display: flex;
       gap: 6px;
@@ -590,6 +641,14 @@
       <i data-lucide="clipboard-list" class="sprinkle-icon lg"></i>
       <span class="top-bar-title sprinkle-heading">Review Queue</span>
       <span id="queue-count-badge" class="badge zero">0</span>
+      <button class="sprinkle-btn sprinkle-btn--secondary" id="review-mode-btn" title="Click-to-comment on the visible page">
+        <i data-lucide="mouse-pointer-click" class="sprinkle-icon sm"></i>
+        <span id="review-mode-label">Pin Review</span>
+      </button>
+      <button class="sprinkle-btn sprinkle-btn--secondary" id="speck-btn" title="Inject the Speck element-editing layer on the visible page">
+        <i data-lucide="sparkles" class="sprinkle-icon sm"></i>
+        <span id="speck-label">Speck Fix</span>
+      </button>
     </div>
     <div id="queue-scroll">
       <div class="empty-state" id="empty-state">
@@ -817,6 +876,8 @@ function extractBody(html) {
 let state = {
   view: 'queue',            // 'queue' | 'document'
   items: [],
+  comments: {},             // { [itemId]: [{text, time}] }
+  pins: {},   // { [url]: [ {num, comment, pageX, pageY, selector, relX, relY, url, ts, done} ] }
   docPath: null,
   docTitle: null,
   annotations: [],
@@ -936,7 +997,8 @@ function createItemCard(item) {
           '<i data-lucide="send" class="sprinkle-icon sm"></i>' +
         '</button>' +
       '</div>' +
-    '</div>';
+    '</div>' +
+    '<div class="comments-log"></div>';
 
   const dot         = div.querySelector('.status-dot');
   const titleEl     = div.querySelector('.item-title');
@@ -984,10 +1046,21 @@ function createItemCard(item) {
       data: { id: item.id, path: item.path, url: item.liveUrl || item.previewUrl || '', comment }
     });
     commentInput.value = '';
+    appendCommentEntry(item.id, comment);
     commentRow.classList.remove('open');
   });
 
-  cardElements.set(item.id, { card: div, dot, label: labelEl, commentRow, commentInput });
+  const commentsLog = div.querySelector('.comments-log');
+  cardElements.set(item.id, { card: div, dot, label: labelEl, commentRow, commentInput, commentsLog });
+
+  // Render any previously saved comments
+  (state.comments && state.comments[item.id] || []).forEach(c => {
+    if (!c.cid) c.cid = 'c' + Date.now() + Math.floor(Math.random()*1000);
+    if (typeof c.done === 'undefined') c.done = false;
+  });
+  const saved = (state.comments && state.comments[item.id]) || [];
+  saved.forEach(c => renderCommentEntry(commentsLog, c, item.id));
+
   return div;
 }
 
@@ -1039,6 +1112,93 @@ function updateItemStatus(id, status) {
   const badge = document.getElementById('queue-count-badge');
   badge.textContent = pendingCount;
   badge.className = 'badge' + (pendingCount === 0 ? ' zero' : '');
+}
+
+function appendCommentEntry(id, text, num) {
+  if (!state.comments) state.comments = {};
+  if (!state.comments[id]) state.comments[id] = [];
+  const now = new Date();
+  const time = now.getHours().toString().padStart(2,'0') + ':' + now.getMinutes().toString().padStart(2,'0');
+  const c = { cid: 'c' + Date.now() + Math.floor(Math.random()*1000), text, time, done: false };
+  if (typeof num === 'number') c.num = num;   // pin marker number (links to page overlay)
+  state.comments[id].push(c);
+  saveState();
+  const el = cardElements.get(id);
+  if (!el || !el.commentsLog) return;
+  renderCommentEntry(el.commentsLog, c, id);
+}
+
+function storePin(pin) {
+  if (!pin || !pin.url || typeof pin.num !== 'number') return;
+  if (!state.pins) state.pins = {};
+  if (!state.pins[pin.url]) state.pins[pin.url] = [];
+  const arr = state.pins[pin.url];
+  const existing = arr.find(p => p.num === pin.num);
+  if (existing) { Object.assign(existing, pin); }
+  else { arr.push(Object.assign({ done: false }, pin)); }
+  saveState();
+}
+
+function renderCommentEntry(container, c, itemId) {
+  const entry = document.createElement('div');
+  entry.className = 'comment-entry' + (c.done ? ' done' : '');
+
+  // Clean the display text: strip any leading pin emoji, mojibake, or "PIN #<n>:" prefix.
+  let display = (c.text || '');
+  // remove a leading pin glyph or its mojibake forms, optional spaces
+  display = display.replace(/^\s*(\uD83D\uDCCD|\u00F0\u0178[\u0080-\u02FF]{1,3}|\uFFFD)\s*/u, '');
+  // remove a leading "PIN #<n>:" label (we render num separately if desired)
+  display = display.replace(/^\s*PIN\s*#\d+\s*:?\s*/i, '');
+  display = display.trim();
+
+  const isPin = (typeof c.num === 'number');
+
+  if (isPin) {
+    const icon = document.createElement('i');
+    icon.setAttribute('data-lucide', 'map-pin');
+    icon.className = 'sprinkle-icon sm';
+    icon.style.flexShrink = '0';
+    icon.style.color = 'var(--s2-accent)';
+    entry.appendChild(icon);
+  }
+
+  const textEl = document.createElement('span');
+  textEl.className = 'comment-entry-text';
+  textEl.textContent = isPin ? ('#' + c.num + ': ' + display) : display;
+
+  const timeEl = document.createElement('span');
+  timeEl.className = 'comment-entry-time';
+  timeEl.textContent = c.time;
+
+  const doneBtn = document.createElement('button');
+  doneBtn.className = 'comment-entry-done-btn';
+  doneBtn.title = c.done ? 'Mark as not done' : 'Mark as done';
+  doneBtn.innerHTML = '<i data-lucide="' + (c.done ? 'check-circle' : 'x') + '" class="sprinkle-icon sm"></i>';
+  doneBtn.addEventListener('click', () => toggleCommentDone(itemId, c.cid));
+
+  entry.appendChild(textEl);
+  entry.appendChild(timeEl);
+  entry.appendChild(doneBtn);
+  container.appendChild(entry);
+  renderIcons();
+}
+
+function toggleCommentDone(itemId, cid) {
+  const list = (state.comments && state.comments[itemId]) || [];
+  const c = list.find(x => x.cid === cid);
+  if (!c) return;
+  c.done = !c.done;
+  saveState();
+  // Re-render the comments log for this item
+  const el = cardElements.get(itemId);
+  if (el && el.commentsLog) {
+    el.commentsLog.innerHTML = '';
+    list.forEach(x => renderCommentEntry(el.commentsLog, x, itemId));
+  }
+  // If this is a pin comment, tell the cone to update the page overlay
+  if (typeof c.num === 'number') {
+    slicc.lick({ action: 'comment-done', data: { num: c.num, done: c.done, itemId, cid } });
+  }
 }
 
 function toggleComment(id) {
@@ -1242,6 +1402,28 @@ function toggleAnnotationsPanel(forceOpen) {
   chevron.classList.toggle('open', state.annotationsOpen);
 }
 
+// ── Review mode toggle ──
+let reviewModeActive = false;
+document.getElementById('review-mode-btn').addEventListener('click', () => {
+  reviewModeActive = !reviewModeActive;
+  const btn = document.getElementById('review-mode-btn');
+  const label = document.getElementById('review-mode-label');
+  btn.classList.toggle('active', reviewModeActive);
+  label.textContent = reviewModeActive ? 'Exit Pin Review' : 'Pin Review';
+  slicc.lick({ action: 'toggle-review-mode', data: { active: reviewModeActive } });
+});
+
+// ── Speck toggle ──
+let speckActive = false;
+document.getElementById('speck-btn').addEventListener('click', () => {
+  speckActive = !speckActive;
+  const btn = document.getElementById('speck-btn');
+  const label = document.getElementById('speck-label');
+  btn.classList.toggle('active', speckActive);
+  label.textContent = speckActive ? 'Speck Fix On' : 'Speck Fix';
+  slicc.lick({ action: 'toggle-speck', data: { active: speckActive } });
+});
+
 // ── Back button ──
 document.getElementById('back-btn').addEventListener('click', () => {
   hidePopup();
@@ -1267,6 +1449,86 @@ slicc.on('update', async (msg) => {
 
   else if (msg.action === 'open-file') {
     await openDocument(msg.path, msg.title || null);
+  }
+
+  else if (msg.action === 'add-comment') {
+    appendCommentEntry(msg.id, msg.comment, typeof msg.num === 'number' ? msg.num : undefined);
+  }
+
+  else if (msg.action === 'add-pin') {
+    // Append the comment line (like add-comment) AND persist the positional marker durably.
+    appendCommentEntry(msg.id, msg.comment, typeof msg.num === 'number' ? msg.num : undefined);
+    if (msg.pin) storePin(msg.pin);
+  }
+
+  else if (msg.action === 'set-pin-done') {
+    if (state.pins && state.pins[msg.url]) {
+      const p = state.pins[msg.url].find(x => x.num === msg.num);
+      if (p) { p.done = !!msg.done; saveState(); }
+    }
+  }
+
+  else if (msg.action === 'request-pins') {
+    const url = msg.url;
+    const pins = (state.pins && state.pins[url]) ? state.pins[url] : [];
+    slicc.lick({ action: 'pins', data: { url, pins } });
+  }
+
+  else if (msg.action === 'remove-pin') {
+    if (state.pins && state.pins[msg.url]) {
+      state.pins[msg.url] = state.pins[msg.url].filter(p => p.num !== msg.num);
+      if (state.pins[msg.url].length === 0) delete state.pins[msg.url];
+      saveState();
+    }
+    // Also remove the matching comment line from every item
+    if (state.comments) {
+      Object.keys(state.comments).forEach(itemId => {
+        state.comments[itemId] = state.comments[itemId].filter(c => c.num !== msg.num);
+      });
+      saveState();
+      cardElements.forEach((el, itemId) => {
+        if (!el.commentsLog) return;
+        el.commentsLog.innerHTML = '';
+        ((state.comments && state.comments[itemId]) || []).forEach(c => renderCommentEntry(el.commentsLog, c, itemId));
+      });
+    }
+  }
+
+  else if (msg.action === 'set-review-mode') {
+    reviewModeActive = !!msg.active;
+    const btn = document.getElementById('review-mode-btn');
+    const label = document.getElementById('review-mode-label');
+    if (btn) btn.classList.toggle('active', reviewModeActive);
+    if (label) label.textContent = reviewModeActive ? 'Exit Pin Review' : 'Pin Review';
+  }
+
+  else if (msg.action === 'set-speck') {
+    speckActive = !!msg.active;
+    const btn = document.getElementById('speck-btn');
+    const label = document.getElementById('speck-label');
+    if (btn) btn.classList.toggle('active', speckActive);
+    if (label) label.textContent = speckActive ? 'Speck Fix On' : 'Speck Fix';
+  }
+
+  else if (msg.action === 'clear-pins') {
+    if (state.comments) {
+      Object.keys(state.comments).forEach(itemId => {
+        state.comments[itemId] = state.comments[itemId].filter(c => {
+          if (typeof c.num === 'number') return false;            // linked pins
+          var t = (c.text || '');
+          if (/^\s*(\u{1F4CD}\s*)?PIN\s*#/u.test(t)) return false; // legacy text pins like "📍 PIN #1 ..."
+          return true;
+        });
+      });
+    }
+    state.pins = {};
+    saveState();
+    // Re-render every card's comments log
+    cardElements.forEach((el, itemId) => {
+      if (!el.commentsLog) return;
+      el.commentsLog.innerHTML = '';
+      ((state.comments && state.comments[itemId]) || []).forEach(c => renderCommentEntry(el.commentsLog, c, itemId));
+    });
   }
 });
 
