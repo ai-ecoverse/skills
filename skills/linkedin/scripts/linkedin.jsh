@@ -207,8 +207,12 @@ async function createPost(text) {
 
 // Refactor of createPost that supports an optional media attachment. When
 // mediaInfo is null behaves identically to the legacy text-only path; when
-// non-null adds the `media` field on the same share-create mutation.
-//   mediaInfo: { category, mediaUrn, recipes, nativeMediaSource }
+// non-null adds the `media` field on the same share-create mutation. The
+// shape of `mediaInfo` differs by category:
+//   VIDEO: { category: 'VIDEO', mediaUrn, recipes, nativeMediaSource }
+//   IMAGE: { category: 'IMAGE', mediaUrn, altText?, tapTargets? }
+// (For images LinkedIn resolves recipes server-side from the asset URN, so
+// they are omitted from the payload; tapTargets default to [].)
 async function createSharePost(text, mediaInfo) {
   var tabId = await ensureTab();
   var csrfToken = await getCsrfToken(tabId);
@@ -478,7 +482,11 @@ function detectImageContentType(imagePath) {
   var ext = dot >= 0 ? imagePath.slice(dot + 1).toLowerCase() : '';
   var mime = IMAGE_MIME_BY_EXT[ext];
   if (!mime) {
-    throw new Error('Unrecognized image extension: .' + ext + ' (supported: ' + Object.keys(IMAGE_MIME_BY_EXT).join(', ') + ')');
+    var supportedDotted = Object.keys(IMAGE_MIME_BY_EXT).map(function(e) { return '.' + e; }).join(', ');
+    if (!ext) {
+      throw new Error('Image file has no extension: ' + imagePath + ' (supported: ' + supportedDotted + ')');
+    }
+    throw new Error('Unrecognized image extension ".' + ext + '" on ' + imagePath + ' (supported: ' + supportedDotted + ')');
   }
   return mime;
 }

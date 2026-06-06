@@ -268,8 +268,8 @@ See `references/endpoints.md` for the full API documentation.
 
 - Both image and video posts work via the session-based Voyager pipeline
   (`linkedin post --image=...` / `--video=...`); OAuth is not required
-- Large media that LinkedIn marks as MULTIPART chunked uploads is not yet
-  supported (SINGLE-part only — covers everything ~3-5 MB and short clips)
+- Large media files that LinkedIn marks as MULTIPART chunked uploads are not
+  yet supported (SINGLE-part only — covers everything ~3-5 MB and short clips)
 - Multi-image carousel posts (up to 20 images) are not yet supported — only
   one media item per post
 - Click-to-tag-people on images (`tapTargets`) is not yet supported
