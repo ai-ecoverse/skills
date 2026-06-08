@@ -1119,6 +1119,28 @@ function appendCommentEntry(id, text, num) {
   if (!state.comments[id]) state.comments[id] = [];
   const now = new Date();
   const time = now.getHours().toString().padStart(2,'0') + ':' + now.getMinutes().toString().padStart(2,'0');
+
+  // Idempotent upsert for pin comments (those carrying a numeric `num`):
+  // if a comment line with the same `num` already exists for this item,
+  // update its text in place (preserving done-state) and re-render the log
+  // rather than appending a duplicate. This makes repeated `add-pin` /
+  // re-seed calls safe (no more stacked duplicate lines).
+  if (typeof num === 'number') {
+    const list = state.comments[id];
+    const existing = list.find(c => c.num === num);
+    if (existing) {
+      existing.text = text;
+      existing.time = time;
+      saveState();
+      const elx = cardElements.get(id);
+      if (elx && elx.commentsLog) {
+        elx.commentsLog.innerHTML = '';
+        sortedComments(list).forEach(c => renderCommentEntry(elx.commentsLog, c, id));
+      }
+      return;
+    }
+  }
+
   const c = { cid: 'c' + Date.now() + Math.floor(Math.random()*1000), text, time, done: false };
   if (typeof num === 'number') c.num = num;   // pin marker number (links to page overlay)
   state.comments[id].push(c);
