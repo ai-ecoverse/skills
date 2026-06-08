@@ -697,7 +697,7 @@
 <div id="annotation-popup">
   <div id="annotation-popup-label">Add annotation</div>
   <div id="annotation-selected-text"></div>
-  <textarea id="annotation-note" placeholder="Enter your revision note…"></textarea>
+  <textarea id="annotation-note" placeholder="Enter your revision note..."></textarea>
   <div class="popup-actions">
     <button class="sprinkle-btn sprinkle-btn--primary" id="popup-save-btn" style="flex:1">
       <i data-lucide="check" class="sprinkle-icon"></i> Save
@@ -992,7 +992,7 @@ function createItemCard(item) {
     '</div>' +
     '<div class="comment-row">' +
       '<div class="comment-inner">' +
-        '<textarea class="comment-input" placeholder="Add a comment…" rows="2"></textarea>' +
+        '<textarea class="comment-input" placeholder="Add a comment..." rows="2"></textarea>' +
         '<button class="sprinkle-btn sprinkle-btn--primary send-comment-btn">' +
           '<i data-lucide="send" class="sprinkle-icon sm"></i>' +
         '</button>' +
@@ -1059,7 +1059,7 @@ function createItemCard(item) {
     if (typeof c.done === 'undefined') c.done = false;
   });
   const saved = (state.comments && state.comments[item.id]) || [];
-  saved.forEach(c => renderCommentEntry(commentsLog, c, item.id));
+  sortedComments(saved).forEach(c => renderCommentEntry(commentsLog, c, item.id));
 
   return div;
 }
@@ -1139,6 +1139,17 @@ function storePin(pin) {
   saveState();
 }
 
+// Sort comments for display: pins (numeric `num`) ascending by num; non-pin comments
+// (no num) keep their relative order and sort after pins.
+function sortedComments(list) {
+  return (list || []).slice().sort((a, b) => {
+    const an = (typeof a.num === 'number') ? a.num : Infinity;
+    const bn = (typeof b.num === 'number') ? b.num : Infinity;
+    if (an !== bn) return an - bn;
+    return 0; // stable for equal/both-non-pin
+  });
+}
+
 function renderCommentEntry(container, c, itemId) {
   const entry = document.createElement('div');
   entry.className = 'comment-entry' + (c.done ? ' done' : '');
@@ -1193,7 +1204,7 @@ function toggleCommentDone(itemId, cid) {
   const el = cardElements.get(itemId);
   if (el && el.commentsLog) {
     el.commentsLog.innerHTML = '';
-    list.forEach(x => renderCommentEntry(el.commentsLog, x, itemId));
+    sortedComments(list).forEach(x => renderCommentEntry(el.commentsLog, x, itemId));
   }
   // If this is a pin comment, tell the cone to update the page overlay
   if (typeof c.num === 'number') {
@@ -1443,6 +1454,25 @@ slicc.on('update', async (msg) => {
     if (state.view !== 'document') showView('queue');
   }
 
+  else if (msg.action === 'ensure-item') {
+    // Upsert a queue item by id (create if missing; do NOT clobber others).
+    if (!state.items) state.items = [];
+    const existing = state.items.find(it => it.id === msg.id);
+    if (!existing) {
+      state.items.push({
+        id: msg.id,
+        title: msg.title || msg.id,
+        path: msg.path || '',
+        previewUrl: msg.previewUrl || '',
+        liveUrl: msg.liveUrl || '',
+        status: 'pending'
+      });
+      saveState();
+      renderQueue();
+      if (state.view !== 'document') showView('queue');
+    }
+  }
+
   else if (msg.action === 'update-status') {
     updateItemStatus(msg.id, msg.status);
   }
@@ -1468,6 +1498,21 @@ slicc.on('update', async (msg) => {
     }
   }
 
+  else if (msg.action === 'set-comment-done') {
+    if (state.comments && state.comments[msg.id]) {
+      const c = state.comments[msg.id].find(x => x.num === msg.num);
+      if (c) {
+        c.done = !!msg.done;
+        saveState();
+        const el = cardElements.get(msg.id);
+        if (el && el.commentsLog) {
+          el.commentsLog.innerHTML = '';
+          sortedComments(state.comments[msg.id]).forEach(x => renderCommentEntry(el.commentsLog, x, msg.id));
+        }
+      }
+    }
+  }
+
   else if (msg.action === 'request-pins') {
     const url = msg.url;
     const pins = (state.pins && state.pins[url]) ? state.pins[url] : [];
@@ -1489,7 +1534,7 @@ slicc.on('update', async (msg) => {
       cardElements.forEach((el, itemId) => {
         if (!el.commentsLog) return;
         el.commentsLog.innerHTML = '';
-        ((state.comments && state.comments[itemId]) || []).forEach(c => renderCommentEntry(el.commentsLog, c, itemId));
+        sortedComments((state.comments && state.comments[itemId]) || []).forEach(c => renderCommentEntry(el.commentsLog, c, itemId));
       });
     }
   }
@@ -1527,7 +1572,7 @@ slicc.on('update', async (msg) => {
     cardElements.forEach((el, itemId) => {
       if (!el.commentsLog) return;
       el.commentsLog.innerHTML = '';
-      ((state.comments && state.comments[itemId]) || []).forEach(c => renderCommentEntry(el.commentsLog, c, itemId));
+      sortedComments((state.comments && state.comments[itemId]) || []).forEach(c => renderCommentEntry(el.commentsLog, c, itemId));
     });
   }
 });

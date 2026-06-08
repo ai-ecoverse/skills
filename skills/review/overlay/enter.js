@@ -162,7 +162,7 @@
           try {
             fetch(SPECK_WEBHOOK_URL, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              mode: 'no-cors',
               body: JSON.stringify({
                 action: 'inject-speck',
                 url: location.href
@@ -299,11 +299,16 @@
       window.__sliccReviewAll.push(c);
       persist();
       closePop();
-      // Real-time delivery to the review log via webhook
+      // Real-time delivery to the review log via webhook.
+      // Use mode:'no-cors' (fire-and-forget) so this works from REMOTE pages too.
+      // The webhook endpoint returns no CORS headers, so a normal cors request is
+      // blocked cross-origin; no-cors still delivers the body (we just can't read
+      // the opaque response, which we don't need). On the extension/preview origin
+      // this also works fine.
       try {
         fetch(WEBHOOK_URL, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          mode: 'no-cors',
           body: JSON.stringify(c),
           keepalive: true
         }).catch(function () {});

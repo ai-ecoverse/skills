@@ -73,6 +73,8 @@ The sprinkle accepts these inbound messages (`sprinkle send review`):
 | `update-status` | `{ id, status }` | Set item status (pending/published/deferred) |
 | `open-file` | `{ path, title }` | Open a document for annotation |
 | `add-comment` | `{ id, comment, num? }` | Append a comment to an item's log. A numeric `num` marks it as a *pin* comment (links to a page marker) |
+| `ensure-item` | `{ id, title, previewUrl?, liveUrl?, path? }` | Upsert a queue item by id — creates the card if missing, leaves others untouched (unlike `load-items` which replaces the whole queue). Used by the webhook handler to auto-create a per-page review entry on the first pin |
+| `set-comment-done` | `{ id, num, done }` | Set a comment line's done-state directly by `num` (crosses it off / un-crosses). Used to restore done-state when re-populating comment lines from the durable store; complements `comment-done` (the lick fired when the user clicks the ✗ button) |
 | `add-pin` | `{ id, comment, num, pin }` | Like `add-comment`, **plus** stores the full positional marker `pin` (`{num, comment, pageX, pageY, selector, url, ts}`) in the durable slicc-backed store keyed by `pin.url`. Use this (not `add-comment`) for pin clicks |
 | `set-pin-done` | `{ url, num, done }` | Persist a pin's done-state in the durable store (echo this when handling a `comment-done` lick for a pin so the store stays in sync) |
 | `request-pins` | `{ url }` | Ask the sprinkle to emit a `pins` lick with the durable markers stored for `url` (seed-back before injection) |
@@ -171,6 +173,27 @@ cache, so seeding won't drop pins.
 Always keep the display overlay (wantAdd=false) injected on a pinned page so pins stay visible
 even with Pin Review off — including after Speck reloads (the `speck-worker` re-injects it).
 
+### Auto-created per-page review entries
+Dropping a pin on ANY page **auto-creates that page's review entry** — no manual queue setup. The
+webhook handler derives a stable item id from the pin's `url` (e.g. preview path → `page-<slug>`,
+http(s) → `page-<host-path-slug>`), sends `ensure-item` to create the card if missing, then
+`add-pin` to that id. So pins always land on a per-page card keyed by URL; never hardcode a single
+target id.
+
+### Works on remote pages too (not just local previews)
+Pin Review works on ANY page — remote http(s) sites included — because the overlay is injected via
+`playwright-cli eval-file` and pins are stored in slicc state (`state.pins`, keyed by URL), not on
+disk. Two things make remote delivery work:
+- **`mode:'no-cors'` POST.** The overlay POSTs each pin to the webhook with `mode:'no-cors'`
+  (fire-and-forget). A normal cross-origin POST is blocked from a remote page (the webhook returns
+  no CORS headers); `no-cors` still delivers the body. (Only **Fix with Speck** stays local-only —
+  it injects editing JS that remote CSP blocks.)
+- **Fresh webhook URL on session resume.** The webhook base URL can regenerate across sessions, so
+  the baked-in URL in `enter.resolved.js` goes stale. ALWAYS rebuild `enter.resolved.js` from
+  `webhook list` (current `review-marker` + `speck-fix` URLs) before injecting after a resume, and
+  re-inject the overlay. Symptom of a stale URL: pins POST "successfully" (opaque) but never reach
+  the scoop / `state.pins` stays empty.
+
 ### Comment flow + setup
 - Create a webhook routed to the `review` scoop: `webhook create --scoop review --name review-marker`,
   then `sed` its URL into `enter.resolved.js` for `__WEBHOOK_URL__`.
@@ -204,6 +227,20 @@ Also echo the done-state into durable storage so a re-seed from slicc state refl
 ```bash
 sprinkle send review '{"action":"set-pin-done","url":"https://preview.example.com/security","num":3,"done":true}'
 ```
+
+### Sorted display
+Comment lines render **sorted by pin number** (ascending) via the `sortedComments(list)` helper,
+applied at every render site (card build, done-toggle, `set-comment-done`, `clear-pins`/`remove-pin`
+re-renders). Non-pin comments (no `num`) sort after pins, preserving their relative order. So pins
+always appear in numeric order regardless of insertion order.
+
+### Restoring pins on a fresh tab (seed-back) — CAUTION
+On a reopened tab, sessionStorage is wiped. To restore: `request-pins {url}` → await the `pins`
+lick → seed its array into `window.__sliccReviewAll` (with `__sliccWantAdd=false`) BEFORE injecting
+`enter.resolved.js`. **A pre-populated `__sliccReviewAll` WINS over sessionStorage** — so only seed
+with the real durable array; never seed an empty/stale array or you'll clobber visible pins. If
+pins vanish after a re-inject, you likely seeded empty `__sliccReviewAll`; fix by clearing it
+(`window.__sliccReviewAll=[]`) and re-injecting so it falls back to sessionStorage.
 
 ## Speck Fix (element-level AI editing)
 
