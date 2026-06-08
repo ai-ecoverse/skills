@@ -207,8 +207,12 @@ async function createPost(text) {
 
 // Refactor of createPost that supports an optional media attachment. When
 // mediaInfo is null behaves identically to the legacy text-only path; when
-// non-null adds the `media` field on the same share-create mutation.
-//   mediaInfo: { category, mediaUrn, recipes, nativeMediaSource }
+// non-null adds the `media` field on the same share-create mutation. The
+// shape of `mediaInfo` differs by category:
+//   VIDEO: { category: 'VIDEO', mediaUrn, recipes, nativeMediaSource }
+//   IMAGE: { category: 'IMAGE', mediaUrn, altText?, tapTargets? }
+// (For images LinkedIn resolves recipes server-side from the asset URN, so
+// they are omitted from the payload; tapTargets default to [].)
 async function createSharePost(text, mediaInfo) {
   var tabId = await ensureTab();
   var csrfToken = await getCsrfToken(tabId);
@@ -222,12 +226,24 @@ async function createSharePost(text, mediaInfo) {
     nonMemberActorUrn: COMPANY_URN
   };
   if (mediaInfo) {
-    post.media = {
-      category: mediaInfo.category,
-      mediaUrn: mediaInfo.mediaUrn,
-      recipes: mediaInfo.recipes,
-      nativeMediaSource: mediaInfo.nativeMediaSource
-    };
+    if (mediaInfo.category === 'IMAGE') {
+      // Image shape: LinkedIn resolves recipes server-side from the asset URN,
+      // so `recipes` and `nativeMediaSource` are omitted. `tapTargets` is for
+      // click-to-tag-people coordinates (out of scope; always [] here).
+      post.media = {
+        category: 'IMAGE',
+        mediaUrn: mediaInfo.mediaUrn,
+        tapTargets: mediaInfo.tapTargets || [],
+        altText: mediaInfo.altText || ''
+      };
+    } else {
+      post.media = {
+        category: mediaInfo.category,
+        mediaUrn: mediaInfo.mediaUrn,
+        recipes: mediaInfo.recipes,
+        nativeMediaSource: mediaInfo.nativeMediaSource
+      };
+    }
   }
 
   var payload = {
@@ -309,12 +325,20 @@ async function createSharePost(text, mediaInfo) {
 
 // --- VIDEO POST ---
 
-// Step 1 of the video pipeline: register the upload and obtain the asset URN
-// and a singleUploadUrl to PUT the bytes to. Captured 2026-06-04 from the live
-// LinkedIn admin composer (HAR: linkedin-context/har/video-upload-2026-06-04.har).
-async function registerVideoUpload(tabId, csrfToken, fileSize, filename) {
+// Step 1 of the media upload pipeline: register the upload and obtain the
+// asset URN and a singleUploadUrl to PUT the bytes to. Used for both video
+// (PR #130, captured 2026-06-04) and image (this PR, captured 2026-06-05;
+// HAR: linkedin-context/har/image-upload-2026-06-05.har). The endpoint is
+// the same for both — only `mediaUploadType` differs.
+//   kind: 'video' | 'image'
+async function registerMediaUpload(tabId, csrfToken, kind, fileSize, filename) {
+  var mediaUploadType;
+  if (kind === 'video') mediaUploadType = 'VIDEO_SHARING';
+  else if (kind === 'image') mediaUploadType = 'IMAGE_SHARING';
+  else throw new Error('registerMediaUpload: unknown kind: ' + kind);
+
   var payload = {
-    mediaUploadType: 'VIDEO_SHARING',
+    mediaUploadType: mediaUploadType,
     fileSize: fileSize,
     nonMemberActorUrn: COMPANY_URN,
     filename: filename
@@ -322,29 +346,35 @@ async function registerVideoUpload(tabId, csrfToken, fileSize, filename) {
   var data = await pageContextFetch(tabId, csrfToken, VIDEO_UPLOAD_METADATA_PATH, { method: 'POST', body: payload });
   var value = data && data.data && data.data.value;
   if (!value || !value.urn || !value.singleUploadUrl) {
-    throw new Error('registerVideoUpload: unexpected response shape: ' + JSON.stringify(data).substring(0, 400));
+    throw new Error('registerMediaUpload: unexpected response shape: ' + JSON.stringify(data).substring(0, 400));
   }
   if (value.type && value.type !== 'SINGLE') {
-    throw new Error('registerVideoUpload: type=' + value.type + ' (MULTIPART chunked upload not yet supported — file a follow-up issue).');
+    throw new Error('registerMediaUpload: type=' + value.type + ' (MULTIPART chunked upload not yet supported — file a follow-up issue).');
   }
   return value;
 }
 
-// Step 2: PUT the raw video bytes to the singleUploadUrl from inside the
+// Backward-compat wrapper retained from PR #130.
+async function registerVideoUpload(tabId, csrfToken, fileSize, filename) {
+  return await registerMediaUpload(tabId, csrfToken, 'video', fileSize, filename);
+}
+
+// Step 2: PUT the raw media bytes to the singleUploadUrl from inside the
 // LinkedIn page context (so cookies + Origin are correct). The bytes are
 // base64-inlined into a temp .js file and decoded into a Blob in-browser.
 // Works fine for ~3.4MB; for larger payloads consider MULTIPART (out of scope).
-async function uploadVideoBytes(tabId, csrfToken, singleUploadUrl, videoPath, singleUploadHeaders) {
+//   contentType: MIME type for the Blob and PUT (e.g. 'video/mp4', 'image/jpeg').
+async function uploadMediaBytes(tabId, csrfToken, singleUploadUrl, mediaPath, singleUploadHeaders, contentType) {
   // Read bytes via fs (returns a latin-1 binary string in this runtime) and
   // base64-encode in-process. Avoids the GNU-only `base64 -w0` shell-out.
   var binStr;
   try {
-    binStr = await fs.readFile(videoPath);
+    binStr = await fs.readFile(mediaPath);
   } catch (e) {
-    throw new Error('Failed to read video file ' + videoPath + ': ' + (e && e.message ? e.message : e));
+    throw new Error('Failed to read media file ' + mediaPath + ': ' + (e && e.message ? e.message : e));
   }
   if (typeof binStr !== 'string') {
-    throw new Error('fs.readFile did not return a binary string for ' + videoPath);
+    throw new Error('fs.readFile did not return a binary string for ' + mediaPath);
   }
   var b64 = btoa(binStr);
 
@@ -353,16 +383,19 @@ async function uploadVideoBytes(tabId, csrfToken, singleUploadUrl, videoPath, si
     Object.keys(singleUploadHeaders).forEach(function(k) { extraHeaders[k] = singleUploadHeaders[k]; });
   }
 
+  var blobType = contentType || 'application/octet-stream';
+
   var script = [
     '(async () => {',
     '  const B64 = ' + JSON.stringify(b64) + ';',
     '  const URL_ = ' + JSON.stringify(singleUploadUrl) + ';',
     '  const EXTRA = ' + JSON.stringify(extraHeaders) + ';',
     '  const CSRF = ' + JSON.stringify(csrfToken) + ';',
+    '  const TYPE = ' + JSON.stringify(blobType) + ';',
     '  const bin = atob(B64);',
     '  const bytes = new Uint8Array(bin.length);',
     '  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);',
-    '  const blob = new Blob([bytes], { type: "video/mp4" });',
+    '  const blob = new Blob([bytes], { type: TYPE });',
     '  const headers = Object.assign({}, EXTRA, { "Csrf-Token": CSRF });',
     '  const resp = await fetch(URL_, { method: "PUT", body: blob, headers: headers, credentials: "include" });',
     '  return JSON.stringify({ status: resp.status, ok: resp.ok });',
@@ -374,44 +407,54 @@ async function uploadVideoBytes(tabId, csrfToken, singleUploadUrl, videoPath, si
   // playwright-cli runner can read the file regardless of host /tmp scoping.
   var tmpDir = '/shared/.cache/linkedin';
   await exec('mkdir -p ' + JSON.stringify(tmpDir));
-  var tmpPath = tmpDir + '/video-upload-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8) + '.js';
+  var tmpPath = tmpDir + '/media-upload-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8) + '.js';
   await fs.writeFile(tmpPath, script);
   var r = await exec('playwright-cli eval-file ' + JSON.stringify(tmpPath) + ' --tab=' + tabId);
   await exec('rm -f ' + JSON.stringify(tmpPath)).catch(function() {});
   if (r.exitCode !== 0) {
-    throw new Error('uploadVideoBytes eval failed: ' + (r.stderr || r.stdout));
+    throw new Error('uploadMediaBytes eval failed: ' + (r.stderr || r.stdout));
   }
   var parsed;
   try { parsed = JSON.parse(r.stdout.trim()); } catch (e) {
-    throw new Error('uploadVideoBytes: unexpected eval output: ' + r.stdout.substring(0, 200));
+    throw new Error('uploadMediaBytes: unexpected eval output: ' + r.stdout.substring(0, 200));
   }
   // LinkedIn's dms-uploads PUT may return 200 or 201 depending on the storage
   // backend variant — accept any 2xx (resp.ok in the eval payload).
   if (!parsed.ok) {
-    throw new Error('Video PUT failed with status ' + parsed.status);
+    throw new Error('Media PUT failed with status ' + parsed.status);
   }
   return parsed;
+}
+
+// Backward-compat wrapper retained from PR #130.
+async function uploadVideoBytes(tabId, csrfToken, singleUploadUrl, videoPath, singleUploadHeaders) {
+  return await uploadMediaBytes(tabId, csrfToken, singleUploadUrl, videoPath, singleUploadHeaders, 'video/mp4');
 }
 
 async function createVideoPost(text, videoPath) {
   var tabId = await ensureTab();
   var csrfToken = await getCsrfToken(tabId);
 
-  // Resolve absolute path + size + basename
-  var statResult = await exec('stat -c "%s" ' + JSON.stringify(videoPath) + ' 2>/dev/null || stat -f "%z" ' + JSON.stringify(videoPath));
-  if (statResult.exitCode !== 0 || !statResult.stdout.trim()) {
-    throw new Error('Cannot stat video file: ' + videoPath);
+  // Resolve size + basename via fs.stat — no shell-out, so the path is never
+  // interpreted by bash (avoids $(...) command-substitution risk on hostile
+  // paths like '/shared/$(rm -rf).mp4').
+  var fileSize;
+  try {
+    var st = await fs.stat(videoPath);
+    if (!st || !st.isFile) throw new Error('not a regular file');
+    fileSize = st.size;
+  } catch (e) {
+    throw new Error('Cannot stat video file ' + videoPath + ': ' + (e && e.message ? e.message : e));
   }
-  var fileSize = parseInt(statResult.stdout.trim(), 10);
   if (!fileSize || fileSize <= 0) throw new Error('Invalid file size for ' + videoPath);
   var filename = videoPath.split('/').pop();
 
   console.error('[linkedin video] Registering upload for ' + filename + ' (' + fileSize + ' bytes)...');
-  var meta = await registerVideoUpload(tabId, csrfToken, fileSize, filename);
+  var meta = await registerMediaUpload(tabId, csrfToken, 'video', fileSize, filename);
   console.error('[linkedin video] Asset: ' + meta.urn);
 
   console.error('[linkedin video] Uploading bytes...');
-  await uploadVideoBytes(tabId, csrfToken, meta.singleUploadUrl, videoPath, meta.singleUploadHeaders);
+  await uploadMediaBytes(tabId, csrfToken, meta.singleUploadUrl, videoPath, meta.singleUploadHeaders, 'video/mp4');
   console.error('[linkedin video] Upload complete. Creating share...');
 
   return await createSharePost(text, {
@@ -419,6 +462,69 @@ async function createVideoPost(text, videoPath) {
     mediaUrn: meta.urn,
     recipes: meta.recipes,
     nativeMediaSource: 'PRE_RECORDED'
+  });
+}
+
+// --- IMAGE POST ---
+
+// Map a file extension to an image MIME type. LinkedIn accepts gif/jpeg/jpg/
+// png/webp per the composer's <input accept=...> attribute.
+var IMAGE_MIME_BY_EXT = {
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  gif: 'image/gif',
+  webp: 'image/webp'
+};
+
+function detectImageContentType(imagePath) {
+  var dot = imagePath.lastIndexOf('.');
+  var ext = dot >= 0 ? imagePath.slice(dot + 1).toLowerCase() : '';
+  var mime = IMAGE_MIME_BY_EXT[ext];
+  if (!mime) {
+    var supportedDotted = Object.keys(IMAGE_MIME_BY_EXT).map(function(e) { return '.' + e; }).join(', ');
+    if (!ext) {
+      throw new Error('Image file has no extension: ' + imagePath + ' (supported: ' + supportedDotted + ')');
+    }
+    throw new Error('Unrecognized image extension ".' + ext + '" on ' + imagePath + ' (supported: ' + supportedDotted + ')');
+  }
+  return mime;
+}
+
+async function createImagePost(text, imagePath, options) {
+  var tabId = await ensureTab();
+  var csrfToken = await getCsrfToken(tabId);
+  var altText = (options && options.altText) || '';
+
+  var contentType = detectImageContentType(imagePath);
+
+  // Resolve size + basename via fs.stat — no shell-out, so the path is never
+  // interpreted by bash (avoids $(...) command-substitution risk on hostile
+  // paths like '/shared/$(rm -rf).jpg').
+  var fileSize;
+  try {
+    var st = await fs.stat(imagePath);
+    if (!st || !st.isFile) throw new Error('not a regular file');
+    fileSize = st.size;
+  } catch (e) {
+    throw new Error('Cannot stat image file ' + imagePath + ': ' + (e && e.message ? e.message : e));
+  }
+  if (!fileSize || fileSize <= 0) throw new Error('Invalid file size for ' + imagePath);
+  var filename = imagePath.split('/').pop();
+
+  console.error('[linkedin image] Registering upload for ' + filename + ' (' + fileSize + ' bytes, ' + contentType + ')...');
+  var meta = await registerMediaUpload(tabId, csrfToken, 'image', fileSize, filename);
+  console.error('[linkedin image] Asset: ' + meta.urn);
+
+  console.error('[linkedin image] Uploading bytes...');
+  await uploadMediaBytes(tabId, csrfToken, meta.singleUploadUrl, imagePath, meta.singleUploadHeaders, contentType);
+  console.error('[linkedin image] Upload complete. Creating share...');
+
+  return await createSharePost(text, {
+    category: 'IMAGE',
+    mediaUrn: meta.urn,
+    altText: altText,
+    tapTargets: []
   });
 }
 
@@ -1445,7 +1551,9 @@ if (!cmd || cmd === 'help') {
   console.log('Posting & content:');
   console.log('  post <text>                  Publish a text post to the company page');
   console.log('  post <text> --video=<path>   Publish a post with a video attached');
+  console.log('  post <text> --image=<path> [--alt="..."]  Publish a post with an image attached');
   console.log('  video <path> "<text>"        Publish a post with a video (alt form)');
+  console.log('  image <path> "<text>" [--alt="..."]   Publish a post with an image (alt form)');
   console.log('  list [--limit N]             List recent posts with engagement stats');
   console.log('');
   console.log('Engagement:');
@@ -1472,6 +1580,8 @@ if (!cmd || cmd === 'help') {
   console.log('  linkedin post "Hello world! #AIEcoverse"');
   console.log('  linkedin post "Demo of the new speck skill" --video=/shared/clips/speck-demo.mp4');
   console.log('  linkedin video /shared/clips/speck-demo.mp4 "Demo of the new speck skill"');
+  console.log('  linkedin post "Meet gh-reaper" --image=/shared/media/hero.jpg --alt="gh-reaper hero banner"');
+  console.log('  linkedin image /shared/media/hero.jpg "Meet gh-reaper" --alt="gh-reaper hero banner"');
   console.log('  linkedin list --limit 5');
   console.log('  linkedin comments 7463311119181312000');
   console.log('  linkedin comment 7463311119181312000 "Thanks for the feedback!"');
@@ -1490,9 +1600,15 @@ var result;
 
 if (cmd === 'post') {
   var text = positional.join(' ');
-  if (!text) { console.error('Usage: linkedin post <text> [--video=<path>]'); process.exit(1); }
+  if (!text) { console.error('Usage: linkedin post <text> [--video=<path> | --image=<path> [--alt="<altText>"]]'); process.exit(1); }
+  if (flags['video'] && flags['image']) {
+    console.error('Cannot combine --video and --image (one media item per post). For multi-image carousels, file a follow-up issue.');
+    process.exit(1);
+  }
   if (flags['video']) {
     result = await createVideoPost(text, flags['video']);
+  } else if (flags['image']) {
+    result = await createImagePost(text, flags['image'], { altText: flags['alt'] || '' });
   } else {
     result = await createPost(text);
   }
@@ -1501,6 +1617,11 @@ if (cmd === 'post') {
   var videoText = positional.slice(1).join(' ');
   if (!videoPath || !videoText) { console.error('Usage: linkedin video <path> "<text>"'); process.exit(1); }
   result = await createVideoPost(videoText, videoPath);
+} else if (cmd === 'image') {
+  var imagePath = positional[0];
+  var imageText = positional.slice(1).join(' ');
+  if (!imagePath || !imageText) { console.error('Usage: linkedin image <path> "<text>" [--alt="<altText>"]'); process.exit(1); }
+  result = await createImagePost(imageText, imagePath, { altText: flags['alt'] || '' });
 } else if (cmd === 'list') {
   result = await listPosts(parseInt(flags['limit'] || '10'));
 } else if (cmd === 'comments') {
