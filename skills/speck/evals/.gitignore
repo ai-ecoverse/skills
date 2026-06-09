@@ -1,0 +1,3 @@
+# Generated eval run artifacts — regenerate with mock/make-eval-bin.sh + grade.py.
+# Excluded because bin/ shims hardcode absolute machine paths and state/ is per-run output.
+runs/
