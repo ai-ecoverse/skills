@@ -12,6 +12,10 @@
 const OWA_BASE = 'https://outlook.office.com/api/v2.0';
 const TOKEN_PATH = '/shared/.outlook-token';
 const OUTLOOK_DOMAIN = 'outlook.office.com';
+// Microsoft has split Outlook across several hostnames as part of the migration to
+// the Microsoft 365 unified shell. Any of these tabs carries the same MSAL token
+// keyed for outlook.office.com / graph.microsoft.com in localStorage.
+const OUTLOOK_DOMAINS = ['outlook.office.com', 'outlook.cloud.microsoft', 'outlook.live.com'];
 
 // ─── Argument Parsing ────────────────────────────────────────────────────────
 
@@ -97,7 +101,7 @@ async function findOutlookTab() {
   if (result.exitCode !== 0) die('Failed to list browser tabs.');
   const lines = result.stdout.split('\n');
   for (const line of lines) {
-    if (line.includes(OUTLOOK_DOMAIN)) {
+    if (OUTLOOK_DOMAINS.some(d => line.includes(d))) {
       const m = line.match(/^\[([^\]]+)\]/);
       if (m) { _tabId = m[1]; return _tabId; }
     }
@@ -164,7 +168,7 @@ async function getToken() {
   } catch { /* no file */ }
 
   die(
-    'Could not extract Outlook token. Open Outlook at https://outlook.office.com in your browser and try again.'
+    'Could not extract Outlook token. Open Outlook at https://outlook.office.com (or https://outlook.cloud.microsoft) in your browser and try again.'
   );
 }
 
