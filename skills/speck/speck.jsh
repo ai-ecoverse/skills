@@ -5,7 +5,8 @@ const args = process.argv.slice(2);
 const command = args[0];
 const tabId = args[1];
 
-if (!command || (command !== '--help' && command !== '-h' && !tabId)) {
+const isHelp = command === '--help' || command === '-h';
+if (!command || isHelp || !tabId) {
   console.log(`speck — element annotation layer for local HTML pages
 
 Usage:
@@ -17,7 +18,7 @@ Options:
   --file <path>    Path to the HTML file being annotated (enables AI-powered edits via licks)
 
 The tabId is the playwright-cli target ID for the tab (shown by 'serve' or 'playwright-cli open').`);
-  process.exit(command === '--help' || command === '-h' ? 0 : 1);
+  process.exit(isHelp ? 0 : 1);
 }
 
 // Parse --file flag
