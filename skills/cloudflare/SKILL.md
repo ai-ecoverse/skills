@@ -7,7 +7,7 @@ description: >-
   no API token, no `wrangler login`. Use when investigating traffic spikes,
   bot scans, error rate changes, or referrer breakdowns for a zone you
   manage. Triggers on "cloudflare traffic", "why did traffic spike", "404
-  rate", "bot scan", "top paths on <domain>".
+  rate", "bot scan", "top paths for example.com".
 allowed-tools: bash
 ---
 
