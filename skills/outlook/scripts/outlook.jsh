@@ -11,28 +11,78 @@
 
 const OWA_BASE = 'https://outlook.office.com/api/v2.0';
 const TOKEN_PATH = '/shared/.outlook-token';
-const TAB_MATCH = /outlook\.(cloud\.microsoft|office\.com|live\.com)/;
+const OUTLOOK_DOMAIN = 'outlook.office.com';
+// Microsoft has split Outlook across several hostnames as part of the migration to
+// the Microsoft 365 unified shell. Any of these tabs carries the same MSAL token
+// keyed for outlook.office.com / graph.microsoft.com in localStorage.
+const OUTLOOK_DOMAINS = ['outlook.office.com', 'outlook.cloud.microsoft', 'outlook.live.com'];
 
 // ─── Argument Parsing ────────────────────────────────────────────────────────
 
-const { positional, flags, subcommand } = process.argv.parseFlags();
+const args = process.argv.slice(2);
+const subcommand = args[0] || '';
+const positional = [];
+const flags = {};
+
+for (let i = 1; i < args.length; i++) {
+  const arg = args[i];
+  if (arg.startsWith('--')) {
+    const eq = arg.indexOf('=');
+    if (eq !== -1) {
+      flags[arg.slice(2, eq)] = arg.slice(eq + 1);
+    } else {
+      const key = arg.slice(2);
+      if (i + 1 < args.length && !args[i + 1].startsWith('--')) {
+        flags[key] = args[++i];
+      } else {
+        flags[key] = true;
+      }
+    }
+  } else {
+    positional.push(arg);
+  }
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+function die(msg) {
+  console.error(msg);
+  process.exit(1);
+}
+
+function out(data) {
+  console.log(JSON.stringify(data, null, 2));
+}
+
+function parseDuration(dur) {
+  if (!dur) return null;
+  const match = dur.match(/^(\d+)(h|d|w)$/);
+  if (!match) return null;
+  const n = parseInt(match[1], 10);
+  const unit = match[2];
+  const ms = { h: 3600000, d: 86400000, w: 604800000 };
+  return ms[unit] * n;
+}
+
 function dateRange(dur, defaultDays) {
-  const spec = dur || `${defaultDays}d`;
-  const ms = time.parseDuration(spec);
-  if (!ms) cli.die(`Invalid duration: ${dur}. Use format like 24h, 7d, 2w`, { prefix: 'outlook' });
+  const ms = dur ? parseDuration(dur) : defaultDays * 86400000;
+  if (!ms) die(`Invalid duration: ${dur}. Use format like 24h, 7d, 2w`);
   const now = new Date();
-  return { start: new Date(now.getTime() - ms).toISOString(), end: now.toISOString() };
+  const start = new Date(now.getTime() - ms);
+  return { start: start.toISOString(), end: now.toISOString() };
 }
 
 function futureRange(dur, defaultDays) {
-  const spec = dur || `${defaultDays}d`;
-  const ms = time.parseDuration(spec);
-  if (!ms) cli.die(`Invalid duration: ${dur}. Use format like 24h, 1d, 2w`, { prefix: 'outlook' });
+  const ms = dur ? parseDuration(dur) : defaultDays * 86400000;
+  if (!ms) die(`Invalid duration: ${dur}. Use format like 24h, 1d, 2w`);
   const now = new Date();
-  return { start: now.toISOString(), end: new Date(now.getTime() + ms).toISOString() };
+  const end = new Date(now.getTime() + ms);
+  return { start: now.toISOString(), end: end.toISOString() };
+}
+
+function trunc(s, n) {
+  s = String(s == null ? '' : s);
+  return s.length > n ? s.slice(0, n - 1) + '…' : s;
 }
 
 function formatDate(iso) {
@@ -43,77 +93,66 @@ function formatDate(iso) {
 
 // ─── Tab & Token Management ─────────────────────────────────────────────────
 
+let _tabId = null;
+
 async function findOutlookTab() {
-  return browser.findTab({ urlMatch: TAB_MATCH });
+  if (_tabId) return _tabId;
+  const result = await exec('playwright-cli tab-list');
+  if (result.exitCode !== 0) die('Failed to list browser tabs.');
+  const lines = result.stdout.split('\n');
+  for (const line of lines) {
+    if (OUTLOOK_DOMAINS.some(d => line.includes(d))) {
+      const m = line.match(/^\[([^\]]+)\]/);
+      if (m) { _tabId = m[1]; return _tabId; }
+    }
+  }
+  return null;
 }
 
 async function extractTokenFromBrowser() {
-  const tab = await findOutlookTab();
-  if (!tab) return null;
+  const tabId = await findOutlookTab();
+  if (!tabId) return null;
 
-  // Strategy 1: Try MSAL v2 localStorage format (secret field in clear text)
-  const legacy = await browser.eval(tab, () => {
-    var best = null, bestScopes = 0;
-    var keys = Object.keys(localStorage);
-    for (var i = 0; i < keys.length; i++) {
-      var k = keys[i];
-      if (k.indexOf('accesstoken') === -1) continue;
-      if (k.indexOf('outlook.office.com') === -1 && k.indexOf('graph.microsoft.com') === -1) continue;
-      try {
-        var e = JSON.parse(localStorage.getItem(k));
-        if (!e || !e.secret) continue;
-        var scopes = (e.target || '').split(' ').length;
-        var exp = parseInt(e.expiresOn || 0);
-        if (exp * 1000 < Date.now()) continue;
-        if (scopes > bestScopes) { best = e; bestScopes = scopes; }
-      } catch (x) {}
+  // Extract the MSAL access token for outlook.office.com with the most scopes
+  // (the one with mail.readwrite, calendars.readwrite, etc.)
+  const extractScript = [
+    '(function(){',
+    'var best=null,bestScopes=0;',
+    'var keys=Object.keys(localStorage);',
+    'for(var i=0;i<keys.length;i++){',
+    'var k=keys[i];',
+    'if(k.indexOf("accesstoken")===-1)continue;',
+    'if(k.indexOf("outlook.office.com")===-1&&k.indexOf("graph.microsoft.com")===-1)continue;',
+    'try{var e=JSON.parse(localStorage.getItem(k));',
+    'if(!e||!e.secret)continue;',
+    'var scopes=(e.target||"").split(" ").length;',
+    'var exp=parseInt(e.expiresOn||0);',
+    'if(exp*1000<Date.now())continue;',  // skip expired
+    'if(scopes>bestScopes){best=e;bestScopes=scopes;}}catch(x){}}',
+    'if(best)return JSON.stringify({secret:best.secret,expiresOn:best.expiresOn,resource:best.target?best.target.split(" ")[0].split("/").slice(0,3).join("/"):"unknown"});',
+    'return null})()',
+  ].join('');
+
+  const tmpFile = '/tmp/.outlook-token-extract-' + Date.now() + '.js';
+  await fs.writeFile(tmpFile, extractScript);
+  const evalResult = await exec(`playwright-cli eval-file ${tmpFile} --tab=${tabId}`);
+  await fs.writeFile(tmpFile, '').catch(() => {}); // clean up
+
+  if (evalResult.exitCode !== 0) return null;
+
+  const raw = evalResult.stdout.trim();
+  if (!raw || raw === 'null' || raw === 'undefined') return null;
+
+  try {
+    let parsed = raw;
+    if (parsed.startsWith('"') && parsed.endsWith('"')) parsed = JSON.parse(parsed);
+    const data = typeof parsed === 'string' ? JSON.parse(parsed) : parsed;
+    if (data && data.secret) {
+      // Save for future use
+      await fs.writeFile(TOKEN_PATH, data.secret);
+      return data.secret;
     }
-    return best ? best.secret : null;
-  });
-
-  if (legacy) {
-    await fs.writeFile(TOKEN_PATH, legacy);
-    return legacy;
-  }
-
-  // Strategy 2: MSAL v3 encrypts tokens in localStorage. Intercept a live
-  // Authorization header from the app's own fetch calls by monkey-patching
-  // fetch, then triggering activity to force a token-bearing request.
-  // Navigate to ensure the app makes fresh authenticated requests.
-  await exec(`playwright-cli navigate "https://outlook.cloud.microsoft/calendar" --tab=${tab.targetId}`);
-  await new Promise(r => setTimeout(r, 3000));
-
-  const token = await browser.evalAsync(tab, async () => {
-    window.__sliccTBA = {};
-    var of = window.fetch;
-    window.fetch = function () {
-      var a = arguments;
-      var o = a[1] || {};
-      var h = o.headers || {};
-      var au = '';
-      if (h instanceof Headers) au = h.get('Authorization') || '';
-      else if (typeof h === 'object') au = h.Authorization || h.authorization || '';
-      if (au.startsWith('Bearer ')) {
-        var tk = au.substring(7);
-        try { var p = tk.split('.'); var pl = JSON.parse(atob(p[1])); window.__sliccTBA[pl.aud] = tk; } catch (e) {}
-      }
-      return of.apply(this, a);
-    };
-    window.dispatchEvent(new Event('focus'));
-    for (var i = 0; i < 16; i++) {
-      await new Promise(r => setTimeout(r, 500));
-      var t = window.__sliccTBA['https://outlook.office.com'];
-      if (t) return t;
-    }
-    var ks = Object.keys(window.__sliccTBA);
-    return ks.length ? window.__sliccTBA[ks[0]] : null;
-  });
-
-  if (token && token.startsWith('eyJ')) {
-    await fs.writeFile(TOKEN_PATH, token);
-    return token;
-  }
-
+  } catch { /* fall through */ }
   return null;
 }
 
@@ -128,34 +167,69 @@ async function getToken() {
     if (saved) return saved;
   } catch { /* no file */ }
 
-  cli.die(
-    'Could not extract Outlook token. Open Outlook at https://outlook.cloud.microsoft (or https://outlook.office.com) in your browser and try again.',
-    { prefix: 'outlook' }
+  die(
+    'Could not extract Outlook token. Open Outlook at https://outlook.office.com (or https://outlook.cloud.microsoft) in your browser and try again.'
   );
 }
 
 // ─── API Client ──────────────────────────────────────────────────────────────
 
-const owa = http.client({
-  baseUrl: OWA_BASE,
-  token: () => getToken(),
-  headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-  retry: { on: [429, 503], maxAttempts: 3 },
-});
-
-// Legacy wrappers for code that still passes token explicitly
 async function owaGet(token, path, params) {
-  return owa.get(path, { params });
+  let url = path.startsWith('http') ? path : `${OWA_BASE}${path}`;
+  if (params) {
+    const qs = Object.entries(params)
+      .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+      .join('&');
+    url += (url.includes('?') ? '&' : '?') + qs;
+  }
+  const res = await fetch(url, {
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    },
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    let msg;
+    try { msg = JSON.parse(body).error?.message || body; } catch { msg = body; }
+    throw new Error(`HTTP ${res.status}: ${msg}`);
+  }
+  return res.json();
 }
 
 async function owaPost(token, path, body) {
-  return owa.post(path, { body });
+  const url = path.startsWith('http') ? path : `${OWA_BASE}${path}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    let msg;
+    try { msg = JSON.parse(text).error?.message || text; } catch { msg = text; }
+    throw new Error(`HTTP ${res.status}: ${msg}`);
+  }
+  // 202 Accepted for sendMail (no body)
+  if (res.status === 202 || res.headers.get('content-length') === '0') return {};
+  return res.json();
 }
 
 // ─── ANSI Colors ─────────────────────────────────────────────────────────────
 
-// Colors: use the `c` global (c.green, c.red, c.yellow, c.gray, c.bold, c.cyan)
-const C = c; // alias for minimal diff in command functions
+const C = {
+  green:  s => `\x1b[32m${s}\x1b[0m`,
+  red:    s => `\x1b[31m${s}\x1b[0m`,
+  yellow: s => `\x1b[33m${s}\x1b[0m`,
+  gray:   s => `\x1b[90m${s}\x1b[0m`,
+  bold:   s => `\x1b[1m${s}\x1b[0m`,
+  cyan:   s => `\x1b[36m${s}\x1b[0m`,
+};
 
 // ─── Commands ────────────────────────────────────────────────────────────────
 
@@ -195,7 +269,7 @@ async function cmdMail() {
     const messages = data.value || [];
 
     if (flags.json === true || flags.json === 'true') {
-      cli.out(messages);
+      out(messages);
       return;
     }
 
@@ -210,16 +284,16 @@ async function cmdMail() {
       const read = msg.IsRead ? C.gray('○') : C.green('●');
       const date = formatDate(msg.ReceivedDateTime);
       const from = msg.From?.EmailAddress?.Name || msg.From?.EmailAddress?.Address || 'unknown';
-      const subj = fmt.trunc(msg.Subject || '(no subject)', 80);
+      const subj = trunc(msg.Subject || '(no subject)', 80);
       const imp = msg.Importance === 'High' ? C.red(' !') : '';
       const attach = msg.HasAttachments ? C.yellow(' 📎') : '';
       console.log(`  ${read} ${C.gray(date)} ${C.cyan(from)}`);
       console.log(`    ${subj}${imp}${attach}`);
-      if (msg.BodyPreview) console.log(`    ${C.gray(fmt.trunc(msg.BodyPreview, 120))}`);
+      if (msg.BodyPreview) console.log(`    ${C.gray(trunc(msg.BodyPreview, 120))}`);
       console.log('');
     }
   } catch (e) {
-    cli.die(`mail failed: ${e.message}`, { prefix: 'outlook' });
+    die(`outlook: mail failed: ${e.message}`);
   }
 }
 
@@ -243,7 +317,7 @@ async function cmdCalendar() {
     const events = data.value || [];
 
     if (flags.json === true || flags.json === 'true') {
-      cli.out(events);
+      out(events);
       return;
     }
 
@@ -267,13 +341,13 @@ async function cmdCalendar() {
                           response === 'TentativelyAccepted' ? C.yellow(' ?') :
                           response === 'NotResponded' ? C.yellow(' [needs response]') : '';
 
-      console.log(`  ${C.cyan(fmt.trunc(ev.Subject || '(no title)', 70))}${cancelled}${allDay}${responseTag}`);
+      console.log(`  ${C.cyan(trunc(ev.Subject || '(no title)', 70))}${cancelled}${allDay}${responseTag}`);
       console.log(`    ${C.gray(start)} → ${C.gray(end)}${loc}`);
       if (org) console.log(`    ${C.gray('Organizer:')} ${org}`);
       console.log('');
     }
   } catch (e) {
-    cli.die(`calendar failed: ${e.message}`, { prefix: 'outlook' });
+    die(`outlook: calendar failed: ${e.message}`);
   }
 }
 
@@ -283,9 +357,9 @@ async function cmdSend() {
   const subject = flags.subject || flags.subj;
   const body = flags.body || positional[0];
 
-  if (!to) cli.die('--to is required', { prefix: 'outlook send' });
-  if (!subject) cli.die('--subject is required', { prefix: 'outlook send' });
-  if (!body) cli.die('--body is required (flag or positional arg)', { prefix: 'outlook send' });
+  if (!to) die('outlook send: --to is required');
+  if (!subject) die('outlook send: --subject is required');
+  if (!body) die('outlook send: --body is required (flag or positional arg)');
 
   const recipients = to.split(',').map(email => ({
     EmailAddress: { Address: email.trim() }
@@ -304,7 +378,7 @@ async function cmdSend() {
     await owaPost(token, '/me/sendMail', payload);
     console.log(C.green('✓') + ` Email sent to ${to}`);
   } catch (e) {
-    cli.die(`send failed: ${e.message}`, { prefix: 'outlook' });
+    die(`outlook: send failed: ${e.message}`);
   }
 }
 
@@ -331,7 +405,7 @@ async function cmdMonday() {
         type: 'email',
         id: `outlook-mail-${msg.Id}`,
         title: msg.Subject || '(no subject)',
-        body: fmt.trunc(msg.BodyPreview || '', 300),
+        body: trunc(msg.BodyPreview || '', 300),
         url: msg.WebLink || `https://outlook.office.com/mail/id/${encodeURIComponent(msg.Id)}`,
         from: msg.From?.EmailAddress?.Address || '',
         date: msg.ReceivedDateTime || '',
@@ -369,7 +443,7 @@ async function cmdMonday() {
         type,
         id: `outlook-cal-${ev.Id}`,
         title: ev.Subject || '(no title)',
-        body: fmt.trunc(ev.BodyPreview || '', 300),
+        body: trunc(ev.BodyPreview || '', 300),
         url: ev.WebLink || `https://outlook.office.com/calendar/item/${encodeURIComponent(ev.Id)}`,
         from: ev.Organizer?.EmailAddress?.Address || '',
         date: ev.Start?.DateTime ? ev.Start.DateTime + 'Z' : '',
@@ -389,7 +463,7 @@ async function cmdMonday() {
 async function cmdView() {
   const token = await getToken();
   const id = positional[0];
-  if (!id) cli.die('provide a message ID', { prefix: 'outlook view' });
+  if (!id) die('outlook view: provide a message ID');
 
   try {
     const msg = await owaGet(token, `/me/messages/${encodeURIComponent(id)}`, {
@@ -418,9 +492,9 @@ async function cmdView() {
       .replace(/&gt;/g, '>')
       .replace(/\s+/g, ' ')
       .trim();
-    console.log(fmt.trunc(plainBody, 2000));
+    console.log(trunc(plainBody, 2000));
   } catch (e) {
-    cli.die(`view failed: ${e.message}`, { prefix: 'outlook' });
+    die(`outlook: view failed: ${e.message}`);
   }
 }
 
@@ -475,7 +549,7 @@ async function cmdRespond(action) {
   }
 
   if (eventIds.length === 0) {
-    cli.die('provide one or more event IDs, or use --all', { prefix: `outlook ${action}` });
+    die(`outlook ${action}: provide one or more event IDs, or use --all`);
   }
 
   const body = { SendResponse: !silent };
@@ -512,7 +586,8 @@ async function cmdRespond(action) {
   console.log(`\n${success} responded, ${failed} failed/skipped.`);
 }
 
-const HELP_TEXT = `outlook — Microsoft Outlook CLI for SLICC
+function showHelp() {
+  console.log(`outlook — Microsoft Outlook CLI for SLICC
 
 Usage: outlook <command> [options]
 
@@ -563,8 +638,9 @@ Monday options:
 
 Authentication:
   Token is extracted automatically from the Outlook browser tab
-  (MSAL v2/v3). Falls back to /shared/.outlook-token.
-`;
+  (MSAL localStorage). Falls back to /workspace/.outlook-token.
+`);
+}
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
@@ -598,15 +674,17 @@ try {
       await cmdMonday();
       break;
     case 'help':
-      cli.help(HELP_TEXT);
+    case '--help':
+    case '-h':
+    case '':
+      showHelp();
       break;
     default:
-      if (flags.help || flags.h || !subcommand) {
-        cli.help(HELP_TEXT);
-      } else {
-        cli.die(`Unknown command: ${subcommand}`, { prefix: 'outlook' });
-      }
+      console.error(`Unknown command: ${subcommand}`);
+      showHelp();
+      process.exit(1);
   }
 } catch (e) {
-  cli.die(e.message, { prefix: 'outlook' });
+  console.error(`outlook: ${e.message}`);
+  process.exit(1);
 }
