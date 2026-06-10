@@ -96,183 +96,112 @@ A `publish` lick resolves to `"status":"published"`; `defer` resolves to `"statu
 
 ## Pin Review (click-to-comment on a live page)
 
-The sprinkle top bar has a **Pin Review** toggle button. It controls *adding* location pins to
-the currently active tab. There is **no in-page banner** — Pin Review state is shown only by the
-sprinkle button.
+The sprinkle top bar has a **Pin Review** toggle that controls *adding* location pins to the active
+tab. Markers are always visible once the display overlay is injected; the toggle only turns the
+add-mode crosshair on/off. There is no in-page banner.
+
+> **Architecture** — dual-store persistence, overlay versioning, element positioning, and the
+> `__sliccReviewAll`/`sessionStorage` precedence rules live in **PIN-REVIEW-INTERNALS.md**. Read it
+> when pins go missing, duplicate, or land in the wrong spot.
 
 ### Overlay assets (`overlay/`)
-- `enter.js` — the full overlay (display layer + add mode). Has TWO placeholders to resolve:
-  `__WEBHOOK_URL__` (comment webhook) and `__SPECK_WEBHOOK_URL__` (speck-fix webhook). `sed` both
-  into a resolved copy (`enter.resolved.js`) before injecting.
-- `exit.js` — turns OFF add mode (removes crosshair + open popups). **Keeps markers visible.**
-- `remove-marker.js` — hide/restore a single marker (used by the `comment-done` handler). Reads
-  `window.__rvRemoveNum` + `window.__rvRemoveDone` set just before eval.
+- `enter.js` — the full overlay. Resolve TWO placeholders before injecting: `__WEBHOOK_URL__`
+  (comment webhook) and `__SPECK_WEBHOOK_URL__` (speck-fix webhook). `sed` both into a resolved copy
+  `enter.resolved.js`.
+- `exit.js` — turns OFF add mode (removes crosshair + open popups). Keeps markers visible.
+- `remove-marker.js` — hide/restore one marker. Reads `window.__rvRemoveNum` + `window.__rvRemoveDone`
+  set just before eval.
 - `drain.js` / `reset.js` — poll committed comments / clear all marker state.
 
-### Two concerns (IMPORTANT design)
-1. **Display layer** — markers + hover tooltips + the "Fix with Speck" button. Once injected it is
-   **always visible**, regardless of Pin Review mode. Done pins are skipped. The overlay exposes
-   `window.__sliccRenderMarkers()` to re-render from state.
+### Setup
+1. Create a webhook routed to the `review` scoop: `webhook create --scoop review --name review-marker`.
+2. `sed` its URL into `enter.resolved.js` for `__WEBHOOK_URL__`.
+3. After any session resume, rebuild `enter.resolved.js` from `webhook list` — the URL regenerates
+   across sessions. (Stale-URL symptom: pins POST opaquely but never arrive; `state.pins` stays empty.)
 
-### Pin persistence (dual-store)
-Pins live in two places, and the second is what makes them durable:
-- **`sessionStorage` (key `__sliccReviewMarkers`)** — fast, page-local cache. Survives reloads but is
-  scoped to that tab's session; lost on tab close / browser restart.
-- **Durable slicc state (`state.pins`, keyed by page url)** — the sprinkle persists every pin's full
-  marker object (`{num, comment, pageX, pageY, selector, url, ts, done}`) through `slicc.setState()`.
-  Survives panel reloads and browser restarts, and can be re-seeded onto any tab pointed at the same
-  url. This is populated by `add-pin` and read back via `request-pins` → `pins` lick.
-
-The overlay restores markers from a pre-populated `window.__sliccReviewAll` if present, otherwise from
-`sessionStorage`. So the seed-back path (below) lets durable slicc state win on a fresh tab/session.
-2. **Add mode** (`window.__sliccAddMode`) — the crosshair + click-to-place-new-pin behavior. This
-   is the ONLY thing the Pin Review button toggles.
-
-### Element-anchored positioning
-Each pin stores its target element's `selector` plus the click's fractional offset within that
-element (`relX`/`relY`), with absolute `pageX`/`pageY` as a fallback. Markers are positioned
-relative to the live element's bounding rect, so they stay attached to the right spot on resize /
-reflow (not pinned to absolute page coords). The overlay binds `window.__sliccDoReposition` and
-listens for `resize`/`scroll` (rAF-throttled) to reposition all markers. The overlay is versioned
-(`__sliccOverlayVersion`, currently 4) — a higher version forces a full re-init on injection; a
-click-gen token (`__sliccClickGen`) makes superseded listeners inert so upgrades never double-handle.
-
-### Injection contract
-Set `window.__sliccWantAdd` (true = add mode, false = display-only) via a tiny inline eval
-**before** eval-ing `enter.resolved.js`. Re-running `enter.resolved.js` when the display layer
-already exists just refreshes markers + add-mode (it does **not** duplicate listeners). Example:
+### Inject the overlay
+Set `window.__sliccWantAdd` (true = add mode, false = display-only) in an inline eval **before**
+eval-ing `enter.resolved.js`:
 ```bash
 printf '(function(){window.__sliccWantAdd=false;})();' > /tmp/wantNoAdd.js
 playwright-cli eval-file /tmp/wantNoAdd.js --tab <id>
 playwright-cli eval-file /shared/review-overlay/enter.resolved.js --tab <id>
 ```
+**Checkpoint** — the inject eval returns `{status:"active",...}` on first inject or
+`{status:"reinjected",...}` on a refresh, with `markers`/`existing` equal to the expected pin count.
+Confirm the version:
+```bash
+playwright-cli eval --tab <id> "window.__sliccOverlayVersion"   # must return 4
+```
 
-**Seeding from durable state (fresh tab / after restart).** When injecting into a tab whose
-`sessionStorage` may be empty (new tab, restarted browser, different machine), prime the overlay from
-slicc state first: send `request-pins {url}`, await the `pins` lick, then write its array into
-`window.__sliccReviewAll` in the same inline eval that sets `__sliccWantAdd`, e.g.
+### Seed from durable state (fresh tab / after restart)
+When a tab's `sessionStorage` may be empty (new tab, restarted browser, different machine), prime the
+overlay from slicc state first: send `request-pins {url}`, await the `pins` lick, then write its array
+into `window.__sliccReviewAll` in the same inline eval that sets `__sliccWantAdd`:
 ```bash
 # PINS_JSON is the `pins` array from the request-pins → pins lick
 printf '(function(){window.__sliccWantAdd=false;window.__sliccReviewAll=%s;})();' "$PINS_JSON" > /tmp/seed.js
 playwright-cli eval-file /tmp/seed.js --tab <id>
 playwright-cli eval-file /shared/review-overlay/enter.resolved.js --tab <id>
 ```
-Precedence (not merge): a pre-populated `__sliccReviewAll` **wins outright**; the overlay only falls
-back to the `sessionStorage` cache when `__sliccReviewAll` is empty (enter.js:31–33). So seeding makes
-durable slicc state authoritative — only do it when you want that (fresh tab / restart, or to repair a
-stale cache). When `sessionStorage` already holds the pins (same-session reload), skip the round-trip
-and let the cache serve. Since `state.pins` is appended on every `add-pin`, slicc is a superset of the
-cache, so seeding won't drop pins.
+**Only seed with the real durable array — never an empty/stale one.** A non-empty `__sliccReviewAll`
+wins over `sessionStorage` and clobbers visible pins (see PIN-REVIEW-INTERNALS.md). On a same-session
+reload, skip seeding and let the cache serve.
 
-### Cone lick handler for `toggle-review-mode`
-- `active:true` → set `__sliccWantAdd=true`, eval `enter.resolved.js` (markers shown + crosshair).
-  First remove any Speck layer and sync `set-speck active:false` (Pin Review and Speck Fix are
-  mutually exclusive — both capture clicks).
-- `active:false` → eval `exit.js` (add mode off, crosshair off, **markers stay**).
+**Checkpoint** — after seeding, the marker count must equal `PINS_JSON` length:
+```bash
+playwright-cli eval --tab <id> "(window.__sliccReviewAll||[]).length"
+```
+If it's 0 after a seed, you seeded an empty array — set `window.__sliccReviewAll=[]` and re-inject to
+fall back to sessionStorage.
 
-Always keep the display overlay (wantAdd=false) injected on a pinned page so pins stay visible
-even with Pin Review off — including after Speck reloads (the `speck-worker` re-injects it).
+### `toggle-review-mode` lick handler (cone)
+- `active:true` → set `__sliccWantAdd=true`, eval `enter.resolved.js` (markers + crosshair). First
+  remove any Speck layer and sync `set-speck active:false` (mutually exclusive — see SPECK-FIX.md).
+- `active:false` → eval `exit.js` (add mode off, crosshair off, markers stay).
 
-### Auto-created per-page review entries
-Dropping a pin on ANY page **auto-creates that page's review entry** — no manual queue setup. The
-webhook handler derives a stable item id from the pin's `url` (e.g. preview path → `page-<slug>`,
-http(s) → `page-<host-path-slug>`), sends `ensure-item` to create the card if missing, then
-`add-pin` to that id. So pins always land on a per-page card keyed by URL; never hardcode a single
-target id.
+Always keep the display overlay (`wantAdd=false`) injected on a pinned page so pins stay visible even
+with Pin Review off — including after Speck reloads.
 
-### Works on remote pages too (not just local previews)
-Pin Review works on ANY page — remote http(s) sites included — because the overlay is injected via
-`playwright-cli eval-file` and pins are stored in slicc state (`state.pins`, keyed by URL), not on
-disk. Two things make remote delivery work:
-- **`mode:'no-cors'` POST.** The overlay POSTs each pin to the webhook with `mode:'no-cors'`
-  (fire-and-forget). A normal cross-origin POST is blocked from a remote page (the webhook returns
-  no CORS headers); `no-cors` still delivers the body. (Only **Fix with Speck** stays local-only —
-  it injects editing JS that remote CSP blocks.)
-- **Fresh webhook URL on session resume.** The webhook base URL can regenerate across sessions, so
-  the baked-in URL in `enter.resolved.js` goes stale. ALWAYS rebuild `enter.resolved.js` from
-  `webhook list` (current `review-marker` + `speck-fix` URLs) before injecting after a resume, and
-  re-inject the overlay. Symptom of a stale URL: pins POST "successfully" (opaque) but never reach
-  the scoop / `state.pins` stays empty.
+### Comment / pin flow
+Each pin click opens a popup; on save it drops a numbered marker AND POSTs the full marker object to
+the webhook. The `review` scoop pushes it into the sprinkle via **`add-pin`** with: a plain-text
+display string `PIN #<num>: <comment>` (ASCII only — the sprinkle renders the icon itself), the
+top-level numeric `num`, and the whole payload as `pin`. Use `add-comment` only for non-pin comments.
+```bash
+sprinkle send review '{"action":"add-pin","id":"page-1","num":3,
+  "comment":"PIN #3: tighten the hero copy",
+  "pin":{"num":3,"comment":"tighten the hero copy","pageX":420,"pageY":680,
+         "selector":".hero h1","relX":0.5,"relY":0.5,"url":"https://preview.example.com/x","ts":1733400000000}}'
+```
 
-### Comment flow + setup
-- Create a webhook routed to the `review` scoop: `webhook create --scoop review --name review-marker`,
-  then `sed` its URL into `enter.resolved.js` for `__WEBHOOK_URL__`.
-- Each pin click opens a popup; on save it drops a numbered marker AND POSTs the **full marker
-  object** to the webhook — `{num, comment, pageX, pageY, selector, relX, relY, url, ts}`. The
-  `review` scoop pushes it into the sprinkle via **`add-pin`**, passing a **plain-text** display
-  string `PIN #<num>: <comment>` (NO emoji — see note below), the top-level numeric `num` (so the
-  comment line links back to the page marker), and the whole payload as `pin` (durable position).
-  Use `add-comment` only for non-pin item comments. Example:
-  ```bash
-  sprinkle send review '{"action":"add-pin","id":"page-1","num":3,
-    "comment":"PIN #3: tighten the hero copy",
-    "pin":{"num":3,"comment":"tighten the hero copy","pageX":420,"pageY":680,
-           "selector":".hero h1","relX":0.5,"relY":0.5,"url":"https://preview.example.com/x","ts":1733400000000}}'
-  ```
-- **Pin icon — do NOT send the 📍 emoji through the webhook.** Passing the emoji through the
-  scoop's jq/shell pipeline double-encodes it (mojibake — renders like an Icelandic `ð`). Instead
-  the **sprinkle renders the pin icon itself**: `renderCommentEntry` detects a pin (numeric `num`),
-  draws a clean Lucide `map-pin` icon, and strips any leading emoji/mojibake/`PIN #n:` prefix from
-  the display text. So always send plain ASCII comment text.
+### Auto-created per-page entries
+Dropping a pin on ANY page auto-creates that page's review entry. The webhook handler derives a stable
+item id from the pin's `url`, sends `ensure-item` to create the card if missing, then `add-pin` to that
+id. Never hardcode a single target id.
 
-### Mark done (✗ button per comment line)
-Each comment line in the queue has a done toggle. Toggling fires `comment-done {num,done,itemId,cid}`
-for pin comments. Cone handler: set `window.__rvRemoveNum=<num>; window.__rvRemoveDone=<bool>` then
-eval `remove-marker.js` on the page — it re-renders markers from state (`__sliccRenderMarkers`), so
-done pins are hidden and un-done pins restored. Done state persists in `sessionStorage`, so the
-overlay's `renderMarker` skips done pins on every (re)injection.
+### Remote pages
+Pin Review works on remote http(s) sites too — the overlay POSTs with `mode:'no-cors'`. Only
+**Fix with Speck** is local-only (see SPECK-FIX.md).
 
-Also echo the done-state into durable storage so a re-seed from slicc state reflects it — send
-`set-pin-done {url, num, done}` to the sprinkle in the same handler:
+### Mark done (✗ per comment line)
+Toggling a pin comment's done button fires `comment-done {num,done,itemId,cid}`. Cone handler: set
+`window.__rvRemoveNum=<num>; window.__rvRemoveDone=<bool>`, eval `remove-marker.js` (re-renders
+markers, hiding done pins), then echo to durable storage so a re-seed reflects it:
 ```bash
 sprinkle send review '{"action":"set-pin-done","url":"https://preview.example.com/security","num":3,"done":true}'
 ```
 
-### Sorted display
-Comment lines render **sorted by pin number** (ascending) via the `sortedComments(list)` helper,
-applied at every render site (card build, done-toggle, `set-comment-done`, `clear-pins`/`remove-pin`
-re-renders). Non-pin comments (no `num`) sort after pins, preserving their relative order. So pins
-always appear in numeric order regardless of insertion order.
-
-### Restoring pins on a fresh tab (seed-back) — CAUTION
-On a reopened tab, sessionStorage is wiped. To restore: `request-pins {url}` → await the `pins`
-lick → seed its array into `window.__sliccReviewAll` (with `__sliccWantAdd=false`) BEFORE injecting
-`enter.resolved.js`. **A pre-populated `__sliccReviewAll` WINS over sessionStorage** — so only seed
-with the real durable array; never seed an empty/stale array or you'll clobber visible pins. If
-pins vanish after a re-inject, you likely seeded empty `__sliccReviewAll`; fix by clearing it
-(`window.__sliccReviewAll=[]`) and re-injecting so it falls back to sessionStorage.
-
 ## Speck Fix (element-level AI editing)
 
-The sprinkle top bar has a **Speck Fix** toggle button (next to Pin Review), and each marker's
-hover tooltip shows a "✨ Fix with Speck" button (visible **only on locally-served pages** —
-`chrome-extension://<id>/preview/...`; hidden on remote http(s) pages, which Speck can't inject
-into due to CSP).
+Optional add-on: run Speck's element-level AI editing on locally-served preview pages. The sprinkle
+has a **Speck Fix** toggle, and each marker tooltip shows a "✨ Fix with Speck" button (local previews
+only). Pin Review and Speck Fix are mutually exclusive.
 
-Both entry points POST `{action:'inject-speck', url}` to the `speck-fix` webhook routed to a
-`speck-worker` scoop. The worker finds the matching tab, maps the preview URL → VFS file path, runs
-`speck inject <tab> --file <path>` (just turns on Speck's annotation layer — no fetch/copy/redesign),
-**re-injects the review display overlay** so pins stay visible, then **syncs the sprinkle**
-(`set-speck active:true`, `set-review-mode active:false`). Element instructions flow through the
-`speck-lick` webhook to the worker, which applies edits, reloads, re-injects Speck, and re-injects
-the pin display overlay each time.
+To enable: install the speck skill, create a `speck-worker` scoop, and wire two webhooks.
+**Full setup steps and architecture → SPECK-FIX.md.**
 
-- Toggle `toggle-speck active:false` (or remove via the cone): run `speck remove <tab>`. Markers stay.
-- Pin Review and Speck Fix are **mutually exclusive** — enabling one disables the other; keep both
-  sprinkle buttons synced via `set-review-mode` / `set-speck`.
-
-### Setup
-
-> **Prerequisites for Speck Fix.** Pin Review works without any of this; Speck Fix needs all three:
-> 1. **The speck skill installed** — `upskill ai-ecoverse/skills --skill speck` (same repo this skill ships from).
-> 2. **A `speck-worker` scoop** with `/tmp/` write access, given standing duties (see the worker's `DUTIES.md` pattern) to handle the two webhooks below.
-> 3. **Two webhooks routed to that scoop** — `speck-fix` (inject-speck) and `speck-lick` (element-instruction).
-
-Install the speck skill (`upskill ai-ecoverse/skills --skill speck`) and create the `speck-worker`
-scoop with `/tmp/` write access. Give it standing duties (see the worker's `DUTIES.md` pattern):
-handle `speck-fix` (inject-speck) and `speck-lick` (element-instruction) webhook events.
-
-### In-flight indicators and failure recovery
+## In-flight indicators and failure recovery
 
 `publish` and `defer` show a pulsing in-flight indicator and disable action buttons until the cone sends a matching `update-status`. The template supports three statuses: `pending`, `published`, `deferred`.
 
