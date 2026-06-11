@@ -1,6 +1,6 @@
 {
   "name": "ai-ecoverse/skills",
-  "version": "0.2.9",
+  "version": "0.2.10",
   "private": false,
   "summary": "Collection of agent skills for SLICC and Tessl-compatible runtimes — productivity, creative, document, and integration skills.",
   "skills": {
