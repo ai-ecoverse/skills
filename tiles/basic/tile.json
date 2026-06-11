@@ -7,6 +7,9 @@
     "aem": {
       "path": "skills/aem/SKILL.md"
     },
+    "aem-edge-functions": {
+      "path": "skills/aem-edge-functions/SKILL.md"
+    },
     "ai-writing-detector": {
       "path": "skills/ai-writing-detector/SKILL.md"
     },
