@@ -141,4 +141,3 @@ Mode `120000` is the magic number for symlinks in the Git tree object. The blob 
 ## Race conditions on long-running operations
 
 `oauth-token github` and `gh.jsh` calls are quick, but a long sequence of git fetches or contents-API writes can occasionally appear to "stall" — the SLICC bash session enforces some implicit timeouts. If a `git fetch origin` hangs at "Resolving deltas" for >30 seconds and stops emitting progress, give it another 60 seconds before assuming it's stuck. Killing and retrying often resumes from the partial pack.
-
