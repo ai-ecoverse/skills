@@ -196,6 +196,7 @@ async function labels(project) {
 async function create(flags) {
   const project = flags.project;
   const issueType = flags.type;
+  const isDryRun = flags['dry-run'] || flags['dry_run'] || flags.dry;
 
   if (!project) cli.die('--project is required (e.g. jira create --project PROJ --type Story --summary "...")');
   if (!issueType) cli.die('--type is required (e.g. Story, Bug, Task)');
@@ -220,7 +221,7 @@ async function create(flags) {
   } else {
     // Shape 2 — classic expand
     const classicResp = await jiraGetRaw(
-      `/rest/api/2/issue/createmeta?projectKeys=${project}&issuetypeNames=${encodeURIComponent(issueType)}&expand=projects.issuetypes.fields`
+      `/rest/api/2/issue/createmeta?projectKeys=${project}&expand=projects.issuetypes.fields`
     );
     if (!classicResp.ok) {
       cli.die(`Could not fetch createmeta for project "${project}" (tried both endpoint variants). Status: ${classicResp.status}`);
@@ -278,6 +279,16 @@ async function create(flags) {
   if (flags.priority)    fields.priority = { name: flags.priority };
   if (flags.labels)      fields.labels = flags.labels.split(',').map(l => l.trim());
   if (flags.components)  fields.components = flags.components.split(',').map(n => ({ name: n.trim() }));
+
+  // Handle raw --field-<id>=<value> overrides for custom fields before
+  // required-field validation so these flags can satisfy required custom fields.
+  for (const [k, v] of Object.entries(flags)) {
+    if (k.startsWith('field-')) {
+      fields[k.slice(6)] = v;
+    } else if (k.startsWith('cf-')) {
+      fields[`customfield_${k.slice(3)}`] = v;
+    }
+  }
 
   // Check required fields from createmeta
   const requiredFields = Object.entries(typeMeta.fields ?? {})
@@ -376,6 +387,13 @@ async function create(flags) {
     }
   }
 
+  // Dry-run: show what would be posted without optional label prompting or sending.
+  if (isDryRun) {
+    console.log(c.yellow('Dry run — would POST to /rest/api/2/issue:'));
+    console.log(JSON.stringify({ fields }, null, 2));
+    process.exit(0);
+  }
+
   // Always surface label options if not supplied — optional but useful.
   // Pass --no-labels to explicitly skip.
   if (!flags.labels && !flags['no-labels']) {
@@ -429,22 +447,6 @@ async function create(flags) {
       console.log(c.dim('\nRe-run with --labels "<name>,<name>" to set labels, or --no-labels to skip.'));
       process.exit(1);
     }
-  }
-
-  // Handle raw --field-<id>=<value> overrides for custom fields
-  for (const [k, v] of Object.entries(flags)) {
-    if (k.startsWith('field-')) {
-      fields[k.slice(6)] = v;
-    } else if (k.startsWith('cf-')) {
-      fields[`customfield_${k.slice(3)}`] = v;
-    }
-  }
-
-  // Dry-run: show what would be posted without sending
-  if (flags['dry-run'] || flags['dry_run'] || flags.dry) {
-    console.log(c.yellow('Dry run — would POST to /rest/api/2/issue:'));
-    console.log(JSON.stringify({ fields }, null, 2));
-    process.exit(0);
   }
 
   // POST the new issue
