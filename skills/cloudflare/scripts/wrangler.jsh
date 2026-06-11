@@ -60,7 +60,7 @@ async function findDashTab(override) {
   if (override) return override;
   const r = await sh('playwright-cli tab-list');
   for (const line of (r.stdout || '').split('\n')) {
-    const m = line.match(/^\[([0-9A-F]+)\]\s+(\S+)/i);
+    const m = line.match(/^\[([^\]]+)\]\s+(\S+)/);
     if (!m) continue;
     try {
       const u = new URL(m[2]);
@@ -73,7 +73,7 @@ async function findDashTab(override) {
 async function ensureTab(override) {
   let tab = await findDashTab(override);
   if (tab) return tab;
-  await sh('playwright-cli open --foreground https://dash.cloudflare.com');
+  await sh('playwright-cli open https://dash.cloudflare.com');
   for (let i = 0; i < 10; i++) {
     await new Promise(function(r){ setTimeout(r, 1000); });
     tab = await findDashTab(null);
@@ -87,18 +87,18 @@ async function runInTab(tabId, jsBody) {
   await ensureDirs();
   const stamp = Date.now() + '-' + Math.floor(Math.random() * 1e6);
   const jsPath = TMP_DIR + '/q-' + stamp + '.js';
-  const outPath = TMP_DIR + '/o-' + stamp + '.json';
   await fs.writeFile(jsPath, jsBody);
-  const cmd = 'playwright-cli eval-file --tab=' + tabId + ' ' + jsPath + ' --output=' + outPath;
+  const cmd = 'playwright-cli eval-file ' + jsPath + ' --tab=' + tabId;
   const r = await sh(cmd);
   if (r.status !== 0) {
     console.error('playwright-cli eval-file failed: ' + (r.stderr || r.stdout));
     process.exit(1);
   }
-  let raw;
-  try { raw = await fs.readFile(outPath, 'utf8'); }
-  catch (e) { console.error('Failed to read output: ' + e.message); process.exit(1); }
-  try { return JSON.parse(raw); }
+  const raw = (r.stdout || '').trim();
+  try {
+    const parsed = JSON.parse(raw);
+    return typeof parsed === 'string' ? JSON.parse(parsed) : parsed;
+  }
   catch (e) {
     console.error('Failed to parse JSON output: ' + e.message);
     console.error(raw.slice(0, 500));
