@@ -1,11 +1,14 @@
 {
   "name": "ai-ecoverse/skills",
-  "version": "0.2.3",
+  "version": "0.2.6",
   "private": false,
   "summary": "Collection of agent skills for SLICC and Tessl-compatible runtimes — productivity, creative, document, and integration skills.",
   "skills": {
     "aem": {
       "path": "skills/aem/SKILL.md"
+    },
+    "aem-edge-functions": {
+      "path": "skills/aem-edge-functions/SKILL.md"
     },
     "ai-writing-detector": {
       "path": "skills/ai-writing-detector/SKILL.md"

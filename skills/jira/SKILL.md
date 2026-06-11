@@ -2,10 +2,10 @@
 name: jira
 description: |
   Use this when interacting with Jira — fetching issues, searching by JQL,
-  reading comments, or pulling issue detail to use in other workflows. Uses
-  the Jira tab open in the browser for auth (SSO session, no token needed).
-  Activate on any mention of Jira, issue keys (e.g. PROJ-123), JQL queries, or
-  requests to read/find/list Jira tickets.
+  reading comments, or creating new issues. Uses the Jira tab open in the
+  browser for auth (SSO session, no token needed). Activate on any mention of
+  Jira, issue keys (e.g. PROJ-123), JQL queries, or requests to
+  read/find/list/create Jira tickets.
 allowed-tools: bash
 ---
 
@@ -21,15 +21,18 @@ jira detect                                          # Find Jira tab — confirm
 jira whoami                                          # Verify auth is working
 jira get PROJ-123                                    # Fetch a single issue with full detail
 jira search "project=PROJ ORDER BY updated DESC"     # JQL search (up to 50 results)
-jira search "project=PROJ AND status=Open"           # Filter by status
 jira comments PROJ-123                               # Fetch all comments on an issue
+jira components PROJ                                 # List all components defined in a project
+jira types PROJ                                      # List all issue types available in a project
+jira labels PROJ                                     # List all labels in use in a project
+jira create --project PROJ --type Story --summary "My new story"
 ```
 
 ## Authentication
 
-Auth is handled via the browser's SSO session. All API calls are made from within
-the Jira page context using `playwright-cli eval` with `credentials: 'include'`,
-so SSO cookies are sent automatically — no token extraction needed.
+Auth is handled via the browser's SSO session. All API calls run inside the
+Jira tab's page context using `browser.fetch`, so SSO cookies are sent
+automatically — no token extraction needed.
 
 **Requirements:**
 - A Jira tab must be open in the browser
@@ -43,9 +46,6 @@ The skill auto-detects the Jira base URL by scanning open browser tabs for any
 URL containing `jira`. Always run `jira detect` first in a new session or when
 switching Jira instances. **The user must confirm the detected URL is correct
 before proceeding with other commands.**
-
-If multiple Jira tabs are open, the first match is used. Close unwanted tabs or
-note which workspace you're targeting.
 
 ## Commands
 
@@ -73,49 +73,17 @@ components, labels, fix versions, and description.
 
 ```bash
 jira get PROJ-123
-jira get PROJ-456
-```
-
-**Example output:**
-```
-PROJ-123: Add dark mode support
-  Type:        Story
-  Status:      In Progress
-  Assignee:    Jane Smith
-  Reporter:    John Doe
-  Created:     2025-08-18
-  Updated:     2026-04-02
-  Components:  Frontend
-  Fix Versions: v1.2
-
-  Description:
-    ...
 ```
 
 ### `jira search "<jql>"`
 
-Runs a JQL query and returns matching issues. Returns up to 50 results showing
-key, summary, status, assignee, and issue type.
+Runs a JQL query and returns matching issues (up to 50).
 
 ```bash
 jira search "project=PROJ ORDER BY updated DESC"
 jira search "project=PROJ AND status=Open"
 jira search "project=PROJ AND assignee=currentUser()"
-jira search "project=PROJ AND fixVersion='v1.2'"
-jira search "project=PROJ AND component='Frontend'"
 ```
-
-**Example output:**
-```
-3 issue(s) found (showing 3):
-
-  PROJ-124: Improve search performance [In Review]
-  PROJ-123: Add dark mode support [In Progress]
-  PROJ-100: Fix broken pagination [Resolved]
-```
-
-**Note:** Results are capped at 50. For larger result sets, add filters to narrow
-the query (e.g. `AND status=Open`, `AND updated >= -30d`).
 
 ### `jira comments <issue-key>`
 
@@ -125,27 +93,76 @@ Fetches all comments on an issue with author, date, and body text.
 jira comments PROJ-123
 ```
 
+### `jira create`
+
+Creates a new issue. **Required fields are discovered automatically** from the
+project's `createmeta` — every Jira project and issue type combination has its
+own set of required fields, so the command fetches those before attempting to
+create, and reports exactly what's missing if the call would fail.
+
+```bash
+# Minimal invocation — will report missing required fields if any exist
+jira create --project PROJ --type Story --summary "Add dark mode"
+
+# With optional fields
+jira create --project PROJ --type Bug \
+  --summary "Login fails on Safari" \
+  --description "Steps to reproduce..." \
+  --assignee jsmith \
+  --priority High \
+  --labels "frontend,regression" \
+  --components "Auth,Frontend"
+
+# Set a custom field by numeric ID
+jira create --project PROJ --type Story --summary "..." --cf-10014 "Sprint 3"
+
+# Set any field by its raw Jira field ID
+jira create --project PROJ --type Story --summary "..." --field-customfield_10200 "value"
+```
+
+**Flags:**
+
+| Flag | Description |
+|---|---|
+| `--project <key>` | Project key — required |
+| `--type <name>` | Issue type name (Story, Bug, Task, …) — required |
+| `--summary <text>` | Issue summary — required for most types |
+| `--description <text>` | Issue description (plain text; Jira wiki markup also accepted) |
+| `--assignee <username>` | Assignee's Jira username |
+| `--priority <name>` | Priority name (e.g. High, Medium, Low, Critical) |
+| `--labels <a,b,c>` | Comma-separated label names |
+| `--components <a,b>` | Comma-separated component names |
+| `--cf-NNNNN <value>` | Custom field by numeric ID (e.g. `--cf-10014 "Sprint 3"`) |
+| `--field-<id> <value>` | Any field by raw Jira field ID |
+| `--dry-run` | Validate fields and print the payload that would be posted, without creating anything |
+
+**How required-field discovery works:**
+
+Before posting, the command fetches the project's `createmeta` to find required
+fields for the given issue type. It tries two endpoint shapes in order:
+
+1. **Paginated** (Jira Server 9+ / Data Center): `GET /rest/api/2/issue/createmeta/{project}/issuetypes`
+2. **Classic** (older Jira Server): `GET /rest/api/2/issue/createmeta?projectKeys=…&expand=projects.issuetypes.fields`
+
+Whichever responds with 200 is used; the result is normalised so the rest of
+the command behaves identically regardless of which endpoint answered.
+
+If any required fields are not covered by the provided flags, it prints them
+with their type and the flag to use, then exits without creating anything.
+Re-run with the missing flags.
+
+If the issue type name is wrong for the project, the command lists valid types
+for that project.
+
 **Example output:**
 ```
-Comments on PROJ-123 (2):
-
-  [2025-08-18] John Doe:
-    Flagging this for design review before implementation.
-
-  [2025-09-23] Jane Smith:
-    Design approved — moving to development.
+✓ Created PROJ-456: https://jira.example.com/browse/PROJ-456
 ```
 
-## Using with other skills
+## Output format — Jira wiki markup
 
-When building pages from Jira content, use `jira get` to pull the full issue and
-`jira comments` for additional context. The `.jsh` script outputs plain text
-suitable for use in prompts or piped to other commands.
-
-### Output format — Jira wiki markup
-
-The `description` and comment `body` fields are returned in **Jira wiki markup**,
-not plain text or Markdown. Common patterns:
+The `description` and comment `body` fields from `get` and `comments` are
+returned in **Jira wiki markup**, not plain text or Markdown. Common patterns:
 
 | Jira markup | Meaning |
 |---|---|
@@ -154,13 +171,39 @@ not plain text or Markdown. Common patterns:
 | `{{text}}` | Inline code |
 | `[label\|url]` | Hyperlink |
 | `{color:#hex}text{color}` | Colored text (usually discard) |
-| `{*}text{*}` | Bold (alternate form) |
 | `# item` | Ordered list item |
 | `- item` | Unordered list item |
-| `\r\n` | Windows line endings |
 
-When consuming this output to generate DA pages or other content, strip the markup
-to plain text or convert to Markdown/HTML as appropriate for the target format.
+When consuming this output to generate content, strip or convert markup as
+appropriate for the target format.
+
+## Project metadata
+
+Several fields on issue creation require values from a fixed list defined per-project. Fetch these directly before prompting the user:
+
+```bash
+# All components defined in a project
+jira components ACE
+
+# All issue types available in a project
+jira types ACE
+```
+
+Or via the REST API directly:
+
+| Data | Endpoint |
+|---|---|
+| Components | `GET /rest/api/2/project/{key}/components` |
+| Labels in use in project | `GET /rest/api/2/search?jql=project={key}+AND+labels+is+not+EMPTY&fields=labels` |
+| All instance labels | `GET /rest/api/1.0/labels/suggest?query=&maxResults=100` |
+| Issue types (paginated, Server 9+) | `GET /rest/api/2/issue/createmeta/{key}/issuetypes` |
+| Issue types (classic) | `GET /rest/api/2/issue/createmeta?projectKeys={key}&expand=projects.issuetypes` |
+| Fields for a type (paginated) | `GET /rest/api/2/issue/createmeta/{key}/issuetypes/{typeId}` |
+| Priority values | `GET /rest/api/2/priority` |
+
+The `create` command fetches components automatically when `--components` is omitted and the field is required — it presents the full list from `/rest/api/2/project/{key}/components`, scored by relevance to the issue summary and description, and prompts the user to pick.
+
+For labels, `create` always prompts (even though labels are optional). It merges two sources: labels already used in the project (from the search API, boosted in ranking) and the full instance-wide label universe (from `/rest/api/1.0/labels/suggest`). Both are scored against the issue content; project-familiar labels are weighted higher and annotated with `(used in project)` in the prompt.
 
 ## Common errors
 
@@ -168,7 +211,9 @@ to plain text or convert to Markdown/HTML as appropriate for the target format.
 |---|---|---|
 | `No Jira tab found` | No browser tab with `jira` in the URL | Open Jira in your browser |
 | `API error 401` | SSO session expired | Refresh the Jira tab, log in again |
-| `eval failed` | Jira tab navigated away or closed | Check `playwright-cli tab-list` |
+| `Project not found` | Wrong project key or no permission | Check the key; verify you can see the project in the browser |
+| `Issue type not found` | Type name doesn't match this project | Run `jira create --project PROJ --type x` — it will list valid types |
+| `Missing required fields` | Project has additional required fields beyond summary | Re-run with the flags listed in the error output |
 
 ## SSO Jira instances
 
@@ -176,11 +221,5 @@ For corporate SSO-protected Jira instances (no personal API tokens available):
 - Uses Jira Server/Data Center REST API (`/rest/api/2/`) not Jira Cloud
 - Standard field names (`summary`, `description`, `status`, `assignee`) work
   reliably; custom fields (`customfield_XXXXX`) vary by instance
-- Session cookies are scoped to the corp domain; direct fetch from localhost is
-  rejected — page-context eval is required (already the default approach)
-
----
-
-> **TODO:** Revisit and tighten this documentation after real use. Add examples
-> of JQL queries that proved useful, output patterns that needed cleanup, and any
-> edge cases encountered.
+- Session cookies are scoped to the corp domain; page-context fetch (the
+  default) handles this automatically
