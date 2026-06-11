@@ -259,3 +259,18 @@ gh.jsh api /repos/owner/repo/git/ref/heads/main --jq .object.sha
 gh.jsh api /repos/owner/repo/git/refs -X POST -f ref=refs/heads/new-branch -f sha=abc123
 ```
 Generic passthrough for any GitHub REST API endpoint. Supports `-X METHOD`, `-f key=value` (sent as JSON body on non-GET), and `--jq .path.to.field` for simple field extraction.
+
+---
+
+## Gotchas
+
+The SLICC environment has a few quirks you'll only hit if you bypass `gh.jsh` and reach for raw `git` or `curl`. The skill's own commands route around all of these. See [`references/gotchas.md`](references/gotchas.md) for full details and copy-paste workarounds.
+
+| Symptom | Cause | Quick fix |
+|---|---|---|
+| `git clone` aborts with `ENOENT mkdir <Foo.graffle>` | OPFS git can't `mkdir` directory-bundle children before the parent is ready | `git init` + `git fetch` + `core.sparseCheckout` excluding the bad path |
+| `git clone --depth=1` rejects flag | SLICC `git` wrapper doesn't accept extra args | Use `init`+`fetch` instead of `clone` |
+| `curl --data @file` returns `400 Problems parsing JSON` | The `@file` body read mangles bytes in this realm | Build and POST from `node` with `fetch()`, or use `gh.jsh api -f key=value` |
+| Uploaded files arrive as Latin-1-of-UTF-8 mojibake on GitHub | `fs.readFile(path, 'utf8')` in this realm doesn't actually decode UTF-8 | Use `fs.readFileBinary` (real `Uint8Array`) before `btoa` |
+| `cat`/`xxd`/`head -c` show corrupted bytes for a known-good file | Same shell I/O layer Latin-1↔UTF-8 round-trip | Verify via `playwright-cli eval` against `raw.githubusercontent.com` |
+| Need to commit a symlink | `PUT /contents` always writes mode `100644` | Use Git Data API with `mode: 120000` and target path as blob content |
