@@ -129,8 +129,20 @@ async function getCsrfToken(tabId) {
     process.exit(1);
   }
   var raw = r.stdout.trim();
-  var match = raw.match(/JSESSIONID="([^"]+)"/);
-  var token = match ? match[1] : raw.replace(/^"|"$/g, '');
+  // Cookie may come back as JSESSIONID="ajax:..." (quoted, legacy format) or
+  // JSESSIONID=ajax:...\tDomain=...\tPath=... (unquoted, tab-separated metadata)
+  var token = '';
+  var quoted = raw.match(/JSESSIONID="([^"]+)"/);
+  if (quoted) {
+    token = quoted[1];
+  } else {
+    var unquoted = raw.match(/JSESSIONID=([^\t\r\n;]+)/);
+    if (unquoted) {
+      token = unquoted[1].replace(/^"|"$/g, '');
+    } else {
+      token = raw.replace(/^"|"$/g, '');
+    }
+  }
   if (!token || token === 'undefined') {
     console.error('No JSESSIONID cookie found. Please log into LinkedIn in your browser.');
     process.exit(1);
