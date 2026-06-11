@@ -6,6 +6,26 @@ allowed-tools: bash
 
 # Review
 
+## Scope — record only, never auto-apply
+
+The review skill **records reviews**: it captures pins, comments, and
+publish/defer status into a persistent queue, and surfaces them to the user.
+It does **not** act on the feedback. A pin that says "this image is dull" or
+"swap these two elements" is an *annotation to record*, not an instruction to
+execute.
+
+**Never silently edit the reviewed artifact (the page, document, or PR) in
+response to a pin or comment.** Applying a change is always the user's
+decision. The user acts on recorded feedback themselves — explicitly, or via
+the **Speck Fix** layer (element-level AI editing on local previews; see
+SPECK-FIX.md), which is user-driven by design.
+
+When a pin or comment arrives, the only correct actions are: store it
+(`add-pin` / `add-comment`), keep its marker/queue state in sync, and report
+it to the user. If the user then wants the change made, they will say so or
+reach for Speck — at which point editing happens through that explicit path,
+not as an implicit consequence of the review.
+
 ## Quick-Start Workflow
 
 1. **Create the scoop** — `scoop_scoop("review")`
@@ -160,14 +180,47 @@ fall back to sessionStorage.
   remove any Speck layer and sync `set-speck active:false` (mutually exclusive — see SPECK-FIX.md).
 - `active:false` → eval `exit.js` (add mode off, crosshair off, markers stay).
 
-Always keep the display overlay (`wantAdd=false`) injected on a pinned page so pins stay visible even
-with Pin Review off — including after Speck reloads.
+### Keep pins visible across reloads (mandatory while review is active)
+
+Pins live in the durable store, but the on-page **markers are erased whenever the
+tab reloads or navigates** — a reload clears the injected overlay (`window.__sliccOverlayVersion`
+goes back to `none`). While the review skill is active on a page, the cone is responsible for
+**re-painting the markers after every reload/navigation** so the user always sees their pins.
+
+The rule: **always keep the display overlay (`wantAdd=false`) injected on a pinned page** so pins
+stay visible even with Pin Review off — including after Speck reloads, manual reloads, and
+re-opening the page in a new tab.
+
+Re-paint procedure (run whenever the page may have reloaded, or whenever the user reports pins
+missing):
+
+1. Check the tab's overlay state: `playwright-cli eval --tab <id> "window.__sliccOverlayVersion || 'none'"`.
+   `none` (or a version below the expected `4`) means the overlay was cleared and must be re-injected.
+2. Ask the sprinkle for the authoritative pins: `sprinkle send review '{"action":"request-pins","url":"<url>"}'`,
+   then await the `pins` lick.
+3. Seed the real array and inject the **display** overlay in the same step:
+   ```bash
+   printf '(function(){window.__sliccWantAdd=false;window.__sliccReviewAll=%s;})();' "$PINS_JSON" > /tmp/seed.js
+   playwright-cli eval-file /tmp/seed.js --tab <id>
+   playwright-cli eval-file /shared/review-overlay/enter.resolved.js --tab <id>
+   ```
+   (Use `__sliccWantAdd=true` instead only if add-mode should also be on — e.g. Pin Review toggled on.)
+4. Verify: `(window.__sliccReviewAll||[]).length` equals the pin count and `window.__sliccOverlayVersion` is `4`.
+
+Never seed an empty/stale array over a non-empty store (it clobbers visible pins — see
+PIN-REVIEW-INTERNALS.md). On a *same-session* reload where `sessionStorage` still holds the markers,
+re-injecting the overlay alone is enough and seeding can be skipped; when in doubt, seed from the
+durable `request-pins` array.
 
 ### Comment / pin flow
 Each pin click opens a popup; on save it drops a numbered marker AND POSTs the full marker object to
 the webhook. The `review` scoop pushes it into the sprinkle via **`add-pin`** with: a plain-text
 display string `PIN #<num>: <comment>` (ASCII only — the sprinkle renders the icon itself), the
 top-level numeric `num`, and the whole payload as `pin`. Use `add-comment` only for non-pin comments.
+
+> **Record only.** Storing the pin is the *complete* handling of a pin click. Do **not** go on to edit
+> the page/artifact to satisfy the pin's request (see § Scope). The change is the user's call, made
+> explicitly or through Speck Fix.
 ```bash
 sprinkle send review '{"action":"add-pin","id":"page-1","num":3,
   "comment":"PIN #3: tighten the hero copy",
@@ -198,7 +251,32 @@ Optional add-on: run Speck's element-level AI editing on locally-served preview 
 has a **Speck Fix** toggle, and each marker tooltip shows a "✨ Fix with Speck" button (local previews
 only). Pin Review and Speck Fix are mutually exclusive.
 
-To enable: install the speck skill, create a `speck-worker` scoop, and wire two webhooks.
+### Lazy auto-load on first use (cone handler for `toggle-speck` / "Fix with Speck")
+
+Speck is **loaded on demand**, not as a manual prerequisite. The user should be able to click
+**✨ Fix with Speck** (or the **Speck Fix** toggle) and have it just work — the click is what triggers
+the skill to load. When the cone receives a `toggle-speck {active:true}` lick (or an `inject-speck`
+event) and Speck is **not yet set up**, the handler must bootstrap it automatically before proceeding,
+then carry out the original request. Do not silently no-op on an unresolved `__SPECK_WEBHOOK_URL__`.
+
+Bootstrap procedure (idempotent — skip any step already done):
+
+1. **Install the skill if missing:** check for `speck` on disk; if absent, run
+   `upskill ai-ecoverse/skills --skill speck`.
+2. **Ensure the `speck-worker` scoop exists** (with `/tmp/` write access and the standing duties to
+   handle the two webhooks — see SPECK-FIX.md). Create it if missing.
+3. **Ensure the two webhooks exist and are routed to `speck-worker`:** `speck-fix` (handles
+   `inject-speck`) and `speck-lick` (element-instruction events). Create any that are missing.
+4. **Resolve `__SPECK_WEBHOOK_URL__`:** re-build `enter.resolved.js` from the *current* `speck-fix`
+   webhook URL (webhook URLs regenerate across sessions — always read the live URL from
+   `webhook list`, never reuse a cached one), then re-inject the overlay so the tooltip button POSTs
+   to a live endpoint.
+5. **Proceed with the original request** — inject Speck on the active tab and sync the sprinkle
+   (`set-speck active:true`, `set-review-mode active:false`).
+
+Tell the user briefly that Speck is loading on first use; subsequent clicks are instant because the
+bootstrap is idempotent.
+
 **Full setup steps and architecture → SPECK-FIX.md.**
 
 ## In-flight indicators and failure recovery
