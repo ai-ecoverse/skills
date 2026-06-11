@@ -125,9 +125,14 @@ add-mode crosshair on/off. There is no in-page banner.
 > when pins go missing, duplicate, or land in the wrong spot.
 
 ### Overlay assets (`overlay/`)
-- `enter.js` — the full overlay. Resolve TWO placeholders before injecting: `__WEBHOOK_URL__`
-  (comment webhook) and `__SPECK_WEBHOOK_URL__` (speck-fix webhook). `sed` both into a resolved copy
-  `enter.resolved.js`.
+- `enter.js` — the full overlay. Has TWO placeholders, `sed` into a resolved copy `enter.resolved.js`:
+  - `__WEBHOOK_URL__` (comment/pin webhook) — **required** at setup. Resolve from the live
+    `review-marker` webhook URL.
+  - `__SPECK_WEBHOOK_URL__` (speck-fix webhook) — **optional / lazy**. Resolve it to an empty string
+    at first setup if Speck isn't wired yet; the Speck Fix lazy-load bootstrap (§ Lazy auto-load on
+    first use) fills it in and re-injects the overlay the first time the user clicks **✨ Fix with
+    Speck**. An empty value just means the Speck button is inert until that first click — Pin Review
+    works fully without it.
 - `exit.js` — turns OFF add mode (removes crosshair + open popups). Keeps markers visible.
 - `remove-marker.js` — hide/restore one marker. Reads `window.__rvRemoveNum` + `window.__rvRemoveDone`
   set just before eval.
