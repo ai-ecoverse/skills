@@ -1,6 +1,6 @@
 {
   "name": "ai-ecoverse/advanced-skills",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "private": false,
   "summary": "Quarantined high-risk skills (browser session capture, WebSocket interception) for Slack and Microsoft Teams. Install only after reviewing the security implications.",
   "skills": {
