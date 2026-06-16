@@ -209,6 +209,20 @@ async function callOp(opName, variables = {}, surface = 'spend') {
   return graphql(surface, { operationName: opName, query, variables });
 }
 
+// Resolve a report's policyId (needed by create/update expense mutations).
+async function getReportPolicyId(reportId) {
+  const userId = await getUserId();
+  const data = await callOp('GetReportPageData', {
+    reportId, includeSummary: true, includePolicy: true, includeEntries: false,
+    includeExceptions: false, includeGroupSettings: false, includeSiteSettings: false,
+    includeWorkflows: false, includeCostObjects: false, userId, contextRole: 'TRAVELER',
+    includeDetailItemizations: false, shouldChangeWarningAlertsToInformation: false,
+  });
+  const m = JSON.stringify(data || {}).match(/"policyId":"([^"]+)"/);
+  if (!m) throw new Error(`Could not resolve policyId for report ${reportId}`);
+  return m[1];
+}
+
 // Lookup a single report's status in the user's report list.
 // Returns { reportId, name, approvalStatus, approvalStatusId, isLocked, ... }
 // where isLocked === true means the report rejects mutations (Approved,
@@ -1033,6 +1047,79 @@ const commands = {
     const r = await exec(`ls ${OPS_DIR}`);
     const list = r.stdout.split('\n').filter(Boolean).map(s => s.replace(/\.graphql$/, ''));
     return { count: list.length, operations: list };
+  },
+
+  // List the payment types available to the report owner.
+  // CASH = "Out of Pocket", PCCD = "Pending Card Transaction".
+  async 'payment-types'() {
+    const userId = await getUserId();
+    return await callOp('GetPaymentTypes', { reportOwnerUserId: userId });
+  },
+
+  // Change an existing entry's payment type (e.g. Corporate Card -> Out of Pocket).
+  // Usage: concur set-payment <reportId> <expenseId> <CASH|PCCD> [--comment="..."] [--policy=<id>]
+  async 'set-payment'(reportId, expenseId, paymentTypeId, ...rest) {
+    if (!reportId || !expenseId || !paymentTypeId) {
+      console.error('Usage: concur set-payment <reportId> <expenseId> <CASH|PCCD> [--comment="..."]');
+      console.error('  CASH = Out of Pocket, PCCD = Pending Card Transaction');
+      process.exit(1);
+    }
+    const flags = parseFlags(rest, {});
+    const userId = await getUserId();
+    const policyId = flags.policy || await getReportPolicyId(reportId);
+    const fields = { paymentTypeId };
+    if (flags.comment) fields.comment = flags.comment;
+    return await callOp('UpdateExistingExpenseEntry', {
+      taxFields: null, userId, contextRole: 'TRAVELER', isTrexEnabled: true,
+      reportId, expenseId, shouldCopyDownFields: false, fields,
+      expenseTypeId: '', policyId, updateRecentExpenseType: false, expenseListDetailFormId: null,
+    });
+  },
+
+  // Create a brand-new (out-of-pocket / cash) expense line on a report.
+  // Usage: concur new-expense <reportId> --type=<expenseTypeId> --date=YYYY-MM-DD \
+  //          --amount=NN.NN --currency=GBP --location=<locationId> [--vendor="..."] \
+  //          [--payment=CASH] [--exchange=1.1555] [--comment="..."] [--personal] \
+  //          [--receipt=<imageId>] [--fields='<extra-json>']
+  // policyId auto-resolves from the report. Some policies require extra required
+  // fields (e.g. custom8/custom24) — pass them via --fields '<json>'.
+  async 'new-expense'(reportId, ...rest) {
+    if (!reportId) {
+      console.error('Usage: concur new-expense <reportId> --type=<expenseTypeId> --date=YYYY-MM-DD --amount=NN.NN --currency=GBP --location=<locationId> [--vendor="..."] [--payment=CASH] [--exchange=1.1555] [--comment="..."] [--personal] [--receipt=<imageId>] [--fields=\'<extra-json>\']');
+      process.exit(1);
+    }
+    const flags = parseFlags(rest, { payment: 'CASH', currency: 'EUR' });
+    if (!flags.type || !flags.date || !flags.amount || !flags.location) {
+      console.error('new-expense requires --type, --date, --amount and --location');
+      process.exit(1);
+    }
+    const userId = await getUserId();
+    const policyId = flags.policy || await getReportPolicyId(reportId);
+    const fields = {
+      expenseTypeId: flags.type,
+      transactionDate: flags.date,
+      paymentTypeId: flags.payment,
+      transactionAmount: { value: Number(flags.amount), currencyCode: flags.currency },
+      locationId: flags.location,
+      isPersonalExpense: flags.personal === true || flags.personal === 'true',
+    };
+    if (flags.vendor) fields.vendorName = flags.vendor;
+    // Concur always expects an exchangeRate. For a same-currency (home) expense
+    // it must be 1.0; for a foreign currency pass the real rate via --exchange.
+    fields.exchangeRate = { operation: 'MULTIPLY', value: flags.exchange ? Number(flags.exchange) : 1.0 };
+    if (flags.comment) fields.comment = flags.comment;
+    if (flags.receipt) fields.receiptImageId = flags.receipt;
+    if (flags.fields) {
+      let extra; try { extra = JSON.parse(flags.fields); } catch { console.error('--fields must be valid JSON'); process.exit(1); }
+      Object.assign(fields, extra);
+    }
+    const data = await callOp('SaveNewExpenseEntry', {
+      taxFields: null, shouldIncludeRpeKey: false, userId, contextRole: 'TRAVELER',
+      isTrexEnabled: true, reportId, fields, expenseTypeId: flags.type, policyId,
+      expenseListDetailFormId: null,
+    });
+    const created = data?.createExpense || data;
+    return { expenseId: created?.id, expenseType: flags.type, amount: fields.transactionAmount, paymentTypeId: flags.payment };
   },
 
   async graphql(opName, varsJson, surface = 'spend') {
