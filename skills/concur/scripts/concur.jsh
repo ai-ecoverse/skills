@@ -1049,6 +1049,56 @@ const commands = {
     return { count: list.length, operations: list };
   },
 
+  // Report status + all validation exceptions (error/warning messages) for a
+  // report. Surfaces blocking issues like ITEMREQ ("Itemizations are required")
+  // and RECEIPT_REQUIRED ("You must attach a receipt image"), grouped per entry.
+  // Usage: concur exceptions <reportId>
+  async exceptions(reportId) {
+    if (!reportId) { console.error('Usage: concur exceptions <reportId>'); process.exit(1); }
+    const userId = await getUserId();
+    const data = await callOp('GetReportExceptionsAndEntries', {
+      userId, contextRole: 'TRAVELER', reportId,
+      expenseListDetailFormId: null, includeDetailItemizations: false,
+    });
+    const meta = {};
+    for (const e of (data?.reportEntriesDetails?.entries || [])) {
+      const s = e.summary || {};
+      meta[e.expenseId] = {
+        expenseType: s.expenseType?.name,
+        vendor: s.vendor?.description || s.vendor?.name,
+      };
+    }
+    const seen = new Set();
+    const exById = {};
+    const headerEx = [];
+    (function walk(o) {
+      if (Array.isArray(o)) { o.forEach(walk); return; }
+      if (o && typeof o === 'object') {
+        if (o.exceptionCode && o.message) {
+          const key = (o.expenseId || 'HEADER') + '|' + o.exceptionCode + '|' + o.message;
+          if (!seen.has(key)) {
+            seen.add(key);
+            const rec = { code: o.exceptionCode, isBlocking: !!o.isBlocking, message: o.message };
+            if (o.expenseId) (exById[o.expenseId] = exById[o.expenseId] || []).push(rec);
+            else headerEx.push(rec);
+          }
+        }
+        for (const k in o) walk(o[k]);
+      }
+    })(data);
+    const entries = Object.keys(exById).map(id => ({
+      expenseId: id, ...(meta[id] || {}), exceptions: exById[id],
+    }));
+    const allBlocking = [...headerEx, ...entries.flatMap(e => e.exceptions)].some(x => x.isBlocking);
+    return {
+      reportId,
+      hasBlockingExceptions: allBlocking,
+      totalExceptions: headerEx.length + entries.reduce((n, e) => n + e.exceptions.length, 0),
+      headerExceptions: headerEx,
+      entryExceptions: entries,
+    };
+  },
+
   // List the payment types available to the report owner.
   // CASH = "Out of Pocket", PCCD = "Pending Card Transaction".
   async 'payment-types'() {
