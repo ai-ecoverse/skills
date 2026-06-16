@@ -109,12 +109,37 @@ async function findOutlookTab() {
   return null;
 }
 
-async function extractTokenFromBrowser() {
-  const tabId = await findOutlookTab();
-  if (!tabId) return null;
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
-  // Extract the MSAL access token for outlook.office.com with the most scopes
-  // (the one with mail.readwrite, calendars.readwrite, etc.)
+// Run a JS expression in the Outlook tab via playwright-cli eval-file and return
+// the trimmed stdout (or null on error / empty result).
+async function evalInTab(tabId, scriptStr) {
+  const tmpFile =
+    '/tmp/.outlook-eval-' + Date.now() + '-' + Math.random().toString(36).slice(2) + '.js';
+  await fs.writeFile(tmpFile, scriptStr);
+  const r = await exec(`playwright-cli eval-file ${tmpFile} --tab=${tabId}`);
+  await fs.writeFile(tmpFile, '').catch(() => {}); // clean up
+  if (r.exitCode !== 0) return null;
+  const raw = (r.stdout || '').trim();
+  if (!raw || raw === 'null' || raw === 'undefined') return null;
+  return raw;
+}
+
+function unwrapEvalString(raw) {
+  // playwright-cli returns string results JSON-quoted; unwrap one layer.
+  if (raw && raw.startsWith('"') && raw.endsWith('"')) {
+    try { return JSON.parse(raw); } catch { /* fall through */ }
+  }
+  return raw;
+}
+
+// Strategy 1 — legacy plaintext MSAL cache (old outlook.office.com client).
+// The classic MSAL cache stores access tokens as JSON objects with a readable
+// `.secret` field. Newer clients (outlook.cloud.microsoft) encrypt the cache
+// ({id,nonce,data,lastUpdatedAt}), so this returns null there — see strategy 2.
+async function extractTokenFromCache(tabId) {
   const extractScript = [
     '(function(){',
     'var best=null,bestScopes=0;',
@@ -133,26 +158,84 @@ async function extractTokenFromBrowser() {
     'return null})()',
   ].join('');
 
-  const tmpFile = '/tmp/.outlook-token-extract-' + Date.now() + '.js';
-  await fs.writeFile(tmpFile, extractScript);
-  const evalResult = await exec(`playwright-cli eval-file ${tmpFile} --tab=${tabId}`);
-  await fs.writeFile(tmpFile, '').catch(() => {}); // clean up
-
-  if (evalResult.exitCode !== 0) return null;
-
-  const raw = evalResult.stdout.trim();
-  if (!raw || raw === 'null' || raw === 'undefined') return null;
-
+  const raw = await evalInTab(tabId, extractScript);
+  if (!raw) return null;
   try {
-    let parsed = raw;
-    if (parsed.startsWith('"') && parsed.endsWith('"')) parsed = JSON.parse(parsed);
+    let parsed = unwrapEvalString(raw);
     const data = typeof parsed === 'string' ? JSON.parse(parsed) : parsed;
-    if (data && data.secret) {
-      // Save for future use
-      await fs.writeFile(TOKEN_PATH, data.secret);
-      return data.secret;
-    }
+    if (data && data.secret) return data.secret;
   } catch { /* fall through */ }
+  return null;
+}
+
+// Strategy 2 — live network capture (new outlook.cloud.microsoft client).
+// When the MSAL cache is encrypted we cannot read the token at rest, but the SPA
+// constantly sends it as an `Authorization: Bearer` header. We hook fetch and
+// XMLHttpRequest, nudge a background sync (focus/visibilitychange — OWA refreshes
+// on these), and poll for a captured Bearer whose decoded JWT `aud` targets
+// outlook.office.com.
+async function captureTokenFromNetwork(tabId) {
+  const injectScript = [
+    '(function(){',
+    'function dec(t){try{var p=t.replace(/^Bearer\\s+/,"");var b=p.split(".")[1];var s=b.replace(/-/g,"+").replace(/_/g,"/");var pad=s.length%4;if(pad)s+="====".slice(pad);return JSON.parse(atob(s));}catch(e){return null;}}',
+    'function consider(a){if(!a||!/^Bearer /.test(a))return;var j=dec(a);if(j&&j.aud&&String(j.aud).indexOf("outlook.office.com")!==-1&&(!j.exp||j.exp*1000>Date.now())){window.__owaTok=a.replace(/^Bearer\\s+/,"");}}',
+    'if(!window.__owaHooked){window.__owaHooked=true;',
+    'var of=window.fetch;window.fetch=function(input,init){try{var h=(init&&init.headers)||(input&&input.headers);var a=null;if(h){if(typeof h.get==="function")a=h.get("Authorization");else a=h.Authorization||h.authorization;}consider(a);}catch(e){}return of.apply(this,arguments);};',
+    'var ox=XMLHttpRequest.prototype.setRequestHeader;XMLHttpRequest.prototype.setRequestHeader=function(k,v){try{if(/^authorization$/i.test(k))consider(v);}catch(e){}return ox.apply(this,arguments);};}',
+    'try{document.dispatchEvent(new Event("visibilitychange"));window.dispatchEvent(new Event("focus"));window.dispatchEvent(new Event("online"));}catch(e){}',
+    'return window.__owaTok?"have":"hooked";})()',
+  ].join('');
+
+  await evalInTab(tabId, injectScript);
+
+  // Click a module-nav entry by accessible label to force the SPA to issue an
+  // authenticated request (passive focus/visibility events alone don't reliably
+  // trigger a sync). Switching Calendar <-> Mail each fires token-bearing calls;
+  // we always return to Mail at the end to restore the user's view.
+  const clickNav = (label) =>
+    evalInTab(
+      tabId,
+      '(function(){try{var el=document.querySelector(\'[aria-label="' +
+        label +
+        '"]\');if(el){(el.closest("button,[role=button],a")||el).click();return "c";}}catch(e){}return "n"})()'
+    );
+
+  let tok = null;
+  for (let i = 0; i < 15; i++) {
+    const raw = await evalInTab(tabId, '(window.__owaTok||null)');
+    if (raw) {
+      const candidate = unwrapEvalString(raw);
+      if (candidate && candidate.split('.').length === 3) {
+        tok = candidate;
+        break;
+      }
+    }
+    await clickNav(i % 2 === 0 ? 'Calendar' : 'Mail');
+    await sleep(1000);
+  }
+
+  await clickNav('Mail'); // restore Mail view
+  return tok;
+}
+
+async function extractTokenFromBrowser() {
+  const tabId = await findOutlookTab();
+  if (!tabId) return null;
+
+  // 1. Legacy plaintext MSAL cache.
+  const cached = await extractTokenFromCache(tabId);
+  if (cached) {
+    await fs.writeFile(TOKEN_PATH, cached);
+    return cached;
+  }
+
+  // 2. Encrypted-cache clients (outlook.cloud.microsoft): capture from network.
+  const captured = await captureTokenFromNetwork(tabId);
+  if (captured) {
+    await fs.writeFile(TOKEN_PATH, captured);
+    return captured;
+  }
+
   return null;
 }
 
