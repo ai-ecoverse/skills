@@ -293,9 +293,13 @@ async function cmdMail() {
   const search = flags.search || null;
   const date = flags.date || null;
 
-  // Build Gmail search query
+  // Build Gmail search query.
+  // Only scope to the inbox when the caller hasn't supplied an explicit search
+  // query — otherwise archived/labelled mail (e.g. auto-filed receipts) would be
+  // invisible. A caller who wants to restrict to the inbox can pass `in:inbox`
+  // (or `is:unread`) as part of --search.
   const queryParts = [];
-  queryParts.push('in:inbox');
+  if (!search) queryParts.push('in:inbox');
   if (unread) queryParts.push('is:unread');
   if (date) {
     const afterDate = durationToDate(date);
