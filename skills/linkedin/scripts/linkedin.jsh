@@ -36,6 +36,7 @@ try {
 
 var COMPANY_URN = config.companyUrn || 'urn:li:fsd_company:122314561';
 var COMPANY_ID = config.companyId || '122314561';
+var COMPANY_NAME = config.name || '';
 var AUTH_MODE = config.auth || 'session'; // 'session' or 'oauth'
 
 // ─── Argument Parsing ────────────────────────────────────────────────────────
@@ -600,6 +601,25 @@ async function listPosts(limit) {
 
         var stats = activityCounts[activityUrn] || {};
 
+        // Detect reshares/reposts. A genuine page post has the company as the
+        // actor and no reshare header. A repost surfaces the ORIGINAL author as
+        // the actor and carries a header such as "AI Ecoverse reposted this", so
+        // its commentary text is the original author's words, not the page's.
+        // Flag these so callers don't mistake a reshare for an original post.
+        function readText(t) {
+          if (!t) return '';
+          return (typeof t === 'string' ? t : (t.text || '')) || '';
+        }
+        var repostHeader = item.header ? readText(item.header.text) : '';
+        var actorName = item.actor ? readText(item.actor.name) : '';
+        var isRepost = /\b(reposted|reshared)\b/i.test(repostHeader);
+        // Fallback: if a company name is configured and the actor is someone
+        // else, treat it as a repost even if the header text is absent.
+        if (!isRepost && COMPANY_NAME && actorName &&
+            actorName.toLowerCase() !== COMPANY_NAME.toLowerCase()) {
+          isRepost = true;
+        }
+
         // Resolve a published timestamp. Check the post item first, then walk
         // included for related update/share/activity entries.
         function pickTs(o) {
@@ -628,6 +648,9 @@ async function listPosts(limit) {
         posts.push({
           activityUrn: activityUrn,
           text: text,
+          isRepost: isRepost,
+          repostHeader: isRepost ? (repostHeader || null) : null,
+          originalAuthor: isRepost ? (actorName || null) : null,
           comments: stats.comments || 0,
           reposts: stats.reposts || 0,
           likes: stats.likes || 0,
