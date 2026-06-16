@@ -94,7 +94,8 @@ These hit the public-API surface at `www-us2.api.concursolutions.com/api/v3.0/*`
 
 | Command | Description |
 |---|---|
-| `concur ops` | List all 56 bundled GraphQL operations. |
+| `concur ops` | List all bundled GraphQL operations. |
+| `concur exceptions <reportId>` | Report status check: lists all validation exceptions (errors/warnings) grouped per entry, with `code`, `isBlocking`, and `message` (e.g. `ITEMREQ` "Itemizations are required", `RECEIPT_REQUIRED` "You must attach a receipt image"). Returns `hasBlockingExceptions` so you can tell if a report can be submitted. |
 | `concur graphql <opName> [<variables-json>] [spend\|cds]` | Run any captured operation verbatim. |
 | `concur tab` | Print the targetId of the Concur tab the skill is using. |
 | `concur help` | Usage + examples. |
