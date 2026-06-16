@@ -51,8 +51,7 @@ Notes:
 `.trim();
 
 if (!cmd || cmd === 'help' || cmd === '--help') {
-  console.log(HELP);
-  process.exit(0);
+  cli.help(HELP);
 }
 
 if (cmd === 'write') {
