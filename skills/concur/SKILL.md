@@ -23,6 +23,42 @@ concur reports-v3                          # full historical report list (REST v
 concur ops                                 # list every callable GraphQL operation
 ```
 
+## Workflow: build and submit an out-of-pocket expense report
+
+End-to-end sequence for filing a cash/personal expense report from scratch. Validate at each checkpoint before proceeding.
+
+```bash
+# 1. Create the report header (or reuse an existing reportId)
+concur graphql CreateReportHeader '{"userId":"<uid>","contextRole":"TRAVELER","fields":{...}}'
+#    Checkpoint: capture the returned reportId.
+
+# 2. Add each out-of-pocket line. Meals/lodging: isExpensePartOfTravelAllowance true;
+#    transport (TAXIX): false. Foreign currency needs --exchange; same-currency uses 1.0.
+concur new-expense <reportId> --type=BRKFT --date=2026-06-01 --vendor="..." \
+  --amount=39.38 --currency=GBP --location=<locationId> --payment=CASH --exchange=1.1555 \
+  --fields='{"custom8":{...},"custom24":{...},"taxRateLocation":"HOME","receiptTypeId":"R","isExpensePartOfTravelAllowance":true}'
+#    Checkpoint: each call returns the new expenseId — record it for the receipt step.
+
+# 3. Itemize entries that require it (e.g. hotel folio -> room + tax per night)
+concur itemize hotel <reportId> <hotelExpenseId> bill.json
+#    Checkpoint: sum of itemizations must equal the parent entry total.
+
+# 4. Attach a receipt image to each entry
+concur attach-receipt <reportId> <expenseId> /path/to/receipt.jpg
+
+# 5. Check exceptions — this is the submit gate
+concur exceptions <reportId>
+#    Checkpoint: hasBlockingExceptions MUST be false before submitting.
+#    Fix blocking issues (ITEMREQ -> itemize; some RECEIPT_REQUIRED -> attach-receipt) and re-check.
+
+# 6. Submit (2-step validate + commit, both must be COMPLETED)
+concur submit <reportId>
+#    Checkpoint: verify with `concur report-v3 <reportId>` (ApprovalStatusName changes from
+#    "Not Submitted" to "Pending Audit Review"/"Submitted & Pending Approval").
+```
+
+To flip an existing card transaction to personal/out-of-pocket: `concur set-payment <reportId> <expenseId> CASH`.
+
 ## Authentication
 
 Concur authenticates with cookies on `*.concursolutions.com`. SLICC's localhost-origin `fetch` cannot send those cookies, so this skill **always issues requests from the page context** of an existing Concur tab via `playwright-cli eval-file`.
