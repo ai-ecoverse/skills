@@ -25,7 +25,7 @@ jobs:
       matrix:
         tile: [basic, advanced]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: tesslio/setup-tessl@v2
         with:
