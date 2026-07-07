@@ -1,7 +1,12 @@
 name: Tessl Skill Review
 
+# Uses pull_request_target so the review job can access TESSLIO_TOKEN on PRs
+# from forks (secrets are never exposed to plain `pull_request` fork runs).
+# The token lives in the `tessl-review` deployment environment, which is
+# configured with required reviewers — a maintainer must approve each fork
+# run before the secret is exposed to PR-supplied content.
 on:
-  pull_request:
+  pull_request_target:
     branches: [main]
     paths:
       - 'skills/**'
@@ -17,14 +22,21 @@ jobs:
       skills: ${{ steps.detect.outputs.skills }}
       has_skills: ${{ steps.detect.outputs.has_skills }}
     steps:
+      # Check out the PR merge ref so detection sees the merged result that
+      # will land on main (works for fork PRs under pull_request_target).
       - uses: actions/checkout@v6
         with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
           fetch-depth: 0
 
       - name: Detect changed skills in tile
         id: detect
+        # base.sha and head.sha are hex SHAs (safe to interpolate) and are both
+        # reachable from the merge commit, so this diff is exactly the PR changes.
         run: |
-          CHANGED_FILES=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
+          CHANGED_FILES=$(git diff --name-only \
+            "${{ github.event.pull_request.base.sha }}" \
+            "${{ github.event.pull_request.head.sha }}")
 
           # Unique skill dirs touched in this PR
           CHANGED_SKILLS=$(echo "$CHANGED_FILES" \
@@ -75,12 +87,19 @@ jobs:
     needs: detect
     if: needs.detect.outputs.has_skills == 'true'
     runs-on: ubuntu-latest
+    # Required-reviewer gate: TESSLIO_TOKEN is an environment secret on
+    # `tessl-review`, so a maintainer must approve the run before the token
+    # is available to the (PR-supplied) skill content being reviewed.
+    environment: tessl-review
     strategy:
       fail-fast: false
       matrix:
         skill: ${{ fromJSON(needs.detect.outputs.skills) }}
     steps:
+      # Review the merged result (the PR content) rather than the base branch.
       - uses: actions/checkout@v6
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
 
       - uses: tesslio/setup-tessl@v2
         with:
