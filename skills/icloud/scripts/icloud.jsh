@@ -413,7 +413,7 @@ async function cmdCalendarCreate(flags, positional) {
     let jsonInput = '';
     if (typeof flags['from-json'] === 'string' && flags['from-json'] !== 'true') {
       try {
-        jsonInput = await fs.promises.readFile(flags['from-json'], 'utf8');
+        jsonInput = await fs.readFile(flags['from-json']);
       } catch (e) {
         cli.die(`icloud calendar create: cannot read file "${flags['from-json']}": ${e.message}`, { prefix: '' });
       }
