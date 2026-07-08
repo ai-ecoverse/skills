@@ -73,6 +73,34 @@
 // │  • `skill.token('github')` and `exec('git remote get-url origin ...')`     │
 // │    both work correctly again now that they're properly required — no      │
 // │    change needed to the token-resolution or repo-inference logic itself.  │
+// ├─────────────────────────────────────────────────────────────────────────────┤
+// │ FOLLOW-UP (this commit) — real fixes found while triaging stale           │
+// │ Copilot review comments anchored to earlier, superseded commits:          │
+// │                                                                             │
+// │  • The Copilot comments themselves were stale (anchored to commits        │
+// │    before the sliccy:* correction above and describing code that no       │
+// │    longer exists — no local `colorsEnabled`/`process.stdout.isTTY` check,  │
+// │    no `process.env.GITHUB_TOKEN`-centric error message, no `.git/config`  │
+// │    file-parsing). But re-checking the underlying instincts against the    │
+// │    CURRENT code surfaced two real, distinct issues, fixed here:            │
+// │  • Missing-token path: previously `personalToken` could silently end up   │
+// │    `''` if `skill.token('github')` throws AND `git config github.token`   │
+// │    is empty AND `GITHUB_TOKEN` is unset — the failure only surfaced       │
+// │    later as an opaque HTTP 401 from `fail()`. Added an explicit upfront   │
+// │    `cli.die()` with an actionable message covering all three fallbacks.   │
+// │  • Repo inference (`inferRepo()`): `exec('git remote get-url origin')`    │
+// │    does not reliably resolve in this sandbox's git wrapper (observed to   │
+// │    echo back the literal argument instead of the configured URL) and,    │
+// │    like most git subcommands here, only behaves correctly when cwd is     │
+// │    exactly the repo root — it does not walk up to find `.git` the way     │
+// │    real git normally does. Fixed by resolving the repo root explicitly    │
+// │    via `git rev-parse --show-toplevel` (confirmed to walk up parent       │
+// │    directories correctly) and then reading the origin URL from that       │
+// │    root specifically via `git -C <root> config --get remote.origin.url`   │
+// │    (confirmed origin-specific and subdirectory-safe). This limitation     │
+// │    pre-dates this PR — the same `git remote get-url origin` call is       │
+// │    present unchanged on `main` today — so this is a genuine improvement,  │
+// │    not a regression fix.                                                  │
 // └─────────────────────────────────────────────────────────────────────────────┘
 
 const skill = require('sliccy:skill');
@@ -152,6 +180,16 @@ try {
   // Fallback to legacy methods
   const _tokenResult = await exec('git config github.token 2>/dev/null');
   personalToken = _tokenResult.stdout.trim() || process.env.GITHUB_TOKEN || '';
+}
+
+if (!personalToken) {
+  cli.die(
+    "No GitHub token available. skill.token('github') failed, `git config github.token` is unset, " +
+    'and GITHUB_TOKEN is not set in the environment. Run `oauth-token github` to obtain a token, then ' +
+    'either let skill.token(\'github\') pick it up automatically or set it explicitly with ' +
+    '`export GITHUB_TOKEN="$(oauth-token github)"` or `git config github.token "$(oauth-token github)"`.',
+    { prefix: 'gh' }
+  );
 }
 
 // ─── AI attribution (ai-aligned-gh) ──────────────────────────────────────────
@@ -267,10 +305,20 @@ function sym(s) { return SYM[s] || color.gray('?'); }
 // ─── Repo inference ───────────────────────────────────────────────────────────
 
 async function inferRepo() {
-  const r = await exec('git remote get-url origin 2>/dev/null');
+  // `git remote get-url origin` doesn't reliably resolve in this sandbox's
+  // git wrapper (it can echo back the literal argument instead of the
+  // configured URL) and, like most git subcommands run without `-C`, only
+  // works when cwd is exactly the repo root. Resolve the repo root
+  // explicitly first (git walks up parent directories for this on its own),
+  // then read the origin URL from that root with `git -C <root> config`,
+  // which is both origin-specific and subdirectory-safe.
+  const top = await exec('git rev-parse --show-toplevel 2>/dev/null');
+  if (top.exitCode !== 0 || !top.stdout.trim()) return null;
+  const toplevel = top.stdout.trim();
+  const r = await exec(`git -C "${toplevel}" config --get remote.origin.url 2>/dev/null`);
   if (r.exitCode !== 0 || !r.stdout.trim()) return null;
   const match = r.stdout.trim().match(/github\.com[:/]([^/\s]+\/[^/\s.]+)/);
-  return match ? match[1] : null;
+  return match ? match[1].replace(/\.git$/, '') : null;
 }
 
 async function resolveRepo(arg) {
