@@ -17,6 +17,16 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Guard tiles/ skill symlinks
+        run: |
+          bad=$(git ls-files -s -- 'tiles/*/skills/*' | awk '$1 != "120000" { print $4 }')
+          if [ -n "$bad" ]; then
+            echo "::error::These tiles/ skill entries are not symlinks (git mode != 120000). They were likely committed with core.symlinks=false:"
+            echo "$bad"
+            exit 1
+          fi
+          echo "All tiles/ skill entries are symlinks."
+
       - uses: tesslio/setup-tessl@v2
 
       - name: Detect changed skills
