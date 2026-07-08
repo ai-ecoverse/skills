@@ -2,8 +2,11 @@
 //
 // Concur uses cookie-based auth on .concursolutions.com. Browser fetch from
 // SLICC's localhost origin can't carry that cookie, so every request runs
-// inside a page-context fetch via `playwright-cli eval-file` against a tab
-// already loaded on us2.concursolutions.com.
+// inside a page-context fetch via `sliccy:browser` against a tab already
+// loaded on us2.concursolutions.com.
+
+const exec = require('sliccy:exec');
+const browser = require('sliccy:browser');
 
 const APP_DOMAIN = 'concursolutions.com';
 const HOME_URL   = 'https://us2.concursolutions.com/home';
@@ -19,27 +22,16 @@ const PERSIST     = `${SKILL_DIR}/.session.json`;
 
 // ----------------- tab management -----------------
 
-let _tabId = null;
-
-async function findConcurTab() {
-  const r = await exec('playwright-cli tab-list');
-  // Match "[TARGETID] https://...concursolutions.com..."
-  const re = /\[([A-F0-9]+)\]\s+https?:\/\/[^\s]*concursolutions\.com/g;
-  const matches = [...r.stdout.matchAll(re)];
-  return matches.length ? matches[0][1] : null;
-}
+let _tab = null;
 
 async function ensureTab() {
-  if (_tabId) return _tabId;
-  const existing = await findConcurTab();
-  if (existing) { _tabId = existing; return _tabId; }
+  if (_tab) return _tab;
+  const existing = await browser.findTab({ urlMatch: /concursolutions\.com/ });
+  if (existing) { _tab = existing; return _tab; }
   console.error('No Concur tab open — opening one. This may require login.');
-  const r = await exec(`playwright-cli open ${HOME_URL}`);
-  const m = r.stdout.match(/targetId:\s*(\S+?)\]/);
-  if (!m) { console.error('Failed to open Concur tab:', r.stdout, r.stderr); process.exit(1); }
-  _tabId = m[1];
+  _tab = await browser.ensureTab(HOME_URL, { matchUrl: /concursolutions\.com/ });
   await new Promise(r => setTimeout(r, 4000));
-  return _tabId;
+  return _tab;
 }
 
 // ----------------- session info -----------------
@@ -114,72 +106,36 @@ async function loadOp(name) {
 
 // ----------------- page-context fetch -----------------
 //
-// We write the request payload to a JS file and run it via
-// `playwright-cli eval-file --tab=<id>`. The page context handles cookies,
-// origin, and any required browser headers automatically.
+// Requests run inside the Concur tab's page context via `sliccy:browser`'s
+// browser.fetch(). The page context handles cookies, origin, and any
+// required browser headers automatically (credentials: 'include' is the
+// browser.fetch default).
 
 async function pageFetch(url, options = {}) {
-  const tabId = await ensureTab();
-  const payload = {
-    url,
-    method: options.method || 'GET',
-    body: options.body ?? null,
-    headers: options.headers || {},
-  };
-  // Playwright runs in a separate container/namespace and reliably sees
-  // /shared but not /tmp; other skills in this repo use /shared for the
-  // same eval-file pattern.
-  const evalFile = `/shared/.concur-fetch-${Date.now()}-${Math.random().toString(36).slice(2,8)}.js`;
-  const script = `
-(async () => {
-  const p = ${JSON.stringify(payload)};
-  const init = { method: p.method, credentials: 'include', headers: { 'Accept': 'application/json', ...p.headers } };
-  if (p.body !== null && p.body !== undefined && p.method !== 'GET') {
-    init.headers['Content-Type'] = init.headers['Content-Type'] || 'application/json';
-    init.body = typeof p.body === 'string' ? p.body : JSON.stringify(p.body);
+  const tab = await ensureTab();
+  const method = options.method || 'GET';
+  const headers = { 'Accept': 'application/json', ...(options.headers || {}) };
+  const body = options.body ?? null;
+  if (body !== null && body !== undefined && method !== 'GET') {
+    headers['Content-Type'] = headers['Content-Type'] || 'application/json';
   }
   let resp;
-  try { resp = await fetch(p.url, init); }
-  catch (e) { return JSON.stringify({ __concur_error: 'network', message: String(e) }); }
-  const status = resp.status;
-  const ctype = resp.headers.get('content-type') || '';
-  const text = await resp.text();
-  if (!resp.ok) return JSON.stringify({ __concur_error: 'http', status, body: text.slice(0, 4000) });
-  if (/json/i.test(ctype)) {
-    try { return JSON.stringify({ ok: true, status, json: JSON.parse(text) }); }
-    catch { return JSON.stringify({ ok: true, status, text }); }
-  }
-  return JSON.stringify({ ok: true, status, text });
-})()
-  `.trim();
-  await writeFile(evalFile, script);
-  const r = await exec(`playwright-cli eval-file ${evalFile} --tab=${tabId}`);
-  await exec(`rm -f ${evalFile}`);
-  if (r.exitCode !== 0) {
-    console.error('eval-file failed:', r.stderr);
+  try {
+    resp = await browser.fetch(tab, url, { method, headers, body });
+  } catch (e) {
+    console.error('Network error:', e?.message || e);
     process.exit(1);
   }
-  // playwright-cli eval-file output sometimes wraps the return value;
-  // strip leading/trailing non-JSON noise.
-  const out = r.stdout.trim();
-  const start = out.indexOf('{');
-  const end   = out.lastIndexOf('}');
-  let parsed;
-  try { parsed = JSON.parse(start >= 0 ? out.slice(start, end + 1) : out); }
-  catch (e) { console.error('Could not parse pageFetch result:', out.slice(0, 1000)); process.exit(1); }
-  if (parsed.__concur_error === 'network') {
-    console.error('Network error:', parsed.message);
-    process.exit(1);
-  }
-  if (parsed.__concur_error === 'http') {
-    if (parsed.status === 401 || parsed.status === 403) {
-      console.error(`Auth failed (${parsed.status}). Open ${HOST_WEB} in your browser, log in, and retry.`);
+  if (!resp.ok) {
+    if (resp.status === 401 || resp.status === 403) {
+      console.error(`Auth failed (${resp.status}). Open ${HOST_WEB} in your browser, log in, and retry.`);
     } else {
-      console.error(`HTTP ${parsed.status}:`, parsed.body);
+      const bodyStr = typeof resp.body === 'string' ? resp.body : JSON.stringify(resp.body);
+      console.error(`HTTP ${resp.status}:`, (bodyStr || '').slice(0, 4000));
     }
     process.exit(1);
   }
-  return parsed.json !== undefined ? parsed.json : parsed.text;
+  return resp.body;
 }
 
 // ----------------- GraphQL helpers -----------------
@@ -839,9 +795,12 @@ const commands = {
     if (b64r.exitCode !== 0) { console.error('base64 failed'); process.exit(1); }
     const b64 = b64r.stdout.trim();
 
-    // Upload via page-context fetch with multipart FormData
-    const tabId = await ensureTab();
-    const evalFile = `/shared/.concur-upload-${Date.now()}.js`;
+    // Upload via page-context fetch with multipart FormData. browser.fetch()
+    // JSON-stringifies object bodies, which can't carry a Blob/FormData, so
+    // this one request still goes through browser.evalAsync() with the
+    // payload embedded as a literal (evalAsync serializes the function to a
+    // string call expression, same technique the old eval-file used).
+    const tab = await ensureTab();
     const filename = jpgPath.split('/').pop();
     const uploadScript = `
 (async () => {
@@ -859,16 +818,15 @@ const commands = {
   return JSON.stringify({ status: r.status, body: text });
 })()
     `.trim();
-    await writeFile(evalFile, uploadScript);
-    const upRes = await exec(`playwright-cli eval-file ${evalFile} --tab=${tabId}`);
-    await exec(`rm -f ${evalFile}`);
+    let wrap;
+    try {
+      const upRes = await browser.evalAsync(tab, uploadScript);
+      wrap = typeof upRes === 'string' ? JSON.parse(upRes) : upRes;
+    } catch (e) {
+      console.error('upload failed:', e?.message || e);
+      process.exit(1);
+    }
     if (jpgPath !== localPath) await exec(`rm -f "${jpgPath}"`);
-    if (upRes.exitCode !== 0) { console.error('upload failed:', upRes.stderr); process.exit(1); }
-
-    // Parse upload response
-    const out = upRes.stdout.trim();
-    const start = out.indexOf('{'), end = out.lastIndexOf('}');
-    const wrap = JSON.parse(start >= 0 ? out.slice(start, end + 1) : out);
     if (wrap.status >= 400) {
       console.error(`Upload HTTP ${wrap.status}:`, wrap.body);
       process.exit(1);
@@ -1050,8 +1008,8 @@ const commands = {
   },
 
   async tab() {
-    const id = await ensureTab();
-    return { tabId: id };
+    const t = await ensureTab();
+    return { tab: t };
   },
 
   async help() {
