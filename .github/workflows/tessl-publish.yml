@@ -1,4 +1,4 @@
-name: Tessl Tile Publish
+name: Tessl Plugin Publish
 
 on:
   push:
@@ -6,23 +6,16 @@ on:
     paths:
       - 'tiles/**'
       - 'skills/**'
-      - '.tileignore'
 
 permissions:
-  contents: write
+  contents: read
   id-token: write
-  pull-requests: write
 
 jobs:
   publish:
     runs-on: ubuntu-latest
-    # Skip the bot's own version-bump commits
-    if: "!contains(github.event.head_commit.message, '[skip ci]')"
     strategy:
       fail-fast: false
-      # Serialize so two parallel `git push` of bumped tile.json files
-      # don't race on the same branch HEAD.
-      max-parallel: 1
       matrix:
         tile: [basic, advanced]
     steps:
@@ -30,86 +23,13 @@ jobs:
         with:
           ref: ${{ github.ref }}
 
-      # Pick up any [skip ci] bump commit from a previous matrix job
-      # so our own push isn't rejected as non-fast-forward.
-      - name: Pull latest from branch
-        run: |
-          git fetch origin "${GITHUB_REF#refs/heads/}"
-          git reset --hard "origin/${GITHUB_REF#refs/heads/}"
-
       - uses: tesslio/setup-tessl@v2
         with:
           token: ${{ secrets.TESSLIO_TOKEN }}
 
-      - name: Publish tile and open version bump PR
+      - name: Publish plugin
         env:
-          GH_TOKEN: ${{ github.token }}
-          TILE: ${{ matrix.tile }}
+          PLUGIN: ${{ matrix.tile }}
         run: |
           set -euo pipefail
-
-          TILE_PATH="tiles/$TILE"
-          TILE_MANIFEST="$TILE_PATH/tile.json"
-          TILE_NAME=$(jq -r .name "$TILE_MANIFEST")
-          CURRENT_VERSION=$(jq -r .version "$TILE_MANIFEST")
-
-          echo "Preparing $TILE_NAME from $TILE_PATH"
-
-          INFO_OUTPUT=$(tessl tile info "$TILE_NAME" 2>&1 || true)
-          LATEST_VERSION=$(printf '%s\n' "$INFO_OUTPUT" | awk '/Latest Version/ {print $NF; exit}')
-
-          if [ -n "$LATEST_VERSION" ]; then
-            if ! printf '%s\n' "$LATEST_VERSION" | grep -Eq '^[0-9]+[.][0-9]+[.][0-9]+$'; then
-              echo "::error::Unexpected latest version from Tessl: $LATEST_VERSION"
-              exit 1
-            fi
-            IFS=. read -r major minor patch <<EOF
-          $LATEST_VERSION
-          EOF
-            REGISTRY_NEXT="$major.$minor.$((patch + 1))"
-            NEXT_VERSION=$(printf '%s\n%s\n' "$CURRENT_VERSION" "$REGISTRY_NEXT" | sort -V | tail -n1)
-          else
-            NEXT_VERSION="$CURRENT_VERSION"
-          fi
-
-          echo "Publishing $TILE_NAME@$NEXT_VERSION"
-          jq --arg version "$NEXT_VERSION" '.version = $version' "$TILE_MANIFEST" > "$TILE_MANIFEST.tmp"
-          mv "$TILE_MANIFEST.tmp" "$TILE_MANIFEST"
-
-          # tessl >=0.81 rejects symlinks for security. Dereference the tile
-          # into a concrete temp copy so published tiles ship real files.
-          TMP=$(mktemp -d)
-          cp -rL "$TILE_PATH" "$TMP/$TILE"
-          tessl tile publish "$TMP/$TILE"
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "$TILE_MANIFEST"
-
-          if git diff --cached --quiet; then
-            echo "No version change to commit."
-            exit 0
-          fi
-
-          git commit -m "Bump $TILE_NAME to $NEXT_VERSION [skip ci]"
-
-          if git push; then
-            echo "Pushed version bump directly to ${GITHUB_REF#refs/heads/}."
-            exit 0
-          fi
-
-          BRANCH="tessl-bump-$TILE-$NEXT_VERSION"
-          git checkout -B "$BRANCH"
-          git push --force-with-lease -u origin "$BRANCH"
-
-          existing_pr=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
-          if [ -n "$existing_pr" ]; then
-            echo "Version bump PR #$existing_pr already exists for $BRANCH."
-            exit 0
-          fi
-
-          gh pr create \
-            --head "$BRANCH" \
-            --base "${GITHUB_REF#refs/heads/}" \
-            --title "Bump $TILE_NAME to $NEXT_VERSION [skip ci]" \
-            --body "Automated Tessl tile version bump for $TILE_NAME."
+          tessl plugin publish --bump patch --resolve-symlinks "tiles/$PLUGIN"
