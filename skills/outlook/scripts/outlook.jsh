@@ -39,6 +39,37 @@
 // │    or logic change. PR #143's own new `captureTokenFromNetwork` /          │
 // │    `extractTokenFromCache` two-strategy token logic is unchanged beyond    │
 // │    what was needed to make it run (the `exec`/`fs` imports above).        │
+// ├─────────────────────────────────────────────────────────────────────────────┤
+// │ FIX — revalidate captured tokens before reusing them (review comment,      │
+// │ chatgpt-codex-connector[bot], P2)                                          │
+// │                                                                             │
+// │ `captureTokenFromNetwork()`'s poll loop read `window.__owaTok` and only    │
+// │ checked that it LOOKED like a JWT (three dot-separated parts) before       │
+// │ accepting it — not that it was still valid. `__owaTok` is a page-global    │
+// │ set by the injected `consider()` hook and persists across multiple calls   │
+// │ into the same tab (the hook itself only installs once, guarded by         │
+// │ `__owaHooked`, by design — that part is correct and unchanged). If a       │
+// │ previous call's captured token was still sitting in `__owaTok` when a      │
+// │ later call started polling, and it had since expired, the old loop would  │
+// │ return that stale token on its very first iteration, before the freshly   │
+// │ (re)triggered fetch had any chance to produce a genuinely new one.        │
+// │ Fixed both ways the review comment suggested, together rather than        │
+// │ either alone:                                                              │
+// │  • `window.__owaTok=null;` is now the first thing the injection script     │
+// │    does on every call, before the `__owaHooked` check — this clears only   │
+// │    the captured *value*, not the one-time hook installation, so a stale    │
+// │    value from a prior call can never leak into a new call's poll loop.    │
+// │  • Added `decodeJwtPayload()` / `isFreshBearerCandidate()` on the Node      │
+// │    side, mirroring the injected script's own `dec()`/`consider()` claim-   │
+// │    checking logic (aud must target outlook.office.com, exp must be in the  │
+// │    future) rather than reinventing it, plus a 60s safety margin so a       │
+// │    token that's about to expire isn't handed back only to expire before    │
+// │    it's actually used for a real API call. The poll loop now calls this    │
+// │    instead of the old `candidate.split('.').length === 3` shape-only       │
+// │    check.                                                                  │
+// │ Scope: entirely inside `captureTokenFromNetwork()` (strategy 2, the        │
+// │ encrypted-cache path) — `extractTokenFromCache()` (strategy 1, legacy      │
+// │ plaintext cache) is untouched by this fix.                                │
 // └─────────────────────────────────────────────────────────────────────────────┘
 
 const exec = require('sliccy:exec');
@@ -203,6 +234,44 @@ async function extractTokenFromCache(tabId) {
   return null;
 }
 
+// Decode a JWT's payload (base64url, no signature check — we only need the
+// claims, not verification, since this token was captured straight from the
+// page's own outgoing Authorization header). Returns null on any parse
+// failure or malformed input. Mirrors the injected `dec()` helper's logic
+// below, translated to the Node/.jsh side (no `atob` here — use
+// Buffer.from(..., 'base64') instead).
+function decodeJwtPayload(tok) {
+  try {
+    const parts = tok.split('.');
+    if (parts.length !== 3) return null;
+    let s = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const pad = s.length % 4;
+    if (pad) s += '===='.slice(pad);
+    return JSON.parse(Buffer.from(s, 'base64').toString('utf8'));
+  } catch {
+    return null;
+  }
+}
+
+// Revalidate a captured bearer token candidate before trusting it: require a
+// well-formed JWT, an `aud` targeting outlook.office.com (same check as the
+// injected `consider()` below), and `exp` at least SAFETY_MARGIN_MS in the
+// future. Without this, a stale `window.__owaTok` left over from a *previous*
+// call into the same tab (the hook only installs once via `__owaHooked` and
+// the page-global `__owaTok` can outlive its own token's validity) would be
+// accepted on the very first poll iteration, before the freshly (re)installed
+// hook ever gets a chance to observe a genuinely new Authorization header.
+const TOKEN_EXP_SAFETY_MARGIN_MS = 60 * 1000;
+
+function isFreshBearerCandidate(candidate) {
+  if (!candidate || candidate.split('.').length !== 3) return false;
+  const claims = decodeJwtPayload(candidate);
+  if (!claims) return false;
+  if (!claims.aud || String(claims.aud).indexOf('outlook.office.com') === -1) return false;
+  if (!claims.exp) return false; // no exp claim — cannot prove freshness, reject
+  return claims.exp * 1000 > Date.now() + TOKEN_EXP_SAFETY_MARGIN_MS;
+}
+
 // Strategy 2 — live network capture (new outlook.cloud.microsoft client).
 // When the MSAL cache is encrypted we cannot read the token at rest, but the SPA
 // constantly sends it as an `Authorization: Bearer` header. We hook fetch and
@@ -212,6 +281,15 @@ async function extractTokenFromCache(tabId) {
 async function captureTokenFromNetwork(tabId) {
   const injectScript = [
     '(function(){',
+    // Clear any previously captured token value up front, on every call, so a
+    // stale value from an earlier invocation into this same tab can never be
+    // read by this call's poll loop below — regardless of the exp/aud check
+    // in isFreshBearerCandidate(), belt-and-suspenders per the review comment.
+    // This does NOT touch `__owaHooked` — the fetch/XHR hook installation
+    // below must stay one-time-per-page-load (re-wrapping window.fetch/XHR on
+    // every call would stack duplicate wrappers), only the *captured value*
+    // is reset here.
+    'window.__owaTok=null;',
     'function dec(t){try{var p=t.replace(/^Bearer\\s+/,"");var b=p.split(".")[1];var s=b.replace(/-/g,"+").replace(/_/g,"/");var pad=s.length%4;if(pad)s+="====".slice(pad);return JSON.parse(atob(s));}catch(e){return null;}}',
     'function consider(a){if(!a||!/^Bearer /.test(a))return;var j=dec(a);if(j&&j.aud&&String(j.aud).indexOf("outlook.office.com")!==-1&&(!j.exp||j.exp*1000>Date.now())){window.__owaTok=a.replace(/^Bearer\\s+/,"");}}',
     'if(!window.__owaHooked){window.__owaHooked=true;',
@@ -240,7 +318,9 @@ async function captureTokenFromNetwork(tabId) {
     const raw = await evalInTab(tabId, '(window.__owaTok||null)');
     if (raw) {
       const candidate = unwrapEvalString(raw);
-      if (candidate && candidate.split('.').length === 3) {
+      // Revalidate exp/aud here rather than trusting the three-dot-parts shape
+      // check alone — see isFreshBearerCandidate() above for why.
+      if (isFreshBearerCandidate(candidate)) {
         tok = candidate;
         break;
       }
