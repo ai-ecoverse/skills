@@ -13,6 +13,39 @@
 //   linkedin watches                   List active watches
 //   linkedin monday [--limit N] [--date Nd]  Monday protocol aggregation
 //   linkedin help                      Show this help
+//
+// ┌─────────────────────────────────────────────────────────────────────────────┐
+// │ FIX — explicit sliccy: module imports (this commit)                        │
+// │                                                                             │
+// │ The `.jsh` runtime no longer injects `exec` (or `skill`/`cli`/`fmt`/`c`/    │
+// │ `http`/`browser`/`time`/`pool`) as a bare global. It still exists and      │
+// │ works exactly as before — it must now be obtained explicitly via          │
+// │ `require('sliccy:exec')`. This script (pre-existing, unrelated to this     │
+// │ PR's original repost/reshare feature) had zero `require('sliccy:...')`     │
+// │ calls and crashed immediately on every command. Concretely:               │
+// │  • Added `const exec = require('sliccy:exec');` at the top of the file.   │
+// │    Checked via grep before importing anything (same discipline as the     │
+// │    gh.jsh/gmail.jsh/outlook.jsh ports this session): this script does not  │
+// │    use `skill`, `cli`, `fmt`, `c`/`color`, `http`, `browser`, `time`, or    │
+// │    `pool` anywhere — it drives the LinkedIn tab entirely through          │
+// │    `exec('playwright-cli ...')` shell-outs, not the `sliccy:browser`       │
+// │    bridge — so none of those were imported.                               │
+// │  • Added `const fs = require('fs');` (VFS bridge, not a `sliccy:` module). │
+// │    This script's `fs.readFile` / `fs.writeFile` / `fs.stat` / `fs.rm` call │
+// │    sites needed no further changes beyond the import — those methods      │
+// │    exist directly on the `require('fs')` object, not only under           │
+// │    `.promises` (same finding as the other ports this session).            │
+// │  • `process.argv.parseFlags()` is NOT used anywhere in this script — its   │
+// │    argument parsing (see "Argument Parsing" below) was already a fully    │
+// │    manual local loop over `process.argv.slice(2)`, so no local            │
+// │    replacement was needed here.                                           │
+// │  • No other call sites changed. Every command, subcommand, and flag       │
+// │    behaves exactly as before — this is a runtime-API port, not a feature  │
+// │    or logic change.                                                       │
+// └─────────────────────────────────────────────────────────────────────────────┘
+
+const exec = require('sliccy:exec');
+const fs = require('fs'); // VFS bridge, not a sliccy: module
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
@@ -36,6 +69,13 @@ try {
 
 var COMPANY_URN = config.companyUrn || 'urn:li:fsd_company:122314561';
 var COMPANY_ID = config.companyId || '122314561';
+// Read the same key `linkedin setup ... --name="..."` persists (config.companyName,
+// see the `cmd === 'setup'` handler below) — NOT `config.name`, which nothing ever
+// writes. Fixes review comment 3422836755: the repost-fallback detection in
+// listPosts() compares the post's actor name against this constant, and with the
+// wrong key it read undefined/'' for every normally-configured setup, silently
+// disabling the fallback whenever LinkedIn's reshare-header text was absent/changed.
+var COMPANY_NAME = config.companyName || '';
 var AUTH_MODE = config.auth || 'session'; // 'session' or 'oauth'
 
 // ─── Argument Parsing ────────────────────────────────────────────────────────
@@ -600,6 +640,25 @@ async function listPosts(limit) {
 
         var stats = activityCounts[activityUrn] || {};
 
+        // Detect reshares/reposts. A genuine page post has the company as the
+        // actor and no reshare header. A repost surfaces the ORIGINAL author as
+        // the actor and carries a header such as "AI Ecoverse reposted this", so
+        // its commentary text is the original author's words, not the page's.
+        // Flag these so callers don't mistake a reshare for an original post.
+        function readText(t) {
+          if (!t) return '';
+          return (typeof t === 'string' ? t : (t.text || '')) || '';
+        }
+        var repostHeader = item.header ? readText(item.header.text) : '';
+        var actorName = item.actor ? readText(item.actor.name) : '';
+        var isRepost = /\b(reposted|reshared)\b/i.test(repostHeader);
+        // Fallback: if a company name is configured and the actor is someone
+        // else, treat it as a repost even if the header text is absent.
+        if (!isRepost && COMPANY_NAME && actorName &&
+            actorName.toLowerCase() !== COMPANY_NAME.toLowerCase()) {
+          isRepost = true;
+        }
+
         // Resolve a published timestamp. Check the post item first, then walk
         // included for related update/share/activity entries.
         function pickTs(o) {
@@ -628,6 +687,9 @@ async function listPosts(limit) {
         posts.push({
           activityUrn: activityUrn,
           text: text,
+          isRepost: isRepost,
+          repostHeader: isRepost ? (repostHeader || null) : null,
+          originalAuthor: isRepost ? (actorName || null) : null,
           comments: stats.comments || 0,
           reposts: stats.reposts || 0,
           likes: stats.likes || 0,

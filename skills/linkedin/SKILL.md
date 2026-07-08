@@ -176,6 +176,17 @@ caption and optional alt text.
 
 List recent posts with engagement statistics (comments, likes, reposts).
 
+Each post includes an `isRepost` flag. When the page reshares another author's
+post (rather than publishing original content), `isRepost` is `true` and two
+extra fields are populated:
+
+- `repostHeader` — the reshare attribution, e.g. `"AI Ecoverse reposted this"`
+- `originalAuthor` — the name of the original author whose post was reshared
+
+For reposts, the `text` field holds the **original author's** words, not the
+page's own copy. Filter on `isRepost` when auditing only the content the page
+authored itself (e.g. content-log entries, cadence tracking, voice analysis).
+
 ### linkedin comments \<activityId\>
 
 View comments on a specific post.
