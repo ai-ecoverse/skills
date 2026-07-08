@@ -86,6 +86,7 @@ This is the most common multi-step flow. Follow these steps in order, validating
 /workspace/skills/github/scripts/gh.jsh content put src/index.js ./index.js "Add entry point" --branch=my-feature owner/repo
 
 # 3. Open the PR — note the returned PR number, e.g. "Created PR #123"
+#    (the command also prints a `gh pr watch <num>` tip using that real number)
 /workspace/skills/github/scripts/gh.jsh pr create "My title" "PR body" my-feature owner/repo
 
 # 4. Verify CI has started for that PR (substitute the real number for <PR_NUMBER>)
@@ -98,7 +99,7 @@ This is the most common multi-step flow. Follow these steps in order, validating
 
 **Validation checkpoints:**
 - After `branch create`: confirm no error output before pushing content.
-- After `pr create`: capture the new PR number from the command's output and reuse it in steps 4 and 5 — never reuse a number from another PR.
+- After `pr create`: capture the new PR number from the command's output and reuse it in steps 4 and 5 — never reuse a number from another PR. Optionally run `pr watch <PR_NUMBER>` right away to get live updates instead of manually re-running `pr view`/`run list`.
 - After `pr view`: read the `Checks:` line in the output (e.g. `Checks:  3 passed`) — only proceed to merge when there are no `failed` or `pending` entries. If any check failed, inspect with `run view <id>` before proceeding.
 
 ### Review and merge an existing PR
@@ -119,7 +120,12 @@ Substitute `<PR_NUMBER>` with the actual PR number you intend to act on.
 
 ### Keeping a scoop in the loop on a PR until merged
 
-A real GitHub repository webhook can push PR events (new review comments, CI completing, the PR closing) to a scoop the moment they happen, instead of polling `pr view`/`run list` in a loop. See [`references/webhook-pr-monitoring.md`](references/webhook-pr-monitoring.md) for the full recipe — setup (SLICC `webhook create` + a real GitHub repo webhook), the self-echo-detection pattern a scoop needs when watching its own PR, and the stop condition for tearing the webhook down once the PR is merged or closed.
+```bash
+gh.jsh pr watch 151                    # start watching — wires up a live webhook
+gh.jsh pr watch 151 --filter "e => e.body.action !== 'synchronize'"  # drop noisy events
+gh.jsh pr unwatch 151                  # stop watching, tears down both webhook layers
+```
+`pr watch` pushes PR events (new review comments, CI completing, the PR closing) to the current scoop the moment they happen, instead of polling `pr view`/`run list` in a loop — it wires up a SLICC webhook and registers it as a real GitHub repo webhook in one step, and is idempotent (running it again on a PR already being watched is a no-op). `pr create` prints a `pr watch <num>` tip using the real new PR number. See [`references/webhook-pr-monitoring.md`](references/webhook-pr-monitoring.md) for exactly how this works under the hood, the manual equivalent if you need it outside `gh.jsh`, and the self-echo-detection pattern a scoop needs when watching its own PR.
 
 ---
 
@@ -138,7 +144,11 @@ gh.jsh pr merge 42 --squash
 gh.jsh pr merge 42 --rebase
 gh.jsh pr comment 42 "LGTM, merging now"
 gh.jsh pr checkout 42                     # prints git fetch/checkout commands (does not execute)
+gh.jsh pr watch 42                        # wire up a live webhook for PR events (idempotent)
+gh.jsh pr watch 42 --filter "e => e.body.action !== 'synchronize'"
+gh.jsh pr unwatch 42                      # tear down the webhook from `pr watch`
 ```
+`pr watch`/`pr unwatch`: see [`references/webhook-pr-monitoring.md`](references/webhook-pr-monitoring.md) for details.
 `pr create`: `head` is the branch to merge from; `--base` defaults to the repo's default branch. Returns the PR number and URL.
 
 ---
