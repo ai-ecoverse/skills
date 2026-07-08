@@ -420,7 +420,7 @@ async function cmdCalendarCreate(flags, positional) {
     } else {
       // Read from stdin
       try {
-        jsonInput = process.stdin.read() || '';
+        jsonInput = (await process.stdin.read()) || '';
       } catch (e) {
         cli.die(`icloud calendar create: failed to read stdin: ${e.message}`, { prefix: '' });
       }
