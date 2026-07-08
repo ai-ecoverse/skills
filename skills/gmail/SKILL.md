@@ -56,6 +56,19 @@ Required environment variables:
 | `GWS_REFRESH_TOKEN` | Long-lived refresh token |
 | `GWS_TYPE` | Literal `authorized_user` (not used by the script) |
 
+If your organization already has a Google Cloud OAuth client and has provisioned
+these three as real secrets, set them and skip the rest of this section.
+
+### Obtaining credentials inside SLICC
+
+If you don't already have `GWS_*` values provisioned, you can bootstrap them
+yourself from inside a SLICC session using `oauth-token --intercept` and a
+well-known, publicly-documented OAuth client (no new Google Cloud project or
+app-review needed). See [`references/oauth-bootstrap.md`](references/oauth-bootstrap.md)
+for the full, tested walkthrough — including the exact intercept config, the
+token-exchange command, and a curl gotcha you'll likely hit if you improvise it
+yourself.
+
 ## Commands
 
 ### gmail mail [options]
