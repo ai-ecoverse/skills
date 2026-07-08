@@ -56,6 +56,26 @@
 // │    stay on the exec('playwright-cli eval-file ...') pattern, unchanged  │
 // │    in behavior. Non-streaming calls (everything else — me/packs/pack/   │
 // │    explore/convs/conv/search/mcp) all move to browser.fetch.            │
+// ├─────────────────────────────────────────────────────────────────────────┤
+// │ FOLLOW-UP (review response) — Copilot review on PR #157 flagged:       │
+// │  • pageFetch()'s non-streaming branch passed options.body straight     │
+// │    through to browser.fetch without JSON-stringifying object bodies    │
+// │    or defaulting Content-Type — real bug, would have broken `fj ask`/  │
+// │    `fj chat`/`fj mcp`'s object-bodied POSTs. Fixed: object bodies are   │
+// │    now explicitly JSON.stringify'd and Content-Type defaulted, exactly │
+// │    matching the old buildFetchExpr()'s behavior.                       │
+// │  • fs.promises.exists()-then-read() pre-checks (MCP session file,      │
+// │    docs page files) were flagged as a non-existent API / TOCTOU risk.  │
+// │    man jsh does document fs.promises.exists(path) as real, but         │
+// │    attempt-then-catch is strictly more robust regardless of which is   │
+// │    correct, so readSession()/the docs reader now just try readFile()   │
+// │    and treat ENOENT (or any read failure) as "not found" — no exists() │
+// │    pre-check left at all.                                              │
+// │  • fs.promises.mkdir(SKILL_ROOT) in writeSession() is documented as    │
+// │    recursive/idempotent (man jsh: "create directory (recursive)"), but │
+// │    wrapped in .catch(() => {}) anyway as cheap insurance.              │
+// │  • docs' page listing (fs.promises.readdir()) doesn't guarantee sorted │
+// │    output the way the old `ls`-based version did — added .sort().      │
 // └─────────────────────────────────────────────────────────────────────────┘
 
 const exec = require('sliccy:exec');
@@ -68,6 +88,17 @@ const UI_HOST = 'https://fluffyjaws.adobe.com';
 const UI_DOMAIN = 'fluffyjaws.adobe.com';
 const SKILL_ROOT = '/workspace/skills/fluffyjaws';
 const MCP_SESSION_FILE = '/workspace/skills/fluffyjaws/.mcp-session';
+
+// Read the cached MCP session id, or '' if the file doesn't exist / is
+// unreadable. Attempt-then-catch (rather than an exists()-then-read()
+// pre-check) avoids a TOCTOU gap between the check and the read.
+async function readSession() {
+  try {
+    return (await fs.promises.readFile(MCP_SESSION_FILE, 'utf8')).trim();
+  } catch (_) {
+    return '';
+  }
+}
 
 // ---------- Tab management ----------
 
@@ -102,8 +133,16 @@ async function pageFetch(path, options = {}) {
   const method = (options.method || 'GET').toUpperCase();
   const headers = Object.assign({ Accept: 'application/json' }, options.headers || {});
   const fetchOpts = { method, headers, credentials: 'include' };
-  if (options.body !== undefined && options.body !== null) {
-    fetchOpts.body = options.body;
+  if (options.body !== undefined && options.body !== null && method !== 'GET' && method !== 'HEAD') {
+    // browser.fetch does not stringify object bodies for us (that JSON-object
+    // auto-serialization is documented for sliccy:http's client, not for
+    // browser.fetch's page-context fetch) — do it explicitly, matching the
+    // old hand-rolled pageFetch()'s behavior exactly, including only
+    // defaulting Content-Type when the caller hasn't already set one.
+    fetchOpts.body = typeof options.body === 'string' ? options.body : JSON.stringify(options.body);
+    if (!('Content-Type' in headers) && !('content-type' in headers)) {
+      headers['Content-Type'] = 'application/json';
+    }
   }
 
   let resp;
@@ -557,20 +596,16 @@ session cookie. If a tab is not open, fj opens one for you. Sign in there once.
   async mcp(sub, ...rest) {
     if (!sub) cli.die('Usage: fj mcp <init|ping|tools|call|shutdown|session> [args]', { prefix: 'fj' });
     if (sub === 'session') {
-      const sid = (await fs.promises.exists(MCP_SESSION_FILE))
-        ? (await fs.promises.readFile(MCP_SESSION_FILE, 'utf8')).trim()
-        : '';
+      const sid = await readSession();
       if (sid) console.log(sid);
       else cli.die('no MCP session — run: fj mcp init', { prefix: 'fj' });
       return;
     }
 
-    async function readSession() {
-      if (!(await fs.promises.exists(MCP_SESSION_FILE))) return '';
-      return (await fs.promises.readFile(MCP_SESSION_FILE, 'utf8')).trim();
-    }
     async function writeSession(sid) {
-      await fs.promises.mkdir(SKILL_ROOT);
+      // fs.promises.mkdir() is documented as recursive (no EEXIST on an
+      // already-existing directory), but tolerate it either way.
+      await fs.promises.mkdir(SKILL_ROOT).catch(() => {});
       await fs.promises.writeFile(MCP_SESSION_FILE, sid);
     }
 
@@ -640,9 +675,13 @@ session cookie. If a tab is not open, fj opens one for you. Sign in there once.
     } catch (_) {
       files = [];
     }
+    // fs.promises.readdir() doesn't guarantee sorted output the way `ls`
+    // (used by the old exec-based version) typically does — sort explicitly
+    // so listing order stays deterministic and matches prior behavior.
     const pages = files
       .filter(f => /\.(md|txt)$/.test(f))
-      .map(f => f.replace(/\.(md|txt)$/, ''));
+      .map(f => f.replace(/\.(md|txt)$/, ''))
+      .sort();
     if (!page) {
       console.log('Pages:');
       for (const p of pages) console.log('  ' + p);
@@ -654,10 +693,12 @@ session cookie. If a tab is not open, fj opens one for you. Sign in there once.
     if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(page) || !pages.includes(page)) {
       cli.die(`no docs page named ${page}`, { prefix: 'fj' });
     }
+    // Attempt-then-catch rather than exists()-then-read() — avoids a TOCTOU
+    // gap and works whether or not the extension actually exists.
     let text = null;
     for (const ext of ['md', 'txt']) {
       const p = `${dir}/${page}.${ext}`;
-      if (await fs.promises.exists(p)) { text = await fs.promises.readFile(p, 'utf8'); break; }
+      try { text = await fs.promises.readFile(p, 'utf8'); break; } catch (_) { /* try next ext */ }
     }
     if (!text) cli.die(`no docs page named ${page}`, { prefix: 'fj' });
     process.stdout.write(text);
