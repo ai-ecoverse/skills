@@ -89,8 +89,14 @@ TOKEN=$(oauth-token github --scope workflow,admin:org)
 
 ### Precedence
 
-1. `git config github.token` (checked first by `gh` and `git push`)
-2. `GITHUB_TOKEN` environment variable (fallback)
+- `gh`/`gh.jsh` reads `GITHUB_TOKEN` from the environment directly (already
+  populated automatically by SLICC — no manual step needed).
+- `git push`/`git pull` are a separate tool and still use
+  `git config github.token`, checked first, falling back to `GITHUB_TOKEN`.
+  Set it once if you need raw `git` push/pull access:
+  ```bash
+  git config github.token "$(oauth-token github)"
+  ```
 
 **Repo defaults** — most subcommands that act on a repo (e.g. `pr`, `issue`, `branch`, `content`, `run`, `release`, `search`, `vars`, `repo`) accept an optional trailing `owner/repo` argument. If omitted, the script infers it from the current directory's `git remote get-url origin`. Pass it explicitly to override. The `api` passthrough and utility commands like `auth` do **not** take a trailing repo — `api` requires a full REST path. The examples below show the short form; append `owner/repo` to repo-scoped commands to target a different repo.
 
