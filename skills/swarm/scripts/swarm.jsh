@@ -1,252 +1,187 @@
-#!/usr/bin/env jsh
 // swarm.jsh — Foursquare/Swarm check-in history CLI
+// Ported to jsh runtime extensions (PR #786)
+//
+// Migrated:
+//  • Colors: raw ANSI constants → c global
+//  • Flag parsing: custom parseFlag() → process.argv.parseFlags()
+//  • Tab discovery: exec('playwright-cli tab-list') + regex → browser.findTab()
+//  • API calls: exec('playwright-cli eval') + double-JSON-unwrap → browser.fetch()
+//  • Date formatting: custom formatDate() → fmt.date(ts*1000, 'locale')
+//  • Error handling: console.error + process.exit → cli.die / cli.help
 
-const args = process.argv.slice(2);
-const command = args[0];
+const { positional, flags } = process.argv.parseFlags();
+const command = positional[0];
 
-const CYAN = '\x1b[36m';
-const YELLOW = '\x1b[33m';
-const GRAY = '\x1b[90m';
-const BOLD = '\x1b[1m';
-const RESET = '\x1b[0m';
+// ─── Tab + API ───────────────────────────────────────────────────────────────
 
-function parseFlag(name) {
-  const prefix = `--${name}=`;
-  const arg = args.find(a => a.startsWith(prefix));
-  return arg ? arg.slice(prefix.length) : null;
-}
-
-function positionalAfter(index) {
-  return args.slice(index).filter(a => !a.startsWith('--'));
-}
-
-async function findFoursquareTab() {
-  const { stdout, stderr, exitCode } = await exec('playwright-cli tab-list');
-  if (exitCode !== 0) {
-    throw new Error(`playwright-cli tab-list failed: ${stderr || stdout}`);
+async function getTab() {
+  const tab = await browser.findTab({ domain: 'app.foursquare.com' });
+  if (!tab) {
+    cli.die(`No Foursquare tab found.\nPlease open ${c.cyan('https://app.foursquare.com')} in your browser and try again.`, { prefix: 'swarm' });
   }
-  const lines = stdout.split('\n');
-  const fsLine = lines.find(l => l.includes('app.foursquare.com'));
-  if (!fsLine) return null;
-  const idMatch = fsLine.match(/\[targetId:\s*([^\]]+)\]/) || fsLine.match(/^\[([^\]]+)\]/);
-  if (!idMatch) return null;
-  return idMatch[1].trim();
+  return tab;
 }
 
-async function apiCall(tabId, endpoint) {
+async function apiCall(tab, endpoint) {
   const url = `https://api.foursquare.com/v2${endpoint}${endpoint.includes('?') ? '&' : '?'}v=20231001`;
-  const expr = `fetch('${url}',{credentials:'include'}).then(r=>r.json()).then(d=>JSON.stringify(d))`;
-  const { stdout, stderr, exitCode } = await exec(
-    'playwright-cli eval --tab=' + tabId + ' ' + JSON.stringify(expr)
-  );
-  if (exitCode !== 0) {
-    throw new Error(`playwright-cli eval failed: ${stderr || stdout}`);
+  const resp = await browser.fetch(tab, url, { credentials: 'include' });
+  if (!resp.ok) {
+    cli.die(`Foursquare API ${resp.status}: ${resp.body?.meta?.errorDetail || resp.statusText || 'request failed'}`, { prefix: 'swarm' });
   }
-  let cleaned = stdout.trim();
-  if (!cleaned) {
-    throw new Error('Empty response from playwright-cli eval — is the Foursquare tab still open?');
-  }
-  // playwright-cli eval may return the result as a quoted JSON string
-  if (cleaned.startsWith('"') && cleaned.endsWith('"')) {
-    try {
-      cleaned = JSON.parse(cleaned);
-    } catch (e) {
-      throw new Error(`Failed to unwrap playwright-cli eval output: ${cleaned.slice(0, 200)}`);
-    }
-  }
-  let data;
-  try {
-    data = JSON.parse(cleaned);
-  } catch (e) {
-    throw new Error(`Failed to parse Foursquare response as JSON: ${String(cleaned).slice(0, 200)}`);
-  }
+  const data = resp.body;
   if (data && data.meta && data.meta.code !== 200) {
-    throw new Error(`Foursquare API ${data.meta.code}: ${data.meta.errorType || ''} ${data.meta.errorDetail || ''}`.trim());
+    cli.die(`Foursquare API ${data.meta.code}: ${data.meta.errorType || ''} ${data.meta.errorDetail || ''}`.trim(), { prefix: 'swarm' });
   }
   return data;
 }
 
-function formatDate(ts) {
-  const d = new Date(ts * 1000);
-  return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
-}
+// ─── Commands ────────────────────────────────────────────────────────────────
 
-async function cmdCheckins(tabId) {
-  const limit = parseFlag('limit') || '20';
-  const offset = parseFlag('offset') || '0';
-  const category = parseFlag('category');
+async function cmdCheckins(tab) {
+  const limit = flags.limit || '20';
+  const offset = flags.offset || '0';
+  const category = flags.category;
   let endpoint = `/users/self/checkins?limit=${limit}&offset=${offset}`;
   if (category) endpoint += `&categoryId=${category}`;
 
-  const data = await apiCall(tabId, endpoint);
+  const data = await apiCall(tab, endpoint);
   const checkins = data.response.checkins.items;
   const total = data.response.checkins.count;
 
-  console.log(`${BOLD}Check-ins${RESET} ${GRAY}(${checkins.length} of ${total})${RESET}\n`);
+  console.log(`${c.bold('Check-ins')} ${c.gray(`(${checkins.length} of ${total})`)}\n`);
 
   for (const ci of checkins) {
     const venue = ci.venue || {};
     const name = venue.name || 'Unknown venue';
     const city = (venue.location && venue.location.city) || '';
     const cat = (venue.categories && venue.categories[0] && venue.categories[0].name) || '';
-    const date = formatDate(ci.createdAt);
-    console.log(`  ${CYAN}${name}${RESET}${city ? ` ${GRAY}— ${city}${RESET}` : ''}`);
-    console.log(`    ${YELLOW}${cat}${RESET}  ${GRAY}${date}${RESET}`);
+    const date = fmt.date(ci.createdAt * 1000, 'locale');
+    console.log(`  ${c.cyan(name)}${city ? ` ${c.gray('— ' + city)}` : ''}`);
+    console.log(`    ${c.yellow(cat)}  ${c.gray(date)}`);
   }
 }
 
-async function cmdHistory(tabId) {
-  const category = parseFlag('category');
+async function cmdHistory(tab) {
+  const category = flags.category;
   const endpoint = category
     ? `/users/self/venuehistory?categoryId=${category}`
     : '/users/self/venuehistory';
 
-  const data = await apiCall(tabId, endpoint);
+  const data = await apiCall(tab, endpoint);
   const venues = data.response.venues.items;
 
-  // Sort by beenHere descending
   venues.sort((a, b) => b.beenHere - a.beenHere);
 
-  console.log(`${BOLD}Venue History${RESET} ${GRAY}(${venues.length} venues)${RESET}\n`);
+  console.log(`${c.bold('Venue History')} ${c.gray(`(${venues.length} venues)`)}\n`);
 
   for (const v of venues) {
     const venue = v.venue || v;
     const name = venue.name || 'Unknown';
     const city = (venue.location && venue.location.city) || '';
     const count = v.beenHere || 0;
-    console.log(`  ${CYAN}${name}${RESET}${city ? ` ${GRAY}— ${city}${RESET}` : ''}  ${YELLOW}×${count}${RESET}`);
+    console.log(`  ${c.cyan(name)}${city ? ` ${c.gray('— ' + city)}` : ''}  ${c.yellow('×' + count)}`);
   }
 }
 
-async function cmdSearch(tabId) {
-  const near = parseFlag('near');
-  if (!near) {
-    console.error(`${YELLOW}Error:${RESET} --near=<lat,lng> is required for search`);
-    process.exit(1);
-  }
-  const queryParts = positionalAfter(1);
-  const query = queryParts.join(' ');
-  if (!query) {
-    console.error(`${YELLOW}Error:${RESET} search query is required`);
-    process.exit(1);
-  }
+async function cmdSearch(tab) {
+  const near = flags.near;
+  if (!near) cli.die('--near=<lat,lng> is required for search', { prefix: 'swarm' });
+  const query = positional.slice(1).join(' ');
+  if (!query) cli.die('search query is required', { prefix: 'swarm' });
 
   const endpoint = `/venues/search?ll=${near}&query=${encodeURIComponent(query)}&limit=10`;
-  const data = await apiCall(tabId, endpoint);
+  const data = await apiCall(tab, endpoint);
   const venues = data.response.venues || [];
 
-  console.log(`${BOLD}Search: "${query}"${RESET} ${GRAY}near ${near}${RESET}\n`);
+  console.log(`${c.bold(`Search: "${query}"`)} ${c.gray('near ' + near)}\n`);
 
   for (const v of venues) {
     const city = (v.location && v.location.city) || '';
     const cat = (v.categories && v.categories[0] && v.categories[0].name) || '';
     const dist = v.location && v.location.distance ? `${v.location.distance}m` : '';
-    console.log(`  ${CYAN}${v.name}${RESET}${city ? ` ${GRAY}— ${city}${RESET}` : ''} ${dist ? GRAY + dist + RESET : ''}`);
-    console.log(`    ${YELLOW}${cat}${RESET}  ${GRAY}id: ${v.id}${RESET}`);
+    console.log(`  ${c.cyan(v.name)}${city ? ` ${c.gray('— ' + city)}` : ''} ${dist ? c.gray(dist) : ''}`);
+    console.log(`    ${c.yellow(cat)}  ${c.gray('id: ' + v.id)}`);
   }
 }
 
-async function cmdVenue(tabId) {
-  const venueId = args[1];
-  if (!venueId || venueId.startsWith('--')) {
-    console.error(`${YELLOW}Error:${RESET} venue ID is required`);
-    process.exit(1);
-  }
+async function cmdVenue(tab) {
+  const venueId = positional[1];
+  if (!venueId) cli.die('venue ID is required', { prefix: 'swarm' });
 
-  const data = await apiCall(tabId, `/venues/${encodeURIComponent(venueId)}`);
+  const data = await apiCall(tab, `/venues/${encodeURIComponent(venueId)}`);
   const v = data.response.venue;
 
-  console.log(`\n${BOLD}${CYAN}${v.name}${RESET}`);
+  console.log(`\n${c.bold(c.cyan(v.name))}`);
   if (v.categories && v.categories[0]) {
-    console.log(`  ${YELLOW}${v.categories[0].name}${RESET}`);
+    console.log(`  ${c.yellow(v.categories[0].name)}`);
   }
   if (v.location) {
     const loc = v.location;
     const addr = [loc.address, loc.city, loc.state, loc.country].filter(Boolean).join(', ');
-    console.log(`  ${GRAY}${addr}${RESET}`);
+    console.log(`  ${c.gray(addr)}`);
   }
   if (v.rating) {
-    console.log(`  Rating: ${CYAN}${v.rating}${RESET}/10`);
+    console.log(`  Rating: ${c.cyan(String(v.rating))}/10`);
   }
   if (v.beenHere && v.beenHere.count) {
-    console.log(`  ${YELLOW}You've been here ${v.beenHere.count} time(s)${RESET}`);
+    console.log(`  ${c.yellow(`You've been here ${v.beenHere.count} time(s)`)}`);
   }
   if (v.url) {
-    console.log(`  ${GRAY}${v.url}${RESET}`);
+    console.log(`  ${c.gray(v.url)}`);
   }
   if (v.hours && v.hours.status) {
-    console.log(`  ${GRAY}${v.hours.status}${RESET}`);
+    console.log(`  ${c.gray(v.hours.status)}`);
   }
   console.log();
 }
 
-async function cmdStats(tabId) {
-  // Get total checkins count
-  const checkinsData = await apiCall(tabId, `/users/self/checkins?limit=1&offset=0`);
+async function cmdStats(tab) {
+  const checkinsData = await apiCall(tab, `/users/self/checkins?limit=1&offset=0`);
   const totalCheckins = checkinsData.response.checkins.count;
 
-  // Get venue history for count and top venues
-  const historyData = await apiCall(tabId, '/users/self/venuehistory');
+  const historyData = await apiCall(tab, '/users/self/venuehistory');
   const venues = historyData.response.venues.items;
   const totalVenues = venues.length;
 
-  // Sort by visits
   venues.sort((a, b) => b.beenHere - a.beenHere);
   const top5 = venues.slice(0, 5);
 
-  console.log(`\n${BOLD}Swarm Stats${RESET}\n`);
-  console.log(`  Total check-ins:  ${CYAN}${totalCheckins}${RESET}`);
-  console.log(`  Unique venues:    ${CYAN}${totalVenues}${RESET}`);
-  console.log(`\n  ${BOLD}Top 5 Venues${RESET}`);
+  console.log(`\n${c.bold('Swarm Stats')}\n`);
+  console.log(`  Total check-ins:  ${c.cyan(String(totalCheckins))}`);
+  console.log(`  Unique venues:    ${c.cyan(String(totalVenues))}`);
+  console.log(`\n  ${c.bold('Top 5 Venues')}`);
 
   for (let i = 0; i < top5.length; i++) {
     const v = top5[i];
     const venue = v.venue || v;
     const name = venue.name || 'Unknown';
     const city = (venue.location && venue.location.city) || '';
-    console.log(`    ${YELLOW}${i + 1}.${RESET} ${CYAN}${name}${RESET}${city ? ` ${GRAY}— ${city}${RESET}` : ''} ${YELLOW}×${v.beenHere}${RESET}`);
+    console.log(`    ${c.yellow((i + 1) + '.')} ${c.cyan(name)}${city ? ` ${c.gray('— ' + city)}` : ''} ${c.yellow('×' + v.beenHere)}`);
   }
   console.log();
 }
 
-// Main
-(async () => {
-  if (!command || command === '--help' || command === '-h') {
-    console.log(`${BOLD}swarm${RESET} — Foursquare/Swarm check-in history\n`);
-    console.log(`Usage:`);
-    console.log(`  swarm checkins [--limit=N] [--offset=N] [--category=<id>]`);
-    console.log(`  swarm history [--category=<id>]`);
-    console.log(`  swarm search <query> --near=<lat,lng>`);
-    console.log(`  swarm venue <venue-id>`);
-    console.log(`  swarm stats`);
-    process.exit(0);
-  }
+// ─── Main ────────────────────────────────────────────────────────────────────
 
-  const tabId = await findFoursquareTab();
-  if (!tabId) {
-    console.error(`${YELLOW}Error:${RESET} No Foursquare tab found.`);
-    console.error(`Please open ${CYAN}https://app.foursquare.com${RESET} in your browser and try again.`);
-    process.exit(1);
-  }
+if (!command || command === '--help' || command === '-h') {
+  cli.help(`${c.bold('swarm')} — Foursquare/Swarm check-in history
 
-  switch (command) {
-    case 'checkins':
-      await cmdCheckins(tabId);
-      break;
-    case 'history':
-      await cmdHistory(tabId);
-      break;
-    case 'search':
-      await cmdSearch(tabId);
-      break;
-    case 'venue':
-      await cmdVenue(tabId);
-      break;
-    case 'stats':
-      await cmdStats(tabId);
-      break;
-    default:
-      console.error(`${YELLOW}Unknown command:${RESET} ${command}`);
-      process.exit(1);
-  }
-})();
+Usage:
+  swarm checkins [--limit=N] [--offset=N] [--category=<id>]
+  swarm history [--category=<id>]
+  swarm search <query> --near=<lat,lng>
+  swarm venue <venue-id>
+  swarm stats`);
+}
+
+const tab = await getTab();
+
+switch (command) {
+  case 'checkins': await cmdCheckins(tab); break;
+  case 'history':  await cmdHistory(tab); break;
+  case 'search':   await cmdSearch(tab); break;
+  case 'venue':    await cmdVenue(tab); break;
+  case 'stats':    await cmdStats(tab); break;
+  default:
+    cli.die(`unknown command: ${command}. Run swarm --help for usage.`, { prefix: 'swarm' });
+}

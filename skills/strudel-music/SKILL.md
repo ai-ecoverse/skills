@@ -100,7 +100,10 @@ stack(pat1, pat2)   // play in parallel
 cat(pat1, pat2)     // one per cycle
 seq(pat1, pat2)     // all in one cycle
 silence             // nothing
+arrange([n, pat1], [m, pat2], …)  // play pat1 for n cycles, then pat2 for m, …
 ```
+
+Use `arrange()` for multi-section songs (intro / build / drop / outro). Each tuple is `[cycle-count, pattern]`; the song moves to the next section automatically. `cat()` cycles one pattern per cycle (useful for quick alternation), `<x y z>` in mini-notation alternates *inside* a parameter (e.g. `note("<a c e>")`), and `arrange()` handles long-form structure with explicit durations.
 
 ### Scales
 
@@ -119,6 +122,15 @@ setcpm(120)   // cycles per minute
 
 Default is 0.5 cps = 120 BPM at 4 events per cycle.
 
+**Tempo by mood (rough sweet spots):**
+
+| Style | `setcps` | Feels like |
+|--|--|--|
+| Ambient / meditation | 0.30 – 0.40 | ~70–95 BPM, four-on-the-floor breathing |
+| Lo-fi hip-hop / chillout | 0.38 – 0.46 | ~90–110 BPM, head-nod groove |
+| House / techno | 0.50 – 0.60 | ~120–144 BPM, classic dance |
+| DnB / jungle | 0.70 – 0.90 | ~168–215 BPM, half-time feel |
+
 ## Samples
 
 Built-in synths (`sawtooth`, `triangle`, `sine`, `square`) work without any sample loading. For real drum sounds and instruments, you need the TidalCycles dirt-samples pack.
@@ -135,6 +147,8 @@ initStrudel({
   }
 });
 ```
+
+> **The curated manifest is an optimization, not a requirement.** The bundled sprinkle `prebake` falls back to `samples('https://raw.githubusercontent.com/tidalcycles/Dirt-Samples/master/strudel.json')` (the full ~2000-sample manifest, 218 categories) whenever the local file is missing or unreadable. So everything works out of the box without running the install steps — the local manifest just trims down what gets parsed and gives you a stable, version-pinned subset. If you don't see a category you need (`sid`, `psr`, `space`, `hoover`, etc. — see "Synth voices" below), let the GitHub fallback take over rather than editing the manifest.
 
 **Validation checkpoints:**
 1. Await `initStrudel({ prebake: ... })` resolution before playing.
@@ -155,7 +169,90 @@ initStrudel({
 - **`.bank()` does NOT work** with this setup. Use 808-prefixed names directly: `sound("808bd")` not `sound("bd").bank("RolandTR808")`.
 - **Samples are fetched lazily** — first play may pause briefly while the WAV downloads from GitHub.
 
+### Synth voices
+
+Beyond the standard `sawtooth/triangle/sine/square` synths and the curated `arpy/bass/jvbass/casio/moog/juno/pad/pluck/sitar/stab/rave` melodic samples, the dirt-samples repo ships with a wide cast of vintage and chip-style synth voices. Used with `note()` they re-pitch from their root sample.
+
+> **Important — the curated manifest does NOT include these.** The categories below ship with `tidalcycles/Dirt-Samples` but are **not** in `samples-manifest.json`. To use them you must either (a) load the full GitHub manifest directly with `samples('https://raw.githubusercontent.com/tidalcycles/Dirt-Samples/master/strudel.json')` (or `samples('github:tidalcycles/dirt-samples')`), or (b) extend `samples-manifest.json` with the categories you want. The bundled sprinkle's `prebake` automatically falls back to the GitHub manifest only when the local file is **missing or unreadable** — so simply having the curated manifest installed will hide these voices. If you need them, skip the local install or extend the manifest.
+
+| Sample | Character | Good for |
+|--|--|--|
+| `sequential` | Sequential Circuits Pro-One — fat analog | sub-bass, walking bass |
+| `moog` | Moog ladder filter sweep | warm bass, lead |
+| `juno` | Roland Juno chorused poly | lush pad, chord stab |
+| `psr` | Yamaha PSR home keyboard | "cheap-but-charming" pad |
+| `koy` | Vintage Korg pluck | melodic counter-line |
+| `arpy` | Soft mallet / Rhodes-ish | mallet motif, comping |
+| `pluck` | Plucked string | counterpoint, arpeggios |
+| `sid` | Commodore 64 SID chip | 8-bit melancholy lead |
+| `bleep` | Atari-style game blip | rhythmic accents |
+| `bend` | Pitch-bent synth tone | sliding lead |
+| `hoover` | The 1992 rave hoover stab | dramatic stab (use ghosted) |
+| `space` | Sci-fi atmospheric pad | drone layer |
+| `cosmicg` | Cosmic Guerrilla arcade synth | retro game feel |
+| `monsterb`, `subroc3d`, `tacscan`, `sundance` | Vintage arcade synths | colour, texture |
+| `simplesine` | Pure sine sample | airy top-line, sub |
+| `wobble` | Wobble bass | dubstep accent |
+| `metal` | Metallic hit | percussion-as-pitch |
+| `industrial`, `dist` | Distorted texture | grit layer |
+| `bass1`, `bass2`, `bass3` | Bass synth banks | melodic bass alternatives |
+| `ades`, `ades2`, `ades3`, `ades4` | Adessio synth pack | varied analog tones |
+| `gabba`, `gabbalouder` | Hardcore / gabber kick | aggressive drop |
+| `crackle` | Vinyl crackle (built-in) | atmospheric texture |
+| `pink`, `brown`, `white` | Coloured noise (built-in) | tape hiss, washes |
+
+For relaxing electronica, `sequential + psr + koy + simplesine` give a complete bass / pad / lead / air stack. For chiptune, layer `sid + bleep + simplesine`. For dubby textures, `hoover` ghosted at low gain plus `space` works well.
+
 For full details on manifest structure, categories, and adding more samples, see `references/api-reference.md`.
+
+## Generative idioms
+
+A static `stack(...)` becomes a living song through a handful of recurring patterns. These are the four highest-leverage idioms — applying any one to a layer makes it stop sounding like a loop.
+
+**Periodic transformation with `every(n, fn)`** — apply a function every n cycles. Great for harmonic interest without writing a longer sequence.
+
+```js
+note("<a1 f1 c2 g1>")
+  .s("moog")
+  .every(8, x => x.add(note(-5)))   // dip down a fourth every 8 cycles
+  .every(7, rev)                    // reverse every 7 (prime-vs-prime keeps it irregular)
+```
+
+**Probabilistic variation with `sometimes(fn)`** — 50% chance of applying a function each cycle. The cousin `often(fn)` is 75%, `rarely(fn)` is 25%.
+
+```js
+n("<0 2 4 7>").scale("A:minor").s("sid")
+  .sometimes(rev)
+  .sometimes(x => x.fast(1.5))
+```
+
+**Offset ghost copies with `off(time, fn)`** — overlay a delayed-and-modified copy onto the main pattern. Classic technique for octave-doubled bells, harmonized leads, soft echoes that lock to the grid (unlike `.delay()` which is time-based).
+
+```js
+n("<0 2 4 5 7 9 7 4>").scale("A:minor:pentatonic").s("sine").fm(3)
+  .off(1/4, x => x.add(note(7)).gain(0.13))   // a 5th above, quarter-cycle late, quieter
+  .off(3/8, x => x.add(note(12)).gain(0.06))  // an octave above, even quieter
+```
+
+**Continuous-signal modulation** — feed a slow `sine`, `cosine`, or `perlin` into any parameter via `.range(min, max).slow(n)`. `perlin` feels organic / breathing; `sine` and `cosine` feel mechanical / oscillating.
+
+```js
+note("<[a3,c4,e4] [f3,a3,c4] [c4,e4,g4] [g3,b3,d4]>").s("juno")
+  .lpf(perlin.range(400, 1800).slow(11))      // organic filter sweep
+  .pan(cosine.range(0.2, 0.8).slow(13))       // slow stereo drift
+  .vowel("<o a e i>/20")                      // 20-cycle vowel morph (mini-notation /n)
+  .gain(sine.range(0.12, 0.20).slow(8))       // gentle volume breathing
+```
+
+Combining all four turns a four-chord pad into something that barely repeats over a minute.
+
+### Layering tip — chord voicings
+
+Triads (`[a3,c4,e4]`) sound thin; five-note voicings with extensions (`[a3,c4,e4,b4,d5]` adds the 9th and 11th) sound dramatically warmer and more cinematic at the same gain. Layer a quiet sawtooth doubling at lower gain (`.gain(0.07)`) under a brighter pad sample to fill the midrange without raising perceived volume.
+
+### Saturation tip — `.shape()`
+
+`.shape(0.1)` to `.shape(0.3)` reads as soft tape saturation / analog warmth on basses and kicks. Higher values cross into distortion. Pairs well with low-pass filtering — saturate first, filter second.
 
 ## Example patterns
 

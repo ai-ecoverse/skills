@@ -1,0 +1,84 @@
+{
+  "skill_name": "speck",
+  "_notes": "Speck's behavior runs against a proprietary runtime (cone/scoop/lick + playwright-cli driving a live browser tab), so these evals are graded from the transcript of Claude *using* the skill: which commands it issues, in what order, and whether it respects the documented setup steps and guardrails — not from a rendered DOM. The --file path points at evals/files/sample-prototype.html, the page being served and edited. tabId values are illustrative playwright-cli target ids.",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "I've got my prototype open in a browser tab (tab 1218556234, serving /shared/acme/prototype/index.html). I want to click around the page and leave notes on individual elements so they get fixed automatically. Set that up for me.",
+      "expected_output": "Claude does the full first-time setup: ensures a speck-worker scoop exists with /tmp/ write access, feeds it standing instructions (read file, locate element, apply edit, reload tab, re-inject speck), then injects speck into the tab with the --file flag so annotations become live AI edits.",
+      "files": ["evals/files/sample-prototype.html"],
+      "expectations": [
+        "Ensures a `speck-worker` scoop exists before injecting (creates it if missing)",
+        "Includes `/tmp/` in the scoop's writablePaths (speck inject writes a temp file for playwright-cli eval)",
+        "Feeds the speck-worker scoop standing instructions to read the file, locate the element, apply the edit, reload the tab, and re-inject speck",
+        "Runs `speck inject 1218556234` with a `--file` argument pointing at the prototype HTML path (not a bare inject)",
+        "Does NOT create more than one webhook — relies on the single `speck-lick` webhook that inject reuses"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Speck's already wired up. Just turn the annotation layer back on for tab 1218556234 — I'm editing /shared/acme/prototype/index.html.",
+      "expected_output": "Claude runs `speck inject 1218556234 --file /shared/acme/prototype/index.html` and does not redundantly recreate the scoop or a second webhook.",
+      "files": ["evals/files/sample-prototype.html"],
+      "expectations": [
+        "Runs `speck inject 1218556234 --file /shared/acme/prototype/index.html`",
+        "Passes the `--file` flag so annotations apply as edits rather than only being collected locally",
+        "Does not create a second/duplicate webhook (inject reuses the existing `speck-lick` webhook)"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Show me the notes I left on tab 1218556234 — I want to see them as a list before I keep going.",
+      "expected_output": "Claude runs `speck collect 1218556234` and presents the returned JSON annotations (instruction + element selector/text) back to the user.",
+      "files": [],
+      "expectations": [
+        "Runs `speck collect 1218556234`",
+        "Surfaces the collected annotations (the instruction text and which element each targets) to the user rather than just running the command silently"
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "Okay I'm done marking things up on tab 1218556234. Take the overlay off so the page is back to normal.",
+      "expected_output": "Claude runs `speck remove 1218556234` to tear down the overlay and clean up the injected state.",
+      "files": [],
+      "expectations": [
+        "Runs `speck remove 1218556234`",
+        "Does not leave the overlay/listeners in place or attempt a page reload instead of removing"
+      ]
+    },
+    {
+      "id": 5,
+      "prompt": "Can you add speck to https://www.nytimes.com so I can annotate elements on their homepage?",
+      "expected_output": "Claude declines to inject into the remote third-party page, explaining that CSP will block playwright-cli eval on remote pages, and points the user toward a locally served or preview page instead.",
+      "files": [],
+      "expectations": [
+        "Does NOT run `speck inject` against the remote nytimes.com URL",
+        "Explains that remote/third-party pages block injection (CSP) and speck only works on locally served or preview pages",
+        "Offers a viable alternative (serve the page locally / use a preview page)"
+      ]
+    },
+    {
+      "id": 6,
+      "prompt": "I just submitted an instruction on an element and the speck-worker applied the edit and reloaded the page — but now I can't hover-highlight anything anymore. What happened and how do I keep annotating?",
+      "expected_output": "Claude explains that reloading the page drops the injected overlay, so speck must be re-injected after every reload, and that the speck-worker scoop's standing instructions should already do this automatically (re-run `speck inject <tabId> --file <path>` after the goto/reload). It re-injects to restore the layer.",
+      "files": [],
+      "expectations": [
+        "Correctly identifies that the page reload removed the injected speck overlay",
+        "States that speck must be re-injected after each reload, and that the scoop's standing instructions should re-inject automatically",
+        "Restores annotation by re-running `speck inject <tabId> --file <path>` (rather than `speck collect` or `speck remove`)",
+        "Does not recommend a shift/hard reload as the fix (shift-reload bypasses the service worker → ERR_FILE_NOT_FOUND)"
+      ]
+    },
+    {
+      "id": 7,
+      "prompt": "The speck overlay feels janky — can we add a little status panel in the extension rail that shows 'editing…' / 'done' while the worker is applying each change?",
+      "expected_output": "Claude declines to build a sprinkle/rail panel for speck progress, explaining the rail icon can't show dynamic status (this was tried and removed), and instead routes progress through inline chat messages from the cone on scoop completion.",
+      "files": [],
+      "expectations": [
+        "Does NOT create a sprinkle / rail panel for speck progress",
+        "Explains that the rail icon can't show dynamic state (a sprinkle was tried and removed for this reason)",
+        "Recommends inline chat progress messages from the cone on `[@speck-worker-scoop completed]` instead"
+      ]
+    }
+  ]
+}

@@ -18,19 +18,49 @@ allowed_tools:
 
 `gh.jsh` is a Node.js GitHub CLI that wraps the GitHub REST API with clean formatted output, ANSI color, and sensible defaults. No `curl | jq` pipelines.
 
-## Setup
+## Authentication
 
-**Authentication** — preferred: use SLICC's OAuth provider:
-```bash
-export GITHUB_TOKEN=$(oauth-token github)
-```
-This works out of the box for SLICC agents — no manual PAT needed. Run `oauth-token github` once interactively if not yet authorized.
+`oauth-token github` is the single entry point for GitHub credentials in SLICC. Get a token, then set it once for the tool you're using:
 
-Alternatives (in precedence order: git config wins, then env var):
 ```bash
-git config github.token <YOUR_PAT>     # persisted across shells
-export GITHUB_TOKEN=<YOUR_PAT>          # session-scoped
+oauth-token github                       # default scopes (repo, read:org)
+oauth-token github --scope workflow       # add workflow scope (for .github/workflows/)
+oauth-token github --scope workflow,repo  # multiple extra scopes
+
+git config github.token "$(oauth-token github)"   # persists the token for gh.jsh and git push/pull
 ```
+
+| Tool | How it gets the token |
+|---|---|
+| `gh` (this skill's CLI) | Reads `git config github.token` automatically once set above. |
+| `git push`/`git pull` | Same config key — set once, both tools pick it up. |
+| Raw `fetch`/`curl` | Not persisted — pass it explicitly per call: `curl -H "Authorization: Bearer $(oauth-token github)" https://api.github.com/...` |
+
+```bash
+# gh commands authenticate transparently once git config github.token is set:
+gh pr list ai-ecoverse/skills
+gh content put README.md ./local.md "update" --branch=feat ai-ecoverse/skills
+```
+
+### Scope escalation
+
+The default token covers most operations. Request additional scopes when needed, then re-run the `git config github.token "$(oauth-token github --scope ...)"` setup above with the escalated token:
+
+| Scope | When needed |
+|-------|-------------|
+| `workflow` | Pushing/modifying `.github/workflows/` files |
+| `delete_repo` | Deleting repositories |
+| `admin:org` | Managing organization settings |
+
+```bash
+git config github.token "$(oauth-token github --scope workflow)"
+git push origin my-branch   # now allowed to push workflow changes
+```
+
+### Precedence
+
+1. `git config github.token` (checked first by `gh` and `git push`)
+2. `GITHUB_TOKEN` environment variable (fallback)
 
 **Repo defaults** — most subcommands that act on a repo (e.g. `pr`, `issue`, `branch`, `content`, `run`, `release`, `search`, `vars`, `repo`) accept an optional trailing `owner/repo` argument. If omitted, the script infers it from the current directory's `git remote get-url origin`. Pass it explicitly to override. The `api` passthrough and utility commands like `auth` do **not** take a trailing repo — `api` requires a full REST path. The examples below show the short form; append `owner/repo` to repo-scoped commands to target a different repo.
 
@@ -56,6 +86,7 @@ This is the most common multi-step flow. Follow these steps in order, validating
 /workspace/skills/github/scripts/gh.jsh content put src/index.js ./index.js "Add entry point" --branch=my-feature owner/repo
 
 # 3. Open the PR — note the returned PR number, e.g. "Created PR #123"
+#    (the command also prints a `gh pr watch <num>` tip using that real number)
 /workspace/skills/github/scripts/gh.jsh pr create "My title" "PR body" my-feature owner/repo
 
 # 4. Verify CI has started for that PR (substitute the real number for <PR_NUMBER>)
@@ -68,7 +99,7 @@ This is the most common multi-step flow. Follow these steps in order, validating
 
 **Validation checkpoints:**
 - After `branch create`: confirm no error output before pushing content.
-- After `pr create`: capture the new PR number from the command's output and reuse it in steps 4 and 5 — never reuse a number from another PR.
+- After `pr create`: capture the new PR number from the command's output and reuse it in steps 4 and 5 — never reuse a number from another PR. Optionally run `pr watch <PR_NUMBER>` right away to get live updates instead of manually re-running `pr view`/`run list`.
 - After `pr view`: read the `Checks:` line in the output (e.g. `Checks:  3 passed`) — only proceed to merge when there are no `failed` or `pending` entries. If any check failed, inspect with `run view <id>` before proceeding.
 
 ### Review and merge an existing PR
@@ -87,6 +118,15 @@ Substitute `<PR_NUMBER>` with the actual PR number you intend to act on.
 /workspace/skills/github/scripts/gh.jsh pr merge <PR_NUMBER> --squash owner/repo
 ```
 
+### Keeping a scoop in the loop on a PR until merged
+
+```bash
+gh.jsh pr watch 151                    # start watching — wires up a live webhook
+gh.jsh pr watch 151 --filter "e => e.body.action !== 'synchronize'"  # drop noisy events
+gh.jsh pr unwatch 151                  # stop watching, tears down both webhook layers
+```
+`pr watch` pushes PR events (new review comments, CI completing, the PR closing) to the current scoop the moment they happen, instead of polling `pr view`/`run list` in a loop — it wires up a SLICC webhook and registers it as a real GitHub repo webhook in one step, and is idempotent (running it again on a PR already being watched is a no-op). `pr create` prints a `pr watch <num>` tip using the real new PR number. See [`references/webhook-pr-monitoring.md`](references/webhook-pr-monitoring.md) for exactly how this works under the hood, the manual equivalent if you need it outside `gh.jsh`, and the self-echo-detection pattern a scoop needs when watching its own PR.
+
 ---
 
 ## Command Reference
@@ -104,7 +144,11 @@ gh.jsh pr merge 42 --squash
 gh.jsh pr merge 42 --rebase
 gh.jsh pr comment 42 "LGTM, merging now"
 gh.jsh pr checkout 42                     # prints git fetch/checkout commands (does not execute)
+gh.jsh pr watch 42                        # wire up a live webhook for PR events (idempotent)
+gh.jsh pr watch 42 --filter "e => e.body.action !== 'synchronize'"
+gh.jsh pr unwatch 42                      # tear down the webhook from `pr watch`
 ```
+`pr watch`/`pr unwatch`: see [`references/webhook-pr-monitoring.md`](references/webhook-pr-monitoring.md) for details.
 `pr create`: `head` is the branch to merge from; `--base` defaults to the repo's default branch. Returns the PR number and URL.
 
 ---
@@ -199,3 +243,18 @@ gh.jsh api /repos/owner/repo/git/ref/heads/main --jq .object.sha
 gh.jsh api /repos/owner/repo/git/refs -X POST -f ref=refs/heads/new-branch -f sha=abc123
 ```
 Generic passthrough for any GitHub REST API endpoint. Supports `-X METHOD`, `-f key=value` (sent as JSON body on non-GET), and `--jq .path.to.field` for simple field extraction.
+
+---
+
+## Gotchas
+
+The SLICC environment has a few quirks you'll only hit if you bypass `gh.jsh` and reach for raw `git` or `curl`. The skill's own commands route around all of these. See [`references/gotchas.md`](references/gotchas.md) for full details and copy-paste workarounds.
+
+| Symptom | Cause | Quick fix |
+|---|---|---|
+| `git clone` aborts with `ENOENT mkdir <Foo.graffle>` | OPFS git can't `mkdir` directory-bundle children before the parent is ready | `git init` + `git fetch` + `core.sparseCheckout` excluding the bad path |
+| `git clone --depth=1` rejects flag | SLICC `git` wrapper doesn't accept extra args | Use `init`+`fetch` instead of `clone` |
+| `curl --data @file` returns `400 Problems parsing JSON` | The `@file` body read mangles bytes in this realm | Build and POST from `node` with `fetch()`, or use `gh.jsh api -f key=value` |
+| Uploaded files arrive as Latin-1-of-UTF-8 mojibake on GitHub | `fs.readFile(path, 'utf8')` in this realm doesn't actually decode UTF-8 | Use `fs.readFileBinary` (real `Uint8Array`) before `btoa` |
+| `cat`/`xxd`/`head -c` show corrupted bytes for a known-good file | Same shell I/O layer Latin-1↔UTF-8 round-trip | Verify via `playwright-cli eval` against `raw.githubusercontent.com` |
+| Need to commit a symlink | `PUT /contents` always writes mode `100644` | Use Git Data API with `mode: 120000` and target path as blob content |
