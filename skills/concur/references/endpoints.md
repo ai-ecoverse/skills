@@ -7,7 +7,7 @@ Captured from `https://us2.concursolutions.com` (Adobe / SAP Concur Expense, US2
 - **Cookie-based** on `.concursolutions.com`.
 - **No** `Authorization: Bearer` header on any captured request — the SAP IDP session cookie is the credential.
 - **Custom request header** all calls send: `concur-correlationId: <uuid>` (also sent lowercased as `concur-correlationid`). The skill generates a fresh UUID per request.
-- **Origin validation:** all API hosts accept `Origin: https://us2.concursolutions.com`. Calls from SLICC's localhost origin will fail; this skill issues requests from inside an open Concur tab via `playwright-cli eval-file`.
+- **Origin validation:** all API hosts accept `Origin: https://us2.concursolutions.com`. Calls from SLICC's localhost origin will fail; this skill issues requests from inside an open Concur tab via the browser bridge (page-context fetch).
 
 ## Hosts
 
