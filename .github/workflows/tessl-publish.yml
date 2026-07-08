@@ -17,7 +17,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        tile: [basic, advanced]
+        include:
+          - plugin: basic
+            base: "0.2.0"
+          - plugin: advanced
+            base: "0.2.13"
     steps:
       - uses: actions/checkout@v7
         with:
@@ -29,7 +33,46 @@ jobs:
 
       - name: Publish plugin
         env:
-          PLUGIN: ${{ matrix.tile }}
+          PLUGIN: ${{ matrix.plugin }}
+          BASE: ${{ matrix.base }}
         run: |
           set -euo pipefail
-          tessl plugin publish --bump patch --resolve-symlinks "tiles/$PLUGIN"
+
+          bump_patch() {
+            local a b c
+            IFS='.' read -r a b c <<< "$1"
+            echo "$a.$b.$((c + 1))"
+          }
+
+          NAME=$(jq -r .name "tiles/$PLUGIN/.tessl-plugin/plugin.json")
+
+          LATEST=$(curl -fsS "https://api.tessl.io/v1/tiles/$NAME" | jq -r '.data.attributes.latestVersion // empty' || true)
+
+          if echo "$LATEST" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            FLOOR="$LATEST"
+          else
+            FLOOR="$BASE"
+          fi
+
+          V=$(bump_patch "$FLOOR")
+
+          for _ in $(seq 1 25); do
+            set +e
+            OUT=$(tessl plugin publish --version "$V" --resolve-symlinks "tiles/$PLUGIN" 2>&1)
+            RC=$?
+            set -e
+            echo "$OUT"
+            if [ "$RC" -eq 0 ]; then
+              echo "Published $NAME@$V"
+              exit 0
+            fi
+            if echo "$OUT" | grep -Eiq 'already exists|not available|already published'; then
+              V=$(bump_patch "$V")
+              continue
+            fi
+            echo "::error::publish failed for a non-version reason"
+            exit 1
+          done
+
+          echo "::error::exhausted version attempts starting from $FLOOR"
+          exit 1
