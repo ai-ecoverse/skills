@@ -98,10 +98,14 @@ function getFlag(args, flag) {
 
 // ── Auth ───────────────────────────────────────────────────────
 
+let _cachedToken = null;
+
 async function getToken() {
+  if (_cachedToken) return _cachedToken;
   try {
-    const token = await skill.token('adobe');
+    const token = (await skill.token('adobe') || '').trim();
     if (!token) throw new Error('empty token');
+    _cachedToken = token;
     return token;
   } catch {
     process.stderr.write('aem: not authenticated. Run: oauth-token adobe\n');
@@ -112,7 +116,7 @@ async function getToken() {
 // ── HTTP (list/get/preview/publish — JSON/text, no file bodies) ────────────
 
 const aemApi = http.client({
-  token: () => skill.token('adobe'),
+  token: () => getToken(),
 });
 
 async function aemRequest(method, url) {
