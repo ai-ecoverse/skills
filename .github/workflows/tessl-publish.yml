@@ -56,7 +56,14 @@ jobs:
 
           V=$(bump_patch "$FLOOR")
 
+          MANIFEST="tiles/$PLUGIN/.tessl-plugin/plugin.json"
+
           for _ in $(seq 1 25); do
+            # publish --version writes version into the manifest even on failure;
+            # strip it so --version is honored on every attempt.
+            tmp=$(mktemp)
+            jq 'del(.version)' "$MANIFEST" > "$tmp" && mv "$tmp" "$MANIFEST"
+
             set +e
             OUT=$(tessl plugin publish --version "$V" --resolve-symlinks "tiles/$PLUGIN" 2>&1)
             RC=$?
@@ -66,7 +73,7 @@ jobs:
               echo "Published $NAME@$V"
               exit 0
             fi
-            if echo "$OUT" | grep -Eiq 'already exists|not available|already published'; then
+            if echo "$OUT" | grep -Eiq 'already exists|not available|already published|already declares version'; then
               V=$(bump_patch "$V")
               continue
             fi
