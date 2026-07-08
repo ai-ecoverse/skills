@@ -1,13 +1,15 @@
-// check-ai-words.jsh — AI Word Rate Checker
+// check-ai-words.jsh â AI Word Rate Checker
 // Detects overused AI vocabulary by comparing actual rates to corpus base rates
 // Usage: check-ai-words <file> [multiplier]
 // Default multiplier: 3 (flag words appearing 3x more than expected)
 
+const fs = require('fs');
+const skill = require('sliccy:skill');
+
 const args = process.argv.slice(2);
 
-// Load AI word base rates from reference file (../references/ai_word_rates.txt)
-const _scriptDir = process.argv[1].substring(0, process.argv[1].lastIndexOf('/'));
-const _ratesText = await fs.readFile(_scriptDir + '/../references/ai_word_rates.txt', 'utf8');
+// Load AI word base rates from reference file (references/ai_word_rates.txt)
+const _ratesText = await fs.readFile(`${skill.refs}/ai_word_rates.txt`, 'utf8');
 const WORD_RATES = {};
 for (const line of _ratesText.split('\n')) {
   const trimmed = line.trim();
@@ -97,4 +99,3 @@ if (violations > 0) {
   process.stdout.write('\n### Result: PASS\n');
   process.stdout.write('No significant AI vocabulary rate violations detected.\n');
 }
-
