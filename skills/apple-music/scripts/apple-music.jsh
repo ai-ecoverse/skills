@@ -18,11 +18,13 @@
  * ┌─────────────────────────────────────────────────────────────────────────────┐
  * │ MIGRATION NOTES (issue #118 / ai-ecoverse/slicc#786)                        │
  * │                                                                             │
- * │ The .jsh runtime no longer injects bare globals (`exec`, `fmt`, ...) —      │
- * │ they must be pulled in explicitly via require('sliccy:<name>'). This       │
- * │ script's logic is otherwise unchanged; only the following moved:           │
+ * │ The .jsh runtime no longer injects bare globals (`exec`, `fmt`, `cli`,      │
+ * │ ...) — they must be pulled in explicitly via require('sliccy:<name>').     │
+ * │ This script's logic is otherwise unchanged; only the following moved:      │
+ * │                                                                             │
  * │  • const fmt  = require('sliccy:fmt');   — replaces the hand-rolled       │
  * │    col()/pad() helper with fmt.col(str, width) (same signature/behavior). │
+ * │                                                                             │
  * │  • Tab discovery/open + in-page fetch: previously shelled out to          │
  * │    `playwright-cli tab-list` / `tab-new` / `eval` via the bare `exec()`   │
  * │    global and regex-parsed the CLI output (including a fragile           │
@@ -34,22 +36,36 @@
  * │    actual request goes through browser.fetch so it runs in-page with      │
  * │    the right Origin/credentials — no more manual shell-quoting of JS      │
  * │    source or exec() at all, so `sliccy:exec` isn't needed by this file).  │
+ * │                                                                             │
+ * │  • const cli = require('sliccy:cli'); — every `console.error(msg) +       │
+ * │    process.exit(1)` pair (usage errors, auth errors, API errors) is       │
+ * │    replaced 1:1 with `cli.die(msg, { prefix: '' })`. `cli.die` defaults   │
+ * │    to prepending "Error: " to the message; `{ prefix: '' }` suppresses    │
+ * │    that so stderr text stays byte-for-byte identical to the original      │
+ * │    bare `console.error(...)` output. The top-level `--help`/`-h`/         │
+ * │    no-args path uses `cli.help(text)` instead of `console.log(text);      │
+ * │    process.exit(0)` — same text, same exit code 0. The final `default:`   │
+ * │    branch (unknown subcommand) still prints the usage dump via            │
+ * │    printUsage() *before* the die(), matching the original ordering        │
+ * │    (usage on stdout, then the error on stderr, then exit 1).              │
+ * │                                                                             │
  * │  • `process.argv.parseFlags()` does not exist in this runtime — kept      │
  * │    the original hand-rolled parseFlags(argsSlice) helper as-is.           │
+ * │                                                                             │
  * │ No subcommands, flags, output formatting, or behavior were changed.       │
  * └─────────────────────────────────────────────────────────────────────────────┘
  */
 
 const browser = require('sliccy:browser');
 const fmt = require('sliccy:fmt');
+const cli = require('sliccy:cli');
 
 // ─── Argument Parsing ────────────────────────────────────────────────────────
 
 const args = process.argv.slice(2);
 
 if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
-  printUsage();
-  process.exit(0);
+  cli.help(usageText());
 }
 
 const subcommand = args[0];
@@ -84,8 +100,8 @@ function parseFlags(argsSlice) {
   return { flags, positional };
 }
 
-function printUsage() {
-  console.log(`apple-music — Apple Music CLI for SLICC
+function usageText() {
+  return `apple-music — Apple Music CLI for SLICC
 
 Usage:
   apple-music search <query> [--type songs|albums|artists|playlists] [--limit N]
@@ -101,7 +117,11 @@ Usage:
 ID conventions:
   Catalog song IDs  — numeric (e.g. 1731434189). From search results. Used to add tracks.
   Library song IDs  — i.xxx format (e.g. i.zpZxmA9tDARo7). From playlist tracks. Used to remove/reorder.
-  Playlist IDs      — p.xxx format (e.g. p.V7VYJJMcvl92Y).`);
+  Playlist IDs      — p.xxx format (e.g. p.V7VYJJMcvl92Y).`;
+}
+
+function printUsage() {
+  console.log(usageText());
 }
 
 /**
@@ -194,8 +214,7 @@ async function amFetch(tab, url, options = {}) {
   });
 
   if (!tokens || !tokens.devToken || !tokens.userToken) {
-    console.error('Not authenticated. Please sign in to Apple Music in the browser tab and try again.');
-    process.exit(1);
+    cli.die('Not authenticated. Please sign in to Apple Music in the browser tab and try again.', { prefix: '' });
   }
 
   let resp;
@@ -211,8 +230,7 @@ async function amFetch(tab, url, options = {}) {
       body: options.body,
     });
   } catch (e) {
-    console.error('Fetch error: ' + e.message);
-    process.exit(1);
+    cli.die('Fetch error: ' + e.message, { prefix: '' });
   }
 
   const status = resp.status;
@@ -220,12 +238,10 @@ async function amFetch(tab, url, options = {}) {
   const parsed = { status, ok: resp.ok, data };
 
   if (parsed.status === 401 || parsed.status === 403) {
-    console.error(`Authentication error (HTTP ${parsed.status}). Your Apple Music session may have expired. Please refresh the Apple Music tab and sign in again.`);
-    process.exit(1);
+    cli.die(`Authentication error (HTTP ${parsed.status}). Your Apple Music session may have expired. Please refresh the Apple Music tab and sign in again.`, { prefix: '' });
   }
   if (!parsed.ok && parsed.status) {
-    console.error(`API error (HTTP ${parsed.status}): ${JSON.stringify(parsed.data).slice(0, 500)}`);
-    process.exit(1);
+    cli.die(`API error (HTTP ${parsed.status}): ${JSON.stringify(parsed.data).slice(0, 500)}`, { prefix: '' });
   }
 
   return parsed;
@@ -237,8 +253,7 @@ async function cmdSearch() {
   const { flags, positional } = parseFlags(args.slice(1));
   const query = positional.join(' ');
   if (!query) {
-    console.error('Usage: apple-music search <query> [--type songs|albums|artists|playlists] [--limit N]');
-    process.exit(1);
+    cli.die('Usage: apple-music search <query> [--type songs|albums|artists|playlists] [--limit N]', { prefix: '' });
   }
 
   const type = flags.type || 'songs';
@@ -393,8 +408,7 @@ async function cmdPlaylist() {
   const { positional } = parseFlags(args.slice(1));
   const playlistId = positional[0];
   if (!playlistId) {
-    console.error('Usage: apple-music playlist <playlistId>');
-    process.exit(1);
+    cli.die('Usage: apple-music playlist <playlistId>', { prefix: '' });
   }
 
   const tab = await getAppleMusicTab();
@@ -455,8 +469,7 @@ async function cmdCreatePlaylist() {
   const { flags, positional } = parseFlags(args.slice(1));
   const name = positional.join(' ');
   if (!name) {
-    console.error('Usage: apple-music create-playlist <name> [--description "..."]');
-    process.exit(1);
+    cli.die('Usage: apple-music create-playlist <name> [--description "..."]', { prefix: '' });
   }
 
   const tab = await getAppleMusicTab();
@@ -502,13 +515,11 @@ async function cmdEditPlaylist() {
   const { flags, positional } = parseFlags(args.slice(1));
   const playlistId = positional[0];
   if (!playlistId) {
-    console.error('Usage: apple-music edit-playlist <id> [--name "..."] [--description "..."]');
-    process.exit(1);
+    cli.die('Usage: apple-music edit-playlist <id> [--name "..."] [--description "..."]', { prefix: '' });
   }
 
   if (!flags.name && !flags.description) {
-    console.error('Provide at least --name or --description to update.');
-    process.exit(1);
+    cli.die('Provide at least --name or --description to update.', { prefix: '' });
   }
 
   const tab = await getAppleMusicTab();
@@ -528,8 +539,7 @@ async function cmdDeletePlaylist() {
   const { positional } = parseFlags(args.slice(1));
   const playlistId = positional[0];
   if (!playlistId) {
-    console.error('Usage: apple-music delete-playlist <playlistId>');
-    process.exit(1);
+    cli.die('Usage: apple-music delete-playlist <playlistId>', { prefix: '' });
   }
 
   const tab = await getAppleMusicTab();
@@ -542,8 +552,7 @@ async function cmdDeletePlaylist() {
 async function cmdAddTracks() {
   const { positional } = parseFlags(args.slice(1));
   if (positional.length < 2) {
-    console.error('Usage: apple-music add-tracks <playlistId> <catalogSongId> [catalogSongId2] ...');
-    process.exit(1);
+    cli.die('Usage: apple-music add-tracks <playlistId> <catalogSongId> [catalogSongId2] ...', { prefix: '' });
   }
 
   const playlistId = positional[0];
@@ -568,8 +577,7 @@ async function cmdAddTracks() {
 async function cmdRemoveTrack() {
   const { positional } = parseFlags(args.slice(1));
   if (positional.length < 2) {
-    console.error('Usage: apple-music remove-track <playlistId> <librarySongId>');
-    process.exit(1);
+    cli.die('Usage: apple-music remove-track <playlistId> <librarySongId>', { prefix: '' });
   }
 
   const playlistId = positional[0];
@@ -585,9 +593,11 @@ async function cmdRemoveTrack() {
 async function cmdReorder() {
   const { positional } = parseFlags(args.slice(1));
   if (positional.length < 2) {
-    console.error('Usage: apple-music reorder <playlistId> <libSongId1> [libSongId2] ...');
-    console.error('List ALL library song IDs in the desired order. This replaces the full track list.');
-    process.exit(1);
+    cli.die(
+      'Usage: apple-music reorder <playlistId> <libSongId1> [libSongId2] ...\n' +
+      'List ALL library song IDs in the desired order. This replaces the full track list.',
+      { prefix: '' }
+    );
   }
 
   const playlistId = positional[0];
@@ -638,9 +648,8 @@ async function main() {
       await cmdReorder();
       break;
     default:
-      console.error(`Unknown command: ${subcommand}`);
       printUsage();
-      process.exit(1);
+      cli.die(`Unknown command: ${subcommand}`, { prefix: '' });
   }
 }
 
