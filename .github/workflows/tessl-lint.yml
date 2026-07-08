@@ -28,17 +28,14 @@ jobs:
             CHANGED_FILES=$(git diff --name-only "${{ github.event.before }}..${{ github.sha }}" 2>/dev/null || echo "")
           fi
 
-          # If any tile manifest or .tileignore changed, lint all affected tiles in full.
+          # If any plugin manifest changed, lint all affected plugins in full.
           CHANGED_TILES=$(echo "$CHANGED_FILES" \
-            | grep -E '^tiles/[^/]+/tile\.json$' \
+            | grep -E '^tiles/[^/]+/\.tessl-plugin/plugin\.json$' \
             | awk -F/ '{print $2}' | sort -u | xargs)
-          if [ -n "$CHANGED_TILES" ] || echo "$CHANGED_FILES" | grep -qE '^\.tileignore$'; then
-            if [ -z "$CHANGED_TILES" ]; then
-              CHANGED_TILES="basic advanced"
-            fi
+          if [ -n "$CHANGED_TILES" ]; then
             echo "scope=full" >> "$GITHUB_OUTPUT"
             echo "tiles=$CHANGED_TILES" >> "$GITHUB_OUTPUT"
-            echo "Tile manifest(s) changed — linting full tile(s): $CHANGED_TILES"
+            echo "Plugin manifest(s) changed — linting full plugin(s): $CHANGED_TILES"
             exit 0
           fi
 
@@ -63,29 +60,31 @@ jobs:
             echo "No skill files changed — lint skipped."
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Lint full tile(s)
+      - name: Lint full plugin(s)
         if: steps.detect.outputs.scope == 'full'
         run: |
           # tessl >=0.81 rejects symlinks for security. The repo uses symlinks
-          # in tiles/*/skills/ pointing to ../../../skills/*. Dereference them into
-          # a concrete temp copy before linting.
+          # in tiles/*/skills/ pointing to ../../../skills/*. plugin lint has no
+          # --resolve-symlinks, so dereference them into a concrete temp copy first.
           for t in ${{ steps.detect.outputs.tiles }}; do
-            echo "::group::Lint tile $t"
+            echo "::group::Lint plugin $t"
             TMP=$(mktemp -d)
             cp -rL "tiles/$t" "$TMP/$t"
-            tessl skill lint "$TMP/$t"
+            tessl plugin lint "$TMP/$t"
             echo "::endgroup::"
           done
 
       - name: Lint changed skills only
         if: steps.detect.outputs.scope == 'subset'
         run: |
-          # Group changed skills by their owning tile (basic|advanced),
-          # build one minimal subset tile per group, then lint each.
-          declare -A TILE_OF
-          for tile in basic advanced; do
-            for k in $(jq -r '.skills | keys[]' "tiles/$tile/tile.json"); do
-              TILE_OF[$k]=$tile
+          # Group changed skills by their owning plugin, build one minimal
+          # subset plugin per group, then lint each.
+          declare -A PLUGIN_OF
+          for manifest in tiles/*/.tessl-plugin/plugin.json; do
+            [ -f "$manifest" ] || continue
+            plugin=$(basename "$(dirname "$(dirname "$manifest")")")
+            for path in $(jq -r '.skills[]' "$manifest"); do
+              PLUGIN_OF[$(basename "$path")]=$plugin
             done
           done
 
@@ -95,32 +94,32 @@ jobs:
               echo "::warning::skills/$skill has no SKILL.md — skipping"
               continue
             fi
-            t="${TILE_OF[$skill]:-}"
-            if [ -z "$t" ]; then
-              echo "::notice::$skill is not in any tile.json — skipping"
+            p="${PLUGIN_OF[$skill]:-}"
+            if [ -z "$p" ]; then
+              echo "::notice::$skill is not in any plugin.json — skipping"
               continue
             fi
-            SUBSET[$t]="${SUBSET[$t]:-} $skill"
+            SUBSET[$p]="${SUBSET[$p]:-} $skill"
           done
 
-          for tile in "${!SUBSET[@]}"; do
+          for plugin in "${!SUBSET[@]}"; do
+            MANIFEST="tiles/$plugin/.tessl-plugin/plugin.json"
             TMP=$(mktemp -d)
-            mkdir -p "$TMP/skills"
-            SKILLS_JSON="{}"
-            for skill in ${SUBSET[$tile]}; do
+            mkdir -p "$TMP/skills" "$TMP/.tessl-plugin"
+            SKILLS_JSON="[]"
+            for skill in ${SUBSET[$plugin]}; do
               cp -rL "$PWD/skills/$skill" "$TMP/skills/$skill"
-              SKILLS_JSON=$(echo "$SKILLS_JSON" | jq --arg k "$skill" \
-                '. + {($k): {"path": ("skills/" + $k + "/SKILL.md")}}')
+              SKILLS_JSON=$(echo "$SKILLS_JSON" | jq --arg k "skills/$skill" '. + [$k]')
             done
-            jq -n --arg name "$(jq -r .name tiles/$tile/tile.json)" \
-                  --arg version "$(jq -r .version tiles/$tile/tile.json)" \
-                  --arg summary "$(jq -r .summary tiles/$tile/tile.json)" \
-                  --argjson private "$(jq .private tiles/$tile/tile.json)" \
+            jq -n --arg name "$(jq -r .name "$MANIFEST")" \
+                  --arg version "$(jq -r .version "$MANIFEST")" \
+                  --arg description "$(jq -r .description "$MANIFEST")" \
+                  --argjson private "$(jq .private "$MANIFEST")" \
                   --argjson skills "$SKILLS_JSON" \
-                  '{name: $name, version: $version, private: $private, summary: $summary, skills: $skills}' \
-              > "$TMP/tile.json"
-            echo "::group::Subset tile.json for $tile"
-            cat "$TMP/tile.json"
+                  '{name: $name, version: $version, private: $private, description: $description, skills: $skills}' \
+              > "$TMP/.tessl-plugin/plugin.json"
+            echo "::group::Subset plugin.json for $plugin"
+            cat "$TMP/.tessl-plugin/plugin.json"
             echo "::endgroup::"
-            tessl skill lint "$TMP"
+            tessl plugin lint "$TMP"
           done
