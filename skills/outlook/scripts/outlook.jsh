@@ -8,6 +8,72 @@
 //   calendar  List calendar events
 //   send      Send an email
 //   monday    Aggregated inbox for monday dispatcher
+//
+// ┌─────────────────────────────────────────────────────────────────────────────┐
+// │ FIX — explicit sliccy: module imports (this commit, PR #143)               │
+// │                                                                             │
+// │ The `.jsh` runtime no longer injects `exec` (or `skill`/`cli`/`fmt`/`c`/    │
+// │ `http`/`time`/`pool`, none of which this script happens to use) as a bare  │
+// │ global. It still exists and works exactly as before — it must now be      │
+// │ obtained explicitly via `require('sliccy:exec')`. Concretely:             │
+// │  • Added `const exec = require('sliccy:exec');` at the top of the file.   │
+// │    This script does not use `skill`, `cli`, `fmt`, `c`/`color`, `http`,   │
+// │    `time`, or `pool` anywhere (checked via grep before importing anything  │
+// │    — same discipline as the gh.jsh port in PR #150), so none of those      │
+// │    were imported.                                                          │
+// │  • Added `const fs = require('fs');` (plain node-ish builtin, not a       │
+// │    `sliccy:` module). This script's `fs.writeFile(...)` / `fs.readFile(...)│
+// │    ` call sites needed no further changes beyond the import — those        │
+// │    methods exist directly on the `require('fs')` object, not only under   │
+// │    `.promises` (verified against this file's exact old call shapes, same  │
+// │    finding as the gh.jsh port).                                            │
+// │  • `process.argv.parseFlags()` is NOT used anywhere in this script — its   │
+// │    argument parsing was already a fully manual local loop (see            │
+// │    "Argument Parsing" below), so no local replacement was needed here.    │
+// │  • The local `C` object (ANSI color helpers) a few dozen lines down is a   │
+// │    script-local `const`, not the removed bare `c` global — it is          │
+// │    unrelated to the `sliccy:color` rename that `gh.jsh` needed and was     │
+// │    left untouched.                                                         │
+// │  • No other call sites changed. Every command, subcommand, and flag       │
+// │    behaves exactly as before — this is a runtime-API port, not a feature   │
+// │    or logic change. PR #143's own new `captureTokenFromNetwork` /          │
+// │    `extractTokenFromCache` two-strategy token logic is unchanged beyond    │
+// │    what was needed to make it run (the `exec`/`fs` imports above).        │
+// ├─────────────────────────────────────────────────────────────────────────────┤
+// │ FIX — revalidate captured tokens before reusing them (review comment,      │
+// │ chatgpt-codex-connector[bot], P2)                                          │
+// │                                                                             │
+// │ `captureTokenFromNetwork()`'s poll loop read `window.__owaTok` and only    │
+// │ checked that it LOOKED like a JWT (three dot-separated parts) before       │
+// │ accepting it — not that it was still valid. `__owaTok` is a page-global    │
+// │ set by the injected `consider()` hook and persists across multiple calls   │
+// │ into the same tab (the hook itself only installs once, guarded by         │
+// │ `__owaHooked`, by design — that part is correct and unchanged). If a       │
+// │ previous call's captured token was still sitting in `__owaTok` when a      │
+// │ later call started polling, and it had since expired, the old loop would  │
+// │ return that stale token on its very first iteration, before the freshly   │
+// │ (re)triggered fetch had any chance to produce a genuinely new one.        │
+// │ Fixed both ways the review comment suggested, together rather than        │
+// │ either alone:                                                              │
+// │  • `window.__owaTok=null;` is now the first thing the injection script     │
+// │    does on every call, before the `__owaHooked` check — this clears only   │
+// │    the captured *value*, not the one-time hook installation, so a stale    │
+// │    value from a prior call can never leak into a new call's poll loop.    │
+// │  • Added `decodeJwtPayload()` / `isFreshBearerCandidate()` on the Node      │
+// │    side, mirroring the injected script's own `dec()`/`consider()` claim-   │
+// │    checking logic (aud must target outlook.office.com, exp must be in the  │
+// │    future) rather than reinventing it, plus a 60s safety margin so a       │
+// │    token that's about to expire isn't handed back only to expire before    │
+// │    it's actually used for a real API call. The poll loop now calls this    │
+// │    instead of the old `candidate.split('.').length === 3` shape-only       │
+// │    check.                                                                  │
+// │ Scope: entirely inside `captureTokenFromNetwork()` (strategy 2, the        │
+// │ encrypted-cache path) — `extractTokenFromCache()` (strategy 1, legacy      │
+// │ plaintext cache) is untouched by this fix.                                │
+// └─────────────────────────────────────────────────────────────────────────────┘
+
+const exec = require('sliccy:exec');
+const fs = require('fs'); // plain node-ish builtin, not a sliccy: module
 
 const OWA_BASE = 'https://outlook.office.com/api/v2.0';
 const TOKEN_PATH = '/shared/.outlook-token';
@@ -109,12 +175,37 @@ async function findOutlookTab() {
   return null;
 }
 
-async function extractTokenFromBrowser() {
-  const tabId = await findOutlookTab();
-  if (!tabId) return null;
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
-  // Extract the MSAL access token for outlook.office.com with the most scopes
-  // (the one with mail.readwrite, calendars.readwrite, etc.)
+// Run a JS expression in the Outlook tab via playwright-cli eval-file and return
+// the trimmed stdout (or null on error / empty result).
+async function evalInTab(tabId, scriptStr) {
+  const tmpFile =
+    '/tmp/.outlook-eval-' + Date.now() + '-' + Math.random().toString(36).slice(2) + '.js';
+  await fs.writeFile(tmpFile, scriptStr);
+  const r = await exec(`playwright-cli eval-file ${tmpFile} --tab=${tabId}`);
+  await fs.writeFile(tmpFile, '').catch(() => {}); // clean up
+  if (r.exitCode !== 0) return null;
+  const raw = (r.stdout || '').trim();
+  if (!raw || raw === 'null' || raw === 'undefined') return null;
+  return raw;
+}
+
+function unwrapEvalString(raw) {
+  // playwright-cli returns string results JSON-quoted; unwrap one layer.
+  if (raw && raw.startsWith('"') && raw.endsWith('"')) {
+    try { return JSON.parse(raw); } catch { /* fall through */ }
+  }
+  return raw;
+}
+
+// Strategy 1 — legacy plaintext MSAL cache (old outlook.office.com client).
+// The classic MSAL cache stores access tokens as JSON objects with a readable
+// `.secret` field. Newer clients (outlook.cloud.microsoft) encrypt the cache
+// ({id,nonce,data,lastUpdatedAt}), so this returns null there — see strategy 2.
+async function extractTokenFromCache(tabId) {
   const extractScript = [
     '(function(){',
     'var best=null,bestScopes=0;',
@@ -133,26 +224,133 @@ async function extractTokenFromBrowser() {
     'return null})()',
   ].join('');
 
-  const tmpFile = '/tmp/.outlook-token-extract-' + Date.now() + '.js';
-  await fs.writeFile(tmpFile, extractScript);
-  const evalResult = await exec(`playwright-cli eval-file ${tmpFile} --tab=${tabId}`);
-  await fs.writeFile(tmpFile, '').catch(() => {}); // clean up
-
-  if (evalResult.exitCode !== 0) return null;
-
-  const raw = evalResult.stdout.trim();
-  if (!raw || raw === 'null' || raw === 'undefined') return null;
-
+  const raw = await evalInTab(tabId, extractScript);
+  if (!raw) return null;
   try {
-    let parsed = raw;
-    if (parsed.startsWith('"') && parsed.endsWith('"')) parsed = JSON.parse(parsed);
+    let parsed = unwrapEvalString(raw);
     const data = typeof parsed === 'string' ? JSON.parse(parsed) : parsed;
-    if (data && data.secret) {
-      // Save for future use
-      await fs.writeFile(TOKEN_PATH, data.secret);
-      return data.secret;
-    }
+    if (data && data.secret) return data.secret;
   } catch { /* fall through */ }
+  return null;
+}
+
+// Decode a JWT's payload (base64url, no signature check — we only need the
+// claims, not verification, since this token was captured straight from the
+// page's own outgoing Authorization header). Returns null on any parse
+// failure or malformed input. Mirrors the injected `dec()` helper's logic
+// below, translated to the Node/.jsh side (no `atob` here — use
+// Buffer.from(..., 'base64') instead).
+function decodeJwtPayload(tok) {
+  try {
+    const parts = tok.split('.');
+    if (parts.length !== 3) return null;
+    let s = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const pad = s.length % 4;
+    if (pad) s += '===='.slice(pad);
+    return JSON.parse(Buffer.from(s, 'base64').toString('utf8'));
+  } catch {
+    return null;
+  }
+}
+
+// Revalidate a captured bearer token candidate before trusting it: require a
+// well-formed JWT, an `aud` targeting outlook.office.com (same check as the
+// injected `consider()` below), and `exp` at least SAFETY_MARGIN_MS in the
+// future. Without this, a stale `window.__owaTok` left over from a *previous*
+// call into the same tab (the hook only installs once via `__owaHooked` and
+// the page-global `__owaTok` can outlive its own token's validity) would be
+// accepted on the very first poll iteration, before the freshly (re)installed
+// hook ever gets a chance to observe a genuinely new Authorization header.
+const TOKEN_EXP_SAFETY_MARGIN_MS = 60 * 1000;
+
+function isFreshBearerCandidate(candidate) {
+  if (!candidate || candidate.split('.').length !== 3) return false;
+  const claims = decodeJwtPayload(candidate);
+  if (!claims) return false;
+  if (!claims.aud || String(claims.aud).indexOf('outlook.office.com') === -1) return false;
+  if (!claims.exp) return false; // no exp claim — cannot prove freshness, reject
+  return claims.exp * 1000 > Date.now() + TOKEN_EXP_SAFETY_MARGIN_MS;
+}
+
+// Strategy 2 — live network capture (new outlook.cloud.microsoft client).
+// When the MSAL cache is encrypted we cannot read the token at rest, but the SPA
+// constantly sends it as an `Authorization: Bearer` header. We hook fetch and
+// XMLHttpRequest, nudge a background sync (focus/visibilitychange — OWA refreshes
+// on these), and poll for a captured Bearer whose decoded JWT `aud` targets
+// outlook.office.com.
+async function captureTokenFromNetwork(tabId) {
+  const injectScript = [
+    '(function(){',
+    // Clear any previously captured token value up front, on every call, so a
+    // stale value from an earlier invocation into this same tab can never be
+    // read by this call's poll loop below — regardless of the exp/aud check
+    // in isFreshBearerCandidate(), belt-and-suspenders per the review comment.
+    // This does NOT touch `__owaHooked` — the fetch/XHR hook installation
+    // below must stay one-time-per-page-load (re-wrapping window.fetch/XHR on
+    // every call would stack duplicate wrappers), only the *captured value*
+    // is reset here.
+    'window.__owaTok=null;',
+    'function dec(t){try{var p=t.replace(/^Bearer\\s+/,"");var b=p.split(".")[1];var s=b.replace(/-/g,"+").replace(/_/g,"/");var pad=s.length%4;if(pad)s+="====".slice(pad);return JSON.parse(atob(s));}catch(e){return null;}}',
+    'function consider(a){if(!a||!/^Bearer /.test(a))return;var j=dec(a);if(j&&j.aud&&String(j.aud).indexOf("outlook.office.com")!==-1&&(!j.exp||j.exp*1000>Date.now())){window.__owaTok=a.replace(/^Bearer\\s+/,"");}}',
+    'if(!window.__owaHooked){window.__owaHooked=true;',
+    'var of=window.fetch;window.fetch=function(input,init){try{var h=(init&&init.headers)||(input&&input.headers);var a=null;if(h){if(typeof h.get==="function")a=h.get("Authorization");else a=h.Authorization||h.authorization;}consider(a);}catch(e){}return of.apply(this,arguments);};',
+    'var ox=XMLHttpRequest.prototype.setRequestHeader;XMLHttpRequest.prototype.setRequestHeader=function(k,v){try{if(/^authorization$/i.test(k))consider(v);}catch(e){}return ox.apply(this,arguments);};}',
+    'try{document.dispatchEvent(new Event("visibilitychange"));window.dispatchEvent(new Event("focus"));window.dispatchEvent(new Event("online"));}catch(e){}',
+    'return window.__owaTok?"have":"hooked";})()',
+  ].join('');
+
+  await evalInTab(tabId, injectScript);
+
+  // Click a module-nav entry by accessible label to force the SPA to issue an
+  // authenticated request (passive focus/visibility events alone don't reliably
+  // trigger a sync). Switching Calendar <-> Mail each fires token-bearing calls;
+  // we always return to Mail at the end to restore the user's view.
+  const clickNav = (label) =>
+    evalInTab(
+      tabId,
+      '(function(){try{var el=document.querySelector(\'[aria-label="' +
+        label +
+        '"]\');if(el){(el.closest("button,[role=button],a")||el).click();return "c";}}catch(e){}return "n"})()'
+    );
+
+  let tok = null;
+  for (let i = 0; i < 15; i++) {
+    const raw = await evalInTab(tabId, '(window.__owaTok||null)');
+    if (raw) {
+      const candidate = unwrapEvalString(raw);
+      // Revalidate exp/aud here rather than trusting the three-dot-parts shape
+      // check alone — see isFreshBearerCandidate() above for why.
+      if (isFreshBearerCandidate(candidate)) {
+        tok = candidate;
+        break;
+      }
+    }
+    await clickNav(i % 2 === 0 ? 'Calendar' : 'Mail');
+    await sleep(1000);
+  }
+
+  await clickNav('Mail'); // restore Mail view
+  return tok;
+}
+
+async function extractTokenFromBrowser() {
+  const tabId = await findOutlookTab();
+  if (!tabId) return null;
+
+  // 1. Legacy plaintext MSAL cache.
+  const cached = await extractTokenFromCache(tabId);
+  if (cached) {
+    await fs.writeFile(TOKEN_PATH, cached);
+    return cached;
+  }
+
+  // 2. Encrypted-cache clients (outlook.cloud.microsoft): capture from network.
+  const captured = await captureTokenFromNetwork(tabId);
+  if (captured) {
+    await fs.writeFile(TOKEN_PATH, captured);
+    return captured;
+  }
+
   return null;
 }
 
