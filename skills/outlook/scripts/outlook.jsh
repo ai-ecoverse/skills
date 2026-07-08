@@ -8,6 +8,41 @@
 //   calendar  List calendar events
 //   send      Send an email
 //   monday    Aggregated inbox for monday dispatcher
+//
+// ┌─────────────────────────────────────────────────────────────────────────────┐
+// │ FIX — explicit sliccy: module imports (this commit, PR #143)               │
+// │                                                                             │
+// │ The `.jsh` runtime no longer injects `exec` (or `skill`/`cli`/`fmt`/`c`/    │
+// │ `http`/`time`/`pool`, none of which this script happens to use) as a bare  │
+// │ global. It still exists and works exactly as before — it must now be      │
+// │ obtained explicitly via `require('sliccy:exec')`. Concretely:             │
+// │  • Added `const exec = require('sliccy:exec');` at the top of the file.   │
+// │    This script does not use `skill`, `cli`, `fmt`, `c`/`color`, `http`,   │
+// │    `time`, or `pool` anywhere (checked via grep before importing anything  │
+// │    — same discipline as the gh.jsh port in PR #150), so none of those      │
+// │    were imported.                                                          │
+// │  • Added `const fs = require('fs');` (plain node-ish builtin, not a       │
+// │    `sliccy:` module). This script's `fs.writeFile(...)` / `fs.readFile(...)│
+// │    ` call sites needed no further changes beyond the import — those        │
+// │    methods exist directly on the `require('fs')` object, not only under   │
+// │    `.promises` (verified against this file's exact old call shapes, same  │
+// │    finding as the gh.jsh port).                                            │
+// │  • `process.argv.parseFlags()` is NOT used anywhere in this script — its   │
+// │    argument parsing was already a fully manual local loop (see            │
+// │    "Argument Parsing" below), so no local replacement was needed here.    │
+// │  • The local `C` object (ANSI color helpers) a few dozen lines down is a   │
+// │    script-local `const`, not the removed bare `c` global — it is          │
+// │    unrelated to the `sliccy:color` rename that `gh.jsh` needed and was     │
+// │    left untouched.                                                         │
+// │  • No other call sites changed. Every command, subcommand, and flag       │
+// │    behaves exactly as before — this is a runtime-API port, not a feature   │
+// │    or logic change. PR #143's own new `captureTokenFromNetwork` /          │
+// │    `extractTokenFromCache` two-strategy token logic is unchanged beyond    │
+// │    what was needed to make it run (the `exec`/`fs` imports above).        │
+// └─────────────────────────────────────────────────────────────────────────────┘
+
+const exec = require('sliccy:exec');
+const fs = require('fs'); // plain node-ish builtin, not a sliccy: module
 
 const OWA_BASE = 'https://outlook.office.com/api/v2.0';
 const TOKEN_PATH = '/shared/.outlook-token';
