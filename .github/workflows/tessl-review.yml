@@ -21,7 +21,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Detect changed skills in tile
+      - name: Detect changed skills in plugin
         id: detect
         run: |
           CHANGED_FILES=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
@@ -32,20 +32,20 @@ jobs:
             | awk -F/ '{print $2}' \
             | sort -u)
 
-          # Keep only skills that are listed in some tile.json and have a SKILL.md
+          # Keep only skills that are listed in some plugin.json and have a SKILL.md
           KEPT=""
           for skill in $CHANGED_SKILLS; do
-            IN_TILE=false
-            for tile in tiles/basic/tile.json tiles/advanced/tile.json; do
-              if jq -e --arg k "$skill" '.skills[$k]' "$tile" >/dev/null 2>&1; then
-                IN_TILE=true
+            IN_PLUGIN=false
+            for plugin in tiles/basic/.tessl-plugin/plugin.json tiles/advanced/.tessl-plugin/plugin.json; do
+              if jq -e --arg k "$skill" '.skills | index("skills/" + $k)' "$plugin" >/dev/null 2>&1; then
+                IN_PLUGIN=true
                 break
               fi
             done
-            if [ "$IN_TILE" = "true" ] && [ -f "skills/$skill/SKILL.md" ]; then
+            if [ "$IN_PLUGIN" = "true" ] && [ -f "skills/$skill/SKILL.md" ]; then
               KEPT="$KEPT $skill"
             else
-              echo "::notice::Skipping review for $skill (not in any tile.json or no SKILL.md)"
+              echo "::notice::Skipping review for $skill (not in any plugin.json or no SKILL.md)"
             fi
           done
 
@@ -54,7 +54,7 @@ jobs:
           if [ "$#" -eq 0 ]; then
             echo "has_skills=false" >> "$GITHUB_OUTPUT"
             echo "skills=[]" >> "$GITHUB_OUTPUT"
-            echo "No tile skills changed — review skipped."
+            echo "No plugin skills changed — review skipped."
           else
             JSON=$(printf '%s\n' "$@" | jq -R . | jq -sc .)
             echo "has_skills=true" >> "$GITHUB_OUTPUT"
@@ -68,7 +68,7 @@ jobs:
           {
             echo "## Tessl Skill Review"
             echo ""
-            echo "No tile skills changed — review skipped."
+            echo "No plugin skills changed — review skipped."
           } >> "$GITHUB_STEP_SUMMARY"
 
   review:
