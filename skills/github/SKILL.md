@@ -20,58 +20,31 @@ allowed_tools:
 
 ## Authentication
 
-Three tools, one token source. `oauth-token github` is the single entry point for GitHub credentials in SLICC.
-
-### Token basics
+`oauth-token github` is the single entry point for GitHub credentials in SLICC. Get a token, then set it once for the tool you're using:
 
 ```bash
 oauth-token github                       # default scopes (repo, read:org)
 oauth-token github --scope workflow       # add workflow scope (for .github/workflows/)
 oauth-token github --scope workflow,repo  # multiple extra scopes
+
+git config github.token "$(oauth-token github)"   # persists the token for gh.jsh and git push/pull
 ```
 
-Returns a fresh OAuth token string. Use it with any of the three GitHub tools:
-
-### With `gh` (this skill's CLI)
-
-`gh` reads the token from `git config github.token` automatically. Set it once:
+| Tool | How it gets the token |
+|---|---|
+| `gh` (this skill's CLI) | Reads `git config github.token` automatically once set above. |
+| `git push`/`git pull` | Same config key — set once, both tools pick it up. |
+| Raw `fetch`/`curl` | Not persisted — pass it explicitly per call: `curl -H "Authorization: Bearer $(oauth-token github)" https://api.github.com/...` |
 
 ```bash
-git config github.token "$(oauth-token github)"
-```
-
-Then all `gh` commands authenticate transparently:
-```bash
+# gh commands authenticate transparently once git config github.token is set:
 gh pr list ai-ecoverse/skills
 gh content put README.md ./local.md "update" --branch=feat ai-ecoverse/skills
 ```
 
-### With `git` (push/pull)
-
-Same config key — `git push`/`pull` use the token from `git config github.token`:
-
-```bash
-git config github.token "$(oauth-token github)"
-git push origin my-branch
-```
-
-For pushing workflow files (`.github/workflows/`), GitHub requires the `workflow` scope:
-```bash
-git config github.token "$(oauth-token github --scope workflow)"
-git push origin my-branch   # now allowed to push workflow changes
-```
-
-### With raw `fetch`/`curl` (API calls)
-
-For direct GitHub REST API calls outside of `gh`:
-```bash
-TOKEN=$(oauth-token github)
-curl -H "Authorization: Bearer $TOKEN" https://api.github.com/repos/owner/repo
-```
-
 ### Scope escalation
 
-The default token covers most operations. Request additional scopes when needed:
+The default token covers most operations. Request additional scopes when needed, then re-run the `git config github.token "$(oauth-token github --scope ...)"` setup above with the escalated token:
 
 | Scope | When needed |
 |-------|-------------|
@@ -80,11 +53,8 @@ The default token covers most operations. Request additional scopes when needed:
 | `admin:org` | Managing organization settings |
 
 ```bash
-# Escalate for workflow file changes
 git config github.token "$(oauth-token github --scope workflow)"
-
-# Multiple scopes
-TOKEN=$(oauth-token github --scope workflow,admin:org)
+git push origin my-branch   # now allowed to push workflow changes
 ```
 
 ### Precedence
@@ -116,6 +86,7 @@ This is the most common multi-step flow. Follow these steps in order, validating
 /workspace/skills/github/scripts/gh.jsh content put src/index.js ./index.js "Add entry point" --branch=my-feature owner/repo
 
 # 3. Open the PR — note the returned PR number, e.g. "Created PR #123"
+#    (the command also prints a `gh pr watch <num>` tip using that real number)
 /workspace/skills/github/scripts/gh.jsh pr create "My title" "PR body" my-feature owner/repo
 
 # 4. Verify CI has started for that PR (substitute the real number for <PR_NUMBER>)
@@ -128,7 +99,7 @@ This is the most common multi-step flow. Follow these steps in order, validating
 
 **Validation checkpoints:**
 - After `branch create`: confirm no error output before pushing content.
-- After `pr create`: capture the new PR number from the command's output and reuse it in steps 4 and 5 — never reuse a number from another PR.
+- After `pr create`: capture the new PR number from the command's output and reuse it in steps 4 and 5 — never reuse a number from another PR. Optionally run `pr watch <PR_NUMBER>` right away to get live updates instead of manually re-running `pr view`/`run list`.
 - After `pr view`: read the `Checks:` line in the output (e.g. `Checks:  3 passed`) — only proceed to merge when there are no `failed` or `pending` entries. If any check failed, inspect with `run view <id>` before proceeding.
 
 ### Review and merge an existing PR
@@ -147,6 +118,15 @@ Substitute `<PR_NUMBER>` with the actual PR number you intend to act on.
 /workspace/skills/github/scripts/gh.jsh pr merge <PR_NUMBER> --squash owner/repo
 ```
 
+### Keeping a scoop in the loop on a PR until merged
+
+```bash
+gh.jsh pr watch 151                    # start watching — wires up a live webhook
+gh.jsh pr watch 151 --filter "e => e.body.action !== 'synchronize'"  # drop noisy events
+gh.jsh pr unwatch 151                  # stop watching, tears down both webhook layers
+```
+`pr watch` pushes PR events (new review comments, CI completing, the PR closing) to the current scoop the moment they happen, instead of polling `pr view`/`run list` in a loop — it wires up a SLICC webhook and registers it as a real GitHub repo webhook in one step, and is idempotent (running it again on a PR already being watched is a no-op). `pr create` prints a `pr watch <num>` tip using the real new PR number. See [`references/webhook-pr-monitoring.md`](references/webhook-pr-monitoring.md) for exactly how this works under the hood, the manual equivalent if you need it outside `gh.jsh`, and the self-echo-detection pattern a scoop needs when watching its own PR.
+
 ---
 
 ## Command Reference
@@ -164,7 +144,11 @@ gh.jsh pr merge 42 --squash
 gh.jsh pr merge 42 --rebase
 gh.jsh pr comment 42 "LGTM, merging now"
 gh.jsh pr checkout 42                     # prints git fetch/checkout commands (does not execute)
+gh.jsh pr watch 42                        # wire up a live webhook for PR events (idempotent)
+gh.jsh pr watch 42 --filter "e => e.body.action !== 'synchronize'"
+gh.jsh pr unwatch 42                      # tear down the webhook from `pr watch`
 ```
+`pr watch`/`pr unwatch`: see [`references/webhook-pr-monitoring.md`](references/webhook-pr-monitoring.md) for details.
 `pr create`: `head` is the branch to merge from; `--base` defaults to the repo's default branch. Returns the PR number and URL.
 
 ---
