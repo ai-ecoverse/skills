@@ -502,6 +502,7 @@ async function prCreate(args) {
     console.log(sym('success') + ' Created PR ' + color.cyan('#' + res.number) + ': ' + res.title);
     console.log(color.gray('Branch:') + '  ' + res.head.ref + ' → ' + res.base.ref);
     console.log(color.gray('URL:') + '     ' + res.html_url);
+    console.log(color.gray('TIP:') + '    run `gh pr watch ' + res.number + '` to get live updates in this scoop as the PR changes.');
   } catch (e) { fail('pr create', e); }
 }
 
@@ -520,6 +521,157 @@ async function prCheckout(args) {
   console.log(color.gray('# Run these commands to check out this PR:'));
   console.log('git fetch ' + remoteUrl + ' ' + branch);
   console.log('git checkout -b ' + branch + ' FETCH_HEAD');
+}
+
+// ─── pr watch / unwatch ──────────────────────────────────────────────────────
+// Wires up a live GitHub repo webhook (POST /repos/<owner>/<repo>/hooks) that
+// fires PR lifecycle events straight to the calling scoop as licks, via a
+// SLICC `webhook create` endpoint. This automates the recipe documented in
+// references/webhook-pr-monitoring.md — see that file for the manual
+// equivalent, the self-echo-detection pattern a scoop needs when watching
+// its own PR, and the (designed-but-not-yet-observed-live) stop condition
+// this command's `unwatch` half is meant to satisfy.
+
+const WATCH_EVENTS = [
+  'pull_request',
+  'pull_request_review',
+  'pull_request_review_comment',
+  'issue_comment',
+  'check_run',
+  'check_suite',
+  'status',
+];
+
+function watchHookName(repo, num) {
+  return 'pr-' + repo.replace('/', '-') + '-' + num + '-watch';
+}
+
+// Parses the structured stdout of `webhook create` ("Created webhook ...",
+// "ID:  <id>", "URL: <url>", "Scoop: <name>") into { id, url }. Not JSON —
+// this is the actual shell command's plain-text output format.
+function parseWebhookCreateOutput(stdout) {
+  const idMatch = stdout.match(/^ID:\s*(\S+)/m);
+  const urlMatch = stdout.match(/^URL:\s*(\S+)/m);
+  return {
+    id: idMatch ? idMatch[1] : null,
+    url: urlMatch ? urlMatch[1] : null,
+  };
+}
+
+async function findExistingWatchWebhook(name) {
+  let listResult;
+  try { listResult = await exec('webhook list'); }
+  catch (e) { cli.die('pr watch: could not query existing webhooks: ' + e.message); }
+  if (listResult.exitCode !== 0) return null;
+  const line = listResult.stdout.split('\n').find(l => l.includes(name));
+  if (!line) return null;
+  const idMatch = line.trim().match(/^(\S+)/);
+  return idMatch ? idMatch[1] : null;
+}
+
+async function prWatch(args) {
+  const usage = 'usage: gh pr watch <num> [--filter <js>] [--scoop <name>] [repo]';
+  if (!args[0]) cli.die('pr watch: PR number required\n' + usage);
+  const num = validateNum(args[0], 'PR number');
+  let filter = null, scoopName = process.env.SLICC_SCOOP || null;
+  const positional = [];
+  for (let i = 1; i < args.length; i++) {
+    if (args[i] === '--filter' && args[i + 1]) { filter = args[++i]; }
+    else if (args[i] === '--scoop' && args[i + 1]) { scoopName = args[++i]; }
+    else positional.push(args[i]);
+  }
+  const repo = await resolveRepo(positional[0]);
+
+  if (!scoopName) {
+    cli.die(
+      'pr watch: no scoop specified and none could be inferred from the environment. ' +
+      'Pass --scoop <name> explicitly (the name of the scoop that should receive PR update licks).'
+    );
+  }
+
+  const hookName = watchHookName(repo, num);
+
+  const existingId = await findExistingWatchWebhook(hookName);
+  if (existingId) {
+    console.log(sym('success') + ' Already watching PR ' + color.cyan('#' + num) + ' in ' + repo + ' (webhook ' + color.gray(existingId) + '). Nothing to do.');
+    return;
+  }
+
+  // 1. Create the SLICC-side webhook endpoint.
+  const createCmd = filter
+    ? `webhook create --scoop ${scoopName} --name ${hookName} --filter ${JSON.stringify(filter)}`
+    : `webhook create --scoop ${scoopName} --name ${hookName}`;
+  let createResult;
+  try { createResult = await exec(createCmd); }
+  catch (e) { cli.die('pr watch: failed to create SLICC webhook: ' + e.message); }
+  if (createResult.exitCode !== 0) {
+    cli.die('pr watch: `webhook create` failed: ' + (createResult.stderr || createResult.stdout).trim());
+  }
+  const { id: webhookId, url: webhookUrl } = parseWebhookCreateOutput(createResult.stdout);
+  if (!webhookId || !webhookUrl) {
+    cli.die('pr watch: could not parse `webhook create` output — got:\n' + createResult.stdout);
+  }
+
+  // 2. Register that URL as a real GitHub repo webhook.
+  let hook;
+  try {
+    hook = await api.post(`/repos/${repo}/hooks`, {
+      body: {
+        name: 'web',
+        active: true,
+        events: WATCH_EVENTS,
+        config: { url: webhookUrl, content_type: 'json' },
+      },
+    });
+  } catch (e) {
+    // Best-effort cleanup of the SLICC-side webhook if the GitHub-side
+    // registration failed, so we don't leave an orphaned watcher behind.
+    try { await exec(`webhook delete ${webhookId}`); } catch {}
+    fail('pr watch', e);
+  }
+
+  console.log(sym('success') + ' Watching PR ' + color.cyan('#' + num) + ' in ' + repo);
+  console.log(color.gray('SLICC webhook:  ') + webhookId + ' (' + hookName + ') → ' + scoopName);
+  console.log(color.gray('GitHub hook:    ') + hook.id);
+  console.log(color.gray('Events:         ') + WATCH_EVENTS.join(', '));
+  console.log(color.gray('Stop watching:  ') + 'gh pr unwatch ' + num + ' ' + repo);
+}
+
+async function prUnwatch(args) {
+  const usage = 'usage: gh pr unwatch <num> [repo]';
+  if (!args[0]) cli.die('pr unwatch: PR number required\n' + usage);
+  const num = validateNum(args[0], 'PR number');
+  const repo = await resolveRepo(args[1]);
+  const hookName = watchHookName(repo, num);
+
+  const webhookId = await findExistingWatchWebhook(hookName);
+  if (!webhookId) {
+    console.log(color.gray('Not watching PR ' + '#' + num + ' in ' + repo + ' — nothing to tear down.'));
+    return;
+  }
+
+  // Find the GitHub-side hook whose config.url matches this SLICC webhook,
+  // so we can remove it too and avoid leaving a dangling registration on
+  // the real repo (see automation/SKILL.md's "Don't leave watchers/webhooks
+  // orphaned" rule).
+  let ghHookId = null;
+  try {
+    const hooks = await api.get(`/repos/${repo}/hooks`);
+    const match = hooks.find(h => h.config && h.config.url && h.config.url.includes('/' + webhookId));
+    if (match) ghHookId = match.id;
+  } catch {}
+
+  if (ghHookId) {
+    try { await api.delete(`/repos/${repo}/hooks/${ghHookId}`); }
+    catch (e) { cli.warn('pr unwatch: could not remove GitHub-side hook ' + ghHookId + ': ' + (e.body?.message || e.message)); }
+  }
+
+  try { await exec(`webhook delete ${webhookId}`); }
+  catch (e) { cli.die('pr unwatch: failed to delete SLICC webhook ' + webhookId + ': ' + e.message); }
+
+  console.log(sym('success') + ' Stopped watching PR ' + color.cyan('#' + num) + ' in ' + repo);
+  console.log(color.gray('Removed SLICC webhook:  ') + webhookId);
+  console.log(color.gray('Removed GitHub hook:    ') + (ghHookId || color.gray('(none found)')));
 }
 
 // ─── pr close ────────────────────────────────────────────────────────────────
@@ -1230,6 +1382,8 @@ ${color.bold('COMMANDS')}
   ${color.cyan('pr close')}      <num> [repo]                 Close a PR without merging
   ${color.cyan('pr comment')}    <num> <message> [repo]       Post a comment
   ${color.cyan('pr checkout')}   <num> [repo]                 Print checkout commands
+  ${color.cyan('pr watch')}      <num> [--filter <js>] [--scoop <name>] [repo]  Watch a PR via webhook
+  ${color.cyan('pr unwatch')}    <num> [repo]                 Stop watching a PR, tear down its webhook
   ${color.cyan('issue list')}    [repo]                       List open issues
   ${color.cyan('issue view')}    <num> [repo]                 View issue details
   ${color.cyan('issue create')}  <title> <body> [--label=L]... [--labels=a,b] [repo]  Create issue
@@ -1274,7 +1428,7 @@ if (cmd === 'api') { await apiPassthrough(argv.slice(1)); process.exit(0); }
 if (cmd === 'monday') { await mondayGh(argv.slice(2)); process.exit(0); }
 
 const dispatch = {
-  pr:      { list: () => prList(rest),      view: () => prView(rest),    merge: () => prMerge(rest), close: () => prClose(rest), comment: () => prComment(rest), checkout: () => prCheckout(rest), create: () => prCreate(rest) },
+  pr:      { list: () => prList(rest),      view: () => prView(rest),    merge: () => prMerge(rest), close: () => prClose(rest), comment: () => prComment(rest), checkout: () => prCheckout(rest), create: () => prCreate(rest), watch: () => prWatch(rest), unwatch: () => prUnwatch(rest) },
   issue:   { list: () => issueList(rest),   view: () => issueView(rest), create: () => issueCreate(rest) },
   repo:    { view: () => repoView(rest), archive: () => repoArchive(rest) },
   branch:  { create: () => branchCreate(rest), delete: () => branchDelete(rest) },
