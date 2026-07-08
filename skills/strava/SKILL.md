@@ -22,8 +22,8 @@ Read-only Strava client using browser session cookies from an open strava.com ta
 
 ```
 strava me                    Show your athlete profile
-strava feed [--limit N]      Show activity feed (default: 10 entries)
-strava feed --mine           Show only your own activities
+strava feed [--limit N]      Show activity feed of your own activities (default: 10 entries)
+strava feed --following      Show the social feed (activities from athletes you follow)
 strava prs                   Show personal records
 strava activity <id>         Show details for a specific activity
 strava notifications         Show notification count
@@ -38,5 +38,5 @@ browser session cookies automatically — no API keys needed.
 ## Flags
 
 - `--limit N` — number of feed entries (default 10, max 50)
-- `--mine` — filter feed to your own activities only
+- `--following` — switch the feed to the social feed (activities from athletes you follow); the feed defaults to your own activities
 - `--json` — output raw JSON instead of formatted text
