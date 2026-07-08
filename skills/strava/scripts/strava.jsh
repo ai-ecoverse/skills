@@ -1,24 +1,77 @@
 // strava.jsh — Strava browser-session client
 
+const browser = require('sliccy:browser');
+const cli = require('sliccy:cli');
+const color = require('sliccy:color');
+const fmt = require('sliccy:fmt');
+
 const HELP = `
 strava — Strava activity client (uses browser session)
 
 USAGE
   strava me                    Current athlete profile
   strava feed [--limit N]      Activity feed (default: 10)
-  strava feed --mine           Your own activities only
+  strava feed --following      Social feed (activities from athletes you follow)
   strava prs                   Personal records
   strava activity <id>         Single activity details
   strava notifications         Notification count
 
 FLAGS
-  --limit N    Number of feed entries (default 10)
-  --mine       Own activities only (feed_type=my_activity)
+  --limit N    Number of feed entries (default 10, max 50)
+  --following  Social feed instead of your own activities (feed_type=following)
   --json       Output raw JSON
 
 REQUIRES
   strava.com open and logged in in your browser
 `.trim();
+
+// ── argument parsing ───────────────────────────────────────────────────────
+// Local replacement for the retired process.argv.parseFlags(): parses
+// `--flag=val`, `--flag val`, `-x` (boolean), positional args, and a `--`
+// passthrough boundary. Shape matches the old parseFlags() output.
+
+function parseFlags(argv) {
+  const positional = [];
+  const flags = {};
+  const passthrough = [];
+  let inPassthrough = false;
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (inPassthrough) {
+      passthrough.push(arg);
+      continue;
+    }
+    if (arg === '--') {
+      inPassthrough = true;
+      continue;
+    }
+    if (arg.startsWith('--')) {
+      const eq = arg.indexOf('=');
+      if (eq !== -1) {
+        flags[arg.slice(2, eq)] = arg.slice(eq + 1);
+      } else {
+        const key = arg.slice(2);
+        const next = argv[i + 1];
+        // A following token that looks like a negative number (e.g. `-5`)
+        // is a value, not a new flag — only treat `-`-prefixed tokens as
+        // flags when they aren't purely numeric.
+        if (next !== undefined && (!next.startsWith('-') || /^-\d+(\.\d+)?$/.test(next))) {
+          flags[key] = next;
+          i++;
+        } else {
+          flags[key] = true;
+        }
+      }
+    } else if (arg.startsWith('-') && arg.length > 1) {
+      flags[arg.slice(1)] = true;
+    } else {
+      positional.push(arg);
+    }
+  }
+
+  return { positional, flags, subcommand: positional[0], passthrough };
+}
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -28,7 +81,7 @@ function stripHtml(s) {
 }
 
 async function getTab() {
-  const tab = await browser.findTab({ urlMatch: /strava.com/ });
+  const tab = await browser.findTab({ urlMatch: /strava\.com/ });
   if (!tab) cli.die('open strava.com in your browser first', { prefix: 'strava' });
   return tab;
 }
@@ -51,6 +104,16 @@ async function apiFetch(tab, path, opts = {}) {
   return res.body;
 }
 
+// Resolve the logged-in athlete's numeric ID via the same endpoint/shape
+// handling cmdMe uses. Throws if it genuinely cannot be determined — callers
+// must not silently fall back to a hard-coded athlete ID.
+async function getCurrentAthleteId(tab) {
+  const data = await apiFetch(tab, '/frontend/athletes/current');
+  const a = (data && data.currentAthlete) || data;
+  if (a && a.id) return a.id;
+  cli.die('could not determine the logged-in athlete ID from strava.com — try refreshing the strava.com tab and logging in again', { prefix: 'strava' });
+}
+
 // ── formatters ─────────────────────────────────────────────────────────────
 
 function formatActivityType(type) {
@@ -66,7 +129,7 @@ function formatFeedEntry(entry) {
   const act = entry.activity;
   if (!act) return null;
 
-  const name   = c.cyan(c.bold(act.activityName || 'Activity'));
+  const name   = color.cyan(color.bold(act.activityName || 'Activity'));
   const type   = act.type || '';
   const icon   = formatActivityType(type);
   const id     = act.id || '';
@@ -77,26 +140,26 @@ function formatFeedEntry(entry) {
 
   // Athlete name
   const athlete = entry.viewingAthlete
-    ? c.dim(`${entry.viewingAthlete.name}`)
+    ? color.dim(`${entry.viewingAthlete.name}`)
     : '';
 
   // Description / weather snippet
   const desc = act.description
-    ? c.dim(fmt.trunc(stripHtml(act.description), 60))
+    ? color.dim(fmt.trunc(stripHtml(act.description), 60))
     : '';
 
   const parts = [`  ${icon} ${name}`];
 
   const metaParts = [];
   if (athlete) metaParts.push(athlete);
-  if (type)    metaParts.push(c.gray(type));
-  if (id)      metaParts.push(c.dim(`id:${id}`));
+  if (type)    metaParts.push(color.gray(type));
+  if (id)      metaParts.push(color.dim(`id:${id}`));
   if (metaParts.length) parts.push(`     ${metaParts.join('  ·  ')}`);
 
   const statParts = [];
-  if (dist) statParts.push(`${c.green(dist)}`);
-  if (time) statParts.push(`${c.green(time)}`);
-  if (elev) statParts.push(`${c.green(elev)} elev`);
+  if (dist) statParts.push(`${color.green(dist)}`);
+  if (time) statParts.push(`${color.green(time)}`);
+  if (elev) statParts.push(`${color.green(elev)} elev`);
   if (statParts.length) parts.push(`     ${statParts.join('   ')}`);
 
   if (desc) parts.push(`     ${desc}`);
@@ -112,18 +175,19 @@ async function cmdMe(tab, flags) {
 
   const a = data.currentAthlete || data;
   console.log('');
-  console.log(c.bold(c.cyan(`  ${a.firstname || ''} ${a.lastname || a.name || 'Athlete'}`)));
-  console.log(`  ${c.dim('ID:')}        ${a.id}`);
-  if (a.gender)           console.log(`  ${c.dim('Gender:')}    ${a.gender}`);
-  if (a.measurement_units)console.log(`  ${c.dim('Units:')}     ${a.measurement_units}`);
-  if (a.is_subscriber)    console.log(`  ${c.dim('Plan:')}      ${c.green('Summit')}`);
+  console.log(color.bold(color.cyan(`  ${a.firstname || ''} ${a.lastname || a.name || 'Athlete'}`)));
+  console.log(`  ${color.dim('ID:')}        ${a.id}`);
+  if (a.gender)            console.log(`  ${color.dim('Gender:')}    ${a.gender}`);
+  if (a.measurement_units) console.log(`  ${color.dim('Units:')}     ${a.measurement_units}`);
+  if (a.is_subscriber)     console.log(`  ${color.dim('Plan:')}      ${color.green('Summit')}`);
   console.log('');
 }
 
 async function cmdFeed(tab, flags) {
-  const limit    = parseInt(flags.limit || flags.l || 10, 10);
+  const parsedLimit = parseInt(flags.limit ?? flags.l, 10);
+  const limit = Number.isFinite(parsedLimit) ? Math.min(Math.max(parsedLimit, 1), 50) : 10;
   const feedType = flags.following ? 'following' : 'my_activity';
-  const path     = `/dashboard/feed?feed_type=${feedType}&num_entries=${Math.min(limit, 50)}`;
+  const path     = `/dashboard/feed?feed_type=${feedType}&num_entries=${limit}`;
 
   const data = await apiFetch(tab, path);
   if (flags.json) { cli.out(data); return; }
@@ -132,14 +196,14 @@ async function cmdFeed(tab, flags) {
   const activities = entries.filter(e => e.entity === 'Activity' || e.activity);
 
   if (!activities.length) {
-    console.log(c.dim('  No activities found.'));
+    console.log(color.dim('  No activities found.'));
     return;
   }
 
-  const label = flags.mine ? 'Your Activities' : 'Activity Feed';
+  const label = flags.following ? 'Activity Feed (following)' : 'Your Activities';
   console.log('');
-  console.log(c.bold(`  ${label}`) + c.dim(`  (${activities.length} entries)`));
-  console.log(c.dim('  ' + '─'.repeat(52)));
+  console.log(color.bold(`  ${label}`) + color.dim(`  (${activities.length} entries)`));
+  console.log(color.dim('  ' + '─'.repeat(52)));
 
   for (const entry of activities) {
     const formatted = formatFeedEntry(entry);
@@ -151,12 +215,7 @@ async function cmdFeed(tab, flags) {
 }
 
 async function cmdPrs(tab, flags) {
-  // Use the configured athlete ID or fetch it first
-  let athleteId = '292322';
-  try {
-    const me = await apiFetch(tab, '/frontend/athletes/current');
-    if (me && me.id) athleteId = me.id;
-  } catch (_) {}
+  const athleteId = await getCurrentAthleteId(tab);
 
   const data = await apiFetch(tab, `/athletes/${athleteId}/prs`);
   if (flags.json) { cli.out(data); return; }
@@ -164,30 +223,30 @@ async function cmdPrs(tab, flags) {
   // The PRs endpoint may return HTML or structured JSON depending on the session
   if (typeof data === 'string') {
     // Try to parse useful info from HTML response
-    console.log(c.dim('  (PRs returned HTML — try viewing strava.com/athletes/' + athleteId + '/prs)'));
+    console.log(color.dim('  (PRs returned HTML — try viewing strava.com/athletes/' + athleteId + '/prs)'));
     return;
   }
 
   const prs = Array.isArray(data) ? data : (data.prs || data.efforts || []);
   if (!prs.length) {
-    console.log(c.dim('  No personal records found.'));
+    console.log(color.dim('  No personal records found.'));
     return;
   }
 
   console.log('');
-  console.log(c.bold('  Personal Records'));
-  console.log(c.dim('  ' + '─'.repeat(52)));
+  console.log(color.bold('  Personal Records'));
+  console.log(color.dim('  ' + '─'.repeat(52)));
 
   for (const pr of prs) {
-    const name  = c.cyan(pr.segment_name || pr.name || 'Segment');
+    const name  = color.cyan(pr.segment_name || pr.name || 'Segment');
     const time  = pr.elapsed_time_raw
-      ? c.green(fmt.trunc(String(pr.elapsed_time_raw), 20))
+      ? color.green(fmt.trunc(String(pr.elapsed_time_raw), 20))
       : '';
     const dist  = pr.distance
-      ? c.green(pr.distance)
+      ? color.green(pr.distance)
       : '';
     const date  = pr.start_date_local
-      ? c.dim(fmt.date(pr.start_date_local, 'short'))
+      ? color.dim(fmt.date(pr.start_date_local, 'short'))
       : '';
 
     const parts = [name];
@@ -203,40 +262,37 @@ async function cmdPrs(tab, flags) {
 async function cmdActivity(tab, actId, flags) {
   if (!actId) cli.die('usage: strava activity <id>', { prefix: 'strava' });
 
-  // Try the internal activity JSON endpoint first
-  const path = `/activities/${actId}`;
-  const res = await browser.fetch(tab, `https://www.strava.com${path}`, {
+  // Try the internal activity endpoint — routed through apiFetch so 401/403
+  // (expired session) get the same login guidance as every other command
+  // instead of a generic "could not load" message. This endpoint serves
+  // HTML rather than JSON, so request text/html explicitly (overriding
+  // apiFetch's default JSON Accept header) — a JSON Accept hint against an
+  // HTML response can trip a body-already-read error in the fetch bridge.
+  const data = await apiFetch(tab, `/activities/${actId}`, {
     headers: {
-      'Accept': 'application/json, text/javascript, */*',
-      'X-Requested-With': 'XMLHttpRequest',
+      'Accept': 'text/html',
     },
   });
-
-  if (!res.ok) {
-    cli.die(`could not load activity ${actId} (status ${res.status})`, { prefix: 'strava' });
-  }
-
-  const data = res.body;
   if (flags.json) { cli.out(data); return; }
 
   // data may be JSON or HTML — handle both
   if (data && typeof data === 'object') {
     const a = data;
     console.log('');
-    console.log(c.bold(c.cyan(`  ${a.name || a.activityName || 'Activity'}`)));
-    if (a.type)        console.log(`  ${c.dim('Type:')}        ${a.type}`);
-    if (a.distance)    console.log(`  ${c.dim('Distance:')}    ${stripHtml(String(a.distance))}`);
-    if (a.moving_time) console.log(`  ${c.dim('Time:')}        ${a.moving_time}`);
+    console.log(color.bold(color.cyan(`  ${a.name || a.activityName || 'Activity'}`)));
+    if (a.type)        console.log(`  ${color.dim('Type:')}        ${a.type}`);
+    if (a.distance)    console.log(`  ${color.dim('Distance:')}    ${stripHtml(String(a.distance))}`);
+    if (a.moving_time) console.log(`  ${color.dim('Time:')}        ${a.moving_time}`);
     if (a.total_elevation_gain)
-                       console.log(`  ${c.dim('Elevation:')}   ${a.total_elevation_gain} m`);
+                       console.log(`  ${color.dim('Elevation:')}   ${a.total_elevation_gain} m`);
     if (a.start_date_local)
-                       console.log(`  ${c.dim('Date:')}        ${fmt.date(a.start_date_local, 'medium')}`);
-    if (a.description) console.log(`  ${c.dim('Notes:')}       ${stripHtml(a.description)}`);
+                       console.log(`  ${color.dim('Date:')}        ${fmt.date(a.start_date_local, 'medium')}`);
+    if (a.description) console.log(`  ${color.dim('Notes:')}       ${stripHtml(a.description)}`);
     console.log('');
   } else {
     // Fallback: try extracting from the feed approach — tell user to use feed
-    console.log(c.dim(`  Activity ${actId} loaded — use --json to see raw data`));
-    console.log(c.dim(`  Or visit: https://www.strava.com/activities/${actId}`));
+    console.log(color.dim(`  Activity ${actId} loaded — use --json to see raw data`));
+    console.log(color.dim(`  Or visit: https://www.strava.com/activities/${actId}`));
   }
 }
 
@@ -249,36 +305,40 @@ async function cmdNotifications(tab, flags) {
 
   console.log('');
   if (isNaN(n) || n === 0) {
-    console.log(`  ${c.dim('Notifications:')}  ${c.gray('none')}`);
+    console.log(`  ${color.dim('Notifications:')}  ${color.gray('none')}`);
   } else {
-    console.log(`  ${c.dim('Notifications:')}  ${c.bold(c.green(String(n)))} new`);
+    console.log(`  ${color.dim('Notifications:')}  ${color.bold(color.green(String(n)))} new`);
   }
   console.log('');
 }
 
 // ── main ───────────────────────────────────────────────────────────────────
 
-const { positional, flags, subcommand } = process.argv.parseFlags();
-const cmd = subcommand || positional[0];
+async function main() {
+  const { positional, flags, subcommand } = parseFlags(process.argv.slice(2));
+  const cmd = subcommand || positional[0];
 
-if (flags.help || flags.h || cmd === '--help' || cmd === 'help' || !cmd) {
-  cli.help(HELP);
-  process.exit(0);
+  if (flags.help || flags.h || cmd === '--help' || cmd === 'help' || !cmd) {
+    cli.help(HELP);
+    process.exit(0);
+  }
+
+  const tab = await getTab();
+
+  if (cmd === 'me') {
+    await cmdMe(tab, flags);
+  } else if (cmd === 'feed') {
+    await cmdFeed(tab, flags);
+  } else if (cmd === 'prs') {
+    await cmdPrs(tab, flags);
+  } else if (cmd === 'activity') {
+    const actId = positional[1] || (positional[0] !== 'activity' && positional[0]);
+    await cmdActivity(tab, actId, flags);
+  } else if (cmd === 'notifications' || cmd === 'notifs' || cmd === 'notify') {
+    await cmdNotifications(tab, flags);
+  } else {
+    cli.die(`unknown command: ${cmd}\nRun 'strava --help' for usage.`, { prefix: 'strava' });
+  }
 }
 
-const tab = await getTab();
-
-if (cmd === 'me') {
-  await cmdMe(tab, flags);
-} else if (cmd === 'feed') {
-  await cmdFeed(tab, flags);
-} else if (cmd === 'prs') {
-  await cmdPrs(tab, flags);
-} else if (cmd === 'activity') {
-  const actId = positional[1] || positional[0] !== 'activity' && positional[0];
-  await cmdActivity(tab, actId, flags);
-} else if (cmd === 'notifications' || cmd === 'notifs' || cmd === 'notify') {
-  await cmdNotifications(tab, flags);
-} else {
-  cli.die(`unknown command: ${cmd}\nRun 'strava --help' for usage.`, { prefix: 'strava' });
-}
+await main();
