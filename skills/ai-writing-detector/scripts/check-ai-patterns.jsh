@@ -1,12 +1,14 @@
-// check-ai-patterns.jsh — AI Pattern Checker (Comprehensive Analysis)
+// check-ai-patterns.jsh â AI Pattern Checker (Comprehensive Analysis)
 // Checks vocabulary rates, em-dash usage, and structural patterns
 // Usage: check-ai-patterns <file> [multiplier]
 
+const fs = require('fs');
+const skill = require('sliccy:skill');
+
 const args = process.argv.slice(2);
 
-// Load AI word base rates from reference file (../references/ai_word_rates.txt)
-const _scriptDir = process.argv[1].substring(0, process.argv[1].lastIndexOf('/'));
-const _ratesText = await fs.readFile(_scriptDir + '/../references/ai_word_rates.txt', 'utf8');
+// Load AI word base rates from reference file (references/ai_word_rates.txt)
+const _ratesText = await fs.readFile(`${skill.refs}/ai_word_rates.txt`, 'utf8');
 const WORD_RATES = {};
 for (const line of _ratesText.split('\n')) {
   const trimmed = line.trim();
@@ -39,7 +41,7 @@ process.stdout.write(`**File:** \`${filePath}\`\n`);
 process.stdout.write(`**Total words:** ${totalWords}\n`);
 process.stdout.write(`**Analysis date:** ${today}\n\n`);
 
-// ── Section 1: Em-Dash Analysis ──────────────────────────────
+// ââ Section 1: Em-Dash Analysis ââââââââââââââââââââââââââââââ
 
 process.stdout.write('## 1. Em-Dash Analysis\n\n');
 
@@ -49,7 +51,7 @@ const totalDashes = emDashCount + doubleHyphen;
 const dashRate = totalWords > 0 ? (totalDashes * 1000 / totalWords).toFixed(2) : '0';
 const dashThreshold = 5;
 
-process.stdout.write(`- Em-dashes (—): ${emDashCount}\n`);
+process.stdout.write(`- Em-dashes (â): ${emDashCount}\n`);
 process.stdout.write(`- Double-hyphens (--): ${doubleHyphen}\n`);
 process.stdout.write(`- **Total:** ${totalDashes}\n`);
 process.stdout.write(`- **Rate:** ${dashRate} per 1000 words\n`);
@@ -57,12 +59,12 @@ process.stdout.write(`- **Threshold:** ${dashThreshold} per 1000 words\n\n`);
 
 const dashFlag = parseFloat(dashRate) > dashThreshold ? 1 : 0;
 if (dashFlag) {
-  process.stdout.write(`⚠️  **Em-dash overuse detected** (${dashRate} > ${dashThreshold})\n\n`);
+  process.stdout.write(`â ï¸  **Em-dash overuse detected** (${dashRate} > ${dashThreshold})\n\n`);
 } else {
-  process.stdout.write('✓ Em-dash rate within normal range\n\n');
+  process.stdout.write('â Em-dash rate within normal range\n\n');
 }
 
-// ── Section 2: Vocabulary Analysis ───────────────────────────
+// ââ Section 2: Vocabulary Analysis âââââââââââââââââââââââââââ
 
 process.stdout.write('## 2. Vocabulary Analysis\n\n');
 process.stdout.write(`Checking ${multiplier}x threshold against corpus base rates...\n\n`);
@@ -107,7 +109,7 @@ if (vocabViolations > 0) {
 }
 process.stdout.write('\n');
 
-// ── Section 3: Phrase Patterns ───────────────────────────────
+// ââ Section 3: Phrase Patterns âââââââââââââââââââââââââââââââ
 
 process.stdout.write('## 3. Phrase Patterns\n\n');
 
@@ -177,7 +179,7 @@ if (phraseCount > 0) {
 }
 process.stdout.write('\n');
 
-// ── Section 4: Summary ──────────────────────────────────────
+// ââ Section 4: Summary ââââââââââââââââââââââââââââââââââââââ
 
 process.stdout.write('## 4. Summary\n\n');
 
@@ -209,4 +211,3 @@ if (score >= 5) {
   process.stdout.write('### Result: PASS\n');
   process.stdout.write('No significant AI patterns detected.\n');
 }
-
