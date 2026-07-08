@@ -2,7 +2,7 @@
  * apple-music.jsh — Apple Music CLI for SLICC
  *
  * Manages Apple Music library and catalog operations via the Apple Music web API.
- * Uses page-context fetch through playwright-cli eval to handle authentication.
+ * Uses page-context fetch (via the `sliccy:browser` bridge) to handle authentication.
  *
  * Usage:
  *   apple-music search <query> [--type songs|albums|artists|playlists] [--limit N]
@@ -14,7 +14,34 @@
  *   apple-music add-tracks <playlistId> <catalogSongId> [catalogSongId2] ...
  *   apple-music remove-track <playlistId> <librarySongId>
  *   apple-music reorder <playlistId> <libSongId1> [libSongId2] ...
+ *
+ * ┌─────────────────────────────────────────────────────────────────────────────┐
+ * │ MIGRATION NOTES (issue #118 / ai-ecoverse/slicc#786)                        │
+ * │                                                                             │
+ * │ The .jsh runtime no longer injects bare globals (`exec`, `fmt`, ...) —      │
+ * │ they must be pulled in explicitly via require('sliccy:<name>'). This       │
+ * │ script's logic is otherwise unchanged; only the following moved:           │
+ * │  • const fmt  = require('sliccy:fmt');   — replaces the hand-rolled       │
+ * │    col()/pad() helper with fmt.col(str, width) (same signature/behavior). │
+ * │  • Tab discovery/open + in-page fetch: previously shelled out to          │
+ * │    `playwright-cli tab-list` / `tab-new` / `eval` via the bare `exec()`   │
+ * │    global and regex-parsed the CLI output (including a fragile           │
+ * │    double-JSON-decode of the eval return value). Replaced with the        │
+ * │    dedicated `sliccy:browser` bridge: `browser.findTab({ domain })`,      │
+ * │    `browser.ensureTab(url)`, `browser.eval(tab, fn)`/`evalAsync`, and     │
+ * │    `browser.fetch(tab, url, opts)` for the authenticated API calls        │
+ * │    themselves (MusicKit tokens are read via browser.evalAsync, the        │
+ * │    actual request goes through browser.fetch so it runs in-page with      │
+ * │    the right Origin/credentials — no more manual shell-quoting of JS      │
+ * │    source or exec() at all, so `sliccy:exec` isn't needed by this file).  │
+ * │  • `process.argv.parseFlags()` does not exist in this runtime — kept      │
+ * │    the original hand-rolled parseFlags(argsSlice) helper as-is.           │
+ * │ No subcommands, flags, output formatting, or behavior were changed.       │
+ * └─────────────────────────────────────────────────────────────────────────────┘
  */
+
+const browser = require('sliccy:browser');
+const fmt = require('sliccy:fmt');
 
 // ─── Argument Parsing ────────────────────────────────────────────────────────
 
@@ -89,16 +116,6 @@ function fmtDuration(ms) {
 }
 
 /**
- * Pad/truncate string to fixed width.
- */
-function col(str, width) {
-  if (str == null) str = '';
-  str = String(str);
-  if (str.length > width) return str.slice(0, width - 1) + '…';
-  return str.padEnd(width);
-}
-
-/**
  * Format a date string to YYYY-MM-DD.
  */
 function fmtDate(dateStr) {
@@ -110,57 +127,32 @@ function fmtDate(dateStr) {
 
 /**
  * Find an open Apple Music tab or open one.
- * Returns the targetId.
+ * Returns a browser TabHandle.
  */
 async function getAppleMusicTab() {
-  // List tabs and look for music.apple.com
-  const listResult = await exec('playwright-cli tab-list');
-  if (listResult.exitCode !== 0) {
-    console.error('Error listing tabs: ' + listResult.stderr);
-    process.exit(1);
-  }
-
-  const lines = listResult.stdout.trim().split('\n');
-  for (const line of lines) {
-    // Match lines like: [TARGET_ID] https://music.apple.com/... "Title" (maybe active)
-    if (line.includes('music.apple.com')) {
-      const match = line.match(/^\[([^\]]+)\]/);
-      if (match) return match[1];
-    }
-  }
+  let tab = await browser.findTab({ domain: 'music.apple.com' });
+  if (tab) return tab;
 
   // No Apple Music tab found — open one
   console.log('No Apple Music tab found. Opening one...');
-  const openResult = await exec('playwright-cli tab-new https://music.apple.com');
-  if (openResult.exitCode !== 0) {
-    console.error('Failed to open Apple Music: ' + openResult.stderr);
-    process.exit(1);
-  }
-
-  // Extract targetId from output
-  const openMatch = openResult.stdout.match(/\[([^\]]+)\]/);
-  if (!openMatch) {
-    console.error('Could not determine tab ID from: ' + openResult.stdout);
-    process.exit(1);
-  }
-  const tabId = openMatch[1];
+  tab = await browser.ensureTab('https://music.apple.com');
 
   // Wait a moment for page to load
   console.log('Waiting for Apple Music to load...');
-  await new Promise(r => setTimeout(r, 3000));
+  await new Promise((r) => setTimeout(r, 3000));
 
-  return tabId;
+  return tab;
 }
 
 /**
  * Detect the user's storefront from the Apple Music page URL.
  * Falls back to 'us' if detection fails.
  */
-async function detectStorefront(tabId) {
-  const result = await exec(`playwright-cli eval --tab=${tabId} "window.location.href"`);
-  if (result.exitCode === 0) {
+async function detectStorefront(tab) {
+  const href = await browser.eval(tab, () => window.location.href);
+  if (href) {
     // URL like https://music.apple.com/de/browse or https://music.apple.com/us/...
-    const urlMatch = result.stdout.match(/music\.apple\.com\/([a-z]{2})\b/);
+    const urlMatch = href.match(/music\.apple\.com\/([a-z]{2})\b/);
     if (urlMatch) return urlMatch[1];
   }
   return 'us';
@@ -181,87 +173,52 @@ function storefrontToLocale(sf) {
 }
 
 /**
- * Execute a fetch call inside the Apple Music tab via playwright-cli eval.
+ * Execute a fetch call inside the Apple Music tab via the sliccy:browser bridge.
  * Returns the parsed JSON response.
  *
- * @param {string} tabId - The playwright tab targetId
+ * @param {object} tab - The browser TabHandle
  * @param {string} url - Full URL to fetch
  * @param {object} [options] - Fetch options (method, headers, body)
  * @returns {object} { status, ok, data }
  */
-async function amFetch(tabId, url, options = {}) {
+async function amFetch(tab, url, options = {}) {
   const method = options.method || 'GET';
-  const body = options.body ? JSON.stringify(options.body) : null;
 
-  // Build the JS to run inside the page context.
-  // We use MusicKit's tokens and the native fetch API.
-  let jsCode = `
-    (async () => {
-      try {
-        const mk = window.MusicKit.getInstance();
-        const devToken = mk.developerToken;
-        const userToken = mk.musicUserToken;
-        if (!devToken || !userToken) {
-          return JSON.stringify({ error: 'NOT_AUTHENTICATED', message: 'Apple Music tokens not available. Please sign in.' });
-        }
-        const resp = await fetch(${JSON.stringify(url)}, {
-          method: ${JSON.stringify(method)},
-          headers: {
-            'Authorization': 'Bearer ' + devToken,
-            'media-user-token': userToken,
-            'Content-Type': 'application/json',
-            'Origin': 'https://music.apple.com'
-          }${body ? `,\n          body: ${JSON.stringify(body)}` : ''}
-        });
-        const status = resp.status;
-        if (status === 204) {
-          return JSON.stringify({ status: 204, ok: true, data: null });
-        }
-        const text = await resp.text();
-        let data = null;
-        try { data = JSON.parse(text); } catch(e) { data = text; }
-        return JSON.stringify({ status, ok: resp.ok, data });
-      } catch (e) {
-        return JSON.stringify({ error: 'FETCH_ERROR', message: e.message });
-      }
-    })()
-  `.trim();
+  // Read MusicKit's tokens from the page context.
+  const tokens = await browser.evalAsync(tab, async () => {
+    const mk = window.MusicKit.getInstance();
+    return {
+      devToken: mk.developerToken,
+      userToken: mk.musicUserToken,
+    };
+  });
 
-  // Escape for shell: we pass the JS as a single-quoted argument to eval.
-  // Replace single quotes in the JS with the shell escape pattern '\''
-  const escapedJs = jsCode.replace(/'/g, "'\\''");
-
-  const result = await exec(`playwright-cli eval --tab=${tabId} '${escapedJs}'`);
-  if (result.exitCode !== 0) {
-    console.error('eval failed: ' + (result.stderr || result.stdout));
-    process.exit(1);
-  }
-
-  // The eval output has the JSON string (possibly with extra quotes from playwright)
-  let raw = result.stdout.trim();
-  // playwright-cli eval wraps the return in quotes and escapes — parse it
-  let parsed;
-  try {
-    // First try direct parse (if playwright returned raw JSON)
-    parsed = JSON.parse(raw);
-  } catch (e) {
-    // Might be double-encoded string
-    try {
-      parsed = JSON.parse(JSON.parse(raw));
-    } catch (e2) {
-      console.error('Failed to parse API response: ' + raw.slice(0, 500));
-      process.exit(1);
-    }
-  }
-
-  if (parsed.error === 'NOT_AUTHENTICATED') {
+  if (!tokens || !tokens.devToken || !tokens.userToken) {
     console.error('Not authenticated. Please sign in to Apple Music in the browser tab and try again.');
     process.exit(1);
   }
-  if (parsed.error === 'FETCH_ERROR') {
-    console.error('Fetch error: ' + parsed.message);
+
+  let resp;
+  try {
+    resp = await browser.fetch(tab, url, {
+      method,
+      headers: {
+        Authorization: 'Bearer ' + tokens.devToken,
+        'media-user-token': tokens.userToken,
+        'Content-Type': 'application/json',
+        Origin: 'https://music.apple.com',
+      },
+      body: options.body,
+    });
+  } catch (e) {
+    console.error('Fetch error: ' + e.message);
     process.exit(1);
   }
+
+  const status = resp.status;
+  const data = status === 204 ? null : resp.body;
+  const parsed = { status, ok: resp.ok, data };
+
   if (parsed.status === 401 || parsed.status === 403) {
     console.error(`Authentication error (HTTP ${parsed.status}). Your Apple Music session may have expired. Please refresh the Apple Music tab and sign in again.`);
     process.exit(1);
@@ -286,8 +243,8 @@ async function cmdSearch() {
 
   const type = flags.type || 'songs';
   const limit = flags.limit || '15';
-  const tabId = await getAppleMusicTab();
-  const storefront = await detectStorefront(tabId);
+  const tab = await getAppleMusicTab();
+  const storefront = await detectStorefront(tab);
   const locale = storefrontToLocale(storefront);
 
   const params = new URLSearchParams({
@@ -305,7 +262,7 @@ async function cmdSearch() {
   }
 
   const url = `https://amp-api-edge.music.apple.com/v1/catalog/${storefront}/search?${params}`;
-  const resp = await amFetch(tabId, url);
+  const resp = await amFetch(tab, url);
   const data = resp.data;
 
   if (!data || !data.results) {
@@ -328,55 +285,55 @@ async function cmdSearch() {
 
   if (type === 'songs') {
     const songs = resources.songs || {};
-    console.log(col('ID', 14) + col('Name', 36) + col('Artist', 24) + col('Album', 28) + 'Duration');
+    console.log(fmt.col('ID', 14) + fmt.col('Name', 36) + fmt.col('Artist', 24) + fmt.col('Album', 28) + 'Duration');
     console.log('-'.repeat(110));
     for (const item of resultSet.data) {
       const s = songs[item.id];
       if (!s) continue;
       const a = s.attributes || {};
       console.log(
-        col(s.id, 14) +
-        col(a.name, 36) +
-        col(a.artistName, 24) +
-        col(a.albumName, 28) +
+        fmt.col(s.id, 14) +
+        fmt.col(a.name, 36) +
+        fmt.col(a.artistName, 24) +
+        fmt.col(a.albumName, 28) +
         fmtDuration(a.durationInMillis)
       );
     }
   } else if (type === 'albums') {
     const albums = resources.albums || {};
-    console.log(col('ID', 14) + col('Name', 40) + col('Artist', 28) + 'Released');
+    console.log(fmt.col('ID', 14) + fmt.col('Name', 40) + fmt.col('Artist', 28) + 'Released');
     console.log('-'.repeat(94));
     for (const item of resultSet.data) {
       const a = albums[item.id];
       if (!a) continue;
       const attr = a.attributes || {};
       console.log(
-        col(a.id, 14) +
-        col(attr.name, 40) +
-        col(attr.artistName, 28) +
+        fmt.col(a.id, 14) +
+        fmt.col(attr.name, 40) +
+        fmt.col(attr.artistName, 28) +
         fmtDate(attr.releaseDate)
       );
     }
   } else if (type === 'artists') {
     const artists = resources.artists || {};
-    console.log(col('ID', 14) + col('Name', 40) + 'Genre');
+    console.log(fmt.col('ID', 14) + fmt.col('Name', 40) + 'Genre');
     console.log('-'.repeat(74));
     for (const item of resultSet.data) {
       const a = artists[item.id];
       if (!a) continue;
       const attr = a.attributes || {};
       const genre = (attr.genreNames || []).join(', ');
-      console.log(col(a.id, 14) + col(attr.name, 40) + genre);
+      console.log(fmt.col(a.id, 14) + fmt.col(attr.name, 40) + genre);
     }
   } else if (type === 'playlists') {
     const playlists = resources.playlists || {};
-    console.log(col('ID', 18) + col('Name', 44) + 'Curator');
+    console.log(fmt.col('ID', 18) + fmt.col('Name', 44) + 'Curator');
     console.log('-'.repeat(82));
     for (const item of resultSet.data) {
       const p = playlists[item.id];
       if (!p) continue;
       const attr = p.attributes || {};
-      console.log(col(p.id, 18) + col(attr.name, 44) + (attr.curatorName || ''));
+      console.log(fmt.col(p.id, 18) + fmt.col(attr.name, 44) + (attr.curatorName || ''));
     }
   }
 
@@ -385,15 +342,15 @@ async function cmdSearch() {
 }
 
 async function cmdPlaylists() {
-  const tabId = await getAppleMusicTab();
-  const storefront = await detectStorefront(tabId);
+  const tab = await getAppleMusicTab();
+  const storefront = await detectStorefront(tab);
   const locale = storefrontToLocale(storefront);
 
   let allPlaylists = [];
   let nextUrl = `https://amp-api.music.apple.com/v1/me/library/playlist-folders/p.playlistsroot/children?format[resources]=map&extend=hasCollaboration&extend[library-playlists]=tags&platform=web&l=${locale}`;
 
   while (nextUrl) {
-    const resp = await amFetch(tabId, nextUrl);
+    const resp = await amFetch(tab, nextUrl);
     const data = resp.data;
     if (!data) break;
 
@@ -418,14 +375,14 @@ async function cmdPlaylists() {
     return;
   }
 
-  console.log(col('ID', 24) + col('Name', 40) + col('Modified', 12) + 'Public');
+  console.log(fmt.col('ID', 24) + fmt.col('Name', 40) + fmt.col('Modified', 12) + 'Public');
   console.log('-'.repeat(82));
   for (const pl of allPlaylists) {
     const a = pl.attributes || {};
     console.log(
-      col(pl.id, 24) +
-      col(a.name, 40) +
-      col(fmtDate(a.lastModifiedDate || a.dateAdded), 12) +
+      fmt.col(pl.id, 24) +
+      fmt.col(a.name, 40) +
+      fmt.col(fmtDate(a.lastModifiedDate || a.dateAdded), 12) +
       (a.isPublic ? 'yes' : 'no')
     );
   }
@@ -440,13 +397,13 @@ async function cmdPlaylist() {
     process.exit(1);
   }
 
-  const tabId = await getAppleMusicTab();
-  const storefront = await detectStorefront(tabId);
+  const tab = await getAppleMusicTab();
+  const storefront = await detectStorefront(tab);
   const locale = storefrontToLocale(storefront);
 
   // Fetch playlist details
   const detailUrl = `https://amp-api.music.apple.com/v1/me/library/playlists/${playlistId}?format[resources]=map&platform=web&l=${locale}`;
-  const detailResp = await amFetch(tabId, detailUrl);
+  const detailResp = await amFetch(tab, detailUrl);
   const detailData = detailResp.data;
 
   if (detailData && detailData.data && detailData.data.length > 0) {
@@ -463,7 +420,7 @@ async function cmdPlaylist() {
 
   // Fetch tracks
   const tracksUrl = `https://amp-api.music.apple.com/v1/me/library/playlists/${playlistId}/tracks?format[resources]=map&platform=web&l=${locale}`;
-  const tracksResp = await amFetch(tabId, tracksUrl);
+  const tracksResp = await amFetch(tab, tracksUrl);
   const tracksData = tracksResp.data;
 
   if (!tracksData || !tracksData.data || tracksData.data.length === 0) {
@@ -474,7 +431,7 @@ async function cmdPlaylist() {
   const libSongs = (tracksData.resources && tracksData.resources['library-songs']) || {};
   const trackItems = tracksData.data || [];
 
-  console.log(col('#', 4) + col('Library ID', 22) + col('Name', 36) + col('Artist', 24) + col('Catalog ID', 14) + 'Duration');
+  console.log(fmt.col('#', 4) + fmt.col('Library ID', 22) + fmt.col('Name', 36) + fmt.col('Artist', 24) + fmt.col('Catalog ID', 14) + 'Duration');
   console.log('-'.repeat(108));
   let idx = 1;
   for (const item of trackItems) {
@@ -482,11 +439,11 @@ async function cmdPlaylist() {
     const a = s.attributes || {};
     const catalogId = (a.playParams && a.playParams.catalogId) || '';
     console.log(
-      col(String(idx), 4) +
-      col(item.id, 22) +
-      col(a.name, 36) +
-      col(a.artistName, 24) +
-      col(catalogId, 14) +
+      fmt.col(String(idx), 4) +
+      fmt.col(item.id, 22) +
+      fmt.col(a.name, 36) +
+      fmt.col(a.artistName, 24) +
+      fmt.col(catalogId, 14) +
       fmtDuration(a.durationInMillis)
     );
     idx++;
@@ -502,8 +459,8 @@ async function cmdCreatePlaylist() {
     process.exit(1);
   }
 
-  const tabId = await getAppleMusicTab();
-  const storefront = await detectStorefront(tabId);
+  const tab = await getAppleMusicTab();
+  const storefront = await detectStorefront(tab);
   const locale = storefrontToLocale(storefront);
 
   const body = {
@@ -517,7 +474,7 @@ async function cmdCreatePlaylist() {
   }
 
   const url = `https://amp-api.music.apple.com/v1/me/library/playlists?art[url]=f&l=${locale}`;
-  const resp = await amFetch(tabId, url, { method: 'POST', body });
+  const resp = await amFetch(tab, url, { method: 'POST', body });
 
   if (resp.data && resp.data.data && resp.data.data.length > 0) {
     const created = resp.data.data[0];
@@ -554,8 +511,8 @@ async function cmdEditPlaylist() {
     process.exit(1);
   }
 
-  const tabId = await getAppleMusicTab();
-  const storefront = await detectStorefront(tabId);
+  const tab = await getAppleMusicTab();
+  const storefront = await detectStorefront(tab);
   const locale = storefrontToLocale(storefront);
 
   const body = { attributes: {} };
@@ -563,7 +520,7 @@ async function cmdEditPlaylist() {
   if (flags.description) body.attributes.description = flags.description;
 
   const url = `https://amp-api.music.apple.com/v1/me/library/playlists/${playlistId}?art[url]=f&format[resources]=map&platform=web&l=${locale}`;
-  await amFetch(tabId, url, { method: 'PATCH', body });
+  await amFetch(tab, url, { method: 'PATCH', body });
   console.log(`Playlist ${playlistId} updated.`);
 }
 
@@ -575,10 +532,10 @@ async function cmdDeletePlaylist() {
     process.exit(1);
   }
 
-  const tabId = await getAppleMusicTab();
+  const tab = await getAppleMusicTab();
 
   const url = `https://amp-api.music.apple.com/v1/me/library/playlists/${playlistId}?art[url]=f`;
-  await amFetch(tabId, url, { method: 'DELETE' });
+  await amFetch(tab, url, { method: 'DELETE' });
   console.log(`Playlist ${playlistId} deleted.`);
 }
 
@@ -592,8 +549,8 @@ async function cmdAddTracks() {
   const playlistId = positional[0];
   const songIds = positional.slice(1);
 
-  const tabId = await getAppleMusicTab();
-  const storefront = await detectStorefront(tabId);
+  const tab = await getAppleMusicTab();
+  const storefront = await detectStorefront(tab);
   const locale = storefrontToLocale(storefront);
 
   const body = {
@@ -601,7 +558,7 @@ async function cmdAddTracks() {
   };
 
   const url = `https://amp-api.music.apple.com/v1/me/library/playlists/${playlistId}/tracks?art[url]=f&l=${locale}&representation=resources`;
-  await amFetch(tabId, url, { method: 'POST', body });
+  await amFetch(tab, url, { method: 'POST', body });
   console.log(`Added ${songIds.length} track${songIds.length !== 1 ? 's' : ''} to playlist ${playlistId}.`);
   for (const id of songIds) {
     console.log(`  + ${id}`);
@@ -618,10 +575,10 @@ async function cmdRemoveTrack() {
   const playlistId = positional[0];
   const librarySongId = positional[1];
 
-  const tabId = await getAppleMusicTab();
+  const tab = await getAppleMusicTab();
 
   const url = `https://amp-api.music.apple.com/v1/me/library/playlists/${playlistId}/tracks?ids[library-songs]=${encodeURIComponent(librarySongId)}&mode=all&art[url]=f`;
-  await amFetch(tabId, url, { method: 'DELETE' });
+  await amFetch(tab, url, { method: 'DELETE' });
   console.log(`Removed ${librarySongId} from playlist ${playlistId}.`);
 }
 
@@ -636,8 +593,8 @@ async function cmdReorder() {
   const playlistId = positional[0];
   const trackIds = positional.slice(1);
 
-  const tabId = await getAppleMusicTab();
-  const storefront = await detectStorefront(tabId);
+  const tab = await getAppleMusicTab();
+  const storefront = await detectStorefront(tab);
   const locale = storefrontToLocale(storefront);
 
   const body = {
@@ -645,7 +602,7 @@ async function cmdReorder() {
   };
 
   const url = `https://amp-api.music.apple.com/v1/me/library/playlists/${playlistId}/tracks?art[url]=f&format[resources]=map&platform=web&l=${locale}`;
-  await amFetch(tabId, url, { method: 'PUT', body });
+  await amFetch(tab, url, { method: 'PUT', body });
   console.log(`Reordered ${trackIds.length} track${trackIds.length !== 1 ? 's' : ''} in playlist ${playlistId}.`);
 }
 
