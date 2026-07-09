@@ -1,19 +1,18 @@
 // Wrangler — Cloudflare zone analytics via authenticated dash.cloudflare.com tab.
-// Issues GraphQL via `playwright-cli eval-file` against the open dash tab so the
+// Issues GraphQL through `browser.fetch` against the open dash tab so the
 // browser session cookies are picked up automatically.
 //
-// IMPORTANT: never use template literals to build GraphQL strings — the eval-file
-// wrapper interpolates ${...} even inside backticks, which corrupts $variables.
-// Build queries with single-quoted concatenation instead.
+// Queries are built with single-quoted concatenation (not template literals)
+// so the raw GraphQL $variables stay intact.
+
+const browser = require('sliccy:browser');
+const fs = require('fs');
 
 const HOME = (process.env && (process.env.HOME || process.env.USERPROFILE)) || '/root';
 const CONFIG_DIR = HOME + '/.config/wrangler';
 const ZONES_FILE = CONFIG_DIR + '/zones.json';
-const TMP_DIR = '/tmp/wrangler';
 
-const argv = (typeof args !== 'undefined' && Array.isArray(args))
-  ? args.slice()
-  : (process.argv ? process.argv.slice(2) : []);
+const argv = process.argv.slice(2);
 
 function parseArgs(av) {
   const opts = { hours: 3, limit: 25, zone: null, tab: null, file: null, json: false };
@@ -40,103 +39,36 @@ function parseArgs(av) {
   return { opts, positional };
 }
 
-async function sh(cmd) {
-  // Prefer the jsh runtime's `exec` global; fall back to child_process.
-  if (typeof exec === 'function') {
-    const r = await exec(cmd);
-    return { stdout: r.stdout || '', stderr: r.stderr || '', status: r.exitCode };
-  }
-  const cp = require('child_process');
-  const r = cp.spawnSync('bash', ['-lc', cmd], { encoding: 'utf8' });
-  return { stdout: r.stdout || '', stderr: r.stderr || '', status: r.status };
-}
-
 async function ensureDirs() {
-  await fs.mkdir(TMP_DIR, { recursive: true }).catch(function() {});
   await fs.mkdir(CONFIG_DIR, { recursive: true }).catch(function() {});
 }
 
-async function findDashTab(override) {
-  if (override) return override;
-  const r = await sh('playwright-cli tab-list');
-  for (const line of (r.stdout || '').split('\n')) {
-    const m = line.match(/^\[([^\]]+)\]\s+(\S+)/);
-    if (!m) continue;
-    try {
-      const u = new URL(m[2]);
-      if (u.host === 'dash.cloudflare.com') return m[1];
-    } catch (e) { /* skip */ }
-  }
-  return null;
-}
-
 async function ensureTab(override) {
-  let tab = await findDashTab(override);
-  if (tab) return tab;
-  await sh('playwright-cli open https://dash.cloudflare.com');
-  for (let i = 0; i < 10; i++) {
-    await new Promise(function(r){ setTimeout(r, 1000); });
-    tab = await findDashTab(null);
-    if (tab) return tab;
-  }
-  console.error('Could not find or open a dash.cloudflare.com tab.');
-  process.exit(1);
-}
-
-async function runInTab(tabId, jsBody) {
-  await ensureDirs();
-  const stamp = Date.now() + '-' + Math.floor(Math.random() * 1e6);
-  const jsPath = TMP_DIR + '/q-' + stamp + '.js';
-  await fs.writeFile(jsPath, jsBody);
-  const cmd = 'playwright-cli eval-file ' + jsPath + ' --tab=' + tabId;
-  const r = await sh(cmd);
-  if (r.status !== 0) {
-    console.error('playwright-cli eval-file failed: ' + (r.stderr || r.stdout));
-    process.exit(1);
-  }
-  const raw = (r.stdout || '').trim();
+  if (override) return override;
   try {
-    const parsed = JSON.parse(raw);
-    return typeof parsed === 'string' ? JSON.parse(parsed) : parsed;
-  }
-  catch (e) {
-    console.error('Failed to parse JSON output: ' + e.message);
-    console.error(raw.slice(0, 500));
+    const tab = await browser.ensureTab('https://dash.cloudflare.com');
+    return tab.targetId;
+  } catch (e) {
+    console.error('Could not find or open a dash.cloudflare.com tab.');
     process.exit(1);
   }
 }
 
-async function gqlFetch(tabId, query, variables) {
-  // Body built with JSON-string literals only — no template literals, ever.
-  const qLit = JSON.stringify(query);
-  const vLit = JSON.stringify(variables || {});
-  const js =
-    '(async () => {\n' +
-    '  const Q = ' + qLit + ';\n' +
-    '  const V = ' + vLit + ';\n' +
-    '  const r = await fetch("/api/v4/graphql", {\n' +
-    '    method: "POST",\n' +
-    '    credentials: "include",\n' +
-    '    headers: { "content-type": "application/json" },\n' +
-    '    body: JSON.stringify({ query: Q, variables: V })\n' +
-    '  });\n' +
-    '  return r.json();\n' +
-    '})()\n';
-  return runInTab(tabId, js);
+async function gqlFetch(tab, query, variables) {
+  const resp = await browser.fetch(tab, '/api/v4/graphql', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: { query: query, variables: variables || {} },
+  });
+  return resp.body;
 }
 
-async function restGet(tabId, path) {
-  const pLit = JSON.stringify(path);
-  const js =
-    '(async () => {\n' +
-    '  const r = await fetch(' + pLit + ', {\n' +
-    '    method: "GET",\n' +
-    '    credentials: "include",\n' +
-    '    headers: { "accept": "application/json" }\n' +
-    '  });\n' +
-    '  return r.json();\n' +
-    '})()\n';
-  return runInTab(tabId, js);
+async function restGet(tab, path) {
+  const resp = await browser.fetch(tab, path, {
+    method: 'GET',
+    headers: { accept: 'application/json' },
+  });
+  return resp.body;
 }
 
 // --- zones cache ---
