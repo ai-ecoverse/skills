@@ -49,8 +49,8 @@
  * │    printUsage() *before* the die(), matching the original ordering        │
  * │    (usage on stdout, then the error on stderr, then exit 1).              │
  * │                                                                             │
- * │  • `process.argv.parseFlags()` does not exist in this runtime — kept      │
- * │    the original hand-rolled parseFlags(argsSlice) helper as-is.           │
+ * │  • Flag parsing uses the runtime-provided `process.argv.parseFlags()`     │
+ * │    global; the former hand-rolled parseFlags() helper was removed.        │
  * │                                                                             │
  * │ No subcommands, flags, output formatting, or behavior were changed.       │
  * └─────────────────────────────────────────────────────────────────────────────┘
@@ -70,35 +70,15 @@ if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
 
 const subcommand = args[0];
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// Flag parsing is provided by the runtime: process.argv.parseFlags() skips
+// argv[0]/argv[1] and returns { positional, flags, subcommand, passthrough }.
+// positional[0] is the subcommand, so the args for a subcommand are
+// positional.slice(1).
+const parsedArgv = process.argv.parseFlags();
+const flags = parsedArgv.flags;
+const positional = parsedArgv.positional.slice(1);
 
-/**
- * Parse --flag and --flag=value from args array.
- * Returns { flags: {key: value}, positional: [remaining args] }
- */
-function parseFlags(argsSlice) {
-  const flags = {};
-  const positional = [];
-  let i = 0;
-  while (i < argsSlice.length) {
-    const arg = argsSlice[i];
-    if (arg.startsWith('--')) {
-      const eqIdx = arg.indexOf('=');
-      if (eqIdx !== -1) {
-        flags[arg.slice(2, eqIdx)] = arg.slice(eqIdx + 1);
-      } else if (i + 1 < argsSlice.length && !argsSlice[i + 1].startsWith('--')) {
-        flags[arg.slice(2)] = argsSlice[i + 1];
-        i++;
-      } else {
-        flags[arg.slice(2)] = true;
-      }
-    } else {
-      positional.push(arg);
-    }
-    i++;
-  }
-  return { flags, positional };
-}
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function usageText() {
   return `apple-music — Apple Music CLI for SLICC
@@ -155,7 +135,11 @@ async function getAppleMusicTab() {
 
   // No Apple Music tab found — open one
   console.log('No Apple Music tab found. Opening one...');
-  tab = await browser.ensureTab('https://music.apple.com');
+  try {
+    tab = await browser.ensureTab('https://music.apple.com');
+  } catch (e) {
+    cli.die('Failed to open Apple Music: ' + e.message, { prefix: '' });
+  }
 
   // Wait a moment for page to load
   console.log('Waiting for Apple Music to load...');
@@ -169,11 +153,15 @@ async function getAppleMusicTab() {
  * Falls back to 'us' if detection fails.
  */
 async function detectStorefront(tab) {
-  const href = await browser.eval(tab, () => window.location.href);
-  if (href) {
-    // URL like https://music.apple.com/de/browse or https://music.apple.com/us/...
-    const urlMatch = href.match(/music\.apple\.com\/([a-z]{2})\b/);
-    if (urlMatch) return urlMatch[1];
+  try {
+    const href = await browser.eval(tab, () => window.location.href);
+    if (href) {
+      // URL like https://music.apple.com/de/browse or https://music.apple.com/us/...
+      const urlMatch = href.match(/music\.apple\.com\/([a-z]{2})\b/);
+      if (urlMatch) return urlMatch[1];
+    }
+  } catch (e) {
+    // eval can reject (tab closed / navigation) — fall back to the default.
   }
   return 'us';
 }
@@ -204,14 +192,22 @@ function storefrontToLocale(sf) {
 async function amFetch(tab, url, options = {}) {
   const method = options.method || 'GET';
 
-  // Read MusicKit's tokens from the page context.
-  const tokens = await browser.evalAsync(tab, async () => {
-    const mk = window.MusicKit.getInstance();
-    return {
-      devToken: mk.developerToken,
-      userToken: mk.musicUserToken,
-    };
-  });
+  // Read MusicKit's tokens from the page context. Guarded because MusicKit may
+  // be missing/not ready (fresh tab, sign-in/interstitial) — surface the clean
+  // "Not authenticated" path instead of an unhandled realm error.
+  let tokens = null;
+  try {
+    tokens = await browser.evalAsync(tab, async () => {
+      const mk = window.MusicKit?.getInstance?.();
+      if (!mk) return null;
+      return {
+        devToken: mk.developerToken,
+        userToken: mk.musicUserToken,
+      };
+    });
+  } catch (e) {
+    tokens = null;
+  }
 
   if (!tokens || !tokens.devToken || !tokens.userToken) {
     cli.die('Not authenticated. Please sign in to Apple Music in the browser tab and try again.', { prefix: '' });
@@ -250,7 +246,6 @@ async function amFetch(tab, url, options = {}) {
 // ─── Subcommands ─────────────────────────────────────────────────────────────
 
 async function cmdSearch() {
-  const { flags, positional } = parseFlags(args.slice(1));
   const query = positional.join(' ');
   if (!query) {
     cli.die('Usage: apple-music search <query> [--type songs|albums|artists|playlists] [--limit N]', { prefix: '' });
@@ -405,7 +400,6 @@ async function cmdPlaylists() {
 }
 
 async function cmdPlaylist() {
-  const { positional } = parseFlags(args.slice(1));
   const playlistId = positional[0];
   if (!playlistId) {
     cli.die('Usage: apple-music playlist <playlistId>', { prefix: '' });
@@ -466,7 +460,6 @@ async function cmdPlaylist() {
 }
 
 async function cmdCreatePlaylist() {
-  const { flags, positional } = parseFlags(args.slice(1));
   const name = positional.join(' ');
   if (!name) {
     cli.die('Usage: apple-music create-playlist <name> [--description "..."]', { prefix: '' });
@@ -512,7 +505,6 @@ async function cmdCreatePlaylist() {
 }
 
 async function cmdEditPlaylist() {
-  const { flags, positional } = parseFlags(args.slice(1));
   const playlistId = positional[0];
   if (!playlistId) {
     cli.die('Usage: apple-music edit-playlist <id> [--name "..."] [--description "..."]', { prefix: '' });
@@ -536,7 +528,6 @@ async function cmdEditPlaylist() {
 }
 
 async function cmdDeletePlaylist() {
-  const { positional } = parseFlags(args.slice(1));
   const playlistId = positional[0];
   if (!playlistId) {
     cli.die('Usage: apple-music delete-playlist <playlistId>', { prefix: '' });
@@ -550,7 +541,6 @@ async function cmdDeletePlaylist() {
 }
 
 async function cmdAddTracks() {
-  const { positional } = parseFlags(args.slice(1));
   if (positional.length < 2) {
     cli.die('Usage: apple-music add-tracks <playlistId> <catalogSongId> [catalogSongId2] ...', { prefix: '' });
   }
@@ -575,7 +565,6 @@ async function cmdAddTracks() {
 }
 
 async function cmdRemoveTrack() {
-  const { positional } = parseFlags(args.slice(1));
   if (positional.length < 2) {
     cli.die('Usage: apple-music remove-track <playlistId> <librarySongId>', { prefix: '' });
   }
@@ -591,7 +580,6 @@ async function cmdRemoveTrack() {
 }
 
 async function cmdReorder() {
-  const { positional } = parseFlags(args.slice(1));
   if (positional.length < 2) {
     cli.die(
       'Usage: apple-music reorder <playlistId> <libSongId1> [libSongId2] ...\n' +
