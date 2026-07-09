@@ -41,7 +41,7 @@ process.stdout.write(`**File:** \`${filePath}\`\n`);
 process.stdout.write(`**Total words:** ${totalWords}\n`);
 process.stdout.write(`**Analysis date:** ${today}\n\n`);
 
-// ââ Section 1: Em-Dash Analysis ââââââââââââââââââââââââââââââ
+// ── Section 1: Em-Dash Analysis ──────────────────────────────
 
 process.stdout.write('## 1. Em-Dash Analysis\n\n');
 
