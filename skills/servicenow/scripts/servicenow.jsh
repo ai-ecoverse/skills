@@ -774,10 +774,28 @@ async function cmdCreate(args) {
   if (category) payload.category = category;
   if (subcategory) payload.subcategory = subcategory;
 
+  // NOTE: payload must be embedded as a JSON.parse()'d STRING, not spliced
+  // raw as an object-literal, and escaped with backslashes-then-quotes (in
+  // that order) -- matching spPost()'s pattern elsewhere in this file.
+  // Confirmed via a live reproduction of just this code-generation step
+  // (new Function(code) parse check, no real ticket created): the previous
+  // `.replace(/\\/g, '\\\\').replace(/'/g, "\\'")` chain, applied to
+  // JSON.stringify(payload) and spliced in unquoted, doubles the backslash
+  // in every escaped double-quote JSON.stringify already produced (e.g. a
+  // title containing a literal '"' becomes \" -> \\" once doubled), which
+  // prematurely closes the JS string literal and throws
+  // "Unexpected identifier" -- so any --title/--description containing a
+  // double-quote character broke `create` outright. This is pre-existing
+  // on main, not introduced by this migration, but real and reproducible
+  // (verified: 'Can\'t access "Finance Portal" - urgent' as a title failed
+  // to parse before this fix). Escaping single quotes was also a no-op --
+  // JSON.stringify never emits single quotes.
+  var payloadJson = JSON.stringify(payload).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   var code = [
     'new Promise(function(resolve) {',
     '  var h = angular.element(document.body).injector().get("$http");',
-    '  h.post("/api/now/table/incident", ' + JSON.stringify(payload).replace(/\\/g, '\\\\').replace(/'/g, "\\'") + ').then(function(resp) {',
+    '  var payload = JSON.parse("' + payloadJson + '");',
+    '  h.post("/api/now/table/incident", payload).then(function(resp) {',
     '    resolve(JSON.stringify({number: resp.data.result.number, sys_id: resp.data.result.sys_id}));',
     '  }).catch(function(e) {',
     '    resolve(JSON.stringify({__error: e.status || 500, detail: e.data || "unknown"}));',
