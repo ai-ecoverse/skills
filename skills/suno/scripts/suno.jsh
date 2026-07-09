@@ -2,7 +2,7 @@
  * suno.jsh — Suno music generation CLI for SLICC
  *
  * Operates against the authenticated browser session on suno.com via
- * page-context fetch through playwright-cli eval. The user must be
+ * page-context fetch through the sliccy:browser bridge. The user must be
  * logged into suno.com in their browser; the script never reads, prints,
  * or stores the session token — every API call runs inside the page and
  * only the API response leaves the browser context.
@@ -30,30 +30,24 @@ const DOMAIN = 'suno.com';
 const BASE_URL = 'https://studio-api-prod.suno.com';
 const DEFAULT_MODEL = 'chirp-fenix';
 
+const browser = require('sliccy:browser');
+
 // ─── Tab discovery ──────────────────────────────────────────────────────────
 
 async function findTab() {
-  const list = await exec('playwright-cli tab-list');
-  if (list.exitCode !== 0) {
-    console.error('playwright-cli tab-list failed: ' + (list.stderr || list.stdout));
+  const tab = await browser.findTab({ domain: DOMAIN });
+  if (!tab) {
+    console.error('No suno.com tab found. Open https://suno.com in your browser and log in first.');
     process.exit(1);
   }
-  const lines = list.stdout.trim().split('\n');
-  for (const line of lines) {
-    if (line.includes(DOMAIN)) {
-      const m = line.match(/^\[([^\]]+)\]/);
-      if (m) return m[1];
-    }
-  }
-  console.error('No suno.com tab found. Open https://suno.com in your browser and log in first.');
-  process.exit(1);
+  return tab;
 }
 
 // ─── Page-context fetch ─────────────────────────────────────────────────────
 // Runs entirely inside the suno.com tab. The Clerk session token is read
 // and consumed by fetch() in the same eval — it never leaves the page.
 
-async function sunoFetch(tabId, method, path, body) {
+async function sunoFetch(tab, method, path, body) {
   const url = path.startsWith('http') ? path : `${BASE_URL}${path}`;
   const jsCode = `
     (async () => {
@@ -79,22 +73,7 @@ async function sunoFetch(tabId, method, path, body) {
       }
     })()
   `.trim();
-  const escaped = jsCode.replace(/'/g, "'\\''");
-  const result = await exec(`playwright-cli eval --tab=${tabId} '${escaped}'`);
-  if (result.exitCode !== 0) {
-    console.error('eval failed: ' + (result.stderr || result.stdout));
-    process.exit(1);
-  }
-  let raw = result.stdout.trim();
-  let parsed;
-  try { parsed = JSON.parse(raw); }
-  catch (e) {
-    try { parsed = JSON.parse(JSON.parse(raw)); }
-    catch (e2) {
-      console.error('Failed to parse response: ' + raw.slice(0, 500));
-      process.exit(1);
-    }
-  }
+  const parsed = await browser.evalAsync(tab, jsCode);
   if (parsed.error === 'NOT_AUTHENTICATED') {
     console.error('Not authenticated. Sign in to suno.com in the browser tab and retry.');
     process.exit(1);
@@ -116,10 +95,10 @@ async function sunoFetch(tabId, method, path, body) {
   return parsed.data;
 }
 
-let _tabId = null;
+let _tab = null;
 async function api(method, path, body) {
-  if (!_tabId) _tabId = await findTab();
-  return sunoFetch(_tabId, method, path, body);
+  if (!_tab) _tab = await findTab();
+  return sunoFetch(_tab, method, path, body);
 }
 
 // ─── Flag parsing ───────────────────────────────────────────────────────────
