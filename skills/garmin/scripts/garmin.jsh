@@ -61,7 +61,17 @@ function fmtActivityType(a) {
 // ─── Token management ────────────────────────────────────────────────────────
 
 async function loadConfig() {
-  return skill.config() || {};
+  // NOTE: must await before the `|| {}` fallback. skill.config() returns a
+  // Promise, which is always truthy, so `skill.config() || {}` (no await)
+  // never falls back to {} even when the resolved config is null (no
+  // config file yet) -- the async function just forwards that null through,
+  // and every call site that reads a property off the "config" (e.g.
+  // getAccessToken()'s `cfg.access_token`) throws
+  // "Cannot read properties of null" instead of hitting the intended
+  // "Not logged in" cli.die() path. Confirmed live: `garmin activities`
+  // with no stored token crashed with exactly that TypeError before this
+  // fix.
+  return (await skill.config()) || {};
 }
 
 async function saveConfig(updates) {
@@ -160,7 +170,14 @@ async function apiClient() {
       Accept:        'application/json',
       'NK':          'NT',
     },
-    retry: { on: [429, 503], attempts: 3, backoff: 'exponential' },
+    // sliccy:http's documented retry shape is { on, maxAttempts } (backoff
+    // is always exponential, not configurable) -- the previous
+    // { attempts, backoff } keys aren't recognized by the real client, so
+    // retries on 429/503 were silently relying on whatever default
+    // maxAttempts applies rather than the intended 3. Low-severity (no
+    // incorrect output, just weaker resilience under rate-limiting), but a
+    // one-line fix to match the actual API.
+    retry: { on: [429, 503], maxAttempts: 3 },
   });
 }
 
@@ -285,7 +302,18 @@ async function cmdActivity(id, flags) {
     return;
   }
 
-  const a = data;
+  // The single-activity detail endpoint nests almost every stat under
+  // summaryDTO (distance, duration, averageHR, averagePower, ...) and uses
+  // activityTypeDTO instead of activityType -- unlike the list endpoint
+  // (cmdActivities), which returns those same fields flattened at the top
+  // level. Every field lookup below (a.distance, a.duration, a.averageHR,
+  // etc.) was written for the flattened shape, so against the real detail
+  // response every one of them read undefined and rendered as "—".
+  // Confirmed live against a real activity: name/id/location showed
+  // correctly, but every other stat was blank. Flatten summaryDTO onto the
+  // top level (and normalize the type field) so the existing field-access
+  // code below works against both shapes.
+  const a = { ...data, ...(data.summaryDTO || {}), activityType: data.activityType || data.activityTypeDTO };
   console.log(c.bold(c.cyan(`\n  ${a.activityName || 'Activity'}`)));
   console.log(c.dim(`  ID: ${a.activityId}`));
   console.log();
@@ -303,10 +331,16 @@ async function cmdActivity(id, flags) {
     ['Avg Speed',     a.averageSpeed ? `${(a.averageSpeed * 3.6).toFixed(1)} km/h` : c.dim('—')],
     ['Calories',      a.calories   ? `${Math.round(a.calories)} kcal`  : c.dim('—')],
     ['Steps',         a.steps      ? String(a.steps)                    : c.dim('—')],
-    ['Avg Cadence',   a.averageRunningCadenceInStepsPerMinute
-                        ? `${Math.round(a.averageRunningCadenceInStepsPerMinute)} spm`
+    // averageRunningCadenceInStepsPerMinute only exists for running
+    // activities; summaryDTO uses averageBikeCadence for cycling. Confirmed
+    // live against a real ride: cadence data existed (68) but rendered as
+    // "—" because only the running key was checked.
+    ['Avg Cadence',   (a.averageRunningCadenceInStepsPerMinute || a.averageBikeCadence)
+                        ? `${Math.round(a.averageRunningCadenceInStepsPerMinute || a.averageBikeCadence)} spm`
                         : c.dim('—')],
-    ['Avg Power',     a.avgPower   ? `${Math.round(a.avgPower)} W`     : c.dim('—')],
+    // summaryDTO's real key is averagePower, not avgPower. Confirmed live:
+    // real power data existed (107W) but rendered as "—" due to the typo.
+    ['Avg Power',     a.averagePower ? `${Math.round(a.averagePower)} W`     : c.dim('—')],
     ['Location',      a.locationName || c.dim('—')],
     ['Description',   a.description  || c.dim('—')],
   ];
@@ -483,6 +517,21 @@ try {
       cli.die(`Unknown command: ${cmd}\nRun: garmin --help`, { prefix: 'garmin' });
   }
 } catch (err) {
+  // cli.die()/process.exit() print their message immediately and then throw
+  // a NodeExitError to unwind the stack in this realm (there's no true
+  // synchronous process termination inside an async function). Any cli.die()
+  // called from within the command handlers above (e.g. getAccessToken()'s
+  // "Not logged in", cmdActivity's usage error) lands here as a caught
+  // NodeExitError -- re-throwing it is required, otherwise this catch-all
+  // falls into the generic branch below and reprints a confusing second
+  // line ("garmin: Process exited with code 1") on top of the real message.
+  // Confirmed live: `garmin activities` with no token printed the correct
+  // "Not logged in. Run: garmin login" AND a duplicate "Process exited with
+  // code 1" line before this fix (same pattern already fixed in gh.jsh #150
+  // and the merged fluffyjaws migration).
+  if (err?.name === 'NodeExitError') {
+    throw err;
+  }
   if (err?.status === 401) {
     cli.die('Authentication error (401). Run: garmin login', { prefix: 'garmin' });
   } else if (err?.status === 403) {
