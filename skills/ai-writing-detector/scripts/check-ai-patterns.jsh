@@ -64,7 +64,7 @@ if (dashFlag) {
   process.stdout.write('â Em-dash rate within normal range\n\n');
 }
 
-// ââ Section 2: Vocabulary Analysis âââââââââââââââââââââââââââ
+// ── Section 2: Vocabulary Analysis ───────────────────────────
 
 process.stdout.write('## 2. Vocabulary Analysis\n\n');
 process.stdout.write(`Checking ${multiplier}x threshold against corpus base rates...\n\n`);
