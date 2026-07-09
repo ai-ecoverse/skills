@@ -10,35 +10,36 @@
 //   send      Send an email
 //   reply     Reply to a message
 //   monday    Aggregated inbox for monday dispatcher
+//
+// ┌─ MIGRATION NOTES (jsh runtime extensions — issue #170) ────────────────────┐
+// │ Bespoke bare globals are hard-cut; capability bridges come via             │
+// │ require('sliccy:<name>'). Mechanical port, behavior preserved:             │
+// │  • Arg parsing → process.argv.parseFlags(); positional drops the leading   │
+// │    subcommand so view/reply ID indices are unchanged.                      │
+// │  • Colors → require('sliccy:color') (kept the `C` name). Identical ANSI by │
+// │    default; now also honors NO_COLOR. No raw escape codes remain.          │
+// │  • list/get/send API → one http.client(); non-2xx errors are reformatted  │
+// │    to the original `HTTP <status>: <message>` text.                        │
+// │ KEPT (deliberate): manual OAuth refresh over fetch (no sliccy:skill        │
+// │  provider backs GWS_* creds); local durationToDate (sliccy:time `m` =      │
+// │  minutes, but this CLI's `--date 1m` = one month); local die/out (sliccy:  │
+// │  cli would add an `Error:` prefix and change output).                      │
+// └────────────────────────────────────────────────────────────────────────────┘
+
+const http = require('sliccy:http');
 
 const GMAIL_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
 const GMAIL_WEB = 'https://mail.google.com/mail/u/0/#inbox';
 
 // ─── Argument Parsing ────────────────────────────────────────────────────────
 
-const args = process.argv.slice(2);
-const subcommand = args[0] || '';
-const positional = [];
-const flags = {};
-
-for (let i = 1; i < args.length; i++) {
-  const arg = args[i];
-  if (arg.startsWith('--')) {
-    const eq = arg.indexOf('=');
-    if (eq !== -1) {
-      flags[arg.slice(2, eq)] = arg.slice(eq + 1);
-    } else {
-      const key = arg.slice(2);
-      if (i + 1 < args.length && !args[i + 1].startsWith('--')) {
-        flags[key] = args[++i];
-      } else {
-        flags[key] = true;
-      }
-    }
-  } else {
-    positional.push(arg);
-  }
-}
+// `process.argv.parseFlags()` yields { positional, flags, subcommand }. Drop the
+// leading subcommand from `positional` so downstream index math (view/reply
+// message IDs) matches the previous hand-rolled parser exactly.
+const parsed = process.argv.parseFlags();
+const subcommand = parsed.subcommand || '';
+const positional = parsed.positional.slice(1);
+const flags = parsed.flags;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -83,14 +84,7 @@ function durationToDate(dur) {
 
 // ─── ANSI Colors ─────────────────────────────────────────────────────────────
 
-const C = {
-  green:  s => `\x1b[32m${s}\x1b[0m`,
-  red:    s => `\x1b[31m${s}\x1b[0m`,
-  yellow: s => `\x1b[33m${s}\x1b[0m`,
-  gray:   s => `\x1b[90m${s}\x1b[0m`,
-  bold:   s => `\x1b[1m${s}\x1b[0m`,
-  cyan:   s => `\x1b[36m${s}\x1b[0m`,
-};
+const C = require('sliccy:color');
 
 // ─── Auth ────────────────────────────────────────────────────────────────────
 
@@ -129,50 +123,44 @@ async function getAccessToken() {
 
 // ─── API Client ──────────────────────────────────────────────────────────────
 
+// Single http.client for all Gmail REST calls. `token` is lazy (resolved per
+// request) and injected as `Authorization: Bearer …`; object bodies are
+// JSON-encoded and querystrings are built from `params` (undefined/null skipped)
+// — matching the previous hand-rolled fetch wrappers.
+const gmailApi = http.client({
+  baseUrl: GMAIL_BASE,
+  token: () => getAccessToken(),
+  headers: { 'Accept': 'application/json' },
+});
+
+// http.client throws HttpError on non-2xx. Reformat it back to the original
+// `HTTP <status>: <message>` text (Gmail nests its detail under error.message)
+// so the per-command `gmail: <cmd> failed: …` wrappers are unchanged.
+function toGmailError(e) {
+  if (e && e.name === 'HttpError') {
+    const b = e.body;
+    const msg = (b && typeof b === 'object')
+      ? (b.error?.message || JSON.stringify(b))
+      : String(b == null ? '' : b);
+    return new Error(`HTTP ${e.status}: ${msg}`);
+  }
+  return e;
+}
+
 async function gmailGet(path, params) {
-  const token = await getAccessToken();
-  let url = path.startsWith('http') ? path : `${GMAIL_BASE}${path}`;
-  if (params) {
-    const qs = Object.entries(params)
-      .filter(([, v]) => v !== undefined && v !== null)
-      .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
-      .join('&');
-    if (qs) url += (url.includes('?') ? '&' : '?') + qs;
+  try {
+    return await gmailApi.get(path, { params });
+  } catch (e) {
+    throw toGmailError(e);
   }
-  const res = await fetch(url, {
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Accept': 'application/json',
-    },
-  });
-  if (!res.ok) {
-    const body = await res.text();
-    let msg;
-    try { msg = JSON.parse(body).error?.message || body; } catch { msg = body; }
-    throw new Error(`HTTP ${res.status}: ${msg}`);
-  }
-  return res.json();
 }
 
 async function gmailPost(path, body) {
-  const token = await getAccessToken();
-  const url = path.startsWith('http') ? path : `${GMAIL_BASE}${path}`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    let msg;
-    try { msg = JSON.parse(text).error?.message || text; } catch { msg = text; }
-    throw new Error(`HTTP ${res.status}: ${msg}`);
+  try {
+    return await gmailApi.post(path, { body });
+  } catch (e) {
+    throw toGmailError(e);
   }
-  return res.json();
 }
 
 // ─── MIME Helpers ─────────────────────────────────────────────────────────────
@@ -329,7 +317,18 @@ async function cmdMail() {
     // Step 2: Fetch each message with metadata
     const messages = await Promise.all(
       messageStubs.map(stub =>
-        gmailGet(`/messages/${stub.id}`, { format: 'metadata', metadataHeaders: 'From,Subject,Date' })
+        // Gmail's metadataHeaders param is an array-typed query param -- it
+        // must be sent as repeated `metadataHeaders=X&metadataHeaders=Y`,
+        // not a single comma-joined string. Confirmed live (pre-existing
+        // bug, not introduced by this migration -- the pre-migration
+        // manual querystring builder had the exact same issue):
+        // encodeURIComponent('From,Subject,Date') produces
+        // `metadataHeaders=From%2CSubject%2CDate`, which Gmail treats as
+        // one (non-existent) header name, so every message rendered with
+        // blank From/Date and "(no subject)". http.client's params DOES
+        // support arrays correctly (repeats the key per element) --
+        // confirmed via a live test against a controllable echo endpoint.
+        gmailGet(`/messages/${stub.id}`, { format: 'metadata', metadataHeaders: ['From', 'Subject', 'Date'] })
       )
     );
 
@@ -354,6 +353,16 @@ async function cmdMail() {
       process.stdout.write(`    ${C.gray('ID: ' + msg.id)}\n\n`);
     }
   } catch (e) {
+    // die() (called deep inside, e.g. by getAccessToken() on missing
+    // GWS_* env vars) prints its message and throws NodeExitError to
+    // unwind in this realm -- there's no true synchronous process exit
+    // inside an async function. Without this check, this catch treats
+    // that already-printed, already-finalized exit as a fresh error and
+    // re-wraps it into a second, confusing "mail failed: Process exited
+    // with code 1" line on top of the real message (confirmed live: this
+    // file, unguarded, printed THREE lines for one error -- this catch's
+    // wrap, plus the outer dispatch catch's wrap on top of that).
+    if (e && e.name === 'NodeExitError') throw e;
     die(`gmail: mail failed: ${e.message}`);
   }
 }
@@ -384,6 +393,9 @@ async function cmdView() {
     const body = extractBody(msg.payload);
     process.stdout.write(body ? trunc(body, 5000) + '\n' : C.gray('(empty body)') + '\n');
   } catch (e) {
+    // See the note in cmdMail()'s catch: must re-throw an already-finalized
+    // NodeExitError instead of re-wrapping it into a second error line.
+    if (e && e.name === 'NodeExitError') throw e;
     die(`gmail: view failed: ${e.message}`);
   }
 }
@@ -421,6 +433,9 @@ async function cmdSend() {
     const result = await gmailPost('/messages/send', { raw });
     process.stdout.write(`${C.green('✓')} Email sent to ${to} (ID: ${result.id})\n`);
   } catch (e) {
+    // See the note in cmdMail()'s catch: must re-throw an already-finalized
+    // NodeExitError instead of re-wrapping it into a second error line.
+    if (e && e.name === 'NodeExitError') throw e;
     die(`gmail: send failed: ${e.message}`);
   }
 }
@@ -435,9 +450,12 @@ async function cmdReply() {
 
   try {
     // Fetch original message headers
+    // See the note on the mail-list metadataHeaders fetch: must be an
+    // array, not a comma-joined string, or Gmail silently returns none of
+    // these headers.
     const orig = await gmailGet(`/messages/${id}`, {
       format: 'metadata',
-      metadataHeaders: 'From,To,Subject,Message-Id,References,In-Reply-To',
+      metadataHeaders: ['From', 'To', 'Subject', 'Message-Id', 'References', 'In-Reply-To'],
     });
 
     const origFrom = getHeader(orig.payload, 'From');
@@ -475,6 +493,9 @@ async function cmdReply() {
     const result = await gmailPost('/messages/send', { raw, threadId });
     process.stdout.write(`${C.green('✓')} Reply sent to ${replyTo} (ID: ${result.id}, thread: ${threadId})\n`);
   } catch (e) {
+    // See the note in cmdMail()'s catch: must re-throw an already-finalized
+    // NodeExitError instead of re-wrapping it into a second error line.
+    if (e && e.name === 'NodeExitError') throw e;
     die(`gmail: reply failed: ${e.message}`);
   }
 }
@@ -509,7 +530,9 @@ async function cmdMonday() {
     const format = depth > 0 ? 'full' : 'metadata';
     const fetchParams = depth > 0
       ? { format: 'full' }
-      : { format: 'metadata', metadataHeaders: 'From,To,Subject,Date' };
+      // See the note on the mail-list metadataHeaders fetch: must be an
+      // array, not a comma-joined string.
+      : { format: 'metadata', metadataHeaders: ['From', 'To', 'Subject', 'Date'] };
 
     const messages = await Promise.all(
       stubs.map(stub => gmailGet(`/messages/${stub.id}`, fetchParams))
@@ -558,6 +581,16 @@ async function cmdMonday() {
       });
     }
   } catch (e) {
+    // See the note in cmdMail()'s catch. Here it matters even more: unlike
+    // the other commands, cmdMonday intentionally downgrades a genuine
+    // fetch failure to a warning and still emits JSON on stdout -- but an
+    // unguarded NodeExitError (e.g. from missing GWS_* creds) would get
+    // swallowed into that same warning ("...failed to fetch mail: Process
+    // exited with code 1") and then this function would carry on to print
+    // an empty JSON array on stdout as if nothing were wrong, instead of
+    // exiting non-zero. Re-throw so a real auth/config failure still
+    // surfaces as a hard error.
+    if (e && e.name === 'NodeExitError') throw e;
     process.stderr.write(`[gmail monday] WARNING: failed to fetch mail: ${e.message}\n`);
   }
 
@@ -652,6 +685,14 @@ try {
       process.exit(1);
   }
 } catch (e) {
+  // See the note in cmdMail()'s catch. This is the outermost handler, so an
+  // already-finalized NodeExitError reaching here (e.g. re-thrown from one
+  // of the per-command catches above, or from showHelp()'s own die() path)
+  // should just propagate uncaught rather than be wrapped again --
+  // rethrowing here lets it surface as a clean, single, already-printed
+  // exit instead of adding a second "gmail: Process exited with code 1"
+  // line on top of the real message.
+  if (e && e.name === 'NodeExitError') throw e;
   process.stderr.write(`gmail: ${e.message}\n`);
   process.exit(1);
 }
