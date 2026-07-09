@@ -1,0 +1,287 @@
+fragment ExpenseTypeFragment on ExpenseType {
+  id
+  name
+  itemizationType
+  text
+  header
+  parentName
+  code
+  visibilityCode
+  itemizeStyle
+  shouldAddUserAsDefaultAttendee
+  allowEditAttendeeAmount
+  allowEditAttendeeCount
+  shouldDisplayAttendeeAmounts
+  itemizationWizardId
+  meta {
+    isTravelAllowanceExpense
+    canCombineExpense
+    isItemizationAllowed
+    isItemizationRequired
+    hasItemizationWizard
+    isJapanPublicTransportation
+    __typename
+  }
+  __typename
+}
+
+fragment AmountValueFragment on AmountValue {
+  amountValue: value {
+    value
+    currencyCode
+    __typename
+  }
+  __typename
+}
+
+fragment BooleanValueFragment on BooleanValue {
+  booleanValue: value
+  isValid
+  __typename
+}
+
+fragment DateValueFragment on DateValue {
+  dateValue: value
+  isValid
+  __typename
+}
+
+fragment ExchangeRateValueFragment on ExchangeRateValue {
+  value
+  operation
+  __typename
+}
+
+fragment ExpenseAmountFragment on ExpenseAmount {
+  expenseAmountValue: value
+  __typename
+}
+
+fragment FloatValueFragment on FloatValue {
+  floatValue: value
+  __typename
+}
+
+fragment IntegerValueFragment on IntegerValue {
+  integerValue: value
+  __typename
+}
+
+fragment ListItemValueFragment on ListItemValue {
+  code
+  id
+  listItemValue: value
+  __typename
+}
+
+fragment ListValueFragment on ListValue {
+  isValid
+  listValue: value {
+    code
+    id
+    value
+    __typename
+  }
+  __typename
+}
+
+fragment LocationValueFragment on LocationListValue {
+  isValid
+  locationValue: value {
+    id
+    name
+    city
+    value
+    countryCode
+    countrySubDivisionCode
+    __typename
+  }
+  __typename
+}
+
+fragment StringValueFragment on StringValue {
+  stringValue: value
+  __typename
+}
+
+fragment FormFieldFragment on FormField {
+  id
+  label
+  formFieldId
+  value {
+    ...AmountValueFragment
+    ...BooleanValueFragment
+    ...DateValueFragment
+    ...ExchangeRateValueFragment
+    ...ExpenseAmountFragment
+    ...FloatValueFragment
+    ...IntegerValueFragment
+    ...ListItemValueFragment
+    ...ListValueFragment
+    ...LocationValueFragment
+    ...StringValueFragment
+    __typename
+  }
+  accessMode
+  control
+  dataType
+  defaultValue {
+    value
+    code
+    listItemId
+    isValid
+    __typename
+  }
+  sequence
+  maximumLength
+  tooltip
+  hasLineSeparator
+  isCopyDownSource
+  itemizationCopyDownAction
+  isExternalList
+  targetFieldSettings {
+    action
+    formFieldId
+    lhsOperandSource
+    operator
+    rhsOperand
+    __typename
+  }
+  comments {
+    comment
+    creationDate
+    isLatest
+    createdForUserId
+    author {
+      first
+      last
+      preferred
+      __typename
+    }
+    __typename
+  }
+  options {
+    id
+    code
+    value
+    __typename
+  }
+  isRequired
+  list {
+    id
+    level
+    parentId
+    displayFormat
+    defaultSearchBy: searchCriteria
+    __typename
+  }
+  dataValidator {
+    validationExpression
+    failureMessage
+    __typename
+  }
+  requiredForSave
+  taxAuthorityId
+  taxFormId
+  showFieldForCountryCode
+  __typename
+}
+
+query GetNewExpenseEntry($reportId: String!, $userId: String!, $reportIdAsID: ID!, $userIdAsID: ID!, $expenseTypeId: ID!, $contextRole: ContextRoleType!, $shouldFetchExpenseForm: Boolean! = true, $expenseTypeChangeContext: ExpenseTypeChangeNewExpenseContext) {
+  expenseTypeFilters(
+    userId: $userId
+    contextRole: $contextRole
+    reportId: $reportId
+  ) {
+    shouldFilterCashAdvanceExpenseTypes
+    shouldFilterCompanyCarExpenseType
+    shouldFilterPersonalCarExpenseType
+    __typename
+  }
+  vehicleRegistrationInfo {
+    hasPersonalCar
+    hasCompanyCar
+    __typename
+  }
+  employee(userId: $userId, contextRole: $contextRole) {
+    userId
+    contextRole
+    expenseReport(reportId: $reportId) {
+      reportId
+      rptKey
+      reportDetails {
+        id
+        allocationFormId
+        userId
+        policy {
+          id
+          expenseListDetailFormId
+          meta {
+            canUploadImagesToExpenses
+            canShowReceipts
+            __typename
+          }
+          __typename
+        }
+        expenseTypes {
+          ...ExpenseTypeFragment
+          __typename
+        }
+        meta {
+          isApproved
+          canReopen
+          isReopened
+          isSubmitted
+          canAddExpense
+          canAllocateExpenses
+          isReceiptImageAvailable
+          __typename
+        }
+        name
+        approvedAmount {
+          value
+          currencyCode
+          __typename
+        }
+        currencyCode
+        countryCode
+        taxConfigId
+        __typename
+      }
+      __typename
+    }
+    __typename
+  }
+  newExpenseForm(
+    dataContext: {reportId: $reportIdAsID, expenseTypeId: $expenseTypeId, expenseTypeChangeContext: $expenseTypeChangeContext}
+    userContext: {userId: $userIdAsID, contextType: $contextRole}
+  ) @include(if: $shouldFetchExpenseForm) {
+    travelRequestEntries {
+      entries {
+        id
+        value
+        __typename
+      }
+      __typename
+    }
+    mainForm {
+      attendeesLinkAccessMode
+      calculateTaxLinkAccessMode
+      fields {
+        ...FormFieldFragment
+        __typename
+      }
+      __typename
+    }
+    meta {
+      canAllocate
+      __typename
+    }
+    expenseTypeDetails {
+      quickTips
+      __typename
+    }
+    backendMileageConfigs
+    __typename
+  }
+}
