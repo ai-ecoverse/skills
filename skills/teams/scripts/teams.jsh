@@ -905,7 +905,7 @@ async function searchChannelFallback(query, since) {
 }
 
 // ---------------------------------------------------------------------------
-// Search subcommand  cascading: substrate � Graph � channel scan fallback
+// Search subcommand  cascading: substrate → Graph → channel scan fallback
 // ---------------------------------------------------------------------------
 
 async function cmdSearch() {
@@ -1106,7 +1106,7 @@ Commands:
   unanswered <team> <channel>       Messages with no replies (default: --since=48h)
   digest                            Activity summary across all teams (default: --since=24h, --max-teams=10)
 
-Aliases: messages/msgs � history, mentions � activity
+Aliases: messages/msgs → history, mentions → activity
 
 Duration format: <number><unit> where unit is m(inutes), h(ours), d(ays), w(eeks)
   Examples: 30m, 24h, 7d, 2w
@@ -1116,8 +1116,8 @@ Duration format: <number><unit> where unit is m(inutes), h(ours), d(ays), w(eeks
 
 Team and channel arguments accept display names (case-insensitive partial match) or IDs.
 
-Search cascade: Substrate Search � Graph Search API � channel scan fallback.
-Activity cascade: Substrate Search � Graph Search � channel scan + chat/DM scan.
+Search cascade: Substrate Search → Graph Search API → channel scan fallback.
+Activity cascade: Substrate Search → Graph Search → channel scan + chat/DM scan.
 
 Authentication: API calls run inside the Teams tab via the sliccy:browser bridge,
 so the MSAL session token is consumed in-page and never written to disk.
