@@ -7,6 +7,11 @@
 //   jira comments <issue-key>
 //   jira create --project <key> --type <type> --summary <text> [--description <text>] [--assignee <name>]
 
+// Runtime bridges: former bare globals are now require('sliccy:<name>') (issue #168).
+const cli = require('sliccy:cli');
+const browser = require('sliccy:browser');
+const c = require('sliccy:color'); // former bare `c` color global
+
 // --- Tab management ---
 
 let _tab = null;
