@@ -1,4 +1,4 @@
-// check-ai-words.jsh â AI Word Rate Checker
+// check-ai-words.jsh — AI Word Rate Checker
 // Detects overused AI vocabulary by comparing actual rates to corpus base rates
 // Usage: check-ai-words <file> [multiplier]
 // Default multiplier: 3 (flag words appearing 3x more than expected)
