@@ -213,28 +213,60 @@ async function amFetch(tab, url, options = {}) {
     cli.die('Not authenticated. Please sign in to Apple Music in the browser tab and try again.', { prefix: '' });
   }
 
-  let resp;
-  try {
-    resp = await browser.fetch(tab, url, {
-      method,
+  // NOTE: deliberately NOT using browser.fetch(tab, url, opts) here.
+  // Confirmed live: browser.fetch throws "TypeError: Failed to execute
+  // 'text' on 'Response': body stream already read" on every PATCH/DELETE/
+  // PUT call against this API (edit-playlist, delete-playlist,
+  // remove-track, reorder all hit this) -- it reproduces with a bare
+  // browser.fetch call with no amFetch code involved, so this is a bug in
+  // the sliccy:browser bridge itself (likely double-reading the response
+  // body when the upstream response has no/empty content, which these
+  // endpoints return on success), not something fixable from skill code.
+  // Worked around by doing the fetch manually inside evalAsync, reading
+  // the body exactly once. Also confirmed live that when this crash
+  // happened server-side, the request had already gone through — reading
+  // the response is what failed, not the request itself. Must be an
+  // invoked IIFE ("(async () => {...})()"), not a bare function
+  // expression, or evalAsync silently returns "{}" (see icloud.jsh #159
+  // for the same trap).
+  const fnSource = `(async () => {
+    const resp = await fetch(${JSON.stringify(url)}, {
+      method: ${JSON.stringify(method)},
       headers: {
-        Authorization: 'Bearer ' + tokens.devToken,
-        'media-user-token': tokens.userToken,
+        Authorization: ${JSON.stringify('Bearer ' + tokens.devToken)},
+        'media-user-token': ${JSON.stringify(tokens.userToken)},
         'Content-Type': 'application/json',
         Origin: 'https://music.apple.com',
       },
-      body: options.body,
+      ${options.body !== undefined ? `body: ${JSON.stringify(JSON.stringify(options.body))},` : ''}
     });
+    const status = resp.status;
+    if (status === 204) return { status, ok: resp.ok, data: null };
+    const text = await resp.text();
+    let data = null;
+    try { data = JSON.parse(text); } catch (e) { data = text; }
+    return { status, ok: resp.ok, data };
+  })()`;
+
+  let parsed;
+  try {
+    parsed = await browser.evalAsync(tab, fnSource);
   } catch (e) {
     cli.die('Fetch error: ' + e.message, { prefix: '' });
   }
 
-  const status = resp.status;
-  const data = status === 204 ? null : resp.body;
-  const parsed = { status, ok: resp.ok, data };
-
   if (parsed.status === 401 || parsed.status === 403) {
     cli.die(`Authentication error (HTTP ${parsed.status}). Your Apple Music session may have expired. Please refresh the Apple Music tab and sign in again.`, { prefix: '' });
+  }
+  // options.allowNotFound lets a caller treat 404 as a normal, non-fatal
+  // result instead of a hard die(). Needed for the playlist tracks
+  // endpoint: confirmed live that Apple's API returns 404 ("No related
+  // resources found for tracks"), not an empty 200, for a playlist with
+  // zero tracks -- so cmdPlaylist's own "No tracks in this playlist."
+  // fallback was unreachable dead code before this, since amFetch died
+  // first on every empty playlist.
+  if (!parsed.ok && parsed.status === 404 && options.allowNotFound) {
+    return parsed;
   }
   if (!parsed.ok && parsed.status) {
     cli.die(`API error (HTTP ${parsed.status}): ${JSON.stringify(parsed.data).slice(0, 500)}`, { prefix: '' });
@@ -426,10 +458,12 @@ async function cmdPlaylist() {
     console.log('');
   }
 
-  // Fetch tracks
+  // Fetch tracks. allowNotFound: true because Apple's API returns 404 (not
+  // an empty 200) for a playlist with zero tracks -- see the note on
+  // amFetch's allowNotFound option.
   const tracksUrl = `https://amp-api.music.apple.com/v1/me/library/playlists/${playlistId}/tracks?format[resources]=map&platform=web&l=${locale}`;
-  const tracksResp = await amFetch(tab, tracksUrl);
-  const tracksData = tracksResp.data;
+  const tracksResp = await amFetch(tab, tracksUrl, { allowNotFound: true });
+  const tracksData = tracksResp.ok ? tracksResp.data : null;
 
   if (!tracksData || !tracksData.data || tracksData.data.length === 0) {
     console.log('No tracks in this playlist.');
