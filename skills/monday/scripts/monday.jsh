@@ -9,55 +9,17 @@
 //   monday gh --limit 10 --rate-importance 8-3 --rate-model claude-haiku-4-5
 //
 // With no positional args, auto-discovers monday-compatible commands on PATH.
+//
+// jsh runtime migration (issue #169):
+//  - Argument parsing uses process.argv.parseFlags() instead of a manual loop.
+//  - Capability bridges are obtained explicitly via require('sliccy:<name>').
+
+const exec = require('sliccy:exec');
+const fs = require('fs');
 
 // ─── Argument Parsing ────────────────────────────────────────────────────────
 
-const args = process.argv.slice(2); // argv[0]=node, argv[1]=script path, argv[2+]=actual args
-
-/**
- * Parse CLI arguments into { subcommands, flags }.
- * Handles --flag value, --flag=value, and bare positional args.
- */
-function parseArgs(args) {
-  const subcommands = [];
-  const flags = {};
-  let i = 0;
-
-  while (i < args.length) {
-    const arg = args[i];
-
-    if (arg.startsWith('--')) {
-      // Handle --flag=value
-      const eqIdx = arg.indexOf('=');
-      if (eqIdx !== -1) {
-        const key = arg.slice(2, eqIdx);
-        const val = arg.slice(eqIdx + 1);
-        flags[key] = val;
-        i++;
-      } else {
-        // Handle --flag value (next arg is the value, unless it's another flag or missing)
-        const key = arg.slice(2);
-        const next = args[i + 1];
-        if (next !== undefined && !next.startsWith('--')) {
-          flags[key] = next;
-          i += 2;
-        } else {
-          // Boolean flag with no value
-          flags[key] = 'true';
-          i++;
-        }
-      }
-    } else {
-      // Positional arg — it's a sub-command name
-      subcommands.push(arg);
-      i++;
-    }
-  }
-
-  return { subcommands, flags };
-}
-
-const { subcommands, flags } = parseArgs(args);
+const { positional: subcommands, flags } = process.argv.parseFlags();
 
 // ─── Flag Defaults ───────────────────────────────────────────────────────────
 
