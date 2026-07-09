@@ -51,7 +51,7 @@ const totalDashes = emDashCount + doubleHyphen;
 const dashRate = totalWords > 0 ? (totalDashes * 1000 / totalWords).toFixed(2) : '0';
 const dashThreshold = 5;
 
-process.stdout.write(`- Em-dashes (â): ${emDashCount}\n`);
+process.stdout.write(`- Em-dashes (—): ${emDashCount}\n`);
 process.stdout.write(`- Double-hyphens (--): ${doubleHyphen}\n`);
 process.stdout.write(`- **Total:** ${totalDashes}\n`);
 process.stdout.write(`- **Rate:** ${dashRate} per 1000 words\n`);
@@ -59,9 +59,9 @@ process.stdout.write(`- **Threshold:** ${dashThreshold} per 1000 words\n\n`);
 
 const dashFlag = parseFloat(dashRate) > dashThreshold ? 1 : 0;
 if (dashFlag) {
-  process.stdout.write(`â ï¸  **Em-dash overuse detected** (${dashRate} > ${dashThreshold})\n\n`);
+  process.stdout.write(`⚠️  **Em-dash overuse detected** (${dashRate} > ${dashThreshold})\n\n`);
 } else {
-  process.stdout.write('â Em-dash rate within normal range\n\n');
+  process.stdout.write('✓ Em-dash rate within normal range\n\n');
 }
 
 // ── Section 2: Vocabulary Analysis ───────────────────────────
@@ -211,3 +211,4 @@ if (score >= 5) {
   process.stdout.write('### Result: PASS\n');
   process.stdout.write('No significant AI patterns detected.\n');
 }
+

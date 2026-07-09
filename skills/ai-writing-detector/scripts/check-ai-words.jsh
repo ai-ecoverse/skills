@@ -99,3 +99,4 @@ if (violations > 0) {
   process.stdout.write('\n### Result: PASS\n');
   process.stdout.write('No significant AI vocabulary rate violations detected.\n');
 }
+
