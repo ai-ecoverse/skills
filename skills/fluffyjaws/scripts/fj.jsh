@@ -6,79 +6,35 @@
 // api.fluffyjaws.adobe.com is CORS-locked against the SLICC localhost
 // origin, so we proxy through the UI host instead.
 //
-// ┌─────────────────────────────────────────────────────────────────────────┐
-// │ MIGRATION NOTES (jsh runtime extensions, ai-ecoverse/slicc#786, #118)   │
-// │                                                                         │
-// │ Migrated to the sliccy: API surface:                                   │
-// │  • Added explicit `require('sliccy:*')` imports — nothing is a bare    │
-// │    global anymore (exec, cli, color, fmt).                             │
-// │  • Tab discovery: exec('playwright-cli tab-list') + regex parse        │
-// │    → browser.findTab({ domain }).                                     │
-// │  • Tab open: exec('playwright-cli open ...') + regex on stdout         │
-// │    → browser.ensureTab(UI_HOST).                                       │
-// │  • Non-streaming page fetch (pageFetch's plain branch): the            │
-// │    base64-eval-file + JSON-double-unwrap dance → browser.fetch(tab,    │
-// │    path, opts), which is page-context (session cookies automatic) and  │
-// │    already returns { ok, status, headers, body } with body parsed     │
-// │    when JSON — this is exactly what buildFetchExpr()/pageFetch() were  │
-// │    hand-rolling.                                                       │
-// │  • api(): now trusts browser.fetch's already-parsed resp.body instead │
-// │    of re-parsing JSON text by content-type itself.                     │
-// │  • Errors/exits: console.error + process.exit(1) → cli.die(msg,        │
-// │    { prefix: 'fj' }).                                                  │
-// │  • Colors/help text: plain console.log → color.bold/cyan + cli.help    │
-// │    for `fj help`.                                                      │
-// │  • File access for MCP session + docs listing/reading: exec('cat ...') │
-// │    / exec('mkdir ...') / exec('ls ...') shell-outs → require('fs')     │
-// │    VFS bridge (exists/readFile/writeFile/mkdir/readdir/rm).            │
-// │                                                                         │
-// │ Deliberately KEPT as exec + playwright-cli (documented gap):           │
-// │  • pageStream() / the `stream: true` branch of pageFetch(), used only  │
-// │    by `fj ask`/`fj chat` to consume the server's SSE stream.           │
-// │    browser.fetch() is explicitly non-streaming — a single call, one    │
-// │    { ok, status, headers, body } result once the response is fully     │
-// │    buffered. This script's streaming design exists specifically to     │
-// │    avoid that: it starts the fetch in the page (stashing the           │
-// │    ReadableStream reader on `window.__fj_stream`), then polls that     │
-// │    in-page state via many short eval calls (every ~200ms) so no single │
-// │    CDP Runtime.evaluate call ever blocks for the full duration of a    │
-// │    long-running LLM response (which can run for minutes and would      │
-// │    otherwise exceed CDP's ~30s Runtime.evaluate ceiling if awaited in   │
-// │    one shot). There is no sliccy:browser equivalent for "start a fetch  │
-// │    and let me poll a live in-page ReadableStream reader across         │
-// │    multiple calls" — browser.fetch's contract is fundamentally         │
-// │    call-once/fully-buffered. `browser.websocket` is not applicable      │
-// │    either: FluffyJaws' assistant responses are plain HTTP SSE over     │
-// │    fetch(), not a WebSocket, and the websocket sink model (webhook/    │
-// │    scoop/vfs/log with declarative JSON filters) doesn't fit a          │
-// │    synchronous CLI command that needs to render deltas to stdout as    │
-// │    they arrive. So pageStream()/buildFetchExpr()'s streaming branch     │
-// │    stay on the exec('playwright-cli eval-file ...') pattern, unchanged  │
-// │    in behavior. Non-streaming calls (everything else — me/packs/pack/   │
-// │    explore/convs/conv/search/mcp) all move to browser.fetch.            │
-// ├─────────────────────────────────────────────────────────────────────────┤
-// │ FOLLOW-UP (review response) — Copilot review on PR #157 flagged:       │
-// │  • pageFetch()'s non-streaming branch passed options.body straight     │
-// │    through to browser.fetch without JSON-stringifying object bodies    │
-// │    or defaulting Content-Type — real bug, would have broken `fj ask`/  │
-// │    `fj chat`/`fj mcp`'s object-bodied POSTs. Fixed: object bodies are   │
-// │    now explicitly JSON.stringify'd and Content-Type defaulted, exactly │
-// │    matching the old buildFetchExpr()'s behavior.                       │
-// │  • fs.promises.exists()-then-read() pre-checks (MCP session file,      │
-// │    docs page files) were flagged as a non-existent API / TOCTOU risk.  │
-// │    man jsh does document fs.promises.exists(path) as real, but         │
-// │    attempt-then-catch is strictly more robust regardless of which is   │
-// │    correct, so readSession()/the docs reader now just try readFile()   │
-// │    and treat ENOENT (or any read failure) as "not found" — no exists() │
-// │    pre-check left at all.                                              │
-// │  • fs.promises.mkdir(SKILL_ROOT) in writeSession() is documented as    │
-// │    recursive/idempotent (man jsh: "create directory (recursive)"), but │
-// │    wrapped in .catch(() => {}) anyway as cheap insurance.              │
-// │  • docs' page listing (fs.promises.readdir()) doesn't guarantee sorted │
-// │    output the way the old `ls`-based version did — added .sort().      │
-// └─────────────────────────────────────────────────────────────────────────┘
+// MIGRATION NOTES (jsh runtime extensions, ai-ecoverse/slicc#786, #118, #165)
+//
+// Fully migrated to the sliccy: API surface — no exec()/CLI shell-outs remain:
+//   • Explicit require('sliccy:*') imports (cli, color, browser) + require('fs');
+//     nothing is a bare global anymore.
+//   • Tab discovery/open: browser.findTab({ domain }) + browser.ensureTab(UI_HOST).
+//   • Non-streaming page fetch (pageFetch's plain branch): browser.fetch(tab, path,
+//     opts) — page-context (session cookies travel automatically), returns
+//     { ok, status, headers, body } with JSON bodies already parsed. Object bodies
+//     are JSON.stringify'd and Content-Type defaulted, matching the old behavior.
+//   • api(): trusts browser.fetch's already-parsed resp.body, falling back to a
+//     manual JSON.parse only for a raw string body.
+//   • File access (MCP session + docs listing/reading): require('fs') VFS bridge
+//     (readFile/writeFile/mkdir/readdir/rm), attempt-then-catch for missing files.
+//   • Errors/exits: cli.die(msg, { prefix: 'fj' }). Help text uses color.bold.
+//
+// Streaming (pageStream() / pageFetch's stream:true branch, used by `fj ask` /
+// `fj chat` for the server's SSE stream): browser.fetch is call-once /
+// fully-buffered and can't stage a long-lived in-page ReadableStream reader for
+// polling, so the streaming path drives the page directly instead:
+//   • Start: browser.evalAsync(tab, buildStreamStartExpr(...)) runs the fetch in
+//     the page, stashes the reader + a background pump on window.__fj_stream, and
+//     returns immediately.
+//   • Poll: browser.evalAsync(tab, POLL_EXPR) drains buffered chunks every ~200ms
+//     so no single Runtime.evaluate blocks for the full (minutes-long) response.
+//   • Cancel: browser.eval(tab, ...) cancels the in-page reader best-effort.
+//   These eval expressions return JSON.stringify(...), which the realm host
+//   unwraps into a parsed object automatically — no temp files, no shell-outs.
 
-const exec = require('sliccy:exec');
 const cli = require('sliccy:cli');
 const color = require('sliccy:color');
 const browser = require('sliccy:browser');
@@ -123,9 +79,9 @@ async function ensureTab() {
 // ---------- Page-context fetch (non-streaming) ----------
 
 // Thin wrapper around browser.fetch for the non-streaming case. Streaming
-// requests (options.stream) still go through the legacy exec/playwright-cli
-// pageStream() path below — see MIGRATION NOTES at the top of this file for
-// why that couldn't move to browser.fetch.
+// requests (options.stream) go through pageStream() below, which drives the
+// page via browser.evalAsync — see MIGRATION NOTES at the top of this file for
+// why streaming can't use browser.fetch directly.
 async function pageFetch(path, options = {}) {
   const tab = await ensureTab();
   if (options.stream) return pageStream(tab, path, options);
@@ -157,7 +113,7 @@ async function pageFetch(path, options = {}) {
   return { ok: resp.ok, status: resp.status, headers: normalizedHeaders, body: resp.body };
 }
 
-// ---------- Streaming fetch (kept on exec/playwright-cli — see notes above) ----------
+// ---------- Streaming fetch (browser.evalAsync page-driving — see notes above) ----------
 
 // Build a JS expression that runs in the page and returns a JSON string with
 // either {ok, status, headers, errorBody} or {error: '...'}. Used only by
@@ -234,47 +190,43 @@ const POLL_EXPR = `(async()=>{
 // no single CDP Runtime.evaluate ever exceeds ~5s. Calls onChunk(text) as new
 // bytes arrive and returns the final {ok, status, headers, body, truncated}.
 async function pageStream(tab, path, options) {
-  const tabId = tab && tab.id ? tab.id : tab;
   const onChunk = options.onChunk || (() => {});
   const maxMs = options.streamMaxMs || 180000;
   const maxBytes = options.streamMaxBytes || 8 * 1024 * 1024;
   const pollMs = options.pollMs || 250;
 
-  // 1. Start the request in the page and stash the reader.
+  // 1. Start the request in the page and stash the reader on window.__fj_stream.
+  //    buildStreamStartExpr() is an async IIFE returning JSON.stringify(...), so
+  //    the realm host unwraps browser.evalAsync's result into a parsed object.
   const startExpr = buildStreamStartExpr(path, options);
-  const startTmp = `/tmp/fj-start-${Date.now()}.js`;
-  await fs.promises.writeFile(startTmp, startExpr);
-  const startRes = await exec(`playwright-cli eval-file ${startTmp} --tab=${tabId}`);
-  await fs.promises.rm(startTmp).catch(() => {});
-  if (startRes.exitCode !== 0) throw new Error('stream start eval failed: ' + (startRes.stderr || startRes.stdout));
-  let startRaw = (startRes.stdout || '').trim();
-  if (startRaw.startsWith('"') && startRaw.endsWith('"')) {
-    try { startRaw = JSON.parse(startRaw); } catch (_) {}
-  }
   let startParsed;
-  try { startParsed = JSON.parse(startRaw); } catch (_) { throw new Error('stream start parse failed: ' + startRaw.slice(0, 400)); }
+  try {
+    startParsed = await browser.evalAsync(tab, startExpr);
+  } catch (e) {
+    throw new Error('stream start eval failed: ' + (e && e.message ? e.message : String(e)));
+  }
+  if (!startParsed || typeof startParsed !== 'object') {
+    throw new Error('stream start parse failed: ' + String(startParsed).slice(0, 400));
+  }
   if (startParsed.error) throw new Error(startParsed.error);
   if (!startParsed.ok) {
     return { ok: false, status: startParsed.status, headers: startParsed.headers, body: startParsed.errorBody || '' };
   }
 
   // 2. Poll the in-page state until done or limits hit.
-  const pollTmp = `/tmp/fj-poll-${Date.now()}.js`;
-  await fs.promises.writeFile(pollTmp, POLL_EXPR);
-
   const start = Date.now();
   let body = '';
   let lastError = null;
   while (true) {
     await new Promise(r => setTimeout(r, pollMs));
-    const r = await exec(`playwright-cli eval-file ${pollTmp} --tab=${tabId}`);
-    if (r.exitCode !== 0) { lastError = r.stderr || r.stdout; break; }
-    let raw = (r.stdout || '').trim();
-    if (raw.startsWith('"') && raw.endsWith('"')) {
-      try { raw = JSON.parse(raw); } catch (_) {}
-    }
     let parsed;
-    try { parsed = JSON.parse(raw); } catch (_) { lastError = 'poll parse: ' + raw.slice(0, 200); break; }
+    try {
+      parsed = await browser.evalAsync(tab, POLL_EXPR);
+    } catch (e) {
+      lastError = e && e.message ? e.message : String(e);
+      break;
+    }
+    if (!parsed || typeof parsed !== 'object') { lastError = 'poll parse: ' + String(parsed).slice(0, 200); break; }
     if (parsed.error) { lastError = parsed.error; break; }
     if (parsed.chunk) {
       body += parsed.chunk;
@@ -284,10 +236,9 @@ async function pageStream(tab, path, options) {
     if (parsed.done) break;
     if (Date.now() - start > maxMs) break;
   }
-  await fs.promises.rm(pollTmp).catch(() => {});
 
-  // best-effort cancel
-  await exec(`playwright-cli eval --tab=${tabId} "(()=>{ try{ window.__fj_stream && window.__fj_stream.reader && window.__fj_stream.reader.cancel(); }catch(_){} 'ok'; })()"`).catch(() => {});
+  // best-effort cancel of the in-page reader
+  await browser.eval(tab, "(()=>{ try{ window.__fj_stream && window.__fj_stream.reader && window.__fj_stream.reader.cancel(); }catch(_){} return 'ok'; })()").catch(() => {});
 
   return {
     ok: startParsed.ok,
