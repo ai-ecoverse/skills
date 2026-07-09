@@ -179,7 +179,15 @@ function icloudEventToShared(ev) {
 // ─── iCloud Tab Management ───────────────────────────────────────────────────
 
 async function getICloudTab() {
-  const tab = await browser.findTab({ domain: 'icloud.com' });
+  // NOTE: browser.findTab's `domain` option requires an exact hostname match.
+  // Navigating to icloud.com always lands on www.icloud.com (redirect), so
+  // `{ domain: 'icloud.com' }` never matches a real tab — confirmed live
+  // against an authenticated www.icloud.com session, which this fails to
+  // find. The pre-migration exec('playwright-cli tab-list') + regex approach
+  // did a plain substring match against the full tab URL, so it matched
+  // www.icloud.com fine; `urlMatch` (substring/regex against the full URL)
+  // is the bridge's equivalent and is used here to restore that behavior.
+  const tab = await browser.findTab({ urlMatch: /icloud\.com/ });
   if (tab) return tab;
 
   cli.die('No iCloud tab found. Please open https://www.icloud.com/ and sign in.', { prefix: '' });
@@ -226,7 +234,15 @@ async function icloudFetch(tab, url, options = {}) {
   const method = options.method || 'GET';
   const body = options.body ? JSON.stringify(options.body) : null;
 
-  const fnSource = `async () => {
+  // NOTE: must be an invoked IIFE ("(async () => {...})()"), not a bare
+  // function expression. browser.evalAsync does not auto-invoke a string
+  // argument the way it does when handed a real Function object — a bare
+  // "async () => {...}" string evaluates to a Function value, which
+  // serializes to "{}" with no error, silently swallowing every fetch made
+  // through this helper. Confirmed live: this exact bug caused `icloud
+  // calendar` to fail with "Calendar API error (HTTP undefined)" even
+  // against a real, authenticated session.
+  const fnSource = `(async () => {
     try {
       const resp = await fetch(${JSON.stringify(url)}, {
         method: ${JSON.stringify(method)},
@@ -242,7 +258,7 @@ async function icloudFetch(tab, url, options = {}) {
     } catch(e) {
       return { error: "FETCH_ERROR", message: e.message };
     }
-  }`;
+  })()`;
 
   let parsed;
   try {
@@ -638,7 +654,9 @@ async function decodeNotesInPage(tab, notes) {
 
   for (let start = 0; start < noteData.length; start += batchSize) {
     const batch = noteData.slice(start, start + batchSize);
-    const fnSource = `async () => {
+    // See the note above icloudFetch()'s fnSource: must be an invoked IIFE,
+    // not a bare function expression, or evalAsync silently returns "{}".
+    const fnSource = `(async () => {
       const notes = ${JSON.stringify(batch)};
       function decodeB64(b64) {
         if (!b64) return "";
@@ -658,7 +676,7 @@ async function decodeNotesInPage(tab, notes) {
           modified: n.modified,
           created: n.created
         }));
-    }`;
+    })()`;
 
     let parsed;
     try {
@@ -685,7 +703,8 @@ async function readNoteContent(tab, noteId, allNotes) {
   const titleB64 = note.fields.TitleEncrypted ? note.fields.TitleEncrypted.value : '';
 
   if (!textDataB64) {
-    const fnSource = `async () => {
+    // See the note above icloudFetch()'s fnSource: must be an invoked IIFE.
+    const fnSource = `(async () => {
       function decodeB64(b64) {
         if (!b64) return "";
         try {
@@ -696,7 +715,7 @@ async function readNoteContent(tab, noteId, allNotes) {
         } catch(e) { return ""; }
       }
       return { title: decodeB64(${JSON.stringify(titleB64)}), content: "(empty note)" };
-    }`;
+    })()`;
     try {
       return await browser.evalAsync(tab, fnSource);
     } catch (e) {
@@ -704,8 +723,9 @@ async function readNoteContent(tab, noteId, allNotes) {
     }
   }
 
-  // Decompress gzip and extract text in page context
-  const fnSource = `async () => {
+  // Decompress gzip and extract text in page context.
+  // See the note above icloudFetch()'s fnSource: must be an invoked IIFE.
+  const fnSource = `(async () => {
     const b64 = ${JSON.stringify(textDataB64)};
     const titleB64 = ${JSON.stringify(titleB64)};
 
@@ -791,7 +811,7 @@ async function readNoteContent(tab, noteId, allNotes) {
     } catch(e) {
       return { error: e.message, title: decodeB64(titleB64) };
     }
-  }`;
+  })()`;
 
   let parsed;
   try {
