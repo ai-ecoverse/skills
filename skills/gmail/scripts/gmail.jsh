@@ -10,35 +10,36 @@
 //   send      Send an email
 //   reply     Reply to a message
 //   monday    Aggregated inbox for monday dispatcher
+//
+// ┌─ MIGRATION NOTES (jsh runtime extensions — issue #170) ────────────────────┐
+// │ Bespoke bare globals are hard-cut; capability bridges come via             │
+// │ require('sliccy:<name>'). Mechanical port, behavior preserved:             │
+// │  • Arg parsing → process.argv.parseFlags(); positional drops the leading   │
+// │    subcommand so view/reply ID indices are unchanged.                      │
+// │  • Colors → require('sliccy:color') (kept the `C` name). Identical ANSI by │
+// │    default; now also honors NO_COLOR. No raw escape codes remain.          │
+// │  • list/get/send API → one http.client(); non-2xx errors are reformatted  │
+// │    to the original `HTTP <status>: <message>` text.                        │
+// │ KEPT (deliberate): manual OAuth refresh over fetch (no sliccy:skill        │
+// │  provider backs GWS_* creds); local durationToDate (sliccy:time `m` =      │
+// │  minutes, but this CLI's `--date 1m` = one month); local die/out (sliccy:  │
+// │  cli would add an `Error:` prefix and change output).                      │
+// └────────────────────────────────────────────────────────────────────────────┘
+
+const http = require('sliccy:http');
 
 const GMAIL_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
 const GMAIL_WEB = 'https://mail.google.com/mail/u/0/#inbox';
 
 // ─── Argument Parsing ────────────────────────────────────────────────────────
 
-const args = process.argv.slice(2);
-const subcommand = args[0] || '';
-const positional = [];
-const flags = {};
-
-for (let i = 1; i < args.length; i++) {
-  const arg = args[i];
-  if (arg.startsWith('--')) {
-    const eq = arg.indexOf('=');
-    if (eq !== -1) {
-      flags[arg.slice(2, eq)] = arg.slice(eq + 1);
-    } else {
-      const key = arg.slice(2);
-      if (i + 1 < args.length && !args[i + 1].startsWith('--')) {
-        flags[key] = args[++i];
-      } else {
-        flags[key] = true;
-      }
-    }
-  } else {
-    positional.push(arg);
-  }
-}
+// `process.argv.parseFlags()` yields { positional, flags, subcommand }. Drop the
+// leading subcommand from `positional` so downstream index math (view/reply
+// message IDs) matches the previous hand-rolled parser exactly.
+const parsed = process.argv.parseFlags();
+const subcommand = parsed.subcommand || '';
+const positional = parsed.positional.slice(1);
+const flags = parsed.flags;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -83,14 +84,7 @@ function durationToDate(dur) {
 
 // ─── ANSI Colors ─────────────────────────────────────────────────────────────
 
-const C = {
-  green:  s => `\x1b[32m${s}\x1b[0m`,
-  red:    s => `\x1b[31m${s}\x1b[0m`,
-  yellow: s => `\x1b[33m${s}\x1b[0m`,
-  gray:   s => `\x1b[90m${s}\x1b[0m`,
-  bold:   s => `\x1b[1m${s}\x1b[0m`,
-  cyan:   s => `\x1b[36m${s}\x1b[0m`,
-};
+const C = require('sliccy:color');
 
 // ─── Auth ────────────────────────────────────────────────────────────────────
 
@@ -129,50 +123,44 @@ async function getAccessToken() {
 
 // ─── API Client ──────────────────────────────────────────────────────────────
 
+// Single http.client for all Gmail REST calls. `token` is lazy (resolved per
+// request) and injected as `Authorization: Bearer …`; object bodies are
+// JSON-encoded and querystrings are built from `params` (undefined/null skipped)
+// — matching the previous hand-rolled fetch wrappers.
+const gmailApi = http.client({
+  baseUrl: GMAIL_BASE,
+  token: () => getAccessToken(),
+  headers: { 'Accept': 'application/json' },
+});
+
+// http.client throws HttpError on non-2xx. Reformat it back to the original
+// `HTTP <status>: <message>` text (Gmail nests its detail under error.message)
+// so the per-command `gmail: <cmd> failed: …` wrappers are unchanged.
+function toGmailError(e) {
+  if (e && e.name === 'HttpError') {
+    const b = e.body;
+    const msg = (b && typeof b === 'object')
+      ? (b.error?.message || JSON.stringify(b))
+      : String(b == null ? '' : b);
+    return new Error(`HTTP ${e.status}: ${msg}`);
+  }
+  return e;
+}
+
 async function gmailGet(path, params) {
-  const token = await getAccessToken();
-  let url = path.startsWith('http') ? path : `${GMAIL_BASE}${path}`;
-  if (params) {
-    const qs = Object.entries(params)
-      .filter(([, v]) => v !== undefined && v !== null)
-      .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
-      .join('&');
-    if (qs) url += (url.includes('?') ? '&' : '?') + qs;
+  try {
+    return await gmailApi.get(path, { params });
+  } catch (e) {
+    throw toGmailError(e);
   }
-  const res = await fetch(url, {
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Accept': 'application/json',
-    },
-  });
-  if (!res.ok) {
-    const body = await res.text();
-    let msg;
-    try { msg = JSON.parse(body).error?.message || body; } catch { msg = body; }
-    throw new Error(`HTTP ${res.status}: ${msg}`);
-  }
-  return res.json();
 }
 
 async function gmailPost(path, body) {
-  const token = await getAccessToken();
-  const url = path.startsWith('http') ? path : `${GMAIL_BASE}${path}`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    let msg;
-    try { msg = JSON.parse(text).error?.message || text; } catch { msg = text; }
-    throw new Error(`HTTP ${res.status}: ${msg}`);
+  try {
+    return await gmailApi.post(path, { body });
+  } catch (e) {
+    throw toGmailError(e);
   }
-  return res.json();
 }
 
 // ─── MIME Helpers ─────────────────────────────────────────────────────────────
