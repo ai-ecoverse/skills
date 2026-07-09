@@ -8,7 +8,6 @@
 const exec = require('sliccy:exec');
 const browser = require('sliccy:browser');
 
-const APP_DOMAIN = 'concursolutions.com';
 const HOME_URL   = 'https://us2.concursolutions.com/home';
 const HOST_WEB   = 'https://us2.concursolutions.com';
 const HOST_API   = 'https://www-us2.api.concursolutions.com';
@@ -774,8 +773,8 @@ const commands = {
 
     // Convert to JPEG unless told otherwise. magick is on PATH; ffmpeg WASM
     // doesn't handle HEIC. We also auto-downscale anything larger than
-    // maxBytes — base64'd 4 MB JPEGs blow past the page-context eval-file
-    // argv limit and the upload silently fails.
+    // maxBytes — base64'd 4 MB JPEGs blow past the evalAsync source-string
+    // limit (the payload is embedded as a literal) and the upload fails.
     let jpgPath = localPath;
     const needConvert = opts['no-convert'] !== 'true' && !/\.jpe?g$/i.test(localPath);
     const needShrink  = opts['no-convert'] !== 'true' && inputBytes > maxBytes;
@@ -790,20 +789,21 @@ const commands = {
       }
     }
 
-    // Base64 the JPEG to ship through the eval-file payload
+    // Base64 the JPEG to embed as a literal in the evalAsync upload function
     const b64r = await exec(`base64 < "${jpgPath}" | tr -d '\\n'`);
     if (b64r.exitCode !== 0) { console.error('base64 failed'); process.exit(1); }
     const b64 = b64r.stdout.trim();
 
     // Upload via page-context fetch with multipart FormData. browser.fetch()
     // JSON-stringifies object bodies, which can't carry a Blob/FormData, so
-    // this one request still goes through browser.evalAsync() with the
-    // payload embedded as a literal (evalAsync serializes the function to a
-    // string call expression, same technique the old eval-file used).
+    // this one request still goes through browser.evalAsync(). The multi-MB
+    // base64 payload + filename have to be baked in as literals (the page
+    // context can't see this realm's locals), so we build a real async upload
+    // function via `new Function` and hand it to evalAsync, which serializes
+    // it to a self-calling expression for Runtime.evaluate.
     const tab = await ensureTab();
     const filename = jpgPath.split('/').pop();
-    const uploadScript = `
-(async () => {
+    const uploadFn = new Function(`return (async () => {
   const b64 = ${JSON.stringify(b64)};
   const bin = atob(b64);
   const bytes = new Uint8Array(bin.length);
@@ -816,13 +816,15 @@ const commands = {
   });
   const text = await r.text();
   return JSON.stringify({ status: r.status, body: text });
-})()
-    `.trim();
+})();`);
     let wrap;
     try {
-      const upRes = await browser.evalAsync(tab, uploadScript);
+      const upRes = await browser.evalAsync(tab, uploadFn);
       wrap = typeof upRes === 'string' ? JSON.parse(upRes) : upRes;
     } catch (e) {
+      // Clean up the converted/shrunk temp JPEG before bailing so an upload
+      // failure never leaves receipt copies behind in /shared.
+      if (jpgPath !== localPath) await exec(`rm -f "${jpgPath}"`);
       console.error('upload failed:', e?.message || e);
       process.exit(1);
     }
@@ -1009,7 +1011,7 @@ const commands = {
 
   async tab() {
     const t = await ensureTab();
-    return { tab: t };
+    return { tabId: t.targetId };
   },
 
   async help() {
@@ -1038,6 +1040,11 @@ const commands = {
 
 // ----------------- CLI plumbing -----------------
 
+// Local flag parser. Concur uses 2-level routing (e.g. `concur itemize hotel
+// …`) and per-command flag DEFAULTS applied to a rest-arg SUBSET of argv. The
+// runtime's `process.argv.parseFlags()` global parses the whole argv once with
+// no defaults and no subset support, so it can't model this shape — hence this
+// small local helper (same rationale the other multi-level skills keep theirs).
 function parseFlags(args, defaults) {
   const out = { ...defaults };
   for (const a of args) {
