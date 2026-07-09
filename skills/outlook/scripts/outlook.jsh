@@ -9,37 +9,16 @@
 //   send      Send an email
 //   monday    Aggregated inbox for monday dispatcher
 //
+// ─── jsh runtime migration (issue #167) ─────────────────────────
+// This script was ported to the current SLICC .jsh runtime:
+//  • Browser access uses the sliccy:browser bridge (findTab / eval) instead
+//    of the legacy tab-list / eval-file browser CLI shell-outs.
+//  • Colored output uses require('sliccy:color') instead of raw ANSI escapes
+//    (auto-disabled on non-TTY / NO_COLOR).
+//  • Argument parsing uses process.argv.parseFlags() instead of a manual loop.
+//  • Every capability bridge is obtained explicitly via require('sliccy:<name>');
+//    Node builtins (fs) still come from require('fs').
 // ┌─────────────────────────────────────────────────────────────────────────────┐
-// │ FIX — explicit sliccy: module imports (this commit, PR #143)               │
-// │                                                                             │
-// │ The `.jsh` runtime no longer injects `exec` (or `skill`/`cli`/`fmt`/`c`/    │
-// │ `http`/`time`/`pool`, none of which this script happens to use) as a bare  │
-// │ global. It still exists and works exactly as before — it must now be      │
-// │ obtained explicitly via `require('sliccy:exec')`. Concretely:             │
-// │  • Added `const exec = require('sliccy:exec');` at the top of the file.   │
-// │    This script does not use `skill`, `cli`, `fmt`, `c`/`color`, `http`,   │
-// │    `time`, or `pool` anywhere (checked via grep before importing anything  │
-// │    — same discipline as the gh.jsh port in PR #150), so none of those      │
-// │    were imported.                                                          │
-// │  • Added `const fs = require('fs');` (plain node-ish builtin, not a       │
-// │    `sliccy:` module). This script's `fs.writeFile(...)` / `fs.readFile(...)│
-// │    ` call sites needed no further changes beyond the import — those        │
-// │    methods exist directly on the `require('fs')` object, not only under   │
-// │    `.promises` (verified against this file's exact old call shapes, same  │
-// │    finding as the gh.jsh port).                                            │
-// │  • `process.argv.parseFlags()` is NOT used anywhere in this script — its   │
-// │    argument parsing was already a fully manual local loop (see            │
-// │    "Argument Parsing" below), so no local replacement was needed here.    │
-// │  • The local `C` object (ANSI color helpers) a few dozen lines down is a   │
-// │    script-local `const`, not the removed bare `c` global — it is          │
-// │    unrelated to the `sliccy:color` rename that `gh.jsh` needed and was     │
-// │    left untouched.                                                         │
-// │  • No other call sites changed. Every command, subcommand, and flag       │
-// │    behaves exactly as before — this is a runtime-API port, not a feature   │
-// │    or logic change. PR #143's own new `captureTokenFromNetwork` /          │
-// │    `extractTokenFromCache` two-strategy token logic is unchanged beyond    │
-// │    what was needed to make it run (the `exec`/`fs` imports above).        │
-// ├─────────────────────────────────────────────────────────────────────────────┤
 // │ FIX — revalidate captured tokens before reusing them (review comment,      │
 // │ chatgpt-codex-connector[bot], P2)                                          │
 // │                                                                             │
@@ -72,7 +51,8 @@
 // │ plaintext cache) is untouched by this fix.                                │
 // └─────────────────────────────────────────────────────────────────────────────┘
 
-const exec = require('sliccy:exec');
+const browser = require('sliccy:browser');
+const C = require('sliccy:color');
 const fs = require('fs'); // plain node-ish builtin, not a sliccy: module
 
 const OWA_BASE = 'https://outlook.office.com/api/v2.0';
@@ -85,29 +65,9 @@ const OUTLOOK_DOMAINS = ['outlook.office.com', 'outlook.cloud.microsoft', 'outlo
 
 // ─── Argument Parsing ────────────────────────────────────────────────────────
 
-const args = process.argv.slice(2);
-const subcommand = args[0] || '';
-const positional = [];
-const flags = {};
-
-for (let i = 1; i < args.length; i++) {
-  const arg = args[i];
-  if (arg.startsWith('--')) {
-    const eq = arg.indexOf('=');
-    if (eq !== -1) {
-      flags[arg.slice(2, eq)] = arg.slice(eq + 1);
-    } else {
-      const key = arg.slice(2);
-      if (i + 1 < args.length && !args[i + 1].startsWith('--')) {
-        flags[key] = args[++i];
-      } else {
-        flags[key] = true;
-      }
-    }
-  } else {
-    positional.push(arg);
-  }
-}
+const { positional: _allPositional, flags } = process.argv.parseFlags();
+const subcommand = _allPositional[0] || '';
+const positional = _allPositional.slice(1);
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -163,13 +123,11 @@ let _tabId = null;
 
 async function findOutlookTab() {
   if (_tabId) return _tabId;
-  const result = await exec('playwright-cli tab-list');
-  if (result.exitCode !== 0) die('Failed to list browser tabs.');
-  const lines = result.stdout.split('\n');
-  for (const line of lines) {
-    if (OUTLOOK_DOMAINS.some(d => line.includes(d))) {
-      const m = line.match(/^\[([^\]]+)\]/);
-      if (m) { _tabId = m[1]; return _tabId; }
+  for (const domain of OUTLOOK_DOMAINS) {
+    const tab = await browser.findTab({ domain });
+    if (tab) {
+      _tabId = tab;
+      return _tabId;
     }
   }
   return null;
@@ -179,22 +137,22 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Run a JS expression in the Outlook tab via playwright-cli eval-file and return
-// the trimmed stdout (or null on error / empty result).
+// Run a JS expression in the Outlook tab via the sliccy:browser bridge and
+// return the trimmed string result (or null on error / empty result).
 async function evalInTab(tabId, scriptStr) {
-  const tmpFile =
-    '/tmp/.outlook-eval-' + Date.now() + '-' + Math.random().toString(36).slice(2) + '.js';
-  await fs.writeFile(tmpFile, scriptStr);
-  const r = await exec(`playwright-cli eval-file ${tmpFile} --tab=${tabId}`);
-  await fs.writeFile(tmpFile, '').catch(() => {}); // clean up
-  if (r.exitCode !== 0) return null;
-  const raw = (r.stdout || '').trim();
-  if (!raw || raw === 'null' || raw === 'undefined') return null;
-  return raw;
+  try {
+    const result = await browser.eval(tabId, scriptStr);
+    if (result === null || result === undefined) return null;
+    const raw = String(result).trim();
+    if (!raw || raw === 'null' || raw === 'undefined') return null;
+    return raw;
+  } catch {
+    return null;
+  }
 }
 
 function unwrapEvalString(raw) {
-  // playwright-cli returns string results JSON-quoted; unwrap one layer.
+  // browser.eval returns raw values; defensively unwrap a JSON-quoted string.
   if (raw && raw.startsWith('"') && raw.endsWith('"')) {
     try { return JSON.parse(raw); } catch { /* fall through */ }
   }
@@ -417,17 +375,6 @@ async function owaPost(token, path, body) {
   if (res.status === 202 || res.headers.get('content-length') === '0') return {};
   return res.json();
 }
-
-// ─── ANSI Colors ─────────────────────────────────────────────────────────────
-
-const C = {
-  green:  s => `\x1b[32m${s}\x1b[0m`,
-  red:    s => `\x1b[31m${s}\x1b[0m`,
-  yellow: s => `\x1b[33m${s}\x1b[0m`,
-  gray:   s => `\x1b[90m${s}\x1b[0m`,
-  bold:   s => `\x1b[1m${s}\x1b[0m`,
-  cyan:   s => `\x1b[36m${s}\x1b[0m`,
-};
 
 // ─── Commands ────────────────────────────────────────────────────────────────
 
