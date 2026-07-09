@@ -9,7 +9,7 @@ const skill = require('sliccy:skill');
 const args = process.argv.slice(2);
 
 // Load AI word base rates from reference file (references/ai_word_rates.txt)
-const _ratesText = await fs.readFile(`${skill.refs}/ai_word_rates.txt`, 'utf8');
+const _ratesText = await fs.readFile(`${skill.dir}/../references/ai_word_rates.txt`, 'utf8');
 const WORD_RATES = {};
 for (const line of _ratesText.split('\n')) {
   const trimmed = line.trim();
