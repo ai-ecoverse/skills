@@ -1,4 +1,4 @@
-// check-ai-patterns.jsh â AI Pattern Checker (Comprehensive Analysis)
+// check-ai-patterns.jsh — AI Pattern Checker (Comprehensive Analysis)
 // Checks vocabulary rates, em-dash usage, and structural patterns
 // Usage: check-ai-patterns <file> [multiplier]
 
