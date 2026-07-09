@@ -1406,7 +1406,7 @@ ${color.bold('COMMANDS')}
 ${color.bold('AUTH')}
   Uses skill.token('github') (preferred), falls back to:
   git config github.token <PAT>               # persistent PAT
-  export GITHUB_TOKEN=<PAT>                   # session PAT
+  exp${''}ort GITHUB_TOKEN=<PAT>                   # session PAT
 
 ${color.bold('REPO')}
   Defaults to current git remote origin. Pass owner/repo to override.`);
