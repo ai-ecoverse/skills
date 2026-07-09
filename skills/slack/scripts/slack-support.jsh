@@ -1,10 +1,60 @@
-// Slack Support Portal client — scrapes adobe-dx-support.enterprise.slack.com
-// Uses playwright-cli to interact with the server-rendered support portal.
+// Slack Support Portal client — scrapes a Slack Enterprise support portal.
+// Uses the sliccy:browser bridge to interact with the server-rendered support portal.
 // Cookie-based auth via existing browser session — no REST API available.
+//
+// jsh runtime migration (issue #176)
+//   • Browser access uses require('sliccy:browser') (findTab / evalAsync) instead
+//     of legacy browser shell-outs and eval-file temp files.
+//   • Each page script fetches its target page same-origin and parses the
+//     server-rendered HTML with DOMParser — no navigation or temp files needed.
+//   • Argument parsing uses process.argv.parseFlags() instead of a manual loop.
+//
+// Follow-up hardening (post-migration review)
+//   • The support-portal domain is no longer hardcoded. Resolution order:
+//     `--domain=<host>` flag > `skill.config().domain` > built-in default.
+//     Set a workspace-specific default with:
+//       slack-support config --domain=your-org.enterprise.slack.com
+//   • findSupportTab() now opens the portal tab automatically via
+//     browser.ensureTab() when no matching tab is already open, instead of
+//     erroring out and telling the user to open one by hand (matches the
+//     browser.findTab()-then-browser.ensureTab() fallback pattern used in
+//     the merged fluffyjaws migration).
+//   • Fixed a pre-existing scrape bug in `list`: open/closed status was
+//     inferred by walking from each <h2> heading to the "nearest following
+//     <table>", which mislabels every row as "open" whenever the account
+//     has zero open requests (the generic "Your Help Requests" heading
+//     greedily claims the Closed Requests table because no Open Requests
+//     heading/table exists to compete with it). Status is now read directly
+//     off each row's own `data-js="open-request"|"closed-request"` marker,
+//     which every row already carries — no heading inference needed.
 
-const SUPPORT_DOMAIN = 'adobe-dx-support.enterprise.slack.com';
-const BASE_URL = `https://${SUPPORT_DOMAIN}`;
-const REQUESTS_URL = `${BASE_URL}/help/requests`;
+const browser = require('sliccy:browser');
+const skill = require('sliccy:skill');
+
+const DEFAULT_SUPPORT_DOMAIN = 'adobe-dx-support.enterprise.slack.com';
+
+// Resolved once at startup in Main (see bottom of file) — do not read these
+// before resolveSupportDomain() has run.
+let SUPPORT_DOMAIN = DEFAULT_SUPPORT_DOMAIN;
+let BASE_URL = `https://${SUPPORT_DOMAIN}`;
+let REQUESTS_URL = `${BASE_URL}/help/requests`;
+
+async function loadConfig() {
+  try {
+    return (await skill.config()) || {};
+  } catch (_) {
+    return {};
+  }
+}
+
+// --domain=<host> flag wins, then skill.config().domain (persisted via
+// `slack-support config --domain=...`), then the built-in default.
+async function resolveSupportDomain(flags) {
+  if (typeof flags.domain === 'string' && flags.domain) return flags.domain;
+  const cfg = await loadConfig();
+  if (cfg && typeof cfg.domain === 'string' && cfg.domain) return cfg.domain;
+  return DEFAULT_SUPPORT_DOMAIN;
+}
 
 // --- Topic mapping ---
 
@@ -58,99 +108,57 @@ function resolveTopicId(input) {
 
 // --- Tab management ---
 
-let _tabId = null;
+let _tab = null;
 
 async function findSupportTab() {
-  if (_tabId) return _tabId;
+  if (_tab) return _tab;
 
-  const list = await exec('playwright-cli tab-list');
-  if (list.exitCode !== 0) {
-    console.error('Error: Failed to list browser tabs.');
-    if (list.stderr?.trim()) console.error(list.stderr.trim());
-    process.exit(1);
-  }
-
-  const lines = list.stdout.split('\n');
-  for (const line of lines) {
-    if (line.includes(SUPPORT_DOMAIN)) {
-      const m = line.match(/^\[([^\]]+)\]/);
-      if (m) {
-        _tabId = m[1];
-        return _tabId;
-      }
+  let tab = await browser.findTab({ domain: SUPPORT_DOMAIN });
+  if (!tab) {
+    try {
+      tab = await browser.ensureTab(REQUESTS_URL);
+    } catch (e) {
+      console.error(`Error: Failed to open support portal tab at ${REQUESTS_URL}: ${(e && e.message) || e}`);
+      process.exit(1);
     }
+    // Give the page (and any SSO redirect) a moment to settle before scraping.
+    await new Promise(r => setTimeout(r, 2500));
   }
 
-  console.error(`Error: No support portal tab found. Open ${REQUESTS_URL} in your browser and try again.`);
-  process.exit(1);
+  _tab = tab;
+  return _tab;
 }
 
 // --- Eval helper ---
-// Writes JS to a temp file, evaluates it in the support tab, parses the result.
+// Runs an async page script in the support tab via the sliccy:browser bridge.
+// Each script fetches its target page (same-origin, credentialed) and parses
+// the server-rendered HTML with DOMParser, so no navigation or temp files are
+// needed.
 
-async function evalInSupportTab(jsCode, { navigate = null, fatal = true } = {}) {
-  const tabId = await findSupportTab();
+async function evalInSupportTab(jsCode, { fatal = true } = {}) {
+  const tab = await findSupportTab();
 
-  // Navigate first if requested
-  if (navigate) {
-    const nav = await exec(`playwright-cli goto "${navigate}" --tab=${tabId} --wait=networkidle`);
-    if (nav.exitCode !== 0) {
-      if (!fatal) return { __error: true, message: 'Navigation failed: ' + (nav.stderr || '') };
-      console.error('Navigation failed:', nav.stderr || 'unknown error');
+  let data;
+  try {
+    data = await browser.evalAsync(tab, jsCode);
+  } catch (e) {
+    if (!fatal) return { __error: true, message: 'Eval failed: ' + ((e && e.message) || String(e)) };
+    console.error('Eval failed:', (e && e.message) || String(e));
+    process.exit(1);
+  }
+
+  // browser.evalAsync returns parsed JSON; defensively unwrap a JSON string.
+  if (typeof data === 'string') {
+    try {
+      data = JSON.parse(data);
+    } catch (e) {
+      if (!fatal) return { __error: true, message: 'Parse failed: ' + data.substring(0, 200) };
+      console.error('Failed to parse response:', data.substring(0, 200));
       process.exit(1);
     }
   }
 
-  const tmpFile = '/shared/.slack_support_' + Date.now() + '_' + Math.random().toString(36).slice(2) + '.js';
-  await fs.writeFile(tmpFile, jsCode);
-
-  const result = await exec(`playwright-cli eval-file "${tmpFile}" --tab=${tabId}`);
-  await fs.rm(tmpFile).catch(() => {});
-
-  if (result.exitCode !== 0) {
-    if (!fatal) return { __error: true, message: result.stderr || 'eval failed' };
-    console.error('Eval failed:', result.stderr);
-    process.exit(1);
-  }
-
-  let data;
-  try {
-    const stdout = result.stdout.trim();
-    data = JSON.parse(stdout);
-    if (typeof data === 'string') data = JSON.parse(data);
-  } catch (e) {
-    if (!fatal) return { __error: true, message: 'Parse failed: ' + result.stdout.substring(0, 200) };
-    console.error('Failed to parse response:', result.stdout.substring(0, 200));
-    process.exit(1);
-  }
-
   return data;
-}
-
-// --- Argument parsing (matches slack.jsh pattern) ---
-
-function parseArgs(args) {
-  const flags = {};
-  const positional = [];
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg.startsWith('--')) {
-      const eq = arg.indexOf('=');
-      if (eq > 0) {
-        flags[arg.substring(2, eq)] = arg.substring(eq + 1);
-      } else {
-        const name = arg.substring(2);
-        if (i + 1 < args.length && !args[i + 1].startsWith('--')) {
-          flags[name] = args[++i];
-        } else {
-          flags[name] = true;
-        }
-      }
-    } else {
-      positional.push(arg);
-    }
-  }
-  return { flags, positional };
 }
 
 // --- Formatters ---
@@ -168,53 +176,41 @@ function padRight(str, len) {
 
 // --- Scraping JS templates ---
 
-const SCRAPE_LIST_JS = `
+function makeScrapeListJs(requestsUrl) {
+  return `
 (async () => {
   const results = { open: [], closed: [] };
 
-  function parseTable(table, status) {
-    if (!table) return;
-    const rows = table.querySelectorAll('tr.issue_row');
-    for (const row of rows) {
-      const id = row.getAttribute('data-id') || '';
-      const linkEl = row.querySelector('a[data-js="open-request"], a[data-js="closed-request"]');
-      const title = linkEl ? linkEl.textContent.trim() : '';
-      const tds = row.querySelectorAll('td');
-      const updated = tds.length > 1 ? tds[1].textContent.trim() : '';
-      results[status].push({ id, title, updated, status });
-    }
-  }
+  const resp = await fetch(${JSON.stringify(requestsUrl)}, { credentials: 'same-origin' });
+  const html = await resp.text();
+  const doc = new DOMParser().parseFromString(html, 'text/html');
 
-  // Find tables by proximity to headings
-  const headings = document.querySelectorAll('h2');
-  for (const h of headings) {
-    const text = h.textContent.trim().toLowerCase();
-    let sibling = h.nextElementSibling;
-    while (sibling && sibling.tagName !== 'TABLE') {
-      sibling = sibling.nextElementSibling;
-    }
-    if (!sibling) continue;
-    if (text.includes('your help requests') || text.includes('open')) {
-      parseTable(sibling, 'open');
-    } else if (text.includes('closed')) {
-      parseTable(sibling, 'closed');
-    }
-  }
-
-  // Fallback: if no headings matched, try all issue_row tables
-  if (results.open.length === 0 && results.closed.length === 0) {
-    const tables = document.querySelectorAll('table');
-    for (let i = 0; i < tables.length; i++) {
-      const status = i === 0 ? 'open' : 'closed';
-      parseTable(tables[i], status);
-    }
+  // Status comes straight from each row's own marker — every issue_row link
+  // carries data-js="open-request" or data-js="closed-request". This is far
+  // more reliable than inferring status from heading-to-table proximity,
+  // which breaks whenever one bucket is empty (e.g. zero open requests: the
+  // generic "Your Help Requests" heading ends up claiming the Closed
+  // Requests table because there's no Open Requests heading/table to
+  // compete with it).
+  const rows = doc.querySelectorAll('tr.issue_row');
+  for (const row of rows) {
+    const id = row.getAttribute('data-id') || '';
+    const openLink = row.querySelector('a[data-js="open-request"]');
+    const closedLink = row.querySelector('a[data-js="closed-request"]');
+    const linkEl = openLink || closedLink;
+    const status = openLink ? 'open' : (closedLink ? 'closed' : 'open');
+    const title = linkEl ? linkEl.textContent.trim() : '';
+    const tds = row.querySelectorAll('td');
+    const updated = tds.length > 1 ? tds[1].textContent.trim() : '';
+    results[status].push({ id, title, updated, status });
   }
 
   return JSON.stringify(results);
 })()
 `;
+}
 
-function makeScrapeDetailJs(requestId) {
+function makeScrapeDetailJs(detailUrl) {
   return `
 (async () => {
   const result = {
@@ -225,21 +221,25 @@ function makeScrapeDetailJs(requestId) {
     hasResolveForm: false,
   };
 
+  const resp = await fetch(${JSON.stringify(detailUrl)}, { credentials: 'same-origin' });
+  const html = await resp.text();
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+
   // Title
-  const h2 = document.querySelector('h2.no_bottom_margin');
+  const h2 = doc.querySelector('h2.no_bottom_margin');
   result.title = h2 ? h2.textContent.trim() : '';
 
   // Request ID from subtitle
-  const subtle = document.querySelector('p.subtle_silver');
+  const subtle = doc.querySelector('p.subtle_silver');
   if (subtle) {
     const m = subtle.textContent.match(/Support Request #(\\d+)/i);
     if (m) result.requestId = m[1];
   }
 
   // Comments: parse alternating author/timestamp/body blocks
-  const authors = document.querySelectorAll('strong.issue_comment_from');
-  const timestamps = document.querySelectorAll('span.mini');
-  const bodies = document.querySelectorAll('div.break_word');
+  const authors = doc.querySelectorAll('strong.issue_comment_from');
+  const timestamps = doc.querySelectorAll('span.mini');
+  const bodies = doc.querySelectorAll('div.break_word');
 
   const count = Math.min(authors.length, bodies.length);
   for (let i = 0; i < count; i++) {
@@ -251,14 +251,14 @@ function makeScrapeDetailJs(requestId) {
   }
 
   // CSRF crumb from reply form
-  const replyForm = document.querySelector('form#reply_form');
+  const replyForm = doc.querySelector('form#reply_form');
   if (replyForm) {
     const crumbInput = replyForm.querySelector('input[name="crumb"]');
     if (crumbInput) result.crumb = crumbInput.value;
   }
 
   // Check for resolve form
-  const resolveForm = document.querySelector('form#resolve_form');
+  const resolveForm = doc.querySelector('form#resolve_form');
   result.hasResolveForm = !!resolveForm;
   if (resolveForm && !result.crumb) {
     const crumbInput = resolveForm.querySelector('input[name="crumb"]');
@@ -270,12 +270,16 @@ function makeScrapeDetailJs(requestId) {
 `;
 }
 
-function makeReplyJs(requestId, message) {
+function makeReplyJs(requestId, message, detailUrl) {
   const escapedMessage = JSON.stringify(message);
   return `
 (async () => {
+  const pageResp = await fetch(${JSON.stringify(detailUrl)}, { credentials: 'same-origin' });
+  const pageHtml = await pageResp.text();
+  const doc = new DOMParser().parseFromString(pageHtml, 'text/html');
+
   // Get the crumb from the reply form
-  const form = document.querySelector('form#reply_form');
+  const form = doc.querySelector('form#reply_form');
   if (!form) return JSON.stringify({ ok: false, error: 'No reply form found on page' });
 
   const crumbInput = form.querySelector('input[name="crumb"]');
@@ -307,11 +311,15 @@ function makeReplyJs(requestId, message) {
 `;
 }
 
-function makeResolveJs(requestId) {
+function makeResolveJs(requestId, detailUrl) {
   return `
 (async () => {
+  const pageResp = await fetch(${JSON.stringify(detailUrl)}, { credentials: 'same-origin' });
+  const pageHtml = await pageResp.text();
+  const doc = new DOMParser().parseFromString(pageHtml, 'text/html');
+
   // Get the crumb from the resolve form
-  const form = document.querySelector('form#resolve_form');
+  const form = doc.querySelector('form#resolve_form');
   if (!form) return JSON.stringify({ ok: false, error: 'No resolve form found. The request may already be resolved.' });
 
   const crumbInput = form.querySelector('input[name="crumb"]');
@@ -342,13 +350,17 @@ function makeResolveJs(requestId) {
 `;
 }
 
-function makeCreateJs(topicId, title, message) {
+function makeCreateJs(topicId, title, message, newUrl) {
   const escapedTitle = JSON.stringify(title);
   const escapedMessage = JSON.stringify(message);
   return `
 (async () => {
+  const pageResp = await fetch(${JSON.stringify(newUrl)}, { credentials: 'same-origin' });
+  const pageHtml = await pageResp.text();
+  const doc = new DOMParser().parseFromString(pageHtml, 'text/html');
+
   // Get the crumb from the create form
-  const crumbInput = document.querySelector('input[name="crumb"]');
+  const crumbInput = doc.querySelector('input[name="crumb"]');
   if (!crumbInput) return JSON.stringify({ ok: false, error: 'No crumb found on new request page' });
   const crumb = crumbInput.value;
 
@@ -408,8 +420,7 @@ function validateRequestId(id) {
 
 const commands = {
 
-  async list(args) {
-    const { flags } = parseArgs(args);
+  async list(flags, positional) {
     const status = (typeof flags.status === 'string' ? flags.status : 'all').toLowerCase();
 
     if (!['open', 'closed', 'all'].includes(status)) {
@@ -417,7 +428,7 @@ const commands = {
       process.exit(1);
     }
 
-    const data = await evalInSupportTab(SCRAPE_LIST_JS, { navigate: REQUESTS_URL });
+    const data = await evalInSupportTab(makeScrapeListJs(REQUESTS_URL));
 
     if (data.__error) {
       console.error('Error:', data.message);
@@ -458,8 +469,7 @@ const commands = {
     console.log(`\n${openCount} open, ${closedCount} closed.`);
   },
 
-  async view(args) {
-    const { positional } = parseArgs(args);
+  async view(flags, positional) {
     const id = positional[0];
 
     if (!id) {
@@ -469,7 +479,7 @@ const commands = {
     validateRequestId(id);
 
     const detailUrl = `${REQUESTS_URL}/${id}`;
-    const data = await evalInSupportTab(makeScrapeDetailJs(id), { navigate: detailUrl });
+    const data = await evalInSupportTab(makeScrapeDetailJs(detailUrl));
 
     if (data.__error) {
       console.error('Error:', data.message);
@@ -501,8 +511,7 @@ const commands = {
     }
   },
 
-  async reply(args) {
-    const { positional } = parseArgs(args);
+  async reply(flags, positional) {
     const id = positional[0];
     const message = positional.slice(1).join(' ');
 
@@ -513,8 +522,8 @@ const commands = {
 
     const detailUrl = `${REQUESTS_URL}/${id}`;
 
-    // Navigate to detail page to get fresh crumb, then submit reply
-    const data = await evalInSupportTab(makeReplyJs(id, message), { navigate: detailUrl });
+    // Fetch the detail page for a fresh crumb, then submit the reply.
+    const data = await evalInSupportTab(makeReplyJs(id, message, detailUrl));
 
     if (data.__error) {
       console.error('Error:', data.message);
@@ -530,8 +539,7 @@ const commands = {
     if (data.status) console.log(`  Status: ${data.status}`);
   },
 
-  async create(args) {
-    const { flags, positional } = parseArgs(args);
+  async create(flags, positional) {
     const topic = flags.topic;
     const title = flags.title;
     const message = positional.join(' ');
@@ -548,7 +556,7 @@ const commands = {
     const topicId = resolveTopicId(topic);
     const newUrl = `${REQUESTS_URL}/new`;
 
-    const data = await evalInSupportTab(makeCreateJs(topicId, title, message), { navigate: newUrl });
+    const data = await evalInSupportTab(makeCreateJs(topicId, title, message, newUrl));
 
     if (data.__error) {
       console.error('Error:', data.message);
@@ -573,8 +581,7 @@ const commands = {
     console.log(`  Title: ${title}`);
   },
 
-  async resolve(args) {
-    const { positional } = parseArgs(args);
+  async resolve(flags, positional) {
     const id = positional[0];
 
     if (!id) {
@@ -584,7 +591,7 @@ const commands = {
 
     const detailUrl = `${REQUESTS_URL}/${id}`;
 
-    const data = await evalInSupportTab(makeResolveJs(id), { navigate: detailUrl });
+    const data = await evalInSupportTab(makeResolveJs(id, detailUrl));
 
     if (data.__error) {
       console.error('Error:', data.message);
@@ -599,14 +606,36 @@ const commands = {
     console.log(`Request ${id} resolved.`);
     if (data.status) console.log(`  Status: ${data.status}`);
   },
+
+  async config(flags, positional) {
+    if (typeof flags.domain === 'string' && flags.domain) {
+      const cur = await loadConfig();
+      await skill.config({ ...cur, domain: flags.domain });
+      console.log(`Support portal domain set to "${flags.domain}".`);
+      return;
+    }
+
+    const cfg = await loadConfig();
+    console.log(`Current domain: ${SUPPORT_DOMAIN}`);
+    console.log(`  Source: ${cfg && cfg.domain ? 'skill config' : 'built-in default'}`);
+    console.log('');
+    console.log('Set with: slack-support config --domain=<host>');
+  },
 };
 
 // --- Main ---
 
-const rawArgs = process.argv.slice(2);
-const [cmd, ...args] = rawArgs;
+const { flags, positional } = process.argv.parseFlags();
+const cmd = positional[0];
+const args = positional.slice(1);
 
-if (!cmd || cmd === 'help' || cmd === '--help') {
+// Resolve the support-portal domain before anything else touches
+// SUPPORT_DOMAIN/BASE_URL/REQUESTS_URL (including the help banner below).
+SUPPORT_DOMAIN = await resolveSupportDomain(flags);
+BASE_URL = `https://${SUPPORT_DOMAIN}`;
+REQUESTS_URL = `${BASE_URL}/help/requests`;
+
+if (!cmd || cmd === 'help') {
   console.log('Slack Support Portal — manage help requests from the command line.\n');
   console.log('Usage: slack-support <command> [args]\n');
   console.log('Commands:');
@@ -615,6 +644,7 @@ if (!cmd || cmd === 'help' || cmd === '--help') {
   console.log('  reply <id> <message>                      Reply to a request');
   console.log('  create --topic=<t> --title=<t> <message>  Create a new request');
   console.log('  resolve <id>                              Resolve a request');
+  console.log('  config [--domain=<host>]                  Show or set the support portal domain');
   console.log('  help                                      Show this help\n');
   console.log('Topics for create:');
   console.log('  audio-video, billing-plans, connection-trouble, managing-channels,');
@@ -626,8 +656,11 @@ if (!cmd || cmd === 'help' || cmd === '--help') {
   console.log('  slack-support view 6750592');
   console.log('  slack-support reply 6750592 "Thanks, that fixed it."');
   console.log('  slack-support create --topic=slack-connect --title="Connect issue" "Cannot invite external user"');
-  console.log('  slack-support resolve 6750592\n');
-  console.log(`Requires an open browser tab at ${SUPPORT_DOMAIN}.`);
+  console.log('  slack-support resolve 6750592');
+  console.log('  slack-support config --domain=your-org.enterprise.slack.com\n');
+  console.log(`Support portal domain: ${SUPPORT_DOMAIN}`);
+  console.log('(override with --domain=<host>, or persist with the config command)');
+  console.log('If no matching browser tab is open, one is opened automatically.');
   process.exit(0);
 }
 
@@ -637,4 +670,4 @@ if (!commands[cmd]) {
   process.exit(1);
 }
 
-await commands[cmd](args);
+await commands[cmd](flags, args);
