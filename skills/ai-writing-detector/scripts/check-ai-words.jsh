@@ -3,11 +3,13 @@
 // Usage: check-ai-words <file> [multiplier]
 // Default multiplier: 3 (flag words appearing 3x more than expected)
 
+const fs = require('fs');
+const skill = require('sliccy:skill');
+
 const args = process.argv.slice(2);
 
-// Load AI word base rates from reference file (../references/ai_word_rates.txt)
-const _scriptDir = process.argv[1].substring(0, process.argv[1].lastIndexOf('/'));
-const _ratesText = await fs.readFile(_scriptDir + '/../references/ai_word_rates.txt', 'utf8');
+// Load AI word base rates from reference file (references/ai_word_rates.txt)
+const _ratesText = await fs.readFile(`${skill.dir}/../references/ai_word_rates.txt`, 'utf8');
 const WORD_RATES = {};
 for (const line of _ratesText.split('\n')) {
   const trimmed = line.trim();
