@@ -9,6 +9,12 @@
 //  • Date formatting: custom formatDate() → fmt.date(ts*1000, 'locale')
 //  • Error handling: console.error + process.exit → cli.die / cli.help
 
+// ─── Runtime bridges (sliccy: virtual modules; bare globals hard-cut in slicc#786) ──
+const browser = require('sliccy:browser');
+const cli = require('sliccy:cli');
+const c = require('sliccy:color');
+const fmt = require('sliccy:fmt');
+
 const { positional, flags } = process.argv.parseFlags();
 const command = positional[0];
 
