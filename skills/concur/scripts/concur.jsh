@@ -2,10 +2,12 @@
 //
 // Concur uses cookie-based auth on .concursolutions.com. Browser fetch from
 // SLICC's localhost origin can't carry that cookie, so every request runs
-// inside a page-context fetch via `playwright-cli eval-file` against a tab
-// already loaded on us2.concursolutions.com.
+// inside a page-context fetch via `sliccy:browser` against a tab already
+// loaded on us2.concursolutions.com.
 
-const APP_DOMAIN = 'concursolutions.com';
+const exec = require('sliccy:exec');
+const browser = require('sliccy:browser');
+
 const HOME_URL   = 'https://us2.concursolutions.com/home';
 const HOST_WEB   = 'https://us2.concursolutions.com';
 const HOST_API   = 'https://www-us2.api.concursolutions.com';
@@ -19,27 +21,16 @@ const PERSIST     = `${SKILL_DIR}/.session.json`;
 
 // ----------------- tab management -----------------
 
-let _tabId = null;
-
-async function findConcurTab() {
-  const r = await exec('playwright-cli tab-list');
-  // Match "[TARGETID] https://...concursolutions.com..."
-  const re = /\[([A-F0-9]+)\]\s+https?:\/\/[^\s]*concursolutions\.com/g;
-  const matches = [...r.stdout.matchAll(re)];
-  return matches.length ? matches[0][1] : null;
-}
+let _tab = null;
 
 async function ensureTab() {
-  if (_tabId) return _tabId;
-  const existing = await findConcurTab();
-  if (existing) { _tabId = existing; return _tabId; }
+  if (_tab) return _tab;
+  const existing = await browser.findTab({ urlMatch: /concursolutions\.com/ });
+  if (existing) { _tab = existing; return _tab; }
   console.error('No Concur tab open — opening one. This may require login.');
-  const r = await exec(`playwright-cli open ${HOME_URL}`);
-  const m = r.stdout.match(/targetId:\s*(\S+?)\]/);
-  if (!m) { console.error('Failed to open Concur tab:', r.stdout, r.stderr); process.exit(1); }
-  _tabId = m[1];
+  _tab = await browser.ensureTab(HOME_URL, { matchUrl: /concursolutions\.com/ });
   await new Promise(r => setTimeout(r, 4000));
-  return _tabId;
+  return _tab;
 }
 
 // ----------------- session info -----------------
@@ -114,72 +105,36 @@ async function loadOp(name) {
 
 // ----------------- page-context fetch -----------------
 //
-// We write the request payload to a JS file and run it via
-// `playwright-cli eval-file --tab=<id>`. The page context handles cookies,
-// origin, and any required browser headers automatically.
+// Requests run inside the Concur tab's page context via `sliccy:browser`'s
+// browser.fetch(). The page context handles cookies, origin, and any
+// required browser headers automatically (credentials: 'include' is the
+// browser.fetch default).
 
 async function pageFetch(url, options = {}) {
-  const tabId = await ensureTab();
-  const payload = {
-    url,
-    method: options.method || 'GET',
-    body: options.body ?? null,
-    headers: options.headers || {},
-  };
-  // Playwright runs in a separate container/namespace and reliably sees
-  // /shared but not /tmp; other skills in this repo use /shared for the
-  // same eval-file pattern.
-  const evalFile = `/shared/.concur-fetch-${Date.now()}-${Math.random().toString(36).slice(2,8)}.js`;
-  const script = `
-(async () => {
-  const p = ${JSON.stringify(payload)};
-  const init = { method: p.method, credentials: 'include', headers: { 'Accept': 'application/json', ...p.headers } };
-  if (p.body !== null && p.body !== undefined && p.method !== 'GET') {
-    init.headers['Content-Type'] = init.headers['Content-Type'] || 'application/json';
-    init.body = typeof p.body === 'string' ? p.body : JSON.stringify(p.body);
+  const tab = await ensureTab();
+  const method = options.method || 'GET';
+  const headers = { 'Accept': 'application/json', ...(options.headers || {}) };
+  const body = options.body ?? null;
+  if (body !== null && body !== undefined && method !== 'GET') {
+    headers['Content-Type'] = headers['Content-Type'] || 'application/json';
   }
   let resp;
-  try { resp = await fetch(p.url, init); }
-  catch (e) { return JSON.stringify({ __concur_error: 'network', message: String(e) }); }
-  const status = resp.status;
-  const ctype = resp.headers.get('content-type') || '';
-  const text = await resp.text();
-  if (!resp.ok) return JSON.stringify({ __concur_error: 'http', status, body: text.slice(0, 4000) });
-  if (/json/i.test(ctype)) {
-    try { return JSON.stringify({ ok: true, status, json: JSON.parse(text) }); }
-    catch { return JSON.stringify({ ok: true, status, text }); }
-  }
-  return JSON.stringify({ ok: true, status, text });
-})()
-  `.trim();
-  await writeFile(evalFile, script);
-  const r = await exec(`playwright-cli eval-file ${evalFile} --tab=${tabId}`);
-  await exec(`rm -f ${evalFile}`);
-  if (r.exitCode !== 0) {
-    console.error('eval-file failed:', r.stderr);
+  try {
+    resp = await browser.fetch(tab, url, { method, headers, body });
+  } catch (e) {
+    console.error('Network error:', e?.message || e);
     process.exit(1);
   }
-  // playwright-cli eval-file output sometimes wraps the return value;
-  // strip leading/trailing non-JSON noise.
-  const out = r.stdout.trim();
-  const start = out.indexOf('{');
-  const end   = out.lastIndexOf('}');
-  let parsed;
-  try { parsed = JSON.parse(start >= 0 ? out.slice(start, end + 1) : out); }
-  catch (e) { console.error('Could not parse pageFetch result:', out.slice(0, 1000)); process.exit(1); }
-  if (parsed.__concur_error === 'network') {
-    console.error('Network error:', parsed.message);
-    process.exit(1);
-  }
-  if (parsed.__concur_error === 'http') {
-    if (parsed.status === 401 || parsed.status === 403) {
-      console.error(`Auth failed (${parsed.status}). Open ${HOST_WEB} in your browser, log in, and retry.`);
+  if (!resp.ok) {
+    if (resp.status === 401 || resp.status === 403) {
+      console.error(`Auth failed (${resp.status}). Open ${HOST_WEB} in your browser, log in, and retry.`);
     } else {
-      console.error(`HTTP ${parsed.status}:`, parsed.body);
+      const bodyStr = typeof resp.body === 'string' ? resp.body : JSON.stringify(resp.body);
+      console.error(`HTTP ${resp.status}:`, (bodyStr || '').slice(0, 4000));
     }
     process.exit(1);
   }
-  return parsed.json !== undefined ? parsed.json : parsed.text;
+  return resp.body;
 }
 
 // ----------------- GraphQL helpers -----------------
@@ -207,6 +162,20 @@ async function graphql(surface, body) {
 async function callOp(opName, variables = {}, surface = 'spend') {
   const query = await loadOp(opName);
   return graphql(surface, { operationName: opName, query, variables });
+}
+
+// Resolve a report's policyId (needed by create/update expense mutations).
+async function getReportPolicyId(reportId) {
+  const userId = await getUserId();
+  const data = await callOp('GetReportPageData', {
+    reportId, includeSummary: true, includePolicy: true, includeEntries: false,
+    includeExceptions: false, includeGroupSettings: false, includeSiteSettings: false,
+    includeWorkflows: false, includeCostObjects: false, userId, contextRole: 'TRAVELER',
+    includeDetailItemizations: false, shouldChangeWarningAlertsToInformation: false,
+  });
+  const m = JSON.stringify(data || {}).match(/"policyId":"([^"]+)"/);
+  if (!m) throw new Error(`Could not resolve policyId for report ${reportId}`);
+  return m[1];
 }
 
 // Lookup a single report's status in the user's report list.
@@ -818,8 +787,8 @@ const commands = {
 
     // Convert to JPEG unless told otherwise. magick is on PATH; ffmpeg WASM
     // doesn't handle HEIC. We also auto-downscale anything larger than
-    // maxBytes — base64'd 4 MB JPEGs blow past the page-context eval-file
-    // argv limit and the upload silently fails.
+    // maxBytes — base64'd 4 MB JPEGs blow past the evalAsync source-string
+    // limit (the payload is embedded as a literal) and the upload fails.
     let jpgPath = localPath;
     const needConvert = opts['no-convert'] !== 'true' && !/\.jpe?g$/i.test(localPath);
     const needShrink  = opts['no-convert'] !== 'true' && inputBytes > maxBytes;
@@ -834,17 +803,21 @@ const commands = {
       }
     }
 
-    // Base64 the JPEG to ship through the eval-file payload
+    // Base64 the JPEG to embed as a literal in the evalAsync upload function
     const b64r = await exec(`base64 < "${jpgPath}" | tr -d '\\n'`);
     if (b64r.exitCode !== 0) { console.error('base64 failed'); process.exit(1); }
     const b64 = b64r.stdout.trim();
 
-    // Upload via page-context fetch with multipart FormData
-    const tabId = await ensureTab();
-    const evalFile = `/shared/.concur-upload-${Date.now()}.js`;
+    // Upload via page-context fetch with multipart FormData. browser.fetch()
+    // JSON-stringifies object bodies, which can't carry a Blob/FormData, so
+    // this one request still goes through browser.evalAsync(). The multi-MB
+    // base64 payload + filename have to be baked in as literals (the page
+    // context can't see this realm's locals), so we build a real async upload
+    // function via `new Function` and hand it to evalAsync, which serializes
+    // it to a self-calling expression for Runtime.evaluate.
+    const tab = await ensureTab();
     const filename = jpgPath.split('/').pop();
-    const uploadScript = `
-(async () => {
+    const uploadFn = new Function(`return (async () => {
   const b64 = ${JSON.stringify(b64)};
   const bin = atob(b64);
   const bytes = new Uint8Array(bin.length);
@@ -857,18 +830,19 @@ const commands = {
   });
   const text = await r.text();
   return JSON.stringify({ status: r.status, body: text });
-})()
-    `.trim();
-    await writeFile(evalFile, uploadScript);
-    const upRes = await exec(`playwright-cli eval-file ${evalFile} --tab=${tabId}`);
-    await exec(`rm -f ${evalFile}`);
+})();`);
+    let wrap;
+    try {
+      const upRes = await browser.evalAsync(tab, uploadFn);
+      wrap = typeof upRes === 'string' ? JSON.parse(upRes) : upRes;
+    } catch (e) {
+      // Clean up the converted/shrunk temp JPEG before bailing so an upload
+      // failure never leaves receipt copies behind in /shared.
+      if (jpgPath !== localPath) await exec(`rm -f "${jpgPath}"`);
+      console.error('upload failed:', e?.message || e);
+      process.exit(1);
+    }
     if (jpgPath !== localPath) await exec(`rm -f "${jpgPath}"`);
-    if (upRes.exitCode !== 0) { console.error('upload failed:', upRes.stderr); process.exit(1); }
-
-    // Parse upload response
-    const out = upRes.stdout.trim();
-    const start = out.indexOf('{'), end = out.lastIndexOf('}');
-    const wrap = JSON.parse(start >= 0 ? out.slice(start, end + 1) : out);
     if (wrap.status >= 400) {
       console.error(`Upload HTTP ${wrap.status}:`, wrap.body);
       process.exit(1);
@@ -1035,6 +1009,129 @@ const commands = {
     return { count: list.length, operations: list };
   },
 
+  // Report status + all validation exceptions (error/warning messages) for a
+  // report. Surfaces blocking issues like ITEMREQ ("Itemizations are required")
+  // and RECEIPT_REQUIRED ("You must attach a receipt image"), grouped per entry.
+  // Usage: concur exceptions <reportId>
+  async exceptions(reportId) {
+    if (!reportId) { console.error('Usage: concur exceptions <reportId>'); process.exit(1); }
+    const userId = await getUserId();
+    const data = await callOp('GetReportExceptionsAndEntries', {
+      userId, contextRole: 'TRAVELER', reportId,
+      expenseListDetailFormId: null, includeDetailItemizations: false,
+    });
+    const meta = {};
+    for (const e of (data?.reportEntriesDetails?.entries || [])) {
+      const s = e.summary || {};
+      meta[e.expenseId] = {
+        expenseType: s.expenseType?.name,
+        vendor: s.vendor?.description || s.vendor?.name,
+      };
+    }
+    const seen = new Set();
+    const exById = {};
+    const headerEx = [];
+    (function walk(o) {
+      if (Array.isArray(o)) { o.forEach(walk); return; }
+      if (o && typeof o === 'object') {
+        if (o.exceptionCode && o.message) {
+          const key = (o.expenseId || 'HEADER') + '|' + o.exceptionCode + '|' + o.message;
+          if (!seen.has(key)) {
+            seen.add(key);
+            const rec = { code: o.exceptionCode, isBlocking: !!o.isBlocking, message: o.message };
+            if (o.expenseId) (exById[o.expenseId] = exById[o.expenseId] || []).push(rec);
+            else headerEx.push(rec);
+          }
+        }
+        for (const k in o) walk(o[k]);
+      }
+    })(data);
+    const entries = Object.keys(exById).map(id => ({
+      expenseId: id, ...(meta[id] || {}), exceptions: exById[id],
+    }));
+    const allBlocking = [...headerEx, ...entries.flatMap(e => e.exceptions)].some(x => x.isBlocking);
+    return {
+      reportId,
+      hasBlockingExceptions: allBlocking,
+      totalExceptions: headerEx.length + entries.reduce((n, e) => n + e.exceptions.length, 0),
+      headerExceptions: headerEx,
+      entryExceptions: entries,
+    };
+  },
+
+  // List the payment types available to the report owner.
+  // CASH = "Out of Pocket", PCCD = "Pending Card Transaction".
+  async 'payment-types'() {
+    const userId = await getUserId();
+    return await callOp('GetPaymentTypes', { reportOwnerUserId: userId });
+  },
+
+  // Change an existing entry's payment type (e.g. Corporate Card -> Out of Pocket).
+  // Usage: concur set-payment <reportId> <expenseId> <CASH|PCCD> [--comment="..."] [--policy=<id>]
+  async 'set-payment'(reportId, expenseId, paymentTypeId, ...rest) {
+    if (!reportId || !expenseId || !paymentTypeId) {
+      console.error('Usage: concur set-payment <reportId> <expenseId> <CASH|PCCD> [--comment="..."]');
+      console.error('  CASH = Out of Pocket, PCCD = Pending Card Transaction');
+      process.exit(1);
+    }
+    const flags = parseFlags(rest, {});
+    const userId = await getUserId();
+    const policyId = flags.policy || await getReportPolicyId(reportId);
+    const fields = { paymentTypeId };
+    if (flags.comment) fields.comment = flags.comment;
+    return await callOp('UpdateExistingExpenseEntry', {
+      taxFields: null, userId, contextRole: 'TRAVELER', isTrexEnabled: true,
+      reportId, expenseId, shouldCopyDownFields: false, fields,
+      expenseTypeId: '', policyId, updateRecentExpenseType: false, expenseListDetailFormId: null,
+    });
+  },
+
+  // Create a brand-new (out-of-pocket / cash) expense line on a report.
+  // Usage: concur new-expense <reportId> --type=<expenseTypeId> --date=YYYY-MM-DD \
+  //          --amount=NN.NN --currency=GBP --location=<locationId> [--vendor="..."] \
+  //          [--payment=CASH] [--exchange=1.1555] [--comment="..."] [--personal] \
+  //          [--receipt=<imageId>] [--fields='<extra-json>']
+  // policyId auto-resolves from the report. Some policies require extra required
+  // fields (e.g. custom8/custom24) — pass them via --fields '<json>'.
+  async 'new-expense'(reportId, ...rest) {
+    if (!reportId) {
+      console.error('Usage: concur new-expense <reportId> --type=<expenseTypeId> --date=YYYY-MM-DD --amount=NN.NN --currency=GBP --location=<locationId> [--vendor="..."] [--payment=CASH] [--exchange=1.1555] [--comment="..."] [--personal] [--receipt=<imageId>] [--fields=\'<extra-json>\']');
+      process.exit(1);
+    }
+    const flags = parseFlags(rest, { payment: 'CASH', currency: 'EUR' });
+    if (!flags.type || !flags.date || !flags.amount || !flags.location) {
+      console.error('new-expense requires --type, --date, --amount and --location');
+      process.exit(1);
+    }
+    const userId = await getUserId();
+    const policyId = flags.policy || await getReportPolicyId(reportId);
+    const fields = {
+      expenseTypeId: flags.type,
+      transactionDate: flags.date,
+      paymentTypeId: flags.payment,
+      transactionAmount: { value: Number(flags.amount), currencyCode: flags.currency },
+      locationId: flags.location,
+      isPersonalExpense: flags.personal === true || flags.personal === 'true',
+    };
+    if (flags.vendor) fields.vendorName = flags.vendor;
+    // Concur always expects an exchangeRate. For a same-currency (home) expense
+    // it must be 1.0; for a foreign currency pass the real rate via --exchange.
+    fields.exchangeRate = { operation: 'MULTIPLY', value: flags.exchange ? Number(flags.exchange) : 1.0 };
+    if (flags.comment) fields.comment = flags.comment;
+    if (flags.receipt) fields.receiptImageId = flags.receipt;
+    if (flags.fields) {
+      let extra; try { extra = JSON.parse(flags.fields); } catch { console.error('--fields must be valid JSON'); process.exit(1); }
+      Object.assign(fields, extra);
+    }
+    const data = await callOp('SaveNewExpenseEntry', {
+      taxFields: null, shouldIncludeRpeKey: false, userId, contextRole: 'TRAVELER',
+      isTrexEnabled: true, reportId, fields, expenseTypeId: flags.type, policyId,
+      expenseListDetailFormId: null,
+    });
+    const created = data?.createExpense || data;
+    return { expenseId: created?.id, expenseType: flags.type, amount: fields.transactionAmount, paymentTypeId: flags.payment };
+  },
+
   async graphql(opName, varsJson, surface = 'spend') {
     if (!opName) {
       console.error('Usage: concur graphql <operationName> [<variables-json>] [spend|cds]');
@@ -1050,8 +1147,8 @@ const commands = {
   },
 
   async tab() {
-    const id = await ensureTab();
-    return { tabId: id };
+    const t = await ensureTab();
+    return { tabId: t.targetId };
   },
 
   async help() {
@@ -1080,6 +1177,11 @@ const commands = {
 
 // ----------------- CLI plumbing -----------------
 
+// Local flag parser. Concur uses 2-level routing (e.g. `concur itemize hotel
+// …`) and per-command flag DEFAULTS applied to a rest-arg SUBSET of argv. The
+// runtime's `process.argv.parseFlags()` global parses the whole argv once with
+// no defaults and no subset support, so it can't model this shape — hence this
+// small local helper (same rationale the other multi-level skills keep theirs).
 function parseFlags(args, defaults) {
   const out = { ...defaults };
   for (const a of args) {
