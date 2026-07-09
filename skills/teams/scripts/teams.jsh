@@ -2,13 +2,21 @@
 // Auto-discovered as `teams` shell command in SLICC.
 //
 // Operates against the authenticated browser session on teams.microsoft.com via
-// page-context fetch through playwright-cli eval. The user must be logged into
+// page-context fetch through the sliccy:browser bridge. The user must be logged into
 // Teams in their browser; the script never reads, prints, or stores the MSAL
 // session token — every API call runs inside the page and only the API response
 // leaves the browser context.
 //
 // Usage: teams <subcommand> [args] [--since=<duration>] [--top=<n>]
 // Subcommands: teams, channels, history, activity, post, thread, user, info, search, unanswered, digest
+//
+// jsh runtime migration (issue #177):
+//  - Browser access uses the sliccy:browser bridge (findTab / evalAsync)
+//    instead of the legacy browser tab-list / eval shell-outs.
+//  - Argument parsing uses process.argv.parseFlags() instead of a manual loop.
+//  - Capability bridges are obtained explicitly via require('sliccy:<name>').
+
+const browser = require('sliccy:browser');
 
 const TEAMS_DOMAIN_PRIMARY = 'teams.microsoft.com';
 const TEAMS_DOMAIN_SECONDARY = 'teams.live.com';
@@ -26,24 +34,9 @@ const SUBSTRATE_AUDIENCE = 'substrate.office.com';
 // Argument parsing
 // ---------------------------------------------------------------------------
 
-const args = process.argv.slice(2);
-const subcommand = args[0] || '';
-const positional = [];
-const flags = {};
-
-for (let i = 1; i < args.length; i++) {
-  const arg = args[i];
-  if (arg.startsWith('--')) {
-    const eq = arg.indexOf('=');
-    if (eq !== -1) {
-      flags[arg.slice(2, eq)] = arg.slice(eq + 1);
-    } else {
-      flags[arg.slice(2)] = true;
-    }
-  } else {
-    positional.push(arg);
-  }
-}
+const { positional: _allPositional, flags } = process.argv.parseFlags();
+const subcommand = _allPositional[0] || '';
+const positional = _allPositional.slice(1);
 
 const sinceDuration = flags.since || null;
 const topN = flags.top ? parseInt(flags.top, 10) : null;
@@ -99,29 +92,20 @@ async function pooled(concurrency, fns) {
 // Tab discovery + page-context fetch
 // ---------------------------------------------------------------------------
 //
-// All API calls run inside the Teams tab via playwright-cli eval. The MSAL
+// All API calls run inside the Teams tab via the sliccy:browser bridge. The MSAL
 // access token is located in localStorage and consumed by fetch() in the
 // same eval block — the token never leaves the browser context.
 
 let _tabId = null;
 
 async function findTeamsTab() {
-  const tabListResult = await exec('playwright-cli tab-list');
-  if (tabListResult.exitCode !== 0) {
-    die('playwright-cli tab-list failed: ' + (tabListResult.stderr || tabListResult.stdout));
+  for (const domain of [TEAMS_DOMAIN_PRIMARY, TEAMS_DOMAIN_SECONDARY]) {
+    const tab = await browser.findTab({ domain });
+    if (tab) return tab;
   }
-  const tabLines = tabListResult.stdout.split('\n');
-  const teamsLine = tabLines.find(
-    (l) => l.includes(TEAMS_DOMAIN_PRIMARY) || l.includes(TEAMS_DOMAIN_SECONDARY)
+  die(
+    'No Teams tab found. Open Teams first:\n  open https://teams.microsoft.com\nWait for it to load and sign in, then retry.'
   );
-  if (!teamsLine) {
-    die(
-      'No Teams tab found. Open Teams first:\n  open https://teams.microsoft.com\nWait for it to load and sign in, then retry.'
-    );
-  }
-  const idMatch = teamsLine.match(/\[targetId:\s*([^\]]+)\]/) || teamsLine.match(/^\[([^\]]+)\]/);
-  if (!idMatch) die('Could not parse Teams tab ID from tab-list output.');
-  return idMatch[1].trim();
 }
 
 async function ensureTab() {
@@ -178,19 +162,26 @@ async function teamsFetch(method, url, body, audience) {
       }
     })()
   `.trim();
-  const escaped = jsCode.replace(/'/g, "'\\''");
-  const result = await exec(`playwright-cli eval --tab=${tabId} '${escaped}'`);
-  if (result.exitCode !== 0) {
-    die('eval failed: ' + (result.stderr || result.stdout));
-  }
-  const raw = result.stdout.trim();
   let parsed;
-  try { parsed = JSON.parse(raw); }
-  catch (e) {
-    try { parsed = JSON.parse(JSON.parse(raw)); }
-    catch (e2) {
-      die('Failed to parse response: ' + raw.slice(0, 500));
+  try {
+    parsed = await browser.evalAsync(tabId, jsCode);
+  } catch (e) {
+    die('eval failed: ' + (e && e.message ? e.message : String(e)));
+  }
+  // browser.evalAsync already unwraps the page's JSON.stringify(...) result to
+  // a value; defensively parse if a raw JSON string comes back instead.
+  if (typeof parsed === 'string') {
+    const raw = parsed.trim();
+    try { parsed = JSON.parse(raw); }
+    catch (e) {
+      try { parsed = JSON.parse(JSON.parse(raw)); }
+      catch (e2) {
+        die('Failed to parse response: ' + raw.slice(0, 500));
+      }
     }
+  }
+  if (parsed === null || parsed === undefined) {
+    die('Failed to parse response: empty result');
   }
   return parsed;
 }
@@ -1128,7 +1119,7 @@ Team and channel arguments accept display names (case-insensitive partial match)
 Search cascade: Substrate Search � Graph Search API � channel scan fallback.
 Activity cascade: Substrate Search � Graph Search � channel scan + chat/DM scan.
 
-Authentication: API calls run inside the Teams tab via playwright-cli eval,
+Authentication: API calls run inside the Teams tab via the sliccy:browser bridge,
 so the MSAL session token is consumed in-page and never written to disk.
 Requires an authenticated Teams tab open at https://teams.microsoft.com.`);
 }
