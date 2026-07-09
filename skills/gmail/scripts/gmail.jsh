@@ -317,7 +317,18 @@ async function cmdMail() {
     // Step 2: Fetch each message with metadata
     const messages = await Promise.all(
       messageStubs.map(stub =>
-        gmailGet(`/messages/${stub.id}`, { format: 'metadata', metadataHeaders: 'From,Subject,Date' })
+        // Gmail's metadataHeaders param is an array-typed query param -- it
+        // must be sent as repeated `metadataHeaders=X&metadataHeaders=Y`,
+        // not a single comma-joined string. Confirmed live (pre-existing
+        // bug, not introduced by this migration -- the pre-migration
+        // manual querystring builder had the exact same issue):
+        // encodeURIComponent('From,Subject,Date') produces
+        // `metadataHeaders=From%2CSubject%2CDate`, which Gmail treats as
+        // one (non-existent) header name, so every message rendered with
+        // blank From/Date and "(no subject)". http.client's params DOES
+        // support arrays correctly (repeats the key per element) --
+        // confirmed via a live test against a controllable echo endpoint.
+        gmailGet(`/messages/${stub.id}`, { format: 'metadata', metadataHeaders: ['From', 'Subject', 'Date'] })
       )
     );
 
@@ -439,9 +450,12 @@ async function cmdReply() {
 
   try {
     // Fetch original message headers
+    // See the note on the mail-list metadataHeaders fetch: must be an
+    // array, not a comma-joined string, or Gmail silently returns none of
+    // these headers.
     const orig = await gmailGet(`/messages/${id}`, {
       format: 'metadata',
-      metadataHeaders: 'From,To,Subject,Message-Id,References,In-Reply-To',
+      metadataHeaders: ['From', 'To', 'Subject', 'Message-Id', 'References', 'In-Reply-To'],
     });
 
     const origFrom = getHeader(orig.payload, 'From');
@@ -516,7 +530,9 @@ async function cmdMonday() {
     const format = depth > 0 ? 'full' : 'metadata';
     const fetchParams = depth > 0
       ? { format: 'full' }
-      : { format: 'metadata', metadataHeaders: 'From,To,Subject,Date' };
+      // See the note on the mail-list metadataHeaders fetch: must be an
+      // array, not a comma-joined string.
+      : { format: 'metadata', metadataHeaders: ['From', 'To', 'Subject', 'Date'] };
 
     const messages = await Promise.all(
       stubs.map(stub => gmailGet(`/messages/${stub.id}`, fetchParams))
