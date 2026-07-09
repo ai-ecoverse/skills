@@ -3,6 +3,7 @@
  *
  * Access iCloud Calendar and Notes via the iCloud web APIs.
  * Requires an open, authenticated iCloud tab at icloud.com.
+ * Uses page-context fetch (via the `sliccy:browser` bridge) to handle authentication.
  *
  * Usage:
  *   icloud calendar [--date 2d|7d|14d|30d] [--json]
@@ -11,47 +12,67 @@
  *   icloud notes [--search "query"] [--json]
  *   icloud notes read <note-id> [--json]
  *   icloud --help
+ *
+ * ┌─────────────────────────────────────────────────────────────────────────────┐
+ * │ MIGRATION NOTES (issue #118 / ai-ecoverse/slicc#786)                        │
+ * │                                                                             │
+ * │ The .jsh runtime no longer injects bare globals (`exec`, `fmt`, `cli`,      │
+ * │ `fs`, ...) — they must be pulled in explicitly via require('sliccy:<name>').│
+ * │ This script's logic is otherwise unchanged; only the following moved:      │
+ * │                                                                             │
+ * │  • const fmt  = require('sliccy:fmt');   — replaces the hand-rolled       │
+ * │    col()/pad() helper with fmt.col(str, width) (same signature/behavior). │
+ * │                                                                             │
+ * │  • Tab discovery + in-page fetch: previously shelled out to               │
+ * │    `playwright-cli tab-list` / `eval` via the bare `exec()` global and     │
+ * │    regex-parsed the CLI output (including a fragile double-JSON-decode    │
+ * │    of the eval return value). Replaced with the dedicated `sliccy:browser` │
+ * │    bridge: `browser.findTab({ domain })` for tab discovery, and            │
+ * │    `browser.evalAsync(tab, fn)` for in-page async evaluation (session      │
+ * │    discovery, batch note decoding, note-content decompression) — no more   │
+ * │    manual shell-quoting of JS source or exec() at all, so `sliccy:exec`    │
+ * │    isn't needed by this file.                                              │
+ * │                                                                             │
+ * │  • const cli = require('sliccy:cli'); — every `console.error(msg) +       │
+ * │    process.exit(1)` pair (usage errors, auth errors, API errors) is       │
+ * │    replaced 1:1 with `cli.die(msg, { prefix: '' })`. `cli.die` defaults   │
+ * │    to prepending "Error: " to the message; `{ prefix: '' }` suppresses    │
+ * │    that so stderr text stays byte-for-byte identical to the original      │
+ * │    bare `console.error(...)` output. The top-level `--help`/`-h`/         │
+ * │    no-args path uses `cli.help(text)` instead of `console.log(text);      │
+ * │    process.exit(0)` — same text, same exit code 0.                        │
+ * │                                                                             │
+ * │  • const fs = require('fs'); — used for `--from-json <file>` reads;        │
+ * │    calls are already `await`ed as required by the new async-only bridge.  │
+ * │                                                                             │
+ * │  • `process.argv.parseFlags()` is now a real bare global; the             │
+ * │    hand-rolled parseFlags() helper was removed and both call sites        │
+ * │    (calendar/notes) read `{ flags, positional }` from it, slicing the     │
+ * │    leading subcommand off `positional` to preserve prior arg semantics.   │
+ * │                                                                             │
+ * │ No subcommands, flags, output formatting, or behavior were changed.       │
+ * └─────────────────────────────────────────────────────────────────────────────┘
  */
+
+const fs = require('fs');
+const browser = require('sliccy:browser');
+const fmt = require('sliccy:fmt');
+const cli = require('sliccy:cli');
 
 // ─── Argument Parsing ────────────────────────────────────────────────────────
 
 const args = process.argv.slice(2);
 
 if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
-  printUsage();
-  process.exit(0);
+  cli.help(usageText());
 }
 
 const subcommand = args[0];
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function parseFlags(argsSlice) {
-  const flags = {};
-  const positional = [];
-  let i = 0;
-  while (i < argsSlice.length) {
-    const arg = argsSlice[i];
-    if (arg.startsWith('--')) {
-      const eqIdx = arg.indexOf('=');
-      if (eqIdx !== -1) {
-        flags[arg.slice(2, eqIdx)] = arg.slice(eqIdx + 1);
-      } else if (i + 1 < argsSlice.length && !argsSlice[i + 1].startsWith('--')) {
-        flags[arg.slice(2)] = argsSlice[i + 1];
-        i++;
-      } else {
-        flags[arg.slice(2)] = true;
-      }
-    } else {
-      positional.push(arg);
-    }
-    i++;
-  }
-  return { flags, positional };
-}
-
-function printUsage() {
-  console.log(`icloud — iCloud Calendar & Notes CLI for SLICC
+function usageText() {
+  return `icloud — iCloud Calendar & Notes CLI for SLICC
 
 Usage:
   icloud calendar [--date 2d|7d|14d|30d] [--json]
@@ -86,14 +107,11 @@ Notes:
   --json    Output raw JSON
 
   icloud notes read <note-id>
-    Reads the full content of a note by its ID.`);
+    Reads the full content of a note by its ID.`;
 }
 
-function col(str, width) {
-  if (str == null) str = '';
-  str = String(str);
-  if (str.length > width) return str.slice(0, width - 1) + '…';
-  return str.padEnd(width);
+function printUsage() {
+  console.log(usageText());
 }
 
 function fmtDate(dateArr) {
@@ -161,71 +179,50 @@ function icloudEventToShared(ev) {
 // ─── iCloud Tab Management ───────────────────────────────────────────────────
 
 async function getICloudTab() {
-  const listResult = await exec('playwright-cli tab-list');
-  if (listResult.exitCode !== 0) {
-    console.error('Error listing tabs: ' + listResult.stderr);
-    process.exit(1);
-  }
+  // NOTE: browser.findTab's `domain` option requires an exact hostname match.
+  // Navigating to icloud.com always lands on www.icloud.com (redirect), so
+  // `{ domain: 'icloud.com' }` never matches a real tab — confirmed live
+  // against an authenticated www.icloud.com session, which this fails to
+  // find. The pre-migration exec('playwright-cli tab-list') + regex approach
+  // did a plain substring match against the full tab URL, so it matched
+  // www.icloud.com fine; `urlMatch` (substring/regex against the full URL)
+  // is the bridge's equivalent and is used here to restore that behavior.
+  const tab = await browser.findTab({ urlMatch: /icloud\.com/ });
+  if (tab) return tab;
 
-  const lines = listResult.stdout.trim().split('\n');
-  for (const line of lines) {
-    if (line.includes('icloud.com')) {
-      const match = line.match(/\[targetId:\s*([^\]]+)\]/) || line.match(/^\[([^\]]+)\]/);
-      if (match) return match[1].trim();
-    }
-  }
-
-  console.error('No iCloud tab found. Please open https://www.icloud.com/ and sign in.');
-  process.exit(1);
+  cli.die('No iCloud tab found. Please open https://www.icloud.com/ and sign in.', { prefix: '' });
 }
 
 // ─── iCloud Session Discovery ────────────────────────────────────────────────
 
-async function getSession(tabId) {
-  const jsCode = `
-    (async () => {
+async function getSession(tab) {
+  let parsed;
+  try {
+    parsed = await browser.evalAsync(tab, async () => {
       try {
         const resp = await fetch("https://setup.icloud.com/setup/ws/1/validate?clientBuildNumber=2618Build21&clientMasteringNumber=2618Build21&clientId=slicc-icloud-skill", {
           method: "POST",
           credentials: "include",
           headers: { "Content-Type": "text/plain", "Origin": "https://www.icloud.com" }
         });
-        if (!resp.ok) return JSON.stringify({ error: "VALIDATE_FAILED", status: resp.status });
+        if (!resp.ok) return { error: "VALIDATE_FAILED", status: resp.status };
         const data = await resp.json();
-        return JSON.stringify({
+        return {
           dsid: data.dsInfo ? data.dsInfo.dsid : null,
           calendarUrl: data.webservices && data.webservices.calendar ? data.webservices.calendar.url : null,
           ckdbUrl: data.webservices && data.webservices.ckdatabasews ? data.webservices.ckdatabasews.url : null
-        });
+        };
       } catch(e) {
-        return JSON.stringify({ error: "SESSION_ERROR", message: e.message });
+        return { error: "SESSION_ERROR", message: e.message };
       }
-    })()
-  `.trim();
-
-  const escapedJs = jsCode.replace(/'/g, "'\\''");
-  const result = await exec(`playwright-cli eval --tab=${tabId} '${escapedJs}'`);
-  if (result.exitCode !== 0) {
-    console.error('Failed to get iCloud session: ' + (result.stderr || result.stdout));
-    process.exit(1);
-  }
-
-  let parsed;
-  try {
-    parsed = JSON.parse(result.stdout.trim());
-  } catch(e) {
-    try {
-      parsed = JSON.parse(JSON.parse(result.stdout.trim()));
-    } catch(e2) {
-      console.error('Failed to parse session response: ' + result.stdout.slice(0, 300));
-      process.exit(1);
-    }
+    });
+  } catch (e) {
+    cli.die('Failed to get iCloud session: ' + e.message, { prefix: '' });
   }
 
   if (parsed.error) {
     console.error(`iCloud session error: ${parsed.error} — ${parsed.message || ''}`);
-    console.error('Please ensure you are signed in at https://www.icloud.com/');
-    process.exit(1);
+    cli.die('Please ensure you are signed in at https://www.icloud.com/', { prefix: '' });
   }
 
   return parsed;
@@ -233,56 +230,48 @@ async function getSession(tabId) {
 
 // ─── Generic Page-Context Fetch ──────────────────────────────────────────────
 
-async function icloudFetch(tabId, url, options = {}) {
+async function icloudFetch(tab, url, options = {}) {
   const method = options.method || 'GET';
   const body = options.body ? JSON.stringify(options.body) : null;
 
-  let jsCode = `
-    (async () => {
-      try {
-        const resp = await fetch(${JSON.stringify(url)}, {
-          method: ${JSON.stringify(method)},
-          credentials: "include",
-          headers: { "Content-Type": "text/plain", "Origin": "https://www.icloud.com" }${body ? `,\n          body: ${JSON.stringify(body)}` : ''}
-        });
-        const status = resp.status;
-        if (status === 204) return JSON.stringify({ status: 204, ok: true, data: null });
-        const text = await resp.text();
-        let data = null;
-        try { data = JSON.parse(text); } catch(e) { data = text; }
-        return JSON.stringify({ status, ok: resp.ok, data });
-      } catch(e) {
-        return JSON.stringify({ error: "FETCH_ERROR", message: e.message });
-      }
-    })()
-  `.trim();
-
-  const escapedJs = jsCode.replace(/'/g, "'\\''");
-  const result = await exec(`playwright-cli eval --tab=${tabId} '${escapedJs}'`);
-  if (result.exitCode !== 0) {
-    console.error('eval failed: ' + (result.stderr || result.stdout));
-    process.exit(1);
-  }
+  // NOTE: must be an invoked IIFE ("(async () => {...})()"), not a bare
+  // function expression. browser.evalAsync does not auto-invoke a string
+  // argument the way it does when handed a real Function object — a bare
+  // "async () => {...}" string evaluates to a Function value, which
+  // serializes to "{}" with no error, silently swallowing every fetch made
+  // through this helper. Confirmed live: this exact bug caused `icloud
+  // calendar` to fail with "Calendar API error (HTTP undefined)" even
+  // against a real, authenticated session.
+  const fnSource = `(async () => {
+    try {
+      const resp = await fetch(${JSON.stringify(url)}, {
+        method: ${JSON.stringify(method)},
+        credentials: "include",
+        headers: { "Content-Type": "text/plain", "Origin": "https://www.icloud.com" }${body ? `,\n        body: ${JSON.stringify(body)}` : ''}
+      });
+      const status = resp.status;
+      if (status === 204) return { status: 204, ok: true, data: null };
+      const text = await resp.text();
+      let data = null;
+      try { data = JSON.parse(text); } catch(e) { data = text; }
+      return { status, ok: resp.ok, data };
+    } catch(e) {
+      return { error: "FETCH_ERROR", message: e.message };
+    }
+  })()`;
 
   let parsed;
   try {
-    parsed = JSON.parse(result.stdout.trim());
-  } catch(e) {
-    try {
-      parsed = JSON.parse(JSON.parse(result.stdout.trim()));
-    } catch(e2) {
-      console.error('Failed to parse API response: ' + result.stdout.slice(0, 500));
-      process.exit(1);
-    }
+    parsed = await browser.evalAsync(tab, fnSource);
+  } catch (e) {
+    cli.die('eval failed: ' + e.message, { prefix: '' });
   }
 
   if (parsed.error === 'FETCH_ERROR') {
-    console.error('Fetch error: ' + parsed.message);
-    process.exit(1);
+    cli.die('Fetch error: ' + parsed.message, { prefix: '' });
   }
   if (parsed.status === 401 || parsed.status === 403) {
-    console.error(`Authentication error (HTTP ${parsed.status}). Your iCloud session may have expired.`);
-    process.exit(1);
+    cli.die(`Authentication error (HTTP ${parsed.status}). Your iCloud session may have expired.`, { prefix: '' });
   }
 
   return parsed;
@@ -291,7 +280,8 @@ async function icloudFetch(tabId, url, options = {}) {
 // ─── Calendar Commands ───────────────────────────────────────────────────────
 
 async function cmdCalendar() {
-  const { flags, positional } = parseFlags(args.slice(1));
+  const { flags, positional: allPositional } = process.argv.parseFlags();
+  const positional = allPositional.slice(1);
 
   // Check for "create" subcommand
   if (positional[0] === 'create') {
@@ -306,13 +296,12 @@ async function cmdCalendar() {
   const rangeStr = flags.date || '7d';
   const rangeMatch = rangeStr.match(/^(\d+)d$/);
   if (!rangeMatch) {
-    console.error('Invalid --date format. Use: 1d, 2d, 7d, 14d, 30d');
-    process.exit(1);
+    cli.die('Invalid --date format. Use: 1d, 2d, 7d, 14d, 30d', { prefix: '' });
   }
   const days = parseInt(rangeMatch[1]);
 
-  const tabId = await getICloudTab();
-  const session = await getSession(tabId);
+  const tab = await getICloudTab();
+  const session = await getSession(tab);
 
   const now = new Date();
   const startDate = now.toISOString().split('T')[0];
@@ -321,11 +310,10 @@ async function cmdCalendar() {
 
   const url = `${session.calendarUrl}/ca/events?startDate=${startDate}&endDate=${endDate}&lang=en-us&usertz=Europe%2FBerlin&clientBuildNumber=2618Build21&clientMasteringNumber=2618Build21&clientId=slicc-icloud-skill&dsid=${session.dsid}`;
 
-  const resp = await icloudFetch(tabId, url);
+  const resp = await icloudFetch(tab, url);
 
   if (!resp.ok) {
-    console.error(`Calendar API error (HTTP ${resp.status})`);
-    process.exit(1);
+    cli.die(`Calendar API error (HTTP ${resp.status})`, { prefix: '' });
   }
 
   const events = (resp.data && resp.data.Event) || [];
@@ -355,7 +343,7 @@ async function cmdCalendar() {
   });
 
   console.log(`Events: ${startDate} to ${endDate} (${days}d)\n`);
-  console.log(col('Date', 12) + col('Time', 14) + col('Title', 40) + 'Location');
+  console.log(fmt.col('Date', 12) + fmt.col('Time', 14) + fmt.col('Title', 40) + 'Location');
   console.log('-'.repeat(90));
 
   let lastDate = '';
@@ -368,9 +356,9 @@ async function cmdCalendar() {
     lastDate = date;
 
     console.log(
-      col(displayDate, 12) +
-      col(timeStr, 14) +
-      col(ev.title || '(no title)', 40) +
+      fmt.col(displayDate, 12) +
+      fmt.col(timeStr, 14) +
+      fmt.col(ev.title || '(no title)', 40) +
       (ev.location || '')
     );
   }
@@ -381,8 +369,8 @@ async function cmdCalendar() {
 // ─── Calendar Create ─────────────────────────────────────────────────────────
 
 async function cmdCalendarCreate(flags, positional) {
-  const tabId = await getICloudTab();
-  const session = await getSession(tabId);
+  const tab = await getICloudTab();
+  const session = await getSession(tab);
 
   // Discover calendars via /ca/allcollections to get GUIDs and ctags
   const calendarName = flags.calendar || null;
@@ -393,7 +381,7 @@ async function cmdCalendarCreate(flags, positional) {
   const colStart = now.toISOString().slice(0, 10);
   const colEnd = new Date(now.getTime() + 7 * 86400000).toISOString().slice(0, 10);
   const collectionsUrl = `${session.calendarUrl}/ca/allcollections?startDate=${colStart}&endDate=${colEnd}&usertz=Europe%2FBerlin&lang=en-US&clientVersion=6.0&requestID=1&clientBuildNumber=2618Build21&clientMasteringNumber=2618Build21&clientId=slicc-icloud-skill&dsid=${session.dsid}`;
-  const colResp = await icloudFetch(tabId, collectionsUrl);
+  const colResp = await icloudFetch(tab, collectionsUrl);
 
   if (colResp.ok && colResp.data && colResp.data.Collection) {
     const collections = colResp.data.Collection;
@@ -410,8 +398,7 @@ async function cmdCalendarCreate(flags, positional) {
   }
 
   if (!calendarGuid) {
-    console.error('Could not determine target calendar. Ensure iCloud Calendar is accessible.');
-    process.exit(1);
+    cli.die('Could not determine target calendar. Ensure iCloud Calendar is accessible.', { prefix: '' });
   }
 
   // Determine event source: --from-json or flags
@@ -423,36 +410,26 @@ async function cmdCalendarCreate(flags, positional) {
       try {
         jsonInput = await fs.readFile(flags['from-json']);
       } catch (e) {
-        console.error(`icloud calendar create: cannot read file "${flags['from-json']}": ${e.message}`);
-        process.exit(1);
+        cli.die(`icloud calendar create: cannot read file "${flags['from-json']}": ${e.message}`, { prefix: '' });
       }
     } else {
       // Read from stdin
       try {
-        jsonInput = await new Promise((resolve, reject) => {
-          let data = '';
-          process.stdin.on('data', chunk => { data += chunk; });
-          process.stdin.on('end', () => resolve(data));
-          process.stdin.on('error', reject);
-          setTimeout(() => resolve(data), 5000);
-        });
+        jsonInput = (await process.stdin.read()) || '';
       } catch (e) {
-        console.error(`icloud calendar create: failed to read stdin: ${e.message}`);
-        process.exit(1);
+        cli.die(`icloud calendar create: failed to read stdin: ${e.message}`, { prefix: '' });
       }
     }
 
     if (!jsonInput.trim()) {
-      console.error('icloud calendar create: no JSON input received');
-      process.exit(1);
+      cli.die('icloud calendar create: no JSON input received', { prefix: '' });
     }
 
     try {
       const parsed = JSON.parse(jsonInput.trim());
       events = Array.isArray(parsed) ? parsed : [parsed];
     } catch (e) {
-      console.error(`icloud calendar create: invalid JSON: ${e.message}`);
-      process.exit(1);
+      cli.die(`icloud calendar create: invalid JSON: ${e.message}`, { prefix: '' });
     }
   } else {
     // Single event from flags
@@ -460,9 +437,9 @@ async function cmdCalendarCreate(flags, positional) {
     const start = flags.start;
     const end = flags.end;
 
-    if (!title) { console.error('icloud calendar create: --title is required'); process.exit(1); }
-    if (!start) { console.error('icloud calendar create: --start is required'); process.exit(1); }
-    if (!end) { console.error('icloud calendar create: --end is required'); process.exit(1); }
+    if (!title) { cli.die('icloud calendar create: --title is required', { prefix: '' }); }
+    if (!start) { cli.die('icloud calendar create: --start is required', { prefix: '' }); }
+    if (!end) { cli.die('icloud calendar create: --end is required', { prefix: '' }); }
 
     events = [{
       title,
@@ -488,7 +465,7 @@ async function cmdCalendarCreate(flags, positional) {
       const maxDate = maxEnd.split('T')[0];
 
       const checkUrl = `${session.calendarUrl}/ca/events?startDate=${minDate}&endDate=${maxDate}&lang=en-us&usertz=Europe%2FBerlin&clientBuildNumber=2618Build21&clientMasteringNumber=2618Build21&clientId=slicc-icloud-skill&dsid=${session.dsid}`;
-      const checkResp = await icloudFetch(tabId, checkUrl);
+      const checkResp = await icloudFetch(tab, checkUrl);
       if (checkResp.ok && checkResp.data && checkResp.data.Event) {
         existingEvents = checkResp.data.Event;
       }
@@ -592,7 +569,7 @@ async function cmdCalendarCreate(flags, positional) {
     // POST to create event
     const createUrl = `${session.calendarUrl}/ca/events/${calendarGuid}/${newGuid}?startDate=${colStart}&endDate=${colEnd}&lang=en-US&usertz=Europe%2FBerlin&requestID=${created + skipped + 2}&clientBuildNumber=2618Build21&clientMasteringNumber=2618Build21&clientId=slicc-icloud-skill&dsid=${session.dsid}`;
 
-    const createResp = await icloudFetch(tabId, createUrl, {
+    const createResp = await icloudFetch(tab, createUrl, {
       method: 'POST',
       body: eventPayload
     });
@@ -610,20 +587,18 @@ async function cmdCalendarCreate(flags, positional) {
 
 // ─── Notes Commands ──────────────────────────────────────────────────────────
 
-async function fetchAllNotes(tabId, session) {
+async function fetchAllNotes(tab, session) {
   // Get zone owner
   const zonesUrl = `${session.ckdbUrl}/database/1/com.apple.notes/production/private/zones/list?clientBuildNumber=2618Build21&clientMasteringNumber=2618Build21&clientId=slicc-icloud-skill&dsid=${session.dsid}`;
-  const zonesResp = await icloudFetch(tabId, zonesUrl, { method: 'POST', body: {} });
+  const zonesResp = await icloudFetch(tab, zonesUrl, { method: 'POST', body: {} });
 
   if (!zonesResp.ok || !zonesResp.data || !zonesResp.data.zones) {
-    console.error('Failed to fetch Notes zones');
-    process.exit(1);
+    cli.die('Failed to fetch Notes zones', { prefix: '' });
   }
 
   const notesZone = zonesResp.data.zones.find(z => z.zoneID.zoneName === 'Notes');
   if (!notesZone) {
-    console.error('Notes zone not found');
-    process.exit(1);
+    cli.die('Notes zone not found', { prefix: '' });
   }
 
   const owner = notesZone.zoneID.ownerRecordName;
@@ -644,7 +619,7 @@ async function fetchAllNotes(tabId, session) {
       body.zones[0].syncToken = syncToken;
     }
 
-    const changesResp = await icloudFetch(tabId, changesUrl, { method: 'POST', body });
+    const changesResp = await icloudFetch(tab, changesUrl, { method: 'POST', body });
 
     if (!changesResp.ok || !changesResp.data || !changesResp.data.zones || !changesResp.data.zones[0]) {
       break;
@@ -663,7 +638,7 @@ async function fetchAllNotes(tabId, session) {
   return allNotes;
 }
 
-async function decodeNotesInPage(tabId, notes) {
+async function decodeNotesInPage(tab, notes) {
   const noteData = notes.map(n => ({
     id: n.recordName,
     titleB64: n.fields.TitleEncrypted ? n.fields.TitleEncrypted.value : '',
@@ -679,94 +654,10 @@ async function decodeNotesInPage(tabId, notes) {
 
   for (let start = 0; start < noteData.length; start += batchSize) {
     const batch = noteData.slice(start, start + batchSize);
-    const jsCode = `
-      (async () => {
-        const notes = ${JSON.stringify(batch)};
-        function decodeB64(b64) {
-          if (!b64) return "";
-          try {
-            const binary = atob(b64);
-            const bytes = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-            return new TextDecoder("utf-8").decode(bytes);
-          } catch(e) { return ""; }
-        }
-        const decoded = notes
-          .filter(n => n.deleted === 0)
-          .map(n => ({
-            id: n.id,
-            title: decodeB64(n.titleB64),
-            snippet: decodeB64(n.snippetB64),
-            modified: n.modified,
-            created: n.created
-          }));
-        return JSON.stringify(decoded);
-      })()
-    `.trim();
-
-    const escapedJs = jsCode.replace(/'/g, "'\\''");
-    const result = await exec(`playwright-cli eval --tab=${tabId} '${escapedJs}'`);
-    if (result.exitCode !== 0) {
-      console.error('Failed to decode notes batch: ' + (result.stderr || result.stdout));
-      continue;
-    }
-
-    let parsed;
-    try {
-      parsed = JSON.parse(result.stdout.trim());
-    } catch(e) {
-      try {
-        parsed = JSON.parse(JSON.parse(result.stdout.trim()));
-      } catch(e2) {
-        continue;
-      }
-    }
-    allDecoded.push(...parsed);
-  }
-
-  // Sort by modification date descending
-  allDecoded.sort((a, b) => b.modified - a.modified);
-  return allDecoded;
-}
-
-async function readNoteContent(tabId, noteId, allNotes) {
-  const note = allNotes.find(n => n.recordName === noteId);
-  if (!note) {
-    console.error(`Note not found: ${noteId}`);
-    process.exit(1);
-  }
-
-  const textDataB64 = note.fields.TextDataEncrypted ? note.fields.TextDataEncrypted.value : '';
-  const titleB64 = note.fields.TitleEncrypted ? note.fields.TitleEncrypted.value : '';
-
-  if (!textDataB64) {
-    const jsCode = `
-      (async () => {
-        function decodeB64(b64) {
-          if (!b64) return "";
-          try {
-            const binary = atob(b64);
-            const bytes = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-            return new TextDecoder("utf-8").decode(bytes);
-          } catch(e) { return ""; }
-        }
-        return JSON.stringify({ title: decodeB64(${JSON.stringify(titleB64)}), content: "(empty note)" });
-      })()
-    `.trim();
-    const escapedJs = jsCode.replace(/'/g, "'\\''");
-    const result = await exec(`playwright-cli eval --tab=${tabId} '${escapedJs}'`);
-    let parsed;
-    try { parsed = JSON.parse(result.stdout.trim()); } catch(e) { try { parsed = JSON.parse(JSON.parse(result.stdout.trim())); } catch(e2) { return { title: '', content: '(empty note)' }; } }
-    return parsed;
-  }
-
-  // Decompress gzip and extract text in page context
-  const jsCode = `
-    (async () => {
-      const b64 = ${JSON.stringify(textDataB64)};
-      const titleB64 = ${JSON.stringify(titleB64)};
-      
+    // See the note above icloudFetch()'s fnSource: must be an invoked IIFE,
+    // not a bare function expression, or evalAsync silently returns "{}".
+    const fnSource = `(async () => {
+      const notes = ${JSON.stringify(batch)};
       function decodeB64(b64) {
         if (!b64) return "";
         try {
@@ -776,106 +667,165 @@ async function readNoteContent(tabId, noteId, allNotes) {
           return new TextDecoder("utf-8").decode(bytes);
         } catch(e) { return ""; }
       }
-      
+      return notes
+        .filter(n => n.deleted === 0)
+        .map(n => ({
+          id: n.id,
+          title: decodeB64(n.titleB64),
+          snippet: decodeB64(n.snippetB64),
+          modified: n.modified,
+          created: n.created
+        }));
+    })()`;
+
+    let parsed;
+    try {
+      parsed = await browser.evalAsync(tab, fnSource);
+    } catch (e) {
+      console.error('Failed to decode notes batch: ' + e.message);
+      continue;
+    }
+    allDecoded.push(...parsed);
+  }
+
+  // Sort by modification date descending
+  allDecoded.sort((a, b) => b.modified - a.modified);
+  return allDecoded;
+}
+
+async function readNoteContent(tab, noteId, allNotes) {
+  const note = allNotes.find(n => n.recordName === noteId);
+  if (!note) {
+    cli.die(`Note not found: ${noteId}`, { prefix: '' });
+  }
+
+  const textDataB64 = note.fields.TextDataEncrypted ? note.fields.TextDataEncrypted.value : '';
+  const titleB64 = note.fields.TitleEncrypted ? note.fields.TitleEncrypted.value : '';
+
+  if (!textDataB64) {
+    // See the note above icloudFetch()'s fnSource: must be an invoked IIFE.
+    const fnSource = `(async () => {
+      function decodeB64(b64) {
+        if (!b64) return "";
+        try {
+          const binary = atob(b64);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+          return new TextDecoder("utf-8").decode(bytes);
+        } catch(e) { return ""; }
+      }
+      return { title: decodeB64(${JSON.stringify(titleB64)}), content: "(empty note)" };
+    })()`;
+    try {
+      return await browser.evalAsync(tab, fnSource);
+    } catch (e) {
+      return { title: '', content: '(empty note)' };
+    }
+  }
+
+  // Decompress gzip and extract text in page context.
+  // See the note above icloudFetch()'s fnSource: must be an invoked IIFE.
+  const fnSource = `(async () => {
+    const b64 = ${JSON.stringify(textDataB64)};
+    const titleB64 = ${JSON.stringify(titleB64)};
+
+    function decodeB64(b64) {
+      if (!b64) return "";
       try {
         const binary = atob(b64);
         const bytes = new Uint8Array(binary.length);
         for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-        
-        const ds = new DecompressionStream("gzip");
-        const writer = ds.writable.getWriter();
-        writer.write(bytes);
-        writer.close();
-        const reader = ds.readable.getReader();
-        const chunks = [];
-        while(true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          chunks.push(value);
-        }
-        const totalLen = chunks.reduce((a, c) => a + c.length, 0);
-        const result = new Uint8Array(totalLen);
-        let offset = 0;
-        for (const c of chunks) { result.set(c, offset); offset += c.length; }
-        
-        // Extract text from Apple Notes protobuf
-        // Strategy: find the longest length-prefixed UTF-8 string (field tag 0x12)
-        function extractNoteText(bytes) {
-          let bestText = "";
-          for (let i = 0; i < bytes.length - 2; i++) {
-            if (bytes[i] === 0x12) {
-              let len = 0, shift = 0, j = i + 1;
-              while (j < bytes.length && (bytes[j] & 0x80)) {
-                len |= (bytes[j] & 0x7f) << shift;
-                shift += 7; j++;
-              }
-              if (j < bytes.length) {
-                len |= (bytes[j] & 0x7f) << shift; j++;
-              }
-              if (len > 3 && len < 100000 && j + len <= bytes.length) {
-                const slice = bytes.slice(j, j + len);
-                try {
-                  const candidate = new TextDecoder("utf-8", {fatal: true}).decode(slice);
-                  let printCount = 0;
-                  for (let c = 0; c < candidate.length; c++) {
-                    const code = candidate.charCodeAt(c);
-                    if ((code >= 32 && code <= 126) || code === 10 || code === 9 || code >= 160) printCount++;
-                  }
-                  const printableRatio = printCount / candidate.length;
-                  if (printableRatio > 0.7 && candidate.length > bestText.length) {
-                    bestText = candidate;
-                  }
-                } catch(e) {}
-              }
-            }
-          }
-          return bestText;
-        }
-        let readable = extractNoteText(result);
-        if (!readable) {
-          // Fallback: strip non-printable from full decode
-          const text = new TextDecoder("utf-8", { fatal: false }).decode(result);
-          let cleaned = "";
-          for (let i = 0; i < text.length; i++) {
-            const code = text.charCodeAt(i);
-            if (code === 10 || code === 9 || (code >= 32 && code <= 126) || code >= 160) {
-              cleaned += text[i];
-            }
-          }
-          readable = cleaned.trim();
-        }
-        
-        return JSON.stringify({ title: decodeB64(titleB64), content: readable });
-      } catch(e) {
-        return JSON.stringify({ error: e.message, title: decodeB64(titleB64) });
-      }
-    })()
-  `.trim();
+        return new TextDecoder("utf-8").decode(bytes);
+      } catch(e) { return ""; }
+    }
 
-  const escapedJs = jsCode.replace(/'/g, "'\\''");
-  const result = await exec(`playwright-cli eval --tab=${tabId} '${escapedJs}'`);
-  if (result.exitCode !== 0) {
-    console.error('Failed to read note content: ' + (result.stderr || result.stdout));
-    process.exit(1);
-  }
+    try {
+      const binary = atob(b64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+
+      const ds = new DecompressionStream("gzip");
+      const writer = ds.writable.getWriter();
+      writer.write(bytes);
+      writer.close();
+      const reader = ds.readable.getReader();
+      const chunks = [];
+      while(true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+      }
+      const totalLen = chunks.reduce((a, c) => a + c.length, 0);
+      const result = new Uint8Array(totalLen);
+      let offset = 0;
+      for (const c of chunks) { result.set(c, offset); offset += c.length; }
+
+      // Extract text from Apple Notes protobuf
+      // Strategy: find the longest length-prefixed UTF-8 string (field tag 0x12)
+      function extractNoteText(bytes) {
+        let bestText = "";
+        for (let i = 0; i < bytes.length - 2; i++) {
+          if (bytes[i] === 0x12) {
+            let len = 0, shift = 0, j = i + 1;
+            while (j < bytes.length && (bytes[j] & 0x80)) {
+              len |= (bytes[j] & 0x7f) << shift;
+              shift += 7; j++;
+            }
+            if (j < bytes.length) {
+              len |= (bytes[j] & 0x7f) << shift; j++;
+            }
+            if (len > 3 && len < 100000 && j + len <= bytes.length) {
+              const slice = bytes.slice(j, j + len);
+              try {
+                const candidate = new TextDecoder("utf-8", {fatal: true}).decode(slice);
+                let printCount = 0;
+                for (let c = 0; c < candidate.length; c++) {
+                  const code = candidate.charCodeAt(c);
+                  if ((code >= 32 && code <= 126) || code === 10 || code === 9 || code >= 160) printCount++;
+                }
+                const printableRatio = printCount / candidate.length;
+                if (printableRatio > 0.7 && candidate.length > bestText.length) {
+                  bestText = candidate;
+                }
+              } catch(e) {}
+            }
+          }
+        }
+        return bestText;
+      }
+      let readable = extractNoteText(result);
+      if (!readable) {
+        // Fallback: strip non-printable from full decode
+        const text = new TextDecoder("utf-8", { fatal: false }).decode(result);
+        let cleaned = "";
+        for (let i = 0; i < text.length; i++) {
+          const code = text.charCodeAt(i);
+          if (code === 10 || code === 9 || (code >= 32 && code <= 126) || code >= 160) {
+            cleaned += text[i];
+          }
+        }
+        readable = cleaned.trim();
+      }
+
+      return { title: decodeB64(titleB64), content: readable };
+    } catch(e) {
+      return { error: e.message, title: decodeB64(titleB64) };
+    }
+  })()`;
 
   let parsed;
   try {
-    parsed = JSON.parse(result.stdout.trim());
-  } catch(e) {
-    try {
-      parsed = JSON.parse(JSON.parse(result.stdout.trim()));
-    } catch(e2) {
-      console.error('Failed to parse note content');
-      process.exit(1);
-    }
+    parsed = await browser.evalAsync(tab, fnSource);
+  } catch (e) {
+    cli.die('Failed to read note content: ' + e.message, { prefix: '' });
   }
 
   return parsed;
 }
 
 async function cmdNotes() {
-  const { flags, positional } = parseFlags(args.slice(1));
+  const { flags, positional: allPositional } = process.argv.parseFlags();
+  const positional = allPositional.slice(1);
   const jsonOutput = !!flags.json;
   const searchQuery = flags.search || null;
 
@@ -883,17 +833,16 @@ async function cmdNotes() {
   if (positional[0] === 'read') {
     const noteId = positional[1];
     if (!noteId) {
-      console.error('Usage: icloud notes read <note-id>');
-      process.exit(1);
+      cli.die('Usage: icloud notes read <note-id>', { prefix: '' });
     }
     await cmdNoteRead(noteId, jsonOutput);
     return;
   }
 
-  const tabId = await getICloudTab();
-  const session = await getSession(tabId);
-  const rawNotes = await fetchAllNotes(tabId, session);
-  const notes = await decodeNotesInPage(tabId, rawNotes);
+  const tab = await getICloudTab();
+  const session = await getSession(tab);
+  const rawNotes = await fetchAllNotes(tab, session);
+  const notes = await decodeNotesInPage(tab, rawNotes);
 
   // Apply search filter
   let filtered = notes;
@@ -925,14 +874,14 @@ async function cmdNotes() {
     console.log('Recent notes:\n');
   }
 
-  console.log(col('ID', 40) + col('Modified', 18) + col('Title', 40) + 'Snippet');
+  console.log(fmt.col('ID', 40) + fmt.col('Modified', 18) + fmt.col('Title', 40) + 'Snippet');
   console.log('-'.repeat(120));
 
   for (const n of filtered.slice(0, 30)) {
     console.log(
-      col(n.id, 40) +
-      col(fmtTimestamp(n.modified), 18) +
-      col(n.title || '(untitled)', 40) +
+      fmt.col(n.id, 40) +
+      fmt.col(fmtTimestamp(n.modified), 18) +
+      fmt.col(n.title || '(untitled)', 40) +
       (n.snippet || '').slice(0, 40)
     );
   }
@@ -945,11 +894,11 @@ async function cmdNotes() {
 }
 
 async function cmdNoteRead(noteId, jsonOutput) {
-  const tabId = await getICloudTab();
-  const session = await getSession(tabId);
-  const rawNotes = await fetchAllNotes(tabId, session);
+  const tab = await getICloudTab();
+  const session = await getSession(tab);
+  const rawNotes = await fetchAllNotes(tab, session);
 
-  const result = await readNoteContent(tabId, noteId, rawNotes);
+  const result = await readNoteContent(tab, noteId, rawNotes);
 
   if (jsonOutput) {
     console.log(JSON.stringify(result, null, 2));
