@@ -50,6 +50,34 @@ function validateWorkspaceId(id) {
   return id;
 }
 
+// SECURITY: watch()/unwatch() interpolate --scoop and the channel-derived
+// watchId directly into exec() shell command strings (`slicc webhook
+// create --scoop=${scoop} ...`) and into a VFS file path
+// (`/workspace/skills/slack/.watch-${watchId}.json`). Confirmed live that
+// sliccy:exec's exec() runs its argument through a real shell -- a probe
+// value like "x; echo INJECTED" actually executed the injected command --
+// so an unvalidated --scoop or channel value is a real, directly
+// user-reachable shell-injection / path-traversal vector on every
+// invocation of `slack watch`. This is a pre-existing issue (unchanged
+// from the pre-migration file, not introduced by this PR's diff), but
+// since this PR is already the designated security-review pass for this
+// file, fixing it here rather than letting it through unflagged.
+function validateScoopName(name) {
+  if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
+    console.error(`Error: Invalid --scoop "${name}". Expected format: alphanumeric, dash, or underscore only.`);
+    process.exit(1);
+  }
+  return name;
+}
+
+function validateChannelId(id) {
+  if (!/^[A-Za-z0-9]+$/.test(id)) {
+    console.error(`Error: Invalid channel ID "${id}". Expected format: alphanumeric (e.g. C0899S7HV0E).`);
+    process.exit(1);
+  }
+  return id;
+}
+
 async function resolveWorkspace(globalFlags) {
   // 1. Explicit flag takes priority
   if (globalFlags.workspace) {
@@ -548,11 +576,30 @@ const commands = {
       console.error('Usage: slack watch <channel_id> --scoop=<name> [--thread=<ts>] [--force]');
       process.exit(1);
     }
+    validateChannelId(channel);
+    validateScoopName(scoop);
 
     const watchId = threadTs ? `${channel}-${threadTs}` : channel;
     const stateFile = `/workspace/skills/slack/.watch-${watchId}.json`;
 
-    // Check for existing watch
+    // Check for existing watch.
+    //
+    // SECURITY/CORRECTNESS: process.exit() throws a NodeExitError to unwind
+    // the stack in this realm (it does not synchronously terminate inside
+    // an async function) -- and this process.exit(1) sits inside a try
+    // block whose catch(_) was written to handle ONLY "no existing state
+    // file" (a JSON.parse/fs.readFile failure). Without the guard below,
+    // that catch(_) also swallows the NodeExitError thrown by this
+    // intentional exit, so execution silently falls through to the
+    // webhook-creation code below instead of stopping -- completely
+    // defeating the "already watching, use --force" duplicate guard.
+    // Confirmed live: calling `slack watch <channel> --scoop=X` a second
+    // time WITHOUT --force printed "Already watching... Use --force" AND
+    // THEN went on to create a brand new webhook + WebSocket subscription
+    // anyway, silently orphaning the previous one (no error, exit 0). Two
+    // leaked webhooks accumulated this way during verification before the
+    // fix. NodeExitError must be re-thrown here so it actually propagates
+    // instead of being caught by this unrelated catch.
     try {
       const existing = JSON.parse(await fs.readFile(stateFile, 'utf8'));
       if (!flags.force) {
@@ -562,25 +609,43 @@ const commands = {
       }
       // Clean up old webhook
       if (existing.webhookId) {
-        await exec(`slicc webhook delete ${existing.webhookId}`).catch(() => {});
+        await exec(`webhook delete ${existing.webhookId}`).catch(() => {});
       }
-    } catch (_) {
-      // No existing watch — proceed
+    } catch (e) {
+      if (e && e.name === 'NodeExitError') throw e;
+      // No existing watch (or a corrupt/unreadable state file) — proceed
     }
 
-    // Create SLICC webhook routed to target scoop
-    const whResult = await exec(`slicc webhook create --scoop=${scoop} --format=json`);
+    // Create SLICC webhook routed to target scoop.
+    //
+    // SECURITY/CORRECTNESS: this call was previously `slicc webhook create
+    // --scoop=${scoop} --format=json` -- confirmed live that this is broken
+    // three separate ways: (1) there is no `slicc` binary at all (`which
+    // slicc` exits 1, and running this literally fails with "slicc:
+    // command not found"), the real command is just `webhook`; (2) the
+    // real `webhook create` command does not accept `--scoop=<value>`
+    // (equals-sign form) at all -- confirmed live it errors with "--scoop
+    // is required" -- only the space-separated `--scoop <value>` form
+    // works; (3) there is no `--format=json` (or any `--json`) output mode
+    // -- confirmed live both are silently ignored and the command always
+    // prints human-readable text ("Created webhook \"...\"\nID:  ...\nURL:
+    // ...\nScoop: ..."), so the old JSON.parse(whResult.stdout) would have
+    // always thrown. This is a pre-existing bug (unchanged from the
+    // pre-migration file) -- the watch feature has never actually worked
+    // end-to-end -- fixed here since this PR is the designated
+    // security/correctness review pass for this file.
+    const whResult = await exec(`webhook create --scoop ${scoop}`);
     if (whResult.exitCode !== 0) {
       console.error('Failed to create webhook:', whResult.stderr);
       process.exit(1);
     }
-    let webhook;
-    try {
-      webhook = JSON.parse(whResult.stdout.trim());
-    } catch (e) {
+    const idMatch = whResult.stdout.match(/^ID:\s*(\S+)/m);
+    const urlMatch = whResult.stdout.match(/^URL:\s*(\S+)/m);
+    if (!idMatch || !urlMatch) {
       console.error('Failed to parse webhook response:', whResult.stdout.substring(0, 200));
       process.exit(1);
     }
+    const webhook = { id: idMatch[1], url: urlMatch[1] };
 
     // Build watch state (persisted after the observer is registered below)
     const state = {
@@ -603,7 +668,7 @@ const commands = {
       sub = await subscribeWatch(tab, state);
     } catch (e) {
       // Roll back: delete the webhook on subscription failure
-      await exec(`slicc webhook delete ${webhook.id}`).catch(() => {});
+      await exec(`webhook delete ${webhook.id}`).catch(() => {});
       console.error('Failed to register WebSocket observer — watch rolled back:', e.message || e);
       process.exit(1);
     }
@@ -624,6 +689,7 @@ const commands = {
       console.error('Usage: slack unwatch <channel_id> [--thread=<ts>]');
       process.exit(1);
     }
+    validateChannelId(channel);
 
     const watchId = threadTs ? `${channel}-${threadTs}` : channel;
     const stateFile = `/workspace/skills/slack/.watch-${watchId}.json`;
@@ -643,7 +709,7 @@ const commands = {
     // closeable handle only at creation time, so a later invocation cannot
     // close a prior subscription by id).
     if (state.webhookId) {
-      await exec(`slicc webhook delete ${state.webhookId}`).catch(() => {});
+      await exec(`webhook delete ${state.webhookId}`).catch(() => {});
     }
 
     // Remove state file
