@@ -68,7 +68,14 @@ if (command === 'inject') {
   }
 
 } else if (command === 'collect') {
-  const COLLECT_SCRIPT = `JSON.stringify(window.__speckElementInstructions||[])`;
+  // NOTE: return the raw value (not a pre-stringified JSON string) — the
+  // sliccy:browser eval bridge auto-JSON-parses string results that happen to
+  // look like JSON, so a page-side `JSON.stringify(...)` comes back here as an
+  // already-deserialized array/object, and `String(anArray)` (e.g. `String([])`
+  // -> `''`, `String([{...}])` -> `'[object Object]'`) silently corrupts the
+  // output. Returning the raw value and stringifying once, here, sidesteps the
+  // double-(de)serialization entirely.
+  const COLLECT_SCRIPT = `window.__speckElementInstructions||[]`;
   let result;
   try {
     result = await browser.eval(tabId, COLLECT_SCRIPT);
@@ -76,7 +83,7 @@ if (command === 'inject') {
     console.error('Failed:', e && e.message ? e.message : String(e));
     process.exit(1);
   }
-  console.log(String(result).trim());
+  console.log(JSON.stringify(result || []));
 
 } else if (command === 'remove') {
   const REMOVE_SCRIPT = `(function(){if(window.__speckCleanup){window.__speckCleanup();return 'speck removed'}return 'speck not found on this page'})()`;
