@@ -1,6 +1,15 @@
 // Slack Support Portal client — scrapes adobe-dx-support.enterprise.slack.com
-// Uses playwright-cli to interact with the server-rendered support portal.
+// Uses the sliccy:browser bridge to interact with the server-rendered support portal.
 // Cookie-based auth via existing browser session — no REST API available.
+//
+// jsh runtime migration (issue #176)
+//   • Browser access uses require('sliccy:browser') (findTab / evalAsync) instead
+//     of legacy browser shell-outs and eval-file temp files.
+//   • Each page script fetches its target page same-origin and parses the
+//     server-rendered HTML with DOMParser — no navigation or temp files needed.
+//   • Argument parsing uses process.argv.parseFlags() instead of a manual loop.
+
+const browser = require('sliccy:browser');
 
 const SUPPORT_DOMAIN = 'adobe-dx-support.enterprise.slack.com';
 const BASE_URL = `https://${SUPPORT_DOMAIN}`;
@@ -58,27 +67,15 @@ function resolveTopicId(input) {
 
 // --- Tab management ---
 
-let _tabId = null;
+let _tab = null;
 
 async function findSupportTab() {
-  if (_tabId) return _tabId;
+  if (_tab) return _tab;
 
-  const list = await exec('playwright-cli tab-list');
-  if (list.exitCode !== 0) {
-    console.error('Error: Failed to list browser tabs.');
-    if (list.stderr?.trim()) console.error(list.stderr.trim());
-    process.exit(1);
-  }
-
-  const lines = list.stdout.split('\n');
-  for (const line of lines) {
-    if (line.includes(SUPPORT_DOMAIN)) {
-      const m = line.match(/^\[([^\]]+)\]/);
-      if (m) {
-        _tabId = m[1];
-        return _tabId;
-      }
-    }
+  const tab = await browser.findTab({ domain: SUPPORT_DOMAIN });
+  if (tab) {
+    _tab = tab;
+    return _tab;
   }
 
   console.error(`Error: No support portal tab found. Open ${REQUESTS_URL} in your browser and try again.`);
@@ -86,71 +83,35 @@ async function findSupportTab() {
 }
 
 // --- Eval helper ---
-// Writes JS to a temp file, evaluates it in the support tab, parses the result.
+// Runs an async page script in the support tab via the sliccy:browser bridge.
+// Each script fetches its target page (same-origin, credentialed) and parses
+// the server-rendered HTML with DOMParser, so no navigation or temp files are
+// needed.
 
-async function evalInSupportTab(jsCode, { navigate = null, fatal = true } = {}) {
-  const tabId = await findSupportTab();
+async function evalInSupportTab(jsCode, { fatal = true } = {}) {
+  const tab = await findSupportTab();
 
-  // Navigate first if requested
-  if (navigate) {
-    const nav = await exec(`playwright-cli goto "${navigate}" --tab=${tabId} --wait=networkidle`);
-    if (nav.exitCode !== 0) {
-      if (!fatal) return { __error: true, message: 'Navigation failed: ' + (nav.stderr || '') };
-      console.error('Navigation failed:', nav.stderr || 'unknown error');
+  let data;
+  try {
+    data = await browser.evalAsync(tab, jsCode);
+  } catch (e) {
+    if (!fatal) return { __error: true, message: 'Eval failed: ' + ((e && e.message) || String(e)) };
+    console.error('Eval failed:', (e && e.message) || String(e));
+    process.exit(1);
+  }
+
+  // browser.evalAsync returns parsed JSON; defensively unwrap a JSON string.
+  if (typeof data === 'string') {
+    try {
+      data = JSON.parse(data);
+    } catch (e) {
+      if (!fatal) return { __error: true, message: 'Parse failed: ' + data.substring(0, 200) };
+      console.error('Failed to parse response:', data.substring(0, 200));
       process.exit(1);
     }
   }
 
-  const tmpFile = '/shared/.slack_support_' + Date.now() + '_' + Math.random().toString(36).slice(2) + '.js';
-  await fs.writeFile(tmpFile, jsCode);
-
-  const result = await exec(`playwright-cli eval-file "${tmpFile}" --tab=${tabId}`);
-  await fs.rm(tmpFile).catch(() => {});
-
-  if (result.exitCode !== 0) {
-    if (!fatal) return { __error: true, message: result.stderr || 'eval failed' };
-    console.error('Eval failed:', result.stderr);
-    process.exit(1);
-  }
-
-  let data;
-  try {
-    const stdout = result.stdout.trim();
-    data = JSON.parse(stdout);
-    if (typeof data === 'string') data = JSON.parse(data);
-  } catch (e) {
-    if (!fatal) return { __error: true, message: 'Parse failed: ' + result.stdout.substring(0, 200) };
-    console.error('Failed to parse response:', result.stdout.substring(0, 200));
-    process.exit(1);
-  }
-
   return data;
-}
-
-// --- Argument parsing (matches slack.jsh pattern) ---
-
-function parseArgs(args) {
-  const flags = {};
-  const positional = [];
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg.startsWith('--')) {
-      const eq = arg.indexOf('=');
-      if (eq > 0) {
-        flags[arg.substring(2, eq)] = arg.substring(eq + 1);
-      } else {
-        const name = arg.substring(2);
-        if (i + 1 < args.length && !args[i + 1].startsWith('--')) {
-          flags[name] = args[++i];
-        } else {
-          flags[name] = true;
-        }
-      }
-    } else {
-      positional.push(arg);
-    }
-  }
-  return { flags, positional };
 }
 
 // --- Formatters ---
@@ -172,6 +133,10 @@ const SCRAPE_LIST_JS = `
 (async () => {
   const results = { open: [], closed: [] };
 
+  const resp = await fetch(${JSON.stringify(REQUESTS_URL)}, { credentials: 'same-origin' });
+  const html = await resp.text();
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+
   function parseTable(table, status) {
     if (!table) return;
     const rows = table.querySelectorAll('tr.issue_row');
@@ -186,7 +151,7 @@ const SCRAPE_LIST_JS = `
   }
 
   // Find tables by proximity to headings
-  const headings = document.querySelectorAll('h2');
+  const headings = doc.querySelectorAll('h2');
   for (const h of headings) {
     const text = h.textContent.trim().toLowerCase();
     let sibling = h.nextElementSibling;
@@ -203,7 +168,7 @@ const SCRAPE_LIST_JS = `
 
   // Fallback: if no headings matched, try all issue_row tables
   if (results.open.length === 0 && results.closed.length === 0) {
-    const tables = document.querySelectorAll('table');
+    const tables = doc.querySelectorAll('table');
     for (let i = 0; i < tables.length; i++) {
       const status = i === 0 ? 'open' : 'closed';
       parseTable(tables[i], status);
@@ -214,7 +179,7 @@ const SCRAPE_LIST_JS = `
 })()
 `;
 
-function makeScrapeDetailJs(requestId) {
+function makeScrapeDetailJs(detailUrl) {
   return `
 (async () => {
   const result = {
@@ -225,21 +190,25 @@ function makeScrapeDetailJs(requestId) {
     hasResolveForm: false,
   };
 
+  const resp = await fetch(${JSON.stringify(detailUrl)}, { credentials: 'same-origin' });
+  const html = await resp.text();
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+
   // Title
-  const h2 = document.querySelector('h2.no_bottom_margin');
+  const h2 = doc.querySelector('h2.no_bottom_margin');
   result.title = h2 ? h2.textContent.trim() : '';
 
   // Request ID from subtitle
-  const subtle = document.querySelector('p.subtle_silver');
+  const subtle = doc.querySelector('p.subtle_silver');
   if (subtle) {
     const m = subtle.textContent.match(/Support Request #(\\d+)/i);
     if (m) result.requestId = m[1];
   }
 
   // Comments: parse alternating author/timestamp/body blocks
-  const authors = document.querySelectorAll('strong.issue_comment_from');
-  const timestamps = document.querySelectorAll('span.mini');
-  const bodies = document.querySelectorAll('div.break_word');
+  const authors = doc.querySelectorAll('strong.issue_comment_from');
+  const timestamps = doc.querySelectorAll('span.mini');
+  const bodies = doc.querySelectorAll('div.break_word');
 
   const count = Math.min(authors.length, bodies.length);
   for (let i = 0; i < count; i++) {
@@ -251,14 +220,14 @@ function makeScrapeDetailJs(requestId) {
   }
 
   // CSRF crumb from reply form
-  const replyForm = document.querySelector('form#reply_form');
+  const replyForm = doc.querySelector('form#reply_form');
   if (replyForm) {
     const crumbInput = replyForm.querySelector('input[name="crumb"]');
     if (crumbInput) result.crumb = crumbInput.value;
   }
 
   // Check for resolve form
-  const resolveForm = document.querySelector('form#resolve_form');
+  const resolveForm = doc.querySelector('form#resolve_form');
   result.hasResolveForm = !!resolveForm;
   if (resolveForm && !result.crumb) {
     const crumbInput = resolveForm.querySelector('input[name="crumb"]');
@@ -270,12 +239,16 @@ function makeScrapeDetailJs(requestId) {
 `;
 }
 
-function makeReplyJs(requestId, message) {
+function makeReplyJs(requestId, message, detailUrl) {
   const escapedMessage = JSON.stringify(message);
   return `
 (async () => {
+  const pageResp = await fetch(${JSON.stringify(detailUrl)}, { credentials: 'same-origin' });
+  const pageHtml = await pageResp.text();
+  const doc = new DOMParser().parseFromString(pageHtml, 'text/html');
+
   // Get the crumb from the reply form
-  const form = document.querySelector('form#reply_form');
+  const form = doc.querySelector('form#reply_form');
   if (!form) return JSON.stringify({ ok: false, error: 'No reply form found on page' });
 
   const crumbInput = form.querySelector('input[name="crumb"]');
@@ -307,11 +280,15 @@ function makeReplyJs(requestId, message) {
 `;
 }
 
-function makeResolveJs(requestId) {
+function makeResolveJs(requestId, detailUrl) {
   return `
 (async () => {
+  const pageResp = await fetch(${JSON.stringify(detailUrl)}, { credentials: 'same-origin' });
+  const pageHtml = await pageResp.text();
+  const doc = new DOMParser().parseFromString(pageHtml, 'text/html');
+
   // Get the crumb from the resolve form
-  const form = document.querySelector('form#resolve_form');
+  const form = doc.querySelector('form#resolve_form');
   if (!form) return JSON.stringify({ ok: false, error: 'No resolve form found. The request may already be resolved.' });
 
   const crumbInput = form.querySelector('input[name="crumb"]');
@@ -342,13 +319,17 @@ function makeResolveJs(requestId) {
 `;
 }
 
-function makeCreateJs(topicId, title, message) {
+function makeCreateJs(topicId, title, message, newUrl) {
   const escapedTitle = JSON.stringify(title);
   const escapedMessage = JSON.stringify(message);
   return `
 (async () => {
+  const pageResp = await fetch(${JSON.stringify(newUrl)}, { credentials: 'same-origin' });
+  const pageHtml = await pageResp.text();
+  const doc = new DOMParser().parseFromString(pageHtml, 'text/html');
+
   // Get the crumb from the create form
-  const crumbInput = document.querySelector('input[name="crumb"]');
+  const crumbInput = doc.querySelector('input[name="crumb"]');
   if (!crumbInput) return JSON.stringify({ ok: false, error: 'No crumb found on new request page' });
   const crumb = crumbInput.value;
 
@@ -408,8 +389,7 @@ function validateRequestId(id) {
 
 const commands = {
 
-  async list(args) {
-    const { flags } = parseArgs(args);
+  async list(flags, positional) {
     const status = (typeof flags.status === 'string' ? flags.status : 'all').toLowerCase();
 
     if (!['open', 'closed', 'all'].includes(status)) {
@@ -417,7 +397,7 @@ const commands = {
       process.exit(1);
     }
 
-    const data = await evalInSupportTab(SCRAPE_LIST_JS, { navigate: REQUESTS_URL });
+    const data = await evalInSupportTab(SCRAPE_LIST_JS);
 
     if (data.__error) {
       console.error('Error:', data.message);
@@ -458,8 +438,7 @@ const commands = {
     console.log(`\n${openCount} open, ${closedCount} closed.`);
   },
 
-  async view(args) {
-    const { positional } = parseArgs(args);
+  async view(flags, positional) {
     const id = positional[0];
 
     if (!id) {
@@ -469,7 +448,7 @@ const commands = {
     validateRequestId(id);
 
     const detailUrl = `${REQUESTS_URL}/${id}`;
-    const data = await evalInSupportTab(makeScrapeDetailJs(id), { navigate: detailUrl });
+    const data = await evalInSupportTab(makeScrapeDetailJs(detailUrl));
 
     if (data.__error) {
       console.error('Error:', data.message);
@@ -501,8 +480,7 @@ const commands = {
     }
   },
 
-  async reply(args) {
-    const { positional } = parseArgs(args);
+  async reply(flags, positional) {
     const id = positional[0];
     const message = positional.slice(1).join(' ');
 
@@ -513,8 +491,8 @@ const commands = {
 
     const detailUrl = `${REQUESTS_URL}/${id}`;
 
-    // Navigate to detail page to get fresh crumb, then submit reply
-    const data = await evalInSupportTab(makeReplyJs(id, message), { navigate: detailUrl });
+    // Fetch the detail page for a fresh crumb, then submit the reply.
+    const data = await evalInSupportTab(makeReplyJs(id, message, detailUrl));
 
     if (data.__error) {
       console.error('Error:', data.message);
@@ -530,8 +508,7 @@ const commands = {
     if (data.status) console.log(`  Status: ${data.status}`);
   },
 
-  async create(args) {
-    const { flags, positional } = parseArgs(args);
+  async create(flags, positional) {
     const topic = flags.topic;
     const title = flags.title;
     const message = positional.join(' ');
@@ -548,7 +525,7 @@ const commands = {
     const topicId = resolveTopicId(topic);
     const newUrl = `${REQUESTS_URL}/new`;
 
-    const data = await evalInSupportTab(makeCreateJs(topicId, title, message), { navigate: newUrl });
+    const data = await evalInSupportTab(makeCreateJs(topicId, title, message, newUrl));
 
     if (data.__error) {
       console.error('Error:', data.message);
@@ -573,8 +550,7 @@ const commands = {
     console.log(`  Title: ${title}`);
   },
 
-  async resolve(args) {
-    const { positional } = parseArgs(args);
+  async resolve(flags, positional) {
     const id = positional[0];
 
     if (!id) {
@@ -584,7 +560,7 @@ const commands = {
 
     const detailUrl = `${REQUESTS_URL}/${id}`;
 
-    const data = await evalInSupportTab(makeResolveJs(id), { navigate: detailUrl });
+    const data = await evalInSupportTab(makeResolveJs(id, detailUrl));
 
     if (data.__error) {
       console.error('Error:', data.message);
@@ -603,10 +579,11 @@ const commands = {
 
 // --- Main ---
 
-const rawArgs = process.argv.slice(2);
-const [cmd, ...args] = rawArgs;
+const { flags, positional } = process.argv.parseFlags();
+const cmd = positional[0];
+const args = positional.slice(1);
 
-if (!cmd || cmd === 'help' || cmd === '--help') {
+if (!cmd || cmd === 'help') {
   console.log('Slack Support Portal — manage help requests from the command line.\n');
   console.log('Usage: slack-support <command> [args]\n');
   console.log('Commands:');
@@ -637,4 +614,4 @@ if (!commands[cmd]) {
   process.exit(1);
 }
 
-await commands[cmd](args);
+await commands[cmd](flags, args);
