@@ -2,7 +2,7 @@
  * suno.jsh — Suno music generation CLI for SLICC
  *
  * Operates against the authenticated browser session on suno.com via
- * page-context fetch through playwright-cli eval. The user must be
+ * page-context fetch through the sliccy:browser bridge. The user must be
  * logged into suno.com in their browser; the script never reads, prints,
  * or stores the session token — every API call runs inside the page and
  * only the API response leaves the browser context.
@@ -24,7 +24,14 @@
  *   suno extend <clip_id> [--infill]
  *   suno tags [tag1 tag2 ...]
  *   suno playlists | projects | me
+ *
+ * jsh runtime migration (issue #171):
+ *  - Browser access uses the sliccy:browser bridge (findTab / evalAsync)
+ *    instead of the legacy tab-list / eval shell-outs.
+ *  - Argument parsing uses process.argv.parseFlags() instead of a local helper.
  */
+
+const browser = require('sliccy:browser');
 
 const DOMAIN = 'suno.com';
 const BASE_URL = 'https://studio-api-prod.suno.com';
@@ -33,20 +40,12 @@ const DEFAULT_MODEL = 'chirp-fenix';
 // ─── Tab discovery ──────────────────────────────────────────────────────────
 
 async function findTab() {
-  const list = await exec('playwright-cli tab-list');
-  if (list.exitCode !== 0) {
-    console.error('playwright-cli tab-list failed: ' + (list.stderr || list.stdout));
+  const tab = await browser.findTab({ domain: DOMAIN });
+  if (!tab) {
+    console.error('No suno.com tab found. Open https://suno.com in your browser and log in first.');
     process.exit(1);
   }
-  const lines = list.stdout.trim().split('\n');
-  for (const line of lines) {
-    if (line.includes(DOMAIN)) {
-      const m = line.match(/^\[([^\]]+)\]/);
-      if (m) return m[1];
-    }
-  }
-  console.error('No suno.com tab found. Open https://suno.com in your browser and log in first.');
-  process.exit(1);
+  return tab;
 }
 
 // ─── Page-context fetch ─────────────────────────────────────────────────────
@@ -79,21 +78,29 @@ async function sunoFetch(tabId, method, path, body) {
       }
     })()
   `.trim();
-  const escaped = jsCode.replace(/'/g, "'\\''");
-  const result = await exec(`playwright-cli eval --tab=${tabId} '${escaped}'`);
-  if (result.exitCode !== 0) {
-    console.error('eval failed: ' + (result.stderr || result.stdout));
+  let parsed;
+  try {
+    parsed = await browser.evalAsync(tabId, jsCode);
+  } catch (e) {
+    console.error('eval failed: ' + (e && e.message ? e.message : String(e)));
     process.exit(1);
   }
-  let raw = result.stdout.trim();
-  let parsed;
-  try { parsed = JSON.parse(raw); }
-  catch (e) {
-    try { parsed = JSON.parse(JSON.parse(raw)); }
-    catch (e2) {
-      console.error('Failed to parse response: ' + raw.slice(0, 500));
-      process.exit(1);
+  // browser.evalAsync unwraps the page's JSON.stringify(...) result to a value;
+  // defensively parse if a raw JSON string comes back instead.
+  if (typeof parsed === 'string') {
+    const raw = parsed.trim();
+    try { parsed = JSON.parse(raw); }
+    catch (e) {
+      try { parsed = JSON.parse(JSON.parse(raw)); }
+      catch (e2) {
+        console.error('Failed to parse response: ' + raw.slice(0, 500));
+        process.exit(1);
+      }
     }
+  }
+  if (parsed === null || parsed === undefined) {
+    console.error('Failed to parse response: empty result');
+    process.exit(1);
   }
   if (parsed.error === 'NOT_AUTHENTICATED') {
     console.error('Not authenticated. Sign in to suno.com in the browser tab and retry.');
@@ -122,31 +129,15 @@ async function api(method, path, body) {
   return sunoFetch(_tabId, method, path, body);
 }
 
-// ─── Flag parsing ───────────────────────────────────────────────────────────
-
-function parseFlags(args) {
-  const flags = {};
-  for (const arg of args) {
-    if (arg.startsWith('--')) {
-      const eq = arg.indexOf('=');
-      if (eq > 0) flags[arg.slice(2, eq)] = arg.slice(eq + 1);
-      else flags[arg.slice(2)] = true;
-    }
-  }
-  return flags;
-}
-
-
 // ─── Commands ───────────────────────────────────────────────────────────────
 
 const commands = {
 
-  async generate(...args) {
-    const flags = parseFlags(args);
+  async generate(positional, flags) {
     if (flags.simple !== undefined) {
       const description = typeof flags.simple === 'string'
         ? flags.simple
-        : args.filter(a => !a.startsWith('--')).join(' ');
+        : positional.join(' ');
       if (!description) {
         console.error('Usage: suno generate --simple "a funky disco track about robots"');
         process.exit(1);
@@ -187,9 +178,8 @@ const commands = {
     return api('POST', '/api/generate/v2-web/', body);
   },
 
-  async poll(...args) {
-    const ids = args.filter(a => !a.startsWith('--'));
-    const flags = parseFlags(args);
+  async poll(positional, flags) {
+    const ids = positional;
     if (ids.length === 0) {
       console.error('Usage: suno poll <clip_id> [...] [--wait] [--timeout=300]');
       process.exit(1);
@@ -221,8 +211,7 @@ const commands = {
     }));
   },
 
-  async feed(...args) {
-    const flags = parseFlags(args);
+  async feed(positional, flags) {
     const page = parseInt(flags.page || '0', 10);
     const result = await api('POST', '/api/feed/v3', { page });
     const clips = result.clips || [];
@@ -238,24 +227,22 @@ const commands = {
     };
   },
 
-  async clip(...args) {
-    const id = args.find(a => !a.startsWith('--'));
+  async clip(positional, flags) {
+    const id = positional[0];
     if (!id) { console.error('Usage: suno clip <clip_id>'); process.exit(1); }
     return api('GET', `/api/clip/${id}`);
   },
 
-  async search(...args) {
-    const flags = parseFlags(args);
-    const term = args.filter(a => !a.startsWith('--')).join(' ');
+  async search(positional, flags) {
+    const term = positional.join(' ');
     if (!term) { console.error('Usage: suno search "query" [--type=public_song]'); process.exit(1); }
     return api('POST', '/api/search/', {
       search_queries: [{ term, search_type: flags.type || 'public_song' }]
     });
   },
 
-  async lyrics(...args) {
-    const flags = parseFlags(args);
-    const prompt = args.filter(a => !a.startsWith('--')).join(' ');
+  async lyrics(positional, flags) {
+    const prompt = positional.join(' ');
     if (!prompt) { console.error('Usage: suno lyrics "description" [--wait]'); process.exit(1); }
     const result = await api('POST', '/api/generate/lyrics-pair', { prompt });
     const lyricsId = result.id;
@@ -274,15 +261,14 @@ const commands = {
     return { id: lyricsId, status: 'submitted', message: 'Use --wait to poll until complete' };
   },
 
-  async 'lyrics-status'(...args) {
-    const id = args[0];
+  async 'lyrics-status'(positional, flags) {
+    const id = positional[0];
     if (!id) { console.error('Usage: suno lyrics-status <id>'); process.exit(1); }
     return api('GET', `/api/generate/lyrics/${id}`);
   },
 
-  async trash(...args) {
-    const flags = parseFlags(args);
-    const ids = args.filter(a => !a.startsWith('--'));
+  async trash(positional, flags) {
+    const ids = positional;
     if (ids.length === 0) { console.error('Usage: suno trash <id> [...] [--restore]'); process.exit(1); }
     return api('POST', '/api/gen/trash', { trash: flags.restore === undefined, clip_ids: ids });
   },
@@ -298,16 +284,14 @@ const commands = {
     };
   },
 
-  async rename(...args) {
-    const flags = parseFlags(args);
-    const id = args.find(a => !a.startsWith('--'));
+  async rename(positional, flags) {
+    const id = positional[0];
     if (!id || !flags.title) { console.error('Usage: suno rename <id> --title "..."'); process.exit(1); }
     return api('POST', `/api/gen/${id}/set_metadata/`, { title: flags.title });
   },
 
-  async visibility(...args) {
-    const flags = parseFlags(args);
-    const id = args.find(a => !a.startsWith('--'));
+  async visibility(positional, flags) {
+    const id = positional[0];
     if (!id || flags.public === undefined) {
       console.error('Usage: suno visibility <id> --public=true|false');
       process.exit(1);
@@ -315,15 +299,14 @@ const commands = {
     return api('POST', `/api/gen/${id}/set_visibility/`, { is_public: flags.public === 'true' || flags.public === true });
   },
 
-  async extend(...args) {
-    const flags = parseFlags(args);
-    const id = args.find(a => !a.startsWith('--'));
+  async extend(positional, flags) {
+    const id = positional[0];
     if (!id) { console.error('Usage: suno extend <id> [--infill]'); process.exit(1); }
     return api('POST', '/api/generate/concat/v2/', { clip_id: id, is_infill: flags.infill !== undefined });
   },
 
-  async tags(...args) {
-    const tags = args.filter(a => !a.startsWith('--'));
+  async tags(positional, flags) {
+    const tags = positional;
     if (tags.length === 0) return api('GET', '/api/generate/get_recommend_styles');
     return api('POST', '/api/tags/recommend', { tags });
   },
@@ -331,9 +314,8 @@ const commands = {
   async playlists() { return api('GET', '/api/playlist/me'); },
   async projects() { return api('GET', '/api/project/me'); },
 
-  async personas(...args) {
-    const flags = parseFlags(args);
-    const term = args.filter(a => !a.startsWith('--')).join(' ') || '';
+  async personas(positional, flags) {
+    const term = positional.join(' ') || '';
     const searchType = flags.favorites ? 'public_persona' : 'library_persona';
     const result = await api('POST', '/api/search/', {
       search_queries: [{ term, search_type: searchType }]
@@ -345,16 +327,19 @@ const commands = {
       image_url: p.image_url, clip_id: p.root_clip_id
     }));
   },
-  async voices(...args) { return commands.personas(...args); },
+  async voices(positional, flags) { return commands.personas(positional, flags); },
 
   async me() { return api('GET', '/api/user/me'); }
 };
 
 // ─── Main ───────────────────────────────────────────────────────────────────
 
-const [,, cmd, ...args] = process.argv;
+const { positional: _allPositional, flags } = process.argv.parseFlags();
+const cmd = _allPositional[0] || '';
+const positional = _allPositional.slice(1);
+const helpRequested = !cmd || cmd === 'help' || cmd === '-h' || flags.help || flags.h;
 
-if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h' || (!commands[cmd] && cmd !== 'voices')) {
+if (helpRequested || (!commands[cmd] && cmd !== 'voices')) {
   console.log(`suno — Suno music generation CLI
 
 Requires: an authenticated suno.com tab open in the browser. The session
@@ -390,8 +375,8 @@ Examples:
   suno generate --lyrics "[Verse]\\n..." --tags "indie rock" --title "Test"
   suno poll abc123 --wait --timeout=120
   suno feed --page=0`);
-  process.exit(cmd === 'help' || cmd === '--help' || cmd === '-h' ? 0 : 1);
+  process.exit(helpRequested ? 0 : 1);
 }
 
-const result = await commands[cmd](...args);
+const result = await commands[cmd](positional, flags);
 console.log(JSON.stringify(result, null, 2));
