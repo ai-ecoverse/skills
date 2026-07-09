@@ -10,6 +10,11 @@
 //
 // With no positional args, auto-discovers monday-compatible commands on PATH.
 
+// Runtime bridges: the jsh runtime no longer injects `exec`/`fs` as bare
+// globals; obtain them explicitly. `exec` is callable directly.
+const exec = require('sliccy:exec');
+const fs = require('fs');
+
 // ─── Argument Parsing ────────────────────────────────────────────────────────
 
 const args = process.argv.slice(2); // argv[0]=node, argv[1]=script path, argv[2+]=actual args
