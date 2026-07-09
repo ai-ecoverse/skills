@@ -109,7 +109,7 @@ if (vocabViolations > 0) {
 }
 process.stdout.write('\n');
 
-// ââ Section 3: Phrase Patterns âââââââââââââââââââââââââââââââ
+// ── Section 3: Phrase Patterns ───────────────────────────────
 
 process.stdout.write('## 3. Phrase Patterns\n\n');
 
