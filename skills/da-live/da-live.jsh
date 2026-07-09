@@ -3,6 +3,11 @@
 //        da-live schema <path> [--sheet <name>]
 //        da-live recalc <path>
 
+// Runtime bridges: former bare globals are now require('sliccy:<name>') (issue #168).
+const cli = require('sliccy:cli');
+const c = require('sliccy:color'); // former bare `c` color global
+const fs = require('fs'); // plain node-ish builtin, not a sliccy: module
+
 const { positional, flags } = process.argv.parseFlags();
 const [cmd, filePath, rowsArg] = positional;
 
