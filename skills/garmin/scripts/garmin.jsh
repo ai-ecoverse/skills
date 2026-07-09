@@ -1,5 +1,13 @@
 // garmin.jsh — Garmin Connect CLI (DI OAuth2 Bearer token against connectapi.garmin.com)
 
+// Runtime bridges: former bare globals are now require('sliccy:<name>') (issue #168).
+const cli = require('sliccy:cli');
+const fmt = require('sliccy:fmt');
+const skill = require('sliccy:skill');
+const http = require('sliccy:http');
+const exec = require('sliccy:exec');
+const c = require('sliccy:color'); // former bare `c` color global
+
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const CLIENT_ID   = 'GARMIN_CONNECT_MOBILE_ANDROID_DI_2025Q2';
