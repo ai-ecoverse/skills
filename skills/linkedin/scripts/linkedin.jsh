@@ -14,6 +14,14 @@
 //   linkedin monday [--limit N] [--date Nd]  Monday protocol aggregation
 //   linkedin help                      Show this help
 //
+// MIGRATION (issue #166): removed all playwright shell-outs and raw ANSI escape
+// codes. Tab discovery/open, cookie reads, page-context fetches, media-upload
+// PUTs, and profile navigation/extraction now go through the sliccy:browser
+// bridge (findTab / ensureTab / cookie / eval / evalAsync / fetch); console
+// colours now use the sliccy:color module. Subcommands, flags, output text and
+// exit codes are unchanged, except the profile vanity-name path now reads
+// name/headline from the DOM instead of the accessibility-tree snapshot (the
+// browser bridge has no snapshot equivalent).
 // ┌─────────────────────────────────────────────────────────────────────────────┐
 // │ FIX — explicit sliccy: module imports (this commit)                        │
 // │                                                                             │
@@ -28,7 +36,7 @@
 // │    gh.jsh/gmail.jsh/outlook.jsh ports this session): this script does not  │
 // │    use `skill`, `cli`, `fmt`, `c`/`color`, `http`, `browser`, `time`, or    │
 // │    `pool` anywhere — it drives the LinkedIn tab entirely through          │
-// │    `exec('playwright-cli ...')` shell-outs, not the `sliccy:browser`       │
+// │    `exec('playwright ...')` shell-outs, not the `sliccy:browser`       │
 // │    bridge — so none of those were imported.                               │
 // │  • Added `const fs = require('fs');` (VFS bridge, not a `sliccy:` module). │
 // │    This script's `fs.readFile` / `fs.writeFile` / `fs.stat` / `fs.rm` call │
@@ -46,6 +54,8 @@
 
 const exec = require('sliccy:exec');
 const fs = require('fs'); // VFS bridge, not a sliccy: module
+const browser = require('sliccy:browser'); // page-context CDP bridge (replaces playwright shell-outs)
+const color = require('sliccy:color'); // console colours (replaces raw ANSI escapes)
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
@@ -126,51 +136,49 @@ function validateVanityName(name) {
 
 // ─── Tab Management ──────────────────────────────────────────────────────────
 
-var _tabId = null;
+var _tab = null;
 
 async function ensureTab() {
-  if (_tabId) return _tabId;
+  if (_tab) return _tab;
 
-  var list = await exec('playwright-cli tab-list');
-  if (list.exitCode !== 0) {
-    console.error('Failed to list browser tabs. Ensure the browser is running.');
-    process.exit(1);
-  }
-  // Match tab IDs (hex or other formats)
-  var match = list.stdout.match(/\[([^\]]+)\]\s+https?:\/\/[^\s]*linkedin\.com/);
-  if (match) {
-    _tabId = match[1];
-    return _tabId;
+  var tab = await browser.findTab({ urlMatch: /linkedin\.com/ });
+  if (tab) {
+    _tab = tab;
+    return _tab;
   }
 
-  var r = await exec('playwright-cli open https://www.linkedin.com/company/' + COMPANY_ID + '/admin/page-posts/published/');
-  if (r.exitCode !== 0) {
-    console.error('Failed to open LinkedIn tab:', r.stderr || 'unknown error');
+  try {
+    tab = await browser.ensureTab('https://www.linkedin.com/company/' + COMPANY_ID + '/admin/page-posts/published/');
+  } catch (e) {
+    console.error('Failed to open LinkedIn tab:', (e && e.message) ? e.message : 'unknown error');
     process.exit(1);
   }
-  var m = r.stdout.match(/targetId:\s*([^\s\]]+)/);
-  _tabId = m ? m[1] : null;
-  if (!_tabId) {
+  if (!tab) {
     console.error('Failed to open LinkedIn tab. Ensure LinkedIn is accessible.');
     process.exit(1);
   }
 
   await new Promise(function(resolve) { setTimeout(resolve, 3000); });
-  return _tabId;
+  _tab = tab;
+  return _tab;
 }
 
 // ─── CSRF Token ──────────────────────────────────────────────────────────────
 
 async function getCsrfToken(tabId) {
-  var r = await exec('playwright-cli cookie-get JSESSIONID --tab=' + tabId);
-  if (r.exitCode !== 0) {
+  var raw;
+  try {
+    raw = await browser.cookie(tabId, 'JSESSIONID');
+  } catch (e) {
     console.error('Failed to read LinkedIn cookies. Is the LinkedIn tab still open?');
-    if (r.stderr) console.error('  ' + r.stderr.trim());
+    if (e && e.message) console.error('  ' + String(e.message).trim());
     process.exit(1);
   }
-  var raw = r.stdout.trim();
-  // Cookie may come back as JSESSIONID="ajax:..." (quoted, legacy format) or
-  // JSESSIONID=ajax:...\tDomain=...\tPath=... (unquoted, tab-separated metadata)
+  raw = (raw || '').trim();
+  // browser.cookie returns the raw cookie value, which for JSESSIONID is a
+  // quote-wrapped string like "ajax:...". Strip the surrounding quotes. The
+  // JSESSIONID=... matchers are kept as defensive fallbacks in case a future
+  // bridge revision hands back the full name=value pair.
   var token = '';
   var quoted = raw.match(/JSESSIONID="([^"]+)"/);
   if (quoted) {
@@ -194,56 +202,57 @@ async function getCsrfToken(tabId) {
 
 async function pageContextFetch(tabId, csrfToken, url, options) {
   var method = (options && options.method) || 'GET';
-  var body = (options && options.body) ? JSON.stringify(options.body) : 'undefined';
 
-  var jsCode = [
-    '(async () => {',
-    '  var opts = {',
-    '    method: "' + method + '",',
-    '    credentials: "include",',
-    '    headers: {',
-    '      "csrf-token": "' + csrfToken + '",',
-    '      "x-restli-protocol-version": "2.0.0",',
-    '      "accept": "application/vnd.linkedin.normalized+json+2.1",',
-    '      "x-li-lang": "en_US"',
-    method === 'POST' ? '      ,"content-type": "application/json; charset=UTF-8"' : '',
-    method === 'POST' ? '      ,"x-li-pem-metadata": "Voyager - Sharing - CreateShare=sharing-create-content,Voyager - Organization - Admin=organization-create-post-as-page"' : '',
-    '    }',
-    body !== 'undefined' ? '    ,body: ' + JSON.stringify(body) : '',
-    '  };',
-    '  var resp = await fetch("' + url.replace(/"/g, '\\"') + '", opts);',
-    '  var text = await resp.text();',
-    '  if (!resp.ok) return JSON.stringify({ __error: resp.status, detail: text.substring(0, 500) });',
-    '  return text;',
-    '})()'
-  ].join(' ');
-
-  var result = await exec('playwright-cli eval --tab=' + tabId + ' ' + JSON.stringify(jsCode));
-  if (result.exitCode !== 0) {
-    throw new Error('Eval failed: ' + result.stderr);
+  var headers = {
+    'csrf-token': csrfToken,
+    'x-restli-protocol-version': '2.0.0',
+    'accept': 'application/vnd.linkedin.normalized+json+2.1',
+    'x-li-lang': 'en_US'
+  };
+  if (method === 'POST') {
+    headers['content-type'] = 'application/json; charset=UTF-8';
+    headers['x-li-pem-metadata'] = 'Voyager - Sharing - CreateShare=sharing-create-content,Voyager - Organization - Admin=organization-create-post-as-page';
   }
 
-  var raw = result.stdout.trim();
-  var parsed;
+  var fetchOpts = { method: method, headers: headers, credentials: 'include' };
+  if (options && options.body) {
+    fetchOpts.body = JSON.stringify(options.body);
+  }
+
+  var resp;
   try {
-    parsed = JSON.parse(raw);
+    resp = await browser.fetch(tabId, url, fetchOpts);
   } catch (e) {
-    // Non-JSON response — likely a login wall or HTML error page
-    var preview = raw.substring(0, 200);
-    if (preview.includes('<html') || preview.includes('<!DOCTYPE')) {
-      console.error('LinkedIn returned HTML instead of JSON. Session may have expired.');
-      console.error('Please log into LinkedIn in your browser and try again.');
-      process.exit(1);
-    }
-    throw new Error('Unexpected response (not JSON): ' + preview);
+    throw new Error('Eval failed: ' + ((e && e.message) ? e.message : e));
   }
 
-  if (parsed && parsed.__error) {
-    if (parsed.__error === 401 || parsed.__error === 403) {
-      console.error('Auth failed (' + parsed.__error + '). Please log into LinkedIn in your browser.');
+  if (!resp.ok) {
+    if (resp.status === 401 || resp.status === 403) {
+      console.error('Auth failed (' + resp.status + '). Please log into LinkedIn in your browser.');
       process.exit(1);
     }
-    throw new Error('API error ' + parsed.__error + ': ' + (parsed.detail || '').substring(0, 200));
+    var detail = (typeof resp.body === 'string') ? resp.body : JSON.stringify(resp.body);
+    throw new Error('API error ' + resp.status + ': ' + (detail || '').substring(0, 200));
+  }
+
+  // browser.fetch parses JSON automatically when the response Content-Type is
+  // application/json; LinkedIn's normalized+json responses arrive as text, so
+  // parse those here (with the same login-wall detection as before).
+  var parsed = resp.body;
+  if (typeof parsed === 'string') {
+    var raw = parsed.trim();
+    try {
+      parsed = JSON.parse(raw);
+    } catch (e) {
+      // Non-JSON response — likely a login wall or HTML error page
+      var preview = raw.substring(0, 200);
+      if (preview.includes('<html') || preview.includes('<!DOCTYPE')) {
+        console.error('LinkedIn returned HTML instead of JSON. Session may have expired.');
+        console.error('Please log into LinkedIn in your browser and try again.');
+        process.exit(1);
+      }
+      throw new Error('Unexpected response (not JSON): ' + preview);
+    }
   }
 
   return parsed;
@@ -450,25 +459,21 @@ async function uploadMediaBytes(tabId, csrfToken, singleUploadUrl, mediaPath, si
     '  const blob = new Blob([bytes], { type: TYPE });',
     '  const headers = Object.assign({}, EXTRA, { "Csrf-Token": CSRF });',
     '  const resp = await fetch(URL_, { method: "PUT", body: blob, headers: headers, credentials: "include" });',
-    '  return JSON.stringify({ status: resp.status, ok: resp.ok });',
+    '  return { status: resp.status, ok: resp.ok };',
     '})()'
   ].join('\n');
 
-  // Write the script to a temp file and run via eval-file — keeps the giant
-  // base64 blob out of the shell argv length budget. Use /shared (VFS) so the
-  // playwright-cli runner can read the file regardless of host /tmp scoping.
-  var tmpDir = '/shared/.cache/linkedin';
-  await exec('mkdir -p ' + JSON.stringify(tmpDir));
-  var tmpPath = tmpDir + '/media-upload-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8) + '.js';
-  await fs.writeFile(tmpPath, script);
-  var r = await exec('playwright-cli eval-file ' + JSON.stringify(tmpPath) + ' --tab=' + tabId);
-  await exec('rm -f ' + JSON.stringify(tmpPath)).catch(function() {});
-  if (r.exitCode !== 0) {
-    throw new Error('uploadMediaBytes eval failed: ' + (r.stderr || r.stdout));
-  }
+  // Run the upload script in the LinkedIn tab's page context via the browser
+  // bridge. evalAsync inlines the (large) base64 blob into the CDP eval source
+  // and returns the parsed result object directly — no temp file, no eval-file.
   var parsed;
-  try { parsed = JSON.parse(r.stdout.trim()); } catch (e) {
-    throw new Error('uploadMediaBytes: unexpected eval output: ' + r.stdout.substring(0, 200));
+  try {
+    parsed = await browser.evalAsync(tabId, script);
+  } catch (e) {
+    throw new Error('uploadMediaBytes eval failed: ' + ((e && e.message) ? e.message : e));
+  }
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('uploadMediaBytes: unexpected eval output: ' + JSON.stringify(parsed).substring(0, 200));
   }
   // LinkedIn's dms-uploads PUT may return 200 or 201 depending on the storage
   // backend variant — accept any 2xx (resp.ok in the eval payload).
@@ -846,44 +851,43 @@ async function getProfile(identifier) {
     return await fetchProfileByUrn(tabId, csrfToken, memberUrn);
   }
 
-  // It's a vanity name — navigate to the profile and extract data from the page
+  // It's a vanity name — navigate the LinkedIn tab to the profile and extract
+  // data from the loaded page via the browser bridge.
   var profileUrl = 'https://www.linkedin.com/in/' + encodeURIComponent(identifier) + '/';
-  await exec('playwright-cli goto ' + JSON.stringify(profileUrl) + ' --tab=' + tabId);
+  await browser.eval(tabId, 'window.location.href = ' + JSON.stringify(profileUrl) + '; "ok"');
   await new Promise(function(resolve) { setTimeout(resolve, 3000); });
-
-  // Get the snapshot for structured data
-  var snap = await exec('playwright-cli snapshot --tab=' + tabId);
-  var lines = snap.stdout.split('\n');
 
   var profile = { vanityName: identifier, url: profileUrl };
 
-  // Parse key info from accessibility tree
-  for (var j = 0; j < lines.length; j++) {
-    var line = lines[j];
-    if (line.includes('heading') && !profile.name && j < 30) {
-      var nameMatch = line.match(/heading "([^"]+)"/);
-      if (nameMatch && !nameMatch[1].includes('navigation') && !nameMatch[1].includes('notification')) {
-        profile.name = nameMatch[1];
-      }
-    }
-    if (line.includes('text "') && profile.name && !profile.headline) {
-      var headlineMatch = line.match(/text "([^"]+)"/);
-      if (headlineMatch && headlineMatch[1].length > 5 && headlineMatch[1].length < 200 && !headlineMatch[1].includes('notification')) {
-        profile.headline = headlineMatch[1];
-      }
-    }
-  }
+  // Extract name, headline, and member URN from the loaded profile DOM. This
+  // replaces the old accessibility-tree snapshot scrape (the browser bridge has
+  // no snapshot equivalent); the member-URN path below stays the primary,
+  // reliable source of full profile data.
+  var extracted = null;
+  try {
+    extracted = await browser.eval(tabId, function () {
+      var out = { name: null, headline: null, memberUrn: null };
+      var h1 = document.querySelector('h1');
+      if (h1 && h1.textContent) out.name = h1.textContent.trim();
+      var hl = document.querySelector('.text-body-medium.break-words') ||
+               document.querySelector('.text-body-medium');
+      if (hl && hl.textContent) out.headline = hl.textContent.trim();
+      var m = document.body.innerHTML.match(/ACoA[A-Za-z0-9_-]{30,50}/);
+      if (m) out.memberUrn = m[0];
+      return out;
+    });
+  } catch (e) {}
+  extracted = extracted || {};
+  if (extracted.name) profile.name = extracted.name;
+  if (extracted.headline) profile.headline = extracted.headline;
 
-  // Also try to extract the member URN from the page to get full data
-  var urnResult = await exec('playwright-cli eval --tab=' + tabId + ' "(() => { var html = document.body.innerHTML; var m = html.match(/ACoA[A-Za-z0-9_-]{30,50}/); return m ? m[0] : null; })()"');
-  var memberUrnFromPage = urnResult.stdout.trim();
-
-  if (memberUrnFromPage && memberUrnFromPage !== 'null') {
+  var memberUrnFromPage = extracted.memberUrn;
+  if (memberUrnFromPage) {
     try {
       var fullProfile = await fetchProfileByUrn(tabId, csrfToken, memberUrnFromPage);
       return Object.assign(profile, fullProfile);
     } catch (e) {
-      // Fall back to snapshot data
+      // Fall back to DOM-extracted data
     }
   }
 
@@ -1248,54 +1252,53 @@ function formatTimestamp(ms) {
 
 async function messagingFetch(tabId, csrfToken, url, options) {
   var method = (options && options.method) || 'GET';
-  var body = (options && options.body) ? JSON.stringify(options.body) : 'undefined';
+  var accept = (options && options.accept) || (method === 'POST' ? 'application/json' : 'application/graphql');
 
-  var jsCode = [
-    '(async () => {',
-    '  var opts = {',
-    '    method: "' + method + '",',
-    '    credentials: "include",',
-    '    headers: {',
-    '      "csrf-token": "' + csrfToken + '",',
-    '      "x-restli-protocol-version": "2.0.0",',
-    '      "accept": "' + ((options && options.accept) || (method === 'POST' ? 'application/json' : 'application/graphql')) + '",',
-    '      "x-li-lang": "en_US"',
-    method === 'POST' ? '      ,"content-type": "application/json; charset=UTF-8"' : '',
-    method === 'POST' ? '      ,"x-li-page-instance": "urn:li:page:d_flagship3_messaging;slicc"' : '',
-    '    }',
-    body !== 'undefined' ? '    ,body: ' + JSON.stringify(body) : '',
-    '  };',
-    '  var resp = await fetch("' + url.replace(/"/g, '\\"') + '", opts);',
-    '  var text = await resp.text();',
-    '  if (!resp.ok) return JSON.stringify({ __error: resp.status, detail: text.substring(0, 500) });',
-    '  return text;',
-    '})()'
-  ].join(' ');
-
-  var evalResult = await exec('playwright-cli eval --tab=' + tabId + ' ' + JSON.stringify(jsCode));
-  if (evalResult.exitCode !== 0) {
-    throw new Error('Eval failed: ' + evalResult.stderr);
+  var headers = {
+    'csrf-token': csrfToken,
+    'x-restli-protocol-version': '2.0.0',
+    'accept': accept,
+    'x-li-lang': 'en_US'
+  };
+  if (method === 'POST') {
+    headers['content-type'] = 'application/json; charset=UTF-8';
+    headers['x-li-page-instance'] = 'urn:li:page:d_flagship3_messaging;slicc';
   }
 
-  var raw = evalResult.stdout.trim();
-  var parsed;
+  var fetchOpts = { method: method, headers: headers, credentials: 'include' };
+  if (options && options.body) {
+    fetchOpts.body = JSON.stringify(options.body);
+  }
+
+  var resp;
   try {
-    parsed = JSON.parse(raw);
+    resp = await browser.fetch(tabId, url, fetchOpts);
   } catch (e) {
-    var preview = raw.substring(0, 200);
-    if (preview.includes('<html') || preview.includes('<!DOCTYPE')) {
-      console.error('LinkedIn returned HTML instead of JSON. Session may have expired.');
-      process.exit(1);
-    }
-    throw new Error('Unexpected response (not JSON): ' + preview);
+    throw new Error('Eval failed: ' + ((e && e.message) ? e.message : e));
   }
 
-  if (parsed && parsed.__error) {
-    if (parsed.__error === 401 || parsed.__error === 403) {
-      console.error('Auth failed (' + parsed.__error + '). Please log into LinkedIn in your browser.');
+  if (!resp.ok) {
+    if (resp.status === 401 || resp.status === 403) {
+      console.error('Auth failed (' + resp.status + '). Please log into LinkedIn in your browser.');
       process.exit(1);
     }
-    throw new Error('API error ' + parsed.__error + ': ' + (parsed.detail || '').substring(0, 200));
+    var detail = (typeof resp.body === 'string') ? resp.body : JSON.stringify(resp.body);
+    throw new Error('API error ' + resp.status + ': ' + (detail || '').substring(0, 200));
+  }
+
+  var parsed = resp.body;
+  if (typeof parsed === 'string') {
+    var raw = parsed.trim();
+    try {
+      parsed = JSON.parse(raw);
+    } catch (e) {
+      var preview = raw.substring(0, 200);
+      if (preview.includes('<html') || preview.includes('<!DOCTYPE')) {
+        console.error('LinkedIn returned HTML instead of JSON. Session may have expired.');
+        process.exit(1);
+      }
+      throw new Error('Unexpected response (not JSON): ' + preview);
+    }
   }
 
   return parsed;
@@ -1374,14 +1377,14 @@ async function getInbox(options) {
 
   // Human-readable output
   var output = [];
-  output.push('\x1b[1mInbox' + (unreadOnly ? ' (unread only)' : '') + '\x1b[0m  \u2014  ' + conversations.length + ' conversations\n');
+  output.push(color.bold('Inbox' + (unreadOnly ? ' (unread only)' : '')) + '  \u2014  ' + conversations.length + ' conversations\n');
   conversations.forEach(function(c) {
-    var unreadMarker = c.unread ? '\x1b[33m\u25cf\x1b[0m ' : '  ';
+    var unreadMarker = c.unread ? color.yellow('\u25cf') + ' ' : '  ';
     var names = c.participants.join(', ') || '(unknown)';
     var preview = c.lastMessage ? (c.lastSender ? c.lastSender + ': ' : '') + c.lastMessage : '(no messages)';
-    output.push(unreadMarker + '\x1b[1m' + names + '\x1b[0m  \x1b[2m' + c.lastActivityAgo + '\x1b[0m');
+    output.push(unreadMarker + color.bold(names) + '  ' + color.dim(c.lastActivityAgo));
     output.push('  ' + preview);
-    output.push('  \x1b[2m' + c.conversationUrn + '\x1b[0m');
+    output.push('  ' + color.dim(c.conversationUrn));
     output.push('');
   });
 
@@ -1440,9 +1443,9 @@ async function getMessages(conversationUrn, options) {
 
   // Human-readable output
   var output = [];
-  output.push('\x1b[1mConversation\x1b[0m  \x1b[2m' + conversationUrn + '\x1b[0m\n');
+  output.push(color.bold('Conversation') + '  ' + color.dim(conversationUrn) + '\n');
   messages.forEach(function(m) {
-    output.push('\x1b[1m' + (m.sender || 'Unknown') + '\x1b[0m  \x1b[2m' + m.deliveredAgo + '\x1b[0m');
+    output.push(color.bold(m.sender || 'Unknown') + '  ' + color.dim(m.deliveredAgo));
     output.push('  ' + m.text);
     output.push('');
   });
@@ -1547,10 +1550,10 @@ async function searchContacts(query) {
 
   // Human-readable output
   var output = [];
-  output.push('\x1b[1mSearch results for "' + query + '"\x1b[0m  \u2014  ' + contacts.length + ' contacts\n');
+  output.push(color.bold('Search results for "' + query + '"') + '  \u2014  ' + contacts.length + ' contacts\n');
   contacts.forEach(function(c) {
-    output.push('  \x1b[1m' + c.name + '\x1b[0m' + (c.headline ? '  \x1b[2m' + c.headline + '\x1b[0m' : ''));
-    output.push('  \x1b[2m' + c.profileUrn + '\x1b[0m');
+    output.push('  ' + color.bold(c.name) + (c.headline ? '  ' + color.dim(c.headline) : ''));
+    output.push('  ' + color.dim(c.profileUrn));
     output.push('');
   });
 
