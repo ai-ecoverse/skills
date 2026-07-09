@@ -1,4 +1,4 @@
-// Slack Support Portal client — scrapes adobe-dx-support.enterprise.slack.com
+// Slack Support Portal client — scrapes a Slack Enterprise support portal.
 // Uses the sliccy:browser bridge to interact with the server-rendered support portal.
 // Cookie-based auth via existing browser session — no REST API available.
 //
@@ -8,12 +8,53 @@
 //   • Each page script fetches its target page same-origin and parses the
 //     server-rendered HTML with DOMParser — no navigation or temp files needed.
 //   • Argument parsing uses process.argv.parseFlags() instead of a manual loop.
+//
+// Follow-up hardening (post-migration review)
+//   • The support-portal domain is no longer hardcoded. Resolution order:
+//     `--domain=<host>` flag > `skill.config().domain` > built-in default.
+//     Set a workspace-specific default with:
+//       slack-support config --domain=your-org.enterprise.slack.com
+//   • findSupportTab() now opens the portal tab automatically via
+//     browser.ensureTab() when no matching tab is already open, instead of
+//     erroring out and telling the user to open one by hand (matches the
+//     browser.findTab()-then-browser.ensureTab() fallback pattern used in
+//     the merged fluffyjaws migration).
+//   • Fixed a pre-existing scrape bug in `list`: open/closed status was
+//     inferred by walking from each <h2> heading to the "nearest following
+//     <table>", which mislabels every row as "open" whenever the account
+//     has zero open requests (the generic "Your Help Requests" heading
+//     greedily claims the Closed Requests table because no Open Requests
+//     heading/table exists to compete with it). Status is now read directly
+//     off each row's own `data-js="open-request"|"closed-request"` marker,
+//     which every row already carries — no heading inference needed.
 
 const browser = require('sliccy:browser');
+const skill = require('sliccy:skill');
 
-const SUPPORT_DOMAIN = 'adobe-dx-support.enterprise.slack.com';
-const BASE_URL = `https://${SUPPORT_DOMAIN}`;
-const REQUESTS_URL = `${BASE_URL}/help/requests`;
+const DEFAULT_SUPPORT_DOMAIN = 'adobe-dx-support.enterprise.slack.com';
+
+// Resolved once at startup in Main (see bottom of file) — do not read these
+// before resolveSupportDomain() has run.
+let SUPPORT_DOMAIN = DEFAULT_SUPPORT_DOMAIN;
+let BASE_URL = `https://${SUPPORT_DOMAIN}`;
+let REQUESTS_URL = `${BASE_URL}/help/requests`;
+
+async function loadConfig() {
+  try {
+    return (await skill.config()) || {};
+  } catch (_) {
+    return {};
+  }
+}
+
+// --domain=<host> flag wins, then skill.config().domain (persisted via
+// `slack-support config --domain=...`), then the built-in default.
+async function resolveSupportDomain(flags) {
+  if (typeof flags.domain === 'string' && flags.domain) return flags.domain;
+  const cfg = await loadConfig();
+  if (cfg && typeof cfg.domain === 'string' && cfg.domain) return cfg.domain;
+  return DEFAULT_SUPPORT_DOMAIN;
+}
 
 // --- Topic mapping ---
 
@@ -72,14 +113,20 @@ let _tab = null;
 async function findSupportTab() {
   if (_tab) return _tab;
 
-  const tab = await browser.findTab({ domain: SUPPORT_DOMAIN });
-  if (tab) {
-    _tab = tab;
-    return _tab;
+  let tab = await browser.findTab({ domain: SUPPORT_DOMAIN });
+  if (!tab) {
+    try {
+      tab = await browser.ensureTab(REQUESTS_URL);
+    } catch (e) {
+      console.error(`Error: Failed to open support portal tab at ${REQUESTS_URL}: ${(e && e.message) || e}`);
+      process.exit(1);
+    }
+    // Give the page (and any SSO redirect) a moment to settle before scraping.
+    await new Promise(r => setTimeout(r, 2500));
   }
 
-  console.error(`Error: No support portal tab found. Open ${REQUESTS_URL} in your browser and try again.`);
-  process.exit(1);
+  _tab = tab;
+  return _tab;
 }
 
 // --- Eval helper ---
@@ -129,55 +176,39 @@ function padRight(str, len) {
 
 // --- Scraping JS templates ---
 
-const SCRAPE_LIST_JS = `
+function makeScrapeListJs(requestsUrl) {
+  return `
 (async () => {
   const results = { open: [], closed: [] };
 
-  const resp = await fetch(${JSON.stringify(REQUESTS_URL)}, { credentials: 'same-origin' });
+  const resp = await fetch(${JSON.stringify(requestsUrl)}, { credentials: 'same-origin' });
   const html = await resp.text();
   const doc = new DOMParser().parseFromString(html, 'text/html');
 
-  function parseTable(table, status) {
-    if (!table) return;
-    const rows = table.querySelectorAll('tr.issue_row');
-    for (const row of rows) {
-      const id = row.getAttribute('data-id') || '';
-      const linkEl = row.querySelector('a[data-js="open-request"], a[data-js="closed-request"]');
-      const title = linkEl ? linkEl.textContent.trim() : '';
-      const tds = row.querySelectorAll('td');
-      const updated = tds.length > 1 ? tds[1].textContent.trim() : '';
-      results[status].push({ id, title, updated, status });
-    }
-  }
-
-  // Find tables by proximity to headings
-  const headings = doc.querySelectorAll('h2');
-  for (const h of headings) {
-    const text = h.textContent.trim().toLowerCase();
-    let sibling = h.nextElementSibling;
-    while (sibling && sibling.tagName !== 'TABLE') {
-      sibling = sibling.nextElementSibling;
-    }
-    if (!sibling) continue;
-    if (text.includes('your help requests') || text.includes('open')) {
-      parseTable(sibling, 'open');
-    } else if (text.includes('closed')) {
-      parseTable(sibling, 'closed');
-    }
-  }
-
-  // Fallback: if no headings matched, try all issue_row tables
-  if (results.open.length === 0 && results.closed.length === 0) {
-    const tables = doc.querySelectorAll('table');
-    for (let i = 0; i < tables.length; i++) {
-      const status = i === 0 ? 'open' : 'closed';
-      parseTable(tables[i], status);
-    }
+  // Status comes straight from each row's own marker — every issue_row link
+  // carries data-js="open-request" or data-js="closed-request". This is far
+  // more reliable than inferring status from heading-to-table proximity,
+  // which breaks whenever one bucket is empty (e.g. zero open requests: the
+  // generic "Your Help Requests" heading ends up claiming the Closed
+  // Requests table because there's no Open Requests heading/table to
+  // compete with it).
+  const rows = doc.querySelectorAll('tr.issue_row');
+  for (const row of rows) {
+    const id = row.getAttribute('data-id') || '';
+    const openLink = row.querySelector('a[data-js="open-request"]');
+    const closedLink = row.querySelector('a[data-js="closed-request"]');
+    const linkEl = openLink || closedLink;
+    const status = openLink ? 'open' : (closedLink ? 'closed' : 'open');
+    const title = linkEl ? linkEl.textContent.trim() : '';
+    const tds = row.querySelectorAll('td');
+    const updated = tds.length > 1 ? tds[1].textContent.trim() : '';
+    results[status].push({ id, title, updated, status });
   }
 
   return JSON.stringify(results);
 })()
 `;
+}
 
 function makeScrapeDetailJs(detailUrl) {
   return `
@@ -397,7 +428,7 @@ const commands = {
       process.exit(1);
     }
 
-    const data = await evalInSupportTab(SCRAPE_LIST_JS);
+    const data = await evalInSupportTab(makeScrapeListJs(REQUESTS_URL));
 
     if (data.__error) {
       console.error('Error:', data.message);
@@ -575,6 +606,21 @@ const commands = {
     console.log(`Request ${id} resolved.`);
     if (data.status) console.log(`  Status: ${data.status}`);
   },
+
+  async config(flags, positional) {
+    if (typeof flags.domain === 'string' && flags.domain) {
+      const cur = await loadConfig();
+      await skill.config({ ...cur, domain: flags.domain });
+      console.log(`Support portal domain set to "${flags.domain}".`);
+      return;
+    }
+
+    const cfg = await loadConfig();
+    console.log(`Current domain: ${SUPPORT_DOMAIN}`);
+    console.log(`  Source: ${cfg && cfg.domain ? 'skill config' : 'built-in default'}`);
+    console.log('');
+    console.log('Set with: slack-support config --domain=<host>');
+  },
 };
 
 // --- Main ---
@@ -582,6 +628,12 @@ const commands = {
 const { flags, positional } = process.argv.parseFlags();
 const cmd = positional[0];
 const args = positional.slice(1);
+
+// Resolve the support-portal domain before anything else touches
+// SUPPORT_DOMAIN/BASE_URL/REQUESTS_URL (including the help banner below).
+SUPPORT_DOMAIN = await resolveSupportDomain(flags);
+BASE_URL = `https://${SUPPORT_DOMAIN}`;
+REQUESTS_URL = `${BASE_URL}/help/requests`;
 
 if (!cmd || cmd === 'help') {
   console.log('Slack Support Portal — manage help requests from the command line.\n');
@@ -592,6 +644,7 @@ if (!cmd || cmd === 'help') {
   console.log('  reply <id> <message>                      Reply to a request');
   console.log('  create --topic=<t> --title=<t> <message>  Create a new request');
   console.log('  resolve <id>                              Resolve a request');
+  console.log('  config [--domain=<host>]                  Show or set the support portal domain');
   console.log('  help                                      Show this help\n');
   console.log('Topics for create:');
   console.log('  audio-video, billing-plans, connection-trouble, managing-channels,');
@@ -603,8 +656,11 @@ if (!cmd || cmd === 'help') {
   console.log('  slack-support view 6750592');
   console.log('  slack-support reply 6750592 "Thanks, that fixed it."');
   console.log('  slack-support create --topic=slack-connect --title="Connect issue" "Cannot invite external user"');
-  console.log('  slack-support resolve 6750592\n');
-  console.log(`Requires an open browser tab at ${SUPPORT_DOMAIN}.`);
+  console.log('  slack-support resolve 6750592');
+  console.log('  slack-support config --domain=your-org.enterprise.slack.com\n');
+  console.log(`Support portal domain: ${SUPPORT_DOMAIN}`);
+  console.log('(override with --domain=<host>, or persist with the config command)');
+  console.log('If no matching browser tab is open, one is opened automatically.');
   process.exit(0);
 }
 
