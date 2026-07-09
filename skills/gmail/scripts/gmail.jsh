@@ -342,6 +342,16 @@ async function cmdMail() {
       process.stdout.write(`    ${C.gray('ID: ' + msg.id)}\n\n`);
     }
   } catch (e) {
+    // die() (called deep inside, e.g. by getAccessToken() on missing
+    // GWS_* env vars) prints its message and throws NodeExitError to
+    // unwind in this realm -- there's no true synchronous process exit
+    // inside an async function. Without this check, this catch treats
+    // that already-printed, already-finalized exit as a fresh error and
+    // re-wraps it into a second, confusing "mail failed: Process exited
+    // with code 1" line on top of the real message (confirmed live: this
+    // file, unguarded, printed THREE lines for one error -- this catch's
+    // wrap, plus the outer dispatch catch's wrap on top of that).
+    if (e && e.name === 'NodeExitError') throw e;
     die(`gmail: mail failed: ${e.message}`);
   }
 }
@@ -372,6 +382,9 @@ async function cmdView() {
     const body = extractBody(msg.payload);
     process.stdout.write(body ? trunc(body, 5000) + '\n' : C.gray('(empty body)') + '\n');
   } catch (e) {
+    // See the note in cmdMail()'s catch: must re-throw an already-finalized
+    // NodeExitError instead of re-wrapping it into a second error line.
+    if (e && e.name === 'NodeExitError') throw e;
     die(`gmail: view failed: ${e.message}`);
   }
 }
@@ -409,6 +422,9 @@ async function cmdSend() {
     const result = await gmailPost('/messages/send', { raw });
     process.stdout.write(`${C.green('✓')} Email sent to ${to} (ID: ${result.id})\n`);
   } catch (e) {
+    // See the note in cmdMail()'s catch: must re-throw an already-finalized
+    // NodeExitError instead of re-wrapping it into a second error line.
+    if (e && e.name === 'NodeExitError') throw e;
     die(`gmail: send failed: ${e.message}`);
   }
 }
@@ -463,6 +479,9 @@ async function cmdReply() {
     const result = await gmailPost('/messages/send', { raw, threadId });
     process.stdout.write(`${C.green('✓')} Reply sent to ${replyTo} (ID: ${result.id}, thread: ${threadId})\n`);
   } catch (e) {
+    // See the note in cmdMail()'s catch: must re-throw an already-finalized
+    // NodeExitError instead of re-wrapping it into a second error line.
+    if (e && e.name === 'NodeExitError') throw e;
     die(`gmail: reply failed: ${e.message}`);
   }
 }
@@ -546,6 +565,16 @@ async function cmdMonday() {
       });
     }
   } catch (e) {
+    // See the note in cmdMail()'s catch. Here it matters even more: unlike
+    // the other commands, cmdMonday intentionally downgrades a genuine
+    // fetch failure to a warning and still emits JSON on stdout -- but an
+    // unguarded NodeExitError (e.g. from missing GWS_* creds) would get
+    // swallowed into that same warning ("...failed to fetch mail: Process
+    // exited with code 1") and then this function would carry on to print
+    // an empty JSON array on stdout as if nothing were wrong, instead of
+    // exiting non-zero. Re-throw so a real auth/config failure still
+    // surfaces as a hard error.
+    if (e && e.name === 'NodeExitError') throw e;
     process.stderr.write(`[gmail monday] WARNING: failed to fetch mail: ${e.message}\n`);
   }
 
@@ -640,6 +669,14 @@ try {
       process.exit(1);
   }
 } catch (e) {
+  // See the note in cmdMail()'s catch. This is the outermost handler, so an
+  // already-finalized NodeExitError reaching here (e.g. re-thrown from one
+  // of the per-command catches above, or from showHelp()'s own die() path)
+  // should just propagate uncaught rather than be wrapped again --
+  // rethrowing here lets it surface as a clean, single, already-printed
+  // exit instead of adding a second "gmail: Process exited with code 1"
+  // line on top of the real message.
+  if (e && e.name === 'NodeExitError') throw e;
   process.stderr.write(`gmail: ${e.message}\n`);
   process.exit(1);
 }
