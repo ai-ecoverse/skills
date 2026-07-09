@@ -45,8 +45,10 @@
  * │  • const fs = require('fs'); — used for `--from-json <file>` reads;        │
  * │    calls are already `await`ed as required by the new async-only bridge.  │
  * │                                                                             │
- * │  • `process.argv.parseFlags()` does not exist in this runtime — kept      │
- * │    the original hand-rolled parseFlags(argsSlice) helper as-is.           │
+ * │  • `process.argv.parseFlags()` is now a real bare global; the             │
+ * │    hand-rolled parseFlags() helper was removed and both call sites        │
+ * │    (calendar/notes) read `{ flags, positional }` from it, slicing the     │
+ * │    leading subcommand off `positional` to preserve prior arg semantics.   │
  * │                                                                             │
  * │ No subcommands, flags, output formatting, or behavior were changed.       │
  * └─────────────────────────────────────────────────────────────────────────────┘
@@ -68,30 +70,6 @@ if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
 const subcommand = args[0];
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
-
-function parseFlags(argsSlice) {
-  const flags = {};
-  const positional = [];
-  let i = 0;
-  while (i < argsSlice.length) {
-    const arg = argsSlice[i];
-    if (arg.startsWith('--')) {
-      const eqIdx = arg.indexOf('=');
-      if (eqIdx !== -1) {
-        flags[arg.slice(2, eqIdx)] = arg.slice(eqIdx + 1);
-      } else if (i + 1 < argsSlice.length && !argsSlice[i + 1].startsWith('--')) {
-        flags[arg.slice(2)] = argsSlice[i + 1];
-        i++;
-      } else {
-        flags[arg.slice(2)] = true;
-      }
-    } else {
-      positional.push(arg);
-    }
-    i++;
-  }
-  return { flags, positional };
-}
 
 function usageText() {
   return `icloud — iCloud Calendar & Notes CLI for SLICC
@@ -286,7 +264,8 @@ async function icloudFetch(tab, url, options = {}) {
 // ─── Calendar Commands ───────────────────────────────────────────────────────
 
 async function cmdCalendar() {
-  const { flags, positional } = parseFlags(args.slice(1));
+  const { flags, positional: allPositional } = process.argv.parseFlags();
+  const positional = allPositional.slice(1);
 
   // Check for "create" subcommand
   if (positional[0] === 'create') {
@@ -825,7 +804,8 @@ async function readNoteContent(tab, noteId, allNotes) {
 }
 
 async function cmdNotes() {
-  const { flags, positional } = parseFlags(args.slice(1));
+  const { flags, positional: allPositional } = process.argv.parseFlags();
+  const positional = allPositional.slice(1);
   const jsonOutput = !!flags.json;
   const searchQuery = flags.search || null;
 
