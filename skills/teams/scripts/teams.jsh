@@ -17,6 +17,7 @@
 //  - Capability bridges are obtained explicitly via require('sliccy:<name>').
 
 const browser = require('sliccy:browser');
+const exec = require('sliccy:exec'); // only for the one-time CDP request-buffer seed (see AUTH note)
 
 const TEAMS_DOMAIN_PRIMARY = 'teams.microsoft.com';
 const TEAMS_DOMAIN_SECONDARY = 'teams.live.com';
@@ -89,12 +90,91 @@ async function pooled(concurrency, fns) {
 }
 
 // ---------------------------------------------------------------------------
-// Tab discovery + page-context fetch
+// Tab discovery + page-context fetch + authentication
 // ---------------------------------------------------------------------------
 //
-// All API calls run inside the Teams tab via the sliccy:browser bridge. The MSAL
-// access token is located in localStorage and consumed by fetch() in the
-// same eval block — the token never leaves the browser context.
+// All API calls run inside the Teams tab via the sliccy:browser bridge, so the
+// origin is teams.microsoft.com and browser session state is available.
+//
+// AUTH (issue #201): Teams v2 now stores every MSAL access token in
+// localStorage as an *encrypted* blob ({id, nonce, data}) with no plaintext
+// `.secret` field, so the old "read the token out of localStorage" approach no
+// longer works — every Graph subcommand failed with NOT_AUTHENTICATED even
+// against a genuinely signed-in tab. Instead we capture the multi-resource MSAL
+// *refresh token* that the Teams client posts to the AAD token endpoint
+// (POST .../oauth2/v2.0/token) and replay it in-page for the Graph (or
+// Substrate) scope; AAD returns an audience-scoped access token because the
+// refresh token is multi-resource (FOCI). Capture is two-pronged, and the
+// refresh + access tokens are minted and consumed entirely inside the page:
+//   1. an idempotent page-context fetch/XHR hook records the refresh token from
+//      any live token request into a window global (survives across evals);
+//   2. a one-time bootstrap seed reads a recent token request out of the CDP
+//      request buffer (playwright-cli requests) and injects it into the page
+//      when the hook has not caught one yet. Token rotation then keeps the
+//      in-page refresh token fresh for the rest of the tab session.
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+// JS prepended to every teamsFetch eval: an idempotent refresh-token capture
+// hook plus __getToken(audience), which mints/caches a bearer token for the
+// requested audience by replaying the captured refresh token in-page.
+const AUTH_PREAMBLE = `
+  const __AUD_SCOPE = {
+    'graph.microsoft.com': 'https://graph.microsoft.com/.default',
+    'substrate.office.com': 'https://substrate.office.com/.default'
+  };
+  if (!window.__sliccTeamsHook) {
+    window.__sliccTeamsHook = true;
+    const __grab = (bodyStr, u) => {
+      try {
+        if (!bodyStr || String(u).indexOf('/oauth2/v2.0/token') === -1) return;
+        const p = new URLSearchParams(bodyStr);
+        const rt = p.get('refresh_token');
+        if (!rt) return;
+        window.__sliccTeamsAuth = { rt: rt, clientId: p.get('client_id'), authority: String(u).split('/oauth2/')[0] };
+      } catch (e) {}
+    };
+    const __of = window.fetch;
+    window.fetch = function (input, init) {
+      try {
+        const u = (typeof input === 'string') ? input : (input && input.url) || '';
+        let b = init && init.body;
+        if (b && typeof b !== 'string' && b.toString) b = b.toString();
+        if (typeof b === 'string') __grab(b, u);
+      } catch (e) {}
+      return __of.apply(this, arguments);
+    };
+    const __os = XMLHttpRequest.prototype.send;
+    const __ou = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function (m, u) { this.__su = u; return __ou.apply(this, arguments); };
+    XMLHttpRequest.prototype.send = function (b) {
+      try { if (typeof b === 'string') __grab(b, this.__su || ''); } catch (e) {}
+      return __os.apply(this, arguments);
+    };
+  }
+  window.__sliccTok = window.__sliccTok || {};
+  async function __getToken(a) {
+    const c = window.__sliccTok[a];
+    if (c && c.exp > (Date.now() / 1000) + 60) return c.token;
+    if (!(window.__sliccTeamsAuth && window.__sliccTeamsAuth.rt)) return null;
+    const au = window.__sliccTeamsAuth;
+    const scope = __AUD_SCOPE[a] || ('https://' + a + '/.default');
+    const bd = new URLSearchParams({ client_id: au.clientId, grant_type: 'refresh_token', refresh_token: au.rt, scope: scope, client_info: '1' });
+    let tj;
+    try {
+      const tr = await fetch(au.authority + '/oauth2/v2.0/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: bd.toString() });
+      tj = await tr.json();
+    } catch (e) { return null; }
+    if (!tj || !tj.access_token) return null;
+    if (tj.refresh_token) window.__sliccTeamsAuth.rt = tj.refresh_token;
+    let exp = Math.floor(Date.now() / 1000) + (tj.expires_in || 3600);
+    try { exp = JSON.parse(atob(tj.access_token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).exp || exp; } catch (e) {}
+    window.__sliccTok[a] = { token: tj.access_token, exp: exp };
+    return tj.access_token;
+  }
+`;
 
 let _tabId = null;
 
@@ -113,75 +193,135 @@ async function ensureTab() {
   return _tabId;
 }
 
-async function teamsFetch(method, url, body, audience) {
-  const tabId = await ensureTab();
-  const aud = audience || GRAPH_AUDIENCE;
+// The browser bridge takes a TabHandle, but playwright-cli needs the raw
+// targetId string. TabHandle exposes .targetId; fall back to the value itself.
+function _targetId(tab) {
+  return (tab && tab.targetId) ? tab.targetId : String(tab);
+}
+
+// Extract a urlencoded form-field value from a request body string.
+function _formField(body, name) {
+  for (const part of String(body).split('&')) {
+    if (part.startsWith(name + '=')) return part.slice(name.length + 1);
+  }
+  return null;
+}
+
+// Bootstrap seed: read a refresh token from the CDP request buffer and inject it
+// into the page as window.__sliccTeamsAuth. Returns true on success. The refresh
+// token is passed straight into a page eval (never printed, never written to
+// disk) where it is decoded and stored in a page global.
+async function seedFromBuffer(tab) {
+  const tid = _targetId(tab);
+  const r = await exec(`playwright-cli requests --filter="oauth2/v2.0/token" --tab=${tid}`);
+  if (r.exitCode !== 0) return false;
+  const lines = r.stdout
+    .split('\n')
+    .filter((l) => /oauth2\/v2\.0\/token/.test(l) && /→\s*200/.test(l));
+  if (lines.length === 0) return false;
+  const last = lines[lines.length - 1];
+  const idx = last.trim().split(/\s+/)[0];
+  const authMatch = last.match(/https:\/\/[^/]+\/[0-9a-fA-F-]{36}/);
+  const authority = authMatch ? authMatch[0] : null;
+  if (!authority || !/^\d+$/.test(idx)) return false;
+  const b = await exec(`playwright-cli request-body ${idx} --tab=${tid}`);
+  if (b.exitCode !== 0) return false;
+  const rt = _formField(b.stdout, 'refresh_token');
+  const cid = _formField(b.stdout, 'client_id');
+  if (!rt || !cid) return false;
+  // rt is percent-encoded in the form body; decode it in-page.
+  const seedJs =
+    `window.__sliccTeamsAuth = { rt: decodeURIComponent(${JSON.stringify(rt)}), clientId: ${JSON.stringify(cid)}, authority: ${JSON.stringify(authority)} }; 'ok';`;
+  try {
+    await browser.eval(tab, seedJs);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+// Force the Teams client to (re)issue a token request so seedFromBuffer can find
+// one in the CDP buffer. A fresh page load makes MSAL re-acquire tokens it does
+// not have cached.
+async function reloadAndWait(tab) {
+  try { await browser.eval(tab, "location.reload(); 'ok'"); } catch (e) {}
+  await sleep(12000);
+}
+
+// Run the API call in the page. Returns { status, ok, data } or { error }.
+async function _runFetchEval(tab, method, url, body, aud) {
   const jsCode = `
     (async () => {
       try {
+        ${AUTH_PREAMBLE}
         const aud = ${JSON.stringify(aud)};
-        let best = null, bestExp = 0;
-        const lkeys = Object.keys(localStorage);
-        for (let i = 0; i < lkeys.length; i++) {
-          const k = lkeys[i];
-          if (k.indexOf('accesstoken') === -1 || k.indexOf(aud) === -1) continue;
-          try {
-            const e = JSON.parse(localStorage.getItem(k));
-            const exp = parseInt(e.expiresOn || e.expires_on || 0);
-            if (e && e.secret && exp > bestExp) { best = e; bestExp = exp; }
-          } catch (x) {}
-        }
-        if (!best) {
-          for (let j = 0; j < sessionStorage.length; j++) {
-            const k2 = sessionStorage.key(j);
-            if (!k2) continue;
-            const lc = k2.toLowerCase();
-            if (lc.indexOf('accesstoken') === -1 || lc.indexOf(aud) === -1) continue;
-            try {
-              const e2 = JSON.parse(sessionStorage.getItem(k2));
-              if (e2 && e2.secret) { best = e2; break; }
-            } catch (x2) {}
-          }
-        }
-        if (!best) return JSON.stringify({ error: 'NOT_AUTHENTICATED' });
-        const opts = {
-          method: ${JSON.stringify(method)},
-          headers: {
-            'Authorization': 'Bearer ' + best.secret,
-            'Accept': 'application/json'
-          }
-        };
+        const tok = await __getToken(aud);
+        if (!tok) return { error: 'NEED_RT' };
+        const opts = { method: ${JSON.stringify(method)}, headers: { 'Authorization': 'Bearer ' + tok, 'Accept': 'application/json' } };
         ${body !== undefined && body !== null ? `opts.headers['Content-Type'] = 'application/json'; opts.body = ${JSON.stringify(JSON.stringify(body))};` : ''}
         const resp = await fetch(${JSON.stringify(url)}, opts);
+        if (resp.status === 401) { try { delete window.__sliccTok[aud]; } catch (e) {} }
         const text = await resp.text();
         let data = null;
         try { data = JSON.parse(text); } catch (e) { data = text; }
-        return JSON.stringify({ status: resp.status, ok: resp.ok, data });
+        return { status: resp.status, ok: resp.ok, data: data };
       } catch (e) {
-        return JSON.stringify({ error: 'FETCH_ERROR', message: e.message });
+        return { error: 'FETCH_ERROR', message: e.message };
       }
     })()
   `.trim();
   let parsed;
   try {
-    parsed = await browser.evalAsync(tabId, jsCode);
+    parsed = await browser.evalAsync(tab, jsCode);
   } catch (e) {
     die('eval failed: ' + (e && e.message ? e.message : String(e)));
   }
-  // browser.evalAsync already unwraps the page's JSON.stringify(...) result to
-  // a value; defensively parse if a raw JSON string comes back instead.
+  // evalAsync returns the value directly. Defensively parse if a raw JSON
+  // string comes back instead (older bridge builds).
   if (typeof parsed === 'string') {
     const raw = parsed.trim();
     try { parsed = JSON.parse(raw); }
     catch (e) {
       try { parsed = JSON.parse(JSON.parse(raw)); }
-      catch (e2) {
-        die('Failed to parse response: ' + raw.slice(0, 500));
-      }
+      catch (e2) { die('Failed to parse response: ' + raw.slice(0, 500)); }
     }
   }
   if (parsed === null || parsed === undefined) {
     die('Failed to parse response: empty result');
+  }
+  return parsed;
+}
+
+async function teamsFetch(method, url, body, audience) {
+  const tab = await ensureTab();
+  const aud = audience || GRAPH_AUDIENCE;
+  let parsed = await _runFetchEval(tab, method, url, body, aud);
+  if (parsed.error === 'NEED_RT') {
+    // The page hook has not captured a refresh token yet. Seed one from the CDP
+    // request buffer; if the buffer is empty, force a token request via reload.
+    let seeded = await seedFromBuffer(tab);
+    if (!seeded) {
+      await reloadAndWait(tab);
+      seeded = await seedFromBuffer(tab);
+    }
+    if (!seeded) {
+      die(
+        'Could not obtain a Teams refresh token. Make sure Teams is fully loaded ' +
+        'and signed in at https://teams.microsoft.com, then retry. If it persists, ' +
+        'refresh the Teams tab.'
+      );
+    }
+    parsed = await _runFetchEval(tab, method, url, body, aud);
+    if (parsed.error === 'NEED_RT') {
+      die(
+        'Authentication failed: captured a refresh token but the token exchange ' +
+        'did not return an access token. Refresh the Teams tab and retry.'
+      );
+    }
+  }
+  // One retry on 401 (the in-page token cache was cleared above).
+  if (parsed.status === 401) {
+    parsed = await _runFetchEval(tab, method, url, body, aud);
   }
   return parsed;
 }
