@@ -4,56 +4,33 @@
 
 const SLACK_DOMAIN = 'app.slack.com';
 
+// Runtime capability bridges. The bespoke bare globals were hard-cut; reach
+// them via the sliccy: virtual-module scheme. `fs` is the VFS bridge.
+const { exec } = require('sliccy:exec');
+const fs = require('fs');
+const browser = require('sliccy:browser');
+
 // --- Tab management ---
 
-let _tabId = null;
+let _tab = null;
 let _tabUrl = null;
 
 async function findSlackTab() {
-  if (_tabId) return _tabId;
+  if (_tab) return _tab;
 
-  const list = await exec('playwright-cli tab-list');
-  if (list.exitCode !== 0) {
-    console.error('Error: Failed to list browser tabs with `playwright-cli tab-list`.');
-    if (list.stderr && list.stderr.trim()) {
-      console.error(list.stderr.trim());
-    }
+  // Prefer a tab whose URL is a workspace view (/client/<ID>/...) over
+  // login/help pages; fall back to any app.slack.com tab.
+  let tab = await browser.findTab({ domain: SLACK_DOMAIN, urlMatch: /\/client\/[A-Z0-9]+/ });
+  if (!tab) tab = await browser.findTab({ domain: SLACK_DOMAIN });
+
+  if (!tab) {
+    console.error('Error: No Slack tab found. Open app.slack.com in your browser and try again.');
     process.exit(1);
   }
-  // Match any tab on app.slack.com — handle both local and remote (follower/leader) tab IDs
-  // Prefer tabs with /client/<ID>/ in the URL (actual workspace views) over login/help pages
-  const lines = list.stdout.split('\n');
-  let fallbackTabId = null;
-  let fallbackTabUrl = null;
-  for (const line of lines) {
-    if (line.includes(SLACK_DOMAIN)) {
-      const m = line.match(/^\[([^\]]+)\]/);
-      if (m) {
-        const urlMatch = line.match(/https?:\/\/\S+/);
-        const url = urlMatch ? urlMatch[0] : null;
-        // Prefer tabs with a workspace URL (/client/<ID>/...)
-        if (url && /\/client\/[A-Z0-9]+/.test(url)) {
-          _tabId = m[1];
-          _tabUrl = url;
-          return _tabId;
-        }
-        // Keep the first Slack tab as fallback
-        if (!fallbackTabId) {
-          fallbackTabId = m[1];
-          fallbackTabUrl = url;
-        }
-      }
-    }
-  }
-  // No tab with /client/ URL found — use the first Slack tab as fallback
-  if (fallbackTabId) {
-    _tabId = fallbackTabId;
-    _tabUrl = fallbackTabUrl;
-    return _tabId;
-  }
 
-  console.error('Error: No Slack tab found. Open app.slack.com in your browser and try again.');
-  process.exit(1);
+  _tab = tab;
+  _tabUrl = tab.url;
+  return _tab;
 }
 
 // --- Workspace resolution ---
@@ -93,32 +70,32 @@ async function resolveWorkspace(globalFlags) {
 
 // --- Eval helper ---
 // Evaluates a JavaScript expression in the Slack browser tab and returns parsed JSON.
-// Handles temp file creation, cleanup, double-encoded JSON, and error handling.
+// Handles double-encoded JSON and error handling via the browser eval bridge.
 
 async function evalInSlackTab(expr, { fatal = true } = {}) {
-  const tabId = await findSlackTab();
-  const tmpFile = '/shared/.slack_eval_' + Date.now() + '.js';
-  await fs.writeFile(tmpFile, expr.trim().replace(/\n/g, ' '));
-  const result = await exec(`playwright-cli eval-file ${tmpFile} --tab=${tabId}`);
-  await fs.rm(tmpFile).catch(async () => {
-    await fs.writeFile(tmpFile, '').catch(() => {});
-  });
+  const tab = await findSlackTab();
 
-  if (result.exitCode !== 0) {
+  // Sanctioned page-context eval bridge replaces the legacy eval-file
+  // temp-file shell-out. The expression is an async IIFE that resolves to a
+  // JSON string.
+  let raw;
+  try {
+    raw = await browser.evalAsync(tab, expr.trim().replace(/\n/g, ' '));
+  } catch (e) {
     if (!fatal) return { ok: false, error: 'eval_failed' };
-    console.error('Eval failed:', result.stderr);
+    console.error('Eval failed:', e && e.message ? e.message : String(e));
     process.exit(1);
   }
 
   let data;
   try {
-    const stdout = result.stdout.trim();
-    data = JSON.parse(stdout);
+    data = typeof raw === 'string' ? JSON.parse(raw) : raw;
     if (typeof data === 'string') data = JSON.parse(data);
     if (!data || typeof data !== 'object') throw new Error('API response was not an object');
   } catch (e) {
     if (!fatal) return { ok: false, error: 'parse_failed' };
-    console.error('Failed to parse API response:', result.stdout.substring(0, 200));
+    const preview = typeof raw === 'string' ? raw.substring(0, 200) : JSON.stringify(raw).substring(0, 200);
+    console.error('Failed to parse API response:', preview);
     process.exit(1);
   }
 
@@ -130,43 +107,43 @@ async function evalInSlackTab(expr, { fatal = true } = {}) {
 // This ensures same-origin cookies are included and the xoxc token works.
 
 async function slackApi(method, params, workspaceId, { fatal = true } = {}) {
-  // Build the param entries as a JSON array to pass into eval
-  const paramEntries = Object.entries(params);
-  const paramJson = JSON.stringify(paramEntries);
+  const tab = await findSlackTab();
 
-  // The eval expression: extract token from localStorage, build XHR, return response
-  const expr = `
-(async () => {
-  let token;
+  // Resolve the workspace token from localConfig_v2 (page localStorage), then
+  // issue the API call with browser.fetch. browser.fetch runs in the tab
+  // origin, so the Slack session cookie travels automatically (no manual
+  // cookie forwarding, no page-context XHR).
+  let token = null;
   try {
-    const rawCfg = localStorage.getItem('localConfig_v2');
-    const cfg = JSON.parse(rawCfg);
-    if (!cfg || !cfg.teams || !cfg.teams['${workspaceId}'] || !cfg.teams['${workspaceId}'].token) {
-      return JSON.stringify({ ok: false, error: 'token_not_found', detail: 'No token for workspace ${workspaceId}' });
+    const raw = await browser.localStorage(tab, 'localConfig_v2');
+    const cfg = raw ? JSON.parse(raw) : null;
+    if (cfg && cfg.teams && cfg.teams[workspaceId] && cfg.teams[workspaceId].token) {
+      token = cfg.teams[workspaceId].token;
     }
-    token = cfg.teams['${workspaceId}'].token;
   } catch (e) {
-    return JSON.stringify({ ok: false, error: 'token_not_found', detail: 'Failed to parse localConfig_v2' });
+    token = null;
   }
-  const params = new URLSearchParams();
-  params.append('token', token);
-  const entries = ${paramJson};
-  for (const [k, v] of entries) {
-    params.append(k, String(v));
-  }
-  return new Promise((resolve) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/api/${method}', true);
-    xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-    xhr.withCredentials = true;
-    xhr.onload = () => resolve(xhr.responseText);
-    xhr.onerror = () => resolve(JSON.stringify({ ok: false, error: 'xhr_error' }));
-    xhr.send(params.toString());
-  });
-})()
-  `;
 
-  const data = await evalInSlackTab(expr, { fatal });
+  let data;
+  if (!token) {
+    data = { ok: false, error: 'token_not_found', detail: `No token for workspace ${workspaceId}` };
+  } else {
+    const body = new URLSearchParams();
+    body.append('token', token);
+    for (const [k, v] of Object.entries(params)) {
+      body.append(k, String(v));
+    }
+    try {
+      const resp = await browser.fetch(tab, `/api/${method}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString(),
+      });
+      data = (resp && typeof resp.body === 'object' && resp.body) ? resp.body : { ok: false, error: 'xhr_error' };
+    } catch (e) {
+      data = { ok: false, error: 'xhr_error' };
+    }
+  }
 
   if (!data.ok) {
     if (data.error === 'invalid_auth' || data.error === 'token_not_found') {
@@ -235,44 +212,22 @@ const commands = {
     const tabId = await findSlackTab();
     const activeWsId = getActiveWorkspaceFromTabUrl();
 
-    // Fetch all teams from localConfig_v2 (id, name, domain, url — NOT the token)
-    const expr = `
-(async () => {
-  try {
-    const rawCfg = localStorage.getItem('localConfig_v2');
-    const cfg = JSON.parse(rawCfg);
-    if (!cfg || !cfg.teams) return JSON.stringify({ ok: false, error: 'no_teams' });
-    const teams = [];
-    for (const [id, team] of Object.entries(cfg.teams)) {
-      teams.push({ id, name: team.name || '', domain: team.domain || '', url: team.url || '' });
-    }
-    return JSON.stringify({ ok: true, teams });
-  } catch (e) {
-    return JSON.stringify({ ok: false, error: e.message });
-  }
-})()
-    `.trim().replace(/\n/g, ' ');
-
-    const tmpFile = '/shared/.slack_eval_' + Date.now() + '.js';
-    await fs.writeFile(tmpFile, expr);
-    const result = await exec(`playwright-cli eval-file ${tmpFile} --tab=${tabId}`);
-    await fs.rm(tmpFile).catch(async () => {
-      await fs.writeFile(tmpFile, '').catch(() => {});
-    });
-
-    if (result.exitCode !== 0) {
-      console.error('Eval failed:', result.stderr);
-      process.exit(1);
-    }
-
+    // Read all teams from localConfig_v2 (id, name, domain, url - NOT the token).
     let data;
     try {
-      const stdout = result.stdout.trim();
-      data = JSON.parse(stdout);
-      if (typeof data === 'string') data = JSON.parse(data);
+      const raw = await browser.localStorage(tabId, 'localConfig_v2');
+      const cfg = raw ? JSON.parse(raw) : null;
+      if (!cfg || !cfg.teams) {
+        data = { ok: false, error: 'no_teams' };
+      } else {
+        const teams = [];
+        for (const [id, team] of Object.entries(cfg.teams)) {
+          teams.push({ id, name: team.name || '', domain: team.domain || '', url: team.url || '' });
+        }
+        data = { ok: true, teams };
+      }
     } catch (e) {
-      console.error('Failed to parse response:', result.stdout.substring(0, 200));
-      process.exit(1);
+      data = { ok: false, error: e.message };
     }
 
     if (!data.ok) {
@@ -627,7 +582,7 @@ const commands = {
       process.exit(1);
     }
 
-    // Save watch state
+    // Build watch state (persisted after the observer is registered below)
     const state = {
       watchId,
       channel,
@@ -637,19 +592,23 @@ const commands = {
       webhookUrl: webhook.url,
       createdAt: new Date().toISOString(),
     };
-    await fs.writeFile(stateFile, JSON.stringify(state, null, 2));
 
-    // Inject interceptor with the full watch set so all watches stay active
-    const allStates = await loadAllWatchStates();
+    // Register the declarative WebSocket observer (sanctioned replacement for
+    // the removed page-context WebSocket.prototype.send patch). The state file
+    // is written only after the observer is live so a failure leaves no
+    // orphaned state (mirrors the legacy rollback ordering).
+    let sub;
     try {
-      await injectWsInterceptor(allStates);
+      const tab = await findSlackTab();
+      sub = await subscribeWatch(tab, state);
     } catch (e) {
-      // Roll back: remove state file and delete webhook on injection failure
-      await fs.rm(stateFile).catch(() => {});
+      // Roll back: delete the webhook on subscription failure
       await exec(`slicc webhook delete ${webhook.id}`).catch(() => {});
-      console.error('Failed to inject interceptor — watch rolled back:', e.message || e);
+      console.error('Failed to register WebSocket observer — watch rolled back:', e.message || e);
       process.exit(1);
     }
+    state.subId = sub.id;
+    await fs.writeFile(stateFile, JSON.stringify(state, null, 2));
 
     console.log(`Watching ${watchId} → scoop "${scoop}"`);
     console.log(`  Webhook: ${webhook.id}`);
@@ -677,22 +636,18 @@ const commands = {
       process.exit(1);
     }
 
-    // Delete webhook
+    // Delete the webhook -- this is the kill-switch. Once the webhook is gone
+    // the observer's webhook sink no longer resolves, so the runtime drops
+    // matched frames and nothing reaches the scoop. The now-idle subscription
+    // is auto-closed when the owning scoop is dropped (the realm API exposes a
+    // closeable handle only at creation time, so a later invocation cannot
+    // close a prior subscription by id).
     if (state.webhookId) {
       await exec(`slicc webhook delete ${state.webhookId}`).catch(() => {});
     }
 
     // Remove state file
     await fs.rm(stateFile).catch(() => {});
-
-    // Reinject with remaining watches so the in-page interceptor is updated
-    const remainingStates = await loadAllWatchStates();
-    if (remainingStates.length > 0) {
-      await injectWsInterceptor(remainingStates).catch(() => {});
-    } else {
-      // No watches left — clear the in-page watch list
-      await injectWsInterceptor([]).catch(() => {});
-    }
 
     console.log(`Stopped watching ${watchId} (was → scoop "${state.scoop}").`);
   },
@@ -729,7 +684,7 @@ const commands = {
     const states = [];
     for (const file of files) {
       try {
-        states.push(JSON.parse(await fs.readFile(file.trim(), 'utf8')));
+        states.push({ file: file.trim(), state: JSON.parse(await fs.readFile(file.trim(), 'utf8')) });
       } catch (_) {}
     }
 
@@ -738,7 +693,16 @@ const commands = {
       return;
     }
 
-    await injectWsInterceptor(states);
+    // Re-register a declarative WebSocket observer for each watch. This is the
+    // recovery path after a page reload: the runtime re-installs its page-side
+    // router on navigation, but per-subscription selectors are re-pushed only
+    // by a fresh observe call.
+    const tab = await findSlackTab();
+    for (const { file, state } of states) {
+      const sub = await subscribeWatch(tab, state);
+      state.subId = sub.id;
+      await fs.writeFile(file, JSON.stringify(state, null, 2)).catch(() => {});
+    }
     console.log(`Re-injected interceptor with ${states.length} watch(es).`);
   },
 
@@ -1448,112 +1412,49 @@ async function executeAttachmentAction(wsId, channel, messageTs, actionName) {
   console.log(`  Callback: ${targetAttachment.callback_id}`);
 }
 
-// --- Watch state helpers ---
+// --- WebSocket watch subscriptions ---
+//
+// The legacy implementation monkey-patched WebSocket.prototype.send inside the
+// Slack page to intercept inbound frames and posted a reshaped envelope to a
+// webhook URL. That page-context prototype patch is the P0 security finding.
+// It is replaced by the runtime's sanctioned, declarative observer:
+// browser.websocket.on(tab).filter(selector).forward(sink). The runtime owns
+// the (audited, single-source) page-side router; skill code supplies only a
+// JSON selector plus a closed-enum sink (here: an existing SLICC webhook id),
+// and can neither author page-context code nor see the inbound frame firehose.
+//
+// Behavior change (documented): the sink now receives the raw Slack `message`
+// frame the router matched, not the legacy `{ type: 'slack-watch', ... }`
+// envelope. The per-channel/thread subscription makes the watch context
+// implicit, and the full frame is a superset of the old envelope's `event`.
+//
+// Known gap (documented): discovery still requires an outbound send() on the
+// socket -- the runtime router wraps a WebSocket instance the first time the
+// page calls send() on it, so a receive-only socket established before the
+// subscription is captured only on its next outbound frame. Slack sends ping
+// keepalives every ~10s, so an existing connection is picked up within one
+// ping cycle. This matches the discovery semantics of the removed patch.
 
-async function loadAllWatchStates() {
-  const globResult = await exec('ls /workspace/skills/slack/.watch-*.json 2>/dev/null');
-  if (globResult.exitCode !== 0 || !globResult.stdout.trim()) return [];
-  const files = globResult.stdout.trim().split('\n');
-  const states = [];
-  for (const file of files) {
-    try {
-      states.push(JSON.parse(await fs.readFile(file.trim(), 'utf8')));
-    } catch (_) {}
-  }
-  return states;
+// Constrain observation to Slack's own event sockets so no cross-origin socket
+// is ever matched (defense against cross-origin capture bleed).
+const SLACK_WS_URL_MATCH = /slack\.com/;
+
+function buildWatchSelector(state) {
+  // Deep-equality subset match, equivalent to the old guard:
+  //   data.type === 'message' && data.channel === w.channel
+  //     && (!w.thread_ts || data.thread_ts === w.thread_ts)
+  const where = { type: 'message', channel: state.channel };
+  if (state.thread_ts) where.thread_ts = state.thread_ts;
+  return { parseAs: 'json', where };
 }
 
-// --- WebSocket interceptor injection ---
-// Uses window.__slackWatchWatches as a mutable list so the watch set can be
-// updated without re-wrapping already-intercepted WebSocket connections.
-
-async function injectWsInterceptor(watchStates) {
-  const tabId = await findSlackTab();
-
-  // Build watch config as JSON for injection
-  const watchConfig = watchStates.map(s => ({
-    watchId: s.watchId,
-    channel: s.channel,
-    thread_ts: s.thread_ts,
-    webhookUrl: s.webhookUrl,
-    scoop: s.scoop,
-  }));
-
-  const interceptorCode = `
-(async () => {
-  // Update the mutable watch list on window — existing wrapped connections
-  // read from this list on every message, so changes take effect immediately.
-  window.__slackWatchWatches = ${JSON.stringify(watchConfig)};
-
-  // Only install the WebSocket interceptor once
-  if (window.__slackWatchInstalled) return 'watches_updated';
-
-  function wrapConnection(ws) {
-    if (ws.__slackWatchWrapped) return;
-    ws.__slackWatchWrapped = true;
-
-    const origOnMessage = ws.onmessage;
-    ws.onmessage = function(event) {
-      if (origOnMessage) origOnMessage.call(ws, event);
-
-      try {
-        const data = JSON.parse(event.data);
-        if (data.type !== 'message') return;
-
-        // Read the current watch list from window at dispatch time
-        const watches = window.__slackWatchWatches || [];
-        for (const w of watches) {
-          if (data.channel !== w.channel) continue;
-          if (w.thread_ts && data.thread_ts !== w.thread_ts) continue;
-
-          const payload = {
-            type: 'slack-watch',
-            watchId: w.watchId,
-            channel: data.channel,
-            thread_ts: w.thread_ts,
-            ts: data.ts,
-            user: data.user,
-            text: data.text,
-            subtype: data.subtype || null,
-            event: data,
-          };
-
-          fetch(w.webhookUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-          }).catch(() => {});
-        }
-      } catch (_) {}
-    };
-  }
-
-  // Patch WebSocket.prototype.send to discover existing connections
-  const origSend = WebSocket.prototype.send;
-  WebSocket.prototype.send = function(data) {
-    wrapConnection(this);
-    return origSend.call(this, data);
-  };
-
-  window.__slackWatchInstalled = true;
-
-  // Slack sends ping keepalives every ~10s, so existing connections
-  // are discovered within one ping cycle.
-
-  return 'interceptor_installed';
-})()
-  `.trim().replace(/\n/g, ' ');
-
-  const tmpFile = '/shared/.slack_ws_intercept_' + Date.now() + '.js';
-  await fs.writeFile(tmpFile, interceptorCode);
-  const result = await exec(`playwright-cli eval-file ${tmpFile} --tab=${tabId}`);
-  await fs.rm(tmpFile).catch(async () => {
-    await fs.writeFile(tmpFile, '').catch(() => {});
-  });
-
-  if (result.exitCode !== 0) {
-    throw new Error(result.stderr || 'eval failed');
-  }
+async function subscribeWatch(tab, state) {
+  // forward -> the SLICC webhook created for this watch (closed-enum sink).
+  // The webhook routes to the target scoop exactly as before.
+  return browser.websocket
+    .on(tab, { urlMatch: SLACK_WS_URL_MATCH })
+    .filter(buildWatchSelector(state))
+    .forward({ sink: 'webhook', webhookId: state.webhookId });
 }
 
 // --- Main ---

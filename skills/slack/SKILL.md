@@ -250,33 +250,35 @@ delivered as a lick event to the specified scoop within seconds.
 
 **How it works:**
 1. Creates a SLICC webhook routed to the target scoop
-2. Injects a WebSocket interceptor into the Slack browser tab
-3. Slack's existing `wss://wss-primary.slack.com/` connections carry all real-time
-   events (messages, typing indicators, etc.)
-4. The interceptor filters for `type: "message"` events matching the watched
+2. Registers a declarative WebSocket observer on the Slack browser tab via the
+   sanctioned `browser.websocket` runtime API (no page-context code injection,
+   no prototype patching)
+3. Slack's `wss://*.slack.com/` connections carry all real-time events
+   (messages, typing indicators, etc.)
+4. The observer filters for `type: "message"` frames matching the watched
    channel (and thread if specified)
-5. Matching events are POSTed to the webhook → delivered as licks to the scoop
+5. Matching frames are forwarded to the webhook → delivered as licks to the scoop
 
-**Lick payload:**
+**Lick payload:** the raw Slack `message` frame that matched the filter, e.g.:
 ```json
 {
-  "type": "slack-watch",
-  "watchId": "C087NCG774J",
+  "type": "message",
   "channel": "C087NCG774J",
   "thread_ts": null,
   "ts": "1776097845.451319",
   "user": "W5BPKRLUA",
   "text": "Hello world!",
-  "subtype": null,
-  "event": { /* full Slack WebSocket message event */ }
+  "subtype": null
 }
 ```
+The watched channel/thread is implicit in the subscription, and the complete
+Slack frame is delivered (any additional Slack fields are preserved).
 
 **Duplicate prevention:** The watch ID is deterministic from channel + thread.
 You cannot create two watches on the same target without `--force`.
 
-**Durability:** The interceptor lives in the Slack tab's page context. If the
-page reloads, use `slack reinject` to re-attach the interceptor.
+**Durability:** The observer lives in the Slack tab. If the page reloads, use
+`slack reinject` to re-register the observers for all active watches.
 
 ### slack unwatch \<channel_id\> [--thread=\<thread_ts\>]
 
@@ -288,18 +290,18 @@ List all active Slack watches with their targets and scoops.
 
 ### slack reinject
 
-Re-inject the WebSocket interceptor into the Slack tab. Use after a page reload
-or if watches stop firing. This reads all active watch state files and re-installs
-the interceptor with the full watch list.
+Re-register the WebSocket observers on the Slack tab. Use after a page reload
+or if watches stop firing. This reads all active watch state files and
+re-registers an observer for each.
 
 ## Watch architecture
 
 ```
-Slack servers → wss://wss-primary.slack.com/ → Browser WebSocket
+Slack servers → wss://*.slack.com/ → Browser WebSocket
     ↓
-Injected interceptor (filters for watched channels)
+Runtime WebSocket observer (declarative filter: type=message + channel/thread)
     ↓
-fetch() POST to SLICC webhook URL
+forward → SLICC webhook (closed-enum sink)
     ↓
 SLICC delivers lick event to target scoop
 ```
@@ -307,7 +309,7 @@ SLICC delivers lick event to target scoop
 **Operational notes:**
 - State files: `/workspace/skills/slack/.watch-<id>.json` (webhook IDs + config)
 - One SLICC webhook per watch routes events to the target scoop
-- After a page reload, run `slack reinject` to re-attach the interceptor
+- After a page reload, run `slack reinject` to re-register the observers
 
 ## Enterprise grid notes
 
