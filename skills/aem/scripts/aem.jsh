@@ -1,6 +1,51 @@
 // aem.jsh — AEM Edge Delivery Services CLI
 // Accepts full EDS URLs: https://main--repo--org.aem.page/path
-// Auth via oauth-token adobe (user OAuth, no manual config needed)
+// Auth via skill.token('adobe') (user OAuth, no manual config needed)
+//
+// ┌─────────────────────────────────────────────────────────────────────────────┐
+// │ MIGRATION NOTES (ai-ecoverse/slicc#786, issue #118)                        │
+// │                                                                             │
+// │ The `.jsh` runtime no longer injects `exec`, `fs`, `skill` as bare         │
+// │ globals — they now must be obtained explicitly via                         │
+// │ `require('sliccy:<name>')` / `require('fs')`. Changes made:                │
+// │  • Added explicit imports: `const exec = require('sliccy:exec')`,          │
+// │    `const skill = require('sliccy:skill')`, `const fs = require('fs')`,    │
+// │    `const cli = require('sliccy:cli')`, `const http = require('sliccy:http')`. │
+// │  • `exec` is used directly (callable), NOT destructured as                 │
+// │    `const { exec } = require('sliccy:exec')`.                              │
+// │  • Auth: `exec('oauth-token adobe')` → `skill.token('adobe')`. Simpler,    │
+// │    no shell round-trip, and propagates a real Error on failure instead of  │
+// │    an empty stdout string.                                                 │
+// │  • Read-only/no-body HTTP calls (list, get, preview, publish) migrated to  │
+// │    a single `http.client()` — GET for list/get, POST (no body) for        │
+// │    preview/publish. This eliminates the hand-rolled `shellQuote()` +      │
+// │    `curl` exec wrapper and its manual 401/403 body-sniffing (http.client   │
+// │    throws HttpError with `{ status, body }` on any non-2xx natively).      │
+// │  • Multipart file upload (`put`, `upload` — AEM/DA `/source` PUT with      │
+// │    `data=@file;type=...`) is a documented known gap (#4 in the tracking    │
+// │    issue): http.client's FormData pass-through is unproven for this       │
+// │    binary-file-from-VFS case, so the existing `exec('curl ... -F ...')`   │
+// │    pattern is KEPT as-is for those two subcommands. Judgment call per      │
+// │    task guidance — curl -F remains simpler and is already known-working.   │
+// │  • `fs.writeFile` / `fs.readFile` / `fs.rm` — same VFS bridge, only the    │
+// │    `require('fs')` import needed to be added; call sites unchanged.       │
+// │  • Error reporting: `process.stderr.write(...); process.exit(1);` usage   │
+// │    error sites left as-is (matches existing per-subcommand usage text     │
+// │    exactly — this is a mechanical API port, not a UX rewrite). Auth       │
+// │    failures now surface via a thrown Error from `skill.token()` /         │
+// │    `HttpError` rather than manual string-sniffing.                        │
+// │  • No `process.argv.parseFlags()` used — manual arg parsing (getFlag,     │
+// │    resolveTarget, positional filtering) is unchanged, per runtime notes   │
+// │    confirming there is no such helper in this runtime.                    │
+// │  • No color/table/time formatting was used by the original script, so     │
+// │    `sliccy:color` / `sliccy:fmt` / `sliccy:time` were not needed.         │
+// └─────────────────────────────────────────────────────────────────────────────┘
+
+const exec = require('sliccy:exec');
+const fs = require('fs');
+const skill = require('sliccy:skill');
+const cli = require('sliccy:cli');
+const http = require('sliccy:http');
 
 const DA_ADMIN_BASE = 'https://admin.da.live';
 const AEM_ADMIN_BASE = 'https://admin.hlx.page';
@@ -53,17 +98,41 @@ function getFlag(args, flag) {
 
 // ── Auth ───────────────────────────────────────────────────────
 
+let _cachedToken = null;
+
 async function getToken() {
-  const r = await exec('oauth-token adobe');
-  const token = r.stdout.trim();
-  if (!token || r.exitCode !== 0) {
+  if (_cachedToken) return _cachedToken;
+  try {
+    const token = (await skill.token('adobe') || '').trim();
+    if (!token) throw new Error('empty token');
+    _cachedToken = token;
+    return token;
+  } catch {
     process.stderr.write('aem: not authenticated. Run: oauth-token adobe\n');
     process.exit(1);
   }
-  return token;
 }
 
-// ── HTTP ───────────────────────────────────────────────────────
+// ── HTTP (list/get/preview/publish — JSON/text, no file bodies) ────────────
+
+const aemApi = http.client({
+  token: () => getToken(),
+});
+
+async function aemRequest(method, url) {
+  try {
+    const resp = await aemApi[method.toLowerCase()](url, { raw: true });
+    return typeof resp.body === 'string' ? resp.body : JSON.stringify(resp.body);
+  } catch (err) {
+    if (err && (err.status === 401 || err.status === 403)) {
+      process.stderr.write('aem: authentication failed (token may be expired). Run: oauth-token adobe\n');
+      process.exit(1);
+    }
+    throw new Error((err && (err.body?.message || err.message)) || `HTTP ${method} failed`);
+  }
+}
+
+// ── HTTP (put/upload — multipart file body; known gap #4, curl -F kept) ────
 
 function shellQuote(a) {
   if (/[^a-zA-Z0-9_.\/:\-=]/.test(a)) {
@@ -72,7 +141,7 @@ function shellQuote(a) {
   return a;
 }
 
-async function aemFetch(method, url, token, extraArgs) {
+async function aemFetchMultipart(method, url, token, extraArgs) {
   const args = [
     'curl', '-sS', '-X', method,
     '-H', `Authorization: Bearer ${token}`,
@@ -110,10 +179,10 @@ async function cmdList(args) {
     process.stderr.write('Usage: aem list <eds-url-or-path> [--org <org> --repo <repo>]\n');
     process.exit(1);
   }
-  const token = await getToken();
+  await getToken();
   const dirPath = target.path.replace(/\/$/, '');
   const url = `${DA_ADMIN_BASE}/list/${target.org}/${target.repo}/${dirPath}`;
-  const body = await aemFetch('GET', url, token);
+  const body = await aemRequest('GET', url);
 
   let entries;
   try { entries = JSON.parse(body); } catch {
@@ -136,10 +205,10 @@ async function cmdGet(args) {
     process.stderr.write('Usage: aem get <eds-url-or-path> [--output <vfs-path>]\n');
     process.exit(1);
   }
-  const token = await getToken();
+  await getToken();
   const path = normalizeAemPath(target.path);
   const url = `${DA_ADMIN_BASE}/source/${target.org}/${target.repo}/${path}`;
-  const html = await aemFetch('GET', url, token);
+  const html = await aemRequest('GET', url);
 
   const outputPath = getFlag(args, '--output') || getFlag(args, '-o');
   if (outputPath) {
@@ -170,7 +239,7 @@ async function cmdPut(args) {
   // Write HTML to a temp file, then use curl -F to upload
   const tmpPath = process.cwd() + '/_aem_put_' + Date.now() + '.html';
   await fs.writeFile(tmpPath, html);
-  await aemFetch('PUT', url, token, ['-F', `data=@${tmpPath};type=text/html`]);
+  await aemFetchMultipart('PUT', url, token, ['-F', `data=@${tmpPath};type=text/html`]);
   await fs.rm(tmpPath);
 
   process.stdout.write(`Saved: ${aemPath}\n`);
@@ -182,10 +251,10 @@ async function cmdPreview(args) {
     process.stderr.write('Usage: aem preview <eds-url-or-path>\n');
     process.exit(1);
   }
-  const token = await getToken();
+  await getToken();
   const path = target.path.replace(/^\//, '').replace(/\.html$/, '');
   const url = `${AEM_ADMIN_BASE}/preview/${target.org}/${target.repo}/${target.ref}/${path}`;
-  const body = await aemFetch('POST', url, token);
+  const body = await aemRequest('POST', url);
 
   let data;
   try { data = JSON.parse(body); } catch {
@@ -203,10 +272,10 @@ async function cmdPublish(args) {
     process.stderr.write('Usage: aem publish <eds-url-or-path>\n');
     process.exit(1);
   }
-  const token = await getToken();
+  await getToken();
   const path = target.path.replace(/^\//, '').replace(/\.html$/, '');
   const url = `${AEM_ADMIN_BASE}/live/${target.org}/${target.repo}/${target.ref}/${path}`;
-  const body = await aemFetch('POST', url, token);
+  const body = await aemRequest('POST', url);
 
   let data;
   try { data = JSON.parse(body); } catch {
@@ -251,7 +320,7 @@ async function cmdUpload(args) {
   const mime = mimeMap[ext] || 'application/octet-stream';
 
   const url = `${DA_ADMIN_BASE}/source/${target.org}/${target.repo}/${aemPath}`;
-  await aemFetch('PUT', url, token, ['-F', `data=@${filePath};type=${mime}`]);
+  await aemFetchMultipart('PUT', url, token, ['-F', `data=@${filePath};type=${mime}`]);
 
   process.stdout.write(`Uploaded: ${filePath} -> ${aemPath}\n`);
 }
