@@ -55,6 +55,12 @@
 //   Otherwise pulls localStorage `jwtToken` from any open zsa.io browser tab.
 //   On 401, tells you to log into oryx.zsa.io in your browser, then retry.
 
+// Runtime bridges: the jsh runtime no longer exposes `exec` as a bare global,
+// and the legacy browser shell-out is replaced by the `sliccy:browser`
+// page-context bridge (tab discovery + localStorage reads).
+const { exec } = require('sliccy:exec');
+const browser = require('sliccy:browser');
+
 const CONFIG_FILE = '/workspace/skills/oryx/.config';
 const ENDPOINT    = 'https://oryx.zsa.io/graphql';
 const ZSA_DOMAIN  = 'zsa.io';
@@ -97,18 +103,21 @@ async function loadConfig() {
 }
 
 async function findZsaTabs() {
-  const r = await exec('playwright-cli tab-list');
-  if (r.exitCode !== 0) return [];
+  // Probe for zsa.io tabs in priority order via the browser bridge:
+  // configure.zsa.io / oryx.zsa.io hold the jwtToken, so try them first,
+  // then fall back to any other zsa.io tab. `browser.findTab` returns one
+  // handle per query, so issue targeted queries and dedupe by targetId.
+  const seen = new Set();
   const tabs = [];
-  for (const line of r.stdout.split('\n')) {
-    const m = line.match(/\[([A-F0-9]+)\]\s+(https?:\/\/[^\s"]*)/);
-    if (m && /\.?zsa\.io/i.test(m[2])) tabs.push({ id: m[1], url: m[2] });
-  }
-  // Prefer configure.zsa.io and oryx.zsa.io (where jwtToken lives)
-  tabs.sort((a, b) => {
-    const score = u => /(configure|oryx)\.zsa\.io/i.test(u) ? 0 : 1;
-    return score(a.url) - score(b.url);
-  });
+  const push = t => {
+    if (t && !seen.has(t.targetId)) {
+      seen.add(t.targetId);
+      tabs.push(t);
+    }
+  };
+  push(await browser.findTab({ domain: 'configure.zsa.io' }));
+  push(await browser.findTab({ domain: 'oryx.zsa.io' }));
+  push(await browser.findTab({ urlMatch: 'zsa\\.io' }));
   return tabs;
 }
 
@@ -119,9 +128,14 @@ async function getToken() {
   // 2. Try every zsa.io tab in priority order
   const tabs = await findZsaTabs();
   for (const t of tabs) {
-    const r = await exec(`playwright-cli localstorage-get jwtToken --tab=${t.id}`);
-    if (r.exitCode !== 0) continue;
-    const tok = r.stdout.trim().replace(/^"+|"+$/g, '');
+    let raw;
+    try {
+      raw = await browser.localStorage(t, 'jwtToken');
+    } catch (_) {
+      continue;
+    }
+    if (raw == null) continue;
+    const tok = String(raw).trim().replace(/^"+|"+$/g, '');
     if (tok && tok !== 'null' && tok !== 'undefined') return tok;
   }
   return null;
