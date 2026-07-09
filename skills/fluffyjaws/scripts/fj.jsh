@@ -5,126 +5,165 @@
 // (Adobe Okta SSO) is sent automatically. The cross-origin host
 // api.fluffyjaws.adobe.com is CORS-locked against the SLICC localhost
 // origin, so we proxy through the UI host instead.
+//
+// ┌─────────────────────────────────────────────────────────────────────────┐
+// │ MIGRATION NOTES (jsh runtime extensions, ai-ecoverse/slicc#786, #118)   │
+// │                                                                         │
+// │ Migrated to the sliccy: API surface:                                   │
+// │  • Added explicit `require('sliccy:*')` imports — nothing is a bare    │
+// │    global anymore (exec, cli, color, fmt).                             │
+// │  • Tab discovery: exec('playwright-cli tab-list') + regex parse        │
+// │    → browser.findTab({ domain }).                                     │
+// │  • Tab open: exec('playwright-cli open ...') + regex on stdout         │
+// │    → browser.ensureTab(UI_HOST).                                       │
+// │  • Non-streaming page fetch (pageFetch's plain branch): the            │
+// │    base64-eval-file + JSON-double-unwrap dance → browser.fetch(tab,    │
+// │    path, opts), which is page-context (session cookies automatic) and  │
+// │    already returns { ok, status, headers, body } with body parsed     │
+// │    when JSON — this is exactly what buildFetchExpr()/pageFetch() were  │
+// │    hand-rolling.                                                       │
+// │  • api(): now trusts browser.fetch's already-parsed resp.body instead │
+// │    of re-parsing JSON text by content-type itself.                     │
+// │  • Errors/exits: console.error + process.exit(1) → cli.die(msg,        │
+// │    { prefix: 'fj' }).                                                  │
+// │  • Colors/help text: plain console.log → color.bold/cyan + cli.help    │
+// │    for `fj help`.                                                      │
+// │  • File access for MCP session + docs listing/reading: exec('cat ...') │
+// │    / exec('mkdir ...') / exec('ls ...') shell-outs → require('fs')     │
+// │    VFS bridge (exists/readFile/writeFile/mkdir/readdir/rm).            │
+// │                                                                         │
+// │ Deliberately KEPT as exec + playwright-cli (documented gap):           │
+// │  • pageStream() / the `stream: true` branch of pageFetch(), used only  │
+// │    by `fj ask`/`fj chat` to consume the server's SSE stream.           │
+// │    browser.fetch() is explicitly non-streaming — a single call, one    │
+// │    { ok, status, headers, body } result once the response is fully     │
+// │    buffered. This script's streaming design exists specifically to     │
+// │    avoid that: it starts the fetch in the page (stashing the           │
+// │    ReadableStream reader on `window.__fj_stream`), then polls that     │
+// │    in-page state via many short eval calls (every ~200ms) so no single │
+// │    CDP Runtime.evaluate call ever blocks for the full duration of a    │
+// │    long-running LLM response (which can run for minutes and would      │
+// │    otherwise exceed CDP's ~30s Runtime.evaluate ceiling if awaited in   │
+// │    one shot). There is no sliccy:browser equivalent for "start a fetch  │
+// │    and let me poll a live in-page ReadableStream reader across         │
+// │    multiple calls" — browser.fetch's contract is fundamentally         │
+// │    call-once/fully-buffered. `browser.websocket` is not applicable      │
+// │    either: FluffyJaws' assistant responses are plain HTTP SSE over     │
+// │    fetch(), not a WebSocket, and the websocket sink model (webhook/    │
+// │    scoop/vfs/log with declarative JSON filters) doesn't fit a          │
+// │    synchronous CLI command that needs to render deltas to stdout as    │
+// │    they arrive. So pageStream()/buildFetchExpr()'s streaming branch     │
+// │    stay on the exec('playwright-cli eval-file ...') pattern, unchanged  │
+// │    in behavior. Non-streaming calls (everything else — me/packs/pack/   │
+// │    explore/convs/conv/search/mcp) all move to browser.fetch.            │
+// ├─────────────────────────────────────────────────────────────────────────┤
+// │ FOLLOW-UP (review response) — Copilot review on PR #157 flagged:       │
+// │  • pageFetch()'s non-streaming branch passed options.body straight     │
+// │    through to browser.fetch without JSON-stringifying object bodies    │
+// │    or defaulting Content-Type — real bug, would have broken `fj ask`/  │
+// │    `fj chat`/`fj mcp`'s object-bodied POSTs. Fixed: object bodies are   │
+// │    now explicitly JSON.stringify'd and Content-Type defaulted, exactly │
+// │    matching the old buildFetchExpr()'s behavior.                       │
+// │  • fs.promises.exists()-then-read() pre-checks (MCP session file,      │
+// │    docs page files) were flagged as a non-existent API / TOCTOU risk.  │
+// │    man jsh does document fs.promises.exists(path) as real, but         │
+// │    attempt-then-catch is strictly more robust regardless of which is   │
+// │    correct, so readSession()/the docs reader now just try readFile()   │
+// │    and treat ENOENT (or any read failure) as "not found" — no exists() │
+// │    pre-check left at all.                                              │
+// │  • fs.promises.mkdir(SKILL_ROOT) in writeSession() is documented as    │
+// │    recursive/idempotent (man jsh: "create directory (recursive)"), but │
+// │    wrapped in .catch(() => {}) anyway as cheap insurance.              │
+// │  • docs' page listing (fs.promises.readdir()) doesn't guarantee sorted │
+// │    output the way the old `ls`-based version did — added .sort().      │
+// └─────────────────────────────────────────────────────────────────────────┘
+
+const exec = require('sliccy:exec');
+const cli = require('sliccy:cli');
+const color = require('sliccy:color');
+const browser = require('sliccy:browser');
+const fs = require('fs');
 
 const UI_HOST = 'https://fluffyjaws.adobe.com';
 const UI_DOMAIN = 'fluffyjaws.adobe.com';
 const SKILL_ROOT = '/workspace/skills/fluffyjaws';
 const MCP_SESSION_FILE = '/workspace/skills/fluffyjaws/.mcp-session';
 
-// ---------- Tab management ----------
-
-let _tabId = null;
-
-async function findTab() {
-  const list = await exec('playwright-cli tab-list');
-  if (list.exitCode !== 0) return null;
-  const re = new RegExp(`\\[([A-F0-9]+)\\]\\s+https?:\\/\\/[^\\s]*${UI_DOMAIN.replace(/\./g,'\\.')}`);
-  const m = list.stdout.match(re);
-  return m ? m[1] : null;
+// Read the cached MCP session id, or '' if the file doesn't exist / is
+// unreadable. Attempt-then-catch (rather than an exists()-then-read()
+// pre-check) avoids a TOCTOU gap between the check and the read.
+async function readSession() {
+  try {
+    return (await fs.promises.readFile(MCP_SESSION_FILE, 'utf8')).trim();
+  } catch (_) {
+    return '';
+  }
 }
 
+// ---------- Tab management ----------
+
+let _tab = null;
+
 async function ensureTab() {
-  if (_tabId) return _tabId;
-  let id = await findTab();
-  if (!id) {
-    const r = await exec(`playwright-cli open ${UI_HOST}`);
-    const m = r.stdout.match(/targetId:\s*([A-F0-9]+)/);
-    if (!m) {
-      console.error('fj: failed to open FluffyJaws tab');
-      console.error(r.stderr || r.stdout);
-      process.exit(1);
+  if (_tab) return _tab;
+  let tab = await browser.findTab({ domain: UI_DOMAIN });
+  if (!tab) {
+    try {
+      tab = await browser.ensureTab(UI_HOST);
+    } catch (e) {
+      cli.die(`failed to open FluffyJaws tab: ${e && e.message ? e.message : e}`, { prefix: 'fj' });
     }
-    id = m[1];
     // Give the SPA + Okta SSO a beat to settle
     await new Promise(r => setTimeout(r, 4000));
   }
-  _tabId = id;
-  return _tabId;
+  _tab = tab;
+  return _tab;
 }
 
-// ---------- Page-context fetch ----------
+// ---------- Page-context fetch (non-streaming) ----------
 
-// Build a JS expression that runs in the page and returns a JSON string with
-// either {ok, status, headers, body} or {error: '...'}.
-//
-// For non-stream requests this is one eval call. For streaming requests we
-// split the work across many short eval calls so we never block CDP for more
-// than a couple of seconds at a time (CDP's Runtime.evaluate has a 30s ceiling).
-function buildFetchExpr(path, options = {}) {
+// Thin wrapper around browser.fetch for the non-streaming case. Streaming
+// requests (options.stream) still go through the legacy exec/playwright-cli
+// pageStream() path below — see MIGRATION NOTES at the top of this file for
+// why that couldn't move to browser.fetch.
+async function pageFetch(path, options = {}) {
+  const tab = await ensureTab();
+  if (options.stream) return pageStream(tab, path, options);
+
   const method = (options.method || 'GET').toUpperCase();
   const headers = Object.assign({ Accept: 'application/json' }, options.headers || {});
-  const bodyStr = options.body == null
-    ? null
-    : (typeof options.body === 'string' ? options.body : JSON.stringify(options.body));
-
-  const payload = {
-    path,
-    method,
-    headers,
-    body: bodyStr,
-  };
-  // jsh has no Buffer; encode UTF-8 → base64 the safe way.
-  const json = JSON.stringify(payload);
-  const b64 = (typeof Buffer !== 'undefined')
-    ? Buffer.from(json, 'utf8').toString('base64')
-    : btoa(String.fromCharCode(...new TextEncoder().encode(json)));
-
-  return `(async()=>{
-    const cfg = JSON.parse(atob('${b64}'));
-    const url = cfg.path.startsWith('http') ? cfg.path : (location.origin + cfg.path);
-    const init = { method: cfg.method, headers: cfg.headers, credentials: 'include' };
-    if (cfg.body != null && cfg.method !== 'GET' && cfg.method !== 'HEAD') {
-      init.body = cfg.body;
-      if (!('Content-Type' in cfg.headers) && !('content-type' in cfg.headers)) {
-        init.headers['Content-Type'] = 'application/json';
-      }
+  const fetchOpts = { method, headers, credentials: 'include' };
+  if (options.body !== undefined && options.body !== null && method !== 'GET' && method !== 'HEAD') {
+    // browser.fetch does not stringify object bodies for us (that JSON-object
+    // auto-serialization is documented for sliccy:http's client, not for
+    // browser.fetch's page-context fetch) — do it explicitly, matching the
+    // old hand-rolled pageFetch()'s behavior exactly, including only
+    // defaulting Content-Type when the caller hasn't already set one.
+    fetchOpts.body = typeof options.body === 'string' ? options.body : JSON.stringify(options.body);
+    if (!('Content-Type' in headers) && !('content-type' in headers)) {
+      headers['Content-Type'] = 'application/json';
     }
-    let r;
-    try { r = await fetch(url, init); }
-    catch (e) { return JSON.stringify({error: 'fetch failed: ' + (e && e.message || String(e))}); }
-    const headersObj = {};
-    r.headers.forEach((v,k) => { headersObj[k.toLowerCase()] = v; });
-    const text = await r.text();
-    return JSON.stringify({ok: r.ok, status: r.status, headers: headersObj, body: text});
-  })()`;
+  }
+
+  let resp;
+  try {
+    resp = await browser.fetch(tab, path, fetchOpts);
+  } catch (e) {
+    throw new Error('fetch failed: ' + (e && e.message ? e.message : String(e)));
+  }
+  // Normalize header casing the same way the old hand-rolled page fetch did.
+  const normalizedHeaders = {};
+  for (const [k, v] of Object.entries(resp.headers || {})) normalizedHeaders[k.toLowerCase()] = v;
+  return { ok: resp.ok, status: resp.status, headers: normalizedHeaders, body: resp.body };
 }
 
-// Execute a fetch expr against the FluffyJaws UI tab and parse its JSON result.
-async function pageFetch(path, options = {}) {
-  const tabId = await ensureTab();
-  if (options.stream) return pageStream(tabId, path, options);
-  const expr = buildFetchExpr(path, options);
-  const tmp = `/tmp/fj-eval-${Date.now()}-${Math.random().toString(36).slice(2,8)}.js`;
-  await exec(`cat > ${tmp} <<'__FJ_EOF__'\n${expr}\n__FJ_EOF__`);
-  const result = await exec(`playwright-cli eval-file ${tmp} --tab=${tabId}`);
-  await exec(`rm -f ${tmp}`);
-  if (result.exitCode !== 0) {
-    throw new Error('eval failed: ' + (result.stderr || result.stdout));
-  }
-  let raw = (result.stdout || '').trim();
-  if (raw.startsWith('"') && raw.endsWith('"')) {
-    try { raw = JSON.parse(raw); } catch (_) { /* keep */ }
-  }
-  let parsed;
-  try { parsed = JSON.parse(raw); }
-  catch (e) {
-    throw new Error('could not parse eval result: ' + raw.slice(0, 500));
-  }
-  if (parsed.error) throw new Error(parsed.error);
-  return parsed;
-}
+// ---------- Streaming fetch (kept on exec/playwright-cli — see notes above) ----------
 
-// Streaming fetch helper. Stages the request and reader on `window.__fj_stream`
-// from the first eval call, then drains chunks across many short eval polls so
-// no single CDP Runtime.evaluate ever exceeds ~5s. Calls onChunk(text) as new
-// bytes arrive and returns the final {ok, status, headers, body, truncated}.
-async function pageStream(tabId, path, options) {
-  const onChunk = options.onChunk || (() => {});
-  const maxMs = options.streamMaxMs || 180000;
-  const maxBytes = options.streamMaxBytes || 8 * 1024 * 1024;
-  const pollMs = options.pollMs || 250;
-
-  // 1. Start the request in the page and stash the reader.
+// Build a JS expression that runs in the page and returns a JSON string with
+// either {ok, status, headers, errorBody} or {error: '...'}. Used only by
+// pageStream()'s start step, since browser.fetch can't stage a long-lived
+// ReadableStream reader on `window` for later polling.
+function buildStreamStartExpr(path, options) {
   const headers = Object.assign({ Accept: 'text/event-stream' }, options.headers || {});
   const bodyStr = options.body == null
     ? null
@@ -135,7 +174,7 @@ async function pageStream(tabId, path, options) {
     ? Buffer.from(startJson, 'utf8').toString('base64')
     : btoa(String.fromCharCode(...new TextEncoder().encode(startJson)));
 
-  const startExpr = `(async()=>{
+  return `(async()=>{
     try {
       const cfg = JSON.parse(atob('${startB64}'));
       if (window.__fj_stream && window.__fj_stream.reader) {
@@ -180,33 +219,48 @@ async function pageStream(tabId, path, options) {
       return JSON.stringify({error: String(e && e.message || e)});
     }
   })()`;
+}
 
-  const startTmp = `/tmp/fj-start-${Date.now()}.js`;
-  await exec(`cat > ${startTmp} <<'__FJ_EOF__'\n${startExpr}\n__FJ_EOF__`);
-  const startRes = await exec(`playwright-cli eval-file ${startTmp} --tab=${tabId}`);
-  await exec(`rm -f ${startTmp}`);
-  if (startRes.exitCode !== 0) throw new Error('stream start eval failed: ' + (startRes.stderr || startRes.stdout));
-  let startRaw = (startRes.stdout || '').trim();
-  if (startRaw.startsWith('"') && startRaw.endsWith('"')) {
-    try { startRaw = JSON.parse(startRaw); } catch (_) {}
-  }
-  let startParsed;
-  try { startParsed = JSON.parse(startRaw); } catch (_) { throw new Error('stream start parse failed: ' + startRaw.slice(0,400)); }
-  if (startParsed.error) throw new Error(startParsed.error);
-  if (!startParsed.ok) {
-    return { ok: false, status: startParsed.status, headers: startParsed.headers, body: startParsed.errorBody || '' };
-  }
-
-  // 2. Poll the in-page state until done or limits hit.
-  const pollExpr = `(async()=>{
+const POLL_EXPR = `(async()=>{
     const s = window.__fj_stream;
     if (!s) return JSON.stringify({error: 'no stream'});
     const buf = s.chunks.join('');
     s.chunks = [];
     return JSON.stringify({chunk: buf, done: s.done, error: s.error || null, totalBytes: s.totalBytes});
   })()`;
+
+// Streaming fetch helper. Stages the request and reader on `window.__fj_stream`
+// from the first eval call, then drains chunks across many short eval polls so
+// no single CDP Runtime.evaluate ever exceeds ~5s. Calls onChunk(text) as new
+// bytes arrive and returns the final {ok, status, headers, body, truncated}.
+async function pageStream(tab, path, options) {
+  const tabId = tab && tab.id ? tab.id : tab;
+  const onChunk = options.onChunk || (() => {});
+  const maxMs = options.streamMaxMs || 180000;
+  const maxBytes = options.streamMaxBytes || 8 * 1024 * 1024;
+  const pollMs = options.pollMs || 250;
+
+  // 1. Start the request in the page and stash the reader.
+  const startExpr = buildStreamStartExpr(path, options);
+  const startTmp = `/tmp/fj-start-${Date.now()}.js`;
+  await fs.promises.writeFile(startTmp, startExpr);
+  const startRes = await exec(`playwright-cli eval-file ${startTmp} --tab=${tabId}`);
+  await fs.promises.rm(startTmp).catch(() => {});
+  if (startRes.exitCode !== 0) throw new Error('stream start eval failed: ' + (startRes.stderr || startRes.stdout));
+  let startRaw = (startRes.stdout || '').trim();
+  if (startRaw.startsWith('"') && startRaw.endsWith('"')) {
+    try { startRaw = JSON.parse(startRaw); } catch (_) {}
+  }
+  let startParsed;
+  try { startParsed = JSON.parse(startRaw); } catch (_) { throw new Error('stream start parse failed: ' + startRaw.slice(0, 400)); }
+  if (startParsed.error) throw new Error(startParsed.error);
+  if (!startParsed.ok) {
+    return { ok: false, status: startParsed.status, headers: startParsed.headers, body: startParsed.errorBody || '' };
+  }
+
+  // 2. Poll the in-page state until done or limits hit.
   const pollTmp = `/tmp/fj-poll-${Date.now()}.js`;
-  await exec(`cat > ${pollTmp} <<'__FJ_EOF__'\n${pollExpr}\n__FJ_EOF__`);
+  await fs.promises.writeFile(pollTmp, POLL_EXPR);
 
   const start = Date.now();
   let body = '';
@@ -220,7 +274,7 @@ async function pageStream(tabId, path, options) {
       try { raw = JSON.parse(raw); } catch (_) {}
     }
     let parsed;
-    try { parsed = JSON.parse(raw); } catch (_) { lastError = 'poll parse: ' + raw.slice(0,200); break; }
+    try { parsed = JSON.parse(raw); } catch (_) { lastError = 'poll parse: ' + raw.slice(0, 200); break; }
     if (parsed.error) { lastError = parsed.error; break; }
     if (parsed.chunk) {
       body += parsed.chunk;
@@ -230,7 +284,7 @@ async function pageStream(tabId, path, options) {
     if (parsed.done) break;
     if (Date.now() - start > maxMs) break;
   }
-  await exec(`rm -f ${pollTmp}`);
+  await fs.promises.rm(pollTmp).catch(() => {});
 
   // best-effort cancel
   await exec(`playwright-cli eval --tab=${tabId} "(()=>{ try{ window.__fj_stream && window.__fj_stream.reader && window.__fj_stream.reader.cancel(); }catch(_){} 'ok'; })()"`).catch(() => {});
@@ -251,13 +305,16 @@ async function api(method, path, body) {
   if (body !== undefined && body !== null) opts.body = body;
   const resp = await pageFetch(path, opts);
   if (resp.status === 401 || resp.status === 403) {
-    console.error(`fj: auth failed (${resp.status}). Open ${UI_HOST} in your browser, sign in with Okta, then retry.`);
-    process.exit(1);
+    cli.die(`auth failed (${resp.status}). Open ${UI_HOST} in your browser, sign in with Okta, then retry.`, { prefix: 'fj' });
   }
   if (!resp.ok) {
-    throw new Error(`API ${method} ${path} -> ${resp.status} ${resp.body.slice(0, 500)}`);
+    const bodyStr = typeof resp.body === 'string' ? resp.body : JSON.stringify(resp.body);
+    throw new Error(`API ${method} ${path} -> ${resp.status} ${(bodyStr || '').slice(0, 500)}`);
   }
-  if (!resp.body) return null;
+  // browser.fetch already parses JSON bodies for us; only fall back to manual
+  // parsing when it handed back a raw string (e.g. non-JSON content-type).
+  if (resp.body == null || resp.body === '') return null;
+  if (typeof resp.body !== 'string') return resp.body;
   const ct = resp.headers['content-type'] || '';
   if (ct.includes('application/json')) {
     try { return JSON.parse(resp.body); }
@@ -267,6 +324,10 @@ async function api(method, path, body) {
 }
 
 // ---------- arg parsing ----------
+// process.argv.parseFlags() does not exist in the jsh runtime — kept the
+// script's own parseArgs(), which already handled the boolean-flag/value
+// distinction this CLI needs (and which parseFlags() doesn't model, since it
+// has no notion of a fixed boolean-flag allowlist).
 
 const BOOLEAN_FLAGS = new Set([
   'no-search', 'no-canvas', 'raw', 'json', 'help',
@@ -325,7 +386,7 @@ function parseSSE(buf) {
 
 const commands = {
   async help() {
-    console.log(`fj — Adobe FluffyJaws CLI
+    console.log(`${color.bold('fj')} — Adobe FluffyJaws CLI
 
 Commands:
   fj me
@@ -357,7 +418,7 @@ session cookie. If a tab is not open, fj opens one for you. Sign in there once.
   async ask(...rest) {
     const { _, opts } = parseArgs(rest);
     const prompt = _.join(' ').trim();
-    if (!prompt) { console.error('Usage: fj ask <prompt> [options]'); process.exit(1); }
+    if (!prompt) cli.die('Usage: fj ask <prompt> [options]', { prefix: 'fj' });
 
     const body = {
       model: opts.model || 'gpt-5.4',
@@ -473,12 +534,12 @@ session cookie. If a tab is not open, fj opens one for you. Sign in there once.
       const ownerStr = p.ownerDisplayName ? ` by ${p.ownerDisplayName}` : '';
       const builtinTag = p.isBuiltIn ? ' [builtin]' : '';
       console.log(`  ${p.uuid}  ${p.name}${builtinTag}${ownerStr}`);
-      if (p.description && p.description !== '-') console.log(`    ${p.description.replace(/\s+/g,' ').slice(0,140)}`);
+      if (p.description && p.description !== '-') console.log(`    ${p.description.replace(/\s+/g, ' ').slice(0, 140)}`);
     }
   },
 
   async pack(uuid) {
-    if (!uuid) { console.error('Usage: fj pack <uuid>'); process.exit(1); }
+    if (!uuid) cli.die('Usage: fj pack <uuid>', { prefix: 'fj' });
     const data = await api('GET', `/api/v1/fluffypack/${encodeURIComponent(uuid)}`);
     console.log(JSON.stringify(data, null, 2));
   },
@@ -490,7 +551,7 @@ session cookie. If a tab is not open, fj opens one for you. Sign in there once.
     const qs = params.toString();
     const data = await api('GET', `/api/v1/fluffypack/explore${qs ? '?' + qs : ''}`);
     if (opts.json) { console.log(JSON.stringify(data, null, 2)); return; }
-    for (const group of ['recommended','recent','builtin','discover']) {
+    for (const group of ['recommended', 'recent', 'builtin', 'discover']) {
       const g = data[group];
       if (!g) continue;
       const packs = g.fluffyPacks || [];
@@ -516,7 +577,7 @@ session cookie. If a tab is not open, fj opens one for you. Sign in there once.
   },
 
   async conv(uuid) {
-    if (!uuid) { console.error('Usage: fj conv <uuid>'); process.exit(1); }
+    if (!uuid) cli.die('Usage: fj conv <uuid>', { prefix: 'fj' });
     const data = await api('GET', `/api/v1/conversation/${encodeURIComponent(uuid)}`);
     console.log(JSON.stringify(data, null, 2));
   },
@@ -524,7 +585,7 @@ session cookie. If a tab is not open, fj opens one for you. Sign in there once.
   async search(...rest) {
     const { _, opts } = parseArgs(rest);
     const q = _.join(' ').trim();
-    if (!q) { console.error('Usage: fj search <query>'); process.exit(1); }
+    if (!q) cli.die('Usage: fj search <query>', { prefix: 'fj' });
     const limit = opts.limit || 20;
     const data = await api('GET', `/api/v1/conversation/search?q=${encodeURIComponent(q)}&limit=${limit}`);
     console.log(JSON.stringify(data, null, 2));
@@ -533,21 +594,19 @@ session cookie. If a tab is not open, fj opens one for you. Sign in there once.
   // ---------- MCP ----------
 
   async mcp(sub, ...rest) {
-    if (!sub) { console.error('Usage: fj mcp <init|ping|tools|call|shutdown|session> [args]'); process.exit(1); }
+    if (!sub) cli.die('Usage: fj mcp <init|ping|tools|call|shutdown|session> [args]', { prefix: 'fj' });
     if (sub === 'session') {
-      const r = await exec(`cat ${MCP_SESSION_FILE} 2>/dev/null`);
-      const sid = (r.stdout || '').trim();
-      if (sid) console.log(sid); else { console.error('no MCP session — run: fj mcp init'); process.exit(1); }
+      const sid = await readSession();
+      if (sid) console.log(sid);
+      else cli.die('no MCP session — run: fj mcp init', { prefix: 'fj' });
       return;
     }
 
-    async function readSession() {
-      const r = await exec(`cat ${MCP_SESSION_FILE} 2>/dev/null`);
-      return (r.stdout || '').trim();
-    }
     async function writeSession(sid) {
-      await exec(`mkdir -p ${SKILL_ROOT}`);
-      await exec(`printf %s ${JSON.stringify(sid)} > ${MCP_SESSION_FILE}`);
+      // fs.promises.mkdir() is documented as recursive (no EEXIST on an
+      // already-existing directory), but tolerate it either way.
+      await fs.promises.mkdir(SKILL_ROOT).catch(() => {});
+      await fs.promises.writeFile(MCP_SESSION_FILE, sid);
     }
 
     async function rpc(envelope, opts = {}) {
@@ -556,7 +615,7 @@ session cookie. If a tab is not open, fj opens one for you. Sign in there once.
       else headers['Accept'] = 'application/json';
       if (opts.useSession) {
         const sid = await readSession();
-        if (!sid) { console.error('no MCP session — run: fj mcp init'); process.exit(1); }
+        if (!sid) cli.die('no MCP session — run: fj mcp init', { prefix: 'fj' });
         headers['Mcp-Session-Id'] = sid;
       }
       return pageFetch('/api/v1/mcp', { method: 'POST', headers, body: envelope });
@@ -567,10 +626,10 @@ session cookie. If a tab is not open, fj opens one for you. Sign in there once.
         jsonrpc: '2.0', id: 1, method: 'initialize',
         params: { protocolVersion: '2025-11-05', clientInfo: { name: 'sliccy-fj', version: '0.1.0' } },
       });
-      if (!resp.ok) { console.error(`mcp init failed: ${resp.status} ${resp.body.slice(0,500)}`); process.exit(1); }
+      if (!resp.ok) cli.die(`mcp init failed: ${resp.status} ${bodyPreview(resp.body)}`, { prefix: 'fj' });
       const sid = resp.headers['mcp-session-id'];
       if (sid) await writeSession(sid);
-      console.log(JSON.stringify({ sessionId: sid, ...JSON.parse(resp.body) }, null, 2));
+      console.log(JSON.stringify({ sessionId: sid, ...asObject(resp.body) }, null, 2));
       return;
     }
     if (sub === 'ping') {
@@ -580,42 +639,49 @@ session cookie. If a tab is not open, fj opens one for you. Sign in there once.
     }
     if (sub === 'tools') {
       const resp = await rpc({ jsonrpc: '2.0', id: Date.now(), method: 'tools/list' }, { useSession: true });
-      if (!resp.ok) { console.error(`mcp tools failed: ${resp.status} ${resp.body.slice(0,500)}`); process.exit(1); }
+      if (!resp.ok) cli.die(`mcp tools failed: ${resp.status} ${bodyPreview(resp.body)}`, { prefix: 'fj' });
       console.log(JSON.stringify(tryParse(resp.body), null, 2));
       return;
     }
     if (sub === 'call') {
       const [name, ...argParts] = rest;
-      if (!name) { console.error('Usage: fj mcp call <name> <args-json>'); process.exit(1); }
+      if (!name) cli.die('Usage: fj mcp call <name> <args-json>', { prefix: 'fj' });
       const argStr = (argParts.join(' ') || '{}').trim();
       let args;
       try { args = JSON.parse(argStr); }
-      catch (e) { console.error('args must be valid JSON: ' + e.message); process.exit(1); }
+      catch (e) { cli.die('args must be valid JSON: ' + e.message, { prefix: 'fj' }); }
       const resp = await rpc({
         jsonrpc: '2.0', id: Date.now(), method: 'tools/call',
         params: { name, arguments: args },
       }, { useSession: true });
-      if (!resp.ok) { console.error(`mcp call failed: ${resp.status} ${resp.body.slice(0,500)}`); process.exit(1); }
+      if (!resp.ok) cli.die(`mcp call failed: ${resp.status} ${bodyPreview(resp.body)}`, { prefix: 'fj' });
       console.log(JSON.stringify(tryParse(resp.body), null, 2));
       return;
     }
     if (sub === 'shutdown') {
       const resp = await rpc({ jsonrpc: '2.0', id: Date.now(), method: 'shutdown' }, { useSession: true });
-      await exec(`rm -f ${MCP_SESSION_FILE}`);
+      await fs.promises.rm(MCP_SESSION_FILE).catch(() => {});
       console.log(JSON.stringify({ status: resp.status, body: tryParse(resp.body) }, null, 2));
       return;
     }
-    console.error(`unknown mcp subcommand: ${sub}`);
-    process.exit(1);
+    cli.die(`unknown mcp subcommand: ${sub}`, { prefix: 'fj' });
   },
 
   async docs(page) {
     const dir = `${SKILL_ROOT}/references/docs`;
-    const lsRes = await exec(`ls ${dir} 2>/dev/null`);
-    const files = (lsRes.stdout || '').trim().split(/\s+/).filter(Boolean);
+    let files = [];
+    try {
+      files = await fs.promises.readdir(dir);
+    } catch (_) {
+      files = [];
+    }
+    // fs.promises.readdir() doesn't guarantee sorted output the way `ls`
+    // (used by the old exec-based version) typically does — sort explicitly
+    // so listing order stays deterministic and matches prior behavior.
     const pages = files
       .filter(f => /\.(md|txt)$/.test(f))
-      .map(f => f.replace(/\.(md|txt)$/, ''));
+      .map(f => f.replace(/\.(md|txt)$/, ''))
+      .sort();
     if (!page) {
       console.log('Pages:');
       for (const p of pages) console.log('  ' + p);
@@ -625,32 +691,52 @@ session cookie. If a tab is not open, fj opens one for you. Sign in there once.
     // Strict allowlist: page must be a simple identifier (no shell metacharacters,
     // no path separators) and must already exist in the docs directory listing.
     if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(page) || !pages.includes(page)) {
-      console.error(`fj: no docs page named ${page}`);
-      process.exit(1);
+      cli.die(`no docs page named ${page}`, { prefix: 'fj' });
     }
-    const r = await exec(`cat ${dir}/${page}.md 2>/dev/null || cat ${dir}/${page}.txt 2>/dev/null`);
-    if (!r.stdout) { console.error(`fj: no docs page named ${page}`); process.exit(1); }
-    process.stdout.write(r.stdout);
+    // Attempt-then-catch rather than exists()-then-read() — avoids a TOCTOU
+    // gap and works whether or not the extension actually exists.
+    let text = null;
+    for (const ext of ['md', 'txt']) {
+      const p = `${dir}/${page}.${ext}`;
+      try { text = await fs.promises.readFile(p, 'utf8'); break; } catch (_) { /* try next ext */ }
+    }
+    if (!text) cli.die(`no docs page named ${page}`, { prefix: 'fj' });
+    process.stdout.write(text);
   },
 };
 
-function tryParse(s) { try { return JSON.parse(s); } catch (_) { return s; } }
+function tryParse(s) {
+  if (typeof s !== 'string') return s;
+  try { return JSON.parse(s); } catch (_) { return s; }
+}
+
+function asObject(body) {
+  const parsed = tryParse(body);
+  return (parsed && typeof parsed === 'object') ? parsed : {};
+}
+
+function bodyPreview(body) {
+  const s = typeof body === 'string' ? body : JSON.stringify(body);
+  return (s || '').slice(0, 500);
+}
 
 // ---------- entry ----------
 
-const [,, cmd, ...args] = process.argv;
+const [, , cmd, ...args] = process.argv;
 if (!cmd || cmd === 'help' || cmd === '-h' || cmd === '--help') {
   await commands.help();
   process.exit(0);
 }
 if (!commands[cmd]) {
-  console.error(`fj: unknown command "${cmd}". Try: fj help`);
-  process.exit(1);
+  cli.die(`unknown command "${cmd}". Try: fj help`, { prefix: 'fj' });
 }
 
 try {
   await commands[cmd](...args);
 } catch (e) {
-  console.error('fj: ' + (e && e.message ? e.message : String(e)));
-  process.exit(1);
+  // cli.die()/process.exit() surface as a thrown NodeExitError in this
+  // runtime rather than truly halting — re-throw those so we don't double-
+  // print an error for a die() that already happened inside the command.
+  if (e && e.name === 'NodeExitError') throw e;
+  cli.die(e && e.message ? e.message : String(e), { prefix: 'fj' });
 }
