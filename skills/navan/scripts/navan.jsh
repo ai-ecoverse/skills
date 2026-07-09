@@ -5,46 +5,45 @@
 // needs two headers that SLICC's own fetch() cannot carry:
 //   Authorization: TripActions <JWT>      (literal scheme word "TripActions")
 //   x-tripactions-locale: en-US
-// So ALL calls run INSIDE the logged-in Navan browser tab via
-// `playwright-cli eval-file`. The JWT is the Auth0 access_token stored in the
-// tab's localStorage under a key starting with "@@auth0spajs@@". If it is not
-// there we fall back to intercepting the Authorization header off the app's
-// own XHR/fetch traffic. On 401/403 we tell the user to re-log-in.
+// So ALL calls run INSIDE the logged-in Navan browser tab via the
+// `sliccy:browser` bridge's `evalAsync` (the page scripts are async IIFEs
+// that `await fetch(...)`, so the synchronous `browser.eval` is not usable
+// here — it does not await a returned Promise). The JWT is the Auth0
+// access_token stored in the tab's localStorage under a key starting with
+// "@@auth0spajs@@". If it is not there we fall back to intercepting the
+// Authorization header off the app's own XHR/fetch traffic. On 401/403 we
+// tell the user to re-log-in.
 //
 // BOOKING SAFETY: `navan book` spends real money. Without --confirm it only
 // prices the itinerary and prints a gate message; it never books.
+
+const browser = require('sliccy:browser'); // page-context CDP bridge (replaces playwright-cli eval-file)
+const fs = require('fs'); // VFS bridge (writeFileBinary for the invoice PDF download)
 
 const APP_HOST  = 'app.navan.com';
 const TRIPS_URL = 'https://app.navan.com/app/user2/trips';
 const LOCALE    = 'en-US';
 
-// ----------------- tiny fs helpers (via exec) -----------------
-async function writeFile(p, s) {
-  const delim = 'NAVAN_EOF_' + Math.random().toString(36).slice(2, 10);
-  await exec(`cat > "${p}" <<'${delim}'\n${s}\n${delim}`);
-}
-async function rmFile(p) { await exec(`rm -f "${p}"`); }
-function tmpPath() { return `/shared/.navan-${Date.now()}-${Math.random().toString(36).slice(2,8)}.js`; }
-
 // ----------------- tab management -----------------
 let _tabId = null;
-async function findNavanTab() {
-  const r = await exec('playwright-cli tab-list');
-  const re = /\[([A-F0-9]+)\]\s+https?:\/\/[^\s]*\bnavan\.com/gi;
-  const m = [...r.stdout.matchAll(re)];
-  return m.length ? m[0][1] : null;
-}
 async function ensureTab() {
   if (_tabId) return _tabId;
-  const existing = await findNavanTab();
-  if (existing) { _tabId = existing; return _tabId; }
-  console.error('No Navan tab found. Open ' + TRIPS_URL + ' in the browser and log in, then retry.');
-  process.exit(2);
+  const tab = await browser.findTab({ urlMatch: /navan\.com/i });
+  if (!tab) {
+    console.error('No Navan tab found. Open ' + TRIPS_URL + ' in the browser and log in, then retry.');
+    process.exit(2);
+  }
+  _tabId = tab;
+  return _tabId;
 }
 
 // ----------------- page-context API caller -----------------
-// Builds a self-contained in-page script that (1) extracts the JWT, (2) runs
-// the fetch with the TripActions Authorization header, (3) returns the raw text.
+// Builds a self-contained in-page async script that (1) extracts the JWT,
+// (2) runs the fetch with the TripActions Authorization header, (3) returns
+// the result directly (NOT JSON.stringify'd — browser.evalAsync serializes
+// the returned value on its own, and pre-stringifying here would make the
+// Node side have to guess whether it got a string or an already-parsed
+// value back; returning the raw object avoids the ambiguity entirely).
 function buildScript(method, path, bodyStr) {
   return `
 (async () => {
@@ -69,7 +68,7 @@ function buildScript(method, path, bodyStr) {
     return null;
   }
   const tok = findToken();
-  if (!tok) return JSON.stringify({ __navan: 'notoken' });
+  if (!tok) return { __navan: 'notoken' };
   const headers = {
     'Authorization': 'TripActions ' + tok,
     'x-tripactions-locale': ${JSON.stringify(LOCALE)},
@@ -79,9 +78,9 @@ function buildScript(method, path, bodyStr) {
   ${bodyStr != null ? `opts.body = ${JSON.stringify(bodyStr)};` : ''}
   let r;
   try { r = await fetch(${JSON.stringify(path)}, opts); }
-  catch (e) { return JSON.stringify({ __navan: 'network', message: String(e) }); }
+  catch (e) { return { __navan: 'network', message: String(e) }; }
   const text = await r.text();
-  return JSON.stringify({ __navan: 'ok', status: r.status, body: text });
+  return { __navan: 'ok', status: r.status, body: text };
 })()
 `.trim();
 }
@@ -91,16 +90,17 @@ async function api(method, path, body) {
   const tabId = await ensureTab();
   const bodyStr = body == null ? null : (typeof body === 'string' ? body : JSON.stringify(body));
   const script = buildScript(method, path, bodyStr);
-  const f = tmpPath();
-  await writeFile(f, script);
-  const r = await exec(`playwright-cli eval-file ${f} --tab=${tabId}`);
-  await rmFile(f);
-  if (r.exitCode !== 0) { console.error('eval-file failed:', r.stderr || r.stdout); process.exit(1); }
   let env;
-  const out = r.stdout.trim();
-  const s = out.indexOf('{'), e = out.lastIndexOf('}');
-  try { env = JSON.parse(s >= 0 ? out.slice(s, e + 1) : out); }
-  catch (err) { console.error('Could not parse eval result:', out.slice(0, 600)); process.exit(1); }
+  try {
+    env = await browser.evalAsync(tabId, script);
+  } catch (e) {
+    console.error('eval failed:', e && e.message ? e.message : String(e));
+    process.exit(1);
+  }
+  if (!env || typeof env !== 'object') {
+    console.error('Could not parse eval result:', JSON.stringify(env).slice(0, 600));
+    process.exit(1);
+  }
   if (env.__navan === 'notoken') {
     console.error('No Navan auth token found in the tab. Make sure you are logged into ' + TRIPS_URL + ' and the tab is open, then retry.');
     process.exit(1);
@@ -144,40 +144,39 @@ async function apiDownload(path) {
     return null;
   }
   const tok = findToken();
-  if (!tok) return JSON.stringify({ __navan: 'notoken' });
+  if (!tok) return { __navan: 'notoken' };
   let r;
   try {
     r = await fetch(${JSON.stringify(path)}, { credentials: 'include',
       headers: { 'Authorization': 'TripActions ' + tok, 'x-tripactions-locale': ${JSON.stringify(LOCALE)} } });
-  } catch (e) { return JSON.stringify({ __navan: 'network', message: String(e) }); }
-  if (!r.ok) { const t = await r.text(); return JSON.stringify({ __navan: 'ok', status: r.status, error: t.slice(0, 600) }); }
+  } catch (e) { return { __navan: 'network', message: String(e) }; }
+  if (!r.ok) { const t = await r.text(); return { __navan: 'ok', status: r.status, error: t.slice(0, 600) }; }
   const buf = await r.arrayBuffer();
   let bin = ''; const bytes = new Uint8Array(buf);
   for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-  return JSON.stringify({ __navan: 'ok', status: r.status, contentType: r.headers.get('content-type') || '', base64: btoa(bin) });
+  return { __navan: 'ok', status: r.status, contentType: r.headers.get('content-type') || '', base64: btoa(bin) };
 })()
 `.trim();
-  const f = tmpPath();
-  await writeFile(f, script);
-  const r = await exec(`playwright-cli eval-file ${f} --tab=${tabId}`);
-  await rmFile(f);
-  if (r.exitCode !== 0) { console.error('eval-file failed:', r.stderr || r.stdout); process.exit(1); }
-  const out = r.stdout.trim();
-  const s = out.indexOf('{'), e = out.lastIndexOf('}');
-  let env; try { env = JSON.parse(s >= 0 ? out.slice(s, e + 1) : out); }
-  catch (err) { console.error('Could not parse download result:', out.slice(0, 400)); process.exit(1); }
+  let env;
+  try {
+    env = await browser.evalAsync(tabId, script);
+  } catch (e) {
+    console.error('eval failed:', e && e.message ? e.message : String(e));
+    process.exit(1);
+  }
+  if (!env || typeof env !== 'object') {
+    console.error('Could not parse download result:', JSON.stringify(env).slice(0, 400));
+    process.exit(1);
+  }
   if (env.__navan === 'notoken') { console.error('No Navan auth token found. Log into ' + TRIPS_URL + ' and retry.'); process.exit(1); }
   if (env.__navan === 'network') { console.error('Network error inside the Navan tab:', env.message); process.exit(1); }
   if (env.status === 401 || env.status === 403) { console.error('Navan session expired (HTTP ' + env.status + '). Re-login and retry.'); process.exit(1); }
   return { status: env.status, base64: env.base64, contentType: env.contentType, error: env.error };
 }
 
-// Write base64 content to a file via the shell.
+// Write base64 content to a file via the VFS binary bridge.
 async function writeBase64(path, b64) {
-  const tmp = tmpPath() + '.b64';
-  await writeFile(tmp, b64);
-  const r = await exec(`base64 -d "${tmp}" > "${path}" && rm -f "${tmp}"`);
-  if (r.exitCode !== 0) { await rmFile(tmp); throw new Error('Failed to write file: ' + (r.stderr || '')); }
+  await fs.writeFileBinary(path, Buffer.from(b64, 'base64'));
 }
 
 // ----------------- small helpers -----------------
