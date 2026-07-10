@@ -91,6 +91,20 @@ List inbox messages with sender, subject, date, and snippet.
 
 View a single email message with full headers and decoded body text.
 
+### gmail attachments \<message-id\>
+
+List a message's file attachments — name, MIME type, size, and `attachmentId`. Add `--json` for machine-readable output.
+
+### gmail download \<message-id\> [attachmentId] [--out=PATH]
+
+Download attachments to disk (binary-safe). With an `attachmentId`, `--out` is the target file path; without one, all attachments are written into the `--out` directory using their original filenames.
+
+```bash
+gmail attachments 19f0298dd5234642
+gmail download 19f0298dd5234642 --out=/tmp/receipts/            # all attachments
+gmail download 19f0298dd5234642 ANGjd... --out=/tmp/folio.pdf   # one attachment
+```
+
 ### gmail send --to EMAIL --subject TEXT --body TEXT [--html]
 
 Send an email to one or more recipients.
