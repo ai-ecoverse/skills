@@ -1217,13 +1217,70 @@ async function getMailboxUrn(tabId, csrfToken) {
   if (_viewerProfileUrn) return _viewerProfileUrn;
 
   var data = await pageContextFetch(tabId, csrfToken, '/voyager/api/me');
-  var miniUrn = data && data.miniProfile && data.miniProfile.entityUrn;
-  if (!miniUrn || typeof miniUrn !== 'string') {
+
+  // The messaging mailboxUrn is the signed-in viewer's dash profile URN
+  // (urn:li:fsd_profile:<id>). Extract it robustly across /voyager/api/me
+  // response shapes — LinkedIn changed the schema (issue #202):
+  //
+  //   (a) Normalized form (what pageContextFetch requests via the
+  //       `application/vnd.linkedin.normalized+json+2.1` Accept header — the
+  //       current live behavior): `data` carries `*miniProfile` as a STRING
+  //       pointer (`urn:li:fs_miniProfile:<id>`) and the actual MiniProfile
+  //       object lives in the top-level `included[]` array. That MiniProfile
+  //       carries a `dashEntityUrn` (already `urn:li:fsd_profile:<id>` —
+  //       exactly the mailbox URN we need) plus a legacy `entityUrn`
+  //       (`urn:li:fs_miniProfile:<id>`).
+  //   (b) Legacy nested form: `data.miniProfile.entityUrn`
+  //       (`urn:li:fs_miniProfile:<id>`). Kept as a fallback.
+  //
+  // fs_miniProfile and fsd_profile share the same identity token after the
+  // final colon, so converting one to the other is a straight prefix swap.
+  function toDashProfileUrn(u) {
+    if (!u || typeof u !== 'string') return null;
+    if (u.indexOf('urn:li:fsd_profile:') === 0) return u;
+    if (u.indexOf('urn:li:fs_miniProfile:') === 0) {
+      return u.replace('urn:li:fs_miniProfile:', 'urn:li:fsd_profile:');
+    }
+    return null;
+  }
+
+  var mailboxUrn = null;
+
+  // (b) Legacy nested shape first (cheapest, unambiguous when present).
+  if (data && data.miniProfile && typeof data.miniProfile.entityUrn === 'string') {
+    mailboxUrn = toDashProfileUrn(data.miniProfile.entityUrn);
+  }
+
+  // (a) Normalized shape: resolve the MiniProfile out of `included[]`. Prefer
+  // its `dashEntityUrn`; fall back to converting its legacy `entityUrn`.
+  if (!mailboxUrn && data && Array.isArray(data.included)) {
+    // Match the MiniProfile that the `*miniProfile` pointer references, if we
+    // can, so we never pick up some unrelated included profile entity.
+    var pointer = data['*miniProfile'];
+    for (var mbi = 0; mbi < data.included.length; mbi++) {
+      var inc = data.included[mbi];
+      if (!inc) continue;
+      var isMiniProfile =
+        (inc['$type'] && inc['$type'].indexOf('MiniProfile') !== -1) ||
+        (typeof inc.entityUrn === 'string' && inc.entityUrn.indexOf('urn:li:fs_miniProfile:') === 0);
+      if (!isMiniProfile) continue;
+      if (pointer && typeof pointer === 'string' && inc.entityUrn !== pointer) continue;
+      mailboxUrn = toDashProfileUrn(inc.dashEntityUrn) || toDashProfileUrn(inc.entityUrn);
+      if (mailboxUrn) break;
+    }
+  }
+
+  // Last resort: convert the `*miniProfile` pointer string directly.
+  if (!mailboxUrn && data && typeof data['*miniProfile'] === 'string') {
+    mailboxUrn = toDashProfileUrn(data['*miniProfile']);
+  }
+
+  if (!mailboxUrn) {
     console.error('Could not determine viewer profile URN from /voyager/api/me. Please log into LinkedIn in your browser.');
     process.exit(1);
   }
-  // fs_miniProfile and fsd_profile use the same identity token after the colon
-  _viewerProfileUrn = miniUrn.replace('urn:li:fs_miniProfile:', 'urn:li:fsd_profile:');
+
+  _viewerProfileUrn = mailboxUrn;
   return _viewerProfileUrn;
 }
 
@@ -1233,6 +1290,17 @@ function generateUUID() {
     var v = c === 'x' ? r : (r & 0x3 | 0x8);
     return v.toString(16);
   });
+}
+
+// LinkedIn's createMessage payload carries a `trackingId` that is 16 RAW bytes
+// embedded directly in the JSON string (NOT base64 — captured live 2026-07-10,
+// issue #208). JSON.stringify escapes control bytes as \u00XX and passes the
+// rest through, exactly matching the web client's wire format. Omitting this
+// field is one of the reasons createMessage returned a bare {"status":400}.
+function generateTrackingId() {
+  var s = '';
+  for (var i = 0; i < 16; i++) s += String.fromCharCode(Math.floor(Math.random() * 256));
+  return s;
 }
 
 function formatTimestamp(ms) {
@@ -1261,7 +1329,10 @@ async function messagingFetch(tabId, csrfToken, url, options) {
     'x-li-lang': 'en_US'
   };
   if (method === 'POST') {
-    headers['content-type'] = 'application/json; charset=UTF-8';
+    // The messaging send endpoint (createMessage) rejects application/json with a
+    // bare {"status":400} — LinkedIn's own web client posts the JSON body with a
+    // text/plain content-type (captured live 2026-07-10, issue #208). Match it.
+    headers['content-type'] = 'text/plain;charset=UTF-8';
     headers['x-li-page-instance'] = 'urn:li:page:d_flagship3_messaging;slicc';
   }
 
@@ -1469,6 +1540,7 @@ async function sendMessage(conversationUrn, messageText) {
       originToken: generateUUID()
     },
     mailboxUrn: mailboxUrn,
+    trackingId: generateTrackingId(),
     dedupeByClientGeneratedToken: false
   };
 
