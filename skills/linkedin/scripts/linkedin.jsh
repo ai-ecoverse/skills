@@ -1292,6 +1292,17 @@ function generateUUID() {
   });
 }
 
+// LinkedIn's createMessage payload carries a `trackingId` that is 16 RAW bytes
+// embedded directly in the JSON string (NOT base64 — captured live 2026-07-10,
+// issue #208). JSON.stringify escapes control bytes as \u00XX and passes the
+// rest through, exactly matching the web client's wire format. Omitting this
+// field is one of the reasons createMessage returned a bare {"status":400}.
+function generateTrackingId() {
+  var s = '';
+  for (var i = 0; i < 16; i++) s += String.fromCharCode(Math.floor(Math.random() * 256));
+  return s;
+}
+
 function formatTimestamp(ms) {
   if (!ms) return '';
   var d = new Date(ms);
@@ -1318,7 +1329,10 @@ async function messagingFetch(tabId, csrfToken, url, options) {
     'x-li-lang': 'en_US'
   };
   if (method === 'POST') {
-    headers['content-type'] = 'application/json; charset=UTF-8';
+    // The messaging send endpoint (createMessage) rejects application/json with a
+    // bare {"status":400} — LinkedIn's own web client posts the JSON body with a
+    // text/plain content-type (captured live 2026-07-10, issue #208). Match it.
+    headers['content-type'] = 'text/plain;charset=UTF-8';
     headers['x-li-page-instance'] = 'urn:li:page:d_flagship3_messaging;slicc';
   }
 
@@ -1526,6 +1540,7 @@ async function sendMessage(conversationUrn, messageText) {
       originToken: generateUUID()
     },
     mailboxUrn: mailboxUrn,
+    trackingId: generateTrackingId(),
     dedupeByClientGeneratedToken: false
   };
 
