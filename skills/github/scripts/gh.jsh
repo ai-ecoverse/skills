@@ -757,6 +757,81 @@ async function issueView(args) {
   }
 }
 
+// ─── issue comment ───────────────────────────────────────────────────────────
+
+async function issueComment(args) {
+  if (!args[0]) cli.die('issue comment: issue number required');
+  const num = validateNum(args[0], 'issue number');
+  if (!args[1]) cli.die('issue comment: message required');
+  const repo = await resolveRepo(args[2]);
+  try {
+    const res = await api.post(`/repos/${repo}/issues/${num}/comments`, {
+      body: { body: args[1] },
+    });
+    console.log(sym('success') + ' Comment posted: ' + res.html_url);
+  } catch (e) { fail('issue comment', e); }
+}
+
+// ─── issue close ─────────────────────────────────────────────────────────────
+
+async function issueClose(args) {
+  let reason = null;
+  const positional = [];
+  for (const a of args) {
+    if (a.startsWith('--reason=')) reason = a.slice(9).trim();
+    else positional.push(a);
+  }
+  if (!positional[0]) cli.die('issue close: issue number required');
+  const num = validateNum(positional[0], 'issue number');
+  const repo = await resolveRepo(positional[1]);
+  try {
+    const res = await api.patch(`/repos/${repo}/issues/${num}`, {
+      body: { state: 'closed', ...(reason ? { state_reason: reason } : {}) },
+    });
+    console.log(sym('closed') + ' Closed issue ' + color.cyan('#' + num) + ': ' + res.title);
+    console.log(color.gray('URL:') + '     ' + res.html_url);
+  } catch (e) { fail('issue close', e); }
+}
+
+// ─── issue edit ──────────────────────────────────────────────────────────────
+
+async function issueEdit(args) {
+  const usage = 'usage: gh issue edit <num> [--title=T] [--body=B] [--label=L]... [--labels=a,b] [--state=open|closed] [repo]';
+  let title = null, body = null, state = null;
+  const labelSet = new Set();
+  let haveLabels = false;
+  const positional = [];
+  for (const a of args) {
+    if (a.startsWith('--title=')) title = a.slice(8);
+    else if (a.startsWith('--body=')) body = a.slice(7);
+    else if (a.startsWith('--state=')) state = a.slice(8).trim();
+    else if (a.startsWith('--label=')) {
+      const v = a.slice(8).trim();
+      if (v) labelSet.add(v);
+      haveLabels = true;
+    } else if (a.startsWith('--labels=')) {
+      for (const v of a.slice(9).split(',').map(s => s.trim()).filter(Boolean)) labelSet.add(v);
+      haveLabels = true;
+    } else positional.push(a);
+  }
+  if (!positional[0]) cli.die('issue edit: issue number required\n' + usage);
+  const num = validateNum(positional[0], 'issue number');
+  const repo = await resolveRepo(positional[1]);
+
+  const payload = {};
+  if (title !== null) payload.title = title;
+  if (body !== null) payload.body = body;
+  if (state !== null) payload.state = state;
+  if (haveLabels) payload.labels = [...labelSet];
+  if (!Object.keys(payload).length) cli.die('issue edit: nothing to update — pass --title, --body, --label(s), or --state\n' + usage);
+
+  try {
+    const res = await api.patch(`/repos/${repo}/issues/${num}`, { body: payload });
+    console.log(sym('success') + ' Edited issue ' + color.cyan('#' + num) + ': ' + res.title);
+    console.log(color.gray('URL:') + '     ' + res.html_url);
+  } catch (e) { fail('issue edit', e); }
+}
+
 // ─── repo view ───────────────────────────────────────────────────────────────
 
 async function repoView(args) {
@@ -1387,6 +1462,9 @@ ${color.bold('COMMANDS')}
   ${color.cyan('issue list')}    [repo]                       List open issues
   ${color.cyan('issue view')}    <num> [repo]                 View issue details
   ${color.cyan('issue create')}  <title> <body> [--label=L]... [--labels=a,b] [repo]  Create issue
+  ${color.cyan('issue close')}   <num> [--reason=completed|not_planned] [repo]  Close an issue
+  ${color.cyan('issue comment')} <num> <message> [repo]       Post a comment on an issue
+  ${color.cyan('issue edit')}    <num> [--title=T] [--body=B] [--label=L]... [--labels=a,b] [--state=open|closed] [repo]  Edit an issue
   ${color.cyan('repo view')}     [repo]                       Show repository info
   ${color.cyan('run list')}      [repo]                       List recent workflow runs
   ${color.cyan('run view')}      <run_id> [repo]              View run details and jobs
@@ -1429,7 +1507,7 @@ if (cmd === 'monday') { await mondayGh(argv.slice(2)); process.exit(0); }
 
 const dispatch = {
   pr:      { list: () => prList(rest),      view: () => prView(rest),    merge: () => prMerge(rest), close: () => prClose(rest), comment: () => prComment(rest), checkout: () => prCheckout(rest), create: () => prCreate(rest), watch: () => prWatch(rest), unwatch: () => prUnwatch(rest) },
-  issue:   { list: () => issueList(rest),   view: () => issueView(rest), create: () => issueCreate(rest) },
+  issue:   { list: () => issueList(rest),   view: () => issueView(rest), create: () => issueCreate(rest), comment: () => issueComment(rest), close: () => issueClose(rest), edit: () => issueEdit(rest) },
   repo:    { view: () => repoView(rest), archive: () => repoArchive(rest) },
   branch:  { create: () => branchCreate(rest), delete: () => branchDelete(rest) },
   content: { put: () => contentPut(rest) },
