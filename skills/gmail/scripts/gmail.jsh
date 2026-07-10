@@ -178,6 +178,39 @@ function decodeBase64Url(data) {
 }
 
 /**
+ * Decode Gmail's base64url-encoded data to raw bytes (Uint8Array) — for
+ * binary attachments (PDF, images) that must not be UTF-8 mangled.
+ */
+function decodeBase64UrlBytes(data) {
+  if (!data) return new Uint8Array(0);
+  const b64 = data.replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(b64);
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  return bytes;
+}
+
+/**
+ * Recursively collect attachment parts (those with a filename + attachmentId)
+ * from a Gmail message payload.
+ */
+function collectAttachments(payload, acc = []) {
+  if (!payload) return acc;
+  if (payload.filename && payload.body && payload.body.attachmentId) {
+    acc.push({
+      filename: payload.filename,
+      attachmentId: payload.body.attachmentId,
+      mimeType: payload.mimeType,
+      size: payload.body.size,
+    });
+  }
+  if (Array.isArray(payload.parts)) {
+    for (const p of payload.parts) collectAttachments(p, acc);
+  }
+  return acc;
+}
+
+/**
  * Encode a string to base64url (for sending messages via Gmail API).
  */
 function encodeBase64Url(str) {
@@ -397,6 +430,61 @@ async function cmdView() {
     // NodeExitError instead of re-wrapping it into a second error line.
     if (e && e.name === 'NodeExitError') throw e;
     die(`gmail: view failed: ${e.message}`);
+  }
+}
+
+async function cmdAttachments() {
+  const id = positional[0];
+  if (!id) die('gmail attachments: provide a message ID');
+  try {
+    const msg = await gmailGet(`/messages/${id}`, { format: 'full' });
+    const atts = collectAttachments(msg.payload);
+    if (flags.json === true || flags.json === 'true') { out(atts); return; }
+    if (!atts.length) { process.stdout.write(C.gray('(no attachments)\n')); return; }
+    process.stdout.write(`${C.bold('Attachments')} — ${atts.length}\n\n`);
+    for (const a of atts) {
+      process.stdout.write(`  ${C.cyan(a.filename)}  ${C.gray(a.mimeType)}  ${C.gray((a.size || 0) + ' bytes')}\n`);
+      process.stdout.write(`    ${C.gray('attachmentId:')} ${a.attachmentId}\n`);
+    }
+  } catch (e) {
+    if (e && e.name === 'NodeExitError') throw e;
+    die(`gmail: attachments failed: ${e.message}`);
+  }
+}
+
+async function cmdDownload() {
+  const fs = require('fs');
+  const id = positional[0];
+  if (!id) die('gmail download: usage: gmail download <messageId> [attachmentId] --out=<path>');
+  const out = flags.out || flags.o;
+  if (!out) die('gmail download: --out=<path> is required (file path for a single attachment, or dir when downloading all)');
+  try {
+    const msg = await gmailGet(`/messages/${id}`, { format: 'full' });
+    const atts = collectAttachments(msg.payload);
+    if (!atts.length) die('gmail download: message has no attachments');
+    let targets, asDir;
+    const explicitId = positional[1];
+    if (explicitId) {
+      targets = atts.filter(a => a.attachmentId === explicitId);
+      if (!targets.length) die(`gmail download: attachmentId not found on message`);
+      asDir = /\/$/.test(out);
+    } else {
+      targets = atts;
+      asDir = true; // download all into out dir
+    }
+    const written = [];
+    for (const a of targets) {
+      const att = await gmailGet(`/messages/${id}/attachments/${a.attachmentId}`);
+      const bytes = decodeBase64UrlBytes(att.data);
+      const path = asDir ? `${out.replace(/\/$/, '')}/${a.filename}` : out;
+      await fs.writeFileBinary(path, bytes);
+      written.push({ filename: a.filename, path, bytes: bytes.length });
+    }
+    if (flags.json === true || flags.json === 'true') { process.stdout.write(JSON.stringify(written, null, 2) + '\n'); return; }
+    for (const w of written) process.stdout.write(`${C.green('✓')} ${w.filename} → ${w.path} (${w.bytes} bytes)\n`);
+  } catch (e) {
+    if (e && e.name === 'NodeExitError') throw e;
+    die(`gmail: download failed: ${e.message}`);
   }
 }
 
@@ -660,6 +748,12 @@ try {
     case 'mail':
     case 'inbox':
       await cmdMail();
+      break;
+    case 'attachments':
+      await cmdAttachments();
+      break;
+    case 'download':
+      await cmdDownload();
       break;
     case 'view':
       await cmdView();
