@@ -1,0 +1,11 @@
+mutation UpdateReportHeader($userId: String!, $contextRole: ContextRoleType!, $reportId: String!, $fields: UpdateReportFieldsInput!) {
+  updateReport(
+    userId: $userId
+    contextRole: $contextRole
+    reportId: $reportId
+    fields: $fields
+  ) {
+    reportId
+    __typename
+  }
+}
