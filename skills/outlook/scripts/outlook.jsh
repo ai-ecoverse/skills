@@ -317,10 +317,14 @@ async function getToken() {
   const browserToken = await extractTokenFromBrowser();
   if (browserToken) return browserToken;
 
-  // 2. Fallback to saved token file
+  // 2. Fallback to saved token file — only if it is still fresh. A stale
+  // on-disk token would otherwise be returned and cause confusing downstream
+  // API failures (401s / empty-body parse errors) instead of the actionable
+  // "open Outlook" guidance below. Mirrors the revalidation already applied to
+  // network-captured tokens (see isFreshBearerCandidate).
   try {
     const saved = (await fs.readFile(TOKEN_PATH)).trim();
-    if (saved) return saved;
+    if (saved && isFreshBearerCandidate(saved)) return saved;
   } catch { /* no file */ }
 
   die(
