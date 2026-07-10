@@ -83,6 +83,20 @@ List upcoming calendar events with time, organizer, location, and response statu
 
 View a single email message with full headers and body text.
 
+### outlook attachments \<message-id\>
+
+List a message's file attachments — name, content type, size, and attachment `id`. Add `--json` for machine-readable output.
+
+### outlook download \<message-id\> [attachmentId] [--out=PATH]
+
+Download attachments to disk (binary-safe, via the OWA `ContentBytes` payload). With an `id`, `--out` is the target file path; without one, all file attachments are written into the `--out` directory using their original names.
+
+```bash
+outlook attachments AAMk...=
+outlook download AAMk...= --out=/tmp/etickets/       # all attachments
+outlook download AAMk...= AAMk...att --out=/tmp/eticket.pdf
+```
+
 ### outlook accept|decline|tentative \<event-id\> [...] [options]
 
 Respond to one or more calendar events. Get event IDs from `outlook calendar --json`.
