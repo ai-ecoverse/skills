@@ -124,13 +124,18 @@ These hit the public-API surface at `www-us2.api.concursolutions.com/api/v3.0/*`
 | `concur set-payment <reportId> <expenseId> <CASH\|PCCD> [--comment="..."]` | Change an existing entry's payment type via `UpdateExistingExpenseEntry` (e.g. flip Corporate Card → Out of Pocket). `policyId` auto-resolves. |
 | `concur payment-types` | List the payment types available to the report owner (`GetPaymentTypes`). `CASH`="Out of Pocket", `PCCD`="Pending Card Transaction". |
 | `concur attach-receipt <reportId> <expenseId> <localPath>` | Upload a receipt image and attach it to a specific expense entry. Auto-converts HEIC/PNG → JPEG via ImageMagick (downscaled to 2048px max, quality 85). Pass `--no-convert` to skip conversion. (PDF attach needs ghostscript; attach a rendered image if unavailable.) |
+| `concur report-purpose <reportId> <listItemId>` | Set the report header's **Business Purpose** (`custom14`) via `UpdateReportHeader` and copy it down to every line (clears `NOBUSPUR`/`NOBUSLIN`/`BADHEADR`). Get the `listItemId` from `concur list-items <businessPurposeListId>`. |
+| `concur itinerary <reportId> <itinerary.json>` | Build & assign a **German Travel Allowance itinerary** (clears `GERTAB`/`NOITIN`) via the legacy Ext.Direct endpoint. `itinerary.json`: `{ "name":"...", "tacKey":"2043", "rows":[ {"departLocation":"Potsdam, GERMANY","departDate":"2026-06-29","departTime":"5:00 AM","arrivalLocation":"San Francisco, California","arrivalDate":"2026-06-29","arrivalTime":"2:00 PM"}, … ] }`. Location keys (`LnKey`) auto-resolve from the location strings; override per-row with `departLnKey`/`arrivalLnKey`. Note: meal expenses on a German-TA report must also be flagged `isExpensePartOfTravelAllowance:true` (via `new-expense --fields` or an entry update) or `GERTAB` persists. |
 | `concur submit <reportId> [--source=WEB] [--approver-validated]` | Two-step submit: runs server validation, then commits. Returns `{validation, commit}` statuses (both should be `COMPLETED`). Before submitting, run `concur exceptions <reportId>` and check `hasBlockingExceptions` — the server validation step catches hard blockers, but reviewing first avoids a wasted round-trip on reports that need edits. All mutation commands (`change-type`, `attach-receipt`, `itemize`, `submit`) also refuse to run against reports that are locked (already Approved/Submitted/Paid) and report the current status instead. |
+
+`concur itemize hotel`/`add` now auto-resolve the required `locationId` and `exchangeRate` from the parent entry's expense form (moved card charges carry a null `location` on the summary, which previously caused a generic `400`). `concur attach-receipt` accepts PDF receipts directly with `--no-convert` (Concur stores PDFs natively; no ghostscript rasterization needed).
 
 ### Escape hatches
 
 | Command | Description |
 |---|---|
 | `concur ops` | List all bundled GraphQL operations. |
+| `concur list-items <listId> [--search=text]` | Resolve a form picklist's items (id, code, value) — e.g. Business Purpose or Class of Service. Runs `GetFormListItems` on the **spend** surface with `{listInformation:{id,…}}` (not `cds`, and the key is `id`, not `listId`). |
 | `concur exceptions <reportId>` | Report status check: lists all validation exceptions (errors/warnings) grouped per entry, with `code`, `isBlocking`, and `message` (e.g. `ITEMREQ` "Itemizations are required", `RECEIPT_REQUIRED` "You must attach a receipt image"). Returns `hasBlockingExceptions` so you can tell if a report can be submitted. |
 | `concur graphql <opName> [<variables-json>] [spend\|cds]` | Run any captured operation verbatim. |
 | `concur tab` | Print the tab handle the skill is using for Concur requests. |
