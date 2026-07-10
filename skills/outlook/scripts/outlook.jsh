@@ -643,6 +643,73 @@ async function cmdView() {
   }
 }
 
+// ─── Attachment Commands ─────────────────────────────────────────────────────
+
+// Standard base64 (OWA ContentBytes) → raw bytes (Uint8Array).
+function decodeBase64Bytes(b64) {
+  if (!b64) return new Uint8Array(0);
+  const raw = atob(b64);
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  return bytes;
+}
+
+async function cmdAttachments() {
+  const token = await getToken();
+  const id = positional[0];
+  if (!id) die('outlook attachments: provide a message ID');
+  try {
+    const res = await owaGet(token, `/me/messages/${encodeURIComponent(id)}/attachments`, {
+      '$select': 'Id,Name,ContentType,Size',
+    });
+    const atts = (res.value || []).map(a => ({ id: a.Id, name: a.Name, contentType: a.ContentType, size: a.Size }));
+    if (flags.json === true || flags.json === 'true') { out(atts); return; }
+    if (!atts.length) { console.log(C.gray('(no attachments)')); return; }
+    console.log(`${C.bold('Attachments')} — ${atts.length}\n`);
+    for (const a of atts) {
+      console.log(`  ${C.cyan(a.name)}  ${C.gray(a.contentType)}  ${C.gray((a.size || 0) + ' bytes')}`);
+      console.log(`    ${C.gray('id:')} ${a.id}`);
+    }
+  } catch (e) {
+    die(`outlook: attachments failed: ${e.message}`);
+  }
+}
+
+async function cmdDownload() {
+  const token = await getToken();
+  const id = positional[0];
+  if (!id) die('outlook download: usage: outlook download <messageId> [attachmentId] --out=<path>');
+  const outPath = flags.out || flags.o;
+  if (!outPath) die('outlook download: --out=<path> required (file path for one attachment, or dir for all)');
+  try {
+    // Fetch attachments with ContentBytes (fileAttachment payloads).
+    const res = await owaGet(token, `/me/messages/${encodeURIComponent(id)}/attachments`);
+    let atts = res.value || [];
+    if (!atts.length) die('outlook download: message has no attachments');
+    const explicitId = positional[1];
+    let asDir;
+    if (explicitId) {
+      atts = atts.filter(a => a.Id === explicitId);
+      if (!atts.length) die('outlook download: attachmentId not found on message');
+      asDir = /\/$/.test(outPath);
+    } else {
+      asDir = true;
+    }
+    const written = [];
+    for (const a of atts) {
+      if (!a.ContentBytes) continue; // skip item/reference attachments
+      const bytes = decodeBase64Bytes(a.ContentBytes);
+      const p = asDir ? `${outPath.replace(/\/$/, '')}/${a.Name}` : outPath;
+      await fs.writeFileBinary(p, bytes);
+      written.push({ name: a.Name, path: p, bytes: bytes.length });
+    }
+    if (flags.json === true || flags.json === 'true') { console.log(JSON.stringify(written, null, 2)); return; }
+    for (const w of written) console.log(`${C.green('✓')} ${w.name} → ${w.path} (${w.bytes} bytes)`);
+  } catch (e) {
+    die(`outlook: download failed: ${e.message}`);
+  }
+}
+
 // ─── Calendar Response Commands ──────────────────────────────────────────────
 
 const RESPOND_LABELS = {
@@ -814,6 +881,12 @@ try {
       break;
     case 'view':
       await cmdView();
+      break;
+    case 'attachments':
+      await cmdAttachments();
+      break;
+    case 'download':
+      await cmdDownload();
       break;
     case 'monday':
       await cmdMonday();
