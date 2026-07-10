@@ -122,10 +122,14 @@ async function pageFetch(url, options = {}) {
   try {
     resp = await browser.fetch(tab, url, { method, headers, body });
   } catch (e) {
+    // `soft` callers (best-effort enrichment lookups) get null instead of a
+    // hard exit so they can fall back rather than aborting the whole command.
+    if (options.soft) return null;
     console.error('Network error:', e?.message || e);
     process.exit(1);
   }
   if (!resp.ok) {
+    if (options.soft) return null;
     if (resp.status === 401 || resp.status === 403) {
       console.error(`Auth failed (${resp.status}). Open ${HOST_WEB} in your browser, log in, and retry.`);
     } else {
@@ -199,38 +203,51 @@ async function resolveLnKey(query) {
   return { lnKey: pick.LnKey, locText: pick.LocText || query };
 }
 
+// Escape XML text content — report names ("Sales & Marketing") and location
+// strings can contain &, <, >, quotes that would otherwise produce malformed
+// XML in the Ext.Direct itinerary payload.
+function xmlEscape(v) {
+  return String(v == null ? '' : v)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
 function buildItineraryXml({ name, tacKey, rptKey, itinKey, create, row }) {
+  const x = xmlEscape;
   const parts = [];
   parts.push('<Itinerary>');
-  parts.push(`<Name>${name}</Name>`);
-  if (itinKey) parts.push(`<ItinKey>${itinKey}</ItinKey>`);
-  parts.push(`<TacKey>${tacKey}</TacKey>`);
+  parts.push(`<Name>${x(name)}</Name>`);
+  if (itinKey) parts.push(`<ItinKey>${x(itinKey)}</ItinKey>`);
+  parts.push(`<TacKey>${x(tacKey)}</TacKey>`);
   if (itinKey) parts.push(`<TacName>German TA</TacName>`);
   parts.push('<ShortDistanceTrip>N</ShortDistanceTrip>');
-  parts.push(`<RptKey>${rptKey}</RptKey>`);
+  parts.push(`<RptKey>${x(rptKey)}</RptKey>`);
   if (create) parts.push('<CleanIfError>Y</CleanIfError>');
   parts.push('<ItineraryRows><ItineraryRow>');
-  parts.push(`<DepartLnKey>${row.departLnKey}</DepartLnKey>`);
-  parts.push(`<DepartLocation>${row.departLocation}</DepartLocation>`);
+  parts.push(`<DepartLnKey>${x(row.departLnKey)}</DepartLnKey>`);
+  parts.push(`<DepartLocation>${x(row.departLocation)}</DepartLocation>`);
   parts.push('<DepartLocationCode></DepartLocationCode>');
-  parts.push(`<DepartDate>${row.departDate}</DepartDate>`);
-  parts.push(`<DepartTime>${row.departTime}</DepartTime>`);
-  parts.push(`<BorderDate>${row.departDate}</BorderDate>`);
-  parts.push(`<BorderTime>${row.departTime}</BorderTime>`);
-  parts.push(`<ArrivalLnKey>${row.arrivalLnKey}</ArrivalLnKey>`);
-  parts.push(`<ArrivalLocation>${row.arrivalLocation}</ArrivalLocation>`);
+  parts.push(`<DepartDate>${x(row.departDate)}</DepartDate>`);
+  parts.push(`<DepartTime>${x(row.departTime)}</DepartTime>`);
+  parts.push(`<BorderDate>${x(row.departDate)}</BorderDate>`);
+  parts.push(`<BorderTime>${x(row.departTime)}</BorderTime>`);
+  parts.push(`<ArrivalLnKey>${x(row.arrivalLnKey)}</ArrivalLnKey>`);
+  parts.push(`<ArrivalLocation>${x(row.arrivalLocation)}</ArrivalLocation>`);
   parts.push('<ArrivalLocationCode></ArrivalLocationCode>');
-  parts.push(`<ArrivalDate>${row.arrivalDate}</ArrivalDate>`);
-  parts.push(`<ArrivalTime>${row.arrivalTime}</ArrivalTime>`);
-  parts.push(`<DepartDateTime>${row.departDate} ${to24(row.departTime)}</DepartDateTime>`);
-  parts.push(`<ArrivalDateTime>${row.arrivalDate} ${to24(row.arrivalTime)}</ArrivalDateTime>`);
+  parts.push(`<ArrivalDate>${x(row.arrivalDate)}</ArrivalDate>`);
+  parts.push(`<ArrivalTime>${x(row.arrivalTime)}</ArrivalTime>`);
+  parts.push(`<DepartDateTime>${x(row.departDate)} ${x(to24(row.departTime))}</DepartDateTime>`);
+  parts.push(`<ArrivalDateTime>${x(row.arrivalDate)} ${x(to24(row.arrivalTime))}</ArrivalDateTime>`);
   parts.push('</ItineraryRow></ItineraryRows></Itinerary>');
   return parts.join('\n');
 }
 
 // ----------------- GraphQL helpers -----------------
 
-async function graphql(surface, body) {
+async function graphql(surface, body, opts = {}) {
   const url = surface === 'cds'
     ? `${HOST_API}/cds/graphql`
     : `${HOST_API}/spend-graphql/graphql`;
@@ -238,11 +255,15 @@ async function graphql(surface, body) {
   const result = await pageFetch(url, {
     method: 'POST',
     body,
+    soft: opts.soft,
     headers: {
       'concur-correlationId': correlationId,
       'concur-correlationid': correlationId,
     },
   });
+  // `soft`: a null body (HTTP error swallowed above) or GraphQL errors resolve
+  // to null instead of exiting, so best-effort callers can fall back.
+  if (opts.soft && (result == null || result.errors)) return null;
   if (result?.errors) {
     console.error('GraphQL errors:', JSON.stringify(result.errors, null, 2));
     process.exit(1);
@@ -250,9 +271,9 @@ async function graphql(surface, body) {
   return result?.data ?? result;
 }
 
-async function callOp(opName, variables = {}, surface = 'spend') {
+async function callOp(opName, variables = {}, surface = 'spend', opts = {}) {
   const query = await loadOp(opName);
-  return graphql(surface, { operationName: opName, query, variables });
+  return graphql(surface, { operationName: opName, query, variables }, opts);
 }
 
 // Resolve a report's policyId (needed by create/update expense mutations).
@@ -353,12 +374,13 @@ async function getEntrySummary(reportId, expenseId) {
 // here — this is what fixes the otherwise-generic 400 on SaveNewItemization.
 async function resolveEntryLocationAndRate(reportId, expenseId) {
   const userId = await getUserId();
-  let form;
-  try {
-    form = await callOp('GetExistingExpenseForm', {
-      userId, contextRole: 'TRAVELER', reportId, expenseId,
-    });
-  } catch (_) { return {}; }
+  // Best-effort: use the soft path so an HTTP/GraphQL error on this lookup
+  // returns null (→ {}) and the caller falls back to overrides/parent data
+  // instead of the whole `itemize` command exiting.
+  const form = await callOp('GetExistingExpenseForm', {
+    userId, contextRole: 'TRAVELER', reportId, expenseId,
+  }, 'spend', { soft: true });
+  if (!form) return {};
   let locationId = null;
   let exchangeRate = null;
   const walk = (o) => {
