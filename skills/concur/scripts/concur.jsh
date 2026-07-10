@@ -137,6 +137,97 @@ async function pageFetch(url, options = {}) {
   return resp.body;
 }
 
+// ----------------- Ext.Direct (legacy .NET router) helpers -----------------
+//
+// German Travel Allowance itineraries are NOT GraphQL — they go through the
+// legacy Ext.Direct proxy at /expense/expenseDotNet/Proxy/expenseRouter.ashx.
+// Body is form-encoded `data=<JSON array of {action,method,data}>&_=`. The
+// response is JavaScript-literal (unquoted keys), so we regex values out.
+// Must run via browser.fetch (page context) so cookies/session are attached.
+async function extDirect(action, method, dataArr) {
+  const tab = await ensureTab();
+  const url = `${HOST_WEB}/expense/expenseDotNet/Proxy/expenseRouter.ashx?requests=${encodeURIComponent(action + ':' + method)}`;
+  const body = 'data=' + encodeURIComponent(JSON.stringify([{ action, method, data: dataArr }])) + '&_=';
+  let resp;
+  try {
+    resp = await browser.fetch(tab, url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'X-Requested-With': 'XMLHttpRequest',
+        'X-Prototype-Version': '1.6.1',
+        'Accept': 'text/javascript, text/html, application/xml, text/xml, */*',
+      },
+      body,
+    });
+  } catch (e) {
+    console.error('Network error (ExtDirect):', e?.message || e);
+    process.exit(1);
+  }
+  if (!resp.ok) {
+    console.error(`ExtDirect HTTP ${resp.status}:`, (typeof resp.body === 'string' ? resp.body : JSON.stringify(resp.body)).slice(0, 2000));
+    process.exit(1);
+  }
+  return typeof resp.body === 'string' ? resp.body : JSON.stringify(resp.body);
+}
+
+// "5:00 AM" -> "5:00", "8:27 PM" -> "20:27"
+function to24(t) {
+  const m = String(t).trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
+  if (!m) return t;
+  let h = parseInt(m[1], 10); const min = m[2]; const ap = (m[3] || '').toUpperCase();
+  if (ap === 'PM' && h !== 12) h += 12;
+  if (ap === 'AM' && h === 12) h = 0;
+  return `${h}:${min}`;
+}
+
+// Resolve a city string ("San Francisco, California") to its Travel-Allowance
+// location key (LnKey) via the Location.GetLocations Ext.Direct call.
+async function resolveLnKey(query) {
+  const raw = await extDirect('Location', 'GetLocations', [query, '', '']);
+  let recs = [];
+  try { recs = JSON.parse(raw)?.Location_GetLocations?.Records || []; }
+  catch (_) {
+    // JS-literal fallback: pull LnKey/LocText pairs
+    const re = /"?LnKey"?:(\d+)[^}]*?"?LocText"?:"([^"]+)"/g; let mm;
+    while ((mm = re.exec(raw))) recs.push({ LnKey: +mm[1], LocText: mm[2] });
+  }
+  if (!recs.length) throw new Error(`No TA location match for "${query}"`);
+  // Prefer exact LocText match, else first record.
+  const exact = recs.find(r => (r.LocText || '').toLowerCase() === query.toLowerCase());
+  const pick = exact || recs[0];
+  return { lnKey: pick.LnKey, locText: pick.LocText || query };
+}
+
+function buildItineraryXml({ name, tacKey, rptKey, itinKey, create, row }) {
+  const parts = [];
+  parts.push('<Itinerary>');
+  parts.push(`<Name>${name}</Name>`);
+  if (itinKey) parts.push(`<ItinKey>${itinKey}</ItinKey>`);
+  parts.push(`<TacKey>${tacKey}</TacKey>`);
+  if (itinKey) parts.push(`<TacName>German TA</TacName>`);
+  parts.push('<ShortDistanceTrip>N</ShortDistanceTrip>');
+  parts.push(`<RptKey>${rptKey}</RptKey>`);
+  if (create) parts.push('<CleanIfError>Y</CleanIfError>');
+  parts.push('<ItineraryRows><ItineraryRow>');
+  parts.push(`<DepartLnKey>${row.departLnKey}</DepartLnKey>`);
+  parts.push(`<DepartLocation>${row.departLocation}</DepartLocation>`);
+  parts.push('<DepartLocationCode></DepartLocationCode>');
+  parts.push(`<DepartDate>${row.departDate}</DepartDate>`);
+  parts.push(`<DepartTime>${row.departTime}</DepartTime>`);
+  parts.push(`<BorderDate>${row.departDate}</BorderDate>`);
+  parts.push(`<BorderTime>${row.departTime}</BorderTime>`);
+  parts.push(`<ArrivalLnKey>${row.arrivalLnKey}</ArrivalLnKey>`);
+  parts.push(`<ArrivalLocation>${row.arrivalLocation}</ArrivalLocation>`);
+  parts.push('<ArrivalLocationCode></ArrivalLocationCode>');
+  parts.push(`<ArrivalDate>${row.arrivalDate}</ArrivalDate>`);
+  parts.push(`<ArrivalTime>${row.arrivalTime}</ArrivalTime>`);
+  parts.push(`<DepartDateTime>${row.departDate} ${to24(row.departTime)}</DepartDateTime>`);
+  parts.push(`<ArrivalDateTime>${row.arrivalDate} ${to24(row.arrivalTime)}</ArrivalDateTime>`);
+  parts.push('</ItineraryRow></ItineraryRows></Itinerary>');
+  return parts.join('\n');
+}
+
 // ----------------- GraphQL helpers -----------------
 
 async function graphql(surface, body) {
@@ -255,6 +346,33 @@ async function getEntrySummary(reportId, expenseId) {
   };
 }
 
+// Resolve a parent entry's locationId + exchangeRate from its expense form.
+// Card charges moved onto a report frequently have a null `location` in the
+// entries list, but the expense FORM always carries the resolved location and
+// the home-currency exchange rate. Itemizations require both, so we pull them
+// here — this is what fixes the otherwise-generic 400 on SaveNewItemization.
+async function resolveEntryLocationAndRate(reportId, expenseId) {
+  const userId = await getUserId();
+  let form;
+  try {
+    form = await callOp('GetExistingExpenseForm', {
+      userId, contextRole: 'TRAVELER', reportId, expenseId,
+    });
+  } catch (_) { return {}; }
+  let locationId = null;
+  let exchangeRate = null;
+  const walk = (o) => {
+    if (!o || typeof o !== 'object') return;
+    if (!locationId && o.locationValue && o.locationValue.id) locationId = o.locationValue.id;
+    if (!exchangeRate && o.value != null && (o.operation === 'MULTIPLY' || o.operation === 'DIVIDE')) {
+      exchangeRate = { operation: o.operation, value: o.value };
+    }
+    for (const k in o) { const v = o[k]; if (v && typeof v === 'object') walk(v); }
+  };
+  walk(form);
+  return { locationId, exchangeRate };
+}
+
 // List itemization expense types available for an entry. Returns a
 // flat array of { id, code, name, parentName, itemizationType }.
 async function itemizeTypes(reportId, expenseId) {
@@ -370,9 +488,16 @@ async function itemizeAdd(reportId, parentExpenseId, typeId, amountStr, ...tail)
   const date = dateStr || entry?.transactionDate || new Date().toISOString().slice(0, 10);
   const policyId = opts.policy || entry?.policy?.id || entry?.policyId || ADOBE_INTL_POLICY.policyId;
 
+  // Auto-resolve locationId + exchangeRate from the parent entry's form
+  // (moved card charges usually lack them on the summary → SaveNewItemization 400s).
+  const overrides = {};
+  const resolved = await resolveEntryLocationAndRate(reportId, parentExpenseId);
+  if (resolved.locationId) overrides.locationId = resolved.locationId;
+  if (resolved.exchangeRate) overrides.exchangeRate = resolved.exchangeRate;
+
   const fields = buildItemizationFields(
     { parentExpenseId, typeId, date, amount, comment },
-    entry, currency,
+    entry, currency, overrides,
   );
 
   const result = await callOp('SaveNewItemization', {
@@ -483,6 +608,13 @@ async function itemizeHotel(reportId, expenseId, billJson) {
   const userId = await getUserId();
   const policyId = bill.policyId || ADOBE_INTL_POLICY.policyId;
   const overrides = bill.customFields || {};
+  // Auto-resolve locationId + exchangeRate from the parent entry's form when
+  // the entry summary lacks them (the common case for moved card charges).
+  if (!overrides.locationId || !overrides.exchangeRate) {
+    const resolved = await resolveEntryLocationAndRate(reportId, expenseId);
+    if (!overrides.locationId && resolved.locationId) overrides.locationId = resolved.locationId;
+    if (!overrides.exchangeRate && resolved.exchangeRate) overrides.exchangeRate = resolved.exchangeRate;
+  }
   const results = [];
   for (let i = 0; i < allLines.length; i++) {
     const l = allLines[i];
@@ -911,6 +1043,68 @@ const commands = {
     process.exit(1);
   },
 
+  // Build & assign a German Travel Allowance itinerary (Ext.Direct).
+  // Usage: concur itinerary <reportId> <itinerary.json>
+  //   { "name":"...", "tacKey":"2043",
+  //     "rows":[ {"departLocation":"Potsdam, GERMANY","departDate":"2026-06-29",
+  //               "departTime":"5:00 AM","arrivalLocation":"San Francisco, California",
+  //               "arrivalDate":"2026-06-29","arrivalTime":"2:00 PM"}, ... ] }
+  // LnKeys auto-resolve from the location strings via Location.GetLocations
+  // (override per-row with departLnKey / arrivalLnKey).
+  async itinerary(reportId, jsonPath) {
+    if (!reportId || !jsonPath) {
+      console.error('Usage: concur itinerary <reportId> <itinerary.json>');
+      process.exit(1);
+    }
+    await assertReportMutable(reportId, 'add a travel-allowance itinerary');
+    const spec = JSON.parse(await readFile(jsonPath));
+    const rows = Array.isArray(spec.rows) ? spec.rows : [];
+    if (!rows.length) throw new Error('itinerary.json needs a non-empty "rows" array');
+    const userId = await getUserId();
+    // Resolve the report's RptKey (the Ext.Direct APIs key on RptKey, not reportId).
+    const rk = await callOp('GetReportIdAndKey', { userId, contextRole: 'TRAVELER', reportId });
+    const rptKey = rk?.employee?.expenseReport?.rptKey;
+    if (!rptKey) throw new Error(`Could not resolve RptKey for report ${reportId}`);
+    const name = spec.name || rk?.employee?.expenseReport?.name || 'Trip';
+    const tacKey = spec.tacKey || '2043'; // German TA config
+
+    // Resolve LnKeys / canonical location text for every row.
+    const locCache = {};
+    async function loc(str, lnKey) {
+      if (lnKey) return { lnKey, locText: str };
+      if (locCache[str]) return locCache[str];
+      const r = await resolveLnKey(str);
+      locCache[str] = r;
+      return r;
+    }
+
+    let itinKey = null;
+    const results = [];
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      const dep = await loc(r.departLocation, r.departLnKey);
+      const arr = await loc(r.arrivalLocation, r.arrivalLnKey);
+      const xml = buildItineraryXml({
+        name, tacKey, rptKey, itinKey, create: i === 0,
+        row: {
+          departLnKey: dep.lnKey, departLocation: dep.locText,
+          departDate: r.departDate, departTime: r.departTime,
+          arrivalLnKey: arr.lnKey, arrivalLocation: arr.locText,
+          arrivalDate: r.arrivalDate, arrivalTime: r.arrivalTime,
+        },
+      });
+      const raw = await extDirect('TravelAllowance', 'ValidateAndSaveItineraryRow', ['', xml, 'N']);
+      if (i === 0) {
+        const m = raw.match(/ItinKey:"?([^",}]+)"?/);
+        if (!m) throw new Error(`Itinerary create failed: ${raw.slice(0, 500)}`);
+        itinKey = m[1];
+      }
+      const status = (raw.match(/Status:"?([A-Z_]+)"?/) || [])[1] || 'UNKNOWN';
+      results.push({ row: i + 1, from: dep.locText, to: arr.locText, status });
+    }
+    return { reportId, rptKey, itinKey, rows: results };
+  },
+
   async submit(reportId, ...args) {
     if (!reportId) { console.error('Usage: concur submit <reportId> [--source=WEB] [--approver-validated]'); process.exit(1); }
     const opts = parseFlags(args, { source: 'WEB', 'approver-validated': '' });
@@ -1007,6 +1201,39 @@ const commands = {
     const r = await exec(`ls ${OPS_DIR}`);
     const list = r.stdout.split('\n').filter(Boolean).map(s => s.replace(/\.graphql$/, ''));
     return { count: list.length, operations: list };
+  },
+
+  // Resolve a form picklist's items (e.g. Business Purpose, Class of Service).
+  // GetFormListItems runs on the SPEND surface with {listInformation:{id,...}}
+  // — NOT the cds surface, and the key is `id` (not `listId`).
+  // Usage: concur list-items <listId> [--search=text]
+  async ['list-items'](listId, ...args) {
+    if (!listId) { console.error('Usage: concur list-items <listId> [--search=text]'); process.exit(1); }
+    const opts = parseFlags(args, { search: '' });
+    const r = await callOp('GetFormListItems', {
+      listInformation: { id: listId, isExternal: null },
+      includeTotalPages: true, sessionId: null,
+    }, 'spend');
+    const items = (r?.CDS_spend?.list?.items || []).map((i) => ({ id: i.id, code: i.code, value: i.value }));
+    const q = String(opts.search || '').toLowerCase();
+    return q ? items.filter((i) => (i.value || '').toLowerCase().includes(q)) : items;
+  },
+
+  // Set a report header's Business Purpose (custom14) and copy it down to all
+  // lines. Pass the list-item id from `concur list-items <businessPurposeListId>`.
+  // Usage: concur report-purpose <reportId> <listItemId>
+  async ['report-purpose'](reportId, listItemId) {
+    if (!reportId || !listItemId) {
+      console.error('Usage: concur report-purpose <reportId> <listItemId>');
+      console.error('  (get the id from `concur list-items <businessPurposeListId>`)');
+      process.exit(1);
+    }
+    await assertReportMutable(reportId, 'set the report business purpose');
+    const userId = await getUserId();
+    return callOp('UpdateReportHeader', {
+      userId, contextRole: 'TRAVELER', reportId,
+      fields: { custom14: { value: listItemId }, reportSource: 'WEB', copyDownRequested: true },
+    });
   },
 
   // Report status + all validation exceptions (error/warning messages) for a
