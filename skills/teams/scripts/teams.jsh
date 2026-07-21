@@ -1225,6 +1225,227 @@ function countOccurrences(arr) {
 // Help
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Transcribe subcommand — turn on live captions and capture the transcript
+// ---------------------------------------------------------------------------
+//
+// Teams' official meeting transcript/recording is NOT reachable with the
+// delegated Graph token this skill uses (the Teams web session lacks the
+// OnlineMeetingTranscript.Read.All / OnlineMeetingRecording.Read.All /
+// OnlineMeetings.Read scopes — every such call 403s). So this captures the
+// live *captions* instead, which only require your own in-meeting view.
+//
+// `start` navigates the meeting menu to turn on "Show live captions" and then
+// installs a tiny in-page collector: a 300ms poller on the caption virtual-list
+// that commits each finalized phrase into a window buffer which survives across
+// evals, so nothing is lost as caption rows scroll out of the small live view.
+// `flush` appends newly-finalized phrases to a transcript file.
+
+const CAP_LIST_TID = 'closed-caption-v2-virtual-list-content';
+
+// Idempotent in-page collector installer; returns the current buffer + state.
+const CAP_COLLECTOR_JS = `
+  (() => {
+    if (!window.__sliccCapInstalled) {
+      window.__sliccCapInstalled = true;
+      window.__sliccCaps = [];
+      window.__capState = { prevAuthor: null, prevText: '' };
+      const parseRow = (row) => {
+        const textEl = row.querySelector('[data-tid="closed-caption-text"]');
+        const full = (row.innerText || '').trim();
+        const text = textEl ? (textEl.innerText || '').trim() : '';
+        let author = full;
+        if (text && full.endsWith(text)) author = full.slice(0, full.length - text.length).trim();
+        author = (author.split('\\n')[0] || '').trim();
+        return { author, text };
+      };
+      const tick = () => {
+        try {
+          const list = document.querySelector('[data-tid="${CAP_LIST_TID}"]');
+          if (!list || !list.children.length) return;
+          const rows = Array.from(list.children);
+          const bottom = parseRow(rows[rows.length - 1]);
+          const st = window.__capState;
+          // A new phrase has started when the bottom row no longer extends the
+          // previous one (different speaker, or text no longer a growing prefix).
+          if (st.prevText && !(bottom.author === st.prevAuthor && bottom.text.startsWith(st.prevText))) {
+            window.__sliccCaps.push({ author: st.prevAuthor, text: st.prevText, ts: Date.now() });
+          }
+          st.prevAuthor = bottom.author;
+          st.prevText = bottom.text;
+        } catch (e) {}
+      };
+      window.__sliccCapTimer = setInterval(tick, 300);
+    }
+    return JSON.stringify({
+      buffer: window.__sliccCaps,
+      pending: window.__capState ? { author: window.__capState.prevAuthor, text: window.__capState.prevText } : null,
+      captionsRendering: !!document.querySelector('[data-tid="${CAP_LIST_TID}"]')
+    });
+  })()
+`;
+
+// Coerce an evalAsync result that may arrive as a boolean or a "true"/"false" string.
+function _asBool(v) {
+  return v === true || v === 'true';
+}
+
+// Walk the meeting overflow menu to enable "Show live captions".
+// Returns: 'already-on' | 'enabled' | 'clicked-unconfirmed' | 'not-in-meeting'
+//        | 'no-language-menu' | 'no-caption-toggle'.
+async function enableLiveCaptions(tab) {
+  const rendering0 = await browser.evalAsync(tab, `(() => !!document.querySelector('[data-tid="${CAP_LIST_TID}"]'))()`);
+  if (_asBool(rendering0)) return 'already-on';
+
+  const clickedMore = await browser.evalAsync(tab, `(() => {
+    const b = Array.from(document.querySelectorAll('button,[role="button"]'))
+      .find(x => (x.getAttribute('aria-label') || '') === 'More' || (x.innerText || '').trim() === 'More');
+    if (!b) return 'no-more';
+    b.click();
+    return 'ok';
+  })()`);
+  if (clickedMore === 'no-more') return 'not-in-meeting';
+  await sleep(1200);
+
+  const langOpened = await browser.evalAsync(tab, `(() => {
+    const it = Array.from(document.querySelectorAll('[role="menuitem"]'))
+      .find(e => (e.innerText || '').trim().startsWith('Language and speech'));
+    if (!it) return 'no-langspeech';
+    it.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    it.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+    it.click();
+    return 'ok';
+  })()`);
+  if (langOpened === 'no-langspeech') return 'no-language-menu';
+  await sleep(1200);
+
+  const toggled = await browser.evalAsync(tab, `(() => {
+    const it = Array.from(document.querySelectorAll('[role="menuitemcheckbox"]'))
+      .find(e => (e.innerText || '').trim().startsWith('Show live captions'));
+    if (!it) return 'no-toggle';
+    if (it.getAttribute('aria-checked') === 'true') return 'already-on';
+    it.click();
+    return 'clicked';
+  })()`);
+  if (toggled === 'no-toggle') return 'no-caption-toggle';
+  if (toggled === 'already-on') return 'already-on';
+  await sleep(2500);
+
+  const rendering1 = await browser.evalAsync(tab, `(() => !!document.querySelector('[data-tid="${CAP_LIST_TID}"]'))()`);
+  return _asBool(rendering1) ? 'enabled' : 'clicked-unconfirmed';
+}
+
+async function cmdTranscribe() {
+  const fs = require('fs');
+  const sub = (positional[0] || 'start').toLowerCase();
+  const outFile = flags.out || flags.o || 'teams-transcript.md';
+  const idxFile = outFile + '.idx';
+  const tab = await findTeamsTab(); // dies if no Teams tab
+
+  async function readCollector() {
+    let raw = await browser.evalAsync(tab, CAP_COLLECTOR_JS);
+    if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) {} }
+    if (!raw || typeof raw !== 'object') raw = {};
+    return { buffer: raw.buffer || [], pending: raw.pending || null, captionsRendering: !!raw.captionsRendering };
+  }
+
+  // Append newly-finalized phrases to the transcript file. Returns the fresh entries.
+  function flushToFile(buffer) {
+    if (!fs.existsSync(outFile)) {
+      fs.writeFileSync(outFile, `# Teams Meeting Transcript\n\nCaptured live via Teams captions. Started ${new Date().toISOString()}\n\n`);
+    }
+    let idx = 0;
+    try { idx = parseInt(fs.readFileSync(idxFile, 'utf8').trim(), 10) || 0; } catch (e) { idx = 0; }
+    const fresh = buffer.slice(idx);
+    if (fresh.length) {
+      const lines = fresh.map((c) => {
+        const t = new Date(c.ts).toISOString().slice(11, 19);
+        return `**[${t}] ${c.author || '?'}:** ${c.text}`;
+      }).join('\n\n');
+      fs.appendFileSync(outFile, lines + '\n\n');
+      fs.writeFileSync(idxFile, String(buffer.length));
+    }
+    return fresh;
+  }
+
+  switch (sub) {
+    case 'start': {
+      const status = await enableLiveCaptions(tab);
+      if (status === 'not-in-meeting') {
+        die('No active meeting found in the Teams tab. Join a meeting first, then run: teams transcribe start');
+      }
+      await readCollector(); // install the collector
+      if (status === 'enabled' || status === 'already-on') {
+        console.log('Live transcription started — captions are on and the collector is running.');
+      } else if (status === 'clicked-unconfirmed') {
+        console.log('Requested live captions (panel not confirmed yet). Collector is running; it will pick up phrases as soon as captions render.');
+      } else {
+        console.log(`Could not fully enable captions (${status}). Turn on "More (...) -> Language and speech -> Show live captions" manually, then run: teams transcribe start`);
+      }
+      const outFlag = (flags.out || flags.o) ? ` --out=${outFile}` : '';
+      console.log(`Transcript file: ${outFile}`);
+      console.log(`Flush new lines:  teams transcribe flush${outFlag}`);
+      console.log(`Live status/tail: teams transcribe status`);
+      console.log(`Stream + flush:   teams transcribe follow${outFlag}`);
+      console.log(`Stop capturing:   teams transcribe stop${outFlag}`);
+      break;
+    }
+
+    case 'flush': {
+      const { buffer } = await readCollector();
+      const fresh = flushToFile(buffer);
+      console.log(`Flushed ${fresh.length} new phrase(s). Total captured: ${buffer.length}. -> ${outFile}`);
+      break;
+    }
+
+    case 'status': {
+      const { buffer, pending, captionsRendering } = await readCollector();
+      console.log(`Captions rendering: ${captionsRendering ? 'yes' : 'no'}`);
+      console.log(`Buffered phrases:   ${buffer.length}`);
+      if (pending && pending.text) console.log(`Live (in progress): [${pending.author || '?'}] ${pending.text}`);
+      break;
+    }
+
+    case 'stop': {
+      const { buffer } = await readCollector();
+      const fresh = flushToFile(buffer);
+      await browser.evalAsync(tab, `(() => { if (window.__sliccCapTimer) clearInterval(window.__sliccCapTimer); window.__sliccCapInstalled = false; return 'stopped'; })()`);
+      console.log(`Stopped. Flushed final ${fresh.length} phrase(s). Total captured: ${buffer.length}. -> ${outFile}`);
+      console.log('(Live captions remain toggled on in the meeting UI — turn them off manually if you want.)');
+      break;
+    }
+
+    case 'follow': {
+      const status = await enableLiveCaptions(tab);
+      if (status === 'not-in-meeting') {
+        die('No active meeting found in the Teams tab. Join a meeting first, then run: teams transcribe follow');
+      }
+      const intervalSec = flags.interval ? Math.max(1, parseInt(flags.interval, 10)) : 5;
+      const maxMin = flags.max ? parseInt(flags.max, 10) : 180;
+      const idleStopMin = flags['idle-stop'] ? parseInt(flags['idle-stop'], 10) : 30;
+      console.log(`Following live transcript — flushing every ${intervalSec}s to ${outFile}. This blocks; press Ctrl-C to stop.\n`);
+      const startT = Date.now();
+      let lastNew = Date.now();
+      while (true) {
+        const { buffer } = await readCollector();
+        const fresh = flushToFile(buffer);
+        for (const c of fresh) {
+          const t = new Date(c.ts).toISOString().slice(11, 19);
+          console.log(`[${t}] ${c.author || '?'}: ${c.text}`);
+        }
+        if (fresh.length) lastNew = Date.now();
+        if (Date.now() - lastNew > idleStopMin * 60000) { console.log(`\nNo captions for ${idleStopMin} min — stopping.`); break; }
+        if (Date.now() - startT > maxMin * 60000) { console.log('\nMax duration reached — stopping.'); break; }
+        await sleep(intervalSec * 1000);
+      }
+      break;
+    }
+
+    default:
+      die(`Unknown transcribe subcommand: ${sub}. Use one of: start | flush | status | follow | stop`);
+  }
+}
+
 function showHelp() {
   console.log(`teams  Microsoft Teams access via Graph API + Substrate Search
 
@@ -1245,6 +1466,11 @@ Commands:
   search <query>                    Full-text search across Teams messages
   unanswered <team> <channel>       Messages with no replies (default: --since=48h)
   digest                            Activity summary across all teams (default: --since=24h, --max-teams=10)
+  transcribe [start]                Turn on live captions in the active meeting and capture the transcript
+  transcribe flush [--out=FILE]     Append newly-finalized caption phrases to the transcript file
+  transcribe status                 Show whether captions render + buffered/live lines
+  transcribe follow [--out=FILE]    Stream the transcript live and flush continuously (blocks)
+  transcribe stop [--out=FILE]      Final flush and stop the in-page collector
 
 Aliases: messages/msgs → history, mentions → activity
 
@@ -1304,6 +1530,12 @@ switch (subcommand) {
     break;
   case 'digest':
     await cmdDigest();
+    break;
+  case 'transcribe':
+  case 'transcript':
+  case 'caption':
+  case 'captions':
+    await cmdTranscribe();
     break;
   case '--help':
   case '-h':
