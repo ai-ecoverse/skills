@@ -1,7 +1,7 @@
 ---
 name: slack
 description: Interact with Slack via its Web API — read messages, post to channels,
-  search channels, read threads, look up users, view activity/notifications, manage
+  search channels, read threads, find and look up users by name or email, view activity/notifications, manage
   Slack support requests, and watch channels for new messages in real time. Supports
   multiple workspaces with auto-detection from the active tab. Use when the user wants
   to check Slack messages, post a Slack message, search Slack channels, read Slack
@@ -65,7 +65,10 @@ slack channels --search=one-aem
 # Read a thread
 slack thread C087NCG774J 1774539502.747989
 
-# Look up a user
+# Find a user by name (or email) → get their user ID
+slack find "Dragos Dascalita"
+
+# Look up a user by ID
 slack user W5BPKRLUA
 
 # Watch a channel for new messages (real-time!)
@@ -224,6 +227,26 @@ member count, and purpose.
 
 Read thread replies. Provide the channel ID and the thread's parent timestamp.
 Default limit is 50.
+
+### slack find \<name or email\> [--limit=N]
+
+Search for users by name, display name, or email and print their user IDs — the
+fastest way to get an ID for `slack post` or `slack user`. Aliases: `users`,
+`find-user`. Default limit is 10.
+
+```bash
+slack find "Dragos Dascalita"
+#   W57QU2CLV  Dragos Dascalita Haut @ddascal — Principal Scientist
+slack post W57QU2CLV "Hey, quick question..."
+```
+
+Deactivated and bot accounts are labelled (`[deactivated]`, `[bot]`) so you can
+tell duplicates apart. Slack has no `users.search` Web API method and
+`users.list` is restricted on enterprise grids, so this uses the same edge users
+cache (`edgeapi.slack.com/cache/<team>/users/search`) that powers Slack's own
+quick switcher. The request is cross-origin, but `browser.fetch` runs in the
+Slack tab and the shared `.slack.com` session cookie authenticates the xoxc
+token — no extra auth step.
 
 ### slack user \<user_id\>
 
