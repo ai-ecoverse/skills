@@ -3,10 +3,14 @@ name: teams
 description: >-
   Interact with Microsoft Teams via the Graph API — read messages, post to channels,
   search, read threads, look up users, view mentions/activity, and get channel info.
+  Also transcribe the meeting you're currently in by turning on live captions and
+  capturing them to a timestamped, speaker-attributed transcript file.
   Supports all teams and channels the user has access to, with auth via the live browser
   session. Use when the user wants to check Teams messages, post a Teams message, search
-  Teams channels, read a thread, get user info, view mentions, or automate any Teams task.
-  Triggers on mentions of Teams, channels, messages, threads, mentions, activity, or digest.
+  Teams channels, read a thread, get user info, view mentions, transcribe or caption a
+  live meeting, or automate any Teams task.
+  Triggers on mentions of Teams, channels, messages, threads, mentions, activity, digest,
+  transcribe, transcript, captions, or meeting notes.
 allowed-tools: bash
 ---
 
@@ -78,6 +82,15 @@ teams unanswered "My Team" "General"
 
 # Cross-team activity digest (default: last 24h)
 teams digest --since=7d
+
+# Start transcribing the meeting you're currently in (turns on live captions)
+teams transcribe
+# ...then append new lines to the transcript file any time:
+teams transcribe flush
+# ...or stream it live (blocks until you Ctrl-C):
+teams transcribe follow --out=standup.md
+# ...and stop when the meeting ends:
+teams transcribe stop
 ```
 
 ## Authentication
@@ -258,6 +271,46 @@ Scans up to `--max-teams` teams (default 10). Progress is printed to stderr.
 > completes in under 15s. Use `--max-teams=20` if you want broader coverage
 > and have headroom. Lower to `--max-teams=5` if you see timeouts.
 
+### teams transcribe [start|flush|status|follow|stop] [--out=FILE]
+
+Transcribe the meeting you're **currently in** by capturing live captions.
+Aliases: `transcript`, `captions`.
+
+Teams' official transcript/recording is reachable only through Microsoft Graph
+scopes the delegated browser session does not have (`OnlineMeetingTranscript.Read.All`,
+`OnlineMeetingRecording.Read.All`, `OnlineMeetings.Read` — all return `403`). So this
+command captures the **live captions** instead, which need nothing beyond your own
+in-meeting view.
+
+| Subcommand | What it does |
+|---|---|
+| `start` (default) | Navigates the meeting menu (More → Language and speech → **Show live captions**) to turn captions on, then installs the in-page collector. |
+| `flush` | Appends newly-finalized caption phrases to the transcript file since the last flush. |
+| `status` | Reports whether captions are rendering, how many phrases are buffered, and the current in-progress line. |
+| `follow` | Foreground loop: starts captions, then flushes + streams new lines to stdout every few seconds. **Blocks** — Ctrl-C to stop. `--interval=SEC` (default 5), `--max=MIN` (default 180), `--idle-stop=MIN` (default 30). |
+| `stop` | Final flush, then clears the collector interval. (Captions stay toggled on in the UI; turn them off manually if desired.) |
+
+Flags: `--out=FILE` sets the transcript path (default `teams-transcript.md`; a sidecar
+`FILE.idx` tracks the flush position). Output is timestamped, speaker-attributed, and
+de-duplicated Markdown:
+
+```
+**[15:04:16] Lars Trieloff:** Including Adobe. So I would say probably the majority is Adobe...
+**[15:04:48] Dragos Dascalita Haut:** And where are you taking this now?
+```
+
+**How it works.** A 300 ms in-page poller watches the caption virtual-list
+(`closed-caption-v2-virtual-list-content`) and commits each finalized phrase into a
+`window` buffer that survives across evals — so nothing is lost even though Teams only
+keeps ~3 caption rows visible at a time. A phrase is treated as final once the bottom
+row stops being a growing prefix of the previous text (i.e. the speaker changed or a new
+utterance began). Because the buffer lives in the page, you can `flush` on any cadence
+(even a 1-minute cron) without losing lines; only a tab reload clears it.
+
+> **Accuracy caveat:** captions are Teams' own speech-to-text, so names and jargon can be
+> mangled (it renders "SLICC" as "Slick", "Concur" as "conqueror", etc.). Clean up in a
+> post-pass if you need a verbatim record.
+
 ## Troubleshooting
 
 | Problem | Fix |
@@ -269,6 +322,9 @@ Scans up to `--max-teams` teams (default 10). Progress is printed to stderr.
 | `Team/channel not found` | Run `teams teams` or `teams channels <team>` to list the exact names/IDs available to the current token. |
 | Search API returns empty / 403 | `teams activity` auto-falls back to a channel scan (delegated tokens often lack the chatMessage search scope). For `teams search`, ensure the token has `Chat.Read` scope. |
 | `digest` or `activity` times out | Use `--max-teams=5` to limit the scan. The .jsh runner has a ~30s budget; large tenants need a smaller cap. |
+| `transcribe` says "No active meeting found" | You must be *in* a meeting (the meeting stage must be the active view in the Teams tab). Join/rejoin the call, then retry. |
+| `transcribe` can't find the caption toggle | Teams' menu labels/DOM can change. Turn on captions manually (More → Language and speech → Show live captions), then run `teams transcribe start` — the collector attaches to the existing caption panel. |
+| `transcribe status` shows captions rendering but 0 buffered | No one has spoken a full phrase yet, or the tab was reloaded (which clears the in-page buffer). Re-run `teams transcribe start` after a reload. |
 | 429 rate-limit errors | The script automatically retries with the `Retry-After` delay (up to 3 times). If you still see 429s, wait a minute and retry. |
 
 ## Endpoints reference
