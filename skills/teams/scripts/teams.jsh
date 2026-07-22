@@ -1272,58 +1272,75 @@ const CAP_LIST_TID = 'closed-caption-v2-virtual-list-content';
 const CAP_COLLECTOR_JS = `
   (() => {
     const LIST_SEL = '[data-tid="${CAP_LIST_TID}"]';
-    const parseRow = (row) => {
-      const textEl = row.querySelector('[data-tid="closed-caption-text"]');
-      const full = (row.innerText || '').trim();
-      const text = textEl ? (textEl.innerText || '').trim() : '';
-      let author = full;
-      if (text && full.endsWith(text)) author = full.slice(0, full.length - text.length).trim();
-      author = (author.split('\\n')[0] || '').trim();
+    const CAP_SEL = '[data-tid="closed-caption-text"]';
+    // Each spoken utterance is its OWN <span data-tid="closed-caption-text"> whose
+    // text grows as it is recognized, then finalizes when the NEXT utterance's
+    // span appears. The speaker name sits ~2 ancestors up ("Name\\n<text>").
+    // (NB: the virtual list has a single wrapper child, so we must iterate the
+    // caption-text spans, not list.children.)
+    const capElements = () => {
+      const list = document.querySelector(LIST_SEL);
+      return list ? Array.from(list.querySelectorAll(CAP_SEL)) : [];
+    };
+    const parseCap = (el) => {
+      const text = (el.innerText || '').trim();
+      if (!text) return { author: '', text: '' };
+      let author = '';
+      let n = el.parentElement;
+      for (let d = 0; d < 5 && n; d++) {
+        const full = (n.innerText || '').trim();
+        if (full.length > text.length && full.endsWith(text)) {
+          author = full.slice(0, full.length - text.length).trim().split('\\n')[0].trim();
+          break;
+        }
+        n = n.parentElement;
+      }
       return { author, text };
     };
     if (!window.__sliccCapInstalled) {
       window.__sliccCapInstalled = true;
       window.__sliccCaps = [];
-      // Track the in-progress bottom-row text. A phrase is COMMITTED whenever the
-      // bottom row no longer EXTENDS the previous text — i.e. a new utterance
-      // began, whether Teams grew the row ("1"->"1 2") or replaced it ("1"->"2").
-      // Committing-the-previous-on-change captures both growth and replacement,
-      // so nothing is overwritten/lost. Driven by a MutationObserver (fires on
-      // every caption change, no inter-poll gaps) plus a debounce that commits
-      // the trailing utterance after a pause.
-      window.__capState = { prevAuthor: null, prevText: '', lastCommitted: '' };
-      const commit = (author, text) => {
-        if (!text) return;
-        // Dedupe: never commit the exact same text twice in a row (a stable
-        // caption that keeps re-rendering must not be committed repeatedly).
-        const sig = (author || '') + '\u0001' + text;
-        if (sig === window.__capState.lastCommitted) return;
-        window.__capState.lastCommitted = sig;
-        const phrase = { author: author, text: text, ts: Date.now() };
-        window.__sliccCaps.push(phrase);
-        if (window.__sliccCapWebhook) {
-          try { fetch(window.__sliccCapWebhook, { method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(phrase) }); } catch (e) {}
+      // One buffer entry per caption-text ELEMENT; SUPERSEDE its text as that
+      // utterance grows. Deliver each utterance to the webhook exactly once, when
+      // it finalizes (no longer the last element) or after a debounce pause.
+      window.__capMeta = new WeakMap(); // caption span -> { idx, text, fired }
+      const fire = (idx) => {
+        const p = window.__sliccCaps[idx];
+        if (p && window.__sliccCapWebhook) {
+          try { fetch(window.__sliccCapWebhook, { method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p) }); } catch (e) {}
         }
+      };
+      const touch = (el, isLast) => {
+        const { author, text } = parseCap(el);
+        if (!text) return;
+        let meta = window.__capMeta.get(el);
+        if (!meta) {
+          const idx = window.__sliccCaps.push({ author: author, text: text, ts: Date.now() }) - 1;
+          meta = { idx: idx, text: text, fired: false };
+          window.__capMeta.set(el, meta);
+        } else if (text !== meta.text) {
+          window.__sliccCaps[meta.idx].text = text; // supersede as the utterance grows
+          if (author) window.__sliccCaps[meta.idx].author = author;
+          meta.text = text;
+        }
+        if (!isLast && !meta.fired) { meta.fired = true; fire(meta.idx); }
       };
       window.__capProcess = () => {
         try {
-          const list = document.querySelector(LIST_SEL);
-          if (!list || !list.children.length) return;
-          const { author, text } = parseRow(list.children[list.children.length - 1]);
-          if (!text) return;
-          const st = window.__capState;
-          if (st.prevText && !(author === st.prevAuthor && text.startsWith(st.prevText))) {
-            commit(st.prevAuthor, st.prevText);
-          }
-          st.prevAuthor = author;
-          st.prevText = text;
-          // Debounce: commit the trailing utterance after a pause (~1.4s) so a
-          // final phrase (or the last number in a count) isn't left uncommitted
-          // and then overwritten by whatever is said next.
+          const els = capElements();
+          if (!els.length) return;
+          const lastIdx = els.length - 1;
+          els.forEach((el, i) => touch(el, i === lastIdx));
+          // Debounce: after a pause, fire the trailing utterance so it isn't left
+          // undelivered (its text is already kept current via supersede above).
           clearTimeout(window.__capTrailTimer);
           window.__capTrailTimer = setTimeout(() => {
-            const s = window.__capState;
-            if (s.prevText) { commit(s.prevAuthor, s.prevText); s.prevText = ''; s.prevAuthor = null; }
+            const e2 = capElements();
+            if (!e2.length) return;
+            const last = e2[e2.length - 1];
+            touch(last, true);
+            const meta = window.__capMeta.get(last);
+            if (meta && !meta.fired) { meta.fired = true; fire(meta.idx); }
           }, 1400);
         } catch (e) {}
       };
@@ -1344,8 +1361,8 @@ const CAP_COLLECTOR_JS = `
     }
     let pending = null;
     try {
-      const l = document.querySelector(LIST_SEL);
-      if (l && l.children.length) pending = parseRow(l.children[l.children.length - 1]);
+      const els = capElements();
+      if (els.length) pending = parseCap(els[els.length - 1]);
     } catch (e) {}
     return JSON.stringify({
       buffer: window.__sliccCaps,
