@@ -330,14 +330,15 @@ teams transcribe stop
 ```
 
 - **`--scoop <name>`** (on `start`): creates a SLICC webhook routed to that scoop and injects its URL into the in-page collector. Each finalized caption phrase is `POST`ed to the webhook (fire-and-forget, `no-cors`) → arrives as a lick to the scoop. No cron, no polling. The webhook id is tracked in `/shared/.teams-transcribe-state.json` and removed on `stop`.
-- **`--snapshot`** (a flag, composes with any subcommand — typically `flush`): if a screen share is active, screenshots the Teams window and keeps it only if it differs (md5) from the last kept frame, into `--shots-dir` (default `/shared/copilot-shots/`). Gives the scoop visual grounding without saving redundant static frames.
-- **`teams post --live <message>`**: posts into the **currently active meeting's chat**, visible to all participants (via the meeting chat DOM). This is how the copilot scoop speaks up.
+- **`--snapshot`** (a flag, composes with any subcommand — typically `flush`): if a screen share is active, captures **only the shared-screen preview** — it draws the largest shared `<video>` element to an in-page canvas and exports a PNG — and keeps it only if the shared content changed (a pixel-payload hash), into `--shots-dir` (default `/shared/copilot-shots/`). Scoping to the video means the dedupe ignores unrelated window churn (captions, chat, roster, clock). Falls back to a full-window screenshot if no capturable video is present.
+- **`teams post --live <message>`**: posts into the **currently active meeting's chat**, visible to all participants. Uses **real CDP input** via `playwright-cli` (resolve the compose box + Send button from the accessibility snapshot, click → type → click Send) — Teams' CKEditor ignores in-page DOM edits, so genuine keystrokes are required.
 
-Typical wiring: `teams transcribe start --scoop meeting-copilot` → the `meeting-copilot` scoop receives a lick per phrase, calls `teams transcribe flush --snapshot` for the latest text + a screen frame, decides whether additional context is warranted, and if so calls `teams post --live "..."`.
+Typical wiring: `teams transcribe start --scoop meeting-copilot` → the `meeting-copilot` scoop receives a lick per phrase, calls `teams transcribe flush --snapshot` for the latest text + a shared-screen frame, decides whether additional context is warranted, and if so calls `teams post --live "..."`.
 
-> **VALIDATE-LIVE:** the page→webhook `fetch`, screen-share detection selectors, the
-> `screenshot --tab` capture path, and the meeting-chat input/send selectors depend on a
-> live meeting and the current Teams build; expect to tune them on first real use.
+> **Validated live** against a real meeting (Jul 2026): webhook→lick delivery, canvas
+> snapshot + content-scoped dedupe, and `post --live` all confirmed working. Selectors
+> (caption list, meeting-chat compose/Send, share `<video>`) may still need updates if a
+> future Teams build changes its DOM.
 
 ## Troubleshooting
 
