@@ -190,6 +190,44 @@ async function slackApi(method, params, workspaceId, { fatal = true } = {}) {
   return data;
 }
 
+// --- People search helper ---
+// Slack's standard `users.list` is restricted on enterprise grids and there is
+// no `users.search` Web API method, so name-based lookup uses the edge users
+// cache endpoint that powers Slack's own quick switcher / composer autocomplete.
+// It lives on edgeapi.slack.com (cross-origin to app.slack.com), but browser.fetch
+// runs in the Slack tab and the shared `.slack.com` session cookie travels with
+// the request, so the xoxc token authenticates just like an /api/* call.
+
+async function edgeUsersSearch(query, workspaceId, count = 10) {
+  const tab = await findSlackTab();
+
+  let token = null;
+  try {
+    const raw = await browser.localStorage(tab, 'localConfig_v2');
+    const cfg = raw ? JSON.parse(raw) : null;
+    if (cfg && cfg.teams && cfg.teams[workspaceId] && cfg.teams[workspaceId].token) {
+      token = cfg.teams[workspaceId].token;
+    }
+  } catch (e) {
+    token = null;
+  }
+
+  if (!token) {
+    return { ok: false, error: 'token_not_found', detail: `No token for workspace ${workspaceId}` };
+  }
+
+  try {
+    const resp = await browser.fetch(tab, `https://edgeapi.slack.com/cache/${workspaceId}/users/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, query, count, present_first: true }),
+    });
+    return (resp && typeof resp.body === 'object' && resp.body) ? resp.body : { ok: false, error: 'xhr_error' };
+  } catch (e) {
+    return { ok: false, error: 'xhr_error' };
+  }
+}
+
 // --- Argument parsing ---
 
 function parseArgs(args) {
@@ -517,6 +555,46 @@ const commands = {
     if (p.status_text) {
       console.log(`  Status:       ${p.status_emoji || ''} ${p.status_text}`);
     }
+  },
+
+  async find(args, globalFlags) {
+    const { flags, positional } = parseArgs(args);
+    // Accept the name as positional words ("slack find Dragos Dascalita") or a flag.
+    const query = String(flags.search || flags.query || flags.q || positional.join(' ') || '').trim();
+
+    if (!query) {
+      console.error('Usage: slack find <name or email> [--limit=N]');
+      console.error('Search users by name, display name, or email to get their user ID.');
+      process.exit(1);
+    }
+
+    const wsId = await resolveWorkspace(globalFlags);
+    const count = parseInt(flags.limit || '10', 10) || 10;
+
+    const data = await edgeUsersSearch(query, wsId, count);
+    if (!data.ok) {
+      console.error('Error:', data.error || 'search_failed');
+      if (data.detail) console.error('Detail:', data.detail);
+      process.exit(1);
+    }
+
+    const results = data.results || [];
+    if (results.length === 0) {
+      console.log(`No users found matching "${query}".`);
+      return;
+    }
+
+    console.log(`Found ${results.length} user(s) matching "${query}":\n`);
+    for (const u of results) {
+      const p = u.profile || {};
+      const real = p.real_name || u.real_name || u.name || '(unknown)';
+      const handle = u.name ? ` @${u.name}` : '';
+      const title = p.title ? ` — ${p.title}` : '';
+      const marks = [u.is_bot ? 'bot' : '', u.deleted ? 'deactivated' : ''].filter(Boolean).join(', ');
+      const suffix = marks ? `  [${marks}]` : '';
+      console.log(`  ${u.id}  ${real}${handle}${title}${suffix}`);
+    }
+    console.log(`\nDM anyone: slack post <user_id> "your message"`);
   },
 
   async info(args, globalFlags) {
@@ -1380,6 +1458,10 @@ const commands = {
   },
 };
 
+// Aliases for the people-search command.
+commands.users = commands.find;
+commands['find-user'] = commands.find;
+
 // --- Attachment action helper ---
 // Executes interactive message button actions (approve/deny) via chat.attachmentAction.
 // Used for Slack Connect invite requests and workspace invite approvals.
@@ -1568,6 +1650,7 @@ if (!cmd || cmd === 'help' || cmd === '--help') {
   console.log('  post <id> <message> [--thread_ts=TS]      Post a message to any channel, DM, or user');
   console.log('  channels --search=<term>                  Search for channels');
   console.log('  thread <channel_id> <thread_ts> [--limit] Read thread replies');
+  console.log('  find <name or email> [--limit=N]          Search users by name/email → user IDs');
   console.log('  user <user_id>                            Look up user info');
   console.log('  info <channel_id>                         Get channel info');
   console.log('  slackbot                                  Find Slackbot DM channel');
