@@ -1524,21 +1524,29 @@ async function postToMeetingChat(tab, message) {
   const esc = String(message).replace(/'/g, `'\\''`);
   await exec(`playwright-cli click ${boxRef} --tab=${tid}`);
   await exec(`playwright-cli type '${esc}' --tab=${tid}`);
-  await sleep(200);
-  if (sendRef) {
-    await exec(`playwright-cli click ${sendRef} --tab=${tid}`);
+  await sleep(400);
+
+  // Re-resolve the Send button AFTER typing: it may have been disabled/absent
+  // (and thus had no or a stale ref) before the box had content. Only then click.
+  const boxEmpty = () => browser.evalAsync(tab, `(() => { const b = document.querySelector('[data-tid="ckeditor"]'); return !(b && (b.innerText || '').replace(/\\s+/g, '')); })()`);
+  const fresh = await findRefs();
+  const finalSend = fresh.sendRef || sendRef;
+  if (finalSend) {
+    await exec(`playwright-cli click ${finalSend} --tab=${tid}`);
   } else {
     await exec(`playwright-cli press Enter --tab=${tid}`);
   }
-  await sleep(300);
 
-  // Confirm the box cleared (message left the composer = sent).
-  try {
-    const chk = await browser.evalAsync(tab, `(() => { const b = document.querySelector('[data-tid="ckeditor"]'); return !(b && (b.innerText || '').trim()); })()`);
-    return _asBool(chk) ? 'sent' : 'send-unconfirmed';
-  } catch (e) {
-    return 'sent';
+  // Confirm the box cleared (message left the composer = sent). Poll up to ~2s;
+  // if still populated, retry Enter once as a fallback.
+  for (let i = 0; i < 8; i++) {
+    await sleep(250);
+    try { if (_asBool(await boxEmpty())) return 'sent'; } catch (e) {}
   }
+  await exec(`playwright-cli press Enter --tab=${tid}`);
+  await sleep(400);
+  try { if (_asBool(await boxEmpty())) return 'sent'; } catch (e) {}
+  return 'send-unconfirmed';
 }
 
 async function cmdTranscribe() {
