@@ -5,11 +5,13 @@ description: >
   Use this skill for any GitHub task: listing or viewing pull requests, merging PRs,
   posting comments, checking out branches, viewing issues, inspecting workflow runs,
   listing releases, searching PRs, managing Actions variables, creating branches,
-  pushing file content, archiving repos, or calling any GitHub API endpoint directly.
+  pushing file content, archiving repos, managing org-owned Projects (v2) and their
+  standalone draft items, or calling any GitHub API endpoint directly.
   Trigger on requests like "list open PRs", "check CI status", "merge this PR",
   "what issues are open", "show the latest release", "post a comment on PR #42",
   "set a repo variable", "archive this repo", "create a branch", "push this file",
-  or any task involving a GitHub repository.
+  "list my GitHub projects", "add a draft item to the project", "capture this request
+  in the project board", or any task involving a GitHub repository or organization Project.
 allowed_tools:
   - bash
 ---
@@ -51,6 +53,7 @@ The default token covers most operations. Request additional scopes when needed,
 | `workflow` | Pushing/modifying `.github/workflows/` files |
 | `delete_repo` | Deleting repositories |
 | `admin:org` | Managing organization settings |
+| `project` | Reading or writing org-owned Projects (v2) — required for all `project` subcommands |
 
 ```bash
 git config github.token "$(oauth-token github --scope workflow)"
@@ -232,6 +235,23 @@ gh.jsh vars list
 gh.jsh vars set MY_VAR "hello world"
 ```
 Creates or updates the variable (PATCH if exists, POST if new).
+
+---
+
+### Projects (org-owned, v2)
+
+Requires the `project` scope — see Scope escalation above. Projects v2 items are org-scoped, not repo-scoped: pass an org login and project number, never `owner/repo`.
+
+```bash
+gh.jsh project list myorg                          # list org's projects, with number/state/url
+gh.jsh project list-items myorg 2                  # list items in project #2
+gh.jsh project add-draft myorg 2 "Some request"    # create a standalone draft item, no repo needed
+gh.jsh project add-draft myorg 2 "Some request" "Longer body text describing it"
+gh.jsh project set-title myorg 2 215884384 "New title"   # rename an existing item
+```
+`add-draft` creates a **draft issue** — an item that lives only inside the project, with no linked repository or real issue, until someone chooses to convert it later (via GitHub's UI; `gh.jsh` does not currently support conversion). This is the standalone-capture mechanism for tracking requests before deciding whether they warrant becoming real repo work — see [GitHub's REST API docs for draft Project items](https://docs.github.com/en/rest/projects/drafts) for the underlying contract.
+
+`set-title` renames an existing item (draft or linked issue/PR). Project item field updates are field-ID-based, not a direct `{title: ...}` body — `set-title` looks up the item's own title field ID for you, so you only pass the item ID and the new title. `add-draft`'s own output prints the new item's ID for exactly this purpose.
 
 ---
 
