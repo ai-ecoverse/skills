@@ -311,6 +311,34 @@ utterance began). Because the buffer lives in the page, you can `flush` on any c
 > mangled (it renders "SLICC" as "Slick", "Concur" as "conqueror", etc.). Clean up in a
 > post-pass if you need a verbatim record.
 
+#### Copilot mode — `--scoop`, `--snapshot`, and `teams post --live`
+
+Turn the transcript into a live "meeting copilot" that surfaces context to everyone:
+
+```bash
+# Fire a lick to a scoop for every finalized phrase (event-driven, no polling)
+teams transcribe start --scoop meeting-copilot
+
+# The scoop, on each phrase-lick, flushes + grabs a deduped screen-share frame:
+teams transcribe flush --snapshot            # only saves a shot if screen-sharing AND the frame changed
+
+# ...then posts context straight into the live meeting chat (visible to all):
+teams post --live "Context: OpTel is Adobe's Observability & Telemetry platform."
+
+# Tear down (also deletes the copilot webhook):
+teams transcribe stop
+```
+
+- **`--scoop <name>`** (on `start`): creates a SLICC webhook routed to that scoop and injects its URL into the in-page collector. Each finalized caption phrase is `POST`ed to the webhook (fire-and-forget, `no-cors`) → arrives as a lick to the scoop. No cron, no polling. The webhook id is tracked in `/shared/.teams-transcribe-state.json` and removed on `stop`.
+- **`--snapshot`** (a flag, composes with any subcommand — typically `flush`): if a screen share is active, screenshots the Teams window and keeps it only if it differs (md5) from the last kept frame, into `--shots-dir` (default `/shared/copilot-shots/`). Gives the scoop visual grounding without saving redundant static frames.
+- **`teams post --live <message>`**: posts into the **currently active meeting's chat**, visible to all participants (via the meeting chat DOM). This is how the copilot scoop speaks up.
+
+Typical wiring: `teams transcribe start --scoop meeting-copilot` → the `meeting-copilot` scoop receives a lick per phrase, calls `teams transcribe flush --snapshot` for the latest text + a screen frame, decides whether additional context is warranted, and if so calls `teams post --live "..."`.
+
+> **VALIDATE-LIVE:** the page→webhook `fetch`, screen-share detection selectors, the
+> `screenshot --tab` capture path, and the meeting-chat input/send selectors depend on a
+> live meeting and the current Teams build; expect to tune them on first real use.
+
 ## Troubleshooting
 
 | Problem | Fix |
