@@ -1441,6 +1441,7 @@ function _writeTranscribeState(st) {
 
 // Create a SLICC webhook routed to <scoop>. Returns { id, url } or null.
 async function createTranscribeWebhook(scoop) {
+  _safeName(scoop, '--scoop'); // guard against shell injection via the exec bridge
   const r = await exec(`webhook create --scoop ${scoop} --name teams-transcribe`);
   if (r.exitCode !== 0) return null;
   const idM = (r.stdout || '').match(/ID:\s*(\S+)/);
@@ -1457,6 +1458,21 @@ async function deleteWebhook(id) {
 // Point the in-page collector at a webhook URL (fired per finalized phrase).
 async function setCollectorWebhook(tab, url) {
   await browser.evalAsync(tab, `(() => { window.__sliccCapWebhook = ${JSON.stringify(url || '')}; return 'ok'; })()`);
+}
+
+// Guards for values interpolated into sliccy:exec shell commands (the exec bridge
+// runs a real shell). Reject anything outside a strict safe set.
+function _safeName(v, what) {
+  if (!/^[A-Za-z0-9._-]+$/.test(String(v == null ? '' : v))) {
+    die(`Invalid ${what}: only letters, digits and . _ - are allowed (got "${v}").`);
+  }
+  return String(v);
+}
+function _safePath(v, what) {
+  if (!/^[A-Za-z0-9._/-]+$/.test(String(v == null ? '' : v))) {
+    die(`Invalid ${what}: only letters, digits and . _ - / are allowed (got "${v}").`);
+  }
+  return String(v);
 }
 
 // Detect whether a screen share is active in the meeting.
@@ -1480,7 +1496,7 @@ async function isScreenSharing(tab) {
 async function takeSnapshot(tab, shotsDir) {
   const fs = require('fs');
   const tid = _targetId(tab);
-  const dir = shotsDir || '/shared/copilot-shots';
+  const dir = _safePath(shotsDir || '/shared/copilot-shots', '--shots-dir'); // guard exec interpolation
   const ts = Date.now();
 
   // Capture ONLY the share-PREVIEW node: draw the largest shared-screen <video>
@@ -1530,14 +1546,15 @@ async function takeSnapshot(tab, shotsDir) {
     } catch (e) { return { saved: false, reason: 'save_failed' }; }
   }
 
-  // Fallback: full-window screenshot + md5 dedupe (exec shell context).
+  // Fallback: full-window screenshot + md5 dedupe (exec shell context). `dir` is
+  // validated by _safePath above; quote every expansion as defense-in-depth.
   const script =
-    `mkdir -p ${dir}; tmp=${dir}/.tmp-${ts}.png; ` +
+    `mkdir -p '${dir}'; tmp='${dir}/.tmp-${ts}.png'; ` +
     `playwright-cli screenshot --tab=${tid} --filename="$tmp" >/dev/null 2>&1 || { echo SNAP_ERR; exit 0; }; ` +
     `nm=$(md5sum "$tmp" 2>/dev/null | awk '{print $1}'); ` +
-    `lm=$(cat ${dir}/.last-md5 2>/dev/null); ` +
+    `lm=$(cat '${dir}/.last-md5' 2>/dev/null); ` +
     `if [ -n "$nm" ] && [ "$nm" = "$lm" ]; then rm -f "$tmp"; echo SNAP_UNCHANGED; exit 0; fi; ` +
-    `final=${dir}/shot-${ts}.png; mv "$tmp" "$final"; echo "$nm" > ${dir}/.last-md5; echo "SNAP_SAVED $final"`;
+    `final='${dir}/shot-${ts}.png'; mv "$tmp" "$final"; echo "$nm" > '${dir}/.last-md5'; echo "SNAP_SAVED $final"`;
   const r = await exec(script);
   const o = (r.stdout || '').trim();
   if (o.includes('SNAP_SAVED')) return { saved: true, path: o.split('SNAP_SAVED ')[1].split(/\s/)[0], scoped: false };
@@ -1651,19 +1668,34 @@ async function cmdTranscribe() {
 
       // Copilot mode: --scoop <name> wires each finalized phrase to a webhook
       // that delivers a lick to that scoop (event-driven, no polling).
-      const state = { outFile, shotsDir: flags['shots-dir'] || '/shared/copilot-shots' };
+      const prev = _readTranscribeState();
+      const state = { outFile, shotsDir: _safePath(flags['shots-dir'] || '/shared/copilot-shots', '--shots-dir') };
       if (flags.scoop) {
-        const prev = _readTranscribeState();
-        if (prev.webhookId) await deleteWebhook(prev.webhookId); // avoid orphaning a previous one
+        _safeName(flags.scoop, '--scoop');
+        // Replace any prior webhook only once the new one is installed, so a
+        // failed create doesn't orphan the old one.
         const wh = await createTranscribeWebhook(flags.scoop);
         if (!wh) {
-          console.log(`WARNING: could not create webhook for scoop "${flags.scoop}" — phrases will still be captured, but no licks will fire.`);
+          // Keep the prior webhook intact (carry it forward) rather than dropping it.
+          if (prev.webhookId) { state.webhookId = prev.webhookId; state.webhookUrl = prev.webhookUrl; state.scoop = prev.scoop; }
+          console.log(`WARNING: could not create webhook for scoop "${flags.scoop}" — phrases are still captured, but no NEW licks are wired.`);
         } else {
+          if (prev.webhookId && prev.webhookId !== wh.id) await deleteWebhook(prev.webhookId);
           await setCollectorWebhook(tab, wh.url);
           state.webhookId = wh.id;
+          state.webhookUrl = wh.url;
           state.scoop = flags.scoop;
           console.log(`Copilot mode: each finalized phrase now fires a lick to scoop "${flags.scoop}" (webhook ${wh.id}).`);
         }
+      } else if (prev.webhookId) {
+        // Plain restart without --scoop: PRESERVE the existing copilot webhook
+        // (carry its id/url forward so `stop` still cleans it up) and re-arm the
+        // in-page collector to it. Prevents an orphaned webhook / cross-meeting leak.
+        state.webhookId = prev.webhookId;
+        state.webhookUrl = prev.webhookUrl;
+        state.scoop = prev.scoop;
+        if (prev.webhookUrl) await setCollectorWebhook(tab, prev.webhookUrl);
+        console.log(`Copilot mode preserved: still firing to scoop "${prev.scoop}" (webhook ${prev.webhookId}). Run 'teams transcribe stop' to remove it.`);
       }
       _writeTranscribeState(state);
 
