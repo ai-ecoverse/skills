@@ -552,8 +552,11 @@ async function cmdPost() {
     if (!message) die('Usage: teams post --live <message>   (posts to the active meeting chat)');
     const tab = await findTeamsTab();
     const res = await postToMeetingChat(tab, message);
+    if (res === 'not-full-view') {
+      die('Meeting is not in full view — refusing to post so I don\'t hit the wrong chat (in compact/PiP view the visible "Chat" is the app rail, often a DM). Expand the meeting to full view and retry.');
+    }
     if (res === 'no-input') {
-      die('Could not find the meeting chat input. Make sure you are in a meeting and the chat is available.');
+      die('Could not find the meeting chat input. Make sure you are in the meeting with the in-call chat available.');
     }
     out({ target: 'live-meeting-chat', result: res, message });
     return;
@@ -1260,57 +1263,93 @@ function countOccurrences(arr) {
 const CAP_LIST_TID = 'closed-caption-v2-virtual-list-content';
 
 // Idempotent in-page collector installer; returns the current buffer + state.
+// Capture is EVENT-DRIVEN via a MutationObserver on the caption virtual-list
+// (not interval polling), so caption rows that appear and scroll away quickly —
+// e.g. rapid distinct utterances — are not missed between samples. A row is
+// committed once it is no longer the last (in-progress) row, or after a short
+// pause (debounce) for the trailing utterance. A low-frequency guardian re-
+// attaches the observer if the (virtualized) list element is replaced.
 const CAP_COLLECTOR_JS = `
   (() => {
+    const LIST_SEL = '[data-tid="${CAP_LIST_TID}"]';
+    const parseRow = (row) => {
+      const textEl = row.querySelector('[data-tid="closed-caption-text"]');
+      const full = (row.innerText || '').trim();
+      const text = textEl ? (textEl.innerText || '').trim() : '';
+      let author = full;
+      if (text && full.endsWith(text)) author = full.slice(0, full.length - text.length).trim();
+      author = (author.split('\\n')[0] || '').trim();
+      return { author, text };
+    };
     if (!window.__sliccCapInstalled) {
       window.__sliccCapInstalled = true;
       window.__sliccCaps = [];
-      window.__capState = { prevAuthor: null, prevText: '' };
-      const parseRow = (row) => {
-        const textEl = row.querySelector('[data-tid="closed-caption-text"]');
-        const full = (row.innerText || '').trim();
-        const text = textEl ? (textEl.innerText || '').trim() : '';
-        let author = full;
-        if (text && full.endsWith(text)) author = full.slice(0, full.length - text.length).trim();
-        author = (author.split('\\n')[0] || '').trim();
-        return { author, text };
+      window.__capSeen = new WeakSet(); // caption row elements already committed
+      const commit = (author, text) => {
+        if (!text) return;
+        const phrase = { author, text, ts: Date.now() };
+        window.__sliccCaps.push(phrase);
+        // Copilot mode: fire the finalized phrase at a SLICC webhook so it arrives
+        // as a lick to the wired scoop. Fire-and-forget, no-cors.
+        if (window.__sliccCapWebhook) {
+          try {
+            fetch(window.__sliccCapWebhook, { method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(phrase) });
+          } catch (e) {}
+        }
       };
-      const tick = () => {
+      window.__capProcess = () => {
         try {
-          const list = document.querySelector('[data-tid="${CAP_LIST_TID}"]');
-          if (!list || !list.children.length) return;
+          const list = document.querySelector(LIST_SEL);
+          if (!list) return;
           const rows = Array.from(list.children);
-          const bottom = parseRow(rows[rows.length - 1]);
-          const st = window.__capState;
-          // A new phrase has started when the bottom row no longer extends the
-          // previous one (different speaker, or text no longer a growing prefix).
-          if (st.prevText && !(bottom.author === st.prevAuthor && bottom.text.startsWith(st.prevText))) {
-            const phrase = { author: st.prevAuthor, text: st.prevText, ts: Date.now() };
-            window.__sliccCaps.push(phrase);
-            // Copilot mode: fire the finalized phrase at a SLICC webhook so it
-            // arrives as a lick to the wired scoop (no polling). Fire-and-forget,
-            // no-cors — we only need to trigger it, not read the response.
-            if (window.__sliccCapWebhook) {
-              try {
-                fetch(window.__sliccCapWebhook, {
-                  method: 'POST',
-                  mode: 'no-cors',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify(phrase),
-                });
-              } catch (e) {}
-            }
-          }
-          st.prevAuthor = bottom.author;
-          st.prevText = bottom.text;
+          const lastIdx = rows.length - 1;
+          // Every row except the current (last, in-progress) one is finalized.
+          rows.forEach((row, i) => {
+            if (i === lastIdx) return;
+            if (window.__capSeen.has(row)) return;
+            const { author, text } = parseRow(row);
+            if (!text) return;
+            window.__capSeen.add(row);
+            commit(author, text);
+          });
+          // Debounce-commit the trailing row when speech pauses (~1.6s), so the
+          // final utterance isn't stuck uncommitted as the perpetual last row.
+          clearTimeout(window.__capTrailTimer);
+          window.__capTrailTimer = setTimeout(() => {
+            const l = document.querySelector(LIST_SEL); if (!l || !l.children.length) return;
+            const last = l.children[l.children.length - 1];
+            if (window.__capSeen.has(last)) return;
+            const { author, text } = parseRow(last);
+            if (!text) return;
+            window.__capSeen.add(last);
+            commit(author, text);
+          }, 1600);
         } catch (e) {}
       };
-      window.__sliccCapTimer = setInterval(tick, 300);
+      window.__capAttach = () => {
+        const list = document.querySelector(LIST_SEL);
+        if (!list) return;
+        if (window.__capList === list && window.__sliccCapObserver) return; // already observing
+        if (window.__sliccCapObserver) { try { window.__sliccCapObserver.disconnect(); } catch (e) {} }
+        window.__capList = list;
+        window.__sliccCapObserver = new MutationObserver(() => window.__capProcess());
+        window.__sliccCapObserver.observe(list, { childList: true, subtree: true, characterData: true });
+        window.__capProcess();
+      };
+      // Guardian only re-attaches when the list appears / is replaced — the
+      // MutationObserver does the actual (event-driven) capturing.
+      window.__sliccCapTimer = setInterval(() => window.__capAttach(), 1000);
+      window.__capAttach();
     }
+    let pending = null;
+    try {
+      const l = document.querySelector(LIST_SEL);
+      if (l && l.children.length) pending = parseRow(l.children[l.children.length - 1]);
+    } catch (e) {}
     return JSON.stringify({
       buffer: window.__sliccCaps,
-      pending: window.__capState ? { author: window.__capState.prevAuthor, text: window.__capState.prevText } : null,
-      captionsRendering: !!document.querySelector('[data-tid="${CAP_LIST_TID}"]')
+      pending: pending,
+      captionsRendering: !!document.querySelector(LIST_SEL)
     });
   })()
 `;
@@ -1499,6 +1538,35 @@ async function postToMeetingChat(tab, message) {
   // model), click Send. Refs come from the accessibility snapshot.
   const tid = _targetId(tab);
 
+  // SAFETY: only post when the meeting is in FULL view. In full view the app
+  // navigation rail is hidden, so the "Chat" control is the MEETING's in-call
+  // chat. In COMPACT/PiP view the app rail is visible and its "Chat (⌃⇧2)" is
+  // the app chat (often a DM) — posting there sends to the wrong conversation.
+  // We refuse rather than risk mis-posting to a DM. (A view-independent Graph
+  // path — POST /chats/{threadId}/messages — is the planned robust upgrade.)
+  let layout = 'unknown';
+  try {
+    layout = await browser.evalAsync(tab, `(() => {
+      const stage = document.querySelector('[data-tid="modern-stage-wrapper"]');
+      if (!stage) return 'no-stage';
+      const r = stage.getBoundingClientRect();
+      return (r.width > window.innerWidth * 0.5 && r.height > 300) ? 'full' : 'compact';
+    })()`);
+  } catch (e) {}
+  if (layout !== 'full') return 'not-full-view';
+
+  // Full view: open the in-call chat pane if it isn't already open.
+  try {
+    const opened = await browser.evalAsync(tab, `(() => {
+      const b = Array.from(document.querySelectorAll('button,[role="button"]')).find((x) => /^chat( |\\()/i.test((x.getAttribute('aria-label') || '')));
+      if (!b) return 'no-toggle';
+      if (b.getAttribute('aria-pressed') === 'true') return 'already-open';
+      b.click();
+      return 'opened';
+    })()`);
+    if (opened === 'opened') await sleep(1600);
+  } catch (e) {}
+
   async function findRefs() {
     const snap = await exec(`playwright-cli snapshot --tab=${tid}`);
     const txt = snap.stdout || '';
@@ -1646,7 +1714,7 @@ async function cmdTranscribe() {
     case 'stop': {
       const { buffer } = await readCollector();
       const fresh = flushToFile(buffer);
-      await browser.evalAsync(tab, `(() => { if (window.__sliccCapTimer) clearInterval(window.__sliccCapTimer); window.__sliccCapInstalled = false; window.__sliccCapWebhook = null; return 'stopped'; })()`);
+      await browser.evalAsync(tab, `(() => { if (window.__sliccCapTimer) clearInterval(window.__sliccCapTimer); if (window.__capTrailTimer) clearTimeout(window.__capTrailTimer); if (window.__sliccCapObserver) { try { window.__sliccCapObserver.disconnect(); } catch (e) {} } window.__sliccCapObserver = null; window.__capList = null; window.__sliccCapInstalled = false; window.__sliccCapWebhook = null; return 'stopped'; })()`);
       // Tear down copilot webhook if one was wired.
       const st = _readTranscribeState();
       if (st.webhookId) {
