@@ -1329,10 +1329,16 @@ async function enableLiveCaptions(tab) {
   })()`);
   if (toggled === 'no-toggle') return 'no-caption-toggle';
   if (toggled === 'already-on') return 'already-on';
-  await sleep(2500);
 
-  const rendering1 = await browser.evalAsync(tab, `(() => !!document.querySelector('[data-tid="${CAP_LIST_TID}"]'))()`);
-  return _asBool(rendering1) ? 'enabled' : 'clicked-unconfirmed';
+  // Captions can take several seconds to render after toggling — especially
+  // right after joining a meeting — so poll for the panel (up to ~12s) rather
+  // than giving up after a single short wait.
+  for (let i = 0; i < 8; i++) {
+    await sleep(1500);
+    const rendering1 = await browser.evalAsync(tab, `(() => !!document.querySelector('[data-tid="${CAP_LIST_TID}"]'))()`);
+    if (_asBool(rendering1)) return 'enabled';
+  }
+  return 'clicked-unconfirmed';
 }
 
 async function cmdTranscribe() {
