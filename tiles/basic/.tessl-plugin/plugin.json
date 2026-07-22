@@ -35,5 +35,6 @@
     "skills/teams",
     "skills/wavespeed",
     "skills/xai-grok"
-  ]
+  ],
+  "version": "0.3.1"
 }
