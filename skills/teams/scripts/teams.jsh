@@ -552,11 +552,11 @@ async function cmdPost() {
     if (!message) die('Usage: teams post --live <message>   (posts to the active meeting chat)');
     const tab = await findTeamsTab();
     const res = await postToMeetingChat(tab, message);
-    if (res === 'not-full-view') {
-      die('Meeting is not in full view — refusing to post so I don\'t hit the wrong chat (in compact/PiP view the visible "Chat" is the app rail, often a DM). Expand the meeting to full view and retry.');
+    if (res === 'no-meeting-chat') {
+      die('Could not open the meeting\'s in-call chat ("Meeting chat" pane). Make sure you are in the meeting (its "Chat" control must be available) and retry.');
     }
     if (res === 'no-input') {
-      die('Could not find the meeting chat input. Make sure you are in the meeting with the in-call chat available.');
+      die('Opened the meeting chat but could not find its message box. Retry in a moment.');
     }
     out({ target: 'live-meeting-chat', result: res, message });
     return;
@@ -1531,90 +1531,52 @@ async function takeSnapshot(tab, shotsDir) {
 // Visible to ALL participants. VALIDATE-LIVE: the meeting-chat input selector and
 // send mechanism vary by Teams build; tune against a real meeting.
 async function postToMeetingChat(tab, message) {
-  // Teams' meeting chat box is a CKEditor contenteditable that ignores in-page
-  // DOM edits (execCommand/paste land as orphan nodes off the editor model, and
-  // execCommand needs OS focus the eval bridge doesn't provide). REAL CDP input
-  // via playwright-cli works: click the box, type (genuine keystrokes reach the
-  // model), click Send. Refs come from the accessibility snapshot.
+  // Post into the MEETING's own in-call chat. Implemented EVAL-FREE via
+  // playwright-cli (accessibility snapshot + real CDP click/type), because:
+  //  - Teams' CKEditor ignores in-page DOM edits (execCommand/paste land as
+  //    orphan nodes; real keystrokes are required), and
+  //  - while a meeting is active the tab's Runtime.evaluate context is often
+  //    detached (evalAsync throws), but the a11y/input CDP domains keep working.
+  // Targeting rule: the in-call chat opens under a heading "Meeting chat" via a
+  // button labelled EXACTLY "Chat". The app rail's "Chat (⌃⇧2)" is a DIFFERENT
+  // control that shows a DM — we must NOT use it. If we can't reach the
+  // "Meeting chat" pane, we abort rather than risk posting to the wrong chat.
   const tid = _targetId(tab);
+  const snap = async () => ((await exec(`playwright-cli snapshot --tab=${tid}`)).stdout || '');
+  const refOf = (txt, re) => { const m = txt.match(re); return m ? m[1] : null; };
 
-  // SAFETY: only post when the meeting is in FULL view. In full view the app
-  // navigation rail is hidden, so the "Chat" control is the MEETING's in-call
-  // chat. In COMPACT/PiP view the app rail is visible and its "Chat (⌃⇧2)" is
-  // the app chat (often a DM) — posting there sends to the wrong conversation.
-  // We refuse rather than risk mis-posting to a DM. (A view-independent Graph
-  // path — POST /chats/{threadId}/messages — is the planned robust upgrade.)
-  let layout = 'unknown';
-  try {
-    layout = await browser.evalAsync(tab, `(() => {
-      const stage = document.querySelector('[data-tid="modern-stage-wrapper"]');
-      if (!stage) return 'no-stage';
-      const r = stage.getBoundingClientRect();
-      return (r.width > window.innerWidth * 0.5 && r.height > 300) ? 'full' : 'compact';
-    })()`);
-  } catch (e) {}
-  if (layout !== 'full') return 'not-full-view';
+  let s = await snap();
 
-  // Full view: open the in-call chat pane if it isn't already open.
-  try {
-    const opened = await browser.evalAsync(tab, `(() => {
-      const b = Array.from(document.querySelectorAll('button,[role="button"]')).find((x) => /^chat( |\\()/i.test((x.getAttribute('aria-label') || '')));
-      if (!b) return 'no-toggle';
-      if (b.getAttribute('aria-pressed') === 'true') return 'already-open';
-      b.click();
-      return 'opened';
-    })()`);
-    if (opened === 'opened') await sleep(1600);
-  } catch (e) {}
-
-  async function findRefs() {
-    const snap = await exec(`playwright-cli snapshot --tab=${tid}`);
-    const txt = snap.stdout || '';
-    const boxM = txt.match(/textbox "Type a message"\s*\[ref=(e\d+)\]/);
-    const sendM = txt.match(/button "Send[^"]*"\s*\[ref=(e\d+)\]/);
-    return { boxRef: boxM ? boxM[1] : null, sendRef: sendM ? sendM[1] : null, snap: txt };
+  // Ensure the Meeting chat pane is open (its distinctive heading).
+  if (!/heading "Meeting chat"/.test(s)) {
+    const chatRef = refOf(s, /button "Chat"\s*\[ref=(e\d+)\]/); // EXACT "Chat" = in-call control
+    if (!chatRef) return 'no-meeting-chat';
+    await exec(`playwright-cli click ${chatRef} --tab=${tid}`);
+    await sleep(1800);
+    s = await snap();
+    if (!/heading "Meeting chat"/.test(s)) return 'no-meeting-chat';
   }
 
-  let { boxRef, sendRef, snap } = await findRefs();
-
-  // If the compose box isn't present, try to open the meeting chat pane.
-  if (!boxRef) {
-    const chatM = snap.match(/button "(?:Chat|Open chat|Show conversation)[^"]*"\s*\[ref=(e\d+)\]/i);
-    if (chatM) {
-      await exec(`playwright-cli click ${chatM[1]} --tab=${tid}`);
-      await sleep(1500);
-      ({ boxRef, sendRef } = await findRefs());
-    }
-  }
+  const boxRef = refOf(s, /textbox "Type a message"\s*\[ref=(e\d+)\]/);
   if (!boxRef) return 'no-input';
 
-  // Shell-escape the message for single-quote wrapping.
   const esc = String(message).replace(/'/g, `'\\''`);
   await exec(`playwright-cli click ${boxRef} --tab=${tid}`);
   await exec(`playwright-cli type '${esc}' --tab=${tid}`);
   await sleep(400);
 
-  // Re-resolve the Send button AFTER typing: it may have been disabled/absent
-  // (and thus had no or a stale ref) before the box had content. Only then click.
-  const boxEmpty = () => browser.evalAsync(tab, `(() => { const b = document.querySelector('[data-tid="ckeditor"]'); return !(b && (b.innerText || '').replace(/\\s+/g, '')); })()`);
-  const fresh = await findRefs();
-  const finalSend = fresh.sendRef || sendRef;
-  if (finalSend) {
-    await exec(`playwright-cli click ${finalSend} --tab=${tid}`);
-  } else {
-    await exec(`playwright-cli press Enter --tab=${tid}`);
-  }
+  // Re-resolve the Send button AFTER typing (it only becomes present/enabled
+  // once the box has content), then click it; fall back to Enter.
+  const s2 = await snap();
+  const sendRef = refOf(s2, /button "Send[^"]*"\s*\[ref=(e\d+)\]/);
+  if (sendRef) await exec(`playwright-cli click ${sendRef} --tab=${tid}`);
+  else await exec(`playwright-cli press Enter --tab=${tid}`);
+  await sleep(500);
 
-  // Confirm the box cleared (message left the composer = sent). Poll up to ~2s;
-  // if still populated, retry Enter once as a fallback.
-  for (let i = 0; i < 8; i++) {
-    await sleep(250);
-    try { if (_asBool(await boxEmpty())) return 'sent'; } catch (e) {}
-  }
-  await exec(`playwright-cli press Enter --tab=${tid}`);
-  await sleep(400);
-  try { if (_asBool(await boxEmpty())) return 'sent'; } catch (e) {}
-  return 'send-unconfirmed';
+  // Confirm: the message now appears as a "Sent …" entry in the chat log.
+  const probe = message.slice(0, 24);
+  const s3 = await snap();
+  return (/\bSent\b/.test(s3) && s3.includes(probe)) ? 'sent' : 'send-unconfirmed';
 }
 
 async function cmdTranscribe() {
