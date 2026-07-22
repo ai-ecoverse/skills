@@ -206,6 +206,7 @@ const WRITE_OPS = {
   vars:          ['set'],
   release:       ['create','upload','delete'],
   notifications: ['read'],
+  project:       ['add-draft', 'set-title'],
 };
 
 function isMutating(cmd, sub) {
@@ -830,6 +831,115 @@ async function issueEdit(args) {
     console.log(sym('success') + ' Edited issue ' + color.cyan('#' + num) + ': ' + res.title);
     console.log(color.gray('URL:') + '     ' + res.html_url);
   } catch (e) { fail('issue edit', e); }
+}
+
+// ─── project (org-owned Projects v2) ─────────────────────────────────────────
+// Projects v2 items are org-scoped, not repo-scoped — there is no owner/repo
+// argument here, only an org login and a project number. REST support for
+// Projects v2 (including standalone draft issues with no linked repo) is
+// documented at https://docs.github.com/en/rest/projects — no GraphQL needed.
+
+function validateOrg(val) {
+  if (!val || !/^[a-zA-Z0-9._-]+$/.test(val)) {
+    cli.die(`Invalid org: expected a plain org login (got: ${JSON.stringify(val)})`);
+  }
+  return val;
+}
+
+async function projectList(args) {
+  const usage = 'usage: gh project list <org>';
+  if (!args[0]) cli.die('project list: org required\n' + usage);
+  const org = validateOrg(args[0]);
+  let projects;
+  try { projects = await api.get(`/orgs/${org}/projectsV2`); }
+  catch (e) { fail('project list', e); }
+
+  if (!projects.length) { console.log(color.gray('No projects.')); return; }
+
+  const rows = projects.map(p => [
+    color.cyan('#' + p.number),
+    fmt.trunc(p.title, 52),
+    p.state === 'open' ? color.green('open') : color.red(p.state),
+    color.gray(`https://github.com/orgs/${org}/projects/${p.number}`),
+  ]);
+  console.log(fmt.table(rows, [6, 54, 10]));
+}
+
+async function projectListItems(args) {
+  const usage = 'usage: gh project list-items <org> <project_number>';
+  if (!args[0]) cli.die('project list-items: org required\n' + usage);
+  if (!args[1]) cli.die('project list-items: project number required\n' + usage);
+  const org = validateOrg(args[0]);
+  const num = validateNum(args[1], 'project number');
+  let items;
+  try { items = await api.get(`/orgs/${org}/projectsV2/${num}/items`); }
+  catch (e) { fail('project list-items', e); }
+
+  if (!items.length) { console.log(color.gray('No items.')); return; }
+
+  const rows = items.map(it => {
+    const title = it.content?.title || '(untitled)';
+    const kind = it.content_type || '(unknown)';
+    return [
+      color.cyan(String(it.id)),
+      fmt.trunc(title, 50),
+      color.gray(kind),
+    ];
+  });
+  console.log(fmt.table(rows, [10, 52]));
+}
+
+async function projectAddDraft(args) {
+  const usage = 'usage: gh project add-draft <org> <project_number> <title> [body]';
+  if (!args[0]) cli.die('project add-draft: org required\n' + usage);
+  if (!args[1]) cli.die('project add-draft: project number required\n' + usage);
+  if (!args[2]) cli.die('project add-draft: title required\n' + usage);
+  const org = validateOrg(args[0]);
+  const num = validateNum(args[1], 'project number');
+  const title = args[2];
+  const body = args[3];
+
+  const payload = { title };
+  if (body !== undefined) payload.body = body;
+
+  try {
+    const res = await api.post(`/orgs/${org}/projectsV2/${num}/drafts`, { body: payload });
+    const item = res.value || res;
+    console.log(sym('success') + ' Created draft item ' + color.cyan(String(item.id)) + ' in ' + org + ' project #' + num);
+    if (item.content && item.content.title) console.log(color.gray('Title:') + '   ' + item.content.title);
+  } catch (e) { fail('project add-draft', e); }
+}
+
+// ─── project set-title ────────────────────────────────────────────────────────
+// Project item field updates are field-ID-based (PATCH .../items/{item_id} with
+// {"fields":[{"id":<field_id>,"value":<new_value>}]}), not a direct {title:...}
+// body — this looks up the item's own "Title" field ID first so the caller only
+// ever has to think in terms of item_id + new title.
+
+async function projectSetTitle(args) {
+  const usage = 'usage: gh project set-title <org> <project_number> <item_id> <new_title>';
+  if (!args[0]) cli.die('project set-title: org required\n' + usage);
+  if (!args[1]) cli.die('project set-title: project number required\n' + usage);
+  if (!args[2]) cli.die('project set-title: item id required\n' + usage);
+  if (args[3] === undefined) cli.die('project set-title: new title required\n' + usage);
+  const org = validateOrg(args[0]);
+  const num = validateNum(args[1], 'project number');
+  const itemId = validateNum(args[2], 'item id');
+  const newTitle = args[3];
+
+  let item;
+  try { item = await api.get(`/orgs/${org}/projectsV2/${num}/items/${itemId}`); }
+  catch (e) { fail('project set-title', e); }
+
+  const titleField = (item.fields || []).find(f => f.data_type === 'title');
+  if (!titleField) cli.die('project set-title: could not find a title field on item ' + itemId);
+
+  try {
+    await api.patch(`/orgs/${org}/projectsV2/${num}/items/${itemId}`, {
+      body: { fields: [{ id: titleField.id, value: newTitle }] },
+    });
+    console.log(sym('success') + ' Updated item ' + color.cyan(String(itemId)) + ' title to: ' + newTitle);
+  } catch (e) { fail('project set-title', e); }
 }
 
 // ─── repo view ───────────────────────────────────────────────────────────────
@@ -1472,6 +1582,10 @@ ${color.bold('COMMANDS')}
   ${color.cyan('search prs')}    <query> [repo]               Search PRs by keyword
   ${color.cyan('vars list')}     [repo]                       List Actions variables
   ${color.cyan('vars set')}      <name> <value> [repo]        Set an Actions variable
+  ${color.cyan('project list')}       <org>                    List org-owned Projects (v2)
+  ${color.cyan('project list-items')} <org> <project_number>    List items in a project
+  ${color.cyan('project add-draft')}  <org> <project_number> <title> [body]  Create a standalone draft item (no repo needed)
+  ${color.cyan('project set-title')}  <org> <project_number> <item_id> <new_title>  Rename a project item
   ${color.cyan('repo archive')}  [repo]                       Archive a repository
   ${color.cyan('branch create')} <name> [--from=<ref>] [repo]  Create a branch
   ${color.cyan('branch delete')} <name> [repo]                 Delete a branch
@@ -1516,6 +1630,7 @@ const dispatch = {
   search:  { prs:  () => searchPrs(rest) },
   vars:    { list: () => varsList(rest),    set:  () => varsSet(rest) },
   notifications: { list: () => notificationsList(rest), read: () => notificationsRead(rest) },
+  project: { list: () => projectList(rest), 'list-items': () => projectListItems(rest), 'add-draft': () => projectAddDraft(rest), 'set-title': () => projectSetTitle(rest) },
 };
 
 if (!dispatch[cmd]) cli.die("unknown command: '" + cmd + "'. Run gh --help for usage.");
