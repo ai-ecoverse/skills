@@ -1284,46 +1284,47 @@ const CAP_COLLECTOR_JS = `
     if (!window.__sliccCapInstalled) {
       window.__sliccCapInstalled = true;
       window.__sliccCaps = [];
-      window.__capSeen = new WeakSet(); // caption row elements already committed
+      // Track the in-progress bottom-row text. A phrase is COMMITTED whenever the
+      // bottom row no longer EXTENDS the previous text — i.e. a new utterance
+      // began, whether Teams grew the row ("1"->"1 2") or replaced it ("1"->"2").
+      // Committing-the-previous-on-change captures both growth and replacement,
+      // so nothing is overwritten/lost. Driven by a MutationObserver (fires on
+      // every caption change, no inter-poll gaps) plus a debounce that commits
+      // the trailing utterance after a pause.
+      window.__capState = { prevAuthor: null, prevText: '', lastCommitted: '' };
       const commit = (author, text) => {
         if (!text) return;
-        const phrase = { author, text, ts: Date.now() };
+        // Dedupe: never commit the exact same text twice in a row (a stable
+        // caption that keeps re-rendering must not be committed repeatedly).
+        const sig = (author || '') + '\u0001' + text;
+        if (sig === window.__capState.lastCommitted) return;
+        window.__capState.lastCommitted = sig;
+        const phrase = { author: author, text: text, ts: Date.now() };
         window.__sliccCaps.push(phrase);
-        // Copilot mode: fire the finalized phrase at a SLICC webhook so it arrives
-        // as a lick to the wired scoop. Fire-and-forget, no-cors.
         if (window.__sliccCapWebhook) {
-          try {
-            fetch(window.__sliccCapWebhook, { method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(phrase) });
-          } catch (e) {}
+          try { fetch(window.__sliccCapWebhook, { method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(phrase) }); } catch (e) {}
         }
       };
       window.__capProcess = () => {
         try {
           const list = document.querySelector(LIST_SEL);
-          if (!list) return;
-          const rows = Array.from(list.children);
-          const lastIdx = rows.length - 1;
-          // Every row except the current (last, in-progress) one is finalized.
-          rows.forEach((row, i) => {
-            if (i === lastIdx) return;
-            if (window.__capSeen.has(row)) return;
-            const { author, text } = parseRow(row);
-            if (!text) return;
-            window.__capSeen.add(row);
-            commit(author, text);
-          });
-          // Debounce-commit the trailing row when speech pauses (~1.6s), so the
-          // final utterance isn't stuck uncommitted as the perpetual last row.
+          if (!list || !list.children.length) return;
+          const { author, text } = parseRow(list.children[list.children.length - 1]);
+          if (!text) return;
+          const st = window.__capState;
+          if (st.prevText && !(author === st.prevAuthor && text.startsWith(st.prevText))) {
+            commit(st.prevAuthor, st.prevText);
+          }
+          st.prevAuthor = author;
+          st.prevText = text;
+          // Debounce: commit the trailing utterance after a pause (~1.4s) so a
+          // final phrase (or the last number in a count) isn't left uncommitted
+          // and then overwritten by whatever is said next.
           clearTimeout(window.__capTrailTimer);
           window.__capTrailTimer = setTimeout(() => {
-            const l = document.querySelector(LIST_SEL); if (!l || !l.children.length) return;
-            const last = l.children[l.children.length - 1];
-            if (window.__capSeen.has(last)) return;
-            const { author, text } = parseRow(last);
-            if (!text) return;
-            window.__capSeen.add(last);
-            commit(author, text);
-          }, 1600);
+            const s = window.__capState;
+            if (s.prevText) { commit(s.prevAuthor, s.prevText); s.prevText = ''; s.prevAuthor = null; }
+          }, 1400);
         } catch (e) {}
       };
       window.__capAttach = () => {
