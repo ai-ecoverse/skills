@@ -278,3 +278,4 @@ The SLICC environment has a few quirks you'll only hit if you bypass `gh.jsh` an
 | Uploaded files arrive as Latin-1-of-UTF-8 mojibake on GitHub | `fs.readFile(path, 'utf8')` in this realm doesn't actually decode UTF-8 | Use `fs.readFileBinary` (real `Uint8Array`) before `btoa` |
 | `cat`/`xxd`/`head -c` show corrupted bytes for a known-good file | Same shell I/O layer Latin-1↔UTF-8 round-trip | Verify via `playwright-cli eval` against `raw.githubusercontent.com` |
 | Need to commit a symlink | `PUT /contents` always writes mode `100644` | Use Git Data API with `mode: 120000` and target path as blob content |
+
