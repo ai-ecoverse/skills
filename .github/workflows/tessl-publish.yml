@@ -9,14 +9,17 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   id-token: write
 
 jobs:
   publish:
     runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    continue-on-error: ${{ matrix.plugin == 'advanced' }}
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         include:
           - plugin: basic
@@ -27,22 +30,77 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.ref }}
+          fetch-depth: 0
+
+      - name: Check for relevant changes
+        id: changed
+        if: >
+          github.event_name != 'workflow_dispatch' &&
+          github.event.before != '' &&
+          github.event.before != '0000000000000000000000000000000000000000'
+        env:
+          PLUGIN: ${{ matrix.plugin }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+
+          if ! git cat-file -e "$BEFORE_SHA" 2>/dev/null; then
+            echo "Commit $BEFORE_SHA not found locally; publishing unconditionally."
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          mapfile -t SKILL_PATHS < <(jq -r '.skills[]' "tiles/$PLUGIN/.tessl-plugin/plugin.json")
+          WATCHED_PATHS=("tiles/$PLUGIN" "${SKILL_PATHS[@]}")
+
+          if git diff --quiet "$BEFORE_SHA" "${{ github.sha }}" -- "${WATCHED_PATHS[@]}"; then
+            echo "No changes under watched paths since $BEFORE_SHA; skipping publish."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+          # BEFORE_SHA was confirmed to exist above, so it's safe to use as the
+          # range start here too. Decide bump type from conventional-commit
+          # messages (this repo already uses fix:/feat: prefixes) touching the
+          # watched paths: "!" or "BREAKING CHANGE" means major, "feat" means
+          # minor, anything else (fix, chore, docs, refactor...) is patch.
+          MESSAGES=$(git log --format='%B' "$BEFORE_SHA..${{ github.sha }}" -- "${WATCHED_PATHS[@]}")
+
+          if echo "$MESSAGES" | grep -Eq 'BREAKING CHANGE|^[a-zA-Z]+(\([^)]*\))?!:'; then
+            BUMP=major
+          elif echo "$MESSAGES" | grep -Eiq '^feat(\([^)]*\))?:'; then
+            BUMP=minor
+          else
+            BUMP=patch
+          fi
+
+          echo "Resolved bump type: $BUMP"
+          echo "bump=$BUMP" >> "$GITHUB_OUTPUT"
 
       - uses: tesslio/setup-tessl@v2
+        if: steps.changed.outputs.skip != 'true'
         with:
           token: ${{ secrets.TESSLIO_TOKEN }}
 
       - name: Publish plugin
+        if: steps.changed.outputs.skip != 'true'
         env:
           PLUGIN: ${{ matrix.plugin }}
           BASE: ${{ matrix.base }}
+          BUMP: ${{ steps.changed.outputs.bump || 'patch' }}
         run: |
           set -euo pipefail
 
-          bump_patch() {
+          bump_version() {
             local a b c
             IFS='.' read -r a b c <<< "$1"
-            echo "$a.$b.$((c + 1))"
+            case "$2" in
+              major) echo "$((a + 1)).0.0" ;;
+              minor) echo "$a.$((b + 1)).0" ;;
+              *)     echo "$a.$b.$((c + 1))" ;;
+            esac
           }
 
           NAME=$(jq -r .name "tiles/$PLUGIN/.tessl-plugin/plugin.json")
@@ -55,7 +113,8 @@ jobs:
             FLOOR="$BASE"
           fi
 
-          V=$(bump_patch "$FLOOR")
+          echo "Bumping $FLOOR as a $BUMP release"
+          V=$(bump_version "$FLOOR" "$BUMP")
 
           MANIFEST="tiles/$PLUGIN/.tessl-plugin/plugin.json"
 
@@ -72,10 +131,21 @@ jobs:
             echo "$OUT"
             if [ "$RC" -eq 0 ]; then
               echo "Published $NAME@$V"
+
+              git config user.name "github-actions[bot]"
+              git config user.email "github-actions[bot]@users.noreply.github.com"
+              git add "$MANIFEST"
+              git commit -m "chore($PLUGIN): record published version $V [skip ci]"
+              git push origin HEAD:main
+
               exit 0
             fi
             if echo "$OUT" | grep -Eiq 'already exists|not available|already published|already declares version'; then
-              V=$(bump_patch "$V")
+              V=$(bump_version "$V" "patch")
+              continue
+            fi
+            if echo "$OUT" | grep -Eiq 'timed out'; then
+              sleep 5
               continue
             fi
             echo "::error::publish failed for a non-version reason"
