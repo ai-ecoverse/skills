@@ -543,6 +543,25 @@ async function cmdHistory() {
 // ---------------------------------------------------------------------------
 
 async function cmdPost() {
+  // --live: post into the CURRENTLY ACTIVE meeting's chat (visible to all
+  // participants) instead of a team channel. No team/channel needed.
+  if (flags.live) {
+    // parseFlags() may capture the message as the value of --live (when it is a
+    // single quoted arg) or leave it in positional; combine both to be safe.
+    const message = [(typeof flags.live === 'string' ? flags.live : ''), ...positional].join(' ').trim();
+    if (!message) die('Usage: teams post --live <message>   (posts to the active meeting chat)');
+    const tab = await findTeamsTab();
+    const res = await postToMeetingChat(tab, message);
+    if (res === 'no-meeting-chat') {
+      die('Could not open the meeting\'s in-call chat ("Meeting chat" pane). Make sure you are in the meeting (its "Chat" control must be available) and retry.');
+    }
+    if (res === 'no-input') {
+      die('Opened the meeting chat but could not find its message box. Retry in a moment.');
+    }
+    out({ target: 'live-meeting-chat', result: res, message });
+    return;
+  }
+
   if (positional.length < 3) die('Usage: teams post <team> <channel> <message> [--reply-to=<message-id>]');
   const team = await resolveTeam(positional[0]);
   const channel = await resolveChannel(team.id, positional[1]);
@@ -1244,43 +1263,111 @@ function countOccurrences(arr) {
 const CAP_LIST_TID = 'closed-caption-v2-virtual-list-content';
 
 // Idempotent in-page collector installer; returns the current buffer + state.
+// Capture is EVENT-DRIVEN via a MutationObserver on the caption virtual-list
+// (not interval polling), so caption rows that appear and scroll away quickly —
+// e.g. rapid distinct utterances — are not missed between samples. A row is
+// committed once it is no longer the last (in-progress) row, or after a short
+// pause (debounce) for the trailing utterance. A low-frequency guardian re-
+// attaches the observer if the (virtualized) list element is replaced.
 const CAP_COLLECTOR_JS = `
   (() => {
+    const LIST_SEL = '[data-tid="${CAP_LIST_TID}"]';
+    const CAP_SEL = '[data-tid="closed-caption-text"]';
+    // Each spoken utterance is its OWN <span data-tid="closed-caption-text"> whose
+    // text grows as it is recognized, then finalizes when the NEXT utterance's
+    // span appears. The speaker name sits ~2 ancestors up ("Name\\n<text>").
+    // (NB: the virtual list has a single wrapper child, so we must iterate the
+    // caption-text spans, not list.children.)
+    const capElements = () => {
+      const list = document.querySelector(LIST_SEL);
+      return list ? Array.from(list.querySelectorAll(CAP_SEL)) : [];
+    };
+    const parseCap = (el) => {
+      const text = (el.innerText || '').trim();
+      if (!text) return { author: '', text: '' };
+      let author = '';
+      let n = el.parentElement;
+      for (let d = 0; d < 5 && n; d++) {
+        const full = (n.innerText || '').trim();
+        if (full.length > text.length && full.endsWith(text)) {
+          author = full.slice(0, full.length - text.length).trim().split('\\n')[0].trim();
+          break;
+        }
+        n = n.parentElement;
+      }
+      return { author, text };
+    };
     if (!window.__sliccCapInstalled) {
       window.__sliccCapInstalled = true;
       window.__sliccCaps = [];
-      window.__capState = { prevAuthor: null, prevText: '' };
-      const parseRow = (row) => {
-        const textEl = row.querySelector('[data-tid="closed-caption-text"]');
-        const full = (row.innerText || '').trim();
-        const text = textEl ? (textEl.innerText || '').trim() : '';
-        let author = full;
-        if (text && full.endsWith(text)) author = full.slice(0, full.length - text.length).trim();
-        author = (author.split('\\n')[0] || '').trim();
-        return { author, text };
+      // One buffer entry per caption-text ELEMENT; SUPERSEDE its text as that
+      // utterance grows. Deliver each utterance to the webhook exactly once, when
+      // it finalizes (no longer the last element) or after a debounce pause.
+      window.__capMeta = new WeakMap(); // caption span -> { idx, text, fired }
+      const fire = (idx) => {
+        const p = window.__sliccCaps[idx];
+        if (p && window.__sliccCapWebhook) {
+          try { fetch(window.__sliccCapWebhook, { method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p) }); } catch (e) {}
+        }
       };
-      const tick = () => {
+      const touch = (el, isLast) => {
+        const { author, text } = parseCap(el);
+        if (!text) return;
+        let meta = window.__capMeta.get(el);
+        if (!meta) {
+          const idx = window.__sliccCaps.push({ author: author, text: text, ts: Date.now() }) - 1;
+          meta = { idx: idx, text: text, fired: false };
+          window.__capMeta.set(el, meta);
+        } else if (text !== meta.text) {
+          window.__sliccCaps[meta.idx].text = text; // supersede as the utterance grows
+          if (author) window.__sliccCaps[meta.idx].author = author;
+          meta.text = text;
+        }
+        if (!isLast && !meta.fired) { meta.fired = true; fire(meta.idx); }
+      };
+      window.__capProcess = () => {
         try {
-          const list = document.querySelector('[data-tid="${CAP_LIST_TID}"]');
-          if (!list || !list.children.length) return;
-          const rows = Array.from(list.children);
-          const bottom = parseRow(rows[rows.length - 1]);
-          const st = window.__capState;
-          // A new phrase has started when the bottom row no longer extends the
-          // previous one (different speaker, or text no longer a growing prefix).
-          if (st.prevText && !(bottom.author === st.prevAuthor && bottom.text.startsWith(st.prevText))) {
-            window.__sliccCaps.push({ author: st.prevAuthor, text: st.prevText, ts: Date.now() });
-          }
-          st.prevAuthor = bottom.author;
-          st.prevText = bottom.text;
+          const els = capElements();
+          if (!els.length) return;
+          const lastIdx = els.length - 1;
+          els.forEach((el, i) => touch(el, i === lastIdx));
+          // Debounce: after a pause, fire the trailing utterance so it isn't left
+          // undelivered (its text is already kept current via supersede above).
+          clearTimeout(window.__capTrailTimer);
+          window.__capTrailTimer = setTimeout(() => {
+            const e2 = capElements();
+            if (!e2.length) return;
+            const last = e2[e2.length - 1];
+            touch(last, true);
+            const meta = window.__capMeta.get(last);
+            if (meta && !meta.fired) { meta.fired = true; fire(meta.idx); }
+          }, 1400);
         } catch (e) {}
       };
-      window.__sliccCapTimer = setInterval(tick, 300);
+      window.__capAttach = () => {
+        const list = document.querySelector(LIST_SEL);
+        if (!list) return;
+        if (window.__capList === list && window.__sliccCapObserver) return; // already observing
+        if (window.__sliccCapObserver) { try { window.__sliccCapObserver.disconnect(); } catch (e) {} }
+        window.__capList = list;
+        window.__sliccCapObserver = new MutationObserver(() => window.__capProcess());
+        window.__sliccCapObserver.observe(list, { childList: true, subtree: true, characterData: true });
+        window.__capProcess();
+      };
+      // Guardian only re-attaches when the list appears / is replaced — the
+      // MutationObserver does the actual (event-driven) capturing.
+      window.__sliccCapTimer = setInterval(() => window.__capAttach(), 1000);
+      window.__capAttach();
     }
+    let pending = null;
+    try {
+      const els = capElements();
+      if (els.length) pending = parseCap(els[els.length - 1]);
+    } catch (e) {}
     return JSON.stringify({
       buffer: window.__sliccCaps,
-      pending: window.__capState ? { author: window.__capState.prevAuthor, text: window.__capState.prevText } : null,
-      captionsRendering: !!document.querySelector('[data-tid="${CAP_LIST_TID}"]')
+      pending: pending,
+      captionsRendering: !!document.querySelector(LIST_SEL)
     });
   })()
 `;
@@ -1341,6 +1428,192 @@ async function enableLiveCaptions(tab) {
   return 'clicked-unconfirmed';
 }
 
+// --- Copilot mode helpers: webhook wiring, snapshots, meeting-chat posting ---
+
+const TRANSCRIBE_STATE = '/shared/.teams-transcribe-state.json';
+
+function _readTranscribeState() {
+  try { const fs = require('fs'); return JSON.parse(fs.readFileSync(TRANSCRIBE_STATE, 'utf8')); } catch (e) { return {}; }
+}
+function _writeTranscribeState(st) {
+  try { const fs = require('fs'); fs.writeFileSync(TRANSCRIBE_STATE, JSON.stringify(st, null, 2)); } catch (e) {}
+}
+
+// Create a SLICC webhook routed to <scoop>. Returns { id, url } or null.
+async function createTranscribeWebhook(scoop) {
+  _safeName(scoop, '--scoop'); // guard against shell injection via the exec bridge
+  const r = await exec(`webhook create --scoop ${scoop} --name teams-transcribe`);
+  if (r.exitCode !== 0) return null;
+  const idM = (r.stdout || '').match(/ID:\s*(\S+)/);
+  const urlM = (r.stdout || '').match(/URL:\s*(\S+)/);
+  if (!idM || !urlM) return null;
+  return { id: idM[1], url: urlM[1] };
+}
+
+async function deleteWebhook(id) {
+  if (!id) return;
+  try { await exec(`webhook delete ${id}`); } catch (e) {}
+}
+
+// Point the in-page collector at a webhook URL (fired per finalized phrase).
+async function setCollectorWebhook(tab, url) {
+  await browser.evalAsync(tab, `(() => { window.__sliccCapWebhook = ${JSON.stringify(url || '')}; return 'ok'; })()`);
+}
+
+// Guards for values interpolated into sliccy:exec shell commands (the exec bridge
+// runs a real shell). Reject anything outside a strict safe set.
+function _safeName(v, what) {
+  if (!/^[A-Za-z0-9._-]+$/.test(String(v == null ? '' : v))) {
+    die(`Invalid ${what}: only letters, digits and . _ - are allowed (got "${v}").`);
+  }
+  return String(v);
+}
+function _safePath(v, what) {
+  if (!/^[A-Za-z0-9._/-]+$/.test(String(v == null ? '' : v))) {
+    die(`Invalid ${what}: only letters, digits and . _ - / are allowed (got "${v}").`);
+  }
+  return String(v);
+}
+
+// Detect whether a screen share is active in the meeting.
+// VALIDATE-LIVE: selectors may need tuning against a real Teams meeting.
+async function isScreenSharing(tab) {
+  const r = await browser.evalAsync(tab, `(() => {
+    const sels = ['[data-tid*="screenshare" i]','[data-tid*="screen-share" i]','[data-tid="shared-content"]','[data-tid="ScreenShareStage"]','[aria-label*="is sharing" i]','[aria-label*="presenting" i]'];
+    for (const s of sels) { try { if (document.querySelector(s)) return true; } catch (e) {} }
+    const ctrls = Array.from(document.querySelectorAll('button,[role="button"]'));
+    if (ctrls.some((b) => /stop (sharing|presenting)/i.test((b.getAttribute('aria-label') || b.innerText || '')))) return true;
+    return false;
+  })()`);
+  return _asBool(r);
+}
+
+// Screenshot the Teams window; keep only if different from the last kept shot
+// (md5 dedupe). The whole pipeline runs in the exec shell context so the
+// screenshot file and md5sum share one filesystem view.
+// VALIDATE-LIVE: confirm `playwright-cli screenshot --tab` is available in exec
+// and writes where md5sum can read it.
+async function takeSnapshot(tab, shotsDir) {
+  const fs = require('fs');
+  const tid = _targetId(tab);
+  const dir = _safePath(shotsDir || '/shared/copilot-shots', '--shots-dir'); // guard exec interpolation
+  const ts = Date.now();
+
+  // Capture ONLY the share-PREVIEW node: draw the largest shared-screen <video>
+  // to an in-page canvas and export a PNG dataURL. This scopes the frame (and
+  // therefore the dedupe) to the shared content itself — captions, chat, roster,
+  // and clock churn elsewhere in the window are excluded. Falls back to a full
+  // window screenshot if no capturable video is present.
+  let dataUrl = '';
+  try {
+    let r = await browser.evalAsync(tab, `(() => {
+      const vids = Array.from(document.querySelectorAll('video'));
+      let best = null, area = 0;
+      for (const v of vids) { const b = v.getBoundingClientRect(); const a = b.width * b.height; if (a > area && b.width > 200 && b.height > 150) { area = a; best = v; } }
+      if (!best) return '';
+      try {
+        const vw = best.videoWidth || Math.round(best.getBoundingClientRect().width);
+        const vh = best.videoHeight || Math.round(best.getBoundingClientRect().height);
+        if (!vw || !vh) return '';
+        const scale = Math.min(1, 1280 / vw);
+        const c = document.createElement('canvas');
+        c.width = Math.round(vw * scale); c.height = Math.round(vh * scale);
+        c.getContext('2d').drawImage(best, 0, 0, c.width, c.height);
+        return c.toDataURL('image/png');
+      } catch (e) { return 'TAINTED'; }
+    })()`);
+    dataUrl = (typeof r === 'string') ? r : String(r);
+  } catch (e) { dataUrl = ''; }
+
+  if (dataUrl && dataUrl.startsWith('data:image')) {
+    const b64 = dataUrl.split(',')[1] || '';
+    // djb2 hash of the pixel payload → dedupe key (changes only when the shared content changes).
+    let h = 5381;
+    for (let i = 0; i < b64.length; i++) { h = ((h << 5) + h + b64.charCodeAt(i)) >>> 0; }
+    const sig = h + ':' + b64.length;
+    let last = '';
+    try { last = fs.readFileSync(dir + '/.last-sig', 'utf8').trim(); } catch (e) {}
+    if (sig === last) return { saved: false, reason: 'unchanged' };
+    try {
+      try { fs.mkdirSync(dir, { recursive: true }); } catch (e) {}
+      const bin = atob(b64);
+      const arr = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+      const outfile = dir + '/shot-' + ts + '.png';
+      fs.writeFileSync(outfile, arr);
+      fs.writeFileSync(dir + '/.last-sig', sig);
+      return { saved: true, path: outfile, scoped: true };
+    } catch (e) { return { saved: false, reason: 'save_failed' }; }
+  }
+
+  // Fallback: full-window screenshot + md5 dedupe (exec shell context). `dir` is
+  // validated by _safePath above; quote every expansion as defense-in-depth.
+  const script =
+    `mkdir -p '${dir}'; tmp='${dir}/.tmp-${ts}.png'; ` +
+    `playwright-cli screenshot --tab=${tid} --filename="$tmp" >/dev/null 2>&1 || { echo SNAP_ERR; exit 0; }; ` +
+    `nm=$(md5sum "$tmp" 2>/dev/null | awk '{print $1}'); ` +
+    `lm=$(cat '${dir}/.last-md5' 2>/dev/null); ` +
+    `if [ -n "$nm" ] && [ "$nm" = "$lm" ]; then rm -f "$tmp"; echo SNAP_UNCHANGED; exit 0; fi; ` +
+    `final='${dir}/shot-${ts}.png'; mv "$tmp" "$final"; echo "$nm" > '${dir}/.last-md5'; echo "SNAP_SAVED $final"`;
+  const r = await exec(script);
+  const o = (r.stdout || '').trim();
+  if (o.includes('SNAP_SAVED')) return { saved: true, path: o.split('SNAP_SAVED ')[1].split(/\s/)[0], scoped: false };
+  if (o.includes('SNAP_UNCHANGED')) return { saved: false, reason: 'unchanged' };
+  return { saved: false, reason: 'screenshot_failed' };
+}
+
+// Post a message into the CURRENTLY ACTIVE meeting's chat via the DOM.
+// Visible to ALL participants. VALIDATE-LIVE: the meeting-chat input selector and
+// send mechanism vary by Teams build; tune against a real meeting.
+async function postToMeetingChat(tab, message) {
+  // Post into the MEETING's own in-call chat. Implemented EVAL-FREE via
+  // playwright-cli (accessibility snapshot + real CDP click/type), because:
+  //  - Teams' CKEditor ignores in-page DOM edits (execCommand/paste land as
+  //    orphan nodes; real keystrokes are required), and
+  //  - while a meeting is active the tab's Runtime.evaluate context is often
+  //    detached (evalAsync throws), but the a11y/input CDP domains keep working.
+  // Targeting rule: the in-call chat opens under a heading "Meeting chat" via a
+  // button labelled EXACTLY "Chat". The app rail's "Chat (⌃⇧2)" is a DIFFERENT
+  // control that shows a DM — we must NOT use it. If we can't reach the
+  // "Meeting chat" pane, we abort rather than risk posting to the wrong chat.
+  const tid = _targetId(tab);
+  const snap = async () => ((await exec(`playwright-cli snapshot --tab=${tid}`)).stdout || '');
+  const refOf = (txt, re) => { const m = txt.match(re); return m ? m[1] : null; };
+
+  let s = await snap();
+
+  // Ensure the Meeting chat pane is open (its distinctive heading).
+  if (!/heading "Meeting chat"/.test(s)) {
+    const chatRef = refOf(s, /button "Chat"\s*\[ref=(e\d+)\]/); // EXACT "Chat" = in-call control
+    if (!chatRef) return 'no-meeting-chat';
+    await exec(`playwright-cli click ${chatRef} --tab=${tid}`);
+    await sleep(1800);
+    s = await snap();
+    if (!/heading "Meeting chat"/.test(s)) return 'no-meeting-chat';
+  }
+
+  const boxRef = refOf(s, /textbox "Type a message"\s*\[ref=(e\d+)\]/);
+  if (!boxRef) return 'no-input';
+
+  const esc = String(message).replace(/'/g, `'\\''`);
+  await exec(`playwright-cli click ${boxRef} --tab=${tid}`);
+  await exec(`playwright-cli type '${esc}' --tab=${tid}`);
+  await sleep(400);
+
+  // Re-resolve the Send button AFTER typing (it only becomes present/enabled
+  // once the box has content), then click it; fall back to Enter.
+  const s2 = await snap();
+  const sendRef = refOf(s2, /button "Send[^"]*"\s*\[ref=(e\d+)\]/);
+  if (sendRef) await exec(`playwright-cli click ${sendRef} --tab=${tid}`);
+  else await exec(`playwright-cli press Enter --tab=${tid}`);
+  await sleep(500);
+
+  // Confirm: the message now appears as a "Sent …" entry in the chat log.
+  const probe = message.slice(0, 24);
+  const s3 = await snap();
+  return (/\bSent\b/.test(s3) && s3.includes(probe)) ? 'sent' : 'send-unconfirmed';
+}
+
 async function cmdTranscribe() {
   const fs = require('fs');
   const sub = (positional[0] || 'start').toLowerCase();
@@ -1362,6 +1635,10 @@ async function cmdTranscribe() {
     }
     let idx = 0;
     try { idx = parseInt(fs.readFileSync(idxFile, 'utf8').trim(), 10) || 0; } catch (e) { idx = 0; }
+    // Catch-up guard: if the in-page buffer is SHORTER than our saved index, the
+    // collector was reinstalled (new session / tab reload) and the buffer reset.
+    // Re-flush from 0 so a fresh session's phrases are never silently skipped.
+    if (idx > buffer.length) idx = 0;
     const fresh = buffer.slice(idx);
     if (fresh.length) {
       const lines = fresh.map((c) => {
@@ -1388,6 +1665,40 @@ async function cmdTranscribe() {
       } else {
         console.log(`Could not fully enable captions (${status}). Turn on "More (...) -> Language and speech -> Show live captions" manually, then run: teams transcribe start`);
       }
+
+      // Copilot mode: --scoop <name> wires each finalized phrase to a webhook
+      // that delivers a lick to that scoop (event-driven, no polling).
+      const prev = _readTranscribeState();
+      const state = { outFile, shotsDir: _safePath(flags['shots-dir'] || '/shared/copilot-shots', '--shots-dir') };
+      if (flags.scoop) {
+        _safeName(flags.scoop, '--scoop');
+        // Replace any prior webhook only once the new one is installed, so a
+        // failed create doesn't orphan the old one.
+        const wh = await createTranscribeWebhook(flags.scoop);
+        if (!wh) {
+          // Keep the prior webhook intact (carry it forward) rather than dropping it.
+          if (prev.webhookId) { state.webhookId = prev.webhookId; state.webhookUrl = prev.webhookUrl; state.scoop = prev.scoop; }
+          console.log(`WARNING: could not create webhook for scoop "${flags.scoop}" — phrases are still captured, but no NEW licks are wired.`);
+        } else {
+          if (prev.webhookId && prev.webhookId !== wh.id) await deleteWebhook(prev.webhookId);
+          await setCollectorWebhook(tab, wh.url);
+          state.webhookId = wh.id;
+          state.webhookUrl = wh.url;
+          state.scoop = flags.scoop;
+          console.log(`Copilot mode: each finalized phrase now fires a lick to scoop "${flags.scoop}" (webhook ${wh.id}).`);
+        }
+      } else if (prev.webhookId) {
+        // Plain restart without --scoop: PRESERVE the existing copilot webhook
+        // (carry its id/url forward so `stop` still cleans it up) and re-arm the
+        // in-page collector to it. Prevents an orphaned webhook / cross-meeting leak.
+        state.webhookId = prev.webhookId;
+        state.webhookUrl = prev.webhookUrl;
+        state.scoop = prev.scoop;
+        if (prev.webhookUrl) await setCollectorWebhook(tab, prev.webhookUrl);
+        console.log(`Copilot mode preserved: still firing to scoop "${prev.scoop}" (webhook ${prev.webhookId}). Run 'teams transcribe stop' to remove it.`);
+      }
+      _writeTranscribeState(state);
+
       const outFlag = (flags.out || flags.o) ? ` --out=${outFile}` : '';
       console.log(`Transcript file: ${outFile}`);
       console.log(`Flush new lines:  teams transcribe flush${outFlag}`);
@@ -1415,7 +1726,14 @@ async function cmdTranscribe() {
     case 'stop': {
       const { buffer } = await readCollector();
       const fresh = flushToFile(buffer);
-      await browser.evalAsync(tab, `(() => { if (window.__sliccCapTimer) clearInterval(window.__sliccCapTimer); window.__sliccCapInstalled = false; return 'stopped'; })()`);
+      await browser.evalAsync(tab, `(() => { if (window.__sliccCapTimer) clearInterval(window.__sliccCapTimer); if (window.__capTrailTimer) clearTimeout(window.__capTrailTimer); if (window.__sliccCapObserver) { try { window.__sliccCapObserver.disconnect(); } catch (e) {} } window.__sliccCapObserver = null; window.__capList = null; window.__sliccCapInstalled = false; window.__sliccCapWebhook = null; return 'stopped'; })()`);
+      // Tear down copilot webhook if one was wired.
+      const st = _readTranscribeState();
+      if (st.webhookId) {
+        await deleteWebhook(st.webhookId);
+        console.log(`Copilot webhook ${st.webhookId} removed.`);
+      }
+      _writeTranscribeState({});
       console.log(`Stopped. Flushed final ${fresh.length} phrase(s). Total captured: ${buffer.length}. -> ${outFile}`);
       console.log('(Live captions remain toggled on in the meeting UI — turn them off manually if you want.)');
       break;
@@ -1450,6 +1768,23 @@ async function cmdTranscribe() {
     default:
       die(`Unknown transcribe subcommand: ${sub}. Use one of: start | flush | status | follow | stop`);
   }
+
+  // --snapshot flag: composes with any subcommand (except follow, which loops).
+  // Captures a deduped screenshot of the Teams window IF a screen share is active.
+  // The copilot scoop typically calls `teams transcribe flush --snapshot` per lick.
+  if (flags.snapshot && sub !== 'follow') {
+    const st = _readTranscribeState();
+    const shotsDir = flags['shots-dir'] || st.shotsDir || '/shared/copilot-shots';
+    const sharing = await isScreenSharing(tab);
+    if (!sharing) {
+      console.log('Snapshot: skipped (no screen share detected).');
+    } else {
+      const snap = await takeSnapshot(tab, shotsDir);
+      if (snap.saved) console.log(`Snapshot: ${snap.path}`);
+      else if (snap.reason === 'unchanged') console.log('Snapshot: unchanged since last frame (skipped).');
+      else console.log('Snapshot: capture failed.');
+    }
+  }
 }
 
 function showHelp() {
@@ -1466,6 +1801,7 @@ Commands:
   activity                          Messages mentioning/involving me (default: --since=24h)
   post <team> <channel> <message>   Post a message to a channel
   post ... --reply-to=<msg-id>      Reply in a thread
+  post --live <message>             Post into the CURRENTLY ACTIVE meeting chat (visible to all)
   thread <team> <channel> <msg-id>  Read replies to a message
   user <user-id-or-name>            Look up a user
   info <team> <channel>             Channel metadata
@@ -1473,10 +1809,12 @@ Commands:
   unanswered <team> <channel>       Messages with no replies (default: --since=48h)
   digest                            Activity summary across all teams (default: --since=24h, --max-teams=10)
   transcribe [start]                Turn on live captions in the active meeting and capture the transcript
-  transcribe flush [--out=FILE]     Append newly-finalized caption phrases to the transcript file
+  transcribe start --scoop <name>   Copilot mode: fire a lick to <name> for each finalized phrase
+  transcribe flush [--snapshot]     Append new phrases; --snapshot also grabs a deduped screen-share frame
   transcribe status                 Show whether captions render + buffered/live lines
   transcribe follow [--out=FILE]    Stream the transcript live and flush continuously (blocks)
-  transcribe stop [--out=FILE]      Final flush and stop the in-page collector
+  transcribe stop [--out=FILE]      Final flush, remove copilot webhook, stop the collector
+    flags: --out=FILE  --scoop=NAME  --snapshot  --shots-dir=DIR  --interval=SEC (follow)
 
 Aliases: messages/msgs → history, mentions → activity
 

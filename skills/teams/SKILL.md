@@ -299,17 +299,57 @@ de-duplicated Markdown:
 **[15:04:48] Dragos Dascalita Haut:** And where are you taking this now?
 ```
 
-**How it works.** A 300 ms in-page poller watches the caption virtual-list
-(`closed-caption-v2-virtual-list-content`) and commits each finalized phrase into a
-`window` buffer that survives across evals — so nothing is lost even though Teams only
-keeps ~3 caption rows visible at a time. A phrase is treated as final once the bottom
-row stops being a growing prefix of the previous text (i.e. the speaker changed or a new
-utterance began). Because the buffer lives in the page, you can `flush` on any cadence
-(even a 1-minute cron) without losing lines; only a tab reload clears it.
+**How it works.** A `MutationObserver` on the caption virtual-list
+(`closed-caption-v2-virtual-list-content`) captures changes event-driven (no poll gaps).
+Each spoken utterance is its OWN `[data-tid="closed-caption-text"]` element whose text
+grows as it is recognized, then finalizes when the next utterance's element appears — so
+the collector keeps one buffer entry per element and **supersedes its text as it grows**,
+delivering each utterance to the webhook exactly once (when it finalizes, or after a
+short debounce for the trailing one). The speaker name sits ~2 ancestors above the text
+span (`"Name\n<text>"`). The `window` buffer survives across evals, so you can `flush` on
+any cadence without losing lines; only a tab reload clears it.
+
+> **Why DOM (not the network):** verified on the wire — Teams live captions arrive over
+> the encrypted **WebRTC media channel** and materialize only in the client DOM; there is
+> **no WebSocket/HTTP source** to tap (a HAR + WS-frame capture during active captioning
+> showed zero caption traffic). Element-level DOM capture is therefore the complete and
+> correct approach. Validated live: a 20-utterance test captured and delivered 20/20.
+>
+> **Common pitfall:** the virtual-list has a single wrapper child — iterate the
+> `closed-caption-text` elements, NOT `list.children`, or you'll see one merged blob.
 
 > **Accuracy caveat:** captions are Teams' own speech-to-text, so names and jargon can be
 > mangled (it renders "SLICC" as "Slick", "Concur" as "conqueror", etc.). Clean up in a
 > post-pass if you need a verbatim record.
+
+#### Copilot mode — `--scoop`, `--snapshot`, and `teams post --live`
+
+Turn the transcript into a live "meeting copilot" that surfaces context to everyone:
+
+```bash
+# Fire a lick to a scoop for every finalized phrase (event-driven, no polling)
+teams transcribe start --scoop meeting-copilot
+
+# The scoop, on each phrase-lick, flushes + grabs a deduped screen-share frame:
+teams transcribe flush --snapshot            # only saves a shot if screen-sharing AND the frame changed
+
+# ...then posts context straight into the live meeting chat (visible to all):
+teams post --live "Context: OpTel is Adobe's Observability & Telemetry platform."
+
+# Tear down (also deletes the copilot webhook):
+teams transcribe stop
+```
+
+- **`--scoop <name>`** (on `start`): creates a SLICC webhook routed to that scoop and injects its URL into the in-page collector. Each finalized caption phrase is `POST`ed to the webhook (fire-and-forget, `no-cors`) → arrives as a lick to the scoop. No cron, no polling. The webhook id is tracked in `/shared/.teams-transcribe-state.json` and removed on `stop`.
+- **`--snapshot`** (a flag, composes with any subcommand — typically `flush`): if a screen share is active, captures **only the shared-screen preview** — it draws the largest shared `<video>` element to an in-page canvas and exports a PNG — and keeps it only if the shared content changed (a pixel-payload hash), into `--shots-dir` (default `/shared/copilot-shots/`). Scoping to the video means the dedupe ignores unrelated window churn (captions, chat, roster, clock). Falls back to a full-window screenshot if no capturable video is present.
+- **`teams post --live <message>`**: posts into the **currently active meeting's chat**, visible to all participants. Uses **real CDP input** via `playwright-cli` (resolve the compose box + Send button from the accessibility snapshot, click → type → click Send) — Teams' CKEditor ignores in-page DOM edits, so genuine keystrokes are required.
+
+Typical wiring: `teams transcribe start --scoop meeting-copilot` → the `meeting-copilot` scoop receives a lick per phrase, calls `teams transcribe flush --snapshot` for the latest text + a shared-screen frame, decides whether additional context is warranted, and if so calls `teams post --live "..."`.
+
+> **Validated live** against a real meeting (Jul 2026): webhook→lick delivery, canvas
+> snapshot + content-scoped dedupe, and `post --live` all confirmed working. Selectors
+> (caption list, meeting-chat compose/Send, share `<video>`) may still need updates if a
+> future Teams build changes its DOM.
 
 ## Troubleshooting
 
