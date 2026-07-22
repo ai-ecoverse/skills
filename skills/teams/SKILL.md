@@ -299,13 +299,24 @@ de-duplicated Markdown:
 **[15:04:48] Dragos Dascalita Haut:** And where are you taking this now?
 ```
 
-**How it works.** A 300 ms in-page poller watches the caption virtual-list
-(`closed-caption-v2-virtual-list-content`) and commits each finalized phrase into a
-`window` buffer that survives across evals — so nothing is lost even though Teams only
-keeps ~3 caption rows visible at a time. A phrase is treated as final once the bottom
-row stops being a growing prefix of the previous text (i.e. the speaker changed or a new
-utterance began). Because the buffer lives in the page, you can `flush` on any cadence
-(even a 1-minute cron) without losing lines; only a tab reload clears it.
+**How it works.** A `MutationObserver` on the caption virtual-list
+(`closed-caption-v2-virtual-list-content`) captures changes event-driven (no poll gaps).
+Each spoken utterance is its OWN `[data-tid="closed-caption-text"]` element whose text
+grows as it is recognized, then finalizes when the next utterance's element appears — so
+the collector keeps one buffer entry per element and **supersedes its text as it grows**,
+delivering each utterance to the webhook exactly once (when it finalizes, or after a
+short debounce for the trailing one). The speaker name sits ~2 ancestors above the text
+span (`"Name\n<text>"`). The `window` buffer survives across evals, so you can `flush` on
+any cadence without losing lines; only a tab reload clears it.
+
+> **Why DOM (not the network):** verified on the wire — Teams live captions arrive over
+> the encrypted **WebRTC media channel** and materialize only in the client DOM; there is
+> **no WebSocket/HTTP source** to tap (a HAR + WS-frame capture during active captioning
+> showed zero caption traffic). Element-level DOM capture is therefore the complete and
+> correct approach. Validated live: a 20-utterance test captured and delivered 20/20.
+>
+> **Common pitfall:** the virtual-list has a single wrapper child — iterate the
+> `closed-caption-text` elements, NOT `list.children`, or you'll see one merged blob.
 
 > **Accuracy caveat:** captions are Teams' own speech-to-text, so names and jargon can be
 > mangled (it renders "SLICC" as "Slick", "Concur" as "conqueror", etc.). Clean up in a
