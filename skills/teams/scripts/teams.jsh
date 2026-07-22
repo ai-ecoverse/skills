@@ -1570,6 +1570,10 @@ async function cmdTranscribe() {
     }
     let idx = 0;
     try { idx = parseInt(fs.readFileSync(idxFile, 'utf8').trim(), 10) || 0; } catch (e) { idx = 0; }
+    // Catch-up guard: if the in-page buffer is SHORTER than our saved index, the
+    // collector was reinstalled (new session / tab reload) and the buffer reset.
+    // Re-flush from 0 so a fresh session's phrases are never silently skipped.
+    if (idx > buffer.length) idx = 0;
     const fresh = buffer.slice(idx);
     if (fresh.length) {
       const lines = fresh.map((c) => {
