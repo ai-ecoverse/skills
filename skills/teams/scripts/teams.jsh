@@ -546,7 +546,9 @@ async function cmdPost() {
   // --live: post into the CURRENTLY ACTIVE meeting's chat (visible to all
   // participants) instead of a team channel. No team/channel needed.
   if (flags.live) {
-    const message = positional.join(' ').trim();
+    // parseFlags() may capture the message as the value of --live (when it is a
+    // single quoted arg) or leave it in positional; combine both to be safe.
+    const message = [(typeof flags.live === 'string' ? flags.live : ''), ...positional].join(' ').trim();
     if (!message) die('Usage: teams post --live <message>   (posts to the active meeting chat)');
     const tab = await findTeamsTab();
     const res = await postToMeetingChat(tab, message);
@@ -1419,20 +1421,69 @@ async function isScreenSharing(tab) {
 // VALIDATE-LIVE: confirm `playwright-cli screenshot --tab` is available in exec
 // and writes where md5sum can read it.
 async function takeSnapshot(tab, shotsDir) {
+  const fs = require('fs');
   const tid = _targetId(tab);
   const dir = shotsDir || '/shared/copilot-shots';
   const ts = Date.now();
+
+  // Capture ONLY the share-PREVIEW node: draw the largest shared-screen <video>
+  // to an in-page canvas and export a PNG dataURL. This scopes the frame (and
+  // therefore the dedupe) to the shared content itself — captions, chat, roster,
+  // and clock churn elsewhere in the window are excluded. Falls back to a full
+  // window screenshot if no capturable video is present.
+  let dataUrl = '';
+  try {
+    let r = await browser.evalAsync(tab, `(() => {
+      const vids = Array.from(document.querySelectorAll('video'));
+      let best = null, area = 0;
+      for (const v of vids) { const b = v.getBoundingClientRect(); const a = b.width * b.height; if (a > area && b.width > 200 && b.height > 150) { area = a; best = v; } }
+      if (!best) return '';
+      try {
+        const vw = best.videoWidth || Math.round(best.getBoundingClientRect().width);
+        const vh = best.videoHeight || Math.round(best.getBoundingClientRect().height);
+        if (!vw || !vh) return '';
+        const scale = Math.min(1, 1280 / vw);
+        const c = document.createElement('canvas');
+        c.width = Math.round(vw * scale); c.height = Math.round(vh * scale);
+        c.getContext('2d').drawImage(best, 0, 0, c.width, c.height);
+        return c.toDataURL('image/png');
+      } catch (e) { return 'TAINTED'; }
+    })()`);
+    dataUrl = (typeof r === 'string') ? r : String(r);
+  } catch (e) { dataUrl = ''; }
+
+  if (dataUrl && dataUrl.startsWith('data:image')) {
+    const b64 = dataUrl.split(',')[1] || '';
+    // djb2 hash of the pixel payload → dedupe key (changes only when the shared content changes).
+    let h = 5381;
+    for (let i = 0; i < b64.length; i++) { h = ((h << 5) + h + b64.charCodeAt(i)) >>> 0; }
+    const sig = h + ':' + b64.length;
+    let last = '';
+    try { last = fs.readFileSync(dir + '/.last-sig', 'utf8').trim(); } catch (e) {}
+    if (sig === last) return { saved: false, reason: 'unchanged' };
+    try {
+      try { fs.mkdirSync(dir, { recursive: true }); } catch (e) {}
+      const bin = atob(b64);
+      const arr = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+      const outfile = dir + '/shot-' + ts + '.png';
+      fs.writeFileSync(outfile, arr);
+      fs.writeFileSync(dir + '/.last-sig', sig);
+      return { saved: true, path: outfile, scoped: true };
+    } catch (e) { return { saved: false, reason: 'save_failed' }; }
+  }
+
+  // Fallback: full-window screenshot + md5 dedupe (exec shell context).
   const script =
-    `mkdir -p ${dir}; ` +
-    `tmp=${dir}/.tmp-${ts}.png; ` +
-    `playwright-cli screenshot --tab=${tid} --filename="$tmp" --max-width=1600 >/dev/null 2>&1 || { echo SNAP_ERR; exit 0; }; ` +
+    `mkdir -p ${dir}; tmp=${dir}/.tmp-${ts}.png; ` +
+    `playwright-cli screenshot --tab=${tid} --filename="$tmp" >/dev/null 2>&1 || { echo SNAP_ERR; exit 0; }; ` +
     `nm=$(md5sum "$tmp" 2>/dev/null | awk '{print $1}'); ` +
     `lm=$(cat ${dir}/.last-md5 2>/dev/null); ` +
     `if [ -n "$nm" ] && [ "$nm" = "$lm" ]; then rm -f "$tmp"; echo SNAP_UNCHANGED; exit 0; fi; ` +
     `final=${dir}/shot-${ts}.png; mv "$tmp" "$final"; echo "$nm" > ${dir}/.last-md5; echo "SNAP_SAVED $final"`;
   const r = await exec(script);
   const o = (r.stdout || '').trim();
-  if (o.includes('SNAP_SAVED')) return { saved: true, path: o.split('SNAP_SAVED ')[1].split(/\s/)[0] };
+  if (o.includes('SNAP_SAVED')) return { saved: true, path: o.split('SNAP_SAVED ')[1].split(/\s/)[0], scoped: false };
   if (o.includes('SNAP_UNCHANGED')) return { saved: false, reason: 'unchanged' };
   return { saved: false, reason: 'screenshot_failed' };
 }
@@ -1441,39 +1492,53 @@ async function takeSnapshot(tab, shotsDir) {
 // Visible to ALL participants. VALIDATE-LIVE: the meeting-chat input selector and
 // send mechanism vary by Teams build; tune against a real meeting.
 async function postToMeetingChat(tab, message) {
-  const js = `(async () => {
-    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    const findBox = () => document.querySelector(
-      '[data-tid="ckeditor"] [contenteditable="true"], ' +
-      'div[role="textbox"][contenteditable="true"], ' +
-      '[data-tid="message-input"] [contenteditable="true"], ' +
-      '[contenteditable="true"][aria-label*="message" i], ' +
-      '[contenteditable="true"][data-tid*="input" i]'
-    );
-    let box = findBox();
-    if (!box) {
-      const toggle = Array.from(document.querySelectorAll('button,[role="button"]'))
-        .find((b) => /chat/i.test((b.getAttribute('aria-label') || '')) && !/close/i.test((b.getAttribute('aria-label') || '')));
-      if (toggle) { toggle.click(); await sleep(1500); box = findBox(); }
+  // Teams' meeting chat box is a CKEditor contenteditable that ignores in-page
+  // DOM edits (execCommand/paste land as orphan nodes off the editor model, and
+  // execCommand needs OS focus the eval bridge doesn't provide). REAL CDP input
+  // via playwright-cli works: click the box, type (genuine keystrokes reach the
+  // model), click Send. Refs come from the accessibility snapshot.
+  const tid = _targetId(tab);
+
+  async function findRefs() {
+    const snap = await exec(`playwright-cli snapshot --tab=${tid}`);
+    const txt = snap.stdout || '';
+    const boxM = txt.match(/textbox "Type a message"\s*\[ref=(e\d+)\]/);
+    const sendM = txt.match(/button "Send[^"]*"\s*\[ref=(e\d+)\]/);
+    return { boxRef: boxM ? boxM[1] : null, sendRef: sendM ? sendM[1] : null, snap: txt };
+  }
+
+  let { boxRef, sendRef, snap } = await findRefs();
+
+  // If the compose box isn't present, try to open the meeting chat pane.
+  if (!boxRef) {
+    const chatM = snap.match(/button "(?:Chat|Open chat|Show conversation)[^"]*"\s*\[ref=(e\d+)\]/i);
+    if (chatM) {
+      await exec(`playwright-cli click ${chatM[1]} --tab=${tid}`);
+      await sleep(1500);
+      ({ boxRef, sendRef } = await findRefs());
     }
-    if (!box) return 'no-input';
-    box.focus();
-    let inserted = false;
-    try { inserted = document.execCommand('insertText', false, ${JSON.stringify(message)}); } catch (e) {}
-    if (!inserted || !(box.textContent || '').trim()) {
-      box.textContent = ${JSON.stringify(message)};
-      box.dispatchEvent(new InputEvent('input', { bubbles: true }));
-    }
-    await sleep(400);
-    const sendBtn = document.querySelector('button[data-tid="newMessageCommands-send"], button[name="send"], button[aria-label*="Send" i]');
-    if (sendBtn && !sendBtn.disabled) { sendBtn.click(); return 'sent-button'; }
-    const opts = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true };
-    box.dispatchEvent(new KeyboardEvent('keydown', opts));
-    box.dispatchEvent(new KeyboardEvent('keyup', opts));
-    return 'sent-enter';
-  })()`;
-  const r = await browser.evalAsync(tab, js);
-  return (typeof r === 'string') ? r : JSON.stringify(r);
+  }
+  if (!boxRef) return 'no-input';
+
+  // Shell-escape the message for single-quote wrapping.
+  const esc = String(message).replace(/'/g, `'\\''`);
+  await exec(`playwright-cli click ${boxRef} --tab=${tid}`);
+  await exec(`playwright-cli type '${esc}' --tab=${tid}`);
+  await sleep(200);
+  if (sendRef) {
+    await exec(`playwright-cli click ${sendRef} --tab=${tid}`);
+  } else {
+    await exec(`playwright-cli press Enter --tab=${tid}`);
+  }
+  await sleep(300);
+
+  // Confirm the box cleared (message left the composer = sent).
+  try {
+    const chk = await browser.evalAsync(tab, `(() => { const b = document.querySelector('[data-tid="ckeditor"]'); return !(b && (b.innerText || '').trim()); })()`);
+    return _asBool(chk) ? 'sent' : 'send-unconfirmed';
+  } catch (e) {
+    return 'sent';
+  }
 }
 
 async function cmdTranscribe() {
