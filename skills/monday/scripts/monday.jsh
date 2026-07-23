@@ -15,6 +15,12 @@
 const exec = require('sliccy:exec');
 const fs = require('fs');
 
+// Single POSIX-shell-quote a value for safe interpolation into an exec()
+// command line (exec runs through the jsh shell bridge).
+function escapeShellArg(value) {
+  return "'" + String(value).replace(/'/g, "'\\''") + "'";
+}
+
 // ─── Argument Parsing ────────────────────────────────────────────────────────
 
 const args = process.argv.slice(2); // argv[0]=node, argv[1]=script path, argv[2+]=actual args
@@ -89,7 +95,7 @@ const KNOWN_COMMANDS = ['gh', 'slack', 'teams', 'outlook', 'gmail', 'servicenow'
  */
 async function discoverCommands() {
   const checks = KNOWN_COMMANDS.map(async (cmd) => {
-    const r = await exec(`which ${cmd} 2>/dev/null`);
+    const r = await exec(`which ${escapeShellArg(cmd)} 2>/dev/null`);
     return r.exitCode === 0 ? cmd : null;
   });
   const results = await Promise.all(checks);
@@ -239,7 +245,7 @@ async function rateItem(item) {
   const result = await exec(fullCmd);
 
   // Clean up temp file
-  await exec(`rm -f ${tmpFile}`);
+  await exec(`rm -f ${escapeShellArg(tmpFile)}`);
 
   if (result.exitCode !== 0) {
     console.error(`[monday] WARNING: rating agent failed for item ${item.id}`);

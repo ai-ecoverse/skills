@@ -3,6 +3,12 @@
 // No dependencies — pure XML + custom ZIP builder
 // ZIP format: https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT
 
+// Single POSIX-shell-quote a value for safe interpolation into an exec()
+// command line (exec runs through the jsh shell bridge).
+function escapeShellArg(value) {
+  return "'" + String(value).replace(/'/g, "'\\''") + "'";
+}
+
 // ============================================================
 // ZIP BUILDER (STORE method, binary-safe)
 // ============================================================
@@ -420,9 +426,9 @@ var assemblePptxWithImages = function(slideXmls, images, meta) {
 var writePptx = async function(zipData, outputPath) {
   const b64 = toB64Safe(zipData);
   await fs.writeFile('/tmp/_pptx_export.b64', b64);
-  await exec(`cat /tmp/_pptx_export.b64 | base64 -d > "${outputPath}"`);
+  await exec(`cat /tmp/_pptx_export.b64 | base64 -d > ${escapeShellArg(outputPath)}`);
   await exec('rm -f /tmp/_pptx_export.b64');
-  const verify = await exec(`wc -c "${outputPath}"`);
+  const verify = await exec(`wc -c ${escapeShellArg(outputPath)}`);
   return (verify.stdout || '').trim();
 }
 

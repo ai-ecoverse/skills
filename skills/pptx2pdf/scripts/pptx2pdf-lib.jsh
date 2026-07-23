@@ -173,7 +173,7 @@ var loadFonts = async function(pdfDoc, lib, typeface, zip) {
     if (urls) {
       try {
         await registerFontkit(pdfDoc);
-        var variants = await Promise.all(urls.map(fetchFontBytes));
+        const variants = await Promise.all(urls.map(fetchFontBytes));
         console.log('Embedded font: ' + typeface);
         return {
           regular:    await pdfDoc.embedFont(variants[0], { subset: true }),

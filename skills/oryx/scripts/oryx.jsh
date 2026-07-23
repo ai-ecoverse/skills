@@ -60,6 +60,12 @@
 // page-context bridge (tab discovery + localStorage reads).
 const { exec } = require('sliccy:exec');
 const browser = require('sliccy:browser');
+// Single POSIX-shell-quote a value for safe interpolation into an exec()
+// command line (exec runs through the jsh shell bridge).
+function escapeShellArg(value) {
+  return "'" + String(value).replace(/'/g, "'\\''") + "'";
+}
+
 
 const CONFIG_FILE = '/workspace/skills/oryx/.config';
 const ENDPOINT    = 'https://oryx.zsa.io/graphql';
@@ -96,7 +102,7 @@ for (let i = 1; i < rawArgs.length; i++) {
 
 async function loadConfig() {
   try {
-    const r = await exec(`cat ${CONFIG_FILE}`);
+    const r = await exec(`cat ${escapeShellArg(CONFIG_FILE)}`);
     if (r.exitCode === 0 && r.stdout.trim()) return JSON.parse(r.stdout.trim());
   } catch (_) {}
   return {};

@@ -105,6 +105,13 @@ const cli = require('sliccy:cli');
 const fmt = require('sliccy:fmt');
 const color = require('sliccy:color'); // renamed from bare `c` global
 const http = require('sliccy:http');
+
+// Single POSIX-shell-quote a value for safe interpolation into an exec()
+// command line (exec runs through the jsh shell bridge).
+function escapeShellArg(value) {
+  return "'" + String(value).replace(/'/g, "'\\''") + "'";
+}
+
 const exec = require('sliccy:exec');
 const time = require('sliccy:time'); // only used by `monday`
 const fs = require('fs'); // plain node-ish builtin, not a sliccy: module
@@ -254,7 +261,7 @@ async function inferRepo() {
   const top = await exec('git rev-parse --show-toplevel 2>/dev/null');
   if (top.exitCode !== 0 || !top.stdout.trim()) return null;
   const toplevel = top.stdout.trim();
-  const r = await exec(`git -C "${toplevel}" config --get remote.origin.url 2>/dev/null`);
+  const r = await exec(`git -C ${escapeShellArg(toplevel)} config --get remote.origin.url 2>/dev/null`);
   if (r.exitCode !== 0 || !r.stdout.trim()) return null;
   const match = r.stdout.trim().match(/github\.com[:/]([^/\s]+\/[^/\s.]+)/);
   return match ? match[1].replace(/\.git$/, '') : null;
@@ -565,7 +572,7 @@ async function prWatch(args) {
   } catch (e) {
     // Best-effort cleanup of the SLICC-side webhook if the GitHub-side
     // registration failed, so we don't leave an orphaned watcher behind.
-    try { await exec(`webhook delete ${webhookId}`); } catch {}
+    try { await exec(`webhook delete ${escapeShellArg(webhookId)}`); } catch {}
     fail('pr watch', e);
   }
 
@@ -605,7 +612,7 @@ async function prUnwatch(args) {
     catch (e) { cli.warn('pr unwatch: could not remove GitHub-side hook ' + ghHookId + ': ' + (e.body?.message || e.message)); }
   }
 
-  try { await exec(`webhook delete ${webhookId}`); }
+  try { await exec(`webhook delete ${escapeShellArg(webhookId)}`); }
   catch (e) { cli.die('pr unwatch: failed to delete SLICC webhook ' + webhookId + ': ' + e.message); }
 
   console.log(sym('success') + ' Stopped watching PR ' + color.cyan('#' + num) + ' in ' + repo);

@@ -251,8 +251,8 @@ async function cmdTrip(args) {
       const f = { bookingId: it.bookingId, bookingUuid: it.bookingUuid, confirmationNumber: it.confirmationNumber, status: it.bookingStatus, price: it.totalPrice, name: it.tripName, legs: [] };
       const dseg = it.departureFlight && it.departureFlight.flight && it.departureFlight.flight.flightSegments || [];
       const rseg = it.returnFlight && it.returnFlight.flight && it.returnFlight.flight.flightSegments || [];
-      dseg.forEach(s => f.legs.push({ dir: 'outbound', ...pickSeg(s) }));
-      rseg.forEach(s => f.legs.push({ dir: 'return', ...pickSeg(s) }));
+      dseg.forEach(s => { f.legs.push({ dir: 'outbound', ...pickSeg(s) }); });
+      rseg.forEach(s => { f.legs.push({ dir: 'return', ...pickSeg(s) }); });
       flights.push(f);
     }
     if (it.hotelRoom || it.hotel) {
@@ -581,7 +581,7 @@ async function cmdBook(args) {
   if (!confirm) {
     console.log('=== BOOKING PREVIEW (not booked) ===');
     console.log(type.toUpperCase() + ' contract ' + contractId);
-    sum.lines.forEach(l => console.log(l));
+    sum.lines.forEach(l => { console.log(l); });
     console.log('  TOTAL: ' + money(sum.total));
     if (c.requiresApproval) console.log('  NOTE: this booking requires approval.');
     console.log('');
