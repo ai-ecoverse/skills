@@ -20,31 +20,27 @@ trigger-phrases:
 
 Four operations: **Create**, **Images**, **Read**, **Edit**. No dependencies on other skills.
 
+All generation is driven by `pptx-lib.jsh`, inlined via shell expansion:
+`node -e "$(cat /workspace/skills/pptx/scripts/pptx-lib.jsh) ...your code..."`. Positions and
+sizes are in **inches** (a 16:9 slide is `13.33 x 7.5`). See
+[`references/api-reference.md`](references/api-reference.md) for the full function and theme-color
+reference.
+
 ---
 
 ## Create a presentation
 
-Inline `pptx-lib.jsh` via shell expansion. Key functions:
-- `slideXml(bgColor, shapes)` — create a slide with background color and shape content
-- `textBox(x, y, w, h, paragraphs, opts)` — text box at position (inches)
-- `rectShape(x, y, w, h, fill, opts)` — rectangle shape
-- `para(runs, opts)` — paragraph with alignment and spacing
+Core functions (full signatures in [`references/api-reference.md`](references/api-reference.md)):
+
+- `slideXml(bgColor, shapes)` — a slide with a background color and shape content
+- `textBox(x, y, w, h, paragraphs, opts)` — text box at a position
+- `rectShape(x, y, w, h, fill, opts)` — rectangle
+- `para(runs, opts)` / `multiPara(texts, opts)` — paragraph(s)
 - `textRun(text, opts)` — styled text segment
-- `multiPara(texts, opts)` — multiple paragraphs from array
 
-### Theme colors
-
-Each presentation gets a random color theme. Access via `T.xxx` for dark slides:
-- `T.dark`, `T.dark2` — dark backgrounds
-- `T.accentBar`, `T.highlightBar` — accent colors
-- `T.textLight`, `T.textMutedDark` — text on dark backgrounds
-- `T.cardBg`, `T.cardBorder` — cards on dark backgrounds
-- `T.good`, `T.poor`, `T.warning`, `T.neutral`, `T.purple` — semantic colors
-
-For light slides, use `T.light.xxx`:
-- `T.light.bg`, `T.light.bg2` — light backgrounds
-- `T.light.text`, `T.light.textMuted`, `T.light.textDim` — dark text for light backgrounds
-- `T.light.card`, `T.light.cardBorder` — cards on light backgrounds
+Colors come from the random per-deck theme `T` (e.g. `T.dark`, `T.accentBar`, `T.textMutedDark`)
+with a light palette under `T.light.*`. Use **dark text on light backgrounds**. Full palette in
+[`references/api-reference.md`](references/api-reference.md#theme-colors).
 
 ### Basic example (text only)
 
@@ -72,260 +68,72 @@ await exec('open --download /mnt/my-presentation.pptx');
 "
 ```
 
+### Verify the output
+
+Creation writes a ZIP/XML file directly, so confirm it is a valid PPTX before delivering it. Read
+it back with the read script (see [`references/reading-pptx.md`](references/reading-pptx.md)) and
+check that the reported slide count equals the number of slides you pushed and that the expected
+titles appear:
+
+```bash
+python3 /tmp/read_pptx.py /mnt/my-presentation.pptx   # expect "Total: N slides"
+```
+
+If the count is wrong, a slide is empty, or the read raises `BadZipFile`, regenerate before
+handing the file to the user.
+
 ---
 
 ## Add images to slides
 
-Two approaches: **full-bleed background** or **positioned image**.
+Two approaches — `imageSlideXml()` for dramatic full-slide visuals, `picShape()` (with
+`slideWithImagesXml`) for positioned images. Download images with `fetchImageB64()` (avoids VFS
+binary corruption); it validates magic bytes and returns `null` on failure, so check the result and
+fall back to a placeholder `rectShape`. Only PNG and JPEG are supported.
 
-**Rule of thumb**: Use `imageSlideXml()` for dramatic full-slide visuals. Use `picShape()` for everything else.
-
-### Fetching images from URLs
-
-Use `fetchImageB64()` to download images (avoids VFS binary corruption):
-
-```bash
-node -e "$(cat /workspace/skills/pptx/scripts/pptx-lib.jsh)
-await fetchImageB64('https://example.com/photo.jpg', '/tmp/img1.b64');
-console.log('done');
-"
-```
-
-Load and decode the b64 file (use this pattern whenever reading a saved b64 file):
-```javascript
-var b64 = await fs.readFile('/tmp/img1.b64');
-var imgBytes = Uint8Array.from(atob(b64.trim()), function(c){ return c.charCodeAt(0); });
-```
-
-**Error handling**: `fetchImageB64` validates the HTTP response (uses `curl --fail`) and checks the file's magic bytes for PNG (`89 50 4E 47`) or JPEG (`FF D8 FF`). On any failure — network error, non-2xx status, HTML error page, or unsupported format like SVG/WebP/GIF — it deletes the output file and returns `null`. Check the return value (and that the file exists) before reading it, and fall back to a placeholder `rectShape` if the image cannot be loaded:
-
-```javascript
-var ok = await fetchImageB64('https://example.com/photo.jpg', '/tmp/img1.b64');
-if (!ok) {
-  // fall back to a placeholder shape instead of embedding a broken image
-}
-```
-
-**Image formats**: Only PNG (`ext: 'png'`) and JPEG (`ext: 'jpeg'`) are supported. SVG, WebP, GIF, and other formats are rejected by `fetchImageB64` and must be converted upstream.
-
-### Positioned images (recommended)
-
-Use `picShape(x, y, w, h, rId)` to place images at specific positions without stretching. Use `slideWithImagesXml` for any slide containing `picShape` elements:
-
-```bash
-node -e "$(cat /workspace/skills/pptx/scripts/pptx-lib.jsh)
-
-// Load image using the b64 decode pattern above
-var b64str = await fs.readFile('/tmp/photo.b64');
-var imgBytes = Uint8Array.from(atob(b64str.trim()), function(c){ return c.charCodeAt(0); });
-
-var slides = [];
-
-// Title slide
-slides.push(slideXml(T.dark, [
-  textBox(1, 2, 11, 1, para(textRun('My Deck', {size:4000, color:'FFFFFF', bold:true}), {align:'center'})),
-].join('')));
-
-// Slide with positioned image
-slides.push(slideWithImagesXml(T.light.bg, [
-  textBox(0.6, 0.5, 12, 0.6, para(textRun('Photo Gallery', {size:2400, color:T.light.text, bold:true}))),
-  picShape(4, 1.5, 5, 4, 'rId2'),  // centered 5x4 inch image
-  textBox(0.6, 6, 12, 0.5, para(textRun('Caption text', {size:1200, color:T.light.textMuted}), {align:'center'})),
-].join('')));
-
-// Image metadata: slideIndex (1-based), mediaIndex, bytes, ext
-var images = [
-  { slideIndex: 2, mediaIndex: 1, bytes: imgBytes, ext: 'jpeg' }
-];
-
-var zipData = assemblePptxWithImages(slides, images, {title: 'Photo Deck'});
-await writePptx(zipData, '/mnt/photo-deck.pptx');
-await exec('open --download /mnt/photo-deck.pptx');
-"
-```
-
-### Full-bleed background images
-
-Use `imageSlideXml(caption)` for images that fill the entire slide (may stretch):
-
-```bash
-node -e "$(cat /workspace/skills/pptx/scripts/pptx-lib.jsh)
-
-// Load image using the b64 decode pattern above
-var b64str = await fs.readFile('/tmp/photo.b64');
-var imgBytes = Uint8Array.from(atob(b64str.trim()), function(c){ return c.charCodeAt(0); });
-
-var slides = [];
-slides.push(slideXml(T.dark, [
-  textBox(1, 3, 11, 1, para(textRun('Title', {size:4000, color:'FFFFFF', bold:true}), {align:'center'})),
-].join('')));
-
-// Full-bleed image slide (stretches to fill)
-slides.push(imageSlideXml('Optional caption overlay'));
-
-var images = [
-  { slideIndex: 2, mediaIndex: 1, bytes: imgBytes, ext: 'jpeg' }
-];
-
-var zipData = assemblePptxWithImages(slides, images, {title: 'Deck'});
-await writePptx(zipData, '/mnt/deck.pptx');
-await exec('open --download /mnt/deck.pptx');
-"
-```
+Full workflows — fetching/decoding, positioned images, and full-bleed backgrounds, each with a
+complete runnable example — are in [`references/images.md`](references/images.md). Verify
+image decks the same way as created decks (read back, check slide count).
 
 ---
 
 ## Read an existing .pptx
 
-Extract all slide text:
+Extract all slide text with the read script in
+[`references/reading-pptx.md`](references/reading-pptx.md):
 
 ```bash
-cat > /tmp/read_pptx.py << 'EOF'
-import zipfile, io, re, sys
-data = open(sys.argv[1], 'rb').read()
-zf = zipfile.ZipFile(io.BytesIO(data))
-slides = sorted(
-    [n for n in zf.namelist() if re.match(r'ppt/slides/slide\d+\.xml$', n)],
-    key=lambda x: int(re.search(r'\d+', x).group())
-)
-for i, path in enumerate(slides, 1):
-    xml = zf.read(path).decode('utf-8', errors='replace')
-    texts = re.findall(r'<a:t[^>]*>([^<]+)</a:t>', xml)
-    print(f'Slide {i}: {" | ".join(t.strip() for t in texts if t.strip())}')
-print(f'Total: {len(slides)} slides')
-EOF
 python3 /tmp/read_pptx.py /mnt/file.pptx
 ```
+
+It prints one line of text per slide plus a `Total: N slides` line — the same script used to
+validate created and edited decks.
 
 ---
 
 ## Edit an existing .pptx
 
-> **Important**: Edit operations manipulate ZIP/XML internals directly. Always verify the output by reading it back (slide count, key text) before delivering it. If the output looks malformed, re-run the read operation against the output file to confirm integrity.
+> **Important**: edit operations manipulate ZIP/XML internals directly. Always verify the output by
+> reading it back (slide count, key text) before delivering it.
 
-### Replace text
+Two operations, with full scripts and per-operation verify steps in
+[`references/editing-pptx.md`](references/editing-pptx.md):
 
-```bash
-cat > /tmp/edit_pptx.py << 'EOF'
-import zipfile, io, sys
-src, dst, find, replace = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-data = open(src, 'rb').read()
-src_zip = zipfile.ZipFile(io.BytesIO(data))
-buf = io.BytesIO()
-with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as out:
-    for name in src_zip.namelist():
-        content = src_zip.read(name)
-        if name.startswith('ppt/slides/slide') and name.endswith('.xml'):
-            content = content.replace(find.encode(), replace.encode())
-        out.writestr(name, content)
-open(dst, 'wb').write(buf.getvalue())
-print(f'Saved: {dst}')
-EOF
-python3 /tmp/edit_pptx.py /mnt/input.pptx /mnt/output.pptx "Old Title" "New Title"
-open --download /mnt/output.pptx
-```
-
-**Verify after replace**: Run the read script against `/mnt/output.pptx` to confirm the replacement took effect and the file is still readable.
-
-### Add a text slide
-
-```bash
-cat > /tmp/add_slide.py << 'EOF'
-import zipfile, io, re, sys
-src, dst = sys.argv[1], sys.argv[2]
-title = sys.argv[3] if len(sys.argv) > 3 else 'New Slide'
-body = sys.argv[4] if len(sys.argv) > 4 else ''
-data = open(src, 'rb').read()
-src_zip = zipfile.ZipFile(io.BytesIO(data))
-slides = [n for n in src_zip.namelist() if re.match(r'ppt/slides/slide\d+\.xml$', n)]
-new_num = len(slides) + 1
-new_slide_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
-       xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
-       xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-  <p:cSld><p:spTree>
-    <p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>
-    <p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>
-    <p:sp>
-      <p:nvSpPr><p:cNvPr id="2" name="Title"/><p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr>
-      <p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>{title}</a:t></a:r></a:p></p:txBody>
-    </p:sp>
-    <p:sp>
-      <p:nvSpPr><p:cNvPr id="3" name="Body"/><p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr><p:ph idx="1"/></p:nvPr></p:nvSpPr>
-      <p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>{body}</a:t></a:r></a:p></p:txBody>
-    </p:sp>
-  </p:spTree></p:cSld>
-  <p:clrMapOvr><a:masterClr/></p:clrMapOvr>
-</p:sld>'''
-new_rels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/></Relationships>'
-prs_xml = src_zip.read('ppt/presentation.xml').decode('utf-8')
-max_id = max((int(x) for x in re.findall(r'id="(\d+)"', prs_xml)), default=256)
-prs_xml = prs_xml.replace('</p:sldIdLst>', f'<p:sldId id="{max_id+1}" r:id="rId{new_num+10}"/></p:sldIdLst>')
-prs_rels = src_zip.read('ppt/_rels/presentation.xml.rels').decode('utf-8')
-prs_rels = prs_rels.replace('</Relationships>', f'<Relationship Id="rId{new_num+10}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide{new_num}.xml"/></Relationships>')
-ct = src_zip.read('[Content_Types].xml').decode('utf-8')
-ct = ct.replace('</Types>', f'<Override PartName="/ppt/slides/slide{new_num}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/></Types>')
-buf = io.BytesIO()
-with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as out:
-    for name in src_zip.namelist():
-        if name == 'ppt/presentation.xml': out.writestr(name, prs_xml.encode())
-        elif name == 'ppt/_rels/presentation.xml.rels': out.writestr(name, prs_rels.encode())
-        elif name == '[Content_Types].xml': out.writestr(name, ct.encode())
-        else: out.writestr(name, src_zip.read(name))
-    out.writestr(f'ppt/slides/slide{new_num}.xml', new_slide_xml.encode())
-    out.writestr(f'ppt/slides/_rels/slide{new_num}.xml.rels', new_rels.encode())
-open(dst, 'wb').write(buf.getvalue())
-print(f'Added slide {new_num}: "{title}" -> {dst}')
-EOF
-python3 /tmp/add_slide.py /mnt/input.pptx /mnt/output.pptx "Slide Title" "Body text"
-open --download /mnt/output.pptx
-```
-
-**Verify after adding a slide**: Run the read script against `/mnt/output.pptx` and confirm the slide count increased by one and the new slide title appears in the output.
+- **Replace text** — `edit_pptx.py <in> <out> "Old" "New"`, then read back to confirm the change.
+- **Add a text slide** — `add_slide.py <in> <out> "Title" "Body"`, then confirm the slide count
+  increased by one and the new title appears.
 
 ---
 
 ## Downloading the result
 
-Use `writePptx()` to write the file, then `open --download` to deliver it. Write to `/mnt/` paths — binary output to `/tmp/` is not reliable.
+Use `writePptx()` to write the file, then `open --download` to deliver it. Write to `/mnt/` paths —
+binary output to `/tmp/` is not reliable.
 
 ```javascript
 await writePptx(zipData, '/mnt/my-deck.pptx');
 await exec('open --download /mnt/my-deck.pptx');
 ```
 
-`writePptx` handles the base64 encode/decode internally — no manual `toB64Safe` or shell piping needed.
-
----
-
-## API Reference
-
-### Slide creation
-- `slideXml(bgColor, shapes)` — standard slide with solid background
-- `slideWithImagesXml(bgColor, shapes)` — slide that can contain `picShape()` elements
-- `imageSlideXml(caption)` — full-bleed background image slide
-
-### Shapes
-- `textBox(x, y, w, h, paragraphs, opts)` — text container
-  - opts: `{fill, border, va}` (va: 't'|'m'|'b' for vertical align)
-- `rectShape(x, y, w, h, fill, opts)` — rectangle
-  - opts: `{rr, border}` (rr: true for rounded corners)
-- `picShape(x, y, w, h, rId)` — positioned image (use with `slideWithImagesXml`)
-
-### Text
-- `textRun(text, opts)` — styled text segment
-  - opts: `{size, color, bold, italic, font}`
-- `para(runs, opts)` — paragraph wrapper
-  - opts: `{align, lnSpc}` (align: 'left'|'center'|'right')
-- `multiPara(texts, opts)` — multiple paragraphs from string array
-
-### Assembly
-- `assemblePptx(slideXmls, meta)` — build PPTX without images
-- `assemblePptxWithImages(slideXmls, images, meta)` — build PPTX with embedded images
-  - images: `[{slideIndex, mediaIndex, bytes, ext}]`
-- `toB64Safe(bytes)` — convert Uint8Array to base64 string
-
-### Utilities
-- `fetchImageB64(url, outPath)` — download image and save as base64
-- `emu(inches)` — convert inches to EMUs (914400 per inch)
-- `escXml(str)` — escape XML special characters
+`writePptx` handles the base64 encode/decode internally — no manual `toB64Safe` or shell piping
+needed.
