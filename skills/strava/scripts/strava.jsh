@@ -25,54 +25,6 @@ REQUIRES
   strava.com open and logged in in your browser
 `.trim();
 
-// ── argument parsing ───────────────────────────────────────────────────────
-// Local replacement for the retired process.argv.parseFlags(): parses
-// `--flag=val`, `--flag val`, `-x` (boolean), positional args, and a `--`
-// passthrough boundary. Shape matches the old parseFlags() output.
-
-function parseFlags(argv) {
-  const positional = [];
-  const flags = {};
-  const passthrough = [];
-  let inPassthrough = false;
-
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (inPassthrough) {
-      passthrough.push(arg);
-      continue;
-    }
-    if (arg === '--') {
-      inPassthrough = true;
-      continue;
-    }
-    if (arg.startsWith('--')) {
-      const eq = arg.indexOf('=');
-      if (eq !== -1) {
-        flags[arg.slice(2, eq)] = arg.slice(eq + 1);
-      } else {
-        const key = arg.slice(2);
-        const next = argv[i + 1];
-        // A following token that looks like a negative number (e.g. `-5`)
-        // is a value, not a new flag — only treat `-`-prefixed tokens as
-        // flags when they aren't purely numeric.
-        if (next !== undefined && (!next.startsWith('-') || /^-\d+(\.\d+)?$/.test(next))) {
-          flags[key] = next;
-          i++;
-        } else {
-          flags[key] = true;
-        }
-      }
-    } else if (arg.startsWith('-') && arg.length > 1) {
-      flags[arg.slice(1)] = true;
-    } else {
-      positional.push(arg);
-    }
-  }
-
-  return { positional, flags, subcommand: positional[0], passthrough };
-}
-
 // ── helpers ────────────────────────────────────────────────────────────────
 
 function stripHtml(s) {
@@ -315,7 +267,11 @@ async function cmdNotifications(tab, flags) {
 // ── main ───────────────────────────────────────────────────────────────────
 
 async function main() {
-  const { positional, flags, subcommand } = parseFlags(process.argv.slice(2));
+  // Runtime helper — parses --flag=val, --flag val, -x shorts, repeated
+  // flags (promoted to array), and a `--` passthrough boundary. Same shape
+  // as the local copy this replaced; `subcommand` is bareword-only, so keep
+  // the positional[0] fallback.
+  const { positional, flags, subcommand } = process.argv.parseFlags();
   const cmd = subcommand || positional[0];
 
   if (flags.help || flags.h || cmd === '--help' || cmd === 'help' || !cmd) {
