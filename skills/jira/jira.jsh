@@ -105,7 +105,7 @@ async function get(key) {
   if (f.labels?.length) out.push(`  Labels:      ${f.labels.join(', ')}`);
   out.push('', '  Description:');
   if (f.description) {
-    stripWiki(f.description).split('\n').forEach(l => out.push(`    ${l}`));
+    stripWiki(f.description).split('\n').forEach(l => { out.push(`    ${l}`); });
   } else {
     out.push(`    ${c.dim('(none)')}`);
   }
@@ -131,7 +131,7 @@ async function comments(key) {
   console.log(`Comments on ${c.bold(key)} (${items.length}):\n`);
   items.forEach(comment => {
     console.log(`  ${c.dim('[' + fmtDate(comment.created) + ']')} ${c.bold(comment.author?.displayName || 'Unknown')}:`);
-    stripWiki(comment.body).split('\n').slice(0, 20).forEach(l => console.log(`    ${l}`));
+    stripWiki(comment.body).split('\n').slice(0, 20).forEach(l => { console.log(`    ${l}`); });
     console.log('');
   });
 }
@@ -144,7 +144,7 @@ async function components(project) {
   if (!items.length) { console.log(`No components defined for ${project}.`); return; }
   console.log(`Components for ${c.bold(project)} (${items.length}):\n`);
   items.sort((a, b) => a.name.localeCompare(b.name))
-       .forEach(item => console.log(`  ${item.name}${item.description ? c.dim(' — ' + item.description) : ''}`));
+       .forEach(item => { console.log(`  ${item.name}${item.description ? c.dim(' — ' + item.description) : ''}`); });
 }
 
 async function types(project) {
@@ -162,7 +162,7 @@ async function types(project) {
   if (!items.length) { console.log(`No issue types found for ${project}.`); return; }
   console.log(`Issue types for ${c.bold(project)} (${items.length}):\n`);
   items.sort((a, b) => a.name.localeCompare(b.name))
-       .forEach(item => console.log(`  ${item.name}${item.description ? c.dim(' — ' + item.description) : ''}`));
+       .forEach(item => { console.log(`  ${item.name}${item.description ? c.dim(' — ' + item.description) : ''}`); });
 }
 
 async function labels(project) {
@@ -189,12 +189,12 @@ async function labels(project) {
   console.log(`Labels for ${c.bold(project)}:\n`);
   if (projectLabels.size) {
     console.log(c.bold(`  Used in this project (${projectLabels.size}):`));
-    [...projectLabels].sort().forEach(l => console.log(`    ${l}`));
+    [...projectLabels].sort().forEach(l => { console.log(`    ${l}`); });
   }
   const instanceOnly = allLabels.filter(l => !projectLabels.has(l));
   if (instanceOnly.length) {
     console.log(c.dim(`\n  Instance-wide (${instanceOnly.length}):`));
-    instanceOnly.forEach(l => console.log(c.dim(`    ${l}`)));
+    instanceOnly.forEach(l => { console.log(c.dim(`    ${l}`)); });
   }
 }
 
@@ -353,13 +353,13 @@ async function create(flags) {
         console.log('Available components for this project:\n');
         if (suggestions.length) {
           console.log(c.bold('  Likely matches (based on issue content):'));
-          suggestions.forEach((s, i) => console.log(`    ${c.cyan(String(i + 1))}. ${s.name}`));
+          suggestions.forEach((s, i) => { console.log(`    ${c.cyan(String(i + 1))}. ${s.name}`); });
           if (others.length) {
             console.log(c.dim('\n  Other components:'));
-            others.forEach((s, i) => console.log(c.dim(`    ${i + suggestions.length + 1}. ${s.name}`)));
+            others.forEach((s, i) => { console.log(c.dim(`    ${i + suggestions.length + 1}. ${s.name}`)); });
           }
         } else {
-          names.forEach((name, i) => console.log(`    ${c.cyan(String(i + 1))}. ${name}`));
+          names.forEach((name, i) => { console.log(`    ${c.cyan(String(i + 1))}. ${name}`); });
         }
 
         const allOrdered = [...suggestions.map(s => s.name), ...others.map(s => s.name)];
@@ -371,7 +371,7 @@ async function create(flags) {
         // Generic allowed-values prompt for other required fields
         const values = fieldMeta.allowedValues.map(v => v.name ?? v.value ?? v.id);
         console.error(c.yellow(`\nRequired: ${req.name}`));
-        values.forEach((v, i) => console.error(`  ${c.cyan(String(i + 1))}. ${v}`));
+        values.forEach((v, i) => { console.error(`  ${c.cyan(String(i + 1))}. ${v}`); });
         console.error(`\nRe-run with: --field-${req.id} "<value>"`);
         process.exit(1);
 
@@ -440,13 +440,13 @@ async function create(flags) {
       console.log('Labels in use in this project:\n');
       if (suggestions.length) {
         console.log(c.bold('  Likely matches:'));
-        suggestions.forEach((s, i) => console.log(`    ${c.cyan(String(i + 1))}. ${s.name}${s.inProject ? c.dim(' (used in project)') : ''}`));
+        suggestions.forEach((s, i) => { console.log(`    ${c.cyan(String(i + 1))}. ${s.name}${s.inProject ? c.dim(' (used in project)') : ''}`); });
         if (others.length) {
           console.log(c.dim('\n  Other labels:'));
-          others.forEach((s, i) => console.log(c.dim(`    ${i + suggestions.length + 1}. ${s.name}${s.inProject ? ' (used in project)' : ''}`)));
+          others.forEach((s, i) => { console.log(c.dim(`    ${i + suggestions.length + 1}. ${s.name}${s.inProject ? ' (used in project)' : ''}`)); });
         }
       } else {
-        scored.forEach((s, i) => console.log(`    ${c.cyan(String(i + 1))}. ${s.name}${s.inProject ? c.dim(' (used in project)') : ''}`));
+        scored.forEach((s, i) => { console.log(`    ${c.cyan(String(i + 1))}. ${s.name}${s.inProject ? c.dim(' (used in project)') : ''}`); });
       }
 
       console.log(c.dim('\nRe-run with --labels "<name>,<name>" to set labels, or --no-labels to skip.'));

@@ -57,7 +57,7 @@ async function find(name) {
 function wl(c) {
   const r = /\[\[([^\]]+)\]\]/g, ls = [];
   let m;
-  while ((m = r.exec(c)) !== null) {
+  for (m = r.exec(c); m !== null; m = r.exec(c)) {
     const target = m[1].split('|', 1)[0].trim();
     if (target) ls.push(target);
   }

@@ -1,0 +1,15 @@
+{
+  "name": "skills-repo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Root tooling for the skills repo (Biome lint/format, aligned with SLICC).",
+  "license": "Apache-2.0",
+  "scripts": {
+    "format": "biome format --write",
+    "lint:jsh": "bash tools/lint-jsh.sh",
+    "check": "biome check"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.16"
+  }
+}
