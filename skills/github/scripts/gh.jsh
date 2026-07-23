@@ -62,14 +62,11 @@
 // │    other API (`cli.*`, `fmt.*`, `http.*`, `skill.*`, `time.*`, `exec()`)    │
 // │    keeps its exact old method names/signatures — no other call sites       │
 // │    changed.                                                                 │
-// │  • `process.argv.parseFlags()` is genuinely gone (confirmed, no sliccy:    │
-// │    replacement) — added a small local `parseFlags()` helper reproducing    │
-// │    its documented behavior (positional/flags/subcommand/passthrough,       │
-// │    --flag=val, --flag val, -x boolean, repeated-flag-promotes-to-array,    │
-// │    -- passthrough). Not currently wired into this script's own routing     │
-// │    (which stays manual two-level cmd/sub dispatch, same as before), kept   │
-// │    for parity since parseFlags() was part of the API surface referenced    │
-// │    in the migration notes above.                                          │
+// │  • `process.argv.parseFlags()`: at migration time this looked gone, so a  │
+// │    local parseFlags() copy was added "for parity". The runtime helper is  │
+// │    back (attached non-enumerably to process.argv) and the local copy was  │
+// │    never wired into this script's routing (still manual two-level         │
+// │    cmd/sub dispatch, same as before), so the dead copy was removed.       │
 // │  • `skill.token('github')` and `exec('git remote get-url origin ...')`     │
 // │    both work correctly again now that they're properly required — no      │
 // │    change needed to the token-resolution or repo-inference logic itself.  │
@@ -111,65 +108,6 @@ const http = require('sliccy:http');
 const exec = require('sliccy:exec');
 const time = require('sliccy:time'); // only used by `monday`
 const fs = require('fs'); // plain node-ish builtin, not a sliccy: module
-
-// ─── Flag parsing (process.argv.parseFlags() no longer exists) ──────────────
-// Local reimplementation of the documented old behavior. Not wired into this
-// script's own routing (still manual two-level cmd/sub dispatch below), kept
-// for parity with the old API surface referenced in the migration notes.
-
-function parseFlags(argv) {
-  const positional = [];
-  const flags = {};
-  const passthrough = [];
-  let sawDashDash = false;
-
-  const addFlag = (name, value) => {
-    if (Object.prototype.hasOwnProperty.call(flags, name)) {
-      if (Array.isArray(flags[name])) flags[name].push(value);
-      else flags[name] = [flags[name], value];
-    } else {
-      flags[name] = value;
-    }
-  };
-
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (sawDashDash) {
-      passthrough.push(a);
-      continue;
-    }
-    if (a === '--') {
-      sawDashDash = true;
-      continue;
-    }
-    if (a.startsWith('--')) {
-      const eq = a.indexOf('=');
-      if (eq !== -1) {
-        addFlag(a.slice(2, eq), a.slice(eq + 1));
-      } else {
-        const name = a.slice(2);
-        const next = argv[i + 1];
-        if (next !== undefined && !next.startsWith('-')) {
-          addFlag(name, next);
-          i++;
-        } else {
-          addFlag(name, true);
-        }
-      }
-    } else if (a.startsWith('-') && a.length > 1) {
-      addFlag(a.slice(1), true);
-    } else {
-      positional.push(a);
-    }
-  }
-
-  return {
-    positional,
-    flags,
-    subcommand: positional[0] || null,
-    passthrough,
-  };
-}
 
 // ─── Auth ────────────────────────────────────────────────────────────────────
 
