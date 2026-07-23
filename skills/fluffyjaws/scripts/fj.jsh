@@ -275,10 +275,11 @@ async function api(method, path, body) {
 }
 
 // ---------- arg parsing ----------
-// process.argv.parseFlags() does not exist in the jsh runtime — kept the
-// script's own parseArgs(), which already handled the boolean-flag/value
-// distinction this CLI needs (and which parseFlags() doesn't model, since it
-// has no notion of a fixed boolean-flag allowlist).
+// Deliberately NOT process.argv.parseFlags(): the runtime helper exists, but
+// it has no notion of a fixed boolean-flag allowlist — it would consume the
+// token after a boolean flag as its value (e.g. `--raw <question>` eats the
+// question). The local parseArgs() keeps the boolean-flag/value distinction
+// this CLI needs via BOOLEAN_FLAGS below.
 
 const BOOLEAN_FLAGS = new Set([
   'no-search', 'no-canvas', 'raw', 'json', 'help',
