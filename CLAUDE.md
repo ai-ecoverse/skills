@@ -140,12 +140,22 @@ async function cmdList(tab, flags) {
   for (const it of items) console.log(`  ${color.cyan(color.bold(it.name))}  ${color.dim(`id:${it.id}`)}`);
 }
 
+async function cmdGet(tab, positional, flags) {
+  const id = positional[0];
+  if (!id) cli.die('usage: mytool get <id>', { prefix: 'mytool' });
+  const data = await apiFetch(tab, `/api/items/${encodeURIComponent(id)}`);
+  if (flags.json) { cli.out(data); return; }
+  const item = data.item || data;                 // shape-shifting APIs — §9
+  console.log(`  ${color.cyan(color.bold(item.name || 'Item'))}  ${color.dim(`id:${item.id ?? id}`)}`);
+}
+
 // ── main ──────────────────────────────────────────────────────────────
 async function main() {
   if (flags.help || flags.h || !subcommand || subcommand === 'help') { cli.help(HELP); }
   const tab = await getTab();
   try {
     if (subcommand === 'list') await cmdList(tab, flags);
+    else if (subcommand === 'get') await cmdGet(tab, positional, flags);
     else cli.die(`unknown command: ${subcommand}\nRun 'mytool --help' for usage.`, { prefix: 'mytool' });
   } catch (err) {
     if (err?.name === 'NodeExitError') throw err;   // MANDATORY — see §6
