@@ -9,7 +9,7 @@ A persistent, interlinked markdown wiki knowledge base skill for [SLICC](https:/
 | `SKILL.md` | Skill definition — setup, processes (ingest/query/lint), constraints |
 | `llm-wiki.shtml` | Sprinkle browser with sidebar nav, search, wikilinks, query/ingest dialogs |
 | `wiki.jsh` | CLI: search, list, read, stats, links, orphans, recent, log |
-| `wiki-ops-brief.md` | Ops scoop system prompt |
+| `references/` | Schema template, worked examples, SLICC integration, and the `wiki-ops` scoop brief |
 | `rules/` | Index/log conventions and optional tooling guidance |
 
 ## Attribution
