@@ -41,13 +41,16 @@ jobs:
       - name: Smoke test the freshly built bundle
         run: |
           set -euo pipefail
-          node xlsx.jsh create /tmp/t.xlsx --data '[["Name","Value"],["foo",42],["bar",100]]'
-          node xlsx.jsh set-cell /tmp/t.xlsx C2 '=SUM(B2:B3)' --formula
-          node xlsx.jsh add-sheet /tmp/t.xlsx Extra --data '[["k","v"],["a",1]]'
-          out=$(node xlsx.jsh read /tmp/t.xlsx --json)
+          # Node's ESM loader rejects the .jsh extension; run the CJS bundle via a
+          # .cjs copy so this is immune to any package.json "type" setting.
+          x=/tmp/xlsx.cjs; cp xlsx.jsh "$x"
+          node "$x" create /tmp/t.xlsx --data '[["Name","Value"],["foo",42],["bar",100]]'
+          node "$x" set-cell /tmp/t.xlsx C2 '=SUM(B2:B3)' --formula
+          node "$x" add-sheet /tmp/t.xlsx Extra --data '[["k","v"],["a",1]]'
+          out=$(node "$x" read /tmp/t.xlsx --json)
           echo "$out"
           echo "$out" | grep -q '"Name": "foo"' || { echo "::error::read did not round-trip"; exit 1; }
-          node xlsx.jsh info /tmp/t.xlsx | grep -q Extra || { echo "::error::add-sheet did not persist"; exit 1; }
+          node "$x" info /tmp/t.xlsx | grep -q Extra || { echo "::error::add-sheet did not persist"; exit 1; }
           echo "smoke test passed"
 
       - name: Drift check (committed bundle vs freshly built)
