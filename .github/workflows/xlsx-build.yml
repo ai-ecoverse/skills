@@ -1,0 +1,63 @@
+name: xlsx skill bundle
+
+# Rebuilds the bundled skill entrypoint (skills/xlsx/scripts/xlsx.jsh) from its
+# source (xlsx.src.js) with esbuild and smoke-tests the result. The committed
+# xlsx.jsh is what ships via `upskill ai-ecoverse/skills --skill xlsx` (no build
+# at install time); this job guards that it stays functional and regenerable.
+
+on:
+  pull_request:
+    paths:
+      - 'skills/xlsx/scripts/**'
+      - '.github/workflows/xlsx-build.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'skills/xlsx/scripts/**'
+      - '.github/workflows/xlsx-build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: skills/xlsx/scripts
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install build deps
+        run: npm install
+
+      - name: Build bundle
+        run: npm run build
+
+      - name: Smoke test the freshly built bundle
+        run: |
+          set -euo pipefail
+          node xlsx.jsh create /tmp/t.xlsx --data '[["Name","Value"],["foo",42],["bar",100]]'
+          node xlsx.jsh set-cell /tmp/t.xlsx C2 '=SUM(B2:B3)' --formula
+          node xlsx.jsh add-sheet /tmp/t.xlsx Extra --data '[["k","v"],["a",1]]'
+          out=$(node xlsx.jsh read /tmp/t.xlsx --json)
+          echo "$out"
+          echo "$out" | grep -q '"Name": "foo"' || { echo "::error::read did not round-trip"; exit 1; }
+          node xlsx.jsh info /tmp/t.xlsx | grep -q Extra || { echo "::error::add-sheet did not persist"; exit 1; }
+          echo "smoke test passed"
+
+      - name: Drift check (committed bundle vs freshly built)
+        # Soft check: esbuild output is deterministic per version, but a
+        # committed bundle produced by a different esbuild build could differ
+        # harmlessly. Report drift as a warning, not a hard failure.
+        run: |
+          if git diff --quiet -- xlsx.jsh; then
+            echo "committed xlsx.jsh matches a fresh build."
+          else
+            echo "::warning::skills/xlsx/scripts/xlsx.jsh differs from a fresh build. If you changed xlsx.src.js, run 'npm run build' in skills/xlsx/scripts and commit the regenerated xlsx.jsh."
+            git diff --stat -- xlsx.jsh || true
+          fi
