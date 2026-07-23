@@ -122,20 +122,24 @@ async function captureToken() {
 }
 
 let _token;
+function cacheToken(t) {
+  _token = t;
+  return t;
+}
 async function getToken() {
   if (_token) return _token;
-  if (flags.token) return (_token = String(flags.token));
-  if (process.env.EXCEL_GRAPH_TOKEN) return (_token = process.env.EXCEL_GRAPH_TOKEN);
+  if (flags.token) return cacheToken(String(flags.token));
+  if (process.env.EXCEL_GRAPH_TOKEN) return cacheToken(process.env.EXCEL_GRAPH_TOKEN);
 
   const now = Math.floor(Date.now() / 1000);
   if (!flags.refresh) {
     const cached = await readCache();
-    if (cached && cached.token && cached.exp - now > 120) return (_token = cached.token);
+    if (cached && cached.token && cached.exp - now > 120) return cacheToken(cached.token);
   }
   const token = await captureToken();
   const { exp } = decodeExp(token);
   await writeCache({ token, exp });
-  return (_token = token);
+  return cacheToken(token);
 }
 
 // ------------------------------------------------------------- graph client ---
