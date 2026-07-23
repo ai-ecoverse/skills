@@ -31,9 +31,7 @@ This skill ships two CLIs:
 ## `xlsx` — local files
 
 The `xlsx` CLI reads, edits, and creates `.xlsx` / `.xls` / `.csv` / `.tsv`
-files. It bundles [SheetJS](https://sheetjs.com) inside a single self-contained
-`xlsx.jsh`, so there is nothing to install at runtime — no `openpyxl`, no
-`pandas`, no `unzip`/`zip`/XML surgery.
+files entirely offline — there is nothing to install at runtime.
 
 ## Commands
 
@@ -150,6 +148,7 @@ Override auto-capture with `--token <jwt>` or the `EXCEL_GRAPH_TOKEN` env var.
 excel ls /Reports
 excel download /Reports/Q3.xlsx --out ./q3.xlsx   # then: xlsx read ./q3.xlsx
 xlsx set-cell ./q3.xlsx B2 99 --number
+xlsx read ./q3.xlsx --range A1:B5                  # verify the edit before uploading
 excel upload ./q3.xlsx /Reports/Q3.xlsx           # replace in place
 excel new /Reports/new.xlsx --data '[["Name","Value"],["foo",42]]'
 excel open /Reports/Q3.xlsx                       # edit in Excel for the Web
@@ -172,5 +171,5 @@ excel open /Reports/Q3.xlsx                       # edit in Excel for the Web
 
 ## Maintainers
 
-Build/rebuild instructions for the bundled `xlsx.jsh` and notes on the
-hand-written `excel.jsh` live in [README.md](./README.md).
+Build/rebuild instructions for the bundled `xlsx.jsh`, and notes on the
+hand-written `excel.jsh`, live in the skill folder's `README.md`.
