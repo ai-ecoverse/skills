@@ -34,7 +34,8 @@
     "skills/swarm",
     "skills/teams",
     "skills/wavespeed",
-    "skills/xai-grok"
+    "skills/xai-grok",
+    "skills/xlsx"
   ],
   "version": "0.3.5"
 }
