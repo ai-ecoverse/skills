@@ -42,8 +42,8 @@ The `monday` command executes the following steps in order:
 
 1. **Discover sources** — with no positional args, run `which [cmd]` for each name in `KNOWN_COMMANDS` and keep those found on PATH; otherwise use the names supplied as positional args.
 2. **Invoke in parallel** — call `[cmd] monday --limit N --depth N --date Nd` for every discovered source concurrently.
-3. **Collect and validate JSON** — read each source's stdout; any source that exits non-zero, produces empty output, or emits invalid JSON is logged to stderr and dropped. Aggregation continues with remaining sources.
-4. **Deduplicate by `id`** — merge all item arrays in source order; when two items share the same `id`, the first occurrence wins and later duplicates are dropped (so positional arg order determines precedence for overlapping sources).
+3. **Collect and validate JSON** — sources that exit non-zero, emit empty output, or return invalid JSON are logged to stderr and dropped; aggregation continues with the rest.
+4. **Deduplicate by `id`** — merge arrays in argument order; the first occurrence of an `id` wins. (Precedence rules: [`references/SOURCE_PROTOCOL.md`](references/SOURCE_PROTOCOL.md).)
 5. **Optionally rate** — if any `--rate-*` flag is set, submit each item to the rating agent (model: `--rate-model`; optional context: `--rate-context`) to assign `importance`, `urgency`, and `summary` fields. Rating failures fall back to the unrated item; aggregation still completes.
 6. **Sort and output** — if rated, sort by `urgency × importance` descending (ties broken by `ts` descending); otherwise sort by `ts` descending. Write the final JSON array to stdout.
 
@@ -66,11 +66,53 @@ the known source list and uses whichever are found on PATH.
 
 ## Source protocol
 
-A command is "monday-compatible" when it accepts `[cmd] monday --limit N --depth N --date Nd` and writes a JSON array of items to stdout. Each item must include `id` (stable unique string for deduplication), `ts` (ISO timestamp for sorting), and any other fields (title, url, participants, body, etc.) which are passed through unchanged.
+A command is **monday-compatible** when `[cmd] monday --limit N --depth N --date Nd`
+writes a JSON array to stdout, with each item carrying a stable `id` (for dedup)
+and an ISO `ts` (for sorting); all other fields pass through unchanged.
 
-To add a new source, implement the protocol above and invoke it explicitly:
-`monday [newcmd] gh slack`. To register it for auto-discovery, add the command name
-to the `KNOWN_COMMANDS` list in the aggregator script.
+Each source (`gmail`, `slack`, `teams`, `outlook`, `github`/`gh`, `servicenow`)
+is its own separately installed skill that implements this sub-command. Full
+contract — invocation flags, item schema, dedup/sort semantics, a reference
+handler, and how to register a new source — is in
+[`references/SOURCE_PROTOCOL.md`](references/SOURCE_PROTOCOL.md).
+
+## Validation & troubleshooting
+
+`monday` writes only the final JSON array to **stdout**; all discovery and
+per-source progress goes to **stderr**. Redirect stdout away to watch the wiring
+before trusting the output:
+
+```bash
+monday gh slack >/dev/null      # show only the diagnostics
+```
+
+Expected stderr, in order:
+
+```text
+[monday] invoking: gh monday --limit 50 --depth 5 --date 7d
+[monday] invoking: slack monday --limit 50 --depth 5 --date 7d
+[monday] merged 37 items from 2 sources
+```
+
+With **no positional args**, a discovery line first confirms which sources were
+found on `PATH`:
+
+```text
+[monday] no sources specified, auto-discovering...
+[monday] discovered: gh, slack
+```
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `no monday-compatible commands found on PATH` | No source skills installed, or none named | Install a source skill, or name sources explicitly (`monday gh`) |
+| A source missing from `merged … from K sources` | It exited non-zero, returned empty, or emitted invalid JSON | Read its `WARNING` / `output preview` on stderr; run `[cmd] monday --limit 5` directly |
+| `"<cmd>" returned non-array JSON` | Source printed an object, or logged to stdout | Sources must print a JSON **array** to stdout and send logs to stderr |
+| Duplicates collapsed unexpectedly | Two sources share an item `id` | First source in argument order wins — reorder positional args to set precedence |
+| Empty `[]` output | Window too narrow or `--limit` too low | Widen `--date` (e.g. `14d`) or raise `--limit` |
+
+Confirm a single source satisfies the protocol before aggregating:
+`gh monday --limit 5 --date 3d | jq 'type, length'` should print `"array"` and a
+count.
 
 ## Output
 
@@ -110,3 +152,9 @@ A single JSON array on stdout. Sorting and rating augmentation follow pipeline s
 ```bash
 monday gh slack --date 2d | jq '.[0:5] | .[] | {id, ts, title}'
 ```
+
+## References
+
+- [`references/SOURCE_PROTOCOL.md`](references/SOURCE_PROTOCOL.md) — the full
+  source contract: invocation flags, item schema, dedup/sort semantics, a
+  reference handler, and how to register a new source for auto-discovery.
