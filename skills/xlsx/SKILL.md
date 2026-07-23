@@ -8,17 +8,30 @@ description: >-
   of a workbook, reading a sheet as JSON, setting a cell, adding a sheet, or
   building a new workbook from tabular data. Trigger whenever a spreadsheet file
   is the primary input or output, even when mentioned only in passing ("the xlsx
-  in /workspace"). Do NOT trigger when the deliverable is a Word document, a
-  PowerPoint deck, an HTML report, a database, or a Google Sheets API integration.
+  in /workspace"). Also covers Excel Online / OneDrive file operations via the
+  `excel` CLI — listing, downloading, uploading, and opening spreadsheets stored
+  in Microsoft 365 (OneDrive for Business). Do NOT trigger when the deliverable
+  is a Word document, a PowerPoint deck, an HTML report, a database, or a Google
+  Sheets API integration.
 allowed-tools: bash
 ---
 
 # xlsx — spreadsheets in SLICC
 
+This skill ships two CLIs:
+
+- **`xlsx`** — read, edit, and create LOCAL spreadsheet files (`.xlsx` / `.xls`
+  / `.csv` / `.tsv`) offline. Bundles [SheetJS](https://sheetjs.com) inside a
+  single self-contained `xlsx.jsh` (no `openpyxl`, `pandas`, or `zip`/XML
+  surgery). Covered below.
+- **`excel`** — CRUD for spreadsheets stored in **Excel Online / OneDrive** via
+  Microsoft Graph: list, download, upload, delete, search, and open-in-browser.
+  See "Excel Online (`excel`)" near the end.
+
+## `xlsx` — local files
+
 The `xlsx` CLI reads, edits, and creates `.xlsx` / `.xls` / `.csv` / `.tsv`
-files. It bundles [SheetJS](https://sheetjs.com) inside a single self-contained
-`xlsx.jsh`, so there is nothing to install at runtime — no `openpyxl`, no
-`pandas`, no `unzip`/`zip`/XML surgery.
+files entirely offline — there is nothing to install at runtime.
 
 ## Commands
 
@@ -92,28 +105,71 @@ xlsx add-sheet report.xlsx Summary --data @summary.json
 - **Output type** is inferred from the output extension: `.xlsx` (default),
   `.xls`, `.csv`, `.tsv`/`.txt`.
 
-## Maintainers: rebuilding the bundle
+## Excel Online (`excel`)
 
-The shipped entrypoint `scripts/xlsx.jsh` is generated from `scripts/xlsx.src.js`
-(the readable source) by bundling SheetJS with esbuild. Installing the skill
-never builds — the committed `xlsx.jsh` ships as-is.
+The `excel` CLI does basic file CRUD against **Excel Online / OneDrive for
+Business** through the Microsoft Graph API. Use it to move spreadsheets between
+your local workspace and the cloud, then edit them locally with `xlsx` or open
+them for editing in Excel for the Web.
 
-```bash
-cd skills/xlsx/scripts
-npm install        # xlsx (SheetJS) + esbuild, pinned in package.json
-npm run build      # regenerates xlsx.jsh from xlsx.src.js
+```
+excel ls [path]                       List a folder (root if omitted)
+excel info <path|id>                  Metadata for a file or folder
+excel search <query>                  Search your OneDrive
+excel download <path|id> [--out F]    Download a file (default: same name locally)
+excel upload <localfile> [remotepath] Upload/replace a file (default: /<basename>)
+excel new <remotepath.xlsx> --data S  Build a workbook (via xlsx) and upload it
+excel mkdir <path>                    Create a folder
+excel rm <path|id>                    Delete a file or folder
+excel open <path|id>                  Open the item in the browser (Excel for the Web)
+excel whoami                          Signed-in account + token expiry
+excel token [--refresh] [--quiet]     Print the Graph access token
 ```
 
-CI (`.github/workflows/xlsx-build.yml`) runs the same build, smoke-tests the
-result, and warns if the committed bundle is stale.
+### Addressing
+Targets are drive **paths** (`/Reports/Q3.xlsx`, `Q3.xlsx`) or item **IDs**.
+Bare id-looking strings are auto-detected; force id interpretation with `--id`.
 
-To rebuild from **within SLICC** (whose `esbuild` CLI wrapper lacks
-`--external`/`--platform` — see ai-ecoverse/slicc#1632 — and whose esbuild-wasm
-Node build API fails on a missing `tty` — ai-ecoverse/slicc#1631), use the CLI
-fallback, which keeps `fs`/`stream` external by default:
+### Auth — no admin approval
+Graph normally needs an app registration + admin consent. `excel` sidesteps that
+by borrowing the delegated token that Microsoft's own first-party "App Home
+Pages" client already minted for the signed-in user inside Excel for the Web: on
+first use (and after the token's ~1h expiry) it opens a throwaway
+`excel.cloud.microsoft` recording tab, lifts the `Authorization: Bearer` header
+off the on-load Graph call, caches it to `/tmp/.slicc-excel-token.json`, and
+closes the tab. **You must be signed into Microsoft 365 in the browser.** The
+token carries `Files.ReadWrite.All`, `Sites.*`, `Calendars.Read`, `User.Read.All`
+(enough for all OneDrive file CRUD) — but NO Teams/OnlineMeetings scopes.
 
+Override auto-capture with `--token <jwt>` or the `EXCEL_GRAPH_TOKEN` env var.
+
+### Examples
 ```bash
-ipk install xlsx && ipk add esbuild-wasm
-esbuild xlsx.src.js --bundle --format=cjs --target=node18 --minify --outfile=xlsx.jsh
-# then prepend the "GENERATED by build.mjs" banner line
+excel ls /Reports
+excel download /Reports/Q3.xlsx --out ./q3.xlsx   # then: xlsx read ./q3.xlsx
+xlsx set-cell ./q3.xlsx B2 99 --number
+xlsx read ./q3.xlsx --range A1:B5                  # verify the edit before uploading
+excel upload ./q3.xlsx /Reports/Q3.xlsx           # replace in place
+excel new /Reports/new.xlsx --data '[["Name","Value"],["foo",42]]'
+excel open /Reports/Q3.xlsx                       # edit in Excel for the Web
 ```
+
+### Notes and gotchas
+- **Uploads go through `curl`.** The jsh proxied `fetch` cannot send a raw binary
+  request body (it stringifies every body type — a `Blob` uploads as the literal
+  13-byte string `[object Blob]`), so `excel upload` PUTs bytes with `curl`, which
+  is byte-faithful. Downloads use `fetch`+`arrayBuffer` (faithful for responses).
+- **Simple PUT to `/content` handles files up to 250 MiB** — no upload-session
+  chunking is needed for real spreadsheets.
+- **OneDrive re-processes Office files on ingest** (an uploaded `.xlsx` may come
+  back a few hundred bytes larger with added SharePoint metadata) but the file
+  stays valid and round-trips cleanly through `xlsx`.
+- **`resourceLocked` on delete/overwrite** means the file is currently open in
+  Excel for the Web — close that tab first.
+- **Search is eventually-consistent** — a freshly created/deleted file may lag in
+  `excel search` for a minute; `excel ls` / `excel info` are real-time.
+
+## Maintainers
+
+Build/rebuild instructions for the bundled `xlsx.jsh`, and notes on the
+hand-written `excel.jsh`, live in the skill folder's `README.md`.
