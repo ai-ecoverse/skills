@@ -54,7 +54,7 @@ jobs:
           echo "smoke test passed"
 
       - name: Upload freshly built bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: xlsx.jsh
           path: skills/xlsx/scripts/xlsx.jsh
