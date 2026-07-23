@@ -18,6 +18,12 @@
 
 const browser = require('sliccy:browser');
 const exec = require('sliccy:exec'); // only for the one-time CDP request-buffer seed (see AUTH note)
+// Single POSIX-shell-quote a value for safe interpolation into an exec()
+// command line (exec runs through the jsh shell bridge).
+function escapeShellArg(value) {
+  return "'" + String(value).replace(/'/g, "'\\''") + "'";
+}
+
 
 const TEAMS_DOMAIN_PRIMARY = 'teams.microsoft.com';
 const TEAMS_DOMAIN_SECONDARY = 'teams.live.com';
@@ -213,7 +219,7 @@ function _formField(body, name) {
 // disk) where it is decoded and stored in a page global.
 async function seedFromBuffer(tab) {
   const tid = _targetId(tab);
-  const r = await exec(`playwright-cli requests --filter="oauth2/v2.0/token" --tab=${tid}`);
+  const r = await exec(`playwright-cli requests --filter="oauth2/v2.0/token" --tab=${escapeShellArg(tid)}`);
   if (r.exitCode !== 0) return false;
   const lines = r.stdout
     .split('\n')
@@ -224,7 +230,7 @@ async function seedFromBuffer(tab) {
   const authMatch = last.match(/https:\/\/[^/]+\/[0-9a-fA-F-]{36}/);
   const authority = authMatch ? authMatch[0] : null;
   if (!authority || !/^\d+$/.test(idx)) return false;
-  const b = await exec(`playwright-cli request-body ${idx} --tab=${tid}`);
+  const b = await exec(`playwright-cli request-body ${escapeShellArg(idx)} --tab=${escapeShellArg(tid)}`);
   if (b.exitCode !== 0) return false;
   const rt = _formField(b.stdout, 'refresh_token');
   const cid = _formField(b.stdout, 'client_id');
@@ -1442,7 +1448,7 @@ function _writeTranscribeState(st) {
 // Create a SLICC webhook routed to <scoop>. Returns { id, url } or null.
 async function createTranscribeWebhook(scoop) {
   _safeName(scoop, '--scoop'); // guard against shell injection via the exec bridge
-  const r = await exec(`webhook create --scoop ${scoop} --name teams-transcribe`);
+  const r = await exec(`webhook create --scoop ${escapeShellArg(scoop)} --name teams-transcribe`);
   if (r.exitCode !== 0) return null;
   const idM = (r.stdout || '').match(/ID:\s*(\S+)/);
   const urlM = (r.stdout || '').match(/URL:\s*(\S+)/);
@@ -1452,7 +1458,7 @@ async function createTranscribeWebhook(scoop) {
 
 async function deleteWebhook(id) {
   if (!id) return;
-  try { await exec(`webhook delete ${id}`); } catch (e) {}
+  try { await exec(`webhook delete ${escapeShellArg(id)}`); } catch (e) {}
 }
 
 // Point the in-page collector at a webhook URL (fired per finalized phrase).
@@ -1550,7 +1556,7 @@ async function takeSnapshot(tab, shotsDir) {
   // validated by _safePath above; quote every expansion as defense-in-depth.
   const script =
     `mkdir -p '${dir}'; tmp='${dir}/.tmp-${ts}.png'; ` +
-    `playwright-cli screenshot --tab=${tid} --filename="$tmp" >/dev/null 2>&1 || { echo SNAP_ERR; exit 0; }; ` +
+    `playwright-cli screenshot --tab=${escapeShellArg(tid)} --filename="$tmp" >/dev/null 2>&1 || { echo SNAP_ERR; exit 0; }; ` +
     `nm=$(md5sum "$tmp" 2>/dev/null | awk '{print $1}'); ` +
     `lm=$(cat '${dir}/.last-md5' 2>/dev/null); ` +
     `if [ -n "$nm" ] && [ "$nm" = "$lm" ]; then rm -f "$tmp"; echo SNAP_UNCHANGED; exit 0; fi; ` +
@@ -1577,7 +1583,7 @@ async function postToMeetingChat(tab, message) {
   // control that shows a DM — we must NOT use it. If we can't reach the
   // "Meeting chat" pane, we abort rather than risk posting to the wrong chat.
   const tid = _targetId(tab);
-  const snap = async () => ((await exec(`playwright-cli snapshot --tab=${tid}`)).stdout || '');
+  const snap = async () => ((await exec(`playwright-cli snapshot --tab=${escapeShellArg(tid)}`)).stdout || '');
   const refOf = (txt, re) => { const m = txt.match(re); return m ? m[1] : null; };
 
   let s = await snap();
@@ -1586,7 +1592,7 @@ async function postToMeetingChat(tab, message) {
   if (!/heading "Meeting chat"/.test(s)) {
     const chatRef = refOf(s, /button "Chat"\s*\[ref=(e\d+)\]/); // EXACT "Chat" = in-call control
     if (!chatRef) return 'no-meeting-chat';
-    await exec(`playwright-cli click ${chatRef} --tab=${tid}`);
+    await exec(`playwright-cli click ${escapeShellArg(chatRef)} --tab=${escapeShellArg(tid)}`);
     await sleep(1800);
     s = await snap();
     if (!/heading "Meeting chat"/.test(s)) return 'no-meeting-chat';
@@ -1596,16 +1602,16 @@ async function postToMeetingChat(tab, message) {
   if (!boxRef) return 'no-input';
 
   const esc = String(message).replace(/'/g, `'\\''`);
-  await exec(`playwright-cli click ${boxRef} --tab=${tid}`);
-  await exec(`playwright-cli type '${esc}' --tab=${tid}`);
+  await exec(`playwright-cli click ${escapeShellArg(boxRef)} --tab=${escapeShellArg(tid)}`);
+  await exec(`playwright-cli type '${esc}' --tab=${escapeShellArg(tid)}`);
   await sleep(400);
 
   // Re-resolve the Send button AFTER typing (it only becomes present/enabled
   // once the box has content), then click it; fall back to Enter.
   const s2 = await snap();
   const sendRef = refOf(s2, /button "Send[^"]*"\s*\[ref=(e\d+)\]/);
-  if (sendRef) await exec(`playwright-cli click ${sendRef} --tab=${tid}`);
-  else await exec(`playwright-cli press Enter --tab=${tid}`);
+  if (sendRef) await exec(`playwright-cli click ${escapeShellArg(sendRef)} --tab=${escapeShellArg(tid)}`);
+  else await exec(`playwright-cli press Enter --tab=${escapeShellArg(tid)}`);
   await sleep(500);
 
   // Confirm: the message now appears as a "Sent …" entry in the chat log.

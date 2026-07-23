@@ -7,6 +7,12 @@
 
 const exec = require('sliccy:exec');
 const browser = require('sliccy:browser');
+// Single POSIX-shell-quote a value for safe interpolation into an exec()
+// command line (exec runs through the jsh shell bridge).
+function escapeShellArg(value) {
+  return "'" + String(value).replace(/'/g, "'\\''") + "'";
+}
+
 
 const HOME_URL   = 'https://us2.concursolutions.com/home';
 const HOST_WEB   = 'https://us2.concursolutions.com';
@@ -61,7 +67,7 @@ async function getUserId() {
 }
 
 async function readFile(p) {
-  const r = await exec(`cat "${p}"`);
+  const r = await exec(`cat ${escapeShellArg(p)}`);
   if (r.exitCode !== 0) throw new Error(`read failed: ${p}`);
   return r.stdout;
 }
@@ -74,11 +80,11 @@ async function writeFile(p, s) {
   // can still see it if the caller later moves it under /shared.
   const tmp = `/shared/.concur-write-${Date.now()}.tmp`;
   if (s.length < 600_000) {
-    await exec(`cat > "${tmp}" <<'____CONCUR_EOF____'\n${s}\n____CONCUR_EOF____`);
+    await exec(`cat > ${escapeShellArg(tmp)} <<'____CONCUR_EOF____'\n${s}\n____CONCUR_EOF____`);
   } else {
     // Chunk-stream via base64 so the shell never sees the raw payload as argv.
     const chunkSize = 400_000; // ~400 KB raw → ~540 KB base64 per chunk
-    await exec(`: > "${tmp}"`);
+    await exec(`: > ${escapeShellArg(tmp)}`);
     // Build the base64 string in small sub-chunks to avoid spreading a huge
     // typed-array into String.fromCharCode (which hits arg-limit / is slow).
     const encoder = new TextEncoder();
@@ -92,11 +98,11 @@ async function writeFile(p, s) {
       }
       const b64 = btoa(bin);
       // Single arg of ~540 KB is safe (well below 1 MB cap).
-      const r = await exec(`printf %s '${b64}' | base64 -d >> "${tmp}"`);
+      const r = await exec(`printf %s ${escapeShellArg(b64)} | base64 -d >> ${escapeShellArg(tmp)}`);
       if (r.exitCode !== 0) throw new Error(`writeFile chunk failed at offset ${i}: ${r.stderr}`);
     }
   }
-  await exec(`mkdir -p "$(dirname "${p}")" && mv "${tmp}" "${p}"`);
+  await exec(`mkdir -p "$(dirname ${escapeShellArg(p)})" && mv ${escapeShellArg(tmp)} ${escapeShellArg(p)}`);
 }
 
 async function loadOp(name) {
@@ -194,7 +200,7 @@ async function resolveLnKey(query) {
   catch (_) {
     // JS-literal fallback: pull LnKey/LocText pairs
     const re = /"?LnKey"?:(\d+)[^}]*?"?LocText"?:"([^"]+)"/g; let mm;
-    while ((mm = re.exec(raw))) recs.push({ LnKey: +mm[1], LocText: mm[2] });
+    for (mm = re.exec(raw); mm; mm = re.exec(raw)) recs.push({ LnKey: +mm[1], LocText: mm[2] });
   }
   if (!recs.length) throw new Error(`No TA location match for "${query}"`);
   // Prefer exact LocText match, else first record.
@@ -935,7 +941,7 @@ const commands = {
     await assertReportMutable(reportId, 'attach receipts');
 
     // Stat the file
-    const stat = await exec(`test -f "${localPath}" && stat -c %s "${localPath}" 2>/dev/null || stat -f %z "${localPath}"`);
+    const stat = await exec(`test -f ${escapeShellArg(localPath)} && stat -c %s ${escapeShellArg(localPath)} 2>/dev/null || stat -f %z ${escapeShellArg(localPath)}`);
     if (stat.exitCode !== 0) { console.error('File not found:', localPath); process.exit(1); }
     const inputBytes = parseInt((stat.stdout || '').trim(), 10) || 0;
 
@@ -950,7 +956,7 @@ const commands = {
       jpgPath = `/shared/.concur-receipt-${Date.now()}.jpg`;
       const dim = needShrink ? '1800x1800>' : '2048x2048>';
       const q   = needShrink ? '75' : '85';
-      const conv = await exec(`magick "${localPath}" -resize '${dim}' -quality ${q} "${jpgPath}"`);
+      const conv = await exec(`magick ${escapeShellArg(localPath)} -resize ${escapeShellArg(dim)} -quality ${escapeShellArg(q)} ${escapeShellArg(jpgPath)}`);
       if (conv.exitCode !== 0) {
         console.error('magick conversion failed:', conv.stderr);
         process.exit(1);
@@ -958,7 +964,7 @@ const commands = {
     }
 
     // Base64 the JPEG to embed as a literal in the evalAsync upload function
-    const b64r = await exec(`base64 < "${jpgPath}" | tr -d '\\n'`);
+    const b64r = await exec(`base64 < ${escapeShellArg(jpgPath)} | tr -d '\\n'`);
     if (b64r.exitCode !== 0) { console.error('base64 failed'); process.exit(1); }
     const b64 = b64r.stdout.trim();
 
@@ -992,11 +998,11 @@ const commands = {
     } catch (e) {
       // Clean up the converted/shrunk temp JPEG before bailing so an upload
       // failure never leaves receipt copies behind in /shared.
-      if (jpgPath !== localPath) await exec(`rm -f "${jpgPath}"`);
+      if (jpgPath !== localPath) await exec(`rm -f ${escapeShellArg(jpgPath)}`);
       console.error('upload failed:', e?.message || e);
       process.exit(1);
     }
-    if (jpgPath !== localPath) await exec(`rm -f "${jpgPath}"`);
+    if (jpgPath !== localPath) await exec(`rm -f ${escapeShellArg(jpgPath)}`);
     if (wrap.status >= 400) {
       console.error(`Upload HTTP ${wrap.status}:`, wrap.body);
       process.exit(1);
@@ -1220,7 +1226,7 @@ const commands = {
   },
 
   async ops() {
-    const r = await exec(`ls ${OPS_DIR}`);
+    const r = await exec(`ls ${escapeShellArg(OPS_DIR)}`);
     const list = r.stdout.split('\n').filter(Boolean).map(s => s.replace(/\.graphql$/, ''));
     return { count: list.length, operations: list };
   },
@@ -1288,8 +1294,10 @@ const commands = {
           if (!seen.has(key)) {
             seen.add(key);
             const rec = { code: o.exceptionCode, isBlocking: !!o.isBlocking, message: o.message };
-            if (o.expenseId) (exById[o.expenseId] = exById[o.expenseId] || []).push(rec);
-            else headerEx.push(rec);
+            if (o.expenseId) {
+              if (!exById[o.expenseId]) exById[o.expenseId] = [];
+              exById[o.expenseId].push(rec);
+            } else headerEx.push(rec);
           }
         }
         for (const k in o) walk(o[k]);

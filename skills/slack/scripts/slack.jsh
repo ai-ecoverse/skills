@@ -8,6 +8,13 @@ const SLACK_DOMAIN = 'app.slack.com';
 // them via the sliccy: virtual-module scheme. `fs` is the VFS bridge.
 const { exec } = require('sliccy:exec');
 const fs = require('fs');
+
+// Single POSIX-shell-quote a value for safe interpolation into an exec()
+// command line (exec runs through the jsh shell bridge).
+function escapeShellArg(value) {
+  return "'" + String(value).replace(/'/g, "'\\''") + "'";
+}
+
 const browser = require('sliccy:browser');
 
 // --- Tab management ---
@@ -687,7 +694,7 @@ const commands = {
       }
       // Clean up old webhook
       if (existing.webhookId) {
-        await exec(`webhook delete ${existing.webhookId}`).catch(() => {});
+        await exec(`webhook delete ${escapeShellArg(existing.webhookId)}`).catch(() => {});
       }
     } catch (e) {
       if (e && e.name === 'NodeExitError') throw e;
@@ -712,7 +719,7 @@ const commands = {
     // pre-migration file) -- the watch feature has never actually worked
     // end-to-end -- fixed here since this PR is the designated
     // security/correctness review pass for this file.
-    const whResult = await exec(`webhook create --scoop ${scoop}`);
+    const whResult = await exec(`webhook create --scoop ${escapeShellArg(scoop)}`);
     if (whResult.exitCode !== 0) {
       console.error('Failed to create webhook:', whResult.stderr);
       process.exit(1);
@@ -746,7 +753,7 @@ const commands = {
       sub = await subscribeWatch(tab, state);
     } catch (e) {
       // Roll back: delete the webhook on subscription failure
-      await exec(`webhook delete ${webhook.id}`).catch(() => {});
+      await exec(`webhook delete ${escapeShellArg(webhook.id)}`).catch(() => {});
       console.error('Failed to register WebSocket observer — watch rolled back:', e.message || e);
       process.exit(1);
     }
@@ -787,7 +794,7 @@ const commands = {
     // closeable handle only at creation time, so a later invocation cannot
     // close a prior subscription by id).
     if (state.webhookId) {
-      await exec(`webhook delete ${state.webhookId}`).catch(() => {});
+      await exec(`webhook delete ${escapeShellArg(state.webhookId)}`).catch(() => {});
     }
 
     // Remove state file
