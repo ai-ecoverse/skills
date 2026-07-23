@@ -186,13 +186,3 @@ ${ht("EXAMPLES")}
 `)}function Cm(x,d,n){d||Qr("a sheet name is required: xlsx add-sheet <file> <name> --data <src>");let r=kn(x);r.SheetNames.includes(d)&&Qr(`sheet "${d}" already exists`);let Qe=Vr.utils.aoa_to_sheet(mo(n.data));Vr.utils.book_append_sheet(r,Qe,d),Hi(r,x),process.stdout.write(Wi("\u2713")+` added sheet "${d}" to ${x}
 `)}function Sm(x,d,n,r){d||Qr("a cell address is required: xlsx set-cell <file> <A1> <value>"),n===void 0&&Qr("a value is required: xlsx set-cell <file> <A1> <value>"),/^[A-Za-z]+\d+$/.test(d)||Qr(`"${d}" is not a valid cell address (e.g. B2)`);let Qe=kn(x),qe=go(Qe,r.sheet),xr=Qe.Sheets[qe],Nr=d.toUpperCase(),cr;if(r.formula)cr={t:"n",f:String(n).replace(/^=/,""),v:0};else if(r.number){let Ur=Number(n);Number.isNaN(Ur)&&Qr(`--number given but "${n}" is not numeric`),cr={t:"n",v:Ur}}else r.bool?cr={t:"b",v:/^(true|1|yes)$/i.test(String(n))}:!(typeof n!="string"||n==="")&&!Number.isNaN(Number(n))&&/^-?\d/.test(n)?cr={t:"n",v:Number(n)}:cr={t:"s",v:String(n)};xr[Nr]=cr;let Gr=xr["!ref"]?Vr.utils.decode_range(xr["!ref"]):{s:{r:0,c:0},e:{r:0,c:0}},g0=Vr.utils.decode_cell(Nr);Gr.s.r=Math.min(Gr.s.r,g0.r),Gr.s.c=Math.min(Gr.s.c,g0.c),Gr.e.r=Math.max(Gr.e.r,g0.r),Gr.e.c=Math.max(Gr.e.c,g0.c),xr["!ref"]=Vr.utils.encode_range(Gr),Hi(Qe,x),process.stdout.write(Wi("\u2713")+` set ${qe}!${Nr} in ${x}
 `)}function ym(){let{positional:x,flags:d}=process.argv.parseFlags?process.argv.parseFlags():Dm(process.argv.slice(2)),[n]=x;if(!n||d.help||d.h||n==="help"){process.stdout.write(wm);return}switch(n){case"info":return Em(x[1]);case"read":return Ui(x[1],d);case"to-csv":return Ui(x[1],{...d,json:!1,tsv:!1});case"to-json":return Ui(x[1],{...d,json:!0});case"create":return Tm(x[1],d);case"add-sheet":return Cm(x[1],x[2],d);case"set-cell":return Sm(x[1],x[2],x[3],d);default:Qr(`unknown command "${n}" (run \`xlsx help\`)`)}}function Dm(x){let d=[],n={};for(let r=0;r<x.length;r++){let Qe=x[r];if(Qe.startsWith("--")){let qe=Qe.indexOf("=");qe!==-1?n[Qe.slice(2,qe)]=Qe.slice(qe+1):r+1<x.length&&!x[r+1].startsWith("--")?n[Qe.slice(2)]=x[++r]:n[Qe.slice(2)]=!0}else d.push(Qe)}return{positional:d,flags:n}}ym();
-/*! Bundled license information:
-
-xlsx/dist/cpexcel.js:
-  (*! cpexcel.js (C) 2013-present SheetJS -- http://sheetjs.com *)
-  (*! cputils.js (C) 2013-present SheetJS -- http://sheetjs.com *)
-
-xlsx/xlsx.js:
-  (*! xlsx.js (C) 2013-present SheetJS -- http://sheetjs.com *)
-  (*! sheetjs (C) 2013-present SheetJS -- http://sheetjs.com *)
-*/
