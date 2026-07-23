@@ -1,0 +1,16 @@
+{
+  "name": "@ai-ecoverse/xlsx-skill-build",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Build tooling for the xlsx SLICC skill. Bundles SheetJS into the shipped xlsx.jsh. Not published; not required at install time.",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "xlsx": "0.18.5"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.1"
+  }
+}
