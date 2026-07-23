@@ -70,7 +70,14 @@ async function readCache() {
   } catch { return null; }
 }
 async function writeCache(obj) {
-  try { await fs.writeFile(TOKEN_CACHE, JSON.stringify(obj)); } catch { /* best effort */ }
+  try {
+    await fs.writeFile(TOKEN_CACHE, JSON.stringify(obj));
+    // The cache holds a live Files.ReadWrite.All bearer token, so restrict it to
+    // owner-only. Under real Node this applies 0600; SLICC's single-tenant VFS
+    // does not expose fs.chmod (and ignores POSIX modes), so the guard no-ops
+    // there — same best-effort pattern as the cloudflare skill's cache.
+    if (typeof fs.chmod === 'function') await fs.chmod(TOKEN_CACHE, 0o600).catch(() => {});
+  } catch { /* best effort */ }
 }
 
 // Capture a fresh Graph bearer token from a throwaway Excel-for-the-Web tab.
@@ -176,6 +183,25 @@ function ref(target) {
 }
 
 const SELECT = '$select=id,name,size,file,folder,webUrl,lastModifiedDateTime,parentReference';
+
+// Follow @odata.nextLink, collecting up to `limit` items (Infinity = all pages).
+async function graphList(firstUrl, limit = Infinity) {
+  const items = [];
+  let url = firstUrl;
+  while (url && items.length < limit) {
+    const data = await graph(url);
+    for (const it of data.value || []) {
+      items.push(it);
+      if (items.length >= limit) break;
+    }
+    url = data['@odata.nextLink'] || null; // absolute URL; graph() passes it through
+  }
+  return items;
+}
+function topLimit(fallback) {
+  const n = flags.top != null ? parseInt(flags.top, 10) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
 function fmtItem(it) {
   const kind = it.folder ? c.cyan('dir ') : 'file';
   const size = it.folder ? `${it.folder.childCount ?? ''} item(s)` : human(it.size);
@@ -194,8 +220,11 @@ async function cmdWhoami() {
 
 async function cmdLs(target) {
   const r = ref(target || '');
-  const data = await graph(`${r.children}?${SELECT}&$top=200&$orderby=name`);
-  const items = data.value || [];
+  // Default to ALL items (paginating), or cap at --top. Page size is bounded by
+  // Graph's 200 max, so a folder with >200 children is no longer truncated.
+  const limit = topLimit(Infinity);
+  const pageSize = Number.isFinite(limit) ? Math.min(limit, 200) : 200;
+  const items = await graphList(`${r.children}?${SELECT}&$top=${pageSize}&$orderby=name`, limit);
   if (flags.json) return out(items);
   if (!items.length) { out(c.dim('(empty)')); return; }
   for (const it of items) out(fmtItem(it));
@@ -214,8 +243,8 @@ async function cmdInfo(target) {
 async function cmdSearch(query) {
   if (!query) cli.die('a query is required: excel search <query>');
   const q = encodeURIComponent(query.replace(/'/g, "''"));
-  const data = await graph(`/me/drive/root/search(q='${q}')?${SELECT}&$top=${flags.top || 25}`);
-  const items = data.value || [];
+  const limit = topLimit(25);
+  const items = await graphList(`/me/drive/root/search(q='${q}')?${SELECT}&$top=${Math.min(limit, 200)}`, limit);
   if (flags.json) return out(items);
   if (!items.length) { out(c.dim('no matches')); return; }
   for (const it of items) out(fmtItem(it));
