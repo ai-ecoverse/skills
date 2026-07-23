@@ -53,14 +53,21 @@ jobs:
           node "$x" info /tmp/t.xlsx | grep -q Extra || { echo "::error::add-sheet did not persist"; exit 1; }
           echo "smoke test passed"
 
+      - name: Upload freshly built bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: xlsx.jsh
+          path: skills/xlsx/scripts/xlsx.jsh
+
       - name: Drift check (committed bundle vs freshly built)
-        # Soft check: esbuild output is deterministic per version, but a
-        # committed bundle produced by a different esbuild build could differ
-        # harmlessly. Report drift as a warning, not a hard failure.
+        # Hard gate: the committed xlsx.jsh must be byte-identical to a fresh
+        # build with this repo's pinned esbuild (package.json). If you changed
+        # xlsx.src.js, run `npm run build` in skills/xlsx/scripts and commit the
+        # regenerated xlsx.jsh.
         run: |
-          if git diff --quiet -- xlsx.jsh; then
+          if git diff --exit-code -- xlsx.jsh; then
             echo "committed xlsx.jsh matches a fresh build."
           else
-            echo "::warning::skills/xlsx/scripts/xlsx.jsh differs from a fresh build. If you changed xlsx.src.js, run 'npm run build' in skills/xlsx/scripts and commit the regenerated xlsx.jsh."
-            git diff --stat -- xlsx.jsh || true
+            echo "::error::skills/xlsx/scripts/xlsx.jsh is stale. Run 'npm run build' in skills/xlsx/scripts and commit the regenerated xlsx.jsh."
+            exit 1
           fi
