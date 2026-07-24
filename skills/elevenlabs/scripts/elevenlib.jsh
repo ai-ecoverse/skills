@@ -50,6 +50,19 @@ async function api(key, method, path, { body, query } = {}) {
     payload = typeof body === 'string' ? body : JSON.stringify(body);
   }
   const res = await fetch(url, { method, headers, body: payload });
+  const ct = res.headers.get('content-type') || '';
+  // Non-JSON responses (e.g. audio/mpeg from text-to-speech) must NOT be run
+  // through res.text() or they get corrupted. Return the raw bytes instead so
+  // the caller (e.g. `eleven api`) can write a usable file.
+  if (!ct.includes('json')) {
+    const buffer = Buffer.from(await res.arrayBuffer());
+    if (!res.ok) {
+      const err = new Error(buffer.slice(0, 300).toString() || res.statusText);
+      err.status = res.status;
+      throw err;
+    }
+    return { __binary: true, contentType: ct, buffer, status: res.status };
+  }
   const text = await res.text();
   let json;
   try { json = text ? JSON.parse(text) : {}; } catch { json = { raw: text }; }
@@ -87,12 +100,15 @@ async function resolveVoice(key, nameOrId) {
 
 // ─── TTS (binary response is faithful over the proxied fetch) ────────────────
 // Returns a Buffer of audio bytes.
-async function tts(key, { text, voiceId, modelId, outputFormat, voiceSettings }) {
+async function tts(key, { text, voiceId, modelId, outputFormat, voiceSettings, languageCode }) {
   const q = outputFormat ? { output_format: outputFormat } : undefined;
   const url = `${BASE}/text-to-speech/${voiceId || DEFAULT_VOICE}` +
     (q ? '?' + new URLSearchParams(q).toString() : '');
   const payload = { text, model_id: modelId || DEFAULT_MODEL };
   if (voiceSettings && Object.keys(voiceSettings).length) payload.voice_settings = voiceSettings;
+  // Enforce a language when requested (-l). Supported by Turbo/Flash v2.5 and v3;
+  // accepted (no-op) by multilingual v2.
+  if (languageCode) payload.language_code = languageCode;
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'xi-api-key': key, 'Content-Type': 'application/json' },
