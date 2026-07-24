@@ -10,7 +10,8 @@ description: |
   "make an AI image", "render an image from this prompt", and requests to produce
   photorealistic or artistic images via Adobe's generative image API. Supports
   multiple variations, custom sizes, seeds, content class (photo/art), negative
-  prompts, and downloading the generated PNGs locally.
+  prompts, model selection (Firefly Image 3 / Image 4 / Image 4 Ultra / custom
+  trained models), and downloading the generated PNGs locally.
 allowed-tools: bash
 ---
 
@@ -51,6 +52,8 @@ lives ~24h and is refreshed automatically. The secret and token are never printe
 | `--seed <int>` | Seed — repeatable, one per variation (`--seed 123 --seed 456`). |
 | `--content-class <c>` | `photo` or `art`. |
 | `--negative <text>` | Negative prompt. |
+| `--model <v>` | Model: `image3`, `image4_standard`, `image4_ultra`, or `image4_custom`. Omit for the server default (`image4_standard`). |
+| `--custom-model <assetId>` | Custom model assetId (from `firefly models`). Implies `--model image4_custom`. |
 | `--download [dir]` | Download outputs to `dir` (default `/workspace`) as `firefly-<jobid>-<i>.png`. |
 | `--json` | Output the raw job result and exit. |
 
@@ -59,7 +62,20 @@ Common sizes: `1024x1024`, `2048x2048`, `1792x1024`, `1024x1792`, `1344x768`, `7
 ```bash
 firefly generate "a red panda astronaut floating in space, photorealistic" --size 1024x1024 --n 1
 firefly generate "neon city skyline at night" --n 2 --content-class art --download /shared
+firefly generate "a tiny robot watering a plant, isometric" --model image4_ultra --download /shared
+firefly generate "portrait in my brand style" --custom-model <assetId> --download /shared
 firefly generate "a calm forest" --json | jq -r '.result.outputs[0].image.url'
+```
+
+### `firefly models`
+
+List the org's trained **custom models** (used with `--custom-model`). Each entry
+shows the display name, its `id:<assetId>` (pass that to `--custom-model`), the
+training mode (`style`/`subject`), and published state.
+
+```bash
+firefly models
+firefly models --json | jq -r '.customModels[].assetId'
 ```
 
 ### `firefly status <statusUrl>`
@@ -71,6 +87,27 @@ so pass the whole URL.
 ```bash
 firefly status "https://firefly-epo853211.adobe.io/v3/status/urn:ff:jobs:..." --download /shared
 ```
+
+## Models
+
+Model selection is done via the **`x-model-version` request header** (not a body
+field — body model fields are silently ignored). Valid values:
+
+| Value | Model |
+|-------|-------|
+| `image3` | Firefly Image 3 |
+| `image4_standard` | Firefly Image 4 (server default — same as omitting `--model`) |
+| `image4_ultra` | Firefly Image 4 Ultra |
+| `image4_custom` | A custom trained model — **requires** `--custom-model <assetId>` |
+
+For `image4_custom`, list the org's trained models with `firefly models` and pass
+one of the returned ids via `--custom-model <assetId>` (which auto-sets
+`--model image4_custom`).
+
+**Partner models are NOT available through this API.** Runway, Luma, OpenAI
+(gpt-image), Google (Imagen/Veo), etc. live in the Firefly app / Creative
+Production layer, not the Firefly Services generate API — any other model value
+returns HTTP 404. Only the four values above are accepted.
 
 ## Notes
 

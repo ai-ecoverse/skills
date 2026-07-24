@@ -20,6 +20,15 @@ const fs = require('fs');
 
 const IMS_TOKEN_URL = 'https://ims-na1.adobelogin.com/ims/token/v3';
 const GENERATE_URL = 'https://firefly-api.adobe.io/v3/images/generate-async';
+const CUSTOM_MODELS_URL = 'https://firefly-api.adobe.io/v3/custom-models';
+
+// Model selection is done via the `x-model-version` request HEADER (NOT a body
+// field — body model fields are silently ignored). Verified live 2026-07-24:
+// only these four header values are accepted; anything else (image4, image5,
+// partner names like runway/luma/imagen/gpt-image-1) → HTTP 404. image4_custom
+// additionally requires the body field `customModelId` (a custom-model assetId).
+// Omitting the header entirely = server default (image4_standard).
+const VALID_MODELS = ['image3', 'image4_standard', 'image4_ultra', 'image4_custom'];
 
 // Default server-to-server scopes for Firefly Services (comma-separated string).
 const DEFAULT_SCOPES = [
@@ -46,6 +55,7 @@ ${color.bold(color.cyan('firefly'))} — Adobe Firefly Services image generation
 ${color.bold('USAGE')}
   firefly login [options]
   firefly generate <prompt> [options]
+  firefly models [--json]
   firefly status <statusUrl> [options]
 
 ${color.bold('COMMANDS')}
@@ -61,8 +71,12 @@ ${color.bold('COMMANDS')}
     ${color.gray('--seed <int>')}             Seed (repeatable — one per variation)
     ${color.gray('--content-class <c>')}      photo | art
     ${color.gray('--negative <text>')}        Negative prompt
+    ${color.gray('--model <v>')}              image3 | image4_standard | image4_ultra | image4_custom
+    ${color.gray('--custom-model <id>')}      Custom model assetId (implies --model image4_custom)
     ${color.gray('--download [dir]')}         Download outputs (default dir /workspace)
     ${color.gray('--json')}                   Output raw job result
+  ${color.cyan('models')}                     List the org's trained custom models
+    ${color.gray('--json')}                   Output raw response
   ${color.cyan('status <statusUrl>')}         Poll a generate job by its full status URL
     ${color.gray('--download [dir]')}         Download outputs on success
     ${color.gray('--json')}                   Output raw status response
@@ -73,12 +87,21 @@ ${color.bold('EXAMPLES')}
   firefly login --from /workspace/firefly-creds.json
   firefly generate "a red panda astronaut, photorealistic" --size 1024x1024 --n 1
   firefly generate "neon city skyline" --n 2 --content-class art --download /shared
+  firefly generate "a tiny robot watering a plant" --model image4_ultra --download /shared
+  firefly models
+  firefly generate "portrait in my brand style" --custom-model <assetId> --download /shared
   firefly generate "a calm forest" --json | jq -r '.result.outputs[0].image.url'
   firefly status "https://firefly-epo853211.adobe.io/v3/status/urn:ff:jobs:..."
 
 ${color.bold('AUTH')}
   Run ${color.cyan('firefly login')} once. Credentials are stored in skill config; the
   IMS access token is cached and auto-refreshed (~24h lifetime).
+
+${color.bold('MODELS')}
+  ${color.gray('--model')} sets the x-model-version header. Valid: ${VALID_MODELS.join(', ')}.
+  Omit it for the server default (image4_standard). image4_custom needs a custom
+  model id — list yours with ${color.cyan('firefly models')} and pass ${color.gray('--custom-model <id>')}.
+  Partner models (Runway, Luma, OpenAI, Google, etc.) are NOT available here.
 
 ${color.bold('NOTE')}
   Output image URLs are pre-signed S3 links that expire in ~1 hour — pass
@@ -192,12 +215,12 @@ async function downloadOutputs(outputs, dir, jobId) {
   return saved;
 }
 
-function printOutputs(result, savedPaths) {
+function printOutputs(result, savedPaths, model) {
   const outputs = result?.outputs || [];
   const size = result?.size;
   console.log();
   console.log(`  ${color.cyan(color.bold('Firefly image' + (outputs.length === 1 ? '' : 's')))} ${color.dim(`(${outputs.length})`)}`);
-  if (size) console.log(`  ${color.dim(`${size.width}x${size.height}`)}${result.contentClass ? color.dim(`  ${result.contentClass}`) : ''}`);
+  if (size) console.log(`  ${color.dim(`${size.width}x${size.height}`)}${result.contentClass ? color.dim(`  ${result.contentClass}`) : ''}${model ? color.dim(`  model:${model}`) : ''}`);
   console.log();
   for (let i = 0; i < outputs.length; i++) {
     const o = outputs[i];
@@ -328,7 +351,34 @@ async function cmdGenerate(positional, flags) {
 
   if (flags.negative) payload.negativePrompt = String(flags.negative);
 
+  // ── Model selection (x-model-version header) ──
+  // --custom-model implies image4_custom and supplies the customModelId body field.
+  let model = flags.model != null ? String(flags.model).toLowerCase() : null;
+  const customModel = flags['custom-model'] != null ? String(flags['custom-model']) : null;
+
+  if (customModel) {
+    if (model && model !== 'image4_custom') {
+      cli.die(`--custom-model implies --model image4_custom, but --model ${model} was given. Drop --model or set it to image4_custom.`, { prefix: 'firefly' });
+    }
+    model = 'image4_custom';
+    payload.customModelId = customModel;
+  }
+
+  if (model) {
+    if (!VALID_MODELS.includes(model)) {
+      cli.die(
+        `Invalid --model "${flags.model}". Valid: ${VALID_MODELS.join(', ')}.\n` +
+        `Partner models (Runway, Luma, OpenAI, Google, etc.) are NOT available through this API — use the Firefly app / Creative Production layer for those.`,
+        { prefix: 'firefly' }
+      );
+    }
+    if (model === 'image4_custom' && !payload.customModelId) {
+      cli.die('--model image4_custom requires a custom model id. Pass --custom-model <assetId> (list them with: firefly models).', { prefix: 'firefly' });
+    }
+  }
+
   const headers = await fireflyHeaders();
+  if (model) headers['x-model-version'] = model;
 
   const submitRes = await fetch(GENERATE_URL, {
     method: 'POST',
@@ -357,7 +407,7 @@ async function cmdGenerate(positional, flags) {
     const dir = typeof flags.download === 'string' ? flags.download : '/workspace';
     saved = await downloadOutputs(result.outputs || [], dir, final.jobId || job.jobId);
   }
-  printOutputs(result, saved);
+  printOutputs(result, saved, model);
 }
 
 async function cmdStatus(positional, flags) {
@@ -397,6 +447,54 @@ async function cmdStatus(positional, flags) {
   printOutputs(result, saved);
 }
 
+async function cmdModels(flags) {
+  const headers = await fireflyHeaders();
+  const res = await fetch(CUSTOM_MODELS_URL, { headers });
+  if (!res.ok) {
+    let detail = await res.text();
+    try { const j = JSON.parse(detail); detail = j.message || j.error_code || detail; } catch { /* raw */ }
+    if (res.status === 401 || res.status === 403) cli.die(`Firefly auth error (${res.status}). Run: firefly login`, { prefix: 'firefly' });
+    cli.die(`Custom models request failed (${res.status}): ${detail}`, { prefix: 'firefly' });
+  }
+  const body = await res.json();
+
+  if (flags.json) { cli.out(body); return; }
+
+  // Defensive wrapper normalization — the array may be under any of these keys.
+  const models = Array.isArray(body)
+    ? body
+    : (body.customModels || body.models || body.items || body.custom_models || []);
+
+  if (!models.length) {
+    console.log();
+    console.log(color.dim('  No custom models found for this org. Train one in the Firefly Custom Models UI.'));
+    console.log();
+    return;
+  }
+
+  console.log();
+  console.log(`  ${color.cyan(color.bold('Firefly custom models'))} ${color.dim(`(${models.length})`)}`);
+  console.log();
+  for (const m of models) {
+    const name = m.displayName || m.name || m.title || 'Untitled model';
+    const assetId = m.assetId || m.assetID || m.id || m.customModelId;
+    const mode = m.trainingMode || m.mode;
+    const published = m.publishedState || m.published || m.state;
+    const base = m.baseModel?.name || m.baseModel?.version || m.baseModel;
+    console.log(`  ${color.cyan(color.bold(name))}`);
+    if (assetId) console.log(`    ${color.dim(`id:${assetId}`)}`);
+    const meta = [];
+    if (mode) meta.push(String(mode));
+    if (published) meta.push(String(published));
+    if (base) meta.push(String(base));
+    if (meta.length) console.log(`    ${color.dim(meta.join('  •  '))}`);
+    if (m.samplePrompt) console.log(`    ${color.gray(fmt.trunc(String(m.samplePrompt), 72))}`);
+    console.log();
+  }
+  console.log(color.dim('  Use an id with: firefly generate "<prompt>" --custom-model <id>'));
+  console.log();
+}
+
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
 const { positional, flags, subcommand } = process.argv.parseFlags();
@@ -417,6 +515,9 @@ try {
       break;
     case 'status':
       await cmdStatus(rest, flags);
+      break;
+    case 'models':
+      await cmdModels(flags);
       break;
     default:
       cli.die(`Unknown command: ${cmd}\nRun: firefly --help`, { prefix: 'firefly' });
