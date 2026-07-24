@@ -495,10 +495,10 @@ const commands = {
       if (!name) name = `/tmp/${info.file.name || (info.file.id + '.' + (info.file.filetype || 'bin'))}`;
     }
     const out = name || `/tmp/slack-download-${Date.now()}`;
-    const tab = await findSlackTab();
+    // Route through evalInSlackTab so a double-encoded JSON eval result is parsed
+    // correctly (a single JSON.parse would leave `res` a string and misreport failure).
     const code = `(async()=>{const r=await fetch(${JSON.stringify(url)},{credentials:'include'});if(!r.ok)return JSON.stringify({ok:false,status:r.status});const u=new Uint8Array(await r.arrayBuffer());let s='';for(let i=0;i<u.length;i+=8192){s+=String.fromCharCode.apply(null,u.subarray(i,i+8192));}return JSON.stringify({ok:true,b64:btoa(s),len:u.length});})()`;
-    const raw = await browser.evalAsync(tab, code);
-    const res = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    const res = await evalInSlackTab(code, { fatal: false });
     if (!res || !res.ok) { console.error('Error: fetch failed', res && res.status ? `(HTTP ${res.status})` : ''); process.exit(1); }
     await fs.writeFileBinary(out, Buffer.from(res.b64, 'base64'));
     console.log(`Downloaded ${res.len} bytes to ${out}`);
