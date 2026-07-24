@@ -62,8 +62,14 @@ slack post W5BPKRLUA "Hey, quick question..."
 # Search for channels
 slack channels --search=one-aem
 
-# Read a thread
+# Read a thread (file/image attachments are shown with their [F...] id)
 slack thread C087NCG774J 1774539502.747989
+
+# Download a file shared in a thread (e.g. a screenshot) to view it locally
+slack download F0BK6BADTKK --out=/tmp/shot.png
+
+# Upload a file to a channel/DM/thread (optionally with a comment)
+slack upload C087NCG774J /tmp/clip.mp3 --thread_ts=1774539502.747989 --comment="voice note"
 
 # Find a user by name (or email) → get their user ID
 slack find "Dragos Dascalita"
@@ -226,7 +232,32 @@ member count, and purpose.
 ### slack thread \<channel_id\> \<thread_ts\> [--limit=N]
 
 Read thread replies. Provide the channel ID and the thread's parent timestamp.
-Default limit is 50.
+Default limit is 50. Messages that carry files/images show an extra line per
+attachment with its name, type, dimensions, and file id, plus a ready-to-run
+`slack download <file_id>` hint — so screenshots shared in a thread are visible
+and fetchable.
+
+### slack download \<file_id\> [--out=\<path\>]
+
+Download a file (e.g. a screenshot shared in a thread) to a local path so you can
+view it. Resolves the file via `files.info`, then fetches the bytes authenticated
+inside the Slack tab (`files.slack.com` needs the session cookie) and writes them
+to disk. Get the `<file_id>` from `slack thread` / `slack history` output (shown as
+`[F...]`). Alternatively pass `--url=<url_private>` directly. Defaults the output to
+`/tmp/<original-name>` when `--out` is omitted.
+
+### slack upload \<channel_id\> \<file\> [--thread_ts=TS] [--comment="..."] [--title="..."]
+
+Upload a local file to a channel, DM, or thread. Accepts a conversation ID or a
+user ID (`U.../W...` opens a DM automatically). Uses Slack's 3-step external upload
+flow: `files.getUploadURLExternal` → POST the raw bytes (via `curl --data-binary`) →
+`files.completeUploadExternal`. `--comment` becomes the message text; `--thread_ts`
+posts it as a threaded reply.
+
+```bash
+slack upload C087NCG774J /tmp/report.pdf --comment="Q3 numbers"
+slack upload C087NCG774J /tmp/voice.mp3 --thread_ts=1774539502.747989 --comment="voice note"
+```
 
 ### slack find \<name or email\> [--limit=N]
 
