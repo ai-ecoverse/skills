@@ -313,14 +313,59 @@ async function cmdComments(args, flags) {
   console.log(`cursor: ${d.cursor}   has_more: ${d.has_more}`);
 }
 
-async function cmdUserVideos(args, flags) {
-  const secUid = args[0];
-  if (!secUid) { console.error('Usage: tiktok user-videos <secUid> [--count=N] [--cursor=N]\n  (get a secUid via "tiktok search <name> --type=user")'); process.exit(1); }
-  const d = await apiGet('/api/post/item_list/', { secUid, count: flags.count || '15', cursor: flags.cursor || '0' });
+// Reads the logged-in user's own secUid from the page app-context. Used to
+// default the profile-list commands when no secUid is given -- handy since the
+// Liked / Favorites tabs are usually only visible for your own account.
+async function ownSecUid() {
+  const tab = await findTab();
+  const raw = await browser.evalAsync(tab, `
+    (() => { try { const el=document.getElementById('__UNIVERSAL_DATA_FOR_REHYDRATION__'); const c=JSON.parse(el.textContent).__DEFAULT_SCOPE__['webapp.app-context']||{}; return JSON.stringify({secUid:(c.user&&c.user.secUid)||''}); } catch(e){ return JSON.stringify({secUid:''}); } })()
+  `.trim().replace(/\n/g, ' '));
+  const o = typeof raw === 'string' ? JSON.parse(raw) : raw;
+  return o.secUid || '';
+}
+
+// The four profile tabs share the same item_list shape (itemList/cursor/hasMore).
+const PROFILE_TABS = {
+  posted: { path: '/api/post/item_list/', label: 'Posted videos' },
+  reposts: { path: '/api/repost/item_list/', label: 'Reposted videos' },
+  liked: { path: '/api/favorite/item_list/', label: 'Liked videos' },
+  favorites: { path: '/api/user/collect/item_list/', label: 'Favorited videos' },
+};
+
+// Shared implementation for posted/reposts/liked/favorites. `tabKey` selects the
+// endpoint. secUid defaults to the logged-in user when omitted.
+async function profileList(tabKey, args, flags) {
+  const t = PROFILE_TABS[tabKey];
+  let secUid = args[0];
+  if (!secUid) {
+    secUid = await ownSecUid();
+    if (!secUid) {
+      console.error(`Usage: tiktok ${tabKey} [<secUid>] [--count=N] [--cursor=N]`);
+      console.error('No secUid given and could not read your own from the page. Get one via "tiktok search <name> --type=user".');
+      process.exit(1);
+    }
+  }
+  const d = await apiGet(t.path, {
+    secUid,
+    count: flags.count || '15',
+    cursor: flags.cursor || '0',
+    coverFormat: '2',
+  });
   const items = d.itemList || [];
-  printVideoList(items, `Videos by secUid ${secUid.slice(0, 16)}...`);
+  if (!items.length) {
+    console.log(`${t.label} (0) for secUid ${secUid.slice(0, 16)}...`);
+    console.log('(Empty — this tab has no videos, or Liked/Favorites are private and only visible on your own account.)');
+    return;
+  }
+  printVideoList(items, `${t.label} for secUid ${secUid.slice(0, 16)}...`);
   console.log(`cursor: ${d.cursor}   hasMore: ${d.hasMore}`);
 }
+
+async function cmdUserVideos(args, flags) { return profileList('posted', args, flags); }
+async function cmdReposts(args, flags) { return profileList('reposts', args, flags); }
+async function cmdLiked(args, flags) { return profileList('liked', args, flags); }
+async function cmdFavorites(args, flags) { return profileList('favorites', args, flags); }
 
 async function cmdNoticeCount() {
   const d = await apiGet('/api/notice/count/', {});
@@ -736,6 +781,10 @@ const commands = {
   video: cmdVideo,
   comments: cmdComments,
   'user-videos': cmdUserVideos,
+  posted: cmdUserVideos,
+  reposts: cmdReposts,
+  liked: cmdLiked,
+  favorites: cmdFavorites,
   notifications: cmdNotifications,
   notices: cmdNotifications,
   'notice-count': cmdNoticeCount,
@@ -778,7 +827,12 @@ if (!cmd || cmd === 'help' || cmd === '--help') {
   console.log('Videos & stats:');
   console.log('  video <videoId>                               Full video detail + play/like/comment/share/save stats');
   console.log('  comments <videoId> [--count=N] [--cursor=N]   List comments on a video');
-  console.log('  user-videos <secUid> [--count=N] [--cursor=N] List a user\'s posted videos (+stats)\n');
+  console.log('  user-videos <secUid> [--count=N] [--cursor=N] List a user\'s posted videos (+stats). Alias: posted\n');
+  console.log('Profile tabs (secUid optional — defaults to your own account):');
+  console.log('  posted    [<secUid>] [--count=N] [--cursor=N]   Posted videos');
+  console.log('  reposts   [<secUid>] [--count=N] [--cursor=N]   Reposted videos');
+  console.log('  liked     [<secUid>] [--count=N] [--cursor=N]   Liked videos (usually self-only)');
+  console.log('  favorites [<secUid>] [--count=N] [--cursor=N]   Favorited/bookmarked videos (self-only)\n');
   console.log('Notifications:');
   console.log('  notice-count                                  Unread notification counts by group');
   console.log('  notifications [--group=N] [--count=N] [--mark-read] [--cursor=<max_time>]');
