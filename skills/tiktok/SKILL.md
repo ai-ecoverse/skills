@@ -65,7 +65,13 @@ tiktok whoami                                    # logged-in account
 tiktok search <query> [--type=general|video|user] [--count=N] [--cursor=N]
 tiktok video <videoId>                           # full stats: plays/likes/comments/shares/saves
 tiktok comments <videoId> [--count=N] [--cursor=N]
-tiktok user-videos <secUid> [--count=N] [--cursor=N]
+tiktok user-videos <secUid> [--count=N] [--cursor=N]  # alias: posted
+
+# Profile tabs (secUid optional — defaults to your own logged-in account)
+tiktok posted    [<secUid>] [--count=N] [--cursor=N]  # posted videos
+tiktok reposts   [<secUid>] [--count=N] [--cursor=N]  # reposted videos
+tiktok liked     [<secUid>] [--count=N] [--cursor=N]  # liked videos (usually self-only)
+tiktok favorites [<secUid>] [--count=N] [--cursor=N]  # favorited/bookmarked videos (self-only)
 tiktok notice-count                              # unread counts by group
 tiktok notifications [--group=N] [--count=N] [--mark-read] [--cursor=<max_time>]
 tiktok conversations                             # list DM conversations (alias: messages)
@@ -130,6 +136,14 @@ tiktok search cats --type=video --count=20
 # A creator's videos: first get their secUid via a user search
 tiktok search mrbeast --type=user      # copy the secUid
 tiktok user-videos MS4wLjABAAAA... --count=15
+
+# The four profile tabs. Omit the secUid to use your own account
+# (Liked / Favorites are typically only visible on your own profile):
+tiktok posted
+tiktok reposts
+tiktok liked
+tiktok favorites --count=20
+tiktok liked MS4wLjABAAAA... --count=10   # someone else's liked tab (if public)
 
 # Notifications / activity feed
 tiktok notice-count
