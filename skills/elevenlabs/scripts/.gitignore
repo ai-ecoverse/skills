@@ -1,0 +1,3 @@
+# Holds the ElevenLabs API key — never commit.
+.config
+.env
