@@ -36,6 +36,24 @@ Signatures appended by `webmssdk` (do NOT set these yourself): `msToken`,
 | `/api/comment/list/` | `aweme_id`, `count`, `cursor` | `comments[]` (`text`, `digg_count`, `create_time`, `user.unique_id`), `total`, `has_more`, `cursor` |
 | `/api/post/item_list/` | `secUid`, `count`, `cursor` | `itemList[]` (videos with `.stats`), `cursor`, `hasMore` — a creator's posts |
 
+### Profile tabs (posted / reposts / liked / favorites)
+
+The four profile tabs all return the same `{ itemList[], cursor, hasMore }` shape
+and take the same params (`secUid`, `count`, `cursor`, `coverFormat=2`,
+`from_page=user`):
+
+| Tab | Path |
+|-----|------|
+| Posted | `/api/post/item_list/` |
+| Reposts | `/api/repost/item_list/` |
+| Liked | `/api/favorite/item_list/` |
+| Favorites (bookmarks) | `/api/user/collect/item_list/` |
+
+Liked and Favorites are usually only visible on **your own** account (the skill
+defaults the `secUid` to the logged-in user when omitted). The Favorites tab also
+has named collections via `/api/user/collection_list/` (the "Posts N / Collections
+N" sub-tabs).
+
 Video stats are also embedded in search / post-list items (`.stats` / `.statsV2`),
 so you often get counts without a separate `item/detail` call.
 
