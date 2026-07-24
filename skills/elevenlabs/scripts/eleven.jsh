@@ -104,7 +104,7 @@ async function main() {
       if (!text) return cli.die('usage: eleven tts <text> [--voice v] [--out file]');
       const voiceId = await L.resolveVoice(key, str(flags.voice));
       const cfg = await L.loadConfig();
-      const buf = await L.tts(key, { text, voiceId, modelId: str(flags.model) || cfg.defaultModel, outputFormat: str(flags.format), voiceSettings: cfg.voiceSettings });
+      const buf = await L.tts(key, { text, voiceId, modelId: str(flags.model) || cfg.defaultModel, outputFormat: str(flags.format), voiceSettings: cfg.voiceSettings, languageCode: str(flags.lang) || str(flags.l) });
       const out = str(flags.out) || str(flags.o);
       if (out) { await fs.writeFileBinary(out, buf); return cli.out(`Wrote ${buf.length} bytes to ${out}`); }
       // no --out: write temp and (optionally) play
@@ -135,6 +135,14 @@ async function main() {
       const query = {};
       if (str(flags.query)) { const [k, ...r] = str(flags.query).split('='); query[k] = r.join('='); }
       const j = await L.api(key, method, path, { body, query });
+      // Binary responses (e.g. audio from text-to-speech) come back as raw bytes —
+      // write them to a file instead of printing corrupted text.
+      if (j && j.__binary) {
+        const ext = /mpeg|mp3/.test(j.contentType) ? 'mp3' : /wav/.test(j.contentType) ? 'wav' : /json/.test(j.contentType) ? 'json' : 'bin';
+        const out = str(flags.out) || str(flags.o) || `/tmp/eleven-api-${Date.now()}.${ext}`;
+        await fs.writeFileBinary(out, j.buffer);
+        return cli.out(`Wrote ${j.buffer.length} bytes (${j.contentType}) to ${out}`);
+      }
       return cli.out(j);
     }
     default:
