@@ -4,5 +4,6 @@
   "private": false,
   "skills": [
     "skills/slack"
-  ]
+  ],
+  "version": "0.3.0"
 }
