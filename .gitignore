@@ -2,3 +2,5 @@
 skills/concur/.session.json
 skills/oryx/.config
 node_modules/
+skills/*/.config
+skills/*/scripts/.config
