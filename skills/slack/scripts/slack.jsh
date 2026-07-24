@@ -274,7 +274,18 @@ function formatMessage(msg) {
   const time = formatTimestamp(msg.ts);
   const text = msg.text || '';
   const thread = msg.reply_count ? ` [${msg.reply_count} replies]` : '';
-  return `[${time}] ${name}: ${text}${thread}`;
+  let out = `[${time}] ${name}: ${text}${thread}`;
+  // Surface file/image attachments so threads with screenshots are legible and
+  // the file id is available for `slack download <file_id>`.
+  if (Array.isArray(msg.files) && msg.files.length) {
+    for (const f of msg.files) {
+      const isImg = (f.mimetype || '').startsWith('image/');
+      const dims = (f.original_w && f.original_h) ? ` ${f.original_w}x${f.original_h}` : '';
+      out += `\n    ↳ ${isImg ? 'image' : 'file'}: ${f.name || f.title || '(unnamed)'} (${f.mimetype || f.filetype || '?'}${dims}) [${f.id}]` +
+             `  → slack download ${f.id}`;
+    }
+  }
+  return out;
 }
 
 // --- Commands ---
@@ -459,6 +470,88 @@ const commands = {
     if (data.message) {
       console.log(`Text: ${data.message.text}`);
     }
+  },
+
+  // Download a file (e.g. an image shared in a thread) to a local path. Fetches
+  // it authenticated in the Slack tab (files.slack.com needs the session cookie),
+  // returns the bytes as base64, and writes them to disk. Get the <file_id> from
+  // `slack thread`/`slack history` output (shown as [F...]).
+  async download(args, globalFlags) {
+    const { flags, positional } = parseArgs(args);
+    const fileId = positional[0];
+    if (!fileId && !flags.url) {
+      console.error('Usage: slack download <file_id> [--out=<path>]');
+      console.error('   or: slack download --url=<url_private> --out=<path>');
+      console.error('File ids appear in `slack thread`/`slack history` output as [F...].');
+      process.exit(1);
+    }
+    const wsId = await resolveWorkspace(globalFlags);
+    let url = typeof flags.url === 'string' ? flags.url : null;
+    let name = typeof flags.out === 'string' ? flags.out : null;
+    if (fileId && !url) {
+      const info = await slackApi('files.info', { file: fileId }, wsId);
+      if (!info.ok) { console.error('Error:', info.error); process.exit(1); }
+      url = info.file.url_private_download || info.file.url_private;
+      if (!name) name = `/tmp/${info.file.name || (info.file.id + '.' + (info.file.filetype || 'bin'))}`;
+    }
+    const out = name || `/tmp/slack-download-${Date.now()}`;
+    const tab = await findSlackTab();
+    const code = `(async()=>{const r=await fetch(${JSON.stringify(url)},{credentials:'include'});if(!r.ok)return JSON.stringify({ok:false,status:r.status});const u=new Uint8Array(await r.arrayBuffer());let s='';for(let i=0;i<u.length;i+=8192){s+=String.fromCharCode.apply(null,u.subarray(i,i+8192));}return JSON.stringify({ok:true,b64:btoa(s),len:u.length});})()`;
+    const raw = await browser.evalAsync(tab, code);
+    const res = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (!res || !res.ok) { console.error('Error: fetch failed', res && res.status ? `(HTTP ${res.status})` : ''); process.exit(1); }
+    await fs.writeFileBinary(out, Buffer.from(res.b64, 'base64'));
+    console.log(`Downloaded ${res.len} bytes to ${out}`);
+  },
+
+  // Upload a local file to a channel/DM/thread using Slack's 3-step external
+  // upload flow (getUploadURLExternal → POST bytes → completeUploadExternal).
+  async upload(args, globalFlags) {
+    const { flags, positional } = parseArgs(args);
+    const channel = positional[0];
+    const file = positional[1];
+    if (!channel || !file) {
+      console.error('Usage: slack upload <channel_id> <file> [--thread_ts=TS] [--comment="text"] [--title="..."]');
+      process.exit(1);
+    }
+    if (!(await fs.exists(file))) { console.error(`Error: file not found: ${file}`); process.exit(1); }
+    const wsId = await resolveWorkspace(globalFlags);
+    const size = (await fs.stat(file)).size;
+    const filename = file.split('/').pop();
+
+    // Resolve a user ID to a DM channel, mirroring `post`.
+    let targetChannel = channel;
+    if (/^[UW][A-Z0-9]+$/.test(channel)) {
+      const dm = await slackApi('conversations.open', { users: channel, return_im: 'true' }, wsId);
+      if (!dm.ok) { console.error(`Error opening DM with ${channel}:`, dm.error); process.exit(1); }
+      targetChannel = dm.channel.id;
+    }
+
+    // Step 1: reserve an upload URL.
+    const up = await slackApi('files.getUploadURLExternal', { filename, length: String(size) }, wsId);
+    if (!up.ok) { console.error('Error (getUploadURL):', up.error); process.exit(1); }
+
+    // Step 2: POST the raw bytes with --data-binary (NOT multipart -F: the
+    // pre-signed S3 upload URL expects exactly `length` raw bytes; multipart
+    // boundary overhead makes small files fail with "internal error: s3_upload").
+    // The URL is pre-signed, so plain curl (no cookie) works, and this keeps the
+    // binary out of the eval bridge.
+    const post = await exec.spawn(['curl', '-s', '-X', 'POST', up.upload_url, '--data-binary', `@${file}`]);
+    if (post.exitCode !== 0 || !/\bOK\b/.test(post.stdout)) {
+      console.error('Error uploading bytes:', post.stdout || post.stderr || `exit ${post.exitCode}`);
+      process.exit(1);
+    }
+
+    // Step 3: finalize into the channel/thread.
+    const params = { files: JSON.stringify([{ id: up.file_id, title: (typeof flags.title === 'string' ? flags.title : filename) }]), channel_id: targetChannel };
+    if (typeof flags.thread_ts === 'string') params.thread_ts = flags.thread_ts;
+    if (typeof flags.comment === 'string') params.initial_comment = flags.comment;
+    const done = await slackApi('files.completeUploadExternal', params, wsId);
+    if (!done.ok) { console.error('Error (completeUpload):', done.error); process.exit(1); }
+
+    console.log(`Uploaded ${filename} (${size} bytes) to ${targetChannel}${params.thread_ts ? ' (in thread)' : ''}.`);
+    const f = done.files && done.files[0];
+    if (f) console.log(`  file: ${f.id}${f.permalink ? '  ' + f.permalink : ''}`);
   },
 
   async channels(args, globalFlags) {
@@ -1655,8 +1748,11 @@ if (!cmd || cmd === 'help' || cmd === '--help') {
   console.log('  deny <message_ts> [--channel=<id>]       Deny an interactive action (e.g. invite request)');
   console.log('  history <channel_id> [--limit=N]          Read channel messages');
   console.log('  post <id> <message> [--thread_ts=TS]      Post a message to any channel, DM, or user');
+  console.log('  upload <channel_id> <file> [--thread_ts=TS] [--comment="..."] [--title="..."]');
+  console.log('                                           Upload a file to a channel/DM/thread');
+  console.log('  download <file_id> [--out=<path>]         Download a file (e.g. thread image) locally');
   console.log('  channels --search=<term>                  Search for channels');
-  console.log('  thread <channel_id> <thread_ts> [--limit] Read thread replies');
+  console.log('  thread <channel_id> <thread_ts> [--limit] Read thread replies (shows [F...] file ids)');
   console.log('  find <name or email> [--limit=N]          Search users by name/email → user IDs');
   console.log('  user <user_id>                            Look up user info');
   console.log('  info <channel_id>                         Get channel info');
