@@ -1,9 +1,11 @@
 name: Lint (Biome)
 
-# Lints the repo's .jsh/.bsh skill scripts with Biome. Biome's CLI ignores the
-# .jsh/.bsh extensions in file mode, so tools/lint-jsh.sh mirrors each script to
-# a temporary .js file and lints those against biome.json. Complements the
-# Tessl skill-lint workflows, which validate skill *content* rather than JS.
+# Lints the repo's .jsh/.bsh skill scripts with @ai-ecoverse/biome-jsh, a
+# jsh-aware Biome runner (wraps each AsyncFunction body so top-level await/return
+# don't trip a false parse error, discovers biome.json, and shifts diagnostics
+# back onto the real file). tools/lint-jsh.sh collects the .jsh/.bsh files and
+# runs `biome-jsh lint`. Complements the Tessl skill-lint workflows, which
+# validate skill *content* rather than JS.
 
 on:
   push:
@@ -24,7 +26,7 @@ jobs:
         with:
           node-version: 22
 
-      - name: Install Biome
+      - name: Install dependencies
         run: npm install
 
       - name: Lint .jsh/.bsh skills
