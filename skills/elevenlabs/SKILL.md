@@ -66,12 +66,15 @@ eleven tts "text" [--voice v] [--model m] [--out f] [--format fmt] [--play]
 eleven stt <file> [--lang xx] [--diarize] [--num-speakers n] [--json]
 eleven user                               # subscription (needs user_read scope)
 eleven config [--voice <id|name>] [--model <id>] [--stability n] [--similarity n] [--style n]  # per-user defaults
-eleven api <METHOD> <path> [--data '<json>'] [--query k=v]   # any endpoint
+eleven api <METHOD> <path> [--data '<json>'] [--query k=v] [--out <file>]   # any endpoint
 ```
 
 Examples:
 
 ```bash
+# Binary responses (e.g. text-to-speech audio) are written to a file, not printed:
+eleven api POST /text-to-speech/21m00Tcm4TlvDq8ikWAM --data '{"text":"hi","model_id":"eleven_multilingual_v2"}' --out /tmp/hi.mp3
+
 eleven api GET /voices/settings/default
 eleven api POST /text-to-speech/21m00Tcm4TlvDq8ikWAM --data '{"text":"hi","model_id":"eleven_multilingual_v2"}'
 eleven config --voice "George" --model eleven_multilingual_v2   # persist defaults
