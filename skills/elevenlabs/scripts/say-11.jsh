@@ -68,7 +68,7 @@ async function main() {
   if (opts.stability != null) voiceSettings.stability = Number(opts.stability);
   if (opts.similarity != null) voiceSettings.similarity_boost = Number(opts.similarity);
   if (opts.style != null) voiceSettings.style = Number(opts.style);
-  const buf = await L.tts(key, { text, voiceId, modelId: opts.model || cfg.defaultModel, voiceSettings });
+  const buf = await L.tts(key, { text, voiceId, modelId: opts.model || cfg.defaultModel, voiceSettings, languageCode: opts.lang });
 
   if (opts.out) {
     await fs.writeFileBinary(opts.out, buf);
