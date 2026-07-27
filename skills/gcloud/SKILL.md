@@ -65,6 +65,7 @@ Override per-call with `--project <id>` (or `-p`).
 | `gcloud dns zones create <name> --dns-name <domain.> --confirm` | Create a managed zone |
 | `gcloud dns records list <zone> [--name N] [--type T]` | List record sets in a zone |
 | `gcloud dns records add <zone> <name> <type> <data>... [--ttl 300] --confirm` | Add/replace a record set |
+| `gcloud dns records add <zone> <name> <type> --routing-policy wrr --routing-policy-data "W:rrdata;W:rrdata" --confirm` | Add/replace a weighted round-robin record set |
 | `gcloud dns records remove <zone> <name> <type> --confirm` | Delete a record set |
 | `gcloud dns logging status <zone>` | Show whether query logging is enabled for a zone |
 | `gcloud dns logging enable <zone> --confirm` | Enable Cloud DNS query logging on a zone |
@@ -114,7 +115,28 @@ primary/backup failover) carry an empty top-level `rrdatas` and stash their real
 targets under `routingPolicy`. `records list` surfaces these — e.g. a weighted
 CNAME prints each item's weight and target (weight `0` is flagged as inactive) —
 so a routed record no longer renders as a blank line. Use `--json` for the raw
-`routingPolicy` structure.
+`routingPolicy` structure. The `--confirm` **change preview** also renders the
+routing policy of both the record being deleted and the one being added, so
+flattening or restoring a weighted record shows exactly what changes.
+
+**Weighted round-robin (WRR) records.** `records add` can create a weighted
+record, not just a plain one — pass `--routing-policy wrr` with
+`--routing-policy-data "WEIGHT:rrdata[,rrdata];WEIGHT:rrdata…"` (`;` separates
+weighted groups, `,` separates rrdatas sharing a weight):
+
+```bash
+# Flatten a mostly-inactive WRR wildcard to a fixed CNAME (cheaper: plain queries
+# bill as "DNS Query" $0.40/M vs "Routing Policy Query" $0.70/M):
+gcloud dns records add my-zone '*.example.com.' CNAME target.example.net. --ttl 300 --confirm
+
+# Reconstruct the weighted policy (rollback), e.g. 100% weight to one target:
+gcloud dns records add my-zone '*.example.com.' CNAME --routing-policy wrr \
+       --routing-policy-data "0:backup.example.net.;1:primary.example.net." --ttl 300 --confirm
+```
+
+Because `add` is an upsert that deletes the existing rrset (routing policy and
+all) before adding the new one, the same command flattens WRR→plain **and**
+restores plain→WRR — the conversion is fully reversible with the skill.
 
 **Query logging.** `gcloud dns logging status <zone>` reports whether a managed
 zone records DNS queries (via the zone's `cloudLoggingConfig.enableLogging`
