@@ -22,6 +22,24 @@ const CONSOLE_HOST = 'console.clickhouse.cloud';
 const CP  = 'https://control-plane-internal.clickhouse.cloud'; // control-plane
 const CA  = 'https://console-api-internal.clickhouse.cloud';   // console-api
 
+// The live Auth0 bearer token is attached to every request, so requests must
+// only ever go to trusted ClickHouse Cloud API hosts — never an arbitrary URL
+// (which could exfiltrate the token). `api` and all callers validate against this.
+const ALLOWED_HOSTS = new Set([
+  'control-plane-internal.clickhouse.cloud',
+  'console-api-internal.clickhouse.cloud',
+]);
+
+function assertAllowedUrl(url) {
+  let host;
+  try { host = new URL(url).host; } catch (e) { host = null; }
+  if (!host || !ALLOWED_HOSTS.has(host)) {
+    console.error('Refusing to send the bearer token to a non-ClickHouse host: ' + url);
+    console.error('Allowed hosts: ' + [...ALLOWED_HOSTS].join(', '));
+    process.exit(1);
+  }
+}
+
 // console-api /.api/metrics time-series metric names (aggregation node_chart_max,
 // times in SECONDS). Discovered from the console bundle.
 const CONSOLE_METRICS = [
@@ -104,6 +122,7 @@ async function findTab() {
 // ─── Page-context API call (token stays in the browser) ─────────────────────────
 
 async function apiCall(method, url, body, ctype) {
+  assertAllowedUrl(url);
   const tabId = await findTab();
   const bodyJson = body == null ? null : (typeof body === 'string' ? body : JSON.stringify(body));
   const code = [
@@ -291,14 +310,34 @@ async function cmdService(pos, opts) {
   for (const [k, v] of fields) console.log(pad(k, w) + '  ' + (v == null ? '-' : v));
 }
 
-// Recursively collect all { key: { metricValue, cost } } line items from a report node.
+// Collect { key: { metricValue, cost } } line items from a report node.
+// Recurses into nested aggregate objects (e.g. totalClickpipeReport) so their
+// line items are captured, but does NOT descend into arrays of sub-reports
+// (instanceReports / clickpipeReports) — those are already rolled up into the
+// totalInstanceReport we pass in, so recursing would double-count.
 function collectLineItems(node, out) {
-  if (!node || typeof node !== 'object') return;
+  if (!node || typeof node !== 'object' || Array.isArray(node)) return;
   for (const [k, v] of Object.entries(node)) {
-    if (v && typeof v === 'object' && 'cost' in v && 'metricValue' in v) {
+    if (!v || typeof v !== 'object') continue;
+    if ('cost' in v && 'metricValue' in v) {
       out[k] = { metricValue: (out[k] ? out[k].metricValue : 0) + v.metricValue, cost: (out[k] ? out[k].cost : 0) + v.cost };
+    } else if (!Array.isArray(v)) {
+      collectLineItems(v, out); // nested aggregate (e.g. totalClickpipeReport)
     }
   }
+}
+
+// Sum every { cost } leaf under a node (deep) — used for authoritative totals.
+function sumCosts(node) {
+  if (!node || typeof node !== 'object') return 0;
+  let total = 0;
+  for (const v of Object.values(node)) {
+    if (v && typeof v === 'object') {
+      if (typeof v.cost === 'number') total += v.cost;
+      else total += sumCosts(v);
+    }
+  }
+  return total;
 }
 
 async function cmdCost(opts) {
@@ -315,15 +354,24 @@ async function cmdCost(opts) {
   console.log('');
 
   const svcRows = [];
-  let grandTotal = 0;
   for (const dw of (report.dataWarehouseReports || [])) {
+    // One recursive pass over the warehouse node captures storage line items
+    // (direct children) plus everything under totalInstanceReport
+    // (compute/transfer/clickpipes). The per-instance instanceReports array is
+    // skipped by collectLineItems, so nothing is double-counted.
     const items = {};
-    collectLineItems(dw, items);                    // storage line items live on the warehouse
-    collectLineItems(dw.totalInstanceReport, items); // compute/transfer aggregated across instances
+    collectLineItems(dw, items);
     let dwTotal = 0;
     for (const k of Object.keys(items)) dwTotal += items[k].cost;
-    grandTotal += dwTotal;
     svcRows.push({ name: dw.name, provider: dw.cloudProvider, region: dw.region, tier: dw.organizationTier, total: dwTotal, items });
+  }
+  // Managed Postgres instances bill separately from data warehouses.
+  for (const pg of (report.pgInstanceReports || [])) {
+    const items = {};
+    collectLineItems(pg, items);
+    let pgTotal = 0;
+    for (const k of Object.keys(items)) pgTotal += items[k].cost;
+    svcRows.push({ name: (pg.name || 'Postgres') + ' (pg)', provider: pg.cloudProvider, region: pg.region, tier: pg.organizationTier, total: pgTotal, items });
   }
 
   table(svcRows, [
@@ -333,6 +381,10 @@ async function cmdCost(opts) {
     { label: 'COST', get: r => money(r.total) },
   ]);
   console.log('');
+  // Authoritative org-wide total: the API's own totalUsageReport if present,
+  // otherwise the sum of the per-service rows above.
+  const rowSum = svcRows.reduce((a, r) => a + r.total, 0);
+  const grandTotal = report.totalUsageReport ? sumCosts(report.totalUsageReport) : rowSum;
   console.log('TOTAL: ' + money(grandTotal) + ' ' + report.currency + ' (period to date)');
 
   // Per-service line-item detail
@@ -351,28 +403,40 @@ async function cmdCost(opts) {
 
 // ── Utilization ──
 
-function seriesStats(values) {
-  const nn = values.filter(v => v != null && !isNaN(v));
-  if (!nn.length) return { points: values.length, nonNull: 0, min: null, max: null, avg: null, latest: null };
+// Accepts an array of [timestamp, value] points (timestamp may be null for the
+// console time-series, which is already time-ordered). min/max/avg use every
+// non-null value; `latest` is the value at the newest timestamp (so for
+// multi-node series it reflects the most recent sample, not the last-listed node).
+function seriesStats(points) {
+  const nn = points.filter(p => p[1] != null && !isNaN(p[1]));
+  if (!nn.length) return { points: points.length, nonNull: 0, min: null, max: null, avg: null, latest: null };
+  const vals = nn.map(p => p[1]);
+  let latestPt = nn[0];
+  for (const p of nn) {
+    if (p[0] == null || latestPt[0] == null) latestPt = p; // no ts → assume input order
+    else if (p[0] >= latestPt[0]) latestPt = p;
+  }
   return {
-    points: values.length, nonNull: nn.length,
-    min: Math.min(...nn), max: Math.max(...nn),
-    avg: nn.reduce((a, b) => a + b, 0) / nn.length,
-    latest: nn[nn.length - 1],
+    points: points.length, nonNull: nn.length,
+    min: Math.min(...vals), max: Math.max(...vals),
+    avg: vals.reduce((a, b) => a + b, 0) / vals.length,
+    latest: latestPt[1],
   };
 }
 
 // queryMetrics data shape: batch[].data = [ [ {node, data:[[tsMs,val],...]}, ... ] ]
+// Returns [tsMs, value] pairs across all nodes so seriesStats can pick the
+// value at the newest timestamp rather than the last-appended node's tail.
 function flattenQueryMetrics(data) {
-  const vals = [];
+  const pts = [];
   const walk = (x) => {
     if (Array.isArray(x)) {
-      if (x.length === 2 && typeof x[0] === 'number') vals.push(x[1]);
+      if (x.length === 2 && typeof x[0] === 'number') pts.push([x[0], x[1]]);
       else { for (const el of x) walk(el); }
     } else if (x && x.data) walk(x.data);
   };
   walk(data);
-  return vals;
+  return pts;
 }
 
 async function cmdMetrics(pos, opts) {
@@ -397,7 +461,7 @@ async function cmdMetrics(pos, opts) {
     const series = m.series || [];
     if (!series.length) { console.log('No data points (service may be idle / scaled to zero).'); return; }
     for (const s of series) {
-      const st = seriesStats((s.values || []).map(p => p.y));
+      const st = seriesStats((s.values || []).map(p => [p.x, p.y]));
       console.log('  ' + (s.name || 'series') + ': min ' + num(st.min) + '  max ' + num(st.max) + '  avg ' + num(st.avg) + '  latest ' + num(st.latest) + '  (' + st.nonNull + '/' + st.points + ' pts)');
     }
     return;
