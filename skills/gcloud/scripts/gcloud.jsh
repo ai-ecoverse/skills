@@ -447,6 +447,55 @@ function normalizeRrdata(type, data) {
   return data;
 }
 
+/** Parse --routing-policy-data "WEIGHT:rrdata[,rrdata];WEIGHT:rrdata…" into
+ *  weighted-round-robin items. Each ';'-separated segment is one weighted
+ *  target group; ','-separated rrdatas share that weight. */
+function parseWrrData(type, dataStr) {
+  const items = dataStr.split(';').map(s => s.trim()).filter(Boolean).map(seg => {
+    const ci = seg.indexOf(':');
+    if (ci < 0) {
+      cli.die(`Invalid --routing-policy-data segment "${seg}" (expected WEIGHT:rrdata[,rrdata]).`, { prefix: 'gcloud' });
+    }
+    const weight = Number(seg.slice(0, ci).trim());
+    if (!Number.isFinite(weight)) cli.die(`Invalid weight in "${seg}".`, { prefix: 'gcloud' });
+    const rrdatas = seg.slice(ci + 1).split(',').map(x => x.trim()).filter(Boolean)
+      .map(d => normalizeRrdata(type, d));
+    if (!rrdatas.length) cli.die(`No rrdata in segment "${seg}".`, { prefix: 'gcloud' });
+    return { weight, rrdatas };
+  });
+  if (!items.length) cli.die('--routing-policy-data produced no items.', { prefix: 'gcloud' });
+  return items;
+}
+
+/** Plain (uncolored) per-line description of an rrset's data for change
+ *  previews — renders routingPolicy targets, not just top-level rrdatas. */
+function changeDetailLines(r) {
+  if (Array.isArray(r.rrdatas) && r.rrdatas.length) return r.rrdatas.slice();
+  const rp = r.routingPolicy;
+  if (!rp) return ['(no data)'];
+  const lines = [];
+  if (rp.wrr?.items) {
+    lines.push('routing: weighted (wrr)');
+    let i = 0;
+    for (const it of rp.wrr.items) {
+      const tgt = (it.rrdatas || []).join(', ') || '(empty)';
+      const w = it.weight ?? 0;
+      lines.push(`  [${i}] weight ${w}${w === 0 ? ' (inactive)' : ''}: ${tgt}`);
+      i++;
+    }
+  } else if (rp.geo?.items) {
+    lines.push('routing: geo');
+    for (const it of rp.geo.items) {
+      lines.push(`  ${it.location || '?'}: ${(it.rrdatas || []).join(', ') || '(empty)'}`);
+    }
+  } else if (rp.primaryBackup) {
+    lines.push('routing: primary/backup (failover)');
+  } else {
+    lines.push('routing policy: ' + JSON.stringify(rp));
+  }
+  return lines;
+}
+
 async function cmdDnsZonesList(flags) {
   const project = await requireProject(flags);
   const zones = await gfetchAll(`${DNS_BASE}/projects/${encodeURIComponent(project)}/managedZones`, 'managedZones');
@@ -559,10 +608,19 @@ async function cmdDnsRecordsChange(positional, flags, mode) {
   const rawName = positional[1];
   const type = (positional[2] || '').toUpperCase();
   const data = positional.slice(3);
-  if (!zone || !rawName || !type || (mode === 'add' && !data.length)) {
+  // Routing-policy support (add only): create a weighted round-robin rrset
+  // instead of a plain one. This is what makes a WRR record reproducible —
+  // e.g. rolling back a flattened wildcard back to its weighted policy.
+  const rpType = str(flags['routing-policy']);
+  const rpData = str(flags['routing-policy-data']);
+  const usingRP = mode === 'add' && !!rpType;
+  if (!zone || !rawName || !type || (mode === 'add' && !usingRP && !data.length)) {
     cli.die(
       mode === 'add'
-        ? 'usage: gcloud dns records add <zone> <name> <type> <data> [<data>...] [--ttl 300] --confirm'
+        ? 'usage:\n' +
+          '  gcloud dns records add <zone> <name> <type> <data> [<data>...] [--ttl 300] --confirm\n' +
+          '  gcloud dns records add <zone> <name> <type> --routing-policy wrr \\\n' +
+          '         --routing-policy-data "WEIGHT:rrdata[,rrdata];WEIGHT:rrdata" [--ttl 300] --confirm'
         : 'usage: gcloud dns records remove <zone> <name> <type> --confirm',
       { prefix: 'gcloud' },
     );
@@ -571,25 +629,42 @@ async function cmdDnsRecordsChange(positional, flags, mode) {
   const base = `${DNS_BASE}/projects/${encodeURIComponent(project)}/managedZones/${encodeURIComponent(zone)}`;
 
   // Look up the existing rrset (name+type) so we can replace/delete it correctly.
+  // The fetched object carries any routingPolicy verbatim, so pushing it into
+  // deletions correctly removes a weighted/geo record (whose top-level rrdatas
+  // are empty) — this is what lets `add` flatten a WRR record to a plain one.
   const existing = await gfetchAll(`${base}/rrsets?name=${encodeURIComponent(name)}&type=${encodeURIComponent(type)}`, 'rrsets');
   const change = { additions: [], deletions: [] };
   if (existing.length) change.deletions.push(existing[0]);
   if (mode === 'add') {
     const ttl = Number.isFinite(parseInt(flags.ttl, 10)) ? parseInt(flags.ttl, 10) : 300;
-    change.additions.push({ name, type, ttl, rrdatas: data.map(d => normalizeRrdata(type, d)) });
+    if (usingRP) {
+      if (rpType.toLowerCase() !== 'wrr') {
+        cli.die('Only --routing-policy wrr (weighted round-robin) is supported.', { prefix: 'gcloud' });
+      }
+      if (!rpData) {
+        cli.die('--routing-policy wrr requires --routing-policy-data "WEIGHT:rrdata[,rrdata];WEIGHT:rrdata".', { prefix: 'gcloud' });
+      }
+      // A routing-policy rrset carries no top-level rrdatas.
+      change.additions.push({ name, type, ttl, routingPolicy: { wrr: { items: parseWrrData(type, rpData) } } });
+    } else {
+      change.additions.push({ name, type, ttl, rrdatas: data.map(d => normalizeRrdata(type, d)) });
+    }
   } else if (!existing.length) {
     cli.die(`No ${type} record found for ${name} in zone ${zone}.`, { prefix: 'gcloud' });
   }
 
-  // Preview
+  // Preview — render rrdatas AND routing policies so a weighted record no longer
+  // shows a misleading blank target.
   console.log('');
   if (change.deletions.length) {
     const d = change.deletions[0];
-    console.log(c.red(`  - ${d.type} ${d.name} ttl:${d.ttl}  ${(d.rrdatas || []).join(' ')}`));
+    console.log(c.red(`  - ${d.type} ${d.name} ttl:${d.ttl}`));
+    for (const line of changeDetailLines(d)) console.log(c.red(`      ${line}`));
   }
   if (change.additions.length) {
     const a = change.additions[0];
-    console.log(c.green(`  + ${a.type} ${a.name} ttl:${a.ttl}  ${(a.rrdatas || []).join(' ')}`));
+    console.log(c.green(`  + ${a.type} ${a.name} ttl:${a.ttl}`));
+    for (const line of changeDetailLines(a)) console.log(c.green(`      ${line}`));
   }
   if (!flags.confirm) {
     console.log(c.dim('\n  Re-run with --confirm to apply this change.'));
@@ -649,7 +724,7 @@ async function cmdDns(positional, flags) {
   if (group === 'logging' && action === 'enable') return await cmdDnsLoggingSet(rest, flags, 'enable');
   if (group === 'logging' && action === 'disable') return await cmdDnsLoggingSet(rest, flags, 'disable');
   cli.die(
-    'usage:\n  gcloud dns zones list\n  gcloud dns zones create <name> --dns-name <domain.> --confirm\n  gcloud dns records list <zone> [--name N] [--type T]\n  gcloud dns records add <zone> <name> <type> <data>... [--ttl 300] --confirm\n  gcloud dns records remove <zone> <name> <type> --confirm\n  gcloud dns logging status <zone>\n  gcloud dns logging enable <zone> --confirm\n  gcloud dns logging disable <zone> --confirm',
+    'usage:\n  gcloud dns zones list\n  gcloud dns zones create <name> --dns-name <domain.> --confirm\n  gcloud dns records list <zone> [--name N] [--type T]\n  gcloud dns records add <zone> <name> <type> <data>... [--ttl 300] --confirm\n  gcloud dns records add <zone> <name> <type> --routing-policy wrr --routing-policy-data "W:rrdata;W:rrdata" [--ttl 300] --confirm\n  gcloud dns records remove <zone> <name> <type> --confirm\n  gcloud dns logging status <zone>\n  gcloud dns logging enable <zone> --confirm\n  gcloud dns logging disable <zone> --confirm',
     { prefix: 'gcloud' },
   );
 }
@@ -822,6 +897,8 @@ USAGE
   gcloud dns zones create <name> --dns-name <domain.> --confirm
   gcloud dns records list <zone> [--name N] [--type T]
   gcloud dns records add    <zone> <name> <type> <data>... [--ttl 300] --confirm
+  gcloud dns records add    <zone> <name> <type> --routing-policy wrr
+         --routing-policy-data "W:rrdata;W:rrdata" [--ttl 300] --confirm
   gcloud dns records remove <zone> <name> <type> --confirm
   gcloud dns logging status  <zone> [--project P]   Query-logging state for a zone
   gcloud dns logging enable  <zone> [--project P] --confirm
