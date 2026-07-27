@@ -543,7 +543,9 @@ function rrdataLines(r) {
       || pb.primaryTargets?.rrdatas || [];
     if (prim.length) lines.push(`primary: ${prim.join(', ')}`);
     const backup = pb.backupGeoTargets?.items || [];
-    backup.forEach(it => lines.push(`backup ${it.location || '?'}: ${(it.rrdatas || []).join(', ')}`));
+    for (const it of backup) {
+      lines.push(`backup ${it.location || '?'}: ${(it.rrdatas || []).join(', ')}`);
+    }
   }
   // Fallback: unknown policy shape — show something rather than nothing.
   if (!lines.length) lines.push(c.dim('routing policy: ' + JSON.stringify(rp)));
