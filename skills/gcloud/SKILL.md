@@ -99,6 +99,13 @@ values are auto-quoted. `add` is an upsert — it replaces an existing record se
 of the same name+type in one transactional change (Cloud DNS requires
 delete-then-add), so you don't have to remove first.
 
+Records that use a **routing policy** (weighted round-robin, geo-location, or
+primary/backup failover) carry an empty top-level `rrdatas` and stash their real
+targets under `routingPolicy`. `records list` surfaces these — e.g. a weighted
+CNAME prints each item's weight and target (weight `0` is flagged as inactive) —
+so a routed record no longer renders as a blank line. Use `--json` for the raw
+`routingPolicy` structure.
+
 ### Raw API access
 
 For anything not wrapped above, `gcloud api` attaches a valid Bearer token to a
