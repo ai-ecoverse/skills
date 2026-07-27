@@ -154,10 +154,14 @@ prefix; it is normalized either way. `link`/`unlink` mutate billing and are
 `--confirm`-gated with a preview.
 
 Note: this API exposes billing **configuration**, not **cost**. Per-project
-spend (dollar amounts, usage breakdowns) is **not** available here — use the
-BigQuery billing export or the Cloud Console billing reports instead
-(project-scoped cost reports require the `billing.resourceCosts.get`
-permission on the project).
+spend (dollar amounts, usage breakdowns) is **not** available through the public
+Cloud Billing API. The supported programmatic source is the BigQuery billing
+export (needs the export enabled + BigQuery read access). Alternatively, for
+cost **and usage** without any billing-account IAM, see
+[`gcloud-ext billing cost`](#gcloud-ext-slicc-only-cost-and-usage-reports) below,
+which replays the Cloud Console's own report API from a logged-in browser
+session (project-level `billing.resourceCosts.get` is sufficient — the same
+permission the Console UI uses).
 
 ### Raw API access
 
@@ -169,6 +173,48 @@ gcloud api GET  "https://cloudresourcemanager.googleapis.com/v1/projects/my-proj
 gcloud api POST "https://compute.googleapis.com/compute/v1/projects/P/zones/Z/instances/I/start"
 gcloud api PATCH "https://.../resource" --data '{"field":"value"}'
 ```
+
+## gcloud-ext: SLICC-only cost and usage reports
+
+The real `gcloud` CLI has no command for cost/usage reports (Google offers them
+only via the Cloud Console UI or a BigQuery billing export). To keep `gcloud`
+command-compatible with the upstream tool, that capability lives in a separate
+binary, **`gcloud-ext`** (`scripts/gcloud-ext.jsh`).
+
+```bash
+gcloud-ext billing cost --project helix-225321
+gcloud-ext billing cost --project helix-225321 --group-by sku
+gcloud-ext billing cost --project P --group-by sku --from 2026-07-01 --to 2026-07-26 --json
+```
+
+`billing cost` reports per-service or per-SKU **cost and usage** for a project
+over a date range (defaults to the current month). With `--group-by sku` it
+includes the usage amount per SKU — e.g. actual DNS query counts:
+
+```
+Networking Cloud DNS Routing Policy Query   $2473.35  net $1978.68  6066731525 count
+DNS Query (port 53)                          $171.85  net $137.48    429635772 count
+```
+
+**How it works / requirements.** Google exposes cost data only through the
+Console's private first-party API (`cloudconsole-pa.clients6.google.com`),
+authenticated with a session `SAPISIDHASH` rather than an OAuth Bearer token.
+`gcloud-ext` therefore runs the request **inside a logged-in
+`console.cloud.google.com` browser tab** (via the `sliccy:browser` bridge),
+signing it with the session cookie. Requirements:
+
+- An open, signed-in GCP Console tab (any page under `console.cloud.google.com`).
+- Project-level **`billing.resourceCosts.get`** (what the Console UI itself
+  uses) — **no** billing-account IAM and **no** BigQuery export required.
+
+The billing account is resolved automatically from the project (override with
+`--billing-account ID`). Use `--json` for machine-readable output.
+
+> This relies on a **private, undocumented** Console API. Google may change the
+> query signature, API key, or schema without notice. If `billing cost` breaks,
+> re-capture the `BillingReportsEntityService … BillingData` request from
+> Billing → Reports in the Console and update the constants at the top of
+> `scripts/gcloud-ext.jsh`.
 
 ## How authentication works
 
