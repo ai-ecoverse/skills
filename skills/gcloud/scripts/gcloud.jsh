@@ -599,6 +599,43 @@ async function cmdDnsRecordsChange(positional, flags, mode) {
   console.log(c.green(`✓ Change ${res.id || ''} submitted`) + c.dim(`  status: ${res.status || 'pending'}`));
 }
 
+async function cmdDnsLoggingStatus(positional, flags) {
+  const project = await requireProject(flags);
+  const zone = positional[0];
+  if (!zone) cli.die('usage: gcloud dns logging status <zone> [--project P]', { prefix: 'gcloud' });
+  const z = await gfetch(`${DNS_BASE}/projects/${encodeURIComponent(project)}/managedZones/${encodeURIComponent(zone)}`);
+  const enabled = z.cloudLoggingConfig?.enableLogging || false;
+  if (flags.json) { cli.out(z.cloudLoggingConfig || { enableLogging: enabled }); return; }
+  console.log('');
+  const state = enabled ? c.green('enabled') : c.dim('disabled');
+  console.log(`  ${c.cyan(c.bold(zone))}  logging: ${state}`);
+}
+
+/** enable = turn query logging on; disable = turn it off. */
+async function cmdDnsLoggingSet(positional, flags, mode) {
+  const project = await requireProject(flags);
+  const zone = positional[0];
+  if (!zone) cli.die(`usage: gcloud dns logging ${mode} <zone> [--project P] --confirm`, { prefix: 'gcloud' });
+  const enable = mode === 'enable';
+  if (!flags.confirm) {
+    console.log('');
+    console.log(c.yellow(`  Would ${enable ? 'ENABLE' : 'DISABLE'} query logging on zone ${c.bold(zone)} (project ${c.bold(project)}).`));
+    if (enable) {
+      console.log(c.dim('  Note: DNS query logs bill through Cloud Logging ingestion at $0.50/GiB'));
+      console.log(c.dim('  after the first 50 GiB/project/month (free tier).'));
+    }
+    console.log(c.dim('  Re-run with --confirm to apply.'));
+    return;
+  }
+  const body = { cloudLoggingConfig: { enableLogging: enable } };
+  const z = await gfetch(
+    `${DNS_BASE}/projects/${encodeURIComponent(project)}/managedZones/${encodeURIComponent(zone)}`,
+    { method: 'PATCH', body },
+  );
+  const applied = z.cloudLoggingConfig?.enableLogging || false;
+  console.log(c.green(`✓ Query logging ${applied ? 'enabled' : 'disabled'} on zone ${c.bold(zone)}`) + c.dim(`  (enableLogging: ${applied})`));
+}
+
 async function cmdDns(positional, flags) {
   const group = positional[0];
   const action = positional[1];
@@ -608,8 +645,134 @@ async function cmdDns(positional, flags) {
   if (group === 'records' && (action === 'list' || !action)) return await cmdDnsRecordsList(rest, flags);
   if (group === 'records' && action === 'add') return await cmdDnsRecordsChange(rest, flags, 'add');
   if (group === 'records' && (action === 'remove' || action === 'delete')) return await cmdDnsRecordsChange(rest, flags, 'remove');
+  if (group === 'logging' && (action === 'status' || !action)) return await cmdDnsLoggingStatus(rest, flags);
+  if (group === 'logging' && action === 'enable') return await cmdDnsLoggingSet(rest, flags, 'enable');
+  if (group === 'logging' && action === 'disable') return await cmdDnsLoggingSet(rest, flags, 'disable');
   cli.die(
-    'usage:\n  gcloud dns zones list\n  gcloud dns zones create <name> --dns-name <domain.> --confirm\n  gcloud dns records list <zone> [--name N] [--type T]\n  gcloud dns records add <zone> <name> <type> <data>... [--ttl 300] --confirm\n  gcloud dns records remove <zone> <name> <type> --confirm',
+    'usage:\n  gcloud dns zones list\n  gcloud dns zones create <name> --dns-name <domain.> --confirm\n  gcloud dns records list <zone> [--name N] [--type T]\n  gcloud dns records add <zone> <name> <type> <data>... [--ttl 300] --confirm\n  gcloud dns records remove <zone> <name> <type> --confirm\n  gcloud dns logging status <zone>\n  gcloud dns logging enable <zone> --confirm\n  gcloud dns logging disable <zone> --confirm',
+    { prefix: 'gcloud' },
+  );
+}
+
+// ── Cloud Billing ────────────────────────────────────────────────────────────
+
+const BILLING_BASE = 'https://cloudbilling.googleapis.com/v1';
+
+/** Normalize an account id to the bare XXXX-XXXX-XXXX form (strip prefix). */
+function billingAccountId(raw) {
+  return (raw || '').replace(/^billingAccounts\//, '');
+}
+
+async function cmdBillingAccountsList(flags) {
+  const accounts = await gfetchAll(`${BILLING_BASE}/billingAccounts`, 'billingAccounts');
+  if (flags.json) { cli.out(accounts); return; }
+  if (!accounts.length) { console.log(c.dim('  No billing accounts accessible.')); return; }
+  console.log('');
+  for (const a of accounts) {
+    const open = a.open ? c.green('open') : c.dim('closed');
+    console.log(`  ${c.cyan(c.bold(a.displayName || a.name))}  ${c.dim(a.name)}  ${open}`);
+  }
+}
+
+async function cmdBillingAccountsDescribe(positional, flags) {
+  const id = billingAccountId(positional[0]);
+  if (!id) cli.die('usage: gcloud billing accounts describe <ACCOUNT_ID>', { prefix: 'gcloud' });
+  const a = await gfetch(`${BILLING_BASE}/billingAccounts/${encodeURIComponent(id)}`);
+  if (flags.json) { cli.out(a); return; }
+  console.log('');
+  console.log(`  ${c.cyan(c.bold(a.displayName || a.name))}`);
+  console.log(`  ${c.dim('name')}         ${a.name}`);
+  console.log(`  ${c.dim('open')}         ${a.open ? c.green('yes') : c.red('no')}`);
+  if (a.masterBillingAccount) console.log(`  ${c.dim('master')}       ${a.masterBillingAccount}`);
+}
+
+async function cmdBillingAccountsGetIamPolicy(positional, flags) {
+  const id = billingAccountId(positional[0]);
+  if (!id) cli.die('usage: gcloud billing accounts get-iam-policy <ACCOUNT_ID>', { prefix: 'gcloud' });
+  const policy = await gfetch(`${BILLING_BASE}/billingAccounts/${encodeURIComponent(id)}:getIamPolicy`, { method: 'POST', body: {} });
+  if (flags.json) { cli.out(policy); return; }
+  const bindings = policy.bindings || [];
+  if (!bindings.length) { console.log(c.dim('  No IAM bindings.')); return; }
+  console.log('');
+  for (const b of bindings) {
+    console.log(`  ${c.cyan(c.bold(b.role))}`);
+    for (const m of (b.members || [])) console.log(`      ${c.dim(m)}`);
+  }
+}
+
+async function cmdBillingProjectsList(positional, flags) {
+  const id = billingAccountId(positional[0]);
+  if (!id) cli.die('usage: gcloud billing projects list <ACCOUNT_ID>', { prefix: 'gcloud' });
+  const projects = await gfetchAll(`${BILLING_BASE}/billingAccounts/${encodeURIComponent(id)}/projects`, 'projectBillingInfo');
+  if (flags.json) { cli.out(projects); return; }
+  if (!projects.length) { console.log(c.dim('  No linked projects.')); return; }
+  console.log('');
+  for (const p of projects) {
+    const on = p.billingEnabled ? c.green('●') : c.dim('○');
+    console.log(`  ${on} ${c.cyan(c.bold(p.projectId))}  ${c.dim(p.billingAccountName || '')}`);
+  }
+}
+
+async function cmdBillingProjectsDescribe(positional, flags) {
+  const projectId = positional[0];
+  if (!projectId) cli.die('usage: gcloud billing projects describe <PROJECT_ID>', { prefix: 'gcloud' });
+  const info = await gfetch(`${BILLING_BASE}/projects/${encodeURIComponent(projectId)}/billingInfo`);
+  if (flags.json) { cli.out(info); return; }
+  console.log('');
+  console.log(`  ${c.cyan(c.bold(info.projectId || projectId))}`);
+  console.log(`  ${c.dim('billingAccountName')}  ${info.billingAccountName || c.dim('(none)')}`);
+  console.log(`  ${c.dim('billingEnabled')}      ${info.billingEnabled ? c.green('yes') : c.red('no')}`);
+}
+
+async function cmdBillingProjectsLink(positional, flags) {
+  const projectId = positional[0];
+  const account = billingAccountId(str(flags['billing-account']));
+  if (!projectId || !account) {
+    cli.die('usage: gcloud billing projects link <PROJECT_ID> --billing-account <ACCOUNT_ID> --confirm', { prefix: 'gcloud' });
+  }
+  const billingAccountName = `billingAccounts/${account}`;
+  if (!flags.confirm) {
+    console.log('');
+    console.log(c.yellow(`  Would LINK project ${c.bold(projectId)} to ${c.bold(billingAccountName)}.`));
+    console.log(c.dim('  Re-run with --confirm to apply.'));
+    return;
+  }
+  const info = await gfetch(
+    `${BILLING_BASE}/projects/${encodeURIComponent(projectId)}/billingInfo`,
+    { method: 'PUT', body: { billingAccountName } },
+  );
+  console.log(c.green(`✓ Linked ${c.bold(projectId)} to ${info.billingAccountName || billingAccountName}`) + c.dim(`  (billingEnabled: ${!!info.billingEnabled})`));
+}
+
+async function cmdBillingProjectsUnlink(positional, flags) {
+  const projectId = positional[0];
+  if (!projectId) cli.die('usage: gcloud billing projects unlink <PROJECT_ID> --confirm', { prefix: 'gcloud' });
+  if (!flags.confirm) {
+    console.log('');
+    console.log(c.yellow(`  Would UNLINK billing from project ${c.bold(projectId)} (disables billing).`));
+    console.log(c.dim('  Re-run with --confirm to apply.'));
+    return;
+  }
+  const info = await gfetch(
+    `${BILLING_BASE}/projects/${encodeURIComponent(projectId)}/billingInfo`,
+    { method: 'PUT', body: { billingAccountName: '' } },
+  );
+  console.log(c.green(`✓ Unlinked billing from ${c.bold(projectId)}`) + c.dim(`  (billingEnabled: ${!!info.billingEnabled})`));
+}
+
+async function cmdBilling(positional, flags) {
+  const group = positional[0];
+  const action = positional[1];
+  const rest = positional.slice(2);
+  if (group === 'accounts' && (action === 'list' || !action)) return await cmdBillingAccountsList(flags);
+  if (group === 'accounts' && action === 'describe') return await cmdBillingAccountsDescribe(rest, flags);
+  if (group === 'accounts' && action === 'get-iam-policy') return await cmdBillingAccountsGetIamPolicy(rest, flags);
+  if (group === 'projects' && (action === 'list' || !action)) return await cmdBillingProjectsList(rest, flags);
+  if (group === 'projects' && action === 'describe') return await cmdBillingProjectsDescribe(rest, flags);
+  if (group === 'projects' && action === 'link') return await cmdBillingProjectsLink(rest, flags);
+  if (group === 'projects' && action === 'unlink') return await cmdBillingProjectsUnlink(rest, flags);
+  cli.die(
+    'usage:\n  gcloud billing accounts list\n  gcloud billing accounts describe <ACCOUNT_ID>\n  gcloud billing accounts get-iam-policy <ACCOUNT_ID>\n  gcloud billing projects list <ACCOUNT_ID>\n  gcloud billing projects describe <PROJECT_ID>\n  gcloud billing projects link <PROJECT_ID> --billing-account <ACCOUNT_ID> --confirm\n  gcloud billing projects unlink <PROJECT_ID> --confirm',
     { prefix: 'gcloud' },
   );
 }
@@ -660,6 +823,17 @@ USAGE
   gcloud dns records list <zone> [--name N] [--type T]
   gcloud dns records add    <zone> <name> <type> <data>... [--ttl 300] --confirm
   gcloud dns records remove <zone> <name> <type> --confirm
+  gcloud dns logging status  <zone> [--project P]   Query-logging state for a zone
+  gcloud dns logging enable  <zone> [--project P] --confirm
+  gcloud dns logging disable <zone> [--project P] --confirm
+
+  gcloud billing accounts list                      Billing accounts you can access
+  gcloud billing accounts describe <ACCOUNT_ID>
+  gcloud billing accounts get-iam-policy <ACCOUNT_ID>
+  gcloud billing projects list <ACCOUNT_ID>         Projects linked to a billing account
+  gcloud billing projects describe <PROJECT_ID>     A project's billing link + state
+  gcloud billing projects link   <PROJECT_ID> --billing-account <ACCOUNT_ID> --confirm
+  gcloud billing projects unlink <PROJECT_ID> --confirm
 
   gcloud api [METHOD] <full-url> [--data <json>]    Authenticated raw call
 
@@ -701,6 +875,7 @@ async function main() {
     if (s === 'services') return await cmdServices(positional, flags);
     if (s === 'run') return await cmdRun(flags);
     if (s === 'dns') return await cmdDns(positional, flags);
+    if (s === 'billing') return await cmdBilling(positional, flags);
     if (s === 'api') return await cmdApi(positional, flags);
 
     cli.die(`unknown command: ${s}\nRun 'gcloud --help' for usage.`, { prefix: 'gcloud' });
