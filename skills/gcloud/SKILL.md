@@ -66,6 +66,16 @@ Override per-call with `--project <id>` (or `-p`).
 | `gcloud dns records list <zone> [--name N] [--type T]` | List record sets in a zone |
 | `gcloud dns records add <zone> <name> <type> <data>... [--ttl 300] --confirm` | Add/replace a record set |
 | `gcloud dns records remove <zone> <name> <type> --confirm` | Delete a record set |
+| `gcloud dns logging status <zone>` | Show whether query logging is enabled for a zone |
+| `gcloud dns logging enable <zone> --confirm` | Enable Cloud DNS query logging on a zone |
+| `gcloud dns logging disable <zone> --confirm` | Disable query logging on a zone |
+| `gcloud billing accounts list` | Billing accounts you can access |
+| `gcloud billing accounts describe <ACCOUNT_ID>` | Details for one billing account |
+| `gcloud billing accounts get-iam-policy <ACCOUNT_ID>` | IAM bindings on a billing account |
+| `gcloud billing projects list <ACCOUNT_ID>` | Projects linked to a billing account |
+| `gcloud billing projects describe <PROJECT_ID>` | A project's billing link + enabled state |
+| `gcloud billing projects link <PROJECT_ID> --billing-account <ACCOUNT_ID> --confirm` | Link a project to a billing account |
+| `gcloud billing projects unlink <PROJECT_ID> --confirm` | Remove a project's billing link |
 | `gcloud api [METHOD] <full-url> [--data <json>]` | Authenticated raw call to any Google API |
 
 All commands accept `--json` for raw output, and `--project <id>` to override
@@ -105,6 +115,49 @@ targets under `routingPolicy`. `records list` surfaces these — e.g. a weighted
 CNAME prints each item's weight and target (weight `0` is flagged as inactive) —
 so a routed record no longer renders as a blank line. Use `--json` for the raw
 `routingPolicy` structure.
+
+**Query logging.** `gcloud dns logging status <zone>` reports whether a managed
+zone records DNS queries (via the zone's `cloudLoggingConfig.enableLogging`
+flag). `enable`/`disable` toggle it and, like every mutation, require
+`--confirm` — without it they print a preview only. Enabling logging is not
+free: DNS query logs bill through Cloud Logging ingestion at $0.50/GiB after the
+first 50 GiB/project/month (the enable preview repeats this so it isn't a
+surprise).
+
+```bash
+gcloud dns logging status hlx-live
+gcloud dns logging enable hlx-live --confirm
+gcloud dns logging disable hlx-live --confirm
+```
+
+### Cloud Billing
+
+`gcloud billing` mirrors the Cloud Billing API. `accounts list/describe/
+get-iam-policy` and `projects list <ACCOUNT_ID>` operate on billing **account**
+resources and therefore need billing-account-level IAM (e.g. *Billing Account
+Viewer*) — without it `accounts list` returns an empty list (printed as "No
+billing accounts accessible."), which is normal, not an error.
+
+```bash
+gcloud billing accounts list
+gcloud billing accounts describe 002EE3-CC6C9E-B2B150   # prefix optional
+gcloud billing projects list 002EE3-CC6C9E-B2B150       # linked projects
+gcloud billing projects describe my-project-id          # this project's link
+gcloud billing projects link   my-project-id --billing-account 002EE3-CC6C9E-B2B150 --confirm
+gcloud billing projects unlink my-project-id --confirm
+```
+
+`projects describe <PROJECT_ID>` works with ordinary **project-level** access —
+it reads the project's `billingInfo` (billing account name + whether billing is
+enabled). Account IDs may be given with or without the `billingAccounts/`
+prefix; it is normalized either way. `link`/`unlink` mutate billing and are
+`--confirm`-gated with a preview.
+
+Note: this API exposes billing **configuration**, not **cost**. Per-project
+spend (dollar amounts, usage breakdowns) is **not** available here — use the
+BigQuery billing export or the Cloud Console billing reports instead
+(project-scoped cost reports require the `billing.resourceCosts.get`
+permission on the project).
 
 ### Raw API access
 
