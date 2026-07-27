@@ -503,8 +503,51 @@ async function cmdDnsRecordsList(positional, flags) {
   console.log('');
   for (const r of rrsets) {
     console.log(`  ${c.cyan(c.bold(r.type.padEnd(6)))} ${r.name}  ${c.dim('ttl:' + r.ttl)}`);
-    for (const d of (r.rrdatas || [])) console.log(`      ${d}`);
+    for (const line of rrdataLines(r)) console.log(`      ${line}`);
   }
+}
+
+/**
+ * Render an rrset's data. Plain records expose `rrdatas`, but records with a
+ * routing policy (WRR / GEO / failover) leave `rrdatas` empty and stash the
+ * real targets under `routingPolicy` — surface those instead of a blank line.
+ */
+function rrdataLines(r) {
+  if (Array.isArray(r.rrdatas) && r.rrdatas.length) return r.rrdatas.slice();
+  const rp = r.routingPolicy;
+  if (!rp) return [];
+  const lines = [];
+  // Weighted round-robin
+  if (rp.wrr?.items) {
+    lines.push(c.dim('routing: weighted (wrr)'));
+    rp.wrr.items.forEach((it, i) => {
+      const targets = (it.rrdatas || []).join(', ') || c.dim('(empty)');
+      const w = it.weight ?? 0;
+      const tag = w === 0 ? c.dim(`weight ${w} — inactive`) : `weight ${w}`;
+      lines.push(`[${i}] ${tag}: ${targets}`);
+    });
+  }
+  // Geo-location
+  if (rp.geo?.items) {
+    lines.push(c.dim('routing: geo'));
+    rp.geo.items.forEach(it => {
+      const targets = (it.rrdatas || []).join(', ') || c.dim('(empty)');
+      lines.push(`${it.location || '?'}: ${targets}`);
+    });
+  }
+  // Primary/backup failover
+  if (rp.primaryBackup) {
+    const pb = rp.primaryBackup;
+    lines.push(c.dim('routing: primary/backup (failover)'));
+    const prim = pb.primaryTargets?.internalLoadBalancers?.map(l => l.ipAddress).filter(Boolean)
+      || pb.primaryTargets?.rrdatas || [];
+    if (prim.length) lines.push(`primary: ${prim.join(', ')}`);
+    const backup = pb.backupGeoTargets?.items || [];
+    backup.forEach(it => lines.push(`backup ${it.location || '?'}: ${(it.rrdatas || []).join(', ')}`));
+  }
+  // Fallback: unknown policy shape — show something rather than nothing.
+  if (!lines.length) lines.push(c.dim('routing policy: ' + JSON.stringify(rp)));
+  return lines;
 }
 
 /** add = upsert (replace existing rrset of same name+type); remove = delete it. */
