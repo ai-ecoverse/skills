@@ -626,8 +626,26 @@ async function owaPost(token, path, body) {
 }
 
 // ─── Mailbox timezone ────────────────────────────────────────────────────────
-// `--timezone` wins; otherwise use the mailbox's own zone (cached in TZ_PATH so
-// the extra round-trip happens once), falling back to UTC if it can't be read.
+// `--timezone` wins; otherwise use the mailbox's own zone, falling back to UTC if
+// it can't be read.
+//
+// The cache in TZ_PATH is scoped to the mailbox the current token belongs to and
+// carries a TTL. Without both, switching the browser to another Outlook account —
+// or changing the timezone in Outlook's settings — would keep reusing the old
+// value forever and label every printed time with a zone that isn't the one the
+// times were actually requested in (review comment,
+// chatgpt-codex-connector[bot], P2).
+const TZ_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+// Identify the mailbox behind a token from its own claims (same decoder used by
+// the bearer revalidation above — no extra API call). `upn`/`unique_name` are the
+// signed-in address; `oid`/`sub` are stable object ids and cover tokens without a
+// upn claim.
+function mailboxIdentity(token) {
+  const claims = decodeJwtPayload(token);
+  if (!claims) return null;
+  return claims.upn || claims.unique_name || claims.oid || claims.sub || null;
+}
 
 let _timezone = null;
 
@@ -637,18 +655,27 @@ async function getTimezone(token) {
     _timezone = String(flags.timezone);
     return _timezone;
   }
+  const mailbox = mailboxIdentity(token);
   try {
-    const cached = (await fs.readFile(TZ_PATH)).trim();
-    if (cached) {
-      _timezone = cached;
+    // Older versions of this script wrote the bare zone name here; that parses as
+    // invalid JSON and is simply treated as a miss.
+    const entry = JSON.parse(await fs.readFile(TZ_PATH));
+    const fresh = entry.cachedAt && Date.now() - entry.cachedAt < TZ_CACHE_TTL_MS;
+    if (entry.timeZone && fresh && entry.mailbox === mailbox) {
+      _timezone = entry.timeZone;
       return _timezone;
     }
-  } catch { /* no cache yet */ }
+  } catch { /* no cache, unreadable, or stale / other mailbox — refetch below */ }
   try {
     const settings = await owaGet(token, '/me/MailboxSettings', { '$select': 'TimeZone' });
     if (settings && settings.TimeZone) {
       _timezone = settings.TimeZone;
-      try { await fs.writeFile(TZ_PATH, _timezone); } catch { /* cache is best-effort */ }
+      try {
+        await fs.writeFile(
+          TZ_PATH,
+          JSON.stringify({ mailbox, timeZone: _timezone, cachedAt: Date.now() })
+        );
+      } catch { /* cache is best-effort */ }
       return _timezone;
     }
   } catch { /* fall through to UTC */ }

@@ -79,7 +79,9 @@ List inbox messages with sender, subject, and preview.
 List upcoming calendar events with time, organizer, location, response status, and event id.
 
 Times are rendered in the mailbox timezone (`GET /me/MailboxSettings` → `TimeZone`,
-requested via `Prefer: outlook.timezone` and cached in `/shared/.outlook-timezone`),
+requested via `Prefer: outlook.timezone` and cached in `/shared/.outlook-timezone`
+per mailbox identity with a 24h TTL, so switching accounts or changing the zone in
+Outlook re-reads it),
 not UTC. The header states which zone is shown.
 
 **Options:**
