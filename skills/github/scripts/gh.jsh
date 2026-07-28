@@ -3343,7 +3343,10 @@ const rest = argv.slice(2);
 
 if (cmd === 'auth') { await authStatus(); process.exit(0); }
 if (cmd === 'api') { await apiPassthrough(argv.slice(1)); process.exit(0); }
-if (cmd === 'monday') { await mondayGh(argv.slice(2)); process.exit(0); }
+// slice(1), not slice(2): `cmd` is argv[0], so argv[1] is already the first
+// flag. Slicing 2 silently ate `--limit` (the first flag monday passes), which
+// left limit pinned at its 50 default while --depth/--date still parsed.
+if (cmd === 'monday') { await mondayGh(argv.slice(1)); process.exit(0); }
 
 const dispatch = {
   pr:      { list: () => prList(rest),      view: () => prView(rest),    checks: () => prChecks(rest), merge: () => prMerge(rest), close: () => prClose(rest), comment: () => prComment(rest), checkout: () => prCheckout(rest), create: () => prCreate(rest), watch: () => prWatch(rest), unwatch: () => prUnwatch(rest) },
