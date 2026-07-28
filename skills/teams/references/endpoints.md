@@ -254,3 +254,21 @@ limits. If you hit throttling, wait per the `Retry-After` header and retry.
 | 404 | Resource not found | Team / channel / message ID is wrong |
 | 429 | Throttled | Wait per `Retry-After` header |
 | 503 | Service unavailable | Transient — retry after a few seconds |
+
+## monday chat retrieval
+
+`teams monday` cannot read chats through Graph: the delegated browser token
+carries no `Chat.ReadBasic` / `Chat.Read` / `Chat.ReadWrite` scope, so
+`/me/chats` answers `403`. (This is the same cause as the
+`Chat scan unavailable (403)` warning from `teams activity`.)
+
+It therefore uses the Teams chat service (IC3) that the web client itself uses:
+
+1. `POST teams.microsoft.com/api/authsvc/v1.0/authz` — obtained in-page with an
+   `api.spaces.skype.com` token — returns a `skypeToken`.
+2. That token is used against
+   `<regionGtms.chatService>/v1/users/ME/conversations[/…/messages]`.
+
+Tokens are minted and consumed inside the Teams tab, exactly like every other
+subcommand; nothing is persisted. If the activity feed is unavailable, `monday`
+falls back to the Graph beta channel scan used by `teams activity`.
