@@ -320,13 +320,282 @@ function fail(cmd, err) {
   cli.die(cmd + ' failed: ' + (err.body?.message || err.message), { prefix: 'gh' });
 }
 
+// ─── Upstream-gh argument compatibility ──────────────────────────────────────
+// SLICC is a harness for AI agents, and agents arrive with strong priors from
+// the real GitHub CLI (cli/cli): named flags (`--title`, `-R owner/repo`),
+// `--json f1,f2`, `--help` on every subcommand. Historically this script only
+// accepted positional arguments, so intuitive commands failed.
+//
+// Everything below is ADDITIVE: each command accepts the upstream flag form
+// AND the original positional form. Rules:
+//  • a flag wins over the equivalent positional slot;
+//  • the same value supplied twice is a hard error, never a silent pick;
+//  • an unrecognised flag is passed through as a positional (with a warning),
+//    exactly as it was before, so no previously-working invocation changes.
+
+// Flag spec: { name: { type, short } } where type is one of
+//   'string' — takes a value (`--title T`, `--title=T`)
+//   'bool'   — no value (`--draft`, `--draft=false`)
+//   'list'   — repeatable and/or comma-separated (`--label a --label b,c`)
+//   'fields' — like 'string' but usable bare (`--json` == every field)
+const REPO_FLAG = { repo: { type: 'string', short: 'R' } };
+const JSON_FLAGS = { json: { type: 'fields' }, jq: { type: 'string', short: 'q' } };
+
+function findFlagSpec(spec, name) {
+  if (Object.hasOwn(spec, name)) return [name, spec[name]];
+  for (const [k, v] of Object.entries(spec)) if (v.short === name) return [k, v];
+  return [null, null];
+}
+
+function parseArgs(cmdLabel, args, spec) {
+  const flags = {};
+  const positional = [];
+  let literal = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (literal) { positional.push(a); continue; }
+    if (a === '--') { literal = true; continue; }
+    if (a.length < 2 || a[0] !== '-') { positional.push(a); continue; }
+
+    const eq = a.indexOf('=');
+    const raw = eq === -1 ? a : a.slice(0, eq);
+    const [key, def] = findFlagSpec(spec, raw.replace(/^--?/, ''));
+    if (!key) {
+      cli.warn(
+        `${cmdLabel}: unrecognised flag ${raw} — passing it through as a positional argument ` +
+        `(run \`gh ${cmdLabel} --help\` for the supported flags)`
+      );
+      positional.push(a);
+      continue;
+    }
+
+    let value;
+    if (eq !== -1) value = a.slice(eq + 1);
+    else if (def.type === 'bool') value = true;
+    else if (def.type === 'fields') {
+      // `--json` is legal bare (meaning "every field"), so only swallow the
+      // next token when it actually looks like a field list — never a number
+      // (`gh pr view --json 42`) or an owner/repo or another flag.
+      const next = args[i + 1];
+      value = (next !== undefined && next[0] !== '-' && !/^\d+$/.test(next) && !next.includes('/'))
+        ? args[++i]
+        : '';
+    } else {
+      if (args[i + 1] === undefined) cli.die(`${cmdLabel}: flag ${raw} requires a value`);
+      value = args[++i];
+    }
+
+    if (def.type === 'list') {
+      flags[key] = flags[key] || [];
+      for (const v of String(value).split(',').map(s => s.trim()).filter(Boolean)) flags[key].push(v);
+    } else if (def.type === 'bool') {
+      flags[key] = value === true ? true : !/^(false|0|no)$/i.test(String(value));
+    } else {
+      if (flags[key] !== undefined) {
+        cli.die(`${cmdLabel}: ${raw} given more than once (${JSON.stringify(flags[key])} and ${JSON.stringify(value)})`);
+      }
+      flags[key] = value;
+    }
+  }
+  return { flags, positional };
+}
+
+// Maps leftover positionals onto named slots, honouring values already taken
+// from flags, and peels off a trailing [repo] the way this CLI always has.
+// A positional is only treated as the repo when there are more positionals
+// than unfilled slots — so `pr create T B feat/x` still means head=feat/x.
+const REPO_SHAPE = /^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/;
+
+function distribute(cmdLabel, positional, slotNames, fromFlags) {
+  const values = {};
+  for (const n of slotNames) values[n] = fromFlags[n] === undefined ? null : fromFlags[n];
+  const fromFlagNames = slotNames.filter(n => values[n] !== null);
+  const unfilled = slotNames.filter(n => values[n] === null);
+  const pos = [...positional];
+  let repoArg = null;
+  if (pos.length > unfilled.length && REPO_SHAPE.test(pos[pos.length - 1])) repoArg = pos.pop();
+  for (const n of unfilled) { if (pos.length) values[n] = pos.shift(); }
+  if (pos.length) {
+    if (fromFlagNames.length) {
+      cli.die(
+        `${cmdLabel}: value supplied twice — ${fromFlagNames.map(n => '--' + n).join(', ')} ` +
+        `given as a flag and extra positional argument(s) present (${pos.join(' ')}). ` +
+        'Use either the flag form or the positional form, not both.'
+      );
+    }
+    cli.warn(`${cmdLabel}: ignoring unexpected extra argument(s): ${pos.join(' ')}`);
+  }
+  return { values, repoArg };
+}
+
+async function repoFrom(cmdLabel, flags, repoArg) {
+  if (flags.repo && repoArg) {
+    cli.die(
+      `${cmdLabel}: repository specified twice — --repo ${flags.repo} and positional ${repoArg}. ` +
+      'Pass only one.'
+    );
+  }
+  return await resolveRepo(flags.repo || repoArg);
+}
+
+// Merges the historical `--label=`/`--labels=` spellings into one list.
+function labelList(flags) {
+  const out = [];
+  for (const v of [...(flags.label || []), ...(flags.labels || [])]) if (!out.includes(v)) out.push(v);
+  return out;
+}
+
+async function bodyFrom(cmdLabel, body, bodyFile) {
+  if (bodyFile) {
+    if (body !== null && body !== undefined) {
+      cli.die(`${cmdLabel}: body specified twice — --body and --body-file. Pass only one.`);
+    }
+    try { return await fs.readFile(bodyFile); }
+    catch (e) { cli.die(`${cmdLabel}: could not read --body-file ${bodyFile}: ${e.message}`); }
+  }
+  return body;
+}
+
+// ─── JSON output (--json / --jq, upstream semantics) ─────────────────────────
+
+function normField(s) { return String(s).toLowerCase().replace(/[^a-z0-9]/g, ''); }
+
+// Returns undefined when --json wasn't used, null for "every field", or the
+// resolved field list. Field names are matched case/shape-insensitively so
+// `statusCheckRollup`, `status_check_rollup` and `statuscheckrollup` all work.
+function parseFields(cmdLabel, raw, available) {
+  if (raw === undefined) return undefined;
+  const requested = String(raw).split(',').map(s => s.trim()).filter(Boolean);
+  if (!requested.length) return null;
+  const index = new Map(available.map(f => [normField(f), f]));
+  const out = [];
+  for (const f of requested) {
+    const hit = index.get(normField(f));
+    if (!hit) {
+      cli.die(`${cmdLabel}: unknown JSON field "${f}"\nAvailable fields: ${available.join(', ')}`);
+    }
+    if (!out.includes(hit)) out.push(hit);
+  }
+  return out;
+}
+
+function wants(fields, name) { return !fields || fields.includes(name); }
+
+function pickFields(obj, fields) {
+  if (!fields) return obj;
+  const out = {};
+  for (const f of fields) out[f] = obj[f];
+  return out;
+}
+
+// Minimal jq fallback (`.a.b`, `.a[].b`, `.a[0]`) for when the shell's jq is
+// unavailable; the real jq is preferred whenever it runs.
+function jqLite(expr, data) {
+  const path = expr.trim().replace(/^\./, '');
+  if (!path) return JSON.stringify(data, null, 2);
+  let cur = [data];
+  for (const seg of path.split('.')) {
+    const m = seg.match(/^([^[\]]*)\[(\d*)\]$/);
+    const key = m ? m[1] : seg;
+    const iterate = !!m && m[2] === '';
+    const idx = m && m[2] !== '' ? parseInt(m[2], 10) : null;
+    const next = [];
+    for (const v of cur) {
+      const val = key ? v?.[key] : v;
+      if (iterate && Array.isArray(val)) next.push(...val);
+      else if (idx !== null && Array.isArray(val)) next.push(val[idx]);
+      else next.push(val);
+    }
+    cur = next;
+  }
+  return cur.map(v => (typeof v === 'string' ? v : JSON.stringify(v, null, 2))).join('\n');
+}
+
+async function applyJq(expr, data) {
+  // Piped through the shell's jq when available (full jq semantics), falling
+  // back to the built-in path evaluator below when jq is missing or errors.
+  try {
+    const json = JSON.stringify(data);
+    const r = await exec(`printf '%s' ${escapeShellArg(json)} | jq -r ${escapeShellArg(expr)}`);
+    if (r.exitCode === 0 && !/^jq: error/m.test(r.stderr || '')) return r.stdout.replace(/\n+$/, '');
+  } catch {}
+  return jqLite(expr, data);
+}
+
+async function outputJson(data, flags) {
+  if (flags.jq) { console.log(await applyJq(flags.jq, data)); return; }
+  console.log(JSON.stringify(data, null, 2));
+}
+
+function upper(s) { return s ? String(s).toUpperCase() : s; }
+function userRef(u) { return u ? { login: u.login, id: u.id, url: u.html_url } : null; }
+function labelRefs(list) { return (list || []).map(l => ({ name: l.name, color: l.color, description: l.description })); }
+
 // ─── pr list ─────────────────────────────────────────────────────────────────
 
+const PR_LIST_FIELDS = [
+  'number', 'title', 'body', 'state', 'isDraft', 'author', 'headRefName', 'baseRefName',
+  'headRefOid', 'url', 'createdAt', 'updatedAt', 'closedAt', 'mergedAt', 'labels',
+  'assignees', 'reviewRequests', 'milestone', 'id',
+];
+
+function prListJson(pr) {
+  return {
+    number: pr.number,
+    title: pr.title,
+    body: pr.body || '',
+    state: pr.merged_at ? 'MERGED' : upper(pr.state),
+    isDraft: !!pr.draft,
+    author: userRef(pr.user),
+    headRefName: pr.head?.ref,
+    baseRefName: pr.base?.ref,
+    headRefOid: pr.head?.sha,
+    url: pr.html_url,
+    createdAt: pr.created_at,
+    updatedAt: pr.updated_at,
+    closedAt: pr.closed_at,
+    mergedAt: pr.merged_at,
+    labels: labelRefs(pr.labels),
+    assignees: (pr.assignees || []).map(userRef),
+    reviewRequests: (pr.requested_reviewers || []).map(userRef),
+    milestone: pr.milestone ? { title: pr.milestone.title, number: pr.milestone.number } : null,
+    id: pr.node_id,
+  };
+}
+
 async function prList(args) {
-  const repo = await resolveRepo(args[0]);
+  const { flags, positional } = parseArgs('pr list', args, {
+    ...REPO_FLAG,
+    ...JSON_FLAGS,
+    state: { type: 'string', short: 's' },
+    limit: { type: 'string', short: 'L' },
+    base: { type: 'string', short: 'B' },
+    head: { type: 'string', short: 'H' },
+    draft: { type: 'bool', short: 'd' },
+  });
+  const { repoArg } = distribute('pr list', positional, [], flags);
+  const repo = await repoFrom('pr list', flags, repoArg);
+
+  const state = (flags.state || 'open').toLowerCase();
+  const params = {
+    state: state === 'merged' ? 'closed' : state,
+    per_page: Math.min(parseInt(flags.limit, 10) || 30, 100),
+  };
+  if (flags.base) params.base = flags.base;
+  if (flags.head) params.head = flags.head.includes(':') ? flags.head : `${repo.split('/')[0]}:${flags.head}`;
+
   let prs;
-  try { prs = await api.get(`/repos/${repo}/pulls`, { params: { state: 'open', per_page: 30 } }); }
+  try { prs = await api.get(`/repos/${repo}/pulls`, { params }); }
   catch (e) { fail('pr list', e); }
+
+  if (state === 'merged') prs = prs.filter(pr => pr.merged_at);
+  if (flags.draft) prs = prs.filter(pr => pr.draft);
+
+  const fields = parseFields('pr list', flags.json, PR_LIST_FIELDS);
+  if (fields !== undefined) {
+    await outputJson(prs.map(pr => pickFields(prListJson(pr), fields)), flags);
+    return;
+  }
 
   if (!prs.length) { console.log(color.gray('No open pull requests.')); return; }
 
@@ -341,13 +610,148 @@ async function prList(args) {
 
 // ─── pr view ─────────────────────────────────────────────────────────────────
 
+const PR_VIEW_FIELDS = [
+  ...PR_LIST_FIELDS,
+  'merged', 'mergeable', 'mergeStateStatus', 'mergeCommit', 'additions', 'deletions',
+  'changedFiles', 'commits', 'statusCheckRollup', 'reviews', 'reviewDecision', 'comments',
+];
+
+// Normalises check-runs + commit statuses into upstream's statusCheckRollup shape.
+function rollupEntries(checkRuns, statuses) {
+  const out = (checkRuns || []).map(r => ({
+    __typename: 'CheckRun',
+    name: r.name,
+    status: upper(r.status),
+    conclusion: upper(r.conclusion),
+    detailsUrl: r.details_url,
+    startedAt: r.started_at,
+    completedAt: r.completed_at,
+    workflowName: r.app ? r.app.name : null,
+  }));
+  for (const s of statuses || []) {
+    out.push({
+      __typename: 'StatusContext',
+      name: s.context,
+      context: s.context,
+      state: upper(s.state),
+      status: s.state === 'pending' ? 'IN_PROGRESS' : 'COMPLETED',
+      conclusion: s.state === 'pending' ? null : upper(s.state),
+      detailsUrl: s.target_url,
+      startedAt: s.created_at,
+      completedAt: s.updated_at,
+      targetUrl: s.target_url,
+      description: s.description,
+    });
+  }
+  return out;
+}
+
+function rollupBucket(entry) {
+  const v = entry.conclusion || entry.state || entry.status;
+  if (['SUCCESS', 'NEUTRAL', 'SKIPPED'].includes(v)) return 'pass';
+  if (['FAILURE', 'TIMED_OUT', 'ACTION_REQUIRED', 'STARTUP_FAILURE', 'ERROR'].includes(v)) return 'fail';
+  if (['CANCELLED', 'STALE'].includes(v)) return 'skipping';
+  return 'pending';
+}
+
+async function fetchRollup(repo, sha) {
+  let checkRuns = [];
+  let statuses = [];
+  try {
+    const c = await api.get(`/repos/${repo}/commits/${sha}/check-runs`, { params: { per_page: 100 } });
+    checkRuns = c.check_runs || [];
+  } catch {}
+  try {
+    const s = await api.get(`/repos/${repo}/commits/${sha}/statuses`, { params: { per_page: 100 } });
+    statuses = Array.isArray(s) ? s : [];
+  } catch {}
+  return rollupEntries(checkRuns, statuses);
+}
+
+async function fetchReviews(repo, num) {
+  try {
+    const rs = await api.get(`/repos/${repo}/pulls/${num}/reviews`, { params: { per_page: 100 } });
+    return (rs || []).map(r => ({
+      id: r.id,
+      author: userRef(r.user),
+      authorAssociation: r.author_association,
+      state: upper(r.state),
+      body: r.body || '',
+      submittedAt: r.submitted_at,
+      url: r.html_url,
+    }));
+  } catch { return []; }
+}
+
+async function fetchComments(repo, num) {
+  try {
+    const cs = await api.get(`/repos/${repo}/issues/${num}/comments`, { params: { per_page: 100 } });
+    return (cs || []).map(c => ({
+      id: c.id,
+      author: userRef(c.user),
+      authorAssociation: c.author_association,
+      body: c.body || '',
+      createdAt: c.created_at,
+      updatedAt: c.updated_at,
+      url: c.html_url,
+    }));
+  } catch { return []; }
+}
+
+function reviewDecision(reviews) {
+  const latest = new Map();
+  for (const r of reviews) {
+    if (!['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(r.state)) continue;
+    latest.set(r.author?.login, r.state);
+  }
+  const states = [...latest.values()];
+  if (states.includes('CHANGES_REQUESTED')) return 'CHANGES_REQUESTED';
+  if (states.includes('APPROVED')) return 'APPROVED';
+  return null;
+}
+
+async function prViewJson(cmdLabel, repo, pr, fields, flags) {
+  const data = prListJson(pr);
+  data.merged = !!pr.merged;
+  data.mergeable = pr.mergeable === true ? 'MERGEABLE' : pr.mergeable === false ? 'CONFLICTING' : 'UNKNOWN';
+  data.mergeStateStatus = upper(pr.mergeable_state);
+  data.mergeCommit = pr.merge_commit_sha ? { oid: pr.merge_commit_sha } : null;
+  data.additions = pr.additions;
+  data.deletions = pr.deletions;
+  data.changedFiles = pr.changed_files;
+  data.commits = pr.commits;
+
+  if (wants(fields, 'statusCheckRollup')) data.statusCheckRollup = await fetchRollup(repo, pr.head.sha);
+  if (wants(fields, 'reviews') || wants(fields, 'reviewDecision')) {
+    const reviews = await fetchReviews(repo, pr.number);
+    data.reviews = reviews;
+    data.reviewDecision = reviewDecision(reviews);
+  }
+  if (wants(fields, 'comments')) data.comments = await fetchComments(repo, pr.number);
+
+  await outputJson(pickFields(data, fields), flags);
+}
+
 async function prView(args) {
-  if (!args[0]) cli.die('pr view: PR number required');
-  const num = validateNum(args[0], 'PR number');
-  const repo = await resolveRepo(args[1]);
+  const { flags, positional } = parseArgs('pr view', args, {
+    ...REPO_FLAG,
+    ...JSON_FLAGS,
+    comments: { type: 'bool', short: 'c' },
+  });
+  const { values, repoArg } = distribute('pr view', positional, ['number'], flags);
+  if (!values.number) cli.die('pr view: PR number required');
+  const num = validateNum(values.number, 'PR number');
+  const repo = await repoFrom('pr view', flags, repoArg);
   let pr, checks;
   try { pr = await api.get(`/repos/${repo}/pulls/${num}`); }
   catch (e) { fail('pr view', e); }
+
+  const fields = parseFields('pr view', flags.json, PR_VIEW_FIELDS);
+  if (fields !== undefined) {
+    await prViewJson('pr view', repo, pr, fields, flags);
+    return;
+  }
+
   try { checks = await api.get(`/repos/${repo}/commits/${pr.head.sha}/check-runs`, { params: { per_page: 30 } }); }
   catch { checks = { check_runs: [] }; }
 
@@ -377,40 +781,157 @@ async function prView(args) {
     console.log('\n' + color.gray('Body:'));
     console.log(fmt.trunc(pr.body.replace(/\r?\n/g, ' '), 400));
   }
+
+  if (flags.comments) {
+    const comments = await fetchComments(repo, num);
+    console.log('\n' + color.bold('Comments:') + (comments.length ? '' : ' ' + color.gray('(none)')));
+    for (const c of comments) {
+      console.log('\n' + color.cyan('@' + (c.author?.login || '?')) + '  ' + color.gray(fmtDate(c.createdAt)));
+      console.log(fmt.trunc(c.body.replace(/\r?\n/g, ' '), 400));
+    }
+  }
+}
+
+// ─── pr checks ───────────────────────────────────────────────────────────────
+// Upstream `gh pr checks <num>` — per-check status/conclusion for a PR's head
+// commit. Previously this only existed folded into `pr view`'s summary line.
+
+const PR_CHECKS_FIELDS = [
+  'name', 'state', 'bucket', 'status', 'conclusion', 'link', 'workflow',
+  'startedAt', 'completedAt', 'description',
+];
+
+async function prChecks(args) {
+  const { flags, positional } = parseArgs('pr checks', args, {
+    ...REPO_FLAG,
+    ...JSON_FLAGS,
+    watch: { type: 'bool' },
+    filter: { type: 'string' },
+    scoop: { type: 'string' },
+  });
+  const { values, repoArg } = distribute('pr checks', positional, ['number'], flags);
+  if (!values.number) cli.die('pr checks: PR number required');
+  const num = validateNum(values.number, 'PR number');
+  const repo = await repoFrom('pr checks', flags, repoArg);
+
+  let pr;
+  try { pr = await api.get(`/repos/${repo}/pulls/${num}`); }
+  catch (e) { fail('pr checks', e); }
+
+  const rollup = await fetchRollup(repo, pr.head.sha);
+  const entries = rollup.map(e => ({
+    name: e.name,
+    state: e.conclusion || e.state || e.status,
+    bucket: rollupBucket(e),
+    status: e.status,
+    conclusion: e.conclusion || null,
+    link: e.detailsUrl || null,
+    workflow: e.workflowName || null,
+    startedAt: e.startedAt || null,
+    completedAt: e.completedAt || null,
+    description: e.description || null,
+  }));
+
+  const fields = parseFields('pr checks', flags.json, PR_CHECKS_FIELDS);
+  if (fields !== undefined) {
+    await outputJson(entries.map(e => pickFields(e, fields)), flags);
+  } else if (!entries.length) {
+    console.log(color.gray('No checks reported for ' + pr.head.sha.slice(0, 7) + '.'));
+  } else {
+    const rows = entries.map(e => [
+      e.bucket === 'pass' ? sym('success') : e.bucket === 'fail' ? sym('failure') : e.bucket === 'pending' ? sym('pending') : sym('skipped'),
+      fmt.trunc(e.name, 44),
+      color.gray(String(e.state || '').toLowerCase() || 'pending'),
+      color.gray(fmt.trunc(e.link || '', 60)),
+    ]);
+    console.log(fmt.table(rows, [3, 46, 16]));
+    const failed = entries.filter(e => e.bucket === 'fail').length;
+    const pending = entries.filter(e => e.bucket === 'pending').length;
+    if (failed) console.log('\n' + color.red(failed + ' check(s) failed') + color.gray(' — `gh run list ' + repo + '` then `gh run view <id> --log-failed` for details'));
+    else if (pending) console.log('\n' + color.yellow(pending + ' check(s) still running'));
+    else console.log('\n' + color.green('All checks passing'));
+  }
+
+  // Polling is the wrong shape for a SLICC agent, so `--watch` installs the
+  // event-driven webhook watch instead (same plumbing as `gh pr watch`): the
+  // scoop gets check_run/check_suite licks as they happen. Mutates the repo
+  // (installs a webhook) — call `gh pr unwatch <num>` when done.
+  if (flags.watch) {
+    console.log(color.gray('\n--watch: installing the event-driven watch (SLICC equivalent of upstream polling)…'));
+    await prWatch([
+      String(num), repo,
+      ...(flags.filter ? ['--filter', flags.filter] : []),
+      ...(flags.scoop ? ['--scoop', flags.scoop] : []),
+    ]);
+  }
 }
 
 // ─── pr merge ────────────────────────────────────────────────────────────────
 
 async function prMerge(args) {
-  if (!args[0]) cli.die('pr merge: PR number required');
-  const num = validateNum(args[0], 'PR number');
-  let method = 'merge';
-  const rest = [];
-  for (const a of args.slice(1)) {
-    if (a === '--squash') method = 'squash';
-    else if (a === '--rebase') method = 'rebase';
-    else if (a === '--merge') method = 'merge';
-    else rest.push(a);
-  }
-  const repo = await resolveRepo(rest[0]);
+  const { flags, positional } = parseArgs('pr merge', args, {
+    ...REPO_FLAG,
+    merge: { type: 'bool', short: 'm' },
+    squash: { type: 'bool', short: 's' },
+    rebase: { type: 'bool', short: 'r' },
+    'delete-branch': { type: 'bool', short: 'd' },
+    subject: { type: 'string', short: 't' },
+    body: { type: 'string', short: 'b' },
+    'body-file': { type: 'string', short: 'F' },
+  });
+  const { values, repoArg } = distribute('pr merge', positional, ['number'], flags);
+  if (!values.number) cli.die('pr merge: PR number required');
+  const num = validateNum(values.number, 'PR number');
+  const chosen = ['merge', 'squash', 'rebase'].filter(m => flags[m]);
+  if (chosen.length > 1) cli.die('pr merge: pick one of --merge, --squash, --rebase (got: ' + chosen.map(m => '--' + m).join(' ') + ')');
+  const method = chosen[0] || 'merge';
+  const repo = await repoFrom('pr merge', flags, repoArg);
+
+  const body = { merge_method: method };
+  if (flags.subject) body.commit_title = flags.subject;
+  const msg = await bodyFrom('pr merge', flags.body ?? null, flags['body-file']);
+  if (msg !== null && msg !== undefined) body.commit_message = msg;
+
   try {
-    const res = await api.put(`/repos/${repo}/pulls/${num}/merge`, {
-      body: { merge_method: method },
-    });
+    const res = await api.put(`/repos/${repo}/pulls/${num}/merge`, { body });
     console.log(sym('merged') + ' ' + color.green('Merged') + ' PR #' + num + ' via ' + method + (res.message ? ' — ' + res.message : ''));
   } catch (e) { fail('pr merge', e); }
+
+  if (flags['delete-branch']) await deleteHeadBranch('pr merge', repo, num);
+}
+
+// Shared by `pr merge --delete-branch` / `pr close --delete-branch`.
+async function deleteHeadBranch(cmdLabel, repo, num) {
+  try {
+    const pr = await api.get(`/repos/${repo}/pulls/${num}`);
+    if (pr.head.repo && pr.head.repo.full_name !== repo) {
+      cli.warn(`${cmdLabel}: --delete-branch skipped — head branch lives in a fork (${pr.head.repo.full_name})`);
+      return;
+    }
+    await api.delete(`/repos/${repo}/git/refs/heads/${pr.head.ref}`);
+    console.log(sym('success') + ' Deleted branch ' + color.cyan(pr.head.ref));
+  } catch (e) {
+    cli.warn(`${cmdLabel}: could not delete head branch: ` + (e.body?.message || e.message));
+  }
 }
 
 // ─── pr comment ──────────────────────────────────────────────────────────────
 
 async function prComment(args) {
-  if (!args[0]) cli.die('pr comment: PR number required');
-  const num = validateNum(args[0], 'PR number');
-  if (!args[1]) cli.die('pr comment: message required');
-  const repo = await resolveRepo(args[2]);
+  const { flags, positional } = parseArgs('pr comment', args, {
+    ...REPO_FLAG,
+    body: { type: 'string', short: 'b' },
+    'body-file': { type: 'string', short: 'F' },
+  });
+  const { values, repoArg } = distribute('pr comment', positional, ['number', 'body'], flags);
+  if (!values.number) cli.die('pr comment: PR number required');
+  const num = validateNum(values.number, 'PR number');
+  const message = await bodyFrom('pr comment', values.body, flags['body-file']);
+  if (!message) cli.die('pr comment: message required (positional <message>, --body or --body-file)');
+  const repo = await repoFrom('pr comment', flags, repoArg);
   try {
     const res = await api.post(`/repos/${repo}/issues/${num}/comments`, {
-      body: { body: args[1] },
+      body: { body: message },
     });
     console.log(sym('success') + ' Comment posted: ' + res.html_url);
   } catch (e) { fail('pr comment', e); }
@@ -419,19 +940,30 @@ async function prComment(args) {
 // ─── pr create ───────────────────────────────────────────────────────────────
 
 async function prCreate(args) {
-  const usage = 'usage: gh pr create <title> <body> <head-branch> [--base=<base>] [--draft] [repo]';
-  let base = null, draft = false;
-  const positional = [];
-  for (const a of args) {
-    if (a.startsWith('--base=')) base = a.slice(7).trim();
-    else if (a === '--draft') draft = true;
-    else positional.push(a);
-  }
-  if (!positional[0]) cli.die('pr create: title required\n' + usage);
-  if (positional[1] === undefined) cli.die('pr create: body required\n' + usage);
-  if (!positional[2]) cli.die('pr create: head branch required\n' + usage);
-  const [title, body, head] = positional;
-  const repo = await resolveRepo(positional[3]);
+  const usage = 'usage: gh pr create --title <t> --body <b> --head <branch> [--base <base>] [--draft] [-R owner/repo]\n'
+    + '       gh pr create <title> <body> <head-branch> [--base=<base>] [--draft] [repo]   (original positional form)';
+  const { flags, positional } = parseArgs('pr create', args, {
+    ...REPO_FLAG,
+    title: { type: 'string', short: 't' },
+    body: { type: 'string', short: 'b' },
+    'body-file': { type: 'string', short: 'F' },
+    head: { type: 'string', short: 'H' },
+    base: { type: 'string', short: 'B' },
+    draft: { type: 'bool', short: 'd' },
+    label: { type: 'list', short: 'l' },
+    labels: { type: 'list' },
+    assignee: { type: 'list', short: 'a' },
+    reviewer: { type: 'list', short: 'r' },
+  });
+  if (flags['body-file']) flags.body = await bodyFrom('pr create', flags.body ?? null, flags['body-file']);
+  const { values, repoArg } = distribute('pr create', positional, ['title', 'body', 'head'], flags);
+  if (!values.title) cli.die('pr create: title required (--title or positional <title>)\n' + usage);
+  if (values.body === null || values.body === undefined) cli.die('pr create: body required (--body, --body-file or positional <body>)\n' + usage);
+  if (!values.head) cli.die('pr create: head branch required (--head or positional <head-branch>)\n' + usage);
+  const { title, body, head } = values;
+  const repo = await repoFrom('pr create', flags, repoArg);
+  let base = flags.base || null;
+  const draft = !!flags.draft;
 
   // Default base to the repo's default branch if not specified
   if (!base) {
@@ -441,8 +973,9 @@ async function prCreate(args) {
     } catch { base = 'main'; }
   }
 
+  let res;
   try {
-    const res = await api.post(`/repos/${repo}/pulls`, {
+    res = await api.post(`/repos/${repo}/pulls`, {
       body: { title, body, head, base, draft },
     });
     console.log(sym('success') + ' Created PR ' + color.cyan('#' + res.number) + ': ' + res.title);
@@ -450,14 +983,43 @@ async function prCreate(args) {
     console.log(color.gray('URL:') + '     ' + res.html_url);
     console.log(color.gray('TIP:') + '    run `gh pr watch ' + res.number + '` to get live updates in this scoop as the PR changes.');
   } catch (e) { fail('pr create', e); }
+
+  // Labels/assignees go through the issues endpoint (a PR is an issue);
+  // reviewers have their own endpoint. Both are best-effort follow-ups so a
+  // permissions failure never loses the created PR.
+  const labels = labelList(flags);
+  if (labels.length || (flags.assignee || []).length) {
+    try {
+      await api.patch(`/repos/${repo}/issues/${res.number}`, {
+        body: {
+          ...(labels.length ? { labels } : {}),
+          ...((flags.assignee || []).length ? { assignees: flags.assignee } : {}),
+        },
+      });
+      if (labels.length) console.log(color.gray('Labels:') + '  ' + labels.join(', '));
+      if ((flags.assignee || []).length) console.log(color.gray('Assignees:') + ' ' + flags.assignee.join(', '));
+    } catch (e) { cli.warn('pr create: PR created but labels/assignees could not be applied: ' + (e.body?.message || e.message)); }
+  }
+  if ((flags.reviewer || []).length) {
+    const users = flags.reviewer.filter(r => !r.includes('/'));
+    const teams = flags.reviewer.filter(r => r.includes('/')).map(r => r.split('/').pop());
+    try {
+      await api.post(`/repos/${repo}/pulls/${res.number}/requested_reviewers`, {
+        body: { ...(users.length ? { reviewers: users } : {}), ...(teams.length ? { team_reviewers: teams } : {}) },
+      });
+      console.log(color.gray('Reviewers:') + ' ' + flags.reviewer.join(', '));
+    } catch (e) { cli.warn('pr create: PR created but reviewers could not be requested: ' + (e.body?.message || e.message)); }
+  }
 }
 
 // ─── pr checkout ─────────────────────────────────────────────────────────────
 
 async function prCheckout(args) {
-  if (!args[0]) cli.die('pr checkout: PR number required');
-  const num = validateNum(args[0], 'PR number');
-  const repo = await resolveRepo(args[1]);
+  const { flags, positional } = parseArgs('pr checkout', args, { ...REPO_FLAG });
+  const { values, repoArg } = distribute('pr checkout', positional, ['number'], flags);
+  if (!values.number) cli.die('pr checkout: PR number required');
+  const num = validateNum(values.number, 'PR number');
+  const repo = await repoFrom('pr checkout', flags, repoArg);
   let pr;
   try { pr = await api.get(`/repos/${repo}/pulls/${num}`); }
   catch (e) { fail('pr checkout', e); }
@@ -516,17 +1078,18 @@ async function findExistingWatchWebhook(name) {
 }
 
 async function prWatch(args) {
-  const usage = 'usage: gh pr watch <num> [--filter <js>] [--scoop <name>] [repo]';
-  if (!args[0]) cli.die('pr watch: PR number required\n' + usage);
-  const num = validateNum(args[0], 'PR number');
-  let filter = null, scoopName = process.env.SLICC_SCOOP || null;
-  const positional = [];
-  for (let i = 1; i < args.length; i++) {
-    if (args[i] === '--filter' && args[i + 1]) { filter = args[++i]; }
-    else if (args[i] === '--scoop' && args[i + 1]) { scoopName = args[++i]; }
-    else positional.push(args[i]);
-  }
-  const repo = await resolveRepo(positional[0]);
+  const usage = 'usage: gh pr watch <num> [--filter <js>] [--scoop <name>] [-R owner/repo] [repo]';
+  const { flags, positional } = parseArgs('pr watch', args, {
+    ...REPO_FLAG,
+    filter: { type: 'string' },
+    scoop: { type: 'string' },
+  });
+  const { values, repoArg } = distribute('pr watch', positional, ['number'], flags);
+  if (!values.number) cli.die('pr watch: PR number required\n' + usage);
+  const num = validateNum(values.number, 'PR number');
+  const filter = flags.filter || null;
+  const scoopName = flags.scoop || process.env.SLICC_SCOOP || null;
+  const repo = await repoFrom('pr watch', flags, repoArg);
 
   if (!scoopName) {
     cli.die(
@@ -584,10 +1147,12 @@ async function prWatch(args) {
 }
 
 async function prUnwatch(args) {
-  const usage = 'usage: gh pr unwatch <num> [repo]';
-  if (!args[0]) cli.die('pr unwatch: PR number required\n' + usage);
-  const num = validateNum(args[0], 'PR number');
-  const repo = await resolveRepo(args[1]);
+  const usage = 'usage: gh pr unwatch <num> [-R owner/repo] [repo]';
+  const { flags, positional } = parseArgs('pr unwatch', args, { ...REPO_FLAG });
+  const { values, repoArg } = distribute('pr unwatch', positional, ['number'], flags);
+  if (!values.number) cli.die('pr unwatch: PR number required\n' + usage);
+  const num = validateNum(values.number, 'PR number');
+  const repo = await repoFrom('pr unwatch', flags, repoArg);
   const hookName = watchHookName(repo, num);
 
   const webhookId = await findExistingWatchWebhook(hookName);
@@ -623,9 +1188,19 @@ async function prUnwatch(args) {
 // ─── pr close ────────────────────────────────────────────────────────────────
 
 async function prClose(args) {
-  if (!args[0]) cli.die('pr close: PR number required');
-  const num = validateNum(args[0], 'PR number');
-  const repo = await resolveRepo(args[1]);
+  const { flags, positional } = parseArgs('pr close', args, {
+    ...REPO_FLAG,
+    'delete-branch': { type: 'bool', short: 'd' },
+    comment: { type: 'string', short: 'c' },
+  });
+  const { values, repoArg } = distribute('pr close', positional, ['number'], flags);
+  if (!values.number) cli.die('pr close: PR number required');
+  const num = validateNum(values.number, 'PR number');
+  const repo = await repoFrom('pr close', flags, repoArg);
+  if (flags.comment) {
+    try { await api.post(`/repos/${repo}/issues/${num}/comments`, { body: { body: flags.comment } }); }
+    catch (e) { cli.warn('pr close: could not post --comment: ' + (e.body?.message || e.message)); }
+  }
   try {
     const res = await api.patch(`/repos/${repo}/pulls/${num}`, {
       body: { state: 'closed' },
@@ -633,17 +1208,73 @@ async function prClose(args) {
     console.log(sym('closed') + ' Closed PR ' + color.cyan('#' + num) + ': ' + res.title);
     console.log(color.gray('URL:') + '     ' + res.html_url);
   } catch (e) { fail('pr close', e); }
+  if (flags['delete-branch']) await deleteHeadBranch('pr close', repo, num);
 }
 
 // ─── issue list ──────────────────────────────────────────────────────────────
 
+const ISSUE_FIELDS = [
+  'number', 'title', 'body', 'state', 'stateReason', 'author', 'url', 'createdAt', 'updatedAt',
+  'closedAt', 'labels', 'assignees', 'milestone', 'commentsCount', 'id',
+];
+
+function issueJson(issue) {
+  return {
+    number: issue.number,
+    title: issue.title,
+    body: issue.body || '',
+    state: upper(issue.state),
+    stateReason: upper(issue.state_reason),
+    author: userRef(issue.user),
+    url: issue.html_url,
+    createdAt: issue.created_at,
+    updatedAt: issue.updated_at,
+    closedAt: issue.closed_at,
+    labels: labelRefs(issue.labels),
+    assignees: (issue.assignees || []).map(userRef),
+    milestone: issue.milestone ? { title: issue.milestone.title, number: issue.milestone.number } : null,
+    commentsCount: issue.comments,
+    id: issue.node_id,
+  };
+}
+
 async function issueList(args) {
-  const repo = await resolveRepo(args[0]);
+  const { flags, positional } = parseArgs('issue list', args, {
+    ...REPO_FLAG,
+    ...JSON_FLAGS,
+    state: { type: 'string', short: 's' },
+    limit: { type: 'string', short: 'L' },
+    label: { type: 'list', short: 'l' },
+    labels: { type: 'list' },
+    assignee: { type: 'string', short: 'a' },
+    author: { type: 'string', short: 'A' },
+    milestone: { type: 'string', short: 'm' },
+  });
+  const { repoArg } = distribute('issue list', positional, [], flags);
+  const repo = await repoFrom('issue list', flags, repoArg);
+
+  const params = {
+    state: (flags.state || 'open').toLowerCase(),
+    per_page: Math.min(parseInt(flags.limit, 10) || 30, 100),
+  };
+  const labels = labelList(flags);
+  if (labels.length) params.labels = labels.join(',');
+  if (flags.assignee) params.assignee = flags.assignee;
+  if (flags.author) params.creator = flags.author;
+  if (flags.milestone) params.milestone = flags.milestone;
+
   let issues;
-  try { issues = await api.get(`/repos/${repo}/issues`, { params: { state: 'open', per_page: 30 } }); }
+  try { issues = await api.get(`/repos/${repo}/issues`, { params }); }
   catch (e) { fail('issue list', e); }
 
   const filtered = issues.filter(i => !i.pull_request);
+
+  const fields = parseFields('issue list', flags.json, ISSUE_FIELDS);
+  if (fields !== undefined) {
+    await outputJson(filtered.map(i => pickFields(issueJson(i), fields)), flags);
+    return;
+  }
+
   if (!filtered.length) { console.log(color.gray('No open issues.')); return; }
 
   const rows = filtered.map(i => [
@@ -657,24 +1288,30 @@ async function issueList(args) {
 // ─── issue create ────────────────────────────────────────────────────────────
 
 async function issueCreate(args) {
-  const usage = 'usage: gh issue create <title> <body> [--label=L]... [--labels=a,b] [repo]';
-  const labelSet = new Set();
-  const positional = [];
-  for (const a of args) {
-    if (a.startsWith('--label=')) {
-      const v = a.slice(8).trim();
-      if (v) labelSet.add(v);
-    } else if (a.startsWith('--labels=')) {
-      for (const v of a.slice(9).split(',').map(s => s.trim()).filter(Boolean)) labelSet.add(v);
-    } else positional.push(a);
-  }
-  if (!positional[0]) cli.die('issue create: title required\n' + usage);
-  if (positional[1] === undefined) cli.die('issue create: body required\n' + usage);
-  const [title, body] = positional;
-  const repo = await resolveRepo(positional[2]);
+  const usage = 'usage: gh issue create --title <t> --body <b> [--label L]... [--assignee U]... [-R owner/repo]\n'
+    + '       gh issue create <title> <body> [--label=L]... [--labels=a,b] [repo]   (original positional form)';
+  const { flags, positional } = parseArgs('issue create', args, {
+    ...REPO_FLAG,
+    title: { type: 'string', short: 't' },
+    body: { type: 'string', short: 'b' },
+    'body-file': { type: 'string', short: 'F' },
+    label: { type: 'list', short: 'l' },
+    labels: { type: 'list' },
+    assignee: { type: 'list', short: 'a' },
+    milestone: { type: 'string', short: 'm' },
+  });
+  if (flags['body-file']) flags.body = await bodyFrom('issue create', flags.body ?? null, flags['body-file']);
+  const { values, repoArg } = distribute('issue create', positional, ['title', 'body'], flags);
+  if (!values.title) cli.die('issue create: title required (--title or positional <title>)\n' + usage);
+  if (values.body === null || values.body === undefined) cli.die('issue create: body required (--body, --body-file or positional <body>)\n' + usage);
+  const { title, body } = values;
+  const repo = await repoFrom('issue create', flags, repoArg);
 
+  const labels = labelList(flags);
   const payload = { title, body };
-  if (labelSet.size) payload.labels = [...labelSet];
+  if (labels.length) payload.labels = labels;
+  if ((flags.assignee || []).length) payload.assignees = flags.assignee;
+  if (flags.milestone) payload.milestone = flags.milestone;
 
   try {
     const res = await api.post(`/repos/${repo}/issues`, { body: payload });
@@ -685,12 +1322,27 @@ async function issueCreate(args) {
 // ─── issue view ──────────────────────────────────────────────────────────────
 
 async function issueView(args) {
-  if (!args[0]) cli.die('issue view: issue number required');
-  const num = validateNum(args[0], 'issue number');
-  const repo = await resolveRepo(args[1]);
+  const { flags, positional } = parseArgs('issue view', args, {
+    ...REPO_FLAG,
+    ...JSON_FLAGS,
+    comments: { type: 'bool', short: 'c' },
+  });
+  const { values, repoArg } = distribute('issue view', positional, ['number'], flags);
+  if (!values.number) cli.die('issue view: issue number required');
+  const num = validateNum(values.number, 'issue number');
+  const repo = await repoFrom('issue view', flags, repoArg);
   let issue;
   try { issue = await api.get(`/repos/${repo}/issues/${num}`); }
   catch (e) { fail('issue view', e); }
+
+  const ISSUE_VIEW_FIELDS = [...ISSUE_FIELDS, 'comments'];
+  const fields = parseFields('issue view', flags.json, ISSUE_VIEW_FIELDS);
+  if (fields !== undefined) {
+    const data = issueJson(issue);
+    if (wants(fields, 'comments')) data.comments = await fetchComments(repo, num);
+    await outputJson(pickFields(data, fields), flags);
+    return;
+  }
 
   const stateStr = issue.state === 'open' ? color.green('open') : color.red('closed');
   console.log(color.bold(issue.title) + '  ' + sym(issue.state) + ' ' + stateStr);
@@ -701,18 +1353,34 @@ async function issueView(args) {
     console.log('\n' + color.gray('Body:'));
     console.log(fmt.trunc(issue.body.replace(/\r?\n/g, ' '), 400));
   }
+
+  if (flags.comments) {
+    const comments = await fetchComments(repo, num);
+    console.log('\n' + color.bold('Comments:') + (comments.length ? '' : ' ' + color.gray('(none)')));
+    for (const c of comments) {
+      console.log('\n' + color.cyan('@' + (c.author?.login || '?')) + '  ' + color.gray(fmtDate(c.createdAt)));
+      console.log(fmt.trunc(c.body.replace(/\r?\n/g, ' '), 400));
+    }
+  }
 }
 
 // ─── issue comment ───────────────────────────────────────────────────────────
 
 async function issueComment(args) {
-  if (!args[0]) cli.die('issue comment: issue number required');
-  const num = validateNum(args[0], 'issue number');
-  if (!args[1]) cli.die('issue comment: message required');
-  const repo = await resolveRepo(args[2]);
+  const { flags, positional } = parseArgs('issue comment', args, {
+    ...REPO_FLAG,
+    body: { type: 'string', short: 'b' },
+    'body-file': { type: 'string', short: 'F' },
+  });
+  const { values, repoArg } = distribute('issue comment', positional, ['number', 'body'], flags);
+  if (!values.number) cli.die('issue comment: issue number required');
+  const num = validateNum(values.number, 'issue number');
+  const message = await bodyFrom('issue comment', values.body, flags['body-file']);
+  if (!message) cli.die('issue comment: message required (positional <message>, --body or --body-file)');
+  const repo = await repoFrom('issue comment', flags, repoArg);
   try {
     const res = await api.post(`/repos/${repo}/issues/${num}/comments`, {
-      body: { body: args[1] },
+      body: { body: message },
     });
     console.log(sym('success') + ' Comment posted: ' + res.html_url);
   } catch (e) { fail('issue comment', e); }
@@ -721,15 +1389,20 @@ async function issueComment(args) {
 // ─── issue close ─────────────────────────────────────────────────────────────
 
 async function issueClose(args) {
-  let reason = null;
-  const positional = [];
-  for (const a of args) {
-    if (a.startsWith('--reason=')) reason = a.slice(9).trim();
-    else positional.push(a);
+  const { flags, positional } = parseArgs('issue close', args, {
+    ...REPO_FLAG,
+    reason: { type: 'string' },
+    comment: { type: 'string', short: 'c' },
+  });
+  const { values, repoArg } = distribute('issue close', positional, ['number'], flags);
+  if (!values.number) cli.die('issue close: issue number required');
+  const num = validateNum(values.number, 'issue number');
+  const reason = flags.reason ? flags.reason.trim() : null;
+  const repo = await repoFrom('issue close', flags, repoArg);
+  if (flags.comment) {
+    try { await api.post(`/repos/${repo}/issues/${num}/comments`, { body: { body: flags.comment } }); }
+    catch (e) { cli.warn('issue close: could not post --comment: ' + (e.body?.message || e.message)); }
   }
-  if (!positional[0]) cli.die('issue close: issue number required');
-  const num = validateNum(positional[0], 'issue number');
-  const repo = await resolveRepo(positional[1]);
   try {
     const res = await api.patch(`/repos/${repo}/issues/${num}`, {
       body: { state: 'closed', ...(reason ? { state_reason: reason } : {}) },
@@ -742,34 +1415,62 @@ async function issueClose(args) {
 // ─── issue edit ──────────────────────────────────────────────────────────────
 
 async function issueEdit(args) {
-  const usage = 'usage: gh issue edit <num> [--title=T] [--body=B] [--label=L]... [--labels=a,b] [--state=open|closed] [repo]';
-  let title = null, body = null, state = null;
-  const labelSet = new Set();
-  let haveLabels = false;
-  const positional = [];
-  for (const a of args) {
-    if (a.startsWith('--title=')) title = a.slice(8);
-    else if (a.startsWith('--body=')) body = a.slice(7);
-    else if (a.startsWith('--state=')) state = a.slice(8).trim();
-    else if (a.startsWith('--label=')) {
-      const v = a.slice(8).trim();
-      if (v) labelSet.add(v);
-      haveLabels = true;
-    } else if (a.startsWith('--labels=')) {
-      for (const v of a.slice(9).split(',').map(s => s.trim()).filter(Boolean)) labelSet.add(v);
-      haveLabels = true;
-    } else positional.push(a);
-  }
-  if (!positional[0]) cli.die('issue edit: issue number required\n' + usage);
-  const num = validateNum(positional[0], 'issue number');
-  const repo = await resolveRepo(positional[1]);
+  const usage = 'usage: gh issue edit <num> [--title T] [--body B] [--body-file F] [--label L]... '
+    + '[--add-label L]... [--remove-label L]... [--state open|closed] [-R owner/repo] [repo]';
+  const { flags, positional } = parseArgs('issue edit', args, {
+    ...REPO_FLAG,
+    title: { type: 'string', short: 't' },
+    body: { type: 'string', short: 'b' },
+    'body-file': { type: 'string', short: 'F' },
+    state: { type: 'string' },
+    label: { type: 'list', short: 'l' },
+    labels: { type: 'list' },
+    'add-label': { type: 'list' },
+    'remove-label': { type: 'list' },
+    'add-assignee': { type: 'list' },
+    'remove-assignee': { type: 'list' },
+    milestone: { type: 'string', short: 'm' },
+  });
+  const { values, repoArg } = distribute('issue edit', positional, ['number'], flags);
+  if (!values.number) cli.die('issue edit: issue number required\n' + usage);
+  const num = validateNum(values.number, 'issue number');
+  const repo = await repoFrom('issue edit', flags, repoArg);
+
+  const title = flags.title ?? null;
+  const body = await bodyFrom('issue edit', flags.body ?? null, flags['body-file']);
+  const state = flags.state ? flags.state.trim() : null;
+  const setLabels = labelList(flags);
+  const addLabels = flags['add-label'] || [];
+  const removeLabels = flags['remove-label'] || [];
+  const addAssignees = flags['add-assignee'] || [];
+  const removeAssignees = flags['remove-assignee'] || [];
 
   const payload = {};
   if (title !== null) payload.title = title;
-  if (body !== null) payload.body = body;
+  if (body !== null && body !== undefined) payload.body = body;
   if (state !== null) payload.state = state;
-  if (haveLabels) payload.labels = [...labelSet];
-  if (!Object.keys(payload).length) cli.die('issue edit: nothing to update — pass --title, --body, --label(s), or --state\n' + usage);
+  if (flags.milestone) payload.milestone = flags.milestone;
+  if (setLabels.length) payload.labels = setLabels;
+  else if (addLabels.length || removeLabels.length) {
+    let current = [];
+    try {
+      const issue = await api.get(`/repos/${repo}/issues/${num}`);
+      current = (issue.labels || []).map(l => l.name);
+    } catch (e) { fail('issue edit', e); }
+    payload.labels = [...new Set([...current, ...addLabels])].filter(l => !removeLabels.includes(l));
+  }
+  if (addAssignees.length || removeAssignees.length) {
+    let current = [];
+    try {
+      const issue = await api.get(`/repos/${repo}/issues/${num}`);
+      current = (issue.assignees || []).map(a => a.login);
+    } catch (e) { fail('issue edit', e); }
+    payload.assignees = [...new Set([...current, ...addAssignees])].filter(a => !removeAssignees.includes(a));
+  }
+  if (!Object.keys(payload).length) {
+    cli.die('issue edit: nothing to update — pass --title, --body, --label(s), --add-label/--remove-label, '
+      + '--add-assignee/--remove-assignee, --milestone or --state\n' + usage);
+  }
 
   try {
     const res = await api.patch(`/repos/${repo}/issues/${num}`, { body: payload });
@@ -889,11 +1590,54 @@ async function projectSetTitle(args) {
 
 // ─── repo view ───────────────────────────────────────────────────────────────
 
+const REPO_FIELDS = [
+  'name', 'nameWithOwner', 'owner', 'description', 'url', 'sshUrl', 'defaultBranchRef',
+  'isPrivate', 'isFork', 'isArchived', 'stargazerCount', 'forkCount', 'openIssuesCount',
+  'primaryLanguage', 'licenseInfo', 'repositoryTopics', 'visibility', 'createdAt', 'updatedAt',
+  'pushedAt', 'homepageUrl', 'hasIssuesEnabled', 'id',
+];
+
+function repoJson(r) {
+  return {
+    name: r.name,
+    nameWithOwner: r.full_name,
+    owner: r.owner ? { login: r.owner.login, id: r.owner.id } : null,
+    description: r.description,
+    url: r.html_url,
+    sshUrl: r.ssh_url,
+    defaultBranchRef: { name: r.default_branch },
+    isPrivate: r.private,
+    isFork: r.fork,
+    isArchived: r.archived,
+    stargazerCount: r.stargazers_count,
+    forkCount: r.forks_count,
+    openIssuesCount: r.open_issues_count,
+    primaryLanguage: r.language ? { name: r.language } : null,
+    licenseInfo: r.license ? { key: r.license.key, name: r.license.name } : null,
+    repositoryTopics: r.topics || [],
+    visibility: upper(r.visibility),
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    pushedAt: r.pushed_at,
+    homepageUrl: r.homepage,
+    hasIssuesEnabled: r.has_issues,
+    id: r.node_id,
+  };
+}
+
 async function repoView(args) {
-  const repo = await resolveRepo(args[0]);
+  const { flags, positional } = parseArgs('repo view', args, { ...REPO_FLAG, ...JSON_FLAGS });
+  const { repoArg } = distribute('repo view', positional, [], flags);
+  const repo = await repoFrom('repo view', flags, repoArg);
   let r;
   try { r = await api.get(`/repos/${repo}`); }
   catch (e) { fail('repo view', e); }
+
+  const fields = parseFields('repo view', flags.json, REPO_FIELDS);
+  if (fields !== undefined) {
+    await outputJson(pickFields(repoJson(r), fields), flags);
+    return;
+  }
 
   console.log(color.bold(r.full_name));
   if (r.description) console.log(r.description);
@@ -909,13 +1653,65 @@ async function repoView(args) {
 
 // ─── run list ────────────────────────────────────────────────────────────────
 
+const RUN_FIELDS = [
+  'databaseId', 'number', 'name', 'displayTitle', 'status', 'conclusion', 'event',
+  'headBranch', 'headSha', 'workflowName', 'workflowDatabaseId', 'url', 'createdAt',
+  'updatedAt', 'startedAt', 'attempt',
+];
+
+function runJson(run) {
+  return {
+    databaseId: run.id,
+    number: run.run_number,
+    name: run.name,
+    displayTitle: run.display_title,
+    status: run.status,
+    conclusion: run.conclusion,
+    event: run.event,
+    headBranch: run.head_branch,
+    headSha: run.head_sha,
+    workflowName: run.name,
+    workflowDatabaseId: run.workflow_id,
+    url: run.html_url,
+    createdAt: run.created_at,
+    updatedAt: run.updated_at,
+    startedAt: run.run_started_at,
+    attempt: run.run_attempt,
+  };
+}
+
 async function runList(args) {
-  const repo = await resolveRepo(args[0]);
+  const { flags, positional } = parseArgs('run list', args, {
+    ...REPO_FLAG,
+    ...JSON_FLAGS,
+    limit: { type: 'string', short: 'L' },
+    branch: { type: 'string', short: 'b' },
+    workflow: { type: 'string', short: 'w' },
+    event: { type: 'string', short: 'e' },
+    status: { type: 'string', short: 's' },
+    user: { type: 'string', short: 'u' },
+  });
+  const { repoArg } = distribute('run list', positional, [], flags);
+  const repo = await repoFrom('run list', flags, repoArg);
   let runs;
+  const params = { per_page: Math.min(parseInt(flags.limit, 10) || 20, 100) };
+  if (flags.branch) params.branch = flags.branch;
+  if (flags.event) params.event = flags.event;
+  if (flags.status) params.status = flags.status;
+  if (flags.user) params.actor = flags.user;
   try {
-    const data = await api.get(`/repos/${repo}/actions/runs`, { params: { per_page: 20 } });
+    const path = flags.workflow
+      ? `/repos/${repo}/actions/workflows/${encodeURIComponent(flags.workflow)}/runs`
+      : `/repos/${repo}/actions/runs`;
+    const data = await api.get(path, { params });
     runs = data.workflow_runs;
   } catch (e) { fail('run list', e); }
+
+  const fields = parseFields('run list', flags.json, RUN_FIELDS);
+  if (fields !== undefined) {
+    await outputJson((runs || []).map(r => pickFields(runJson(r), fields)), flags);
+    return;
+  }
 
   if (!runs || !runs.length) { console.log(color.gray('No workflow runs.')); return; }
 
@@ -936,15 +1732,95 @@ async function runList(args) {
 
 // ─── run view ────────────────────────────────────────────────────────────────
 
+const RUN_VIEW_FIELDS = [...RUN_FIELDS, 'jobs'];
+
+function jobJson(job) {
+  return {
+    databaseId: job.id,
+    name: job.name,
+    status: job.status,
+    conclusion: job.conclusion,
+    startedAt: job.started_at,
+    completedAt: job.completed_at,
+    url: job.html_url,
+    steps: (job.steps || []).map(st => ({
+      name: st.name,
+      number: st.number,
+      status: st.status,
+      conclusion: st.conclusion,
+      startedAt: st.started_at,
+      completedAt: st.completed_at,
+    })),
+  };
+}
+
+// Actions job logs. `http.client` throws on the 302 the logs endpoint answers
+// with, so this uses plain fetch (which follows the redirect) and returns text.
+async function fetchJobLog(repo, jobId) {
+  try {
+    const r = await fetch(`https://api.github.com/repos/${repo}/actions/jobs/${jobId}/logs`, {
+      headers: {
+        Authorization: `Bearer ${personalToken}`,
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'gh.jsh/1.0',
+      },
+    });
+    if (!r.ok) return { ok: false, error: `HTTP ${r.status}` };
+    return { ok: true, text: await r.text() };
+  } catch (e) { return { ok: false, error: e.message }; }
+}
+
+function tailLines(text, n) {
+  const lines = text.replace(/\r/g, '').split('\n');
+  if (!n || n <= 0 || lines.length <= n) return lines.join('\n');
+  return lines.slice(-n).join('\n');
+}
+
+async function printJobLogs(repo, jobs, tail) {
+  for (const job of jobs) {
+    console.log('\n' + color.bold('── log: ' + job.name + ' ') + color.gray('(job ' + job.id + ')'));
+    const failedSteps = (job.steps || []).filter(st => st.conclusion && st.conclusion !== 'success' && st.conclusion !== 'skipped');
+    if (failedSteps.length) {
+      console.log(color.gray('Failed steps: ') + failedSteps.map(st => `#${st.number} ${st.name} (${st.conclusion})`).join(', '));
+    }
+    const log = await fetchJobLog(repo, job.id);
+    if (!log.ok) {
+      console.log(color.yellow('Could not download the log (' + log.error + ') — showing step conclusions only:'));
+      for (const st of job.steps || []) {
+        console.log('  ' + (st.conclusion === 'success' ? sym('success') : st.conclusion === 'skipped' ? sym('skipped') : sym('failure')) + '  ' + st.name + color.gray(' — ' + (st.conclusion || st.status)));
+      }
+      continue;
+    }
+    console.log(tailLines(log.text, tail));
+  }
+}
+
 async function runView(args) {
-  if (!args[0]) cli.die('run view: run ID required');
-  const runId = validateNum(args[0], 'run ID');
-  const repo = await resolveRepo(args[1]);
+  const { flags, positional } = parseArgs('run view', args, {
+    ...REPO_FLAG,
+    ...JSON_FLAGS,
+    log: { type: 'bool' },
+    'log-failed': { type: 'bool' },
+    'log-tail': { type: 'string' },
+    job: { type: 'string', short: 'j' },
+  });
+  const { values, repoArg } = distribute('run view', positional, ['runId'], flags);
+  if (!values.runId) cli.die('run view: run ID required');
+  const runId = validateNum(values.runId, 'run ID');
+  const repo = await repoFrom('run view', flags, repoArg);
   let run, jobsData;
   try { run = await api.get(`/repos/${repo}/actions/runs/${runId}`); }
   catch (e) { fail('run view', e); }
-  try { jobsData = await api.get(`/repos/${repo}/actions/runs/${runId}/jobs`); }
+  try { jobsData = await api.get(`/repos/${repo}/actions/runs/${runId}/jobs`, { params: { per_page: 100 } }); }
   catch { jobsData = { jobs: [] }; }
+
+  const fields = parseFields('run view', flags.json, RUN_VIEW_FIELDS);
+  if (fields !== undefined) {
+    const data = runJson(run);
+    data.jobs = (jobsData.jobs || []).map(jobJson);
+    await outputJson(pickFields(data, fields), flags);
+    return;
+  }
 
   const statusStr = run.status === 'completed'
     ? sym(run.conclusion || 'neutral') + ' ' + run.status + ' / ' + (run.conclusion || 'unknown')
@@ -966,17 +1842,71 @@ async function runView(args) {
       const dur = (job.completed_at && job.started_at)
         ? color.gray(' (' + Math.round((new Date(job.completed_at) - new Date(job.started_at)) / 1000) + 's)') : '';
       console.log('  ' + s + '  ' + job.name + dur);
+      const failedSteps = (job.steps || []).filter(st => st.conclusion === 'failure' || st.conclusion === 'timed_out');
+      for (const st of failedSteps) {
+        console.log('      ' + sym('failure') + '  ' + color.red('step ' + st.number + ': ' + st.name));
+      }
+    }
+  }
+
+  // `--log` / `--log-failed` — the natural next step after a red run. Logs come
+  // from the Actions logs API (GET /actions/jobs/<id>/logs); output is tailed to
+  // --log-tail lines (default 200, 0 = whole log) so a huge log stays readable.
+  if (flags.log || flags['log-failed']) {
+    const tail = flags['log-tail'] === undefined ? 200 : parseInt(flags['log-tail'], 10) || 0;
+    let selected = jobs;
+    if (flags['log-failed']) {
+      selected = jobs.filter(j => j.conclusion && j.conclusion !== 'success' && j.conclusion !== 'skipped');
+    }
+    if (flags.job) selected = selected.filter(j => String(j.id) === String(flags.job) || j.name === flags.job);
+    if (!selected.length) {
+      console.log('\n' + color.gray(flags['log-failed'] ? 'No failed jobs in this run.' : 'No jobs to show logs for.'));
+    } else {
+      await printJobLogs(repo, selected, tail);
     }
   }
 }
 
 // ─── release list ────────────────────────────────────────────────────────────
 
+const RELEASE_FIELDS = [
+  'name', 'tagName', 'isDraft', 'isPrerelease', 'isLatest', 'publishedAt', 'createdAt',
+  'url', 'body', 'author', 'id',
+];
+
+function releaseJson(r) {
+  return {
+    name: r.name || r.tag_name,
+    tagName: r.tag_name,
+    isDraft: r.draft,
+    isPrerelease: r.prerelease,
+    isLatest: !r.draft && !r.prerelease,
+    publishedAt: r.published_at,
+    createdAt: r.created_at,
+    url: r.html_url,
+    body: r.body || '',
+    author: userRef(r.author),
+    id: r.node_id,
+  };
+}
+
 async function releaseList(args) {
-  const repo = await resolveRepo(args[0]);
+  const { flags, positional } = parseArgs('release list', args, {
+    ...REPO_FLAG,
+    ...JSON_FLAGS,
+    limit: { type: 'string', short: 'L' },
+  });
+  const { repoArg } = distribute('release list', positional, [], flags);
+  const repo = await repoFrom('release list', flags, repoArg);
   let releases;
-  try { releases = await api.get(`/repos/${repo}/releases`, { params: { per_page: 15 } }); }
+  try { releases = await api.get(`/repos/${repo}/releases`, { params: { per_page: Math.min(parseInt(flags.limit, 10) || 15, 100) } }); }
   catch (e) { fail('release list', e); }
+
+  const fields = parseFields('release list', flags.json, RELEASE_FIELDS);
+  if (fields !== undefined) {
+    await outputJson(releases.map(r => pickFields(releaseJson(r), fields)), flags);
+    return;
+  }
 
   if (!releases.length) { console.log(color.gray('No releases.')); return; }
 
@@ -1089,15 +2019,55 @@ async function notificationsRead(args) {
 
 // ─── search prs ──────────────────────────────────────────────────────────────
 
+const SEARCH_PR_FIELDS = [
+  'number', 'title', 'body', 'state', 'author', 'repository', 'url', 'createdAt',
+  'updatedAt', 'closedAt', 'labels', 'isDraft', 'commentsCount', 'id',
+];
+
+function searchPrJson(item) {
+  return {
+    number: item.number,
+    title: item.title,
+    body: item.body || '',
+    state: item.pull_request?.merged_at ? 'MERGED' : upper(item.state),
+    author: userRef(item.user),
+    repository: { nameWithOwner: item.repository_url.replace('https://api.github.com/repos/', '') },
+    url: item.html_url,
+    createdAt: item.created_at,
+    updatedAt: item.updated_at,
+    closedAt: item.closed_at,
+    labels: labelRefs(item.labels),
+    isDraft: !!item.draft,
+    commentsCount: item.comments,
+    id: item.node_id,
+  };
+}
+
 async function searchPrs(args) {
-  if (!args[0]) cli.die('search prs: query required');
-  const repo = args[1] || await inferRepo();
-  const q = args[0] + ' type:pr' + (repo ? ' repo:' + repo : '');
+  const { flags, positional } = parseArgs('search prs', args, {
+    ...REPO_FLAG,
+    ...JSON_FLAGS,
+    limit: { type: 'string', short: 'L' },
+    state: { type: 'string' },
+  });
+  const { values, repoArg } = distribute('search prs', positional, ['query'], flags);
+  if (!values.query) cli.die('search prs: query required');
+  if (flags.repo && repoArg) {
+    cli.die(`search prs: repository specified twice — --repo ${flags.repo} and positional ${repoArg}. Pass only one.`);
+  }
+  const repo = flags.repo || repoArg || await inferRepo();
+  const q = values.query + ' type:pr' + (repo ? ' repo:' + repo : '') + (flags.state ? ' state:' + flags.state : '');
   let results;
   try {
-    const data = await api.get('/search/issues', { params: { q, per_page: 20 } });
+    const data = await api.get('/search/issues', { params: { q, per_page: Math.min(parseInt(flags.limit, 10) || 20, 100) } });
     results = data.items;
   } catch (e) { fail('search prs', e); }
+
+  const fields = parseFields('search prs', flags.json, SEARCH_PR_FIELDS);
+  if (fields !== undefined) {
+    await outputJson(results.map(i => pickFields(searchPrJson(i), fields)), flags);
+    return;
+  }
 
   if (!results.length) { console.log(color.gray('No matching PRs.')); return; }
 
@@ -1343,7 +2313,9 @@ async function mondayGh(args) {
 // ─── repo archive ────────────────────────────────────────────────────────────
 
 async function repoArchive(args) {
-  const repo = await resolveRepo(args[0]);
+  const { flags, positional } = parseArgs('repo archive', args, { ...REPO_FLAG });
+  const { repoArg } = distribute('repo archive', positional, [], flags);
+  const repo = await repoFrom('repo archive', flags, repoArg);
   try {
     await api.patch(`/repos/${repo}`, { body: { archived: true } });
     console.log(sym('success') + ' Archived ' + color.cyan(repo));
