@@ -182,13 +182,6 @@ Fetch recent top-level messages from a channel (replies are not inlined — use
 
 **Alias:** `teams messages` / `teams msgs` also route to `history`.
 
-### teams activity [--since=DURATION] [--max-teams=N] [--concurrency=N]
-
-Messages that mention or involve the current user. Default window is the last
-24 hours. See the full description in the **Available commands** section below.
-
-**Alias:** `teams mentions` also routes to `activity`.
-
 ### teams post \<team\> \<channel\> \<message\> [--reply-to=\<message-id\>]
 
 Post a plain-text message to a channel, or reply in a thread when
@@ -298,16 +291,11 @@ Fields: `id` (`teams-msg-<messageId>` / `teams-activity-<activityId>`), `ts`
 `context[]`. `importance`/`urgency`/`summary` are intentionally **not** emitted —
 `monday` adds those when rating.
 
-> **Why not Graph `/me/chats`:** the delegated browser token has no
-> `Chat.ReadBasic/Chat.Read/Chat.ReadWrite` scope, so Graph answers `403`
-> (this is also why `teams activity` logs "Chat scan unavailable (403)").
-> `monday` therefore uses the **Teams chat service (IC3)** the web client itself
-> uses: a `skypeToken` from `POST teams.microsoft.com/api/authsvc/v1.0/authz`
-> (obtained in-page with an `api.spaces.skype.com` token) against
-> `<regionGtms.chatService>/v1/users/ME/conversations[/…/messages]`. Tokens are
-> minted and consumed inside the Teams tab, exactly like every other
-> subcommand. If the activity feed is unavailable, it falls back to the Graph
-> beta channel scan used by `teams activity`.
+Chats are read via the Teams chat service rather than Graph, and the command
+falls back to a channel scan if the activity feed is unavailable. You do not
+need to know either to use it — see
+[`references/endpoints.md`](references/endpoints.md#monday-chat-retrieval) if
+you are changing the implementation.
 
 ### teams transcribe [start|flush|status|follow|stop] [--out=FILE]
 
