@@ -104,8 +104,13 @@ resulting refresh token in the skill config. A human must complete the Google
 consent screen — this step is inherently interactive.
 
 With `--from-file PATH`, imports credentials from a JSON file instead of running
-consent. Required fields: `client_id`, `client_secret`, `refresh_token`.
+consent. Required fields: `client_id`, `client_secret`, `refresh_token` — all
+three, because a refresh token only works with the client that issued it.
 Optional: `token_uri`, `scope`, `account`.
+
+The imported credentials are validated against Google *before* anything is
+persisted, so a rejected or incomplete import fails with a non-zero exit and
+leaves existing stored credentials untouched.
 
 ```bash
 gmail login                              # browser consent
