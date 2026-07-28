@@ -8,7 +8,7 @@
 // leaves the browser context.
 //
 // Usage: teams <subcommand> [args] [--since=<duration>] [--top=<n>]
-// Subcommands: teams, channels, history, activity, post, thread, user, info, search, unanswered, digest
+// Subcommands: teams, channels, history, activity, post, thread, user, info, search, unanswered, digest, monday
 //
 // jsh runtime migration (issue #177):
 //  - Browser access uses the sliccy:browser bridge (findTab / evalAsync)
@@ -1793,6 +1793,536 @@ async function cmdTranscribe() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// monday subcommand (cross-tool inbox aggregator source)
+// ---------------------------------------------------------------------------
+//
+// Contract (monday skill, references/SOURCE_PROTOCOL.md):
+//   teams monday --limit N --depth N --date Nd
+//   → one JSON array on stdout, NOTHING else on stdout, all logging on stderr,
+//     exit 0 (an empty result is `[]`, not an error). Items carry a stable
+//     source-prefixed `id` plus `ts`, `source`, `title`, `url`, `participants`
+//     and `body`. `importance`/`urgency`/`summary` are added by `monday`.
+//
+// Data sources (in page context, same auth model as every other subcommand):
+//   1. Teams chat service (IC3) — `<regionGtms.chatService>/v1/users/ME/...`,
+//      authenticated with a skypeToken obtained from
+//      POST teams.microsoft.com/api/authsvc/v1.0/authz. This is what the Teams
+//      web client itself uses for 1:1/group chats. Graph `/me/chats` cannot be
+//      used: the delegated browser token has no Chat.Read* scope (verified —
+//      Graph returns 403 "API requires one of 'Chat.ReadBasic, Chat.Read,
+//      Chat.ReadWrite'"), which is why `teams activity` logs "Chat scan
+//      unavailable (403)".
+//   2. The activity feed conversation `48:notifications` on the same service —
+//      each entry is an activity record (`properties.activity`) carrying
+//      mention/reply metadata plus a `messagePreview`; this is where channel
+//      @mentions come from.
+//   3. Fallback only: the Graph beta channel scan (same plumbing `activity`
+//      uses) when the activity feed yields nothing.
+//
+// Because the protocol requires exit 0 + a valid array even on partial
+// failure, this path uses only non-fatal wrappers (`apiGetSafe`, `skypeEval`),
+// never `graphGet`/`die()`.
+
+// In-page helper: mint a skypeToken (+ the region service map) from the
+// captured refresh token and cache it on `window`. Appended after
+// AUTH_PREAMBLE, which provides __getToken().
+const SKYPE_PREAMBLE = `
+  async function __getSkype() {
+    const c = window.__sliccTeamsSkype;
+    if (c && c.exp > Date.now() + 60000) return c;
+    const t = await __getToken('api.spaces.skype.com');
+    if (!t) return null;
+    const r = await fetch('https://teams.microsoft.com/api/authsvc/v1.0/authz', {
+      method: 'POST', headers: { Authorization: 'Bearer ' + t }
+    });
+    if (!r.ok) return null;
+    const j = await r.json().catch(() => null);
+    const st = j && j.tokens && j.tokens.skypeToken;
+    if (!st) return null;
+    window.__sliccTeamsSkype = {
+      st: st,
+      gtms: j.regionGtms || {},
+      exp: Date.now() + ((j.tokens.expiresIn || 3600) * 1000)
+    };
+    return window.__sliccTeamsSkype;
+  }
+  async function __chatGet(url) {
+    const s = await __getSkype();
+    if (!s) return { error: 'NO_SKYPE_TOKEN' };
+    const full = url.indexOf('http') === 0
+      ? url
+      : String(s.gtms.chatService || '').replace(/\\/$/, '') + url;
+    const r = await fetch(full, { headers: { Authentication: 'skypetoken=' + s.st } });
+    const txt = await r.text();
+    let data = null;
+    try { data = JSON.parse(txt); } catch (e) { data = txt; }
+    return { status: r.status, ok: r.ok, data: data };
+  }
+`;
+
+// Run a small collector snippet inside the Teams tab with __chatGet available.
+// The snippet must be an expression body of an async IIFE and should return
+// already-trimmed data (chat-service payloads are megabytes raw).
+async function skypeEval(bodyJs) {
+  const tab = await ensureTab();
+  const jsCode = `
+    (async () => {
+      try {
+        ${AUTH_PREAMBLE}
+        ${SKYPE_PREAMBLE}
+        return await (async () => { ${bodyJs} })();
+      } catch (e) {
+        return { error: 'FETCH_ERROR', message: String((e && e.message) || e) };
+      }
+    })()
+  `.trim();
+  let parsed;
+  try {
+    parsed = await browser.evalAsync(tab, jsCode);
+  } catch (e) {
+    return { error: 'EVAL_FAILED', message: e?.message || String(e) };
+  }
+  if (typeof parsed === 'string') {
+    try { parsed = JSON.parse(parsed); } catch { return { error: 'PARSE_FAILED' }; }
+  }
+  return parsed || { error: 'EMPTY' };
+}
+
+// Accepts both `--limit 5` and `--limit=5` so the command behaves the same
+// whether `monday` invokes it (space form) or a human does.
+function parseMondayFlags(argv) {
+  const f = { limit: 50, depth: 5, date: '7d' };
+  for (let i = 0; i < argv.length; i++) {
+    const a = String(argv[i]);
+    const eq = a.indexOf('=');
+    const name = eq === -1 ? a : a.slice(0, eq);
+    if (name !== '--limit' && name !== '--depth' && name !== '--date') continue;
+    const val = eq === -1 ? argv[i + 1] : a.slice(eq + 1);
+    if (val === undefined) continue;
+    if (name === '--date') f.date = String(val);
+    else f[name.slice(2)] = parseInt(val, 10);
+  }
+  if (!Number.isFinite(f.limit) || f.limit <= 0) f.limit = 50;
+  if (!Number.isFinite(f.depth) || f.depth < 0) f.depth = 5;
+  return f;
+}
+
+// `Nm`/`Nh`/`Nd`/`Nw` → cutoff epoch ms (defaults to 7 days).
+function mondayCutoff(dateStr) {
+  const ms = parseDuration(dateStr) || 7 * 86400000;
+  return Date.now() - ms;
+}
+
+function mondayBody(m) {
+  const raw = m && (m.content || m.body || '');
+  return raw ? stripHtml(String(raw)) : '';
+}
+
+function mondayIso(v) {
+  if (!v) return null;
+  const d = new Date(typeof v === 'number' ? v : String(v));
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+// Web deep link into a chat/channel thread, optionally to one message.
+function mondayThreadUrl(threadId, messageId) {
+  const t = encodeURIComponent(threadId);
+  if (messageId) {
+    return `https://teams.microsoft.com/l/message/${t}/${encodeURIComponent(messageId)}`;
+  }
+  return `https://teams.microsoft.com/l/chat/${t}/conversations`;
+}
+
+// 1:1 / group chat conversations with activity in the window, plus their most
+// recent messages. Both steps run in-page and return trimmed records.
+async function mondayFetchChats(cutoff, depth, maxChats, meName) {
+  const listBody = `
+    const cutoff = ${cutoff};
+    // 'space' = team channels (handled via the activity feed); everything else
+    // in the Chat list: 1:1 ('chat'), named group chats ('topic'), meeting chats.
+    const wanted = { chat: 1, topic: 1, group: 1, sfbinteropchat: 1, meeting: 1, privatemeeting: 1 };
+    const out = [];
+    let url = '/v1/users/ME/conversations?view=msnp24Equivalent&pageSize=200&startTime=1';
+    for (let page = 0; page < 3 && url; page++) {
+      const r = await __chatGet(url);
+      if (r.error) return { error: r.error };
+      if (!r.ok) return { error: 'HTTP_' + r.status };
+      const convs = (r.data && r.data.conversations) || [];
+      let oldest = Infinity;
+      for (const c of convs) {
+        const tp = c.threadProperties || {};
+        const props = c.properties || {};
+        const last = c.lastMessage || {};
+        const lastTime = Date.parse(props.lastimreceivedtime || last.originalarrivaltime || last.composetime || '') || 0;
+        if (lastTime) oldest = Math.min(oldest, lastTime);
+        const tt = String(tp.threadType || '').toLowerCase();
+        if (!wanted[tt]) continue;
+        if (props.isemptyconversation === 'True') continue;
+        if (lastTime && lastTime < cutoff) continue;
+        out.push({
+          id: c.id,
+          threadType: tt,
+          topic: tp.topic || tp.spaceThreadTopic || '',
+          lastTime: lastTime,
+          consumptionHorizon: props.consumptionhorizon || '',
+          messagesUrl: c.messages || '',
+        });
+      }
+      if (oldest !== Infinity && oldest < cutoff) break;
+      url = (r.data && r.data._metadata && r.data._metadata.syncState) || '';
+      if (convs.length === 0) break;
+    }
+    return { chats: out };
+  `;
+  const listed = await skypeEval(listBody);
+  if (listed.error) return { error: listed.error, chats: [] };
+  const chats = (listed.chats || []).sort((a, b) => b.lastTime - a.lastTime).slice(0, maxChats);
+  if (chats.length === 0) return { chats: [] };
+
+  // Per-chat message fetch. A chat is only interesting if it contains a message
+  // from SOMEONE ELSE, but the user may have sent an arbitrary number of messages
+  // since then — so we cannot size this page off `depth`. Page until we find an
+  // incoming message (or run out / cross the cutoff), bounded to keep it cheap.
+  const pageSize = Math.min(50, Math.max(depth + 2, 8));
+  const msgBody = `
+    const chats = ${JSON.stringify(chats)};
+    const cutoff = ${cutoff};
+    const meName = ${JSON.stringify(meName || '')};
+    const pageSize = ${pageSize};
+    const MAX_PAGES = 4;
+    const out = [];
+    const mapMsg = (m) => ({
+      id: m.id,
+      from: m.imdisplayname || m.fromDisplayNameInToken || '',
+      fromId: m.from || '',
+      ts: m.originalarrivaltime || m.composetime || '',
+      type: m.messagetype || '',
+      content: typeof m.content === 'string' ? m.content.slice(0, 4000) : '',
+      deleted: !!(m.properties && m.properties.deletetime),
+    });
+    const isIncoming = (m) =>
+      !m.deleted && m.content && /^(RichText|Text)/i.test(m.type || 'Text') &&
+      (m.from || '') !== meName && (Date.parse(m.ts) || 0) >= cutoff;
+    for (const c of chats) {
+      const base = c.messagesUrl || ('/v1/users/ME/conversations/' + encodeURIComponent(c.id) + '/messages');
+      let url = base + '?view=msnp24Equivalent&pageSize=' + pageSize + '&startTime=1';
+      let msgs = [];
+      let err = null;
+      for (let page = 0; page < MAX_PAGES && url; page++) {
+        const r = await __chatGet(url);
+        if (!r || r.error || !r.ok) { err = (r && (r.error || r.status)) || 'ERR'; break; }
+        const batch = ((r.data && r.data.messages) || []).map(mapMsg);
+        msgs = msgs.concat(batch);
+        if (batch.length === 0) break;
+        // Stop as soon as this chat has an incoming message we can report.
+        if (msgs.some(isIncoming)) break;
+        // Stop once we are reading messages older than the window — anything
+        // further back cannot produce an in-window item.
+        const oldest = batch.reduce((acc, m) => Math.min(acc, Date.parse(m.ts) || Infinity), Infinity);
+        if (oldest !== Infinity && oldest < cutoff) break;
+        url = (r.data && r.data._metadata && r.data._metadata.syncState) || '';
+      }
+      if (err && msgs.length === 0) { out.push({ chat: c, messages: [], error: err }); continue; }
+      out.push({ chat: c, messages: msgs });
+    }
+    return { results: out };
+  `;
+  const fetched = await skypeEval(msgBody);
+  if (fetched.error) return { error: fetched.error, chats: [] };
+  return { chats, results: fetched.results || [] };
+}
+
+// The Teams activity feed (`48:notifications`): mentions, replies and reactions
+// aimed at the current user, including channel mentions.
+async function mondayFetchActivity(cutoff, limit) {
+  const body = `
+    const r = await __chatGet('/v1/users/ME/conversations/48:notifications/messages?view=msnp24Equivalent&pageSize=' + ${Math.min(100, Math.max(limit * 4, 50))} + '&startTime=1');
+    if (!r || r.error) return { error: (r && r.error) || 'ERR' };
+    if (!r.ok) return { error: 'HTTP_' + r.status };
+    const out = [];
+    for (const m of ((r.data && r.data.messages) || [])) {
+      const a = (m.properties && m.properties.activity) || null;
+      if (!a) continue;
+      const t = Date.parse(a.activityTimestamp || m.originalarrivaltime || '') || 0;
+      if (t && t < ${cutoff}) continue;
+      out.push({
+        activityId: a.activityId,
+        activityType: a.activityType || '',
+        activitySubtype: a.activitySubtype || '',
+        ts: a.activityTimestamp || m.originalarrivaltime || '',
+        sourceThreadId: a.sourceThreadId || '',
+        sourceMessageId: a.sourceMessageId || '',
+        sourceReplyChainId: a.sourceReplyChainId || '',
+        from: a.sourceUserImDisplayName || '',
+        preview: typeof a.messagePreview === 'string' ? a.messagePreview.slice(0, 4000) : '',
+        threadTopic: a.sourceThreadTopic || a.threadTopic || '',
+      });
+    }
+    return { activities: out };
+  `;
+  const res = await skypeEval(body);
+  if (res.error) return { error: res.error, activities: [] };
+  return { activities: res.activities || [] };
+}
+
+// Chat items: newest message from someone else per conversation, with `depth`
+// older messages as context.
+function mondayChatItems(results, meName, cutoff, depth) {
+  const items = [];
+  for (const { chat, messages } of results) {
+    const usable = (messages || []).filter(
+      (m) => !m.deleted && m.content && /^(RichText|Text)/i.test(m.type || 'Text')
+    );
+    // Newest-first; take the newest message that is not the user's own.
+    const idx = usable.findIndex(
+      (m) => (m.from || '') !== meName && (Date.parse(m.ts) || 0) >= cutoff
+    );
+    if (idx === -1) continue;
+    const msg = usable[idx];
+    const sender = msg.from || 'unknown';
+    const context = usable.slice(idx + 1, idx + 1 + depth).map((m) => ({
+      from: m.from || 'unknown',
+      date: mondayIso(m.ts),
+      body: mondayBody(m).slice(0, 500),
+    }));
+    const others = Array.from(
+      new Set(usable.map((m) => m.from).filter((n) => n && n !== meName))
+    );
+    const label = chat.topic || (others.length ? others.slice(0, 4).join(', ') : 'Teams chat');
+    const oneOnOne = chat.threadType === 'chat' && others.length <= 1;
+    const lastRead = parseInt(String(chat.consumptionHorizon).split(';')[0], 10);
+    const unread = Number.isFinite(lastRead)
+      ? Number(msg.id) > lastRead
+      : null;
+
+    items.push({
+      id: `teams-msg-${msg.id}`,
+      ts: mondayIso(msg.ts),
+      source: 'teams',
+      type: oneOnOne ? 'chat' : 'group-chat',
+      title: `Teams ${oneOnOne ? 'DM' : 'group chat'} — ${label} — ${sender}`,
+      url: mondayThreadUrl(chat.id, msg.id),
+      threadId: chat.id,
+      participants: Array.from(new Set([sender, ...others])),
+      body: mondayBody(msg).slice(0, 2000),
+      from: sender,
+      date: mondayIso(msg.ts),
+      chat: label,
+      chatType: chat.threadType,
+      unread,
+      context,
+    });
+  }
+  return items;
+}
+
+// Activity-feed items: channel/chat mentions and replies aimed at the user.
+function mondayActivityItems(activities, seenThreadIds) {
+  const keep = { mention: 1, reply: 1 };
+  const items = [];
+  for (const a of activities) {
+    const kind = String(a.activityType).toLowerCase();
+    if (!keep[kind]) continue;
+    // Skip activities for chats already represented by a chat item.
+    if (a.sourceThreadId && seenThreadIds.has(a.sourceThreadId)) continue;
+    const preview = stripHtml(a.preview || '');
+    const sender = a.from || 'unknown';
+    const where = a.threadTopic ? ` in ${a.threadTopic}` : '';
+    const label = kind === 'mention' ? 'mention' : 'reply';
+    items.push({
+      id: `teams-activity-${a.activityId || `${a.sourceThreadId}-${a.sourceMessageId}`}`,
+      ts: mondayIso(a.ts),
+      source: 'teams',
+      type: `${a.activitySubtype === 'chat' ? 'chat' : 'channel'}-${label}`,
+      title: `Teams ${label}${where} — ${sender}`,
+      url: mondayThreadUrl(a.sourceThreadId, a.sourceMessageId),
+      participants: [sender],
+      body: preview.slice(0, 2000),
+      from: sender,
+      date: mondayIso(a.ts),
+      threadId: a.sourceThreadId,
+      activityType: kind,
+      activitySubtype: a.activitySubtype || '',
+      context: [],
+    });
+  }
+  return items;
+}
+
+// Fallback only: Graph beta channel scan (the same plumbing `teams activity`
+// uses) for channel mentions, used when the activity feed is unavailable.
+async function mondayChannelScan(me, cutoff, limit, maxTeams, concurrency) {
+  const allTeams = await mondayGetAllSafe(`${GRAPH_BASE}/me/joinedTeams`, 2);
+  const scan = allTeams.slice(0, maxTeams);
+  if (scan.length === 0) return [];
+  console.error(`[teams monday] Fallback: scanning channels in ${scan.length} of ${allTeams.length} teams...`);
+
+  const teamChannels = await pooled(
+    concurrency,
+    scan.map((team) => async () => {
+      const chans = await mondayGetAllSafe(`${GRAPH_BASE}/teams/${team.id}/channels`, 1);
+      return { team, channels: chans.slice(0, 3) };
+    })
+  );
+
+  const results = await pooled(
+    concurrency,
+    teamChannels.flatMap(({ team, channels }) =>
+      channels.map((channel) => async () => {
+        const r = await apiGetSafe(
+          `${GRAPH_BETA}/teams/${team.id}/channels/${channel.id}/messages?$top=25`
+        );
+        return { team, channel, messages: r.ok ? r.data?.value || [] : [] };
+      })
+    )
+  );
+
+  const nameLower = (me.displayName || '').toLowerCase();
+  const items = [];
+  for (const { team, channel, messages } of results) {
+    for (const m of messages) {
+      if (m.messageType !== 'message' || m.deletedDateTime) continue;
+      if ((Date.parse(m.createdDateTime) || 0) < cutoff) continue;
+      if (m.from?.user?.id === me.id) continue;
+      const bodyText = m.body?.content ? stripHtml(m.body.content) : '';
+      const mentioned =
+        (m.mentions || []).some((x) => x.mentioned?.user?.id === me.id) ||
+        (nameLower && bodyText.toLowerCase().includes(nameLower));
+      if (!mentioned) continue;
+      const sender = m.from?.user?.displayName || m.from?.application?.displayName || 'unknown';
+      items.push({
+        id: `teams-msg-${m.id}`,
+        ts: mondayIso(m.createdDateTime),
+        source: 'teams',
+        type: 'channel-mention',
+        title: `Teams mention — ${team.displayName} / ${channel.displayName} — ${sender}`,
+        url: m.webUrl || mondayThreadUrl(channel.id, m.id),
+        participants: [sender],
+        body: bodyText.slice(0, 2000),
+        from: sender,
+        date: mondayIso(m.createdDateTime),
+        team: team.displayName,
+        channel: channel.displayName,
+        context: [],
+      });
+      if (items.length >= limit) break;
+    }
+    if (items.length >= limit) break;
+  }
+  return items;
+}
+
+// Safe (never-die) paginated Graph GET used by the monday path.
+async function mondayGetAllSafe(url, maxPages) {
+  const results = [];
+  let next = url;
+  let pages = 0;
+  while (next && pages < (maxPages || 1)) {
+    const r = await apiGetSafe(next);
+    if (!r.ok) break;
+    if (r.data?.value) results.push(...r.data.value);
+    next = r.data?.['@odata.nextLink'] || null;
+    pages++;
+  }
+  return results;
+}
+
+async function cmdMonday() {
+  // The monday source protocol requires a single JSON array on stdout and exit 0,
+  // ALWAYS — an empty inbox is []. Teams can fail hard underneath us (no signed-in
+  // tab, refresh token unobtainable), and those paths call die() -> process.exit(1),
+  // which would emit no array at all and break the aggregator. Contain that here.
+  try {
+    await mondayRun();
+  } catch (e) {
+    const msg = e?.message || String(e);
+    console.error(`[teams monday] WARNING: Teams unavailable (${msg}) — emitting empty inbox.`);
+    console.log("[]");
+  }
+}
+
+async function mondayRun() {
+  const f = parseMondayFlags(process.argv.slice(2));
+  const cutoff = mondayCutoff(f.date);
+  const maxTeams = parseInt(flags['max-teams'] || '10', 10);
+  const concurrency = parseInt(flags.concurrency || '5', 10);
+  console.error(
+    `[teams monday] limit=${f.limit} depth=${f.depth} date=${f.date} (since ${new Date(cutoff).toISOString()})`
+  );
+
+  // Identify the user (also warms up the in-page refresh-token capture that the
+  // chat-service calls rely on).
+  const meResp = await apiGetSafe(`${GRAPH_BASE}/me`);
+  const me = meResp.ok ? meResp.data || {} : {};
+  if (!meResp.ok) {
+    console.error(
+      `[teams monday] WARNING: /me failed (status ${meResp.status}) — is the Teams tab open and signed in?`
+    );
+  }
+  const meName = me.displayName || '';
+
+  // 1. 1:1 + group chats via the Teams chat service.
+  let chatItems = [];
+  const chatThreadIds = new Set();
+  try {
+    const chats = await mondayFetchChats(cutoff, f.depth, Math.max(f.limit, 20), meName);
+    if (chats.error) {
+      console.error(`[teams monday] WARNING: chat service unavailable (${chats.error}).`);
+    } else {
+      console.error(`[teams monday] ${(chats.chats || []).length} chats active in window.`);
+      chatItems = mondayChatItems(chats.results || [], meName, cutoff, f.depth);
+      // Suppress activity-feed duplicates ONLY for chats that actually produced a
+      // chat item. Adding every listed chat id would also discard mentions/replies
+      // from chats whose fetch failed or yielded nothing, losing them entirely.
+      for (const it of chatItems) if (it.threadId) chatThreadIds.add(it.threadId);
+    }
+  } catch (e) {
+    console.error(`[teams monday] WARNING: chat scan failed: ${e?.message || e}`);
+  }
+
+  // 2. Channel/chat mentions + replies via the activity feed.
+  let activityItems = [];
+  try {
+    const act = await mondayFetchActivity(cutoff, f.limit);
+    if (act.error) {
+      console.error(`[teams monday] WARNING: activity feed unavailable (${act.error}).`);
+    } else {
+      activityItems = mondayActivityItems(act.activities, chatThreadIds);
+      console.error(
+        `[teams monday] ${act.activities.length} activity records in window → ${activityItems.length} mention/reply items.`
+      );
+    }
+  } catch (e) {
+    console.error(`[teams monday] WARNING: activity feed failed: ${e?.message || e}`);
+  }
+
+  // 3. Fallback: Graph channel scan when the activity feed produced nothing.
+  if (activityItems.length === 0 && me.id) {
+    try {
+      activityItems = await mondayChannelScan(me, cutoff, f.limit, maxTeams, concurrency);
+      console.error(`[teams monday] Fallback channel scan → ${activityItems.length} items.`);
+    } catch (e) {
+      console.error(`[teams monday] WARNING: channel scan failed: ${e?.message || e}`);
+    }
+  }
+
+  const seen = new Set();
+  const items = [...chatItems, ...activityItems]
+    .filter((it) => {
+      if (!it.id || seen.has(it.id)) return false;
+      seen.add(it.id);
+      return true;
+    })
+    .sort((a, b) => (Date.parse(b.ts) || 0) - (Date.parse(a.ts) || 0))
+    .slice(0, f.limit);
+
+  console.error(
+    `[teams monday] ${items.length} items (${chatItems.length} chat, ${activityItems.length} mention/reply).`
+  );
+  console.log(JSON.stringify(items));
+}
+
 function showHelp() {
   console.log(`teams  Microsoft Teams access via Graph API + Substrate Search
 
@@ -1814,6 +2344,9 @@ Commands:
   search <query>                    Full-text search across Teams messages
   unanswered <team> <channel>       Messages with no replies (default: --since=48h)
   digest                            Activity summary across all teams (default: --since=24h, --max-teams=10)
+  monday --limit N --depth N --date Nd
+                                    monday-protocol inbox source: JSON array of unread/recent
+                                    chat messages + channel mentions on stdout (logs on stderr)
   transcribe [start]                Turn on live captions in the active meeting and capture the transcript
   transcribe start --scoop <name>   Copilot mode: fire a lick to <name> for each finalized phrase
   transcribe flush [--snapshot]     Append new phrases; --snapshot also grabs a deduped screen-share frame
@@ -1880,6 +2413,9 @@ switch (subcommand) {
     break;
   case 'digest':
     await cmdDigest();
+    break;
+  case 'monday':
+    await cmdMonday();
     break;
   case 'transcribe':
   case 'transcript':

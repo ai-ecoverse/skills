@@ -8,9 +8,10 @@ description: >-
   Supports all teams and channels the user has access to, with auth via the live browser
   session. Use when the user wants to check Teams messages, post a Teams message, search
   Teams channels, read a thread, get user info, view mentions, transcribe or caption a
-  live meeting, or automate any Teams task.
-  Triggers on mentions of Teams, channels, messages, threads, mentions, activity, digest,
-  transcribe, transcript, captions, or meeting notes.
+  live meeting, or feed Microsoft Teams items into the SLICC `monday` start-of-day
+  inbox digest (the monday aggregator skill — unrelated to the monday.com SaaS product).
+  Triggers on mentions of Teams, Microsoft Teams, channels, messages, threads, mentions,
+  activity, digest, transcribe, transcript, captions, or meeting notes.
 allowed-tools: bash
 ---
 
@@ -182,13 +183,6 @@ Fetch recent top-level messages from a channel (replies are not inlined — use
 
 **Alias:** `teams messages` / `teams msgs` also route to `history`.
 
-### teams activity [--since=DURATION] [--max-teams=N] [--concurrency=N]
-
-Messages that mention or involve the current user. Default window is the last
-24 hours. See the full description in the **Available commands** section below.
-
-**Alias:** `teams mentions` also routes to `activity`.
-
 ### teams post \<team\> \<channel\> \<message\> [--reply-to=\<message-id\>]
 
 Post a plain-text message to a channel, or reply in a thread when
@@ -270,6 +264,41 @@ Scans up to `--max-teams` teams (default 10). Progress is printed to stderr.
 > **Large tenants:** With the parallel fetch, 10 teams × N channels typically
 > completes in under 15s. Use `--max-teams=20` if you want broader coverage
 > and have headroom. Lower to `--max-teams=5` if you see timeouts.
+
+### teams monday [--limit N] [--depth N] [--date Nd]
+
+`monday`-protocol inbox source (see the `monday` skill,
+`references/SOURCE_PROTOCOL.md`). Prints a **single JSON array** to stdout and
+nothing else; all progress/warnings go to stderr and the command always exits
+`0` (an empty inbox is `[]`) — including when Teams itself is unavailable, e.g.
+no signed-in tab, so the aggregator degrades instead of failing. Intended to be
+called by `monday`, which merges
+it with `gh`, `slack`, `outlook`, `gmail` and `servicenow`.
+
+```bash
+teams monday --limit 20 --depth 3 --date 7d
+monday teams --limit 10 --date 21d       # via the aggregator
+```
+
+Items returned:
+
+| Type | Source |
+|---|---|
+| `chat` / `group-chat` | Newest message from **someone else** in each 1:1 or group chat active in the window, plus `--depth` older messages as `context[]`. Paginates past your own replies, so a chat still appears when you sent the last several messages. |
+| `channel-mention` / `chat-mention` / `channel-reply` | Entries from the Teams **activity feed** (`48:notifications`) — @mentions and thread replies aimed at you. |
+
+Fields: `id` (`teams-msg-<messageId>` / `teams-activity-<activityId>`), `ts`
+(ISO-8601), `source: "teams"`, `title`, `url` (deep link
+`https://teams.microsoft.com/l/message/<threadId>/<messageId>`), `participants`,
+`body` (HTML stripped), plus `from`, `chat`/`threadId`, `chatType`, `unread`,
+`context[]`. `importance`/`urgency`/`summary` are intentionally **not** emitted —
+`monday` adds those when rating.
+
+Chats are read via the Teams chat service rather than Graph, and the command
+falls back to a channel scan if the activity feed is unavailable. You do not
+need to know either to use it — see
+[`references/endpoints.md`](references/endpoints.md#monday-chat-retrieval) if
+you are changing the implementation.
 
 ### teams transcribe [start|flush|status|follow|stop] [--out=FILE]
 
