@@ -8,8 +8,8 @@ description: >-
   Supports all teams and channels the user has access to, with auth via the live browser
   session. Use when the user wants to check Teams messages, post a Teams message, search
   Teams channels, read a thread, get user info, view mentions, transcribe or caption a
-  live meeting, or automate any Teams task.
-  Triggers on mentions of Teams, channels, messages, threads, mentions, activity, digest,
+  live meeting, feed the cross-tool monday inbox digest, or automate any Teams task.
+  Triggers on mentions of Teams, channels, messages, threads, mentions, activity, digest, monday,
   transcribe, transcript, captions, or meeting notes.
 allowed-tools: bash
 ---
@@ -270,6 +270,44 @@ Scans up to `--max-teams` teams (default 10). Progress is printed to stderr.
 > **Large tenants:** With the parallel fetch, 10 teams × N channels typically
 > completes in under 15s. Use `--max-teams=20` if you want broader coverage
 > and have headroom. Lower to `--max-teams=5` if you see timeouts.
+
+### teams monday [--limit N] [--depth N] [--date Nd]
+
+`monday`-protocol inbox source (see the `monday` skill,
+`references/SOURCE_PROTOCOL.md`). Prints a **single JSON array** to stdout and
+nothing else; all progress/warnings go to stderr and the command always exits
+`0` (an empty inbox is `[]`). Intended to be called by `monday`, which merges
+it with `gh`, `slack`, `outlook`, `gmail` and `servicenow`.
+
+```bash
+teams monday --limit 20 --depth 3 --date 7d
+monday teams --limit 10 --date 21d       # via the aggregator
+```
+
+Items returned:
+
+| Type | Source |
+|---|---|
+| `chat` / `group-chat` | Newest message from **someone else** in each 1:1 or group chat active in the window, plus `--depth` older messages as `context[]`. |
+| `channel-mention` / `chat-mention` / `channel-reply` | Entries from the Teams **activity feed** (`48:notifications`) — @mentions and thread replies aimed at you. |
+
+Fields: `id` (`teams-msg-<messageId>` / `teams-activity-<activityId>`), `ts`
+(ISO-8601), `source: "teams"`, `title`, `url` (deep link
+`https://teams.microsoft.com/l/message/<threadId>/<messageId>`), `participants`,
+`body` (HTML stripped), plus `from`, `chat`/`threadId`, `chatType`, `unread`,
+`context[]`. `importance`/`urgency`/`summary` are intentionally **not** emitted —
+`monday` adds those when rating.
+
+> **Why not Graph `/me/chats`:** the delegated browser token has no
+> `Chat.ReadBasic/Chat.Read/Chat.ReadWrite` scope, so Graph answers `403`
+> (this is also why `teams activity` logs "Chat scan unavailable (403)").
+> `monday` therefore uses the **Teams chat service (IC3)** the web client itself
+> uses: a `skypeToken` from `POST teams.microsoft.com/api/authsvc/v1.0/authz`
+> (obtained in-page with an `api.spaces.skype.com` token) against
+> `<regionGtms.chatService>/v1/users/ME/conversations[/…/messages]`. Tokens are
+> minted and consumed inside the Teams tab, exactly like every other
+> subcommand. If the activity feed is unavailable, it falls back to the Graph
+> beta channel scan used by `teams activity`.
 
 ### teams transcribe [start|flush|status|follow|stop] [--out=FILE]
 
