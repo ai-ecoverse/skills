@@ -42,9 +42,9 @@ The `monday` command executes the following steps in order:
 
 1. **Discover sources** — with no positional args, run `which [cmd]` for each name in `KNOWN_COMMANDS` and keep those found on PATH; otherwise use the names supplied as positional args.
 2. **Invoke in parallel** — call `[cmd] monday --limit N --depth N --date Nd` for every discovered source concurrently.
-3. **Collect and validate JSON** — sources that exit non-zero, emit empty output, or return invalid JSON are logged to stderr and dropped; aggregation continues with the rest.
+3. **Collect and validate JSON** — sources that exit non-zero, emit empty output, or return invalid JSON are logged to stderr and dropped; aggregation continues with the rest. Each source is also truncated to `--limit`, so a source that ignores the flag cannot inflate the run.
 4. **Deduplicate by `id`** — merge arrays in argument order; the first occurrence of an `id` wins. (Precedence rules: [`references/SOURCE_PROTOCOL.md`](references/SOURCE_PROTOCOL.md).)
-5. **Optionally rate** — if any `--rate-*` flag is set, submit each item to the rating agent (model: `--rate-model`; optional context: `--rate-context`) to assign `importance`, `urgency`, and `summary` fields. Rating failures fall back to the unrated item; aggregation still completes.
+5. **Optionally rate** — if any `--rate-*` flag is set, submit each item to the rating agent (model: `--rate-model`; optional context: `--rate-context`) to assign `importance`, `urgency`, and `summary` fields. Agents run through a bounded worker pool (`--rate-concurrency`) and no more than `--rate-max` items are rated. Rating failures fall back to the unrated item; aggregation still completes.
 6. **Sort and output** — if rated, sort by `urgency × importance` descending (ties broken by `ts` descending); otherwise sort by `ts` descending. Write the final JSON array to stdout.
 
 ## Flags
@@ -59,10 +59,29 @@ The `monday` command executes the following steps in order:
 | `--rate-summary N` | off | Generate a ~N-character summary per item |
 | `--rate-model NAME` | `claude-haiku-4-5` | Model used by the rating agent |
 | `--rate-context PATH` | none | Read-only knowledge-base path the rating agent can grep |
+| `--rate-concurrency N` | `4` | Parallel rating agents (bounded worker pool) |
+| `--rate-max N` | `60` | Refuse to rate more than N items; the rest pass through unrated |
 
 Positional args (`gh`, `slack`, `teams`, `outlook`, `gmail`, `servicenow`) select
 which sources to invoke. With no positional args, `monday` runs `which <cmd>` on
 the known source list and uses whichever are found on PATH.
+
+`linkedin` and `tiktok` implement the protocol but are **not** auto-discovered,
+because they swamp a work triage run with personal notifications. Name them
+explicitly to opt in (`monday gh tiktok`).
+
+### Rating is one model call per item
+
+Each rated item costs one `agent` invocation, so cost and wall time scale with
+the merged item count — not with the number of sources. Two guard rails keep a
+run bounded: `--rate-concurrency` caps how many run at once, and `--rate-max`
+caps how many are rated at all (excess items pass through unrated rather than
+silently launching hundreds of calls). Start with a small `--limit` and one
+source, then widen:
+
+```bash
+monday gh --limit 5 --date 1d --rate-importance 9-1 --rate-urgency 8-1
+```
 
 ## Source protocol
 
@@ -109,6 +128,8 @@ found on `PATH`:
 | `"<cmd>" returned non-array JSON` | Source printed an object, or logged to stdout | Sources must print a JSON **array** to stdout and send logs to stderr |
 | Duplicates collapsed unexpectedly | Two sources share an item `id` | First source in argument order wins — reorder positional args to set precedence |
 | Empty `[]` output | Window too narrow or `--limit` too low | Widen `--date` (e.g. `14d`) or raise `--limit` |
+| `NOTE: "<cmd>" returned N items for --limit K` | The source ignored `--limit`; `monday` truncated it | Harmless, but the source has a bug worth fixing — it also inflates rating cost |
+| Rating never finishes / floods approval prompts | Too many items, or an old build writing one scratch file per item | Lower `--limit`, lower `--rate-max`, or reduce `--rate-concurrency`. Current builds pass prompts as arguments and write nothing |
 
 Confirm a single source satisfies the protocol before aggregating:
 `gh monday --limit 5 --date 3d | jq 'type, length'` should print `"array"` and a
