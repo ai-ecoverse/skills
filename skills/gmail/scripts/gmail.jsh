@@ -467,28 +467,62 @@ async function cmdLogin() {
     // Tolerate the "installed"/"web" wrapper Google's console downloads use.
     if (creds.installed || creds.web) creds = { ...(creds.installed || creds.web), ...creds };
     const refreshToken = creds.refresh_token || creds.refreshToken;
-    if (!refreshToken) {
-      die(`gmail login: ${fromFile} has no refresh_token field`);
+    const clientId = creds.client_id || creds.clientId;
+    const clientSecret = creds.client_secret || creds.clientSecret;
+    // A refresh token is bound to the OAuth client that issued it, so we must not
+    // substitute this skill's built-in client for a missing one — the result would
+    // be unusable AND would have overwritten a working stored config.
+    const missing = [
+      !refreshToken && 'refresh_token',
+      !clientId && 'client_id',
+      !clientSecret && 'client_secret',
+    ].filter(Boolean);
+    if (missing.length) {
+      die(
+        `gmail login: ${fromFile} is missing required field(s): ${missing.join(', ')}\n` +
+        '  A refresh token only works with the client_id/client_secret that issued it.\n' +
+        '  Existing stored credentials were left untouched.'
+      );
     }
-    await saveConfig({
-      client_id: creds.client_id || creds.clientId || OAUTH_CLIENT_ID,
-      client_secret: creds.client_secret || creds.clientSecret || OAUTH_CLIENT_SECRET,
-      refresh_token: refreshToken,
-      scope: creds.scope || OAUTH_SCOPE,
-      account: creds.account || '',
-      // Drop any stale access token cached for a previous identity.
-      access_token: '',
-      expires_at: 0,
-    });
+    // Validate the imported credentials BEFORE persisting anything, and validate
+    // them *directly* — going through gmailGet()/getAccessToken() would resolve
+    // credentials env-first, so with GWS_* set we would "verify" a different
+    // identity and store an unusable token while reporting success.
+    const imported = { clientId, clientSecret, refreshToken };
+    let tokenData;
+    try {
+      tokenData = await refreshAccessToken(imported);
+    } catch (e) {
+      die(`gmail login: could not reach Google to validate credentials: ${e.message}`);
+    }
+    if (!tokenData?.access_token) {
+      die(
+        `gmail login: the credentials in ${fromFile} were rejected by Google: ` +
+        `${JSON.stringify(tokenData)}\n  Existing stored credentials were left untouched.`
+      );
+    }
 
+    // Only now that the refresh token demonstrably works do we overwrite config.
     let email = creds.account || '';
     try {
-      const profile = await gmailGet('/profile');
-      email = profile.emailAddress || email;
-      await saveConfig({ account: email });
-    } catch (e) {
-      process.stderr.write(`gmail login: imported, but profile check failed: ${e.message}\n`);
-    }
+      const res = await fetch(`${GMAIL_BASE}/profile`, {
+        headers: { Authorization: `Bearer ${tokenData.access_token}` },
+      });
+      if (res.ok) {
+        const profile = await res.json();
+        email = profile.emailAddress || email;
+      }
+    } catch { /* identity is cosmetic here; the token itself already validated */ }
+
+    await saveConfig({
+      client_id: clientId,
+      client_secret: clientSecret,
+      refresh_token: refreshToken,
+      scope: creds.scope || OAUTH_SCOPE,
+      account: email,
+      access_token: tokenData.access_token,
+      expires_at: Date.now() + (tokenData.expires_in || 3600) * 1000,
+    });
     process.stdout.write(`${C.green('✓')} Credentials imported from ${fromFile}${email ? ` (${email})` : ''}\n`);
     process.stdout.write(`  ${C.gray('Stored in skill config; access tokens auto-refresh.')}\n`);
     return;
@@ -546,20 +580,34 @@ async function cmdLogin() {
 async function cmdAuth() {
   const creds = await resolveCredentials();
   const cfg = await loadConfig();
+  // Only surface persisted-config metadata when the config is the ACTIVE source.
+  // With GWS_* env vars set, the stored config is inactive and may describe an
+  // entirely different mailbox — reporting its account/scope would be misleading.
+  const configActive = creds?.source === 'config';
+  let account = creds?.account || (configActive ? cfg.account : '') || null;
+  let scope = configActive ? cfg.scope || OAUTH_SCOPE : null;
+  if (creds?.source === 'env') {
+    // Resolve identity from the token actually in use, not from stored config.
+    try {
+      const profile = await gmailGet('/profile');
+      account = profile.emailAddress || null;
+    } catch { /* leave unknown rather than borrow the inactive config's identity */ }
+    scope = process.env.GWS_SCOPE || null;
+  }
   const info = {
     authenticated: !!creds,
     source: creds ? creds.source : null,
-    account: creds?.account || cfg.account || null,
+    account,
     client_id: creds ? creds.clientId : null,
     refresh_token_length: creds ? creds.refreshToken.length : 0,
-    scope: cfg.scope || OAUTH_SCOPE,
+    scope,
   };
   if (flags.json === true || flags.json === 'true') { out(info); return; }
   process.stdout.write('\n');
   process.stdout.write(`  ${C.gray('authenticated')}  ${info.authenticated ? C.green('yes') : C.red('no')}\n`);
   process.stdout.write(`  ${C.gray('source')}         ${info.source || C.gray('(none — run: gmail login)')}\n`);
   process.stdout.write(`  ${C.gray('account')}        ${info.account || C.gray('(unknown)')}\n`);
-  process.stdout.write(`  ${C.gray('scope')}          ${info.scope}\n`);
+  process.stdout.write(`  ${C.gray('scope')}          ${info.scope || C.gray('(unknown — set by the env credentials)')}\n`);
   process.stdout.write(`  ${C.gray('refresh token')}  ${info.refresh_token_length ? `present (${info.refresh_token_length} chars)` : C.red('absent')}\n`);
 }
 
