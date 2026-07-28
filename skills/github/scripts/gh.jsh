@@ -340,11 +340,224 @@ function fail(cmd, err) {
 //   'fields' — like 'string' but usable bare (`--json` == every field)
 const REPO_FLAG = { repo: { type: 'string', short: 'R' } };
 const JSON_FLAGS = { json: { type: 'fields' }, jq: { type: 'string', short: 'q' } };
+const PROJECT_OWNER_FLAG = { owner: { type: 'string', short: 'o' } };
+
+// Every command's flag spec lives here, keyed by the command label, so that the
+// help interception at the bottom of the file can ask the SAME definitions
+// whether a flag consumes the token after it. Hand-maintained lists of
+// "boolean flags" drift; this cannot. `api` and `monday` keep their own
+// hand-rolled parsers but still declare their flags here for that reason.
+const FLAG_SPECS = {
+  'pr list': {
+    ...REPO_FLAG, ...JSON_FLAGS,
+    state: { type: 'string', short: 's' },
+    limit: { type: 'string', short: 'L' },
+    base: { type: 'string', short: 'B' },
+    head: { type: 'string', short: 'H' },
+    draft: { type: 'bool', short: 'd' },
+  },
+  'pr view': {
+    ...REPO_FLAG, ...JSON_FLAGS,
+    comments: { type: 'bool', short: 'c' },
+  },
+  'pr checks': {
+    ...REPO_FLAG, ...JSON_FLAGS,
+    watch: { type: 'bool' },
+    filter: { type: 'string' },
+    scoop: { type: 'string' },
+  },
+  'pr merge': {
+    ...REPO_FLAG,
+    merge: { type: 'bool', short: 'm' },
+    squash: { type: 'bool', short: 's' },
+    rebase: { type: 'bool', short: 'r' },
+    'delete-branch': { type: 'bool', short: 'd' },
+    subject: { type: 'string', short: 't' },
+    body: { type: 'string', short: 'b' },
+    'body-file': { type: 'string', short: 'F' },
+  },
+  'pr comment': {
+    ...REPO_FLAG,
+    body: { type: 'string', short: 'b' },
+    'body-file': { type: 'string', short: 'F' },
+  },
+  'pr create': {
+    ...REPO_FLAG,
+    title: { type: 'string', short: 't' },
+    body: { type: 'string', short: 'b' },
+    'body-file': { type: 'string', short: 'F' },
+    head: { type: 'string', short: 'H' },
+    base: { type: 'string', short: 'B' },
+    draft: { type: 'bool', short: 'd' },
+    label: { type: 'list', short: 'l' },
+    labels: { type: 'list' },
+    assignee: { type: 'list', short: 'a' },
+    reviewer: { type: 'list', short: 'r' },
+  },
+  'pr checkout': { ...REPO_FLAG },
+  'pr watch': {
+    ...REPO_FLAG,
+    filter: { type: 'string' },
+    scoop: { type: 'string' },
+  },
+  'pr unwatch': { ...REPO_FLAG },
+  'pr close': {
+    ...REPO_FLAG,
+    'delete-branch': { type: 'bool', short: 'd' },
+    comment: { type: 'string', short: 'c' },
+  },
+  'issue list': {
+    ...REPO_FLAG, ...JSON_FLAGS,
+    state: { type: 'string', short: 's' },
+    limit: { type: 'string', short: 'L' },
+    label: { type: 'list', short: 'l' },
+    labels: { type: 'list' },
+    assignee: { type: 'string', short: 'a' },
+    author: { type: 'string', short: 'A' },
+    milestone: { type: 'string', short: 'm' },
+  },
+  'issue create': {
+    ...REPO_FLAG,
+    title: { type: 'string', short: 't' },
+    body: { type: 'string', short: 'b' },
+    'body-file': { type: 'string', short: 'F' },
+    label: { type: 'list', short: 'l' },
+    labels: { type: 'list' },
+    assignee: { type: 'list', short: 'a' },
+    milestone: { type: 'string', short: 'm' },
+  },
+  'issue view': {
+    ...REPO_FLAG, ...JSON_FLAGS,
+    comments: { type: 'bool', short: 'c' },
+  },
+  'issue comment': {
+    ...REPO_FLAG,
+    body: { type: 'string', short: 'b' },
+    'body-file': { type: 'string', short: 'F' },
+  },
+  'issue close': {
+    ...REPO_FLAG,
+    reason: { type: 'string' },
+    comment: { type: 'string', short: 'c' },
+  },
+  'issue edit': {
+    ...REPO_FLAG,
+    title: { type: 'string', short: 't' },
+    body: { type: 'string', short: 'b' },
+    'body-file': { type: 'string', short: 'F' },
+    state: { type: 'string' },
+    label: { type: 'list', short: 'l' },
+    labels: { type: 'list' },
+    'add-label': { type: 'list' },
+    'remove-label': { type: 'list' },
+    'add-assignee': { type: 'list' },
+    'remove-assignee': { type: 'list' },
+    milestone: { type: 'string', short: 'm' },
+  },
+  'project list': { ...PROJECT_OWNER_FLAG, ...JSON_FLAGS },
+  'project list-items': { ...PROJECT_OWNER_FLAG, ...JSON_FLAGS },
+  'project add-draft': {
+    ...PROJECT_OWNER_FLAG,
+    title: { type: 'string', short: 't' },
+    body: { type: 'string', short: 'b' },
+    'body-file': { type: 'string', short: 'F' },
+  },
+  'project set-title': {
+    ...PROJECT_OWNER_FLAG,
+    title: { type: 'string', short: 't' },
+  },
+  'repo view': { ...REPO_FLAG, ...JSON_FLAGS },
+  'repo archive': { ...REPO_FLAG },
+  'run list': {
+    ...REPO_FLAG, ...JSON_FLAGS,
+    limit: { type: 'string', short: 'L' },
+    branch: { type: 'string', short: 'b' },
+    workflow: { type: 'string', short: 'w' },
+    event: { type: 'string', short: 'e' },
+    status: { type: 'string', short: 's' },
+    user: { type: 'string', short: 'u' },
+  },
+  'run view': {
+    ...REPO_FLAG, ...JSON_FLAGS,
+    log: { type: 'bool' },
+    'log-failed': { type: 'bool' },
+    'log-tail': { type: 'string' },
+    job: { type: 'string', short: 'j' },
+  },
+  'release list': {
+    ...REPO_FLAG, ...JSON_FLAGS,
+    limit: { type: 'string', short: 'L' },
+  },
+  'notifications list': {
+    ...REPO_FLAG, ...JSON_FLAGS,
+    participating: { type: 'bool', short: 'p' },
+    all: { type: 'bool', short: 'a' },
+    limit: { type: 'string', short: 'n' },
+  },
+  'notifications read': { ...REPO_FLAG },
+  'search prs': {
+    ...REPO_FLAG, ...JSON_FLAGS,
+    limit: { type: 'string', short: 'L' },
+    state: { type: 'string' },
+  },
+  'vars list': {
+    ...REPO_FLAG, ...JSON_FLAGS,
+    limit: { type: 'string', short: 'L' },
+  },
+  'vars set': {
+    ...REPO_FLAG,
+    body: { type: 'string', short: 'b' },
+  },
+  'branch create': {
+    ...REPO_FLAG,
+    from: { type: 'string' },
+  },
+  'branch delete': { ...REPO_FLAG },
+  'content put': {
+    ...REPO_FLAG,
+    branch: { type: 'string', short: 'b' },
+    message: { type: 'string', short: 'm' },
+  },
+  // Hand-rolled parsers (apiPassthrough / mondayGh) — declared for help detection.
+  api: {
+    method: { type: 'string', short: 'X' },
+    jq: { type: 'string', short: 'q' },
+    field: { type: 'string', short: 'f' },
+    'raw-field': { type: 'string', short: 'F' },
+  },
+  monday: {
+    limit: { type: 'string' },
+    depth: { type: 'string' },
+    date: { type: 'string' },
+  },
+  auth: {},
+  version: {},
+};
 
 function findFlagSpec(spec, name) {
   if (Object.hasOwn(spec, name)) return [name, spec[name]];
   for (const [k, v] of Object.entries(spec)) if (v.short === name) return [k, v];
   return [null, null];
+}
+
+// A 'fields' flag (`--json`) is usable bare, so it only swallows the next token
+// when that token actually looks like a field list. Shared with the help
+// interception so both agree on what a flag consumes.
+function fieldsFlagConsumes(next) {
+  return next !== undefined && next[0] !== '-' && !/^\d+$/.test(next) && !next.includes('/');
+}
+
+// True when the flag token `tok` (as written, e.g. `--title` or `-t`) consumes
+// the token that follows it, given a command's flag spec. Mirrors parseArgs
+// exactly: `--x=y` is self-contained, unrecognised flags are passed through as
+// positionals (and so consume nothing), bools take no value.
+function flagConsumesNext(spec, tok, next) {
+  if (tok.includes('=')) return false;
+  const [key, def] = findFlagSpec(spec || {}, tok.replace(/^--?/, ''));
+  if (!key) return false;
+  if (def.type === 'bool') return false;
+  if (def.type === 'fields') return fieldsFlagConsumes(next);
+  return next !== undefined;
 }
 
 function parseArgs(cmdLabel, args, spec) {
@@ -376,10 +589,7 @@ function parseArgs(cmdLabel, args, spec) {
       // `--json` is legal bare (meaning "every field"), so only swallow the
       // next token when it actually looks like a field list — never a number
       // (`gh pr view --json 42`) or an owner/repo or another flag.
-      const next = args[i + 1];
-      value = (next !== undefined && next[0] !== '-' && !/^\d+$/.test(next) && !next.includes('/'))
-        ? args[++i]
-        : '';
+      value = fieldsFlagConsumes(args[i + 1]) ? args[++i] : '';
     } else {
       if (args[i + 1] === undefined) cli.die(`${cmdLabel}: flag ${raw} requires a value`);
       value = args[++i];
@@ -443,6 +653,34 @@ function labelList(flags) {
   const out = [];
   for (const v of [...(flags.label || []), ...(flags.labels || [])]) if (!out.includes(v)) out.push(v);
   return out;
+}
+
+// Upstream spells this flag `--milestone <name>`, but the REST API wants the
+// milestone's *number* (the create/edit payloads reject a title outright, and
+// the issue-list filter only understands a number, `*` or `none`). So a
+// non-numeric value is looked up by title first.
+async function resolveMilestone(cmdLabel, repo, value, { allowSentinels = false } = {}) {
+  if (value === undefined || value === null || value === '') return undefined;
+  const want = String(value).trim();
+  if (/^\d+$/.test(want)) return Number(want);
+  if (allowSentinels && (want === '*' || want === 'none')) return want;
+
+  let list;
+  try {
+    list = await api.get(`/repos/${repo}/milestones`, { params: { state: 'all', per_page: 100 } });
+  } catch (e) { fail(cmdLabel, e); }
+  const all = Array.isArray(list) ? list : [];
+  const hit = all.find(m => m.title === want)
+    || all.find(m => String(m.title).toLowerCase() === want.toLowerCase());
+  if (!hit) {
+    cli.die(
+      `${cmdLabel}: no milestone titled "${want}" in ${repo}` +
+      (all.length
+        ? `\nAvailable milestones: ${all.map(m => `${m.title} (#${m.number})`).join(', ')}`
+        : '\nThis repository has no milestones.')
+    );
+  }
+  return hit.number;
 }
 
 async function bodyFrom(cmdLabel, body, bodyFile) {
@@ -563,16 +801,15 @@ function prListJson(pr) {
   };
 }
 
+// The plain-output state column: `--state closed|merged|all` must not label
+// everything `open`. Derived from pr.state + pr.merged_at, like upstream.
+function prStateLabel(pr) {
+  if (pr.merged_at) return color.cyan('merged');
+  if (pr.state !== 'open') return color.red('closed');
+  return pr.draft ? color.green('open') + '  ' + color.yellow('[DRAFT]') : color.green('open');
+}
 async function prList(args) {
-  const { flags, positional } = parseArgs('pr list', args, {
-    ...REPO_FLAG,
-    ...JSON_FLAGS,
-    state: { type: 'string', short: 's' },
-    limit: { type: 'string', short: 'L' },
-    base: { type: 'string', short: 'B' },
-    head: { type: 'string', short: 'H' },
-    draft: { type: 'bool', short: 'd' },
-  });
+  const { flags, positional } = parseArgs('pr list', args, FLAG_SPECS['pr list']);
   const { repoArg } = distribute('pr list', positional, [], flags);
   const repo = await repoFrom('pr list', flags, repoArg);
 
@@ -597,13 +834,16 @@ async function prList(args) {
     return;
   }
 
-  if (!prs.length) { console.log(color.gray('No open pull requests.')); return; }
+  if (!prs.length) {
+    console.log(color.gray('No ' + (state === 'all' ? '' : state + ' ') + 'pull requests.'));
+    return;
+  }
 
   const rows = prs.map(pr => [
     color.cyan('#' + pr.number),
     fmt.trunc(pr.title, 52),
     color.gray(fmt.trunc(pr.head.ref, 36)),
-    pr.draft ? color.green('open') + '  ' + color.yellow('[DRAFT]') : color.green('open'),
+    prStateLabel(pr),
   ]);
   console.log(fmt.table(rows, [6, 54, 38]));
 }
@@ -613,7 +853,8 @@ async function prList(args) {
 const PR_VIEW_FIELDS = [
   ...PR_LIST_FIELDS,
   'merged', 'mergeable', 'mergeStateStatus', 'mergeCommit', 'additions', 'deletions',
-  'changedFiles', 'commits', 'statusCheckRollup', 'reviews', 'reviewDecision', 'comments',
+  'changedFiles', 'commits', 'commitsCount', 'statusCheckRollup', 'reviews', 'reviewDecision',
+  'comments',
 ];
 
 // Normalises check-runs + commit statuses into upstream's statusCheckRollup shape.
@@ -654,6 +895,20 @@ function rollupBucket(entry) {
   return 'pending';
 }
 
+// Keeps only the newest status per context. `/statuses` is a full history, so a
+// context that reported `failure` and later `success` shows up twice there and
+// the obsolete entry would be counted as a current failure.
+function latestStatusPerContext(statuses) {
+  const newest = new Map();
+  for (const s of statuses || []) {
+    const prev = newest.get(s.context);
+    const t = Date.parse(s.updated_at || s.created_at || 0) || 0;
+    const pt = prev ? (Date.parse(prev.updated_at || prev.created_at || 0) || 0) : -1;
+    if (!prev || t > pt || (t === pt && (s.id || 0) > (prev.id || 0))) newest.set(s.context, s);
+  }
+  return [...newest.values()];
+}
+
 async function fetchRollup(repo, sha) {
   let checkRuns = [];
   let statuses = [];
@@ -662,10 +917,17 @@ async function fetchRollup(repo, sha) {
     checkRuns = c.check_runs || [];
   } catch {}
   try {
-    const s = await api.get(`/repos/${repo}/commits/${sha}/statuses`, { params: { per_page: 100 } });
-    statuses = Array.isArray(s) ? s : [];
-  } catch {}
-  return rollupEntries(checkRuns, statuses);
+    // Combined status: GitHub already collapses this to the latest status per
+    // context. `latestStatusPerContext` is belt-and-braces for the fallback.
+    const s = await api.get(`/repos/${repo}/commits/${sha}/status`, { params: { per_page: 100 } });
+    statuses = Array.isArray(s?.statuses) ? s.statuses : [];
+  } catch {
+    try {
+      const s = await api.get(`/repos/${repo}/commits/${sha}/statuses`, { params: { per_page: 100 } });
+      statuses = Array.isArray(s) ? s : [];
+    } catch {}
+  }
+  return rollupEntries(checkRuns, latestStatusPerContext(statuses));
 }
 
 async function fetchReviews(repo, num) {
@@ -680,6 +942,32 @@ async function fetchReviews(repo, num) {
       submittedAt: r.submitted_at,
       url: r.html_url,
     }));
+  } catch { return []; }
+}
+
+// Upstream's `commits` JSON field is an array of commit objects (consumers do
+// `.commits[].oid`), whereas the REST pull-request payload only carries a
+// numeric commit count. Fetched lazily — only when the field is asked for.
+async function fetchCommits(repo, num) {
+  try {
+    const cs = await api.get(`/repos/${repo}/pulls/${num}/commits`, { params: { per_page: 100 } });
+    return (cs || []).map(c => {
+      const msg = c.commit?.message || '';
+      const nl = msg.indexOf('\n');
+      return {
+        oid: c.sha,
+        messageHeadline: nl === -1 ? msg : msg.slice(0, nl),
+        messageBody: nl === -1 ? '' : msg.slice(nl + 1).replace(/^\n+/, ''),
+        authoredDate: c.commit?.author?.date || null,
+        committedDate: c.commit?.committer?.date || null,
+        authors: [{
+          name: c.commit?.author?.name || null,
+          email: c.commit?.author?.email || null,
+          login: c.author ? c.author.login : null,
+        }],
+        url: c.html_url,
+      };
+    });
   } catch { return []; }
 }
 
@@ -719,7 +1007,10 @@ async function prViewJson(repo, pr, fields, flags) {
   data.additions = pr.additions;
   data.deletions = pr.deletions;
   data.changedFiles = pr.changed_files;
-  data.commits = pr.commits;
+  // REST gives a count; upstream's `commits` is an array of commit objects, so
+  // the count keeps its own field and `commits` is fetched on demand.
+  data.commitsCount = pr.commits;
+  if (wants(fields, 'commits')) data.commits = await fetchCommits(repo, pr.number);
 
   if (wants(fields, 'statusCheckRollup')) data.statusCheckRollup = await fetchRollup(repo, pr.head.sha);
   if (wants(fields, 'reviews') || wants(fields, 'reviewDecision')) {
@@ -733,11 +1024,7 @@ async function prViewJson(repo, pr, fields, flags) {
 }
 
 async function prView(args) {
-  const { flags, positional } = parseArgs('pr view', args, {
-    ...REPO_FLAG,
-    ...JSON_FLAGS,
-    comments: { type: 'bool', short: 'c' },
-  });
+  const { flags, positional } = parseArgs('pr view', args, FLAG_SPECS['pr view']);
   const { values, repoArg } = distribute('pr view', positional, ['number'], flags);
   if (!values.number) cli.die('pr view: PR number required');
   const num = validateNum(values.number, 'PR number');
@@ -802,13 +1089,7 @@ const PR_CHECKS_FIELDS = [
 ];
 
 async function prChecks(args) {
-  const { flags, positional } = parseArgs('pr checks', args, {
-    ...REPO_FLAG,
-    ...JSON_FLAGS,
-    watch: { type: 'bool' },
-    filter: { type: 'string' },
-    scoop: { type: 'string' },
-  });
+  const { flags, positional } = parseArgs('pr checks', args, FLAG_SPECS['pr checks']);
   const { values, repoArg } = distribute('pr checks', positional, ['number'], flags);
   if (!values.number) cli.die('pr checks: PR number required');
   const num = validateNum(values.number, 'PR number');
@@ -832,6 +1113,9 @@ async function prChecks(args) {
     description: e.description || null,
   }));
 
+  const failed = entries.filter(e => e.bucket === 'fail').length;
+  const pending = entries.filter(e => e.bucket === 'pending').length;
+
   const fields = parseFields('pr checks', flags.json, PR_CHECKS_FIELDS);
   if (fields !== undefined) {
     await outputJson(entries.map(e => pickFields(e, fields)), flags);
@@ -845,8 +1129,6 @@ async function prChecks(args) {
       color.gray(fmt.trunc(e.link || '', 60)),
     ]);
     console.log(fmt.table(rows, [3, 46, 16]));
-    const failed = entries.filter(e => e.bucket === 'fail').length;
-    const pending = entries.filter(e => e.bucket === 'pending').length;
     if (failed) console.log('\n' + color.red(failed + ' check(s) failed') + color.gray(' — `gh run list ' + repo + '` then `gh run view <id> --log-failed` for details'));
     else if (pending) console.log('\n' + color.yellow(pending + ' check(s) still running'));
     else console.log('\n' + color.green('All checks passing'));
@@ -856,6 +1138,9 @@ async function prChecks(args) {
   // event-driven webhook watch instead (same plumbing as `gh pr watch`): the
   // scoop gets check_run/check_suite licks as they happen. Mutates the repo
   // (installs a webhook) — call `gh pr unwatch <num>` when done.
+  // Entering watch mode is a success in itself, so it exits 0 (upstream does
+  // the same: the status code reflects the final state it watched, and here the
+  // final state arrives later as webhook licks).
   if (flags.watch) {
     console.log(color.gray('\n--watch: installing the event-driven watch (SLICC equivalent of upstream polling)…'));
     await prWatch([
@@ -863,22 +1148,26 @@ async function prChecks(args) {
       ...(flags.filter ? ['--filter', flags.filter] : []),
       ...(flags.scoop ? ['--scoop', flags.scoop] : []),
     ]);
+    return;
   }
+
+  // Upstream exit-status contract, so that `gh pr checks && gh pr merge` is
+  // safe: 0 = every check passed, 1 = at least one failed (or no checks were
+  // reported at all), 8 = nothing failed but some checks are still pending.
+  if (failed) process.exit(1);
+  if (!entries.length) {
+    if (fields !== undefined) cli.warn('pr checks: no checks reported for ' + pr.head.sha.slice(0, 7));
+    else console.log(color.gray('(upstream gh treats "no checks reported" as a failure — exiting 1)'));
+    process.exit(1);
+  }
+  if (pending) process.exit(8);
+  process.exit(0);
 }
 
 // ─── pr merge ────────────────────────────────────────────────────────────────
 
 async function prMerge(args) {
-  const { flags, positional } = parseArgs('pr merge', args, {
-    ...REPO_FLAG,
-    merge: { type: 'bool', short: 'm' },
-    squash: { type: 'bool', short: 's' },
-    rebase: { type: 'bool', short: 'r' },
-    'delete-branch': { type: 'bool', short: 'd' },
-    subject: { type: 'string', short: 't' },
-    body: { type: 'string', short: 'b' },
-    'body-file': { type: 'string', short: 'F' },
-  });
+  const { flags, positional } = parseArgs('pr merge', args, FLAG_SPECS['pr merge']);
   const { values, repoArg } = distribute('pr merge', positional, ['number'], flags);
   if (!values.number) cli.die('pr merge: PR number required');
   const num = validateNum(values.number, 'PR number');
@@ -918,11 +1207,7 @@ async function deleteHeadBranch(cmdLabel, repo, num) {
 // ─── pr comment ──────────────────────────────────────────────────────────────
 
 async function prComment(args) {
-  const { flags, positional } = parseArgs('pr comment', args, {
-    ...REPO_FLAG,
-    body: { type: 'string', short: 'b' },
-    'body-file': { type: 'string', short: 'F' },
-  });
+  const { flags, positional } = parseArgs('pr comment', args, FLAG_SPECS['pr comment']);
   const { values, repoArg } = distribute('pr comment', positional, ['number', 'body'], flags);
   if (!values.number) cli.die('pr comment: PR number required');
   const num = validateNum(values.number, 'PR number');
@@ -942,19 +1227,7 @@ async function prComment(args) {
 async function prCreate(args) {
   const usage = 'usage: gh pr create --title <t> --body <b> --head <branch> [--base <base>] [--draft] [-R owner/repo]\n'
     + '       gh pr create <title> <body> <head-branch> [--base=<base>] [--draft] [repo]   (original positional form)';
-  const { flags, positional } = parseArgs('pr create', args, {
-    ...REPO_FLAG,
-    title: { type: 'string', short: 't' },
-    body: { type: 'string', short: 'b' },
-    'body-file': { type: 'string', short: 'F' },
-    head: { type: 'string', short: 'H' },
-    base: { type: 'string', short: 'B' },
-    draft: { type: 'bool', short: 'd' },
-    label: { type: 'list', short: 'l' },
-    labels: { type: 'list' },
-    assignee: { type: 'list', short: 'a' },
-    reviewer: { type: 'list', short: 'r' },
-  });
+  const { flags, positional } = parseArgs('pr create', args, FLAG_SPECS['pr create']);
   if (flags['body-file']) flags.body = await bodyFrom('pr create', flags.body ?? null, flags['body-file']);
   const { values, repoArg } = distribute('pr create', positional, ['title', 'body', 'head'], flags);
   if (!values.title) cli.die('pr create: title required (--title or positional <title>)\n' + usage);
@@ -1015,7 +1288,7 @@ async function prCreate(args) {
 // ─── pr checkout ─────────────────────────────────────────────────────────────
 
 async function prCheckout(args) {
-  const { flags, positional } = parseArgs('pr checkout', args, { ...REPO_FLAG });
+  const { flags, positional } = parseArgs('pr checkout', args, FLAG_SPECS['pr checkout']);
   const { values, repoArg } = distribute('pr checkout', positional, ['number'], flags);
   if (!values.number) cli.die('pr checkout: PR number required');
   const num = validateNum(values.number, 'PR number');
@@ -1079,11 +1352,7 @@ async function findExistingWatchWebhook(name) {
 
 async function prWatch(args) {
   const usage = 'usage: gh pr watch <num> [--filter <js>] [--scoop <name>] [-R owner/repo] [repo]';
-  const { flags, positional } = parseArgs('pr watch', args, {
-    ...REPO_FLAG,
-    filter: { type: 'string' },
-    scoop: { type: 'string' },
-  });
+  const { flags, positional } = parseArgs('pr watch', args, FLAG_SPECS['pr watch']);
   const { values, repoArg } = distribute('pr watch', positional, ['number'], flags);
   if (!values.number) cli.die('pr watch: PR number required\n' + usage);
   const num = validateNum(values.number, 'PR number');
@@ -1148,7 +1417,7 @@ async function prWatch(args) {
 
 async function prUnwatch(args) {
   const usage = 'usage: gh pr unwatch <num> [-R owner/repo] [repo]';
-  const { flags, positional } = parseArgs('pr unwatch', args, { ...REPO_FLAG });
+  const { flags, positional } = parseArgs('pr unwatch', args, FLAG_SPECS['pr unwatch']);
   const { values, repoArg } = distribute('pr unwatch', positional, ['number'], flags);
   if (!values.number) cli.die('pr unwatch: PR number required\n' + usage);
   const num = validateNum(values.number, 'PR number');
@@ -1188,11 +1457,7 @@ async function prUnwatch(args) {
 // ─── pr close ────────────────────────────────────────────────────────────────
 
 async function prClose(args) {
-  const { flags, positional } = parseArgs('pr close', args, {
-    ...REPO_FLAG,
-    'delete-branch': { type: 'bool', short: 'd' },
-    comment: { type: 'string', short: 'c' },
-  });
+  const { flags, positional } = parseArgs('pr close', args, FLAG_SPECS['pr close']);
   const { values, repoArg } = distribute('pr close', positional, ['number'], flags);
   if (!values.number) cli.die('pr close: PR number required');
   const num = validateNum(values.number, 'PR number');
@@ -1239,17 +1504,7 @@ function issueJson(issue) {
 }
 
 async function issueList(args) {
-  const { flags, positional } = parseArgs('issue list', args, {
-    ...REPO_FLAG,
-    ...JSON_FLAGS,
-    state: { type: 'string', short: 's' },
-    limit: { type: 'string', short: 'L' },
-    label: { type: 'list', short: 'l' },
-    labels: { type: 'list' },
-    assignee: { type: 'string', short: 'a' },
-    author: { type: 'string', short: 'A' },
-    milestone: { type: 'string', short: 'm' },
-  });
+  const { flags, positional } = parseArgs('issue list', args, FLAG_SPECS['issue list']);
   const { repoArg } = distribute('issue list', positional, [], flags);
   const repo = await repoFrom('issue list', flags, repoArg);
 
@@ -1265,7 +1520,10 @@ async function issueList(args) {
   if (labels.length) params.labels = labels.join(',');
   if (flags.assignee) params.assignee = flags.assignee;
   if (flags.author) params.creator = flags.author;
-  if (flags.milestone) params.milestone = flags.milestone;
+  if (flags.milestone) {
+    // `*` and `none` are meaningful to the list filter; a title is resolved to its number.
+    params.milestone = String(await resolveMilestone('issue list', repo, flags.milestone, { allowSentinels: true }));
+  }
 
   let issues;
   try { issues = await api.get(`/repos/${repo}/issues`, { params }); }
@@ -1294,16 +1552,7 @@ async function issueList(args) {
 async function issueCreate(args) {
   const usage = 'usage: gh issue create --title <t> --body <b> [--label L]... [--assignee U]... [-R owner/repo]\n'
     + '       gh issue create <title> <body> [--label=L]... [--labels=a,b] [repo]   (original positional form)';
-  const { flags, positional } = parseArgs('issue create', args, {
-    ...REPO_FLAG,
-    title: { type: 'string', short: 't' },
-    body: { type: 'string', short: 'b' },
-    'body-file': { type: 'string', short: 'F' },
-    label: { type: 'list', short: 'l' },
-    labels: { type: 'list' },
-    assignee: { type: 'list', short: 'a' },
-    milestone: { type: 'string', short: 'm' },
-  });
+  const { flags, positional } = parseArgs('issue create', args, FLAG_SPECS['issue create']);
   if (flags['body-file']) flags.body = await bodyFrom('issue create', flags.body ?? null, flags['body-file']);
   const { values, repoArg } = distribute('issue create', positional, ['title', 'body'], flags);
   if (!values.title) cli.die('issue create: title required (--title or positional <title>)\n' + usage);
@@ -1315,7 +1564,7 @@ async function issueCreate(args) {
   const payload = { title, body };
   if (labels.length) payload.labels = labels;
   if ((flags.assignee || []).length) payload.assignees = flags.assignee;
-  if (flags.milestone) payload.milestone = flags.milestone;
+  if (flags.milestone) payload.milestone = await resolveMilestone('issue create', repo, flags.milestone);
 
   try {
     const res = await api.post(`/repos/${repo}/issues`, { body: payload });
@@ -1326,11 +1575,7 @@ async function issueCreate(args) {
 // ─── issue view ──────────────────────────────────────────────────────────────
 
 async function issueView(args) {
-  const { flags, positional } = parseArgs('issue view', args, {
-    ...REPO_FLAG,
-    ...JSON_FLAGS,
-    comments: { type: 'bool', short: 'c' },
-  });
+  const { flags, positional } = parseArgs('issue view', args, FLAG_SPECS['issue view']);
   const { values, repoArg } = distribute('issue view', positional, ['number'], flags);
   if (!values.number) cli.die('issue view: issue number required');
   const num = validateNum(values.number, 'issue number');
@@ -1371,11 +1616,7 @@ async function issueView(args) {
 // ─── issue comment ───────────────────────────────────────────────────────────
 
 async function issueComment(args) {
-  const { flags, positional } = parseArgs('issue comment', args, {
-    ...REPO_FLAG,
-    body: { type: 'string', short: 'b' },
-    'body-file': { type: 'string', short: 'F' },
-  });
+  const { flags, positional } = parseArgs('issue comment', args, FLAG_SPECS['issue comment']);
   const { values, repoArg } = distribute('issue comment', positional, ['number', 'body'], flags);
   if (!values.number) cli.die('issue comment: issue number required');
   const num = validateNum(values.number, 'issue number');
@@ -1393,11 +1634,7 @@ async function issueComment(args) {
 // ─── issue close ─────────────────────────────────────────────────────────────
 
 async function issueClose(args) {
-  const { flags, positional } = parseArgs('issue close', args, {
-    ...REPO_FLAG,
-    reason: { type: 'string' },
-    comment: { type: 'string', short: 'c' },
-  });
+  const { flags, positional } = parseArgs('issue close', args, FLAG_SPECS['issue close']);
   const { values, repoArg } = distribute('issue close', positional, ['number'], flags);
   if (!values.number) cli.die('issue close: issue number required');
   const num = validateNum(values.number, 'issue number');
@@ -1421,20 +1658,7 @@ async function issueClose(args) {
 async function issueEdit(args) {
   const usage = 'usage: gh issue edit <num> [--title T] [--body B] [--body-file F] [--label L]... '
     + '[--add-label L]... [--remove-label L]... [--state open|closed] [-R owner/repo] [repo]';
-  const { flags, positional } = parseArgs('issue edit', args, {
-    ...REPO_FLAG,
-    title: { type: 'string', short: 't' },
-    body: { type: 'string', short: 'b' },
-    'body-file': { type: 'string', short: 'F' },
-    state: { type: 'string' },
-    label: { type: 'list', short: 'l' },
-    labels: { type: 'list' },
-    'add-label': { type: 'list' },
-    'remove-label': { type: 'list' },
-    'add-assignee': { type: 'list' },
-    'remove-assignee': { type: 'list' },
-    milestone: { type: 'string', short: 'm' },
-  });
+  const { flags, positional } = parseArgs('issue edit', args, FLAG_SPECS['issue edit']);
   const { values, repoArg } = distribute('issue edit', positional, ['number'], flags);
   if (!values.number) cli.die('issue edit: issue number required\n' + usage);
   const num = validateNum(values.number, 'issue number');
@@ -1453,7 +1677,7 @@ async function issueEdit(args) {
   if (title !== null) payload.title = title;
   if (body !== null && body !== undefined) payload.body = body;
   if (state !== null) payload.state = state;
-  if (flags.milestone) payload.milestone = flags.milestone;
+  if (flags.milestone) payload.milestone = await resolveMilestone('issue edit', repo, flags.milestone);
   if (setLabels.length) payload.labels = setLabels;
   else if (addLabels.length || removeLabels.length) {
     let current = [];
@@ -1496,11 +1720,9 @@ function validateOrg(val) {
   return val;
 }
 
-const PROJECT_OWNER_FLAG = { owner: { type: 'string', short: 'o' } };
-
 async function projectList(args) {
   const usage = 'usage: gh project list <org>   (or: gh project list --owner <org>)';
-  const { flags, positional } = parseArgs('project list', args, { ...PROJECT_OWNER_FLAG, ...JSON_FLAGS });
+  const { flags, positional } = parseArgs('project list', args, FLAG_SPECS['project list']);
   const { values } = distribute('project list', positional, ['org'], { org: flags.owner ?? null });
   if (!values.org) cli.die('project list: org required\n' + usage);
   const org = validateOrg(values.org);
@@ -1533,7 +1755,7 @@ async function projectList(args) {
 
 async function projectListItems(args) {
   const usage = 'usage: gh project list-items <org> <project_number>';
-  const { flags, positional } = parseArgs('project list-items', args, { ...PROJECT_OWNER_FLAG, ...JSON_FLAGS });
+  const { flags, positional } = parseArgs('project list-items', args, FLAG_SPECS['project list-items']);
   const { values } = distribute('project list-items', positional, ['org', 'number'], { org: flags.owner ?? null });
   if (!values.org) cli.die('project list-items: org required\n' + usage);
   if (!values.number) cli.die('project list-items: project number required\n' + usage);
@@ -1571,12 +1793,7 @@ async function projectListItems(args) {
 async function projectAddDraft(args) {
   const usage = 'usage: gh project add-draft <org> <project_number> <title> [body]\n'
     + '       gh project add-draft <org> <project_number> --title <t> [--body <b>]';
-  const { flags, positional } = parseArgs('project add-draft', args, {
-    ...PROJECT_OWNER_FLAG,
-    title: { type: 'string', short: 't' },
-    body: { type: 'string', short: 'b' },
-    'body-file': { type: 'string', short: 'F' },
-  });
+  const { flags, positional } = parseArgs('project add-draft', args, FLAG_SPECS['project add-draft']);
   if (flags['body-file']) flags.body = await bodyFrom('project add-draft', flags.body ?? null, flags['body-file']);
   const { values } = distribute('project add-draft', positional, ['org', 'number', 'title', 'body'], {
     org: flags.owner ?? null,
@@ -1611,10 +1828,7 @@ async function projectAddDraft(args) {
 async function projectSetTitle(args) {
   const usage = 'usage: gh project set-title <org> <project_number> <item_id> <new_title>\n'
     + '       gh project set-title <org> <project_number> <item_id> --title <t>';
-  const { flags, positional } = parseArgs('project set-title', args, {
-    ...PROJECT_OWNER_FLAG,
-    title: { type: 'string', short: 't' },
-  });
+  const { flags, positional } = parseArgs('project set-title', args, FLAG_SPECS['project set-title']);
   const { values } = distribute('project set-title', positional, ['org', 'number', 'itemId', 'title'], {
     org: flags.owner ?? null,
     title: flags.title ?? null,
@@ -1681,7 +1895,7 @@ function repoJson(r) {
 }
 
 async function repoView(args) {
-  const { flags, positional } = parseArgs('repo view', args, { ...REPO_FLAG, ...JSON_FLAGS });
+  const { flags, positional } = parseArgs('repo view', args, FLAG_SPECS['repo view']);
   const { repoArg } = distribute('repo view', positional, [], flags);
   const repo = await repoFrom('repo view', flags, repoArg);
   let r;
@@ -1736,16 +1950,7 @@ function runJson(run) {
 }
 
 async function runList(args) {
-  const { flags, positional } = parseArgs('run list', args, {
-    ...REPO_FLAG,
-    ...JSON_FLAGS,
-    limit: { type: 'string', short: 'L' },
-    branch: { type: 'string', short: 'b' },
-    workflow: { type: 'string', short: 'w' },
-    event: { type: 'string', short: 'e' },
-    status: { type: 'string', short: 's' },
-    user: { type: 'string', short: 'u' },
-  });
+  const { flags, positional } = parseArgs('run list', args, FLAG_SPECS['run list']);
   const { repoArg } = distribute('run list', positional, [], flags);
   const repo = await repoFrom('run list', flags, repoArg);
   let runs;
@@ -1860,14 +2065,7 @@ async function printJobLogs(repo, jobs, tail) {
 }
 
 async function runView(args) {
-  const { flags, positional } = parseArgs('run view', args, {
-    ...REPO_FLAG,
-    ...JSON_FLAGS,
-    log: { type: 'bool' },
-    'log-failed': { type: 'bool' },
-    'log-tail': { type: 'string' },
-    job: { type: 'string', short: 'j' },
-  });
+  const { flags, positional } = parseArgs('run view', args, FLAG_SPECS['run view']);
   const { values, repoArg } = distribute('run view', positional, ['runId'], flags);
   if (!values.runId) cli.die('run view: run ID required');
   const runId = validateNum(values.runId, 'run ID');
@@ -1938,13 +2136,15 @@ const RELEASE_FIELDS = [
   'url', 'body', 'author', 'id',
 ];
 
-function releaseJson(r) {
+// `latestTag` is the repository's actual latest release tag (from
+// /releases/latest) — without it every stable release would claim isLatest.
+function releaseJson(r, latestTag) {
   return {
     name: r.name || r.tag_name,
     tagName: r.tag_name,
     isDraft: r.draft,
     isPrerelease: r.prerelease,
-    isLatest: !r.draft && !r.prerelease,
+    isLatest: !!latestTag && r.tag_name === latestTag,
     publishedAt: r.published_at,
     createdAt: r.created_at,
     url: r.html_url,
@@ -1955,11 +2155,7 @@ function releaseJson(r) {
 }
 
 async function releaseList(args) {
-  const { flags, positional } = parseArgs('release list', args, {
-    ...REPO_FLAG,
-    ...JSON_FLAGS,
-    limit: { type: 'string', short: 'L' },
-  });
+  const { flags, positional } = parseArgs('release list', args, FLAG_SPECS['release list']);
   const { repoArg } = distribute('release list', positional, [], flags);
   const repo = await repoFrom('release list', flags, repoArg);
   let releases;
@@ -1968,7 +2164,13 @@ async function releaseList(args) {
 
   const fields = parseFields('release list', flags.json, RELEASE_FIELDS);
   if (fields !== undefined) {
-    await outputJson(releases.map(r => pickFields(releaseJson(r), fields)), flags);
+    // Exactly one release is the latest; ask GitHub which one (only when asked for).
+    let latestTag = null;
+    if (wants(fields, 'isLatest')) {
+      try { latestTag = (await api.get(`/repos/${repo}/releases/latest`)).tag_name; }
+      catch { latestTag = null; } // no published release, or none visible
+    }
+    await outputJson(releases.map(r => pickFields(releaseJson(r, latestTag), fields)), flags);
     return;
   }
 
@@ -2022,13 +2224,7 @@ async function notificationsList(args) {
     if (glued) { normalised.push('-n', glued[1]); continue; }
     normalised.push(a);
   }
-  const { flags, positional } = parseArgs('notifications list', normalised, {
-    ...REPO_FLAG,
-    ...JSON_FLAGS,
-    participating: { type: 'bool', short: 'p' },
-    all: { type: 'bool', short: 'a' },
-    limit: { type: 'string', short: 'n' },
-  });
+  const { flags, positional } = parseArgs('notifications list', normalised, FLAG_SPECS['notifications list']);
   const participating = !!flags.participating;
   const showAll = !!flags.all;
   const limit = parseInt(flags.limit, 10) || 30;
@@ -2101,7 +2297,7 @@ async function notificationsList(args) {
 }
 
 async function notificationsRead(args) {
-  const { flags, positional } = parseArgs('notifications read', args, { ...REPO_FLAG });
+  const { flags, positional } = parseArgs('notifications read', args, FLAG_SPECS['notifications read']);
   let repoFilter = flags.repo || null;
   for (const a of positional) {
     if (a.includes('/')) {
@@ -2149,12 +2345,7 @@ function searchPrJson(item) {
 }
 
 async function searchPrs(args) {
-  const { flags, positional } = parseArgs('search prs', args, {
-    ...REPO_FLAG,
-    ...JSON_FLAGS,
-    limit: { type: 'string', short: 'L' },
-    state: { type: 'string' },
-  });
+  const { flags, positional } = parseArgs('search prs', args, FLAG_SPECS['search prs']);
   const { values, repoArg } = distribute('search prs', positional, ['query'], flags);
   if (!values.query) cli.die('search prs: query required');
   if (flags.repo && repoArg) {
@@ -2188,11 +2379,7 @@ async function searchPrs(args) {
 // ─── vars list ───────────────────────────────────────────────────────────────
 
 async function varsList(args) {
-  const { flags, positional } = parseArgs('vars list', args, {
-    ...REPO_FLAG,
-    ...JSON_FLAGS,
-    limit: { type: 'string', short: 'L' },
-  });
+  const { flags, positional } = parseArgs('vars list', args, FLAG_SPECS['vars list']);
   const { repoArg } = distribute('vars list', positional, [], flags);
   const repo = await repoFrom('vars list', flags, repoArg);
   let vars;
@@ -2218,10 +2405,7 @@ async function varsList(args) {
 // ─── vars set ────────────────────────────────────────────────────────────────
 
 async function varsSet(args) {
-  const { flags, positional } = parseArgs('vars set', args, {
-    ...REPO_FLAG,
-    body: { type: 'string', short: 'b' },
-  });
+  const { flags, positional } = parseArgs('vars set', args, FLAG_SPECS['vars set']);
   const { values, repoArg } = distribute('vars set', positional, ['name', 'value'], flags);
   if (!values.name) cli.die('vars set: name required');
   const rawValue = values.value !== null && values.value !== undefined ? values.value : flags.body;
@@ -2438,7 +2622,7 @@ async function mondayGh(args) {
 // ─── repo archive ────────────────────────────────────────────────────────────
 
 async function repoArchive(args) {
-  const { flags, positional } = parseArgs('repo archive', args, { ...REPO_FLAG });
+  const { flags, positional } = parseArgs('repo archive', args, FLAG_SPECS['repo archive']);
   const { repoArg } = distribute('repo archive', positional, [], flags);
   const repo = await repoFrom('repo archive', flags, repoArg);
   try {
@@ -2451,10 +2635,7 @@ async function repoArchive(args) {
 
 async function branchCreate(args) {
   const usage = 'usage: gh branch create <name> [--from <ref>] [-R owner/repo] [repo]';
-  const { flags, positional } = parseArgs('branch create', args, {
-    ...REPO_FLAG,
-    from: { type: 'string' },
-  });
+  const { flags, positional } = parseArgs('branch create', args, FLAG_SPECS['branch create']);
   const { values, repoArg } = distribute('branch create', positional, ['name'], flags);
   if (!values.name) cli.die('branch create: branch name required\n' + usage);
   const branchName = values.name;
@@ -2489,7 +2670,7 @@ async function branchCreate(args) {
 // ─── branch delete ───────────────────────────────────────────────────────────
 
 async function branchDelete(args) {
-  const { flags, positional } = parseArgs('branch delete', args, { ...REPO_FLAG });
+  const { flags, positional } = parseArgs('branch delete', args, FLAG_SPECS['branch delete']);
   const { values, repoArg } = distribute('branch delete', positional, ['name'], flags);
   if (!values.name) cli.die('branch delete: branch name required');
   const branchName = values.name;
@@ -2504,11 +2685,7 @@ async function branchDelete(args) {
 
 async function contentPut(args) {
   const usage = 'usage: gh content put <path> <local-file> <message> [--branch <branch>] [-R owner/repo] [repo]';
-  const { flags, positional } = parseArgs('content put', args, {
-    ...REPO_FLAG,
-    branch: { type: 'string', short: 'b' },
-    message: { type: 'string', short: 'm' },
-  });
+  const { flags, positional } = parseArgs('content put', args, FLAG_SPECS['content put']);
   const { values, repoArg } = distribute('content put', positional, ['path', 'file', 'message'], {
     ...flags,
     message: flags.message,
@@ -3101,21 +3278,47 @@ const HELP_FLAGS = ['--help', '-h', '-?'];
 // the terse `-h`/`-?` spellings additionally only count while we are still in
 // the leading command-word region — after positional data has started they are
 // treated as data. `--help` keeps working anywhere, e.g. `gh pr view 1 --help`.
+//
+// Crucially, "consumed as the value of a preceding flag" is decided from the
+// real flag definitions (FLAG_SPECS) rather than assumed: a boolean flag takes
+// no value, so `gh pr merge 42 --squash --help` prints help instead of merging.
+
+// Resolves the FLAG_SPECS entry for an argv, so help detection can ask the same
+// definitions the command itself will use. Unknown command/subcommand ⇒ empty
+// spec, in which case nothing is treated as consuming a value (matching
+// parseArgs, which passes unrecognised flags through as positionals).
+function specForArgv(args) {
+  const a = args[0] === 'help' ? args.slice(1) : args;
+  const cmd = a[0] && a[0][0] !== '-' ? a[0] : null;
+  const sub = a[1] && a[1][0] !== '-' ? a[1] : null;
+  if (cmd && sub && FLAG_SPECS[`${cmd} ${sub}`]) return FLAG_SPECS[`${cmd} ${sub}`];
+  if (cmd && FLAG_SPECS[cmd]) return FLAG_SPECS[cmd];
+  return {};
+}
+
 function helpRequested(args) {
+  const spec = specForArgv(args);
+  const mutating = !!isMutating(args[0], args[1]);
   let words = 0;
   for (let i = 0; i < args.length; i++) {
     const t = args[i];
     if (t === '--') return false;
     if (t === '--help') return true;
     if (HELP_FLAGS.includes(t)) {
-      // Terse `-h`/`-?`: only help while still in the command-word region AND
-      // with no positional data after it, so `gh search prs "-h" owner/repo`
+      // Terse `-h`/`-?`: help while still in the command-word region AND with
+      // no positional data after it, so `gh search prs "-h" owner/repo`
       // searches for the literal string while `gh pr create -h` prints help.
+      // For mutating commands a bare, unconsumed `-h` always means help — no
+      // such command takes `-h` as a real flag, and silently treating it as
+      // data (or ignoring it) would perform a write the caller never asked
+      // for. Use `--` to pass a literal `-h`: `gh vars set FOO -- -h`.
+      if (mutating) return true;
       if (words > 2) return false;
       return !args.slice(i + 1).some((later) => later[0] !== '-');
     }
     if (t[0] === '-' && t.length > 1) {
-      if (!t.includes('=')) i++; // skip this flag's value, whatever it looks like
+      // Only skip the next token when this flag really consumes a value.
+      if (flagConsumesNext(spec, t, args[i + 1])) i++;
       continue;
     }
     words++;

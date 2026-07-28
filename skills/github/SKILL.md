@@ -80,10 +80,11 @@ gh run list -R owner/repo                            # find the run id
 gh run view <run_id> --log-failed -R owner/repo      # the failing job's log
 ```
 
-Only merge when no check is `failed` or `pending`:
+`gh pr checks` exits `0` when everything passed, `1` on failure (or no checks at all) and
+`8` while checks are still running — so the merge can be gated on it:
 
 ```bash
-gh pr merge <num> --squash --delete-branch -R owner/repo
+gh pr checks <num> -R owner/repo && gh pr merge <num> --squash --delete-branch -R owner/repo
 ```
 
 ### Stay in the loop on a PR without polling

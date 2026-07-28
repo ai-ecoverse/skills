@@ -12,6 +12,11 @@ gh help pr create
 gh version
 ```
 
+`--help` wins over everything, even after boolean flags — `gh pr merge 42 --squash --help`
+prints help instead of merging. The terse `-h`/`-?` counts as help while still in the leading
+command words, and always on a state-changing command; pass a literal `-h` after `--`
+(`gh vars set FOO -- -h`).
+
 ## `--json` / `--jq`
 
 Available on: `pr view`, `pr list`, `pr checks`, `issue view`, `issue list`, `run list`,
@@ -35,7 +40,7 @@ Field sets (see `gh <cmd> <sub> --help` for the authoritative list):
 | Command | Fields |
 |---|---|
 | `pr list` | `number title body state isDraft author headRefName baseRefName headRefOid url createdAt updatedAt closedAt mergedAt labels assignees reviewRequests milestone id` |
-| `pr view` | all of `pr list` plus `merged mergeable mergeStateStatus mergeCommit additions deletions changedFiles commits statusCheckRollup reviews reviewDecision comments` |
+| `pr view` | all of `pr list` plus `merged mergeable mergeStateStatus mergeCommit additions deletions changedFiles commits commitsCount statusCheckRollup reviews reviewDecision comments` |
 | `pr checks` | `name state bucket status conclusion link workflow startedAt completedAt description` |
 | `issue list` | `number title body state stateReason author url createdAt updatedAt closedAt labels assignees milestone commentsCount id` |
 | `issue view` | all of `issue list` plus `comments` (the comment array) |
@@ -44,6 +49,13 @@ Field sets (see `gh <cmd> <sub> --help` for the authoritative list):
 | `repo view` | `name nameWithOwner owner description url sshUrl defaultBranchRef isPrivate isFork isArchived stargazerCount forkCount openIssuesCount primaryLanguage licenseInfo repositoryTopics visibility createdAt updatedAt pushedAt homepageUrl hasIssuesEnabled id` |
 | `search prs` | `number title body state author repository url createdAt updatedAt closedAt labels isDraft commentsCount id` |
 | `release list` | `name tagName isDraft isPrerelease isLatest publishedAt createdAt url body author id` |
+
+- `pr view --json commits` is an **array of commit objects** (`oid`, `messageHeadline`,
+  `messageBody`, `authoredDate`, `committedDate`, `authors`, `url`) — upstream's shape, so
+  `--jq '.commits[].oid'` works. The REST integer count is `commitsCount`. The commit list is
+  only fetched when the field is requested.
+- `release list --json isLatest` marks exactly one entry — the repository's actual latest
+  release (`/releases/latest`), not "every stable release".
 
 ## Pull requests
 
@@ -68,8 +80,19 @@ gh pr unwatch 42
   `--reviewer` via the requested-reviewers endpoint; if a follow-up is refused the PR still
   exists and a warning is printed.
 - `pr checks` reports check-runs **and** commit statuses, bucketed `pass`/`fail`/`pending`/`skipping`.
+  Commit statuses are read from the combined-status endpoint, so a context that first reported
+  `failure` and later `success` counts once, as its current state.
   `--watch` prints the table and then installs the event-driven watch (it does not poll, and it
   mutates the repo exactly as `pr watch` does).
+- `pr checks` **exit status** follows upstream, so `gh pr checks 42 && gh pr merge 42` is safe:
+
+  | Exit | Meaning |
+  |---|---|
+  | `0` | every check passed (or was skipped/neutral) |
+  | `1` | at least one check failed — or no checks were reported at all |
+  | `8` | nothing failed, some checks still queued/in progress |
+
+  `--watch` exits `0` once the watch is installed; the outcome then arrives as licks.
 
 ## Issues
 
@@ -86,6 +109,10 @@ gh issue close 123 --reason not_planned --comment "won't fix"
 
 `issue edit` replaces the label set with `--label`, or adjusts it incrementally with
 `--add-label`/`--remove-label` (likewise `--add-assignee`/`--remove-assignee`).
+
+`--milestone` takes a milestone **title** (`--milestone v1.0`, as upstream documents) or its
+number; a title is resolved to the number the REST API requires, and an unknown title errors
+with the list of available milestones. On `issue list`, `*` (any milestone) and `none` also work.
 
 ## Workflow runs
 
