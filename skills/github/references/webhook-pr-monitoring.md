@@ -23,6 +23,15 @@ gh.jsh pr unwatch 151
 #    Removed GitHub hook:    <id>
 ```
 
+All three accept `-R owner/repo` as well as the trailing positional `owner/repo`, and
+`gh pr watch --help` / `gh pr unwatch --help` print their usage (help is intercepted before
+argument validation, so it works even though these commands demand a PR number).
+
+`gh pr checks <num> --watch` is the same thing by another name: upstream's `--watch` polls
+until the checks finish, which is the wrong shape for a SLICC agent, so it prints the current
+check table and then installs this event-driven watch instead. It mutates the repo exactly as
+`pr watch` does, and `gh pr unwatch <num>` tears it down.
+
 `pr watch` is idempotent: running it again against a PR that's already being watched (matched by a deterministic webhook name, `pr-<owner>-<repo>-<number>-watch`) is a no-op that reports the existing webhook instead of creating a duplicate — see `/workspace/skills/automation/SKILL.md`'s "Don't" section on why duplicate near-identical registrations are worth avoiding. `pr create` prints a `gh pr watch <num>` tip using the real new PR number as soon as a PR is opened, so the feature is discoverable at exactly the moment it's useful.
 
 **Still required, and still manual:** the self-echo-detection pattern below — `pr watch` sets up delivery, but a scoop receiving the resulting licks still needs to check live PR/comment state before reacting, exactly as described in the "Self-echo-detection" section. `pr watch` doesn't (and can't) do that part for you; it lives in whatever code handles the incoming lick.
@@ -44,7 +53,14 @@ Once a webhook (however it was created) is live, *every* PR event fires a lick b
 
 **A scoop with a live PR webhook must assume any given lick might describe its own prior action, and check before reacting** — otherwise it risks re-doing finished work, or worse, replying to its own reply in an infinite loop. The pattern that worked:
 
-1. On receiving a PR-related lick, re-fetch current live state rather than acting on the payload at face value — `GET /repos/<owner>/<repo>/pulls/<number>` for the PR's current `head.sha`/`state`/`mergeable_state`, and `GET /repos/<owner>/<repo>/pulls/<number>/comments` for the current comment/reply count and their `in_reply_to_id`s.
+1. On receiving a PR-related lick, re-fetch current live state rather than acting on the payload at face value — `GET /repos/<owner>/<repo>/pulls/<number>` for the PR's current `head.sha`/`state`/`mergeable_state`, and `GET /repos/<owner>/<repo>/pulls/<number>/comments` for the current comment/reply count and their `in_reply_to_id`s. One `gh` call now covers most of this:
+
+   ```bash
+   gh pr view <num> --json headRefOid,state,mergeable,mergeStateStatus,statusCheckRollup,reviews,comments
+   gh pr checks <num> --json name,state,bucket        # just the CI verdict
+   ```
+
+   Compare `headRefOid` against the last SHA this scoop pushed, and the `comments`/`reviews` counts against what it already posted.
 2. Compare that live state against what's already been done/reported. If the head SHA matches the last commit already pushed, and the comment count matches what was already replied to, the lick is an echo of already-completed work — no action needed, report tersely (or don't report at all if nothing changed) rather than re-triggering the same work.
 3. Only treat a lick as actionable if it describes state the scoop hasn't already accounted for (a genuinely new review comment with no reply yet, a new commit pushed by someone else, CI finishing on a commit that hasn't been evaluated yet).
 

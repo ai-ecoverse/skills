@@ -1,281 +1,120 @@
 ---
 name: github
 description: >
-  Interact with GitHub via gh.jsh — a lightweight GitHub CLI for SLICC agents.
-  Use this skill for any GitHub task: listing or viewing pull requests, merging PRs,
-  posting comments, checking out branches, viewing issues, inspecting workflow runs,
-  listing releases, searching PRs, managing Actions variables, creating branches,
-  pushing file content, archiving repos, managing org-owned Projects (v2) and their
-  standalone draft items, or calling any GitHub API endpoint directly.
-  Trigger on requests like "list open PRs", "check CI status", "merge this PR",
-  "what issues are open", "show the latest release", "post a comment on PR #42",
-  "set a repo variable", "archive this repo", "create a branch", "push this file",
-  "list my GitHub projects", "add a draft item to the project", "capture this request
-  in the project board", or any task involving a GitHub repository or organization Project.
+  Interact with GitHub via gh.jsh — a GitHub CLI for SLICC agents that accepts the real
+  GitHub CLI's syntax (--title/--body, -R owner/repo, --json [fields], --jq, --help on every
+  command) as well as its own positional forms.
+  Use this skill for any GitHub task: listing or viewing pull requests, checking CI checks and
+  failed job logs, merging PRs, posting comments, checking out branches, viewing issues,
+  inspecting workflow runs, listing releases, searching PRs, managing Actions variables,
+  creating branches, pushing file content, archiving repos, managing org-owned Projects (v2),
+  or calling any GitHub API endpoint directly.
+  Trigger on requests like "list open PRs", "check CI status", "why did CI fail", "merge this
+  PR", "what issues are open", "show the latest release", "post a comment on PR #42",
+  "set a repo variable", "create a branch", "push this file", "list my GitHub projects".
 allowed_tools:
   - bash
 ---
 
-# gh — GitHub CLI for SLICC Agents
+# gh — GitHub CLI for SLICC agents
 
-`gh.jsh` is a Node.js GitHub CLI that wraps the GitHub REST API with clean formatted output, ANSI color, and sensible defaults. No `curl | jq` pipelines.
+`gh` wraps the GitHub REST API with formatted output, `--json` machine output, and sensible
+defaults. No `curl | jq` pipelines.
+
+Run `gh --help`, `gh <command> --help` or `gh <command> <subcommand> --help` — every command
+is self-documenting. Full reference: [`references/COMMANDS.md`](references/COMMANDS.md).
 
 ## Authentication
 
-`oauth-token github` is the single entry point for GitHub credentials in SLICC. Get a token, then set it once for the tool you're using:
-
 ```bash
-oauth-token github                       # default scopes (repo, read:org)
-oauth-token github --scope workflow       # add workflow scope (for .github/workflows/)
-oauth-token github --scope workflow,repo  # multiple extra scopes
-
-git config github.token "$(oauth-token github)"   # persists the token for gh.jsh and git push/pull
+oauth-token github                                 # default scopes (repo, read:org)
+git config github.token "$(oauth-token github)"    # persists for gh and git push/pull
 ```
 
-| Tool | How it gets the token |
-|---|---|
-| `gh` (this skill's CLI) | Reads `git config github.token` automatically once set above. |
-| `git push`/`git pull` | Same config key — set once, both tools pick it up. |
-| Raw `fetch`/`curl` | Not persisted — pass it explicitly per call: `curl -H "Authorization: Bearer $(oauth-token github)" https://api.github.com/...` |
-
-```bash
-# gh commands authenticate transparently once git config github.token is set:
-gh pr list ai-ecoverse/skills
-gh content put README.md ./local.md "update" --branch=feat ai-ecoverse/skills
-```
-
-### Scope escalation
-
-The default token covers most operations. Request additional scopes when needed, then re-run the `git config github.token "$(oauth-token github --scope ...)"` setup above with the escalated token:
-
-| Scope | When needed |
-|-------|-------------|
-| `workflow` | Pushing/modifying `.github/workflows/` files |
-| `delete_repo` | Deleting repositories |
-| `admin:org` | Managing organization settings |
-| `project` | Reading or writing org-owned Projects (v2) — required for all `project` subcommands |
+Precedence: `skill.token('github')` → `git config github.token` → `$GITHUB_TOKEN`.
+Check with `gh auth`. Extra scopes when needed: `workflow` (editing `.github/workflows/`),
+`delete_repo`, `admin:org`, `project` (all `project` subcommands):
 
 ```bash
 git config github.token "$(oauth-token github --scope workflow)"
-git push origin my-branch   # now allowed to push workflow changes
 ```
 
-### Precedence
+## Syntax
 
-1. `git config github.token` (checked first by `gh` and `git push`)
-2. `GITHUB_TOKEN` environment variable (fallback)
-
-**Repo defaults** — most subcommands that act on a repo (e.g. `pr`, `issue`, `branch`, `content`, `run`, `release`, `search`, `vars`, `repo`) accept an optional trailing `owner/repo` argument. If omitted, the script infers it from the current directory's `git remote get-url origin`. Pass it explicitly to override. The `api` passthrough and utility commands like `auth` do **not** take a trailing repo — `api` requires a full REST path. The examples below show the short form; append `owner/repo` to repo-scoped commands to target a different repo.
-
-## Running the script
+Both syntaxes work for every command — the upstream flag form and this CLI's positional form:
 
 ```bash
-/workspace/skills/github/scripts/gh.jsh <command> <subcommand> [args] [owner/repo]
+gh pr create --title "T" --body "B" --head my-branch --base main -R owner/repo
+gh pr create "T" "B" my-branch --base=main owner/repo
 ```
 
----
+| Situation | Behaviour |
+|---|---|
+| Flag and positional both usable | The flag wins |
+| Same value twice (`-R owner/repo` **and** trailing `owner/repo`) | Error, never a silent pick |
+| Unrecognised flag | Warned on stderr, passed through as a positional |
+| `--` | Ends flag parsing |
 
-## Common Workflows
+Repo defaults to the current git remote `origin`; override with `-R owner/repo` or the
+trailing positional. `--json [fields]` (+ `--jq`/`-q`) is available on the read commands;
+bare `--json` emits all fields, unknown fields error with the valid list.
 
-### Create a PR from scratch
+## Workflows
 
-This is the most common multi-step flow. Follow these steps in order, validating each before proceeding. **Important:** `pr create` returns a PR number — capture it and use that exact value in later steps. Do not hard-code the example number `<PR_NUMBER>` shown below; replace it with the number printed by step 3 in your own session.
+### Open a PR
 
 ```bash
-# 1. Create the branch
-/workspace/skills/github/scripts/gh.jsh branch create my-feature owner/repo
-
-# 2. Push file changes to that branch
-/workspace/skills/github/scripts/gh.jsh content put src/index.js ./index.js "Add entry point" --branch=my-feature owner/repo
-
-# 3. Open the PR — note the returned PR number, e.g. "Created PR #123"
-#    (the command also prints a `gh pr watch <num>` tip using that real number)
-/workspace/skills/github/scripts/gh.jsh pr create "My title" "PR body" my-feature owner/repo
-
-# 4. Verify CI has started for that PR (substitute the real number for <PR_NUMBER>)
-/workspace/skills/github/scripts/gh.jsh pr view <PR_NUMBER> owner/repo
-/workspace/skills/github/scripts/gh.jsh run list owner/repo
-
-# 5. Once CI is green, merge that same PR number
-/workspace/skills/github/scripts/gh.jsh pr merge <PR_NUMBER> --squash owner/repo
+gh branch create my-feature owner/repo
+gh content put src/index.js ./index.js "Add entry point" --branch my-feature -R owner/repo
+gh pr create --title "My title" --body "PR body" --head my-feature -R owner/repo
 ```
 
-**Validation checkpoints:**
-- After `branch create`: confirm no error output before pushing content.
-- After `pr create`: capture the new PR number from the command's output and reuse it in steps 4 and 5 — never reuse a number from another PR. Optionally run `pr watch <PR_NUMBER>` right away to get live updates instead of manually re-running `pr view`/`run list`.
-- After `pr view`: read the `Checks:` line in the output (e.g. `Checks:  3 passed`) — only proceed to merge when there are no `failed` or `pending` entries. If any check failed, inspect with `run view <id>` before proceeding.
+`pr create` prints the new PR number — capture it and reuse that exact number below.
 
-### Review and merge an existing PR
-
-Substitute `<PR_NUMBER>` with the actual PR number you intend to act on.
+### Check CI, and diagnose it when red
 
 ```bash
-# Inspect the PR and its checks (look at the 'Checks:' line in the output)
-/workspace/skills/github/scripts/gh.jsh pr view <PR_NUMBER> owner/repo
-
-# Confirm CI is passing (cross-check the per-job status from 'run list')
-/workspace/skills/github/scripts/gh.jsh run list owner/repo
-
-# Post a comment then merge
-/workspace/skills/github/scripts/gh.jsh pr comment <PR_NUMBER> "Automated: all checks passed, merging." owner/repo
-/workspace/skills/github/scripts/gh.jsh pr merge <PR_NUMBER> --squash owner/repo
+gh pr checks <num> -R owner/repo                     # per-check status
+gh pr view <num> --json statusCheckRollup,mergeable  # machine-readable
+gh run list -R owner/repo                            # find the run id
+gh run view <run_id> --log-failed -R owner/repo      # the failing job's log
 ```
 
-### Keeping a scoop in the loop on a PR until merged
+Only merge when no check is `failed` or `pending`:
 
 ```bash
-gh.jsh pr watch 151                    # start watching — wires up a live webhook
-gh.jsh pr watch 151 --filter "e => e.body.action !== 'synchronize'"  # drop noisy events
-gh.jsh pr unwatch 151                  # stop watching, tears down both webhook layers
+gh pr merge <num> --squash --delete-branch -R owner/repo
 ```
-`pr watch` pushes PR events (new review comments, CI completing, the PR closing) to the current scoop the moment they happen, instead of polling `pr view`/`run list` in a loop — it wires up a SLICC webhook and registers it as a real GitHub repo webhook in one step, and is idempotent (running it again on a PR already being watched is a no-op). `pr create` prints a `pr watch <num>` tip using the real new PR number. See [`references/webhook-pr-monitoring.md`](references/webhook-pr-monitoring.md) for exactly how this works under the hood, the manual equivalent if you need it outside `gh.jsh`, and the self-echo-detection pattern a scoop needs when watching its own PR.
 
----
-
-## Command Reference
-
-### Pull Requests
+### Stay in the loop on a PR without polling
 
 ```bash
-gh.jsh pr list
-gh.jsh pr view 42
-gh.jsh pr create "My title" "PR body text" my-feature-branch
-gh.jsh pr create "My title" "PR body" my-branch --base=develop
-gh.jsh pr create "My title" "PR body" my-branch --draft
-gh.jsh pr merge 42                        # default: merge commit
-gh.jsh pr merge 42 --squash
-gh.jsh pr merge 42 --rebase
-gh.jsh pr comment 42 "LGTM, merging now"
-gh.jsh pr checkout 42                     # prints git fetch/checkout commands (does not execute)
-gh.jsh pr watch 42                        # wire up a live webhook for PR events (idempotent)
-gh.jsh pr watch 42 --filter "e => e.body.action !== 'synchronize'"
-gh.jsh pr unwatch 42                      # tear down the webhook from `pr watch`
-```
-`pr watch`/`pr unwatch`: see [`references/webhook-pr-monitoring.md`](references/webhook-pr-monitoring.md) for details.
-`pr create`: `head` is the branch to merge from; `--base` defaults to the repo's default branch. Returns the PR number and URL.
-
----
-
-### Issues
-
-```bash
-gh.jsh issue list
-gh.jsh issue view 123
-gh.jsh issue create "Title" "Body text"
-gh.jsh issue create "Title" "Body text" --label=bug
-gh.jsh issue create "Title" "Body text" --labels=bug,triage
-```
-Returns the new issue number and URL. `--label=` may be repeated; `--labels=` accepts a comma-separated list. Title and body are required; pass `""` for an empty body.
-
----
-
-### Repository
-
-```bash
-gh.jsh repo view
-gh.jsh repo archive owner/repo           # irreversible without admin unarchive
+gh pr watch <num>      # PR/review/CI events arrive as licks (idempotent)
+gh pr unwatch <num>    # tear down when the PR reaches a terminal state
 ```
 
----
+`pr watch` installs a webhook, so it mutates the repo. A scoop reacting to those licks must
+re-check live state first — see
+[`references/webhook-pr-monitoring.md`](references/webhook-pr-monitoring.md) for the
+self-echo-detection pattern and the stop condition.
 
-### Branches
+## Destructive operations
 
-```bash
-gh.jsh branch create my-feature
-gh.jsh branch create my-feature --from=develop
-gh.jsh branch create my-feature --from=abc1234...
-gh.jsh branch delete my-feature
-```
-Creates from the default branch (or `--from` ref/SHA). Use before `content put` to prepare a PR branch.
+`pr merge`, `pr close`, `issue close`, `branch delete`, `repo archive`, `content put`,
+`vars set` and `pr watch`/`pr unwatch` change remote state. Before running one, confirm the
+target with its read counterpart (`gh pr view <num>`, `gh pr checks <num>`,
+`gh branch`/`gh repo view`) — and never act on a PR number you have not just read back.
 
----
+## References
 
-### File Content (Contents API)
+- [`references/COMMANDS.md`](references/COMMANDS.md) — every command, flag and `--json` field
+- [`references/webhook-pr-monitoring.md`](references/webhook-pr-monitoring.md) — event-driven PR watching
+- [`references/gotchas.md`](references/gotchas.md) — SLICC quirks when bypassing `gh` for raw `git`/`curl`
 
-```bash
-gh.jsh content put README.md ./local-readme.md "Update README" --branch=my-feature
-gh.jsh content put src/index.js ./index.js "Add entry point" --branch=my-feature owner/repo
-```
-Reads a local VFS file, base64-encodes it, and creates/updates it on the specified branch via the GitHub Contents API. Handles SHA lookup for existing files automatically. Use this to push file changes without git clone + push.
-
----
-
-### Workflow Runs
-
-```bash
-gh.jsh run list
-gh.jsh run view 12345678
-```
-`run view` shows run details, commit, and per-job status with duration.
-
----
-
-### Releases
-
-```bash
-gh.jsh release list
-```
-
----
-
-### Search
-
-```bash
-gh.jsh search prs "fix login"
-gh.jsh search prs "fix login" owner/repo
-```
-Uses GitHub search API. Returns PR number, title, repo, and state.
-
----
-
-### Actions Variables
-
-```bash
-gh.jsh vars list
-gh.jsh vars set MY_VAR "hello world"
-```
-Creates or updates the variable (PATCH if exists, POST if new).
-
----
-
-### Projects (org-owned, v2)
-
-Requires the `project` scope — see Scope escalation above. Projects v2 items are org-scoped, not repo-scoped: pass an org login and project number, never `owner/repo`.
-
-```bash
-gh.jsh project list myorg                          # list org's projects, with number/state/url
-gh.jsh project list-items myorg 2                  # list items in project #2
-gh.jsh project add-draft myorg 2 "Some request"    # create a standalone draft item, no repo needed
-gh.jsh project add-draft myorg 2 "Some request" "Longer body text describing it"
-gh.jsh project set-title myorg 2 215884384 "New title"   # rename an existing item
-```
-`add-draft` creates a **draft issue** — an item that lives only inside the project, with no linked repository or real issue, until someone chooses to convert it later (via GitHub's UI; `gh.jsh` does not currently support conversion). This is the standalone-capture mechanism for tracking requests before deciding whether they warrant becoming real repo work — see [GitHub's REST API docs for draft Project items](https://docs.github.com/en/rest/projects/drafts) for the underlying contract.
-
-`set-title` renames an existing item (draft or linked issue/PR). Project item field updates are field-ID-based, not a direct `{title: ...}` body — `set-title` looks up the item's own title field ID for you, so you only pass the item ID and the new title. `add-draft`'s own output prints the new item's ID for exactly this purpose.
-
----
-
-### Raw API Passthrough
-
-```bash
-gh.jsh api /repos/owner/repo
-gh.jsh api /repos/owner/repo/git/ref/heads/main --jq .object.sha
-gh.jsh api /repos/owner/repo/git/refs -X POST -f ref=refs/heads/new-branch -f sha=abc123
-```
-Generic passthrough for any GitHub REST API endpoint. Supports `-X METHOD`, `-f key=value` (sent as JSON body on non-GET), and `--jq .path.to.field` for simple field extraction.
-
----
-
-## Gotchas
-
-The SLICC environment has a few quirks you'll only hit if you bypass `gh.jsh` and reach for raw `git` or `curl`. The skill's own commands route around all of these. See [`references/gotchas.md`](references/gotchas.md) for full details and copy-paste workarounds.
-
-| Symptom | Cause | Quick fix |
-|---|---|---|
-| `git clone` aborts with `ENOENT mkdir <Foo.graffle>` | OPFS git can't `mkdir` directory-bundle children before the parent is ready | `git init` + `git fetch` + `core.sparseCheckout` excluding the bad path |
-| `git clone --depth=1` rejects flag | SLICC `git` wrapper doesn't accept extra args | Use `init`+`fetch` instead of `clone` |
-| `curl --data @file` returns `400 Problems parsing JSON` | The `@file` body read mangles bytes in this realm | Build and POST from `node` with `fetch()`, or use `gh.jsh api -f key=value` |
-| Uploaded files arrive as Latin-1-of-UTF-8 mojibake on GitHub | `fs.readFile(path, 'utf8')` in this realm doesn't actually decode UTF-8 | Use `fs.readFileBinary` (real `Uint8Array`) before `btoa` |
-| `cat`/`xxd`/`head -c` show corrupted bytes for a known-good file | Same shell I/O layer Latin-1↔UTF-8 round-trip | Verify via `playwright-cli eval` against `raw.githubusercontent.com` |
-| Need to commit a symlink | `PUT /contents` always writes mode `100644` | Use Git Data API with `mode: 120000` and target path as blob content |
-
+| Symptom | Quick fix |
+|---|---|
+| `git clone` aborts with `ENOENT mkdir <Foo.graffle>` | `git init` + `git fetch` + sparse-checkout excluding the path |
+| `git clone --depth=1` rejects the flag | Use `init` + `fetch` |
+| `curl --data @file` → `400 Problems parsing JSON` | Use `gh api -f key=value`, or `fetch()` from node |
+| Uploaded files arrive as mojibake | Use `fs.readFileBinary` before `btoa` |
+| Need to commit a symlink | Git Data API with `mode: 120000` |
