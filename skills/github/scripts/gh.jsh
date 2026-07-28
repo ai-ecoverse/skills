@@ -710,7 +710,7 @@ function reviewDecision(reviews) {
   return null;
 }
 
-async function prViewJson(cmdLabel, repo, pr, fields, flags) {
+async function prViewJson(repo, pr, fields, flags) {
   const data = prListJson(pr);
   data.merged = !!pr.merged;
   data.mergeable = pr.mergeable === true ? 'MERGEABLE' : pr.mergeable === false ? 'CONFLICTING' : 'UNKNOWN';
@@ -748,7 +748,7 @@ async function prView(args) {
 
   const fields = parseFields('pr view', flags.json, PR_VIEW_FIELDS);
   if (fields !== undefined) {
-    await prViewJson('pr view', repo, pr, fields, flags);
+    await prViewJson(repo, pr, fields, flags);
     return;
   }
 
@@ -1253,9 +1253,13 @@ async function issueList(args) {
   const { repoArg } = distribute('issue list', positional, [], flags);
   const repo = await repoFrom('issue list', flags, repoArg);
 
+  // The issues endpoint returns PRs too and they are filtered out below, so an
+  // explicit --limit over-fetches and trims afterwards; without --limit the page
+  // size stays exactly what it always was.
+  const limit = Math.min(parseInt(flags.limit, 10) || 30, 100);
   const params = {
     state: (flags.state || 'open').toLowerCase(),
-    per_page: Math.min(parseInt(flags.limit, 10) || 30, 100),
+    per_page: flags.limit === undefined ? limit : Math.min(limit * 3, 100),
   };
   const labels = labelList(flags);
   if (labels.length) params.labels = labels.join(',');
@@ -1267,7 +1271,7 @@ async function issueList(args) {
   try { issues = await api.get(`/repos/${repo}/issues`, { params }); }
   catch (e) { fail('issue list', e); }
 
-  const filtered = issues.filter(i => !i.pull_request);
+  const filtered = issues.filter(i => !i.pull_request).slice(0, limit);
 
   const fields = parseFields('issue list', flags.json, ISSUE_FIELDS);
   if (fields !== undefined) {
@@ -1492,13 +1496,29 @@ function validateOrg(val) {
   return val;
 }
 
+const PROJECT_OWNER_FLAG = { owner: { type: 'string', short: 'o' } };
+
 async function projectList(args) {
-  const usage = 'usage: gh project list <org>';
-  if (!args[0]) cli.die('project list: org required\n' + usage);
-  const org = validateOrg(args[0]);
+  const usage = 'usage: gh project list <org>   (or: gh project list --owner <org>)';
+  const { flags, positional } = parseArgs('project list', args, { ...PROJECT_OWNER_FLAG, ...JSON_FLAGS });
+  const { values } = distribute('project list', positional, ['org'], { org: flags.owner ?? null });
+  if (!values.org) cli.die('project list: org required\n' + usage);
+  const org = validateOrg(values.org);
   let projects;
   try { projects = await api.get(`/orgs/${org}/projectsV2`); }
   catch (e) { fail('project list', e); }
+
+  const fields = parseFields('project list', flags.json, ['number', 'title', 'state', 'url', 'id']);
+  if (fields !== undefined) {
+    await outputJson(projects.map(pj => pickFields({
+      number: pj.number,
+      title: pj.title,
+      state: pj.state,
+      url: `https://github.com/orgs/${org}/projects/${pj.number}`,
+      id: pj.id,
+    }, fields)), flags);
+    return;
+  }
 
   if (!projects.length) { console.log(color.gray('No projects.')); return; }
 
@@ -1513,13 +1533,26 @@ async function projectList(args) {
 
 async function projectListItems(args) {
   const usage = 'usage: gh project list-items <org> <project_number>';
-  if (!args[0]) cli.die('project list-items: org required\n' + usage);
-  if (!args[1]) cli.die('project list-items: project number required\n' + usage);
-  const org = validateOrg(args[0]);
-  const num = validateNum(args[1], 'project number');
+  const { flags, positional } = parseArgs('project list-items', args, { ...PROJECT_OWNER_FLAG, ...JSON_FLAGS });
+  const { values } = distribute('project list-items', positional, ['org', 'number'], { org: flags.owner ?? null });
+  if (!values.org) cli.die('project list-items: org required\n' + usage);
+  if (!values.number) cli.die('project list-items: project number required\n' + usage);
+  const org = validateOrg(values.org);
+  const num = validateNum(values.number, 'project number');
   let items;
   try { items = await api.get(`/orgs/${org}/projectsV2/${num}/items`); }
   catch (e) { fail('project list-items', e); }
+
+  const fields = parseFields('project list-items', flags.json, ['id', 'title', 'contentType', 'url']);
+  if (fields !== undefined) {
+    await outputJson(items.map(it => pickFields({
+      id: it.id,
+      title: it.content?.title || null,
+      contentType: it.content_type || null,
+      url: it.content?.html_url || null,
+    }, fields)), flags);
+    return;
+  }
 
   if (!items.length) { console.log(color.gray('No items.')); return; }
 
@@ -1536,14 +1569,27 @@ async function projectListItems(args) {
 }
 
 async function projectAddDraft(args) {
-  const usage = 'usage: gh project add-draft <org> <project_number> <title> [body]';
-  if (!args[0]) cli.die('project add-draft: org required\n' + usage);
-  if (!args[1]) cli.die('project add-draft: project number required\n' + usage);
-  if (!args[2]) cli.die('project add-draft: title required\n' + usage);
-  const org = validateOrg(args[0]);
-  const num = validateNum(args[1], 'project number');
-  const title = args[2];
-  const body = args[3];
+  const usage = 'usage: gh project add-draft <org> <project_number> <title> [body]\n'
+    + '       gh project add-draft <org> <project_number> --title <t> [--body <b>]';
+  const { flags, positional } = parseArgs('project add-draft', args, {
+    ...PROJECT_OWNER_FLAG,
+    title: { type: 'string', short: 't' },
+    body: { type: 'string', short: 'b' },
+    'body-file': { type: 'string', short: 'F' },
+  });
+  if (flags['body-file']) flags.body = await bodyFrom('project add-draft', flags.body ?? null, flags['body-file']);
+  const { values } = distribute('project add-draft', positional, ['org', 'number', 'title', 'body'], {
+    org: flags.owner ?? null,
+    title: flags.title ?? null,
+    body: flags.body ?? null,
+  });
+  if (!values.org) cli.die('project add-draft: org required\n' + usage);
+  if (!values.number) cli.die('project add-draft: project number required\n' + usage);
+  if (!values.title) cli.die('project add-draft: title required\n' + usage);
+  const org = validateOrg(values.org);
+  const num = validateNum(values.number, 'project number');
+  const title = values.title;
+  const body = values.body === null ? undefined : values.body;
 
   const payload = { title };
   if (body !== undefined) payload.body = body;
@@ -1563,15 +1609,24 @@ async function projectAddDraft(args) {
 // ever has to think in terms of item_id + new title.
 
 async function projectSetTitle(args) {
-  const usage = 'usage: gh project set-title <org> <project_number> <item_id> <new_title>';
-  if (!args[0]) cli.die('project set-title: org required\n' + usage);
-  if (!args[1]) cli.die('project set-title: project number required\n' + usage);
-  if (!args[2]) cli.die('project set-title: item id required\n' + usage);
-  if (args[3] === undefined) cli.die('project set-title: new title required\n' + usage);
-  const org = validateOrg(args[0]);
-  const num = validateNum(args[1], 'project number');
-  const itemId = validateNum(args[2], 'item id');
-  const newTitle = args[3];
+  const usage = 'usage: gh project set-title <org> <project_number> <item_id> <new_title>\n'
+    + '       gh project set-title <org> <project_number> <item_id> --title <t>';
+  const { flags, positional } = parseArgs('project set-title', args, {
+    ...PROJECT_OWNER_FLAG,
+    title: { type: 'string', short: 't' },
+  });
+  const { values } = distribute('project set-title', positional, ['org', 'number', 'itemId', 'title'], {
+    org: flags.owner ?? null,
+    title: flags.title ?? null,
+  });
+  if (!values.org) cli.die('project set-title: org required\n' + usage);
+  if (!values.number) cli.die('project set-title: project number required\n' + usage);
+  if (!values.itemId) cli.die('project set-title: item id required\n' + usage);
+  if (values.title === null || values.title === undefined) cli.die('project set-title: new title required\n' + usage);
+  const org = validateOrg(values.org);
+  const num = validateNum(values.number, 'project number');
+  const itemId = validateNum(values.itemId, 'item id');
+  const newTitle = values.title;
 
   let item;
   try { item = await api.get(`/orgs/${org}/projectsV2/${num}/items/${itemId}`); }
@@ -1770,10 +1825,19 @@ async function fetchJobLog(repo, jobId) {
   } catch (e) { return { ok: false, error: e.message }; }
 }
 
-function tailLines(text, n) {
+// Picks the most useful window of a job log: the lines leading up to the LAST
+// `##[error]` annotation (the actual failure) when there is one, otherwise the
+// tail — a raw tail usually lands in post-job cleanup. n = 0 means the whole log.
+function logExcerpt(text, n) {
   const lines = text.replace(/\r/g, '').split('\n');
   if (!n || n <= 0 || lines.length <= n) return lines.join('\n');
-  return lines.slice(-n).join('\n');
+  let lastError = -1;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i].includes('##[error]')) { lastError = i; break; }
+  }
+  if (lastError === -1) return lines.slice(-n).join('\n');
+  const end = Math.min(lines.length, lastError + 6);
+  return lines.slice(Math.max(0, end - n), end).join('\n');
 }
 
 async function printJobLogs(repo, jobs, tail) {
@@ -1791,7 +1855,7 @@ async function printJobLogs(repo, jobs, tail) {
       }
       continue;
     }
-    console.log(tailLines(log.text, tail));
+    console.log(logExcerpt(log.text, tail));
   }
 }
 
@@ -1950,16 +2014,33 @@ function reasonStr(r) {
 }
 
 async function notificationsList(args) {
-  let participating = false, repoFilter = null, showAll = false, limit = 30;
-  const rest = [];
+  // The historical glued `-nN` form (`-n30`) is normalised to `-n 30` first so
+  // the shared parser sees it; both spellings keep working.
+  const normalised = [];
   for (const a of args) {
-    if (a === '--participating' || a === '-p') participating = true;
-    else if (a === '--all' || a === '-a') showAll = true;
-    else if (a.startsWith('--repo=')) repoFilter = a.slice(7);
-    else if (a.startsWith('-n')) limit = parseInt(a.slice(2)) || 30;
-    else rest.push(a);
+    const glued = /^-n(\d+)$/.exec(a);
+    if (glued) { normalised.push('-n', glued[1]); continue; }
+    normalised.push(a);
   }
-  if (rest[0] && rest[0].includes('/')) repoFilter = rest[0];
+  const { flags, positional } = parseArgs('notifications list', normalised, {
+    ...REPO_FLAG,
+    ...JSON_FLAGS,
+    participating: { type: 'bool', short: 'p' },
+    all: { type: 'bool', short: 'a' },
+    limit: { type: 'string', short: 'n' },
+  });
+  const participating = !!flags.participating;
+  const showAll = !!flags.all;
+  const limit = parseInt(flags.limit, 10) || 30;
+  let repoFilter = flags.repo || null;
+  const rest = positional;
+  if (rest[0] && rest[0].includes('/')) {
+    if (repoFilter && repoFilter !== rest[0]) {
+      cli.die(`notifications list: repository specified twice — --repo ${repoFilter} and positional ${rest[0]}. Pass only one.`);
+    }
+    repoFilter = rest[0];
+  }
+  if (repoFilter) validateRepo(repoFilter);
 
   const params = {
     all: showAll ? 'true' : 'false',
@@ -1974,6 +2055,24 @@ async function notificationsList(args) {
       : `/notifications`;
     notifs = await api.get(endpoint, { params });
   } catch (e) { fail('notifications list', e); }
+
+  const fields = parseFields('notifications list', flags.json, [
+    'id', 'reason', 'unread', 'updatedAt', 'title', 'type', 'repository', 'url', 'subjectUrl',
+  ]);
+  if (fields !== undefined) {
+    await outputJson(notifs.map(n => pickFields({
+      id: n.id,
+      reason: n.reason,
+      unread: n.unread,
+      updatedAt: n.updated_at,
+      title: n.subject?.title,
+      type: n.subject?.type,
+      repository: { nameWithOwner: n.repository?.full_name },
+      url: n.repository?.html_url,
+      subjectUrl: n.subject?.url,
+    }, fields)), flags);
+    return;
+  }
 
   if (!notifs.length) { console.log(color.gray('No notifications.')); return; }
 
@@ -2002,11 +2101,17 @@ async function notificationsList(args) {
 }
 
 async function notificationsRead(args) {
-  let repoFilter = null;
-  for (const a of args) {
-    if (a.includes('/')) repoFilter = a;
-    else if (a.startsWith('--repo=')) repoFilter = a.slice(7);
+  const { flags, positional } = parseArgs('notifications read', args, { ...REPO_FLAG });
+  let repoFilter = flags.repo || null;
+  for (const a of positional) {
+    if (a.includes('/')) {
+      if (repoFilter && repoFilter !== a) {
+        cli.die(`notifications read: repository specified twice — --repo ${repoFilter} and positional ${a}. Pass only one.`);
+      }
+      repoFilter = a;
+    }
   }
+  if (repoFilter) validateRepo(repoFilter);
 
   try {
     const endpoint = repoFilter
@@ -2083,12 +2188,26 @@ async function searchPrs(args) {
 // ─── vars list ───────────────────────────────────────────────────────────────
 
 async function varsList(args) {
-  const repo = await resolveRepo(args[0]);
+  const { flags, positional } = parseArgs('vars list', args, {
+    ...REPO_FLAG,
+    ...JSON_FLAGS,
+    limit: { type: 'string', short: 'L' },
+  });
+  const { repoArg } = distribute('vars list', positional, [], flags);
+  const repo = await repoFrom('vars list', flags, repoArg);
   let vars;
   try {
-    const data = await api.get(`/repos/${repo}/actions/variables`, { params: { per_page: 30 } });
+    const data = await api.get(`/repos/${repo}/actions/variables`, { params: { per_page: Math.min(parseInt(flags.limit, 10) || 30, 100) } });
     vars = data.variables;
   } catch (e) { fail('vars list', e); }
+
+  const fields = parseFields('vars list', flags.json, ['name', 'value', 'createdAt', 'updatedAt']);
+  if (fields !== undefined) {
+    await outputJson((vars || []).map(v => pickFields({
+      name: v.name, value: v.value, createdAt: v.created_at, updatedAt: v.updated_at,
+    }, fields)), flags);
+    return;
+  }
 
   if (!vars || !vars.length) { console.log(color.gray('No variables.')); return; }
 
@@ -2099,10 +2218,16 @@ async function varsList(args) {
 // ─── vars set ────────────────────────────────────────────────────────────────
 
 async function varsSet(args) {
-  if (!args[0]) cli.die('vars set: name required');
-  if (args[1] === undefined) cli.die('vars set: value required');
-  const repo = await resolveRepo(args[2]);
-  const name = validateVarName(args[0]), value = args[1];
+  const { flags, positional } = parseArgs('vars set', args, {
+    ...REPO_FLAG,
+    body: { type: 'string', short: 'b' },
+  });
+  const { values, repoArg } = distribute('vars set', positional, ['name', 'value'], flags);
+  if (!values.name) cli.die('vars set: name required');
+  const rawValue = values.value !== null && values.value !== undefined ? values.value : flags.body;
+  if (rawValue === undefined || rawValue === null) cli.die('vars set: value required');
+  const repo = await repoFrom('vars set', flags, repoArg);
+  const name = validateVarName(values.name), value = rawValue;
 
   // Check if variable exists (expecting 404 if not — http.client throws on non-2xx)
   let exists = false;
@@ -2325,16 +2450,16 @@ async function repoArchive(args) {
 // ─── branch create ───────────────────────────────────────────────────────────
 
 async function branchCreate(args) {
-  const usage = 'usage: gh branch create <name> [--from=<ref>] [repo]';
-  let from = null;
-  const positional = [];
-  for (const a of args) {
-    if (a.startsWith('--from=')) from = a.slice(7).trim();
-    else positional.push(a);
-  }
-  if (!positional[0]) cli.die('branch create: branch name required\n' + usage);
-  const branchName = positional[0];
-  const repo = await resolveRepo(positional[1]);
+  const usage = 'usage: gh branch create <name> [--from <ref>] [-R owner/repo] [repo]';
+  const { flags, positional } = parseArgs('branch create', args, {
+    ...REPO_FLAG,
+    from: { type: 'string' },
+  });
+  const { values, repoArg } = distribute('branch create', positional, ['name'], flags);
+  if (!values.name) cli.die('branch create: branch name required\n' + usage);
+  const branchName = values.name;
+  let from = flags.from ? flags.from.trim() : null;
+  const repo = await repoFrom('branch create', flags, repoArg);
 
   // Resolve the SHA to branch from
   if (!from) {
@@ -2364,9 +2489,11 @@ async function branchCreate(args) {
 // ─── branch delete ───────────────────────────────────────────────────────────
 
 async function branchDelete(args) {
-  if (!args[0]) cli.die('branch delete: branch name required');
-  const branchName = args[0];
-  const repo = await resolveRepo(args[1]);
+  const { flags, positional } = parseArgs('branch delete', args, { ...REPO_FLAG });
+  const { values, repoArg } = distribute('branch delete', positional, ['name'], flags);
+  if (!values.name) cli.die('branch delete: branch name required');
+  const branchName = values.name;
+  const repo = await repoFrom('branch delete', flags, repoArg);
   try {
     await api.delete(`/repos/${repo}/git/refs/heads/${branchName}`);
     console.log(sym('success') + ' Deleted branch ' + color.cyan(branchName) + ' from ' + repo);
@@ -2376,18 +2503,22 @@ async function branchDelete(args) {
 // ─── content put ─────────────────────────────────────────────────────────────
 
 async function contentPut(args) {
-  const usage = 'usage: gh content put <path> <local-file> <message> [--branch=<branch>] [repo]';
-  let branch = null;
-  const positional = [];
-  for (const a of args) {
-    if (a.startsWith('--branch=')) branch = a.slice(9).trim();
-    else positional.push(a);
-  }
-  if (!positional[0]) cli.die('content put: file path required\n' + usage);
-  if (!positional[1]) cli.die('content put: local file required\n' + usage);
-  if (!positional[2]) cli.die('content put: commit message required\n' + usage);
-  const [filePath, localFile, message] = positional;
-  const repo = await resolveRepo(positional[3]);
+  const usage = 'usage: gh content put <path> <local-file> <message> [--branch <branch>] [-R owner/repo] [repo]';
+  const { flags, positional } = parseArgs('content put', args, {
+    ...REPO_FLAG,
+    branch: { type: 'string', short: 'b' },
+    message: { type: 'string', short: 'm' },
+  });
+  const { values, repoArg } = distribute('content put', positional, ['path', 'file', 'message'], {
+    ...flags,
+    message: flags.message,
+  });
+  if (!values.path) cli.die('content put: file path required\n' + usage);
+  if (!values.file) cli.die('content put: local file required\n' + usage);
+  if (!values.message) cli.die('content put: commit message required\n' + usage);
+  const filePath = values.path, localFile = values.file, message = values.message;
+  const branch = flags.branch ? flags.branch.trim() : null;
+  const repo = await repoFrom('content put', flags, repoArg);
 
   // Read local file and base64-encode (unicode-safe)
   let content;
@@ -2423,15 +2554,18 @@ async function contentPut(args) {
 // ─── api (raw passthrough) ───────────────────────────────────────────────────
 
 async function apiPassthrough(args) {
-  const usage = 'usage: gh api <path> [-X METHOD] [--field key=value]... [--jq <expr>]';
+  const usage = 'usage: gh api <path> [-X METHOD] [-f key=value]... [--jq <expr>]';
   if (!args[0]) cli.die(usage);
   let method = 'GET', jqExpr = null;
   const fields = {};
   const positional = [];
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === '-X' && args[i+1]) { method = args[++i].toUpperCase(); }
-    else if (args[i] === '--jq' && args[i+1]) { jqExpr = args[++i]; }
-    else if ((args[i] === '-f' || args[i] === '--field') && args[i+1]) {
+    // Upstream spells the verb -X/--method and the filter --jq/-q; both work.
+    if ((args[i] === '-X' || args[i] === '--method') && args[i+1]) { method = args[++i].toUpperCase(); }
+    else if (args[i].startsWith('--method=')) { method = args[i].slice(9).toUpperCase(); }
+    else if ((args[i] === '--jq' || args[i] === '-q') && args[i+1]) { jqExpr = args[++i]; }
+    else if (args[i].startsWith('--jq=')) { jqExpr = args[i].slice(5); }
+    else if ((args[i] === '-f' || args[i] === '--field' || args[i] === '-F' || args[i] === '--raw-field') && args[i+1]) {
       const [k, ...vParts] = args[++i].split('=');
       fields[k] = vParts.join('=');
     }
@@ -2457,11 +2591,8 @@ async function apiPassthrough(args) {
     }
 
     if (jqExpr && typeof result === 'object') {
-      // Simple jq: support .key and .key.subkey
-      const keys = jqExpr.replace(/^\./, '').split('.');
-      let val = result;
-      for (const k of keys) { val = val?.[k]; }
-      console.log(typeof val === 'string' ? val : JSON.stringify(val, null, 2));
+      // Full jq when the shell provides it, path-evaluator fallback otherwise.
+      console.log(await applyJq(jqExpr, result));
     } else {
       cli.out(result);
     }
@@ -2469,48 +2600,481 @@ async function apiPassthrough(args) {
 }
 
 // ─── help ────────────────────────────────────────────────────────────────────
+// Every command and subcommand group is self-documenting, and --help/-h is
+// intercepted BEFORE any argument validation (see the router at the bottom) so
+// that `gh pr --help` and `gh pr watch --help` print usage instead of dying
+// with "unknown subcommand" / "Invalid PR number". `gh help <cmd> [<sub>]`
+// works too. Discoverability is the point: an agent's first move on an
+// unfamiliar CLI is --help, and if that fails it has no path to anything else.
+
+const REPO_HELP = '-R, --repo <owner/repo>   target repository (or pass it as the trailing positional)';
+const JSON_HELP = '--json [fields]           JSON output, optionally restricted to a comma-separated field list';
+const JQ_HELP = '-q, --jq <expr>           filter the --json output through a jq expression';
+
+const HELP = {
+  pr: {
+    summary: 'Work with pull requests',
+    subs: {
+      list: {
+        usage: [
+          'gh pr list [--state open|closed|merged|all] [--limit N] [--base B] [--head H] [--draft]',
+          'gh pr list [repo]',
+        ],
+        desc: 'List pull requests',
+        flags: [REPO_HELP, JSON_HELP, JQ_HELP,
+          '-s, --state <state>       open (default), closed, merged, all',
+          '-L, --limit <n>           max results (default 30)',
+          '-B, --base <branch>       filter by base branch',
+          '-H, --head <branch>       filter by head branch',
+          '-d, --draft               only draft PRs'],
+      },
+      view: {
+        usage: [
+          'gh pr view <num> [--json statusCheckRollup,reviews,comments,mergeable] [--comments]',
+          'gh pr view <num> [repo]',
+        ],
+        desc: 'View a PR: title, author, branches, check summary, body',
+        flags: [REPO_HELP, JSON_HELP, JQ_HELP, '-c, --comments            also print the PR comments'],
+        notes: ['JSON fields: ' + PR_VIEW_FIELDS.join(', ')],
+      },
+      checks: {
+        usage: ['gh pr checks <num> [--json] [--watch]', 'gh pr checks <num> [repo]'],
+        desc: 'Per-check status/conclusion for the PR head commit',
+        flags: [REPO_HELP, JSON_HELP, JQ_HELP,
+          '--watch                   install the event-driven watch (SLICC equivalent of upstream polling;',
+          '                          mutates the repo — see `gh pr watch`)',
+          '--filter <js>             passed through to the watch; drops events before they reach the scoop',
+          '--scoop <name>            scoop that should receive the watch licks'],
+        notes: ['JSON fields: ' + PR_CHECKS_FIELDS.join(', ')],
+      },
+      create: {
+        usage: [
+          'gh pr create --title <t> --body <b> --head <branch> [--base <base>] [--draft]',
+          'gh pr create <title> <body> <head-branch> [--base=<base>] [--draft] [repo]',
+        ],
+        desc: 'Open a pull request',
+        flags: [REPO_HELP,
+          '-t, --title <title>       PR title',
+          '-b, --body <body>         PR body',
+          '-F, --body-file <path>    read the body from a file',
+          '-H, --head <branch>       branch to merge from',
+          '-B, --base <branch>       branch to merge into (default: the repo default branch)',
+          '-d, --draft               open as a draft',
+          '-l, --label <name>        add a label (repeatable, comma-separated ok)',
+          '-a, --assignee <user>     assign a user (repeatable)',
+          '-r, --reviewer <user>     request a reviewer (repeatable; org/team for teams)'],
+        notes: ['A value supplied both as a flag and as a positional is an error, never silently picked.'],
+      },
+      merge: {
+        usage: ['gh pr merge <num> [--squash|--rebase|--merge] [--delete-branch]', 'gh pr merge <num> [--squash] [repo]'],
+        desc: 'Merge a pull request',
+        flags: [REPO_HELP,
+          '-m, --merge               merge commit (default)',
+          '-s, --squash              squash merge',
+          '-r, --rebase              rebase merge',
+          '-d, --delete-branch       delete the head branch afterwards',
+          '-t, --subject <text>      commit title',
+          '-b, --body <text>         commit message body',
+          '-F, --body-file <path>    read the commit message body from a file'],
+      },
+      close: {
+        usage: ['gh pr close <num> [--comment <text>] [--delete-branch]', 'gh pr close <num> [repo]'],
+        desc: 'Close a pull request without merging',
+        flags: [REPO_HELP, '-c, --comment <text>      leave a closing comment', '-d, --delete-branch       delete the head branch'],
+      },
+      comment: {
+        usage: ['gh pr comment <num> --body <text>', 'gh pr comment <num> <message> [repo]'],
+        desc: 'Post a comment on a pull request',
+        flags: [REPO_HELP, '-b, --body <text>         comment body', '-F, --body-file <path>    read the body from a file'],
+      },
+      checkout: {
+        usage: ['gh pr checkout <num> [-R owner/repo]', 'gh pr checkout <num> [repo]'],
+        desc: 'Print the git fetch/checkout commands for a PR (does not execute them)',
+        flags: [REPO_HELP],
+      },
+      watch: {
+        usage: ['gh pr watch <num> [--filter <js>] [--scoop <name>] [-R owner/repo]', 'gh pr watch <num> [repo]'],
+        desc: 'Watch a PR event-driven: PR/review/CI events arrive as licks',
+        flags: [REPO_HELP,
+          '--filter <js>             JS predicate passed to `webhook create --filter`, drops noisy events',
+          '--scoop <name>            receiving scoop (default: $SLICC_SCOOP)'],
+        notes: [
+          'Installs a SLICC webhook plus a GitHub repo webhook. Idempotent.',
+          'Mutates the repository. Tear it down with `gh pr unwatch <num>`.',
+          'See references/webhook-pr-monitoring.md for the self-echo-detection pattern',
+          'a scoop needs when watching its own PR.',
+        ],
+      },
+      unwatch: {
+        usage: ['gh pr unwatch <num> [-R owner/repo]', 'gh pr unwatch <num> [repo]'],
+        desc: 'Stop watching a PR; removes the GitHub hook and the SLICC webhook',
+        flags: [REPO_HELP],
+      },
+    },
+  },
+  issue: {
+    summary: 'Work with issues',
+    subs: {
+      list: {
+        usage: ['gh issue list [--state open|closed|all] [--label L] [--assignee U] [--json]', 'gh issue list [repo]'],
+        desc: 'List issues (pull requests filtered out)',
+        flags: [REPO_HELP, JSON_HELP, JQ_HELP,
+          '-s, --state <state>       open (default), closed, all',
+          '-L, --limit <n>           max results (default 30)',
+          '-l, --label <name>        filter by label (repeatable)',
+          '-a, --assignee <user>     filter by assignee',
+          '-A, --author <user>       filter by author',
+          '-m, --milestone <ms>      filter by milestone'],
+      },
+      view: {
+        usage: ['gh issue view <num> [--json] [--comments]', 'gh issue view <num> [repo]'],
+        desc: 'View an issue',
+        flags: [REPO_HELP, JSON_HELP, JQ_HELP, '-c, --comments            also print the issue comments'],
+        notes: ['JSON fields: ' + [...ISSUE_FIELDS, 'comments'].join(', ')],
+      },
+      create: {
+        usage: [
+          'gh issue create --title <t> --body <b> [--label L] [--assignee U]',
+          'gh issue create <title> <body> [--label=L]... [--labels=a,b] [repo]',
+        ],
+        desc: 'Create an issue',
+        flags: [REPO_HELP,
+          '-t, --title <title>       issue title',
+          '-b, --body <body>         issue body',
+          '-F, --body-file <path>    read the body from a file',
+          '-l, --label <name>        add a label (repeatable, comma-separated ok)',
+          '--labels <a,b>            comma-separated labels (original spelling)',
+          '-a, --assignee <user>     assign a user (repeatable)',
+          '-m, --milestone <ms>      milestone number'],
+      },
+      comment: {
+        usage: ['gh issue comment <num> --body <text>', 'gh issue comment <num> <message> [repo]'],
+        desc: 'Post a comment on an issue',
+        flags: [REPO_HELP, '-b, --body <text>         comment body', '-F, --body-file <path>    read the body from a file'],
+      },
+      close: {
+        usage: ['gh issue close <num> [--reason completed|not_planned] [--comment <text>]', 'gh issue close <num> [--reason=completed] [repo]'],
+        desc: 'Close an issue',
+        flags: [REPO_HELP, '--reason <reason>         completed | not_planned', '-c, --comment <text>      leave a closing comment'],
+      },
+      edit: {
+        usage: [
+          'gh issue edit <num> [--title T] [--body B] [--add-label L] [--remove-label L] [--state S]',
+          'gh issue edit <num> [--title=T] [--body=B] [--label=L]... [repo]',
+        ],
+        desc: 'Edit an issue',
+        flags: [REPO_HELP,
+          '-t, --title <title>       new title',
+          '-b, --body <body>         new body',
+          '-F, --body-file <path>    read the new body from a file',
+          '--state <state>           open | closed',
+          '-l, --label <name>        replace the label set (repeatable)',
+          '--add-label <name>        add a label, keeping existing ones',
+          '--remove-label <name>     remove a label',
+          '--add-assignee <user>     add an assignee',
+          '--remove-assignee <user>  remove an assignee',
+          '-m, --milestone <ms>      milestone number'],
+      },
+    },
+  },
+  repo: {
+    summary: 'Work with repositories',
+    subs: {
+      view: {
+        usage: ['gh repo view [-R owner/repo] [--json]', 'gh repo view [repo]'],
+        desc: 'Show repository information',
+        flags: [REPO_HELP, JSON_HELP, JQ_HELP],
+        notes: ['JSON fields: ' + REPO_FIELDS.join(', ')],
+      },
+      archive: {
+        usage: ['gh repo archive [-R owner/repo]', 'gh repo archive [repo]'],
+        desc: 'Archive a repository (irreversible without admin unarchive)',
+        flags: [REPO_HELP],
+      },
+    },
+  },
+  branch: {
+    summary: 'Create and delete branches via the git refs API',
+    subs: {
+      create: {
+        usage: ['gh branch create <name> [--from <ref>] [-R owner/repo]', 'gh branch create <name> [--from=<ref>] [repo]'],
+        desc: 'Create a branch from a ref or SHA (default: the repo default branch)',
+        flags: [REPO_HELP, '--from <ref>              branch, tag or 40-char SHA to branch from'],
+      },
+      delete: {
+        usage: ['gh branch delete <name> [-R owner/repo]', 'gh branch delete <name> [repo]'],
+        desc: 'Delete a branch',
+        flags: [REPO_HELP],
+      },
+    },
+  },
+  content: {
+    summary: 'Create or update files through the Contents API',
+    subs: {
+      put: {
+        usage: [
+          'gh content put <path> <local-file> <message> [--branch <b>] [-R owner/repo]',
+          'gh content put <path> <local-file> <msg> [--branch=<b>] [repo]',
+        ],
+        desc: 'Upload a local file to a repository path (SHA lookup is automatic)',
+        flags: [REPO_HELP, '-b, --branch <branch>     target branch', '-m, --message <msg>       commit message (or pass it positionally)'],
+      },
+    },
+  },
+  run: {
+    summary: 'Inspect GitHub Actions workflow runs',
+    subs: {
+      list: {
+        usage: ['gh run list [--branch B] [--workflow W] [--status S] [--limit N] [--json]', 'gh run list [repo]'],
+        desc: 'List recent workflow runs',
+        flags: [REPO_HELP, JSON_HELP, JQ_HELP,
+          '-L, --limit <n>           max results (default 20)',
+          '-b, --branch <branch>     filter by branch',
+          '-w, --workflow <file|id>  filter by workflow',
+          '-e, --event <event>       filter by triggering event',
+          '-s, --status <status>     filter by status/conclusion',
+          '-u, --user <login>        filter by actor'],
+      },
+      view: {
+        usage: ['gh run view <run_id> [--log-failed] [--log] [--json]', 'gh run view <run_id> [repo]'],
+        desc: 'View a run, its jobs, and optionally the job logs',
+        flags: [REPO_HELP, JSON_HELP, JQ_HELP,
+          '--log-failed              print logs for the failed jobs only',
+          '--log                     print logs for every job',
+          '--log-tail <n>            tail the log to n lines (default 200, 0 = whole log)',
+          '-j, --job <id|name>       restrict --log/--log-failed to one job'],
+        notes: [
+          'Logs come from the Actions logs API (GET /actions/jobs/<id>/logs).',
+          'If a download is refused, the failed steps and their conclusions are printed instead.',
+        ],
+      },
+    },
+  },
+  release: {
+    summary: 'Inspect releases',
+    subs: {
+      list: {
+        usage: ['gh release list [--limit N] [--json]', 'gh release list [repo]'],
+        desc: 'List recent releases',
+        flags: [REPO_HELP, JSON_HELP, JQ_HELP, '-L, --limit <n>           max results (default 15)'],
+      },
+    },
+  },
+  search: {
+    summary: 'Search GitHub',
+    subs: {
+      prs: {
+        usage: ['gh search prs <query> [-R owner/repo] [--json]', 'gh search prs <query> [repo]'],
+        desc: 'Search pull requests by keyword',
+        flags: [REPO_HELP, JSON_HELP, JQ_HELP,
+          '-L, --limit <n>           max results (default 20)',
+          '--state <state>           add state: to the query'],
+      },
+    },
+  },
+  vars: {
+    summary: 'Manage Actions variables',
+    subs: {
+      list: {
+        usage: ['gh vars list [-R owner/repo] [--json]', 'gh vars list [repo]'],
+        desc: 'List Actions variables',
+        flags: [REPO_HELP, JSON_HELP, JQ_HELP, '-L, --limit <n>           max results (default 30)'],
+      },
+      set: {
+        usage: ['gh vars set <name> <value> [-R owner/repo]', 'gh vars set <name> <value> [repo]'],
+        desc: 'Create or update an Actions variable',
+        flags: [REPO_HELP, '-b, --body <value>        variable value (alternative to the positional)'],
+      },
+    },
+  },
+  notifications: {
+    summary: 'Read your notification inbox',
+    subs: {
+      list: {
+        usage: ['gh notifications list [--all] [-p] [-R owner/repo] [-n 30] [--json]', 'gh notifications list [--all] [-p] [--repo=r] [-nN]'],
+        desc: 'List notifications, grouped by repository',
+        flags: [REPO_HELP, JSON_HELP, JQ_HELP,
+          '-a, --all                 include read notifications',
+          '-p, --participating       only notifications you participate in',
+          '-n, --limit <n>           max results (default 30; the glued -nN form still works)'],
+      },
+      read: {
+        usage: ['gh notifications read [-R owner/repo]', 'gh notifications read [--repo=r]'],
+        desc: 'Mark notifications as read (all, or one repository)',
+        flags: [REPO_HELP],
+      },
+    },
+  },
+  project: {
+    summary: 'Org-owned Projects (v2) — org-scoped, never owner/repo. Needs the `project` token scope.',
+    subs: {
+      list: {
+        usage: ['gh project list <org>', 'gh project list --owner <org>'],
+        desc: "List an organisation's Projects (v2)",
+        flags: ['-o, --owner <org>         org login (alternative to the positional)'],
+      },
+      'list-items': {
+        usage: ['gh project list-items <org> <project_number>'],
+        desc: 'List the items in a project',
+        flags: ['-o, --owner <org>         org login (alternative to the positional)'],
+      },
+      'add-draft': {
+        usage: [
+          'gh project add-draft <org> <project_number> <title> [body]',
+          'gh project add-draft <org> <project_number> --title <t> [--body <b>]',
+        ],
+        desc: 'Create a standalone draft item (no repo or real issue needed)',
+        flags: ['-o, --owner <org>         org login (alternative to the positional)',
+          '-t, --title <title>       draft title',
+          '-b, --body <body>         draft body'],
+      },
+      'set-title': {
+        usage: [
+          'gh project set-title <org> <project_number> <item_id> <new_title>',
+          'gh project set-title <org> <project_number> <item_id> --title <t>',
+        ],
+        desc: 'Rename a project item (draft or linked issue/PR)',
+        flags: ['-o, --owner <org>         org login (alternative to the positional)',
+          '-t, --title <title>       new title'],
+      },
+    },
+  },
+  api: {
+    summary: 'Raw GitHub REST API passthrough',
+    standalone: {
+      usage: ['gh api <path> [-X METHOD] [-f key=value]... [--jq <expr>]'],
+      desc: 'Call any REST endpoint with this tool\u2019s auth',
+      flags: ['-X, --method <verb>       GET (default), POST, PUT, PATCH, DELETE',
+        '-f, --field <key=value>   body field (repeatable), sent as JSON on non-GET',
+        '-q, --jq <expr>           filter the response through a jq expression'],
+      notes: ['Bodies are built from -f flags, never from @file — see references/gotchas.md.'],
+    },
+  },
+  auth: {
+    summary: 'Show authentication status',
+    standalone: {
+      usage: ['gh auth status'],
+      desc: 'Show which token is in use, the authenticated user, and AI-attribution status',
+      flags: [],
+      notes: ["Token resolution: skill.token('github'), then `git config github.token`, then $GITHUB_TOKEN."],
+    },
+  },
+  monday: {
+    summary: 'Monday-protocol inbox (machine-readable JSON)',
+    standalone: {
+      usage: ['gh monday [--limit N] [--depth N] [--date 7d]'],
+      desc: 'Emit notifications, review requests and assigned issues as one JSON array',
+      flags: ['--limit <n>               max items (default 50)',
+        '--depth <n>               comment thread depth (default 5)',
+        '--date <spec>             lookback window, e.g. 7d (default 7d)'],
+    },
+  },
+  version: {
+    summary: 'Print the gh.jsh version',
+    standalone: { usage: ['gh version'], desc: 'Print the version of this GitHub CLI', flags: [] },
+  },
+};
+
+const GH_VERSION = 'gh.jsh (SLICC GitHub CLI) 2.0.0';
+
+function helpBlock(lines) {
+  return lines.map((l) => '  ' + l).join('\n');
+}
+
+function renderSubHelp(cmd, sub, entry) {
+  const parts = [color.bold('gh ' + cmd + (sub ? ' ' + sub : '')) + (entry.desc ? ' — ' + entry.desc : '')];
+  parts.push('\n' + color.bold('USAGE') + '\n' + helpBlock(entry.usage));
+  if (entry.flags && entry.flags.length) parts.push('\n' + color.bold('FLAGS') + '\n' + helpBlock(entry.flags));
+  if (entry.notes && entry.notes.length) parts.push('\n' + color.bold('NOTES') + '\n' + helpBlock(entry.notes));
+  parts.push('\n' + color.gray('Upstream-gh flag forms and this CLI\u2019s original positional forms are both accepted.'));
+  cli.help(parts.join('\n'));
+}
+
+function renderCommandHelp(cmd, entry) {
+  if (entry.standalone) { renderSubHelp(cmd, null, entry.standalone); return; }
+  const lines = [color.bold('gh ' + cmd) + ' — ' + entry.summary];
+  lines.push('\n' + color.bold('SUBCOMMANDS'));
+  for (const [sub, e] of Object.entries(entry.subs)) {
+    lines.push('  ' + color.cyan(fmt.col(sub, 13)) + (e.desc || ''));
+  }
+  lines.push('\n' + color.bold('USAGE'));
+  for (const e of Object.values(entry.subs)) lines.push('  ' + e.usage[0]);
+  lines.push('\n' + color.gray('Run `gh ' + cmd + ' <subcommand> --help` for one subcommand\u2019s flags.'));
+  cli.help(lines.join('\n'));
+}
+
+// Prints the most specific help available for what the caller reached for, and
+// exits 0 — never an error, whatever the rest of the command line looks like.
+function showScopedHelp(cmd, sub) {
+  if (!cmd || !HELP[cmd]) { showHelp(); return; }
+  const entry = HELP[cmd];
+  if (sub && entry.subs && entry.subs[sub]) { renderSubHelp(cmd, sub, entry.subs[sub]); return; }
+  if (sub && entry.subs) {
+    cli.help(
+      color.bold('gh ' + cmd) + ' — ' + entry.summary + '\n\n' +
+      color.yellow('No subcommand "' + sub + '" under `gh ' + cmd + '`.') + '\n\n' +
+      color.bold('SUBCOMMANDS') + '\n' +
+      Object.entries(entry.subs).map(([k, e]) => '  ' + color.cyan(fmt.col(k, 13)) + (e.desc || '')).join('\n')
+    );
+    return;
+  }
+  renderCommandHelp(cmd, entry);
+}
 
 function showHelp() {
   cli.help(`${color.bold('gh.jsh')} — GitHub CLI for SLICC agents
 
 ${color.bold('USAGE')}
-  gh <command> <subcommand> [args] [owner/repo]
+  gh <command> <subcommand> [args] [flags] [owner/repo]
+
+${color.bold('UPSTREAM-COMPATIBLE')}
+  Named flags (${color.cyan('--title')}, ${color.cyan('--body')}, ${color.cyan('-R owner/repo')}), ${color.cyan('--json [fields]')} with ${color.cyan('--jq')},
+  and ${color.cyan('--help')} on every command behave as they do in the real GitHub CLI.
+  The original all-positional forms keep working unchanged.
 
 ${color.bold('COMMANDS')}
-  ${color.cyan('pr list')}       [repo]                       List open pull requests
-  ${color.cyan('pr view')}       <num> [repo]                 View PR details and checks
-  ${color.cyan('pr create')}     <title> <body> <head> [--base=<base>] [--draft] [repo]  Open a PR
-  ${color.cyan('pr merge')}      <num> [--squash|--rebase] [repo]  Merge a PR
-  ${color.cyan('pr close')}      <num> [repo]                 Close a PR without merging
-  ${color.cyan('pr comment')}    <num> <message> [repo]       Post a comment
-  ${color.cyan('pr checkout')}   <num> [repo]                 Print checkout commands
-  ${color.cyan('pr watch')}      <num> [--filter <js>] [--scoop <name>] [repo]  Watch a PR via webhook
-  ${color.cyan('pr unwatch')}    <num> [repo]                 Stop watching a PR, tear down its webhook
-  ${color.cyan('issue list')}    [repo]                       List open issues
-  ${color.cyan('issue view')}    <num> [repo]                 View issue details
-  ${color.cyan('issue create')}  <title> <body> [--label=L]... [--labels=a,b] [repo]  Create issue
-  ${color.cyan('issue close')}   <num> [--reason=completed|not_planned] [repo]  Close an issue
-  ${color.cyan('issue comment')} <num> <message> [repo]       Post a comment on an issue
-  ${color.cyan('issue edit')}    <num> [--title=T] [--body=B] [--label=L]... [--labels=a,b] [--state=open|closed] [repo]  Edit an issue
-  ${color.cyan('repo view')}     [repo]                       Show repository info
-  ${color.cyan('run list')}      [repo]                       List recent workflow runs
-  ${color.cyan('run view')}      <run_id> [repo]              View run details and jobs
-  ${color.cyan('release list')}  [repo]                       List recent releases
-  ${color.cyan('search prs')}    <query> [repo]               Search PRs by keyword
-  ${color.cyan('vars list')}     [repo]                       List Actions variables
-  ${color.cyan('vars set')}      <name> <value> [repo]        Set an Actions variable
-  ${color.cyan('project list')}       <org>                    List org-owned Projects (v2)
-  ${color.cyan('project list-items')} <org> <project_number>    List items in a project
-  ${color.cyan('project add-draft')}  <org> <project_number> <title> [body]  Create a standalone draft item (no repo needed)
-  ${color.cyan('project set-title')}  <org> <project_number> <item_id> <new_title>  Rename a project item
-  ${color.cyan('repo archive')}  [repo]                       Archive a repository
-  ${color.cyan('branch create')} <name> [--from=<ref>] [repo]  Create a branch
-  ${color.cyan('branch delete')} <name> [repo]                 Delete a branch
-  ${color.cyan('content put')}   <path> <local-file> <msg> [--branch=<b>] [repo]  Create/update a file
-  ${color.cyan('api')}           <path> [-X METHOD] [-f key=val]... [--jq <expr>]  Raw API call
-  ${color.cyan('notifications list')}  [--all] [-p] [--repo=r] [-nN]  List notifications
-  ${color.cyan('notifications read')}  [--repo=r]              Mark notifications as read
-  ${color.cyan('monday')}            [--limit N] [--date Nd]    Monday protocol inbox (JSON)
+  ${color.cyan('pr list')}       [--state S] [--limit N] [--json] [repo]      List pull requests
+  ${color.cyan('pr view')}       <num> [--json f1,f2] [--comments] [repo]     View PR details and checks
+  ${color.cyan('pr checks')}     <num> [--json] [--watch] [repo]              Per-check status for the PR head
+  ${color.cyan('pr create')}     --title T --body B --head BR [--base M] [--draft]  Open a PR
+  ${color.cyan('pr merge')}      <num> [--squash|--rebase] [--delete-branch]  Merge a PR
+  ${color.cyan('pr close')}      <num> [--comment T] [repo]                   Close a PR without merging
+  ${color.cyan('pr comment')}    <num> --body T [repo]                        Post a comment
+  ${color.cyan('pr checkout')}   <num> [repo]                                 Print checkout commands
+  ${color.cyan('pr watch')}      <num> [--filter <js>] [--scoop <name>]       Watch a PR via webhook
+  ${color.cyan('pr unwatch')}    <num> [repo]                                 Stop watching a PR
+  ${color.cyan('issue list')}    [--state S] [--label L] [--json] [repo]      List issues
+  ${color.cyan('issue view')}    <num> [--json] [--comments] [repo]           View issue details
+  ${color.cyan('issue create')}  --title T --body B [--label L] [repo]        Create issue
+  ${color.cyan('issue close')}   <num> [--reason completed|not_planned]       Close an issue
+  ${color.cyan('issue comment')} <num> --body T [repo]                        Comment on an issue
+  ${color.cyan('issue edit')}    <num> [--title T] [--add-label L] [--state S]  Edit an issue
+  ${color.cyan('repo view')}     [--json] [repo]                              Show repository info
+  ${color.cyan('repo archive')}  [repo]                                       Archive a repository
+  ${color.cyan('run list')}      [--branch B] [--json] [repo]                 List recent workflow runs
+  ${color.cyan('run view')}      <run_id> [--log-failed] [--json] [repo]      Run details, jobs and logs
+  ${color.cyan('release list')}  [--json] [repo]                              List recent releases
+  ${color.cyan('search prs')}    <query> [--json] [repo]                      Search PRs by keyword
+  ${color.cyan('vars list')}     [--json] [repo]                              List Actions variables
+  ${color.cyan('vars set')}      <name> <value> [repo]                        Set an Actions variable
+  ${color.cyan('branch create')} <name> [--from <ref>] [repo]                 Create a branch
+  ${color.cyan('branch delete')} <name> [repo]                                Delete a branch
+  ${color.cyan('content put')}   <path> <local-file> <msg> [--branch B]       Create/update a file
+  ${color.cyan('project list')}       <org>                                   List org-owned Projects (v2)
+  ${color.cyan('project list-items')} <org> <project_number>                   List items in a project
+  ${color.cyan('project add-draft')}  <org> <project_number> <title> [body]    Create a draft item
+  ${color.cyan('project set-title')}  <org> <project_number> <item_id> <title>  Rename a project item
+  ${color.cyan('api')}           <path> [-X METHOD] [-f key=val]... [--jq E]  Raw API call
+  ${color.cyan('notifications list')}  [--all] [-p] [-n N] [--json]           List notifications
+  ${color.cyan('notifications read')}  [-R owner/repo]                        Mark notifications as read
+  ${color.cyan('auth')}          status                                       Show auth status
+  ${color.cyan('monday')}        [--limit N] [--date Nd]                      Monday protocol inbox (JSON)
+  ${color.cyan('version')}                                                    Print the version
+
+${color.bold('HELP')}
+  gh <command> --help                 e.g. gh pr --help
+  gh <command> <subcommand> --help    e.g. gh pr create --help
+  gh help <command> [<subcommand>]
 
 ${color.bold('AUTH')}
   Uses skill.token('github') (preferred), falls back to:
@@ -2518,26 +3082,62 @@ ${color.bold('AUTH')}
   exp${''}ort GITHUB_TOKEN=<PAT>                   # session PAT
 
 ${color.bold('REPO')}
-  Defaults to current git remote origin. Pass owner/repo to override.`);
+  Defaults to the current git remote origin. Override with ${color.cyan('-R owner/repo')} or the
+  trailing positional ${color.cyan('owner/repo')} — but never both.`);
 }
 
 // ─── Router ───────────────────────────────────────────────────────────────────
 
 const argv = process.argv.slice(2);
+
+// --help / -h is handled FIRST — before dispatch, before any argument
+// validation — so it can never be mistaken for a subcommand or a PR number.
+const HELP_FLAGS = ['--help', '-h', '-?'];
+
+// Help wins early, but must never swallow a help-looking *value*: `gh issue
+// create "title" "-h"` and `gh pr comment 5 --body "-h"` have to post the data,
+// not print help. So a token only counts as a help request when it is in a flag
+// position (not consumed as the value of a preceding flag, not after `--`), and
+// the terse `-h`/`-?` spellings additionally only count while we are still in
+// the leading command-word region — after positional data has started they are
+// treated as data. `--help` keeps working anywhere, e.g. `gh pr view 1 --help`.
+function helpRequested(args) {
+  let words = 0;
+  for (let i = 0; i < args.length; i++) {
+    const t = args[i];
+    if (t === '--') return false;
+    if (t === '--help') return true;
+    if (HELP_FLAGS.includes(t)) return words <= 2;
+    if (t[0] === '-' && t.length > 1) {
+      if (!t.includes('=')) i++; // skip this flag's value, whatever it looks like
+      continue;
+    }
+    words++;
+  }
+  return false;
+}
+
+if (!argv.length || argv[0] === 'help' || helpRequested(argv)) {
+  const words = (argv[0] === 'help' ? argv.slice(1) : argv).filter((a) => a[0] !== '-');
+  showScopedHelp(words[0], words[1]);
+  process.exit(0); // defensive: cli.help() already exits 0
+}
+
+if (argv[0] === 'version' || argv[0] === '--version') {
+  console.log(GH_VERSION);
+  process.exit(0);
+}
+
 const cmd  = argv[0];
 const sub  = argv[1];
 const rest = argv.slice(2);
-
-if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
-  showHelp();
-}
 
 if (cmd === 'auth') { await authStatus(); process.exit(0); }
 if (cmd === 'api') { await apiPassthrough(argv.slice(1)); process.exit(0); }
 if (cmd === 'monday') { await mondayGh(argv.slice(2)); process.exit(0); }
 
 const dispatch = {
-  pr:      { list: () => prList(rest),      view: () => prView(rest),    merge: () => prMerge(rest), close: () => prClose(rest), comment: () => prComment(rest), checkout: () => prCheckout(rest), create: () => prCreate(rest), watch: () => prWatch(rest), unwatch: () => prUnwatch(rest) },
+  pr:      { list: () => prList(rest),      view: () => prView(rest),    checks: () => prChecks(rest), merge: () => prMerge(rest), close: () => prClose(rest), comment: () => prComment(rest), checkout: () => prCheckout(rest), create: () => prCreate(rest), watch: () => prWatch(rest), unwatch: () => prUnwatch(rest) },
   issue:   { list: () => issueList(rest),   view: () => issueView(rest), create: () => issueCreate(rest), comment: () => issueComment(rest), close: () => issueClose(rest), edit: () => issueEdit(rest) },
   repo:    { view: () => repoView(rest), archive: () => repoArchive(rest) },
   branch:  { create: () => branchCreate(rest), delete: () => branchDelete(rest) },
@@ -2551,7 +3151,12 @@ const dispatch = {
 };
 
 if (!dispatch[cmd]) cli.die("unknown command: '" + cmd + "'. Run gh --help for usage.");
-if (!sub || !dispatch[cmd][sub]) cli.die("unknown subcommand: '" + cmd + ' ' + (sub || '') + "'. Run gh --help for usage.");
+if (!sub || !dispatch[cmd][sub]) {
+  cli.die(
+    "unknown subcommand: '" + cmd + ' ' + (sub || '') + "'. Run `gh " + cmd +
+    ' --help` for this command\u2019s subcommands, or `gh --help` for everything.'
+  );
+}
 
 try {
   await dispatch[cmd][sub]();
