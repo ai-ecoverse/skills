@@ -10,10 +10,10 @@
 //
 // With no positional args, auto-discovers monday-compatible commands on PATH.
 
-// Runtime bridges: the jsh runtime no longer injects `exec`/`fs` as bare
-// globals; obtain them explicitly. `exec` is callable directly.
+// Runtime bridge: the jsh runtime no longer injects `exec` as a bare global;
+// obtain it explicitly. `exec` is callable directly.
+// (No `fs` import: rating passes prompts as argv, so this script writes nothing.)
 const exec = require('sliccy:exec');
-const fs = require('fs');
 
 // Single POSIX-shell-quote a value for safe interpolation into an exec()
 // command line (exec runs through the jsh shell bridge).
@@ -70,6 +70,43 @@ function parseArgs(args) {
 
 const { subcommands, flags } = parseArgs(args);
 
+// ─── Help ────────────────────────────────────────────────────────────────────
+
+if (flags.help || flags.h) {
+  console.log(`monday — aggregate and rank inbox items across tools
+
+USAGE
+  monday [source...] [flags]
+
+  With no sources, auto-discovers monday-compatible commands on PATH.
+  Sources: gh, slack, teams, outlook, gmail, servicenow, linkedin, tiktok
+
+FLAGS
+  --limit N              Max items per source (default 50). Enforced by monday
+                         even if a source ignores it.
+  --depth N              Thread/comment depth per item (default 5)
+  --date Nd              Time window, e.g. 3d, 2w (default 7d)
+
+RATING (each rated item costs one model call — start small)
+  --rate-importance HI-LO   Rate importance, e.g. 9-1
+  --rate-urgency HI-LO      Rate urgency, e.g. 8-1
+  --rate-summary N          ~N-character summary per item
+  --rate-model NAME         Model for rating (default claude-haiku-4-5)
+  --rate-context PATH       Read-only knowledge base the rater may grep
+  --rate-concurrency N      Parallel rating agents (default 4)
+  --rate-max N              Refuse to rate more than N items (default 60)
+
+OUTPUT
+  JSON array on stdout; progress and warnings on stderr. Sorted by
+  urgency x importance when rated, else by timestamp descending.
+
+EXAMPLES
+  monday gh --limit 5 --date 1d
+  monday slack teams --limit 10 --date 3d
+  monday gh --limit 5 --rate-importance 9-1 --rate-urgency 8-1`);
+  process.exit(0);
+}
+
 // ─── Flag Defaults ───────────────────────────────────────────────────────────
 
 const limit = flags['limit'] || '50';
@@ -82,12 +119,21 @@ const rateUrgency    = flags['rate-urgency']    || null;   // e.g. "9-2"
 const rateSummary    = flags['rate-summary']     || null;   // e.g. "1000"
 const rateModel      = flags['rate-model']       || 'claude-haiku-4-5';
 const rateContext    = flags['rate-context']      || null;  // e.g. "/workspace/kb"
+const rateConcurrency = flags['rate-concurrency'] || '4';   // parallel rating agents
+const rateMax        = flags['rate-max']          || '60';  // hard ceiling on rated items
 
 const hasRating = !!(rateImportance || rateUrgency || rateSummary);
 
 // ─── Known Monday-Compatible Commands ────────────────────────────────────────
 
-const KNOWN_COMMANDS = ['gh', 'slack', 'teams', 'outlook', 'gmail', 'servicenow'];  // 'monday' itself intentionally excluded
+// Work sources, auto-discovered when no positional args are given.
+// 'monday' itself intentionally excluded.
+const KNOWN_COMMANDS = ['gh', 'slack', 'teams', 'outlook', 'gmail', 'servicenow'];
+
+// Protocol-compatible but personal/high-noise: these implement `<cmd> monday` yet
+// are NOT auto-discovered, because a work triage run drowns in them (one 21-day run
+// pulled 25 TikTok notifications and zero work items). Name them explicitly to opt in.
+const OPT_IN_COMMANDS = ['linkedin', 'tiktok'];
 
 /**
  * Discover which known commands are available on PATH.
@@ -132,6 +178,17 @@ async function invokeSource(cmd) {
     if (!Array.isArray(parsed)) {
       console.error(`[monday] WARNING: "${cmd}" returned non-array JSON`);
       return [];
+    }
+    // Enforce --limit ourselves. It is documented as "max items per source", but a
+    // source that ignores the flag would otherwise silently inflate the run — and
+    // when rating is on, every extra item costs one more agent invocation. Trust
+    // the contract, verify the result.
+    const cap = parseInt(limit, 10);
+    if (Number.isFinite(cap) && cap > 0 && parsed.length > cap) {
+      console.error(
+        `[monday] NOTE: "${cmd}" returned ${parsed.length} items for --limit ${cap}; truncating.`
+      );
+      return parsed.slice(0, cap);
     }
     return parsed;
   } catch (e) {
@@ -225,11 +282,11 @@ async function rateItem(item) {
   const prompt = buildRatingPrompt(item);
 
   // Build the agent command
-  let cmd = `agent --model ${rateModel}`;
+  let cmd = `agent --model ${escapeShellArg(rateModel)}`;
 
   // Set read-only paths if rate-context is provided
   if (rateContext) {
-    cmd += ` --read-only ${rateContext},/workspace/`;
+    cmd += ` --read-only ${escapeShellArg(`${rateContext},/workspace/`)}`;
   }
 
   // CWD, allowed commands, and the prompt
@@ -237,15 +294,13 @@ async function rateItem(item) {
   const allowedCmds = rateContext ? 'grep,rg,cat,find,ls' : 'true';
   cmd += ` . ${allowedCmds}`;
 
-  // Escape the prompt for shell: use a temp file to avoid quoting issues
-  const tmpFile = `/tmp/monday-prompt-${item.id.replace(/[^a-zA-Z0-9_-]/g, '_')}-${Date.now()}.txt`;
-  await fs.writeFile(tmpFile, prompt);
-
-  const fullCmd = `${cmd} "$(cat ${tmpFile})"`;
+  // Pass the prompt as a single quoted argv, NOT via a temp file. `agent` takes the
+  // prompt as its third positional argument, so a file buys nothing — and writing
+  // one scratch file per item is actively harmful: in a sandbox that gates writes,
+  // each write raises its own approval request (a 147-item run produced 128 of them
+  // and never finished). No filesystem writes here means nothing to approve.
+  const fullCmd = `${cmd} ${escapeShellArg(prompt)}`;
   const result = await exec(fullCmd);
-
-  // Clean up temp file
-  await exec(`rm -f ${escapeShellArg(tmpFile)}`);
 
   if (result.exitCode !== 0) {
     console.error(`[monday] WARNING: rating agent failed for item ${item.id}`);
@@ -280,11 +335,36 @@ async function rateItem(item) {
 }
 
 /**
- * Rate all items in parallel.
+ * Rate all items with BOUNDED concurrency.
+ *
+ * A plain Promise.all over the merged list spawns one agent per item all at once —
+ * 147 items meant 147 simultaneous model calls, which is how a triage run wedged
+ * itself. A small worker pool keeps the run steady and interruptible while still
+ * being much faster than serial.
  */
 async function rateAllItems(items) {
-  console.error(`[monday] rating ${items.length} items with model=${rateModel}...`);
-  return Promise.all(items.map(rateItem));
+  const workers = Math.max(1, parseInt(rateConcurrency, 10) || 1);
+  console.error(
+    `[monday] rating ${items.length} items with model=${rateModel} (concurrency ${workers})...`
+  );
+
+  const out = new Array(items.length);
+  let next = 0;
+  let done = 0;
+
+  async function worker() {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await rateItem(items[i]);
+      done++;
+      if (done % 10 === 0 || done === items.length) {
+        console.error(`[monday]   rated ${done}/${items.length}`);
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(workers, items.length) }, worker));
+  return out;
 }
 
 // ─── Sorting ─────────────────────────────────────────────────────────────────
@@ -322,6 +402,16 @@ async function main() {
       return;
     }
     console.error(`[monday] discovered: ${commands.join(', ')}`);
+    const optIn = await Promise.all(
+      OPT_IN_COMMANDS.map(async (c) => {
+        const r = await exec(`which ${escapeShellArg(c)} 2>/dev/null`);
+        return r.exitCode === 0 ? c : null;
+      })
+    );
+    const available = optIn.filter(Boolean);
+    if (available.length) {
+      console.error(`[monday] not included (name explicitly to opt in): ${available.join(', ')}`);
+    }
   }
 
   // 2. Invoke all sources in parallel
@@ -333,7 +423,22 @@ async function main() {
 
   // 4. Rate if any --rate-* flags are present
   if (hasRating && items.length > 0) {
-    items = await rateAllItems(items);
+    // Guard rail: rating is one model call per item, so an unexpectedly large merge
+    // is expensive and slow. Rate the newest N and pass the rest through unrated
+    // rather than silently launching hundreds of calls.
+    const cap = Math.max(1, parseInt(rateMax, 10) || 1);
+    if (items.length > cap) {
+      console.error(
+        `[monday] WARNING: ${items.length} items exceeds --rate-max ${cap}. ` +
+        `Rating the ${cap} newest; the rest pass through unrated. ` +
+        `Raise --rate-max or lower --limit.`
+      );
+      const byNewest = sortItems(items, false);
+      const rated = await rateAllItems(byNewest.slice(0, cap));
+      items = [...rated, ...byNewest.slice(cap)];
+    } else {
+      items = await rateAllItems(items);
+    }
   }
 
   // 5. Sort
