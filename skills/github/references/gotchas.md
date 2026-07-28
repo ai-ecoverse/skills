@@ -80,7 +80,29 @@ NODE
 GH_TOK="$(oauth-token github)" node /tmp/post-issue.mjs
 ```
 
-The `gh.jsh api` passthrough avoids this entirely — it builds the body from `-f key=value` flags or stdin, never from `@file`. Prefer it whenever possible.
+The `gh.jsh api` passthrough avoids this entirely — it builds the body from `-f key=value` flags or stdin, never from `@file`. Prefer it whenever possible. (`gh api` also accepts the upstream spellings `--method POST` for `-X POST` and `-q`/`--jq` for the response filter.)
+
+## Reach for `--json` before `gh api` + `--jq`
+
+Most read commands now support `--json [fields]` (+ `--jq`), so structured output rarely needs
+the raw passthrough any more:
+
+```bash
+gh pr view 42 --json statusCheckRollup,reviews,comments,mergeable
+gh pr checks 42 --json name,state,bucket
+gh run view 123 --json jobs --jq '.jobs[] | select(.conclusion=="failure") | .name'
+```
+
+`--jq` shells out to the real `jq` when it is available and falls back to a built-in
+`.a.b` / `.a[].b` path evaluator otherwise, so simple filters work either way. Field names
+are matched shape-insensitively (`statusCheckRollup` == `status_check_rollup`) and an unknown
+field errors with the list of valid ones — no silent empty output.
+
+## `--help` works on every command
+
+`gh <cmd> --help`, `gh <cmd> <sub> --help` and `gh help <cmd> [<sub>]` all print scoped usage
+and exit 0. Help is intercepted before argument validation, so `gh pr watch --help` prints
+usage rather than complaining about a missing PR number.
 
 ## Uploading binary or non-ASCII content via the Contents API
 
