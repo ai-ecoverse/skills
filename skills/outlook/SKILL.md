@@ -78,11 +78,7 @@ List inbox messages with sender, subject, and preview.
 
 List upcoming calendar events with time, organizer, location, response status, and event id.
 
-Times are rendered in the mailbox timezone (`GET /me/MailboxSettings` → `TimeZone`,
-requested via `Prefer: outlook.timezone` and cached in `/shared/.outlook-timezone`
-per mailbox identity with a 24h TTL, so switching accounts or changing the zone in
-Outlook re-reads it),
-not UTC. The header states which zone is shown.
+Times are shown in the mailbox timezone, not UTC; the header names the zone.
 
 **Options:**
 - `--limit N` — number of events (default: 20)
@@ -93,21 +89,14 @@ not UTC. The header states which zone is shown.
 
 ### outlook event \<event-id\> [options]
 
-Show one calendar event in full. Fetches `Body` (not the truncated `BodyPreview`),
-renders the HTML invite as plain text, and surfaces conferencing details as
-structured fields.
+Show one event in full: time, organizer, location, your response, attendees,
+`Type` (`SingleInstance`/`Occurrence`/`Exception`/`SeriesMaster`), the
+`SeriesMasterId` and recurrence summary for series, a **Join info** block, and the
+whole rendered invite body.
 
-Shows: subject, start/end in the mailbox timezone, organizer, location, your
-response, `Type` (`SingleInstance` / `Occurrence` / `Exception` / `SeriesMaster`),
-`SeriesMasterId` for occurrences, a recurrence summary for series (e.g.
-`every 2 weeks on Tuesday, 2026-02-24 → 2026-08-18`), attendees, and a **Join info**
-block with — when present — join URL, Teams meeting ID, passcode, video-device
-tenant key and video ID, PSTN dial-in number(s) and phone conference ID. Absent
-fields are omitted; invites with no PSTN number say so explicitly.
-
-The join URL falls back through `OnlineMeeting.JoinUrl` and the invite's join
-anchor, because `OnlineMeetingUrl` is often `null` even for Teams meetings.
-Labels are matched in English and German, on the same line or the next one.
+**Join info** lists whatever the invite carries: join URL, meeting ID, passcode,
+video tenant key and video ID, dial-in number(s) and phone conference ID. Fields
+that are absent are omitted, and an invite with no dial-in says so.
 
 **Options:**
 - `--series` — show the series master instead of this occurrence
@@ -148,6 +137,9 @@ Respond to one or more calendar events. Get event IDs from `outlook calendar --j
 - `--date PERIOD` — date range for `--all` (default: `2d`)
 - `--series` — resolve occurrence/exception ids to their `SeriesMasterId` and respond to the whole series
 - `--dry-run` — print the events that would be responded to and exit without sending anything
+
+Always run `--dry-run` first when using `--all` or `--series`: both fan out to
+events you did not name, and a real response emails the organizer.
 
 ```bash
 # Accept a single event
