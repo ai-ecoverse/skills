@@ -1,10 +1,20 @@
 // gmail.jsh — Gmail CLI for SLICC agents
-// Uses GWS_* env vars (OAuth client credentials + refresh token) to obtain
-// access tokens via the Google OAuth2 token endpoint. No browser needed.
+// Obtains access tokens via the Google OAuth2 token endpoint (refresh_token
+// grant). No browser needed for day-to-day use.
+//
+// Credential precedence:
+//   1. GWS_CLIENT_ID / GWS_CLIENT_SECRET / GWS_REFRESH_TOKEN env vars
+//      (unchanged legacy behaviour — always wins when all three are present)
+//   2. Persisted skill config (`skill.config()`), provisioned by `gmail login`
+//      — the same mechanism the sibling gcloud skill uses. Works in runtimes
+//      that cannot inject env vars into a .jsh child process.
 //
 // Usage: gmail <command> [args] [--flags]
 //
 // Commands:
+//   login     Authenticate with Google and persist a refresh token
+//   auth      Show which credential source is active
+//   logout    Clear persisted credentials
 //   mail      List inbox messages
 //   view      View a single message (full body)
 //   send      Send an email
@@ -27,9 +37,30 @@
 // └────────────────────────────────────────────────────────────────────────────┘
 
 const http = require('sliccy:http');
+const skill = require('sliccy:skill');
+const exec = require('sliccy:exec');
 
 const GMAIL_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
 const GMAIL_WEB = 'https://mail.google.com/mail/u/0/#inbox';
+
+// ─── OAuth constants ─────────────────────────────────────────────────────────
+
+// Thunderbird's public desktop OAuth client. Desktop clients are
+// non-confidential — Google protects them with loopback redirect-URI matching,
+// not secrecy of the "secret" — and this one is verified by Google for Gmail's
+// restricted scopes (https://mail.google.com/). The Google Cloud SDK public
+// client is NOT verified for those scopes and gets blocked, which is why the
+// gcloud skill's client is deliberately not reused here.
+const OAUTH_CLIENT_ID = '406964657835-aq8lmia8j95dhl1a2bvharmfk3t1hgqj.apps.googleusercontent.com';
+const OAUTH_CLIENT_SECRET = 'kSmqreRr0qwBWJgbf5Y-PjSU';
+const AUTH_URL = 'https://accounts.google.com/o/oauth2/auth';
+const TOKEN_URL = 'https://oauth2.googleapis.com/token';
+const REVOKE_URL = 'https://oauth2.googleapis.com/revoke';
+// Loopback redirect; desktop clients accept 127.0.0.1 on any port. A fixed port
+// keeps the oauth-token --redirect-pattern match deterministic.
+const REDIRECT_PORT = 8085;
+const REDIRECT_URI = `http://127.0.0.1:${REDIRECT_PORT}/`;
+const OAUTH_SCOPE = 'https://mail.google.com/';
 
 // ─── Argument Parsing ────────────────────────────────────────────────────────
 
@@ -90,35 +121,132 @@ const C = require('sliccy:color');
 
 let _accessToken = null;
 
-async function getAccessToken() {
-  if (_accessToken) return _accessToken;
+/**
+ * Read the skill's persisted config.
+ *
+ * GOTCHA (same one documented in gcloud.jsh): skill.config() returns a Promise,
+ * which is always truthy — so `skill.config() || {}` never falls back, and
+ * reading a property off the *resolved* null config then throws. Always await
+ * before the `|| {}`.
+ */
+async function loadConfig() {
+  return (await skill.config()) || {};
+}
 
-  const clientId = process.env.GWS_CLIENT_ID;
-  const clientSecret = process.env.GWS_CLIENT_SECRET;
-  const refreshToken = process.env.GWS_REFRESH_TOKEN;
+async function saveConfig(updates) {
+  const cur = await loadConfig();
+  await skill.config({ ...cur, ...updates });
+}
 
-  if (!clientId || !clientSecret || !refreshToken) {
-    die('gmail: missing GWS_CLIENT_ID, GWS_CLIENT_SECRET, or GWS_REFRESH_TOKEN env vars.');
+/**
+ * Resolve OAuth credentials.
+ *
+ * Precedence:
+ *   1. env vars (GWS_CLIENT_ID + GWS_CLIENT_SECRET + GWS_REFRESH_TOKEN) — all
+ *      three required, exactly as before, so nothing regresses for callers who
+ *      do have a working env-var setup.
+ *   2. persisted skill config (written by `gmail login`).
+ *
+ * Returns { clientId, clientSecret, refreshToken, source } or null.
+ */
+async function resolveCredentials() {
+  const envId = process.env.GWS_CLIENT_ID;
+  const envSecret = process.env.GWS_CLIENT_SECRET;
+  const envRefresh = process.env.GWS_REFRESH_TOKEN;
+  if (envId && envSecret && envRefresh) {
+    return {
+      clientId: envId,
+      clientSecret: envSecret,
+      refreshToken: envRefresh,
+      source: 'env',
+    };
   }
 
-  const res = await fetch('https://oauth2.googleapis.com/token', {
+  const cfg = await loadConfig();
+  if (cfg.refresh_token) {
+    return {
+      clientId: cfg.client_id || OAUTH_CLIENT_ID,
+      clientSecret: cfg.client_secret || OAUTH_CLIENT_SECRET,
+      refreshToken: cfg.refresh_token,
+      source: 'config',
+      account: cfg.account || '',
+    };
+  }
+
+  return null;
+}
+
+async function refreshAccessToken(creds) {
+  const res = await fetch(TOKEN_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
-      client_id: clientId,
-      client_secret: clientSecret,
-      refresh_token: refreshToken,
+      client_id: creds.clientId,
+      client_secret: creds.clientSecret,
+      refresh_token: creds.refreshToken,
       grant_type: 'refresh_token',
     }).toString(),
   });
+  return await res.json();
+}
 
-  const data = await res.json();
+async function getAccessToken() {
+  if (_accessToken) return _accessToken;
+
+  const creds = await resolveCredentials();
+  if (!creds) {
+    die(
+      'gmail: no credentials. Run `gmail login` (browser consent), or ' +
+      '`gmail login --from-file <creds.json>`, or set GWS_CLIENT_ID, ' +
+      'GWS_CLIENT_SECRET and GWS_REFRESH_TOKEN.'
+    );
+  }
+
+  // Reuse a still-valid cached access token from config (config source only —
+  // env-var credentials are treated as stateless, as before).
+  if (creds.source === 'config') {
+    const cfg = await loadConfig();
+    if (cfg.access_token && cfg.expires_at && Date.now() < cfg.expires_at - 60_000) {
+      _accessToken = cfg.access_token;
+      return _accessToken;
+    }
+  }
+
+  const data = await refreshAccessToken(creds);
   if (!data.access_token) {
     die(`gmail: token refresh failed: ${JSON.stringify(data)}`);
   }
 
+  if (creds.source === 'config') {
+    const updates = {
+      access_token: data.access_token,
+      expires_at: Date.now() + (data.expires_in || 3600) * 1000,
+    };
+    if (data.refresh_token) updates.refresh_token = data.refresh_token;
+    await saveConfig(updates);
+  }
+
   _accessToken = data.access_token;
   return _accessToken;
+}
+
+async function exchangeCode(code) {
+  const res = await fetch(TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'authorization_code',
+      code: code,
+      client_id: OAUTH_CLIENT_ID,
+      client_secret: OAUTH_CLIENT_SECRET,
+      redirect_uri: REDIRECT_URI,
+    }).toString(),
+  });
+  const data = await res.json();
+  if (!res.ok || !data.refresh_token) {
+    die(`gmail login: code exchange failed (${res.status}): ${JSON.stringify(data)}`);
+  }
+  return data;
 }
 
 // ─── API Client ──────────────────────────────────────────────────────────────
@@ -307,6 +435,200 @@ function parseDisplayName(str) {
 }
 
 // ─── Commands ────────────────────────────────────────────────────────────────
+
+/**
+ * `gmail login` — browser consent flow via `oauth-token --intercept`, persisting
+ * the resulting refresh token to skill config (mirrors `gcloud login`).
+ *
+ * `gmail login --from-file <path>` — one-time import of credentials captured
+ * elsewhere. Accepts the conventional Google client-secrets field names:
+ * client_id, client_secret, refresh_token, plus optional token_uri, scope,
+ * account.
+ */
+async function cmdLogin() {
+  const fromFile = typeof flags['from-file'] === 'string'
+    ? flags['from-file']
+    : (typeof flags.from === 'string' ? flags.from : null);
+
+  if (fromFile) {
+    const fs = require('node:fs');
+    let raw;
+    try {
+      raw = fs.readFileSync(fromFile, 'utf8');
+    } catch (e) {
+      die(`gmail login: cannot read ${fromFile}: ${e.message}`);
+    }
+    let creds;
+    try {
+      creds = JSON.parse(raw);
+    } catch (e) {
+      die(`gmail login: ${fromFile} is not valid JSON: ${e.message}`);
+    }
+    // Tolerate the "installed"/"web" wrapper Google's console downloads use.
+    if (creds.installed || creds.web) creds = { ...(creds.installed || creds.web), ...creds };
+    const refreshToken = creds.refresh_token || creds.refreshToken;
+    const clientId = creds.client_id || creds.clientId;
+    const clientSecret = creds.client_secret || creds.clientSecret;
+    // A refresh token is bound to the OAuth client that issued it, so we must not
+    // substitute this skill's built-in client for a missing one — the result would
+    // be unusable AND would have overwritten a working stored config.
+    const missing = [
+      !refreshToken && 'refresh_token',
+      !clientId && 'client_id',
+      !clientSecret && 'client_secret',
+    ].filter(Boolean);
+    if (missing.length) {
+      die(
+        `gmail login: ${fromFile} is missing required field(s): ${missing.join(', ')}\n` +
+        '  A refresh token only works with the client_id/client_secret that issued it.\n' +
+        '  Existing stored credentials were left untouched.'
+      );
+    }
+    // Validate the imported credentials BEFORE persisting anything, and validate
+    // them *directly* — going through gmailGet()/getAccessToken() would resolve
+    // credentials env-first, so with GWS_* set we would "verify" a different
+    // identity and store an unusable token while reporting success.
+    const imported = { clientId, clientSecret, refreshToken };
+    let tokenData;
+    try {
+      tokenData = await refreshAccessToken(imported);
+    } catch (e) {
+      die(`gmail login: could not reach Google to validate credentials: ${e.message}`);
+    }
+    if (!tokenData?.access_token) {
+      die(
+        `gmail login: the credentials in ${fromFile} were rejected by Google: ` +
+        `${JSON.stringify(tokenData)}\n  Existing stored credentials were left untouched.`
+      );
+    }
+
+    // Only now that the refresh token demonstrably works do we overwrite config.
+    let email = creds.account || '';
+    try {
+      const res = await fetch(`${GMAIL_BASE}/profile`, {
+        headers: { Authorization: `Bearer ${tokenData.access_token}` },
+      });
+      if (res.ok) {
+        const profile = await res.json();
+        email = profile.emailAddress || email;
+      }
+    } catch { /* identity is cosmetic here; the token itself already validated */ }
+
+    await saveConfig({
+      client_id: clientId,
+      client_secret: clientSecret,
+      refresh_token: refreshToken,
+      scope: creds.scope || OAUTH_SCOPE,
+      account: email,
+      access_token: tokenData.access_token,
+      expires_at: Date.now() + (tokenData.expires_in || 3600) * 1000,
+    });
+    process.stdout.write(`${C.green('✓')} Credentials imported from ${fromFile}${email ? ` (${email})` : ''}\n`);
+    process.stdout.write(`  ${C.gray('Stored in skill config; access tokens auto-refresh.')}\n`);
+    return;
+  }
+
+  process.stdout.write(`${C.cyan('Opening Google sign-in…')}\n`);
+  process.stdout.write(`${C.gray('A browser tab will open. Complete the Google consent screen, then return here.')}\n`);
+
+  const authorizeUrl =
+    `${AUTH_URL}?client_id=${encodeURIComponent(OAUTH_CLIENT_ID)}` +
+    `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
+    `&response_type=code&access_type=offline&prompt=consent` +
+    `&scope=${encodeURIComponent(OAUTH_SCOPE)}`;
+
+  const { stdout, stderr, exitCode } = await exec.spawn([
+    'oauth-token', '--intercept',
+    '--authorize-url', authorizeUrl,
+    '--redirect-pattern', `http://127.0.0.1:${REDIRECT_PORT}/*`,
+  ]);
+
+  if (exitCode !== 0) {
+    die(`gmail login: oauth-token intercept failed:\n${stderr}`);
+  }
+
+  const redirectUrl = (stdout || '').trim();
+  const m = redirectUrl.match(/[?&]code=([^&\s]+)/);
+  if (!m) {
+    die(`gmail login: no authorization code in redirect URL.\nGot: ${redirectUrl}`);
+  }
+  // Authorization codes are single-use: they burn on the first request that
+  // reaches Google. Never retry an exchange with the same code — re-run login.
+  const tok = await exchangeCode(decodeURIComponent(m[1]));
+
+  await saveConfig({
+    client_id: OAUTH_CLIENT_ID,
+    client_secret: OAUTH_CLIENT_SECRET,
+    refresh_token: tok.refresh_token,
+    access_token: tok.access_token || '',
+    expires_at: Date.now() + (tok.expires_in || 3600) * 1000,
+    scope: OAUTH_SCOPE,
+  });
+
+  let email = '';
+  try {
+    const profile = await gmailGet('/profile');
+    email = profile.emailAddress || '';
+    await saveConfig({ account: email });
+  } catch { /* non-fatal */ }
+
+  process.stdout.write(`${C.green('✓')} Logged in to Gmail${email ? ` (${email})` : ''}\n`);
+  process.stdout.write(`  ${C.gray('Refresh token stored in skill config. Access tokens auto-refresh.')}\n`);
+}
+
+/** `gmail auth` — show which credential source is active (never prints secrets). */
+async function cmdAuth() {
+  const creds = await resolveCredentials();
+  const cfg = await loadConfig();
+  // Only surface persisted-config metadata when the config is the ACTIVE source.
+  // With GWS_* env vars set, the stored config is inactive and may describe an
+  // entirely different mailbox — reporting its account/scope would be misleading.
+  const configActive = creds?.source === 'config';
+  let account = creds?.account || (configActive ? cfg.account : '') || null;
+  let scope = configActive ? cfg.scope || OAUTH_SCOPE : null;
+  if (creds?.source === 'env') {
+    // Resolve identity from the token actually in use, not from stored config.
+    try {
+      const profile = await gmailGet('/profile');
+      account = profile.emailAddress || null;
+    } catch { /* leave unknown rather than borrow the inactive config's identity */ }
+    scope = process.env.GWS_SCOPE || null;
+  }
+  const info = {
+    authenticated: !!creds,
+    source: creds ? creds.source : null,
+    account,
+    client_id: creds ? creds.clientId : null,
+    refresh_token_length: creds ? creds.refreshToken.length : 0,
+    scope,
+  };
+  if (flags.json === true || flags.json === 'true') { out(info); return; }
+  process.stdout.write('\n');
+  process.stdout.write(`  ${C.gray('authenticated')}  ${info.authenticated ? C.green('yes') : C.red('no')}\n`);
+  process.stdout.write(`  ${C.gray('source')}         ${info.source || C.gray('(none — run: gmail login)')}\n`);
+  process.stdout.write(`  ${C.gray('account')}        ${info.account || C.gray('(unknown)')}\n`);
+  process.stdout.write(`  ${C.gray('scope')}          ${info.scope || C.gray('(unknown — set by the env credentials)')}\n`);
+  process.stdout.write(`  ${C.gray('refresh token')}  ${info.refresh_token_length ? `present (${info.refresh_token_length} chars)` : C.red('absent')}\n`);
+}
+
+/** `gmail logout` — revoke (best effort) and clear persisted credentials. */
+async function cmdLogout() {
+  const cfg = await loadConfig();
+  if (cfg.refresh_token && flags['no-revoke'] !== true) {
+    try {
+      await fetch(REVOKE_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ token: cfg.refresh_token }).toString(),
+      });
+    } catch { /* best effort */ }
+  }
+  await skill.config({
+    client_id: '', client_secret: '', refresh_token: '',
+    access_token: '', expires_at: 0, account: '',
+  });
+  process.stdout.write(`${C.green('✓')} Persisted Gmail credentials cleared.\n`);
+}
 
 async function cmdMail() {
   const limit = parseInt(flags.limit || '20', 10);
@@ -694,11 +1016,19 @@ function showHelp() {
 Usage: gmail <command> [options]
 
 Commands:
+  login      Authenticate with Google (browser consent) and persist credentials
+  auth       Show which credential source is active (no secrets printed)
+  logout     Revoke and clear persisted credentials
   mail       List inbox messages
   view       View a single message (full body)
   send       Send an email
   reply      Reply to a message
   monday     Aggregated inbox items for monday dispatcher
+
+Login options:
+  --from-file PATH   Import credentials from a JSON file instead of running the
+                     consent flow. Fields: client_id, client_secret,
+                     refresh_token (required), token_uri, scope, account.
 
 Mail options:
   --limit N          Number of messages (default: 20)
@@ -728,10 +1058,13 @@ Monday options:
   --date PERIOD      Date range (default: 1d)
   --depth N          0 = snippet only, >0 = full body (default: 0)
 
-Authentication:
-  Uses GWS_CLIENT_ID, GWS_CLIENT_SECRET, and GWS_REFRESH_TOKEN env vars.
-  Obtains a fresh access token via OAuth2 refresh_token grant.
-  No browser tab needed.
+Authentication (precedence):
+  1. GWS_CLIENT_ID + GWS_CLIENT_SECRET + GWS_REFRESH_TOKEN env vars
+     (all three must be set; takes precedence when present)
+  2. Persisted skill config — provisioned by \`gmail login\`
+     (or \`gmail login --from-file creds.json\`)
+  Either way, a fresh access token is minted via the OAuth2 refresh_token
+  grant on demand; config-sourced tokens are cached until expiry.
 
 Gmail API:
   Base URL: https://gmail.googleapis.com/gmail/v1/users/me
@@ -745,6 +1078,16 @@ Gmail API:
 
 try {
   switch (subcommand) {
+    case 'login':
+      await cmdLogin();
+      break;
+    case 'auth':
+    case 'whoami':
+      await cmdAuth();
+      break;
+    case 'logout':
+      await cmdLogout();
+      break;
     case 'mail':
     case 'inbox':
       await cmdMail();
