@@ -1936,7 +1936,7 @@ function mondayThreadUrl(threadId, messageId) {
 
 // 1:1 / group chat conversations with activity in the window, plus their most
 // recent messages. Both steps run in-page and return trimmed records.
-async function mondayFetchChats(cutoff, depth, maxChats) {
+async function mondayFetchChats(cutoff, depth, maxChats, meName) {
   const listBody = `
     const cutoff = ${cutoff};
     // 'space' = team channels (handled via the activity feed); everything else
@@ -1980,24 +1980,50 @@ async function mondayFetchChats(cutoff, depth, maxChats) {
   const chats = (listed.chats || []).sort((a, b) => b.lastTime - a.lastTime).slice(0, maxChats);
   if (chats.length === 0) return { chats: [] };
 
+  // Per-chat message fetch. A chat is only interesting if it contains a message
+  // from SOMEONE ELSE, but the user may have sent an arbitrary number of messages
+  // since then — so we cannot size this page off `depth`. Page until we find an
+  // incoming message (or run out / cross the cutoff), bounded to keep it cheap.
+  const pageSize = Math.min(50, Math.max(depth + 2, 8));
   const msgBody = `
     const chats = ${JSON.stringify(chats)};
     const cutoff = ${cutoff};
-    const pageSize = ${Math.min(50, Math.max(depth + 2, 4))};
+    const meName = ${JSON.stringify(meName || '')};
+    const pageSize = ${pageSize};
+    const MAX_PAGES = 4;
     const out = [];
+    const mapMsg = (m) => ({
+      id: m.id,
+      from: m.imdisplayname || m.fromDisplayNameInToken || '',
+      fromId: m.from || '',
+      ts: m.originalarrivaltime || m.composetime || '',
+      type: m.messagetype || '',
+      content: typeof m.content === 'string' ? m.content.slice(0, 4000) : '',
+      deleted: !!(m.properties && m.properties.deletetime),
+    });
+    const isIncoming = (m) =>
+      !m.deleted && m.content && /^(RichText|Text)/i.test(m.type || 'Text') &&
+      (m.from || '') !== meName && (Date.parse(m.ts) || 0) >= cutoff;
     for (const c of chats) {
       const base = c.messagesUrl || ('/v1/users/ME/conversations/' + encodeURIComponent(c.id) + '/messages');
-      const r = await __chatGet(base + '?view=msnp24Equivalent&pageSize=' + pageSize + '&startTime=1');
-      if (!r || r.error || !r.ok) { out.push({ chat: c, messages: [], error: (r && (r.error || r.status)) || 'ERR' }); continue; }
-      const msgs = ((r.data && r.data.messages) || []).map((m) => ({
-        id: m.id,
-        from: m.imdisplayname || m.fromDisplayNameInToken || '',
-        fromId: m.from || '',
-        ts: m.originalarrivaltime || m.composetime || '',
-        type: m.messagetype || '',
-        content: typeof m.content === 'string' ? m.content.slice(0, 4000) : '',
-        deleted: !!(m.properties && m.properties.deletetime),
-      }));
+      let url = base + '?view=msnp24Equivalent&pageSize=' + pageSize + '&startTime=1';
+      let msgs = [];
+      let err = null;
+      for (let page = 0; page < MAX_PAGES && url; page++) {
+        const r = await __chatGet(url);
+        if (!r || r.error || !r.ok) { err = (r && (r.error || r.status)) || 'ERR'; break; }
+        const batch = ((r.data && r.data.messages) || []).map(mapMsg);
+        msgs = msgs.concat(batch);
+        if (batch.length === 0) break;
+        // Stop as soon as this chat has an incoming message we can report.
+        if (msgs.some(isIncoming)) break;
+        // Stop once we are reading messages older than the window — anything
+        // further back cannot produce an in-window item.
+        const oldest = batch.reduce((acc, m) => Math.min(acc, Date.parse(m.ts) || Infinity), Infinity);
+        if (oldest !== Infinity && oldest < cutoff) break;
+        url = (r.data && r.data._metadata && r.data._metadata.syncState) || '';
+      }
+      if (err && msgs.length === 0) { out.push({ chat: c, messages: [], error: err }); continue; }
       out.push({ chat: c, messages: msgs });
     }
     return { results: out };
@@ -2077,6 +2103,7 @@ function mondayChatItems(results, meName, cutoff, depth) {
       type: oneOnOne ? 'chat' : 'group-chat',
       title: `Teams ${oneOnOne ? 'DM' : 'group chat'} — ${label} — ${sender}`,
       url: mondayThreadUrl(chat.id, msg.id),
+      threadId: chat.id,
       participants: Array.from(new Set([sender, ...others])),
       body: mondayBody(msg).slice(0, 2000),
       from: sender,
@@ -2202,6 +2229,20 @@ async function mondayGetAllSafe(url, maxPages) {
 }
 
 async function cmdMonday() {
+  // The monday source protocol requires a single JSON array on stdout and exit 0,
+  // ALWAYS — an empty inbox is []. Teams can fail hard underneath us (no signed-in
+  // tab, refresh token unobtainable), and those paths call die() -> process.exit(1),
+  // which would emit no array at all and break the aggregator. Contain that here.
+  try {
+    await mondayRun();
+  } catch (e) {
+    const msg = e?.message || String(e);
+    console.error(`[teams monday] WARNING: Teams unavailable (${msg}) — emitting empty inbox.`);
+    console.log("[]");
+  }
+}
+
+async function mondayRun() {
   const f = parseMondayFlags(process.argv.slice(2));
   const cutoff = mondayCutoff(f.date);
   const maxTeams = parseInt(flags['max-teams'] || '10', 10);
@@ -2225,14 +2266,16 @@ async function cmdMonday() {
   let chatItems = [];
   const chatThreadIds = new Set();
   try {
-    const chats = await mondayFetchChats(cutoff, f.depth, Math.max(f.limit, 20));
+    const chats = await mondayFetchChats(cutoff, f.depth, Math.max(f.limit, 20), meName);
     if (chats.error) {
       console.error(`[teams monday] WARNING: chat service unavailable (${chats.error}).`);
     } else {
       console.error(`[teams monday] ${(chats.chats || []).length} chats active in window.`);
       chatItems = mondayChatItems(chats.results || [], meName, cutoff, f.depth);
-      for (const it of chatItems) chatThreadIds.add(String(it.url));
-      for (const c of chats.chats || []) chatThreadIds.add(c.id);
+      // Suppress activity-feed duplicates ONLY for chats that actually produced a
+      // chat item. Adding every listed chat id would also discard mentions/replies
+      // from chats whose fetch failed or yielded nothing, losing them entirely.
+      for (const it of chatItems) if (it.threadId) chatThreadIds.add(it.threadId);
     }
   } catch (e) {
     console.error(`[teams monday] WARNING: chat scan failed: ${e?.message || e}`);
