@@ -270,7 +270,9 @@ Scans up to `--max-teams` teams (default 10). Progress is printed to stderr.
 `monday`-protocol inbox source (see the `monday` skill,
 `references/SOURCE_PROTOCOL.md`). Prints a **single JSON array** to stdout and
 nothing else; all progress/warnings go to stderr and the command always exits
-`0` (an empty inbox is `[]`). Intended to be called by `monday`, which merges
+`0` (an empty inbox is `[]`) — including when Teams itself is unavailable, e.g.
+no signed-in tab, so the aggregator degrades instead of failing. Intended to be
+called by `monday`, which merges
 it with `gh`, `slack`, `outlook`, `gmail` and `servicenow`.
 
 ```bash
@@ -282,7 +284,7 @@ Items returned:
 
 | Type | Source |
 |---|---|
-| `chat` / `group-chat` | Newest message from **someone else** in each 1:1 or group chat active in the window, plus `--depth` older messages as `context[]`. |
+| `chat` / `group-chat` | Newest message from **someone else** in each 1:1 or group chat active in the window, plus `--depth` older messages as `context[]`. Paginates past your own replies, so a chat still appears when you sent the last several messages. |
 | `channel-mention` / `chat-mention` / `channel-reply` | Entries from the Teams **activity feed** (`48:notifications`) — @mentions and thread replies aimed at you. |
 
 Fields: `id` (`teams-msg-<messageId>` / `teams-activity-<activityId>`), `ts`
