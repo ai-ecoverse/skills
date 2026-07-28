@@ -6,6 +6,7 @@
 // Commands:
 //   mail      List inbox messages
 //   calendar  List calendar events
+//   event     Show one calendar event in full (body, Teams join info, recurrence)
 //   send      Send an email
 //   monday    Aggregated inbox for monday dispatcher
 //
@@ -57,6 +58,10 @@ const fs = require('fs'); // plain node-ish builtin, not a sliccy: module
 
 const OWA_BASE = 'https://outlook.office.com/api/v2.0';
 const TOKEN_PATH = '/shared/.outlook-token';
+// Cached mailbox timezone (GET /me/MailboxSettings → .TimeZone). Calendar times
+// are requested in this zone via the `Prefer: outlook.timezone` header; without
+// it OWA answers in UTC and an 11:30 CEST meeting prints as 09:30.
+const TZ_PATH = '/shared/.outlook-timezone';
 const OUTLOOK_DOMAIN = 'outlook.office.com';
 // Microsoft has split Outlook across several hostnames as part of the migration to
 // the Microsoft 365 unified shell. Any of these tabs carries the same MSAL token
@@ -115,6 +120,244 @@ function formatDate(iso) {
   if (!iso) return '';
   const d = new Date(iso);
   return d.toISOString().replace('T', ' ').replace(/\.\d+Z$/, ' UTC');
+}
+
+// Event Start/End are wall-clock times in the timezone we asked OWA for (see
+// `Prefer: outlook.timezone` in owaGet) — they carry no offset, so they must NOT
+// be re-parsed as UTC. `2026-08-04T11:30:00.0000000` → `2026-08-04 11:30`.
+function formatEventTime(slot) {
+  const dt = slot && slot.DateTime;
+  if (!dt) return '';
+  return String(dt)
+    .replace('T', ' ')
+    .replace(/:\d{2}(\.\d+)?$/, '')
+    .trim();
+}
+
+// Render an end stamp relative to its start: same day → time only, otherwise the
+// full `YYYY-MM-DD HH:MM`. Both arguments are already-formatted strings.
+function endLabel(start, end) {
+  if (!end) return '';
+  const startDate = String(start).split(' ')[0];
+  const [endDate, endTime] = String(end).split(' ');
+  return startDate && endDate === startDate && endTime ? endTime : end;
+}
+
+// ─── HTML → plain text ───────────────────────────────────────────────────────
+// Invite bodies come back as HTML (`Body.ContentType: "HTML"`); BodyPreview is
+// truncated mid-invite, so details always fetch `Body` and render it here.
+// Deliberately dependency-free: no python3 / html-to-markdown in this runtime.
+
+function decodeEntities(s) {
+  return String(s)
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(parseInt(d, 10)))
+    .replace(/&(?:quot|ldquo|rdquo);/gi, '"')
+    .replace(/&(?:apos|lsquo|rsquo);/gi, "'")
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&(?:ndash|mdash);/gi, '—')
+    .replace(/&hellip;/gi, '…')
+    .replace(/&amp;/gi, '&'); // last, so &amp;lt; doesn't become '<'
+}
+
+function normalizeText(text) {
+  return String(text || '')
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((line) => line.replace(/[^\S\n]+/g, ' ').trim())
+    .filter((line) => line.length > 0)
+    .join('\n');
+}
+
+function htmlToText(html) {
+  if (!html) return '';
+  let s = String(html)
+    .replace(/\r\n?/g, '\n')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<(script|style|head|title)\b[^>]*>[\s\S]*?<\/\1>/gi, '')
+    // Raw newlines are insignificant whitespace in HTML — collapse them before
+    // tags introduce the real line breaks, otherwise labels and values get cut
+    // apart at arbitrary points ("Join\n the meeting now").
+    .replace(/\n+/g, ' ')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<hr\b[^>]*>/gi, '\n')
+    .replace(/<li\b[^>]*>/gi, '\n• ')
+    .replace(/<\/(?:p|div|tr|li|ul|ol|h[1-6]|blockquote|table|section|header|footer|pre)\s*>/gi, '\n')
+    .replace(/<[^>]+>/g, '');
+  s = decodeEntities(s);
+  return s
+    .split('\n')
+    .map((line) => line.replace(/[^\S\n]+/g, ' ').trim())
+    .filter((line) => line.length > 0)
+    .join('\n');
+}
+
+// ─── Conferencing (Teams / Webex VTC / PSTN) extraction ──────────────────────
+// Teams invites put the label and its value in SEPARATE inline tags, so after
+// htmlToText() they land on consecutive lines ("Meeting ID:" / "220 ..."). Match
+// both shapes: value on the same line, or on the next one.
+
+// Labels are localised (the mailbox may render invites in German) and Teams has
+// shipped several invite layouts, so every field accepts a few aliases. `kind`
+// controls how the captured value is tidied: 'id' values are digit groups that
+// are often followed by unrelated link text on the same line.
+const CONF_LABELS = [
+  ['meetingId', 'id', /^(?:meeting|besprechungs)[\s-]*(?:id|kennung)\s*:?\s*(.*)$/i],
+  ['passcode', 'raw', /^(?:passcode|password|kenncode|passwort)\s*:?\s*(.*)$/i],
+  ['tenantKey', 'raw', /^(?:tenant key|mandantenschl(?:ü|ue)ssel)\s*:?\s*(.*)$/i],
+  ['videoId', 'id', /^video(?:[\s-]conference)?[\s-]*id\s*:?\s*(.*)$/i],
+  ['videoId', 'id', /^video-?konferenz[\s-]*id\s*:?\s*(.*)$/i],
+  [
+    'conferenceId',
+    'id',
+    /^(?:phone conference id|conference id|telefonkonferenz[\s-]*id|konferenz[\s-]*id)\s*:?\s*(.*)$/i,
+  ],
+];
+
+const PHONE_RE = /(\+\d[\d\s\u00a0().-]{5,}\d)/;
+const WEBEX_TENANT_RE = /^[\w.+-]+@[\w.-]*webex\.com$/i;
+
+function tidyConfValue(value, kind) {
+  let s = String(value).split('|')[0].trim();
+  if (kind === 'id') {
+    // e.g. "399 774 325# Find a local number" → "399 774 325#"
+    const digits = s.match(/^[\d\s\u00a0]{3,}#?/);
+    if (digits) s = digits[0].trim();
+  }
+  return s.replace(/\s{2,}/g, ' ').trim();
+}
+
+function labelledValue(lines, re) {
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(re);
+    if (!m) continue;
+    const inline = (m[1] || '').trim();
+    if (inline) return inline;
+    // Label-only line — Teams puts label and value in separate inline tags, so
+    // the value is the next non-empty line, unless that is itself a label.
+    const next = (lines[i + 1] || '').trim();
+    if (!next) continue;
+    if (CONF_LABELS.some(([, , labelRe]) => labelRe.test(next))) continue;
+    return next;
+  }
+  return null;
+}
+
+function extractPhones(lines) {
+  const phones = [];
+  const seen = new Set();
+  for (const line of lines) {
+    const m = line.match(PHONE_RE);
+    if (!m) continue;
+    const number = m[1].replace(/[\u00a0\s]+/g, ' ').trim();
+    const digits = number.replace(/\D/g, '');
+    if (digits.length < 7) continue;
+    if (seen.has(digits)) continue;
+    seen.add(digits);
+    // What's left of the line is the region label, minus the ",,<pin># " prefix.
+    const label = line
+      .replace(m[1], '')
+      .replace(/^[\s,]*\d+#/, '')
+      .replace(/^[\s,#()]+|[\s,|]+$/g, '')
+      .split('|')[0]
+      .trim();
+    phones.push(label ? { number, label } : { number });
+  }
+  return phones;
+}
+
+// `OnlineMeetingUrl` is frequently null even for Teams meetings, so fall back to
+// `OnlineMeeting.JoinUrl` and finally to the invite body's join anchor. Prefer
+// the anchor's `originalsrc` — `href` is a Safelinks wrapper.
+function joinUrlFromHtml(html) {
+  if (!html) return null;
+  const anchors = String(html).match(/<a\b[^>]*>/gi) || [];
+  for (const tag of anchors) {
+    if (!/join_link|Meeting join link/i.test(tag)) continue;
+    const orig = tag.match(/originalsrc="([^"]+)"/i);
+    if (orig) return decodeEntities(orig[1]);
+    const href = tag.match(/href="([^"]+)"/i);
+    if (href) return decodeEntities(href[1]);
+  }
+  const direct = String(html).match(
+    /https:\/\/(?:teams\.microsoft\.com\/l\/meetup-join|[\w.-]*zoom\.us\/j|meet\.google\.com|[\w.-]*webex\.com\/[^"'\s<>]*j\.php)[^"'\s<>]*/i
+  );
+  return direct ? decodeEntities(direct[0]) : null;
+}
+
+function parseConferencing(ev, textLines) {
+  const conf = {};
+  const provider = ev.OnlineMeetingProvider;
+  if (provider && provider !== 'Unknown') conf.provider = provider;
+
+  const joinUrl =
+    (ev.OnlineMeeting && ev.OnlineMeeting.JoinUrl) ||
+    ev.OnlineMeetingUrl ||
+    joinUrlFromHtml(ev.Body && ev.Body.Content);
+  if (joinUrl) conf.joinUrl = joinUrl;
+
+  for (const [key, kind, re] of CONF_LABELS) {
+    if (conf[key]) continue; // first alias that matches wins
+    const value = labelledValue(textLines, re);
+    if (value) conf[key] = tidyConfValue(value, kind);
+  }
+
+  // Older Teams layouts print the Webex tenant key as a bare line under
+  // "Join with a video conferencing device", with no label at all.
+  if (!conf.tenantKey) {
+    const bare = textLines.find((line) => WEBEX_TENANT_RE.test(line.trim()));
+    if (bare) conf.tenantKey = bare.trim();
+  }
+
+  const phones = extractPhones(textLines);
+  if (phones.length) conf.phones = phones;
+
+  return conf;
+}
+
+// ─── Recurrence ──────────────────────────────────────────────────────────────
+
+function summarizeRecurrence(rec) {
+  if (!rec) return null;
+  const p = rec.Pattern || {};
+  const r = rec.Range || {};
+  const n = p.Interval || 1;
+  const every = (unit) => (n === 1 ? `every ${unit}` : `every ${n} ${unit}s`);
+  const days = (p.DaysOfWeek || []).join(', ');
+  const index = (p.Index || '').toLowerCase();
+
+  let s;
+  switch (p.Type) {
+    case 'Daily':
+      s = every('day');
+      break;
+    case 'Weekly':
+      s = every('week') + (days ? ` on ${days}` : '');
+      break;
+    case 'AbsoluteMonthly':
+      s = every('month') + (p.DayOfMonth ? ` on day ${p.DayOfMonth}` : '');
+      break;
+    case 'RelativeMonthly':
+      s = every('month') + ` on the ${index} ${days}`.replace(/\s+/g, ' ');
+      break;
+    case 'AbsoluteYearly':
+      s = every('year') + (p.DayOfMonth ? ` on ${p.Month}-${p.DayOfMonth}` : '');
+      break;
+    case 'RelativeYearly':
+      s = every('year') + ` on the ${index} ${days} of month ${p.Month}`.replace(/\s+/g, ' ');
+      break;
+    default:
+      s = p.Type ? String(p.Type) : 'recurring';
+  }
+
+  const from = r.StartDate ? String(r.StartDate).slice(0, 10) : null;
+  if (r.Type === 'NoEnd') s += from ? `, from ${from} (no end)` : ', no end date';
+  else if (r.Type === 'Numbered') s += `, ${from ? from + ' → ' : ''}${r.NumberOfOccurrences} occurrences`;
+  else if (r.EndDate) s += `, ${from ? from + ' → ' : ''}${String(r.EndDate).slice(0, 10)}`;
+  else if (from) s += `, from ${from}`;
+  return s.trim();
 }
 
 // ─── Tab & Token Management ─────────────────────────────────────────────────
@@ -334,7 +577,9 @@ async function getToken() {
 
 // ─── API Client ──────────────────────────────────────────────────────────────
 
-async function owaGet(token, path, params) {
+// opts.timezone → `Prefer: outlook.timezone="<Windows tz name>"`, which makes OWA
+// return Start/End as wall-clock times in that zone instead of UTC.
+async function owaGet(token, path, params, opts) {
   let url = path.startsWith('http') ? path : `${OWA_BASE}${path}`;
   if (params) {
     const qs = Object.entries(params)
@@ -342,13 +587,13 @@ async function owaGet(token, path, params) {
       .join('&');
     url += (url.includes('?') ? '&' : '?') + qs;
   }
-  const res = await fetch(url, {
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-    },
-  });
+  const headers = {
+    'Authorization': `Bearer ${token}`,
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+  };
+  if (opts && opts.timezone) headers['Prefer'] = `outlook.timezone="${opts.timezone}"`;
+  const res = await fetch(url, { headers });
   if (!res.ok) {
     const body = await res.text();
     let msg;
@@ -378,6 +623,64 @@ async function owaPost(token, path, body) {
   // 202 Accepted for sendMail (no body)
   if (res.status === 202 || res.headers.get('content-length') === '0') return {};
   return res.json();
+}
+
+// ─── Mailbox timezone ────────────────────────────────────────────────────────
+// `--timezone` wins; otherwise use the mailbox's own zone, falling back to UTC if
+// it can't be read.
+//
+// The cache in TZ_PATH is scoped to the mailbox the current token belongs to and
+// carries a TTL. Without both, switching the browser to another Outlook account —
+// or changing the timezone in Outlook's settings — would keep reusing the old
+// value forever and label every printed time with a zone that isn't the one the
+// times were actually requested in (review comment,
+// chatgpt-codex-connector[bot], P2).
+const TZ_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+// Identify the mailbox behind a token from its own claims (same decoder used by
+// the bearer revalidation above — no extra API call). `upn`/`unique_name` are the
+// signed-in address; `oid`/`sub` are stable object ids and cover tokens without a
+// upn claim.
+function mailboxIdentity(token) {
+  const claims = decodeJwtPayload(token);
+  if (!claims) return null;
+  return claims.upn || claims.unique_name || claims.oid || claims.sub || null;
+}
+
+let _timezone = null;
+
+async function getTimezone(token) {
+  if (_timezone) return _timezone;
+  if (flags.timezone) {
+    _timezone = String(flags.timezone);
+    return _timezone;
+  }
+  const mailbox = mailboxIdentity(token);
+  try {
+    // Older versions of this script wrote the bare zone name here; that parses as
+    // invalid JSON and is simply treated as a miss.
+    const entry = JSON.parse(await fs.readFile(TZ_PATH));
+    const fresh = entry.cachedAt && Date.now() - entry.cachedAt < TZ_CACHE_TTL_MS;
+    if (entry.timeZone && fresh && entry.mailbox === mailbox) {
+      _timezone = entry.timeZone;
+      return _timezone;
+    }
+  } catch { /* no cache, unreadable, or stale / other mailbox — refetch below */ }
+  try {
+    const settings = await owaGet(token, '/me/MailboxSettings', { '$select': 'TimeZone' });
+    if (settings && settings.TimeZone) {
+      _timezone = settings.TimeZone;
+      try {
+        await fs.writeFile(
+          TZ_PATH,
+          JSON.stringify({ mailbox, timeZone: _timezone, cachedAt: Date.now() })
+        );
+      } catch { /* cache is best-effort */ }
+      return _timezone;
+    }
+  } catch { /* fall through to UTC */ }
+  _timezone = 'UTC';
+  return _timezone;
 }
 
 // ─── Commands ────────────────────────────────────────────────────────────────
@@ -450,6 +753,8 @@ async function cmdCalendar() {
   const token = await getToken();
   const limit = parseInt(flags.limit || '20', 10);
   const date = flags.date || '2d';
+  const details = flags.details === true || flags.details === 'true';
+  const tz = await getTimezone(token);
 
   const range = futureRange(date, 2);
 
@@ -458,12 +763,39 @@ async function cmdCalendar() {
     'startDateTime': range.start,
     'endDateTime': range.end,
     '$orderby': 'Start/DateTime asc',
-    '$select': 'Id,Subject,Start,End,Organizer,IsAllDay,ResponseStatus,Location,BodyPreview,WebLink,IsCancelled,OnlineMeetingUrl,Attendees,Categories',
+    '$select': 'Id,Subject,Start,End,Organizer,IsAllDay,ResponseStatus,Location,BodyPreview,WebLink,IsCancelled,OnlineMeetingUrl,Attendees,Categories,Type,SeriesMasterId',
   };
 
   try {
-    const data = await owaGet(token, '/me/calendarview', params);
+    const data = await owaGet(token, '/me/calendarview', params, { timezone: tz });
     const events = data.value || [];
+
+    // --details re-fetches each event with Body/OnlineMeeting/Recurrence so the
+    // full invite and parsed join info are available (the list projection only
+    // carries the truncated BodyPreview).
+    if (details) {
+      const full = [];
+      for (const ev of events) {
+        try {
+          full.push(eventDetails(await fetchEvent(token, ev.Id, tz), tz));
+        } catch (e) {
+          console.error(`outlook: calendar --details: ${ev.Id.slice(0, 20)}...: ${e.message}`);
+        }
+      }
+      if (flags.json === true || flags.json === 'true') {
+        out(full);
+        return;
+      }
+      if (full.length === 0) {
+        console.log('No calendar events found.');
+        return;
+      }
+      full.forEach((d, i) => {
+        if (i > 0) console.log('');
+        printEventDetails(d);
+      });
+      return;
+    }
 
     if (flags.json === true || flags.json === 'true') {
       out(events);
@@ -475,13 +807,15 @@ async function cmdCalendar() {
       return;
     }
 
-    console.log(`${C.bold('Calendar')} — ${events.length} event${events.length !== 1 ? 's' : ''} in next ${date}\n`);
+    console.log(
+      `${C.bold('Calendar')} — ${events.length} event${events.length !== 1 ? 's' : ''} in next ${date} ${C.gray(`(times in ${tz})`)}\n`
+    );
 
     for (const ev of events) {
       const cancelled = ev.IsCancelled ? C.red(' [CANCELLED]') : '';
       const allDay = ev.IsAllDay ? C.yellow(' [All day]') : '';
-      const start = ev.Start?.DateTime ? formatDate(ev.Start.DateTime + 'Z') : '';
-      const end = ev.End?.DateTime ? formatDate(ev.End.DateTime + 'Z') : '';
+      const start = formatEventTime(ev.Start);
+      const end = endLabel(start, formatEventTime(ev.End));
       const org = ev.Organizer?.EmailAddress?.Name || ev.Organizer?.EmailAddress?.Address || '';
       const loc = ev.Location?.DisplayName ? ` @ ${ev.Location.DisplayName}` : '';
       const response = ev.ResponseStatus?.Response || '';
@@ -493,10 +827,155 @@ async function cmdCalendar() {
       console.log(`  ${C.cyan(trunc(ev.Subject || '(no title)', 70))}${cancelled}${allDay}${responseTag}`);
       console.log(`    ${C.gray(start)} → ${C.gray(end)}${loc}`);
       if (org) console.log(`    ${C.gray('Organizer:')} ${org}`);
+      console.log(`    ${C.gray('id:')} ${C.gray(ev.Id)}`);
       console.log('');
     }
   } catch (e) {
     die(`outlook: calendar failed: ${e.message}`);
+  }
+}
+
+// ─── Event Details ───────────────────────────────────────────────────────────
+
+const EVENT_SELECT =
+  'Id,Subject,Start,End,IsAllDay,IsCancelled,Type,SeriesMasterId,Recurrence,Organizer,Attendees,' +
+  'Location,Locations,ResponseStatus,ShowAs,Importance,Sensitivity,Categories,Body,BodyPreview,' +
+  'WebLink,OnlineMeetingUrl,OnlineMeeting,IsOnlineMeeting,OnlineMeetingProvider';
+
+function fetchEvent(token, id, tz) {
+  return owaGet(token, `/me/events/${encodeURIComponent(id)}`, { '$select': EVENT_SELECT }, { timezone: tz });
+}
+
+function eventDetails(ev, tz) {
+  const raw = ev.Body?.Content || '';
+  const body = ev.Body?.ContentType === 'Text' ? normalizeText(raw) : htmlToText(raw);
+  const lines = body ? body.split('\n') : [];
+  const attendees = (ev.Attendees || []).map((a) => ({
+    name: a.EmailAddress?.Name || '',
+    address: a.EmailAddress?.Address || '',
+    type: a.Type || '',
+    response: a.Status?.Response || '',
+  }));
+
+  const details = {
+    id: ev.Id,
+    subject: ev.Subject || '(no title)',
+    type: ev.Type || '',
+    timeZone: tz,
+    start: formatEventTime(ev.Start),
+    end: formatEventTime(ev.End),
+    isAllDay: !!ev.IsAllDay,
+    isCancelled: !!ev.IsCancelled,
+    organizer: {
+      name: ev.Organizer?.EmailAddress?.Name || '',
+      address: ev.Organizer?.EmailAddress?.Address || '',
+    },
+    location: ev.Location?.DisplayName || null,
+    locations: (ev.Locations || []).map((l) => l.DisplayName).filter(Boolean),
+    response: ev.ResponseStatus?.Response || null,
+    showAs: ev.ShowAs || null,
+    importance: ev.Importance || null,
+    sensitivity: ev.Sensitivity || null,
+    categories: ev.Categories || [],
+    attendees,
+    conferencing: parseConferencing(ev, lines),
+    webLink: ev.WebLink || null,
+    body,
+  };
+
+  if (ev.SeriesMasterId) details.seriesMasterId = ev.SeriesMasterId;
+  if (ev.Recurrence) {
+    details.recurrence = {
+      summary: summarizeRecurrence(ev.Recurrence),
+      pattern: ev.Recurrence.Pattern || null,
+      range: ev.Recurrence.Range || null,
+      // The series' own authoring zone — NOT the display zone above.
+      timeZone: ev.Recurrence.Range?.RecurrenceTimeZone || null,
+    };
+  }
+  return details;
+}
+
+function printEventDetails(d) {
+  const cancelled = d.isCancelled ? C.red(' [CANCELLED]') : '';
+  const allDay = d.isAllDay ? C.yellow(' [All day]') : '';
+  console.log(`${C.bold(C.cyan(d.subject))}${cancelled}${allDay}`);
+  console.log(`${C.gray('When:')} ${d.start} → ${endLabel(d.start, d.end)} ${C.gray(`(${d.timeZone})`)}`);
+  if (d.organizer.name || d.organizer.address) {
+    console.log(`${C.gray('Organizer:')} ${d.organizer.name}${d.organizer.address ? ` <${d.organizer.address}>` : ''}`);
+  }
+  if (d.location) console.log(`${C.gray('Location:')} ${d.location}`);
+  if (d.response) console.log(`${C.gray('Your response:')} ${d.response}`);
+  if (d.showAs) console.log(`${C.gray('Show as:')} ${d.showAs}`);
+  if (d.categories.length) console.log(`${C.gray('Categories:')} ${d.categories.join(', ')}`);
+  if (d.type) console.log(`${C.gray('Type:')} ${d.type}`);
+  if (d.seriesMasterId) console.log(`${C.gray('Series master id:')} ${d.seriesMasterId}`);
+  if (d.recurrence?.summary) {
+    console.log(`${C.gray('Recurrence:')} ${d.recurrence.summary}`);
+    if (d.recurrence.timeZone && d.recurrence.timeZone !== d.timeZone) {
+      console.log(`${C.gray('Recurrence timezone:')} ${d.recurrence.timeZone} ${C.gray('(series authoring zone)')}`);
+    }
+  }
+  if (d.attendees.length) {
+    console.log(`${C.gray('Attendees:')} ${d.attendees.length}`);
+    const shown = d.attendees.slice(0, 12);
+    for (const a of shown) {
+      const who = a.name || a.address;
+      const resp = a.response && a.response !== 'None' ? C.gray(` — ${a.response}`) : '';
+      console.log(`  ${who}${resp}`);
+    }
+    if (d.attendees.length > shown.length) {
+      console.log(C.gray(`  … ${d.attendees.length - shown.length} more (use --json for all)`));
+    }
+  }
+  console.log(`${C.gray('id:')} ${d.id}`);
+  if (d.webLink) console.log(`${C.gray('Link:')} ${d.webLink}`);
+
+  const c = d.conferencing || {};
+  const hasJoinInfo = Object.keys(c).length > 0;
+  if (hasJoinInfo) {
+    console.log(`\n${C.bold('Join info')}${c.provider ? ` ${C.gray(`(${c.provider})`)}` : ''}`);
+    if (c.joinUrl) console.log(`  ${C.gray('Join URL:')} ${c.joinUrl}`);
+    if (c.meetingId) console.log(`  ${C.gray('Meeting ID:')} ${c.meetingId}`);
+    if (c.passcode) console.log(`  ${C.gray('Passcode:')} ${c.passcode}`);
+    if (c.tenantKey) console.log(`  ${C.gray('Video tenant key:')} ${c.tenantKey}`);
+    if (c.videoId) console.log(`  ${C.gray('Video ID:')} ${c.videoId}`);
+    if (c.phones?.length) {
+      for (const p of c.phones) {
+        console.log(`  ${C.gray('Dial-in:')} ${p.number}${p.label ? ` ${C.gray(`(${p.label})`)}` : ''}`);
+      }
+      if (c.conferenceId) console.log(`  ${C.gray('Phone conference ID:')} ${c.conferenceId}`);
+    } else if (c.joinUrl || c.meetingId) {
+      console.log(`  ${C.gray('Dial-in:')} ${C.gray('none in invite (no PSTN number)')}`);
+    }
+  }
+
+  if (d.body) {
+    console.log(`\n${C.bold('Invite')}`);
+    console.log(d.body);
+  }
+}
+
+async function cmdEvent() {
+  const token = await getToken();
+  const id = positional[0];
+  if (!id) die('outlook event: provide a calendar event ID (see `outlook calendar --json`)');
+  const tz = await getTimezone(token);
+
+  try {
+    let ev = await fetchEvent(token, id, tz);
+    // --series shows the whole series instead of this single occurrence.
+    if ((flags.series === true || flags.series === 'true') && ev.SeriesMasterId) {
+      ev = await fetchEvent(token, ev.SeriesMasterId, tz);
+    }
+    const details = eventDetails(ev, tz);
+    if (flags.json === true || flags.json === 'true') {
+      out(details);
+      return;
+    }
+    printEventDetails(details);
+  } catch (e) {
+    die(`outlook: event failed: ${e.message}`);
   }
 }
 
@@ -643,7 +1122,22 @@ async function cmdView() {
       .trim();
     console.log(trunc(plainBody, 2000));
   } catch (e) {
+    // Calendar event ids live in a different store, so /me/messages/<eventId>
+    // answers a bare 404 ("The specified object was not found in the store.").
+    // Probe the event store and point at the right command instead.
+    if (/404/.test(e.message || '') && (await looksLikeEvent(token, id))) {
+      die(`outlook view: that ID is a calendar event, not a message — use: outlook event ${id}`);
+    }
     die(`outlook: view failed: ${e.message}`);
+  }
+}
+
+async function looksLikeEvent(token, id) {
+  try {
+    const ev = await owaGet(token, `/me/events/${encodeURIComponent(id)}`, { '$select': 'Id' });
+    return !!(ev && ev.Id);
+  } catch {
+    return false;
   }
 }
 
@@ -722,10 +1216,23 @@ const RESPOND_LABELS = {
   tentativelyAccept: { progressive: 'Tentatively accepting', past: 'Tentative' },
 };
 
+// Resolve an occurrence/exception id to its series master so a single response
+// covers the whole series. SeriesMaster ids pass through; single instances warn
+// and are left alone.
+async function resolveSeriesId(token, id) {
+  const ev = await owaGet(token, `/me/events/${encodeURIComponent(id)}`, {
+    '$select': 'Id,Type,SeriesMasterId,Subject',
+  });
+  if (ev.SeriesMasterId) return { id: ev.SeriesMasterId, type: ev.Type, subject: ev.Subject, resolved: true };
+  return { id: ev.Id || id, type: ev.Type, subject: ev.Subject, resolved: false };
+}
+
 async function cmdRespond(action) {
   const token = await getToken();
   const comment = flags.comment || flags.message || '';
   const silent = flags.silent === true || flags.silent === 'true';
+  const series = flags.series === true || flags.series === 'true';
+  const dryRun = flags['dry-run'] === true || flags['dry-run'] === 'true' || flags.dryRun === true;
   const labels = RESPOND_LABELS[action];
 
   // Collect event IDs: positional args or --all pending events
@@ -766,6 +1273,37 @@ async function cmdRespond(action) {
 
   if (eventIds.length === 0) {
     die(`outlook ${action}: provide one or more event IDs, or use --all`);
+  }
+
+  if (series) {
+    const resolved = [];
+    for (const id of eventIds) {
+      try {
+        const master = await resolveSeriesId(token, id);
+        if (master.resolved) {
+          console.log(`  ${C.gray('↳ series master for')} ${master.subject || id.slice(0, 20) + '...'}`);
+        } else {
+          console.log(
+            `  ${C.yellow('⚠')} ${master.subject || id.slice(0, 20) + '...'} is ${master.type || 'not part of a series'} — responding to the single event`
+          );
+        }
+        if (!resolved.includes(master.id)) resolved.push(master.id);
+        if (master.subject) subjectsById.set(master.id, master.subject);
+      } catch (e) {
+        console.log(`  ${C.red('✗')} Could not resolve series for ${id.slice(0, 20)}...: ${e.message}`);
+      }
+    }
+    if (resolved.length === 0) die(`outlook ${action}: no event IDs left after --series resolution`);
+    eventIds = resolved;
+  }
+
+  if (dryRun) {
+    console.log(`${C.bold('Dry run')} — would ${action} ${eventIds.length} event(s), no response sent:\n`);
+    for (const id of eventIds) {
+      console.log(`  ${subjectsById.get(id) || '(subject unknown)'}`);
+      console.log(`    ${C.gray('id:')} ${id}`);
+    }
+    return;
   }
 
   const body = { SendResponse: !silent };
@@ -810,6 +1348,7 @@ Usage: outlook <command> [options]
 Commands:
   mail       List inbox messages
   calendar   List calendar events
+  event      Show one calendar event in full (invite body + join info)
   accept     Accept calendar event(s)
   decline    Decline calendar event(s)
   tentative  Tentatively accept calendar event(s)
@@ -827,7 +1366,17 @@ Mail options:
 Calendar options:
   --limit N          Number of events (default: 20)
   --date PERIOD      How far ahead to look (default: 2d)
+  --details          Full details (invite body + join info) for every event
+  --timezone TZ      Windows timezone name for displayed times
+                     (default: mailbox timezone from MailboxSettings)
   --json             Output raw JSON
+
+Event options:
+  outlook event <event-id>   Invite body, parsed Teams/VTC join info, type,
+                             series master id, recurrence summary
+  --series           Show the series master instead of this occurrence
+  --timezone TZ      Windows timezone name for displayed times
+  --json             Structured JSON (includes parsed join info)
 
 Respond options (accept/decline/tentative):
   outlook accept <event-id> [<event-id>...]
@@ -838,6 +1387,9 @@ Respond options (accept/decline/tentative):
   --silent          Don't send response to organizer
   --all             Act on all NotResponded events in date range
   --date PERIOD     With --all, calendar window to scan (default: 2d)
+  --series          Resolve occurrence IDs to their series master and respond
+                    to the whole series
+  --dry-run         Print the events that would be responded to, send nothing
 
 Send options:
   --to EMAIL         Recipient(s), comma-separated
@@ -845,7 +1397,7 @@ Send options:
   --body TEXT        Email body
 
 View:
-  outlook view <message-id>
+  outlook view <message-id>    Mail only — for calendar events use: outlook event
 
 Monday options:
   --limit N          Max items per source (default: 50)
@@ -885,6 +1437,9 @@ try {
       break;
     case 'view':
       await cmdView();
+      break;
+    case 'event':
+      await cmdEvent();
       break;
     case 'attachments':
       await cmdAttachments();

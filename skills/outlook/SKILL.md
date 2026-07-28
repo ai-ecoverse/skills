@@ -12,132 +12,80 @@ allowed-tools: bash
 
 # Outlook
 
-Direct API access to Microsoft Outlook via Microsoft Graph. The CLI extracts an
-MSAL token from an open `outlook.office.com` browser tab when available, and
-falls back to a saved token file so commands keep working without a tab open.
+Direct API access to Microsoft Outlook. The CLI extracts an MSAL token from an open
+`outlook.office.com` browser tab when available, and falls back to a saved token
+file so commands keep working without a tab open. If a command reports it cannot
+get a token, open Outlook in the browser and retry.
+
+Full flag-by-flag reference: [references/COMMANDS.md](references/COMMANDS.md).
+Implementation notes: [references/internals.md](references/internals.md).
 
 ## Quick start
 
 ```bash
-# List recent inbox messages
+# Inbox
 outlook mail --limit 10
-
-# Unread only
 outlook mail --unread
-
-# Search across all folders
 outlook mail --search "quarterly report"
-
-# Filter by age
-outlook mail --date 3d --unread
-
-# View calendar for the next 2 days
-outlook calendar
-
-# View calendar for the next week
-outlook calendar --date 7d
-
-# Accept/decline calendar events by ID
-outlook accept <event-id>
-outlook decline <event-id> --comment "Conflict"
-
-# Accept all pending events
-outlook accept --all
-
-# Decline all pending in the next week
-outlook decline --all --date 7d
-
-# View a single message
 outlook view <message-id>
 
-# Send an email
+# Calendar (times are shown in the mailbox timezone, named in the header)
+outlook calendar
+outlook calendar --date 7d
+outlook calendar --date 7d --json          # ids for the commands below
+
+# One event in full: invite body, Teams/Webex join info, recurrence
+outlook event <event-id>
+outlook event <event-id> --json
+
+# Respond — always dry-run first, see "Responding to invitations" below
+outlook decline <event-id> --dry-run
+outlook decline <event-id> --comment "Conflict"
+
+# Send mail
 outlook send --to user@example.com --subject "Hello" --body "Message body"
 
 # Monday aggregation (unread mail + upcoming calendar)
 outlook monday --limit 20
 ```
 
-## Commands
+## Getting meeting join details
 
-### outlook mail [options]
-
-List inbox messages with sender, subject, and preview.
-
-**Options:**
-- `--limit N` — number of messages (default: 20)
-- `--date PERIOD` — filter by age: `1d`, `7d`, `2w` (default: all)
-- `--unread` — show only unread messages
-- `--search QUERY` — full-text search across all mail folders
-- `--json` — output raw JSON array
-
-### outlook calendar [options]
-
-List upcoming calendar events with time, organizer, location, and response status.
-
-**Options:**
-- `--limit N` — number of events (default: 20)
-- `--date PERIOD` — how far ahead to look (default: `2d`)
-- `--json` — output raw JSON array
-
-### outlook view \<message-id\>
-
-View a single email message with full headers and body text.
-
-### outlook attachments \<message-id\>
-
-List a message's file attachments — name, content type, size, and attachment `id`. Add `--json` for machine-readable output.
-
-### outlook download \<message-id\> [attachmentId] [--out=PATH]
-
-Download attachments to disk (binary-safe, via the OWA `ContentBytes` payload). With an `id`, `--out` is the target file path; without one, all file attachments are written into the `--out` directory using their original names.
+`outlook calendar` lists events and prints each event `id`. Feed that id to
+`outlook event` for the whole invite plus a structured **Join info** block (join
+URL, meeting ID, passcode, video tenant key and video ID, dial-in number and phone
+conference ID — whichever the invite actually contains).
 
 ```bash
-outlook attachments AAMk...=
-outlook download AAMk...= --out=/tmp/etickets/       # all attachments
-outlook download AAMk...= AAMk...att --out=/tmp/eticket.pdf
+outlook calendar --date 7d                 # copy the id: line of the event
+outlook event <event-id>                   # human-readable
+outlook event <event-id> --json            # .conferencing has the parsed fields
+outlook event <occurrence-id> --series     # the series, not this occurrence
 ```
 
-### outlook accept|decline|tentative \<event-id\> [...] [options]
+`outlook view` is for mail only; given an event id it says so and points here.
 
-Respond to one or more calendar events. Get event IDs from `outlook calendar --json`.
+## Responding to invitations
 
-**Options:**
-- `--comment TEXT` — optional message to the organizer
-- `--silent` — don't send a response notification to the organizer
-- `--all` — respond to all `NotResponded` events in the date range
-- `--date PERIOD` — date range for `--all` (default: `2d`)
+`accept`, `decline` and `tentative` **email the organizer**, and `--all` and
+`--series` act on events you did not name individually. Always dry-run first:
+
+1. **Dry-run.** Re-run your exact command with `--dry-run` added. Nothing is sent.
+2. **Confirm the printed list** is what you intended — for `--series`, check the
+   resolved series-master id; for `--all`, check every event listed.
+3. **Re-run without `--dry-run`** only after that confirmation.
+4. **Verify** with `outlook calendar --date 7d --limit 100 --json` that `response`
+   changed for the intended events only.
 
 ```bash
-# Accept a single event
-outlook accept AAMkADQ...
+# Whole recurring series, from any occurrence id
+outlook decline <occurrence-id> --series --dry-run
+outlook decline <occurrence-id> --series
 
-# Decline multiple events
-outlook decline AAMk...1 AAMk...2 --comment "Schedule conflict"
-
-# Tentatively accept all pending
+# Everything still unanswered in a window
+outlook tentative --all --date 7d --dry-run
 outlook tentative --all --date 7d
 ```
 
-**Batch accept/decline workflow:**
-1. List events in the window with a high enough limit: `outlook calendar --date 7d --limit 100 --json`.
-2. Filter for items where `response` is `NotResponded` and collect their `id` values for the ones you actually want to act on.
-3. Respond to those specific IDs: `outlook accept <id1> <id2> ...` (or `decline` / `tentative`). Only use `--all --date 7d` when every `NotResponded` event in the window should receive the same response.
-4. Verify: `outlook calendar --date 7d --limit 100 --json` — confirm `response` updated for the targeted IDs.
-
-### outlook send --to EMAIL --subject TEXT --body TEXT
-
-Send an email. Multiple recipients can be comma-separated in `--to`.
-
-### outlook monday [--limit N] [--date PERIOD] [--depth N]
-
-Produce a JSON array of actionable items for the monday aggregator. Fetches:
-- Unread inbox messages
-- Calendar events for today and tomorrow (including meetings needing response)
-
-Each item includes `source`, `type`, `id`, `title`, `body`, `url`, `from`, `date`,
-and optional fields like `importance`, `location`, and `response`.
-
-**Item types:**
-- `email` — unread inbox message
-- `calendar` — calendar event (already responded to)
-- `meeting` — calendar event awaiting response
+Prefer naming explicit ids — `outlook accept <id1> <id2>` — over `--all` whenever
+only some pending events should get the same response.
