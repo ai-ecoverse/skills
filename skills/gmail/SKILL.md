@@ -3,16 +3,18 @@ name: gmail
 description: >-
   Interact with Gmail — read inbox, search messages, view full message bodies,
   send email, reply to threads, and produce aggregated inbox items for the monday
-  dispatcher. Uses OAuth2 refresh token flow via GWS_* env vars. Triggers on
-  requests involving Gmail, Google email, inbox, sending mail, checking unread
-  messages, or monday inbox aggregation that includes Gmail data.
+  dispatcher. Authenticates via OAuth2 refresh token — either GWS_* env vars or
+  credentials persisted by `gmail login`. Triggers on requests involving Gmail,
+  Google email, inbox, sending mail, checking unread messages, signing in to
+  Gmail, or monday inbox aggregation that includes Gmail data.
 allowed-tools: bash
 ---
 
 # Gmail
 
-Direct API access to Gmail via OAuth2 refresh token flow. Uses the `GWS_CLIENT_ID`,
-`GWS_CLIENT_SECRET`, and `GWS_REFRESH_TOKEN` environment variables.
+Direct API access to Gmail via OAuth2 refresh token flow. Credentials come from
+either the `GWS_*` environment variables or from credentials persisted by
+`gmail login`; see [Authentication](#authentication) for the precedence rules.
 
 ## Quick start
 
@@ -47,7 +49,16 @@ gmail monday --limit 20 --date 1d
 
 ## Authentication
 
-Required environment variables:
+Credentials are resolved in a fixed order, first match wins:
+
+1. **Environment variables** — used only if `GWS_CLIENT_ID`, `GWS_CLIENT_SECRET`
+   and `GWS_REFRESH_TOKEN` are *all* set. Takes precedence over stored config.
+2. **Persisted skill config** — written by `gmail login`. Survives across
+   sessions, so you authenticate once.
+
+If neither is present, every command fails with a message naming both options.
+An access token is minted on demand from the refresh token and cached until it
+expires, so tokens are never stored long-term by the caller.
 
 | Variable | Description |
 |----------|-------------|
@@ -58,6 +69,14 @@ Required environment variables:
 
 If your organization already has a Google Cloud OAuth client and has provisioned
 these three as real secrets, set them and skip the rest of this section.
+
+Run `gmail auth` at any time to see which source is active. It prints the
+account, scope and credential source, and never prints secret values.
+
+> **Scope warning:** the tested scope is `https://mail.google.com/` — full
+> read, send *and delete* access to the mailbox. Treat stored credentials
+> accordingly, and prefer a dedicated account over a personal mailbox where
+> that distinction matters.
 
 ### Obtaining credentials inside SLICC
 
@@ -75,6 +94,43 @@ yourself, and a security note on the risk of the authorization code being
 exposed before exchange.
 
 ## Commands
+
+### gmail login [--from-file PATH]
+
+Authenticate and persist credentials so later runs need no env vars.
+
+With no arguments, runs the interactive browser consent flow and stores the
+resulting refresh token in the skill config. A human must complete the Google
+consent screen — this step is inherently interactive.
+
+With `--from-file PATH`, imports credentials from a JSON file instead of running
+consent. Required fields: `client_id`, `client_secret`, `refresh_token`.
+Optional: `token_uri`, `scope`, `account`.
+
+```bash
+gmail login                              # browser consent
+gmail login --from-file ./creds.json     # import existing credentials
+```
+
+The consent flow captures the redirect with a bounded timeout. If it expires
+before you finish, the authorization code is lost and you must re-run `login` —
+re-arm it *first*, then complete the consent screen.
+
+### gmail auth
+
+Show which credential source is active (`env` or `config`), the account, and the
+scope. Prints no secret values. `gmail whoami` is an alias.
+
+### gmail logout [--no-revoke]
+
+Clear the persisted credentials. By default it also attempts to revoke the
+refresh token with Google first; that revocation is best-effort, so the local
+credentials are cleared even if the network call fails.
+
+Pass `--no-revoke` to clear locally without contacting Google — use this when
+the same refresh token is still needed elsewhere.
+
+Env-var credentials are unaffected — unset those separately.
 
 ### gmail mail [options]
 
