@@ -426,8 +426,17 @@ async function main() {
     // Guard rail: rating is one model call per item, so an unexpectedly large merge
     // is expensive and slow. Rate the newest N and pass the rest through unrated
     // rather than silently launching hundreds of calls.
-    const cap = Math.max(1, parseInt(rateMax, 10) || 1);
-    if (items.length > cap) {
+    //
+    // `--rate-max 0` must mean ZERO calls, so clamp at 0 rather than 1 — an
+    // explicit cap of zero that still spent one paid call would be a lie. A
+    // non-numeric value falls back to the documented default instead of 1.
+    const parsedMax = parseInt(rateMax, 10);
+    const cap = Number.isFinite(parsedMax) ? Math.max(0, parsedMax) : 60;
+    if (cap === 0) {
+      console.error(
+        '[monday] --rate-max 0: rating disabled, all items pass through unrated.'
+      );
+    } else if (items.length > cap) {
       console.error(
         `[monday] WARNING: ${items.length} items exceeds --rate-max ${cap}. ` +
         `Rating the ${cap} newest; the rest pass through unrated. ` +
