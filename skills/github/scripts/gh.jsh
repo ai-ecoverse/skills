@@ -3107,7 +3107,13 @@ function helpRequested(args) {
     const t = args[i];
     if (t === '--') return false;
     if (t === '--help') return true;
-    if (HELP_FLAGS.includes(t)) return words <= 2;
+    if (HELP_FLAGS.includes(t)) {
+      // Terse `-h`/`-?`: only help while still in the command-word region AND
+      // with no positional data after it, so `gh search prs "-h" owner/repo`
+      // searches for the literal string while `gh pr create -h` prints help.
+      if (words > 2) return false;
+      return !args.slice(i + 1).some((later) => later[0] !== '-');
+    }
     if (t[0] === '-' && t.length > 1) {
       if (!t.includes('=')) i++; // skip this flag's value, whatever it looks like
       continue;
