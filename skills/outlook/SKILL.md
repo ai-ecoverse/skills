@@ -37,6 +37,10 @@ outlook calendar
 # View calendar for the next week
 outlook calendar --date 7d
 
+# Full details for one event — invite body, Teams/Webex join info, recurrence
+outlook event <event-id>
+outlook event <event-id> --json
+
 # Accept/decline calendar events by ID
 outlook accept <event-id>
 outlook decline <event-id> --comment "Conflict"
@@ -72,16 +76,50 @@ List inbox messages with sender, subject, and preview.
 
 ### outlook calendar [options]
 
-List upcoming calendar events with time, organizer, location, and response status.
+List upcoming calendar events with time, organizer, location, response status, and event id.
+
+Times are rendered in the mailbox timezone (`GET /me/MailboxSettings` → `TimeZone`,
+requested via `Prefer: outlook.timezone` and cached in `/shared/.outlook-timezone`),
+not UTC. The header states which zone is shown.
 
 **Options:**
 - `--limit N` — number of events (default: 20)
 - `--date PERIOD` — how far ahead to look (default: `2d`)
-- `--json` — output raw JSON array
+- `--details` — full details (invite body + parsed join info) for every event in the window
+- `--timezone TZ` — override the display timezone (Windows zone name, e.g. `Pacific Standard Time`)
+- `--json` — output raw JSON array (structured details objects with `--details`)
+
+### outlook event \<event-id\> [options]
+
+Show one calendar event in full. Fetches `Body` (not the truncated `BodyPreview`),
+renders the HTML invite as plain text, and surfaces conferencing details as
+structured fields.
+
+Shows: subject, start/end in the mailbox timezone, organizer, location, your
+response, `Type` (`SingleInstance` / `Occurrence` / `Exception` / `SeriesMaster`),
+`SeriesMasterId` for occurrences, a recurrence summary for series (e.g.
+`every 2 weeks on Tuesday, 2026-02-24 → 2026-08-18`), attendees, and a **Join info**
+block with — when present — join URL, Teams meeting ID, passcode, video-device
+tenant key and video ID, PSTN dial-in number(s) and phone conference ID. Absent
+fields are omitted; invites with no PSTN number say so explicitly.
+
+The join URL falls back through `OnlineMeeting.JoinUrl` and the invite's join
+anchor, because `OnlineMeetingUrl` is often `null` even for Teams meetings.
+Labels are matched in English and German, on the same line or the next one.
+
+**Options:**
+- `--series` — show the series master instead of this occurrence
+- `--timezone TZ` — override the display timezone
+- `--json` — structured JSON including the parsed conferencing fields
+
+Get event ids from `outlook calendar --date 7d --json` (or the `id:` line of the
+plain listing).
 
 ### outlook view \<message-id\>
 
-View a single email message with full headers and body text.
+View a single email message with full headers and body text. Mail only — calendar
+event ids live in a different store; passing one reports that and points at
+`outlook event <event-id>` instead of a bare `HTTP 404`.
 
 ### outlook attachments \<message-id\>
 
@@ -106,6 +144,8 @@ Respond to one or more calendar events. Get event IDs from `outlook calendar --j
 - `--silent` — don't send a response notification to the organizer
 - `--all` — respond to all `NotResponded` events in the date range
 - `--date PERIOD` — date range for `--all` (default: `2d`)
+- `--series` — resolve occurrence/exception ids to their `SeriesMasterId` and respond to the whole series
+- `--dry-run` — print the events that would be responded to and exit without sending anything
 
 ```bash
 # Accept a single event
@@ -116,6 +156,10 @@ outlook decline AAMk...1 AAMk...2 --comment "Schedule conflict"
 
 # Tentatively accept all pending
 outlook tentative --all --date 7d
+
+# Decline a whole recurring series from any occurrence id (check first)
+outlook decline <occurrence-id> --series --dry-run
+outlook decline <occurrence-id> --series
 ```
 
 **Batch accept/decline workflow:**
