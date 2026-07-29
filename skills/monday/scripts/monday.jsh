@@ -12,13 +12,44 @@
 
 // Runtime bridge: the jsh runtime no longer injects `exec` as a bare global;
 // obtain it explicitly. `exec` is callable directly.
-// (No `fs` import: rating passes prompts as argv, so this script writes nothing.)
 const exec = require('sliccy:exec');
+// `fs` is used for the persistent rating cache and the done/ignore list only —
+// the rating agents still write nothing (prompts are passed as argv).
+const fs = require('fs');
 
 // Single POSIX-shell-quote a value for safe interpolation into an exec()
 // command line (exec runs through the jsh shell bridge).
 function escapeShellArg(value) {
   return "'" + String(value).replace(/'/g, "'\\''") + "'";
+}
+
+// ─── Persistent state (rating cache + done/ignore list) ──────────────────────
+// Both live outside the repo, keyed off $MONDAY_HOME or ~/.monday, so a rerun
+// doesn't re-pay for unchanged items and dismissed items stay dismissed.
+const STATE_DIR =
+  process.env.MONDAY_HOME ||
+  (process.env.HOME && process.env.HOME !== '/'
+    ? `${process.env.HOME}/.monday`
+    : '/shared/monday');
+const CACHE_FILE = `${STATE_DIR}/rating-cache.json`;
+const SUPPRESS_FILE = `${STATE_DIR}/suppress.json`;
+
+function ensureStateDir() {
+  try { fs.mkdirSync(STATE_DIR, { recursive: true }); } catch { /* best effort; writeFile will surface real errors */ }
+}
+function readJson(path, fallback) {
+  try { return JSON.parse(fs.readFileSync(path, 'utf8')); } catch { return fallback; }
+}
+function writeJson(path, obj) {
+  ensureStateDir();
+  fs.writeFileSync(path, JSON.stringify(obj, null, 2));
+}
+
+// Stable, dependency-free string hash (djb2/xor) for cache keys.
+function hashKey(s) {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = (((h << 5) + h) ^ s.charCodeAt(i)) >>> 0;
+  return h.toString(16);
 }
 
 // ─── Argument Parsing ────────────────────────────────────────────────────────
@@ -77,6 +108,10 @@ if (flags.help || flags.h) {
 
 USAGE
   monday [source...] [flags]
+  monday done|ignore <id>...        # never show these items again
+  monday restore <id>...            # undo a done/ignore
+  monday ignored                    # list the done/ignore list
+  monday cache-clear                # wipe the rating cache
 
   With no sources, auto-discovers monday-compatible commands on PATH.
   Sources: gh, slack, teams, outlook, gmail, servicenow, linkedin, tiktok
@@ -113,11 +148,23 @@ RANKING & BACKPRESSURE (turn a wall of items into a plan of attack)
 
   Every rated item is also tagged actionable vs not: informational items
   (merged PRs, closed issues, build/FYI notifications) go to a separate "fyi"
-  bucket — awareness only, never counted against your time budget.
+  bucket — awareness only, never counted against your time budget. Items where
+  you are the author (still open) or were asked to review/act are kept
+  actionable even if the rater guessed FYI (disable with --no-trust-signals).
+
+STATE (persisted under $MONDAY_HOME or ~/.monday)
+  --no-cache             Don't reuse or write cached ratings this run
+  --include-ignored      Show items on the done/ignore list anyway
+  --no-trust-signals     Don't override the rater from source relationship meta
+
+  Ratings are cached (keyed by item content + rating params + model), so a
+  rerun only pays for new or changed items. "monday done|ignore <id>" hides an
+  item permanently; "monday restore <id>" brings it back.
 
 OUTPUT
   JSON array on stdout; progress, plan summary, and warnings on stderr.
-  Sorted by the chosen --sort mode. Rated items carry an "actionable" flag;
+  Sorted by the chosen --sort mode. Rated items carry a "category"
+  (fyi/confirm/review/respond/act) and derived "actionable" flag;
   when a plan is active each item carries a "bucket" field
   ("now" | "later" | "fyi") so a presenter can show a doable slice first,
   hold the rest, and keep informational items in a separate awareness list.
@@ -160,6 +207,11 @@ const rateEffort     = !!flags['rate-effort'];              // estimate effort_m
 const sortArg  = typeof flags.sort === 'string' ? flags.sort.toLowerCase() : null; // null = auto
 const focusArg  = typeof flags.focus  === 'string' ? flags.focus  : null; // top-N "now" cap
 const budgetArg = typeof flags.budget === 'string' ? flags.budget : null; // time box, e.g. "90m"
+
+// State flags
+const noCache = !!flags['no-cache'];               // bypass the rating cache for this run
+const includeIgnored = !!flags['include-ignored']; // show items on the done/ignore list anyway
+const trustSignals = flags['no-trust-signals'] ? false : true; // deterministic actionable override
 
 const hasRating = !!(rateImportance || rateUrgency || rateSummary || rateEffort);
 
@@ -408,11 +460,73 @@ function buildRatingPrompt(item) {
   return parts.join('\n');
 }
 
+// ─── Rating cache & deterministic signal guard ───────────────────────────────
+
+// Any rating parameter or model change must invalidate cached ratings.
+const ratingSignature = [rateImportance, rateUrgency, rateSummary, rateEffort ? 'E' : '', rateContext || '']
+  .map((x) => (x == null ? '' : String(x)))
+  .join('|');
+function cacheKeyFor(item) {
+  return hashKey(
+    [item.id, item.title, item.subtitle, item.body, item.ts, ratingSignature]
+      .map((x) => (x == null ? '' : String(x)))
+      .join('\u0001')
+  );
+}
+// Loaded once, mutated during rating, flushed after. --no-cache starts empty.
+const ratingCache = noCache ? {} : readJson(CACHE_FILE, {});
+let cacheHits = 0;
+function flushCache() {
+  if (noCache) return;
+  try { writeJson(CACHE_FILE, ratingCache); } catch (e) {
+    console.error(`[monday] WARNING: could not write rating cache: ${e.message}`);
+  }
+}
+
 /**
- * Rate a single item by spawning an agent.
- * Returns the item with importance/urgency/summary merged in.
+ * Deterministic actionable override. Trust explicit relationship signals from the
+ * source over the rater: if you were asked to review/act on something not closed,
+ * or you authored an item still open, it is a to-do — never silently FYI. This
+ * closes the gap where a rater buries your own open PR in the FYI pile. Disable
+ * with --no-trust-signals.
+ */
+function applySignalGuard(rated) {
+  if (!trustSignals) return rated;
+  const m = rated.meta || {};
+  const closed = m.state === 'closed' || m.state === 'merged' || m.merged === true;
+  const asked = ['review_requested', 'mention', 'assign', 'assigned'].includes(m.relationship);
+  const mineOpen = m.authored_by_you === true && m.state === 'open';
+  if (!closed && rated.category === 'fyi' && (asked || mineOpen)) {
+    rated.category = 'review';
+    rated.actionable = true;
+    rated.reclassified_by_signal = true;
+  }
+  return rated;
+}
+
+/**
+ * Rate a single item by spawning an agent (or reusing a cached rating).
+ * Returns the item with importance/urgency/summary/category (+ effort) merged in.
  */
 async function rateItem(item) {
+  const key = cacheKeyFor(item);
+  if (!noCache && ratingCache[key]) {
+    cacheHits++;
+    const c = ratingCache[key];
+    const rated = {
+      ...item,
+      importance: c.importance ?? 5,
+      urgency: c.urgency ?? 5,
+      summary: c.summary ?? '',
+      category: c.category ?? 'act',
+      actionable: (c.category ?? 'act') !== 'fyi',
+    };
+    if (rateEffort) {
+      rated.effort_minutes = c.effort_minutes ?? null;
+      rated.effort_band = effortBand(rated.effort_minutes);
+    }
+    return applySignalGuard(rated);
+  }
   const prompt = buildRatingPrompt(item);
 
   // Build the agent command
@@ -472,7 +586,16 @@ async function rateItem(item) {
     const cat = typeof rating.category === 'string' ? rating.category.toLowerCase().trim() : '';
     rated.category = CATEGORIES.includes(cat) ? cat : 'act'; // default to a to-do, not FYI
     rated.actionable = rated.category !== 'fyi';
-    return rated;
+    // Cache the rater's raw output (the signal guard is applied on read, not stored).
+    ratingCache[cacheKeyFor(item)] = {
+      importance: rated.importance,
+      urgency: rated.urgency,
+      summary: rated.summary,
+      category: rated.category,
+      effort_minutes: rated.effort_minutes ?? null,
+      at: new Date().toISOString(),
+    };
+    return applySignalGuard(rated);
   } catch (e) {
     console.error(`[monday] WARNING: failed to parse rating for ${item.id}: ${e.message}`);
     console.error(`  output: ${raw.slice(0, 300)}`);
@@ -650,7 +773,68 @@ function buildPlan(items) {
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
+// ─── Done / ignore list management ────────────────────────────────────────────
+// A permanent, personal suppression list: items you mark `done` or `ignore` stay
+// out of every future run until you `restore` them. Keyed by the stable item id.
+const MGMT_COMMANDS = new Set([
+  'done', 'ignore', 'unignore', 'restore', 'ignored', 'list-ignored', 'cache-clear', 'forget-cache',
+]);
+
+function loadSuppress() {
+  const s = readJson(SUPPRESS_FILE, { items: {} });
+  if (!s.items) s.items = {};
+  return s;
+}
+
+async function handleManagement(action, ids) {
+  if (action === 'ignored' || action === 'list-ignored') {
+    const store = loadSuppress();
+    const list = Object.entries(store.items).map(([id, v]) => ({ id, ...v }));
+    console.error(`[monday] ${list.length} item(s) on your done/ignore list (${SUPPRESS_FILE})`);
+    console.log(JSON.stringify(list, null, 2));
+    return;
+  }
+  if (action === 'cache-clear' || action === 'forget-cache') {
+    try { writeJson(CACHE_FILE, {}); console.error('[monday] rating cache cleared.'); }
+    catch (e) { console.error(`[monday] could not clear cache: ${e.message}`); }
+    return;
+  }
+  // done | ignore | unignore | restore
+  if (ids.length === 0) {
+    console.error(`[monday] usage: monday ${action} <id> [<id>...]   (ids come from monday output or the dip's Done/Later buttons)`);
+    process.exit(2);
+  }
+  const store = loadSuppress();
+  const remove = action === 'unignore' || action === 'restore';
+  let n = 0;
+  for (const id of ids) {
+    if (remove) {
+      if (store.items[id]) { delete store.items[id]; n++; }
+    } else {
+      store.items[id] = {
+        action: action === 'done' ? 'done' : 'ignore',
+        at: new Date().toISOString(),
+        ...(typeof flags.title === 'string' ? { title: flags.title } : {}),
+      };
+      n++;
+    }
+  }
+  writeJson(SUPPRESS_FILE, store);
+  console.error(
+    remove
+      ? `[monday] restored ${n} item(s); they can resurface in future runs.`
+      : `[monday] ${action === 'done' ? 'marked done' : 'ignoring'} ${n} item(s); they won't appear in future runs (monday restore <id> to undo).`
+  );
+}
+
 async function main() {
+  // Management subcommands (done/ignore/restore/ignored/cache-clear) short-circuit
+  // the aggregation pipeline entirely.
+  if (subcommands.length && MGMT_COMMANDS.has(subcommands[0])) {
+    await handleManagement(subcommands[0], subcommands.slice(1));
+    return;
+  }
+
   // 1. Determine which sub-commands to run
   let commands = subcommands;
 
@@ -681,6 +865,20 @@ async function main() {
   // 3. Merge and deduplicate
   let items = mergeItems(results);
   console.error(`[monday] merged ${items.length} items from ${commands.length} sources`);
+
+  // 3b. Drop items on the permanent done/ignore list (unless --include-ignored).
+  if (!includeIgnored) {
+    const suppress = loadSuppress();
+    const before = items.length;
+    items = items.filter((it) => !suppress.items[it.id]);
+    const hidden = before - items.length;
+    if (hidden) {
+      console.error(
+        `[monday] hid ${hidden} item(s) on your done/ignore list ` +
+        `(monday ignored to view · monday restore <id> to unhide · --include-ignored to override).`
+      );
+    }
+  }
 
   // 4. Rate if any --rate-* flags are present
   if (hasRating && items.length > 0) {
@@ -719,6 +917,10 @@ async function main() {
     } else {
       items = await rateAllItems(items);
     }
+    if (cacheHits) {
+      console.error(`[monday] rating cache: reused ${cacheHits} cached rating(s); the rest were freshly rated (--no-cache to disable, monday cache-clear to reset).`);
+    }
+    flushCache();
   }
 
   // 5. Sort. Default to ROI (bang-for-buck — impact per minute) whenever effort
@@ -731,7 +933,8 @@ async function main() {
   }
   if (mode === 'roi' && !rateEffort) {
     console.error(
-      '[monday] --sort roi needs --rate-effort; falling back to --sort value. ' +      'Add --rate-effort to rank by impact-per-minute.'
+      '[monday] --sort roi needs --rate-effort; falling back to --sort value. ' +
+      'Add --rate-effort to rank by impact-per-minute.'
     );
     mode = 'value';
   }
@@ -751,7 +954,7 @@ async function main() {
     if (plan.fyiCount) tail.push(`${plan.fyiCount} FYI`);
     console.error(
       `[monday] plan: ${bits.join(', ')}` +
-      (tail.length ? ` � ${tail.join(' � ')}` : '') +
+      (tail.length ? ` � ${tail.join(' � ')}` : '') +
       `. Start with the "now" bucket; "later" stays ranked and "FYI" is just for awareness.`
     );
   } else if (hasRating && items.length > 12) {
