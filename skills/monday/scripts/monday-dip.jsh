@@ -72,7 +72,8 @@ const byBucket = (b) => items.filter((it) => it.bucket === b);
 const hasBuckets = items.some((it) => 'bucket' in it);
 const now = hasBuckets ? byBucket('now') : items.filter((it) => it.actionable !== false);
 const later = hasBuckets ? byBucket('later') : [];
-const fyi = hasBuckets ? byBucket('fyi') : items.filter((it) => it.actionable === false);
+const followup = hasBuckets ? byBucket('followup') : items.filter((it) => it.category === 'waiting');
+const fyi = hasBuckets ? byBucket('fyi') : items.filter((it) => it.actionable === false && it.category !== 'waiting');
 
 const nowMinutes = now.reduce((a, it) => a + (it.effort_minutes || 0), 0);
 const haveEffort = now.some((it) => it.effort_minutes != null);
@@ -114,8 +115,15 @@ function listRow(it) {
 const nowRows = now.map(todoRow).join('\n');
 const laterRows = later.map(listRow).join('\n');
 const fyiRows = fyi.map(listRow).join('\n');
+// "Waiting on others" rows get a Nudge action — the ball is in someone else's court.
+function followupRow(it) {
+  const nudge = esc(JSON.stringify({ id: it.id, title: it.title }));
+  const eff = effortText(it);
+  return `        <li><i data-lucide="hourglass" class="sprinkle-icon sprinkle-icon--xs"></i> <a href="${esc(it.url)}" target="_blank">${esc(it.title)}</a> <span class="monday-src">${esc(it.subtitle || '')}${eff ? ` · ${esc(eff)}` : ''}</span> <button class="sprinkle-btn sprinkle-btn--secondary sprinkle-btn--s" onclick="slicc.lick({action:'nudge',data:${nudge}})"><i data-lucide="send" class="sprinkle-icon sprinkle-icon--xs"></i> Nudge</button></li>`;
+}
+const followupRows = followup.map(followupRow).join('\n');
 
-const headerCount = `${now.length} to-do${fyi.length ? ` · ${fyi.length} FYI` : ''}`;
+const headerCount = `${now.length} to-do${followup.length ? ` · ${followup.length} waiting` : ''}${fyi.length ? ` · ${fyi.length} FYI` : ''}`;
 const intro = now.length
   ? `Start here — ${haveEffort ? `about ${nowMinutes} minutes of ` : ''}${now.length} thing${now.length === 1 ? '' : 's'} worth doing now.${later.length ? ` ${later.length} more held for later.` : ''}`
   : 'Nothing needs your action right now.';
@@ -145,6 +153,15 @@ ${laterRows}
       </details>`
   : '';
 
+const followupBlock = followup.length
+  ? `      <details open>
+        <summary><i data-lucide="hourglass" class="sprinkle-icon sprinkle-icon--s"></i> ${followup.length} waiting on others — chase or nudge</summary>
+        <ul class="monday-list">
+${followupRows}
+        </ul>
+      </details>`
+  : '';
+
 const fyiBlock = fyi.length
   ? `      <details>
         <summary><i data-lucide="info" class="sprinkle-icon sprinkle-icon--s"></i> ${fyi.length} for your information — no action needed</summary>
@@ -164,6 +181,7 @@ ${style}
     <div style="font-size:13px;opacity:.85;margin-bottom:2px">${esc(intro)}</div>
 ${nowRows}
 ${laterBlock}
+${followupBlock}
 ${fyiBlock}
   </div>
   <div class="sprinkle-action-card__actions">
