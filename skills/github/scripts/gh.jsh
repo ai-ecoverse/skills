@@ -2503,6 +2503,18 @@ async function mondayGh(args) {
   const items = [];
   const seen = new Set();
 
+  // Source-owned rating guidance, carried to the rater via the item's
+  // `rating_hint` field (part of the monday protocol). Keeping GitHub's field
+  // semantics here — not in the generic aggregator — lets each tool manage its
+  // own rating instructions.
+  const GH_RATING_HINT = [
+    'This is a GitHub item. `meta.viewer` is the reader\'s own username.',
+    '`meta.authored_by_you: true` means the reader opened this PR/issue (they are likely waiting on others or on a merge).',
+    '`meta.relationship` (review_requested, assignee, mention, author, subscribed, ...) says what is expected of the reader — weight items where they are personally on the hook (review requested, assigned, directly mentioned, or authored-and-ready) above things they merely subscribe to.',
+    'If `meta.merged` is true or `meta.state` is "closed", the item is already done — category MUST be `fyi`.',
+    'If `meta.awaiting_checks` is true (a PR whose CI is pending or failing) or `meta.draft` is true, it is not ready to act on yet — keep urgency low; acting now would be premature. `meta.checks` is passing/pending/failing and `meta.ready_to_merge: true` means clean and green.',
+  ].join(' ');
+
   function addItem(item) {
     if (seen.has(item.id)) return;
     seen.add(item.id);
@@ -2605,6 +2617,7 @@ async function mondayGh(args) {
       addItem({
         id: `gh-notif-${n.id}`,
         source: 'gh',
+        rating_hint: GH_RATING_HINT,
         type,
         title: n.subject.title,
         subtitle: num ? `${repo} #${num}` : repo,
@@ -2639,6 +2652,7 @@ async function mondayGh(args) {
       addItem({
         id: `gh-pr-${pr.id}`,
         source: 'gh',
+        rating_hint: GH_RATING_HINT,
         type: 'pr',
         title: pr.title,
         subtitle: `${repoUrl} #${pr.number}`,
@@ -2674,6 +2688,7 @@ async function mondayGh(args) {
       addItem({
         id: `gh-issue-${issue.id}`,
         source: 'gh',
+        rating_hint: GH_RATING_HINT,
         type: 'issue',
         title: issue.title,
         subtitle: `${repoUrl} #${issue.number}`,
