@@ -1,6 +1,6 @@
 ---
 name: clickhouse-cloud
-description: Report on ClickHouse Cloud cost, spend, and utilization via the ClickHouse Cloud console/control-plane API. Use when the user asks about ClickHouse Cloud billing, spend, cost, usage report, compute unit hours, storage cost, data transfer cost, or wants to inspect ClickHouse Cloud services — their size, replica count, memory/autoscaling configuration, state, or region — or to check utilization metrics (CPU, memory, disk/S3 storage, queries per second, connections, network) for a service over time. Activate on mentions of "ClickHouse Cloud cost", "ClickHouse spend", "ClickHouse usage report", "ClickHouse Cloud services", "ClickHouse replicas", "ClickHouse utilization", "ClickHouse metrics", "ClickHouse Cloud billing". For running SQL against a ClickHouse service, use the `klickhaus` skill instead — this skill covers the cloud console (cost + infra + metrics), NOT SQL.
+description: Report on ClickHouse Cloud cost, spend, and utilization via the ClickHouse Cloud console/control-plane API. Use when the user asks about ClickHouse Cloud billing, spend, cost, usage report, compute unit hours, storage cost, data transfer cost, or wants to inspect ClickHouse Cloud services — their size, replica count, memory/autoscaling configuration, state, or region — or to check utilization metrics (CPU, memory, disk/S3 storage, queries per second, connections, network) for a service over time. Activate on mentions of "ClickHouse Cloud cost", "ClickHouse spend", "ClickHouse usage report", "ClickHouse Cloud services", "ClickHouse replicas", "ClickHouse utilization", "ClickHouse metrics", "ClickHouse Cloud billing". It can also run ad-hoc SQL against a service via the Cloud SQL-console query proxy (session-authenticated, no DB password). For the dedicated, purpose-built AEM CDN-logs investigation workflow, use the `klickhaus` skill instead.
 allowed-tools: bash
 ---
 
@@ -8,8 +8,11 @@ allowed-tools: bash
 
 Cost and utilization reporting for **ClickHouse Cloud** — the management console
 (organizations, service inventory, billing/usage reports, and utilization
-metrics). This is distinct from the `klickhaus` skill, which runs SQL against a
-ClickHouse service's data plane.
+metrics), plus ad-hoc **SQL** against a service through the Cloud SQL-console
+query proxy (session-authenticated, no separate database password). The
+`klickhaus` skill remains the dedicated, purpose-built CDN-logs investigation
+workflow (fixed service, its own credentials); use this skill's `query` when you
+want to run arbitrary SQL against any service you can see in the console.
 
 ## Setup
 
@@ -43,11 +46,34 @@ clickhouse-cloud services [--org ID]              # services: state, tier, repli
 clickhouse-cloud service <svcId> [--org ID]       # full detail for one service
 clickhouse-cloud cost [--org ID] [--period P]     # usage/billing report: per-service cost + line items + total
 clickhouse-cloud metrics <svcId> [FLAGS]          # utilization summary (min/max/avg/latest)
+clickhouse-cloud query "<SQL>" [FLAGS]            # run SQL against a service (session-auth, no DB password)
 clickhouse-cloud api <METHOD> <URL> [--body=..]   # raw authenticated passthrough
 ```
 
 Global flags: `--org=ID` (auto-detected when you have exactly one org),
 `--json` (raw JSON instead of a table).
+
+### query
+
+Runs arbitrary SQL against a service through the **Cloud SQL-console query
+proxy** (`queries.clickhouse.cloud/service/<id>/run`) — the same endpoint the
+console's SQL console uses. It is signed with the in-page Auth0 session token, so
+**no separate database username/password is needed** (unlike a direct
+native/HTTP connection). Any service visible in the logged-in console is
+queryable.
+
+```bash
+clickhouse-cloud query "SELECT count() FROM system.query_log" --service=<svcId>
+clickhouse-cloud query "SELECT now(), version()" --org=<orgId>         # auto-picks the org's only service
+clickhouse-cloud query --file=report.sql --service=<svcId> --json
+```
+
+Flags: `--service=ID` (the service to run against; auto-detected when the org has
+exactly one), `--database=DB` (default `default`), `--file=PATH` (read SQL from a
+file instead of the argument), `--json` / `--tsv` (machine-readable output instead
+of a table). Use `clusterAllReplicas(default, system.<table>)` to aggregate system
+tables across replicas. SQL errors are surfaced with the ClickHouse error code +
+message.
 
 ### cost
 
