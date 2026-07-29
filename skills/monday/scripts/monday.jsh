@@ -6,7 +6,7 @@
 // Examples:
 //   monday gh slack --limit 20 --date 3d
 //   monday --rate-importance 9-4 --rate-urgency 8-3 --rate-summary 500
-//   monday gh --limit 10 --rate-importance 8-3 --rate-model haiku
+//   monday gh --limit 10 --rate-importance 8-3 --rate-model us.anthropic.claude-haiku
 //
 // With no positional args, auto-discovers monday-compatible commands on PATH.
 
@@ -129,7 +129,7 @@ RATING (each rated item costs one model call — start small)
   --rate-effort             Estimate effort per item (effort_minutes + a
                             quick/short/deep band). Feeds --sort roi & --budget.
   --rate-model NAME         Model for rating. Accepts an exact id from \`models\`
-                            or a unique substring (e.g. "haiku"). Validated
+                            or a unique substring (e.g. "us.anthropic.claude-haiku"). Validated
                             before any call; defaults to the cheapest model.
   --rate-context PATH       Read-only knowledge base the rater may grep
   --rate-concurrency N      Parallel rating agents (default 4)
@@ -358,7 +358,7 @@ async function resolveRateModel(requested) {
     // 1. Exact id match — the ideal case.
     if (ids.includes(requested)) return requested;
     // 2. Unique case-insensitive substring match (lets the user pass a short,
-    //    memorable fragment like "haiku" or "claude-haiku-4-5").
+    //    memorable fragment like "us.anthropic.claude-haiku").
     const needle = requested.toLowerCase();
     const matches = ids.filter((id) => id.toLowerCase().includes(needle));
     if (matches.length === 1) {
@@ -927,16 +927,6 @@ async function main() {
 
   // 4. Rate if any --rate-* flags are present
   if (hasRating && items.length > 0) {
-    // Resolve the rating model to an exact `models` id up front. This both
-    // validates the user's --rate-model (fail fast on a typo instead of paying
-    // for a wrong model) and sidesteps the alias-fallback trap in `agent`
-    // (ai-ecoverse/slicc#1752).
-    try {
-      rateModel = await resolveRateModel(rateModelArg);
-    } catch (e) {
-      console.error(`[monday] ${e.message}`);
-      process.exit(1);
-    }
     // Guard rail: rating is one model call per item, so an unexpectedly large merge
     // is expensive and slow. Rate the newest N and pass the rest through unrated
     // rather than silently launching hundreds of calls.
@@ -947,25 +937,40 @@ async function main() {
     const parsedMax = parseInt(rateMax, 10);
     const cap = Number.isFinite(parsedMax) ? Math.max(0, parsedMax) : 60;
     if (cap === 0) {
+      // Rating is explicitly disabled — do NOT resolve the model. Resolving here
+      // would let a missing `models` command or a bad --rate-model fail a run
+      // that was never going to spend a call. All items pass through unrated.
       console.error(
         '[monday] --rate-max 0: rating disabled, all items pass through unrated.'
       );
-    } else if (items.length > cap) {
-      console.error(
-        `[monday] WARNING: ${items.length} items exceeds --rate-max ${cap}. ` +
-        `Rating the ${cap} newest; the rest pass through unrated. ` +
-        `Raise --rate-max or lower --limit.`
-      );
-      const byNewest = sortItems(items, false);
-      const rated = await rateAllItems(byNewest.slice(0, cap));
-      items = [...rated, ...byNewest.slice(cap)];
     } else {
-      items = await rateAllItems(items);
+      // Resolve the rating model to an exact `models` id up front. This both
+      // validates the user's --rate-model (fail fast on a typo instead of paying
+      // for a wrong model) and sidesteps the alias-fallback trap in `agent`
+      // (ai-ecoverse/slicc#1752).
+      try {
+        rateModel = await resolveRateModel(rateModelArg);
+      } catch (e) {
+        console.error(`[monday] ${e.message}`);
+        process.exit(1);
+      }
+      if (items.length > cap) {
+        console.error(
+          `[monday] WARNING: ${items.length} items exceeds --rate-max ${cap}. ` +
+          `Rating the ${cap} newest; the rest pass through unrated. ` +
+          `Raise --rate-max or lower --limit.`
+        );
+        const byNewest = sortItems(items, false);
+        const rated = await rateAllItems(byNewest.slice(0, cap));
+        items = [...rated, ...byNewest.slice(cap)];
+      } else {
+        items = await rateAllItems(items);
+      }
+      if (cacheHits) {
+        console.error(`[monday] rating cache: reused ${cacheHits} cached rating(s); the rest were freshly rated (--no-cache to disable, monday cache-clear to reset).`);
+      }
+      flushCache();
     }
-    if (cacheHits) {
-      console.error(`[monday] rating cache: reused ${cacheHits} cached rating(s); the rest were freshly rated (--no-cache to disable, monday cache-clear to reset).`);
-    }
-    flushCache();
   }
 
   // 5. Sort. Default to ROI (bang-for-buck — impact per minute) whenever effort
