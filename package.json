@@ -10,7 +10,7 @@
     "check": "biome check"
   },
   "devDependencies": {
-    "@ai-ecoverse/biome-jsh": "5.83.0",
+    "@ai-ecoverse/biome-jsh": "5.85.2",
     "@biomejs/biome": "2.5.6"
   }
 }
