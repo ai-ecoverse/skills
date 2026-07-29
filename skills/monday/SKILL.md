@@ -200,14 +200,24 @@ field from monday's output — the same ones the dip's Done / Later buttons send
 back via `slicc.lick`, so the presentation loop can call `monday done <id>`
 directly.
 
-**Signal trust.** Sources may tag items with relationship metadata
-(`meta.authored_by_you`, `meta.relationship` = `review_requested` / `mention` /
-`assign`, `meta.state`). When present, `monday` trusts these over the rater: an
-item you were asked to review, or authored and left open, stays **actionable**
-even if the rater guessed `fyi` (it is retagged `category: review` and marked
-`reclassified_by_signal`). Merged/closed items are never resurfaced. Disable the
-override with `--no-trust-signals`. The `github` source populates these fields
-for notifications, review requests, and assigned issues.
+**Signal trust.** Sources may tag items with relationship and state metadata
+(`meta.authored_by_you`, `meta.relationship`, `meta.state`, `meta.merged`,
+`meta.draft`, `meta.checks`, `meta.awaiting_checks`). When present, `monday`
+trusts these over the rater:
+
+- **Already merged / closed** → forced to `fyi` (never a to-do), no matter what
+  the rater guessed from stale notification text.
+- **Asked to review / mentioned / assigned, or authored and still open** → kept
+  **actionable** even if the rater guessed `fyi` (retagged `category: review`,
+  marked `reclassified_by_signal`).
+- **A PR still red or pending on CI (`awaiting_checks`) or a draft** → held out
+  of the `now` bucket (into `later`) even if it ranks high — it isn't ready to
+  act on yet.
+
+Disable the override with `--no-trust-signals`. The `github` source populates
+these fields by fetching each PR/issue's real state and CI status (notifications
+alone don't carry it), so merged PRs and CI-pending PRs are classified correctly
+instead of surfacing as fresh top-of-list to-dos.
 
 
 
