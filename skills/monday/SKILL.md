@@ -36,7 +36,7 @@ monday gh slack --limit 20 --date 3d
 monday --rate-importance 9-1 --rate-urgency 8-1 --rate-summary 500
 
 # Rate with a specific model and a knowledge-base context directory
-monday gh --rate-importance 8-3 --rate-model haiku --rate-context /workspace/kb
+monday gh --rate-importance 8-3 --rate-model us.anthropic.claude-haiku --rate-context /workspace/kb
 
 # Estimate effort and rank by quick wins first (impact per minute)
 monday gh --rate-importance 9-1 --rate-urgency 8-1 --rate-effort --sort roi
@@ -72,7 +72,7 @@ The `monday` command executes the following steps in order:
 | `--rate-urgency HI-LO` | off | Rate each item's urgency on a HI..LO integer scale |
 | `--rate-summary N` | off | Generate a ~N-character summary per item |
 | `--rate-effort` | off | Estimate `effort_minutes` per item plus a `quick`/`short`/`deep` band. Powers `--sort roi` and `--budget`. |
-| `--rate-model NAME` | cheapest model | Rating model. Accepts an exact id from `models` or a unique case-insensitive substring (e.g. `haiku`, `us.anthropic.claude-haiku`). Validated against the live `models` catalog before any call — a typo or ambiguous fragment fails fast (exit 1) instead of running. When omitted, the cheapest haiku-class model is auto-selected. |
+| `--rate-model NAME` | cheapest model | Rating model. Accepts an exact id from `models` or a unique case-insensitive substring (e.g. `us.anthropic.claude-haiku`). Validated against the live `models` catalog before any call — a typo or ambiguous fragment fails fast (exit 1) instead of running. When omitted, the cheapest haiku-class model is auto-selected. |
 | `--rate-context PATH` | none | Read-only knowledge-base path the rating agent can grep |
 | `--rate-concurrency N` | `4` | Parallel rating agents (bounded worker pool) |
 | `--rate-max N` | `60` | Refuse to rate more than N items; the rest pass through unrated |
