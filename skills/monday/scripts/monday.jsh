@@ -91,6 +91,8 @@ RATING (each rated item costs one model call — start small)
   --rate-importance HI-LO   Rate importance, e.g. 9-1
   --rate-urgency HI-LO      Rate urgency, e.g. 8-1
   --rate-summary N          ~N-character summary per item
+  --rate-effort             Estimate effort per item (effort_minutes + a
+                            quick/short/deep band). Feeds --sort roi & --budget.
   --rate-model NAME         Model for rating. Accepts an exact id from \`models\`
                             or a unique substring (e.g. "haiku"). Validated
                             before any call; defaults to the cheapest model.
@@ -98,14 +100,29 @@ RATING (each rated item costs one model call — start small)
   --rate-concurrency N      Parallel rating agents (default 4)
   --rate-max N              Refuse to rate more than N items (default 60)
 
+RANKING & BACKPRESSURE (turn a wall of items into a plan of attack)
+  --sort MODE               value (default: importance x urgency), roi
+                            (impact per minute — quick wins first; needs
+                            --rate-effort), or newest (timestamp)
+  --focus N                 Mark only the top N items as the "now" bucket;
+                            everything else becomes "later". A doable slice
+                            instead of the full backlog.
+  --budget DURATION         Pack the highest-ranked items that fit a time box
+                            into "now" (e.g. 90m, 2h, 1h30m); needs
+                            --rate-effort. The rest become "later".
+
 OUTPUT
-  JSON array on stdout; progress and warnings on stderr. Sorted by
-  urgency x importance when rated, else by timestamp descending.
+  JSON array on stdout; progress, plan summary, and warnings on stderr.
+  Sorted by the chosen --sort mode. When --focus or --budget is set, each item
+  carries a "bucket" field ("now" | "later") so a presenter can show a doable
+  slice first and collapse the rest.
 
 EXAMPLES
   monday gh --limit 5 --date 1d
   monday slack teams --limit 10 --date 3d
-  monday gh --limit 5 --rate-importance 9-1 --rate-urgency 8-1`);
+  monday gh --limit 5 --rate-importance 9-1 --rate-urgency 8-1
+  monday gh --rate-importance 9-1 --rate-urgency 8-1 --rate-effort --sort roi
+  monday --rate-importance 9-1 --rate-urgency 8-1 --rate-effort --budget 90m`);
   process.exit(0);
 }
 
@@ -132,8 +149,14 @@ let   rateModel      = rateModelArg;                          // resolved to an 
 const rateContext    = flags['rate-context']      || null;  // e.g. "/workspace/kb"
 const rateConcurrency = flags['rate-concurrency'] || '4';   // parallel rating agents
 const rateMax        = flags['rate-max']          || '60';  // hard ceiling on rated items
+const rateEffort     = !!flags['rate-effort'];              // estimate effort_minutes per item
 
-const hasRating = !!(rateImportance || rateUrgency || rateSummary);
+// Ranking & backpressure flags (local only — shape the plan, not the data source)
+const sortMode = (typeof flags.sort === 'string' ? flags.sort : 'value').toLowerCase();
+const focusArg  = typeof flags.focus  === 'string' ? flags.focus  : null; // top-N "now" cap
+const budgetArg = typeof flags.budget === 'string' ? flags.budget : null; // time box, e.g. "90m"
+
+const hasRating = !!(rateImportance || rateUrgency || rateSummary || rateEffort);
 
 // ─── Known Monday-Compatible Commands ────────────────────────────────────────
 
@@ -356,10 +379,16 @@ function buildRatingPrompt(item) {
     parts.push('- **summary**: a one-sentence summary');
   }
 
+  if (rateEffort) {
+    parts.push('- **effort_minutes**: your best integer estimate of how many minutes it would take a human to actually resolve or respond to this item (not to read it). A quick ack or approval might be 5; a substantive reply or small task 20-45; a deep review or real work 90+. Base it on the type, scope, and content — estimate concretely, do not default to a round number.');
+  }
+
   parts.push('');
   parts.push('## Output');
   parts.push('Return ONLY a valid JSON object on a single line, no markdown fences, no explanation:');
-  parts.push('{"importance": N, "urgency": N, "summary": "..."}');
+  const schemaFields = ['"importance": N', '"urgency": N', '"summary": "..."'];
+  if (rateEffort) schemaFields.push('"effort_minutes": N');
+  parts.push(`{${schemaFields.join(', ')}}`);
 
   return parts.join('\n');
 }
@@ -411,12 +440,18 @@ async function rateItem(item) {
     }
 
     const rating = JSON.parse(jsonMatch[0]);
-    return {
+    const rated = {
       ...item,
       importance: rating.importance ?? 5,
       urgency: rating.urgency ?? 5,
       summary: rating.summary ?? '',
     };
+    if (rateEffort) {
+      const em = Number(rating.effort_minutes);
+      rated.effort_minutes = Number.isFinite(em) && em > 0 ? Math.round(em) : null;
+      rated.effort_band = effortBand(rated.effort_minutes);
+    }
+    return rated;
   } catch (e) {
     console.error(`[monday] WARNING: failed to parse rating for ${item.id}: ${e.message}`);
     console.error(`  output: ${raw.slice(0, 300)}`);
@@ -457,25 +492,118 @@ async function rateAllItems(items) {
   return out;
 }
 
-// ─── Sorting ─────────────────────────────────────────────────────────────────
+// ─── Ranking, Effort & Backpressure ──────────────────────────────────────────
+
+/** value score = importance x urgency. */
+const scoreOf = (it) => (it.urgency || 0) * (it.importance || 0);
+
+/** Derive a coarse effort band from a minute estimate. */
+function effortBand(mins) {
+  if (mins == null) return null;
+  if (mins <= 15) return 'quick';
+  if (mins <= 60) return 'short';
+  return 'deep';
+}
 
 /**
- * Sort items. If rated, by urgency*importance descending, then ts descending.
- * Otherwise, by ts descending.
+ * Parse a human duration into whole minutes. Accepts "90m", "2h", "1h30m",
+ * "1.5h", or a bare number (minutes). Returns null if unparsable.
  */
-function sortItems(items, rated) {
+function parseDuration(s) {
+  if (!s) return null;
+  const str = String(s).trim().toLowerCase();
+  if (/^\d+$/.test(str)) return parseInt(str, 10); // bare number = minutes
+  let mins = 0;
+  let matched = false;
+  const h = str.match(/(\d+(?:\.\d+)?)\s*h/);
+  if (h) { mins += parseFloat(h[1]) * 60; matched = true; }
+  const m = str.match(/(\d+(?:\.\d+)?)\s*m/);
+  if (m) { mins += parseFloat(m[1]); matched = true; }
+  return matched ? Math.round(mins) : null;
+}
+
+/**
+ * Return-on-investment: value per minute of effort. Items missing an effort
+ * estimate are treated as a middling 30 min so they neither dominate nor vanish.
+ */
+const EFFORT_UNKNOWN_MIN = 30;
+const roiOf = (it) => scoreOf(it) / Math.max(1, it.effort_minutes || EFFORT_UNKNOWN_MIN);
+
+/**
+ * Sort items by the chosen mode.
+ *   value  — importance x urgency desc (default), ts desc as tie-break
+ *   roi    — value per minute desc (quick wins first), value then ts as tie-break
+ *   newest — ts desc
+ * When not rated, everything collapses to ts desc regardless of mode.
+ */
+function sortItems(items, rated, mode = 'value') {
+  const byTs = (a, b) =>
+    (b.ts ? new Date(b.ts).getTime() : 0) - (a.ts ? new Date(a.ts).getTime() : 0);
   return items.sort((a, b) => {
-    if (rated) {
-      const scoreA = (a.urgency || 0) * (a.importance || 0);
-      const scoreB = (b.urgency || 0) * (b.importance || 0);
-      if (scoreB !== scoreA) return scoreB - scoreA;
+    if (rated && mode === 'roi') {
+      const d = roiOf(b) - roiOf(a);
+      if (d !== 0) return d;
+      const s = scoreOf(b) - scoreOf(a);
+      if (s !== 0) return s;
+    } else if (rated && mode !== 'newest') {
+      const s = scoreOf(b) - scoreOf(a);
+      if (s !== 0) return s;
     }
-    // Tie-break (or primary if not rated): ts descending
-    const tsA = a.ts ? new Date(a.ts).getTime() : 0;
-    const tsB = b.ts ? new Date(b.ts).getTime() : 0;
-    return tsB - tsA;
+    return byTs(a, b);
   });
 }
+
+/**
+ * Backpressure: split an already-sorted list into "now" and "later" buckets so a
+ * human sees a doable slice first instead of the whole backlog. Humans have the
+ * judgement; the tool's job is to protect their attention, not dump on it.
+ *
+ *   --focus N   : the top N items are "now".
+ *   --budget T  : pack the top items whose cumulative effort fits T minutes into
+ *                 "now" (items with no effort estimate assumed 30 min).
+ *   both        : budget packs by time, but never exceeds the focus count.
+ *
+ * Returns { items (each tagged with a `bucket` field), nowCount, nowMinutes,
+ * laterCount, budgetMin }. When neither flag is set, planning is a no-op and
+ * `bucket` is left off entirely (output stays backward-compatible).
+ */
+function buildPlan(items) {
+  const budgetMin = parseDuration(budgetArg);
+  const focusN = focusArg != null ? parseInt(focusArg, 10) : null;
+  const focusValid = Number.isFinite(focusN) && focusN >= 0 ? focusN : null;
+  const planning = budgetMin != null || focusValid != null;
+  if (!planning) {
+    return { items, planning: false };
+  }
+
+  let usedMin = 0;
+  let nowCount = 0;
+  const tagged = items.map((it) => {
+    let inNow = true;
+    if (budgetMin != null) {
+      const cost = it.effort_minutes != null ? Math.max(1, it.effort_minutes) : EFFORT_UNKNOWN_MIN;
+      const fitsTime = usedMin + cost <= budgetMin;
+      const fitsFocus = focusValid == null || nowCount < focusValid;
+      inNow = fitsTime && fitsFocus;
+      if (inNow) usedMin += cost;
+    } else {
+      inNow = nowCount < focusValid;
+    }
+    if (inNow) nowCount++;
+    return { ...it, bucket: inNow ? 'now' : 'later' };
+  });
+
+  return {
+    items: [...tagged.filter((it) => it.bucket === 'now'), ...tagged.filter((it) => it.bucket === 'later')],
+    planning: true,
+    nowCount,
+    nowMinutes: usedMin,
+    laterCount: tagged.length - nowCount,
+    budgetMin,
+    focusN: focusValid,
+  };
+}
+
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
@@ -550,10 +678,44 @@ async function main() {
     }
   }
 
-  // 5. Sort
-  items = sortItems(items, hasRating);
+  // 5. Sort by the requested mode. ROI needs effort estimates; fall back with a
+  // warning rather than silently sorting on a bogus 30-min-for-everything ROI.
+  let mode = sortMode;
+  if (mode === 'roi' && !rateEffort) {
+    console.error(
+      '[monday] --sort roi needs --rate-effort; falling back to --sort value. ' +
+      'Add --rate-effort to rank by impact-per-minute.'
+    );
+    mode = 'value';
+  } else if (!['value', 'roi', 'newest'].includes(mode)) {
+    console.error(`[monday] unknown --sort "${sortMode}"; using value.`);
+    mode = 'value';
+  }
+  items = sortItems(items, hasRating, mode);
 
-  // 6. Output
+  // 6. Backpressure: build a "now"/"later" plan when --focus or --budget is set.
+  const plan = buildPlan(items);
+  items = plan.items;
+  if (plan.planning) {
+    const bits = [`${plan.nowCount} now`];
+    if (rateEffort) bits[0] += ` (~${plan.nowMinutes}m)`;
+    if (plan.budgetMin != null) bits.push(`budget ${plan.budgetMin}m`);
+    if (plan.focusN != null) bits.push(`focus ${plan.focusN}`);
+    console.error(
+      `[monday] plan: ${bits.join(', ')} · ${plan.laterCount} later. ` +
+      `Start with the "now" bucket; the rest stay ranked for when you're ready.`
+    );
+  } else if (hasRating && items.length > 12) {
+    // Soft nudge: a big ranked list is still a wall. Point at the tools that
+    // turn it into a doable slice — a plan of attack, not a verdict of doom.
+    console.error(
+      `[monday] ${items.length} items ranked. That's a lot to face at once — ` +
+      `add --focus 5 (or --budget 90m with --rate-effort) to get a doable "now" ` +
+      `slice; everything else stays ranked for later.`
+    );
+  }
+
+  // 7. Output
   console.log(JSON.stringify(items, null, 2));
 }
 
