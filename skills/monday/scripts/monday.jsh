@@ -108,9 +108,9 @@ if (flags.help || flags.h) {
 
 USAGE
   monday [source...] [flags]
-  monday done|ignore <id>...        # never show these items again
-  monday restore <id>...            # undo a done/ignore
-  monday ignored                    # list the done/ignore list
+  monday done|ignore|mute <id>...   # never show these items again
+  monday restore <id>...            # undo a done/ignore/mute
+  monday ignored                    # list what's silenced
   monday cache-clear                # wipe the rating cache
 
   With no sources, auto-discovers monday-compatible commands on PATH.
@@ -467,8 +467,10 @@ const ratingSignature = [rateImportance, rateUrgency, rateSummary, rateEffort ? 
   .map((x) => (x == null ? '' : String(x)))
   .join('|');
 function cacheKeyFor(item) {
+  // Keyed on the item's content AND the rating params AND the resolved model
+  // (rateModel is set before any rateItem call) — change any of them, re-rate.
   return hashKey(
-    [item.id, item.title, item.subtitle, item.body, item.ts, ratingSignature]
+    [item.id, item.title, item.subtitle, item.body, item.ts, ratingSignature, rateModel]
       .map((x) => (x == null ? '' : String(x)))
       .join('\u0001')
   );
@@ -777,7 +779,7 @@ function buildPlan(items) {
 // A permanent, personal suppression list: items you mark `done` or `ignore` stay
 // out of every future run until you `restore` them. Keyed by the stable item id.
 const MGMT_COMMANDS = new Set([
-  'done', 'ignore', 'unignore', 'restore', 'ignored', 'list-ignored', 'cache-clear', 'forget-cache',
+  'done', 'ignore', 'mute', 'unignore', 'unmute', 'restore', 'ignored', 'list-ignored', 'muted', 'cache-clear', 'forget-cache',
 ]);
 
 function loadSuppress() {
@@ -787,10 +789,10 @@ function loadSuppress() {
 }
 
 async function handleManagement(action, ids) {
-  if (action === 'ignored' || action === 'list-ignored') {
+  if (action === 'ignored' || action === 'list-ignored' || action === 'muted') {
     const store = loadSuppress();
     const list = Object.entries(store.items).map(([id, v]) => ({ id, ...v }));
-    console.error(`[monday] ${list.length} item(s) on your done/ignore list (${SUPPRESS_FILE})`);
+    console.error(`[monday] ${list.length} item(s) silenced (done/ignore/mute) — ${SUPPRESS_FILE}`);
     console.log(JSON.stringify(list, null, 2));
     return;
   }
@@ -799,20 +801,21 @@ async function handleManagement(action, ids) {
     catch (e) { console.error(`[monday] could not clear cache: ${e.message}`); }
     return;
   }
-  // done | ignore | unignore | restore
+  // done | ignore | mute | unignore | unmute | restore
   if (ids.length === 0) {
-    console.error(`[monday] usage: monday ${action} <id> [<id>...]   (ids come from monday output or the dip's Done/Later buttons)`);
+    console.error(`[monday] usage: monday ${action} <id> [<id>...]   (ids come from monday output or the dip's buttons)`);
     process.exit(2);
   }
   const store = loadSuppress();
-  const remove = action === 'unignore' || action === 'restore';
+  const remove = action === 'unignore' || action === 'unmute' || action === 'restore';
+  const label = action === 'done' ? 'done' : action === 'mute' ? 'mute' : 'ignore';
   let n = 0;
   for (const id of ids) {
     if (remove) {
       if (store.items[id]) { delete store.items[id]; n++; }
     } else {
       store.items[id] = {
-        action: action === 'done' ? 'done' : 'ignore',
+        action: label,
         at: new Date().toISOString(),
         ...(typeof flags.title === 'string' ? { title: flags.title } : {}),
       };
@@ -822,8 +825,8 @@ async function handleManagement(action, ids) {
   writeJson(SUPPRESS_FILE, store);
   console.error(
     remove
-      ? `[monday] restored ${n} item(s); they can resurface in future runs.`
-      : `[monday] ${action === 'done' ? 'marked done' : 'ignoring'} ${n} item(s); they won't appear in future runs (monday restore <id> to undo).`
+      ? `[monday] un-silenced ${n} item(s); they can resurface in future runs.`
+      : `[monday] ${label === 'done' ? 'marked done' : label === 'mute' ? 'muted' : 'ignoring'} ${n} item(s); they won't appear in future runs (monday restore <id> to undo).`
   );
 }
 
