@@ -43,10 +43,37 @@ is passed through to the output unchanged.
 | `url` | no | string | Passthrough (display). |
 | `participants` | no | string[] | Passthrough (display). |
 | `body` | no | string | Passthrough; useful context for the rating agent. |
+| `rating_hint` | no | string | **Source-owned rating guidance.** Injected verbatim into the rating prompt as "Source guidance" so each tool explains how to read its own fields (e.g. what `meta.merged` or a "review_requested" relationship means) without the generic aggregator hard-coding any source's semantics. Omit it and `monday` falls back to a generic instruction. |
+| `meta` | no | object | Passthrough; also read by the signal guard (below). |
 | _any other_ | no | any | Passed through verbatim. |
 
-`importance`, `urgency`, and `summary` are **added by `monday`** when a `--rate-*`
-flag is set — sources should not emit them.
+`importance`, `urgency`, `summary`, and `category` are **added by `monday`** when
+a `--rate-*` flag is set — sources should not emit them.
+
+### Rating hint (let each tool own its instructions)
+
+Put source-specific interpretation in `rating_hint`, not in `monday`. Example
+from the `github` source:
+
+```json
+{
+  "id": "gh-notif-123", "ts": "2025-07-14T09:12:00Z", "source": "gh",
+  "title": "Fix race condition", "url": "https://github.com/org/repo/pull/4821",
+  "meta": { "state": "open", "merged": false, "relationship": "review_requested",
+            "authored_by_you": false, "checks": "passing", "awaiting_checks": false },
+  "rating_hint": "This is a GitHub item. meta.relationship says what is expected of the reader… If meta.merged is true or meta.state is \"closed\", category MUST be fyi. If meta.awaiting_checks is true, keep urgency low — acting now is premature."
+}
+```
+
+### Signal guard (optional `meta` fields the aggregator acts on)
+
+Independently of the rating agent, `monday` applies a small deterministic guard
+from `meta` when `--trust-signals` is on (the default): `meta.merged` /
+`meta.state:"closed"` force the item to `fyi`; `meta.awaiting_checks` /
+`meta.draft` hold a PR out of the "now" bucket; `meta.relationship`
+(review_requested / mention / assign) or `meta.authored_by_you` on an open item
+keep it actionable. Sources that want this behavior populate those fields; the
+guard is skipped for sources that don't.
 
 ### Minimal item
 
