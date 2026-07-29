@@ -2500,6 +2500,27 @@ async function mondayGh(args) {
     username = user.login;
   } catch {}
 
+  // Normalize GitHub's own state into the protocol-standard disposition flags the
+  // aggregator's signal guard reads (so `monday` stays source-agnostic):
+  //   resolved          — merged/closed → FYI
+  //   not_ready         — draft or CI pending/failing → hold for later
+  //   awaiting_you      — your review/action is requested → actionable now
+  //   waiting_on_others — you authored it and it's now on others (review/merge)
+  function ghNormalize(m) {
+    const resolved = m.merged === true || m.state === 'closed';
+    if (resolved) return { resolved: true };
+    const asked = ['review_requested', 'mention', 'assign', 'assigned'].includes(m.relationship);
+    if (asked) return { awaiting_you: true };
+    const notReady = m.draft === true || m.awaiting_checks === true;
+    if (m.authored_by_you === true && m.state === 'open') {
+      if (notReady) return { not_ready: true };            // blocked on your CI / still a draft
+      if (m.mergeable_state === 'clean') return { awaiting_you: true }; // green + approved → you merge
+      return { waiting_on_others: true };                  // waiting on reviewers/merge
+    }
+    return notReady ? { not_ready: true } : {};
+  }
+  const withNormalized = (m) => ({ ...m, ...ghNormalize(m) });
+
   const items = [];
   const seen = new Set();
 
@@ -2509,10 +2530,12 @@ async function mondayGh(args) {
   // own rating instructions.
   const GH_RATING_HINT = [
     'This is a GitHub item. `meta.viewer` is the reader\'s own username.',
-    '`meta.authored_by_you: true` means the reader opened this PR/issue (they are likely waiting on others or on a merge).',
-    '`meta.relationship` (review_requested, assignee, mention, author, subscribed, ...) says what is expected of the reader — weight items where they are personally on the hook (review requested, assigned, directly mentioned, or authored-and-ready) above things they merely subscribe to.',
-    'If `meta.merged` is true or `meta.state` is "closed", the item is already done — category MUST be `fyi`.',
-    'If `meta.awaiting_checks` is true (a PR whose CI is pending or failing) or `meta.draft` is true, it is not ready to act on yet — keep urgency low; acting now would be premature. `meta.checks` is passing/pending/failing and `meta.ready_to_merge: true` means clean and green.',
+    'The item carries normalized disposition flags — trust them:',
+    '`meta.resolved: true` → it is merged/closed, already done → category MUST be `fyi`.',
+    '`meta.awaiting_you: true` → the reader\'s review or action is requested (review_requested / assigned / mentioned, or their own PR is green and ready to merge) → this is a real to-do (confirm/review/respond/act).',
+    '`meta.waiting_on_others: true` → the reader has done their part and is now waiting on other people (their open PR awaiting review/merge, a question awaiting a reply) → category `waiting`: they may want to chase or nudge, but there is nothing for them to build.',
+    '`meta.not_ready: true` → a PR that is a draft or whose CI is pending/failing → not ready to act on yet; keep urgency low.',
+    'Otherwise use `meta.relationship` and the content to judge how much the reader is personally on the hook.',
   ].join(' ');
 
   function addItem(item) {
@@ -2625,7 +2648,7 @@ async function mondayGh(args) {
         ts: n.updated_at,
         body,
         participants: [],
-        meta: {
+        meta: withNormalized({
           reason: n.reason,
           unread: n.unread,
           viewer: username,
@@ -2634,7 +2657,7 @@ async function mondayGh(args) {
           relationship: n.reason,
           authored_by_you: n.reason === 'author',
           ...signals,
-        },
+        }),
       });
     }
   } catch {}
@@ -2660,7 +2683,7 @@ async function mondayGh(args) {
         ts: pr.updated_at,
         body,
         participants: [pr.user.login, ...(pr.assignees || []).map(a => a.login)].filter((v, i, a) => a.indexOf(v) === i),
-        meta: {
+        meta: withNormalized({
           state: pr.state,
           draft: pr.draft || false,
           viewer: username,
@@ -2670,7 +2693,7 @@ async function mondayGh(args) {
           // Checks readiness so a review request that's still red/pending on CI
           // can be held out of the "now" slice.
           ...(await subjectSignals(repoUrl, pr.number, 'pr')),
-        },
+        }),
       });
     }
   } catch {}
@@ -2696,14 +2719,14 @@ async function mondayGh(args) {
         ts: issue.updated_at,
         body,
         participants: [issue.user.login, ...(issue.assignees || []).map(a => a.login)].filter((v, i, a) => a.indexOf(v) === i),
-        meta: {
+        meta: withNormalized({
           state: issue.state,
           labels: (issue.labels || []).map(l => l.name),
           viewer: username,
           author: issue.user.login,
           relationship: 'assignee',
           authored_by_you: issue.user.login === username,
-        },
+        }),
       });
     }
   } catch {}
