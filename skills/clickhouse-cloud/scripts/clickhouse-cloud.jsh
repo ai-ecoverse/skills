@@ -21,6 +21,7 @@ const fs   = require('fs');
 const CONSOLE_HOST = 'console.clickhouse.cloud';
 const CP  = 'https://control-plane-internal.clickhouse.cloud'; // control-plane
 const CA  = 'https://console-api-internal.clickhouse.cloud';   // console-api
+const QUERIES = 'https://queries.clickhouse.cloud';            // SQL-console query proxy
 
 // The live Auth0 bearer token is attached to every request, so requests must
 // only ever go to trusted ClickHouse Cloud API hosts — never an arbitrary URL
@@ -28,6 +29,7 @@ const CA  = 'https://console-api-internal.clickhouse.cloud';   // console-api
 const ALLOWED_HOSTS = new Set([
   'control-plane-internal.clickhouse.cloud',
   'console-api-internal.clickhouse.cloud',
+  'queries.clickhouse.cloud',
 ]);
 
 function assertAllowedUrl(url) {
@@ -504,15 +506,82 @@ async function cmdApi(pos, opts) {
   console.log(typeof res === 'string' ? res : JSON.stringify(res, null, 2));
 }
 
+// ─── SQL query (SQL-console query proxy, session-authenticated) ─────────────────
+// Runs SQL against a service via the same endpoint the Cloud SQL console uses
+// (queries.clickhouse.cloud), signed with the in-page Auth0 token — so no separate
+// database username/password is needed, unlike a direct native/HTTP connection.
+
+async function resolveService(opts) {
+  const explicit = (typeof opts.service === 'string' && opts.service) ||
+                   (typeof opts.instance === 'string' && opts.instance) || null;
+  if (explicit) return explicit;
+  const orgId = await resolveOrg(opts);
+  const insts = await listInstances(orgId);
+  if (insts.length === 1) return insts[0].id;
+  if (insts.length === 0) { console.error('No services in this org. Specify --service=<id>.'); process.exit(1); }
+  console.error('Multiple services — specify --service=<id>:');
+  for (const i of insts) console.error('  ' + i.id + '  ' + i.name);
+  process.exit(1);
+}
+
+function fmtCell(v) {
+  if (v == null) return '';
+  if (typeof v === 'object') return JSON.stringify(v);
+  return String(v);
+}
+
+// Parse the streaming JSONEachRowWithProgress body into { meta, rows, exception }.
+function parseRowStream(body) {
+  const out = { meta: [], rows: [], exception: null };
+  for (const ln of String(body).split('\n')) {
+    if (!ln.trim()) continue;
+    let o; try { o = JSON.parse(ln); } catch (e) { continue; }
+    if (o.exception) out.exception = o.exception;
+    else if (o.meta) out.meta = o.meta;
+    else if (o.row) out.rows.push(o.row);
+    // {progress:{...}} lines are ignored
+  }
+  return out;
+}
+
+async function cmdQuery(pos, opts) {
+  let sql = pos.join(' ').trim();
+  if (typeof opts.file === 'string' && opts.file) sql = (await fs.readFile(opts.file, 'utf8')).trim();
+  if (!sql) {
+    console.error('Usage: clickhouse-cloud query "<SQL>" [--service=ID] [--org=ID] [--database=default] [--json|--tsv]');
+    console.error('   or: clickhouse-cloud query --file=query.sql [--service=ID]');
+    process.exit(1);
+  }
+  const svcId = await resolveService(opts);
+  const database = (typeof opts.database === 'string' && opts.database) || 'default';
+  const runId = 'liveQueries:' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+  const url = QUERIES + '/service/' + encodeURIComponent(svcId) +
+    '/run?enable_http_compression=1&format=JSONEachRowWithProgress&request_timeout=3600000';
+  const raw = await apiCall('POST', url, JSON.stringify({ runId, sql, database }), 'text/plain;charset=UTF-8');
+  const res = parseRowStream(typeof raw === 'string' ? raw : JSON.stringify(raw));
+  if (res.exception) { console.error('ClickHouse: ' + res.exception); process.exit(1); }
+  if (opts.json) { console.log(JSON.stringify(res.rows, null, 2)); return; }
+  if (!res.meta.length && !res.rows.length) { console.log('(no rows)'); return; }
+  const cols = res.meta.length ? res.meta.map(m => m.name) : Object.keys(res.rows[0] || {});
+  if (opts.tsv) {
+    console.log(cols.join('\t'));
+    for (const r of res.rows) console.log(cols.map(c => fmtCell(r[c])).join('\t'));
+    return;
+  }
+  table(res.rows, cols.map(c => ({ label: c, get: r => fmtCell(r[c]) })));
+  console.log('\n' + res.rows.length + ' row(s).');
+}
+
 function showHelp() {
   console.log('clickhouse-cloud — ClickHouse Cloud cost & utilization reporting\n');
-  console.log('(Console/control-plane API — for SQL queries use the `klickhaus` skill.)\n');
+  console.log('(Console/control-plane API. Also runs SQL via the Cloud SQL-console proxy —\n see `query` below; the `klickhaus` skill remains the dedicated CDN-logs workflow.)\n');
   console.log('Commands:');
   console.log('  orgs                             List organizations');
   console.log('  services [--org ID]              List services (state, tier, replicas, memory, idle)');
   console.log('  service <svcId> [--org ID]       Full detail for one service');
   console.log('  cost [--org ID] [--period P]     Usage/billing report: per-service cost + line items');
   console.log('  metrics <svcId> [FLAGS]          Utilization summary (min/max/avg/latest)');
+  console.log('  query "<SQL>" [FLAGS]            Run SQL against a service (session-auth, no DB password)');
   console.log('  api <METHOD> <URL> [--body=..]   Raw authenticated passthrough\n');
   console.log('Global flags:');
   console.log('  --org=ID       Organization id (auto-detected if you have exactly one)');
@@ -528,12 +597,19 @@ function showHelp() {
   console.log('  instance metric types: ' + INSTANCE_METRIC_TYPES.slice(0, 8).join(', ') + ', ...');
   console.log('  console metrics:       ' + CONSOLE_METRICS.slice(0, 8).join(', ') + ', ...');
   console.log('  (see references/endpoints.md for the full lists)\n');
+  console.log('query flags:');
+  console.log('  --service=ID   service to run against (auto-detected if the org has exactly one)');
+  console.log('  --database=DB  default database (default: default)');
+  console.log('  --file=PATH    read SQL from a file instead of the argument');
+  console.log('  --json | --tsv output as JSON array / TSV instead of a table\n');
   console.log('Examples:');
   console.log('  clickhouse-cloud cost');
   console.log('  clickhouse-cloud services');
   console.log('  clickhouse-cloud metrics 6f3c51d6-c282-421a-a46d-54fc08d4ce99 --period=LAST_WEEK');
   console.log('  clickhouse-cloud metrics <svc> --type=S3_STORAGE_USAGE --period=LAST_MONTH');
   console.log('  clickhouse-cloud metrics <svc> --metric=disk_storage');
+  console.log('  clickhouse-cloud query "SELECT count() FROM system.query_log" --service=<svc>');
+  console.log('  clickhouse-cloud query --file=q.sql --json');
 }
 
 // ─── Main ──────────────────────────────────────────────────────────────────────
@@ -552,6 +628,8 @@ try {
     case 'cost':     await cmdCost(opts); break;
     case 'metrics':  await cmdMetrics(pos, opts); break;
     case 'usage':    await cmdCost(opts); break;
+    case 'query':    await cmdQuery(pos, opts); break;
+    case 'sql':      await cmdQuery(pos, opts); break;
     case 'api':      await cmdApi(pos, opts); break;
     default:
       console.error('Unknown command: ' + cmd);
