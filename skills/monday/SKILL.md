@@ -270,6 +270,12 @@ A command is **monday-compatible** when `[cmd] monday --limit N --depth N --date
 writes a JSON array to stdout, with each item carrying a stable `id` (for dedup)
 and an ISO `ts` (for sorting); all other fields pass through unchanged.
 
+**Each tool owns its own rating guidance.** A source can attach a `rating_hint`
+string to its items explaining how to read its own fields (e.g. what `merged`,
+`review_requested`, or `awaiting_checks` mean). `monday` injects it into the
+rating prompt as "Source guidance" — so the generic aggregator never hard-codes
+any one source's semantics. See [`references/SOURCE_PROTOCOL.md`](references/SOURCE_PROTOCOL.md).
+
 Each source (`gmail`, `slack`, `teams`, `outlook`, `github`/`gh`, `servicenow`)
 is its own separately installed skill that implements this sub-command. Full
 contract — invocation flags, item schema, dedup/sort semantics, a reference
