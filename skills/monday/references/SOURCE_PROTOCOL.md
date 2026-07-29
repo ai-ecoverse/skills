@@ -65,15 +65,23 @@ from the `github` source:
 }
 ```
 
-### Signal guard (optional `meta` fields the aggregator acts on)
+### Signal guard (normalized disposition flags)
 
 Independently of the rating agent, `monday` applies a small deterministic guard
-from `meta` when `--trust-signals` is on (the default): `meta.merged` /
-`meta.state:"closed"` force the item to `fyi`; `meta.awaiting_checks` /
-`meta.draft` hold a PR out of the "now" bucket; `meta.relationship`
-(review_requested / mention / assign) or `meta.authored_by_you` on an open item
-keep it actionable. Sources that want this behavior populate those fields; the
-guard is skipped for sources that don't.
+from **protocol-standard** `meta` flags (when `--trust-signals` is on — the
+default). Each source normalizes its own state into these; the aggregator reads
+only these, never a source's raw fields:
+
+| `meta` flag | Meaning | Effect in `monday` |
+|-------------|---------|--------------------|
+| `resolved: true` | Done — merged, closed, answered | Forced to `fyi` |
+| `awaiting_you: true` | Your review/decision/action is requested | Kept actionable (now-eligible) |
+| `waiting_on_others: true` | You've done your part; waiting on other people | Category `waiting` → the `followup` bucket (chase, don't build) |
+| `not_ready: true` | Can't act yet (draft, CI pending/failing) | Held out of `now` into `later` |
+
+A source computes these from whatever it knows (the `github` source derives them
+from PR/issue state, merge/CI status, and your relationship to the thread). A
+source that sets none of them is simply unaffected by the guard.
 
 ### Minimal item
 
