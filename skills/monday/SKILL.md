@@ -5,10 +5,13 @@ description: >-
   Outlook, GitHub, ServiceNow) into a single ranked list. Acts as a dispatcher: each
   source skill exposes a `[cmd] monday` sub-command that returns JSON items, and the
   `monday` command merges, deduplicates, optionally rates with an AI model
-  (importance times urgency), and sorts them. Use when the user asks "what should I
-  work on", "Monday morning triage", "what needs my attention", "show me my inbox",
-  "rank my todos", "what's urgent across all my tools", or for weekly/daily triage
-  across email, chat, tickets, and pull requests.
+  (importance times urgency, and optionally effort in minutes), sorts by value or
+  ROI (impact per minute), and can build a doable "now" plan under a time budget or
+  top-N focus so a big inbox becomes a plan of attack rather than an overwhelming
+  wall. Use when the user asks "what should I work on", "Monday morning triage",
+  "what needs my attention", "show me my inbox", "rank my todos", "what's urgent
+  across all my tools", "build me a plan", "what can I clear in 90 minutes", or for
+  weekly/daily triage across email, chat, tickets, and pull requests.
 allowed-tools: bash
 ---
 
@@ -34,6 +37,15 @@ monday --rate-importance 9-1 --rate-urgency 8-1 --rate-summary 500
 
 # Rate with a specific model and a knowledge-base context directory
 monday gh --rate-importance 8-3 --rate-model haiku --rate-context /workspace/kb
+
+# Estimate effort and rank by quick wins first (impact per minute)
+monday gh --rate-importance 9-1 --rate-urgency 8-1 --rate-effort --sort roi
+
+# Backpressure: turn a big inbox into a doable 90-minute plan
+monday --rate-importance 9-1 --rate-urgency 8-1 --rate-effort --budget 90m
+
+# Or just the top 5 as "now", everything else ranked as "later"
+monday --rate-importance 9-1 --rate-urgency 8-1 --focus 5
 ```
 
 ## Aggregation pipeline
@@ -44,8 +56,10 @@ The `monday` command executes the following steps in order:
 2. **Invoke in parallel** — call `[cmd] monday --limit N --depth N --date Nd` for every discovered source concurrently.
 3. **Collect and validate JSON** — sources that exit non-zero, emit empty output, or return invalid JSON are logged to stderr and dropped; aggregation continues with the rest. Each source is also truncated to `--limit`, so a source that ignores the flag cannot inflate the run.
 4. **Deduplicate by `id`** — merge arrays in argument order; the first occurrence of an `id` wins. (Precedence rules: [`references/SOURCE_PROTOCOL.md`](references/SOURCE_PROTOCOL.md).)
-5. **Optionally rate** — if any `--rate-*` flag is set, submit each item to the rating agent (model: `--rate-model`; optional context: `--rate-context`) to assign `importance`, `urgency`, and `summary` fields. Agents run through a bounded worker pool (`--rate-concurrency`) and no more than `--rate-max` items are rated. Rating failures fall back to the unrated item; aggregation still completes.
-6. **Sort and output** — if rated, sort by `urgency × importance` descending (ties broken by `ts` descending); otherwise sort by `ts` descending. Write the final JSON array to stdout.
+5. **Optionally rate** — if any `--rate-*` flag is set, submit each item to the rating agent (model: `--rate-model`; optional context: `--rate-context`) to assign `importance`, `urgency`, `summary`, and — with `--rate-effort` — an `effort_minutes` estimate plus a coarse `effort_band` (`quick`/`short`/`deep`). Agents run through a bounded worker pool (`--rate-concurrency`) and no more than `--rate-max` items are rated. Rating failures fall back to the unrated item; aggregation still completes.
+6. **Sort** — order by `--sort`: `value` (importance × urgency, the default), `roi` (impact per minute — quick wins first; needs `--rate-effort`), or `newest` (timestamp). Unrated runs always fall back to `ts` descending.
+7. **Plan (backpressure)** — if `--focus N` or `--budget DURATION` is set, split the sorted list into a `now` bucket and a `later` bucket, tag each item with a `bucket` field, and emit `now` items first. A one-line plan summary goes to stderr. The goal is a doable slice, not a wall (see [Backpressure](#backpressure-a-plan-not-a-wall)).
+8. **Output** — write the final JSON array to stdout.
 
 ## Flags
 
@@ -57,10 +71,14 @@ The `monday` command executes the following steps in order:
 | `--rate-importance HI-LO` | off | Rate each item's importance on a HI..LO integer scale |
 | `--rate-urgency HI-LO` | off | Rate each item's urgency on a HI..LO integer scale |
 | `--rate-summary N` | off | Generate a ~N-character summary per item |
+| `--rate-effort` | off | Estimate `effort_minutes` per item plus a `quick`/`short`/`deep` band. Powers `--sort roi` and `--budget`. |
 | `--rate-model NAME` | cheapest model | Rating model. Accepts an exact id from `models` or a unique case-insensitive substring (e.g. `haiku`, `us.anthropic.claude-haiku`). Validated against the live `models` catalog before any call — a typo or ambiguous fragment fails fast (exit 1) instead of running. When omitted, the cheapest haiku-class model is auto-selected. |
 | `--rate-context PATH` | none | Read-only knowledge-base path the rating agent can grep |
 | `--rate-concurrency N` | `4` | Parallel rating agents (bounded worker pool) |
 | `--rate-max N` | `60` | Refuse to rate more than N items; the rest pass through unrated |
+| `--sort MODE` | `value` | Ranking: `value` (importance × urgency), `roi` (impact per minute; needs `--rate-effort`), or `newest` (timestamp) |
+| `--focus N` | off | Mark only the top N items as the `now` bucket; the rest become `later` |
+| `--budget DURATION` | off | Pack the highest-ranked items that fit a time box (`90m`, `2h`, `1h30m`) into `now`; needs `--rate-effort` |
 
 Positional args (`gh`, `slack`, `teams`, `outlook`, `gmail`, `servicenow`) select
 which sources to invoke. With no positional args, `monday` runs `which <cmd>` on
@@ -93,6 +111,76 @@ resolving against `models --json` ourselves and handing `agent` an exact id, the
 rating pass runs on the model you asked for, and a typo or ambiguous fragment
 fails fast (exit 1, no paid calls) instead of quietly overspending. Confirm the
 resolved model and per-scoop cost afterwards with `cost` / `cost --json`.
+
+### Effort and ROI ranking
+
+`--rate-effort` asks the rater for an `effort_minutes` estimate — how long it
+would take *you* to actually resolve the item, not read it — plus a coarse
+`effort_band` (`quick` ≤15m, `short` ≤60m, `deep` >60m). That unlocks two views
+beyond raw importance × urgency:
+
+- `--sort roi` ranks by **impact per minute**, so a high-value item that costs
+  two hours sinks below three five-minute wins. This is the "what can I clear
+  before my next meeting" order.
+- `--budget 90m` (below) uses effort to pack a realistic session.
+
+Effort is an AI estimate — treat it as a hint, not a stopwatch. Items the rater
+can't size are assumed 30 minutes so they neither dominate nor vanish.
+
+## Backpressure: a plan, not a wall
+
+A ranked list of 150 items is still a wall. Humans bring judgement, context, and
+intuition an AI can't — but they're easy to overwhelm, and a giant inbox invites
+paralysis, not progress. `monday`'s job is to hand you a **doable slice** and
+keep the rest ranked-but-out-of-sight until you ask.
+
+Two knobs shape the plan; both tag every item with a `bucket` field
+(`"now"` | `"later"`) and emit the `now` items first:
+
+- **`--focus N`** — only the top N are `now`; everything else is `later`. Start
+  your day with five things that matter, not a scroll of eighty.
+- **`--budget DURATION`** — pack the highest-ranked items whose cumulative
+  `effort_minutes` fit the time box (`90m`, `2h`, `1h30m`) into `now`; the rest
+  become `later`. Combine with `--sort roi` for a max-impact session. When both
+  `--focus` and `--budget` are set, the budget packs by time but never exceeds
+  the focus count.
+
+A one-line plan summary prints to stderr, e.g.:
+
+```text
+[monday] plan: 4 now (~85m), budget 90m · 46 later. Start with the "now" bucket; the rest stay ranked for when you're ready.
+```
+
+When a rated run is large (>12 items) and neither knob is set, `monday` nudges
+you toward them on stderr rather than silently dumping the backlog. The default
+output is unchanged and fully backward-compatible — `bucket` only appears once
+you opt into a plan.
+
+## Presentation: render as a dip, not a wall
+
+`monday` emits data; **how that data reaches the human decides whether it feels
+like a plan or a defeat.** When you (the cone) surface a triage run to the user,
+do not paste the raw JSON array. Render it as a [dip](../dips/SKILL.md) — an
+inline, ephemeral chat widget — following these principles:
+
+1. **Lead with the `now` bucket.** Show the doable slice big and first
+   ("Start here → 4 items, ~85 min"). Collapse `later` behind a count
+   ("+46 more, ranked, when you're ready") — visible, not in your face.
+2. **One line per item:** title, a `source #id` chip, the score or ROI, the
+   `effort_band` as a small pill, and a one-clause "why now" from the summary.
+3. **Band the list** (CRIT / HIGH / MED / LOW by score, or by `effort_band`)
+   so the eye groups it without reading every row.
+4. **Make each item actionable** — an Open link (`url`), and optionally
+   Done / Defer buttons that `slicc.lick(...)` back so triage is a loop, not a
+   report.
+5. **Frame momentum, not doom.** "3 quick wins before lunch" beats "50 open
+   items." The backlog *count* stays honest; its *contents* stay collapsed.
+
+Recommended pipeline: run `monday … --rate-effort --budget 90m` (or `--focus`),
+read the JSON, and build the dip from the `now`/`later` buckets. Keep the JSON
+contract intact for scripts; the dip is a presentation layer on top, not a
+replacement.
+
 
 ## Source protocol
 
@@ -141,6 +229,9 @@ found on `PATH`:
 | Empty `[]` output | Window too narrow or `--limit` too low | Widen `--date` (e.g. `14d`) or raise `--limit` |
 | `NOTE: "<cmd>" returned N items for --limit K` | The source ignored `--limit`; `monday` truncated it | Harmless, but the source has a bug worth fixing — it also inflates rating cost |
 | Rating never finishes / floods approval prompts | Too many items, or an old build writing one scratch file per item | Lower `--limit`, lower `--rate-max`, or reduce `--rate-concurrency`. Current builds pass prompts as arguments and write nothing |
+| `--sort roi` had no effect / warned | `--sort roi` needs effort estimates | Add `--rate-effort`; without it monday falls back to `--sort value` |
+| `--budget` put everything in `later` | Budget smaller than the cheapest item's effort, or no `--rate-effort` (items assumed 30m) | Raise the budget, add `--rate-effort` for real estimates, or use `--focus N` instead |
+| Still feels like a wall | Presented raw JSON instead of a plan | Use `--focus`/`--budget` and render the `now`/`later` buckets as a dip — see [Presentation](#presentation-render-as-a-dip-not-a-wall) |
 
 Confirm a single source satisfies the protocol before aggregating:
 `gh monday --limit 5 --date 3d | jq 'type, length'` should print `"array"` and a
@@ -164,7 +255,7 @@ A single JSON array on stdout. Sorting and rating augmentation follow pipeline s
 ]
 ```
 
-**Rated item example** (with `--rate-importance 9-1 --rate-urgency 8-1 --rate-summary 200`):
+**Rated item example** (with `--rate-importance 9-1 --rate-urgency 8-1 --rate-summary 200 --rate-effort --budget 90m`):
 ```json
 [
   {
@@ -176,10 +267,17 @@ A single JSON array on stdout. Sorting and rating augmentation follow pipeline s
     "participants": ["alice", "bob"],
     "importance": 8,
     "urgency": 7,
-    "summary": "Security-critical PR awaiting your review; blocks the 2.4 release."
+    "summary": "Security-critical PR awaiting your review; blocks the 2.4 release.",
+    "effort_minutes": 20,
+    "effort_band": "short",
+    "bucket": "now"
   }
 ]
 ```
+
+`effort_minutes` / `effort_band` appear only with `--rate-effort`; `bucket`
+appears only with `--focus` or `--budget`. Without those flags the output is
+unchanged from the plain rated shape (`importance` / `urgency` / `summary`).
 
 ```bash
 monday gh slack --date 2d | jq '.[0:5] | .[] | {id, ts, title}'
