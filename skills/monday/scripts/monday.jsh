@@ -414,7 +414,7 @@ function buildRatingPrompt(item) {
 
   parts.push('## Instructions');
   parts.push('Rate this item based on its content, participants, recency, and context.');
-  parts.push('If the item has a `meta` block, use it: `meta.viewer` is the reader\'s own username, so `meta.authored_by_you: true` means the reader opened this and is likely waiting on others or on a merge; `meta.relationship` (e.g. review_requested, assignee, mention, author) tells you what is expected of the reader. Weight items where the reader is personally on the hook (their review is requested, it is assigned to them, they are directly mentioned, or they authored it and it is now ready) higher than things they are merely subscribed to.');
+  parts.push('If the item has a `meta` block, use it: `meta.viewer` is the reader\'s own username, so `meta.authored_by_you: true` means the reader opened this and is likely waiting on others or on a merge; `meta.relationship` (e.g. review_requested, assignee, mention, author) tells you what is expected of the reader. Weight items where the reader is personally on the hook (their review is requested, it is assigned to them, they are directly mentioned, or they authored it and it is now ready) higher than things they are merely subscribed to. If `meta.merged` is true or `meta.state` is "closed", the item is already done — category MUST be `fyi`. If `meta.awaiting_checks` is true (a PR whose CI is still pending or failing) or `meta.draft` is true, it is not ready to merge/act on yet — keep its urgency low, since acting now would be premature.');
   parts.push('');
 
   if (rateImportance) {
@@ -496,12 +496,24 @@ function applySignalGuard(rated) {
   if (!trustSignals) return rated;
   const m = rated.meta || {};
   const closed = m.state === 'closed' || m.state === 'merged' || m.merged === true;
+  // Downgrade: an already merged/closed item is done — never a to-do, whatever
+  // the rater guessed from stale notification text.
+  if (closed) {
+    if (rated.category !== 'fyi') {
+      rated.category = 'fyi';
+      rated.actionable = false;
+      rated.reclassified_by_signal = 'closed';
+    }
+    return rated;
+  }
+  // Upgrade: you were asked to review/act, or authored an open item — keep it a
+  // to-do even if the rater guessed FYI.
   const asked = ['review_requested', 'mention', 'assign', 'assigned'].includes(m.relationship);
   const mineOpen = m.authored_by_you === true && m.state === 'open';
-  if (!closed && rated.category === 'fyi' && (asked || mineOpen)) {
+  if (rated.category === 'fyi' && (asked || mineOpen)) {
     rated.category = 'review';
     rated.actionable = true;
-    rated.reclassified_by_signal = true;
+    rated.reclassified_by_signal = 'relationship';
   }
   return rated;
 }
@@ -736,10 +748,16 @@ function buildPlan(items) {
 
   let usedMin = 0;
   let nowCount = 0;
+  // A PR that is a draft or still red/pending on CI isn't ready to act on — hold
+  // it for "later" rather than the top of the list, even if it ranks high.
+  const notReadyNow = (it) =>
+    it.type === 'pr' && it.meta && (it.meta.draft === true || it.meta.awaiting_checks === true);
   const taggedTodo = todo.map((it) => {
     let inNow = true;
     if (sliceRequested) {
-      if (budgetMin != null) {
+      if (notReadyNow(it)) {
+        inNow = false; // waiting on checks / draft → not top of the list
+      } else if (budgetMin != null) {
         const cost = it.effort_minutes != null ? Math.max(1, it.effort_minutes) : EFFORT_UNKNOWN_MIN;
         const fitsTime = usedMin + cost <= budgetMin;
         const fitsFocus = focusValid == null || nowCount < focusValid;
