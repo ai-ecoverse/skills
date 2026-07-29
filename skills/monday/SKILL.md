@@ -79,6 +79,20 @@ The `monday` command executes the following steps in order:
 | `--sort MODE` | `roi` if `--rate-effort` else `value` | Ranking: `roi` (impact per minute — best bang-for-buck first), `value` (importance × urgency), or `newest` (timestamp) |
 | `--focus N` | off | Promote only the top N to-dos to the `now` bucket; the rest become `later` |
 | `--budget DURATION` | off | Pack the highest-ranked to-dos that fit a time box (`90m`, `2h`, `1h30m`) into `now`; needs `--rate-effort` |
+| `--no-cache` | off | Don't reuse or write cached ratings this run |
+| `--include-ignored` | off | Show items on the done/ignore list anyway |
+| `--no-trust-signals` | off | Don't override the rater from source relationship metadata |
+
+**Management subcommands** (persist state under `$MONDAY_HOME` / `~/.monday`):
+
+| Command | Effect |
+|---------|--------|
+| `monday done <id>...` | Mark handled — hidden from all future runs |
+| `monday ignore <id>...` | Never show these items again |
+| `monday restore <id>...` (alias `unignore`) | Undo a done/ignore |
+| `monday ignored` (alias `list-ignored`) | Print the done/ignore list (JSON on stdout) |
+| `monday cache-clear` (alias `forget-cache`) | Wipe the rating cache |
+
 
 Positional args (`gh`, `slack`, `teams`, `outlook`, `gmail`, `servicenow`) select
 which sources to invoke. With no positional args, `monday` runs `which <cmd>` on
@@ -155,6 +169,45 @@ When a rated run is large (>12 items) and neither knob is set, `monday` nudges
 you toward them on stderr rather than silently dumping the backlog. The default
 output is unchanged and fully backward-compatible — `bucket` only appears once
 you opt into a plan.
+
+## State: rating cache, done/ignore list, and signal trust
+
+`monday` keeps a little persistent state under `$MONDAY_HOME` (default
+`~/.monday`, or `/shared/monday` when there is no home dir):
+
+**Rating cache** (`rating-cache.json`). Every rating is cached, keyed by the
+item's content **and** the rating parameters and model. A rerun only pays for
+new or changed items — an unchanged inbox re-rates for free. The key includes
+the importance/urgency scales, summary length, effort flag, context path, and
+resolved model, so changing any of them correctly invalidates. Bypass with
+`--no-cache`; wipe with `monday cache-clear`.
+
+**Done / ignore list** (`suppress.json`). Dismiss an item permanently so it
+never resurfaces:
+
+```bash
+monday done   gh-notif-24826743046      # handled it
+monday ignore gh-notif-24826743046      # never show me this again
+monday ignored                          # list what's suppressed (JSON on stdout)
+monday restore gh-notif-24826743046     # bring it back
+```
+
+Suppressed items are filtered right after merge (before rating, so they cost
+nothing). `--include-ignored` shows them anyway. The ids are the stable `id`
+field from monday's output — the same ones the dip's Done / Later buttons send
+back via `slicc.lick`, so the presentation loop can call `monday done <id>`
+directly.
+
+**Signal trust.** Sources may tag items with relationship metadata
+(`meta.authored_by_you`, `meta.relationship` = `review_requested` / `mention` /
+`assign`, `meta.state`). When present, `monday` trusts these over the rater: an
+item you were asked to review, or authored and left open, stays **actionable**
+even if the rater guessed `fyi` (it is retagged `category: review` and marked
+`reclassified_by_signal`). Merged/closed items are never resurfaced. Disable the
+override with `--no-trust-signals`. The `github` source populates these fields
+for notifications, review requests, and assigned issues.
+
+
 
 ## Presentation: render as a dip, not a wall
 
