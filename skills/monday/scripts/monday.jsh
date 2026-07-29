@@ -6,7 +6,7 @@
 // Examples:
 //   monday gh slack --limit 20 --date 3d
 //   monday --rate-importance 9-4 --rate-urgency 8-3 --rate-summary 500
-//   monday gh --limit 10 --rate-importance 8-3 --rate-model claude-haiku-4-5
+//   monday gh --limit 10 --rate-importance 8-3 --rate-model haiku
 //
 // With no positional args, auto-discovers monday-compatible commands on PATH.
 
@@ -91,7 +91,9 @@ RATING (each rated item costs one model call — start small)
   --rate-importance HI-LO   Rate importance, e.g. 9-1
   --rate-urgency HI-LO      Rate urgency, e.g. 8-1
   --rate-summary N          ~N-character summary per item
-  --rate-model NAME         Model for rating (default claude-haiku-4-5)
+  --rate-model NAME         Model for rating. Accepts an exact id from \`models\`
+                            or a unique substring (e.g. "haiku"). Validated
+                            before any call; defaults to the cheapest model.
   --rate-context PATH       Read-only knowledge base the rater may grep
   --rate-concurrency N      Parallel rating agents (default 4)
   --rate-max N              Refuse to rate more than N items (default 60)
@@ -117,7 +119,16 @@ const date  = flags['date']  || '7d';
 const rateImportance = flags['rate-importance'] || null;   // e.g. "8-3"
 const rateUrgency    = flags['rate-urgency']    || null;   // e.g. "9-2"
 const rateSummary    = flags['rate-summary']     || null;   // e.g. "1000"
-const rateModel      = flags['rate-model']       || 'claude-haiku-4-5';
+// Rating model. Resolved against `models --json` in main() before any agent
+// spawns — see resolveRateModel(). We deliberately do NOT hardcode a default
+// model id here: exact ids carry a version+date suffix that drifts, and the
+// bare alias `claude-haiku-4-5` is a trap (it passes `agent`'s validation but
+// the spawned scoop silently falls back to the parent model, e.g. opus at ~5x
+// the cost — see ai-ecoverse/slicc#1752). Instead we look up the live model
+// list and resolve the user's request (or auto-pick the cheapest model) to an
+// exact `models` id, which is proven to carry through to the scoop.
+const rateModelArg   = flags['rate-model']       || null;   // user request (may be a substring)
+let   rateModel      = rateModelArg;                          // resolved to an exact id in main()
 const rateContext    = flags['rate-context']      || null;  // e.g. "/workspace/kb"
 const rateConcurrency = flags['rate-concurrency'] || '4';   // parallel rating agents
 const rateMax        = flags['rate-max']          || '60';  // hard ceiling on rated items
@@ -221,6 +232,85 @@ function mergeItems(arrays) {
 }
 
 // ─── Rating via Agent ────────────────────────────────────────────────────────
+
+/**
+ * Fetch the live model catalog via `models --json`.
+ * Returns an array of { id, cost: { input, output, ... }, reasoning, ... }.
+ * Throws with a clear message if the command is unavailable or unparsable.
+ */
+async function getModels() {
+  const r = await exec('models --json 2>/dev/null');
+  if (r.exitCode !== 0 || !r.stdout.trim()) {
+    throw new Error(
+      "could not read the model catalog via `models --json`. Is the `models` command available?"
+    );
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(r.stdout);
+  } catch {
+    throw new Error('`models --json` did not return valid JSON.');
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0) {
+    throw new Error('`models --json` returned no models.');
+  }
+  return parsed;
+}
+
+/**
+ * Resolve a requested rating model to an EXACT `models` id.
+ *
+ * Why resolve here instead of trusting `agent --model`? Because `agent` accepts
+ * some aliases that it then fails to apply — notably the bare `claude-haiku-4-5`
+ * validates fine but silently spawns the parent model (opus) at ~5x the cost
+ * (ai-ecoverse/slicc#1752). Exact ids from `models` are proven to carry through,
+ * so we always hand `agent` an exact id and never rely on alias resolution.
+ *
+ * @param {string|null} requested  user's --rate-model value, or null to auto-pick.
+ * @returns {Promise<string>} an exact model id from the catalog.
+ */
+async function resolveRateModel(requested) {
+  const catalog = await getModels();
+  const ids = catalog.map((m) => m.id);
+  const costOf = (m) => (m.cost?.input || 0) + (m.cost?.output || 0);
+
+  if (requested) {
+    // 1. Exact id match — the ideal case.
+    if (ids.includes(requested)) return requested;
+    // 2. Unique case-insensitive substring match (lets the user pass a short,
+    //    memorable fragment like "haiku" or "claude-haiku-4-5").
+    const needle = requested.toLowerCase();
+    const matches = ids.filter((id) => id.toLowerCase().includes(needle));
+    if (matches.length === 1) {
+      console.error(`[monday] --rate-model "${requested}" resolved to ${matches[0]}`);
+      return matches[0];
+    }
+    if (matches.length > 1) {
+      throw new Error(
+        `--rate-model "${requested}" is ambiguous, matches ${matches.length} models:\n  ` +
+        matches.join('\n  ') +
+        '\nSpecify a more exact id (see `models`).'
+      );
+    }
+    // 3. No match — fail fast rather than silently falling back to an expensive model.
+    throw new Error(
+      `--rate-model "${requested}" is not a known model. Available ids (see \`models\`):\n  ` +
+      ids.join('\n  ')
+    );
+  }
+
+  // Auto-pick: cheapest model, preferring a haiku-class model when present
+  // (fast + cheap is the right default for bulk triage rating).
+  const byCost = [...catalog].sort((a, b) => costOf(a) - costOf(b));
+  const haiku = byCost.filter((m) => m.id.toLowerCase().includes('haiku'));
+  const pick = (haiku.length ? haiku : byCost)[0];
+  console.error(
+    `[monday] no --rate-model given; auto-selected cheapest ${haiku.length ? 'haiku-class ' : ''}` +
+    `model: ${pick.id} (${pick.cost?.input}/${pick.cost?.output} per MTok)`
+  );
+  return pick.id;
+}
+
 
 /**
  * Build the agent prompt for rating a single item.
@@ -423,6 +513,16 @@ async function main() {
 
   // 4. Rate if any --rate-* flags are present
   if (hasRating && items.length > 0) {
+    // Resolve the rating model to an exact `models` id up front. This both
+    // validates the user's --rate-model (fail fast on a typo instead of paying
+    // for a wrong model) and sidesteps the alias-fallback trap in `agent`
+    // (ai-ecoverse/slicc#1752).
+    try {
+      rateModel = await resolveRateModel(rateModelArg);
+    } catch (e) {
+      console.error(`[monday] ${e.message}`);
+      process.exit(1);
+    }
     // Guard rail: rating is one model call per item, so an unexpectedly large merge
     // is expensive and slow. Rate the newest N and pass the rest through unrated
     // rather than silently launching hundreds of calls.
