@@ -56,9 +56,9 @@ The `monday` command executes the following steps in order:
 2. **Invoke in parallel** — call `[cmd] monday --limit N --depth N --date Nd` for every discovered source concurrently.
 3. **Collect and validate JSON** — sources that exit non-zero, emit empty output, or return invalid JSON are logged to stderr and dropped; aggregation continues with the rest. Each source is also truncated to `--limit`, so a source that ignores the flag cannot inflate the run.
 4. **Deduplicate by `id`** — merge arrays in argument order; the first occurrence of an `id` wins. (Precedence rules: [`references/SOURCE_PROTOCOL.md`](references/SOURCE_PROTOCOL.md).)
-5. **Optionally rate** — if any `--rate-*` flag is set, submit each item to the rating agent to assign `importance`, `urgency`, `summary`, a `category` (`fyi` \| `confirm` \| `review` \| `respond` \| `act` — what the item asks of you), a derived `actionable` flag (`category !== 'fyi'`), and — with `--rate-effort` — an `effort_minutes` estimate plus a coarse `effort_band` (`quick`/`short`/`deep`). Agents run through a bounded worker pool (`--rate-concurrency`) and no more than `--rate-max` items are rated. Rating failures fall back to the unrated item; aggregation still completes.
+5. **Optionally rate** — if any `--rate-*` flag is set, submit each item to the rating agent to assign `importance`, `urgency`, `summary`, a `category` (`fyi` \| `confirm` \| `review` \| `respond` \| `act` \| `waiting` — what the item asks of you; `waiting` = you've done your part and are chasing others), a derived `actionable` flag (true unless `fyi` or `waiting`), and — with `--rate-effort` — an `effort_minutes` estimate plus a coarse `effort_band` (`quick`/`short`/`deep`). Agents run through a bounded worker pool (`--rate-concurrency`) and no more than `--rate-max` items are rated. Rating failures fall back to the unrated item; aggregation still completes.
 6. **Sort** — order by `--sort`: `roi` (impact per minute — the default when `--rate-effort` is on), `value` (importance × urgency), or `newest`. Unrated runs always fall back to `ts` descending.
-7. **Plan (backpressure)** — split actionable to-dos from informational **FYI** items (merged PRs, closed issues, notifications). If `--focus N` or `--budget DURATION` is set, promote a doable slice of to-dos to a `now` bucket and hold the rest as `later`; FYI items go to a separate `fyi` bucket that never consumes the time budget. Each item gets a `bucket` field and a one-line plan summary prints to stderr. The goal is a doable slice, not a wall (see [Backpressure](#backpressure-a-plan-not-a-wall) and [Presentation](#presentation-render-as-a-dip-not-a-wall)).
+7. **Plan (backpressure)** — split to-dos from **FYI** (merged/closed/notifications) and from **waiting** (you're chasing others). If `--focus N` or `--budget DURATION` is set, promote a doable slice of to-dos to a `now` bucket and hold the rest as `later`; `waiting` items go to a `followup` bucket (chase/nudge, not counted against your budget) and FYI to a `fyi` bucket. Each item gets a `bucket` field and a one-line plan summary prints to stderr. The goal is a doable slice, not a wall (see [Backpressure](#backpressure-a-plan-not-a-wall) and [Presentation](#presentation-render-as-a-dip-not-a-wall)).
 8. **Output** — write the final JSON array to stdout.
 
 ## Flags
@@ -365,9 +365,9 @@ A single JSON array on stdout. Sorting and rating augmentation follow pipeline s
 ]
 ```
 
-`category` (`fyi`/`confirm`/`review`/`respond`/`act`) and its derived
+`category` (`fyi`/`confirm`/`review`/`respond`/`act`/`waiting`) and its derived
 `actionable` flag appear on every rated item; `effort_minutes` / `effort_band`
-appear only with `--rate-effort`; `bucket` (`now` | `later` | `fyi`) appears
+appear only with `--rate-effort`; `bucket` (`now` | `later` | `followup` | `fyi`) appears
 once a plan is active. Without those flags the output is unchanged from the
 plain rated shape (`importance` / `urgency` / `summary`).
 
