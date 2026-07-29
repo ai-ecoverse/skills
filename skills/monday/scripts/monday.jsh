@@ -101,21 +101,26 @@ RATING (each rated item costs one model call — start small)
   --rate-max N              Refuse to rate more than N items (default 60)
 
 RANKING & BACKPRESSURE (turn a wall of items into a plan of attack)
-  --sort MODE               value (default: importance x urgency), roi
-                            (impact per minute — quick wins first; needs
-                            --rate-effort), or newest (timestamp)
-  --focus N                 Mark only the top N items as the "now" bucket;
-                            everything else becomes "later". A doable slice
-                            instead of the full backlog.
-  --budget DURATION         Pack the highest-ranked items that fit a time box
+  --sort MODE               roi (impact per minute — best bang-for-buck first;
+                            the default when --rate-effort is on), value
+                            (importance x urgency), or newest (timestamp)
+  --focus N                 Promote only the top N to-dos to the "now" bucket;
+                            the rest become "later". A doable slice, not the
+                            whole backlog.
+  --budget DURATION         Pack the highest-ranked to-dos that fit a time box
                             into "now" (e.g. 90m, 2h, 1h30m); needs
                             --rate-effort. The rest become "later".
 
+  Every rated item is also tagged actionable vs not: informational items
+  (merged PRs, closed issues, build/FYI notifications) go to a separate "fyi"
+  bucket — awareness only, never counted against your time budget.
+
 OUTPUT
   JSON array on stdout; progress, plan summary, and warnings on stderr.
-  Sorted by the chosen --sort mode. When --focus or --budget is set, each item
-  carries a "bucket" field ("now" | "later") so a presenter can show a doable
-  slice first and collapse the rest.
+  Sorted by the chosen --sort mode. Rated items carry an "actionable" flag;
+  when a plan is active each item carries a "bucket" field
+  ("now" | "later" | "fyi") so a presenter can show a doable slice first,
+  hold the rest, and keep informational items in a separate awareness list.
 
 EXAMPLES
   monday gh --limit 5 --date 1d
@@ -152,7 +157,7 @@ const rateMax        = flags['rate-max']          || '60';  // hard ceiling on r
 const rateEffort     = !!flags['rate-effort'];              // estimate effort_minutes per item
 
 // Ranking & backpressure flags (local only — shape the plan, not the data source)
-const sortMode = (typeof flags.sort === 'string' ? flags.sort : 'value').toLowerCase();
+const sortArg  = typeof flags.sort === 'string' ? flags.sort.toLowerCase() : null; // null = auto
 const focusArg  = typeof flags.focus  === 'string' ? flags.focus  : null; // top-N "now" cap
 const budgetArg = typeof flags.budget === 'string' ? flags.budget : null; // time box, e.g. "90m"
 
@@ -383,11 +388,14 @@ function buildRatingPrompt(item) {
     parts.push('- **effort_minutes**: your best integer estimate of how many minutes it would take a human to actually resolve or respond to this item (not to read it). A quick ack or approval might be 5; a substantive reply or small task 20-45; a deep review or real work 90+. Base it on the type, scope, and content — estimate concretely, do not default to a round number.');
   }
 
+  parts.push('- **actionable**: true if this item needs an action FROM the reader — a review, reply, decision, merge, or fix that is still pending. false if it is purely informational: an already-merged PR, a closed or resolved issue, a build/release notification, a CC/FYI mention, or anything reported only so the reader is aware. When in doubt about whether the reader still has to do something, prefer false for items that are already done or closed.');
+
   parts.push('');
   parts.push('## Output');
   parts.push('Return ONLY a valid JSON object on a single line, no markdown fences, no explanation:');
   const schemaFields = ['"importance": N', '"urgency": N', '"summary": "..."'];
   if (rateEffort) schemaFields.push('"effort_minutes": N');
+  schemaFields.push('"actionable": true|false');
   parts.push(`{${schemaFields.join(', ')}}`);
 
   return parts.join('\n');
@@ -451,6 +459,9 @@ async function rateItem(item) {
       rated.effort_minutes = Number.isFinite(em) && em > 0 ? Math.round(em) : null;
       rated.effort_band = effortBand(rated.effort_minutes);
     }
+    // Default to actionable when the rater omits it — safer to surface a to-do
+    // than to bury a real task in the FYI pile.
+    rated.actionable = rating.actionable === false ? false : true;
     return rated;
   } catch (e) {
     console.error(`[monday] WARNING: failed to parse rating for ${item.id}: ${e.message}`);
@@ -554,51 +565,73 @@ function sortItems(items, rated, mode = 'value') {
 }
 
 /**
- * Backpressure: split an already-sorted list into "now" and "later" buckets so a
- * human sees a doable slice first instead of the whole backlog. Humans have the
- * judgement; the tool's job is to protect their attention, not dump on it.
+ * Backpressure: turn a ranked list into a plan of attack. Two axes:
  *
- *   --focus N   : the top N items are "now".
- *   --budget T  : pack the top items whose cumulative effort fits T minutes into
- *                 "now" (items with no effort estimate assumed 30 min).
- *   both        : budget packs by time, but never exceeds the focus count.
+ *   1. TODO vs FYI — items the rater marked `actionable: false` (merged PRs,
+ *      closed issues, build notifications, CC mentions) are things to be *aware*
+ *      of, not act on. They go to the "fyi" bucket, never consume the time
+ *      budget, and are presented as a separate, glanceable list.
+ *   2. now vs later — among the actionable TODO items, a doable slice is
+ *      promoted to "now" and the rest held as "later":
+ *        --focus N   : the top N to-dos are "now".
+ *        --budget T  : pack the to-dos whose cumulative effort fits T minutes
+ *                      (items with no effort estimate assumed 30 min).
+ *        both        : budget packs by time, but never exceeds the focus count.
  *
- * Returns { items (each tagged with a `bucket` field), nowCount, nowMinutes,
- * laterCount, budgetMin }. When neither flag is set, planning is a no-op and
- * `bucket` is left off entirely (output stays backward-compatible).
+ * `items` must already be sorted by the chosen mode (ROI by default when effort
+ * is present — best bang-for-buck first). Returns the list re-ordered
+ * now → later → fyi, each tagged with a `bucket` field, plus plan counts. When
+ * no plan flag is set AND every item is actionable, planning is a no-op and no
+ * `bucket` is added (output stays backward-compatible); FYI splitting alone,
+ * however, still tags buckets so a presenter can separate the two lists.
  */
 function buildPlan(items) {
   const budgetMin = parseDuration(budgetArg);
   const focusN = focusArg != null ? parseInt(focusArg, 10) : null;
   const focusValid = Number.isFinite(focusN) && focusN >= 0 ? focusN : null;
-  const planning = budgetMin != null || focusValid != null;
-  if (!planning) {
+  const sliceRequested = budgetMin != null || focusValid != null;
+
+  const todo = items.filter((it) => it.actionable !== false);
+  const fyi = items.filter((it) => it.actionable === false);
+
+  // Nothing to plan and nothing to separate → leave output untouched.
+  if (!sliceRequested && fyi.length === 0) {
     return { items, planning: false };
   }
 
   let usedMin = 0;
   let nowCount = 0;
-  const tagged = items.map((it) => {
+  const taggedTodo = todo.map((it) => {
     let inNow = true;
-    if (budgetMin != null) {
-      const cost = it.effort_minutes != null ? Math.max(1, it.effort_minutes) : EFFORT_UNKNOWN_MIN;
-      const fitsTime = usedMin + cost <= budgetMin;
-      const fitsFocus = focusValid == null || nowCount < focusValid;
-      inNow = fitsTime && fitsFocus;
-      if (inNow) usedMin += cost;
-    } else {
-      inNow = nowCount < focusValid;
+    if (sliceRequested) {
+      if (budgetMin != null) {
+        const cost = it.effort_minutes != null ? Math.max(1, it.effort_minutes) : EFFORT_UNKNOWN_MIN;
+        const fitsTime = usedMin + cost <= budgetMin;
+        const fitsFocus = focusValid == null || nowCount < focusValid;
+        inNow = fitsTime && fitsFocus;
+        if (inNow) usedMin += cost;
+      } else {
+        inNow = nowCount < focusValid;
+      }
     }
+    // With no slice flag, every to-do is "now" (but still split from FYI).
     if (inNow) nowCount++;
     return { ...it, bucket: inNow ? 'now' : 'later' };
   });
+  const taggedFyi = fyi.map((it) => ({ ...it, bucket: 'fyi' }));
 
   return {
-    items: [...tagged.filter((it) => it.bucket === 'now'), ...tagged.filter((it) => it.bucket === 'later')],
+    items: [
+      ...taggedTodo.filter((it) => it.bucket === 'now'),
+      ...taggedTodo.filter((it) => it.bucket === 'later'),
+      ...taggedFyi,
+    ],
     planning: true,
+    sliceRequested,
     nowCount,
     nowMinutes: usedMin,
-    laterCount: tagged.length - nowCount,
+    laterCount: taggedTodo.length - nowCount,
+    fyiCount: taggedFyi.length,
     budgetMin,
     focusN: focusValid,
   };
@@ -678,32 +711,39 @@ async function main() {
     }
   }
 
-  // 5. Sort by the requested mode. ROI needs effort estimates; fall back with a
-  // warning rather than silently sorting on a bogus 30-min-for-everything ROI.
-  let mode = sortMode;
+  // 5. Sort. Default to ROI (bang-for-buck — impact per minute) whenever effort
+  // is available, else value; an explicit --sort always wins. ROI without effort
+  // can't be computed, so fall back with a warning rather than a bogus ranking.
+  let mode = sortArg;
+  if (mode && !['value', 'roi', 'newest'].includes(mode)) {
+    console.error(`[monday] unknown --sort "${sortArg}"; using ${rateEffort ? 'roi' : 'value'}.`);
+    mode = null;
+  }
   if (mode === 'roi' && !rateEffort) {
     console.error(
       '[monday] --sort roi needs --rate-effort; falling back to --sort value. ' +
       'Add --rate-effort to rank by impact-per-minute.'
     );
     mode = 'value';
-  } else if (!['value', 'roi', 'newest'].includes(mode)) {
-    console.error(`[monday] unknown --sort "${sortMode}"; using value.`);
-    mode = 'value';
   }
+  if (!mode) mode = rateEffort ? 'roi' : 'value'; // bang-for-buck by default when we can
   items = sortItems(items, hasRating, mode);
 
-  // 6. Backpressure: build a "now"/"later" plan when --focus or --budget is set.
+  // 6. Backpressure: split TODO vs FYI, and promote a doable "now" slice.
   const plan = buildPlan(items);
   items = plan.items;
   if (plan.planning) {
-    const bits = [`${plan.nowCount} now`];
-    if (rateEffort) bits[0] += ` (~${plan.nowMinutes}m)`;
+    const bits = [`${plan.nowCount} to-do now`];
+    if (rateEffort && plan.sliceRequested) bits[0] += ` (~${plan.nowMinutes}m)`;
     if (plan.budgetMin != null) bits.push(`budget ${plan.budgetMin}m`);
     if (plan.focusN != null) bits.push(`focus ${plan.focusN}`);
+    const tail = [];
+    if (plan.laterCount) tail.push(`${plan.laterCount} later`);
+    if (plan.fyiCount) tail.push(`${plan.fyiCount} FYI`);
     console.error(
-      `[monday] plan: ${bits.join(', ')} · ${plan.laterCount} later. ` +
-      `Start with the "now" bucket; the rest stay ranked for when you're ready.`
+      `[monday] plan: ${bits.join(', ')}` +
+      (tail.length ? ` · ${tail.join(' · ')}` : '') +
+      `. Start with the "now" bucket; "later" stays ranked and "FYI" is just for awareness.`
     );
   } else if (hasRating && items.length > 12) {
     // Soft nudge: a big ranked list is still a wall. Point at the tools that
