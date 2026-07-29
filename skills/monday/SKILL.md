@@ -33,7 +33,7 @@ monday gh slack --limit 20 --date 3d
 monday --rate-importance 9-1 --rate-urgency 8-1 --rate-summary 500
 
 # Rate with a specific model and a knowledge-base context directory
-monday gh --rate-importance 8-3 --rate-model claude-haiku-4-5 --rate-context /workspace/kb
+monday gh --rate-importance 8-3 --rate-model haiku --rate-context /workspace/kb
 ```
 
 ## Aggregation pipeline
@@ -57,7 +57,7 @@ The `monday` command executes the following steps in order:
 | `--rate-importance HI-LO` | off | Rate each item's importance on a HI..LO integer scale |
 | `--rate-urgency HI-LO` | off | Rate each item's urgency on a HI..LO integer scale |
 | `--rate-summary N` | off | Generate a ~N-character summary per item |
-| `--rate-model NAME` | `claude-haiku-4-5` | Model used by the rating agent |
+| `--rate-model NAME` | cheapest model | Rating model. Accepts an exact id from `models` or a unique case-insensitive substring (e.g. `haiku`, `us.anthropic.claude-haiku`). Validated against the live `models` catalog before any call — a typo or ambiguous fragment fails fast (exit 1) instead of running. When omitted, the cheapest haiku-class model is auto-selected. |
 | `--rate-context PATH` | none | Read-only knowledge-base path the rating agent can grep |
 | `--rate-concurrency N` | `4` | Parallel rating agents (bounded worker pool) |
 | `--rate-max N` | `60` | Refuse to rate more than N items; the rest pass through unrated |
@@ -82,6 +82,17 @@ source, then widen:
 ```bash
 monday gh --limit 5 --date 1d --rate-importance 9-1 --rate-urgency 8-1
 ```
+
+### Rating model is validated against the live catalog
+
+`--rate-model` is resolved to an **exact** `models` id before any agent spawns.
+This is deliberate: some model aliases pass `agent`'s `--model` validation but
+are not actually applied — the spawned scoop silently falls back to the parent
+model (e.g. opus at ~5× the cost of haiku; see ai-ecoverse/slicc#1752). By
+resolving against `models --json` ourselves and handing `agent` an exact id, the
+rating pass runs on the model you asked for, and a typo or ambiguous fragment
+fails fast (exit 1, no paid calls) instead of quietly overspending. Confirm the
+resolved model and per-scoop cost afterwards with `cost` / `cost --json`.
 
 ## Source protocol
 
