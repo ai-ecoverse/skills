@@ -273,7 +273,7 @@ function formatMessage(msg) {
   const name = msg.user_profile?.display_name || msg.user_profile?.real_name || msg.user || 'unknown';
   const time = formatTimestamp(msg.ts);
   const text = msg.text || '';
-  const thread = msg.reply_count ? ` [${msg.reply_count} replies]` : '';
+  const thread = msg.reply_count ? ` [${msg.reply_count} replies · ts=${msg.ts}]` : '';
   let out = `[${time}] ${name}: ${text}${thread}`;
   // Surface file/image attachments so threads with screenshots are legible and
   // the file id is available for `slack download <file_id>`.
