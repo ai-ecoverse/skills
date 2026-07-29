@@ -2559,7 +2559,15 @@ async function mondayGh(args) {
         ts: n.updated_at,
         body,
         participants: [],
-        meta: { reason: n.reason, unread: n.unread },
+        meta: {
+          reason: n.reason,
+          unread: n.unread,
+          viewer: username,
+          // Your relationship to the thread, straight from the notification
+          // reason (author, review_requested, mention, assign, comment, ...).
+          relationship: n.reason,
+          authored_by_you: n.reason === 'author',
+        },
       });
     }
   } catch {}
@@ -2584,7 +2592,14 @@ async function mondayGh(args) {
         ts: pr.updated_at,
         body,
         participants: [pr.user.login, ...(pr.assignees || []).map(a => a.login)].filter((v, i, a) => a.indexOf(v) === i),
-        meta: { state: pr.state, draft: pr.draft || false },
+        meta: {
+          state: pr.state,
+          draft: pr.draft || false,
+          viewer: username,
+          author: pr.user.login,
+          relationship: 'review_requested',
+          authored_by_you: pr.user.login === username,
+        },
       });
     }
   } catch {}
@@ -2609,7 +2624,14 @@ async function mondayGh(args) {
         ts: issue.updated_at,
         body,
         participants: [issue.user.login, ...(issue.assignees || []).map(a => a.login)].filter((v, i, a) => a.indexOf(v) === i),
-        meta: { state: issue.state, labels: (issue.labels || []).map(l => l.name) },
+        meta: {
+          state: issue.state,
+          labels: (issue.labels || []).map(l => l.name),
+          viewer: username,
+          author: issue.user.login,
+          relationship: 'assignee',
+          authored_by_you: issue.user.login === username,
+        },
       });
     }
   } catch {}
