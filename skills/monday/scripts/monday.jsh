@@ -414,7 +414,16 @@ function buildRatingPrompt(item) {
 
   parts.push('## Instructions');
   parts.push('Rate this item based on its content, participants, recency, and context.');
-  parts.push('If the item has a `meta` block, use it: `meta.viewer` is the reader\'s own username, so `meta.authored_by_you: true` means the reader opened this and is likely waiting on others or on a merge; `meta.relationship` (e.g. review_requested, assignee, mention, author) tells you what is expected of the reader. Weight items where the reader is personally on the hook (their review is requested, it is assigned to them, they are directly mentioned, or they authored it and it is now ready) higher than things they are merely subscribed to. If `meta.merged` is true or `meta.state` is "closed", the item is already done — category MUST be `fyi`. If `meta.awaiting_checks` is true (a PR whose CI is still pending or failing) or `meta.draft` is true, it is not ready to merge/act on yet — keep its urgency low, since acting now would be premature.');
+  // Source-specific guidance travels with the item via `rating_hint` (see the
+  // monday protocol): each tool explains how to read its own fields, so this
+  // aggregator stays generic. Generic fallback covers sources that omit it.
+  if (typeof item.rating_hint === 'string' && item.rating_hint.trim()) {
+    parts.push('');
+    parts.push('### Source guidance');
+    parts.push(item.rating_hint.trim());
+  } else if (item.meta) {
+    parts.push('If the item has a `meta` block, use whatever it carries (relationship to the reader, state, etc.) to judge how much the reader is personally on the hook, and whether the item is already resolved (then it is `fyi`) or not yet ready to act on (keep urgency low).');
+  }
   parts.push('');
 
   if (rateImportance) {
@@ -470,7 +479,7 @@ function cacheKeyFor(item) {
   // Keyed on the item's content AND the rating params AND the resolved model
   // (rateModel is set before any rateItem call) — change any of them, re-rate.
   return hashKey(
-    [item.id, item.title, item.subtitle, item.body, item.ts, ratingSignature, rateModel]
+    [item.id, item.title, item.subtitle, item.body, item.ts, item.rating_hint, ratingSignature, rateModel]
       .map((x) => (x == null ? '' : String(x)))
       .join('\u0001')
   );
