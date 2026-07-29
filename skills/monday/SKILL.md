@@ -89,8 +89,9 @@ The `monday` command executes the following steps in order:
 |---------|--------|
 | `monday done <id>...` | Mark handled — hidden from all future runs |
 | `monday ignore <id>...` | Never show these items again |
-| `monday restore <id>...` (alias `unignore`) | Undo a done/ignore |
-| `monday ignored` (alias `list-ignored`) | Print the done/ignore list (JSON on stdout) |
+| `monday mute <id>...` | Silence forever (alias of ignore) |
+| `monday restore <id>...` (aliases `unignore`, `unmute`) | Undo a done/ignore/mute |
+| `monday ignored` (aliases `list-ignored`, `muted`) | Print the silenced list (JSON on stdout) |
 | `monday cache-clear` (alias `forget-cache`) | Wipe the rating cache |
 
 
@@ -188,7 +189,8 @@ never resurfaces:
 ```bash
 monday done   gh-notif-24826743046      # handled it
 monday ignore gh-notif-24826743046      # never show me this again
-monday ignored                          # list what's suppressed (JSON on stdout)
+monday mute   gh-notif-24826743046      # silence forever (alias of ignore)
+monday ignored                          # list what's silenced (JSON on stdout)
 monday restore gh-notif-24826743046     # bring it back
 ```
 
