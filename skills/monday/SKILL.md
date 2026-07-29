@@ -56,9 +56,9 @@ The `monday` command executes the following steps in order:
 2. **Invoke in parallel** — call `[cmd] monday --limit N --depth N --date Nd` for every discovered source concurrently.
 3. **Collect and validate JSON** — sources that exit non-zero, emit empty output, or return invalid JSON are logged to stderr and dropped; aggregation continues with the rest. Each source is also truncated to `--limit`, so a source that ignores the flag cannot inflate the run.
 4. **Deduplicate by `id`** — merge arrays in argument order; the first occurrence of an `id` wins. (Precedence rules: [`references/SOURCE_PROTOCOL.md`](references/SOURCE_PROTOCOL.md).)
-5. **Optionally rate** — if any `--rate-*` flag is set, submit each item to the rating agent (model: `--rate-model`; optional context: `--rate-context`) to assign `importance`, `urgency`, `summary`, and — with `--rate-effort` — an `effort_minutes` estimate plus a coarse `effort_band` (`quick`/`short`/`deep`). Agents run through a bounded worker pool (`--rate-concurrency`) and no more than `--rate-max` items are rated. Rating failures fall back to the unrated item; aggregation still completes.
-6. **Sort** — order by `--sort`: `value` (importance × urgency, the default), `roi` (impact per minute — quick wins first; needs `--rate-effort`), or `newest` (timestamp). Unrated runs always fall back to `ts` descending.
-7. **Plan (backpressure)** — if `--focus N` or `--budget DURATION` is set, split the sorted list into a `now` bucket and a `later` bucket, tag each item with a `bucket` field, and emit `now` items first. A one-line plan summary goes to stderr. The goal is a doable slice, not a wall (see [Backpressure](#backpressure-a-plan-not-a-wall)).
+5. **Optionally rate** — if any `--rate-*` flag is set, submit each item to the rating agent to assign `importance`, `urgency`, `summary`, an `actionable` flag (does it need action from you, or is it FYI?), and — with `--rate-effort` — an `effort_minutes` estimate plus a coarse `effort_band` (`quick`/`short`/`deep`). Agents run through a bounded worker pool (`--rate-concurrency`) and no more than `--rate-max` items are rated. Rating failures fall back to the unrated item; aggregation still completes.
+6. **Sort** — order by `--sort`: `roi` (impact per minute — the default when `--rate-effort` is on), `value` (importance × urgency), or `newest`. Unrated runs always fall back to `ts` descending.
+7. **Plan (backpressure)** — split actionable to-dos from informational **FYI** items (merged PRs, closed issues, notifications). If `--focus N` or `--budget DURATION` is set, promote a doable slice of to-dos to a `now` bucket and hold the rest as `later`; FYI items go to a separate `fyi` bucket that never consumes the time budget. Each item gets a `bucket` field and a one-line plan summary prints to stderr. The goal is a doable slice, not a wall (see [Backpressure](#backpressure-a-plan-not-a-wall) and [Presentation](#presentation-render-as-a-dip-not-a-wall)).
 8. **Output** — write the final JSON array to stdout.
 
 ## Flags
@@ -76,9 +76,9 @@ The `monday` command executes the following steps in order:
 | `--rate-context PATH` | none | Read-only knowledge-base path the rating agent can grep |
 | `--rate-concurrency N` | `4` | Parallel rating agents (bounded worker pool) |
 | `--rate-max N` | `60` | Refuse to rate more than N items; the rest pass through unrated |
-| `--sort MODE` | `value` | Ranking: `value` (importance × urgency), `roi` (impact per minute; needs `--rate-effort`), or `newest` (timestamp) |
-| `--focus N` | off | Mark only the top N items as the `now` bucket; the rest become `later` |
-| `--budget DURATION` | off | Pack the highest-ranked items that fit a time box (`90m`, `2h`, `1h30m`) into `now`; needs `--rate-effort` |
+| `--sort MODE` | `roi` if `--rate-effort` else `value` | Ranking: `roi` (impact per minute — best bang-for-buck first), `value` (importance × urgency), or `newest` (timestamp) |
+| `--focus N` | off | Promote only the top N to-dos to the `now` bucket; the rest become `later` |
+| `--budget DURATION` | off | Pack the highest-ranked to-dos that fit a time box (`90m`, `2h`, `1h30m`) into `now`; needs `--rate-effort` |
 
 Positional args (`gh`, `slack`, `teams`, `outlook`, `gmail`, `servicenow`) select
 which sources to invoke. With no positional args, `monday` runs `which <cmd>` on
@@ -161,25 +161,42 @@ you opt into a plan.
 `monday` emits data; **how that data reaches the human decides whether it feels
 like a plan or a defeat.** When you (the cone) surface a triage run to the user,
 do not paste the raw JSON array. Render it as a [dip](../dips/SKILL.md) — an
-inline, ephemeral chat widget — following these principles:
+inline, ephemeral chat widget.
 
-1. **Lead with the `now` bucket.** Show the doable slice big and first
-   ("Start here → 4 items, ~85 min"). Collapse `later` behind a count
-   ("+46 more, ranked, when you're ready") — visible, not in your face.
-2. **One line per item:** title, a `source #id` chip, the score or ROI, the
-   `effort_band` as a small pill, and a one-clause "why now" from the summary.
-3. **Band the list** (CRIT / HIGH / MED / LOW by score, or by `effort_band`)
-   so the eye groups it without reading every row.
-4. **Make each item actionable** — an Open link (`url`), and optionally
-   Done / Defer buttons that `slicc.lick(...)` back so triage is a loop, not a
-   report.
-5. **Frame momentum, not doom.** "3 quick wins before lunch" beats "50 open
-   items." The backlog *count* stays honest; its *contents* stay collapsed.
+**The turnkey path is the bundled `monday-dip` renderer** — it is the canonical
+presentation template, so you never hand-assemble the widget:
 
-Recommended pipeline: run `monday … --rate-effort --budget 90m` (or `--focus`),
-read the JSON, and build the dip from the `now`/`later` buckets. Keep the JSON
-contract intact for scripts; the dip is a presentation layer on top, not a
-replacement.
+```bash
+monday gh --rate-importance 9-1 --rate-urgency 8-1 --rate-effort --budget 90m \
+  > /tmp/plan.json 2>/dev/null
+monday-dip /tmp/plan.json          # prints the dip shtml; emit it in chat
+```
+
+`monday-dip` reads a `monday` JSON plan and prints a `.sprinkle-action-card`
+`shtml` block to stdout. Emit that block verbatim in your reply. It encodes the
+principles below so they stay consistent:
+
+1. **Three lists, in priority order.** The `now` bucket (the doable to-do slice)
+   is shown big and first; `later` collapses behind a count; **`fyi`** (merged
+   PRs, closed issues, build notifications — awareness only, marked
+   `actionable: false`) is a separate collapsed list that never competes for
+   attention.
+2. **Bang-for-buck order.** `now` is presented in monday's ROI order (impact per
+   minute), so the best-value work leads.
+3. **No meaningless numbers.** Items show a priority *word* (Critical / High /
+   Medium / Low) and the effort/time — never the raw importance×urgency score,
+   which means nothing to a human.
+4. **Icons, not emoji.** All glyphs are Lucide (`<i data-lucide="…"
+   class="sprinkle-icon">`), per the S2 style guide's "NO EMOJIS" rule.
+5. **A loop, not a report.** Each to-do has Open (`url`) plus Done / Later
+   buttons that `slicc.lick({action, data})` back; card-level Start / Re-plan
+   actions let the user drive the next step. Handle those licks (mark done,
+   re-run with a wider `--budget`, etc.).
+
+If you must build the widget by hand (e.g. a bespoke layout), read
+[`scripts/monday-dip.jsh`](scripts/monday-dip.jsh) as the reference structure.
+Keep the JSON contract intact for scripts; the dip is a presentation layer on
+top, not a replacement.
 
 
 ## Source protocol
@@ -268,6 +285,7 @@ A single JSON array on stdout. Sorting and rating augmentation follow pipeline s
     "importance": 8,
     "urgency": 7,
     "summary": "Security-critical PR awaiting your review; blocks the 2.4 release.",
+    "actionable": true,
     "effort_minutes": 20,
     "effort_band": "short",
     "bucket": "now"
@@ -275,9 +293,10 @@ A single JSON array on stdout. Sorting and rating augmentation follow pipeline s
 ]
 ```
 
-`effort_minutes` / `effort_band` appear only with `--rate-effort`; `bucket`
-appears only with `--focus` or `--budget`. Without those flags the output is
-unchanged from the plain rated shape (`importance` / `urgency` / `summary`).
+`actionable` appears on every rated item; `effort_minutes` / `effort_band`
+appear only with `--rate-effort`; `bucket` (`now` | `later` | `fyi`) appears
+once a plan is active. Without those flags the output is unchanged from the
+plain rated shape (`importance` / `urgency` / `summary`).
 
 ```bash
 monday gh slack --date 2d | jq '.[0:5] | .[] | {id, ts, title}'
