@@ -188,6 +188,34 @@ Related console-api endpoints on the same `${apiUrl}` base:
 
 ---
 
+## SQL query proxy — `POST queries.clickhouse.cloud/service/<serviceId>/run` (used by `query`)
+
+The Cloud **SQL console** runs statements through a dedicated query proxy on a
+separate host (`queries.clickhouse.cloud`, *not* the `*-internal` control-plane).
+It is authenticated with the **same Auth0 bearer token** as everything else — so
+no database username/password is needed.
+
+```
+POST https://queries.clickhouse.cloud/service/<serviceId>/run
+       ?enable_http_compression=1&format=JSONEachRowWithProgress&request_timeout=3600000
+Authorization: Bearer <auth0 access_token>
+Content-Type:  text/plain;charset=UTF-8
+
+body: { "runId": "liveQueries:<uuid>", "sql": "<SQL>", "database": "default" }
+```
+
+Response is **newline-delimited** JSON (`JSONEachRowWithProgress`): interleaved
+`{"progress":{…}}` lines, one `{"meta":[{name,type},…]}` line, then a
+`{"row":{…}}` line per result row; a query error arrives as `{"exception":"…"}`
+(HTTP 200) or as an HTTP 400 with `{"error":{"code","details"}}`. The console
+wraps system-table reads in `clusterAllReplicas(default, 'system.<table>')` to
+span all replicas, and tags its own internal queries with
+`Settings['log_comment']='sql console internal query'` (filter these out when
+inspecting `system.query_log`). `queries.clickhouse.cloud` is in the CLI's
+allowed-host set alongside the two `*-internal` hosts.
+
+---
+
 ## Other control-plane RPC endpoints (not wired into the CLI, reachable via `api`)
 
 - `/api/account` — user/account RPCs (`addUserToCloudWaitlist`, `listOrganizations`
