@@ -2500,8 +2500,43 @@ async function mondayGh(args) {
     username = user.login;
   } catch {}
 
+  // Normalize GitHub's own state into the protocol-standard disposition flags the
+  // aggregator's signal guard reads (so `monday` stays source-agnostic):
+  //   resolved          — merged/closed → FYI
+  //   not_ready         — draft or CI pending/failing → hold for later
+  //   awaiting_you      — your review/action is requested → actionable now
+  //   waiting_on_others — you authored it and it's now on others (review/merge)
+  function ghNormalize(m) {
+    const resolved = m.merged === true || m.state === 'closed';
+    if (resolved) return { resolved: true };
+    const asked = ['review_requested', 'mention', 'assign', 'assigned'].includes(m.relationship);
+    if (asked) return { awaiting_you: true };
+    const notReady = m.draft === true || m.awaiting_checks === true;
+    if (m.authored_by_you === true && m.state === 'open') {
+      if (notReady) return { not_ready: true };            // blocked on your CI / still a draft
+      if (m.mergeable_state === 'clean') return { awaiting_you: true }; // green + approved → you merge
+      return { waiting_on_others: true };                  // waiting on reviewers/merge
+    }
+    return notReady ? { not_ready: true } : {};
+  }
+  const withNormalized = (m) => ({ ...m, ...ghNormalize(m) });
+
   const items = [];
   const seen = new Set();
+
+  // Source-owned rating guidance, carried to the rater via the item's
+  // `rating_hint` field (part of the monday protocol). Keeping GitHub's field
+  // semantics here — not in the generic aggregator — lets each tool manage its
+  // own rating instructions.
+  const GH_RATING_HINT = [
+    'This is a GitHub item. `meta.viewer` is the reader\'s own username.',
+    'The item carries normalized disposition flags — trust them:',
+    '`meta.resolved: true` → it is merged/closed, already done → category MUST be `fyi`.',
+    '`meta.awaiting_you: true` → the reader\'s review or action is requested (review_requested / assigned / mentioned, or their own PR is green and ready to merge) → this is a real to-do (confirm/review/respond/act).',
+    '`meta.waiting_on_others: true` → the reader has done their part and is now waiting on other people (their open PR awaiting review/merge, a question awaiting a reply) → category `waiting`: they may want to chase or nudge, but there is nothing for them to build.',
+    '`meta.not_ready: true` → a PR that is a draft or whose CI is pending/failing → not ready to act on yet; keep urgency low.',
+    'Otherwise use `meta.relationship` and the content to judge how much the reader is personally on the hook.',
+  ].join(' ');
 
   function addItem(item) {
     if (seen.has(item.id)) return;
@@ -2522,6 +2557,54 @@ async function mondayGh(args) {
     } catch {
       return currentBody;
     }
+  }
+
+  // Helper: derive a normalized checks state for a commit sha.
+  // 'passing' | 'pending' | 'failing' | 'none' | null (unknown/error).
+  async function checksFor(repo, sha) {
+    if (!sha) return null;
+    try {
+      const runs = await api.get(`/repos/${repo}/commits/${sha}/check-runs`);
+      const cr = (runs && runs.check_runs) || [];
+      if (cr.length) {
+        if (cr.some(r => r.status !== 'completed')) return 'pending';
+        if (cr.some(r => ['failure', 'timed_out', 'cancelled', 'action_required', 'stale'].includes(r.conclusion))) return 'failing';
+        return 'passing';
+      }
+      // Fall back to the legacy combined status API for repos not using checks.
+      const st = await api.get(`/repos/${repo}/commits/${sha}/status`);
+      if (st && st.total_count > 0) {
+        return st.state === 'success' ? 'passing' : st.state === 'pending' ? 'pending' : 'failing';
+      }
+      return 'none';
+    } catch { return null; }
+  }
+
+  // Helper: fetch the real state/merged/draft/checks for a PR or issue subject.
+  // Notifications alone don't carry this, so merged PRs and CI-pending PRs would
+  // otherwise look like fresh to-dos. One extra call per subject (plus one for
+  // checks on open PRs) — bounded by --limit.
+  async function subjectSignals(repo, num, type) {
+    const m = {};
+    if (!repo || !num) return m;
+    try {
+      if (type === 'pr') {
+        const pr = await api.get(`/repos/${repo}/pulls/${num}`);
+        m.state = pr.state;                        // 'open' | 'closed'
+        m.merged = !!pr.merged;
+        m.draft = !!pr.draft;
+        m.mergeable_state = pr.mergeable_state || null;
+        if (!m.merged && pr.state === 'open') {
+          m.checks = await checksFor(repo, pr.head && pr.head.sha);
+          m.awaiting_checks = m.checks === 'pending' || m.checks === 'failing';
+          m.ready_to_merge = m.mergeable_state === 'clean' && m.checks === 'passing';
+        }
+      } else if (type === 'issue') {
+        const iss = await api.get(`/repos/${repo}/issues/${num}`);
+        m.state = iss.state;                       // 'open' | 'closed'
+      }
+    } catch { /* enrichment is best-effort */ }
+    return m;
   }
 
   // 1. Notifications
@@ -2549,9 +2632,15 @@ async function mondayGh(args) {
       const body = (num && depth > 0)
         ? await fetchThread(repo, num, type, baseBody, depth)
         : baseBody;
+      // Enrich with real subject state so merged/closed items don't look like
+      // open to-dos and CI-pending PRs can be held out of the "now" slice.
+      const signals = (type === 'pr' || type === 'issue')
+        ? await subjectSignals(repo, num, type)
+        : {};
       addItem({
         id: `gh-notif-${n.id}`,
         source: 'gh',
+        rating_hint: GH_RATING_HINT,
         type,
         title: n.subject.title,
         subtitle: num ? `${repo} #${num}` : repo,
@@ -2559,7 +2648,16 @@ async function mondayGh(args) {
         ts: n.updated_at,
         body,
         participants: [],
-        meta: { reason: n.reason, unread: n.unread },
+        meta: withNormalized({
+          reason: n.reason,
+          unread: n.unread,
+          viewer: username,
+          // Your relationship to the thread, straight from the notification
+          // reason (author, review_requested, mention, assign, comment, ...).
+          relationship: n.reason,
+          authored_by_you: n.reason === 'author',
+          ...signals,
+        }),
       });
     }
   } catch {}
@@ -2577,6 +2675,7 @@ async function mondayGh(args) {
       addItem({
         id: `gh-pr-${pr.id}`,
         source: 'gh',
+        rating_hint: GH_RATING_HINT,
         type: 'pr',
         title: pr.title,
         subtitle: `${repoUrl} #${pr.number}`,
@@ -2584,7 +2683,17 @@ async function mondayGh(args) {
         ts: pr.updated_at,
         body,
         participants: [pr.user.login, ...(pr.assignees || []).map(a => a.login)].filter((v, i, a) => a.indexOf(v) === i),
-        meta: { state: pr.state, draft: pr.draft || false },
+        meta: withNormalized({
+          state: pr.state,
+          draft: pr.draft || false,
+          viewer: username,
+          author: pr.user.login,
+          relationship: 'review_requested',
+          authored_by_you: pr.user.login === username,
+          // Checks readiness so a review request that's still red/pending on CI
+          // can be held out of the "now" slice.
+          ...(await subjectSignals(repoUrl, pr.number, 'pr')),
+        }),
       });
     }
   } catch {}
@@ -2602,6 +2711,7 @@ async function mondayGh(args) {
       addItem({
         id: `gh-issue-${issue.id}`,
         source: 'gh',
+        rating_hint: GH_RATING_HINT,
         type: 'issue',
         title: issue.title,
         subtitle: `${repoUrl} #${issue.number}`,
@@ -2609,7 +2719,14 @@ async function mondayGh(args) {
         ts: issue.updated_at,
         body,
         participants: [issue.user.login, ...(issue.assignees || []).map(a => a.login)].filter((v, i, a) => a.indexOf(v) === i),
-        meta: { state: issue.state, labels: (issue.labels || []).map(l => l.name) },
+        meta: withNormalized({
+          state: issue.state,
+          labels: (issue.labels || []).map(l => l.name),
+          viewer: username,
+          author: issue.user.login,
+          relationship: 'assignee',
+          authored_by_you: issue.user.login === username,
+        }),
       });
     }
   } catch {}

@@ -43,10 +43,45 @@ is passed through to the output unchanged.
 | `url` | no | string | Passthrough (display). |
 | `participants` | no | string[] | Passthrough (display). |
 | `body` | no | string | Passthrough; useful context for the rating agent. |
+| `rating_hint` | no | string | **Source-owned rating guidance.** Injected verbatim into the rating prompt as "Source guidance" so each tool explains how to read its own fields (e.g. what `meta.merged` or a "review_requested" relationship means) without the generic aggregator hard-coding any source's semantics. Omit it and `monday` falls back to a generic instruction. |
+| `meta` | no | object | Passthrough; also read by the signal guard (below). |
 | _any other_ | no | any | Passed through verbatim. |
 
-`importance`, `urgency`, and `summary` are **added by `monday`** when a `--rate-*`
-flag is set — sources should not emit them.
+`importance`, `urgency`, `summary`, and `category` are **added by `monday`** when
+a `--rate-*` flag is set — sources should not emit them.
+
+### Rating hint (let each tool own its instructions)
+
+Put source-specific interpretation in `rating_hint`, not in `monday`. Example
+from the `github` source:
+
+```json
+{
+  "id": "gh-notif-123", "ts": "2025-07-14T09:12:00Z", "source": "gh",
+  "title": "Fix race condition", "url": "https://github.com/org/repo/pull/4821",
+  "meta": { "state": "open", "merged": false, "relationship": "review_requested",
+            "authored_by_you": false, "checks": "passing", "awaiting_checks": false },
+  "rating_hint": "This is a GitHub item. meta.relationship says what is expected of the reader… If meta.merged is true or meta.state is \"closed\", category MUST be fyi. If meta.awaiting_checks is true, keep urgency low — acting now is premature."
+}
+```
+
+### Signal guard (normalized disposition flags)
+
+Independently of the rating agent, `monday` applies a small deterministic guard
+from **protocol-standard** `meta` flags (when `--trust-signals` is on — the
+default). Each source normalizes its own state into these; the aggregator reads
+only these, never a source's raw fields:
+
+| `meta` flag | Meaning | Effect in `monday` |
+|-------------|---------|--------------------|
+| `resolved: true` | Done — merged, closed, answered | Forced to `fyi` |
+| `awaiting_you: true` | Your review/decision/action is requested | Kept actionable (now-eligible) |
+| `waiting_on_others: true` | You've done your part; waiting on other people | Category `waiting` → the `followup` bucket (chase, don't build) |
+| `not_ready: true` | Can't act yet (draft, CI pending/failing) | Held out of `now` into `later` |
+
+A source computes these from whatever it knows (the `github` source derives them
+from PR/issue state, merge/CI status, and your relationship to the thread). A
+source that sets none of them is simply unaffected by the guard.
 
 ### Minimal item
 
