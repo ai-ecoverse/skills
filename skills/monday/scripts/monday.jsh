@@ -362,6 +362,7 @@ function buildRatingPrompt(item) {
 
   parts.push('## Instructions');
   parts.push('Rate this item based on its content, participants, recency, and context.');
+  parts.push('If the item has a `meta` block, use it: `meta.viewer` is the reader\'s own username, so `meta.authored_by_you: true` means the reader opened this and is likely waiting on others or on a merge; `meta.relationship` (e.g. review_requested, assignee, mention, author) tells you what is expected of the reader. Weight items where the reader is personally on the hook (their review is requested, it is assigned to them, they are directly mentioned, or they authored it and it is now ready) higher than things they are merely subscribed to.');
   parts.push('');
 
   if (rateImportance) {
@@ -385,17 +386,23 @@ function buildRatingPrompt(item) {
   }
 
   if (rateEffort) {
-    parts.push('- **effort_minutes**: your best integer estimate of how many minutes it would take a human to actually resolve or respond to this item (not to read it). A quick ack or approval might be 5; a substantive reply or small task 20-45; a deep review or real work 90+. Base it on the type, scope, and content — estimate concretely, do not default to a round number.');
+    parts.push('- **effort_minutes**: your best integer estimate of how many minutes it would take the reader to ACTUALLY handle this — the work itself, not reading it. Be realistic and do not over-estimate; most inbox items are small. Anchors: clicking approve/merge on a PR that is already reviewed, acking a mention, or a one-line reply = 1-2 min; a quick look-then-approve or a short comment = 3-8 min; a genuine review or a considered reply = 15-30 min; real implementation, a deep review, or a long writeup = 60+ min. A pure "confirm" action is almost always 1-2 minutes — reserve larger numbers for items that truly require reading, thinking, or writing.');
   }
 
-  parts.push('- **actionable**: true if this item needs an action FROM the reader — a review, reply, decision, merge, or fix that is still pending. false if it is purely informational: an already-merged PR, a closed or resolved issue, a build/release notification, a CC/FYI mention, or anything reported only so the reader is aware. When in doubt about whether the reader still has to do something, prefer false for items that are already done or closed.');
+  parts.push('- **category**: the single word that best describes what is expected of the reader:');
+  parts.push('  - `fyi` — no action; awareness only (already-merged PR, closed/resolved issue, build or release notification, CC/FYI mention).');
+  parts.push('  - `confirm` — a quick yes/no decision or acknowledgement: approve, merge an already-reviewed PR, sign off, dismiss. Low effort.');
+  parts.push('  - `review` — the reader must read/examine something before deciding: review a PR\'s code, read a doc or proposal.');
+  parts.push('  - `respond` — the reader owes a written reply: answer a question, reply to a comment or message, weigh in on a discussion.');
+  parts.push('  - `act` — the reader has real work to do: implement a fix, make a change, complete a task.');
+  parts.push('  Choose exactly one. If it is already done or closed, it is `fyi`.');
 
   parts.push('');
   parts.push('## Output');
   parts.push('Return ONLY a valid JSON object on a single line, no markdown fences, no explanation:');
   const schemaFields = ['"importance": N', '"urgency": N', '"summary": "..."'];
   if (rateEffort) schemaFields.push('"effort_minutes": N');
-  schemaFields.push('"actionable": true|false');
+  schemaFields.push('"category": "fyi|confirm|review|respond|act"');
   parts.push(`{${schemaFields.join(', ')}}`);
 
   return parts.join('\n');
@@ -459,9 +466,12 @@ async function rateItem(item) {
       rated.effort_minutes = Number.isFinite(em) && em > 0 ? Math.round(em) : null;
       rated.effort_band = effortBand(rated.effort_minutes);
     }
-    // Default to actionable when the rater omits it — safer to surface a to-do
-    // than to bury a real task in the FYI pile.
-    rated.actionable = rating.actionable === false ? false : true;
+    // Category is the reader's expected posture (fyi/confirm/review/respond/act).
+    // `actionable` is derived from it for backward-compatible consumers.
+    const CATEGORIES = ['fyi', 'confirm', 'review', 'respond', 'act'];
+    const cat = typeof rating.category === 'string' ? rating.category.toLowerCase().trim() : '';
+    rated.category = CATEGORIES.includes(cat) ? cat : 'act'; // default to a to-do, not FYI
+    rated.actionable = rated.category !== 'fyi';
     return rated;
   } catch (e) {
     console.error(`[monday] WARNING: failed to parse rating for ${item.id}: ${e.message}`);
@@ -721,8 +731,7 @@ async function main() {
   }
   if (mode === 'roi' && !rateEffort) {
     console.error(
-      '[monday] --sort roi needs --rate-effort; falling back to --sort value. ' +
-      'Add --rate-effort to rank by impact-per-minute.'
+      '[monday] --sort roi needs --rate-effort; falling back to --sort value. ' +      'Add --rate-effort to rank by impact-per-minute.'
     );
     mode = 'value';
   }
@@ -742,14 +751,14 @@ async function main() {
     if (plan.fyiCount) tail.push(`${plan.fyiCount} FYI`);
     console.error(
       `[monday] plan: ${bits.join(', ')}` +
-      (tail.length ? ` · ${tail.join(' · ')}` : '') +
+      (tail.length ? ` � ${tail.join(' � ')}` : '') +
       `. Start with the "now" bucket; "later" stays ranked and "FYI" is just for awareness.`
     );
   } else if (hasRating && items.length > 12) {
     // Soft nudge: a big ranked list is still a wall. Point at the tools that
-    // turn it into a doable slice — a plan of attack, not a verdict of doom.
+    // turn it into a doable slice  a plan of attack, not a verdict of doom.
     console.error(
-      `[monday] ${items.length} items ranked. That's a lot to face at once — ` +
+      `[monday] ${items.length} items ranked. That's a lot to face at once  ` +
       `add --focus 5 (or --budget 90m with --rate-effort) to get a doable "now" ` +
       `slice; everything else stays ranked for later.`
     );
