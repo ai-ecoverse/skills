@@ -205,7 +205,10 @@ than retrying the same `message_ts`.
 
 ### slack history \<channel_id\> [--limit=N]
 
-Fetch recent messages from a channel. Default limit is 20.
+Fetch recent messages from a channel. Default limit is 20. Threaded messages are
+tagged with the parent timestamp, e.g. `[3 replies · ts=1774539502.747989]`, so you
+can copy that `ts` straight into `slack thread` / `slack post --thread_ts` without
+having to open the message in the Slack UI to find its permalink.
 
 ### slack post \<channel_or_user_id\> \<message\>
 
@@ -231,7 +234,8 @@ member count, and purpose.
 
 ### slack thread \<channel_id\> \<thread_ts\> [--limit=N]
 
-Read thread replies. Provide the channel ID and the thread's parent timestamp.
+Read thread replies. Provide the channel ID and the thread's parent timestamp
+(shown as `ts=…` on the `[N replies]` marker in `slack history` output).
 Default limit is 50. Messages that carry files/images show an extra line per
 attachment with its name, type, dimensions, and file id, plus a ready-to-run
 `slack download <file_id>` hint — so screenshots shared in a thread are visible
