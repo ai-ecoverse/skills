@@ -2524,6 +2524,54 @@ async function mondayGh(args) {
     }
   }
 
+  // Helper: derive a normalized checks state for a commit sha.
+  // 'passing' | 'pending' | 'failing' | 'none' | null (unknown/error).
+  async function checksFor(repo, sha) {
+    if (!sha) return null;
+    try {
+      const runs = await api.get(`/repos/${repo}/commits/${sha}/check-runs`);
+      const cr = (runs && runs.check_runs) || [];
+      if (cr.length) {
+        if (cr.some(r => r.status !== 'completed')) return 'pending';
+        if (cr.some(r => ['failure', 'timed_out', 'cancelled', 'action_required', 'stale'].includes(r.conclusion))) return 'failing';
+        return 'passing';
+      }
+      // Fall back to the legacy combined status API for repos not using checks.
+      const st = await api.get(`/repos/${repo}/commits/${sha}/status`);
+      if (st && st.total_count > 0) {
+        return st.state === 'success' ? 'passing' : st.state === 'pending' ? 'pending' : 'failing';
+      }
+      return 'none';
+    } catch { return null; }
+  }
+
+  // Helper: fetch the real state/merged/draft/checks for a PR or issue subject.
+  // Notifications alone don't carry this, so merged PRs and CI-pending PRs would
+  // otherwise look like fresh to-dos. One extra call per subject (plus one for
+  // checks on open PRs) — bounded by --limit.
+  async function subjectSignals(repo, num, type) {
+    const m = {};
+    if (!repo || !num) return m;
+    try {
+      if (type === 'pr') {
+        const pr = await api.get(`/repos/${repo}/pulls/${num}`);
+        m.state = pr.state;                        // 'open' | 'closed'
+        m.merged = !!pr.merged;
+        m.draft = !!pr.draft;
+        m.mergeable_state = pr.mergeable_state || null;
+        if (!m.merged && pr.state === 'open') {
+          m.checks = await checksFor(repo, pr.head && pr.head.sha);
+          m.awaiting_checks = m.checks === 'pending' || m.checks === 'failing';
+          m.ready_to_merge = m.mergeable_state === 'clean' && m.checks === 'passing';
+        }
+      } else if (type === 'issue') {
+        const iss = await api.get(`/repos/${repo}/issues/${num}`);
+        m.state = iss.state;                       // 'open' | 'closed'
+      }
+    } catch { /* enrichment is best-effort */ }
+    return m;
+  }
+
   // 1. Notifications
   try {
     const notifs = await api.get('/notifications', {
@@ -2549,6 +2597,11 @@ async function mondayGh(args) {
       const body = (num && depth > 0)
         ? await fetchThread(repo, num, type, baseBody, depth)
         : baseBody;
+      // Enrich with real subject state so merged/closed items don't look like
+      // open to-dos and CI-pending PRs can be held out of the "now" slice.
+      const signals = (type === 'pr' || type === 'issue')
+        ? await subjectSignals(repo, num, type)
+        : {};
       addItem({
         id: `gh-notif-${n.id}`,
         source: 'gh',
@@ -2567,6 +2620,7 @@ async function mondayGh(args) {
           // reason (author, review_requested, mention, assign, comment, ...).
           relationship: n.reason,
           authored_by_you: n.reason === 'author',
+          ...signals,
         },
       });
     }
@@ -2599,6 +2653,9 @@ async function mondayGh(args) {
           author: pr.user.login,
           relationship: 'review_requested',
           authored_by_you: pr.user.login === username,
+          // Checks readiness so a review request that's still red/pending on CI
+          // can be held out of the "now" slice.
+          ...(await subjectSignals(repoUrl, pr.number, 'pr')),
         },
       });
     }
