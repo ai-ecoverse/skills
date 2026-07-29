@@ -456,6 +456,7 @@ function buildRatingPrompt(item) {
   parts.push('  - `review` — the reader must read/examine something before deciding: review a PR\'s code, read a doc or proposal.');
   parts.push('  - `respond` — the reader owes a written reply: answer a question, reply to a comment or message, weigh in on a discussion.');
   parts.push('  - `act` — the reader has real work to do: implement a fix, make a change, complete a task.');
+  parts.push('  - `waiting` — the reader has done their part and is now waiting on other people (their PR awaiting review/merge, a question they asked awaiting a reply). Something to chase or track, not to build.');
   parts.push('  Choose exactly one. If it is already done or closed, it is `fyi`.');
 
   parts.push('');
@@ -501,28 +502,37 @@ function flushCache() {
  * closes the gap where a rater buries your own open PR in the FYI pile. Disable
  * with --no-trust-signals.
  */
+/**
+ * Deterministic disposition guard. Reads ONLY the protocol-standard normalized
+ * flags a source may set — so the aggregator stays source-agnostic:
+ *   meta.resolved          → done; force `fyi`.
+ *   meta.awaiting_you      → your action is requested; keep it a to-do.
+ *   meta.waiting_on_others → you're chasing a follow-up; category `waiting`.
+ * (meta.not_ready is consumed by the planner, not here.) Disable with
+ * --no-trust-signals. A source that sets none of these is unaffected.
+ */
 function applySignalGuard(rated) {
   if (!trustSignals) return rated;
   const m = rated.meta || {};
-  const closed = m.state === 'closed' || m.state === 'merged' || m.merged === true;
-  // Downgrade: an already merged/closed item is done — never a to-do, whatever
-  // the rater guessed from stale notification text.
-  if (closed) {
+  if (m.resolved === true) {
     if (rated.category !== 'fyi') {
       rated.category = 'fyi';
       rated.actionable = false;
-      rated.reclassified_by_signal = 'closed';
+      rated.reclassified_by_signal = 'resolved';
     }
     return rated;
   }
-  // Upgrade: you were asked to review/act, or authored an open item — keep it a
-  // to-do even if the rater guessed FYI.
-  const asked = ['review_requested', 'mention', 'assign', 'assigned'].includes(m.relationship);
-  const mineOpen = m.authored_by_you === true && m.state === 'open';
-  if (rated.category === 'fyi' && (asked || mineOpen)) {
+  if (m.awaiting_you === true && rated.category === 'fyi') {
     rated.category = 'review';
     rated.actionable = true;
-    rated.reclassified_by_signal = 'relationship';
+    rated.reclassified_by_signal = 'awaiting_you';
+    return rated;
+  }
+  if (m.waiting_on_others === true && rated.category !== 'waiting') {
+    // You've done your part — this is a follow-up to chase, not work to do.
+    rated.category = 'waiting';
+    rated.actionable = false;
+    rated.reclassified_by_signal = 'waiting_on_others';
   }
   return rated;
 }
@@ -542,7 +552,7 @@ async function rateItem(item) {
       urgency: c.urgency ?? 5,
       summary: c.summary ?? '',
       category: c.category ?? 'act',
-      actionable: (c.category ?? 'act') !== 'fyi',
+      actionable: !['fyi', 'waiting'].includes(c.category ?? 'act'),
     };
     if (rateEffort) {
       rated.effort_minutes = c.effort_minutes ?? null;
@@ -605,10 +615,10 @@ async function rateItem(item) {
     }
     // Category is the reader's expected posture (fyi/confirm/review/respond/act).
     // `actionable` is derived from it for backward-compatible consumers.
-    const CATEGORIES = ['fyi', 'confirm', 'review', 'respond', 'act'];
+    const CATEGORIES = ['fyi', 'confirm', 'review', 'respond', 'act', 'waiting'];
     const cat = typeof rating.category === 'string' ? rating.category.toLowerCase().trim() : '';
     rated.category = CATEGORIES.includes(cat) ? cat : 'act'; // default to a to-do, not FYI
-    rated.actionable = rated.category !== 'fyi';
+    rated.actionable = !['fyi', 'waiting'].includes(rated.category);
     // Cache the rater's raw output (the signal guard is applied on read, not stored).
     ratingCache[cacheKeyFor(item)] = {
       importance: rated.importance,
@@ -736,10 +746,11 @@ function sortItems(items, rated, mode = 'value') {
  *
  * `items` must already be sorted by the chosen mode (ROI by default when effort
  * is present — best bang-for-buck first). Returns the list re-ordered
- * now → later → fyi, each tagged with a `bucket` field, plus plan counts. When
- * no plan flag is set AND every item is actionable, planning is a no-op and no
- * `bucket` is added (output stays backward-compatible); FYI splitting alone,
- * however, still tags buckets so a presenter can separate the two lists.
+ * now → later → followup → fyi, each tagged with a `bucket` field, plus plan
+ * counts. `followup` holds `waiting` items (you're chasing others — nothing to
+ * build). When no plan flag is set AND everything is a plain to-do, planning is
+ * a no-op (output stays backward-compatible); any FYI or waiting items, however,
+ * still get bucketed so a presenter can separate the lists.
  */
 function buildPlan(items) {
   const budgetMin = parseDuration(budgetArg);
@@ -747,25 +758,26 @@ function buildPlan(items) {
   const focusValid = Number.isFinite(focusN) && focusN >= 0 ? focusN : null;
   const sliceRequested = budgetMin != null || focusValid != null;
 
-  const todo = items.filter((it) => it.actionable !== false);
-  const fyi = items.filter((it) => it.actionable === false);
+  const waiting = items.filter((it) => it.category === 'waiting');
+  const fyi = items.filter((it) => it.actionable === false && it.category !== 'waiting');
+  const todo = items.filter((it) => it.actionable !== false && it.category !== 'waiting');
 
   // Nothing to plan and nothing to separate → leave output untouched.
-  if (!sliceRequested && fyi.length === 0) {
+  if (!sliceRequested && fyi.length === 0 && waiting.length === 0) {
     return { items, planning: false };
   }
 
   let usedMin = 0;
   let nowCount = 0;
-  // A PR that is a draft or still red/pending on CI isn't ready to act on — hold
-  // it for "later" rather than the top of the list, even if it ranks high.
-  const notReadyNow = (it) =>
-    it.type === 'pr' && it.meta && (it.meta.draft === true || it.meta.awaiting_checks === true);
+  // An item flagged not_ready by its source (a draft or CI-pending PR) isn't
+  // ready to act on — hold it for "later" rather than the top, even if it ranks
+  // high. Reads the normalized protocol flag, not any source's raw fields.
+  const notReadyNow = (it) => it.meta && it.meta.not_ready === true;
   const taggedTodo = todo.map((it) => {
     let inNow = true;
     if (sliceRequested) {
       if (notReadyNow(it)) {
-        inNow = false; // waiting on checks / draft → not top of the list
+        inNow = false; // not ready (draft / CI pending) → not top of the list
       } else if (budgetMin != null) {
         const cost = it.effort_minutes != null ? Math.max(1, it.effort_minutes) : EFFORT_UNKNOWN_MIN;
         const fitsTime = usedMin + cost <= budgetMin;
@@ -776,16 +788,18 @@ function buildPlan(items) {
         inNow = nowCount < focusValid;
       }
     }
-    // With no slice flag, every to-do is "now" (but still split from FYI).
+    // With no slice flag, every to-do is "now" (but still split from FYI/waiting).
     if (inNow) nowCount++;
     return { ...it, bucket: inNow ? 'now' : 'later' };
   });
+  const taggedWaiting = waiting.map((it) => ({ ...it, bucket: 'followup' }));
   const taggedFyi = fyi.map((it) => ({ ...it, bucket: 'fyi' }));
 
   return {
     items: [
       ...taggedTodo.filter((it) => it.bucket === 'now'),
       ...taggedTodo.filter((it) => it.bucket === 'later'),
+      ...taggedWaiting,
       ...taggedFyi,
     ],
     planning: true,
@@ -793,6 +807,7 @@ function buildPlan(items) {
     nowCount,
     nowMinutes: usedMin,
     laterCount: taggedTodo.length - nowCount,
+    followupCount: taggedWaiting.length,
     fyiCount: taggedFyi.length,
     budgetMin,
     focusN: focusValid,
@@ -981,10 +996,11 @@ async function main() {
     if (plan.focusN != null) bits.push(`focus ${plan.focusN}`);
     const tail = [];
     if (plan.laterCount) tail.push(`${plan.laterCount} later`);
+    if (plan.followupCount) tail.push(`${plan.followupCount} waiting on others`);
     if (plan.fyiCount) tail.push(`${plan.fyiCount} FYI`);
     console.error(
       `[monday] plan: ${bits.join(', ')}` +
-      (tail.length ? ` � ${tail.join(' � ')}` : '') +
+      (tail.length ? ` | ${tail.join(' | ')}` : '') +
       `. Start with the "now" bucket; "later" stays ranked and "FYI" is just for awareness.`
     );
   } else if (hasRating && items.length > 12) {
