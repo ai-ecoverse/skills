@@ -300,20 +300,36 @@ let tasks = [];
 // If your store lives elsewhere, change this one constant.
 const STORE_PATH = '/shared/loose-ends.json';
 
-async function loadState() {
-  // 1) Authoritative: read the store file directly.
+async function readStoreText() {
+  // Try the direct VFS read first; fall back to the worker-shell `cat`
+  // (same jsh runtime that can always reach /shared/). Whichever works.
   try {
     if (slicc.readFile) {
-      const txt = await slicc.readFile(STORE_PATH);
-      if (txt) {
-        const data = JSON.parse(txt);
-        if (data && Array.isArray(data.tasks)) { tasks = data.tasks; return; }
-      }
+      const t = await slicc.readFile(STORE_PATH);
+      if (t) return t;
     }
-  } catch (e) { /* fall through to cached view state */ }
-  // 2) Fallback: last persisted view state (same-session snappiness).
+  } catch (e) { /* try next mechanism */ }
+  try {
+    if (slicc.exec) {
+      const r = await slicc.exec('cat ' + STORE_PATH);
+      if (r && r.exitCode === 0 && r.stdout) return r.stdout;
+    }
+  } catch (e) { /* fall through */ }
+  return null;
+}
+
+// Returns 'store' if hydrated from the authoritative store, else 'fallback'.
+async function loadState() {
+  const txt = await readStoreText();
+  if (txt) {
+    try {
+      const data = JSON.parse(txt);
+      if (data && Array.isArray(data.tasks)) { tasks = data.tasks; return 'store'; }
+    } catch (e) { /* corrupt/partial — fall through */ }
+  }
   const saved = slicc.getState && slicc.getState();
   if (saved && Array.isArray(saved.tasks)) tasks = saved.tasks;
+  return 'fallback';
 }
 function saveState() {
   if (slicc.setState) slicc.setState({ tasks });
@@ -494,8 +510,14 @@ function renderIcons() {
 //  INIT
 // ═══════════════════════════════════════════════════
 (async function init() {
-  await loadState();
+  const src = await loadState();
   renderAll();
+  // Safety net: if we could NOT reach the authoritative store (neither
+  // slicc.readFile nor slicc.exec worked in this sandbox), ask the cone to
+  // push the list. The cone answers `request-load` with a load-items message.
+  if (src !== 'store') {
+    try { if (slicc.lick) slicc.lick({ action: 'request-load' }); } catch (e) {}
+  }
 })();
 </script>
 <script>if (window.LucideIcons) window.LucideIcons.render();</script>
