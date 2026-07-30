@@ -160,35 +160,39 @@
       font-size: 12.5px;
       color: var(--s2-fg);
       line-height: 1.35;
-      margin-bottom: 6px;
+      margin-bottom: 5px;
     }
 
-    /* ── Context details/expand ── */
-    .task-context {
+    /* ── Human-facing summary (always visible) ── */
+    .task-summary {
       font-size: 11.5px;
       color: var(--s2-fg-secondary, var(--s2-fg));
+      line-height: 1.5;
+      white-space: pre-wrap;
+    }
+
+    /* ── Agent-facing detail (collapsible) ── */
+    .task-context {
+      font-size: 11.5px;
+      margin-top: 6px;
     }
     .task-context > summary {
       list-style: none;
       cursor: pointer;
-      color: var(--s2-color-detail, rgba(128,128,128,0.8));
-      line-height: 1.45;
       outline: none;
-      display: block;
-    }
-    .task-context > summary::-webkit-details-marker { display: none; }
-    .task-context > summary .preview { display: inline; }
-    .task-context > summary .more,
-    .task-context > summary .less {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
       color: var(--s2-accent);
       font-weight: 600;
-      margin-left: 4px;
-      white-space: nowrap;
+      font-size: 10.5px;
     }
-    .task-context > summary .less { display: none; }
-    .task-context[open] > summary .preview { display: none; }
-    .task-context[open] > summary .more { display: none; }
-    .task-context[open] > summary .less { display: inline; }
+    .task-context > summary::-webkit-details-marker { display: none; }
+    .task-context > summary .chev { transition: transform 0.15s ease; }
+    .task-context[open] > summary .chev { transform: rotate(90deg); }
+    .task-context > summary .lbl-close { display: none; }
+    .task-context[open] > summary .lbl-open { display: none; }
+    .task-context[open] > summary .lbl-close { display: inline; }
     /* .full is a sibling of <summary>, so native <details> hides it while
        collapsed and reveals it on open — no duplicated text. */
     .task-context .full {
@@ -196,7 +200,36 @@
       line-height: 1.55;
       white-space: pre-wrap;
       margin-top: 6px;
+      font-size: 11.5px;
     }
+
+    /* ── Meta row: created date + session provenance ── */
+    .task-meta {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-top: 8px;
+      flex-wrap: wrap;
+    }
+    .task-date,
+    .task-session {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 10px;
+      color: var(--s2-color-detail, rgba(128,128,128,0.8));
+      line-height: 1;
+    }
+    .task-session {
+      background: none;
+      border: none;
+      padding: 0;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .task-session:hover { color: var(--s2-accent); }
+    .task-date .sprinkle-icon,
+    .task-session .sprinkle-icon { width: 11px; height: 11px; }
 
     /* ── Actions row ── */
     .task-actions {
@@ -246,6 +279,16 @@ function escHtml(str) {
 
 const PREVIEW_LEN = 140;
 
+// Format an ISO timestamp as e.g. "Jul 30, 2026" (empty string if unparseable).
+function fmtDate(iso) {
+  if (!iso) return '';
+  try {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  } catch (e) { return ''; }
+}
+
 // ═══════════════════════════════════════════════════
 //  STATE
 // ═══════════════════════════════════════════════════
@@ -288,33 +331,60 @@ function createTaskCard(task) {
   div.className = 'task-item';
   div.dataset.id = task.id;
 
-  const context = task.context || '';
-  const needsTruncate = context.length > PREVIEW_LEN;
-  const preview = needsTruncate ? context.slice(0, PREVIEW_LEN).trimEnd() + '…' : context;
+  // v2 schema: human-facing `summary`, agent-facing `detail`.
+  // Back-compat: older tasks carry `context` (== the agent detail) and no summary.
+  const summary = task.summary || '';
+  const detail  = task.detail || task.context || '';
+  const created = fmtDate(task.created);
+  const session = task.session || null;
 
-  // Lick payloads — encoded with esc(JSON.stringify(obj)).
-  const doData   = esc(JSON.stringify({ action: 'do',   data: { id: task.id, title: task.title, context: task.context } }));
+  // Lick payload — the cone acts on `detail`; `summary` gives it the human framing.
+  const doData = esc(JSON.stringify({ action: 'do', data: {
+    id: task.id, title: task.title, summary, detail
+  } }));
 
-  let contextBlock = '';
-  if (context) {
-    if (needsTruncate) {
-      contextBlock =
-        '<details class="task-context">' +
-          '<summary>' +
-            '<span class="preview">' + escHtml(preview) + '</span>' +
-            '<span class="more">more</span>' +
-            '<span class="less">less</span>' +
-          '</summary>' +
-          '<div class="full">' + escHtml(context) + '</div>' +
-        '</details>';
-    } else {
-      contextBlock = '<div class="task-context"><div class="full" style="margin-top:0;color:var(--s2-fg-secondary,var(--s2-fg))">' + escHtml(context) + '</div></div>';
-    }
+  // If there's no explicit summary, fall back to showing the detail as the
+  // visible line (so nothing is hidden behind the collapsed brief).
+  const visibleText = summary || (detail && detail.length <= 220 ? detail : '');
+  const summaryBlock = visibleText
+    ? '<div class="task-summary">' + escHtml(visibleText) + '</div>'
+    : '';
+
+  // Show the collapsible agent brief only when there's detail AND it isn't
+  // already fully shown as the visible summary line.
+  let detailBlock = '';
+  if (detail && detail !== visibleText) {
+    detailBlock =
+      '<details class="task-context">' +
+        '<summary>' +
+          '<i data-lucide="chevron-right" class="sprinkle-icon sm chev"></i>' +
+          '<span class="lbl-open">Agent brief</span>' +
+          '<span class="lbl-close">Hide brief</span>' +
+        '</summary>' +
+        '<div class="full">' + escHtml(detail) + '</div>' +
+      '</details>';
   }
+
+  // Meta row: created date + session provenance link.
+  let metaInner = '';
+  if (created) {
+    metaInner += '<span class="task-date"><i data-lucide="clock" class="sprinkle-icon sm"></i>' + escHtml(created) + '</span>';
+  }
+  if (session && (session.file || session.id)) {
+    const sessData = esc(JSON.stringify({ action: 'open-session', data: {
+      id: session.id || '', file: session.file || '', at: session.at || ''
+    } }));
+    const sessLabel = session.at ? fmtDate(session.at) : (session.file ? session.file.slice(0, 10) : 'session');
+    metaInner += '<button class="task-session" onclick="slicc.lick(' + sessData + ')" title="Open the session this came from">' +
+      '<i data-lucide="history" class="sprinkle-icon sm"></i>from ' + escHtml(sessLabel) + '</button>';
+  }
+  const metaBlock = metaInner ? '<div class="task-meta">' + metaInner + '</div>' : '';
 
   div.innerHTML =
     '<div class="task-title">' + escHtml(task.title || task.id || '') + '</div>' +
-    contextBlock +
+    summaryBlock +
+    detailBlock +
+    metaBlock +
     '<div class="task-actions">' +
       '<button class="sprinkle-btn sprinkle-btn--primary" onclick="slicc.lick(' + doData + ')">' +
         '<i data-lucide="arrow-right" class="sprinkle-icon sm"></i> Do' +
