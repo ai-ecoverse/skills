@@ -7,9 +7,9 @@
 //                       [--tournament <id|slug>] [--order-by <field>]
 //                       [--limit n] [--offset n] [--json]
 //   metaculus question <post_id> [--cp] [--json]
-//   metaculus forecast <question_id> <prob>          binary (0.001–0.999)
-//   metaculus forecast <question_id> --data '<json>' MC / continuous
-//   metaculus withdraw <question_id>
+//   metaculus forecast <question_id> <prob> --confirm          binary (0.001–0.999)
+//   metaculus forecast <question_id> --data '<json>' --confirm MC / continuous
+//   metaculus withdraw <question_id> --confirm
 //   metaculus comment <post_id> <text> [--private] [--parent <comment_id>]
 //   metaculus comments [--post <id>] [--author me|<id>] [--limit n] [--json]
 //   metaculus tournaments [--json]
@@ -39,8 +39,19 @@ async function getToken(override) {
 
 // ─── request helper ───────────────────────────────────────────────────────────
 // Returns parsed JSON (or text). Throws {message,status} on non-2xx.
+// SECURITY: the auth token is only ever attached to metaculus.com hosts, so an
+// absolute URL pointing elsewhere (e.g. `metaculus api GET https://evil/`) can
+// never leak the token.
+function assertMetaculusHost(url) {
+  let host;
+  try { host = new URL(url).host; } catch { throw new Error(`invalid URL: ${url}`); }
+  if (!/(^|\.)metaculus\.com$/i.test(host)) {
+    throw new Error(`refusing to send credentials to non-Metaculus host: ${host}`);
+  }
+}
 async function req(token, method, path, { query, body } = {}) {
   let url = path.startsWith('http') ? path : BASE + (path.startsWith('/') ? path : '/' + path);
+  assertMetaculusHost(url);
   if (query && Object.keys(query).length) {
     const qs = Object.entries(query)
       .filter(([, v]) => v !== undefined && v !== null && v !== '')
@@ -80,9 +91,9 @@ const HELP = `metaculus — Metaculus forecasting API
                       [--tournament <id|slug>] [--order-by <field>]
                       [--limit n] [--offset n] [--json]
   metaculus question <post_id> [--cp] [--json]
-  metaculus forecast <question_id> <prob>            binary, 0.001–0.999
-  metaculus forecast <question_id> --data '<json>'   MC/continuous forecast object
-  metaculus withdraw <question_id>
+  metaculus forecast <question_id> <prob> --confirm            binary, 0.001–0.999
+  metaculus forecast <question_id> --data '<json>' --confirm   MC/continuous forecast object
+  metaculus withdraw <question_id> --confirm
   metaculus comment <post_id> <text> [--private] [--parent <comment_id>]
   metaculus comments [--post <id>] [--author me|<id>] [--limit n] [--json]
   metaculus tournaments [--json]
@@ -154,11 +165,19 @@ async function main() {
         title: j.title, type: q.type, status: j.status, resolved: j.resolved,
         nr_forecasters: j.nr_forecasters, open_time: j.open_time,
         scheduled_close_time: j.scheduled_close_time, scheduled_resolve_time: j.scheduled_resolve_time,
-        resolution: q.resolution, url: `https://www.metaculus.com/questions/${j.id}/`,
+        resolution: q.resolution,
+        // resolution rules matter for forecasting — surface them (agents need them)
+        description: q.description || null,
+        resolution_criteria: q.resolution_criteria || null,
+        fine_print: q.fine_print || null,
+        options: q.options || undefined,
+        url: `https://www.metaculus.com/questions/${j.id}/`,
       };
       if (flags.cp) {
         const cp = q.aggregations?.recency_weighted?.latest;
-        out.community_prediction = cp
+        // A latest object may exist yet still have null centers (CP is gated
+        // until you have forecast) — test centers explicitly, not just `cp`.
+        out.community_prediction = (cp && cp.centers != null)
           ? { centers: cp.centers, forecaster_count: cp.forecaster_count }
           : 'not available (Metaculus hides the community prediction until you have forecast on this question)';
       }
@@ -171,11 +190,24 @@ async function main() {
       let entry;
       if (flags.data) {
         entry = JSON.parse(str(flags.data));
-        if (entry.question == null) entry.question = Number(qid);
+        // Reject a payload whose embedded question id contradicts the positional
+        // id — otherwise we'd silently forecast on a different question.
+        if (entry.question != null && Number(entry.question) !== Number(qid)) {
+          return cli.die(`question id mismatch: positional ${qid} vs --data question ${entry.question}. ` +
+            `Pass one, or make them match.`);
+        }
+        entry.question = Number(qid);
       } else {
         const prob = positional[2];
         if (prob == null) return cli.die('binary forecast needs a probability, e.g. `metaculus forecast 123 0.65`');
         entry = { question: Number(qid), probability_yes: Number(prob) };
+      }
+      // Forecasting is a real mutation against the user's track record — require
+      // an explicit --confirm. Without it, preview the payload and stop.
+      if (!flags.confirm) {
+        cli.out({ preview: entry,
+          note: 'This will submit a forecast on your Metaculus account. Re-run with --confirm to send it.' });
+        return;
       }
       const j = await req(token, 'POST', '/questions/forecast/', { body: [entry] });
       return cli.out(flags.json ? j : { ok: true, submitted: entry, response: j });
@@ -183,7 +215,12 @@ async function main() {
 
     case 'withdraw': {
       const qid = str(flags.question) || positional[1];
-      if (!qid) return cli.die('usage: metaculus withdraw <question_id>');
+      if (!qid) return cli.die('usage: metaculus withdraw <question_id> [--confirm]');
+      if (!flags.confirm) {
+        cli.out({ preview: { withdraw_question: Number(qid) },
+          note: 'This will withdraw your active forecast. Re-run with --confirm to proceed.' });
+        return;
+      }
       const j = await req(token, 'POST', '/questions/withdraw/', { body: [{ question: Number(qid) }] });
       return cli.out(flags.json ? j : { ok: true, withdrawn: Number(qid), response: j });
     }
