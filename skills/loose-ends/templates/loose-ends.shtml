@@ -294,7 +294,24 @@ function fmtDate(iso) {
 // ═══════════════════════════════════════════════════
 let tasks = [];
 
-function loadState() {
+// The authoritative store. The panel self-hydrates from this file on open so
+// closing + reopening the sprinkle never loses the list (view state via
+// slicc.setState is only a fast-path cache and does not survive a full reopen).
+// If your store lives elsewhere, change this one constant.
+const STORE_PATH = '/shared/loose-ends.json';
+
+async function loadState() {
+  // 1) Authoritative: read the store file directly.
+  try {
+    if (slicc.readFile) {
+      const txt = await slicc.readFile(STORE_PATH);
+      if (txt) {
+        const data = JSON.parse(txt);
+        if (data && Array.isArray(data.tasks)) { tasks = data.tasks; return; }
+      }
+    }
+  } catch (e) { /* fall through to cached view state */ }
+  // 2) Fallback: last persisted view state (same-session snappiness).
   const saved = slicc.getState && slicc.getState();
   if (saved && Array.isArray(saved.tasks)) tasks = saved.tasks;
 }
@@ -476,8 +493,8 @@ function renderIcons() {
 // ═══════════════════════════════════════════════════
 //  INIT
 // ═══════════════════════════════════════════════════
-(function init() {
-  loadState();
+(async function init() {
+  await loadState();
   renderAll();
 })();
 </script>
