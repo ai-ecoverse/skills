@@ -28,6 +28,20 @@ const BASE = 'https://www.metaculus.com/api';
 
 function str(v) { return typeof v === 'string' ? v : undefined; }
 
+// Collect every question the caller has forecast within a post, whether it is a
+// single question, a group, or a conditional pair. Returns [{ q, mf }].
+function questionsInPost(p) {
+  const qs = [];
+  if (p.question) qs.push(p.question);
+  if (Array.isArray(p.group_of_questions)) qs.push(...p.group_of_questions);
+  if (p.conditional) {
+    if (p.conditional.question_yes) qs.push(p.conditional.question_yes);
+    if (p.conditional.question_no) qs.push(p.conditional.question_no);
+  }
+  return qs.map((q) => ({ q, mf: q && q.my_forecasts && q.my_forecasts.latest }))
+           .filter((x) => x.mf);
+}
+
 // ─── config / auth ──────────────────────────────────────────────────────────
 async function loadConfig() { return (await skill.config()) || {}; }
 async function saveConfig(u) { await skill.config({ ...(await loadConfig()), ...u }); }
@@ -184,8 +198,9 @@ async function main() {
           : 'not available via API (gated — use `metaculus-ext cp ' + j.id + '` with a logged-in browser tab)';
       }
       // Surface the caller's own forecast + whether it is still active. Metaculus
-      // auto-withdraws stale forecasts (prediction expiration); a `latest` whose
-      // end_time is in the past means the forecast is no longer standing.
+      // auto-withdraws stale forecasts (prediction expiration), but a forecast can
+      // also be withdrawn manually — both leave end_time in the past, and the API
+      // doesn't distinguish them, so we only assert "withdrawn", not the cause.
       const mine = q.my_forecasts?.latest;
       if (mine) {
         const nowS = Date.now() / 1000;
@@ -193,7 +208,7 @@ async function main() {
         out.my_forecast = {
           probability_yes: (mine.forecast_values || [])[1] ?? null,
           active,
-          status: active ? 'active' : 'withdrawn (auto-expired)',
+          status: active ? 'active' : 'withdrawn or expired',
           end_time: mine.end_time ? new Date(mine.end_time * 1000).toISOString() : null,
         };
       }
@@ -213,17 +228,16 @@ async function main() {
         });
         const res = j.results || [];
         for (const p of res) {
-          const q = p.question || {};
-          const mf = q.my_forecasts?.latest;
-          if (!mf) continue;
-          const active = mf.end_time == null || mf.end_time > nowS;
-          if (want === 'active' && !active) continue;
-          if (want === 'withdrawn' && active) continue;
-          rows.push({
-            post_id: p.id, question_id: q.id, type: q.type,
-            probability_yes: q.type === 'binary' ? (mf.forecast_values || [])[1] ?? null : null,
-            active, title: p.title,
-          });
+          for (const { q, mf } of questionsInPost(p)) {
+            const active = mf.end_time == null || mf.end_time > nowS;
+            if (want === 'active' && !active) continue;
+            if (want === 'withdrawn' && active) continue;
+            rows.push({
+              post_id: p.id, question_id: q.id, type: q.type,
+              probability_yes: q.type === 'binary' ? (mf.forecast_values || [])[1] ?? null : null,
+              active, title: q.title && q.title !== p.title ? `${p.title} — ${q.title}` : p.title,
+            });
+          }
         }
         if (res.length < 50) break;
       }
