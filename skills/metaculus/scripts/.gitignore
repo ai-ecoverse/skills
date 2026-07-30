@@ -1,0 +1,3 @@
+# Holds the Metaculus API token — never commit.
+.config
+.env
