@@ -34,6 +34,8 @@ curl -o /workspace/.v86/vgabios.bin https://raw.githubusercontent.com/copy/v86/m
 
 `/workspace/.v86/{seabios,vgabios}.bin` is the default BIOS location; override with `-bios` / `-vgabios`. Missing pieces produce an actionable error containing these exact commands.
 
+**Where BIOS blobs come from:** [copy/v86's `bios/` directory](https://github.com/copy/v86/tree/master/bios) is the canonical source — prebuilt SeaBIOS + Bochs VGABIOS, exactly what the emulator is tested against (the curl lines above). The same directory has debug variants; upstream [SeaBIOS](https://www.seabios.org/) and Bochs builds also work, but there is no reason to stray.
+
 ## 2. Get a guest image
 
 Download images into the VFS with `curl` (SLICC's fetch proxy bypasses CORS):
@@ -47,6 +49,14 @@ curl -o /tmp/arch_state.bin.zst https://i.copy.sh/arch_state-v3.bin.zst
 ```
 
 FreeDOS floppy/disk images and KolibriOS (`kolibri.img`) also work well. For the newest Alpine instead of the pinned one above, list https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/x86/ and pick the current `alpine-virt-*-x86.iso` filename.
+
+### Finding compatible software
+
+- **Start with the tested list.** copy/v86's README ["Compatibility" section](https://github.com/copy/v86#compatibility) enumerates OSes known to boot (Alpine, Arch, Damn Small Linux, Buildroot, FreeDOS, KolibriOS, ReactOS, Haiku, 9front, Windows 9x/2000/XP-era, BSDs…), and the [copy.sh/v86 demo page](https://copy.sh/v86/) links the exact images it runs — the ones hosted at `https://i.copy.sh/` (e.g. the Arch state above) can be curled directly.
+- **Selection rules of thumb:** 32-bit i686/x86 build (never x86_64); small footprint (≤512 MiB RAM, ideally a few hundred MB of disk); era-appropriate drivers — IDE disks, NE2000 or virtio NIC, VGA/VESA graphics. Anything needing modern ACPI-heavy kernels, SSE4+, or GPU acceleration will crawl or fail.
+- **Distro archives:** Alpine keeps every release series under a permanent `https://dl-cdn.alpinelinux.org/alpine/vX.Y/releases/x86/` directory; other distros that still ship an i686 port (Debian, Void, Tiny Core, Slackware) have similar archive layouts.
+- **Retro OSes and DOS software:** the [Internet Archive's software collections](https://archive.org/details/software) host bootable floppy/CD images (FreeDOS apps, Win9x-era ISOs, DOS games) — download the raw `.img`/`.iso`, not an emulator-wrapped bundle.
+- **Verify before a long boot:** check the image is 32-bit (e.g. the filename/release page says `x86`, `i686`, or `i386`) — catching an x86_64 image up front beats waiting out a hung boot.
 
 ## 3. Boot: devices and flags (QEMU-flavored)
 
