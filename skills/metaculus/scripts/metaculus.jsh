@@ -2,6 +2,7 @@
 //
 //   metaculus auth <token> | --show
 //   metaculus me
+//   metaculus mine [--status active|withdrawn|all] [--json]
 //   metaculus questions [--search q] [--status open|closed|resolved|upcoming]
 //                       [--type binary|multiple_choice|numeric|date|group]
 //                       [--tournament <id|slug>] [--order-by <field>]
@@ -26,6 +27,20 @@ const skill = require('sliccy:skill');
 const BASE = 'https://www.metaculus.com/api';
 
 function str(v) { return typeof v === 'string' ? v : undefined; }
+
+// Collect every question the caller has forecast within a post, whether it is a
+// single question, a group, or a conditional pair. Returns [{ q, mf }].
+function questionsInPost(p) {
+  const qs = [];
+  if (p.question) qs.push(p.question);
+  if (Array.isArray(p.group_of_questions)) qs.push(...p.group_of_questions);
+  if (p.conditional) {
+    if (p.conditional.question_yes) qs.push(p.conditional.question_yes);
+    if (p.conditional.question_no) qs.push(p.conditional.question_no);
+  }
+  return qs.map((q) => ({ q, mf: q && q.my_forecasts && q.my_forecasts.latest }))
+           .filter((x) => x.mf);
+}
 
 // ─── config / auth ──────────────────────────────────────────────────────────
 async function loadConfig() { return (await skill.config()) || {}; }
@@ -86,6 +101,7 @@ const HELP = `metaculus — Metaculus forecasting API
 
   metaculus auth <token> | --show
   metaculus me
+  metaculus mine [--status active|withdrawn|all] [--json]
   metaculus questions [--search q] [--status open|closed|resolved|upcoming]
                       [--type binary|multiple_choice|numeric|date|group]
                       [--tournament <id|slug>] [--order-by <field>]
@@ -179,9 +195,58 @@ async function main() {
         // until you have forecast) — test centers explicitly, not just `cp`.
         out.community_prediction = (cp && cp.centers != null)
           ? { centers: cp.centers, forecaster_count: cp.forecaster_count }
-          : 'not available (Metaculus hides the community prediction until you have forecast on this question)';
+          : 'not available via API (gated — use `metaculus-ext cp ' + j.id + '` with a logged-in browser tab)';
+      }
+      // Surface the caller's own forecast + whether it is still active. Metaculus
+      // auto-withdraws stale forecasts (prediction expiration), but a forecast can
+      // also be withdrawn manually — both leave end_time in the past, and the API
+      // doesn't distinguish them, so we only assert "withdrawn", not the cause.
+      const mine = q.my_forecasts?.latest;
+      if (mine) {
+        const nowS = Date.now() / 1000;
+        const active = mine.end_time == null || mine.end_time > nowS;
+        out.my_forecast = {
+          probability_yes: (mine.forecast_values || [])[1] ?? null,
+          active,
+          status: active ? 'active' : 'withdrawn or expired',
+          end_time: mine.end_time ? new Date(mine.end_time * 1000).toISOString() : null,
+        };
       }
       return cli.out(out);
+    }
+
+    case 'mine': {
+      // List the caller's forecasts on currently-open questions, flagging which
+      // are still active vs auto-withdrawn (Metaculus expires stale forecasts).
+      const me = await req(token, 'GET', '/users/me/');
+      const want = (str(flags.status) || 'active').toLowerCase(); // active|withdrawn|all
+      const nowS = Date.now() / 1000;
+      const rows = [];
+      for (let offset = 0; offset < 2000; offset += 50) {
+        const j = await req(token, 'GET', '/posts/', {
+          query: { forecaster_id: me.id, statuses: 'open', with_cp: 'true', limit: 50, offset },
+        });
+        const res = j.results || [];
+        for (const p of res) {
+          for (const { q, mf } of questionsInPost(p)) {
+            const active = mf.end_time == null || mf.end_time > nowS;
+            if (want === 'active' && !active) continue;
+            if (want === 'withdrawn' && active) continue;
+            rows.push({
+              post_id: p.id, question_id: q.id, type: q.type,
+              probability_yes: q.type === 'binary' ? (mf.forecast_values || [])[1] ?? null : null,
+              active, title: q.title && q.title !== p.title ? `${p.title} — ${q.title}` : p.title,
+            });
+          }
+        }
+        if (res.length < 50) break;
+      }
+      if (flags.json) return cli.out({ count: rows.length, status: want, forecasts: rows });
+      const table = rows.map((r) => [String(r.post_id), r.active ? 'active' : 'withdrawn', r.type || '',
+        r.probability_yes != null ? `${(r.probability_yes * 100).toFixed(0)}%` : '', fmt.trunc(r.title, 56)]);
+      cli.out(fmt.table([['POST', 'STATUS', 'TYPE', 'P(yes)', 'TITLE'], ...table]));
+      cli.out(`\n${rows.length} ${want} forecast(s).`);
+      return;
     }
 
     case 'forecast': {
