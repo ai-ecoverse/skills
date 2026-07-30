@@ -178,27 +178,24 @@
     }
     .task-context > summary::-webkit-details-marker { display: none; }
     .task-context > summary .preview { display: inline; }
-    .task-context > summary .more {
+    .task-context > summary .more,
+    .task-context > summary .less {
       color: var(--s2-accent);
       font-weight: 600;
       margin-left: 4px;
       white-space: nowrap;
     }
+    .task-context > summary .less { display: none; }
     .task-context[open] > summary .preview { display: none; }
     .task-context[open] > summary .more { display: none; }
+    .task-context[open] > summary .less { display: inline; }
+    /* .full is a sibling of <summary>, so native <details> hides it while
+       collapsed and reveals it on open — no duplicated text. */
     .task-context .full {
       color: var(--s2-fg);
       line-height: 1.55;
       white-space: pre-wrap;
-      margin-top: 2px;
-    }
-    .task-context .collapse {
-      display: inline-block;
       margin-top: 6px;
-      color: var(--s2-accent);
-      font-weight: 600;
-      font-size: 11px;
-      cursor: pointer;
     }
 
     /* ── Actions row ── */
@@ -306,11 +303,12 @@ function createTaskCard(task) {
           '<summary>' +
             '<span class="preview">' + escHtml(preview) + '</span>' +
             '<span class="more">more</span>' +
-            '<span class="full">' + escHtml(context) + '</span>' +
+            '<span class="less">less</span>' +
           '</summary>' +
+          '<div class="full">' + escHtml(context) + '</div>' +
         '</details>';
     } else {
-      contextBlock = '<div class="task-context"><span class="full" style="color:var(--s2-fg-secondary,var(--s2-fg))">' + escHtml(context) + '</span></div>';
+      contextBlock = '<div class="task-context"><div class="full" style="margin-top:0;color:var(--s2-fg-secondary,var(--s2-fg))">' + escHtml(context) + '</div></div>';
     }
   }
 
