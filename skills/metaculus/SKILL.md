@@ -38,9 +38,9 @@ metaculus questions [--search q] [--status open|closed|resolved|upcoming] \
 metaculus question <post_id> [--cp] [--json]
 
 # Forecast (see "Forecasting" below — uses the QUESTION id, not the post id)
-metaculus forecast <question_id> <prob>            # binary, 0.001–0.999
-metaculus forecast <question_id> --data '<json>'   # MC / continuous
-metaculus withdraw <question_id>
+metaculus forecast <question_id> <prob> --confirm            # binary, 0.001–0.999
+metaculus forecast <question_id> --data '<json>' --confirm   # MC / continuous
+metaculus withdraw <question_id> --confirm
 
 # Comments
 metaculus comments [--post <id>] [--author me|<id>] [--limit n] [--json]
@@ -65,16 +65,19 @@ Value field by question type:
 
 | Type              | How to submit                                                              |
 |-------------------|----------------------------------------------------------------------------|
-| `binary`          | `metaculus forecast <qid> 0.65`                                            |
-| `multiple_choice` | `metaculus forecast <qid> --data '{"probability_yes_per_category":{"Yes":0.6,"No":0.4}}'` |
-| `numeric`/`date`  | `metaculus forecast <qid> --data '{"continuous_cdf":[…201 increasing values 0..1…]}'` |
+| `binary`          | `metaculus forecast <qid> 0.65 --confirm`                                  |
+| `multiple_choice` | `metaculus forecast <qid> --data '{"probability_yes_per_category":{"Yes":0.6,"No":0.4}}' --confirm` |
+| `numeric`/`date`  | `metaculus forecast <qid> --data '{"continuous_cdf":[…201 increasing values 0..1…]}' --confirm` |
 
 Constraints: binary probabilities clamp to **0.001–0.999**; continuous CDFs must
 be exactly **201** monotonically-increasing points (per-step increase ≤ 0.2).
 
-Forecasting is a real mutation against the user's Metaculus track record — get
-explicit confirmation before submitting, and prefer showing the user the value
-first.
+`forecast` and `withdraw` are real mutations against the user's Metaculus track
+record, so they **require `--confirm`**. Without it, the command prints a preview
+of the exact payload and submits nothing — show the user that preview and get
+explicit approval before re-running with `--confirm`. A `--data` payload whose
+embedded `question` id contradicts the positional id is rejected (no silent
+forecast on the wrong question).
 
 ## Gotchas
 
@@ -87,6 +90,9 @@ first.
   support@metaculus.com for broader access.
 - The Swagger UI at `/api/` sits behind a Cloudflare JS challenge — open it in a
   browser, not headless curl.
+- **Credentials only go to metaculus.com:** the `api` passthrough refuses to
+  attach the token to an absolute URL on any non-`metaculus.com` host, so a stray
+  or malicious URL can't exfiltrate the token.
 
 ## Reference
 
