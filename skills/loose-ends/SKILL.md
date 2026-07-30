@@ -148,6 +148,7 @@ The panel fires these licks back to the cone as `[Sprinkle Event: loose-ends]`:
 | `do`   | `{ id, title, summary, detail }` | User clicks **Do** | Start working the task now, using `detail` as the agent brief (`summary` gives the human framing). The row stays in the list (a "Do" is not a completion). |
 | `done` | `{ id, title }` | User clicks **Done** | The panel already removed the row optimistically. Remove that `id` from `/shared/loose-ends.json` and bump `updated`. No panel round-trip needed. |
 | `open-session` | `{ id, file, at }` | User clicks the **"from &lt;date&gt;"** provenance link | Open the originating transcript at `/sessions/<file>` (e.g. `read_file`) and surface it to the user — the conversation this loose end came from. |
+| `request-load` | `{}` | Panel `init` when it could **not** reach the store itself (neither `slicc.readFile` nor `slicc.exec` worked in the sandbox) | Reseed the panel from the store: `sprinkle send loose-ends '{"action":"load-items","tasks":[ ...store tasks... ]}'` (delegate to the scoop). This is the safety net behind self-hydration. |
 
 > **`done` is optimistic in the panel.** The row disappears the instant the user
 > clicks, then the lick fires. The cone's only job is to make the store match by
@@ -183,9 +184,13 @@ store writes.
 - **No emojis in the UI** — the panel uses Lucide icons (`list-checks`, `check`,
   `arrow-right`), per the SLICC style guide.
 - **Template:** `templates/loose-ends.shtml` (full-document mode). On open it
-  **self-hydrates from the store** — its `init` reads `STORE_PATH`
-  (default `/shared/loose-ends.json`) via `slicc.readFile()` and renders from
-  that, so closing and reopening the sprinkle never empties the list. `slicc.setState`/`getState`
-  is only a same-session fast-path cache. If your store lives elsewhere, change
-  the `STORE_PATH` constant near the top of the script. The store is
-  authoritative — `bootstrap` also reseeds explicitly for good measure.
+  **self-hydrates from the store** so closing + reopening never loses the list.
+  Its `init` reads `STORE_PATH` (default `/shared/loose-ends.json`) — trying
+  `slicc.readFile()` first, then `slicc.exec('cat …')` — and renders from that.
+  If **neither** works in the sandbox, it fires a `request-load` lick and the
+  cone reseeds (see the lick table). `slicc.setState`/`getState` is only a
+  same-session cache and does **not** survive a full close+reopen — that was the
+  original "empty after reopen" bug. **Test hydration with `sprinkle close` +
+  `sprinkle open`, not `sprinkle reload`** (reload keeps the state cache and
+  masks the problem). If your store lives elsewhere, change the `STORE_PATH`
+  constant near the top of the script.
