@@ -40,13 +40,13 @@ Download images into the VFS with `curl` (SLICC's fetch proxy bypasses CORS):
 
 ```bash
 # Alpine Linux — 32-bit "virt" ISO (~60 MB), boots to login: root, no password
-curl -o /workspace/alpine.iso https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/x86/alpine-virt-3.22.2-x86.iso
+curl -o /workspace/alpine.iso https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/x86/alpine-virt-3.22.2-x86.iso
 
 # Pre-booted Arch Linux state from copy.sh (~15 MB) — resumes straight into a root shell
 curl -o /tmp/arch_state.bin.zst https://i.copy.sh/arch_state-v3.bin.zst
 ```
 
-FreeDOS floppy/disk images and KolibriOS (`kolibri.img`) also work well. Check the exact Alpine filename against https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/x86/ if the URL 404s — the version moves.
+FreeDOS floppy/disk images and KolibriOS (`kolibri.img`) also work well. For the newest Alpine instead of the pinned one above, list https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/x86/ and pick the current `alpine-virt-*-x86.iso` filename.
 
 ## 3. Boot: devices and flags (QEMU-flavored)
 
