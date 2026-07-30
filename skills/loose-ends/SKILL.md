@@ -11,10 +11,13 @@ A durable, cross-session to-do list rendered as a sprinkle panel. Unlike the
 publish/annotate state), loose-ends is a hand-curated backlog of open threads
 the user wants kept in view until they're truly done.
 
-Each task carries a **title** and a free-form **context** blob — the "why it's
-open / what to do next / links" — so a future session (or a future you) can pick
-it up cold. The panel shows the title, an expandable context preview, and two
-buttons: **Do** and **Done**.
+Each task carries a **title**, a human-facing **summary** (the at-a-glance what &
+why), and an agent-facing **detail** brief (the full "what to do next / links"),
+plus a **created** timestamp and optional **session** provenance linking it back
+to the `/sessions/` transcript it came from — so a future session (or a future
+you) can pick it up cold. The panel shows the title and summary, a collapsible
+"Agent brief", a created date, a "from &lt;date&gt;" link to the origin session,
+and two buttons: **Do** and **Done**.
 
 ## Architecture — who owns what
 
@@ -35,13 +38,19 @@ and reseed from the store (see [Resurrecting](#resurrecting-in-a-new-session)).
 
 ```json
 {
-  "updated": "2026-07-30T17:22:24.862Z",
+  "updated": "2026-07-30T18:08:00.000Z",
   "tasks": [
     {
       "id": "le-example",
       "title": "Short imperative title",
-      "context": "The full why/what/links blob. Can be long — the panel truncates a preview and expands on click.",
-      "created": "2026-07-30T17:15:00Z"
+      "summary": "Human-facing: what this is and why it's still open, in a sentence or two. Always visible on the card.",
+      "detail": "Agent-facing: the full working brief — exact next actions, addresses, file paths, links, GUIDs. Collapsed behind an \"Agent brief\" toggle.",
+      "created": "2026-07-30T17:15:00Z",
+      "session": {
+        "id": "c20ed555-454d-4bc1-925c-2d11f7e2074d",
+        "file": "2026-07-30T17-23-30-891Z-slicc-speaking-talks-and-loose-ends.md",
+        "at": "2026-07-30T17:23:30.891Z"
+      }
     }
   ]
 }
@@ -49,10 +58,33 @@ and reseed from the store (see [Resurrecting](#resurrecting-in-a-new-session)).
 
 - `id` — stable, unique, kebab-case (e.g. `le-<slug>`). Upserts key on it.
 - `title` — one-line imperative summary shown in bold.
-- `context` — optional rich text; the panel shows a ~140-char preview with a
-  "more" toggle.
-- `created` — ISO timestamp (informational).
+- **`summary` — human-facing.** The at-a-glance "what & why", always visible. Keep it short and readable.
+- **`detail` — agent-facing.** The full brief the cone acts on: concrete steps, contacts, paths, links. Shown collapsed under an "Agent brief" toggle; can be long.
+- `created` — ISO timestamp (informational; rendered on the card).
+- `session` — provenance into `/sessions/`: `{ id, file, at }` linking the task back to the conversation that spawned it (see [Session provenance](#session-provenance)). Optional.
 - Bump the top-level `updated` on every store write.
+
+> **Back-compat.** Older tasks used a single `context` field (== the agent
+> `detail`) with no `summary`/`session`. The template still reads `context` as a
+> fallback for `detail`, and if there's no `summary` it shows the detail (when
+> short) or hides it behind the brief toggle. Prefer `summary` + `detail` for new
+> tasks.
+
+### Session provenance
+
+Every task can point back to the `/sessions/` transcript it came from. Each
+session file is named `<ISO-ts>-<slug>.md` and indexed in `/sessions/index.json`
+as `{ filename, title, frozenAt, sessionId, ... }`.
+
+- **Resolve a task's origin session by time:** a task `created` at time *T*
+  belongs to the session whose `frozenAt` is the smallest value `>= T` (sessions
+  are sequential; the one frozen just after the task was created was the active
+  one). Populate `session` = `{ id: sessionId, file: filename, at: frozenAt }`.
+- The **live** (unfrozen) session isn't in `index.json` yet, so a task created
+  mid-session may not resolve until that session is frozen — set what you know
+  (`at` = now) and reconcile later with the same rule.
+- On the card, the provenance renders as a **"from &lt;date&gt;"** link; clicking
+  it fires an `open-session` lick (see below).
 
 ## Quick-start / bootstrap
 
@@ -94,7 +126,7 @@ The cone owns the store, so it does two things per change: **write the JSON**
 1. Cone appends/replaces the task in `/shared/loose-ends.json` and bumps `updated`.
 2. Cone → scoop:
    ```
-   feed_scoop("loose-ends", "sprinkle send loose-ends '{\"action\":\"add-item\",\"task\":{\"id\":\"le-foo\",\"title\":\"...\",\"context\":\"...\",\"created\":\"2026-07-30T00:00:00Z\"}}'")
+   feed_scoop("loose-ends", "sprinkle send loose-ends '{\"action\":\"add-item\",\"task\":{\"id\":\"le-foo\",\"title\":\"...\",\"summary\":\"human what & why\",\"detail\":\"agent brief: steps, contacts, paths, links\",\"created\":\"2026-07-30T00:00:00Z\",\"session\":{\"id\":\"...\",\"file\":\"...md\",\"at\":\"...\"}}}'")
    ```
    `add-item` upserts: an existing `id` is replaced in place; a new `id` is
    appended.
@@ -113,8 +145,9 @@ The panel fires these licks back to the cone as `[Sprinkle Event: loose-ends]`:
 
 | Action | Data | When | Cone handler |
 |--------|------|------|--------------|
-| `do`   | `{ id, title, context }` | User clicks **Do** | Start working the task now, using `context` as the brief. The row stays in the list (a "Do" is not a completion). |
+| `do`   | `{ id, title, summary, detail }` | User clicks **Do** | Start working the task now, using `detail` as the agent brief (`summary` gives the human framing). The row stays in the list (a "Do" is not a completion). |
 | `done` | `{ id, title }` | User clicks **Done** | The panel already removed the row optimistically. Remove that `id` from `/shared/loose-ends.json` and bump `updated`. No panel round-trip needed. |
+| `open-session` | `{ id, file, at }` | User clicks the **"from &lt;date&gt;"** provenance link | Open the originating transcript at `/sessions/<file>` (e.g. `read_file`) and surface it to the user — the conversation this loose end came from. |
 
 > **`done` is optimistic in the panel.** The row disappears the instant the user
 > clicks, then the lick fires. The cone's only job is to make the store match by
