@@ -125,6 +125,13 @@ forecasts by `|you − crowd|` — the real "out on a limb" metric. (Extremity �
 divergence: a 1% forecast where the crowd is also at 1% is high-conviction but
 not contrarian.) Requires an open, logged-in metaculus.com tab.
 
+Notes: `cp` is type-aware — binary renders as a probability, multiple-choice as
+per-option probabilities, and numeric/date centers are scaled to real
+units/dates (never a misleading `%`); it falls back to `n/a` when the CP isn't
+embedded. `divergence` is binary + single-question (it can't map one page's CP
+onto multiple sub-questions of a group post); `metaculus mine` does list your
+group/conditional forecasts.
+
 ## Gotchas
 
 - **post id ≠ question id** (see above). Group/conditional posts have `question:
