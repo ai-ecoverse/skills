@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Loose ends</title>
+  <link rel="icon" href="list-checks" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: var(--s2-font-family, system-ui, sans-serif);
+      background: var(--s2-bg-base);
+      color: var(--s2-fg);
+      font-size: 13px;
+      line-height: 1.5;
+      overflow-x: hidden;
+    }
+
+    #app {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* ── Top bar ── */
+    .top-bar {
+      display: flex;
+      align-items: center;
+      gap: var(--s2-spacing-100, 8px);
+      padding: 10px var(--s2-spacing-200, 12px);
+      background: var(--s2-bg-elevated);
+      border-bottom: 1px solid color-mix(in srgb, var(--s2-fg) 8%, transparent);
+      flex-shrink: 0;
+      min-height: 44px;
+    }
+    .top-bar-title {
+      font-weight: 600;
+      font-size: 13px;
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: var(--s2-fg);
+    }
+
+    /* ── Pill count badge ── */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 18px;
+      height: 18px;
+      padding: 0 6px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 700;
+      background: color-mix(in srgb, var(--s2-accent) 15%, transparent);
+      color: var(--s2-accent);
+      line-height: 1;
+      flex-shrink: 0;
+    }
+    .badge.zero { display: none; }
+
+    /* ── Buttons ── */
+    .sprinkle-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      border-radius: var(--s2-radius-pill, 999px);
+      border: none;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 500;
+      padding: 5px 11px;
+      transition: opacity 0.15s, background 0.15s, box-shadow 0.15s;
+      white-space: nowrap;
+      line-height: 1.3;
+    }
+    .sprinkle-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .sprinkle-btn--primary {
+      background: var(--s2-accent);
+      color: var(--s2-bg-base);
+    }
+    .sprinkle-btn--primary:not(:disabled):hover { opacity: 0.88; }
+    .sprinkle-btn--positive {
+      background: color-mix(in srgb, var(--s2-positive) 12%, transparent);
+      color: var(--s2-positive);
+    }
+    .sprinkle-btn--positive:not(:disabled):hover {
+      background: color-mix(in srgb, var(--s2-positive) 22%, transparent);
+    }
+
+    /* ── Icons ── */
+    .sprinkle-icon {
+      width: 14px;
+      height: 14px;
+      stroke-width: 2;
+      flex-shrink: 0;
+    }
+    .sprinkle-icon.sm { width: 12px; height: 12px; }
+    .sprinkle-icon.lg { width: 16px; height: 16px; }
+
+    /* ── Typography ── */
+    .sprinkle-detail {
+      font-size: 11px;
+      color: var(--s2-color-detail, rgba(128,128,128,0.8));
+    }
+
+    /* ── List scroll ── */
+    #list-scroll {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    #list-scroll::-webkit-scrollbar { width: 4px; }
+    #list-scroll::-webkit-scrollbar-track { background: transparent; }
+    #list-scroll::-webkit-scrollbar-thumb {
+      background: color-mix(in srgb, var(--s2-fg) 15%, transparent);
+      border-radius: 2px;
+    }
+
+    /* ── Empty state ── */
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 48px 20px;
+      color: var(--s2-fg-secondary, var(--s2-fg));
+      opacity: 0.55;
+      text-align: center;
+    }
+    .empty-state .sprinkle-icon { width: 32px; height: 32px; opacity: 0.5; }
+
+    /* ── Task card ── */
+    .task-item {
+      background: var(--s2-bg-elevated);
+      border-radius: var(--s2-radius-l, 10px);
+      box-shadow: var(--s2-shadow-container);
+      overflow: hidden;
+      transition: box-shadow 0.15s, opacity 0.25s ease, transform 0.25s ease;
+      padding: 10px 12px 8px;
+    }
+    .task-item:hover { box-shadow: var(--s2-shadow-elevated); }
+    .task-item.leaving {
+      opacity: 0;
+      transform: translateX(16px);
+    }
+
+    .task-title {
+      font-weight: 600;
+      font-size: 12.5px;
+      color: var(--s2-fg);
+      line-height: 1.35;
+      margin-bottom: 6px;
+    }
+
+    /* ── Context details/expand ── */
+    .task-context {
+      font-size: 11.5px;
+      color: var(--s2-fg-secondary, var(--s2-fg));
+    }
+    .task-context > summary {
+      list-style: none;
+      cursor: pointer;
+      color: var(--s2-color-detail, rgba(128,128,128,0.8));
+      line-height: 1.45;
+      outline: none;
+      display: block;
+    }
+    .task-context > summary::-webkit-details-marker { display: none; }
+    .task-context > summary .preview { display: inline; }
+    .task-context > summary .more {
+      color: var(--s2-accent);
+      font-weight: 600;
+      margin-left: 4px;
+      white-space: nowrap;
+    }
+    .task-context[open] > summary .preview { display: none; }
+    .task-context[open] > summary .more { display: none; }
+    .task-context .full {
+      color: var(--s2-fg);
+      line-height: 1.55;
+      white-space: pre-wrap;
+      margin-top: 2px;
+    }
+    .task-context .collapse {
+      display: inline-block;
+      margin-top: 6px;
+      color: var(--s2-accent);
+      font-weight: 600;
+      font-size: 11px;
+      cursor: pointer;
+    }
+
+    /* ── Actions row ── */
+    .task-actions {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      margin-top: 10px;
+    }
+  </style>
+</head>
+<body>
+<div id="app">
+  <div class="top-bar">
+    <i data-lucide="list-checks" class="sprinkle-icon lg"></i>
+    <span class="top-bar-title">Loose ends</span>
+    <span id="count-badge" class="badge zero">0</span>
+  </div>
+  <div id="list-scroll">
+    <div class="empty-state" id="empty-state">
+      <i data-lucide="check-check" class="sprinkle-icon"></i>
+      <span class="sprinkle-detail">No loose ends — all clear.</span>
+    </div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════
+//  ESCAPING HELPERS
+//  esc()  — attribute-safe encoding. We build lick-data
+//  objects with esc(JSON.stringify(obj)); the JSON is valid
+//  JS and &quot; decodes in-attribute. Do NOT double-stringify.
+// ═══════════════════════════════════════════════════
+function esc(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+function escHtml(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+const PREVIEW_LEN = 140;
+
+// ═══════════════════════════════════════════════════
+//  STATE
+// ═══════════════════════════════════════════════════
+let tasks = [];
+
+function loadState() {
+  const saved = slicc.getState && slicc.getState();
+  if (saved && Array.isArray(saved.tasks)) tasks = saved.tasks;
+}
+function saveState() {
+  if (slicc.setState) slicc.setState({ tasks });
+}
+
+// ═══════════════════════════════════════════════════
+//  RENDER
+// ═══════════════════════════════════════════════════
+function updateCount() {
+  const badge = document.getElementById('count-badge');
+  const n = tasks.length;
+  badge.textContent = n;
+  badge.className = 'badge' + (n === 0 ? ' zero' : '');
+}
+
+function updateEmptyState() {
+  const empty = document.getElementById('empty-state');
+  empty.style.display = tasks.length === 0 ? 'flex' : 'none';
+}
+
+function renderAll() {
+  const scroll = document.getElementById('list-scroll');
+  [...scroll.querySelectorAll('.task-item')].forEach(el => el.remove());
+  tasks.forEach(t => scroll.appendChild(createTaskCard(t)));
+  updateCount();
+  updateEmptyState();
+  renderIcons();
+}
+
+function createTaskCard(task) {
+  const div = document.createElement('div');
+  div.className = 'task-item';
+  div.dataset.id = task.id;
+
+  const context = task.context || '';
+  const needsTruncate = context.length > PREVIEW_LEN;
+  const preview = needsTruncate ? context.slice(0, PREVIEW_LEN).trimEnd() + '…' : context;
+
+  // Lick payloads — encoded with esc(JSON.stringify(obj)).
+  const doData   = esc(JSON.stringify({ action: 'do',   data: { id: task.id, title: task.title, context: task.context } }));
+
+  let contextBlock = '';
+  if (context) {
+    if (needsTruncate) {
+      contextBlock =
+        '<details class="task-context">' +
+          '<summary>' +
+            '<span class="preview">' + escHtml(preview) + '</span>' +
+            '<span class="more">more</span>' +
+            '<span class="full">' + escHtml(context) + '</span>' +
+          '</summary>' +
+        '</details>';
+    } else {
+      contextBlock = '<div class="task-context"><span class="full" style="color:var(--s2-fg-secondary,var(--s2-fg))">' + escHtml(context) + '</span></div>';
+    }
+  }
+
+  div.innerHTML =
+    '<div class="task-title">' + escHtml(task.title || task.id || '') + '</div>' +
+    contextBlock +
+    '<div class="task-actions">' +
+      '<button class="sprinkle-btn sprinkle-btn--primary" onclick="slicc.lick(' + doData + ')">' +
+        '<i data-lucide="arrow-right" class="sprinkle-icon sm"></i> Do' +
+      '</button>' +
+      '<button class="sprinkle-btn sprinkle-btn--positive done-btn">' +
+        '<i data-lucide="check" class="sprinkle-icon sm"></i> Done' +
+      '</button>' +
+    '</div>';
+
+  // Done: OPTIMISTIC removal first, then emit the lick.
+  const doneBtn = div.querySelector('.done-btn');
+  doneBtn.addEventListener('click', () => {
+    doneBtn.disabled = true;
+    // 1) Optimistically remove the row + update model/count/empty-state.
+    removeTaskById(task.id, true);
+    // 2) THEN notify the cone.
+    slicc.lick({ action: 'done', data: { id: task.id, title: task.title } });
+  });
+
+  return div;
+}
+
+// Remove a task from the model + DOM (with a small leave animation).
+function removeTaskById(id, animate) {
+  const idx = tasks.findIndex(t => t.id === id);
+  if (idx !== -1) tasks.splice(idx, 1);
+  saveState();
+
+  const scroll = document.getElementById('list-scroll');
+  const el = [...scroll.querySelectorAll('.task-item')].find(n => n.dataset.id === id);
+  const finalize = () => { updateCount(); updateEmptyState(); };
+  if (el) {
+    if (animate) {
+      el.classList.add('leaving');
+      setTimeout(() => { el.remove(); finalize(); }, 250);
+    } else {
+      el.remove();
+      finalize();
+    }
+  } else {
+    finalize();
+  }
+}
+
+// ═══════════════════════════════════════════════════
+//  SLICC EVENTS (inbound from the cone via `sprinkle send`)
+// ═══════════════════════════════════════════════════
+slicc.on('update', (msg) => {
+  if (!msg || !msg.action) return;
+
+  if (msg.action === 'load-items') {
+    tasks = Array.isArray(msg.tasks) ? msg.tasks.slice() : [];
+    saveState();
+    renderAll();
+  }
+
+  else if (msg.action === 'add-item') {
+    if (msg.task && msg.task.id) {
+      const existing = tasks.findIndex(t => t.id === msg.task.id);
+      if (existing !== -1) tasks[existing] = msg.task;
+      else tasks.push(msg.task);
+      saveState();
+      const scroll = document.getElementById('list-scroll');
+      // If it already had a card (upsert), re-render fully; else append.
+      if (existing !== -1) {
+        renderAll();
+      } else {
+        scroll.appendChild(createTaskCard(msg.task));
+        updateCount();
+        updateEmptyState();
+        renderIcons();
+      }
+    }
+  }
+
+  else if (msg.action === 'remove-item') {
+    if (msg.id) removeTaskById(msg.id, false);
+  }
+});
+
+// ═══════════════════════════════════════════════════
+//  ICON RENDER HELPER
+// ═══════════════════════════════════════════════════
+function renderIcons() {
+  if (typeof LucideIcons !== 'undefined' && LucideIcons.render) LucideIcons.render();
+  if (window.LucideIcons) window.LucideIcons.render();
+}
+
+// ═══════════════════════════════════════════════════
+//  INIT
+// ═══════════════════════════════════════════════════
+(function init() {
+  loadState();
+  renderAll();
+})();
+</script>
+<script>if (window.LucideIcons) window.LucideIcons.render();</script>
+</body>
+</html>
