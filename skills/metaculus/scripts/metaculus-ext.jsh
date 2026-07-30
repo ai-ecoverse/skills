@@ -52,6 +52,49 @@ async function api(token, path, query) {
   return res.json();
 }
 
+// Convert an internal 0..1 aggregation location to a real value using the
+// question's scaling (Metaculus' own formula: linear when zero_point is null,
+// log otherwise). Used to render numeric/date community predictions correctly.
+function scaleLocation(x, scaling) {
+  if (!scaling) return x;
+  const { range_min, range_max, zero_point } = scaling;
+  if (range_min == null || range_max == null) return x;
+  if (zero_point != null) {
+    const r = (range_max - zero_point) / (range_min - zero_point);
+    return range_min + (range_max - range_min) * (Math.pow(r, x) - 1) / (r - 1);
+  }
+  return range_min + (range_max - range_min) * x;
+}
+
+// Render a question's community centers according to its type.
+function formatCp(type, centers, meta) {
+  if (!centers || !centers.length) return 'n/a';
+  if (type === 'binary') return `${(centers[0] * 100).toFixed(1)}%`;
+  if (type === 'multiple_choice') {
+    const opts = (meta && meta.options) || [];
+    return centers.map((c, i) => `${opts[i] || 'opt' + i}: ${(c * 100).toFixed(0)}%`).join(', ');
+  }
+  // numeric / date / discrete: centers are internal locations → scale to real units
+  const scaling = meta && meta.scaling;
+  const median = scaleLocation(centers[Math.floor(centers.length / 2)] ?? centers[0], scaling);
+  if (type === 'date') return new Date(median * 1000).toISOString().slice(0, 10);
+  const unit = (meta && meta.unit) ? ' ' + meta.unit : '';
+  return `${(+median).toPrecision(4)}${unit} (median)`;
+}
+
+// Fetch type/scaling/options/unit for a set of post ids from the token API.
+async function questionMeta(token, ids) {
+  const meta = {};
+  for (const id of ids) {
+    try {
+      const j = await api(token, `/posts/${id}/`);
+      const q = j.question || {};
+      meta[id] = { type: q.type, scaling: q.scaling, options: q.options, unit: q.unit };
+    } catch { meta[id] = {}; }
+  }
+  return meta;
+}
+
 // ─── browser session: read CP out of the server-rendered question page ────────
 async function findTab() {
   const tab = await browser.findTab({ urlMatch: /(^|\.)metaculus\.com/ });
@@ -119,16 +162,22 @@ async function cpForIds(ids) {
 // ─── commands ─────────────────────────────────────────────────────────────────
 async function cmdCp(ids, flags) {
   if (!ids.length) cli.die('usage: metaculus-ext cp <post_id> [post_id...]', { prefix: 'metaculus-ext' });
-  const res = await cpForIds(ids.map(Number));
-  if (flags.json) return cli.out(res);
-  const rows = ids.map((id) => {
-    const r = res[id] || {};
-    const cp = r.centers && r.centers.length === 1 ? `${(r.centers[0] * 100).toFixed(1)}%`
-      : r.centers ? `[${r.centers.map((x) => (x * 100).toFixed(0) + '%').join(', ')}]`
-      : (r.err ? 'error' : 'n/a');
-    return [String(id), cp, r.fc != null ? String(r.fc) : ''];
+  const nids = ids.map(Number);
+  const token = await getToken();
+  const [res, meta] = await Promise.all([cpForIds(nids), questionMeta(token, nids)]);
+  if (flags.json) {
+    return cli.out(Object.fromEntries(nids.map((id) => {
+      const r = res[id] || {}, m = meta[id] || {};
+      return [id, { type: m.type, centers: r.centers, forecaster_count: r.fc,
+        formatted: r.centers ? formatCp(m.type, r.centers, m) : (r.err ? 'error' : 'n/a') }];
+    })));
+  }
+  const rows = nids.map((id) => {
+    const r = res[id] || {}, m = meta[id] || {};
+    const cp = r.centers ? formatCp(m.type, r.centers, m) : (r.err ? 'error' : 'n/a');
+    return [String(id), m.type || '', cp, r.fc != null ? String(r.fc) : ''];
   });
-  cli.out(fmt.table([['POST', 'COMMUNITY', 'FORECASTERS'], ...rows]));
+  cli.out(fmt.table([['POST', 'TYPE', 'COMMUNITY', 'FORECASTERS'], ...rows]));
 }
 
 async function cmdDivergence(flags) {
@@ -146,9 +195,13 @@ async function cmdDivergence(flags) {
     });
     const res = j.results || [];
     for (const p of res) {
-      const q = p.question || {};
-      const mf = q.my_forecasts && q.my_forecasts.latest;
-      if (!mf || q.type !== 'binary') continue;               // v1: binary only
+      // Only single-question posts here: the CP is read per page/post id, which
+      // can't disambiguate multiple sub-questions of a group/conditional post, so
+      // including them would map one sub-question's CP onto all. `metaculus mine`
+      // does list group forecasts (no CP mapping needed there).
+      const q = p.question;
+      const mf = q && q.my_forecasts && q.my_forecasts.latest;
+      if (!mf || q.type !== 'binary') continue;               // v1: binary, single-question
       const active = mf.end_time == null || mf.end_time > nowS;
       if (!active && !flags['include-withdrawn']) continue;    // current forecasts only
       const pyes = (mf.forecast_values || [])[1];
