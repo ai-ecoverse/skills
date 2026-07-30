@@ -182,6 +182,10 @@ store writes.
   then `loose-ends reseed`.
 - **No emojis in the UI** — the panel uses Lucide icons (`list-checks`, `check`,
   `arrow-right`), per the SLICC style guide.
-- **Template:** `templates/loose-ends.shtml` (full-document mode). It persists
-  its own view via `slicc.setState`/`getState`, but the store is authoritative —
-  always reseed from `/shared/loose-ends.json` on bootstrap.
+- **Template:** `templates/loose-ends.shtml` (full-document mode). On open it
+  **self-hydrates from the store** — its `init` reads `STORE_PATH`
+  (default `/shared/loose-ends.json`) via `slicc.readFile()` and renders from
+  that, so closing and reopening the sprinkle never empties the list. `slicc.setState`/`getState`
+  is only a same-session fast-path cache. If your store lives elsewhere, change
+  the `STORE_PATH` constant near the top of the script. The store is
+  authoritative — `bootstrap` also reseeds explicitly for good measure.
