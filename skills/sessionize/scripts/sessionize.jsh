@@ -75,10 +75,17 @@ async function postForm(path, bodyString, { referer } = {}) {
 }
 
 function detectLoginRedirect(resp) {
-  // A logged-out session redirects to a login page or returns the login HTML.
+  // A genuinely logged-out state is either the fetch's FINAL url landing on the
+  // login page, OR the body actually BEING the login page (a real login form /
+  // Password field / login heading). Do NOT match a bare <a href="/app/login">
+  // link against the body — the logged-IN dashboard's account menu contains one,
+  // which previously caused false "logged out" exits.
   const body = typeof resp.body === 'string' ? resp.body : '';
-  const url = resp.url || '';
-  if (/\/app\/(login|signin)|Log in to Sessionize/i.test(url + body)) {
+  const loggedOut =
+    /\/app\/(login|signin)\b/i.test(resp.url || '') ||
+    /name=["']Password["']/i.test(body) ||
+    /Log in to Sessionize/i.test(body);
+  if (loggedOut) {
     console.error('Sessionize session appears logged out. Log in at https://sessionize.com and try again.');
     process.exit(1);
   }
@@ -564,24 +571,59 @@ function buildProfilePhotoBody(dom, serverFilename, basename) {
 // Commands
 // ---------------------------------------------------------------------------
 const commands = {
-  // Best-effort: /app/speaker/sessions was NOT in the recording. We fetch the
-  // page and surface session titles if present, else say so.
-  async sessions() {
+  // Lists the speaker's active sessions from /app/speaker/sessions. Each row
+  // has a bold title link to the session's GUID edit URL, plus the event it was
+  // submitted to (event/details/<id>), a status dot, and a month/year. Edit
+  // URLs are GUIDs (not numeric ids); titles/links repeat in the markup (the
+  // title link + the "Edit" button), so we dedupe by GUID.
+  async sessions(args, flags) {
     const resp = await getPage('/app/speaker/sessions');
     detectLoginRedirect(resp);
     const html = htmlOf(resp);
-    // Heuristic scrape of session titles.
-    const titles = [];
-    const re = /session\/profile\/edit\/(\d+)"[^>]*>\s*([^<]+)</gi;
+
+    const anchorRe = /<a class="font-bold" href="\/app\/speaker\/session\/profile\/edit\/([0-9a-f-]{36})">([\s\S]*?)<\/a>/gi;
+    const anchors = [];
     let m;
-    while ((m = re.exec(html))) titles.push(`${m[1]}\t${decodeHtml(m[2].trim())}`);
-    if (titles.length) {
-      console.log('id\ttitle');
-      titles.forEach((t) => console.log(t));
+    while ((m = anchorRe.exec(html))) {
+      anchors.push({ guid: m[1], title: decodeHtml(m[2].replace(/<[^>]*>/g, '').trim()), start: m.index });
+    }
+
+    const seen = new Set();
+    const sessions = [];
+    for (let i = 0; i < anchors.length; i++) {
+      const cur = anchors[i];
+      if (seen.has(cur.guid)) continue;
+      seen.add(cur.guid);
+      // Scope the metadata search to this row (from this anchor to the next).
+      const end = i + 1 < anchors.length ? anchors[i + 1].start : html.length;
+      const win = html.slice(cur.start, end);
+      const ev = win.match(/\/app\/speaker\/event\/details\/(\d+)"[^>]*>([\s\S]*?)<\/a>/i);
+      const dt = win.match(/<small>\s*([\s\S]*?)\s*<\/small>/i);
+      const st = win.match(/session-status-fg_(\d+)/i);
+      sessions.push({
+        guid: cur.guid,
+        title: cur.title,
+        event: ev ? decodeHtml(ev[2].replace(/<[^>]*>/g, '').trim()) : '',
+        eventId: ev ? ev[1] : '',
+        date: dt ? decodeHtml(dt[1].replace(/<[^>]*>/g, '').trim()) : '',
+        status: st ? st[1] : '',
+      });
+    }
+
+    if (flags && flags.json) {
+      console.log(JSON.stringify(sessions, null, 2));
+      return;
+    }
+    if (sessions.length) {
+      console.log(`${sessions.length} session(s):\n`);
+      for (const s of sessions) {
+        console.log(`${s.guid}  ${s.title}`);
+        const meta = [s.event, s.date].filter(Boolean).join('  •  ');
+        if (meta) console.log(`    ${meta}`);
+      }
     } else {
       console.log('No sessions parsed from /app/speaker/sessions.');
-      console.log('(This endpoint was not in the source recording — its shape is unverified.');
-      console.log(' Open https://sessionize.com/app/speaker/sessions in your browser to confirm.)');
+      console.log('(Open https://sessionize.com/app/speaker/sessions in your browser to confirm.)');
     }
   },
 
