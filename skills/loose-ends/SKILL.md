@@ -46,6 +46,7 @@ and reseed from the store (see [Resurrecting](#resurrecting-in-a-new-session)).
       "summary": "Human-facing: what this is and why it's still open, in a sentence or two. Always visible on the card.",
       "detail": "Agent-facing: the full working brief — exact next actions, addresses, file paths, links, GUIDs. Collapsed behind an \"Agent brief\" toggle.",
       "created": "2026-07-30T17:15:00Z",
+      "skills": ["sessionize", "gmail"],
       "session": {
         "id": "c20ed555-454d-4bc1-925c-2d11f7e2074d",
         "file": "2026-07-30T17-23-30-891Z-slicc-speaking-talks-and-loose-ends.md",
@@ -61,6 +62,7 @@ and reseed from the store (see [Resurrecting](#resurrecting-in-a-new-session)).
 - **`summary` — human-facing.** The at-a-glance "what & why", always visible. Keep it short and readable.
 - **`detail` — agent-facing.** The full brief the cone acts on: concrete steps, contacts, paths, links. Shown collapsed under an "Agent brief" toggle; can be long.
 - `created` — ISO timestamp (informational; rendered on the card).
+- `skills` — optional `string[]` of the SLICC skills involved (e.g. `["sessionize","gmail"]`). Rendered as tag chips on the card and passed through to the monday item.
 - `session` — provenance into `/sessions/`: `{ id, file, at }` linking the task back to the conversation that spawned it (see [Session provenance](#session-provenance)). Optional.
 - Bump the top-level `updated` on every store write.
 
@@ -174,6 +176,29 @@ persists. To bring the panel back exactly as it was:
 `bootstrap` re-copies the template, reopens the panel, and reseeds every task
 from `/shared/loose-ends.json`. The cone resumes handling `do`/`done` licks and
 store writes.
+
+## Monday integration (source protocol)
+
+Loose ends are open follow-ups, so they belong in the daily `monday` triage. The
+helper exposes a monday-compatible source command:
+
+```bash
+loose-ends monday --limit N --depth N --date Nd   # prints a JSON array to stdout
+```
+
+It reads the store and emits one monday item per task. Notes:
+
+- Each item = `{ id, ts, source:"loose-ends", title, body:<summary>, detail, skills, session, rating_hint }`.
+  `id` is the task id (already stable/unique), `ts` is `created`, `body` is the
+  human summary, and `rating_hint` tells the rater these are user-curated
+  follow-ups carrying real intent (actionable unless the summary says they're
+  waiting on someone else).
+- **`--date` is intentionally ignored** — a loose end from weeks ago is still
+  open, so the whole backlog surfaces (bounded by `--limit`). `--depth` is
+  accepted and ignored.
+- Include it in a run positionally — `monday loose-ends gh gmail` — or add
+  `loose-ends` to `KNOWN_COMMANDS` in `monday/scripts/monday.jsh` for
+  auto-discovery. See `monday/references/SOURCE_PROTOCOL.md`.
 
 ## Notes
 
