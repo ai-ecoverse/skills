@@ -94,7 +94,9 @@ gh pr watch <num>      # PR/review/CI events arrive as licks (idempotent)
 gh pr unwatch <num>    # tear down when the PR reaches a terminal state
 ```
 
-`pr watch` installs a webhook, so it mutates the repo. A scoop reacting to those licks must
+`pr watch` installs a webhook, so it mutates the repo. Events are filtered to the target PR
+before they reach the scoop; `--filter <js>` adds a second predicate that must also pass.
+A scoop reacting to those licks must
 re-check live state first — see
 [`references/webhook-pr-monitoring.md`](references/webhook-pr-monitoring.md) for the
 self-echo-detection pattern and the stop condition.

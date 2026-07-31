@@ -105,6 +105,7 @@ const cli = require('sliccy:cli');
 const fmt = require('sliccy:fmt');
 const color = require('sliccy:color'); // renamed from bare `c` global
 const http = require('sliccy:http');
+const { buildPrWatchFilter, composePrWatchFilter } = require('./pr-watch-filter.js');
 
 // Single POSIX-shell-quote a value for safe interpolation into an exec()
 // command line (exec runs through the jsh shell bridge).
@@ -1356,7 +1357,7 @@ async function prWatch(args) {
   const { values, repoArg } = distribute('pr watch', positional, ['number'], flags);
   if (!values.number) cli.die('pr watch: PR number required\n' + usage);
   const num = validateNum(values.number, 'PR number');
-  const filter = flags.filter || null;
+  const userFilter = flags.filter || null;
   const scoopName = flags.scoop || process.env.SLICC_SCOOP || null;
   const repo = await repoFrom('pr watch', flags, repoArg);
 
@@ -1375,10 +1376,18 @@ async function prWatch(args) {
     return;
   }
 
+  // GitHub webhooks are repository-wide, so filter on the SLICC side before
+  // unrelated events can consume the receiving scoop's context. The head ref
+  // preserves status and fork-PR check events that lack a PR number.
+  let pr;
+  try { pr = await api.get(`/repos/${repo}/pulls/${num}`); }
+  catch (e) { fail('pr watch', e); }
+  const defaultFilter = buildPrWatchFilter(num, pr && pr.head && pr.head.ref);
+  const filter = composePrWatchFilter(defaultFilter, userFilter);
+
   // 1. Create the SLICC-side webhook endpoint.
-  const createCmd = filter
-    ? `webhook create --scoop ${scoopName} --name ${hookName} --filter ${JSON.stringify(filter)}`
-    : `webhook create --scoop ${scoopName} --name ${hookName}`;
+  const createCmd = `webhook create --scoop ${escapeShellArg(scoopName)} ` +
+    `--name ${escapeShellArg(hookName)} --filter ${escapeShellArg(filter)}`;
   let createResult;
   try { createResult = await exec(createCmd); }
   catch (e) { cli.die('pr watch: failed to create SLICC webhook: ' + e.message); }
@@ -2990,10 +2999,10 @@ const HELP = {
         usage: ['gh pr watch <num> [--filter <js>] [--scoop <name>] [-R owner/repo]', 'gh pr watch <num> [repo]'],
         desc: 'Watch a PR event-driven: PR/review/CI events arrive as licks',
         flags: [REPO_HELP,
-          '--filter <js>             JS predicate passed to `webhook create --filter`, drops noisy events',
+          '--filter <js>             additional predicate ANDed with the automatic PR-scoped filter',
           '--scoop <name>            receiving scoop (default: $SLICC_SCOOP)'],
         notes: [
-          'Installs a SLICC webhook plus a GitHub repo webhook. Idempotent.',
+          'Installs a PR-filtered SLICC webhook plus a GitHub repo webhook. Idempotent.',
           'Mutates the repository. Tear it down with `gh pr unwatch <num>`.',
           'See references/webhook-pr-monitoring.md for the self-echo-detection pattern',
           'a scoop needs when watching its own PR.',

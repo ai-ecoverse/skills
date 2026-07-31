@@ -71,7 +71,7 @@ gh pr merge 42 --squash --delete-branch      # or --merge (default) / --rebase; 
 gh pr close 42 --comment "superseded by #43" # --delete-branch
 gh pr comment 42 --body "LGTM"               # or: gh pr comment 42 "LGTM"; --body-file
 gh pr checkout 42                            # prints git fetch/checkout commands, does not execute
-gh pr watch 42                               # --filter <js> --scoop <name>
+gh pr watch 42                               # PR-scoped; --filter <js> adds a predicate; --scoop <name>
 gh pr unwatch 42
 ```
 

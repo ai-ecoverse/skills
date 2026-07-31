@@ -15,7 +15,7 @@ gh.jsh pr watch 151 --scoop <your-scoop-name>
 
 gh.jsh pr watch 151 --filter "e => e.body.action !== 'synchronize'" --scoop <your-scoop-name>
 # same, but drops noisy `synchronize` events before they reach the scoop
-# (passes straight through to `webhook create --filter`, see automation/SKILL.md)
+# (ANDed with the automatic PR-scoped filter)
 
 gh.jsh pr unwatch 151
 # -> Stopped watching PR #151 in owner/repo
@@ -32,7 +32,7 @@ until the checks finish, which is the wrong shape for a SLICC agent, so it print
 check table and then installs this event-driven watch instead. It mutates the repo exactly as
 `pr watch` does, and `gh pr unwatch <num>` tears it down.
 
-`pr watch` is idempotent: running it again against a PR that's already being watched (matched by a deterministic webhook name, `pr-<owner>-<repo>-<number>-watch`) is a no-op that reports the existing webhook instead of creating a duplicate — see `/workspace/skills/automation/SKILL.md`'s "Don't" section on why duplicate near-identical registrations are worth avoiding. `pr create` prints a `gh pr watch <num>` tip using the real new PR number as soon as a PR is opened, so the feature is discoverable at exactly the moment it's useful.
+`pr watch` is idempotent: running it again against a PR that's already being watched (matched by a deterministic webhook name, `pr-<owner>-<repo>-<number>-watch`) is a no-op that reports the existing webhook instead of creating a duplicate — see `/workspace/skills/automation/SKILL.md`'s "Don't" section on why duplicate near-identical registrations are worth avoiding. New watches always include a SLICC-side predicate for the target PR number. The command resolves the PR's head branch so `status` and fork-PR check payloads without a PR reference can still match. A user `--filter` is ANDed with that mandatory scope. `pr create` prints a `gh pr watch <num>` tip using the real new PR number as soon as a PR is opened, so the feature is discoverable at exactly the moment it's useful.
 
 **Still required, and still manual:** the self-echo-detection pattern below — `pr watch` sets up delivery, but a scoop receiving the resulting licks still needs to check live PR/comment state before reacting, exactly as described in the "Self-echo-detection" section. `pr watch` doesn't (and can't) do that part for you; it lives in whatever code handles the incoming lick.
 
@@ -42,7 +42,7 @@ check table and then installs this event-driven watch instead. It mutates the re
 
 `pr watch` is a thin two-step wrapper (see `gh.jsh`'s `prWatch()`/`prUnwatch()` for the exact implementation):
 
-1. `webhook create --scoop <scoop> --name pr-<owner>-<repo>-<num>-watch [--filter <js>]` — allocates a SLICC-side webhook endpoint and points it at the given scoop.
+1. `webhook create --scoop <scoop> --name pr-<owner>-<repo>-<num>-watch --filter <js>` — allocates a SLICC-side webhook endpoint with a mandatory PR-scoped predicate and points it at the given scoop.
 2. `POST /repos/<owner>/<repo>/hooks` with `events: [pull_request, pull_request_review, pull_request_review_comment, issue_comment, check_run, check_suite, status]` and `config: { url: <step 1's URL>, content_type: "json" }` — registers that URL as a real GitHub repository webhook, using the same token `gh.jsh` already uses for everything else (`skill.token('github')` / `GITHUB_TOKEN` fallback). No extra OAuth scope was needed in practice for this to succeed on a repo the token's account has admin/write access to.
 
 `pr unwatch` reverses both steps: it looks up the GitHub-side hook whose `config.url` matches the known SLICC webhook, deletes it via the Contents/Hooks API, then deletes the SLICC webhook itself.
