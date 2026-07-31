@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Loose ends</title>
+  <link rel="icon" href="list-checks" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: var(--s2-font-family, system-ui, sans-serif);
+      background: var(--s2-bg-base);
+      color: var(--fg);
+      font-size: 13px;
+      line-height: 1.5;
+      overflow-x: hidden;
+    }
+
+    #app {
+      /* Robust theme tokens: prefer the canonical S2 content token, then the
+         legacy alias — so text stays readable in light AND dark mode. */
+      --fg: var(--s2-content-default, var(--s2-fg));
+      --fg-muted: color-mix(in srgb, var(--fg) 60%, transparent);
+      --fg-faint: color-mix(in srgb, var(--fg) 42%, transparent);
+      --line: color-mix(in srgb, var(--fg) 12%, transparent);
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* ── Top bar ── */
+    .top-bar {
+      display: flex;
+      align-items: center;
+      gap: var(--s2-spacing-100, 8px);
+      padding: 11px 14px;
+      border-bottom: 1px solid var(--line);
+      flex-shrink: 0;
+      min-height: 44px;
+    }
+    .top-bar > .sprinkle-icon { color: var(--fg-muted); }
+    .top-bar-title {
+      font-weight: 600;
+      font-size: 13px;
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: var(--fg);
+    }
+
+    /* ── Pill count badge ── */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 18px;
+      height: 18px;
+      padding: 0 6px;
+      border-radius: var(--s2-radius-pill, 9999px);
+      font-size: 10px;
+      font-weight: 700;
+      background: color-mix(in srgb, var(--fg) 10%, transparent);
+      color: var(--fg-muted);
+      line-height: 1;
+      flex-shrink: 0;
+    }
+    .badge.zero { display: none; }
+
+    /* ── Buttons (the only rounded elements — S2 mandates pill buttons) ── */
+    .sprinkle-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      border-radius: var(--s2-radius-pill, 9999px);
+      border: 1px solid transparent;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 500;
+      padding: 5px 12px;
+      transition: background 0.15s, opacity 0.15s, border-color 0.15s;
+      white-space: nowrap;
+      line-height: 1.3;
+    }
+    .sprinkle-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .sprinkle-btn--primary {
+      background: var(--s2-accent);
+      color: var(--s2-gray-25, var(--s2-bg-base));
+    }
+    .sprinkle-btn--primary:not(:disabled):hover { opacity: 0.88; }
+    .sprinkle-btn--ghost {
+      background: transparent;
+      color: var(--fg-muted);
+      border-color: var(--line);
+    }
+    .sprinkle-btn--ghost:not(:disabled):hover {
+      background: color-mix(in srgb, var(--fg) 6%, transparent);
+      color: var(--fg);
+    }
+
+    /* ── Icons ── */
+    .sprinkle-icon {
+      width: 14px;
+      height: 14px;
+      stroke-width: 2;
+      flex-shrink: 0;
+    }
+    .sprinkle-icon.sm { width: 12px; height: 12px; }
+    .sprinkle-icon.lg { width: 16px; height: 16px; }
+
+    /* ── Typography ── */
+    .sprinkle-detail {
+      font-size: 11px;
+      color: var(--fg-muted);
+    }
+
+    /* ── List scroll ── */
+    #list-scroll {
+      flex: 1;
+      overflow-y: auto;
+      padding: 2px 0 24px;
+    }
+    #list-scroll::-webkit-scrollbar { width: 4px; }
+    #list-scroll::-webkit-scrollbar-track { background: transparent; }
+    #list-scroll::-webkit-scrollbar-thumb {
+      background: color-mix(in srgb, var(--fg) 15%, transparent);
+      border-radius: 2px;
+    }
+
+    /* ── Empty state ── */
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 48px 20px;
+      color: var(--fg-muted);
+      text-align: center;
+    }
+    .empty-state .sprinkle-icon { width: 32px; height: 32px; color: var(--fg-faint); }
+
+    /* ── Task row (flat — separated by hairline dividers, no card/shadow) ── */
+    .task-item {
+      padding: 13px 14px;
+      border-bottom: 1px solid var(--line);
+      transition: opacity 0.25s ease, transform 0.25s ease, background 0.12s;
+    }
+    .task-item:last-child { border-bottom: none; }
+    .task-item:hover { background: color-mix(in srgb, var(--fg) 3.5%, transparent); }
+    .task-item.leaving {
+      opacity: 0;
+      transform: translateX(16px);
+    }
+
+    .task-title {
+      font-weight: 600;
+      font-size: 13px;
+      color: var(--fg);
+      line-height: 1.35;
+      margin-bottom: 3px;
+    }
+
+    /* ── Human-facing summary (always visible) ── */
+    .task-summary {
+      font-size: 12px;
+      color: var(--fg-muted);
+      line-height: 1.5;
+      white-space: pre-wrap;
+    }
+
+    /* ── Skill tags ── */
+    .task-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      margin-top: 8px;
+    }
+    .task-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      font-size: 10px;
+      font-weight: 500;
+      padding: 2px 8px;
+      border-radius: var(--s2-radius-pill, 9999px);
+      background: color-mix(in srgb, var(--s2-accent) 12%, transparent);
+      color: var(--s2-accent);
+      line-height: 1.5;
+    }
+    .task-tag .sprinkle-icon { width: 9px; height: 9px; opacity: 0.8; }
+
+    /* ── Agent-facing detail (collapsible, offset by a rule — not a box) ── */
+    .task-context {
+      font-size: 12px;
+      margin-top: 6px;
+    }
+    .task-context > summary {
+      list-style: none;
+      cursor: pointer;
+      outline: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      color: var(--s2-accent);
+      font-weight: 500;
+      font-size: 11px;
+    }
+    .task-context > summary::-webkit-details-marker { display: none; }
+    .task-context > summary .chev { transition: transform 0.15s ease; }
+    .task-context[open] > summary .chev { transform: rotate(90deg); }
+    .task-context > summary .lbl-close { display: none; }
+    .task-context[open] > summary .lbl-open { display: none; }
+    .task-context[open] > summary .lbl-close { display: inline; }
+    /* .full is a sibling of <summary>, so native <details> hides it while
+       collapsed and reveals it on open — no duplicated text. */
+    .task-context .full {
+      color: var(--fg);
+      line-height: 1.55;
+      white-space: pre-wrap;
+      margin-top: 6px;
+      padding-left: 10px;
+      border-left: 2px solid var(--line);
+      font-size: 12px;
+    }
+
+    /* ── Meta row: created date + session provenance ── */
+    .task-meta {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-top: 9px;
+      flex-wrap: wrap;
+    }
+    .task-date,
+    .task-session {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 10.5px;
+      color: var(--fg-faint);
+      line-height: 1;
+    }
+    .task-session {
+      background: none;
+      border: none;
+      padding: 0;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .task-session:hover { color: var(--s2-accent); }
+    .task-date .sprinkle-icon,
+    .task-session .sprinkle-icon { width: 11px; height: 11px; }
+
+    /* ── Actions row ── */
+    .task-actions {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      margin-top: 11px;
+    }
+  </style>
+</head>
+<body>
+<div id="app">
+  <div class="top-bar">
+    <i data-lucide="list-checks" class="sprinkle-icon lg"></i>
+    <span class="top-bar-title">Loose ends</span>
+    <span id="count-badge" class="badge zero">0</span>
+  </div>
+  <div id="list-scroll">
+    <div class="empty-state" id="empty-state">
+      <i data-lucide="check-check" class="sprinkle-icon"></i>
+      <span class="sprinkle-detail">No loose ends — all clear.</span>
+    </div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════
+//  ESCAPING HELPERS
+//  esc()  — attribute-safe encoding. We build lick-data
+//  objects with esc(JSON.stringify(obj)); the JSON is valid
+//  JS and &quot; decodes in-attribute. Do NOT double-stringify.
+// ═══════════════════════════════════════════════════
+function esc(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+function escHtml(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+const PREVIEW_LEN = 140;
+
+// Format an ISO timestamp as e.g. "Jul 30, 2026" (empty string if unparseable).
+function fmtDate(iso) {
+  if (!iso) return '';
+  try {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  } catch (e) { return ''; }
+}
+
+// ═══════════════════════════════════════════════════
+//  STATE
+// ═══════════════════════════════════════════════════
+let tasks = [];
+
+// The authoritative store. The panel self-hydrates from this file on open so
+// closing + reopening the sprinkle never loses the list (view state via
+// slicc.setState is only a fast-path cache and does not survive a full reopen).
+// If your store lives elsewhere, change this one constant.
+const STORE_PATH = '/shared/loose-ends.json';
+
+// A hanging bridge call must never stall init. Some SLICC builds have had
+// slicc.readFile() hang (never settle) inside a sprinkle sandbox, so every
+// async read is guarded by a timeout race; a timed-out read falls through to
+// the next mechanism.
+const READ_TIMEOUT = Symbol('read-timeout');
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise(function (resolve) { setTimeout(function () { resolve(READ_TIMEOUT); }, ms); })
+  ]);
+}
+function delay(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+async function readStoreText() {
+  // On some SLICC builds (6.0.2) the FIRST worker-shell bridge call made right
+  // after a sprinkle opens hangs (never settles) while the bridge warms up;
+  // subsequent calls succeed. So retry a few times — a hung attempt is
+  // abandoned by the timeout, and the next one lands once the bridge is warm.
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      if (slicc.exec) {
+        const r = await withTimeout(slicc.exec('cat ' + STORE_PATH), 1200);
+        if (r !== READ_TIMEOUT && r && r.exitCode === 0 && typeof r.stdout === 'string' && r.stdout) return r.stdout;
+      }
+    } catch (e) { /* retry */ }
+    await delay(150);
+  }
+  // Last resort: direct VFS read, timeout-guarded (slicc.readFile can hang too).
+  try {
+    if (slicc.readFile) {
+      const t = await withTimeout(slicc.readFile(STORE_PATH), 1200);
+      if (t !== READ_TIMEOUT && typeof t === 'string' && t) return t;
+    }
+  } catch (e) { /* fall through */ }
+  return null;
+}
+
+// Returns 'store' if hydrated from the authoritative store, else 'fallback'.
+async function loadState() {
+  const txt = await readStoreText();
+  if (txt) {
+    try {
+      const data = JSON.parse(txt);
+      if (data && Array.isArray(data.tasks)) { tasks = data.tasks; return 'store'; }
+    } catch (e) { /* corrupt/partial — fall through */ }
+  }
+  const saved = slicc.getState && slicc.getState();
+  if (saved && Array.isArray(saved.tasks)) tasks = saved.tasks;
+  return 'fallback';
+}
+function saveState() {
+  if (slicc.setState) slicc.setState({ tasks });
+}
+
+// ═══════════════════════════════════════════════════
+//  RENDER
+// ═══════════════════════════════════════════════════
+function updateCount() {
+  const badge = document.getElementById('count-badge');
+  const n = tasks.length;
+  badge.textContent = n;
+  badge.className = 'badge' + (n === 0 ? ' zero' : '');
+}
+
+function updateEmptyState() {
+  const empty = document.getElementById('empty-state');
+  empty.style.display = tasks.length === 0 ? 'flex' : 'none';
+}
+
+function renderAll() {
+  const scroll = document.getElementById('list-scroll');
+  [...scroll.querySelectorAll('.task-item')].forEach(el => el.remove());
+  tasks.forEach(t => scroll.appendChild(createTaskCard(t)));
+  updateCount();
+  updateEmptyState();
+  renderIcons();
+}
+
+function createTaskCard(task) {
+  const div = document.createElement('div');
+  div.className = 'task-item';
+  div.dataset.id = task.id;
+
+  // v2 schema: human-facing `summary`, agent-facing `detail`.
+  // Back-compat: older tasks carry `context` (== the agent detail) and no summary.
+  const summary = task.summary || '';
+  const detail  = task.detail || task.context || '';
+  const created = fmtDate(task.created);
+  const session = task.session || null;
+
+  // Lick payload — the cone acts on `detail`; `summary` gives it the human framing.
+  const doData = esc(JSON.stringify({ action: 'do', data: {
+    id: task.id, title: task.title, summary, detail, skills: task.skills || []
+  } }));
+
+  // If there's no explicit summary, fall back to showing the detail as the
+  // visible line (so nothing is hidden behind the collapsed brief).
+  const visibleText = summary || (detail && detail.length <= 220 ? detail : '');
+  const summaryBlock = visibleText
+    ? '<div class="task-summary">' + escHtml(visibleText) + '</div>'
+    : '';
+
+  // Skill tags — the SLICC skills involved in the task.
+  let tagsBlock = '';
+  if (Array.isArray(task.skills) && task.skills.length) {
+    tagsBlock = '<div class="task-tags">' +
+      task.skills.map(function (s) {
+        return '<span class="task-tag"><i data-lucide="tag" class="sprinkle-icon"></i>' + escHtml(s) + '</span>';
+      }).join('') +
+      '</div>';
+  }
+
+  // Show the collapsible agent brief only when there's detail AND it isn't
+  // already fully shown as the visible summary line.
+  let detailBlock = '';
+  if (detail && detail !== visibleText) {
+    detailBlock =
+      '<details class="task-context">' +
+        '<summary>' +
+          '<i data-lucide="chevron-right" class="sprinkle-icon sm chev"></i>' +
+          '<span class="lbl-open">Agent brief</span>' +
+          '<span class="lbl-close">Hide brief</span>' +
+        '</summary>' +
+        '<div class="full">' + escHtml(detail) + '</div>' +
+      '</details>';
+  }
+
+  // Meta row: created date + session provenance link.
+  let metaInner = '';
+  if (created) {
+    metaInner += '<span class="task-date"><i data-lucide="clock" class="sprinkle-icon sm"></i>' + escHtml(created) + '</span>';
+  }
+  if (session && (session.file || session.id)) {
+    const sessData = esc(JSON.stringify({ action: 'open-session', data: {
+      id: session.id || '', file: session.file || '', at: session.at || ''
+    } }));
+    const sessLabel = session.at ? fmtDate(session.at) : (session.file ? session.file.slice(0, 10) : 'session');
+    metaInner += '<button class="task-session" onclick="slicc.lick(' + sessData + ')" title="Open the session this came from">' +
+      '<i data-lucide="history" class="sprinkle-icon sm"></i>from ' + escHtml(sessLabel) + '</button>';
+  }
+  const metaBlock = metaInner ? '<div class="task-meta">' + metaInner + '</div>' : '';
+
+  div.innerHTML =
+    '<div class="task-title">' + escHtml(task.title || task.id || '') + '</div>' +
+    summaryBlock +
+    tagsBlock +
+    detailBlock +
+    metaBlock +
+    '<div class="task-actions">' +
+      '<button class="sprinkle-btn sprinkle-btn--primary" onclick="slicc.lick(' + doData + ')">' +
+        '<i data-lucide="arrow-right" class="sprinkle-icon sm"></i> Do' +
+      '</button>' +
+      '<button class="sprinkle-btn sprinkle-btn--ghost done-btn">' +
+        '<i data-lucide="check" class="sprinkle-icon sm"></i> Done' +
+      '</button>' +
+    '</div>';
+
+  // Done: OPTIMISTIC removal first, then emit the lick.
+  const doneBtn = div.querySelector('.done-btn');
+  doneBtn.addEventListener('click', () => {
+    doneBtn.disabled = true;
+    // 1) Optimistically remove the row + update model/count/empty-state.
+    removeTaskById(task.id, true);
+    // 2) THEN notify the cone.
+    slicc.lick({ action: 'done', data: { id: task.id, title: task.title } });
+  });
+
+  return div;
+}
+
+// Remove a task from the model + DOM (with a small leave animation).
+function removeTaskById(id, animate) {
+  const idx = tasks.findIndex(t => t.id === id);
+  if (idx !== -1) tasks.splice(idx, 1);
+  saveState();
+
+  const scroll = document.getElementById('list-scroll');
+  const el = [...scroll.querySelectorAll('.task-item')].find(n => n.dataset.id === id);
+  const finalize = () => { updateCount(); updateEmptyState(); };
+  if (el) {
+    if (animate) {
+      el.classList.add('leaving');
+      setTimeout(() => { el.remove(); finalize(); }, 250);
+    } else {
+      el.remove();
+      finalize();
+    }
+  } else {
+    finalize();
+  }
+}
+
+// ═══════════════════════════════════════════════════
+//  SLICC EVENTS (inbound from the cone via `sprinkle send`)
+// ═══════════════════════════════════════════════════
+slicc.on('update', (msg) => {
+  if (!msg || !msg.action) return;
+
+  if (msg.action === 'load-items') {
+    tasks = Array.isArray(msg.tasks) ? msg.tasks.slice() : [];
+    saveState();
+    renderAll();
+  }
+
+  else if (msg.action === 'add-item') {
+    if (msg.task && msg.task.id) {
+      const existing = tasks.findIndex(t => t.id === msg.task.id);
+      if (existing !== -1) tasks[existing] = msg.task;
+      else tasks.push(msg.task);
+      saveState();
+      const scroll = document.getElementById('list-scroll');
+      // If it already had a card (upsert), re-render fully; else append.
+      if (existing !== -1) {
+        renderAll();
+      } else {
+        scroll.appendChild(createTaskCard(msg.task));
+        updateCount();
+        updateEmptyState();
+        renderIcons();
+      }
+    }
+  }
+
+  else if (msg.action === 'remove-item') {
+    if (msg.id) removeTaskById(msg.id, false);
+  }
+});
+
+// ═══════════════════════════════════════════════════
+//  ICON RENDER HELPER
+// ═══════════════════════════════════════════════════
+function renderIcons() {
+  if (typeof LucideIcons !== 'undefined' && LucideIcons.render) LucideIcons.render();
+  if (window.LucideIcons) window.LucideIcons.render();
+}
+
+// ═══════════════════════════════════════════════════
+//  INIT
+// ═══════════════════════════════════════════════════
+(async function init() {
+  const src = await loadState();
+  renderAll();
+  // Safety net: if we could NOT reach the authoritative store (neither
+  // slicc.readFile nor slicc.exec worked in this sandbox), ask the cone to
+  // push the list. The cone answers `request-load` with a load-items message.
+  if (src !== 'store') {
+    try { if (slicc.lick) slicc.lick({ action: 'request-load' }); } catch (e) {}
+  }
+})();
+</script>
+<script>if (window.LucideIcons) window.LucideIcons.render();</script>
+</body>
+</html>
