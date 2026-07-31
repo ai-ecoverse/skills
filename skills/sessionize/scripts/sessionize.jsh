@@ -45,6 +45,14 @@ function validateSlug(slug) {
   return slug;
 }
 
+function validateGuid(guid) {
+  if (!guid || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(guid)) {
+    console.error(`Error: invalid session GUID "${guid}". Expected a 36-char GUID (list them with \`sessionize sessions\`).`);
+    process.exit(1);
+  }
+  return guid;
+}
+
 // ---------------------------------------------------------------------------
 // Same-origin fetch helpers (run inside the sessionize.com tab)
 // ---------------------------------------------------------------------------
@@ -568,6 +576,42 @@ function buildProfilePhotoBody(dom, serverFilename, basename) {
 }
 
 // ---------------------------------------------------------------------------
+// Archive / unarchive a session.
+// Reverse-engineered from the sessions page's toArchive() helper, which does:
+//   $.post('/app/speaker/to-archive', { isArchived, sessionId }, ..., 'json')
+// i.e. POST application/x-www-form-urlencoded body `isArchived=<bool>&sessionId=<guid>`
+// with X-Requested-With: XMLHttpRequest. No anti-forgery token is required by
+// this endpoint (the live request sends none). isArchived=true moves a session
+// TO the archive; isArchived=false moves it back to the active list.
+// ---------------------------------------------------------------------------
+async function toArchiveSession(guid, isArchived, flags) {
+  validateGuid(guid);
+  const body = `isArchived=${isArchived ? 'true' : 'false'}&sessionId=${encodeURIComponent(guid)}`;
+  const resp = await postForm('/app/speaker/to-archive', body, {
+    referer: 'https://sessionize.com/app/speaker/sessions',
+  });
+  detectLoginRedirect(resp);
+  const data = resp.body;
+  const status = resp.status;
+
+  if (flags && flags.json) {
+    console.log(JSON.stringify({
+      sessionId: guid,
+      isArchived,
+      status: typeof status === 'number' ? status : null,
+      response: (data && typeof data === 'object') ? data
+        : (typeof data === 'string' ? data.slice(0, 500) : data),
+    }, null, 2));
+    return;
+  }
+  if (typeof status === 'number' && status >= 400) {
+    console.error(`Failed to ${isArchived ? 'archive' : 'unarchive'} session ${guid} (HTTP ${status}).`);
+    process.exit(1);
+  }
+  console.log(`${isArchived ? 'Archived' : 'Unarchived'} session ${guid} — moved ${isArchived ? 'to the archive' : 'back to active sessions'}.`);
+}
+
+// ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
 const commands = {
@@ -637,6 +681,12 @@ const commands = {
   },
 
   async cfps(args, flags) { return commands.events(args, flags); },
+
+  // Move a session TO the archive (out of the active list).
+  async archive(args, flags) { await toArchiveSession(args[0], true, flags); },
+
+  // Move a session back from the archive to the active list.
+  async unarchive(args, flags) { await toArchiveSession(args[0], false, flags); },
 
   async show(args) {
     const slug = validateSlug(args[0]);
@@ -846,6 +896,8 @@ async function main() {
     console.log('  show <event-slug>              Scrape a CFP form: tokens, custom fields, tag options');
     console.log('  submit <event-slug> [flags]    Build the submission payload and POST it');
     console.log('  photo <image> [--profile]      Upload + set your speaker photo (default: profile)');
+    console.log('  archive <session-guid>         Move a session to the archive (out of active)');
+    console.log('  unarchive <session-guid>       Move a session back from the archive to active');
     console.log('');
     console.log('submit flags:');
     console.log('  --title, --description, --session-type, --primary-track,');

@@ -266,6 +266,25 @@ the same round-trip-the-whole-form + `User.ProfilePicture` overlay (field name
 likely `User.ProfilePicture` there too; **confirm from that form's HTML** — this
 variant was not in the recording and is not yet wired to a flag).
 
+## Session archive / unarchive (`sessionize archive` / `unarchive`)
+
+Source: the `/app/speaker/sessions` page's `toArchive(sender, id, isMovingToArchive)`
+JS helper (read live via `toArchive.toString()`), plus a captured live request.
+
+- **Endpoint:** `POST /app/speaker/to-archive`
+- **Content-Type:** `application/x-www-form-urlencoded; charset=UTF-8`
+- **Headers:** `X-Requested-With: XMLHttpRequest`, `Accept: application/json` (the
+  page also sends Application-Insights `Request-Id`/`traceparent`, which are not
+  required). **No `__RequestVerificationToken`** is sent — the endpoint needs none.
+- **Body:** `isArchived=<true|false>&sessionId=<GUID>`
+  - `isArchived=true`  → move the session TO the archive (out of the active list)
+  - `isArchived=false` → move it back to the active list
+- **Response:** JSON — a bare `true` on success (HTTP 200).
+
+The active list is `GET /app/speaker/sessions`; the archived list is
+`GET /app/speaker/sessions?archive=True`. Verified live (Jul 31, 2026) with a
+non-destructive unarchive→archive round-trip on one session.
+
 ## Read APIs (not found)
 
 - No JSON list-CFPs / list-events endpoint appears in the HAR.

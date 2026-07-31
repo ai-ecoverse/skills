@@ -32,6 +32,8 @@ sessionize cfps                     # alias of events
 sessionize show <event-slug>        # scrape a CFP form: tokens, custom fields, tag options
 sessionize submit <event-slug> [flags]   # build the submission payload and POST it
 sessionize photo <image> [--profile] [--dry-run] [--json]  # upload + set your speaker photo
+sessionize archive <session-guid> [--json]     # move a session to the archive (out of active)
+sessionize unarchive <session-guid> [--json]   # move a session back from the archive to active
 ```
 
 ### `submit` flags
@@ -135,6 +137,16 @@ already-submitted sessions; the per-event speaker photo uses the analogous form
 at `/app/speaker/events/speaker/edit/<eventId>/<speakerGuid>` (same round-trip +
 `User.ProfilePicture` overlay — see `references/endpoints.md`; not yet wired to a
 flag).
+
+## `archive` / `unarchive` — move sessions in/out of the archive
+
+`sessionize archive <session-guid>` moves a session to your archive (out of the
+active list); `sessionize unarchive <session-guid>` moves it back to active.
+Both `POST /app/speaker/to-archive` with the body `isArchived=<true|false>&sessionId=<guid>`
+(same-origin, `X-Requested-With: XMLHttpRequest`; no anti-forgery token is
+required). The GUID is the 36-char id shown by `sessionize sessions`. `--json`
+prints the raw result (`{sessionId, isArchived, status, response}`). Verified
+live (Jul 31, 2026) with a non-destructive unarchive→archive round-trip.
 
 ## `submit` — LIVE-VERIFIED (Jul 31, 2026)
 
