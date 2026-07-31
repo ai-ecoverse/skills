@@ -1,15 +1,23 @@
 // ─────────────────────────────────────────────────────────────────────────
-//  loose-ends — sprinkle-side bootstrap / reseed helper
+//  loose-ends — store + sprinkle management for the loose-ends panel
 //
-//  Run this from the OWNING SCOOP (the scoop named after the sprinkle). It is
-//  the one process allowed to touch `sprinkle`. The store JSON is authoritative
-//  and cone-owned; this helper only READS it — it never writes tasks.
+//  The store JSON (default /shared/loose-ends.json) is authoritative. This
+//  command is the single mutation API for it: create/done/snooze/unsnooze do an
+//  atomic full rewrite (fs.writeFileSync, no stale-tail risk) AND best-effort
+//  sync an open panel via `sprinkle send` (a failed/absent send is non-fatal —
+//  the panel self-hydrates from the store on next open, or `reseed` catches up).
+//  Prefer these commands over hand-editing the JSON.
 //
 //  Commands:
 //    loose-ends bootstrap   Copy the template into the sprinkle dir, refresh the
 //                           VFS, open the panel, then reseed it from the store.
-//    loose-ends reseed      Re-send `load-items` from the store to an
-//                           already-open panel (no template copy / open).
+//    loose-ends reseed      Re-send `load-items` from the store to an open panel.
+//    loose-ends list        List loose ends (active + snoozed); --snoozed / --json.
+//    loose-ends create      Add (or upsert by --id) a loose end. --title required.
+//    loose-ends done <id>   Remove a loose end by id.
+//    loose-ends snooze <id> <when>   Hide until: tomorrow|monday|week|YYYY-MM-DD (09:00 local).
+//    loose-ends unsnooze <id>        Wake a snoozed loose end now.
+//    loose-ends monday      Emit the monday-source JSON (snoozed items excluded).
 //
 //  Options (all optional, --long form only — single-dash flags are ignored):
 //    --name <n>       sprinkle + scoop name           (default: loose-ends)
@@ -68,6 +76,75 @@ function readStore(storePath) {
   return data;
 }
 
+// Persist the store. fs.writeFileSync fully replaces the file content (unlike a
+// shell `>` redirect, which can leave a stale tail), so this is a clean rewrite.
+function writeStore(storePath, store) {
+  store.updated = new Date().toISOString();
+  fs.writeFileSync(storePath, JSON.stringify(store, null, 2) + '\n');
+  return store;
+}
+
+function slugify(s) {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40) || 'item';
+}
+
+// Generate a unique `le-<slug>` id not already present in the store.
+function genId(title, tasks) {
+  const base = 'le-' + slugify(title);
+  let id = base, n = 2;
+  const has = (x) => tasks.some((t) => t.id === x);
+  while (has(id)) { id = base + '-' + n; n++; }
+  return id;
+}
+
+// Resolve a snooze "when" token to an ISO timestamp at 09:00 LOCAL.
+//   tomorrow | monday (next Monday, strictly future) | week/1w (+7d) | YYYY-MM-DD
+//   or any string Date can parse (used verbatim).
+function parseWhen(when) {
+  const w = String(when || '').trim().toLowerCase();
+  const at9 = (d) => { d.setHours(9, 0, 0, 0); return d.toISOString(); };
+  const now = new Date();
+  if (w === 'tomorrow' || w === 'tom') {
+    const d = new Date(now); d.setDate(d.getDate() + 1); return at9(d);
+  }
+  if (w === 'monday' || w === 'mon') {
+    const d = new Date(now);
+    let diff = (1 - d.getDay() + 7) % 7; // 0=Sun..6=Sat; Monday=1
+    if (diff === 0) diff = 7;            // strictly future
+    d.setDate(d.getDate() + diff); return at9(d);
+  }
+  if (w === 'week' || w === '1w' || w === 'nextweek' || w === 'next-week') {
+    const d = new Date(now); d.setDate(d.getDate() + 7); return at9(d);
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(w)) {
+    const [y, m, dd] = w.split('-').map(Number);
+    return at9(new Date(y, m - 1, dd));
+  }
+  const parsed = new Date(when);
+  if (!isNaN(parsed.getTime())) return parsed.toISOString();
+  throw new Error(`unrecognized snooze time: "${when}" (use: tomorrow | monday | week | YYYY-MM-DD)`);
+}
+
+// Best-effort panel sync — the store write is the source of truth; keeping an
+// open panel in step is a nicety, so a failed/absent `sprinkle send` is not fatal.
+async function trySend(name, payload) {
+  try {
+    await exec(`sprinkle send ${shellQuote(name)} ${shellQuote(JSON.stringify(payload))}`);
+    return true;
+  } catch (e) { return false; }
+}
+
+function isSnoozed(t, now) {
+  if (!t || !t.snoozedUntil) return false;
+  const ts = new Date(t.snoozedUntil).getTime();
+  return !isNaN(ts) && ts > (now == null ? Date.now() : now);
+}
+
+
 async function reseed(name, storePath) {
   const store = readStore(storePath);
   const payload = JSON.stringify({ action: 'load-items', tasks: store.tasks });
@@ -91,6 +168,109 @@ async function main() {
     process.stdout.write(`loose-ends: reseeded '${name}' with ${n} task(s) from ${storePath}\n`);
     return;
   }
+
+  if (cmd === 'create' || cmd === 'add') {
+    const title = typeof args.title === 'string' ? args.title
+      : (args._[1] && !String(args._[1]).startsWith('-') ? args._.slice(1).join(' ') : null);
+    if (!title) throw new Error('create: --title <text> is required (or pass the title as positional args)');
+    const store = readStore(storePath);
+    const id = typeof args.id === 'string' ? args.id : genId(title, store.tasks);
+    const skills = typeof args.skills === 'string'
+      ? args.skills.split(',').map((s) => s.trim()).filter(Boolean) : [];
+    const task = {
+      id,
+      title,
+      summary: typeof args.summary === 'string' ? args.summary : '',
+      detail: typeof args.detail === 'string' ? args.detail : '',
+      created: new Date().toISOString(),
+      skills,
+    };
+    if (typeof args.snooze === 'string') task.snoozedUntil = parseWhen(args.snooze);
+    if (typeof args['session-file'] === 'string' || typeof args['session-id'] === 'string') {
+      task.session = {
+        id: typeof args['session-id'] === 'string' ? args['session-id'] : '',
+        file: typeof args['session-file'] === 'string' ? args['session-file'] : '',
+        at: typeof args['session-at'] === 'string' ? args['session-at'] : new Date().toISOString(),
+      };
+    }
+    const existing = store.tasks.findIndex((t) => t.id === id);
+    if (existing !== -1) store.tasks[existing] = { ...store.tasks[existing], ...task };
+    else store.tasks.push(task);
+    writeStore(storePath, store);
+    const synced = await trySend(name, { action: 'add-item', task });
+    process.stdout.write(`loose-ends: ${existing !== -1 ? 'updated' : 'created'} '${id}'${synced ? '' : ' (panel not synced — reseed or reopen)'}\n`);
+    return;
+  }
+
+  if (cmd === 'done' || cmd === 'remove' || cmd === 'rm') {
+    const id = args._[1];
+    if (!id) throw new Error(`${cmd}: an id is required (e.g. loose-ends done le-foo) — see 'loose-ends list'`);
+    const store = readStore(storePath);
+    const before = store.tasks.length;
+    store.tasks = store.tasks.filter((t) => t.id !== id);
+    if (store.tasks.length === before) throw new Error(`no loose end with id '${id}' (see 'loose-ends list')`);
+    writeStore(storePath, store);
+    const synced = await trySend(name, { action: 'remove-item', id });
+    process.stdout.write(`loose-ends: removed '${id}'${synced ? '' : ' (panel not synced — reseed or reopen)'}\n`);
+    return;
+  }
+
+  if (cmd === 'snooze') {
+    const id = args._[1];
+    const when = typeof args.until === 'string' ? args.until : args._[2];
+    if (!id || !when) throw new Error('snooze: usage: loose-ends snooze <id> <tomorrow|monday|week|YYYY-MM-DD>');
+    const until = parseWhen(when);
+    const store = readStore(storePath);
+    const task = store.tasks.find((t) => t.id === id);
+    if (!task) throw new Error(`no loose end with id '${id}' (see 'loose-ends list')`);
+    task.snoozedUntil = until;
+    writeStore(storePath, store);
+    const synced = await trySend(name, { action: 'add-item', task });
+    process.stdout.write(`loose-ends: snoozed '${id}' until ${until}${synced ? '' : ' (panel not synced — reseed or reopen)'}\n`);
+    return;
+  }
+
+  if (cmd === 'unsnooze' || cmd === 'wake') {
+    const id = args._[1];
+    if (!id) throw new Error(`${cmd}: an id is required (e.g. loose-ends unsnooze le-foo)`);
+    const store = readStore(storePath);
+    const task = store.tasks.find((t) => t.id === id);
+    if (!task) throw new Error(`no loose end with id '${id}' (see 'loose-ends list')`);
+    delete task.snoozedUntil;
+    writeStore(storePath, store);
+    const synced = await trySend(name, { action: 'add-item', task });
+    process.stdout.write(`loose-ends: woke '${id}'${synced ? '' : ' (panel not synced — reseed or reopen)'}\n`);
+    return;
+  }
+
+  if (cmd === 'list' || cmd === 'ls') {
+    const store = readStore(storePath);
+    const now = Date.now();
+    const showSnoozed = args.snoozed === true || args.all === true;
+    let rows = store.tasks;
+    if (args.snoozed === true) rows = rows.filter((t) => isSnoozed(t, now));
+    if (args.json === true) {
+      process.stdout.write(JSON.stringify(rows, null, 2) + '\n');
+      return;
+    }
+    if (!rows.length) { process.stdout.write('loose-ends: no loose ends.\n'); return; }
+    const active = rows.filter((t) => !isSnoozed(t, now));
+    const snoozed = rows.filter((t) => isSnoozed(t, now));
+    const line = (t) => {
+      const skills = (t.skills && t.skills.length) ? `  [${t.skills.join(', ')}]` : '';
+      const snz = isSnoozed(t, now) ? `  (snoozed until ${new Date(t.snoozedUntil).toLocaleString()})` : '';
+      return `  ${t.id}\n    ${t.title || ''}${skills}${snz}\n`;
+    };
+    let out = '';
+    active.forEach((t) => { out += line(t); });
+    if (snoozed.length) {
+      out += `  — snoozed (${snoozed.length}) —\n`;
+      snoozed.forEach((t) => { out += line(t); });
+    }
+    process.stdout.write(`loose-ends (${active.length} active${snoozed.length ? `, ${snoozed.length} snoozed` : ''}):\n` + out);
+    return;
+  }
+
 
   if (cmd === 'bootstrap') {
     if (!fs.existsSync(template)) {
@@ -130,12 +310,17 @@ async function main() {
     // (an old open loose end is still open); --limit is honoured.
     const limit = Number(args.limit != null ? args.limit : 50) || 50;
     const store = readStore(storePath);
+    // A snoozed loose end (snoozedUntil in the future) is intentionally out of
+    // view until it wakes, so it is NOT surfaced to the monday dispatcher.
+    // A snooze whose time has already passed auto-resurfaces (treated as active).
+    const now = Date.now();
+    const openTasks = store.tasks.filter((t) => !isSnoozed(t, now));
     const RATING_HINT =
       'This is a user-curated loose end — a follow-up the user explicitly saved to act on later, ' +
       'so it carries real intent; treat it as actionable unless its summary says it is waiting on ' +
       'someone else. `body` is the human summary; `detail` is the full agent brief. `skills` lists ' +
       'the SLICC skills involved. There is no external state, so do not down-rank it as resolved.';
-    const items = store.tasks.slice(0, limit).map((t) => ({
+    const items = openTasks.slice(0, limit).map((t) => ({
       id: t.id,
       ts: t.created || (t.session && t.session.at) || null,
       source: 'loose-ends',
@@ -153,7 +338,15 @@ async function main() {
 
   process.stderr.write(
     `loose-ends: unknown command '${cmd}'\n` +
-    `usage: loose-ends [bootstrap|reseed|monday] [--name <n>] [--store <path>] [--template <path>] [--limit N]\n`
+    `usage:\n` +
+    `  loose-ends bootstrap [--name <n>] [--store <path>] [--template <path>]\n` +
+    `  loose-ends reseed    [--name <n>] [--store <path>]\n` +
+    `  loose-ends list      [--snoozed] [--json]\n` +
+    `  loose-ends create --title <t> [--summary <s>] [--detail <d>] [--skills a,b] [--id <id>] [--snooze <when>]\n` +
+    `  loose-ends done <id>\n` +
+    `  loose-ends snooze <id> <tomorrow|monday|week|YYYY-MM-DD>\n` +
+    `  loose-ends unsnooze <id>\n` +
+    `  loose-ends monday    [--limit N]\n`
   );
   process.exit(1);
 }
