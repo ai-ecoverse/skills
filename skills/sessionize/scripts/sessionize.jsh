@@ -11,6 +11,7 @@
 // note that `submit` (non-draft) still needs live verification.
 
 const browser = require('sliccy:browser');
+const exec = require('sliccy:exec');
 
 const SESSIONIZE_DOMAIN = 'sessionize.com';
 
@@ -386,6 +387,180 @@ function buildPayload(dom, flags) {
 }
 
 // ---------------------------------------------------------------------------
+// Speaker photo upload (two-step; reverse-engineered from
+// /shared/sessionize-photo-recording/{fileupload,profile-save}.har).
+//
+// Step 1: POST the raw image bytes as multipart/form-data (ONE field `file`)
+//         to /fileUpload. Response: {"filename":"<serverId>.png"}.
+// Step 2: Persist it by round-tripping the WHOLE /app/speaker/profile form and
+//         overlaying User.ProfilePicture=<serverId>.png (+ the human-readable
+//         User.ProfilePicturePreview=<original basename>), then POSTing it as
+//         x-www-form-urlencoded — the SAME serialize-then-overlay pattern the
+//         CFP `submit` uses. NOTE: programmatic DOM .value sets / Dropzone
+//         emit('success') do NOT persist through an interactive save (formex
+//         ignores them); posting the round-tripped urlencoded body directly
+//         DOES persist. That is why we build and POST the body ourselves.
+// ---------------------------------------------------------------------------
+function guessImageMime(name) {
+  const ext = String(name).split('.').pop().toLowerCase();
+  return ({
+    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+    gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp',
+  })[ext] || 'application/octet-stream';
+}
+
+// Upload the local image to /fileUpload (same-origin, in the logged-in tab).
+// browser.fetch() JSON-stringifies object bodies (can't carry a Blob/FormData),
+// so — like the concur receipt upload — the multipart POST runs inside the page
+// via evalAsync with the base64 bytes baked in as a literal. Returns the
+// server-assigned filename plus the original basename. This only STAGES a file
+// server-side; it does not change the profile until the save in step 2.
+async function uploadImage(localPath) {
+  const q = (s) => "'" + String(s).replace(/'/g, "'\\''") + "'";
+  const st = await exec(`test -f ${q(localPath)} && (stat -c %s ${q(localPath)} 2>/dev/null || stat -f %z ${q(localPath)})`);
+  if (!st || st.exitCode !== 0) {
+    console.error(`Error: image file not found or unreadable: ${localPath}`);
+    process.exit(1);
+  }
+  const size = parseInt(String(st.stdout || '').trim(), 10) || 0;
+  const basename = String(localPath).split('/').pop();
+  const mime = guessImageMime(basename);
+
+  const b64r = await exec(`base64 < ${q(localPath)} | tr -d '\\n'`);
+  if (!b64r || b64r.exitCode !== 0) {
+    console.error('Error: failed to base64-encode the image.');
+    process.exit(1);
+  }
+  const b64 = String(b64r.stdout || '').trim();
+  if (size > 8 * 1024 * 1024) {
+    console.error(`Warning: image is ${(size / 1048576).toFixed(1)} MB — large files may exceed the eval payload limit.`);
+  }
+
+  const tab = await findSessionizeTab();
+  const uploadFn = new Function(`return (async () => {
+    const b64 = ${JSON.stringify(b64)};
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const blob = new Blob([bytes], { type: ${JSON.stringify(mime)} });
+    const fd = new FormData();
+    fd.append('file', blob, ${JSON.stringify(basename)});
+    const r = await fetch('/fileUpload', {
+      method: 'POST', body: fd, credentials: 'same-origin',
+      headers: { 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json' },
+    });
+    const text = await r.text();
+    return JSON.stringify({ status: r.status, body: text });
+  })();`);
+
+  let wrap;
+  try {
+    const res = await browser.evalAsync(tab, uploadFn);
+    wrap = typeof res === 'string' ? JSON.parse(res) : res;
+  } catch (e) {
+    console.error('Photo upload failed: ' + ((e && e.message) || e));
+    process.exit(1);
+  }
+  if (!wrap || wrap.status >= 400) {
+    console.error(`/fileUpload returned HTTP ${wrap ? wrap.status : '?'}: ${wrap ? wrap.body : ''}`);
+    process.exit(1);
+  }
+  let parsed = {};
+  try { parsed = JSON.parse(wrap.body); } catch (e) { /* non-JSON */ }
+  const serverFilename = parsed.filename || '';
+  if (!serverFilename) {
+    console.error('/fileUpload did not return a {"filename":...}: ' + wrap.body);
+    process.exit(1);
+  }
+  return { serverFilename, basename, size };
+}
+
+// Serialize the ENTIRE live /app/speaker/profile form (same DOM/FormData
+// approach as the CFP form, minus selectize `fakename__*` decoys). Returns the
+// round-tripped pairs + anti-forgery token so we can overlay just the photo.
+const PROFILE_SERIALIZE_SCRIPT = `(() => {
+  const anchor = document.querySelector('[name="User.ProfilePicture"]');
+  const form = anchor ? anchor.closest('form') : document.querySelector('form');
+  if (!form) return { error: 'no profile form found on the page' };
+  const fd = new FormData(form);
+  const pairs = [];
+  for (const [k, v] of fd.entries()) {
+    if (k.indexOf('fakename__') === 0) continue; // selectize decoy inputs
+    if (typeof v !== 'string') continue;          // skip File entries
+    pairs.push([k, v]);
+  }
+  const tok = (form.querySelector('[name="__RequestVerificationToken"]') || {}).value || '';
+  const userId = (form.querySelector('[name="User.Id"]') || {}).value || '';
+  return { pairs, token: tok, userId };
+})()`;
+
+async function serializeProfileForm() {
+  const url = 'https://sessionize.com/app/speaker/profile';
+  const tab = await findSessionizeTab();
+  let href = '';
+  try { href = String(await browser.eval(tab, 'location.href')); } catch (e) { /* ignore */ }
+  if (!/\/app\/speaker\/profile/.test(href)) {
+    await browser.eval(tab, `window.location.assign(${JSON.stringify(url)})`);
+    let ready = false;
+    for (let i = 0; i < 60; i++) {
+      await new Promise((r) => setTimeout(r, 500));
+      try {
+        ready = await browser.eval(tab, 'document.readyState==="complete" && !!document.querySelector(\'[name="User.ProfilePicture"]\')');
+      } catch (e) { ready = false; }
+      if (ready) break;
+    }
+    if (!ready) {
+      let now = '';
+      try { now = String(await browser.eval(tab, 'location.href')); } catch (e) { /* ignore */ }
+      console.error(`Could not load the speaker profile form at ${url}.`);
+      console.error(`Tab is at: ${now || '(unknown)'} — are you logged in?`);
+      process.exit(1);
+    }
+  }
+  const d = await browser.eval(tab, PROFILE_SERIALIZE_SCRIPT);
+  if (!d || d.error || !Array.isArray(d.pairs)) {
+    console.error('Could not serialize the profile form: ' + ((d && d.error) || 'unexpected shape'));
+    process.exit(1);
+  }
+  if (!d.token) {
+    console.error('Serialized profile form is missing the anti-forgery token — are you logged in?');
+    process.exit(1);
+  }
+  return d;
+}
+
+// Build the /app/speaker/profile save body: round-trip the whole form, overlay
+// only the photo fields (overwrite-in-place-else-append, same as buildPayload).
+//   - User.ProfilePicture        = <serverId>.png   (from /fileUpload)
+//   - User.ProfilePicturePreview = <original basename> (what the form shows)
+//   - formex-submit-button-value = save+preview       (the save action; the
+//       recorded interactive save carried this — FormData omits submit buttons)
+//   - _charset_                  = utf-8              (force UTF-8 decode; see
+//       the CFP submit fix — an absent/empty _charset_ makes the ASP.NET server
+//       fall back to Latin-1 and mojibake multibyte chars).
+function buildProfilePhotoBody(dom, serverFilename, basename) {
+  const overlays = {
+    'User.ProfilePicture': [String(serverFilename)],
+    'User.ProfilePicturePreview': [String(basename)],
+    'formex-submit-button-value': ['save+preview'],
+    '_charset_': ['utf-8'],
+  };
+  const p = new URLSearchParams();
+  const applied = new Set();
+  for (const [k, v] of dom.pairs) {
+    if (Object.prototype.hasOwnProperty.call(overlays, k)) {
+      if (!applied.has(k)) { for (const ov of overlays[k]) p.append(k, ov); applied.add(k); }
+      continue; // drop the form's original value for this key
+    }
+    p.append(k, v);
+  }
+  for (const k of Object.keys(overlays)) {
+    if (!applied.has(k)) { for (const ov of overlays[k]) p.append(k, ov); applied.add(k); }
+  }
+  return p.toString();
+}
+
+// ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
 const commands = {
@@ -439,6 +614,61 @@ const commands = {
       const opts = Object.keys(f.options || {});
       console.log(`  ${guid}  Id=${f.id} type=${f.fieldType}${opts.length ? '  options=[' + opts.join(', ') + ']' : ''}`);
     }
+  },
+
+  // Two-step speaker-photo update: upload the image, then persist it onto the
+  // profile by round-tripping the whole profile form. Default target = profile.
+  async photo(args, flags) {
+    const localPath = args[0];
+    if (!localPath) {
+      console.error('Usage: sessionize photo <local-image-path> [--profile] [--dry-run] [--json]');
+      process.exit(1);
+    }
+    // Only the profile target is implemented today. The per-event speaker photo
+    // uses the analogous /app/speaker/events/speaker/edit/<eventId>/<guid> form
+    // (same round-trip + User.ProfilePicture overlay) — see references/endpoints.md.
+    const referer = 'https://sessionize.com/app/speaker/profile';
+
+    // 1. Upload the image bytes → /fileUpload (stages a file; no profile change).
+    const up = await uploadImage(localPath);
+
+    // 2. Serialize the ENTIRE live profile form (single render).
+    const dom = await serializeProfileForm();
+
+    // 3. Overlay the photo fields and build the save body.
+    const body = buildProfilePhotoBody(dom, up.serverFilename, up.basename);
+    const params = new URLSearchParams(body);
+
+    if (flags['dry-run']) {
+      console.log(`Dry run — image uploaded (staged) as "${up.serverFilename}"; profile-save body assembled (${body.length} bytes, ${[...params.keys()].length} params). NOT saved.`);
+      console.log('Overlaid params:');
+      console.log('  User.ProfilePicture        = ' + params.get('User.ProfilePicture'));
+      console.log('  User.ProfilePicturePreview = ' + params.get('User.ProfilePicturePreview'));
+      console.log('  formex-submit-button-value = ' + params.get('formex-submit-button-value'));
+      console.log('  _charset_                  = ' + params.get('_charset_'));
+      return;
+    }
+
+    // 4. POST the profile save — this is what persists the new photo.
+    const resp = await postForm('/app/speaker/profile', body, { referer });
+    const data = resp.body;
+    if (flags.json) {
+      console.log(typeof data === 'string' ? data : JSON.stringify(data, null, 2));
+      return;
+    }
+    if (data && typeof data === 'object' && data.ValidationErrors && Object.keys(data.ValidationErrors).length) {
+      console.error('Profile save returned validation errors:');
+      for (const [k, v] of Object.entries(data.ValidationErrors)) console.error(`  - ${k}: ${v}`);
+      process.exit(2);
+    }
+    const status = resp.status || '?';
+    if (typeof status === 'number' && status >= 400) {
+      console.error(`Profile save returned HTTP ${status}.`);
+      console.error(typeof data === 'string' ? data.slice(0, 1000) : JSON.stringify(data));
+      process.exit(1);
+    }
+    console.log(`Profile photo updated (uploaded "${up.serverFilename}", status ${status}).`);
+    console.log('Note: this changes your PROFILE photo; already-submitted sessions keep their photo.');
   },
 
   async submit(args, flags) {
@@ -505,7 +735,7 @@ const commands = {
 //   - boolean flags (single-token): --draft --consent --json
 //   - repeatable: --field <guid>=<value>, --tag <guid>=<label|id>
 // ---------------------------------------------------------------------------
-const BOOLEAN_FLAGS = new Set(['draft', 'consent', 'json', 'dry-run']);
+const BOOLEAN_FLAGS = new Set(['draft', 'consent', 'json', 'dry-run', 'profile']);
 const VALUE_FLAGS = new Set([
   'title', 'description', 'session-type', 'primary-track', 'secondary-track',
   'level', 'takeaways', 'video', 'tags', 'company', 'role',
@@ -573,6 +803,7 @@ async function main() {
     console.log('  events | cfps                  Info on listing CFPs (no confirmed list endpoint)');
     console.log('  show <event-slug>              Scrape a CFP form: tokens, custom fields, tag options');
     console.log('  submit <event-slug> [flags]    Build the submission payload and POST it');
+    console.log('  photo <image> [--profile]      Upload + set your speaker photo (default: profile)');
     console.log('');
     console.log('submit flags:');
     console.log('  --title, --description, --session-type, --primary-track,');
@@ -586,6 +817,13 @@ async function main() {
     console.log('  --field-id <Id>=<value>        set a text field by its STABLE numeric Id (repeatable, preferred)');
     console.log('  --tag-id <Id>=<label|id,...>   set a Tag field by its STABLE numeric Id (repeatable, preferred)');
     console.log('  --json                         print raw JSON response');
+    console.log('');
+    console.log('photo flags:');
+    console.log('  --profile                      target your speaker profile photo (default)');
+    console.log('  --dry-run                      upload + build the save body, print it, do NOT save');
+    console.log('  --json                         print the raw profile-save response');
+    console.log('  photo does a 2-step flow: POST /fileUpload (multipart), then round-trip');
+    console.log('  the /app/speaker/profile form with User.ProfilePicture overlaid + POST it.');
     console.log('\nNote: per-field GUIDs are per-render nonces (they change on every form load),');
     console.log('so prefer --field-id/--tag-id with the stable numeric Id shown by `show`.');
     console.log('Tag values must resolve to a form option (case-insensitive) or an existing');

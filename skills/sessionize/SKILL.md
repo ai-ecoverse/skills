@@ -31,6 +31,7 @@ sessionize events                   # a.k.a. `cfps` — list CFPs you can submit
 sessionize cfps                     # alias of events
 sessionize show <event-slug>        # scrape a CFP form: tokens, custom fields, tag options
 sessionize submit <event-slug> [flags]   # build the submission payload and POST it
+sessionize photo <image> [--profile] [--dry-run] [--json]  # upload + set your speaker photo
 ```
 
 ### `submit` flags
@@ -97,6 +98,43 @@ corrupts multibyte characters (an em-dash `—` was stored as `â€"` /
 `U+00E2 U+0080 U+0094`). `buildPayload` guarantees exactly one `_charset_=utf-8`
 pair (overwriting the form's own value if present), and the body stays UTF-8
 percent-encoded (`—` → `%E2%80%94`). See `references/endpoints.md` for details.
+
+## `photo` — speaker photo upload/set
+
+`sessionize photo <local-image-path> [--profile] [--dry-run] [--json]` sets your
+speaker photo. Default target is your **profile** photo. It is a **two-step**
+flow (reverse-engineered from `/shared/sessionize-photo-recording/`):
+
+1. **Upload the image bytes** → `POST /fileUpload` (same-origin, inside your
+   logged-in tab). Multipart `form-data` with ONE field named `file`; headers
+   `X-Requested-With: XMLHttpRequest`, `Accept: application/json`. Response:
+   `{"filename":"<serverId>.png"}`. (`browser.fetch` can't carry a `Blob`, so
+   this runs in-page via `evalAsync` with the base64 bytes baked in — the same
+   pattern the `concur` receipt upload uses.)
+2. **Persist it onto the profile** → `POST /app/speaker/profile`. The skill
+   serializes the ENTIRE live `/app/speaker/profile` form (all ~115 params) the
+   same way `submit` round-trips the CFP form, then overlays only:
+   - `User.ProfilePicture=<serverId>.png` (from step 1),
+   - `User.ProfilePicturePreview=<original basename>` (what the UI shows),
+   - `formex-submit-button-value=save+preview` (the save action; `FormData`
+     omits submit buttons, so we re-add it),
+   - `_charset_=utf-8` (same UTF-8 fix as `submit`).
+   Headers: `Content-Type: …; charset=UTF-8`, `X-FormEx: 1`,
+   `X-Requested-With: XMLHttpRequest`, `Referer: …/app/speaker/profile`.
+
+Why the round-trip POST (not DOM clicks): setting `.value` programmatically or
+firing Dropzone's `emit('success')` does **not** persist through an interactive
+save — formex ignores those. Posting the round-tripped urlencoded body directly
+is what actually persists the photo.
+
+`--dry-run` uploads the image (harmless — `/fileUpload` only *stages* a file),
+serializes + overlays the profile form, and prints the param count and the
+overlaid `User.ProfilePicture` / `User.ProfilePicturePreview` values **without**
+POSTing the save. Note: a profile-photo change does **not** propagate to
+already-submitted sessions; the per-event speaker photo uses the analogous form
+at `/app/speaker/events/speaker/edit/<eventId>/<speakerGuid>` (same round-trip +
+`User.ProfilePicture` overlay — see `references/endpoints.md`; not yet wired to a
+flag).
 
 ## `submit` — LIVE-VERIFIED (Jul 31, 2026)
 

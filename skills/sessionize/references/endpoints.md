@@ -202,6 +202,70 @@ Two facts the recording did not reveal, discovered live:
 recording; they remain best-effort. `cfps`/`events` has no confirmed JSON list
 endpoint.
 
+## Speaker photo upload (`sessionize photo`)
+
+Source: `/shared/sessionize-photo-recording/` — `fileupload.har` (the real
+`POST /fileUpload`), `profile-save.har` (the real `POST /app/speaker/profile`),
+and `profile-save-body.txt` (the exact 4200-byte, 114-param save body).
+
+Setting a speaker photo is a **two-step** flow:
+
+### Step 1 — `POST /fileUpload`
+
+Uploads the raw image bytes and stages them server-side (does NOT change the
+profile yet).
+
+- Body: `multipart/form-data` with **one** field named `file` (the image bytes;
+  filename e.g. `photo.png`).
+- Request headers: `X-Requested-With: XMLHttpRequest`, `Accept: application/json`,
+  `Referer: https://sessionize.com/app/speaker/profile`.
+- Response (200): `{"filename":"<serverId>.png"}` — e.g.
+  `{"filename":"BdccmZL2b4fJcjNn5SQgca.png"}`. Capture that `filename`.
+
+`browser.fetch` JSON-stringifies object bodies and can't carry a `Blob`/`FormData`,
+so the skill issues this POST from inside the page via `evalAsync` (base64 bytes
+baked in as a literal, reconstructed to a `Blob`→`File`→`FormData`) — the same
+technique as the `concur` receipt upload.
+
+### Step 2 — `POST /app/speaker/profile`
+
+Persists the uploaded photo by round-tripping the whole profile form.
+
+- Headers: `Content-Type: application/x-www-form-urlencoded; charset=UTF-8`,
+  `X-FormEx: 1`, `X-Requested-With: XMLHttpRequest`,
+  `Referer: https://sessionize.com/app/speaker/profile`. Response: `200` (empty
+  body observed).
+- Body: the ENTIRE profile form serialized live (`new FormData(form)` minus
+  selectize `fakename__*` decoys — ~115 params: `__RequestVerificationToken`,
+  `formex-verification`, `User.Id`/`User.FirstName`/`User.LastName`,
+  `DefaultLanguage_Tagline`/`_Bio`, the `Links[n].*` block, `UserBadgesExternal[n].*`,
+  `UserCertificates[n].*`, etc.), with these overlaid:
+
+  | Field | Value | Source |
+  |-------|-------|--------|
+  | `User.ProfilePicture` | `<serverId>.png` | the `filename` from step 1 |
+  | `User.ProfilePicturePreview` | `<original basename>` (e.g. `out-3.png`) | the local file's name |
+  | `formex-submit-button-value` | `save+preview` | the save action (FormData omits submit buttons) |
+  | `_charset_` | `utf-8` | forces UTF-8 decode (see mojibake note above) |
+
+  Verbatim from `profile-save-body.txt`:
+  `User.ProfilePicture=BdccmZL2b4fJcjNn5SQgca.png&User.ProfilePicturePreview=out-3.png`
+  and `formex-submit-button-value=save%2Bpreview`.
+
+**Why round-trip + direct POST (not DOM manipulation):** setting the input
+`.value` programmatically or firing Dropzone's `emit('success')` does NOT persist
+through an interactive click-save — formex ignores those. Posting the
+round-tripped urlencoded body directly (same as CFP `submit`) DOES persist.
+
+### Per-event speaker photo (same pattern — needs verification)
+
+A profile-photo change does **not** propagate to already-submitted sessions. The
+per-event speaker photo uses the analogous form at
+`POST /app/speaker/events/speaker/edit/<eventId>/<speakerGuid>` — expected to be
+the same round-trip-the-whole-form + `User.ProfilePicture` overlay (field name
+likely `User.ProfilePicture` there too; **confirm from that form's HTML** — this
+variant was not in the recording and is not yet wired to a flag).
+
 ## Read APIs (not found)
 
 - No JSON list-CFPs / list-events endpoint appears in the HAR.
