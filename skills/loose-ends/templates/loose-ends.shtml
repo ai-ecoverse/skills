@@ -263,6 +263,106 @@
       align-items: center;
       margin-top: 11px;
     }
+
+    /* ── Snooze section subheader (flat disclosure — hairline, no box) ── */
+    .snooze-subhead {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--line);
+      border-top: 1px solid var(--line);
+      cursor: pointer;
+      user-select: none;
+      color: var(--fg-muted);
+      font-size: 11px;
+      font-weight: 600;
+      background: none;
+      width: 100%;
+      text-align: left;
+      font-family: inherit;
+    }
+    .snooze-subhead:hover { background: color-mix(in srgb, var(--fg) 3.5%, transparent); }
+    .snooze-subhead > .sprinkle-icon { color: var(--fg-faint); }
+    .snooze-subhead .chev { transition: transform 0.15s ease; margin-left: auto; }
+    .snooze-subhead.collapsed .chev { transform: rotate(-90deg); }
+
+    /* ── Compact greyed snoozed row ── */
+    .task-item.snoozed { opacity: 0.65; }
+    .task-item.snoozed .task-title { font-size: 12.5px; margin-bottom: 2px; }
+    .snoozed-until {
+      font-size: 11px;
+      color: var(--fg-faint);
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      line-height: 1;
+    }
+    .snoozed-meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-top: 6px;
+    }
+    .snoozed-meta .sprinkle-icon { width: 11px; height: 11px; }
+
+    /* ── Snooze menu (popover — flat, dark-mode safe) ── */
+    .snooze-menu-wrap { position: relative; display: inline-flex; }
+    .snooze-menu {
+      position: absolute;
+      z-index: 50;
+      bottom: calc(100% + 6px);
+      left: 0;
+      min-width: 176px;
+      background: var(--s2-bg-elevated, var(--s2-bg-base));
+      border: 1px solid var(--line);
+      border-radius: var(--s2-radius-l, 10px);
+      box-shadow: var(--s2-shadow-elevated, 0 6px 20px rgba(0,0,0,0.28));
+      padding: 4px;
+      display: none;
+      flex-direction: column;
+      gap: 1px;
+    }
+    .snooze-menu.open { display: flex; }
+    .snooze-menu-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 10px;
+      border-radius: var(--s2-radius-default, 8px);
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 12px;
+      color: var(--fg);
+      text-align: left;
+      width: 100%;
+      line-height: 1.3;
+    }
+    .snooze-menu-item:hover { background: color-mix(in srgb, var(--fg) 8%, transparent); }
+    .snooze-menu-item .sprinkle-icon { color: var(--fg-muted); }
+    .snooze-menu-item .sub { color: var(--fg-faint); font-size: 10.5px; margin-left: auto; }
+    .snooze-menu-date {
+      display: none;
+      padding: 6px 8px 4px;
+      border-top: 1px solid var(--line);
+      margin-top: 2px;
+    }
+    .snooze-menu-date.open { display: block; }
+    .snooze-menu-date input[type="date"] {
+      width: 100%;
+      background: var(--s2-bg-base);
+      border: 1px solid var(--line);
+      border-radius: var(--s2-radius-default, 8px);
+      color: var(--fg);
+      font-family: inherit;
+      font-size: 12px;
+      padding: 5px 8px;
+      outline: none;
+    }
+    .snooze-menu-date input[type="date"]:focus { border-color: var(--s2-accent); }
   </style>
 </head>
 <body>
@@ -312,6 +412,64 @@ function fmtDate(iso) {
     if (isNaN(d.getTime())) return '';
     return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   } catch (e) { return ''; }
+}
+
+// Format a snooze target: "Jul 30, 2026" or "Jul 30, 2026, 2:30 PM" when the
+// time isn't the canonical 09:00 wake hour (so custom times stay visible).
+function fmtSnoozeUntil(iso) {
+  if (!iso) return '';
+  try {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    const dateStr = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    if (d.getHours() === 9 && d.getMinutes() === 0) return dateStr;
+    const timeStr = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+    return dateStr + ', ' + timeStr;
+  } catch (e) { return ''; }
+}
+
+// ── Snooze predicates + time math ──────────────────────────────────
+// A task is snoozed iff snoozedUntil is set AND still in the future.
+// A passed snoozedUntil auto-resurfaces (treated as active).
+function isSnoozed(task) {
+  if (!task || !task.snoozedUntil) return false;
+  const t = new Date(task.snoozedUntil).getTime();
+  return !isNaN(t) && t > Date.now();
+}
+
+// Build an ISO timestamp for a date offset by `days`, at 09:00 local.
+function atNineAM(date) {
+  const d = new Date(date);
+  d.setHours(9, 0, 0, 0);
+  return d.toISOString();
+}
+function snoozeTomorrow() {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  return atNineAM(d);
+}
+function snoozeNextWeek() {
+  const d = new Date();
+  d.setDate(d.getDate() + 7);
+  return atNineAM(d);
+}
+// Next Monday strictly in the future (if today is Monday → +7 days).
+function snoozeNextMonday() {
+  const d = new Date();
+  const day = d.getDay(); // 0=Sun … 1=Mon
+  let add = (1 - day + 7) % 7; // days until next Monday (0 if today is Monday)
+  if (add === 0) add = 7;      // strictly in the future
+  d.setDate(d.getDate() + add);
+  return atNineAM(d);
+}
+// A local YYYY-MM-DD (from <input type=date>) at 09:00 local.
+function snoozeFromDateInput(value) {
+  if (!value) return null;
+  const parts = value.split('-');
+  if (parts.length !== 3) return null;
+  const d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]), 9, 0, 0, 0);
+  if (isNaN(d.getTime())) return null;
+  return d.toISOString();
 }
 
 // ═══════════════════════════════════════════════════
@@ -381,25 +539,92 @@ function saveState() {
 // ═══════════════════════════════════════════════════
 //  RENDER
 // ═══════════════════════════════════════════════════
+// Disclosure state for the snoozed section. Default: collapsed when there are
+// active items (keep the active list front-and-center), expanded when the only
+// items are snoozed. Recomputed lazily in renderAll unless the user toggled it.
+let snoozeCollapsed = null; // null = auto; true/false = user-pinned
+
 function updateCount() {
+  // Badge counts ACTIVE tasks only (snoozed items are parked).
   const badge = document.getElementById('count-badge');
-  const n = tasks.length;
+  const n = tasks.filter(t => !isSnoozed(t)).length;
   badge.textContent = n;
   badge.className = 'badge' + (n === 0 ? ' zero' : '');
 }
 
 function updateEmptyState() {
+  // Empty only when there are zero tasks total (active AND snoozed).
   const empty = document.getElementById('empty-state');
   empty.style.display = tasks.length === 0 ? 'flex' : 'none';
 }
 
 function renderAll() {
   const scroll = document.getElementById('list-scroll');
-  [...scroll.querySelectorAll('.task-item')].forEach(el => el.remove());
-  tasks.forEach(t => scroll.appendChild(createTaskCard(t)));
+  [...scroll.querySelectorAll('.task-item, .snooze-subhead')].forEach(el => el.remove());
+  closeAllSnoozeMenus();
+
+  const active = tasks.filter(t => !isSnoozed(t));
+  const snoozed = tasks.filter(t => isSnoozed(t));
+
+  // Active rows first, in existing order.
+  active.forEach(t => scroll.appendChild(createTaskCard(t)));
+
+  // Snoozed section: subheader disclosure + compact greyed rows, last.
+  if (snoozed.length) {
+    const collapsed = snoozeCollapsed !== null ? snoozeCollapsed : (active.length > 0);
+    scroll.appendChild(createSnoozeSubheader(snoozed.length, collapsed));
+    if (!collapsed) {
+      snoozed.forEach(t => scroll.appendChild(createSnoozedRow(t)));
+    }
+  }
+
   updateCount();
   updateEmptyState();
   renderIcons();
+}
+
+// The muted disclosure row between active and snoozed sections.
+function createSnoozeSubheader(count, collapsed) {
+  const btn = document.createElement('button');
+  btn.className = 'snooze-subhead' + (collapsed ? ' collapsed' : '');
+  btn.innerHTML =
+    '<i data-lucide="alarm-clock-off" class="sprinkle-icon sm"></i>' +
+    '<span>Snoozed (' + count + ')</span>' +
+    '<i data-lucide="chevron-down" class="sprinkle-icon sm chev"></i>';
+  btn.addEventListener('click', () => {
+    // Toggle from the state ACTUALLY rendered (the `collapsed` arg), not from a
+    // null-defaults-to-collapsed guess — otherwise, when everything is snoozed
+    // (auto-expanded), the first click wrongly re-expands and appears to no-op.
+    snoozeCollapsed = !collapsed;
+    renderAll();
+  });
+  return btn;
+}
+
+// Compact, greyed, minimal snoozed row: title + "Snoozed until …" + Wake now.
+function createSnoozedRow(task) {
+  const div = document.createElement('div');
+  div.className = 'task-item snoozed';
+  div.dataset.id = task.id;
+
+  const until = fmtSnoozeUntil(task.snoozedUntil);
+  div.innerHTML =
+    '<div class="task-title">' + escHtml(task.title || task.id || '') + '</div>' +
+    '<div class="snoozed-meta">' +
+      '<span class="snoozed-until">' +
+        '<i data-lucide="clock" class="sprinkle-icon sm"></i>Snoozed until ' + escHtml(until) +
+      '</span>' +
+      '<button class="sprinkle-btn sprinkle-btn--ghost wake-btn">' +
+        '<i data-lucide="alarm-clock" class="sprinkle-icon sm"></i> Wake now' +
+      '</button>' +
+    '</div>';
+
+  const wakeBtn = div.querySelector('.wake-btn');
+  wakeBtn.addEventListener('click', () => {
+    wakeBtn.disabled = true;
+    unsnoozeTask(task.id);
+  });
+  return div;
 }
 
 function createTaskCard(task) {
@@ -479,6 +704,26 @@ function createTaskCard(task) {
       '<button class="sprinkle-btn sprinkle-btn--ghost done-btn">' +
         '<i data-lucide="check" class="sprinkle-icon sm"></i> Done' +
       '</button>' +
+      '<div class="snooze-menu-wrap">' +
+        '<button class="sprinkle-btn sprinkle-btn--ghost snooze-btn" title="Snooze this loose end">' +
+          '<i data-lucide="alarm-clock" class="sprinkle-icon sm"></i> Snooze' +
+        '</button>' +
+        '<div class="snooze-menu">' +
+          '<button class="snooze-menu-item" data-preset="tomorrow">' +
+            '<i data-lucide="sun" class="sprinkle-icon sm"></i>Tomorrow' +
+          '</button>' +
+          '<button class="snooze-menu-item" data-preset="monday">' +
+            '<i data-lucide="calendar" class="sprinkle-icon sm"></i>Next Monday' +
+          '</button>' +
+          '<button class="snooze-menu-item" data-preset="week">' +
+            '<i data-lucide="calendar-days" class="sprinkle-icon sm"></i>Next week' +
+          '</button>' +
+          '<button class="snooze-menu-item" data-preset="pick">' +
+            '<i data-lucide="calendar-clock" class="sprinkle-icon sm"></i>Pick a date…' +
+          '</button>' +
+          '<div class="snooze-menu-date"><input type="date" /></div>' +
+        '</div>' +
+      '</div>' +
     '</div>';
 
   // Done: OPTIMISTIC removal first, then emit the lick.
@@ -491,7 +736,80 @@ function createTaskCard(task) {
     slicc.lick({ action: 'done', data: { id: task.id, title: task.title } });
   });
 
+  // Snooze: open a preset menu; picking a preset snoozes optimistically + emits.
+  wireSnoozeMenu(div, task);
+
   return div;
+}
+
+// ── Snooze menu wiring ─────────────────────────────────────────────
+function closeAllSnoozeMenus() {
+  document.querySelectorAll('.snooze-menu.open').forEach(m => {
+    m.classList.remove('open');
+    const dateWrap = m.querySelector('.snooze-menu-date');
+    if (dateWrap) dateWrap.classList.remove('open');
+  });
+}
+
+function wireSnoozeMenu(row, task) {
+  const btn = row.querySelector('.snooze-btn');
+  const menu = row.querySelector('.snooze-menu');
+  const dateWrap = row.querySelector('.snooze-menu-date');
+  const dateInput = dateWrap ? dateWrap.querySelector('input[type="date"]') : null;
+  if (!btn || !menu) return;
+
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const isOpen = menu.classList.contains('open');
+    closeAllSnoozeMenus();
+    if (!isOpen) menu.classList.add('open');
+  });
+
+  // Keep clicks inside the menu from bubbling to the document (outside-click close).
+  menu.addEventListener('click', (e) => e.stopPropagation());
+
+  menu.querySelectorAll('.snooze-menu-item').forEach(item => {
+    item.addEventListener('click', () => {
+      const preset = item.dataset.preset;
+      if (preset === 'pick') {
+        if (dateWrap) dateWrap.classList.add('open');
+        if (dateInput) setTimeout(() => dateInput.focus(), 30);
+        return;
+      }
+      let until = null;
+      if (preset === 'tomorrow') until = snoozeTomorrow();
+      else if (preset === 'monday') until = snoozeNextMonday();
+      else if (preset === 'week') until = snoozeNextWeek();
+      if (until) applySnooze(task.id, task.title, until);
+    });
+  });
+
+  if (dateInput) {
+    dateInput.addEventListener('change', () => {
+      const until = snoozeFromDateInput(dateInput.value);
+      if (until) applySnooze(task.id, task.title, until);
+    });
+  }
+}
+
+// Optimistically snooze a task locally, re-render, then notify the cone.
+function applySnooze(id, title, untilIso) {
+  closeAllSnoozeMenus();
+  const t = tasks.find(x => x.id === id);
+  if (t) t.snoozedUntil = untilIso;
+  saveState();
+  renderAll();
+  slicc.lick({ action: 'snooze', data: { id, title, until: untilIso } });
+}
+
+// Optimistically wake a snoozed task locally, re-render, then notify the cone.
+function unsnoozeTask(id) {
+  const t = tasks.find(x => x.id === id);
+  const title = t ? t.title : '';
+  if (t) delete t.snoozedUntil;
+  saveState();
+  renderAll();
+  slicc.lick({ action: 'unsnooze', data: { id, title } });
 }
 
 // Remove a task from the model + DOM (with a small leave animation).
@@ -534,21 +852,20 @@ slicc.on('update', (msg) => {
       if (existing !== -1) tasks[existing] = msg.task;
       else tasks.push(msg.task);
       saveState();
-      const scroll = document.getElementById('list-scroll');
-      // If it already had a card (upsert), re-render fully; else append.
-      if (existing !== -1) {
-        renderAll();
-      } else {
-        scroll.appendChild(createTaskCard(msg.task));
-        updateCount();
-        updateEmptyState();
-        renderIcons();
-      }
+      // Full partition-aware render so a new/updated task lands in the correct
+      // section (active vs snoozed) with the right controls, and the snoozed
+      // subheader count stays accurate — an incremental append can't do that.
+      renderAll();
     }
   }
 
   else if (msg.action === 'remove-item') {
-    if (msg.id) removeTaskById(msg.id, false);
+    if (msg.id) {
+      removeTaskById(msg.id, false);
+      // Rebuild so the snoozed subheader count/visibility reflects the removal
+      // (removeTaskById only touches the active badge + empty state).
+      renderAll();
+    }
   }
 });
 
@@ -559,6 +876,29 @@ function renderIcons() {
   if (typeof LucideIcons !== 'undefined' && LucideIcons.render) LucideIcons.render();
   if (window.LucideIcons) window.LucideIcons.render();
 }
+
+// ── Close snooze menus on outside-click / Escape ──
+document.addEventListener('click', () => closeAllSnoozeMenus());
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeAllSnoozeMenus(); });
+
+// ── Auto-resurface: every 60s, wake any snooze whose time has passed so it
+//    returns to the active list without needing a reopen. We CLEAR the expired
+//    `snoozedUntil` (rather than just re-rendering) so the task doesn't keep
+//    matching "due" on every subsequent tick — otherwise the panel would rebuild
+//    every minute forever, closing any open brief/menu and disrupting the user.
+setInterval(function () {
+  try {
+    const now = Date.now();
+    let changed = false;
+    tasks.forEach(t => {
+      if (t.snoozedUntil && new Date(t.snoozedUntil).getTime() <= now) {
+        delete t.snoozedUntil;
+        changed = true;
+      }
+    });
+    if (changed) { saveState(); renderAll(); }
+  } catch (e) { /* keep the timer cheap + resilient */ }
+}, 60000);
 
 // ═══════════════════════════════════════════════════
 //  INIT

@@ -1,6 +1,6 @@
 ---
 name: loose-ends
-description: "A persistent to-do / follow-up list that lives in a sprinkle panel alongside the chat. Use when the user wants to track loose ends, open follow-ups, waiting-on-others items, or 'things I still need to do' across sessions — a durable backlog the cone maintains and resurfaces. Each item has a title and a rich context blob (why it's open, what to do, links). The panel offers two actions per row: 'Do' (hand the item to the cone to work on now) and 'Done' (remove it). Triggers on 'loose ends', 'my to-do list', 'open follow-ups', 'things I still need to do', 'track this for later', 'add a loose end', 'what's still open'."
+description: "A persistent to-do / follow-up list that lives in a sprinkle panel alongside the chat. Use when the user wants to track loose ends, open follow-ups, waiting-on-others items, or 'things I still need to do' across sessions — a durable backlog the cone maintains and resurfaces. Each item has a title and a rich context blob (why it's open, what to do, links). The panel offers three actions per row: 'Do' (hand the item to the cone to work on now), 'Snooze' (hide it until Tomorrow / Next Monday / Next week / a picked date, then auto-resurface), and 'Done' (remove it). Triggers on 'loose ends', 'my to-do list', 'open follow-ups', 'things I still need to do', 'track this for later', 'add a loose end', 'snooze this until', 'mute until Monday', 'what's still open'."
 allowed-tools: bash
 ---
 
@@ -21,18 +21,44 @@ and two buttons: **Do** and **Done**.
 
 ## Architecture — who owns what
 
-Two owners, one authoritative file. Keep them separate:
+Two concerns, one authoritative file. Keep the *lifecycle* concerns separate,
+but mutate through one API:
 
-- **Store — cone-owned.** `/shared/loose-ends.json` is the single source of
-  truth. **Only the cone writes it.** It survives scoop restarts and session
-  reloads, so task truth never depends on the (disposable) UI scoop being alive.
-- **Sprinkle — scoop-owned.** One scoop named `loose-ends` owns the panel at
-  `/shared/sprinkles/loose-ends/loose-ends.shtml`. Per the SLICC sprinkle rule,
-  **the cone MUST NOT write the `.shtml` or run `sprinkle`** — it delegates every
-  panel operation (open, reload, `sprinkle send`) to that scoop via `feed_scoop`.
+- **Store — the source of truth.** `/shared/loose-ends.json` survives scoop
+  restarts and session reloads, so task truth never depends on the (disposable)
+  UI scoop being alive. **Mutate it through the `loose-ends` CLI**
+  (`create` / `done` / `snooze` / `unsnooze`), which does an atomic full rewrite
+  *and* best-effort syncs an open panel in one step. Prefer the CLI over
+  hand-editing the JSON (fewer footguns, keeps the panel in step).
+- **Sprinkle lifecycle — scoop-owned.** One scoop named `loose-ends` owns the
+  panel at `/shared/sprinkles/loose-ends/loose-ends.shtml`. Per the SLICC sprinkle
+  rule, **the cone MUST NOT author the `.shtml` or run the panel-lifecycle
+  commands** (`sprinkle refresh` / `open` / `reload` / `close`) — it delegates
+  those to that scoop via `feed_scoop`. (Lightweight `sprinkle send` messaging is
+  what the mutation CLI does internally and is fine from either process.)
 
 The scoop is a puppet: the store is what matters. If the scoop dies, recreate it
 and reseed from the store (see [Resurrecting](#resurrecting-in-a-new-session)).
+
+### CLI — the mutation & reporting API
+
+```bash
+loose-ends list                     # active + snoozed, human-readable
+loose-ends list --snoozed --json    # filter/format
+loose-ends create --title "Ping Marta re: Code Europe slot" \
+  --summary "Waiting on her reply to the abstract" \
+  --detail "Full brief: contacts, links, next steps…" \
+  --skills gmail,outlook [--id le-custom] [--snooze monday]
+loose-ends done   <id>              # remove
+loose-ends snooze <id> <tomorrow|monday|week|YYYY-MM-DD>   # hide until (09:00 local)
+loose-ends unsnooze <id>            # wake now
+```
+
+`create` upserts when `--id` matches an existing task. Every mutating command
+writes the store atomically (bumps `updated`) then best-effort `sprinkle send`s
+the matching panel message; a failed/absent send prints a note and is non-fatal
+(the panel self-hydrates on next open, or `loose-ends reseed` catches up).
+
 
 ### Store schema
 
@@ -47,6 +73,7 @@ and reseed from the store (see [Resurrecting](#resurrecting-in-a-new-session)).
       "detail": "Agent-facing: the full working brief — exact next actions, addresses, file paths, links, GUIDs. Collapsed behind an \"Agent brief\" toggle.",
       "created": "2026-07-30T17:15:00Z",
       "skills": ["sessionize", "gmail"],
+      "snoozedUntil": null,
       "session": {
         "id": "c20ed555-454d-4bc1-925c-2d11f7e2074d",
         "file": "2026-07-30T17-23-30-891Z-slicc-speaking-talks-and-loose-ends.md",
@@ -63,6 +90,7 @@ and reseed from the store (see [Resurrecting](#resurrecting-in-a-new-session)).
 - **`detail` — agent-facing.** The full brief the cone acts on: concrete steps, contacts, paths, links. Shown collapsed under an "Agent brief" toggle; can be long.
 - `created` — ISO timestamp (informational; rendered on the card).
 - `skills` — optional `string[]` of the SLICC skills involved (e.g. `["sessionize","gmail"]`). Rendered as tag chips on the card and passed through to the monday item.
+- `snoozedUntil` — optional ISO timestamp. When set to a **future** time the task is *snoozed*: the panel renders it, greyed and compact, in a collapsed "Snoozed (N)" section at the **bottom** of the list, and it is **excluded** from `loose-ends monday` output (it isn't "open now"). Absent, `null`, or a **past** timestamp = active (a passed snooze auto-resurfaces to the active list). See [Snooze](#snooze).
 - `session` — provenance into `/sessions/`: `{ id, file, at }` linking the task back to the conversation that spawned it (see [Session provenance](#session-provenance)). Optional.
 - Bump the top-level `updated` on every store write.
 
@@ -116,26 +144,35 @@ Options (all `--long` form): `--name <n>` (default `loose-ends`),
 `--store <path>` (default `/shared/loose-ends.json`),
 `--template <path>` (default the skill's `templates/loose-ends.shtml`).
 
-The helper only **reads** the store — it never writes tasks (that stays the
-cone's job). Run it from the owning scoop; it drives `sprinkle`.
+`bootstrap`/`reseed` drive `sprinkle` lifecycle — run them from the owning scoop.
+The mutation commands (`create`/`done`/`snooze`/`unsnooze`) and `list`/`monday`
+can run from either process (they write the store atomically and only *message*
+the panel).
 
 ## Adding, updating, and removing tasks
 
-The cone owns the store, so it does two things per change: **write the JSON**
-(direct file edit) **and** tell the scoop to update the panel.
+**Prefer the CLI** — one atomic command writes the store *and* syncs the panel:
 
-**Add / update a task (upsert by `id`):**
-1. Cone appends/replaces the task in `/shared/loose-ends.json` and bumps `updated`.
-2. Cone → scoop:
-   ```
-   feed_scoop("loose-ends", "sprinkle send loose-ends '{\"action\":\"add-item\",\"task\":{\"id\":\"le-foo\",\"title\":\"...\",\"summary\":\"human what & why\",\"detail\":\"agent brief: steps, contacts, paths, links\",\"created\":\"2026-07-30T00:00:00Z\",\"session\":{\"id\":\"...\",\"file\":\"...md\",\"at\":\"...\"}}}'")
-   ```
-   `add-item` upserts: an existing `id` is replaced in place; a new `id` is
-   appended.
+```bash
+loose-ends create --title "…" --summary "human what & why" \
+  --detail "agent brief: steps, contacts, paths, links" --skills gmail,outlook
+loose-ends done   le-foo          # remove
+loose-ends snooze le-foo monday   # hide until (tomorrow|monday|week|YYYY-MM-DD)
+loose-ends unsnooze le-foo        # wake now
+```
 
-**Remove a task:**
-1. Cone deletes it from the store and bumps `updated`.
-2. Cone → scoop: `sprinkle send loose-ends '{"action":"remove-item","id":"le-foo"}'`.
+`create` upserts by `--id` (auto-generated `le-<slug>` when omitted) and accepts
+`--snooze <when>`, `--session-file`/`--session-id`/`--session-at`.
+
+<details><summary>Manual flow (fallback / advanced)</summary>
+
+If you must edit the JSON by hand, do both halves yourself: write
+`/shared/loose-ends.json` (bump `updated`) **and** message the panel via the scoop:
+
+- Add/update (upsert by `id`):
+  `feed_scoop("loose-ends", "sprinkle send loose-ends '{\"action\":\"add-item\",\"task\":{\"id\":\"le-foo\", … }}'")`
+- Remove: `sprinkle send loose-ends '{"action":"remove-item","id":"le-foo"}'`
+</details>
 
 > ### ⚠️ Always confirm before tying up a loose end
 > **The cone must NOT unilaterally remove or "mark done" a loose end** — even
@@ -166,7 +203,15 @@ The panel fires these licks back to the cone as `[Sprinkle Event: loose-ends]`:
 | `do`   | `{ id, title, summary, detail }` | User clicks **Do** | Start working the task now, using `detail` as the agent brief (`summary` gives the human framing). The row stays in the list (a "Do" is not a completion). **When the work is finished, do NOT auto-remove it — report the result and ask the user whether to tie it up** (they may have more to add). See "Always confirm before tying up a loose end". |
 | `done` | `{ id, title }` | User clicks **Done** | The panel already removed the row optimistically. Remove that `id` from `/shared/loose-ends.json` and bump `updated`. No panel round-trip needed. |
 | `open-session` | `{ id, file, at }` | User clicks the **"from &lt;date&gt;"** provenance link | Open the originating transcript at `/sessions/<file>` (e.g. `read_file`) and surface it to the user — the conversation this loose end came from. |
+| `snooze` | `{ id, title, until }` | User picks a snooze preset (Tomorrow / Next Monday / Next week / Pick a date) | The panel already moved the row to the snoozed section optimistically. Set that task's `snoozedUntil = until` (ISO) in `/shared/loose-ends.json` and bump `updated`. No panel round-trip needed. |
+| `unsnooze` | `{ id, title }` | User clicks **Wake now** on a snoozed row | The panel already moved the row back to active optimistically. Clear (delete or `null`) that task's `snoozedUntil` in the store and bump `updated`. |
 | `request-load` | `{}` | Panel `init` when it could **not** reach the store itself (neither `slicc.readFile` nor `slicc.exec` worked in the sandbox) | Reseed the panel from the store: `sprinkle send loose-ends '{"action":"load-items","tasks":[ ...store tasks... ]}'` (delegate to the scoop). This is the safety net behind self-hydration. |
+
+> **`snooze`/`unsnooze` are optimistic in the panel** (like `done`): the row moves
+> the instant the user acts, then the lick fires. The cone's only job is to make
+> the store match (`snoozedUntil` set/cleared + bump `updated`). No `add-item`
+> round-trip needed. A snooze whose time has passed auto-resurfaces in the panel,
+> so a stale future `snoozedUntil` is harmless.
 
 > **`done` is optimistic in the panel.** The row disappears the instant the user
 > clicks, then the lick fires. The cone's only job is to make the store match by
@@ -180,6 +225,26 @@ The panel fires these licks back to the cone as `[Sprinkle Event: loose-ends]`:
 | `load-items` | `{ tasks:[...] }` | Replace the entire list (full reseed). |
 | `add-item` | `{ task:{id,title,context,created} }` | Upsert one task by `id` (replace if present, else append). |
 | `remove-item` | `{ id }` | Remove one task by `id`. |
+
+`load-items` / `add-item` task objects may carry `snoozedUntil` — the panel honors
+it in rendering (no separate inbound action needed).
+
+## Snooze
+
+Each active row has a **Snooze** control (next to Do/Done) offering presets —
+**Tomorrow**, **Next Monday**, **Next week**, and **Pick a date…** — each resolving
+to 09:00 local on the target day. Picking one optimistically moves the row into a
+collapsed **"Snoozed (N)"** section at the bottom (greyed, compact, with a **Wake
+now** button) and fires a `snooze` lick; the cone persists `snoozedUntil` to the
+store. **Wake now** fires `unsnooze` and returns the row to the active list.
+
+- The top-bar count badge counts **active** rows only; snoozed rows are not counted.
+- A snoozed task auto-resurfaces (moves back to active) once `snoozedUntil` passes —
+  the panel re-checks on a timer, so no reopen is needed.
+- Snoozed tasks are **excluded** from `loose-ends monday` (they aren't open *now*).
+- The cone can also snooze a task directly (e.g. "mute this until Monday") by
+  writing a future `snoozedUntil` into the store and re-sending it via `add-item`
+  (upsert) or a full `load-items`.
 
 ## Resurrecting in a new session
 
