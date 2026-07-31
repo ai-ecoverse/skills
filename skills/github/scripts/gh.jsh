@@ -105,7 +105,7 @@ const cli = require('sliccy:cli');
 const fmt = require('sliccy:fmt');
 const color = require('sliccy:color'); // renamed from bare `c` global
 const http = require('sliccy:http');
-const { buildPrWatchFilter, composePrWatchFilter } = require('./pr-watch-filter.js');
+const { buildPrWatchFilter, composePrWatchFilter, findWatchWebhook } = require('./pr-watch-filter.js');
 
 // Single POSIX-shell-quote a value for safe interpolation into an exec()
 // command line (exec runs through the jsh shell bridge).
@@ -1345,10 +1345,7 @@ async function findExistingWatchWebhook(name) {
   try { listResult = await exec('webhook list'); }
   catch (e) { cli.die('pr watch: could not query existing webhooks: ' + e.message); }
   if (listResult.exitCode !== 0) return null;
-  const line = listResult.stdout.split('\n').find(l => l.includes(name));
-  if (!line) return null;
-  const idMatch = line.trim().match(/^(\S+)/);
-  return idMatch ? idMatch[1] : null;
+  return findWatchWebhook(listResult.stdout, name);
 }
 
 async function prWatch(args) {
@@ -1370,19 +1367,26 @@ async function prWatch(args) {
 
   const hookName = watchHookName(repo, num);
 
-  const existingId = await findExistingWatchWebhook(hookName);
-  if (existingId) {
-    console.log(sym('success') + ' Already watching PR ' + color.cyan('#' + num) + ' in ' + repo + ' (webhook ' + color.gray(existingId) + '). Nothing to do.');
+  const existing = await findExistingWatchWebhook(hookName);
+  if (existing && existing.filtered) {
+    console.log(sym('success') + ' Already watching PR ' + color.cyan('#' + num) + ' in ' + repo + ' (webhook ' + color.gray(existing.id) + '). Nothing to do.');
     return;
   }
 
   // GitHub webhooks are repository-wide, so filter on the SLICC side before
-  // unrelated events can consume the receiving scoop's context. The head ref
-  // preserves status and fork-PR check events that lack a PR number.
+  // unrelated events can consume the receiving scoop's context. Repository
+  // identity plus head ref follows later commits without colliding across forks;
+  // the current SHA covers CI payloads that omit repository metadata.
   let pr;
   try { pr = await api.get(`/repos/${repo}/pulls/${num}`); }
   catch (e) { fail('pr watch', e); }
-  const defaultFilter = buildPrWatchFilter(num, pr && pr.head && pr.head.ref);
+  const head = pr && pr.head;
+  const defaultFilter = buildPrWatchFilter(
+    num,
+    head && head.ref,
+    head && head.repo && head.repo.id,
+    head && head.sha
+  );
   const filter = composePrWatchFilter(defaultFilter, userFilter);
 
   // 1. Create the SLICC-side webhook endpoint.
@@ -1399,17 +1403,24 @@ async function prWatch(args) {
     cli.die('pr watch: could not parse `webhook create` output — got:\n' + createResult.stdout);
   }
 
-  // 2. Register that URL as a real GitHub repo webhook.
+  // 2. Register that URL as a real GitHub repo webhook. Legacy watches had no
+  // SLICC filter; repoint their existing GitHub hook before deleting the old
+  // endpoint so delivery remains live throughout the upgrade.
   let hook;
   try {
-    hook = await api.post(`/repos/${repo}/hooks`, {
-      body: {
-        name: 'web',
-        active: true,
-        events: WATCH_EVENTS,
-        config: { url: webhookUrl, content_type: 'json' },
-      },
-    });
+    let existingHook = null;
+    if (existing) {
+      const hooks = await api.get(`/repos/${repo}/hooks`);
+      existingHook = hooks.find(h => h.config && h.config.url && h.config.url.includes('/' + existing.id));
+    }
+    const hookConfig = {
+      active: true,
+      events: WATCH_EVENTS,
+      config: { url: webhookUrl, content_type: 'json' },
+    };
+    hook = existingHook
+      ? await api.patch(`/repos/${repo}/hooks/${existingHook.id}`, { body: hookConfig })
+      : await api.post(`/repos/${repo}/hooks`, { body: { name: 'web', ...hookConfig } });
   } catch (e) {
     // Best-effort cleanup of the SLICC-side webhook if the GitHub-side
     // registration failed, so we don't leave an orphaned watcher behind.
@@ -1417,7 +1428,16 @@ async function prWatch(args) {
     fail('pr watch', e);
   }
 
-  console.log(sym('success') + ' Watching PR ' + color.cyan('#' + num) + ' in ' + repo);
+  if (existing) {
+    try {
+      const deleted = await exec(`webhook delete ${escapeShellArg(existing.id)}`);
+      if (deleted.exitCode !== 0) cli.warn('pr watch: upgraded delivery but could not delete legacy SLICC webhook ' + existing.id);
+    } catch {
+      cli.warn('pr watch: upgraded delivery but could not delete legacy SLICC webhook ' + existing.id);
+    }
+  }
+
+  console.log(sym('success') + (existing ? ' Upgraded watch for PR ' : ' Watching PR ') + color.cyan('#' + num) + ' in ' + repo);
   console.log(color.gray('SLICC webhook:  ') + webhookId + ' (' + hookName + ') → ' + scoopName);
   console.log(color.gray('GitHub hook:    ') + hook.id);
   console.log(color.gray('Events:         ') + WATCH_EVENTS.join(', '));
@@ -1433,11 +1453,12 @@ async function prUnwatch(args) {
   const repo = await repoFrom('pr unwatch', flags, repoArg);
   const hookName = watchHookName(repo, num);
 
-  const webhookId = await findExistingWatchWebhook(hookName);
-  if (!webhookId) {
+  const existing = await findExistingWatchWebhook(hookName);
+  if (!existing) {
     console.log(color.gray('Not watching PR ' + '#' + num + ' in ' + repo + ' — nothing to tear down.'));
     return;
   }
+  const webhookId = existing.id;
 
   // Find the GitHub-side hook whose config.url matches this SLICC webhook,
   // so we can remove it too and avoid leaving a dangling registration on
