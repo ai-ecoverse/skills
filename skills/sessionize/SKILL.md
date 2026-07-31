@@ -88,6 +88,16 @@ ValueTagIds" rejection you get when free-form text leaks into a tag field.
 Round-tripping the whole form is essential: omitting the profile/hidden fields
 makes the server model-binder **500**. Preview safely first with `--dry-run`.
 
+### UTF-8 / encoding
+
+The payload always includes a `_charset_=utf-8` field. Sessionize's ASP.NET
+backend decodes `x-www-form-urlencoded` bodies using the charset named in that
+field; when it is missing/empty the server falls back to **Latin-1** and
+corrupts multibyte characters (an em-dash `—` was stored as `â€"` /
+`U+00E2 U+0080 U+0094`). `buildPayload` guarantees exactly one `_charset_=utf-8`
+pair (overwriting the form's own value if present), and the body stays UTF-8
+percent-encoded (`—` → `%E2%80%94`). See `references/endpoints.md` for details.
+
 ## `submit` — LIVE-VERIFIED (Jul 31, 2026)
 
 A clean end-to-end submit was confirmed on the live **aienyc2026** CFP: the POST

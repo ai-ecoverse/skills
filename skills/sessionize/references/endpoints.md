@@ -41,6 +41,23 @@ Accept: */*
 Referer: https://sessionize.com/<event-slug>/
 ```
 
+### UTF-8 / encoding (mojibake fix)
+
+The body **must** carry a `_charset_=utf-8` form field. For ASP.NET
+`application/x-www-form-urlencoded` requests the server chooses the *decode*
+charset from the `_charset_` field (a hidden input browsers auto-populate with
+the document charset at native submit time). If it is absent or empty the
+server falls back to **Latin-1 (ISO-8859-1)** and mojibakes every multibyte
+char: e.g. an em-dash `—` (U+2014, UTF-8 bytes `E2 80 94`) was stored as three
+code points `U+00E2 U+0080 U+0094` (`226,128,148`). Native browser submits do
+not corrupt because the browser sends `_charset_`.
+
+Fix (implemented in `buildPayload`): always emit exactly one `_charset_=utf-8`
+pair (overwrite the round-tripped form's value if present, else append), and
+keep the `Content-Type: …; charset=UTF-8` header. The body itself is UTF-8
+percent-encoded by `URLSearchParams` (em-dash → `%E2%80%94`); never re-encode
+to Latin-1.
+
 ### Submit response shape (JSON)
 
 ```json

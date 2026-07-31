@@ -357,6 +357,16 @@ function buildPayload(dom, flags) {
 
   if (flags.consent) setName('Consent', 'true');
 
+  // Force UTF-8 form decoding. For ASP.NET x-www-form-urlencoded bodies the
+  // server picks the decode charset from the `_charset_` field (browsers
+  // auto-populate it at native submit time). Our fetch-based POST otherwise
+  // sends it empty/absent, so the server falls back to Latin-1 (ISO-8859-1)
+  // and mojibakes multibyte chars — e.g. an em-dash "—" (U+2014, UTF-8 bytes
+  // E2 80 94) got stored as three code points U+00E2 U+0080 U+0094. Setting it
+  // as an overlay overwrites any existing `_charset_` in the round-tripped
+  // form (else it's appended below), guaranteeing exactly one `_charset_=utf-8`.
+  setName('_charset_', 'utf-8');
+
   // Emit the round-tripped form, replacing overlaid keys in place (first
   // occurrence), then appending any overlay keys that had no existing value
   // (e.g. an empty multi-select ValueTagIds, or Consent when the box was off).
