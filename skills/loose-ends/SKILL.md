@@ -137,6 +137,22 @@ The cone owns the store, so it does two things per change: **write the JSON**
 1. Cone deletes it from the store and bumps `updated`.
 2. Cone → scoop: `sprinkle send loose-ends '{"action":"remove-item","id":"le-foo"}'`.
 
+> ### ⚠️ Always confirm before tying up a loose end
+> **The cone must NOT unilaterally remove or "mark done" a loose end** — even
+> after it has finished the underlying work. A loose end is the user's thread;
+> only the user decides it's truly closed. They may still have comments, edits,
+> or follow-ups to add before it's tied up.
+>
+> - When the cone completes work on an item (e.g. after a **Do**), it should
+>   **report what it did and ASK** something like *"Shall I tie up `<title>`, or
+>   do you have more to add?"* — and only `remove-item` after the user says yes.
+> - The **only** self-service closure is the user clicking **Done** on the card:
+>   that click *is* the confirmation, so the cone just makes the store match (see
+>   the `done` lick). Do not pre-empt it.
+> - When in doubt, keep the item and offer to close it — never the reverse. It's
+>   cheap to leave an item open; it's costly to silently drop one the user still
+>   cared about.
+
 **Replace the whole list** (e.g. after a bulk edit) — reseed:
 `sprinkle send loose-ends '{"action":"load-items","tasks":[ ... ]}'` (or just
 `loose-ends reseed`).
@@ -147,7 +163,7 @@ The panel fires these licks back to the cone as `[Sprinkle Event: loose-ends]`:
 
 | Action | Data | When | Cone handler |
 |--------|------|------|--------------|
-| `do`   | `{ id, title, summary, detail }` | User clicks **Do** | Start working the task now, using `detail` as the agent brief (`summary` gives the human framing). The row stays in the list (a "Do" is not a completion). |
+| `do`   | `{ id, title, summary, detail }` | User clicks **Do** | Start working the task now, using `detail` as the agent brief (`summary` gives the human framing). The row stays in the list (a "Do" is not a completion). **When the work is finished, do NOT auto-remove it — report the result and ask the user whether to tie it up** (they may have more to add). See "Always confirm before tying up a loose end". |
 | `done` | `{ id, title }` | User clicks **Done** | The panel already removed the row optimistically. Remove that `id` from `/shared/loose-ends.json` and bump `updated`. No panel round-trip needed. |
 | `open-session` | `{ id, file, at }` | User clicks the **"from &lt;date&gt;"** provenance link | Open the originating transcript at `/sessions/<file>` (e.g. `read_file`) and surface it to the user — the conversation this loose end came from. |
 | `request-load` | `{}` | Panel `init` when it could **not** reach the store itself (neither `slicc.readFile` nor `slicc.exec` worked in the sandbox) | Reseed the panel from the store: `sprinkle send loose-ends '{"action":"load-items","tasks":[ ...store tasks... ]}'` (delegate to the scoop). This is the safety net behind self-hydration. |
