@@ -113,8 +113,7 @@ function extractHiddenInputs(html) {
   // Returns { name: value } for every <input type=hidden name=.. value=..>.
   const out = {};
   const re = /<input\b[^>]*>/gi;
-  let m;
-  while ((m = re.exec(html))) {
+  for (let m = re.exec(html); m !== null; m = re.exec(html)) {
     const tag = m[0];
     if (!/type\s*=\s*["']?hidden/i.test(tag)) continue;
     const nameM = tag.match(/\bname\s*=\s*"([^"]*)"/i);
@@ -140,8 +139,7 @@ function scrapeForm(html) {
   // Custom fields: collect every GUID that appears, plus its Id/Signature/FieldType.
   const fields = {}; // guid -> { id, signature, fieldType, options: {labelLower: id}, label }
   const guidRe = /Fields\.CustomFields\[([0-9a-f-]{36})\]\.(Id|Signature|FieldType)/gi;
-  let g;
-  while ((g = guidRe.exec(html))) {
+  for (let g = guidRe.exec(html); g !== null; g = guidRe.exec(html)) {
     const guid = g[1];
     const prop = g[2];
     fields[guid] = fields[guid] || { id: '', signature: '', fieldType: '', options: {}, label: '' };
@@ -157,16 +155,14 @@ function scrapeForm(html) {
   // Tag <option> lists: try to associate <select> blocks that mention a GUID
   // with their option label->value maps. Best-effort HTML parse.
   const selectRe = /<select\b[^>]*name\s*=\s*"([^"]*ValueTagIds[^"]*)"[^>]*>([\s\S]*?)<\/select>/gi;
-  let s;
-  while ((s = selectRe.exec(html))) {
+  for (let s = selectRe.exec(html); s !== null; s = selectRe.exec(html)) {
     const name = s[1];
     const guidM = name.match(/\[([0-9a-f-]{36})\]/i);
     if (!guidM) continue;
     const guid = guidM[1];
     fields[guid] = fields[guid] || { id: '', signature: '', fieldType: 'Tag', options: {}, label: '' };
     const optRe = /<option\b[^>]*value\s*=\s*"([^"]*)"[^>]*>([\s\S]*?)<\/option>/gi;
-    let o;
-    while ((o = optRe.exec(s[2]))) {
+    for (let o = optRe.exec(s[2]); o !== null; o = optRe.exec(s[2])) {
       const val = o[1];
       const label = decodeHtml(o[2].replace(/<[^>]*>/g, '').trim());
       if (val) fields[guid].options[label.toLowerCase()] = val;
@@ -653,8 +649,7 @@ const commands = {
 
     const anchorRe = /<a class="font-bold" href="\/app\/speaker\/session\/profile\/edit\/([0-9a-f-]{36})">([\s\S]*?)<\/a>/gi;
     const anchors = [];
-    let m;
-    while ((m = anchorRe.exec(html))) {
+    for (let m = anchorRe.exec(html); m !== null; m = anchorRe.exec(html)) {
       anchors.push({ guid: m[1], title: decodeHtml(m[2].replace(/<[^>]*>/g, '').trim()), start: m.index });
     }
 
