@@ -353,16 +353,42 @@ function buildPayload(dom, flags) {
   if (flags.title != null) setName('Session.Title', flags.title);
   if (flags.description != null) setName('Session.Description', flags.description);
 
-  // Named convenience flags (only resolve on the reference event).
-  if (flags['session-type'] != null) { const gg = guidFor('session-type'); if (gg) setTagByGuid(gg, flags['session-type']); }
-  if (flags['primary-track'] != null) { const gg = guidFor('primary-track'); if (gg) setTagByGuid(gg, flags['primary-track']); }
-  if (flags['secondary-track'] != null) { const gg = guidFor('secondary-track'); if (gg) setTagByGuid(gg, flags['secondary-track']); }
-  if (flags.level != null) { const gg = guidFor('level'); if (gg) setTagByGuid(gg, flags.level); }
-  if (flags.takeaways != null) { const gg = guidFor('takeaways'); if (gg) setTextByGuid(gg, flags.takeaways); }
-  if (flags.video != null) { const gg = guidFor('video'); if (gg) setTextByGuid(gg, flags.video); }
-  if (flags.company != null) { const gg = guidFor('company'); if (gg) setTextByGuid(gg, flags.company); }
-  if (flags.role != null) { const gg = guidFor('role'); if (gg) setTextByGuid(gg, flags.role); }
-  if (flags.tags != null) { const gg = guidFor('tags'); if (gg) setTagByGuid(gg, flags.tags); }
+  // Named convenience flags map to the ORIGINAL reference event's custom
+  // fields. Custom-field GUIDs are regenerated on every form render, so on any
+  // other event `guidFor()` returns null. A named flag that cannot be resolved
+  // MUST NOT silently no-op — that would submit the form's default values while
+  // the user believes their flag took effect (wrong CFP data, no warning). We
+  // collect unresolvable named flags and abort with guidance to target the
+  // field by its STABLE numeric Id (--field-id/--tag-id) or current GUID.
+  const NAMED_FLAG_KIND = {
+    'session-type': 'tag',
+    'primary-track': 'tag',
+    'secondary-track': 'tag',
+    level: 'tag',
+    tags: 'tag',
+    takeaways: 'text',
+    video: 'text',
+    company: 'text',
+    role: 'text',
+  };
+  const unresolvableNamed = [];
+  for (const name of Object.keys(NAMED_FLAG_KIND)) {
+    if (flags[name] == null) continue;
+    const gg = guidFor(name);
+    if (!gg) { unresolvableNamed.push(name); continue; }
+    if (NAMED_FLAG_KIND[name] === 'tag') setTagByGuid(gg, flags[name]);
+    else setTextByGuid(gg, flags[name]);
+  }
+  if (unresolvableNamed.length) {
+    console.error(`Error: could not resolve named flag(s) ${unresolvableNamed.map((n) => `--${n}`).join(', ')} to a field on this form.`);
+    console.error('Named convenience flags only match the original reference event; custom-field GUIDs are');
+    console.error('regenerated on every form render, so they cannot be matched on other events.');
+    console.error('Target the field by its STABLE numeric Id instead (from `sessionize show <event-slug>`):');
+    console.error('  --tag-id <Id>=<label|id,...>   for Tag fields');
+    console.error('  --field-id <Id>=<value>        for text fields');
+    console.error('(or by the current-render GUID with --tag <guid>=... / --field <guid>=...).');
+    process.exit(1);
+  }
 
   // Explicit overrides by GUID (fragile — GUIDs are per-render nonces).
   for (const [guid, value] of flags._tagOverrides) setTagByGuid(guid, value);
@@ -796,6 +822,7 @@ const commands = {
     const resp = await postForm(path, body, { referer });
 
     const data = resp.body;
+    const status = resp.status;
     if (flags.json) {
       console.log(typeof data === 'string' ? data : JSON.stringify(data, null, 2));
       return;
@@ -807,14 +834,28 @@ const commands = {
       process.exit(2);
     }
     if (flags.draft) {
-      console.log('Draft auto-saved (status ' + (resp.status || '?') + ').');
-      return;
+      // A draft save only "succeeded" if the server actually accepted it. The
+      // /submission-draft endpoint currently 404s upstream and returns an
+      // HTML/string body (which bypasses the ValidationErrors check above), so
+      // we must require an OK (2xx) status AND a JSON object body before
+      // claiming the draft persisted — never report success for a 404.
+      const okStatus = typeof status === 'number' ? status >= 200 && status < 300 : resp.ok === true;
+      if (okStatus && data && typeof data === 'object') {
+        console.log('Draft auto-saved (status ' + (status || '?') + ').');
+        return;
+      }
+      console.error('Draft save FAILED (status ' + (status || '?') + ') — nothing was persisted.');
+      console.error('/submission-draft currently returns 404 upstream (Sessionize changed it since the recording).');
+      console.error('Use --dry-run to validate the payload locally, or omit --draft to POST the real,');
+      console.error('self-validating /submission/<slug> endpoint instead.');
+      if (typeof data === 'string' && data.trim()) console.error(data.slice(0, 300));
+      process.exit(1);
     }
     if (data && typeof data === 'object' && (data.Success || data.RedirectTo || data.ConfirmationMessages)) {
       console.log('Submitted. Response:');
       console.log(JSON.stringify(data, null, 2));
     } else {
-      console.log('Submit returned status ' + (resp.status || '?') + '. Raw response:');
+      console.log('Submit returned status ' + (status || '?') + '. Raw response:');
       console.log(typeof data === 'string' ? data.slice(0, 2000) : JSON.stringify(data, null, 2));
       console.log('\nNote: a clean accepted submit was never observed in the source recording — verify in the UI.');
     }

@@ -51,7 +51,7 @@ sessionize unarchive <session-guid> [--json]   # move a session back from the ar
 --company "..."           Company                                      [reference event only]
 --role "..."              Role                                         [reference event only]
 --consent                 set the acceptance checkbox to true (boolean, single-dash-safe)
---draft                   only POST to /submission-draft (auto-save)  [see caveat: currently 404s]
+--draft                   POST to /submission-draft (auto-save)  [currently 404s upstream → fails with a clear error + nonzero exit; use --dry-run instead]
 --dry-run                 build + print the payload, do NOT post (safe preview)
 --field <guid>=<value>    set a text custom field by GUID (repeatable)
 --tag <guid>=<label|id>   set a Tag custom field by GUID (repeatable)
@@ -63,9 +63,12 @@ sessionize unarchive <session-guid> [--json]   # move a session back from the ar
 > ⚠️ **Custom-field GUIDs are per-render nonces** — Sessionize regenerates them
 > on *every* form load, so a GUID from an earlier `show` will not match the next
 > render, and the named convenience flags (`--session-type`, `--primary-track`,
-> …) only resolve on the original reference event. **Target fields by their
-> stable numeric `Id`** (shown by `show`) with `--field-id` / `--tag-id`. The
-> submit re-scrapes the live form and maps the Id to that render's GUID.
+> …) only resolve on the original reference event. On any other event a named
+> flag **cannot** be matched to the current render, so `submit` now **aborts with
+> a clear error** (rather than silently ignoring the flag and submitting default
+> values). **Target fields by their stable numeric `Id`** (shown by `show`) with
+> `--field-id` / `--tag-id`. The submit re-scrapes the live form and maps the Id
+> to that render's GUID.
 
 Tag flags accept the **human label** as shown on the form (case-insensitive);
 the skill resolves it to the event's tag ids by reading the form's option list
@@ -157,9 +160,11 @@ appeared in the speaker's "Sessions you've submitted" list. Notes:
 - The full-form round-trip (step 1 above) is what makes it work; the earlier
   hand-picked payload 500'd on missing profile fields.
 - `--draft` (`/submission-draft`) currently returns **404** — Sessionize changed
-  that endpoint since the source recording. Use `--dry-run` to validate the
-  payload locally instead; the real `/submission/<slug>` is self-validating
-  (returns `ValidationErrors` without committing when the payload is incomplete).
+  that endpoint since the source recording. `submit --draft` now detects the
+  non-OK response and **fails with a clear error and a nonzero exit** instead of
+  falsely reporting the draft was saved. Use `--dry-run` to validate the payload
+  locally instead; the real `/submission/<slug>` is self-validating (returns
+  `ValidationErrors` without committing when the payload is incomplete).
 - Custom-field GUIDs, `Id`s, `Signature`s, and tag ids are **event-specific and
   per-render** — never hardcode them; they are scraped live each run.
 
