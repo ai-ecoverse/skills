@@ -1,0 +1,296 @@
+# Sessionize endpoints & field reference
+
+All facts below were extracted from `/shared/sessionize-recording/submit.har`
+(an in-progress CFP submission to the event **ai-native-devcon-nyc-2026**,
+Event.Id `25004`). Nothing here is guessed — where the recording did not
+contain a piece of information it is called out explicitly.
+
+## Auth model
+
+Sessionize is **session-cookie authenticated in the user's logged-in
+browser**. There is no bearer token, API key, or PAT. Every call in the HAR is
+a same-origin request from `https://sessionize.com/...` and relies on the
+`.AspNet...` session cookie already present in the tab.
+
+Therefore this skill issues all calls **same-origin from inside an open
+`sessionize.com` browser tab** (`browser.fetch(tab, '/relative/path', …)`,
+which carries cookies + correct Origin automatically). Do **not** store or
+forward cookies/tokens.
+
+## Discovered endpoints
+
+| Method | Path | Purpose | Status seen |
+|--------|------|---------|-------------|
+| POST | `/submission-draft` | Auto-save the in-progress draft. Fires repeatedly as the user edits the form. Body = the full form payload (see below). | 200 (valid) / 500 (server-side, see notes) |
+| POST | `/submission/<event-slug>` | **The actual submit.** `<event-slug>` is the path segment, e.g. `ai-native-devcon-nyc-2026`. Body = same full form payload. Returns JSON. | 200 |
+| POST | `/submission/helper/<eventId>.js` | Helper ping, returns `{"ok":true}`. Not needed for submitting. | 200 |
+| POST | `/app/playbook/menu` | Returned empty (`{"html":"\r\n\r\n","links":{}}`). No useful data. | 200 |
+
+The CFP form page itself is `https://sessionize.com/<event-slug>/`
+(seen as the `Referer` on the submit request). This GET page is **not** in
+the HAR, but it is where the anti-forgery tokens and per-field metadata
+(Id / Signature / tag options) originate — the skill scrapes it live.
+
+### Request headers required on submit / draft
+
+```
+Content-Type: application/x-www-form-urlencoded; charset=UTF-8
+X-FormEx: 1
+X-Requested-With: XMLHttpRequest
+Accept: */*
+Referer: https://sessionize.com/<event-slug>/
+```
+
+### UTF-8 / encoding (mojibake fix)
+
+The body **must** carry a `_charset_=utf-8` form field. For ASP.NET
+`application/x-www-form-urlencoded` requests the server chooses the *decode*
+charset from the `_charset_` field (a hidden input browsers auto-populate with
+the document charset at native submit time). If it is absent or empty the
+server falls back to **Latin-1 (ISO-8859-1)** and mojibakes every multibyte
+char: e.g. an em-dash `—` (U+2014, UTF-8 bytes `E2 80 94`) was stored as three
+code points `U+00E2 U+0080 U+0094` (`226,128,148`). Native browser submits do
+not corrupt because the browser sends `_charset_`.
+
+Fix (implemented in `buildPayload`): always emit exactly one `_charset_=utf-8`
+pair (overwrite the round-tripped form's value if present, else append), and
+keep the `Content-Type: …; charset=UTF-8` header. The body itself is UTF-8
+percent-encoded by `URLSearchParams` (em-dash → `%E2%80%94`); never re-encode
+to Latin-1.
+
+### Submit response shape (JSON)
+
+```json
+{
+  "Error": null, "Data": null, "Success": null,
+  "RedirectTo": null, "ConfirmationMessages": null,
+  "ValidationErrors": { "<field>": "<message>", ... },
+  "Empty": false, "ReloadPage": false
+}
+```
+
+A clean success is expected to carry `Success`/`RedirectTo`/
+`ConfirmationMessages`. In the recording every `/submission/<slug>` response
+was a **validation failure** (see "Live-verification gap" below).
+
+## Form payload structure (application/x-www-form-urlencoded)
+
+Note: `/submission-draft` wraps the same fields inside a single
+`data=<url-encoded-json>` parameter, whereas `/submission/<slug>` posts the
+fields **directly** as urlencoded form pairs. This skill posts the direct
+form-pair shape to both, which matched the 200 draft/submit calls.
+
+### Top-level fields
+
+| Field | Example value | Notes |
+|-------|---------------|-------|
+| `__RequestVerificationToken` | `kokwUOul…` | Anti-forgery token. Scraped from form page. |
+| `formex-verification` | `YTdkYWJj…` (base64) | FormEx anti-forgery. Scraped from form page. |
+| `formex-submit-button-value` | `` | empty |
+| `formex-confirmation-value` | `` | empty |
+| `Event.Id` | `25004` | Numeric event id. Scraped from form page. |
+| `SubmissionExceptionSignature` | `` | empty |
+| `SessionType` | `New` | `New` for a brand-new session. |
+| `Selected_SameSessionIdentifier` | `` | empty |
+| `Session.Title` | `AI Ecoverse: …` | The talk title. |
+| `Session.Description` | `Last time in London…` | The abstract. |
+| `SpeakerMode` | `View` | |
+| `User.TagLine` | `Principal at Adobe` | Speaker tagline (from profile). |
+| `User.Bio` | `Lars Trieloff has…` | Bio. **Must be ≥ 300 chars** (validation). |
+| `User.ProfilePicture` | `55c25d11-…jpg` | Existing profile photo id. |
+| `User.ProfilePicturePreview` | `https://cdn.sessionize.com/image/…` | |
+| `SpeakerLinks[n].Type` / `.Url` | `Twitter`,`LinkedIn`,`Blog`,`Company_Website` | Repeated block. |
+| `ImpersonatedUser.*`, `ImpersonatedSpeakerLinks[n].*` | empty | Only used when submitting on behalf of another speaker. |
+| `ExtraSpeakerInviteEmails[n].Email` | empty | Co-speaker invites. |
+| `ConsentImpersonation` | `false` | |
+| `Consent` | `false` | Acceptance checkbox. **Was `false` in the recording — a `true` here is almost certainly required for a real submit.** |
+
+### Custom fields (keyed by GUID)
+
+Each custom field emits this group of params (ASP.NET model-binding shape):
+
+```
+Fields.CustomFields.index=<GUID>                       (repeated, one per field, defines order)
+Fields.CustomFields[<GUID>].Id=<numeric field id>
+Fields.CustomFields[<GUID>].Signature=<opaque signature>
+Fields.CustomFields[<GUID>].FieldType=<Tag|Short_Text|Checkbox|...>
+# then ONE of:
+Fields.CustomFields[<GUID>].ValueTagIds=<tagId>        (FieldType=Tag)
+Fields.CustomFields[<GUID>].Value=<text|true|false>    (FieldType=Short_Text / Checkbox)
+```
+
+`Id`, `Signature`, and the valid tag-option ids are **event-specific** and are
+scraped live from the form page — they are NOT stable across events.
+
+#### Exact custom fields captured for ai-native-devcon-nyc-2026 (Event.Id 25004)
+
+| GUID | Meaning (per task ground-truth) | Id | Signature | FieldType | Value seen |
+|------|-------------------------------|----|-----------|-----------|------------|
+| `2a2c2a76-0798-4177-966e-a82c6429fb07` | **Session Type** | 136888 | igpacwez | Tag | ValueTagIds `496087` |
+| `67e7454b-cde2-47a4-83aa-d9b111669f68` | **Primary Track** | 136889 | ipwahwet | Tag | ValueTagIds `496123` |
+| `f04e9b6f-e3bd-4aef-a1b5-e935efd9f61a` | **Secondary Track** | 136894 | gcacteu | Tag | ValueTagIds `496111` |
+| `91d73ba0-10d9-4512-974f-c04f806ff4f5` | **Level** | 136893 | ixdaxu | Tag | ValueTagIds `496106` |
+| `e41b8ee4-8490-4611-bc7d-906eab63919f` | **Key takeaways** (long free text) | 136890 | iltaohfe | Short_Text | "1. Why an agent… 2. How… 3. What breaks…" |
+| `d677b6e1-0021-46c2-8a46-5a71edacb185` | Short text (empty in recording; purpose unknown) | 136891 | ifbalweq | Short_Text | `` |
+| `510277b2-bdca-40ab-ba17-4b190c9a285a` | **Video URL** | 136892 | kooxwa | Short_Text | `https://www.youtube.com/watch?v=Uo-Y7AtPlas` |
+| `e4e23b6d-dcd8-4a85-ae23-c11f65e87c78` | Checkbox (purpose unknown) | 136897 | iqtantex | Checkbox | `false` |
+| `e361764f-d666-4c5d-b9e9-27cc0eca29fe` | **Tags / technologies** (free-tag) | 136898 | iuvmalze | Tag | ValueTagIds `WASM` |
+| `71c50e00-a300-4e30-99ef-31b090bba27c` | **In-person consent** | 136899 | iotlap | Checkbox | `false` |
+| `d7228853-525a-4715-bc81-bb4f7faa1ecb` | **Company** | 136895 | ifmalo | Short_Text | `Adobe` |
+| `3d4df803-e071-4629-9906-86ac59cf7ccc` | **Role** | 136896 | dnaxfet | Short_Text | `Principal` |
+
+The GUID→meaning column comes from the task's ground-truth; the Id/Signature/
+FieldType/Value columns are extracted verbatim from the HAR.
+
+## Live-verification gap (important)
+
+The **source recording** was an in-progress submission that never completed. See
+below for the **resolved** live-verification (Jul 31, 2026).
+
+Every `/submission/<slug>` call in the recording returned `ValidationErrors`:
+
+```json
+"ValidationErrors": {
+  "User.Bio": "Biography must have at least 300 characters.",
+  "User.ProfilePicture": "Your photo is 512x512 pixels. Please upload one that’s at least 1000×1000 pixels.",
+  "Fields.CustomFields[e361764f-…].ValueTagIds":
+      "The value 'AI agents,browser-native agents,…' is not valid for ValueTagIds."
+}
+```
+
+Blockers were: (1) bio under 300 chars, (2) photo too small, (3) the free-tag
+field sent comma-joined labels instead of valid tag ids.
+
+## Live verification — RESOLVED (Jul 31, 2026)
+
+A clean end-to-end submit was confirmed on the live **aienyc2026** CFP
+(Event.Id 24999). The accepted response:
+
+```json
+{ "Error": null, "Data": null, "Success": null,
+  "RedirectTo": "/aienyc2026/", "ConfirmationMessages": null,
+  "ValidationErrors": null, "Empty": false, "ReloadPage": false }
+```
+
+Two facts the recording did not reveal, discovered live:
+
+1. **Custom-field GUIDs are per-render nonces.** Every form load regenerates
+   them (e.g. the session-format field was `1a7e5dac…`, then `11239171…`, then
+   `286225b1…` on successive loads). The numeric **`Id`** (e.g. `136848`) is the
+   stable identifier; tag option ids (`ValueTagIds` values) are also stable.
+   → Target fields by `Id` (`--field-id`/`--tag-id`); scrape+submit in one
+   render.
+
+2. **The whole form must be round-tripped.** Posting only tokens + custom
+   fields (omitting the speaker profile block: `User.Bio`, `User.TagLine`,
+   `User.ProfilePicture`, `SpeakerMode`, `SpeakerLinks[…]`, the `Impersonated*`
+   block, `ConsentImpersonation`) makes the server model-binder return a bare
+   **HTTP 500** (not a `ValidationErrors` JSON). The skill now serializes the
+   ENTIRE live form via the DOM (`new FormData(form)`, minus the selectize
+   `fakename__*` decoy inputs) and overlays only the fields being set.
+
+   Tag `<select>`s are managed by **selectize.js**, which strips the original
+   `<option>` nodes — read options from `select.selectize.options`
+   (`{text,value}`) instead of `select option`.
+
+3. **`/submission-draft` now 404s** (changed since the recording). Use
+   `--dry-run` to validate the payload locally; the real `/submission/<slug>`
+   endpoint is self-validating and returns `ValidationErrors` (no commit) when
+   the payload is incomplete.
+
+`sessions` / `events` still hit `/app/speaker/*` pages that were not in the
+recording; they remain best-effort. `cfps`/`events` has no confirmed JSON list
+endpoint.
+
+## Speaker photo upload (`sessionize photo`)
+
+Source: `/shared/sessionize-photo-recording/` — `fileupload.har` (the real
+`POST /fileUpload`), `profile-save.har` (the real `POST /app/speaker/profile`),
+and `profile-save-body.txt` (the exact 4200-byte, 114-param save body).
+
+Setting a speaker photo is a **two-step** flow:
+
+### Step 1 — `POST /fileUpload`
+
+Uploads the raw image bytes and stages them server-side (does NOT change the
+profile yet).
+
+- Body: `multipart/form-data` with **one** field named `file` (the image bytes;
+  filename e.g. `photo.png`).
+- Request headers: `X-Requested-With: XMLHttpRequest`, `Accept: application/json`,
+  `Referer: https://sessionize.com/app/speaker/profile`.
+- Response (200): `{"filename":"<serverId>.png"}` — e.g.
+  `{"filename":"BdccmZL2b4fJcjNn5SQgca.png"}`. Capture that `filename`.
+
+`browser.fetch` JSON-stringifies object bodies and can't carry a `Blob`/`FormData`,
+so the skill issues this POST from inside the page via `evalAsync` (base64 bytes
+baked in as a literal, reconstructed to a `Blob`→`File`→`FormData`) — the same
+technique as the `concur` receipt upload.
+
+### Step 2 — `POST /app/speaker/profile`
+
+Persists the uploaded photo by round-tripping the whole profile form.
+
+- Headers: `Content-Type: application/x-www-form-urlencoded; charset=UTF-8`,
+  `X-FormEx: 1`, `X-Requested-With: XMLHttpRequest`,
+  `Referer: https://sessionize.com/app/speaker/profile`. Response: `200` (empty
+  body observed).
+- Body: the ENTIRE profile form serialized live (`new FormData(form)` minus
+  selectize `fakename__*` decoys — ~115 params: `__RequestVerificationToken`,
+  `formex-verification`, `User.Id`/`User.FirstName`/`User.LastName`,
+  `DefaultLanguage_Tagline`/`_Bio`, the `Links[n].*` block, `UserBadgesExternal[n].*`,
+  `UserCertificates[n].*`, etc.), with these overlaid:
+
+  | Field | Value | Source |
+  |-------|-------|--------|
+  | `User.ProfilePicture` | `<serverId>.png` | the `filename` from step 1 |
+  | `User.ProfilePicturePreview` | `<original basename>` (e.g. `out-3.png`) | the local file's name |
+  | `formex-submit-button-value` | `save+preview` | the save action (FormData omits submit buttons) |
+  | `_charset_` | `utf-8` | forces UTF-8 decode (see mojibake note above) |
+
+  Verbatim from `profile-save-body.txt`:
+  `User.ProfilePicture=BdccmZL2b4fJcjNn5SQgca.png&User.ProfilePicturePreview=out-3.png`
+  and `formex-submit-button-value=save%2Bpreview`.
+
+**Why round-trip + direct POST (not DOM manipulation):** setting the input
+`.value` programmatically or firing Dropzone's `emit('success')` does NOT persist
+through an interactive click-save — formex ignores those. Posting the
+round-tripped urlencoded body directly (same as CFP `submit`) DOES persist.
+
+### Per-event speaker photo (same pattern — needs verification)
+
+A profile-photo change does **not** propagate to already-submitted sessions. The
+per-event speaker photo uses the analogous form at
+`POST /app/speaker/events/speaker/edit/<eventId>/<speakerGuid>` — expected to be
+the same round-trip-the-whole-form + `User.ProfilePicture` overlay (field name
+likely `User.ProfilePicture` there too; **confirm from that form's HTML** — this
+variant was not in the recording and is not yet wired to a flag).
+
+## Session archive / unarchive (`sessionize archive` / `unarchive`)
+
+Source: the `/app/speaker/sessions` page's `toArchive(sender, id, isMovingToArchive)`
+JS helper (read live via `toArchive.toString()`), plus a captured live request.
+
+- **Endpoint:** `POST /app/speaker/to-archive`
+- **Content-Type:** `application/x-www-form-urlencoded; charset=UTF-8`
+- **Headers:** `X-Requested-With: XMLHttpRequest`, `Accept: application/json` (the
+  page also sends Application-Insights `Request-Id`/`traceparent`, which are not
+  required). **No `__RequestVerificationToken`** is sent — the endpoint needs none.
+- **Body:** `isArchived=<true|false>&sessionId=<GUID>`
+  - `isArchived=true`  → move the session TO the archive (out of the active list)
+  - `isArchived=false` → move it back to the active list
+- **Response:** JSON — a bare `true` on success (HTTP 200).
+
+The active list is `GET /app/speaker/sessions`; the archived list is
+`GET /app/speaker/sessions?archive=True`. Verified live (Jul 31, 2026) with a
+non-destructive unarchive→archive round-trip on one session.
+
+## Read APIs (not found)
+
+- No JSON list-CFPs / list-events endpoint appears in the HAR.
+  `/app/playbook/menu` returned empty.
+- The speaker area lives under `https://sessionize.com/app/speaker/...`
+  (e.g. `/app/speaker/sessions`, `/app/speaker/session/profile/edit/<id>`),
+  but **no** `/app/speaker/*` request is present in this recording, so their
+  response shapes are unknown. The skill's `sessions`/`events` commands are
+  best-effort HTML fetches of those pages and are **not** HAR-validated.
