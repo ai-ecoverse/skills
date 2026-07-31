@@ -592,8 +592,10 @@ function createSnoozeSubheader(count, collapsed) {
     '<span>Snoozed (' + count + ')</span>' +
     '<i data-lucide="chevron-down" class="sprinkle-icon sm chev"></i>';
   btn.addEventListener('click', () => {
-    const nowCollapsed = snoozeCollapsed !== null ? snoozeCollapsed : true;
-    snoozeCollapsed = !nowCollapsed;
+    // Toggle from the state ACTUALLY rendered (the `collapsed` arg), not from a
+    // null-defaults-to-collapsed guess — otherwise, when everything is snoozed
+    // (auto-expanded), the first click wrongly re-expands and appears to no-op.
+    snoozeCollapsed = !collapsed;
     renderAll();
   });
   return btn;
@@ -850,21 +852,20 @@ slicc.on('update', (msg) => {
       if (existing !== -1) tasks[existing] = msg.task;
       else tasks.push(msg.task);
       saveState();
-      const scroll = document.getElementById('list-scroll');
-      // If it already had a card (upsert), re-render fully; else append.
-      if (existing !== -1) {
-        renderAll();
-      } else {
-        scroll.appendChild(createTaskCard(msg.task));
-        updateCount();
-        updateEmptyState();
-        renderIcons();
-      }
+      // Full partition-aware render so a new/updated task lands in the correct
+      // section (active vs snoozed) with the right controls, and the snoozed
+      // subheader count stays accurate — an incremental append can't do that.
+      renderAll();
     }
   }
 
   else if (msg.action === 'remove-item') {
-    if (msg.id) removeTaskById(msg.id, false);
+    if (msg.id) {
+      removeTaskById(msg.id, false);
+      // Rebuild so the snoozed subheader count/visibility reflects the removal
+      // (removeTaskById only touches the active badge + empty state).
+      renderAll();
+    }
   }
 });
 
@@ -880,12 +881,22 @@ function renderIcons() {
 document.addEventListener('click', () => closeAllSnoozeMenus());
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeAllSnoozeMenus(); });
 
-// ── Auto-resurface: every 60s, if any snoozed task's snoozedUntil has passed,
-//    re-render so it returns to the active list without needing a reopen.
+// ── Auto-resurface: every 60s, wake any snooze whose time has passed so it
+//    returns to the active list without needing a reopen. We CLEAR the expired
+//    `snoozedUntil` (rather than just re-rendering) so the task doesn't keep
+//    matching "due" on every subsequent tick — otherwise the panel would rebuild
+//    every minute forever, closing any open brief/menu and disrupting the user.
 setInterval(function () {
   try {
-    const anyDue = tasks.some(t => t.snoozedUntil && new Date(t.snoozedUntil).getTime() <= Date.now());
-    if (anyDue) renderAll();
+    const now = Date.now();
+    let changed = false;
+    tasks.forEach(t => {
+      if (t.snoozedUntil && new Date(t.snoozedUntil).getTime() <= now) {
+        delete t.snoozedUntil;
+        changed = true;
+      }
+    });
+    if (changed) { saveState(); renderAll(); }
   } catch (e) { /* keep the timer cheap + resilient */ }
 }, 60000);
 
