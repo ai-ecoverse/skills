@@ -177,98 +177,201 @@ const REFERENCE_GUIDS = {
 };
 
 // ---------------------------------------------------------------------------
-// Payload builder
+// Live-form serialization (single consistent render, via the DOM)
 // ---------------------------------------------------------------------------
-function buildPayload(scrape, flags, slug) {
-  const p = new URLSearchParams();
-  const add = (k, v) => p.append(k, v == null ? '' : String(v));
-
-  add('__RequestVerificationToken', scrape.token);
-  add('formex-submit-button-value', '');
-  add('formex-confirmation-value', '');
-  add('formex-verification', scrape.formexVerification);
-  add('Event.Id', scrape.eventId);
-  add('SubmissionExceptionSignature', '');
-  add('SessionType', 'New');
-  add('Selected_SameSessionIdentifier', '');
-
-  if (flags.title != null) add('Session.Title', flags.title);
-  if (flags.description != null) add('Session.Description', flags.description);
-
-  // Resolve which GUID each flag targets.
-  const guidFor = (name) => {
-    // Prefer a scraped field whose label matches; else fall back to reference GUID
-    // if that GUID actually exists on this form.
-    if (REFERENCE_GUIDS[name] && scrape.fields[REFERENCE_GUIDS[name]]) return REFERENCE_GUIDS[name];
-    const kw = name.replace('-', ' ');
-    for (const guid of Object.keys(scrape.fields)) {
-      if ((scrape.fields[guid].label || '').toLowerCase().includes(kw)) return guid;
-    }
-    return REFERENCE_GUIDS[name] || null;
-  };
-
-  const customValues = {}; // guid -> { kind:'tag'|'text'|'checkbox', value }
-  const setTag = (guid, human) => {
-    const f = scrape.fields[guid];
-    let id = human;
-    if (f && f.options && Object.keys(f.options).length) {
-      const resolved = f.options[String(human).toLowerCase()];
-      if (resolved) id = resolved;
-      else if (!/^\d+$/.test(String(human))) {
-        console.error(`Error: tag value "${human}" not valid for field ${guid}.`);
-        console.error('Valid options: ' + Object.keys(f.options).join(', '));
-        console.error('Or pass the id directly with --tag ' + guid + '=<id>.');
-        process.exit(1);
+// The CFP form round-trips a LOT of hidden state the server model-binder needs:
+// anti-forgery tokens, the full speaker profile (User.Bio, SpeakerLinks[…],
+// SpeakerMode, ProfilePicture), Impersonated* blocks, and every custom field's
+// Id/Signature/FieldType. Omitting any of it makes the submit 500. Rather than
+// hand-pick fields, we serialize the ENTIRE live form exactly as the browser
+// would (FormData) and overlay only what we're setting. Everything comes from a
+// SINGLE render because the per-field GUIDs are per-render nonces — they change
+// on every page load, so metadata, tokens, and payload must all be one render.
+//
+// Tag options are pulled from selectize.js (`select.selectize.options`) because
+// selectize strips the original <option> nodes from the DOM.
+const FORM_SERIALIZE_SCRIPT = `(() => {
+  const form = document.querySelector('form');
+  if (!form) return { error: 'no submission form found on the page' };
+  const fd = new FormData(form);
+  const pairs = [];
+  for (const [k, v] of fd.entries()) {
+    if (k.indexOf('fakename__') === 0) continue; // selectize decoy inputs
+    if (typeof v !== 'string') continue;          // skip File entries
+    pairs.push([k, v]);
+  }
+  const fields = {};
+  form.querySelectorAll('input[name]').forEach((inp) => {
+    const m = inp.name.match(/^Fields\\.CustomFields\\[([0-9a-f-]{36})\\]\\.Id$/i);
+    if (!m) return;
+    const guid = m[1];
+    const g = (p) => { const el = form.querySelector('[name="Fields.CustomFields[' + guid + '].' + p + '"]'); return el ? el.value : ''; };
+    const ft = g('FieldType');
+    const f = { id: inp.value, signature: g('Signature'), fieldType: ft, options: {} };
+    if (/tag/i.test(ft)) {
+      const sel = form.querySelector('select[name="Fields.CustomFields[' + guid + '].ValueTagIds"]');
+      if (sel && sel.selectize) {
+        for (const o of Object.values(sel.selectize.options)) { if (o && o.value != null) f.options[String(o.text).trim().toLowerCase()] = String(o.value); }
+      } else if (sel) {
+        sel.querySelectorAll('option').forEach((o) => { if (o.value) f.options[o.textContent.trim().toLowerCase()] = o.value; });
       }
     }
-    customValues[guid] = { kind: 'tag', value: id };
+    fields[guid] = f;
+  });
+  const tok = (form.querySelector('[name="__RequestVerificationToken"]') || {}).value || '';
+  const eventId = (form.querySelector('[name="Event.Id"]') || {}).value || '';
+  return { pairs, fields, token: tok, eventId };
+})()`;
+
+async function serializeForm(slug) {
+  const url = `https://sessionize.com/${slug}/`;
+  const tab = await findSessionizeTab();
+  let href = '';
+  try { href = String(await browser.eval(tab, 'location.href')); } catch (e) { /* ignore */ }
+  if (!href.includes(`/${slug}/`)) {
+    // Navigate the logged-in tab to the CFP form and wait for it to render.
+    await browser.eval(tab, `window.location.assign(${JSON.stringify(url)})`);
+    let ready = false;
+    for (let i = 0; i < 60; i++) {
+      await new Promise((r) => setTimeout(r, 500));
+      try {
+        ready = await browser.eval(tab, 'document.readyState==="complete" && !!document.querySelector(\'[name="Session.Title"]\')');
+      } catch (e) { ready = false; }
+      if (ready) break;
+    }
+    if (!ready) {
+      let now = '';
+      try { now = String(await browser.eval(tab, 'location.href')); } catch (e) { /* ignore */ }
+      console.error(`Could not load the CFP form at ${url}.`);
+      console.error(`Tab is at: ${now || '(unknown)'} — are you logged in and is the CFP open?`);
+      process.exit(1);
+    }
+  }
+  const d = await browser.eval(tab, FORM_SERIALIZE_SCRIPT);
+  if (!d || d.error || !Array.isArray(d.pairs)) {
+    console.error('Could not serialize the CFP form: ' + ((d && d.error) || 'unexpected shape'));
+    process.exit(1);
+  }
+  if (!d.token || !d.eventId) {
+    console.error('Serialized form is missing anti-forgery token / Event.Id — the page may not be the CFP form or you are logged out.');
+    process.exit(1);
+  }
+  return d;
+}
+
+// ---------------------------------------------------------------------------
+// Payload builder — round-trip the whole live form, overlay only what we set.
+// ---------------------------------------------------------------------------
+function buildPayload(dom, flags) {
+  const fields = dom.fields || {};
+
+  // Resolve which GUID a named flag targets (best-effort; GUIDs are per-render
+  // so REFERENCE_GUIDS only ever match the original reference event — named
+  // flags on other events should use --tag-id/--field-id instead).
+  const guidFor = (name) => {
+    if (REFERENCE_GUIDS[name] && fields[REFERENCE_GUIDS[name]]) return REFERENCE_GUIDS[name];
+    return null;
   };
 
-  if (flags['session-type'] != null) { const gg = guidFor('session-type'); if (gg) setTag(gg, flags['session-type']); }
-  if (flags['primary-track'] != null) { const gg = guidFor('primary-track'); if (gg) setTag(gg, flags['primary-track']); }
-  if (flags['secondary-track'] != null) { const gg = guidFor('secondary-track'); if (gg) setTag(gg, flags['secondary-track']); }
-  if (flags.level != null) { const gg = guidFor('level'); if (gg) setTag(gg, flags.level); }
-  if (flags.takeaways != null) { const gg = guidFor('takeaways'); if (gg) customValues[gg] = { kind: 'text', value: flags.takeaways }; }
-  if (flags.video != null) { const gg = guidFor('video'); if (gg) customValues[gg] = { kind: 'text', value: flags.video }; }
-  if (flags.company != null) { const gg = guidFor('company'); if (gg) customValues[gg] = { kind: 'text', value: flags.company }; }
-  if (flags.role != null) { const gg = guidFor('role'); if (gg) customValues[gg] = { kind: 'text', value: flags.role }; }
-  if (flags.tags != null) {
-    // Free-tag field: each comma-separated value must be an existing tag id/label.
-    const gg = guidFor('tags');
-    if (gg) {
-      const parts = String(flags.tags).split(',').map((x) => x.trim()).filter(Boolean);
-      const f = scrape.fields[gg] || { options: {} };
-      const ids = parts.map((part) => {
-        const r = f.options[part.toLowerCase()];
-        return r || part;
-      });
-      customValues[gg] = { kind: 'tag', value: ids.join(',') };
-    }
+  const guidByFieldId = {};
+  for (const guid of Object.keys(fields)) {
+    if (fields[guid].id) guidByFieldId[String(fields[guid].id)] = guid;
   }
-
-  // Explicit overrides
-  for (const [guid, value] of flags._tagOverrides) setTag(guid, value);
-  for (const [guid, value] of flags._fieldOverrides) customValues[guid] = { kind: 'text', value };
-
-  // Emit every custom field known on the form (index list first, then group).
-  const guids = Object.keys(scrape.fields);
-  for (const guid of guids) add('Fields.CustomFields.index', guid);
-  for (const guid of guids) {
-    const f = scrape.fields[guid];
-    add(`Fields.CustomFields[${guid}].Id`, f.id);
-    add(`Fields.CustomFields[${guid}].Signature`, f.signature);
-    add(`Fields.CustomFields[${guid}].FieldType`, f.fieldType);
-    const cv = customValues[guid];
-    if ((f.fieldType || '').toLowerCase() === 'tag') {
-      add(`Fields.CustomFields[${guid}].ValueTagIds`, cv ? cv.value : '');
-    } else if ((f.fieldType || '').toLowerCase() === 'checkbox') {
-      add(`Fields.CustomFields[${guid}].Value`, cv ? cv.value : 'false');
-    } else {
-      add(`Fields.CustomFields[${guid}].Value`, cv ? cv.value : '');
+  const resolveFieldId = (fid) => {
+    const guid = guidByFieldId[String(fid)];
+    if (!guid) {
+      console.error(`Error: no custom field with Id ${fid} on this form.`);
+      console.error('Run `sessionize show <event-slug>` to list current field Ids.');
+      process.exit(1);
     }
-  }
+    return guid;
+  };
 
-  add('Consent', flags.consent ? 'true' : 'false');
+  // Resolve a human tag value (or comma-separated list) to the numeric tag ids
+  // Sessionize's `ValueTagIds` requires. Strict on purpose: `ValueTagIds` ONLY
+  // accepts existing tag ids, never arbitrary label text — sending free-form
+  // text is what makes the server reject the whole submission ("The value '…'
+  // is not valid for ValueTagIds"). Each part must match an option label
+  // (case-insensitive) or already be a numeric id; anything else is a hard
+  // client-side error listing the valid options. Returns an array of ids.
+  const resolveTagIds = (guid, human) => {
+    const f = fields[guid] || { options: {} };
+    const opts = f.options || {};
+    const hasOptions = Object.keys(opts).length > 0;
+    // Option labels can themselves contain commas (e.g. "non-us based,
+    // international travel+hotel needed"), so try the WHOLE string as a single
+    // option first; only comma-split for multi-select when it isn't a match.
+    const whole = String(human).trim();
+    const parts = opts[whole.toLowerCase()]
+      ? [whole]
+      : String(human).split(',').map((x) => x.trim()).filter(Boolean);
+    const ids = [];
+    const unresolved = [];
+    for (const part of parts) {
+      const byLabel = opts[part.toLowerCase()];
+      if (byLabel) { ids.push(byLabel); continue; }
+      if (/^\d+$/.test(part)) { ids.push(part); continue; } // already a tag id
+      unresolved.push(part);
+    }
+    if (unresolved.length) {
+      console.error(`Error: tag value(s) ${unresolved.map((u) => `"${u}"`).join(', ')} not valid for field ${guid}.`);
+      if (hasOptions) {
+        console.error('Valid options: ' + Object.keys(opts).join(', '));
+        console.error('Or pass the numeric id directly with --tag ' + guid + '=<id> (comma-separate for multiple).');
+      } else {
+        console.error('This is a free/open tag field with no predefined options on the form.');
+        console.error('`ValueTagIds` only accepts EXISTING numeric tag ids — arbitrary new-tag text is rejected server-side.');
+        console.error('Pass existing tag ids directly with --tag ' + guid + '=<id>[,<id>].');
+      }
+      process.exit(1);
+    }
+    return ids;
+  };
+
+  // overlays: name -> array of string values that REPLACE the form's own values.
+  const overlays = {};
+  const setName = (name, val) => { overlays[name] = [val == null ? '' : String(val)]; };
+  const setTagByGuid = (guid, human) => { overlays[`Fields.CustomFields[${guid}].ValueTagIds`] = resolveTagIds(guid, human); };
+  const setTextByGuid = (guid, val) => { overlays[`Fields.CustomFields[${guid}].Value`] = [val == null ? '' : String(val)]; };
+
+  if (flags.title != null) setName('Session.Title', flags.title);
+  if (flags.description != null) setName('Session.Description', flags.description);
+
+  // Named convenience flags (only resolve on the reference event).
+  if (flags['session-type'] != null) { const gg = guidFor('session-type'); if (gg) setTagByGuid(gg, flags['session-type']); }
+  if (flags['primary-track'] != null) { const gg = guidFor('primary-track'); if (gg) setTagByGuid(gg, flags['primary-track']); }
+  if (flags['secondary-track'] != null) { const gg = guidFor('secondary-track'); if (gg) setTagByGuid(gg, flags['secondary-track']); }
+  if (flags.level != null) { const gg = guidFor('level'); if (gg) setTagByGuid(gg, flags.level); }
+  if (flags.takeaways != null) { const gg = guidFor('takeaways'); if (gg) setTextByGuid(gg, flags.takeaways); }
+  if (flags.video != null) { const gg = guidFor('video'); if (gg) setTextByGuid(gg, flags.video); }
+  if (flags.company != null) { const gg = guidFor('company'); if (gg) setTextByGuid(gg, flags.company); }
+  if (flags.role != null) { const gg = guidFor('role'); if (gg) setTextByGuid(gg, flags.role); }
+  if (flags.tags != null) { const gg = guidFor('tags'); if (gg) setTagByGuid(gg, flags.tags); }
+
+  // Explicit overrides by GUID (fragile — GUIDs are per-render nonces).
+  for (const [guid, value] of flags._tagOverrides) setTagByGuid(guid, value);
+  for (const [guid, value] of flags._fieldOverrides) setTextByGuid(guid, value);
+  // Explicit overrides by STABLE numeric field Id (preferred).
+  for (const [fid, value] of flags._tagIdOverrides) setTagByGuid(resolveFieldId(fid), value);
+  for (const [fid, value] of flags._fieldIdOverrides) setTextByGuid(resolveFieldId(fid), value);
+
+  if (flags.consent) setName('Consent', 'true');
+
+  // Emit the round-tripped form, replacing overlaid keys in place (first
+  // occurrence), then appending any overlay keys that had no existing value
+  // (e.g. an empty multi-select ValueTagIds, or Consent when the box was off).
+  const p = new URLSearchParams();
+  const applied = new Set();
+  for (const [k, v] of dom.pairs) {
+    if (Object.prototype.hasOwnProperty.call(overlays, k)) {
+      if (!applied.has(k)) { for (const ov of overlays[k]) p.append(k, ov); applied.add(k); }
+      continue; // drop the form's original value(s) for this key
+    }
+    p.append(k, v);
+  }
+  for (const k of Object.keys(overlays)) {
+    if (!applied.has(k)) { for (const ov of overlays[k]) p.append(k, ov); applied.add(k); }
+  }
   return p.toString();
 }
 
@@ -332,19 +435,27 @@ const commands = {
     const slug = validateSlug(args[0]);
     const referer = `https://sessionize.com/${slug}/`;
 
-    // 1. Scrape the live form for tokens + field metadata + tag options.
-    const pageResp = await getPage(`/${slug}/`);
-    detectLoginRedirect(pageResp);
-    const scrape = scrapeForm(htmlOf(pageResp));
-    if (!scrape.token || !scrape.formexVerification || !scrape.eventId) {
-      console.error('Could not scrape the anti-forgery tokens / Event.Id from the form page.');
-      console.error('The form HTML shape may have changed, or you are not logged in / the CFP is closed.');
-      console.error('Run `sessionize show ' + slug + '` to inspect what was scraped.');
-      process.exit(1);
-    }
+    // 1. Serialize the ENTIRE live form from a single render (navigates a
+    //    logged-in tab to the CFP form; captures tokens, full speaker profile,
+    //    every custom field's Id/Signature/FieldType, and tag options).
+    const dom = await serializeForm(slug);
 
-    // 2. Build the payload.
-    const body = buildPayload(scrape, flags, slug);
+    // 2. Build the payload: round-trip the form, overlay only what we set.
+    const body = buildPayload(dom, flags);
+
+    if (flags['dry-run']) {
+      const params = new URLSearchParams(body);
+      console.log(`Dry run — payload assembled (${body.length} bytes, ${[...params.keys()].length} params). NOT posted.`);
+      console.log('Overlaid / notable params:');
+      for (const k of ['Session.Title', 'Session.Description', 'Consent']) {
+        if (params.has(k)) console.log(`  ${k} = ${String(params.get(k)).slice(0, 80)}`);
+      }
+      for (const [k, v] of params.entries()) {
+        if (/\.ValueTagIds$/.test(k) && v) console.log(`  ${k} = ${v}`);
+        if (/\.Value$/.test(k) && v) console.log(`  ${k} = ${String(v).slice(0, 60)}`);
+      }
+      return;
+    }
 
     // 3. POST to draft (safe) or the real submit endpoint.
     const path = flags.draft ? '/submission-draft' : `/submission/${slug}`;
@@ -384,14 +495,14 @@ const commands = {
 //   - boolean flags (single-token): --draft --consent --json
 //   - repeatable: --field <guid>=<value>, --tag <guid>=<label|id>
 // ---------------------------------------------------------------------------
-const BOOLEAN_FLAGS = new Set(['draft', 'consent', 'json']);
+const BOOLEAN_FLAGS = new Set(['draft', 'consent', 'json', 'dry-run']);
 const VALUE_FLAGS = new Set([
   'title', 'description', 'session-type', 'primary-track', 'secondary-track',
   'level', 'takeaways', 'video', 'tags', 'company', 'role',
 ]);
 
 function parseFlags(argv) {
-  const flags = { _tagOverrides: [], _fieldOverrides: [] };
+  const flags = { _tagOverrides: [], _fieldOverrides: [], _tagIdOverrides: [], _fieldIdOverrides: [] };
   const positional = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -408,6 +519,17 @@ function parseFlags(argv) {
         const m = String(val || '').match(/^([0-9a-f-]{36})=(.*)$/i);
         if (!m) { console.error(`Error: --${name} expects <guid>=<value>.`); process.exit(1); }
         (name === 'tag' ? flags._tagOverrides : flags._fieldOverrides).push([m[1], m[2]]);
+        continue;
+      }
+
+      // Target a custom field by its STABLE numeric Id (from `show`).
+      // The per-field GUID is a per-render nonce that changes on every form
+      // load, so --field-id/--tag-id are the reliable way to target fields.
+      if (name === 'field-id' || name === 'tag-id') {
+        if (val == null) val = argv[++i];
+        const m = String(val || '').match(/^(\d+)=([\s\S]*)$/);
+        if (!m) { console.error(`Error: --${name} expects <fieldId>=<value>.`); process.exit(1); }
+        (name === 'tag-id' ? flags._tagIdOverrides : flags._fieldIdOverrides).push([m[1], m[2]]);
         continue;
       }
 
@@ -447,12 +569,20 @@ async function main() {
     console.log('  --secondary-track, --level, --takeaways, --video, --tags "a,b",');
     console.log('  --company, --role');
     console.log('  --consent                      set acceptance checkbox true');
-    console.log('  --draft                        only auto-save (/submission-draft), no real submit');
+    console.log('  --dry-run                      build + print the payload, do NOT post (safe preview)');
+    console.log('  --draft                        POST to /submission-draft (NOTE: currently 404s)');
     console.log('  --field <guid>=<value>         set a text custom field by GUID (repeatable)');
     console.log('  --tag <guid>=<label|id>        set a Tag custom field by GUID (repeatable)');
+    console.log('  --field-id <Id>=<value>        set a text field by its STABLE numeric Id (repeatable, preferred)');
+    console.log('  --tag-id <Id>=<label|id,...>   set a Tag field by its STABLE numeric Id (repeatable, preferred)');
     console.log('  --json                         print raw JSON response');
+    console.log('\nNote: per-field GUIDs are per-render nonces (they change on every form load),');
+    console.log('so prefer --field-id/--tag-id with the stable numeric Id shown by `show`.');
+    console.log('Tag values must resolve to a form option (case-insensitive) or an existing');
+    console.log('numeric tag id; comma-separate multiple; free-form/unknown tags are rejected.');
     console.log('\nAuth: log in to https://sessionize.com in your browser first.');
-    console.log('Note: `submit` (non-draft) needs live verification — prefer --draft first.');
+    console.log('Note: `submit` round-trips the whole live form (verified Jul 31, 2026).');
+    console.log('Preview with --dry-run; the real POST is self-validating.');
     process.exit(0);
   }
 

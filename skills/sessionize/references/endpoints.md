@@ -127,8 +127,10 @@ FieldType/Value columns are extracted verbatim from the HAR.
 
 ## Live-verification gap (important)
 
-The recording was an **in-progress submission that never completed**. Every
-`/submission/<slug>` call returned `ValidationErrors`:
+The **source recording** was an in-progress submission that never completed. See
+below for the **resolved** live-verification (Jul 31, 2026).
+
+Every `/submission/<slug>` call in the recording returned `ValidationErrors`:
 
 ```json
 "ValidationErrors": {
@@ -139,15 +141,49 @@ The recording was an **in-progress submission that never completed**. Every
 }
 ```
 
-So the recording proves the endpoint, headers, and payload shape, but a
-**clean end-to-end accepted submit was never observed**. Blockers were:
-1. Bio under 300 chars.
-2. Speaker photo too small (needs ≥ 1000×1000).
-3. The free-tag "Tags" field was sent comma-joined labels; `ValueTagIds`
-   expects **existing tag ids**, not arbitrary text — each tag value must be a
-   valid option id (or a pre-created tag).
+Blockers were: (1) bio under 300 chars, (2) photo too small, (3) the free-tag
+field sent comma-joined labels instead of valid tag ids.
 
-Treat `submit` as **needing live verification**.
+## Live verification — RESOLVED (Jul 31, 2026)
+
+A clean end-to-end submit was confirmed on the live **aienyc2026** CFP
+(Event.Id 24999). The accepted response:
+
+```json
+{ "Error": null, "Data": null, "Success": null,
+  "RedirectTo": "/aienyc2026/", "ConfirmationMessages": null,
+  "ValidationErrors": null, "Empty": false, "ReloadPage": false }
+```
+
+Two facts the recording did not reveal, discovered live:
+
+1. **Custom-field GUIDs are per-render nonces.** Every form load regenerates
+   them (e.g. the session-format field was `1a7e5dac…`, then `11239171…`, then
+   `286225b1…` on successive loads). The numeric **`Id`** (e.g. `136848`) is the
+   stable identifier; tag option ids (`ValueTagIds` values) are also stable.
+   → Target fields by `Id` (`--field-id`/`--tag-id`); scrape+submit in one
+   render.
+
+2. **The whole form must be round-tripped.** Posting only tokens + custom
+   fields (omitting the speaker profile block: `User.Bio`, `User.TagLine`,
+   `User.ProfilePicture`, `SpeakerMode`, `SpeakerLinks[…]`, the `Impersonated*`
+   block, `ConsentImpersonation`) makes the server model-binder return a bare
+   **HTTP 500** (not a `ValidationErrors` JSON). The skill now serializes the
+   ENTIRE live form via the DOM (`new FormData(form)`, minus the selectize
+   `fakename__*` decoy inputs) and overlays only the fields being set.
+
+   Tag `<select>`s are managed by **selectize.js**, which strips the original
+   `<option>` nodes — read options from `select.selectize.options`
+   (`{text,value}`) instead of `select option`.
+
+3. **`/submission-draft` now 404s** (changed since the recording). Use
+   `--dry-run` to validate the payload locally; the real `/submission/<slug>`
+   endpoint is self-validating and returns `ValidationErrors` (no commit) when
+   the payload is incomplete.
+
+`sessions` / `events` still hit `/app/speaker/*` pages that were not in the
+recording; they remain best-effort. `cfps`/`events` has no confirmed JSON list
+endpoint.
 
 ## Read APIs (not found)
 

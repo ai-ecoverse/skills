@@ -38,58 +38,70 @@ sessionize submit <event-slug> [flags]   # build the submission payload and POST
 ```
 --title "..."            Session.Title
 --description "..."       Session.Description (the abstract)
---session-type "..."      maps to the Session Type custom field (tag)
---primary-track "..."     Primary Track (tag)
---secondary-track "..."   Secondary Track (tag)   [optional]
---level "..."             Level (tag)
---takeaways "..."         Key-takeaways long text
---video "..."             Video URL
---tags "a,b,c"            Tags / technologies (free-tag field)
---company "..."           Company
---role "..."              Role
+--session-type "..."      maps to the Session Type custom field (tag)  [reference event only]
+--primary-track "..."     Primary Track (tag)                          [reference event only]
+--secondary-track "..."   Secondary Track (tag)                        [reference event only]
+--level "..."             Level (tag)                                  [reference event only]
+--takeaways "..."         Key-takeaways long text                      [reference event only]
+--video "..."             Video URL                                    [reference event only]
+--tags "a,b,c"            Tags / technologies (free-tag field)         [reference event only]
+--company "..."           Company                                      [reference event only]
+--role "..."              Role                                         [reference event only]
 --consent                 set the acceptance checkbox to true (boolean, single-dash-safe)
---draft                   only POST to /submission-draft (auto-save), do NOT submit for real
---field <guid>=<value>    override/set a custom field's text Value by GUID (repeatable)
+--draft                   only POST to /submission-draft (auto-save)  [see caveat: currently 404s]
+--dry-run                 build + print the payload, do NOT post (safe preview)
+--field <guid>=<value>    set a text custom field by GUID (repeatable)
 --tag <guid>=<label|id>   set a Tag custom field by GUID (repeatable)
+--field-id <Id>=<value>   set a text field by its STABLE numeric Id (repeatable, PREFERRED)
+--tag-id <Id>=<label|id,...>  set a Tag field by its STABLE numeric Id (repeatable, PREFERRED)
 --json                    print the raw JSON response
 ```
 
-Tag flags (`--session-type`, `--primary-track`, `--level`, …) accept the
-**human label** as shown on the form; the skill resolves it to the event's
-`ValueTagIds` by scraping the form's `<option>` list. If a label can't be
-resolved it errors and lists the valid options — pass the id directly with
-`--tag <guid>=<id>` in that case.
+> ⚠️ **Custom-field GUIDs are per-render nonces** — Sessionize regenerates them
+> on *every* form load, so a GUID from an earlier `show` will not match the next
+> render, and the named convenience flags (`--session-type`, `--primary-track`,
+> …) only resolve on the original reference event. **Target fields by their
+> stable numeric `Id`** (shown by `show`) with `--field-id` / `--tag-id`. The
+> submit re-scrapes the live form and maps the Id to that render's GUID.
+
+Tag flags accept the **human label** as shown on the form (case-insensitive);
+the skill resolves it to the event's tag ids by reading the form's option list
+(including selectize.js widgets). Comma-separate multiple selections. **A value
+that matches no option and isn't already a numeric tag id is a hard error** with
+the valid options listed — this prevents the server-side "not valid for
+ValueTagIds" rejection you get when free-form text leaks into a tag field.
 
 ### How `submit` works
 
-1. GETs the CFP form page `https://sessionize.com/<event-slug>/`
-   (same-origin, in your tab) and scrapes: `__RequestVerificationToken`,
-   `formex-verification`, `Event.Id`, and for every custom field its GUID,
-   `Id`, `Signature`, `FieldType`, and (for Tag fields) the label→id options.
-2. Merges those with your flags into the exact
-   `application/x-www-form-urlencoded` payload shape Sessionize expects.
-3. POSTs to `/submission-draft` (with `--draft`) or `/submission/<event-slug>`
+1. Navigates your logged-in Sessionize tab to the CFP form and **serializes the
+   ENTIRE live form** (via the DOM, one consistent render): all anti-forgery
+   tokens, the full speaker profile (`User.Bio`, `SpeakerLinks[…]`,
+   `SpeakerMode`, `ProfilePicture`), the `Impersonated*` blocks, and every
+   custom field's `Id`/`Signature`/`FieldType` plus its tag options.
+2. **Overlays only the fields you set** (title, description, custom values,
+   consent) onto that round-tripped payload, resolving tag labels → numeric ids.
+3. POSTs the `application/x-www-form-urlencoded` body to `/submission/<slug>`
    with headers `X-FormEx: 1`, `X-Requested-With: XMLHttpRequest`.
-4. Prints `ValidationErrors` (if any) or the success/redirect payload.
+4. Prints `ValidationErrors` (if any) or the success/redirect payload. A clean
+   accept returns `RedirectTo: "/<slug>/"` with `ValidationErrors: null`.
 
-## ⚠️ `submit` needs live verification
+Round-tripping the whole form is essential: omitting the profile/hidden fields
+makes the server model-binder **500**. Preview safely first with `--dry-run`.
 
-The source recording was an **in-progress submission that never completed** —
-it was blocked on (1) a bio under 300 chars, (2) a speaker photo smaller than
-1000×1000, and (3) a free-tag field sent as comma-joined text instead of valid
-tag ids. So the submit **endpoint, headers, and payload shape are confirmed**,
-but a **clean, accepted end-to-end submit was never observed in the
-recording**. Treat `sessionize submit` (without `--draft`) as **experimental /
-needs live verification**: run it once interactively, read the returned
-`ValidationErrors`, and fix profile/photo/tag issues before relying on it.
-Prefer `--draft` first to validate the payload safely.
+## `submit` — LIVE-VERIFIED (Jul 31, 2026)
 
-Also note:
-- Custom-field GUIDs, `Id`s, `Signature`s and tag ids are **event-specific**;
-  never hardcode the values from the reference doc — they are scraped live.
-- `sessions` / `events` hit `/app/speaker/*` pages that were **not** in the
-  recording; they are best-effort and may need adjustment. `cfps`/`events`
-  has no confirmed JSON list endpoint (see reference doc).
+A clean end-to-end submit was confirmed on the live **aienyc2026** CFP: the POST
+returned `{"RedirectTo":"/aienyc2026/","ValidationErrors":null}` and the session
+appeared in the speaker's "Sessions you've submitted" list. Notes:
+
+- The full-form round-trip (step 1 above) is what makes it work; the earlier
+  hand-picked payload 500'd on missing profile fields.
+- `--draft` (`/submission-draft`) currently returns **404** — Sessionize changed
+  that endpoint since the source recording. Use `--dry-run` to validate the
+  payload locally instead; the real `/submission/<slug>` is self-validating
+  (returns `ValidationErrors` without committing when the payload is incomplete).
+- Custom-field GUIDs, `Id`s, `Signature`s, and tag ids are **event-specific and
+  per-render** — never hardcode them; they are scraped live each run.
 
 ## Files
 
