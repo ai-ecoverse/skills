@@ -107,9 +107,36 @@ async function main() {
     return;
   }
 
+  if (cmd === 'monday') {
+    // monday source protocol: print a JSON array of items to stdout, logs to stderr.
+    // Loose ends are standing follow-ups, so --date is intentionally NOT applied
+    // (an old open loose end is still open); --limit is honoured.
+    const limit = Number(args.limit != null ? args.limit : 50) || 50;
+    const store = readStore(storePath);
+    const RATING_HINT =
+      'This is a user-curated loose end — a follow-up the user explicitly saved to act on later, ' +
+      'so it carries real intent; treat it as actionable unless its summary says it is waiting on ' +
+      'someone else. `body` is the human summary; `detail` is the full agent brief. `skills` lists ' +
+      'the SLICC skills involved. There is no external state, so do not down-rank it as resolved.';
+    const items = store.tasks.slice(0, limit).map((t) => ({
+      id: t.id,
+      ts: t.created || (t.session && t.session.at) || null,
+      source: 'loose-ends',
+      title: t.title || t.id,
+      body: t.summary || t.detail || '',
+      detail: t.detail || t.context || '',
+      skills: Array.isArray(t.skills) ? t.skills : [],
+      session: t.session || null,
+      rating_hint: RATING_HINT,
+    }));
+    process.stderr.write(`[loose-ends] monday: ${items.length} item(s)\n`);
+    process.stdout.write(JSON.stringify(items) + '\n');
+    return;
+  }
+
   process.stderr.write(
     `loose-ends: unknown command '${cmd}'\n` +
-    `usage: loose-ends [bootstrap|reseed] [--name <n>] [--store <path>] [--template <path>]\n`
+    `usage: loose-ends [bootstrap|reseed|monday] [--name <n>] [--store <path>] [--template <path>] [--limit N]\n`
   );
   process.exit(1);
 }
