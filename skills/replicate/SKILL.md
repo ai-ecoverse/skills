@@ -44,18 +44,27 @@ The script resolves the token in priority order:
 
 ### Run a model
 
+`replicate run` requires `--confirm` before POSTing (prevents accidental billable runs).
+Use `--dry-run` to inspect the resolved request without submitting it.
+
 ```bash
-# Run black-forest-labs/flux-schnell with default latest version
+# Preview what would be submitted (no prediction created)
 replicate run black-forest-labs/flux-schnell prompt="a photo of a cat astronaut"
 
-# Specify a version explicitly
-replicate run stability-ai/sdxl:7762fd07 prompt="a lighthouse at dusk" num_outputs=2
+# Actually create the prediction
+replicate run black-forest-labs/flux-schnell prompt="a photo of a cat astronaut" --confirm
 
-# Run and get raw JSON output
-replicate run stability-ai/sdxl prompt="a lighthouse" --json
+# Specify a version explicitly
+replicate run stability-ai/sdxl:7762fd07 prompt="a lighthouse at dusk" num_outputs=2 --confirm
+
+# Run and get raw JSON output (nonzero exit if failed/canceled)
+replicate run stability-ai/sdxl prompt="a lighthouse" --json --confirm
 
 # Run without waiting (returns prediction ID immediately)
-replicate run stability-ai/sdxl prompt="test" --no-wait
+replicate run stability-ai/sdxl prompt="test" --no-wait --confirm
+
+# Inspect the full request body without POSTing
+replicate run stability-ai/sdxl prompt="test" --dry-run
 ```
 
 Input values are coerced automatically:
@@ -63,6 +72,15 @@ Input values are coerced automatically:
 - `disable_safety_checker=true` → boolean true
 - `extra={"key":"val"}` → parsed as JSON object
 - `prompt="a cat"` → string (quotes optional in shell)
+
+**Forcing a specific type** — use `key:TYPE=value` to override auto-coercion:
+- `prompt:str=00123` → string `"00123"` (keeps leading zeros, prevents number coercion)
+- `steps:num=5` → number `5`
+- `enabled:bool=false` → boolean `false`
+- `opts:json={"a":1}` → object `{ a: 1 }`
+
+This is especially useful when a string value looks like a number (`"007"`, `"1e3"`) or
+looks like a boolean (`"true"` as a literal string to a text model).
 
 The command uses `Prefer: wait=60` for single-call sync mode (up to 60s), then falls
 back to polling every 2 seconds until `succeeded`, `failed`, or `canceled`.
@@ -148,9 +166,12 @@ replicate api /account
 replicate api GET /models/stability-ai/sdxl
 replicate api /models/stability-ai/sdxl/versions
 
-# POST with a JSON body (read-only via --data is fine; use --no-wait for mutations)
+# POST with a JSON body
 replicate api POST /predictions --data '{"version":"...","input":{"prompt":"test"}}'
 ```
+
+Absolute URLs passed to `replicate api` must target `https://api.replicate.com`.
+Any other host is rejected to prevent the bearer token being sent elsewhere.
 
 ## Limitations
 

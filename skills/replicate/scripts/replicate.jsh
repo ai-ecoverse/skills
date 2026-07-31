@@ -30,13 +30,19 @@
 //   replicate collections list           Curated model collections
 //   replicate collections get <slug>     Models in a collection
 //
-//   replicate run <owner/name[:version]> [key=value ...]   Create prediction + wait
-//     Flags: --json  --no-wait  --version <id>  --token <t>
-//     Input values: bare strings, numbers, booleans, or JSON objects/arrays.
-//     Values starting with { or [ are parsed as JSON.
+//   replicate run <owner/name[:version]> [key=value ...] --confirm
+//     Flags: --confirm (required to actually POST)  --dry-run (print request, no POST)
+//            --json  --no-wait  --version <id>  --token <t>
+//     Input values: strings, numbers, booleans (true/false), or JSON (values starting
+//     with { or [). Force a type with key:TYPE=value suffixes:
+//       prompt:str=00123   → string "00123" (keep leading zeros, prevent number coercion)
+//       steps:num=5        → number 5
+//       flag:bool=false    → boolean false
+//       opts:json={"k":1}  → object { k: 1 }
 //
 //   replicate api <METHOD> <path> [--data '<json>'] [--query k=v]
 //     Raw authenticated HTTP call. METHOD defaults to GET.
+//     Absolute URLs must target https://api.replicate.com (credential leak guard).
 
 const cli   = require('sliccy:cli');
 const fmt   = require('sliccy:fmt');
@@ -91,7 +97,22 @@ async function getToken(explicit) {
  * Returns parsed JSON or throws with the API error message.
  */
 async function api(token, method, path, { body, headers: extraHeaders, query } = {}) {
-  let url = path.startsWith('http') ? path : BASE + (path.startsWith('/') ? path : '/' + path);
+  let url;
+  if (path.startsWith('http')) {
+    // Reject absolute URLs that don't target api.replicate.com to prevent
+    // accidentally leaking the bearer token to an arbitrary host.
+    let parsed;
+    try { parsed = new URL(path); } catch { throw new Error(`Invalid URL: ${path}`); }
+    if (parsed.origin !== 'https://api.replicate.com') {
+      throw new Error(
+        `Refusing to send authenticated request to non-Replicate host: ${parsed.origin}\n` +
+        '  Only https://api.replicate.com is allowed.'
+      );
+    }
+    url = path;
+  } else {
+    url = BASE + (path.startsWith('/') ? path : '/' + path);
+  }
   if (query && Object.keys(query).length) {
     const qs = new URLSearchParams(query).toString();
     url += (url.includes('?') ? '&' : '?') + qs;
@@ -148,11 +169,17 @@ async function listAll(token, path, { maxPages = 20, query = {} } = {}) {
 
 /**
  * Parse positional key=value inputs into an object.
- * Values are coerced:
- *   - 'true'/'false' → boolean
- *   - numeric strings → number
- *   - values starting with { or [ → JSON.parse
- *   - everything else → string
+ *
+ * Default auto-coercion (no type suffix):
+ *   'true'/'false' → boolean  |  numeric strings → number
+ *   values starting with { or [ → JSON.parse  |  everything else → string
+ *
+ * Explicit type suffix — use key:TYPE=value to force a type and prevent
+ * auto-coercion.  The ":TYPE" is stripped from the stored key name:
+ *   prompt:str=00123        → { prompt: "00123" }  (keeps leading zeros)
+ *   steps:num=5             → { steps: 5 }
+ *   flag:bool=true          → { flag: true }
+ *   opts:json={"a":1}       → { opts: { a: 1 } }
  */
 function parseInputs(args) {
   const inputs = {};
@@ -161,15 +188,43 @@ function parseInputs(args) {
     if (eq < 0) {
       throw new Error(`Invalid input "${arg}" — expected key=value format`);
     }
-    const key = arg.slice(0, eq);
-    const raw = arg.slice(eq + 1);
+    const rawKey = arg.slice(0, eq);
+    const raw    = arg.slice(eq + 1);
+
+    // Detect optional :type suffix on the key (e.g. "prompt:str")
+    const colonIdx = rawKey.lastIndexOf(':');
+    const typeSuffix = colonIdx >= 0 ? rawKey.slice(colonIdx + 1).toLowerCase() : null;
+    const KNOWN_TYPES = ['str', 'string', 'num', 'number', 'bool', 'boolean', 'json'];
+    const hasTypeSuffix = typeSuffix !== null && KNOWN_TYPES.includes(typeSuffix);
+    const key = hasTypeSuffix ? rawKey.slice(0, colonIdx) : rawKey;
+
     let val;
-    if (raw === 'true') val = true;
-    else if (raw === 'false') val = false;
-    else if (raw !== '' && !isNaN(Number(raw))) val = Number(raw);
-    else if (raw.startsWith('{') || raw.startsWith('[')) {
-      try { val = JSON.parse(raw); } catch { val = raw; }
-    } else val = raw;
+    if (hasTypeSuffix) {
+      // Explicit type — honour exactly, no further coercion
+      if (typeSuffix === 'str' || typeSuffix === 'string') {
+        val = raw;
+      } else if (typeSuffix === 'num' || typeSuffix === 'number') {
+        const n = Number(raw);
+        if (Number.isNaN(n)) throw new Error(`Input "${key}:num=${raw}": "${raw}" is not a valid number`);
+        val = n;
+      } else if (typeSuffix === 'bool' || typeSuffix === 'boolean') {
+        if (raw === 'true') val = true;
+        else if (raw === 'false') val = false;
+        else throw new Error(`Input "${key}:bool=${raw}": expected "true" or "false"`);
+      } else {
+        // json
+        try { val = JSON.parse(raw); }
+        catch { throw new Error(`Input "${key}:json=${raw}": invalid JSON`); }
+      }
+    } else {
+      // Auto-coerce
+      if (raw === 'true') val = true;
+      else if (raw === 'false') val = false;
+      else if (raw !== '' && !Number.isNaN(Number(raw))) val = Number(raw);
+      else if (raw.startsWith('{') || raw.startsWith('[')) {
+        try { val = JSON.parse(raw); } catch { val = raw; }
+      } else val = raw;
+    }
     inputs[key] = val;
   }
   return inputs;
@@ -531,7 +586,10 @@ async function cmdCollectionsGet(token, slug, flags) {
 async function cmdRun(token, positional, flags) {
   // positional[0] = owner/name[:version], rest = key=value inputs
   const ref = positional[0];
-  if (!ref) return cli.die('usage: replicate run <owner/name[:version]> [key=value ...]\n       replicate run black-forest-labs/flux-schnell prompt="a cat"');
+  if (!ref) return cli.die(
+    'usage: replicate run <owner/name[:version]> [key=value ...] [--confirm] [--dry-run]\n' +
+    '       replicate run black-forest-labs/flux-schnell prompt="a cat" --confirm'
+  );
 
   const { owner, name, version: versionFromRef } = parseModelRef(ref);
   const versionOverride = str(flags.version) || versionFromRef;
@@ -547,7 +605,7 @@ async function cmdRun(token, positional, flags) {
     try {
       const model = await api(token, 'GET', `/models/${owner}/${name}`);
       versionId = model.latest_version?.id;
-    } catch (e) {
+    } catch (_) {
       // Non-fatal: model lookup failed, try without version (official model API path)
     }
   }
@@ -566,9 +624,51 @@ async function cmdRun(token, positional, flags) {
   }
 
   const noWait = Boolean(flags['no-wait']);
+
+  // ── Dry-run: print request body and exit without POSTing ─────────────────
+  if (flags['dry-run']) {
+    const dryOut = {
+      endpoint: `POST https://api.replicate.com/v1${endpoint}`,
+      body: reqBody,
+    };
+    if (!flags.json) {
+      console.log(c.dim('Dry run — no prediction created.'));
+      console.log(JSON.stringify(dryOut, null, 2));
+    } else {
+      cli.out(dryOut);
+    }
+    return;
+  }
+
+  // ── Confirmation guard: require --confirm before actually POSTing ─────────
+  if (!flags.confirm) {
+    const modelLabel = `${owner}/${name}` + (versionId ? ` (v:${versionId.slice(0, 16)}…)` : '');
+    if (flags.json) {
+      // In JSON mode emit to stderr so stdout stays valid JSON
+      process.stderr.write(JSON.stringify({
+        preview: true,
+        model: modelLabel,
+        endpoint: `POST https://api.replicate.com/v1${endpoint}`,
+        body: reqBody,
+        message: 'Pass --confirm to create this prediction.',
+      }) + '\n');
+    } else {
+      console.log('');
+      console.log(c.yellow('  Preview — no prediction created yet.'));
+      console.log(`  ${c.dim('model')}     ${modelLabel}`);
+      console.log(`  ${c.dim('endpoint')}  POST /v1${endpoint}`);
+      console.log(`  ${c.dim('inputs')}    ${JSON.stringify(inputs)}`);
+      console.log('');
+      console.log(`  Re-run with ${c.cyan('--confirm')} to create the prediction.`);
+      console.log(`  Add ${c.cyan('--dry-run')} to print the full request body without POSTing.`);
+    }
+    return;
+  }
+
   const preferHeader = noWait ? {} : { 'Prefer': 'wait=60' };
 
-  console.log(c.dim(`Creating prediction for ${owner}/${name}${versionId ? ` (v:${versionId.slice(0, 12)}…)` : ''}…`));
+  // Progress always goes to stderr so stdout in --json mode stays clean JSON
+  console.error(c.dim(`Creating prediction for ${owner}/${name}${versionId ? ` (v:${versionId.slice(0, 12)}…)` : ''}…`));
 
   let prediction = await api(token, 'POST', endpoint, {
     body: reqBody,
@@ -576,7 +676,10 @@ async function cmdRun(token, positional, flags) {
   });
 
   if (noWait) {
-    if (flags.json) return cli.out(prediction);
+    if (flags.json) {
+      cli.out(prediction);
+      return;
+    }
     console.log(`Prediction created: https://replicate.com/p/${prediction.id}  ${c.dim('(not waiting — use: replicate prediction get ' + prediction.id + ')')}`);
     return;
   }
@@ -586,7 +689,12 @@ async function cmdRun(token, positional, flags) {
     prediction = await pollPrediction(token, prediction);
   }
 
-  if (flags.json) return cli.out(prediction);
+  // Fix: in JSON mode emit the prediction object but still exit nonzero on failure
+  if (flags.json) {
+    cli.out(prediction);
+    if (prediction.status !== 'succeeded') process.exit(1);
+    return;
+  }
 
   if (prediction.status === 'succeeded') {
     printOutput(prediction.output);
@@ -662,16 +770,26 @@ USAGE
   replicate collections list           Curated model collections
   replicate collections get <slug>     Models in a collection
 
-  replicate run <owner/name[:version]> [key=value ...]
+  replicate run <owner/name[:version]> [key=value ...] --confirm
     Create a prediction and wait for output.
-    Input values: strings, numbers (auto-detected), booleans (true/false),
-    or JSON objects/arrays (values starting with { or [).
-    Example: replicate run black-forest-labs/flux-schnell prompt="a cat"
-    Flags: --json (emit raw JSON)  --no-wait (return immediately)
+    --confirm is required to actually POST (prevents accidental billable runs).
+    --dry-run prints the resolved request body and exits without POSTing.
+
+    Input values are auto-coerced: numbers, booleans (true/false), JSON ({...}/[...]),
+    or strings. Use key:TYPE=value to force a specific type:
+      prompt:str=00123      → string "00123"  (prevents number coercion)
+      steps:num=5           → number 5
+      enabled:bool=false    → boolean false
+      opts:json={"k":1}     → object { k: 1 }
+
+    Example: replicate run black-forest-labs/flux-schnell prompt="a cat" --confirm
+    Flags: --json (emit raw JSON, nonzero exit on failure)  --no-wait
            --version <id> (override version)  --token <t>
+           --confirm  --dry-run
 
   replicate api [METHOD] <path-or-url> [--data '<json>'] [--query k=v]
     Authenticated raw API call. METHOD defaults to GET.
+    Absolute URLs must target https://api.replicate.com (credential leak guard).
     Example: replicate api /account
     Example: replicate api GET /models/stability-ai/sdxl
 
@@ -680,7 +798,7 @@ AUTH
   Get a token at https://replicate.com/account/api-tokens
 
 FLAGS
-  --json       Output raw JSON
+  --json       Output raw JSON (--json + failed prediction → nonzero exit)
   --token <t>  Override token for this call
   --help       Show this help
 `.trim();
