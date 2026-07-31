@@ -411,7 +411,7 @@ async function cmdPredictionGet(token, id, flags) {
   if (p.output) {
     console.log(`\n  ${c.bold('Output:')}`);
     if (Array.isArray(p.output)) {
-      p.output.forEach((o, i) => console.log(`    [${i}] ${o}`));
+      p.output.forEach((o, i) => { console.log(`    [${i}] ${o}`); });
     } else {
       console.log('  ' + (typeof p.output === 'string' ? p.output : JSON.stringify(p.output, null, 2)));
     }
