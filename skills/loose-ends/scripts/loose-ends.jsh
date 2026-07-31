@@ -76,11 +76,15 @@ function readStore(storePath) {
   return data;
 }
 
-// Persist the store. fs.writeFileSync fully replaces the file content (unlike a
-// shell `>` redirect, which can leave a stale tail), so this is a clean rewrite.
+// Persist the store atomically: write a sibling temp file, then rename it over
+// the target. rename(2) is atomic on the same filesystem, so a crash mid-write
+// can never leave the authoritative store truncated or half-written — readers
+// always see either the old or the complete new content.
 function writeStore(storePath, store) {
   store.updated = new Date().toISOString();
-  fs.writeFileSync(storePath, JSON.stringify(store, null, 2) + '\n');
+  const tmp = storePath + '.tmp-' + process.pid + '-' + Date.now();
+  fs.writeFileSync(tmp, JSON.stringify(store, null, 2) + '\n');
+  fs.renameSync(tmp, storePath);
   return store;
 }
 
@@ -133,8 +137,11 @@ function parseWhen(when) {
 // open panel in step is a nicety, so a failed/absent `sprinkle send` is not fatal.
 async function trySend(name, payload) {
   try {
-    await exec(`sprinkle send ${shellQuote(name)} ${shellQuote(JSON.stringify(payload))}`);
-    return true;
+    // `exec` resolves with a nonzero exitCode (it does not throw) when the panel
+    // is absent/unavailable, so inspect the code — otherwise we'd always report
+    // "synced" and suppress the documented "panel not synced" warning.
+    const r = await exec(`sprinkle send ${shellQuote(name)} ${shellQuote(JSON.stringify(payload))}`);
+    return !!r && r.exitCode === 0;
   } catch (e) { return false; }
 }
 
@@ -197,7 +204,11 @@ async function main() {
     if (existing !== -1) store.tasks[existing] = { ...store.tasks[existing], ...task };
     else store.tasks.push(task);
     writeStore(storePath, store);
-    const synced = await trySend(name, { action: 'add-item', task });
+    // Send the STORED object (post-merge) so an upsert that omits optional
+    // fields doesn't push an unmerged task to the panel — otherwise add-item
+    // would replace the panel's copy and drop retained session/snoozedUntil.
+    const sent = existing !== -1 ? store.tasks[existing] : task;
+    const synced = await trySend(name, { action: 'add-item', task: sent });
     process.stdout.write(`loose-ends: ${existing !== -1 ? 'updated' : 'created'} '${id}'${synced ? '' : ' (panel not synced — reseed or reopen)'}\n`);
     return;
   }
