@@ -20,6 +20,8 @@
 const exec = require('sliccy:exec');
 const fs = require('fs');
 
+const DEFAULT_STORE = '/shared/loose-ends.json';
+
 // Hand-parse argv: jsh's parseFlags treats single-dash flags as booleans and
 // drops their value, so we only honour explicit --long / --long=value forms.
 function parseArgs(argv) {
@@ -79,7 +81,7 @@ async function main() {
   const cmd = args._[0] || 'bootstrap';
 
   const name = typeof args.name === 'string' ? args.name : 'loose-ends';
-  const storePath = typeof args.store === 'string' ? args.store : '/shared/loose-ends.json';
+  const storePath = typeof args.store === 'string' ? args.store : DEFAULT_STORE;
   const template = typeof args.template === 'string'
     ? args.template
     : '/workspace/skills/loose-ends/templates/loose-ends.shtml';
@@ -95,8 +97,23 @@ async function main() {
       throw new Error(`template not found: ${template} (pass --template <path>)`);
     }
     const dir = `/shared/sprinkles/${name}`;
+    const dest = `${dir}/${name}.shtml`;
     await sh(`mkdir -p ${shellQuote(dir)}`);
-    await sh(`cp ${shellQuote(template)} ${shellQuote(`${dir}/${name}.shtml`)}`);
+    await sh(`cp ${shellQuote(template)} ${shellQuote(dest)}`);
+    // Bake the selected --store into the installed template so the panel's own
+    // self-hydration (STORE_PATH) reads the SAME store as `reseed`. Without this,
+    // a custom --store only affects reseed and the panel reloads the default
+    // store on every close/reopen.
+    if (storePath !== DEFAULT_STORE) {
+      const shtml = fs.readFileSync(dest, 'utf8');
+      const safe = storePath.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+      const patched = shtml.replace(/const STORE_PATH = '[^']*';/, `const STORE_PATH = '${safe}';`);
+      if (patched !== shtml) {
+        fs.writeFileSync(dest, patched);
+      } else {
+        process.stderr.write('loose-ends: warning — could not find STORE_PATH in template to inject --store; panel will hydrate from the template default\n');
+      }
+    }
     await sh(`sprinkle refresh`);
     await sh(`sprinkle open ${shellQuote(name)}`);
     const n = await reseed(name, storePath);
