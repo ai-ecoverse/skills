@@ -1,0 +1,3 @@
+# Holds the Replicate API token — never commit.
+.config
+.env
