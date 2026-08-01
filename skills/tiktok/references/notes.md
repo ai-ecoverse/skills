@@ -73,3 +73,69 @@ events need it).
 `language`, and `wid` (used as `device_id`). `httpOnly` session cookies aren't in
 `document.cookie` — but same-origin `fetch(..., {credentials:'include'})` from the
 page sends them automatically.
+
+## Seeing videos (transcript + filmstrip)
+
+The combo command is `tiktok see` (not `watch`). In SLICC, `watch` means a
+long-lived webhook/lick monitor (`gh pr watch`, `slack watch`); this is a
+one-shot content capture.
+
+Added Aug 2026 after live-validating against a 104s UCI track-cycling clip
+(`7667617105923083542`).
+
+### Captions live on the item, not a separate API
+
+`itemStruct.video.subtitleInfos[]` (and the richer
+`itemStruct.video.claInfo.captionInfos[]`) list available caption tracks.
+Each entry has a CDN `Url` / `urlList[]` pointing at a WebVTT file, plus
+`LanguageCodeName` (e.g. `eng-US`), `Format: webvtt`, `Source: ASR` for
+auto-generated. Fetch the VTT **from inside the logged-in tab**
+(`fetch(url, {credentials:'include'})`) — bare Node fetch sometimes works for
+caption CDNs but fails for video CDNs; keep one path.
+
+`/api/item/detail/?itemId=` returns the same subtitleInfos. When the API is
+soft-throttled (empty 200), fall back to reading
+`__UNIVERSAL_DATA_FOR_REHYDRATION__` → `webapp.video-detail.itemInfo.itemStruct`
+from an open video page. Return a **slim** item (drop playAddr url_lists etc.)
+— the full blob is multi-MB and can break the eval bridge.
+
+### Filmstrip: sync seek only
+
+This does NOT work on TikTok tabs (hangs until timeout):
+
+```js
+v.currentTime = t;
+await new Promise(r => v.addEventListener('seeked', r, { once: true }));
+```
+
+This does (proven ~50ms per eval):
+
+```js
+// eval 1 (sync)
+v.muted = true; v.pause(); v.currentTime = t;
+// shell: sleep ~700ms for the frame to decode
+// eval 2 (sync)
+ctx.drawImage(v, ...);
+```
+
+Build the strip on `window.__ttStrip` (a page-global canvas) across N seek/draw
+cycles, then `canvas.toDataURL('image/jpeg', 0.85)` once at the end. A single
+async eval-file that does all N seeks and returns the data URL came back as
+`{}` — keep steps small and sync.
+
+Canvas is not tainted when the `<video>` uses `crossOrigin="use-credentials"`
+on the same TikTok origin session — `toDataURL` succeeds.
+
+### Video page navigation
+
+`playwright-cli goto https://www.tiktok.com/@<user>/video/<id> --tab=<id>` is
+reliable. Without the author handle, `/@/video/<id>` usually redirects. Prefer
+resolving `author.uniqueId` from item/detail first. After goto, invalidate the
+cached tab (URL changed) and poll until `video.readyState >= 1`.
+
+### SLICC convert/ffmpeg limits
+
+The in-browser SLICC `convert` is NOT full ImageMagick (`+append` / `-gravity`
+unsupported). `ffmpeg` needs `ipk add @ffmpeg/core@0.12.10` before it can
+hstack. The skill therefore stitches the filmstrip with page-context canvas —
+zero native deps.
