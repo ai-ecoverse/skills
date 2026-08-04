@@ -1,0 +1,8 @@
+{
+  "client_id": "YOUR_CLIENT_ID",
+  "client_secret": "YOUR_CLIENT_SECRET",
+  "org_id": "YOUR_ORG_ID@AdobeOrg",
+  "scopes": "openid,AdobeID,session,additional_info,firefly_api,ff_apis,read_organizations,additional_info.projectedProductContext,creative_sdk,ee.express_api,indesign_services",
+  "access_token": null,
+  "token_expires_at": null
+}
