@@ -142,7 +142,13 @@ wavespeed_poll() {
     result=$(curl -s \
       -H "Authorization: Bearer $WAVESPEED_API_KEY" \
       "https://api.wavespeed.ai/api/v3/predictions/$task_id/result")
-    status=$(echo "$result" | jq -r '.data.status // empty' 2>/dev/null)
+    # jq's stderr is deliberately NOT suppressed: a missing jq or a non-JSON
+    # body are tooling problems, and hiding them would misreport both as an
+    # unexpected API response.
+    if ! status=$(echo "$result" | jq -r '.data.status // empty'); then
+      echo "Could not parse the poll response (is jq installed?):"; echo "$result"
+      return 4
+    fi
     if [ "$status" = "completed" ]; then
       echo "$result" | jq -r '.data.outputs[]'
       return 0
@@ -150,8 +156,8 @@ wavespeed_poll() {
       echo "Task failed:"; echo "$result"
       return 1
     elif [ -z "$status" ]; then
-      # No parsable status: a wrong URL or an auth error, not a pending task.
-      # Surface it instead of spinning for the full timeout.
+      # Valid JSON, but no status field: a wrong URL or an auth error, not a
+      # pending task. Surface it instead of spinning for the full timeout.
       echo "Unexpected poll response:"; echo "$result"
       return 3
     fi
@@ -169,6 +175,16 @@ wavespeed_poll "$TASK_ID"
 # Video (slower — use 5s interval)
 wavespeed_poll "$TASK_ID" 5
 ```
+
+`wavespeed_poll` requires `jq`, and distinguishes its failures so you can tell what to fix:
+
+| rc | meaning | what to do |
+|----|---------|------------|
+| 0 | completed; output URLs printed | — |
+| 1 | the model reported `failed` | read the error in the printed body |
+| 2 | still running at the timeout | poll longer, or raise the timeout argument |
+| 3 | valid JSON with no status field | usually a wrong URL or a bad API key |
+| 4 | the response could not be parsed | install `jq`, or read its error above the body |
 
 ## Step 7: Deliver the Output
 
@@ -204,7 +220,8 @@ wavespeed_poll() {
   while [ $SECONDS -lt "$timeout" ]; do
     result=$(curl -s -H "Authorization: Bearer $WAVESPEED_API_KEY" \
       "https://api.wavespeed.ai/api/v3/predictions/$task_id/result")
-    status=$(echo "$result" | jq -r '.data.status // empty' 2>/dev/null)
+    if ! status=$(echo "$result" | jq -r '.data.status // empty'); then
+      echo "Could not parse the poll response (is jq installed?):"; echo "$result"; return 4; fi
     if [ "$status" = "completed" ]; then echo "$result" | jq -r '.data.outputs[]'; return 0
     elif [ "$status" = "failed" ]; then echo "Task failed:"; echo "$result"; return 1
     elif [ -z "$status" ]; then echo "Unexpected poll response:"; echo "$result"; return 3; fi
