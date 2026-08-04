@@ -100,8 +100,18 @@ async function harvestSessionToken() {
 /** Token resolution order: --token flag > stored config > one-shot browser harvest. */
 let cachedToken;
 let reharvested = false;
+// The token the last request actually used — including a `--token` override,
+// which is deliberately never cached or persisted. Only ever rendered masked.
+let activeToken;
 
+/** Resolve a token and record which one was used, so `whoami` masks the token
+ *  that authenticated the call rather than whatever happens to be cached. */
 async function getToken(flags) {
+  activeToken = await resolveToken(flags);
+  return activeToken;
+}
+
+async function resolveToken(flags) {
   const override = str(flags && flags.token);
   if (override) return override;
   if (cachedToken) return cachedToken;
@@ -397,7 +407,7 @@ async function cmdWhoami(flags) {
   console.log(`  ${c.dim('2FA')}          ${user.two_factor_auth_enabled ? c.green('enabled') : c.yellow('disabled')}`);
   if (self) {
     console.log('');
-    console.log(`  ${c.dim('token')}        ${self.name || 'unnamed'}  ${c.dim(maskToken(cachedToken))}`);
+    console.log(`  ${c.dim('token')}        ${self.name || 'unnamed'}  ${c.dim(maskToken(activeToken))}`);
     console.log(`  ${c.dim('token scope')}  ${self.scope || (self.scopes || []).join(',') || 'n/a'}`);
     console.log(`  ${c.dim('token expiry')} ${self.expires_at ? self.expires_at : c.green('never')}`);
   }
