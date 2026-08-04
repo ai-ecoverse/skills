@@ -1,5 +1,4 @@
 .yolo/
 skills/concur/.session.json
 skills/oryx/.config
-skills/fastly/scripts/.config
 node_modules/
