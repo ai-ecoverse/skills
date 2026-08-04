@@ -27,7 +27,8 @@ Implementation notes: [references/internals.md](references/internals.md).
 outlook mail --limit 10
 outlook mail --unread
 outlook mail --search "quarterly report"
-outlook view <message-id>
+outlook view <message-id|conversation-id>
+outlook thread <message-id|conversation-id>   # who is on this chain
 
 # Calendar (times are shown in the mailbox timezone, named in the header)
 outlook calendar
@@ -47,6 +48,21 @@ outlook send --to user@example.com --subject "Hello" --body "Message body"
 
 # Monday aggregation (unread mail + upcoming calendar)
 outlook monday --limit 20
+```
+
+## Who is on a thread
+
+An Outlook web URL — `…/mail/inbox/id/<id>` — carries a **conversation id**, not a
+message id. `view` and `thread` both accept either, so paste whichever you have.
+
+`outlook thread` lists every message oldest-first with its own sender, **To** and
+**Cc**. Recipients are per message, never merged — in a forwarded or re-Cc'd chain
+they genuinely differ, which is usually the answer you want.
+
+```bash
+outlook thread <conversation-id>           # previews
+outlook thread <message-id> --full         # complete bodies
+outlook thread <conversation-id> --json    # from/to/cc/bcc, ts, ids per message
 ```
 
 ## Getting meeting join details
