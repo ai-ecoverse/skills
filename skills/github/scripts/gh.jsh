@@ -105,7 +105,6 @@ const cli = require('sliccy:cli');
 const fmt = require('sliccy:fmt');
 const color = require('sliccy:color'); // renamed from bare `c` global
 const http = require('sliccy:http');
-const { buildPrWatchFilter, composePrWatchFilter, findWatchWebhook } = require('./pr-watch-filter.js');
 
 // Single POSIX-shell-quote a value for safe interpolation into an exec()
 // command line (exec runs through the jsh shell bridge).
@@ -1345,7 +1344,10 @@ async function findExistingWatchWebhook(name) {
   try { listResult = await exec('webhook list'); }
   catch (e) { cli.die('pr watch: could not query existing webhooks: ' + e.message); }
   if (listResult.exitCode !== 0) return null;
-  return findWatchWebhook(listResult.stdout, name);
+  const line = listResult.stdout.split('\n').find(l => l.includes(name));
+  if (!line) return null;
+  const idMatch = line.trim().match(/^(\S+)/);
+  return idMatch ? idMatch[1] : null;
 }
 
 async function prWatch(args) {
@@ -1354,7 +1356,7 @@ async function prWatch(args) {
   const { values, repoArg } = distribute('pr watch', positional, ['number'], flags);
   if (!values.number) cli.die('pr watch: PR number required\n' + usage);
   const num = validateNum(values.number, 'PR number');
-  const userFilter = flags.filter || null;
+  const filter = flags.filter || null;
   const scoopName = flags.scoop || process.env.SLICC_SCOOP || null;
   const repo = await repoFrom('pr watch', flags, repoArg);
 
@@ -1367,31 +1369,16 @@ async function prWatch(args) {
 
   const hookName = watchHookName(repo, num);
 
-  const existing = await findExistingWatchWebhook(hookName);
-  if (existing && existing.filtered) {
-    console.log(sym('success') + ' Already watching PR ' + color.cyan('#' + num) + ' in ' + repo + ' (webhook ' + color.gray(existing.id) + '). Nothing to do.');
+  const existingId = await findExistingWatchWebhook(hookName);
+  if (existingId) {
+    console.log(sym('success') + ' Already watching PR ' + color.cyan('#' + num) + ' in ' + repo + ' (webhook ' + color.gray(existingId) + '). Nothing to do.');
     return;
   }
 
-  // GitHub webhooks are repository-wide, so filter on the SLICC side before
-  // unrelated events can consume the receiving scoop's context. Repository
-  // identity plus head ref follows later commits without colliding across forks;
-  // the current SHA covers CI payloads that omit repository metadata.
-  let pr;
-  try { pr = await api.get(`/repos/${repo}/pulls/${num}`); }
-  catch (e) { fail('pr watch', e); }
-  const head = pr && pr.head;
-  const defaultFilter = buildPrWatchFilter(
-    num,
-    head && head.ref,
-    head && head.repo && head.repo.id,
-    head && head.sha
-  );
-  const filter = composePrWatchFilter(defaultFilter, userFilter);
-
   // 1. Create the SLICC-side webhook endpoint.
-  const createCmd = `webhook create --scoop ${escapeShellArg(scoopName)} ` +
-    `--name ${escapeShellArg(hookName)} --filter ${escapeShellArg(filter)}`;
+  const createCmd = filter
+    ? `webhook create --scoop ${scoopName} --name ${hookName} --filter ${JSON.stringify(filter)}`
+    : `webhook create --scoop ${scoopName} --name ${hookName}`;
   let createResult;
   try { createResult = await exec(createCmd); }
   catch (e) { cli.die('pr watch: failed to create SLICC webhook: ' + e.message); }
@@ -1403,24 +1390,17 @@ async function prWatch(args) {
     cli.die('pr watch: could not parse `webhook create` output — got:\n' + createResult.stdout);
   }
 
-  // 2. Register that URL as a real GitHub repo webhook. Legacy watches had no
-  // SLICC filter; repoint their existing GitHub hook before deleting the old
-  // endpoint so delivery remains live throughout the upgrade.
+  // 2. Register that URL as a real GitHub repo webhook.
   let hook;
   try {
-    let existingHook = null;
-    if (existing) {
-      const hooks = await api.get(`/repos/${repo}/hooks`);
-      existingHook = hooks.find(h => h.config && h.config.url && h.config.url.includes('/' + existing.id));
-    }
-    const hookConfig = {
-      active: true,
-      events: WATCH_EVENTS,
-      config: { url: webhookUrl, content_type: 'json' },
-    };
-    hook = existingHook
-      ? await api.patch(`/repos/${repo}/hooks/${existingHook.id}`, { body: hookConfig })
-      : await api.post(`/repos/${repo}/hooks`, { body: { name: 'web', ...hookConfig } });
+    hook = await api.post(`/repos/${repo}/hooks`, {
+      body: {
+        name: 'web',
+        active: true,
+        events: WATCH_EVENTS,
+        config: { url: webhookUrl, content_type: 'json' },
+      },
+    });
   } catch (e) {
     // Best-effort cleanup of the SLICC-side webhook if the GitHub-side
     // registration failed, so we don't leave an orphaned watcher behind.
@@ -1428,16 +1408,7 @@ async function prWatch(args) {
     fail('pr watch', e);
   }
 
-  if (existing) {
-    try {
-      const deleted = await exec(`webhook delete ${escapeShellArg(existing.id)}`);
-      if (deleted.exitCode !== 0) cli.warn('pr watch: upgraded delivery but could not delete legacy SLICC webhook ' + existing.id);
-    } catch {
-      cli.warn('pr watch: upgraded delivery but could not delete legacy SLICC webhook ' + existing.id);
-    }
-  }
-
-  console.log(sym('success') + (existing ? ' Upgraded watch for PR ' : ' Watching PR ') + color.cyan('#' + num) + ' in ' + repo);
+  console.log(sym('success') + ' Watching PR ' + color.cyan('#' + num) + ' in ' + repo);
   console.log(color.gray('SLICC webhook:  ') + webhookId + ' (' + hookName + ') → ' + scoopName);
   console.log(color.gray('GitHub hook:    ') + hook.id);
   console.log(color.gray('Events:         ') + WATCH_EVENTS.join(', '));
@@ -1453,12 +1424,11 @@ async function prUnwatch(args) {
   const repo = await repoFrom('pr unwatch', flags, repoArg);
   const hookName = watchHookName(repo, num);
 
-  const existing = await findExistingWatchWebhook(hookName);
-  if (!existing) {
+  const webhookId = await findExistingWatchWebhook(hookName);
+  if (!webhookId) {
     console.log(color.gray('Not watching PR ' + '#' + num + ' in ' + repo + ' — nothing to tear down.'));
     return;
   }
-  const webhookId = existing.id;
 
   // Find the GitHub-side hook whose config.url matches this SLICC webhook,
   // so we can remove it too and avoid leaving a dangling registration on
@@ -2530,43 +2500,8 @@ async function mondayGh(args) {
     username = user.login;
   } catch {}
 
-  // Normalize GitHub's own state into the protocol-standard disposition flags the
-  // aggregator's signal guard reads (so `monday` stays source-agnostic):
-  //   resolved          — merged/closed → FYI
-  //   not_ready         — draft or CI pending/failing → hold for later
-  //   awaiting_you      — your review/action is requested → actionable now
-  //   waiting_on_others — you authored it and it's now on others (review/merge)
-  function ghNormalize(m) {
-    const resolved = m.merged === true || m.state === 'closed';
-    if (resolved) return { resolved: true };
-    const asked = ['review_requested', 'mention', 'assign', 'assigned'].includes(m.relationship);
-    if (asked) return { awaiting_you: true };
-    const notReady = m.draft === true || m.awaiting_checks === true;
-    if (m.authored_by_you === true && m.state === 'open') {
-      if (notReady) return { not_ready: true };            // blocked on your CI / still a draft
-      if (m.mergeable_state === 'clean') return { awaiting_you: true }; // green + approved → you merge
-      return { waiting_on_others: true };                  // waiting on reviewers/merge
-    }
-    return notReady ? { not_ready: true } : {};
-  }
-  const withNormalized = (m) => ({ ...m, ...ghNormalize(m) });
-
   const items = [];
   const seen = new Set();
-
-  // Source-owned rating guidance, carried to the rater via the item's
-  // `rating_hint` field (part of the monday protocol). Keeping GitHub's field
-  // semantics here — not in the generic aggregator — lets each tool manage its
-  // own rating instructions.
-  const GH_RATING_HINT = [
-    'This is a GitHub item. `meta.viewer` is the reader\'s own username.',
-    'The item carries normalized disposition flags — trust them:',
-    '`meta.resolved: true` → it is merged/closed, already done → category MUST be `fyi`.',
-    '`meta.awaiting_you: true` → the reader\'s review or action is requested (review_requested / assigned / mentioned, or their own PR is green and ready to merge) → this is a real to-do (confirm/review/respond/act).',
-    '`meta.waiting_on_others: true` → the reader has done their part and is now waiting on other people (their open PR awaiting review/merge, a question awaiting a reply) → category `waiting`: they may want to chase or nudge, but there is nothing for them to build.',
-    '`meta.not_ready: true` → a PR that is a draft or whose CI is pending/failing → not ready to act on yet; keep urgency low.',
-    'Otherwise use `meta.relationship` and the content to judge how much the reader is personally on the hook.',
-  ].join(' ');
 
   function addItem(item) {
     if (seen.has(item.id)) return;
@@ -2587,54 +2522,6 @@ async function mondayGh(args) {
     } catch {
       return currentBody;
     }
-  }
-
-  // Helper: derive a normalized checks state for a commit sha.
-  // 'passing' | 'pending' | 'failing' | 'none' | null (unknown/error).
-  async function checksFor(repo, sha) {
-    if (!sha) return null;
-    try {
-      const runs = await api.get(`/repos/${repo}/commits/${sha}/check-runs`);
-      const cr = (runs && runs.check_runs) || [];
-      if (cr.length) {
-        if (cr.some(r => r.status !== 'completed')) return 'pending';
-        if (cr.some(r => ['failure', 'timed_out', 'cancelled', 'action_required', 'stale'].includes(r.conclusion))) return 'failing';
-        return 'passing';
-      }
-      // Fall back to the legacy combined status API for repos not using checks.
-      const st = await api.get(`/repos/${repo}/commits/${sha}/status`);
-      if (st && st.total_count > 0) {
-        return st.state === 'success' ? 'passing' : st.state === 'pending' ? 'pending' : 'failing';
-      }
-      return 'none';
-    } catch { return null; }
-  }
-
-  // Helper: fetch the real state/merged/draft/checks for a PR or issue subject.
-  // Notifications alone don't carry this, so merged PRs and CI-pending PRs would
-  // otherwise look like fresh to-dos. One extra call per subject (plus one for
-  // checks on open PRs) — bounded by --limit.
-  async function subjectSignals(repo, num, type) {
-    const m = {};
-    if (!repo || !num) return m;
-    try {
-      if (type === 'pr') {
-        const pr = await api.get(`/repos/${repo}/pulls/${num}`);
-        m.state = pr.state;                        // 'open' | 'closed'
-        m.merged = !!pr.merged;
-        m.draft = !!pr.draft;
-        m.mergeable_state = pr.mergeable_state || null;
-        if (!m.merged && pr.state === 'open') {
-          m.checks = await checksFor(repo, pr.head && pr.head.sha);
-          m.awaiting_checks = m.checks === 'pending' || m.checks === 'failing';
-          m.ready_to_merge = m.mergeable_state === 'clean' && m.checks === 'passing';
-        }
-      } else if (type === 'issue') {
-        const iss = await api.get(`/repos/${repo}/issues/${num}`);
-        m.state = iss.state;                       // 'open' | 'closed'
-      }
-    } catch { /* enrichment is best-effort */ }
-    return m;
   }
 
   // 1. Notifications
@@ -2662,15 +2549,9 @@ async function mondayGh(args) {
       const body = (num && depth > 0)
         ? await fetchThread(repo, num, type, baseBody, depth)
         : baseBody;
-      // Enrich with real subject state so merged/closed items don't look like
-      // open to-dos and CI-pending PRs can be held out of the "now" slice.
-      const signals = (type === 'pr' || type === 'issue')
-        ? await subjectSignals(repo, num, type)
-        : {};
       addItem({
         id: `gh-notif-${n.id}`,
         source: 'gh',
-        rating_hint: GH_RATING_HINT,
         type,
         title: n.subject.title,
         subtitle: num ? `${repo} #${num}` : repo,
@@ -2678,16 +2559,7 @@ async function mondayGh(args) {
         ts: n.updated_at,
         body,
         participants: [],
-        meta: withNormalized({
-          reason: n.reason,
-          unread: n.unread,
-          viewer: username,
-          // Your relationship to the thread, straight from the notification
-          // reason (author, review_requested, mention, assign, comment, ...).
-          relationship: n.reason,
-          authored_by_you: n.reason === 'author',
-          ...signals,
-        }),
+        meta: { reason: n.reason, unread: n.unread },
       });
     }
   } catch {}
@@ -2705,7 +2577,6 @@ async function mondayGh(args) {
       addItem({
         id: `gh-pr-${pr.id}`,
         source: 'gh',
-        rating_hint: GH_RATING_HINT,
         type: 'pr',
         title: pr.title,
         subtitle: `${repoUrl} #${pr.number}`,
@@ -2713,17 +2584,7 @@ async function mondayGh(args) {
         ts: pr.updated_at,
         body,
         participants: [pr.user.login, ...(pr.assignees || []).map(a => a.login)].filter((v, i, a) => a.indexOf(v) === i),
-        meta: withNormalized({
-          state: pr.state,
-          draft: pr.draft || false,
-          viewer: username,
-          author: pr.user.login,
-          relationship: 'review_requested',
-          authored_by_you: pr.user.login === username,
-          // Checks readiness so a review request that's still red/pending on CI
-          // can be held out of the "now" slice.
-          ...(await subjectSignals(repoUrl, pr.number, 'pr')),
-        }),
+        meta: { state: pr.state, draft: pr.draft || false },
       });
     }
   } catch {}
@@ -2741,7 +2602,6 @@ async function mondayGh(args) {
       addItem({
         id: `gh-issue-${issue.id}`,
         source: 'gh',
-        rating_hint: GH_RATING_HINT,
         type: 'issue',
         title: issue.title,
         subtitle: `${repoUrl} #${issue.number}`,
@@ -2749,14 +2609,7 @@ async function mondayGh(args) {
         ts: issue.updated_at,
         body,
         participants: [issue.user.login, ...(issue.assignees || []).map(a => a.login)].filter((v, i, a) => a.indexOf(v) === i),
-        meta: withNormalized({
-          state: issue.state,
-          labels: (issue.labels || []).map(l => l.name),
-          viewer: username,
-          author: issue.user.login,
-          relationship: 'assignee',
-          authored_by_you: issue.user.login === username,
-        }),
+        meta: { state: issue.state, labels: (issue.labels || []).map(l => l.name) },
       });
     }
   } catch {}
@@ -2877,6 +2730,33 @@ async function contentPut(args) {
 
 // ─── api (raw passthrough) ───────────────────────────────────────────────────
 
+// Expand upstream-style bracket notation in `-f` keys into a nested request
+// body, so `-f 'tree[0][path]=x' -f 'parents[]=sha'` builds
+// `{tree:[{path:"x"}], parents:["sha"]}` rather than storing the bracketed key
+// literally. references/gotchas.md has documented this syntax as the way to
+// commit a mode-120000 symlink through the Git Data API, but the parser used to
+// keep `tree[0][path]` as a flat key, so GitHub answered "Invalid tree info".
+// Keys with no brackets are assigned verbatim, so existing callers are unaffected.
+function assignField(body, rawKey, value) {
+  const m = rawKey.match(/^([^[\]]+)((?:\[[^[\]]*\])*)$/);
+  if (!m || !m[2]) { body[rawKey] = value; return; }
+  const segs = [m[1]];
+  for (const b of m[2].matchAll(/\[([^[\]]*)\]/g)) segs.push(b[1]);
+  let cur = body;
+  for (let i = 0; i < segs.length; i++) {
+    const raw = segs[i];
+    const isLast = i === segs.length - 1;
+    // An empty `[]` appends; a numeric index addresses an array slot.
+    const key = raw === '' ? (Array.isArray(cur) ? cur.length : 0)
+      : /^\d+$/.test(raw) ? Number(raw) : raw;
+    if (isLast) { cur[key] = value; continue; }
+    const nxt = segs[i + 1];
+    const nextIsIndex = nxt === '' || /^\d+$/.test(nxt);
+    if (cur[key] === null || typeof cur[key] !== 'object') cur[key] = nextIsIndex ? [] : {};
+    cur = cur[key];
+  }
+}
+
 async function apiPassthrough(args) {
   const usage = 'usage: gh api <path> [-X METHOD] [-f key=value]... [--jq <expr>]';
   if (!args[0]) cli.die(usage);
@@ -2891,7 +2771,7 @@ async function apiPassthrough(args) {
     else if (args[i].startsWith('--jq=')) { jqExpr = args[i].slice(5); }
     else if ((args[i] === '-f' || args[i] === '--field' || args[i] === '-F' || args[i] === '--raw-field') && args[i+1]) {
       const [k, ...vParts] = args[++i].split('=');
-      fields[k] = vParts.join('=');
+      assignField(fields, k, vParts.join('='));
     }
     else positional.push(args[i]);
   }
@@ -3020,10 +2900,10 @@ const HELP = {
         usage: ['gh pr watch <num> [--filter <js>] [--scoop <name>] [-R owner/repo]', 'gh pr watch <num> [repo]'],
         desc: 'Watch a PR event-driven: PR/review/CI events arrive as licks',
         flags: [REPO_HELP,
-          '--filter <js>             additional predicate ANDed with the automatic PR-scoped filter',
+          '--filter <js>             JS predicate passed to `webhook create --filter`, drops noisy events',
           '--scoop <name>            receiving scoop (default: $SLICC_SCOOP)'],
         notes: [
-          'Installs a PR-filtered SLICC webhook plus a GitHub repo webhook. Idempotent.',
+          'Installs a SLICC webhook plus a GitHub repo webhook. Idempotent.',
           'Mutates the repository. Tear it down with `gh pr unwatch <num>`.',
           'See references/webhook-pr-monitoring.md for the self-echo-detection pattern',
           'a scoop needs when watching its own PR.',
@@ -3271,7 +3151,11 @@ const HELP = {
       flags: ['-X, --method <verb>       GET (default), POST, PUT, PATCH, DELETE',
         '-f, --field <key=value>   body field (repeatable), sent as JSON on non-GET',
         '-q, --jq <expr>           filter the response through a jq expression'],
-      notes: ['Bodies are built from -f flags, never from @file — see references/gotchas.md.'],
+      notes: [
+        'Bodies are built from -f flags, never from @file — see references/gotchas.md.',
+        "-f keys accept bracket notation for nested bodies: -f 'tree[0][path]=x' and",
+        '-f \'parents[]=sha\' build {"tree":[{"path":"x"}],"parents":["sha"]}.',
+      ],
     },
   },
   auth: {
