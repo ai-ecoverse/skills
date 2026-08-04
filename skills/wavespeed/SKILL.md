@@ -126,6 +126,10 @@ timeout for slow models (e.g. `--max-time 120`).
 
 ## Step 6: Poll for Results
 
+Poll `/api/v3/predictions/{id}/result`. The **`/result` suffix is required** —
+`/api/v3/predictions/{id}` on its own returns a bare `404 page not found`, which parses to
+an empty status and makes a naive poll loop spin until it times out instead of failing.
+
 ```bash
 # Define once per session
 wavespeed_poll() {
@@ -137,14 +141,25 @@ wavespeed_poll() {
   while [ $SECONDS -lt "$timeout" ]; do
     result=$(curl -s \
       -H "Authorization: Bearer $WAVESPEED_API_KEY" \
-      "https://api.wavespeed.ai/api/v3/predictions/$task_id")
-    status=$(echo "$result" | jq -r '.data.status')
+      "https://api.wavespeed.ai/api/v3/predictions/$task_id/result")
+    # jq's stderr is deliberately NOT suppressed: a missing jq or a non-JSON
+    # body are tooling problems, and hiding them would misreport both as an
+    # unexpected API response.
+    if ! status=$(echo "$result" | jq -r '.data.status // empty'); then
+      echo "Could not parse the poll response (is jq installed?):"; echo "$result"
+      return 4
+    fi
     if [ "$status" = "completed" ]; then
       echo "$result" | jq -r '.data.outputs[]'
       return 0
     elif [ "$status" = "failed" ]; then
       echo "Task failed:"; echo "$result"
       return 1
+    elif [ -z "$status" ]; then
+      # Valid JSON, but no status field: a wrong URL or an auth error, not a
+      # pending task. Surface it instead of spinning for the full timeout.
+      echo "Unexpected poll response:"; echo "$result"
+      return 3
     fi
     sleep "$interval"
   done
@@ -160,6 +175,16 @@ wavespeed_poll "$TASK_ID"
 # Video (slower — use 5s interval)
 wavespeed_poll "$TASK_ID" 5
 ```
+
+`wavespeed_poll` requires `jq`, and distinguishes its failures so you can tell what to fix:
+
+| rc | meaning | what to do |
+|----|---------|------------|
+| 0 | completed; output URLs printed | — |
+| 1 | the model reported `failed` | read the error in the printed body |
+| 2 | still running at the timeout | poll longer, or raise the timeout argument |
+| 3 | valid JSON with no status field | usually a wrong URL or a bad API key |
+| 4 | the response could not be parsed | install `jq`, or read its error above the body |
 
 ## Step 7: Deliver the Output
 
@@ -194,10 +219,12 @@ wavespeed_poll() {
   SECONDS=0
   while [ $SECONDS -lt "$timeout" ]; do
     result=$(curl -s -H "Authorization: Bearer $WAVESPEED_API_KEY" \
-      "https://api.wavespeed.ai/api/v3/predictions/$task_id")
-    status=$(echo "$result" | jq -r '.data.status')
+      "https://api.wavespeed.ai/api/v3/predictions/$task_id/result")
+    if ! status=$(echo "$result" | jq -r '.data.status // empty'); then
+      echo "Could not parse the poll response (is jq installed?):"; echo "$result"; return 4; fi
     if [ "$status" = "completed" ]; then echo "$result" | jq -r '.data.outputs[]'; return 0
-    elif [ "$status" = "failed" ]; then echo "Task failed:"; echo "$result"; return 1; fi
+    elif [ "$status" = "failed" ]; then echo "Task failed:"; echo "$result"; return 1
+    elif [ -z "$status" ]; then echo "Unexpected poll response:"; echo "$result"; return 3; fi
     sleep "$interval"
   done
   echo "Timed out after ${timeout}s"; return 2
