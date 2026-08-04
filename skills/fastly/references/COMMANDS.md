@@ -126,6 +126,10 @@ subtrees.
 | `fastly-ext billing forecast` | `--window N` (backtest months, default 12), `--json` |
 | `fastly-ext billing summary` | `--year YYYY`, `--json` |
 
+`--limit` and `--window` must be 1 or greater; a non-positive value is rejected
+rather than quietly falling back to a page of data (`slice(-0)` in particular
+would otherwise widen the backtest to the entire invoice history).
+
 `invoices` and `summary` paginate with the API's cursor automatically.
 `summary` without `--year` shows per-month detail for the current calendar year
 plus annual sums for the whole history; unpaid invoices
