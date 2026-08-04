@@ -8,6 +8,7 @@
 //   calendar  List calendar events
 //   event     Show one calendar event in full (body, Teams join info, recurrence)
 //   send      Send an email
+//   thread    Every message in a conversation, with per-message To/Cc
 //   monday    Aggregated inbox for monday dispatcher
 //
 // ─── jsh runtime migration (issue #167) ─────────────────────────
@@ -120,6 +121,17 @@ function formatDate(iso) {
   if (!iso) return '';
   const d = new Date(iso);
   return d.toISOString().replace('T', ' ').replace(/\.\d+Z$/, ' UTC');
+}
+
+// Epoch milliseconds for a `ts` field, or null when the stamp is missing or
+// unparseable. `monday` sorts items by `new Date(item.ts).getTime()`, which
+// treats a missing `ts` as epoch 0 and buries the source at the bottom of every
+// digest — a number is unambiguous there, where an epoch-ms *string* would parse
+// as an invalid date.
+function epochMs(iso) {
+  if (!iso) return null;
+  const ms = new Date(iso).getTime();
+  return Number.isNaN(ms) ? null : ms;
 }
 
 // Event Start/End are wall-clock times in the timezone we asked OWA for (see
@@ -464,11 +476,39 @@ function decodeJwtPayload(tok) {
 // hook ever gets a chance to observe a genuinely new Authorization header.
 const TOKEN_EXP_SAFETY_MARGIN_MS = 60 * 1000;
 
+// OWA mints several tokens for the SAME audience (`https://outlook.office.com`)
+// with very different privileges. Besides the full mailbox token (74 scopes,
+// ~85 min lifetime) the SPA regularly emits single-purpose short-lived ones —
+// observed live: `scp: "OwaAttachments.Read"`, 300 s lifetime — whenever it
+// lazily loads an attachment. Those satisfy an aud/exp check but answer
+// `403 Access is denied` on /me/messages and /me/calendarview, which is what
+// made `outlook monday` intermittently print an empty list: the capture hook had
+// latched the attachment token. So a candidate must also carry a scope that
+// actually grants mailbox access. A token with no `scp` claim at all is still
+// accepted — there is nothing to judge it by, and rejecting it would break the
+// legacy plaintext-cache path, which mints tokens outside this code's control.
+const MAILBOX_SCOPE_RES = [
+  /^(?:mail|calendars)\./i,
+  /^(?:owa|eas|outlookservice)\.accessasuser/i,
+  /^full_access_as_user$/i,
+  /(?:^|\/)\.default$/i,
+];
+
+function hasMailboxScope(claims) {
+  const scp = claims && claims.scp;
+  if (!scp) return true;
+  return String(scp)
+    .split(/\s+/)
+    .filter(Boolean)
+    .some((scope) => MAILBOX_SCOPE_RES.some((re) => re.test(scope)));
+}
+
 function isFreshBearerCandidate(candidate) {
   if (!candidate || candidate.split('.').length !== 3) return false;
   const claims = decodeJwtPayload(candidate);
   if (!claims) return false;
   if (!claims.aud || String(claims.aud).indexOf('outlook.office.com') === -1) return false;
+  if (!hasMailboxScope(claims)) return false; // right audience, wrong privileges
   if (!claims.exp) return false; // no exp claim — cannot prove freshness, reject
   return claims.exp * 1000 > Date.now() + TOKEN_EXP_SAFETY_MARGIN_MS;
 }
@@ -577,6 +617,88 @@ async function getToken() {
 
 // ─── API Client ──────────────────────────────────────────────────────────────
 
+// A bearer token scraped from the live SPA can stop being usable mid-command:
+// Outlook rotates it, and the capture hook can momentarily see a token that the
+// scope gate above would reject (see hasMailboxScope). Either way the request
+// answers 401/403 while the browser session itself is perfectly healthy — which
+// is why re-running the whole command used to "fix" it, the next extraction just
+// happened to see a different token. Recover in place instead: discard the token
+// that just failed, force one cache-bypassing re-extraction, and replay the
+// request EXACTLY once. Every other status (400, 404, 5xx) is reported as
+// before, and a genuinely unauthorised session still ends in the original error
+// rather than a retry loop.
+const AUTH_RETRY_STATUSES = [401, 403];
+
+// Tokens proven bad during this process. `reacquireToken` consults it so a
+// forced refresh can never hand the same failing token back, and
+// `effectiveToken` consults it so the remaining calls of a multi-request command
+// go straight to the replacement instead of each paying for its own retry.
+const _rejectedTokens = new Set();
+let _refreshedToken = null;
+
+function effectiveToken(token) {
+  return _refreshedToken && _rejectedTokens.has(token) ? _refreshedToken : token;
+}
+
+// Invalidate `badToken` — in this process and in the on-disk cache, so a later
+// run cannot pick it up again — then try ONCE to obtain a different one.
+// Returns null rather than exiting when it cannot, so the caller surfaces the
+// original HTTP error instead of a misleading "could not extract token".
+async function reacquireToken(badToken) {
+  if (badToken) {
+    _rejectedTokens.add(badToken);
+    try {
+      if ((await fs.readFile(TOKEN_PATH)).trim() === badToken) {
+        await fs.writeFile(TOKEN_PATH, '');
+      }
+    } catch { /* no cache file, or not writable — nothing to invalidate */ }
+  }
+  let fresh = null;
+  try {
+    fresh = await extractTokenFromBrowser();
+  } catch { /* no usable Outlook tab — fall through to null */ }
+  if (!fresh || _rejectedTokens.has(fresh)) return null;
+  _refreshedToken = fresh;
+  return fresh;
+}
+
+// Build the Error for a failed response, exposing `.status` and `.code` so
+// callers can branch on them without regex-matching the message. The message
+// itself keeps its existing `HTTP <status>: <message>` shape.
+async function httpError(res) {
+  const body = await res.text();
+  let msg = body;
+  let code = null;
+  try {
+    const parsed = JSON.parse(body);
+    msg = parsed.error?.message || body;
+    code = parsed.error?.code || null;
+  } catch { /* non-JSON error body — surface it verbatim */ }
+  // Some auth rejections come back with an empty body; don't report "HTTP 401: ".
+  if (!String(msg).trim()) msg = res.statusText || 'request failed';
+  const err = new Error(`HTTP ${res.status}: ${msg}`);
+  err.status = res.status;
+  err.code = code;
+  return err;
+}
+
+// Run `attempt(token)` and, on 401/403 only, replay it once with a freshly
+// re-extracted token. Returns the final Response with its body still unread.
+// Replaying a POST is safe here because 401/403 means the request was rejected
+// before it was processed — no mail was sent, no invitation was answered.
+async function withAuthRetry(token, attempt) {
+  const first = effectiveToken(token);
+  let res = await attempt(first);
+  if (!res.ok && AUTH_RETRY_STATUSES.includes(res.status)) {
+    const fresh = await reacquireToken(first);
+    if (fresh) {
+      try { await res.text(); } catch { /* drain the discarded 401/403 body */ }
+      res = await attempt(fresh); // exactly one replay — never a loop
+    }
+  }
+  return res;
+}
+
 // opts.timezone → `Prefer: outlook.timezone="<Windows tz name>"`, which makes OWA
 // return Start/End as wall-clock times in that zone instead of UTC.
 async function owaGet(token, path, params, opts) {
@@ -587,39 +709,34 @@ async function owaGet(token, path, params, opts) {
       .join('&');
     url += (url.includes('?') ? '&' : '?') + qs;
   }
-  const headers = {
-    'Authorization': `Bearer ${token}`,
-    'Content-Type': 'application/json',
-    'Accept': 'application/json',
-  };
-  if (opts && opts.timezone) headers['Prefer'] = `outlook.timezone="${opts.timezone}"`;
-  const res = await fetch(url, { headers });
-  if (!res.ok) {
-    const body = await res.text();
-    let msg;
-    try { msg = JSON.parse(body).error?.message || body; } catch { msg = body; }
-    throw new Error(`HTTP ${res.status}: ${msg}`);
-  }
+  const res = await withAuthRetry(token, (bearer) => {
+    const headers = {
+      'Authorization': `Bearer ${bearer}`,
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    };
+    if (opts && opts.timezone) headers['Prefer'] = `outlook.timezone="${opts.timezone}"`;
+    return fetch(url, { headers });
+  });
+  if (!res.ok) throw await httpError(res);
   return res.json();
 }
 
 async function owaPost(token, path, body) {
   const url = path.startsWith('http') ? path : `${OWA_BASE}${path}`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    let msg;
-    try { msg = JSON.parse(text).error?.message || text; } catch { msg = text; }
-    throw new Error(`HTTP ${res.status}: ${msg}`);
-  }
+  const payload = JSON.stringify(body);
+  const res = await withAuthRetry(token, (bearer) =>
+    fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${bearer}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: payload,
+    })
+  );
+  if (!res.ok) throw await httpError(res);
   // 202 Accepted for sendMail (no body)
   if (res.status === 202 || res.headers.get('content-length') === '0') return {};
   return res.json();
@@ -1036,6 +1153,8 @@ async function cmdMonday() {
         body: trunc(msg.BodyPreview || '', 300),
         url: msg.WebLink || `https://outlook.office.com/mail/id/${encodeURIComponent(msg.Id)}`,
         from: msg.From?.EmailAddress?.Address || '',
+        // `ts` is what monday sorts on; `date` stays for backwards compatibility.
+        ts: epochMs(msg.ReceivedDateTime),
         date: msg.ReceivedDateTime || '',
         importance: msg.Importance || 'Normal',
         repo: null,
@@ -1065,6 +1184,7 @@ async function cmdMonday() {
 
       const response = ev.ResponseStatus?.Response || '';
       const type = response === 'NotResponded' ? 'meeting' : 'calendar';
+      const startIso = ev.Start?.DateTime ? ev.Start.DateTime + 'Z' : '';
 
       items.push({
         source: 'outlook',
@@ -1074,7 +1194,10 @@ async function cmdMonday() {
         body: trunc(ev.BodyPreview || '', 300),
         url: ev.WebLink || `https://outlook.office.com/calendar/item/${encodeURIComponent(ev.Id)}`,
         from: ev.Organizer?.EmailAddress?.Address || '',
-        date: ev.Start?.DateTime ? ev.Start.DateTime + 'Z' : '',
+        // No `Prefer: outlook.timezone` on the calendarview call above, so
+        // Start.DateTime is UTC wall-clock and appending 'Z' makes it a real instant.
+        ts: epochMs(startIso),
+        date: startIso,
         location: ev.Location?.DisplayName || null,
         response: response || null,
         repo: null,
@@ -1088,47 +1211,242 @@ async function cmdMonday() {
   console.log(JSON.stringify(items, null, 2));
 }
 
+const VIEW_SELECT =
+  'Id,ConversationId,Subject,From,ToRecipients,CcRecipients,ReceivedDateTime,Body,' +
+  'Importance,HasAttachments,WebLink';
+
+// Render one message the way `outlook view` always has. Extracted unchanged so
+// the conversation-id path below can reuse it verbatim.
+function printMessage(msg) {
+  console.log(C.bold(msg.Subject || '(no subject)'));
+  console.log(`${C.gray('From:')} ${msg.From?.EmailAddress?.Name || ''} <${msg.From?.EmailAddress?.Address || ''}>`);
+  const to = (msg.ToRecipients || []).map(r => r.EmailAddress?.Address).join(', ');
+  if (to) console.log(`${C.gray('To:')} ${to}`);
+  const cc = (msg.CcRecipients || []).map(r => r.EmailAddress?.Address).join(', ');
+  if (cc) console.log(`${C.gray('Cc:')} ${cc}`);
+  console.log(`${C.gray('Date:')} ${formatDate(msg.ReceivedDateTime)}`);
+  if (msg.Importance && msg.Importance !== 'Normal') console.log(`${C.gray('Importance:')} ${msg.Importance}`);
+  console.log(`${C.gray('Link:')} ${msg.WebLink || ''}`);
+  // The id to hand to `outlook thread` to see the rest of the chain.
+  if (msg.ConversationId) console.log(`${C.gray('Conversation:')} ${msg.ConversationId}`);
+  console.log('');
+
+  // Strip HTML tags for plain-text display
+  const bodyContent = msg.Body?.Content || '';
+  const plainBody = bodyContent
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/\s+/g, ' ')
+    .trim();
+  console.log(trunc(plainBody, 2000));
+}
+
 async function cmdView() {
   const token = await getToken();
   const id = positional[0];
   if (!id) die('outlook view: provide a message ID');
 
+  let msg = null;
+  let conversationFallback = false;
+  let isEventId = false;
+  let failure = null;
+  try {
+    msg = await owaGet(token, `/me/messages/${encodeURIComponent(id)}`, { '$select': VIEW_SELECT });
+  } catch (e) {
+    // The id in an Outlook web URL is a conversation id, and this endpoint
+    // rejects it outright — resolve it below instead of failing.
+    if (isConversationIdError(e)) {
+      conversationFallback = true;
+    } else if (e.status === 404 && (await looksLikeEvent(token, id))) {
+      // Calendar event ids live in a different store, so /me/messages/<eventId>
+      // answers a bare 404 ("The specified object was not found in the store.").
+      // Probe the event store and point at the right command instead.
+      isEventId = true;
+    } else {
+      failure = e.message;
+    }
+  }
+  if (isEventId) die(`outlook view: that ID is a calendar event, not a message — use: outlook event ${id}`);
+  if (failure) die(`outlook: view failed: ${failure}`);
+
+  if (conversationFallback) {
+    let messages = [];
+    try {
+      messages = await fetchConversation(token, id, 50, true);
+    } catch (e) {
+      failure = e.message;
+    }
+    if (failure) die(`outlook: view failed: ${failure}`);
+    if (!messages.length) die(`outlook: view failed: no messages in conversation ${trunc(id, 40)}`);
+    // Newest message in full — the one a person opening that URL is looking at.
+    printMessage(messages[messages.length - 1]);
+    if (messages.length > 1) {
+      console.log('');
+      console.log(C.gray(`Thread: ${messages.length} messages in this conversation (newest shown above).`));
+      console.log(C.gray(`For every message with its own To/Cc: outlook thread ${id}`));
+    }
+    return;
+  }
+
+  printMessage(msg);
+}
+
+// ─── Conversations ───────────────────────────────────────────────────────────
+// The id in an Outlook web URL (…/mail/inbox/id/<id>) is a CONVERSATION id, not a
+// message id, so it is the id anyone naturally has to hand — but
+// /me/messages/<conversationId> answers 400 ErrorInvalidOperation
+// ("ConversationId isn't supported in the context of this operation."). Both
+// `view` and `thread` therefore accept either shape. Both encodings work in the
+// $filter below: the standard base64 the URL carries (…xlI/grQ=) and the
+// base64url the API itself returns (…xlI-grQ=), so neither is normalised.
+
+function isConversationIdError(e) {
+  return !!e && e.status === 400 && /conversationid/i.test(e.message || '');
+}
+
+const THREAD_SELECT =
+  'Id,ConversationId,Subject,From,Sender,ToRecipients,CcRecipients,BccRecipients,' +
+  'ReceivedDateTime,SentDateTime,Importance,HasAttachments,WebLink,BodyPreview';
+
+// Every message in one conversation, oldest first. `$orderby` cannot be combined
+// with a ConversationId `$filter` — the store answers 400 InefficientFilter — so
+// the ordering is done here rather than server-side.
+async function fetchConversation(token, conversationId, limit, withBody) {
+  const literal = String(conversationId).replace(/'/g, "''"); // OData string escape
+  const data = await owaGet(token, '/me/messages', {
+    '$filter': `ConversationId eq '${literal}'`,
+    '$select': withBody ? `${THREAD_SELECT},Body` : THREAD_SELECT,
+    '$top': String(limit),
+  });
+  return (data.value || []).sort(
+    (a, b) =>
+      new Date(a.ReceivedDateTime || a.SentDateTime || 0).getTime() -
+      new Date(b.ReceivedDateTime || b.SentDateTime || 0).getTime()
+  );
+}
+
+// Resolve either id shape to a conversation id. A message id costs one extra GET
+// to read its ConversationId; a conversation id is recognised from the 400 above
+// and used as-is. Returns null when the id is a message with no conversation.
+async function resolveConversationId(token, id) {
   try {
     const msg = await owaGet(token, `/me/messages/${encodeURIComponent(id)}`, {
-      '$select': 'Id,Subject,From,ToRecipients,CcRecipients,ReceivedDateTime,Body,Importance,HasAttachments,WebLink',
+      '$select': 'Id,ConversationId',
     });
-
-    console.log(C.bold(msg.Subject || '(no subject)'));
-    console.log(`${C.gray('From:')} ${msg.From?.EmailAddress?.Name || ''} <${msg.From?.EmailAddress?.Address || ''}>`);
-    const to = (msg.ToRecipients || []).map(r => r.EmailAddress?.Address).join(', ');
-    if (to) console.log(`${C.gray('To:')} ${to}`);
-    const cc = (msg.CcRecipients || []).map(r => r.EmailAddress?.Address).join(', ');
-    if (cc) console.log(`${C.gray('Cc:')} ${cc}`);
-    console.log(`${C.gray('Date:')} ${formatDate(msg.ReceivedDateTime)}`);
-    if (msg.Importance && msg.Importance !== 'Normal') console.log(`${C.gray('Importance:')} ${msg.Importance}`);
-    console.log(`${C.gray('Link:')} ${msg.WebLink || ''}`);
-    console.log('');
-
-    // Strip HTML tags for plain-text display
-    const bodyContent = msg.Body?.Content || '';
-    const plainBody = bodyContent
-      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/&nbsp;/g, ' ')
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/\s+/g, ' ')
-      .trim();
-    console.log(trunc(plainBody, 2000));
+    return msg && msg.ConversationId ? msg.ConversationId : null;
   } catch (e) {
-    // Calendar event ids live in a different store, so /me/messages/<eventId>
-    // answers a bare 404 ("The specified object was not found in the store.").
-    // Probe the event store and point at the right command instead.
-    if (/404/.test(e.message || '') && (await looksLikeEvent(token, id))) {
-      die(`outlook view: that ID is a calendar event, not a message — use: outlook event ${id}`);
+    if (isConversationIdError(e)) return id;
+    throw e;
+  }
+}
+
+function addressLabel(box) {
+  const email = box && box.EmailAddress ? box.EmailAddress : null;
+  const name = (email && email.Name) || '';
+  const address = (email && email.Address) || '';
+  if (name && address && name !== address) return `${name} <${address}>`;
+  return address || name || '';
+}
+
+function recipientList(list) {
+  return (list || []).map(addressLabel).filter(Boolean);
+}
+
+function messageBodyText(msg) {
+  const raw = msg.Body?.Content || '';
+  if (!raw) return (msg.BodyPreview || '').trim();
+  return msg.Body?.ContentType === 'Text' ? normalizeText(raw) : htmlToText(raw);
+}
+
+// `outlook thread` — who is actually on this chain. Recipients are printed PER
+// MESSAGE and never merged: in a forwarded or re-Cc'd chain the individual
+// messages carry genuinely different To/Cc sets even though Outlook groups them
+// under one conversation, and that divergence is the whole point of asking.
+async function cmdThread() {
+  const token = await getToken();
+  const id = positional[0];
+  if (!id) die('outlook thread: provide a message id or conversation id');
+  const limit = parseInt(flags.limit || '50', 10);
+  const full = flags.full === true || flags.full === 'true';
+  const asJson = flags.json === true || flags.json === 'true';
+
+  let messages = null;
+  let failure = null;
+  try {
+    const conversationId = await resolveConversationId(token, id);
+    if (conversationId) {
+      messages = await fetchConversation(token, conversationId, limit, full);
+    } else {
+      failure = `no conversation found for id ${trunc(id, 40)}`;
     }
-    die(`outlook: view failed: ${e.message}`);
+  } catch (e) {
+    failure = e.message;
+  }
+  if (failure) die(`outlook: thread failed: ${failure}`);
+
+  const items = messages.map((msg) => {
+    const stamp = msg.ReceivedDateTime || msg.SentDateTime || '';
+    return {
+      id: msg.Id,
+      conversationId: msg.ConversationId || '',
+      subject: msg.Subject || '',
+      from: addressLabel(msg.From || msg.Sender),
+      to: recipientList(msg.ToRecipients),
+      cc: recipientList(msg.CcRecipients),
+      bcc: recipientList(msg.BccRecipients),
+      date: stamp,
+      ts: epochMs(stamp),
+      importance: msg.Importance || 'Normal',
+      hasAttachments: !!msg.HasAttachments,
+      url: msg.WebLink || '',
+      body: full ? messageBodyText(msg) : (msg.BodyPreview || '').trim(),
+      bodyIsPreview: !full,
+    };
+  });
+
+  if (asJson) {
+    out(items);
+    return;
+  }
+
+  if (!items.length) {
+    console.log('No messages found in that conversation.');
+    return;
+  }
+
+  // Thread subject: the oldest message's, with any RE:/FW: prefix left intact on
+  // the per-message lines below so a renamed reply is still visible.
+  console.log(
+    `${C.bold(items[0].subject || '(no subject)')} — ${items.length} message${items.length !== 1 ? 's' : ''}`
+  );
+  console.log(`${C.gray('Conversation:')} ${C.gray(items[0].conversationId || String(id))}`);
+
+  items.forEach((item, i) => {
+    console.log('');
+    console.log(
+      `${C.bold(`[${i + 1}/${items.length}]`)} ${C.gray(formatDate(item.date))}${item.importance === 'High' ? C.red(' !') : ''}${item.hasAttachments ? C.yellow(' 📎') : ''}`
+    );
+    console.log(`  ${C.gray('From:')} ${C.cyan(item.from || 'unknown')}`);
+    console.log(`  ${C.gray('To:  ')} ${item.to.length ? item.to.join(', ') : C.gray('(none)')}`);
+    if (item.cc.length) console.log(`  ${C.gray('Cc:  ')} ${item.cc.join(', ')}`);
+    if (item.bcc.length) console.log(`  ${C.gray('Bcc: ')} ${item.bcc.join(', ')}`);
+    if (item.subject && item.subject !== items[0].subject) {
+      console.log(`  ${C.gray('Subject:')} ${item.subject}`);
+    }
+    const body = full ? item.body : trunc(item.body, 400);
+    if (body) {
+      console.log('');
+      for (const line of body.split('\n')) console.log(`  ${line}`);
+    }
+  });
+
+  if (!full) {
+    console.log('');
+    console.log(C.gray('(previews shown — use --full for complete message bodies)'));
   }
 }
 
@@ -1353,7 +1671,8 @@ Commands:
   decline    Decline calendar event(s)
   tentative  Tentatively accept calendar event(s)
   send       Send an email
-  view       View a single message
+  view       View a single message (accepts a conversation id too)
+  thread     Every message in a conversation, with per-message To/Cc
   monday     Aggregated inbox items for monday dispatcher
 
 Mail options:
@@ -1397,7 +1716,15 @@ Send options:
   --body TEXT        Email body
 
 View:
-  outlook view <message-id>    Mail only — for calendar events use: outlook event
+  outlook view <message-id>        Mail only — for calendar events use: outlook event
+  outlook view <conversation-id>   The id in an Outlook web URL is a conversation
+                                   id; it resolves to the newest message in it
+
+Thread options (who is on this chain):
+  outlook thread <message-id|conversation-id>
+  --full             Complete message bodies instead of previews
+  --limit N          Max messages in the conversation (default: 50)
+  --json             Output JSON (per-message from/to/cc/bcc, ts, ids)
 
 Monday options:
   --limit N          Max items per source (default: 50)
@@ -1437,6 +1764,10 @@ try {
       break;
     case 'view':
       await cmdView();
+      break;
+    case 'thread':
+    case 'conversation':
+      await cmdThread();
       break;
     case 'event':
       await cmdEvent();
