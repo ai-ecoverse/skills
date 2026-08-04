@@ -64,11 +64,49 @@ outlook event <occurrence-id> --series
 Get event ids from `outlook calendar --date 7d --json`, or from the `id:` line of
 the plain listing.
 
-## outlook view \<message-id\>
+## outlook view \<message-id|conversation-id\>
 
-View a single email message with full headers and body text. Mail only — calendar
-event ids live in a different store, so passing one reports that and points at
-`outlook event <event-id>`.
+View a single email message: subject, From, **To**, **Cc**, date, importance, web
+link, the `Conversation:` id to hand to `outlook thread`, and the body as text.
+
+Accepts either id shape. The id in an Outlook web URL
+(`https://outlook.cloud.microsoft/mail/inbox/id/<id>`) is a **conversation id**;
+`/me/messages/<conversationId>` rejects it outright
+(`400 ErrorInvalidOperation: ConversationId isn't supported in the context of this
+operation.`), so `view` detects that and resolves the conversation instead,
+printing its newest message plus a pointer to `outlook thread`.
+
+Mail only — calendar event ids live in a different store, so passing one reports
+that and points at `outlook event <event-id>`.
+
+## outlook thread \<message-id|conversation-id\> [options]
+
+Every message in one conversation, **oldest first**, each with its own sender,
+`To`, `Cc`, `Bcc`, timestamp and body. Aliased as `outlook conversation`.
+
+Recipients are reported **per message and never merged.** In a real forwarded or
+re-Cc'd chain the individual messages carry different recipient sets even though
+Outlook groups them under one conversation, and surfacing that divergence is the
+point of the command.
+
+- `--full` — complete message bodies instead of previews
+- `--limit N` — maximum messages to fetch from the conversation (default: 50)
+- `--json` — array of `{ id, conversationId, subject, from, to, cc, bcc, date, ts,
+  importance, hasAttachments, url, body, bodyIsPreview }`; `to`/`cc`/`bcc` are
+  arrays of `Name <address>` strings
+
+A message id costs one extra request to read its `ConversationId`; a conversation
+id is used directly. Both the standard-base64 form the web URL carries
+(`…xlI/grQ=`) and the base64url form the API returns (`…xlI-grQ=`) work.
+
+```bash
+outlook thread AAQk...=                     # from an Outlook web URL
+outlook thread AAMk...= --full              # from a message id, whole bodies
+outlook thread AAQk...= --json
+```
+
+Ordering is done client-side: `$orderby` cannot be combined with a
+`ConversationId` `$filter` — the store answers `400 InefficientFilter`.
 
 ## outlook attachments \<message-id\>
 
@@ -129,8 +167,13 @@ Produce a JSON array of actionable items for the monday aggregator: unread inbox
 messages plus calendar events for today and tomorrow (including meetings needing a
 response).
 
-Each item includes `source`, `type`, `id`, `title`, `body`, `url`, `from`, `date`,
-and optional `importance`, `location`, `response`.
+Each item includes `source`, `type`, `id`, `title`, `body`, `url`, `from`, `ts`,
+`date`, and optional `importance`, `location`, `response`.
+
+`ts` is epoch **milliseconds** — the message's `ReceivedDateTime` or the event's
+`Start`. This is the field `monday` sorts on; without it every Outlook item was
+treated as epoch 0 and sank to the bottom of the digest. `date` is the same instant
+as an ISO 8601 string and is kept for backwards compatibility.
 
 Item types:
 - `email` — unread inbox message
