@@ -106,6 +106,7 @@ const fmt = require('sliccy:fmt');
 const color = require('sliccy:color'); // renamed from bare `c` global
 const http = require('sliccy:http');
 const { buildPrWatchFilter, composePrWatchFilter, findWatchWebhook } = require('./pr-watch-filter.js');
+const { assignField } = require('./assign-field.js');
 
 // Single POSIX-shell-quote a value for safe interpolation into an exec()
 // command line (exec runs through the jsh shell bridge).
@@ -2891,7 +2892,7 @@ async function apiPassthrough(args) {
     else if (args[i].startsWith('--jq=')) { jqExpr = args[i].slice(5); }
     else if ((args[i] === '-f' || args[i] === '--field' || args[i] === '-F' || args[i] === '--raw-field') && args[i+1]) {
       const [k, ...vParts] = args[++i].split('=');
-      fields[k] = vParts.join('=');
+      assignField(fields, k, vParts.join('='));
     }
     else positional.push(args[i]);
   }
@@ -3271,7 +3272,9 @@ const HELP = {
       flags: ['-X, --method <verb>       GET (default), POST, PUT, PATCH, DELETE',
         '-f, --field <key=value>   body field (repeatable), sent as JSON on non-GET',
         '-q, --jq <expr>           filter the response through a jq expression'],
-      notes: ['Bodies are built from -f flags, never from @file — see references/gotchas.md.'],
+      notes: ['Bodies are built from -f flags, never from @file — see references/gotchas.md.',
+        "-f keys accept bracket notation for nested bodies: -f 'tree[0][path]=x' and",
+        '-f \'parents[]=sha\' build {"tree":[{"path":"x"}],"parents":["sha"]}.'],
     },
   },
   auth: {
