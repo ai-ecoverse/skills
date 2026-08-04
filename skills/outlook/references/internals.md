@@ -13,6 +13,40 @@ plus a safety margin) before use and cached in `/shared/.outlook-token`. See the
 comment block at the top of `scripts/outlook.jsh` for the stale-token bug this
 guards against; don't simplify it.
 
+### Scope gate — why `aud` alone is not enough
+
+OWA mints several tokens for the **same** audience (`https://outlook.office.com`)
+with very different privileges. Alongside the full mailbox token (74 scopes, ~85 min)
+the SPA emits single-purpose short-lived ones whenever it lazily loads an
+attachment — observed live: `scp: "OwaAttachments.Read"`, 300 s lifetime. Those pass
+an `aud`/`exp` check but answer `403 Access is denied` on `/me/messages` and
+`/me/calendarview`.
+
+That is what made `outlook monday` intermittently print `[]` with two 403 warnings:
+the capture hook had latched the attachment token, and it stayed the one the SPA was
+re-sending for tens of seconds. So `isFreshBearerCandidate()` also requires a scope
+that actually grants mailbox access (`Mail.*`, `Calendars.*`,
+`OWA/EAS/OutlookService.AccessAsUser*`, `.default`, `full_access_as_user`). A token
+with **no** `scp` claim is still accepted — there is nothing to judge it by, and
+rejecting it would break the legacy plaintext-cache path.
+
+### Retry on 401/403
+
+Even with the scope gate a token can stop being usable mid-command, because Outlook
+rotates it. `owaGet`/`owaPost` therefore share `withAuthRetry()`: on **401 or 403
+only**, the failing token is added to an in-process reject set, blanked from
+`/shared/.outlook-token` so a later run cannot pick it up, re-extracted once from the
+browser, and the request is replayed **exactly once**. Never a loop.
+
+- If re-extraction yields the *same* token, `reacquireToken()` returns `null` and the
+  original HTTP error is surfaced — replaying with a token that just failed is
+  pointless, and a permanently unauthorised session must still fail loudly.
+- `effectiveToken()` routes the remaining calls of a multi-request command straight
+  to the replacement, so only the first one pays for the retry.
+- Replaying a POST is safe: 401/403 means the request was rejected before it was
+  processed, so no mail was sent and no invitation was answered.
+- Other statuses (400, 404, 5xx) are never retried.
+
 ## Timezone handling
 
 Calendar and event requests send `Prefer: outlook.timezone="<zone>"`, so OWA
