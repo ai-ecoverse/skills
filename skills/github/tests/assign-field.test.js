@@ -78,3 +78,58 @@ test('returns the body so callers may chain', () => {
   const body = {};
   assert.equal(assignField(body, 'parents[]', 'sha'), body);
 });
+
+test('sparse indices keep array length semantics', () => {
+  assert.deepEqual(build([['parents[]', 'a'], ['parents[2]', 'c']]), {
+    parents: ['a', undefined, 'c'],
+  });
+});
+
+// ─── hostile keys: `-f` values come straight off the command line ────────────
+
+test('does not pollute Object.prototype through __proto__', () => {
+  const body = build([['__proto__[polluted]', 'yes']]);
+
+  assert.equal({}.polluted, undefined, 'Object.prototype must be untouched');
+  assert.equal(Object.prototype.polluted, undefined);
+  // The key survives as ordinary data rather than being silently dropped.
+  assert.ok(Object.prototype.hasOwnProperty.call(body, '__proto__'));
+  assert.equal(JSON.stringify(body), '{"__proto__":{"polluted":"yes"}}');
+});
+
+test('does not reach Object.prototype through constructor or prototype', () => {
+  build([['constructor[prototype][x]', 'boom'], ['prototype[y]', 'boom']]);
+
+  assert.equal({}.x, undefined);
+  assert.equal({}.y, undefined);
+});
+
+test('treats a plain __proto__ key as data', () => {
+  const body = build([['__proto__', 'plain']]);
+
+  assert.equal({}.polluted, undefined);
+  assert.equal(JSON.stringify(body), '{"__proto__":"plain"}');
+});
+
+// ─── container conflicts: never lose a value the user supplied ────────────────
+
+test('reshapes an array to an object rather than dropping a non-index key', () => {
+  // JSON.stringify omits non-index array properties, so keeping the array would
+  // make `k` vanish from the request body without any warning.
+  const body = build([['parents[]', 'x'], ['parents[k]', 'y']]);
+
+  assert.deepEqual(body, { parents: { 0: 'x', k: 'y' } });
+  assert.equal(JSON.stringify(body), '{"parents":{"0":"x","k":"y"}}');
+});
+
+test('keeps an existing object when an index key arrives later', () => {
+  const body = build([['a[b][c]', '1'], ['a[0][c]', '2']]);
+
+  assert.deepEqual(body, { a: { b: { c: '1' }, 0: { c: '2' } } });
+});
+
+test('appends past the highest integer key of a stand-in object', () => {
+  const body = build([['a[b]', '1'], ['a[]', '2'], ['a[]', '3']]);
+
+  assert.deepEqual(body, { a: { b: '1', 0: '2', 1: '3' } });
+});
