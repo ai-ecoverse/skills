@@ -112,6 +112,14 @@ function futureRange(dur, defaultDays) {
   return { start: now.toISOString(), end: end.toISOString() };
 }
 
+// `--limit` given with no value arrives as boolean `true`, and `--limit=abc` as a
+// non-numeric string; `parseInt` turned both into NaN, which reached the API as
+// `$top=NaN` and came back as an opaque Graph 400. Fall back to the default.
+function positiveInt(value, fallback) {
+  const n = parseInt(value, 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
 function trunc(s, n) {
   s = String(s == null ? '' : s);
   return s.length > n ? s.slice(0, n - 1) + '…' : s;
@@ -804,7 +812,7 @@ async function getTimezone(token) {
 
 async function cmdMail() {
   const token = await getToken();
-  const limit = parseInt(flags.limit || '20', 10);
+  const limit = positiveInt(flags.limit, 20);
   const unread = flags.unread === true || flags.unread === 'true';
   const search = flags.search || null;
   const date = flags.date || null;
@@ -868,7 +876,7 @@ async function cmdMail() {
 
 async function cmdCalendar() {
   const token = await getToken();
-  const limit = parseInt(flags.limit || '20', 10);
+  const limit = positiveInt(flags.limit, 20);
   const date = flags.date || '2d';
   const details = flags.details === true || flags.details === 'true';
   const tz = await getTimezone(token);
@@ -1129,7 +1137,7 @@ async function cmdSend() {
 
 async function cmdMonday() {
   const token = await getToken();
-  const limit = parseInt(flags.limit || '50', 10);
+  const limit = positiveInt(flags.limit, 50);
   const date = flags.date || '7d';
   const depth = parseInt(flags.depth || '5', 10);
 
@@ -1231,8 +1239,16 @@ function printMessage(msg) {
   if (msg.ConversationId) console.log(`${C.gray('Conversation:')} ${msg.ConversationId}`);
   console.log('');
 
-  // Strip HTML tags for plain-text display
+  // A Text body has no tags to strip, so the HTML path below would delete any
+  // literal `<...>` in it as if it were markup. Render it as text instead; the
+  // HTML branch is left exactly as it was.
   const bodyContent = msg.Body?.Content || '';
+  if (msg.Body?.ContentType === 'Text') {
+    console.log(trunc(normalizeText(bodyContent), 2000));
+    return;
+  }
+
+  // Strip HTML tags for plain-text display
   const plainBody = bodyContent
     .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
     .replace(/<[^>]+>/g, ' ')
@@ -1370,7 +1386,7 @@ async function cmdThread() {
   const token = await getToken();
   const id = positional[0];
   if (!id) die('outlook thread: provide a message id or conversation id');
-  const limit = parseInt(flags.limit || '50', 10);
+  const limit = positiveInt(flags.limit, 50);
   const full = flags.full === true || flags.full === 'true';
   const asJson = flags.json === true || flags.json === 'true';
 
