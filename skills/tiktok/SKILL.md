@@ -3,13 +3,17 @@ name: tiktok
 description: Interact with TikTok via its web API and messages page — search TikTok
   (videos, users, mixed feed), read video stats (plays, likes, comments, shares,
   saves), list a creator's videos, read comments, check notifications and the
-  activity feed, and read/send direct messages. Use when the user wants to
-  automate TikTok, look up a TikTok video's stats or view count, search TikTok,
-  check TikTok notifications or DMs, read or send a TikTok message, or pull
-  TikTok data without clicking through www.tiktok.com. Activate on mentions of
-  "TikTok", "TikTok stats", "TikTok video", "TikTok search", "TikTok
-  notifications", "TikTok messages", "TikTok DM", "views/likes on a TikTok", or
-  related TikTok workflows.
+  activity feed, read/send direct messages, and see a video (extract auto-caption
+  transcripts + filmstrip contact sheets so an agent can see/hear what a TikTok
+  is about without a human). Use when the user wants to automate TikTok, look up
+  a TikTok video's stats or view count, search TikTok, check TikTok notifications
+  or DMs, read or send a TikTok message, pull a TikTok transcript/captions,
+  generate a filmstrip of frames, "watch" a TikTok, or pull TikTok data without
+  clicking through www.tiktok.com. Activate on mentions of "TikTok", "TikTok
+  stats", "TikTok video", "TikTok search", "TikTok notifications", "TikTok
+  messages", "TikTok DM", "views/likes on a TikTok", "TikTok transcript",
+  "TikTok captions", "TikTok filmstrip", "watch this TikTok", or related TikTok
+  workflows.
 allowed-tools: bash
 ---
 
@@ -84,6 +88,12 @@ tiktok studio user                                 # Studio creator profile info
 
 # Aggregation
 tiktok monday [--limit=N] [--date=Nd]            # unified inbox JSON (notifications + unread DMs)
+
+# See a video (transcript + filmstrip — for agents)
+tiktok transcript <videoId|url> [--lang=eng-US] [--out=path] [--json] [--raw]
+tiktok filmstrip  <videoId|url> [--frames=8] [--width=160] [--out=path] [--seek-wait=700] [--json]
+tiktok see        <videoId|url> [--frames=8] [--width=160] [--lang=eng-US] [--dir=path] [--seek-wait=700] [--json]
+
 
 # Escape hatch — call ANY TikTok endpoint (like `gh api`)
 tiktok api <path> [--method=GET] [--query k=v ...] [--data '<json>'] [--bare] [--raw] [--include]
@@ -166,6 +176,79 @@ tiktok read-messages "Olanski"
 tiktok send-message "Olanski" "thanks for the video!"
 ```
 
+
+## Seeing a video (transcript + filmstrip)
+
+The combo command is `tiktok see` — **not** `watch`. In SLICC, `watch` means a
+long-lived webhook/lick monitor (`gh pr watch`, `slack watch`). This is a one-shot
+content capture.
+
+An agent can't literally play a TikTok. `see` / `transcript` / `filmstrip`
+give it the next-best thing: the auto-caption track (what was said / narrated)
+plus a contact sheet of frames (what it looked like).
+
+```bash
+# One-shot: open the video, dump captions + filmstrip into a dir
+tiktok see 7667617105923083542 --json
+tiktok see 'https://www.tiktok.com/@uci_cycling/video/7667617105923083542' --frames=12
+
+# Just the timed transcript (WebVTT → plain text)
+tiktok transcript 7667617105923083542
+tiktok transcript 7667617105923083542 --json            # {cues:[{start,end,text},...]}
+tiktok transcript 7667617105923083542 --raw             # original WebVTT
+tiktok transcript 7667617105923083542 --out=/tmp/t.txt
+
+# Just a filmstrip JPEG of N frames across the duration
+tiktok filmstrip 7667617105923083542 --frames=8 --out=/tmp/strip.jpg
+tiktok filmstrip 7667617105923083542 --frames=12 --width=200 --json
+```
+
+### How it works
+
+- **Transcript** reads `video.subtitleInfos` / `claInfo.captionInfos` from the
+  item (via `/api/item/detail/` or the open video page's rehydration data),
+  then downloads the WebVTT from the CDN **inside the logged-in tab** so cookies
+  and referer are correct. Not every video has captions — exit code 2 means none.
+  Caption URLs are short-lived, so a tab that has been open a while yields URLs
+  the CDN rejects; the skill reloads the page once and retries with fresh URLs.
+- **Filmstrip** navigates to the video page, finds the `<video>` element, seeks
+  to N evenly-spaced timestamps, and `canvas.drawImage`s each frame into a
+  horizontal JPEG contact sheet with timestamps. Seeks are synchronous
+  (`video.currentTime = t` + shell sleep) — top-level `await` on `seeked`
+  hangs on TikTok tabs, so don't "improve" it that way.
+### Exit codes
+
+`transcript` and `see` distinguish "this video has no captions" from "something
+broke", so an agent can tell an expected gap from a fault:
+
+| code | meaning |
+|------|---------|
+| `0` | every requested artefact was produced |
+| `2` | the video genuinely ships no captions. For `see` the filmstrip may still have succeeded — check `filmstrip` in the summary |
+| `1` | an operation failed: captions existed but the WebVTT download failed, the filmstrip could not be captured, or a usage error |
+
+`see`'s `summary.json` also carries `transcriptErrorKind`: `none` (no captions
+on the item), `fetch` (download failed), or `error`. Branch on that rather than
+matching the English in `transcriptError`.
+
+- **see** does both, writes `captions.vtt`, `transcript.txt`,
+  `filmstrip.jpg`, and `summary.json` under `--dir` (default
+  `/workspace/skills/tiktok/.tmp/see-<id>/`), and with `--json` prints one
+  agent-friendly payload including full `cues`.
+
+### Flags
+
+| flag | commands | default | notes |
+|------|----------|---------|-------|
+| `--lang` | transcript, see | eng-US preference | substring match on language code |
+| `--out` | transcript, filmstrip | stdout / `.tmp/filmstrip-<id>.jpg` | path; `transcript` infers format from extension (`.vtt`/`.json`/`.txt`) |
+| `--dir` | see | `.tmp/see-<id>/` | output directory |
+| `--frames` / `--n` | filmstrip, see | 8 | 1–24 |
+| `--width` / `--w` | filmstrip, see | 160 | thumb width px (64–480) |
+| `--seek-wait` | filmstrip, see | 700 | ms to wait after each seek for the frame to decode |
+| `--json` | all three | off | machine-readable |
+| `--raw` | transcript | off | original WebVTT on stdout |
+
 ## Notes for the assistant
 
 - **Pagination:** most list commands print a `cursor` / `max_time`; pass it back
@@ -179,3 +262,24 @@ tiktok send-message "Olanski" "thanks for the video!"
   the foreground (it issues real keyboard events). Reading only captures what's
   currently rendered (roughly the last ~40 bubbles).
 - Do not read `appId` from the page — the web API id is hard-coded to `1988`.
+- **Frame capture needs a VISIBLE tab.** A backgrounded tab never decodes video:
+  the `<video>` element exists but reports `readyState 0` and `duration NaN`
+  indefinitely. `filmstrip`/`see` therefore bring the TikTok tab to the front
+  before probing the player, which **switches the user's active tab**. The probe
+  then polls for up to ~10s while the player initialises.
+- **Filmstrip seeks must be sync.** `video.currentTime = t` + shell sleep +
+  canvas capture. Top-level `await` on the `seeked` event hangs on TikTok
+  tabs; `eval-file` of an async canvas export can return `{}`. Don't "fix".
+- **A dead CDP session cannot be reloaded away.** If a TikTok tab is closed or
+  its target recycled, every `eval-file` fails with `-32001` ("Session with
+  given id not found"). The skill now recovers automatically: it opens a fresh
+  tab, adopts the new target id, and retries once. If you hit it manually, open
+  a **new** tab — reloading the old one keeps the same dead target. Use
+  `playwright-cli tab-list` to see live tabs.
+- **Not every video has captions.** `transcript`/`see` exit 2 when
+  `subtitleInfos`/`captionInfos` are empty. Sports/music/text-on-screen
+  clips often still have ASR commentary captions; pure-music clips often don't.
+- `see`/`filmstrip` need a real navigable video page (they call
+  `playwright-cli goto`). Prefer passing a full `@user/video/<id>` URL when
+  you have one so the first navigation hits.
+

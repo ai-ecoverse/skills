@@ -42,6 +42,89 @@ async function findTab() {
   return _tab;
 }
 
+// A CDP session dies when the tab is closed or its target is recycled. Every
+// eval below addresses the tab by targetId, so once that happens EVERY call
+// fails with -32001 until the process restarts. Reloading cannot help: the
+// target id itself is gone, so recovery means a brand-new tab.
+const DEAD_SESSION_RE = /-32001|Session with given id not found|Target closed|No target with given id|Inspected target/i;
+
+function isDeadSession(text) {
+  return !!text && DEAD_SESSION_RE.test(String(text));
+}
+
+// Open a fresh tab and adopt it, reading the target id straight out of
+// `playwright-cli open` so we never re-adopt the dead tab that is still listed.
+async function openFreshTab(url) {
+  const target = url && /tiktok\.com/.test(url) ? url : 'https://www.tiktok.com/';
+  _tab = null;
+  let stdout = '';
+  try {
+    const r = await exec('playwright-cli open ' + target);
+    stdout = (r && r.stdout) || '';
+  } catch (e) {
+    return await findTab();
+  }
+  const m = /targetId:\s*([0-9A-Za-z]+)/.exec(stdout);
+  if (m) {
+    _tab = { targetId: m[1], url: target };
+    // Deliberately NOT `open --fg`: that returns a target id whose CDP session
+    // is not attachable yet (-32001). Open in the background, then foreground it
+    // by index, which is attachable and lets the player decode.
+    await sleep(800);
+    await focusTab(_tab);
+    return _tab;
+  }
+  return await findTab();
+}
+
+// A hidden tab never decodes video: the <video> element exists but reports
+// readyState 0 and duration NaN for as long as the tab stays in the background,
+// so any frame capture fails. Bringing the tab to the front fixes it. tab-list
+// is 1-based by line, which is what tab-select expects.
+async function focusTab(tab) {
+  if (!tab || !tab.targetId) return false;
+  try {
+    const r = await exec('playwright-cli tab-list');
+    const lines = String((r && r.stdout) || '').split('\n').filter((l) => l.trim());
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].indexOf(tab.targetId) !== -1) {
+        await exec('playwright-cli tab-select ' + (i + 1));
+        await sleep(700);
+        return true;
+      }
+    }
+  } catch (e) {}
+  return false;
+}
+
+// Run `playwright-cli eval-file` against a tab, recovering once from a dead
+// session. The output file is truncated first: pwEval/pwEvalAsync reuse fixed
+// filenames, so a leftover result from an earlier call would otherwise be read
+// back as a fresh success.
+async function evalFileOnTab(tab, exprFile, outFile) {
+  async function once(t) {
+    try { fs.writeFileSync(outFile, ''); } catch (e) {}
+    let stderr = '';
+    let failed = null;
+    try {
+      const r = await exec('playwright-cli eval-file ' + exprFile + ' --tab=' + t.targetId + ' --output=' + outFile);
+      stderr = (r && r.stderr) || '';
+    } catch (e) {
+      failed = (e && e.message) ? e.message : String(e);
+    }
+    let out = '';
+    try { out = fs.readFileSync(outFile, 'utf8'); } catch (e) {}
+    return { out: out, stderr: stderr, failed: failed, tab: t };
+  }
+
+  let res = await once(tab);
+  if (!res.out && isDeadSession(res.stderr + ' ' + (res.failed || ''))) {
+    const fresh = await openFreshTab(tab && tab.url);
+    if (fresh && fresh.targetId && fresh.targetId !== tab.targetId) res = await once(fresh);
+  }
+  return res;
+}
+
 // ---------------------------------------------------------------------------
 // API helper -- page-context fetch, auto-signed by webmssdk
 // ---------------------------------------------------------------------------
@@ -61,7 +144,7 @@ async function findTab() {
 // Returns { status, bodyText, data } where data is parsed JSON or null.
 async function signedRequest(opts) {
   const { url, method = 'GET', query = {}, body = null, useCommon = true } = opts;
-  const tab = await findTab();
+  let tab = await findTab();
   const expr = `
     (async () => {
       let ctx = {};
@@ -118,11 +201,10 @@ async function signedRequest(opts) {
   async function runOnce() {
     try {
       fs.writeFileSync(exprFile, expr);
-      const { stderr } = await exec(`playwright-cli eval-file ${exprFile} --tab=${tab.targetId} --output=${outFile}`);
-      let out = null;
-      try { out = fs.readFileSync(outFile, 'utf8'); } catch (e) {}
-      if (!out) return { fail: 'no-output', stderr };
-      return { env: JSON.parse(out) };
+      const r = await evalFileOnTab(tab, exprFile, outFile);
+      tab = r.tab;
+      if (!r.out) return { fail: r.failed || 'no-output', stderr: r.stderr };
+      return { env: JSON.parse(r.out) };
     } catch (e) {
       return { fail: e && e.message ? e.message : String(e) };
     }
@@ -139,7 +221,9 @@ async function signedRequest(opts) {
   if (res.fail && !res.env) {
     console.error('Page eval failed:', res.fail);
     if (res.stderr) console.error(res.stderr.trim());
-    console.error('The TikTok tab may have navigated or lost its context. Reload www.tiktok.com and retry.');
+    console.error('The TikTok tab may have navigated or lost its context.');
+    console.error('Open a NEW www.tiktok.com tab and retry — reloading the old one cannot revive a dead');
+    console.error('CDP session, because the target id is gone. `playwright-cli tab-list` shows live tabs.');
     process.exit(1);
   }
   const status = res.env.__ttStatus;
@@ -605,7 +689,9 @@ async function cmdApi(positional, flags, rawRest) {
   if (flags.include || flags.i) console.error(`HTTP ${status}`);
   if (data != null && !flags.raw) console.log(JSON.stringify(data, null, 2));
   else console.log(bodyText || '');
-  if (status >= 400 || (data && data.status_code && data.status_code !== 0)) process.exitCode = 1;
+  // process.exitCode is ignored by this runtime; exit explicitly or a failed
+  // call reports success.
+  if (status >= 400 || (data && data.status_code && data.status_code !== 0)) process.exit(1);
 }
 
 // ---------------------------------------------------------------------------
@@ -772,6 +858,779 @@ async function cmdMonday(positional, flags) {
 }
 
 // ---------------------------------------------------------------------------
+// Video seeing: transcript (captions) + filmstrip (frame contact sheet)
+// (verb is `see`, not `watch` — `watch` is reserved for webhook/lick monitors
+// like `gh pr watch` / `slack watch`.)
+// ---------------------------------------------------------------------------
+//
+// An agent "sees" a TikTok by combining:
+//   1. Auto-captions (WebVTT from video.subtitleInfos / claInfo.captionInfos)
+//   2. A filmstrip of N frames grabbed from the in-page <video> via canvas
+//
+// Gotchas (learned the hard way, Aug 2026):
+//   - playwright-cli `eval` top-level await (and eval-file async returning large
+//     canvas payloads) can hang or come back as `{}` on TikTok tabs. Filmstrip
+//     capture uses ONLY sync evals: set video.currentTime, sleep in the shell,
+//     then canvas.drawImage + toDataURL.
+//   - Caption VTT URLs are CDN-signed; fetch them from page context with
+//     credentials so cookies/referer stay correct.
+//   - Filmstrip needs the video open in a tab; transcript can use item/detail
+//     when subtitleInfos are present, else falls back to the video page.
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/** Accept a bare numeric id, a @user/video/<id> URL, or a /video/<id> URL. */
+function parseVideoRef(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return null;
+  let m = s.match(/\/video\/(\d{5,})/);
+  if (m) {
+    const author = (s.match(/@([A-Za-z0-9._]+)/) || [])[1] || null;
+    return { id: m[1], author };
+  }
+  m = s.match(/(\d{5,})/);
+  if (m) return { id: m[1], author: null };
+  return null;
+}
+
+function fmtTs(sec) {
+  sec = Math.max(0, Number(sec) || 0);
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = Math.floor(sec % 60);
+  const ms = Math.round((sec - Math.floor(sec)) * 1000);
+  const pad = (n, w) => String(n).padStart(w || 2, '0');
+  if (h > 0) return pad(h) + ':' + pad(m) + ':' + pad(s) + '.' + pad(ms, 3);
+  return pad(m) + ':' + pad(s) + '.' + pad(ms, 3);
+}
+
+function parseWebVtt(vtt) {
+  const lines = String(vtt || '').replace(/^\uFEFF/, '').split(/\r?\n/);
+  const cues = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.includes('-->')) continue;
+    const parts = line.split('-->');
+    if (parts.length < 2) continue;
+    const startRaw = parts[0].trim().split(/\s+/)[0];
+    const endRaw = parts[1].trim().split(/\s+/)[0];
+    const toSec = (t) => {
+      t = String(t).replace(',', '.');
+      const p = t.split(':').map(Number);
+      if (p.length === 3) return p[0] * 3600 + p[1] * 60 + p[2];
+      if (p.length === 2) return p[0] * 60 + p[1];
+      return Number(t) || 0;
+    };
+    const text = [];
+    i++;
+    while (i < lines.length && lines[i].trim() !== '') {
+      if (!/^\d+$/.test(lines[i].trim())) text.push(lines[i].trim());
+      i++;
+    }
+    const joined = text.join(' ').replace(/<[^>]+>/g, '').trim();
+    if (!joined) continue;
+    cues.push({ start: toSec(startRaw), end: toSec(endRaw), text: joined });
+  }
+  return cues;
+}
+
+/**
+ * Run a JS expression in the TikTok tab via playwright-cli eval-file.
+ * Expression should be a sync IIFE that returns a string or JSON-serializable
+ * value. Avoid top-level await — it hangs on some TikTok tabs (Aug 2026).
+ */
+async function pwEval(tab, expression) {
+  if (typeof fs.mkdirSync === 'function') {
+    try { fs.mkdirSync(TMP_DIR, { recursive: true }); } catch (e) {}
+  }
+  const exprFile = TMP_DIR + '/eval-expr.js';
+  const outFile = TMP_DIR + '/eval-out.txt';
+  fs.writeFileSync(exprFile, expression);
+  const r = await evalFileOnTab(tab, exprFile, outFile);
+  let out = r.out;
+  if (!out) {
+    const err = ((r.failed || '') + ' ' + (r.stderr || '')).trim();
+    throw new Error('empty eval result' + (err ? ': ' + err : ''));
+  }
+  if (out.endsWith('\n')) out = out.slice(0, -1);
+  // Unwrap a single JSON-encoded string layer when present.
+  if (out.charAt(0) === '"' && out.charAt(out.length - 1) === '"') {
+    try { out = JSON.parse(out); } catch (e) {}
+  }
+  return out;
+}
+
+/** Like pwEval but for async page expressions (e.g. fetch). Returns parsed JSON if possible. */
+async function pwEvalAsync(tab, asyncIifeSource) {
+  if (typeof fs.mkdirSync === 'function') {
+    try { fs.mkdirSync(TMP_DIR, { recursive: true }); } catch (e) {}
+  }
+  const exprFile = TMP_DIR + '/eval-async.js';
+  const outFile = TMP_DIR + '/eval-async-out.txt';
+  fs.writeFileSync(exprFile, asyncIifeSource);
+  const r = await evalFileOnTab(tab, exprFile, outFile);
+  let out = r.out;
+  if (!out) {
+    const err = ((r.failed || '') + ' ' + (r.stderr || '')).trim();
+    throw new Error('empty async eval result' + (err ? ': ' + err : ''));
+  }
+  if (out.endsWith('\n')) out = out.slice(0, -1);
+  if (out.charAt(0) === '"' && out.charAt(out.length - 1) === '"') {
+    try { out = JSON.parse(out); } catch (e) {}
+  }
+  try { return JSON.parse(out); } catch (e) { return out; }
+}
+
+function extractCaptionsFromItem(item) {
+  const video = (item && item.video) || {};
+  const list = [];
+  const seen = new Set();
+  const push = (c) => {
+    if (!c) return;
+    const url = c.Url || c.url
+      || (c.urlList && c.urlList[0])
+      || (c.url_list && c.url_list[0]);
+    if (!url || seen.has(url)) return;
+    seen.add(url);
+    list.push({
+      url: url,
+      language: c.LanguageCodeName || c.language || c.languageCode || '',
+      format: c.Format || c.captionFormat || c.format || 'webvtt',
+      source: c.Source || (c.isAutoGen ? 'ASR' : '') || '',
+      isAuto: !!(c.isAutoGen || c.Source === 'ASR' || c.source === 'ASR'),
+      variant: c.Version || c.variant || '',
+      urlList: c.urlList || c.url_list || [url],
+    });
+  };
+  const subs = video.subtitleInfos || video.subtitle_infos || [];
+  for (let i = 0; i < subs.length; i++) push(subs[i]);
+  const cla = video.claInfo || video.cla_info || (item && item.claInfo) || null;
+  if (cla && cla.captionInfos) {
+    for (let i = 0; i < cla.captionInfos.length; i++) push(cla.captionInfos[i]);
+  }
+  return list;
+}
+
+async function fetchItemStruct(id) {
+  // Soft-fail variant of apiGet: on throttle / error return null so callers can
+  // fall back to the open video page instead of killing the process.
+  try {
+    const { status, bodyText, data } = await signedRequest({
+      url: '/api/item/detail/',
+      query: { itemId: id },
+    });
+    if (!bodyText || !data) return null;
+    if (data.status_code && data.status_code !== 0 && !data.itemInfo) return null;
+    return (data.itemInfo && data.itemInfo.itemStruct) || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function ensureVideoTab(id, author) {
+  let tab = await findTab();
+  const cur = tab.url || '';
+  if (cur.indexOf('/video/' + id) !== -1) {
+    // Already on the right video, but it may be a background tab whose player
+    // never loaded. Frame capture needs it visible.
+    await focusTab(tab);
+    return tab;
+  }
+
+  let uniqueId = author || null;
+  if (!uniqueId) {
+    try {
+      const it = await fetchItemStruct(id);
+      if (it && it.author) {
+        uniqueId = it.author.uniqueId || it.author.unique_id || null;
+      }
+      ensureVideoTab._lastItem = it || null;
+    } catch (e) {
+      // throttle / API failure — continue with /@/video/id
+    }
+  }
+  const url = uniqueId
+    ? 'https://www.tiktok.com/@' + uniqueId + '/video/' + id
+    : 'https://www.tiktok.com/@/video/' + id;
+
+  try {
+    await exec('playwright-cli goto ' + url + ' --tab=' + tab.targetId);
+  } catch (e) {
+    await exec('playwright-cli open ' + url);
+  }
+  // URL changed — drop cache and re-find.
+  _tab = null;
+  tab = await findTab();
+  await focusTab(tab);
+
+  for (let i = 0; i < 15; i++) {
+    try {
+      const raw = await pwEval(tab, "(() => {\n"
+        + "  const v = [...document.querySelectorAll('video')].find(x => x.duration > 1 && x.videoWidth > 0);\n"
+        + "  return JSON.stringify({\n"
+        + "    ready: !!(v && v.readyState >= 1),\n"
+        + "    duration: v ? v.duration : 0,\n"
+        + "    w: v ? v.videoWidth : 0,\n"
+        + "    h: v ? v.videoHeight : 0,\n"
+        + "    href: location.href\n"
+        + "  });\n"
+        + "})()");
+      const st = JSON.parse(raw);
+      if (st.ready) return tab;
+      if (st.href && st.href.indexOf('/video/' + id) !== -1 && i > 5 && st.duration > 0) return tab;
+    } catch (e) {}
+    await sleep(400);
+  }
+  return tab;
+}
+
+async function readItemFromPage(tab) {
+  const raw = await pwEval(tab, "(() => {\n"
+    + "  try {\n"
+    + "    const el = document.getElementById('__UNIVERSAL_DATA_FOR_REHYDRATION__');\n"
+    + "    if (!el) return JSON.stringify({ error: 'no-universal-data' });\n"
+    + "    const scope = JSON.parse(el.textContent).__DEFAULT_SCOPE__ || {};\n"
+    + "    let item = null;\n"
+    + "    const keys = Object.keys(scope);\n"
+    + "    for (let i = 0; i < keys.length; i++) {\n"
+    + "      const v = scope[keys[i]];\n"
+    + "      if (v && v.itemInfo && v.itemInfo.itemStruct) { item = v.itemInfo.itemStruct; break; }\n"
+    + "      if (v && v.itemStruct) { item = v.itemStruct; break; }\n"
+    + "    }\n"
+    + "    if (!item) return JSON.stringify({ error: 'no-item', keys: keys });\n"
+    + "    const video = item.video || {};\n"
+    + "    const slim = {\n"
+    + "      id: item.id || item.aweme_id,\n"
+    + "      desc: item.desc || '',\n"
+    + "      createTime: item.createTime || item.create_time,\n"
+    + "      author: item.author ? {\n"
+    + "        uniqueId: item.author.uniqueId || item.author.unique_id,\n"
+    + "        nickname: item.author.nickname || item.author.nickName,\n"
+    + "        secUid: item.author.secUid || item.author.sec_uid\n"
+    + "      } : null,\n"
+    + "      stats: item.statsV2 || item.stats || {},\n"
+    + "      video: {\n"
+    + "        duration: video.duration,\n"
+    + "        width: video.width,\n"
+    + "        height: video.height,\n"
+    + "        ratio: video.ratio,\n"
+    + "        subtitleInfos: video.subtitleInfos || video.subtitle_infos || [],\n"
+    + "        claInfo: video.claInfo || video.cla_info || null\n"
+    + "      }\n"
+    + "    };\n"
+    + "    return JSON.stringify(slim);\n"
+    + "  } catch (e) {\n"
+    + "    return JSON.stringify({ error: String(e) });\n"
+    + "  }\n"
+    + "})()");
+  const data = JSON.parse(raw);
+  if (data.error) throw new Error('page item: ' + data.error);
+  return data;
+}
+
+async function fetchVttText(tab, urls) {
+  const list = Array.isArray(urls) ? urls : [urls];
+  const src = "(async () => {\n"
+    + "  const urls = " + JSON.stringify(list) + ";\n"
+    + "  let lastErr = '';\n"
+    + "  for (let i = 0; i < urls.length; i++) {\n"
+    + "    try {\n"
+    + "      const r = await fetch(urls[i], { credentials: 'include' });\n"
+    + "      const text = await r.text();\n"
+    + "      if (r.ok && text && /WEBVTT/i.test(text)) {\n"
+    + "        return JSON.stringify({ ok: true, status: r.status, text: text });\n"
+    + "      }\n"
+    + "      lastErr = 'HTTP ' + r.status + ' len=' + (text ? text.length : 0);\n"
+    + "    } catch (e) { lastErr = String(e); }\n"
+    + "  }\n"
+    + "  return JSON.stringify({ ok: false, error: lastErr || 'fetch failed' });\n"
+    + "})()";
+  let parsed = await pwEvalAsync(tab, src);
+  if (typeof parsed === 'string') {
+    try { parsed = JSON.parse(parsed); } catch (e) {}
+  }
+  if (!parsed || !parsed.ok) {
+    throw new Error('caption fetch failed: ' + ((parsed && parsed.error) || 'unknown'));
+  }
+  return parsed.text;
+}
+
+function videoUrlFor(ref, author) {
+  const a = author || (ref && ref.author) || '';
+  return 'https://www.tiktok.com/@' + a + '/video/' + ref.id;
+}
+
+// Caption CDN URLs are short-lived. A tab that has been open for a while still
+// has them in its rehydration payload, but the CDN already rejects them, which
+// surfaces as "caption fetch failed: TypeError: Failed to fetch" on a video that
+// demonstrably HAS captions. Reload the page once and use the newly minted URLs.
+// state = { tab, ref, item, cap } and is updated in place on a successful reload.
+async function fetchCaptionVttWithReload(state, lang) {
+  let lastErr = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) {
+      const url = videoUrlFor(state.ref, authorOf(state.item));
+      try {
+        await exec('playwright-cli goto ' + url + ' --tab=' + state.tab.targetId);
+      } catch (e) { /* fall through: the page may already be right */ }
+      await focusTab(state.tab);
+      await sleep(1500);
+      let freshItem = null;
+      try { freshItem = await readItemFromPage(state.tab); } catch (e) {}
+      const caps = freshItem ? extractCaptionsFromItem(freshItem) : [];
+      if (!caps.length) break;
+      if (!state.item) state.item = freshItem;
+      state.cap = pickCaption(caps, lang);
+    }
+    try {
+      const urls = (state.cap.urlList && state.cap.urlList.length)
+        ? state.cap.urlList : [state.cap.url];
+      return await fetchVttText(state.tab, urls);
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error('caption fetch failed: unknown');
+}
+
+function pickCaption(captions, lang) {
+  if (!captions.length) return null;
+  if (lang) {
+    const want = String(lang).toLowerCase();
+    for (let i = 0; i < captions.length; i++) {
+      if ((captions[i].language || '').toLowerCase().indexOf(want) !== -1) return captions[i];
+    }
+  }
+  for (let i = 0; i < captions.length; i++) {
+    if (/eng/i.test(captions[i].language) && captions[i].isAuto) return captions[i];
+  }
+  for (let i = 0; i < captions.length; i++) {
+    if (/eng/i.test(captions[i].language)) return captions[i];
+  }
+  for (let i = 0; i < captions.length; i++) {
+    if (captions[i].isAuto) return captions[i];
+  }
+  return captions[0];
+}
+
+function authorOf(item) {
+  if (!item || !item.author) return null;
+  return item.author.uniqueId || item.author.unique_id || null;
+}
+
+async function cmdTranscript(args, flags) {
+  const ref = parseVideoRef(args[0]);
+  if (!ref) {
+    console.error('Usage: tiktok transcript <videoId|url> [--lang=eng-US] [--out=path] [--json] [--raw]');
+    process.exit(1);
+  }
+  const wantJson = !!flags.json;
+  const wantRaw = !!(flags.raw || flags.vtt);
+  const lang = flags.lang || flags.language || null;
+
+  let item = null;
+  let tab = null;
+  item = await fetchItemStruct(ref.id);
+  const apiFailed = !item;
+
+  let captions = item ? extractCaptionsFromItem(item) : [];
+
+  if (!captions.length) {
+    tab = await ensureVideoTab(ref.id, ref.author || authorOf(item));
+    const pageItem = await readItemFromPage(tab);
+    if (!item) item = pageItem;
+    captions = extractCaptionsFromItem(pageItem);
+    if (!item.video) item.video = pageItem.video;
+  }
+
+  if (!captions.length) {
+    console.error('No captions/subtitles available for video ' + ref.id
+      + '. (TikTok only ships auto-captions on some videos.)');
+    process.exit(2);
+  }
+
+  const cap = pickCaption(captions, lang);
+  if (!tab) tab = await findTab();
+
+  const tState = { tab: tab, ref: ref, item: item, cap: cap };
+  let vtt;
+  try {
+    vtt = await fetchCaptionVttWithReload(tState, lang);
+    if (tState.item) item = tState.item;
+  } catch (e) {
+    console.error('Failed to download captions: ' + (e.message || e));
+    process.exit(1);
+  }
+
+  const cues = parseWebVtt(vtt);
+  const meta = {
+    id: String((item && item.id) || ref.id),
+    author: authorOf(item) || ref.author || null,
+    desc: ((item && item.desc) || '').replace(/\n/g, ' ').trim(),
+    duration: (item && item.video && item.video.duration) || null,
+    language: cap.language,
+    source: cap.source || (cap.isAuto ? 'ASR' : 'unknown'),
+    cueCount: cues.length,
+  };
+
+  if (flags.out) {
+    const outPath = String(flags.out);
+    if (wantRaw || /\.vtt$/i.test(outPath)) fs.writeFileSync(outPath, vtt);
+    else if (wantJson || /\.json$/i.test(outPath)) {
+      fs.writeFileSync(outPath, JSON.stringify(Object.assign({}, meta, { cues: cues }), null, 2));
+    } else {
+      const body = cues.map((c) => fmtTs(c.start) + '  ' + c.text).join('\n') + '\n';
+      fs.writeFileSync(outPath, body);
+    }
+    console.error('wrote ' + outPath);
+  }
+
+  if (wantRaw) {
+    process.stdout.write(vtt.endsWith('\n') ? vtt : vtt + '\n');
+    return;
+  }
+  if (wantJson) {
+    console.log(JSON.stringify(Object.assign({}, meta, { cues: cues }), null, 2));
+    return;
+  }
+
+  console.log('Transcript for ' + meta.id + (meta.author ? ' @' + meta.author : ''));
+  if (meta.desc) console.log('  ' + meta.desc.slice(0, 100));
+  console.log('  language: ' + (meta.language || '?')
+    + '  source: ' + meta.source
+    + '  cues: ' + meta.cueCount
+    + (meta.duration ? '  duration: ' + meta.duration + 's' : '')
+    + (apiFailed ? '  (via page)' : ''));
+  console.log('');
+  for (let i = 0; i < cues.length; i++) {
+    console.log(fmtTs(cues[i].start) + '  ' + cues[i].text);
+  }
+}
+
+async function cmdFilmstrip(args, flags) {
+  const ref = parseVideoRef(args[0]);
+  if (!ref) {
+    console.error('Usage: tiktok filmstrip <videoId|url> [--frames=8] [--width=160] [--out=path] [--seek-wait=700] [--json]');
+    process.exit(1);
+  }
+  const nFrames = Math.max(1, Math.min(24, parseInt(flags.frames || flags.n || '8', 10) || 8));
+  const thumbW = Math.max(64, Math.min(480, parseInt(flags.width || flags.w || '160', 10) || 160));
+  const seekWait = Math.max(200, Math.min(3000, parseInt(flags['seek-wait'] || '700', 10) || 700));
+  const outPath = String(flags.out || (TMP_DIR + '/filmstrip-' + ref.id + '.jpg'));
+  const wantJson = !!flags.json;
+
+  const tab = await ensureVideoTab(ref.id, ref.author);
+
+  const PROBE_SRC = "(() => {\n"
+    + "  const v = [...document.querySelectorAll('video')].find(x => x.duration > 1 && x.videoWidth > 0)\n"
+    + "    || document.querySelector('video');\n"
+    + "  if (!v) return JSON.stringify({ error: 'no-video-element' });\n"
+    + "  return JSON.stringify({\n"
+    + "    duration: v.duration,\n"
+    + "    w: v.videoWidth,\n"
+    + "    h: v.videoHeight,\n"
+    + "    ready: v.readyState\n"
+    + "  });\n"
+    + "})()";
+
+  // The player may still be initialising — a freshly opened tab (including one
+  // adopted after a dead-session recovery) has no decoded video yet. Poll for up
+  // to ~10s instead of failing on the first look.
+  let probe = null;
+  let probeErr = null;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    try {
+      probe = JSON.parse(await pwEval(tab, PROBE_SRC));
+      probeErr = null;
+    } catch (e) {
+      probe = null;
+      probeErr = e && e.message ? e.message : String(e);
+    }
+    if (probe && !probe.error && Number(probe.duration) > 0 && Number(probe.w) > 0) break;
+    await sleep(500);
+  }
+
+  if (!probe) {
+    console.error('Could not read <video> on the page: ' + (probeErr || 'unknown'));
+    process.exit(1);
+  }
+  if (probe.error) {
+    console.error('No playable <video> element found for ' + ref.id
+      + '. Open the video on www.tiktok.com and retry.');
+    process.exit(1);
+  }
+
+  const duration = Number(probe.duration) || 0;
+  if (!(duration > 0)) {
+    console.error('Video duration is still 0/NaN after ~10s — the player never initialised.');
+    console.error('The tab may be showing a login wall or an age gate. Open the video manually and retry.');
+    process.exit(1);
+  }
+  const thumbH = Math.round(thumbW * (probe.h || 16) / (probe.w || 9));
+
+  await pwEval(tab, "(() => {\n"
+    + "  const N = " + nFrames + ", tw = " + thumbW + ", th = " + thumbH + ";\n"
+    + "  const c = document.createElement('canvas');\n"
+    + "  c.width = tw * N; c.height = th;\n"
+    + "  window.__ttStrip = { c: c, ctx: c.getContext('2d'), tw: tw, th: th, N: N, times: [] };\n"
+    + "  return 'ok';\n"
+    + "})()");
+
+  const times = [];
+  for (let i = 0; i < nFrames; i++) {
+    const t = (duration * (i + 0.5)) / nFrames;
+    times.push(Math.round(t * 10) / 10);
+    const label = fmtTs(t).replace(/\.\d+$/, '');
+
+    await pwEval(tab, "(() => {\n"
+      + "  const v = [...document.querySelectorAll('video')].find(x => x.duration > 1)\n"
+      + "    || document.querySelector('video');\n"
+      + "  if (!v) return 'no-video';\n"
+      + "  v.muted = true;\n"
+      + "  try { v.pause(); } catch (e) {}\n"
+      + "  v.currentTime = " + t + ";\n"
+      + "  return 'seek:' + v.currentTime;\n"
+      + "})()");
+    await sleep(seekWait);
+
+    await pwEval(tab, "(() => {\n"
+      + "  const s = window.__ttStrip;\n"
+      + "  const v = [...document.querySelectorAll('video')].find(x => x.duration > 1)\n"
+      + "    || document.querySelector('video');\n"
+      + "  if (!s || !v) return 'missing';\n"
+      + "  const i = " + i + ";\n"
+      + "  s.ctx.drawImage(v, 0, 0, v.videoWidth, v.videoHeight, i * s.tw, 0, s.tw, s.th);\n"
+      + "  s.ctx.fillStyle = 'rgba(0,0,0,0.55)';\n"
+      + "  s.ctx.fillRect(i * s.tw, s.th - 22, s.tw, 22);\n"
+      + "  s.ctx.fillStyle = '#fff';\n"
+      + "  s.ctx.font = 'bold 14px sans-serif';\n"
+      + "  s.ctx.fillText(" + JSON.stringify(label) + ", i * s.tw + 8, s.th - 6);\n"
+      + "  s.times[i] = " + t + ";\n"
+      + "  return 'drew:' + i;\n"
+      + "})()");
+  }
+
+  const dataUrl = await pwEval(tab, "(() => {\n"
+    + "  const s = window.__ttStrip;\n"
+    + "  if (!s) return '';\n"
+    + "  return s.c.toDataURL('image/jpeg', 0.85);\n"
+    + "})()");
+
+  if (!dataUrl || String(dataUrl).indexOf('data:image') !== 0) {
+    console.error('Filmstrip export failed (empty or non-image data URL).'
+      + ' The canvas may be tainted or the player not ready.');
+    process.exit(1);
+  }
+  const b64 = String(dataUrl).replace(/^data:image\/\w+;base64,/, '');
+  const buf = Buffer.from(b64, 'base64');
+  try {
+    const slash = outPath.lastIndexOf('/');
+    if (slash > 0 && typeof fs.mkdirSync === 'function') {
+      fs.mkdirSync(outPath.slice(0, slash), { recursive: true });
+    }
+  } catch (e) {}
+  fs.writeFileSync(outPath, buf);
+
+  const result = {
+    id: ref.id,
+    out: outPath,
+    bytes: buf.length,
+    frames: nFrames,
+    width: thumbW * nFrames,
+    height: thumbH,
+    thumbWidth: thumbW,
+    thumbHeight: thumbH,
+    duration: duration,
+    times: times,
+    videoWidth: probe.w,
+    videoHeight: probe.h,
+  };
+
+  if (wantJson) {
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    console.log('Filmstrip ' + ref.id);
+    console.log('  frames:   ' + nFrames + ' @ ' + thumbW + 'x' + thumbH
+      + '  (sheet ' + result.width + 'x' + result.height + ')');
+    console.log('  duration: ' + duration.toFixed(1) + 's');
+    console.log('  times:    ' + times.join(', '));
+    console.log('  out:      ' + outPath + '  (' + buf.length + ' bytes)');
+  }
+  return result;
+}
+
+async function cmdSee(args, flags) {
+  const ref = parseVideoRef(args[0]);
+  if (!ref) {
+    console.error('Usage: tiktok see <videoId|url> [--frames=8] [--width=160] [--lang=eng-US] [--dir=path] [--json]');
+    console.error('  Opens the video, extracts transcript + filmstrip so an agent can "see" it.');
+    process.exit(1);
+  }
+  const dir = String(flags.dir || (TMP_DIR + '/see-' + ref.id));
+  if (typeof fs.mkdirSync === 'function') {
+    try { fs.mkdirSync(dir, { recursive: true }); } catch (e) {}
+  }
+
+  const tab = await ensureVideoTab(ref.id, ref.author);
+  let item = null;
+  try {
+    item = await readItemFromPage(tab);
+  } catch (e) {
+    try { item = await fetchItemStruct(ref.id); } catch (e2) {}
+  }
+
+  let transcript = null;
+  let transcriptError = null;
+  // 'none'  = the video genuinely ships no captions (an expected outcome)
+  // 'fetch' = captions exist but the WebVTT download failed (an operational fault)
+  let transcriptErrorKind = null;
+  try {
+    const captions = item ? extractCaptionsFromItem(item) : [];
+    if (!captions.length) {
+      const none = new Error('no captions on item');
+      none.kind = 'none';
+      throw none;
+    }
+    const lang = flags.lang || flags.language || null;
+    const cap = pickCaption(captions, lang);
+    const sState = { tab: tab, ref: ref, item: item, cap: cap };
+    const vtt = await fetchCaptionVttWithReload(sState, lang);
+    if (sState.item) item = sState.item;
+    const cues = parseWebVtt(vtt);
+    const vttPath = dir + '/captions.vtt';
+    const txtPath = dir + '/transcript.txt';
+    fs.writeFileSync(vttPath, vtt);
+    fs.writeFileSync(txtPath, cues.map((c) => fmtTs(c.start) + '  ' + c.text).join('\n') + '\n');
+    const usedCap = sState.cap || cap;
+    transcript = {
+      language: usedCap.language,
+      source: usedCap.source || (usedCap.isAuto ? 'ASR' : 'unknown'),
+      cueCount: cues.length,
+      vtt: vttPath,
+      text: txtPath,
+      cues: cues,
+    };
+  } catch (e) {
+    transcriptError = e && e.message ? e.message : String(e);
+    transcriptErrorKind = (e && e.kind)
+      || (/^caption fetch failed/.test(transcriptError) ? 'fetch' : 'error');
+  }
+
+  let filmstrip = null;
+  let filmstripError = null;
+  try {
+    const fsFlags = Object.assign({}, flags, { out: dir + '/filmstrip.jpg' });
+    const prevLog = console.log;
+    const prevErr = console.error;
+    if (flags.json) {
+      console.log = function () {};
+      console.error = function () {};
+    }
+    try {
+      filmstrip = await cmdFilmstrip([ref.id], fsFlags);
+    } finally {
+      console.log = prevLog;
+      console.error = prevErr;
+    }
+  } catch (e) {
+    filmstripError = e && e.message ? e.message : String(e);
+  }
+
+  const author = authorOf(item);
+  const summary = {
+    id: ref.id,
+    url: author
+      ? 'https://www.tiktok.com/@' + author + '/video/' + ref.id
+      : 'https://www.tiktok.com/@/video/' + ref.id,
+    author: author,
+    nickname: item && item.author ? (item.author.nickname || null) : null,
+    desc: item ? (item.desc || '').replace(/\n/g, ' ').trim() : null,
+    duration: (item && item.video && item.video.duration)
+      || (filmstrip && filmstrip.duration) || null,
+    stats: (item && item.stats) || null,
+    dir: dir,
+    transcript: transcript ? {
+      language: transcript.language,
+      source: transcript.source,
+      cueCount: transcript.cueCount,
+      vtt: transcript.vtt,
+      text: transcript.text,
+    } : null,
+    transcriptError: transcriptError,
+    transcriptErrorKind: transcriptErrorKind,
+    filmstrip: filmstrip ? {
+      out: filmstrip.out,
+      frames: filmstrip.frames,
+      width: filmstrip.width,
+      height: filmstrip.height,
+      times: filmstrip.times,
+      bytes: filmstrip.bytes,
+    } : null,
+    filmstripError: filmstripError,
+    cues: transcript ? transcript.cues : null,
+  };
+
+  try {
+    fs.writeFileSync(dir + '/summary.json', JSON.stringify(summary, null, 2));
+  } catch (e) {}
+
+  // Exit contract, matching `transcript` and documented in SKILL.md:
+  //   0 = every requested artefact was produced
+  //   2 = the video genuinely has no captions (filmstrip may still be fine)
+  //   1 = something failed that was supposed to work
+  // Assigning `process.exitCode` does NOT stick in this runtime — only an
+  // explicit process.exit() does — so the code is applied after the output is
+  // printed, once there is nothing left to flush.
+  const exitCode = (filmstripError
+      || transcriptErrorKind === 'fetch'
+      || transcriptErrorKind === 'error') ? 1
+    : transcriptErrorKind === 'none' ? 2
+      : 0;
+
+  if (flags.json) {
+    console.log(JSON.stringify(summary, null, 2));
+    if (exitCode) process.exit(exitCode);
+    return summary;
+  }
+
+  console.log('See ' + summary.id + (summary.author ? ' @' + summary.author : ''));
+  if (summary.desc) console.log('  ' + summary.desc.slice(0, 120));
+  if (summary.duration) console.log('  duration: ' + summary.duration + 's');
+  if (summary.stats) {
+    const s = summary.stats;
+    console.log('  ▶ ' + num(s.playCount)
+      + '  ❤ ' + num(s.diggCount)
+      + '  💬 ' + num(s.commentCount)
+      + '  ↪ ' + num(s.shareCount));
+  }
+  console.log('  dir: ' + dir);
+  console.log('');
+  if (transcript) {
+    console.log('Transcript (' + (transcript.language || '?')
+      + ', ' + transcript.source + ', ' + transcript.cueCount + ' cues):');
+    console.log('  ' + transcript.text);
+    console.log('');
+    for (let i = 0; i < transcript.cues.length; i++) {
+      console.log(fmtTs(transcript.cues[i].start) + '  ' + transcript.cues[i].text);
+    }
+    console.log('');
+  } else {
+    console.log('Transcript: unavailable (' + (transcriptError || 'unknown') + ')');
+    console.log('');
+  }
+  if (filmstrip) {
+    console.log('Filmstrip: ' + filmstrip.out);
+    console.log('  ' + filmstrip.frames + ' frames, '
+      + filmstrip.width + 'x' + filmstrip.height
+      + ', times: ' + filmstrip.times.join(', '));
+  } else {
+    console.log('Filmstrip: unavailable (' + (filmstripError || 'unknown') + ')');
+  }
+  if (exitCode) process.exit(exitCode);
+  return summary;
+}
+
+// ---------------------------------------------------------------------------
 // Dispatch
 // ---------------------------------------------------------------------------
 
@@ -795,6 +1654,11 @@ const commands = {
   api: cmdApi,
   studio: cmdStudio,
   monday: cmdMonday,
+  transcript: cmdTranscript,
+  captions: cmdTranscript,
+  filmstrip: cmdFilmstrip,
+  frames: cmdFilmstrip,
+  see: cmdSee,
 };
 
 function parseArgs(argv) {
@@ -849,7 +1713,20 @@ if (!cmd || cmd === 'help' || cmd === '--help') {
   console.log('Escape hatch (like `gh api`):');
   console.log('  api <path> [--method=GET] [--query k=v ...] [--data \'<json>\'] [--bare] [--raw] [--include]');
   console.log('                                                Call any TikTok endpoint from the signed page context\n');
+
+  console.log('See a video (transcript + filmstrip — one-shot, not a webhook watcher):');
+  console.log('  transcript <videoId|url> [--lang=eng-US] [--out=path] [--json] [--raw]');
+  console.log('                                                Pull auto-captions (WebVTT) as a timed transcript');
+  console.log('                                                Aliases: captions');
+  console.log('  filmstrip  <videoId|url> [--frames=8] [--width=160] [--out=path] [--seek-wait=700] [--json]');
+  console.log('                                                Contact sheet of N frames from the in-page player');
+  console.log('                                                Aliases: frames');
+  console.log('  see        <videoId|url> [--frames=8] [--width=160] [--lang=eng-US] [--dir=path]');
+  console.log('                                                [--seek-wait=700] [--json]');
+  console.log('                                                Open video + transcript + filmstrip in one shot');
+  console.log('                                                (not a webhook watcher — use transcript/filmstrip/see, never "watch")\n');
   console.log('Tip: get a secUid for user-videos via `tiktok search <name> --type=user`.');
+  console.log('Tip: see/transcript/filmstrip accept a bare video id or a full @user/video/<id> URL.');
   process.exit(0);
 }
 

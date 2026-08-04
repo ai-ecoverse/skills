@@ -129,3 +129,23 @@ REST endpoint for conversation history or sending. The skill uses the rendered
 - **Composer**: `[contenteditable="true"]` / `textarea`; type + Enter to send.
 - `/api/im/item_detail/?itemId=<id>` is only used by the UI to hydrate previews
   of *shared videos* inside a conversation — not the messages themselves.
+
+## Captions / seeing a video
+
+No dedicated caption API — captions hang off the item payload:
+
+| Source | Path to captions |
+|--------|------------------|
+| `GET /api/item/detail/?itemId=` | `itemInfo.itemStruct.video.subtitleInfos[]` and `.claInfo.captionInfos[]` |
+| Open video page rehydration | `__UNIVERSAL_DATA_FOR_REHYDRATION__` → `webapp.video-detail.itemInfo.itemStruct.video.*` (same shape) |
+
+Each caption entry (field names vary camel/snake):
+
+- `Url` / `url` / `urlList[]` — CDN WebVTT (signed, expiring)
+- `LanguageCodeName` / `language` — e.g. `eng-US`
+- `Format` / `captionFormat` — `webvtt`
+- `Source` — `ASR` for auto-generated
+- `Version` / `variant` — e.g. `1:big_caption`
+
+Filmstrip does not use an API; it seeks the in-page `<video>` element and
+captures frames via canvas (see `references/notes.md`).
