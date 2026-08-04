@@ -126,6 +126,10 @@ timeout for slow models (e.g. `--max-time 120`).
 
 ## Step 6: Poll for Results
 
+Poll `/api/v3/predictions/{id}/result`. The **`/result` suffix is required** —
+`/api/v3/predictions/{id}` on its own returns a bare `404 page not found`, which parses to
+an empty status and makes a naive poll loop spin until it times out instead of failing.
+
 ```bash
 # Define once per session
 wavespeed_poll() {
@@ -137,14 +141,19 @@ wavespeed_poll() {
   while [ $SECONDS -lt "$timeout" ]; do
     result=$(curl -s \
       -H "Authorization: Bearer $WAVESPEED_API_KEY" \
-      "https://api.wavespeed.ai/api/v3/predictions/$task_id")
-    status=$(echo "$result" | jq -r '.data.status')
+      "https://api.wavespeed.ai/api/v3/predictions/$task_id/result")
+    status=$(echo "$result" | jq -r '.data.status // empty' 2>/dev/null)
     if [ "$status" = "completed" ]; then
       echo "$result" | jq -r '.data.outputs[]'
       return 0
     elif [ "$status" = "failed" ]; then
       echo "Task failed:"; echo "$result"
       return 1
+    elif [ -z "$status" ]; then
+      # No parsable status: a wrong URL or an auth error, not a pending task.
+      # Surface it instead of spinning for the full timeout.
+      echo "Unexpected poll response:"; echo "$result"
+      return 3
     fi
     sleep "$interval"
   done
@@ -194,10 +203,11 @@ wavespeed_poll() {
   SECONDS=0
   while [ $SECONDS -lt "$timeout" ]; do
     result=$(curl -s -H "Authorization: Bearer $WAVESPEED_API_KEY" \
-      "https://api.wavespeed.ai/api/v3/predictions/$task_id")
-    status=$(echo "$result" | jq -r '.data.status')
+      "https://api.wavespeed.ai/api/v3/predictions/$task_id/result")
+    status=$(echo "$result" | jq -r '.data.status // empty' 2>/dev/null)
     if [ "$status" = "completed" ]; then echo "$result" | jq -r '.data.outputs[]'; return 0
-    elif [ "$status" = "failed" ]; then echo "Task failed:"; echo "$result"; return 1; fi
+    elif [ "$status" = "failed" ]; then echo "Task failed:"; echo "$result"; return 1
+    elif [ -z "$status" ]; then echo "Unexpected poll response:"; echo "$result"; return 3; fi
     sleep "$interval"
   done
   echo "Timed out after ${timeout}s"; return 2
