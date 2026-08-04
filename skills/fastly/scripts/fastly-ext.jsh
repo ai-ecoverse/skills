@@ -73,9 +73,12 @@ async function bfetch(path) {
   }
 }
 
-/** Cursor-paginated invoice list, newest first. `want` caps how many we fetch. */
+/** Cursor-paginated invoice list, newest first. `want` caps how many we fetch.
+ *  A non-positive `want` means "nothing was asked for" and fetches nothing,
+ *  rather than silently rounding up to one page. */
 async function fetchInvoices(want) {
   const out = [];
+  if (!Number.isFinite(want) || want < 1) return out;
   let cursor = '';
   for (let page = 0; page < MAX_PAGES; page++) {
     const limit = Math.min(PAGE_LIMIT, Math.max(1, want - out.length));
@@ -182,6 +185,7 @@ function usd(n, cur = 'USD') {
 
 async function cmdInvoices(flags) {
   const limit = num(flags.limit, 12);
+  if (limit < 1) cli.die('--limit must be 1 or greater.', { prefix: 'fastly-ext' });
   const invoices = await fetchInvoices(limit);
   if (flags.json) {
     cli.out(invoices);
@@ -343,11 +347,14 @@ function backtest(rows, window) {
     const { pred } = predictUsage(prev, y, m);
     errs.push({ month: act.month, rel: (pred - act.usage) / act.usage });
   }
-  return errs.slice(-window);
+  // `slice(-0)` is `slice(0)` and would silently return the whole history, so
+  // an empty window must be handled explicitly rather than by negation.
+  return window >= 1 ? errs.slice(-window) : [];
 }
 
 async function cmdForecast(flags) {
   const window = num(flags.window, DEFAULT_BACKTEST_WINDOW);
+  if (window < 1) cli.die('--window must be 1 or greater.', { prefix: 'fastly-ext' });
   const mtdRaw = await bfetch('/billing/v3/invoices/month-to-date');
   const mtd = analyse(mtdRaw);
   const [curYear, curMonth] = ymOf(mtd);
