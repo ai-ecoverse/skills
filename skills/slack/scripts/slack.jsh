@@ -254,6 +254,247 @@ async function edgeUsersSearch(query, workspaceId, count = 10) {
   }
 }
 
+// --- Reactions ---
+
+// Add an emoji reaction to a message. `name` is a shortcode WITHOUT colons
+// (e.g. "icecream"). Non-fatal by default: the caller decides how to handle
+// the returned {ok:false,error} shape. Thin wrapper over reactions.add.
+async function addReaction({ channel, timestamp, name }, workspaceId, { fatal = false } = {}) {
+  return slackApi('reactions.add', { channel, timestamp, name }, workspaceId, { fatal });
+}
+
+// --- Auto-sign / auto-watch helpers (post feature) ---
+
+// Normalize an emoji flag value to a bare Slack shortcode (no surrounding
+// colons). Accepts ":robot_face:", "robot_face", or "  :ok:  ". Returns null
+// for non-string / empty input so callers can guard.
+function normalizeEmojiName(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim().replace(/^:+|:+$/g, '').trim();
+  return trimmed || null;
+}
+
+// Decide the auto-watch shape from a channel's member count.
+//   > 100 members            -> watch the THREAD ONLY (thread === threadTs)
+//   <= 100 members / DM / n/a -> watch the CHANNEL (also covers thread replies,
+//                                which arrive as channel message events carrying
+//                                thread_ts).
+// numMembers may be null/undefined (DMs, or info lookup failed) -> treat as small.
+function decideWatchScope(numMembers) {
+  const n = (typeof numMembers === 'number' && Number.isFinite(numMembers)) ? numMembers : 0;
+  return n > 100 ? 'thread' : 'channel';
+}
+
+// Build the webhook --filter JS for an auto-watch. The runtime evaluates this
+// against each forwarded event (an object with .body carrying the raw Slack
+// message frame the WS observer matched). We keep genuine reply message events
+// and drop the echo of the just-sent message (same ts) plus subtype/bot noise.
+//   scope 'thread'  -> only events whose thread_ts === threadTs
+//   scope 'channel' -> any channel message event (thread replies included),
+//                      minus the self-echo of the just-sent message.
+// `selfTs` is the ts of the message we just posted (data.ts) so we never route
+// the post's own echo back as a "reply".
+function buildAutoWatchFilter(scope, threadTs, selfTs) {
+  // The event delivered to the webhook is the raw matched Slack frame under
+  // e.body (the WS observer forwards the frame; the webhook wraps it). Guard
+  // for both shapes (e.body.<field> or e.<field>) so the filter is robust.
+  const t = JSON.stringify(threadTs);
+  const s = JSON.stringify(selfTs);
+  if (scope === 'thread') {
+    return `(e) => { const m = (e && e.body) || e || {}; ` +
+      `if (m.ts === ${s}) return false; ` +
+      `if (m.subtype) return false; ` +
+      `return m.type === 'message' && m.thread_ts === ${t}; }`;
+  }
+  // channel scope
+  return `(e) => { const m = (e && e.body) || e || {}; ` +
+    `if (m.ts === ${s}) return false; ` +
+    `if (m.subtype) return false; ` +
+    `return m.type === 'message'; }`;
+}
+
+// Compute the cron minute/hour (5-field expr) for a one-shot teardown ~offsetMs
+// from now. The scheduler evaluates cron in LOCAL time, and the JS realm's
+// `new Date()` is already local, so we read local fields directly (do NOT use
+// bash `date`, which is UTC in this environment). We pin minute+hour+day+month
+// so the task fires once; the teardown handler deletes itself so a same-time
+// recurrence next month never runs.
+function computeTeardownCron(offsetMs = 3600 * 1000, now = new Date()) {
+  const at = new Date(now.getTime() + offsetMs);
+  const min = at.getMinutes();
+  const hour = at.getHours();
+  const dom = at.getDate();
+  const month = at.getMonth() + 1; // cron months are 1-12
+  return { cron: `${min} ${hour} ${dom} ${month} *`, at };
+}
+
+// Default scoop the auto-watch (and its teardown) routes to. The cone/main
+// assistant is registered as scoop folder `cone`, so replies surface directly
+// to the human. `webhook create --scoop cone` and `crontask create --scoop cone`
+// are both accepted by the runtime. Overridable per-post with --watch-scoop.
+const DEFAULT_WATCH_SCOOP = 'cone';
+// Fallback standing relay scoop if the cone is ever rejected as a target.
+const RELAY_WATCH_SCOOP = 'slack-reply-watch';
+const AUTOWATCH_TTL_MS = 3600 * 1000; // 1 hour
+
+// Start (or extend) the reply auto-watch for a just-posted message and schedule
+// a one-hour self-teardown crontask. Non-fatal throughout: any failure prints a
+// warning and returns without failing the post.
+//
+// scope decision uses conversations.info num_members on targetChannel:
+//   > 100 members  -> watch the THREAD ONLY
+//   otherwise/DM   -> watch the whole CHANNEL (covers thread replies too)
+//
+// Teardown model: crontask/webhook route events to a scoop as *licks*, they do
+// not run shell commands directly. So the one-shot teardown crontask fires a
+// lick (routed to the watch scoop — the cone by default) carrying a
+// self-describing payload instructing the receiver to run
+//   slack unwatch <target>  &&  crontask delete <taskId>
+// which removes the webhook (kill-switch) and deletes the task so it never
+// recurs. Expiry + taskId are also persisted in the watch state file so a
+// later post can extend the TTL (reschedule) instead of erroring.
+async function startAutoWatch({ targetChannel, threadTs, selfTs, wsId, watchScoop }) {
+  // 1. Member count -> scope.
+  let numMembers = null;
+  try {
+    const info = await slackApi('conversations.info', { channel: targetChannel }, wsId, { fatal: false });
+    if (info && info.ok && info.channel && info.channel.num_members != null) {
+      numMembers = info.channel.num_members;
+    }
+  } catch (_) { /* DM / lookup failed -> treat as small */ }
+  const scope = decideWatchScope(numMembers);
+
+  // 2. watchId + state file, mirroring watch()/unwatch() conventions.
+  //    thread scope -> keyed by channel-threadTs (a --thread watch)
+  //    channel scope -> keyed by channel (a whole-channel watch)
+  const useThread = scope === 'thread';
+  const watchId = useThread ? `${targetChannel}-${threadTs}` : targetChannel;
+  const stateFile = `/workspace/skills/slack/.watch-${watchId}.json`;
+
+  // 3. If already under an active autowatch, EXTEND expiry (reschedule teardown)
+  //    instead of erroring or creating a duplicate.
+  let existing = null;
+  try { existing = JSON.parse(await fs.readFile(stateFile, 'utf8')); } catch (_) {}
+  if (existing && existing.autowatch) {
+    const { at } = computeTeardownCron(AUTOWATCH_TTL_MS);
+    // Delete the old teardown task and schedule a fresh one.
+    if (existing.teardownTaskId) {
+      await exec(`crontask delete ${escapeShellArg(existing.teardownTaskId)}`).catch(() => {});
+    }
+    const newTask = await scheduleTeardown({ watchId, target: existing, at, useThread, threadTs, targetChannel, scoop: existing.scoop });
+    existing.expiresAt = new Date(Date.now() + AUTOWATCH_TTL_MS).toISOString();
+    existing.teardownTaskId = newTask || null;
+    await fs.writeFile(stateFile, JSON.stringify(existing, null, 2)).catch(() => {});
+    console.log(`Extended reply watch for ${watchId} to 1h (routes to ${existing.scoop})`);
+    return;
+  }
+
+  // 4. Fresh watch. Build filter + create webhook routed to the watch scoop.
+  const scoop = watchScoop || DEFAULT_WATCH_SCOOP;
+  const filter = buildAutoWatchFilter(scope, threadTs, selfTs);
+
+  let scoopToUse = scoop;
+  let whResult = await exec(`webhook create --scoop ${escapeShellArg(scoopToUse)} --filter ${escapeShellArg(filter)}`);
+  // Fallback: if the cone is rejected as a target, create/reuse a standing
+  // relay scoop and retry once.
+  if (whResult.exitCode !== 0 && scoopToUse === DEFAULT_WATCH_SCOOP) {
+    console.error(`Warning: watch scoop "${scoopToUse}" rejected (${(whResult.stderr || '').trim()}); falling back to relay scoop "${RELAY_WATCH_SCOOP}".`);
+    await ensureRelayScoop().catch(() => {});
+    scoopToUse = RELAY_WATCH_SCOOP;
+    whResult = await exec(`webhook create --scoop ${escapeShellArg(scoopToUse)} --filter ${escapeShellArg(filter)}`);
+  }
+  if (whResult.exitCode !== 0) {
+    console.error('Warning: auto-watch webhook creation failed:', (whResult.stderr || '').trim());
+    return;
+  }
+  const idMatch = whResult.stdout.match(/^ID:\s*(\S+)/m);
+  const urlMatch = whResult.stdout.match(/^URL:\s*(\S+)/m);
+  if (!idMatch || !urlMatch) {
+    console.error('Warning: could not parse auto-watch webhook response.');
+    return;
+  }
+  const webhook = { id: idMatch[1], url: urlMatch[1] };
+
+  // 5. Register the WS observer for the watched target.
+  const state = {
+    watchId,
+    channel: targetChannel,
+    thread_ts: useThread ? threadTs : null,
+    scoop: scoopToUse,
+    filter,
+    webhookId: webhook.id,
+    webhookUrl: webhook.url,
+    createdAt: new Date().toISOString(),
+    // auto-watch metadata
+    autowatch: true,
+    autowatchScope: scope,
+    threadRoot: threadTs,
+    expiresAt: new Date(Date.now() + AUTOWATCH_TTL_MS).toISOString(),
+    teardownTaskId: null,
+  };
+  try {
+    const tab = await findSlackTab();
+    const sub = await subscribeWatch(tab, state);
+    state.subId = sub.id;
+  } catch (e) {
+    await exec(`webhook delete ${escapeShellArg(webhook.id)}`).catch(() => {});
+    console.error('Warning: auto-watch WS observer failed — rolled back:', e.message || e);
+    return;
+  }
+
+  // 6. Schedule the one-hour teardown crontask.
+  const { at } = computeTeardownCron(AUTOWATCH_TTL_MS);
+  const taskId = await scheduleTeardown({ watchId, target: state, at, useThread, threadTs, targetChannel, scoop: scoopToUse });
+  state.teardownTaskId = taskId || null;
+
+  await fs.writeFile(stateFile, JSON.stringify(state, null, 2)).catch(() => {});
+
+  const scopeMsg = scope === 'thread' ? 'thread' : 'channel+thread';
+  console.log(`Watching ${scopeMsg} for replies for 1h (routes to ${scoopToUse})`);
+}
+
+// Create the one-shot teardown crontask. Returns the crontask id (or null).
+// The task fires once (minute/hour/day/month pinned) and its --filter payload
+// tells the receiving scoop to run the unwatch + delete-self commands.
+async function scheduleTeardown({ watchId, at, useThread, threadTs, targetChannel, scoop }) {
+  const name = `slack-autowatch-teardown-${watchId}`;
+  const min = at.getMinutes();
+  const hour = at.getHours();
+  const dom = at.getDate();
+  const month = at.getMonth() + 1;
+  const cron = `${min} ${hour} ${dom} ${month} *`;
+  const unwatchCmd = useThread
+    ? `slack unwatch ${targetChannel} --thread=${threadTs}`
+    : `slack unwatch ${targetChannel}`;
+  // Self-describing payload delivered as a lick to the scoop. It names the exact
+  // shell commands to run so the receiver (cone or relay) can execute the
+  // teardown deterministically and then delete this very task.
+  const payload =
+    `() => ({ kind: 'slack-autowatch-teardown', watchId: ${JSON.stringify(watchId)}, ` +
+    `instruction: 'The 1h Slack reply auto-watch has expired. Run these two commands then stop.', ` +
+    `commands: [${JSON.stringify(unwatchCmd)}, 'crontask delete ' + ${JSON.stringify(name)}] })`;
+  const res = await exec(
+    `crontask create --name ${escapeShellArg(name)} --scoop ${escapeShellArg(scoop)} ` +
+    `--cron ${escapeShellArg(cron)} --filter ${escapeShellArg(payload)}`
+  );
+  if (res.exitCode !== 0) {
+    console.error('Warning: teardown crontask creation failed:', (res.stderr || '').trim());
+    return null;
+  }
+  const idMatch = res.stdout.match(/^ID:\s*(\S+)/m);
+  return idMatch ? idMatch[1] : null;
+}
+
+// Ensure the fallback relay scoop exists (best-effort). Only invoked if the
+// cone is rejected as a webhook/crontask target.
+async function ensureRelayScoop() {
+  const check = await exec(`test -d /scoops/${RELAY_WATCH_SCOOP} && echo yes`).catch(() => ({ stdout: '' }));
+  if ((check.stdout || '').includes('yes')) return;
+  // scoop_scoop / feed_scoop are the SLICC scoop-creation entry points; try the
+  // generic creation command, ignoring failure (the caller degrades gracefully).
+  await exec(`scoop_scoop create ${RELAY_WATCH_SCOOP} --purpose ${escapeShellArg('Relay Slack reply-watch events to the cone.')}`).catch(() => {});
+}
+
 // --- Argument parsing ---
 
 function parseArgs(args) {
@@ -488,6 +729,53 @@ const commands = {
     }
     if (data.message) {
       console.log(`Text: ${data.message.text}`);
+    }
+
+    // --- Feature 1: auto-sign the sent message with an emoji reaction ---
+    // Default-on (Lars wants a reaction under every message). --no-sign opts
+    // out. --sign=<name> / --sign <name> overrides the emoji; colons optional.
+    // Non-fatal: a reaction failure must never fail the post.
+    if (flags['no-sign'] !== true && flags.sign !== false) {
+      // Resolve the emoji name: explicit --sign value (string) or the default.
+      let signName = 'icecream';
+      if (typeof flags.sign === 'string') {
+        const norm = normalizeEmojiName(flags.sign);
+        if (norm) signName = norm;
+      }
+      try {
+        const react = await addReaction(
+          { channel: targetChannel, timestamp: data.ts, name: signName },
+          wsId,
+          { fatal: false },
+        );
+        if (react && react.ok) {
+          console.log(`Signed with :${signName}:`);
+        } else {
+          const err = (react && react.error) || 'unknown_error';
+          // Treat these as benign — warn but never fail the post.
+          console.error(`Warning: could not sign message with :${signName}: (${err})`);
+        }
+      } catch (e) {
+        console.error(`Warning: reaction failed (${e && e.message ? e.message : e})`);
+      }
+    }
+
+    // --- Feature 2: auto-watch for replies for 1 hour ---
+    // Default-on. --no-watch opts out. --watch-scoop=<name> overrides the target
+    // scoop (default: the cone). Thread root = the thread we replied into, else
+    // the fresh message's own ts. Entirely non-fatal.
+    if (flags['no-watch'] !== true && flags.watch !== false) {
+      const threadTs = (typeof flags.thread_ts === 'string' && flags.thread_ts)
+        ? flags.thread_ts
+        : data.ts;
+      const watchScoop = (typeof flags['watch-scoop'] === 'string' && flags['watch-scoop'])
+        ? flags['watch-scoop']
+        : null;
+      try {
+        await startAutoWatch({ targetChannel, threadTs, selfTs: data.ts, wsId, watchScoop });
+      } catch (e) {
+        console.error(`Warning: auto-watch setup failed (${e && e.message ? e.message : e})`);
+      }
     }
   },
 
@@ -1769,7 +2057,9 @@ if (!cmd || cmd === 'help' || cmd === '--help') {
   console.log('  approve <message_ts> [--channel=<id>]    Approve an interactive action (e.g. invite request)');
   console.log('  deny <message_ts> [--channel=<id>]       Deny an interactive action (e.g. invite request)');
   console.log('  history <channel_id> [--limit=N]          Read channel messages');
-  console.log('  post <id> <message> [--thread_ts=TS]      Post a message to any channel, DM, or user');
+  console.log('  post <id> <message> [--thread_ts=TS] [--sign[=emoji]|--no-sign] [--no-watch] [--watch-scoop=<name>]');
+  console.log('                                           Post a message; auto-signs with :icecream: and');
+  console.log('                                           auto-watches for replies for 1h (routes to cone)');
   console.log('  upload <channel_id> <file> [--thread_ts=TS] [--comment="..."] [--title="..."]');
   console.log('                                           Upload a file to a channel/DM/thread');
   console.log('  download <file_id> [--out=<path>]         Download a file (e.g. thread image) locally');

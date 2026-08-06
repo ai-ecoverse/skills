@@ -54,7 +54,11 @@ slack --workspace=T06DUTYDQ channels --search=helix
 slack --ws=T06DUTYDQ history C06ABC123
 
 # Post a message to a channel
+# (auto-signs with :icecream: and auto-watches for replies for 1h → cone)
 slack post C087NCG774J "Hello from SLICC!"
+
+# Post without the auto sign/watch
+slack post C087NCG774J "quiet post" --no-sign --no-watch
 
 # DM a user directly (opens DM automatically)
 slack post W5BPKRLUA "Hey, quick question..."
@@ -222,6 +226,84 @@ slack post W5BPKRLUA "Hey, quick question..."
 # Reply in a thread
 slack post C087NCG774J "Got it" --thread_ts=1774539502.747989
 ```
+
+**Post flags:**
+
+- `--thread_ts=<ts>` — post as a threaded reply to the message with that timestamp.
+- `--sign[=<emoji>]` / `--no-sign` — control the auto-sign reaction (see below).
+- `--no-watch` — skip the auto reply-watch (see below).
+- `--watch-scoop=<name>` — override the scoop the reply-watch routes to (default: the cone).
+
+#### Auto-sign (default-on)
+
+After a **successful** post, the message is automatically signed with an emoji
+reaction — `:icecream:` (🍦) by default. This is non-fatal: if Slack rejects the
+reaction (`already_reacted`, `invalid_name`, permission errors, etc.) the post
+still succeeds (exit 0) and a warning is printed to stderr.
+
+```bash
+# Default: signs with :icecream:
+slack post C087NCG774J "Deploy is green"        # → "Signed with :icecream:"
+
+# Custom emoji (colons optional — ":robot_face:" or "robot_face" both work)
+slack post C087NCG774J "Bot did it" --sign=robot_face
+slack post C087NCG774J "Bot did it" --sign :robot_face:
+
+# Opt out entirely
+slack post C087NCG774J "no sticker please" --no-sign
+```
+
+Works identically for channel posts, DMs, and threaded replies. Uses the
+`reactions.add` Web API method (`{ channel, timestamp, name }`, `name` without
+colons).
+
+#### Auto-watch for replies, 1 hour (default-on)
+
+After a successful post (and the reaction), a reply-watch is started that
+**self-tears-down after one hour**. It reuses the same `slack watch` machinery
+(webhook + WebSocket observer + `--filter`). Opt out with `--no-watch`.
+
+- **Thread root** = the `--thread_ts` you replied into, or (for a fresh
+  top-level message) the new message's own `ts`.
+- **Scope by channel size** — looked up via `conversations.info` `num_members`
+  on the resolved channel:
+  - **> 100 members** → watch the **thread only** (a `--thread` watch whose
+    filter matches messages with `thread_ts === <threadRoot>`), to avoid a
+    firehose on a big channel.
+  - **≤ 100 members, or a DM / unknown count** → watch the **whole channel**
+    (a channel message watch already receives thread-reply events, which carry
+    `thread_ts`, so this covers both channel messages and thread replies). The
+    filter drops the echo of the just-sent message and subtype/system events.
+- **Routing** — replies route to the **cone** by default (`--scoop cone`), so
+  they surface directly to you. If the runtime ever rejects the cone as a
+  webhook target, it falls back to a standing relay scoop `slack-reply-watch`
+  (auto-created if missing). Override with `--watch-scoop=<name>`.
+- **1-hour TTL / self-teardown** — `expiresAt` (now + 3600s) and the teardown
+  task id are stored in the watch state file
+  (`/workspace/skills/slack/.watch-<watchId>.json`). A one-shot `crontask`
+  named `slack-autowatch-teardown-<watchId>` is scheduled ~60 min out (cron
+  minute/hour computed from **local** time, since the scheduler uses local tz
+  while bash `date` is UTC). When it fires it delivers a self-describing lick to
+  the watch scoop instructing it to run `slack unwatch <target>` and then
+  `crontask delete <itself>` — so the watch is torn down and the task removes
+  itself (fires once, no recurrence).
+- **Re-posting extends the TTL** — if you post again into a channel/thread that
+  is already under an active auto-watch, the existing watch's expiry is
+  **extended** (the teardown is rescheduled) instead of erroring or duplicating.
+
+```bash
+# Default: signs + watches for replies for 1h, routing to the cone
+slack post C087NCG774J "Anyone around to review PR 42?"
+#   Signed with :icecream:
+#   Watching channel+thread for replies for 1h (routes to cone)
+
+# Route replies to a specific scoop instead of the cone
+slack post C087NCG774J "ping" --watch-scoop=my-monitor
+
+# Post without watching
+slack post C087NCG774J "fire and forget" --no-watch
+```
+
 
 ### slack channels [--search=term]
 

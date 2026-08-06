@@ -108,6 +108,29 @@ Post a message to a channel or DM.
 }
 ```
 
+### POST /api/reactions.add
+
+Add an emoji reaction to a message. Used by `slack post`'s auto-sign feature to
+"sign" the just-posted message (default `icecream` → 🍦).
+
+**Parameters:**
+| Param | Required | Description |
+|-------|----------|-------------|
+| token | yes | xoxc token |
+| channel | yes | Channel/DM ID the message is in (the RESOLVED channel — for a DM, the `D…` id) |
+| timestamp | yes | The message `ts` to react to (e.g. the `ts` returned by `chat.postMessage`) |
+| name | yes | Emoji shortcode **without** colons (e.g. `icecream`, `robot_face`) |
+
+**Response:**
+```json
+{ "ok": true }
+```
+
+**Common non-fatal errors** (`slack post` warns but still exits 0):
+- `already_reacted` — the reaction is already present on the message.
+- `invalid_name` — no emoji with that name exists in the workspace.
+- `no_reaction` / permission-style errors — cannot react in this context.
+
 ### POST /api/conversations.open
 
 Open or find a DM channel with a user.
@@ -157,6 +180,12 @@ Get channel metadata.
   }
 }
 ```
+
+**`num_members` usage:** `slack post`'s auto-watch reads `channel.num_members`
+to decide watch scope — **> 100 members** → watch the thread only; **≤ 100 /
+DM / missing** → watch the whole channel. DMs and some conversation types omit
+`num_members`; a missing value is treated as "small" (whole-channel watch).
+
 
 ### POST /api/users.info
 
