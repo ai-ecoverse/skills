@@ -76,9 +76,17 @@ Get thread replies.
 | channel | yes | Channel ID |
 | ts | yes | Thread parent timestamp |
 | limit | no | Number of replies (default 100) |
+| oldest | no | Unix timestamp — only replies after this |
+| inclusive | no | `false` to exclude the `oldest` message itself |
 | cursor | no | Pagination cursor |
 
 **Response:** Same structure as `conversations.history`. First message is the thread parent.
+
+**Auto-watch poll usage:** `slack poll-replies` uses `conversations.replies`
+(thread-scope watch) or `conversations.history` (channel-scope watch) with
+`oldest=<sinceTs>` + `inclusive=false` to fetch only messages after the
+last-seen ts, then filters out the just-sent message and subtype/system events
+to surface genuine new replies.
 
 ### POST /api/chat.postMessage
 
@@ -182,9 +190,10 @@ Get channel metadata.
 ```
 
 **`num_members` usage:** `slack post`'s auto-watch reads `channel.num_members`
-to decide watch scope — **> 100 members** → watch the thread only; **≤ 100 /
-DM / missing** → watch the whole channel. DMs and some conversation types omit
-`num_members`; a missing value is treated as "small" (whole-channel watch).
+to decide poll scope — **> 100 members** → poll the thread only
+(`conversations.replies`); **≤ 100 / DM / missing** → poll the whole channel
+(`conversations.history`). DMs and some conversation types omit `num_members`; a
+missing value is treated as "small" (whole-channel poll).
 
 
 ### POST /api/users.info

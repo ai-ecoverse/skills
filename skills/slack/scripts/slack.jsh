@@ -285,34 +285,6 @@ function decideWatchScope(numMembers) {
   return n > 100 ? 'thread' : 'channel';
 }
 
-// Build the webhook --filter JS for an auto-watch. The runtime evaluates this
-// against each forwarded event (an object with .body carrying the raw Slack
-// message frame the WS observer matched). We keep genuine reply message events
-// and drop the echo of the just-sent message (same ts) plus subtype/bot noise.
-//   scope 'thread'  -> only events whose thread_ts === threadTs
-//   scope 'channel' -> any channel message event (thread replies included),
-//                      minus the self-echo of the just-sent message.
-// `selfTs` is the ts of the message we just posted (data.ts) so we never route
-// the post's own echo back as a "reply".
-function buildAutoWatchFilter(scope, threadTs, selfTs) {
-  // The event delivered to the webhook is the raw matched Slack frame under
-  // e.body (the WS observer forwards the frame; the webhook wraps it). Guard
-  // for both shapes (e.body.<field> or e.<field>) so the filter is robust.
-  const t = JSON.stringify(threadTs);
-  const s = JSON.stringify(selfTs);
-  if (scope === 'thread') {
-    return `(e) => { const m = (e && e.body) || e || {}; ` +
-      `if (m.ts === ${s}) return false; ` +
-      `if (m.subtype) return false; ` +
-      `return m.type === 'message' && m.thread_ts === ${t}; }`;
-  }
-  // channel scope
-  return `(e) => { const m = (e && e.body) || e || {}; ` +
-    `if (m.ts === ${s}) return false; ` +
-    `if (m.subtype) return false; ` +
-    `return m.type === 'message'; }`;
-}
-
 // Compute the cron minute/hour (5-field expr) for a one-shot teardown ~offsetMs
 // from now. The scheduler evaluates cron in LOCAL time, and the JS realm's
 // `new Date()` is already local, so we read local fields directly (do NOT use
@@ -330,29 +302,45 @@ function computeTeardownCron(offsetMs = 3600 * 1000, now = new Date()) {
 
 // Default scoop the auto-watch (and its teardown) routes to. The cone/main
 // assistant is registered as scoop folder `cone`, so replies surface directly
-// to the human. `webhook create --scoop cone` and `crontask create --scoop cone`
-// are both accepted by the runtime. Overridable per-post with --watch-scoop.
+// to the human. `crontask create --scoop cone` is accepted by the runtime.
+// Overridable per-post with --watch-scoop.
 const DEFAULT_WATCH_SCOOP = 'cone';
 // Fallback standing relay scoop if the cone is ever rejected as a target.
 const RELAY_WATCH_SCOOP = 'slack-reply-watch';
 const AUTOWATCH_TTL_MS = 3600 * 1000; // 1 hour
 
-// Start (or extend) the reply auto-watch for a just-posted message and schedule
-// a one-hour self-teardown crontask. Non-fatal throughout: any failure prints a
-// warning and returns without failing the post.
+// Start (or extend) the reply auto-watch for a just-posted message.
+//
+// DELIVERY MECHANISM — POLLING (not the WS observer).
+// -----------------------------------------------------------------------------
+// The `slack watch` WebSocket observer (browser.websocket.on().forward()) CANNOT
+// be used from `slack post`: the observer subscription is bound to the lifetime
+// of the process/realm that creates it, and `slack post` exits immediately after
+// posting, so the runtime auto-closes the subscription and NO Slack frames are
+// ever forwarded. (Confirmed live: Slack's socket is in the page main world, its
+// frames are plaintext JSON with the expected {type,channel,thread_ts} shape, and
+// the runtime router DOES match+forward them while the creating process is alive
+// — but the post process is gone within milliseconds, so delivery never happens.
+// This is the same reason the legacy watch "never actually worked" end-to-end.)
+//
+// Instead we deliver reply notifications with a PROCESS-INDEPENDENT poll: a
+// `crontask` that fires every minute, routed to the watch scoop (the cone by
+// default). Crontask lifetime is independent of the posting process. crontask
+// `--filter` cannot itself call Slack (it is a lightweight skip/run/payload
+// decision, disabled entirely in extension mode), so the tick delivers a
+// self-describing lick telling the receiving scoop to poll
+// `conversations.history` / `conversations.replies` for messages after the last
+// seen ts, report any NEW replies, and (when now >= expiresAt, or as a safety
+// net) tear the watch down. A separate one-shot teardown crontask at +1h removes
+// the poller + state file so nothing runs past the hour.
 //
 // scope decision uses conversations.info num_members on targetChannel:
-//   > 100 members  -> watch the THREAD ONLY
-//   otherwise/DM   -> watch the whole CHANNEL (covers thread replies too)
+//   > 100 members  -> poll the THREAD ONLY (conversations.replies on threadRoot)
+//   otherwise/DM   -> poll the whole CHANNEL (conversations.history; thread
+//                     replies also surface in history, so this covers both)
 //
-// Teardown model: crontask/webhook route events to a scoop as *licks*, they do
-// not run shell commands directly. So the one-shot teardown crontask fires a
-// lick (routed to the watch scoop — the cone by default) carrying a
-// self-describing payload instructing the receiver to run
-//   slack unwatch <target>  &&  crontask delete <taskId>
-// which removes the webhook (kill-switch) and deletes the task so it never
-// recurs. Expiry + taskId are also persisted in the watch state file so a
-// later post can extend the TTL (reschedule) instead of erroring.
+// Re-posting into an active autowatch EXTENDS expiry (reschedules teardown) and
+// advances the last-seen ts, instead of erroring or duplicating.
 async function startAutoWatch({ targetChannel, threadTs, selfTs, wsId, watchScoop }) {
   // 1. Member count -> scope.
   let numMembers = null;
@@ -370,94 +358,115 @@ async function startAutoWatch({ targetChannel, threadTs, selfTs, wsId, watchScoo
   const useThread = scope === 'thread';
   const watchId = useThread ? `${targetChannel}-${threadTs}` : targetChannel;
   const stateFile = `/workspace/skills/slack/.watch-${watchId}.json`;
+  const now = Date.now();
+  const expiresAt = new Date(now + AUTOWATCH_TTL_MS).toISOString();
 
-  // 3. If already under an active autowatch, EXTEND expiry (reschedule teardown)
-  //    instead of erroring or creating a duplicate.
+  // 3. If already under an active autowatch, EXTEND expiry (reschedule teardown),
+  //    advance the last-seen ts to this post, and reuse the existing poller.
   let existing = null;
   try { existing = JSON.parse(await fs.readFile(stateFile, 'utf8')); } catch (_) {}
   if (existing && existing.autowatch) {
     const { at } = computeTeardownCron(AUTOWATCH_TTL_MS);
-    // Delete the old teardown task and schedule a fresh one.
     if (existing.teardownTaskId) {
       await exec(`crontask delete ${escapeShellArg(existing.teardownTaskId)}`).catch(() => {});
     }
-    const newTask = await scheduleTeardown({ watchId, target: existing, at, useThread, threadTs, targetChannel, scoop: existing.scoop });
-    existing.expiresAt = new Date(Date.now() + AUTOWATCH_TTL_MS).toISOString();
-    existing.teardownTaskId = newTask || null;
+    const scoop = existing.scoop || DEFAULT_WATCH_SCOOP;
+    const newTeardown = await scheduleTeardown({ watchId, at, useThread, threadTs, targetChannel, scoop });
+    existing.expiresAt = expiresAt;
+    existing.sinceTs = selfTs;            // don't re-report messages before this post
+    existing.teardownTaskId = newTeardown || null;
     await fs.writeFile(stateFile, JSON.stringify(existing, null, 2)).catch(() => {});
-    console.log(`Extended reply watch for ${watchId} to 1h (routes to ${existing.scoop})`);
+    console.log(`Extended reply watch for ${watchId} to 1h (routes to ${scoop})`);
     return;
   }
 
-  // 4. Fresh watch. Build filter + create webhook routed to the watch scoop.
-  const scoop = watchScoop || DEFAULT_WATCH_SCOOP;
-  const filter = buildAutoWatchFilter(scope, threadTs, selfTs);
+  // 4. Fresh watch. Determine the target scoop (cone default, relay fallback).
+  let scoop = watchScoop || DEFAULT_WATCH_SCOOP;
 
-  let scoopToUse = scoop;
-  let whResult = await exec(`webhook create --scoop ${escapeShellArg(scoopToUse)} --filter ${escapeShellArg(filter)}`);
-  // Fallback: if the cone is rejected as a target, create/reuse a standing
-  // relay scoop and retry once.
-  if (whResult.exitCode !== 0 && scoopToUse === DEFAULT_WATCH_SCOOP) {
-    console.error(`Warning: watch scoop "${scoopToUse}" rejected (${(whResult.stderr || '').trim()}); falling back to relay scoop "${RELAY_WATCH_SCOOP}".`);
+  // 5. Create the per-minute POLLER crontask routed to the watch scoop. Its
+  //    payload is a self-describing instruction the receiving scoop acts on.
+  const poll = await schedulePoller({ watchId, scope, useThread, threadRoot: threadTs, targetChannel, sinceTs: selfTs, expiresAt, wsId, scoop, stateFile });
+  // Fallback: if the cone is rejected as a crontask target, create/reuse a
+  // standing relay scoop and retry once.
+  if (!poll.ok && scoop === DEFAULT_WATCH_SCOOP) {
+    console.error(`Warning: watch scoop "${scoop}" rejected (${poll.error || 'unknown'}); falling back to relay scoop "${RELAY_WATCH_SCOOP}".`);
     await ensureRelayScoop().catch(() => {});
-    scoopToUse = RELAY_WATCH_SCOOP;
-    whResult = await exec(`webhook create --scoop ${escapeShellArg(scoopToUse)} --filter ${escapeShellArg(filter)}`);
-  }
-  if (whResult.exitCode !== 0) {
-    console.error('Warning: auto-watch webhook creation failed:', (whResult.stderr || '').trim());
+    scoop = RELAY_WATCH_SCOOP;
+    const retry = await schedulePoller({ watchId, scope, useThread, threadRoot: threadTs, targetChannel, sinceTs: selfTs, expiresAt, wsId, scoop, stateFile });
+    if (!retry.ok) {
+      console.error('Warning: auto-watch poller creation failed:', retry.error || '');
+      return;
+    }
+    poll.taskId = retry.taskId;
+  } else if (!poll.ok) {
+    console.error('Warning: auto-watch poller creation failed:', poll.error || '');
     return;
   }
-  const idMatch = whResult.stdout.match(/^ID:\s*(\S+)/m);
-  const urlMatch = whResult.stdout.match(/^URL:\s*(\S+)/m);
-  if (!idMatch || !urlMatch) {
-    console.error('Warning: could not parse auto-watch webhook response.');
-    return;
-  }
-  const webhook = { id: idMatch[1], url: urlMatch[1] };
 
-  // 5. Register the WS observer for the watched target.
+  // 6. Schedule the one-hour teardown crontask (removes the poller + state).
+  const { at } = computeTeardownCron(AUTOWATCH_TTL_MS);
+  const teardownTaskId = await scheduleTeardown({ watchId, at, useThread, threadTs, targetChannel, scoop });
+
+  // 7. Persist state.
   const state = {
     watchId,
     channel: targetChannel,
     thread_ts: useThread ? threadTs : null,
-    scoop: scoopToUse,
-    filter,
-    webhookId: webhook.id,
-    webhookUrl: webhook.url,
-    createdAt: new Date().toISOString(),
+    scoop,
+    workspace: wsId,
+    createdAt: new Date(now).toISOString(),
     // auto-watch metadata
     autowatch: true,
+    delivery: 'poll',
     autowatchScope: scope,
     threadRoot: threadTs,
-    expiresAt: new Date(Date.now() + AUTOWATCH_TTL_MS).toISOString(),
-    teardownTaskId: null,
+    sinceTs: selfTs,
+    expiresAt,
+    pollerTaskId: poll.taskId || null,
+    teardownTaskId: teardownTaskId || null,
   };
-  try {
-    const tab = await findSlackTab();
-    const sub = await subscribeWatch(tab, state);
-    state.subId = sub.id;
-  } catch (e) {
-    await exec(`webhook delete ${escapeShellArg(webhook.id)}`).catch(() => {});
-    console.error('Warning: auto-watch WS observer failed — rolled back:', e.message || e);
-    return;
-  }
-
-  // 6. Schedule the one-hour teardown crontask.
-  const { at } = computeTeardownCron(AUTOWATCH_TTL_MS);
-  const taskId = await scheduleTeardown({ watchId, target: state, at, useThread, threadTs, targetChannel, scoop: scoopToUse });
-  state.teardownTaskId = taskId || null;
-
   await fs.writeFile(stateFile, JSON.stringify(state, null, 2)).catch(() => {});
 
   const scopeMsg = scope === 'thread' ? 'thread' : 'channel+thread';
-  console.log(`Watching ${scopeMsg} for replies for 1h (routes to ${scoopToUse})`);
+  console.log(`Watching ${scopeMsg} for replies for 1h (polls every 1m, routes to ${scoop})`);
+}
+
+// Create the per-minute poller crontask. Returns { ok, taskId?, error? }.
+// The tick delivers a self-describing lick to the watch scoop; the scoop reads
+// the last-seen ts from the state file, polls Slack for newer messages, reports
+// any, advances sinceTs, and tears the watch down once expired.
+async function schedulePoller({ watchId, scope, useThread, threadRoot, targetChannel, sinceTs, expiresAt, wsId, scoop, stateFile }) {
+  const name = `slack-autowatch-poll-${watchId}`;
+  // Self-describing payload. The receiving scoop just runs ONE command —
+  // `slack poll-replies <watchId>` — which deterministically polls Slack, prints
+  // any NEW replies, advances the last-seen ts, and self-tears-down on expiry.
+  // Keeping it to a single command (rather than asking the scoop to reason about
+  // timestamps it can't see in `history`/`thread` output) makes delivery robust.
+  const pollCmd = `slack poll-replies ${watchId}`;
+  const payload =
+    `() => ({ kind: 'slack-reply-poll', watchId: ${JSON.stringify(watchId)}, ` +
+    `channel: ${JSON.stringify(targetChannel)}, scope: ${JSON.stringify(scope)}, ` +
+    `expiresAt: ${JSON.stringify(expiresAt)}, command: ${JSON.stringify(pollCmd)}, ` +
+    `instruction: 'Slack reply-watch tick. Run the command (\\'' + ${JSON.stringify(pollCmd)} + '\\'). If it prints new replies, surface them to the user; if it prints \\'No new replies.\\' stay quiet. The command handles dedup, advancing state, and self-teardown on expiry automatically.' })`;
+  const res = await exec(
+    `crontask create --name ${escapeShellArg(name)} --scoop ${escapeShellArg(scoop)} ` +
+    `--cron ${escapeShellArg('* * * * *')} --filter ${escapeShellArg(payload)}`
+  );
+  if (res.exitCode !== 0) {
+    return { ok: false, error: (res.stderr || res.stdout || '').trim() };
+  }
+  const idMatch = res.stdout.match(/^ID:\s*(\S+)/m);
+  return { ok: true, taskId: idMatch ? idMatch[1] : null };
 }
 
 // Create the one-shot teardown crontask. Returns the crontask id (or null).
 // The task fires once (minute/hour/day/month pinned) and its --filter payload
-// tells the receiving scoop to run the unwatch + delete-self commands.
+// tells the receiving scoop to unwatch and delete BOTH the poller and this
+// teardown task, then remove the state file — so nothing runs past the hour.
 async function scheduleTeardown({ watchId, at, useThread, threadTs, targetChannel, scoop }) {
   const name = `slack-autowatch-teardown-${watchId}`;
+  const pollName = `slack-autowatch-poll-${watchId}`;
+  const stateFile = `/workspace/skills/slack/.watch-${watchId}.json`;
   const min = at.getMinutes();
   const hour = at.getHours();
   const dom = at.getDate();
@@ -468,11 +477,12 @@ async function scheduleTeardown({ watchId, at, useThread, threadTs, targetChanne
     : `slack unwatch ${targetChannel}`;
   // Self-describing payload delivered as a lick to the scoop. It names the exact
   // shell commands to run so the receiver (cone or relay) can execute the
-  // teardown deterministically and then delete this very task.
+  // teardown deterministically and then delete both cron tasks + the state file.
   const payload =
     `() => ({ kind: 'slack-autowatch-teardown', watchId: ${JSON.stringify(watchId)}, ` +
-    `instruction: 'The 1h Slack reply auto-watch has expired. Run these two commands then stop.', ` +
-    `commands: [${JSON.stringify(unwatchCmd)}, 'crontask delete ' + ${JSON.stringify(name)}] })`;
+    `instruction: 'The 1h Slack reply auto-watch has expired. Run these commands then stop.', ` +
+    `commands: [${JSON.stringify(unwatchCmd)}, 'crontask delete ' + ${JSON.stringify(pollName)}, ` +
+    `'crontask delete ' + ${JSON.stringify(name)}, 'rm -f ' + ${JSON.stringify(stateFile)}] })`;
   const res = await exec(
     `crontask create --name ${escapeShellArg(name)} --scoop ${escapeShellArg(scoop)} ` +
     `--cron ${escapeShellArg(cron)} --filter ${escapeShellArg(payload)}`
@@ -1190,12 +1200,18 @@ const commands = {
       process.exit(1);
     }
 
-    // Delete the webhook -- this is the kill-switch. Once the webhook is gone
-    // the observer's webhook sink no longer resolves, so the runtime drops
-    // matched frames and nothing reaches the scoop. The now-idle subscription
-    // is auto-closed when the owning scoop is dropped (the realm API exposes a
-    // closeable handle only at creation time, so a later invocation cannot
-    // close a prior subscription by id).
+    // Kill-switch. Clean up whichever delivery mechanism this watch uses:
+    //  - poll-based auto-watch: delete the poller + teardown crontasks.
+    //  - legacy/manual WS watch: delete the webhook (the now-idle observer
+    //    subscription is auto-closed when its owning scoop is dropped; the realm
+    //    API exposes a closeable handle only at creation time, so a later
+    //    invocation cannot close a prior subscription by id).
+    if (state.pollerTaskId) {
+      await exec(`crontask delete ${escapeShellArg(state.pollerTaskId)}`).catch(() => {});
+    }
+    if (state.teardownTaskId) {
+      await exec(`crontask delete ${escapeShellArg(state.teardownTaskId)}`).catch(() => {});
+    }
     if (state.webhookId) {
       await exec(`webhook delete ${escapeShellArg(state.webhookId)}`).catch(() => {});
     }
@@ -1204,6 +1220,83 @@ const commands = {
     await fs.rm(stateFile).catch(() => {});
 
     console.log(`Stopped watching ${watchId} (was → scoop "${state.scoop}").`);
+  },
+
+  // Poll a poll-based auto-watch for NEW replies since the last-seen ts. Invoked
+  // by the per-minute poller crontask's receiving scoop (the cone by default):
+  // the crontask lick just says "run `slack poll-replies <watchId>`", and this
+  // command does all the work deterministically — poll Slack, print any new
+  // messages, advance sinceTs in the state file, and self-tear-down when expired.
+  // This keeps the receiving scoop's job trivial (relay the output) rather than
+  // asking it to reason about raw timestamps it can't see in `history`/`thread`.
+  //
+  // Usage: slack poll-replies <watchId>   (watchId = channel or channel-threadTs)
+  // Emits a compact, machine-and-human-friendly report; prints "No new replies."
+  // when there is nothing new (so a per-minute tick is quiet).
+  async ['poll-replies'](args, globalFlags) {
+    const { positional } = parseArgs(args);
+    const watchId = positional[0];
+    if (!watchId) {
+      console.error('Usage: slack poll-replies <watchId>');
+      process.exit(1);
+    }
+    const stateFile = `/workspace/skills/slack/.watch-${watchId}.json`;
+    let state;
+    try {
+      state = JSON.parse(await fs.readFile(stateFile, 'utf8'));
+    } catch (_) {
+      // No state -> the watch is gone; make sure our own poller isn't orphaned.
+      await exec(`crontask delete slack-autowatch-poll-${watchId}`).catch(() => {});
+      console.log(`No active watch for ${watchId} (nothing to poll).`);
+      return;
+    }
+
+    const wsId = state.workspace || await resolveWorkspace(globalFlags);
+    const sinceTs = state.sinceTs || '0';
+    const channel = state.channel;
+
+    // Expired? Tear down: unwatch (removes poller + teardown crontasks + state).
+    if (state.expiresAt && Date.now() >= Date.parse(state.expiresAt)) {
+      const threadArg = state.thread_ts ? ` --thread=${state.thread_ts}` : '';
+      await exec(`slack unwatch ${channel}${threadArg}`).catch(() => {});
+      console.log(`Watch ${watchId} expired — torn down.`);
+      return;
+    }
+
+    // Poll: thread scope -> conversations.replies on the thread root; channel
+    // scope -> conversations.history. Both accept `oldest` so we only fetch
+    // messages after the last-seen ts. `inclusive:false` avoids re-reporting the
+    // sinceTs message itself.
+    let messages = [];
+    if (state.autowatchScope === 'thread' && state.threadRoot) {
+      const r = await slackApi('conversations.replies', { channel, ts: state.threadRoot, oldest: sinceTs, inclusive: 'false', limit: '50' }, wsId, { fatal: false });
+      if (r && r.ok && Array.isArray(r.messages)) messages = r.messages;
+    } else {
+      const r = await slackApi('conversations.history', { channel, oldest: sinceTs, inclusive: 'false', limit: '50' }, wsId, { fatal: false });
+      if (r && r.ok && Array.isArray(r.messages)) messages = r.messages;
+    }
+
+    // Keep only genuine NEW messages: ts strictly greater than sinceTs, not the
+    // sinceTs message itself, and not subtype/system noise.
+    const sinceNum = parseFloat(sinceTs) || 0;
+    const fresh = messages
+      .filter((m) => m && m.ts && parseFloat(m.ts) > sinceNum && m.ts !== sinceTs && !m.subtype)
+      .sort((a, b) => parseFloat(a.ts) - parseFloat(b.ts));
+
+    if (fresh.length === 0) {
+      console.log('No new replies.');
+      return;
+    }
+
+    // Advance sinceTs to the newest message so the next tick starts after it.
+    const newest = fresh[fresh.length - 1].ts;
+    state.sinceTs = newest;
+    await fs.writeFile(stateFile, JSON.stringify(state, null, 2)).catch(() => {});
+
+    console.log(`${fresh.length} new repl${fresh.length === 1 ? 'y' : 'ies'} in ${watchId}:`);
+    for (const m of fresh) {
+      console.log(formatMessage(m));
+    }
   },
 
   async watches(args, globalFlags) {
@@ -1219,8 +1312,11 @@ const commands = {
       try {
         const state = JSON.parse(await fs.readFile(file.trim(), 'utf8'));
         const thread = state.thread_ts ? ` thread=${state.thread_ts}` : '';
-        console.log(`  ${state.watchId}${thread} → scoop "${state.scoop}" (webhook: ${state.webhookId})`);
-        console.log(`    Created: ${state.createdAt}`);
+        const via = state.delivery === 'poll'
+          ? `poll every 1m${state.pollerTaskId ? ` (task: ${state.pollerTaskId})` : ''}`
+          : (state.webhookId ? `webhook: ${state.webhookId}` : 'unknown delivery');
+        console.log(`  ${state.watchId}${thread} → scoop "${state.scoop}" (${via})`);
+        console.log(`    Created: ${state.createdAt}${state.expiresAt ? `  Expires: ${state.expiresAt}` : ''}`);
       } catch (_) {
         console.log(`  (corrupt state file: ${file})`);
       }
@@ -2071,6 +2167,7 @@ if (!cmd || cmd === 'help' || cmd === '--help') {
   console.log('  slackbot                                  Find Slackbot DM channel');
   console.log('  watch <channel_id> --scoop=<name>         Watch channel for new messages');
   console.log('  unwatch <channel_id> [--thread=<ts>]      Stop watching a channel');
+  console.log('  poll-replies <watchId>                    Poll an auto-watch for new replies (used by the poller cron)');
   console.log('  watches                                   List active watches');
   console.log('  reinject                                  Re-inject WebSocket interceptor');
   console.log('  monday [--limit=N] [--depth=N] [--date=Nd] Monday protocol: fetch inbox as JSON');
