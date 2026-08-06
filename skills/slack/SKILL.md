@@ -262,51 +262,56 @@ colons).
 After a successful post (and the reaction), a reply-watch is started that
 **self-tears-down after one hour**. Opt out with `--no-watch`.
 
-**Delivery is poll-based, not the WebSocket observer.** The `slack watch`
-WebSocket observer cannot be used from `slack post`: the observer subscription
-is bound to the lifetime of the process that creates it, and `slack post` exits
-immediately after posting, so the runtime auto-closes the subscription and no
-Slack frames are ever forwarded (this is why the legacy WS watch never delivered
-end-to-end). Instead the auto-watch delivers replies with a **process-independent
-poll**: a `crontask` fires every minute, routed to the watch scoop, and its lick
-tells the scoop to run **`slack poll-replies <watchId>`**, which polls Slack for
-new messages since the last-seen ts, prints any genuine replies, advances the
-stored ts (dedup), and self-tears-down on expiry.
+**Delivery is event-driven (WebSocket observer) — silent when idle.** The watch
+registers the runtime's declarative WebSocket observer on the live Slack tab
+(`browser.websocket.on(tab).filter(...).forward({sink:'webhook', webhookId})`,
+the same mechanism as `slack watch`) and creates a webhook routed to the watch
+scoop. The runtime forwards **only matching Slack `message` frames** to the
+webhook, which delivers them to the scoop. When nothing is said, no frame
+arrives, so **the scoop is never woken** — there are no ticks and no per-minute
+polling. A notification is produced only when a genuine new reply arrives. (The
+observer subscription is owned by the runtime's page-side router tied to the
+tab, so it persists after `slack post` exits.)
 
 - **Thread root** = the `--thread_ts` you replied into, or (for a fresh
   top-level message) the new message's own `ts`.
 - **Scope by channel size** — looked up via `conversations.info` `num_members`
   on the resolved channel:
-  - **> 100 members** → poll the **thread only** (`conversations.replies` on the
-    thread root), to avoid a firehose on a big channel.
-  - **≤ 100 members, or a DM / unknown count** → poll the **whole channel**
-    (`conversations.history`; thread replies also surface in channel history, so
-    this covers both channel messages and thread replies). `poll-replies` drops
-    the just-sent message and subtype/system events.
+  - **> 100 members** → watch the **thread only** (the observer selector adds
+    `thread_ts === <threadRoot>`), to avoid a firehose on a big channel.
+  - **≤ 100 members, or a DM / unknown count** → watch the **whole channel** (a
+    channel message watch also receives thread-reply frames, which carry
+    top-level `channel` + `thread_ts`, so this covers both channel messages and
+    thread replies).
+- **Genuine-reply filter** — the webhook `--filter` keeps only real new replies:
+  it drops the echo of the just-sent message (`ts === selfTs`) and Slack's
+  subtype/system envelopes (e.g. `subtype:"message_replied"` parent-update
+  notifications, joins, edits), so only an actual reply produces a lick.
 - **Routing** — replies route to the **cone** by default (`--scoop cone`), so
   they surface directly to you. If the runtime ever rejects the cone as a
-  crontask target, it falls back to a standing relay scoop `slack-reply-watch`
+  webhook target, it falls back to a standing relay scoop `slack-reply-watch`
   (auto-created if missing). Override with `--watch-scoop=<name>`.
-- **1-hour TTL / self-teardown** — `expiresAt` (now + 3600s), the poller task
-  id, and the teardown task id are stored in the watch state file
+- **1-hour TTL / self-teardown** — `expiresAt` (now + 3600s) and the teardown
+  task id are stored in the watch state file
   (`/workspace/skills/slack/.watch-<watchId>.json`). A one-shot `crontask`
   named `slack-autowatch-teardown-<watchId>` is scheduled ~60 min out (cron
   minute/hour computed from **local** time, since the scheduler uses local tz
   while bash `date` is UTC). When it fires it delivers a self-describing lick to
-  the watch scoop instructing it to run `slack unwatch <target>` and then
-  `crontask delete` both the poller and itself, and remove the state file — so
-  the watch is fully torn down and nothing runs past the hour. As a safety net,
-  `slack poll-replies` also tears the watch down itself once `now >= expiresAt`.
+  the watch scoop instructing it to run `slack unwatch <target>` (which deletes
+  the webhook — the delivery kill-switch — and the state) and then
+  `crontask delete` itself, so nothing runs or delivers past the hour. (The WS
+  observer subscription can only be closed by its creating process, so it
+  lingers in the page router until the Slack tab reloads — but it is inert once
+  its webhook is deleted: matched frames have nowhere to go.)
 - **Re-posting extends the TTL** — if you post again into a channel/thread that
   is already under an active auto-watch, the existing watch's expiry is
-  **extended** (the teardown is rescheduled) and the last-seen ts is advanced to
-  the new post, instead of erroring or duplicating.
+  **extended** (the teardown is rescheduled) instead of erroring or duplicating.
 
 ```bash
 # Default: signs + watches for replies for 1h, routing to the cone
 slack post C087NCG774J "Anyone around to review PR 42?"
 #   Signed with :icecream:
-#   Watching channel+thread for replies for 1h (polls every 1m, routes to cone)
+#   Watching channel+thread for replies for 1h (routes to cone)
 
 # Route replies to a specific scoop instead of the cone
 slack post C087NCG774J "ping" --watch-scoop=my-monitor
@@ -435,26 +440,14 @@ You cannot create two watches on the same target without `--force`.
 
 ### slack unwatch \<channel_id\> [--thread=\<thread_ts\>]
 
-Stop watching a channel or thread. Removes the delivery machinery — for a
-poll-based auto-watch it deletes the poller and teardown crontasks; for a
-legacy/manual WS watch it deletes the webhook — and removes the watch state.
-
-### slack poll-replies \<watchId\>
-
-Poll a poll-based auto-watch (created by `slack post`) for NEW replies since the
-last-seen ts. This is what the per-minute poller crontask's receiving scoop runs
-each tick; you rarely invoke it by hand. `watchId` is the channel id (channel
-scope) or `channel-threadTs` (thread scope). It reads the watch state file,
-polls `conversations.history` / `conversations.replies` with `oldest=<sinceTs>`,
-prints any genuinely new messages (`No new replies.` when there are none),
-advances the stored `sinceTs` so replies aren't re-reported, and — once the
-watch's `expiresAt` has passed — tears the watch down (calls `slack unwatch`,
-which removes both crontasks and the state file).
+Stop watching a channel or thread. Deletes the webhook (the delivery
+kill-switch — the WS observer's sink stops resolving, so matched frames are
+silently dropped) and the `+1h` teardown crontask if present, and removes the
+watch state.
 
 ### slack watches
 
-List all active Slack watches with their targets, scoops, delivery mechanism
-(poll vs webhook), and expiry.
+List all active Slack watches with their targets, scoops, webhook, and expiry.
 
 ### slack reinject
 
