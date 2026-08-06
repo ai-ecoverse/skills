@@ -768,9 +768,10 @@ const commands = {
     const channel = positional[0];
     const scoop = flags.scoop;
     const threadTs = flags.thread || null;
+    const watchFilter = (typeof flags.filter === 'string' && flags.filter) ? flags.filter : null;
 
     if (!channel || !scoop) {
-      console.error('Usage: slack watch <channel_id> --scoop=<name> [--thread=<ts>] [--force]');
+      console.error('Usage: slack watch <channel_id> --scoop=<name> [--thread=<ts>] [--filter=<js>] [--force]');
       process.exit(1);
     }
     validateChannelId(channel);
@@ -831,7 +832,7 @@ const commands = {
     // pre-migration file) -- the watch feature has never actually worked
     // end-to-end -- fixed here since this PR is the designated
     // security/correctness review pass for this file.
-    const whResult = await exec(`webhook create --scoop ${escapeShellArg(scoop)}`);
+    const whResult = await exec(`webhook create --scoop ${escapeShellArg(scoop)}${watchFilter ? ` --filter ${escapeShellArg(watchFilter)}` : ''}`);
     if (whResult.exitCode !== 0) {
       console.error('Failed to create webhook:', whResult.stderr);
       process.exit(1);
@@ -850,6 +851,7 @@ const commands = {
       channel,
       thread_ts: threadTs,
       scoop,
+      filter: watchFilter,
       webhookId: webhook.id,
       webhookUrl: webhook.url,
       createdAt: new Date().toISOString(),
@@ -874,6 +876,7 @@ const commands = {
 
     console.log(`Watching ${watchId} → scoop "${scoop}"`);
     console.log(`  Webhook: ${webhook.id}`);
+    if (watchFilter) console.log(`  Filter: ${watchFilter}`);
     if (threadTs) console.log(`  Thread: ${threadTs}`);
   },
 
