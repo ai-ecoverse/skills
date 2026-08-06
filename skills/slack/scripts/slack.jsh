@@ -40,6 +40,47 @@ async function findSlackTab() {
   return _tab;
 }
 
+// Read localConfig_v2 from a tab, retrying the bridge read. The SLICC browser
+// bridge can transiently drop/hang the FIRST localStorage read after a tab or
+// context switch, so a single failed read must never be mistaken for "not
+// logged in" (this caused spurious `token_not_found` on otherwise-valid calls).
+async function readLocalConfig(tab, attempts = 4) {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const raw = await browser.localStorage(tab, 'localConfig_v2');
+      if (raw) {
+        const cfg = JSON.parse(raw);
+        if (cfg && cfg.teams) return cfg;
+      }
+    } catch (e) { /* transient — retry */ }
+    if (i < attempts - 1) await new Promise((r) => setTimeout(r, 300));
+  }
+  return null;
+}
+
+// Resolve a workspace's token from a logged-in Slack tab. Tries the cached/
+// active tab first (with retries), then — critically for Enterprise Grid where
+// multiple workspaces/tabs coexist — re-discovers a tab whose /client/<id>/ URL
+// is scoped to THIS workspace and reads again. Returns { tab, token }.
+async function resolveWorkspaceToken(workspaceId) {
+  let tab = await findSlackTab();
+  let cfg = await readLocalConfig(tab);
+  let team = cfg && cfg.teams && cfg.teams[workspaceId];
+  if (team && team.token) return { tab, token: team.token };
+
+  // Fallback: a tab explicitly scoped to this workspace (its origin's
+  // localConfig_v2 is guaranteed to carry that workspace's token).
+  const wsTab = await browser.findTab({ domain: SLACK_DOMAIN, urlMatch: new RegExp('/client/' + workspaceId + '(?![A-Z0-9])') });
+  if (wsTab) {
+    _tab = wsTab; _tabUrl = wsTab.url;
+    cfg = await readLocalConfig(wsTab);
+    team = cfg && cfg.teams && cfg.teams[workspaceId];
+    if (team && team.token) return { tab: wsTab, token: team.token };
+    tab = wsTab;
+  }
+  return { tab, token: null };
+}
+
 // --- Workspace resolution ---
 
 function getActiveWorkspaceFromTabUrl() {
@@ -142,22 +183,11 @@ async function evalInSlackTab(expr, { fatal = true } = {}) {
 // This ensures same-origin cookies are included and the xoxc token works.
 
 async function slackApi(method, params, workspaceId, { fatal = true } = {}) {
-  const tab = await findSlackTab();
-
-  // Resolve the workspace token from localConfig_v2 (page localStorage), then
-  // issue the API call with browser.fetch. browser.fetch runs in the tab
+  // Resolve the workspace token (with retries + workspace-scoped tab fallback),
+  // then issue the API call with browser.fetch. browser.fetch runs in the tab
   // origin, so the Slack session cookie travels automatically (no manual
   // cookie forwarding, no page-context XHR).
-  let token = null;
-  try {
-    const raw = await browser.localStorage(tab, 'localConfig_v2');
-    const cfg = raw ? JSON.parse(raw) : null;
-    if (cfg && cfg.teams && cfg.teams[workspaceId] && cfg.teams[workspaceId].token) {
-      token = cfg.teams[workspaceId].token;
-    }
-  } catch (e) {
-    token = null;
-  }
+  const { tab, token } = await resolveWorkspaceToken(workspaceId);
 
   let data;
   if (!token) {
@@ -206,18 +236,7 @@ async function slackApi(method, params, workspaceId, { fatal = true } = {}) {
 // the request, so the xoxc token authenticates just like an /api/* call.
 
 async function edgeUsersSearch(query, workspaceId, count = 10) {
-  const tab = await findSlackTab();
-
-  let token = null;
-  try {
-    const raw = await browser.localStorage(tab, 'localConfig_v2');
-    const cfg = raw ? JSON.parse(raw) : null;
-    if (cfg && cfg.teams && cfg.teams[workspaceId] && cfg.teams[workspaceId].token) {
-      token = cfg.teams[workspaceId].token;
-    }
-  } catch (e) {
-    token = null;
-  }
+  const { tab, token } = await resolveWorkspaceToken(workspaceId);
 
   if (!token) {
     return { ok: false, error: 'token_not_found', detail: `No token for workspace ${workspaceId}` };
@@ -749,9 +768,10 @@ const commands = {
     const channel = positional[0];
     const scoop = flags.scoop;
     const threadTs = flags.thread || null;
+    const watchFilter = (typeof flags.filter === 'string' && flags.filter) ? flags.filter : null;
 
     if (!channel || !scoop) {
-      console.error('Usage: slack watch <channel_id> --scoop=<name> [--thread=<ts>] [--force]');
+      console.error('Usage: slack watch <channel_id> --scoop=<name> [--thread=<ts>] [--filter=<js>] [--force]');
       process.exit(1);
     }
     validateChannelId(channel);
@@ -812,7 +832,7 @@ const commands = {
     // pre-migration file) -- the watch feature has never actually worked
     // end-to-end -- fixed here since this PR is the designated
     // security/correctness review pass for this file.
-    const whResult = await exec(`webhook create --scoop ${escapeShellArg(scoop)}`);
+    const whResult = await exec(`webhook create --scoop ${escapeShellArg(scoop)}${watchFilter ? ` --filter ${escapeShellArg(watchFilter)}` : ''}`);
     if (whResult.exitCode !== 0) {
       console.error('Failed to create webhook:', whResult.stderr);
       process.exit(1);
@@ -831,6 +851,7 @@ const commands = {
       channel,
       thread_ts: threadTs,
       scoop,
+      filter: watchFilter,
       webhookId: webhook.id,
       webhookUrl: webhook.url,
       createdAt: new Date().toISOString(),
@@ -855,6 +876,7 @@ const commands = {
 
     console.log(`Watching ${watchId} → scoop "${scoop}"`);
     console.log(`  Webhook: ${webhook.id}`);
+    if (watchFilter) console.log(`  Filter: ${watchFilter}`);
     if (threadTs) console.log(`  Thread: ${threadTs}`);
   },
 
