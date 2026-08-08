@@ -27,10 +27,22 @@ Signal appears as a **tray remote** target:
 
 ## Setup
 
-Register the CLI once per session:
+The CLI **auto-registers**. SLICC discovers every `.jsh` under
+`/workspace/skills/` as a command named after its basename, so
+`scripts/signal.jsh` becomes the `signal` command as soon as the skill is in
+place — no registration step.
+
+> **Do _not_ `touch /usr/bin/signal`.** That creates an empty, non-executable
+> file that _shadows_ the discovered command (`command not found`). If you did,
+> `rm -f /usr/bin/signal`.
+
+If `signal` is not found immediately after the skill is created (the command
+catalog is cached and only refreshes when a skill file is written), touch the
+script to force a re-scan, then run it in the next command:
 
 ```bash
-touch /usr/bin/signal; hash -r
+touch /workspace/skills/signal/scripts/signal.jsh
+signal tabs
 ```
 
 Signal Desktop must be open on the host machine so the tray remote exposes its
