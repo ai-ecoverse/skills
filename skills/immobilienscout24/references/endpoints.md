@@ -148,6 +148,27 @@ X-Requested-With: XMLHttpRequest  (some paths)
 Referer: https://www.immobilienscout24.de/...
 ```
 
+## Rent profile / Bewerbermappe (landlord view of seeker)
+
+Base: `https://api.rentprofile.immobilienscout24.de/meinkonto/dokumente/api`
+
+| Method | Path | Notes |
+|--------|------|-------|
+| GET | `/profile-preview?ownerSsoId={ssoId}` | Shared seeker profile JSON (income, employment, docs metadata). UI route `/meinkonto/dokumente/ansicht/{base64(ssoId)}` loads this. |
+| GET | `/profile` | **Own** profile (landlord as seeker) — not the counterparty. |
+| GET | `/profile/documents?documentTypes=SCHUFA_SOLVENCY,INCOME,…` | Own documents only; returns `[]` when viewing someone else. |
+| GET | `/profile/documents/download/{TYPE}` | Own PDF blob; 404/empty for other users' packages. |
+
+`profile-preview` document entries look like
+`{ "type": "SCHUFA_SOLVENCY"|"INCOME"|"SELF_REPORT"|"IDENTIFICATION", "creationDate": "YYYY-MM-DD" }`.
+No score, no employer name, no file bytes.
+
+Cross-origin: page `fetch()` to `api.rentprofile` is CORS-blocked; **credentialed XHR**
+from an IS24 tab works. Skill uses in-page XHR via `evalAsync`.
+
+Related (own package only, not wired): `/documents/application-package`,
+`/profile/self-report`, `/profile/shared-profile`.
+
 ## Live validation notes (2026-08-09)
 
 - ScoutManager POSTs require `x-xsrf-token` = cookie `XSRF-TOKEN` (path `/scoutmanager/`). Open ScoutManager once so the cookie exists.
@@ -155,4 +176,6 @@ Referer: https://www.immobilienscout24.de/...
 - Geoautocomplete requires static header `X-IS24-GAC: 49f5bf376feed3a0f0a52abb46c0dc90`.
 - `browser.fetch` hangs on POST in SLICC — skill uses in-page `evalAsync` fetch for non-GET.
 - Search result-list JSON is WAF-gated; `search` returns the oneStepSearch `redirectUrl` instead of scraping hits.
-- Conversation messages: `GET .../conversations/:id` returns `{messages:[...]}`. POST `.../messages` is send-only.
+- Conversation messages: `GET .../conversations/:id` returns `{messages:[...], participantData, conversation}`. POST `.../messages` is send-only.
+- `participantData.applicationDocuments.schufaProvided` is **stale/wrong** often — cross-check `profile-preview` document list.
+- `messages` enriches with `applicant` from rent-profile when `participantSsoId` is present.

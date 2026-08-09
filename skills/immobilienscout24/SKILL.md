@@ -83,6 +83,15 @@ whose URL matches `immobilienscout24.de`.
 
 - Mutations (publish / reply / archive / deactivate) were partially captured in the
   source HAR but are **not** exposed — only safe read paths.
-- Cross-subdomain calls (`sso.`, `api.header.`, `my-property.`) ride the same browser
-  session; if one 401s, re-login on www and retry.
+- Cross-subdomain calls (`sso.`, `api.header.`, `my-property.`, `api.rentprofile.`)
+  ride the same browser session; if one 401s, re-login on www and retry.
+- **Bewerbermappe:** `applicant <ssoId>` hits
+  `api.rentprofile…/profile-preview?ownerSsoId=` (credentialed XHR). Returns income,
+  employment, move-in, and document **types + dates** (IDENTIFICATION, INCOME,
+  SCHUFA_SOLVENCY, SELF_REPORT). PDF blobs are **not** exposed to the landlord API —
+  only metadata / green-check status. UI:
+  `/meinkonto/dokumente/ansicht/<base64(ssoId)>`.
+- **`schufaProvided` trap:** `messages` → `participantData.applicationDocuments.schufaProvided`
+  is often `false` even when SCHUFA is hinterlegt. Prefer `applicant.documents` or the
+  mappe strip on `messages`.
 - Endpoint reference: `references/endpoints.md`.

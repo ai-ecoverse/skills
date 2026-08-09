@@ -28,6 +28,8 @@ const WWW = 'https://www.immobilienscout24.de';
 const SSO = 'https://sso.immobilienscout24.de';
 const HEADER_API = 'https://api.header.immobilienscout24.de';
 const MY_PROPERTY = 'https://my-property.immobilienscout24.de';
+// Rent-profile / Bewerbermappe preview (cross-subdomain; credentialed XHR).
+const RENT_PROFILE_API = 'https://api.rentprofile.immobilienscout24.de/meinkonto/dokumente/api';
 
 // Public geo client key observed on every geoautocomplete call in the HAR
 // (constant across the session; not a user secret).
@@ -43,6 +45,7 @@ USAGE
   immobilienscout24 exposes [--limit N]
   immobilienscout24 conversations <listingId> [--limit N] [--tag inbox]
   immobilienscout24 messages <listingId> <conversationId>
+  immobilienscout24 applicant <ssoId|base64>   Bewerbermappe / rent-profile preview
   immobilienscout24 search <location> [flags]
   immobilienscout24 geo <query>
 
@@ -851,6 +854,151 @@ async function cmdConversations(tab, listingId, flags) {
   }
 }
 
+/** Decode numeric SSO id from digits or base64 (URL path uses base64 of ssoId). */
+function resolveSsoId(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return null;
+  if (/^\d{5,12}$/.test(s)) return s;
+  // base64 of digits, e.g. MTI2Mzk2NDYz → 126396463
+  try {
+    const decoded = Buffer.from(s, 'base64').toString('utf8');
+    if (/^\d{5,12}$/.test(decoded)) return decoded;
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+/**
+ * Cross-origin rent-profile GETs: page `fetch` is CORS-blocked; credentialed XHR works
+ * from an IS24 tab (verified 2026-08-09). browser.fetch is same-tab proxy — also OK on
+ * some runtimes, but XHR matches the SPA and is reliable here.
+ */
+async function xhrGetJson(tab, url) {
+  if (typeof browser.evalAsync !== 'function') {
+    throw new Error('browser.evalAsync is required for rent-profile XHR');
+  }
+  const expr = `(async () => {
+    return await new Promise((resolve) => {
+      const x = new XMLHttpRequest();
+      x.open('GET', ${JSON.stringify(url)}, true);
+      x.withCredentials = true;
+      x.setRequestHeader('Accept', 'application/json, text/plain, */*');
+      x.onload = () => {
+        let body = x.responseText;
+        const ct = (x.getResponseHeader('content-type') || '').toLowerCase();
+        if (ct.includes('json') || (body && (body[0] === '{' || body[0] === '['))) {
+          try { body = JSON.parse(x.responseText); } catch { /* keep text */ }
+        }
+        resolve({ ok: x.status >= 200 && x.status < 300, status: x.status, body });
+      };
+      x.onerror = () => resolve({ ok: false, status: 0, body: null, error: 'xhr network error' });
+      x.send();
+    });
+  })()`;
+  const out = await browser.evalAsync(tab, expr);
+  if (!out || typeof out !== 'object') {
+    throw new Error('rent-profile XHR returned no result');
+  }
+  return out;
+}
+
+/** Landlord view of a seeker's shared rent profile / Bewerbermappe metadata. */
+async function fetchApplicantPreview(tab, ssoId) {
+  const url = `${RENT_PROFILE_API}/profile-preview?ownerSsoId=${encodeURIComponent(ssoId)}`;
+  const res = await xhrGetJson(tab, url);
+  if (!res.ok) {
+    const err = new Error(`rent-profile ${res.status || 'error'}`);
+    err.status = res.status;
+    err.body = res.body;
+    throw err;
+  }
+  return res.body;
+}
+
+function formatApplicantHuman(preview, ssoId) {
+  const name = [preview.firstName, preview.lastName].filter(Boolean).join(' ') || 'Applicant';
+  console.log('');
+  console.log(color.bold(`  Applicant ${name}`) + color.dim(`  sso:${ssoId}`));
+  console.log(color.dim('  ' + '─'.repeat(52)));
+  if (preview.plusBadge) console.log(`  ${color.yellow('IS24 Plus')}`);
+  if (preview.birthdate) console.log(`  ${color.dim('DOB:')}        ${preview.birthdate}`);
+  const addr = preview.address || {};
+  const line = [addr.street, addr.houseNumber].filter(Boolean).join(' ');
+  const city = [addr.postcode, addr.city].filter(Boolean).join(' ');
+  if (line || city) console.log(`  ${color.dim('Address:')}    ${[line, city].filter(Boolean).join(', ')}`);
+  if (preview.profession) console.log(`  ${color.dim('Profession:')} ${preview.profession}`);
+  if (preview.levelOfEmployment) {
+    console.log(`  ${color.dim('Employment:')} ${preview.levelOfEmployment}`);
+  }
+  if (preview.income != null) {
+    console.log(`  ${color.dim('Net income:')} ${color.green(money(preview.income) + ' / mo')}`);
+  }
+  const move =
+    preview.moveIn?.moveInDataType ||
+    preview.moveIn?.moveInDate ||
+    preview.moveInDate ||
+    null;
+  if (move) console.log(`  ${color.dim('Move-in:')}    ${move}`);
+  const pets = preview.pets?.hasPets === false ? 'no' : preview.pets?.hasPets ? 'yes' : null;
+  if (pets) console.log(`  ${color.dim('Pets:')}       ${pets}`);
+  if (preview.smoker === false) console.log(`  ${color.dim('Smoker:')}     no`);
+  if (preview.smoker === true) console.log(`  ${color.dim('Smoker:')}     yes`);
+  if (preview.rentArrears === false) console.log(`  ${color.dim('Rent arrears flag:')} ${color.green('false')}`);
+  if (preview.rentArrears === true) console.log(`  ${color.dim('Rent arrears flag:')} ${color.red('true')}`);
+  if (preview.suretyShip != null) console.log(`  ${color.dim('Guarantor:')}  ${preview.suretyShip ? 'yes' : 'no'}`);
+  if (preview.sharedApartment != null) {
+    console.log(`  ${color.dim('WG:')}         ${preview.sharedApartment ? 'yes' : 'no'}`);
+  }
+
+  const docs = Array.isArray(preview.documents) ? preview.documents : [];
+  console.log('');
+  console.log(color.bold('  Bewerbermappe') + color.dim('  (metadata only — PDF blobs not exposed to landlord API)'));
+  if (!docs.length) {
+    console.log(color.dim('  No documents listed on shared profile.'));
+  } else {
+    for (const d of docs) {
+      const when = d.creationDate || d.createdAt || '';
+      console.log(`  ${color.green('✓')} ${d.type || '?'}${when ? color.dim('  ·  ' + when) : ''}`);
+    }
+  }
+  const b64 = Buffer.from(String(ssoId), 'utf8').toString('base64');
+  console.log('');
+  console.log(
+    color.dim(`  UI: ${WWW}/meinkonto/dokumente/ansicht/${b64}`),
+  );
+  console.log(
+    color.dim(
+      '  Note: messages.participantData.applicationDocuments.schufaProvided is often stale/false even when SCHUFA is hinterlegt — trust this preview.',
+    ),
+  );
+  console.log('');
+}
+
+async function cmdApplicant(tab, rawId, flags) {
+  const ssoId = resolveSsoId(rawId);
+  if (!ssoId) {
+    cli.die('usage: immobilienscout24 applicant <ssoId|base64SsoId>', {
+      prefix: 'immobilienscout24',
+    });
+  }
+  let preview;
+  try {
+    preview = await fetchApplicantPreview(tab, ssoId);
+  } catch (err) {
+    cli.die(
+      `could not load applicant profile for sso ${ssoId}: ${err.message || err}` +
+        (err.status ? ` (HTTP ${err.status})` : ''),
+      { prefix: 'immobilienscout24' },
+    );
+  }
+  if (flags.json) {
+    cli.out({ ssoId, preview });
+    return;
+  }
+  formatApplicantHuman(preview, ssoId);
+}
+
 async function cmdMessages(tab, listingId, conversationId, flags) {
   if (!listingId || !conversationId) {
     cli.die('usage: immobilienscout24 messages <listingId> <conversationId>', {
@@ -877,8 +1025,34 @@ async function cmdMessages(tab, listingId, conversationId, flags) {
       ? detail
       : [];
 
+  // Enrich with rent-profile Bewerbermappe when we have a seeker SSO id.
+  // participantData.applicationDocuments.schufaProvided is unreliable (often false
+  // while the mappe is complete) — prefer profile-preview document list.
+  const ssoId =
+    detail?.conversation?.participantSsoId ||
+    detail?.participantSsoId ||
+    detail?.participant?.ssoId ||
+    null;
+  let applicant = null;
+  let applicantError = null;
+  if (ssoId && /^\d{5,12}$/.test(String(ssoId))) {
+    try {
+      applicant = await fetchApplicantPreview(tab, String(ssoId));
+    } catch (err) {
+      applicantError = err.message || String(err);
+    }
+  }
+
   if (flags.json) {
-    cli.out(detail);
+    cli.out({
+      ...((detail && typeof detail === 'object' && !Array.isArray(detail)) ? detail : { messages: detail }),
+      applicant,
+      applicantError,
+      _notes: {
+        schufaProvidedUnreliable:
+          'participantData.applicationDocuments.schufaProvided is often false even when SCHUFA_SOLVENCY is on the shared mappe — use applicant.documents',
+      },
+    });
     return;
   }
 
@@ -887,11 +1061,75 @@ async function cmdMessages(tab, listingId, conversationId, flags) {
   console.log(color.dim(`  listing ${listingId}`));
   console.log(color.dim('  ' + '─'.repeat(52)));
 
-  if (detail && typeof detail === 'object') {
-    const who = detail.participantName || detail.participant?.name;
-    if (who) console.log(`  ${color.dim('With:')}     ${color.cyan(who)}`);
-    if (detail.status) console.log(`  ${color.dim('Status:')}   ${detail.status}`);
-    if (detail.conversationStage) console.log(`  ${color.dim('Stage:')}    ${detail.conversationStage}`);
+  const conv = detail?.conversation || detail;
+  if (conv && typeof conv === 'object') {
+    const who = conv.participantName || detail.participantName || detail.participant?.name;
+    if (who) {
+      const plus = conv.participantPlus || detail.participantPlus ? color.yellow(' PLUS') : '';
+      console.log(`  ${color.dim('With:')}     ${color.cyan(who)}${plus}`);
+    }
+    if (ssoId) console.log(`  ${color.dim('SSO:')}      ${ssoId}`);
+    if (conv.status || detail.status) console.log(`  ${color.dim('Status:')}   ${conv.status || detail.status}`);
+    if (conv.conversationStage || detail.conversationStage) {
+      console.log(`  ${color.dim('Stage:')}    ${conv.conversationStage || detail.conversationStage}`);
+    }
+  }
+
+  // Compact participant strip from Nachrichten payload
+  const pd = detail?.participantData;
+  if (pd && typeof pd === 'object') {
+    const addr = pd.address || pd.personalDetails?.personalInformation?.address;
+    if (addr) {
+      const line = [addr.street, addr.houseNumber].filter(Boolean).join(' ');
+      const city = [addr.postcode, addr.city].filter(Boolean).join(' ');
+      if (line || city) console.log(`  ${color.dim('Address:')}  ${[line, city].filter(Boolean).join(', ')}`);
+    }
+    const phones = Array.isArray(pd.phoneNumbers) ? pd.phoneNumbers : [];
+    if (phones.length) {
+      console.log(
+        `  ${color.dim('Phone:')}    ${phones.map((p) => p.number || p).filter(Boolean).join(', ')}`,
+      );
+    }
+    const emp = pd.personalDetails?.personalInformation?.employment?.type;
+    const income = pd.personalDetails?.householdIncome?.netIncomeRange;
+    const usage = pd.personalDetails?.propertyUsage;
+    const bits = [
+      emp,
+      income,
+      usage?.numberOfResidents || usage?.numberOfPersons,
+      usage?.petsInHousehold != null ? `pets:${usage.petsInHousehold}` : null,
+    ].filter(Boolean);
+    if (bits.length) console.log(`  ${color.dim('Profile:')}  ${bits.join(' · ')}`);
+    const docs = pd.personalDetails?.applicationDocuments;
+    if (docs) {
+      const schufaFlag = docs.schufaProvided;
+      console.log(
+        `  ${color.dim('Msgs flag:')} schufaProvided=${schufaFlag}` +
+          color.dim(schufaFlag ? '' : ' (unreliable — see Bewerbermappe below)'),
+      );
+    }
+    if (pd.url) console.log(`  ${color.dim('Mappe UI:')} ${pd.url}`);
+  }
+
+  if (applicant) {
+    const docs = Array.isArray(applicant.documents) ? applicant.documents : [];
+    const inc =
+      applicant.income != null ? money(applicant.income) + '/mo' : null;
+    const head = [
+      applicant.profession,
+      applicant.levelOfEmployment,
+      inc,
+      applicant.birthdate,
+    ].filter(Boolean);
+    console.log(
+      `  ${color.dim('Mappe:')}    ${color.green(docs.length ? docs.map((d) => d.type).join(', ') : 'no docs')}` +
+        (head.length ? color.dim('  ·  ' + head.join(' · ')) : ''),
+    );
+    if (applicant.rentArrears === false) {
+      console.log(`  ${color.dim('Arrears:')}  ${color.green('flag false')}`);
+    }
+  } else if (applicantError) {
+    console.log(color.dim(`  Mappe:    (preview failed: ${applicantError})`));
   }
 
   if (!list.length) {
@@ -902,12 +1140,22 @@ async function cmdMessages(tab, listingId, conversationId, flags) {
 
   console.log('');
   for (const m of list) {
-    const when = m.createdDateTime || m.creationDate || m.timestamp || m.date || '';
-    const from =
+    const when =
+      m.creationDateTime || m.createdDateTime || m.creationDate || m.timestamp || m.date || '';
+    let from =
       m.senderName ||
       m.authorName ||
       m.sender?.name ||
-      (m.outgoing || m.sentByMe || m.direction === 'OUT' ? 'you' : m.senderType || 'them');
+      null;
+    if (!from) {
+      if (m.userType === 'REALTOR' || m.outgoing || m.sentByMe || m.direction === 'OUT') {
+        from = 'you';
+      } else if (m.userType === 'SEEKER') {
+        from = 'them';
+      } else {
+        from = m.senderType || 'them';
+      }
+    }
     const text = m.message || m.text || m.body || m.content || m.previewMessage || '';
     console.log(`  ${color.bold(String(from))}  ${color.dim(shortDate(when) || '')}`);
     if (text) console.log(`     ${String(text).replace(/\r\n/g, '\n').split('\n').join('\n     ')}`);
@@ -1107,6 +1355,14 @@ async function main() {
       subcommand === 'conversation'
     ) {
       await cmdMessages(tab, positional[0], positional[1], flags);
+    } else if (
+      subcommand === 'applicant' ||
+      subcommand === 'bewerber' ||
+      subcommand === 'mappe' ||
+      subcommand === 'rent-profile' ||
+      subcommand === 'rentprofile'
+    ) {
+      await cmdApplicant(tab, positional[0], flags);
     } else if (subcommand === 'search' || subcommand === 'suche') {
       const loc = positional.length ? positional.join(' ') : '';
       await cmdSearch(tab, loc, flags);
