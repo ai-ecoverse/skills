@@ -165,7 +165,7 @@ async function listingIdFromTab(tab) {
   // Prefer live tab URL (may have navigated since findTab)
   let href = '';
   try {
-    const got = await browser.eval(tab, () => location.href);
+    const got = await browser.eval(tab, 'location.href');
     href = typeof got === 'string' ? got : (tab && tab.url) || '';
   } catch {
     href = (tab && tab.url) || '';

@@ -120,3 +120,9 @@ used for `/api/users/:id/bank-accounts`.
 /en/dashboard/l/:listingId/edit
 /en/dashboard/l/:listingId/performance
 ```
+
+## Live validation notes (2026-08-09)
+
+- Prefer in-page `evalAsync` fetch over `browser.fetch` — the latter intermittently returns `401 AuthenticationRequiredError` on authenticated routes and can hang on POST.
+- `listingIdFromTab` must use `browser.eval(tab, 'location.href')` (string expression), not a function argument.
+- All commands verified live: me, listings, listing, availability, blocks, blocked-dates, bookings, requests, banks, block-create/delete round-trip on 2027-07-10..11.
