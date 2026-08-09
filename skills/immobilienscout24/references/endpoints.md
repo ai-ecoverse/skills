@@ -147,3 +147,12 @@ Content-Type: application/json   (on POST)
 X-Requested-With: XMLHttpRequest  (some paths)
 Referer: https://www.immobilienscout24.de/...
 ```
+
+## Live validation notes (2026-08-09)
+
+- ScoutManager POSTs require `x-xsrf-token` = cookie `XSRF-TOKEN` (path `/scoutmanager/`). Open ScoutManager once so the cookie exists.
+- Nachrichten POSTs require `x-xsrf-communication-mgr-token` + `x-xsrf-contact-prospects-token` minted as **response headers** on GETs to `/nachrichten-manager/api/feature-switches` and `/contact-prospects/api/shared/feature-switches`.
+- Geoautocomplete requires static header `X-IS24-GAC: 49f5bf376feed3a0f0a52abb46c0dc90`.
+- `browser.fetch` hangs on POST in SLICC — skill uses in-page `evalAsync` fetch for non-GET.
+- Search result-list JSON is WAF-gated; `search` returns the oneStepSearch `redirectUrl` instead of scraping hits.
+- Conversation messages: `GET .../conversations/:id` returns `{messages:[...]}`. POST `.../messages` is send-only.

@@ -1,11 +1,23 @@
 // immobilienscout24.jsh — ImmoScout24 browser-session client
 //
-// AUTH: cookie session in an open immobilienscout24.de tab. Multi-subdomain
-// APIs (sso., api.header., my-property., www.) are called via browser.fetch so
-// first-party cookies travel automatically. No token is stored or printed.
+// AUTH: cookie session in an open immobilienscout24.de tab via sliccy:browser.
+// Multi-subdomain APIs (sso., api.header., my-property., www.) go through
+// browser.fetch so first-party cookies travel automatically. No token is
+// stored or printed.
 //
-// Endpoints reverse-engineered from /recordings/rec-1786282613280-yexubu/
-// (2026-08-09). See ../references/endpoints.md.
+// CSRF / GAC (verified live 2026-08-09 against HAR rec-1786282613280-yexubu):
+//  • ScoutManager POSTs need header `x-xsrf-token` = cookie `XSRF-TOKEN`
+//    (path-scoped to /scoutmanager/).
+//  • Nachrichten-Manager POSTs need `x-xsrf-communication-mgr-token` and
+//    `x-xsrf-contact-prospects-token` — these are returned as **response
+//    headers** on GETs like /nachrichten-manager/api/feature-switches and
+//    /contact-prospects/api/shared/feature-switches (not readable cookies).
+//  • Geoautocomplete needs static header `X-IS24-GAC`.
+//  • Search: POST /Suche/controller/oneStepSearch (form) → redirectUrl; the
+//    result-list XHR is WAF-gated from headless fetch, so we surface the
+//    redirect and a shortlist from the HTML page when possible.
+//
+// Endpoints reverse-engineered from /recordings/rec-1786282613280-yexubu/.
 
 const browser = require('sliccy:browser');
 const cli = require('sliccy:cli');
@@ -16,6 +28,10 @@ const WWW = 'https://www.immobilienscout24.de';
 const SSO = 'https://sso.immobilienscout24.de';
 const HEADER_API = 'https://api.header.immobilienscout24.de';
 const MY_PROPERTY = 'https://my-property.immobilienscout24.de';
+
+// Public geo client key observed on every geoautocomplete call in the HAR
+// (constant across the session; not a user secret).
+const IS24_GAC = '49f5bf376feed3a0f0a52abb46c0dc90';
 
 const HELP = `
 immobilienscout24 — ImmoScout24 client (browser session)
@@ -49,8 +65,6 @@ REQUIRES
   immobilienscout24.de open and logged in in your browser
 `.trim();
 
-// ── real-estate type map (search) ──────────────────────────────────────────
-
 const SEARCH_TYPES = {
   rent: 'apartmentrent',
   apartmentrent: 'apartmentrent',
@@ -65,8 +79,6 @@ const SEARCH_TYPES = {
   shorttermaccommodationrent: 'shorttermaccommodationrent',
 };
 
-// ── args ───────────────────────────────────────────────────────────────────
-
 const parsed = process.argv.parseFlags();
 const subcommand = parsed.subcommand || parsed.positional[0] || '';
 const positional = parsed.subcommand
@@ -77,10 +89,16 @@ const flags = parsed.flags;
 // ── session ────────────────────────────────────────────────────────────────
 
 let _tab = null;
+// Response-header CSRF tokens (nachrichten / contact-prospects).
+const _hdrTokens = {
+  communicationMgr: null,
+  contactProspects: null,
+};
+let _scoutXsrf = null;
+let _bootstrapped = { nachrichten: false, scout: false };
 
 async function getTab() {
   if (_tab) return _tab;
-  // Prefer www / app pages over pure static CDN tabs.
   _tab = await browser.findTab({ urlMatch: /immobilienscout24\.de/i });
   if (!_tab) {
     cli.die(
@@ -91,6 +109,18 @@ async function getTab() {
   return _tab;
 }
 
+async function getScoutTab() {
+  return (await browser.findTab({ urlMatch: /immobilienscout24\.de\/scoutmanager/i })) || null;
+}
+
+async function getNachrichtenTab() {
+  return (
+    (await browser.findTab({
+      urlMatch: /immobilienscout24\.de\/(nachrichten-manager|meinkonto)/i,
+    })) || null
+  );
+}
+
 function isHtmlBody(body) {
   if (typeof body !== 'string') return false;
   const s = body.slice(0, 200).trim().toLowerCase();
@@ -98,30 +128,267 @@ function isHtmlBody(body) {
 }
 
 function lookLikeLogin(res) {
-  if (res.status === 401 || res.status === 403) return true;
+  // 403 on missing CSRF is NOT a login wall — those bodies say "Forbidden".
+  if (res.status === 401) return true;
   const url = String(res.url || '');
   if (/\/sso\/login|\/meinkonto\/login|\/login/i.test(url)) return true;
-  if (typeof res.body === 'string' && /anmelden|log\s*in|login-form/i.test(res.body.slice(0, 2000)) && isHtmlBody(res.body)) {
+  if (
+    typeof res.body === 'string' &&
+    /anmelden|log\s*in|login-form/i.test(res.body.slice(0, 2000)) &&
+    isHtmlBody(res.body)
+  ) {
     return true;
   }
   return false;
 }
 
+function headerGet(headers, name) {
+  if (!headers) return null;
+  const want = name.toLowerCase();
+  if (typeof headers.get === 'function') return headers.get(name) || headers.get(want);
+  if (Array.isArray(headers)) {
+    const h = headers.find((x) => String(x.name || '').toLowerCase() === want);
+    return h ? h.value : null;
+  }
+  if (typeof headers === 'object') {
+    for (const [k, v] of Object.entries(headers)) {
+      if (k.toLowerCase() === want) return v;
+    }
+  }
+  return null;
+}
+
+function harvestTokens(res) {
+  const comm = headerGet(res.headers, 'x-xsrf-communication-mgr-token');
+  const contact = headerGet(res.headers, 'x-xsrf-contact-prospects-token');
+  if (comm) _hdrTokens.communicationMgr = comm;
+  if (contact) _hdrTokens.contactProspects = contact;
+}
+
+async function readDocumentCookie(tab, name) {
+  // Non-HttpOnly cookies only. ScoutManager XSRF-TOKEN is path=/scoutmanager/ and
+  // is visible from scoutmanager pages via document.cookie.
+  try {
+    const expr = `(function(){var m=document.cookie.match(/(?:^|; )${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}=([^;]*)/);return m?decodeURIComponent(m[1]):null;})()`;
+    const v = await browser.eval(tab, expr);
+    return v || null;
+  } catch {
+    return null;
+  }
+}
+
+async function ensureScoutXsrf(tab) {
+  if (_scoutXsrf) return _scoutXsrf;
+  const scoutTab = (await getScoutTab()) || tab;
+  let token = await readDocumentCookie(scoutTab, 'XSRF-TOKEN');
+  if (!token) {
+    try {
+      const all = await browser.eval(scoutTab, 'document.cookie');
+      const m = String(all || '').match(/(?:^|; )XSRF-TOKEN=([^;]*)/);
+      if (m) token = decodeURIComponent(m[1]);
+    } catch {
+      /* ignore */
+    }
+  }
+  if (!token) {
+    cli.die(
+      'missing ScoutManager XSRF-TOKEN — open https://www.immobilienscout24.de/scoutmanager/angebotsliste/app/overview.html once, then retry',
+      { prefix: 'immobilienscout24' },
+    );
+  }
+  _scoutXsrf = token;
+  return token;
+}
+
+async function ensureNachrichtenTokens(tab) {
+  if (_bootstrapped.nachrichten && _hdrTokens.communicationMgr) return;
+  const nTab = (await getNachrichtenTab()) || tab;
+  // Feature-switch GETs mint the CSRF headers used by subsequent POSTs.
+  try {
+    const r1 = await browser.fetch(nTab, `${WWW}/nachrichten-manager/api/feature-switches`, {
+      headers: { Accept: 'application/json' },
+    });
+    harvestTokens(r1);
+  } catch {
+    /* ignore */
+  }
+  try {
+    const r2 = await browser.fetch(nTab, `${WWW}/contact-prospects/api/shared/feature-switches`, {
+      headers: { Accept: 'application/json' },
+    });
+    harvestTokens(r2);
+  } catch {
+    /* ignore */
+  }
+  _bootstrapped.nachrichten = true;
+  if (!_hdrTokens.communicationMgr) {
+    cli.die(
+      'could not mint Nachrichten CSRF tokens — open the Nachrichten-Manager once while logged in, then retry',
+      { prefix: 'immobilienscout24' },
+    );
+  }
+}
+
+function classifyUrl(url) {
+  const u = String(url);
+  if (/\/scoutmanager\//i.test(u)) return 'scout';
+  if (/\/nachrichten-manager\//i.test(u) || /\/contact-prospects\//i.test(u)) return 'nachrichten';
+  if (/\/geoautocomplete\//i.test(u)) return 'geo';
+  return 'other';
+}
+
+async function pickTab(tab, kind) {
+  // Prefer a tab whose document origin/path matches the API surface so
+  // path-scoped cookies and page CSRF state line up with the SPA.
+  if (kind === 'scout') return (await getScoutTab()) || tab;
+  if (kind === 'nachrichten') return (await getNachrichtenTab()) || tab;
+  // Cross-subdomain identity calls are flaky from the nachrichten SPA bundle;
+  // prefer scoutmanager or a plain www tab when available.
+  if (kind === 'other') {
+    return (
+      (await browser.findTab({ urlMatch: /immobilienscout24\.de\/scoutmanager/i })) ||
+      (await browser.findTab({ urlMatch: /immobilienscout24\.de\/(?!nachrichten-manager)/i })) ||
+      tab
+    );
+  }
+  return tab;
+}
+
 async function apiFetch(tab, url, opts = {}) {
+  const kind = classifyUrl(url);
+  const useTab = await pickTab(tab, kind);
+  if (kind === 'scout') await ensureScoutXsrf(useTab);
+  if (kind === 'nachrichten') await ensureNachrichtenTokens(useTab);
+
   const headers = {
     Accept: 'application/json, text/plain, */*',
     'X-Requested-With': 'XMLHttpRequest',
     ...(opts.headers || {}),
   };
-  const fetchOpts = { ...opts, headers };
-  if (fetchOpts.body != null && typeof fetchOpts.body === 'object' && !(typeof fetchOpts.body === 'string')) {
-    fetchOpts.body = JSON.stringify(fetchOpts.body);
+
+  if (kind === 'scout' && _scoutXsrf && !headers['x-xsrf-token'] && !headers['X-XSRF-TOKEN']) {
+    headers['x-xsrf-token'] = _scoutXsrf;
+  }
+  if (kind === 'nachrichten') {
+    if (_hdrTokens.communicationMgr && !headers['x-xsrf-communication-mgr-token']) {
+      headers['x-xsrf-communication-mgr-token'] = _hdrTokens.communicationMgr;
+    }
+    if (_hdrTokens.contactProspects && !headers['x-xsrf-contact-prospects-token']) {
+      headers['x-xsrf-contact-prospects-token'] = _hdrTokens.contactProspects;
+    }
+  }
+  if (kind === 'geo' && !headers['X-IS24-GAC'] && !headers['x-is24-gac']) {
+    headers['X-IS24-GAC'] = IS24_GAC;
     if (!headers['Content-Type'] && !headers['content-type']) {
       headers['Content-Type'] = 'application/json';
     }
   }
 
-  const res = await browser.fetch(tab, url, fetchOpts);
+  let bodyStr = null;
+  if (opts.body != null) {
+    if (typeof opts.body === 'string') {
+      bodyStr = opts.body;
+    } else {
+      bodyStr = JSON.stringify(opts.body);
+      if (!headers['Content-Type'] && !headers['content-type']) {
+        headers['Content-Type'] = 'application/json';
+      }
+    }
+  }
+
+  const method = String(opts.method || 'GET').toUpperCase();
+
+  // browser.fetch hangs on POST in this runtime (verified 2026-08-09). GETs are
+  // fine via browser.fetch; non-GET goes through in-page eval fetch instead.
+  async function doFetch(targetTab) {
+    if (method === 'GET' || method === 'HEAD') {
+      return browser.fetch(targetTab, url, { method, headers });
+    }
+    // evalAsync unwraps an async IIFE; bare `await` / `return` are illegal here.
+    const expr = `(async () => {
+      const r = await fetch(${JSON.stringify(url)}, {
+        method: ${JSON.stringify(method)},
+        credentials: 'include',
+        headers: ${JSON.stringify(headers)},
+        body: ${bodyStr == null ? 'undefined' : JSON.stringify(bodyStr)},
+      });
+      const text = await r.text();
+      const hdrs = {};
+      r.headers.forEach((v, k) => { hdrs[k] = v; });
+      let body = text;
+      const ct = (hdrs['content-type'] || '').toLowerCase();
+      if (ct.includes('json') || (text && (text[0] === '{' || text[0] === '['))) {
+        try { body = JSON.parse(text); } catch { /* keep text */ }
+      }
+      return { ok: r.ok, status: r.status, url: r.url, headers: hdrs, body };
+    })()`;
+    if (typeof browser.evalAsync !== 'function') {
+      throw new Error('browser.evalAsync is required for non-GET ImmoScout calls');
+    }
+    const out = await browser.evalAsync(targetTab, expr);
+    if (!out || typeof out !== 'object') {
+      throw new Error('in-page fetch returned no result');
+    }
+    return out;
+  }
+
+  let res;
+  try {
+    res = await doFetch(useTab);
+  } catch (err) {
+    if (useTab !== tab) {
+      try {
+        res = await doFetch(tab);
+      } catch (err2) {
+        cli.die(
+          `fetch failed for ${url.replace(/^https?:\/\/[^/]+/, '')}: ${err2.message || err2}`,
+          { prefix: 'immobilienscout24' },
+        );
+      }
+    } else {
+      cli.die(
+        `fetch failed for ${url.replace(/^https?:\/\/[^/]+/, '')}: ${err.message || err}`,
+        { prefix: 'immobilienscout24' },
+      );
+    }
+  }
+
+  harvestTokens(res);
+
+  // Retry once on scout 403 with fresh XSRF (cookie may have rotated).
+  if (res.status === 403 && kind === 'scout') {
+    _scoutXsrf = null;
+    await ensureScoutXsrf(useTab);
+    if (_scoutXsrf) {
+      headers['x-xsrf-token'] = _scoutXsrf;
+      try {
+        res = await doFetch(useTab);
+        harvestTokens(res);
+      } catch {
+        /* keep original */
+      }
+    }
+  }
+
+  // Retry once on nachrichten 403 after re-bootstrap.
+  if (res.status === 403 && kind === 'nachrichten') {
+    _bootstrapped.nachrichten = false;
+    _hdrTokens.communicationMgr = null;
+    _hdrTokens.contactProspects = null;
+    await ensureNachrichtenTokens(useTab);
+    if (_hdrTokens.communicationMgr) {
+      headers['x-xsrf-communication-mgr-token'] = _hdrTokens.communicationMgr;
+      if (_hdrTokens.contactProspects) {
+        headers['x-xsrf-contact-prospects-token'] = _hdrTokens.contactProspects;
+      }
+      try {
+        res = await doFetch(useTab);
+        harvestTokens(res);
+      } catch {
+        /* keep original */
+      }
+    }
+  }
 
   if (lookLikeLogin(res)) {
     cli.die(
@@ -140,16 +407,17 @@ async function apiFetch(tab, url, opts = {}) {
       } catch {
         /* ignore */
       }
+    } else if (isHtmlBody(res.body) && /roboter|captcha|waf/i.test(String(res.body).slice(0, 500))) {
+      detail = ': blocked by bot check (open the page in the browser tab and retry)';
     }
     cli.die(`immobilienscout24 returned ${res.status} for ${path}${detail}`, {
       prefix: 'immobilienscout24',
     });
   }
 
-  // Login walls sometimes 200 with HTML.
   if (isHtmlBody(res.body)) {
     cli.die(
-      'got HTML instead of JSON — session may have expired; log in on immobilienscout24.de and retry',
+      'got HTML instead of JSON — session may have expired or hit a bot check; log in on immobilienscout24.de and retry',
       { prefix: 'immobilienscout24' },
     );
   }
@@ -167,7 +435,11 @@ function money(n) {
   if (n == null || n === '') return null;
   const num = Number(n);
   if (!Number.isFinite(num)) return String(n);
-  return num.toLocaleString('de-DE', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 });
+  return num.toLocaleString('de-DE', {
+    style: 'currency',
+    currency: 'EUR',
+    maximumFractionDigits: 0,
+  });
 }
 
 function shortDate(v) {
@@ -187,12 +459,37 @@ function preview(text, n = 90) {
 // ── commands ───────────────────────────────────────────────────────────────
 
 async function cmdMe(tab, flags) {
-  // Fan-out across the three identity endpoints seen on every logged-in page.
-  const [sso, header, profile] = await Promise.all([
-    apiFetch(tab, `${SSO}/sso/me`),
-    apiFetch(tab, `${HEADER_API}/api/v1/getByCookie`),
-    apiFetch(tab, `${WWW}/meinkonto/endpoint/fullprofile/v2`),
-  ]);
+  // Soft identity fan-out. Do NOT route through apiFetch/cli.die — sso.* can
+  // throw "Failed to fetch" from the nachrichten SPA bundle while sibling
+  // endpoints on www still work. Prefer a scoutmanager tab when present.
+  const idTab =
+    (await getScoutTab()) ||
+    (await browser.findTab({ urlMatch: /immobilienscout24\.de\/(?!nachrichten-manager)/i })) ||
+    tab;
+
+  async function softGet(url) {
+    try {
+      const res = await browser.fetch(idTab, url, {
+        headers: { Accept: 'application/json' },
+      });
+      if (!res || !res.ok) {
+        return { __error: `HTTP ${res && res.status}` };
+      }
+      return res.body;
+    } catch (err) {
+      return { __error: err.message || String(err) };
+    }
+  }
+
+  const sso = await softGet(`${SSO}/sso/me`);
+  const header = await softGet(`${HEADER_API}/api/v1/getByCookie`);
+  const profile = await softGet(`${WWW}/meinkonto/endpoint/fullprofile/v2`);
+
+  if (header?.__error && profile?.__error && sso?.__error) {
+    cli.die(`could not load profile (${header.__error})`, {
+      prefix: 'immobilienscout24',
+    });
+  }
 
   const out = { sso, header, profile };
   if (flags.json) {
@@ -230,21 +527,21 @@ async function cmdMe(tab, flags) {
 }
 
 async function cmdDashboard(tab, flags) {
-  const [
-    unread,
-    pubs,
-    contracts,
-    propertyCount,
-    saved,
-    appPkg,
-  ] = await Promise.all([
-    apiFetch(tab, `${WWW}/meinkonto/dashboard-backend/unread-messages`),
-    apiFetch(tab, `${WWW}/meinkonto/dashboard-backend/publication-statistics`),
-    apiFetch(tab, `${WWW}/meinkonto/dashboard-backend/active-contract/count`),
-    apiFetch(tab, `${MY_PROPERTY}/real-estate-objects/count`).catch(() => null),
-    apiFetch(tab, `${WWW}/savedsearch/overviewwidget/recent/2`).catch(() => null),
-    apiFetch(tab, `${WWW}/meinkonto/endpoint/appPackageStatus`).catch(() => null),
-  ]);
+  const soft = async (url) => {
+    try {
+      return await apiFetch(tab, url);
+    } catch (err) {
+      if (err?.name === 'NodeExitError') throw err;
+      return null;
+    }
+  };
+
+  const unread = await apiFetch(tab, `${WWW}/meinkonto/dashboard-backend/unread-messages`);
+  const pubs = await soft(`${WWW}/meinkonto/dashboard-backend/publication-statistics`);
+  const contracts = await soft(`${WWW}/meinkonto/dashboard-backend/active-contract/count`);
+  const propertyCount = await soft(`${MY_PROPERTY}/real-estate-objects/count`);
+  const saved = await soft(`${WWW}/savedsearch/overviewwidget/recent/2`);
+  const appPkg = await soft(`${WWW}/meinkonto/endpoint/appPackageStatus`);
 
   const out = {
     unread,
@@ -267,13 +564,17 @@ async function cmdDashboard(tab, flags) {
   const seeker = unread?.seekerUnreadMessageCount ?? 0;
   const owner = unread?.homeOwnerUnreadMessageCount ?? 0;
   const unreadLabel = total > 0 ? color.bold(color.green(String(total))) : color.gray('0');
-  console.log(`  ${color.dim('Unread messages:')}  ${unreadLabel}  ${color.dim(`(seeker ${seeker} · landlord ${owner})`)}`);
+  console.log(
+    `  ${color.dim('Unread messages:')}  ${unreadLabel}  ${color.dim(`(seeker ${seeker} · landlord ${owner})`)}`,
+  );
 
   if (pubs) {
     console.log(
       `  ${color.dim('Listings:')}          ${pubs.numberOfActiveListings ?? 0} active` +
         color.dim(` / ${pubs.numberOfListings ?? 0} total`) +
-        color.dim(` · ${pubs.numberOfDeactivatedListings ?? 0} off · ${pubs.numberOfArchivedListings ?? 0} archived`),
+        color.dim(
+          ` · ${pubs.numberOfDeactivatedListings ?? 0} off · ${pubs.numberOfArchivedListings ?? 0} archived`,
+        ),
     );
   }
   if (contracts) {
@@ -290,16 +591,23 @@ async function cmdDashboard(tab, flags) {
   }
   if (appPkg) {
     console.log(
-      `  ${color.dim('App package:')}       ${appPkg.packageComplete ? color.green('complete') : color.gray('incomplete')}`,
+      `  ${color.dim('App package:')}       ${
+        appPkg.packageComplete ? color.green('complete') : color.gray('incomplete')
+      }`,
     );
   }
   console.log('');
 }
 
 async function cmdListings(tab, flags) {
-  const limit = clampInt(flags.limit ?? flags.l ?? flags.pagesize, { min: 1, max: 100, fallback: 20 });
+  const limit = clampInt(flags.limit ?? flags.l ?? flags.pagesize, {
+    min: 1,
+    max: 100,
+    fallback: 20,
+  });
   const archived = Boolean(flags.archived);
-  const freeText = flags.q != null ? String(flags.q) : (flags.query != null ? String(flags.query) : '');
+  const freeText =
+    flags.q != null ? String(flags.q) : flags.query != null ? String(flags.query) : '';
 
   const body = {
     freeTextSearch: freeText,
@@ -324,21 +632,24 @@ async function cmdListings(tab, flags) {
   let clickStats = [];
   let msgStats = [];
   if (ids.length) {
-    // Best-effort — stats endpoints accept a batch of listing ids.
-    [clickStats, msgStats] = await Promise.all([
-      apiFetch(tab, `${WWW}/scoutmanager/angebotsliste/api/realestate-stats`, {
-        method: 'POST',
-        body: ids,
-      }).catch(() => []),
-      apiFetch(tab, `${WWW}/scoutmanager/angebotsliste/api/communication-stats`, {
-        method: 'POST',
-        body: ids,
-      }).catch(() => []),
-    ]);
+    const softPost = async (path, b) => {
+      try {
+        return await apiFetch(tab, path, { method: 'POST', body: b });
+      } catch (err) {
+        if (err?.name === 'NodeExitError') throw err;
+        return [];
+      }
+    };
+    clickStats = await softPost(`${WWW}/scoutmanager/angebotsliste/api/realestate-stats`, ids);
+    msgStats = await softPost(`${WWW}/scoutmanager/angebotsliste/api/communication-stats`, ids);
   }
 
-  const clickById = new Map((Array.isArray(clickStats) ? clickStats : []).map((s) => [s.realEstateId, s]));
-  const msgById = new Map((Array.isArray(msgStats) ? msgStats : []).map((s) => [s.realEstateId, s]));
+  const clickById = new Map(
+    (Array.isArray(clickStats) ? clickStats : []).map((s) => [s.realEstateId, s]),
+  );
+  const msgById = new Map(
+    (Array.isArray(msgStats) ? msgStats : []).map((s) => [s.realEstateId, s]),
+  );
 
   const enriched = hits.map((h) => ({
     ...h,
@@ -378,7 +689,9 @@ async function cmdListings(tab, flags) {
       h.area != null ? `${h.area} m²` : null,
       price,
     ].filter(Boolean);
-    const addr = h.completeAddress || [h.street, h.houseNumber, h.postalCode, h.city].filter(Boolean).join(' ');
+    const addr =
+      h.completeAddress ||
+      [h.street, h.houseNumber, h.postalCode, h.city].filter(Boolean).join(' ');
     const status = h.archived
       ? color.gray('archived')
       : h.publishedOnIs24
@@ -399,7 +712,11 @@ async function cmdListings(tab, flags) {
 }
 
 async function cmdExposes(tab, flags) {
-  const limit = clampInt(flags.limit ?? flags.l ?? flags.pagesize, { min: 1, max: 50, fallback: 12 });
+  const limit = clampInt(flags.limit ?? flags.l ?? flags.pagesize, {
+    min: 1,
+    max: 50,
+    fallback: 12,
+  });
   const data = await apiFetch(
     tab,
     `${WWW}/nachrichten-manager/api/expose?page=0&size=${limit}&sort=desc`,
@@ -410,7 +727,11 @@ async function cmdExposes(tab, flags) {
     return;
   }
 
-  const exposes = Array.isArray(data?.exposes) ? data.exposes : Array.isArray(data) ? data : [];
+  const exposes = Array.isArray(data?.exposes)
+    ? data.exposes
+    : Array.isArray(data)
+      ? data
+      : [];
   console.log('');
   console.log(color.bold('  Nachrichten-Manager exposes') + color.dim(`  (${exposes.length})`));
   console.log(color.dim('  ' + '─'.repeat(52)));
@@ -427,7 +748,12 @@ async function cmdExposes(tab, flags) {
     const d = ex.details || {};
     const st = ex.statistics || {};
     const addr = ex.address
-      ? [ex.address.street, ex.address.streetNumber || ex.address.houseNumber, ex.address.postcode, ex.address.city]
+      ? [
+          ex.address.street,
+          ex.address.streetNumber || ex.address.houseNumber,
+          ex.address.postcode,
+          ex.address.city,
+        ]
           .filter(Boolean)
           .join(' ')
       : '';
@@ -454,7 +780,9 @@ async function cmdExposes(tab, flags) {
 
 async function cmdConversations(tab, listingId, flags) {
   if (!listingId) {
-    cli.die('usage: immobilienscout24 conversations <listingId>', { prefix: 'immobilienscout24' });
+    cli.die('usage: immobilienscout24 conversations <listingId>', {
+      prefix: 'immobilienscout24',
+    });
   }
   if (!/^\d+$/.test(String(listingId))) {
     cli.die(`invalid listing id "${listingId}" — expected digits (from listings / exposes)`, {
@@ -462,7 +790,11 @@ async function cmdConversations(tab, listingId, flags) {
     });
   }
 
-  const limit = clampInt(flags.limit ?? flags.l ?? flags.size, { min: 1, max: 50, fallback: 10 });
+  const limit = clampInt(flags.limit ?? flags.l ?? flags.size, {
+    min: 1,
+    max: 50,
+    fallback: 10,
+  });
   const tag = flags.tag ? String(flags.tag) : 'inbox';
 
   const url =
@@ -479,7 +811,11 @@ async function cmdConversations(tab, listingId, flags) {
     return;
   }
 
-  const convos = Array.isArray(data?.conversations) ? data.conversations : Array.isArray(data) ? data : [];
+  const convos = Array.isArray(data?.conversations)
+    ? data.conversations
+    : Array.isArray(data)
+      ? data
+      : [];
   console.log('');
   console.log(
     color.bold(`  Conversations for listing ${listingId}`) +
@@ -524,44 +860,25 @@ async function cmdMessages(tab, listingId, conversationId, flags) {
   if (!/^\d+$/.test(String(listingId))) {
     cli.die(`invalid listing id "${listingId}"`, { prefix: 'immobilienscout24' });
   }
-  // Conversation ids are UUIDs in the captured SPA.
   if (!/^[0-9a-f-]{16,80}$/i.test(String(conversationId))) {
     cli.die(`invalid conversation id "${conversationId}"`, { prefix: 'immobilienscout24' });
   }
 
+  // Live 2026-08-09: GET conversation detail returns { messages: [...] }.
+  // POST …/messages is the send-message endpoint (SendMessageRequest) — not a list.
   const base =
     `${WWW}/nachrichten-manager/api/references/${encodeURIComponent(listingId)}` +
     `/conversations/${encodeURIComponent(conversationId)}`;
 
-  // Detail + messages — both routes come from the nachrichten-manager SPA
-  // bundle (not exercised as separate XHRs in the source HAR). Fall back
-  // gracefully if one shape differs.
-  let detail = null;
-  let messages = null;
-  let errors = [];
+  const detail = await apiFetch(tab, base);
+  const list = Array.isArray(detail?.messages)
+    ? detail.messages
+    : Array.isArray(detail)
+      ? detail
+      : [];
 
-  try {
-    detail = await apiFetch(tab, base);
-  } catch (err) {
-    if (err?.name === 'NodeExitError') throw err;
-    errors.push(`detail: ${err.message}`);
-  }
-
-  try {
-    messages = await apiFetch(tab, `${base}/messages`);
-  } catch (err) {
-    if (err?.name === 'NodeExitError') throw err;
-    errors.push(`messages: ${err.message}`);
-  }
-
-  // Some builds nest messages under the conversation detail.
-  if (!messages && detail) {
-    messages = detail.messages || detail.communicationMessages || detail;
-  }
-
-  const out = { conversation: detail, messages, errors: errors.length ? errors : undefined };
   if (flags.json) {
-    cli.out(out);
+    cli.out(detail);
     return;
   }
 
@@ -577,21 +894,8 @@ async function cmdMessages(tab, listingId, conversationId, flags) {
     if (detail.conversationStage) console.log(`  ${color.dim('Stage:')}    ${detail.conversationStage}`);
   }
 
-  const list = Array.isArray(messages)
-    ? messages
-    : Array.isArray(messages?.messages)
-      ? messages.messages
-      : Array.isArray(messages?.content)
-        ? messages.content
-        : [];
-
   if (!list.length) {
-    if (errors.length) {
-      console.log(color.dim(`  Could not load messages (${errors.join('; ')}).`));
-      console.log(color.dim('  Try: immobilienscout24 conversations ' + listingId));
-    } else {
-      console.log(color.dim('  No messages returned. Use --json to inspect the raw payload.'));
-    }
+    console.log(color.dim('  No messages returned. Use --json to inspect the raw payload.'));
     console.log('');
     return;
   }
@@ -654,7 +958,6 @@ async function cmdGeo(tab, query, flags) {
 }
 
 async function resolveGeo(tab, location) {
-  // Accept a raw geocode id, a geopath uri, or free text.
   const raw = String(location).trim();
   if (/^\d{6,}$/.test(raw)) {
     return { id: raw, label: raw, geopath: null, type: 'id' };
@@ -668,7 +971,10 @@ async function resolveGeo(tab, location) {
     dataset: 'nextgen',
   });
   const suggestions = await apiFetch(tab, `${WWW}/geoautocomplete/v4.0/DEU?${params.toString()}`);
-  const first = Array.isArray(suggestions) && suggestions[0] ? suggestions[0].entity || suggestions[0] : null;
+  const first =
+    Array.isArray(suggestions) && suggestions[0]
+      ? suggestions[0].entity || suggestions[0]
+      : null;
   if (!first?.id) {
     cli.die(`no geo match for "${raw}" — try a city name like Berlin or a postcode`, {
       prefix: 'immobilienscout24',
@@ -687,140 +993,86 @@ async function cmdSearch(tab, location, flags) {
   const typeKey = String(flags.type || 'rent').toLowerCase();
   const realEstateType = SEARCH_TYPES[typeKey];
   if (!realEstateType) {
-    cli.die(
-      `unknown --type ${typeKey} (use rent|buy|house-rent|house-buy|short-term)`,
-      { prefix: 'immobilienscout24' },
-    );
+    cli.die(`unknown --type ${typeKey} (use rent|buy|house-rent|house-buy|short-term)`, {
+      prefix: 'immobilienscout24',
+    });
   }
 
   const page = clampInt(flags.page ?? flags.pagenumber, { min: 1, max: 100, fallback: 1 });
-  const pagesize = clampInt(flags.pagesize ?? flags.limit ?? flags.l, { min: 1, max: 50, fallback: 20 });
+  const pagesize = clampInt(flags.pagesize ?? flags.limit ?? flags.l, {
+    min: 1,
+    max: 50,
+    fallback: 20,
+  });
 
   const geo = await resolveGeo(tab, location);
 
-  const qs = new URLSearchParams({
+  // Build the classic /region?… search URL the SPA feeds into oneStepSearch.
+  const regionQs = new URLSearchParams({
     realestatetype: realEstateType,
     exclusioncriteria: 'swapflat',
     geocodes: String(geo.id),
-    pagesize: String(pagesize),
-    pagenumber: String(page),
   });
-
   if (flags['price-max'] != null || flags.priceMax != null || flags.pricemax != null) {
-    qs.set('price', `-/${flags['price-max'] ?? flags.priceMax ?? flags.pricemax}`);
+    regionQs.set('price', `-/${flags['price-max'] ?? flags.priceMax ?? flags.pricemax}`);
   }
   if (flags['rooms-min'] != null || flags.roomsMin != null || flags.roomsmin != null) {
-    qs.set('numberofrooms', `${flags['rooms-min'] ?? flags.roomsMin ?? flags.roomsmin}-`);
+    regionQs.set('numberofrooms', `${flags['rooms-min'] ?? flags.roomsMin ?? flags.roomsmin}-`);
   }
   if (flags['area-min'] != null || flags.areaMin != null || flags.areamin != null) {
-    qs.set('livingspace', `${flags['area-min'] ?? flags.areaMin ?? flags.areamin}-`);
+    regionQs.set('livingspace', `${flags['area-min'] ?? flags.areaMin ?? flags.areamin}-`);
   }
 
-  // SPA updateResults: GET search URL with Accept application/json
-  // (reactApp.js, captured 2026-08-09).
-  const url = `${WWW}/Suche/region?${qs.toString()}`;
-  const data = await apiFetch(tab, url, {
-    headers: { Accept: 'application/json' },
+  const locationPath = `/region?${regionQs.toString()}`;
+  const form = new URLSearchParams({
+    type: 'SEARCH_URL',
+    location: locationPath,
   });
 
-  if (flags.json) {
-    cli.out({ geo, query: Object.fromEntries(qs), results: data });
-    return;
+  // browser.fetch with form body as string
+  const step = await apiFetch(tab, `${WWW}/Suche/controller/oneStepSearch`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Accept: 'application/json',
+    },
+    body: form.toString(),
+  });
+
+  const redirectUrl = step?.redirectUrl || step?.url || null;
+  // Append paging if we got a pretty path back.
+  let resultPath = redirectUrl;
+  if (resultPath && !/[?&]pagenumber=/.test(resultPath)) {
+    const join = resultPath.includes('?') ? '&' : '?';
+    resultPath = `${resultPath}${join}pagenumber=${page}&pagesize=${pagesize}`;
   }
 
-  // Shape varies: searchResponseModel / resultlist.resultlist / resultList / entries.
-  const root = data?.searchResponseModel || data;
-  const rl =
-    root?.['resultlist.resultlist'] ||
-    root?.resultlist ||
-    root?.resultList ||
-    root?.resultListModel ||
-    data?.resultListModel ||
-    data;
-  const paging = rl?.paging || root?.paging || data?.paging || {};
-  const numberOfHits = paging.numberOfHits ?? rl?.numberOfHits ?? root?.numberOfHits ?? data?.numberOfHits;
-  const entriesRaw =
-    rl?.resultlistEntries ||
-    rl?.resultListEntries ||
-    rl?.entries ||
-    root?.resultlistEntries ||
-    data?.resultlistEntries ||
-    data?.entries ||
-    [];
-
-  // Entries may be [{ resultlistEntry: [...] }] (IS24 legacy envelope).
-  let entries = [];
-  if (Array.isArray(entriesRaw)) {
-    for (const block of entriesRaw) {
-      if (Array.isArray(block?.resultlistEntry)) entries.push(...block.resultlistEntry);
-      else if (Array.isArray(block?.resultListEntry)) entries.push(...block.resultListEntry);
-      else if (block?.['resultlist.realEstate'] || block?.realEstateId || block?.id || block?.['@id']) {
-        entries.push(block);
-      } else if (Array.isArray(block)) {
-        entries.push(...block);
-      }
-    }
+  const out = { geo, oneStepSearch: step, resultPath };
+  if (flags.json) {
+    cli.out(out);
+    return;
   }
 
   const label = geo.label || location;
   console.log('');
   console.log(
-    color.bold(`  Search ${label}`) +
-      color.dim(`  ${realEstateType} · page ${page}`) +
-      (numberOfHits != null ? color.dim(` · ${numberOfHits} hits`) : ''),
+    color.bold(`  Search ${label}`) + color.dim(`  ${realEstateType} · page ${page}`),
   );
-  console.log(color.dim(`  geo:${geo.id}${geo.geopath?.uri ? ' · ' + geo.geopath.uri : ''}`));
+  console.log(
+    color.dim(`  geo:${geo.id}${geo.geopath?.uri ? ' · ' + geo.geopath.uri : ''}`),
+  );
   console.log(color.dim('  ' + '─'.repeat(52)));
-
-  if (!entries.length) {
-    // Still useful: print top-level keys so --json isn't the only escape hatch.
-    console.log(color.dim('  No listings parsed from response.'));
-    console.log(color.dim('  Re-run with --json to inspect the raw payload.'));
-    if (data && typeof data === 'object') {
-      console.log(color.dim(`  Top-level keys: ${Object.keys(data).slice(0, 12).join(', ')}`));
-    }
-    console.log('');
-    return;
-  }
-
-  let shown = 0;
-  for (const entry of entries) {
-    const re =
-      entry?.['resultlist.realEstate'] ||
-      entry?.realEstate ||
-      entry?.['resultlistEntry'] ||
-      entry;
-    if (!re || typeof re !== 'object') continue;
-
-    const id =
-      re['@id'] ||
-      re.realEstateId ||
-      re.id ||
-      entry.realEstateId ||
-      entry['@id'] ||
-      entry.id;
-    const title = re.title || re.headline || entry.title || 'Listing';
-    const addr = re.address || {};
-    const addrLine = [addr.quarter, addr.city || addr.region, addr.postcode].filter(Boolean).join(', ') ||
-      [addr.street, addr.houseNumber].filter(Boolean).join(' ');
-    const priceObj = re.price || re.calculatedPrice || re.coldRent || re.warmRent || {};
-    const priceVal = priceObj.value ?? priceObj.amount ?? re.priceValue ?? null;
-    const rooms = re.numberOfRooms ?? re.rooms;
-    const space = re.livingSpace ?? re.usableFloorSpace ?? re.area;
-    const meta = [
-      rooms != null ? `${rooms} Zi` : null,
-      space != null ? `${space} m²` : null,
-      priceVal != null ? money(priceVal) || String(priceVal) : null,
-    ].filter(Boolean);
-
-    console.log(`  ${color.cyan(color.bold(preview(title, 70)))}  ${color.dim(id != null ? `id:${id}` : '')}`);
-    if (meta.length) console.log(`     ${meta.join('  ·  ')}`);
-    if (addrLine) console.log(`     ${color.dim(addrLine)}`);
-    shown++;
-  }
-
-  if (!shown) {
-    console.log(color.dim('  Entries present but not in a recognized shape — use --json.'));
+  if (resultPath) {
+    const abs = resultPath.startsWith('http') ? resultPath : `${WWW}${resultPath}`;
+    console.log(`  ${color.dim('Result URL:')}  ${color.cyan(abs)}`);
+    console.log(
+      color.dim(
+        '  Note: the result-list JSON endpoint is WAF-gated from automated fetch;',
+      ),
+    );
+    console.log(color.dim('  open the URL in the IS24 tab (or use the browser) to browse hits.'));
+  } else {
+    console.log(color.dim('  oneStepSearch returned no redirectUrl — use --json.'));
   }
   console.log('');
 }
@@ -843,21 +1095,29 @@ async function main() {
       await cmdListings(tab, flags);
     } else if (subcommand === 'exposes' || subcommand === 'expose') {
       await cmdExposes(tab, flags);
-    } else if (subcommand === 'conversations' || subcommand === 'inbox' || subcommand === 'nachrichten') {
+    } else if (
+      subcommand === 'conversations' ||
+      subcommand === 'inbox' ||
+      subcommand === 'nachrichten'
+    ) {
       await cmdConversations(tab, positional[0], flags);
-    } else if (subcommand === 'messages' || subcommand === 'thread' || subcommand === 'conversation') {
+    } else if (
+      subcommand === 'messages' ||
+      subcommand === 'thread' ||
+      subcommand === 'conversation'
+    ) {
       await cmdMessages(tab, positional[0], positional[1], flags);
     } else if (subcommand === 'search' || subcommand === 'suche') {
-      // location may be multiple words: search Berlin Mitte
       const loc = positional.length ? positional.join(' ') : '';
       await cmdSearch(tab, loc, flags);
     } else if (subcommand === 'geo' || subcommand === 'geoautocomplete' || subcommand === 'gac') {
       const q = positional.length ? positional.join(' ') : '';
       await cmdGeo(tab, q, flags);
     } else {
-      cli.die(`unknown command: ${subcommand}\nRun 'immobilienscout24 --help' for usage.`, {
-        prefix: 'immobilienscout24',
-      });
+      cli.die(
+        `unknown command: ${subcommand}\nRun 'immobilienscout24 --help' for usage.`,
+        { prefix: 'immobilienscout24' },
+      );
     }
   } catch (err) {
     if (err?.name === 'NodeExitError') throw err;
