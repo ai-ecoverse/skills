@@ -59,12 +59,14 @@ If 200 → move to Phase 4. If 401/403 → dig into auth. If 404 → HAR capture
 
 ```bash
 # Paste the JS filter expression from references/har-filter.md in place of <FILTER>.
-# Minimal working filter (keeps JSON/API responses, drops static assets):
-playwright-cli record https://app.example.com \
-  --filter="(e) => e.response && /application\/(json|graphql)/.test(e.response.headers['content-type'] || '')"
+# Minimal working filter — headers are [{name,value},…] NOT a map; map lookup
+# silently drops every entry and stop-recording leaves an empty directory.
+playwright-cli record https://app.example.com --filter="(e) => { if (!e.response) return false; const hs=e.response.headers||[]; const ct=String((Array.isArray(hs)?(hs.find(h=>String(h.name||'').toLowerCase()==='content-type')||{}).value:hs['content-type'])||(e.response.content&&e.response.content.mimeType)||'').toLowerCase(); return /application\/(json|graphql)/.test(ct) || /\/(api|graphql|v\d+)\b/i.test((e.request&&e.request.url)||''); }"
 ```
 
-The full annotated filter (drops static assets and analytics, keeps JSON/form/API-path responses) is in `references/har-filter.md`. Copy it verbatim for a more thorough capture.
+The full annotated filter (drops static assets and analytics, keeps JSON/form/API-path responses, documents the header-shape pitfall) is in `references/har-filter.md`. Copy it verbatim for a more thorough capture.
+
+After the first navigation, verify `/recordings/<recordingId>/` contains a non-empty `001-…-navigation-….har`. Empty dir = broken filter; fall back to unfiltered `playwright-cli record <url>` and filter offline.
 
 Tell the user to perform the actions they want to automate, then:
 ```bash
