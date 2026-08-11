@@ -14,6 +14,8 @@
 //   signal read [name|id] [--limit=N] [--json]
 //   signal send <name|id> <text> --yes          # refuses without --yes
 //   signal send <name|id> <text> --draft        # fill composer only, do not send
+//   signal watch <name|id> --scoop=<name>       # lick a scoop only on change
+//   signal watches | unwatch <id|all> | reinject
 //   signal help
 //
 // Register once per session:
@@ -584,6 +586,11 @@ Commands:
                                     Send a message (REFUSES without --yes)
   signal send <name|id> <text> --draft
                                     Fill the composer only; do not press Send/Enter
+  signal watch <name|id> --scoop=<name> [--every=<seconds>] [--force]
+                                    Lick a scoop when (and only when) a chat changes
+  signal watches [--json]           List watches with live tick/fire counters
+  signal unwatch <watch-id|all>     Stop watching
+  signal reinject                   Re-install watchers after a leader reload
   signal help                       This help
 
 Safety:
@@ -591,6 +598,14 @@ Safety:
   - \`send\` requires --yes. Prefer --draft to validate composer fill.
   - Do not exfiltrate full message history into notifications; summarize.
   - Do not change Signal account settings.
+
+Watching:
+  Signal has no push and no readable socket (E2E), so the change detector lives in
+  the LEADER tab: every --every seconds it reads a cheap fingerprint out of Signal
+  and calls the scoop's webhook ONLY when it differs. An unchanged chat costs one
+  DOM query and wakes nobody. Signal's own renderer blocks egress, which is why
+  the loop cannot live inside Signal itself.
+  The interval is page state: after a leader reload, run \`signal reinject\`.
 
 Notes:
   - Only chats currently rendered in the virtualized left pane are listed
@@ -820,6 +835,388 @@ async function cmdSend() {
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
+// ─── Watch (leader-hosted change detector) ───────────────────────────────────
+//
+// WHY THIS IS NOT SLACK'S WATCH, AND NOT A CRON EITHER.
+//
+// `slack watch` subscribes a declarative observer to `wss://*.slack.com/`
+// because Slack's realtime frames arrive in the clear. Signal has no such seam:
+// its socket is end-to-end encrypted and Redux / ConversationController /
+// sqlcipher are not on `window`. `bluebubbles watch` does not transfer either —
+// that is a server PUSHING to a webhook, and Signal Desktop pushes nowhere.
+// So the new-message signal only exists in the rendered DOM: something must
+// look.
+//
+// The naive version of "something must look" is a crontask that licks a scoop
+// every N minutes. That is rejected on purpose: it wakes an LLM turn to learn
+// "nothing happened", which is exactly the cost this command exists to avoid.
+// (A cron `--filter` cannot rescue it — `LickManager.runDueCronTask` calls the
+// filter SYNCHRONOUSLY (`filterFn(null)`, not awaited), so it cannot read a DOM
+// it has to await.)
+//
+// Instead the detector lives in the LEADER page, one hop out from Signal:
+//
+//   setInterval in the leader tab
+//     └─ browser.withTab(signalTab, () => evaluate(FINGERPRINT))   ← cheap read
+//        └─ fingerprint changed?  no  → return (nothing happens at all)
+//                                 yes → fetch(webhookUrl) → lick on the scoop
+//
+// Why the leader and not Signal itself: Signal's renderer blocks ALL egress
+// (`net::ERR_ACCESS_DENIED` — the same block that forces the CDP-over-CDP
+// follower), so an interval inside Signal can detect a change but can never
+// deliver it. Verified live: `fetch()` from the Signal page fails, the same
+// fetch from the leader page returns 200.
+//
+// `withTab` is used rather than a bare `attachToPage` because BrowserAPI
+// attachment is process-wide state; `withTab` serializes on its `_tabLock`, so
+// a tick cannot yank the tab out from under a human or an agent mid-operation.
+//
+// Cost when idle: one DOM query per interval. Zero licks, zero agent turns.
+//
+// Durability: the interval is page state, so a leader reload drops it — same
+// trade-off `slack reinject` exists for. Use `signal reinject`.
+
+const WATCH_DIR = '/workspace/skills/signal';
+
+function watchStatePath(id) {
+  return WATCH_DIR + '/.watch-' + id + '.json';
+}
+
+/** Slugify a chat name into a filesystem-safe watch id. */
+function watchIdFor(chat) {
+  const slug = String(chat || 'open-chat')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40);
+  return slug || 'open-chat';
+}
+
+/**
+ * The leader's own CDP target id.
+ *
+ * `playwright-cli tab-list` deliberately hides SLICC's own app tabs
+ * (`isSliccAppUrl`), so the id has to come from the raw CDP target list. The
+ * kernel's `fetch` is bridged and can reach the loopback CDP endpoint;
+ * `playwright-cli eval --tab=<id>` then attaches to it happily.
+ */
+async function leaderTargetId() {
+  const ports = [9222, 9223, 9224];
+  for (const port of ports) {
+    try {
+      const res = await fetch('http://localhost:' + port + '/json/list');
+      const targets = await res.json();
+      const leader = targets.find(
+        (t) => t.type === 'page' && /sliccy\.ai|localhost:8787/.test(t.url || '')
+      );
+      if (leader && leader.id) return leader.id;
+    } catch (e) {
+      if (e && e.name === 'NodeExitError') throw e;
+      // Try the next port.
+    }
+  }
+  return null;
+}
+
+/** Run an expression in the leader page and return its (JSON) value. */
+async function evalInLeader(expression) {
+  const tab = await leaderTargetId();
+  if (!tab) {
+    cli.die('could not find the leader tab (is this running inside SLICC?)', { prefix: 'signal' });
+  }
+  const res = await pw(['eval', '--tab=' + tab, expression]);
+  return res;
+}
+
+/**
+ * Fingerprint of the open conversation, evaluated INSIDE Signal.
+ *
+ * Message count plus the last message's author/time/text. Signal exposes no
+ * message id in the DOM, and it renders relative timestamps ("42m") that drift
+ * between reads, so the text is part of the key — time alone would re-fire.
+ */
+const SRC_FINGERPRINT = `(() => {
+  const clean = (s) => String(s || '').replace(/[\\u2066-\\u2069]/g, '').replace(/\\s+/g, ' ').trim();
+  const nodes = [...document.querySelectorAll('.module-message')];
+  const last = nodes[nodes.length - 1];
+  if (!last) return 'EMPTY';
+  const t = last.querySelector('.module-message__text');
+  const a = last.querySelector('.module-message__author');
+  const d = last.querySelector('.module-message__metadata__date');
+  return [
+    nodes.length,
+    clean(a && a.textContent),
+    clean(d && d.textContent),
+    clean(t && t.textContent).slice(0, 80),
+  ].join('|');
+})()`;
+
+/**
+ * Installer that runs in the LEADER page. Kept as a single self-contained
+ * expression so it can be shipped through `playwright-cli eval`.
+ */
+function installerSource(opts) {
+  return `(() => {
+  const cfg = ${JSON.stringify(opts)};
+  const b = globalThis.__slicc_browser;
+  if (!b) return JSON.stringify({ ok: false, error: 'no_browser_api' });
+  globalThis.__signalWatch = globalThis.__signalWatch || {};
+  const reg = globalThis.__signalWatch;
+  if (reg[cfg.id] && reg[cfg.id].timer) clearInterval(reg[cfg.id].timer);
+  const st = {
+    id: cfg.id, chat: cfg.chat, scoop: cfg.scoop, tab: cfg.tab,
+    everySeconds: cfg.everySeconds, webhookUrl: cfg.webhookUrl,
+    last: null, ticks: 0, fires: 0, errors: 0, lastError: null, startedAt: new Date().toISOString(),
+  };
+  st.timer = setInterval(async () => {
+    st.ticks++;
+    try {
+      const fp = await b.withTab(cfg.tab, async () => b.evaluate(${JSON.stringify(SRC_FINGERPRINT)}));
+      // Seed on the first read so the backlog already on screen is never
+      // reported as new.
+      if (st.last === null) { st.last = fp; return; }
+      if (fp === st.last) return;   // <-- no change, no lick, no agent turn
+      const previous = st.last;
+      st.last = fp;
+      st.fires++;
+      await fetch(cfg.webhookUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          source: 'signal-watch',
+          watchId: cfg.id,
+          chat: cfg.chat,
+          fingerprint: fp,
+          previous,
+          at: new Date().toISOString(),
+          hint: 'New activity in Signal chat "' + cfg.chat + '". Run: signal read ' + JSON.stringify(cfg.chat),
+        }),
+      });
+    } catch (e) {
+      st.errors++;
+      st.lastError = String((e && e.message) || e).slice(0, 200);
+    }
+  }, Math.max(5, cfg.everySeconds) * 1000);
+  reg[cfg.id] = st;
+  return JSON.stringify({ ok: true, id: cfg.id });
+})()`;
+}
+
+async function readWatchState(id) {
+  try {
+    return JSON.parse(await fs.readFile(watchStatePath(id), 'utf8'));
+  } catch (e) {
+    if (e && e.name === 'NodeExitError') throw e;
+    return null;
+  }
+}
+
+async function writeWatchState(id, state) {
+  await exec('mkdir -p ' + escapeShellArg(WATCH_DIR));
+  await fs.writeFile(watchStatePath(id), JSON.stringify(state, null, 2));
+}
+
+async function listWatchStates() {
+  const res = await exec('ls ' + escapeShellArg(WATCH_DIR) + '/.watch-*.json 2>/dev/null');
+  const files = String(res.stdout || '')
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const out = [];
+  for (const file of files) {
+    try {
+      out.push(JSON.parse(await fs.readFile(file, 'utf8')));
+    } catch (e) {
+      if (e && e.name === 'NodeExitError') throw e;
+      // Skip corrupt state rather than failing the whole listing.
+    }
+  }
+  return out;
+}
+
+/** Install (or re-install) the leader-side detector for one watch. */
+async function installWatch(state) {
+  const out = await evalInLeader(
+    installerSource({
+      id: state.watchId,
+      chat: state.chat,
+      scoop: state.scoop,
+      tab: state.signalTab,
+      everySeconds: state.everySeconds,
+      webhookUrl: state.webhookUrl,
+    })
+  );
+  const text = String((out && (out.stdout || out.value || out)) || '');
+  if (!/"ok"\s*:\s*true/.test(text)) {
+    return { ok: false, error: text.slice(0, 200) || 'installer returned no result' };
+  }
+  return { ok: true };
+}
+
+async function cmdWatch() {
+  const chat = positional.join(' ').trim();
+  const scoop = flags.scoop;
+  const every = Math.max(5, parseInt(flags.every || '20', 10) || 20);
+
+  if (!scoop) {
+    cli.die('usage: signal watch <name|id> --scoop=<name> [--every=<seconds>] [--force]', {
+      prefix: 'signal',
+    });
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(String(scoop))) {
+    cli.die('invalid scoop name: ' + scoop, { prefix: 'signal' });
+  }
+
+  const tab = await findSignalTab();
+  const target = await resolveOpenTarget(chat);
+  if (!target.ok) {
+    cli.die(
+      target.error === 'not_found'
+        ? 'Chat not found: ' + chat
+        : target.error === 'no_open_chat'
+          ? 'No chat open. Pass a name: signal watch "Eclipse Chasers" --scoop=my-watch'
+          : target.error || 'open failed',
+      { prefix: 'signal' }
+    );
+  }
+  const chatName = (target.opened && target.opened.name) || chat;
+  const id = watchIdFor(chatName);
+
+  // Duplicate guard. The `process.exit(1)` deliberately sits OUTSIDE any
+  // try/catch: it throws NodeExitError to unwind, and a `catch` that swallowed
+  // it would let execution fall through and orphan a webhook — the exact bug
+  // slack.jsh documents having shipped (two leaked webhooks).
+  const existing = await readWatchState(id);
+  if (existing && !flags.force) {
+    console.error('Already watching "' + chatName + '" (scoop: ' + existing.scoop + ').');
+    console.error('Use --force to replace, or: signal unwatch ' + id);
+    process.exit(1);
+  }
+  if (existing && existing.webhookId) {
+    await exec('webhook delete ' + escapeShellArg(existing.webhookId)).catch(() => {});
+  }
+
+  const whResult = await exec('webhook create --scoop ' + escapeShellArg(scoop));
+  const idMatch = String(whResult.stdout || '').match(/ID:\s*(\S+)/i);
+  const urlMatch = String(whResult.stdout || '').match(/URL:\s*(\S+)/i);
+  if (!idMatch || !urlMatch) {
+    cli.die(
+      'could not create webhook: ' + String(whResult.stderr || whResult.stdout || '').slice(0, 200),
+      { prefix: 'signal' }
+    );
+  }
+
+  const state = {
+    watchId: id,
+    chat: chatName,
+    scoop,
+    signalTab: tab.id || tab,
+    everySeconds: every,
+    webhookId: idMatch[1],
+    webhookUrl: urlMatch[1],
+    createdAt: new Date().toISOString(),
+  };
+
+  const installed = await installWatch(state);
+  if (!installed.ok) {
+    // Roll back the webhook so a failed install cannot leak one.
+    await exec('webhook delete ' + escapeShellArg(state.webhookId)).catch(() => {});
+    cli.die('failed to install the leader-side watcher: ' + installed.error, { prefix: 'signal' });
+  }
+  await writeWatchState(id, state);
+
+  if (flags.json) return cli.out(state);
+  console.log('Watching "' + chatName + '" -> scoop "' + scoop + '"');
+  console.log('  Watch ID: ' + id);
+  console.log('  Checks:   every ' + every + 's in the leader tab (no scoop wake unless changed)');
+  console.log('  Webhook:  ' + state.webhookId);
+  console.log('  Stop:     signal unwatch ' + id);
+}
+
+async function cmdWatches() {
+  const states = await listWatchStates();
+  // Live counters come from the leader page; state files alone cannot say
+  // whether the detector actually survived a reload.
+  let live = {};
+  try {
+    const out = await evalInLeader(
+      `JSON.stringify(Object.fromEntries(Object.entries(globalThis.__signalWatch || {}).map(([k, v]) => [k, { ticks: v.ticks, fires: v.fires, errors: v.errors, lastError: v.lastError }])))`
+    );
+    const text = String((out && (out.stdout || out.value || out)) || '{}');
+    const m = text.match(/\{[\s\S]*\}/);
+    if (m) live = JSON.parse(m[0]);
+  } catch (e) {
+    if (e && e.name === 'NodeExitError') throw e;
+  }
+
+  if (flags.json) return cli.out(states.map((s) => ({ ...s, live: live[s.watchId] || null })));
+  if (!states.length) {
+    console.log('(no active signal watches)');
+    return;
+  }
+  const rows = [
+    ['ID', 'CHAT', 'SCOOP', 'EVERY', 'TICKS', 'FIRES', 'STATUS'],
+    ...states.map((s) => {
+      const l = live[s.watchId];
+      return [
+        s.watchId || '',
+        (s.chat || '').slice(0, 24),
+        s.scoop || '',
+        (s.everySeconds || '?') + 's',
+        l ? String(l.ticks) : '-',
+        l ? String(l.fires) : '-',
+        l ? (l.errors ? 'errors: ' + l.errors : 'live') : 'DEAD (signal reinject)',
+      ];
+    }),
+  ];
+  console.log(fmt.table(rows, [20, 24, 16, 6, 6, 6, 22]));
+}
+
+async function cmdUnwatch() {
+  const id = (positional[0] || '').trim();
+  if (!id) cli.die('usage: signal unwatch <watch-id|all>', { prefix: 'signal' });
+  const targets =
+    id === 'all' ? await listWatchStates() : [await readWatchState(id)].filter(Boolean);
+  if (!targets.length) {
+    console.log('No matching watch (see: signal watches)');
+    return;
+  }
+  for (const state of targets) {
+    await evalInLeader(
+      `(() => { const r = globalThis.__signalWatch || {}; const s = r[${JSON.stringify(state.watchId)}]; if (s && s.timer) clearInterval(s.timer); delete r[${JSON.stringify(state.watchId)}]; return 'stopped'; })()`
+    ).catch(() => {});
+    if (state.webhookId) {
+      await exec('webhook delete ' + escapeShellArg(state.webhookId)).catch(() => {});
+    }
+    await exec('rm -f ' + escapeShellArg(watchStatePath(state.watchId))).catch(() => {});
+    console.log('Stopped watching "' + state.chat + '" (' + state.watchId + ')');
+  }
+}
+
+/** Re-install every stored watch after a leader reload dropped the intervals. */
+async function cmdReinject() {
+  const states = await listWatchStates();
+  if (!states.length) {
+    console.log('(no stored watches to reinject)');
+    return;
+  }
+  for (const state of states) {
+    // The Signal tab id changes when Signal restarts; re-resolve it.
+    try {
+      const tab = await findSignalTab({ fatal: false });
+      if (tab && (tab.id || tab)) {
+        state.signalTab = tab.id || tab;
+        await writeWatchState(state.watchId, state);
+      }
+    } catch (e) {
+      if (e && e.name === 'NodeExitError') throw e;
+    }
+    const res = await installWatch(state);
+    console.log((res.ok ? 'reinjected ' : 'FAILED ') + state.watchId + ' (' + state.chat + ')');
+    if (!res.ok) console.error('  ' + res.error);
+  }
+}
+
 async function main() {
   switch (subcommand) {
     case 'tabs':
@@ -841,6 +1238,14 @@ async function main() {
       return cmdRead();
     case 'send':
       return cmdSend();
+    case 'watch':
+      return cmdWatch();
+    case 'watches':
+      return cmdWatches();
+    case 'unwatch':
+      return cmdUnwatch();
+    case 'reinject':
+      return cmdReinject();
     default:
       console.log(usageText());
       cli.die('unknown subcommand: ' + subcommand, { prefix: 'signal' });

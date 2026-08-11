@@ -3,10 +3,12 @@ name: signal
 description: >
   Interact with Signal Desktop (Electron) via CDP/DOM automation — list
   conversations, search chats, open a chat, read recent messages, and send
-  messages with an explicit --yes gate. Use when the user wants to check
+  messages with an explicit --yes gate, and watch a chat so a scoop is
+  notified only when it actually changes. Use when the user wants to check
   Signal messages, read a Signal chat, list Signal conversations, search
-  Signal contacts/groups, draft or send a Signal message, or automate Signal
-  Desktop without clicking the UI. Activate on mentions of Signal, Signal
+  Signal contacts/groups, draft or send a Signal message, watch/monitor a
+  Signal chat for new messages, or automate Signal Desktop without clicking
+  the UI. Activate on mentions of Signal, Signal
   Desktop, Signal chat, Signal message, Signal group, or related messaging
   workflows. Requires a live Signal Desktop CDP tab on a tray remote (no
   public third-party HTTP API for personal Signal Desktop).
@@ -80,6 +82,11 @@ signal open <name|id>
 signal read [name|id] [--limit=N] [--json]
 signal send <name|id> <text> --yes   # real send
 signal send <name|id> <text> --draft # composer only
+
+signal watch <name|id> --scoop=<name> [--every=<seconds>] [--force]
+signal watches [--json]
+signal unwatch <watch-id|all>
+signal reinject                      # after a leader reload
 signal help
 ```
 
@@ -179,6 +186,87 @@ Implementation:
 
 **Never omit `--yes` for a real send.** Agents must not pass `--yes` unless the
 user explicitly asked to send that message.
+
+
+### watch / watches / unwatch / reinject
+
+Notify a scoop when a Signal chat changes — **and only when it changes**.
+
+```bash
+signal watch "Eclipse Chasers" --scoop=signal-inbox
+signal watch "Eclipse Chasers" --scoop=signal-inbox --every=10 --force
+signal watches
+signal unwatch eclipse-chasers      # or: signal unwatch all
+signal reinject                     # after the leader tab reloaded
+```
+
+**Options**
+
+- `--scoop=<name>` — **(required)** scoop that receives the lick
+- `--every=<seconds>` — check interval, default `20`, floor `5`
+- `--force` — replace an existing watch on the same chat
+
+**How it works**
+
+Signal offers nothing to subscribe to: the socket is end-to-end encrypted, and
+Redux / `ConversationController` / sqlcipher are not on `window`. New messages
+are legible only in the rendered DOM, so something has to look. The design
+question is what pays for the looking.
+
+The detector runs in the **leader tab**, not in a scoop and not on a cron:
+
+```
+setInterval in the leader page (every --every seconds)
+  └─ browser.withTab(signalTab, () => evaluate(FINGERPRINT))   ← one DOM query
+     ├─ unchanged → return. Nothing is dispatched. No scoop wakes.
+     └─ changed   → POST the scoop's webhook → one lick
+```
+
+An idle chat therefore costs a DOM read per interval and **zero** agent turns.
+This is the whole point of the command: a `crontask` that licks a scoop every
+N minutes would wake an LLM turn just to conclude "nothing happened".
+
+Two constraints shaped this and are worth knowing before changing it:
+
+- **The loop cannot live inside Signal.** Signal's renderer blocks all egress
+  (`net::ERR_ACCESS_DENIED` — the same block that forces the CDP-over-CDP
+  follower), so an interval there can detect a change but never deliver it.
+  Verified: `fetch()` from the Signal page fails; the same call from the leader
+  page returns 200.
+- **A cron `--filter` cannot do the check.** `LickManager.runDueCronTask` calls
+  the filter synchronously (`filterFn(null)`, not awaited), so it cannot await a
+  DOM read. A filter returning a Promise silently becomes the payload.
+
+`withTab` is used rather than a bare `attachToPage` because BrowserAPI
+attachment is process-wide; `withTab` serializes on its lock so a tick cannot
+steal the tab from a human or an agent mid-operation.
+
+**Lick payload**
+
+```json
+{
+  "source": "signal-watch",
+  "watchId": "eclipse-chasers",
+  "chat": "Eclipse Chasers",
+  "fingerprint": "87|Ada|8:21 PM|see you at the mirador",
+  "previous": "86|Ada|7:02 PM|running late",
+  "at": "2026-08-11T19:44:03.117Z",
+  "hint": "New activity in Signal chat \"Eclipse Chasers\". Run: signal read \"Eclipse Chasers\""
+}
+```
+
+The payload carries the *fingerprint*, not the message bodies — the scoop calls
+`signal read` if it wants content, so message text is never pushed into a lick.
+
+**Durability.** The interval is page state, so a leader reload drops every
+watcher. `signal watches` reports those as `DEAD (signal reinject)`; run
+`signal reinject` to re-install them (it also re-resolves the Signal tab id,
+which changes when Signal restarts). Same trade-off `slack reinject` exists for.
+
+**Fingerprint.** Message count plus the last message's author, timestamp and
+first 80 characters. Signal exposes no message id in the DOM and renders
+relative timestamps ("42m") that drift between reads, so the text is part of
+the key — a time-only key would re-fire on its own.
 
 ## How the tab is found
 
