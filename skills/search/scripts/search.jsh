@@ -1,28 +1,23 @@
 // search.jsh — multi-provider web search for SLICC agents.
 //
-// Queries Brave, Exa or Tavily and returns one normalized result shape so an
-// agent can swap providers without changing its parsing:
+// Queries Brave, Exa, Tavily or Kagi and returns one normalized result shape so
+// an agent can swap providers without changing its parsing:
 //
-//   { title, url, snippet, source: 'brave'|'exa'|'tavily', published?: <ISO 8601> }
+//   { title, url, snippet, source: 'brave'|'exa'|'tavily'|'kagi', published?: <ISO 8601> }
 //
 // USAGE
-//   search "<query>" [--provider brave|exa|tavily|auto] [-n N] [--type web|news]
+//   search "<query>" [--provider brave|exa|tavily|kagi|auto] [-n N] [--type web|news]
 //                    [--include-domains a,b] [--exclude-domains a,b] [--json] [--debug]
 //
 // AUTH (env only — no config file, nothing is persisted)
-//   BRAVE_API_KEY | EXA_API_KEY | TAVILY_API_KEY
-//   `auto` walks Brave → Exa → Tavily, taking the first provider that has a key
-//   and falling through to the next one when a provider errors.
+//   BRAVE_API_KEY | EXA_API_KEY | TAVILY_API_KEY | KAGI_API_KEY
+//   `auto` walks Brave → Exa → Tavily → Kagi, taking the first provider that has
+//   a key and falling through to the next one when a provider errors. Kagi is
+//   last on purpose: it bills per search at a premium rate, so it is picked up
+//   automatically only when nothing else is configured. Ask for it by name
+//   (`--provider kagi`) when its result quality is worth the cost.
 //
 // Read-only and side-effect free: every command is a single search request.
-//
-// TODO(kagi): KAGI_API_KEY is documented as an optional future provider but is
-// deliberately NOT wired up here. Kagi's Search API (POST-less GET
-// https://kagi.com/api/v0/search, `Authorization: Bot <token>`, results under
-// `data[]` with `t:0` = search result / `t:1` = related searches) is invite-only
-// and metered per search, and adding it would widen the documented `source`
-// union that agents already parse. Wire it in a follow-up that updates SKILL.md's
-// output schema and the --provider list in the same change.
 
 const cli = require('sliccy:cli');
 const color = require('sliccy:color');
@@ -30,32 +25,38 @@ const color = require('sliccy:color');
 const PREFIX = 'search';
 
 const HELP = `
-search — multi-provider web search (Brave, Exa, Tavily)
+search — multi-provider web search (Brave, Exa, Tavily, Kagi)
 
 USAGE
   search "<query>" [options]
 
 OPTIONS
-  --provider <brave|exa|tavily|auto>  Backend to use (default: auto)
-  -n, --num <N>                       Number of results, 1-20 (default: 8)
-  --type <web|news>                   Result type where supported (default: web)
-  --include-domains <a,b>             Keep only results from these domains
-  --exclude-domains <a,b>             Drop results from these domains
-  --json                              Emit a JSON array instead of a human summary
-  --debug                             Log provider/endpoint decisions to stderr
-  -h, --help                          Show this help
+  --provider <brave|exa|tavily|kagi|auto>  Backend to use (default: auto)
+  -n, --num <N>                            Number of results, 1-20 (default: 8)
+  --type <web|news>                        Result type (default: web; not on kagi)
+  --include-domains <a,b>                  Keep only results from these domains
+  --exclude-domains <a,b>                  Drop results from these domains
+  --json                                   Emit a JSON array, not a human summary
+  --debug                                  Log provider/endpoint decisions to stderr
+  -h, --help                               Show this help
 
 AUTH (environment variables, or SLICC secrets exposed as env)
   BRAVE_API_KEY    Brave  — independent index, low latency, privacy
   EXA_API_KEY      Exa    — neural/semantic, research and discovery
   TAVILY_API_KEY   Tavily — LLM-optimized snippets for RAG
+  KAGI_API_KEY     Kagi   — premium human-quality results, billed per search
 
   auto uses the first provider that has a key, in the order Brave, Exa, Tavily,
-  and falls through to the next one when a provider errors.
+  Kagi, and falls through to the next one when a provider errors. Kagi is last
+  because it bills per search — name it explicitly to pay for its quality.
+
+  --type news is served by Brave, Exa and Tavily; Kagi has no news endpoint and
+  is skipped (auto) or refused (--provider kagi) rather than silently answering
+  with web results.
 
 JSON OUTPUT
   [{ "title": "…", "url": "https://…", "snippet": "…",
-     "source": "brave|exa|tavily", "published": "2026-01-31T00:00:00.000Z" }]
+     "source": "brave|exa|tavily|kagi", "published": "2026-01-31T00:00:00.000Z" }]
   "published" is omitted when the provider does not report a parseable date.
 
 EXAMPLES
@@ -63,6 +64,7 @@ EXAMPLES
   search "current status of the Bing Search API" --provider brave -n 5
   search "papers arguing RAG is obsolete" --provider exa --json
   search "LLM grounding best practices" --provider tavily --type news --json
+  search "the best essays on typography" --provider kagi -n 5
   search "edge caching" --include-domains fastly.com,cloudflare.com --json
 `.trim();
 
@@ -260,6 +262,14 @@ function errorDetail(text) {
   } catch {
     return ' — ' + trunc(stripHtml(text), 200);
   }
+  // Kagi reports `error: [{ code, msg }]`; the others use an object or a string.
+  if (body && Array.isArray(body.error)) {
+    const joined = body.error
+      .map((e) => (e && (e.msg || e.message)) || '')
+      .filter(Boolean)
+      .join('; ');
+    return joined ? ' — ' + trunc(joined, 200) : '';
+  }
   const msg =
     (body && body.error && (body.error.detail || body.error.message || body.error.meta)) ||
     (body && (body.detail || body.message || body.error));
@@ -318,6 +328,7 @@ const BRAVE_WEB = 'https://api.search.brave.com/res/v1/web/search';
 const BRAVE_NEWS = 'https://api.search.brave.com/res/v1/news/search';
 const EXA_SEARCH = 'https://api.exa.ai/search';
 const TAVILY_SEARCH = 'https://api.tavily.com/search';
+const KAGI_SEARCH = 'https://kagi.com/api/v0/search';
 
 async function braveSearch(key, query, opts) {
   // Brave takes no structured domain filter — it understands `site:` / `-site:`
@@ -431,13 +442,53 @@ async function tavilySearch(key, query, opts) {
   }));
 }
 
+/**
+ * Kagi's Search API is a plain GET with a `Bot` credential. Its payload is a
+ * heterogeneous `data[]`: `t:0` entries are search results, `t:1` is the
+ * related-searches block — filter by `t` rather than trusting position.
+ * There is no news vertical and no structured domain filter, so `--type news`
+ * is refused upstream and domains ride along as query operators.
+ */
+async function kagiSearch(key, query, opts) {
+  let q = query;
+  if (opts.includeDomains.length) {
+    q += ' ' + opts.includeDomains.map((d) => `site:${d}`).join(' OR ');
+  }
+  if (opts.excludeDomains.length) {
+    q += ' ' + opts.excludeDomains.map((d) => `-site:${d}`).join(' ');
+  }
+
+  const url = new URL(KAGI_SEARCH);
+  url.searchParams.set('q', q);
+  url.searchParams.set('limit', String(opts.num));
+  debug(`kagi GET ${url.toString()}`);
+
+  const data = await request(url.toString(), {
+    headers: { Accept: 'application/json', Authorization: `Bot ${key}` },
+    label: 'kagi',
+  });
+
+  const rows = Array.isArray(data.data) ? data.data : [];
+  return rows
+    .filter((r) => r && r.t === 0)
+    .map((r) => ({
+      title: stripHtml(r.title),
+      url: r.url,
+      snippet: stripHtml(r.snippet || ''),
+      source: 'kagi',
+      published: toIso(r.published),
+    }));
+}
+
 const PROVIDERS = {
-  brave: { id: 'brave', env: 'BRAVE_API_KEY', search: braveSearch },
-  exa: { id: 'exa', env: 'EXA_API_KEY', search: exaSearch },
-  tavily: { id: 'tavily', env: 'TAVILY_API_KEY', search: tavilySearch },
+  brave: { id: 'brave', env: 'BRAVE_API_KEY', search: braveSearch, news: true },
+  exa: { id: 'exa', env: 'EXA_API_KEY', search: exaSearch, news: true },
+  tavily: { id: 'tavily', env: 'TAVILY_API_KEY', search: tavilySearch, news: true },
+  kagi: { id: 'kagi', env: 'KAGI_API_KEY', search: kagiSearch, news: false },
 };
-// auto order: independent index first, then semantic, then RAG snippets.
-const AUTO_ORDER = ['brave', 'exa', 'tavily'];
+// auto order: independent index first, then semantic, then RAG snippets, and
+// Kagi last — it bills per search, so it is a fallback, not a default.
+const AUTO_ORDER = ['brave', 'exa', 'tavily', 'kagi'];
 
 // ─── result handling ─────────────────────────────────────────────────────────
 
@@ -465,9 +516,9 @@ function normalize(raw) {
 }
 
 /**
- * Client-side domain filter. Exa and Tavily filter server-side and Brave gets
- * `site:` operators, but only this pass makes the flags behave identically
- * across providers.
+ * Client-side domain filter. Exa and Tavily filter server-side while Brave and
+ * Kagi only get `site:` operators, so only this pass makes the flags behave
+ * identically across providers.
  */
 function filterDomains(results, include, exclude) {
   let out = results;
@@ -519,7 +570,7 @@ async function main() {
   if (!query) {
     cli.die(
       'missing query.\n' +
-        '  usage: search "<query>" [--provider brave|exa|tavily|auto] [-n N] [--json]\n' +
+        '  usage: search "<query>" [--provider brave|exa|tavily|kagi|auto] [-n N] [--json]\n' +
         "  run 'search --help' for the full flag list.",
       { prefix: PREFIX }
     );
@@ -527,7 +578,7 @@ async function main() {
 
   const provider = (str(flags.provider) || 'auto').toLowerCase();
   if (provider !== 'auto' && !PROVIDERS[provider]) {
-    cli.die(`unknown --provider "${provider}" — expected brave, exa, tavily or auto`, {
+    cli.die(`unknown --provider "${provider}" — expected brave, exa, tavily, kagi or auto`, {
       prefix: PREFIX,
     });
   }
@@ -564,7 +615,8 @@ async function main() {
           '  Set at least one of:\n' +
           '    export BRAVE_API_KEY=…    (https://api-dashboard.search.brave.com)\n' +
           '    export EXA_API_KEY=…      (https://dashboard.exa.ai)\n' +
-          '    export TAVILY_API_KEY=…   (https://app.tavily.com)',
+          '    export TAVILY_API_KEY=…   (https://app.tavily.com)\n' +
+          '    export KAGI_API_KEY=…     (https://kagi.com/settings?p=api)',
         { prefix: PREFIX }
       );
     }
@@ -578,6 +630,27 @@ async function main() {
     }
     chain = [provider];
   }
+
+  // Kagi has no news vertical. Answering --type news with its web results would
+  // be a silently wrong answer, so drop it from an auto chain and refuse it
+  // outright when it was asked for by name.
+  if (type === 'news') {
+    const capable = chain.filter((id) => PROVIDERS[id].news);
+    if (!capable.length) {
+      cli.die(
+        provider === 'auto'
+          ? '--type news needs a provider with a news endpoint.\n' +
+              '  kagi has none — set BRAVE_API_KEY, EXA_API_KEY or TAVILY_API_KEY.'
+          : `--provider ${provider} has no news endpoint — use brave, exa or tavily for --type news`,
+        { prefix: PREFIX }
+      );
+    }
+    if (capable.length !== chain.length) {
+      debug(`skipping ${chain.filter((id) => !PROVIDERS[id].news).join(', ')} — no news endpoint`);
+    }
+    chain = capable;
+  }
+
   debug(`chain=${chain.join(' → ')} type=${type} num=${num}`);
 
   let results = null;

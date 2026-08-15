@@ -3,10 +3,10 @@ name: search
 description: >
   Web search for SLICC agents via a multi-provider CLI (search.jsh).
   Supports Brave (independent index, low-latency, privacy), Exa (neural/semantic),
-  and Tavily (RAG-optimized). Use when the agent needs current web information,
-  research, grounding, or verification instead of (or in addition to) browser
-  automation. Prefer this for open-web queries; use browser tools for authenticated
-  or interactive page work.
+  Tavily (RAG-optimized) and Kagi (premium, human-quality). Use when the agent
+  needs current web information, research, grounding, or verification instead of
+  (or in addition to) browser automation. Prefer this for open-web queries; use
+  browser tools for authenticated or interactive page work.
   Trigger on requests like "search the web for…", "find recent info on…",
   "what does the internet say about…", "ground this claim", "research X".
 allowed-tools:
@@ -27,7 +27,7 @@ Set API keys as environment variables (or via SLICC secrets):
 export BRAVE_API_KEY=...     # recommended primary
 export EXA_API_KEY=...       # recommended for semantic/research
 export TAVILY_API_KEY=...    # recommended for RAG-style snippets
-# optional: KAGI_API_KEY=...
+export KAGI_API_KEY=...      # optional: premium quality, billed per search
 ```
 
 Keys are read from `process.env`. Missing keys for a requested provider produce a
@@ -43,12 +43,12 @@ search "query" [options]
 
 | Flag | Description |
 |---|---|
-| `--provider brave\|exa\|tavily\|auto` | Backend to use (default: `auto`) |
+| `--provider brave\|exa\|tavily\|kagi\|auto` | Backend to use (default: `auto`) |
 | `-n, --num <N>` | Number of results (default 8) |
 | `--json` | Emit machine-readable JSON instead of human summary |
-| `--type web\|news` | Result type where supported (default `web`) |
-| `--include-domains a,b` | Restrict to domains (Exa / some others) |
-| `--exclude-domains a,b` | Exclude domains |
+| `--type web\|news` | Result type where supported (default `web`; Kagi has no news endpoint) |
+| `--include-domains a,b` | Restrict to domains (native on Exa/Tavily, `site:` on Brave/Kagi, always enforced client-side) |
+| `--exclude-domains a,b` | Exclude domains (same mechanism) |
 
 ### Examples
 
@@ -64,6 +64,9 @@ search "papers arguing RAG is obsolete" --provider exa --json
 
 # RAG-friendly clean snippets
 search "best practices for LLM grounding" --provider tavily --json
+
+# Premium quality, when it is worth the per-search cost
+search "the best essays on typography" --provider kagi -n 5
 ```
 
 ## Provider guidance
@@ -74,10 +77,17 @@ search "best practices for LLM grounding" --provider tavily --json
   research, discovery, and coding-related queries. Token-efficient highlights.
 - **Tavily** — LLM-optimized snippets + extract; often the practical choice for
   RAG pipelines and agents that want clean context with minimal post-processing.
-- **Kagi (optional)** — High human-quality results; higher cost/friction; enable
-  only if a key is present and premium quality is desired.
+- **Kagi** — High human-quality results; higher cost/friction. Enabled whenever
+  `KAGI_API_KEY` is present, but it sits **last** in the `auto` order because it
+  bills per search — name it with `--provider kagi` when the quality is worth
+  the cost. It has no news vertical, so `--type news` skips it in `auto` mode
+  and is refused outright when Kagi was asked for by name, rather than answering
+  a news query with web results.
 
-`auto` prefers Brave → Exa → Tavily based on available keys and can fall back.
+`auto` prefers Brave → Exa → Tavily → Kagi based on available keys and can fall
+back: it takes the first provider that has a key and moves to the next one when
+a provider errors. An explicit `--provider` never falls back, so results are
+never misattributed.
 
 ## Output
 
@@ -91,7 +101,7 @@ With `--json` it emits a stable array of objects:
     "title": "…",
     "url": "https://…",
     "snippet": "…",
-    "source": "brave|exa|tavily",
+    "source": "brave|exa|tavily|kagi",
     "published": "2026-…"
   }
 ]
