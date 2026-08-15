@@ -70,23 +70,22 @@ search "the best essays on typography" --provider kagi -n 5
 
 ## Provider guidance
 
-- **Brave** — Independent index (not Google/Bing), low latency, privacy-focused,
-  LLM Context endpoint. Excellent default for general agent grounding.
-- **Exa** — Neural/semantic search, modes for latency vs depth, strong for
-  research, discovery, and coding-related queries. Token-efficient highlights.
-- **Tavily** — LLM-optimized snippets + extract; often the practical choice for
-  RAG pipelines and agents that want clean context with minimal post-processing.
-- **Kagi** — High human-quality results; higher cost/friction. Enabled whenever
-  `KAGI_API_KEY` is present, but it sits **last** in the `auto` order because it
-  bills per search — name it with `--provider kagi` when the quality is worth
-  the cost. It has no news vertical, so `--type news` skips it in `auto` mode
-  and is refused outright when Kagi was asked for by name, rather than answering
-  a news query with web results.
+| Provider | Strength | Env var | `--type news` |
+|---|---|---|---|
+| **Brave** | Independent index (not Google/Bing), low latency, privacy. Best default for general grounding. | `BRAVE_API_KEY` | yes |
+| **Exa** | Neural/semantic. Best for research, discovery, "find things arguing X". Token-efficient highlights. | `EXA_API_KEY` | yes |
+| **Tavily** | LLM-optimized snippets; the practical choice for RAG with minimal post-processing. | `TAVILY_API_KEY` | yes |
+| **Kagi** | Premium human-quality results, billed per search. | `KAGI_API_KEY` | no |
 
-`auto` prefers Brave → Exa → Tavily → Kagi based on available keys and can fall
-back: it takes the first provider that has a key and moves to the next one when
-a provider errors. An explicit `--provider` never falls back, so results are
-never misattributed.
+`auto` walks Brave → Exa → Tavily → Kagi: it takes the first provider that has a
+key and moves on when one errors. Kagi is last because it bills per search — name
+it with `--provider kagi` when the quality is worth the cost. An explicit
+`--provider` never falls back, so a result's `source` is always the provider that
+was asked. Kagi has no news vertical, so `--type news` skips it in `auto` and is
+refused under `--provider kagi` rather than answering with web results.
+
+Endpoints, request/response field mappings, and per-provider quirks:
+[references/providers.md](references/providers.md).
 
 ## Output
 
@@ -110,14 +109,13 @@ Agents should prefer `--json` when they need to reason over or cite results.
 
 ## When not to use this skill
 
-- Authenticated or interactive work inside a specific web app → use browser
-  tools / CDP / existing app skills.
-- Local file or repo search → use `grep`, `rg`, or filesystem tools.
-- When the answer is already in the agent's context or a more specific skill
-  exists.
+Use browser tools instead for authenticated or interactive work inside a specific
+web app; this skill only reaches the open web.
 
 ## Implementation notes
 
-The command lives at `scripts/search.jsh`. It uses the SLICC `.jsh` runtime
-(`process`, `fetch`, normalized error handling). Extend it carefully so the JSON
-schema stays stable for agents that already depend on it.
+The command lives at `scripts/search.jsh` (SLICC `.jsh` runtime: `process`,
+`fetch`, normalized error handling). It is read-only: one request per
+invocation, nothing persisted. Extend it carefully so the JSON schema stays
+stable for agents that already depend on it, and keep `--help`,
+`references/providers.md` and this file in lockstep with the code.
