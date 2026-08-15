@@ -9,8 +9,7 @@ description: >
   browser tools for authenticated or interactive page work.
   Trigger on requests like "search the web for…", "find recent info on…",
   "what does the internet say about…", "ground this claim", "research X".
-allowed-tools:
-  - bash
+allowed-tools: bash
 ---
 
 # search — Multi-provider web search for SLICC agents
