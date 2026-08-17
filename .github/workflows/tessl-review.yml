@@ -6,6 +6,7 @@ on:
     paths:
       - 'skills/**'
       - '.github/workflows/tessl-review.yml'
+      - 'tools/detect-tessl-changes.mjs'
 
 permissions:
   contents: read
@@ -21,45 +22,22 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Detect changed skills in plugin
+      - name: Detect changed canonical skills
         id: detect
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          CHANGED_FILES=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
-
-          # Unique skill dirs touched in this PR
-          CHANGED_SKILLS=$(echo "$CHANGED_FILES" \
-            | grep -E '^skills/[^/]+/' \
-            | awk -F/ '{print $2}' \
-            | sort -u)
-
-          # Keep only skills that are listed in some plugin.json and have a SKILL.md
-          KEPT=""
-          for skill in $CHANGED_SKILLS; do
-            IN_PLUGIN=false
-            for plugin in tiles/basic/.tessl-plugin/plugin.json tiles/advanced/.tessl-plugin/plugin.json; do
-              if jq -e --arg k "$skill" '.skills | index("skills/" + $k)' "$plugin" >/dev/null 2>&1; then
-                IN_PLUGIN=true
-                break
-              fi
-            done
-            if [ "$IN_PLUGIN" = "true" ] && [ -f "skills/$skill/SKILL.md" ]; then
-              KEPT="$KEPT $skill"
-            else
-              echo "::notice::Skipping review for $skill (not in any plugin.json or no SKILL.md)"
-            fi
-          done
-
-          # shellcheck disable=SC2086
-          set -- $KEPT
-          if [ "$#" -eq 0 ]; then
+          set -euo pipefail
+          CHANGED_FILES=$(git diff --name-only "origin/$BASE_REF...HEAD")
+          DETECTED=$(printf '%s\n' "$CHANGED_FILES" | node tools/detect-tessl-changes.mjs)
+          SKILLS=$(jq -c .skills <<< "$DETECTED")
+          echo "skills=$SKILLS" >> "$GITHUB_OUTPUT"
+          if [ "$SKILLS" = "[]" ]; then
             echo "has_skills=false" >> "$GITHUB_OUTPUT"
-            echo "skills=[]" >> "$GITHUB_OUTPUT"
-            echo "No plugin skills changed — review skipped."
+            echo "No canonical skills changed — review skipped."
           else
-            JSON=$(printf '%s\n' "$@" | jq -R . | jq -sc .)
             echo "has_skills=true" >> "$GITHUB_OUTPUT"
-            echo "skills=$JSON" >> "$GITHUB_OUTPUT"
-            echo "Skills to review: $JSON"
+            echo "Skills to review: $SKILLS"
           fi
 
       - name: Skip summary
@@ -68,7 +46,7 @@ jobs:
           {
             echo "## Tessl Skill Review"
             echo ""
-            echo "No plugin skills changed — review skipped."
+            echo "No canonical skills changed — review skipped."
           } >> "$GITHUB_STEP_SUMMARY"
 
   review:
@@ -87,4 +65,9 @@ jobs:
           token: ${{ secrets.TESSLIO_TOKEN }}
 
       - name: Review skill (threshold 90%)
-        run: tessl skill review "skills/${{ matrix.skill }}" --threshold 90
+        env:
+          SKILL: ${{ matrix.skill }}
+        run: |
+          set -euo pipefail
+          tessl review run "$SKILL" --workspace ai-ecoverse --json --threshold 90
+          echo "- ✅ \`$SKILL\` passed the blocking 90% review threshold." >> "$GITHUB_STEP_SUMMARY"

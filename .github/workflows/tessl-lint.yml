@@ -17,119 +17,66 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Guard tiles/ skill symlinks
-        run: |
-          bad=$(git ls-files -s -- 'tiles/*/skills/*' | awk '$1 != "120000" { print $4 }')
-          if [ -n "$bad" ]; then
-            echo "::error::These tiles/ skill entries are not symlinks (git mode != 120000). They were likely committed with core.symlinks=false:"
-            echo "$bad"
-            exit 1
-          fi
-          echo "All tiles/ skill entries are symlinks."
-
       - uses: tesslio/setup-tessl@v2
 
-      - name: Detect changed skills
+      - name: Detect changed skills and plugin manifests
         id: detect
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            CHANGED_FILES=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            CHANGED_FILES=$(git diff --name-only "origin/$BASE_REF...HEAD")
           else
-            CHANGED_FILES=$(git diff --name-only "${{ github.event.before }}..${{ github.sha }}" 2>/dev/null || echo "")
+            CHANGED_FILES=$(git diff --name-only "$BEFORE..$SHA" 2>/dev/null || true)
           fi
 
-          # If any plugin manifest changed, lint all affected plugins in full.
-          CHANGED_TILES=$(echo "$CHANGED_FILES" \
-            | grep -E '^tiles/[^/]+/\.tessl-plugin/plugin\.json$' \
-            | awk -F/ '{print $2}' | sort -u | xargs)
-          if [ -n "$CHANGED_TILES" ]; then
-            echo "scope=full" >> "$GITHUB_OUTPUT"
-            echo "tiles=$CHANGED_TILES" >> "$GITHUB_OUTPUT"
-            echo "Plugin manifest(s) changed — linting full plugin(s): $CHANGED_TILES"
-            exit 0
-          fi
-
-          # Find unique skill directories with changes
-          SKILLS=$(echo "$CHANGED_FILES" | grep -E '^skills/[^/]+/' | awk -F/ '{print $2}' | sort -u | xargs)
-
-          if [ -z "$SKILLS" ]; then
-            echo "scope=none" >> "$GITHUB_OUTPUT"
-            echo "No skill files changed — nothing to lint."
-          else
-            echo "scope=subset" >> "$GITHUB_OUTPUT"
-            echo "skills=$SKILLS" >> "$GITHUB_OUTPUT"
-            echo "Changed skills: $SKILLS"
-          fi
+          DETECTED=$(printf '%s\n' "$CHANGED_FILES" | node tools/detect-tessl-changes.mjs)
+          echo "skills=$(jq -c .skills <<< "$DETECTED")" >> "$GITHUB_OUTPUT"
+          echo "plugins=$(jq -c .plugins <<< "$DETECTED")" >> "$GITHUB_OUTPUT"
+          echo "Detected Tessl targets: $DETECTED"
 
       - name: Skip summary
-        if: steps.detect.outputs.scope == 'none'
+        if: steps.detect.outputs.skills == '[]' && steps.detect.outputs.plugins == '[]'
         run: |
           {
             echo "## Tessl Skill Lint"
             echo ""
-            echo "No skill files changed — lint skipped."
+            echo "No canonical skills or plugin manifests changed — lint skipped."
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Lint full plugin(s)
-        if: steps.detect.outputs.scope == 'full'
+      - name: Lint changed canonical skills
+        if: steps.detect.outputs.skills != '[]'
+        env:
+          SKILLS: ${{ steps.detect.outputs.skills }}
         run: |
-          # tessl >=0.81 rejects symlinks for security. The repo uses symlinks
-          # in tiles/*/skills/ pointing to ../../../skills/*. plugin lint has no
-          # --resolve-symlinks, so dereference them into a concrete temp copy first.
-          for t in ${{ steps.detect.outputs.tiles }}; do
-            echo "::group::Lint plugin $t"
-            TMP=$(mktemp -d)
-            cp -rL "tiles/$t" "$TMP/$t"
-            tessl plugin lint "$TMP/$t"
+          set -euo pipefail
+          LINT_ROOT=$(mktemp -d)
+          trap 'rm -rf "$LINT_ROOT"' EXIT
+          while IFS= read -r skill; do
+            echo "::group::Lint skill $skill"
+            package="$LINT_ROOT/$(basename "$skill")"
+            node tools/stage-tessl-skill.mjs "$skill" "$package"
+            tessl skill lint "$package"
             echo "::endgroup::"
-          done
+            echo "- ✅ \`$skill\` (isolated package)" >> "$GITHUB_STEP_SUMMARY"
+          done < <(jq -r '.[]' <<< "$SKILLS")
 
-      - name: Lint changed skills only
-        if: steps.detect.outputs.scope == 'subset'
+      - name: Lint changed staged plugins
+        if: steps.detect.outputs.plugins != '[]'
+        env:
+          PLUGINS: ${{ steps.detect.outputs.plugins }}
         run: |
-          # Group changed skills by their owning plugin, build one minimal
-          # subset plugin per group, then lint each.
-          declare -A PLUGIN_OF
-          for manifest in tiles/*/.tessl-plugin/plugin.json; do
-            [ -f "$manifest" ] || continue
-            plugin=$(basename "$(dirname "$(dirname "$manifest")")")
-            for path in $(jq -r '.skills[]' "$manifest"); do
-              PLUGIN_OF[$(basename "$path")]=$plugin
-            done
-          done
-
-          declare -A SUBSET
-          for skill in ${{ steps.detect.outputs.skills }}; do
-            if [ ! -f "skills/$skill/SKILL.md" ]; then
-              echo "::warning::skills/$skill has no SKILL.md — skipping"
-              continue
-            fi
-            p="${PLUGIN_OF[$skill]:-}"
-            if [ -z "$p" ]; then
-              echo "::notice::$skill is not in any plugin.json — skipping"
-              continue
-            fi
-            SUBSET[$p]="${SUBSET[$p]:-} $skill"
-          done
-
-          for plugin in "${!SUBSET[@]}"; do
-            MANIFEST="tiles/$plugin/.tessl-plugin/plugin.json"
-            TMP=$(mktemp -d)
-            mkdir -p "$TMP/skills" "$TMP/.tessl-plugin"
-            SKILLS_JSON="[]"
-            for skill in ${SUBSET[$plugin]}; do
-              cp -rL "$PWD/skills/$skill" "$TMP/skills/$skill"
-              SKILLS_JSON=$(echo "$SKILLS_JSON" | jq --arg k "skills/$skill" '. + [$k]')
-            done
-            jq -n --arg name "$(jq -r .name "$MANIFEST")" \
-                  --arg version "$(jq -r .version "$MANIFEST")" \
-                  --arg description "$(jq -r .description "$MANIFEST")" \
-                  --argjson private "$(jq .private "$MANIFEST")" \
-                  --argjson skills "$SKILLS_JSON" \
-                  '{name: $name, version: $version, private: $private, description: $description, skills: $skills}' \
-              > "$TMP/.tessl-plugin/plugin.json"
-            echo "::group::Subset plugin.json for $plugin"
-            cat "$TMP/.tessl-plugin/plugin.json"
+          set -euo pipefail
+          STAGE_ROOT=$(mktemp -d)
+          trap 'rm -rf "$STAGE_ROOT"' EXIT
+          while IFS= read -r plugin; do
+            echo "::group::Stage and lint plugin $plugin"
+            node tools/stage-tessl-plugin.mjs "$plugin" "$STAGE_ROOT/$plugin"
+            tessl plugin lint "$STAGE_ROOT/$plugin"
             echo "::endgroup::"
-            tessl plugin lint "$TMP"
-          done
+            echo "- ✅ staged plugin \`$plugin\`" >> "$GITHUB_STEP_SUMMARY"
+          done < <(jq -r '.[]' <<< "$PLUGINS")
