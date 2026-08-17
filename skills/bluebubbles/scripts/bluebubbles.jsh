@@ -1,6 +1,8 @@
 // bluebubbles.jsh — BlueBubbles REST client (iMessage/SMS via local server)
 //
-// Auth: server password as ?password= query param (never printed).
+// Auth: server password as ?password= query param. It is never printed: every
+// string that leaves this script passes through safeErrorText() / die(), which
+// redact `password=…`, JSON `"password": "…"` and the literal secret value.
 // Config order: flags/env → ~/.bluebubbles.json (or BLUEBUBBLES_CONFIG) → defaults.
 // Password: BLUEBUBBLES_PASSWORD → passwordFile from config → BLUEBUBBLES_PASSWORD_FILE.
 
@@ -154,6 +156,8 @@ async function resolveConfig() {
     (await readPasswordFile(cfg.passwordFile)) ||
     null;
 
+  if (password) registerSecret(password);
+
   return {
     url: String(url).replace(/\/+$/, ''),
     password,
@@ -162,21 +166,75 @@ async function resolveConfig() {
   };
 }
 
+// ── redaction ──────────────────────────────────────────────────────────────
+// The password travels as a `?password=` query parameter, so it appears inside
+// request URLs *and* inside error strings composed by the HTTP layer
+// (`HTTP 530 <url>: <body>`). Sanitising only the `url` field is not enough —
+// anything that can reach the terminal goes through safeErrorText(), and die()
+// is the single choke point for fatal output.
+
+const PASSWORD_MASK = '***';
+
+// `password=<value>` anywhere in a string (not only after ? or &), any case.
+// The value ends at &, whitespace, a quote/backtick, an angle bracket or the end
+// of the string; percent-escapes are part of the value, so URL-encoded secrets
+// are covered too.
+const PASSWORD_PARAM_RE = /password=[^&\s"'`<>]*/gi;
+// `"password": "<value>"` inside a JSON body echoed back by the server.
+const PASSWORD_JSON_RE = /("password"\s*:\s*")(?:\\.|[^"\\])*"/gi;
+
+// Literal secrets (the resolved password and its URL-encoded form) so the value
+// is masked even when it shows up without a `password=` prefix.
+const knownSecrets = new Set();
+
+function registerSecret(value) {
+  const v = typeof value === 'string' ? value.trim() : '';
+  if (v.length < 4) return; // too short to mask without mangling output
+  knownSecrets.add(v);
+  try {
+    const encoded = encodeURIComponent(v);
+    if (encoded !== v) knownSecrets.add(encoded);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Redact every secret-bearing pattern from an arbitrary string. */
+function safeErrorText(value) {
+  if (value == null) return value;
+  let out = String(value)
+    .replace(PASSWORD_PARAM_RE, `password=${PASSWORD_MASK}`)
+    .replace(PASSWORD_JSON_RE, `$1${PASSWORD_MASK}"`);
+  for (const secret of knownSecrets) {
+    if (out.includes(secret)) out = out.split(secret).join(PASSWORD_MASK);
+  }
+  return out;
+}
+
+/** cli.die with every message forced through the redactor. */
+function die(message, opts) {
+  return cli.die(safeErrorText(message), opts);
+}
+
 // ── HTTP ───────────────────────────────────────────────────────────────────
 
 function stripPasswordFromUrl(u) {
   try {
     const parsedUrl = new URL(u);
     if (parsedUrl.searchParams.has('password')) {
-      parsedUrl.searchParams.set('password', '***');
+      parsedUrl.searchParams.set('password', PASSWORD_MASK);
     }
-    return parsedUrl.toString();
+    return safeErrorText(parsedUrl.toString());
   } catch {
-    return String(u).replace(/([?&]password=)[^&]*/gi, '$1***');
+    return safeErrorText(u);
   }
 }
 
 function bbErrorMessage(err) {
+  return safeErrorText(rawBbErrorMessage(err));
+}
+
+function rawBbErrorMessage(err) {
   if (!err) return 'unknown error';
   const body = err.body;
   if (body && typeof body === 'object') {
@@ -194,7 +252,7 @@ function bbErrorMessage(err) {
 }
 
 function authDie(detail) {
-  cli.die(
+  die(
     (detail ? detail + '\n' : '') +
       '  Set BLUEBUBBLES_PASSWORD or passwordFile in ~/.bluebubbles.json\n' +
       '  Config: ~/.bluebubbles.json → { "url", "urlLocal", "passwordFile" }\n' +
@@ -213,7 +271,7 @@ async function getCfg() {
     authDie('No BlueBubbles password found.');
   }
   if (!_cfg.url) {
-    cli.die('No BlueBubbles URL configured.', { prefix: 'bluebubbles' });
+    die('No BlueBubbles URL configured.', { prefix: 'bluebubbles' });
   }
   return _cfg;
 }
@@ -241,7 +299,7 @@ async function api(method, apiPath, { body, params, timeoutMs, raw } = {}) {
 
   try {
     const m = String(method || 'GET').toLowerCase();
-    if (!client[m]) cli.die(`unsupported method ${method}`, { prefix: 'bluebubbles' });
+    if (!client[m]) die(`unsupported method ${method}`, { prefix: 'bluebubbles' });
     const res = await client[m](apiPath, opts);
     return res;
   } catch (err) {
@@ -254,14 +312,14 @@ async function api(method, apiPath, { body, params, timeoutMs, raw } = {}) {
     const msg = bbErrorMessage(err);
     const safeUrl = stripPasswordFromUrl(err.url || cfg.url + apiPath);
     if (!status) {
-      cli.die(
+      die(
         `Could not reach BlueBubbles at ${cfg.url} (${msg}).\n` +
           '  Is the server running? Try --local or set BLUEBUBBLES_URL / config url.',
         { prefix: 'bluebubbles' },
       );
     }
     // Some endpoints 500 on this server build (e.g. handle/query without offset)
-    const e = new Error(`BlueBubbles ${status} on ${apiPath}: ${msg}`);
+    const e = new Error(safeErrorText(`BlueBubbles ${status} on ${apiPath}: ${msg}`));
     e.status = status;
     e.body = err.body;
     e.url = safeUrl;
@@ -493,7 +551,7 @@ async function resolveChatGuid(target) {
 
 async function cmdMessages(positional, flags) {
   const target = positional[0];
-  if (!target) cli.die('usage: bluebubbles messages <chatGuid|address> [--limit N]', { prefix: 'bluebubbles' });
+  if (!target) die('usage: bluebubbles messages <chatGuid|address> [--limit N]', { prefix: 'bluebubbles' });
   const limit = numFlag(flags.limit ?? flags.l, 20, { max: 200 });
 
   const chatGuid = await resolveChatGuid(target);
@@ -570,7 +628,7 @@ async function cmdSend(positional, flags) {
   if (!text && str(flags.m)) text = str(flags.m);
 
   if (!target || !text) {
-    cli.die('usage: bluebubbles send <address|chatGuid> <text...>', { prefix: 'bluebubbles' });
+    die('usage: bluebubbles send <address|chatGuid> <text...>', { prefix: 'bluebubbles' });
   }
 
   // Prefer existing direct chat guid when address given
@@ -584,7 +642,7 @@ async function cmdSend(positional, flags) {
   }
 
   if (chatGuid.includes(';+;') && !flags.confirm && !flags.group) {
-    cli.die(
+    die(
       `Refusing to send to group guid without --confirm (guid: ${chatGuid}).\n` +
         '  Pass --confirm if you really mean the group thread.',
       { prefix: 'bluebubbles' },
@@ -606,7 +664,7 @@ async function cmdSend(positional, flags) {
       timedOut = true;
       res = { timedOut: true, note: 'Request timed out — message may still be sending' };
     } else if (err.status === 400) {
-      cli.die(`Send rejected (400): ${bbErrorMessage(err)}`, { prefix: 'bluebubbles' });
+      die(`Send rejected (400): ${bbErrorMessage(err)}`, { prefix: 'bluebubbles' });
     } else {
       throw err;
     }
@@ -635,7 +693,7 @@ function isGroupGuid(g) {
 
 async function cmdSearch(positional, flags) {
   const query = positional.join(' ').trim() || str(flags.q) || str(flags.query) || '';
-  if (!query) cli.die('usage: bluebubbles search <query> [--in messages|chats|contacts]', { prefix: 'bluebubbles' });
+  if (!query) die('usage: bluebubbles search <query> [--in messages|chats|contacts]', { prefix: 'bluebubbles' });
 
   const scope = (str(flags.in) || 'messages').toLowerCase();
   const limit = numFlag(flags.limit ?? flags.l, 20, { max: 100 });
@@ -740,7 +798,7 @@ async function cmdContacts(positional, flags) {
       res = await api('POST', '/api/v1/contact/query', { body: { limit: 5000 } });
     } catch (err2) {
       if (err2?.name === 'NodeExitError') throw err2;
-      cli.die(`Contacts unavailable: ${bbErrorMessage(err2)}`, { prefix: 'bluebubbles' });
+      die(`Contacts unavailable: ${bbErrorMessage(err2)}`, { prefix: 'bluebubbles' });
     }
   }
 
@@ -865,7 +923,7 @@ function shellQuote(s) {
 
 function validateScoopName(name) {
   if (!name || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(name)) {
-    cli.die(
+    die(
       'invalid --scoop name (use letters, digits, _-, max 64, start alnum)',
       { prefix: 'bluebubbles' },
     );
@@ -946,7 +1004,7 @@ async function createSliccWebhook({ scoop, name, filter }) {
   if (filter) cmd += ` --filter ${shellQuote(filter)}`;
   const res = await exec(cmd);
   if (res.exitCode !== 0) {
-    cli.die(
+    die(
       `webhook create failed: ${(res.stderr || res.stdout || '').trim() || 'exit ' + res.exitCode}`,
       { prefix: 'bluebubbles' },
     );
@@ -955,7 +1013,7 @@ async function createSliccWebhook({ scoop, name, filter }) {
   const idMatch = out.match(/^ID:\s*(\S+)/m);
   const urlMatch = out.match(/^URL:\s*(\S+)/m);
   if (!idMatch || !urlMatch) {
-    cli.die(`could not parse webhook create output:\n${fmt.trunc(out, 300)}`, {
+    die(`could not parse webhook create output:\n${fmt.trunc(out, 300)}`, {
       prefix: 'bluebubbles',
     });
   }
@@ -972,7 +1030,7 @@ async function registerBbWebhook(hookUrl, events) {
   const res = await api('POST', '/api/v1/webhook', { body });
   const data = unwrap(res);
   if (!data || data.id == null) {
-    cli.die(
+    die(
       `BlueBubbles webhook create returned unexpected payload: ${fmt.trunc(JSON.stringify(res), 200)}`,
       { prefix: 'bluebubbles' },
     );
@@ -1005,7 +1063,7 @@ async function cmdWatch(flags) {
 
   const existing = await readWatchState(stateFile);
   if (existing && !force) {
-    cli.die(
+    die(
       `already watching ${watchId} → scoop "${existing.scoop}". Use --force to replace.`,
       { prefix: 'bluebubbles' },
     );
@@ -1026,7 +1084,7 @@ async function cmdWatch(flags) {
     slicc = await createSliccWebhook({ scoop, name, filter });
   } catch (err) {
     if (err?.name === 'NodeExitError') throw err;
-    cli.die(`SLICC webhook create failed: ${err.message || err}`, { prefix: 'bluebubbles' });
+    die(`SLICC webhook create failed: ${err.message || err}`, { prefix: 'bluebubbles' });
   }
 
   let bb;
@@ -1035,7 +1093,7 @@ async function cmdWatch(flags) {
   } catch (err) {
     await deleteSliccWebhook(slicc.id);
     if (err?.name === 'NodeExitError') throw err;
-    cli.die(`BlueBubbles webhook register failed: ${err.message || err}`, {
+    die(`BlueBubbles webhook register failed: ${err.message || err}`, {
       prefix: 'bluebubbles',
     });
   }
@@ -1109,7 +1167,7 @@ async function cmdUnwatch(positional, flags) {
   }
 
   if (!removed.length) {
-    cli.die(`no watch matched "${target}" (try bluebubbles watches)`, {
+    die(`no watch matched "${target}" (try bluebubbles watches)`, {
       prefix: 'bluebubbles',
     });
   }
@@ -1191,13 +1249,13 @@ async function main() {
     } else if (subcommand === 'watches' || subcommand === 'watch-list') {
       await cmdWatches(flags);
     } else {
-      cli.die(`unknown command: ${subcommand}\nRun 'bluebubbles --help' for usage.`, {
+      die(`unknown command: ${subcommand}\nRun 'bluebubbles --help' for usage.`, {
         prefix: 'bluebubbles',
       });
     }
   } catch (err) {
     if (err?.name === 'NodeExitError') throw err;
-    cli.die(err.message || String(err), { prefix: 'bluebubbles' });
+    die(err.message || String(err), { prefix: 'bluebubbles' });
   }
 }
 

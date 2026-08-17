@@ -16,7 +16,10 @@ script: scripts/bluebubbles.jsh
 
 CLI over a running [BlueBubbles](https://bluebubbles.app) server. All calls are
 REST with `?password=` — credentials stay in env / a local config file; the CLI
-never prints the password.
+never prints the password. Every error string is pushed through a single
+redactor (`safeErrorText`) before it reaches the terminal, so `password=…`,
+a `"password"` field in a server JSON body and the literal secret are masked as
+`***` even when the HTTP layer embeds the full request URL in its own message.
 
 ## Quick start
 
@@ -111,7 +114,10 @@ script: scripts/bluebubbles.jsh
 
 CLI over a running [BlueBubbles](https://bluebubbles.app) server. All calls are
 REST with `?password=` — credentials stay in env / a local config file; the CLI
-never prints the password.
+never prints the password. Every error string is pushed through a single
+redactor (`safeErrorText`) before it reaches the terminal, so `password=…`,
+a `"password"` field in a server JSON body and the literal secret are masked as
+`***` even when the HTTP layer embeds the full request URL in its own message.
 
 ## Quick start
 
