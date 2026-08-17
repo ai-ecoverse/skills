@@ -1,0 +1,276 @@
+# Immobilienscout24 endpoints
+
+Extracted from `/recordings/rec-1786282613280-yexubu/` (2026-08-09 session:
+home → Berlin search → meinkonto dashboard → scoutmanager angebotsliste →
+publish flow → nachrichten-manager). `chromewebdata` error chunks ignored.
+
+## Auth model
+
+IS24 is **cookie-session authenticated**. No bearer/API key in the HAR for the
+landlord/seeker UI paths below. The browser holds shared cookies on
+`.immobilienscout24.de` and the SPA calls multiple subdomains from `www`:
+
+| Host | Role |
+|------|------|
+| `www.immobilienscout24.de` | Main app, search, meinkonto, scoutmanager, nachrichten-manager |
+| `sso.immobilienscout24.de` | SSO identity (`/sso/me`, `/sso/t`) |
+| `api.header.immobilienscout24.de` | Orange-header user chip (`/api/v1/getByCookie`) |
+| `my-property.immobilienscout24.de` | Property portfolio / shortlist |
+| `geoservices.immobilienscout24.de` | Map shapes |
+| `tenant-network.immobilienscout24.de` | Tenant-network eligibility |
+| `api.consumer-entitlements.immobilienscout24.de` | Active products |
+
+Skill rule: issue every call via `browser.fetch` from an open
+`*immobilienscout24.de` tab. Never print cookies or the Iterable JWT from
+`/nachrichten-manager/api/iterable/token`.
+
+## Profile / identity
+
+| Method | URL | Notes |
+|--------|-----|-------|
+| GET | `https://sso.immobilienscout24.de/sso/me` | `{ username, email, ssoId }` — Accept `application/json` |
+| GET | `https://api.header.immobilienscout24.de/api/v1/getByCookie` | `{ isProfessional, email, firstname, surname, customerNumber, avatarImageUrl, membershipEdition }` |
+| GET | `https://www.immobilienscout24.de/meinkonto/endpoint/fullprofile/v2` | Seeker/landlord profile (address, segment, docs flags) |
+| GET | `https://www.immobilienscout24.de/meinkonto/endpoint/appPackageStatus` | Application-package document status |
+| GET | `https://www.immobilienscout24.de/anbieten/private-anbieter/inserieren/api/user` | Private-landlord contact (publish flow) |
+
+## Dashboard (meinkonto)
+
+Base: `https://www.immobilienscout24.de/meinkonto/dashboard-backend/`
+
+| Method | Path | Response (captured) |
+|--------|------|---------------------|
+| GET | `/unread-messages` | `{ totalUnreadMessageCount, seekerUnreadMessageCount, homeOwnerUnreadMessageCount }` |
+| GET | `/publication-statistics` | `{ ssoId, numberOfListings, numberOfActiveListings, numberOfDeactivatedListings, numberOfArchivedListings }` |
+| GET | `/active-contract/count` | `{ activeContractCount }` |
+| GET | `/feature-switches` | feature flags array |
+
+Related:
+
+| Method | URL |
+|--------|-----|
+| GET | `https://www.immobilienscout24.de/savedsearch/overviewwidget/recent/2` |
+| GET | `https://my-property.immobilienscout24.de/real-estate-objects/count` → `{ buildingCount, standaloneUnits }` |
+| GET | `https://my-property.immobilienscout24.de/v2/shortlist?pageSize=1&offset=0&sortBy=CREATED_DESC` |
+| GET | `https://api.consumer-entitlements.immobilienscout24.de/v2/active-products/my` |
+
+## ScoutManager — Angebotsliste
+
+Base: `https://www.immobilienscout24.de/scoutmanager/angebotsliste/api`
+
+| Method | Path | Body / notes |
+|--------|------|--------------|
+| GET | `/realtorData` | SSO id, contacts, permissions |
+| GET | `/waitinglist/eligibility` | boolean |
+| POST | `/query` | Listing search (see body below) |
+| POST | `/realestate-stats` | body: `[realEstateId, …]` → `[{ realEstateId, clickCount }]` |
+| POST | `/communication-stats` | body: `[realEstateId, …]` → `[{ realEstateId, newMessages }]` |
+
+### POST `/query` body (captured)
+
+```json
+{
+  "freeTextSearch": "",
+  "pageRequest": { "from": 0, "size": 20 },
+  "orderBy": "ALTERATION_DATE",
+  "publishedOnIS24": true,
+  "publishedOnHomepage": true,
+  "publishedOnMarkets": [],
+  "published": true,
+  "deactivated": true,
+  "archived": false
+}
+```
+
+Response: `{ searchHits: [...], totalHits, facetResults }`. Each hit includes
+`id`, `title`, `type`, `typeName`, `price`, `priceType`, `area`, `rooms`,
+`completeAddress`, `publishedOnIs24`, `archived`, dates, `titlePictureUrl`.
+
+Headers: `Accept: application/json`, `Content-Type: application/json`.
+
+## Nachrichten-Manager
+
+Base: `https://www.immobilienscout24.de/nachrichten-manager/api`
+
+| Method | Path | Notes |
+|--------|------|-------|
+| GET | `/expose?page=0&size=6&sort=desc` | Listings with conversation stats |
+| GET | `/references/:id` | Listing card for a reference |
+| GET | `/references/:id/statistics` | Per-tag unread/total |
+| POST | `/references/:id/conversations?tags=inbox&size=10&plusUserPriority=true` | body `{"copilotConversations":[]}` |
+| GET | `/references/:id/conversations/:conversationId` | Conversation detail (SPA route; not exercised in HAR) |
+| GET | `/references/:id/conversations/:conversationId/messages` | Message list (SPA route; not exercised in HAR) |
+| POST | `/references/:id/conversations/:conversationId/messages` | **Send a reply** (write path — see below) |
+| PUT | `/references/:id/conversations/:conversationId/draft` | Save the reply draft (`{ text }`); not exposed by the skill |
+| GET | `/realtor/metadata` | `{ isInternalUser, isDeactivatedInTat, ssoId }` |
+| GET | `/metadata/professional` | boolean |
+| GET | `/feature-switches` | flags |
+| GET | `/iterable/token` | **JWT — do not print** |
+
+Conversation list item fields (captured): `conversationId`, `participantName`,
+`salutation`, `lastUpdateDateTime`, `previewMessage`, `read`, `status`,
+`participantSsoId`, `participantPlus`, `tags`, `conversationStage`,
+`shortDetails`.
+
+Also: `GET /contact-prospects/api/shared/statistics?exposeIds=:id`.
+
+### Sending a message (write path) — CONFIRMED by capture
+
+Captured from a real landlord send on 2026-08-17 21:10 local (HAR
+`rec-1786993644274-38v491`, entry `003-*-close-*.har`; request/response pair extracted to
+`is24-send-request.json`). Everything in this block is **OBSERVED** unless marked otherwise.
+
+```http
+POST /nachrichten-manager/api/references/166323126/conversations/<conversationId>/messages
+Content-Type: application/json
+Accept: application/json, text/plain, */*
+X-XSRF-TOKEN: aa0bd168-…-94ad3fadc19a          # 36-char UUID
+x-xsrf-communication-mgr-token: <96 chars>
+x-xsrf-contact-prospects-token: <96 chars>
+
+{"message":"Dear …,\n\n…","conversationId":"<conversationId>",
+ "tags":["replied","inbox"],"recommendedActionName":null}
+```
+
+```http
+201 Created
+
+{"id":"<messageId>","conversationId":"<conversationId>","read":true,"autoReply":false,
+ "message":"<echo of the text>","creationDateTime":"2026-08-17T19:10:47.326Z",
+ "userType":"REALTOR","attachments":[],"intent":null,"source":"API","tags":null,
+ "messageType":"TEXT","messageKey":"","payload":""}
+```
+
+- Success status is **201**, not 200. `id` is the new message id.
+- `source` comes back as `"API"`; `tags` comes back `null` even though the request sent
+  two tags, so `tags` in the request is folder bookkeeping for the sending view, not a
+  property of the message.
+- Newlines in `message` are plain `\n` — no HTML, no `<br>`.
+- The `x-datadog-parent-id` / `x-datadog-trace-id` / `x-datadog-origin` /
+  `x-datadog-sampling-priority` / `traceparent` / `tracestate` headers in the capture are
+  Datadog RUM telemetry. **INFERRED, not tested:** they are not required — they carry no
+  auth material, are absent whenever RUM is blocked, and the skill omits them.
+- Not implemented: `uploadIds` (attachments), `appointment` objects,
+  `conversations/bulk-message`, `draft` (PUT), `conversation-stage`, `tags` PATCH.
+
+### CSRF token provenance (answered)
+
+Three different tokens travel on a Nachrichten-Manager write. They come from three
+different places:
+
+| Header | Origin | Verified how |
+|--------|--------|--------------|
+| `X-XSRF-TOKEN` | The **`XSRF-TOKEN` cookie** — classic double-submit. `Domain=www.immobilienscout24.de`, `Path=/`, **not HttpOnly**, so `document.cookie` can read it. | The cookie jar holds `XSRF-TOKEN=aa0bd168-e0fd-40b3-8461-94ad3fadc19a`, byte-identical to the header value in the captured 201. |
+| `x-xsrf-communication-mgr-token` | **Response header** of *any* `GET /nachrichten-manager/api/…` (e.g. `/feature-switches`, `/references/:id/statistics`, `/realtor/metadata`). 96 chars, base64url-ish, **rotates on every response**. Not readable as a cookie. | Live read-only GETs: each returned a different 96-char value in that response header; `set-cookie` absent. |
+| `x-xsrf-contact-prospects-token` | **Response header** of `GET /contact-prospects/api/…` (e.g. `/contact-prospects/api/shared/feature-switches`). Also 96 chars and rotating. Not a cookie. | Same probe: only the `/contact-prospects` GET mints it; the `/nachrichten-manager` GETs do not, and vice versa. |
+
+Related cookies that are **not** the header values:
+
+- `XSRF-COMMUNICATION-MGR-TOKEN` — a 36-char UUID, `Domain=.immobilienscout24.de`,
+  `Path=/nachrichten-manager`, **HttpOnly**, `Secure`. It is the server-side half of the
+  rotating `x-xsrf-communication-mgr-token` pair; a client cannot read it and must not try.
+- `XSRF-OKM-TOKEN` — a separate UUID for other Mein-Konto surfaces; unused here.
+- There is **no** `XSRF-CONTACT-PROSPECTS-TOKEN` cookie in the jar at all (checked via
+  CDP over the whole `immobilienscout24.de` domain).
+
+Consequences for the skill, all implemented:
+
+1. `X-XSRF-TOKEN` is read from `document.cookie` in an open www tab
+   (`ensureWwwXsrf`), and a missing cookie fails with
+   `missing XSRF-TOKEN cookie — open https://www.immobilienscout24.de (logged in) in the browser tab, reload it once, then retry`.
+2. The two rotating tokens are minted by GETting the two feature-switch endpoints
+   (`ensureNachrichtenTokens`) and re-harvested from **every** response
+   (`harvestTokens`); a missing token fails with
+   `could not mint Nachrichten CSRF tokens — open the Nachrichten-Manager once while logged in, then retry`.
+3. Because they rotate, `send` calls `refreshNachrichtenTokens()` immediately before the
+   POST, and `apiFetch` still re-mints and retries once on a 403.
+4. Token values are never printed — not in the dry run, not in `--json`, not in errors.
+
+### Conversation deep link (trap)
+
+```
+https://www.immobilienscout24.de/nachrichten-manager/<listingId>/inbox/messages/<conversationId>
+```
+
+The `messages/` segment is **required**. The variant without it —
+`/nachrichten-manager/<listingId>/inbox/<conversationId>` — loads the listing shell and
+renders no thread, which silently looks like an empty or missing conversation when driving
+the UI. `/nachrichten-manager/<listingId>/inbox/navbar` is the folder view.
+
+## Search / geo
+
+| Method | URL | Notes |
+|--------|-----|-------|
+| GET | `/geoautocomplete/v4.0/DEU?i={q}&lpt=5&t=country,region,city,…&f=shapeAvailable&dataset=nextgen` | Suggestions `[{ entity: { type, id, label, geopath } }]` |
+| GET | `/geoautocomplete/v4.0/DEU/entity/{id}?g=GeoId&pos=0` | Resolve one entity |
+| POST | `/Suche/controller/oneStepSearch` | form `type=SEARCH_URL&location=/region?realestatetype=…&geocodes=…` (empty JSON body; drives client nav) |
+| GET | `/Suche/region?realestatetype=apartmentrent&exclusioncriteria=swapflat&geocodes={id}&pagesize=20&pagenumber=1` | Result list — SPA uses `Accept: application/json` (`updateResults` in reactApp.js). Pretty URLs like `/Suche/de/berlin/berlin/wohnung-mieten` are equivalent entry points. |
+| POST | `/Suche/controller/filtersuggestions` | body `{ apiUrl, totalHits, searchId }` |
+| GET | `/Suche/controller/shortlist/list` | saved shortlist ids |
+| GET | `/home/api/immogpt/?count=3&language=de&locationType=CITY&locationLabel=Berlin` | marketing suggestions |
+
+`realestatetype` values seen/used: `apartmentrent`, `apartmentbuy`, `houserent`,
+`housebuy`, `shorttermaccommodationrent`.
+
+## Publish flow (captured, not exposed as mutations)
+
+| Method | URL |
+|--------|-----|
+| GET | `/anbieten/private-anbieter/inserieren/api/configurations?category=SHORT_TERM_ACCOMMODATION&transaction=RENT&segmentation=PROPERTY_OWNER` |
+| GET | `/anbieten/private-anbieter/inserieren/api/realEstate/{uuid}` |
+| GET | `/anbieten/private-anbieter/inserieren/api/geo/geoCode?street=…&houseNumber=…&postcode=…&city=…` |
+| PUT | `/anbieten/private-anbieter/inserieren/api/realEstate/offer-api/{uuid}?updateObject=true&requestSource=clf` |
+
+These are intentionally **not** wired into the CLI (destructive / incomplete
+without the full multi-step wizard).
+
+## Headers commonly sent by the SPA
+
+```
+Accept: application/json, text/plain, */*
+Content-Type: application/json   (on POST)
+X-Requested-With: XMLHttpRequest  (some paths)
+Referer: https://www.immobilienscout24.de/...
+```
+
+## Rent profile / Bewerbermappe (landlord view of seeker)
+
+Base: `https://api.rentprofile.immobilienscout24.de/meinkonto/dokumente/api`
+
+| Method | Path | Notes |
+|--------|------|-------|
+| GET | `/profile-preview?ownerSsoId={ssoId}` | Shared seeker profile JSON (income, employment, docs metadata). UI route `/meinkonto/dokumente/ansicht/{base64(ssoId)}` loads this. |
+| GET | `/profile` | **Own** profile (landlord as seeker) — not the counterparty. |
+| GET | `/profile/documents?documentTypes=SCHUFA_SOLVENCY,INCOME,…` | Own documents only; returns `[]` when viewing someone else. |
+| GET | `/profile/documents/download/{TYPE}` | Own PDF blob; 404/empty for other users' packages. |
+
+`profile-preview` document entries look like
+`{ "type": "SCHUFA_SOLVENCY"|"INCOME"|"SELF_REPORT"|"IDENTIFICATION", "creationDate": "YYYY-MM-DD" }`.
+No score, no employer name, no file bytes.
+
+Cross-origin: page `fetch()` to `api.rentprofile` is CORS-blocked; **credentialed XHR**
+from an IS24 tab works. Skill uses in-page XHR via `evalAsync`.
+
+Related (own package only, not wired): `/documents/application-package`,
+`/profile/self-report`, `/profile/shared-profile`.
+
+## Live validation notes (2026-08-09)
+
+- ScoutManager POSTs require `x-xsrf-token` = cookie `XSRF-TOKEN` (path `/scoutmanager/`). Open ScoutManager once so the cookie exists.
+- Nachrichten POSTs require **three** tokens: `X-XSRF-TOKEN` (= the non-HttpOnly `XSRF-TOKEN` cookie) plus `x-xsrf-communication-mgr-token` + `x-xsrf-contact-prospects-token`, which are minted as **response headers** on GETs to `/nachrichten-manager/api/feature-switches` and `/contact-prospects/api/shared/feature-switches` and rotate on every response. See "CSRF token provenance (answered)" above.
+- Geoautocomplete requires static header `X-IS24-GAC: 49f5bf376feed3a0f0a52abb46c0dc90`.
+- `browser.fetch` hangs on POST in SLICC — skill uses in-page `evalAsync` fetch for non-GET.
+- Search result-list JSON is WAF-gated; `search` returns the oneStepSearch `redirectUrl` instead of scraping hits.
+- Conversation messages: `GET .../conversations/:id` returns `{messages:[...], participantData, conversation}`. POST `.../messages` is send-only.
+- `participantData.applicationDocuments.schufaProvided` is **stale/wrong** often — cross-check `profile-preview` document list.
+- `messages` enriches with `applicant` from rent-profile when `participantSsoId` is present.
+
+## Live validation notes (2026-08-17/18)
+
+- Send confirmed end to end by capture: `POST …/conversations/:id/messages` → **201** with
+  `{ id, conversationId, message, creationDateTime, userType: "REALTOR", source: "API" }`.
+- The three CSRF tokens' origins are settled — see the provenance table above.
+- Conversation deep link needs the `messages/` segment:
+  `/nachrichten-manager/<listingId>/inbox/messages/<conversationId>`.
+- `skills` note: the skill's `send` command is confirm-gated; the dry run makes no network
+  call and never prints token values.
