@@ -274,7 +274,7 @@ async function resolveRepo(arg) {
   if (arg && arg.includes('/')) return validateRepo(arg);
   const inferred = await inferRepo();
   if (inferred) return inferred;
-  cli.die('No repo specified and could not infer from git remote. Pass owner/repo explicitly.');
+  cli.die('No repo specified and could not infer from git remote. Pass -R owner/repo (or a trailing owner/repo) explicitly.');
 }
 
 // ─── Input validation ────────────────────────────────────────────────────────
@@ -397,7 +397,7 @@ const FLAG_SPECS = {
     reviewer: { type: 'list', short: 'r' },
   },
   'pr edit': {
-    ...REPO_FLAG,
+    ...REPO_FLAG, ...JSON_FLAGS,
     title: { type: 'string', short: 't' },
     body: { type: 'string', short: 'b' },
     'body-file': { type: 'string', short: 'F' },
@@ -577,7 +577,7 @@ function flagConsumesNext(spec, tok, next) {
   return next !== undefined;
 }
 
-function parseArgs(cmdLabel, args, spec) {
+function parseArgs(cmdLabel, args, spec, { rejectUnknown = false } = {}) {
   const flags = {};
   const positional = [];
   let literal = false;
@@ -591,6 +591,9 @@ function parseArgs(cmdLabel, args, spec) {
     const raw = eq === -1 ? a : a.slice(0, eq);
     const [key, def] = findFlagSpec(spec, raw.replace(/^--?/, ''));
     if (!key) {
+      if (rejectUnknown) {
+        cli.die(`${cmdLabel}: unknown flag ${raw} (run \`gh ${cmdLabel} --help\` for the supported flags)`);
+      }
       cli.warn(
         `${cmdLabel}: unrecognised flag ${raw} — passing it through as a positional argument ` +
         `(run \`gh ${cmdLabel} --help\` for the supported flags)`
@@ -1312,8 +1315,13 @@ async function prEdit(args) {
   const usage = 'usage: gh pr edit <num> [--title T] [--body B] [--body-file F] [--base B] '
     + '[--add-label L]... [--remove-label L]... [--add-assignee U]... '
     + '[--remove-assignee U]... [--add-reviewer R]... [--remove-reviewer R]... '
-    + '[--milestone M|--remove-milestone] [-R owner/repo] [repo]';
-  const { flags, positional } = parseArgs('pr edit', args, FLAG_SPECS['pr edit']);
+    + '[--milestone M|--remove-milestone] [--json [fields]] [-R owner/repo] [repo]';
+  const { flags, positional } = parseArgs(
+    'pr edit',
+    args,
+    FLAG_SPECS['pr edit'],
+    { rejectUnknown: true }
+  );
   if (flags.repo !== undefined) validateRepo(flags.repo);
   if (positional.length > 1) {
     validateRepo(positional[positional.length - 1]);
@@ -1343,6 +1351,7 @@ async function prEdit(args) {
   if (!hasEdit) {
     cli.die('pr edit: nothing to update — pass at least one edit flag\n' + usage);
   }
+  const fields = parseFields('pr edit', flags.json, PR_LIST_FIELDS);
 
   const repo = await repoFrom('pr edit', flags, repoArg);
   if (addAssignees.includes('@me') || removeAssignees.includes('@me')) {
@@ -1357,8 +1366,14 @@ async function prEdit(args) {
     addAssignees = addAssignees.map((value) => value === '@me' ? login : value);
     removeAssignees = removeAssignees.map((value) => value === '@me' ? login : value);
   }
+  let currentPull;
+  try { currentPull = await api.get(`/repos/${repo}/pulls/${num}`); }
+  catch (e) { fail('pr edit', e); }
+
+  const needsIssue = addLabels.length || removeLabels.length || addAssignees.length
+    || removeAssignees.length || flags.milestone !== undefined || flags['remove-milestone'];
   let currentIssue = null;
-  if (addLabels.length || removeLabels.length || addAssignees.length || removeAssignees.length) {
+  if (needsIssue) {
     try { currentIssue = await api.get(`/repos/${repo}/issues/${num}`); }
     catch (e) { fail('pr edit', e); }
   }
@@ -1369,6 +1384,10 @@ async function prEdit(args) {
   }
 
   const plan = buildPrEditPlan({
+    currentTitle: currentPull.title,
+    currentBody: currentPull.body ?? '',
+    currentBase: currentPull.base?.ref,
+    currentMilestone: currentIssue?.milestone?.number ?? null,
     ...(flags.title !== undefined ? { title: flags.title } : {}),
     ...(body !== null ? { body } : {}),
     ...(flags.base !== undefined ? { base: flags.base } : {}),
@@ -1385,6 +1404,19 @@ async function prEdit(args) {
 
   try {
     const result = await applyPrEdit(api, repo, num, plan);
+    if (!Object.keys(result).length) {
+      if (fields !== undefined) {
+        await outputJson(pickFields(prListJson(currentPull), fields), flags);
+      } else {
+        console.log(color.gray('No changes to PR #' + num + ' in ' + repo + '.'));
+      }
+      return;
+    }
+    if (fields !== undefined) {
+      const updated = await api.get(`/repos/${repo}/pulls/${num}`);
+      await outputJson(pickFields(prListJson(updated), fields), flags);
+      return;
+    }
     const edited = result.pull || result.issue;
     console.log(sym('success') + ' Edited PR ' + color.cyan('#' + num)
       + (edited?.title ? ': ' + edited.title : '') + ' in ' + repo);
@@ -3096,7 +3128,7 @@ const HELP = {
         notes: ['A value supplied both as a flag and as a positional is an error, never silently picked.'],
       },
       edit: {
-        usage: ['gh pr edit <num> [--title T] [--body B] [--base B] [--add-label L]', 'gh pr edit <num> [flags] [repo]'],
+        usage: ['gh pr edit <num> [--title T] [--body B] [--base B] [--add-label L] [--json [fields]]', 'gh pr edit <num> [flags] [repo]'],
         desc: 'Edit pull request metadata, assignees, and requested reviewers',
         flags: [REPO_HELP,
           '-t, --title <title>       new title',
@@ -3110,10 +3142,14 @@ const HELP = {
           '--add-assignee <user>     add an assignee (use @me for yourself)',
           '--remove-assignee <user>  remove an assignee (use @me for yourself)',
           '--add-reviewer <user>     request a reviewer (repeatable; org/team for teams)',
-          '--remove-reviewer <user>  remove a reviewer request (repeatable; org/team for teams)'],
+          '--remove-reviewer <user>  remove a reviewer request (repeatable; org/team for teams)',
+          '--json [fields]           output the updated PR as JSON',
+          '-q, --jq <expr>           filter JSON output with jq'],
         notes: [
           'Requires a positive integer PR number and at least one edit flag.',
           '--body and --body-file conflict; --milestone and --remove-milestone conflict.',
+          '--body-file preserves the file contents verbatim, including a trailing newline.',
+          'Unknown flags are rejected before any mutation.',
           'Project flags and implicit, branch, or URL selectors are not supported.',
         ],
       },

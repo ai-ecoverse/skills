@@ -19,7 +19,7 @@ command words, and always on a state-changing command; pass a literal `-h` after
 
 ## `--json` / `--jq`
 
-Available on: `pr view`, `pr list`, `pr checks`, `issue view`, `issue list`, `run list`,
+Available on: `pr view`, `pr list`, `pr edit`, `pr checks`, `issue view`, `issue list`, `run list`,
 `run view`, `repo view`, `release list`, `vars list`, `notifications list`, `search prs`,
 `project list`, `project list-items`.
 
@@ -40,6 +40,7 @@ Field sets (see `gh <cmd> <sub> --help` for the authoritative list):
 | Command | Fields |
 |---|---|
 | `pr list` | `number title body state isDraft author headRefName baseRefName headRefOid url createdAt updatedAt closedAt mergedAt labels assignees reviewRequests milestone id` |
+| `pr edit` | same as `pr list` (the updated PR) |
 | `pr view` | all of `pr list` plus `merged mergeable mergeStateStatus mergeCommit additions deletions changedFiles commits commitsCount statusCheckRollup reviews reviewDecision comments` |
 | `pr checks` | `name state bucket status conclusion link workflow startedAt completedAt description` |
 | `issue list` | `number title body state stateReason author url createdAt updatedAt closedAt labels assignees milestone commentsCount id` |
@@ -70,6 +71,7 @@ gh pr create "T" "B" my-branch --base=develop owner/repo     # positional form
 gh pr edit 42 --title "New title" --body-file ./body.md --base develop
 gh pr edit 42 --add-label ready --remove-label needs-info --add-assignee octocat
 gh pr edit 42 --add-reviewer octocat --add-reviewer acme/platform --milestone v2.0
+gh pr edit 42 --title "New title" --json number,title,url
 gh pr merge 42 --squash --delete-branch      # or --merge (default) / --rebase; --subject --body --body-file
 gh pr close 42 --comment "superseded by #43" # --delete-branch
 gh pr comment 42 --body "LGTM"               # or: gh pr comment 42 "LGTM"; --body-file
@@ -86,11 +88,13 @@ gh pr unwatch 42
   `-t`/`--title`, `-b`/`--body`, `-F`/`--body-file`, `-B`/`--base`,
   `-m`/`--milestone`, `--remove-milestone`, `--add-label`, `--remove-label`,
   `--add-assignee`, `--remove-assignee`, `--add-reviewer`, and `--remove-reviewer`.
-  `--body-file -` reads the body from stdin. Add/remove flags are repeatable and comma-separated
+  `--body-file -` reads the body from stdin; other body files are sent verbatim, including any
+  trailing newline. Add/remove flags are repeatable and comma-separated
   values also work; assignee flags accept `@me` for the authenticated user. Reviewer teams use
   `org/team`. `--body` conflicts with `--body-file`; `--milestone` conflicts with
-  `--remove-milestone`; at least one edit flag is required. No project flags or implicit,
-  branch, or URL selectors are supported.
+  `--remove-milestone`; at least one edit flag is required. `--json [fields]` returns the updated
+  PR, while unknown flags are rejected before mutation. No project flags or implicit, branch,
+  or URL selectors are supported.
 - `pr checks` reports check-runs **and** commit statuses, bucketed `pass`/`fail`/`pending`/`skipping`.
   Commit statuses are read from the combined-status endpoint, so a context that first reported
   `failure` and later `success` counts once, as its current state.

@@ -110,3 +110,25 @@ test('skips endpoints whose payloads are empty', async () => {
 
   assert.deepEqual(await applyPrEdit(api, 'octo/repo', 42, plan()), {});
 });
+
+test('omits semantic no-ops from pull and issue payloads', () => {
+  assert.deepEqual(
+    plan({
+      currentTitle: 'Same',
+      currentBody: 'Body\n',
+      currentBase: 'main',
+      currentMilestone: 7,
+      currentLabels: ['ready'],
+      currentAssignees: ['octocat'],
+      title: 'Same',
+      body: 'Body\n',
+      base: 'main',
+      milestone: 7,
+      addLabels: ['ready'],
+      removeLabels: ['missing'],
+      addAssignees: ['octocat'],
+      removeAssignees: ['missing'],
+    }),
+    { pull: {}, issue: {}, addReviewers: {}, removeReviewers: {} }
+  );
+});

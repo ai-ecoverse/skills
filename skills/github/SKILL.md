@@ -52,12 +52,12 @@ gh pr create "T" "B" my-branch --base=main owner/repo
 |---|---|
 | Flag and positional both usable | The flag wins |
 | Same value twice (`-R owner/repo` **and** trailing `owner/repo`) | Error, never a silent pick |
-| Unrecognised flag | Warned on stderr, passed through as a positional |
+| Unrecognised flag | Warned on stderr and passed through as a positional; `pr edit` rejects it before mutation |
 | `--` | Ends flag parsing |
 
 Repo defaults to the current git remote `origin`; override with `-R owner/repo` or the
-trailing positional. `--json [fields]` (+ `--jq`/`-q`) is available on the read commands;
-bare `--json` emits all fields, unknown fields error with the valid list.
+trailing positional. `--json [fields]` (+ `--jq`/`-q`) is available on the read commands and
+`pr edit`; bare `--json` emits all fields, unknown fields error with the valid list.
 
 ## Workflows
 
@@ -77,12 +77,14 @@ gh pr create --title "My title" --body "PR body" --head my-feature -R owner/repo
 gh pr edit <num> --title "New title" --body-file ./body.md --base main -R owner/repo
 gh pr edit <num> --add-label ready --remove-assignee old-user -R owner/repo
 gh pr edit <num> --add-reviewer user --add-reviewer org/team --milestone v2.0 -R owner/repo
+gh pr edit <num> --title "New title" --json number,title,url -R owner/repo
 ```
 
 `pr edit` requires a numeric PR number and at least one edit flag. It supports title,
 body/body-file, base, milestone changes, and additive/removal label, assignee, and reviewer
-updates; see the command reference for the exact flag list. Project flags and implicit,
-branch, or URL selectors are not supported.
+updates; body files are sent verbatim, including a trailing newline. `--json [fields]` returns
+the updated PR, and unknown flags are rejected before mutation. See the command reference for
+the exact flag list. Project flags and implicit, branch, or URL selectors are not supported.
 
 ### Check CI, and diagnose it when red
 
