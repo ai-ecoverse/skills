@@ -192,6 +192,10 @@ async function main() {
       created: new Date().toISOString(),
       skills,
     };
+    // Optional primary URL — panel shows a View/Map button that opens it
+    // directly via `open` (no cone round-trip). Also accepted as --link.
+    if (typeof args.url === 'string' && args.url.trim()) task.url = args.url.trim();
+    else if (typeof args.link === 'string' && args.link.trim()) task.url = args.link.trim();
     if (typeof args.snooze === 'string') task.snoozedUntil = parseWhen(args.snooze);
     if (typeof args['session-file'] === 'string' || typeof args['session-id'] === 'string') {
       task.session = {
@@ -353,7 +357,7 @@ async function main() {
     `  loose-ends bootstrap [--name <n>] [--store <path>] [--template <path>]\n` +
     `  loose-ends reseed    [--name <n>] [--store <path>]\n` +
     `  loose-ends list      [--snoozed] [--json]\n` +
-    `  loose-ends create --title <t> [--summary <s>] [--detail <d>] [--skills a,b] [--id <id>] [--snooze <when>]\n` +
+    `  loose-ends create --title <t> [--summary <s>] [--detail <d>] [--url <href>] [--skills a,b] [--id <id>] [--snooze <when>]\n` +
     `  loose-ends done <id>\n` +
     `  loose-ends snooze <id> <tomorrow|monday|week|YYYY-MM-DD>\n` +
     `  loose-ends unsnooze <id>\n` +

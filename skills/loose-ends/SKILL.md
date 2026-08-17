@@ -88,6 +88,7 @@ the matching panel message; a failed/absent send prints a note and is non-fatal
 - `title` — one-line imperative summary shown in bold.
 - **`summary` — human-facing.** The at-a-glance "what & why", always visible. Keep it short and readable.
 - **`detail` — agent-facing.** The full brief the cone acts on: concrete steps, contacts, paths, links. Shown collapsed under an "Agent brief" toggle; can be long.
+- **`url` — optional primary link.** When set, the card shows a **View** button (or **Map** for Google/Apple Maps URLs) that opens the link in a new browser tab via `open`, entirely inside the sprinkle — no cone round-trip. Bare `http(s)://` URLs inside `summary`/`detail` are also linkified. If `url` is omitted the panel falls back to the first maps URL (then any URL) found in the text.
 - `created` — ISO timestamp (informational; rendered on the card).
 - `skills` — optional `string[]` of the SLICC skills involved (e.g. `["sessionize","gmail"]`). Rendered as tag chips on the card and passed through to the monday item.
 - `snoozedUntil` — optional ISO timestamp. When set to a **future** time the task is *snoozed*: the panel renders it, greyed and compact, in a collapsed "Snoozed (N)" section at the **bottom** of the list, and it is **excluded** from `loose-ends monday` output (it isn't "open now"). Absent, `null`, or a **past** timestamp = active (a passed snooze auto-resurfaces to the active list). See [Snooze](#snooze).
@@ -200,7 +201,8 @@ The panel fires these licks back to the cone as `[Sprinkle Event: loose-ends]`:
 
 | Action | Data | When | Cone handler |
 |--------|------|------|--------------|
-| `do`   | `{ id, title, summary, detail }` | User clicks **Do** | Start working the task now, using `detail` as the agent brief (`summary` gives the human framing). The row stays in the list (a "Do" is not a completion). **When the work is finished, do NOT auto-remove it — report the result and ask the user whether to tie it up** (they may have more to add). See "Always confirm before tying up a loose end". |
+| `do`   | `{ id, title, summary, detail, url? }` | User clicks **Do** | Start working the task now, using `detail` as the agent brief (`summary` gives the human framing). If `url` is present (or a clear primary link is in the brief), open it with `open <url>` as the first step so the human sees the artifact immediately. The row stays in the list (a "Do" is not a completion). **When the work is finished, do NOT auto-remove it — report the result and ask the user whether to tie it up** (they may have more to add). See "Always confirm before tying up a loose end". |
+| *(panel-local)* | View / Map button | User clicks **View** or **Map** | Handled inside the sprinkle via `slicc.exec('open …')` — **no lick, no cone turn**. |
 | `done` | `{ id, title }` | User clicks **Done** | The panel already removed the row optimistically. Remove that `id` from `/shared/loose-ends.json` and bump `updated`. No panel round-trip needed. |
 | `open-session` | `{ id, file, at }` | User clicks the **"from &lt;date&gt;"** provenance link | Open the originating transcript at `/sessions/<file>` (e.g. `read_file`) and surface it to the user — the conversation this loose end came from. |
 | `snooze` | `{ id, title, until }` | User picks a snooze preset (Tomorrow / Next Monday / Next week / Pick a date) | The panel already moved the row to the snoozed section optimistically. Set that task's `snoozedUntil = until` (ISO) in `/shared/loose-ends.json` and bump `updated`. No panel round-trip needed. |

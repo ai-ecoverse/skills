@@ -262,7 +262,19 @@
       gap: 6px;
       align-items: center;
       margin-top: 11px;
+      flex-wrap: wrap;
     }
+
+    /* Clickable URLs inside the agent brief */
+    .task-context .full a.task-link,
+    a.task-link {
+      color: var(--s2-accent, #3b82f6);
+      text-decoration: underline;
+      text-underline-offset: 2px;
+      cursor: pointer;
+      word-break: break-all;
+    }
+    a.task-link:hover { opacity: 0.85; }
 
     /* ── Snooze section subheader (flat disclosure — hairline, no box) ── */
     .snooze-subhead {
@@ -400,6 +412,109 @@ function escHtml(str) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
+}
+
+// Open a URL (or VFS path) in a new browser tab via the host `open` command.
+// Runs entirely inside the sprinkle — no cone round-trip.
+function openUrl(url) {
+  if (!url) return;
+  const u = String(url).trim();
+  if (!u) return;
+  // Single-quote for the shell; escape any embedded single quotes.
+  const q = "'" + u.replace(/'/g, "'\\''") + "'";
+  try {
+    if (typeof slicc !== 'undefined' && typeof slicc.exec === 'function') {
+      slicc.exec('open ' + q);
+      return;
+    }
+  } catch (e) { /* fall through */ }
+  // Fallback: try window.open (may be blocked by sandbox).
+  try { window.open(u, '_blank', 'noopener'); } catch (e2) {}
+}
+
+// True for Google Maps / Apple Maps / geo deep links.
+function isMapUrl(url) {
+  if (!url) return false;
+  const u = String(url).toLowerCase();
+  return /google\.[a-z.]*\/maps|maps\.google\.|maps\.app\.goo\.gl|goo\.gl\/maps|maps\.apple\.com|^geo:|openstreetmap\.org|mapbox\.com/.test(u);
+}
+
+// Pull the first http(s) URL out of free text.
+function firstUrlIn(text) {
+  if (!text) return '';
+  const m = String(text).match(/https?:\/\/[^\s<>"')\]]+/i);
+  if (!m) return '';
+  return m[0].replace(/[.,;:]+$/, ''); // trim trailing punctuation
+}
+
+// Prefer explicit task.url; else first map URL in summary/detail; else first URL.
+function primaryUrl(task) {
+  if (task && typeof task.url === 'string' && task.url.trim()) return task.url.trim();
+  const blob = ((task && (task.summary || '')) + '\n' + (task && (task.detail || task.context || '')) );
+  // Prefer a maps URL if any.
+  const all = String(blob).match(/https?:\/\/[^\s<>"')\]]+/gi) || [];
+  for (const raw of all) {
+    const u = raw.replace(/[.,;:]+$/, '');
+    if (isMapUrl(u)) return u;
+  }
+  return all.length ? all[0].replace(/[.,;:]+$/, '') : '';
+}
+
+// Split free text into plain-text and URL runs.
+//
+// URLs are matched in the RAW text, never in HTML-escaped text. Matching after
+// escaping stopped at the `&` of `&amp;`, so `?a=1&b=2` linkified as `?a=1`
+// only and the anchor pointed at the wrong resource.
+//
+// The URL character class excludes quotes and angle brackets (same shape as
+// firstUrlIn/primaryUrl) so a crafted URL cannot smuggle markup delimiters.
+function linkifyParts(text) {
+  const parts = [];
+  const src = String(text ?? '');
+  if (!src) return parts;
+  const re = /https?:\/\/[^\s<>"'`]+/gi;
+  let last = 0;
+  let m;
+  while ((m = re.exec(src)) !== null) {
+    let url = m[0];
+    let trail = '';
+    // Drop common trailing punctuation that isn't part of the URL.
+    while (/[.,;:!?)\]]$/.test(url)) {
+      trail = url.slice(-1) + trail;
+      url = url.slice(0, -1);
+    }
+    if (m.index > last) parts.push({ type: 'text', value: src.slice(last, m.index) });
+    parts.push({ type: 'url', value: url });
+    if (trail) parts.push({ type: 'text', value: trail });
+    last = m.index + m[0].length;
+  }
+  if (last < src.length) parts.push({ type: 'text', value: src.slice(last) });
+  return parts;
+}
+
+// Render free text into `el` as text nodes plus real anchor elements.
+//
+// Built with DOM APIs on purpose: the URL is set with setAttribute() and the
+// label with textContent, so it never passes through string concatenation into
+// an attribute of markup that is later assigned via innerHTML. A URL carrying a
+// literal quote therefore cannot close the href and inject an inline handler
+// (e.g. onmouseover="slicc.exec(...)").
+function linkifyInto(el, text) {
+  if (!el) return;
+  el.textContent = '';
+  const parts = linkifyParts(text);
+  for (const part of parts) {
+    if (part.type === 'url') {
+      const a = document.createElement('a');
+      a.className = 'task-link';
+      a.setAttribute('href', part.value);
+      a.setAttribute('title', 'Open in new tab');
+      a.textContent = part.value;
+      el.appendChild(a);
+    } else {
+      el.appendChild(document.createTextNode(part.value));
+    }
+  }
 }
 
 const PREVIEW_LEN = 140;
@@ -638,18 +753,21 @@ function createTaskCard(task) {
   const detail  = task.detail || task.context || '';
   const created = fmtDate(task.created);
   const session = task.session || null;
+  const viewUrl = primaryUrl(task);
+  const viewIsMap = isMapUrl(viewUrl);
 
   // Lick payload — the cone acts on `detail`; `summary` gives it the human framing.
+  // Include url so a Do handler can open it without re-deriving.
   const doData = esc(JSON.stringify({ action: 'do', data: {
-    id: task.id, title: task.title, summary, detail, skills: task.skills || []
+    id: task.id, title: task.title, summary, detail, skills: task.skills || [],
+    url: viewUrl || task.url || ''
   } }));
 
   // If there's no explicit summary, fall back to showing the detail as the
   // visible line (so nothing is hidden behind the collapsed brief).
   const visibleText = summary || (detail && detail.length <= 220 ? detail : '');
-  const summaryBlock = visibleText
-    ? '<div class="task-summary">' + escHtml(visibleText) + '</div>'
-    : '';
+  // Container only; the linkified content is filled in via DOM APIs below.
+  const summaryBlock = visibleText ? '<div class="task-summary"></div>' : '';
 
   // Skill tags — the SLICC skills involved in the task.
   let tagsBlock = '';
@@ -672,7 +790,7 @@ function createTaskCard(task) {
           '<span class="lbl-open">Agent brief</span>' +
           '<span class="lbl-close">Hide brief</span>' +
         '</summary>' +
-        '<div class="full">' + escHtml(detail) + '</div>' +
+        '<div class="full"></div>' +
       '</details>';
   }
 
@@ -691,6 +809,18 @@ function createTaskCard(task) {
   }
   const metaBlock = metaInner ? '<div class="task-meta">' + metaInner + '</div>' : '';
 
+  // View / Map button — opens the URL directly from the sprinkle (no cone).
+  let viewBtnHtml = '';
+  if (viewUrl) {
+    const icon = viewIsMap ? 'map-pin' : 'external-link';
+    const label = viewIsMap ? 'Map' : 'View';
+    const title = viewIsMap ? 'Open map in a new tab' : 'Open in a new tab';
+    viewBtnHtml =
+      '<button type="button" class="sprinkle-btn sprinkle-btn--ghost view-btn" title="' + esc(title) + '" data-url="' + esc(viewUrl) + '">' +
+        '<i data-lucide="' + icon + '" class="sprinkle-icon sm"></i> ' + label +
+      '</button>';
+  }
+
   div.innerHTML =
     '<div class="task-title">' + escHtml(task.title || task.id || '') + '</div>' +
     summaryBlock +
@@ -701,6 +831,7 @@ function createTaskCard(task) {
       '<button class="sprinkle-btn sprinkle-btn--primary" onclick="slicc.lick(' + doData + ')">' +
         '<i data-lucide="arrow-right" class="sprinkle-icon sm"></i> Do' +
       '</button>' +
+      viewBtnHtml +
       '<button class="sprinkle-btn sprinkle-btn--ghost done-btn">' +
         '<i data-lucide="check" class="sprinkle-icon sm"></i> Done' +
       '</button>' +
@@ -725,6 +856,31 @@ function createTaskCard(task) {
         '</div>' +
       '</div>' +
     '</div>';
+
+  // Fill summary/detail with linkified text using DOM APIs (see linkifyInto):
+  // URLs become real anchor elements, so nothing is concatenated into markup.
+  if (visibleText) linkifyInto(div.querySelector('.task-summary'), visibleText);
+  if (detailBlock) linkifyInto(div.querySelector('.task-context .full'), detail);
+
+  // View / Map: open URL directly — no lick, no cone.
+  const viewBtn = div.querySelector('.view-btn');
+  if (viewBtn) {
+    viewBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openUrl(viewBtn.getAttribute('data-url') || viewUrl);
+    });
+  }
+
+  // Linkified anchors inside summary/detail: intercept so we don't navigate the
+  // sprinkle iframe — open a real browser tab instead.
+  div.querySelectorAll('a.task-link').forEach((a) => {
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openUrl(a.getAttribute('href'));
+    });
+  });
 
   // Done: OPTIMISTIC removal first, then emit the lick.
   const doneBtn = div.querySelector('.done-btn');
