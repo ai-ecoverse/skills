@@ -126,7 +126,12 @@ web app; this skill only reaches the open web.
 
 ## Implementation notes
 
-`scripts/search.jsh` (SLICC `.jsh` runtime) is read-only: one request per
-invocation, nothing persisted. Keep the JSON schema stable for agents that
-already depend on it, and `--help`, `references/providers.md` and this file in
-lockstep with the code.
+`scripts/search.jsh` (SLICC `.jsh` runtime) is read-only and persists nothing.
+It is **not** one request per run: a transient status (429/502/503/504) is
+retried once, and in `auto` a failing provider hands off to the next one holding
+a key — so a run can issue up to two requests per provider tried, eight with all
+four keys set. That matters where searches are metered, and Kagi bills per
+search.
+
+Keep the JSON schema stable for agents that already depend on it, and `--help`,
+`references/providers.md` and this file in lockstep with the code.

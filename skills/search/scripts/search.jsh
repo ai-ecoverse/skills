@@ -20,7 +20,11 @@
 //   All four serve --type news, each through its own knob. See
 //   references/providers.md for per-provider endpoints and field mappings.
 //
-// Read-only and side-effect free: every command is a single search request.
+// Read-only: nothing is written or persisted. It is NOT one request per run,
+// though — a transient status (429/502/503/504) is retried once, and in `auto` a
+// failing provider hands off to the next one holding a key, so a run can issue up
+// to two requests per provider tried (eight with all four keys set). That matters
+// where searches are metered, and Kagi bills per search.
 
 const cli = require('sliccy:cli');
 const color = require('sliccy:color');
@@ -255,28 +259,54 @@ function retryDelay(res) {
   return 1000;
 }
 
-/** Best-effort human detail from an error body. Never contains the API key. */
-function errorDetail(text) {
-  if (!text) return '';
-  let body;
+/** JSON.parse that yields undefined instead of throwing. */
+function parseJson(text) {
+  if (!text) return undefined;
   try {
-    body = JSON.parse(text);
+    return JSON.parse(text);
   } catch {
-    return ' — ' + trunc(stripHtml(text), 200);
+    return undefined;
   }
-  // Kagi reports an error *array*, unlike the others: v1 is
-  // `error: [{ code, url, message, location }]` (v0 used `msg`), so both keys are
-  // read. The others use an object or a bare string.
-  if (body && Array.isArray(body.error)) {
-    const joined = body.error
-      .map((e) => (e && (e.msg || e.message)) || '')
+}
+
+/**
+ * Error rows, for providers that answer with a list of them rather than a single
+ * object. Kagi is the one that does, and its live responses name the array
+ * `errors` while its OpenAPI spec documents `error` — so both are read, plural
+ * first (captured live 2026-08-17, PR #285). The per-row text is `message` in
+ * v1 and was `msg` in v0.
+ */
+function errorRows(body) {
+  if (!body || typeof body !== 'object') return [];
+  const rows = Array.isArray(body.errors)
+    ? body.errors
+    : Array.isArray(body.error)
+      ? body.error
+      : [];
+  return rows.filter((r) => r && typeof r === 'object');
+}
+
+// Some providers signal a bad credential with a status that is not 401/403 —
+// Kagi answers a rotated or v0-era token with HTTP 400 and this code, which
+// would otherwise read as "you sent a malformed request" (captured live
+// 2026-08-17, PR #285). Matched on the error code, not the status.
+const AUTH_ERROR_CODE_RE = /invalid_token|invalid_api_key|unauthorized|forbidden/i;
+
+/** Best-effort human detail from an error body. Never contains the API key. */
+function errorDetail(text, body, rows) {
+  if (rows.length) {
+    const joined = rows
+      .map((r) => r.message || r.msg || r.code || '')
       .filter(Boolean)
       .join('; ');
-    return joined ? ' — ' + trunc(joined, 200) : '';
+    if (joined) return ' — ' + trunc(joined, 200);
   }
+  if (body === undefined) return text ? ' — ' + trunc(stripHtml(text), 200) : '';
   const msg =
-    (body && body.error && (body.error.detail || body.error.message || body.error.meta)) ||
-    (body && (body.detail || body.message || body.error));
+    (body.error && (body.error.detail || body.error.message || body.error.meta)) ||
+    body.detail ||
+    body.message ||
+    body.error;
   if (!msg) return '';
   return ' — ' + trunc(typeof msg === 'string' ? msg : JSON.stringify(msg), 200);
 }
@@ -291,8 +321,15 @@ async function request(url, { method = 'GET', headers, body, label, timeoutMs = 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     let res;
+    let text = null;
+    let retryable = false;
     try {
       res = await fetch(url, { method, headers, body, signal: controller.signal });
+      retryable = attempt === 0 && RETRY_STATUS.has(res.status);
+      // fetch() resolving only means the headers arrived. A provider that stalls
+      // mid-body would hang forever if the abort timer had already been cleared,
+      // so the body is read while it is still armed.
+      if (!retryable) text = await res.text();
     } catch (err) {
       const msg = err && err.message ? err.message : String(err);
       if ((err && err.name === 'AbortError') || /abort/i.test(msg)) {
@@ -300,29 +337,34 @@ async function request(url, { method = 'GET', headers, body, label, timeoutMs = 
       }
       throw new Error(`${label}: network error — ${msg}`);
     } finally {
+      // Cleared once the exchange is done, so the retry backoff below cannot eat
+      // into the next attempt's timeout budget.
       clearTimeout(timer);
     }
 
-    if (attempt === 0 && RETRY_STATUS.has(res.status)) {
+    if (retryable) {
       const wait = retryDelay(res);
       debug(`${label}: HTTP ${res.status}, retrying once in ${wait}ms`);
       await sleep(wait);
       continue;
     }
 
-    const text = await res.text();
+    const parsed = parseJson(text);
     if (!res.ok) {
+      const rows = errorRows(parsed);
       const err = new Error(
-        `${label}: HTTP ${res.status}${res.statusText ? ' ' + res.statusText : ''}${errorDetail(text)}`
+        `${label}: HTTP ${res.status}${res.statusText ? ' ' + res.statusText : ''}` +
+          errorDetail(text, parsed, rows)
       );
       err.status = res.status;
+      if (rows.some((r) => AUTH_ERROR_CODE_RE.test(String(r.code || '')))) err.authFailed = true;
       throw err;
     }
-    try {
-      return text ? JSON.parse(text) : {};
-    } catch {
+    if (!text) return {};
+    if (parsed === undefined) {
       throw new Error(`${label}: response was not valid JSON (HTTP ${res.status})`);
     }
+    return parsed === null ? {} : parsed;
   }
 }
 
@@ -673,7 +715,7 @@ async function main() {
     } catch (err) {
       if (err && err.name === 'NodeExitError') throw err;
       let message = err && err.message ? err.message : String(err);
-      if (err && (err.status === 401 || err.status === 403)) {
+      if (err && (err.status === 401 || err.status === 403 || err.authFailed)) {
         message += `\n  ${p.env} was rejected — check that the key is valid and its plan covers this endpoint.`;
       }
       failures.push(`${id}: ${message}`);

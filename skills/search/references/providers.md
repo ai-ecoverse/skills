@@ -134,9 +134,18 @@ Every bucket holds the same `searchResult`: `url` and `title` (both required),
 `snippet`, `time` (**the date field — v0 called it `published`**), plus optional
 `image` and an open-ended `props`.
 
-Errors are an **array**, unlike the other three:
-`error: [{ code, url, message, location }]` — v0 used `msg`, so error rendering
-reads either key.
+Errors are an **array**, unlike the other three. The spec documents
+`error: [{ code, url, message, location }]`, but **live responses use `errors`
+(plural)** — both keys are read, plural first, and `msg` as well as `message`
+since v0 used the shorter name. A bad token arrives as:
+
+```
+HTTP 400 Bad Request
+{"errors": [{"code": "general.invalid_token", "message": "Token signature failed to verify…"}]}
+```
+
+so it is 400 rather than 401, and is recognised by the code (captured live
+2026-08-17, PR #285).
 
 ## Cross-provider behaviour
 
@@ -154,8 +163,17 @@ reads either key.
   subdomains (`reddit.com` excludes `www.reddit.com`).
 - **Dates** — `published` is emitted only when the provider's value parses to a
   real date, always as ISO 8601. Relative strings are dropped, never guessed.
-- **Transport** — 20s abort timeout; one retry on 429/502/503/504 honouring
-  `Retry-After` (capped at 10s). Failures exit non-zero even under `--json`.
+- **Transport** — a 20s abort timeout that stays armed until the response body
+  has been read (a provider can stall after sending headers); one retry on
+  429/502/503/504 honouring `Retry-After` (capped at 10s, and outside the timeout
+  budget). Failures exit non-zero even under `--json`. A run is therefore **not**
+  one request: up to two per provider tried, eight with all four keys set — worth
+  knowing where searches are metered.
+- **Auth failures** — 401 and 403 are the obvious ones, but a provider may signal
+  a bad credential with another status: Kagi answers a rotated or v0-era token
+  with **HTTP 400** and error code `general.invalid_token` (captured live
+  2026-08-17). Detection therefore keys off the error code as well as the status,
+  so the "check your key" hint fires either way.
 - **Keys** never appear in output, including `--debug`, which logs only the
   provider chain and request URLs.
 

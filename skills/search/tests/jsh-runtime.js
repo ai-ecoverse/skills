@@ -120,6 +120,21 @@ function mockFetch(handler) {
         init.signal.addEventListener('abort', () => reject(abortError()));
       });
     }
+    // Headers arrive, then the body stalls — the case that distinguishes a timer
+    // cleared when fetch() resolves from one held until the body is consumed.
+    if (raw && raw.__hangBody) {
+      const status = raw.status === undefined ? 200 : raw.status;
+      return {
+        ok: status >= 200 && status < 300,
+        status,
+        statusText: raw.statusText || '',
+        headers: { get: () => null },
+        text: () =>
+          new Promise((_resolve, reject) => {
+            init.signal.addEventListener('abort', () => reject(abortError()));
+          }),
+      };
+    }
     if (raw instanceof Error) throw raw;
 
     const res = raw && ('body' in raw || 'status' in raw || 'headers' in raw) ? raw : { body: raw };

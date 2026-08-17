@@ -352,6 +352,35 @@ test('kagi: error[] bodies are surfaced as readable text', async () => {
   assert.match(r.stderr, /KAGI_API_KEY was rejected/);
 });
 
+test('kagi: a 400 invalid_token is an auth failure, and `errors` is read', async () => {
+  // Live behaviour, not deducible from the spec: a rotated or v0-era Kagi token
+  // answers HTTP 400 (not 401) and names the array `errors` where the OpenAPI
+  // spec says `error`. Reading only the spec's key drops the message entirely.
+  const f = mockFetch(() => ({
+    status: 400,
+    statusText: 'Bad Request',
+    body: {
+      errors: [{ code: 'general.invalid_token', message: 'Token signature failed to verify.' }],
+    },
+  }));
+  const r = await run(['q', '--provider', 'kagi'], { KAGI_API_KEY: 'stale' }, f);
+  assert.equal(r.exitCode, 1);
+  assert.match(r.stderr, /Token signature failed to verify/, 'the plural key is read');
+  assert.match(r.stderr, /KAGI_API_KEY was rejected/, '400 + invalid_token is an auth failure');
+  assert.ok(!r.stderr.includes('stale'));
+});
+
+test('a 400 that is not an auth problem is not blamed on the key', async () => {
+  const f = mockFetch(() => ({
+    status: 400,
+    body: { errors: [{ code: 'search.invalid_query', message: 'query was empty' }] },
+  }));
+  const r = await run(['q', '--provider', 'kagi'], { KAGI_API_KEY: 'k' }, f);
+  assert.equal(r.exitCode, 1);
+  assert.match(r.stderr, /query was empty/);
+  assert.ok(!/was rejected/.test(r.stderr), 'the auth hint keys off the code, not any 400');
+});
+
 test('kagi is last in the auto chain, so cheaper providers win', async () => {
   const f = route({ 'api.search.brave.com': BRAVE_WEB });
   const r = await run(['q', '--json'], { KAGI_API_KEY: 'kk', BRAVE_API_KEY: 'bk' }, f);
@@ -495,6 +524,18 @@ test('a hanging request is aborted by the 20s timeout', async () => {
   assert.equal(r.exitCode, 1);
   assert.match(r.stderr, /timed out/);
   assert.ok(Date.now() - started >= 19_000, 'the abort fires on the documented timeout');
+});
+
+test('a body that stalls after the headers still hits the timeout', async () => {
+  // The timer must stay armed through res.text(): fetch() resolving only means
+  // the headers arrived, so clearing it there would let a stalled body hang
+  // forever despite the advertised 20s timeout.
+  const f = mockFetch(() => ({ __hangBody: true }));
+  const started = Date.now();
+  const r = await run(['q', '--provider', 'brave'], { BRAVE_API_KEY: 'k' }, f);
+  assert.equal(r.exitCode, 1);
+  assert.match(r.stderr, /timed out/);
+  assert.ok(Date.now() - started >= 19_000);
 });
 
 // ── results ──────────────────────────────────────────────────────────────────
