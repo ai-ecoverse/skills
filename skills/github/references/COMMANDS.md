@@ -67,6 +67,9 @@ gh pr create --title "T" --body "B" --head my-branch
 gh pr create --title "T" --body-file ./body.md --head br --base develop --draft
 gh pr create --title "T" --body "B" --head br --label bug --assignee me --reviewer someone
 gh pr create "T" "B" my-branch --base=develop owner/repo     # positional form
+gh pr edit 42 --title "New title" --body-file ./body.md --base develop
+gh pr edit 42 --add-label ready --remove-label needs-info --add-assignee octocat
+gh pr edit 42 --add-reviewer octocat --add-reviewer acme/platform --milestone v2.0
 gh pr merge 42 --squash --delete-branch      # or --merge (default) / --rebase; --subject --body --body-file
 gh pr close 42 --comment "superseded by #43" # --delete-branch
 gh pr comment 42 --body "LGTM"               # or: gh pr comment 42 "LGTM"; --body-file
@@ -79,6 +82,14 @@ gh pr unwatch 42
   branch. `--label`/`--assignee` are applied after creation via the issues endpoint and
   `--reviewer` via the requested-reviewers endpoint; if a follow-up is refused the PR still
   exists and a warning is printed.
+- `pr edit` selects a pull request by positive integer number. It accepts `-R`/`--repo`,
+  `-t`/`--title`, `-b`/`--body`, `-F`/`--body-file`, `-B`/`--base`,
+  `-m`/`--milestone`, `--remove-milestone`, `--add-label`, `--remove-label`,
+  `--add-assignee`, `--remove-assignee`, `--add-reviewer`, and `--remove-reviewer`.
+  Add/remove flags are repeatable and comma-separated values also work. Reviewer teams use
+  `org/team`. `--body` conflicts with `--body-file`; `--milestone` conflicts with
+  `--remove-milestone`; at least one edit flag is required. No project flags or implicit,
+  branch, or URL selectors are supported.
 - `pr checks` reports check-runs **and** commit statuses, bucketed `pass`/`fail`/`pending`/`skipping`.
   Commit statuses are read from the combined-status endpoint, so a context that first reported
   `failure` and later `success` counts once, as its current state.
