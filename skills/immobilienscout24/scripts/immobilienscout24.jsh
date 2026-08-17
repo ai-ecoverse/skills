@@ -108,6 +108,7 @@ const _hdrTokens = {
   contactProspects: null,
 };
 let _scoutXsrf = null;
+let _wwwXsrf = null;
 let _bootstrapped = { nachrichten: false, scout: false };
 
 async function getTab() {
@@ -213,6 +214,24 @@ async function ensureScoutXsrf(tab) {
   return token;
 }
 
+// The plain www double-submit token: header X-XSRF-TOKEN must equal the non-HttpOnly
+// XSRF-TOKEN cookie (Domain=www.immobilienscout24.de, Path=/). Observed on the captured
+// 201 send: header value === cookie value, both the same 36-char UUID.
+async function ensureWwwXsrf(tab) {
+  if (_wwwXsrf) return _wwwXsrf;
+  const nTab = (await getNachrichtenTab()) || tab;
+  let token = await readDocumentCookie(nTab, 'XSRF-TOKEN');
+  if (!token) token = await readDocumentCookie(tab, 'XSRF-TOKEN');
+  if (!token) {
+    cli.die(
+      'missing XSRF-TOKEN cookie — open https://www.immobilienscout24.de (logged in) in the browser tab, reload it once, then retry',
+      { prefix: 'immobilienscout24' },
+    );
+  }
+  _wwwXsrf = token;
+  return token;
+}
+
 async function ensureNachrichtenTokens(tab) {
   if (_bootstrapped.nachrichten && _hdrTokens.communicationMgr) return;
   const nTab = (await getNachrichtenTab()) || tab;
@@ -240,6 +259,16 @@ async function ensureNachrichtenTokens(tab) {
       { prefix: 'immobilienscout24' },
     );
   }
+}
+
+// The two header tokens rotate on every response (verified live: two consecutive GETs to
+// /nachrichten-manager/api/feature-switches mint different values), so a write should use
+// freshly minted ones rather than whatever an earlier read left in the cache.
+async function refreshNachrichtenTokens(tab) {
+  _bootstrapped.nachrichten = false;
+  _hdrTokens.communicationMgr = null;
+  _hdrTokens.contactProspects = null;
+  await ensureNachrichtenTokens(tab);
 }
 
 function classifyUrl(url) {
@@ -270,8 +299,11 @@ async function pickTab(tab, kind) {
 async function apiFetch(tab, url, opts = {}) {
   const kind = classifyUrl(url);
   const useTab = await pickTab(tab, kind);
+  const method = String(opts.method || 'GET').toUpperCase();
+  const isWrite = method !== 'GET' && method !== 'HEAD';
   if (kind === 'scout') await ensureScoutXsrf(useTab);
   if (kind === 'nachrichten') await ensureNachrichtenTokens(useTab);
+  if (kind === 'nachrichten' && isWrite) await ensureWwwXsrf(useTab);
 
   const headers = {
     Accept: 'application/json, text/plain, */*',
@@ -283,6 +315,9 @@ async function apiFetch(tab, url, opts = {}) {
     headers['x-xsrf-token'] = _scoutXsrf;
   }
   if (kind === 'nachrichten') {
+    if (isWrite && _wwwXsrf && !headers['X-XSRF-TOKEN'] && !headers['x-xsrf-token']) {
+      headers['X-XSRF-TOKEN'] = _wwwXsrf;
+    }
     if (_hdrTokens.communicationMgr && !headers['x-xsrf-communication-mgr-token']) {
       headers['x-xsrf-communication-mgr-token'] = _hdrTokens.communicationMgr;
     }
@@ -308,8 +343,6 @@ async function apiFetch(tab, url, opts = {}) {
       }
     }
   }
-
-  const method = String(opts.method || 'GET').toUpperCase();
 
   // browser.fetch hangs on POST in this runtime (verified 2026-08-09). GETs are
   // fine via browser.fetch; non-GET goes through in-page eval fetch instead.
@@ -1175,20 +1208,44 @@ async function cmdMessages(tab, listingId, conversationId, flags) {
 
 // ── send (write path) ──────────────────────────────────────────────────────
 //
-// POST /nachrichten-manager/api/references/:reference/conversations/:conversationId/messages
+// Confirmed against a real captured send (HAR rec-1786993644274-38v491, 2026-08-17
+// 21:10 local; request/response saved at is24-send-request.json):
 //
-// Endpoint + payload shape read out of the Nachrichten-Manager SPA bundle
-// (static/js/main.6423fc7b.js): api map entry `messageSend` and the
-// `sendMessage` hook that builds
-//   { message, conversationId, tags, recommendedActionName, [uploadIds], [appointment] }
-// and POSTs it. CSRF is the same x-xsrf-communication-mgr-token flow the read
-// paths already use, so apiFetch handles it.
+//   POST /nachrichten-manager/api/references/<listingId>/conversations/<conversationId>/messages
+//   Content-Type: application/json
+//   Accept: application/json, text/plain, */*
+//   X-XSRF-TOKEN: <value of the non-HttpOnly XSRF-TOKEN cookie, 36-char UUID>
+//   x-xsrf-communication-mgr-token: <96-char token minted on any /nachrichten-manager/api GET>
+//   x-xsrf-contact-prospects-token: <96-char token minted on any /contact-prospects/api GET>
+//   { "message": "…\n…", "conversationId": "…", "tags": ["replied","inbox"],
+//     "recommendedActionName": null }
+//   → 201 Created
+//   { "id": "<messageId>", "conversationId": "…", "read": true, "autoReply": false,
+//     "message": "<echo>", "creationDateTime": "…Z", "userType": "REALTOR",
+//     "attachments": [], "source": "API", "tags": null, "messageType": "TEXT" }
 //
-// SAFETY: real prospects are on the other end. Without --confirm this prints the
-// request and returns without any network call.
+// The x-datadog-* / traceparent headers in the capture are Datadog RUM telemetry and are
+// not sent here: they carry no auth material and the API cannot depend on them (any
+// non-RUM client, including the app with RUM blocked, would fail otherwise).
+//
+// SAFETY: real prospects are on the other end. Without --confirm this prints the request
+// and returns without any network call.
 
 const MAX_MESSAGE_CHARS = 100000; // UI reply textarea maxLength (observed in DOM)
+// The captured 201 send carried the conversation's own folder tags. Override with --tags
+// (e.g. --tags inbox for a thread you have not replied to yet).
+const DEFAULT_SEND_TAGS = ['replied', 'inbox'];
 const SEND_ALIASES = new Set(['send', 'reply', 'antworten']);
+
+// Conversation deep link. The `messages/` segment is required: the variant without it
+// (/nachrichten-manager/<listingId>/inbox/<conversationId>) renders the listing shell with
+// no thread at all.
+function threadUrl(listingId, conversationId) {
+  return (
+    `${WWW}/nachrichten-manager/${encodeURIComponent(listingId)}` +
+    `/inbox/messages/${encodeURIComponent(conversationId)}`
+  );
+}
 
 function sendUrl(listingId, conversationId) {
   return (
@@ -1221,11 +1278,62 @@ function readMessageBody(positionalText, flags) {
 
 function parseTags(flags) {
   const raw = flags.tags;
-  if (raw == null || raw === true || raw === '') return [];
+  if (raw == null || raw === true || raw === '') return [...DEFAULT_SEND_TAGS];
+  if (raw === 'none' || raw === false) return [];
   return String(raw)
     .split(',')
     .map((t) => t.trim())
     .filter(Boolean);
+}
+
+function sendHeaderPlan() {
+  return {
+    Accept: 'application/json, text/plain, */*',
+    'Content-Type': 'application/json',
+    'X-XSRF-TOKEN': '<XSRF-TOKEN cookie (document.cookie, www host, not HttpOnly)>',
+    'x-xsrf-communication-mgr-token':
+      '<response header of GET /nachrichten-manager/api/feature-switches>',
+    'x-xsrf-contact-prospects-token':
+      '<response header of GET /contact-prospects/api/shared/feature-switches>',
+  };
+}
+
+// Verified live: GET on a real conversation → 200 + { messages, participantData,
+// conversation, … }; GET on a syntactically valid but unknown id → 200 + HTML shell.
+// So an unknown id must be detected by payload shape, not by status code.
+async function loadConversationForSend(tab, listingId, conversationId) {
+  const url =
+    `${WWW}/nachrichten-manager/api/references/${encodeURIComponent(listingId)}` +
+    `/conversations/${encodeURIComponent(conversationId)}`;
+  const useTab = await pickTab(tab, 'nachrichten');
+  let res;
+  try {
+    res = await browser.fetch(useTab, url, {
+      headers: { Accept: 'application/json, text/plain, */*' },
+    });
+  } catch (err) {
+    cli.die(`could not reach the Nachrichten-Manager API: ${err.message || err}`, {
+      prefix: 'immobilienscout24',
+    });
+  }
+  harvestTokens(res);
+  if (lookLikeLogin(res)) {
+    cli.die('session expired — log in to immobilienscout24.de in your browser, then retry', {
+      prefix: 'immobilienscout24',
+    });
+  }
+  const body = res.body;
+  const looksLikeConversation =
+    body && typeof body === 'object' && !Array.isArray(body) && Array.isArray(body.messages);
+  if (!looksLikeConversation) {
+    cli.die(
+      `unknown conversation ${conversationId} on listing ${listingId} ` +
+        `(detail GET returned ${res.status} ${isHtmlBody(body) ? 'HTML instead of JSON' : 'an unexpected payload'})\n` +
+        `  list the real ids with: immobilienscout24 conversations ${listingId}`,
+      { prefix: 'immobilienscout24' },
+    );
+  }
+  return body;
 }
 
 async function cmdSend(tab, listingId, conversationId, textArg, flags) {
@@ -1275,7 +1383,10 @@ async function cmdSend(tab, listingId, conversationId, textArg, flags) {
         url,
         listingId: String(listingId),
         conversationId: String(conversationId),
+        headers: sendHeaderPlan(),
         payload,
+        threadUrl: threadUrl(listingId, conversationId),
+        expectedStatus: 201,
         messageChars: message.length,
         note: 'nothing was sent — re-run with --confirm to POST this exact request',
       });
@@ -1289,6 +1400,16 @@ async function cmdSend(tab, listingId, conversationId, textArg, flags) {
     console.log(`  ${color.dim('Listing:')}  ${listingId}`);
     console.log(`  ${color.dim('Conv:')}     ${conversationId}`);
     console.log(`  ${color.dim('Chars:')}    ${message.length}`);
+    console.log(`  ${color.dim('Thread:')}   ${threadUrl(listingId, conversationId)}`);
+    console.log(`  ${color.dim('Expect:')}   201 Created + { id: <messageId>, … }`);
+    console.log('');
+    console.log(color.bold('  Headers') + color.dim('  (token values are never printed)'));
+    console.log(
+      JSON.stringify(sendHeaderPlan(), null, 2)
+        .split('\n')
+        .map((l) => '  ' + l)
+        .join('\n'),
+    );
     console.log('');
     console.log(color.bold('  Payload'));
     console.log(
@@ -1301,15 +1422,6 @@ async function cmdSend(tab, listingId, conversationId, textArg, flags) {
     console.log(color.bold('  Message body'));
     console.log(message.split('\n').map((l) => '  │ ' + l).join('\n'));
     console.log('');
-    if (!payload.tags.length) {
-      console.log(
-        color.dim(
-          "  tags is empty — the web UI copies the conversation's current tags here;\n" +
-            "  pass --tags a,b (the tags column in the conversations command) to mirror it.",
-        ),
-      );
-      console.log('');
-    }
     console.log(
       `  ${color.yellow('Not sent.')} ` +
         color.dim('Re-run the same command with --confirm to deliver it.'),
@@ -1319,26 +1431,25 @@ async function cmdSend(tab, listingId, conversationId, textArg, flags) {
   }
 
   // ── confirmed: verify the conversation, then POST ───────────────────────
-  let detail = null;
-  try {
-    detail = await apiFetch(
-      tab,
-      `${WWW}/nachrichten-manager/api/references/${encodeURIComponent(listingId)}` +
-        `/conversations/${encodeURIComponent(conversationId)}`,
-    );
-  } catch (err) {
-    if (err?.name === 'NodeExitError') throw err;
-    cli.die(
-      `could not load conversation ${conversationId} on listing ${listingId}: ${err.message || err}`,
-      { prefix: 'immobilienscout24' },
-    );
-  }
+  const detail = await loadConversationForSend(tab, listingId, conversationId);
   const participant =
     detail?.participantData?.name ||
     detail?.conversation?.participantName ||
     detail?.participantName ||
     null;
 
+  const liveTags = Array.isArray(detail?.conversation?.tags) ? detail.conversation.tags : null;
+  if (liveTags && liveTags.join(',') !== payload.tags.join(',')) {
+    console.log(
+      color.dim(
+        `  note: thread tags are [${liveTags.join(', ')}]; sending [${payload.tags.join(', ')}] ` +
+          '(override with --tags)',
+      ),
+    );
+  }
+
+  // The two header tokens rotate per response, so mint fresh ones right before the write.
+  await refreshNachrichtenTokens(tab);
   const sent = await apiFetch(tab, url, { method: 'POST', body: payload });
 
   if (flags.json) {
@@ -1349,9 +1460,13 @@ async function cmdSend(tab, listingId, conversationId, textArg, flags) {
   console.log(`  ${color.green('✓')} Message sent`);
   console.log(`  ${color.dim('Conv:')}     ${conversationId}`);
   if (participant) console.log(`  ${color.dim('To:')}       ${participant}`);
-  const messageId = sent?.messageId || sent?.id || sent?.message?.messageId || null;
+  const messageId = sent?.id || sent?.messageId || sent?.message?.messageId || null;
   if (messageId) console.log(`  ${color.dim('Message:')}  ${messageId}`);
+  if (sent?.creationDateTime) {
+    console.log(`  ${color.dim('Sent at:')}  ${shortDate(sent.creationDateTime) || sent.creationDateTime}`);
+  }
   console.log(`  ${color.dim('Chars:')}    ${message.length}`);
+  console.log(`  ${color.dim('Thread:')}   ${threadUrl(listingId, conversationId)}`);
   console.log('');
 }
 

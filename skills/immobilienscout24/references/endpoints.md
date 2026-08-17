@@ -114,44 +114,88 @@ Conversation list item fields (captured): `conversationId`, `participantName`,
 
 Also: `GET /contact-prospects/api/shared/statistics?exposeIds=:id`.
 
-### Sending a message (write path)
+### Sending a message (write path) — CONFIRMED by capture
 
-```
-POST /nachrichten-manager/api/references/{listingId}/conversations/{conversationId}/messages
+Captured from a real landlord send on 2026-08-17 21:10 local (HAR
+`rec-1786993644274-38v491`, entry `003-*-close-*.har`; request/response pair extracted to
+`is24-send-request.json`). Everything in this block is **OBSERVED** unless marked otherwise.
+
+```http
+POST /nachrichten-manager/api/references/166323126/conversations/<conversationId>/messages
 Content-Type: application/json
-x-xsrf-communication-mgr-token: <minted by a GET on /nachrichten-manager/api/feature-switches>
-x-xsrf-contact-prospects-token: <minted by a GET on /contact-prospects/api/shared/feature-switches>
+Accept: application/json, text/plain, */*
+X-XSRF-TOKEN: aa0bd168-…-94ad3fadc19a          # 36-char UUID
+x-xsrf-communication-mgr-token: <96 chars>
+x-xsrf-contact-prospects-token: <96 chars>
 
-{
-  "message": "Sehr geehrter Herr …",
-  "conversationId": "b025f04b-f81f-4a01-9f27-9fa0d1b9ab23",
-  "tags": [],
-  "recommendedActionName": null
-}
+{"message":"Dear …,\n\n…","conversationId":"<conversationId>",
+ "tags":["replied","inbox"],"recommendedActionName":null}
 ```
 
-Provenance (2026-08-18), Nachrichten-Manager SPA bundle
-`/nachrichten-manager/static/js/main.6423fc7b.js`:
+```http
+201 Created
 
-- **OBSERVED** — the API map entry
-  `messageSend: r("/nachrichten-manager/api/references/:reference/conversations/:conversationId/messages".concat(o()))`,
-  posted with `axios.post(url, payload)` from the `sendMessageMutation` hook
-  (`mutationKey: SendSingleMessage`).
-- **OBSERVED** — the payload builder:
-  `{ message, conversationId, tags, recommendedActionName, copilotConversationIndex, …(uploadIds?.length && { uploadIds }), …(appointment && { appointment }) }`.
-  `tags` is the conversation's current tag array in the UI; `recommendedActionName` is
-  `null` unless a recommended-action template was used.
-- **OBSERVED** — `o()` adds no query string on production `/nachrichten-manager/…`
-  paths: live resource timings for this account show plain
-  `…/conversations/<id>/messages` with no `?ssoId=`.
-- **OBSERVED** — the reply textarea in the UI carries `maxLength=100000`; the skill
-  refuses longer bodies client-side.
-- **INFERRED, not exercised** — the response shape (the skill reads `messageId`/`id`
-  defensively), the server's reaction to `tags: []`, and the error codes for an unknown
-  conversation id. No POST was ever issued during development: `send` requires
-  `--confirm` and the first live send is left to the operator.
+{"id":"<messageId>","conversationId":"<conversationId>","read":true,"autoReply":false,
+ "message":"<echo of the text>","creationDateTime":"2026-08-17T19:10:47.326Z",
+ "userType":"REALTOR","attachments":[],"intent":null,"source":"API","tags":null,
+ "messageType":"TEXT","messageKey":"","payload":""}
+```
+
+- Success status is **201**, not 200. `id` is the new message id.
+- `source` comes back as `"API"`; `tags` comes back `null` even though the request sent
+  two tags, so `tags` in the request is folder bookkeeping for the sending view, not a
+  property of the message.
+- Newlines in `message` are plain `\n` — no HTML, no `<br>`.
+- The `x-datadog-parent-id` / `x-datadog-trace-id` / `x-datadog-origin` /
+  `x-datadog-sampling-priority` / `traceparent` / `tracestate` headers in the capture are
+  Datadog RUM telemetry. **INFERRED, not tested:** they are not required — they carry no
+  auth material, are absent whenever RUM is blocked, and the skill omits them.
 - Not implemented: `uploadIds` (attachments), `appointment` objects,
   `conversations/bulk-message`, `draft` (PUT), `conversation-stage`, `tags` PATCH.
+
+### CSRF token provenance (answered)
+
+Three different tokens travel on a Nachrichten-Manager write. They come from three
+different places:
+
+| Header | Origin | Verified how |
+|--------|--------|--------------|
+| `X-XSRF-TOKEN` | The **`XSRF-TOKEN` cookie** — classic double-submit. `Domain=www.immobilienscout24.de`, `Path=/`, **not HttpOnly**, so `document.cookie` can read it. | The cookie jar holds `XSRF-TOKEN=aa0bd168-e0fd-40b3-8461-94ad3fadc19a`, byte-identical to the header value in the captured 201. |
+| `x-xsrf-communication-mgr-token` | **Response header** of *any* `GET /nachrichten-manager/api/…` (e.g. `/feature-switches`, `/references/:id/statistics`, `/realtor/metadata`). 96 chars, base64url-ish, **rotates on every response**. Not readable as a cookie. | Live read-only GETs: each returned a different 96-char value in that response header; `set-cookie` absent. |
+| `x-xsrf-contact-prospects-token` | **Response header** of `GET /contact-prospects/api/…` (e.g. `/contact-prospects/api/shared/feature-switches`). Also 96 chars and rotating. Not a cookie. | Same probe: only the `/contact-prospects` GET mints it; the `/nachrichten-manager` GETs do not, and vice versa. |
+
+Related cookies that are **not** the header values:
+
+- `XSRF-COMMUNICATION-MGR-TOKEN` — a 36-char UUID, `Domain=.immobilienscout24.de`,
+  `Path=/nachrichten-manager`, **HttpOnly**, `Secure`. It is the server-side half of the
+  rotating `x-xsrf-communication-mgr-token` pair; a client cannot read it and must not try.
+- `XSRF-OKM-TOKEN` — a separate UUID for other Mein-Konto surfaces; unused here.
+- There is **no** `XSRF-CONTACT-PROSPECTS-TOKEN` cookie in the jar at all (checked via
+  CDP over the whole `immobilienscout24.de` domain).
+
+Consequences for the skill, all implemented:
+
+1. `X-XSRF-TOKEN` is read from `document.cookie` in an open www tab
+   (`ensureWwwXsrf`), and a missing cookie fails with
+   `missing XSRF-TOKEN cookie — open https://www.immobilienscout24.de (logged in) in the browser tab, reload it once, then retry`.
+2. The two rotating tokens are minted by GETting the two feature-switch endpoints
+   (`ensureNachrichtenTokens`) and re-harvested from **every** response
+   (`harvestTokens`); a missing token fails with
+   `could not mint Nachrichten CSRF tokens — open the Nachrichten-Manager once while logged in, then retry`.
+3. Because they rotate, `send` calls `refreshNachrichtenTokens()` immediately before the
+   POST, and `apiFetch` still re-mints and retries once on a 403.
+4. Token values are never printed — not in the dry run, not in `--json`, not in errors.
+
+### Conversation deep link (trap)
+
+```
+https://www.immobilienscout24.de/nachrichten-manager/<listingId>/inbox/messages/<conversationId>
+```
+
+The `messages/` segment is **required**. The variant without it —
+`/nachrichten-manager/<listingId>/inbox/<conversationId>` — loads the listing shell and
+renders no thread, which silently looks like an empty or missing conversation when driving
+the UI. `/nachrichten-manager/<listingId>/inbox/navbar` is the folder view.
 
 ## Search / geo
 
@@ -213,10 +257,20 @@ Related (own package only, not wired): `/documents/application-package`,
 ## Live validation notes (2026-08-09)
 
 - ScoutManager POSTs require `x-xsrf-token` = cookie `XSRF-TOKEN` (path `/scoutmanager/`). Open ScoutManager once so the cookie exists.
-- Nachrichten POSTs require `x-xsrf-communication-mgr-token` + `x-xsrf-contact-prospects-token` minted as **response headers** on GETs to `/nachrichten-manager/api/feature-switches` and `/contact-prospects/api/shared/feature-switches`.
+- Nachrichten POSTs require **three** tokens: `X-XSRF-TOKEN` (= the non-HttpOnly `XSRF-TOKEN` cookie) plus `x-xsrf-communication-mgr-token` + `x-xsrf-contact-prospects-token`, which are minted as **response headers** on GETs to `/nachrichten-manager/api/feature-switches` and `/contact-prospects/api/shared/feature-switches` and rotate on every response. See "CSRF token provenance (answered)" above.
 - Geoautocomplete requires static header `X-IS24-GAC: 49f5bf376feed3a0f0a52abb46c0dc90`.
 - `browser.fetch` hangs on POST in SLICC — skill uses in-page `evalAsync` fetch for non-GET.
 - Search result-list JSON is WAF-gated; `search` returns the oneStepSearch `redirectUrl` instead of scraping hits.
 - Conversation messages: `GET .../conversations/:id` returns `{messages:[...], participantData, conversation}`. POST `.../messages` is send-only.
 - `participantData.applicationDocuments.schufaProvided` is **stale/wrong** often — cross-check `profile-preview` document list.
 - `messages` enriches with `applicant` from rent-profile when `participantSsoId` is present.
+
+## Live validation notes (2026-08-17/18)
+
+- Send confirmed end to end by capture: `POST …/conversations/:id/messages` → **201** with
+  `{ id, conversationId, message, creationDateTime, userType: "REALTOR", source: "API" }`.
+- The three CSRF tokens' origins are settled — see the provenance table above.
+- Conversation deep link needs the `messages/` segment:
+  `/nachrichten-manager/<listingId>/inbox/messages/<conversationId>`.
+- `skills` note: the skill's `send` command is confirm-gated; the dry run makes no network
+  call and never prints token values.

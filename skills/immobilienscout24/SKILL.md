@@ -83,12 +83,32 @@ immobilienscout24 send 166323126 <conversationId> --file ./einladung.txt --confi
   pipe form. Inline text stays available for one-liners; passing both is an error.
 - `--json` works in both modes: the preview returns `{ dryRun: true, method, url,
   payload, … }`, the confirmed send returns the API response.
-- `--tags a,b` sets the `tags` array in the payload (default: empty). The web UI
-  copies the conversation's current tags there.
+- `--tags a,b` sets the `tags` array. Default is `replied,inbox`, the value in the
+  captured real send; use `--tags inbox` for a thread you have not replied to yet, or
+  `--tags none` for an empty array. The web UI copies the conversation's current tags
+  there, and `send` prints a note when they differ from what it is about to send.
 - Empty bodies, malformed listing/conversation ids and bodies over 100 000 characters
   (the reply box cap) are rejected before anything is sent. On `--confirm` the
   conversation is fetched first, so an unknown conversation id fails before the POST.
 - Attachments, appointment objects and bulk messages are **not** implemented.
+
+The wire contract is confirmed by a captured real send, not guessed:
+
+```
+POST /nachrichten-manager/api/references/<listingId>/conversations/<conversationId>/messages
+{"message":"…\n…","conversationId":"…","tags":["replied","inbox"],"recommendedActionName":null}
+→ 201 Created  {"id":"<messageId>", …, "userType":"REALTOR", "source":"API"}
+```
+
+On success the command prints the new message `id`, the server timestamp and the thread
+deep link. Three CSRF tokens are required and the skill sources each the way the app does:
+`X-XSRF-TOKEN` from the non-HttpOnly `XSRF-TOKEN` cookie, and
+`x-xsrf-communication-mgr-token` / `x-xsrf-contact-prospects-token` from the response
+headers of `/nachrichten-manager/api/feature-switches` and
+`/contact-prospects/api/shared/feature-switches` — those two rotate on every response, so
+`send` re-mints them immediately before the POST. Missing cookie or un-mintable token both
+fail with an actionable message. **Token values are never printed**, not even in the dry
+run. Details in `references/endpoints.md`.
 
 ## Flags
 
@@ -126,9 +146,12 @@ whose URL matches `immobilienscout24.de`.
   exist in the SPA but are deliberately **not** exposed.
 - `send` posts to
   `/nachrichten-manager/api/references/<listingId>/conversations/<conversationId>/messages`
-  with `{ message, conversationId, tags, recommendedActionName }` — endpoint and payload
-  read out of the Nachrichten-Manager JS bundle, CSRF handled by the existing
-  `x-xsrf-communication-mgr-token` flow.
+  with `{ message, conversationId, tags, recommendedActionName }` and expects **201** with
+  the new message `id` — confirmed by a captured live send, not inferred.
+- **Deep-link trap:** a thread is
+  `/nachrichten-manager/<listingId>/inbox/messages/<conversationId>`. Drop the `messages/`
+  segment and the page renders the listing shell with no thread, which looks exactly like an
+  empty conversation. `/inbox/navbar` is the folder view.
 - Cross-subdomain calls (`sso.`, `api.header.`, `my-property.`, `api.rentprofile.`)
   ride the same browser session; if one 401s, re-login on www and retry.
 - **Bewerbermappe:** `applicant <ssoId>` hits

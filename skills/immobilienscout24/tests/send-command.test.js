@@ -40,7 +40,8 @@ function loadHelpers() {
     'cli',
     'require',
     `${body}
-    return { MAX_MESSAGE_CHARS, SEND_ALIASES, sendUrl, readMessageBody, parseTags };`
+    return { MAX_MESSAGE_CHARS, DEFAULT_SEND_TAGS, SEND_ALIASES, threadUrl, sendUrl,
+             readMessageBody, parseTags };`
   );
   return {
     ...factory('https://www.immobilienscout24.de', cli, require),
@@ -75,11 +76,13 @@ test('MAX_MESSAGE_CHARS matches the reply textarea cap', () => {
   assert.equal(MAX_MESSAGE_CHARS, 100000);
 });
 
-test('parseTags splits, trims and drops empties', () => {
+test('parseTags defaults to the captured tags and parses overrides', () => {
   const { parseTags } = loadHelpers();
-  assert.deepEqual(parseTags({}), []);
-  assert.deepEqual(parseTags({ tags: true }), []);
-  assert.deepEqual(parseTags({ tags: '' }), []);
+  // The captured 201 send carried ["replied","inbox"].
+  assert.deepEqual(parseTags({}), ['replied', 'inbox']);
+  assert.deepEqual(parseTags({ tags: true }), ['replied', 'inbox']);
+  assert.deepEqual(parseTags({ tags: '' }), ['replied', 'inbox']);
+  assert.deepEqual(parseTags({ tags: 'none' }), []);
   assert.deepEqual(parseTags({ tags: 'inbox' }), ['inbox']);
   assert.deepEqual(parseTags({ tags: ' inbox , favourite ,, ' }), ['inbox', 'favourite']);
 });
@@ -179,4 +182,101 @@ test('the HELP text advertises send with --confirm', () => {
   assert.ok(help.includes('immobilienscout24 send <listingId> <conversationId>'));
   assert.ok(help.includes('--confirm'));
   assert.ok(help.includes('--file <path>'));
+});
+
+test('DEFAULT_SEND_TAGS matches the captured request body', () => {
+  const { DEFAULT_SEND_TAGS } = loadHelpers();
+  assert.deepEqual(DEFAULT_SEND_TAGS, ['replied', 'inbox']);
+});
+
+test('threadUrl keeps the required messages/ segment', () => {
+  const { threadUrl } = loadHelpers();
+  assert.equal(
+    threadUrl('166323126', 'b025f04b-f81f-4a01-9f27-9fa0d1b9ab23'),
+    'https://www.immobilienscout24.de/nachrichten-manager/166323126' +
+      '/inbox/messages/b025f04b-f81f-4a01-9f27-9fa0d1b9ab23'
+  );
+  // the trap: without messages/ the SPA renders no thread
+  assert.ok(!/\/inbox\/[0-9a-f-]+$/.test(threadUrl('1', 'b025f04b-f81f-4a01-9f27-9fa0d1b9ab23')));
+});
+
+test('writes carry the www double-submit token, reads do not', () => {
+  assert.ok(
+    /const isWrite = method !== 'GET' && method !== 'HEAD';/.test(source),
+    'apiFetch does not classify writes'
+  );
+  assert.ok(
+    /if \(kind === 'nachrichten' && isWrite\) await ensureWwwXsrf\(useTab\);/.test(source),
+    'nachrichten writes do not ensure the XSRF-TOKEN cookie'
+  );
+  assert.ok(
+    /headers\['X-XSRF-TOKEN'\] = _wwwXsrf;/.test(source),
+    'X-XSRF-TOKEN header is not attached'
+  );
+});
+
+test('ensureWwwXsrf reads the cookie and fails actionably', () => {
+  const fn = source.slice(source.indexOf('async function ensureWwwXsrf('), source.indexOf('async function ensureNachrichtenTokens('));
+  assert.ok(/readDocumentCookie\(nTab, 'XSRF-TOKEN'\)/.test(fn), 'cookie is not read');
+  assert.ok(/missing XSRF-TOKEN cookie/.test(fn), 'no actionable error message');
+  assert.ok(/immobilienscout24\.de \(logged in\)/.test(fn), 'error does not say what to do');
+});
+
+test('send re-mints the rotating tokens immediately before the POST', () => {
+  const start = source.indexOf('async function cmdSend(');
+  const body = source.slice(start, source.indexOf('async function cmdGeo('));
+  const refresh = body.indexOf('await refreshNachrichtenTokens(tab);');
+  const post = body.indexOf("{ method: 'POST', body: payload }");
+  assert.ok(refresh > 0, 'no token refresh before the write');
+  assert.ok(post > refresh, 'tokens are refreshed after the POST, not before');
+  assert.ok(
+    /_hdrTokens\.communicationMgr = null;/.test(source) &&
+      /_hdrTokens\.contactProspects = null;/.test(source),
+    'refresh does not clear both cached tokens'
+  );
+});
+
+test('the dry run never prints token values', () => {
+  const plan = source.slice(source.indexOf('function sendHeaderPlan()'), source.indexOf('async function cmdSend('));
+  assert.ok(/X-XSRF-TOKEN/.test(plan), 'header plan omits X-XSRF-TOKEN');
+  // every value in the plan must be a <placeholder>, never a live token
+  for (const m of plan.matchAll(/'(<[^']+>)'/g)) assert.ok(m[1].startsWith('<'));
+  assert.ok(!/_wwwXsrf|_hdrTokens/.test(plan), 'header plan reaches into live token state');
+});
+
+test('success handling matches the captured 201 response shape', () => {
+  const start = source.indexOf('async function cmdSend(');
+  const body = source.slice(start, source.indexOf('async function cmdGeo('));
+  assert.ok(/sent\?\.id \|\| sent\?\.messageId/.test(body), 'response id is not read as .id first');
+  assert.ok(/creationDateTime/.test(body), 'server timestamp is not surfaced');
+  assert.ok(/threadUrl\(listingId, conversationId\)/.test(body), 'thread deep link not printed');
+});
+
+test('endpoints.md documents token provenance and the deep-link trap', () => {
+  const md = fs.readFileSync(ENDPOINTS_MD, 'utf8');
+  assert.ok(/CSRF token provenance/.test(md));
+  assert.ok(/XSRF-TOKEN` cookie/.test(md), 'X-XSRF-TOKEN cookie origin missing');
+  assert.ok(/rotates on every response/.test(md), 'token rotation not documented');
+  assert.ok(/201 Created/.test(md), '201 status not documented');
+  assert.ok(/inbox\/messages\/<conversationId>/.test(md), 'deep-link pattern missing');
+  assert.ok(/messages\/` segment is \*\*required\*\*/.test(md), 'deep-link trap not called out');
+});
+
+test('unknown conversation ids are detected by payload shape, not status', () => {
+  const fn = source.slice(
+    source.indexOf('async function loadConversationForSend('),
+    source.indexOf('async function cmdSend(')
+  );
+  assert.ok(/Array\.isArray\(body\.messages\)/.test(fn), 'does not check for a messages array');
+  assert.ok(/unknown conversation/.test(fn), 'no actionable unknown-id message');
+  assert.ok(/immobilienscout24 conversations/.test(fn), 'does not tell the user how to list ids');
+  assert.ok(/lookLikeLogin\(res\)/.test(fn), 'does not detect an expired session');
+});
+
+test('the pre-flight runs before the POST in cmdSend', () => {
+  const start = source.indexOf('async function cmdSend(');
+  const body = source.slice(start, source.indexOf('async function cmdGeo('));
+  const pre = body.indexOf('await loadConversationForSend(');
+  const post = body.indexOf("{ method: 'POST', body: payload }");
+  assert.ok(pre > 0 && post > pre, 'pre-flight does not precede the POST');
 });
