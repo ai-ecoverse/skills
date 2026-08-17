@@ -1477,7 +1477,10 @@ slicc.on('update', async (msg) => {
   }
 
   else if (msg.action === 'ensure-item') {
-    // Upsert a queue item by id (create if missing; do NOT clobber others).
+    // Upsert a queue item by id: create it if missing, update it if present.
+    // Only fields supplied in the message are written, other items are left
+    // alone, and `status` is deliberately never touched — the panel owns
+    // publish/defer state.
     if (!state.items) state.items = [];
     const existing = state.items.find(it => it.id === msg.id);
     if (!existing) {
@@ -1489,10 +1492,15 @@ slicc.on('update', async (msg) => {
         liveUrl: msg.liveUrl || '',
         status: 'pending'
       });
-      saveState();
-      renderQueue();
-      if (state.view !== 'document') showView('queue');
+    } else {
+      ['title', 'path', 'previewUrl', 'liveUrl'].forEach(k => {
+        if (msg[k] !== undefined && msg[k] !== null) existing[k] = msg[k];
+      });
     }
+    saveState();
+    // renderQueue() re-reads state.comments per card, so comment logs survive.
+    renderQueue();
+    if (state.view !== 'document') showView('queue');
   }
 
   else if (msg.action === 'update-status') {
