@@ -79,6 +79,10 @@ written — anything you omit keeps its current value, and the item's `status` i
 never modified, so a published or deferred card does not silently revert to
 pending. Existing comments on the card are preserved.
 
+A card whose Publish/Defer lick is still in flight (awaiting `update-status`)
+stays disabled across the re-render, so an `ensure-item` cannot re-enable its
+buttons and invite a duplicate lick.
+
 ```bash
 # Repoint an existing card at a readable path, leaving title/status/comments alone
 sprinkle send review '{"action":"ensure-item","id":"page-1","path":"/shared/review/security.md"}'

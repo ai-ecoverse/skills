@@ -926,6 +926,15 @@ function showView(which) {
 // ═══════════════════════════════════════════════════
 const cardElements = new Map(); // id -> { card, dot, label, commentRow, commentInput }
 
+// Ids with a publish/defer lick in flight, awaiting `update-status`. The busy
+// marker itself lives in the card's DOM classes, which any re-render destroys,
+// so the set of acting ids is tracked here and reapplied by createItemCard.
+//
+// Deliberately NOT part of `state`, so saveState() never persists it: after a
+// reload there is no lick in flight to answer, and a card stuck busy forever is
+// worse than a duplicate lick.
+const actingItems = new Set();
+
 function renderQueue() {
   const scroll = document.getElementById('queue-scroll');
   const empty  = document.getElementById('empty-state');
@@ -933,6 +942,12 @@ function renderQueue() {
   const pendingCount = state.items.filter(i => i.status === 'pending').length;
   badge.textContent = pendingCount;
   badge.className = 'badge' + (pendingCount === 0 ? ' zero' : '');
+
+  // Forget in-flight markers for ids no longer in the queue (e.g. a load-items
+  // replace dropped the card) so a later re-add does not inherit a busy state.
+  [...actingItems].forEach(id => {
+    if (!state.items.some(i => i.id === id)) actingItems.delete(id);
+  });
 
   // Remove existing cards (keep empty state node)
   [...scroll.querySelectorAll('.queue-item')].forEach(el => el.remove());
@@ -1053,6 +1068,11 @@ function createItemCard(item) {
   const commentsLog = div.querySelector('.comments-log');
   cardElements.set(item.id, { card: div, dot, label: labelEl, commentRow, commentInput, commentsLog });
 
+  // A re-render (load-items / ensure-item) rebuilds every card, so restore the
+  // in-flight marker for items whose publish/defer lick is still unanswered —
+  // otherwise the new buttons come back enabled and allow a duplicate lick.
+  if (actingItems.has(item.id)) applyItemActing(item.id, true);
+
   // Render any previously saved comments
   (state.comments && state.comments[item.id] || []).forEach(c => {
     if (!c.cid) c.cid = 'c' + Date.now() + Math.floor(Math.random()*1000);
@@ -1081,6 +1101,14 @@ function handleItemAction(action, id) {
 }
 
 function setItemActing(id, acting) {
+  // Record the in-flight state first so it survives a re-render, then paint it.
+  if (acting) actingItems.add(id);
+  else actingItems.delete(id);
+  applyItemActing(id, acting);
+}
+
+// Paint (or clear) the busy marker on the card currently rendered for `id`.
+function applyItemActing(id, acting) {
   const el = cardElements.get(id);
   if (!el) return;
   el.card.classList.toggle('acting', acting);
@@ -1093,6 +1121,10 @@ function updateItemStatus(id, status) {
   if (!item) return;
   item.status = status;
   saveState();
+
+  // The operation is over: drop the in-flight record as well as the marker, so a
+  // later re-render does not resurrect it.
+  actingItems.delete(id);
 
   const el = cardElements.get(id);
   if (el) {
