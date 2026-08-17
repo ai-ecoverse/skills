@@ -10,6 +10,6 @@
     "xlsx": "0.18.5"
   },
   "devDependencies": {
-    "esbuild": "0.28.1"
+    "esbuild": "0.28.2"
   }
 }
