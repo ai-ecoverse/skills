@@ -7,6 +7,10 @@ function updatedValues(current, added, removed) {
   return unique([...current, ...added]).filter((value) => !removedValues.has(value));
 }
 
+function sameValues(left, right) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
 function reviewerPayload(values) {
   const reviewers = [];
   const teamReviewers = [];
@@ -26,21 +30,26 @@ function reviewerPayload(values) {
 
 function buildPrEditPlan(options) {
   const pull = {};
-  if (options.title !== undefined) pull.title = options.title;
-  if (options.body !== undefined) pull.body = options.body;
-  if (options.base !== undefined) pull.base = options.base;
+  if (options.title !== undefined && options.title !== options.currentTitle)
+    pull.title = options.title;
+  if (options.body !== undefined && options.body !== options.currentBody) pull.body = options.body;
+  if (options.base !== undefined && options.base !== options.currentBase) pull.base = options.base;
 
   const issue = {};
-  if (options.milestone !== undefined) issue.milestone = options.milestone;
+  if (options.milestone !== undefined && options.milestone !== options.currentMilestone) {
+    issue.milestone = options.milestone;
+  }
   if (options.addLabels.length || options.removeLabels.length) {
-    issue.labels = updatedValues(options.currentLabels, options.addLabels, options.removeLabels);
+    const labels = updatedValues(options.currentLabels, options.addLabels, options.removeLabels);
+    if (!sameValues(labels, options.currentLabels)) issue.labels = labels;
   }
   if (options.addAssignees.length || options.removeAssignees.length) {
-    issue.assignees = updatedValues(
+    const assignees = updatedValues(
       options.currentAssignees,
       options.addAssignees,
       options.removeAssignees
     );
+    if (!sameValues(assignees, options.currentAssignees)) issue.assignees = assignees;
   }
 
   const removedReviewers = unique(options.removeReviewers);

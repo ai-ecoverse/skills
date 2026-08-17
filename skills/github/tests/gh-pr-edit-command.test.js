@@ -21,6 +21,7 @@ async function runGh(args, scenario = {}) {
   const stdout = [];
   const stderr = [];
   let stdinReadCount = 0;
+  let pullReadCount = 0;
   const record = (method) => async (requestPath, options) => {
     calls.push({ method, path: requestPath, options });
     if (scenario.failWrite) throw { body: { message: 'boom' } };
@@ -34,6 +35,11 @@ async function runGh(args, scenario = {}) {
         return scenario.authenticatedUser || { login: 'viewer' };
       }
       if (requestPath.endsWith('/milestones')) return scenario.milestones || [];
+      if (/\/pulls\/\d+$/.test(requestPath)) {
+        pullReadCount++;
+        if (pullReadCount > 1 && scenario.updatedPull) return scenario.updatedPull;
+        return scenario.pull || {};
+      }
       if (requestPath.includes('/issues/')) {
         return scenario.issue || { labels: [], assignees: [] };
       }
@@ -73,6 +79,9 @@ async function runGh(args, scenario = {}) {
   exec.start = exec;
   const fileSystem = {
     readFile: async (filePath) => {
+      if (scenario.bodyFiles && Object.hasOwn(scenario.bodyFiles, filePath)) {
+        return scenario.bodyFiles[filePath];
+      }
       if (filePath === '/body.md') return 'from file';
       throw new Error('ENOENT');
     },
@@ -153,6 +162,8 @@ test('exposes pr edit in top-level, group, and scoped help', async () => {
     '--remove-assignee',
     '--add-reviewer',
     '--remove-reviewer',
+    '--json',
+    '--jq',
   ])
     assert.match(help, new RegExp(flag));
   assert.match(help, /use "-" for stdin/);
@@ -196,6 +207,15 @@ test('rejects parser and validation errors before any write', async () => {
       /Invalid repo format/,
       { inferredRepo: 'inferred/repo' },
     ],
+    [['pr', 'edit', '42', '--bogus', 'X', '-R', 'octo/repo'], /unknown flag --bogus/],
+    [
+      ['pr', 'edit', '42', '--add-project', 'Roadmap', '-R', 'octo/repo'],
+      /unknown flag --add-project/,
+    ],
+    [
+      ['pr', 'edit', '42', '--title', 'T', '--json', 'notAField', '-R', 'octo/repo'],
+      /unknown JSON field "notAField"/,
+    ],
     [
       ['pr', 'edit', '42', 'invalid', '--title', 'T'],
       /Invalid repo format/,
@@ -236,8 +256,15 @@ test('dispatches pull fields and body files to the pull endpoint', async () => {
   result = await runGh(['pr', 'edit', '42', '-F', '/body.md', '-R', 'octo/repo']);
   assert.deepEqual(writes(result)[0].options.body, { body: 'from file' });
 
-  result = await runGh(['pr', 'edit', '42', '--body', '', '-R', 'octo/repo']);
+  result = await runGh(['pr', 'edit', '42', '--body', '', '-R', 'octo/repo'], {
+    pull: { body: 'existing body' },
+  });
   assert.deepEqual(writes(result)[0].options.body, { body: '' });
+
+  result = await runGh(['pr', 'edit', '42', '-F', '/newline.md', '-R', 'octo/repo'], {
+    bodyFiles: { '/newline.md': 'from file\n' },
+  });
+  assert.deepEqual(writes(result)[0].options.body, { body: 'from file\n' });
 
   result = await runGh(['pr', 'edit', '42', '--title', 'T'], {
     inferredRepo: 'inferred/repo',
@@ -361,13 +388,90 @@ test('dispatches user and team reviewer additions and removals', async () => {
   ]);
 });
 
+test('emits selected fields from the updated PR with --json', async () => {
+  const scenario = {
+    pull: { number: 42, title: 'Before', body: '', base: { ref: 'main' } },
+    updatedPull: {
+      number: 42,
+      title: 'After',
+      body: '',
+      base: { ref: 'main' },
+      html_url: 'https://example.test/pr/42',
+    },
+  };
+  let result = await runGh(
+    ['pr', 'edit', '42', '--title', 'After', '--json', 'number,title,url', '-R', 'octo/repo'],
+    scenario
+  );
+  assert.deepEqual(writes(result), [
+    {
+      method: 'patch',
+      path: '/repos/octo/repo/pulls/42',
+      options: { body: { title: 'After' } },
+    },
+  ]);
+  assert.deepEqual(JSON.parse(result.stdout.join('\n')), {
+    number: 42,
+    title: 'After',
+    url: 'https://example.test/pr/42',
+  });
+
+  result = await runGh(
+    ['pr', 'edit', '42', '--title', 'After', '--json', '-R', 'octo/repo'],
+    scenario
+  );
+  assert.equal(JSON.parse(result.stdout.join('\n')).title, 'After');
+
+  result = await runGh(
+    [
+      'pr',
+      'edit',
+      '42',
+      '--title',
+      'After',
+      '--json',
+      'title',
+      '--jq',
+      '.title',
+      '-R',
+      'octo/repo',
+    ],
+    scenario
+  );
+  assert.equal(result.stdout.join('\n'), 'After');
+});
+
+test('reports semantic no-ops without a PATCH', async () => {
+  let result = await runGh(['pr', 'edit', '42', '--title', 'Same', '-R', 'octo/repo'], {
+    pull: { title: 'Same', body: '', base: { ref: 'main' } },
+  });
+  assert.deepEqual(writes(result), []);
+  assert.match(result.stdout.join('\n'), /No changes/);
+  assert.doesNotMatch(result.stdout.join('\n'), /Edited PR/);
+
+  result = await runGh(['pr', 'edit', '42', '--add-label', 'ready', '-R', 'octo/repo'], {
+    pull: { title: 'Same', body: '', base: { ref: 'main' } },
+    issue: { labels: [{ name: 'ready' }], assignees: [] },
+  });
+  assert.deepEqual(writes(result), []);
+  assert.match(result.stdout.join('\n'), /No changes/);
+});
+
+test('repo inference failure recommends the explicit -R form', async () => {
+  const result = await runGh(['pr', 'edit', '42', '--title', 'T']);
+  assert.match(result.error.message, /-R owner\/repo/);
+  assert.deepEqual(writes(result), []);
+});
+
 test('resolves named milestones and clears milestones', async () => {
   let result = await runGh(['pr', 'edit', '42', '--milestone', 'Sprint', '-R', 'octo/repo'], {
     milestones: [{ title: 'Sprint', number: 7 }],
   });
   assert.deepEqual(writes(result)[0].options.body, { milestone: 7 });
 
-  result = await runGh(['pr', 'edit', '42', '--remove-milestone', '-R', 'octo/repo']);
+  result = await runGh(['pr', 'edit', '42', '--remove-milestone', '-R', 'octo/repo'], {
+    issue: { labels: [], assignees: [], milestone: { number: 7 } },
+  });
   assert.deepEqual(writes(result)[0].options.body, { milestone: null });
 });
 
