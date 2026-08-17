@@ -70,18 +70,18 @@ search "the best essays on typography" --provider kagi -n 5
 
 ## Provider guidance
 
-| Provider | Strength | Env var | `--type news` |
-|---|---|---|---|
-| **Brave** | Independent index (not Google/Bing), low latency, privacy. Best default for general grounding. | `BRAVE_API_KEY` | yes |
-| **Exa** | Neural/semantic. Best for research, discovery, "find things arguing X". Token-efficient highlights. | `EXA_API_KEY` | yes |
-| **Tavily** | LLM-optimized snippets; the practical choice for RAG with minimal post-processing. | `TAVILY_API_KEY` | yes |
-| **Kagi** | Premium human-quality results, billed per search. | `KAGI_API_KEY` | yes |
+| Provider | Env var | Strength |
+|---|---|---|
+| **Brave** | `BRAVE_API_KEY` | Independent index (not Google/Bing), low latency, privacy. Best default for general grounding. |
+| **Exa** | `EXA_API_KEY` | Neural/semantic. Best for research, discovery, "find things arguing X". Token-efficient highlights. |
+| **Tavily** | `TAVILY_API_KEY` | LLM-optimized snippets; the practical choice for RAG with minimal post-processing. |
+| **Kagi** | `KAGI_API_KEY` | Premium human-quality results, billed per search. |
 
-`auto` walks Brave → Exa → Tavily → Kagi: it takes the first provider that has a
-key and moves on when one errors. Kagi is last because it bills per search — name
-it with `--provider kagi` when the quality is worth the cost. An explicit
-`--provider` never falls back, so a result's `source` is always the provider that
-was asked.
+All four serve `--type news`. `auto` takes the first provider that has a key, in
+that order, and moves on when one errors; Kagi is last because it bills per
+search, so name it with `--provider kagi` when the quality is worth the cost. An
+explicit `--provider` never falls back, so a result's `source` is always the
+provider that was asked.
 
 Endpoints, request/response field mappings, and per-provider quirks:
 [references/providers.md](references/providers.md).
@@ -106,6 +106,19 @@ With `--json` it emits a stable array of objects:
 
 Agents should prefer `--json` when they need to reason over or cite results.
 
+## When a search comes up short
+
+- **`[]`, or "No results found"** — a successful search that matched nothing, not
+  an error. Broaden the query (drop quoted phrases and rare terms), drop
+  `--include-domains`, or switch index: `--provider exa` reaches semantically
+  phrased questions, `--provider brave` favours keyword coverage. Re-running the
+  identical query will not help.
+- **Non-zero exit** — the message names the cause and the fix. A rejected key
+  names its env var; in `auto` mode each provider tried is listed, so a single
+  failure there means every configured provider failed. Rate limits (429) are
+  already retried once internally, so a repeat run is only worth it after a wait.
+- **Results look out of date** — add `--type news`.
+
 ## When not to use this skill
 
 Use browser tools instead for authenticated or interactive work inside a specific
@@ -113,8 +126,7 @@ web app; this skill only reaches the open web.
 
 ## Implementation notes
 
-The command lives at `scripts/search.jsh` (SLICC `.jsh` runtime: `process`,
-`fetch`, normalized error handling). It is read-only: one request per
-invocation, nothing persisted. Extend it carefully so the JSON schema stays
-stable for agents that already depend on it, and keep `--help`,
-`references/providers.md` and this file in lockstep with the code.
+`scripts/search.jsh` (SLICC `.jsh` runtime) is read-only: one request per
+invocation, nothing persisted. Keep the JSON schema stable for agents that
+already depend on it, and `--help`, `references/providers.md` and this file in
+lockstep with the code.
