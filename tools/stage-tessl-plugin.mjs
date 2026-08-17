@@ -111,7 +111,15 @@ async function loadPlugins(repoRoot) {
     }
     plugins.set(entry.name, { manifestPath, manifest });
   }
-  return { plugins, skillPaths: [...memberships.keys()] };
+  return plugins;
+}
+
+async function listCanonicalSkillPaths(repoRoot) {
+  const entries = await readdir(join(repoRoot, 'skills'), { withFileTypes: true });
+  return entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => `skills/${entry.name}`)
+    .sort();
 }
 
 async function resolvePhysicalPath(path) {
@@ -185,12 +193,13 @@ export async function stagePlugin({ pluginName, destination, repoRoot = REPO_ROO
   if (!destination) throw new Error('destination is required');
 
   const resolvedRepoRoot = resolve(repoRoot);
-  const { plugins, skillPaths } = await loadPlugins(resolvedRepoRoot);
+  const plugins = await loadPlugins(resolvedRepoRoot);
   const plugin = plugins.get(pluginName);
   if (!plugin) throw new Error(`unknown plugin: ${pluginName}`);
 
   const stageRoot = await resolvePhysicalPath(destination);
-  await assertDestinationDoesNotOverlap(stageRoot, resolvedRepoRoot, skillPaths);
+  const canonicalSkillPaths = await listCanonicalSkillPaths(resolvedRepoRoot);
+  await assertDestinationDoesNotOverlap(stageRoot, resolvedRepoRoot, canonicalSkillPaths);
   await assertEmptyDestination(stageRoot);
   await mkdir(join(stageRoot, '.tessl-plugin'), { recursive: true });
   await copyFile(plugin.manifestPath, join(stageRoot, '.tessl-plugin', 'plugin.json'));

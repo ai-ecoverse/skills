@@ -181,3 +181,15 @@ test('rejects destinations overlapping canonical skills before writing', async (
   );
   await assert.deepEqual(await readdir(skillRoot), ['SKILL.md']);
 });
+
+test('rejects a destination inside an unpublished canonical skill before writing', async (t) => {
+  const repoRoot = await fixture(t, { basic: ['skills/alpha'] }, ['alpha', 'unpublished']);
+  const unpublishedRoot = join(repoRoot, 'skills', 'unpublished');
+  const destination = join(unpublishedRoot, 'stage');
+
+  await assert.rejects(
+    stagePlugin({ pluginName: 'basic', destination, repoRoot }),
+    /destination overlaps canonical skill skills\/unpublished/
+  );
+  assert.deepEqual(await readdir(unpublishedRoot), ['SKILL.md']);
+});

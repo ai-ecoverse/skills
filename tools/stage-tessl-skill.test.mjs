@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -45,6 +45,23 @@ test('rejects unsafe paths and overlapping destinations before writing', async (
     }),
     /destination overlaps canonical skill/
   );
+});
+
+test('rejects a destination reached through a symlinked source ancestor without writing', async (t) => {
+  const repoRoot = await fixture(t);
+  const source = join(repoRoot, 'skills/unpublished');
+  const alias = join(repoRoot, 'skill-alias');
+  await symlink(source, alias, 'dir');
+
+  await assert.rejects(
+    stageSkill({
+      skillPath: 'skills/unpublished',
+      destination: join(alias, 'stage'),
+      repoRoot,
+    }),
+    /destination overlaps canonical skill/
+  );
+  assert.deepEqual(await readdir(source), ['SKILL.md']);
 });
 
 test('rejects source symlinks before creating output', async (t) => {

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { copyFile, lstat, mkdir, readdir, writeFile } from 'node:fs/promises';
+import { copyFile, lstat, mkdir, readdir, realpath, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -15,6 +15,22 @@ function containsPath(parent, child) {
       !childFromParent.startsWith(`..${sep}`) &&
       !isAbsolute(childFromParent))
   );
+}
+
+async function resolvePhysicalPath(path) {
+  let cursor = resolve(path);
+  const missingSegments = [];
+  while (true) {
+    try {
+      return resolve(await realpath(cursor), ...missingSegments.reverse());
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    const parent = dirname(cursor);
+    if (parent === cursor) throw new Error(`cannot resolve destination: ${path}`);
+    missingSegments.push(basename(cursor));
+    cursor = parent;
+  }
 }
 
 async function assertConcreteTree(path) {
@@ -48,8 +64,20 @@ export async function stageSkill({ skillPath, destination, repoRoot = REPO_ROOT 
   if (!destination) throw new Error('destination is required');
 
   const source = resolve(repoRoot, skillPath);
-  const stageRoot = resolve(destination);
-  if (containsPath(source, stageRoot) || containsPath(stageRoot, source)) {
+  const skillName = basename(skillPath);
+  const sourceStat = await lstat(source);
+  const manifestStat = await lstat(join(source, 'SKILL.md'));
+  if (!sourceStat.isDirectory() || sourceStat.isSymbolicLink()) {
+    throw new Error(`skill is not a canonical directory: ${skillPath}`);
+  }
+  if (!manifestStat.isFile() || manifestStat.isSymbolicLink()) {
+    throw new Error(`skill has no regular SKILL.md: ${skillPath}`);
+  }
+  await assertConcreteTree(source);
+
+  const physicalSource = await realpath(source);
+  const stageRoot = await resolvePhysicalPath(destination);
+  if (containsPath(physicalSource, stageRoot) || containsPath(stageRoot, physicalSource)) {
     throw new Error(`destination overlaps canonical skill ${skillPath}: ${stageRoot}`);
   }
 
@@ -61,17 +89,6 @@ export async function stageSkill({ skillPath, destination, repoRoot = REPO_ROOT 
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
   }
-
-  const skillName = basename(skillPath);
-  const sourceStat = await lstat(source);
-  const manifestStat = await lstat(join(source, 'SKILL.md'));
-  if (!sourceStat.isDirectory() || sourceStat.isSymbolicLink()) {
-    throw new Error(`skill is not a canonical directory: ${skillPath}`);
-  }
-  if (!manifestStat.isFile() || manifestStat.isSymbolicLink()) {
-    throw new Error(`skill has no regular SKILL.md: ${skillPath}`);
-  }
-  await assertConcreteTree(source);
 
   await mkdir(join(stageRoot, '.tessl-plugin'), { recursive: true });
   await mkdir(join(stageRoot, 'skills'));

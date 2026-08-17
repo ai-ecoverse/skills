@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SKILL_FILE = /^skills\/([a-z0-9][a-z0-9-]*)\//;
 const PLUGIN_MANIFEST = /^tiles\/([a-z0-9][a-z0-9-]*)\/\.tessl-plugin\/plugin\.json$/;
+const TILE_SKILL = /^tiles\/([a-z0-9][a-z0-9-]*)\/skills(?:\/|$)/;
 
 async function isCanonicalSkill(repoRoot, skillName) {
   try {
@@ -34,6 +35,9 @@ export async function detectTesslChanges({ changedFiles, repoRoot = REPO_ROOT })
 
     const pluginMatch = file.match(PLUGIN_MANIFEST);
     if (pluginMatch) plugins.add(pluginMatch[1]);
+
+    const tileSkillMatch = file.match(TILE_SKILL);
+    if (tileSkillMatch) plugins.add(tileSkillMatch[1]);
   }
 
   const skills = [];

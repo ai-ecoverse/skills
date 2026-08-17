@@ -76,3 +76,13 @@ test('maps a manifest-only change to staged plugin validation', async (t) => {
 
   assert.deepEqual(result, { skills: [], plugins: ['advanced'] });
 });
+
+test('maps a tracked tile skill change to staged plugin validation during migration', async (t) => {
+  const repoRoot = await fixture(t);
+  const result = await detectTesslChanges({
+    changedFiles: ['tiles/basic/skills/published'],
+    repoRoot,
+  });
+
+  assert.deepEqual(result, { skills: [], plugins: ['basic'] });
+});
