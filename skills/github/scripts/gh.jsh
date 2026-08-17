@@ -107,6 +107,7 @@ const color = require('sliccy:color'); // renamed from bare `c` global
 const http = require('sliccy:http');
 const { buildPrWatchFilter, composePrWatchFilter, findWatchWebhook } = require('./pr-watch-filter.js');
 const { assignField } = require('./assign-field.js');
+const { applyPrEdit, buildPrEditPlan } = require('./pr-edit.js');
 
 // Single POSIX-shell-quote a value for safe interpolation into an exec()
 // command line (exec runs through the jsh shell bridge).
@@ -273,7 +274,7 @@ async function resolveRepo(arg) {
   if (arg && arg.includes('/')) return validateRepo(arg);
   const inferred = await inferRepo();
   if (inferred) return inferred;
-  cli.die('No repo specified and could not infer from git remote. Pass owner/repo explicitly.');
+  cli.die('No repo specified and could not infer from git remote. Pass -R owner/repo (or a trailing owner/repo) explicitly.');
 }
 
 // ─── Input validation ────────────────────────────────────────────────────────
@@ -287,7 +288,6 @@ function validateNum(val, name) {
 }
 
 function validateRepo(val) {
-  if (!val) return val;
   if (!/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/.test(val)) {
     cli.die(`Invalid repo format: expected owner/repo with alphanumeric, hyphens, dots (got: ${JSON.stringify(val)})`);
   }
@@ -395,6 +395,21 @@ const FLAG_SPECS = {
     labels: { type: 'list' },
     assignee: { type: 'list', short: 'a' },
     reviewer: { type: 'list', short: 'r' },
+  },
+  'pr edit': {
+    ...REPO_FLAG, ...JSON_FLAGS,
+    title: { type: 'string', short: 't' },
+    body: { type: 'string', short: 'b' },
+    'body-file': { type: 'string', short: 'F' },
+    base: { type: 'string', short: 'B' },
+    milestone: { type: 'string', short: 'm' },
+    'remove-milestone': { type: 'bool' },
+    'add-label': { type: 'list' },
+    'remove-label': { type: 'list' },
+    'add-assignee': { type: 'list' },
+    'remove-assignee': { type: 'list' },
+    'add-reviewer': { type: 'list' },
+    'remove-reviewer': { type: 'list' },
   },
   'pr checkout': { ...REPO_FLAG },
   'pr watch': {
@@ -562,7 +577,7 @@ function flagConsumesNext(spec, tok, next) {
   return next !== undefined;
 }
 
-function parseArgs(cmdLabel, args, spec) {
+function parseArgs(cmdLabel, args, spec, { rejectUnknown = false } = {}) {
   const flags = {};
   const positional = [];
   let literal = false;
@@ -576,6 +591,9 @@ function parseArgs(cmdLabel, args, spec) {
     const raw = eq === -1 ? a : a.slice(0, eq);
     const [key, def] = findFlagSpec(spec, raw.replace(/^--?/, ''));
     if (!key) {
+      if (rejectUnknown) {
+        cli.die(`${cmdLabel}: unknown flag ${raw} (run \`gh ${cmdLabel} --help\` for the supported flags)`);
+      }
       cli.warn(
         `${cmdLabel}: unrecognised flag ${raw} — passing it through as a positional argument ` +
         `(run \`gh ${cmdLabel} --help\` for the supported flags)`
@@ -686,9 +704,13 @@ async function resolveMilestone(cmdLabel, repo, value, { allowSentinels = false 
 }
 
 async function bodyFrom(cmdLabel, body, bodyFile) {
-  if (bodyFile) {
+  if (bodyFile !== undefined && bodyFile !== null) {
     if (body !== null && body !== undefined) {
       cli.die(`${cmdLabel}: body specified twice — --body and --body-file. Pass only one.`);
+    }
+    if (bodyFile === '-') {
+      try { return (await process.stdin.read()) ?? ''; }
+      catch (e) { cli.die(`${cmdLabel}: could not read stdin for --body-file -: ${e.message}`); }
     }
     try { return await fs.readFile(bodyFile); }
     catch (e) { cli.die(`${cmdLabel}: could not read --body-file ${bodyFile}: ${e.message}`); }
@@ -1285,6 +1307,121 @@ async function prCreate(args) {
       console.log(color.gray('Reviewers:') + ' ' + flags.reviewer.join(', '));
     } catch (e) { cli.warn('pr create: PR created but reviewers could not be requested: ' + (e.body?.message || e.message)); }
   }
+}
+
+// ─── pr edit ─────────────────────────────────────────────────────────────────
+
+async function prEdit(args) {
+  const usage = 'usage: gh pr edit <num> [--title T] [--body B] [--body-file F] [--base B] '
+    + '[--add-label L]... [--remove-label L]... [--add-assignee U]... '
+    + '[--remove-assignee U]... [--add-reviewer R]... [--remove-reviewer R]... '
+    + '[--milestone M|--remove-milestone] [--json [fields]] [-R owner/repo] [repo]';
+  const { flags, positional } = parseArgs(
+    'pr edit',
+    args,
+    FLAG_SPECS['pr edit'],
+    { rejectUnknown: true }
+  );
+  if (flags.repo !== undefined) validateRepo(flags.repo);
+  if (positional.length > 1) {
+    validateRepo(positional[positional.length - 1]);
+    if (positional.length > 2) cli.die('pr edit: too many positional arguments\n' + usage);
+  }
+  const { values, repoArg } = distribute('pr edit', positional, ['number'], flags);
+  if (!values.number) cli.die('pr edit: PR number required\n' + usage);
+  const num = validateNum(values.number, 'PR number');
+  const body = await bodyFrom('pr edit', flags.body ?? null, flags['body-file']);
+  const addLabels = flags['add-label'] || [];
+  const removeLabels = flags['remove-label'] || [];
+  let addAssignees = flags['add-assignee'] || [];
+  let removeAssignees = flags['remove-assignee'] || [];
+  const addReviewers = flags['add-reviewer'] || [];
+  const removeReviewers = flags['remove-reviewer'] || [];
+
+  if (flags.milestone !== undefined && flags['remove-milestone']) {
+    cli.die('pr edit: --milestone and --remove-milestone cannot be used together\n' + usage);
+  }
+  if (flags.milestone !== undefined && !String(flags.milestone).trim()) {
+    cli.die('pr edit: --milestone requires a non-empty value\n' + usage);
+  }
+  const hasEdit = flags.title !== undefined || body !== null || flags.base !== undefined
+    || flags.milestone !== undefined || !!flags['remove-milestone']
+    || addLabels.length || removeLabels.length || addAssignees.length || removeAssignees.length
+    || addReviewers.length || removeReviewers.length;
+  if (!hasEdit) {
+    cli.die('pr edit: nothing to update — pass at least one edit flag\n' + usage);
+  }
+  const fields = parseFields('pr edit', flags.json, PR_LIST_FIELDS);
+
+  const repo = await repoFrom('pr edit', flags, repoArg);
+  if (addAssignees.includes('@me') || removeAssignees.includes('@me')) {
+    let login;
+    try {
+      const user = await api.get('/user');
+      login = user?.login;
+    } catch (e) {
+      cli.die('pr edit: could not resolve @me: ' + (e.body?.message || e.message));
+    }
+    if (!login) cli.die('pr edit: could not resolve @me: GitHub returned no authenticated user login');
+    addAssignees = addAssignees.map((value) => value === '@me' ? login : value);
+    removeAssignees = removeAssignees.map((value) => value === '@me' ? login : value);
+  }
+  let currentPull;
+  try { currentPull = await api.get(`/repos/${repo}/pulls/${num}`); }
+  catch (e) { fail('pr edit', e); }
+
+  const needsIssue = addLabels.length || removeLabels.length || addAssignees.length
+    || removeAssignees.length || flags.milestone !== undefined || flags['remove-milestone'];
+  let currentIssue = null;
+  if (needsIssue) {
+    try { currentIssue = await api.get(`/repos/${repo}/issues/${num}`); }
+    catch (e) { fail('pr edit', e); }
+  }
+  let milestone;
+  if (flags['remove-milestone']) milestone = null;
+  else if (flags.milestone !== undefined) {
+    milestone = await resolveMilestone('pr edit', repo, flags.milestone);
+  }
+
+  const plan = buildPrEditPlan({
+    currentTitle: currentPull.title,
+    currentBody: currentPull.body ?? '',
+    currentBase: currentPull.base?.ref,
+    currentMilestone: currentIssue?.milestone?.number ?? null,
+    ...(flags.title !== undefined ? { title: flags.title } : {}),
+    ...(body !== null ? { body } : {}),
+    ...(flags.base !== undefined ? { base: flags.base } : {}),
+    ...(milestone !== undefined ? { milestone } : {}),
+    currentLabels: (currentIssue?.labels || []).map((label) => label.name),
+    currentAssignees: (currentIssue?.assignees || []).map((assignee) => assignee.login),
+    addLabels,
+    removeLabels,
+    addAssignees,
+    removeAssignees,
+    addReviewers,
+    removeReviewers,
+  });
+
+  try {
+    const result = await applyPrEdit(api, repo, num, plan);
+    if (!Object.keys(result).length) {
+      if (fields !== undefined) {
+        await outputJson(pickFields(prListJson(currentPull), fields), flags);
+      } else {
+        console.log(color.gray('No changes to PR #' + num + ' in ' + repo + '.'));
+      }
+      return;
+    }
+    if (fields !== undefined) {
+      const updated = await api.get(`/repos/${repo}/pulls/${num}`);
+      await outputJson(pickFields(prListJson(updated), fields), flags);
+      return;
+    }
+    const edited = result.pull || result.issue;
+    console.log(sym('success') + ' Edited PR ' + color.cyan('#' + num)
+      + (edited?.title ? ': ' + edited.title : '') + ' in ' + repo);
+    if (edited?.html_url) console.log(color.gray('URL:') + '     ' + edited.html_url);
+  } catch (e) { fail('pr edit', e); }
 }
 
 // ─── pr checkout ─────────────────────────────────────────────────────────────
@@ -2990,6 +3127,32 @@ const HELP = {
           '-r, --reviewer <user>     request a reviewer (repeatable; org/team for teams)'],
         notes: ['A value supplied both as a flag and as a positional is an error, never silently picked.'],
       },
+      edit: {
+        usage: ['gh pr edit <num> [--title T] [--body B] [--base B] [--add-label L] [--json [fields]]', 'gh pr edit <num> [flags] [repo]'],
+        desc: 'Edit pull request metadata, assignees, and requested reviewers',
+        flags: [REPO_HELP,
+          '-t, --title <title>       new title',
+          '-b, --body <body>         new body',
+          '-F, --body-file <path>    read the new body from a file (use "-" for stdin)',
+          '-B, --base <branch>       new base branch',
+          '-m, --milestone <ms>      milestone name or number',
+          '--remove-milestone        clear the milestone',
+          '--add-label <name>        add a label, keeping existing ones',
+          '--remove-label <name>     remove a label',
+          '--add-assignee <user>     add an assignee (use @me for yourself)',
+          '--remove-assignee <user>  remove an assignee (use @me for yourself)',
+          '--add-reviewer <user>     request a reviewer (repeatable; org/team for teams)',
+          '--remove-reviewer <user>  remove a reviewer request (repeatable; org/team for teams)',
+          '--json [fields]           output the updated PR as JSON',
+          '-q, --jq <expr>           filter JSON output with jq'],
+        notes: [
+          'Requires a positive integer PR number and at least one edit flag.',
+          '--body and --body-file conflict; --milestone and --remove-milestone conflict.',
+          '--body-file preserves the file contents verbatim, including a trailing newline.',
+          'Unknown flags are rejected before any mutation.',
+          'Project flags and implicit, branch, or URL selectors are not supported.',
+        ],
+      },
       merge: {
         usage: ['gh pr merge <num> [--squash|--rebase|--merge] [--delete-branch]', 'gh pr merge <num> [--squash] [repo]'],
         desc: 'Merge a pull request',
@@ -3364,6 +3527,7 @@ ${color.bold('COMMANDS')}
   ${color.cyan('pr view')}       <num> [--json f1,f2] [--comments] [repo]     View PR details and checks
   ${color.cyan('pr checks')}     <num> [--json] [--watch] [repo]              Per-check status for the PR head
   ${color.cyan('pr create')}     --title T --body B --head BR [--base M] [--draft]  Open a PR
+  ${color.cyan('pr edit')}       <num> [--title T] [--base B] [--add-label L]  Edit a PR
   ${color.cyan('pr merge')}      <num> [--squash|--rebase] [--delete-branch]  Merge a PR
   ${color.cyan('pr close')}      <num> [--comment T] [repo]                   Close a PR without merging
   ${color.cyan('pr comment')}    <num> --body T [repo]                        Post a comment
@@ -3499,7 +3663,7 @@ if (cmd === 'api') { await apiPassthrough(argv.slice(1)); process.exit(0); }
 if (cmd === 'monday') { await mondayGh(argv.slice(1)); process.exit(0); }
 
 const dispatch = {
-  pr:      { list: () => prList(rest),      view: () => prView(rest),    checks: () => prChecks(rest), merge: () => prMerge(rest), close: () => prClose(rest), comment: () => prComment(rest), checkout: () => prCheckout(rest), create: () => prCreate(rest), watch: () => prWatch(rest), unwatch: () => prUnwatch(rest) },
+  pr:      { list: () => prList(rest),      view: () => prView(rest),    checks: () => prChecks(rest), merge: () => prMerge(rest), close: () => prClose(rest), comment: () => prComment(rest), checkout: () => prCheckout(rest), create: () => prCreate(rest), edit: () => prEdit(rest), watch: () => prWatch(rest), unwatch: () => prUnwatch(rest) },
   issue:   { list: () => issueList(rest),   view: () => issueView(rest), create: () => issueCreate(rest), comment: () => issueComment(rest), close: () => issueClose(rest), edit: () => issueEdit(rest) },
   repo:    { view: () => repoView(rest), archive: () => repoArchive(rest) },
   branch:  { create: () => branchCreate(rest), delete: () => branchDelete(rest) },
