@@ -69,11 +69,11 @@ jobs:
           MESSAGES=$(git log --format='%B' "$BEFORE_SHA..${{ github.sha }}" -- "${WATCHED_PATHS[@]}")
 
           if echo "$MESSAGES" | grep -Eq 'BREAKING CHANGE|^[a-zA-Z]+(\([^)]*\))?!:'; then
-            BUMP=major
+            BUMP="major"
           elif echo "$MESSAGES" | grep -Eiq '^feat(\([^)]*\))?:'; then
-            BUMP=minor
+            BUMP="minor"
           else
-            BUMP=patch
+            BUMP="patch"
           fi
 
           echo "Resolved bump type: $BUMP"
@@ -116,25 +116,33 @@ jobs:
           echo "Bumping $FLOOR as a $BUMP release"
           V=$(bump_version "$FLOOR" "$BUMP")
 
-          MANIFEST="tiles/$PLUGIN/.tessl-plugin/plugin.json"
+          SOURCE_MANIFEST="tiles/$PLUGIN/.tessl-plugin/plugin.json"
+          STAGE_ROOT=$(mktemp -d)
+          trap 'rm -rf "$STAGE_ROOT"' EXIT
+          STAGED_PLUGIN="$STAGE_ROOT/$PLUGIN"
+          STAGED_MANIFEST="$STAGED_PLUGIN/.tessl-plugin/plugin.json"
+          node tools/stage-tessl-plugin.mjs "$PLUGIN" "$STAGED_PLUGIN"
 
           for _ in $(seq 1 25); do
             # publish --version writes version into the manifest even on failure;
             # strip it so --version is honored on every attempt.
             tmp=$(mktemp)
-            jq 'del(.version)' "$MANIFEST" > "$tmp" && mv "$tmp" "$MANIFEST"
+            jq 'del(.version)' "$STAGED_MANIFEST" > "$tmp" && mv "$tmp" "$STAGED_MANIFEST"
 
             set +e
-            OUT=$(tessl plugin publish --version "$V" --resolve-symlinks "tiles/$PLUGIN" 2>&1)
+            OUT=$(tessl plugin publish --version "$V" "$STAGED_PLUGIN" 2>&1)
             RC=$?
             set -e
             echo "$OUT"
             if [ "$RC" -eq 0 ]; then
               echo "Published $NAME@$V"
 
+              tmp=$(mktemp)
+              jq --arg version "$V" '.version = $version' "$SOURCE_MANIFEST" > "$tmp" && mv "$tmp" "$SOURCE_MANIFEST"
+
               git config user.name "github-actions[bot]"
               git config user.email "github-actions[bot]@users.noreply.github.com"
-              git add "$MANIFEST"
+              git add "$SOURCE_MANIFEST"
               git commit -m "chore($PLUGIN): record published version $V [skip ci]"
               git push origin HEAD:main
 

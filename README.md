@@ -32,6 +32,14 @@ skills/{skill-name}/
 
 Only `SKILL.md` is required. Add the other directories as needed.
 
+### Tessl plugin membership
+
+To publish a skill through Tessl, add its canonical `skills/{skill-name}` path to exactly one
+source manifest: `tiles/basic/.tessl-plugin/plugin.json` or
+`tiles/advanced/.tessl-plugin/plugin.json`. The manifest is the only membership declaration;
+do not create a symlink or copy under `tiles/`. CI and publishing assemble concrete plugin trees
+with `tools/stage-tessl-plugin.mjs`.
+
 ## SKILL.md frontmatter
 
 Every `SKILL.md` starts with YAML frontmatter that defines the skill metadata:

@@ -35,8 +35,13 @@ jobs:
         env:
           PLUGIN: ${{ matrix.plugin }}
         run: |
+          set -euo pipefail
           MANIFEST="tiles/$PLUGIN/.tessl-plugin/plugin.json"
           NAME=$(jq -r .name "$MANIFEST")
           VERSION=$(jq -r .version "$MANIFEST")
-          echo "Publishing $NAME@$VERSION from tiles/$PLUGIN"
-          tessl plugin publish --resolve-symlinks "tiles/$PLUGIN"
+          STAGE_ROOT=$(mktemp -d)
+          trap 'rm -rf "$STAGE_ROOT"' EXIT
+          STAGED_PLUGIN="$STAGE_ROOT/$PLUGIN"
+          node tools/stage-tessl-plugin.mjs "$PLUGIN" "$STAGED_PLUGIN"
+          echo "Publishing $NAME@$VERSION from staged plugin $PLUGIN"
+          tessl plugin publish "$STAGED_PLUGIN"
