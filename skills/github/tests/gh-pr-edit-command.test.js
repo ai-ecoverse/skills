@@ -20,6 +20,7 @@ async function runGh(args, scenario = {}) {
   const calls = [];
   const stdout = [];
   const stderr = [];
+  let stdinReadCount = 0;
   const record = (method) => async (requestPath, options) => {
     calls.push({ method, path: requestPath, options });
     if (scenario.failWrite) throw { body: { message: 'boom' } };
@@ -28,6 +29,10 @@ async function runGh(args, scenario = {}) {
   const api = {
     get: async (requestPath, options) => {
       calls.push({ method: 'get', path: requestPath, options });
+      if (requestPath === '/user') {
+        if (scenario.failUserLookup) throw { body: { message: 'viewer unavailable' } };
+        return scenario.authenticatedUser || { login: 'viewer' };
+      }
       if (requestPath.endsWith('/milestones')) return scenario.milestones || [];
       if (requestPath.includes('/issues/')) {
         return scenario.issue || { labels: [], assignees: [] };
@@ -88,6 +93,14 @@ async function runGh(args, scenario = {}) {
   const mockProcess = {
     argv: ['node', target, ...args],
     env: {},
+    stdin: {
+      read: async () => {
+        stdinReadCount++;
+        if (stdinReadCount > 1) throw new Error('stdin already consumed');
+        if (scenario.stdinError) throw scenario.stdinError;
+        return scenario.stdin ?? '';
+      },
+    },
     exit: (code) => {
       throw new NodeExitError('exit', code);
     },
@@ -106,9 +119,9 @@ async function runGh(args, scenario = {}) {
       mockConsole,
       async () => assert.fail('unexpected fetch')
     );
-    return { calls, stdout, stderr };
+    return { calls, stdinReadCount, stdout, stderr };
   } catch (error) {
-    return { error, calls, stdout, stderr };
+    return { error, calls, stdinReadCount, stdout, stderr };
   }
 }
 
@@ -142,6 +155,8 @@ test('exposes pr edit in top-level, group, and scoped help', async () => {
     '--remove-reviewer',
   ])
     assert.match(help, new RegExp(flag));
+  assert.match(help, /use "-" for stdin/);
+  assert.match(help, /use @me for yourself/);
   assert.doesNotMatch(help, /--(?:add|remove)-project/);
 
   const terseHelp = await runGh(['pr', 'edit', '42', '--title', 'T', '-h', '-R', 'octo/repo']);
@@ -230,6 +245,37 @@ test('dispatches pull fields and body files to the pull endpoint', async () => {
   assert.equal(writes(result)[0].path, '/repos/inferred/repo/pulls/42');
 });
 
+test('reads --body-file - from one-shot stdin without changing file behavior', async () => {
+  let result = await runGh(['pr', 'edit', '42', '--body-file', '-', '-R', 'octo/repo'], {
+    stdin: 'from stdin\n',
+  });
+  assert.equal(result.stdinReadCount, 1);
+  assert.deepEqual(writes(result)[0].options.body, { body: 'from stdin\n' });
+
+  result = await runGh(['pr', 'edit', '42', '--body-file', '/body.md', '-R', 'octo/repo'], {
+    stdin: 'must not be read',
+  });
+  assert.equal(result.stdinReadCount, 0);
+  assert.deepEqual(writes(result)[0].options.body, { body: 'from file' });
+});
+
+test('rejects stdin conflicts and read failures before any write', async () => {
+  let result = await runGh(
+    ['pr', 'edit', '42', '--body', 'inline', '--body-file', '-', '-R', 'octo/repo'],
+    { stdin: 'must not be read' }
+  );
+  assert.match(result.error.message, /body specified twice/);
+  assert.equal(result.stdinReadCount, 0);
+  assert.deepEqual(writes(result), []);
+
+  result = await runGh(['pr', 'edit', '42', '--body-file', '-', '-R', 'octo/repo'], {
+    stdinError: new Error('stdin unavailable'),
+  });
+  assert.match(result.error.message, /could not read stdin.*stdin unavailable/);
+  assert.equal(result.stdinReadCount, 1);
+  assert.deepEqual(writes(result), []);
+});
+
 test('preserves and de-duplicates labels and assignees at the issues endpoint', async () => {
   const result = await runGh(
     [
@@ -261,6 +307,32 @@ test('preserves and de-duplicates labels and assignees at the issues endpoint', 
       options: { body: { labels: ['keep', 'new'], assignees: ['keep-user', 'bob'] } },
     },
   ]);
+});
+
+test('resolves @me for assignee additions and removals', async () => {
+  let result = await runGh(['pr', 'edit', '42', '--add-assignee', '@me,bob', '-R', 'octo/repo'], {
+    authenticatedUser: { login: 'octocat' },
+    issue: { labels: [], assignees: [{ login: 'keep-user' }] },
+  });
+  assert.deepEqual(writes(result)[0].options.body, {
+    assignees: ['keep-user', 'octocat', 'bob'],
+  });
+
+  result = await runGh(['pr', 'edit', '42', '--remove-assignee', '@me', '-R', 'octo/repo'], {
+    authenticatedUser: { login: 'octocat' },
+    issue: { labels: [], assignees: [{ login: 'keep-user' }, { login: 'octocat' }] },
+  });
+  assert.deepEqual(writes(result)[0].options.body, { assignees: ['keep-user'] });
+});
+
+test('fails authenticated-user lookup before any assignee write', async () => {
+  const result = await runGh(['pr', 'edit', '42', '--add-assignee', '@me', '-R', 'octo/repo'], {
+    failUserLookup: true,
+  });
+  assert.equal(result.error.name, 'NodeExitError');
+  assert.match(result.error.message, /could not resolve @me.*viewer unavailable/);
+  assert.deepEqual(writes(result), []);
+  assert.deepEqual(result.calls, [{ method: 'get', path: '/user', options: undefined }]);
 });
 
 test('dispatches user and team reviewer additions and removals', async () => {

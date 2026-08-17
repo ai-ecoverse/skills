@@ -705,6 +705,10 @@ async function bodyFrom(cmdLabel, body, bodyFile) {
     if (body !== null && body !== undefined) {
       cli.die(`${cmdLabel}: body specified twice — --body and --body-file. Pass only one.`);
     }
+    if (bodyFile === '-') {
+      try { return (await process.stdin.read()) ?? ''; }
+      catch (e) { cli.die(`${cmdLabel}: could not read stdin for --body-file -: ${e.message}`); }
+    }
     try { return await fs.readFile(bodyFile); }
     catch (e) { cli.die(`${cmdLabel}: could not read --body-file ${bodyFile}: ${e.message}`); }
   }
@@ -1321,8 +1325,8 @@ async function prEdit(args) {
   const body = await bodyFrom('pr edit', flags.body ?? null, flags['body-file']);
   const addLabels = flags['add-label'] || [];
   const removeLabels = flags['remove-label'] || [];
-  const addAssignees = flags['add-assignee'] || [];
-  const removeAssignees = flags['remove-assignee'] || [];
+  let addAssignees = flags['add-assignee'] || [];
+  let removeAssignees = flags['remove-assignee'] || [];
   const addReviewers = flags['add-reviewer'] || [];
   const removeReviewers = flags['remove-reviewer'] || [];
 
@@ -1341,6 +1345,18 @@ async function prEdit(args) {
   }
 
   const repo = await repoFrom('pr edit', flags, repoArg);
+  if (addAssignees.includes('@me') || removeAssignees.includes('@me')) {
+    let login;
+    try {
+      const user = await api.get('/user');
+      login = user?.login;
+    } catch (e) {
+      cli.die('pr edit: could not resolve @me: ' + (e.body?.message || e.message));
+    }
+    if (!login) cli.die('pr edit: could not resolve @me: GitHub returned no authenticated user login');
+    addAssignees = addAssignees.map((value) => value === '@me' ? login : value);
+    removeAssignees = removeAssignees.map((value) => value === '@me' ? login : value);
+  }
   let currentIssue = null;
   if (addLabels.length || removeLabels.length || addAssignees.length || removeAssignees.length) {
     try { currentIssue = await api.get(`/repos/${repo}/issues/${num}`); }
@@ -3085,14 +3101,14 @@ const HELP = {
         flags: [REPO_HELP,
           '-t, --title <title>       new title',
           '-b, --body <body>         new body',
-          '-F, --body-file <path>    read the new body from a file',
+          '-F, --body-file <path>    read the new body from a file (use "-" for stdin)',
           '-B, --base <branch>       new base branch',
           '-m, --milestone <ms>      milestone name or number',
           '--remove-milestone        clear the milestone',
           '--add-label <name>        add a label, keeping existing ones',
           '--remove-label <name>     remove a label',
-          '--add-assignee <user>     add an assignee',
-          '--remove-assignee <user>  remove an assignee',
+          '--add-assignee <user>     add an assignee (use @me for yourself)',
+          '--remove-assignee <user>  remove an assignee (use @me for yourself)',
           '--add-reviewer <user>     request a reviewer (repeatable; org/team for teams)',
           '--remove-reviewer <user>  remove a reviewer request (repeatable; org/team for teams)'],
         notes: [
