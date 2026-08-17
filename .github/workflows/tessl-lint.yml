@@ -17,6 +17,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Reject tracked tile skill paths
+        run: git ls-files | node tools/check-tessl-layout.mjs
+
       - uses: tesslio/setup-tessl@v2
 
       - name: Detect changed skills and plugin manifests
