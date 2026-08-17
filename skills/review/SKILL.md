@@ -70,6 +70,26 @@ sprinkle send review '{"action":"open-file","path":"/shared/document.md","title"
 sprinkle send review '{"action":"update-status","id":"page-1","status":"published"}'
 ```
 
+### Creating or updating a single item (upsert)
+
+`ensure-item` is a true upsert: it creates the card when the `id` is new and
+updates it in place when the `id` already exists, without disturbing the rest of
+the queue. Only the fields you send (`title`, `path`, `previewUrl`, `liveUrl`) are
+written — anything you omit keeps its current value, and the item's `status` is
+never modified, so a published or deferred card does not silently revert to
+pending. Existing comments on the card are preserved.
+
+A card whose Publish/Defer lick is still in flight (awaiting `update-status`)
+stays disabled across the re-render, so an `ensure-item` cannot re-enable its
+buttons and invite a duplicate lick.
+
+```bash
+# Repoint an existing card at a readable path, leaving title/status/comments alone
+sprinkle send review '{"action":"ensure-item","id":"page-1","path":"/shared/review/security.md"}'
+```
+
+Use this instead of re-sending `load-items` when you only need to fix one card.
+
 ## Lick Events
 
 The sprinkle fires these licks back to the cone:
@@ -93,7 +113,7 @@ The sprinkle accepts these inbound messages (`sprinkle send review`):
 | `update-status` | `{ id, status }` | Set item status (pending/published/deferred) |
 | `open-file` | `{ path, title }` | Open a document for annotation |
 | `add-comment` | `{ id, comment, num? }` | Append a comment to an item's log. A numeric `num` marks it as a *pin* comment (links to a page marker) |
-| `ensure-item` | `{ id, title, previewUrl?, liveUrl?, path? }` | Upsert a queue item by id — creates the card if missing, leaves others untouched (unlike `load-items` which replaces the whole queue). Used by the webhook handler to auto-create a per-page review entry on the first pin |
+| `ensure-item` | `{ id, title?, previewUrl?, liveUrl?, path? }` | Upsert a queue item by id — creates the card if missing, updates it in place if it already exists, and leaves every other item untouched (unlike `load-items`, which replaces the whole queue). Only the fields present in the message are written; unsupplied fields keep their current values, and `status` is **never** modified by `ensure-item` (publish/defer state is owned by the panel and only changed via `update-status`). Comments already attached to the card survive the update. Used by the webhook handler to auto-create a per-page review entry on the first pin, and to repoint an existing card at a new `path`/`previewUrl` |
 | `set-comment-done` | `{ id, num, done }` | Set a comment line's done-state directly by `num` (crosses it off / un-crosses). Used to restore done-state when re-populating comment lines from the durable store; complements `comment-done` (the lick fired when the user clicks the ✗ button) |
 | `add-pin` | `{ id, comment, num, pin }` | Like `add-comment`, **plus** stores the full positional marker `pin` (`{num, comment, pageX, pageY, selector, url, ts}`) in the durable slicc-backed store keyed by `pin.url`. Use this (not `add-comment`) for pin clicks |
 | `set-pin-done` | `{ url, num, done }` | Persist a pin's done-state in the durable store (echo this when handling a `comment-done` lick for a pin so the store stays in sync) |
@@ -235,7 +255,7 @@ sprinkle send review '{"action":"add-pin","id":"page-1","num":3,
 
 ### Auto-created per-page entries
 Dropping a pin on ANY page auto-creates that page's review entry. The webhook handler derives a stable
-item id from the pin's `url`, sends `ensure-item` to create the card if missing, then `add-pin` to that
+item id from the pin's `url`, sends `ensure-item` to create or refresh the card, then `add-pin` to that
 id. Never hardcode a single target id.
 
 ### Remote pages
