@@ -460,20 +460,61 @@ function primaryUrl(task) {
   return all.length ? all[0].replace(/[.,;:]+$/, '') : '';
 }
 
-// Escape HTML, then turn bare http(s) URLs into clickable anchors that call openUrl.
-function linkifyHtml(text) {
-  const esc = escHtml(text);
-  // Match the escaped form of http(s)://... (no HTML entities inside a bare URL).
-  return esc.replace(/https?:\/\/[^\s<&]+/g, function (u) {
-    // Drop common trailing punctuation that isn't part of the URL.
-    let url = u;
+// Split free text into plain-text and URL runs.
+//
+// URLs are matched in the RAW text, never in HTML-escaped text. Matching after
+// escaping stopped at the `&` of `&amp;`, so `?a=1&b=2` linkified as `?a=1`
+// only and the anchor pointed at the wrong resource.
+//
+// The URL character class excludes quotes and angle brackets (same shape as
+// firstUrlIn/primaryUrl) so a crafted URL cannot smuggle markup delimiters.
+function linkifyParts(text) {
+  const parts = [];
+  const src = String(text ?? '');
+  if (!src) return parts;
+  const re = /https?:\/\/[^\s<>"'`]+/gi;
+  let last = 0;
+  let m;
+  while ((m = re.exec(src)) !== null) {
+    let url = m[0];
     let trail = '';
-    while (/[.,;:!?)]$/.test(url)) {
+    // Drop common trailing punctuation that isn't part of the URL.
+    while (/[.,;:!?)\]]$/.test(url)) {
       trail = url.slice(-1) + trail;
       url = url.slice(0, -1);
     }
-    return '<a class="task-link" href="' + url + '" title="Open in new tab">' + url + '</a>' + trail;
-  });
+    if (m.index > last) parts.push({ type: 'text', value: src.slice(last, m.index) });
+    parts.push({ type: 'url', value: url });
+    if (trail) parts.push({ type: 'text', value: trail });
+    last = m.index + m[0].length;
+  }
+  if (last < src.length) parts.push({ type: 'text', value: src.slice(last) });
+  return parts;
+}
+
+// Render free text into `el` as text nodes plus real anchor elements.
+//
+// Built with DOM APIs on purpose: the URL is set with setAttribute() and the
+// label with textContent, so it never passes through string concatenation into
+// an attribute of markup that is later assigned via innerHTML. A URL carrying a
+// literal quote therefore cannot close the href and inject an inline handler
+// (e.g. onmouseover="slicc.exec(...)").
+function linkifyInto(el, text) {
+  if (!el) return;
+  el.textContent = '';
+  const parts = linkifyParts(text);
+  for (const part of parts) {
+    if (part.type === 'url') {
+      const a = document.createElement('a');
+      a.className = 'task-link';
+      a.setAttribute('href', part.value);
+      a.setAttribute('title', 'Open in new tab');
+      a.textContent = part.value;
+      el.appendChild(a);
+    } else {
+      el.appendChild(document.createTextNode(part.value));
+    }
+  }
 }
 
 const PREVIEW_LEN = 140;
@@ -725,9 +766,8 @@ function createTaskCard(task) {
   // If there's no explicit summary, fall back to showing the detail as the
   // visible line (so nothing is hidden behind the collapsed brief).
   const visibleText = summary || (detail && detail.length <= 220 ? detail : '');
-  const summaryBlock = visibleText
-    ? '<div class="task-summary">' + linkifyHtml(visibleText) + '</div>'
-    : '';
+  // Container only; the linkified content is filled in via DOM APIs below.
+  const summaryBlock = visibleText ? '<div class="task-summary"></div>' : '';
 
   // Skill tags — the SLICC skills involved in the task.
   let tagsBlock = '';
@@ -750,7 +790,7 @@ function createTaskCard(task) {
           '<span class="lbl-open">Agent brief</span>' +
           '<span class="lbl-close">Hide brief</span>' +
         '</summary>' +
-        '<div class="full">' + linkifyHtml(detail) + '</div>' +
+        '<div class="full"></div>' +
       '</details>';
   }
 
@@ -816,6 +856,11 @@ function createTaskCard(task) {
         '</div>' +
       '</div>' +
     '</div>';
+
+  // Fill summary/detail with linkified text using DOM APIs (see linkifyInto):
+  // URLs become real anchor elements, so nothing is concatenated into markup.
+  if (visibleText) linkifyInto(div.querySelector('.task-summary'), visibleText);
+  if (detailBlock) linkifyInto(div.querySelector('.task-context .full'), detail);
 
   // View / Map: open URL directly — no lick, no cone.
   const viewBtn = div.querySelector('.view-btn');
