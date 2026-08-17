@@ -46,6 +46,8 @@ USAGE
   immobilienscout24 conversations <listingId> [--limit N] [--tag inbox]
   immobilienscout24 messages <listingId> <conversationId>
   immobilienscout24 applicant <ssoId|base64>   Bewerbermappe / rent-profile preview
+  immobilienscout24 send <listingId> <conversationId> "text" --confirm
+  immobilienscout24 send <listingId> <conversationId> --file <path> --confirm
   immobilienscout24 search <location> [flags]
   immobilienscout24 geo <query>
 
@@ -63,6 +65,14 @@ FLAGS
   --q TEXT            ScoutManager free-text filter
   --archived          archived listings only
   --tag TAG           conversation tag (default inbox)
+
+SEND FLAGS (write path — guarded)
+  --confirm           REQUIRED to actually POST the message. Without it,
+                      send prints the exact request and exits without
+                      touching the network.
+  --file <path>       read the message body from a file (use this for
+                      multi-line German text; stdin is not readable here)
+  --tags a,b          tags array to send with the message (default: none)
 
 REQUIRES
   immobilienscout24.de open and logged in in your browser
@@ -1163,6 +1173,188 @@ async function cmdMessages(tab, listingId, conversationId, flags) {
   }
 }
 
+// ── send (write path) ──────────────────────────────────────────────────────
+//
+// POST /nachrichten-manager/api/references/:reference/conversations/:conversationId/messages
+//
+// Endpoint + payload shape read out of the Nachrichten-Manager SPA bundle
+// (static/js/main.6423fc7b.js): api map entry `messageSend` and the
+// `sendMessage` hook that builds
+//   { message, conversationId, tags, recommendedActionName, [uploadIds], [appointment] }
+// and POSTs it. CSRF is the same x-xsrf-communication-mgr-token flow the read
+// paths already use, so apiFetch handles it.
+//
+// SAFETY: real prospects are on the other end. Without --confirm this prints the
+// request and returns without any network call.
+
+const MAX_MESSAGE_CHARS = 100000; // UI reply textarea maxLength (observed in DOM)
+const SEND_ALIASES = new Set(['send', 'reply', 'antworten']);
+
+function sendUrl(listingId, conversationId) {
+  return (
+    `${WWW}/nachrichten-manager/api/references/${encodeURIComponent(listingId)}` +
+    `/conversations/${encodeURIComponent(conversationId)}/messages`
+  );
+}
+
+function readMessageBody(positionalText, flags) {
+  const filePath = typeof flags.file === 'string' ? flags.file : null;
+  if (filePath) {
+    if (positionalText) {
+      cli.die('pass the message either inline or via --file, not both', {
+        prefix: 'immobilienscout24',
+      });
+    }
+    const fs = require('node:fs');
+    let raw;
+    try {
+      raw = fs.readFileSync(filePath, 'utf8');
+    } catch (err) {
+      cli.die(`cannot read --file ${filePath}: ${err.message || err}`, {
+        prefix: 'immobilienscout24',
+      });
+    }
+    return raw.replace(/\r\n/g, '\n').replace(/\s+$/, '');
+  }
+  return positionalText == null ? '' : String(positionalText).replace(/\r\n/g, '\n');
+}
+
+function parseTags(flags) {
+  const raw = flags.tags;
+  if (raw == null || raw === true || raw === '') return [];
+  return String(raw)
+    .split(',')
+    .map((t) => t.trim())
+    .filter(Boolean);
+}
+
+async function cmdSend(tab, listingId, conversationId, textArg, flags) {
+  if (!listingId || !conversationId) {
+    cli.die(
+      'usage: immobilienscout24 send <listingId> <conversationId> "text" [--confirm]\n' +
+        '       immobilienscout24 send <listingId> <conversationId> --file <path> [--confirm]',
+      { prefix: 'immobilienscout24' },
+    );
+  }
+  if (!/^\d+$/.test(String(listingId))) {
+    cli.die(`invalid listing id "${listingId}"`, { prefix: 'immobilienscout24' });
+  }
+  if (!/^[0-9a-f-]{16,80}$/i.test(String(conversationId))) {
+    cli.die(`invalid conversation id "${conversationId}"`, { prefix: 'immobilienscout24' });
+  }
+
+  const message = readMessageBody(textArg, flags);
+  if (!message.trim()) {
+    cli.die(
+      'empty message body — pass text as the third argument or use --file <path>',
+      { prefix: 'immobilienscout24' },
+    );
+  }
+  if (message.length > MAX_MESSAGE_CHARS) {
+    cli.die(
+      `message is ${message.length} characters; the Nachrichten-Manager reply box caps at ${MAX_MESSAGE_CHARS}`,
+      { prefix: 'immobilienscout24' },
+    );
+  }
+
+  const url = sendUrl(listingId, conversationId);
+  const payload = {
+    message,
+    conversationId: String(conversationId),
+    tags: parseTags(flags),
+    recommendedActionName: null,
+  };
+
+  // ── dry run: no tab, no request, exit 0 ─────────────────────────────────
+  if (!flags.confirm) {
+    if (flags.json) {
+      cli.out({
+        dryRun: true,
+        confirmed: false,
+        method: 'POST',
+        url,
+        listingId: String(listingId),
+        conversationId: String(conversationId),
+        payload,
+        messageChars: message.length,
+        note: 'nothing was sent — re-run with --confirm to POST this exact request',
+      });
+      return;
+    }
+    console.log('');
+    console.log(color.bold('  DRY RUN') + color.dim('  — nothing sent, no network call made'));
+    console.log(color.dim('  ────────────────────────────────────────────────────'));
+    console.log(`  ${color.dim('Method:')}   POST`);
+    console.log(`  ${color.dim('URL:')}      ${url}`);
+    console.log(`  ${color.dim('Listing:')}  ${listingId}`);
+    console.log(`  ${color.dim('Conv:')}     ${conversationId}`);
+    console.log(`  ${color.dim('Chars:')}    ${message.length}`);
+    console.log('');
+    console.log(color.bold('  Payload'));
+    console.log(
+      JSON.stringify(payload, null, 2)
+        .split('\n')
+        .map((l) => '  ' + l)
+        .join('\n'),
+    );
+    console.log('');
+    console.log(color.bold('  Message body'));
+    console.log(message.split('\n').map((l) => '  │ ' + l).join('\n'));
+    console.log('');
+    if (!payload.tags.length) {
+      console.log(
+        color.dim(
+          "  tags is empty — the web UI copies the conversation's current tags here;\n" +
+            "  pass --tags a,b (the tags column in the conversations command) to mirror it.",
+        ),
+      );
+      console.log('');
+    }
+    console.log(
+      `  ${color.yellow('Not sent.')} ` +
+        color.dim('Re-run the same command with --confirm to deliver it.'),
+    );
+    console.log('');
+    return;
+  }
+
+  // ── confirmed: verify the conversation, then POST ───────────────────────
+  let detail = null;
+  try {
+    detail = await apiFetch(
+      tab,
+      `${WWW}/nachrichten-manager/api/references/${encodeURIComponent(listingId)}` +
+        `/conversations/${encodeURIComponent(conversationId)}`,
+    );
+  } catch (err) {
+    if (err?.name === 'NodeExitError') throw err;
+    cli.die(
+      `could not load conversation ${conversationId} on listing ${listingId}: ${err.message || err}`,
+      { prefix: 'immobilienscout24' },
+    );
+  }
+  const participant =
+    detail?.participantData?.name ||
+    detail?.conversation?.participantName ||
+    detail?.participantName ||
+    null;
+
+  const sent = await apiFetch(tab, url, { method: 'POST', body: payload });
+
+  if (flags.json) {
+    cli.out({ dryRun: false, confirmed: true, url, payload, response: sent });
+    return;
+  }
+  console.log('');
+  console.log(`  ${color.green('✓')} Message sent`);
+  console.log(`  ${color.dim('Conv:')}     ${conversationId}`);
+  if (participant) console.log(`  ${color.dim('To:')}       ${participant}`);
+  const messageId = sent?.messageId || sent?.id || sent?.message?.messageId || null;
+  if (messageId) console.log(`  ${color.dim('Message:')}  ${messageId}`);
+  console.log(`  ${color.dim('Chars:')}    ${message.length}`);
+  console.log('');
+}
+
 async function cmdGeo(tab, query, flags) {
   if (!query) {
     cli.die('usage: immobilienscout24 geo <query>', { prefix: 'immobilienscout24' });
@@ -1332,7 +1524,9 @@ async function main() {
     cli.help(HELP);
   }
 
-  const tab = await getTab();
+  // `send` without --confirm is a pure local preview: no tab lookup, no request.
+  const isSendPreview = SEND_ALIASES.has(subcommand) && !flags.confirm;
+  const tab = isSendPreview ? null : await getTab();
 
   try {
     if (subcommand === 'me' || subcommand === 'profile' || subcommand === 'whoami') {
@@ -1363,6 +1557,8 @@ async function main() {
       subcommand === 'rentprofile'
     ) {
       await cmdApplicant(tab, positional[0], flags);
+    } else if (SEND_ALIASES.has(subcommand)) {
+      await cmdSend(tab, positional[0], positional[1], positional[2], flags);
     } else if (subcommand === 'search' || subcommand === 'suche') {
       const loc = positional.length ? positional.join(' ') : '';
       await cmdSearch(tab, loc, flags);

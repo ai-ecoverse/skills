@@ -100,6 +100,8 @@ Base: `https://www.immobilienscout24.de/nachrichten-manager/api`
 | POST | `/references/:id/conversations?tags=inbox&size=10&plusUserPriority=true` | body `{"copilotConversations":[]}` |
 | GET | `/references/:id/conversations/:conversationId` | Conversation detail (SPA route; not exercised in HAR) |
 | GET | `/references/:id/conversations/:conversationId/messages` | Message list (SPA route; not exercised in HAR) |
+| POST | `/references/:id/conversations/:conversationId/messages` | **Send a reply** (write path — see below) |
+| PUT | `/references/:id/conversations/:conversationId/draft` | Save the reply draft (`{ text }`); not exposed by the skill |
 | GET | `/realtor/metadata` | `{ isInternalUser, isDeactivatedInTat, ssoId }` |
 | GET | `/metadata/professional` | boolean |
 | GET | `/feature-switches` | flags |
@@ -111,6 +113,45 @@ Conversation list item fields (captured): `conversationId`, `participantName`,
 `shortDetails`.
 
 Also: `GET /contact-prospects/api/shared/statistics?exposeIds=:id`.
+
+### Sending a message (write path)
+
+```
+POST /nachrichten-manager/api/references/{listingId}/conversations/{conversationId}/messages
+Content-Type: application/json
+x-xsrf-communication-mgr-token: <minted by a GET on /nachrichten-manager/api/feature-switches>
+x-xsrf-contact-prospects-token: <minted by a GET on /contact-prospects/api/shared/feature-switches>
+
+{
+  "message": "Sehr geehrter Herr …",
+  "conversationId": "b025f04b-f81f-4a01-9f27-9fa0d1b9ab23",
+  "tags": [],
+  "recommendedActionName": null
+}
+```
+
+Provenance (2026-08-18), Nachrichten-Manager SPA bundle
+`/nachrichten-manager/static/js/main.6423fc7b.js`:
+
+- **OBSERVED** — the API map entry
+  `messageSend: r("/nachrichten-manager/api/references/:reference/conversations/:conversationId/messages".concat(o()))`,
+  posted with `axios.post(url, payload)` from the `sendMessageMutation` hook
+  (`mutationKey: SendSingleMessage`).
+- **OBSERVED** — the payload builder:
+  `{ message, conversationId, tags, recommendedActionName, copilotConversationIndex, …(uploadIds?.length && { uploadIds }), …(appointment && { appointment }) }`.
+  `tags` is the conversation's current tag array in the UI; `recommendedActionName` is
+  `null` unless a recommended-action template was used.
+- **OBSERVED** — `o()` adds no query string on production `/nachrichten-manager/…`
+  paths: live resource timings for this account show plain
+  `…/conversations/<id>/messages` with no `?ssoId=`.
+- **OBSERVED** — the reply textarea in the UI carries `maxLength=100000`; the skill
+  refuses longer bodies client-side.
+- **INFERRED, not exercised** — the response shape (the skill reads `messageId`/`id`
+  defensively), the server's reaction to `tags: []`, and the error codes for an unknown
+  conversation id. No POST was ever issued during development: `send` requires
+  `--confirm` and the first live send is left to the operator.
+- Not implemented: `uploadIds` (attachments), `appointment` objects,
+  `conversations/bulk-message`, `draft` (PUT), `conversation-stage`, `tags` PATCH.
 
 ## Search / geo
 
