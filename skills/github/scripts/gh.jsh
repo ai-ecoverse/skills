@@ -288,7 +288,6 @@ function validateNum(val, name) {
 }
 
 function validateRepo(val) {
-  if (!val) return val;
   if (!/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/.test(val)) {
     cli.die(`Invalid repo format: expected owner/repo with alphanumeric, hyphens, dots (got: ${JSON.stringify(val)})`);
   }
@@ -702,7 +701,7 @@ async function resolveMilestone(cmdLabel, repo, value, { allowSentinels = false 
 }
 
 async function bodyFrom(cmdLabel, body, bodyFile) {
-  if (bodyFile) {
+  if (bodyFile !== undefined && bodyFile !== null) {
     if (body !== null && body !== undefined) {
       cli.die(`${cmdLabel}: body specified twice — --body and --body-file. Pass only one.`);
     }
@@ -1311,6 +1310,11 @@ async function prEdit(args) {
     + '[--remove-assignee U]... [--add-reviewer R]... [--remove-reviewer R]... '
     + '[--milestone M|--remove-milestone] [-R owner/repo] [repo]';
   const { flags, positional } = parseArgs('pr edit', args, FLAG_SPECS['pr edit']);
+  if (flags.repo !== undefined) validateRepo(flags.repo);
+  if (positional.length > 1) {
+    validateRepo(positional[positional.length - 1]);
+    if (positional.length > 2) cli.die('pr edit: too many positional arguments\n' + usage);
+  }
   const { values, repoArg } = distribute('pr edit', positional, ['number'], flags);
   if (!values.number) cli.die('pr edit: PR number required\n' + usage);
   const num = validateNum(values.number, 'PR number');
@@ -1324,6 +1328,9 @@ async function prEdit(args) {
 
   if (flags.milestone !== undefined && flags['remove-milestone']) {
     cli.die('pr edit: --milestone and --remove-milestone cannot be used together\n' + usage);
+  }
+  if (flags.milestone !== undefined && !String(flags.milestone).trim()) {
+    cli.die('pr edit: --milestone requires a non-empty value\n' + usage);
   }
   const hasEdit = flags.title !== undefined || body !== null || flags.base !== undefined
     || flags.milestone !== undefined || !!flags['remove-milestone']

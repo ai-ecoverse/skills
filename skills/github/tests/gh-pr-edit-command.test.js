@@ -55,7 +55,15 @@ async function runGh(args, scenario = {}) {
     { date: (value) => String(value) },
     { get: (object, key) => object[key] || ((value) => String(value)) }
   );
-  const exec = async () => ({ stdout: '', stderr: '', exitCode: 1 });
+  const exec = async (command) => {
+    if (scenario.inferredRepo && command.includes('rev-parse --show-toplevel')) {
+      return { stdout: '/workspace/repo\n', stderr: '', exitCode: 0 };
+    }
+    if (scenario.inferredRepo && command.includes('config --get remote.origin.url')) {
+      return { stdout: `git@github.com:${scenario.inferredRepo}.git\n`, stderr: '', exitCode: 0 };
+    }
+    return { stdout: '', stderr: '', exitCode: 1 };
+  };
   exec.spawn = exec;
   exec.start = exec;
   const fileSystem = {
@@ -151,6 +159,10 @@ test('rejects parser and validation errors before any write', async () => {
       /body specified twice/,
     ],
     [
+      ['pr', 'edit', '42', '--body', 'x', '--body-file=', '-R', 'octo/repo'],
+      /body specified twice/,
+    ],
+    [
       ['pr', 'edit', '42', '--body-file', '/missing.md', '-R', 'octo/repo'],
       /could not read --body-file/,
     ],
@@ -158,10 +170,27 @@ test('rejects parser and validation errors before any write', async () => {
       ['pr', 'edit', '42', '--milestone', '7', '--remove-milestone', '-R', 'octo/repo'],
       /cannot be used together/,
     ],
+    [['pr', 'edit', '42', '--milestone=', '-R', 'octo/repo'], /non-empty value/],
+    [
+      ['pr', 'edit', '42', '--title', 'T', '-R', 'invalid'],
+      /Invalid repo format/,
+      { inferredRepo: 'inferred/repo' },
+    ],
+    [
+      ['pr', 'edit', '42', '--title', 'T', '--repo='],
+      /Invalid repo format/,
+      { inferredRepo: 'inferred/repo' },
+    ],
+    [
+      ['pr', 'edit', '42', 'invalid', '--title', 'T'],
+      /Invalid repo format/,
+      { inferredRepo: 'inferred/repo' },
+    ],
   ];
-  for (const [args, message] of cases) {
-    const result = await runGh(args);
+  for (const [args, message, scenario] of cases) {
+    const result = await runGh(args, scenario);
     assert.equal(result.error.name, 'NodeExitError');
+    assert.notEqual(result.error.exitCode, 0);
     assert.match(result.error.message, message);
     assert.deepEqual(writes(result), []);
   }
@@ -191,6 +220,14 @@ test('dispatches pull fields and body files to the pull endpoint', async () => {
 
   result = await runGh(['pr', 'edit', '42', '-F', '/body.md', '-R', 'octo/repo']);
   assert.deepEqual(writes(result)[0].options.body, { body: 'from file' });
+
+  result = await runGh(['pr', 'edit', '42', '--body', '', '-R', 'octo/repo']);
+  assert.deepEqual(writes(result)[0].options.body, { body: '' });
+
+  result = await runGh(['pr', 'edit', '42', '--title', 'T'], {
+    inferredRepo: 'inferred/repo',
+  });
+  assert.equal(writes(result)[0].path, '/repos/inferred/repo/pulls/42');
 });
 
 test('preserves and de-duplicates labels and assignees at the issues endpoint', async () => {
