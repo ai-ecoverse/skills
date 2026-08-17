@@ -564,11 +564,16 @@ async function cmdMessages(positional, flags) {
   };
 
   let res;
+  // The fallback query is scoped to nothing: it returns recent messages across
+  // every conversation on the server, so its result is only usable after the
+  // client-side filter has been applied unconditionally.
+  let usedFallback = false;
   try {
     res = await api('POST', '/api/v1/message/query', { body });
   } catch (err) {
     if (err?.name === 'NodeExitError') throw err;
     // Retry without chatGuid using client filter if server rejects synthetic guid
+    usedFallback = true;
     res = await api('POST', '/api/v1/message/query', {
       body: { limit: Math.min(limit * 5, 100), offset: 0, with: ['handle', 'chats'], sort: 'DESC' },
     });
@@ -587,13 +592,30 @@ async function cmdMessages(positional, flags) {
       if (addr && (addr === lower || guidLower.endsWith(addr))) return true;
       return false;
     });
-    // Only apply filter when it keeps something (avoid empty from synthetic guid mismatch)
-    if (filtered.length) messages = filtered;
+    if (usedFallback) {
+      // Never widen to "everything recent": a non-matching message belongs to a
+      // different conversation, and showing it here would attribute someone
+      // else's thread to the requested address. No match means no result.
+      messages = filtered;
+    } else if (filtered.length) {
+      // Server-side chatGuid scoping already applied; the client filter only
+      // ever narrows, so keep the server list if it recognises nothing.
+      messages = filtered;
+    }
   }
   messages = messages.slice(0, limit);
 
+  const noFallbackMatch = usedFallback && !messages.length;
+
   if (flags.json) {
-    cli.out({ chatGuid, messages });
+    const payload = { chatGuid, messages };
+    if (noFallbackMatch) {
+      payload.note =
+        `no messages matched "${target}" — the server rejected the chat guid and ` +
+        'the recent-message scan contained nothing from this conversation; ' +
+        'run "bluebubbles chats" to get the real chat guid';
+    }
+    cli.out(payload);
     return;
   }
 
@@ -602,7 +624,16 @@ async function cmdMessages(positional, flags) {
   console.log(color.dim('  ' + '─'.repeat(52)));
 
   if (!messages.length) {
-    console.log(color.dim('  No messages found.'));
+    if (noFallbackMatch) {
+      console.log(color.dim(`  No messages found for ${target}.`));
+      console.log(
+        color.dim('  The server rejected this chat guid and the recent-message scan'),
+      );
+      console.log(color.dim('  held nothing from this conversation.'));
+      console.log(color.dim('  Find the real guid with: bluebubbles chats --search=' + target));
+    } else {
+      console.log(color.dim('  No messages found.'));
+    }
     console.log('');
     return;
   }
@@ -1020,9 +1051,11 @@ async function createSliccWebhook({ scoop, name, filter }) {
   return { id: idMatch[1], url: urlMatch[1] };
 }
 
+/** Best-effort delete. Returns true when the endpoint is known to be gone. */
 async function deleteSliccWebhook(id) {
-  if (!id) return;
-  await exec(`webhook delete ${shellQuote(id)}`).catch(() => {});
+  if (!id) return true;
+  const res = await exec(`webhook delete ${shellQuote(id)}`).catch(() => null);
+  return !!(res && res.exitCode === 0);
 }
 
 async function registerBbWebhook(hookUrl, events) {
@@ -1038,13 +1071,16 @@ async function registerBbWebhook(hookUrl, events) {
   return data;
 }
 
+/** Best-effort delete. Returns true when the endpoint is known to be gone. */
 async function deleteBbWebhook(id) {
-  if (id == null || id === '') return;
+  if (id == null || id === '') return true;
   try {
     await api('DELETE', `/api/v1/webhook/${encodeURIComponent(String(id))}`);
+    return true;
   } catch (err) {
     if (err?.name === 'NodeExitError') throw err;
     // best-effort
+    return false;
   }
 }
 
@@ -1068,15 +1104,11 @@ async function cmdWatch(flags) {
       { prefix: 'bluebubbles' },
     );
   }
-  if (existing && force) {
-    await deleteSliccWebhook(existing.sliccWebhookId);
-    await deleteBbWebhook(existing.bbWebhookId);
-    try {
-      await fs.rm(stateFile);
-    } catch {
-      /* ignore */
-    }
-  }
+  // --force deliberately does NOT retire the old pair here. The existing watch
+  // keeps forwarding (and stays recorded in the state file) until the
+  // replacement is registered and persisted, so a failure halfway through
+  // cannot leave the operator with no monitoring at all. The cost is a short
+  // window where both pairs are live and a matching message may lick twice.
 
   const filter = buildSliccFilter(chatGuid);
   let slicc;
@@ -1109,10 +1141,48 @@ async function cmdWatch(flags) {
     createdAt: new Date().toISOString(),
     // never store password
   };
-  await fs.writeFile(stateFile, JSON.stringify(state, null, 2));
+  // Persist before anything else: the two ids only become discoverable to
+  // `watches` / `unwatch` once they are on disk. If the write fails, the fresh
+  // pair is unreachable, so retire it again rather than leaking a forwarder.
+  try {
+    await fs.writeFile(stateFile, JSON.stringify(state, null, 2));
+  } catch (err) {
+    if (err?.name === 'NodeExitError') throw err;
+    const sliccGone = await deleteSliccWebhook(slicc.id);
+    const bbGone = await deleteBbWebhook(bb.id);
+    const orphans = [];
+    if (!sliccGone) orphans.push(`SLICC webhook ${slicc.id} — remove with: webhook delete ${slicc.id}`);
+    if (!bbGone) orphans.push(`BlueBubbles webhook ${bb.id} — DELETE /api/v1/webhook/${bb.id}`);
+    const rolled = orphans.length
+      ? `  Rollback incomplete. Still active, delete by hand:\n    ${orphans.join('\n    ')}`
+      : `  Rolled back: SLICC webhook ${slicc.id} and BlueBubbles webhook ${bb.id} were deleted; no new watch is active.`;
+    const kept =
+      existing && force
+        ? `\n  The previous watch is untouched and still forwarding (slicc ${existing.sliccWebhookId}, bb ${existing.bbWebhookId}).`
+        : '';
+    die(
+      `could not write watch state to ${stateFile}: ${err?.message || err}\n${rolled}${kept}`,
+      { prefix: 'bluebubbles' },
+    );
+  }
+
+  // Replacement is live and recorded — only now retire the pair it supersedes.
+  let retired = null;
+  if (existing && force) {
+    const staleSlicc = existing.sliccWebhookId && existing.sliccWebhookId !== slicc.id;
+    const staleBb =
+      existing.bbWebhookId != null &&
+      String(existing.bbWebhookId) !== String(bb.id);
+    if (staleSlicc) await deleteSliccWebhook(existing.sliccWebhookId);
+    if (staleBb) await deleteBbWebhook(existing.bbWebhookId);
+    retired = {
+      sliccWebhookId: staleSlicc ? existing.sliccWebhookId : null,
+      bbWebhookId: staleBb ? existing.bbWebhookId : null,
+    };
+  }
 
   if (flags.json) {
-    cli.out(state);
+    cli.out(retired ? { ...state, replaced: retired } : state);
     return;
   }
 
@@ -1129,6 +1199,15 @@ async function cmdWatch(flags) {
   console.log(`  ${color.dim('slicc wh:')}  ${slicc.id}`);
   console.log(`  ${color.dim('bb wh:')}     ${bb.id}`);
   console.log(`  ${color.dim('state:')}     ${stateFile}`);
+  if (retired && (retired.sliccWebhookId || retired.bbWebhookId)) {
+    console.log(
+      `  ${color.dim('replaced:')}  ${color.dim(
+        [retired.sliccWebhookId && `slicc ${retired.sliccWebhookId}`, retired.bbWebhookId && `bb ${retired.bbWebhookId}`]
+          .filter(Boolean)
+          .join(', '),
+      )}`,
+    );
+  }
   console.log('');
   console.log(color.dim('  New matching messages arrive as licks on the scoop.'));
   console.log(color.dim(`  Stop with: bluebubbles unwatch ${watchId}`));
