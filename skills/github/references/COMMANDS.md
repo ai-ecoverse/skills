@@ -86,7 +86,8 @@ gh pr unwatch 42
   `-t`/`--title`, `-b`/`--body`, `-F`/`--body-file`, `-B`/`--base`,
   `-m`/`--milestone`, `--remove-milestone`, `--add-label`, `--remove-label`,
   `--add-assignee`, `--remove-assignee`, `--add-reviewer`, and `--remove-reviewer`.
-  Add/remove flags are repeatable and comma-separated values also work. Reviewer teams use
+  `--body-file -` reads the body from stdin. Add/remove flags are repeatable and comma-separated
+  values also work; assignee flags accept `@me` for the authenticated user. Reviewer teams use
   `org/team`. `--body` conflicts with `--body-file`; `--milestone` conflicts with
   `--remove-milestone`; at least one edit flag is required. No project flags or implicit,
   branch, or URL selectors are supported.
