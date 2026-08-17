@@ -2,21 +2,17 @@
 name: immobilienscout24
 description: >
   Interact with Immobilienscout24 (ImmoScout24 / IS24) — Germany's largest real-estate
-  portal for landlords and seekers. Use when the user mentions Immobilienscout24,
+  portal — as landlord or seeker. Use when the user mentions Immobilienscout24,
   ImmoScout24, ImmoScout, IS24, immobilienscout24.de, ScoutManager, Mein Konto,
-  Angebotsliste, Nachrichten-Manager, Vermieter-Postfach, Wohnung mieten, Wohnung
-  suchen, Kleinanzeige, Inserat, Exposé, Geoautocomplete, or wants to check their
-  IS24 profile, dashboard unread messages, listing stats, landlord conversations,
-  tenant inquiries, search apartments/houses for rent or sale in German cities
-  (Berlin, München, Hamburg, Köln, Frankfurt, Potsdam, …), or look up geocodes.
-  Triggers on phrases like "my ImmoScout listings", "IS24 messages", "ScoutManager
-  angebote", "unread IS24", "search Berlin Wohnung", "Immobilienscout dashboard",
-  "nachrichten manager", "meinkonto", "who messaged my listing", "listing click
-  stats", "reply to a prospect on IS24", "send a viewing invitation", "antworte auf
-  die Anfrage", "Besichtigungstermin anbieten". Private-landlord and seeker paths
-  reverse-engineered from a live browser session — cookie auth only, no API key. The
-  single write path (`send`, a reply in a Nachrichten-Manager thread) is gated behind
-  an explicit `--confirm`.
+  Angebotsliste, Nachrichten-Manager, Vermieter-Postfach, Bewerbermappe, Inserat,
+  Exposé, or wants their IS24 profile, dashboard, unread messages, listing stats,
+  landlord conversations, tenant inquiries, applicant documents, a reply to a
+  prospect, a viewing invitation, apartment/house search in German cities, or
+  geocodes. Triggers on "my ImmoScout listings", "IS24 messages", "unread IS24",
+  "who messaged my listing", "nachrichten manager", "search Berlin Wohnung",
+  "reply on IS24", "antworte auf die Anfrage", "Besichtigungstermin anbieten".
+  Cookie auth from an open browser tab, no API key. Read paths are unguarded; the
+  one write path (send, a thread reply) requires an explicit --confirm.
 allowed-tools: bash
 command: immobilienscout24
 script: scripts/immobilienscout24.jsh
