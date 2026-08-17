@@ -45,8 +45,8 @@ search "query" [options]
 | `--provider brave\|exa\|tavily\|kagi\|auto` | Backend to use (default: `auto`) |
 | `-n, --num <N>` | Number of results (default 8) |
 | `--json` | Emit machine-readable JSON instead of human summary |
-| `--type web\|news` | Result type where supported (default `web`; Kagi has no news endpoint) |
-| `--include-domains a,b` | Restrict to domains (native on Exa/Tavily, `site:` on Brave/Kagi, always enforced client-side) |
+| `--type web\|news` | Result type (default `web`); all four providers serve it |
+| `--include-domains a,b` | Restrict to domains (native on Exa/Tavily/Kagi, `site:` on Brave, always enforced client-side) |
 | `--exclude-domains a,b` | Exclude domains (same mechanism) |
 
 ### Examples
@@ -75,14 +75,13 @@ search "the best essays on typography" --provider kagi -n 5
 | **Brave** | Independent index (not Google/Bing), low latency, privacy. Best default for general grounding. | `BRAVE_API_KEY` | yes |
 | **Exa** | Neural/semantic. Best for research, discovery, "find things arguing X". Token-efficient highlights. | `EXA_API_KEY` | yes |
 | **Tavily** | LLM-optimized snippets; the practical choice for RAG with minimal post-processing. | `TAVILY_API_KEY` | yes |
-| **Kagi** | Premium human-quality results, billed per search. | `KAGI_API_KEY` | no |
+| **Kagi** | Premium human-quality results, billed per search. | `KAGI_API_KEY` | yes |
 
 `auto` walks Brave → Exa → Tavily → Kagi: it takes the first provider that has a
 key and moves on when one errors. Kagi is last because it bills per search — name
 it with `--provider kagi` when the quality is worth the cost. An explicit
 `--provider` never falls back, so a result's `source` is always the provider that
-was asked. Kagi has no news vertical, so `--type news` skips it in `auto` and is
-refused under `--provider kagi` rather than answering with web results.
+was asked.
 
 Endpoints, request/response field mappings, and per-provider quirks:
 [references/providers.md](references/providers.md).

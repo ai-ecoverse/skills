@@ -73,21 +73,34 @@ const TAVILY_BODY = {
   ],
 };
 
-// Kagi's data[] is heterogeneous: t:0 is a search result, t:1 the
-// related-searches block.
+// Kagi API v1 splits results into named arrays by type under `data`; the date
+// field is `time`. (v0's heterogeneous data[] + `t` discriminator is gone.)
 const KAGI_BODY = {
-  meta: { id: 'abc', node: 'us-east', ms: 42, api_balance: 4.99 },
-  data: [
-    {
-      t: 0,
-      rank: 1,
-      url: 'https://practicaltypography.com/',
-      title: 'Butterick&rsquo;s Practical Typography',
-      snippet: 'A book about <b>typography</b>.',
-      published: '2026-02-10T00:00:00Z',
-    },
-    { t: 1, list: ['typography books', 'best fonts'] },
-  ],
+  meta: { trace: 'abc', node: 'us-east' },
+  data: {
+    search: [
+      {
+        url: 'https://practicaltypography.com/',
+        title: 'Butterick&rsquo;s Practical Typography',
+        snippet: 'A book about <b>typography</b>.',
+        time: '2026-02-10T00:00:00Z',
+      },
+    ],
+    related_search: [{ url: 'https://kagi.com/search?q=x', title: 'typography books' }],
+  },
+};
+
+const KAGI_NEWS_BODY = {
+  data: {
+    news: [
+      {
+        url: 'https://news.example/typo',
+        title: 'Type news',
+        snippet: 'n',
+        time: '2026-08-01T00:00:00Z',
+      },
+    ],
+  },
 };
 
 // ── CLI surface ──────────────────────────────────────────────────────────────
@@ -228,7 +241,11 @@ test('exa: POST body and highlight-first snippets', async () => {
   const body = JSON.parse(f.calls[0].init.body);
   assert.equal(body.query, 'papers arguing RAG is obsolete');
   assert.equal(body.numResults, 8);
-  assert.ok(body.contents.highlights, 'highlights are requested for token-efficient snippets');
+  assert.equal(
+    body.contents.highlights,
+    true,
+    'the deprecated {numSentences,…} object is not sent'
+  );
 
   const data = JSON.parse(r.stdout);
   assert.equal(data[0].source, 'exa');
@@ -266,35 +283,68 @@ test('tavily: bearer auth, body shape, RFC 1123 date', async () => {
   assert.equal(data[0].published, '2026-03-03T00:00:00.000Z');
 });
 
-test('kagi: Bot auth, t:0 filtering, and normalized results', async () => {
+test('kagi: v1 POST, Bearer auth, and normalized results', async () => {
   const f = route({ 'kagi.com': KAGI_BODY });
   const r = await run(
     ['the best essays on typography', '--provider', 'kagi', '--json'],
-    {
-      KAGI_API_KEY: 'kk',
-    },
+    { KAGI_API_KEY: 'kk' },
     f
   );
   assert.equal(r.exitCode, 0);
 
-  const url = new URL(f.calls[0].url);
-  assert.equal(url.origin + url.pathname, 'https://kagi.com/api/v0/search');
-  assert.equal(url.searchParams.get('limit'), '8');
-  assert.equal(f.calls[0].init.headers.Authorization, 'Bot kk');
+  assert.equal(f.calls[0].url, 'https://kagi.com/api/v1/search', 'v1, not the sunset v0');
+  assert.equal(f.calls[0].init.method, 'POST');
+  assert.equal(f.calls[0].init.headers.Authorization, 'Bearer kk', 'Bearer, not v0 Bot');
+  const body = JSON.parse(f.calls[0].init.body);
+  assert.equal(body.query, 'the best essays on typography');
+  assert.equal(body.workflow, 'search');
+  assert.equal(body.limit, 8);
 
   const data = JSON.parse(r.stdout);
-  assert.equal(data.length, 1, 'the t:1 related-searches block is not a result');
+  assert.equal(data.length, 1, 'only data.search[] — related_search is not a result');
   assert.equal(data[0].source, 'kagi');
-  assert.equal(data[0].title, 'Butterick’s Practical Typography');
+  assert.equal(data[0].title, 'Butterick\u2019s Practical Typography');
   assert.equal(data[0].snippet, 'A book about typography.');
-  assert.equal(data[0].published, '2026-02-10T00:00:00.000Z');
+  assert.equal(data[0].published, '2026-02-10T00:00:00.000Z', 'mapped from `time`');
   assert.ok(!r.stdout.includes('kk') && !r.stderr.includes('kk'));
 });
 
+test('kagi: --type news sends workflow news and reads data.news[]', async () => {
+  const f = route({ 'kagi.com': KAGI_NEWS_BODY });
+  const r = await run(
+    ['q', '--provider', 'kagi', '--type', 'news', '--json'],
+    { KAGI_API_KEY: 'kk' },
+    f
+  );
+  assert.equal(r.exitCode, 0, r.stderr);
+  assert.equal(JSON.parse(f.calls[0].init.body).workflow, 'news');
+  const data = JSON.parse(r.stdout);
+  assert.equal(data.length, 1);
+  assert.equal(data[0].url, 'https://news.example/typo');
+});
+
+test('kagi: a news workflow falls back through interesting_news to search', async () => {
+  const f = route({
+    'kagi.com': {
+      data: { interesting_news: [{ url: 'https://a.example/1', title: 'T', snippet: 's' }] },
+    },
+  });
+  const r = await run(
+    ['q', '--provider', 'kagi', '--type', 'news', '--json'],
+    { KAGI_API_KEY: 'kk' },
+    f
+  );
+  assert.equal(JSON.parse(r.stdout).length, 1);
+});
+
 test('kagi: error[] bodies are surfaced as readable text', async () => {
+  // v1 puts the human text in `message`; v0 used `msg`. Both are read.
   const f = mockFetch(() => ({
     status: 401,
-    body: { error: [{ code: 1, msg: 'Invalid API token' }], data: null },
+    body: {
+      error: [{ code: 'search.unauthorized', message: 'Invalid API token', location: null }],
+      data: null,
+    },
   }));
   const r = await run(['q', '--provider', 'kagi'], { KAGI_API_KEY: 'bad' }, f);
   assert.equal(r.exitCode, 1);
@@ -319,39 +369,26 @@ test('kagi is still used by auto when it is the only key', async () => {
   assert.equal(JSON.parse(r.stdout)[0].source, 'kagi');
 });
 
-test('--type news skips kagi in auto and refuses it by name', async () => {
-  // auto: kagi is dropped from the chain, brave answers.
-  const f = route({ 'api.search.brave.com': { results: [{ title: 'n', url: 'https://n.com' }] } });
-  const auto = await run(
-    ['q', '--type', 'news', '--json'],
-    {
-      KAGI_API_KEY: 'kk',
-      BRAVE_API_KEY: 'bk',
-    },
-    f
-  );
-  assert.equal(auto.exitCode, 0);
-  assert.ok(f.calls.every((c) => !c.url.includes('kagi.com')));
-
-  // auto with only kagi: refuse rather than answer news with web results.
-  const only = await run(['q', '--type', 'news', '--json'], { KAGI_API_KEY: 'kk' });
-  assert.equal(only.exitCode, 1);
-  assert.match(only.stderr, /needs a provider with a news endpoint/);
-
-  // explicit: refuse outright.
-  const named = await run(['q', '--provider', 'kagi', '--type', 'news'], { KAGI_API_KEY: 'kk' });
-  assert.equal(named.exitCode, 1);
-  assert.match(named.stderr, /no news endpoint/);
-});
-
-test('kagi domain filters ride along as query operators and are enforced', async () => {
+test('kagi domain filters use a native lens and are still enforced client-side', async () => {
   const f = route({ 'kagi.com': KAGI_BODY });
   const r = await run(
-    ['q', '--provider', 'kagi', '--exclude-domains', 'practicaltypography.com', '--json'],
+    [
+      'q',
+      '--provider',
+      'kagi',
+      '--include-domains',
+      'example.org',
+      '--exclude-domains',
+      'practicaltypography.com',
+      '--json',
+    ],
     { KAGI_API_KEY: 'kk' },
     f
   );
-  assert.match(decodeURIComponent(f.calls[0].url), /-site:practicaltypography\.com/);
+  const body = JSON.parse(f.calls[0].init.body);
+  assert.deepEqual(body.lens.sites_included, ['example.org'], 'native lens, no site: operator');
+  assert.deepEqual(body.lens.sites_excluded, ['practicaltypography.com']);
+  assert.ok(!JSON.stringify(body).includes('site:'), 'v1 needs no query operators');
   assert.deepEqual(JSON.parse(r.stdout), [], 'the client-side pass is authoritative');
 });
 
@@ -377,6 +414,10 @@ test('--type news reaches the right knob on every provider', async () => {
     tavily
   );
   assert.equal(JSON.parse(tavily.calls[0].init.body).topic, 'news');
+
+  const kagi = route({ 'kagi.com': KAGI_NEWS_BODY });
+  await run(['q', '--provider', 'kagi', '--type', 'news', '--json'], { KAGI_API_KEY: 'k' }, kagi);
+  assert.equal(JSON.parse(kagi.calls[0].init.body).workflow, 'news');
 });
 
 // ── provider chain ───────────────────────────────────────────────────────────

@@ -17,6 +17,9 @@
 //   automatically only when nothing else is configured. Ask for it by name
 //   (`--provider kagi`) when its result quality is worth the cost.
 //
+//   All four serve --type news, each through its own knob. See
+//   references/providers.md for per-provider endpoints and field mappings.
+//
 // Read-only and side-effect free: every command is a single search request.
 
 const cli = require('sliccy:cli');
@@ -33,7 +36,7 @@ USAGE
 OPTIONS
   --provider <brave|exa|tavily|kagi|auto>  Backend to use (default: auto)
   -n, --num <N>                            Number of results, 1-20 (default: 8)
-  --type <web|news>                        Result type (default: web; not on kagi)
+  --type <web|news>                        Result type (default: web)
   --include-domains <a,b>                  Keep only results from these domains
   --exclude-domains <a,b>                  Drop results from these domains
   --json                                   Emit a JSON array, not a human summary
@@ -50,9 +53,8 @@ AUTH (environment variables, or SLICC secrets exposed as env)
   Kagi, and falls through to the next one when a provider errors. Kagi is last
   because it bills per search — name it explicitly to pay for its quality.
 
-  --type news is served by Brave, Exa and Tavily; Kagi has no news endpoint and
-  is skipped (auto) or refused (--provider kagi) rather than silently answering
-  with web results.
+  --type news is served by all four, each through its own knob (Brave's news
+  endpoint, Exa's category, Tavily's topic, Kagi's workflow).
 
 JSON OUTPUT
   [{ "title": "…", "url": "https://…", "snippet": "…",
@@ -262,7 +264,9 @@ function errorDetail(text) {
   } catch {
     return ' — ' + trunc(stripHtml(text), 200);
   }
-  // Kagi reports `error: [{ code, msg }]`; the others use an object or a string.
+  // Kagi reports an error *array*, unlike the others: v1 is
+  // `error: [{ code, url, message, location }]` (v0 used `msg`), so both keys are
+  // read. The others use an object or a bare string.
   if (body && Array.isArray(body.error)) {
     const joined = body.error
       .map((e) => (e && (e.msg || e.message)) || '')
@@ -328,7 +332,7 @@ const BRAVE_WEB = 'https://api.search.brave.com/res/v1/web/search';
 const BRAVE_NEWS = 'https://api.search.brave.com/res/v1/news/search';
 const EXA_SEARCH = 'https://api.exa.ai/search';
 const TAVILY_SEARCH = 'https://api.tavily.com/search';
-const KAGI_SEARCH = 'https://kagi.com/api/v0/search';
+const KAGI_SEARCH = 'https://kagi.com/api/v1/search';
 
 async function braveSearch(key, query, opts) {
   // Brave takes no structured domain filter — it understands `site:` / `-site:`
@@ -373,10 +377,12 @@ async function exaSearch(key, query, opts) {
     numResults: opts.num,
     type: 'auto',
     // Highlights are the token-efficient snippet; text is the fallback when a
-    // page yields none.
+    // page yields none. `highlights: true` is the current form — the
+    // { numSentences, highlightsPerUrl } object is deprecated per Exa's
+    // coding-agent guide (docs.exa.ai/reference/search-api-guide-for-coding-agents).
     contents: {
       text: { maxCharacters: 800 },
-      highlights: { numSentences: 2, highlightsPerUrl: 2 },
+      highlights: true,
     },
   };
   if (opts.type === 'news') body.category = 'news';
@@ -443,48 +449,70 @@ async function tavilySearch(key, query, opts) {
 }
 
 /**
- * Kagi's Search API is a plain GET with a `Bot` credential. Its payload is a
- * heterogeneous `data[]`: `t:0` entries are search results, `t:1` is the
- * related-searches block — filter by `t` rather than trusting position.
- * There is no news vertical and no structured domain filter, so `--type news`
- * is refused upstream and domains ride along as query operators.
+ * Kagi API v1 (verified against https://kagi.com/api/docs/_spec/openapi.yaml,
+ * `openapi: 3.0.0`, servers `https://kagi.com/api/v1`, 2026-08-17, PR #285).
+ *
+ * The v0 beta this skill first targeted is being sunset and rejects keys issued
+ * by the current portal with a 401, so nothing about v0 is kept: the call is a
+ * POST with a JSON body and `Authorization: Bearer`, not a GET with `Bot`.
+ *
+ * v1 also drops v0's heterogeneous `data[]` + `t` discriminator — results are
+ * split into named arrays by type (`data.search[]`, `data.news[]`, `data.image[]`,
+ * …), selected here by the requested `workflow`. Every bucket holds the same
+ * `searchResult` shape, in which the date field is `time` (not v0's `published`).
  */
 async function kagiSearch(key, query, opts) {
-  let q = query;
-  if (opts.includeDomains.length) {
-    q += ' ' + opts.includeDomains.map((d) => `site:${d}`).join(' OR ');
-  }
-  if (opts.excludeDomains.length) {
-    q += ' ' + opts.excludeDomains.map((d) => `-site:${d}`).join(' ');
-  }
+  const workflow = opts.type === 'news' ? 'news' : 'search';
+  const body = { query, workflow, limit: opts.num };
 
-  const url = new URL(KAGI_SEARCH);
-  url.searchParams.set('q', q);
-  url.searchParams.set('limit', String(opts.num));
-  debug(`kagi GET ${url.toString()}`);
+  // v1 filters domains natively through a lens, so no `site:` operators. Per the
+  // spec, lens options take precedence over operators in the query text.
+  if (opts.includeDomains.length || opts.excludeDomains.length) {
+    body.lens = {};
+    if (opts.includeDomains.length) body.lens.sites_included = opts.includeDomains;
+    if (opts.excludeDomains.length) body.lens.sites_excluded = opts.excludeDomains;
+  }
+  debug(`kagi POST ${KAGI_SEARCH} (workflow=${workflow}, limit=${opts.num})`);
 
-  const data = await request(url.toString(), {
-    headers: { Accept: 'application/json', Authorization: `Bot ${key}` },
+  const data = await request(KAGI_SEARCH, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${key}`,
+    },
+    body: JSON.stringify(body),
     label: 'kagi',
   });
 
-  const rows = Array.isArray(data.data) ? data.data : [];
-  return rows
-    .filter((r) => r && r.t === 0)
-    .map((r) => ({
-      title: stripHtml(r.title),
-      url: r.url,
-      snippet: stripHtml(r.snippet || ''),
-      source: 'kagi',
-      published: toIso(r.published),
-    }));
+  // Read the bucket matching the workflow, with fallbacks: a news workflow may
+  // land in `news` or Kagi's own `interesting_news` index.
+  const buckets = workflow === 'news' ? ['news', 'interesting_news', 'search'] : ['search'];
+  const d = data.data || {};
+  let rows = [];
+  for (const name of buckets) {
+    if (Array.isArray(d[name]) && d[name].length) {
+      rows = d[name];
+      break;
+    }
+  }
+
+  return rows.map((r) => ({
+    title: stripHtml(r.title),
+    url: r.url,
+    snippet: stripHtml(r.snippet || ''),
+    source: 'kagi',
+    published: toIso(r.time),
+  }));
 }
 
+// Every provider serves --type news, each through its own knob: Brave a separate
+// endpoint, Exa `category`, Tavily `topic`, Kagi `workflow`.
 const PROVIDERS = {
-  brave: { id: 'brave', env: 'BRAVE_API_KEY', search: braveSearch, news: true },
-  exa: { id: 'exa', env: 'EXA_API_KEY', search: exaSearch, news: true },
-  tavily: { id: 'tavily', env: 'TAVILY_API_KEY', search: tavilySearch, news: true },
-  kagi: { id: 'kagi', env: 'KAGI_API_KEY', search: kagiSearch, news: false },
+  brave: { id: 'brave', env: 'BRAVE_API_KEY', search: braveSearch },
+  exa: { id: 'exa', env: 'EXA_API_KEY', search: exaSearch },
+  tavily: { id: 'tavily', env: 'TAVILY_API_KEY', search: tavilySearch },
+  kagi: { id: 'kagi', env: 'KAGI_API_KEY', search: kagiSearch },
 };
 // auto order: independent index first, then semantic, then RAG snippets, and
 // Kagi last — it bills per search, so it is a fallback, not a default.
@@ -616,7 +644,7 @@ async function main() {
           '    export BRAVE_API_KEY=…    (https://api-dashboard.search.brave.com)\n' +
           '    export EXA_API_KEY=…      (https://dashboard.exa.ai)\n' +
           '    export TAVILY_API_KEY=…   (https://app.tavily.com)\n' +
-          '    export KAGI_API_KEY=…     (https://kagi.com/settings?p=api)',
+          '    export KAGI_API_KEY=…     (https://kagi.com/api/keys)',
         { prefix: PREFIX }
       );
     }
@@ -629,26 +657,6 @@ async function main() {
       );
     }
     chain = [provider];
-  }
-
-  // Kagi has no news vertical. Answering --type news with its web results would
-  // be a silently wrong answer, so drop it from an auto chain and refuse it
-  // outright when it was asked for by name.
-  if (type === 'news') {
-    const capable = chain.filter((id) => PROVIDERS[id].news);
-    if (!capable.length) {
-      cli.die(
-        provider === 'auto'
-          ? '--type news needs a provider with a news endpoint.\n' +
-              '  kagi has none — set BRAVE_API_KEY, EXA_API_KEY or TAVILY_API_KEY.'
-          : `--provider ${provider} has no news endpoint — use brave, exa or tavily for --type news`,
-        { prefix: PREFIX }
-      );
-    }
-    if (capable.length !== chain.length) {
-      debug(`skipping ${chain.filter((id) => !PROVIDERS[id].news).join(', ')} — no news endpoint`);
-    }
-    chain = capable;
   }
 
   debug(`chain=${chain.join(' → ')} type=${type} num=${num}`);

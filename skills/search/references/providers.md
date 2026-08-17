@@ -45,8 +45,7 @@ Request body:
   "query": "…",
   "numResults": 8,
   "type": "auto",
-  "contents": { "text": { "maxCharacters": 800 },
-                "highlights": { "numSentences": 2, "highlightsPerUrl": 2 } },
+  "contents": { "text": { "maxCharacters": 800 }, "highlights": true },
   "category": "news",
   "includeDomains": ["a.com"],
   "excludeDomains": ["b.com"]
@@ -55,8 +54,15 @@ Request body:
 
 `category` is set only for `--type news`. Highlights are requested because they
 are the token-efficient snippet: the CLI prefers `highlights[]` (joined with
-`…`) and falls back to `text` when a page yields none. Dates arrive as ISO 8601
-in `publishedDate`. Domain filters are native and server-side.
+`…`) and falls back to `text` when a page yields none. `highlights: true` is the
+current form — the `{ numSentences, highlightsPerUrl }` object is deprecated per
+Exa's [coding-agent guide](https://docs.exa.ai/reference/search-api-guide-for-coding-agents).
+Dates arrive as ISO 8601 in `publishedDate`. Domain filters are native and
+server-side.
+
+`type` is left at `"auto"`. Exa also exposes `fast`, `instant`, `deep-lite`,
+`deep` and `deep-reasoning`, plus `outputSchema` for structured grounded output —
+unused here, a reasonable follow-up.
 
 ## Tavily — `TAVILY_API_KEY`
 
@@ -87,28 +93,50 @@ otherwise opted into with `--provider kagi`.
 
 | | |
 |---|---|
-| Endpoint | `GET https://kagi.com/api/v0/search?q=&limit=` |
-| Auth | `Authorization: Bot <key>` |
-| Keys | https://kagi.com/settings?p=api |
+| Endpoint | `POST https://kagi.com/api/v1/search` |
+| Auth | `Authorization: Bearer <key>` |
+| Keys | https://kagi.com/api/keys |
+| Spec | https://kagi.com/api/docs/_spec/openapi.yaml |
 
-The payload is a **heterogeneous** `data[]` discriminated by `t`:
+**This is API v1.** The v0 beta (`GET api/v0/search?q=`, `Authorization: Bot`) is
+being sunset and returns 401 for keys issued by the current portal, so v0 is not
+a fallback — everything below changed with it: method, path, auth scheme, request
+encoding, response shape, and the date field.
+
+Request body:
 
 ```json
-{ "meta": { "id": "…", "api_balance": 4.99 },
-  "data": [ { "t": 0, "rank": 1, "url": "…", "title": "…", "snippet": "…",
-              "published": "2026-02-10T00:00:00Z" },
-            { "t": 1, "list": ["related search", "…"] } ] }
+{
+  "query": "…",
+  "workflow": "search",
+  "limit": 8,
+  "lens": { "sites_included": ["a.com"], "sites_excluded": ["b.com"] }
+}
 ```
 
-Only `t === 0` entries are results — `t: 1` is the related-searches block, and
-filtering by position instead of by `t` would turn it into a bogus result.
-Errors come back as `error: [{ code, msg }]` (an **array**, unlike the other
-three), so error rendering unwraps it to show the real message.
+- `workflow` — `search | images | videos | news | podcasts`. `--type news` sends
+  `news`; Kagi **does** have a news vertical.
+- `limit` — 1..1024. Per the spec it caps what is *returned*, not what is
+  searched, so it is a ceiling rather than a page size.
+- `lens` — native domain filtering, so no `site:` operators are needed. The spec
+  notes lens options take precedence over operators written into the query text.
+  `lens_id` (a saved/shareable lens) and the other lens facets — `keywords_included`,
+  `keywords_excluded`, `file_type`, `time_after`, `time_before`, `time_relative`,
+  `search_region` — are available but unused here.
 
-There is no news vertical and no structured domain filter. `--type news` is
-therefore skipped in `auto` and refused under `--provider kagi`, rather than
-answering a news query with web results; domains ride along as `site:` /
-`-site:` operators.
+Responses split results into **named arrays by type** under `data` —
+`data.search[]`, `data.news[]`, `data.image[]`, `data.video[]`,
+`data.related_search[]`, `data.interesting_news[]`, and more. There is no `t`
+discriminator (that was v0). The CLI reads the bucket matching the requested
+workflow, falling back `news → interesting_news → search` for a news query.
+
+Every bucket holds the same `searchResult`: `url` and `title` (both required),
+`snippet`, `time` (**the date field — v0 called it `published`**), plus optional
+`image` and an open-ended `props`.
+
+Errors are an **array**, unlike the other three:
+`error: [{ code, url, message, location }]` — v0 used `msg`, so error rendering
+reads either key.
 
 ## Cross-provider behaviour
 
@@ -116,8 +144,11 @@ answering a news query with web results; domains ride along as `site:` /
   runs; a provider that *errors* falls through to the next. An empty result set
   is a success, not a reason to fall through, and an explicit `--provider` never
   falls back at all, so a result's `source` is always the provider that was asked.
-- **Domain filters** — native on Exa and Tavily, `site:`/`-site:` query operators
-  on Brave and Kagi, and a client-side host check on every provider afterwards.
+- **`--type news`** — served by all four, each through its own knob: Brave a
+  separate endpoint, Exa `category`, Tavily `topic`, Kagi `workflow`.
+- **Domain filters** — native on Exa, Tavily and Kagi (the last via a `lens`),
+  `site:`/`-site:` query operators on Brave, and a client-side host check on every
+  provider afterwards.
   The client-side pass is authoritative and is what makes the flags behave the
   same everywhere; it matches a bare domain against both the host and its
   subdomains (`reddit.com` excludes `www.reddit.com`).
