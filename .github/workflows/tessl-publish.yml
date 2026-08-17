@@ -21,11 +21,7 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
-        include:
-          - plugin: basic
-            base: "0.2.0"
-          - plugin: advanced
-            base: "0.2.13"
+        plugin: [basic, advanced]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -88,77 +84,19 @@ jobs:
         if: steps.changed.outputs.skip != 'true'
         env:
           PLUGIN: ${{ matrix.plugin }}
-          BASE: ${{ matrix.base }}
           BUMP: ${{ steps.changed.outputs.bump || 'patch' }}
         run: |
           set -euo pipefail
 
-          bump_version() {
-            local a b c
-            IFS='.' read -r a b c <<< "$1"
-            case "$2" in
-              major) echo "$((a + 1)).0.0" ;;
-              minor) echo "$a.$((b + 1)).0" ;;
-              *)     echo "$a.$b.$((c + 1))" ;;
-            esac
-          }
-
-          NAME=$(jq -r .name "tiles/$PLUGIN/.tessl-plugin/plugin.json")
-
-          LATEST=$(curl -fsS "https://api.tessl.io/v1/tiles/$NAME" | jq -r '.data.attributes.latestVersion // empty' || true)
-
-          if echo "$LATEST" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            FLOOR="$LATEST"
-          else
-            FLOOR="$BASE"
-          fi
-
-          echo "Bumping $FLOOR as a $BUMP release"
-          V=$(bump_version "$FLOOR" "$BUMP")
-
           SOURCE_MANIFEST="tiles/$PLUGIN/.tessl-plugin/plugin.json"
-          STAGE_ROOT=$(mktemp -d)
-          trap 'rm -rf "$STAGE_ROOT"' EXIT
-          STAGED_PLUGIN="$STAGE_ROOT/$PLUGIN"
-          STAGED_MANIFEST="$STAGED_PLUGIN/.tessl-plugin/plugin.json"
-          node tools/stage-tessl-plugin.mjs "$PLUGIN" "$STAGED_PLUGIN"
+          bash tools/publish-tessl-plugin.sh "$PLUGIN" "$BUMP"
 
-          for _ in $(seq 1 25); do
-            # publish --version writes version into the manifest even on failure;
-            # strip it so --version is honored on every attempt.
-            tmp=$(mktemp)
-            jq 'del(.version)' "$STAGED_MANIFEST" > "$tmp" && mv "$tmp" "$STAGED_MANIFEST"
+          NAME=$(jq -er .name "$SOURCE_MANIFEST")
+          V=$(jq -er .version "$SOURCE_MANIFEST")
+          echo "Published $NAME@$V"
 
-            set +e
-            OUT=$(tessl plugin publish --version "$V" "$STAGED_PLUGIN" 2>&1)
-            RC=$?
-            set -e
-            echo "$OUT"
-            if [ "$RC" -eq 0 ]; then
-              echo "Published $NAME@$V"
-
-              tmp=$(mktemp)
-              jq --arg version "$V" '.version = $version' "$SOURCE_MANIFEST" > "$tmp" && mv "$tmp" "$SOURCE_MANIFEST"
-
-              git config user.name "github-actions[bot]"
-              git config user.email "github-actions[bot]@users.noreply.github.com"
-              git add "$SOURCE_MANIFEST"
-              git commit -m "chore($PLUGIN): record published version $V [skip ci]"
-              git push origin HEAD:main
-
-              exit 0
-            fi
-            if echo "$OUT" | grep -Eiq 'already exists|not available|already published|already declares version'; then
-              V=$(bump_version "$V" "patch")
-              continue
-            fi
-            if echo "$OUT" | grep -Eiq 'timed out'; then
-              sleep 5
-              continue
-            fi
-            echo "::error::publish failed for a non-version reason"
-            exit 1
-          done
-
-          echo "::error::exhausted version attempts starting from $FLOOR"
-          exit 1
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "$SOURCE_MANIFEST"
+          git commit -m "chore($PLUGIN): record published version $V [skip ci]"
+          git push origin HEAD:main
