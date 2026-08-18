@@ -365,18 +365,43 @@ async function cmdSelf() {
   console.log(`  ${color.dim(`id:${current}`)}`);
 }
 
+/**
+ * The list endpoint returns rows, never a total, so a single capped page would
+ * report its own page size as the thread count. Page through with offset and
+ * say so when the page budget runs out instead of publishing a fake total.
+ */
+async function collectThreads() {
+  const PAGE_SIZE = 200;
+  const MAX_PAGES = 25;
+  const active = [];
+  let total = 0;
+  for (let page = 0; page < MAX_PAGES; page += 1) {
+    const batch = await request('get', '/threads', {
+      params: { limit: String(PAGE_SIZE), offset: String(page * PAGE_SIZE) },
+    });
+    const threads = Array.isArray(batch) ? batch : batch.threads || [];
+    total += threads.length;
+    for (const thread of threads) {
+      if (thread.status !== 'idle') active.push(thread);
+    }
+    if (threads.length < PAGE_SIZE) return { total, truncated: false, active };
+  }
+  return { total, truncated: true, active };
+}
+
 async function cmdStatus() {
   const stored = await config();
   const { origin, paired } = await api();
   const version = await request('get', '/system/version', { tolerate: true });
-  const threads = await request('get', '/threads', { params: { limit: '200' } });
+  const { total, truncated, active } = await collectThreads();
   const payload = {
     serverUrl: origin,
     paired,
     machineId: stored.machineId ?? null,
     selfThreadId: firstString(process.env.BB_THREAD_ID, stored.selfThreadId) ?? null,
     version: version ?? null,
-    threadCount: Array.isArray(threads) ? threads.length : null,
+    threadCount: total,
+    threadCountTruncated: truncated,
   };
   if (flags.json) {
     cli.out(payload);
@@ -388,9 +413,8 @@ async function cmdStatus() {
   line('Auth', paired ? color.green('machine credential stored') : color.dim('none (local access)'));
   line('Machine', payload.machineId);
   line('Version', version && (version.currentVersion || version.version));
-  line('Threads', payload.threadCount);
+  line('Threads', truncated ? `${total}+ ${color.dim('(counted up to the page budget)')}` : total);
   line('Default thread', payload.selfThreadId);
-  const active = Array.isArray(threads) ? threads.filter((thread) => thread.status !== 'idle') : [];
   if (active.length > 0) {
     console.log('');
     console.log(color.dim('  Active:'));
