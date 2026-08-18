@@ -616,6 +616,61 @@ let storeReadDetail = null;
 // was read but unusable — the owner needs those apart to know where to look.
 let hydrationFailure = null; // null | 'store-unreachable' | 'store-corrupt' | 'no-bridge'
 
+// ── request-load / load-ack: the panel↔owner hydration handshake ──
+// A cheap client-side FLOOR under `request-load` — deliberately not a cap. An
+// instance that legitimately never receives data (a follower panel whose store
+// bridges time out permanently) must be able to keep asking, so consecutive
+// unanswered asks widen the gap towards a slow heartbeat instead of being
+// silenced; a `load-items` arrival proves the channel works and resets it.
+const REQUEST_LOAD_MIN_GAP_MS = 5000;   // never more than one ask per 5s …
+const REQUEST_LOAD_BACKOFF_FACTOR = 2;  // … doubling per unanswered ask …
+const REQUEST_LOAD_MAX_GAP_MS = 60000;  // … capped at a one-per-minute heartbeat
+let requestLoadGapMs = REQUEST_LOAD_MIN_GAP_MS;
+let requestLoadLastAt = 0;
+
+function requestLoad(reason, detail) {
+  // Diagnostics must never be able to break init, hence the blanket try/catch.
+  try {
+    if (!slicc.lick) return;
+    const now = Date.now();
+    if (requestLoadLastAt && now - requestLoadLastAt < requestLoadGapMs) return;
+    requestLoadLastAt = now;
+    requestLoadGapMs = Math.min(
+      requestLoadGapMs * REQUEST_LOAD_BACKOFF_FACTOR, REQUEST_LOAD_MAX_GAP_MS);
+    // `action` stays first and unchanged — the extra keys are additive, so
+    // owners that key only on `action` keep working untouched.
+    slicc.lick({
+      action: 'request-load',
+      instanceId: INSTANCE_ID,
+      reason: reason,
+      detail: detail || null,
+      mountedAt: MOUNTED_AT
+    });
+  } catch (e) {}
+}
+
+// `load-items` is fire-and-forget from the owner's side, and `sprinkle send`
+// addresses a panel by NAME, not by runtime or instance — so without an ack the
+// owner cannot tell "hydrated" from "the push went to some other instance".
+// Emitted after tasks are assigned and rendered; never allowed to break that.
+function emitLoadAck(count) {
+  try {
+    if (!slicc.lick) return;
+    slicc.lick({
+      action: 'load-ack',
+      instanceId: INSTANCE_ID,
+      count: count,
+      at: new Date().toISOString()
+    });
+  } catch (e) {}
+}
+
+// Delivery proves the channel works, so the next ask starts from the floor
+// again rather than from the widened gap.
+function noteLoadDelivered() {
+  requestLoadGapMs = REQUEST_LOAD_MIN_GAP_MS;
+}
+
 // A hanging bridge call must never stall init. Some SLICC builds have had
 // slicc.readFile() hang (never settle) inside a sprinkle sandbox, so every
 // async read is guarded by a timeout race; a timed-out read falls through to
@@ -1029,6 +1084,10 @@ slicc.on('update', (msg) => {
     tasks = Array.isArray(msg.tasks) ? msg.tasks.slice() : [];
     saveState();
     renderAll();
+    // The push landed in THIS instance: stand the backoff down and say so, so
+    // the owner can distinguish a delivered push from one that vanished.
+    noteLoadDelivered();
+    emitLoadAck(tasks.length);
   }
 
   else if (msg.action === 'add-item') {
@@ -1088,35 +1147,6 @@ setInterval(function () {
 // ═══════════════════════════════════════════════════
 //  INIT
 // ═══════════════════════════════════════════════════
-// A cheap client-side floor under `request-load`. Both counters are per
-// document, so a legitimate remount always gets its one ask (fresh document →
-// fresh budget) while a panel that re-asks in a tight loop runs out fast and
-// stops billing the owner a turn per attempt.
-const REQUEST_LOAD_MIN_GAP_MS = 5000; // at most one ask every 5s …
-const REQUEST_LOAD_MAX_PER_MOUNT = 3; // … and at most 3 asks for this mount
-let requestLoadCount = 0;
-let requestLoadLastAt = 0;
-function requestLoad(reason, detail) {
-  // Diagnostics must never be able to break init, hence the blanket try/catch.
-  try {
-    if (!slicc.lick) return;
-    if (requestLoadCount >= REQUEST_LOAD_MAX_PER_MOUNT) return;
-    const now = Date.now();
-    if (requestLoadLastAt && now - requestLoadLastAt < REQUEST_LOAD_MIN_GAP_MS) return;
-    requestLoadCount++;
-    requestLoadLastAt = now;
-    // `action` stays first and unchanged — the extra keys are additive, so
-    // owners that key only on `action` keep working untouched.
-    slicc.lick({
-      action: 'request-load',
-      instanceId: INSTANCE_ID,
-      reason: reason,
-      detail: detail || null,
-      mountedAt: MOUNTED_AT
-    });
-  } catch (e) {}
-}
-
 (async function init() {
   const src = await loadState();
   renderAll();
