@@ -199,8 +199,9 @@ gh api /repos/owner/repo/git/ref/heads/main --jq .object.sha
 gh api /repos/owner/repo/git/refs -X POST -f ref=refs/heads/new-branch -f sha=abc123
 ```
 
-`-X`/`--method`, `-f`/`--field key=value` (JSON body on non-GET), `--jq`/`-q`. Bodies are built
-from `-f` flags, never from `@file` — see [`gotchas.md`](gotchas.md).
+`-X`/`--method`, `-f`/`--raw-field key=value` (raw strings), `-F`/`--field key=value`
+(typed values; `@file` and `@-` read UTF-8 or stdin), `--jq`/`-q`. Fields imply POST unless
+`-X` is explicit; use `-f key=@mention` for a literal leading `@`. See [`gotchas.md`](gotchas.md).
 
 ## Auth
 

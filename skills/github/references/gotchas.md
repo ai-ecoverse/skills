@@ -80,7 +80,7 @@ NODE
 GH_TOK="$(oauth-token github)" node /tmp/post-issue.mjs
 ```
 
-The `gh.jsh api` passthrough avoids this entirely — it builds the body from `-f key=value` flags or stdin, never from `@file`. Prefer it whenever possible. (`gh api` also accepts the upstream spellings `--method POST` for `-X POST` and `-q`/`--jq` for the response filter.)
+The `gh.jsh api` passthrough avoids this entirely: `-f`/`--raw-field key=value` builds raw string fields, while `-F`/`--field` converts booleans, null, and integers and supports `key=@file` (UTF-8) or `key=@-` (stdin). Body fields imply POST unless `-X`/`--method` is explicit. Use `-f key=@mention` for a literal value beginning with `@`. (`gh api` also accepts `-q`/`--jq` for response filtering.)
 
 ## Reach for `--json` before `gh api` + `--jq`
 

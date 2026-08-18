@@ -3015,31 +3015,66 @@ async function contentPut(args) {
 
 // ─── api (raw passthrough) ───────────────────────────────────────────────────
 
+function typedApiField(value) {
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  if (value === 'null') return null;
+  if (/^-?(?:0|[1-9]\d*)$/.test(value)) return Number(value);
+  return value;
+}
+
 async function apiPassthrough(args) {
-  const usage = 'usage: gh api <path> [-X METHOD] [-f key=value]... [--jq <expr>]';
+  const usage = 'usage: gh api <path> [-X METHOD] [-f key=value]... [-F key=value]... [--jq <expr>]';
   if (!args[0]) cli.die(usage);
-  let method = 'GET', jqExpr = null;
+  let method = 'GET', methodExplicit = false, jqExpr = null, stdinValue;
   const fields = {};
   const positional = [];
+  const readTypedField = async (value) => {
+    if (value === '@-') {
+      if (stdinValue === undefined) {
+        try { stdinValue = String((await process.stdin.read()) ?? ''); }
+        catch (e) { cli.die(`api: could not read stdin for -F key=@-: ${e.message}`); }
+      }
+      return stdinValue;
+    }
+    if (value.startsWith('@')) {
+      const filePath = value.slice(1);
+      try { return new TextDecoder().decode(await fs.readFileBinary(filePath)); }
+      catch (e) { cli.die(`api: could not read -F value from ${filePath}: ${e.message}\nUse -f key=@mention for a literal value beginning with @.`); }
+    }
+    return typedApiField(value);
+  };
   for (let i = 0; i < args.length; i++) {
     // Upstream spells the verb -X/--method and the filter --jq/-q; both work.
-    if ((args[i] === '-X' || args[i] === '--method') && args[i+1]) { method = args[++i].toUpperCase(); }
-    else if (args[i].startsWith('--method=')) { method = args[i].slice(9).toUpperCase(); }
+    if ((args[i] === '-X' || args[i] === '--method') && args[i+1]) {
+      method = args[++i].toUpperCase();
+      methodExplicit = true;
+    }
+    else if (args[i].startsWith('--method=')) {
+      method = args[i].slice(9).toUpperCase();
+      methodExplicit = true;
+    }
     else if ((args[i] === '--jq' || args[i] === '-q') && args[i+1]) { jqExpr = args[++i]; }
     else if (args[i].startsWith('--jq=')) { jqExpr = args[i].slice(5); }
-    else if ((args[i] === '-f' || args[i] === '--field' || args[i] === '-F' || args[i] === '--raw-field') && args[i+1]) {
+    else if ((args[i] === '-f' || args[i] === '--raw-field') && args[i+1]) {
       const [k, ...vParts] = args[++i].split('=');
       assignField(fields, k, vParts.join('='));
+    }
+    else if ((args[i] === '-F' || args[i] === '--field') && args[i+1]) {
+      const [k, ...vParts] = args[++i].split('=');
+      assignField(fields, k, await readTypedField(vParts.join('=')));
     }
     else positional.push(args[i]);
   }
 
   const path = positional[0];
+  if (!methodExplicit && Object.keys(fields).length) method = 'POST';
 
   try {
     const opts = {};
-    if (method !== 'GET' && Object.keys(fields).length) {
-      opts.body = fields;
+    if (Object.keys(fields).length) {
+      if (method === 'GET') opts.params = fields;
+      else opts.body = fields;
     }
 
     let result;
@@ -3430,13 +3465,16 @@ const HELP = {
   api: {
     summary: 'Raw GitHub REST API passthrough',
     standalone: {
-      usage: ['gh api <path> [-X METHOD] [-f key=value]... [--jq <expr>]'],
+      usage: ['gh api <path> [-X METHOD] [-f key=value]... [-F key=value]... [--jq <expr>]'],
       desc: 'Call any REST endpoint with this tool\u2019s auth',
       flags: ['-X, --method <verb>       GET (default), POST, PUT, PATCH, DELETE',
-        '-f, --field <key=value>   body field (repeatable), sent as JSON on non-GET',
+        '-f, --raw-field <key=value> raw string; fields imply POST when -X is omitted',
+        '-F, --field <key=value>   typed field; @file reads UTF-8 and @- reads stdin',
         '-q, --jq <expr>           filter the response through a jq expression'],
-      notes: ['Bodies are built from -f flags, never from @file — see references/gotchas.md.',
-        "-f keys accept bracket notation for nested bodies: -f 'tree[0][path]=x' and",
+      notes: ['-F converts true, false, null, and integers; other values stay strings.',
+        '-F means --field for gh api, but --body-file for gh issue/pr create and edit.',
+        'Use -f key=@mention when a literal string should begin with @.',
+        "Field keys accept bracket notation: -f 'tree[0][path]=x' and",
         '-f \'parents[]=sha\' build {"tree":[{"path":"x"}],"parents":["sha"]}.'],
     },
   },
