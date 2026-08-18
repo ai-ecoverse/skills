@@ -475,6 +475,85 @@ test('resolves named milestones and clears milestones', async () => {
   assert.deepEqual(writes(result)[0].options.body, { milestone: null });
 });
 
+test('gh api fields imply POST and preserve typed versus raw semantics', async () => {
+  const result = await runGh([
+    'api',
+    '/repos/octo/repo/issues',
+    '-f',
+    'count=2',
+    '-f',
+    'draft=false',
+    '-F',
+    'raw=2',
+  ]);
+
+  assert.equal(result.error.exitCode, 0);
+  assert.deepEqual(writes(result), [
+    {
+      method: 'post',
+      path: '/repos/octo/repo/issues',
+      options: { body: { count: 2, draft: false, raw: '2' } },
+    },
+  ]);
+});
+
+test('gh api preserves an explicit GET by sending fields as query parameters', async () => {
+  const result = await runGh(['api', '/search/issues', '-X', 'GET', '-f', 'q=repo:octo/repo']);
+
+  assert.deepEqual(result.calls, [
+    {
+      method: 'get',
+      path: '/search/issues',
+      options: { params: { q: 'repo:octo/repo' } },
+    },
+  ]);
+  assert.deepEqual(writes(result), []);
+});
+
+test('gh api -F reads a multi-line UTF-8 file', async () => {
+  const body = 'First line\nEmoji: 🐙\nCafé\n';
+  const result = await runGh(['api', '/repos/octo/repo/issues', '-F', 'body=@/issue.md'], {
+    bodyFiles: { '/issue.md': body },
+  });
+
+  assert.deepEqual(writes(result)[0].options.body, { body });
+  assert.equal(result.stdinReadCount, 0);
+});
+
+test('gh api -F reads @- from stdin', async () => {
+  const result = await runGh(['api', '/repos/octo/repo/issues', '-F', 'body=@-'], {
+    stdin: 'Line one\nLine two\n',
+  });
+
+  assert.deepEqual(writes(result)[0].options.body, { body: 'Line one\nLine two\n' });
+  assert.equal(result.stdinReadCount, 1);
+});
+
+test('gh api reports -F file errors with the literal-mention alternative', async () => {
+  const result = await runGh(['api', '/repos/octo/repo/issues', '-F', 'body=@octocat']);
+
+  assert.equal(result.error.name, 'NodeExitError');
+  assert.match(result.error.message, /could not read -F value from octocat/);
+  assert.match(result.error.message, /Use -f key=@mention/);
+  assert.deepEqual(writes(result), []);
+});
+
+test('gh api accepts a legitimate value beginning with @ via -f', async () => {
+  const result = await runGh(['api', '/repos/octo/repo/issues', '-f', 'body=@octocat']);
+
+  assert.deepEqual(writes(result)[0].options.body, { body: '@octocat' });
+});
+
+test('gh api help documents field behavior and the -F collision', async () => {
+  const result = await runGh(['api', '--help']);
+  assert.equal(result.error.exitCode, 0);
+  const help = result.stdout.join('\n');
+  assert.match(help, /fields imply POST/);
+  assert.match(help, /@file reads a file and @- reads stdin/);
+  assert.match(help, /--body-file for gh issue\/pr/);
+  assert.match(help, /-f key=@mention/);
+});
+
 test('propagates API failures as command errors', async () => {
   const result = await runGh(['pr', 'edit', '42', '--title', 'T', '-R', 'octo/repo'], {
     failWrite: true,
