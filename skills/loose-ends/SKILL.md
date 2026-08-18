@@ -207,7 +207,7 @@ The panel fires these licks back to the cone as `[Sprinkle Event: loose-ends]`:
 | `open-session` | `{ id, file, at }` | User clicks the **"from &lt;date&gt;"** provenance link | Open the originating transcript at `/sessions/<file>` (e.g. `read_file`) and surface it to the user — the conversation this loose end came from. |
 | `snooze` | `{ id, title, until }` | User picks a snooze preset (Tomorrow / Next Monday / Next week / Pick a date) | The panel already moved the row to the snoozed section optimistically. Set that task's `snoozedUntil = until` (ISO) in `/shared/loose-ends.json` and bump `updated`. No panel round-trip needed. |
 | `unsnooze` | `{ id, title }` | User clicks **Wake now** on a snoozed row | The panel already moved the row back to active optimistically. Clear (delete or `null`) that task's `snoozedUntil` in the store and bump `updated`. |
-| `request-load` | `{}` | Panel `init` when it could **not** reach the store itself (neither `slicc.readFile` nor `slicc.exec` worked in the sandbox) | Reseed the panel from the store: `sprinkle send loose-ends '{"action":"load-items","tasks":[ ...store tasks... ]}'` (delegate to the scoop). This is the safety net behind self-hydration. |
+| `request-load` | `{ instanceId, reason, detail, mountedAt }` — e.g. `{"action":"request-load","instanceId":"a1b2c3d4","reason":"store-unreachable","detail":"exec-timeout","mountedAt":"2026-08-18T16:20:00.000Z"}` | Panel `init` when it could **not** hydrate from the store itself (neither `slicc.readFile` nor `slicc.exec` worked in the sandbox, or the store was unusable) | Reseed the panel from the store: `sprinkle send loose-ends '{"action":"load-items","tasks":[ ...store tasks... ]}'` (delegate to the scoop). This is the safety net behind self-hydration. The payload is **additive** — `action` is still the first key and owners keying only on it are unaffected. Use `instanceId` to triage repeats: **different** `instanceId` values mean repeated *mounts* (normal on multi-runtime setups, where a follower panel's VFS bridges are not backed by the leader's storage, so every mount legitimately asks for a push), while repeats with the **same** `instanceId` mean a real loop in one panel. `reason` is `store-unreachable` \| `store-corrupt` \| `no-bridge`; `detail` is the finer cause (`exec-timeout`, `exec-nonzero`, `exec-threw`, `readfile-timeout`, `readfile-empty`, `readfile-threw`, `no-bridge`, or `null`). |
 
 > **`snooze`/`unsnooze` are optimistic in the panel** (like `done`): the row moves
 > the instant the user acts, then the lick fires. The cone's only job is to make
@@ -302,3 +302,12 @@ It reads the store and emits one monday item per task. Notes:
   `sprinkle open`, not `sprinkle reload`** (reload keeps the state cache and
   masks the problem). If your store lives elsewhere, change the `STORE_PATH`
   constant near the top of the script.
+- **`request-load` diagnostics:** when that safety net fires, the lick says why.
+  `reason` is `store-unreachable` (the store could not be read), `store-corrupt`
+  (read, but the JSON was broken or had no `tasks` array) or `no-bridge`
+  (neither `slicc.exec` nor `slicc.readFile` exists in this sandbox); `detail`
+  narrows a failed read to `exec-timeout`, `exec-nonzero`, `exec-threw`,
+  `readfile-timeout`, `readfile-empty` or `readfile-threw`. A per-mount
+  `instanceId` plus `mountedAt` separate repeated mounts from a repeating panel,
+  and the panel emits at most 3 asks per mount, 5s apart — a fresh mount always
+  gets its one request, a loop gets capped.
