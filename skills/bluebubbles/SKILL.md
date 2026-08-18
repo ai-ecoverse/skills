@@ -1,137 +1,130 @@
 ---
 name: bluebubbles
-description: Sends and receives iMessages via the BlueBubbles REST API. Use when the user wants to send a text message, iMessage, or SMS, read or search message history, find contacts, list conversations, or interact with their iPhone messages from the desktop. Capabilities include sending direct messages and group chats, querying message history, finding contacts by name, searching existing chat threads, distinguishing direct vs group conversations, and verifying message delivery. Requires a running BlueBubbles server.
+description: |
+  Send and read iMessage/SMS via a BlueBubbles server REST API (password auth, not
+  browser session). Use when the user wants to text someone, send an iMessage or SMS,
+  check iPhone messages from the desktop, list conversations/inbox, read a thread,
+  search message history, look up contacts or handles, or verify that a message was
+  delivered. Triggers on BlueBubbles, iMessage, SMS, text message, chat guid,
+  iMessage;-;, Messages.app, or "text <person>". Not Slack, not Signal, not Teams.
 allowed-tools: bash
+command: bluebubbles
+script: scripts/bluebubbles.jsh
 ---
 
-# BlueBubbles iMessage API
+# BlueBubbles
 
-## First Time Setup
+CLI over a running [BlueBubbles](https://bluebubbles.app) server. All calls are
+REST with `?password=` — credentials stay in env / a local config file; the CLI
+never prints the password. Every error string is pushed through a single
+redactor (`safeErrorText`) before it reaches the terminal, so `password=…`,
+a `"password"` field in a server JSON body and the literal secret are masked as
+`***` even when the HTTP layer embeds the full request URL in its own message.
 
-Before using this skill, you need the BlueBubbles server URL and password.
-
-**Ask the user:**
-
-1. "What is your BlueBubbles server URL?" (default: `http://localhost:1234`)
-2. "What is your BlueBubbles password?"
-
-**Store in memory** using `update_global_memory`:
-
-```
-bluebubbles_url: http://localhost:1234
-bluebubbles_password: <user's password>
-```
-
-**Test the connection** (substitute `SERVER_URL` with the stored `bluebubbles_url` and `PASSWORD` with the stored `bluebubbles_password`):
+## Quick start
 
 ```bash
-curl -s "SERVER_URL/api/v1/server/info?password=PASSWORD" | jq '.status'
+bluebubbles status                          # ping + server info + db totals
+bluebubbles chats --limit 20               # recent conversations (inbox)
+bluebubbles chats --direct --search=+49    # 1:1 only, filter participants
+bluebubbles messages any;-;+15551234567    # recent messages in a chat
+bluebubbles messages user@example.com      # resolve address → chat
+bluebubbles send +15551234567 "Hello!"     # send iMessage/SMS
+bluebubbles search "dinner" --limit 10     # scan recent message text
+bluebubbles search "mila" --in chats       # find threads by participant
+bluebubbles contacts "Gunnar"              # address book filter
+bluebubbles handles --limit 20             # known handles (degrades if API 500s)
+
+# Real-time watch (BB webhook → SLICC webhook → scoop)
+bluebubbles watch --scoop=imsg-inbox
+bluebubbles watch --scoop=tenant-dm --chat='any;-;+49160…'
+bluebubbles watches
+bluebubbles unwatch all
+
+bluebubbles status --json                  # machine-readable
+bluebubbles chats --local                  # prefer config urlLocal (LAN)
 ```
 
-Returns `200` if the connection works.
+## Config / auth
 
-## Authentication
+Resolution order:
 
-All endpoints require `?password=PASSWORD` as a query parameter. Throughout this skill, `SERVER_URL` is the value of `bluebubbles_url` and `PASSWORD` is the value of `bluebubbles_password` from memory — substitute them in every curl command.
+| What | Order |
+| --- | --- |
+| **URL** | `--url` → `BLUEBUBBLES_URL` → `--local` ? `urlLocal` : `url` in config → `urlLocal` → `http://localhost:1234` |
+| **Password** | `BLUEBUBBLES_PASSWORD` → `--password-file` / `BLUEBUBBLES_PASSWORD_FILE` → `passwordFile` from config |
+| **Config file** | `BLUEBUBBLES_CONFIG` → `~/.bluebubbles.json` → `/home/lars/.bluebubbles.json` |
 
-## IMPORTANT: Use POST /query endpoints
+Example `~/.bluebubbles.json` (no secrets inline):
 
-Most endpoints use POST with `/query` suffix. GET endpoints may return 404.
+```json
+{
+  "url": "https://<tunnel>.trycloudflare.com",
+  "urlLocal": "http://localhost:4321",
+  "passwordFile": "/home/lars/.bluebubbles-password"
+}
+```
 
-## Chat GUID Format
+Password file is a single line. **Do not** commit it, paste it into chat logs, or
+put it in this skill.
+
+## Commands
+
+`status`/`ping`, `chats`/`inbox`, `messages`, `send`, `search`, `contacts`,
+`handles`, `watch`, `watches`, `unwatch` — every command accepts `--json`.
+Full subcommand/flag reference and per-command caveats: `references/commands.md`.
+
+### Watch architecture
+
+```
+BlueBubbles (new-message, …)
+  → POST to SLICC webhook URL
+  → optional --filter (chatGuid substring)
+  → lick on target scoop
+```
+
+- Kill-switch: `bluebubbles unwatch …` (or `webhook delete <sliccId>`).
+- State files hold webhook IDs only — never the server password.
+- Scoop name must match `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$` — letters, digits, `_`
+  and `-`, first char alphanumeric, 64 chars max. An invalid name is rejected
+  before any webhook is created.
+- Checkpoint: confirm the watch registered. `watch` echoes `scoop`, `events`,
+  `chat`, `slicc wh:` (SLICC webhook id), `bb wh:` (BlueBubbles webhook id) and
+  the state file path. Then run `bluebubbles watches`: the watch must be listed
+  under "Active BlueBubbles watches (n)" as `<watchId>  ->  scoop <name>` with
+  non-empty `bb:` and `slicc:` ids. If the list prints "None." nothing was
+  registered — re-run `watch` (add `--force` to replace a stale watch with the
+  same id). `bluebubbles watches --json` returns the same state for scripting.
+
+## Chat GUIDs
 
 | Prefix | Meaning |
 | --- | --- |
-| `iMessage;-;` | Direct message — **use this to SEND** to a phone/email |
-| `any;-;` | Existing 1:1 chat (returned by chat queries) |
-| `any;+;` | **Group chat** — do NOT use for personal messages |
+| `iMessage;-;+…` / `iMessage;-;user@…` | Direct send target (creates thread if needed) |
+| `any;-;…` | Existing 1:1 chat from `chats` — prefer for `messages` |
+| `any;+;…` | Group chat — do **not** use for personal DMs; `send` requires `--confirm` |
 
-- Phone: `iMessage;-;+1234567890` (include country code)
-- Email: `iMessage;-;user@example.com`
+Prefer guids returned by `chats` / `messages` over hand-built ones when reading history.
 
-## Send a Message
+## Agent notes
 
-**Use `--max-time 5`** — the API waits for delivery confirmation (can take 30+ seconds). A timeout does NOT mean failure; verify delivery afterward (see Verify section).
+- Prefer `bluebubbles …` over raw `curl`. Never echo the password; prefer `--json` when chaining.
+- After `send`, a short HTTP timeout is normal (server waits on delivery). Run `messages` on the same target to verify.
+- `private_api: false` / helper disconnected still allows send/read of normal texts; advanced features may be missing.
+- Message text search is a recent-history scan (server-side `WHERE` is flaky on some 1.9.x builds). Narrow with `--in chats` or open a specific thread via `messages`.
+- Endpoint map: `references/endpoints.md`.
 
-```bash
-curl -s --max-time 5 -X POST "SERVER_URL/api/v1/message/text?password=PASSWORD" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "chatGuid": "iMessage;-;+1234567890",
-    "message": "Hello from slicc!",
-    "tempGuid": "temp-123456"
-  }' || echo '{"note": "Request timed out - message may still be sending"}'
-```
-
-**Required Parameters:**
-
-- `chatGuid`: Chat identifier (see Chat GUID Format above)
-- `message`: Text content to send
-- `tempGuid`: A unique temporary ID — use `temp-$(date +%s)`
-
-## Find a Contact by Name
+## Examples
 
 ```bash
-curl -s "SERVER_URL/api/v1/contact?password=PASSWORD" \
-  | jq '.data[] | select(.displayName != null) | select(.displayName | test("Name"; "i")) | {displayName, phoneNumbers, emails}'
+# Inbox snapshot for the agent
+bluebubbles chats --limit 15 --json
+
+# Read a thread then reply
+bluebubbles messages any;-;friend@example.com --limit 10
+bluebubbles send friend@example.com "On my way"
+
+# Find someone, then text the number from contacts
+bluebubbles contacts "Ada" --json
+bluebubbles send +1555… "Hi!"
 ```
-
-## Find and Filter Chats with a Contact
-
-Query all chats, then filter by address and participant count:
-
-```bash
-# All chats involving an address
-curl -s -X POST "SERVER_URL/api/v1/chat/query?password=PASSWORD" \
-  -H "Content-Type: application/json" \
-  -d '{"limit": 200}' | jq '.data[] | select(.participants[] | .address == "user@example.com") | {guid, participantCount: (.participants | length), participants: [.participants[] | .address]}'
-```
-
-**Filter to direct chats only** (1 participant) before sending a personal message:
-
-```bash
-curl -s -X POST "SERVER_URL/api/v1/chat/query?password=PASSWORD" \
-  -H "Content-Type: application/json" \
-  -d '{"limit": 200}' | jq '.data[] | select(.participants | length == 1) | select(.participants[0].address == "user@example.com") | {guid, participant: .participants[0].address}'
-```
-
-- `participantCount == 1` → direct chat (safe to use)
-- `participantCount > 1` → group chat — do NOT use for personal messages
-- If no direct chat exists, send with `iMessage;-;address` format to create one.
-
-## Get Recent Messages
-
-```bash
-curl -s -X POST "SERVER_URL/api/v1/message/query?password=PASSWORD" \
-  -H "Content-Type: application/json" \
-  -d '{"limit": 10}' | jq '.data[] | {text, isFromMe, dateCreated, from: .handle.address}'
-```
-
-## Get Messages from a Specific Chat
-
-For message queries, pass the exact `guid` string returned by `/chat/query` (the `.data[].guid` field). Do not hand-construct a GUID here — look it up first via the chat-filtering step above and copy the value verbatim.
-
-```bash
-curl -s -X POST "SERVER_URL/api/v1/message/query?password=PASSWORD" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "chatGuid": "<guid from /chat/query>",
-    "limit": 10
-  }' | jq '.data[] | {text, isFromMe, dateCreated}'
-```
-
-## Verify Message Was Sent
-
-After sending (even after a timeout), confirm the message appears in recent outbound messages:
-
-```bash
-curl -s -X POST "SERVER_URL/api/v1/message/query?password=PASSWORD" \
-  -H "Content-Type: application/json" \
-  -d '{"limit": 5}' | jq '.data[] | select(.isFromMe == true) | {text, dateCreated}'
-```
-
-## Error Handling
-
-- A 400 error means the message was NOT sent — check the error message
-- A timeout is not an error — verify with the query above
-- If you get connection errors, ask the user to verify the BlueBubbles server URL and password
