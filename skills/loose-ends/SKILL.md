@@ -316,3 +316,12 @@ It reads the store and emits one monday item per task. Notes:
   Applying a `load-items` push makes the panel emit `load-ack`
   (`{ action, instanceId, count, at }`), which is how the owner confirms the
   push reached the instance that asked.
+  **The panel-side floor cannot stop a remount storm.** It lives inside one
+  document, so it only protects against an instance that asks repeatedly. If the
+  host recreates the panel document on a timer — observed at roughly 30-second
+  intervals on a `slicc-standalone` follower, where each fresh `init` fails its
+  store read and asks once — every ask comes from a document with a brand-new
+  `instanceId`, and no client-side gap applies. Owners must therefore dedupe on
+  their own side: group by `instanceId`, and read many distinct `instanceId`
+  values with `mountedAt` values marching forward as a remount loop in the host,
+  not a panel defect. Nothing in the template can suppress that.
