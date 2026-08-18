@@ -127,8 +127,8 @@ Agents should prefer `--json` when they need to reason over or cite results.
 
 Search-heavy research belongs in scoops, not inline in the cone. Raw HTML, PDFs
 and legal text should be fetched, cached and distilled inside a scoop, with only
-a short summary returned. Read `/workspace/skills/delegation/SKILL.md` for the
-primitives; this section covers what is specific to search work.
+a short summary returned. `man delegation` covers the primitives (scoop shaping,
+parallel orchestration, cost); this section covers what is specific to search work.
 
 ### One scoop per question
 
@@ -204,7 +204,7 @@ curl -sL "<href from the DOM>" -o /shared/research/tos/src/terms.pdf
 
 That is how a gated-looking document turned out to need no login: the href
 carried its own token. Tab rules, including re-reading `tab-list` before `--tab`,
-are in `/workspace/skills/playwright-cli/SKILL.md`.
+are in `man playwright-cli`.
 
 ### Demand a citable artefact
 
