@@ -85,6 +85,12 @@ async function runGh(args, scenario = {}) {
       if (filePath === '/body.md') return 'from file';
       throw new Error('ENOENT');
     },
+    readFileBinary: async (filePath) => {
+      if (scenario.bodyFiles && Object.hasOwn(scenario.bodyFiles, filePath)) {
+        return new TextEncoder().encode(scenario.bodyFiles[filePath]);
+      }
+      throw new Error('ENOENT');
+    },
     writeFile: async () => {},
   };
   const mocks = {
@@ -479,12 +485,14 @@ test('gh api fields imply POST and preserve typed versus raw semantics', async (
   const result = await runGh([
     'api',
     '/repos/octo/repo/issues',
-    '-f',
-    'count=2',
-    '-f',
-    'draft=false',
     '-F',
+    'count=2',
+    '--field',
+    'draft=false',
+    '-f',
     'raw=2',
+    '--raw-field',
+    'version=1.0',
   ]);
 
   assert.equal(result.error.exitCode, 0);
@@ -492,7 +500,7 @@ test('gh api fields imply POST and preserve typed versus raw semantics', async (
     {
       method: 'post',
       path: '/repos/octo/repo/issues',
-      options: { body: { count: 2, draft: false, raw: '2' } },
+      options: { body: { count: 2, draft: false, raw: '2', version: '1.0' } },
     },
   ]);
 });
@@ -549,7 +557,9 @@ test('gh api help documents field behavior and the -F collision', async () => {
   assert.equal(result.error.exitCode, 0);
   const help = result.stdout.join('\n');
   assert.match(help, /fields imply POST/);
-  assert.match(help, /@file reads a file and @- reads stdin/);
+  assert.match(help, /@file reads UTF-8 and @- reads stdin/);
+  assert.match(help, /-f, --raw-field/);
+  assert.match(help, /-F, --field/);
   assert.match(help, /--body-file for gh issue\/pr/);
   assert.match(help, /-f key=@mention/);
 });

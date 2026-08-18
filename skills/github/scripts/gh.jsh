@@ -3019,7 +3019,7 @@ function typedApiField(value) {
   if (value === 'true') return true;
   if (value === 'false') return false;
   if (value === 'null') return null;
-  if (/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/.test(value)) return Number(value);
+  if (/^-?(?:0|[1-9]\d*)$/.test(value)) return Number(value);
   return value;
 }
 
@@ -3029,7 +3029,7 @@ async function apiPassthrough(args) {
   let method = 'GET', methodExplicit = false, jqExpr = null, stdinValue;
   const fields = {};
   const positional = [];
-  const readRawField = async (value) => {
+  const readTypedField = async (value) => {
     if (value === '@-') {
       if (stdinValue === undefined) {
         try { stdinValue = String((await process.stdin.read()) ?? ''); }
@@ -3039,10 +3039,10 @@ async function apiPassthrough(args) {
     }
     if (value.startsWith('@')) {
       const filePath = value.slice(1);
-      try { return String(await fs.readFile(filePath)); }
+      try { return new TextDecoder().decode(await fs.readFileBinary(filePath)); }
       catch (e) { cli.die(`api: could not read -F value from ${filePath}: ${e.message}\nUse -f key=@mention for a literal value beginning with @.`); }
     }
-    return value;
+    return typedApiField(value);
   };
   for (let i = 0; i < args.length; i++) {
     // Upstream spells the verb -X/--method and the filter --jq/-q; both work.
@@ -3056,13 +3056,13 @@ async function apiPassthrough(args) {
     }
     else if ((args[i] === '--jq' || args[i] === '-q') && args[i+1]) { jqExpr = args[++i]; }
     else if (args[i].startsWith('--jq=')) { jqExpr = args[i].slice(5); }
-    else if ((args[i] === '-f' || args[i] === '--field') && args[i+1]) {
+    else if ((args[i] === '-f' || args[i] === '--raw-field') && args[i+1]) {
       const [k, ...vParts] = args[++i].split('=');
-      assignField(fields, k, typedApiField(vParts.join('=')));
+      assignField(fields, k, vParts.join('='));
     }
-    else if ((args[i] === '-F' || args[i] === '--raw-field') && args[i+1]) {
+    else if ((args[i] === '-F' || args[i] === '--field') && args[i+1]) {
       const [k, ...vParts] = args[++i].split('=');
-      assignField(fields, k, await readRawField(vParts.join('=')));
+      assignField(fields, k, await readTypedField(vParts.join('=')));
     }
     else positional.push(args[i]);
   }
@@ -3468,11 +3468,11 @@ const HELP = {
       usage: ['gh api <path> [-X METHOD] [-f key=value]... [-F key=value]... [--jq <expr>]'],
       desc: 'Call any REST endpoint with this tool\u2019s auth',
       flags: ['-X, --method <verb>       GET (default), POST, PUT, PATCH, DELETE',
-        '-f, --field <key=value>   typed JSON field; fields imply POST when -X is omitted',
-        '-F, --raw-field <key=value> raw string; @file reads a file and @- reads stdin',
+        '-f, --raw-field <key=value> raw string; fields imply POST when -X is omitted',
+        '-F, --field <key=value>   typed field; @file reads UTF-8 and @- reads stdin',
         '-q, --jq <expr>           filter the response through a jq expression'],
-      notes: ['-f converts true, false, null, and JSON numbers; other values stay strings.',
-        '-F means --raw-field for gh api, but --body-file for gh issue/pr create and edit.',
+      notes: ['-F converts true, false, null, and integers; other values stay strings.',
+        '-F means --field for gh api, but --body-file for gh issue/pr create and edit.',
         'Use -f key=@mention when a literal string should begin with @.',
         "Field keys accept bracket notation: -f 'tree[0][path]=x' and",
         '-f \'parents[]=sha\' build {"tree":[{"path":"x"}],"parents":["sha"]}.'],
