@@ -22,9 +22,12 @@ bb — drive a bb server (threads, projects, agents) from SLICC
 
 USAGE
   bb status [--json]
+  bb attach [--server <url>]                 Pair with no code (uses your signed-in bb tab)
   bb pair --code <code> [--server <url>] [--connect-url <url>]
   bb unpair
   bb self [<thread-id>]
+
+  bb host list [--json]
 
   bb project list [--json]
   bb project show <id> [--json]
@@ -38,7 +41,7 @@ USAGE
                  [--reasoning-level <l>] [--permission-mode <m>] [--json]
   bb thread spawn --project <id> [--prompt <p>] [--provider <id>] [--model <m>]
                  [--title <t>] [--environment <id>] [--new-environment worktree]
-                 [--host <id>] [--base-branch <b>] [--parent-thread <id>]
+                 [--host <name-or-id>] [--base-branch <b>] [--parent-thread <id>]
                  [--visibility visible|hidden] [--json]
   bb thread stop [<id>] [--self] [--json]
   bb thread wait <id> [--status <status>] [--timeout <seconds>] [--poll-interval <ms>] [--json]
@@ -50,7 +53,11 @@ GLOBAL FLAGS
   --json           Print the raw API response
 
 REQUIRES
-  bb pair --code <code> --server https://<handle>.getbb.app
+  bb attach --server https://<handle>.getbb.app
+    Mints and redeems a code itself, using the session in your bb browser tab.
+    Sign in to the bb server in the browser first.
+
+  Manual alternative — bb pair --code <code> --server https://<handle>.getbb.app
   Mint the code on the bb server itself:
     curl -s -X POST -H 'content-type: application/json' -d 'null' \\
       http://127.0.0.1:38886/api/v1/plugins/connect/rpc/createMachineCode
@@ -289,6 +296,139 @@ async function resolveThreadId(explicit, usage) {
   die(usage);
 }
 
+// ── commands: code-less attach ────────────────────────────────────────
+/**
+ * Pair without a machine code, for the common case where the human is already
+ * signed in to the bb server in this browser.
+ *
+ * `createMachineCode` is normally reached over loopback from a shell on the
+ * machine that owns the bb server — which SLICC does not have. But the RPC is
+ * also served on the server's public origin, where the owner's session cookie
+ * authorises it, and every bb request here already runs inside a tab parked on
+ * that origin. So mint the code in-page and redeem it immediately: one command,
+ * nothing to copy, and no shell on the host machine.
+ *
+ * Codes are one-time and short-lived (~10 minutes), so minting and redeeming
+ * must stay a single atomic step — never mint one to use later.
+ */
+async function cmdAttach() {
+  const server = typeof flags.server === 'string' ? normalizeServerUrl(flags.server) : undefined;
+  const stored = await config();
+  if (!firstString(server, process.env.BB_SERVER_URL, stored.serverUrl)) {
+    die('usage: bb attach [--server https://<handle>.getbb.app]');
+  }
+  const { origin } = await api();
+  // `-d null` is what the RPC expects; `tolerate` so a signed-out tab gets a
+  // useful message instead of the generic credential error.
+  const minted = await request('post', '/plugins/connect/rpc/createMachineCode', {
+    body: null,
+    tolerate: true,
+  });
+  const code = typeof minted?.result?.code === 'string' ? minted.result.code : undefined;
+  if (!code) {
+    die(
+      `${origin} would not mint a machine code.\n` +
+        `  Open ${origin} in the browser and sign in as the server's owner, then retry —\n` +
+        `  minting is authorised by that session, not by a stored credential.\n` +
+        `  Fallback: mint one on the bb server itself and use 'bb pair --code <code>'.`,
+    );
+  }
+  const serverUrl = firstString(server, minted?.result?.serverUrl, stored.serverUrl);
+  return await redeemMachineCode(code, serverUrl ? normalizeServerUrl(serverUrl) : undefined);
+}
+
+// ── hosts ─────────────────────────────────────────────────────────────
+/**
+ * Enrolled hosts, as `/api/v1/hosts` reports them. Kept in one place because
+ * both `bb host list` and worktree spawning need it: a managed worktree is
+ * created ON a host, so `--new-environment worktree` cannot be satisfied
+ * without one.
+ */
+async function listHosts() {
+  const data = await request('get', '/hosts');
+  if (Array.isArray(data)) return data;
+  return Array.isArray(data?.hosts) ? data.hosts : [];
+}
+
+function hostIsConnected(host) {
+  return host?.status === 'connected';
+}
+
+function hostLabel(host) {
+  return `${host.name || '(unnamed)'} (${host.id})`;
+}
+
+/**
+ * Resolve `--host` the way the upstream bb CLI's own share-host resolver does:
+ * an exact id wins, then a case-insensitive name, and an ambiguous name lists
+ * the candidate ids rather than guessing.
+ *
+ * With no `--host` at all, a single enrolled host is unambiguous, so use it
+ * instead of failing — the previous behaviour pointed at `bb thread show` for
+ * an id that command never prints, leaving no way to discover one.
+ *
+ * An explicit `--host` is taken at its word and is NOT connectivity-checked:
+ * naming a host is a statement of intent, and it doubles as the override when
+ * the automatic path refuses a disconnected one.
+ */
+async function resolveHostId(explicit) {
+  const hosts = await listHosts();
+  const query = typeof explicit === 'string' ? explicit.trim() : '';
+  if (query.length > 0) {
+    const byId = hosts.find((host) => host.id === query);
+    if (byId) return byId.id;
+    const byName = hosts.filter(
+      (host) => String(host.name || '').toLocaleLowerCase() === query.toLocaleLowerCase(),
+    );
+    if (byName.length === 1) return byName[0].id;
+    if (byName.length > 1) {
+      die(`--host "${query}" is ambiguous; pass one of these ids: ${byName.map((host) => host.id).join(', ')}`);
+    }
+    die(`no enrolled host matches --host "${query}" — run 'bb host list' to see them`);
+  }
+  // Ambiguity is a property of the ENROLLED set, not of who happens to be online
+  // right now. Narrowing to connected hosts first would silently run the agent on
+  // a fallback machine just because the intended host was momentarily offline, so
+  // decide ambiguity first and check connectivity only afterwards.
+  if (hosts.length === 0) {
+    die("this bb server has no enrolled hosts — run 'bb host list' to confirm, then enroll one in bb");
+  }
+  if (hosts.length > 1) {
+    die(
+      `--new-environment worktree needs --host <name-or-id> — ${hosts.length} enrolled hosts: ` +
+        hosts.map((host) => `${hostLabel(host)} [${host.status || 'unknown'}]`).join(', '),
+    );
+  }
+  const only = hosts[0];
+  if (!hostIsConnected(only)) {
+    die(
+      `the only enrolled host, ${hostLabel(only)}, is ${only.status || 'not connected'} — it cannot build a worktree.\n` +
+        `  Bring it online, reuse an existing environment with --environment <id>,\n` +
+        `  or pass --host ${only.id} to try anyway.`,
+    );
+  }
+  return only.id;
+}
+
+async function cmdHostList() {
+  const hosts = await listHosts();
+  if (flags.json) {
+    cli.out(hosts);
+    return;
+  }
+  if (hosts.length === 0) {
+    console.log(color.dim('  no enrolled hosts'));
+    return;
+  }
+  console.log('');
+  for (const host of hosts) {
+    const icon = hostIsConnected(host) ? color.green('✓') : color.dim('·');
+    console.log(`  ${icon} ${color.cyan(color.bold(host.name || '(unnamed)'))}  ${color.dim(`id:${host.id}`)}`);
+    const bits = [host.type, host.status, host.maxPermissionMode ? `permissions:${host.maxPermissionMode}` : ''];
+    console.log(`      ${color.dim(bits.filter(Boolean).join('  '))}`);
+  }
+}
+
 // ── commands: pairing + status ────────────────────────────────────────
 async function cmdPair() {
   const server = typeof flags.server === 'string' ? normalizeServerUrl(flags.server) : undefined;
@@ -301,6 +441,15 @@ async function cmdPair() {
     console.log(`  ${color.green('✓')} bb server set to ${color.cyan(server)} ${color.dim('(no credential — local access)')}`);
     return;
   }
+  return await redeemMachineCode(code, server);
+}
+
+/**
+ * Redeem a connect machine code and persist the durable credential. Shared by
+ * `bb pair --code` (code pasted by hand) and `bb attach` (code minted here), so
+ * both paths store config identically.
+ */
+async function redeemMachineCode(code, server) {
   const connectUrl = typeof flags['connect-url'] === 'string' ? normalizeServerUrl(flags['connect-url']) : CONNECT_BASE;
   let response;
   try {
@@ -322,7 +471,9 @@ async function cmdPair() {
   if (!response.ok) {
     const reason = typeof body.error === 'string' ? body.error : `HTTP ${response.status}`;
     die(
-      `pairing failed (${reason}) — machine codes are one-time and expire; mint a fresh one on the bb server:\n` +
+      `pairing failed (${reason}) — machine codes are one-time and expire.\n` +
+        `  Easiest fix: 'bb attach --server https://<handle>.getbb.app' mints and redeems a fresh code itself.\n` +
+        `  Or mint one on the bb server:\n` +
         `  curl -s -X POST -H 'content-type: application/json' -d 'null' http://127.0.0.1:38886/api/v1/plugins/connect/rpc/createMachineCode`,
     );
   }
@@ -587,11 +738,12 @@ async function cmdThreadSpawn() {
           ? { kind: 'named', name: flags['base-branch'] }
           : { kind: 'default' },
     };
-    const hostId = firstString(
-      typeof flags.host === 'string' ? flags.host : undefined,
-      typeof flags.machine === 'string' ? flags.machine : undefined,
+    const hostId = await resolveHostId(
+      firstString(
+        typeof flags.host === 'string' ? flags.host : undefined,
+        typeof flags.machine === 'string' ? flags.machine : undefined,
+      ),
     );
-    if (!hostId) die('--new-environment worktree needs --host <host-id> (see bb thread show for a host id)');
     body.environment = { type: 'host', hostId, workspace };
   }
   if (typeof flags.provider === 'string') body.providerId = flags.provider;
@@ -722,10 +874,16 @@ async function main() {
   if (flags.help || flags.h || !group || group === 'help') cli.help(HELP);
   try {
     if (group === 'pair') return await cmdPair();
+if (group === 'attach') return await cmdAttach();
     if (group === 'unpair') return await cmdUnpair();
     if (group === 'self') return await cmdSelf();
     if (group === 'status') return await cmdStatus();
-    if (group === 'project') {
+    if (group === 'host') {
+const sub = positional[1] || 'list';
+if (sub === 'list') return await cmdHostList();
+die(`unknown command: bb host ${sub}\nRun 'bb --help' for usage.`);
+}
+if (group === 'project') {
       const sub = positional[1] || '';
       if (sub === 'list') return await cmdProjectList();
       if (sub === 'show') return await cmdProjectShow();
