@@ -736,6 +736,23 @@ async function cmdView() {
     const date = getHeader(msg.payload, 'Date');
     const labels = (msg.labelIds || []).join(', ');
 
+    // `--json` is honoured here for parity with `mail`/`attachments`; the body
+    // is NOT truncated in this mode, and attachments are listed so a caller can
+    // go straight to `gmail download`.
+    if (flags.json) {
+      out({
+        id: msg.id,
+        threadId: msg.threadId || null,
+        subject, from, to: to || null, cc: cc || null, date,
+        labels: msg.labelIds || [],
+        snippet: msg.snippet || null,
+        link: `${GMAIL_WEB}/${id}`,
+        body: extractBody(msg.payload),
+        attachments: collectAttachments(msg.payload),
+      });
+      return;
+    }
+
     process.stdout.write(`${C.bold(subject)}\n`);
     process.stdout.write(`${C.gray('From:')} ${from}\n`);
     if (to) process.stdout.write(`${C.gray('To:')} ${to}\n`);
@@ -1021,6 +1038,8 @@ Commands:
   logout     Revoke and clear persisted credentials
   mail       List inbox messages
   view       View a single message (full body)
+  attachments List a message's attachments (name, type, size, attachmentId)
+  download   Download a message's attachments to disk
   send       Send an email
   reply      Reply to a message
   monday     Aggregated inbox items for monday dispatcher
@@ -1038,7 +1057,16 @@ Mail options:
   --json             Output raw JSON
 
 View:
-  gmail view <message-id>
+  gmail view <message-id> [--json]
+  --json             Structured output: headers, labels, the UNTRUNCATED body
+                     and the attachment list (the text view truncates at 5000).
+
+Attachments:
+  gmail attachments <message-id> [--json]
+  gmail download <message-id> [attachmentId] --out=<path>
+                     With an attachmentId, --out is the target FILE; without
+                     one, every attachment is written into the --out DIRECTORY
+                     under its original filename.
 
 Send options:
   --to EMAIL         Recipient(s), comma-separated (required)
