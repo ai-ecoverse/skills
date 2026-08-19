@@ -116,6 +116,31 @@ async function loadOp(name) {
 // required browser headers automatically (credentials: 'include' is the
 // browser.fetch default).
 
+// Why the most recent `soft` request failed. `soft` swallows network errors,
+// HTTP failures (incl. 401/403) and GraphQL errors alike, which makes every
+// fallback path prone to misdiagnosing an expired session as "this report just
+// exposes less data". Callers that fall back MUST consult this before deciding.
+let lastSoftFailure = null;
+const softFailure = () => lastSoftFailure;
+
+// Re-emit the diagnostic `pageFetch`/`graphql` would have printed had the call
+// not been soft, then exit. Used by fallback paths that decide not to recover.
+function failFromSoft(context) {
+  const f = lastSoftFailure;
+  if (f?.kind === 'network') {
+    console.error(`${context}: network error: ${f.message}`);
+  } else if (f?.kind === 'http' && (f.status === 401 || f.status === 403)) {
+    console.error(`Auth failed (${f.status}). Open ${HOST_WEB} in your browser, log in, and retry.`);
+  } else if (f?.kind === 'http') {
+    console.error(`${context}: HTTP ${f.status}: ${(f.body || '').slice(0, 2000)}`);
+  } else if (f?.kind === 'graphql') {
+    console.error(`${context}: GraphQL errors:`, JSON.stringify(f.errors, null, 2));
+  } else {
+    console.error(`${context}: request failed (no diagnostic captured).`);
+  }
+  process.exit(1);
+}
+
 async function pageFetch(url, options = {}) {
   const tab = await ensureTab();
   const method = options.method || 'GET';
@@ -125,17 +150,27 @@ async function pageFetch(url, options = {}) {
     headers['Content-Type'] = headers['Content-Type'] || 'application/json';
   }
   let resp;
+  if (options.soft) lastSoftFailure = null;
   try {
     resp = await browser.fetch(tab, url, { method, headers, body });
   } catch (e) {
     // `soft` callers (best-effort enrichment lookups) get null instead of a
     // hard exit so they can fall back rather than aborting the whole command.
-    if (options.soft) return null;
+    if (options.soft) {
+      lastSoftFailure = { kind: 'network', message: e?.message || String(e) };
+      return null;
+    }
     console.error('Network error:', e?.message || e);
     process.exit(1);
   }
   if (!resp.ok) {
-    if (options.soft) return null;
+    if (options.soft) {
+      lastSoftFailure = {
+        kind: 'http', status: resp.status,
+        body: typeof resp.body === 'string' ? resp.body : JSON.stringify(resp.body),
+      };
+      return null;
+    }
     if (resp.status === 401 || resp.status === 403) {
       console.error(`Auth failed (${resp.status}). Open ${HOST_WEB} in your browser, log in, and retry.`);
     } else {
@@ -269,7 +304,11 @@ async function graphql(surface, body, opts = {}) {
   });
   // `soft`: a null body (HTTP error swallowed above) or GraphQL errors resolve
   // to null instead of exiting, so best-effort callers can fall back.
-  if (opts.soft && (result == null || result.errors)) return null;
+  if (opts.soft && (result == null || result.errors)) {
+    // A null result means pageFetch already recorded the transport failure.
+    if (result?.errors) lastSoftFailure = { kind: 'graphql', errors: result.errors };
+    return null;
+  }
   if (result?.errors) {
     console.error('GraphQL errors:', JSON.stringify(result.errors, null, 2));
     process.exit(1);
@@ -775,13 +814,32 @@ const commands = {
     // Business purpose is required to submit on most policies, so set it now
     // (and copy it down to every line) when the caller supplied one.
     if (opts.purpose || opts.comment) {
+      // Every EDITABLE field in UpdateReportFieldsInput is wrapped as
+      // { value: … } — including `comment`. A bare string is rejected, and
+      // because the whole mutation is one input object that also loses a
+      // `--purpose` supplied in the same invocation. `reportSource` and
+      // `copyDownRequested` are control params, not form fields, so they stay bare.
       const fields = { reportSource: 'WEB', copyDownRequested: true };
       if (opts.purpose) fields.custom14 = { value: opts.purpose };
-      if (opts.comment) fields.comment = opts.comment;
+      if (opts.comment) fields.comment = { value: opts.comment };
       const upd = await callOp('UpdateReportHeader',
         { userId, contextRole: 'TRAVELER', reportId, fields }, 'spend', { soft: true });
       out.headerUpdated = !!upd;
       if (opts.purpose) out.purposeListItemId = opts.purpose;
+      // The report itself already exists and its id must reach the caller, so
+      // this cannot just exit(1) — but a silent partial success would leave a
+      // report that fails to submit for want of a business purpose. Say so
+      // loudly, on stderr, with the command that repairs it.
+      if (!upd) {
+        const missed = [opts.purpose && 'business purpose', opts.comment && 'comment'].filter(Boolean).join(' + ');
+        out.warning = `report ${reportId} was created but the header update failed — ${missed} NOT applied`;
+        console.error(`concur new-report: ${out.warning}.`);
+        if (opts.purpose) console.error(`  repair with: concur report-purpose ${reportId} ${opts.purpose}`);
+        const f = softFailure();
+        if (f?.kind === 'graphql') console.error('  cause:', JSON.stringify(f.errors));
+        else if (f?.kind === 'http') console.error(`  cause: HTTP ${f.status}`);
+        else if (f?.kind === 'network') console.error(`  cause: network error: ${f.message}`);
+      }
     }
     return out;
   },
@@ -907,13 +965,21 @@ const commands = {
     const main = await callOp('GetReportPageData', vars, 'spend', { soft: true });
     if (main) return main;
     // Submitted/approved reports answer 403 `reports.cannotAccess` on the
-    // costObjects sub-selection alone, which used to fail the whole command.
-    // Retry without them so history stays readable, and say so in the output.
+    // costObjects sub-selection ALONE. Only that specific failure is worth a
+    // retry — an expired session, a network drop or any other GraphQL error
+    // must keep its own diagnostic instead of being reported as "this report
+    // exposes less data" (which would also point at v3 commands that fail the
+    // same way).
+    const f = softFailure();
+    const isCostObjects = f?.kind === 'graphql' && (f.errors || []).some((e) => (
+      e?.extensions?.errorId === 'reports.cannotAccess'
+      || (Array.isArray(e?.path) && e.path.includes('costObjects'))
+    ));
+    if (!isCostObjects) failFromSoft(`concur report ${reportId}`);
     const degraded = await callOp('GetReportPageData',
       { ...vars, includeCostObjects: false }, 'spend', { soft: true });
     if (degraded) return { ...degraded, _note: 'costObjects omitted (403 on this report — normal once submitted)' };
-    console.error(`concur report: could not read ${reportId}. Approved/paid reports expose less via GraphQL — try \`concur report-v3 ${reportId}\` and \`concur entries-v3 --reportId=${reportId}\`.`);
-    process.exit(1);
+    failFromSoft(`concur report ${reportId} (retry without costObjects)`);
   },
 
   async expenses(reportId) {
