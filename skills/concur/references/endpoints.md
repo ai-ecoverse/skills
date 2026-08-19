@@ -230,9 +230,12 @@ were established by probing error *counts* against the live endpoint.
   afterwards with `UpdateReportHeader` (`concur new-report --purpose` does this).
 - **`DeleteExpenseEntries`** — `{ userId, contextRole, reportId, expenseIds: [String!] }`, resolving
   `employee.expenseReport.deleteExpenseEntries.status.success`. Works on entries and itemizations.
-  Sibling app mutations that exist on the same surface but are not bundled here:
-  `DeleteExpenseReport`, `DeleteAvailableExpenses`, `CombineExpenseEntries`, `DeleteReceipt`,
-  `DeleteReportAttachments`, `DeleteTravelDiaries`, `DeleteAllocationFavorite`.
+- **`DeleteExpenseReport`** — `{ userId, contextRole, reportId }`, resolving
+  `employee.expenseReport.deleteReport.status.success`. Company-card charges on the report return to
+  Available Expenses; cash entries and itemizations go with it. Sibling app mutations on the same
+  surface that are still not bundled here: `DeleteAvailableExpenses`, `CombineExpenseEntries`,
+  `ReopenReport`, `DeleteReceipt`, `DeleteReportAttachments`, `DeleteTravelDiaries`,
+  `DeleteAllocationFavorite`.
 - **`GetExpenseFormExpenseTypes`** — `filterBy` is an input OBJECT of booleans, not an enum:
   `{ isItemization, itemizationsNotAllowed, japanPublicTransportation, companyCarMileage,
   personalCarMileage, cashAdvance }`. `isItemization: true` + `parentExpenseTypeId` yields the
