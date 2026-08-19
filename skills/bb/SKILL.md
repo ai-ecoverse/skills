@@ -139,10 +139,18 @@ the thread stored by `bb self <id>` (or `BB_THREAD_ID` when the runtime sets it)
   mutations regardless of what the API allows locally. Listing them with
   `bb host list` is read-only and does work.
 - `--new-environment worktree` builds the worktree **on a host**, so it needs one.
-  With `--host` omitted, a single enrolled host is used automatically; with
-  several, bb lists them and asks you to choose. `--host` takes a **name or an
-  id** (an exact id wins, then a case-insensitive name), matching the upstream
-  bb CLI's own `--host <name-or-id>` resolution.
+  `--host` takes a **name or an id** (an exact id wins, then a case-insensitive
+  name), matching the upstream bb CLI's own `--host <name-or-id>` resolution.
+  With `--host` omitted:
+  - exactly one enrolled host → used automatically, if it is connected;
+  - that one host disconnected → refused, since it cannot build a worktree;
+  - several enrolled → listed with their connection status so you can choose.
+
+  Ambiguity is judged on the **enrolled** set, never on which hosts happen to be
+  online: narrowing to connected hosts first would silently run the agent on a
+  fallback machine whenever the intended host was briefly offline. An explicit
+  `--host` is taken at its word and is not connectivity-checked, so it doubles as
+  the override when the automatic path refuses.
 - A managed worktree keeps the agent out of the user's real checkout: it works in
   `~/.bb/worktrees/<env-id>/<repo>` instead of the project source path.
 - Recursion works: `bb thread tell <own-thread-id> "…"` prompts the very thread
