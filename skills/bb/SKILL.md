@@ -32,8 +32,32 @@ request and satisfies the bb connect gate.
 ## Pairing (do this once)
 
 bb servers reachable through bb connect (`https://<handle>.getbb.app`) gate
-`/api/v1` behind a **connect machine credential**. The owner mints a one-time
-machine code on the bb server itself:
+`/api/v1` behind a **connect machine credential**.
+
+### The short way: `bb attach`
+
+If the human is already signed in to the bb server in this browser, no code
+needs to change hands at all:
+
+```bash
+bb attach --server https://<handle>.getbb.app
+```
+
+`attach` mints a machine code **in the page** and redeems it in the same step.
+It works because `createMachineCode` is served on the bb server's public origin
+as well as over loopback, and there the owner's session cookie authorises it —
+and every bb request already runs inside a tab parked on that origin. So the
+credential is obtained without a shell on the machine that owns the server,
+which is the case SLICC is normally in.
+
+Sign in to the bb server in the browser first. If the tab is signed out, bb
+declines to mint and `attach` says so instead of failing obscurely.
+
+### The manual way: `bb pair --code`
+
+Needed when nobody is signed in to that origin in this browser — for example a
+headless runtime. The owner mints a one-time machine code on the bb server
+itself:
 
 ```bash
 # run on the machine that owns the bb server (its own shell, not SLICC)
@@ -68,9 +92,12 @@ for a single call.
 
 ```
 bb status [--json]                      Connection, server version, thread counts
+bb attach [--server <url>]              Pair with no code, via your signed-in bb tab
 bb pair --code <c> [--server <url>]     Redeem a connect machine code
 bb unpair                               Forget the stored credential and server
 bb self [<thread-id>]                   Show or set the default thread for --self
+
+bb host list [--json]                   Enrolled hosts, with connection status
 
 bb project list [--json]
 bb project show <id> [--json]
@@ -84,7 +111,7 @@ bb thread tell <id> <message…> [--self] [--mode steer|queue|auto]
                [--model <m>] [--reasoning-level <l>] [--permission-mode <m>] [--json]
 bb thread spawn --project <id> [--prompt <p>] [--provider <id>] [--model <m>]
                [--title <t>] [--environment <id>] [--new-environment worktree]
-               [--host <id>] [--base-branch <b>] [--parent-thread <id>]
+               [--host <name-or-id>] [--base-branch <b>] [--parent-thread <id>]
                [--visibility visible|hidden] [--json]
 bb thread stop [<id>] [--self] [--json]
 bb thread wait <id> [--status <status>] [--timeout <seconds>]
@@ -109,7 +136,15 @@ the thread stored by `bb self <id>` (or `BB_THREAD_ID` when the runtime sets it)
   row in the projects table. Its threads still list via
   `bb thread list --project proj_personal`.
 - A machine credential cannot manage bb hosts — the connect gate rejects host
-  mutations regardless of what the API allows locally.
+  mutations regardless of what the API allows locally. Listing them with
+  `bb host list` is read-only and does work.
+- `--new-environment worktree` builds the worktree **on a host**, so it needs one.
+  With `--host` omitted, a single enrolled host is used automatically; with
+  several, bb lists them and asks you to choose. `--host` takes a **name or an
+  id** (an exact id wins, then a case-insensitive name), matching the upstream
+  bb CLI's own `--host <name-or-id>` resolution.
+- A managed worktree keeps the agent out of the user's real checkout: it works in
+  `~/.bb/worktrees/<env-id>/<repo>` instead of the project source path.
 - Recursion works: `bb thread tell <own-thread-id> "…"` prompts the very thread
   driving SLICC. Use `--mode queue` there, otherwise the message interrupts the
   turn that sent it.
