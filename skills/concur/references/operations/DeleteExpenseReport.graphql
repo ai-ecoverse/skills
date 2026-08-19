@@ -1,0 +1,11 @@
+mutation DeleteExpenseReport($userId: String!, $contextRole: ContextRoleType!, $reportId: String!) {
+  employee(userId: $userId, contextRole: $contextRole) {
+    expenseReport(reportId: $reportId) {
+      deleteReport {
+        status {
+          success
+        }
+      }
+    }
+  }
+}
