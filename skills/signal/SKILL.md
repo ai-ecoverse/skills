@@ -248,14 +248,16 @@ steal the tab from a human or an agent mid-operation.
   "source": "signal-watch",
   "watchId": "eclipse-chasers",
   "chat": "Eclipse Chasers",
-  "fingerprint": "87|Ada|8:21 PM|see you at the mirador",
-  "previous": "86|Ada|7:02 PM|running late",
+  "messageCount": 87,
   "at": "2026-08-11T19:44:03.117Z",
   "hint": "New activity in Signal chat \"Eclipse Chasers\". Run: signal read \"Eclipse Chasers\""
 }
 ```
 
-The payload carries the *fingerprint*, not the message bodies — the scoop calls
+The payload carries **metadata only** — a `messageCount` and the chat name, never
+message bodies (nor the internal change fingerprint). The detector fingerprints
+locally on message count + last author + absolute timestamp to decide *whether*
+to fire; that fingerprint never leaves the leader page. A woken scoop calls
 `signal read` if it wants content, so message text is never pushed into a lick.
 
 **Durability.** The interval is page state, so a leader reload drops every
