@@ -29,7 +29,7 @@ End-to-end sequence for filing a cash/personal expense report from scratch. Vali
 
 ```bash
 # 1. Create the report header (or reuse an existing reportId)
-concur graphql CreateReportHeader '{"userId":"<uid>","contextRole":"TRAVELER","fields":{...}}'
+concur new-report --name="Trip addendum" --purpose=<businessPurposeListItemId>
 #    Checkpoint: capture the returned reportId.
 
 # 2. Add each out-of-pocket line. Meals/lodging: isExpensePartOfTravelAllowance true;
@@ -121,12 +121,36 @@ These hit the public-API surface at `www-us2.api.concursolutions.com/api/v3.0/*`
 | Command | Description |
 |---|---|
 | `concur new-expense <reportId> --type=<expenseTypeId> --date=YYYY-MM-DD --amount=NN.NN --currency=<ISO> --location=<locationId> [--vendor="..."] [--payment=CASH] [--exchange=<rate>] [--comment="..."] [--personal] [--receipt=<imageId>] [--fields='<json>']` | Create a brand-new (out-of-pocket / cash) expense line via `SaveNewExpenseEntry`/`createExpense`. `policyId` auto-resolves from the report. `--payment=CASH` = Out of Pocket, `PCCD` = Pending Card Transaction. An `exchangeRate` is always sent (defaults to 1.0 for same-currency; pass `--exchange` for a foreign currency, e.g. GBP→EUR `1.1555`). Many policies require extra required fields — pass them via `--fields '<json>'` (e.g. `custom8`/`custom24` list items, `taxRateLocation`, `receiptTypeId`). Note: for non-meal types (e.g. transport `TAXIX`) set `isExpensePartOfTravelAllowance:false` in `--fields`; meals/lodging policies may want it true. Returns the new `expenseId`. |
+| `concur new-report --name="<name>" [--policy=<policyId>] [--purpose=<listItemId>] [--comment="..."]` | Create a new unsubmitted report via `CreateReportHeader`. Cost center, company code and site location default from your profile; `--purpose` sets the Business Purpose (`custom14`) and copies it down, which most policies require before submit. Returns the new `reportId`. |
+| `concur delete-expense <reportId> <expenseId> [<expenseId>…] --confirm` | Delete entries **or itemizations** from an unsubmitted report (`DeleteExpenseEntries`). `--confirm` is a **prerequisite** — without it the command dry-runs and prints what it would remove; `--dry-run` does the same explicitly. Company-card charges are **not** destroyed: they return to Available Expenses and can be moved onto another report. Out-of-pocket entries and itemizations are permanent. |
 | `concur set-payment <reportId> <expenseId> <CASH\|PCCD> [--comment="..."]` | Change an existing entry's payment type via `UpdateExistingExpenseEntry` (e.g. flip Corporate Card → Out of Pocket). `policyId` auto-resolves. |
 | `concur payment-types` | List the payment types available to the report owner (`GetPaymentTypes`). `CASH`="Out of Pocket", `PCCD`="Pending Card Transaction". |
 | `concur attach-receipt <reportId> <expenseId> <localPath>` | Upload a receipt image and attach it to a specific expense entry. Auto-converts HEIC/PNG → JPEG via ImageMagick (downscaled to 2048px max, quality 85). Pass `--no-convert` to skip conversion. (PDF attach needs ghostscript; attach a rendered image if unavailable.) |
 | `concur report-purpose <reportId> <listItemId>` | Set the report header's **Business Purpose** (`custom14`) via `UpdateReportHeader` and copy it down to every line (clears `NOBUSPUR`/`NOBUSLIN`/`BADHEADR`). Get the `listItemId` from `concur list-items <businessPurposeListId>`. |
 | `concur itinerary <reportId> <itinerary.json>` | Build & assign a **German Travel Allowance itinerary** (clears `GERTAB`/`NOITIN`) via the legacy Ext.Direct endpoint. `itinerary.json`: `{ "name":"...", "tacKey":"2043", "rows":[ {"departLocation":"Potsdam, GERMANY","departDate":"2026-06-29","departTime":"5:00 AM","arrivalLocation":"San Francisco, California","arrivalDate":"2026-06-29","arrivalTime":"2:00 PM"}, … ] }`. Location keys (`LnKey`) auto-resolve from the location strings; override per-row with `departLnKey`/`arrivalLnKey`. Note: meal expenses on a German-TA report must also be flagged `isExpensePartOfTravelAllowance:true` (via `new-expense --fields` or an entry update) or `GERTAB` persists. |
 | `concur submit <reportId> [--source=WEB] [--approver-validated]` | Two-step submit: runs server validation, then commits. Returns `{validation, commit}` statuses (both should be `COMPLETED`). Before submitting, run `concur exceptions <reportId>` and check `hasBlockingExceptions` — the server validation step catches hard blockers, but reviewing first avoids a wasted round-trip on reports that need edits. All mutation commands (`change-type`, `attach-receipt`, `itemize`, `submit`) also refuse to run against reports that are locked (already Approved/Submitted/Paid) and report the current status instead. |
+
+### German travel allowance (`GERTAB` / `NOITIN`)
+
+Meal expense types (`BRKFT` Daily Meals, `01040` Group Meals, …) on a German policy are gated by two mutually exclusive blocking exceptions, and which one you get tells you the state of the `isExpensePartOfTravelAllowance` flag:
+
+| Exception | Meaning | Fix |
+|---|---|---|
+| `GERTAB` "always apply Travel Allowance box" | flag is **false** | set the flag (below) |
+| `NOITIN` "cannot be submitted until a Travel Allowance Itinerary is created" | flag is **true**, report has no itinerary | `concur itinerary <reportId> <itinerary.json>` |
+
+Set the flag per itemization with `concur itemize add … --travel-allowance`, or in `bill.json` — `"travelAllowance": true` at the top level applies to every line, and a per-line `"travelAllowance"` on any `nights[]`/`extras[]` entry overrides it:
+
+```json
+{ "currency": "USD", "travelAllowance": false,
+  "nights": [ { "roomRate": 283.00, "roomTax": 42.95, "date": "2026-05-18" } ],
+  "extras": [ { "typeId": "ONLIN", "amount": 30.00, "comment": "In-room internet" },
+              { "typeId": "BRKFT", "amount": 47.80, "travelAllowance": true } ] }
+```
+
+An itinerary only satisfies the rule — it does **not** create per-diem expense lines, so adding one to an addendum does not double-claim against the original report. After deleting a travel-allowance line, re-run `concur exceptions`: sibling meal lines can keep reporting a stale `NOITIN` until the report recomputes.
+
+`concur itemize types <reportId> <expenseId>` lists the ~100 selectable itemization types (id, name, parent group) for the parent entry's policy — use it instead of guessing type ids.
 
 `concur itemize hotel`/`add` now auto-resolve the required `locationId` and `exchangeRate` from the parent entry's expense form (moved card charges carry a null `location` on the summary, which previously caused a generic `400`). `concur attach-receipt` accepts PDF receipts directly with `--no-convert` (Concur stores PDFs natively; no ghostscript rasterization needed).
 
@@ -171,6 +195,8 @@ For the few operations on the `cds` surface (e.g. `GetOnScreenHelpData`), pass `
 - **Cookie auth requires an open Concur tab.** The skill auto-finds the first `concursolutions.com` tab; pass a different one by closing extras or by opening the desired tab first.
 - **Single-user scope.** Cached `userId` is per-skill-install. Delete `<skill-dir>/.session.json` after switching SSO identities.
 - **GraphQL operations were captured in batched form.** The web app sometimes sends multiple operations in one POST as a JSON array; this skill always sends a single operation per request, which Concur accepts.
+- **Approved/paid reports expose less.** `concur report <id>` retries without `costObjects` when Concur answers 403 `reports.cannotAccess` (normal once a report is submitted) and adds a `_note` saying so, instead of failing. For full history use `concur report-v3` / `concur entries-v3`.
+- **Report URL:** `https://us2.concursolutions.com/nui/expense/reports/<reportId>`. The plausible-looking `/nui/expense/report/<rptKey>` (singular, rptKey) sends the SPA into a redirect loop that appends the report id until the tab dies.
 - **Mutations are real.** `UpdateExistingExpenseEntry`, `CreateReportHeader`, `MoveAvailableExpensesToReport`, `SaveExpenseAttendees`, `SubmitExpenseReport`, `AttachImage`, `MoveExpense` modify state. They are exposed via `concur graphql <op>` rather than a top-level command, so you can't fire them by accident — but they will work.
 
 ## Files
