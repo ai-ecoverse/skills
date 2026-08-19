@@ -536,16 +536,25 @@ async function openChat(query) {
   await ensureChatsTab();
   const res = await pwEvalJson(SRC_OPEN_CHAT(query));
   if (!res.ok) return res;
-  // Wait for ConversationView to mount
-  for (let i = 0; i < 10; i++) {
-    await sleep(250);
+  // Wait until the RENDERED conversation title matches the one we opened — not
+  // merely that a ConversationView is mounted. When switching from another
+  // chat the previous view stays mounted while the new one loads, so a
+  // hasView-only check passes for the wrong conversation (and sleep() is a
+  // no-op here). Each poll is a real eval round-trip, which provides the wait.
+  const wantTitle = cleanText(res.opened && res.opened.name);
+  res.confirmed = false;
+  for (let i = 0; i < 20; i++) {
     const state = await pwEvalJson(`
       (() => JSON.stringify({
         hasView: !!document.querySelector('.ConversationView, .module-timeline'),
         title: (document.querySelector('.module-ConversationHeader__header__info__title') || {}).textContent || null
       }))()
     `);
-    if (state.hasView) break;
+    const haveTitle = cleanText(state && state.title);
+    if (state.hasView && (!wantTitle || haveTitle === wantTitle)) {
+      res.confirmed = true;
+      break;
+    }
   }
   return res;
 }
@@ -756,6 +765,12 @@ async function cmdRead() {
         prefix: 'signal',
       });
     }
+    if (res.confirmed === false) {
+      console.error(
+        'signal: warning — could not confirm "' + q + '" is the open conversation; ' +
+          'the messages below may be from another chat.'
+      );
+    }
     await sleep(400);
   }
   const data = await readMessages(limit);
@@ -808,6 +823,13 @@ async function cmdSend() {
         : opened.error === 'ambiguous'
           ? 'Ambiguous chat name; be more specific'
           : opened.error || 'open failed',
+      { prefix: 'signal' }
+    );
+  }
+  if (opened.confirmed === false) {
+    cli.die(
+      'could not confirm "' + target + '" is the open conversation — aborting to avoid ' +
+        'sending to the wrong chat. Retry, or open it first with: signal open ' + JSON.stringify(target),
       { prefix: 'signal' }
     );
   }
@@ -1037,36 +1059,44 @@ function installerSource(opts) {
       let data = raw;
       if (typeof data === 'string') { try { data = JSON.parse(data); } catch (e) { data = null; } }
       if (!data) return;
-      // Bind to the configured conversation. If some OTHER chat is on screen
-      // (human opened another chat, or several watches share the tab), do not
-      // fingerprint a foreign timeline — skip this tick rather than misreport.
-      const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
-      const want = norm(cfg.chat);
-      const have = norm(data.title);
-      if (want && have && want !== have && want.indexOf(have) === -1 && have.indexOf(want) === -1) {
-        return;
-      }
+      // Bind to the configured conversation by EXACT title (Unicode preserved).
+      // If another chat is on screen (human switched, or multiple watches share
+      // the tab), skip this tick rather than fingerprint a foreign timeline.
+      // Exact match avoids both the non-ASCII-name failure (norm() emptied
+      // names like 家族) and substring collisions (Ann vs Anna).
+      const cleanT = (s) => String(s || '').replace(/[\\u2066-\\u2069]/g, '').replace(/\\s+/g, ' ').trim();
+      const wantTitle = cleanT(cfg.chatTitle || cfg.chat);
+      if (wantTitle && cleanT(data.title) !== wantTitle) return;
       // Content-free, drift-free key: count + last author + ABSOLUTE time.
       const fp = [data.count, data.author || '', data.time || ''].join('|');
       // Seed on the first read so the backlog already on screen is never
       // reported as new.
       if (st.last === null) { st.last = fp; return; }
       if (fp === st.last) return;   // <-- no change, no lick, no agent turn
-      st.last = fp;
-      st.fires++;
-      await fetch(cfg.webhookUrl, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          source: 'signal-watch',
-          watchId: cfg.id,
-          chat: cfg.chat,
-          // Metadata only — message text never leaves Signal.
-          messageCount: data.count,
-          at: new Date().toISOString(),
-          hint: 'New activity in Signal chat "' + cfg.chat + '". Run: signal read ' + JSON.stringify(cfg.chat),
-        }),
-      });
+      // Deliver FIRST; commit last/fires only on a confirmed 2xx. fetch()
+      // resolves for 4xx/5xx, so without checking resp.ok a failed delivery
+      // would advance last and the activity would never be retried or reported.
+      let delivered = false;
+      try {
+        const resp = await fetch(cfg.webhookUrl, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            source: 'signal-watch',
+            watchId: cfg.id,
+            chat: cfg.chat,
+            // Metadata only — message text never leaves Signal.
+            messageCount: data.count,
+            at: new Date().toISOString(),
+            hint: 'New activity in Signal chat "' + cfg.chat + '". Run: signal read ' + JSON.stringify(cfg.chat),
+          }),
+        });
+        delivered = !!(resp && resp.ok);
+        if (!delivered) st.lastError = 'webhook HTTP ' + (resp && resp.status);
+      } catch (e) {
+        st.lastError = 'webhook: ' + String((e && e.message) || e).slice(0, 120);
+      }
+      if (delivered) { st.last = fp; st.fires++; }
     } catch (e) {
       st.errors++;
       st.lastError = String((e && e.message) || e).slice(0, 200);
@@ -1123,6 +1153,7 @@ async function installWatch(state) {
     installerSource({
       id: state.watchId,
       chat: state.chat,
+      chatTitle: state.chatTitle || state.chat,
       scoop: state.scoop,
       tab: state.signalTab,
       everySeconds: state.everySeconds,
@@ -1164,6 +1195,17 @@ async function cmdWatch() {
   }
   const chatName = (target.opened && target.opened.name) || chat;
   const id = watchIdFor(chatName);
+  // Capture the RENDERED header title for exact watch binding (Unicode
+  // preserved). The tick compares the open conversation's title to this
+  // verbatim, so a non-ASCII name (e.g. 家族) or a substring collision
+  // (Ann vs Anna) can no longer disable or misfire the binding.
+  let chatTitle = chatName;
+  try {
+    const hstate = await pwEvalJson(SRC_COMPOSER_STATE);
+    if (hstate && hstate.title) chatTitle = cleanText(hstate.title);
+  } catch (e) {
+    if (e && e.name === 'NodeExitError') throw e;
+  }
 
   // Duplicate guard. The `process.exit(1)` deliberately sits OUTSIDE any
   // try/catch: it throws NodeExitError to unwind, and a `catch` that swallowed
@@ -1192,6 +1234,7 @@ async function cmdWatch() {
   const state = {
     watchId: id,
     chat: chatName,
+    chatTitle: chatTitle,
     scoop,
     signalTab: tab.id || tab,
     everySeconds: every,
