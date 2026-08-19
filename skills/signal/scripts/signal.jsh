@@ -1026,6 +1026,11 @@ function installerSource(opts) {
     last: null, ticks: 0, fires: 0, errors: 0, lastError: null, startedAt: new Date().toISOString(),
   };
   st.timer = setInterval(async () => {
+    // Overlap guard: a withTab into the tray remote can block up to the CDP
+    // timeout (~30s). Without this, ticks pile up and hammer the remote with
+    // overlapping attaches, which wedges the session. Only one tick in flight.
+    if (st.busy) return;
+    st.busy = true;
     st.ticks++;
     try {
       const raw = await b.withTab(cfg.tab, async () => b.evaluate(${JSON.stringify(SRC_FINGERPRINT)}));
@@ -1065,6 +1070,14 @@ function installerSource(opts) {
     } catch (e) {
       st.errors++;
       st.lastError = String((e && e.message) || e).slice(0, 200);
+      // Recover: a concurrent CLI attach to the same tray remote can wedge the
+      // leader's page-level session so every subsequent withTab times out.
+      // Detaching clears it so the next tick re-attaches fresh. Fire-and-forget
+      // — b.detach() can itself block on a wedged session, and awaiting it would
+      // pin the busy flag and freeze the watch.
+      try { Promise.resolve(b.detach()).catch(() => {}); } catch (_) {}
+    } finally {
+      st.busy = false;
     }
   }, Math.max(5, cfg.everySeconds) * 1000);
   reg[cfg.id] = st;
