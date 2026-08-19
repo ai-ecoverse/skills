@@ -265,10 +265,12 @@ watcher. `signal watches` reports those as `DEAD (signal reinject)`; run
 `signal reinject` to re-install them (it also re-resolves the Signal tab id,
 which changes when Signal restarts). Same trade-off `slack reinject` exists for.
 
-**Fingerprint.** Message count plus the last message's author, timestamp and
-first 80 characters. Signal exposes no message id in the DOM and renders
-relative timestamps ("42m") that drift between reads, so the text is part of
-the key — a time-only key would re-fire on its own.
+**Fingerprint.** Content-free and drift-free: message count + the last
+message's author + its ABSOLUTE timestamp (the `datetime` attribute, not the
+relative "42m" text that drifts between reads). No message text is included, so
+nothing content-bearing ever leaves Signal. Each tick binds to its configured
+conversation by EXACT header title (Unicode preserved) and skips when another
+chat is on screen; `last`/`fires` advance only after a confirmed 2xx webhook.
 
 ## How the tab is found
 
@@ -317,6 +319,17 @@ That is durable across Signal Desktop builds as long as class names /
 6. **SLICC overlay** — Signal blocks embedded SLICC panels; drive from the
    leader window via this CLI.
 7. **No sqlcipher / key access** — by design; we never touch the local DB.
+8. **Watch observes only the open conversation** — Signal renders just the
+   active timeline, so a watch detects activity in its chat only while that
+   chat is the one on screen. It never reopens the chat itself (that would yank
+   a human's view and contend with the tray remote's single CDP session). If
+   the user navigates away, activity is caught the next time the chat is open.
+   For always-on observation of a background chat, a CLI-bridge poller is the
+   sturdier design than the leader interval.
+9. **Watch change-detection is heuristic** — Signal exposes no message id in
+   the DOM, so the fingerprint is derived from the mounted timeline. Scrolling
+   the watched chat can shift the count/last-entry (possible false fire) and a
+   new message that is not yet mounted can leave it unchanged (possible miss).
 
 ## Troubleshooting
 
