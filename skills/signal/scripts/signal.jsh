@@ -943,6 +943,14 @@ function watchIdFor(chat) {
  * `playwright-cli eval --tab=<id>` then attaches to it happily.
  */
 async function leaderTargetId() {
+  // Prefer the browser bridge: a raw fetch to the CDP endpoint contends with
+  // the bridge once it has attached to the Signal remote and hangs.
+  try {
+    const t = await browser.findTab({ urlMatch: /sliccy\.ai|localhost:8787/ });
+    if (t && t.targetId) return t.targetId;
+  } catch (e) {
+    if (e && e.name === 'NodeExitError') throw e;
+  }
   const ports = [9222, 9223, 9224];
   for (const port of ports) {
     try {
@@ -966,17 +974,11 @@ async function evalInLeader(expression) {
   if (!tab) {
     cli.die('could not find the leader tab (is this running inside SLICC?)', { prefix: 'signal' });
   }
-  // Evaluate against the leader tab ONLY. Do NOT route through pw(), which
-  // appends its own --tab=<Signal tab>; two --tab args make playwright-cli use
-  // the last one (Signal), where globalThis.__slicc_browser is absent, so the
-  // watcher installer silently fails with no_browser_api.
-  const r = await exec(
-    'playwright-cli eval --tab=' + escapeShellArg(tab) + ' ' + escapeShellArg(expression)
-  );
-  if (r.exitCode !== 0) {
-    throw new Error((r.stderr || r.stdout || 'leader eval failed').trim());
-  }
-  return (r.stdout || '').replace(/\n$/, '');
+  // Evaluate through the browser bridge, not playwright-cli: a playwright-cli
+  // subprocess (or a raw CDP fetch) contends with the bridge once it has
+  // attached to the Signal remote earlier in the same command, and hangs.
+  const raw = await browser.evalAsync(tab, expression);
+  return typeof raw === 'string' ? raw : JSON.stringify(raw);
 }
 
 /**
