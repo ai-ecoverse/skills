@@ -411,20 +411,26 @@ async function itemizeTypes(reportId, expenseId) {
   const userId = await getUserId();
   const entry = await getEntrySummary(reportId, expenseId);
   const parentTypeId = entry?.expenseTypeId || entry?.expenseType?.id || 'LODNG';
-  const data = await callOp('GetNewItemizationExpenseTypesForm', {
-    dataContext: { reportId, expenseTypeId: parentTypeId },
-    userContext: { userId, contextType: 'TRAVELER' },
+  // GetNewItemizationExpenseTypesForm returns the itemization FORM, whose
+  // "Expense Type" field is a bare STRING/EDIT control with options:null on
+  // Adobe's policy — it never carried the list. The type list comes from
+  // `expenseTypes` with an ITEMIZATION filter instead.
+  const policyId = await getReportPolicyId(reportId).catch(() => ADOBE_INTL_POLICY.policyId);
+  const data = await callOp('GetExpenseFormExpenseTypes', {
+    userId, contextRole: 'TRAVELER', policyId, reportOwnerUserId: userId,
+    parentExpenseTypeId: parentTypeId, filterBy: ITEMIZATION_TYPE_FILTER,
   });
-  // The form has a "Expense Type" listOptions field (code-based), and the
-  // GraphQL also exposes the parent's expenseTypes list under reportDetails;
-  // we surface whatever we found.
-  const fields = data?.expenseTypesForm?.fields || [];
-  const typeField = fields.find((f) => /expense.?type/i.test(f.label) || f.formFieldId === 'ExpKey');
-  const opts = typeField?.options || [];
+  const list = data?.employee?.expenseTypes || [];
+  // Group headers come back as entries with no parentName; keep them flagged
+  // so callers can tell a category ("Lodging") from a selectable type.
+  const types = list.map((t) => ({
+    id: t.id, name: t.name, parentName: t.parentName || null,
+    isGroupHeader: !t.parentName, description: t.description || null,
+  }));
   return {
-    parent: { reportId, expenseId, expenseTypeId: parentTypeId },
-    count: opts.length,
-    types: opts.map((o) => ({ id: o.id, code: o.code, name: o.value })),
+    parent: { reportId, expenseId, expenseTypeId: parentTypeId, policyId },
+    count: types.filter((t) => !t.isGroupHeader).length,
+    types,
   };
 }
 
@@ -438,6 +444,18 @@ async function itemizeTypes(reportId, expenseId) {
 // custom5  → Optional sub-category (left null is fine).
 //
 // Override these via bill.json customFields if your tenant uses different IDs.
+// `InputFilterExpenseTypeBy` is an input OBJECT of booleans, not an enum —
+// the web app sends every key. `isItemization: true` yields the types that are
+// selectable as itemizations of a parent entry (107 on Adobe's policy).
+const ITEMIZATION_TYPE_FILTER = {
+  isItemization: true,
+  itemizationsNotAllowed: false,
+  japanPublicTransportation: false,
+  companyCarMileage: true,
+  personalCarMileage: true,
+  cashAdvance: false,
+};
+
 const ADOBE_INTL_POLICY = {
   policyId: '23DB999B33CC4B28B692AB90112EB86F',
   custom8:  { listItemId: '3981FF8FF4CEEC4A9960A22023335A9F', value: '3981FF8FF4CEEC4A9960A22023335A9F' },
@@ -456,7 +474,12 @@ function buildItemizationFields(line, parentEntry, currency, overrides = {}) {
     expenseTypeId: line.typeId,
     transactionDate: line.date,
     transactionAmount: { value: line.amount, currencyCode: currency },
-    isExpensePartOfTravelAllowance: false,
+    // German Travel Allowance: meal itemizations (BRKFT/01040/…) on a German
+    // policy are BLOCKED by GERTAB unless this is true, and true additionally
+    // requires an itinerary on the report (NOITIN) — see `concur itinerary`.
+    // Per-line `travelAllowance` wins over the bill-level default.
+    isExpensePartOfTravelAllowance:
+      line.travelAllowance ?? overrides.travelAllowance ?? false,
     isPersonalExpense: false,
     taxRateLocation: overrides.taxRateLocation || ADOBE_INTL_POLICY.taxRateLocation,
     receiptTypeId:   overrides.receiptTypeId   || ADOBE_INTL_POLICY.receiptTypeId,
@@ -485,7 +508,7 @@ function buildItemizationFields(line, parentEntry, currency, overrides = {}) {
 // Add one itemization line via SaveNewItemization.
 async function itemizeAdd(reportId, parentExpenseId, typeId, amountStr, ...tail) {
   if (!reportId || !parentExpenseId || !typeId || !amountStr) {
-    console.error('Usage: concur itemize add <reportId> <parentExpenseId> <typeId> <amount> [date] [comment] [--currency=USD]');
+    console.error('Usage: concur itemize add <reportId> <parentExpenseId> <typeId> <amount> [date] [comment] [--currency=USD] [--travel-allowance]');
     process.exit(1);
   }
   // The [date] positional is optional. Treat any leading `--flag` as a flag
@@ -501,7 +524,7 @@ async function itemizeAdd(reportId, parentExpenseId, typeId, amountStr, ...tail)
   if (positionals.length && /^\d{4}-\d{2}-\d{2}$/.test(positionals[0])) {
     dateStr = positionals.shift();
   }
-  const opts = parseFlags(flags, { currency: '', policy: '' });
+  const opts = parseFlags(flags, { currency: '', policy: '', 'travel-allowance': '' });
   const comment = positionals.join(' ') || null;
   const amount = parseFloat(amountStr);
   if (!isFinite(amount) || amount <= 0) {
@@ -523,6 +546,7 @@ async function itemizeAdd(reportId, parentExpenseId, typeId, amountStr, ...tail)
   if (resolved.locationId) overrides.locationId = resolved.locationId;
   if (resolved.exchangeRate) overrides.exchangeRate = resolved.exchangeRate;
 
+  if (opts['travel-allowance']) overrides.travelAllowance = true;
   const fields = buildItemizationFields(
     { parentExpenseId, typeId, date, amount, comment },
     entry, currency, overrides,
@@ -586,7 +610,9 @@ async function itemizeHotel(reportId, expenseId, billJson) {
     console.error('  { "currency":"USD",');
     console.error('    "nights":[ {"roomRate":160,"roomTax":21.41,"date":"2026-04-19"}, … ],');
     console.error('    "extras":[ {"typeId":"01022","amount":41.95,"date":"2026-04-19","comment":"Resort Fee"}, … ],');
-    console.error('    "roomTypeId":"LODNG", "roomTaxTypeId":"LODTX" }');
+    console.error('    "roomTypeId":"LODNG", "roomTaxTypeId":"LODTX",');
+    console.error('    "travelAllowance":false }   // per-line override: "travelAllowance":true on a night/extra');
+    console.error('Meal lines (BRKFT/01040) on a German policy need travelAllowance:true + the itinerary command.');
     process.exit(1);
   }
   await assertReportMutable(reportId, 'itemize this hotel entry');
@@ -613,8 +639,8 @@ async function itemizeHotel(reportId, expenseId, billJson) {
   const nightLines = nights.flatMap((n, i) => {
     const date = n.date || (checkin ? addDays(checkin, i) : new Date().toISOString().slice(0, 10));
     const out = [];
-    if (n.roomRate) out.push({ typeId: roomTypeId,    amount: n.roomRate, date, comment: n.comment || `Room night ${i + 1}` });
-    if (n.roomTax)  out.push({ typeId: roomTaxTypeId, amount: n.roomTax,  date, comment: n.taxComment || `Hotel tax night ${i + 1}` });
+    if (n.roomRate) out.push({ typeId: roomTypeId,    amount: n.roomRate, date, comment: n.comment || `Room night ${i + 1}`, travelAllowance: n.travelAllowance });
+    if (n.roomTax)  out.push({ typeId: roomTaxTypeId, amount: n.roomTax,  date, comment: n.taxComment || `Hotel tax night ${i + 1}`, travelAllowance: n.travelAllowance });
     return out;
   });
   const allLines = [...nightLines, ...extras.map((e) => ({
@@ -622,6 +648,7 @@ async function itemizeHotel(reportId, expenseId, billJson) {
     amount: e.amount,
     date: e.date || checkin,
     comment: e.comment,
+    travelAllowance: e.travelAllowance,
   }))];
 
   const sum = allLines.reduce((acc, l) => acc + (l.amount || 0), 0);
@@ -636,6 +663,10 @@ async function itemizeHotel(reportId, expenseId, billJson) {
   const userId = await getUserId();
   const policyId = bill.policyId || ADOBE_INTL_POLICY.policyId;
   const overrides = bill.customFields || {};
+  // Bill-level default for lines that don't set `travelAllowance` themselves.
+  if (bill.travelAllowance !== undefined && overrides.travelAllowance === undefined) {
+    overrides.travelAllowance = bill.travelAllowance;
+  }
   // Auto-resolve locationId + exchangeRate from the parent entry's form when
   // the entry summary lacks them (the common case for moved card charges).
   if (!overrides.locationId || !overrides.exchangeRate) {
@@ -651,7 +682,7 @@ async function itemizeHotel(reportId, expenseId, billJson) {
       continue;
     }
     const fields = buildItemizationFields(
-      { parentExpenseId: expenseId, typeId: l.typeId, date: l.date, amount: l.amount, comment: l.comment },
+      { parentExpenseId: expenseId, typeId: l.typeId, date: l.date, amount: l.amount, comment: l.comment, travelAllowance: l.travelAllowance },
       entry, currency, overrides,
     );
     const res = await callOp('SaveNewItemization', {
@@ -711,17 +742,127 @@ const commands = {
     return data.employee.reportsForUser;
   },
 
+  // Create a new (unsubmitted) expense report header.
+  // Usage: concur new-report --name="Trip addendum" [--policy=<policyId>]
+  //                          [--purpose=<listItemId>] [--comment="..."]
+  // CreateReportFieldsInput takes PLAIN SCALARS (name, policyId) — unlike
+  // UpdateReportFieldsInput, which wraps every value as { value: … }. Header
+  // custom fields (business purpose custom14, orgUnit*) are rejected on create
+  // and must follow via UpdateReportHeader, which `--purpose` does for you.
+  async 'new-report'(...args) {
+    const opts = parseFlags(args, { name: '', policy: '', purpose: '', comment: '' });
+    if (!opts.name) {
+      console.error('Usage: concur new-report --name="<report name>" [--policy=<policyId>] [--purpose=<listItemId>] [--comment="..."]');
+      console.error('  --purpose takes a Business Purpose list-item id: concur list-items <businessPurposeListId>');
+      console.error('  Everything else (cost center, company code, site location) defaults from your profile.');
+      process.exit(1);
+    }
+    const userId = await getUserId();
+    let policyId = opts.policy;
+    if (!policyId) {
+      const policies = await callOp('GetPolicies', { userId, contextRole: 'TRAVELER' }, 'spend', { soft: true });
+      const list = policies?.employee?.expensePolicies?.policies || [];
+      const def = list.find((p) => p.isDefault) || list[0];
+      policyId = def?.id || ADOBE_INTL_POLICY.policyId;
+    }
+    const created = await callOp('CreateReportHeader', {
+      userId, contextRole: 'TRAVELER',
+      fields: { name: opts.name, policyId },
+    });
+    const reportId = created?.createReport?.reportId;
+    if (!reportId) return { ok: false, raw: created };
+    const out = { reportId, name: opts.name, policyId };
+    // Business purpose is required to submit on most policies, so set it now
+    // (and copy it down to every line) when the caller supplied one.
+    if (opts.purpose || opts.comment) {
+      const fields = { reportSource: 'WEB', copyDownRequested: true };
+      if (opts.purpose) fields.custom14 = { value: opts.purpose };
+      if (opts.comment) fields.comment = opts.comment;
+      const upd = await callOp('UpdateReportHeader',
+        { userId, contextRole: 'TRAVELER', reportId, fields }, 'spend', { soft: true });
+      out.headerUpdated = !!upd;
+      if (opts.purpose) out.purposeListItemId = opts.purpose;
+    }
+    return out;
+  },
+
+  // Delete expense entries (or itemizations) from an unsubmitted report.
+  // Usage: concur delete-expense <reportId> <expenseId> [<expenseId>…] --confirm
+  // Company-card charges are NOT destroyed — they return to Available
+  // Expenses and can be moved onto another report. Out-of-pocket entries and
+  // itemizations are gone for good, hence --confirm.
+  async 'delete-expense'(reportId, ...args) {
+    const opts = parseFlags(args, { confirm: '', 'dry-run': '' });
+    const ids = args.filter((a) => typeof a === 'string' && !a.startsWith('-'));
+    if (!reportId || !ids.length) {
+      console.error('Usage: concur delete-expense <reportId> <expenseId> [<expenseId>…] --confirm');
+      console.error('       concur delete-expense <reportId> <expenseId> --dry-run   # show what would go');
+      console.error('  --confirm is a PREREQUISITE: without it nothing is deleted.');
+      console.error('  Card charges return to Available Expenses; cash entries and itemizations are permanent.');
+      process.exit(1);
+    }
+    await assertReportMutable(reportId, 'delete expenses');
+    // Resolve what we are about to remove so --dry-run is meaningful and the
+    // result names the entries rather than echoing opaque ids.
+    const userId = await getUserId();
+    const listed = await callOp('GetReportExceptionsAndEntries', {
+      reportId, userId, contextRole: 'TRAVELER',
+      expenseListDetailFormId: null, includeDetailItemizations: true,
+    }, 'spend', { soft: true });
+    const entries = listed?.reportEntriesDetails?.entries || [];
+    const describe = (id) => {
+      const e = entries.find((x) => x.expenseId === id);
+      if (!e) return { expenseId: id, found: false };
+      const sum = e.summary || {};
+      return {
+        expenseId: id, found: true,
+        expenseType: sum.expenseType?.name,
+        amount: sum.transactionAmount?.value,
+        currency: sum.transactionAmount?.currencyCode,
+        transactionDate: sum.transactionDate,
+        vendor: sum.vendor?.description || sum.vendor?.name || null,
+        paymentType: sum.paymentType?.name || null,
+      };
+    };
+    const targets = ids.map(describe);
+    const missing = targets.filter((t) => !t.found);
+    if (missing.length) {
+      console.error(`concur delete-expense: not on report ${reportId}: ${missing.map((m) => m.expenseId).join(', ')}`);
+      process.exit(1);
+    }
+    if (opts['dry-run'] || !opts.confirm) {
+      return {
+        dryRun: true, reportId, wouldDelete: targets,
+        note: opts.confirm ? 'dry run — nothing deleted' : 'pass --confirm to actually delete',
+      };
+    }
+    const res = await callOp('DeleteExpenseEntries', {
+      userId, contextRole: 'TRAVELER', reportId, expenseIds: ids,
+    });
+    const success = res?.employee?.expenseReport?.deleteExpenseEntries?.status?.success;
+    return { deleted: success === true, reportId, entries: targets, raw: res };
+  },
+
   async report(reportId) {
     if (!reportId) { console.error('Usage: concur report <reportId>'); process.exit(1); }
     const userId = await getUserId();
-    const main = await callOp('GetReportPageData', {
+    const vars = {
       reportId, userId, contextRole: 'TRAVELER',
       includeCostObjects: true, includeDetailItemizations: true, includeEntries: true,
       includeExceptions: true, includeGroupSettings: true, includePolicy: true,
       includeSiteSettings: true, includeSummary: true, includeWorkflows: true,
       shouldChangeWarningAlertsToInformation: false,
-    });
-    return main;
+    };
+    const main = await callOp('GetReportPageData', vars, 'spend', { soft: true });
+    if (main) return main;
+    // Submitted/approved reports answer 403 `reports.cannotAccess` on the
+    // costObjects sub-selection alone, which used to fail the whole command.
+    // Retry without them so history stays readable, and say so in the output.
+    const degraded = await callOp('GetReportPageData',
+      { ...vars, includeCostObjects: false }, 'spend', { soft: true });
+    if (degraded) return { ...degraded, _note: 'costObjects omitted (403 on this report — normal once submitted)' };
+    console.error(`concur report: could not read ${reportId}. Approved/paid reports expose less via GraphQL — try \`concur report-v3 ${reportId}\` and \`concur entries-v3 --reportId=${reportId}\`.`);
+    process.exit(1);
   },
 
   async expenses(reportId) {
@@ -1057,7 +1198,7 @@ const commands = {
       console.error([
         'Usage:',
         '  concur itemize types     <reportId> <expenseId>',
-        '  concur itemize add       <reportId> <parentExpenseId> <typeId> <amount> [date] [comment] [--currency=USD]',
+        '  concur itemize add       <reportId> <parentExpenseId> <typeId> <amount> [date] [comment] [--currency=USD] [--travel-allowance]',
         '  concur itemize room-rate <reportId> <expenseId> <rates.json>',
         '  concur itemize hotel     <reportId> <expenseId> <bill.json>',
       ].join('\n'));
@@ -1421,6 +1562,10 @@ const commands = {
         'concur report-v3 A1B2C3D4E5F60718293A         # REST v3: report header',
         'concur entries-v3 --reportId=A1B2C3D4E5F60718293A',
         'concur expenses A1B2C3D4E5F60718293A',
+        'concur new-report --name="Trip addendum" --purpose=<listItemId>',
+        'concur delete-expense A1B2C3D4E5F60718293A <expenseId> --dry-run',
+        'concur delete-expense A1B2C3D4E5F60718293A <expenseId> --confirm',
+        'concur itemize types A1B2C3D4E5F60718293A <expenseId>   # selectable itemization types',
         'concur available-receipts',
         'concur smartexpenses',
         'concur policies',
