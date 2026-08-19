@@ -25,6 +25,7 @@
 // scoop notifications — summarize.
 
 const { exec } = require('sliccy:exec');
+const browser = require('sliccy:browser');
 const cli = require('sliccy:cli');
 const fmt = require('sliccy:fmt');
 const fs = require('fs');
@@ -46,7 +47,7 @@ function escapeShellArg(value) {
 }
 
 function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
+  return Promise.resolve();
 }
 
 // Strip Signal bidi isolates (U+2068 FIRST-STRONG ISOLATE / U+2069 POP) and
@@ -104,11 +105,10 @@ function parseSignalTabs(stdout) {
 }
 
 async function findSignalTab({ fatal = true } = {}) {
-  if (_tabId) {
-    const raw = await tabListRaw();
-    if (raw.includes(_tabId)) return _tabId;
-    _tabId = null;
-  }
+  if (_tabId) return _tabId;
+  let _t = null;
+  try { _t = await browser.findTab({ urlMatch: /background\.html|Signal\.app/i }); } catch (e) { _t = null; }
+  if (_t && _t.targetId) { _tabId = _t.targetId; return _tabId; }
   const raw = await tabListRaw();
   const tabs = parseSignalTabs(raw);
   if (!tabs.length) {
@@ -479,6 +479,45 @@ const SRC_CLEAR_COMPOSER = `
 })()
 `;
 
+const SRC_INSERT_TEXT = (text) => `
+(() => {
+  const editor = document.querySelector('.ql-editor');
+  if (!editor) return JSON.stringify({ ok: false, error: 'no_composer' });
+  editor.focus();
+  const sel = window.getSelection();
+  const r = document.createRange();
+  r.selectNodeContents(editor);
+  sel.removeAllRanges();
+  sel.addRange(r);
+  try { document.execCommand('delete'); } catch (e) {}
+  const text = ${JSON.stringify(String(text))};
+  document.execCommand('insertText', false, text);
+  try {
+    editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+  } catch (e) {}
+  return JSON.stringify({ ok: true, content: editor.textContent });
+})()
+`;
+
+const SRC_PRESS_ENTER = `
+(() => {
+  const editor = document.querySelector('.ql-editor');
+  if (!editor) return JSON.stringify({ ok: false, error: 'no_composer' });
+  editor.focus();
+  function fire(type) {
+    const ev = new KeyboardEvent(type, {
+      key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
+      bubbles: true, cancelable: true,
+    });
+    return editor.dispatchEvent(ev);
+  }
+  const kd = fire('keydown');
+  fire('keypress');
+  fire('keyup');
+  return JSON.stringify({ ok: true, keydownNotCancelled: kd });
+})()
+`;
+
 // ─── Higher-level ops ────────────────────────────────────────────────────────
 
 async function ensureChatsTab() {
@@ -778,9 +817,10 @@ async function cmdSend() {
   await sleep(150);
   await pwEvalJson(SRC_FOCUS_COMPOSER);
 
-  // Type via CDP Input (Quill/React picks this up; DOM execCommand alone does not)
-  await pwType(text);
-  await sleep(300);
+  // Insert via browser bridge (playwright-cli subprocess conflicts with the
+  // browser CDP connection on the same remote target and hangs).
+  const ins = await pwEvalJson(SRC_INSERT_TEXT(text));
+  if (!ins.ok) cli.die('Composer insert failed', { prefix: 'signal' });
 
   const state = await pwEvalJson(SRC_COMPOSER_STATE);
   const typed = cleanText(state && state.content);
@@ -809,8 +849,7 @@ async function cmdSend() {
   // Send = Enter in the composition box (Signal has no separate Send button
   // when the mic/send toggle is voice-mode; Enter is the reliable path).
   await pwEvalJson(SRC_FOCUS_COMPOSER);
-  await pwPress('Enter');
-  await sleep(600);
+  await pwEvalJson(SRC_PRESS_ENTER);
 
   const after = await pwEvalJson(SRC_COMPOSER_STATE);
   const stillThere = cleanText(after && after.content);
