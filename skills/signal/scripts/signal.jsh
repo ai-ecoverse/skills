@@ -766,9 +766,10 @@ async function cmdRead() {
       });
     }
     if (res.confirmed === false) {
-      console.error(
-        'signal: warning — could not confirm "' + q + '" is the open conversation; ' +
-          'the messages below may be from another chat.'
+      cli.die(
+        'could not confirm "' + q + '" is the open conversation — aborting so this ' +
+          'does not return messages from another chat. Retry, or: signal open ' + JSON.stringify(q),
+        { prefix: 'signal' }
       );
     }
     await sleep(400);
@@ -946,14 +947,23 @@ function watchStatePath(id) {
   return WATCH_DIR + '/.watch-' + id + '.json';
 }
 
-/** Slugify a chat name into a filesystem-safe watch id. */
-function watchIdFor(chat) {
+/** Slugify a chat name into a filesystem-safe watch id, made collision-proof
+ * by appending a short hash of a stable identity (the conversation id when
+ * known, else the full unmodified name). Without this, the lossy slug collides
+ * for distinct chats — e.g. every all-non-ASCII name becomes `open-chat`, and
+ * names sharing the same normalized first 40 chars map to one id — so a second
+ * watch is wrongly rejected as a duplicate or `--force` clobbers the first
+ * chat's webhook. */
+function watchIdFor(chat, stableId) {
   const slug = String(chat || 'open-chat')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
-    .slice(0, 40);
-  return slug || 'open-chat';
+    .slice(0, 40) || 'open-chat';
+  const seed = String(stableId || chat || '');
+  let h = 5381;
+  for (let i = 0; i < seed.length; i++) h = ((h * 33) ^ seed.charCodeAt(i)) >>> 0;
+  return slug + '-' + h.toString(36);
 }
 
 /**
@@ -1194,7 +1204,7 @@ async function cmdWatch() {
     );
   }
   const chatName = (target.opened && target.opened.name) || chat;
-  const id = watchIdFor(chatName);
+  const id = watchIdFor(chatName, target.opened && target.opened.id);
   // Capture the RENDERED header title for exact watch binding (Unicode
   // preserved). The tick compares the open conversation's title to this
   // verbatim, so a non-ASCII name (e.g. 家族) or a substring collision
