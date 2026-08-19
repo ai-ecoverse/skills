@@ -843,6 +843,57 @@ const commands = {
     return { deleted: success === true, reportId, entries: targets, raw: res };
   },
 
+  // Delete an entire unsubmitted report.
+  // Usage: concur delete-report <reportId> --confirm
+  // Any company-card charges on it return to Available Expenses; out-of-pocket
+  // entries and itemizations go with the report. Submitted/approved/paid
+  // reports are refused by assertReportMutable — recall or send back first.
+  async 'delete-report'(reportId, ...args) {
+    const opts = parseFlags(args, { confirm: '', 'dry-run': '' });
+    if (!reportId) {
+      console.error('Usage: concur delete-report <reportId> --confirm');
+      console.error('       concur delete-report <reportId> --dry-run   # show what would go');
+      console.error('  --confirm is a PREREQUISITE: without it nothing is deleted.');
+      console.error('  Card charges on the report return to Available Expenses; cash entries are permanent.');
+      process.exit(1);
+    }
+    const status = await assertReportMutable(reportId, 'delete this report');
+    const userId = await getUserId();
+    // Summarise the report first: a delete is irreversible, so both the dry run
+    // and the result should say what was on it rather than just an id.
+    const listed = await callOp('GetReportExceptionsAndEntries', {
+      reportId, userId, contextRole: 'TRAVELER',
+      expenseListDetailFormId: null, includeDetailItemizations: false,
+    }, 'spend', { soft: true });
+    const entries = (listed?.reportEntriesDetails?.entries || []).map((e) => {
+      const sum = e.summary || {};
+      return {
+        expenseId: e.expenseId,
+        expenseType: sum.expenseType?.name,
+        amount: sum.transactionAmount?.value,
+        currency: sum.transactionAmount?.currencyCode,
+        paymentType: sum.paymentType?.name || null,
+        returnsToAvailableExpenses: !!sum.paymentType?.name && sum.paymentType.name !== 'Out of Pocket',
+      };
+    });
+    const summary = {
+      reportId,
+      name: status?.name || null,
+      approvalStatus: status?.approvalStatus || null,
+      entryCount: entries.length,
+      entries,
+    };
+    if (opts['dry-run'] || !opts.confirm) {
+      return {
+        dryRun: true, wouldDelete: summary,
+        note: opts.confirm ? 'dry run — nothing deleted' : 'pass --confirm to actually delete',
+      };
+    }
+    const res = await callOp('DeleteExpenseReport', { userId, contextRole: 'TRAVELER', reportId });
+    const success = res?.employee?.expenseReport?.deleteReport?.status?.success;
+    return { deleted: success === true, report: summary, raw: res };
+  },
+
   async report(reportId) {
     if (!reportId) { console.error('Usage: concur report <reportId>'); process.exit(1); }
     const userId = await getUserId();
@@ -1565,6 +1616,8 @@ const commands = {
         'concur new-report --name="Trip addendum" --purpose=<listItemId>',
         'concur delete-expense A1B2C3D4E5F60718293A <expenseId> --dry-run',
         'concur delete-expense A1B2C3D4E5F60718293A <expenseId> --confirm',
+        'concur delete-report A1B2C3D4E5F60718293A --dry-run',
+        'concur delete-report A1B2C3D4E5F60718293A --confirm',
         'concur itemize types A1B2C3D4E5F60718293A <expenseId>   # selectable itemization types',
         'concur available-receipts',
         'concur smartexpenses',
