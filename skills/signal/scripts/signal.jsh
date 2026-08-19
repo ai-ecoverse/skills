@@ -18,8 +18,10 @@
 //   signal watches | unwatch <id|all> | reinject
 //   signal help
 //
-// Register once per session:
-//   touch /usr/bin/signal; hash -r
+// Setup: the `signal` command is auto-discovered from this skill script. If a
+// fresh catalog is needed, touch the script (never /usr/bin/signal — an empty
+// file there shadows the command and breaks it):
+//   touch /workspace/skills/signal/scripts/signal.jsh; hash -r
 //
 // Safety: send requires --yes. Never auto-send. Do not dump full histories into
 // scoop notifications — summarize.
@@ -607,8 +609,9 @@ function printMessages(data) {
 function usageText() {
   return `signal — Signal Desktop CLI (CDP / DOM automation)
 
-Setup (once per session):
-  touch /usr/bin/signal; hash -r
+Setup: auto-discovered from the skill script. For a catalog refresh only:
+  touch /workspace/skills/signal/scripts/signal.jsh; hash -r
+  (never touch /usr/bin/signal — an empty file there shadows the command)
 
 Requires Signal Desktop running on a tray host with CDP exposed.
 Find the tab:  signal tabs
@@ -963,31 +966,44 @@ async function evalInLeader(expression) {
   if (!tab) {
     cli.die('could not find the leader tab (is this running inside SLICC?)', { prefix: 'signal' });
   }
-  const res = await pw(['eval', '--tab=' + tab, expression]);
-  return res;
+  // Evaluate against the leader tab ONLY. Do NOT route through pw(), which
+  // appends its own --tab=<Signal tab>; two --tab args make playwright-cli use
+  // the last one (Signal), where globalThis.__slicc_browser is absent, so the
+  // watcher installer silently fails with no_browser_api.
+  const r = await exec(
+    'playwright-cli eval --tab=' + escapeShellArg(tab) + ' ' + escapeShellArg(expression)
+  );
+  if (r.exitCode !== 0) {
+    throw new Error((r.stderr || r.stdout || 'leader eval failed').trim());
+  }
+  return (r.stdout || '').replace(/\n$/, '');
 }
 
 /**
  * Fingerprint of the open conversation, evaluated INSIDE Signal.
  *
- * Message count plus the last message's author/time/text. Signal exposes no
- * message id in the DOM, and it renders relative timestamps ("42m") that drift
- * between reads, so the text is part of the key — time alone would re-fire.
+ * Returns structured metadata (never message text): the open conversation's
+ * title, the rendered message count, and the last message's author plus its
+ * ABSOLUTE timestamp (the `datetime`/`title` attribute, never the relative
+ * "42m" textContent which drifts between reads). The leader tick derives a
+ * content-free fingerprint from this and also uses `title` to bind the watch
+ * to its configured conversation.
  */
 const SRC_FINGERPRINT = `(() => {
   const clean = (s) => String(s || '').replace(/[\\u2066-\\u2069]/g, '').replace(/\\s+/g, ' ').trim();
+  const header = document.querySelector('.module-ConversationHeader__header__info__title');
+  const title = header ? clean(header.textContent) : null;
   const nodes = [...document.querySelectorAll('.module-message')];
   const last = nodes[nodes.length - 1];
-  if (!last) return 'EMPTY';
-  const t = last.querySelector('.module-message__text');
-  const a = last.querySelector('.module-message__author');
-  const d = last.querySelector('.module-message__metadata__date');
-  return [
-    nodes.length,
-    clean(a && a.textContent),
-    clean(d && d.textContent),
-    clean(t && t.textContent).slice(0, 80),
-  ].join('|');
+  let author = null, time = null;
+  if (last) {
+    const a = last.querySelector('.module-message__author');
+    const d = last.querySelector('.module-message__metadata__date');
+    author = clean(a && a.textContent) || null;
+    // Absolute time only — never the drifting relative textContent.
+    if (d) time = d.getAttribute('datetime') || d.getAttribute('title') || null;
+  }
+  return JSON.stringify({ title: title, count: nodes.length, author: author, time: time });
 })()`;
 
 /**
@@ -1010,12 +1026,25 @@ function installerSource(opts) {
   st.timer = setInterval(async () => {
     st.ticks++;
     try {
-      const fp = await b.withTab(cfg.tab, async () => b.evaluate(${JSON.stringify(SRC_FINGERPRINT)}));
+      const raw = await b.withTab(cfg.tab, async () => b.evaluate(${JSON.stringify(SRC_FINGERPRINT)}));
+      let data = raw;
+      if (typeof data === 'string') { try { data = JSON.parse(data); } catch (e) { data = null; } }
+      if (!data) return;
+      // Bind to the configured conversation. If some OTHER chat is on screen
+      // (human opened another chat, or several watches share the tab), do not
+      // fingerprint a foreign timeline — skip this tick rather than misreport.
+      const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+      const want = norm(cfg.chat);
+      const have = norm(data.title);
+      if (want && have && want !== have && want.indexOf(have) === -1 && have.indexOf(want) === -1) {
+        return;
+      }
+      // Content-free, drift-free key: count + last author + ABSOLUTE time.
+      const fp = [data.count, data.author || '', data.time || ''].join('|');
       // Seed on the first read so the backlog already on screen is never
       // reported as new.
       if (st.last === null) { st.last = fp; return; }
       if (fp === st.last) return;   // <-- no change, no lick, no agent turn
-      const previous = st.last;
       st.last = fp;
       st.fires++;
       await fetch(cfg.webhookUrl, {
@@ -1025,8 +1054,8 @@ function installerSource(opts) {
           source: 'signal-watch',
           watchId: cfg.id,
           chat: cfg.chat,
-          fingerprint: fp,
-          previous,
+          // Metadata only — message text never leaves Signal.
+          messageCount: data.count,
           at: new Date().toISOString(),
           hint: 'New activity in Signal chat "' + cfg.chat + '". Run: signal read ' + JSON.stringify(cfg.chat),
         }),
