@@ -148,9 +148,9 @@ List inbox messages with sender, subject, date, and snippet.
 - `--search QUERY` — Gmail search query (maps to the `q` API parameter)
 - `--json` — output raw JSON array
 
-### gmail view \<message-id\>
+### gmail view \<message-id\> [--json]
 
-View a single email message with full headers and decoded body text.
+View a single email message with full headers and decoded body text. The text view truncates the body at 5000 characters; `--json` returns it in full, plus label ids, the snippet and the attachment list (so you can pipe straight into `gmail download`).
 
 ### gmail attachments \<message-id\>
 
