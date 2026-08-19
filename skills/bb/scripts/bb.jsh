@@ -366,6 +366,10 @@ function hostLabel(host) {
  * With no `--host` at all, a single enrolled host is unambiguous, so use it
  * instead of failing — the previous behaviour pointed at `bb thread show` for
  * an id that command never prints, leaving no way to discover one.
+ *
+ * An explicit `--host` is taken at its word and is NOT connectivity-checked:
+ * naming a host is a statement of intent, and it doubles as the override when
+ * the automatic path refuses a disconnected one.
  */
 async function resolveHostId(explicit) {
   const hosts = await listHosts();
@@ -382,17 +386,28 @@ async function resolveHostId(explicit) {
     }
     die(`no enrolled host matches --host "${query}" — run 'bb host list' to see them`);
   }
-  // Prefer connected hosts; a disconnected one cannot build a worktree.
-  const connected = hosts.filter(hostIsConnected);
-  const pool = connected.length > 0 ? connected : hosts;
-  if (pool.length === 1) return pool[0].id;
-  if (pool.length === 0) {
+  // Ambiguity is a property of the ENROLLED set, not of who happens to be online
+  // right now. Narrowing to connected hosts first would silently run the agent on
+  // a fallback machine just because the intended host was momentarily offline, so
+  // decide ambiguity first and check connectivity only afterwards.
+  if (hosts.length === 0) {
     die("this bb server has no enrolled hosts — run 'bb host list' to confirm, then enroll one in bb");
   }
-  die(
-    `--new-environment worktree needs --host <name-or-id> — ${pool.length} hosts to choose from: ` +
-      pool.map(hostLabel).join(', '),
-  );
+  if (hosts.length > 1) {
+    die(
+      `--new-environment worktree needs --host <name-or-id> — ${hosts.length} enrolled hosts: ` +
+        hosts.map((host) => `${hostLabel(host)} [${host.status || 'unknown'}]`).join(', '),
+    );
+  }
+  const only = hosts[0];
+  if (!hostIsConnected(only)) {
+    die(
+      `the only enrolled host, ${hostLabel(only)}, is ${only.status || 'not connected'} — it cannot build a worktree.\n` +
+        `  Bring it online, reuse an existing environment with --environment <id>,\n` +
+        `  or pass --host ${only.id} to try anyway.`,
+    );
+  }
+  return only.id;
 }
 
 async function cmdHostList() {
