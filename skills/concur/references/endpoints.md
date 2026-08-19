@@ -217,3 +217,33 @@ Request body is form-encoded. **Not currently exposed as named commands** — th
 
 `GetReportsForUser.variables.filterByStatus` — observed: `ACTIVE`. Other values from the UI:
 `PAID`, `PENDING_APPROVAL`, `RETURNED`, `SUBMITTED`, `IN_PAYMENT_PROCESS`, `EXTRACTED_FOR_PAYMENT`, `APPROVED`, `NOT_SUBMITTED`. Try them as-is; the GraphQL will reject unknown enums clearly.
+
+## Mutation input shapes (measured, not documented upstream)
+
+Adobe's tenant masks every GraphQL error as `{"message":"An error occurred"}`, so these shapes
+were established by probing error *counts* against the live endpoint.
+
+- **`CreateReportHeader`** — `CreateReportFieldsInput` takes **plain scalars**:
+  `fields: { name: "…", policyId: "…" }`. Both are required. This is the opposite of
+  `UpdateReportFieldsInput`, where every value is wrapped: `fields: { custom14: { value: "…" } }`.
+  Header custom fields (`custom14`, `orgUnit*`, `currency`) are **rejected** on create — set them
+  afterwards with `UpdateReportHeader` (`concur new-report --purpose` does this).
+- **`DeleteExpenseEntries`** — `{ userId, contextRole, reportId, expenseIds: [String!] }`, resolving
+  `employee.expenseReport.deleteExpenseEntries.status.success`. Works on entries and itemizations.
+  Sibling app mutations that exist on the same surface but are not bundled here:
+  `DeleteExpenseReport`, `DeleteAvailableExpenses`, `CombineExpenseEntries`, `DeleteReceipt`,
+  `DeleteReportAttachments`, `DeleteTravelDiaries`, `DeleteAllocationFavorite`.
+- **`GetExpenseFormExpenseTypes`** — `filterBy` is an input OBJECT of booleans, not an enum:
+  `{ isItemization, itemizationsNotAllowed, japanPublicTransportation, companyCarMileage,
+  personalCarMileage, cashAdvance }`. `isItemization: true` + `parentExpenseTypeId` yields the
+  itemization type list (~107 entries on Adobe's International Expense Policy). Group headers come
+  back with a null `parentName`.
+- **`GetNewItemizationExpenseTypesForm`** does *not* carry the type list on this policy: its single
+  "Expense Type" field is a bare `STRING`/`EDIT` control with `options: null` and `list: null`.
+- **Receipt images are single-use.** `GetLineItemImage` reports
+  `meta.isAllowedForMultipleUse: false` for vendor e-receipts, so the same `imageId` cannot be
+  attached to a second entry — download `imageUrl` (page-context fetch, cookies required) and
+  re-upload with `concur attach-receipt … --no-convert`.
+- **`FindMatchingAvailableExpenses`** returns `match: null` across currencies, so a pending USD
+  e-receipt and its posted EUR card charge are never auto-reconciled; the duplicate has to be
+  deleted by hand.
