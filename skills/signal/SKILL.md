@@ -83,10 +83,11 @@ signal read [name|id] [--limit=N] [--json]
 signal send <name|id> <text> --yes   # real send
 signal send <name|id> <text> --draft # composer only
 
-signal watch <name|id> --scoop=<name> [--every=<seconds>] [--force]
+signal watch <name|id> --scoop=<name> [--every=<minutes>] [--force]
 signal watches [--json]
 signal unwatch <watch-id|all>
-signal reinject                      # after a leader reload
+signal watch-poll [--json]           # one poll pass (run by the poller scoop)
+signal reinject                      # re-ensure the poll crontask
 signal help
 ```
 
@@ -188,89 +189,90 @@ Implementation:
 user explicitly asked to send that message.
 
 
-### watch / watches / unwatch / reinject
+### watch / watches / unwatch / watch-poll / reinject
 
-Notify a scoop when a Signal chat changes — **and only when it changes**.
+Notify a scoop when a Signal chat changes — **and only when it changes** —
+without attaching to the tray remote or switching the visible conversation.
 
 ```bash
-signal watch "Eclipse Chasers" --scoop=signal-inbox
-signal watch "Eclipse Chasers" --scoop=signal-inbox --every=10 --force
+signal watch "Eclipse Chasers" --scoop=signal-inbox            # poll every 2 min
+signal watch "Eclipse Chasers" --scoop=signal-inbox --every=5  # minutes
 signal watches
-signal unwatch eclipse-chasers      # or: signal unwatch all
-signal reinject                     # after the leader tab reloaded
+signal unwatch eclipse-chasers-<hash>   # id from `signal watches`; or: all
+signal reinject                          # re-ensure the poll crontask
 ```
 
 **Options**
 
-- `--scoop=<name>` — **(required)** scoop that receives the lick
-- `--every=<seconds>` — check interval, default `20`, floor `5`
+- `--scoop=<name>` — **(required)** scoop that receives the lick on change
+- `--every=<minutes>` — poll interval in minutes, default `2`, floor `1`
 - `--force` — replace an existing watch on the same chat
 
-**How it works**
+**How it works — a CLI-bridge poller**
 
-Signal offers nothing to subscribe to: the socket is end-to-end encrypted, and
-Redux / `ConversationController` / sqlcipher are not on `window`. New messages
-are legible only in the rendered DOM, so something has to look. The design
-question is what pays for the looking.
-
-The detector runs in the **leader tab**, not in a scoop and not on a cron:
+Signal offers nothing to subscribe to (E2E socket; Redux / sqlcipher off
+`window`), so change must be polled from the DOM. This skill polls the
+**left-pane chat list** through the reliable browser bridge — the same path
+`signal chats` uses — which needs no CDP attach to the tray remote and never
+switches the open conversation:
 
 ```
-setInterval in the leader page (every --every seconds)
-  └─ browser.withTab(signalTab, () => evaluate(FINGERPRINT))   ← one DOM query
-     ├─ unchanged → return. Nothing is dispatched. No scoop wakes.
-     └─ changed   → POST the scoop's webhook → one lick
+crontask "signal-watch-poll" (every --every min)
+  └─ licks the poller scoop "signal-watch"
+       └─ runs `signal watch-poll`   ← one `signal chats` read
+            ├─ a watched chat's row unchanged → nothing
+            └─ changed → curl POST that watch's webhook → one lick on its scoop
 ```
 
-An idle chat therefore costs a DOM read per interval and **zero** agent turns.
-This is the whole point of the command: a `crontask` that licks a scoop every
-N minutes would wake an LLM turn just to conclude "nothing happened".
+Cost: one cheap scoop tick per interval; the target scoop is woken only on
+change. Reading the list (not the open timeline) means a watch observes its
+chat regardless of which conversation is on screen, and a chat with new activity
+surfaces to the top of the list.
 
-Two constraints shaped this and are worth knowing before changing it:
+An earlier design ran a `setInterval` in the leader tab that used
+`browser.withTab` to read Signal directly. That is retired: the tray remote
+permits a single page-level CDP session, so the leader's repeated attach
+contended with any CLI `signal` call and wedged on `Runtime.enable`. The CLI
+bridge (`signal chats`) has no such problem, at the cost of one scoop tick per
+interval instead of zero.
 
-- **The loop cannot live inside Signal.** Signal's renderer blocks all egress
-  (`net::ERR_ACCESS_DENIED` — the same block that forces the CDP-over-CDP
-  follower), so an interval there can detect a change but never deliver it.
-  Verified: `fetch()` from the Signal page fails; the same call from the leader
-  page returns 200.
-- **A cron `--filter` cannot do the check.** `LickManager.runDueCronTask` calls
-  the filter synchronously (`filterFn(null)`, not awaited), so it cannot await a
-  DOM read. A filter returning a Promise silently becomes the payload.
+**Setup (once).** A shell command cannot spawn a scoop, so a persistent scoop
+named **`signal-watch`** must exist whose standing job is to run
+`signal watch-poll` on each `signal-watch-poll` cron lick. Create it once; then
+`signal watch` creates each per-watch webhook and the shared crontask
+automatically. The poller scoop needs write access to `/.playwright` (browser
+bridge) and `/shared` (watch state) — the latter is in a scoop's default
+sandbox; grant `/.playwright` once.
 
-`withTab` is used rather than a bare `attachToPage` because BrowserAPI
-attachment is process-wide; `withTab` serializes on its lock so a tick cannot
-steal the tab from a human or an agent mid-operation.
+**Identity & fingerprint.** Each watch is keyed by the conversation's stable id
+(`data-id`) plus a slug, so distinct chats never collide. The change
+fingerprint is the row's `unread` count + last-message preview: drift-free (no
+relative timestamp), and the preview (message text) stays **local** in the state
+file under `/shared/signal-watch/`. It is seeded on the first poll so the
+existing backlog is never reported.
 
 **Lick payload**
 
 ```json
 {
   "source": "signal-watch",
-  "watchId": "eclipse-chasers",
+  "watchId": "eclipse-chasers-1a2b3c",
   "chat": "Eclipse Chasers",
-  "messageCount": 87,
-  "at": "2026-08-11T19:44:03.117Z",
+  "unread": 2,
+  "at": "2026-08-20T07:31:07.667Z",
   "hint": "New activity in Signal chat \"Eclipse Chasers\". Run: signal read \"Eclipse Chasers\""
 }
 ```
 
-The payload carries **metadata only** — a `messageCount` and the chat name, never
-message bodies (nor the internal change fingerprint). The detector fingerprints
-locally on message count + last author + absolute timestamp to decide *whether*
-to fire; that fingerprint never leaves the leader page. A woken scoop calls
-`signal read` if it wants content, so message text is never pushed into a lick.
+**Metadata only** — `unread` count and chat name, never message text and never
+the local fingerprint. A woken scoop calls `signal read` if it wants content.
+Delivery uses `curl` and commits state only on a confirmed 2xx, so a failed
+webhook is retried on the next poll rather than silently dropped.
 
-**Durability.** The interval is page state, so a leader reload drops every
-watcher. `signal watches` reports those as `DEAD (signal reinject)`; run
-`signal reinject` to re-install them (it also re-resolves the Signal tab id,
-which changes when Signal restarts). Same trade-off `slack reinject` exists for.
-
-**Fingerprint.** Content-free and drift-free: message count + the last
-message's author + its ABSOLUTE timestamp (the `datetime` attribute, not the
-relative "42m" text that drifts between reads). No message text is included, so
-nothing content-bearing ever leaves Signal. Each tick binds to its configured
-conversation by EXACT header title (Unicode preserved) and skips when another
-chat is on screen; `last`/`fires` advance only after a confirmed 2xx webhook.
+**Durability.** Watch state lives in files under `/shared/signal-watch/`, so it
+survives reloads. `signal reinject` re-ensures the poll crontask exists for the
+stored watches. `signal watch-poll` is the per-tick worker the poller scoop
+invokes; you can also run it by hand to poll once.
 
 ## How the tab is found
 
@@ -319,17 +321,15 @@ That is durable across Signal Desktop builds as long as class names /
 6. **SLICC overlay** — Signal blocks embedded SLICC panels; drive from the
    leader window via this CLI.
 7. **No sqlcipher / key access** — by design; we never touch the local DB.
-8. **Watch observes only the open conversation** — Signal renders just the
-   active timeline, so a watch detects activity in its chat only while that
-   chat is the one on screen. It never reopens the chat itself (that would yank
-   a human's view and contend with the tray remote's single CDP session). If
-   the user navigates away, activity is caught the next time the chat is open.
-   For always-on observation of a background chat, a CLI-bridge poller is the
-   sturdier design than the leader interval.
+8. **Watch costs one scoop tick per interval** — the CLI-bridge poller wakes
+   its poller scoop every `--every` minutes to run one `signal chats` read.
+   Cheap, but not the zero-turn idle cost of the retired leader interval; the
+   trade is reliability (no tray-remote attach) for that tick.
 9. **Watch change-detection is heuristic** — Signal exposes no message id in
-   the DOM, so the fingerprint is derived from the mounted timeline. Scrolling
-   the watched chat can shift the count/last-entry (possible false fire) and a
-   new message that is not yet mounted can leave it unchanged (possible miss).
+   the DOM. The fingerprint is the chat's list row (unread + last-message
+   preview), so two identical consecutive messages, or a change that does not
+   alter the visible preview, can be missed; a chat scrolled out of the
+   virtualized list is only re-observed once new activity surfaces it to the top.
 
 ## Troubleshooting
 
