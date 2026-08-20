@@ -144,13 +144,11 @@ exact name (case-insensitive), then unique substring. Ambiguous matches error ou
 with candidates and their ids — including two conversations with the *same*
 display name, which are never resolved by guessing the first row.
 
-After clicking, the CLI waits until the requested conversation is the one
-actually rendered, and confirms that on a **stable identity**: the header title
-must match *and* the selected left-pane row must carry the conversation `data-id`
-/ `data-testid` that was clicked. A title-only check is accepted only when that
-title is unique among visible rows, because a still-mounted previous chat with
-the same display name would otherwise satisfy it. `read` and `send` abort (with
-the reason) when confirmation fails, rather than operating on another chat.
+Confirmation then requires a **stable identity**: the header title must match
+*and* the selected left-pane row must carry the clicked `data-id` /
+`data-testid`. A title-only match counts only when that title is unique, so a
+still-mounted same-named chat cannot pass it. `read` / `send` abort with the
+reason instead of operating on another chat.
 
 ### read
 
@@ -214,12 +212,9 @@ signal reinject                          # re-ensure the poll crontask
 **Options**
 
 - `--scoop=<name>` — **(required)** scoop that receives the lick on change
-- `--every=<minutes>` — poll interval in minutes, default `2`, floor `1`.
-  Watches share one crontask: it ticks at the **smallest** interval any watch
-  asks for (set on `signal watch`, `signal unwatch` and `signal reinject`), and
-  each watch is then gated to its own interval, so a `--every=5` watch is not
-  polled every minute just because another watch asked for `--every=1`, and a
-  later `--every=1` watch is not starved by an existing 5-minute task.
+- `--every=<minutes>` — poll interval, default `2`, floor `1`. All watches share
+  one crontask, ticking at the **smallest** `--every` in use; each watch is then
+  gated to its own, so mixed intervals hold in any creation order.
 - `--force` — replace an existing watch on the same chat
 
 **How it works — a CLI-bridge poller**
@@ -245,12 +240,9 @@ change. Reading the list (not the open timeline) means a watch observes its
 chat regardless of which conversation is on screen, and a chat with new activity
 surfaces to the top of the list.
 
-An earlier design ran a `setInterval` in the leader tab that used
-`browser.withTab` to read Signal directly. That is retired: the tray remote
-permits a single page-level CDP session, so the leader's repeated attach
-contended with any CLI `signal` call and wedged on `Runtime.enable`. The CLI
-bridge (`signal chats`) has no such problem, at the cost of one scoop tick per
-interval instead of zero.
+The retired design ran a `setInterval` in the leader tab: the tray remote allows
+one page-level CDP session, so its repeated attach wedged CLI calls on
+`Runtime.enable`. The bridge trades that for one scoop tick per interval.
 
 **Setup (once).** A shell command cannot spawn a scoop, so a persistent scoop
 named **`signal-watch`** must exist whose standing job is to run
@@ -265,10 +257,9 @@ sandbox; grant `/.playwright` once. **Mute the poller scoop** (`scoop_mute`) so 
 fingerprint is the row's `unread` count + last-message preview: drift-free (no
 relative timestamp), and the preview (message text) stays **local** in the state
 file under `/shared/signal-watch/`. It is seeded on the first poll so the
-existing backlog is never reported. A watched row that is temporarily **absent**
-from the virtualized left pane (the user scrolled) is skipped, not fingerprinted:
-absence is not activity, so neither disappearing nor remounting unchanged fires a
-lick.
+existing backlog is never reported. A row temporarily absent from the virtualized
+pane (the user scrolled) is skipped, not fingerprinted — absence is not activity,
+and neither is its unchanged return.
 
 **Lick payload**
 
@@ -284,14 +275,12 @@ lick.
 }
 ```
 
-**Metadata only** — `unread` count, chat name and the stable `convId`, never
-message text and never the local fingerprint. The `hint` reads by `convId`
-whenever the watch has one, so a woken scoop cannot be steered into a different
-conversation that happens to share the display name (`convId` is `null` only for
-a watch on a row that exposed no `data-id`, and the hint then falls back to the
-name). A woken scoop calls `signal read` if it wants content.
-Delivery uses `curl` and commits state only on a confirmed 2xx, so a failed
-webhook is retried on the next poll rather than silently dropped.
+**Metadata only** — `unread`, chat name and the stable `convId`; never message
+text, never the fingerprint. The `hint` reads by `convId` (falling back to the
+name only when the row exposed no `data-id`), so a same-named chat cannot be
+substituted; the woken scoop runs `signal read` if it wants content. Delivery
+uses `curl` and commits state only on a confirmed 2xx, so a failed webhook is
+retried next poll.
 
 **Durability.** Watch state lives in files under `/shared/signal-watch/`, so it
 survives reloads. `signal reinject` re-ensures the poll crontask exists for the
@@ -330,7 +319,8 @@ playwright-cli eval --tab="$TAB" 'document.title'
 
 Conclusion: this skill is **UI-scraped + CDP input**, not an internal API client.
 That is durable across Signal Desktop builds as long as class names /
-`data-testid`s remain stable (they are part of Signal's own test surface).
+`data-testid`s remain stable (they are part of Signal's own test surface). Full
+selector inventory: `references/dom-surface.md`.
 
 ## Limitations
 
@@ -367,6 +357,7 @@ That is durable across Signal Desktop builds as long as class names /
 | Composer did not accept text | CDP type failed; retry `signal send ... --draft` |
 | Send may have failed | Composer still held text after Enter — check focus and retry with `--yes` |
 | Wrong tab targeted | Always use composite id from `signal tabs`; never bare page id alone on remotes |
+| Selectors changed after a Signal update | Probe the live DOM with `scripts/signal-debug.jsh` and compare against `references/dom-surface.md` |
 
 ## Examples
 
