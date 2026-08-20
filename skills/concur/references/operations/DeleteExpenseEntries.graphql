@@ -1,0 +1,11 @@
+mutation DeleteExpenseEntries($userId: String!, $contextRole: ContextRoleType!, $reportId: String!, $expenseIds: [String!]) {
+  employee(userId: $userId, contextRole: $contextRole) {
+    expenseReport(reportId: $reportId) {
+      deleteExpenseEntries(expenseIds: $expenseIds) {
+        status {
+          success
+        }
+      }
+    }
+  }
+}
