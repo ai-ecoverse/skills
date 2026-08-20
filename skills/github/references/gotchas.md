@@ -129,7 +129,9 @@ Verify after upload by fetching `https://raw.githubusercontent.com/owner/repo/<b
 
 ## Creating symlinks via the Contents API
 
-`PUT /repos/owner/repo/contents/<path>` always creates a regular file (mode `100644`). It cannot create a symlink. To add a symlink (e.g. `tiles/basic/skills/<name> → ../../../skills/<name>` in `ai-ecoverse/skills`), use the Git Data API:
+`PUT /repos/owner/repo/contents/<path>` always creates a regular file (mode `100644`). It cannot create a symlink. To add one, use the Git Data API:
+
+Do not use this to wire up tile membership in `ai-ecoverse/skills`: tracked `tiles/*/skills/**` paths are rejected by `tools/check-tessl-layout.mjs`, and a skill joins a tile by being listed in that tile's `.tessl-plugin/plugin.json` only.
 
 ```bash
 TOK=$(oauth-token github)
@@ -140,12 +142,12 @@ TREE=$(gh.jsh api /repos/owner/repo/git/commits/$HEAD --jq .tree.sha)
 
 # 2. Create a blob with the symlink target (just the target path text)
 BLOB=$(gh.jsh api /repos/owner/repo/git/blobs -X POST \
-  -f content="../../../skills/myskill" -f encoding=utf-8 --jq .sha)
+  -f content="../README.md" -f encoding=utf-8 --jq .sha)
 
 # 3. Build a new tree on top of the current tree, with mode 120000 (symlink)
 NEW_TREE=$(gh.jsh api /repos/owner/repo/git/trees -X POST \
   -f base_tree=$TREE \
-  -f tree[0][path]="tiles/basic/skills/myskill" \
+  -f tree[0][path]="docs/link-to-readme" \
   -f tree[0][mode]=120000 \
   -f tree[0][type]=blob \
   -f tree[0][sha]=$BLOB \
@@ -153,7 +155,7 @@ NEW_TREE=$(gh.jsh api /repos/owner/repo/git/trees -X POST \
 
 # 4. Commit and move the ref
 COMMIT=$(gh.jsh api /repos/owner/repo/git/commits -X POST \
-  -f message="add tiles/basic/skills/myskill symlink" \
+  -f message="add docs/link-to-readme symlink" \
   -f tree=$NEW_TREE -f parents[]=$HEAD --jq .sha)
 gh.jsh api /repos/owner/repo/git/refs/heads/<branch> -X PATCH -f sha=$COMMIT
 ```
