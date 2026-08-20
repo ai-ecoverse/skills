@@ -598,6 +598,79 @@ let tasks = [];
 // If your store lives elsewhere, change this one constant.
 const STORE_PATH = '/shared/loose-ends.json';
 
+// Per-mount identity, generated once per document load. It rides along on the
+// `request-load` lick so the owner can tell repeated MOUNTS (a different
+// instanceId each time — normal on multi-runtime setups where a follower panel
+// cannot read the leader's store) from a panel stuck in a loop (the same
+// instanceId over and over, which is a real defect). crypto.randomUUID is
+// missing on older/insecure-context sandboxes, hence the fallback.
+const INSTANCE_ID = (typeof crypto !== 'undefined' && crypto.randomUUID && crypto.randomUUID())
+  || Math.random().toString(36).slice(2, 10);
+const MOUNTED_AT = new Date().toISOString();
+
+// Why the last store read failed, machine-readable. readStoreText() used to
+// swallow the reason, which left "store unreachable" and "bridge missing
+// entirely" looking identical from the outside. Set by readStoreText().
+let storeReadDetail = null;
+// Whether hydration fell back because the store could not be READ or because it
+// was read but unusable — the owner needs those apart to know where to look.
+let hydrationFailure = null; // null | 'store-unreachable' | 'store-corrupt' | 'no-bridge'
+
+// ── request-load / load-ack: the panel↔owner hydration handshake ──
+// A cheap client-side FLOOR under `request-load` — deliberately not a cap. An
+// instance that legitimately never receives data (a follower panel whose store
+// bridges time out permanently) must be able to keep asking, so consecutive
+// unanswered asks widen the gap towards a slow heartbeat instead of being
+// silenced; a `load-items` arrival proves the channel works and resets it.
+const REQUEST_LOAD_MIN_GAP_MS = 5000;   // never more than one ask per 5s …
+const REQUEST_LOAD_BACKOFF_FACTOR = 2;  // … doubling per unanswered ask …
+const REQUEST_LOAD_MAX_GAP_MS = 60000;  // … capped at a one-per-minute heartbeat
+let requestLoadGapMs = REQUEST_LOAD_MIN_GAP_MS;
+let requestLoadLastAt = 0;
+
+function requestLoad(reason, detail) {
+  // Diagnostics must never be able to break init, hence the blanket try/catch.
+  try {
+    if (!slicc.lick) return;
+    const now = Date.now();
+    if (requestLoadLastAt && now - requestLoadLastAt < requestLoadGapMs) return;
+    requestLoadLastAt = now;
+    requestLoadGapMs = Math.min(
+      requestLoadGapMs * REQUEST_LOAD_BACKOFF_FACTOR, REQUEST_LOAD_MAX_GAP_MS);
+    // `action` stays first and unchanged — the extra keys are additive, so
+    // owners that key only on `action` keep working untouched.
+    slicc.lick({
+      action: 'request-load',
+      instanceId: INSTANCE_ID,
+      reason: reason,
+      detail: detail || null,
+      mountedAt: MOUNTED_AT
+    });
+  } catch (e) {}
+}
+
+// `load-items` is fire-and-forget from the owner's side, and `sprinkle send`
+// addresses a panel by NAME, not by runtime or instance — so without an ack the
+// owner cannot tell "hydrated" from "the push went to some other instance".
+// Emitted after tasks are assigned and rendered; never allowed to break that.
+function emitLoadAck(count) {
+  try {
+    if (!slicc.lick) return;
+    slicc.lick({
+      action: 'load-ack',
+      instanceId: INSTANCE_ID,
+      count: count,
+      at: new Date().toISOString()
+    });
+  } catch (e) {}
+}
+
+// Delivery proves the channel works, so the next ask starts from the floor
+// again rather than from the widened gap.
+function noteLoadDelivered() {
+  requestLoadGapMs = REQUEST_LOAD_MIN_GAP_MS;
+}
+
 // A hanging bridge call must never stall init. Some SLICC builds have had
 // slicc.readFile() hang (never settle) inside a sprinkle sandbox, so every
 // async read is guarded by a timeout race; a timed-out read falls through to
@@ -615,33 +688,44 @@ async function readStoreText() {
   // after a sprinkle opens hangs (never settles) while the bridge warms up;
   // subsequent calls succeed. So retry a few times — a hung attempt is
   // abandoned by the timeout, and the next one lands once the bridge is warm.
+  storeReadDetail = null;
+  let sawBridge = false; // no bridge at all is a different diagnosis from a dead bridge
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
       if (slicc.exec) {
+        sawBridge = true;
         const r = await withTimeout(slicc.exec('cat ' + STORE_PATH), 1200);
         if (r !== READ_TIMEOUT && r && r.exitCode === 0 && typeof r.stdout === 'string' && r.stdout) return r.stdout;
+        storeReadDetail = r === READ_TIMEOUT ? 'exec-timeout' : 'exec-nonzero';
       }
-    } catch (e) { /* retry */ }
+    } catch (e) { storeReadDetail = 'exec-threw'; /* retry */ }
     await delay(150);
   }
   // Last resort: direct VFS read, timeout-guarded (slicc.readFile can hang too).
   try {
     if (slicc.readFile) {
+      sawBridge = true;
       const t = await withTimeout(slicc.readFile(STORE_PATH), 1200);
       if (t !== READ_TIMEOUT && typeof t === 'string' && t) return t;
+      storeReadDetail = t === READ_TIMEOUT ? 'readfile-timeout' : 'readfile-empty';
     }
-  } catch (e) { /* fall through */ }
+  } catch (e) { storeReadDetail = 'readfile-threw'; /* fall through */ }
+  if (!sawBridge) storeReadDetail = 'no-bridge';
   return null;
 }
 
 // Returns 'store' if hydrated from the authoritative store, else 'fallback'.
 async function loadState() {
+  hydrationFailure = null;
   const txt = await readStoreText();
   if (txt) {
     try {
       const data = JSON.parse(txt);
       if (data && Array.isArray(data.tasks)) { tasks = data.tasks; return 'store'; }
-    } catch (e) { /* corrupt/partial — fall through */ }
+      hydrationFailure = 'store-corrupt'; // readable, but not our shape
+    } catch (e) { hydrationFailure = 'store-corrupt'; /* corrupt/partial — fall through */ }
+  } else {
+    hydrationFailure = storeReadDetail === 'no-bridge' ? 'no-bridge' : 'store-unreachable';
   }
   const saved = slicc.getState && slicc.getState();
   if (saved && Array.isArray(saved.tasks)) tasks = saved.tasks;
@@ -1000,6 +1084,10 @@ slicc.on('update', (msg) => {
     tasks = Array.isArray(msg.tasks) ? msg.tasks.slice() : [];
     saveState();
     renderAll();
+    // The push landed in THIS instance: stand the backoff down and say so, so
+    // the owner can distinguish a delivered push from one that vanished.
+    noteLoadDelivered();
+    emitLoadAck(tasks.length);
   }
 
   else if (msg.action === 'add-item') {
@@ -1066,7 +1154,7 @@ setInterval(function () {
   // slicc.readFile nor slicc.exec worked in this sandbox), ask the cone to
   // push the list. The cone answers `request-load` with a load-items message.
   if (src !== 'store') {
-    try { if (slicc.lick) slicc.lick({ action: 'request-load' }); } catch (e) {}
+    requestLoad(hydrationFailure || 'store-unreachable', storeReadDetail);
   }
 })();
 </script>
