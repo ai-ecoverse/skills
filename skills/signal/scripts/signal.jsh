@@ -330,9 +330,18 @@ const SRC_OPEN_CHAT = (query) => `
     const m = meta(b);
     return m.id === q || m.serviceId === q;
   });
-  // Exact name (case-insensitive)
+  // Exact name (case-insensitive). Distinct conversations can share a display
+  // name, so report that as ambiguous instead of silently taking the first row.
   if (!btn) {
-    btn = buttons.find((b) => meta(b).name.toLowerCase() === qLower);
+    const exact = buttons.filter((b) => meta(b).name.toLowerCase() === qLower);
+    if (exact.length === 1) btn = exact[0];
+    else if (exact.length > 1) {
+      return JSON.stringify({
+        ok: false,
+        error: 'ambiguous',
+        matches: exact.slice(0, 8).map((b) => meta(b)),
+      });
+    }
   }
   // Substring name
   if (!btn) {
@@ -357,6 +366,43 @@ const SRC_OPEN_CHAT = (query) => `
   btn.focus();
   btn.click();
   return JSON.stringify({ ok: true, opened: meta(btn) });
+})()
+`;
+
+// Report which conversation is actually rendered, keyed on a STABLE identity.
+// The header title is not an identity: two conversations can share a display
+// name, so a still-mounted previous chat can satisfy a title-only check. The
+// left pane marks the selected row and that row carries the conversation's
+// stable ids (data-id / data-testid), which is the identity to compare.
+const SRC_CONFIRM_OPEN = (wantTitle) => `
+(() => {
+  function clean(s) {
+    return String(s || '').replace(/[\\u2066-\\u2069]/g, '').replace(/\\s+/g, ' ').trim();
+  }
+  const want = ${JSON.stringify(String(wantTitle || ''))};
+  const rows = [...document.querySelectorAll(
+    'button.module-conversation-list__item--contact-or-conversation'
+  )];
+  function nameOf(b) {
+    const nameEl = b.querySelector(
+      '.module-conversation-list__item--contact-or-conversation__content__header__name__contact-name, .module-contact-name'
+    );
+    return clean(nameEl ? nameEl.textContent : '');
+  }
+  const selected = rows.filter((b) =>
+    b.className.includes('selected') ||
+    b.getAttribute('aria-selected') === 'true' ||
+    b.hasAttribute('data-selected')
+  );
+  const only = selected.length === 1 ? selected[0] : null;
+  const header = document.querySelector('.module-ConversationHeader__header__info__title');
+  return JSON.stringify({
+    hasView: !!document.querySelector('.ConversationView, .module-timeline'),
+    title: header ? clean(header.textContent) : null,
+    selectedId: only ? (only.getAttribute('data-id') || '') : '',
+    selectedServiceId: only ? (only.getAttribute('data-testid') || '') : '',
+    titleMatches: want ? rows.filter((b) => nameOf(b) === want).length : 0,
+  });
 })()
 `;
 
@@ -536,25 +582,44 @@ async function openChat(query) {
   await ensureChatsTab();
   const res = await pwEvalJson(SRC_OPEN_CHAT(query));
   if (!res.ok) return res;
-  // Wait until the RENDERED conversation title matches the one we opened — not
-  // merely that a ConversationView is mounted. When switching from another
-  // chat the previous view stays mounted while the new one loads, so a
-  // hasView-only check passes for the wrong conversation (and sleep() is a
-  // no-op here). Each poll is a real eval round-trip, which provides the wait.
+  // Wait until the conversation we clicked is the one actually RENDERED — not
+  // merely that a ConversationView is mounted, and not merely that the header
+  // title matches. When switching from another chat the previous view stays
+  // mounted while the new one loads (and sleep() is a no-op here), and two
+  // conversations can share a display title, so a title-only check can confirm
+  // the wrong chat. Confirm on the stable conversation id of the selected
+  // left-pane row wherever Signal exposes it, and fall back to the title only
+  // when that title is unique among visible rows. Each poll is a real eval
+  // round-trip, which provides the wait.
+  const wantId = String((res.opened && res.opened.id) || '');
+  const wantServiceId = String((res.opened && res.opened.serviceId) || '');
   const wantTitle = cleanText(res.opened && res.opened.name);
   res.confirmed = false;
   for (let i = 0; i < 20; i++) {
-    const state = await pwEvalJson(`
-      (() => JSON.stringify({
-        hasView: !!document.querySelector('.ConversationView, .module-timeline'),
-        title: (document.querySelector('.module-ConversationHeader__header__info__title') || {}).textContent || null
-      }))()
-    `);
-    const haveTitle = cleanText(state && state.title);
-    if (state.hasView && (!wantTitle || haveTitle === wantTitle)) {
-      res.confirmed = true;
-      break;
+    const state = await pwEvalJson(SRC_CONFIRM_OPEN(wantTitle));
+    if (!state || !state.hasView) continue;
+    if (wantTitle && cleanText(state.title) !== wantTitle) continue;
+    const haveId = String(state.selectedId || '');
+    const haveServiceId = String(state.selectedServiceId || '');
+    if ((wantId && haveId) || (wantServiceId && haveServiceId)) {
+      // Stable identity is readable — it must be the row we clicked.
+      if ((wantId && haveId === wantId) || (wantServiceId && haveServiceId === wantServiceId)) {
+        res.confirmed = true;
+        break;
+      }
+      res.confirmDetail = 'another conversation is still selected in the chat list';
+      continue;
     }
+    if ((state.titleMatches || 0) > 1) {
+      // Duplicate display titles and no readable selected-row id: refuse to
+      // guess which of them is open.
+      res.confirmDetail =
+        state.titleMatches + ' visible conversations share the title "' + wantTitle +
+        '" and no selected-row id is exposed to tell them apart';
+      continue;
+    }
+    res.confirmed = true;
+    break;
   }
   return res;
 }
@@ -653,12 +718,15 @@ Safety:
 
 Watching:
   Signal has no push and no readable socket (E2E), so change detection polls.
-  A crontask licks the poller scoop "signal-watch" every --every minutes; it runs
-  \`signal watch-poll\`, which reads the left-pane chat LIST once (reliable browser
-  bridge — no chat switching, no leader attach) and calls a watch's webhook ONLY
-  when its row changed. Setup once: a scoop named "signal-watch" that runs
+  One crontask licks the poller scoop "signal-watch" at the SMALLEST --every of
+  all watches; it runs \`signal watch-poll\`, which reads the left-pane chat LIST
+  once (reliable browser bridge — no chat switching, no leader attach), skips any
+  watch not yet due for its own --every, and calls a watch's webhook ONLY when
+  its row changed. A row missing from the virtualized pane is skipped, not
+  reported. Setup once: a scoop named "signal-watch" that runs
   \`signal watch-poll\` on each "signal-watch-poll" lick. Fingerprint (unread +
-  last-message preview) stays local; the lick payload is metadata only.
+  last-message preview) stays local; the lick payload is metadata only (plus the
+  conversation id, so the woken scoop reads the right chat).
   Reads the list, so it observes background chats regardless of what is open.
 
 Notes:
@@ -760,8 +828,8 @@ async function cmdRead() {
     const res = await openChat(q);
     if (!res.ok) {
       if (res.error === 'ambiguous') {
-        console.error('Ambiguous match:');
-        for (const m of res.matches || []) console.error('  - ' + m.name);
+        console.error('Ambiguous match — pass one of these ids instead:');
+        for (const m of res.matches || []) console.error('  - ' + m.name + '  (' + m.id + ')');
         process.exit(1);
       }
       cli.die(res.error === 'not_found' ? 'Chat not found: ' + q : res.error || 'open failed', {
@@ -771,7 +839,9 @@ async function cmdRead() {
     if (res.confirmed === false) {
       cli.die(
         'could not confirm "' + q + '" is the open conversation — aborting so this ' +
-          'does not return messages from another chat. Retry, or: signal open ' + JSON.stringify(q),
+          'does not return messages from another chat' +
+          (res.confirmDetail ? ' (' + res.confirmDetail + ')' : '') +
+          '. Retry, or: signal open ' + JSON.stringify(q),
         { prefix: 'signal' }
       );
     }
@@ -825,7 +895,7 @@ async function cmdSend() {
       opened.error === 'not_found'
         ? 'Chat not found: ' + target
         : opened.error === 'ambiguous'
-          ? 'Ambiguous chat name; be more specific'
+          ? 'Ambiguous chat name — pass the conversation id (signal chats --json)'
           : opened.error || 'open failed',
       { prefix: 'signal' }
     );
@@ -833,7 +903,9 @@ async function cmdSend() {
   if (opened.confirmed === false) {
     cli.die(
       'could not confirm "' + target + '" is the open conversation — aborting to avoid ' +
-        'sending to the wrong chat. Retry, or open it first with: signal open ' + JSON.stringify(target),
+        'sending to the wrong chat' +
+        (opened.confirmDetail ? ' (' + opened.confirmDetail + ')' : '') +
+        '. Retry, or open it first with: signal open ' + JSON.stringify(target),
       { prefix: 'signal' }
     );
   }
@@ -905,7 +977,8 @@ async function cmdSend() {
 
 // ─── Watch (CLI-bridge poller) ───────────────────────────────────────────────
 //
-// A crontask licks the shared poller scoop every N minutes; that scoop runs
+// One crontask licks the shared poller scoop at the smallest interval any watch
+// asks for (each watch is then gated to its own --every); that scoop runs
 // `signal watch-poll`, which reads the chat LIST once through the reliable
 // browser bridge — no leader CDP attach, no chat switching, and it works
 // regardless of which conversation is open — fingerprints each watched chat's
@@ -982,9 +1055,11 @@ async function listWatchStates() {
 }
 
 /** Fingerprint a chat's list row. Drift-free (no relative timestamp), and the
- * message-bearing part (preview) stays LOCAL — it is never sent in a lick. */
+ * message-bearing part (preview) stays LOCAL — it is never sent in a lick.
+ * Callers must only pass a present row: an absent row means it scrolled out of
+ * the virtualized left pane, which is not activity, so cmdWatchPoll() skips it
+ * rather than fingerprinting the absence. */
 function rowFingerprint(row) {
-  if (!row) return 'GONE';
   const unread = row.unread || 0;
   const preview = cleanText(row.preview || '');
   return unread + '\u00a6' + preview;
@@ -1001,25 +1076,57 @@ function findWatchRow(chats, state) {
   return chats.find((c) => cleanText(c.name) === want) || null;
 }
 
-/** Create the poll crontask if it is not already active. */
+/** Create the shared poll crontask, or reconfigure it so it ticks at the
+ * SMALLEST interval any stored watch asks for. A single crontask serves every
+ * watch, so a slower task would starve a later `--every=1` watch and a faster
+ * one would wake the poller scoop more often than anybody asked; per-watch
+ * cadence is then honoured by the due-time gate in cmdWatchPoll(). crontask has
+ * no update verb, so a change means delete + create. */
 async function ensureWatchCron(everyMinutes) {
-  const every = Math.max(1, parseInt(everyMinutes, 10) || 2);
+  const requested = Math.max(1, Math.min(59, parseInt(everyMinutes, 10) || 2));
+  const stored = (await listWatchStates())
+    .map((s) => parseInt(s.everyMinutes, 10))
+    .filter((n) => n > 0 && n < 60);
+  const every = Math.max(1, Math.min(59, Math.min.apply(null, [requested].concat(stored))));
   const list = await exec('crontask list').catch(() => ({ stdout: '' }));
-  if (String(list.stdout || '').indexOf(WATCH_CRON_NAME) !== -1) {
-    return { ok: true, existed: true };
+  const line = String(list.stdout || '').split('\n').find((l) => l.indexOf(WATCH_CRON_NAME) !== -1);
+  let reconfigured = false;
+  if (line) {
+    const m = line.match(/\*\/(\d+)\s+\*\s+\*\s+\*\s+\*/);
+    const current = m ? parseInt(m[1], 10) : null;
+    if (current === every) {
+      return { ok: true, existed: true, everyMinutes: current };
+    }
+    // Wrong cadence for the current set of watches (or an expression we cannot
+    // read) — replace it, since crontask cannot edit a task in place.
+    const id = line.trim().split(/\s+/)[0];
+    if (id) await exec('crontask delete ' + escapeShellArg(id)).catch(() => {});
+    reconfigured = true;
   }
   const r = await exec(
     'crontask create --name ' + escapeShellArg(WATCH_CRON_NAME) +
       ' --scoop ' + escapeShellArg(WATCH_POLLER_SCOOP) +
       ' --cron ' + escapeShellArg('*/' + every + ' * * * *')
   );
-  return { ok: r.exitCode === 0, existed: false, out: String(r.stdout || r.stderr || '').trim() };
+  return {
+    ok: r.exitCode === 0,
+    existed: false,
+    reconfigured,
+    everyMinutes: every,
+    out: String(r.stdout || r.stderr || '').trim(),
+  };
 }
 
-/** Delete the poll crontask once no watches remain. */
-async function removeWatchCronIfIdle() {
+/** After a watch is removed: delete the poll crontask once none remain, else
+ * relax it to the slowest cadence the remaining watches still need. */
+async function pruneWatchCron() {
   const states = await listWatchStates();
-  if (states.length) return;
+  if (states.length) {
+    await ensureWatchCron(
+      Math.min.apply(null, states.map((s) => parseInt(s.everyMinutes, 10) || 2))
+    );
+    return;
+  }
   const list = await exec('crontask list').catch(() => ({ stdout: '' }));
   const line = String(list.stdout || '').split('\n').find((l) => l.indexOf(WATCH_CRON_NAME) !== -1);
   if (line) {
@@ -1108,7 +1215,10 @@ async function cmdWatch() {
   if (flags.json) return cli.out({ ...state, cron });
   console.log('Watching "' + chatName + '" -> scoop "' + scoop + '"');
   console.log('  Watch ID: ' + id);
-  console.log('  Poll:     every ' + every + ' min (crontask "' + WATCH_CRON_NAME + '" -> scoop "' + WATCH_POLLER_SCOOP + '")');
+  console.log(
+    '  Poll:     this watch every ' + every + ' min (shared crontask "' + WATCH_CRON_NAME +
+      '" ticks every ' + (cron.everyMinutes || every) + ' min -> scoop "' + WATCH_POLLER_SCOOP + '")'
+  );
   console.log('  Webhook:  ' + state.webhookId);
   console.log('  Stop:     signal unwatch ' + id);
   if (!cron.ok) {
@@ -1128,12 +1238,32 @@ async function cmdWatchPoll() {
   }
   const data = await listChats();
   const chats = data.chats || [];
-  const now = new Date().toISOString();
+  const nowMs = Date.now();
+  const now = new Date(nowMs).toISOString();
   const fired = [];
+  const skipped = [];
   for (const state of states) {
+    // Honour this watch's own interval. One shared crontask ticks at the
+    // fastest watch's rate, so a slower watch must skip the ticks that are not
+    // yet due for it. Small slack so a tick landing a hair early still counts.
+    const everyMs = Math.max(1, parseInt(state.everyMinutes, 10) || 2) * 60000;
+    const lastMs = Date.parse(state.lastPollAt || '');
+    if (Number.isFinite(lastMs) && nowMs - lastMs < everyMs - 15000) {
+      skipped.push(state.watchId);
+      continue;
+    }
     const row = findWatchRow(chats, state);
-    const fp = rowFingerprint(row);
     state.lastPollAt = now;
+    // A row can be absent because the virtualized left pane unmounted it (the
+    // user scrolled), not because anything happened. Absence is not activity:
+    // leave lastFingerprint untouched so remounting the unchanged row does not
+    // read as a change either.
+    if (!row) {
+      state.lastMissingAt = now;
+      await writeWatchState(state.watchId, state);
+      continue;
+    }
+    const fp = rowFingerprint(row);
     // Seed on the first poll so the backlog already on screen is not reported.
     if (state.lastFingerprint == null) {
       state.lastFingerprint = fp;
@@ -1153,10 +1283,14 @@ async function cmdWatchPoll() {
       source: 'signal-watch',
       watchId: state.watchId,
       chat: state.chat,
+      // Stable conversation id, so the woken scoop reads the chat this watch is
+      // pinned to even when another conversation shares its display name.
+      convId: state.convId || null,
       // Metadata only — message text never leaves Signal.
-      unread: (row && row.unread) || 0,
+      unread: row.unread || 0,
       at: now,
-      hint: 'New activity in Signal chat "' + state.chat + '". Run: signal read ' + JSON.stringify(state.chat),
+      hint: 'New activity in Signal chat "' + state.chat + '". Run: signal read ' +
+        JSON.stringify(state.convId || state.chat),
     });
     try {
       const r = await exec(
@@ -1181,8 +1315,11 @@ async function cmdWatchPoll() {
     }
     await writeWatchState(state.watchId, state);
   }
-  if (flags.json) return cli.out({ ok: true, watches: states.length, fired });
-  console.log(fired.length ? 'fired: ' + fired.join(', ') : 'no change (' + states.length + ' watch(es))');
+  if (flags.json) return cli.out({ ok: true, watches: states.length, fired, skipped });
+  console.log(
+    (fired.length ? 'fired: ' + fired.join(', ') : 'no change (' + states.length + ' watch(es))') +
+      (skipped.length ? '; not due: ' + skipped.length : '')
+  );
 }
 
 async function cmdWatches() {
@@ -1222,7 +1359,7 @@ async function cmdUnwatch() {
     await exec('rm -f ' + escapeShellArg(watchStatePath(state.watchId))).catch(() => {});
     console.log('Stopped watching "' + state.chat + '" (' + state.watchId + ')');
   }
-  await removeWatchCronIfIdle();
+  await pruneWatchCron();
 }
 
 // With the CLI-bridge poller there is no page state to lose on a leader reload;
@@ -1236,7 +1373,12 @@ async function cmdReinject() {
   const every = Math.min.apply(null, states.map((s) => s.everyMinutes || 2));
   const cron = await ensureWatchCron(every);
   console.log(
-    (cron.existed ? 'poll crontask already active' : cron.ok ? 'poll crontask (re)created' : 'FAILED to create poll crontask') +
+    (cron.existed
+      ? 'poll crontask already active (every ' + cron.everyMinutes + ' min)'
+      : cron.ok
+        ? (cron.reconfigured ? 'poll crontask reconfigured' : 'poll crontask (re)created') +
+          ' to every ' + cron.everyMinutes + ' min'
+        : 'FAILED to create poll crontask') +
       ' for ' + states.length + ' watch(es)'
   );
   console.error('Ensure a scoop named "' + WATCH_POLLER_SCOOP + '" runs `signal watch-poll` on each "' + WATCH_CRON_NAME + '" lick.');

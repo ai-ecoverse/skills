@@ -140,8 +140,17 @@ signal open 019a1b2c-3d4e-7f80-9abc-def012345678
 ```
 
 Clicks the matching conversation row. Match order: exact `id` / `serviceId`,
-exact name (case-insensitive), then unique substring. Ambiguous substring
-matches error out with candidates.
+exact name (case-insensitive), then unique substring. Ambiguous matches error out
+with candidates and their ids — including two conversations with the *same*
+display name, which are never resolved by guessing the first row.
+
+After clicking, the CLI waits until the requested conversation is the one
+actually rendered, and confirms that on a **stable identity**: the header title
+must match *and* the selected left-pane row must carry the conversation `data-id`
+/ `data-testid` that was clicked. A title-only check is accepted only when that
+title is unique among visible rows, because a still-mounted previous chat with
+the same display name would otherwise satisfy it. `read` and `send` abort (with
+the reason) when confirmation fails, rather than operating on another chat.
 
 ### read
 
@@ -205,7 +214,12 @@ signal reinject                          # re-ensure the poll crontask
 **Options**
 
 - `--scoop=<name>` — **(required)** scoop that receives the lick on change
-- `--every=<minutes>` — poll interval in minutes, default `2`, floor `1`
+- `--every=<minutes>` — poll interval in minutes, default `2`, floor `1`.
+  Watches share one crontask: it ticks at the **smallest** interval any watch
+  asks for (set on `signal watch`, `signal unwatch` and `signal reinject`), and
+  each watch is then gated to its own interval, so a `--every=5` watch is not
+  polled every minute just because another watch asked for `--every=1`, and a
+  later `--every=1` watch is not starved by an existing 5-minute task.
 - `--force` — replace an existing watch on the same chat
 
 **How it works — a CLI-bridge poller**
@@ -217,10 +231,12 @@ Signal offers nothing to subscribe to (E2E socket; Redux / sqlcipher off
 switches the open conversation:
 
 ```
-crontask "signal-watch-poll" (every --every min)
+crontask "signal-watch-poll" (every min(--every) of all watches)
   └─ licks the poller scoop "signal-watch"
        └─ runs `signal watch-poll`   ← one `signal chats` read
+            ├─ watch not yet due for its own --every → nothing
             ├─ a watched chat's row unchanged → nothing
+            ├─ its row absent from the virtualized pane → nothing (not activity)
             └─ changed → curl POST that watch's webhook → one lick on its scoop
 ```
 
@@ -249,7 +265,10 @@ sandbox; grant `/.playwright` once. **Mute the poller scoop** (`scoop_mute`) so 
 fingerprint is the row's `unread` count + last-message preview: drift-free (no
 relative timestamp), and the preview (message text) stays **local** in the state
 file under `/shared/signal-watch/`. It is seeded on the first poll so the
-existing backlog is never reported.
+existing backlog is never reported. A watched row that is temporarily **absent**
+from the virtualized left pane (the user scrolled) is skipped, not fingerprinted:
+absence is not activity, so neither disappearing nor remounting unchanged fires a
+lick.
 
 **Lick payload**
 
@@ -258,14 +277,19 @@ existing backlog is never reported.
   "source": "signal-watch",
   "watchId": "eclipse-chasers-1a2b3c",
   "chat": "Eclipse Chasers",
+  "convId": "019a1b2c-3d4e-7f80-9abc-def012345678",
   "unread": 2,
   "at": "2026-08-20T07:31:07.667Z",
-  "hint": "New activity in Signal chat \"Eclipse Chasers\". Run: signal read \"Eclipse Chasers\""
+  "hint": "New activity in Signal chat \"Eclipse Chasers\". Run: signal read \"019a1b2c-3d4e-7f80-9abc-def012345678\""
 }
 ```
 
-**Metadata only** — `unread` count and chat name, never message text and never
-the local fingerprint. A woken scoop calls `signal read` if it wants content.
+**Metadata only** — `unread` count, chat name and the stable `convId`, never
+message text and never the local fingerprint. The `hint` reads by `convId`
+whenever the watch has one, so a woken scoop cannot be steered into a different
+conversation that happens to share the display name (`convId` is `null` only for
+a watch on a row that exposed no `data-id`, and the hint then falls back to the
+name). A woken scoop calls `signal read` if it wants content.
 Delivery uses `curl` and commits state only on a confirmed 2xx, so a failed
 webhook is retried on the next poll rather than silently dropped.
 
@@ -329,7 +353,8 @@ That is durable across Signal Desktop builds as long as class names /
    the DOM. The fingerprint is the chat's list row (unread + last-message
    preview), so two identical consecutive messages, or a change that does not
    alter the visible preview, can be missed; a chat scrolled out of the
-   virtualized list is only re-observed once new activity surfaces it to the top.
+   virtualized list is skipped (not reported as activity) and is only re-observed
+   once it is mounted again — typically when new activity surfaces it to the top.
 
 ## Troubleshooting
 
