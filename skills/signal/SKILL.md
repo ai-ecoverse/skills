@@ -242,7 +242,7 @@ named **`signal-watch`** must exist whose standing job is to run
 `signal watch` creates each per-watch webhook and the shared crontask
 automatically. The poller scoop needs write access to `/.playwright` (browser
 bridge) and `/shared` (watch state) — the latter is in a scoop's default
-sandbox; grant `/.playwright` once.
+sandbox; grant `/.playwright` once. **Mute the poller scoop** (`scoop_mute`) so its per-poll completions do not wake the orchestrator — the meaningful signal is the webhook delivered to each watch's target scoop, not the poller's own turn.
 
 **Identity & fingerprint.** Each watch is keyed by the conversation's stable id
 (`data-id`) plus a slug, so distinct chats never collide. The change
