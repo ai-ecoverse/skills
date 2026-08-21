@@ -54,8 +54,11 @@ Every command accepts `--json`.
 **`send` is fire-once, then check.** One `POST /message/text` as
 `iMessage;-;<address>` (never `any;-;` on the wire — AppleScript rejects
 service type `any`). jsh has no working timers/abort, so the CLI **detaches**
-the POST after ~25s wall clock and verifies delivery on `urlLocal` (separate
-HTTP host) so the in-flight send cannot starve `message/query`. Outcomes:
+the POST after ~25s wall clock (macrotask yields via `MessageChannel`, never an
+awaited same-host ping) and verifies delivery on a **companion** host — the
+config `urlLocal` only when it is known to be the same server as the selected
+`url` (ignored under `--url` / `BLUEBUBBLES_URL`). Each verify fetch is itself
+bounded (~5s). Outcomes:
 
 | `status` (also in `--json`) | Meaning | Resend? |
 | --- | --- | --- |

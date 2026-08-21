@@ -140,6 +140,9 @@ async function loadFileConfig() {
 async function resolveConfig() {
   const { cfg, path: configPath } = await loadFileConfig();
   const preferLocal = !!(flags.local || flags.L);
+  const urlOverridden = !!(str(flags.url) || process.env.BLUEBUBBLES_URL);
+  const fileUrl = cfg.url ? String(cfg.url).replace(/\/+$/, '') : null;
+  const fileLocal = cfg.urlLocal ? String(cfg.urlLocal).replace(/\/+$/, '') : null;
 
   const url =
     str(flags.url) ||
@@ -158,11 +161,23 @@ async function resolveConfig() {
 
   if (password) registerSecret(password);
 
+  const primary = String(url).replace(/\/+$/, '');
+  // Second base known to be the SAME BlueBubbles server as primary. Used only
+  // so send can POST on one host and verify/yield on another (HTTP/1 pin).
+  // Never use a stale urlLocal when --url / BLUEBUBBLES_URL pointed elsewhere.
+  let companionLocal = null;
+  if (!urlOverridden && fileLocal && fileLocal !== primary) {
+    if (fileUrl && primary === fileUrl) companionLocal = fileLocal;
+    else if (preferLocal && fileUrl && primary === fileLocal) companionLocal = fileUrl;
+  }
+
   return {
-    url: String(url).replace(/\/+$/, ''),
+    url: primary,
     password,
     configPath,
-    urlLocal: cfg.urlLocal || null,
+    urlLocal: fileLocal,
+    urlOverridden,
+    companionLocal,
   };
 }
 
@@ -674,28 +689,84 @@ async function cmdMessages(positional, flags) {
 }
 
 
-/** Fire one POST /message/text via curl with a real wall-clock deadline.
+/** Yield a macrotask so in-flight fetch callbacks can run.
+ * jsh setTimeout is a no-op; MessageChannel still schedules a macrotask.
+ */
+function yieldMacrotask() {
+  return new Promise((resolve) => {
+    if (typeof MessageChannel !== 'undefined') {
+      const ch = new MessageChannel();
+      ch.port1.onmessage = () => resolve();
+      ch.port2.postMessage(0);
+      return;
+    }
+    Promise.resolve().then(resolve);
+  });
+}
+
+/**
+ * Wait until deadline or isDone(), without ever awaiting the send host.
+ * Optional companionBase (other host, same server) gets a throttled ping so we
+ * both yield and keep the LAN path warm — never more often than pingEveryMs.
+ */
+async function waitUntil(deadline, isDone, { companionBase = null, pingEveryMs = 500 } = {}) {
+  let lastPing = 0;
+  while (Date.now() < deadline && !isDone()) {
+    await yieldMacrotask();
+    if (companionBase && Date.now() - lastPing >= pingEveryMs) {
+      lastPing = Date.now();
+      try {
+        await fetch(`${companionBase.replace(/\/$/, '')}/api/v1/ping`);
+      } catch {
+        /* yield only */
+      }
+    }
+  }
+}
+
+/** fetch with a hard wall-clock bound (no AbortController — broken in jsh). */
+async function fetchBounded(url, init, maxMs) {
+  let settled = null;
+  const p = fetch(url, init)
+    .then(async (r) => {
+      const text = await r.text();
+      settled = { status: r.status, text, ok: r.ok };
+      return settled;
+    })
+    .catch((err) => {
+      settled = { error: err };
+      return settled;
+    });
+  await waitUntil(Date.now() + maxMs, () => settled != null);
+  if (!settled) {
+    void p;
+    const e = new Error(`timeout after ${maxMs}ms`);
+    e.timedOut = true;
+    e.status = 408;
+    e.soft = true;
+    throw e;
+  }
+  if (settled.error) throw settled.error;
+  return settled;
+}
+
+/**
+ * Fire one POST /message/text, detach at deadline, never HTTP-retry.
  *
- * Why curl: jsh has no working setTimeout / AbortController (fetch abort is a
- * no-op; sliccy:http timeouts never fire). A hanging BlueBubbles send holds the
- * HTTP/1 connection and starves every later request on the same host — which is
- * exactly how agents ended up retrying and multi-sending. curl -m runs outside
- * jsh and returns in ≤ SEND_TIMEOUT_MS whether or not Messages.app delivered.
- *
- * Password is written to a short-lived curl config file and deleted in finally;
- * never printed. stdout is only the HTTP code + body via -w / -o.
+ * jsh has no working setTimeout / AbortController (fetch abort is a no-op;
+ * sliccy:http timeouts never fire). A hanging BlueBubbles send holds the
+ * HTTP/1 connection and starves every later request on the same host — which
+ * is how agents ended up retrying and multi-sending. We fire the POST, wait
+ * up to maxMs via macrotask yields (+ throttled companion-host pings), then
+ * detach and let the caller verify on the companion host.
  */
 async function postMessageTextOnce(body, timeoutMs) {
   const cfg = await getCfg();
   const maxMs = Math.max(1000, timeoutMs || 25000);
   const url =
     `${cfg.url.replace(/\/$/, '')}/api/v1/message/text?password=${encodeURIComponent(cfg.password)}`;
+  const companion = cfg.companionLocal || null;
 
-  // jsh has no working setTimeout / AbortController — a hanging await on send
-  // pins the HTTP/1 connection to that host and starves every later call.
-  // Strategy: fire the POST without awaiting it on the primary URL, then poll
-  // delivery on a *different* host (urlLocal) so verify has its own connection.
-  // After maxMs wall clock we stop waiting on the POST promise entirely.
   let settled = null;
   const postPromise = fetch(url, {
     method: 'POST',
@@ -715,30 +786,14 @@ async function postMessageTextOnce(body, timeoutMs) {
       return settled;
     });
 
-  const deadline = Date.now() + maxMs;
-  // Yield to the event loop by awaiting *other-host* requests (urlLocal).
-  // Same-host pings would queue behind the open POST and never run.
-  const pingBase = (cfg.urlLocal || '').replace(/\/$/, '');
-  while (Date.now() < deadline && !settled) {
-    if (pingBase) {
-      try {
-        await fetch(`${pingBase}/api/v1/ping`);
-      } catch {
-        // ignore — the yield is what matters
-      }
-    } else {
-      // No urlLocal: fall back to a same-host ping (may not progress until POST ends)
-      try {
-        await fetch(`${cfg.url.replace(/\/$/, '')}/api/v1/ping`);
-      } catch {
-        /* */
-      }
-    }
-  }
+  // Never await the send host here — that is the hang. Companion is optional.
+  await waitUntil(Date.now() + maxMs, () => settled != null, {
+    companionBase: companion,
+    pingEveryMs: 500,
+  });
 
   if (!settled) {
     // Leave postPromise dangling on purpose — do not await it.
-    // Detaching is the whole point of fire-and-forget under broken abort.
     void postPromise;
     const e = new Error(
       safeErrorText(
@@ -777,12 +832,23 @@ async function postMessageTextOnce(body, timeoutMs) {
   }
 }
 
-/** message/query preferring urlLocal so it is not starved by an in-flight send POST. */
+const VERIFY_FETCH_MS = 5000;
+
+/** message/query on companion (same server, other host) first, then primary. Each attempt is bounded. */
 async function queryMessagesForVerify(chatGuid) {
   const cfg = await getCfg();
   const bases = [];
-  if (cfg.urlLocal) bases.push(cfg.urlLocal.replace(/\/$/, ''));
+  if (cfg.companionLocal) bases.push(String(cfg.companionLocal).replace(/\/$/, ''));
+  // Primary last: may still be pinned by a detached send POST on this host.
   bases.push(cfg.url.replace(/\/$/, ''));
+  // de-dupe
+  const seen = new Set();
+  const uniq = bases.filter((b) => {
+    if (!b || seen.has(b)) return false;
+    seen.add(b);
+    return true;
+  });
+
   const body = {
     limit: 25,
     offset: 0,
@@ -791,21 +857,28 @@ async function queryMessagesForVerify(chatGuid) {
     sort: 'DESC',
   };
   let lastErr = null;
-  for (const base of bases) {
+  for (const base of uniq) {
     try {
-      const r = await fetch(
+      const r = await fetchBounded(
         `${base}/api/v1/message/query?password=${encodeURIComponent(cfg.password)}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
           body: JSON.stringify(body),
         },
+        VERIFY_FETCH_MS,
       );
       if (!r.ok) {
         lastErr = new Error(`HTTP ${r.status}`);
         continue;
       }
-      const j = await r.json();
+      let j;
+      try {
+        j = JSON.parse(r.text);
+      } catch (err) {
+        lastErr = err;
+        continue;
+      }
       return asArray(unwrap(j));
     } catch (err) {
       lastErr = err;
