@@ -336,8 +336,9 @@ const AUTOWATCH_TTL_MS = 3600 * 1000; // 1 hour
 //                     receives thread-reply frames, which carry top-level
 //                     `channel` + `thread_ts`, so it covers both)
 //
-// The webhook `--filter` drops the just-sent message's own echo (ts === selfTs)
-// and Slack's subtype/system envelopes (e.g. subtype:"message_replied" parent
+// The webhook `--filter` drops everything WE posted — our own user id
+// (auth.test `user_id`) plus the just-sent message's echo (ts === selfTs) — and
+// Slack's subtype/system envelopes (e.g. subtype:"message_replied" parent
 // notifications) so only genuine new replies produce a lick.
 //
 // A one-shot teardown crontask at +1h deletes the webhook (the delivery
@@ -369,6 +370,15 @@ async function startAutoWatch({ targetChannel, threadTs, selfTs, wsId, watchScoo
   const expiresAt = new Date(now + AUTOWATCH_TTL_MS).toISOString();
 
   // 3. If already under an active autowatch, EXTEND expiry (reschedule teardown).
+  //
+  // The webhook filter is NOT touched here, and cannot be: a webhook's --filter is
+  // fixed at `webhook create` time (the CLI has create/list/delete, no update), and
+  // the WS observer subscription forwards to that one webhook id and can only be
+  // closed by the process that created it — so deleting and recreating the webhook
+  // would orphan the observer. Instead the filter created in step 5 drops messages
+  // by OUR OWN USER ID, not just the first message's ts: our own messages never
+  // notify, which is exactly what makes this TTL extension silent (previously a
+  // second post into a live watch matched the filter and woke the watch scoop).
   let existing = null;
   try { existing = JSON.parse(await fs.readFile(stateFile, 'utf8')); } catch (_) {}
   if (existing && existing.autowatch) {
@@ -388,9 +398,11 @@ async function startAutoWatch({ targetChannel, threadTs, selfTs, wsId, watchScoo
   // 4. Fresh watch. Determine the target scoop (cone default, relay fallback).
   let scoop = watchScoop || DEFAULT_WATCH_SCOOP;
 
-  // 5. Create the webhook routed to the watch scoop, with a filter that keeps
-  //    only genuine new replies (drops the self-echo + subtype/system frames).
-  const filter = buildAutoWatchWebhookFilter(selfTs);
+  // 5. Resolve our own Slack user id (auth.test, non-fatal) and create the webhook
+  //    routed to the watch scoop, with a filter that keeps only genuine new replies
+  //    (drops anything we posted ourselves + subtype/system frames).
+  const selfUser = await resolveSelfUserId(wsId);
+  const filter = buildAutoWatchWebhookFilter(selfTs, selfUser);
   let whId = null;
   let mkWebhook = await exec(`webhook create --scoop ${escapeShellArg(scoop)} --filter ${escapeShellArg(filter)}`);
   // Fallback: if the cone is rejected as a target, create/reuse a relay scoop.
@@ -425,6 +437,7 @@ async function startAutoWatch({ targetChannel, threadTs, selfTs, wsId, watchScoo
     autowatchScope: scope,
     threadRoot: threadTs,
     selfTs,
+    selfUser,
     webhookId: whId,
     webhookUrl: whUrl,
     filter,
@@ -451,18 +464,44 @@ async function startAutoWatch({ targetChannel, threadTs, selfTs, wsId, watchScoo
   console.log(`Watching ${scopeMsg} for replies for 1h (routes to ${scoop})`);
 }
 
+// Resolve the authenticated user's own Slack user id via auth.test. Non-fatal by
+// design: a failure (or a response without `user_id`) returns null and the caller
+// degrades to timestamp-only filtering rather than breaking the post.
+async function resolveSelfUserId(wsId) {
+  try {
+    const auth = await slackApi('auth.test', {}, wsId, { fatal: false });
+    if (auth && auth.ok && typeof auth.user_id === 'string' && auth.user_id) {
+      return auth.user_id;
+    }
+  } catch (_) { /* non-fatal — fall through to null */ }
+  return null;
+}
+
 // Build the webhook --filter JS for an event-driven auto-watch. The webhook event
 // carries the raw matched Slack frame under `e.body` (the WS observer forwards the
-// frame; the webhook wraps it). Keep only genuine new reply messages: drop the
-// echo of the just-sent message (same ts) and Slack subtype/system frames (e.g.
-// subtype:"message_replied" parent-update envelopes, joins, edits). `selfTs` is
-// the ts of the message we just posted so we never route the post's own echo.
-function buildAutoWatchWebhookFilter(selfTs) {
+// frame; the webhook wraps it). Keep only genuine new reply messages and drop:
+//   - Slack subtype/system frames (subtype:"message_replied" parent-update
+//     envelopes, joins, edits)
+//   - the echo of the just-sent message (`selfTs`)
+//   - EVERY message from `selfUser`, our own user id (auth.test `user_id`)
+// The own-user drop is what makes "your own messages never notify" true for the
+// whole life of the watch, and therefore makes TTL extension silent: posting again
+// into a live auto-watch must extend the hour without notifying about our own new
+// message. It has to be handled here, at creation time, because a webhook's
+// --filter is immutable after `webhook create` (the CLI has no update) and the WS
+// observer subscription can only be closed by its creating process — so the filter
+// cannot be rewritten later without orphaning the observer.
+// `selfUser` may be null (auth.test failed) — then the filter keeps today's
+// timestamp-only behaviour. The returned string is self-contained: it closes over
+// nothing, every value is JSON-inlined.
+function buildAutoWatchWebhookFilter(selfTs, selfUser) {
   const s = JSON.stringify(selfTs);
+  const u = JSON.stringify(selfUser);
   return `(e) => { const m = (e && e.body) || e || {}; ` +
     `if (m.type !== 'message') return false; ` +
     `if (m.subtype) return false; ` +
     `if (m.ts === ${s}) return false; ` +
+    (selfUser ? `if (m.user === ${u}) return false; ` : '') +
     `return true; }`;
 }
 
