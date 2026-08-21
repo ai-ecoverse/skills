@@ -228,8 +228,9 @@ slack post C087NCG774J "part 3" --thread_ts=last   # same thread, no bookkeeping
 
 - `--thread_ts=<ts>` — post as a threaded reply to the message with that timestamp.
 - `--thread_ts=last` — reply into the thread root of the most recent message this
-  CLI posted in that channel (remembered per workspace + channel in
-  `.last-post.json`). Errors if nothing has been posted there yet.
+  CLI posted in that channel (remembered in a per-workspace-and-channel
+  `.last-post-<workspace>-<channel>.json` state file, alongside the `.watch-*.json`
+  files). Errors if nothing has been posted there yet.
 - `--sign[=<emoji>]` / `--no-sign` — control the auto-sign reaction (see below).
 - `--no-watch` — skip the auto reply-watch (see below).
 - `--watch-scoop=<name>` — override the scoop the reply-watch routes to (default: the cone).

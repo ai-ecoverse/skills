@@ -315,17 +315,30 @@ const AUTOWATCH_TTL_MS = 3600 * 1000; // 1 hour
 // channel, so a multi-part write-up can chain replies without the caller
 // tracking timestamps (issue #307). Entirely best-effort: a read or write
 // failure never affects the post.
-const LAST_POST_FILE = '/workspace/skills/slack/.last-post.json';
+//
+// ONE FILE PER WORKSPACE+CHANNEL, mirroring the `.watch-<id>.json` convention.
+// A single shared map would need a read-modify-write, and two `slack post`
+// processes running concurrently in different channels would each rewrite the
+// whole map from their own stale read — the later write silently dropping the
+// other channel's entry, so a later `--thread_ts=last` could resurrect an older
+// root and reply into the wrong thread. Writing only this channel's own file
+// removes the shared state entirely; concurrent posts to the SAME channel still
+// race, but there last-write-wins is exactly the intended semantics.
+const LAST_POST_DIR = '/workspace/skills/slack';
 
-function lastPostKey(wsId, channel) {
-  return `${wsId || 'active'}/${channel}`;
+function lastPostFile(wsId, channel) {
+  // Sanitize: the channel arrives from argv, and the id is interpolated into a
+  // path — anything outside [A-Za-z0-9_-] (notably `/` and `..`) is collapsed so
+  // the state file can never escape the skill directory.
+  const key = `${wsId || 'active'}-${channel}`.replace(/[^A-Za-z0-9_-]/g, '_');
+  return `${LAST_POST_DIR}/.last-post-${key}.json`;
 }
 
 async function readLastPostTs(wsId, channel) {
   try {
-    const raw = await fs.readFile(LAST_POST_FILE, 'utf8');
-    const map = JSON.parse(raw);
-    const val = map && map[lastPostKey(wsId, channel)];
+    const raw = await fs.readFile(lastPostFile(wsId, channel), 'utf8');
+    const state = JSON.parse(raw);
+    const val = state && state.ts;
     return typeof val === 'string' && val ? val : null;
   } catch (_) {
     return null;
@@ -335,12 +348,8 @@ async function readLastPostTs(wsId, channel) {
 async function rememberLastPostTs(wsId, channel, ts) {
   if (!ts) return;
   try {
-    let map = {};
-    try {
-      map = JSON.parse(await fs.readFile(LAST_POST_FILE, 'utf8')) || {};
-    } catch (_) { /* no prior state */ }
-    map[lastPostKey(wsId, channel)] = ts;
-    await fs.writeFile(LAST_POST_FILE, JSON.stringify(map));
+    const state = { workspace: wsId || null, channel, ts, updatedAt: new Date().toISOString() };
+    await fs.writeFile(lastPostFile(wsId, channel), JSON.stringify(state));
   } catch (_) { /* best-effort only */ }
 }
 
