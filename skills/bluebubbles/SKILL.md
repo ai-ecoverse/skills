@@ -109,10 +109,13 @@ Prefer guids returned by `chats` / `messages` over hand-built ones when reading 
 ## Agent notes
 
 - Prefer `bluebubbles …` over raw `curl`. Never echo the password; prefer `--json` when chaining.
-- After `send`, a short HTTP timeout is normal (server waits on delivery). Run `messages` on the same target to verify.
+- **`send` is fire-once, then check.** One POST, detached after ~25s wall clock (jsh has no working `setTimeout`/`AbortController`; an awaited hang would pin the HTTP/1 connection). `private_api: false` often returns **HTTP 5xx after the iMessage already left the Mac**, or never returns at all — both are soft. The CLI verifies the thread (preferring `urlLocal` so verify is not starved by the in-flight POST) and prints `delivered` / `soft_5xx_unverified` / `timeout_unverified` / `duplicate`.
+- **Send GUID:** wire as `iMessage;-;<address>`. The real thread guid `any;-;<address>` breaks Messages.app AppleScript (`Can't make any into type constant`).
+- **Never re-run `send` because of 5xx, timeout, or a hung shell.** Read the thread first: `bluebubbles messages <target> --limit 5`. Identical text inside 5 minutes is refused unless `--force`.
 - `private_api: false` / helper disconnected still allows send/read of normal texts; advanced features may be missing.
 - Message text search is a recent-history scan (server-side `WHERE` is flaky on some 1.9.x builds). Narrow with `--in chats` or open a specific thread via `messages`.
 - Endpoint map: `references/endpoints.md`.
+
 
 ## Examples
 

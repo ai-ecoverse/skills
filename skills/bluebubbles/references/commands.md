@@ -10,7 +10,7 @@ The Quick start lives in `SKILL.md`; endpoint map in `references/endpoints.md`.
 | `status` / `ping` | Server version, private_api/helper flags, message/chat counts |
 | `chats` / `inbox` | Recent threads (`--limit`, `--search`, `--direct`, `--group`) |
 | `messages <target>` | History for a chatGuid or address (`--limit`) |
-| `send <target> <text>` | Send; group guids need `--confirm`. Timeouts ≠ failure — re-check with `messages` |
+| `send <target> <text>` | Fire-once send; group guids need `--confirm`. 5xx/timeout = soft (verify thread). Identical text ≤5 min refused unless `--force` |
 | `search <query>` | `--in messages` (default, scans recent), `chats`, or `contacts` |
 | `contacts [query]` | macOS address book entries exposed by the server |
 | `handles [query]` | Handle/query; some builds 500 without `offset` — CLI sends it and degrades gracefully |
@@ -33,6 +33,7 @@ Every command accepts `--json`.
 | `--search Q` | `chats` | Filter by participant / display name |
 | `--in <scope>` | `search` | `messages` (default), `chats`, `contacts` |
 | `--confirm` | `send` | Required for group (`any;+;…`) targets |
+| `--force` | `send` | Bypass the 5-minute identical-text duplicate guard |
 | `--scoop <name>` | `watch` | Target scoop for the licks; `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$` |
 | `--chat <guid>` | `watch` | Only events for this chatGuid |
 | `--events <list>` | `watch` | BB event names (default: `new-message`) |
@@ -49,6 +50,25 @@ Every command accepts `--json`.
   redacted by `safeErrorText()` first.
 
 ## Failure semantics worth relying on
+
+**`send` is fire-once, then check.** One `POST /message/text` as
+`iMessage;-;<address>` (never `any;-;` on the wire — AppleScript rejects
+service type `any`). jsh has no working timers/abort, so the CLI **detaches**
+the POST after ~25s wall clock and verifies delivery on `urlLocal` (separate
+HTTP host) so the in-flight send cannot starve `message/query`. Outcomes:
+
+| `status` (also in `--json`) | Meaning | Resend? |
+| --- | --- | --- |
+| `delivered` | Outbound text visible in-thread | No |
+| `accepted_unverified` | HTTP 2xx but not yet visible | Check `messages` first |
+| `soft_5xx_unverified` | HTTP 5xx — common with `private_api:false` after the iMessage already left | Check `messages` first |
+| `timeout_unverified` | Detached after deadline; message may still land | Check `messages` first |
+| `duplicate` | Same outbound text already in-thread within 5 minutes; **no POST issued** | Only with `--force` or different text |
+
+HTTP 400 is still a hard failure. Agents must **never** re-run `send` solely
+because of 5xx, timeout, or a hung shell — that is how the 2026-08-21 Anni
+quadruple-send happened.
+
 
 **`messages <address>` when the server rejects the chat guid.** An address with no
 existing thread resolves to a synthetic `iMessage;-;<address>` guid, which some

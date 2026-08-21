@@ -288,12 +288,24 @@ async function getClient() {
   return _client;
 }
 
-async function api(method, apiPath, { body, params, timeoutMs, raw } = {}) {
+async function api(method, apiPath, { body, params, timeoutMs, raw, noRetry } = {}) {
   const cfg = await getCfg();
-  const client = await getClient();
+  // Fresh short-timeout / no-retry client when requested. Default shared client
+  // otherwise (retries 429/503, 30s ceiling).
+  const client =
+    timeoutMs || noRetry
+      ? http.client({
+          baseUrl: cfg.url,
+          timeoutMs: timeoutMs || 30000,
+          headers: { Accept: 'application/json' },
+          retry: { maxAttempts: 1 },
+        })
+      : await getClient();
   const q = { password: cfg.password, ...(params || {}) };
   const opts = { params: q };
   if (body !== undefined) opts.body = body;
+  // Kept for forward-compat if sliccy:http ever honours it; real deadline is
+  // the client constructor timeout above.
   if (timeoutMs) opts.timeoutMs = timeoutMs;
   if (raw) opts.raw = true;
 
@@ -308,10 +320,19 @@ async function api(method, apiPath, { body, params, timeoutMs, raw } = {}) {
     if (status === 401 || status === 403) {
       authDie(`Auth failed (${status}) for ${apiPath} — check passwordFile / BLUEBUBBLES_PASSWORD.`);
     }
-    // Connection / tunnel failures
     const msg = bbErrorMessage(err);
     const safeUrl = stripPasswordFromUrl(err.url || cfg.url + apiPath);
     if (!status) {
+      // Timeouts / aborts are soft for callers that can verify side effects
+      // (send). Hard connection failures still die.
+      if (/timeout|abort|Timeout|AbortError/i.test(msg) || err?.name === 'AbortError') {
+        const e = new Error(safeErrorText(`BlueBubbles timeout on ${apiPath}: ${msg}`));
+        e.status = 408;
+        e.timedOut = true;
+        e.soft = true;
+        e.url = safeUrl;
+        throw e;
+      }
       die(
         `Could not reach BlueBubbles at ${cfg.url} (${msg}).\n` +
           '  Is the server running? Try --local or set BLUEBUBBLES_URL / config url.',
@@ -652,6 +673,156 @@ async function cmdMessages(positional, flags) {
   }
 }
 
+
+/** Fire one POST /message/text via curl with a real wall-clock deadline.
+ *
+ * Why curl: jsh has no working setTimeout / AbortController (fetch abort is a
+ * no-op; sliccy:http timeouts never fire). A hanging BlueBubbles send holds the
+ * HTTP/1 connection and starves every later request on the same host — which is
+ * exactly how agents ended up retrying and multi-sending. curl -m runs outside
+ * jsh and returns in ≤ SEND_TIMEOUT_MS whether or not Messages.app delivered.
+ *
+ * Password is written to a short-lived curl config file and deleted in finally;
+ * never printed. stdout is only the HTTP code + body via -w / -o.
+ */
+async function postMessageTextOnce(body, timeoutMs) {
+  const cfg = await getCfg();
+  const maxMs = Math.max(1000, timeoutMs || 25000);
+  const url =
+    `${cfg.url.replace(/\/$/, '')}/api/v1/message/text?password=${encodeURIComponent(cfg.password)}`;
+
+  // jsh has no working setTimeout / AbortController — a hanging await on send
+  // pins the HTTP/1 connection to that host and starves every later call.
+  // Strategy: fire the POST without awaiting it on the primary URL, then poll
+  // delivery on a *different* host (urlLocal) so verify has its own connection.
+  // After maxMs wall clock we stop waiting on the POST promise entirely.
+  let settled = null;
+  const postPromise = fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify(body),
+  })
+    .then(async (r) => {
+      const text = await r.text();
+      settled = { httpStatus: r.status, body: text };
+      return settled;
+    })
+    .catch((err) => {
+      settled = {
+        httpStatus: 0,
+        error: String(err && err.message ? err.message : err),
+      };
+      return settled;
+    });
+
+  const deadline = Date.now() + maxMs;
+  // Yield to the event loop by awaiting *other-host* requests (urlLocal).
+  // Same-host pings would queue behind the open POST and never run.
+  const pingBase = (cfg.urlLocal || '').replace(/\/$/, '');
+  while (Date.now() < deadline && !settled) {
+    if (pingBase) {
+      try {
+        await fetch(`${pingBase}/api/v1/ping`);
+      } catch {
+        // ignore — the yield is what matters
+      }
+    } else {
+      // No urlLocal: fall back to a same-host ping (may not progress until POST ends)
+      try {
+        await fetch(`${cfg.url.replace(/\/$/, '')}/api/v1/ping`);
+      } catch {
+        /* */
+      }
+    }
+  }
+
+  if (!settled) {
+    // Leave postPromise dangling on purpose — do not await it.
+    // Detaching is the whole point of fire-and-forget under broken abort.
+    void postPromise;
+    const e = new Error(
+      safeErrorText(
+        `BlueBubbles timeout on /api/v1/message/text after ${Math.round(maxMs / 1000)}s (detached)`,
+      ),
+    );
+    e.status = 408;
+    e.timedOut = true;
+    e.soft = true;
+    throw e;
+  }
+
+  const httpStatus = settled.httpStatus || 0;
+  const outBody = settled.body || '';
+
+  if (httpStatus >= 400) {
+    const e = new Error(
+      safeErrorText(`BlueBubbles ${httpStatus} on /api/v1/message/text: ${outBody.slice(0, 300)}`),
+    );
+    e.status = httpStatus;
+    e.body = outBody;
+    e.soft = httpStatus >= 500;
+    throw e;
+  }
+  if (!httpStatus) {
+    const e = new Error(
+      safeErrorText(`BlueBubbles send transport failed: ${settled.error || 'unknown'}`),
+    );
+    e.status = 0;
+    throw e;
+  }
+  try {
+    return JSON.parse(outBody);
+  } catch {
+    return { status: httpStatus, raw: outBody };
+  }
+}
+
+/** message/query preferring urlLocal so it is not starved by an in-flight send POST. */
+async function queryMessagesForVerify(chatGuid) {
+  const cfg = await getCfg();
+  const bases = [];
+  if (cfg.urlLocal) bases.push(cfg.urlLocal.replace(/\/$/, ''));
+  bases.push(cfg.url.replace(/\/$/, ''));
+  const body = {
+    limit: 25,
+    offset: 0,
+    chatGuid,
+    with: ['handle', 'chats'],
+    sort: 'DESC',
+  };
+  let lastErr = null;
+  for (const base of bases) {
+    try {
+      const r = await fetch(
+        `${base}/api/v1/message/query?password=${encodeURIComponent(cfg.password)}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify(body),
+        },
+      );
+      if (!r.ok) {
+        lastErr = new Error(`HTTP ${r.status}`);
+        continue;
+      }
+      const j = await r.json();
+      return asArray(unwrap(j));
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  if (lastErr) throw lastErr;
+  return [];
+}
+
+// Test seam: harness assigns a fake that goes through stubbed api().
+let _sendTransport = null;
+async function dispatchSend(body, timeoutMs) {
+  if (typeof _sendTransport === 'function') return _sendTransport(body, timeoutMs);
+  return postMessageTextOnce(body, timeoutMs);
+}
+
+
 async function cmdSend(positional, flags) {
   const target = positional[0];
   let text = positional.slice(1).join(' ').trim();
@@ -659,18 +830,34 @@ async function cmdSend(positional, flags) {
   if (!text && str(flags.m)) text = str(flags.m);
 
   if (!target || !text) {
-    die('usage: bluebubbles send <address|chatGuid> <text...>', { prefix: 'bluebubbles' });
+    die('usage: bluebubbles send <address|chatGuid> <text...> [--force]', { prefix: 'bluebubbles' });
   }
 
   // Prefer existing direct chat guid when address given
   let chatGuid = looksLikeGuid(target) ? target : null;
+  let queryGuid = null; // any;-; form is fine for message/query + dupe checks
   if (!chatGuid) {
     const resolved = await resolveChatGuid(target);
-    // For send, iMessage;-;address is the documented create-or-send form when
-    // no prior thread exists; prefer real any;-; guid when we found a 1:1.
-    if (resolved && !isGroupGuid(resolved)) chatGuid = resolved;
-    else chatGuid = toChatGuid(target);
+    // For *read* paths, any;-;address is the real thread guid. For *send*,
+    // private_api:false builds drive Messages via osascript and choke on
+    // service type "any" ("Can't make any into type constant"). Always wire
+    // the POST as iMessage;-;<address> (or SMS;-; if that is what we resolved).
+    if (resolved && !isGroupGuid(resolved)) {
+      queryGuid = resolved;
+      const m = String(resolved).match(/^(any|iMessage|SMS|rc);-;(.+)$/i);
+      if (m && /^any$/i.test(m[1])) {
+        chatGuid = `iMessage;-;${m[2]}`;
+      } else {
+        chatGuid = resolved;
+      }
+    } else {
+      chatGuid = toChatGuid(target);
+    }
+  } else if (/^any;-;/i.test(chatGuid)) {
+    queryGuid = chatGuid;
+    chatGuid = `iMessage;-;${chatGuid.slice('any;-;'.length)}`;
   }
+  if (!queryGuid) queryGuid = chatGuid;
 
   if (chatGuid.includes(';+;') && !flags.confirm && !flags.group) {
     die(
@@ -680,42 +867,194 @@ async function cmdSend(positional, flags) {
     );
   }
 
-  const tempGuid = `temp-slicc-${Date.now()}`;
-  const body = { chatGuid, message: text, tempGuid };
+  // ── Fire once, forget, check ────────────────────────────────────────────
+  // BlueBubbles with private_api:false often returns HTTP 500 *after* the
+  // iMessage has already left the Mac. Agents that treat 5xx/timeout as
+  // "failed" and re-run `send` produce duplicates (seen 2026-08-21: Anni
+  // got four copies). Contract:
+  //   1. At most one POST /message/text per invocation (no HTTP retries).
+  //   2. Short client deadline — sliccy:http only honours constructor timeout.
+  //   3. 5xx and timeout are soft: verify the thread before anyone resends.
+  //   4. Identical outbound text inside the dupe window is refused unless --force.
+  const SEND_TIMEOUT_MS = 25000;
+  const DUPE_WINDOW_MS = 5 * 60 * 1000;
+  const VERIFY_WINDOW_MS = 2 * 60 * 1000;
 
-  let res;
-  let timedOut = false;
-  try {
-    // Server may wait on delivery; short timeout — timeout ≠ failure
-    res = await api('POST', '/api/v1/message/text', { body, timeoutMs: 8000 });
-  } catch (err) {
-    if (err?.name === 'NodeExitError') throw err;
-    const msg = String(err.message || err);
-    if (/timeout|abort|Timeout/i.test(msg) || err.status === 408) {
-      timedOut = true;
-      res = { timedOut: true, note: 'Request timed out — message may still be sending' };
-    } else if (err.status === 400) {
-      die(`Send rejected (400): ${bbErrorMessage(err)}`, { prefix: 'bluebubbles' });
-    } else {
-      throw err;
+  if (!flags.force) {
+    const prior = await findRecentOutbound(queryGuid, text, DUPE_WINDOW_MS);
+    if (prior) {
+      const payload = {
+        chatGuid,
+        queryGuid,
+        status: 'duplicate',
+        verified: true,
+        messageGuid: prior.guid || null,
+        note:
+          'Identical outbound text already in this thread within the last 5 minutes. ' +
+          'Not sending again. Pass --force to override, or change the text.',
+      };
+      if (flags.json) {
+        cli.out(payload);
+        return;
+      }
+      console.log('');
+      console.log(color.yellow('  ✗ Refusing duplicate send'));
+      console.log(`  ${color.dim('to:')}     ${chatGuid}`);
+      console.log(`  ${color.dim('text:')}   ${oneLine(text, 80)}`);
+      console.log(`  ${color.dim('reason:')} same outbound text already present (use --force to resend)`);
+      console.log(`  ${color.dim('check:')}  bluebubbles messages ${queryGuid} --limit 5`);
+      console.log('');
+      return;
     }
   }
 
+  const tempGuid = `temp-slicc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const body = { chatGuid, message: text, tempGuid };
+
+  let httpStatus = null;
+  let timedOut = false;
+  let soft = false;
+  let res = null;
+  let postError = null;
+
+  try {
+    // curl -m: real wall-clock deadline (jsh timers/abort are broken)
+    res = await dispatchSend(body, SEND_TIMEOUT_MS);
+    httpStatus = 200;
+  } catch (err) {
+    if (err?.name === 'NodeExitError') throw err;
+    postError = err;
+    httpStatus = err.status || null;
+    timedOut = !!(err.timedOut || err.status === 408 || /timeout|abort/i.test(String(err.message || '')));
+    if (err.status === 400) {
+      die(`Send rejected (400): ${bbErrorMessage(err)}`, { prefix: 'bluebubbles' });
+    }
+    if (err.status === 401 || err.status === 403) throw err;
+    // 5xx and timeout: soft — message may already be on the wire
+    if (timedOut || (err.status && err.status >= 500) || err.soft) {
+      soft = true;
+    } else if (!err.status) {
+      // true network failure before any response — hard
+      throw err;
+    } else {
+      // other 4xx
+      die(`Send failed (${err.status}): ${bbErrorMessage(err)}`, { prefix: 'bluebubbles' });
+    }
+  }
+
+  // Always check the thread. Soft responses are worthless as delivery proof;
+  // a 200 is only slightly better on private_api:false builds.
+  const verifiedMsg = await findRecentOutbound(queryGuid, text, VERIFY_WINDOW_MS, { preferLocal: true });
+  const verified = !!verifiedMsg;
+
+  let status;
+  if (verified) status = 'delivered';
+  else if (soft && timedOut) status = 'timeout_unverified';
+  else if (soft) status = 'soft_5xx_unverified';
+  else status = 'accepted_unverified';
+
+  const payload = {
+    chatGuid,
+    queryGuid,
+    tempGuid,
+    status,
+    verified,
+    httpStatus,
+    timedOut,
+    soft,
+    messageGuid: verifiedMsg?.guid || null,
+    response: res,
+    error: postError ? safeErrorText(String(postError.message || postError)) : null,
+    note: verified
+      ? 'Outbound message visible in thread.'
+      : soft
+        ? 'POST returned 5xx/timeout (common with private_api:false) — message often still lands. ' +
+          'Verify with `bluebubbles messages` before any resend. Do NOT retry send blindly.'
+        : 'Server accepted the POST but the message is not visible yet. Verify before resending.',
+  };
+
   if (flags.json) {
-    cli.out({ chatGuid, tempGuid, timedOut, response: res });
+    cli.out(payload);
     return;
   }
 
   console.log('');
-  if (timedOut) {
-    console.log(color.yellow('  Send request timed out — message may still be delivering.'));
-    console.log(color.dim(`  Verify: bluebubbles messages ${chatGuid} --limit 5`));
+  if (verified) {
+    console.log(color.green('  ✓ Message delivered (verified in thread)'));
+  } else if (soft) {
+    console.log(color.yellow('  ~ Send soft-failed at HTTP layer — do not resend yet'));
+    if (timedOut) {
+      console.log(color.dim('    POST timed out (message may already be sending)'));
+    } else {
+      console.log(color.dim(`    POST returned HTTP ${httpStatus} (private_api:false often 500s after send)`));
+    }
   } else {
     console.log(color.green('  ✓ Message accepted by BlueBubbles'));
+    console.log(color.dim('    Not yet visible in thread — verify before any resend'));
   }
-  console.log(`  ${color.dim('to:')}   ${chatGuid}`);
-  console.log(`  ${color.dim('text:')} ${oneLine(text, 80)}`);
+  console.log(`  ${color.dim('to:')}     ${chatGuid}`);
+  console.log(`  ${color.dim('text:')}   ${oneLine(text, 80)}`);
+  console.log(`  ${color.dim('status:')} ${status}`);
+  console.log(`  ${color.dim('check:')}  bluebubbles messages ${chatGuid} --limit 5`);
   console.log('');
+}
+
+/** Recent isFromMe message in chat whose text equals needle (trimmed). */
+async function findRecentOutbound(chatGuid, text, windowMs, opts = {}) {
+  const needle = String(text || '').trim();
+  if (!needle || !chatGuid) return null;
+  const now = Date.now();
+  let messages = [];
+  try {
+    // During live post-send verify, prefer urlLocal so the detached tunnel POST
+    // cannot starve us. In tests (_sendTransport set) always use stubbed api().
+    if (opts.preferLocal && typeof _sendTransport !== 'function') {
+      messages = await queryMessagesForVerify(chatGuid);
+    } else {
+      const res = await api('POST', '/api/v1/message/query', {
+        body: {
+          limit: 25,
+          offset: 0,
+          chatGuid,
+          with: ['handle', 'chats'],
+          sort: 'DESC',
+        },
+      });
+      messages = asArray(unwrap(res));
+    }
+  } catch {
+    try {
+      const res = await api('POST', '/api/v1/message/query', {
+        body: {
+          limit: 40,
+          offset: 0,
+          with: ['handle', 'chats'],
+          sort: 'DESC',
+        },
+      });
+      const all = asArray(unwrap(res));
+      const lower = chatGuid.toLowerCase();
+      const addr = chatGuid.split(';-;')[1] || chatGuid.split(';+;')[1] || '';
+      messages = all.filter((m) => {
+        const guids = (m.chats || []).map((c) => String(c.guid || '').toLowerCase());
+        if (guids.some((g) => g === lower || (addr && g.includes(addr.toLowerCase())))) return true;
+        const h = String(m.handle?.address || '').toLowerCase();
+        return addr && h === addr.toLowerCase();
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  for (const m of messages) {
+    if (!m || !m.isFromMe) continue;
+    const body = msgText(m).trim();
+    if (body !== needle) continue;
+    const t = Number(m.dateCreated);
+    if (Number.isFinite(t) && now - t > windowMs) continue;
+    return m;
+  }
+  return null;
 }
 
 function isGroupGuid(g) {
