@@ -1,6 +1,6 @@
 {
   "name": "ai-ecoverse/skills",
-  "description": "Collection of agent skills for SLICC and Tessl-compatible runtimes — productivity, creative, document, and integration skills.",
+  "description": "Collection of agent skills for SLICC and Tessl-compatible runtimes \u2014 productivity, creative, document, and integration skills.",
   "private": false,
   "skills": [
     "skills/aem",
@@ -13,6 +13,7 @@
     "skills/cosmos",
     "skills/fastly",
     "skills/fluffyjaws",
+    "skills/fx",
     "skills/github",
     "skills/gmail",
     "skills/icloud",
