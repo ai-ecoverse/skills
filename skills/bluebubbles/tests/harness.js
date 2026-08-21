@@ -30,12 +30,20 @@ async function load(opts = {}) {
   source += `
 return {
   cmdMessages,
+  cmdSend,
   cmdWatch,
   cmdWatches,
   cmdUnwatch,
   safeErrorText,
+  findRecentOutbound,
   setApi: (fn) => {
     api = fn;
+    // Send goes through curl in prod; in tests route it via the stubbed api
+    // so we still exercise cmdSend's soft/verify/dupe logic without a network.
+    _sendTransport = async (body) => api('POST', '/api/v1/message/text', { body });
+  },
+  setSendTransport: (fn) => {
+    _sendTransport = fn;
   },
 };
 `;

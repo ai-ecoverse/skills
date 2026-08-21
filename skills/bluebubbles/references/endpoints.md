@@ -32,7 +32,7 @@ GUID shapes:
 | Method | Path | Body | Notes |
 | --- | --- | --- | --- |
 | POST | `/message/query` | `{ limit, offset, chatGuid?, with, sort, where? }` | Primary read API. `with: ["handle","chats","attachment"]`. `sort: "DESC"`. |
-| POST | `/message/text` | `{ chatGuid, message, tempGuid }` | Send. May block until delivery — use ~5–8s client timeout; timeout ≠ failure. |
+| POST | `/message/text` | `{ chatGuid, message, tempGuid }` | Send. CLI fires once, detaches after ~25s, verifies via `message/query` on `urlLocal` first. Use `iMessage;-;` not `any;-;` on the wire. 5xx/timeout = soft. |
 | GET | `/message/count` | — | `{ total }` |
 
 Message highlights: `text`, `isFromMe`, `dateCreated` (ms epoch), `handle.address`, `chats[].guid`, `guid`, attachments.
@@ -53,8 +53,9 @@ Message highlights: `text`, `isFromMe`, `dateCreated` (ms epoch), `handle.addres
 | --- | --- |
 | 401 | Bad/missing password |
 | 400 | Send/validation rejected — message not sent |
-| 500 | Often bad query shape (see handle `offset`); degrade gracefully |
-| timeout on send | Not decisive — re-query recent outbound messages |
+| 500 on send | Common with `private_api:false` **after** the iMessage left — soft; verify thread, do not resend |
+| 500 on query | Often bad query shape (see handle `offset`); degrade gracefully |
+| timeout on send | Not decisive — re-query recent outbound messages; CLI reports `timeout_unverified` |
 
 ## CLI coverage
 
