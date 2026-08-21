@@ -76,9 +76,12 @@ Get thread replies.
 | channel | yes | Channel ID |
 | ts | yes | Thread parent timestamp |
 | limit | no | Number of replies (default 100) |
+| oldest | no | Unix timestamp — only replies after this |
+| inclusive | no | `false` to exclude the `oldest` message itself |
 | cursor | no | Pagination cursor |
 
 **Response:** Same structure as `conversations.history`. First message is the thread parent.
+
 
 ### POST /api/chat.postMessage
 
@@ -107,6 +110,29 @@ Post a message to a channel or DM.
   }
 }
 ```
+
+### POST /api/reactions.add
+
+Add an emoji reaction to a message. Used by `slack post`'s auto-sign feature to
+"sign" the just-posted message (default `icecream` → 🍦).
+
+**Parameters:**
+| Param | Required | Description |
+|-------|----------|-------------|
+| token | yes | xoxc token |
+| channel | yes | Channel/DM ID the message is in (the RESOLVED channel — for a DM, the `D…` id) |
+| timestamp | yes | The message `ts` to react to (e.g. the `ts` returned by `chat.postMessage`) |
+| name | yes | Emoji shortcode **without** colons (e.g. `icecream`, `robot_face`) |
+
+**Response:**
+```json
+{ "ok": true }
+```
+
+**Common non-fatal errors** (`slack post` warns but still exits 0):
+- `already_reacted` — the reaction is already present on the message.
+- `invalid_name` — no emoji with that name exists in the workspace.
+- `no_reaction` / permission-style errors — cannot react in this context.
 
 ### POST /api/conversations.open
 
@@ -157,6 +183,42 @@ Get channel metadata.
   }
 }
 ```
+
+**`num_members` usage:** `slack post`'s auto-watch reads `channel.num_members`
+to decide watch scope — **> 100 members** → watch the thread only (observer
+selector adds `thread_ts`); **≤ 100 / DM / missing** → watch the whole channel.
+DMs and some conversation types omit `num_members`; a missing value is treated
+as "small" (whole-channel watch).
+
+
+### POST /api/auth.test
+
+Identify the authenticated user behind the current token. Used by `slack post`'s
+auto-watch to learn **our own** user id, so the reply-watch webhook filter can
+drop every message we post ourselves (not just the one that created the watch)
+and your own posts never produce a notification.
+
+**Parameters:**
+| Param | Required | Description |
+|-------|----------|-------------|
+| token | yes | xoxc token |
+
+**Response:**
+```json
+{
+  "ok": true,
+  "url": "https://adobe.enterprise.slack.com/",
+  "team": "Adobe",
+  "user": "trieloff",
+  "team_id": "T06DUTYDQ",
+  "user_id": "W5BPKRLUA"
+}
+```
+
+**`user_id` usage:** the auto-watch reads `user_id` once, at watch-creation time,
+and inlines it into the webhook filter (`m.user === "<user_id>"` → drop). The call
+is non-fatal: if it fails or returns no `user_id`, the filter falls back to
+dropping only the originating message's `ts`, and posting still succeeds.
 
 ### POST /api/users.info
 

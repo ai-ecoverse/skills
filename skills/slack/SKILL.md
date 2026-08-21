@@ -25,39 +25,26 @@ or can be specified explicitly with `--workspace`.
 # List available workspaces
 slack workspaces
 
-# View activity feed (notifications)
+# Activity feed (notifications): all, admin-only, unread mentions, app DMs
 slack activity
-
-# Admin notifications only (channel archiving, etc.)
 slack --ws=E06V3987PMY activity --type=admin
-
-# Unread mentions
 slack activity --type=mentions --unread
-
-# App DMs (invite requests, Google Drive, etc.)
 slack activity --type=apps
 
-# List pending approval requests
+# Pending approval requests, then approve or deny one by timestamp
 slack --ws=E06V3987PMY pending
-
-# Approve or deny a request by timestamp
 slack --ws=E06V3987PMY approve 1774846849.585479
 slack --ws=E06V3987PMY deny 1770698762.931619
 
-# Read recent messages from a channel (uses active workspace)
+# Read a channel (active workspace), or pick the workspace explicitly
 slack history C087NCG774J
-
-# Use a specific workspace
 slack --workspace=T06DUTYDQ channels --search=helix
-
-# Shorthand
 slack --ws=T06DUTYDQ history C06ABC123
 
-# Post a message to a channel
+# Post — auto-signs with :icecream:, auto-watches replies for 1h → cone
 slack post C087NCG774J "Hello from SLICC!"
-
-# DM a user directly (opens DM automatically)
-slack post W5BPKRLUA "Hey, quick question..."
+slack post C087NCG774J "quiet post" --no-sign --no-watch
+slack post W5BPKRLUA "Hey, quick question..."   # user ID → DM opened automatically
 
 # Search for channels
 slack channels --search=one-aem
@@ -71,48 +58,36 @@ slack download F0BK6BADTKK --out=/tmp/shot.png
 # Upload a file to a channel/DM/thread (optionally with a comment)
 slack upload C087NCG774J /tmp/clip.mp3 --thread_ts=1774539502.747989 --comment="voice note"
 
-# Find a user by name (or email) → get their user ID
+# Find a user by name (or email) → user ID; or look one up by ID
 slack find "Dragos Dascalita"
-
-# Look up a user by ID
 slack user W5BPKRLUA
 
-# Watch a channel for new messages (real-time!)
+# Watch a channel or a single thread in real time; list watches; stop watching
 slack watch C087NCG774J --scoop=my-monitor
-
-# Watch a specific thread
 slack watch C087NCG774J --scoop=my-monitor --thread=1774539502.747989
-
-# List active watches
 slack watches
-
-# Stop watching
 slack unwatch C087NCG774J
 ```
 
 ## Authentication
 
 The token is extracted automatically from `localStorage` key `localConfig_v2` in
-the Slack browser tab. The workspace ID (team or enterprise ID) determines which
-token to use. The `localConfig_v2.teams` object maps workspace IDs to
-`{ name, domain, url, token }` — keys are either enterprise IDs (`E...`) or
-team IDs (`T...`).
+the Slack browser tab, whose `.teams` object maps workspace IDs — enterprise
+(`E...`) or team (`T...`) — to `{ name, domain, url, token }`. All calls execute
+via XHR from the Slack page context, so cookies are included automatically. This
+requires an open Slack tab at `app.slack.com`; without one the script errors and
+asks the user to open Slack.
 
 Workspace resolution order:
 1. `--workspace=<ID>` or `--ws=<ID>` flag if provided
 2. Auto-detected from the active Slack tab URL (`/client/<ID>/...`)
 
-All API calls execute via XHR from the Slack page context so cookies are included
-automatically. Requires an open Slack tab at `app.slack.com`. If no Slack tab is
-found, the script reports an error and asks the user to open Slack.
-
 ## Global flags
 
 ### --workspace=\<ID\>, --ws=\<ID\>
 
-Specify which workspace to use by team or enterprise ID. If omitted, the workspace
-is auto-detected from the currently active Slack tab URL. Run `slack workspaces` to
-see all available IDs. The flag can appear before or after the command name:
+Which workspace to use, by team or enterprise ID. `slack workspaces` lists the
+available IDs. The flag can appear before or after the command name:
 
 ```bash
 slack --ws=E23RE8G4F history C087NCG774J
@@ -169,12 +144,10 @@ pass directly to `slack approve` or `slack deny`.
 
 ### slack approve \<message_ts\> [--channel=\<id\>]
 
-Approve an interactive message action (e.g. Slack Connect invite request, workspace
-invite). The `message_ts` is the timestamp of the Slackbot notification message
-containing the Approve/Deny buttons. Defaults to the Slackbot DM channel; use
-`--channel` to override.
-
-Uses the `chat.attachmentAction` API to programmatically click the Approve button.
+Click the Approve button on an interactive message (e.g. Slack Connect invite
+request, workspace invite) via the `chat.attachmentAction` API. The `message_ts` is
+the timestamp of the Slackbot notification message carrying the Approve/Deny
+buttons. Defaults to the Slackbot DM channel; use `--channel` to override.
 
 ### slack deny \<message_ts\> [--channel=\<id\>]
 
@@ -188,13 +161,10 @@ silently no-op. Always verify by re-listing pending requests after acting:
 ```bash
 # 1. List pending requests — note the timestamp of the target
 slack --ws=E06V3987PMY pending
-
 # 2. Approve by timestamp
 slack --ws=E06V3987PMY approve 1774846849.585479
-
 # 2b. Or deny by timestamp (use the full command form, not just `deny <ts>`)
 slack --ws=E06V3987PMY deny 1770698762.931619
-
 # 3. Verify — the entry should no longer appear in pending
 slack --ws=E06V3987PMY pending
 ```
@@ -213,15 +183,63 @@ Post a message to a channel, DM, or user. Accepts channel IDs (`C...`, `D...`, `
 or user IDs (`U...`, `W...`) — in which case a DM is opened automatically.
 
 ```bash
-# Post to a channel
 slack post C087NCG774J "Hello channel!"
-
-# DM a user by user ID (opens DM automatically)
-slack post W5BPKRLUA "Hey, quick question..."
-
-# Reply in a thread
-slack post C087NCG774J "Got it" --thread_ts=1774539502.747989
+slack post W5BPKRLUA "Hey, quick question..."   # DM, opened automatically
+slack post C087NCG774J "Got it" --thread_ts=1774539502.747989   # threaded reply
 ```
+
+**Post flags:**
+
+- `--thread_ts=<ts>` — post as a threaded reply to the message with that timestamp.
+- `--sign[=<emoji>]` / `--no-sign` — control the auto-sign reaction (see below).
+- `--no-watch` — skip the auto reply-watch (see below).
+- `--watch-scoop=<name>` — override the scoop the reply-watch routes to (default: the cone).
+
+#### Auto-sign (default-on)
+
+After a **successful** post the message is signed with an emoji reaction —
+`:icecream:` (🍦) by default, via `reactions.add`. Identical for channel posts,
+DMs, and threaded replies. Non-fatal: if Slack rejects the reaction
+(`already_reacted`, `invalid_name`, permission errors, etc.) the post still
+succeeds (exit 0) and a warning goes to stderr.
+
+```bash
+# Default: signs with :icecream:
+slack post C087NCG774J "Deploy is green"        # → "Signed with :icecream:"
+# Custom emoji (colons optional — ":robot_face:" or "robot_face" both work)
+slack post C087NCG774J "Bot did it" --sign=robot_face
+slack post C087NCG774J "Bot did it" --sign :robot_face:
+# Opt out entirely
+slack post C087NCG774J "no sticker please" --no-sign
+```
+
+#### Auto-watch for replies, 1 hour (default-on)
+
+After a successful post, replies are watched for **one hour**, then the watch
+tears itself down. It is silent when idle: a notification arrives only on a
+genuine new reply — never a tick, never a poll.
+
+- **Where replies go** — the cone by default, so they surface directly to you.
+  `--watch-scoop=<name>` routes them to another scoop instead.
+- **Scope** — channels with **more than 100 members** are watched **thread-only**
+  (the thread you replied into, or the new message's own). Everything smaller,
+  and every DM, is watched **whole-channel** — which also catches thread replies.
+- **Your own messages never notify.** Posting again into a live watch silently
+  **extends the hour**.
+- `--no-watch` opts out.
+
+```bash
+# Default: signs + watches for replies for 1h, routing to the cone
+slack post C087NCG774J "Anyone around to review PR 42?"
+#   Signed with :icecream:
+#   Watching channel+thread for replies for 1h (routes to cone)
+# Route replies to a specific scoop instead of the cone
+slack post C087NCG774J "ping" --watch-scoop=my-monitor
+# Post without watching
+slack post C087NCG774J "fire and forget" --no-watch
+```
+
+Internals: `references/watch-architecture.md`.
 
 ### slack channels [--search=term]
 
@@ -231,28 +249,26 @@ member count, and purpose.
 
 ### slack thread \<channel_id\> \<thread_ts\> [--limit=N]
 
-Read thread replies. Provide the channel ID and the thread's parent timestamp.
-Default limit is 50. Messages that carry files/images show an extra line per
-attachment with its name, type, dimensions, and file id, plus a ready-to-run
-`slack download <file_id>` hint — so screenshots shared in a thread are visible
-and fetchable.
+Read thread replies. Takes the channel ID and the thread's parent timestamp;
+default limit 50. Messages carrying files/images get an extra line per attachment
+with name, type, dimensions and file id, plus a ready-to-run
+`slack download <file_id>` hint.
 
 ### slack download \<file_id\> [--out=\<path\>]
 
 Download a file (e.g. a screenshot shared in a thread) to a local path so you can
-view it. Resolves the file via `files.info`, then fetches the bytes authenticated
-inside the Slack tab (`files.slack.com` needs the session cookie) and writes them
-to disk. Get the `<file_id>` from `slack thread` / `slack history` output (shown as
-`[F...]`). Alternatively pass `--url=<url_private>` directly. Defaults the output to
-`/tmp/<original-name>` when `--out` is omitted.
+view it. Get the `<file_id>` from `slack thread` / `slack history` output (shown as
+`[F...]`), or pass `--url=<url_private>` directly. Resolves via `files.info`, then
+fetches the bytes authenticated inside the Slack tab (`files.slack.com` needs the
+session cookie). Without `--out` the file lands in `/tmp/<original-name>`.
 
 ### slack upload \<channel_id\> \<file\> [--thread_ts=TS] [--comment="..."] [--title="..."]
 
 Upload a local file to a channel, DM, or thread. Accepts a conversation ID or a
-user ID (`U.../W...` opens a DM automatically). Uses Slack's 3-step external upload
-flow: `files.getUploadURLExternal` → POST the raw bytes (via `curl --data-binary`) →
-`files.completeUploadExternal`. `--comment` becomes the message text; `--thread_ts`
-posts it as a threaded reply.
+user ID (`U.../W...` opens a DM automatically), and uses Slack's 3-step external
+upload flow (`files.getUploadURLExternal` → raw bytes →
+`files.completeUploadExternal`). `--comment` becomes the message text, `--title`
+the file title, `--thread_ts` posts it as a threaded reply.
 
 ```bash
 slack upload C087NCG774J /tmp/report.pdf --comment="Q3 numbers"
@@ -272,12 +288,11 @@ slack post W57QU2CLV "Hey, quick question..."
 ```
 
 Deactivated and bot accounts are labelled (`[deactivated]`, `[bot]`) so you can
-tell duplicates apart. Slack has no `users.search` Web API method and
-`users.list` is restricted on enterprise grids, so this uses the same edge users
-cache (`edgeapi.slack.com/cache/<team>/users/search`) that powers Slack's own
-quick switcher. The request is cross-origin, but `browser.fetch` runs in the
-Slack tab and the shared `.slack.com` session cookie authenticates the xoxc
-token — no extra auth step.
+tell duplicates apart. Slack has no `users.search` method and `users.list` is
+restricted on enterprise grids, so this uses the edge users cache
+(`edgeapi.slack.com/cache/<team>/users/search`) behind Slack's own quick switcher:
+cross-origin, but `browser.fetch` runs in the Slack tab and the shared
+`.slack.com` cookie authenticates the xoxc token — no extra auth step.
 
 ### slack user \<user_id\>
 
@@ -300,24 +315,11 @@ delivered as a lick event to the specified scoop within seconds.
 **Options:**
 - `--scoop=<name>` — **(required)** the scoop that receives lick events
 - `--thread=<thread_ts>` — watch a specific thread instead of the whole channel
-- `--filter=<js>` — a JS filter passed to the underlying webhook; it is evaluated
-  per forwarded message (`(event) => …`, where `event.body` is the Slack message
-  frame) and a falsy result drops the event *before it wakes the scoop*. Use this
-  to wake the scoop only on messages you care about (e.g. alerts/escalations)
-  instead of every message in the channel. Example:
+- `--filter=<js>` — a JS filter (`(event) => …`, `event.body` is the Slack message
+  frame) evaluated per forwarded message; a falsy result drops it *before it wakes
+  the scoop*, so the scoop only wakes on messages worth waking for. Example:
   `--filter='(e)=>/deploy failed/i.test(JSON.stringify(e.body))'`
 - `--force` — replace an existing watch on the same target
-
-**How it works:**
-1. Creates a SLICC webhook routed to the target scoop
-2. Registers a declarative WebSocket observer on the Slack browser tab via the
-   sanctioned `browser.websocket` runtime API (no page-context code injection,
-   no prototype patching)
-3. Slack's `wss://*.slack.com/` connections carry all real-time events
-   (messages, typing indicators, etc.)
-4. The observer filters for `type: "message"` frames matching the watched
-   channel (and thread if specified)
-5. Matching frames are forwarded to the webhook → delivered as licks to the scoop
 
 **Lick payload:** the raw Slack `message` frame that matched the filter, e.g.:
 ```json
@@ -331,45 +333,46 @@ delivered as a lick event to the specified scoop within seconds.
   "subtype": null
 }
 ```
-The watched channel/thread is implicit in the subscription, and the complete
-Slack frame is delivered (any additional Slack fields are preserved).
+The watched channel/thread is implicit, and the complete Slack frame is delivered
+(any additional Slack fields are preserved).
 
-**Duplicate prevention:** The watch ID is deterministic from channel + thread.
-You cannot create two watches on the same target without `--force`.
+**Duplicate prevention:** the watch ID is deterministic from channel + thread, so
+you cannot create two watches on the same target without `--force`.
 
-**Durability:** The observer lives in the Slack tab. If the page reloads, use
-`slack reinject` to re-register the observers for all active watches.
+Each watch keeps one SLICC webhook plus a state file at
+`/workspace/skills/slack/.watch-<id>.json`. Delivery depends on the Slack tab: if
+the page reloads, run `slack reinject`. Internals:
+`references/watch-architecture.md`.
 
 ### slack unwatch \<channel_id\> [--thread=\<thread_ts\>]
 
-Stop watching a channel or thread. Deletes the webhook and removes the watch state.
+Stop watching a channel or thread. Deletes the webhook (which is what stops
+delivery), the `+1h` teardown task if present, and the watch state.
 
 ### slack watches
 
-List all active Slack watches with their targets and scoops.
+List all active Slack watches with their targets, scoops, webhook, and expiry.
 
 ### slack reinject
 
-Re-register the WebSocket observers on the Slack tab. Use after a page reload
-or if watches stop firing. This reads all active watch state files and
-re-registers an observer for each.
+Re-register the WebSocket observers on the Slack tab for all active watches. Use
+after a page reload, or if watches stop firing.
 
-## Watch architecture
+### slack monday [--limit=N] [--depth=N] [--date=Nd]
 
-```
-Slack servers → wss://*.slack.com/ → Browser WebSocket
-    ↓
-Runtime WebSocket observer (declarative filter: type=message + channel/thread)
-    ↓
-forward → SLICC webhook (closed-enum sink)
-    ↓
-SLICC delivers lick event to target scoop
-```
+Monday protocol: dump the Slack inbox as a single JSON array for triage. Merges
+unread mentions, unread DMs, and unread thread replies, deduplicates them and
+sorts newest first. Each item is
+`{ id, source, type: mention|dm|thread, title, subtitle, url, ts, body,
+participants, meta: { channel, thread_ts, msg_ts } }`, where `body` is the thread
+(or DM tail) fetched to `--depth` messages. Every source is non-fatal — a failing
+one is skipped rather than aborting the run.
 
-**Operational notes:**
-- State files: `/workspace/skills/slack/.watch-<id>.json` (webhook IDs + config)
-- One SLICC webhook per watch routes events to the target scoop
-- After a page reload, run `slack reinject` to re-register the observers
+**Flags:**
+- `--limit=N` — items per source, and the cap on the final array (default 50)
+- `--depth=N` — messages of thread/DM context per item (default 5; `0` skips
+  thread fetching, leaving `body` empty for mentions and thread items)
+- `--date=Nd` — how far back to look: `Nh`, `Nd` or `Nw` (default `7d`)
 
 ## Enterprise grid notes
 
@@ -389,56 +392,37 @@ at the support portal domain.
 ### Quick start
 
 ```bash
-# List all help requests
+# List all help requests, or only the open ones
 slack-support list
-
-# List only open requests
 slack-support list --status=open
-
-# View a specific request with comments
+# View a specific request with its comment thread
 slack-support view 6750592
-
 # Reply to a request
 slack-support reply 6750592 "Thanks, that fixed it."
-
 # Create a new request
 slack-support create --topic=slack-connect --title="Connect issue" "Cannot invite external user"
-
 # Resolve a request
 slack-support resolve 6750592
 ```
 
 ### Available commands
 
-#### slack-support list [--status=open|closed|all]
+- `slack-support list [--status=open|closed|all]` — request ID, status, title and
+  last-updated date. Default `all`.
+- `slack-support view <id>` — details plus the comment thread.
+- `slack-support reply <id> <message>` — add a reply to an existing request.
+- `slack-support create --topic=<topic> --title=<title> <message>` — open a new
+  request. Topics: `audio-video`, `billing-plans`, `connection-trouble`,
+  `managing-channels`, `managing-members`, `notifications`, `signing-in`,
+  `slack-connect`, `workflow-builder`, `workspace-migration`.
+- `slack-support resolve <id>` — mark a request resolved.
 
-List help requests. Default shows all. Displays request ID, status, title,
-and last updated date.
+Auth is the existing browser session cookie at
+`adobe-dx-support.enterprise.slack.com` — no separate token, since the
+`playwright-cli` commands run in the tab context.
 
-#### slack-support view \<id\>
+## References
 
-View a request's details and comment thread.
-
-#### slack-support reply \<id\> \<message\>
-
-Add a reply to an existing request.
-
-#### slack-support create --topic=\<topic\> --title=\<title\> \<message\>
-
-Create a new help request. Available topics: `audio-video`, `billing-plans`,
-`connection-trouble`, `managing-channels`, `managing-members`, `notifications`,
-`signing-in`, `slack-connect`, `workflow-builder`, `workspace-migration`.
-
-#### slack-support resolve \<id\>
-
-Mark a request as resolved.
-
-### Authentication
-
-Uses cookie-based auth via the existing browser session at
-`adobe-dx-support.enterprise.slack.com`. No separate token is needed — the
-`playwright-cli` commands execute in the browser tab context.
-
-## Endpoints reference
-
-See `references/endpoints.md` for the full endpoint documentation.
+- `references/endpoints.md` — full Slack Web API endpoint documentation.
+- `references/watch-architecture.md` — internals of `slack watch` and of
+  `slack post`'s reply auto-watch (observer, filter, TTL teardown, state files).
