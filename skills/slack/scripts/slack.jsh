@@ -309,6 +309,50 @@ const DEFAULT_WATCH_SCOOP = 'cone';
 const RELAY_WATCH_SCOOP = 'slack-reply-watch';
 const AUTOWATCH_TTL_MS = 3600 * 1000; // 1 hour
 
+// --- Last-post memory (for `--thread_ts=last`) --------------------------------
+// After every successful `slack post` the thread root we wrote into (an explicit
+// --thread_ts, else the fresh message's own ts) is remembered per workspace and
+// channel, so a multi-part write-up can chain replies without the caller
+// tracking timestamps (issue #307). Entirely best-effort: a read or write
+// failure never affects the post.
+//
+// ONE FILE PER WORKSPACE+CHANNEL, mirroring the `.watch-<id>.json` convention.
+// A single shared map would need a read-modify-write, and two `slack post`
+// processes running concurrently in different channels would each rewrite the
+// whole map from their own stale read — the later write silently dropping the
+// other channel's entry, so a later `--thread_ts=last` could resurrect an older
+// root and reply into the wrong thread. Writing only this channel's own file
+// removes the shared state entirely; concurrent posts to the SAME channel still
+// race, but there last-write-wins is exactly the intended semantics.
+const LAST_POST_DIR = '/workspace/skills/slack';
+
+function lastPostFile(wsId, channel) {
+  // Sanitize: the channel arrives from argv, and the id is interpolated into a
+  // path — anything outside [A-Za-z0-9_-] (notably `/` and `..`) is collapsed so
+  // the state file can never escape the skill directory.
+  const key = `${wsId || 'active'}-${channel}`.replace(/[^A-Za-z0-9_-]/g, '_');
+  return `${LAST_POST_DIR}/.last-post-${key}.json`;
+}
+
+async function readLastPostTs(wsId, channel) {
+  try {
+    const raw = await fs.readFile(lastPostFile(wsId, channel), 'utf8');
+    const state = JSON.parse(raw);
+    const val = state && state.ts;
+    return typeof val === 'string' && val ? val : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function rememberLastPostTs(wsId, channel, ts) {
+  if (!ts) return;
+  try {
+    const state = { workspace: wsId || null, channel, ts, updatedAt: new Date().toISOString() };
+    await fs.writeFile(lastPostFile(wsId, channel), JSON.stringify(state));
+  } catch (_) { /* best-effort only */ }
+}
+
 // Start (or extend) the reply auto-watch for a just-posted message.
 //
 // DELIVERY MECHANISM — EVENT-DRIVEN WebSocket observer (silent when idle).
@@ -587,7 +631,10 @@ function formatMessage(msg) {
   const name = msg.user_profile?.display_name || msg.user_profile?.real_name || msg.user || 'unknown';
   const time = formatTimestamp(msg.ts);
   const text = msg.text || '';
-  const thread = msg.reply_count ? ` [${msg.reply_count} replies · ts=${msg.ts}]` : '';
+  // The ts is always shown: it is the only handle for `--thread_ts=` and for
+  // `slack thread`, and hiding it until a thread exists made threading a fresh
+  // message impossible (issue #307). The reply count stays conditional.
+  const thread = ` [ts=${msg.ts}${msg.reply_count ? ` · ${msg.reply_count} replies` : ''}]`;
   let out = `[${time}] ${name}: ${text}${thread}`;
   // Surface file/image attachments so threads with screenshots are legible and
   // the file id is available for `slack download <file_id>`.
@@ -659,7 +706,7 @@ const commands = {
     const { flags, positional } = parseArgs(args);
     const channel = positional[0];
     if (!channel) {
-      console.error('Usage: slack history <channel_id> [--limit=N]');
+      console.error('Usage: slack history <channel_id> [--limit=N] [--json]');
       process.exit(1);
     }
     const wsId = await resolveWorkspace(globalFlags);
@@ -675,8 +722,15 @@ const commands = {
       process.exit(1);
     }
 
+    // --json emits the raw API `messages` array (newest first, exactly as
+    // conversations.history returns it) so `jq` can consume it.
+    if (flags.json) {
+      console.log(JSON.stringify(data.messages || [], null, 2));
+      return;
+    }
+
     // Print messages in chronological order (API returns newest first)
-    const msgs = data.messages.reverse();
+    const msgs = (data.messages || []).reverse();
     for (const msg of msgs) {
       console.log(formatMessage(msg));
     }
@@ -777,14 +831,36 @@ const commands = {
       process.exit(1);
     }
 
+    // Resolve --thread_ts. `--thread_ts=last` chains onto the thread root of the
+    // most recent message this CLI posted in the same channel (issue #307), so a
+    // multi-part write-up needs no timestamp bookkeeping by the caller.
+    if (flags.thread_ts === true) {
+      console.error('Error: --thread_ts requires a timestamp (or "last").');
+      process.exit(1);
+    }
+    let threadTsFlag = typeof flags.thread_ts === 'string' ? flags.thread_ts.trim() : '';
+    if (threadTsFlag === 'last') {
+      threadTsFlag = await readLastPostTs(wsId, targetChannel);
+      if (!threadTsFlag) {
+        console.error(`Error: --thread_ts=last: this CLI has not posted to ${targetChannel} yet.`);
+        console.error('Post the root message first, or pass an explicit --thread_ts=<ts>.');
+        process.exit(1);
+      }
+      console.log(`Threading onto last post: ${threadTsFlag}`);
+    }
+
     const params = { channel: targetChannel, text: sanitizedMessage };
-    if (flags.thread_ts) params.thread_ts = flags.thread_ts;
+    if (threadTsFlag) params.thread_ts = threadTsFlag;
 
     const data = await slackApi('chat.postMessage', params, wsId);
     if (!data.ok) {
       console.error('Error:', data.error);
       process.exit(1);
     }
+
+    // chat.postMessage returns the new message's ts at the top level, and again
+    // inside `message`; fall back to the nested copy if the top level is absent.
+    const sentTs = data.ts || (data.message && data.message.ts) || '';
 
     console.log(`Message sent to ${targetChannel} at ${formatTimestamp(data.ts)}`);
     if (targetChannel !== channel) {
@@ -793,6 +869,16 @@ const commands = {
     if (data.message) {
       console.log(`Text: ${data.message.text}`);
     }
+    // The raw ts, on its own line — without it there is no way to thread onto a
+    // message you just posted (issue #307). The hint targets the thread ROOT, so
+    // replying to a reply keeps the conversation in one thread.
+    if (sentTs) {
+      const rootTs = threadTsFlag || sentTs;
+      const wsPrefix = globalFlags.workspace ? `--ws=${globalFlags.workspace} ` : '';
+      console.log(`ts: ${sentTs}`);
+      console.log(`reply with: slack ${wsPrefix}post ${targetChannel} "..." --thread_ts=${rootTs}`);
+    }
+    await rememberLastPostTs(wsId, targetChannel, threadTsFlag || sentTs);
 
     // --- Feature 1: auto-sign the sent message with an emoji reaction ---
     // Default-on (Lars wants a reaction under every message). --no-sign opts
@@ -828,9 +914,7 @@ const commands = {
     // scoop (default: the cone). Thread root = the thread we replied into, else
     // the fresh message's own ts. Entirely non-fatal.
     if (flags['no-watch'] !== true && flags.watch !== false) {
-      const threadTs = (typeof flags.thread_ts === 'string' && flags.thread_ts)
-        ? flags.thread_ts
-        : data.ts;
+      const threadTs = threadTsFlag || sentTs;
       const watchScoop = (typeof flags['watch-scoop'] === 'string' && flags['watch-scoop'])
         ? flags['watch-scoop']
         : null;
@@ -974,7 +1058,7 @@ const commands = {
     const threadTs = positional[1];
 
     if (!channel || !threadTs) {
-      console.error('Usage: slack thread <channel_id> <thread_ts> [--limit=N]');
+      console.error('Usage: slack thread <channel_id> <thread_ts> [--limit=N] [--json]');
       process.exit(1);
     }
 
@@ -989,7 +1073,13 @@ const commands = {
       process.exit(1);
     }
 
-    for (const msg of data.messages) {
+    // --json emits the raw API `messages` array (root first, then replies).
+    if (flags.json) {
+      console.log(JSON.stringify(data.messages || [], null, 2));
+      return;
+    }
+
+    for (const msg of data.messages || []) {
       console.log(formatMessage(msg));
     }
     if (data.has_more) {
@@ -2131,15 +2221,19 @@ if (!cmd || cmd === 'help' || cmd === '--help') {
   console.log('  pending [--pages=N] [--json]             List pending approval requests');
   console.log('  approve <message_ts> [--channel=<id>]    Approve an interactive action (e.g. invite request)');
   console.log('  deny <message_ts> [--channel=<id>]       Deny an interactive action (e.g. invite request)');
-  console.log('  history <channel_id> [--limit=N]          Read channel messages');
-  console.log('  post <id> <message> [--thread_ts=TS] [--sign[=emoji]|--no-sign] [--no-watch] [--watch-scoop=<name>]');
-  console.log('                                           Post a message; auto-signs with :icecream: and');
+  console.log('  history <channel_id> [--limit=N] [--json] Read channel messages (--json = raw API messages)');
+  console.log('  post <id> <message> [--thread_ts=TS|last] [--sign[=emoji]|--no-sign] [--no-watch] [--watch-scoop=<name>]');
+  console.log('                                           Post a message; prints the new message ts and a');
+  console.log('                                           --thread_ts hint; auto-signs with :icecream: and');
   console.log('                                           auto-watches for replies for 1h (routes to cone)');
+  console.log('                                           --thread_ts=last threads onto the last message');
+  console.log('                                           this CLI posted in that channel');
   console.log('  upload <channel_id> <file> [--thread_ts=TS] [--comment="..."] [--title="..."]');
   console.log('                                           Upload a file to a channel/DM/thread');
   console.log('  download <file_id> [--out=<path>]         Download a file (e.g. thread image) locally');
   console.log('  channels --search=<term>                  Search for channels');
-  console.log('  thread <channel_id> <thread_ts> [--limit] Read thread replies (shows [F...] file ids)');
+  console.log('  thread <channel_id> <thread_ts> [--limit] [--json]');
+  console.log('                                           Read thread replies (shows [F...] file ids)');
   console.log('  find <name or email> [--limit=N]          Search users by name/email → user IDs');
   console.log('  user <user_id>                            Look up user info');
   console.log('  info <channel_id>                         Get channel info');

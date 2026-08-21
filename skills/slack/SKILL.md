@@ -41,8 +41,10 @@ slack history C087NCG774J
 slack --workspace=T06DUTYDQ channels --search=helix
 slack --ws=T06DUTYDQ history C06ABC123
 
-# Post — auto-signs with :icecream:, auto-watches replies for 1h → cone
+# Post — prints the new message's ts, auto-signs with :icecream:,
+# auto-watches replies for 1h → cone
 slack post C087NCG774J "Hello from SLICC!"
+slack post C087NCG774J "and part 2" --thread_ts=1787334522.567869   # reply in thread
 slack post C087NCG774J "quiet post" --no-sign --no-watch
 slack post W5BPKRLUA "Hey, quick question..."   # user ID → DM opened automatically
 
@@ -173,9 +175,21 @@ If step 3 still shows the same entry, the action button has expired. Re-trigger
 the request from the original source (e.g. ask the inviter to resend) rather
 than retrying the same `message_ts`.
 
-### slack history \<channel_id\> [--limit=N]
+### slack history \<channel_id\> [--limit=N] [--json]
 
 Fetch recent messages from a channel. Default limit is 20.
+
+Every line carries the message timestamp as `[ts=<ts>]` — this is the handle for
+`slack thread <channel> <ts>` and for `slack post ... --thread_ts=<ts>`. The reply
+count is appended when the message has replies: `[ts=1774539502.747989 · 3 replies]`.
+
+`--json` prints the raw `conversations.history` `messages` array (newest first,
+exactly as the API returns it) instead of the formatted lines, so `jq` can consume it:
+
+```bash
+slack history C087NCG774J --limit=1 --json | jq -r '.[0].ts'
+slack history C087NCG774J | grep -o 'ts=[0-9.]*'
+```
 
 ### slack post \<channel_or_user_id\> \<message\>
 
@@ -188,9 +202,35 @@ slack post W5BPKRLUA "Hey, quick question..."   # DM, opened automatically
 slack post C087NCG774J "Got it" --thread_ts=1774539502.747989   # threaded reply
 ```
 
+**Output.** A successful post prints the new message's timestamp and a ready-to-run
+reply hint, so a thread can be built without looking the `ts` up anywhere else:
+
+```
+Message sent to C087NCG774J at 2026-08-21 17:48:42 UTC
+Text: Hello channel!
+ts: 1787334522.567869
+reply with: slack post C087NCG774J "..." --thread_ts=1787334522.567869
+Signed with :icecream:
+```
+
+**Posting a thread (two steps):**
+
+```bash
+# 1. post the root and capture its ts
+ts=$(slack post C087NCG774J "Write-up, part 1 :thread:" | sed -n 's/^ts: //p')
+
+# 2. reply into that thread
+slack post C087NCG774J "part 2" --thread_ts="$ts"
+slack post C087NCG774J "part 3" --thread_ts=last   # same thread, no bookkeeping
+```
+
 **Post flags:**
 
 - `--thread_ts=<ts>` — post as a threaded reply to the message with that timestamp.
+- `--thread_ts=last` — reply into the thread root of the most recent message this
+  CLI posted in that channel (remembered in a per-workspace-and-channel
+  `.last-post-<workspace>-<channel>.json` state file, alongside the `.watch-*.json`
+  files). Errors if nothing has been posted there yet.
 - `--sign[=<emoji>]` / `--no-sign` — control the auto-sign reaction (see below).
 - `--no-watch` — skip the auto reply-watch (see below).
 - `--watch-scoop=<name>` — override the scoop the reply-watch routes to (default: the cone).
@@ -252,10 +292,12 @@ Search for channels by name. Uses `search.modules` API (the standard
 `conversations.list` is restricted on enterprise grids). Returns channel ID, name,
 member count, and purpose.
 
-### slack thread \<channel_id\> \<thread_ts\> [--limit=N]
+### slack thread \<channel_id\> \<thread_ts\> [--limit=N] [--json]
 
-Read thread replies. Takes the channel ID and the thread's parent timestamp;
-default limit 50. Messages carrying files/images get an extra line per attachment
+Read thread replies. Takes the channel ID and the thread's parent timestamp
+(from `slack post` output or the `[ts=...]` in `slack history`); default limit 50.
+`--json` prints the raw `conversations.replies` `messages` array instead of the
+formatted lines. Messages carrying files/images get an extra line per attachment
 with name, type, dimensions and file id, plus a ready-to-run
 `slack download <file_id>` hint.
 
