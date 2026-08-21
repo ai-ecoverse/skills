@@ -756,8 +756,17 @@ const commands = {
     } catch (e) {
       // custom emoji cache unavailable — continue with static map only
     }
+    // Shortcode preflight. A group of digits between colons is not a shortcode when
+    // it is flanked by digits: "09:41:16" contains ":41:", "1:2:3" contains ":2:".
+    // Digit-named emoji (:100:, :1234:, :8ball:) still resolve, because a real
+    // shortcode's neighbours are whitespace or punctuation, never a digit. Flanked
+    // matches are left verbatim and never counted as unresolved, so a message that
+    // merely mentions a time cannot be refused.
     const unresolved = [];
-    const sanitizedMessage = message.replace(/:[a-z0-9_+-]+:/g, (match) => {
+    const sanitizedMessage = message.replace(/:[a-z0-9_+-]+:/g, (match, offset) => {
+      const before = offset > 0 ? message[offset - 1] : '';
+      const after = message[offset + match.length] || '';
+      if (/[0-9]/.test(before) || /[0-9]/.test(after)) return match;
       if (emojiMap[match]) return emojiMap[match];
       unresolved.push(match);
       return match;
@@ -1272,7 +1281,10 @@ const commands = {
       return;
     }
 
-    const files = globResult.stdout.trim().split('\n');
+    // The shell's `ls` separates matches with blank lines, so a naive split yields
+    // empty entries — which inflated the count and printed a bogus "corrupt state
+    // file" line. Drop the empties (and stray whitespace) here.
+    const files = globResult.stdout.split('\n').map((f) => f.trim()).filter(Boolean);
     console.log(`Active watches (${files.length}):\n`);
     for (const file of files) {
       try {
@@ -1294,7 +1306,10 @@ const commands = {
       return;
     }
 
-    const files = globResult.stdout.trim().split('\n');
+    // The shell's `ls` separates matches with blank lines, so a naive split yields
+    // empty entries — which inflated the count and printed a bogus "corrupt state
+    // file" line. Drop the empties (and stray whitespace) here.
+    const files = globResult.stdout.split('\n').map((f) => f.trim()).filter(Boolean);
     const states = [];
     for (const file of files) {
       try {

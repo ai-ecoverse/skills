@@ -195,6 +195,11 @@ slack post C087NCG774J "Got it" --thread_ts=1774539502.747989   # threaded reply
 - `--no-watch` — skip the auto reply-watch (see below).
 - `--watch-scoop=<name>` — override the scoop the reply-watch routes to (default: the cone).
 
+Emoji shortcodes in the message are converted to Unicode before sending; a
+shortcode that resolves to nothing is refused, so the message never posts with a
+literal `:name:` in it. Digits between colons inside a time or ratio
+(`09:41:16`, `16:9:1`) are not treated as shortcodes.
+
 #### Auto-sign (default-on)
 
 After a **successful** post the message is signed with an emoji reaction —
