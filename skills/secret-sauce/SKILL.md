@@ -21,9 +21,52 @@ SLICC fetch() routes through the browser Fetch API:
 - Origin is always `http://localhost:...` — cannot be overridden
 - User-Agent cannot be overridden
 
-**Rule of thumb:** If the API is designed for third-party integrations (documented, uses API keys/PATs), use `fetch()` directly. If the API is the web app's own backend, use `playwright-cli eval` from the page context — it carries real cookies, correct origin, and full browser state.
+**Rule of thumb:** If the API is designed for third-party integrations (documented, uses API keys/PATs), use `fetch()` directly. If the API is the web app's own backend, call it from the page context — it carries real cookies, correct origin, and full browser state. During discovery that means `playwright-cli eval`; in the *generated* script it means `require('sliccy:browser').fetch(tab, …)`.
 
-`exec()` returns `{stdout, stderr, exitCode}`. Use it for `playwright-cli`, `webhook`, and other shell commands from .jsh scripts.
+`require('sliccy:exec')` returns `{stdout, stderr, exitCode}`. Use it for `webhook` and other shell commands from .jsh scripts. It runs a **real shell** — pass `exec.spawn([bin, ...args])` for anything containing a variable.
+
+## Modules: never hand-roll what `require()` already gives you
+
+Generated `.jsh` scripts are JavaScript with a CommonJS `require()`. Reach for a module before writing a helper — the recurring review failure in generated skills is 200 lines of hand-rolled arg parsing, shell quoting, table formatting, and duration math that the runtime already ships.
+
+`require()` resolves in this order: `sliccy:*` capability bridges → served Node built-ins → `node_modules` on disk.
+
+**1. `sliccy:*` — always available, zero install. Prefer these over any npm equivalent.**
+
+| Need | Use | Not |
+| --- | --- | --- |
+| Argument parsing | `process.argv.parseFlags()` → `{positional, flags, subcommand, passthrough}` | `minimist`, a hand-rolled loop |
+| Shell quoting | `exec.spawn([bin, ...args])` from `sliccy:exec` | `shell-quote`, a hand-rolled `shellQuote()` |
+| Errors / usage / `--json` output | `sliccy:cli` — `cli.die`, `cli.out`, `cli.warn`, `cli.help` | `process.exit` + `console.error` |
+| Terminal color | `sliccy:color` — no-ops when `!isTTY` or `NO_COLOR` | `chalk`, `picocolors` |
+| Tables, truncation, dates | `sliccy:fmt` — `table`, `col`, `trunc`, `date` (ANSI-aware) | `cli-table3`, `date-fns` |
+| Durations, `--since`/`--until` | `sliccy:time` — `parseDuration`, `ago`, `range`, `future` (`m` = minutes, `M` = months) | `ms`, `dayjs` |
+| Bounded fan-out | `pool(concurrency, items, fn)` from `sliccy:pool` | `Promise.all` over the whole list, `p-limit` |
+| Retrying HTTP client | `sliccy:http` — `http.client({baseUrl, token, retry: {on, maxAttempts}})` | `axios`, `got`, a hand-rolled retry |
+| Page-context fetch, cookies, tabs | `sliccy:browser` | `exec('playwright-cli …')` |
+| Skill paths, config, OAuth tokens | `sliccy:skill` — `skill.dir`, `skill.refs`, `(await skill.config()) \|\| {}`, `skill.token(id)` | hardcoded `/workspace/skills/<name>/` |
+
+The full set: `exec`, `agent`, `skill`, `http`, `browser`, `cli`, `color`, `time`, `fmt`, `pool`, `usb`, `serial`, `hid`. An unknown name throws and lists the known ones.
+
+**2. Node built-ins** — `require('fs')`, `fs/promises`, `path`, `crypto`, `child_process`, `buffer`, `assert`, `util`, `events`, `os`, `stream`, `url`, `zlib`. `fs` is the VFS bridge (`readFile`, `writeFile`, `readFileBinary`, `writeFileBinary`, `readDir`, `exists`, `stat`, `mkdir`, `rm`, `fetchToFile`) — no `watch`, no streams, sync reads capped at 1 MB. `http`/`https`/`net`/`tls`/`dns`/`vm`/`worker_threads` throw; use `fetch()` or `sliccy:browser`.
+
+**3. npm packages — only if installed, and there is no CDN fallback.** A bare `require('some-pkg')` resolves by walking `node_modules` upward from the *script's own directory*. Nothing is bundled and nothing is fetched from a CDN: an uninstalled package fails immediately with `Cannot find module 'x' (run: ipk install x)`.
+
+```bash
+cd /workspace/skills/{app-name}/scripts
+ipk install some-pkg           # writes node_modules/ + package.json
+ipk add esbuild-wasm           # only if the package is ESM and needs transpiling
+```
+
+`node_modules/` is gitignored, so an installed tree does **not** travel with the skill. A generated skill that needs a package must therefore pick one of:
+
+- **Drop the dependency** — the default. Check the `sliccy:` table above first; it covers almost every reason a generated client reaches for npm.
+- **Bundle it** — `esbuild <src>.js --bundle --format=cjs --target=node18 --outfile=<name>.jsh` and commit the single generated file (the `xlsx` skill is the reference).
+- **Document a one-time install** — put the exact `ipk install` line in the generated `SKILL.md` and make the script fail with an actionable error naming that command (the `v86` skill is the reference).
+
+Native packages (`sharp`, `sqlite3`, `puppeteer`, `canvas`, …) hard-throw — they can never work here. Prefer a `sliccy:` bridge over any dependency: a purpose-built bridge has beaten a generic npm utility every time it came up in review.
+
+**Limitation — static specifiers only.** The module graph is built by scanning the entry file for `require('<string-literal>')` before it runs. `require(pkgName)` with a variable, or a specifier assembled at runtime, is not in the graph and throws. Write every specifier as a literal at the top of the script.
 
 ## Phase 1: Discovery
 
@@ -130,13 +173,17 @@ skills/{app-name}/
 ├── scripts/
 │   ├── {app-name}.jsh               # Main API client
 │   ├── auth.jsh                     # Auth helpers (if needed)
-│   └── watch.jsh                    # Observer/webhook setup (if applicable)
+│   ├── watch.jsh                    # Observer/webhook setup (if applicable)
+│   └── package.json                 # ONLY if an npm dependency was unavoidable
+│                                    # (node_modules/ is gitignored — see Modules)
 ├── references/
 │   ├── endpoints.md                 # Discovered API endpoints
 │   ├── auth-strategies.md           # Auth strategy table
 │   ├── har-filter.md                # Full annotated HAR capture filter
 │   ├── observers.md                 # Observer type selection and patterns
-│   └── page-context-helper.md       # openApp() and apiViaBrowser() helpers
+│   └── page-context-helper.md       # openApp()/apiViaBrowser() — discovery-time
+│                                    # playwright-cli helpers; the shipped .jsh
+│                                    # uses sliccy:browser instead
 └── assets/
     ├── observer.js                  # Page-context observer (if applicable)
     └── -.{domain}.bsh               # Auto-injector (if applicable)
@@ -144,7 +191,99 @@ skills/{app-name}/
 
 ### .jsh script structure
 
-A `.jsh` script should include: (1) tab management via `openApp()`, (2) auth extraction from localStorage/cookies, (3) direct `fetch()` or page-context `apiViaBrowser()` depending on the auth mechanism, and (4) a command dispatch block that maps CLI arguments to API operations. The filename without `.jsh` becomes the shell command name.
+The filename without `.jsh` becomes the shell command name. Start from this template — it is the house style, and every utility it needs comes from `require()` rather than a local helper (see [Modules](#modules-never-hand-roll-what-require-already-gives-you)).
+
+```js
+// {app-name}.jsh — API client for {App Name} (uses the browser session)
+const browser = require('sliccy:browser');
+const cli = require('sliccy:cli');
+const color = require('sliccy:color');
+const fmt = require('sliccy:fmt');
+
+const HELP = `
+{app-name} — talk to {App Name} via its API
+
+USAGE
+  {app-name} list [--limit N]
+  {app-name} get <id>
+
+FLAGS
+  --json       Output raw JSON
+
+REQUIRES
+  {app-domain} open and logged in in your browser
+`.trim();
+
+// ── args ── runtime parser; do not hand-roll and do not install minimist
+const parsed = process.argv.parseFlags();
+const subcommand = parsed.subcommand || '';
+const positional = parsed.positional.slice(1);   // drop the leading subcommand
+const flags = parsed.flags;                      // booleans are real `true`; repeats become arrays
+
+// ── session ── memoize: SSO redirects move the tab off-domain mid-flow
+let _tab = null;
+async function getTab() {
+  if (_tab) return _tab;
+  _tab = await browser.findTab({ urlMatch: /{app-domain-escaped}/ });   // urlMatch beats {domain}; escape the dots
+  if (!_tab) cli.die('open {app-domain} in your browser first', { prefix: '{app-name}' });
+  return _tab;
+}
+
+// ── one fetch wrapper ── so every command gives identical auth-expiry guidance
+async function apiFetch(tab, path, opts = {}) {
+  const res = await browser.fetch(tab, `https://{app-domain}${path}`, {
+    ...opts,
+    headers: { 'Accept': 'application/json', ...(opts.headers || {}) },   // + any CSRF/custom header the HAR showed
+  });
+  if (res.status === 401 || res.status === 403)
+    cli.die('session expired — log in to {App Name} in your browser, then retry', { prefix: '{app-name}' });
+  if (!res.ok) cli.die(`{App Name} returned ${res.status} for ${path}`, { prefix: '{app-name}' });
+  return res.body;
+}
+
+// ── commands ──
+async function cmdList(tab, flags) {
+  const n = parseInt(flags.limit ?? flags.l, 10);
+  const limit = Number.isFinite(n) ? Math.min(Math.max(n, 1), 50) : 10;
+  const data = await apiFetch(tab, `/api/items?limit=${limit}`);
+  if (flags.json) { cli.out(data); return; }
+  const items = Array.isArray(data) ? data : (data.items || data.results || []);
+  if (!items.length) { console.log(color.dim('  No items found.')); return; }
+  for (const it of items)
+    console.log(`  ${color.cyan(color.bold(it.name))}  ${color.dim(`id:${it.id}`)}  ${fmt.date(it.updated, 'human')}`);
+}
+
+async function cmdGet(tab, positional, flags) {
+  const id = positional[0];
+  if (!id) cli.die('usage: {app-name} get <id>', { prefix: '{app-name}' });
+  const data = await apiFetch(tab, `/api/items/${encodeURIComponent(id)}`);
+  if (flags.json) { cli.out(data); return; }
+  const item = data.item || data;                      // detail endpoints nest what list endpoints flatten
+  console.log(`  ${color.cyan(color.bold(item.name || 'Item'))}  ${color.dim(`id:${item.id ?? id}`)}`);
+}
+
+// ── main ──
+async function main() {
+  if (flags.help || flags.h || !subcommand || subcommand === 'help') cli.help(HELP);
+  const tab = await getTab();
+  try {
+    if (subcommand === 'list') await cmdList(tab, flags);
+    else if (subcommand === 'get') await cmdGet(tab, positional, flags);
+    else cli.die(`unknown command: ${subcommand}\nRun '{app-name} --help' for usage.`, { prefix: '{app-name}' });
+  } catch (err) {
+    if (err?.name === 'NodeExitError') throw err;   // MANDATORY: cli.die/process.exit unwind by throwing this
+    cli.die(err.message, { prefix: '{app-name}' });
+  }
+}
+await main();
+```
+
+Notes that survive review:
+- Top-level `await` and top-level `return` are both legal — the file runs as an async function body.
+- `cli.die`/`process.exit` throw `NodeExitError` to unwind. **Every** catch around command dispatch must re-throw it first, or a real auth failure is downgraded into a confusing second error.
+- Every command takes `--json` and early-returns the raw response via `cli.out`. Still exit non-zero on failure in `--json` mode.
+- Resolve the current user/account dynamically and `die` loudly if that fails. Never ship a hardcoded ID as a fallback identity.
+- For a token-based API, swap `browser.fetch` for `http.client({baseUrl, token, retry: {on: [429, 503], maxAttempts: 3}})` from `sliccy:http` — it honours `Retry-After` and throws `HttpError{status, url, body}`, so no hand-rolled retry loop is needed.
 
 ### Generated SKILL.md frontmatter
 
@@ -169,6 +308,8 @@ Include the app name multiple times and list common action triggers to maximise 
 3. 401 triggers re-auth message; 429 shows rate-limit info
 4. The .jsh is callable as a shell command (filename without .jsh = command)
 5. The SKILL.md description includes the app name and common action words
+6. No hand-rolled helper duplicates a module — grep the script for a local arg parser, `shellQuote`, colour escapes, a retry loop, or a table formatter and replace each with its `require()` equivalent
+7. Every `require()` specifier is a string literal, and every bare npm package actually resolves (run the script once; an uninstalled one fails with `Cannot find module … (run: ipk install …)`)
 
 ## Decision tree
 
