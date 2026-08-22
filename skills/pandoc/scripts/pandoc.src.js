@@ -53,6 +53,45 @@ LICENSE
   pandoc-wasm is GPL-2.0-or-later; typst-wasm is MIT. See references/licensing.md.
 `.trim();
 
+// process.argv.parseFlags() treats `-o path` as boolean `-o` (short-flag cluster).
+function rawFlagValue(short, long) {
+  const raw = process.argv.slice(2);
+  for (let i = 0; i < raw.length; i++) {
+    const arg = raw[i];
+    if (arg === short || arg === long) {
+      const next = raw[i + 1];
+      if (next && !next.startsWith('-')) return next;
+    }
+    if (arg.startsWith(`${long}=`)) return arg.slice(long.length + 1);
+    if (short.length === 2 && arg.startsWith(`${short}=`)) return arg.slice(short.length + 1);
+  }
+  return undefined;
+}
+
+function flagString(flags, ...keys) {
+  for (const key of keys) {
+    const value = flags[key];
+    if (typeof value === 'string' && value) return value;
+  }
+  return undefined;
+}
+
+function resolveOutput(flags, fallback) {
+  return (
+    flagString(flags, 'output', 'o') ||
+    rawFlagValue('-o', '--output') ||
+    fallback
+  );
+}
+
+function resolveFrom(flags) {
+  return flagString(flags, 'from', 'f') || rawFlagValue('-f', '--from');
+}
+
+function resolveTo(flags) {
+  return flagString(flags, 'to', 't') || rawFlagValue('-t', '--to');
+}
+
 async function loadWasmBytes(path) {
   const bytes = await fs.readFileBinary(path);
   const buf = new ArrayBuffer(bytes.byteLength);
@@ -177,8 +216,8 @@ async function cmdConvert(positional, flags) {
   if (!input) {
     cli.die('usage: pandoc convert -f <from> -t <to> <input> [-o out]', { prefix: 'pandoc' });
   }
-  const from = flags.f || flags.from;
-  const to = flags.t || flags.to;
+  const from = resolveFrom(flags);
+  const to = resolveTo(flags);
   if (!from) cli.die('--from/-f is required', { prefix: 'pandoc' });
   if (!to) cli.die('--to/-t is required', { prefix: 'pandoc' });
 
@@ -188,7 +227,7 @@ async function cmdConvert(positional, flags) {
   if (toNorm === 'pdf') {
     const { convert } = await getPandoc();
     const typstOut = await convert({ from, to: 'typst', standalone: true }, text, {});
-    const outPath = flags.o || flags.output || defaultOutPath(input, 'pdf');
+    const outPath = resolveOutput(flags, defaultOutPath(input, 'pdf'));
     const bytes = await typstCompileSource(typstOut.stdout, outPath);
     console.log(color.green('✓') + ` wrote ${outPath} (${bytes} bytes)`);
     return;
@@ -197,7 +236,7 @@ async function cmdConvert(positional, flags) {
   const { convert } = await getPandoc();
   const result = await convert({ from, to, standalone: true }, text, {});
   const out = result.stdout;
-  const outPath = flags.o || flags.output;
+  const outPath = resolveOutput(flags);
 
   if (outPath) {
     await fs.writeFile(outPath, out, 'utf8');
@@ -214,7 +253,7 @@ async function cmdPdf(positional, flags) {
   const text = await readInput(input);
   const { convert } = await getPandoc();
   const typstOut = await convert({ from: 'markdown', to: 'typst', standalone: true }, text, {});
-  const outPath = flags.o || flags.output || defaultOutPath(input, 'pdf');
+  const outPath = resolveOutput(flags, defaultOutPath(input, 'pdf'));
   const bytes = await typstCompileSource(typstOut.stdout, outPath);
   console.log(color.green('✓') + ` wrote ${outPath} (${bytes} bytes)`);
 }
@@ -238,7 +277,7 @@ async function cmdTypstCompile(positional, flags) {
     cli.die('usage: pandoc typst compile <input.typ> [-o out.pdf]', { prefix: 'pandoc' });
   }
   const text = await readInput(input);
-  const outPath = flags.o || flags.output || defaultOutPath(input, 'pdf');
+  const outPath = resolveOutput(flags, defaultOutPath(input, 'pdf'));
   const bytes = await typstCompileSource(text, outPath);
   console.log(color.green('✓') + ` wrote ${outPath} (${bytes} bytes)`);
 }
