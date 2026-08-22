@@ -8,7 +8,8 @@
       "**/*.cjs",
       "**/*.json",
       "**/*.jsonc",
-      "!**/node_modules/**"
+      "!**/node_modules/**",
+      "!**/pandoc-core.mjs"
     ]
   },
   "formatter": {

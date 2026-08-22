@@ -1,0 +1,45 @@
+name: pandoc skill bundle
+
+# Rebuilds pandoc-core.mjs from pandoc-wasm/src/core.js and checks drift.
+
+on:
+  pull_request:
+    paths:
+      - 'skills/pandoc/**'
+      - '.github/workflows/pandoc-build.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'skills/pandoc/**'
+      - '.github/workflows/pandoc-build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: skills/pandoc/scripts
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Install build deps
+        run: npm install
+
+      - name: Build bundle
+        run: npm run build
+
+      - name: Drift check (committed bundle vs freshly built)
+        run: |
+          if git diff --exit-code -- pandoc-core.mjs; then
+            echo "committed pandoc-core.mjs matches a fresh build."
+          else
+            echo "::error::skills/pandoc/scripts/pandoc-core.mjs is stale. Run 'npm run build' in skills/pandoc/scripts and commit."
+            exit 1
+          fi
