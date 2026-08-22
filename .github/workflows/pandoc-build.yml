@@ -1,6 +1,6 @@
 name: pandoc skill bundle
 
-# Rebuilds pandoc-core.mjs from pandoc-wasm/src/core.js and checks drift.
+# Rebuilds pandoc-core.cjs from pandoc-wasm/src/core.js and checks drift.
 
 on:
   pull_request:
@@ -37,9 +37,9 @@ jobs:
 
       - name: Drift check (committed bundle vs freshly built)
         run: |
-          if git diff --exit-code -- pandoc-core.mjs; then
-            echo "committed pandoc-core.mjs matches a fresh build."
+          if git diff --exit-code -- pandoc-core.cjs; then
+            echo "committed pandoc-core.cjs matches a fresh build."
           else
-            echo "::error::skills/pandoc/scripts/pandoc-core.mjs is stale. Run 'npm run build' in skills/pandoc/scripts and commit."
+            echo "::error::skills/pandoc/scripts/pandoc-core.cjs is stale. Run 'npm run build' in skills/pandoc/scripts and commit."
             exit 1
           fi

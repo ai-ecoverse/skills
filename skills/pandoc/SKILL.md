@@ -79,7 +79,7 @@ pandoc query version
 ## Notes
 
 - **Never `require('pandoc-wasm')`** at runtime — use the skill's prebuilt
-  `scripts/pandoc-core.mjs` plus `fs.readFileBinary` on `pandoc.wasm`.
+  `scripts/pandoc-core.cjs` plus `fs.readFileBinary` on `pandoc.wasm`.
 - **PDF shape:** typst-wasm returns `pdf.output` (Uint8Array), not `pdf.pages`.
 - **Fonts:** default Libertinus / New CM fonts from `@typst-wasm/fonts` are loaded
   automatically for PDF output.
@@ -89,6 +89,6 @@ pandoc query version
 
 ## Maintainers
 
-Rebuild `scripts/pandoc-core.mjs` from `pandoc-wasm/src/core.js` via
+Rebuild `scripts/pandoc-core.cjs` from `pandoc-wasm/src/core.js` via
 `npm run build` in `scripts/`. `pandoc.jsh` is hand-authored from `pandoc.src.js`
 (no esbuild bundle of the CLI — only the pandoc core glue is prebuilt).

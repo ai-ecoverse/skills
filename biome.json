@@ -9,7 +9,7 @@
       "**/*.json",
       "**/*.jsonc",
       "!**/node_modules/**",
-      "!**/pandoc-core.mjs"
+      "!**/pandoc-core.cjs"
     ]
   },
   "formatter": {

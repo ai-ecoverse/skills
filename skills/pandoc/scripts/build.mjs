@@ -1,4 +1,4 @@
-// build.mjs — bundle pandoc-wasm/src/core.js -> pandoc-core.mjs
+// build.mjs — bundle pandoc-wasm/src/core.js -> pandoc-core.cjs
 //
 // Run locally or in CI:  npm install && npm run build
 //
@@ -17,10 +17,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 
 await esbuild.build({
   entryPoints: [join(here, 'node_modules/pandoc-wasm/src/core.js')],
-  outfile: join(here, 'pandoc-core.mjs'),
+  outfile: join(here, 'pandoc-core.cjs'),
   bundle: true,
   platform: 'node',
-  format: 'esm',
+  format: 'cjs',
   target: ['node18'],
   minify: true,
   legalComments: 'none',
@@ -29,4 +29,4 @@ await esbuild.build({
   },
 });
 
-console.log('built pandoc-core.mjs');
+console.log('built pandoc-core.cjs');

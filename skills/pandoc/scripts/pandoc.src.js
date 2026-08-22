@@ -2,15 +2,13 @@
 //
 // Runtime: pandoc-wasm (GPL-2.0-or-later) + typst-wasm (MIT). Load pandoc WASM
 // bytes via fs.readFileBinary; import createPandocInstance from the prebuilt
-// pandoc-core.mjs (never require('pandoc-wasm') — TLA breaks realm transpiler).
+// pandoc-core.cjs via require('./pandoc-core.cjs') — dynamic import() of VFS paths
+// is not in the realm module graph; use a static relative require instead.
 
 const fs = require('fs');
 const cli = require('sliccy:cli');
-const skill = require('sliccy:skill');
 const exec = require('sliccy:exec');
 const color = require('sliccy:color');
-
-const CORE_MJS = `${skill.dir}/pandoc-core.mjs`;
 const DEPS = ['pandoc-wasm@1.1.0', 'typst-wasm', '@typst-wasm/fonts'];
 const PANDOC_WASM = '/workspace/node_modules/pandoc-wasm/src/pandoc.wasm';
 const TYPST_ENGINE = '/workspace/node_modules/typst-wasm/dist/engine';
@@ -111,7 +109,7 @@ async function cmdInstall() {
 
 async function getPandoc() {
   await ensureDeps();
-  const { createPandocInstance } = await import(CORE_MJS);
+  const { createPandocInstance } = require('./pandoc-core.cjs');
   const wasm = await loadWasmBytes(PANDOC_WASM);
   return await createPandocInstance(wasm);
 }
