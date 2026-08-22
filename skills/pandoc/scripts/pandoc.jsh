@@ -10,7 +10,7 @@ const skill = require('sliccy:skill');
 const exec = require('sliccy:exec');
 const color = require('sliccy:color');
 
-const CORE_MJS = `${skill.dir}/scripts/pandoc-core.mjs`;
+const CORE_MJS = `${skill.dir}/pandoc-core.mjs`;
 const DEPS = ['pandoc-wasm@1.1.0', 'typst-wasm', '@typst-wasm/fonts'];
 const PANDOC_WASM = '/workspace/node_modules/pandoc-wasm/src/pandoc.wasm';
 const TYPST_ENGINE = '/workspace/node_modules/typst-wasm/dist/engine';
