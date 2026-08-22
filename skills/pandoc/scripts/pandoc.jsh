@@ -236,15 +236,26 @@ function defaultOutPath(input, ext) {
   return `${base}.${ext}`;
 }
 
+function resolveInputPath(positional, from, to) {
+  const skip = new Set(
+    [from, to]
+      .filter(Boolean)
+      .map((s) => String(s).toLowerCase())
+  );
+  const candidates = positional.filter((p) => !skip.has(String(p).toLowerCase()));
+  if (!candidates.length) return undefined;
+  return candidates[0];
+}
+
 async function cmdConvert(positional, flags) {
-  const input = positional[0];
-  if (!input) {
-    cli.die('usage: pandoc convert -f <from> -t <to> <input> [-o out]', { prefix: 'pandoc' });
-  }
   const from = resolveFrom(flags);
   const to = resolveTo(flags);
   if (!from) cli.die('--from/-f is required', { prefix: 'pandoc' });
   if (!to) cli.die('--to/-t is required', { prefix: 'pandoc' });
+  const input = resolveInputPath(positional, from, to);
+  if (!input) {
+    cli.die('usage: pandoc convert -f <from> -t <to> <input> [-o out]', { prefix: 'pandoc' });
+  }
 
   const { stdin, files } = await readInputForConvert(input, from);
   const toNorm = String(to).toLowerCase();
