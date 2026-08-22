@@ -202,8 +202,33 @@ async function typstCompileSource(typstSource, outPath) {
   }
 }
 
-async function readInput(path) {
-  return await fs.readFile(path, 'utf8');
+// SLICC fs.readFile(..., 'utf8') is byte-valued, not UTF-8 decoded — use readFileBinary.
+const BINARY_FROM = new Set([
+  'docx',
+  'odt',
+  'epub',
+  'doc',
+  'pptx',
+  'rtf',
+  'odp',
+  'xlsx',
+  'fb2',
+]);
+
+async function readInputForConvert(path, fromFmt) {
+  const bytes = await fs.readFileBinary(path);
+  const from = String(fromFmt).toLowerCase();
+  if (BINARY_FROM.has(from)) {
+    const base = path.split('/').pop() || `input.${from}`;
+    return { stdin: '', files: { [base]: bytes } };
+  }
+  const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+  return { stdin: text, files: {} };
+}
+
+async function readTextInput(path) {
+  const bytes = await fs.readFileBinary(path);
+  return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
 }
 
 function defaultOutPath(input, ext) {
@@ -221,12 +246,12 @@ async function cmdConvert(positional, flags) {
   if (!from) cli.die('--from/-f is required', { prefix: 'pandoc' });
   if (!to) cli.die('--to/-t is required', { prefix: 'pandoc' });
 
-  const text = await readInput(input);
+  const { stdin, files } = await readInputForConvert(input, from);
   const toNorm = String(to).toLowerCase();
 
   if (toNorm === 'pdf') {
     const { convert } = await getPandoc();
-    const typstOut = await convert({ from, to: 'typst', standalone: true }, text, {});
+    const typstOut = await convert({ from, to: 'typst', standalone: true }, stdin, files);
     const outPath = resolveOutput(flags, defaultOutPath(input, 'pdf'));
     const bytes = await typstCompileSource(typstOut.stdout, outPath);
     console.log(color.green('✓') + ` wrote ${outPath} (${bytes} bytes)`);
@@ -234,7 +259,7 @@ async function cmdConvert(positional, flags) {
   }
 
   const { convert } = await getPandoc();
-  const result = await convert({ from, to, standalone: true }, text, {});
+  const result = await convert({ from, to, standalone: true }, stdin, files);
   const out = result.stdout;
   const outPath = resolveOutput(flags);
 
@@ -250,7 +275,7 @@ async function cmdConvert(positional, flags) {
 async function cmdPdf(positional, flags) {
   const input = positional[0];
   if (!input) cli.die('usage: pandoc pdf <input.md> [-o out.pdf]', { prefix: 'pandoc' });
-  const text = await readInput(input);
+  const text = await readTextInput(input);
   const { convert } = await getPandoc();
   const typstOut = await convert({ from: 'markdown', to: 'typst', standalone: true }, text, {});
   const outPath = resolveOutput(flags, defaultOutPath(input, 'pdf'));
@@ -276,7 +301,7 @@ async function cmdTypstCompile(positional, flags) {
   if (!input) {
     cli.die('usage: pandoc typst compile <input.typ> [-o out.pdf]', { prefix: 'pandoc' });
   }
-  const text = await readInput(input);
+  const text = await readTextInput(input);
   const outPath = resolveOutput(flags, defaultOutPath(input, 'pdf'));
   const bytes = await typstCompileSource(text, outPath);
   console.log(color.green('✓') + ` wrote ${outPath} (${bytes} bytes)`);
