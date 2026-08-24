@@ -92,10 +92,9 @@ pandoc query version
   (`compile({ format: 'png', ppi: 144 })`) and wraps each as a Flate DeviceRGB
   image in a PDF 1.3. Do not ship typst-wasm's native PDF.
 - **Fonts:** `@typst-wasm/fonts` (Libertinus / New CM / DejaVu) load by
-  default. `addFonts` wants TTF/OTF bytes — **not** Fontsource / Expo /
-  `@fontpkg` WOFF2. Libertinus has no U+2E3A and no CJK. For `⸺`, add only
-  the needed cuts of Adobe `source-serif@4.5.1` (official OTF on npm). CJK
-  is not on npm as OTF. Package table and install paths:
+  default. Extra faces come from **`TYPST_FONT_PATHS`** — same env as
+  desktop typst (`typst compile --font-path`, colon-separated, recursive
+  `.otf`/`.ttf`). No new CLI flag. WOFF2 is ignored. Package table:
   [`references/formats.md`](references/formats.md).
 - **GPL:** pandoc-wasm is GPL-2.0-or-later; typst-wasm is MIT. See
   [`references/licensing.md`](references/licensing.md).
