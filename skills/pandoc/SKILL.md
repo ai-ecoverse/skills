@@ -80,9 +80,23 @@ pandoc query version
 
 - **Never `require('pandoc-wasm')`** at runtime — use the skill's prebuilt
   `scripts/pandoc-core.cjs` plus `fs.readFileBinary` on `pandoc.wasm`.
-- **PDF shape:** typst-wasm returns `pdf.output` (Uint8Array), not `pdf.pages`.
-- **Fonts:** default Libertinus / New CM fonts from `@typst-wasm/fonts` are loaded
-  automatically for PDF output.
+- **Keep the runner on the promise.** `.jsh` bodies are an `AsyncFunction`.
+  `await main()` is correct *if* the file never hits the CJS transpiler;
+  `await` at top level currently dies with `Top-level await is currently not
+  supported with the "cjs" output format` (and `typescript@7` has no
+  `transpileModule` fallback). `main().catch(...)` without `return`/`await`
+  lets the wrapper exit before any I/O. **`return main().catch(...)`** is the
+  form that waits and still transpiles.
+- **PDF shape:** typst-wasm native `pdf.output` embeds CID CFF that extract as
+  text but paint as tofu (`pdftoppm`, DocuSign). The skill compiles PNG pages
+  (`compile({ format: 'png', ppi: 144 })`) and wraps each as a Flate DeviceRGB
+  image in a PDF 1.3. Do not ship typst-wasm's native PDF.
+- **Fonts:** `@typst-wasm/fonts` (Libertinus / New CM / DejaVu) load by
+  default. `addFonts` wants TTF/OTF bytes — **not** Fontsource / Expo /
+  `@fontpkg` WOFF2. Libertinus has no U+2E3A and no CJK. For `⸺`, add only
+  the needed cuts of Adobe `source-serif@4.5.1` (official OTF on npm). CJK
+  is not on npm as OTF. Package table and install paths:
+  [`references/formats.md`](references/formats.md).
 - **GPL:** pandoc-wasm is GPL-2.0-or-later; typst-wasm is MIT. See
   [`references/licensing.md`](references/licensing.md).
 - Format matrix: [`references/formats.md`](references/formats.md).

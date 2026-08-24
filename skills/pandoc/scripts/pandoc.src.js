@@ -4,8 +4,12 @@
 // bytes via fs.readFileBinary; import createPandocInstance from the prebuilt
 // pandoc-core.cjs via require('./pandoc-core.cjs') — dynamic import() of VFS paths
 // is not in the realm module graph; use a static relative require instead.
+//
+// End with `return main()` — not `await main()` (CJS transpile rejects TLA)
+// and not a bare `main().catch(...)` (the AsyncFunction wrapper exits first).
 
 const fs = require('fs');
+const zlib = require('zlib');
 const cli = require('sliccy:cli');
 const exec = require('sliccy:exec');
 const color = require('sliccy:color');
@@ -13,6 +17,7 @@ const DEPS = ['pandoc-wasm@1.1.0', 'typst-wasm', '@typst-wasm/fonts'];
 const PANDOC_WASM = '/workspace/node_modules/pandoc-wasm/src/pandoc.wasm';
 const TYPST_ENGINE = '/workspace/node_modules/typst-wasm/dist/engine';
 const FONT_DIR = '/workspace/node_modules/@typst-wasm/fonts/dist/files';
+const PDF_PPI = 144;
 
 const HELP = `
 pandoc — convert documents with pandoc-wasm; PDF via typst-wasm
@@ -30,7 +35,9 @@ CONVERT
   docx→markdown. When -t pdf (or format name pdf), routes through typst-wasm.
 
 PDF
-  Markdown → typst (pandoc) → PDF (typst). Output defaults to <input>.pdf.
+  Markdown → typst (pandoc) → PNG pages (typst-wasm) → PDF 1.3 with one Flate
+  DeviceRGB image per page. typst-wasm's native PDF embeds CID CFF that extract
+  as text but paint as tofu (pdftoppm, DocuSign). Output defaults to <input>.pdf.
 
 INSTALL
   One-time: ipk add pandoc-wasm@1.1.0 typst-wasm @typst-wasm/fonts (~90MB WASM).
@@ -167,10 +174,11 @@ async function loadDefaultFonts(compiler) {
     'NewCMMath-Regular.otf',
     'DejaVuSansMono.ttf',
   ];
+  const fonts = [];
   for (const name of names) {
-    const bytes = await fs.readFileBinary(`${FONT_DIR}/${name}`);
-    await compiler.addFonts(bytes);
+    fonts.push(await fs.readFileBinary(`${FONT_DIR}/${name}`));
   }
+  await compiler.addFonts(...fonts);
 }
 
 async function createTypstCompiler() {
@@ -184,15 +192,212 @@ async function createTypstCompiler() {
   return compiler;
 }
 
+function paeth(a, b, c) {
+  const p = a + b - c;
+  const pa = Math.abs(p - a);
+  const pb = Math.abs(p - b);
+  const pc = Math.abs(p - c);
+  if (pa <= pb && pa <= pc) return a;
+  if (pb <= pc) return b;
+  return c;
+}
+
+function decodePngToRgb(pngBytes) {
+  const bytes = pngBytes instanceof Uint8Array ? pngBytes : new Uint8Array(pngBytes);
+  const sig = [137, 80, 78, 71, 13, 10, 26, 10];
+  for (let i = 0; i < 8; i++) {
+    if (bytes[i] !== sig[i]) throw new Error('not a PNG');
+  }
+  let width = 0;
+  let height = 0;
+  let bitDepth = 0;
+  let colorType = 0;
+  let interlace = 0;
+  const idat = [];
+  let offset = 8;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  while (offset + 8 <= bytes.length) {
+    const len = view.getUint32(offset);
+    const type = String.fromCharCode(bytes[offset + 4], bytes[offset + 5], bytes[offset + 6], bytes[offset + 7]);
+    const dataStart = offset + 8;
+    const dataEnd = dataStart + len;
+    if (dataEnd + 4 > bytes.length) throw new Error('truncated PNG chunk');
+    if (type === 'IHDR') {
+      width = view.getUint32(dataStart);
+      height = view.getUint32(dataStart + 4);
+      bitDepth = bytes[dataStart + 8];
+      colorType = bytes[dataStart + 9];
+      interlace = bytes[dataStart + 12];
+    } else if (type === 'IDAT') {
+      idat.push(bytes.subarray(dataStart, dataEnd));
+    } else if (type === 'IEND') {
+      break;
+    }
+    offset = dataEnd + 4;
+  }
+  if (!width || !height) throw new Error('PNG missing IHDR');
+  if (bitDepth !== 8) throw new Error(`unsupported PNG bit depth ${bitDepth}`);
+  if (interlace !== 0) throw new Error('interlaced PNG is not supported');
+  if (colorType !== 2 && colorType !== 6 && colorType !== 0) {
+    throw new Error(`unsupported PNG color type ${colorType}`);
+  }
+  let packed = 0;
+  for (const part of idat) packed += part.length;
+  const compressed = new Uint8Array(packed);
+  let woff = 0;
+  for (const part of idat) {
+    compressed.set(part, woff);
+    woff += part.length;
+  }
+  const inflated = zlib.inflateSync(compressed);
+  const channels = colorType === 6 ? 4 : colorType === 2 ? 3 : 1;
+  const stride = width * channels;
+  const rgb = new Uint8Array(width * height * 3);
+  const prev = new Uint8Array(stride);
+  const row = new Uint8Array(stride);
+  let src = 0;
+  for (let y = 0; y < height; y++) {
+    const filter = inflated[src++];
+    const raw = inflated.subarray(src, src + stride);
+    src += stride;
+    if (filter === 0) {
+      row.set(raw);
+    } else if (filter === 1) {
+      for (let i = 0; i < stride; i++) {
+        const left = i >= channels ? row[i - channels] : 0;
+        row[i] = (raw[i] + left) & 255;
+      }
+    } else if (filter === 2) {
+      for (let i = 0; i < stride; i++) row[i] = (raw[i] + prev[i]) & 255;
+    } else if (filter === 3) {
+      for (let i = 0; i < stride; i++) {
+        const left = i >= channels ? row[i - channels] : 0;
+        row[i] = (raw[i] + ((left + prev[i]) >> 1)) & 255;
+      }
+    } else if (filter === 4) {
+      for (let i = 0; i < stride; i++) {
+        const left = i >= channels ? row[i - channels] : 0;
+        const up = prev[i];
+        const upLeft = i >= channels ? prev[i - channels] : 0;
+        row[i] = (raw[i] + paeth(left, up, upLeft)) & 255;
+      }
+    } else {
+      throw new Error(`unsupported PNG filter ${filter}`);
+    }
+    prev.set(row);
+    const dst = y * width * 3;
+    if (colorType === 2) {
+      rgb.set(row, dst);
+    } else if (colorType === 6) {
+      for (let x = 0; x < width; x++) {
+        rgb[dst + x * 3] = row[x * 4];
+        rgb[dst + x * 3 + 1] = row[x * 4 + 1];
+        rgb[dst + x * 3 + 2] = row[x * 4 + 2];
+      }
+    } else {
+      for (let x = 0; x < width; x++) {
+        const g = row[x];
+        rgb[dst + x * 3] = g;
+        rgb[dst + x * 3 + 1] = g;
+        rgb[dst + x * 3 + 2] = g;
+      }
+    }
+  }
+  return { width, height, rgb };
+}
+
+function pdfEscape(str) {
+  return String(str).replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+}
+
+function wrapPngPagesToPdf(pages, ppi) {
+  // 1 = Catalog, 2 = Pages, 3 = Info (PDF 1.3 trailer /Info is an indirect
+  // reference — an inline dict is nonconforming). Then Image / Contents / Page.
+  const numbered = [];
+  numbered.push('<< /Type /Catalog /Pages 2 0 R >>');
+  numbered.push(null);
+  numbered.push(
+    `<< /Creator (${pdfEscape('pandoc+typst-wasm (raster)')}) /Producer (${pdfEscape('slicc pandoc skill')}) >>`
+  );
+  const kids = [];
+  for (const page of pages) {
+    const png = page instanceof Uint8Array ? page : page.output;
+    const { width, height, rgb } = decodePngToRgb(png);
+    const compressed = zlib.deflateSync(rgb);
+    const wPt = (width * 72) / ppi;
+    const hPt = (height * 72) / ppi;
+    const imgId = numbered.length + 1;
+    numbered.push({
+      header:
+        `<< /Type /XObject /Subtype /Image /Width ${width} /Height ${height} ` +
+        `/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode ` +
+        `/Length ${compressed.length} >>\nstream\n`,
+      stream: compressed,
+    });
+    const content = `q ${wPt.toFixed(2)} 0 0 ${hPt.toFixed(2)} 0 0 cm /Im0 Do Q\n`;
+    const contentsId = numbered.length + 1;
+    numbered.push(`<< /Length ${content.length} >>\nstream\n${content}endstream`);
+    const pageId = numbered.length + 1;
+    numbered.push(
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${wPt.toFixed(2)} ${hPt.toFixed(2)}] ` +
+        `/Resources << /XObject << /Im0 ${imgId} 0 R >> >> /Contents ${contentsId} 0 R >>`
+    );
+    kids.push(`${pageId} 0 R`);
+  }
+  numbered[1] = `<< /Type /Pages /Kids [ ${kids.join(' ')} ] /Count ${kids.length} >>`;
+
+  const encoder = new TextEncoder();
+  const chunks = [encoder.encode('%PDF-1.3\n%\xE2\xE3\xCF\xD3\n')];
+  const offsets = [0];
+  let pos = chunks[0].length;
+  for (let i = 0; i < numbered.length; i++) {
+    offsets.push(pos);
+    const item = numbered[i];
+    let block;
+    if (item && typeof item === 'object' && item.stream) {
+      const head = encoder.encode(`${i + 1} 0 obj\n${item.header}`);
+      const tailBytes = encoder.encode('\nendstream\nendobj\n');
+      block = new Uint8Array(head.length + item.stream.length + tailBytes.length);
+      block.set(head, 0);
+      block.set(item.stream, head.length);
+      block.set(tailBytes, head.length + item.stream.length);
+    } else {
+      block = encoder.encode(`${i + 1} 0 obj\n${item}\nendobj\n`);
+    }
+    chunks.push(block);
+    pos += block.length;
+  }
+  const xrefPos = pos;
+  let xref = `xref\n0 ${numbered.length + 1}\n0000000000 65535 f \n`;
+  for (let i = 1; i < offsets.length; i++) {
+    xref += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`;
+  }
+  xref +=
+    `trailer\n<< /Size ${numbered.length + 1} /Root 1 0 R /Info 3 0 R >>\n` +
+    `startxref\n${xrefPos}\n%%EOF\n`;
+  chunks.push(encoder.encode(xref));
+  let total = 0;
+  for (const c of chunks) total += c.length;
+  const out = new Uint8Array(total);
+  let o = 0;
+  for (const c of chunks) {
+    out.set(c, o);
+    o += c.length;
+  }
+  return out;
+}
+
 async function typstCompileSource(typstSource, outPath) {
   const compiler = await createTypstCompiler();
   try {
     await compiler.addSource('main.typ', typstSource);
     await compiler.setMain('main.typ');
-    const pdf = await compiler.compile({ format: 'pdf' });
-    const bytes = pdf.output;
-    await fs.writeFileBinary(outPath, bytes);
-    return bytes.byteLength;
+    const png = await compiler.compile({ format: 'png', ppi: PDF_PPI });
+    const pages = png.pages || [];
+    if (!pages.length) throw new Error('typst-wasm produced no PNG pages');
+    const pdf = wrapPngPagesToPdf(pages, PDF_PPI);
+    await fs.writeFileBinary(outPath, pdf);
+    return pdf.byteLength;
   } finally {
     await compiler.dispose();
   }
@@ -328,4 +533,7 @@ async function main() {
   }
 }
 
-await main();
+return main().catch((err) => {
+  if (err?.name === 'NodeExitError') throw err;
+  cli.die(err && err.message ? err.message : String(err), { prefix: 'pandoc' });
+});
