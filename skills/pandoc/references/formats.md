@@ -33,14 +33,14 @@ typst-wasm `addFonts` takes TTF/OTF bytes. **WOFF2 packages do not work**
 | `source-code-pro@2.42.0` | Source Code Pro | 131 kB | no | no |
 
 These three are the official Adobe `adobe-fonts/source-*#release` trees and
-include an `OTF/` directory. To fix `⸺` without pulling CJK:
+include an `OTF/` directory. Desktop typst finds extra fonts via
+`TYPST_FONT_PATHS` / `--font-path` (no pandoc flag). The skill does the same:
+walk those dirs for `.otf`/`.ttf` and `addFonts` them. No OS font scan.
 
 ```bash
 ipk add source-serif@4.5.1
-# then addFonts:
-#   node_modules/source-serif/OTF/SourceSerif4-Regular.otf
-#   node_modules/source-serif/OTF/SourceSerif4-Bold.otf
-#   node_modules/source-serif/OTF/SourceSerif4-It.otf
+TYPST_FONT_PATHS=/workspace/node_modules/source-serif/OTF \
+  pandoc pdf report.md -o /shared/report.pdf
 ```
 
 Do not add the whole 20 MB / 59 MB packages to `pandoc install`. Source Han

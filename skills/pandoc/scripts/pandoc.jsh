@@ -39,6 +39,12 @@ PDF
   DeviceRGB image per page. typst-wasm's native PDF embeds CID CFF that extract
   as text but paint as tofu (pdftoppm, DocuSign). Output defaults to <input>.pdf.
 
+FONTS
+  Default: Libertinus / New CM / DejaVu from @typst-wasm/fonts.
+  Extra: TYPST_FONT_PATHS (same env as desktop typst) — colon-separated
+  directories, walked recursively for .otf/.ttf, then addFonts. WOFF2 ignored.
+  Example: TYPST_FONT_PATHS=/workspace/node_modules/source-serif/OTF
+
 INSTALL
   One-time: ipk add pandoc-wasm@1.1.0 typst-wasm @typst-wasm/fonts (~90MB WASM).
 
@@ -181,6 +187,64 @@ async function loadDefaultFonts(compiler) {
   await compiler.addFonts(...fonts);
 }
 
+// Desktop typst: --font-path / TYPST_FONT_PATHS. Colon-separated on Unix
+// (this VFS), recursively searched. No OS font scan in wasm, so this env
+// is the only extra-font path. WOFF2 is ignored (addFonts wants TTF/OTF).
+const FONT_FILE = /\.(otf|ttf)$/i;
+
+function typstFontDirs() {
+  const raw = process.env.TYPST_FONT_PATHS;
+  if (!raw || !String(raw).trim()) return [];
+  return String(raw)
+    .split(':')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+async function collectFontFiles(dir, acc) {
+  let names;
+  try {
+    names = await fs.readDir(dir);
+  } catch {
+    return acc;
+  }
+  for (const name of names) {
+    const path = dir.endsWith('/') ? dir + name : `${dir}/${name}`;
+    let st;
+    try {
+      st = await fs.stat(path);
+    } catch {
+      continue;
+    }
+    if (st.isDirectory) await collectFontFiles(path, acc);
+    else if (st.isFile && FONT_FILE.test(name)) acc.push(path);
+  }
+  return acc;
+}
+
+async function loadFontPathFonts(compiler) {
+  const dirs = typstFontDirs();
+  if (!dirs.length) return 0;
+  const files = [];
+  for (const dir of dirs) {
+    let st;
+    try {
+      st = await fs.stat(dir);
+    } catch {
+      console.error(`pandoc: TYPST_FONT_PATHS: ${dir}: not found`);
+      continue;
+    }
+    if (st.isDirectory) await collectFontFiles(dir, files);
+    else if (st.isFile && FONT_FILE.test(dir)) files.push(dir);
+    else console.error(`pandoc: TYPST_FONT_PATHS: ${dir}: not a font directory`);
+  }
+  if (!files.length) return 0;
+  const fonts = [];
+  for (const path of files) fonts.push(await fs.readFileBinary(path));
+  await compiler.addFonts(...fonts);
+  return files.length;
+}
+
 async function createTypstCompiler() {
   await ensureDeps();
   const { createTypstCompiler: factory } = await import('typst-wasm');
@@ -189,6 +253,7 @@ async function createTypstCompiler() {
     coreModules: await loadTypstCoreModules(),
   });
   await loadDefaultFonts(compiler);
+  await loadFontPathFonts(compiler);
   return compiler;
 }
 
