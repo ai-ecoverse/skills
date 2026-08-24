@@ -204,7 +204,7 @@ function typstFontDirs() {
 async function collectFontFiles(dir, acc) {
   let names;
   try {
-    names = await fs.readdir(dir);
+    names = await fs.readDir(dir);
   } catch {
     return acc;
   }
