@@ -63,7 +63,51 @@ Response: `{ Event: [...], Recurrence: [...] }`
 ```
 
 Date array format: `[YYYYMMDD, year, month, day, hour, minute, minuteOfDay]`
-- Index 6 is minute-of-day (0-1440)
+
+- Index 6 is **not seconds**. On write and on `startDate` it is minutes since
+  midnight (`hour*60 + minute`). On a *server-returned* `endDate` it is minutes
+  until midnight (`1440 − (hour*60 + minute)`). Shared-schema ISO therefore
+  always uses `arr[4]:arr[5]:00`.
+- Timed `duration` is minutes. All-day `duration` is `days × 1440`.
+- All-day: `hour`, `minute`, and index 6 are `0`; `tz` is `null`.
+- All-day `endDate` is **exclusive** (the day after the last blocked day). A
+  same-day all-day event is stored as 1 day (`duration: 1440`, end = next day).
+
+### List calendars
+
+```
+GET https://p27-calendarws.icloud.com/ca/allcollections
+  ?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD
+  &lang=en-US&usertz=Europe%2FBerlin&clientVersion=6.0
+  &clientBuildNumber=2618Build21&clientMasteringNumber=2618Build21
+  &clientId=<uuid>&dsid=<dsid>
+```
+
+Response: `{ Collection: [...] }` with `title`, `guid`, `readOnly`, `isDefault`,
+`isFamily`, `ctag`. `icloud calendars` prints those five public fields.
+
+### Create event
+
+```
+POST https://p27-calendarws.icloud.com/ca/events/{pGuid}/{guid}
+  ?startDate=<event-start-YMD>&endDate=<event-end-YMD>
+  &lang=en-US&usertz=Europe%2FBerlin&clientVersion=6.0
+  &requestID=<int>&clientBuildNumber=2618Build21
+  &clientMasteringNumber=2618Build21&clientId=<uuid>&dsid=<dsid>
+```
+
+- Query `startDate`/`endDate` must cover the event being created (not
+  `now…now+7d`). Far windows (2027) work.
+- Body is JSON with `Content-Type: text/plain`. `Event.etag` must be `''`.
+  `ClientState.Collection` carries `{guid, ctag}` from a fresh
+  `/ca/allcollections` read. No `ifMatch` on create.
+- `--calendar` is required: exact title, then unique substring, then guid.
+  Never default to `work` / Arbeit.
+
+Contract write, 2026-08-24, calendar **Familie**
+(`guid 8a4b028c24c6454160d55fbae2018d0d4ff76d380b77d1d7649cca8f901cf6b5`):
+event `4C693D70-FC5D-4670-A0EA-F3C4E923B511`, all-day 31.07–08.08.2027,
+exclusive `endDate` 09.08, `duration` 12960, `tz` null, HTTP 200.
 
 ### Other Calendar Endpoints
 
