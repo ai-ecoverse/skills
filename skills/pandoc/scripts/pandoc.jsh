@@ -369,8 +369,7 @@ function wrapPngPagesToPdf(pages, ppi) {
     xref += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`;
   }
   xref +=
-    `trailer\n<< /Size ${numbered.length + 1} /Root 1 0 R /Info << ` +
-    `/Creator (${pdfEscape('pandoc+typst-wasm (raster)')}) /Producer (${pdfEscape('slicc pandoc skill')}) >> >>\n` +
+    `trailer\n<< /Size ${numbered.length + 1} /Root 1 0 R /Info 3 0 R >>\n` +
     `startxref\n${xrefPos}\n%%EOF\n`;
   chunks.push(encoder.encode(xref));
   let total = 0;
