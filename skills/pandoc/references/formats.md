@@ -18,6 +18,33 @@ that extract as text but paint as tofu (`pdftoppm`, DocuSign) — do not ship it
 
 Libertinus (the default `@typst-wasm/fonts` serif) has no CJK and no U+2E3A
 (Doppelgeviertstrich). Those code points stay boxes until a covering font is
-added.
+`addFonts`'d.
+
+### Extra fonts (OTF only)
+
+typst-wasm `addFonts` takes TTF/OTF bytes. **WOFF2 packages do not work**
+(`@fontsource/*`, Expo Google Fonts, `@fontpkg/*`, `node-source-han-sans-*`).
+
+| Package | Family | Regular OTF | U+2E3A | CJK |
+|---------|--------|------------:|:------:|:---:|
+| `@typst-wasm/fonts` (default) | Libertinus Serif | 337 kB | no | no |
+| `source-serif@4.5.1` | Source Serif 4 | 241 kB | yes | no |
+| `source-sans@3.52.0` | Source Sans 3 | 335 kB | yes | no |
+| `source-code-pro@2.42.0` | Source Code Pro | 131 kB | no | no |
+
+These three are the official Adobe `adobe-fonts/source-*#release` trees and
+include an `OTF/` directory. To fix `⸺` without pulling CJK:
+
+```bash
+ipk add source-serif@4.5.1
+# then addFonts:
+#   node_modules/source-serif/OTF/SourceSerif4-Regular.otf
+#   node_modules/source-serif/OTF/SourceSerif4-Bold.otf
+#   node_modules/source-serif/OTF/SourceSerif4-It.otf
+```
+
+Do not add the whole 20 MB / 59 MB packages to `pandoc install`. Source Han
+(思源) is not on npm as OTF; CJK still needs a GitHub-release Noto / Source Han
+file.
 
 Use `pandoc query version` for the embedded Pandoc version string.
