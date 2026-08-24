@@ -311,10 +311,14 @@ function pdfEscape(str) {
 }
 
 function wrapPngPagesToPdf(pages, ppi) {
-  // 1 = Catalog, 2 = Pages, then Image / Contents / Page per raster page.
+  // 1 = Catalog, 2 = Pages, 3 = Info (PDF 1.3 trailer /Info is an indirect
+  // reference — an inline dict is nonconforming). Then Image / Contents / Page.
   const numbered = [];
   numbered.push('<< /Type /Catalog /Pages 2 0 R >>');
   numbered.push(null);
+  numbered.push(
+    `<< /Creator (${pdfEscape('pandoc+typst-wasm (raster)')}) /Producer (${pdfEscape('slicc pandoc skill')}) >>`
+  );
   const kids = [];
   for (const page of pages) {
     const png = page instanceof Uint8Array ? page : page.output;
