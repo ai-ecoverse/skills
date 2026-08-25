@@ -28,6 +28,7 @@
     "skills/pptx",
     "skills/pptx2pdf",
     "skills/presentations",
+    "skills/printful",
     "skills/review",
     "skills/save-the-cat",
     "skills/search",
@@ -41,5 +42,5 @@
     "skills/xai-grok",
     "skills/xlsx"
   ],
-  "version": "0.3.23"
+  "version": "0.3.24"
 }
