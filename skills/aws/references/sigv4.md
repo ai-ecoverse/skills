@@ -50,22 +50,60 @@ main();                // WRONG: silent, empty, rc=0
 foo().then(print);     // WRONG: same
 ```
 
+This bites hardest when you are *verifying* the signer rather than using it: a
+one-off check that wraps its work in an async IIFE prints nothing and exits 0, which
+reads as "the signer produced no output" when in fact the process left before
+`subtle.sign` resolved. Every HMAC call here is async, so **any** script that touches
+this file — a skill, a test, a scratch check — must `await` at top level. It has cost
+two separate people two attempts each.
+
 A `.jsh` cannot be checked with `node --check` (unsupported, exits 9). Syntax-check
 with `new Function('async function w(){' + src + '\n}')` — the async wrapper is
 required because of top-level `await`.
 
 ## Requiring it
 
-`require()` resolves a VFS module **only if the path appears as a literal string
-in the calling source** — the runtime pre-registers modules by statically
-scanning literal specifiers. A relative literal works and is
-installation-path-independent:
+**Verdict: a relative literal works once installed, and no workaround is needed.**
+That is what `aws.jsh` and `aws-ext.jsh` ship:
 
 ```js
-const sigv4 = require('./lib/sigv4.js');   // works, resolved script-relative
+const sigv4 = require('./lib/sigv4.js');   // works at any install path
+```
+
+Two independent constraints combine here, and only one of them is a limitation.
+
+**1. The specifier must be LITERAL.** The runtime pre-registers VFS modules by
+statically scanning literal require specifiers in the source, so a computed path
+fails even though the file exists and the string is byte-identical:
+
+```js
 const p = `${__dirname}/lib/sigv4.js`;
 const sigv4 = require(p);                  // FAILS: "Cannot find module"
 ```
+
+Corollary for anyone writing a generic loader or a test harness: pre-register each
+target with a literal `require` first; dynamic forms then hit the module cache and
+work.
+
+**2. Resolution is script-relative, not cwd-relative.** Measured by invoking the
+same script from two different working directories:
+
+```
+$ cd /some/where   && mycmd     → resolved from <script-dir>/lib   (cwd /some/where)
+$ cd /else/where   && mycmd     → resolved from <script-dir>/lib   (cwd /else/where)
+```
+
+The path is resolved against the requiring file's `__dirname`, exactly like Node
+CJS. This is *why* the relative literal is safe: it stays correct whether the skill
+lives at `/workspace/skills/aws/scripts/`, in a build tree, or anywhere else, and
+no absolute path ever has to be baked into shipped source.
+
+**The one consequence to remember: `lib/` must travel with the script.** A lone copy
+of `aws.jsh` dropped into a directory with no sibling `lib/sigv4.js` cannot find the
+signer. When copying the signer into another skill, copy it to
+`<that-skill>/scripts/lib/sigv4.js` and require it the same relative way — do not
+point at this skill's copy with an absolute path, or the borrowing skill breaks the
+moment either skill moves.
 
 ## API
 
