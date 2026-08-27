@@ -148,10 +148,39 @@ deterministic id scheme `slack watch` uses, so `slack unwatch <channel>` /
 
 ## Routing
 
-Replies route to the **cone** by default (`--scoop cone`), so they surface directly
-to the human. If the runtime ever rejects the cone as a webhook target, the
-auto-watch warns and falls back to a standing relay scoop `slack-reply-watch`,
-auto-created if missing. `--watch-scoop=<name>` overrides the target.
+Replies route back to **the cone that posted**. The target resolution order is:
+
+1. `--watch-scoop=<name>` (per-post override; `--scoop=<name>` for `slack watch`).
+2. `SLICC_LICK_TARGET` from the process environment — the runtime sets it in the
+   shell env of every cone that is *not* the default root, naming that cone's own
+   scoop folder (slicc `packages/webapp/src/shell/lick-target-env.ts`,
+   `scoops/scoop-context/shell-env.ts`). Environment variables do reach `.jsh`
+   scripts; older notes claiming otherwise are stale.
+3. Nothing — no explicit target, and the runtime dispatches the lick to the
+   untargeted destination itself.
+
+Case 3 matters: the untargeted destination is `rootsOf(scoops)[0]`, the **oldest**
+root, which is deliberately not necessarily whichever cone currently holds the
+reserved `cone` folder (that folder is recycled to the next new cone when the
+original primary is dropped). So hardcoding `cone` is wrong in principle, not only
+in a multi-cone workspace — which is why the teardown crontask omits `--scoop`
+entirely when there is no target.
+
+The webhook cannot do that yet: `crontask create` accepts an omitted `--scoop`,
+while `webhook create` rejects it with `--scoop is required` (exit 1). That
+asymmetry is **slicc#2525**; until it lands, `webhook create` keeps passing the
+literal `cone` (`WEBHOOK_FALLBACK_SCOOP`) when there is no target. This is a
+knowing stopgap, not an oversight — when slicc#2525 lands, delete the constant and
+omit the flag exactly as `scheduleTeardown()` already does.
+
+Whatever value ends up being interpolated goes through `validateScoopName()` first,
+including one read from the environment: it lands in an `exec()` shell command
+string, so an unvalidated value is a shell-injection vector regardless of source.
+
+If the runtime rejects the resolved target as a webhook target, the auto-watch warns
+and falls back to a standing relay scoop `slack-reply-watch`, auto-created if
+missing — but never for an explicitly requested `--watch-scoop`, where the caller
+wants that scoop or a clear failure.
 
 If the observer registration fails after the webhook was created, the webhook is
 deleted again (roll-back) and the post still succeeds with a warning — the whole
@@ -196,6 +225,39 @@ timestamp: otherwise the extending post would itself be forwarded as a reply.
 Output on the extend path is `Extended reply watch for <watchId> to 1h (routes to
 <scoop>)`.
 
+## Shared state across cones
+
+Every cone in the workspace shares `/workspace/skills/`, and the state file names
+are keyed by workspace + channel with no cone component. So a channel has exactly
+one watch, and it belongs to whichever cone created it. The files therefore record
+the owner in `lickTarget` (`null` = the default root; absent = written before
+ownership tracking, treated as unknown so old files never trip the checks):
+
+- `slack post` into a channel another cone is watching still extends the hour and
+  keeps that cone's routing, but warns `<watchId> is watched by <owner>, not
+  <us>` and prints the `slack watch … --force` takeover command. It never
+  re-points the watch silently — the silent version of this is exactly the bug
+  that delivered `cone-helix`'s replies to `cone`.
+- `slack watch` without `--force` names the owner in the "Already watching" refusal
+  and says explicitly when replacing it would cut off another cone's replies. With
+  `--force` it deletes the previous watch's **teardown crontask as well as its
+  webhook**: that task fires against the deterministic watch id, so a survivor
+  would later run `slack unwatch` and delete the replacement watch about an hour
+  after the takeover.
+- `slack watches` appends `[owner: <cone>]` when the owner differs from the
+  webhook's scoop.
+- `.last-post-<workspace>-<channel>.json` records the **posting cone** — its own
+  `SLICC_LICK_TARGET`, never a `--watch-scoop` override, since redirecting replies
+  does not change who posted. (Recording the override instead would make a cone
+  refuse to thread onto its own earlier post, and make two cones sharing one
+  override look like a single owner.) So
+  `--thread_ts=last` refuses (and prints the timestamp for an explicit
+  `--thread_ts=<ts>`) rather than threading under a message a different cone posted.
+
+Sharding the filenames per cone was rejected: it would hide other cones' watches
+from `slack watches` and break `slack unwatch` across cones, trading a visible
+conflict for an invisible one.
+
 ## State files
 
 One JSON file per watch, at `/workspace/skills/slack/.watch-<watchId>.json`. Fields
@@ -208,7 +270,8 @@ fields):
 | `watchId` | `<channel>` or `<channel>-<threadTs>` — deterministic, prevents duplicates |
 | `channel` | Resolved conversation id (`C…`/`D…`/`G…`) |
 | `thread_ts` | Thread root when thread-scoped, else `null` |
-| `scoop` | Scoop the webhook routes licks to (`cone` by default) |
+| `scoop` | Scoop the webhook was actually given (the resolved target, else `cone` — slicc#2525) |
+| `lickTarget` | Cone that owns the watch: its `SLICC_LICK_TARGET`, or `null` for the default root |
 | `workspace` | Team/enterprise id the watch belongs to |
 | `createdAt` | ISO timestamp of creation |
 | `autowatch` | `true` for a `slack post` auto-watch (absent for manual watches) |
