@@ -146,11 +146,27 @@ function assess(text) {
   }
 
   var total = t.length;
-  var ctrl = (t.match(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g) || []).length;
+
+  // Counted by code point rather than by regex: a character class containing
+  // literal control characters trips Biome noControlCharactersInRegex, and this
+  // is both clearer and a single pass.
+  var ctrl = 0, printable = 0;
+  for (var ci = 0; ci < total; ci++) {
+    var cc = t.charCodeAt(ci);
+    var isTabNlCr = cc === 9 || cc === 10 || cc === 13;
+    if (!isTabNlCr && (cc < 32 || cc === 127)) ctrl++;
+    if (isTabNlCr ||
+        (cc >= 32 && cc <= 126) ||          // printable ASCII
+        (cc >= 0xa0 && cc <= 0x24f) ||      // Latin-1 Supplement .. Latin Extended-B
+        (cc >= 0x2010 && cc <= 0x203a) ||   // general punctuation (dashes, quotes)
+        cc === 0x20ac) {                    // euro sign
+      printable++;
+    }
+  }
+
   var ctrlRatio = ctrl / total;
   if (ctrlRatio > 0.02) reasons.push('control-character density ' + (ctrlRatio * 100).toFixed(1) + '% (>2%) — looks like raw glyph indices');
 
-  var printable = (t.match(/[\x09\x0a\x0d\x20-\x7e\u00a0-\u024f\u2010-\u203a\u20ac]/g) || []).length;
   var printRatio = printable / total;
   if (printRatio < 0.85) reasons.push('only ' + (printRatio * 100).toFixed(1) + '% printable/Latin characters (<85%)');
 
@@ -205,8 +221,8 @@ function tier1Builtin(file) {
 // it cannot mistake an embedded font program for page text.
 
 function inflate(buf) {
-  try { return zlib.inflateSync(buf); } catch (e) {}
-  try { return zlib.inflateRawSync(buf); } catch (e) {}
+  try { return zlib.inflateSync(buf); } catch {}
+  try { return zlib.inflateRawSync(buf); } catch {}
   return null;
 }
 
@@ -215,8 +231,8 @@ function parseObjects(buf) {
   var s = buf.toString('latin1');
   var objs = {};
   var re = /(\d+)\s+(\d+)\s+obj\b/g;
-  var m;
-  while ((m = re.exec(s)) !== null) {
+  var m = re.exec(s);
+  while (m !== null) {
     var num = parseInt(m[1], 10);
     var bodyStart = m.index + m[0].length;
     var endIdx = s.indexOf('endobj', bodyStart);
@@ -237,6 +253,7 @@ function parseObjects(buf) {
       }
     }
     objs[num] = entry;
+    m = re.exec(s);
   }
   return objs;
 }
@@ -248,8 +265,9 @@ function refsIn(str, key) {
   if (single) out.push(parseInt(single[1], 10));
   var arr = new RegExp('\\/' + key + '\\s*\\[([^\\]]*)\\]').exec(str);
   if (arr) {
-    var rr = /(\d+)\s+\d+\s+R/g, mm;
-    while ((mm = rr.exec(arr[1])) !== null) out.push(parseInt(mm[1], 10));
+    var rr = /(\d+)\s+\d+\s+R/g;
+    var mm = rr.exec(arr[1]);
+    while (mm !== null) { out.push(parseInt(mm[1], 10)); mm = rr.exec(arr[1]); }
   }
   return out;
 }
@@ -264,19 +282,28 @@ function parseToUnicode(txt) {
     for (var i = 0; i + 3 < h.length + 1 && i < h.length; i += 4) out += String.fromCharCode(parseInt(h.substr(i, 4), 16));
     return out;
   };
-  var bfcRe = /beginbfchar([\s\S]*?)endbfchar/g, bc;
-  while ((bc = bfcRe.exec(s)) !== null) {
-    var pr = /<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>/g, p;
-    while ((p = pr.exec(bc[1])) !== null) map[parseInt(p[1], 16)] = hex(p[2]);
+  var bfcRe = /beginbfchar([\s\S]*?)endbfchar/g;
+  var bc = bfcRe.exec(s);
+  while (bc !== null) {
+    var pr = /<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>/g;
+    var pm = pr.exec(bc[1]);
+    while (pm !== null) { map[parseInt(pm[1], 16)] = hex(pm[2]); pm = pr.exec(bc[1]); }
+    bc = bfcRe.exec(s);
   }
-  var bfrRe = /beginbfrange([\s\S]*?)endbfrange/g, br;
-  while ((br = bfrRe.exec(s)) !== null) {
-    var rr2 = /<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>/g, q;
-    while ((q = rr2.exec(br[1])) !== null) {
+  var bfrRe = /beginbfrange([\s\S]*?)endbfrange/g;
+  var br = bfrRe.exec(s);
+  while (br !== null) {
+    var rr2 = /<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>/g;
+    var q = rr2.exec(br[1]);
+    while (q !== null) {
       var lo = parseInt(q[1], 16), hi = parseInt(q[2], 16), dst = parseInt(q[3], 16);
-      if (hi - lo > 65535) continue;
-      for (var c = lo; c <= hi; c++) map[c] = String.fromCharCode(dst + (c - lo));
+      // Guard a malformed/hostile range; the advance below must still run.
+      if (hi >= lo && hi - lo <= 65535) {
+        for (var c = lo; c <= hi; c++) map[c] = String.fromCharCode(dst + (c - lo));
+      }
+      q = rr2.exec(br[1]);
     }
+    br = bfrRe.exec(s);
   }
   return map;
 }
@@ -318,13 +345,13 @@ function decodeBytes(bytes, font) {
   if (twoByte) {
     for (var i = 0; i + 1 < bytes.length; i += 2) {
       var code = (bytes[i] << 8) | bytes[i + 1];
-      if (map && Object.prototype.hasOwnProperty.call(map, code)) out += map[code];
+      if (map && Object.hasOwn(map, code)) out += map[code];
       else { out += String.fromCharCode(code); if (font) font.undecoded = (font.undecoded || 0) + 1; }
     }
   } else {
     for (var k = 0; k < bytes.length; k++) {
       var c = bytes[k];
-      if (map && Object.prototype.hasOwnProperty.call(map, c)) out += map[c];
+      if (map && Object.hasOwn(map, c)) out += map[c];
       else out += String.fromCharCode(c);
     }
   }
@@ -364,11 +391,11 @@ function extractFromContent(content, fonts) {
     if (ch === '<' && s[i + 1] === '<') { i += 2; continue; }
     if (ch === '>' && s[i + 1] === '>') { i += 2; continue; }
     if (ch === '/') {
-      var nm = /^\/([^\s\/\[\]<>(){}]*)/.exec(s.slice(i));
+      var nm = /^\/([^\s/[\]<>(){}]*)/.exec(s.slice(i));
       pending.push({ kind: 'name', value: nm ? nm[1] : '' });
       i += nm ? nm[0].length : 1; continue;
     }
-    if (/[\[\]]/.test(ch)) { i++; continue; }
+    if (ch === '[' || ch === ']') { i++; continue; }
     var numm = /^[-+]?(?:\d+\.?\d*|\.\d+)/.exec(s.slice(i));
     if (numm) { pending.push({ kind: 'num', value: parseFloat(numm[0]) }); i += numm[0].length; continue; }
     var opm = /^[A-Za-z'"*][A-Za-z0-9'"*]*/.exec(s.slice(i));
@@ -432,18 +459,21 @@ function tier1Inflate(file) {
     var fonts = {};
     var fdict = /\/Font\s*<<([\s\S]*?)>>/.exec(page.dict);
     if (fdict) {
-      var fr = /\/([^\s\/]+)\s+(\d+)\s+\d+\s+R/g, fm;
-      while ((fm = fr.exec(fdict[1])) !== null) {
+      var fr = /\/([^\s/]+)\s+(\d+)\s+\d+\s+R/g;
+      var fm = fr.exec(fdict[1]);
+      while (fm !== null) {
         var fo = objs[parseInt(fm[2], 10)];
-        if (!fo) continue;
-        var identity = /\/Subtype\s*\/Type0\b/.test(fo.dict) || /\/Encoding\s*\/Identity-[HV]/.test(fo.dict);
-        var tuRefs = refsIn(fo.dict, 'ToUnicode');
-        var tu = null;
-        if (tuRefs.length && objs[tuRefs[0]] && objs[tuRefs[0]].stream) {
-          tu = parseToUnicode(objs[tuRefs[0]].stream.toString('latin1'));
-          if (!Object.keys(tu).length) tu = null;
+        if (fo) {
+          var identity = /\/Subtype\s*\/Type0\b/.test(fo.dict) || /\/Encoding\s*\/Identity-[HV]/.test(fo.dict);
+          var tuRefs = refsIn(fo.dict, 'ToUnicode');
+          var tu = null;
+          if (tuRefs.length && objs[tuRefs[0]] && objs[tuRefs[0]].stream) {
+            tu = parseToUnicode(objs[tuRefs[0]].stream.toString('latin1'));
+            if (!Object.keys(tu).length) tu = null;
+          }
+          fonts[fm[1]] = { identity: identity, toUnicode: tu, undecoded: 0 };
         }
-        fonts[fm[1]] = { identity: identity, toUnicode: tu, undecoded: 0 };
+        fm = fr.exec(fdict[1]);
       }
     }
     var contentRefs = refsIn(page.dict, 'Contents');
