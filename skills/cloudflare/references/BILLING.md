@@ -32,7 +32,7 @@ tab URL before spending a request on `/api/v4/accounts`.
 
 ```json
 {
-  "id": "e0911e59-aff1-5307-bf12-90c4f673a41c",
+  "id": "00000000-1111-5222-8333-444444444444",
   "type": "invoice",
   "occurred_at": "2026-08-20T00:00:00Z",
   "amount": 582.54,
@@ -40,7 +40,7 @@ tab URL before spending a request on `/api/v4/accounts`.
   "amount_remaining": 0,
   "ready_to_pay": false,
   "currency": "usd",
-  "invoice_id": "e0911e59-aff1-5307-bf12-90c4f673a41c",
+  "invoice_id": "00000000-1111-5222-8333-444444444444",
   "receipt_id": "IN705825",
   "status": "OPEN",
   "source": "netsuite"
