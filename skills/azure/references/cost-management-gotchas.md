@@ -33,6 +33,22 @@ az-ext: throttled (HTTP 429) … Attempt 3 — waiting 90s (time-based backoff; 
 → succeeded on attempt 4, total wall clock 2m44s
 ```
 
+A *historical* query on the same subscription minutes later did far worse —
+**six** consecutive 429s across **635 seconds** of backoff without clearing:
+
+```
+az-ext: throttled (HTTP 429) on 2025-08-01→2026-08-01, None granularity, PublisherType+ServiceName. Attempt 1 — waiting 20s … Waited 0s of 1500s budget.
+… Attempt 2 — waiting 45s  … Waited 20s of 1500s budget.
+… Attempt 3 — waiting 90s  … Waited 65s of 1500s budget.
+… Attempt 4 — waiting 180s … Waited 155s of 1500s budget.
+… Attempt 5 — waiting 300s … Waited 335s of 1500s budget.
+… Attempt 6 — waiting 300s … Waited 635s of 1500s budget.
+```
+
+Budget an hour of wall clock for a first pass over a subscription's history, and
+let the cache do the rest. This is also why `--max-wait` defaults to 900 s rather
+than something polite: a shorter budget just fails.
+
 ### Mitigations, in order of value
 
 **(a) Cache to disk. This is the single most valuable thing.** Every successful
@@ -95,27 +111,47 @@ command spend **zero** quota.
 
 ---
 
-## 2. One year maximum per query
-
-A `timePeriod` spanning more than ~366 days:
+## 2. The real cap is 364 days, not 365 and not 366
 
 ```
 HTTP 400
 {"error":{"code":"BadRequest",
-          "message":"The time period for pulling the data cannot exceed 1 year(s)."}}
+          "message":"Invalid query definition: The time period for pulling the data cannot exceed 1 year(s)"}}
 ```
 
-`az-ext` chunks anything longer into ≤366-day windows automatically, warns that
-it is doing so, and caches each chunk separately. **Each chunk spends throttle
-budget**, so a 3-year query is three times as likely to hit §1 — combine with
-caching and pull long histories one year at a time over several sittings.
+**Measured, and stricter than "1 year" suggests.** Cost Management appears to
+count `timePeriod` **inclusively**, so:
+
+| `from` → `to` | `to - from` | Result |
+|---|---|---|
+| `2025-08-28` → `2026-08-27` | 364 days | **200 OK** |
+| `2025-08-01` → `2026-08-01` | 365 days | **400 BadRequest** |
+
+That second row is a live failure from this skill's own first `cost marketplace`
+run: an innocent-looking `--months 12` (1st of the month 12 back → 1st of this
+month) is 365 days and **ARM rejects it**. Two consequences baked into `az-ext`:
+
+- `MAX_QUERY_DAYS = 364`, not 366.
+- `--months N` is anchored at the **1st of the month N-1 back → today**, so the
+  common `--months 12` lands at ~361 days and stays a *single* query. Anchoring
+  on N instead produced the 365-day span above.
+
+Longer ranges are chunked automatically, with a warning. Chunks are split
+**evenly**, not greedily: greedy chunking of 365 days gives `[364, 1]` — two
+full-price queries, one for a single day — whereas even splitting gives
+`[183, 182]` for the same price. **Each chunk spends throttle budget**, so a
+3-year history is 4 queries and, at ~1 query per 5 minutes, a 20-minute job.
+Pull long histories a year at a time over several sittings and let the cache
+accumulate.
 
 If you hit this through `az rest`, split the range yourself. The error message
-from `az-ext` reports both the limit and the span you asked for:
+reports both the limit and the span asked for:
 
 ```
-az-ext: Cost Management rejected the query (400 BadRequest): The time period for pulling the data cannot exceed 1 year(s).
-Cost Management allows at most ~366 days per query and this one asked for 731.
+az-ext: Cost Management rejected the query (400 BadRequest): Invalid query definition: The time period for pulling the data cannot exceed 1 year(s)
+Cost Management counts timePeriod INCLUSIVELY, so the safe maximum for (to - from) is 364 days, and this one asked for 731.
+This command chunks longer ranges automatically — if you hit this via
+`az rest`, split the range yourself.
 ```
 
 ---
