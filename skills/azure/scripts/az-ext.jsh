@@ -127,8 +127,71 @@ const DEFAULT_MAX_WAIT_SECONDS = 900;
 const TTL_HISTORICAL_SECONDS = 24 * 3600;
 const TTL_MTD_SECONDS = 900;
 
-const HOME = (process.env && (process.env.HOME || process.env.USERPROFILE)) || '/root';
-const CACHE_DIR = HOME + '/.cache/az-ext/cost';
+// ─── Cache location (a deliberate design decision, see references) ───────────
+//
+// The cache must live somewhere the person running the skill can both WRITE and
+// later DELETE, because `cost cache --clear` has to actually work. That rules out
+// anything inside the installed skill tree: install roots are managed, and in
+// sandboxed runtimes write and unlink are gated separately — a cache written
+// under the skill directory can become undeletable, which silently turns
+// `--clear` into a lie and strands the data forever.
+//
+// So: user-scoped by default, and overridable. Resolution order, first wins:
+//   1. --cache-dir <path>          per-invocation (tests, CI, one-off isolation)
+//   2. AZ_EXT_CACHE_DIR            environment
+//   3. cacheDir in the skill config  durable per-user choice
+//   4. $HOME/.cache/az-ext/cost    default (XDG-ish, outside the skill tree)
+const DEFAULT_CACHE_SUBPATH = '/.cache/az-ext/cost';
+
+function homeDir() {
+  return (process.env && (process.env.HOME || process.env.USERPROFILE)) || '/root';
+}
+
+function defaultCacheDir() {
+  return homeDir() + DEFAULT_CACHE_SUBPATH;
+}
+
+let cacheDirOverride = null;
+
+/** The active cache directory. Everything on the cache path goes through this. */
+function cacheDir() {
+  return cacheDirOverride || defaultCacheDir();
+}
+
+/**
+ * Refuse a cache directory inside an installed-skill tree. This is a guard
+ * against a footgun rather than a theoretical concern: files created there may
+ * be impossible to remove afterwards, so `cache --clear` could not honour its
+ * contract and the cache would grow without bound.
+ */
+function assertUsableCacheDir(dir) {
+  if (/^\/workspace\/skills(\/|$)/.test(dir)) {
+    cli.die(
+      `Refusing to use ${dir} as the cache directory.\n` +
+        '/workspace/skills/ is the installed-skill tree: it is install-managed, and in\n' +
+        'sandboxed runtimes deletion there is gated separately from writing — so the\n' +
+        'cache could become impossible to clear.\n' +
+        `Use the default (${defaultCacheDir()}), or pass --cache-dir <path>.`,
+      { prefix: 'az-ext' }
+    );
+  }
+  if (!dir.startsWith('/')) {
+    cli.die(`--cache-dir must be an absolute path, got "${dir}".`, { prefix: 'az-ext' });
+  }
+}
+
+/** Resolve and latch the cache directory for this invocation. */
+async function resolveCacheDir(flags) {
+  const cfg = (await skill.config()) || {};
+  const chosen =
+    str(flags && flags['cache-dir']) ||
+    str(process.env && process.env.AZ_EXT_CACHE_DIR) ||
+    str(cfg.cacheDir) ||
+    defaultCacheDir();
+  assertUsableCacheDir(chosen);
+  cacheDirOverride = chosen;
+  return chosen;
+}
 
 // ─── tiny helpers ────────────────────────────────────────────────────────────
 
@@ -461,11 +524,11 @@ function cacheKeyFor(subscriptionId, body) {
 }
 
 async function ensureCacheDir() {
-  await fs.mkdir(CACHE_DIR, { recursive: true }).catch(() => {});
+  await fs.mkdir(cacheDir(), { recursive: true }).catch(() => {});
 }
 
 function cachePath(key) {
-  return CACHE_DIR + '/' + key + '.json';
+  return cacheDir() + '/' + key + '.json';
 }
 
 /**
@@ -505,7 +568,7 @@ async function cacheSet(subscriptionId, body, response, ttlSeconds) {
 async function cacheList() {
   let names;
   try {
-    names = await fs.readDir(CACHE_DIR);
+    names = await fs.readDir(cacheDir());
   } catch {
     return [];
   }
@@ -514,7 +577,7 @@ async function cacheList() {
     const fileName = typeof name === 'string' ? name : name && name.name;
     if (!fileName || !fileName.endsWith('.json')) continue;
     try {
-      const entry = JSON.parse(await fs.readFile(CACHE_DIR + '/' + fileName, 'utf8'));
+      const entry = JSON.parse(await fs.readFile(cacheDir() + '/' + fileName, 'utf8'));
       const q = entry.query || {};
       out.push({
         key: entry.key,
@@ -1223,7 +1286,7 @@ async function cmdCache(flags) {
       }
     }
     console.log(
-      `${c.green('✓')} cleared ${removed}/${entries.length} cached cost responses from ${CACHE_DIR}\n` +
+      `${c.green('✓')} cleared ${removed}/${entries.length} cached cost responses from ${cacheDir()}\n` +
         c.yellow('  Warning: ') +
         c.dim('the next query re-spends throttle budget (~1 historical query / 5 min).')
     );
@@ -1231,11 +1294,11 @@ async function cmdCache(flags) {
   }
   const entries = await cacheList();
   if (flags.json) {
-    cli.out({ dir: CACHE_DIR, entries: entries });
+    cli.out({ dir: cacheDir(), entries: entries });
     return;
   }
   console.log('');
-  console.log(`  ${c.bold('cost query cache')}  ${c.dim(CACHE_DIR)}`);
+  console.log(`  ${c.bold('cost query cache')}  ${c.dim(cacheDir())}`);
   console.log('');
   if (!entries.length) {
     console.log(`  ${c.dim('(empty)')}`);
@@ -1290,8 +1353,9 @@ USAGE
   az-ext cost dimensions  [--check <name>] [--json]
       The valid grouping dimensions, offline. Zero quota.
 
-  az-ext cost cache       [--list] [--clear] [--json]
-      Inspect or drop the on-disk response cache.
+  az-ext cost cache       [--list] [--clear] [--cache-dir P] [--json]
+      Inspect or drop the on-disk response cache. --list prints the directory in
+      use, so it doubles as "where is my cache?".
 
 COMMON FLAGS
   --subscription <id|name>  GUID, exact name, or unique substring. Falls back to
@@ -1302,6 +1366,11 @@ COMMON FLAGS
   --refresh                 Ignore the cache and re-query (spends quota).
   --max-wait S              Seconds to spend backing off a 429. Default ${DEFAULT_MAX_WAIT_SECONDS}.
   --limit N                 Rows to print. Default 25.
+  --cache-dir <abs-path>    Where to keep cached responses. Default
+                            $HOME/.cache/az-ext/cost; also settable via
+                            AZ_EXT_CACHE_DIR or a "cacheDir" config key. Must be
+                            writable AND deletable, so a path inside the
+                            installed-skill tree is refused.
   --json                    Raw structured output.
 
 THROTTLING (read this before scripting anything)
@@ -1327,6 +1396,8 @@ const flags = parsed.flags;
 
 async function route() {
   const [group, sub] = positional;
+  // Latch the cache directory before any command can touch the cache.
+  await resolveCacheDir(flags);
   if (group !== 'cost') {
     cli.die(`unknown command group: ${group}\nOnly 'cost' exists. Run 'az-ext --help'.`, { prefix: 'az-ext' });
   }
@@ -1388,7 +1459,10 @@ module.exports = {
   VALID_DIMENSIONS,
   BACKOFF_SECONDS,
   MAX_QUERY_DAYS,
-  CACHE_DIR,
+  cacheDir,
+  defaultCacheDir,
+  resolveCacheDir,
+  assertUsableCacheDir,
 };
 
 if (process.env.AZ_EXT_NO_MAIN !== '1') {
