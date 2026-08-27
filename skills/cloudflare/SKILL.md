@@ -3,18 +3,18 @@ name: cloudflare
 description: >-
   Query Cloudflare zone analytics (HTTP requests, status codes, top paths, user
   agents, countries, threats) AND account billing (invoice history, invoice PDFs,
-  per-month/per-year spend, contract numbers, Workers excess-usage overage) by
-  piggybacking on an open, logged-in `dash.cloudflare.com` tab — no API token, no
-  `wrangler login`. Use when investigating traffic spikes, bot scans, error-rate
-  changes or referrer breakdowns for a zone you manage, and when you need a
-  Cloudflare invoice, bill, cost or spend total, an invoice PDF, a contract
-  number, or excess-usage detail. Essential on a shared enterprise account, where
-  the contract number on each invoice is the only way to tell your team's spend
-  from the parent org's. Triggers on "cloudflare traffic", "why did traffic
-  spike", "404 rate", "bot scan", "top paths for example.com", "cloudflare
-  invoice", "cloudflare bill", "how much are we spending on Cloudflare", "Workers
-  overage", "cloudflare contract". Not Fastly, not AWS CloudFront, not Akamai —
-  Cloudflare only, and both zone analytics AND billing.
+  per-month/per-year spend, contract numbers, Workers excess-usage overage) from
+  an open, logged-in `dash.cloudflare.com` tab — no API token, no `wrangler
+  login`. Use when investigating traffic spikes, bot scans or error-rate changes
+  for a zone you manage, and when you need a Cloudflare invoice, bill, cost or
+  spend total, an invoice PDF, a contract number or excess-usage detail. On a
+  shared enterprise account the contract number on each invoice is the only way
+  to tell your team's spend from the parent org's. Triggers on "cloudflare
+  traffic", "why did traffic spike", "404 rate", "bot scan", "top paths for
+  example.com", "cloudflare invoice", "cloudflare bill", "how much are we
+  spending on Cloudflare", "Workers overage", "cloudflare contract". Not Fastly,
+  not AWS CloudFront, not Akamai — Cloudflare only, and both zone analytics AND
+  billing.
 allowed-tools: bash
 ---
 
