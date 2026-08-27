@@ -108,9 +108,13 @@ const DIMENSION_ALIASES = {
   month: 'BillingMonth',
 };
 
-// A window wider than this is rejected 400 by Cost Management. 366 (not 365)
-// keeps a leap year inside a single query.
-const MAX_QUERY_DAYS = 366;
+// MEASURED, and stricter than the docs imply: Cost Management counts timePeriod
+// INCLUSIVELY, so a from/to exactly 365 days apart spans 366 calendar days and is
+// rejected 400 "The time period for pulling the data cannot exceed 1 year(s)".
+// Confirmed live on 2026-08-27: from 2025-08-01 to 2026-08-01 (365 days) FAILED,
+// while from 2025-08-28 to 2026-08-27 (364 days) succeeded. So the safe maximum
+// for (to - from) is 364 days, NOT 366.
+const MAX_QUERY_DAYS = 364;
 
 // Time-based backoff, in seconds. Deliberately front-loaded gently then long:
 // the observed budget is ~1 historical query / 5 minutes, so the tail steps sit
@@ -225,9 +229,14 @@ function requireDimension(name) {
 // ─── 1-year chunking (constraint 2) ──────────────────────────────────────────
 
 /**
- * Split [fromIso, toIso) into windows of at most MAX_QUERY_DAYS days, newest
- * last. A span inside the limit yields exactly one window, so callers never
+ * Split [fromIso, toIso) into windows of at most MAX_QUERY_DAYS days, oldest
+ * first. A span inside the limit yields exactly one window, so callers never
  * special-case the common path.
+ *
+ * Windows are split EVENLY rather than greedily. Greedy chunking of a 365-day
+ * range yields [364, 1] — two full-price queries, one of which fetches a single
+ * day. Since every chunk costs the same throttle budget regardless of width,
+ * even splitting ([183, 182]) is strictly better for the same price.
  */
 function chunkRange(fromIso, toIso) {
   const from = isoStart(fromIso);
@@ -235,10 +244,13 @@ function chunkRange(fromIso, toIso) {
   if (Date.parse(from) >= Date.parse(to)) {
     return [{ from: from, to: to }];
   }
+  const spanDays = daysBetween(from, to);
+  const count = Math.ceil(spanDays / MAX_QUERY_DAYS);
+  const perWindow = Math.ceil(spanDays / count);
   const windows = [];
   let cursor = from;
   while (Date.parse(cursor) < Date.parse(to)) {
-    const next = new Date(Date.parse(cursor) + MAX_QUERY_DAYS * 86400000);
+    const next = new Date(Date.parse(cursor) + perWindow * 86400000);
     const end = Date.parse(next) < Date.parse(to) ? isoStart(ymd(next)) : to;
     windows.push({ from: cursor, to: end });
     cursor = end;
@@ -661,9 +673,10 @@ async function costQuery(subscriptionId, body, opts, deps) {
       if (/cannot exceed 1 year/i.test(errMessage)) {
         const span = body.timePeriod ? daysBetween(body.timePeriod.from, body.timePeriod.to) : null;
         hint =
-          '\nCost Management allows at most ~366 days per query' +
-          (span ? ` and this one asked for ${span}` : '') +
-          '.\nThis command chunks longer ranges automatically — if you hit this via ' +
+          '\nCost Management counts timePeriod INCLUSIVELY, so the safe maximum for' +
+          ` (to - from) is ${MAX_QUERY_DAYS} days` +
+          (span ? `, and this one asked for ${span}` : '') +
+          '.\nThis command chunks longer ranges automatically — if you hit this via\n' +
           '`az rest`, split the range yourself.';
       } else if (/dimension/i.test(errMessage)) {
         hint = '\nValid grouping dimensions: ' + VALID_DIMENSIONS.join(', ');
@@ -805,13 +818,19 @@ function commonOptions(flags) {
   };
 }
 
-/** Resolve --from/--to/--months into an ISO window ending at the 1st of the
- *  current month (closed months only) unless --to says otherwise. */
+/**
+ * Resolve --from/--to/--months into an ISO window.
+ *
+ * `--months N` means "the N most recent months, including the current partial
+ * one": from the 1st of the month N-1 back, to today. Anchoring on N-1 (not N)
+ * is deliberate — anchoring on N produced a 365-day span for the default N=12,
+ * which Cost Management REJECTS (see MAX_QUERY_DAYS). With N-1 the common
+ * 12-month request stays a single query instead of silently costing two.
+ */
 function resolveWindow(flags, defaultMonths) {
-  const to = str(flags.to) ? isoStart(str(flags.to)) : isoStart(monthStart(0));
-  const from = str(flags.from)
-    ? isoStart(str(flags.from))
-    : isoStart(monthStart(num(flags.months, defaultMonths)));
+  const months = Math.max(1, num(flags.months, defaultMonths));
+  const to = str(flags.to) ? isoStart(str(flags.to)) : isoStart(new Date());
+  const from = str(flags.from) ? isoStart(str(flags.from)) : isoStart(monthStart(months - 1));
   if (Date.parse(from) >= Date.parse(to)) {
     cli.die(`--from (${from.slice(0, 10)}) must be before --to (${to.slice(0, 10)}).`, { prefix: 'az-ext' });
   }
