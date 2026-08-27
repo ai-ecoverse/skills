@@ -62,6 +62,9 @@ time-based. The skill is built around not spending that budget twice:
   query body. Measured: the same `cost mtd` took **2m44s** cold and **0.082s**
   warm with zero ARM requests. The most valuable mitigation by far — reruns,
   re-renders and `--json` are free.
+  Cached under `$HOME/.cache/az-ext/cost` by default (`--cache-dir`,
+  `AZ_EXT_CACHE_DIR` or a `cacheDir` config key override it) — user-scoped, never
+  inside the installed skill tree, so `cost cache --clear` can actually delete.
 - **429s back off visibly** (20s, 45s, 90s, 180s, 300s…) printing the remaining
   `--max-wait` budget, and are always reported *as throttling*, never as a
   generic failure.
