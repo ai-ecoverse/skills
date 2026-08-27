@@ -63,3 +63,9 @@ Combining both sources is the right move:
 | `top-uas <zone>` | Most-common user agents (sampled, aggregated client-side) |
 | `top-countries <zone>` | Top source countries by request count (sampled) |
 | `query --zone=<z>` | Arbitrary GraphQL, from `--file=path` or stdin |
+
+`--zone` accepts either a zone **name** or a **32-char hex zone ID**; a name is
+resolved through the cache, then via `/api/v4/zones?name=…`, then by listing all
+zones. `--hours` is the window ending now (1-72, default 3) and `--limit` caps
+`top-*` rows (default 25). `--tab` overrides the auto-picked dashboard tab and
+`--json` emits the raw GraphQL response.
