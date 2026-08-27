@@ -52,7 +52,7 @@ than something polite: a shorter budget just fails.
 ### Mitigations, in order of value
 
 **(a) Cache to disk. This is the single most valuable thing.** Every successful
-response is written to `~/.cache/az-ext/cost/<sha256-24>.json` keyed on
+response is written to `$HOME/.cache/az-ext/cost/<sha256-24>.json` keyed on
 subscription id + the exact query body. A rerun, a re-render, a switch to
 `--json`, or a second look at the same window costs **zero** quota. Measured:
 the same `cost mtd` took **2m44s** cold and **0.082s** warm.
@@ -64,10 +64,41 @@ answer the wrong question. TTLs: **24 h** for historical windows (closed months
 do not change), **15 min** for month-to-date.
 
 ```bash
-az-ext cost cache --list     # what is already answered, and how old
+az-ext cost cache --list     # what is already answered, how old, and WHERE
 az-ext cost cache --clear    # warns that the next query re-spends budget
 az-ext cost summary --refresh   # deliberately bypass the cache
 ```
+
+#### Where the cache lives, and why there
+
+The cache is only useful if `cache --clear` genuinely works, so the directory has
+to be one the user can **write and later delete**. Resolution order, first wins:
+
+| Source | Use |
+|---|---|
+| `--cache-dir <abs-path>` | per-invocation isolation (tests, CI, a one-off run) |
+| `AZ_EXT_CACHE_DIR` | environment, e.g. a container mount |
+| `cacheDir` in the skill config | durable per-user choice |
+| `$HOME/.cache/az-ext/cost` | **default** |
+
+The default is deliberately **user-scoped and outside the installed skill tree**.
+An install root is managed (an update may overwrite or relocate it), and in
+sandboxed runtimes *write* and *unlink* are separately gated — so a cache written
+under the skill directory can end up impossible to remove, which silently turns
+`--clear` into a lie and lets the cache grow without bound. `az-ext` therefore
+**refuses** a `--cache-dir` under `/workspace/skills/` outright, and refuses a
+relative path:
+
+```
+az-ext: Refusing to use /workspace/skills/azure/cache as the cache directory.
+/workspace/skills/ is the installed-skill tree: it is install-managed, and in
+sandboxed runtimes deletion there is gated separately from writing — so the
+cache could become impossible to clear.
+Use the default ($HOME/.cache/az-ext/cost), or pass --cache-dir <path>.
+```
+
+`cache --list` always prints the directory in use, so it doubles as "where is my
+cache?".
 
 **(b) Back off with visible progress, and never bury a 429.** A 429 reported as
 a generic failure sends you debugging your auth. Every wait prints what is
