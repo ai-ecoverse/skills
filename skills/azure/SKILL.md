@@ -82,13 +82,14 @@ investigating. Re-grouping by **`PublisherType`** explains it instantly:
 
 | PublisherType | 12 months to 2026-08 | Share |
 |---|---|---|
-| `Marketplace` | $22,720.00 | **97.0%** |
-| `Azure` | $695.60 | 3.0% |
+| `Marketplace` | $22,725.00 | **97.0%** |
+| `Azure` | $696.13 | 3.0% |
 
 It was third-party SaaS resold through Azure billing — in the same subscription,
-`Marketplace / SaaS` was **ClickHouse Cloud at $8,253**. Azure-native
-infrastructure (Functions Premium $511, Service Bus $61, Static Web Apps $52,
-Storage ~$54) came to about **$694 per year**.
+`Marketplace / SaaS` was **ClickHouse Cloud at $8,258**. Azure-native
+infrastructure (Functions $524.92, Service Bus $60.58, App Service $51.57,
+Storage $39.82, and six smaller meters) came to **$696.13 for the whole year** —
+less than four days of the ClickHouse charge.
 
 This is not a footnote: "optimise your Azure spend" is meaningless when 97% of it
 is a SaaS contract that no Azure lever touches. `az-ext cost marketplace` makes
