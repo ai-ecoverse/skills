@@ -105,8 +105,8 @@ All subcommands accept these:
 | Flag | Meaning | Default |
 |---|---|---|
 | `--subscription <id\|name>` | GUID, exact name, or unique substring | the `az account set` default |
-| `--months N` | Window length in whole months, ending at the 1st of the current month | `12` |
-| `--from` / `--to YYYY-MM-DD` | Explicit window (overrides `--months`) | — |
+| `--months N` | The N most recent months **including** the current partial one: 1st of the month N-1 back → today | `12` |
+| `--from` / `--to YYYY-MM-DD` | Explicit window (overrides `--months`). Spans over 364 days are chunked. | — |
 | `--refresh` | Ignore the cache and re-query. **Spends quota.** | off |
 | `--no-cache` | Synonym for `--refresh` | off |
 | `--max-wait S` | Seconds to spend backing off HTTP 429 | `900` |
@@ -124,8 +124,9 @@ switching on or off, which must not be read as growth.
 az-ext cost summary --subscription "DMa/Helix PRD" --months 13
 ```
 
-Ranges over 366 days are split into ≤1-year chunks automatically (with a
-warning; each uncached chunk spends quota).
+Ranges over 364 days are split into even chunks automatically (with a warning;
+each uncached chunk spends quota). `--months N` is anchored so the default
+`--months 12` stays a **single** query.
 
 ### `az-ext cost marketplace`
 
