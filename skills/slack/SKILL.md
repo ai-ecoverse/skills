@@ -42,7 +42,7 @@ slack --workspace=T06DUTYDQ channels --search=helix
 slack --ws=T06DUTYDQ history C06ABC123
 
 # Post — prints the new message's ts, auto-signs with :icecream:,
-# auto-watches replies for 1h → cone
+# auto-watches replies for 1h → back to the cone that posted
 slack post C087NCG774J "Hello from SLICC!"
 slack post C087NCG774J "and part 2" --thread_ts=1787334522.567869   # reply in thread
 slack post C087NCG774J "quiet post" --no-sign --no-watch
@@ -65,6 +65,7 @@ slack find "Dragos Dascalita"
 slack user W5BPKRLUA
 
 # Watch a channel or a single thread in real time; list watches; stop watching
+slack watch C087NCG774J                 # → this cone (needs SLICC_LICK_TARGET)
 slack watch C087NCG774J --scoop=my-monitor
 slack watch C087NCG774J --scoop=my-monitor --thread=1774539502.747989
 slack watches
@@ -230,10 +231,13 @@ slack post C087NCG774J "part 3" --thread_ts=last   # same thread, no bookkeeping
 - `--thread_ts=last` — reply into the thread root of the most recent message this
   CLI posted in that channel (remembered in a per-workspace-and-channel
   `.last-post-<workspace>-<channel>.json` state file, alongside the `.watch-*.json`
-  files). Errors if nothing has been posted there yet.
+  files). Errors if nothing has been posted there yet, or if the remembered post
+  was made by a *different* cone — it prints that timestamp so you can pass
+  `--thread_ts=<ts>` deliberately instead of threading under someone else's message.
 - `--sign[=<emoji>]` / `--no-sign` — control the auto-sign reaction (see below).
 - `--no-watch` — skip the auto reply-watch (see below).
-- `--watch-scoop=<name>` — override the scoop the reply-watch routes to (default: the cone).
+- `--watch-scoop=<name>` — override the scoop the reply-watch routes to (default:
+  the cone that posted, from `SLICC_LICK_TARGET`).
 
 Emoji shortcodes in the message are converted to Unicode before sending; a
 shortcode that resolves to nothing is refused, so the message never posts with a
@@ -264,8 +268,15 @@ After a successful post, replies are watched for **one hour**, then the watch
 tears itself down. It is silent when idle: a notification arrives only on a
 genuine new reply — never a tick, never a poll.
 
-- **Where replies go** — the cone by default, so they surface directly to you.
-  `--watch-scoop=<name>` routes them to another scoop instead.
+- **Where replies go** — **back to the cone that posted**, so they surface in the
+  chat that sent the message. The target is the posting cone's own
+  `SLICC_LICK_TARGET` (set by the runtime for every cone that is not the default
+  root); with it unset the lick is left untargeted and the runtime picks the
+  default root. `--watch-scoop=<name>` routes them to another scoop instead.
+- **One watch per channel, and every cone shares them.** The state files live in
+  the shared `/workspace/skills/slack/`, so if another cone is already watching
+  that channel the post extends that watch and warns you whose it is, printing the
+  `slack watch … --force` command to take it over. `slack watches` names the owner.
 - **Scope** — channels with **more than 100 members** are watched **thread-only**
   (the thread you replied into, or the new message's own). Everything smaller,
   and every DM, is watched **whole-channel** — which also catches thread replies.
@@ -274,11 +285,12 @@ genuine new reply — never a tick, never a poll.
 - `--no-watch` opts out.
 
 ```bash
-# Default: signs + watches for replies for 1h, routing to the cone
+# Default: signs + watches for replies for 1h, routing back to this cone
 slack post C087NCG774J "Anyone around to review PR 42?"
 #   Signed with :icecream:
-#   Watching channel+thread for replies for 1h (routes to cone)
-# Route replies to a specific scoop instead of the cone
+#   Watching channel+thread for replies for 1h (routes to cone-helix)
+#   (default root, SLICC_LICK_TARGET unset → "routes to the default root cone")
+# Route replies to a specific scoop instead of this cone
 slack post C087NCG774J "ping" --watch-scoop=my-monitor
 # Post without watching
 slack post C087NCG774J "fire and forget" --no-watch
@@ -354,13 +366,17 @@ Get channel metadata (name, purpose, topic, member count).
 
 Opens/finds the Slackbot DM channel and prints its ID.
 
-### slack watch \<channel_id\> --scoop=\<name\> [--thread=\<ts\>] [--filter=\<js\>] [--force]
+### slack watch \<channel_id\> [--scoop=\<name\>] [--thread=\<ts\>] [--filter=\<js\>] [--force]
 
 Watch a channel or thread for new messages **in real time**. Each new message is
-delivered as a lick event to the specified scoop within seconds.
+delivered as a lick event to the target scoop within seconds.
 
 **Options:**
-- `--scoop=<name>` — **(required)** the scoop that receives lick events
+- `--scoop=<name>` — the scoop that receives lick events. Defaults to the calling
+  cone (`SLICC_LICK_TARGET`), so plain `slack watch <channel>` wakes whoever ran
+  it. **Required** when that variable is unset (the default root), because
+  `webhook create` needs a concrete scoop and guessing one could route silently
+  wrong.
 - `--thread=<thread_ts>` — watch a specific thread instead of the whole channel
 - `--filter=<js>` — a JS filter (`(event) => …`, `event.body` is the Slack message
   frame) evaluated per forwarded message; a falsy result drops it *before it wakes
@@ -384,7 +400,9 @@ The watched channel/thread is implicit, and the complete Slack frame is delivere
 (any additional Slack fields are preserved).
 
 **Duplicate prevention:** the watch ID is deterministic from channel + thread, so
-you cannot create two watches on the same target without `--force`.
+you cannot create two watches on the same target without `--force`. Watch state is
+shared by every cone in the workspace, so the refusal names the owning cone and
+warns when replacing the watch would cut off *another* cone's replies.
 
 Each watch keeps one SLICC webhook plus a state file at
 `/workspace/skills/slack/.watch-<id>.json`. Delivery depends on the Slack tab: if
@@ -398,7 +416,9 @@ delivery), the `+1h` teardown task if present, and the watch state.
 
 ### slack watches
 
-List all active Slack watches with their targets, scoops, webhook, and expiry.
+List all active Slack watches with their targets, scoops, webhook, and expiry —
+across every cone in the workspace, with `[owner: <cone>]` when the owning cone
+differs from the webhook's scoop.
 
 ### slack reinject
 

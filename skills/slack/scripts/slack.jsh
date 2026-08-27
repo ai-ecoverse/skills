@@ -110,9 +110,13 @@ function validateWorkspaceId(id) {
 // from the pre-migration file, not introduced by this PR's diff), but
 // since this PR is already the designated security-review pass for this
 // file, fixing it here rather than letting it through unflagged.
-function validateScoopName(name) {
+// `label` names the source of the value in the error message: a value taken
+// from the SLICC_LICK_TARGET environment variable reaches exactly the same
+// shell command strings and VFS paths as one taken from --scoop, so it must
+// pass exactly the same guard.
+function validateScoopName(name, label = '--scoop') {
   if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
-    console.error(`Error: Invalid --scoop "${name}". Expected format: alphanumeric, dash, or underscore only.`);
+    console.error(`Error: Invalid ${label} "${name}". Expected format: alphanumeric, dash, or underscore only.`);
     process.exit(1);
   }
   return name;
@@ -300,14 +304,69 @@ function computeTeardownCron(offsetMs = 3600 * 1000, now = new Date()) {
   return { cron: `${min} ${hour} ${dom} ${month} *`, at };
 }
 
-// Default scoop the auto-watch (and its teardown) routes to. The cone/main
-// assistant is registered as scoop folder `cone`, so replies surface directly
-// to the human. `crontask create --scoop cone` is accepted by the runtime.
+// --- Lick routing -------------------------------------------------------------
+// Replies must come back to the cone that posted. A workspace can run several
+// cones at once, and every cone that is NOT the default root gets its own scoop
+// folder named in `SLICC_LICK_TARGET` in its shell environment (slicc
+// `packages/webapp/src/shell/lick-target-env.ts`; env vars do reach .jsh
+// scripts — measured, older notes claiming otherwise are stale). Reading it is
+// the whole fix: hardcoding `cone` sent every secondary cone's replies to the
+// default root's chat (observed live: `cone-helix` posted, `cone` was woken).
+//
+// When SLICC_LICK_TARGET is UNSET this process IS the default root, and the
+// correct thing is to pass no --scoop at all and let dispatch choose the
+// untargeted destination (`rootsOf(scoops)[0]`, the OLDEST root — deliberately
+// not necessarily whoever currently holds the reserved `cone` folder, since
+// that folder is recycled to the next new cone when the original is dropped).
+// `crontask create` accepts an omitted --scoop, so the teardown does exactly
+// that. `webhook create` still rejects it with "--scoop is required" (exit 1),
+// so the webhook keeps naming `cone` explicitly.
+//
 // Overridable per-post with --watch-scoop.
-const DEFAULT_WATCH_SCOOP = 'cone';
-// Fallback standing relay scoop if the cone is ever rejected as a target.
+//
+// Stopgap target for `webhook create` when there is no explicit target: this is
+// the pre-existing hardcoded value and it is knowingly retained, NOT an
+// oversight. `webhook create` rejects an omitted --scoop ("--scoop is
+// required", exit 1) while `crontask create` accepts it; that asymmetry is
+// slicc#2525. Once it lands, drop this constant and omit --scoop here too, the
+// same way scheduleTeardown() already does.
+const WEBHOOK_FALLBACK_SCOOP = 'cone';
+// Fallback standing relay scoop if the target is ever rejected as a webhook target.
 const RELAY_WATCH_SCOOP = 'slack-reply-watch';
 const AUTOWATCH_TTL_MS = 3600 * 1000; // 1 hour
+
+// This cone's own lick target, or null when this process is the default root
+// (SLICC_LICK_TARGET unset) and dispatch should pick the destination itself.
+// The value is interpolated into exec() shell command strings, so it goes
+// through validateScoopName() exactly like a --scoop flag value.
+function envLickTarget() {
+  const raw = process.env ? process.env.SLICC_LICK_TARGET : null;
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  return validateScoopName(trimmed, 'SLICC_LICK_TARGET');
+}
+
+// Resolve the lick target for a watch: an explicit --watch-scoop/--scoop value
+// wins, else this cone's own target, else null ("let dispatch decide").
+function resolveLickTarget(explicit) {
+  if (typeof explicit === 'string' && explicit) return validateScoopName(explicit);
+  return envLickTarget();
+}
+
+// The owning target recorded in a state file, normalized. `null` means "the
+// default root". `undefined` means the file predates ownership tracking, so the
+// owner is unknown and cross-cone checks must not fire on it.
+function stateOwner(state) {
+  if (!state || typeof state !== 'object') return undefined;
+  if (!('lickTarget' in state)) return undefined;
+  return state.lickTarget || null;
+}
+
+// Human-readable name for a target, for log lines and conflict messages.
+function describeTarget(target) {
+  return target || 'the default root cone';
+}
 
 // --- Last-post memory (for `--thread_ts=last`) --------------------------------
 // After every successful `slack post` the thread root we wrote into (an explicit
@@ -334,21 +393,33 @@ function lastPostFile(wsId, channel) {
   return `${LAST_POST_DIR}/.last-post-${key}.json`;
 }
 
-async function readLastPostTs(wsId, channel) {
+// Returns {ts, owner} for the remembered post, or null. `owner` is the lick
+// target of the cone that wrote it (undefined for files written before
+// ownership was recorded). /workspace/skills is shared by every cone, so this
+// file is not per-cone state: without the owner, `--thread_ts=last` in one cone
+// could silently thread under a message a DIFFERENT cone posted.
+async function readLastPost(wsId, channel) {
   try {
     const raw = await fs.readFile(lastPostFile(wsId, channel), 'utf8');
     const state = JSON.parse(raw);
     const val = state && state.ts;
-    return typeof val === 'string' && val ? val : null;
+    if (typeof val !== 'string' || !val) return null;
+    return { ts: val, owner: stateOwner(state) };
   } catch (_) {
     return null;
   }
 }
 
-async function rememberLastPostTs(wsId, channel, ts) {
+async function rememberLastPostTs(wsId, channel, ts, lickTarget) {
   if (!ts) return;
   try {
-    const state = { workspace: wsId || null, channel, ts, updatedAt: new Date().toISOString() };
+    const state = {
+      workspace: wsId || null,
+      channel,
+      ts,
+      lickTarget: lickTarget || null,
+      updatedAt: new Date().toISOString(),
+    };
     await fs.writeFile(lastPostFile(wsId, channel), JSON.stringify(state));
   } catch (_) { /* best-effort only */ }
 }
@@ -363,7 +434,8 @@ async function rememberLastPostTs(wsId, channel, ts) {
 //     .forward({sink:'webhook', webhookId})
 // exactly as the manual `slack watch` command does (subscribeWatch). The runtime
 // forwards ONLY matching Slack `message` frames to the webhook, which routes them
-// to the watch scoop (the cone by default). This is silent by construction: when
+// to the watch scoop (this cone's own lick target by default — see
+// resolveLickTarget()). This is silent by construction: when
 // nothing is said, no frame arrives, so the scoop is NEVER woken — satisfying the
 // "no per-minute wakes; notify only on a genuine new reply" constraint for free.
 //
@@ -425,22 +497,37 @@ async function startAutoWatch({ targetChannel, threadTs, selfTs, wsId, watchScoo
   // second post into a live watch matched the filter and woke the watch scoop).
   let existing = null;
   try { existing = JSON.parse(await fs.readFile(stateFile, 'utf8')); } catch (_) {}
+  const lickTarget = resolveLickTarget(watchScoop);
   if (existing && existing.autowatch) {
     const { at } = computeTeardownCron(AUTOWATCH_TTL_MS);
     if (existing.teardownTaskId) {
       await exec(`crontask delete ${escapeShellArg(existing.teardownTaskId)}`).catch(() => {});
     }
-    const scoop = existing.scoop || DEFAULT_WATCH_SCOOP;
+    // The watch (and therefore where its replies land) belongs to whichever cone
+    // created it: /workspace/skills is shared, so a second cone posting into the
+    // same channel lands on the same state file. Extending someone else's watch
+    // is harmless, but silently inheriting their routing is what caused the
+    // original mis-delivery, so name the owner and print the takeover command
+    // instead of quietly re-pointing anything.
+    const owner = stateOwner(existing);
+    const scoop = owner === undefined ? (existing.scoop || WEBHOOK_FALLBACK_SCOOP) : owner;
     const newTeardown = await scheduleTeardown({ watchId, at, useThread, threadTs, targetChannel, scoop });
     existing.expiresAt = expiresAt;
     existing.teardownTaskId = newTeardown || null;
     await fs.writeFile(stateFile, JSON.stringify(existing, null, 2)).catch(() => {});
-    console.log(`Extended reply watch for ${watchId} to 1h (routes to ${scoop})`);
+    console.log(`Extended reply watch for ${watchId} to 1h (routes to ${describeTarget(scoop)})`);
+    if (owner !== undefined && owner !== lickTarget) {
+      console.error(`Warning: ${watchId} is watched by ${describeTarget(owner)}, not ${describeTarget(lickTarget)} — replies will wake ${describeTarget(owner)}.`);
+      console.error(`  To take it over: slack watch ${targetChannel}${useThread ? ` --thread=${threadTs}` : ''}${lickTarget ? ` --scoop=${lickTarget}` : ''} --force`);
+    }
     return;
   }
 
-  // 4. Fresh watch. Determine the target scoop (cone default, relay fallback).
-  let scoop = watchScoop || DEFAULT_WATCH_SCOOP;
+  // 4. Fresh watch. `webhook create` cannot express "let dispatch choose" yet
+  //    (slicc#2525), so an absent target falls back to WEBHOOK_FALLBACK_SCOOP
+  //    here; the teardown crontask in step 7 omits --scoop instead.
+  let scoop = lickTarget || WEBHOOK_FALLBACK_SCOOP;
+  let relayed = false;
 
   // 5. Resolve our own Slack user id (auth.test, non-fatal) and create the webhook
   //    routed to the watch scoop, with a filter that keeps only genuine new replies
@@ -449,11 +536,14 @@ async function startAutoWatch({ targetChannel, threadTs, selfTs, wsId, watchScoo
   const filter = buildAutoWatchWebhookFilter(selfTs, selfUser);
   let whId = null;
   let mkWebhook = await exec(`webhook create --scoop ${escapeShellArg(scoop)} --filter ${escapeShellArg(filter)}`);
-  // Fallback: if the cone is rejected as a target, create/reuse a relay scoop.
-  if (mkWebhook.exitCode !== 0 && scoop === DEFAULT_WATCH_SCOOP) {
+  // Fallback: if the target is rejected, create/reuse a relay scoop. Never for an
+  // explicitly requested --watch-scoop: a caller naming a scoop wants that scoop
+  // or a clear failure, not a silent redirect.
+  if (mkWebhook.exitCode !== 0 && !watchScoop) {
     console.error(`Warning: watch scoop "${scoop}" rejected (${(mkWebhook.stderr || '').trim()}); falling back to relay scoop "${RELAY_WATCH_SCOOP}".`);
     await ensureRelayScoop().catch(() => {});
     scoop = RELAY_WATCH_SCOOP;
+    relayed = true;
     mkWebhook = await exec(`webhook create --scoop ${escapeShellArg(scoop)} --filter ${escapeShellArg(filter)}`);
   }
   if (mkWebhook.exitCode !== 0) {
@@ -474,6 +564,10 @@ async function startAutoWatch({ targetChannel, threadTs, selfTs, wsId, watchScoo
     channel: targetChannel,
     thread_ts: useThread ? threadTs : null,
     scoop,
+    // The cone that owns this watch (null = the default root). Distinct from
+    // `scoop`, which is what `webhook create` was actually given — those differ
+    // when the fallback above kicks in, and when there is no target at all.
+    lickTarget: relayed ? RELAY_WATCH_SCOOP : lickTarget,
     workspace: wsId,
     createdAt: new Date(now).toISOString(),
     autowatch: true,
@@ -499,13 +593,17 @@ async function startAutoWatch({ targetChannel, threadTs, selfTs, wsId, watchScoo
   }
 
   // 7. Schedule the one-hour teardown crontask (deletes the webhook + state).
+  //    Unlike the webhook, crontask accepts an omitted --scoop, so an absent
+  //    target is passed through as null and dispatch picks the destination.
   const { at } = computeTeardownCron(AUTOWATCH_TTL_MS);
-  state.teardownTaskId = await scheduleTeardown({ watchId, at, useThread, threadTs, targetChannel, scoop });
+  state.teardownTaskId = await scheduleTeardown({
+    watchId, at, useThread, threadTs, targetChannel, scoop: state.lickTarget,
+  });
 
   await fs.writeFile(stateFile, JSON.stringify(state, null, 2)).catch(() => {});
 
   const scopeMsg = scope === 'thread' ? 'thread' : 'channel+thread';
-  console.log(`Watching ${scopeMsg} for replies for 1h (routes to ${scoop})`);
+  console.log(`Watching ${scopeMsg} for replies for 1h (routes to ${describeTarget(state.lickTarget)})`);
 }
 
 // Resolve the authenticated user's own Slack user id via auth.test. Non-fatal by
@@ -554,6 +652,12 @@ function buildAutoWatchWebhookFilter(selfTs, selfUser) {
 // tells the receiving scoop to run `slack unwatch <target>` (the delivery
 // kill-switch — deletes the webhook so the observer's sink stops resolving) and
 // then delete this teardown task, so nothing runs or delivers past the hour.
+//
+// `scoop` may be null, meaning "no explicit target — let the runtime dispatch
+// this lick". `crontask create` accepts an omitted --scoop (unlike `webhook
+// create`, slicc#2525), and omitting it is strictly more correct than naming
+// `cone`: the untargeted destination is the OLDEST root, which is not
+// necessarily whichever cone currently holds the reserved `cone` folder.
 async function scheduleTeardown({ watchId, at, useThread, threadTs, targetChannel, scoop }) {
   const name = `slack-autowatch-teardown-${watchId}`;
   const min = at.getMinutes();
@@ -571,8 +675,9 @@ async function scheduleTeardown({ watchId, at, useThread, threadTs, targetChanne
     `() => ({ kind: 'slack-autowatch-teardown', watchId: ${JSON.stringify(watchId)}, ` +
     `instruction: 'The 1h Slack reply auto-watch has expired. Run these commands then stop.', ` +
     `commands: [${JSON.stringify(unwatchCmd)}, 'crontask delete ' + ${JSON.stringify(name)}] })`;
+  const scoopArg = scoop ? `--scoop ${escapeShellArg(validateScoopName(scoop))} ` : '';
   const res = await exec(
-    `crontask create --name ${escapeShellArg(name)} --scoop ${escapeShellArg(scoop)} ` +
+    `crontask create --name ${escapeShellArg(name)} ${scoopArg}` +
     `--cron ${escapeShellArg(cron)} --filter ${escapeShellArg(payload)}`
   );
   if (res.exitCode !== 0) {
@@ -838,14 +943,30 @@ const commands = {
       console.error('Error: --thread_ts requires a timestamp (or "last").');
       process.exit(1);
     }
+    // The lick target of this process: also the owner recorded on the state
+    // files, since /workspace/skills is shared by every cone in the workspace.
+    const watchScoopFlag = (typeof flags['watch-scoop'] === 'string' && flags['watch-scoop'])
+      ? flags['watch-scoop']
+      : null;
+    const lickTarget = resolveLickTarget(watchScoopFlag);
+
     let threadTsFlag = typeof flags.thread_ts === 'string' ? flags.thread_ts.trim() : '';
     if (threadTsFlag === 'last') {
-      threadTsFlag = await readLastPostTs(wsId, targetChannel);
-      if (!threadTsFlag) {
+      const last = await readLastPost(wsId, targetChannel);
+      if (!last) {
         console.error(`Error: --thread_ts=last: this CLI has not posted to ${targetChannel} yet.`);
         console.error('Post the root message first, or pass an explicit --thread_ts=<ts>.');
         process.exit(1);
       }
+      // The remembered post may belong to a different cone (shared state file).
+      // Threading under another cone's message is worse than refusing, so decline
+      // and hand over the timestamp for an explicit, deliberate choice.
+      if (last.owner !== undefined && last.owner !== lickTarget) {
+        console.error(`Error: --thread_ts=last: the last post to ${targetChannel} was made by ${describeTarget(last.owner)}, not ${describeTarget(lickTarget)}.`);
+        console.error(`Pass --thread_ts=${last.ts} to thread under it deliberately, or post a new root message.`);
+        process.exit(1);
+      }
+      threadTsFlag = last.ts;
       console.log(`Threading onto last post: ${threadTsFlag}`);
     }
 
@@ -878,7 +999,7 @@ const commands = {
       console.log(`ts: ${sentTs}`);
       console.log(`reply with: slack ${wsPrefix}post ${targetChannel} "..." --thread_ts=${rootTs}`);
     }
-    await rememberLastPostTs(wsId, targetChannel, threadTsFlag || sentTs);
+    await rememberLastPostTs(wsId, targetChannel, threadTsFlag || sentTs, lickTarget);
 
     // --- Feature 1: auto-sign the sent message with an emoji reaction ---
     // Default-on (Lars wants a reaction under every message). --no-sign opts
@@ -911,16 +1032,18 @@ const commands = {
 
     // --- Feature 2: auto-watch for replies for 1 hour ---
     // Default-on. --no-watch opts out. --watch-scoop=<name> overrides the target
-    // scoop (default: the cone). Thread root = the thread we replied into, else
-    // the fresh message's own ts. Entirely non-fatal.
+    // scoop (default: this cone's own SLICC_LICK_TARGET, so replies come back to
+    // whoever posted). Thread root = the thread we replied into, else the fresh
+    // message's own ts. Entirely non-fatal.
     if (flags['no-watch'] !== true && flags.watch !== false) {
       const threadTs = threadTsFlag || sentTs;
-      const watchScoop = (typeof flags['watch-scoop'] === 'string' && flags['watch-scoop'])
-        ? flags['watch-scoop']
-        : null;
       try {
-        await startAutoWatch({ targetChannel, threadTs, selfTs: data.ts, wsId, watchScoop });
+        await startAutoWatch({ targetChannel, threadTs, selfTs: data.ts, wsId, watchScoop: watchScoopFlag });
       } catch (e) {
+        // A rejected scoop name (validateScoopName) exits deliberately; letting
+        // this catch swallow the NodeExitError would downgrade a routing/security
+        // refusal to a warning and exit 0.
+        if (e && e.name === 'NodeExitError') throw e;
         console.error(`Warning: auto-watch setup failed (${e && e.message ? e.message : e})`);
       }
     }
@@ -1207,12 +1330,22 @@ const commands = {
   async watch(args, globalFlags) {
     const { flags, positional } = parseArgs(args);
     const channel = positional[0];
-    const scoop = flags.scoop;
     const threadTs = flags.thread || null;
     const watchFilter = (typeof flags.filter === 'string' && flags.filter) ? flags.filter : null;
 
+    // --scoop is optional when this cone has its own lick target: `slack watch
+    // <channel>` then routes to the calling cone, which is what it means. With
+    // SLICC_LICK_TARGET unset (the default root) --scoop stays REQUIRED rather
+    // than guessing: `webhook create` needs a concrete scoop (slicc#2525), and
+    // the untargeted destination is the oldest root, which is not reliably the
+    // holder of the `cone` folder — so a guess here could route silently wrong.
+    const scoop = (typeof flags.scoop === 'string' && flags.scoop) ? flags.scoop : envLickTarget();
+
     if (!channel || !scoop) {
-      console.error('Usage: slack watch <channel_id> --scoop=<name> [--thread=<ts>] [--filter=<js>] [--force]');
+      console.error('Usage: slack watch <channel_id> [--scoop=<name>] [--thread=<ts>] [--filter=<js>] [--force]');
+      if (channel && !scoop) {
+        console.error('--scoop is required here: SLICC_LICK_TARGET is not set, so there is no cone to default to.');
+      }
       process.exit(1);
     }
     validateChannelId(channel);
@@ -1242,7 +1375,14 @@ const commands = {
     try {
       const existing = JSON.parse(await fs.readFile(stateFile, 'utf8'));
       if (!flags.force) {
-        console.error(`Already watching ${watchId} (scoop: ${existing.scoop}).`);
+        // Name the owner: the state file is keyed by workspace+channel only and
+        // /workspace/skills is shared by every cone, so "already watching" often
+        // means ANOTHER cone is watching, and replacing it re-points its replies.
+        const owner = stateOwner(existing);
+        console.error(`Already watching ${watchId} (scoop: ${existing.scoop}${owner === undefined ? '' : `, owned by ${describeTarget(owner)}`}).`);
+        if (owner !== undefined && owner !== scoop) {
+          console.error(`That watch belongs to ${describeTarget(owner)}, not ${describeTarget(scoop)} — replacing it stops their replies from arriving.`);
+        }
         console.error('Use --force to replace.');
         process.exit(1);
       }
@@ -1292,6 +1432,9 @@ const commands = {
       channel,
       thread_ts: threadTs,
       scoop,
+      // Owner of this watch, for the cross-cone guard above. A manual watch always
+      // names a concrete scoop, so owner === scoop.
+      lickTarget: scoop,
       filter: watchFilter,
       webhookId: webhook.id,
       webhookUrl: webhook.url,
@@ -1381,7 +1524,11 @@ const commands = {
         const state = JSON.parse(await fs.readFile(file.trim(), 'utf8'));
         const thread = state.thread_ts ? ` thread=${state.thread_ts}` : '';
         const via = state.webhookId ? `webhook: ${state.webhookId}` : 'unknown delivery';
-        console.log(`  ${state.watchId}${thread} → scoop "${state.scoop}" (${via})`);
+        // Watches from every cone share this directory, so name the owning cone
+        // when it is recorded and is not simply the webhook's scoop.
+        const owner = stateOwner(state);
+        const ownedBy = (owner === undefined || owner === state.scoop) ? '' : ` [owner: ${describeTarget(owner)}]`;
+        console.log(`  ${state.watchId}${thread} → scoop "${state.scoop}"${ownedBy} (${via})`);
         console.log(`    Created: ${state.createdAt}${state.expiresAt ? `  Expires: ${state.expiresAt}` : ''}`);
       } catch (_) {
         console.log(`  (corrupt state file: ${file})`);
@@ -2225,7 +2372,8 @@ if (!cmd || cmd === 'help' || cmd === '--help') {
   console.log('  post <id> <message> [--thread_ts=TS|last] [--sign[=emoji]|--no-sign] [--no-watch] [--watch-scoop=<name>]');
   console.log('                                           Post a message; prints the new message ts and a');
   console.log('                                           --thread_ts hint; auto-signs with :icecream: and');
-  console.log('                                           auto-watches for replies for 1h (routes to cone)');
+  console.log('                                           auto-watches for replies for 1h (replies return to');
+  console.log('                                           the cone that posted; --watch-scoop=<name> overrides)');
   console.log('                                           --thread_ts=last threads onto the last message');
   console.log('                                           this CLI posted in that channel');
   console.log('  upload <channel_id> <file> [--thread_ts=TS] [--comment="..."] [--title="..."]');
@@ -2238,7 +2386,8 @@ if (!cmd || cmd === 'help' || cmd === '--help') {
   console.log('  user <user_id>                            Look up user info');
   console.log('  info <channel_id>                         Get channel info');
   console.log('  slackbot                                  Find Slackbot DM channel');
-  console.log('  watch <channel_id> --scoop=<name>         Watch channel for new messages');
+  console.log('  watch <channel_id> [--scoop=<name>]       Watch channel for new messages (defaults to the');
+  console.log('                                           calling cone; required if it has no lick target)');
   console.log('  unwatch <channel_id> [--thread=<ts>]      Stop watching a channel');
   console.log('  watches                                   List active watches');
   console.log('  reinject                                  Re-inject WebSocket interceptor');
