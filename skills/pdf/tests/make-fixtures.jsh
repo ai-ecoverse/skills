@@ -189,4 +189,71 @@ order.push(fontNum + 1);
 order.sort(function (a, b) { return a - b; });
 write('big.pdf', assemble(bigObjs, order));
 
-console.log('done — 6 fixtures');
+// ------------------------------------------------- 7: scanned-image-only.pdf
+// A page whose only content is a raster image, i.e. what a scan looks like: no
+// text layer at all. Every text extractor must return EMPTY for this, and
+// pdf-text must diagnose 'no text layer' rather than blaming a CID font.
+//
+// The JPEG is generated here rather than shipped: SLICC's `convert` cannot WRITE
+// PDF (it only rasterises PDF input) and has no `text:` coder, so the raster is
+// built by annotating a pdftoppm-rendered blank page, then embedded by hand as a
+// /DCTDecode image XObject.
+
+var cp = require('child_process');
+
+// spawnSync's `cwd` option is IGNORED by the SLICC runtime, so every path must
+// be absolute; `o()` anchors a name into the output directory.
+function o(name) { return path.join(OUT, name); }
+function sh(bin, args) {
+  var r = cp.spawnSync(bin, args, { encoding: 'utf8' });
+  return r.status === 0;
+}
+
+function jpegSize(jpg) {
+  for (var i = 2; i < jpg.length - 9;) {
+    if (jpg[i] !== 0xff) { i++; continue; }
+    var mk = jpg[i + 1];
+    if (mk >= 0xc0 && mk <= 0xcf && mk !== 0xc4 && mk !== 0xc8 && mk !== 0xcc) {
+      return { h: jpg.readUInt16BE(i + 5), w: jpg.readUInt16BE(i + 7) };
+    }
+    if (mk === 0xd8 || mk === 0x01 || (mk >= 0xd0 && mk <= 0xd7)) { i += 2; continue; }
+    i += 2 + jpg.readUInt16BE(i + 2);
+  }
+  return null;
+}
+
+// A blank page, rasterised, gives a white canvas (convert has no -size/xc:).
+write('blank.pdf', assemble({
+  1: { dict: '<< /Type /Catalog /Pages 2 0 R >>' },
+  2: { dict: '<< /Type /Pages /Kids [3 0 R] /Count 1 >>' },
+  3: { dict: '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>' }
+}, [1, 2, 3]));
+
+var okRaster =
+  sh('pdftoppm', ['-r', '100', '-png', o('blank.pdf'), o('canvas')]) &&
+  sh('convert', [o('canvas-1.png'), '-pointsize', '34', '-fill', 'black',
+                '-annotate', '+70+140', 'SCANNED INVOICE TOTAL 777 USD', o('scanned.png')]) &&
+  sh('convert', [o('scanned.png'), '-quality', '85', o('scanned.jpg')]);
+
+if (!okRaster) {
+  console.log('  scanned-image-only.pdf  SKIPPED (pdftoppm/convert unavailable)');
+} else {
+  var jpg = fs.readFileSync(o('scanned.jpg'));
+  var dim = jpegSize(jpg);
+  if (!dim) {
+    console.log('  scanned-image-only.pdf  SKIPPED (could not read JPEG dimensions)');
+  } else {
+    write('scanned-image-only.pdf', assemble({
+      1: { dict: '<< /Type /Catalog /Pages 2 0 R >>' },
+      2: { dict: '<< /Type /Pages /Kids [3 0 R] /Count 1 >>' },
+      3: { dict: '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] ' +
+                 '/Resources << /XObject << /Im0 5 0 R >> >> /Contents 4 0 R >>' },
+      4: { stream: 'q\n612 0 0 792 0 0 cm\n/Im0 Do\nQ\n' },
+      5: { stream: jpg,
+           extra: ' /Type /XObject /Subtype /Image /Width ' + dim.w + ' /Height ' + dim.h +
+                  ' /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode' }
+    }, [1, 2, 3, 4, 5], ' /Info << /Title (Scanned Fixture) >>'));
+  }
+}
+
+console.log('done');
