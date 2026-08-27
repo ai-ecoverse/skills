@@ -69,6 +69,30 @@ A caller that checks only "exit 0 and non-empty stdout" concludes success and
 carries mojibake forward as data. That is what cost a real session significant
 time while reading Cloudflare invoice PDFs.
 
+### It never returns metadata — measured across all three PDF classes
+
+`dump_data_utf8` was tested on every kind of PDF it can meet. It **always exits 0**
+and it **never emits a single metadata marker** (`NumberOfPages`, `InfoKey`,
+`InfoValue`):
+
+| Fixture | Page content | rc | stdout | metadata markers |
+|---|---|---|---|---|
+| `simple-raw.pdf` | `/Type1` text layer | 0 | 86 B of correct text | 0 |
+| `cid-nounicode.pdf` | CID text, no `/ToUnicode` | 0 | 7 B of mojibake | 0 |
+| `scanned-image-only.pdf` | raster image only | 0 | **0 B (empty)** | 0 |
+
+So there are **two distinct silent failures**, not one, and they need opposite
+advice:
+
+- **non-empty but unusable** → the glyphs cannot be mapped to Unicode (CID font
+  with no `/ToUnicode`). Escalate to poppler on a follower; the text *is* in the
+  file, it just needs a better decoder.
+- **empty from every tier** → there is **no text layer at all** (a scan). No
+  decoder anywhere will help; the page is pixels. SLICC has no OCR engine.
+
+`pdf-text` distinguishes these and prints the matching diagnosis, so a scanned
+PDF is never misreported as a font problem.
+
 ## Why tier 1 cannot always win: CID fonts and `/ToUnicode`
 
 A PDF content stream does not store characters. It stores **glyph selectors** for
@@ -250,6 +274,18 @@ expectation.
   (`spawnSync` / `execSync` both work).
 - **Creating a subdirectory for scratch can trip a sandbox write gate.** Write
   scratch files flat into an existing directory with a unique filename prefix.
+- **`spawnSync`'s `cwd` option is IGNORED.** A child process always runs in the
+  parent's cwd, so `{ cwd: dir }` silently does nothing and relative paths resolve
+  against the wrong directory. Pass **absolute paths** to every child process.
+- **The shell does not word-split a variable holding a command with arguments.**
+  With `V="node /path/x.jsh"`, `$V arg` looks for a command literally named
+  `node /path/x.jsh` and fails with 127. Dispatch through a shell function
+  (`f(){ node /path/x.jsh "$@"; }`) or `eval`. Env-var prefixes
+  (`FOO=bar f args`) do work on functions.
+- **`command -v` can report a stale `.jsh`** that has since been deleted; running
+  it then fails with 127. Probe by actually executing the tool, not by `command -v`.
+- `set -u` plus `${VAR:-}` misfires here (`unbound variable`); guard with
+  `[ "$#" -ge 1 ]` and plain assignments instead.
 - `node --check` exits 9 and checks nothing. Syntax-check with
   `new Function('async function w(){' + src + '\n}')` — the async wrapper is
   required because `.jsh` uses top-level `await`.
@@ -260,9 +296,13 @@ expectation.
 bash skills/pdf/tests/run-tests.sh [workdir]
 ```
 
+The skill does **not** need to be installed: if `pdf-text` is not a registered
+command the suite runs the sibling source file with `node` instead. Override the
+tool under test with `PDF_TEXT_BIN`.
+
 It builds the fixtures, asserts behaviour and exits non-zero on any failure. Tier 2
 assertions are skipped automatically when no `[ssh]` follower is attached. Measured
-on SLICC 6.96.2 with a macOS follower present: **48 assertions, 0 failures.**
+on SLICC 6.96.2 with a macOS follower present: **58 assertions, 0 failures.**
 
 ## Reproducible fixtures
 
@@ -280,6 +320,21 @@ fixtures are deterministic and need no network or font files:
 - **`big.pdf`** — 12 pages, padded to ~98 KB with an unreferenced random-bytes
   object so the base64 payload spans 6 chunks. Exercises the chunked transfer at
   the size of the invoice from the original incident.
+- **`scanned-image-only.pdf`** — a page whose only content is a `/DCTDecode`
+  image XObject: what a scan looks like. Every extractor must return empty, and
+  `pdf-text` must diagnose a missing text layer rather than blaming a CID font.
+- **`blank.pdf`** — an empty page, used only as the white canvas the scan fixture
+  is rendered from.
 
-`convert` cannot help build these: it has no `text:` coder in SLICC, and
-`-crop`/`+repage` are unsupported by the magick-wasm build.
+Notes on `convert` in SLICC, all measured:
+
+- **It cannot WRITE PDF at all.** `convert x.png x.pdf` silently produces a *PNG*
+  with a `.pdf` name (`pdftk` then reports `No PDF header found`). `convert` only
+  *rasterises* PDF input. So the scan fixture is assembled by hand as a
+  `/DCTDecode` image XObject instead.
+- No `text:` coder, and no `-size` / `xc:` canvas generation — hence the white
+  canvas comes from `pdftoppm` rendering `blank.pdf`.
+- `-annotate` **does** work (bundled Adobe Clean font) and is what draws the text
+  into the raster.
+- `+repage` is unsupported; `-crop` is accepted.
+- `convert` needs magick-wasm: `ipk install -g @imagemagick/magick-wasm@0.0.42`.
