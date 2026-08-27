@@ -242,6 +242,37 @@ categorically wrong advice:
 - Conversely, the $694 of real Azure infra (Functions Premium, Service Bus,
   Static Web Apps, Storage) is too small to be worth optimising at all.
 
+### Verified live
+
+`az-ext cost marketplace --months 12` against the real subscription on
+2026-08-27 (window `2025-09-01 → 2026-08-27`, cost: 1 × 429 then 1 × 200):
+
+```
+  DMa/Helix PRD (AZR3455)  2025-09-01 → 2026-08-27  by PublisherType  (2 ARM request(s); cached for reuse)
+
+  Azure-native infrastructure             $696.13    3.0%
+    Functions                                   $524.92
+    Service Bus                                  $60.58
+    Azure App Service                            $51.57
+    Storage                                      $39.82
+    Virtual Network                              $12.27
+    Azure DNS                                     $3.03
+    Log Analytics                                 $2.62
+    Bandwidth                                     $0.72
+
+  Third-party (Marketplace)             $22725.00   97.0%
+    Marketplace $22725.00
+      Unassigned                              $14467.00
+      SaaS                                     $8258.00
+
+  TOTAL                                 $23421.13 USD
+```
+
+The `Unassigned` figure is **$14,467.00 exactly** as first measured, and the
+Azure-native total is **$696.13** — i.e. the entire year of real Azure
+infrastructure for this subscription costs less than four days of the ClickHouse
+Marketplace charge.
+
 `az-ext cost marketplace` makes this the default view: it groups by
 `PublisherType` + `ServiceName`, prints the Azure/third-party split with
 percentages, and (with `--vendors`, which spends a second throttled request)
