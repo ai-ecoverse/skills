@@ -111,6 +111,7 @@ All subcommands accept these:
 | `--no-cache` | Synonym for `--refresh` | off |
 | `--max-wait S` | Seconds to spend backing off HTTP 429 | `900` |
 | `--limit N` | Rows to print | `25` |
+| `--cache-dir <abs-path>` | Cache location. Also `AZ_EXT_CACHE_DIR`, or a `cacheDir` config key | `$HOME/.cache/az-ext/cost` |
 | `--json` | Structured output, including cache accounting | off |
 
 ### `az-ext cost summary`
@@ -176,12 +177,18 @@ validates one name and exits non-zero with the alternatives if it is wrong.
 az-ext cost dimensions --check PublisherName   # → rejected, suggests PublisherType
 ```
 
-### `az-ext cost cache [--list] [--clear] [--json]`
+### `az-ext cost cache [--list] [--clear] [--cache-dir P] [--json]`
 
-Inspect or drop the on-disk response cache
-(`~/.cache/az-ext/cost/<sha256-24>.json`). `--list` shows each entry's
-timeframe, granularity, grouping, row count, age and freshness. `--clear` warns
-that the next query re-spends throttle budget.
+Inspect or drop the on-disk response cache. `--list` prints the directory in use
+(so it answers "where is my cache?") plus each entry's timeframe, granularity,
+grouping, row count, age and freshness. `--clear` warns that the next query
+re-spends throttle budget.
+
+The cache defaults to **`$HOME/.cache/az-ext/cost`** — user-scoped and outside
+the installed skill tree, because `--clear` must actually be able to delete.
+Override with `--cache-dir <abs-path>`, `AZ_EXT_CACHE_DIR`, or a `cacheDir`
+config key. A path under `/workspace/skills/` is refused, and so is a relative
+path. Rationale: [`cost-management-gotchas.md`](cost-management-gotchas.md).
 
 ```
   fresh   1544fd656d7f MonthToDate  None     (none)      1 rows  0m old
