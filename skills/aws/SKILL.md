@@ -1,6 +1,18 @@
 ---
 name: aws
-description: Query AWS from the command line with a working Signature Version 4 signer built for SLICC — `aws sts get-caller-identity` to check credentials and `aws ce get-cost-and-usage` for Cost Explorer, mirroring the real AWS CLI's command and flag names, plus a sibling binary `aws-ext cost` for analysis the upstream CLI has no command for: gross-vs-net discount breakouts (EDP, Private Rate Card), regime-break detection in a monthly series, per-service usage-quantity drilldown, and linked-account discovery. The reusable signer lives in `scripts/lib/sigv4.js` and is verified against AWS's official SigV4 test vectors — copy it into any skill that must sign an AWS request, because `crypto.createHmac` does not exist in this runtime. Use when the user mentions AWS cost, AWS bill or invoice, Cost Explorer, EDP or Enterprise Discount Program, AWS spend for a service, an AWS account id or ARN, STS session credentials, SigV4 or "signing an AWS request". Not Azure, not GCP (see the `gcloud` skill), not Fastly. Cost and credential focus — this is NOT a general EC2/S3/IAM management CLI.
+description: >-
+  Query AWS from the command line with a working Signature Version 4 signer built for SLICC — `aws
+  sts get-caller-identity` to check credentials and `aws ce get-cost-and-usage` for Cost Explorer,
+  mirroring the real AWS CLI's command and flag names, plus a sibling binary `aws-ext cost` for
+  analysis the upstream CLI has no command for — gross-vs-net discount breakouts (EDP, Private Rate
+  Card), regime-break detection in a monthly series, per-service usage-quantity drilldown, and
+  linked-account discovery. The reusable signer lives in `scripts/lib/sigv4.js` and is verified
+  against AWS's official SigV4 test vectors — copy it into any skill that must sign an AWS
+  request, because `crypto.createHmac` does not exist in this runtime. Use when the user mentions
+  AWS cost, AWS bill or invoice, Cost Explorer, EDP or Enterprise Discount Program, AWS spend for
+  a service, an AWS account id or ARN, STS session credentials, SigV4 or "signing an AWS request".
+  Not Azure, not GCP (see the `gcloud` skill), not Fastly. Cost and credential focus — this is NOT
+  a general EC2/S3/IAM management CLI.
 allowed-tools: bash
 command: aws
 script: scripts/aws.jsh
