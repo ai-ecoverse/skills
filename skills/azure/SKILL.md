@@ -1,6 +1,21 @@
 ---
 name: azure
-description: Query Azure subscriptions and Azure Cost Management from the command line, authenticated by piggybacking an open logged-in portal.azure.com tab — no service principal, no `az login`, no client secret. `az` mirrors the real Azure CLI (`az account list/show/set`, `az rest` raw ARM passthrough); the sibling `az-ext cost` adds the analysis the real CLI lacks: monthly spend summaries, MeterCategory/SKU and ServiceName breakdowns, a month-to-date fast path, and a PublisherType split that separates Azure-native infrastructure from third-party Marketplace software resold through Azure billing. Handles Cost Management's undocumented throttling (~1 historical query per 5 minutes, HTTP 429, no Retry-After) with disk caching and time-based backoff. Use when the user mentions Azure spend, Azure costs, Azure invoices or billing, Azure subscriptions, Cost Management, ARM / management.azure.com, Azure Marketplace charges, or a ClickHouse/SaaS charge appearing on an Azure bill. Not AWS, not GCP, not Microsoft 365 or Entra admin. This is subscriptions plus Cost Management — not a general VM, AKS, or resource-management CLI.
+description: >-
+  Query Azure subscriptions and Azure Cost Management from the command line,
+  authenticated by piggybacking an open logged-in portal.azure.com tab — no
+  service principal, no `az login`, no client secret. `az` mirrors the real Azure
+  CLI (`az account list/show/set`, `az rest` raw ARM passthrough); the sibling
+  `az-ext cost` adds the analysis the real CLI lacks — monthly spend summaries,
+  MeterCategory/SKU and ServiceName breakdowns, a month-to-date fast path, and a
+  PublisherType split that separates Azure-native infrastructure from third-party
+  Marketplace software resold through Azure billing. Handles Cost Management’s
+  undocumented throttling (~1 historical query per 5 minutes, HTTP 429, no
+  Retry-After) with disk caching and time-based backoff. Use when the user
+  mentions Azure spend, Azure costs, Azure invoices or billing, Azure
+  subscriptions, Cost Management, ARM / management.azure.com, Azure Marketplace
+  charges, or a ClickHouse/SaaS charge appearing on an Azure bill. Not AWS, not
+  GCP, not Microsoft 365 or Entra admin. This is subscriptions plus Cost
+  Management — not a general VM, AKS, or resource-management CLI.
 allowed-tools: bash
 command: az
 script: scripts/az.jsh
@@ -56,7 +71,7 @@ time-based. The skill is built around not spending that budget twice:
 - **`az-ext cost dimensions`** validates a grouping name for zero quota, rather
   than spending a throttled request to learn `PublisherName` does not exist.
 
-Full detail incl. the 366-day cap:
+Full detail incl. the measured 364-day cap:
 [`cost-management-gotchas.md`](references/cost-management-gotchas.md).
 
 ## The PublisherType insight
@@ -108,7 +123,7 @@ loop `az rest`: no cache, no backoff.
   trick (a live tab held 10 access tokens, only 2 for ARM), expiry handling, the
   CDP size cap, and the never-print rule.
 - [`references/cost-management-gotchas.md`](references/cost-management-gotchas.md)
-  — throttling budget and caching strategy, the 366-day cap, the 34 valid
+  — throttling budget and caching strategy, the measured 364-day cap, the 34 valid
   grouping dimensions, the PublisherType/Marketplace analysis, and why
   `properties.rows` must be mapped by column **name** and never by index.
 
@@ -118,7 +133,8 @@ loop `az rest`: no cache, no backoff.
   the token dies in ~1 hour. Interactive reader credential, not a CI principal.
 - Don't print, log or pass the token on a command line — argv is visible to `ps`.
 - Don't index `properties.rows` positionally; column order is not stable.
-- Don't ask for more than 366 days per query, and don't chunk a long range "to be
-  gentle" — each chunk costs a full unit of the same throttle budget.
+- Don't ask for more than **364** days per query — Cost Management counts
+  `timePeriod` inclusively, so 365 days is already rejected. And don't chunk a long
+  range "to be gentle": each chunk costs a full unit of the same throttle budget.
 - Don't read a big `(unassigned)` MeterCategory bucket as missing data. Check
   `PublisherType` first.
