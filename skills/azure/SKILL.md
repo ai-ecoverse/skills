@@ -3,19 +3,18 @@ name: azure
 description: >-
   Query Azure subscriptions and Azure Cost Management from the command line,
   authenticated by piggybacking an open logged-in portal.azure.com tab — no
-  service principal, no `az login`, no client secret. `az` mirrors the real Azure
-  CLI (`az account list/show/set`, `az rest` raw ARM passthrough); the sibling
-  `az-ext cost` adds the analysis the real CLI lacks — monthly spend summaries,
-  MeterCategory/SKU and ServiceName breakdowns, a month-to-date fast path, and a
-  PublisherType split that separates Azure-native infrastructure from third-party
-  Marketplace software resold through Azure billing. Handles Cost Management’s
-  undocumented throttling (~1 historical query per 5 minutes, HTTP 429, no
-  Retry-After) with disk caching and time-based backoff. Use when the user
-  mentions Azure spend, Azure costs, Azure invoices or billing, Azure
-  subscriptions, Cost Management, ARM / management.azure.com, Azure Marketplace
-  charges, or a ClickHouse/SaaS charge appearing on an Azure bill. Not AWS, not
-  GCP, not Microsoft 365 or Entra admin. This is subscriptions plus Cost
-  Management — not a general VM, AKS, or resource-management CLI.
+  service principal, no `az login`. `az` mirrors the real Azure CLI
+  (`az account list/show/set`, `az rest` raw ARM passthrough); the sibling
+  `az-ext cost` adds what it lacks — monthly spend summaries, SKU and service
+  breakdowns, a month-to-date fast path, and a PublisherType split separating
+  Azure-native infrastructure from third-party Marketplace software resold through
+  Azure billing. Handles Cost Management’s undocumented throttling (~1 historical
+  query per 5 minutes, HTTP 429, no Retry-After) with disk caching and time-based
+  backoff. Use for Azure spend, costs, billing or invoices, Azure subscriptions,
+  Cost Management, ARM / management.azure.com, Azure Marketplace charges, or a
+  ClickHouse/SaaS charge on an Azure bill. Not AWS, not GCP, not Microsoft 365 or
+  Entra admin; subscriptions plus Cost Management, not a general VM/AKS
+  resource-management CLI.
 allowed-tools: bash
 command: az
 script: scripts/az.jsh
