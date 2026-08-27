@@ -78,9 +78,10 @@ function scratch(name) {
 // SLICC .jsh does not populate process.pid, so derive a unique run id ourselves.
 var RUNID = String(process.pid || '') || (Date.now().toString(36) + Math.random().toString(36).slice(2, 8));
 
-function run(bin, args, opts) {
-  var o = opts || {};
-  var r = cp.spawnSync(bin, args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, cwd: o.cwd });
+// NOTE: spawnSync's `cwd` option is IGNORED by the SLICC runtime, so it is not
+// offered here — every path handed to a child process must already be absolute.
+function run(bin, args) {
+  var r = cp.spawnSync(bin, args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   return {
     status: r.status === null || r.status === undefined ? (r.error ? 127 : 1) : r.status,
     stdout: String(r.stdout || ''),
@@ -657,13 +658,31 @@ if (flags.json) {
     console.error('  Rasterised ' + raster.length + ' page(s) for VISUAL inspection — this is NOT extracted text:');
     raster.forEach(function (f) { console.error('    ' + f); });
     console.error('  View with: open --view ' + raster[0] + ' --size high');
-    console.error('  If the glyphs render as tofu boxes the embedded subset font is unmappable;');
-    console.error('  neither text extraction nor OCR-free reading can recover it here.');
+    console.error('  If text is visible in the image but no tier extracted it, the page is a');
+    console.error('  raster (scan) — there is no text layer. If the glyphs render as tofu boxes');
+    console.error('  instead, the embedded subset font is unmappable.');
     console.error('');
   }
-  console.error('  Most likely cause: subset CID font with no /ToUnicode CMap. The literal');
-  console.error('  strings in the content stream are glyph indices, not characters, so nothing');
-  console.error('  local can map them back. Fix: run poppler `pdftotext -layout` on a machine');
-  console.error('  with the real font stack — attach an ssh follower and re-run without --no-ssh.');
+  // Distinguish the two very different root causes: every tier finding NOTHING
+  // means there is no text layer at all (a scan), whereas tiers finding
+  // unusable BYTES means the glyphs could not be mapped to Unicode.
+  var textAttempts = attempts.filter(function (a) { return a.tier !== '3'; });
+  var allEmpty = textAttempts.length > 0 && textAttempts.every(function (a) {
+    return a.why && (/empty output/.test(a.why) || /skipped/.test(a.why));
+  });
+  var sawEmpty = textAttempts.some(function (a) { return a.why && /empty output/.test(a.why); });
+
+  if (allEmpty && sawEmpty) {
+    console.error('  Most likely cause: the PDF has NO TEXT LAYER — every extractor returned');
+    console.error('  nothing at all, which is what a scanned or image-only PDF looks like. The');
+    console.error('  page content is a raster image, so there are no characters to extract.');
+    console.error('  SLICC has no OCR engine, so text cannot be recovered here; read the page');
+    console.error('  images above visually, or OCR them on a machine that has an OCR tool.');
+  } else {
+    console.error('  Most likely cause: subset CID font with no /ToUnicode CMap. The literal');
+    console.error('  strings in the content stream are glyph indices, not characters, so nothing');
+    console.error('  local can map them back. Fix: run poppler `pdftotext -layout` on a machine');
+    console.error('  with the real font stack — attach an ssh follower and re-run without --no-ssh.');
+  }
 }
 process.exit(3);
