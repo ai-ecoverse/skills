@@ -234,6 +234,8 @@ slack post C087NCG774J "part 3" --thread_ts=last   # same thread, no bookkeeping
   files). Errors if nothing has been posted there yet, or if the remembered post
   was made by a *different* cone — it prints that timestamp so you can pass
   `--thread_ts=<ts>` deliberately instead of threading under someone else's message.
+  Ownership is the posting cone itself, so using `--watch-scoop` on an earlier post
+  does not stop you chaining onto it.
 - `--sign[=<emoji>]` / `--no-sign` — control the auto-sign reaction (see below).
 - `--no-watch` — skip the auto reply-watch (see below).
 - `--watch-scoop=<name>` — override the scoop the reply-watch routes to (default:
@@ -382,7 +384,9 @@ delivered as a lick event to the target scoop within seconds.
   frame) evaluated per forwarded message; a falsy result drops it *before it wakes
   the scoop*, so the scoop only wakes on messages worth waking for. Example:
   `--filter='(e)=>/deploy failed/i.test(JSON.stringify(e.body))'`
-- `--force` — replace an existing watch on the same target
+- `--force` — replace an existing watch on the same target, deleting its webhook
+  and its `+1h` teardown task (leaving that task alive would tear the replacement
+  down an hour later)
 
 **Lick payload:** the raw Slack `message` frame that matched the filter, e.g.:
 ```json

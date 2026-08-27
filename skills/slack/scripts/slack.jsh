@@ -393,11 +393,13 @@ function lastPostFile(wsId, channel) {
   return `${LAST_POST_DIR}/.last-post-${key}.json`;
 }
 
-// Returns {ts, owner} for the remembered post, or null. `owner` is the lick
-// target of the cone that wrote it (undefined for files written before
-// ownership was recorded). /workspace/skills is shared by every cone, so this
-// file is not per-cone state: without the owner, `--thread_ts=last` in one cone
-// could silently thread under a message a DIFFERENT cone posted.
+// Returns {ts, owner} for the remembered post, or null. `owner` is the cone that
+// wrote it — its own `SLICC_LICK_TARGET`, never a `--watch-scoop` override, so a
+// cone still recognizes its own posts after routing replies elsewhere
+// (`undefined` for files written before ownership was recorded).
+// /workspace/skills is shared by every cone, so this file is not per-cone state:
+// without the owner, `--thread_ts=last` in one cone could silently thread under a
+// message a DIFFERENT cone posted.
 async function readLastPost(wsId, channel) {
   try {
     const raw = await fs.readFile(lastPostFile(wsId, channel), 'utf8');
@@ -410,14 +412,14 @@ async function readLastPost(wsId, channel) {
   }
 }
 
-async function rememberLastPostTs(wsId, channel, ts, lickTarget) {
+async function rememberLastPostTs(wsId, channel, ts, postingCone) {
   if (!ts) return;
   try {
     const state = {
       workspace: wsId || null,
       channel,
       ts,
-      lickTarget: lickTarget || null,
+      lickTarget: postingCone || null,
       updatedAt: new Date().toISOString(),
     };
     await fs.writeFile(lastPostFile(wsId, channel), JSON.stringify(state));
@@ -943,12 +945,18 @@ const commands = {
       console.error('Error: --thread_ts requires a timestamp (or "last").');
       process.exit(1);
     }
-    // The lick target of this process: also the owner recorded on the state
-    // files, since /workspace/skills is shared by every cone in the workspace.
     const watchScoopFlag = (typeof flags['watch-scoop'] === 'string' && flags['watch-scoop'])
       ? flags['watch-scoop']
       : null;
-    const lickTarget = resolveLickTarget(watchScoopFlag);
+    // WHO posted, which is not the same as WHERE its replies are routed:
+    // --watch-scoop redirects delivery without changing the identity of the
+    // calling cone. Conflating the two would make `--thread_ts=last` refuse a
+    // cone's own earlier post just because that post used an override, and would
+    // make two cones sharing one override look like a single owner.
+    // Validate the override up front all the same, so a bad value fails before
+    // the message is sent rather than after.
+    if (watchScoopFlag) validateScoopName(watchScoopFlag);
+    const postingCone = envLickTarget();
 
     let threadTsFlag = typeof flags.thread_ts === 'string' ? flags.thread_ts.trim() : '';
     if (threadTsFlag === 'last') {
@@ -961,8 +969,8 @@ const commands = {
       // The remembered post may belong to a different cone (shared state file).
       // Threading under another cone's message is worse than refusing, so decline
       // and hand over the timestamp for an explicit, deliberate choice.
-      if (last.owner !== undefined && last.owner !== lickTarget) {
-        console.error(`Error: --thread_ts=last: the last post to ${targetChannel} was made by ${describeTarget(last.owner)}, not ${describeTarget(lickTarget)}.`);
+      if (last.owner !== undefined && last.owner !== postingCone) {
+        console.error(`Error: --thread_ts=last: the last post to ${targetChannel} was made by ${describeTarget(last.owner)}, not ${describeTarget(postingCone)}.`);
         console.error(`Pass --thread_ts=${last.ts} to thread under it deliberately, or post a new root message.`);
         process.exit(1);
       }
@@ -999,7 +1007,7 @@ const commands = {
       console.log(`ts: ${sentTs}`);
       console.log(`reply with: slack ${wsPrefix}post ${targetChannel} "..." --thread_ts=${rootTs}`);
     }
-    await rememberLastPostTs(wsId, targetChannel, threadTsFlag || sentTs, lickTarget);
+    await rememberLastPostTs(wsId, targetChannel, threadTsFlag || sentTs, postingCone);
 
     // --- Feature 1: auto-sign the sent message with an emoji reaction ---
     // Default-on (Lars wants a reaction under every message). --no-sign opts
@@ -1386,7 +1394,15 @@ const commands = {
         console.error('Use --force to replace.');
         process.exit(1);
       }
-      // Clean up old webhook
+      // Clean up the old watch exactly as `unwatch` does. The teardown task
+      // matters as much as the webhook: it fires against the DETERMINISTIC watch
+      // id, so a surviving one would later run `slack unwatch <channel>` and
+      // silently delete the replacement watch — and deliver that teardown lick to
+      // the previous owner. That makes a `--force` takeover of an auto-watch
+      // self-destruct about an hour later.
+      if (existing.teardownTaskId) {
+        await exec(`crontask delete ${escapeShellArg(existing.teardownTaskId)}`).catch(() => {});
+      }
       if (existing.webhookId) {
         await exec(`webhook delete ${escapeShellArg(existing.webhookId)}`).catch(() => {});
       }

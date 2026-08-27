@@ -239,10 +239,18 @@ ownership tracking, treated as unknown so old files never trip the checks):
   re-points the watch silently — the silent version of this is exactly the bug
   that delivered `cone-helix`'s replies to `cone`.
 - `slack watch` without `--force` names the owner in the "Already watching" refusal
-  and says explicitly when replacing it would cut off another cone's replies.
+  and says explicitly when replacing it would cut off another cone's replies. With
+  `--force` it deletes the previous watch's **teardown crontask as well as its
+  webhook**: that task fires against the deterministic watch id, so a survivor
+  would later run `slack unwatch` and delete the replacement watch about an hour
+  after the takeover.
 - `slack watches` appends `[owner: <cone>]` when the owner differs from the
   webhook's scoop.
-- `.last-post-<workspace>-<channel>.json` records `lickTarget` too, so
+- `.last-post-<workspace>-<channel>.json` records the **posting cone** — its own
+  `SLICC_LICK_TARGET`, never a `--watch-scoop` override, since redirecting replies
+  does not change who posted. (Recording the override instead would make a cone
+  refuse to thread onto its own earlier post, and make two cones sharing one
+  override look like a single owner.) So
   `--thread_ts=last` refuses (and prints the timestamp for an explicit
   `--thread_ts=<ts>`) rather than threading under a message a different cone posted.
 
