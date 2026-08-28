@@ -122,6 +122,8 @@ The sprinkle accepts these inbound messages (`sprinkle send review`):
 | `set-review-mode` | `{ active }` | Sync the Pin Review button state |
 | `set-speck` | `{ active }` | Sync the Speck Fix button state |
 | `clear-pins` | `{}` | Remove all pin comments (those with `num`, or text starting `📍 PIN #`) from every item, and empty the durable marker store |
+| `add-findings` | `{ id, source, summary?, severity?, findings? }` | Attach one integration's result to a card (creates the card if missing). Re-running the same `source` replaces that block; other sources stay. See [Integrations](#integrations). |
+| `clear-findings` | `{ id, source? }` | Drop one source's findings on a card, or every source if `source` is omitted. |
 
 ### Handling licks (cone)
 
@@ -314,3 +316,17 @@ bootstrap is idempotent.
   sprinkle send review '{"action":"update-status","id":"page-1","status":"pending"}'
   ```
 - **Timeout** — if the scoop does not respond in time, push `"status":"pending"` to avoid a stuck UI.
+
+## Integrations
+
+Other skills attach checks to the review backlog the same way monday sources attach inbox items: a `review` sub-command that writes one JSON object to stdout. The contract lives in [`references/SOURCE_PROTOCOL.md`](references/SOURCE_PROTOCOL.md).
+
+```bash
+review sources
+review ingest --path /shared/page.md --id page-1
+review ingest pangram --path /shared/page.md --dry-run
+```
+
+`review ingest` discovers `pangram` and `check-llm-cliches` on PATH (both optional; missing commands are skipped), runs `[cmd] review --path PATH`, then `ensure-item` + `add-findings` on the sprinkle. Findings render on the card. The queue works with zero integrations installed.
+
+To add a source: implement `[cmd] review --path PATH [--id ID]`, then either name it (`review ingest mysource --path FILE`) or add it to `KNOWN_INTEGRATIONS` in `scripts/review.jsh`.
