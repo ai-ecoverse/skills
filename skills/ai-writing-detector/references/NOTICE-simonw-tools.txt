@@ -1,0 +1,17 @@
+LLM cliché highlighter
+https://tools.simonwillison.net/llm-cliche-highlighter
+https://github.com/simonw/tools/blob/aabd3c5b1258a20ea2d512269ea72a7f083b07a6/llm-cliche-highlighter.html
+
+Copyright Simon Willison and contributors.
+Licensed under the Apache License, Version 2.0.
+https://github.com/simonw/tools/blob/main/LICENSE
+
+This skill vendors a derivative of the detection engine (pattern finders,
+catalog, and self-tests) from llm-cliche-highlighter.html at commit
+aabd3c5b1258a20ea2d512269ea72a7f083b07a6 (2026-08-27).
+
+Not included from upstream: the browser UI, URL loading via Jina Reader,
+tooltips, and the tests for those pieces.
+
+Wikipedia-group pattern names are adapted from
+https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing
