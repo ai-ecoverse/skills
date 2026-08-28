@@ -832,7 +832,7 @@ function offsetToLineCol(text, offset) {
 
 function parseArgs(argv) {
   const positional = [];
-  const flags = { json: false, all: false, test: false, list: false, help: false, pattern: [] };
+  const flags = { json: false, all: false, test: false, list: false, help: false, pattern: [], path: '', id: '' };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--json') flags.json = true;
@@ -840,7 +840,19 @@ function parseArgs(argv) {
     else if (a === '--test') flags.test = true;
     else if (a === '--list') flags.list = true;
     else if (a === '--help' || a === '-h') flags.help = true;
-    else if (a === '--pattern' || a === '-p') {
+    else if (a === '--path') {
+      const v = argv[++i];
+      if (!v) throw new Error('--path needs a file');
+      flags.path = v;
+    } else if (a.startsWith('--path=')) {
+      flags.path = a.slice('--path='.length);
+    } else if (a === '--id') {
+      const v = argv[++i];
+      if (!v) throw new Error('--id needs a value');
+      flags.id = v;
+    } else if (a.startsWith('--id=')) {
+      flags.id = a.slice('--id='.length);
+    } else if (a === '--pattern' || a === '-p') {
       const v = argv[++i];
       if (!v) throw new Error('--pattern needs an id');
       flags.pattern.push(v);
@@ -869,6 +881,7 @@ function enabledSet(flags) {
 function helpText() {
   return [
     'Usage: check-llm-cliches <file> [--json] [--all] [--pattern <id>]...',
+    '       check-llm-cliches review --path <file> [--id <id>]',
     '       check-llm-cliches --test',
     '       check-llm-cliches --list',
     '',
@@ -979,6 +992,38 @@ function formatMarkdown(filePath, report) {
   return lines.join('\n');
 }
 
+function clicheSeverity(report) {
+  if (report.matches.length >= 6) return 'fail';
+  if (report.matches.length >= 3) return 'warn';
+  return 'info';
+}
+
+function reviewContribution(filePath, id, report) {
+  const n = report.matches.length;
+  const p = report.byPattern.length;
+  return {
+    source: 'check-llm-cliches',
+    id: id || ('cliches:' + filePath),
+    path: filePath,
+    title: String(filePath).split('/').pop(),
+    summary:
+      n === 0
+        ? 'No LLM clichés detected'
+        : n + ' match' + (n === 1 ? '' : 'es') + ' across ' + p + ' pattern' + (p === 1 ? '' : 's'),
+    severity: clicheSeverity(report),
+    findings: report.matches.map((m) => ({
+      severity: 'warn',
+      title: m.id,
+      body: ('L' + m.line + ': ' + m.sentence).replace(/\s+/g, ' ').trim(),
+      line: m.line,
+      start: m.start,
+      end: m.end,
+    })),
+    ts: new Date().toISOString(),
+    meta: { matches: n, byPattern: report.byPattern, words: report.words },
+  };
+}
+
 const USAGE_ERROR = 2;
 
 try {
@@ -1042,6 +1087,7 @@ try {
     process.stdout.write(formatMarkdown(filePath, report));
   }
 } catch (err) {
+  if (err && err.name === 'NodeExitError') throw err;
   process.stderr.write((err && err.message ? err.message : String(err)) + '\n');
   process.exit(USAGE_ERROR);
 }
