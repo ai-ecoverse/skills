@@ -320,16 +320,22 @@ function userNeedsLookup(id) {
 function collectUserMentionIds(text) {
   const ids = [];
   const re = /<@([UWB][A-Z0-9]+)(?:\|[^>]*)?>/g;
-  let m;
-  while ((m = re.exec(text || ''))) ids.push(m[1]);
+  let m = re.exec(text || '');
+  while (m) {
+    ids.push(m[1]);
+    m = re.exec(text || '');
+  }
   return ids;
 }
 
 function collectChannelMentions(text) {
   const out = [];
   const re = /<#([CGD][A-Z0-9]+)(?:\|([^>]*))?>/g;
-  let m;
-  while ((m = re.exec(text || ''))) out.push({ id: m[1], name: m[2] || '' });
+  let m = re.exec(text || '');
+  while (m) {
+    out.push({ id: m[1], name: m[2] || '' });
+    m = re.exec(text || '');
+  }
   return out;
 }
 
