@@ -1008,7 +1008,8 @@ try {
     }
     process.exit(failed.length === 0 ? 0 : 1);
   }
-  const filePath = positional[0];
+  const asReview = positional[0] === 'review';
+  const filePath = asReview ? (flags.path || positional[1]) : positional[0];
   if (!filePath) {
     process.stderr.write(helpText());
     process.exit(USAGE_ERROR);
@@ -1016,12 +1017,26 @@ try {
   const fs = require('fs');
   const text = await fs.readFile(filePath, 'utf8');
   if (!text.trim()) {
+    if (asReview) {
+      process.stdout.write(JSON.stringify({
+        source: 'check-llm-cliches',
+        id: flags.id || ('cliches:' + filePath),
+        path: filePath,
+        title: String(filePath).split('/').pop(),
+        summary: 'Empty file',
+        severity: 'info',
+        findings: [],
+      }) + '\n');
+      process.exit(0);
+    }
     process.stdout.write('Input file is empty or contains only whitespace; no analysis to perform.\n');
     process.exit(0);
   }
   const enabled = enabledSet(flags);
   const report = analyze(text, enabled);
-  if (flags.json) {
+  if (asReview) {
+    process.stdout.write(JSON.stringify(reviewContribution(filePath, flags.id, report)) + '\n');
+  } else if (flags.json) {
     process.stdout.write(JSON.stringify({ file: filePath, ...report }, null, 2) + '\n');
   } else {
     process.stdout.write(formatMarkdown(filePath, report));
