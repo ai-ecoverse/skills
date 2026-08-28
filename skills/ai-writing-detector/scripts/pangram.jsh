@@ -17,6 +17,16 @@ const cli = require('sliccy:cli');
 const BASE = 'https://text.external-api.pangram.com';
 const DEFAULT_MODEL = 'pangram-4';
 const MAX_POLLS = 60;
+const POLL_MS = 500;
+
+// jsh setTimeout never fires. Spin so MAX_POLLS is an elapsed-time window
+// (~30s) rather than a burst of back-to-back GETs.
+function pause(ms) {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    /* spin */
+  }
+}
 
 function helpText() {
   return [
@@ -108,6 +118,7 @@ async function poll(key, taskId) {
     last = await pangramFetch('/task/' + encodeURIComponent(taskId), key);
     const stage = last && last.stage;
     if (stage === 'STAGE_SUCCESS' || stage === 'STAGE_FAILED') return last;
+    pause(POLL_MS);
   }
   const err = new Error(
     'Pangram task ' + taskId + ' still ' + ((last && last.stage) || 'unknown') + ' after ' + MAX_POLLS + ' polls'
@@ -297,6 +308,7 @@ try {
   if (flags.json) process.stdout.write(JSON.stringify(result, null, 2) + '\n');
   else process.stdout.write(formatMarkdown(filePath, result));
 } catch (err) {
+  if (err && err.name === 'NodeExitError') throw err;
   const extra = err && err.status ? ' (HTTP ' + err.status + ')' : '';
   process.stderr.write((err && err.message ? err.message : String(err)) + extra + '\n');
   process.exit(err && err.status === 401 ? 2 : 1);
