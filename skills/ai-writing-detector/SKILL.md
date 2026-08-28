@@ -14,6 +14,7 @@ allowed-tools: bash
    - Structural patterns (em-dashes, rule of three, parallelisms)
    - Content patterns (legacy puffery, superficial analysis, hedging)
    - Style patterns (vague attribution, elegant variation)
+   - LLM clichés from `check-llm-cliches` (therapist-voice, "no X, no Y" chains, chatbot leftovers)
 3. **Validate findings** before reporting:
    - If confidence is Medium, examine context around flagged passages to rule out false positives (e.g., a single `delve` in an otherwise clean document may be coincidental)
    - Check whether flagged patterns cluster in one section or spread across the text — clustering reduces false-positive risk
@@ -72,7 +73,7 @@ Top indicators (see full examples in [references/patterns.md](references/pattern
 
 ## Scripts
 
-The scripts `check-ai-words` and `check-ai-patterns` must be available on `PATH`; if absent, fall back to manual grep-based analysis using the pattern categories above.
+The scripts `check-ai-words`, `check-ai-patterns`, and `check-llm-cliches` must be available on `PATH`; if absent, fall back to manual grep-based analysis using the pattern categories above.
 
 ### Quick Check: `check-ai-words`
 Vocabulary-only analysis with rate comparison.
@@ -95,12 +96,23 @@ Output includes:
 - Common AI phrase detection
 - Confidence score (0-7)
 
+### Cliché scan: `check-llm-cliches`
+Sentence-level detectors ported from Simon Willison's [LLM cliché highlighter](https://tools.simonwillison.net/llm-cliche-highlighter) (Apache-2.0). 38 patterns: "no X, no Y" chains, therapist-voice ("sit with that", "worth naming"), echoing sentence runs, chatbot leftovers, plus the Wikipedia "Signs of AI writing" group.
+
+```bash
+check-llm-cliches <file> [--json] [--all] [--pattern <id>]...
+check-llm-cliches --test
+check-llm-cliches --list
+```
+
+`colon-triple` is off unless `--all` (noisy in documentation). Attribution: [references/NOTICE-simonw-tools.txt](references/NOTICE-simonw-tools.txt). Catalog: [references/llm-cliches.md](references/llm-cliches.md). For a human-facing highlighter, use the upstream page rather than reimplementing the UI.
+
 ### Data File: `references/ai_word_rates.txt`
 Base rates per million words from ngrams.dev English corpus (23.6B words). This file is expected to be present in the skill bundle's `references/` directory alongside `references/patterns.md`.
 
 ## Detailed Pattern Reference
 
-For comprehensive pattern lists with examples, see [references/patterns.md](references/patterns.md). If this file is not present in the bundle, use the inline examples and vocabulary markers listed above as the primary reference.
+For comprehensive pattern lists with examples, see [references/patterns.md](references/patterns.md). For the cliché catalog used by `check-llm-cliches`, see [references/llm-cliches.md](references/llm-cliches.md). If these files are not present in the bundle, use the inline examples and vocabulary markers listed above as the primary reference.
 
 ## Confidence Calibration
 
