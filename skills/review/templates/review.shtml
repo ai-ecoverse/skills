@@ -303,6 +303,66 @@
       color: var(--s2-fg-secondary, var(--s2-fg));
     }
 
+    /* Integration findings (review source protocol) */
+    .findings {
+      margin: 0 0 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .findings[hidden] { display: none !important; }
+    .findings-block {
+      border: 1px solid color-mix(in srgb, var(--s2-fg) 10%, transparent);
+      border-radius: var(--s2-radius-default, 8px);
+      padding: 6px 8px;
+      background: color-mix(in srgb, var(--s2-fg) 3%, transparent);
+    }
+    .findings-head {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .findings-badge {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      padding: 1px 6px;
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--s2-fg) 8%, transparent);
+      color: var(--s2-fg-secondary, var(--s2-fg));
+    }
+    .findings-badge.warn {
+      background: color-mix(in srgb, var(--s2-notice) 14%, transparent);
+      color: var(--s2-notice);
+    }
+    .findings-badge.fail {
+      background: color-mix(in srgb, var(--s2-negative, #c62828) 14%, transparent);
+      color: var(--s2-negative, #c62828);
+    }
+    .findings-badge.info {
+      background: color-mix(in srgb, var(--s2-positive) 12%, transparent);
+      color: var(--s2-positive);
+    }
+    .findings-summary {
+      font-size: 11px;
+      color: var(--s2-fg);
+      flex: 1;
+    }
+    .findings-list {
+      margin: 4px 0 0;
+      padding-left: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .findings-list:empty { display: none; }
+    .findings-list li {
+      font-size: 11px;
+      color: var(--s2-fg-secondary, var(--s2-fg));
+    }
+
     /* Comment expand */
     .comment-row {
       overflow: hidden;
@@ -877,6 +937,7 @@ let state = {
   view: 'queue',            // 'queue' | 'document'
   items: [],
   comments: {},             // { [itemId]: [{text, time}] }
+  findings: {},             // { [itemId]: { [source]: { summary, severity, findings, ts } } }
   pins: {},   // { [url]: [ {num, comment, pageX, pageY, selector, relX, relY, url, ts, done} ] }
   docPath: null,
   docTitle: null,
@@ -912,6 +973,43 @@ function showView(which) {
     queueView.classList.remove('visible'); queueView.classList.add('hidden');
   }
   renderIcons();
+}
+
+
+function renderFindings(itemId, container) {
+  if (!container) return;
+  const bySource = (state.findings && state.findings[itemId]) || {};
+  const sources = Object.keys(bySource);
+  container.hidden = sources.length === 0;
+  container.textContent = '';
+  sources.forEach((source) => {
+    const block = bySource[source] || {};
+    const wrap = document.createElement('div');
+    wrap.className = 'findings-block';
+    const head = document.createElement('div');
+    head.className = 'findings-head';
+    const badge = document.createElement('span');
+    const sev = block.severity === 'fail' || block.severity === 'warn' ? block.severity : 'info';
+    badge.className = 'findings-badge ' + sev;
+    badge.textContent = source;
+    const summary = document.createElement('span');
+    summary.className = 'findings-summary';
+    summary.textContent = block.summary || '';
+    head.appendChild(badge);
+    head.appendChild(summary);
+    wrap.appendChild(head);
+    const list = document.createElement('ul');
+    list.className = 'findings-list';
+    (block.findings || []).forEach((f) => {
+      const li = document.createElement('li');
+      const title = f && f.title ? String(f.title) : '';
+      const body = f && f.body ? String(f.body) : '';
+      li.textContent = title && body ? title + ': ' + body : (title || body);
+      list.appendChild(li);
+    });
+    if (list.childNodes.length) wrap.appendChild(list);
+    container.appendChild(wrap);
+  });
 }
 
 // ═══════════════════════════════════════════════════
@@ -992,6 +1090,7 @@ function createItemCard(item) {
         '<div class="item-title"></div>' +
       '</div>' +
       '<div class="item-links" hidden></div>' +
+      '<div class="findings" hidden></div>' +
       '<div class="item-actions">' +
         '<button class="sprinkle-btn sprinkle-btn--positive action-btn" data-action="publish">' +
           '<i data-lucide="check-circle" class="sprinkle-icon sm"></i> Publish' +
@@ -1066,7 +1165,9 @@ function createItemCard(item) {
   });
 
   const commentsLog = div.querySelector('.comments-log');
-  cardElements.set(item.id, { card: div, dot, label: labelEl, commentRow, commentInput, commentsLog });
+  const findingsEl = div.querySelector('.findings');
+  cardElements.set(item.id, { card: div, dot, label: labelEl, commentRow, commentInput, commentsLog, findings: findingsEl });
+  renderFindings(item.id, findingsEl);
 
   // A re-render (load-items / ensure-item) rebuilds every card, so restore the
   // in-flight marker for items whose publish/defer lick is still unanswered —
@@ -1545,6 +1646,45 @@ slicc.on('update', async (msg) => {
 
   else if (msg.action === 'add-comment') {
     appendCommentEntry(msg.id, msg.comment, typeof msg.num === 'number' ? msg.num : undefined);
+  }
+
+  else if (msg.action === 'add-findings') {
+    // Replace one source's findings on a card. Other sources on the same
+    // card are left intact. Mirrors ensure-item: missing card is created.
+    if (!msg.id || !msg.source) return;
+    if (!state.items) state.items = [];
+    if (!state.items.find(it => it.id === msg.id)) {
+      state.items.push({
+        id: msg.id,
+        title: msg.title || msg.id,
+        path: msg.path || '',
+        previewUrl: msg.previewUrl || '',
+        liveUrl: msg.liveUrl || '',
+        status: 'pending'
+      });
+    }
+    if (!state.findings) state.findings = {};
+    if (!state.findings[msg.id]) state.findings[msg.id] = {};
+    state.findings[msg.id][msg.source] = {
+      summary: msg.summary || '',
+      severity: msg.severity || 'info',
+      findings: Array.isArray(msg.findings) ? msg.findings : [],
+      ts: msg.ts || null
+    };
+    saveState();
+    renderQueue();
+    if (state.view !== 'document') showView('queue');
+  }
+
+  else if (msg.action === 'clear-findings') {
+    if (!msg.id || !state.findings) return;
+    if (msg.source) {
+      if (state.findings[msg.id]) delete state.findings[msg.id][msg.source];
+    } else {
+      delete state.findings[msg.id];
+    }
+    saveState();
+    renderQueue();
   }
 
   else if (msg.action === 'add-pin') {
