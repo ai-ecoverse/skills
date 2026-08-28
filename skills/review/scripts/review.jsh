@@ -33,7 +33,14 @@ function escapeShellArg(s) {
 
 async function which(cmd) {
   const r = await exec('which ' + escapeShellArg(cmd) + ' 2>/dev/null');
-  return r.exitCode === 0;
+  if (r.exitCode === 0) return true;
+  // SLICC registers .jsh commands without always exposing them to nested `which`.
+  try {
+    const probe = await exec.spawn([cmd, '--help']);
+    return probe.exitCode !== 127;
+  } catch (e) {
+    return false;
+  }
 }
 
 async function discover(named) {
