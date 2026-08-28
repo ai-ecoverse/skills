@@ -258,6 +258,243 @@ async function edgeUsersSearch(query, workspaceId, count = 10) {
   }
 }
 
+// Batch user lookup via the same edge cache (Slack client's users/info). One
+// request for many IDs, so a 50-message thread does not N+1 on users.info.
+async function edgeUsersInfo(ids, workspaceId) {
+  const { tab, token } = await resolveWorkspaceToken(workspaceId);
+  if (!token) {
+    return { ok: false, error: 'token_not_found', detail: `No token for workspace ${workspaceId}` };
+  }
+  if (!ids.length) return { ok: true, results: [] };
+
+  const updated_ids = {};
+  for (const id of ids) updated_ids[id] = 0;
+
+  try {
+    const resp = await browser.fetch(tab, `https://edgeapi.slack.com/cache/${workspaceId}/users/info`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        token,
+        check_interaction: true,
+        https_img: true,
+        include_profile_only_users: true,
+        updated_ids,
+      }),
+    });
+    return (resp && typeof resp.body === 'object' && resp.body) ? resp.body : { ok: false, error: 'xhr_error' };
+  } catch (e) {
+    return { ok: false, error: 'xhr_error' };
+  }
+}
+
+// In-process entity cache for one CLI invocation. Seeded from message
+// user_profile blobs, then filled by a batched users.info / conversations.info.
+const entityCache = {
+  users: new Map(),
+  channels: new Map(),
+};
+
+function rememberUser(id, src) {
+  if (!id || !src) return;
+  const prev = entityCache.users.get(id) || { id };
+  const p = src.profile || {};
+  entityCache.users.set(id, {
+    id,
+    name: src.name || prev.name || '',
+    real_name: src.real_name || p.real_name || prev.real_name || '',
+    display_name: p.display_name || src.display_name || prev.display_name || '',
+  });
+}
+
+function rememberChannel(id, name) {
+  if (!id || !name) return;
+  entityCache.channels.set(id, name);
+}
+
+function userNeedsLookup(id) {
+  const u = entityCache.users.get(id);
+  return !u || !u.name || !u.real_name;
+}
+
+function collectUserMentionIds(text) {
+  const ids = [];
+  const re = /<@([UWB][A-Z0-9]+)(?:\|[^>]*)?>/g;
+  let m;
+  while ((m = re.exec(text || ''))) ids.push(m[1]);
+  return ids;
+}
+
+function collectChannelMentions(text) {
+  const out = [];
+  const re = /<#([CGD][A-Z0-9]+)(?:\|([^>]*))?>/g;
+  let m;
+  while ((m = re.exec(text || ''))) out.push({ id: m[1], name: m[2] || '' });
+  return out;
+}
+
+function edgeUserList(data) {
+  if (!data || typeof data !== 'object') return [];
+  const raw = data.results || data.users || data.user || [];
+  if (Array.isArray(raw)) return raw;
+  if (raw && typeof raw === 'object') return Object.values(raw);
+  return [];
+}
+
+async function lookupUsers(ids, workspaceId) {
+  const missing = [...new Set(ids.filter(Boolean).filter(userNeedsLookup))];
+  if (!missing.length) return;
+
+  const edge = await edgeUsersInfo(missing, workspaceId);
+  for (const u of edgeUserList(edge)) {
+    if (u && u.id) rememberUser(u.id, u);
+  }
+
+  const still = missing.filter(userNeedsLookup);
+  for (let i = 0; i < still.length; i += 8) {
+    const chunk = still.slice(i, i + 8);
+    await Promise.all(chunk.map(async (id) => {
+      const data = await slackApi('users.info', { user: id }, workspaceId, { fatal: false });
+      if (data && data.ok && data.user) rememberUser(id, data.user);
+    }));
+  }
+}
+
+async function lookupChannels(ids, workspaceId) {
+  const missing = [...new Set(ids.filter(Boolean).filter((id) => !entityCache.channels.has(id)))];
+  if (!missing.length) return;
+  await Promise.all(missing.map(async (id) => {
+    const data = await slackApi('conversations.info', { channel: id }, workspaceId, { fatal: false });
+    if (data && data.ok && data.channel && data.channel.name) {
+      rememberChannel(id, data.channel.name);
+    }
+  }));
+}
+
+function seedEntitiesFromMessages(messages) {
+  for (const msg of messages || []) {
+    if (msg.user && msg.user_profile) {
+      rememberUser(msg.user, {
+        id: msg.user,
+        name: msg.user_profile.name,
+        real_name: msg.user_profile.real_name,
+        display_name: msg.user_profile.display_name,
+      });
+    } else if (msg.user) {
+      rememberUser(msg.user, { id: msg.user });
+    }
+    for (const { id, name } of collectChannelMentions(msg.text)) {
+      if (name) rememberChannel(id, name);
+    }
+  }
+}
+
+async function hydrateMessageEntities(messages, workspaceId) {
+  seedEntitiesFromMessages(messages);
+  const userIds = [];
+  const channelIds = [];
+  for (const msg of messages || []) {
+    if (msg.user) userIds.push(msg.user);
+    userIds.push(...collectUserMentionIds(msg.text));
+    for (const { id, name } of collectChannelMentions(msg.text)) {
+      if (!name && !entityCache.channels.has(id)) channelIds.push(id);
+    }
+  }
+  await lookupUsers(userIds, workspaceId);
+  await lookupChannels(channelIds, workspaceId);
+}
+
+// `Real Name (@username, ID)` — always emit every piece Slack actually returned.
+function formatUserTriple(u) {
+  if (!u) return 'unknown';
+  const id = u.id || '';
+  const handle = u.name ? `@${u.name}` : '';
+  const real = u.real_name || u.display_name || '';
+  if (real && handle && id) return `${real} (${handle}, ${id})`;
+  if (real && id) return `${real} (${id})`;
+  if (handle && id) return `${handle} (${id})`;
+  if (real && handle) return `${real} (${handle})`;
+  return real || handle || id || 'unknown';
+}
+
+function authorFromMessage(msg) {
+  if (msg.user) {
+    const cached = entityCache.users.get(msg.user);
+    const p = msg.user_profile || {};
+    return formatUserTriple({
+      id: msg.user,
+      name: (cached && cached.name) || p.name || '',
+      real_name: (cached && cached.real_name) || p.real_name || '',
+      display_name: (cached && cached.display_name) || p.display_name || '',
+    });
+  }
+  if (msg.bot_profile && msg.bot_profile.name) {
+    return msg.bot_id ? `${msg.bot_profile.name} (bot ${msg.bot_id})` : msg.bot_profile.name;
+  }
+  if (msg.username) return msg.username;
+  return 'unknown';
+}
+
+function expandMrkdwn(text) {
+  if (!text) return '';
+  return text
+    .replace(/<@([UWB][A-Z0-9]+)(?:\|[^>]*)?>/g, (_, id) => {
+      return formatUserTriple(entityCache.users.get(id) || { id });
+    })
+    .replace(/<#([CGD][A-Z0-9]+)(?:\|([^>]*))?>/g, (_, id, pipeName) => {
+      const name = entityCache.channels.get(id) || pipeName;
+      return name ? `#${name} (${id})` : `#${id}`;
+    });
+}
+
+// Handle-shaped queries: a single Slack username token (`tripod`, `@rofe`).
+// Emails and multi-word real names are not handles.
+function isHandleQuery(q) {
+  const s = String(q || '').trim();
+  if (!s) return false;
+  if (s.startsWith('@')) return /^@[A-Za-z0-9._-]+$/.test(s);
+  if (s.includes('@') || /\s/.test(s)) return false;
+  return /^[A-Za-z0-9._-]+$/.test(s);
+}
+
+function findQueryVariants(query) {
+  const q = String(query || '').trim();
+  const variants = [q];
+  if (!isHandleQuery(q)) return variants;
+  if (q.startsWith('@')) {
+    const bare = q.slice(1);
+    if (bare) variants.push(bare);
+  } else {
+    variants.push('@' + q);
+  }
+  return variants;
+}
+
+function mergeUsersById(lists) {
+  const seen = new Map();
+  for (const list of lists) {
+    for (const u of list || []) {
+      if (u && u.id && !seen.has(u.id)) seen.set(u.id, u);
+    }
+  }
+  return [...seen.values()];
+}
+
+function rankFindResults(results, query) {
+  const handle = String(query || '').trim().replace(/^@/, '').toLowerCase();
+  const score = (u) => {
+    const name = (u.name || '').toLowerCase();
+    const display = ((u.profile && u.profile.display_name) || u.display_name || '').toLowerCase();
+    const real = (u.real_name || (u.profile && u.profile.real_name) || '').toLowerCase();
+    if (name === handle) return 0;
+    if (display === handle) return 1;
+    if (real === handle) return 2;
+    if (name.startsWith(handle)) return 3;
+    return 4;
+  };
+  return results.slice().sort((a, b) => score(a) - score(b));
+}
+
 // --- Reactions ---
 
 // Add an emoji reaction to a message. `name` is a shortcode WITHOUT colons
@@ -735,9 +972,9 @@ function formatTimestamp(ts) {
 }
 
 function formatMessage(msg) {
-  const name = msg.user_profile?.display_name || msg.user_profile?.real_name || msg.user || 'unknown';
+  const name = authorFromMessage(msg);
   const time = formatTimestamp(msg.ts);
-  const text = msg.text || '';
+  const text = expandMrkdwn(msg.text || '');
   // The ts is always shown: it is the only handle for `--thread_ts=` and for
   // `slack thread`, and hiding it until a thread exists made threading a fresh
   // message impossible (issue #307). The reply count stays conditional.
@@ -838,6 +1075,7 @@ const commands = {
 
     // Print messages in chronological order (API returns newest first)
     const msgs = (data.messages || []).reverse();
+    await hydrateMessageEntities(msgs, wsId);
     for (const msg of msgs) {
       console.log(formatMessage(msg));
     }
@@ -1210,7 +1448,9 @@ const commands = {
       return;
     }
 
-    for (const msg of data.messages || []) {
+    const msgs = data.messages || [];
+    await hydrateMessageEntities(msgs, wsId);
+    for (const msg of msgs) {
       console.log(formatMessage(msg));
     }
     if (data.has_more) {
@@ -1254,22 +1494,31 @@ const commands = {
     const query = String(flags.search || flags.query || flags.q || positional.join(' ') || '').trim();
 
     if (!query) {
-      console.error('Usage: slack find <name or email> [--limit=N]');
-      console.error('Search users by name, display name, or email to get their user ID.');
+      console.error('Usage: slack find <name, username, or email> [--limit=N]');
+      console.error('Search users by username (@handle), real name, display name, or email to get their user ID.');
       process.exit(1);
     }
 
     const wsId = await resolveWorkspace(globalFlags);
     const count = parseInt(flags.limit || '10', 10) || 10;
 
-    const data = await edgeUsersSearch(query, wsId, count);
-    if (!data.ok) {
+    // Edge search matches real/display name well, but a short username like
+    // `rofe` is drowned out by "Robert …" fuzzy hits. Slack's own composer
+    // finds those via `@rofe`, so a handle-shaped query always runs both
+    // the bare token and the `@token` form, then exact-username matches
+    // are ranked to the top.
+    const variants = findQueryVariants(query);
+    const searches = await Promise.all(variants.map((q) => edgeUsersSearch(q, wsId, count)));
+    const failed = searches.filter((d) => !d.ok);
+    if (failed.length === searches.length) {
+      const data = failed[0] || {};
       console.error('Error:', data.error || 'search_failed');
       if (data.detail) console.error('Detail:', data.detail);
       process.exit(1);
     }
 
-    const results = data.results || [];
+    const merged = mergeUsersById(searches.filter((d) => d.ok).map((d) => d.results || []));
+    const results = rankFindResults(merged, query).slice(0, count);
     if (results.length === 0) {
       console.log(`No users found matching "${query}".`);
       return;
@@ -2398,7 +2647,7 @@ if (!cmd || cmd === 'help' || cmd === '--help') {
   console.log('  channels --search=<term>                  Search for channels');
   console.log('  thread <channel_id> <thread_ts> [--limit] [--json]');
   console.log('                                           Read thread replies (shows [F...] file ids)');
-  console.log('  find <name or email> [--limit=N]          Search users by name/email → user IDs');
+  console.log('  find <name, username, or email> [--limit=N] Search users by name/username/email → user IDs');
   console.log('  user <user_id>                            Look up user info');
   console.log('  info <channel_id>                         Get channel info');
   console.log('  slackbot                                  Find Slackbot DM channel');
