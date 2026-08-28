@@ -103,13 +103,9 @@ async function sprinkleSend(msg) {
   return r;
 }
 
-function cardId(flags, contributions, filePath) {
-  if (flags.id) return String(flags.id);
-  for (const c of contributions) {
-    if (c && c.id) return String(c.id);
-  }
-  const base = String(filePath).split('/').pop() || 'item';
-  return 'review-' + base.replace(/\s+/g, '-');
+function stableCardId(filePath) {
+  // Full path so /a/README.md and /b/README.md never share a card.
+  return 'review:' + String(filePath);
 }
 
 const parsed = process.argv.parseFlags();
@@ -153,12 +149,14 @@ try {
     process.stderr.write('[review] no review-compatible sources on PATH\n');
   }
 
+  // Pin the card id before any source runs so a failed Pangram cannot change
+  // which card the cliché source (or a later retry) attaches to.
+  const id = flags.id ? String(flags.id) : stableCardId(filePath);
+
   const contributions = [];
-  const jobs = sources.map((s) => invokeSource(s, filePath, flags.id));
+  const jobs = sources.map((s) => invokeSource(s, filePath, id));
   const results = await Promise.all(jobs);
   for (const c of results) if (c) contributions.push(c);
-
-  const id = cardId(flags, contributions, filePath);
   const title =
     flags.title ||
     (contributions.find((c) => c.title) || {}).title ||
@@ -212,6 +210,7 @@ try {
   );
   if (flags.json) process.stdout.write(JSON.stringify(payload, null, 2) + '\n');
 } catch (err) {
+  if (err && err.name === 'NodeExitError') throw err;
   process.stderr.write((err && err.message ? err.message : String(err)) + '\n');
   process.exit(2);
 }
