@@ -71,3 +71,5 @@ Apache 2.0 — see [LICENSE](LICENSE).
 
 **Exception:** `skills/llm-wiki/` is MIT-licensed (upstream origin). See [skills/llm-wiki/LICENSE](skills/llm-wiki/LICENSE).
 
+Portions of `skills/ai-writing-detector/` are derived from Simon Willison's [LLM cliché highlighter](https://github.com/simonw/tools/blob/main/llm-cliche-highlighter.html) (Apache-2.0). See [skills/ai-writing-detector/references/NOTICE-simonw-tools.txt](skills/ai-writing-detector/references/NOTICE-simonw-tools.txt).
+
