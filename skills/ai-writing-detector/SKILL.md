@@ -101,11 +101,26 @@ Sentence-level detectors ported from Simon Willison's [LLM cliché highlighter](
 
 ```bash
 check-llm-cliches <file> [--json] [--all] [--pattern <id>]...
+check-llm-cliches review --path <file> [--id <id>]
 check-llm-cliches --test
 check-llm-cliches --list
 ```
 
 `colon-triple` is off unless `--all` (noisy in documentation). Attribution: [references/NOTICE-simonw-tools.txt](references/NOTICE-simonw-tools.txt). Catalog: [references/llm-cliches.md](references/llm-cliches.md). For a human-facing highlighter, use the upstream page rather than reimplementing the UI.
+
+`check-llm-cliches review` emits a review-protocol contribution (see the review skill's `SOURCE_PROTOCOL.md`) so `review ingest` can attach findings to a card.
+
+### Classifier: `pangram`
+Optional Pangram API check. Needs `PANGRAM_API_KEY` or `pangram login` (stores the key in gitignored skill config). Docs: [references/pangram.md](references/pangram.md).
+
+```bash
+pangram <file> [--json] [--model pangram-4]
+pangram review --path <file> [--id <id>]
+pangram models
+pangram login
+```
+
+Never pass the API key as a flag. Both `pangram` and `check-llm-cliches` are optional review integrations: `review ingest --path FILE` skips whichever is not on PATH.
 
 ### Data File: `references/ai_word_rates.txt`
 Base rates per million words from ngrams.dev English corpus (23.6B words). This file is expected to be present in the skill bundle's `references/` directory alongside `references/patterns.md`.
