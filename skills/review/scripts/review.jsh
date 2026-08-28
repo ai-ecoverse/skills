@@ -110,9 +110,13 @@ const { positional, flags, subcommand } = parsed;
 const cmd = subcommand || positional[0];
 
 try {
-  if (flags.help || flags.h || !cmd || cmd === 'help') {
+  if (flags.help || flags.h || cmd === 'help') {
     process.stdout.write(helpText());
-    process.exit(cmd ? 0 : 2);
+    process.exit(0);
+  }
+  if (!cmd) {
+    process.stderr.write(helpText());
+    process.exit(2);
   }
 
   if (cmd === 'sources') {
