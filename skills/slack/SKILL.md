@@ -1,7 +1,7 @@
 ---
 name: slack
 description: Interact with Slack via its Web API — read messages, post to channels,
-  search channels, read threads, find and look up users by name or email, view activity/notifications, manage
+  search channels, read threads, find and look up users by name, username, or email, view activity/notifications, manage
   Slack support requests, and watch channels for new messages in real time. Supports
   multiple workspaces with auto-detection from the active tab. Use when the user wants
   to check Slack messages, post a Slack message, search Slack channels, read Slack
@@ -60,7 +60,9 @@ slack download F0BK6BADTKK --out=/tmp/shot.png
 # Upload a file to a channel/DM/thread (optionally with a comment)
 slack upload C087NCG774J /tmp/clip.mp3 --thread_ts=1774539502.747989 --comment="voice note"
 
-# Find a user by name (or email) → user ID; or look one up by ID
+# Find a user by username (@handle), real name, or email → user ID
+slack find tripod
+slack find @rofe
 slack find "Dragos Dascalita"
 slack user W5BPKRLUA
 
@@ -179,6 +181,11 @@ than retrying the same `message_ts`.
 ### slack history \<channel_id\> [--limit=N] [--json]
 
 Fetch recent messages from a channel. Default limit is 20.
+
+Authors print as `Real Name (@username, ID)` whenever Slack returned those
+fields. User mentions (`<@U…>` / `<@W…>`) expand to the same triple; channel
+mentions (`<#C…>` / `<#C…|name>`) expand to `#name (C…)`. Lookups are batched
+(edge `users/info`, then `users.info`) so a long thread does not N+1.
 
 Every line carries the message timestamp as `[ts=<ts>]` — this is the handle for
 `slack thread <channel> <ts>` and for `slack post ... --thread_ts=<ts>`. The reply
@@ -310,9 +317,10 @@ member count, and purpose.
 
 Read thread replies. Takes the channel ID and the thread's parent timestamp
 (from `slack post` output or the `[ts=...]` in `slack history`); default limit 50.
-`--json` prints the raw `conversations.replies` `messages` array instead of the
-formatted lines. Messages carrying files/images get an extra line per attachment
-with name, type, dimensions and file id, plus a ready-to-run
+Human output uses the same author triple and mention/channel expansion as
+`slack history`. `--json` prints the raw `conversations.replies` `messages`
+array instead of the formatted lines. Messages carrying files/images get an extra
+line per attachment with name, type, dimensions and file id, plus a ready-to-run
 `slack download <file_id>` hint.
 
 ### slack download \<file_id\> [--out=\<path\>]
@@ -336,24 +344,38 @@ slack upload C087NCG774J /tmp/report.pdf --comment="Q3 numbers"
 slack upload C087NCG774J /tmp/voice.mp3 --thread_ts=1774539502.747989 --comment="voice note"
 ```
 
-### slack find \<name or email\> [--limit=N]
+### slack find \<name, username, or email\> [--limit=N]
 
-Search for users by name, display name, or email and print their user IDs — the
-fastest way to get an ID for `slack post` or `slack user`. Aliases: `users`,
-`find-user`. Default limit is 10.
+Search for users by **username** (`@handle`, with or without the `@`), real name,
+display name, or email and print their user IDs — the fastest way to get an ID
+for `slack post` or `slack user`. Aliases: `users`, `find-user`. Default limit is 10.
+
+Each hit prints **id**, **@username**, and **full/real name**, plus title when
+present:
 
 ```bash
+slack find tripod
+#   W4R5LUW5P  Tobias Bocanegra @tripod — Senior Principal Scientist
+slack find rofe
+#   W4RPXRGKD  Raphael Wegmueller @rofe — Director of Engineering
+slack find uncled
+#   W4RPL6X6X  David Nuescheler @uncled — Fellow & VP, Developer Platform & Ecosystem
 slack find "Dragos Dascalita"
 #   W57QU2CLV  Dragos Dascalita Haut @ddascal — Principal Scientist
 slack post W57QU2CLV "Hey, quick question..."
 ```
+
+A short username like `rofe` also matches many real names (`Robert …`) in the
+edge cache, so handle-shaped queries run both the bare token and `@token` and
+rank an exact username match first.
 
 Deactivated and bot accounts are labelled (`[deactivated]`, `[bot]`) so you can
 tell duplicates apart. Slack has no `users.search` method and `users.list` is
 restricted on enterprise grids, so this uses the edge users cache
 (`edgeapi.slack.com/cache/<team>/users/search`) behind Slack's own quick switcher:
 cross-origin, but `browser.fetch` runs in the Slack tab and the shared
-`.slack.com` cookie authenticates the xoxc token — no extra auth step.
+`.slack.com` cookie authenticates the xoxc token — no extra auth step. Do not
+add a `users.list` crawl.
 
 ### slack user \<user_id\>
 
