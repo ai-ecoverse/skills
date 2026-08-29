@@ -1,7 +1,7 @@
 # Pin Review — internals
 
 Background for debugging the Pin Review overlay. **Not needed for normal operation** — see the
-Pin Review section of `SKILL.md` for the commands. Read this when pins go missing, duplicate, or
+Pin Review section of [`SKILL.md`](../SKILL.md) for the commands. Read this when pins go missing, duplicate, or
 land in the wrong spot.
 
 ## Two concerns

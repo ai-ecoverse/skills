@@ -18,7 +18,7 @@ execute.
 response to a pin or comment.** Applying a change is always the user's
 decision. The user acts on recorded feedback themselves — explicitly, or via
 the **Speck Fix** layer (element-level AI editing on local previews; see
-SPECK-FIX.md), which is user-driven by design.
+[`SPECK-FIX.md`](references/SPECK-FIX.md)), which is user-driven by design.
 
 When a pin or comment arrives, the only correct actions are: store it
 (`add-pin` / `add-comment`), keep its marker/queue state in sync, and report
@@ -122,6 +122,8 @@ The sprinkle accepts these inbound messages (`sprinkle send review`):
 | `set-review-mode` | `{ active }` | Sync the Pin Review button state |
 | `set-speck` | `{ active }` | Sync the Speck Fix button state |
 | `clear-pins` | `{}` | Remove all pin comments (those with `num`, or text starting `📍 PIN #`) from every item, and empty the durable marker store |
+| `add-findings` | `{ id, source, summary?, severity?, findings? }` | Attach one integration's result to a card (creates the card if missing). Re-running the same `source` replaces that block; other sources stay. See [Integrations](#integrations). |
+| `clear-findings` | `{ id, source? }` | Drop one source's findings on a card, or every source if `source` is omitted. |
 
 ### Handling licks (cone)
 
@@ -141,7 +143,7 @@ tab. Markers are always visible once the display overlay is injected; the toggle
 add-mode crosshair on/off. There is no in-page banner.
 
 > **Architecture** — dual-store persistence, overlay versioning, element positioning, and the
-> `__sliccReviewAll`/`sessionStorage` precedence rules live in **PIN-REVIEW-INTERNALS.md**. Read it
+> `__sliccReviewAll`/`sessionStorage` precedence rules live in [`PIN-REVIEW-INTERNALS.md`](references/PIN-REVIEW-INTERNALS.md). Read it
 > when pins go missing, duplicate, or land in the wrong spot.
 
 ### Overlay assets (`overlay/`)
@@ -190,7 +192,7 @@ playwright-cli eval-file /tmp/seed.js --tab <id>
 playwright-cli eval-file /shared/review-overlay/enter.resolved.js --tab <id>
 ```
 **Only seed with the real durable array — never an empty/stale one.** A non-empty `__sliccReviewAll`
-wins over `sessionStorage` and clobbers visible pins (see PIN-REVIEW-INTERNALS.md). On a same-session
+wins over `sessionStorage` and clobbers visible pins (see [`PIN-REVIEW-INTERNALS.md`](references/PIN-REVIEW-INTERNALS.md)). On a same-session
 reload, skip seeding and let the cache serve.
 
 **Checkpoint** — after seeding, the marker count must equal `PINS_JSON` length:
@@ -202,7 +204,7 @@ fall back to sessionStorage.
 
 ### `toggle-review-mode` lick handler (cone)
 - `active:true` → set `__sliccWantAdd=true`, eval `enter.resolved.js` (markers + crosshair). First
-  remove any Speck layer and sync `set-speck active:false` (mutually exclusive — see SPECK-FIX.md).
+  remove any Speck layer and sync `set-speck active:false` (mutually exclusive — see [`SPECK-FIX.md`](references/SPECK-FIX.md)).
 - `active:false` → eval `exit.js` (add mode off, crosshair off, markers stay).
 
 ### Keep pins visible across reloads (mandatory while review is active)
@@ -233,7 +235,7 @@ missing):
 4. Verify: `(window.__sliccReviewAll||[]).length` equals the pin count and `window.__sliccOverlayVersion` is `4`.
 
 Never seed an empty/stale array over a non-empty store (it clobbers visible pins — see
-PIN-REVIEW-INTERNALS.md). On a *same-session* reload where `sessionStorage` still holds the markers,
+[`PIN-REVIEW-INTERNALS.md`](references/PIN-REVIEW-INTERNALS.md)). On a *same-session* reload where `sessionStorage` still holds the markers,
 re-injecting the overlay alone is enough and seeding can be skipped; when in doubt, seed from the
 durable `request-pins` array.
 
@@ -260,7 +262,7 @@ id. Never hardcode a single target id.
 
 ### Remote pages
 Pin Review works on remote http(s) sites too — the overlay POSTs with `mode:'no-cors'`. Only
-**Fix with Speck** is local-only (see SPECK-FIX.md).
+**Fix with Speck** is local-only (see [`SPECK-FIX.md`](references/SPECK-FIX.md)).
 
 ### Mark done (✗ per comment line)
 Toggling a pin comment's done button fires `comment-done {num,done,itemId,cid}`. Cone handler: set
@@ -289,7 +291,7 @@ Bootstrap procedure (idempotent — skip any step already done):
 1. **Install the skill if missing:** check for `speck` on disk; if absent, run
    `upskill ai-ecoverse/skills --skill speck`.
 2. **Ensure the `speck-worker` scoop exists** (with `/tmp/` write access and the standing duties to
-   handle the two webhooks — see SPECK-FIX.md). Create it if missing.
+   handle the two webhooks — see [`SPECK-FIX.md`](references/SPECK-FIX.md)). Create it if missing.
 3. **Ensure the two webhooks exist and are routed to `speck-worker`:** `speck-fix` (handles
    `inject-speck`) and `speck-lick` (element-instruction events). Create any that are missing.
 4. **Resolve `__SPECK_WEBHOOK_URL__`:** re-build `enter.resolved.js` from the *current* `speck-fix`
@@ -302,7 +304,7 @@ Bootstrap procedure (idempotent — skip any step already done):
 Tell the user briefly that Speck is loading on first use; subsequent clicks are instant because the
 bootstrap is idempotent.
 
-**Full setup steps and architecture → SPECK-FIX.md.**
+**Full setup steps and architecture → [`SPECK-FIX.md`](references/SPECK-FIX.md).**
 
 ## In-flight indicators and failure recovery
 
@@ -314,3 +316,17 @@ bootstrap is idempotent.
   sprinkle send review '{"action":"update-status","id":"page-1","status":"pending"}'
   ```
 - **Timeout** — if the scoop does not respond in time, push `"status":"pending"` to avoid a stuck UI.
+
+## Integrations
+
+Other skills attach checks to the review backlog the same way monday sources attach inbox items: a `review` sub-command that writes one JSON object to stdout. The contract lives in [`references/SOURCE_PROTOCOL.md`](references/SOURCE_PROTOCOL.md).
+
+```bash
+review sources
+review ingest --path /shared/page.md --id page-1
+review ingest pangram --path /shared/page.md --dry-run
+```
+
+`review ingest` discovers `pangram` and `check-llm-cliches` on PATH (both optional; missing commands are skipped), runs `[cmd] review --path PATH`, then `ensure-item` + `add-findings` on the sprinkle. Findings render on the card. The queue works with zero integrations installed.
+
+To add a source: implement `[cmd] review --path PATH [--id ID]`, then either name it (`review ingest mysource --path FILE`) or add it to `KNOWN_INTEGRATIONS` in `scripts/review.jsh`.

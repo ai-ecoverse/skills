@@ -8,7 +8,7 @@ which Speck can't inject into due to CSP. Pin Review works without any of this.
 
 Speck loads **on demand** the first time the user clicks **✨ Fix with Speck** (or the **Speck Fix**
 toggle). The cone's `toggle-speck` / `inject-speck` handler runs the bootstrap below automatically;
-the user does not perform any manual setup. See `SKILL.md` § Lazy auto-load on first use for the
+the user does not perform any manual setup. See [`SKILL.md`](../SKILL.md) § Lazy auto-load on first use for the
 handler contract.
 
 Bootstrap steps (idempotent — the handler skips any already done):

@@ -5,6 +5,7 @@ Comprehensive catalog of AI-generated writing patterns. Sources: Wikipedia's "Si
 ## Table of Contents
 - [Vocabulary Markers](#vocabulary-markers)
 - [Phrase Patterns](#phrase-patterns)
+- [LLM clichés (Simon Willison)](#llm-clichés-simon-willison)
 - [Content Patterns](#content-patterns)
 - [Structural Patterns](#structural-patterns)
 - [Style Patterns](#style-patterns)
@@ -103,6 +104,31 @@ Uncharted, Underscore, Undoubtedly, Unique, Unleash, Unlock, Unparalleled, Unvei
 - "indelible mark"
 - "deeply rooted"
 - "profound heritage"
+
+---
+
+## LLM clichés (Simon Willison)
+
+Sentence-level detectors from the [LLM cliché highlighter](https://tools.simonwillison.net/llm-cliche-highlighter) (`simonw/tools`, Apache-2.0). Run them with `check-llm-cliches`. Full catalog: [llm-cliches.md](llm-cliches.md). Attribution: [NOTICE-simonw-tools.txt](NOTICE-simonw-tools.txt).
+
+These catch register that the vocabulary-rate checker misses: therapist-voice, stacked rhetoric, echoing sentence skeletons, and chatbot paste debris.
+
+| id | tell |
+|----|------|
+| `no-chain` | "No fluff, no filler, no jargon" |
+| `did-not-chain` | "Did not flinch, did not blink" |
+| `dont-verb-it` | "Don't call it X. Call it Y." |
+| `sit-with` / `worth-naming` / `not-nothing` | therapist-voice validation |
+| `already-know` | false intimacy ("you already know") |
+| `whole` / `is-the-whole` / `is-the-entire` | "that's the whole point" |
+| `echo-triad` | consecutive sentences on the same skeleton |
+| `performative-honesty` | "I won't pretend", "let's be honest", sentence-initial "Look," |
+| `stacked-questions` | two or more questions in a row |
+| `sentence-anaphora` | three sentences opening on the same word |
+| `ai-leftovers` | "as an AI language model", `oaicite`, `utm_source=` |
+| `colon-triple` | colon into a triple (off by default; noisy in docs) |
+
+Wikipedia-group ids (`ai-vocab`, `not-just`, `note-that`, `testament`, `crucial-role`, `landscape`, `vague-experts`, `despite-challenges`, `participle-tail`, `promo`) overlap the lists below; prefer `check-llm-cliches` when you want offsets and self-tests rather than a word-rate table.
 
 ---
 
@@ -407,4 +433,4 @@ These are **NOT** reliable signs of AI writing:
 
 ---
 
-*Sources: Wikipedia "Signs of AI writing", ScriptRAG AI Content Indicators Database, nostalgebraist (2024)*
+*Sources: Wikipedia "Signs of AI writing", ScriptRAG AI Content Indicators Database, nostalgebraist (2024), Simon Willison's LLM cliché highlighter (Apache-2.0, 2026)*
