@@ -83,11 +83,22 @@ Probed live on 2026-09-01 against SLICC 6.99.9 (Chrome 152), from inside a
 
 ## Gotchas that cost real time
 
-- **Keep backticks out of `//` comments in a `.jsh`.** The transpile detector's
-  string masker tracks template literals, and a stray backtick in a comment
-  desynchronises it — which then mis-detects `import(`/`export` in ordinary code
-  and fails the run with "esbuild-wasm is not installed". Verify a script with
-  `hasEsmSyntax` / `hasDynamicImport` from `ipk/resolver.ts` before shipping it.
+- **A backticked span inside a `//` comment is not masked.** The transpile
+  detector blanks comments before scanning, but a backtick opens a
+  template-literal frame whose contents survive into the scanned source. So
+  prose like ``// lowers a literal `import(` in a .jsh`` reads as a real dynamic
+  import and the run dies with "esbuild-wasm is not installed" — while the same
+  sentence without backticks is fine, and ``// see `require` here`` is fine too
+  because the span holds no trigger. The rule is narrow: never put `import(`,
+  `export`, or `import.meta` **inside backticks in a comment**. Confirm before
+  shipping, rather than eyeballing it:
+
+  ```js
+  // esbuild packages/webapp/src/shell/ipk/resolver.ts --bundle --format=esm --platform=neutral
+  import { hasEsmSyntax, hasDynamicImport } from './resolver.mjs';
+  const src = readFileSync('my-skill.jsh', 'utf8');
+  console.log(hasEsmSyntax(src), hasDynamicImport(src));   // both must be false
+  ```
 - **The SPA fallback lies.** Fetching a nonexistent same-origin path returns
   `index.html` with a 200, so a bad module URL fails as a confusing parse error
   rather than a 404. Check `content-type` when a load misbehaves.

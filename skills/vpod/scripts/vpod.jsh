@@ -19,12 +19,18 @@ const PKG_DIR = '/workspace/node_modules/@capsule-run/vpod';
 const STATE_DIR = '/workspace/.vpod';
 const SESSION_DIR = `${STATE_DIR}/sessions`;
 const SNAPSHOT_DIR = `${STATE_DIR}/snapshots`;
-const LOCK_STALE_MS = 15 * 60 * 1000;
+// A lock is held for as long as the operation it guards could legitimately run
+// (boot + the guest's own timeout + suspend, plus slack), never a flat window --
+// a 3600s guest command must not have its lock judged stale at 15 minutes and
+// stolen by a second invocation that then suspends over the same delta.
+const LOCK_SLACK_MS = 60 * 1000;
 const BOOT_DEADLINE_MS = 5 * 60 * 1000;
 const SUSPEND_DEADLINE_MS = 60 * 1000;
 // Host-side grace on top of the guest's own --timeout, so a guest that stops
 // answering surfaces as an error instead of an infinite spin.
 const RUN_GRACE_MS = 30 * 1000;
+const DEFAULT_TIMEOUT_S = 120;
+const MAX_TIMEOUT_S = 3600;
 const NAME_RE = /^[A-Za-z0-9._-]+$/;
 // The tray exec wire caps one message at 8 MiB (TRAY_MAX_MESSAGE_BYTES), and
 // base64 inflates by 4/3, so 3 MiB of payload per `ssh` round trip stays clear.
@@ -134,7 +140,18 @@ function parseArgs(argv, { stopAtBareWord = false } = {}) {
     }
     const eq = arg.startsWith('--') ? arg.indexOf('=') : -1;
     if (eq > 0) {
-      flags[arg.slice(2, eq)] = arg.slice(eq + 1);
+      // Validate the --key=value form too, or `--timeot=10` is silently dropped
+      // and the command runs with a default the user did not ask for.
+      const key = arg.slice(0, eq);
+      if (!ARG_FLAGS.has(key)) {
+        cli.die(
+          BOOL_FLAGS.has(key)
+            ? `${key} takes no value\nRun '${TOOL} --help' for usage.`
+            : `unknown flag: ${key}\nRun '${TOOL} --help' for usage.`,
+          { prefix: TOOL }
+        );
+      }
+      flags[key.slice(2)] = arg.slice(eq + 1);
     } else if (ARG_FLAGS.has(arg)) {
       const value = argv[i + 1];
       if (value === undefined) cli.die(`${arg} needs a value`, { prefix: TOOL });
@@ -154,6 +171,20 @@ function parseArgs(argv, { stopAtBareWord = false } = {}) {
 /** POSIX single-quote a token so the guest /bin/sh sees it verbatim. */
 function shQuote(token) {
   return `'${String(token).replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * Quote a path destined for a REMOTE shell, keeping a leading ~ expandable.
+ * shQuote alone turns the default ~/vpod into cd '~/vpod', and POSIX shells do
+ * not expand a tilde inside single quotes -- so the documented remote build
+ * failed unless a directory literally named "~" existed. The remainder stays
+ * single-quoted, so this buys expansion without giving up injection safety.
+ */
+function shQuotePath(path) {
+  const value = String(path);
+  if (value === '~') return '"$HOME"';
+  if (value.startsWith('~/')) return `"$HOME"/${shQuote(value.slice(2))}`;
+  return shQuote(value);
 }
 
 /**
@@ -193,10 +224,11 @@ function requireName(name, what) {
 //      relative imports, worker spawning and the wasm fetch all resolve
 //      natively from here.
 //
-// Note: keep backticks out of // comments in a .jsh. The transpile detector's
-// string masker tracks template literals, and a stray backtick in a comment
-// desynchronises it -- which is how this file first tripped the CJS lowering
-// it exists to avoid.
+// Note: the detector blanks // comments before scanning, but a backticked span
+// inside one survives as live source. Never write import(, export or
+// import.meta inside backticks in a comment -- that is how this file first
+// tripped the CJS lowering it exists to avoid. Backticks are otherwise fine.
+// See references/wasm-in-slicc.md for the one-line way to verify a script.
 const importEsm = new Function('url', 'return import(url);');
 
 const previewUrl = (vfsPath) => `${globalThis.location.origin}/preview${vfsPath}`;
@@ -256,14 +288,19 @@ async function listSessions() {
 
 async function isLocked(name) {
   const lock = await readJson(lockPath(name));
-  return Boolean(lock && Date.now() - (lock.at || 0) < LOCK_STALE_MS);
+  if (!lock) return false;
+  const expiresAt = Number(lock.expiresAt) || (Number(lock.at) || 0) + LOCK_SLACK_MS;
+  return Date.now() < expiresAt;
 }
 
 /**
  * Advisory lock. Two concurrent runs against one session would each resume the
  * same delta and race to overwrite it, silently losing one side's work.
+ * `holdMs` is the caller's own worst-case runtime; the token lets the holder
+ * release only its OWN lock, so a run that outlives its expiry can never delete
+ * the lock of whoever legitimately took over.
  */
-async function acquireLock(name) {
+async function acquireLock(name, holdMs) {
   if (await isLocked(name)) {
     cli.die(
       `session '${name}' is busy — another vpod command is using it.\n` +
@@ -271,12 +308,20 @@ async function acquireLock(name) {
       { prefix: TOOL }
     );
   }
+  const token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   await fs.mkdir(SESSION_DIR, { recursive: true });
-  await fs.writeFile(lockPath(name), JSON.stringify({ at: Date.now() }));
+  await fs.writeFile(lockPath(name), JSON.stringify({
+    at: Date.now(), expiresAt: Date.now() + holdMs, token,
+  }));
+  return token;
 }
 
-async function releaseLock(name) {
-  try { await fs.rm(lockPath(name)); } catch { /* best effort */ }
+async function releaseLock(name, token) {
+  try {
+    const lock = await readJson(lockPath(name));
+    if (lock && token && lock.token !== token) return; // someone else's lock now
+    await fs.rm(lockPath(name));
+  } catch { /* best effort */ }
 }
 
 /**
@@ -348,14 +393,19 @@ async function saveSession(sandbox, name, snapshotId) {
   return delta.byteLength;
 }
 
-/** Run `fn` against a locked session and suspend it back on success. */
-async function withSession(name, flags, fn) {
+/**
+ * Run `fn` against a locked session and suspend it back on success.
+ * `guestTimeoutMs` is the deadline `fn` itself will apply, so the lock outlives
+ * the work it guards.
+ */
+async function withSession(name, flags, fn, guestTimeoutMs = DEFAULT_TIMEOUT_S * 1000 + RUN_GRACE_MS) {
   requireName(name, 'session name');
   // Load the SDK BEFORE taking the lock: it touches no session state, and a
   // failure here (the not-installed gate) must not leave a lock behind that
-  // blocks the session for the next 15 minutes.
+  // blocks the session until the lock expires.
   const sdk = await loadSdk();
-  await acquireLock(name);
+  const holdMs = BOOT_DEADLINE_MS + guestTimeoutMs + SUSPEND_DEADLINE_MS + LOCK_SLACK_MS;
+  const token = await acquireLock(name, holdMs);
   let sandbox = null;
   try {
     let opened;
@@ -390,7 +440,7 @@ async function withSession(name, flags, fn) {
     }
   } finally {
     if (sandbox) await closeQuietly(sandbox);
-    await releaseLock(name);
+    await releaseLock(name, token);
   }
 }
 
@@ -447,10 +497,15 @@ function base64ToBytes(b64) {
 // ── commands ──────────────────────────────────────────────────────────
 async function cmdInstall(flags) {
   const existing = await installedVersion();
-  if (existing && !flags.fresh) {
+  // Only an EXACT match short-circuits. Every API this skill drives was verified
+  // against the pinned build, so silently accepting some other installed version
+  // would hand the user a runtime the rest of the script does not know.
+  if (existing === PINNED_VERSION && !flags.fresh) {
     console.log(`  ${color.green('✓')} ${PACKAGE}@${existing} already installed`);
-    console.log(color.dim(`    reinstall with: ipk add ${PACKAGE}@${PINNED_VERSION}`));
     return;
+  }
+  if (existing) {
+    console.log(color.yellow(`  ${PACKAGE}@${existing} is installed; this skill is pinned to ${PINNED_VERSION} — replacing it.`));
   }
   console.log(color.dim(`  Installing ${PACKAGE}@${PINNED_VERSION} (~30 MB) …`));
   const res = await exec.spawn(['ipk', 'add', `${PACKAGE}@${PINNED_VERSION}`]);
@@ -473,7 +528,7 @@ async function cmdRun(argv) {
       sandbox.commands.run(command, { timeout }), timeout * 1000 + RUN_GRACE_MS, 'the guest command'
     );
     return { result, opened };
-  });
+  }, timeout * 1000 + RUN_GRACE_MS);
   const { result, opened } = outcome;
 
   if (flags.json) {
@@ -503,7 +558,7 @@ async function cmdPython(argv) {
 
   const { result } = await withSession(name, flags, async (sandbox) => ({
     result: await withDeadline(sandbox.code.run(code, { timeout }), timeout * 1000 + RUN_GRACE_MS, 'the guest command'),
-  }));
+  }), timeout * 1000 + RUN_GRACE_MS);
 
   if (flags.json) { cli.out({ session: name, code, ...plainCodeResult(result) }); return; }
   const text = result.text ?? result.stdout ?? '';
@@ -529,7 +584,7 @@ async function cmdPut(argv) {
       ),
       timeout * 1000 + RUN_GRACE_MS, 'the guest write'
     ),
-  }));
+  }), timeout * 1000 + RUN_GRACE_MS);
   if (result.exitCode !== 0) {
     cli.die(`guest write failed (exit ${result.exitCode}): ${result.stderr.trim()}`, { prefix: TOOL });
   }
@@ -549,7 +604,7 @@ async function cmdGet(argv) {
       sandbox.commands.run(`base64 < ${shQuote(src)}`, { timeout }),
       timeout * 1000 + RUN_GRACE_MS, 'the guest read'
     ),
-  }));
+  }), timeout * 1000 + RUN_GRACE_MS);
   if (result.exitCode !== 0) {
     cli.die(`guest read failed (exit ${result.exitCode}): ${result.stderr.trim()}`, { prefix: TOOL });
   }
@@ -758,8 +813,8 @@ async function remoteBuild(target, flags) {
 
   const out = `/tmp/vpod-${name}.snap`;
   const script =
-    `cd ${shQuote(repo)} && ./scripts/build-custom-snapshot.sh ` +
-    `-f ${shQuote(dockerfile)} -n ${shQuote(name)} --ram ${ram} --out ${shQuote(out)}`;
+    `cd ${shQuotePath(repo)} && ./scripts/build-custom-snapshot.sh ` +
+    `-f ${shQuotePath(dockerfile)} -n ${shQuote(name)} --ram ${ram} --out ${shQuote(out)}`;
   console.log(color.dim(`  ${target}: ${script}`));
   console.log(color.dim(`  (a riscv64 image build takes many minutes — timeout ${timeout}s)`));
 
@@ -779,7 +834,7 @@ async function remotePull(target, positional, flags) {
   }
   requireName(name, 'snapshot name');
 
-  const sizeRes = await ssh(target, `wc -c < ${shQuote(remotePath)}`, 60);
+  const sizeRes = await ssh(target, `wc -c < ${shQuotePath(remotePath)}`, 60);
   const total = Number(String(sizeRes.stdout).trim());
   if (sizeRes.exitCode !== 0 || !Number.isFinite(total) || total <= 0) {
     cli.die(`cannot stat ${remotePath} on ${target}: ${sizeRes.stderr.trim() || 'no size'}`, { prefix: TOOL });
@@ -792,7 +847,7 @@ async function remotePull(target, positional, flags) {
   for (let i = 0; i < chunks; i++) {
     const res = await ssh(
       target,
-      `dd if=${shQuote(remotePath)} bs=${REMOTE_CHUNK_BYTES} skip=${i} count=1 2>/dev/null | base64 | tr -d '\\n'`,
+      `dd if=${shQuotePath(remotePath)} bs=${REMOTE_CHUNK_BYTES} skip=${i} count=1 2>/dev/null | base64 | tr -d '\\n'`,
       600
     );
     if (res.exitCode !== 0) {
@@ -812,7 +867,8 @@ async function remotePull(target, positional, flags) {
 
   // Verify against the source rather than trusting 20 shell round trips.
   const localDigest = await sha256Hex(buffer);
-  const remoteDigest = await ssh(target, `sha256sum ${shQuote(remotePath)} 2>/dev/null || shasum -a 256 ${shQuote(remotePath)}`, 300);
+  const remoteDigest = await ssh(target,
+    `sha256sum ${shQuotePath(remotePath)} 2>/dev/null || shasum -a 256 ${shQuotePath(remotePath)}`, 300);
   const expected = String(remoteDigest.stdout).trim().split(/\s+/)[0];
   if (expected && expected !== localDigest) {
     cli.die(`sha256 mismatch — remote ${expected}, local ${localDigest}. Nothing was written.`, { prefix: TOOL });
@@ -904,6 +960,9 @@ async function cmdInfo(argv) {
 
   console.log(`\n  ${color.bold('vpod')}  ${info.installed ? color.green(`${PACKAGE}@${info.version}`) : color.red('not installed')}`);
   if (!info.installed) { console.log(color.dim(`    ${NOT_INSTALLED}`)); return; }
+  if (info.version !== PINNED_VERSION) {
+    console.log(color.yellow(`  ! pinned to ${PINNED_VERSION} — run \`${TOOL} install\` to match`));
+  }
   console.log(`  ${info.crossOriginIsolated ? color.green('✓') : color.yellow('✗')} cross-origin isolated` +
     color.dim(info.crossOriginIsolated ? '' : ' — guest networking needs it (Document-Isolation-Policy)'));
   const backend = info.network?.backend ?? (info.networkAvailability?.available ? 'fetch (on boot)' : 'none');
@@ -949,8 +1008,8 @@ async function closeQuietly(sandbox) {
 
 function clampTimeout(value) {
   const parsed = parseInt(value, 10);
-  if (!Number.isFinite(parsed)) return 120;
-  return Math.min(Math.max(parsed, 1), 3600);
+  if (!Number.isFinite(parsed)) return DEFAULT_TIMEOUT_S;
+  return Math.min(Math.max(parsed, 1), MAX_TIMEOUT_S);
 }
 
 function endWithNewline(text) {
