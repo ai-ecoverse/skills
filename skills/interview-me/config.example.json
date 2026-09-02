@@ -1,0 +1,12 @@
+{
+  "brief": "Ask me about the project I'm currently building — what it does, why I'm building it, and what's been hardest about it so far.",
+  "voice": "eve",
+  "webSearch": true,
+  "xSearch": true,
+  "webAllowedDomains": [],
+  "xAllowedHandles": [],
+  "kbMode": "local",
+  "collectionId": null,
+  "kbPath": "/shared/sprinkles/interview-me/kb/",
+  "sessionMinutes": 5
+}
