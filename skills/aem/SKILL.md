@@ -1,6 +1,6 @@
 ---
 name: aem
-description: AEM Edge Delivery Services (EDS) skill for reading, writing, previewing, and publishing EDS pages via the `aem` CLI. Use when the user asks about AEM Edge Delivery Services, EDS pages, Franklin, Helix, AEM EDS, edge delivery content, document-based authoring, or needs to list, get, put, preview, publish, or upload content in AEM EDS. Supports the full get→edit→put→preview→publish pipeline, on both Helix 5 (admin.hlx.page, admin.da.live) and Helix 6 (api.aem.live Source Bus) sites.
+description: AEM Edge Delivery Services (EDS) skill for reading, writing, previewing, and publishing EDS pages via the `aem` CLI. Use when the user asks about AEM Edge Delivery Services, EDS pages, Franklin, Helix, AEM EDS, edge delivery content, document-based authoring, or needs to list, get, put, preview, publish, or upload content in AEM EDS. Supports the full get→edit→put→preview→publish pipeline, on both Helix 5 (admin.hlx.page, admin.da.live) and Helix 6 (api.aem.live Source Bus) sites. Also provides `aem-ext` for long-lived authentication: minting, listing, registering and revoking AEM admin API keys (365-day, `X-Auth-Token`) so long content jobs survive the ~20-minute Adobe IMS token expiry. Use `aem-ext` when the user mentions API keys, admin keys, apiKeys, token expiry, "authentication keeps expiring", 401 from AEM, `access.admin.apiKeyId`, or wants a non-interactive/long-running AEM job.
 allowed-tools: bash
 ---
 
@@ -10,14 +10,49 @@ Shell command for AEM Edge Delivery Services. Manages EDS page content.
 
 ## Authentication
 
-Run `oauth-token adobe` to authenticate (auto-triggered on first use).
-No manual configuration needed — no client IDs, no service tokens.
+Two commands, two credential styles:
+
+- `aem` — Adobe IMS user token only. Run `oauth-token adobe` (auto-triggered on first
+  use). No manual configuration needed. **In practice that token stops working after
+  ~20 minutes**, which breaks long content jobs.
+- `aem-ext` — the same content verbs plus AEM **admin API keys**, which last up to
+  **365 days**. Use it for long or unattended jobs. See
+  [Long-lived API keys (`aem-ext`)](#long-lived-api-keys-aem-ext) and
+  `references/api-keys.md`.
+
+### The header rule (verified live 2026-09-03)
+
+The two credential types use different auth schemes and **do not cross over**:
+
+| Credential | Header | Lifetime |
+|---|---|---|
+| Adobe IMS user token | `Authorization: Bearer <token>` | ~20 minutes in practice |
+| Admin API key (a JWT) | `X-Auth-Token: <key>` (or `Authorization: token <key>`) | up to 365 days |
+| `auth login` cookie | `Cookie: auth_token=<value>` | session (curl paths only — see note) |
+
+Sending `Bearer <api-key>` returns 401, and so does `X-Auth-Token: <ims-token>`. An API
+key sent with the wrong scheme looks exactly like an expired credential.
+
+### Credential resolution order (`aem-ext`)
+
+1. `--api-key <value>`, or the `AEM_API_KEY` environment variable
+2. the `aem.apikey` secret (or `--secret-name <name>`), via the `secret` command
+3. an `auth_token` cookie stored by `aem-ext auth login` — **limited**: SLICC's `fetch()`
+   silently strips `Cookie` headers, so this credential is refused with an actionable error
+   on the JSON/API routes. Prefer a long-lived API key.
+4. the Adobe IMS user token from `skill.token('adobe')`
+
+`--ims` skips 1–3 and forces the IMS token. Minting, registering and revoking keys
+always require the IMS token — an API key cannot write site config.
 
 ## Usage
 
 ```
 aem <command> <eds-url-or-path> [options]
+aem-ext <command> [<eds-url-or-path>] [options]     # same verbs + API-key auth
 ```
+
+Run `aem-ext --help` for the full flag list.
 
 All commands accept full EDS URLs: `https://main--repo--org.aem.page/path`
 Or use `--org`/`--repo` flags with a plain path.
@@ -31,6 +66,19 @@ Or use `--org`/`--repo` flags with a plain path.
 - `aem publish <url>` — Trigger AEM publish
 - `aem upload <vfs-file> <url>` — Upload a media file
 - `aem help` — Show usage
+
+`aem-ext` mirrors the content verbs on the new credential resolution and adds key
+management:
+
+- `aem-ext auth status [--org <o> --site <s>] [--json]` — which credential wins, its
+  type, subject/roles/expiry, and whether it really has access to the site
+- `aem-ext auth login [--idp google|microsoft|adobe] [--print-url]` — IDP login,
+  harvesting the `auth_token` cookie (browser flow unverified; `--print-url` verified)
+- `aem-ext auth key create --org <o> --site <s> [--roles admin] [--description <d>] [--expires-in <s>] [--register] [--save-secret [name]]` — mint a key
+- `aem-ext auth key list --org <o> --site <s>` — keys with their registration state
+- `aem-ext auth key register --org <o> --site <s> --id <jti>` — the Helix 6 registration step
+- `aem-ext auth key delete --org <o> --site <s> --id <jti> --confirm` — revoke
+- `aem-ext list|get|put|status|preview|publish` — content verbs on the resolved credential
 
 ## Architecture version: Helix 5 and Helix 6
 
@@ -100,6 +148,76 @@ production site. Binary media through the Source Bus uses the same raw `PUT` as
 HTML and is untested, so `upload` reports the HTTP status it received instead of
 claiming success.
 
+**Update 2026-09-03:** Helix 6 `POST .../preview/<path>` and `GET .../status/<path>`
+were verified live (200 with an admin API key), so `aem-ext` treats them as supported.
+The `aem` command still requires the explicit `--hlx6` for `preview`/`publish`;
+relaxing it for `preview` is a safe follow-up. Helix 6 `live` (publish) is still
+unexercised.
+
+## Long-lived API keys (`aem-ext`)
+
+`aem-ext` exists because a 20-minute credential cannot carry a long content job. It is a
+separate script; `aem` is unchanged.
+
+```bash
+# one-time: mint a 365-day key, enable it, and store it in the secrets manager
+aem-ext auth key create --org myorg --site mysite --roles admin --register --save-secret
+
+# from then on, every command resolves that key automatically
+aem-ext auth status --org myorg --site mysite
+aem-ext list /blog --org myorg --site mysite
+aem-ext get /blog/my-post --org myorg --site mysite --output /shared/post.html
+aem-ext put /blog/my-post --org myorg --site mysite /shared/post.html
+aem-ext preview /blog/my-post --org myorg --site mysite
+aem-ext publish /blog/my-post --org myorg --site mysite
+```
+
+Without `--save-secret` the key value is printed **once**, because the API returns it
+exactly once and never again (`config.json` lists metadata only). Prefer
+`--save-secret`, which keeps it out of the transcript; the secrets manager masks the
+value locally and the fetch proxy unmasks it server-side, so `aem-ext` never needs to
+see it.
+
+### On Helix 6 a new key returns 401 until it is registered
+
+<https://www.aem.live/docs/admin-apikeys> states that a new key is "automatically
+enabled … There is no need to manually add the API Key ID to the
+`access.admin.apiKeyId` property". **That is true on Helix 5 and false on Helix 6**
+(verified live 2026-09-03): a freshly minted key returned 401 on every
+`/<org>/sites/<site>/…` resource while `GET /profile` returned 200 for the same key —
+a false positive that makes a dead key look healthy. That is why
+`aem-ext auth status --org <o> --site <s>` probes `source/` rather than `/profile`.
+
+Fix it with `--register` at create time, or afterwards:
+
+```bash
+aem-ext auth key register --org myorg --site mysite --id '<jti>'
+```
+
+Registration writes `access.admin.apiKeyId`, and **that POST is a whole-object
+overwrite**: `aem-ext` always reads `config.json` first and merges, preserving the
+existing `role` map (the site's admin/author email lists) and any other registered key
+ids. Sending just `apiKeyId` would lock real people out. `aem-ext` reports the role map
+before and after so the merge is visible.
+
+### Other sharp edges
+
+- **`--expires-in`**: the Helix 6 property API rejects `expiresIn` with 400
+  (`must NOT have additional properties`). The Helix 5 create helper on
+  `admin.hlx.page` still answers for migrated Helix 6 sites and does honour it, so
+  `aem-ext` mints through that route when the flag is used and warns that it did.
+  Without the flag every key lasts a year.
+- **URL-safe jti**: a raw `jti` can contain `+` and `/`. The `apiKeys` object key and
+  the DELETE path use `+`→`-`, `/`→`_`; `access.admin.apiKeyId` stores the raw form.
+  `aem-ext` accepts either spelling.
+- **Revoking is immediate**: `auth key delete` shows a preview and exits non-zero unless
+  `--confirm` is passed, then also removes the id from `access.admin.apiKeyId`.
+- Helix 6 `preview` and `status` are now verified with an API key (200 on both), so
+  `aem-ext` does not gate them behind a flag the way `aem` still does.
+
+Full endpoint/auth reference, including everything that was and was not verified:
+`references/api-keys.md`.
+
 ## Typical Workflow
 
 For editing a page, follow this sequence:
@@ -143,6 +261,13 @@ aem upload /workspace/image.png https://main--myrepo--myorg.aem.page/media_123.p
 aem list https://main--aem-website--adobe.aem.page/blog
 aem get https://main--aem-website--adobe.aem.page/blog/my-post --output /shared/post.html
 aem put https://main--aem-website--adobe.aem.page/blog/my-post /shared/post.html
+
+# Long-lived auth: mint once, then run for a year without re-authenticating
+aem-ext auth key create --org myorg --site mysite --register --save-secret
+aem-ext auth status --org myorg --site mysite
+aem-ext auth key list --org myorg --site mysite --json
+aem-ext put /blog/my-post --org myorg --site mysite /shared/post.html
+aem-ext auth key delete --org myorg --site mysite --id '<jti>' --confirm
 
 # Force a backend, or use Helix 6 vocabulary with plain paths
 aem list /blog --org adobe --site aem-website --hlx6
