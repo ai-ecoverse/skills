@@ -14,7 +14,74 @@ allowed-tools: bash
 
 # WaveSpeed AI — Generate Images, Videos, and Speech via curl
 
-## Step 1: Get the API Key
+## The `wavespeed` CLI (preferred)
+
+A `.jsh` client ships with this skill at `scripts/wavespeed.jsh`, so `wavespeed` is available
+as a bare command. Prefer it over hand-rolled `curl` — it handles polling, array inputs,
+webhooks and the broken `?search=` parameter for you. The raw-curl recipes further down
+still work and remain the escape hatch.
+
+```
+wavespeed auth <key> | --show
+wavespeed models [term] [--json] [--limit N] [--all]
+wavespeed schema <model_id> [--json]
+wavespeed upload <file>
+wavespeed run <model_id> [--input k=v ...] [--json-input <file>] [--wait]
+              [--webhook [name]] [--poll-interval s] [--timeout s] [--out path] [--json]
+wavespeed status <task_id> [--json]
+wavespeed get <task_id> [--out path] [--index n] [--json]
+wavespeed reconcile [--status s] [--model id] [--since 24h] [--json]
+wavespeed webhook create [--name name] | list | secret
+wavespeed api <METHOD> <path> [--data '<json>'] [--query k=v]
+```
+
+Auth resolves in order: `--key` → `$WAVESPEED_API_KEY` → skill config (`wavespeed auth`)
+→ `/shared/.secrets/wavespeed-api-key`. The key is never printed.
+
+### Finding a model
+
+`?search=` on the models endpoint is **silently ignored** — it returns unfiltered results.
+`wavespeed models <term>` works around this by fetching the full catalogue (~1020 models)
+and filtering `model_id` client-side. `wavespeed schema <model_id>` then prints that
+model's inputs, required fields and array limits — the raw `api_schema` is deeply nested
+and painful to read by hand.
+
+### Array inputs
+
+Repeat `--input` for array-typed fields; a single occurrence of an array field is still
+wrapped correctly:
+
+```
+wavespeed run alibaba/wan-2.6/reference-to-video-flash \
+  --input reference_files=<url1> --input reference_files=<url2> \
+  --input audio=<url> --input duration=5 --input enable_audio=false --wait
+```
+
+### Webhooks instead of polling
+
+`--webhook` attaches a SLICC webhook URL so a long job reports completion as a lick rather
+than being polled. Two things it handles, both learned the hard way:
+
+- **Webhook URLs are tray-scoped.** They embed the tray id, and a tray reset makes a cached
+  URL return `HTTP 410 TRAY_EXPIRED` **silently** while the job itself reports success. The
+  CLI re-reads the URL from `webhook list` at submit time rather than caching it.
+- **A callback can outlive its tray** on a long job, so `reconcile` is the backstop: it lists
+  recent tasks and finds completed ones whose callback was lost. Callback as fast path,
+  polling as safety net.
+
+### Generation gotchas
+
+- **`enable_audio` vs your own audio.** On the wan reference-to-video models, `audio` only
+  *guides* lip motion; with `enable_audio: true` (the default) the model **synthesises its
+  own output audio**. Set `enable_audio: false` and mux your real track in afterwards.
+- **Output aspect follows input aspect** on `sync/lipsync-3/avatar`: a 768x1363 still yields
+  a 768x1363 video. Feed it a portrait still for vertical output instead of cropping.
+- **A contact sheet is not a multi-reference trick.** Stitching four poses into one image
+  made `lipsync-3/avatar` animate all four faces in unison. Models that genuinely accept
+  multiple references expose an array field — check `schema` first.
+- Uploaded files expire after 7 days.
+
+## Step 1: Get the API Key (raw curl path)
 
 Ask the user for their WaveSpeed API key if not already known. They can also store it in
 global memory (`/shared/CLAUDE.md`) for reuse across sessions.
