@@ -28,7 +28,7 @@ The two credential types use different auth schemes and **do not cross over**:
 |---|---|---|
 | Adobe IMS user token | `Authorization: Bearer <token>` | ~20 minutes in practice |
 | Admin API key (a JWT) | `X-Auth-Token: <key>` (or `Authorization: token <key>`) | up to 365 days |
-| `auth login` cookie | `Cookie: auth_token=<value>` | session |
+| `auth login` cookie | `Cookie: auth_token=<value>` | session (curl paths only — see note) |
 
 Sending `Bearer <api-key>` returns 401, and so does `X-Auth-Token: <ims-token>`. An API
 key sent with the wrong scheme looks exactly like an expired credential.
@@ -37,7 +37,9 @@ key sent with the wrong scheme looks exactly like an expired credential.
 
 1. `--api-key <value>`, or the `AEM_API_KEY` environment variable
 2. the `aem.apikey` secret (or `--secret-name <name>`), via the `secret` command
-3. an `auth_token` cookie stored by `aem-ext auth login`
+3. an `auth_token` cookie stored by `aem-ext auth login` — **limited**: SLICC's `fetch()`
+   silently strips `Cookie` headers, so this credential is refused with an actionable error
+   on the JSON/API routes. Prefer a long-lived API key.
 4. the Adobe IMS user token from `skill.token('adobe')`
 
 `--ims` skips 1–3 and forces the IMS token. Minting, registering and revoking keys

@@ -23,7 +23,9 @@
 //    API keys and Bearer only for IMS tokens.
 //
 // 2. MINTING ON HELIX 6 — the Helix 5 helper `POST /config/{org}/sites/{site}/apiKeys.json`
-//    on admin.hlx.page 404s on Helix 6. Use the site-config property API instead:
+// NOTE: the Helix 5 create helper is NOT dead on Helix 6. For a migrated site it still
+// answers 200 (with link: rel="successor-version") and it honours expiresIn, which the
+// Helix 6 config route rejects — so --expires-in is deliberately routed through it.
 //      POST https://api.aem.live/<org>/sites/<site>/config/apiKeys.json
 //      {"description":"...","roles":["admin"]}
 //    `expiresIn` MUST be omitted on Helix 6: sending it returns 400 with
@@ -161,7 +163,39 @@ SECURITY
 
 // ── args ──────────────────────────────────────────────────────────────────────
 
-const parsed = process.argv.parseFlags();
+// The runtime parser has no boolean allowlist: it consumes the NEXT token as a long
+// flag's value, so `get --hlx5 /page` would eat `/page` and set hlx5 to a string.
+// Verified live before this fix (PR review, Codex P2). Parse argv with an explicit
+// boolean set instead.
+const BOOL_FLAGS = new Set(['hlx6', 'hlx5', 'ims', 'json', 'register', 'confirm',
+  'help', 'h', 'select-account', 'print-url']);
+function parseArgv(argv) {
+  const f = Object.create(null);
+  const pos = [];
+  for (let i = 0; i < argv.length; i += 1) {
+    const a = argv[i];
+    if (a === '--') { pos.push(...argv.slice(i + 1)); break; }
+    let m = /^--([^=]+)=([\s\S]*)$/.exec(a);
+    if (m) { f[m[1]] = m[2]; continue; }
+    m = /^--(.+)$/.exec(a);
+    if (m) {
+      const name = m[1];
+      const next = argv[i + 1];
+      if (BOOL_FLAGS.has(name) || next === undefined || /^--/.test(next)) { f[name] = true; continue; }
+      f[name] = next; i += 1; continue;
+    }
+    m = /^-([A-Za-z])$/.exec(a);
+    if (m) {
+      const name = m[1];
+      const next = argv[i + 1];
+      if (BOOL_FLAGS.has(name) || next === undefined || /^-/.test(next)) { f[name] = true; continue; }
+      f[name] = next; i += 1; continue;
+    }
+    pos.push(a);
+  }
+  return { flags: f, positional: pos };
+}
+const parsed = parseArgv(process.argv.slice(2));
 const flags = parsed.flags;
 const words = parsed.positional; // e.g. ['auth','key','create'] — nested subcommands
 
@@ -341,10 +375,39 @@ async function imsCredential() {
   return { kind: 'ims', source: "skill.token('adobe')", value: ims };
 }
 
+function shellQuote(a) {
+  if (/[^a-zA-Z0-9_.\/:\-=@;]/.test(a)) return "'" + String(a).replace(/'/g, "'\\''") + "'";
+  return a;
+}
+
+// curl form of the same header rule authHeaders() applies: API keys use X-Auth-Token,
+// IMS tokens use Authorization: Bearer. They do not cross over.
+function authCurlArgs(cred) {
+  const h = authHeaders(cred);
+  const out = [];
+  for (const [k, v] of Object.entries(h)) out.push('-H', `${k}: ${v}`);
+  return out;
+}
+
 // ── HTTP (one wrapper — see the header note on why not http.client) ───────────
 
 async function apiFetch(method, url, opts = {}) {
   const cred = opts.cred || (await credential());
+  // SLICC's fetch() goes through the browser Fetch API, which SILENTLY STRIPS a
+  // caller-supplied Cookie header (skills/secret-sauce/SKILL.md). A cookie credential
+  // would therefore make an unauthenticated request that looks like an auth failure.
+  // Fail loudly instead (review: Codex P2). curl DOES carry the header, which is why
+  // 'aem-ext put' works on any credential.
+  if (cred.kind === 'cookie') {
+    cli.die(
+      'the auth_token cookie credential cannot be used for this request: the browser Fetch\n' +
+      '  API strips Cookie headers, so it would be sent unauthenticated.\n' +
+      '  Use a long-lived API key instead:\n' +
+      `    aem-ext auth key create --org <org> --site <site> --register --save-secret\n` +
+      '  or force the IMS token with --ims.',
+      { prefix: PREFIX },
+    );
+  }
   const headers = { ...authHeaders(cred), ...(opts.headers || {}) };
   if (opts.contentType) headers['Content-Type'] = opts.contentType;
 
@@ -429,6 +492,8 @@ function isHelix5() {
 }
 
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+// Escape every RegExp metacharacter, not just '.' (review: Copilot).
+function reEscape(str) { return String(str).replace(/[.*+?^${}()|[\]\\]/g, (m) => "\\" + m); }
 
 function requireOrgSite(usage) {
   const org = flag('org');
@@ -555,6 +620,13 @@ function roleSummary(admin) {
 // ── auth status ───────────────────────────────────────────────────────────────
 
 async function cmdAuthStatus() {
+  // Validate before building any URL — same allowlist as everywhere else (review: Copilot).
+  {
+    const o = flag('org');
+    const si = flag('site');
+    if (o !== undefined && (o === true || !NAME_RE.test(String(o)))) cli.die(`invalid --org "${o}"`, { prefix: PREFIX });
+    if (si !== undefined && (si === true || !NAME_RE.test(String(si)))) cli.die(`invalid --site "${si}"`, { prefix: PREFIX });
+  }
   const cred = await credential();
   const claims = cred.masked ? null : decodeJwt(cred.value);
 
@@ -725,7 +797,7 @@ async function cmdAuthLogin() {
   console.log(`  Opening ${loginUrl} — complete the login in the browser.`);
   let tab;
   try {
-    tab = await browser.ensureTab(loginUrl, { matchUrl: new RegExp(base.replace(/^https?:\/\//, '').replace(/\./g, '\\.')) });
+    tab = await browser.ensureTab(loginUrl, { matchUrl: new RegExp(reEscape(base.replace(/^https?:\/\//, ''))) });
   } catch (err) {
     cli.die(
       `could not drive the browser (${err.message}).\n` +
@@ -852,22 +924,9 @@ async function cmdKeyCreate() {
     );
   }
 
-  let registered = false;
-  let roleMapBefore = null;
-  let roleMapAfter = null;
-  if (flags.register) {
-    if (isHelix5()) {
-      warnings.push('--register is a Helix 6 requirement; skipped on Helix 5 where keys are enabled automatically.');
-    } else {
-      const config = await fetchSiteConfig(org, site, cred);
-      roleMapBefore = roleSummary(((config.access || {}).admin) || {});
-      const { admin } = mergeAdminAccess(config, { add: key.id });
-      await writeAdminAccess(org, site, admin, cred);
-      roleMapAfter = roleSummary(admin);
-      registered = true;
-    }
-  }
-
+  // The key secret is returned exactly once. Registration below performs TWO fallible
+  // network calls, so persist FIRST — otherwise a transient failure leaves an active but
+  // unrecoverable key in the site config (review: Codex P1).
   let savedSecret = null;
   const saveSecret = flag('save-secret');
   if (saveSecret !== undefined) {
@@ -879,6 +938,31 @@ async function cmdKeyCreate() {
       warnings.push(`could not store the key in secret "${name}": ${(r.stderr || r.stdout || '').trim().slice(0, 200)}`);
     } else {
       savedSecret = name;
+    }
+  }
+
+  let registered = false;
+  let roleMapBefore = null;
+  let roleMapAfter = null;
+  if (flags.register) {
+    if (isHelix5()) {
+      warnings.push('--register is a Helix 6 requirement; skipped on Helix 5 where keys are enabled automatically.');
+    } else {
+      try {
+        const config = await fetchSiteConfig(org, site, cred);
+        roleMapBefore = roleSummary(((config.access || {}).admin) || {});
+        const { admin } = mergeAdminAccess(config, { add: key.id });
+        await writeAdminAccess(org, site, admin, cred);
+        roleMapAfter = roleSummary(admin);
+        registered = true;
+      } catch (err) {
+        if (err?.name === 'NodeExitError') throw err; // cli.die/process.exit unwind through here
+        // The key EXISTS and its secret is only returned once. Never let a registration
+        // failure swallow it — report, and print the value if it was not saved.
+        warnings.push(`the key was created (id ${key.id}) but registration FAILED: ${err.message}. ` +
+          `Register it with: aem-ext auth key register --org ${org} --site ${site} --id '${key.id}'`);
+        if (!savedSecret) warnings.push('the key value is printed below — it cannot be retrieved again.');
+      }
     }
   }
 
@@ -934,9 +1018,8 @@ async function cmdKeyList() {
     cli.out({
       org,
       site,
-      registeredIds: [...new Set(
-        (((config.access || {}).admin || {}).apiKeyId) || [],
-      )],
+      // apiKeyId may be a bare string; spreading it would emit characters (review: Copilot).
+      registeredIds: [...registeredIds(config)],
       keys: entries.map((e) => ({
         id: e.id,
         objectKey: e.objectKey,
@@ -981,16 +1064,21 @@ async function cmdKeyRegister() {
   const cred = await imsCredential();
   const config = await fetchSiteConfig(org, site, cred);
   const known = apiKeyEntries(config);
-  if (known.length && !known.some((e) => jtiVariants(e.id).has(id) || jtiVariants(id).has(e.objectKey))) {
+  const match = known.find((e) => jtiVariants(e.id).has(id) || jtiVariants(id).has(e.objectKey));
+  if (known.length && !match) {
     cli.die(
       `no key with id "${id}" exists on ${org}/${site}.\n` +
       `  List them: aem-ext auth key list --org ${org} --site ${site}`,
       { prefix: PREFIX },
     );
   }
+  // access.admin.apiKeyId holds the RAW jti. If the caller passed the URL-safe object-key
+  // spelling, writing it verbatim leaves a key with + or / unauthorized while
+  // registeredIds() would still report success (review: Codex P2).
+  const rawId = match ? match.id : id;
 
   const before = roleSummary(((config.access || {}).admin) || {});
-  const { admin, previous, next } = mergeAdminAccess(config, { add: id });
+  const { admin, previous, next } = mergeAdminAccess(config, { add: rawId });
   if (previous.length === next.length) {
     if (flags.json) { cli.out({ org, site, id, registered: true, changed: false }); return; }
     section('Already registered');
@@ -1005,7 +1093,7 @@ async function cmdKeyRegister() {
   const afterAdmin = ((after.access || {}).admin) || {};
 
   if (flags.json) {
-    cli.out({ org, site, id, registered: registeredIds(after).has(id) || registeredIds(after).has(urlSafeJti(id)),
+    cli.out({ org, site, id: rawId, registered: registeredIds(after).has(rawId) || registeredIds(after).has(urlSafeJti(rawId)),
       apiKeyId: afterAdmin.apiKeyId || [], roleMap: afterAdmin.role || {} });
     return;
   }
@@ -1151,19 +1239,36 @@ async function cmdPut() {
   const t = resolveTarget('aem-ext put <url-or-path> <vfs-file>');
   const file = words[2];
   if (!file) cli.die('usage: aem-ext put <url-or-path> <vfs-file>', { prefix: PREFIX });
-  const html = await fs.readFile(file);
   const path = documentPath(t.path);
-  // Source Bus: raw body, Content-Type: text/html, 201 on create AND overwrite.
-  const res = await apiFetch('PUT', sourceUrl(t.org, t.site, path), {
-    contentType: 'text/html',
-    body: html,
-  });
-  dieOnError(res, `writing ${t.org}/${t.site}/${path}`);
-  if (flags.json) { cli.out({ path, status: res.status, bytes: html.length }); return; }
+  // Byte-faithful upload. fs.readFile returns a byte-per-codepoint string, so handing it
+  // to fetch re-UTF-8-encodes every byte and stores mojibake for any non-ASCII content
+  // (verified: em-dash e28094 -> c3a2c280c294). curl --data-binary @file streams the real
+  // bytes off the VFS, which also avoids holding the file in memory (review: Codex P1).
+  // Helix 5's source endpoint additionally needs a multipart 'data' part rather than a
+  // raw body, so branch on the backend (review: Codex P1).
+  const bytes = (await fs.readFileBinary(file)).length;
+  const cred = await credential();
+  const url = sourceUrl(t.org, t.site, path);
+  const curlArgs = ['curl', '-sS', '-X', 'PUT', ...authCurlArgs(cred)];
+  if (isHelix5()) {
+    curlArgs.push('-F', `data=@${file};type=text/html`);
+  } else {
+    curlArgs.push('-H', 'Content-Type: text/html', '--data-binary', `@${file}`);
+  }
+  curlArgs.push('-w', '\\n%{http_code}', url);
+  const r = await exec(curlArgs.map(shellQuote).join(' '));
+  if (r.exitCode !== 0) cli.die(`upload failed: ${(r.stderr || r.stdout || '').slice(0, 300)}`, { prefix: PREFIX });
+  const lines = (r.stdout || '').split('\n');
+  const status = parseInt(lines.pop(), 10);
+  const body = lines.join('\n');
+  if (!status || status >= 400) {
+    cli.die(`writing ${t.org}/${t.site}/${path} failed: HTTP ${status || '(no status)'}${body ? ` — ${body.slice(0, 200)}` : ''}`, { prefix: PREFIX });
+  }
+  if (flags.json) { cli.out({ path, status, bytes }); return; }
   section('Saved');
   kv('path', path);
-  kv('status', `${color.green('✓')} HTTP ${res.status}`);
-  kv('bytes', String(html.length));
+  kv('status', `${color.green('✓')} HTTP ${status}`);
+  kv('bytes', String(bytes));
 }
 
 async function cmdOperation(verb, label) {

@@ -15,7 +15,7 @@ and still uses IMS tokens only.
 |---|---|---|---|
 | Adobe IMS user token | `oauth-token adobe`, `skill.token('adobe')` | `Authorization: Bearer <token>` | **~20 min** in practice |
 | Admin API key (a JWT) | minted per site, see §2 | `X-Auth-Token: <key>` **or** `Authorization: token <key>` | up to 365 days |
-| Login cookie | browser IDP login, §5 | `Cookie: auth_token=<value>` | session |
+| Login cookie | browser IDP login, §5 | `Cookie: auth_token=<value>` | session (see §5 caveat) |
 
 **The schemes do not cross over.** All four combinations verified against
 `GET https://api.aem.live/ai-ecoverse/sites/slicc-website/source/`:
@@ -138,6 +138,13 @@ A raw `jti` can contain `+` and `/` (e.g. `AbCd1E+FgHi7jkL5MnOpQrStUvWxYz8/9v` �
   the raw form even when its object key is URL-safe.
 
 ## 5. Login and the `auth_token` cookie
+
+> **Caveat (found in PR review).** SLICC's `fetch()` goes through the browser Fetch API,
+> which **silently strips a caller-supplied `Cookie` header**. A cookie credential would
+> therefore issue an unauthenticated request that merely looks like an auth failure, so
+> `aem-ext` refuses it on those routes with an actionable message instead. `curl`-based
+> paths (e.g. `aem-ext put`) do carry the header. A long-lived API key is the supported
+> way to run unattended.
 
 `GET https://api.aem.live/login` returns **JSON, not HTML** (verified):
 
