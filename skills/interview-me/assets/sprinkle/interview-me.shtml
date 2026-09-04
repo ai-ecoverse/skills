@@ -1,0 +1,3086 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Interview me</title>
+<link rel="icon" href="mic" />
+<style>
+  * { box-sizing: border-box; }
+
+  /* No `color` was ever set here -- every element that doesn't set its own
+     (h2 titles, field/checkbox labels, plain notes) fell back to the
+     browser's UA default text color for an unstyled element. That default
+     is NOT static: with `color-scheme: light dark` previously declared on
+     `:root` (added only to anchor the light-dark() calls this round
+     removed -- see .im-video-wrap/audio,video.im-review-media below), the
+     UA default text color tracks the OS `prefers-color-scheme`, not this
+     app's `.theme-light` class. Confirmed empirically via the dark-mode
+     self-test check below: `getComputedStyle(document.body).color` stayed
+     `rgb(255,255,255)` across a `.theme-light` toggle that correctly
+     flipped every other measured token -- i.e. body text was ALWAYS white,
+     invisible (contrast 1:1) against the light theme's white page
+     background, and only "worked" in dark mode by coincidence of matching
+     the sandbox's OS preference. Fix (at the time): set a real,
+     class-tracked color explicitly and remove the now-unused
+     `color-scheme` declaration, since nothing here called `light-dark()`
+     anymore.
+
+     THAT REMOVAL HAD A SECOND, UNNOTICED EFFECT: `color-scheme` doesn't
+     only gate `light-dark()` -- it's also what tells the UA which palette
+     to use for native form-control rendering (an <input>/<textarea>/
+     <select>'s own default background/chrome, not just the CSS `color`
+     property, which is set separately via the S2 token below).  Without
+     it, `.sprinkle-text-field` -- whose OWN css sets no
+     background/color at all (see the single `resize`/`font-family`/
+     `min-height` rule below; it relies entirely on this UA default plus
+     whatever else cascades in) -- fell back to the browser's LIGHT
+     default background in BOTH themes, while its text `color` (an S2
+     token) correctly tracked the app theme independently. Result:
+     confirmed via getComputedStyle() (see the
+     "form-controls-readable-in-both-themes" self-test check) --
+     `background-color: rgb(255,255,255)` on every .sprinkle-text-field
+     element in BOTH theme states (never changed), paired with
+     `color: rgb(232,232,232)` in dark mode specifically -- 1.23:1
+     contrast, exactly matching the reported "white background, bright
+     text" symptom. Light mode's background happened to also be white,
+     so it "worked"
+     there purely by coincidence (18.58:1), same shape of bug as the body
+     text one above.
+
+     FIX, part 1: restore `color-scheme`, but CLASS-DRIVEN instead of the
+     old `light dark` (OS-driven) value -- `:root { color-scheme: dark; }`
+     with `:root.theme-light { color-scheme: light; }` override. This
+     does not reintroduce the original bug: `light dark` let the UA
+     pick EITHER palette based on the OS preference with no author
+     control; a single fixed value per class selector is entirely
+     class-driven, tracking `.theme-light` exactly like every `--s2-*`
+     token already does, never the OS.
+
+     Tried this FIRST, alone, and re-ran the self-test before writing
+     part 2 below: NO EFFECT. background-color measured bit-for-bit
+     identical (rgb(255,255,255), both theme states) before and after
+     adding this rule -- this render path evidently does not apply
+     `color-scheme` to native form-control background here, whatever the
+     reason. Left in anyway (harmless, and may still matter for other
+     native chrome this file doesn't otherwise control, e.g. checkbox
+     rendering, a native <select> popup panel) -- but the actual fix for
+     the reported bug is part 2, explicit background/color on
+     `.sprinkle-text-field` itself (see that rule's own comment, a little
+     further down), which IS what empirically fixed it. Root cause was
+     therefore BOTH, in a sense: the missing `color-scheme` broke the one
+     lever that COULD have fixed this for free, but in THIS environment
+     that lever turned out to be inert for backgrounds regardless -- the
+     framework class shipping with no background/color of its own is what
+     actually required a direct fix. */
+  :root { color-scheme: dark; }
+  :root.theme-light { color-scheme: light; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--s2-bg-base);
+    color: var(--s2-content-default);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+
+  body {
+    padding: var(--s2-spacing-300);
+    padding-bottom: var(--s2-spacing-600);
+  }
+
+  .im-stack { display: flex; flex-direction: column; gap: var(--s2-spacing-300); max-width: 720px; margin: 0 auto; }
+
+  /* Each screen's own padding -- previously provided by the .im-card box
+     that wrapped each <section>. The box (background/shadow/radius) is
+     gone -- the sprinkle already renders inside a panel, so a nested card
+     was a redundant box -- but the SPACING it provided is preserved here
+     so content never butts against the panel edge. */
+  .im-screen { padding: var(--s2-spacing-300); }
+
+  /* Still used for individual test-search result rows (see onTestSearch) --
+     small elevated chips, not a full-screen wrapper. */
+  .im-card {
+    background: var(--s2-bg-layer-1);
+    border-radius: var(--s2-radius-l);
+    box-shadow: var(--s2-shadow-container);
+    padding: var(--s2-spacing-300);
+  }
+
+  .im-hidden { display: none !important; }
+
+  .im-row { display: flex; align-items: center; gap: var(--s2-spacing-200); flex-wrap: wrap; }
+  .im-row--between { justify-content: space-between; }
+  .im-field { display: flex; flex-direction: column; gap: var(--s2-spacing-100); flex: 1 1 220px; }
+  .im-field label { font-size: 0.85em; font-weight: 600; }
+  .im-field--checkbox { flex-direction: row; align-items: center; gap: var(--s2-spacing-100); flex: 0 0 auto; }
+
+  textarea.sprinkle-text-field { resize: vertical; font-family: inherit; min-height: 6.5em; }
+
+  /* .sprinkle-text-field itself (the framework class, applied to every
+     <textarea>/<input type="text">/<select> in this file) sets no
+     background or color of its own -- confirmed by reading this file's
+     own CSS (only the one rule above, for textarea specifically) and by
+     getComputedStyle() showing the exact browser UA default before any
+     fix. That left it entirely dependent on `color-scheme` for its native
+     background, which the dark-mode round's removal of `color-scheme`
+     broke (see the long comment by `:root { color-scheme: dark; }` above)
+     -- reported symptom: white background, bright S2-token text, in dark
+     mode. Restoring `color-scheme` (class-driven, not the old OS-driven
+     `light dark`) was tried FIRST and verified EMPIRICALLY to have NO
+     effect here: background-color measured bit-for-bit identical
+     (rgb(255,255,255) in both theme states) before and after that change,
+     via the "form-controls-readable-in-both-themes" self-test. Whatever
+     this render path does for native form-control theming, it is not
+     picking up `color-scheme` for background-color -- so it is set
+     explicitly here instead, with real tokens, same as everything else
+     in this file. --s2-bg-layer-1 for the same "distinct nested surface"
+     role --s2-card already uses; --s2-content-default matches
+     html/body's own default text color above.
+
+     NOT RE-VERIFIED as of the skill-packaging pass: a later SLICC release
+     is reported to theme sprinkle text fields correctly by default
+     (`--uxc-<hue>-subtle-bg`/`-text`), which would make this override
+     redundant. This override is being KEPT rather than removed on that
+     basis alone -- verifying it properly means reading real
+     getComputedStyle() values in both theme states with the override
+     removed, which needs either a live re-render of THIS sprinkle (would
+     mean touching the packaging-time source of truth without live
+     confirmation) or an isolated test surface this packaging pass didn't
+     have the tooling to build safely. If re-verifying: render a bare
+     `.sprinkle-text-field` element (a dip is the easiest isolated surface
+     -- it inherits the same framework CSS with no code from this file
+     involved), toggle `.theme-light`, and read real computed
+     background-color/color/contrast in both states before removing this
+     rule. Do not remove on the strength of a changelog entry alone. */
+  .sprinkle-text-field {
+    background: var(--s2-bg-layer-1);
+    color: var(--s2-content-default);
+  }
+
+  /* Placeholder text is the "common second offender" for this exact bug
+     shape -- confirmed here too (3.45:1 in dark mode before this fix,
+     under the unstyled UA default). --s2-content-tertiary (the more
+     de-emphasized option) was already found in a prior round to measure
+     just under WCAG AA (~4.4:1) against a page-level background -- the
+     same near-miss would likely recur against this field's background,
+     so this uses --s2-content-secondary instead, the token already used
+     elsewhere in this file for exactly "de-emphasized but must stay
+     legible" text. Verified empirically below regardless of this
+     reasoning, not just assumed from the token name. */
+  .sprinkle-text-field::placeholder {
+    color: var(--s2-content-secondary);
+  }
+
+  /* Tabs (Interview / Advanced) -- role=tablist/tab/tabpanel, keyboard-navigable.
+     border-bottom was `var(--s2-bg-layer-2)` -- a BACKGROUND token pressed
+     into service as a border color. It happened to be visible against
+     --s2-bg-base, but a border has its own dedicated token family for a
+     reason: --s2-border-subtle is guaranteed real (if understated)
+     contrast in both themes, where a background token's contrast against
+     another background token is coincidental. */
+  .im-tablist { display: flex; gap: var(--s2-spacing-100); border-bottom: 1px solid var(--s2-border-subtle); }
+  .im-tab {
+    appearance: none;
+    border: none;
+    background: none;
+    /* Was `opacity: 0.6` on inherited text color. Dimming already-low-
+       contrast text via opacity hits dark backgrounds harder than light
+       ones (the effective color slides toward the dark bg either way, but
+       dark-on-dark loses far more relative contrast than dark-on-light
+       does) -- use the dedicated secondary-content token instead, which is
+       calibrated for exactly this "de-emphasized but still legible" role
+       in both themes. */
+    color: var(--s2-content-secondary);
+    font: inherit;
+    font-weight: 600;
+    font-size: 0.92em;
+    padding: var(--s2-spacing-200) var(--s2-spacing-100);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+  }
+  .im-tab[aria-selected="true"] { color: var(--s2-content-default); border-bottom-color: var(--s2-accent); }
+  .im-tab:focus-visible { outline: 2px solid var(--s2-accent); outline-offset: 2px; }
+
+  /* Was `opacity: 0.75` -- same reasoning as .im-tab above. */
+  .im-note {
+    font-size: 0.82em;
+    color: var(--s2-content-secondary);
+    line-height: 1.4;
+  }
+
+  /* Video preview / self-view. Was `light-dark(#111, #000)` -- two
+     problems: (1) both branches are near-black, so light mode got a harsh
+     black slab against a light panel instead of a genuinely lighter
+     letterbox; (2) light-dark() tracks the OS color-scheme preference, but
+     S2 tokens track the parent app's class-based theme toggle -- if those
+     two disagree (dark OS + light app theme, or vice versa), this element
+     alone would desync from the rest of the UI. --s2-bg-sunken is the
+     token for exactly this "recessed area" role and swaps in lockstep with
+     everything else. */
+  .im-video-wrap {
+    position: relative;
+    border-radius: var(--s2-radius-default);
+    overflow: hidden;
+    background: var(--s2-bg-sunken);
+    aspect-ratio: 4 / 3;
+    max-width: 320px;
+  }
+  .im-video-wrap video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+  .im-rec-indicator {
+    position: absolute;
+    top: var(--s2-spacing-100);
+    left: var(--s2-spacing-100);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    /* This badge's background is a FIXED near-black tint, deliberately --
+       it overlays an arbitrary live camera feed, not one of our own
+       panels, so it must stay legible against whatever the camera shows
+       regardless of app theme (exactly why it was never a --s2-bg-*
+       token to begin with; not something this audit is changing). */
+    background: color-mix(in srgb, black 55%, transparent);
+    /* Was `var(--s2-gray-25)` -- looked like the right "near-white text on
+       dark background" token per the S2 style guide, but gray-25 is
+       DEFINED to equal --s2-bg-base (the page background itself) in every
+       theme -- i.e. it tracks the APP theme, flipping to near-BLACK in
+       dark mode. Paired with this badge's intentionally theme-INVARIANT
+       fixed-black backdrop, that produces near-black-on-near-black in
+       dark mode specifically: the self-test's contrastOverBlackVideo
+       check measured 1.21:1 in dark mode (effectively invisible) vs
+       21:1 in light mode (only "worked" by coincidence, because a light
+       theme's page-bg-tracking gray-25 happens to be white). No S2 token
+       is theme-invariant (by design -- the whole gray scale tracks
+       theme), so this needs the same kind of fixed, non-token value as
+       its own background above -- deliberately, matching the sibling
+       rule, and NOT tracking OS `color-scheme` either (this must stay
+       legible against live video regardless of BOTH the app theme AND
+       the OS preference, so light-dark() would be equally wrong here).
+       92% white (not literal #fff) matches the style guide's
+       halation-avoidance guidance and the color-mix idiom already used
+       for the background right above. */
+    color: color-mix(in srgb, white 92%, transparent);
+    padding: 3px 8px;
+    border-radius: var(--s2-radius-pill);
+    font-size: 0.72em;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+  }
+  .im-rec-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--s2-negative);
+    animation: im-pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes im-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+  /* Waveforms */
+  .im-wave-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s2-spacing-200); }
+  @media (max-width: 480px) { .im-wave-grid { grid-template-columns: 1fr; } }
+  .im-wave-box {
+    background: var(--s2-bg-layer-2);
+    border-radius: var(--s2-radius-default);
+    padding: var(--s2-spacing-100);
+  }
+  .im-wave-box canvas { width: 100%; height: 64px; display: block; }
+  /* Was `opacity: 0.75` -- same reasoning as .im-tab/.im-note above. */
+  .im-wave-label { font-size: 0.75em; font-weight: 600; color: var(--s2-content-secondary); margin-bottom: 4px; display: flex; justify-content: space-between; align-items: center; }
+
+  /* Countdown */
+  .im-countdown { font-size: 2em; font-weight: 700; font-variant-numeric: tabular-nums; text-align: center; }
+  .im-countdown--warn { color: var(--s2-notice); }
+  .im-countdown--danger { color: var(--s2-negative); }
+
+  /* Transcript */
+  .im-transcript {
+    max-height: 260px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--s2-spacing-100);
+    padding: var(--s2-spacing-100);
+    background: var(--s2-bg-layer-2);
+    border-radius: var(--s2-radius-default);
+  }
+  .im-transcript-entry { font-size: 0.88em; line-height: 1.4; }
+  /* Was `opacity: 0.55` -- the most-dimmed value in the file. Tried
+     --s2-content-tertiary first (the "most de-emphasized, still legible"
+     tier) but the self-test's contrast check measured it at ~4.4:1 in
+     BOTH themes against the transcript's own background -- just under the
+     4.5:1 WCAG AA body-text threshold, and consistently so (not a
+     dark-mode-specific shortfall, tertiary is simply calibrated lighter
+     than that in general). A timestamp label is small, real text a user
+     reads, not decorative -- not worth the AA miss, so this uses
+     --s2-content-secondary instead (~6.7:1 dark / ~8:1 light in the same
+     self-test), same as .im-note/.im-tab/etc, at the cost of one less
+     level of visual hierarchy against the message text next to it. */
+  .im-transcript-entry .im-ts { color: var(--s2-content-secondary); font-variant-numeric: tabular-nums; margin-right: 6px; }
+  .im-transcript-entry--user .im-who { color: var(--s2-accent); font-weight: 700; }
+  .im-transcript-entry--assistant .im-who { color: var(--s2-positive); font-weight: 700; }
+  /* Was `opacity: 0.7` -- same reasoning as .im-tab/.im-note above. */
+  .im-transcript-entry--tool { color: var(--s2-content-secondary); font-style: italic; }
+
+  .im-chip-row { display: flex; gap: 6px; flex-wrap: wrap; min-height: 26px; }
+
+  /* Unused (no element in this file has this class) -- left tokenized
+     rather than opacity for consistency with the rest of this audit, in
+     case something starts using it later. */
+  .im-speaking-idle { color: var(--s2-content-secondary); }
+
+  .im-screen-title { margin: 0 0 4px 0; font-size: 1.15em; font-weight: 700; }
+  /* Was `opacity: 0.7` -- same reasoning as .im-tab/.im-note above. */
+  .im-screen-sub { margin: 0 0 var(--s2-spacing-200) 0; font-size: 0.85em; color: var(--s2-content-secondary); }
+
+  /* Same fix and same reasoning as .im-video-wrap above -- was
+     light-dark(#111,#000), an OS-driven near-black-both-ways pair that
+     could desync from the app's class-based theme toggle. */
+  audio, video.im-review-media { width: 100%; border-radius: var(--s2-radius-default); background: var(--s2-bg-sunken); }
+</style>
+</head>
+<body>
+<div class="im-stack">
+
+  <!-- ============================= SETUP ============================= -->
+  <section id="screen-setup" class="im-stack im-screen">
+    <h2 class="im-screen-title">Interview me</h2>
+    <p class="im-screen-sub" id="im-setup-intro">Grok conducts a spoken interview, grounded in your documents plus live web and X search. Up to five minutes, fully recorded and transcribed.</p>
+
+    <div class="im-tablist" role="tablist" aria-label="Setup sections">
+      <button type="button" class="im-tab" id="im-tab-interview" role="tab" aria-selected="true" aria-controls="im-panel-interview" tabindex="0">Interview</button>
+      <button type="button" class="im-tab" id="im-tab-advanced" role="tab" aria-selected="false" aria-controls="im-panel-advanced" tabindex="-1">Advanced</button>
+    </div>
+
+    <!-- ==================== PRIMARY: Interview tab ==================== -->
+    <div id="im-panel-interview" class="im-stack" role="tabpanel" aria-labelledby="im-tab-interview" tabindex="0">
+      <div class="im-field">
+        <label for="im-brief">Briefing</label>
+        <textarea id="im-brief" class="sprinkle-text-field" rows="5" placeholder="What should the interview be about? e.g. building SLICC and the vanilla web stance"></textarea>
+      </div>
+
+      <div class="im-row im-row--between">
+        <span class="im-note">Camera preview and mic level appear here once enabled.</span>
+        <button id="im-enable-btn" type="button" class="sprinkle-btn sprinkle-btn--secondary">Enable mic &amp; camera</button>
+      </div>
+
+      <div id="im-preview-row" class="im-row im-hidden" style="display:none">
+        <div class="im-video-wrap">
+          <video id="im-preview-video" autoplay playsinline muted></video>
+        </div>
+        <div class="im-field" style="flex:1">
+          <label>Mic level (test)</label>
+          <div class="sprinkle-meter" id="im-level-meter" style="--value:0%"></div>
+          <span class="im-note" id="im-cam-note"></span>
+        </div>
+      </div>
+
+      <div class="im-row im-row--between">
+        <span class="im-note" id="im-setup-status"></span>
+        <button id="im-start-btn" type="button" class="sprinkle-btn sprinkle-btn--primary" disabled>Start interview</button>
+      </div>
+    </div>
+
+    <!-- ==================== Advanced tab (everything else) ==================== -->
+    <div id="im-panel-advanced" class="im-stack" role="tabpanel" aria-labelledby="im-tab-advanced" tabindex="0" style="display:none">
+      <div class="im-row">
+        <div class="im-field im-field--checkbox">
+          <input id="im-web-search" type="checkbox" checked />
+          <label for="im-web-search" style="margin:0">Web search</label>
+        </div>
+        <div class="im-field im-field--checkbox">
+          <input id="im-x-search" type="checkbox" checked />
+          <label for="im-x-search" style="margin:0">X search</label>
+        </div>
+      </div>
+      <div class="im-row">
+        <div class="im-field">
+          <label for="im-web-domains">Allowed web domains (comma-separated, optional, max 5)</label>
+          <input id="im-web-domains" type="text" class="sprinkle-text-field" placeholder="e.g. x.ai, docs.x.ai" />
+        </div>
+        <div class="im-field">
+          <label for="im-x-handles">Allowed X handles (comma-separated, optional, max 20)</label>
+          <input id="im-x-handles" type="text" class="sprinkle-text-field" placeholder="e.g. xai" />
+        </div>
+      </div>
+
+      <div class="im-field">
+        <label for="im-voice">Voice</label>
+        <select id="im-voice" class="sprinkle-text-field"></select>
+      </div>
+
+      <div class="im-divider" style="border-top:1px solid var(--s2-border-subtle)"></div>
+
+      <!-- ==================== Knowledge base ==================== -->
+      <div class="im-field">
+        <label for="im-kb-mode">Knowledge base</label>
+        <select id="im-kb-mode" class="sprinkle-text-field">
+          <option value="collection" selected>Collection (file_search — recommended)</option>
+          <option value="local">Local documents (no credentials needed)</option>
+        </select>
+      </div>
+
+      <div id="im-kb-collection-panel" class="im-stack">
+        <div class="im-field">
+          <label for="im-collection-select">Collection</label>
+          <select id="im-collection-select" class="sprinkle-text-field"></select>
+        </div>
+
+        <div class="sprinkle-collapsible" id="im-create-collection">
+          <button type="button" class="sprinkle-collapsible__header" onclick="document.getElementById('im-create-collection').classList.toggle('sprinkle-collapsible--open')">
+            <span class="sprinkle-collapsible__chevron"></span>
+            Create a new collection from a folder
+          </button>
+          <div class="sprinkle-collapsible__body im-stack">
+            <div class="im-row">
+              <div class="im-field">
+                <label for="im-new-collection-path">Source folder (VFS path)</label>
+                <input id="im-new-collection-path" type="text" class="sprinkle-text-field" value="" />
+              </div>
+              <div class="im-field">
+                <label for="im-new-collection-name">Collection name</label>
+                <input id="im-new-collection-name" type="text" class="sprinkle-text-field" placeholder="e.g. my-notes" />
+              </div>
+            </div>
+            <div class="im-row im-row--between">
+              <span class="im-note" id="im-create-collection-status"></span>
+              <button id="im-create-collection-btn" type="button" class="sprinkle-btn sprinkle-btn--secondary">Create &amp; ingest</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="im-field">
+          <label for="im-test-query">Test search</label>
+          <div class="im-row">
+            <input id="im-test-query" type="text" class="sprinkle-text-field" style="flex:1" placeholder="e.g. What is SLICC?" />
+            <button id="im-test-search-btn" type="button" class="sprinkle-btn sprinkle-btn--secondary">Test</button>
+          </div>
+          <div id="im-test-results" class="im-stack" style="gap:6px"></div>
+        </div>
+      </div>
+
+      <div id="im-kb-local-panel" class="im-field im-hidden" style="display:none">
+        <label for="im-kb-path">Document folder (VFS path)</label>
+        <input id="im-kb-path" type="text" class="sprinkle-text-field" value="" />
+        <span class="im-note" id="im-kb-status">Not loaded yet — loads when you start.</span>
+      </div>
+
+      <div class="im-divider" style="border-top:1px solid var(--s2-border-subtle)"></div>
+
+      <div class="im-row">
+        <div class="im-field">
+          <label for="im-mic-select">Microphone</label>
+          <select id="im-mic-select" class="sprinkle-text-field"><option>Microphone…</option></select>
+        </div>
+        <div class="im-field">
+          <label for="im-cam-select">Camera</label>
+          <select id="im-cam-select" class="sprinkle-text-field"><option>Camera…</option></select>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================= LIVE ============================= -->
+  <section id="screen-live" class="im-stack im-hidden im-screen" style="display:none">
+    <div class="sprinkle-toolbar">
+      <div class="sprinkle-toolbar__start">
+        <span class="sprinkle-status-light sprinkle-status-light--informative" id="im-speaking-indicator">Connecting…</span>
+      </div>
+      <div class="sprinkle-toolbar__center">
+        <span class="im-countdown" id="im-countdown">05:00</span>
+      </div>
+      <div class="sprinkle-toolbar__end">
+        <button id="im-stop-btn" type="button" class="sprinkle-btn sprinkle-btn--negative">Stop</button>
+      </div>
+    </div>
+
+    <div class="im-row" style="align-items:flex-start">
+      <div class="im-video-wrap">
+        <video id="im-live-video" autoplay playsinline muted></video>
+        <div class="im-rec-indicator"><span class="im-rec-dot"></span>REC</div>
+      </div>
+      <div style="flex:1; min-width:200px" class="im-stack">
+        <div class="im-wave-grid">
+          <div class="im-wave-box">
+            <div class="im-wave-label"><span>You</span></div>
+            <canvas id="im-wave-user" width="300" height="64"></canvas>
+          </div>
+          <div class="im-wave-box">
+            <div class="im-wave-label"><span>Agent</span></div>
+            <canvas id="im-wave-agent" width="300" height="64"></canvas>
+          </div>
+        </div>
+        <div class="im-chip-row" id="im-chip-row"></div>
+      </div>
+    </div>
+
+    <div class="im-stack">
+      <div class="im-screen-sub" style="margin:0">Live transcript</div>
+      <div class="im-transcript" id="im-transcript"></div>
+    </div>
+  </section>
+
+  <!-- ============================= SAVING ============================= -->
+  <!-- Shown the instant a session ends (any reason: manual stop, the
+       5-minute cap, a watchdog fatal, etc.), BEFORE the potentially slow
+       recorder-stop/artifact-write sequence -- see showSavingScreen().
+       A real interview's human.webm write took ~3.5s of nothing visibly
+       happening on the Live screen, which read as a hang; this makes the
+       "already ended, work in progress" state unmistakable instead. -->
+  <section id="screen-saving" class="im-stack im-hidden im-screen" style="display:none">
+    <h2 class="im-screen-title">Saving recording…</h2>
+    <p class="im-screen-sub">Writing the recording and transcript to disk. This can take a few seconds for a full-length session — please don't close this tab.</p>
+    <span class="sprinkle-status-light sprinkle-status-light--notice" id="im-saving-indicator">Saving…</span>
+  </section>
+
+  <!-- ============================= REVIEW ============================= -->
+  <section id="screen-review" class="im-stack im-hidden im-screen" style="display:none">
+    <h2 class="im-screen-title">Interview complete</h2>
+    <p class="im-screen-sub" id="im-review-sub"></p>
+
+    <div class="im-stack">
+      <div>
+        <div class="im-screen-sub" style="margin:0 0 4px 0">Your recording</div>
+        <video id="im-review-human" class="im-review-media" controls></video>
+      </div>
+      <div>
+        <div class="im-screen-sub" style="margin:0 0 4px 0">Agent audio</div>
+        <audio id="im-review-agent" controls style="width:100%"></audio>
+      </div>
+    </div>
+
+    <div class="im-divider" style="border-top:1px solid var(--s2-border-subtle)"></div>
+
+    <div class="im-screen-sub" style="margin:0 0 4px 0">Transcript</div>
+    <div class="im-transcript" id="im-review-transcript" style="max-height:320px"></div>
+
+    <div class="im-divider" style="border-top:1px solid var(--s2-border-subtle)"></div>
+
+    <dl class="sprinkle-kv-list" id="im-review-kv"></dl>
+
+    <div class="sprinkle-btn-group">
+      <button id="im-download-human" type="button" class="sprinkle-btn sprinkle-btn--secondary">Download video</button>
+      <button id="im-download-agent" type="button" class="sprinkle-btn sprinkle-btn--secondary">Download agent audio</button>
+      <button id="im-download-transcript" type="button" class="sprinkle-btn sprinkle-btn--secondary">Download transcript</button>
+      <button id="im-restart-btn" type="button" class="sprinkle-btn sprinkle-btn--primary">New interview</button>
+    </div>
+    <p class="im-note" id="im-files-note"></p>
+  </section>
+
+</div>
+
+<script>
+  // Single source of truth for where this sprinkle's own runtime files
+  // (config.json, lib/, debug.json, sessions/, kb/) live in the VFS. Not
+  // wired to any one install location -- the install step (see the CLI's
+  // `install` subcommand / SKILL.md) is what actually places this
+  // sprinkle at a given path; if it ever installs somewhere else, this is
+  // the only line that needs to change. Every other path in this file is
+  // derived from it (LIB_DIR/CONFIG_PATH/DEBUG_PATH/session dirs/kb
+  // default), never hardcoded a second time.
+  window.__IM_BASE_DIR__ = "/shared/sprinkles/interview-me";
+
+  // Diagnostics harness (verification-only, self-contained, no imports so it
+  // always runs even if ESM module loading itself fails). Captures runtime
+  // errors that a scoop without direct browser devtools access can still
+  // retrieve, by writing to a VFS file via the slicc bridge.
+  window.__IM_DIAG__ = [];
+  function __imDiag(stage, detail) {
+    window.__IM_DIAG__.push({ t: Date.now(), stage, detail: detail === undefined ? null : detail });
+    __imFlushDiag();
+  }
+  let __imFlushTimer = null;
+  function __imFlushDiag() {
+    if (__imFlushTimer) return;
+    __imFlushTimer = setTimeout(() => {
+      __imFlushTimer = null;
+      try {
+        if (!window.slicc || typeof window.slicc.writeFile !== "function") return;
+        const payload = JSON.stringify(window.__IM_DIAG__, null, 2);
+        // slicc.writeFile is a bridge call and bridge calls CAN hang (this
+        // is not hypothetical -- slicc.exec has been observed to hang in
+        // this environment). Race it against a timeout so a stuck write
+        // can never silently stop every subsequent diagnostic from being
+        // recorded: this function is invoked as fire-and-forget from
+        // __imDiag, so an unbounded await here would starve nothing
+        // visibly, it would just make debug.json go permanently stale --
+        // exactly the failure mode that made a real bug invisible once.
+        const writePromise = window.slicc.writeFile(`${window.__IM_BASE_DIR__}/debug.json`, payload);
+        Promise.race([writePromise, new Promise((_, reject) => setTimeout(() => reject(new Error("writeFile timeout")), 4000))]).catch(() => {
+          /* best-effort only -- never throw out of a setTimeout callback */
+        });
+      } catch (err) {
+        /* best-effort only */
+      }
+    }, 150);
+  }
+  window.addEventListener("error", (e) => {
+    __imDiag("window-error", {
+      message: e.message,
+      filename: e.filename,
+      lineno: e.lineno,
+      colno: e.colno,
+      stack: e.error && e.error.stack,
+    });
+  });
+  window.addEventListener("unhandledrejection", (e) => {
+    __imDiag("unhandled-rejection", { reason: String(e.reason), stack: e.reason && e.reason.stack });
+  });
+  __imDiag("classic-script-ran");
+  __imDiag("document-base-uri", document.baseURI);
+
+  // --- Local module loader ------------------------------------------------
+  // WHY THIS EXISTS: this sprinkle renders with `document.baseURI` pointed
+  // at the SLICC app shell (e.g. https://www.sliccy.ai/?tray=...), not at
+  // this sprinkle's own install directory (see `window.__IM_BASE_DIR__`
+  // above). Relative/absolute `import`/`fetch` of a VFS
+  // path therefore resolves against the app origin, where every path is
+  // caught by the app's own SPA fallback route and returns its index.html
+  // (HTTP 200, wrong body) instead of the real file -- so NO import
+  // specifier (relative or absolute) can ever resolve via native browser
+  // networking here. Verified by probing 6 candidate path shapes, all
+  // returning the same SPA shell body.
+  //
+  // THE FIX: `slicc.readFile` reads VFS content over the bridge's own
+  // message-passing channel, bypassing browser networking entirely. This
+  // loader reads a lib/*.js file's source as text, recursively resolves and
+  // inlines its sibling `from "./x.js"` specifiers into Blob URLs (which
+  // `import()` CAN load -- they never hit the network), and returns a Blob
+  // URL for the (rewritten) module. `window.__imLoadModule(path)` is used
+  // by the main module script below in place of static imports, and by
+  // `AudioWorkletNode` setup in place of `audioWorklet.addModule(url)`.
+  const __imModuleCache = new Map();
+
+  function __imResolvePath(dir, specifier) {
+    const parts = `${dir}/${specifier}`.split("/");
+    const out = [];
+    for (const part of parts) {
+      if (part === "" || part === ".") continue;
+      if (part === "..") out.pop();
+      else out.push(part);
+    }
+    return `/${out.join("/")}`;
+  }
+
+  async function __imLoadModule(path) {
+    if (__imModuleCache.has(path)) return __imModuleCache.get(path);
+    const promise = (async () => {
+      const source = await window.slicc.readFile(path);
+      const dir = path.slice(0, path.lastIndexOf("/"));
+      // A FRESH RegExp per call -- sharing one `g`-flagged regex object
+      // across concurrent/recursive calls (this loader is both, since
+      // bootstrap loads 9 files in parallel and some depend on others)
+      // corrupts `lastIndex` across calls and silently mangles output.
+      // Cost four minutes of debugging a "SyntaxError: Unexpected
+      // identifier 'from'" to find; do not reintroduce a shared instance.
+      const relSpecifierRe = /(from\s*)(["'])(\.\.?\/[^"']+)\2/g;
+      let rewritten = "";
+      let lastIndex = 0;
+      let match;
+      while ((match = relSpecifierRe.exec(source))) {
+        const [full, fromKw, quote, specifier] = match;
+        rewritten += source.slice(lastIndex, match.index);
+        const depUrl = await __imLoadModule(__imResolvePath(dir, specifier));
+        rewritten += `${fromKw}${quote}${depUrl}${quote}`;
+        lastIndex = match.index + full.length;
+      }
+      rewritten += source.slice(lastIndex);
+      return URL.createObjectURL(new Blob([rewritten], { type: "text/javascript" }));
+    })();
+    __imModuleCache.set(path, promise);
+    return promise;
+  }
+  window.__imLoadModule = __imLoadModule;
+
+  // Permanent smoke test (cheap, runs once on every load): confirms native
+  // import is (still, expectedly) unusable here, and that the loader above
+  // is not. If native import ever starts working in a future environment
+  // fix, this just becomes a harmless extra confirmation.
+  import("./lib/pcm-codec.js")
+    .then(() => __imDiag("native-import-smoke-test", { unexpectedlyWorked: true }))
+    .catch((err) => __imDiag("native-import-smoke-test", { expectedFailure: true, message: err.message }));
+  __imLoadModule(`${window.__IM_BASE_DIR__}/lib/pcm-codec.js`)
+    .then((url) => import(url))
+    .then((m) => __imDiag("loader-smoke-test", { ok: typeof m.float32ToBase64PCM16 === "function" }))
+    .catch((err) => __imDiag("loader-smoke-test", { ok: false, message: err.message }));
+</script>
+<script type="module" id="im-module-script" onerror="window.__imDiag && window.__imDiag('module-script-tag-error', {message:'inline onerror fired'})">
+const BASE_DIR = window.__IM_BASE_DIR__;
+const LIB_DIR = `${BASE_DIR}/lib`;
+const [
+  { AudioPlayer },
+  { RealtimeSession },
+  { KnowledgeBase },
+  { buildTools, buildInstructions, buildSessionConfig },
+  { TranscriptStore },
+  { createHumanRecorder, createAgentRecorder, blobToUint8Array },
+  { mintEphemeralToken, fetchVoices },
+  { int16ToBase64 },
+  { listCollections, searchCollection, ingestDirectory },
+  { createMicWatchdog },
+  { createStreamWatchdog },
+  { finalizeSession, buildDiagnosticsDocument },
+  { UiState },
+  { createWrapupController },
+] = await Promise.all(
+  [
+    "audio-player.js",
+    "realtime-session.js",
+    "kb.js",
+    "tools.js",
+    "transcript-store.js",
+    "recorder.js",
+    "ephemeral-token.js",
+    "pcm-codec.js",
+    "collections.js",
+    "mic-watchdog.js",
+    "stream-watchdog.js",
+    "session-end.js",
+    "ui-state.js",
+    "wrapup-controller.js",
+  ].map((name) => window.__imLoadModule(`${LIB_DIR}/${name}`).then((url) => import(url)))
+);
+window.__imDiag && window.__imDiag("all-lib-modules-loaded");
+
+// Direct, minimal probe of the slicc.exec bridge itself, independent of the
+// (more failure-prone: network + oauth-token + curl) voices/collections
+// calls, so a hang there is distinguishable from the bridge itself being
+// unavailable.
+(async () => {
+  try {
+    const t0 = Date.now();
+    const result = await slicc.exec("echo im-exec-probe-ok");
+    window.__imDiag && window.__imDiag("slicc-exec-probe", { ms: Date.now() - t0, stdout: result.stdout, exitCode: result.exitCode });
+  } catch (err) {
+    window.__imDiag && window.__imDiag("slicc-exec-probe-failed", { message: err.message, stack: err.stack });
+  }
+})();
+
+(async () => {
+  try {
+    const t0 = Date.now();
+    const entries = await slicc.readDir(`${window.__IM_BASE_DIR__}/kb`);
+    window.__imDiag && window.__imDiag("slicc-readdir-probe", { ms: Date.now() - t0, count: entries.length });
+  } catch (err) {
+    window.__imDiag && window.__imDiag("slicc-readdir-probe-failed", { message: err.message, stack: err.stack });
+  }
+})();
+
+(async () => {
+  try {
+    const t0 = Date.now();
+    const dataUrl = await slicc.screenshot();
+    window.__imDiag && window.__imDiag("slicc-screenshot-probe", { ms: Date.now() - t0, length: dataUrl.length, prefix: dataUrl.slice(0, 30) });
+  } catch (err) {
+    window.__imDiag && window.__imDiag("slicc-screenshot-probe-failed", { message: err.message, stack: err.stack });
+  }
+})();
+
+(async () => {
+  try {
+    const t0 = Date.now();
+    const stat = await slicc.stat(`${window.__IM_BASE_DIR__}/config.json`);
+    window.__imDiag && window.__imDiag("slicc-stat-probe", { ms: Date.now() - t0, stat });
+  } catch (err) {
+    window.__imDiag && window.__imDiag("slicc-stat-probe-failed", { message: err.message, stack: err.stack });
+  }
+})();
+
+const FALLBACK_VOICES = ["eve", "altair", "ara", "atlas", "aurora", "carina", "castor", "celeste", "cosmo", "helios"];
+
+// Session length is now configurable via config.json's `sessionMinutes`
+// (read/applied through applyConfig(), same as every other field -- a CLI
+// push picks it up live). DEFAULT_SESSION_MINUTES is only the fallback for
+// when the field is absent (matches the previous hardcoded behavior);
+// MIN/MAX are sane bounds: below 1 minute there is not enough time for
+// even a single real question-and-answer exchange to complete, and above
+// 10 minutes this stops being the "short spoken interview" format the rest
+// of the UI copy/instructions assume (and produces a proportionally huge
+// recording -- see recorder.js's bitrate comment). `sessionLengthMs` is
+// the CURRENT live value (mutated by applyStaticConfigFields); each
+// session snapshots it into `state.sessionLengthMs` at start (see
+// beginSession()) so a config push mid-interview can never change the
+// deadline of an interview already underway.
+const DEFAULT_SESSION_MINUTES = 5;
+const MIN_SESSION_MINUTES = 1;
+const MAX_SESSION_MINUTES = 10;
+let sessionLengthMs = DEFAULT_SESSION_MINUTES * 60 * 1000;
+
+/** Returns a clamped integer-or-fractional minute count, or null if the input isn't a usable positive number. */
+function clampSessionMinutes(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.min(MAX_SESSION_MINUTES, Math.max(MIN_SESSION_MINUTES, n));
+}
+
+// The wrap-up nudge used to be a flat 30s before the end regardless of
+// total length -- fine at 10% of a 5-minute session, but 50% of a
+// 1-minute one. Proportional-with-a-cap.
+//
+// ROUND 2 REVISION: widened from 20%/30s-cap to 25%/45s-cap. Round 1's
+// budget was sized around the OLD (buggy) design, where the directive
+// send was deferred until the user stopped speaking and so could consume
+// a real, unpredictable chunk of the reserved window before even
+// landing. Now that the directive is sent immediately and unconditionally
+// at the threshold (see WrapupController -- it's silent, it cannot
+// interrupt anyone, so there's no reason to wait), that source of
+// unpredictability is gone, but real evidence from a later session
+// showed the OTHER problem instead:
+// even with a same-instant send, the model's very next response can
+// already be in flight (a genuine race against the server's own turn
+// detection) and miss the directive, needing a further exchange to
+// close. More total runway gives that further exchange room to actually
+// happen instead of running into the fallback. At 5 minutes this now
+// resolves to 45s (up from 30s); at 3 minutes to 45s as well (25% of
+// 180s); at 1 minute it's 15s (25%, still well short of eating the whole
+// session).
+function wrapupOffsetMs(lengthMs) {
+  return Math.min(45000, lengthMs * 0.25);
+}
+
+// The canned line sent via sendForceMessage() -- a LAST-RESORT FALLBACK
+// only (see WrapupController in lib/wrapup-controller.js), not the
+// primary wrap-up action. Real evidence from a live session showed why
+// this can never be the primary action: it fired mid-sentence, cutting
+// the user off, and a
+// force_message is a canned TTS line -- it does not prompt the model to
+// actually close, so it just ended the exchange rather than winding it
+// down, producing ~29s of dead air. Pulled out to a shared constant so
+// the fallback callback (which sends it) and claimForceMessageItem()
+// (which records it verbatim once the server tells us which item id it
+// landed under -- see that function's own comment) can never drift apart
+// from each other.
+const WRAP_UP_MESSAGE = "We're almost out of time -- let's wrap up with one last thought.";
+
+// ROUND 3: three delivery channels for the wrap-up notice were tested
+// against the live API before picking one. Role-"system"
+// conversation.item.create items are silently ignored by the model (it
+// asked a brand-new question anyway). Both a session.update instructions
+// append AND an unsolicited function_call_output worked -- zero errors,
+// clean close, no new question either way. His preference: frame the
+// notice as information the agent RECEIVED (a tool result), not words
+// put in its mouth -- that's WRAP_UP_TIME_CHECK_PAYLOAD below, sent as a
+// real conversation.item.create/function_call_output via
+// RealtimeSession#sendFunctionCallOutput with a synthetic call_id (no
+// preceding function call -- undocumented behavior; it works today, but
+// could change). WRAP_UP_DIRECTIVE (a session.update, documented,
+// persists for the rest of the session) is kept as a DURABLE BACKSTOP
+// sent at the exact same moment, so later turns stay in wind-down mode
+// even if the tool-result channel ever stops working. Both are sent
+// IMMEDIATELY at the wrap-up threshold, regardless of user speech state
+// -- see WrapupController#poll()'s "Stage 1" comment for why that is
+// safe (neither emits audio; neither can interrupt anyone) and why
+// sending them as early as possible, rather than deferring the way
+// ROUND 1 of this fix mistakenly did, matters: deferring until the user
+// stops speaking put the directive in a race against the server's own
+// turn-detection-triggered next response, and in a real session it lost
+// that race, arriving just after the next response had already started
+// generating. The model then closes
+// naturally, in context, on whichever of its own turns first reflects
+// either signal -- possibly its very next one now, possibly one turn
+// later if that race still doesn't go our way -- never by us injecting a
+// turn on its behalf.
+const WRAP_UP_TIME_CHECK_CALL_ID = "call-timecheck-1"; // sent at most once per session, so a fixed literal is fine -- no need for a counter
+const WRAP_UP_TIME_CHECK_PAYLOAD = { time_check: "Interview time is up. Thank the guest and close warmly now. Ask no further questions." };
+const WRAP_UP_DIRECTIVE = "You are almost out of time. After the user's next answer, thank them and close warmly. Ask no new questions.";
+
+// How long the "everything has gone quiet" condition -- user not
+// speaking, no response in flight, agent playback drained (see
+// WrapupController#poll()) -- must hold CONTINUOUSLY, once a close has
+// actually been DELIVERED (a recognised closing turn, or the canned
+// fallback below), before the session ends on its own with
+// endReason:"wrapped-up". Reaching the wrap-up threshold is NOT enough to
+// start this clock: post-threshold silence while the user is simply
+// thinking about the question they were just asked looks identical to
+// this condition, and ending there cuts the interview off before its last
+// answer -- see wrapup-controller.js's ROUND 4 note. Chosen at 5s: the
+// API's own turn_detection
+// (silence_duration_ms:900) has already gated `userSpeaking` becoming
+// false on a real ~900ms pause before this module ever sees it, so 5s of
+// FURTHER continuous quiet on top of that is comfortably longer than any
+// natural mid-thought breath; it is also safely under the session's own
+// configured turn_detection.idle_timeout_ms (8000 -- the server's own
+// threshold for proactively re-engaging a silent user), so once the close
+// HAS been delivered this app acts to wrap up before the server would
+// try to re-engage, avoiding an awkward collision between the two (being
+// under that 8000 is precisely why an ungated version of this timer could
+// beat the server's re-engagement of a user who was merely thinking); and
+// it is short enough
+// that ending still feels prompt rather than making the user sit through
+// a long, silent tail once the conversation has genuinely finished.
+const SILENCE_SUSTAIN_MS = 5000;
+
+// The ultimate backstop, entirely separate from WrapupController (see
+// startCountdown()'s tick(), which checks `elapsed >= sessionLengthMs +
+// HARD_BACKSTOP_GRACE_MS`) -- guarantees a session can never run forever
+// even if the user simply never stops talking (in which case NEITHER the
+// fallback NOR stop-on-silence can ever fire, both deliberately deferring
+// indefinitely during speech -- and, since round 4, the fallback also
+// defers while any response is generating or agent audio is still
+// draining, which this backstop likewise covers). Deliberately WELL BEYOND the nominal
+// session length now that ending is silence-driven rather than
+// clock-driven -- the nominal length only decides when wind-down BEGINS,
+// not when the session must end, so this needs real headroom past it:
+// a flat 60s addition, chosen over a percentage-based one so a very
+// short session (e.g. sessionMinutes:1) still gets a full, useful grace
+// window (a 20%-style scaling would only add ~12s to a 1-minute session,
+// not enough room for a deferred fallback + its own playback + drain),
+// while for longer sessions a flat 60s is still a small, bounded addition
+// rather than a runaway one. Still recorded as endReason:"timeout" so
+// the artifact distinguishes "the backstop actually had to fire" (a
+// session that, unusually, never went quiet) from a normal
+// endReason:"wrapped-up" ending.
+const HARD_BACKSTOP_GRACE_MS = 60000;
+
+// How long to wait after the directive lands before giving up on a
+// natural close and falling back to the canned WRAP_UP_MESSAGE. Chosen
+// against the widened ~45s budget wrapupOffsetMs() now reserves before
+// the hard cap (see that function). Raised from round 1's 15s to 20s:
+// the directive now lands with its full lead time intact (no deferral
+// latency eating into the wait), and the wider 45s window (up from 30s)
+// leaves room to actually use a longer wait productively -- real
+// transcript evidence across this app's own sessions shows exchanges can
+// run 10-30s+ each, so 20s gives a real shot at one full additional
+// exchange (the user's next answer, then the model's close) even with
+// generation latency, while still leaving a comfortable ~25s of the 45s
+// budget for the fallback's OWN force_message to play out and for the
+// wait-for-audio-drain-then-stop sequence (see onClosingTurnComplete in
+// beginSession()) if it does come to that. Unlike the directive, the
+// fallback DOES still defer indefinitely while anything audible is in
+// progress -- the user speaking, ANY response still generating, or the
+// player still draining agent audio (see WrapupController#poll()'s
+// "Stage 3", and its ROUND 4 note for why the narrower user-speech-only
+// check was not enough) -- so if any of those hold when this delay
+// elapses, the fallback simply waits, and this budget can end up mostly
+// or entirely consumed by that deferral. That remains intentional:
+// the hard cap stays the ultimate backstop, this fallback is a
+// best-effort improvement on top of it, never a replacement for it.
+const WRAP_UP_FALLBACK_DELAY_MS = 20000;
+
+// The ONE place the wrap-up directive gets combined with the real
+// interview instructions -- pulled out as a small pure function (used by
+// the real sendDirective callback in beginSession()) specifically so
+// "append, never replace" is directly unit-testable without needing a
+// real session/beginSession() call. Never mutates its input (strings are
+// immutable anyway; named this way for clarity about intent).
+function appendWrapupDirective(currentInstructions, directive) {
+  const current = currentInstructions || "";
+  return `${current}\n\n${directive}`;
+}
+
+const MODEL = "grok-voice-latest";
+// Declared here (not down near loadConfig(), where it reads more naturally)
+// on purpose: init() is called near the top of this script and runs
+// synchronously up to its first `await`, which reaches into loadConfig()'s
+// own body before yielding -- a `const` declared textually AFTER that
+// init() call site is still in the temporal dead zone at that point and
+// throws "Cannot access before initialization". Confirmed by hitting this
+// exact error when CONFIG_PATH was declared next to loadConfig() instead:
+// every top-level `const` this module needs before init() runs must be
+// declared before the `init().catch(...)` call below, full stop.
+const CONFIG_PATH = `${BASE_DIR}/config.json`;
+
+const $ = (id) => document.getElementById(id);
+
+// Bridge calls that touch the network (slicc.exec running curl, slicc.fetch)
+// can in principle hang rather than reject -- a stalled shell, a dead
+// network path, anything. A promise that never settles must not be allowed
+// to leave a dropdown empty or a button spinning forever with no
+// explanation. Every exec-dependent call below is wrapped in this.
+function withTimeout(promise, ms, label) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
+
+const el = {
+  setupIntro: $("im-setup-intro"),
+  brief: $("im-brief"),
+  tabInterview: $("im-tab-interview"),
+  tabAdvanced: $("im-tab-advanced"),
+  panelInterview: $("im-panel-interview"),
+  panelAdvanced: $("im-panel-advanced"),
+  kbPath: $("im-kb-path"),
+  kbStatus: $("im-kb-status"),
+  webSearch: $("im-web-search"),
+  xSearch: $("im-x-search"),
+  webDomains: $("im-web-domains"),
+  xHandles: $("im-x-handles"),
+  voice: $("im-voice"),
+  kbMode: $("im-kb-mode"),
+  kbCollectionPanel: $("im-kb-collection-panel"),
+  kbLocalPanel: $("im-kb-local-panel"),
+  collectionSelect: $("im-collection-select"),
+  newCollectionPath: $("im-new-collection-path"),
+  newCollectionName: $("im-new-collection-name"),
+  createCollectionBtn: $("im-create-collection-btn"),
+  createCollectionStatus: $("im-create-collection-status"),
+  testQuery: $("im-test-query"),
+  testSearchBtn: $("im-test-search-btn"),
+  testResults: $("im-test-results"),
+  micSelect: $("im-mic-select"),
+  camSelect: $("im-cam-select"),
+  enableBtn: $("im-enable-btn"),
+  previewRow: $("im-preview-row"),
+  previewVideo: $("im-preview-video"),
+  levelMeter: $("im-level-meter"),
+  camNote: $("im-cam-note"),
+  setupStatus: $("im-setup-status"),
+  startBtn: $("im-start-btn"),
+
+  screenSetup: $("screen-setup"),
+  screenLive: $("screen-live"),
+  screenSaving: $("screen-saving"),
+  screenReview: $("screen-review"),
+
+  speakingIndicator: $("im-speaking-indicator"),
+  countdown: $("im-countdown"),
+  stopBtn: $("im-stop-btn"),
+  liveVideo: $("im-live-video"),
+  waveUser: $("im-wave-user"),
+  waveAgent: $("im-wave-agent"),
+  chipRow: $("im-chip-row"),
+  transcript: $("im-transcript"),
+
+  reviewSub: $("im-review-sub"),
+  reviewHuman: $("im-review-human"),
+  reviewAgent: $("im-review-agent"),
+  reviewTranscript: $("im-review-transcript"),
+  reviewKv: $("im-review-kv"),
+  downloadHuman: $("im-download-human"),
+  downloadAgent: $("im-download-agent"),
+  downloadTranscript: $("im-download-transcript"),
+  restartBtn: $("im-restart-btn"),
+  filesNote: $("im-files-note"),
+};
+
+const state = {
+  rawStream: null,
+  hasVideo: false,
+  audioCtx: null,
+  micWorkletNode: null,
+  micSourceNode: null,
+  micAnalyser: null,
+  player: null,
+  session: null,
+  kb: new KnowledgeBase(),
+  transcript: null,
+  humanRecorder: null,
+  agentRecorder: null,
+  humanBlob: null,
+  agentBlob: null,
+  t0: null,
+  countdownHandle: null,
+  waveHandle: null,
+  awaitingContinuation: false,
+  // See WRAP_UP_MESSAGE/claimForceMessageItem(): the wrap-up force_message
+  // has no client-supplied item id, so the correlation between "we just
+  // sent it" and "which item id the server assigned it" is tracked here.
+  pendingForceMessageText: null,
+  forceMessageItemIds: new Set(),
+  wrapupController: null,
+  wrapupControllerEvents: [],
+  sessionLengthMs: null,
+  sessionDir: null,
+  config: null,
+  ended: false,
+  testMeterHandle: null,
+};
+
+// Persists small UI state (active tab/screen, briefing textarea text)
+// across a sprinkle re-render -- fixes "resizing the panel resets the
+// sprinkle to its initial state". Also carries the "a recording was in
+// flight when we died" marker; see markSessionStarted()/clearSession()
+// call sites below and ui-state-INTEGRATION.md for the full reasoning.
+// Exactly one instance per sprinkle instance (see that doc's warning
+// about why two would see inconsistent debounce/flush state).
+const uiState = new UiState(
+  { setState: (v) => slicc.setState(v), getState: () => slicc.getState() },
+  {
+    onError: (ctx, err) => window.__imDiag && window.__imDiag("ui-state-error", { ctx, message: err.message }),
+  }
+);
+
+// --- Canvas color resolution ------------------------------------------
+// Canvas 2D color strings are parsed OUTSIDE the CSS cascade, so `var(...)`
+// inside a `ctx.strokeStyle`/`ctx.fillStyle` assignment cannot resolve --
+// the assignment is silently rejected and the property keeps its previous
+// value (the canvas default, #000000, if never set before). This bit both
+// waveform canvases: they were drawing pure black, invisible against the
+// var(--s2-bg-layer-2) box in dark mode. Fix: resolve the token through
+// getComputedStyle() -- which DOES run inside the normal cascade -- and
+// feed canvas a literal (already-resolved) color. Resolved against
+// `document.documentElement`, the actual sprinkle theme root in
+// full-document mode (this file starts with <!DOCTYPE html>): the parent
+// toggles `.theme-light` there and injects/updates every `--s2-*` value on
+// it directly (see the sprinkles skill's "Light & dark mode" section) --
+// not on `<body>`, which only inherits.
+function resolveWaveStrokeColor() {
+  const accent = getComputedStyle(document.documentElement).getPropertyValue("--s2-accent").trim() || "#6c5ce7";
+  return `color-mix(in srgb, ${accent} 80%, transparent)`;
+}
+
+let waveStrokeColor = resolveWaveStrokeColor();
+// Cached rather than resolved every animation frame (getComputedStyle is
+// not free), but re-resolved whenever the theme actually changes -- a
+// MutationObserver on the root's `class` attribute is the correct hook
+// for that, since `.theme-light` is exactly what the parent toggles.
+new MutationObserver(() => {
+  waveStrokeColor = resolveWaveStrokeColor();
+}).observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+
+window.__imDiag && window.__imDiag("module-script-started");
+init().catch((err) => window.__imDiag && window.__imDiag("init-threw", { message: err.message, stack: err.stack }));
+
+// There is no config PERSISTENCE at all besides this: reads
+// CONFIG_PATH (written by the CLI, scripts/interview-me.jsh) and
+// prefills the UI from it, falling back to built-in defaults when the file
+// is absent or a field is missing. The sprinkle does NOT write this file
+// back on its own -- use the CLI to persist settings (see README.md).
+//
+// LIVE UPDATE FROM THE CLI: config.json used to be read exactly once, at
+// init(). A real bug report: the sprinkle can sit open for hours while
+// `interview-me.jsh` edits config.json from a shell, and nothing ever
+// re-read it -- not a parse bug, a missing "notice a push" concept
+// entirely. There is deliberately NO reload button and NO
+// staleness-polling in this sprinkle -- that design was explicitly
+// rejected in favor of the CLI-push model. The only fix is: the CLI pushes
+// `sprinkle send interview-me '{"type":"reloadconfig"}'` after every
+// write, and the handler below re-reads and re-applies. Two pieces:
+//   - readConfigFile(): throws on failure (missing file OR malformed
+//     JSON) -- used by the push handler, which must surface a real error
+//     rather than fail silently, per the bug report.
+//   - loadConfig(): wraps readConfigFile() with the original silent
+//     fallback-to-{} behavior, kept for init() specifically -- "no
+//     config.json yet" is the normal first-run state, not worth alarming
+//     anyone about.
+//   - applyConfig(): the ONE place that applies a config object to the
+//     UI, used by BOTH init()'s first pass and the push handler, so the
+//     two paths cannot drift apart from each other.
+async function readConfigFile() {
+  const text = await withTimeout(slicc.readFile(CONFIG_PATH), 5000, "readConfig");
+  const parsed = JSON.parse(text);
+  if (!parsed || typeof parsed !== "object") throw new Error("config.json did not contain a JSON object");
+  return parsed;
+}
+
+async function loadConfig() {
+  try {
+    const parsed = await readConfigFile();
+    safeDiag("config-loaded", { keys: Object.keys(parsed) });
+    return parsed;
+  } catch (err) {
+    safeDiag("config-load-fallback", { message: err.message });
+    return {};
+  }
+}
+
+// Fields that don't depend on dynamically-populated <option> lists --
+// applied immediately so config prefill doesn't wait on network calls.
+function applyStaticConfigFields(config) {
+  if (typeof config.brief === "string") el.brief.value = config.brief;
+  el.webSearch.checked = config.webSearch === undefined ? true : !!config.webSearch;
+  el.xSearch.checked = config.xSearch === undefined ? true : !!config.xSearch;
+  if (Array.isArray(config.webAllowedDomains)) el.webDomains.value = config.webAllowedDomains.join(", ");
+  if (Array.isArray(config.xAllowedHandles)) el.xHandles.value = config.xAllowedHandles.join(", ");
+  el.kbMode.value = config.kbMode === "local" ? "local" : "collection";
+  if (typeof config.kbPath === "string" && config.kbPath) el.kbPath.value = config.kbPath;
+
+  if (config.sessionMinutes !== undefined) {
+    const clamped = clampSessionMinutes(config.sessionMinutes);
+    if (clamped === null) {
+      safeDiag("session-minutes-invalid", { value: config.sessionMinutes });
+    } else {
+      sessionLengthMs = clamped * 60 * 1000;
+      safeDiag("session-minutes-applied", { minutes: clamped });
+    }
+  }
+  updateSetupIntro();
+}
+
+// Keeps the Setup screen's own copy ("Up to N minutes...") honest against
+// whatever sessionLengthMs currently is, instead of the old hardcoded
+// "five minutes" text that would have silently gone stale the moment this
+// became configurable.
+function updateSetupIntro() {
+  const minutes = sessionLengthMs / 60000;
+  const label = Number.isInteger(minutes) ? String(minutes) : minutes.toFixed(1);
+  el.setupIntro.textContent = `Grok conducts a spoken interview, grounded in your documents plus live web and X search. Up to ${label} minute${minutes === 1 ? "" : "s"}, fully recorded and transcribed.`;
+}
+
+// Voice/collection selection can only be applied once their <option>
+// lists exist; falls back to whatever default got selected (documented
+// behavior, not a bug) if the configured value isn't in the list yet.
+function applyVoiceSelection(config) {
+  if (config.voice && Array.from(el.voice.options).some((o) => o.value === config.voice)) {
+    el.voice.value = config.voice;
+  }
+}
+function applyCollectionSelection(config) {
+  if (config.kbMode !== "local" && config.collectionId && Array.from(el.collectionSelect.options).some((o) => o.value === config.collectionId)) {
+    el.collectionSelect.value = config.collectionId;
+  }
+}
+
+// The ONE place that applies a config object to the UI -- init()'s first
+// pass and the CLI push handler both go through this, so they cannot
+// drift. Voice/collection are safe to call unconditionally here even
+// before their <option> lists are populated (a no-op in that case, per
+// applyVoiceSelection/applyCollectionSelection's own fallback) -- init()
+// calls this once early AND again after population resolves (see below);
+// by the time a CLI push can arrive, population has long since finished,
+// so applyConfig alone is always sufficient there.
+function applyConfig(config) {
+  applyStaticConfigFields(config);
+  onKbModeChange();
+  applyVoiceSelection(config);
+  applyCollectionSelection(config);
+}
+
+// The CLI's `{"type":"reloadconfig"}` push handler -- the entire feature.
+// No button, no polling: this is the only way config.json changes ever
+// reach an already-open sprinkle, by design.
+async function applyConfigPush() {
+  try {
+    const config = await readConfigFile();
+    applyConfig(config);
+    const chars = typeof config.brief === "string" ? config.brief.length : 0;
+    const minutes = sessionLengthMs / 60000;
+    el.setupStatus.textContent = `Config updated from CLI — briefing ${chars} chars, session ${minutes} min.`;
+    safeDiag("config-push-applied", { briefChars: chars, sessionMinutes: minutes });
+  } catch (err) {
+    el.setupStatus.textContent = `Config update from CLI failed: ${err.message}`;
+    safeDiag("config-push-failed", { message: err.message });
+  }
+}
+
+// Hoisted to module scope (was a closure inside wireTabs()) so init() can
+// also call it directly, to apply a restored tab from ui-state.js BEFORE
+// the user has clicked anything -- see the restore() call in init().
+// Externally-observed behavior (aria-selected/tabIndex/panel display) is
+// unchanged; the only addition is persisting the choice via uiState.
+const TAB_LIST = [el.tabInterview, el.tabAdvanced];
+const TAB_PANEL_FOR = { [el.tabInterview.id]: el.panelInterview, [el.tabAdvanced.id]: el.panelAdvanced };
+
+function selectTab(tab) {
+  for (const t of TAB_LIST) {
+    const selected = t === tab;
+    t.setAttribute("aria-selected", String(selected));
+    t.tabIndex = selected ? 0 : -1;
+    // Inline style.display, not a class -- slicc.screenshot() does not
+    // reliably honor class-based display:none from a <style> block.
+    TAB_PANEL_FOR[t.id].style.display = selected ? "" : "none";
+  }
+  uiState.update({ tab: tab === el.tabAdvanced ? "advanced" : "interview" });
+}
+
+function wireTabs() {
+  for (const tab of TAB_LIST) {
+    tab.addEventListener("click", () => selectTab(tab));
+    tab.addEventListener("keydown", (e) => {
+      const idx = TAB_LIST.indexOf(tab);
+      let nextIdx = null;
+      if (e.key === "ArrowRight") nextIdx = (idx + 1) % TAB_LIST.length;
+      else if (e.key === "ArrowLeft") nextIdx = (idx - 1 + TAB_LIST.length) % TAB_LIST.length;
+      else if (e.key === "Home") nextIdx = 0;
+      else if (e.key === "End") nextIdx = TAB_LIST.length - 1;
+      if (nextIdx !== null) {
+        e.preventDefault();
+        TAB_LIST[nextIdx].focus();
+        selectTab(TAB_LIST[nextIdx]);
+      }
+    });
+  }
+}
+
+async function init() {
+  try {
+    const missing = Object.entries(el).filter(([, node]) => !node).map(([key]) => key);
+    window.__imDiag && window.__imDiag("dom-check", { missingElements: missing });
+
+    // These two fields ship with no baked-in default in the markup itself
+    // (a hardcoded VFS path there would tie every installation to one
+    // location) -- fill in a sensible default derived from BASE_DIR here,
+    // only if the field is still empty, so a user typing over it (or a
+    // config-driven override applied later in this function) always wins.
+    if (!el.kbPath.value.trim()) el.kbPath.value = `${BASE_DIR}/kb/`;
+    if (!el.newCollectionPath.value.trim()) el.newCollectionPath.value = `${BASE_DIR}/kb/`;
+
+    const config = await loadConfig();
+    // Restore persisted UI state (active tab, briefing text, and the
+    // "a recording was in flight when we died" marker) BEFORE
+    // applyConfig() touches the DOM -- see ui-state-INTEGRATION.md. This
+    // is what fixes "resizing the panel resets the sprinkle to its
+    // initial state": a re-render calls init() again from scratch, and
+    // without this, everything the user had open/typed was lost.
+    //
+    // Wrapped in its own try/catch here (rather than trusting
+    // UiState.restore()'s internal "never throws" guarantee blindly): that
+    // guarantee holds for a bridge call that REJECTS, but `getState()` is
+    // invoked directly as a Promise.resolve() argument inside restore(),
+    // not behind an inner async wrapper -- if the bridge is ever missing
+    // `getState` entirely (throws SYNCHRONOUSLY rather than rejecting),
+    // that exception propagates out of restore() itself instead of
+    // degrading to defaults. init() failing to complete over a
+    // best-effort UI-persistence feature would be a much worse outcome
+    // than losing that convenience, so this call site adds its own
+    // fallback rather than assuming the module already covers every case.
+    let restoredUi = { tab: "interview", screen: "setup", brief: "" };
+    let interruptedSession = null;
+    try {
+      const restored = await uiState.restore();
+      restoredUi = restored.uiState;
+      interruptedSession = restored.interruptedSession;
+    } catch (err) {
+      window.__imDiag && window.__imDiag("ui-state-restore-threw", { message: err.message });
+    }
+
+    wireTabs();
+    // Applied before applyConfig() so a restored "advanced" tab is the
+    // very first thing the user sees on re-render, not a setup-tab flash.
+    selectTab(restoredUi.tab === "advanced" ? el.tabAdvanced : el.tabInterview);
+
+    applyConfig(config); // static fields + kbMode panel land immediately; voice/collection re-applied below once populated
+
+    // Briefing precedence: config.json (CLI-pushed) wins whenever present
+    // and non-empty; the restored UI-state briefing is only a fallback for
+    // text typed directly into the textarea that config.json never knew
+    // about. See ui-state-INTEGRATION.md's "Precedence" section -- the
+    // other order would let an incidental resize silently revert a
+    // CLI-pushed briefing back to stale textarea content, a variant of
+    // the very bug this module fixes.
+    if (typeof config.brief !== "string" || !config.brief) {
+      if (restoredUi.brief) el.brief.value = restoredUi.brief;
+    }
+
+    // Deliberately NOT auto-resuming or jumping to "live"/"review" here --
+    // the MediaStream/AudioContext/WebSocket/MediaRecorder a live session
+    // needs do not survive a re-render, so there is nothing safe to
+    // resume into. This is purely an honest, plain-language notice so a
+    // re-render mid-interview reads as "something was interrupted", not
+    // as a pristine Setup screen implying nothing happened.
+    if (interruptedSession) {
+      el.setupStatus.textContent =
+        `A previous recording session was interrupted (started ${new Date(interruptedSession.startedAt).toLocaleString()}, ` +
+        `saved to ${interruptedSession.sessionDir}). No new session was auto-resumed — check that folder for partial artifacts.`;
+    }
+
+    el.brief.addEventListener("input", () => uiState.update({ brief: el.brief.value }));
+    el.enableBtn.addEventListener("click", onEnableDevices);
+    el.startBtn.addEventListener("click", onStartInterview);
+    el.stopBtn.addEventListener("click", () => stopInterview("manual"));
+    el.restartBtn.addEventListener("click", () => location.reload());
+    el.downloadHuman.addEventListener("click", () => downloadBlob(state.humanBlob, `human.${state.humanRecorder ? state.humanRecorder.extension() : "webm"}`));
+    el.downloadAgent.addEventListener("click", () => downloadBlob(state.agentBlob, `agent.${state.agentRecorder ? state.agentRecorder.extension() : "webm"}`));
+    el.downloadTranscript.addEventListener("click", () => downloadTranscript());
+
+    el.kbMode.addEventListener("change", onKbModeChange);
+    el.createCollectionBtn.addEventListener("click", onCreateCollection);
+    el.testSearchBtn.addEventListener("click", onTestSearch);
+    el.camSelect.addEventListener("change", restartPreviewStream);
+    el.micSelect.addEventListener("change", restartPreviewStream);
+    onKbModeChange();
+
+    // Dynamic dropdowns: each internally timeout-bounded already (see
+    // populateVoices/populateCollections), so awaiting them here only
+    // delays when the configured voice/collection gets selected, never
+    // blocks button wiring or interactivity above.
+    await Promise.all([populateVoices().then(() => applyVoiceSelection(config)), populateCollections().then(() => applyCollectionSelection(config))]);
+
+    window.__imDiag && window.__imDiag("init-complete");
+  } catch (err) {
+    window.__imDiag && window.__imDiag("init-error", { message: err.message, stack: err.stack });
+    throw err;
+  }
+}
+
+function onKbModeChange() {
+  const mode = el.kbMode.value;
+  el.kbCollectionPanel.classList.toggle("im-hidden", mode !== "collection");
+  el.kbCollectionPanel.style.display = mode === "collection" ? "" : "none";
+  el.kbLocalPanel.classList.toggle("im-hidden", mode !== "local");
+  el.kbLocalPanel.style.display = mode === "local" ? "" : "none";
+}
+
+async function populateCollections(selectId) {
+  el.collectionSelect.innerHTML = "";
+  let collections = [];
+  try {
+    if (typeof slicc.exec === "function") {
+      collections = await withTimeout(listCollections((cmd) => slicc.exec(cmd)), 10000, "listCollections");
+    }
+  } catch (err) {
+    collections = [];
+    window.__imDiag && window.__imDiag("populate-collections-error", { message: err.message, stack: err.stack });
+  }
+
+  // No baked-in default collection is offered here -- a fresh install has
+  // no collections until the user creates one (Advanced tab, or the CLI's
+  // `collections create`). An empty list is a normal, expected state, not
+  // an error; onStartInterview()'s own validation is what actually blocks
+  // starting a session with nothing selected.
+  if (collections.length === 0) {
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "No collections yet -- create one below or via the CLI";
+    el.collectionSelect.appendChild(opt);
+  }
+
+  for (const c of collections) {
+    const opt = document.createElement("option");
+    opt.value = c.collection_id;
+    const docCount = typeof c.documents_count === "number" ? ` (${c.documents_count} doc${c.documents_count === 1 ? "" : "s"})` : "";
+    opt.textContent = `${c.collection_name || c.collection_id}${docCount}`;
+    el.collectionSelect.appendChild(opt);
+  }
+  if (selectId) el.collectionSelect.value = selectId;
+  window.__imDiag && window.__imDiag("populate-collections", { count: collections.length, ids: collections.map((c) => c.collection_id) });
+}
+
+async function onCreateCollection() {
+  const dirPath = el.newCollectionPath.value.trim();
+  if (!dirPath) {
+    el.createCollectionStatus.textContent = "Enter a folder path first.";
+    return;
+  }
+  const name = el.newCollectionName.value.trim() || undefined;
+  el.createCollectionBtn.disabled = true;
+  el.createCollectionStatus.textContent = "Creating collection…";
+  try {
+    const result = await withTimeout(
+      ingestDirectory((cmd) => slicc.exec(cmd), dirPath, {
+        collectionName: name,
+        listDir: (p) => slicc.readDir(p),
+        onProgress: (p) => {
+          if (p.stage === "created-collection") el.createCollectionStatus.textContent = `Created ${p.collectionId}, uploading files…`;
+          else if (p.stage === "uploading") el.createCollectionStatus.textContent = `Uploading ${p.filename}…`;
+          else if (p.stage === "attaching") el.createCollectionStatus.textContent = `Indexing ${p.filename}…`;
+        },
+      }),
+      90000,
+      "ingestDirectory"
+    );
+    el.createCollectionStatus.textContent = `Ingested ${result.files.length} file(s) into ${result.collectionId}.`;
+    await populateCollections(result.collectionId);
+  } catch (err) {
+    el.createCollectionStatus.textContent = `Failed: ${err.message}`;
+  } finally {
+    el.createCollectionBtn.disabled = false;
+  }
+}
+
+async function onTestSearch() {
+  const query = el.testQuery.value.trim();
+  const collectionId = el.collectionSelect.value;
+  if (!query || !collectionId) return;
+  el.testSearchBtn.disabled = true;
+  el.testResults.innerHTML = `<span class="im-note">Searching…</span>`;
+  try {
+    const matches = await withTimeout(searchCollection((cmd) => slicc.exec(cmd), collectionId, query, 5), 10000, "searchCollection");
+    el.testResults.innerHTML = "";
+    if (!matches.length) {
+      el.testResults.innerHTML = `<span class="im-note">No matches.</span>`;
+    }
+    for (const m of matches) {
+      const row = document.createElement("div");
+      row.className = "im-card";
+      row.style.padding = "var(--s2-spacing-100)";
+      const title = (m.fields && (m.fields.title || m.fields["chroma:uri"])) || m.file_id;
+      const score = typeof m.score === "number" ? m.score.toFixed(2) : "?";
+      row.innerHTML = `<div class="im-note" style="font-weight:600">${escapeHtml(title)} — score ${score}</div><div class="im-note">${escapeHtml((m.chunk_content || "").slice(0, 220))}${(m.chunk_content || "").length > 220 ? "…" : ""}</div>`;
+      el.testResults.appendChild(row);
+    }
+  } catch (err) {
+    el.testResults.innerHTML = `<span class="im-note">Search failed: ${escapeHtml(err.message)}</span>`;
+  } finally {
+    el.testSearchBtn.disabled = false;
+  }
+}
+
+async function populateVoices() {
+  el.voice.innerHTML = "";
+  let voices = null;
+  try {
+    if (typeof slicc.exec === "function") {
+      voices = await withTimeout(fetchVoices((cmd) => slicc.exec(cmd)), 10000, "fetchVoices");
+    }
+  } catch (err) {
+    voices = null;
+    window.__imDiag && window.__imDiag("populate-voices-error", { message: err.message, stack: err.stack });
+  }
+  const list = voices && voices.length ? voices.map((v) => v.voice_id) : FALLBACK_VOICES;
+  for (const id of list) {
+    const opt = document.createElement("option");
+    opt.value = id;
+    opt.textContent = id.charAt(0).toUpperCase() + id.slice(1);
+    if (id === "eve") opt.selected = true;
+    el.voice.appendChild(opt);
+  }
+  window.__imDiag && window.__imDiag("populate-voices", { fromApi: !!(voices && voices.length), count: list.length });
+}
+
+// --- Video attach + diagnostics --------------------------------------
+// Two known black-preview causes this guards against:
+//  1. Assigning `srcObject` alone can leave a <video> unrendered inside a
+//     sandboxed about:srcdoc iframe, where autoplay is unreliable even with
+//     the autoplay/playsinline/muted attributes present in markup. An
+//     explicit `.play()` (with the same three properties ALSO set
+//     imperatively, since attribute-vs-property handling differs across
+//     engines, and `muted` in particular must be true for autoplay to be
+//     permitted) is required, and any rejection (AbortError/NotAllowedError)
+//     is diagnostic gold, not something to swallow.
+//  2. A live MediaStreamTrack that never actually delivers frames (ended,
+//     or 0x0 after loadedmetadata) looks IDENTICAL to a rendering failure
+//     from the outside -- a black rectangle either way. logStreamDiagnostics
+//     below distinguishes "no frames arriving from the device" from
+//     "frames arriving but not rendered" and reports both to debug.json.
+// window.__imDiag is defined in the FIRST <script> block and is meant to be
+// resilient, but it was directly implicated in a real incident: a failure
+// during onEnableDevices left debug.json completely un-rewritten (still
+// showing the load-time entries from three minutes earlier), meaning either
+// the failure happened before any diagnostic call, or a diagnostic call
+// itself never returned. Every call site below now goes through this
+// wrapper so __imDiag can NEVER be the reason a caller stalls or throws,
+// regardless of which of those turns out to be true.
+function safeDiag(stage, detail) {
+  try {
+    window.__imDiag && window.__imDiag(stage, detail);
+  } catch (err) {
+    /* __imDiag must never be able to break its caller */
+  }
+}
+
+async function attachStreamToVideo(videoEl, stream, label) {
+  videoEl.muted = true;
+  videoEl.autoplay = true;
+  videoEl.playsInline = true;
+  videoEl.srcObject = stream;
+
+  videoEl.addEventListener(
+    "loadedmetadata",
+    () => {
+      safeDiag(`video-loadedmetadata:${label}`, {
+        videoWidth: videoEl.videoWidth,
+        videoHeight: videoEl.videoHeight,
+        zeroDimensions: videoEl.videoWidth === 0 || videoEl.videoHeight === 0,
+      });
+    },
+    { once: true }
+  );
+
+  // videoEl.play()'s returned promise is NOT guaranteed to settle here: it
+  // can hang indefinitely (neither resolve nor reject) in this heavily
+  // sandboxed about:srcdoc context -- this is the confirmed root cause of a
+  // real regression where the awaited call here blocked device-list
+  // population and the level meter entirely, with zero diagnostics ever
+  // recorded because execution never reached a point that could log one.
+  // The caller (safeAttachCameraPreview) now bounds how long it waits for
+  // this whole function via withTimeout; this function no longer being
+  // awaited-through by anything device-list-related is the actual fix.
+  try {
+    await videoEl.play();
+    safeDiag(`video-play-ok:${label}`, {});
+  } catch (err) {
+    safeDiag(`video-play-failed:${label}`, { name: err.name, message: err.message });
+  }
+}
+
+// Audio-only safety, verified: getVideoTracks() always returns an array
+// (empty for an audio-only stream, never throws), the `if (videoTracks.length)`
+// guard means `[0]` is never indexed on an empty array, and `getSettings`
+// is feature-detected before use. describeCameraDiagnostics()'s own
+// `if (!diag.track) return "";` guard covers the case where this returns
+// no `.track` at all (audio-only). None of this throws for an audio-only
+// stream -- confirmed by re-reading, not just asserted.
+function logStreamDiagnostics(stream, label) {
+  const videoTracks = stream.getVideoTracks();
+  const detail = { videoTrackCount: videoTracks.length };
+  if (videoTracks.length) {
+    const track = videoTracks[0];
+    const settings = typeof track.getSettings === "function" ? track.getSettings() : {};
+    detail.track = {
+      label: track.label,
+      readyState: track.readyState, // "live" vs "ended" -- distinguishes a dead device from a render problem
+      muted: track.muted,
+      enabled: track.enabled,
+      settings: { width: settings.width, height: settings.height, frameRate: settings.frameRate, deviceId: settings.deviceId },
+    };
+    track.onended = () => safeDiag(`video-track-ended:${label}`, { trackLabel: track.label });
+    track.onmute = () => safeDiag(`video-track-muted:${label}`, { trackLabel: track.label });
+    track.onunmute = () => safeDiag(`video-track-unmuted:${label}`, { trackLabel: track.label });
+  }
+  safeDiag(`stream-diagnostics:${label}`, detail);
+  return detail;
+}
+
+function describeCameraDiagnostics(diag) {
+  if (!diag.track) return "";
+  const { label, readyState, settings } = diag.track;
+  const dims = settings.width && settings.height ? `${settings.width}x${settings.height}` : "unknown size";
+  return ` — ${label || "camera"} ${dims} (track ${readyState})`;
+}
+
+/**
+ * Runs attach -> diagnostics -> description as one bounded, non-throwing
+ * operation. Each step is isolated in its own try/catch (a failure in
+ * logStreamDiagnostics or describeCameraDiagnostics must not be able to
+ * hide a successful attach, or vice versa) and the whole attach step is
+ * timeout-wrapped, because attachStreamToVideo's internal `videoEl.play()`
+ * await is NOT guaranteed to ever settle in this sandboxed context --
+ * that hang, unbounded, is the confirmed cause of a real regression where
+ * it silently blocked device-list population entirely. Never throws;
+ * always returns { ok, diag, description, errors }, so a caller can
+ * ALWAYS proceed with whatever else it needs to do (populate dropdowns,
+ * start the level meter, enable the Start button) and separately decide
+ * what to show the user about the preview specifically.
+ */
+// `diagExtra` (optional): merged into every safeDiag() detail this call
+// makes. Exists so a caller that is DELIBERATELY provoking a failure --
+// today, only the self-test's "hung-play-does-not-block" check, via
+// label "selftest-hang-sim" -- can mark its own diagnostic entries as
+// such (`{ simulated: true }`) EXPLICITLY, rather than the warning
+// classifier in session-end.js having to pattern-match on the label
+// string. This function stays generic: it has no idea "selftest-hang-sim"
+// means anything special, and never will -- see that check's own call
+// site for where the marker actually gets set, and
+// buildDiagnosticsDocument()'s doc comment in session-end.js for why an
+// explicit marker beats guessing from a name.
+async function safeAttachCameraPreview(videoEl, stream, label, timeoutMs = 2500, diagExtra) {
+  const result = { ok: true, diag: null, description: "", errors: [] };
+
+  try {
+    await withTimeout(attachStreamToVideo(videoEl, stream, label), timeoutMs, `attachStreamToVideo:${label}`);
+  } catch (err) {
+    result.ok = false;
+    result.errors.push({ stage: "attach", name: err && err.name, message: err && err.message });
+    safeDiag(`camera-preview-attach-failed:${label}`, { name: err && err.name, message: err && err.message, ...diagExtra });
+  }
+
+  try {
+    result.diag = logStreamDiagnostics(stream, label);
+  } catch (err) {
+    result.ok = false;
+    result.errors.push({ stage: "diagnostics", name: err && err.name, message: err && err.message });
+    safeDiag(`camera-preview-diagnostics-failed:${label}`, { name: err && err.name, message: err && err.message, ...diagExtra });
+  }
+
+  try {
+    result.description = result.diag ? describeCameraDiagnostics(result.diag) : "";
+  } catch (err) {
+    result.errors.push({ stage: "describe", name: err && err.name, message: err && err.message });
+    safeDiag(`camera-preview-describe-failed:${label}`, { name: err && err.name, message: err && err.message, ...diagExtra });
+    result.description = "";
+  }
+
+  return result;
+}
+
+function describePreviewFailure(result) {
+  const first = result.errors[0];
+  if (!first) return "unknown error";
+  return `${first.stage}: ${first.name || "Error"} — ${first.message || "no message"}`;
+}
+
+async function onEnableDevices() {
+  el.enableBtn.disabled = true;
+  el.setupStatus.textContent = "Requesting microphone and camera access…";
+  let stream = null;
+  let hasVideo = true;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+  } catch (err) {
+    hasVideo = false;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err2) {
+      el.setupStatus.textContent = `Could not access microphone: ${err2.message}`;
+      el.enableBtn.disabled = false;
+      return;
+    }
+  }
+
+  state.rawStream = stream;
+  state.hasVideo = hasVideo;
+  el.previewRow.classList.remove("im-hidden");
+  el.previewRow.style.display = "";
+
+  // Device enumeration, the level meter, and enabling Start MUST happen
+  // regardless of whether the camera preview ever renders. A regression
+  // previously awaited the video-attach path BEFORE these -- a hung
+  // videoEl.play() promise (confirmed possible in this sandboxed context:
+  // it can neither resolve nor reject) silently blocked all three, with
+  // the dropdowns staying empty and zero diagnostics ever written, because
+  // execution never reached a point that could log one. Nothing below this
+  // comment can be blocked or skipped by a camera-preview failure.
+  await populateDeviceLists();
+  startLevelMeterTest(stream);
+  el.startBtn.disabled = false;
+  el.enableBtn.textContent = "Devices enabled";
+  el.setupStatus.textContent = "Mic and camera ready.";
+
+  if (!hasVideo) {
+    el.camNote.textContent = "Camera unavailable or denied — continuing audio-only.";
+    return;
+  }
+
+  // Everything from here down is best-effort and fully isolated: it can
+  // fail, throw, or time out without affecting anything above.
+  const previewResult = await safeAttachCameraPreview(el.previewVideo, stream, "enable-devices");
+  el.camNote.textContent = previewResult.ok
+    ? `Camera enabled${previewResult.description}.`
+    : `Camera preview failed (${describePreviewFailure(previewResult)}). Mic and device selection still work.`;
+}
+
+// Re-acquires getUserMedia with whichever devices are now selected in the
+// mic/camera dropdowns, and re-attaches the result to the preview. Wired to
+// both selects' `change` events -- previously nothing was, so switching
+// cameras did nothing at all.
+async function restartPreviewStream() {
+  if (!state.rawStream) return; // devices not enabled yet -- nothing to restart
+  const micDeviceId = el.micSelect.value || undefined;
+  const camDeviceId = el.camSelect.value || undefined;
+  el.camNote.textContent = "Switching device…";
+
+  try {
+    const constraints = {
+      audio: micDeviceId ? { deviceId: { exact: micDeviceId } } : true,
+      video: camDeviceId ? { deviceId: { exact: camDeviceId } } : true,
+    };
+    const newStream = await navigator.mediaDevices.getUserMedia(constraints);
+
+    // Stop the OLD stream's tracks BEFORE swapping state -- leaving them
+    // running keeps the previous camera's indicator light on and can block
+    // the new device from opening (many webcams/OSes serialize access).
+    if (state.rawStream) {
+      state.rawStream.getTracks().forEach((t) => t.stop());
+    }
+
+    state.rawStream = newStream;
+    state.hasVideo = newStream.getVideoTracks().length > 0;
+
+    // Same fix as onEnableDevices, same reason: the level meter (the new
+    // MIC) must restart regardless of whether the new CAMERA's preview
+    // ever renders -- these were previously sequenced the other way
+    // around, so a hung video-attach also silently broke the level meter
+    // on every device switch, not just the preview.
+    stopLevelMeterTest();
+    startLevelMeterTest(newStream);
+    el.setupStatus.textContent = "Devices updated.";
+
+    if (!state.hasVideo) {
+      el.camNote.textContent = "No camera track on this device — continuing audio-only.";
+      return;
+    }
+
+    const previewResult = await safeAttachCameraPreview(el.previewVideo, newStream, "device-switch");
+    el.camNote.textContent = previewResult.ok
+      ? `Camera switched${previewResult.description}.`
+      : `Camera preview failed (${describePreviewFailure(previewResult)}). Mic switch still applied.`;
+  } catch (err) {
+    el.setupStatus.textContent = `Could not switch device: ${err.message}`;
+    el.camNote.textContent = `Switch failed: ${err.message}`;
+    window.__imDiag && window.__imDiag("restart-preview-failed", { message: err.message, name: err.name });
+  }
+}
+
+async function populateDeviceLists() {
+  let devices = [];
+  try {
+    devices = await navigator.mediaDevices.enumerateDevices();
+  } catch (err) {
+    devices = [];
+  }
+  fillSelect(el.micSelect, devices.filter((d) => d.kind === "audioinput"), "Microphone");
+  fillSelect(el.camSelect, devices.filter((d) => d.kind === "videoinput"), "Camera");
+}
+
+function fillSelect(select, devices, label) {
+  select.innerHTML = "";
+  if (!devices.length) {
+    const opt = document.createElement("option");
+    opt.textContent = `No ${label.toLowerCase()} found`;
+    select.appendChild(opt);
+    return;
+  }
+  devices.forEach((d, i) => {
+    const opt = document.createElement("option");
+    opt.value = d.deviceId;
+    opt.textContent = d.label || `${label} ${i + 1}`;
+    select.appendChild(opt);
+  });
+}
+
+function stopLevelMeterTest() {
+  if (state.testMeterHandle) cancelAnimationFrame(state.testMeterHandle);
+  state.testMeterHandle = null;
+  if (state.testAudioCtx) {
+    state.testAudioCtx.close().catch(() => {});
+    state.testAudioCtx = null;
+  }
+}
+
+function startLevelMeterTest(stream) {
+  stopLevelMeterTest();
+  const ctx = new AudioContext();
+  state.testAudioCtx = ctx;
+  const source = ctx.createMediaStreamSource(stream);
+  const analyser = ctx.createAnalyser();
+  analyser.fftSize = 512;
+  source.connect(analyser);
+  const data = new Uint8Array(analyser.fftSize);
+
+  const tick = () => {
+    analyser.getByteTimeDomainData(data);
+    let sum = 0;
+    for (let i = 0; i < data.length; i++) {
+      const v = (data[i] - 128) / 128;
+      sum += v * v;
+    }
+    const level = Math.min(1, Math.sqrt(sum / data.length) * 4);
+    el.levelMeter.style.setProperty("--value", `${Math.round(level * 100)}%`);
+    state.testMeterHandle = requestAnimationFrame(tick);
+  };
+  tick();
+}
+
+function gatherConfig() {
+  const parseList = (value, max) =>
+    value.split(",").map((s) => s.trim()).filter(Boolean).slice(0, max);
+
+  const kbMode = el.kbMode.value === "local" ? "local" : "collection";
+  return {
+    topic: el.brief.value,
+    kbMode,
+    kbPath: el.kbPath.value.trim() || `${BASE_DIR}/kb/`,
+    collectionId: kbMode === "collection" ? el.collectionSelect.value || null : null,
+    webSearch: el.webSearch.checked,
+    xSearch: el.xSearch.checked,
+    webAllowedDomains: parseList(el.webDomains.value, 5),
+    xAllowedHandles: parseList(el.xHandles.value, 20),
+    voice: el.voice.value || "eve",
+    micDeviceId: el.micSelect.value || undefined,
+    camDeviceId: el.camSelect.value || undefined,
+  };
+}
+
+async function onStartInterview() {
+  el.startBtn.disabled = true;
+  el.setupStatus.textContent = "Preparing session…";
+  const config = gatherConfig();
+
+  // Fail clearly, before ever touching a microphone/camera or minting a
+  // token, if Collection mode has no collection selected. No baked-in
+  // default is shipped -- see buildTools()'s own matching backstop check
+  // in lib/tools.js, which this is meant to make unreachable in normal
+  // use by catching the same condition earlier and with a clearer message.
+  if (config.kbMode !== "local" && !config.collectionId) {
+    el.setupStatus.textContent =
+      "No collection selected. Create one on the Advanced tab (or via the CLI's " +
+      "`collections create <name>` + `set collection=<id>`), or switch Knowledge Base mode to Local.";
+    el.startBtn.disabled = false;
+    return;
+  }
+
+  state.config = config;
+  stopLevelMeterTest();
+
+  try {
+    // Re-acquire a stream pinned to the chosen devices (explicit user gesture already happened).
+    const constraints = {
+      audio: config.micDeviceId ? { deviceId: { exact: config.micDeviceId } } : true,
+      video: state.hasVideo ? (config.camDeviceId ? { deviceId: { exact: config.camDeviceId } } : true) : false,
+    };
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia(constraints);
+    } catch (err) {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: constraints.audio, video: false });
+      state.hasVideo = false;
+    }
+    if (state.rawStream) state.rawStream.getTracks().forEach((t) => t.stop());
+    state.rawStream = stream;
+
+    if (config.kbMode === "local") {
+      el.setupStatus.textContent = "Loading knowledge base…";
+      await state.kb.loadFromDir(
+        config.kbPath,
+        (p) => slicc.readDir(p),
+        (p) => slicc.readFile(p)
+      );
+      el.kbStatus.textContent = state.kb.isEmpty()
+        ? "No documents found at that path — continuing with search tools only."
+        : `Loaded ${state.kb.files.length} document(s): ${state.kb.files.map((f) => f.filename).join(", ")}`;
+    }
+
+    el.setupStatus.textContent = "Minting ephemeral token…";
+    const token = await withTimeout(mintEphemeralToken((cmd) => slicc.exec(cmd), 280), 15000, "mintEphemeralToken");
+
+    el.setupStatus.textContent = "Connecting…";
+    await beginSession(config, token.value);
+  } catch (err) {
+    el.setupStatus.textContent = `Failed to start: ${err.message}`;
+    el.startBtn.disabled = false;
+    // A timed-out session.connect() abandons our WAIT for the WebSocket,
+    // not the WebSocket itself -- it can still open later, with hooks
+    // already wired, and start feeding transcript/audio state for a
+    // session the UI thinks never started. Tear it down defensively.
+    // Detach onClose first so this deliberate cleanup close doesn't cascade
+    // into a full stopInterview() for an interview that never began (no
+    // recorders were ever created at this point in the failure path).
+    if (state.session) {
+      state.session.onClose = null;
+      state.session.close();
+      state.session = null;
+    }
+    // Deliberate, small deviation from ui-state-INTEGRATION.md's stated
+    // assumption that "this path runs before beginSession() ever calls
+    // markSessionStarted()": that's only true for failures during token
+    // minting (before beginSession() is even invoked). beginSession()
+    // itself calls markSessionStarted() as its FIRST line, before
+    // session.connect() -- so a connect timeout (exactly the case the
+    // comment above this one is about) throws back into THIS catch block
+    // with the marker already set, and nothing recorded (recorders are
+    // only start()ed after a successful connect). Clearing here
+    // unconditionally is a safe no-op when no marker was ever set
+    // (clearSession() just re-saves session:null) and prevents a false
+    // "recording was interrupted" report next load for an interview that
+    // never actually started recording anything.
+    uiState.clearSession();
+  }
+}
+
+async function beginSession(config, ephemeralToken) {
+  state.t0 = Date.now();
+  // Mark a recording as in-flight, as early as possible (before any of
+  // the WebSocket/AudioContext/recorder setup below, all of which can
+  // fail or the panel can be resized mid-setup) -- this is the durable
+  // record that survives a re-render and lets init()'s restore() tell the
+  // user plainly "a recording was interrupted" instead of a pristine
+  // Setup screen. Directory formula MUST match writeSessionArtifacts()'s
+  // `dir` exactly (see that function) -- same source of truth, not a
+  // second one.
+  const sessionDirForMarker = `${BASE_DIR}/sessions/${new Date(state.t0).toISOString().replace(/[:.]/g, "-")}`;
+  await uiState.markSessionStarted({ sessionDir: sessionDirForMarker, startedAt: state.t0 });
+  state.transcript = new TranscriptStore(state.t0);
+  state.ended = false;
+  state.pendingForceMessageText = null;
+  state.forceMessageItemIds = new Set();
+  // Snapshot the current (possibly config.json/CLI-configured) session
+  // length for THIS session -- see the comment by `let sessionLengthMs`
+  // above. A config push arriving mid-interview must never move the
+  // deadline of a session already running.
+  state.sessionLengthMs = sessionLengthMs;
+
+  // --- Audio graph: mic capture (worklet -> PCM16) + playback (scheduled queue) ---
+  const audioCtx = new AudioContext({ sampleRate: 24000 });
+  state.audioCtx = audioCtx;
+
+  // Watchdog for the failure mode that killed the first real interview:
+  // the browser suspends this AudioContext on a visibility/occlusion/focus
+  // change, the worklet stops posting chunks, and session.appendAudio(...)
+  // silently stops being called -- nothing throws, nothing closes. Attached
+  // immediately (before audioWorklet.addModule/connect below) so even a
+  // suspend during setup gets logged; auto-resume attempts themselves only
+  // fire once the watchdog is start()ed, further down.
+  const micWatchdog = createMicWatchdog({
+    onStall: (info) => {
+      addChip("mic stalled", `${Math.round(info.sinceLastFrameMs / 1000)}s no audio`, true);
+      setMicWarning(true);
+    },
+    onRecovered: (info) => {
+      addChip("mic recovered", `after ${Math.round(info.stalledForMs / 1000)}s`);
+      setMicWarning(false);
+    },
+    onFatal: (info) => {
+      addChip("mic failed", info.reason, true);
+      setMicWarning(true);
+      stopInterview("mic-watchdog-fatal");
+    },
+    onDiagnostic: () => {
+      state.micWatchdogEvents = micWatchdog.getEvents(); // cheap; kept current for writeSessionArtifacts()
+    },
+  });
+  state.micWatchdog = micWatchdog;
+  micWatchdog.attachAudioContext(audioCtx);
+  micWatchdog.attachStream(state.rawStream);
+
+  // Receive-direction counterpart to micWatchdog above: watches for the
+  // failure that killed the SECOND real interview, where the socket
+  // stayed open (no close/error event) but the SERVER stopped sending
+  // anything -- see stream-watchdog.js's header for the transcript.json
+  // gap measurements behind its threshold. Constructed here (before
+  // session.connect() below) so attachSession() can be called as soon as
+  // the session object exists; started once the connection is actually
+  // live, alongside micWatchdog.start() further down.
+  const streamWatchdog = createStreamWatchdog({
+    onStall: (info) => {
+      addChip("stream stalled", `${Math.round(info.sinceLastEventMs / 1000)}s no server events`, true);
+      setStreamWarning(true);
+    },
+    onRecovered: (info) => {
+      addChip("stream recovered", `after ${Math.round(info.stalledForMs / 1000)}s`);
+      setStreamWarning(false);
+    },
+    onFatal: (info) => {
+      addChip("stream failed", info.reason, true);
+      setStreamWarning(true);
+      stopInterview("stream-stalled");
+    },
+    onEmptyResponse: (info) => {
+      addChip("empty response", info.itemId ? `item ${info.itemId}` : "no transcript text", true);
+    },
+    onDiagnostic: () => {
+      state.streamWatchdogEvents = streamWatchdog.getEvents(); // cheap; kept current for collectDiagnosticsEntries()
+    },
+  });
+  state.streamWatchdog = streamWatchdog;
+
+  // Graceful wrap-up instead of a blind timer -- see WRAP_UP_MESSAGE/
+  // WRAP_UP_DIRECTIVE/WRAP_UP_FALLBACK_DELAY_MS's own comments and
+  // wrapup-controller.js's header for the two real failures this fixes
+  // (round 1: a force_message barged in mid-sentence; round 2: the first
+  // fix's own directive-deferral lost a race against the model's next
+  // turn). Constructed here, before `session` exists, is fine --
+  // every callback below reads state.session/state.lastSessionConfig/
+  // state.player at CALL time (poll() is only ever invoked from
+  // startCountdown()'s tick, itself only started at the very end of this
+  // function once everything is live), not at construction time.
+  const wrapupController = createWrapupController({
+    wrapAtMs: state.sessionLengthMs - wrapupOffsetMs(state.sessionLengthMs),
+    fallbackDelayMs: WRAP_UP_FALLBACK_DELAY_MS,
+    silenceSustainMs: SILENCE_SUSTAIN_MS,
+    sendTimeCheck: () => {
+      // Preferred framing (verified against the live API): the
+      // time check as information the agent RECEIVED, via a genuine
+      // conversation.item.create/function_call_output with a synthetic
+      // call_id -- no preceding function call. Never touches
+      // _inFlightCalls/onToolCallsSettled (RealtimeSession#sendFunctionCallOutput
+      // is a raw, one-off send, same call this file already uses for
+      // real tool results) -- this is not a real tool call, it's a
+      // narrow, deliberate (if undocumented) use of the same wire shape.
+      // See WRAP_UP_DIRECTIVE's own comment for why the documented
+      // session.update backstop is ALSO always sent alongside this.
+      if (state.session && state.session.isOpen()) {
+        state.session.sendFunctionCallOutput(WRAP_UP_TIME_CHECK_CALL_ID, WRAP_UP_TIME_CHECK_PAYLOAD);
+      }
+    },
+    sendDirective: () => {
+      // Append-only: keep the real interview instructions intact, add
+      // the closing directive after them. This is a session.update, so
+      // it only takes effect for responses generated from here on --
+      // it can never retroactively affect (or interrupt) whatever is
+      // already in flight, and (unlike a force_message) it never speaks,
+      // so it is called by WrapupController UNCONDITIONALLY at the
+      // threshold -- there is nothing here that needs to wait for the
+      // user to stop talking. Recorded back onto state.lastSessionConfig
+      // so session.json's own copy of the sent config reflects what was
+      // ACTUALLY in effect for the rest of the session, not just the
+      // original.
+      const current = (state.lastSessionConfig && state.lastSessionConfig.instructions) || "";
+      const updated = appendWrapupDirective(current, WRAP_UP_DIRECTIVE);
+      if (state.lastSessionConfig) state.lastSessionConfig.instructions = updated;
+      if (state.session && state.session.isOpen()) {
+        state.session.updateSession({ instructions: updated });
+      }
+      addChip("wrap-up", "asked the model to close after your next answer");
+    },
+    sendFallbackMessage: () => {
+      // Last resort only -- see WRAP_UP_FALLBACK_DELAY_MS's comment.
+      // Unlike the directive above, THIS one speaks -- WrapupController's
+      // own poll() defers it indefinitely while the user is talking, while
+      // any response is still generating, and while the player still has
+      // agent audio to drain, so it never reaches here unless the room is
+      // genuinely quiet.
+      if (state.session && state.session.isOpen()) {
+        state.session.sendForceMessage(WRAP_UP_MESSAGE, true);
+        // Sets up claimForceMessageItem() (see wireSessionHooks()) to
+        // record the NEXT brand-new assistant item id under this exact
+        // text, instead of whatever (possibly empty) transcript event
+        // the server sends for it -- see recordForcedMessage()'s doc
+        // comment in transcript-store.js for why.
+        state.pendingForceMessageText = WRAP_UP_MESSAGE;
+      }
+      addChip("wrap-up fallback", "closing line sent (no natural close yet)", true);
+    },
+    onClosingTurnComplete: () => {
+      // Fired for EITHER a natural model-driven close or the fallback's
+      // own force_message completing -- both mean "the interview has now
+      // been wound down". Wait for the agent's own audio to finish
+      // actually PLAYING (response.done only means generation finished,
+      // not that playback has drained -- see AudioPlayer#waitForDrain,
+      // the same pattern onToolCallsSettled already uses below) before
+      // ending, and re-check user speech state at that later point (not
+      // the state at the moment this callback fired) in case the user
+      // started talking again during the wait -- never cut them off.
+      addChip("wrap-up", "closing turn complete");
+      (state.player ? state.player.waitForDrain() : Promise.resolve()).then(() => {
+        if (!state.ended && !wrapupController.getStatus().userSpeaking) {
+          stopInterview("wrapped-up");
+        }
+      });
+    },
+    onSustainedSilence: () => {
+      // The OTHER route to the same clean end -- for a session whose
+      // closing turn (natural or the canned fallback) never settles into
+      // a clean response.done of its own, but where the conversation has
+      // gone quiet (nobody speaking, nothing generating, nothing still
+      // playing) for SILENCE_SUSTAIN_MS after that close was delivered.
+      // It can no longer fire on ordinary post-threshold thinking silence
+      // before anything has closed -- see wrapup-controller.js's ROUND 4
+      // note. By construction (see poll()) this
+      // callback only ever fires once already-drained/not-speaking/
+      // nothing-in-flight has held continuously -- there is nothing left
+      // to wait on, so this stops immediately rather than re-checking
+      // anything the way onClosingTurnComplete above has to.
+      addChip("wrap-up", "ended on sustained silence");
+      if (!state.ended) {
+        stopInterview("wrapped-up");
+      }
+    },
+    onDiagnostic: () => {
+      state.wrapupControllerEvents = wrapupController.getEvents(); // cheap; kept current for collectDiagnosticsEntries()
+    },
+  });
+  state.wrapupController = wrapupController;
+
+  // AudioWorklet has its OWN module loader with the same network-resolution
+  // problem as the main document (see the loader comment near the top of
+  // this file) -- so it also needs a Blob URL, not a network URL.
+  const workletBlobUrl = await window.__imLoadModule(`${LIB_DIR}/mic-worklet.js`);
+  await audioCtx.audioWorklet.addModule(workletBlobUrl);
+
+  const micSource = audioCtx.createMediaStreamSource(state.rawStream);
+  const micAnalyser = audioCtx.createAnalyser();
+  micAnalyser.fftSize = 1024;
+  micSource.connect(micAnalyser);
+  state.micAnalyser = micAnalyser;
+
+  const workletNode = new AudioWorkletNode(audioCtx, "mic-capture-processor", {
+    processorOptions: { sampleRate: audioCtx.sampleRate },
+  });
+  micSource.connect(workletNode);
+  state.micWorkletNode = workletNode;
+  state.micSourceNode = micSource;
+
+  const player = new AudioPlayer(audioCtx, 24000);
+  state.player = player;
+
+  // --- Recorders ---
+  state.humanRecorder = createHumanRecorder(state.rawStream);
+  state.agentRecorder = createAgentRecorder(player.stream);
+
+  // --- Knowledge base / tools / instructions ---
+  // Default path: file_search against the chosen collection (server-side,
+  // no local excerpt injection needed). Fallback path (kbMode === "local"):
+  // BM25-ranked excerpts injected into instructions + lookup_documents tool.
+  const sourceMaterial = config.kbMode === "local" ? state.kb.sourceMaterial(config.topic || "the interview topic") : "";
+  // sessionMinutes comes from the same per-session snapshot the countdown
+  // and WrapupController use (never the live, CLI-pushable `sessionLengthMs`),
+  // so the prompt's stated duration cannot disagree with the deadline this
+  // interview is actually running to -- see buildInstructions() in tools.js.
+  const instructions = buildInstructions({
+    topic: config.topic,
+    sourceMaterial,
+    sessionMinutes: state.sessionLengthMs / 60000,
+  });
+  const tools = buildTools(config);
+  const sessionConfig = buildSessionConfig({ voice: config.voice, instructions, tools });
+  state.lastSessionConfig = sessionConfig;
+
+  // --- Realtime session ---
+  // localFunctionNames: the ONLY function-call names that are genuinely
+  // ours to answer -- everything else RealtimeSession sees via
+  // response.function_call_arguments.done is a SERVER-SIDE tool
+  // (file_search/collections_search, web_search, x_search, mcp, etc) that
+  // the server continues on its own. Derived directly from `tools` (this
+  // session's REAL declared tools, built two lines above) rather than any
+  // hardcoded name list -- see RealtimeSession#isLocalFunction's own doc
+  // comment for the full failure chain replying to a server tool caused
+  // (duplicate/truncated assistant turns, lost user answers, an
+  // unexplained response-generation gap).
+  const localFunctionNames = tools.filter((t) => t.type === "function").map((t) => t.name);
+  const session = new RealtimeSession({ model: MODEL, localFunctionNames });
+  state.session = session;
+  wireSessionHooks(session);
+  streamWatchdog.attachSession(session);
+
+  // WebSocket connect() only resolves/rejects on the browser's own 'open'/
+  // 'error' events; a network black hole (silently dropped packets, a dead
+  // proxy) fires neither, and this await would otherwise hang forever with
+  // "Connecting…" stuck on screen. Every other network-touching call in
+  // this file is already timeout-wrapped -- this one was missed.
+  await withTimeout(session.connect(ephemeralToken), 15000, "session.connect");
+  session.updateSession(sessionConfig);
+
+  // Kick off audio streaming to the server.
+  workletNode.port.onmessage = (event) => {
+    if (event.data && event.data.type === "chunk") {
+      const int16 = new Int16Array(event.data.buffer);
+      session.appendAudio(int16ToBase64(int16));
+      micWatchdog.noteFrameAppended();
+    }
+  };
+  micWatchdog.start();
+  streamWatchdog.start();
+
+  state.humanRecorder.start();
+  state.agentRecorder.start();
+
+  showScreen("live");
+  // Countdown and waveforms must start regardless of whether the live
+  // self-view preview ever renders -- the SAME hang risk as the Setup
+  // screen's preview applies here, and blocking on it would silently
+  // break the five-minute hard stop for an actual recording session. The
+  // preview attach happens after, isolated and non-blocking.
+  startCountdown();
+  startWaveforms();
+  const previewResult = await safeAttachCameraPreview(el.liveVideo, state.rawStream, "live-screen");
+  if (!previewResult.ok) {
+    addChip("preview", describePreviewFailure(previewResult), true);
+  }
+}
+
+function wireSessionHooks(session) {
+  // Response-lifecycle diagnostics only (added after a real session
+  // showed an unexplained 59s gap between a user question and the
+  // agent's reply, with the stream watchdog never firing -- i.e. inbound
+  // events kept arriving, but response GENERATION itself was slow or
+  // stalled, and there isn't enough evidence yet to say why). Not a fix --
+  // just logs response.created/response.done with each response's id,
+  // output item ids, and (on .done) how long that response took from its
+  // own .created to .done, into the same window.__IM_DIAG__ stream
+  // everything else in this file uses, which flows into this session's
+  // diagnostics.json via collectDiagnosticsEntries(). Local to one
+  // wireSessionHooks() call, i.e. reset fresh every beginSession().
+  const responseCreatedAt = new Map(); // response_id -> Date.now() at response.created
+  const summarizeResponse = (data) => {
+    const response = data && data.response;
+    const outputItemIds = Array.isArray(response && response.output) ? response.output.map((item) => item && item.id).filter(Boolean) : [];
+    return { responseId: (response && response.id) || null, outputItemIds };
+  };
+  session.onResponseCreated = (data) => {
+    const { responseId, outputItemIds } = summarizeResponse(data);
+    if (responseId) responseCreatedAt.set(responseId, Date.now());
+    window.__imDiag && window.__imDiag("response-created", { responseId, outputItemIds });
+    if (state.wrapupController) state.wrapupController.noteResponseCreated();
+  };
+
+  session.onError = (err) => {
+    addChip("error", (err && err.message) || "error", true);
+  };
+
+  // Previously unwired: RealtimeSession defines onClose but nothing here
+  // ever assigned it, so a connection that died mid-interview (network
+  // drop, server-side close, token expiry) left the UI silently frozen --
+  // countdown and speaking indicator kept showing stale state with no
+  // signal anything was wrong. `state.ended` distinguishes an unexpected
+  // close from the one we ourselves trigger via session.close() in
+  // stopInterview() (which already sets state.ended = true first).
+  session.onClose = (event) => {
+    window.__imDiag && window.__imDiag("session-closed", { code: event && event.code, reason: event && event.reason, wasClean: event && event.wasClean, alreadyEnded: state.ended });
+    if (state.ended) return; // our own intentional close during stopInterview
+    addChip("connection closed", event && event.reason ? event.reason : "unexpected", true);
+    setSpeaking("idle");
+    stopInterview("connection-closed");
+  };
+
+  session.onSpeechStarted = () => {
+    setSpeaking("user");
+    if (state.player) state.player.flush(); // barge-in
+    if (state.wrapupController) state.wrapupController.noteUserSpeechStarted();
+  };
+  session.onSpeechStopped = (data) => {
+    setSpeaking("idle");
+    if (state.wrapupController) state.wrapupController.noteUserSpeechStopped();
+    // No dedicated "user transcript final" event exists in this API (only
+    // the cumulative .updated) -- speech_stopped's item_id (when present;
+    // OpenAI-compatible events carry one) is the closest real signal that a
+    // user turn is settled. Previously unwired: markUserFinal existed on
+    // TranscriptStore but nothing ever called it, so `final` stayed false
+    // for every user entry regardless of what actually happened.
+    if (data && data.item_id) {
+      state.transcript.markUserFinal(data.item_id);
+      renderTranscript();
+    }
+  };
+
+  session.onUserTranscriptUpdated = (itemId, text) => {
+    state.transcript.setUserTranscript(itemId, text); // CUMULATIVE — replace, never append
+    renderTranscript();
+  };
+
+  session.onAssistantTranscriptDelta = (itemId, delta) => {
+    if (claimForceMessageItem(itemId)) return; // see claimForceMessageItem()'s doc comment
+    state.transcript.appendAssistantDelta(itemId, delta);
+    setSpeaking("agent");
+    renderTranscript();
+    if (state.streamWatchdog) state.streamWatchdog.noteAssistantDelta(itemId);
+  };
+  session.onAssistantTranscriptDone = (itemId, text) => {
+    if (claimForceMessageItem(itemId)) return; // see claimForceMessageItem()'s doc comment
+    state.transcript.markAssistantFinal(itemId, text);
+    renderTranscript();
+    // Flags the exact shape of the real failure's 4:30 entry: a response
+    // that settled with no delta ever received and no final text either.
+    // A force_message's own empty .done is excluded from ever reaching
+    // here (claimForceMessageItem() above returns before this runs), so
+    // this can no longer false-positive on every session's wrap-up nudge.
+    if (state.streamWatchdog) state.streamWatchdog.noteAssistantResponseDone(itemId, text);
+  };
+
+  session.onAudioDelta = (base64) => {
+    if (state.player) state.player.enqueueBase64(base64);
+  };
+
+  // Only ever invoked for a genuinely LOCAL function-call name (see
+  // localFunctionNames in beginSession() and
+  // RealtimeSession#isLocalFunction's doc comment) -- today that is only
+  // ever "lookup_documents", and only in local-KB mode. The
+  // "Unknown function" fallback is defensive: it can no longer actually
+  // be reached for THIS file's current declared tools (a server-side
+  // tool call is now gated out entirely before this ever runs, see
+  // onServerToolCall below), but is kept in case a future client-side
+  // function tool is ever declared without this handler being updated to
+  // match.
+  session.onFunctionCall = async ({ name, arguments: args }) => {
+    const query = args && args.query ? args.query : "";
+    state.transcript.logTool(name, query);
+    addChip(name, query);
+    renderTranscript();
+    if (name === "lookup_documents") {
+      return state.kb.lookupDocuments(query);
+    }
+    return { error: `Unknown function: ${name}` };
+  };
+
+  // A SERVER-SIDE tool call (file_search/collections_search, web_search,
+  // x_search, mcp, etc -- anything not in localFunctionNames). The server
+  // executes and continues the response on its own; this must NEVER send
+  // a function_call_output or touch onToolCallsSettled (RealtimeSession
+  // itself already guarantees that -- see isLocalFunction()). This hook
+  // exists purely so the UI still shows a search happened: same
+  // chip/transcript treatment as a real client-side tool call, just no
+  // response is expected or returned.
+  session.onServerToolCall = ({ name, arguments: args }) => {
+    const query = args && args.query ? args.query : "";
+    state.transcript.logTool(name, query);
+    addChip(name, query);
+    renderTranscript();
+  };
+
+  session.onToolCallsSettled = () => {
+    state.awaitingContinuation = true;
+    (state.player ? state.player.waitForDrain() : Promise.resolve()).then(() => {
+      if (state.awaitingContinuation && session.isOpen()) {
+        session.requestResponse();
+        state.awaitingContinuation = false;
+      }
+    });
+  };
+
+  session.onResponseDone = (data) => {
+    // Response-lifecycle diagnostic (see the header comment near
+    // onResponseCreated above) -- logged first, before any of the
+    // existing tool-chip/speaking-state handling below, so it is recorded
+    // even if something further down ever throws.
+    const { responseId, outputItemIds } = summarizeResponse(data);
+    const createdAt = responseId ? responseCreatedAt.get(responseId) : null;
+    const elapsedMs = createdAt != null ? Date.now() - createdAt : null;
+    if (responseId) responseCreatedAt.delete(responseId);
+    window.__imDiag && window.__imDiag("response-done", { responseId, outputItemIds, elapsedMs });
+    if (state.wrapupController) state.wrapupController.noteResponseDone();
+
+    // Best-effort: surface server-side search tool activity if the payload
+    // exposes it (xAI does not document the exact shape for server-side
+    // web_search/x_search/file_search calls at the time this was written).
+    const output = data && data.response && data.response.output;
+    if (Array.isArray(output)) {
+      for (const item of output) {
+        if (item && typeof item.type === "string" && /search/i.test(item.type)) {
+          addChip(item.type, item.query || "");
+        }
+      }
+    }
+    setSpeaking("idle");
+  };
+}
+
+/**
+ * Correlates a brand-new assistant item id to the wrap-up force_message we
+ * just sent (see startCountdown()'s tick(), which sets
+ * state.pendingForceMessageText right after calling sendForceMessage()).
+ *
+ * Heuristic, not a protocol guarantee: a force_message's
+ * `conversation.item.create` carries no client-supplied id, so there is no
+ * exact correlation available from the protocol itself. Relies on
+ * docs/speech-to-speech.md's own framing of force_message -- "Do NOT send
+ * response.create -- the force_message IS the turn" -- meaning no other
+ * response should be concurrently in flight when we send one, so the very
+ * next brand-new assistant item id observed is it.
+ *
+ * Returns true (and has already done everything needed: recording the
+ * real wrap-up text via TranscriptStore#recordForcedMessage, re-rendering,
+ * and remembering this item id so every LATER event for it is also
+ * swallowed here) when `itemId` is the force_message's. Returns false
+ * otherwise, so the caller falls through to its normal handling unchanged.
+ */
+function claimForceMessageItem(itemId) {
+  if (state.forceMessageItemIds.has(itemId)) return true; // already claimed -- swallow every further event for it (a delta arriving after the claiming .done, or vice versa, can never re-open or duplicate the entry)
+  if (!state.pendingForceMessageText) return false;
+  if (state.transcript.hasItem(itemId)) return false; // not a NEW item -- can't be the force_message's
+
+  state.forceMessageItemIds.add(itemId);
+  state.transcript.recordForcedMessage(itemId, state.pendingForceMessageText);
+  state.pendingForceMessageText = null;
+  renderTranscript();
+  return true;
+}
+
+function setSpeaking(who) {
+  // A mic warning OR a stream warning takes priority over the ordinary
+  // speaking indicator -- either one means something is actively wrong
+  // with a live session and must not be silently overwritten by the next
+  // routine "You/Agent speaking"/"Listening" update.
+  if (el.speakingIndicator.dataset.micWarning || el.speakingIndicator.dataset.streamWarning) return;
+  const el2 = el.speakingIndicator;
+  el2.classList.remove("sprinkle-status-light--informative", "sprinkle-status-light--positive", "sprinkle-status-light--notice");
+  if (who === "user") {
+    el2.textContent = "You are speaking";
+    el2.classList.add("sprinkle-status-light--positive");
+  } else if (who === "agent") {
+    el2.textContent = "Agent is speaking";
+    el2.classList.add("sprinkle-status-light--informative");
+  } else {
+    el2.textContent = "Listening";
+    el2.classList.add("sprinkle-status-light--notice");
+  }
+}
+
+// Shared by setMicWarning()/setStreamWarning() below: recomputes
+// #im-speaking-indicator purely from which warning dataset flags are
+// currently set, so clearing ONE warning while the other is still active
+// can never incorrectly drop the negative styling or the wrong warning's
+// text (a bug the first version of this had -- each setter blindly
+// toggled the negative class off on its own `active=false`, which would
+// have erased a still-active OTHER warning's styling).
+function _syncWarningIndicator() {
+  const el2 = el.speakingIndicator;
+  const micActive = !!el2.dataset.micWarning;
+  const streamActive = !!el2.dataset.streamWarning;
+  if (micActive || streamActive) {
+    el2.classList.add("sprinkle-status-light--negative");
+    el2.classList.remove("sprinkle-status-light--informative", "sprinkle-status-light--positive", "sprinkle-status-light--notice");
+    // Mic takes text priority when both are active -- it is the more
+    // locally-actionable of the two (a hardware/OS-level issue on this
+    // machine vs. a server-side connection issue).
+    el2.textContent = micActive ? "Mic stalled — recovering…" : "Connection stalled — recovering…";
+  } else {
+    el2.classList.remove("sprinkle-status-light--negative");
+  }
+}
+
+// Toolbar-level, always-in-view mic-stall warning (the point: last time
+// this failure was completely silent). setSpeaking() defers to this while
+// active, above. onRecovered/onStall in beginSession() drive this; onFatal
+// leaves it set through to stopInterview()'s move to the Review screen, so
+// it is never left showing with nothing behind it.
+function setMicWarning(active) {
+  const el2 = el.speakingIndicator;
+  if (active) el2.dataset.micWarning = "1";
+  else delete el2.dataset.micWarning;
+  _syncWarningIndicator();
+  // Only fall back to the ordinary speaking indicator once BOTH warnings
+  // are clear -- a stream stall active/clearing independently of this one
+  // must not be clobbered.
+  if (!active && !el2.dataset.micWarning && !el2.dataset.streamWarning) setSpeaking("idle");
+}
+
+// Same treatment as setMicWarning() above, for the receive-direction
+// counterpart (stream-watchdog.js) -- reuses the identical
+// sprinkle-status-light--negative styling and #im-speaking-indicator
+// element so an inbound-silence fault is exactly as unmissable as a mic
+// stall was. Kept as a distinct dataset flag (streamWarning, not
+// micWarning) so the two failure modes can be told apart in a DOM read,
+// and so clearing one never stomps on the other if both were ever active
+// at once.
+function setStreamWarning(active) {
+  const el2 = el.speakingIndicator;
+  if (active) el2.dataset.streamWarning = "1";
+  else delete el2.dataset.streamWarning;
+  _syncWarningIndicator();
+  if (!active && !el2.dataset.micWarning && !el2.dataset.streamWarning) setSpeaking("idle");
+}
+
+function addChip(label, detail, isError) {
+  const chip = document.createElement("span");
+  chip.className = `sprinkle-badge sprinkle-badge--subtle sprinkle-badge--${isError ? "negative" : "informative"}`;
+  chip.textContent = detail ? `${label}: ${detail}` : label;
+  el.chipRow.appendChild(chip);
+  while (el.chipRow.children.length > 8) el.chipRow.removeChild(el.chipRow.firstChild);
+}
+
+function renderTranscript() {
+  renderTranscriptInto(el.transcript);
+}
+
+function renderTranscriptInto(container) {
+  container.innerHTML = "";
+  for (const entry of state.transcript.toJSON()) {
+    const row = document.createElement("div");
+    if (entry.role === "tool") {
+      row.className = "im-transcript-entry im-transcript-entry--tool";
+      row.innerHTML = `<span class="im-ts">${fmtMs(entry.t_ms)}</span>TOOL ${escapeHtml(entry.name)}${entry.query ? `: ${escapeHtml(entry.query)}` : ""}`;
+    } else {
+      row.className = `im-transcript-entry im-transcript-entry--${entry.role}`;
+      const who = entry.role === "user" ? "You" : "Agent";
+      row.innerHTML = `<span class="im-ts">${fmtMs(entry.t_start_ms)}</span><span class="im-who">${who}:</span> ${escapeHtml(entry.text)}`;
+    }
+    container.appendChild(row);
+  }
+  container.scrollTop = container.scrollHeight;
+}
+
+function fmtMs(ms) {
+  const totalSeconds = Math.max(0, Math.round(ms / 1000));
+  const mm = String(Math.floor(totalSeconds / 60)).padStart(2, "0");
+  const ss = String(totalSeconds % 60).padStart(2, "0");
+  return `${mm}:${ss}`;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function startCountdown() {
+  // setInterval, not requestAnimationFrame: rAF callbacks can be throttled
+  // or fully paused when the panel isn't the visible/focused surface (a
+  // very real scenario for a side-rail sprinkle during a "video call"-style
+  // interview), and the five-minute hard stop must fire on a wall-clock
+  // deadline regardless of visibility. A 250ms tick is plenty for a
+  // once-a-second countdown display; the actual cutoff is computed from
+  // `Date.now() - state.t0`, not from tick count, so even a throttled timer
+  // still fires the stop at the right wall-clock moment, just observed a
+  // little late rather than not at all.
+  const tick = () => {
+    if (state.ended) {
+      clearInterval(state.countdownHandle);
+      return;
+    }
+    const lengthMs = state.sessionLengthMs || sessionLengthMs;
+    const elapsed = Date.now() - state.t0;
+    const remaining = Math.max(0, lengthMs - elapsed);
+    el.countdown.textContent = fmtMs(remaining);
+    el.countdown.classList.toggle("im-countdown--warn", remaining <= 60000 && remaining > 20000);
+    el.countdown.classList.toggle("im-countdown--danger", remaining <= 20000);
+
+    // Wrap-up is now a whole state machine (WrapupController), not a
+    // blind fire-at-threshold timer -- see beginSession()'s construction
+    // of it, and wrapup-controller.js's header, for the real failures
+    // this fixes. poll() decides for itself whether it is time to send
+    // the time-check/directive, end on sustained silence, or (last
+    // resort) send the fallback -- this call site just feeds it the
+    // elapsed value already computed above, plus a cheap synchronous
+    // "is agent audio done playing right now" read from the real
+    // AudioPlayer (the one piece of live state this module cannot get
+    // for itself -- see poll()'s own doc comment), every tick.
+    if (state.wrapupController) {
+      state.wrapupController.poll(elapsed, state.player ? !state.player.isDraining() : true);
+    }
+
+    // The ultimate backstop -- see HARD_BACKSTOP_GRACE_MS's own comment
+    // for why this is now WELL BEYOND the nominal length rather than
+    // exactly at it: ending is silence-driven now (see
+    // onSustainedSilence/onClosingTurnComplete in beginSession()), so the
+    // nominal length only decides when wind-down BEGINS. This is what
+    // still guarantees a session cannot run forever if the user simply
+    // never stops talking (in which case the fallback and stop-on-silence
+    // both keep deferring, by design, and never fire).
+    if (elapsed >= lengthMs + HARD_BACKSTOP_GRACE_MS) {
+      clearInterval(state.countdownHandle);
+      stopInterview("timeout");
+      return;
+    }
+  };
+  state.countdownHandle = setInterval(tick, 250);
+  tick();
+}
+
+function startWaveforms() {
+  const userCtx = el.waveUser.getContext("2d");
+  const agentCtx = el.waveAgent.getContext("2d");
+  const userData = new Uint8Array(state.micAnalyser ? state.micAnalyser.fftSize : 1024);
+  const agentData = new Uint8Array(state.player ? state.player.analyser.fftSize : 1024);
+
+  const draw = (ctx, canvas, analyser, data) => {
+    if (!analyser) return;
+    analyser.getByteTimeDomainData(data);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.beginPath();
+    const sliceWidth = canvas.width / data.length;
+    let x = 0;
+    for (let i = 0; i < data.length; i++) {
+      const v = data[i] / 128.0;
+      const y = (v * canvas.height) / 2;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+      x += sliceWidth;
+    }
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = waveStrokeColor; // pre-resolved -- see resolveWaveStrokeColor() above
+    ctx.stroke();
+  };
+
+  const tick = () => {
+    if (state.ended) return;
+    draw(userCtx, el.waveUser, state.micAnalyser, userData);
+    draw(agentCtx, el.waveAgent, state.player && state.player.analyser, agentData);
+    state.waveHandle = requestAnimationFrame(tick);
+  };
+  tick();
+}
+
+async function stopInterview(reason) {
+  if (state.ended) return; // a second Stop press (or a second stopInterview trigger racing this one) -- see showSavingScreen()'s comment for why the button itself can't realistically be pressed again by the time this guard would matter.
+  state.ended = true;
+  // Immediately, synchronously, before ANY of the teardown/await work
+  // below (which real evidence showed can take several seconds for a
+  // full-length session's human.webm write) -- this is the actual fix for
+  // "the recording didn't stop on its own, I pressed the button": the
+  // session HAD stopped, but nothing on screen said so.
+  showSavingScreen();
+
+  // Before audioCtx.close(): stop() detaches the onstatechange handler and
+  // clears the poll timer, so teardown never triggers a spurious resume
+  // attempt against a context that is intentionally being closed.
+  if (state.micWatchdog) {
+    state.micWatchdog.stop();
+  }
+  if (state.streamWatchdog) {
+    state.streamWatchdog.stop();
+  }
+
+  if (state.countdownHandle) clearInterval(state.countdownHandle); // setInterval id, not rAF -- see startCountdown()
+  if (state.waveHandle) cancelAnimationFrame(state.waveHandle);
+
+  if (state.session) {
+    state.session.close();
+  }
+  if (state.micWorkletNode) {
+    try {
+      state.micWorkletNode.port.postMessage({ type: "stop" });
+    } catch (err) {
+      /* ignore */
+    }
+  }
+
+  const endedAt = Date.now();
+  const durationMs = state.t0 ? endedAt - state.t0 : 0;
+
+  // MediaRecorder.stop()'s promise (see recorder.js) resolves via the
+  // `onstop` event, which fires reliably in practice but is still a browser
+  // event this code does not control -- the hard-stop-at-5:00 requirement
+  // depends on this NOT being able to hang the whole shutdown/file-write
+  // path indefinitely. Falls back to whatever chunks were already
+  // collected (`.blob()`) rather than blocking forever.
+  const stopWithFallback = (recorder) => {
+    if (!recorder) return Promise.resolve(null);
+    return withTimeout(recorder.stop(), 8000, "recorder.stop").catch((err) => {
+      window.__imDiag && window.__imDiag("recorder-stop-timeout", { message: err.message });
+      return recorder.blob();
+    });
+  };
+  const [humanBlob, agentBlob] = await Promise.all([stopWithFallback(state.humanRecorder), stopWithFallback(state.agentRecorder)]);
+  state.humanBlob = humanBlob;
+  state.agentBlob = agentBlob;
+
+  if (state.rawStream) state.rawStream.getTracks().forEach((t) => t.stop());
+  if (state.audioCtx) {
+    try {
+      await state.audioCtx.close();
+    } catch (err) {
+      /* ignore */
+    }
+  }
+
+  await writeSessionArtifacts(endedAt, durationMs, reason);
+
+  // Artifacts are on disk now, so clearing the interrupted-session marker
+  // here cannot lose evidence of an interruption that already resolved
+  // normally -- this is every normal end-of-session path (manual stop,
+  // the timeout cap, a watchdog fatal, connection-closed), since they all
+  // funnel through this one stopInterview() function.
+  await uiState.clearSession();
+
+  // Finalisation: diagnostics.json (this session's own copy of the
+  // diagnostics log, which survives a reload unlike the shared,
+  // always-rewritten-from-scratch debug.json) and the recording-complete
+  // lick. Ordered internally as artifacts (already written above) ->
+  // diagnostics -> lick; either later step failing can never undo the
+  // artifacts or block the other step -- see finalizeSession's own doc
+  // comment in session-end.js.
+  const finalizeResult = await finalizeSession(slicc, {
+    sessionDir: state.sessionDir,
+    endReason: reason,
+    durationMs,
+    transcriptEntries: state.transcript.toJSON(),
+    diagnosticsEntries: collectDiagnosticsEntries(),
+    humanBytes: state.humanBlob ? state.humanBlob.size : null,
+    agentBytes: state.agentBlob ? state.agentBlob.size : null,
+    // Scopes diagnostics.json's warningCount to entries that actually
+    // happened during THIS interview (window.__IM_DIAG__, folded in via
+    // collectDiagnosticsEntries() above, accumulates for the whole page's
+    // lifetime -- see buildDiagnosticsDocument()'s doc comment in
+    // session-end.js for the real bug this fixes). Same t0/endedAt
+    // session.json itself records a few lines up in writeSessionArtifacts,
+    // so diagnostics.json and session.json always agree on the window.
+    sessionStartMs: state.t0,
+    sessionEndMs: endedAt,
+  });
+  window.__imDiag && window.__imDiag("session-finalize-result", finalizeResult);
+
+  showReview(endedAt, durationMs, reason);
+}
+
+// Diagnostics fed into session-end.js's writeDiagnostics(): the load-time
+// __imDiag() harness log plus (if a mic and/or stream watchdog ran this
+// session) their own event logs, merged and re-sorted by timestamp. This
+// is what lets diagnostics.json replace the separate mic-watchdog.json
+// write below, and is also where the new stream-watchdog.js events (the
+// receive-direction counterpart) land -- a post-mortem only needs to open
+// one file for either failure mode.
+function collectDiagnosticsEntries() {
+  const base = window.__IM_DIAG__ || [];
+  const micEvents = state.micWatchdog
+    ? state.micWatchdog.getEvents().map((e) => ({ t: e.t, stage: `mic-watchdog:${e.type}`, detail: e.detail }))
+    : [];
+  const streamEvents = state.streamWatchdog
+    ? state.streamWatchdog.getEvents().map((e) => ({ t: e.t, stage: `stream-watchdog:${e.type}`, detail: e.detail }))
+    : [];
+  const wrapupEvents = state.wrapupController
+    ? state.wrapupController.getEvents().map((e) => ({ t: e.t, stage: `wrapup-controller:${e.type}`, detail: e.detail }))
+    : [];
+  return [...base, ...micEvents, ...streamEvents, ...wrapupEvents].sort((a, b) => (a.t || 0) - (b.t || 0));
+}
+
+async function writeSessionArtifacts(endedAt, durationMs, reason) {
+  const iso = new Date(state.t0).toISOString().replace(/[:.]/g, "-");
+  const dir = `${BASE_DIR}/sessions/${iso}`;
+  state.sessionDir = dir;
+
+  try {
+    await slicc.mkdir(dir);
+
+    if (state.humanBlob) {
+      const bytes = await blobToUint8Array(state.humanBlob);
+      await slicc.writeFileBinary(`${dir}/human.${state.humanRecorder.extension()}`, bytes);
+    }
+    if (state.agentBlob) {
+      const bytes = await blobToUint8Array(state.agentBlob);
+      await slicc.writeFileBinary(`${dir}/agent.${state.agentRecorder.extension()}`, bytes);
+    }
+
+    const transcriptJson = JSON.stringify(state.transcript.toJSON(), null, 2);
+    await slicc.writeFile(`${dir}/transcript.json`, transcriptJson);
+    await slicc.writeFile(`${dir}/transcript.md`, state.transcript.toMarkdown());
+
+    const sessionMeta = {
+      model: MODEL,
+      voice: state.config.voice,
+      topic: state.config.topic,
+      kbMode: state.config.kbMode,
+      kbPath: state.config.kbMode === "local" ? state.config.kbPath : null,
+      kbFiles: state.kb.files.map((f) => f.filename),
+      collectionId: state.config.collectionId || null,
+      webSearch: state.config.webSearch,
+      xSearch: state.config.xSearch,
+      sessionConfig: state.lastSessionConfig,
+      startedAt: new Date(state.t0).toISOString(),
+      endedAt: new Date(endedAt).toISOString(),
+      durationMs,
+      endReason: reason,
+    };
+    await slicc.writeFile(`${dir}/session.json`, JSON.stringify(sessionMeta, null, 2));
+
+    // No separate mic-watchdog.json here anymore -- its events are folded
+    // into diagnostics.json by finalizeSession() (see
+    // collectDiagnosticsEntries()), which runs right after this function
+    // returns, so a post-mortem needs only one file for both.
+
+    el.filesNote.textContent = `Written to ${dir}/ (human.${state.humanRecorder ? state.humanRecorder.extension() : "webm"}, agent.${state.agentRecorder ? state.agentRecorder.extension() : "webm"}, transcript.json, transcript.md, session.json)`;
+  } catch (err) {
+    el.filesNote.textContent = `Could not write session files: ${err.message}`;
+  }
+}
+
+function showReview(endedAt, durationMs, reason) {
+  showScreen("review");
+  el.reviewSub.textContent = `${fmtMs(durationMs)} interview about "${state.config.topic || "(no topic set)"}" — ended (${reason}).`;
+
+  if (state.humanBlob) el.reviewHuman.src = URL.createObjectURL(state.humanBlob);
+  if (state.agentBlob) el.reviewAgent.src = URL.createObjectURL(state.agentBlob);
+
+  renderTranscriptInto(el.reviewTranscript);
+
+  el.reviewKv.innerHTML = "";
+  const kv = [
+    ["Voice", state.config.voice],
+    ["Model", MODEL],
+    ["Web search", state.config.webSearch ? "on" : "off"],
+    ["X search", state.config.xSearch ? "on" : "off"],
+    ["Knowledge base", state.config.collectionId ? `file_search (${state.config.collectionId})` : `local (${state.kb.files.length} doc(s))`],
+    ["Duration", fmtMs(durationMs)],
+    ["Session folder", state.sessionDir || "(not written)"],
+  ];
+  for (const [k, v] of kv) {
+    const dt = document.createElement("dt");
+    dt.textContent = k;
+    const dd = document.createElement("dd");
+    dd.textContent = v;
+    el.reviewKv.appendChild(dt);
+    el.reviewKv.appendChild(dd);
+  }
+}
+
+function showScreen(name) {
+  // Persist the screen transition (ui-state.js): "setup"/"live"/"review"
+  // are the only values it recognises and stores -- "saving" (see
+  // showSavingScreen() below) is intentionally not part of that enum,
+  // same reasoning as never restoring straight into "live"/"review": it
+  // is not safe to jump back into on a re-render, so there is nothing to
+  // persist for it. update() silently no-ops on an unrecognised value,
+  // so this line is harmless for "saving" and simply leaves the
+  // previously-persisted screen in place. flush() (not the debounced
+  // path) because a screen transition is infrequent and important enough
+  // that a resize a few hundred ms later must not be able to lose it.
+  uiState.update({ screen: name });
+  uiState.flush();
+
+  // Inline style, not just the .im-hidden class: slicc.screenshot() clones
+  // the DOM through an SVG foreignObject and does not reliably honor rules
+  // from a <style> block (see style-guide.md's "use inline styles on
+  // elements you intend to screenshot" note) -- inline display is what
+  // that renderer actually respects, and it costs nothing for the real
+  // browser render either.
+  el.screenSetup.classList.toggle("im-hidden", name !== "setup");
+  el.screenSetup.style.display = name === "setup" ? "" : "none";
+  el.screenLive.classList.toggle("im-hidden", name !== "live");
+  el.screenLive.style.display = name === "live" ? "" : "none";
+  el.screenSaving.classList.toggle("im-hidden", name !== "saving");
+  el.screenSaving.style.display = name === "saving" ? "" : "none";
+  el.screenReview.classList.toggle("im-hidden", name !== "review");
+  el.screenReview.style.display = name === "review" ? "" : "none";
+}
+
+// Called the instant a session ends, BEFORE the potentially slow
+// recorder-stop/artifact-write sequence in stopInterview() -- see that
+// function's first lines. Makes both halves of the real bug fix visible in
+// one place: the screen transition itself (so "already ended, saving" is
+// obvious rather than reading as a frozen Live screen) and the Stop button
+// becoming unmistakably inert (disabled AND relabelled, not just disabled
+// -- a disabled button also stops dispatching click events at all, so a
+// second press right at this instant has nothing to hit, not a silently
+// swallowed click).
+function showSavingScreen() {
+  showScreen("saving");
+  el.stopBtn.disabled = true;
+  el.stopBtn.textContent = "Stopping…";
+}
+
+function downloadBlob(blob, filename) {
+  if (!blob) return;
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+function downloadTranscript() {
+  if (!state.transcript) return;
+  const blob = new Blob([JSON.stringify(state.transcript.toJSON(), null, 2)], { type: "application/json" });
+  downloadBlob(blob, "transcript.json");
+}
+
+slicc.on("update", (data) => {
+  if (data && data.type === "restart") location.reload();
+  if (data && data.type === "dryrun") runDryRun();
+  if (data && data.type === "selecttab") {
+    const tab = data.tab === "advanced" ? el.tabAdvanced : el.tabInterview;
+    tab.click();
+  }
+  // The entire live-update feature: lets `interview-me.jsh` (after writing
+  // config.json) push into an already-open sprinkle. No button, no
+  // polling -- this is the only path. Triggered via:
+  //   sprinkle send interview-me '{"type":"reloadconfig"}'
+  if (data && data.type === "reloadconfig") applyConfigPush();
+});
+
+// --- Verification-only dry run, triggered on demand via:
+//   sprinkle send interview-me '{"type":"dryrun"}'
+// Exercises the transcript/session-metadata/file-writing pipeline with a
+// synthesized fake conversation, pushed through the REAL TranscriptStore
+// and the REAL writeSessionArtifacts() -- not a parallel reimplementation
+// -- so transcript.json/transcript.md/session.json, [mm:ss] formatting, and
+// the sessions/<ISO8601>/ directory layout can all be proven correct
+// without a microphone. Deliberately does NOT touch human.webm/agent.webm:
+// writeSessionArtifacts() already skips those when humanBlob/agentBlob are
+// null (no real media exists in a dry run), which is exactly the behavior
+// that path should have with nothing recorded -- fabricating fake video
+// bytes would prove nothing and could be mistaken for a real recording.
+async function runDryRun() {
+  if (state.session && state.session.isOpen()) {
+    window.__imDiag && window.__imDiag("dryrun-skipped", { reason: "a real interview is in progress" });
+    return null;
+  }
+
+  const previous = {
+    t0: state.t0,
+    transcript: state.transcript,
+    config: state.config,
+    lastSessionConfig: state.lastSessionConfig,
+    humanBlob: state.humanBlob,
+    agentBlob: state.agentBlob,
+    humanRecorder: state.humanRecorder,
+    agentRecorder: state.agentRecorder,
+    sessionDir: state.sessionDir,
+    ended: state.ended,
+  };
+
+  try {
+    const t0 = Date.now() - 21000; // pretend this fake interview started 21s ago
+    const transcript = new TranscriptStore(t0);
+
+    // Synthesized conversation, using the SAME store methods production
+    // code calls -- cumulative user updates (replace, not append) and
+    // incremental assistant deltas (append), a tool call, then a second
+    // exchange. `TranscriptStore.now()` is `Date.now() - this.t0`, and this
+    // whole function runs in a handful of real milliseconds, so calling the
+    // store methods back-to-back would bake in the SAME timestamp for
+    // every entry -- not "plausible timestamps". `at(elapsedMs)` fakes the
+    // passage of time between synthesized turns by moving `t0` itself, so
+    // each call below lands at the elapsed offset it names; `t0` is
+    // restored to the real anchor before handoff to writeSessionArtifacts.
+    const at = (elapsedMs) => {
+      transcript.t0 = Date.now() - elapsedMs;
+    };
+
+    const u1 = "item_dryrun_u1";
+    at(2200);
+    transcript.setUserTranscript(u1, "Hi");
+    at(2900);
+    transcript.setUserTranscript(u1, "Hi there, I'm");
+    at(3600);
+    transcript.setUserTranscript(u1, "Hi there, I'm working on");
+    at(4400);
+    transcript.setUserTranscript(u1, "Hi there, I'm working on the interview-me sprinkle.");
+    at(4600);
+    transcript.markUserFinal(u1);
+
+    const a1 = "item_dryrun_a1";
+    at(5800);
+    transcript.appendAssistantDelta(a1, "Nice ");
+    at(6100);
+    transcript.appendAssistantDelta(a1, "to meet you. ");
+    at(6900);
+    transcript.appendAssistantDelta(a1, "What got you started on it?");
+    at(7000);
+    transcript.markAssistantFinal(a1, "Nice to meet you. What got you started on it?");
+
+    at(9200);
+    transcript.logTool("lookup_documents", "SLICC vanilla JS philosophy");
+
+    const u2 = "item_dryrun_u2";
+    at(15100);
+    transcript.setUserTranscript(u2, "Mostly");
+    at(15800);
+    transcript.setUserTranscript(u2, "Mostly because the team");
+    at(16600);
+    transcript.setUserTranscript(u2, "Mostly because the team wanted zero dependencies.");
+    at(16800);
+    transcript.markUserFinal(u2);
+
+    const a2 = "item_dryrun_a2";
+    at(18000);
+    transcript.appendAssistantDelta(a2, "That tracks with everything else he builds. ");
+    at(18900);
+    transcript.appendAssistantDelta(a2, "Thanks for the interview!");
+    at(19000);
+    transcript.markAssistantFinal(a2, "That tracks with everything else he builds. Thanks for the interview!");
+
+    transcript.t0 = t0; // restore the real session anchor before export
+
+    const config = {
+      voice: "eve",
+      topic: "the interview-me sprinkle (DRY RUN -- synthesized, not a real interview)",
+      kbMode: "collection",
+      kbPath: null,
+      // A synthesized id is fine here -- buildTools()/buildSessionConfig()
+      // only construct objects, they never call the network for this, so
+      // dry-run needs no real collection to exercise the full pipeline.
+      collectionId: "collection_dryrun_example",
+      webSearch: true,
+      xSearch: true,
+    };
+    const tools = buildTools(config);
+    const instructions = buildInstructions({ topic: config.topic, sourceMaterial: "", sessionMinutes: sessionLengthMs / 60000 });
+    const sessionConfig = buildSessionConfig({ voice: config.voice, instructions, tools });
+
+    state.t0 = t0;
+    state.transcript = transcript;
+    state.config = config;
+    state.lastSessionConfig = sessionConfig;
+    state.humanBlob = null;
+    state.agentBlob = null;
+    state.humanRecorder = null;
+    state.agentRecorder = null;
+    state.ended = true; // this "session" is already over -- nothing live to protect
+
+    const endedAt = t0 + 21000; // matches the anchor above -- a short ~21s exchange
+    const durationMs = endedAt - t0;
+
+    // The REAL production function -- not a reimplementation.
+    await writeSessionArtifacts(endedAt, durationMs, "dryrun");
+
+    const finalizeResult = await finalizeSession(slicc, {
+      sessionDir: state.sessionDir,
+      endReason: "dryrun",
+      durationMs,
+      transcriptEntries: transcript.toJSON(),
+      diagnosticsEntries: collectDiagnosticsEntries(),
+      humanBytes: null,
+      agentBytes: null,
+      // Same synthetic anchors this dry run already used for
+      // writeSessionArtifacts()/session.json above -- diagnostics.json and
+      // session.json must agree on the window.
+      sessionStartMs: t0,
+      sessionEndMs: endedAt,
+    });
+    window.__imDiag && window.__imDiag("session-finalize-result", finalizeResult);
+
+    const dir = state.sessionDir;
+    window.__imDiag && window.__imDiag("dryrun-complete", { dir, entries: transcript.toJSON().length });
+    return dir;
+  } finally {
+    Object.assign(state, previous);
+  }
+}
+
+</script>
+</body>
+</html>
