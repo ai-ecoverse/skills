@@ -306,8 +306,30 @@ async function cmdSet(args, notify) {
 // overwrites a real user's settings, and it never touches anything the
 // user has put in kb/ or sessions/.
 
+// `sliccy:skill`.dir is the directory of the RUNNING SCRIPT (documented in
+// skill-authoring/jsh-runtime-extensions.md), so `skill.assets` resolves to
+// `<skill>/scripts/assets`. This repo ships assets at the skill ROOT instead
+// (`<skill>/assets`, as oryx and remotion-clipper do), so the root has to be
+// derived by stripping a trailing `/scripts`. Probe both rather than assuming:
+// a missing assets dir used to surface as a confusing per-file read error
+// halfway through install, after directories had already been created.
+// Returns the assets ROOT so every consumer below resolves from one place --
+// the sprinkle payload AND the bundled kb/README.md, whose read is
+// intentionally non-fatal and would otherwise fail SILENTLY on a wrong root.
+async function resolveAssetsRoot() {
+  const root = skill.dir.replace(/\/scripts\/?$/, '');
+  const candidates = [`${root}/assets`, skill.assets];
+  for (const c of candidates) {
+    if (await fs.exists(`${c}/sprinkle/interview-me.shtml`)) return c;
+  }
+  throw new Error(
+    `could not locate the skill assets. Tried:\n  ${candidates.join('\n  ')}`,
+  );
+}
+
 async function cmdInstall() {
-  const assetsDir = `${skill.assets}/sprinkle`;
+  const assetsRoot = await resolveAssetsRoot();
+  const assetsDir = `${assetsRoot}/sprinkle`;
 
   // `recursive: true` on every one of these: /shared/sprinkles itself does
   // not exist on a fresh runtime, and a non-recursive mkdir fails on the
@@ -360,7 +382,7 @@ async function cmdInstall() {
   // skill's own documentation instead of about the user.
   let kbReadme = '';
   try {
-    kbReadme = await fs.readFile(`${skill.assets}/kb/README.md`);
+    kbReadme = await fs.readFile(`${assetsRoot}/kb/README.md`);
   } catch {
     // Bundled notes missing (partial checkout) -- kb/ itself still exists,
     // which is the part the sprinkle actually needs.

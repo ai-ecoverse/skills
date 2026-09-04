@@ -502,7 +502,14 @@ async function buildHarness(opts) {
   const skillDir = (() => {
     try { return require('sliccy:skill').dir; } catch { return null; }
   })();
+  // `sliccy:skill`.dir is the directory of the RUNNING SCRIPT (documented in
+  // skill-authoring/jsh-runtime-extensions.md), so skill.assets is
+  // `<skill>/scripts/assets`. This repo ships assets at the skill ROOT instead
+  // (`<skill>/assets`, same as oryx), so the root must be derived by stripping a
+  // trailing `/scripts`. Both layouts are tried; a bare checkout is covered too.
+  const skillRoot = skillDir ? skillDir.replace(/\/scripts\/?$/, '') : null;
   const harnessCandidates = [
+    skillRoot && `${skillRoot}/assets/remotion-harness`,
     skillDir && `${skillDir}/assets/remotion-harness`,
     skillDir && `${skillDir}/remotion-harness`,
     `${dirnameOf(process.argv[1] || '')}/remotion-harness`,
