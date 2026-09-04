@@ -411,6 +411,13 @@ async function main() {
       // rejected downstream as "The input file could not be decoded as an
       // image". curl round-trips the identical payload intact.
       //
+      // Fix status (noted 2026-09-04, ai-ecoverse/skills#332 review): the jsh
+      // fetch binary-body corruption is reported fixed upstream in SLICC
+      // v6.127.0; the runtime this was measured on is 6.124.0. The curl path is
+      // kept deliberately — it is verified here and stays correct on older
+      // runtimes — so do not "simplify" it back to fetch/FormData without
+      // re-running the upload-and-fetch-back byte comparison described above.
+      //
       // Why a shell script rather than a direct exec: `exec` takes one command
       // string and splits it on whitespace WITHOUT honoring quotes, so
       // -H "Authorization: Bearer <key>" would arrive as four arguments and
