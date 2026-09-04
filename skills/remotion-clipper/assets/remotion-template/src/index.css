@@ -1,0 +1,5 @@
+/* Intentionally empty. The three shot compositions use inline styles only
+   (object-fit: cover for cropping) -- no CSS framework needed. Kept as a
+   file (rather than dropping the import) so `create-video`'s default
+   Root.tsx import line keeps working if you scaffold with Tailwind by
+   habit and then paste these files over it. */
