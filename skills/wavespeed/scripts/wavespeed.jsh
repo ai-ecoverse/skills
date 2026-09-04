@@ -37,6 +37,7 @@ const fs = require('fs');
 const BASE = 'https://api.wavespeed.ai';
 const SECRETS_FALLBACK = '/shared/.secrets/wavespeed-api-key';
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled', 'timeout', 'deleted']);
+const WEBHOOK_REDACTED = '<redacted-webhook-url>';
 
 function str(v) { return typeof v === 'string' ? v : undefined; }
 function asList(v) { return v === undefined ? [] : Array.isArray(v) ? v : [v]; }
@@ -48,6 +49,27 @@ function asList(v) { return v === undefined ? [] : Array.isArray(v) ? v : [v]; }
 // paid API. A bare `--timeout` (and `--timeout -5`, which argv parsing splits
 // into a valueless flag) arrives as boolean true, and Number(true) is 1, so
 // booleans are rejected explicitly rather than meaning "one second".
+// Webhook URLs are effectively bearer tokens (and tray-scoped), and everything a
+// .jsh prints lands in the agent transcript — CLAUDE.md §7.5. Walk the
+// value and replace the live URL wherever the API echoes it back, so --json stays
+// useful without publishing a callable endpoint.
+function scrubWebhookUrl(value, url) {
+  if (!url) return value;
+  const forms = [url, encodeURIComponent(url)];
+  if (typeof value === 'string') {
+    let out = value;
+    for (const f of forms) if (out.includes(f)) out = out.split(f).join(WEBHOOK_REDACTED);
+    return out;
+  }
+  if (Array.isArray(value)) return value.map((v) => scrubWebhookUrl(v, url));
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) out[k] = scrubWebhookUrl(v, url);
+    return out;
+  }
+  return value;
+}
+
 // SLICC's fs.readFile has returned byte-valued text rather than a UTF-8 decoded
 // string on some builds (see the note in skills/pandoc/scripts/pandoc.jsh), which
 // mojibakes a non-ASCII prompt before it is ever submitted. Read the bytes and
@@ -450,25 +472,29 @@ async function main() {
 
       const webhookFlag = flags.webhook !== undefined ? flags.webhook : flags.notify;
       let webhookUrl;
+      let webhookRef;
       if (webhookFlag !== undefined) {
         const name = typeof webhookFlag === 'string' ? webhookFlag : 'wavespeed';
         const wh = await resolveWebhookUrl(name);
         if (!wh) return cli.die(`no webhook named "${name}" — create one first: \`wavespeed webhook create --name ${name}\` (then \`wavespeed webhook list\` to confirm).`);
         webhookUrl = wh.url;
+        // Only the id and name are ever printed; the URL itself is a live secret.
+        webhookRef = { id: wh.id, name: wh.name };
       }
 
       const path = `/api/v3/${modelId}` + (webhookUrl ? `?webhook=${encodeURIComponent(webhookUrl)}` : '');
       const j = await api.post(path, { body });
       const id = j && j.data && j.data.id;
-      if (!id) return cli.die(`unexpected submit response: ${JSON.stringify(j)}`);
+      if (!id) return cli.die(`unexpected submit response: ${JSON.stringify(scrubWebhookUrl(j, webhookUrl))}`);
 
-      if (flags.json && !flags.wait) return cli.out(j);
-      cli.out(`Submitted ${modelId} → task ${id}` + (webhookUrl ? `  (webhook: ${webhookUrl})` : ''));
+      if (flags.json && !flags.wait) return cli.out(scrubWebhookUrl(j, webhookUrl));
+      cli.out(`Submitted ${modelId} → task ${id}` +
+        (webhookRef ? `  (webhook: ${webhookRef.name} id:${webhookRef.id})` : ''));
       if (!flags.wait) return;
 
       const data = await pollResult(api, id, { intervalMs, timeoutMs });
 
-      if (flags.json) return cli.out(data);
+      if (flags.json) return cli.out(scrubWebhookUrl(data, webhookUrl));
       if (data.status !== 'completed') {
         return cli.die(`task ${id} ended with status "${data.status}"` + (data.error ? `: ${data.error}` : ''));
       }
