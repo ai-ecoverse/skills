@@ -12,9 +12,12 @@
 // not REST, so conversation history / send are handled through the rendered DOM
 // (playwright-cli), not the API.
 
-const { exec } = require('sliccy:exec');
+const sliccExec = require('sliccy:exec');
+const { exec } = sliccExec;
 const browser = require('sliccy:browser');
+const cli = require('sliccy:cli');
 const fs = require('fs');
+const nodeCrypto = require('crypto');
 
 const TT_DOMAIN = 'www.tiktok.com';
 const TMP_DIR = '/workspace/skills/tiktok/.tmp';
@@ -275,18 +278,7 @@ function ts(sec) {
 // ---------------------------------------------------------------------------
 
 async function cmdWhoami() {
-  const tab = await findTab();
-  const raw = await browser.evalAsync(tab, `
-    (() => {
-      try {
-        const el = document.getElementById('__UNIVERSAL_DATA_FOR_REHYDRATION__');
-        const ctx = JSON.parse(el.textContent).__DEFAULT_SCOPE__['webapp.app-context'] || {};
-        const u = ctx.user || {};
-        return JSON.stringify({ loggedIn: !!(u.uid), uniqueId: u.uniqueId, nickName: u.nickName, uid: u.uid, secUid: u.secUid, region: u.region || ctx.region, isPrivate: u.isPrivateAccount });
-      } catch (e) { return JSON.stringify({ error: String(e) }); }
-    })()
-  `.trim().replace(/\n/g, ' '));
-  const u = typeof raw === 'string' ? JSON.parse(raw) : raw;
+  const u = await ownIdentity();
   if (u.error || !u.loggedIn) {
     console.error('Not logged in to TikTok, or the app-context could not be read. Open www.tiktok.com and sign in.');
     process.exit(1);
@@ -1631,6 +1623,360 @@ async function cmdSee(args, flags) {
 }
 
 // ---------------------------------------------------------------------------
+// Posting: upload + publish a video
+// ---------------------------------------------------------------------------
+//
+// Four stages (see references/upload-flow.md for the measured wire spec):
+//   1. GET /api/v1/video/upload/auth/?aid=1988          signed -> MAIN world
+//   2. GET /top/v1?Action=ApplyUploadInner...           AWS4-signed with the STS
+//                                                       creds from (1); plain node
+//   3. POST https://<UploadHost>/upload/v1/<StoreUri>   multipart; plain node
+//   4. POST /tiktok/web/project/post/v1/                signed -> MAIN world
+//
+// The bytes NEVER go through the browser. `playwright-cli upload` re-encodes the
+// file as UTF-8 text (every byte >= 0x80 becomes EF BF BD), which silently
+// inflated a 24,349,008-byte mp4 to 45,152,034 bytes and produced a 480x360
+// video that never finished transcoding. Stages 2 and 3 need no cookies, so we
+// read the file with fs.readFileBinary() and POST it straight from node.
+
+const CRC32_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+
+// Lowercase hex CRC-32 (IEEE, poly 0xEDB88320) -- the `Content-CRC32` the TOS
+// ingest edge validates and echoes back.
+function crc32hex(buf) {
+  let c = -1;
+  for (let i = 0; i < buf.length; i++) c = (c >>> 8) ^ CRC32_TABLE[(c ^ buf[i]) & 0xFF];
+  return ((c ^ -1) >>> 0).toString(16).padStart(8, '0');
+}
+
+const SUBTLE = (globalThis.crypto && globalThis.crypto.subtle) || nodeCrypto.webcrypto.subtle;
+const HEXB = (b) => Array.from(new Uint8Array(b)).map((x) => x.toString(16).padStart(2, '0')).join('');
+
+async function sha256hex(s) { return HEXB(await SUBTLE.digest('SHA-256', new TextEncoder().encode(s))); }
+async function hmacRaw(keyBytes, msg) {
+  const k = await SUBTLE.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return new Uint8Array(await SUBTLE.sign('HMAC', k, new TextEncoder().encode(msg)));
+}
+
+function postFail(msg, detail) {
+  console.error(`Error: ${msg}`);
+  if (detail) console.error(String(detail).slice(0, 600));
+  process.exit(1);
+}
+
+// Reads the logged-in account's identity out of the page app-context.
+async function ownIdentity() {
+  const tab = await findTab();
+  const raw = await browser.evalAsync(tab, `
+    (() => {
+      try {
+        const el = document.getElementById('__UNIVERSAL_DATA_FOR_REHYDRATION__');
+        const ctx = JSON.parse(el.textContent).__DEFAULT_SCOPE__['webapp.app-context'] || {};
+        const u = ctx.user || {};
+        return JSON.stringify({ loggedIn: !!(u.uid), uniqueId: u.uniqueId, nickName: u.nickName, uid: u.uid, secUid: u.secUid, region: u.region || ctx.region, isPrivate: u.isPrivateAccount });
+      } catch (e) { return JSON.stringify({ error: String(e) }); }
+    })()
+  `.trim().replace(/\n/g, ' '));
+  return typeof raw === 'string' ? JSON.parse(raw) : raw;
+}
+
+// Stage 1 -- STS2 upload credentials. Signature-required path, so it goes
+// through signedRequest() (main world).
+async function uploadAuth() {
+  const { status, bodyText, data } = await signedRequest({
+    url: '/api/v1/video/upload/auth/', query: { aid: '1988' }, useCommon: false,
+  });
+  if (!data) postFail(`upload/auth returned HTTP ${status} with an unparseable body`, bodyText);
+  if (data.status_code) postFail(`upload/auth failed (status_code=${data.status_code} ${data.status_msg || ''})`, bodyText);
+  const tok = data.video_token_v5;
+  // NB: the real field name has one 'c': secret_acess_key.
+  if (!tok || !tok.access_key_id || !tok.secret_acess_key || !tok.session_token) {
+    postFail('upload/auth gave no usable video_token_v5 (access_key_id / secret_acess_key / session_token)', bodyText);
+  }
+  return { tok, storeRegion: data.store_region || '' };
+}
+
+// Stage 2 -- reserve a Vid + storage URI. AWS4-HMAC-SHA256, region gcp,
+// service vod, only x-amz-date;x-amz-security-token signed. No cookies.
+async function applyUploadInner(tok) {
+  const query = {
+    Action: 'ApplyUploadInner',
+    Version: '2020-11-19',
+    SpaceName: tok.space_name || 'tiktok',
+    FileType: 'video',
+    IsInner: '1',
+    'X-Amz-Expires': '604800',
+    s: Math.random().toString(36).slice(2, 13).padEnd(11, '0'),
+    device_platform: 'web',
+    business_tag: 'tiktok_video_submission_web',
+  };
+  const qs = Object.keys(query).sort().map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(query[k])}`).join('&');
+  const amzdate = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+  const datestamp = amzdate.slice(0, 8);
+  const region = 'gcp', service = 'vod';
+  const signedHeaders = 'x-amz-date;x-amz-security-token';
+  const canonicalHeaders = `x-amz-date:${amzdate}\nx-amz-security-token:${tok.session_token}\n`;
+  const canonicalRequest = ['GET', '/top/v1', qs, canonicalHeaders, signedHeaders, await sha256hex('')].join('\n');
+  const scope = `${datestamp}/${region}/${service}/aws4_request`;
+  const stringToSign = ['AWS4-HMAC-SHA256', amzdate, scope, await sha256hex(canonicalRequest)].join('\n');
+  let k = await hmacRaw(new TextEncoder().encode('AWS4' + tok.secret_acess_key), datestamp);
+  k = await hmacRaw(k, region);
+  k = await hmacRaw(k, service);
+  k = await hmacRaw(k, 'aws4_request');
+  const sig = HEXB(await hmacRaw(k, stringToSign));
+  const auth = `AWS4-HMAC-SHA256 Credential=${tok.access_key_id}/${scope}, SignedHeaders=${signedHeaders}, Signature=${sig}`;
+
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 30000);
+  let res, text;
+  try {
+    res = await fetch(`https://${TT_DOMAIN}/top/v1?${qs}`, {
+      signal: ctl.signal,
+      headers: { 'X-Amz-Date': amzdate, 'x-amz-security-token': tok.session_token, Authorization: auth },
+    });
+    text = await res.text();
+  } catch (e) {
+    postFail('ApplyUploadInner request failed (network/timeout)', e && e.message);
+  } finally { clearTimeout(timer); }
+  if (res.status !== 200) postFail(`ApplyUploadInner returned HTTP ${res.status}`, text);
+  let j = null;
+  try { j = JSON.parse(text); } catch (e) { postFail('ApplyUploadInner returned unparseable JSON', text); }
+  const node0 = j && j.Result && j.Result.InnerUploadAddress
+    && j.Result.InnerUploadAddress.UploadNodes && j.Result.InnerUploadAddress.UploadNodes[0];
+  const store = node0 && node0.StoreInfos && node0.StoreInfos[0];
+  if (!node0 || !store || !node0.Vid || !store.StoreUri || !store.Auth || !node0.UploadHost || !node0.SessionKey) {
+    postFail('ApplyUploadInner response is missing Vid/StoreUri/Auth/UploadHost/SessionKey', text);
+  }
+  return { vid: node0.Vid, storeUri: store.StoreUri, auth: store.Auth, host: node0.UploadHost, sessionKey: node0.SessionKey };
+}
+
+// Stage 3 -- one multipart POST of the whole file. `X-Upload-With-PostUpload: 1`
+// plus `post_upload_req` makes the ingest edge run CommitUploadInner for us, so
+// there is no separate commit call. Proven for a 24 MB file in a single POST.
+async function uploadBytes(reserve, tok, bytes, uid, filename) {
+  const crc = crc32hex(bytes);
+  const fd = new FormData();
+  fd.append('file', new Blob([bytes], { type: 'application/octet-stream' }), filename || 'video.mp4');
+  fd.append('post_upload_req', JSON.stringify({
+    sts2_token: tok.session_token,
+    sts2_secret: tok.secret_acess_key,
+    session_key: reserve.sessionKey,
+    functions: [],
+  }));
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 600000);
+  let res, text;
+  try {
+    res = await fetch(`https://${reserve.host}/upload/v1/${reserve.storeUri}`, {
+      method: 'POST', signal: ctl.signal, body: fd,
+      headers: {
+        Authorization: reserve.auth,
+        'Content-CRC32': crc,
+        'X-Storage-U': String(uid),
+        'X-Upload-With-PostUpload': '1',
+      },
+    });
+    text = await res.text();
+  } catch (e) {
+    postFail('byte upload failed (network/timeout)', e && e.message);
+  } finally { clearTimeout(timer); }
+  if (res.status !== 200) postFail(`byte upload returned HTTP ${res.status}`, text);
+  let j = null;
+  try { j = JSON.parse(text); } catch (e) { postFail('byte upload returned unparseable JSON', text); }
+  if (j.code !== 2000) postFail(`byte upload rejected (code=${j.code} ${j.message || ''})`, text);
+  const echoed = j.data && j.data.file_info && j.data.file_info.crc32;
+  if (echoed && echoed !== crc) postFail(`CRC32 mismatch: sent ${crc}, server computed ${echoed} — the bytes did not arrive intact`);
+  const result = j.data && j.data.post_upload_resp && j.data.post_upload_resp.results && j.data.post_upload_resp.results[0];
+  if (!result || !result.video_meta) postFail('byte upload succeeded but the server returned no video_meta (commit did not run)', text);
+  return { vid: result.vid || reserve.vid, meta: result.video_meta, crc };
+}
+
+// Local probe of the source file, so the server's probe can be checked against
+// it. A mismatch is the exact signature of corrupted bytes.
+async function probeVideo(path) {
+  let r;
+  try {
+    r = await sliccExec.spawn(['ffprobe', '-v', 'error', '-print_format', 'json', '-show_streams', '-show_format', path]);
+  } catch (e) { return { error: (e && e.message) || String(e) }; }
+  if (r.exitCode !== 0) return { error: (r.stderr || '').trim() || `ffprobe exited ${r.exitCode}` };
+  let j;
+  try { j = JSON.parse(r.stdout); } catch (e) { return { error: 'ffprobe output was not JSON' }; }
+  const v = (j.streams || []).find((s) => s.codec_type === 'video');
+  if (!v) return { error: 'no video stream found' };
+  let width = Number(v.width), height = Number(v.height);
+  const rot = Number(
+    (v.side_data_list || []).map((s) => s.rotation).find((x) => x != null)
+    ?? (v.tags && v.tags.rotate) ?? 0,
+  );
+  if (Math.abs(rot) === 90 || Math.abs(rot) === 270) { const t = width; width = height; height = t; }
+  const duration = Number((j.format && j.format.duration) || v.duration || 0);
+  const hasAudio = (j.streams || []).some((s) => s.codec_type === 'audio');
+  return { width, height, duration, codec: v.codec_name, hasAudio };
+}
+
+// Stage 4 -- publish. Signature-required path, so main world again.
+async function publishPost(opts) {
+  const { vid, caption, visibility, allowComment, allowDuet, allowStitch, width, height, durationMs } = opts;
+  const creationId = 'slicc' + Math.random().toString(36).slice(2, 12) + Math.random().toString(36).slice(2, 8);
+  const body = {
+    post_common_info: { creation_id: creationId, enter_post_page_from: 8, post_type: 3 },
+    feature_common_info_list: [{
+      geofencing_regions: [], playlist_name: '', playlist_id: '',
+      tcm_params: '{"commerce_toggle_info":{}}', sound_exemption: 0, anchors: [],
+      vedit_common_info: { draft: '', video_id: vid },
+      privacy_setting_info: {
+        visibility_type: visibility,
+        allow_duet: allowDuet,
+        allow_stitch: allowStitch,
+        allow_comment: allowComment,
+        allow_content_reuse: 1,
+        allow_ai_remix: 2,
+      },
+    }],
+    single_post_req_list: [{
+      batch_index: 0, video_id: vid, is_long_video: 0,
+      single_post_feature_info: {
+        text: caption, text_extra: [], markup_text: caption,
+        music_info: { origin_volume: '100' }, poster_delay: 0,
+        cloud_edit_video_height: height, cloud_edit_video_width: width,
+        cloud_edit_is_use_video_canvas: false,
+        has_original_audio: 1, is_upload_audio_track: false,
+        video_track_time_range_list: [{ start_time_in_ms: 0, end_time_in_ms: durationMs }],
+        mature_theme_type: 0,
+      },
+    }],
+  };
+  let tz = 'UTC';
+  try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch (e) {}
+  const { status, bodyText, data } = await signedRequest({
+    url: '/tiktok/web/project/post/v1/',
+    method: 'POST',
+    useCommon: false,
+    query: { app_name: 'tiktok_web', channel: 'tiktok_web', device_platform: 'web', tz_name: tz, aid: '1988' },
+    body,
+  });
+  if (!data) postFail(`publish returned HTTP ${status} with an unparseable body`, bodyText);
+  if (data.status_code) postFail(`publish rejected (status_code=${data.status_code} ${data.status_msg || ''})`, bodyText);
+  const r0 = (data.single_post_resp_list || [])[0];
+  if (!r0 || r0.status_code || !r0.item_id) {
+    postFail(`publish did not return an item_id (status_code=${r0 && r0.status_code} ${(r0 && r0.status_msg) || ''})`, bodyText);
+  }
+  return { itemId: r0.item_id, projectId: data.project_id, creationId };
+}
+
+const VISIBILITY = { self: 1, friends: 2, public: 0 };
+
+async function cmdPost(args, flags) {
+  const path = args[0];
+  if (!path) {
+    console.error('Usage: tiktok post <file> [--caption="..."] [--privacy=self|friends|public]');
+    console.error('                        [--no-comment] [--no-duet] [--no-stitch] [--json]');
+    console.error('Privacy defaults to SELF (only you). Publishing publicly needs an explicit --privacy=public.');
+    process.exit(1);
+  }
+  const privacyName = String(flags.privacy || 'self').toLowerCase();
+  if (!(privacyName in VISIBILITY)) {
+    postFail(`unknown --privacy=${privacyName}. Use self (default, only you), friends, or public.`);
+  }
+  const visibility = VISIBILITY[privacyName];
+  const caption = flags.caption === true ? '' : String(flags.caption || '');
+  // The UI sends null for duet/stitch when the toggles are hidden (self-only
+  // posts). 1 = allow (MEASURED); 0 = disallow (INFERRED, not exercised).
+  const allowComment = flags['no-comment'] ? 0 : 1;
+  const allowDuet = flags['no-duet'] ? 0 : (visibility === 1 ? null : 1);
+  const allowStitch = flags['no-stitch'] ? 0 : (visibility === 1 ? null : 1);
+
+  if (!(await fs.exists(path))) postFail(`file not found: ${path}`);
+  let bytes;
+  try { bytes = await fs.readFileBinary(path); } catch (e) { postFail(`could not read ${path}`, e && e.message); }
+  if (!bytes || !bytes.length) postFail(`${path} is empty`);
+  const filename = path.split('/').pop();
+
+  const probe = await probeVideo(path);
+  if (probe.error) {
+    console.error(`Warning: could not probe ${path} locally with ffprobe (${probe.error}).`);
+    console.error('         The server-side dimension check will be skipped — corrupted bytes may go unnoticed.');
+  }
+  console.log(`file:     ${path}`);
+  console.log(`          ${bytes.length} bytes` + (probe.error ? '' : `, ${probe.width}x${probe.height}, ${probe.duration.toFixed(2)}s, ${probe.codec}${probe.hasAudio ? '+audio' : ', no audio'}`));
+  console.log(`privacy:  ${privacyName}${visibility === 1 ? ' (only you)' : ''}  [visibility_type=${visibility}]`);
+  console.log(`caption:  ${caption ? JSON.stringify(caption) : '(none)'}`);
+
+  const me = await ownIdentity();
+  if (!me || me.error || !me.loggedIn || !me.uid) {
+    postFail('not logged in to TikTok (could not read uid from the page app-context). Open www.tiktok.com and sign in.', me && me.error);
+  }
+  console.log(`account:  @${me.uniqueId} (uid ${me.uid})`);
+
+  console.log('[1/4] fetching upload credentials ...');
+  const { tok, storeRegion } = await uploadAuth();
+  console.log(`      ok — space "${tok.space_name || 'tiktok'}", store_region ${storeRegion || '?'}, creds valid until ${tok.expired_time || '?'}`);
+
+  console.log('[2/4] reserving video id + storage uri ...');
+  const reserve = await applyUploadInner(tok);
+  console.log(`      ok — vid ${reserve.vid} via ${reserve.host}`);
+
+  console.log(`[3/4] uploading ${bytes.length} bytes (single multipart POST) ...`);
+  const up = await uploadBytes(reserve, tok, bytes, me.uid, filename);
+  const meta = up.meta;
+  console.log(`      ok — server probe: ${meta.Width}x${meta.Height}, ${meta.Duration}s, ${meta.Size} bytes, ${meta.Codec || '?'} (crc32 ${up.crc})`);
+
+  // Corruption gate. A body mangled on the way up shows up here as 480x360 with
+  // no Duration, and/or an inflated Size.
+  const problems = [];
+  if (Number(meta.Size) !== bytes.length) problems.push(`server received ${meta.Size} bytes, source is ${bytes.length}`);
+  if (!meta.Duration) problems.push('server reported no Duration (it could not parse the media)');
+  if (!probe.error) {
+    if (Number(meta.Width) !== probe.width || Number(meta.Height) !== probe.height) {
+      problems.push(`server probed ${meta.Width}x${meta.Height}, source is ${probe.width}x${probe.height}`);
+    }
+    if (meta.Duration && Math.abs(Number(meta.Duration) - probe.duration) > 1) {
+      problems.push(`server probed ${meta.Duration}s, source is ${probe.duration.toFixed(2)}s`);
+    }
+  }
+  if (problems.length) {
+    console.error('Error: the uploaded object does not match the source file — NOT publishing.');
+    for (const p of problems) console.error(`  - ${p}`);
+    console.error('This is the signature of corrupted bytes. Never route the file through');
+    console.error('`playwright-cli upload` / the browser: it re-encodes binary as UTF-8 text.');
+    console.error(`Orphan vid (no post created): ${up.vid}`);
+    process.exit(1);
+  }
+
+  const width = Number(meta.Width) || probe.width;
+  const height = Number(meta.Height) || probe.height;
+  const durationMs = Math.round(Number(meta.Duration || probe.duration) * 1000);
+
+  console.log('[4/4] publishing ...');
+  const pub = await publishPost({
+    vid: up.vid, caption, visibility, allowComment, allowDuet, allowStitch, width, height, durationMs,
+  });
+  const url = `https://www.tiktok.com/@${me.uniqueId}/video/${pub.itemId}`;
+  if (flags.json) {
+    cli.out({
+      item_id: pub.itemId, project_id: pub.projectId, url, video_id: up.vid,
+      privacy: privacyName, visibility_type: visibility, caption,
+      width, height, duration_ms: durationMs, bytes: bytes.length, crc32: up.crc,
+    });
+    return;
+  }
+  console.log('');
+  console.log(`item_id:  ${pub.itemId}`);
+  console.log(`project:  ${pub.projectId}`);
+  console.log(`url:      ${url}`);
+  console.log(`visible:  ${privacyName}${visibility === 1 ? ' — only you' : ''}`);
+  console.log('A fresh post sits in "Content under review" for a while; that is normal.');
+}
+
+// ---------------------------------------------------------------------------
 // Dispatch
 // ---------------------------------------------------------------------------
 
@@ -1638,6 +1984,7 @@ const commands = {
   whoami: cmdWhoami,
   search: cmdSearch,
   video: cmdVideo,
+  post: cmdPost,
   comments: cmdComments,
   'user-videos': cmdUserVideos,
   posted: cmdUserVideos,
@@ -1692,6 +2039,11 @@ if (!cmd || cmd === 'help' || cmd === '--help') {
   console.log('  video <videoId>                               Full video detail + play/like/comment/share/save stats');
   console.log('  comments <videoId> [--count=N] [--cursor=N]   List comments on a video');
   console.log('  user-videos <secUid> [--count=N] [--cursor=N] List a user\'s posted videos (+stats). Alias: posted\n');
+  console.log('Posting:');
+  console.log('  post <file> [--caption="..."] [--privacy=self|friends|public]');
+  console.log('       [--no-comment] [--no-duet] [--no-stitch] [--json]');
+  console.log('                                                Upload + publish a video. PRIVACY DEFAULTS TO SELF');
+  console.log('                                                (only you) — public needs an explicit --privacy=public.\n');
   console.log('Profile tabs (secUid optional — defaults to your own account):');
   console.log('  posted    [<secUid>] [--count=N] [--cursor=N]   Posted videos');
   console.log('  reposts   [<secUid>] [--count=N] [--cursor=N]   Reposted videos');
