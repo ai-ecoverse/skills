@@ -2,22 +2,17 @@
 name: remotion-clipper
 description: |
   Use this when the user wants to turn long-form interview, podcast, or talking-head
-  recordings into short vertical (1080x1920) clips for TikTok/Reels/Shorts — cutting to
+  recordings into short vertical (1080x1920) clips for TikTok/Reels/Shorts: cutting to
   word-exact boundaries, removing filler words and dead air, and laying out interviewer
   + interviewee footage as split-screen or full-frame portrait shots with Remotion.
-  Covers three shot types (`split` — interviewer top / interviewee bottom;
-  `portrait-interviewer`; `portrait-interviewee`), an EDL (edit decision list) JSON
-  schema that hands cut points from a transcription/analysis step to the render step,
-  and the `remotion` CLI (`.jsh`, this skill's `scripts/remotion.jsh`):
-  `inspect` / `validate` / `stage` / `transcode`. Triggers on "clip this interview",
-  "cut this into TikToks", "vertical video edit", "split-screen interview", "EDL",
-  "crop to 9:16", "talking-head video export", "center-crop this video". Also load
-  this when the user asks to inspect a video/audio file's dimensions, duration, or
-  codec WITHOUT ffmpeg (`@remotion/media-parser` does this natively in SLICC) — see
-  below before reaching for wasm ffmpeg. IMPORTANT: this skill does NOT render a
-  composition to pixels — read "Rendering" before implying it can produce a finished
-  video by itself; for the actual render step, use the official `remotion-render`
-  skill on whatever machine you normally render on.
+  Covers three shot types (`split`, `portrait-interviewer`, `portrait-interviewee`),
+  an EDL (edit decision list) JSON schema handing cut points from transcription to
+  render, and the `remotion` CLI: `inspect` / `validate` / `stage` / `transcode` /
+  `render` (in-browser, via `@remotion/web-renderer`). Triggers on "clip this
+  interview", "cut this into TikToks", "vertical video edit", "split-screen interview",
+  "EDL", "crop to 9:16", "talking-head video export". Also load this to inspect a
+  video/audio file's dimensions, duration, or codec WITHOUT ffmpeg
+  (`@remotion/media-parser` does it natively in SLICC).
 allowed-tools: bash
 ---
 
