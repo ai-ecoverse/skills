@@ -26,8 +26,9 @@ wavespeed auth <key> | --show
 wavespeed models [term] [--json] [--limit N] [--all]
 wavespeed schema <model_id> [--json]
 wavespeed upload <file>
-wavespeed run <model_id> [--input k=v ...] [--json-input <file>] [--wait]
-              [--webhook [name]] [--poll-interval s] [--timeout s] [--out path] [--json]
+wavespeed run <model_id> [--input k=v ...] [--json-input <file>] --confirm
+              [--wait] [--webhook [name]] [--poll-interval s] [--timeout s]
+              [--out path] [--json] [--dry-run]
 wavespeed status <task_id> [--json]
 wavespeed get <task_id> [--out path] [--index n] [--json]
 wavespeed reconcile [--status s] [--model id] [--since 24h] [--json]
@@ -37,6 +38,39 @@ wavespeed api <METHOD> <path> [--data '<json>'] [--query k=v]
 
 Auth resolves in order: `--key` → `$WAVESPEED_API_KEY` → skill config (`wavespeed auth`)
 → `/shared/.secrets/wavespeed-api-key`. The key is never printed.
+
+### `run` spends money and requires `--confirm`
+
+`run` creates a **paid** prediction, so it is gated per the repo spending contract
+(`CLAUDE.md` §7.6):
+
+- **Without `--confirm`** it prints a preview — model id, the catalog price per run, the
+  fully resolved request body, the webhook target — and **submits nothing** (exit 0).
+  With `--json` the preview is `{"preview":true,"submitted":false,...}`, so a scripted
+  caller can tell a preview from a submission.
+- **With `--confirm`** it submits.
+- `--dry-run` forces preview mode even when `--confirm` is present, for re-checking a
+  request before paying for it.
+
+```bash
+# preview only, nothing submitted
+wavespeed run wavespeed-ai/flux-schnell --input prompt="a paper boat"
+# actually submits ($0.003)
+wavespeed run wavespeed-ai/flux-schnell --input prompt="a paper boat" --confirm
+```
+
+### Exit codes, machine-readable output, flag validation
+
+- `run --wait --json` writes **only** the final JSON to stdout; the submission line and
+  per-status progress go to stderr, so `wavespeed run ... --wait --json | jq` works.
+- A terminal `failed`/`cancelled`/`timeout`/`deleted` status still prints the JSON and then
+  **exits nonzero** — `--json` never reports a failed generation as success.
+- `--poll-interval` and `--timeout` must be positive numbers of seconds; a non-numeric or
+  valueless flag is a usage error (exit 1) instead of a NaN timeout that never fires.
+- `--json-input` is read as bytes and decoded as UTF-8, so non-ASCII prompts
+  ("Grüße aus Potsdam", emoji) reach the API intact.
+- Webhook URLs are treated as secrets: `run` prints the webhook **name and id**, never the
+  URL, and redacts the URL from `--json` output should the API echo it back.
 
 ### Finding a model
 
@@ -54,7 +88,7 @@ wrapped correctly:
 ```
 wavespeed run alibaba/wan-2.6/reference-to-video-flash \
   --input reference_files=<url1> --input reference_files=<url2> \
-  --input audio=<url> --input duration=5 --input enable_audio=false --wait
+  --input audio=<url> --input duration=5 --input enable_audio=false --confirm --wait
 ```
 
 ### Webhooks instead of polling

@@ -5,8 +5,9 @@
 //   wavespeed models [term] [--json] [--limit N] [--all]
 //   wavespeed schema <model_id> [--json]
 //   wavespeed upload <file>
-//   wavespeed run <model_id> [--input k=v ...] [--json-input <file>] [--wait]
-//                [--webhook [name]] [--poll-interval s] [--timeout s] [--out path] [--json]
+//   wavespeed run <model_id> [--input k=v ...] [--json-input <file>] --confirm
+//                [--wait] [--webhook [name]] [--poll-interval s] [--timeout s]
+//                [--out path] [--json] [--dry-run]
 //   wavespeed status <task_id> [--json]
 //   wavespeed get <task_id> [--out path] [--index n] [--json]
 //   wavespeed reconcile [--status s] [--model id] [--since 24h] [--page-size n] [--json]
@@ -15,6 +16,12 @@
 //
 // Auth priority: --key | WAVESPEED_API_KEY | skill config (`wavespeed auth <key>`) |
 //                /shared/.secrets/wavespeed-api-key (read-only fallback).
+//
+// Spending: `run` creates a PAID prediction, so it is gated behind --confirm per
+// the spending contract in CLAUDE.md §7.6 (navan is the reference). Without
+// --confirm, `run` prints a preview — model, per-run price from the catalog, the
+// exact resolved request body, the webhook target — and submits nothing.
+// --dry-run forces preview mode even when --confirm is present.
 //
 // Callbacks: WaveSpeedAI supports a `?webhook=<url>` query param on task submission
 // (see /docs/how-to-use-webhooks). This CLI wires it up via `wavespeed webhook create`
@@ -41,6 +48,7 @@ const WEBHOOK_REDACTED = '<redacted-webhook-url>';
 
 function str(v) { return typeof v === 'string' ? v : undefined; }
 function asList(v) { return v === undefined ? [] : Array.isArray(v) ? v : [v]; }
+function isSet(v) { return v !== undefined && v !== false && v !== 'false'; }
 
 // Duration flags are validated before polling starts (and before the submit):
 // Number('abc') is NaN, which makes the `Date.now() - start > timeoutMs` check
@@ -95,8 +103,9 @@ const HELP = `wavespeed — WaveSpeed AI API client
   wavespeed models [term] [--json] [--limit N] [--all]
   wavespeed schema <model_id> [--json]
   wavespeed upload <file>
-  wavespeed run <model_id> [--input k=v ...] [--json-input <file>] [--wait]
-                [--webhook [name]] [--poll-interval s] [--timeout s] [--out path] [--json]
+  wavespeed run <model_id> [--input k=v ...] [--json-input <file>] --confirm
+                [--wait] [--webhook [name]] [--poll-interval s] [--timeout s]
+                [--out path] [--json] [--dry-run]
   wavespeed status <task_id> [--json]
   wavespeed get <task_id> [--out path] [--index n] [--json]
   wavespeed reconcile [--status s] [--model id] [--since 24h] [--page-size n] [--json]
@@ -104,6 +113,11 @@ const HELP = `wavespeed — WaveSpeed AI API client
   wavespeed api <METHOD> <path> [--data '<json>'] [--query k=v]
 
 Auth: --key <k> | WAVESPEED_API_KEY | \`wavespeed auth <key>\` | ${SECRETS_FALLBACK}
+
+Spending: \`run\` costs real money. WITHOUT --confirm it prints a preview (model,
+per-run price, resolved input, webhook target) and submits NOTHING. WITH --confirm
+it submits. --dry-run forces preview mode even if --confirm is given.
+--poll-interval and --timeout must be positive numbers of seconds.
 
 Webhooks: pass --webhook (or --webhook <name>, default "wavespeed") to \`run\` to
 attach a callback URL instead of polling. Create it once with
@@ -441,7 +455,7 @@ async function main() {
 
     case 'run': {
       const modelId = positional[1];
-      if (!modelId) return cli.die('usage: wavespeed run <model_id> [--input k=v ...] [--wait]');
+      if (!modelId) return cli.die('usage: wavespeed run <model_id> [--input k=v ...] --confirm [--wait]');
 
       // Validated up front: a mistyped duration must not reach the submit,
       // let alone the poll loop.
@@ -458,9 +472,10 @@ async function main() {
       }
 
       let schema;
+      let model;
       try {
         const models = await fetchModels(api);
-        const model = findModel(models, modelId);
+        model = findModel(models, modelId);
         if (!model) cli.warn(`model_id "${modelId}" not found in the catalog — submitting anyway (may be new/unlisted).`, { prefix: 'wavespeed' });
         else schema = requestSchemaOf(model);
       } catch { /* schema lookup is best-effort; submit proceeds without coercion */ }
@@ -480,6 +495,35 @@ async function main() {
         webhookUrl = wh.url;
         // Only the id and name are ever printed; the URL itself is a live secret.
         webhookRef = { id: wh.id, name: wh.name };
+      }
+
+      // ── spending gate (CLAUDE.md §7.6) ────────────────────
+      // `run` bills the user's WaveSpeed balance, so an invocation without
+      // --confirm previews and stops. --dry-run wins over --confirm so a caller
+      // can re-check the exact request it is about to pay for.
+      const dryRun = isSet(flags['dry-run']);
+      if (!isSet(flags.confirm) || dryRun) {
+        const priceLabel = model && model.base_price != null ? '$' + model.base_price + ' / run' : null;
+        if (flags.json) {
+          return cli.out({
+            preview: true,
+            submitted: false,
+            reason: dryRun ? '--dry-run' : '--confirm not given',
+            model: modelId,
+            base_price: (model && model.base_price != null) ? model.base_price : null,
+            input: body,
+            webhook: webhookRef || null,
+          });
+        }
+        console.log('\n' + color.bold('=== RUN PREVIEW (nothing submitted) ==='));
+        console.log(`  model:   ${modelId}` + (priceLabel ? color.gray(`  (${priceLabel})`) : ''));
+        if (webhookRef) console.log(`  webhook: ${webhookRef.name}  ` + color.gray('id:' + webhookRef.id));
+        console.log(`  input:   ${JSON.stringify(body)}`);
+        console.log(color.dim('  ' + '─'.repeat(52)));
+        console.log('  Submitting spends real money. Nothing was submitted.');
+        console.log('  To submit, re-run the same command with --confirm:');
+        console.log('    ' + color.cyan(`wavespeed run ${modelId} … --confirm`));
+        return;
       }
 
       const path = `/api/v3/${modelId}` + (webhookUrl ? `?webhook=${encodeURIComponent(webhookUrl)}` : '');
