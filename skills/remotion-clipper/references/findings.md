@@ -6,11 +6,13 @@ footage during development, not assumed.
 Note on scope: the first four sections below describe what `inspect`/`validate`/
 `stage`/`transcode` actually do and don't do -- read those first. The last three
 sections (`--help` on the Remotion CLI, `ssh` stdin, the `serve` retry trap) were
-learned while building and then removing an early version of this skill that shelled
-out over `ssh` to render on a specific machine (removed on review -- see `SKILL.md`'s
-"Rendering" section for why). They're kept here because they're true, general facts
-about this platform that will bite anyone wiring a render step externally, but none
-of them describe code that ships in `scripts/remotion.jsh` today.
+learned while building, and then removing, an early version of this skill that shelled
+out over `ssh` to render on one specific machine. That path is gone for two separate
+reasons: it baked one person's tray-follower id and home directory into a portable
+skill, AND it turned out to be unnecessary -- rendering works in-browser via
+`@remotion/web-renderer` (see `SKILL.md`'s "Rendering" section and
+`render-target.md`). The three `ssh`-adjacent findings are kept because they are
+true, general platform facts, but none of them describe code that ships today.
 
 ## `@remotion/media-parser` fully replaces ffprobe for inspection
 
@@ -81,11 +83,26 @@ they're for pixel filters (color grading, watermarks), not frame selection. So:
   `<Composition>` layout inside this package.
 
 Both are buildable directly on the (proven-working) primitives above -- decode with
-sample-range filtering, draw into an `OffscreenCanvas`, re-encode, mux -- but that is
-a real feature to write, not a quick fix. This is precisely why this skill stops at
-`stage` rather than rendering: nothing available purely in-browser today does
-frame-range selection or multi-source layout, and the actual render step needs
-`@remotion/renderer` (real headless Chromium + native ffmpeg) on a real host regardless.
+sample-range filtering, draw into an `OffscreenCanvas`, re-encode, mux.
+
+**CORRECTION: none of that needs writing, and the conclusion originally drawn here was
+wrong.** This section used to end by saying that nothing in-browser does frame-range
+selection or multi-source layout, and that rendering therefore needs
+`@remotion/renderer` (headless Chromium + native ffmpeg) on a real host. Both halves
+were mistaken:
+
+- Frame-range selection and multi-source layout are the **composition's** job
+  (`trimBefore`/`trimAfter` plus CSS), not `convertMedia`'s. `convertMedia`
+  being whole-file only is true and irrelevant.
+- `@remotion/renderer` is not the only renderer. **`@remotion/web-renderer`** renders
+  a composition in the browser and encodes via mediabunny. Verified end to end: a real
+  7-segment 1080x1920 h264+aac cut with two video sources, a split shot and word-level
+  captions, rendered entirely in-browser.
+
+The reasoning error is worth naming because it is easy to repeat: two packages were
+evaluated, both were correctly ruled out, and absence of the capability was inferred
+without checking whether a third package provided it. `references/render-target.md`
+has the mechanism and the measured numbers.
 
 ## A confirmed upstream packaging bug in `@remotion/webcodecs@4.0.520`
 

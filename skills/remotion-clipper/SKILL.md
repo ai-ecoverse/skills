@@ -54,32 +54,43 @@ remotion stage edl.json /tmp/staged            # real copies (not symlinks) of e
 remotion transcode footage.mp4 out.webm        # whole-file transcode, no external host
 ```
 
-## Rendering — deliberately out of scope, and why
+## Rendering — in the browser
 
-This skill does not shell out to another machine to render a composition, and does
-not attempt an in-browser render pipeline either. Two reasons, both real constraints,
-not policy:
+Render with **`@remotion/web-renderer`**. It renders a Remotion composition to canvas
+and encodes with mediabunny, so it needs a browser but NOT a headless-Chromium binary and
+NOT native ffmpeg. Measured here: a 1080x1920 h264 mp4 in **410ms** for 4.6s of synthetic
+output, and a real 7-segment cut with two video sources in **50s** for 29.9s of output
+(decode-bound, so real footage runs slower than realtime; do not quote the synthetic
+figure for real work).
 
-1. **In-browser render genuinely can't cut to an EDL yet.** `@remotion/webcodecs`'s
-   `convertMedia` (used by `transcode`) is whole-file only — no time-range parameter,
-   no compositor. It cannot select a sub-range of frames or lay two sources into
-   split top/bottom halves. That's buildable directly on `VideoDecoder`/
-   `VideoEncoder`/`OffscreenCanvas` (all proven functional inside a `.jsh`'s worker —
-   see `references/findings.md`), but it's a real feature to write, not something
-   this skill should paper over with a partial implementation.
-2. **Actually rendering pixels needs `@remotion/renderer`** — a real headless-Chromium
-   binary plus native ffmpeg, neither of which exists in SLICC. Any render has to
-   happen on a real host. An earlier version of this skill shelled out over `ssh` to
-   a specific machine to do that; it was removed on review, because it baked one
-   person's tray-follower id and home directory into a "skill" that was really just
-   "ssh to my other computer," and because it papered over gap (1) with a workaround
-   that becomes dead weight the moment either gap closes. A skill that clearly does
-   not render is more useful than one that half-renders.
+It needs a real DOM, so it runs in a served page rather than in a `.jsh` realm —
+`require('@remotion/web-renderer')` from a script fails. Load the package through an
+importmap of pinned, `external`-ised esm.sh builds so exactly one copy of `react`,
+`react-dom`, `remotion` and `mediabunny` is shared; the package's own
+`dist/esm/index.mjs` imports bare `react` and cannot be loaded from `node_modules`
+in a browser. Compositions use `React.createElement` — no JSX, no build step.
 
-**For the render step**, use the official `remotion-render` skill (already installed
-alongside this one under `/workspace/skills/`) on whatever machine you normally
-render on, pointed at `assets/remotion-template/` (below) and a `remotion stage`d
-asset folder.
+Trimming and compositing live in the **composition** (`trimBefore`/`trimAfter` and
+ordinary CSS layout), not in `@remotion/webcodecs`. `convertMedia` is whole-file only
+with no time range, which is why it cannot serve as a renderer — but that was never the
+right layer for a cut.
+
+Three traps worth knowing before you spend an hour on them:
+
+- **A hidden tab is ~117x slower and will not load media at all.** The same render
+  measured 146ms visible and 17097ms hidden, with byte-identical output, and a
+  `<video>` in a background tab sits at `readyState 0` forever. Foreground the tab
+  before rendering.
+- **Pin codec profile AND level to the resolution.** `avc1.42E01E` is baseline level
+  3.0: `true` at 640x480, `false` at 1080x1920. That is a level limit, not a missing
+  codec — `avc1.42E034` and `avc1.640028` both encode 1080x1920. A bare
+  `isConfigSupported` failure is not evidence a codec is unavailable.
+- **Text can only be burned in this way.** ffmpeg is not an alternative: `drawtext`
+  fails with `No font filename provided` because the wasm core ships no font, and
+  supplying one from the VFS fails with `cannot open resource`.
+
+`references/render-target.md` documents the reasoning, including the earlier wrong
+conclusion that rendering was impossible here and why it was reached.
 
 ## The EDL schema
 
