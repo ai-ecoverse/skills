@@ -41,6 +41,23 @@ const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled', 'timeout'
 function str(v) { return typeof v === 'string' ? v : undefined; }
 function asList(v) { return v === undefined ? [] : Array.isArray(v) ? v : [v]; }
 
+// Duration flags are validated before polling starts (and before the submit):
+// Number('abc') is NaN, which makes the `Date.now() - start > timeoutMs` check
+// permanently false while setTimeout(NaN) behaves like setTimeout(0) — the
+// documented bounded wait silently becomes an unbounded tight loop against a
+// paid API. A bare `--timeout` (and `--timeout -5`, which argv parsing splits
+// into a valueless flag) arrives as boolean true, and Number(true) is 1, so
+// booleans are rejected explicitly rather than meaning "one second".
+function positiveSeconds(v, name, dflt) {
+  if (v === undefined) return dflt;
+  const num = typeof v === 'string' ? Number(v.trim()) : typeof v === 'number' ? v : NaN;
+  if (!Number.isFinite(num) || num <= 0) {
+    cli.die(`--${name} must be a positive number of seconds (got ${JSON.stringify(v)}). ` +
+      `Example: --${name} 5`, { prefix: 'wavespeed' });
+  }
+  return num;
+}
+
 const HELP = `wavespeed — WaveSpeed AI API client
 
   wavespeed auth <key> | --show
@@ -395,6 +412,11 @@ async function main() {
       const modelId = positional[1];
       if (!modelId) return cli.die('usage: wavespeed run <model_id> [--input k=v ...] [--wait]');
 
+      // Validated up front: a mistyped duration must not reach the submit,
+      // let alone the poll loop.
+      const intervalMs = positiveSeconds(flags['poll-interval'], 'poll-interval', 3) * 1000;
+      const timeoutMs = positiveSeconds(flags.timeout, 'timeout', 300) * 1000;
+
       let body = {};
       const jsonInputFile = str(flags['json-input']);
       if (jsonInputFile) {
@@ -433,8 +455,6 @@ async function main() {
       cli.out(`Submitted ${modelId} → task ${id}` + (webhookUrl ? `  (webhook: ${webhookUrl})` : ''));
       if (!flags.wait) return;
 
-      const intervalMs = Number(flags['poll-interval'] || 3) * 1000;
-      const timeoutMs = Number(flags.timeout || 300) * 1000;
       const data = await pollResult(api, id, { intervalMs, timeoutMs });
 
       if (flags.json) return cli.out(data);
