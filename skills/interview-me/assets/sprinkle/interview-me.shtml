@@ -2174,7 +2174,15 @@ async function beginSession(config, ephemeralToken) {
   // no local excerpt injection needed). Fallback path (kbMode === "local"):
   // BM25-ranked excerpts injected into instructions + lookup_documents tool.
   const sourceMaterial = config.kbMode === "local" ? state.kb.sourceMaterial(config.topic || "the interview topic") : "";
-  const instructions = buildInstructions({ topic: config.topic, sourceMaterial });
+  // sessionMinutes comes from the same per-session snapshot the countdown
+  // and WrapupController use (never the live, CLI-pushable `sessionLengthMs`),
+  // so the prompt's stated duration cannot disagree with the deadline this
+  // interview is actually running to -- see buildInstructions() in tools.js.
+  const instructions = buildInstructions({
+    topic: config.topic,
+    sourceMaterial,
+    sessionMinutes: state.sessionLengthMs / 60000,
+  });
   const tools = buildTools(config);
   const sessionConfig = buildSessionConfig({ voice: config.voice, instructions, tools });
   state.lastSessionConfig = sessionConfig;
@@ -3015,7 +3023,7 @@ async function runDryRun() {
       xSearch: true,
     };
     const tools = buildTools(config);
-    const instructions = buildInstructions({ topic: config.topic, sourceMaterial: "" });
+    const instructions = buildInstructions({ topic: config.topic, sourceMaterial: "", sessionMinutes: sessionLengthMs / 60000 });
     const sessionConfig = buildSessionConfig({ voice: config.voice, instructions, tools });
 
     state.t0 = t0;

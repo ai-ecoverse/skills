@@ -57,12 +57,43 @@ export function buildTools(options = {}) {
   return tools;
 }
 
+// Session length is configurable (config.json's `sessionMinutes`, bounds
+// 1-10 — see interview-me.shtml's MIN/MAX_SESSION_MINUTES), so the prompt
+// cannot state a fixed one: a 10-minute interview instructed to finish "in
+// under five minutes" is actively mis-steered, and a 1-minute one is told it
+// has five times the time it really has. BOTH duration-derived literals in
+// the Goal section — the length and the question budget — are therefore
+// computed from the length actually in effect for this session, which the
+// host passes in from the same snapshot its countdown and WrapupController
+// use (interview-me.shtml's state.sessionLengthMs).
+const DEFAULT_SESSION_MINUTES = 5; // only for a missing/unusable value — matches the host's own fallback
+
+/** Same "5" vs "2.5" formatting the Setup screen's copy uses (interview-me.shtml's updateSetupIntro). */
+function minutesLabel(minutes) {
+  return Number.isInteger(minutes) ? String(minutes) : minutes.toFixed(1);
+}
+
+/**
+ * One question per minute, floored at 2 — the ratio the verified 5-minute
+ * prompt already used ("up to five questions" in five minutes), so a
+ * 5-minute session's prompt is unchanged and every other length scales from
+ * it. The floor matters at the 1-minute bound: this is a ceiling the model
+ * must not exceed, not a target, and one question with no room for a single
+ * follow-up is not an interview.
+ */
+function questionBudget(minutes) {
+  return Math.max(2, Math.round(minutes));
+}
+
 /** Fixed section order per the xAI prompting guide / BRIEF.md — keep it short. */
-export function buildInstructions({ topic, sourceMaterial } = {}) {
+export function buildInstructions({ topic, sourceMaterial, sessionMinutes } = {}) {
   const t = topic && topic.trim() ? topic.trim() : "their work and interests";
+  const rawMinutes = Number(sessionMinutes);
+  const minutes = Number.isFinite(rawMinutes) && rawMinutes > 0 ? rawMinutes : DEFAULT_SESSION_MINUTES;
+  const duration = `${minutesLabel(minutes)} minute${minutes === 1 ? "" : "s"}`;
   let prompt = `You are an interviewer.
 ## Goal
-Interview the user about ${t} in under five minutes. Ask up to five questions, one at a time. Never ask two questions in one turn.
+Interview the user about ${t} in under ${duration}. Ask up to ${questionBudget(minutes)} questions, one at a time. Never ask two questions in one turn.
 ## Style
 Warm, curious, concise. One or two sentences per turn. Follow up on what is actually interesting in their answer rather than marching through a list.
 ## Grounding
