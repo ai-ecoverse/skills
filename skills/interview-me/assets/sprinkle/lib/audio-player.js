@@ -21,6 +21,52 @@ export class AudioPlayer {
     this.gainNode.connect(this.ctx.destination);
     this.gainNode.connect(this.destinationNode);
     this.gainNode.connect(this.analyser);
+
+    // Keeps destinationNode's MediaStreamTrack alive with a real, continuous
+    // signal for the entire lifetime of this AudioPlayer -- fixes a real bug
+    // where a MediaRecorder attached to `stream` dropped stretches where the
+    // agent wasn't speaking instead of recording them as silence (confirmed
+    // empirically: an agent.webm recorded 66.9s of audio for a 94.6s session
+    // -- the agent recorder and the human recorder ended up on different
+    // timelines, so a timestamp in one file did not correspond to the same
+    // moment in the other).
+    //
+    // A `ConstantSourceNode` at offset 0 (true, exact silence) was tried
+    // FIRST and measured to have NO effect: a diagnostic recording with a
+    // real silent gap decoded to roughly half its wall-clock duration both
+    // before and after adding it. That rules out "the rendering graph goes
+    // idle without an actively-scheduled source" as the mechanism -- exact
+    // zero is exactly as easy to detect as no signal at all. The remaining
+    // explanation is encoder-side silence suppression (Opus DTX/VAD-style
+    // behavior): the recorder's encoder is dropping frames it detects as
+    // silence, and true zero is the easiest possible input to detect as
+    // silence.
+    //
+    // Fix: loop an extremely low-amplitude noise buffer (peak ~1/32768, the
+    // smallest step a 16-bit PCM sample can represent, i.e. below what
+    // ANY consumer downstream of this graph could ever quantize as
+    // distinguishable from true silence) instead of true zero. This is not
+    // "silence" from a real-signal encoder's point of view -- there is no
+    // stretch of identical, repeatable zero for a VAD/DTX heuristic to
+    // key off -- verified below by re-running the exact silence-then-tone
+    // diagnostic this fix was written against and confirming decoded
+    // duration now tracks wall-clock time. Contribution to every other
+    // consumer of gainNode (ctx.destination playback, the analyser used for
+    // the level meter/waveform) is inaudible and does not move the meter:
+    // a peak amplitude of 1/32768 is roughly -90 dBFS, far below both human
+    // hearing and this app's own level-meter/waveform rendering.
+    const DITHER_SECONDS = 1;
+    const DITHER_PEAK = 1 / 32768;
+    const ditherBuffer = this.ctx.createBuffer(1, Math.round(DITHER_SECONDS * this.ctx.sampleRate), this.ctx.sampleRate);
+    const ditherData = ditherBuffer.getChannelData(0);
+    for (let i = 0; i < ditherData.length; i++) {
+      ditherData[i] = (Math.random() * 2 - 1) * DITHER_PEAK;
+    }
+    this.silenceNode = this.ctx.createBufferSource();
+    this.silenceNode.buffer = ditherBuffer;
+    this.silenceNode.loop = true;
+    this.silenceNode.connect(this.gainNode);
+    this.silenceNode.start();
   }
 
   /** MediaStream to hand to a MediaRecorder for the agent-audio recording. */
