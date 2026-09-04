@@ -1,23 +1,16 @@
 ---
 name: tiktok
-description: Interact with TikTok via its web API and messages page — upload and
-  publish videos (private by default), search TikTok
-  (videos, users, mixed feed), read video stats (plays, likes, comments, shares,
-  saves), list a creator's videos, read comments, check notifications and the
-  activity feed, read/send direct messages, and see a video (extract auto-caption
-  transcripts + filmstrip contact sheets so an agent can see/hear what a TikTok
-  is about without a human). Use when the user wants to automate TikTok, look up
-  a TikTok video's stats or view count, search TikTok, check TikTok notifications
-  or DMs, read or send a TikTok message, pull a TikTok transcript/captions,
-  generate a filmstrip of frames, "watch" a TikTok, or pull TikTok data without
-  clicking through www.tiktok.com. Also use when the user wants to post, upload
-  or publish a video to TikTok, post a TikTok privately/self-only, or set a
-  TikTok caption, privacy, comment/duet/stitch settings on a new post. Activate on mentions of "TikTok", "TikTok
-  stats", "TikTok video", "TikTok search", "TikTok notifications", "TikTok
-  messages", "TikTok DM", "views/likes on a TikTok", "TikTok post", "post to TikTok", "upload a video to TikTok",
-  "publish a TikTok", "TikTok transcript",
-  "TikTok captions", "TikTok filmstrip", "watch this TikTok", or related TikTok
-  workflows.
+description: Interact with TikTok via its web API and messages page — upload and publish videos
+  (private by default), search TikTok (videos, users, mixed feed), read video stats (plays,
+  likes, comments, shares, saves), list a creator's videos, read comments, check notifications
+  and the activity feed, read/send direct messages, and see a video (auto-caption transcripts +
+  filmstrip contact sheets so an agent can see/hear a TikTok without a human). Use when the user
+  wants to automate TikTok, look up a video's stats or view count, read or send a TikTok DM,
+  pull a transcript/captions, post/upload/publish a video to TikTok, post a TikTok
+  privately/self-only, or set a caption, privacy or comment/duet/stitch settings on a new post.
+  Activate on mentions of "TikTok", "TikTok stats", "TikTok search", "TikTok DM", "TikTok
+  post", "post to TikTok", "upload a video to TikTok", "publish a TikTok", "TikTok
+  transcript", "TikTok filmstrip", "watch this TikTok", or related TikTok workflows.
 allowed-tools: bash
 ---
 
