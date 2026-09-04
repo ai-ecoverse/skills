@@ -891,20 +891,26 @@ const WRAP_UP_DIRECTIVE = "You are almost out of time. After the user's next ans
 
 // How long the "everything has gone quiet" condition -- user not
 // speaking, no response in flight, agent playback drained (see
-// WrapupController#poll()) -- must hold CONTINUOUSLY, once past the
-// wrap-up threshold, before the session ends on its own with
-// endReason:"wrapped-up". This is now the PRIMARY way a session ends
-// once wind-down begins (see onSustainedSilence in beginSession()),
-// independent of whether the model ever produces a turn recognisable as
-// a deliberate "close". Chosen at 5s: the API's own turn_detection
+// WrapupController#poll()) -- must hold CONTINUOUSLY, once a close has
+// actually been DELIVERED (a recognised closing turn, or the canned
+// fallback below), before the session ends on its own with
+// endReason:"wrapped-up". Reaching the wrap-up threshold is NOT enough to
+// start this clock: post-threshold silence while the user is simply
+// thinking about the question they were just asked looks identical to
+// this condition, and ending there cuts the interview off before its last
+// answer -- see wrapup-controller.js's ROUND 4 note. Chosen at 5s: the
+// API's own turn_detection
 // (silence_duration_ms:900) has already gated `userSpeaking` becoming
 // false on a real ~900ms pause before this module ever sees it, so 5s of
 // FURTHER continuous quiet on top of that is comfortably longer than any
 // natural mid-thought breath; it is also safely under the session's own
 // configured turn_detection.idle_timeout_ms (8000 -- the server's own
-// threshold for proactively re-engaging a silent user), so this app acts
-// to wrap up BEFORE the server would otherwise try to re-engage,
-// avoiding an awkward collision between the two; and it is short enough
+// threshold for proactively re-engaging a silent user), so once the close
+// HAS been delivered this app acts to wrap up before the server would
+// try to re-engage, avoiding an awkward collision between the two (being
+// under that 8000 is precisely why an ungated version of this timer could
+// beat the server's re-engagement of a user who was merely thinking); and
+// it is short enough
 // that ending still feels prompt rather than making the user sit through
 // a long, silent tail once the conversation has genuinely finished.
 const SILENCE_SUSTAIN_MS = 5000;
@@ -914,7 +920,9 @@ const SILENCE_SUSTAIN_MS = 5000;
 // HARD_BACKSTOP_GRACE_MS`) -- guarantees a session can never run forever
 // even if the user simply never stops talking (in which case NEITHER the
 // fallback NOR stop-on-silence can ever fire, both deliberately deferring
-// indefinitely during speech). Deliberately WELL BEYOND the nominal
+// indefinitely during speech -- and, since round 4, the fallback also
+// defers while any response is generating or agent audio is still
+// draining, which this backstop likewise covers). Deliberately WELL BEYOND the nominal
 // session length now that ending is silence-driven rather than
 // clock-driven -- the nominal length only decides when wind-down BEGINS,
 // not when the session must end, so this needs real headroom past it:
@@ -943,11 +951,13 @@ const HARD_BACKSTOP_GRACE_MS = 60000;
 // budget for the fallback's OWN force_message to play out and for the
 // wait-for-audio-drain-then-stop sequence (see onClosingTurnComplete in
 // beginSession()) if it does come to that. Unlike the directive, the
-// fallback DOES still defer indefinitely while the user is speaking (see
-// WrapupController#poll()'s "Stage 2" -- this is the one thing that can
-// actually interrupt someone) -- if they are still talking when this
-// delay elapses, the fallback simply waits, and this budget can end up
-// mostly or entirely consumed by that deferral. That remains intentional:
+// fallback DOES still defer indefinitely while anything audible is in
+// progress -- the user speaking, ANY response still generating, or the
+// player still draining agent audio (see WrapupController#poll()'s
+// "Stage 3", and its ROUND 4 note for why the narrower user-speech-only
+// check was not enough) -- so if any of those hold when this delay
+// elapses, the fallback simply waits, and this budget can end up mostly
+// or entirely consumed by that deferral. That remains intentional:
 // the hard cap stays the ultimate backstop, this fallback is a
 // best-effort improvement on top of it, never a replacement for it.
 const WRAP_UP_FALLBACK_DELAY_MS = 20000;
@@ -2092,8 +2102,10 @@ async function beginSession(config, ephemeralToken) {
     sendFallbackMessage: () => {
       // Last resort only -- see WRAP_UP_FALLBACK_DELAY_MS's comment.
       // Unlike the directive above, THIS one speaks -- WrapupController's
-      // own poll() defers it indefinitely while the user is talking, and
-      // never reaches here until they've stopped.
+      // own poll() defers it indefinitely while the user is talking, while
+      // any response is still generating, and while the player still has
+      // agent audio to drain, so it never reaches here unless the room is
+      // genuinely quiet.
       if (state.session && state.session.isOpen()) {
         state.session.sendForceMessage(WRAP_UP_MESSAGE, true);
         // Sets up claimForceMessageItem() (see wireSessionHooks()) to
@@ -2123,11 +2135,14 @@ async function beginSession(config, ephemeralToken) {
       });
     },
     onSustainedSilence: () => {
-      // The OTHER route to the same clean end -- for a session where the
-      // model never produces anything WrapupController recognises as a
-      // deliberate closing turn, but the conversation has gone quiet
-      // (nobody speaking, nothing generating, nothing still playing) for
-      // SILENCE_SUSTAIN_MS regardless. By construction (see poll()) this
+      // The OTHER route to the same clean end -- for a session whose
+      // closing turn (natural or the canned fallback) never settles into
+      // a clean response.done of its own, but where the conversation has
+      // gone quiet (nobody speaking, nothing generating, nothing still
+      // playing) for SILENCE_SUSTAIN_MS after that close was delivered.
+      // It can no longer fire on ordinary post-threshold thinking silence
+      // before anything has closed -- see wrapup-controller.js's ROUND 4
+      // note. By construction (see poll()) this
       // callback only ever fires once already-drained/not-speaking/
       // nothing-in-flight has held continuously -- there is nothing left
       // to wait on, so this stops immediately rather than re-checking

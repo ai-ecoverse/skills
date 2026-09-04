@@ -38,6 +38,27 @@
 // produces a clean closing turn still ends naturally rather than running
 // to the deadline.
 //
+// ROUND 4 (review follow-up, reasoned from the code and reproduced with a
+// unit harness driving poll() -- no live session): both remaining guards
+// were too narrow.
+//   a. STOP-ON-SILENCE armed the moment the threshold passed, with no
+//      requirement that anything had closed. Ordinary between-turn silence
+//      is indistinguishable from "the interview is over": threshold
+//      arrives right after the agent's question, the user is still
+//      thinking, and silenceSustainMs later the recording stops -- with
+//      the last answer never given, and sooner than the server's own
+//      idle_timeout_ms would have re-engaged them. It also starved the
+//      fallback: at threshold+5s the host ended the session, ~15s before
+//      the +20s fallback could ever run, so a "forced" close was
+//      effectively unreachable in any quiet session. Now gated on a close
+//      having actually been delivered.
+//   b. THE FALLBACK only deferred for the response created AFTER the
+//      directive, so a response created just BEFORE it -- still
+//      generating, still audible, and measured by the host at up to 59s
+//      -- did not defer anything, and the canned line could start over
+//      it. Now it defers for ANY in-flight response and for undrained
+//      playback too. A barge-in over the agent is still a barge-in.
+//
 // Three-part design:
 //   1. PRIMARY: at the wrap-up threshold, IMMEDIATELY and
 //      UNCONDITIONALLY (never deferred for user speech -- neither of
@@ -47,19 +68,42 @@
 //        b. the closing directive (sendDirective, a session.update
 //           appending to the real `instructions`) -- documented, and a
 //           backstop in case (a) ever stops working.
-//   2. STOP ON SILENCE: once past the threshold, if the user is not
-//      speaking, no response is in flight, and agent playback has
+//   2. STOP ON SILENCE: once a close has actually been DELIVERED (a
+//      recognised closing turn, or the fallback line below), if the user
+//      is not speaking, no response is in flight, and agent playback has
 //      drained, for a SUSTAINED period, tell the host to end the session
-//      -- this is the primary, expected ending once wind-down begins,
-//      independent of whether any particular "closing turn" was ever
-//      recognised.
-//   3. FALLBACK (genuine last resort, and the ONLY stage that still
-//      defers during user speech -- this is the one thing that can
-//      actually talk over someone): if neither (2) nor a recognised
+//      -- the expected ending once wind-down begins, independent of
+//      whether the closing turn itself ever completed cleanly.
+//
+//      ROUND 4: this stage used to arm the instant the threshold passed,
+//      with no requirement that anything had closed. That made ordinary
+//      between-turn silence indistinguishable from "the interview is
+//      over": if the threshold arrived just after the agent finished a
+//      question, while the user was still thinking about their answer,
+//      all three conditions were already true and the session ended
+//      silenceSustainMs later -- before the user could answer at all,
+//      and before the server's own idle_timeout_ms (8000, see
+//      buildSessionConfig()) would have re-engaged them. It also made
+//      stage 3 nearly unreachable: in a quiet session this fired at
+//      threshold+5s, long before the +20s fallback it is supposed to
+//      complement.
+//   3. FALLBACK (genuine last resort, and the ONLY stage that defers for
+//      anything that is merely IN PROGRESS -- this is the one thing that
+//      can actually talk over someone): if neither (2) nor a recognised
 //      closing turn (see noteResponseDone()) has happened
-//      `fallbackDelayMs` after the directive landed, AND the user is not
-//      speaking, send the canned force_message anyway so the interview
-//      has SOME graceful ending. Reuses the same "closing turn observed"
+//      `fallbackDelayMs` after the directive landed, AND nothing audible
+//      is happening right now -- the user is not speaking, NO response of
+//      any kind is generating, and agent playback has drained -- send the
+//      canned force_message so the interview has SOME graceful ending.
+//      ROUND 4: the in-flight check used to cover only the response
+//      created AFTER the directive (`_closingResponseInFlight`), so a
+//      response created just BEFORE it -- the exact race the round-2 note
+//      above describes, and one the host has measured taking as long as
+//      59s -- left the guard open and let the canned line start over an
+//      answer the agent was still speaking. Deferring on ANY in-flight
+//      response (and on undrained playback) closes that hole; the
+//      barge-in this module exists to prevent is no less of a barge-in
+//      for happening over the agent instead of the user. Reuses the same "closing turn observed"
 //      detection -- the force_message's own response lifecycle naturally
 //      satisfies it once it completes, so no special-casing is needed
 //      for "what happens after the fallback plays" (silence detection
@@ -100,8 +144,8 @@
  *   parameter rather than opinion-having about it.
  * @property {number} [silenceSustainMs=5000] How long the "everything
  *   has gone quiet" condition (user not speaking, no response in flight,
- *   agent playback drained) must hold CONTINUOUSLY, once past the
- *   threshold, before onSustainedSilence() fires. See the host's own
+ *   agent playback drained) must hold CONTINUOUSLY, once a close has been
+ *   delivered (see poll()), before onSustainedSilence() fires. See the host's own
  *   comment (interview-me.shtml, near SILENCE_SUSTAIN_MS) for the chosen
  *   value and reasoning.
  * @property {() => void} [sendTimeCheck] Called exactly once, at
@@ -112,8 +156,9 @@
  *   responsible for actually performing the session.update.
  * @property {() => void} [sendFallbackMessage] Called at most once, only
  *   if neither a closing turn nor sustained silence has been observed
- *   within fallbackDelayMs of the directive landing, and the user is not
- *   speaking at that moment. The host is responsible for actually
+ *   within fallbackDelayMs of the directive landing, and nothing audible
+ *   is in progress at that moment (no user speech, no response of any
+ *   kind generating, playback drained). The host is responsible for actually
  *   calling sendForceMessage().
  * @property {() => void} [onClosingTurnComplete] Called once the
  *   "closing turn" (the first response created after the directive was
@@ -124,9 +169,10 @@
  *   user speech state, then stop).
  * @property {() => void} [onSustainedSilence] Called once, at most, when
  *   the "everything has gone quiet" condition has held continuously for
- *   silenceSustainMs since the threshold was crossed. An ADDITIONAL route
- *   to a clean end alongside onClosingTurnComplete, for the case where no
- *   recognisable closing turn ever happens.
+ *   silenceSustainMs since a close was DELIVERED (a recognised closing
+ *   turn, or the fallback). An ADDITIONAL route to a clean end alongside
+ *   onClosingTurnComplete, for the case where the closing turn never
+ *   settles into a clean response.done of its own.
  * @property {(entry: object) => void} [onDiagnostic] Fired for every
  *   entry appended to the internal event log -- same convenience hook
  *   mic-watchdog.js/stream-watchdog.js already expose, and specifically
@@ -161,6 +207,7 @@ class WrapupController {
     this._fallbackSent = false;
     this._silenceStartedAtElapsedMs = null; // when the quiet condition most recently became true, or null if not currently quiet
     this._silenceStopSent = false;
+    this._fallbackDeferralsLogged = {}; // reason -> true; keeps the once-per-reason deferral log out of every 250ms tick
   }
 
   // `t` here is a real wall-clock timestamp (Date.now()), purely for
@@ -277,16 +324,27 @@ class WrapupController {
     }
 
     // Stop on silence: an ADDITIONAL route to a clean end, alongside
-    // onClosingTurnComplete above -- for the case where the model never
-    // produces a recognisable closing turn at all, but the conversation
-    // has nonetheless gone quiet (nobody speaking, nothing generating,
-    // nothing still playing) for a sustained period. Tracks how long the
-    // quiet condition has held CONTINUOUSLY -- any break resets the
-    // clock, so a natural pause mid-thought (which shows up as, at most,
-    // a brief gap before the user resumes or the model responds) cannot
-    // by itself end the interview.
+    // onClosingTurnComplete above -- for the case where the closing turn
+    // never settles into a clean response.done of its own, but the
+    // conversation has nonetheless gone quiet (nobody speaking, nothing
+    // generating, nothing still playing) for a sustained period. Tracks
+    // how long the quiet condition has held CONTINUOUSLY -- any break
+    // resets the clock.
+    //
+    // GATED on a close having actually been DELIVERED first
+    // (`closeDelivered` below). Silence alone does not mean the interview
+    // finished: crossing the threshold moments after the agent asked a
+    // question leaves the user THINKING, which looks exactly like this
+    // condition -- not speaking, nothing generating, nothing playing --
+    // and ending there cuts the interview off before its last answer,
+    // even before the server's own idle_timeout_ms would re-engage them.
+    // Waiting for a close first also restores stage 3's reachability: an
+    // ungated silence stop fired at threshold+silenceSustainMs, so the
+    // host ended the session long before the +fallbackDelayMs fallback
+    // this stage is meant to complement could ever run.
     if (!this._silenceStopSent) {
-      const silentNow = !this._userSpeaking && !this._responseInFlight && playbackDrained;
+      const closeDelivered = this._closingTurnSeen || this._fallbackSent;
+      const silentNow = closeDelivered && !this._userSpeaking && !this._responseInFlight && playbackDrained;
       if (silentNow) {
         if (this._silenceStartedAtElapsedMs === null) this._silenceStartedAtElapsedMs = elapsedMs;
         const silentForMs = elapsedMs - this._silenceStartedAtElapsedMs;
@@ -301,24 +359,47 @@ class WrapupController {
       }
     }
 
-    // Stage 2 (last resort): the fallback. Only reachable once the
+    // Stage 3 (last resort): the fallback. Only reachable once the
     // directive has landed, only fires once, only while neither a
     // recognised closing turn NOR sustained silence has already ended
-    // things, never while the user is speaking, and never while a
-    // response that MIGHT still be the natural closing turn is actively
-    // in flight -- give it the chance to finish rather than talking
-    // over/alongside it with the fallback line. THIS is the one stage
-    // that still defers for user speech, deliberately unchanged from
-    // before -- the force_message it sends is the one thing that can
-    // actually interrupt someone.
-    if (this._closingTurnSeen || this._fallbackSent || this._closingResponseInFlight) return;
-    if (this._userSpeaking) return; // deferred indefinitely here -- this is the audible one
+    // things, and never while ANYTHING audible is in progress. THIS is
+    // the one stage that defers, deliberately -- the force_message it
+    // sends is the one thing in this module that can actually interrupt
+    // someone, so every in-progress condition below is a reason to wait
+    // rather than to speak.
+    if (this._closingTurnSeen || this._fallbackSent) return;
+    if (this._userSpeaking) return this._deferFallback("user-speaking"); // deferred indefinitely -- this is the audible one
+    // ANY response in flight, not just the one created after the
+    // directive: a response created just BEFORE the directive is still
+    // real speech being generated, and `_closingResponseInFlight` (a
+    // strict subset of this flag) is false for it, which is exactly how
+    // the canned line could previously start over an answer already
+    // underway. Waiting also gives that response the chance to become
+    // the natural close.
+    if (this._responseInFlight) return this._deferFallback("response-in-flight");
+    // Generation finishing is not the same as the audio being heard:
+    // response.done fires while the host's AudioPlayer may still have
+    // seconds of queued PCM (see AudioPlayer#waitForDrain, which
+    // onClosingTurnComplete's host callback also waits on). Speaking
+    // over that tail is the same barge-in, one buffer later.
+    if (!playbackDrained) return this._deferFallback("playback-draining");
     const sinceDirectiveMs = elapsedMs - this._directiveSentAtElapsedMs;
     if (sinceDirectiveMs >= this._fallbackDelayMs) {
       this._fallbackSent = true;
       this._log("fallback-sent", { elapsedMs, sinceDirectiveMs });
       if (this._sendFallbackMessage) this._sendFallbackMessage();
     }
+  }
+
+  // poll() runs every 250ms, so a deferral cannot log per tick without
+  // burying diagnostics.json -- log the FIRST tick each distinct reason
+  // defers the fallback and stay quiet after that. Round 4's two findings
+  // were both diagnosed from this event log (see the module header), so
+  // the new guards are worth the same one-line record.
+  _deferFallback(reason) {
+    if (this._fallbackDeferralsLogged[reason]) return;
+    this._fallbackDeferralsLogged[reason] = true;
+    this._log("fallback-deferred", { reason });
   }
 }
 
