@@ -306,8 +306,26 @@ async function cmdSet(args, notify) {
 // overwrites a real user's settings, and it never touches anything the
 // user has put in kb/ or sessions/.
 
+// `sliccy:skill`.dir is the directory of the RUNNING SCRIPT (documented in
+// skill-authoring/jsh-runtime-extensions.md), so `skill.assets` resolves to
+// `<skill>/scripts/assets`. This repo ships assets at the skill ROOT instead
+// (`<skill>/assets`, as oryx and remotion-clipper do), so the root has to be
+// derived by stripping a trailing `/scripts`. Probe both rather than assuming:
+// a missing assets dir used to surface as a confusing per-file read error
+// halfway through install, after directories had already been created.
+async function resolveAssetsDir() {
+  const root = skill.dir.replace(/\/scripts\/?$/, '');
+  const candidates = [`${root}/assets/sprinkle`, `${skill.assets}/sprinkle`];
+  for (const c of candidates) {
+    if (await fs.exists(`${c}/interview-me.shtml`)) return c;
+  }
+  throw new Error(
+    `could not locate the sprinkle assets. Tried:\n  ${candidates.join('\n  ')}`,
+  );
+}
+
 async function cmdInstall() {
-  const assetsDir = `${skill.assets}/sprinkle`;
+  const assetsDir = await resolveAssetsDir();
 
   // `recursive: true` on every one of these: /shared/sprinkles itself does
   // not exist on a fresh runtime, and a non-recursive mkdir fails on the
