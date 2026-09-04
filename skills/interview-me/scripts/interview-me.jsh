@@ -303,20 +303,27 @@ async function cmdSet(args, notify) {
 // interview-me.shtml + lib/*.js from this skill's bundled assets (so a
 // skill upgrade's fixes reach an already-installed sprinkle), but only
 // SEEDS config.json if one doesn't already exist there -- it never
-// overwrites a real user's settings.
+// overwrites a real user's settings, and it never touches anything the
+// user has put in kb/ or sessions/.
 
 async function cmdInstall() {
   const assetsDir = `${skill.assets}/sprinkle`;
 
-  try {
-    await fs.mkdir(SPRINKLE_DIR);
-  } catch {
-    // already exists -- fine
-  }
-  try {
-    await fs.mkdir(`${SPRINKLE_DIR}/lib`);
-  } catch {
-    // already exists -- fine
+  // `recursive: true` on every one of these: /shared/sprinkles itself does
+  // not exist on a fresh runtime, and a non-recursive mkdir fails on the
+  // missing PARENT, not on "already exists" -- which the empty catch below
+  // then swallows, so the failure only resurfaced later as a confusing
+  // write error against a path that was never created. Recursive mkdir is
+  // also idempotent, which is what makes re-running install safe.
+  //
+  // kb/ is created here too: it is the DEFAULT kbPath
+  // (`${KB_DIR}/` -- see defaultConfig()) and the Advanced tab's
+  // prefilled ingestion path, and until it exists local-context mode loads
+  // an empty corpus (silently: kb.js's loadFromDir() treats an unreadable
+  // directory as "no documents") and `collections create` from the
+  // prefilled path fails outright.
+  for (const dir of [SPRINKLE_DIR, `${SPRINKLE_DIR}/lib`, KB_DIR]) {
+    await fs.mkdir(dir, { recursive: true });
   }
 
   const shtml = await fs.readFile(`${assetsDir}/interview-me.shtml`);
@@ -345,8 +352,24 @@ async function cmdInstall() {
     await fs.writeFile(SPRINKLE_CONFIG_FILE, JSON.stringify(config, null, 2));
   }
 
+  // The bundled kb notes ship as documentation, so they are installed
+  // ALONGSIDE kb/ rather than inside it: everything under kbPath that ends
+  // in .md/.txt is real interview source material (kb.js chunks and ranks
+  // the whole directory, and `collections ingest ${KB_DIR}` uploads it), so
+  // a README dropped in there would come back as questions about this
+  // skill's own documentation instead of about the user.
+  let kbReadme = '';
+  try {
+    kbReadme = await fs.readFile(`${skill.assets}/kb/README.md`);
+  } catch {
+    // Bundled notes missing (partial checkout) -- kb/ itself still exists,
+    // which is the part the sprinkle actually needs.
+  }
+  if (kbReadme) await fs.writeFile(`${SPRINKLE_DIR}/KB-README.md`, kbReadme);
+
   console.log(`Installed interview-me.shtml + ${libCount} lib module(s) to ${SPRINKLE_DIR}`);
   console.log(configExisted ? 'Existing config.json left untouched.' : 'Seeded config.json with defaults.');
+  console.log(`Knowledge-base folder ready at ${KB_DIR}/ -- drop .md/.txt files there${kbReadme ? ` (see ${SPRINKLE_DIR}/KB-README.md)` : ''}.`);
   console.log('Open it with: sprinkle open interview-me');
 }
 

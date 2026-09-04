@@ -53,10 +53,14 @@ This skill has two parts:
    ```
    interview-me install
    ```
-   Copies the sprinkle into `/shared/sprinkles/interview-me/`. Safe to
-   re-run after a skill upgrade to pick up fixes — it refreshes
-   `interview-me.shtml`/`lib/*.js` every time but never overwrites an
-   existing `config.json`.
+   Copies the sprinkle into `/shared/sprinkles/interview-me/` and creates
+   the default knowledge-base folder `/shared/sprinkles/interview-me/kb/`
+   (empty — the bundled notes about it are installed next to it as
+   `KB-README.md`, deliberately outside `kb/` so they never become
+   interview source material). Safe to re-run after a skill upgrade to pick
+   up fixes — it refreshes `interview-me.shtml`/`lib/*.js` every time but
+   never overwrites an existing `config.json`, and never touches your own
+   `kb/` files or recorded `sessions/`.
 3. **Set a briefing** — what the interviewer should ask about:
    ```
    interview-me brief "Ask me about the project I'm currently building and what's been hardest about it"
