@@ -332,11 +332,59 @@ async function main() {
     case 'upload': {
       const file = positional[1];
       if (!file) return cli.die('usage: wavespeed upload <file>');
-      const buf = await fs.readFileBinary(file);
-      const blob = new Blob([buf]);
-      const fd = new FormData();
-      fd.append('file', blob, file.split('/').pop());
-      const j = await api.post('/api/v3/media/upload/binary', { body: fd });
+
+      // Upload via curl in a generated shell script, NOT via fetch.
+      //
+      // jsh's fetch is not binary-safe for request bodies: it encodes the body
+      // as UTF-8 text, so every byte above 0x7f arrives as its two-byte UTF-8
+      // sequence. Verified against a 9-byte payload with every body type --
+      // Buffer, Uint8Array, ArrayBuffer, Blob, and FormData+Blob all produced
+      // identical damage, and sliccy:http (which wraps fetch) does too:
+      //   sent     ff d8 ff 98 00 41 7f 80 fe                 (9 bytes)
+      //   returned c3bf c398 c3bf c298 00 41 7f c280 c3be     (15 bytes)
+      // Bytes <= 0x7f pass through, which is why uploading a text file appears
+      // to work and only binary breaks. The request still returns HTTP 200
+      // with a working-looking URL, so the only way to catch this is to fetch
+      // the object back and compare bytes -- a JPEG uploaded that way is
+      // rejected downstream as "The input file could not be decoded as an
+      // image". curl round-trips the identical payload intact.
+      //
+      // Why a shell script rather than a direct exec: `exec` takes one command
+      // string and splits it on whitespace WITHOUT honoring quotes, so
+      // -H "Authorization: Bearer <key>" would arrive as four arguments and
+      // curl would report "no URL specified". This curl build has no
+      // --config either. A generated /bin/sh script lets the shell do the
+      // quoting and keeps the key out of any argument list.
+      if (/["'`$\\]/.test(file)) {
+        return cli.die('file path may not contain a quote, backtick, $ or backslash');
+      }
+      const shPath = '/tmp/.ws-upload-' + Date.now().toString(36) + '.sh';
+      const script = [
+        '#!/bin/sh',
+        'curl -s --max-time 300 -X POST "' + BASE + '/api/v3/media/upload/binary" \\',
+        '  -H "Authorization: Bearer ' + key + '" \\',
+        '  -F "file=@' + file + '"',
+        '',
+      ].join('\n');
+      await fs.writeFile(shPath, script);
+      let up;
+      try {
+        up = await exec('sh ' + shPath);
+      } finally {
+        try { await fs.unlink(shPath); } catch { /* best effort cleanup */ }
+      }
+      if (up.exitCode !== 0) {
+        return cli.die('upload failed: curl exit ' + up.exitCode + ' ' + String(up.stderr || '').slice(0, 200));
+      }
+      let j;
+      try {
+        j = JSON.parse(up.stdout);
+      } catch {
+        return cli.die('upload failed: unparseable response ' + String(up.stdout).slice(0, 200));
+      }
+      if (j && j.code && j.code !== 200) {
+        return cli.die('upload failed: ' + (j.message || JSON.stringify(j).slice(0, 200)));
+      }
       if (flags.json) return cli.out(j);
       cli.out(j?.data?.download_url || j);
       console.error(color.gray('Note: uploaded files expire after 7 days.'));
