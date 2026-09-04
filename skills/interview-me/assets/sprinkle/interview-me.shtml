@@ -414,6 +414,16 @@
         <select id="im-voice" class="sprinkle-text-field"></select>
       </div>
 
+      <div class="im-field">
+        <label for="im-voice-preview-text">Preview line</label>
+        <div class="im-row">
+          <input id="im-voice-preview-text" type="text" class="sprinkle-text-field" style="flex:1" placeholder="What should the interviewer say?" />
+          <button id="im-voice-preview-btn" type="button" class="sprinkle-btn sprinkle-btn--secondary">Play preview</button>
+        </div>
+        <span class="im-note" id="im-voice-preview-status"></span>
+        <audio id="im-voice-preview-audio" style="display:none"></audio>
+      </div>
+
       <div class="im-divider" style="border-top:1px solid var(--s2-border-subtle)"></div>
 
       <!-- ==================== Knowledge base ==================== -->
@@ -727,6 +737,7 @@ const [
   { finalizeSession, buildDiagnosticsDocument },
   { UiState },
   { createWrapupController },
+  { synthesizeVoicePreview },
 ] = await Promise.all(
   [
     "audio-player.js",
@@ -743,6 +754,7 @@ const [
     "session-end.js",
     "ui-state.js",
     "wrapup-controller.js",
+    "tts-preview.js",
   ].map((name) => window.__imLoadModule(`${LIB_DIR}/${name}`).then((url) => import(url)))
 );
 window.__imDiag && window.__imDiag("all-lib-modules-loaded");
@@ -792,6 +804,23 @@ window.__imDiag && window.__imDiag("all-lib-modules-loaded");
 })();
 
 const FALLBACK_VOICES = ["eve", "altair", "ara", "atlas", "aurora", "carina", "castor", "celeste", "cosmo", "helios"];
+
+// Used by the Advanced tab's voice-audition feature whenever there's no
+// briefing to derive an opening line from yet (a brand-new install, or the
+// briefing field genuinely empty). Deliberately phrased as a real opening
+// question, not a generic demo line ("the quick brown fox...") -- the whole
+// point of auditioning is to hear how a voice actually sounds asking the
+// kind of thing this app asks.
+const DEFAULT_VOICE_PREVIEW_LINE = "Hey there. Quick one to start — what first drew you to the work you're doing right now?";
+
+/** First sentence of `text` (up to and including a ./!/? boundary), or the whole (trimmed) string if none is found. Empty input -> "". */
+function firstSentenceOf(text) {
+  if (typeof text !== "string") return "";
+  const trimmed = text.trim();
+  if (!trimmed) return "";
+  const match = trimmed.match(/^.*?[.!?](?=\s|$)/);
+  return (match ? match[0] : trimmed).trim();
+}
 
 // Session length is now configurable via config.json's `sessionMinutes`
 // (read/applied through applyConfig(), same as every other field -- a CLI
@@ -1022,6 +1051,10 @@ const el = {
   webDomains: $("im-web-domains"),
   xHandles: $("im-x-handles"),
   voice: $("im-voice"),
+  voicePreviewText: $("im-voice-preview-text"),
+  voicePreviewBtn: $("im-voice-preview-btn"),
+  voicePreviewStatus: $("im-voice-preview-status"),
+  voicePreviewAudio: $("im-voice-preview-audio"),
   kbMode: $("im-kb-mode"),
   kbCollectionPanel: $("im-kb-collection-panel"),
   kbLocalPanel: $("im-kb-local-panel"),
@@ -1100,6 +1133,16 @@ const state = {
   config: null,
   ended: false,
   testMeterHandle: null,
+  // Voice-preview cache: key `${voiceId}::${text}` -> raw MP3 Uint8Array.
+  // Session-only (a plain in-memory Map, cleared on reload) -- generating
+  // audio costs a real API call, so a repeat play of the same (voice,
+  // line) combo must never re-hit the network. Deliberately caches the
+  // raw bytes, not a Blob URL: onPlayVoicePreview() derives a fresh Blob
+  // URL from the cached bytes on every play and revokes the previous one,
+  // so there is exactly one place that creates/owns blob: URLs regardless
+  // of whether this call was a cache hit or a fresh synthesis.
+  voicePreviewCache: new Map(),
+  voicePreviewCurrentUrl: null,
 };
 
 // Persists small UI state (active tab/screen, briefing textarea text)
@@ -1192,8 +1235,21 @@ async function loadConfig() {
 
 // Fields that don't depend on dynamically-populated <option> lists --
 // applied immediately so config prefill doesn't wait on network calls.
+// Fills the voice-preview line from the briefing's own opening -- but only
+// while the field is still empty, exactly like the kbPath/newCollectionPath
+// "fill in a default only if the user hasn't already put something there"
+// convention elsewhere in this file. Called from applyStaticConfigFields()
+// so both init() and a CLI-pushed config update keep this in sync with
+// whatever the CURRENT briefing is, without ever clobbering a preview line
+// someone is actively rehearsing.
+function updateVoicePreviewDefault(brief) {
+  if (el.voicePreviewText.value.trim()) return;
+  el.voicePreviewText.value = firstSentenceOf(brief) || DEFAULT_VOICE_PREVIEW_LINE;
+}
+
 function applyStaticConfigFields(config) {
   if (typeof config.brief === "string") el.brief.value = config.brief;
+  updateVoicePreviewDefault(config.brief);
   el.webSearch.checked = config.webSearch === undefined ? true : !!config.webSearch;
   el.xSearch.checked = config.xSearch === undefined ? true : !!config.xSearch;
   if (Array.isArray(config.webAllowedDomains)) el.webDomains.value = config.webAllowedDomains.join(", ");
@@ -1392,6 +1448,7 @@ async function init() {
     el.kbMode.addEventListener("change", onKbModeChange);
     el.createCollectionBtn.addEventListener("click", onCreateCollection);
     el.testSearchBtn.addEventListener("click", onTestSearch);
+    el.voicePreviewBtn.addEventListener("click", onPlayVoicePreview);
     el.camSelect.addEventListener("change", restartPreviewStream);
     el.micSelect.addEventListener("change", restartPreviewStream);
     onKbModeChange();
@@ -1532,6 +1589,54 @@ async function populateVoices() {
     el.voice.appendChild(opt);
   }
   window.__imDiag && window.__imDiag("populate-voices", { fromApi: !!(voices && voices.length), count: list.length });
+}
+
+function voicePreviewCacheKey(voiceId, text) {
+  return `${voiceId}::${text}`;
+}
+
+/**
+ * The ONE place that decides "cache hit or real network call" for a voice
+ * preview. Returns `{ bytes, fromCache }`; never touches the DOM/Blob URLs
+ * (that's onPlayVoicePreview()'s job) so this stays trivially testable with
+ * a throwaway cache Map and a counting execFn.
+ */
+async function getOrCreateVoicePreviewBytes(execFn, cache, voiceId, text) {
+  const key = voicePreviewCacheKey(voiceId, text);
+  const cached = cache.get(key);
+  if (cached) return { bytes: cached, fromCache: true };
+  const bytes = await withTimeout(synthesizeVoicePreview(execFn, { text, voiceId }), 20000, "synthesizeVoicePreview");
+  cache.set(key, bytes);
+  return { bytes, fromCache: false };
+}
+
+async function onPlayVoicePreview() {
+  const voiceId = el.voice.value;
+  const text = el.voicePreviewText.value.trim() || DEFAULT_VOICE_PREVIEW_LINE;
+  if (!voiceId) {
+    el.voicePreviewStatus.textContent = "Pick a voice first.";
+    return;
+  }
+  el.voicePreviewBtn.disabled = true;
+  const alreadyCached = state.voicePreviewCache.has(voicePreviewCacheKey(voiceId, text));
+  el.voicePreviewStatus.textContent = alreadyCached ? "Playing cached preview…" : "Generating preview…";
+  try {
+    const { bytes, fromCache } = await getOrCreateVoicePreviewBytes((cmd) => slicc.exec(cmd), state.voicePreviewCache, voiceId, text);
+    // One owner of blob: URLs for this feature -- revoke the previous one
+    // before creating the next, whether this play was a cache hit or not,
+    // so repeated plays never leak object URLs across a long session.
+    if (state.voicePreviewCurrentUrl) URL.revokeObjectURL(state.voicePreviewCurrentUrl);
+    const blob = new Blob([bytes], { type: "audio/mpeg" });
+    state.voicePreviewCurrentUrl = URL.createObjectURL(blob);
+    el.voicePreviewAudio.src = state.voicePreviewCurrentUrl;
+    await el.voicePreviewAudio.play();
+    el.voicePreviewStatus.textContent = fromCache ? "Playing (cached — no new request)." : "Playing.";
+  } catch (err) {
+    el.voicePreviewStatus.textContent = `Preview failed: ${err.message}`;
+    window.__imDiag && window.__imDiag("voice-preview-error", { message: err.message, voiceId });
+  } finally {
+    el.voicePreviewBtn.disabled = false;
+  }
 }
 
 // --- Video attach + diagnostics --------------------------------------
