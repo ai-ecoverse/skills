@@ -487,17 +487,28 @@ async function main() {
       const id = j && j.data && j.data.id;
       if (!id) return cli.die(`unexpected submit response: ${JSON.stringify(scrubWebhookUrl(j, webhookUrl))}`);
 
-      if (flags.json && !flags.wait) return cli.out(scrubWebhookUrl(j, webhookUrl));
-      cli.out(`Submitted ${modelId} → task ${id}` +
-        (webhookRef ? `  (webhook: ${webhookRef.name} id:${webhookRef.id})` : ''));
-      if (!flags.wait) return;
+      // The submission line goes to stderr whenever --json is set, so stdout stays
+      // a single parseable JSON document for `| jq`.
+      const note = `Submitted ${modelId} → task ${id}` +
+        (webhookRef ? `  (webhook: ${webhookRef.name} id:${webhookRef.id})` : '');
+      if (flags.json) process.stderr.write(note + '\n');
+      else cli.out(note);
+
+      if (!flags.wait) {
+        if (flags.json) return cli.out(scrubWebhookUrl(j, webhookUrl));
+        return;
+      }
 
       const data = await pollResult(api, id, { intervalMs, timeoutMs });
 
-      if (flags.json) return cli.out(scrubWebhookUrl(data, webhookUrl));
+      // Print the JSON, then still exit nonzero on a terminal non-completed
+      // status: the early return here made automated callers read a failed
+      // generation as success (CLAUDE.md §6, issue #76).
+      if (flags.json) cli.out(scrubWebhookUrl(data, webhookUrl));
       if (data.status !== 'completed') {
         return cli.die(`task ${id} ended with status "${data.status}"` + (data.error ? `: ${data.error}` : ''));
       }
+      if (flags.json) return;
       cli.out(data.outputs && data.outputs[0]);
       const outPath = str(flags.out);
       if (outPath && data.outputs && typeof data.outputs[0] === 'string' && /^https?:\/\//.test(data.outputs[0])) {
