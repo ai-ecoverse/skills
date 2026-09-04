@@ -48,6 +48,15 @@ function asList(v) { return v === undefined ? [] : Array.isArray(v) ? v : [v]; }
 // paid API. A bare `--timeout` (and `--timeout -5`, which argv parsing splits
 // into a valueless flag) arrives as boolean true, and Number(true) is 1, so
 // booleans are rejected explicitly rather than meaning "one second".
+// SLICC's fs.readFile has returned byte-valued text rather than a UTF-8 decoded
+// string on some builds (see the note in skills/pandoc/scripts/pandoc.jsh), which
+// mojibakes a non-ASCII prompt before it is ever submitted. Read the bytes and
+// decode them explicitly so correctness does not depend on the build.
+async function readTextUtf8(path) {
+  const bytes = await fs.readFileBinary(path);
+  return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+}
+
 function positiveSeconds(v, name, dflt) {
   if (v === undefined) return dflt;
   const num = typeof v === 'string' ? Number(v.trim()) : typeof v === 'number' ? v : NaN;
@@ -420,7 +429,9 @@ async function main() {
       let body = {};
       const jsonInputFile = str(flags['json-input']);
       if (jsonInputFile) {
-        const raw = await fs.readFile(jsonInputFile);
+        let raw;
+        try { raw = await readTextUtf8(jsonInputFile); }
+        catch (e) { return cli.die(`--json-input ${jsonInputFile} could not be read: ${e.message}`); }
         try { body = JSON.parse(raw); } catch (e) { return cli.die(`--json-input ${jsonInputFile} is not valid JSON: ${e.message}`); }
       }
 
