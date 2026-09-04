@@ -11,7 +11,7 @@
 //   wavespeed status <task_id> [--json]
 //   wavespeed get <task_id> [--out path] [--index n] [--json]
 //   wavespeed reconcile [--status s] [--model id] [--since 24h] [--page-size n] [--json]
-//   wavespeed webhook create [--name name] | list | secret
+//   wavespeed webhook create [--name name] [--scoop target] | list | secret
 //   wavespeed api <METHOD> <path> [--data '<json>'] [--query k=v]
 //
 // Auth priority: --key | WAVESPEED_API_KEY | skill config (`wavespeed auth <key>`) |
@@ -31,6 +31,20 @@
 // TRAY_EXPIRED while the WaveSpeed job still reports success. `reconcile` is the
 // polling-based backstop for a callback that never arrives (long jobs can outlive
 // the tray that issued the URL).
+//
+// Callback ROUTING (measured 2026-09-04, ai-ecoverse/skills#332 review): a webhook
+// created without --scoop is untargeted, and dispatch delivers its events to the
+// cone — not to the scoop that created it. `webhook create` does NOT reject an
+// omitted --scoop (it is documented optional, "Omit for your own cone", and exits
+// 0), but the default resolves against the invoking process: run from a scoop's
+// shell it picks up that scoop, while the same command issued from a .jsh through
+// exec.spawn produced an untargeted webhook whose callback landed on the cone:
+//   exec.spawn(['webhook','create','--name','x'])          -> no target  (cone)
+//   exec.spawn([...,'--scoop','ws-review-scoop'])          -> ws-review-scoop
+// So `run --webhook` was unusable end to end from inside a scoop. This CLI now
+// passes SLICC_LICK_TARGET explicitly when it is set, the same fix slack.jsh
+// documents for its own lick routing, and `run --webhook` warns when the named
+// webhook is targeted somewhere other than this process.
 
 const cli = require('sliccy:cli');
 const fmt = require('sliccy:fmt');
@@ -109,7 +123,7 @@ const HELP = `wavespeed — WaveSpeed AI API client
   wavespeed status <task_id> [--json]
   wavespeed get <task_id> [--out path] [--index n] [--json]
   wavespeed reconcile [--status s] [--model id] [--since 24h] [--page-size n] [--json]
-  wavespeed webhook create [--name name] | list | secret
+  wavespeed webhook create [--name name] [--scoop target] | list | secret
   wavespeed api <METHOD> <path> [--data '<json>'] [--query k=v]
 
 Auth: --key <k> | WAVESPEED_API_KEY | \`wavespeed auth <key>\` | ${SECRETS_FALLBACK}
@@ -123,7 +137,11 @@ Webhooks: pass --webhook (or --webhook <name>, default "wavespeed") to \`run\` t
 attach a callback URL instead of polling. Create it once with
 \`wavespeed webhook create\`. The URL is re-read from \`webhook list\` on every
 submit — never cached — since a tray reset invalidates old URLs silently.
-If a callback is lost, \`wavespeed reconcile\` recovers it from task history.`;
+If a callback is lost, \`wavespeed reconcile\` recovers it from task history.
+
+Callback routing: \`webhook create\` defaults --scoop to SLICC_LICK_TARGET when set,
+so callbacks reach the scoop that created the webhook. An untargeted webhook
+delivers to the cone instead. Override with --scoop <target>.`;
 
 // ─── config / auth ──────────────────────────────────────────────────────────
 
@@ -220,6 +238,32 @@ function parseInputFlags(inputFlag) {
 
 // ─── webhooks: create/list wrap the SLICC `webhook` shell command ─────────
 
+// Scoop/cone names are interpolated into a command argument list; keep them to a
+// strict allowlist (CLAUDE.md section 7.1) and fail fast on anything else.
+function validateScoopTarget(name, label = '--scoop') {
+  if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
+    cli.die(`invalid ${label} "${name}": expected alphanumerics, dash or underscore only.`,
+      { prefix: 'wavespeed' });
+  }
+  return name;
+}
+
+// This process's lick target, or null when unset (we ARE the default root cone,
+// and dispatch should pick the destination itself). Same contract slack.jsh
+// records for SLICC_LICK_TARGET.
+function envLickTarget() {
+  const raw = process.env ? process.env.SLICC_LICK_TARGET : null;
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  return validateScoopTarget(raw.trim(), 'SLICC_LICK_TARGET');
+}
+
+// Explicit --scoop wins; otherwise default to this process's own lick target so a
+// scoop-initiated run receives its own callbacks; otherwise omit --scoop.
+function resolveWebhookTarget(explicit) {
+  if (typeof explicit === 'string' && explicit) return validateScoopTarget(explicit);
+  return envLickTarget();
+}
+
 async function shWebhook(args) {
   const { stdout, stderr, exitCode } = await exec.spawn(['webhook', ...args]);
   if (exitCode !== 0) throw new Error(`webhook ${args.join(' ')} failed: ${(stdout || stderr || '').trim()}`);
@@ -237,7 +281,14 @@ function parseWebhookList(stdout) {
     if (parts.length < 3) continue;
     const [id, name, url] = parts;
     if (!/^https?:\/\//.test(url)) continue;
-    entries.push({ id, name, url });
+    // Trailing columns are "-> <target scoop>" and/or "[filtered]", in that order.
+    // No arrow means the webhook is untargeted and delivers to the cone.
+    let target = null;
+    for (const extra of parts.slice(3)) {
+      const m = /^->\s*(\S+)/.exec(extra);
+      if (m) { target = m[1]; break; }
+    }
+    entries.push({ id, name, url, target });
   }
   return entries;
 }
@@ -311,8 +362,16 @@ async function main() {
   if (cmd === 'webhook' && (positional[1] === 'create' || positional[1] === 'list')) {
     if (positional[1] === 'create') {
       const name = str(flags.name) || 'wavespeed';
-      const stdout = await shWebhook(['create', '--name', name]);
-      return cli.out(stdout.trim());
+      const target = resolveWebhookTarget(str(flags.scoop));
+      const args = ['create', '--name', name];
+      if (target) args.push('--scoop', target);
+      const stdout = await shWebhook(args);
+      cli.out(stdout.trim());
+      console.error(color.gray(target
+        ? `Callbacks for "${name}" will be delivered to ${target}.`
+        : `Callbacks for "${name}" are untargeted and will be delivered to the cone. ` +
+          `Pass --scoop <target> to send them somewhere specific.`));
+      return;
     }
     const stdout = await shWebhook(['list']);
     return cli.out(stdout.trim());
@@ -501,7 +560,22 @@ async function main() {
         if (!wh) return cli.die(`no webhook named "${name}" — create one first: \`wavespeed webhook create --name ${name}\` (then \`wavespeed webhook list\` to confirm).`);
         webhookUrl = wh.url;
         // Only the id and name are ever printed; the URL itself is a live secret.
-        webhookRef = { id: wh.id, name: wh.name };
+        webhookRef = { id: wh.id, name: wh.name, target: wh.target || null };
+        // A webhook targeted elsewhere (or untargeted, i.e. the cone) means the
+        // callback never reaches this process. Measured live: an untargeted
+        // webhook created from a .jsh delivered its event to the cone instead of
+        // the scoop that submitted the task.
+        const mine = envLickTarget();
+        if ((wh.target || null) !== mine) {
+          const dest = wh.target || 'the cone';
+          const self = mine || 'the cone';
+          cli.warn(
+            `webhook "${name}" delivers to ${dest}, but this process is ${self} — ` +
+            `the callback will not reach you. Recreate it with ` +
+            `\`wavespeed webhook create --name ${name}${mine ? ` --scoop ${mine}` : ''}\`, ` +
+            `or use \`wavespeed reconcile\` / --wait instead.`,
+            { prefix: 'wavespeed' });
+        }
       }
 
       // ── spending gate (CLAUDE.md §7.6) ────────────────────

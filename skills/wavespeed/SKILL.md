@@ -32,7 +32,7 @@ wavespeed run <model_id> [--input k=v ...] [--json-input <file>] --confirm
 wavespeed status <task_id> [--json]
 wavespeed get <task_id> [--out path] [--index n] [--json]
 wavespeed reconcile [--status s] [--model id] [--since 24h] [--json]
-wavespeed webhook create [--name name] | list | secret
+wavespeed webhook create [--name name] [--scoop target] | list | secret
 wavespeed api <METHOD> <path> [--data '<json>'] [--query k=v]
 ```
 
@@ -102,6 +102,29 @@ than being polled. Two things it handles, both learned the hard way:
 - **A callback can outlive its tray** on a long job, so `reconcile` is the backstop: it lists
   recent tasks and finds completed ones whose callback was lost. Callback as fast path,
   polling as safety net.
+- **Callbacks go to the cone unless the webhook names a target scoop.** `webhook create`
+  treats `--scoop` as optional ("Omit for your own cone") and exits 0 without it, but an
+  untargeted webhook is delivered to the cone — so a scoop that submits a job with
+  `--webhook` never sees its own callback. Measured 2026-09-04: `webhook create --name x`
+  issued from a `.jsh` via `exec.spawn` produced an untargeted webhook whose event landed
+  on the cone, while adding `--scoop <name>` routed it correctly. The CLI therefore
+  defaults `--scoop` to `$SLICC_LICK_TARGET` when that is set:
+
+  ```bash
+  wavespeed webhook create --name wavespeed                  # -> this scoop, if SLICC_LICK_TARGET is set
+  wavespeed webhook create --name wavespeed --scoop my-scoop # explicit target
+  wavespeed webhook list                                     # the "-> <scoop>" column shows the target
+  ```
+
+  If you are working at a cone prompt, the default (no target) is correct and callbacks
+  arrive at the cone. `run --webhook <name>` warns on stderr when the named webhook is
+  targeted anywhere other than the current process, since the callback would be lost:
+
+  ```
+  wavespeed: webhook "ws-route-cone" delivers to cone, but this process is ws-review-scoop
+  — the callback will not reach you. Recreate it with `wavespeed webhook create --name
+  ws-route-cone --scoop ws-review-scoop`, or use `wavespeed reconcile` / --wait instead.
+  ```
 
 ### Generation gotchas
 
