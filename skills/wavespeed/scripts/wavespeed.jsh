@@ -524,4 +524,12 @@ async function main() {
   }
 }
 
-await main().catch((e) => cli.die((e && e.message) || String(e), { prefix: 'wavespeed' }));
+try {
+  await main();
+} catch (e) {
+  // cli.die / cli.help / process.exit unwind by throwing NodeExitError. Re-throw
+  // it untouched (CLAUDE.md §6): wrapping it in a second cli.die reprints
+  // the message as a bogus secondary error and can change the exit code.
+  if (e?.name === 'NodeExitError') throw e;
+  cli.die((e && e.message) || String(e), { prefix: 'wavespeed' });
+}
