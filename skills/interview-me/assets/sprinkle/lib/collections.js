@@ -29,24 +29,65 @@ function shellSingleQuote(str) {
   return `'${String(str).replace(/'/g, `'"'"'`)}'`;
 }
 
+// `curl -s` is SILENT, not strict: it exits 0 for a 4xx/5xx that carries a
+// JSON error body, so a non-zero exitCode alone can never tell an API
+// rejection apart from a success. Every request below therefore appends the
+// status code as a final line via `-w` and parses it out here -- chosen over
+// `-f`/`--fail`, which does exit non-zero but also DISCARDS the response
+// body, throwing away the very message ("...must provide fields", an invalid
+// collection id, an auth failure) that makes the error actionable. The
+// marker is emitted on its own line so it can never be confused with the
+// body, whether or not the body ends in a newline.
+const STATUS_WRITE_OUT = `-w '\\n%{http_code}'`;
+
+/** Splits curl's `-w '\n%{http_code}'` tail off the response body. */
+function splitStatus(stdout) {
+  const text = String(stdout == null ? "" : stdout);
+  const match = text.match(/(?:^|\n)(\d{3})[ \t\r\n]*$/);
+  if (!match) return { status: null, body: text.trim() };
+  return { status: Number(match[1]), body: text.slice(0, match.index).trim() };
+}
+
 async function runJson(execFn, cmd) {
   const result = await execFn(cmd);
   if (!result || result.exitCode !== 0) {
     throw new Error(`Command failed: ${(result && result.stderr) || "unknown error"}`);
   }
-  const trimmed = (result.stdout || "").trim();
-  if (!trimmed) return {};
-  try {
-    return JSON.parse(trimmed);
-  } catch (err) {
-    throw new Error(`Response was not JSON: ${trimmed.slice(0, 300)}`);
+  const { status, body } = splitStatus(result.stdout);
+  if (status === null) {
+    // No status line at all: curl never ran the request (or its output was
+    // mangled). Surfacing this rather than parsing the body keeps a broken
+    // invocation from masquerading as an empty success.
+    throw new Error(`No HTTP status in response: ${body.slice(0, 300) || "(empty output)"}`);
   }
+
+  let data = null;
+  if (body) {
+    try {
+      data = JSON.parse(body);
+    } catch {
+      if (status < 200 || status >= 300) throw new Error(`HTTP ${status}: ${body.slice(0, 300)}`);
+      throw new Error(`Response was not JSON: ${body.slice(0, 300)}`);
+    }
+  }
+
+  if (status < 200 || status >= 300) {
+    throw new Error(`HTTP ${status}: ${apiErrorMessage(data) || body.slice(0, 300) || "no response body"}`);
+  }
+  return data === null || typeof data !== "object" ? {} : data;
+}
+
+/** xAI's error bodies are inconsistent -- try the shapes actually observed, then fall back to the raw JSON. */
+function apiErrorMessage(data) {
+  if (!data || typeof data !== "object") return "";
+  const nested = data.error && typeof data.error === "object" ? data.error.message : null;
+  return String(data.message || nested || (typeof data.error === "string" ? data.error : "") || JSON.stringify(data)).slice(0, 300);
 }
 
 export async function createCollection(execFn, collectionName) {
   const body = JSON.stringify({ collection_name: collectionName, field_definitions: [] });
   const cmd =
-    `${CRED_CMD} && curl -s -X POST ${API_BASE}/collections ` +
+    `${CRED_CMD} && curl -s ${STATUS_WRITE_OUT} -X POST ${API_BASE}/collections ` +
     '-H "Authorization: Bearer $KEY" -H "Content-Type: application/json" ' +
     `--data ${shellSingleQuote(body)}`;
   const data = await runJson(execFn, cmd);
@@ -55,14 +96,14 @@ export async function createCollection(execFn, collectionName) {
 }
 
 export async function listCollections(execFn) {
-  const cmd = `${CRED_CMD} && curl -s ${API_BASE}/collections -H "Authorization: Bearer $KEY"`;
+  const cmd = `${CRED_CMD} && curl -s ${STATUS_WRITE_OUT} ${API_BASE}/collections -H "Authorization: Bearer $KEY"`;
   const data = await runJson(execFn, cmd);
   return data.collections || [];
 }
 
 export async function uploadFile(execFn, filePath, purpose = "assistants") {
   const cmd =
-    `${CRED_CMD} && curl -s -X POST ${API_BASE}/files ` +
+    `${CRED_CMD} && curl -s ${STATUS_WRITE_OUT} -X POST ${API_BASE}/files ` +
     '-H "Authorization: Bearer $KEY" ' +
     `-F ${shellSingleQuote(`file=@${filePath}`)} -F ${shellSingleQuote(`purpose=${purpose}`)}`;
   const data = await runJson(execFn, cmd);
@@ -74,14 +115,14 @@ export async function uploadFile(execFn, filePath, purpose = "assistants") {
 export async function attachFile(execFn, collectionId, fileId, fields = {}) {
   const body = JSON.stringify({ file_id: fileId, collection_id: collectionId, fields });
   const cmd =
-    `${CRED_CMD} && curl -s -X POST ${API_BASE}/collections/${collectionId}/documents/${fileId} ` +
+    `${CRED_CMD} && curl -s ${STATUS_WRITE_OUT} -X POST ${API_BASE}/collections/${collectionId}/documents/${fileId} ` +
     '-H "Authorization: Bearer $KEY" -H "Content-Type: application/json" ' +
     `--data ${shellSingleQuote(body)}`;
   return runJson(execFn, cmd); // {} on success
 }
 
 export async function listDocuments(execFn, collectionId) {
-  const cmd = `${CRED_CMD} && curl -s ${API_BASE}/collections/${collectionId}/documents -H "Authorization: Bearer $KEY"`;
+  const cmd = `${CRED_CMD} && curl -s ${STATUS_WRITE_OUT} ${API_BASE}/collections/${collectionId}/documents -H "Authorization: Bearer $KEY"`;
   const data = await runJson(execFn, cmd);
   return data.documents || [];
 }
@@ -89,7 +130,7 @@ export async function listDocuments(execFn, collectionId) {
 export async function searchCollection(execFn, collectionId, query, limit = 5) {
   const body = JSON.stringify({ query, limit, source: { collection_ids: [collectionId] } });
   const cmd =
-    `${CRED_CMD} && curl -s -X POST ${API_BASE}/documents/search ` +
+    `${CRED_CMD} && curl -s ${STATUS_WRITE_OUT} -X POST ${API_BASE}/documents/search ` +
     '-H "Authorization: Bearer $KEY" -H "Content-Type: application/json" ' +
     `--data ${shellSingleQuote(body)}`;
   const data = await runJson(execFn, cmd);
