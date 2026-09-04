@@ -8,7 +8,7 @@
   "dependencies": {
     "@remotion/cli": "4.0.520",
     "react": "19.2.8",
-    "react-dom": "19.2.3",
+    "react-dom": "19.2.8",
     "remotion": "4.0.520",
     "zod": "4.4.3"
   },
