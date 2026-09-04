@@ -119,6 +119,8 @@ but is not yet wired into the template's render logic (see `references/findings.
 | `remotion validate <edl.json> [--no-check-media]` | schema checks + (default) real in-point/duration cross-checks |
 | `remotion stage <edl.json> <dir>` | real byte copies of every referenced source into `<dir>/assets`, plus a rewritten EDL |
 | `remotion transcode <src> <out> [--container webm\|mp4]` | whole-file container/codec transcode via `@remotion/webcodecs`, fully in-browser |
+| `remotion render <edl.json> <dir> [--index N] [--out <path>]` | renders the EDL to an mp4 in the browser via `@remotion/web-renderer`. Whole EDL by default; `--index N` for one segment |
+| `remotion filmstrip <file> [--frames=N] [--width=N]` | contact sheet of evenly-sampled frames, so output can be LOOKED at rather than trusted |
 
 ## The project template
 
@@ -126,8 +128,9 @@ but is not yet wired into the template's render logic (see `references/findings.
 (`Root.tsx`, `SplitShot.tsx`, `PortraitShot.tsx`, `CenterCropVideo.tsx`, `types.ts`,
 `index.ts`, `index.css`) plus a `package.json` pinned to the versions this was built
 and rendered against (Remotion 4.0.520), a minimal `remotion.config.ts`, and
-`tsconfig.json`. To use it (with the official `remotion-render` skill, on a machine
-that has it):
+`tsconfig.json`. `render` does not need this template — it generates its own harness. The template is
+for when you want a Remotion Studio preview, or to render with the official
+`remotion-render` skill on a machine that has the Remotion CLI:
 
 ```bash
 npx create-video@latest --yes --blank my-clipper
@@ -147,9 +150,17 @@ shape (`{durationInSeconds, source: {src, inSec}}` or `{..., top, bottom}` for s
 
 ## Known limitations (read before promising more than this does)
 
-- **No render, on purpose** — see "Rendering" above.
-- **No trim/composite without a full render host.** `@remotion/webcodecs`'s
-  `convertMedia` (used by `remotion transcode`) is whole-file only.
+- **Real footage renders SLOWER than realtime.** Decode-bound, not encode-bound:
+  50s for a 29.9s output with two video sources. A synthetic composition (text on a
+  background) hit 410ms for 4.6s, i.e. ~11x faster than realtime — do not quote that
+  figure for real work, it is not representative.
+- **`convertMedia` cannot trim.** `remotion transcode` is whole-file only. Cutting
+  belongs to the composition (`trimBefore`/`trimAfter`), which is what `render` uses.
+- **A background tab is ~117x slower and will not load media at all.** `render`
+  foregrounds its tab for this reason; if something else steals focus mid-render, the
+  render still completes but takes far longer.
+- **Sources over ~25 MiB cannot be served directly**, so `render` splits them into
+  ~8 MiB parts and reassembles them in-page. Upstream: `ai-ecoverse/slicc#2852`.
 - **Symlinked assets in a Remotion project's `public/` break `remotion render`**
   silently (Studio preview works fine). `stage` always makes real copies for this
   reason.
