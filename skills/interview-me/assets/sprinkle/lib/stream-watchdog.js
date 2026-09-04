@@ -88,6 +88,7 @@ class StreamWatchdog {
 
     this._session = null;
     this._prevOnRawEvent = null;
+    this._ownOnRawEvent = null; // the exact handler this module installed -- see _detachSession()
 
     this._itemsWithDelta = new Set();
 
@@ -241,21 +242,37 @@ class StreamWatchdog {
     this._session = session;
     this._prevOnRawEvent = session.onRawEvent || null;
     const prev = this._prevOnRawEvent;
-    session.onRawEvent = (event) => {
+    // Kept so _detachSession() can prove the hook is still OURS before
+    // restoring anything.
+    this._ownOnRawEvent = (event) => {
       this.noteServerEvent(event && event.type);
       if (prev) prev(event);
     };
+    session.onRawEvent = this._ownOnRawEvent;
   }
 
   _detachSession() {
-    if (this._session && this._session.onRawEvent) {
-      // Only restore if we are still the one holding it (best-effort;
-      // this module never outlives the session it was attached to in
-      // practice, but avoid clobbering an unrelated later assignment).
-      this._session.onRawEvent = this._prevOnRawEvent;
+    // Restore ONLY if this module is still the direct holder of the hook.
+    // The old check ("is onRawEvent truthy?") could not tell our handler
+    // from a later component's, so it restored the pre-attach handler on
+    // top of whatever had replaced ours, silently unhooking that component
+    // -- the exact clobbering its own comment claimed to avoid. Identity
+    // is the only thing that actually distinguishes the two cases. If
+    // someone else owns it now (a replacement, or a chain wrapping ours),
+    // leaving it alone is strictly safer than guessing: it keeps their
+    // instrumentation attached, and the worst case is that our handler
+    // stays reachable while this instance is stopped, where
+    // noteServerEvent() only updates counters nothing polls any more.
+    if (this._session && this._ownOnRawEvent) {
+      if (this._session.onRawEvent === this._ownOnRawEvent) {
+        this._session.onRawEvent = this._prevOnRawEvent;
+      } else {
+        this._log("detach-left-foreign-hook", {});
+      }
     }
     this._session = null;
     this._prevOnRawEvent = null;
+    this._ownOnRawEvent = null;
   }
 
   // ---- "response created but produced no transcript" detection --------
