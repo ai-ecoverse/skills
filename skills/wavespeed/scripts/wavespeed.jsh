@@ -1,0 +1,728 @@
+// wavespeed.jsh — WaveSpeed AI API client for SLICC.
+//
+//   wavespeed auth <key>                              store API key in skill config
+//   wavespeed auth --show                              show masked stored key
+//   wavespeed models [term] [--json] [--limit N] [--all]
+//   wavespeed schema <model_id> [--json]
+//   wavespeed upload <file>
+//   wavespeed run <model_id> [--input k=v ...] [--json-input <file>] --confirm
+//                [--wait] [--webhook [name]] [--poll-interval s] [--timeout s]
+//                [--out path] [--json] [--dry-run]
+//   wavespeed status <task_id> [--json]
+//   wavespeed get <task_id> [--out path] [--index n] [--json]
+//   wavespeed reconcile [--status s] [--model id] [--since 24h] [--page-size n] [--json]
+//   wavespeed webhook create [--name name] [--scoop target] | list | secret
+//   wavespeed api <METHOD> <path> [--data '<json>'] [--query k=v]
+//
+// Auth priority: --key | WAVESPEED_API_KEY | skill config (`wavespeed auth <key>`) |
+//                /shared/.secrets/wavespeed-api-key (read-only fallback).
+//
+// Spending: `run` creates a PAID prediction, so it is gated behind --confirm per
+// the spending contract in CLAUDE.md §7.6 (navan is the reference). Without
+// --confirm, `run` prints a preview — model, per-run price from the catalog, the
+// exact resolved request body, the webhook target — and submits nothing.
+// --dry-run forces preview mode even when --confirm is present.
+//
+// Callbacks: WaveSpeedAI supports a `?webhook=<url>` query param on task submission
+// (see /docs/how-to-use-webhooks). This CLI wires it up via `wavespeed webhook create`
+// (a thin wrapper over the SLICC `webhook` shell command) + `run --webhook [name]`.
+// The URL is re-resolved from `webhook list` at submit time — NEVER cached — because
+// webhook URLs embed the tray id and a tray reset makes a saved string 410
+// TRAY_EXPIRED while the WaveSpeed job still reports success. `reconcile` is the
+// polling-based backstop for a callback that never arrives (long jobs can outlive
+// the tray that issued the URL).
+//
+// Callback ROUTING (measured 2026-09-04, ai-ecoverse/skills#332 review): a webhook
+// created without --scoop is untargeted, and dispatch delivers its events to the
+// cone — not to the scoop that created it. `webhook create` does NOT reject an
+// omitted --scoop (it is documented optional, "Omit for your own cone", and exits
+// 0), but the default resolves against the invoking process: run from a scoop's
+// shell it picks up that scoop, while the same command issued from a .jsh through
+// exec.spawn produced an untargeted webhook whose callback landed on the cone:
+//   exec.spawn(['webhook','create','--name','x'])          -> no target  (cone)
+//   exec.spawn([...,'--scoop','ws-review-scoop'])          -> ws-review-scoop
+// So `run --webhook` was unusable end to end from inside a scoop. This CLI now
+// passes SLICC_LICK_TARGET explicitly when it is set, the same fix slack.jsh
+// documents for its own lick routing, and `run --webhook` warns when the named
+// webhook is targeted somewhere other than this process.
+
+const cli = require('sliccy:cli');
+const fmt = require('sliccy:fmt');
+const color = require('sliccy:color');
+const http = require('sliccy:http');
+const skill = require('sliccy:skill');
+const time = require('sliccy:time');
+const { exec } = require('sliccy:exec');
+const fs = require('fs');
+
+const BASE = 'https://api.wavespeed.ai';
+const SECRETS_FALLBACK = '/shared/.secrets/wavespeed-api-key';
+const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled', 'timeout', 'deleted']);
+const WEBHOOK_REDACTED = '<redacted-webhook-url>';
+
+function str(v) { return typeof v === 'string' ? v : undefined; }
+function asList(v) { return v === undefined ? [] : Array.isArray(v) ? v : [v]; }
+function isSet(v) { return v !== undefined && v !== false && v !== 'false'; }
+
+// Duration flags are validated before polling starts (and before the submit):
+// Number('abc') is NaN, which makes the `Date.now() - start > timeoutMs` check
+// permanently false while setTimeout(NaN) behaves like setTimeout(0) — the
+// documented bounded wait silently becomes an unbounded tight loop against a
+// paid API. A bare `--timeout` (and `--timeout -5`, which argv parsing splits
+// into a valueless flag) arrives as boolean true, and Number(true) is 1, so
+// booleans are rejected explicitly rather than meaning "one second".
+// Webhook URLs are effectively bearer tokens (and tray-scoped), and everything a
+// .jsh prints lands in the agent transcript — CLAUDE.md §7.5. Walk the
+// value and replace the live URL wherever the API echoes it back, so --json stays
+// useful without publishing a callable endpoint.
+function scrubWebhookUrl(value, url) {
+  if (!url) return value;
+  const forms = [url, encodeURIComponent(url)];
+  if (typeof value === 'string') {
+    let out = value;
+    for (const f of forms) if (out.includes(f)) out = out.split(f).join(WEBHOOK_REDACTED);
+    return out;
+  }
+  if (Array.isArray(value)) return value.map((v) => scrubWebhookUrl(v, url));
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) out[k] = scrubWebhookUrl(v, url);
+    return out;
+  }
+  return value;
+}
+
+// SLICC's fs.readFile has returned byte-valued text rather than a UTF-8 decoded
+// string on some builds (see the note in skills/pandoc/scripts/pandoc.jsh), which
+// mojibakes a non-ASCII prompt before it is ever submitted. Read the bytes and
+// decode them explicitly so correctness does not depend on the build.
+async function readTextUtf8(path) {
+  const bytes = await fs.readFileBinary(path);
+  return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+}
+
+function positiveSeconds(v, name, dflt) {
+  if (v === undefined) return dflt;
+  const num = typeof v === 'string' ? Number(v.trim()) : typeof v === 'number' ? v : NaN;
+  if (!Number.isFinite(num) || num <= 0) {
+    cli.die(`--${name} must be a positive number of seconds (got ${JSON.stringify(v)}). ` +
+      `Example: --${name} 5`, { prefix: 'wavespeed' });
+  }
+  return num;
+}
+
+const HELP = `wavespeed — WaveSpeed AI API client
+
+  wavespeed auth <key> | --show
+  wavespeed models [term] [--json] [--limit N] [--all]
+  wavespeed schema <model_id> [--json]
+  wavespeed upload <file>
+  wavespeed run <model_id> [--input k=v ...] [--json-input <file>] --confirm
+                [--wait] [--webhook [name]] [--poll-interval s] [--timeout s]
+                [--out path] [--json] [--dry-run]
+  wavespeed status <task_id> [--json]
+  wavespeed get <task_id> [--out path] [--index n] [--json]
+  wavespeed reconcile [--status s] [--model id] [--since 24h] [--page-size n] [--json]
+  wavespeed webhook create [--name name] [--scoop target] | list | secret
+  wavespeed api <METHOD> <path> [--data '<json>'] [--query k=v]
+
+Auth: --key <k> | WAVESPEED_API_KEY | \`wavespeed auth <key>\` | ${SECRETS_FALLBACK}
+
+Spending: \`run\` costs real money. WITHOUT --confirm it prints a preview (model,
+per-run price, resolved input, webhook target) and submits NOTHING. WITH --confirm
+it submits. --dry-run forces preview mode even if --confirm is given.
+--poll-interval and --timeout must be positive numbers of seconds.
+
+Webhooks: pass --webhook (or --webhook <name>, default "wavespeed") to \`run\` to
+attach a callback URL instead of polling. Create it once with
+\`wavespeed webhook create\`. The URL is re-read from \`webhook list\` on every
+submit — never cached — since a tray reset invalidates old URLs silently.
+If a callback is lost, \`wavespeed reconcile\` recovers it from task history.
+
+Callback routing: \`webhook create\` defaults --scoop to SLICC_LICK_TARGET when set,
+so callbacks reach the scoop that created the webhook. An untargeted webhook
+delivers to the cone instead. Override with --scoop <target>.`;
+
+// ─── config / auth ──────────────────────────────────────────────────────────
+
+async function loadConfig() {
+  return (await skill.config()) || {};
+}
+
+async function getKey(explicit) {
+  if (typeof explicit === 'string' && explicit) return explicit;
+  if (process.env.WAVESPEED_API_KEY) return process.env.WAVESPEED_API_KEY;
+  const cfg = await loadConfig();
+  if (cfg.apiKey) return cfg.apiKey;
+  try {
+    const fromFile = (await fs.readFile(SECRETS_FALLBACK)).trim();
+    if (fromFile) return fromFile;
+  } catch { /* no fallback file — fall through to the error below */ }
+  throw new Error(
+    'No WaveSpeed API key. Set one with `wavespeed auth <key>`, pass --key, ' +
+    `export WAVESPEED_API_KEY, or place one at ${SECRETS_FALLBACK}.`);
+}
+
+function client(key) {
+  return http.client({
+    baseUrl: BASE,
+    token: () => key,
+    retry: { on: [429, 500, 502, 503, 504], maxAttempts: 4 },
+    timeoutMs: 120000,
+  });
+}
+
+// ─── model catalog ──────────────────────────────────────────────────────────
+// `?search=` on GET /api/v3/models is silently ignored by the API (verified —
+// it returns the unfiltered catalog regardless), and `page`/`size` turned out
+// to be no-ops too: every page/size combination we tried returned the same
+// ~1018-model catalog in one response. We still pass page/size (in case that
+// ever changes) and paginate defensively, but the practical behavior today is
+// "one ~1.8MB fetch, filter client-side."
+async function fetchModels(api) {
+  const all = [];
+  const seen = new Set();
+  for (let page = 1; page <= 10; page++) {
+    const j = await api.get('/api/v3/models', { params: { page, size: 500 } });
+    const data = (j && j.data) || [];
+    if (!data.length) break;
+    let added = 0;
+    for (const m of data) {
+      if (!seen.has(m.model_id)) { seen.add(m.model_id); all.push(m); added++; }
+    }
+    if (added === 0) break; // server ignored pagination and handed back the same set
+    if (data.length < 500) break;
+  }
+  return all;
+}
+
+function findModel(models, modelId) {
+  return models.find((m) => m.model_id === modelId);
+}
+
+function requestSchemaOf(model) {
+  return model && model.api_schema && model.api_schema.api_schemas
+    && model.api_schema.api_schemas[0] && model.api_schema.api_schemas[0].request_schema;
+}
+
+// ─── input coercion (CLI strings → JSON-typed request body) ───────────────
+
+function coerceScalar(v, propSchema) {
+  if (typeof v !== 'string') return v;
+  const t = propSchema && propSchema.type;
+  if (t === 'boolean') { if (v === 'true') return true; if (v === 'false') return false; return v; }
+  if (t === 'integer') { const n = parseInt(v, 10); return Number.isNaN(n) ? v : n; }
+  if (t === 'number') { const n = parseFloat(v); return Number.isNaN(n) ? v : n; }
+  return v;
+}
+
+function coerceValue(raw, propSchema) {
+  const isArrayField = propSchema && propSchema.type === 'array';
+  if (Array.isArray(raw)) return raw.map((v) => coerceScalar(v, propSchema && propSchema.items));
+  if (isArrayField) return [coerceScalar(raw, propSchema.items)];
+  return coerceScalar(raw, propSchema);
+}
+
+function parseInputFlags(inputFlag) {
+  const out = {};
+  for (const item of asList(inputFlag)) {
+    const eq = String(item).indexOf('=');
+    if (eq === -1) throw new Error(`--input must be key=value (got "${item}")`);
+    const k = item.slice(0, eq);
+    const v = item.slice(eq + 1);
+    if (k in out) { if (Array.isArray(out[k])) out[k].push(v); else out[k] = [out[k], v]; }
+    else out[k] = v;
+  }
+  return out;
+}
+
+// ─── webhooks: create/list wrap the SLICC `webhook` shell command ─────────
+
+// Scoop/cone names are interpolated into a command argument list; keep them to a
+// strict allowlist (CLAUDE.md section 7.1) and fail fast on anything else.
+function validateScoopTarget(name, label = '--scoop') {
+  if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
+    cli.die(`invalid ${label} "${name}": expected alphanumerics, dash or underscore only.`,
+      { prefix: 'wavespeed' });
+  }
+  return name;
+}
+
+// This process's lick target, or null when unset (we ARE the default root cone,
+// and dispatch should pick the destination itself). Same contract slack.jsh
+// records for SLICC_LICK_TARGET.
+function envLickTarget() {
+  const raw = process.env ? process.env.SLICC_LICK_TARGET : null;
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  return validateScoopTarget(raw.trim(), 'SLICC_LICK_TARGET');
+}
+
+// Explicit --scoop wins; otherwise default to this process's own lick target so a
+// scoop-initiated run receives its own callbacks; otherwise omit --scoop.
+function resolveWebhookTarget(explicit) {
+  if (typeof explicit === 'string' && explicit) return validateScoopTarget(explicit);
+  return envLickTarget();
+}
+
+async function shWebhook(args) {
+  const { stdout, stderr, exitCode } = await exec.spawn(['webhook', ...args]);
+  if (exitCode !== 0) throw new Error(`webhook ${args.join(' ')} failed: ${(stdout || stderr || '').trim()}`);
+  return stdout;
+}
+
+// Parses the plain-text `webhook list` table. There is no --json form of the
+// shell command, so this is a defensive line parser, not a stable API.
+function parseWebhookList(stdout) {
+  const entries = [];
+  for (const line of stdout.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || /^Active webhooks:/i.test(trimmed) || /^No /i.test(trimmed)) continue;
+    const parts = trimmed.split(/\s{2,}/);
+    if (parts.length < 3) continue;
+    const [id, name, url] = parts;
+    if (!/^https?:\/\//.test(url)) continue;
+    // Trailing columns are "-> <target scoop>" and/or "[filtered]", in that order.
+    // No arrow means the webhook is untargeted and delivers to the cone.
+    let target = null;
+    for (const extra of parts.slice(3)) {
+      const m = /^->\s*(\S+)/.exec(extra);
+      if (m) { target = m[1]; break; }
+    }
+    entries.push({ id, name, url, target });
+  }
+  return entries;
+}
+
+// Deliberately NOT cached across calls: webhook URLs embed the tray id, and a
+// tray reset makes a saved URL fail with a silent HTTP 410 TRAY_EXPIRED while
+// the WaveSpeed job itself still reports success. Always re-read `webhook
+// list` right before using the URL.
+async function resolveWebhookUrl(name) {
+  const stdout = await shWebhook(['list']);
+  const entries = parseWebhookList(stdout);
+  return entries.find((e) => e.name === name) || null;
+}
+
+// ─── polling (the callback backstop, and the only path when no webhook) ────
+// Bounded (timeoutMs), resumable (throws with the task id so the caller can
+// re-check later via `wavespeed status`/`get` instead of losing the job), and
+// prints a progress line on every status change.
+async function pollResult(api, id, { intervalMs = 3000, timeoutMs = 300000 } = {}) {
+  const start = Date.now();
+  let lastStatus;
+  while (true) {
+    const j = await api.get(`/api/v3/predictions/${id}/result`);
+    const data = j && j.data;
+    const status = data && data.status;
+    if (!status) throw new Error(`unexpected poll response for ${id}: ${JSON.stringify(j)}`);
+    if (status !== lastStatus) {
+      process.stderr.write(`[${new Date().toISOString()}] ${id}: ${status}\n`);
+      lastStatus = status;
+    }
+    if (TERMINAL_STATUSES.has(status)) return data;
+    if (Date.now() - start > timeoutMs) {
+      throw new Error(
+        `timed out after ${Math.round(timeoutMs / 1000)}s waiting on task ${id} ` +
+        `(last status: ${status}). It may still complete — check later with ` +
+        `\`wavespeed status ${id}\` or \`wavespeed get ${id}\`.`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
+
+function extFromUrl(url) {
+  try {
+    const u = new URL(url);
+    const m = u.pathname.match(/\.[a-zA-Z0-9]+$/);
+    return m ? m[0] : '';
+  } catch { return ''; }
+}
+
+async function main() {
+  const { positional, flags } = process.argv.parseFlags();
+  const [cmd] = positional;
+
+  if (!cmd || flags.help || flags.h) return cli.help(HELP);
+
+  if (cmd === 'auth') {
+    if (flags.show) {
+      const cfg = await loadConfig();
+      if (!cfg.apiKey) return cli.out('No key stored in skill config (falls back to WAVESPEED_API_KEY / ' + SECRETS_FALLBACK + ' at request time).');
+      const k = cfg.apiKey;
+      return cli.out(`Stored key: ${k.slice(0, 8)}…${k.slice(-4)}`);
+    }
+    const key = str(flags.key) || positional[1];
+    if (!key) return cli.die('usage: wavespeed auth <key>  (or: wavespeed auth --show)');
+    await skill.config({ apiKey: key });
+    return cli.out('API key saved to skill config.');
+  }
+
+  // `webhook create` doesn't need a WaveSpeed key at all (it's a SLICC-side
+  // call); `webhook secret` does, so it's handled after key resolution below.
+  if (cmd === 'webhook' && (positional[1] === 'create' || positional[1] === 'list')) {
+    if (positional[1] === 'create') {
+      const name = str(flags.name) || 'wavespeed';
+      const target = resolveWebhookTarget(str(flags.scoop));
+      const args = ['create', '--name', name];
+      if (target) args.push('--scoop', target);
+      const stdout = await shWebhook(args);
+      cli.out(stdout.trim());
+      console.error(color.gray(target
+        ? `Callbacks for "${name}" will be delivered to ${target}.`
+        : `Callbacks for "${name}" are untargeted and will be delivered to the cone. ` +
+          `Pass --scoop <target> to send them somewhere specific.`));
+      return;
+    }
+    const stdout = await shWebhook(['list']);
+    return cli.out(stdout.trim());
+  }
+
+  const key = await getKey(str(flags.key));
+  const api = client(key);
+
+  switch (cmd) {
+    case 'webhook': {
+      const sub = positional[1];
+      if (sub === 'secret') {
+        const j = await api.get('/api/v3/webhook/secret');
+        if (flags.json) return cli.out(j);
+        return cli.out(j?.data?.secret || j);
+      }
+      return cli.die('usage: wavespeed webhook create [--name <name>] | list | secret');
+    }
+
+    case 'models': {
+      const term = positional[1];
+      const models = await fetchModels(api);
+      let filtered = models;
+      if (term) {
+        const q = term.toLowerCase();
+        filtered = models.filter((m) => (m.model_id || '').toLowerCase().includes(q));
+      }
+      const limit = flags.all ? filtered.length : (Number(flags.limit) || 40);
+      const shown = filtered.slice(0, limit);
+      if (flags.json) return cli.out(shown);
+      const rows = [['model_id', 'base_price', 'description']];
+      for (const m of shown) {
+        rows.push([m.model_id, m.base_price != null ? `$${m.base_price}` : '', fmt.trunc(m.description || '', 70)]);
+      }
+      cli.out(fmt.table(rows));
+      if (shown.length < filtered.length) {
+        console.log(color.gray(
+          `\n… ${filtered.length - shown.length} more (of ${filtered.length} matching, ${models.length} total). ` +
+          `Narrow the term, raise --limit, or pass --all.`));
+      } else {
+        console.log(color.gray(`\n${filtered.length} model(s)${term ? ` matching "${term}"` : ''} (${models.length} total in the catalog).`));
+      }
+      return;
+    }
+
+    case 'schema': {
+      const modelId = positional[1];
+      if (!modelId) return cli.die('usage: wavespeed schema <model_id>');
+      const models = await fetchModels(api);
+      const model = findModel(models, modelId);
+      if (!model) return cli.die(`unknown model_id: ${modelId} (try \`wavespeed models ${modelId.split('/')[0]}\`)`);
+      const schema = requestSchemaOf(model);
+      if (!schema) return cli.die(`model ${modelId} has no published request schema`);
+      if (flags.json) return cli.out(schema);
+      console.log(color.bold(modelId) + color.gray(`  ($${model.base_price} / run)`));
+      if (model.description) console.log(fmt.trunc(model.description, 300));
+      console.log();
+      const required = new Set(schema.required || []);
+      const order = schema['x-order-properties'] || Object.keys(schema.properties || {});
+      for (const name of order) {
+        const p = (schema.properties || {})[name];
+        if (!p) continue;
+        const reqLabel = required.has(name) ? color.yellow('required') : color.gray('optional');
+        let typeLabel = p.type || 'any';
+        if (p.type === 'array') {
+          typeLabel = `array<${(p.items && p.items.type) || 'any'}>`;
+          if (p.maxItems !== undefined) typeLabel += ` maxItems=${p.maxItems}`;
+        }
+        if (p.enum) typeLabel += ` enum=[${p.enum.join(', ')}]`;
+        const bits = [typeLabel, reqLabel];
+        if (p.default !== undefined) bits.push(`default=${JSON.stringify(p.default)}`);
+        if (p.minimum !== undefined || p.maximum !== undefined) bits.push(`range=${p.minimum ?? '-inf'}..${p.maximum ?? '+inf'}`);
+        console.log(`  ${color.cyan(name)}  ${bits.join('  ')}`);
+        if (p.description) console.log(`      ${color.gray(p.description)}`);
+      }
+      return;
+    }
+
+    case 'upload': {
+      const file = positional[1];
+      if (!file) return cli.die('usage: wavespeed upload <file>');
+
+      // Upload via curl in a generated shell script, NOT via fetch.
+      //
+      // jsh's fetch is not binary-safe for request bodies: it encodes the body
+      // as UTF-8 text, so every byte above 0x7f arrives as its two-byte UTF-8
+      // sequence. Verified against a 9-byte payload with every body type --
+      // Buffer, Uint8Array, ArrayBuffer, Blob, and FormData+Blob all produced
+      // identical damage, and sliccy:http (which wraps fetch) does too:
+      //   sent     ff d8 ff 98 00 41 7f 80 fe                 (9 bytes)
+      //   returned c3bf c398 c3bf c298 00 41 7f c280 c3be     (15 bytes)
+      // Bytes <= 0x7f pass through, which is why uploading a text file appears
+      // to work and only binary breaks. The request still returns HTTP 200
+      // with a working-looking URL, so the only way to catch this is to fetch
+      // the object back and compare bytes -- a JPEG uploaded that way is
+      // rejected downstream as "The input file could not be decoded as an
+      // image". curl round-trips the identical payload intact.
+      //
+      // Fix status (noted 2026-09-04, ai-ecoverse/skills#332 review): the jsh
+      // fetch binary-body corruption is reported fixed upstream in SLICC
+      // v6.127.0; the runtime this was measured on is 6.124.0. The curl path is
+      // kept deliberately — it is verified here and stays correct on older
+      // runtimes — so do not "simplify" it back to fetch/FormData without
+      // re-running the upload-and-fetch-back byte comparison described above.
+      //
+      // Why a shell script rather than a direct exec: `exec` takes one command
+      // string and splits it on whitespace WITHOUT honoring quotes, so
+      // -H "Authorization: Bearer <key>" would arrive as four arguments and
+      // curl would report "no URL specified". This curl build has no
+      // --config either. A generated /bin/sh script lets the shell do the
+      // quoting and keeps the key out of any argument list.
+      if (/["'`$\\]/.test(file)) {
+        return cli.die('file path may not contain a quote, backtick, $ or backslash');
+      }
+      const shPath = '/tmp/.ws-upload-' + Date.now().toString(36) + '.sh';
+      const script = [
+        '#!/bin/sh',
+        'curl -s --max-time 300 -X POST "' + BASE + '/api/v3/media/upload/binary" \\',
+        '  -H "Authorization: Bearer ' + key + '" \\',
+        '  -F "file=@' + file + '"',
+        '',
+      ].join('\n');
+      await fs.writeFile(shPath, script);
+      let up;
+      try {
+        up = await exec('sh ' + shPath);
+      } finally {
+        try { await fs.unlink(shPath); } catch { /* best effort cleanup */ }
+      }
+      if (up.exitCode !== 0) {
+        return cli.die('upload failed: curl exit ' + up.exitCode + ' ' + String(up.stderr || '').slice(0, 200));
+      }
+      let j;
+      try {
+        j = JSON.parse(up.stdout);
+      } catch {
+        return cli.die('upload failed: unparseable response ' + String(up.stdout).slice(0, 200));
+      }
+      if (j && j.code && j.code !== 200) {
+        return cli.die('upload failed: ' + (j.message || JSON.stringify(j).slice(0, 200)));
+      }
+      if (flags.json) return cli.out(j);
+      cli.out(j?.data?.download_url || j);
+      console.error(color.gray('Note: uploaded files expire after 7 days.'));
+      return;
+    }
+
+    case 'run': {
+      const modelId = positional[1];
+      if (!modelId) return cli.die('usage: wavespeed run <model_id> [--input k=v ...] --confirm [--wait]');
+
+      // Validated up front: a mistyped duration must not reach the submit,
+      // let alone the poll loop.
+      const intervalMs = positiveSeconds(flags['poll-interval'], 'poll-interval', 3) * 1000;
+      const timeoutMs = positiveSeconds(flags.timeout, 'timeout', 300) * 1000;
+
+      let body = {};
+      const jsonInputFile = str(flags['json-input']);
+      if (jsonInputFile) {
+        let raw;
+        try { raw = await readTextUtf8(jsonInputFile); }
+        catch (e) { return cli.die(`--json-input ${jsonInputFile} could not be read: ${e.message}`); }
+        try { body = JSON.parse(raw); } catch (e) { return cli.die(`--json-input ${jsonInputFile} is not valid JSON: ${e.message}`); }
+      }
+
+      let schema;
+      let model;
+      try {
+        const models = await fetchModels(api);
+        model = findModel(models, modelId);
+        if (!model) cli.warn(`model_id "${modelId}" not found in the catalog — submitting anyway (may be new/unlisted).`, { prefix: 'wavespeed' });
+        else schema = requestSchemaOf(model);
+      } catch { /* schema lookup is best-effort; submit proceeds without coercion */ }
+
+      const overrides = parseInputFlags(flags.input);
+      for (const [k, v] of Object.entries(overrides)) {
+        body[k] = coerceValue(v, schema && schema.properties && schema.properties[k]);
+      }
+
+      const webhookFlag = flags.webhook !== undefined ? flags.webhook : flags.notify;
+      let webhookUrl;
+      let webhookRef;
+      if (webhookFlag !== undefined) {
+        const name = typeof webhookFlag === 'string' ? webhookFlag : 'wavespeed';
+        const wh = await resolveWebhookUrl(name);
+        if (!wh) return cli.die(`no webhook named "${name}" — create one first: \`wavespeed webhook create --name ${name}\` (then \`wavespeed webhook list\` to confirm).`);
+        webhookUrl = wh.url;
+        // Only the id and name are ever printed; the URL itself is a live secret.
+        webhookRef = { id: wh.id, name: wh.name, target: wh.target || null };
+        // A webhook targeted elsewhere (or untargeted, i.e. the cone) means the
+        // callback never reaches this process. Measured live: an untargeted
+        // webhook created from a .jsh delivered its event to the cone instead of
+        // the scoop that submitted the task.
+        const mine = envLickTarget();
+        if ((wh.target || null) !== mine) {
+          const dest = wh.target || 'the cone';
+          const self = mine || 'the cone';
+          cli.warn(
+            `webhook "${name}" delivers to ${dest}, but this process is ${self} — ` +
+            `the callback will not reach you. Recreate it with ` +
+            `\`wavespeed webhook create --name ${name}${mine ? ` --scoop ${mine}` : ''}\`, ` +
+            `or use \`wavespeed reconcile\` / --wait instead.`,
+            { prefix: 'wavespeed' });
+        }
+      }
+
+      // ── spending gate (CLAUDE.md §7.6) ────────────────────
+      // `run` bills the user's WaveSpeed balance, so an invocation without
+      // --confirm previews and stops. --dry-run wins over --confirm so a caller
+      // can re-check the exact request it is about to pay for.
+      const dryRun = isSet(flags['dry-run']);
+      if (!isSet(flags.confirm) || dryRun) {
+        const priceLabel = model && model.base_price != null ? '$' + model.base_price + ' / run' : null;
+        if (flags.json) {
+          return cli.out({
+            preview: true,
+            submitted: false,
+            reason: dryRun ? '--dry-run' : '--confirm not given',
+            model: modelId,
+            base_price: (model && model.base_price != null) ? model.base_price : null,
+            input: body,
+            webhook: webhookRef || null,
+          });
+        }
+        console.log('\n' + color.bold('=== RUN PREVIEW (nothing submitted) ==='));
+        console.log(`  model:   ${modelId}` + (priceLabel ? color.gray(`  (${priceLabel})`) : ''));
+        if (webhookRef) console.log(`  webhook: ${webhookRef.name}  ` + color.gray('id:' + webhookRef.id));
+        console.log(`  input:   ${JSON.stringify(body)}`);
+        console.log(color.dim('  ' + '─'.repeat(52)));
+        console.log('  Submitting spends real money. Nothing was submitted.');
+        console.log('  To submit, re-run the same command with --confirm:');
+        console.log('    ' + color.cyan(`wavespeed run ${modelId} … --confirm`));
+        return;
+      }
+
+      const path = `/api/v3/${modelId}` + (webhookUrl ? `?webhook=${encodeURIComponent(webhookUrl)}` : '');
+      const j = await api.post(path, { body });
+      const id = j && j.data && j.data.id;
+      if (!id) return cli.die(`unexpected submit response: ${JSON.stringify(scrubWebhookUrl(j, webhookUrl))}`);
+
+      // The submission line goes to stderr whenever --json is set, so stdout stays
+      // a single parseable JSON document for `| jq`.
+      const note = `Submitted ${modelId} → task ${id}` +
+        (webhookRef ? `  (webhook: ${webhookRef.name} id:${webhookRef.id})` : '');
+      if (flags.json) process.stderr.write(note + '\n');
+      else cli.out(note);
+
+      if (!flags.wait) {
+        if (flags.json) return cli.out(scrubWebhookUrl(j, webhookUrl));
+        return;
+      }
+
+      const data = await pollResult(api, id, { intervalMs, timeoutMs });
+
+      // Print the JSON, then still exit nonzero on a terminal non-completed
+      // status: the early return here made automated callers read a failed
+      // generation as success (CLAUDE.md §6, issue #76).
+      if (flags.json) cli.out(scrubWebhookUrl(data, webhookUrl));
+      if (data.status !== 'completed') {
+        return cli.die(`task ${id} ended with status "${data.status}"` + (data.error ? `: ${data.error}` : ''));
+      }
+      if (flags.json) return;
+      cli.out(data.outputs && data.outputs[0]);
+      const outPath = str(flags.out);
+      if (outPath && data.outputs && typeof data.outputs[0] === 'string' && /^https?:\/\//.test(data.outputs[0])) {
+        await fs.fetchToFile(data.outputs[0], outPath);
+        console.error(color.gray(`Saved to ${outPath}`));
+      }
+      return;
+    }
+
+    case 'status': {
+      const id = positional[1];
+      if (!id) return cli.die('usage: wavespeed status <task_id>');
+      const j = await api.get(`/api/v3/predictions/${id}/result`);
+      if (flags.json) return cli.out(j);
+      const d = j && j.data || {};
+      cli.out(`${d.id}  ${d.model || ''}  ${d.status}` + (d.error ? `  error=${d.error}` : ''));
+      return;
+    }
+
+    case 'get': {
+      const id = positional[1];
+      if (!id) return cli.die('usage: wavespeed get <task_id> [--out path] [--index n]');
+      const j = await api.get(`/api/v3/predictions/${id}/result`);
+      const d = j && j.data || {};
+      if (d.status !== 'completed') {
+        if (flags.json) return cli.out(j);
+        return cli.die(`task ${id} is "${d.status}", not completed` + (d.error ? `: ${d.error}` : '') +
+          ' — poll with `wavespeed status`, or use `wavespeed reconcile` if a webhook callback may have been lost.');
+      }
+      const idx = Number(flags.index || 0);
+      const output = d.outputs && d.outputs[idx];
+      if (output === undefined) return cli.die(`task ${id} has no output at index ${idx} (outputs: ${(d.outputs || []).length})`);
+      if (flags.json) return cli.out({ ...j, selected: output });
+      if (typeof output === 'string' && /^https?:\/\//.test(output)) {
+        const outPath = str(flags.out) || `/tmp/wavespeed-${id}${extFromUrl(output) || ''}`;
+        await fs.fetchToFile(output, outPath);
+        return cli.out(`Saved ${outPath}`);
+      }
+      return cli.out(output);
+    }
+
+    case 'reconcile': {
+      // Backstop for a lost webhook callback: list recent predictions by
+      // status/model/time instead of needing to remember the task id.
+      const body = {
+        page: Number(flags.page || 1),
+        page_size: Math.min(100, Number(flags['page-size'] || flags.limit || 20)),
+      };
+      if (str(flags.status)) body.status = flags.status;
+      if (str(flags.model)) body.model = flags.model;
+      if (str(flags.since)) body.created_after = time.ago(flags.since).toISOString();
+      const j = await api.post('/api/v3/predictions', { body });
+      if (flags.json) return cli.out(j);
+      const items = (j && j.data && j.data.items) || [];
+      if (!items.length) return cli.out('No matching predictions.');
+      const rows = [['id', 'model', 'status', 'created_at']];
+      for (const it of items) rows.push([it.id, fmt.trunc(it.model || '', 34), it.status, fmt.date(it.created_at, 'short')]);
+      return cli.out(fmt.table(rows));
+    }
+
+    case 'api': {
+      const method = (positional[1] || 'GET').toUpperCase();
+      const path = positional[2];
+      if (!path) return cli.die("usage: wavespeed api <METHOD> <path> [--data '<json>'] [--query k=v]");
+      let reqBody;
+      if (str(flags.data)) { try { reqBody = JSON.parse(flags.data); } catch { reqBody = flags.data; } }
+      const params = {};
+      for (const q of asList(flags.query)) {
+        const eq = String(q).indexOf('=');
+        if (eq === -1) continue;
+        params[q.slice(0, eq)] = q.slice(eq + 1);
+      }
+      const fn = api[method.toLowerCase()];
+      if (!fn) return cli.die(`unsupported method: ${method}`);
+      const j = await fn(path, { body: reqBody, params });
+      return cli.out(j);
+    }
+
+    default:
+      return cli.die(`unknown command: ${cmd}\n\n${HELP}`);
+  }
+}
+
+try {
+  await main();
+} catch (e) {
+  // cli.die / cli.help / process.exit unwind by throwing NodeExitError. Re-throw
+  // it untouched (CLAUDE.md §6): wrapping it in a second cli.die reprints
+  // the message as a bogus secondary error and can change the exit code.
+  if (e?.name === 'NodeExitError') throw e;
+  cli.die((e && e.message) || String(e), { prefix: 'wavespeed' });
+}

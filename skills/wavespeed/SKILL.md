@@ -14,7 +14,131 @@ allowed-tools: bash
 
 # WaveSpeed AI — Generate Images, Videos, and Speech via curl
 
-## Step 1: Get the API Key
+## The `wavespeed` CLI (preferred)
+
+A `.jsh` client ships with this skill at `scripts/wavespeed.jsh`, so `wavespeed` is available
+as a bare command. Prefer it over hand-rolled `curl` — it handles polling, array inputs,
+webhooks and the broken `?search=` parameter for you. The raw-curl recipes further down
+still work and remain the escape hatch.
+
+```
+wavespeed auth <key> | --show
+wavespeed models [term] [--json] [--limit N] [--all]
+wavespeed schema <model_id> [--json]
+wavespeed upload <file>
+wavespeed run <model_id> [--input k=v ...] [--json-input <file>] --confirm
+              [--wait] [--webhook [name]] [--poll-interval s] [--timeout s]
+              [--out path] [--json] [--dry-run]
+wavespeed status <task_id> [--json]
+wavespeed get <task_id> [--out path] [--index n] [--json]
+wavespeed reconcile [--status s] [--model id] [--since 24h] [--json]
+wavespeed webhook create [--name name] [--scoop target] | list | secret
+wavespeed api <METHOD> <path> [--data '<json>'] [--query k=v]
+```
+
+Auth resolves in order: `--key` → `$WAVESPEED_API_KEY` → skill config (`wavespeed auth`)
+→ `/shared/.secrets/wavespeed-api-key`. The key is never printed.
+
+### `run` spends money and requires `--confirm`
+
+`run` creates a **paid** prediction, so it is gated per the repo spending contract
+(`CLAUDE.md` §7.6):
+
+- **Without `--confirm`** it prints a preview — model id, the catalog price per run, the
+  fully resolved request body, the webhook target — and **submits nothing** (exit 0).
+  With `--json` the preview is `{"preview":true,"submitted":false,...}`, so a scripted
+  caller can tell a preview from a submission.
+- **With `--confirm`** it submits.
+- `--dry-run` forces preview mode even when `--confirm` is present, for re-checking a
+  request before paying for it.
+
+```bash
+# preview only, nothing submitted
+wavespeed run wavespeed-ai/flux-schnell --input prompt="a paper boat"
+# actually submits ($0.003)
+wavespeed run wavespeed-ai/flux-schnell --input prompt="a paper boat" --confirm
+```
+
+### Exit codes, machine-readable output, flag validation
+
+- `run --wait --json` writes **only** the final JSON to stdout; the submission line and
+  per-status progress go to stderr, so `wavespeed run ... --wait --json | jq` works.
+- A terminal `failed`/`cancelled`/`timeout`/`deleted` status still prints the JSON and then
+  **exits nonzero** — `--json` never reports a failed generation as success.
+- `--poll-interval` and `--timeout` must be positive numbers of seconds; a non-numeric or
+  valueless flag is a usage error (exit 1) instead of a NaN timeout that never fires.
+- `--json-input` is read as bytes and decoded as UTF-8, so non-ASCII prompts
+  ("Grüße aus Potsdam", emoji) reach the API intact.
+- Webhook URLs are treated as secrets: `run` prints the webhook **name and id**, never the
+  URL, and redacts the URL from `--json` output should the API echo it back.
+
+### Finding a model
+
+`?search=` on the models endpoint is **silently ignored** — it returns unfiltered results.
+`wavespeed models <term>` works around this by fetching the full catalogue (~1020 models)
+and filtering `model_id` client-side. `wavespeed schema <model_id>` then prints that
+model's inputs, required fields and array limits — the raw `api_schema` is deeply nested
+and painful to read by hand.
+
+### Array inputs
+
+Repeat `--input` for array-typed fields; a single occurrence of an array field is still
+wrapped correctly:
+
+```
+wavespeed run alibaba/wan-2.6/reference-to-video-flash \
+  --input reference_files=<url1> --input reference_files=<url2> \
+  --input audio=<url> --input duration=5 --input enable_audio=false --confirm --wait
+```
+
+### Webhooks instead of polling
+
+`--webhook` attaches a SLICC webhook URL so a long job reports completion as a lick rather
+than being polled. Two things it handles, both learned the hard way:
+
+- **Webhook URLs are tray-scoped.** They embed the tray id, and a tray reset makes a cached
+  URL return `HTTP 410 TRAY_EXPIRED` **silently** while the job itself reports success. The
+  CLI re-reads the URL from `webhook list` at submit time rather than caching it.
+- **A callback can outlive its tray** on a long job, so `reconcile` is the backstop: it lists
+  recent tasks and finds completed ones whose callback was lost. Callback as fast path,
+  polling as safety net.
+- **Callbacks go to the cone unless the webhook names a target scoop.** `webhook create`
+  treats `--scoop` as optional ("Omit for your own cone") and exits 0 without it, but an
+  untargeted webhook is delivered to the cone — so a scoop that submits a job with
+  `--webhook` never sees its own callback. Measured 2026-09-04: `webhook create --name x`
+  issued from a `.jsh` via `exec.spawn` produced an untargeted webhook whose event landed
+  on the cone, while adding `--scoop <name>` routed it correctly. The CLI therefore
+  defaults `--scoop` to `$SLICC_LICK_TARGET` when that is set:
+
+  ```bash
+  wavespeed webhook create --name wavespeed                  # -> this scoop, if SLICC_LICK_TARGET is set
+  wavespeed webhook create --name wavespeed --scoop my-scoop # explicit target
+  wavespeed webhook list                                     # the "-> <scoop>" column shows the target
+  ```
+
+  If you are working at a cone prompt, the default (no target) is correct and callbacks
+  arrive at the cone. `run --webhook <name>` warns on stderr when the named webhook is
+  targeted anywhere other than the current process, since the callback would be lost:
+
+  ```
+  wavespeed: webhook "ws-route-cone" delivers to cone, but this process is ws-review-scoop
+  — the callback will not reach you. Recreate it with `wavespeed webhook create --name
+  ws-route-cone --scoop ws-review-scoop`, or use `wavespeed reconcile` / --wait instead.
+  ```
+
+### Generation gotchas
+
+- **`enable_audio` vs your own audio.** On the wan reference-to-video models, `audio` only
+  *guides* lip motion; with `enable_audio: true` (the default) the model **synthesises its
+  own output audio**. Set `enable_audio: false` and mux your real track in afterwards.
+- **Output aspect follows input aspect** on `sync/lipsync-3/avatar`: a 768x1363 still yields
+  a 768x1363 video. Feed it a portrait still for vertical output instead of cropping.
+- **A contact sheet is not a multi-reference trick.** Stitching four poses into one image
+  made `lipsync-3/avatar` animate all four faces in unison. Models that genuinely accept
+  multiple references expose an array field — check `schema` first.
+- Uploaded files expire after 7 days.
+
+## Step 1: Get the API Key (raw curl path)
 
 Ask the user for their WaveSpeed API key if not already known. They can also store it in
 global memory (`/shared/CLAUDE.md`) for reuse across sessions.
