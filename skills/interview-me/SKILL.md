@@ -9,17 +9,13 @@ description: >
   AI interview me about X", set up a "spoken Q&A session", rehearse
   answers out loud, capture a "verbal braindump" as a structured
   transcript, or otherwise wants a short (1-10 minute), voice-driven,
-  agent-led conversation that ends with a full transcript, audio/video
-  recording, and markdown summary. Also use it for any follow-up request
-  to change the interview briefing/topic, pick a different voice, ingest
-  documents into a knowledge base the interviewer should ask informed
-  questions from, adjust session length, or install/reinstall the
-  interview sprinkle itself. This is a two-part skill: a CLI
-  (`scripts/interview-me.jsh`) for setup/configuration/knowledge-base
-  management, and a browser sprinkle (installed by the CLI) that actually
-  runs the live voice session end to end -- do not attempt to replicate the
-  realtime voice session logic by hand; use the CLI to configure it and
-  `sprinkle open interview-me` to run it.
+  agent-led conversation that ends with a transcript, audio/video
+  recording, and markdown summary. Also use it for follow-ups: change the
+  interview briefing/topic, pick a different voice, ingest documents into
+  a knowledge base the interviewer should ask informed questions from,
+  adjust session length, or install/reinstall the interview sprinkle
+  itself. Two parts: a CLI (`scripts/interview-me.jsh`) and the browser
+  sprinkle it installs, which runs the session.
 allowed-tools: bash
 ---
 
