@@ -1,19 +1,16 @@
 ---
 name: tiktok
-description: Interact with TikTok via its web API and messages page — search TikTok
-  (videos, users, mixed feed), read video stats (plays, likes, comments, shares,
-  saves), list a creator's videos, read comments, check notifications and the
-  activity feed, read/send direct messages, and see a video (extract auto-caption
-  transcripts + filmstrip contact sheets so an agent can see/hear what a TikTok
-  is about without a human). Use when the user wants to automate TikTok, look up
-  a TikTok video's stats or view count, search TikTok, check TikTok notifications
-  or DMs, read or send a TikTok message, pull a TikTok transcript/captions,
-  generate a filmstrip of frames, "watch" a TikTok, or pull TikTok data without
-  clicking through www.tiktok.com. Activate on mentions of "TikTok", "TikTok
-  stats", "TikTok video", "TikTok search", "TikTok notifications", "TikTok
-  messages", "TikTok DM", "views/likes on a TikTok", "TikTok transcript",
-  "TikTok captions", "TikTok filmstrip", "watch this TikTok", or related TikTok
-  workflows.
+description: Interact with TikTok via its web API and messages page — upload and publish videos
+  (private by default), search TikTok (videos, users, mixed feed), read video stats (plays,
+  likes, comments, shares, saves), list a creator's videos, read comments, check notifications
+  and the activity feed, read/send direct messages, and see a video (auto-caption transcripts +
+  filmstrip contact sheets so an agent can see/hear a TikTok without a human). Use when the user
+  wants to automate TikTok, look up a video's stats or view count, read or send a TikTok DM,
+  pull a transcript/captions, post/upload/publish a video to TikTok, post a TikTok
+  privately/self-only, or set a caption, privacy or comment/duet/stitch settings on a new post.
+  Activate on mentions of "TikTok", "TikTok stats", "TikTok search", "TikTok DM", "TikTok
+  post", "post to TikTok", "upload a video to TikTok", "publish a TikTok", "TikTok
+  transcript", "TikTok filmstrip", "watch this TikTok", or related TikTok workflows.
 allowed-tools: bash
 ---
 
@@ -70,6 +67,10 @@ tiktok search <query> [--type=general|video|user] [--count=N] [--cursor=N]
 tiktok video <videoId>                           # full stats: plays/likes/comments/shares/saves
 tiktok comments <videoId> [--count=N] [--cursor=N]
 tiktok user-videos <secUid> [--count=N] [--cursor=N]  # alias: posted
+
+# Upload + publish a video (private by default)
+tiktok post <file> [--caption="..."] [--privacy=self|friends|public]
+                   [--no-comment] [--no-duet] [--no-stitch] [--json]
 
 # Profile tabs (secUid optional — defaults to your own logged-in account)
 tiktok posted    [<secUid>] [--count=N] [--cursor=N]  # posted videos
@@ -177,6 +178,92 @@ tiktok send-message "Olanski" "thanks for the video!"
 ```
 
 
+## Posting a video (`tiktok post`)
+
+Uploads a local video file and publishes it. **Private by default.**
+
+```bash
+# Self-only ("Only me") — the default. Nothing is ever published publicly by accident.
+tiktok post /path/to/clip.mp4 --caption="my caption"
+
+# Explicit visibility
+tiktok post clip.mp4 --privacy=friends
+tiktok post clip.mp4 --privacy=public          # the ONLY way to go public
+tiktok post clip.mp4 --no-comment --no-duet --no-stitch --json
+```
+
+| flag | default | meaning |
+|------|---------|---------|
+| `--caption` | empty | post text (`text` + `markup_text`; hashtag/mention spans are not parsed) |
+| `--privacy` | **`self`** | `self` → `visibility_type 1` ("Only me"), `friends` → `2`, `public` → `0` |
+| `--no-comment` | comments allowed | `allow_comment: 0` |
+| `--no-duet` | see note | `allow_duet: 0` |
+| `--no-stitch` | see note | `allow_stitch: 0` |
+| `--json` | off | machine-readable result (`item_id`, `project_id`, `url`, `video_id`, dimensions, crc32) |
+
+On success it prints the `item_id`, the `project_id` and the canonical URL
+(`https://www.tiktok.com/@<you>/video/<item_id>`). A fresh post shows as
+"Content under review" in Studio for a while — that is normal.
+
+### Safety
+
+`--privacy` defaults to `self` on purpose: an agent that mis-parses an
+instruction must not be able to publish to a public audience. Going public
+requires typing `--privacy=public`.
+
+### How it works (4 stages, see `references/upload-flow.md`)
+
+1. `GET /api/v1/video/upload/auth/?aid=1988` → STS2 credentials
+   (`video_token_v5`; note TikTok's own typo `secret_acess_key`).
+   Signature-required → issued from the **main world** via `signedRequest()`.
+2. `GET /top/v1?Action=ApplyUploadInner…`, signed AWS4-HMAC-SHA256
+   (region `gcp`, service `vod`, `SignedHeaders=x-amz-date;x-amz-security-token`)
+   → `Vid`, `StoreUri`, `Auth`, `UploadHost`, `SessionKey`. Plain HTTP from node.
+3. `POST https://<UploadHost>/upload/v1/<StoreUri>` — one multipart POST
+   (`file` + `post_upload_req`) with `Authorization: SpaceKey/…`, `Content-CRC32`,
+   `X-Storage-U: <uid>`, `X-Upload-With-PostUpload: 1`. The header makes the
+   ingest edge commit the upload for you, and the response carries the server's
+   own probe of the media (`video_meta`). Plain HTTP from node; a single POST
+   handles at least 24 MB.
+4. `POST /tiktok/web/project/post/v1/?…&aid=1988` with `post_common_info` /
+   `feature_common_info_list` / `single_post_req_list` → `item_id`.
+   Signature-required → main world.
+
+No cover is uploaded (TikTok generates one), no draft is created, and the
+client-side transcode/polling the Studio UI does is skipped entirely.
+
+### ⚠️ Never route the bytes through the browser
+
+`playwright-cli upload` **corrupts binary files**: it reads the VFS file as text
+and re-encodes it with `TextEncoder`, so every byte ≥ 0x80 becomes `EF BF BD`.
+Measured: a 24,349,008-byte mp4 arrived as 45,152,034 bytes, and TikTok turned it
+into a 480x360 clip whose transcode never finished (cover stuck on
+"Processing…", Post button permanently disabled). `tiktok post` therefore reads
+the file with `fs.readFileBinary()` and POSTs it from node — stages 2 and 3 need
+no cookies, so the browser is not involved in the byte path at all. Do not
+"simplify" this by driving the upload page.
+
+As a second guard, `post` compares the server's `video_meta` (`Width`, `Height`,
+`Duration`, `Size`) against a local `ffprobe` of the source and against the exact
+byte length, and **aborts before publishing** on any mismatch (a degraded
+`480x360` with no `Duration` is the signature of mangled bytes). It also checks
+that the CRC-32 the edge computed equals the one it sent.
+
+### Limits and gaps
+
+- Cover frame, location/POI, playlist, scheduling, branded content and AIGC
+  labels are not implemented (their publish-body fields were never observed —
+  see `references/upload-flow.md` §9). `post` sends no `cover_info`.
+- `allow_duet` / `allow_stitch` default to `null` for a self-only post (what the
+  UI sends when the toggles are hidden) and `1` otherwise. `1` = allow is
+  MEASURED; `0` = disallow is INFERRED from the field being numeric — not
+  exercised on the wire.
+- `is_long_video` is always sent as `0` (the observed value for a 30 s clip);
+  behaviour for >60 min videos and files above ~1 GiB is untested.
+- Photo/carousel posts are not supported.
+- Drafts cannot be deleted through this skill — no delete endpoint was observed.
+  Use TikTok Studio → Content → Drafts in the browser.
+
 ## Seeing a video (transcript + filmstrip)
 
 The combo command is `tiktok see` — **not** `watch`. In SLICC, `watch` means a
@@ -251,6 +338,12 @@ matching the English in `transcriptError`.
 
 ## Notes for the assistant
 
+- **`post` never sends bytes through the browser.** `playwright-cli upload`
+  UTF-8-mangles binary files (24,349,008 B mp4 → 45,152,034 B, resulting in a
+  480x360 video that never transcodes). The byte upload is a plain node POST to
+  the TOS ingest host; only the two signature-required calls use the tab.
+- **`post` is private by default** (`--privacy=self`, `visibility_type 1`). Only
+  pass `--privacy=public` when the user explicitly asked for a public post.
 - **Pagination:** most list commands print a `cursor` / `max_time`; pass it back
   via `--cursor` to page further.
 - **secUid vs uniqueId:** `user-videos` needs a `secUid` (a long `MS4wLjAB...`
