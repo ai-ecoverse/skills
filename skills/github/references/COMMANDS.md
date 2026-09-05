@@ -21,7 +21,7 @@ command words, and always on a state-changing command; pass a literal `-h` after
 
 Available on: `pr view`, `pr list`, `pr edit`, `pr checks`, `issue view`, `issue list`, `run list`,
 `run view`, `repo view`, `release list`, `vars list`, `notifications list`, `search prs`,
-`project list`, `project list-items`.
+`search issues`, `project list`, `project list-items`.
 
 ```bash
 gh pr view 123 --json statusCheckRollup,reviews,comments,mergeable
@@ -49,6 +49,7 @@ Field sets (see `gh <cmd> <sub> --help` for the authoritative list):
 | `run view` | all of `run list` plus `jobs` (each with `steps`) |
 | `repo view` | `name nameWithOwner owner description url sshUrl defaultBranchRef isPrivate isFork isArchived stargazerCount forkCount openIssuesCount primaryLanguage licenseInfo repositoryTopics visibility createdAt updatedAt pushedAt homepageUrl hasIssuesEnabled id` |
 | `search prs` | `number title body state author repository url createdAt updatedAt closedAt labels isDraft commentsCount id` |
+| `search issues` | `number title body state author repository url createdAt updatedAt closedAt labels commentsCount id` |
 | `release list` | `name tagName isDraft isPrerelease isLatest publishedAt createdAt url body author id` |
 
 - `pr view --json commits` is an **array of commit objects** (`oid`, `messageHeadline`,
@@ -63,6 +64,7 @@ Field sets (see `gh <cmd> <sub> --help` for the authoritative list):
 ```bash
 gh pr list                                  # --state open|closed|merged|all --limit N --base B --head H --draft --json
 gh pr view 42                               # --json --jq --comments
+gh pr diff 42                               # unified diff of the files changed in the PR
 gh pr checks 42                             # per-check status/conclusion for the head commit; --json
 gh pr create --title "T" --body "B" --head my-branch
 gh pr create --title "T" --body-file ./body.md --head br --base develop --draft
@@ -110,10 +112,15 @@ gh pr unwatch 42
 
   `--watch` exits `0` once the watch is installed; the outcome then arrives as licks.
 
+- `pr diff` prints a unified diff reconstructed from
+  `GET /repos/{owner}/{repo}/pulls/{n}/files` (filename + patch per file). `--repo` /
+  `-R` and a trailing `owner/repo` work as elsewhere. A missing PR exits 1 with a
+  clear error and no stdout.
+
 ## Issues
 
 ```bash
-gh issue list                                # --state --limit --label --assignee --author --milestone --json
+gh issue list                                # --state --limit --label --assignee --author --milestone --search --json
 gh issue view 123                            # --json --jq --comments
 gh issue create --title "T" --body "B" --label bug --assignee me
 gh issue create "T" "B" --labels=bug,triage  # positional form
@@ -129,6 +136,10 @@ gh issue close 123 --reason not_planned --comment "won't fix"
 `--milestone` takes a milestone **title** (`--milestone v1.0`, as upstream documents) or its
 number; a title is resolved to the number the REST API requires, and an unknown title errors
 with the list of available milestones. On `issue list`, `*` (any milestone) and `none` also work.
+
+`issue list --search` (also `-S`) maps onto `GET /search/issues` with `repo:` and `type:issue`
+qualifiers, plus `--state` / `--label` / `--assignee` / `--author` / `--milestone` when set.
+It is not a silent no-op on the unfiltered list.
 
 ## Workflow runs
 
@@ -163,6 +174,7 @@ Contents API, handling the SHA lookup for existing files.
 ```bash
 gh release list                              # --limit --json
 gh search prs "fix login"                    # --limit --state --json; -R owner/repo
+gh search issues "fix login"                 # --limit --state --json; -R owner/repo
 gh vars list                                 # --json
 gh vars set MY_VAR "hello world"             # PATCH if it exists, POST if new
 ```

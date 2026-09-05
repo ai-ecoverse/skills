@@ -322,6 +322,11 @@ function fail(cmd, err) {
   cli.die(cmd + ' failed: ' + (err.body?.message || err.message), { prefix: 'gh' });
 }
 
+function isNotFound(err) {
+  return err?.status === 404 || err?.status === '404'
+    || err?.body?.status === 404 || err?.body?.status === '404';
+}
+
 // ─── Upstream-gh argument compatibility ──────────────────────────────────────
 // SLICC is a harness for AI agents, and agents arrive with strong priors from
 // the real GitHub CLI (cli/cli): named flags (`--title`, `-R owner/repo`),
@@ -411,6 +416,7 @@ const FLAG_SPECS = {
     'add-reviewer': { type: 'list' },
     'remove-reviewer': { type: 'list' },
   },
+  'pr diff': { ...REPO_FLAG },
   'pr checkout': { ...REPO_FLAG },
   'pr watch': {
     ...REPO_FLAG,
@@ -432,6 +438,7 @@ const FLAG_SPECS = {
     assignee: { type: 'string', short: 'a' },
     author: { type: 'string', short: 'A' },
     milestone: { type: 'string', short: 'm' },
+    search: { type: 'string', short: 'S' },
   },
   'issue create': {
     ...REPO_FLAG,
@@ -513,6 +520,11 @@ const FLAG_SPECS = {
   },
   'notifications read': { ...REPO_FLAG },
   'search prs': {
+    ...REPO_FLAG, ...JSON_FLAGS,
+    limit: { type: 'string', short: 'L' },
+    state: { type: 'string' },
+  },
+  'search issues': {
     ...REPO_FLAG, ...JSON_FLAGS,
     limit: { type: 'string', short: 'L' },
     state: { type: 'string' },
@@ -1644,6 +1656,74 @@ async function prClose(args) {
   if (flags['delete-branch']) await deleteHeadBranch('pr close', repo, num);
 }
 
+// ─── pr diff ─────────────────────────────────────────────────────────────────
+// Reconstruct a usable unified diff from GET /repos/{owner}/{repo}/pulls/{n}/files.
+// The files endpoint's `patch` field is hunks only (no `diff --git` headers);
+// filename + previous_filename + status are required to make it apply-shaped.
+// Captured from GitHub REST (issue slicc#2880).
+
+function fileToUnifiedDiff(file) {
+  const dest = file.filename || 'unknown';
+  const src = file.previous_filename || dest;
+  const status = file.status || 'modified';
+  const lines = ['diff --git a/' + src + ' b/' + dest];
+  if (status === 'added') {
+    lines.push('new file mode 100644');
+    lines.push('--- /dev/null');
+    lines.push('+++ b/' + dest);
+  } else if (status === 'removed') {
+    lines.push('deleted file mode 100644');
+    lines.push('--- a/' + src);
+    lines.push('+++ /dev/null');
+  } else if (status === 'renamed') {
+    lines.push('rename from ' + src);
+    lines.push('rename to ' + dest);
+    lines.push('--- a/' + src);
+    lines.push('+++ b/' + dest);
+  } else if (status === 'copied') {
+    lines.push('copy from ' + src);
+    lines.push('copy to ' + dest);
+    lines.push('--- a/' + src);
+    lines.push('+++ b/' + dest);
+  } else {
+    lines.push('--- a/' + src);
+    lines.push('+++ b/' + dest);
+  }
+  if (file.patch) {
+    lines.push(String(file.patch).replace(/\n$/, ''));
+  } else if (status !== 'renamed' && status !== 'copied') {
+    lines.push('Binary files a/' + src + ' and b/' + dest + ' differ');
+  }
+  return lines.join('\n');
+}
+
+async function prDiff(args) {
+  const { flags, positional } = parseArgs('pr diff', args, FLAG_SPECS['pr diff']);
+  const { values, repoArg } = distribute('pr diff', positional, ['number'], flags);
+  if (!values.number) cli.die('pr diff: PR number required');
+  const num = validateNum(values.number, 'PR number');
+  const repo = await repoFrom('pr diff', flags, repoArg);
+
+  const files = [];
+  try {
+    // The files API caps at 100 per page and 3000 files total.
+    for (let page = 1; page <= 30; page++) {
+      const batch = await api.get(`/repos/${repo}/pulls/${num}/files`, {
+        params: { per_page: 100, page },
+      });
+      const list = Array.isArray(batch) ? batch : [];
+      files.push(...list);
+      if (list.length < 100) break;
+    }
+  } catch (e) {
+    if (isNotFound(e)) cli.die('pr diff: pull request #' + num + ' not found in ' + repo);
+    fail('pr diff', e);
+  }
+
+  if (!files.length) return;
+  console.log(files.map(fileToUnifiedDiff).join('\n'));
+}
+
 // ─── issue list ──────────────────────────────────────────────────────────────
 
 const ISSUE_FIELDS = [
@@ -1671,6 +1751,25 @@ function issueJson(issue) {
   };
 }
 
+// GitHub search qualifiers: quote values that contain whitespace.
+function searchQualifier(key, value) {
+  const v = String(value);
+  if (/[\s"]/.test(v)) return key + ':"' + v.replace(/"/g, '\\"') + '"';
+  return key + ':' + v;
+}
+
+function buildIssueListSearchQuery(repo, flags) {
+  const parts = [searchQualifier('repo', repo), 'type:issue'];
+  const state = (flags.state || 'open').toLowerCase();
+  if (state && state !== 'all') parts.push(searchQualifier('state', state));
+  for (const label of labelList(flags)) parts.push(searchQualifier('label', label));
+  if (flags.assignee) parts.push(searchQualifier('assignee', flags.assignee));
+  if (flags.author) parts.push(searchQualifier('author', flags.author));
+  if (flags.milestone) parts.push(searchQualifier('milestone', flags.milestone));
+  if (flags.search) parts.push(flags.search);
+  return parts.join(' ');
+}
+
 async function issueList(args) {
   const { flags, positional } = parseArgs('issue list', args, FLAG_SPECS['issue list']);
   const { repoArg } = distribute('issue list', positional, [], flags);
@@ -1680,24 +1779,37 @@ async function issueList(args) {
   // explicit --limit over-fetches and trims afterwards; without --limit the page
   // size stays exactly what it always was.
   const limit = Math.min(parseInt(flags.limit, 10) || 30, 100);
-  const params = {
-    state: (flags.state || 'open').toLowerCase(),
-    per_page: flags.limit === undefined ? limit : Math.min(limit * 3, 100),
-  };
-  const labels = labelList(flags);
-  if (labels.length) params.labels = labels.join(',');
-  if (flags.assignee) params.assignee = flags.assignee;
-  if (flags.author) params.creator = flags.author;
-  if (flags.milestone) {
-    // `*` and `none` are meaningful to the list filter; a title is resolved to its number.
-    params.milestone = String(await resolveMilestone('issue list', repo, flags.milestone, { allowSentinels: true }));
+  let filtered;
+  if (flags.search !== undefined) {
+    // Honour --search via the issue search API. Silently ignoring it used to
+    // return an unfiltered list that looked like search hits (slicc#2880).
+    const q = buildIssueListSearchQuery(repo, flags);
+    let results;
+    try {
+      const data = await api.get('/search/issues', { params: { q, per_page: limit } });
+      results = data.items || [];
+    } catch (e) { fail('issue list', e); }
+    filtered = results.filter(i => !i.pull_request).slice(0, limit);
+  } else {
+    const params = {
+      state: (flags.state || 'open').toLowerCase(),
+      per_page: flags.limit === undefined ? limit : Math.min(limit * 3, 100),
+    };
+    const labels = labelList(flags);
+    if (labels.length) params.labels = labels.join(',');
+    if (flags.assignee) params.assignee = flags.assignee;
+    if (flags.author) params.creator = flags.author;
+    if (flags.milestone) {
+      // `*` and `none` are meaningful to the list filter; a title is resolved to its number.
+      params.milestone = String(await resolveMilestone('issue list', repo, flags.milestone, { allowSentinels: true }));
+    }
+
+    let issues;
+    try { issues = await api.get(`/repos/${repo}/issues`, { params }); }
+    catch (e) { fail('issue list', e); }
+
+    filtered = issues.filter(i => !i.pull_request).slice(0, limit);
   }
-
-  let issues;
-  try { issues = await api.get(`/repos/${repo}/issues`, { params }); }
-  catch (e) { fail('issue list', e); }
-
-  const filtered = issues.filter(i => !i.pull_request).slice(0, limit);
 
   const fields = parseFields('issue list', flags.json, ISSUE_FIELDS);
   if (fields !== undefined) {
@@ -1705,12 +1817,15 @@ async function issueList(args) {
     return;
   }
 
-  if (!filtered.length) { console.log(color.gray('No open issues.')); return; }
+  if (!filtered.length) {
+    console.log(color.gray(flags.search !== undefined ? 'No matching issues.' : 'No open issues.'));
+    return;
+  }
 
   const rows = filtered.map(i => [
     color.cyan('#' + i.number),
     fmt.trunc(i.title, 60),
-    i.labels.map(l => color.yellow(l.name)).join(', '),
+    (i.labels || []).map(l => color.yellow(l.name)).join(', '),
   ]);
   console.log(fmt.table(rows, [6, 62]));
 }
@@ -2544,6 +2659,63 @@ async function searchPrs(args) {
   console.log(fmt.table(rows, [6, 58, 36]));
 }
 
+// ─── search issues ───────────────────────────────────────────────────────────
+
+const SEARCH_ISSUE_FIELDS = [
+  'number', 'title', 'body', 'state', 'author', 'repository', 'url', 'createdAt',
+  'updatedAt', 'closedAt', 'labels', 'commentsCount', 'id',
+];
+
+function searchIssueJson(item) {
+  return {
+    number: item.number,
+    title: item.title,
+    body: item.body || '',
+    state: upper(item.state),
+    author: userRef(item.user),
+    repository: { nameWithOwner: item.repository_url.replace('https://api.github.com/repos/', '') },
+    url: item.html_url,
+    createdAt: item.created_at,
+    updatedAt: item.updated_at,
+    closedAt: item.closed_at,
+    labels: labelRefs(item.labels),
+    commentsCount: item.comments,
+    id: item.node_id,
+  };
+}
+
+async function searchIssues(args) {
+  const { flags, positional } = parseArgs('search issues', args, FLAG_SPECS['search issues']);
+  const { values, repoArg } = distribute('search issues', positional, ['query'], flags);
+  if (!values.query) cli.die('search issues: query required');
+  if (flags.repo && repoArg) {
+    cli.die(`search issues: repository specified twice — --repo ${flags.repo} and positional ${repoArg}. Pass only one.`);
+  }
+  const repo = flags.repo || repoArg || await inferRepo();
+  const q = values.query + ' type:issue' + (repo ? ' repo:' + repo : '') + (flags.state ? ' state:' + flags.state : '');
+  let results;
+  try {
+    const data = await api.get('/search/issues', { params: { q, per_page: Math.min(parseInt(flags.limit, 10) || 20, 100) } });
+    results = data.items || [];
+  } catch (e) { fail('search issues', e); }
+
+  const fields = parseFields('search issues', flags.json, SEARCH_ISSUE_FIELDS);
+  if (fields !== undefined) {
+    await outputJson(results.map(i => pickFields(searchIssueJson(i), fields)), flags);
+    return;
+  }
+
+  if (!results.length) { console.log(color.gray('No matching issues.')); return; }
+
+  const rows = results.map(item => [
+    color.cyan('#' + item.number),
+    fmt.trunc(item.title, 56),
+    color.gray(item.repository_url.replace('https://api.github.com/repos/', '')),
+    item.state === 'open' ? color.green('open') : color.red(item.state),
+  ]);
+  console.log(fmt.table(rows, [6, 58, 36]));
+}
+
 // ─── vars list ───────────────────────────────────────────────────────────────
 
 async function varsList(args) {
@@ -3233,13 +3405,22 @@ const HELP = {
         desc: 'Stop watching a PR; removes the GitHub hook and the SLICC webhook',
         flags: [REPO_HELP],
       },
+      diff: {
+        usage: ['gh pr diff <num> [-R owner/repo]', 'gh pr diff <num> [repo]'],
+        desc: 'Print a unified diff of the files changed in a pull request',
+        flags: [REPO_HELP],
+        notes: [
+          'Uses GET /repos/{owner}/{repo}/pulls/{n}/files and reconstructs a unified diff',
+          'from each file\'s filename and patch. Missing PRs exit 1 with no stdout.',
+        ],
+      },
     },
   },
   issue: {
     summary: 'Work with issues',
     subs: {
       list: {
-        usage: ['gh issue list [--state open|closed|all] [--label L] [--assignee U] [--json]', 'gh issue list [repo]'],
+        usage: ['gh issue list [--state open|closed|all] [--label L] [--search Q] [--json]', 'gh issue list [repo]'],
         desc: 'List issues (pull requests filtered out)',
         flags: [REPO_HELP, JSON_HELP, JQ_HELP,
           '-s, --state <state>       open (default), closed, all',
@@ -3247,7 +3428,8 @@ const HELP = {
           '-l, --label <name>        filter by label (repeatable)',
           '-a, --assignee <user>     filter by assignee',
           '-A, --author <user>       filter by author',
-          '-m, --milestone <ms>      filter by milestone'],
+          '-m, --milestone <ms>      filter by milestone',
+          '-S, --search <query>      search issues (uses the issue search API, not an unfiltered list)'],
       },
       view: {
         usage: ['gh issue view <num> [--json] [--comments]', 'gh issue view <num> [repo]'],
@@ -3389,6 +3571,13 @@ const HELP = {
       prs: {
         usage: ['gh search prs <query> [-R owner/repo] [--json]', 'gh search prs <query> [repo]'],
         desc: 'Search pull requests by keyword',
+        flags: [REPO_HELP, JSON_HELP, JQ_HELP,
+          '-L, --limit <n>           max results (default 20)',
+          '--state <state>           add state: to the query'],
+      },
+      issues: {
+        usage: ['gh search issues <query> [-R owner/repo] [--json]', 'gh search issues <query> [repo]'],
+        desc: 'Search issues by keyword',
         flags: [REPO_HELP, JSON_HELP, JQ_HELP,
           '-L, --limit <n>           max results (default 20)',
           '--state <state>           add state: to the query'],
@@ -3563,6 +3752,7 @@ ${color.bold('UPSTREAM-COMPATIBLE')}
 ${color.bold('COMMANDS')}
   ${color.cyan('pr list')}       [--state S] [--limit N] [--json] [repo]      List pull requests
   ${color.cyan('pr view')}       <num> [--json f1,f2] [--comments] [repo]     View PR details and checks
+  ${color.cyan('pr diff')}       <num> [repo]                                 Print a unified diff of the PR
   ${color.cyan('pr checks')}     <num> [--json] [--watch] [repo]              Per-check status for the PR head
   ${color.cyan('pr create')}     --title T --body B --head BR [--base M] [--draft]  Open a PR
   ${color.cyan('pr edit')}       <num> [--title T] [--base B] [--add-label L]  Edit a PR
@@ -3572,7 +3762,7 @@ ${color.bold('COMMANDS')}
   ${color.cyan('pr checkout')}   <num> [repo]                                 Print checkout commands
   ${color.cyan('pr watch')}      <num> [--filter <js>] [--scoop <name>]       Watch a PR via webhook
   ${color.cyan('pr unwatch')}    <num> [repo]                                 Stop watching a PR
-  ${color.cyan('issue list')}    [--state S] [--label L] [--json] [repo]      List issues
+  ${color.cyan('issue list')}    [--state S] [--search Q] [--json] [repo]     List issues
   ${color.cyan('issue view')}    <num> [--json] [--comments] [repo]           View issue details
   ${color.cyan('issue create')}  --title T --body B [--label L] [repo]        Create issue
   ${color.cyan('issue close')}   <num> [--reason completed|not_planned]       Close an issue
@@ -3584,6 +3774,7 @@ ${color.bold('COMMANDS')}
   ${color.cyan('run view')}      <run_id> [--log-failed] [--json] [repo]      Run details, jobs and logs
   ${color.cyan('release list')}  [--json] [repo]                              List recent releases
   ${color.cyan('search prs')}    <query> [--json] [repo]                      Search PRs by keyword
+  ${color.cyan('search issues')} <query> [--json] [repo]                      Search issues by keyword
   ${color.cyan('vars list')}     [--json] [repo]                              List Actions variables
   ${color.cyan('vars set')}      <name> <value> [repo]                        Set an Actions variable
   ${color.cyan('branch create')} <name> [--from <ref>] [repo]                 Create a branch
@@ -3701,14 +3892,14 @@ if (cmd === 'api') { await apiPassthrough(argv.slice(1)); process.exit(0); }
 if (cmd === 'monday') { await mondayGh(argv.slice(1)); process.exit(0); }
 
 const dispatch = {
-  pr:      { list: () => prList(rest),      view: () => prView(rest),    checks: () => prChecks(rest), merge: () => prMerge(rest), close: () => prClose(rest), comment: () => prComment(rest), checkout: () => prCheckout(rest), create: () => prCreate(rest), edit: () => prEdit(rest), watch: () => prWatch(rest), unwatch: () => prUnwatch(rest) },
+  pr:      { list: () => prList(rest),      view: () => prView(rest),    checks: () => prChecks(rest), merge: () => prMerge(rest), close: () => prClose(rest), comment: () => prComment(rest), checkout: () => prCheckout(rest), create: () => prCreate(rest), edit: () => prEdit(rest), watch: () => prWatch(rest), unwatch: () => prUnwatch(rest), diff: () => prDiff(rest) },
   issue:   { list: () => issueList(rest),   view: () => issueView(rest), create: () => issueCreate(rest), comment: () => issueComment(rest), close: () => issueClose(rest), edit: () => issueEdit(rest) },
   repo:    { view: () => repoView(rest), archive: () => repoArchive(rest) },
   branch:  { create: () => branchCreate(rest), delete: () => branchDelete(rest) },
   content: { put: () => contentPut(rest) },
   run:     { list: () => runList(rest),     view: () => runView(rest) },
   release: { list: () => releaseList(rest) },
-  search:  { prs:  () => searchPrs(rest) },
+  search:  { prs:  () => searchPrs(rest), issues: () => searchIssues(rest) },
   vars:    { list: () => varsList(rest),    set:  () => varsSet(rest) },
   notifications: { list: () => notificationsList(rest), read: () => notificationsRead(rest) },
   project: { list: () => projectList(rest), 'list-items': () => projectListItems(rest), 'add-draft': () => projectAddDraft(rest), 'set-title': () => projectSetTitle(rest) },
