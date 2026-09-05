@@ -4,14 +4,15 @@ description: >
   Interact with GitHub via gh.jsh — a GitHub CLI for SLICC agents that accepts the real
   GitHub CLI's syntax (--title/--body, -R owner/repo, --json [fields], --jq, --help on every
   command) as well as its own positional forms.
-  Use this skill for any GitHub task: listing, viewing, or editing pull requests, checking CI
+  Use this skill for any GitHub task: listing, viewing, diffing, or editing pull requests, checking CI
   checks and failed job logs, merging PRs, posting comments, checking out branches, viewing issues,
-  inspecting workflow runs, listing releases, searching PRs, managing Actions variables,
+  inspecting workflow runs, listing releases, searching PRs or issues, managing Actions variables,
   creating branches, pushing file content, archiving repos, managing org-owned Projects (v2),
   or calling any GitHub API endpoint directly.
-  Trigger on requests like "list open PRs", "check CI status", "why did CI fail", "merge this
-  PR", "what issues are open", "show the latest release", "post a comment on PR #42",
-  "set a repo variable", "create a branch", "push this file", "list my GitHub projects".
+  Trigger on requests like "list open PRs", "show the PR diff", "search issues", "check CI status",
+  "why did CI fail", "merge this PR", "what issues are open", "has this been filed",
+  "show the latest release", "post a comment on PR #42", "set a repo variable",
+  "create a branch", "push this file", "list my GitHub projects".
 allowed_tools:
   - bash
 ---
@@ -70,6 +71,26 @@ gh pr create --title "My title" --body "PR body" --head my-feature -R owner/repo
 ```
 
 `pr create` prints the new PR number — capture it and reuse that exact number below.
+
+### Read a PR diff
+
+```bash
+gh pr diff <num> -R owner/repo
+```
+
+Prints a unified diff of the files the PR changes. A missing PR exits 1 with a clear error
+and empty stdout. Use this before merge, and when checking a diff for accidentally-committed
+secrets.
+
+### Search issues (including duplicate-check)
+
+```bash
+gh search issues "playwright upload binary" -R owner/repo
+gh issue list --search "playwright upload binary" -R owner/repo
+```
+
+`search issues` queries GitHub issue search. `issue list --search` maps onto the same API
+instead of returning an unfiltered list.
 
 ### Edit a PR
 
