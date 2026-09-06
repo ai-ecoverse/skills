@@ -32,9 +32,17 @@ adb screencap <out.png>        Capture the framebuffer to a VFS path
 adb pull <remote> <local>      Copy a file off the device (binary-safe)
 ```
 
-Flags: `--serial <s>` to pick a device, `--key <path>` for the signing key,
+Flags — `--serial <s>` to pick a device, `--key <path>` for the signing key,
 `--json` for machine-readable output, `--timeout <ms>` per transfer,
 `--no-reset` to skip the USB reset on connect.
+
+**Flags must precede the subcommand**, as with real adb (`adb --serial X shell
+…`). Everything after the subcommand is passed through untouched, so
+`adb shell pm list packages --user 10` sends `--user 10` to the device rather
+than parsing it here.
+
+`adb shell` reports the device-side exit status as its own and keeps stderr
+separate from stdout; `--json` returns `{command, stdout, stderr, exitCode}`.
 
 ## Setup
 
@@ -47,9 +55,10 @@ Flags: `--serial <s>` to pick a device, `--key <path>` for the signing key,
 3. **Provide a signing key** at `/workspace/.adb/adbkey`, PKCS#8 PEM. Two options:
    - Copy the host's `~/.android/adbkey` to inherit its existing authorization —
      the device already trusts it, so no on-device prompt appears.
-   - Use any other RSA key and enroll it by approving the phone's
-     "Allow USB debugging?" prompt. **Enrolling a fresh key is not implemented
-     yet** — that needs the `AUTH RSAPUBLICKEY` frame (see Limitations).
+   - **A key the device does not already trust will not work.** Enrolling one
+     needs the `AUTH RSAPUBLICKEY` frame, which this client does not send, so
+     no on-device approval prompt appears — retrying cannot help (see
+     Limitations).
 
    Override the path with `--key`, or persist one via skill config (`keyPath`).
 
@@ -79,7 +88,11 @@ design, so treat it exactly like a local shell — never hand it unvalidated inp
   actionable error rather than raising the on-device prompt. Adding it needs
   ADB's custom public-key encoding (`n0inv` and `rr` Montgomery parameters).
 - **No `push`, no `install`, no `logcat -f`** — those need the `sync:` protocol
-  or long-lived streams. `pull` deliberately uses `exec:cat` instead of `sync:`.
+  or long-lived streams. `pull` uses `cat` over shell-v2 instead of `sync:`:
+  binary-safe, far simpler, and the shell-v2 exit frame is what makes a failed
+  read detectable, so a missing path errors instead of writing the error text
+  over your local file. Devices that do not advertise `shell_v2` (pre-Android
+  7) therefore cannot use `pull`, and `shell` on them reports no exit status.
 - **Output is buffered, not streamed** — `.jsh` stdout is delivered on
   completion, so long-running commands print nothing until they finish.
 - **Chromium only.** WebUSB is unavailable in the cloud / hosted-leader float.

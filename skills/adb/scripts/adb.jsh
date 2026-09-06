@@ -15,11 +15,12 @@ adb — drive an Android device over WebUSB, no host adb required
 USAGE
   adb devices                    List granted USB devices exposing an ADB interface
   adb connect                    Authenticate and print the device banner
-  adb shell <command...>         Run a shell command, print its output
+  adb shell <command...>         Run a shell command; everything after 'shell'
+                                 is sent verbatim, flags included
   adb screencap <out.png>        Capture the framebuffer to a VFS path
   adb pull <remote> <local>      Copy a file off the device (binary-safe)
 
-FLAGS
+FLAGS  (must precede the subcommand, as with real adb: adb --serial X shell ...)
   --serial <s>   Target a specific device serial (default: first ADB-capable one)
   --key <path>   RSA private key, PKCS#8 PEM (default: config, then /workspace/.adb/adbkey)
   --json         Machine-readable output
@@ -371,8 +372,11 @@ async function handshake(transport, key) {
       if (++attempts > MAX_AUTH_ATTEMPTS) {
         throw new Error(
           'device rejected the signature — this key is not authorized.\n' +
-          "  Use the host's ~/.android/adbkey, or enroll this key by unlocking the\n" +
-          '  phone and approving the "Allow USB debugging?" prompt.'
+          "  Point --key at a key the device already trusts (the host's\n" +
+          '  ~/.android/adbkey is the usual one). Enrolling a NEW key is not\n' +
+          '  supported yet: that needs the AUTH RSAPUBLICKEY frame, which this\n' +
+          '  client does not send, so no on-device approval prompt will appear\n' +
+          '  no matter how many times you retry.'
         );
       }
       await transport.writeMessage(A_AUTH, AUTH_SIGNATURE, 0, signToken(msg.data, key));
@@ -386,6 +390,48 @@ async function handshake(transport, key) {
     if (msg.cmd === A_CLSE) { await transport.writeMessage(A_CLSE, msg.arg1 || 1, msg.arg0); continue; }
     throw new Error(`unexpected ${msg.name} during connect`);
   }
+}
+
+const SHELL_V2_STDOUT = 1;
+const SHELL_V2_STDERR = 2;
+const SHELL_V2_EXIT = 3;
+
+/**
+ * Decode the shell-v2 frame stream: `[id:1][length:4 LE][payload]`, repeated.
+ * The exit frame is what the legacy `shell:`/`exec:` services cannot give us,
+ * so this is the only way to learn whether a device-side command failed.
+ */
+function parseShellV2(bytes) {
+  const out = [];
+  const err = [];
+  let exitCode = null;
+  let i = 0;
+  while (i + 5 <= bytes.length) {
+    const id = bytes[i];
+    const view = new DataView(bytes.buffer, bytes.byteOffset + i + 1, 4);
+    const length = view.getUint32(0, true);
+    if (i + 5 + length > bytes.length) break; // truncated tail — stop cleanly
+    const payload = bytes.subarray(i + 5, i + 5 + length);
+    if (id === SHELL_V2_STDOUT) out.push(payload);
+    else if (id === SHELL_V2_STDERR) err.push(payload);
+    else if (id === SHELL_V2_EXIT && length > 0) exitCode = payload[0];
+    i += 5 + length;
+  }
+  return { stdout: concat(out), stderr: concat(err), exitCode };
+}
+
+/**
+ * Run a device-side command. Uses the shell-v2 protocol when the device
+ * advertises it, which separates stdout/stderr and carries a real exit status;
+ * `raw` means no pty, so binary output survives. Falls back to `exec:` on
+ * devices that predate shell-v2, where the exit status is simply unknowable.
+ */
+async function runCommand(transport, features, command) {
+  if (features.has('shell_v2')) {
+    return parseShellV2(await runService(transport, `shell,v2,raw:${command}`));
+  }
+  const stdout = await runService(transport, `exec:${command}`);
+  return { stdout, stderr: new Uint8Array(0), exitCode: null };
 }
 
 /** Open a service stream, drain it to completion, return the raw bytes. */
@@ -489,7 +535,9 @@ async function withDevice(flags, fn) {
   }
   try {
     const banner = await handshake(transport, key);
-    return await fn(transport, { banner, device });
+    const { props } = parseBanner(banner);
+    const features = new Set((props.features ?? '').split(',').filter(Boolean));
+    return await fn(transport, { banner, device, features });
   } finally {
     await transport.close();
   }
@@ -508,7 +556,11 @@ function parseBanner(banner) {
 }
 
 async function cmdDevices(flags) {
-  const found = await listAdbDevices();
+  const all = await listAdbDevices();
+  // A granted-but-not-ADB device (or one whose interface is busy) has no
+  // descriptor; keep it out rather than dereferencing a null below.
+  const found = all.filter((d) => d.iface);
+  const skipped = all.length - found.length;
   if (flags.json) {
     cli.out(found.map(({ device, iface }) => ({
       serial: device.serialNumber,
@@ -521,7 +573,13 @@ async function cmdDevices(flags) {
     })));
     return;
   }
-  if (!found.length) { console.log(color.dim('  No ADB-capable USB devices granted.')); return; }
+  if (!found.length) {
+    console.log(color.dim('  No ADB-capable USB devices granted.'));
+    if (skipped) {
+      console.log(color.dim(`  (${skipped} granted USB device(s) exposed no ADB interface — busy, or not an Android device.)`));
+    }
+    return;
+  }
   console.log();
   for (const { device, iface } of found) {
     console.log(
@@ -529,6 +587,9 @@ async function cmdDevices(flags) {
       `${color.dim(`serial:${device.serialNumber}`)}  ` +
       `${color.dim(`handle:${device.handle}`)}  ${color.dim(`iface:${iface.interfaceNumber}`)}`
     );
+  }
+  if (skipped) {
+    console.log(color.dim(`  (${skipped} other granted USB device(s) exposed no ADB interface.)`));
   }
 }
 
@@ -544,20 +605,33 @@ async function cmdConnect(flags) {
   }
 }
 
-async function cmdShell(flags, positional) {
-  const command = positional.join(' ').trim();
+async function cmdShell(flags, argv) {
+  const command = argv.join(' ').trim();
   if (!command) cli.die('usage: adb shell <command...>', { prefix: 'adb' });
-  const bytes = await withDevice(flags, (t) => runService(t, `shell:${command}`));
-  const text = dec.decode(bytes);
-  if (flags.json) { cli.out({ command, output: text }); return; }
-  if (text) process.stdout.write(text.endsWith('\n') ? text : text + '\n');
+  const r = await withDevice(flags, (t, { features }) => runCommand(t, features, command));
+  const stdout = dec.decode(r.stdout);
+  const stderr = dec.decode(r.stderr);
+  if (flags.json) {
+    cli.out({ command, stdout, stderr, exitCode: r.exitCode });
+  } else {
+    if (stdout) process.stdout.write(stdout.endsWith('\n') ? stdout : stdout + '\n');
+    if (stderr) process.stderr.write(stderr.endsWith('\n') ? stderr : stderr + '\n');
+  }
+  // Propagate the device-side status; a failing remote command must not look
+  // like success. Unknown (pre-shell-v2 devices) stays 0.
+  if (r.exitCode) process.exit(r.exitCode);
 }
 
 async function cmdScreencap(flags, positional) {
   const out = positional[0];
   if (!out) cli.die('usage: adb screencap <out.png>', { prefix: 'adb' });
-  // `exec:` skips the pty layer, so PNG bytes survive unmangled.
-  const bytes = await withDevice(flags, (t) => runService(t, 'exec:screencap -p'));
+  // Raw mode (no pty) so PNG bytes survive unmangled.
+  const r = await withDevice(flags, (t, { features }) => runCommand(t, features, 'screencap -p'));
+  if (r.exitCode) {
+    const detail = dec.decode(r.stderr).trim() || `exit ${r.exitCode}`;
+    cli.die(`screencap failed on the device: ${detail}`, { prefix: 'adb' });
+  }
+  const bytes = r.stdout;
   if (bytes.length < 8 || bytes[0] !== 0x89 || bytes[1] !== 0x50) {
     cli.die(`device did not return a PNG (${bytes.length} bytes)`, { prefix: 'adb' });
   }
@@ -569,8 +643,25 @@ async function cmdScreencap(flags, positional) {
 async function cmdPull(flags, positional) {
   const [remote, local] = positional;
   if (!remote || !local) cli.die('usage: adb pull <remote> <local>', { prefix: 'adb' });
-  // `exec:cat` rather than the sync: protocol — binary-safe and far simpler.
-  const bytes = await withDevice(flags, (t) => runService(t, `exec:cat ${shellQuote(remote)}`));
+  // `cat` over shell-v2 rather than the sync: protocol — binary-safe, and the
+  // exit frame is what makes a missing/unreadable path detectable. Without it
+  // a failed read would be written to `local`, silently clobbering a good file.
+  const r = await withDevice(flags, async (t, { features }) => {
+    if (!features.has('shell_v2')) {
+      cli.die(
+        'this device does not advertise shell_v2, so a failed read cannot be\n' +
+        '  distinguished from a successful one — refusing to risk overwriting\n' +
+        `  ${local}. Use \`adb shell cat ...\` and redirect if you accept that.`,
+        { prefix: 'adb' }
+      );
+    }
+    return runCommand(t, features, `cat ${shellQuote(remote)}`);
+  });
+  if (r.exitCode) {
+    const detail = dec.decode(r.stderr).trim() || `exit ${r.exitCode}`;
+    cli.die(`could not read ${remote} on the device: ${detail}`, { prefix: 'adb' });
+  }
+  const bytes = r.stdout;
   await fs.writeFileBinary(local, bytes);
   if (flags.json) { cli.out({ remote, local, bytes: bytes.length }); return; }
   console.log(`  ${color.green('✓')} pulled ${color.cyan(remote)} → ${color.cyan(local)} ${color.dim(`(${bytes.length} bytes)`)}`);
@@ -582,19 +673,54 @@ function shellQuote(v) {
 }
 
 // ── main ──────────────────────────────────────────────────────────────
-const parsed = process.argv.parseFlags();
-const subcommand = parsed.subcommand || '';
-const positional = parsed.positional.slice(1);
-const flags = parsed.flags;
+// `process.argv.parseFlags()` is the house helper, but it cannot express this
+// grammar: everything after the subcommand is an opaque device-side command.
+// It consumes long options wherever they appear, so `adb shell pm list
+// packages --user 10` would reach the device as `pm list packages`, and
+// `adb --json shell ls` would parse `shell` as --json's value. So the
+// invocation is split explicitly here: our flags first, then the subcommand,
+// then an untouched tail.
+const BOOLEAN_FLAGS = new Set(['json', 'no-reset', 'help']);
+const VALUE_FLAGS = new Set(['serial', 'key', 'timeout']);
+
+function parseInvocation(argv) {
+  const flags = {};
+  let i = 0;
+  for (; i < argv.length; i++) {
+    const token = argv[i];
+    if (token === '-h') {
+      flags.h = true;
+      continue;
+    }
+    if (!token.startsWith('--')) break; // the subcommand
+    const eq = token.indexOf('=');
+    if (eq > 0) {
+      flags[token.slice(2, eq)] = token.slice(eq + 1);
+      continue;
+    }
+    const name = token.slice(2);
+    if (VALUE_FLAGS.has(name)) {
+      flags[name] = argv[++i];
+      continue;
+    }
+    if (!BOOLEAN_FLAGS.has(name)) {
+      cli.die(`unknown flag --${name}\nRun 'adb --help' for usage.`, { prefix: 'adb' });
+    }
+    flags[name] = true;
+  }
+  return { flags, subcommand: argv[i] ?? '', tail: argv.slice(i + 1) };
+}
+
+const { flags, subcommand, tail: rawTail } = parseInvocation(process.argv.slice(2));
 
 async function main() {
   if (flags.help || flags.h || !subcommand || subcommand === 'help') cli.help(HELP);
   try {
     if (subcommand === 'devices') await cmdDevices(flags);
     else if (subcommand === 'connect') await cmdConnect(flags);
-    else if (subcommand === 'shell') await cmdShell(flags, parsed.passthrough?.length ? parsed.passthrough : positional);
-    else if (subcommand === 'screencap') await cmdScreencap(flags, positional);
-    else if (subcommand === 'pull') await cmdPull(flags, positional);
+    else if (subcommand === 'shell') await cmdShell(flags, rawTail);
+    else if (subcommand === 'screencap') await cmdScreencap(flags, rawTail);
+    else if (subcommand === 'pull') await cmdPull(flags, rawTail);
     else cli.die(`unknown command: ${subcommand}\nRun 'adb --help' for usage.`, { prefix: 'adb' });
   } catch (err) {
     if (err?.name === 'NodeExitError') throw err;
