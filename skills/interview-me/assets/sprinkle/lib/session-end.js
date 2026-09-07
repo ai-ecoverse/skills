@@ -22,9 +22,9 @@
 //   5. `warningCount`/the lick's `warnings` field must reflect ONLY things
 //      that happened DURING the interview and that a human might actually
 //      act on -- see buildDiagnosticsDocument()'s own doc comment. A real
-//      session reported warningCount:3 with ZERO real faults: all three
-//      were startup-diagnostic leftovers from earlier in the same page
-//      load, still sitting in
+//      session (a recorded session) reported warningCount:3 with
+//      ZERO real faults: all three were self-test leftovers from ~45
+//      minutes earlier in the same page load, still sitting in
 //      window.__IM_DIAG__ (which interview-me.shtml's
 //      collectDiagnosticsEntries() folds in wholesale, across the whole
 //      page's lifetime, not just this session). A monitor that cries wolf
@@ -189,8 +189,7 @@ function defaultIsWarning(entry) {
  * @param {object} slicc - bridge object with writeFile(path,string):Promise
  *   and mkdir(path):Promise (mkdir is best-effort/idempotent, matching the
  *   existing app's usage of slicc.mkdir before writing session artifacts).
- * @param {string} sessionDir - the per-session directory the caller writes
- *   session artifacts into, e.g. "<sprinkleDir>/sessions/<iso-timestamp>"
+ * @param {string} sessionDir - e.g. "/shared/sprinkles/interview-me/sessions/<iso>"
  * @param {Array<object>} entries - diagnostic log, see buildDiagnosticsDocument.
  * @param {object} [opts]
  * @param {number} [opts.timeoutMs=4000] - bound on each bridge call.

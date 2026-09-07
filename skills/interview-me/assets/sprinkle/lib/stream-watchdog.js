@@ -2,10 +2,11 @@
 // Watches the RECEIVE path of the realtime WebSocket -- the direction
 // mic-watchdog.js does not cover. mic-watchdog.js exists because the mic
 // capture pipeline can go silent while the socket stays open; this module
-// exists because a failure observed in a real interview session was the
+// exists because the failure that killed the SECOND real interview was the
 // mirror image: the socket stayed open (readyState OPEN the whole time,
 // `onclose`/`onerror` never fired) while the SERVER stopped sending
-// anything at all. Evidence, from that session's recorded artifacts:
+// anything at all. Evidence, from
+// A recorded session showed:
 //   - transcript.json: last real user turn at 3:48, then one assistant
 //     entry at 4:30 with an EMPTY transcript, then nothing until the
 //     5:00 hard cap.

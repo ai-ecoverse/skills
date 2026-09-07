@@ -3,38 +3,38 @@
 // approaches, instead of blindly injecting a canned line on a fixed timer
 // with no awareness of what's actually happening in the conversation.
 //
-// Real failure this fixes, ROUND 1: in a real session, a force_message
-// fired mid-sentence while the user was mid-thought describing an
-// unrelated project -- the scripted wrap-up line barged in and cut them
-// off -- and then produced 29 seconds of dead air until the hard cap,
-// because a force_message is a canned TTS utterance: it does not prompt
-// the model to actually close the conversation, it just speaks over
-// whoever/whatever was happening and ends the exchange rather than
+// Real failure this fixes, ROUND 1 (a recorded session): a
+// force_message fired mid-sentence -- the user was talking about "Hotglue, a
+// Lisp-style macro language..." when the scripted wrap-up line barged in
+// and cut him off -- and then produced 29 seconds of dead air until the
+// hard cap, because a force_message is a canned TTS utterance: it does
+// not prompt the model to actually close the conversation, it just speaks
+// over whoever/whatever was happening and ends the exchange rather than
 // winding it down.
 //
-// Real failure this fixes, ROUND 2: the FIRST fix deferred the (silent)
-// directive send while the user was speaking, on the same reasoning as
-// the (audible, interrupting) fallback. That was wrong: `session.update`
-// emits no audio and cannot interrupt anyone, so deferring it only
-// delayed it -- in the real trace, until the exact moment the user
-// stopped talking, which is also the exact moment the server's own turn
-// detection triggers the model's next response. The directive arrived
-// just after that response had already started generating (a real race
-// this deferral made near-guaranteed, not just possible), so it missed
-// influencing it.
+// Real failure this fixes, ROUND 2 (a recorded session):
+// the FIRST fix deferred the (silent) directive send while the user was
+// speaking, on the same reasoning as the (audible, interrupting)
+// fallback. That was wrong: `session.update` emits no audio and cannot
+// interrupt anyone, so deferring it only delayed it -- in the real trace,
+// until the exact moment the user stopped talking, which is also the
+// exact moment the server's own turn detection triggers the model's next
+// response. The directive arrived just after that response had already
+// started generating (a real race this deferral made near-guaranteed,
+// not just possible), so it missed influencing it.
 //
-// ROUND 3: probed three delivery channels against the live API
+// ROUND 3: the user probed three delivery channels against the live API
 // (role-"system" items are silently ignored; a `session.update`
 // instructions append and an unsolicited `function_call_output` both
 // work, zero errors, and both produce a clean close with no new
-// question). The preferred framing: deliver the time check as
+// question). His preferred framing: deliver the time check as
 // information the agent RECEIVED (a tool result), not words put in its
 // mouth. Since the tool-result channel is undocumented behavior (it
 // works today; xAI could change it), the durable `session.update`
 // directive is kept as a documented backstop -- both are sent, together,
 // at the threshold. Also: sessions were still ending on either a
-// recognisable "closing turn" or the fixed-length hard cap; ending on
-// SUSTAINED SILENCE instead means a session where the model never
+// recognisable "closing turn" or the fixed-length hard cap; the user wants
+// ending on SUSTAINED SILENCE instead, so a session where the model never
 // produces a clean closing turn still ends naturally rather than running
 // to the deadline.
 //
@@ -63,8 +63,8 @@
 //   1. PRIMARY: at the wrap-up threshold, IMMEDIATELY and
 //      UNCONDITIONALLY (never deferred for user speech -- neither of
 //      these emits audio, so neither can interrupt anyone):
-//        a. a time-check tool result (sendTimeCheck) -- the preferred
-//           framing above, but undocumented behavior;
+//        a. a time-check tool result (sendTimeCheck) -- the user's preferred
+//           framing, but undocumented behavior;
 //        b. the closing directive (sendDirective, a session.update
 //           appending to the real `instructions`) -- documented, and a
 //           backstop in case (a) ever stops working.
@@ -74,19 +74,6 @@
 //      drained, for a SUSTAINED period, tell the host to end the session
 //      -- the expected ending once wind-down begins, independent of
 //      whether the closing turn itself ever completed cleanly.
-//
-//      ROUND 4: this stage used to arm the instant the threshold passed,
-//      with no requirement that anything had closed. That made ordinary
-//      between-turn silence indistinguishable from "the interview is
-//      over": if the threshold arrived just after the agent finished a
-//      question, while the user was still thinking about their answer,
-//      all three conditions were already true and the session ended
-//      silenceSustainMs later -- before the user could answer at all,
-//      and before the server's own idle_timeout_ms (8000, see
-//      buildSessionConfig()) would have re-engaged them. It also made
-//      stage 3 nearly unreachable: in a quiet session this fired at
-//      threshold+5s, long before the +20s fallback it is supposed to
-//      complement.
 //   3. FALLBACK (genuine last resort, and the ONLY stage that defers for
 //      anything that is merely IN PROGRESS -- this is the one thing that
 //      can actually talk over someone): if neither (2) nor a recognised
@@ -95,15 +82,7 @@
 //      is happening right now -- the user is not speaking, NO response of
 //      any kind is generating, and agent playback has drained -- send the
 //      canned force_message so the interview has SOME graceful ending.
-//      ROUND 4: the in-flight check used to cover only the response
-//      created AFTER the directive (`_closingResponseInFlight`), so a
-//      response created just BEFORE it -- the exact race the round-2 note
-//      above describes, and one the host has measured taking as long as
-//      59s -- left the guard open and let the canned line start over an
-//      answer the agent was still speaking. Deferring on ANY in-flight
-//      response (and on undrained playback) closes that hole; the
-//      barge-in this module exists to prevent is no less of a barge-in
-//      for happening over the agent instead of the user. Reuses the same "closing turn observed"
+//      Reuses the same "closing turn observed"
 //      detection -- the force_message's own response lifecycle naturally
 //      satisfies it once it completes, so no special-casing is needed
 //      for "what happens after the fallback plays" (silence detection
@@ -338,10 +317,13 @@ class WrapupController {
     // condition -- not speaking, nothing generating, nothing playing --
     // and ending there cuts the interview off before its last answer,
     // even before the server's own idle_timeout_ms would re-engage them.
-    // Waiting for a close first also restores stage 3's reachability: an
-    // ungated silence stop fired at threshold+silenceSustainMs, so the
-    // host ended the session long before the +fallbackDelayMs fallback
-    // this stage is meant to complement could ever run.
+    // Waiting for a close first also restores the fallback stage's
+    // reachability: an ungated silence stop fired at
+    // threshold+silenceSustainMs, so the host ended the session long
+    // before the +fallbackDelayMs fallback this stage is meant to
+    // complement could ever run. (ROUND 4 fix -- reasoned from the code
+    // and reproduced with a unit harness driving poll(), not a live
+    // session: both remaining guards were too narrow. This is guard (a).)
     if (!this._silenceStopSent) {
       const closeDelivered = this._closingTurnSeen || this._fallbackSent;
       const silentNow = closeDelivered && !this._userSpeaking && !this._responseInFlight && playbackDrained;
@@ -375,13 +357,19 @@ class WrapupController {
     // strict subset of this flag) is false for it, which is exactly how
     // the canned line could previously start over an answer already
     // underway. Waiting also gives that response the chance to become
-    // the natural close.
+    // the natural close. (ROUND 4 fix, guard (b): the in-flight check
+    // used to cover only the response created AFTER the directive
+    // (`_closingResponseInFlight`), so a response created just before it
+    // -- still generating, still audible -- did not defer anything, and
+    // the canned line could start over it.)
     if (this._responseInFlight) return this._deferFallback("response-in-flight");
     // Generation finishing is not the same as the audio being heard:
     // response.done fires while the host's AudioPlayer may still have
     // seconds of queued PCM (see AudioPlayer#waitForDrain, which
     // onClosingTurnComplete's host callback also waits on). Speaking
-    // over that tail is the same barge-in, one buffer later.
+    // over that tail is the same barge-in, one buffer later. (ROUND 4
+    // fix, guard (b), continued: the fallback previously had no
+    // playback-drained check of its own at all.)
     if (!playbackDrained) return this._deferFallback("playback-draining");
     const sinceDirectiveMs = elapsedMs - this._directiveSentAtElapsedMs;
     if (sinceDirectiveMs >= this._fallbackDelayMs) {

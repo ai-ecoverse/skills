@@ -52,16 +52,16 @@ export class TranscriptStore {
    * text the client sent, rather than whatever transcript event the
    * server does or doesn't emit for it.
    *
-   * Real evidence, observed in a live session: the server's own response
-   * lifecycle for a force_message fires
+   * Real evidence (a recorded session): the server's own
+   * response lifecycle for a force_message fires
    * response.output_audio_transcript.done, but with an EMPTY transcript
    * string -- recording that verbatim produced a silent, content-free
    * assistant entry (len=0) AND a false-positive from the "response
    * produced no transcript" stream-watchdog check, which has no way to
-   * know this was a scripted message rather than a dead turn. This also
-   * corrected an earlier misdiagnosis in a separate session, where an
-   * empty transcript entry near a wrap-up boundary had been attributed to
-   * a stream stall -- it was actually this same wrap-up force_message.
+   * know this was a scripted message rather than a dead turn. This
+   * corrects an earlier misdiagnosis too: the empty 4:30 entry in session
+   * a recorded session was this same wrap-up force_message, not
+   * evidence of that session's stream stall.
    *
    * Correlating an item_id to the force_message that produced it has to
    * happen in the CALLER (interview-me.shtml) -- a force_message's
@@ -103,18 +103,18 @@ export class TranscriptStore {
   /**
    * xAI sometimes re-emits an assistant turn's transcript under a brand-new
    * item id after tool calls resolve (same conversational turn, same text,
-   * different item_id) — observed in a real session where an opening
-   * greeting was finalized twice, 9s apart, with two collections_search
-   * calls in between. Recorded verbatim, that reads as the interviewer
-   * repeating itself, which it did not do.
+   * different item_id) — see the real earlier session,
+   * where "Happy to have you..." was finalized twice, 9s apart, with two
+   * collections_search calls in between. Recorded verbatim, that reads as
+   * the interviewer repeating itself, which it did not do.
    *
-   * The re-emission is not always byte-identical, either — observed live,
-   * mid-interview, in another real session: a 319-char question finalized
-   * under one item id, then TWO collections_search calls, then the "same"
-   * question re-emitted under a brand-new item id but cut off mid-word at
-   * 105 chars. Recorded verbatim, that is the agent audibly asking the
-   * same question twice, the second time truncated — exactly what was
-   * heard live and flagged.
+   * The re-emission is not always byte-identical, either — see the real
+   * a recorded session (the user noticed this one live, mid
+   * interview): a 319-char question finalized under one item id, then
+   * TWO collections_search calls, then the "same" question re-emitted
+   * under a brand-new item id but cut off mid-word at 105 chars. Recorded
+   * verbatim, that is the agent audibly asking the same question twice,
+   * the second time truncated — exactly what the user heard and flagged.
    *
    * Detect both shapes at record time: once an assistant entry finishes,
    * look back across any purely-tool entries (no intervening user turn)
@@ -191,9 +191,9 @@ export class TranscriptStore {
     // that arrival order, which reads backwards in a human transcript:
     // "assistant answers a question... THEN searches for it", when the
     // search is what actually informed that very answer (real evidence:
-    // a "collections_search" tool entry timestamped to the exact
-    // millisecond the preceding assistant entry's t_end_ms landed on).
-    // Build a DISPLAY order for Markdown
+    // a recorded session, a "collections_search" tool
+    // entry timestamped to the exact millisecond the preceding assistant
+    // entry's t_end_ms landed on). Build a DISPLAY order for Markdown
     // ONLY here -- transcript.json (this.entries, untouched) stays the
     // faithful, real event-arrival-order record -- that moves a tool
     // entry immediately following an assistant entry to render just
