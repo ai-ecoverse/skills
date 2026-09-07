@@ -18,6 +18,7 @@
 // lives.
 
 import { BASE_DIR, SESSIONS_ROOT } from "./constants.js";
+import { listCollections } from "./collections.js";
 
 /**
  * Run the full self-test suite.
@@ -109,10 +110,21 @@ export async function runSelfTest(ctx) {
     return { count, selected: el.voice.value };
   });
 
-  await check("collections-populated", () => {
+  await check("collections-populated", async () => {
+    // The dropdown must REFLECT the account's real collections, whatever that
+    // number is -- including ZERO. A fresh install with no collections yet is a
+    // valid state (the app defaults to local-KB mode and needs no collection),
+    // and no private default is injected anymore. So assert the option count
+    // equals the account's live listCollections count: 0 == 0 passes, N == N
+    // passes, and a MISMATCH (the dropdown does not reflect the account) still
+    // goes RED -- which is what proves population actually works.
+    const account = await withTimeout(listCollections((cmd) => slicc.exec(cmd)), 10000, "listCollections");
+    const accountCount = account.length;
     const count = el.collectionSelect.options.length;
-    if (count === 0) throw new Error("Collection dropdown is empty");
-    return { count, options: Array.from(el.collectionSelect.options).map((o) => o.value) };
+    if (count !== accountCount) {
+      throw new Error(`Collection dropdown has ${count} option(s) but the account has ${accountCount} collection(s) -- dropdown does not reflect the account`);
+    }
+    return { count, accountCount, options: Array.from(el.collectionSelect.options).map((o) => o.value) };
   });
 
   await check("ephemeral-token-mint", async () => {
