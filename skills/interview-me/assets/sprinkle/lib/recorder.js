@@ -45,9 +45,28 @@ export class TrackRecorder {
   constructor(stream, mimeCandidates, chunkMs = 1000, recorderOptions = {}) {
     this.mimeType = pickSupportedMime(mimeCandidates);
     this.chunks = [];
+    // Optional incremental flusher (lib/chunk-flusher.js). When attached via
+    // attachFlusher(), every timeslice chunk is ALSO streamed to a part file
+    // on the VFS as it arrives, so a recording's bytes reach disk during the
+    // session instead of only at stopInterview(). Purely additive: with no
+    // flusher attached this class behaves exactly as before, byte for byte,
+    // which is what keeps the single-camera path unchanged.
+    this.flusher = null;
     this.recorder = new MediaRecorder(stream, { mimeType: this.mimeType, ...recorderOptions });
     this.recorder.ondataavailable = (e) => {
-      if (e.data && e.data.size > 0) this.chunks.push(e.data);
+      if (!e.data || e.data.size <= 0) return;
+      const index = this.chunks.length;
+      this.chunks.push(e.data);
+      if (this.flusher) {
+        // The release callback lets a flusher configured with
+        // releaseAfterFlush drop the retained Blob once its bytes are safely
+        // on disk, making retained memory bounded rather than proportional to
+        // session length. Default is to keep it: MEASURED at +0 JS heap for
+        // 260 MB of Blobs, and the review <video> preview needs it.
+        this.flusher.append(e.data, () => {
+          this.chunks[index] = null;
+        });
+      }
     };
     this._chunkMs = chunkMs;
     this._stopped = null;
@@ -74,8 +93,25 @@ export class TrackRecorder {
     return this._stopped;
   }
 
+  /**
+   * Attach an incremental flusher. Must be called BEFORE start() so no chunk
+   * is missed. Returns the flusher for convenience.
+   */
+  attachFlusher(flusher) {
+    this.flusher = flusher;
+    return flusher;
+  }
+
   blob() {
-    return new Blob(this.chunks, { type: this.mimeType });
+    // Skips chunks a releaseAfterFlush flusher has already dropped; with the
+    // default (retain) flusher or no flusher at all this is every chunk, so
+    // the bytes are identical to the pre-flusher behaviour.
+    return new Blob(this.chunks.filter(Boolean), { type: this.mimeType });
+  }
+
+  /** Bytes seen by ondataavailable, whether or not the Blobs were retained. */
+  retainedChunkCount() {
+    return this.chunks.filter(Boolean).length;
   }
 
   extension() {
@@ -99,4 +135,23 @@ export function createAgentRecorder(stream) {
 export async function blobToUint8Array(blob) {
   const buf = await blob.arrayBuffer();
   return new Uint8Array(buf);
+}
+
+/**
+ * A recorder for one ADDITIONAL camera angle.
+ *
+ * Additive: `createHumanRecorder` is untouched, so the single-camera path keeps
+ * its exact bitrates and its `human.webm` output. Per DESIGN.md section 5:
+ *  - the shared mic track is added to EVERY camera's MediaStream, because
+ *    measured decoded PCM is byte-identical (same MD5) across all five files,
+ *    which makes cross-angle alignment exact for free;
+ *  - audio is 128 kbps here rather than the hero's 64 kbps, because in a
+ *    multi-angle recording this track IS the synchronisation signal;
+ *  - 900 kbps video at 720p is the validated figure (measured actual
+ *    1048-1195 kbps -- VP9 overshoots the hint, do not treat it as a cap).
+ */
+export function createCameraRecorder(videoTrack, sharedAudioTrack, { videoBitsPerSecond = 900_000 } = {}) {
+  const ms = new MediaStream([videoTrack]);
+  if (sharedAudioTrack) ms.addTrack(sharedAudioTrack);
+  return new TrackRecorder(ms, VIDEO_MIME_CANDIDATES, 1000, { videoBitsPerSecond, audioBitsPerSecond: 128_000 });
 }

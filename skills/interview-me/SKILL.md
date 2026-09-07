@@ -26,8 +26,15 @@ A voice-interview app: a human talks to an AI interviewer over live audio
 local folder of `.md`/`.txt` notes) plus web/X search, for a short,
 configurable session (default 5 minutes). The session is recorded,
 transcribed with timestamps, and saved as a reviewable artifact
-(`transcript.json`/`transcript.md`, `session.json`, audio/video, and
-`diagnostics.json`).
+(`transcript.json`/`transcript.md`, `session.json`, `diagnostics.json`,
+and the recordings). Video is captured from **every connected camera at
+once**: the selected hero camera as `human.webm` plus each additional
+camera as a synchronized `video/angleN.webm`, with the shared microphone
+muxed identically into every file and per-stream timing recorded in
+`sync.json`, so a session can be re-cut from multiple angles. The agent's
+own voice is saved separately as `agent.webm`. See
+`references/multi-camera-recording.md` for the sync model and the
+camera-open reliability behavior.
 
 This skill has two parts:
 
@@ -103,8 +110,10 @@ change) — pass `--no-notify` to skip this for scripted use.
 - SLICC **>= 6.113.0** (uses `FormData`/`Blob` request bodies in `fetch`
   for document upload; older runtimes reject FormData bodies outright).
 - A working `xai-grok` skill connection (OAuth token).
-- A microphone (and, optionally, a camera) in the browser session that
-  opens the sprinkle — there is no way to run a real interview headlessly.
+- A microphone (and, optionally, one or more cameras — every connected
+  camera is recorded as its own synchronized angle) in the browser session
+  that opens the sprinkle — there is no way to run a real interview
+  headlessly.
 
 ## What this is not
 
@@ -132,5 +141,6 @@ references/                     empirical findings about the realtime API
   realtime-connection.md
   steering-mid-session.md
   sprinkle-module-loading.md
+  multi-camera-recording.md
 config.example.json             example of the config shape, with placeholders
 ```
