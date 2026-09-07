@@ -118,6 +118,9 @@ USAGE
   aem-ext preview <url-or-path> [--json]
   aem-ext publish <url-or-path> [--json]
 
+  aem-ext sweep  --org <o> --site <s> [--never-published] [--stale] [--include-assets]
+  aem-ext review --path <content-path> --org <o> --site <s> [--id <id>]
+
 CREDENTIAL RESOLUTION (first match wins)
   1. --api-key <value>, or the AEM_API_KEY environment variable
   2. the '${SECRET_NAME}' secret, or --secret-name <name>
@@ -185,7 +188,8 @@ SECURITY
 // Verified live before this fix (PR review, Codex P2). Parse argv with an explicit
 // boolean set instead.
 const BOOL_FLAGS = new Set(['hlx6', 'hlx5', 'ims', 'json', 'register', 'confirm',
-  'help', 'h', 'select-account', 'print-url']);
+  'help', 'h', 'select-account', 'print-url',
+  'never-published', 'stale', 'include-assets', 'dry-run']);
 function parseArgv(argv) {
   const f = Object.create(null);
   const pos = [];
@@ -1539,6 +1543,283 @@ async function cmdOperation(verb, label) {
   if (!data.preview && !data.live) kv('status', `${color.green('✓')} HTTP ${res.status}`);
 }
 
+// ── review integration ────────────────────────────────────────────────────────
+//
+// Two sub-commands expose AEM page state to the review skill:
+//
+//   aem-ext sweep --org ORG --site SITE   (enumeration — NDJSON, one card per line)
+//   aem-ext review --path PATH            (enrichment  — one JSON object, SOURCE_PROTOCOL.md)
+//
+// The tree-diff sweep walks preview/ and live/ using the Admin API listFolder
+// endpoints, follows links.next pagination at exactly 100 children per page, and
+// diffs the results. Measured 2026-09-07 on ai-ecoverse/slicc-website:
+//   preview: 259 files / 8 calls   live: 228 files / 6 calls
+//   never-published: 31   stale: 0   live-only orphans: 0
+//
+// Using tree listings (not per-page status) keeps total API calls to O(folders),
+// not O(pages) — 14 calls vs 259 calls, within the x-ratelimit-limit of 10/s.
+//
+// THE PAGINATION TRAP: listings return at most 100 children per response. When
+// links.next is present the remaining children are silently omitted — there is no
+// error, no flag. Ignoring it gives 136 files for this site instead of 259.
+// Every folder-list response must be paginated until links.next is absent.
+
+function treeListUrl(org, site, env, folderPath) {
+  // Trailing slash is required — without it the endpoint returns 404 (Helix 6).
+  const suffix = folderPath ? `${folderPath}/` : '';
+  return `${apiBase()}/${org}/sites/${site}/${env}/${suffix}`;
+}
+
+// Strip the content-bus extension; map index.md / root to '/'.
+function contentPathToWebPath(relPath) {
+  const p = String(relPath).replace(/^\//, '').replace(/\.(md|html|docx)$/, '');
+  if (p === 'index' || p === '') return '/';
+  return '/' + p;
+}
+
+// Page heuristic: include .md/.html/.docx; exclude binary assets by default.
+// --include-assets overrides.
+function isPageFile(relPath) {
+  if (flags['include-assets']) return true;
+  return /\.(md|html|docx)$/.test(String(relPath));
+}
+
+// Walk an entire tree partition, following links.next within each folder.
+// Returns { files: Map<relPath, entry>, calls: number }.
+// Logs each request and final totals to stderr.
+async function walkPartition(org, site, env) {
+  const files = new Map();
+  let calls = 0;
+  const prefix = `/${org}/sites/${site}/${env}/`;
+  const queue = ['']; // relative folder paths; '' = root
+
+  while (queue.length > 0) {
+    const folder = queue.shift();
+    let url = treeListUrl(org, site, env, folder);
+
+    while (url) {
+      calls++;
+      process.stderr.write(`[aem-ext sweep] ${env} GET ${url}\n`);
+      const res = await apiFetch('GET', url);
+      dieOnError(res, `listing ${env} tree ${folder || '/'}`);
+      const data = res.json || {};
+      const children = data.children || [];
+
+      for (const child of children) {
+        const rel = String(child.path).slice(prefix.length);
+        if (child.type === 'folder') {
+          queue.push(rel.replace(/\/$/, ''));
+        } else if (child.type === 'file') {
+          files.set(rel, child);
+        }
+      }
+
+      url = (data.links && data.links.next) || null;
+    }
+  }
+
+  process.stderr.write(`[aem-ext sweep] ${env}: ${files.size} files fetched in ${calls} API calls\n`);
+  return { files, calls };
+}
+
+// Build a stable review-card id from a content path.
+function reviewId(relPath) {
+  return 'aem:' + String(relPath).replace(/^\//, '').replace(/\.(md|html|docx)$/, '');
+}
+
+// Build a card title from a web path.
+function reviewTitle(webPath) {
+  if (webPath === '/') return 'Home page';
+  return webPath.split('/').filter(Boolean).pop() || webPath;
+}
+
+// aem-ext sweep — enumerate never-published and stale pages as NDJSON review cards.
+// Output: one JSON object per line (review source protocol shape).
+async function cmdSweep() {
+  const { org, site } = requireOrgSite('aem-ext sweep --org ORG --site SITE');
+  const ts = new Date().toISOString();
+
+  // Filter flags: if neither is set, include both.  If one is set, include only that.
+  const filterNP = flags['never-published'] === true;
+  const filterStale = flags['stale'] === true;
+  const includeNP = !filterNP && !filterStale || filterNP;
+  const includeStale = !filterNP && !filterStale || filterStale;
+
+  const [preview, live] = await Promise.all([
+    walkPartition(org, site, 'preview'),
+    walkPartition(org, site, 'live'),
+  ]);
+
+  process.stderr.write(
+    `[aem-ext sweep] preview: ${preview.files.size} files / ${preview.calls} calls; ` +
+    `live: ${live.files.size} files / ${live.calls} calls\n`,
+  );
+
+  // Raw diff stats (all file types — matches the measured totals in AEM-SOURCE.md).
+  let rawNP = 0;
+  let rawStale = 0;
+  let rawOrphans = 0;
+  for (const [relPath, pe] of preview.files) {
+    const le = live.files.get(relPath);
+    if (!le) {
+      rawNP++;
+    } else if (new Date(pe.lastModified).getTime() > new Date(le.lastModified).getTime()) {
+      rawStale++;
+    }
+  }
+  for (const rel of live.files.keys()) {
+    if (!preview.files.has(rel)) rawOrphans++;
+  }
+  process.stderr.write(
+    `[aem-ext sweep] raw diff — never-published: ${rawNP}, stale: ${rawStale}, ` +
+    `live-only orphans: ${rawOrphans} (all file types)\n`,
+  );
+
+  // Emit review cards for page files only (exclude binary assets unless --include-assets).
+  let neverPublished = 0;
+  let stale = 0;
+
+  for (const [relPath, pe] of preview.files) {
+    if (!isPageFile(relPath)) continue;
+
+    const webPath = contentPathToWebPath(relPath);
+    const id = reviewId(relPath);
+    const title = reviewTitle(webPath);
+    const pUrl = `https://main--${site}--${org}.aem.page${webPath}`;
+    const lUrl = `https://main--${site}--${org}.aem.live${webPath}`;
+
+    if (!live.files.has(relPath)) {
+      neverPublished++;
+      if (!includeNP) continue;
+      const card = {
+        source: 'aem-source',
+        id,
+        title,
+        path: '/' + relPath,
+        previewUrl: pUrl,
+        summary: 'Never published',
+        severity: 'warn',
+        findings: [{ severity: 'warn', title: 'never-published',
+          body: `Preview exists (${pe.lastModified}); no live version.` }],
+        meta: { previewLastModified: pe.lastModified, contentType: pe.contentType },
+        ts,
+      };
+      process.stdout.write(JSON.stringify(card) + '\n');
+    } else {
+      const le = live.files.get(relPath);
+      const previewMs = new Date(pe.lastModified).getTime();
+      const liveMs = new Date(le.lastModified).getTime();
+      if (previewMs > liveMs) {
+        stale++;
+        if (!includeStale) continue;
+        const card = {
+          source: 'aem-source',
+          id,
+          title,
+          path: '/' + relPath,
+          previewUrl: pUrl,
+          liveUrl: lUrl,
+          summary: 'Stale — preview is newer than live',
+          severity: 'info',
+          findings: [{ severity: 'info', title: 'stale',
+            body: `Preview: ${pe.lastModified}  Live: ${le.lastModified}` }],
+          meta: {
+            previewLastModified: pe.lastModified,
+            liveLastModified: le.lastModified,
+            staleDeltaMs: previewMs - liveMs,
+          },
+          ts,
+        };
+        process.stdout.write(JSON.stringify(card) + '\n');
+      }
+    }
+  }
+
+  process.stderr.write(
+    `[aem-ext sweep] page cards — never-published: ${neverPublished}, stale: ${stale}` +
+    (flags['include-assets'] ? '' : ` (${rawNP - neverPublished} non-page assets excluded; use --include-assets to emit them)`) +
+    `\n`,
+  );
+}
+
+// aem-ext review — per-path enrichment following review SOURCE_PROTOCOL.md.
+// Called by: review ingest aem-ext --path PATH [--id ID]
+// Output: one JSON object to stdout.
+async function cmdReviewSource() {
+  const { org, site } = requireOrgSite('aem-ext review --path PATH --org ORG --site SITE');
+  const rawPath = flag('path');
+  if (!rawPath) {
+    cli.die('usage: aem-ext review --path PATH --org ORG --site SITE [--id ID]', { prefix: PREFIX });
+  }
+  const ts = new Date().toISOString();
+  const relPath = String(rawPath).replace(/^\//, '');
+  const webPath = contentPathToWebPath(relPath);
+  const id = flag('id') || reviewId(relPath);
+  const title = reviewTitle(webPath);
+  const pUrl = `https://main--${site}--${org}.aem.page${webPath}`;
+  const lUrl = `https://main--${site}--${org}.aem.live${webPath}`;
+
+  // Use the status endpoint for single-page enrichment (adds lastModifiedBy etc.)
+  const statusPath = webPath === '/' ? 'index' : webPath.replace(/^\//, '');
+  const res = await apiFetch('GET', operationUrl('status', org, site, 'main', statusPath));
+  dieOnError(res, `status ${org}/${site}/${statusPath}`);
+  const data = res.json || {};
+
+  const previewStatus = data.preview && data.preview.status;
+  const liveStatus = data.live && data.live.status;
+  const previewLM = data.preview && data.preview.lastModified;
+  const liveLM = data.live && data.live.lastModified;
+
+  let summary;
+  let severity;
+  let findings;
+
+  if (previewStatus === 200 && liveStatus === 404) {
+    summary = 'Never published';
+    severity = 'warn';
+    findings = [{ severity: 'warn', title: 'never-published',
+      body: `Preview HTTP ${previewStatus} (${previewLM || 'unknown'}); live HTTP 404.` }];
+  } else if (previewStatus === 200 && liveStatus === 200) {
+    const pm = previewLM ? new Date(previewLM).getTime() : 0;
+    const lm = liveLM ? new Date(liveLM).getTime() : 0;
+    if (pm > lm) {
+      summary = 'Stale — preview is newer than live';
+      severity = 'info';
+      findings = [{ severity: 'info', title: 'stale',
+        body: `Preview: ${previewLM}  Live: ${liveLM}` }];
+    } else {
+      summary = 'Published and up-to-date';
+      severity = 'info';
+      findings = [];
+    }
+  } else {
+    summary = `Preview: ${previewStatus || 'unknown'}  Live: ${liveStatus || 'unknown'}`;
+    severity = 'info';
+    findings = [];
+  }
+
+  const card = {
+    source: 'aem-source',
+    id,
+    title,
+    path: '/' + relPath,
+    previewUrl: pUrl,
+    liveUrl: liveStatus === 200 ? lUrl : undefined,
+    summary,
+    severity,
+    findings,
+    meta: { preview: data.preview, live: data.live },
+    ts,
+  };
+  // Remove undefined fields
+  for (const k of Object.keys(card)) {
+    if (card[k] === undefined) delete card[k];
+  }
+
+  process.stderr.write(`[aem-ext review] ${relPath}: ${summary}\n`);
+  process.stdout.write(JSON.stringify(card) + '\n');
+}
+
 // ── dispatch ──────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -1566,6 +1847,8 @@ async function main() {
   if (cmd === 'status') return cmdOperation('status', 'status');
   if (cmd === 'preview') return cmdOperation('preview', 'preview');
   if (cmd === 'publish') return cmdOperation('live', 'publish');
+  if (cmd === 'sweep') return cmdSweep();
+  if (cmd === 'review') return cmdReviewSource();
 
   cli.die(`unknown command: ${cmd}\n  Run 'aem-ext --help' for usage.`, { prefix: PREFIX });
 }
