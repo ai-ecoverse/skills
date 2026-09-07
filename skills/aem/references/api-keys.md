@@ -9,13 +9,13 @@ live on **2026-09-03** against org `ai-ecoverse`, site `slicc-website`, which ru
 Used by `skills/aem/scripts/aem-ext.jsh` (`aem-ext`). `aem.jsh` (`aem`) is unaffected
 and still uses IMS tokens only.
 
-## 1. Two credential types, and the header rule
+## 1. Three credential types, and the header rule
 
 | Credential | How to get it | Header to send | Lifetime |
 |---|---|---|---|
 | Adobe IMS user token | `oauth-token adobe`, `skill.token('adobe')` | `Authorization: Bearer <token>` | **~20 min** in practice |
 | Admin API key (a JWT) | minted per site, see §2 | `X-Auth-Token: <key>` **or** `Authorization: token <key>` | up to 365 days |
-| Login cookie | browser IDP login, §5 | `Cookie: auth_token=<value>` | session (see §5 caveat) |
+| Login cookie | `aem-ext auth login`, see `references/auth.md` | `Cookie: auth_token=<value>` — **curl only**, never `fetch()` | up to 24h |
 
 **The schemes do not cross over.** All four combinations verified against
 `GET https://api.aem.live/ai-ecoverse/sites/slicc-website/source/`:
@@ -139,30 +139,14 @@ A raw `jti` can contain `+` and `/` (e.g. `AbCd1E+FgHi7jkL5MnOpQrStUvWxYz8/9v` �
 
 ## 5. Login and the `auth_token` cookie
 
-> **Caveat (found in PR review).** SLICC's `fetch()` goes through the browser Fetch API,
-> which **silently strips a caller-supplied `Cookie` header**. A cookie credential would
-> therefore issue an unauthenticated request that merely looks like an auth failure, so
-> `aem-ext` refuses it on those routes with an actionable message instead. `curl`-based
-> paths (e.g. `aem-ext put`) do carry the header. A long-lived API key is the supported
-> way to run unattended.
-
-`GET https://api.aem.live/login` returns **JSON, not HTML** (verified):
-
-```json
-{"links":{"login_google":"https://api.aem.live/auth/google",
-          "login_google_sa":"https://api.aem.live/auth/google?selectAccount=true",
-          "login_microsoft":"https://api.aem.live/auth/microsoft",
-          "login_adobe":"https://api.aem.live/auth/adobe",
-          "login_adobe-stage":"https://api.aem.live/auth/adobe-stg", "...": "..."}}
-```
-
-`_sa` variants append `?selectAccount=true`. After the IDP flow the browser is
-redirected to `/profile` and receives a session-scoped `auth_token` cookie (OpenAPI
-security scheme `AuthCookie`, `in: cookie`, `name: auth_token`). Helix 5 has the same
-shape on `https://admin.hlx.page`. Harvesting that cookie programmatically
-(`browser.ensureTab` + `browser.cookie(tab, 'auth_token')`) is implemented in
-`aem-ext auth login` but **was not verified live** — only the `/login` JSON and the
-link resolution (`--print-url`) were.
+**Moved to `references/auth.md`.** An earlier version of this section claimed a
+cookie credential "cannot be used" because SLICC's `fetch()` strips a caller-supplied
+`Cookie` header. That is half right: `fetch()` does strip it, but **`curl` does not**,
+and `aem-ext.jsh` already shells out to `curl` for some operations — so the cookie is
+fully usable, not refused. `references/auth.md` has the corrected, live-verified
+write-up: the `/login` JSON, the browser-driven harvest (`aem-ext auth login`, verified
+live 2026-09-07), the three traps found building it, and the curl-vs-`fetch()` header
+rule for all three credential types.
 
 ## 6. Endpoints used by `aem-ext` (Helix 6)
 
