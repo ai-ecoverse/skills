@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <title>Phone</title>
+    <meta charset="utf-8" />
+    <link rel="icon" href="smartphone" />
+    <style>
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body {
+        font-family: var(--s2-font-family, -apple-system, system-ui, sans-serif);
+        background: transparent;
+        color: var(--s2-content-default, #e8e8e8);
+        display: flex; flex-direction: column; gap: 10px; padding: 10px;
+      }
+      #status { font-size: 12px; color: var(--s2-content-muted, #9a9a9a); min-height: 16px; }
+      #status.err { color: var(--s2-negative, #ff6b6b); }
+      #screen {
+        width: 100%; max-width: 360px; margin: 0 auto; border-radius: 12px;
+        background: #000; display: block; cursor: crosshair;
+        border: 1px solid var(--s2-border-subtle, #3a3a3a);
+      }
+      #bar { display: flex; gap: 6px; justify-content: center; flex-wrap: wrap; }
+      button {
+        height: 30px; padding: 0 12px; border-radius: 9999px; cursor: pointer;
+        background: var(--s2-bg-elevated, #2c2c2c); color: inherit;
+        border: 1px solid var(--s2-border-subtle, #3a3a3a); font-size: 12px;
+      }
+      button:hover { background: var(--s2-bg-hover, #3a3a3a); }
+    </style>
+  </head>
+  <body>
+    <div id="status">idle</div>
+    <canvas id="screen" width="720" height="1568"></canvas>
+    <div id="bar">
+      <button onclick="start()">Connect</button>
+      <button onclick="key('KEYCODE_HOME')">Home</button>
+      <button onclick="key('KEYCODE_BACK')">Back</button>
+      <button onclick="key('KEYCODE_APP_SWITCH')">Recents</button>
+      <button onclick="stop()">Stop</button>
+    </div>
+
+    <script>
+      // ── ADB over WebUSB, page-side ────────────────────────────────────
+      // Speaks the ADB wire protocol straight down a bulk pipe via
+      // `slicc.usb`, decodes screenrecord's H.264 with WebCodecs, and paints
+      // frames to the canvas. Nothing here touches a host adb binary.
+      const A_CNXN = 0x4e584e43, A_AUTH = 0x48545541, A_OPEN = 0x4e45504f;
+      const A_OKAY = 0x59414b4f, A_CLSE = 0x45534c43, A_WRTE = 0x45545257;
+      const ADB_CLASS = 0xff, ADB_SUBCLASS = 0x42, ADB_PROTOCOL = 0x01;
+      const KEY_PATH = '/workspace/.adb/adbkey';
+      const u32 = (v) => v >>> 0;
+      const enc = new TextEncoder(), dec = new TextDecoder();
+
+      let session = null;
+      const statusEl = document.getElementById('status');
+      const canvas = document.getElementById('screen');
+      const ctx = canvas.getContext('2d');
+      const say = (m, isErr) => { statusEl.textContent = m; statusEl.className = isErr ? 'err' : ''; };
+
+      // ── RSA (PKCS#1 v1.5 over a raw 20-byte token) ────────────────────
+      const SHA1_DIGEST_INFO = new Uint8Array([
+        0x30,0x21,0x30,0x09,0x06,0x05,0x2b,0x0e,0x03,0x02,0x1a,0x05,0x00,0x04,0x14,
+      ]);
+      function bytesToBigInt(b) { let h = ''; for (const x of b) h += x.toString(16).padStart(2, '0'); return h ? BigInt('0x' + h) : 0n; }
+      function bigIntToBytes(v, width) {
+        let h = v.toString(16); if (h.length % 2) h = '0' + h;
+        const raw = h.match(/../g) ?? [], out = new Uint8Array(width);
+        raw.forEach((x, i) => { out[width - raw.length + i] = parseInt(x, 16); });
+        return out;
+      }
+      function modPow(b, e, m) { let r = 1n; b %= m; while (e > 0n) { if (e & 1n) r = (r * b) % m; b = (b * b) % m; e >>= 1n; } return r; }
+      function derReader(b) {
+        let i = 0;
+        const len = () => { let n = b[i++]; if (n < 0x80) return n; const c = n & 0x7f; n = 0; for (let k = 0; k < c; k++) n = n * 256 + b[i++]; return n; };
+        return { tag: () => b[i++], length: len, take: (n) => { const o = b.subarray(i, i + n); i += n; return o; }, skip: (n) => { i += n; }, get offset() { return i; } };
+      }
+      function parseRsaPrivateKey(der) {
+        let r = derReader(der);
+        if (r.tag() !== 0x30) throw new Error('not a DER SEQUENCE');
+        r.length();
+        if (r.tag() !== 0x02) throw new Error('unexpected PKCS#8 layout');
+        const version = r.take(r.length());
+        if (version.length === 1 && version[0] === 0) {
+          const save = r.offset;
+          if (r.tag() === 0x30) {
+            r.skip(r.length());
+            if (r.tag() !== 0x04) throw new Error('PKCS#8 missing privateKey');
+            return parseRsaPrivateKey(r.take(r.length()));
+          }
+          r = derReader(der.subarray(save));
+        }
+        const int = () => { if (r.tag() !== 0x02) throw new Error('expected INTEGER'); return bytesToBigInt(r.take(r.length())); };
+        const n = int(); int(); const d = int();
+        return { n, d };
+      }
+      function signToken(token, key) {
+        const k = (key.n.toString(16).length + 1) >> 1;
+        const tail = SHA1_DIGEST_INFO.length + token.length;
+        const block = new Uint8Array(k);
+        block[0] = 0x00; block[1] = 0x01;
+        block.fill(0xff, 2, k - tail - 1);
+        block[k - tail - 1] = 0x00;
+        block.set(SHA1_DIGEST_INFO, k - tail);
+        block.set(token, k - token.length);
+        return bigIntToBytes(modPow(bytesToBigInt(block), key.d, key.n), k);
+      }
+      function pemToDer(pem) {
+        const b64 = pem.replace(/-----(BEGIN|END)[^-]*-----/g, '').replace(/\s+/g, '');
+        const bin = atob(b64), out = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+        return out;
+      }
+    </script>
+
+    <script>
+      // ── USB transport ─────────────────────────────────────────────────
+      /**
+       * Find the ADB interface in the descriptors `slicc.usb.list()` reports.
+       * These arrive with the device info, so no control transfer is needed.
+       */
+      function findAdbInterface(device) {
+        for (const cfg of device.configurations ?? []) {
+          for (const iface of cfg.interfaces ?? []) {
+            for (const alt of iface.alternates ?? []) {
+              if (alt.interfaceClass !== ADB_CLASS) continue;
+              if (alt.interfaceSubclass !== ADB_SUBCLASS) continue;
+              if (alt.interfaceProtocol !== ADB_PROTOCOL) continue;
+              const inEp = alt.endpoints.find((e) => e.direction === 'in' && e.type === 'bulk');
+              const outEp = alt.endpoints.find((e) => e.direction === 'out' && e.type === 'bulk');
+              if (!inEp || !outEp) continue;
+              return {
+                configurationValue: cfg.configurationValue ?? 1,
+                interfaceNumber: iface.interfaceNumber,
+                epIn: inEp.endpointNumber,
+                epOut: outEp.endpointNumber,
+              };
+            }
+          }
+        }
+        return null;
+      }
+
+      class Adb {
+        constructor(handle, iface) {
+          this.handle = handle;
+          this.iface = iface;
+          this.pending = new Uint8Array(0);
+          // Every stream needs its own local id. Reusing one meant a new OPEN
+          // could collide with the id of a stream the device had not finished
+          // tearing down, and the replies were then attributed to the wrong one.
+          this.nextLocalId = 1;
+        }
+
+        async write(cmd, arg0, arg1, payload = new Uint8Array(0)) {
+          const pkt = new Uint8Array(24 + payload.length), dv = new DataView(pkt.buffer);
+          let sum = 0; for (const b of payload) sum = u32(sum + b);
+          dv.setUint32(0, cmd, true); dv.setUint32(4, u32(arg0), true); dv.setUint32(8, u32(arg1), true);
+          dv.setUint32(12, payload.length, true); dv.setUint32(16, sum, true);
+          dv.setUint32(20, u32(cmd ^ 0xffffffff), true);
+          pkt.set(payload, 24);
+          await slicc.usb.transferOut(this.handle, this.iface.epOut, pkt);
+        }
+
+        async readExact(n) {
+          while (this.pending.length < n) {
+            const r = await slicc.usb.transferIn(this.handle, this.iface.epIn, Math.max(n - this.pending.length, 16384));
+            const chunk = r.bytes;
+            if (!chunk.length) continue;
+            const merged = new Uint8Array(this.pending.length + chunk.length);
+            merged.set(this.pending, 0); merged.set(chunk, this.pending.length);
+            this.pending = merged;
+          }
+          const out = this.pending.subarray(0, n);
+          this.pending = this.pending.subarray(n);
+          return out;
+        }
+
+        async read() {
+          const head = await this.readExact(24);
+          const dv = new DataView(head.buffer, head.byteOffset, head.byteLength);
+          const cmd = dv.getUint32(0, true), arg0 = dv.getUint32(4, true);
+          const arg1 = dv.getUint32(8, true), length = dv.getUint32(12, true);
+          const data = length ? await this.readExact(length) : new Uint8Array(0);
+          return { cmd, arg0, arg1, data };
+        }
+
+        async connect(key) {
+          await this.write(A_CNXN, 0x01000001, 256 * 1024, enc.encode('host::features=shell_v2,cmd,exec\0'));
+          for (let attempts = 0; attempts < 4; ) {
+            const m = await this.read();
+            if (m.cmd === A_CNXN) return dec.decode(m.data).replace(/\0+$/, '');
+            if (m.cmd === A_AUTH && m.arg0 === 1) {
+              attempts++;
+              await this.write(A_AUTH, 2, 0, signToken(m.data, key));
+              continue;
+            }
+            if (m.cmd === A_WRTE) { await this.write(A_OKAY, m.arg1 || 1, m.arg0); continue; }
+            if (m.cmd === A_CLSE) { await this.write(A_CLSE, m.arg1 || 1, m.arg0); continue; }
+          }
+          throw new Error('device rejected the key — it must already be trusted');
+        }
+
+        /** Open a service and hand each WRTE payload to `onData` until CLSE. */
+        async stream(service, onData, shouldStop) {
+          const localId = ++this.nextLocalId;
+          await this.write(A_OPEN, localId, 0, enc.encode(service + '\0'));
+          let remoteId = 0;
+          for (;;) {
+            if (shouldStop()) {
+              if (remoteId) await this.write(A_CLSE, localId, remoteId).catch(() => {});
+              return;
+            }
+            const m = await this.read();
+            if (m.arg1 && m.arg1 !== localId) continue;
+            if (m.cmd === A_CLSE) { await this.write(A_CLSE, localId, m.arg0); return; }
+            if (m.cmd === A_OKAY) { remoteId ||= m.arg0; continue; }
+            if (m.cmd === A_WRTE) { onData(m.data); await this.write(A_OKAY, localId, m.arg0); }
+          }
+        }
+
+        async run(command) {
+          const chunks = [];
+          await this.stream('exec:' + command, (b) => chunks.push(b), () => false);
+          return chunks;
+        }
+      }
+    </script>
+
+    <script>
+      // ── H.264 Annex-B → WebCodecs ─────────────────────────────────────
+      // screenrecord emits Annex-B, which VideoDecoder accepts directly when
+      // the config carries no `description`. Frames must arrive as whole
+      // access units, so NALs are grouped until the next VCL start.
+      function nalType(b, i) { return b[i] & 0x1f; }
+
+      class AnnexBSplitter {
+        constructor(onAccessUnit) { this.buf = new Uint8Array(0); this.onAccessUnit = onAccessUnit; this.au = []; }
+
+        push(chunk) {
+          const merged = new Uint8Array(this.buf.length + chunk.length);
+          merged.set(this.buf, 0); merged.set(chunk, this.buf.length);
+          this.buf = merged;
+          this.drain();
+        }
+
+        // Start codes are 00 00 01 (optionally preceded by an extra 00).
+        *starts(b) {
+          for (let i = 0; i + 2 < b.length; i++) {
+            if (b[i] === 0 && b[i + 1] === 0 && b[i + 2] === 1) yield i;
+          }
+        }
+
+        drain() {
+          const idx = [...this.starts(this.buf)];
+          if (idx.length < 2) return;
+          // Keep the final (possibly incomplete) NAL in the buffer.
+          for (let k = 0; k < idx.length - 1; k++) {
+            const from = idx[k], to = idx[k + 1];
+            const nal = this.buf.subarray(from, to);
+            const payloadAt = from + 3;
+            const t = nalType(this.buf, payloadAt);
+            // 1 = non-IDR slice, 5 = IDR slice — either starts a new frame.
+            if ((t === 1 || t === 5) && this.au.length && this.auHasSlice) {
+              this.flush();
+            }
+            this.au.push(nal);
+            if (t === 1 || t === 5) { this.auHasSlice = true; this.auKey = this.auKey || t === 5; }
+          }
+          this.buf = this.buf.subarray(idx[idx.length - 1]);
+        }
+
+        flush() {
+          if (!this.au.length) return;
+          const total = this.au.reduce((n, x) => n + x.length, 0);
+          const out = new Uint8Array(total);
+          let at = 0; for (const x of this.au) { out.set(x, at); at += x.length; }
+          const key = !!this.auKey;
+          this.au = []; this.auHasSlice = false; this.auKey = false;
+          this.onAccessUnit(out, key);
+        }
+      }
+
+      // ── session ───────────────────────────────────────────────────────
+      async function start() {
+        if (session) { say('already streaming'); return; }
+        try {
+          say('finding device…');
+          const devices = await slicc.usb.list();
+          const device = devices[0];
+          if (!device) throw new Error('no granted USB device — run `usb request` in the shell first');
+
+          await slicc.usb.open(device.handle);
+          try { await slicc.usb.reset(device.handle); } catch { /* best effort */ }
+
+          const iface = findAdbInterface(device);
+          if (!iface) throw new Error('device exposes no ADB interface (USB debugging off?)');
+          try { await slicc.usb.selectConfiguration(device.handle, iface.configurationValue); } catch { /* already set */ }
+          await slicc.usb.claimInterface(device.handle, iface.interfaceNumber);
+
+          say('authenticating…');
+          const pem = dec.decode(await slicc.readFileBinary(KEY_PATH));
+          const key = parseRsaPrivateKey(pemToDer(pem));
+          const adb = new Adb(device.handle, iface);
+          const banner = await adb.connect(key);
+          const model = /ro\.product\.model=([^;]+)/.exec(banner)?.[1] ?? 'device';
+
+          const size = await sizeOf(adb);
+          canvas.width = size.w; canvas.height = size.h;
+
+          session = { device, iface, adb, stopped: false, frames: 0, bytes: 0 };
+          const label = `${model} · ${size.w}×${size.h}`;
+          say(`streaming ${label}`);
+          // screenrecord only emits when the display actually changes, so a
+          // still screen legitimately shows no new frames. Surfacing the count
+          // keeps that from reading as a hang.
+          session.ticker = setInterval(() => {
+            if (!session || session.stopped) return;
+            const mb = (session.bytes / 1048576).toFixed(1);
+            say(`streaming ${label} · ${session.frames} frames · ${mb} MB`);
+          }, 1000);
+          void pump(adb, size);
+        } catch (err) {
+          say(String(err.message || err), true);
+          await teardown();
+        }
+      }
+
+      async function sizeOf(adb) {
+        const chunks = await adb.run('wm size');
+        const text = dec.decode(chunks.length ? concat(chunks) : new Uint8Array(0));
+        const m = /(\d+)x(\d+)/.exec(text);
+        const w = m ? Number(m[1]) : 720, h = m ? Number(m[2]) : 1568;
+        // Halve to keep the encoder inside a size it reliably supports.
+        const scale = w > 800 ? 0.5 : 1;
+        return { w: Math.round((w * scale) / 16) * 16, h: Math.round((h * scale) / 16) * 16 };
+      }
+
+      function concat(chunks) {
+        const total = chunks.reduce((n, c) => n + c.length, 0);
+        const out = new Uint8Array(total);
+        let at = 0; for (const c of chunks) { out.set(c, at); at += c.length; }
+        return out;
+      }
+
+      async function pump(adb, size) {
+        const decoder = new VideoDecoder({
+          output: (frame) => {
+            ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
+            frame.close();
+            if (session) session.frames++;
+          },
+          error: (e) => say('decode: ' + e.message, true),
+        });
+        decoder.configure({ codec: 'avc1.42E01E', optimizeForLatency: true });
+
+        let first = true;
+        const splitter = new AnnexBSplitter((au, key) => {
+          if (decoder.state !== 'configured') return;
+          if (first && !key) return; // decoder must start on a keyframe
+          first = false;
+          decoder.decode(new EncodedVideoChunk({
+            type: key ? 'key' : 'delta',
+            timestamp: performance.now() * 1000,
+            data: au,
+          }));
+        });
+
+        const service = `exec:screenrecord --output-format=h264 --time-limit 0 --size ${size.w}x${size.h} -`;
+        try {
+          await adb.stream(service, (bytes) => {
+            if (session) session.bytes += bytes.length;
+            splitter.push(bytes);
+          }, () => !session || session.stopped);
+        } catch (err) {
+          if (session && !session.stopped) say('stream: ' + (err.message || err), true);
+        } finally {
+          try { await decoder.close(); } catch { /* already closed */ }
+        }
+      }
+
+      async function stop() {
+        if (!session) { say('idle'); return; }
+        session.stopped = true;
+        const n = session.frames;
+        await teardown();
+        say(`stopped after ${n} frames`);
+      }
+
+      async function teardown() {
+        const s = session; session = null;
+        if (!s) return;
+        if (s.ticker) clearInterval(s.ticker);
+        try { await slicc.usb.releaseInterface(s.device.handle, s.iface.interfaceNumber); } catch { /* ignore */ }
+        try { await slicc.usb.close(s.device.handle); } catch { /* ignore */ }
+      }
+
+      /** Send a keyevent over a fresh exec stream on the live connection. */
+      async function key(name) {
+        if (!session) { say('connect first', true); return; }
+        try { await session.adb.run('input keyevent ' + name); } catch (e) { say(String(e.message || e), true); }
+      }
+
+      // Tap where the user clicks, mapped from canvas space to device pixels.
+      canvas.addEventListener('click', async (ev) => {
+        if (!session) return;
+        const r = canvas.getBoundingClientRect();
+        const x = Math.round(((ev.clientX - r.left) / r.width) * canvas.width);
+        const y = Math.round(((ev.clientY - r.top) / r.height) * canvas.height);
+        try { await session.adb.run(`input tap ${x} ${y}`); } catch (e) { say(String(e.message || e), true); }
+      });
+    </script>
+  </body>
+</html>

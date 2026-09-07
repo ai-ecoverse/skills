@@ -7,9 +7,10 @@ description: >
   a connected phone or tablet, Pixel, Samsung, Motorola, moto, OnePlus, Xiaomi, a USB-connected
   device, device screenshots, screen capture from a phone, running a shell command on a phone,
   pulling a file off a phone, checking getprop, dumpsys, logcat, installed packages, or wants to
-  automate, inspect, script, or drive an Android device. Triggers on phrases like "connect to my
+  automate, inspect, script, mirror, watch, stream, or drive an Android device's screen. Triggers on phrases like "connect to my
   phone", "run this on my phone", "screenshot my phone", "adb shell", "adb devices",
-  "what's on my Android", "pull that file off my phone", "control my Android".
+  "what's on my Android", "pull that file off my phone", "control my Android",
+  "mirror my phone", "show me my phone screen", "stream my phone".
 allowed-tools: bash
 command: adb
 script: scripts/adb.jsh
@@ -30,6 +31,8 @@ adb connect                    Authenticate and print the device banner
 adb shell <command...>         Run a shell command, print its output
 adb screencap <out.png>        Capture the framebuffer to a VFS path
 adb pull <remote> <local>      Copy a file off the device (binary-safe)
+
+sprinkle open phone-view       Live screen viewer with tap and key input
 ```
 
 Flags — `--serial <s>` to pick a device, `--key <path>` for the signing key,
@@ -43,6 +46,26 @@ than parsing it here.
 
 `adb shell` reports the device-side exit status as its own and keeps stderr
 separate from stdout; `--json` returns `{command, stdout, stderr, exitCode}`.
+
+## Live screen viewer
+
+`sprinkle open phone-view` opens a panel that mirrors the device and lets you
+drive it — click the canvas to tap, plus Home / Back / Recents buttons. Input
+travels over the same ADB connection as the video.
+
+The device H.264-encodes its own display (`screenrecord --output-format=h264`),
+the frames arrive over the same WebUSB pipe as everything else, and WebCodecs
+decodes them to a canvas. No host `adb`, no intermediate server, no file on the
+device.
+
+**A still screen produces almost no frames.** `screenrecord` captures from
+SurfaceFlinger, which only produces buffers when something actually changes, so
+a motionless home screen legitimately sits at one frame after the initial
+keyframe. The status line shows a running frame and byte count so that reads as
+idle rather than broken.
+
+Requires SLICC **6.135.0+** — sprinkles could not perform USB transfers before
+that, only `list`/`request`/`open`/`close`.
 
 ## Setup
 
@@ -96,6 +119,12 @@ design, so treat it exactly like a local shell — never hand it unvalidated inp
 - **Output is buffered, not streamed** — `.jsh` stdout is delivered on
   completion, so long-running commands print nothing until they finish.
 - **Chromium only.** WebUSB is unavailable in the cloud / hosted-leader float.
+- **The viewer renders in SLICC, not at a URL.** Frames are decoded in the
+  browser that holds the USB grant, so there is nothing to hand to someone else.
+  Sharing a link would need a host-side bridge that re-serves the stream.
+- **The viewer holds the interface for as long as it streams**, so `adb shell`
+  and friends cannot run at the same time from the realm. Use the viewer's own
+  buttons, which share its connection.
 - **Stop the host adb server first** (`adb kill-server`). It claims the ADB
   interface exclusively. The USB reset on connect does free it, but the host
   server re-claims it the moment the device re-enumerates, so leaving it running
