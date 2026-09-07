@@ -1,6 +1,18 @@
 ---
 name: review
-description: "Track review items (publish/comment/defer), annotate documents, and leave location pins directly on a live web page via a sprinkle dashboard. Use when the user has content to review, approve, annotate, or mark up — pages pending publish, PRs needing signoff, documents, or a rendered web page they want to pin comments on. Includes 'Pin Review' (click-to-comment markers on the active tab, persistent and mark-as-done) and 'Speck Fix' (toggle the Speck element-level AI editing layer on locally-served pages). Triggers on 'review queue', 'what's pending', 'annotate this', 'mark up this page', 'pin a comment on the page', 'review dashboard', 'publish queue'. Distinct from code review tools: manages a persistent UI queue with in-flight publish tracking, inline annotations, and on-page location pins."
+description: >
+  Track review items (publish/comment/defer), annotate documents, and leave
+  location pins directly on a live web page via a sprinkle dashboard. Use when
+  the user has content to review, approve, annotate, or mark up — pages pending
+  publish, PRs needing signoff, documents, or a rendered web page they want to
+  pin comments on. Includes Pin Review (click-to-comment markers on the active
+  tab, persistent and mark-as-done), Speck Fix (element-level AI editing on
+  locally-served pages), and AEM Source (populate the backlog from an AEM
+  preview/live tree diff via `review sweep`). Triggers on 'review queue',
+  'what's pending', 'annotate this', 'mark up this page', 'pin a comment on
+  the page', 'review dashboard', 'publish queue', 'AEM unpublished pages'.
+  Distinct from code review tools: manages a persistent UI queue with in-flight
+  publish tracking, inline annotations, and on-page location pins.
 allowed-tools: bash
 ---
 
@@ -330,3 +342,31 @@ review ingest pangram --path /shared/page.md --dry-run
 `review ingest` discovers `pangram` and `check-llm-cliches` on PATH (both optional; missing commands are skipped), runs `[cmd] review --path PATH`, then `ensure-item` + `add-findings` on the sprinkle. Findings render on the card. The queue works with zero integrations installed.
 
 To add a source: implement `[cmd] review --path PATH [--id ID]`, then either name it (`review ingest mysource --path FILE`) or add it to `KNOWN_INTEGRATIONS` in `scripts/review.jsh`.
+
+## AEM Source
+
+Populate the review backlog from an AEM site by diffing the preview and live
+content trees. Requires `aem-ext` (the `aem` skill) with a valid credential.
+
+```bash
+# Populate backlog with all unpublished and stale pages:
+review sweep --org ai-ecoverse --site slicc-website
+
+# Dry-run (print cards, don't touch the sprinkle):
+review sweep --org ai-ecoverse --site slicc-website --dry-run
+
+# Enrich a single selected card via the status endpoint:
+review ingest aem-ext --path /drafts/wac-demo.md --org ai-ecoverse --site slicc-website
+```
+
+`review sweep` calls `aem-ext sweep`, which walks the `preview/` and `live/`
+partition trees via the Admin API (O(folders) calls, not O(pages)), follows
+`links.next` pagination to avoid the silent 100-item truncation trap, and diffs
+the results. Each never-published or stale page becomes an `ensure-item` card
+with `previewUrl` set. Binary assets (PDF, images, etc.) are excluded by
+default; use `--include-assets` to include them.
+
+For visual review of a card, use Pin Review on the card's `previewUrl` tab —
+the only option that provides full rendered fidelity. See
+[`references/AEM-SOURCE.md`](references/AEM-SOURCE.md) for the full design
+including the renderer options analysis.
