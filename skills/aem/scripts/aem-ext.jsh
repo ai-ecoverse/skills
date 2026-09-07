@@ -1023,6 +1023,23 @@ async function cmdAuthLogin() {
       authTokenSavedAt: new Date().toISOString(),
       authHost: base.replace(/^https?:\/\//, ''),
     });
+    // credential() resolves the '${COOKIE_SECRET_NAME}' SECRET before it ever looks
+    // at the skill config (same precedence the API-key path uses — see credential()).
+    // If an OLDER auth_token secret is still sitting there from a previous login, it
+    // would silently shadow the fresh cookie we just stored in config: the NEXT
+    // command picks the old secret, not this one. Worse, a value read back from the
+    // secrets manager is masked (looksMasked() is true), so decodeJwt() never runs
+    // and the exp check this function just performed is skipped entirely on that
+    // path — a stale, possibly-expired secret sails through credential() and 401s
+    // on the very next request, even though THIS command is about to report success.
+    // Clear the stale secret so the config fallback can actually be read back.
+    await execWithTimeout(['secret', 'delete', COOKIE_SECRET_NAME], 20000);
+    // Verify by reading back rather than trusting the delete's own exit code: a
+    // delete of a secret that never existed ALSO exits non-zero ("no secret named
+    // ..."), which is the common, harmless case (most logins have no stale secret
+    // to begin with) and must not trigger a false alarm.
+    const stillShadowed = await readSecretValue(COOKIE_SECRET_NAME);
+    if (stillShadowed) stored = 'config-shadowed';
   }
 
   const closeRes = await exec.spawn(['playwright-cli', 'tab-close', `--tab=${tab}`]);
@@ -1032,20 +1049,39 @@ async function cmdAuthLogin() {
 
   const expiresIso = new Date(claims.exp * 1000).toISOString();
   const expiresRel = relTime(claims.exp);
+  const fixHint = `secret delete ${COOKIE_SECRET_NAME}`;
   if (flags.json) {
     cli.out({
       idp, stored, email: claims.email || null, name: claims.name || null,
       expires: expiresIso, expiresIn: expiresRel,
+      ...(stored === 'config-shadowed' ? { shadowedBy: COOKIE_SECRET_NAME, fix: fixHint } : {}),
     });
+    if (stored === 'config-shadowed') process.exit(1);
     return;
   }
   section('Logged in');
   kv('idp', idp);
   if (claims.email) kv('email', `${claims.email}${claims.name ? ` (${claims.name})` : ''}`);
   kv('expires', `${expiresIso} ${color.dim(`(${expiresRel})`)}`);
-  kv('stored', stored === 'secret'
-    ? `${color.green('✓')} secret ${COOKIE_SECRET_NAME} (session-scoped; not persisted across restarts)`
-    : `${color.yellow('~')} skill config — the secrets manager rejected the write; still session-scoped`);
+  if (stored === 'secret') {
+    kv('stored', `${color.green('✓')} secret ${COOKIE_SECRET_NAME} (session-scoped; not persisted across restarts)`);
+  } else if (stored === 'config') {
+    kv('stored', `${color.yellow('~')} skill config — the secrets manager rejected the write; still session-scoped`);
+  } else {
+    // stored === 'config-shadowed': this login is NOT actually in effect. Say so
+    // plainly rather than printing a calm "stored" line next to a real credential
+    // that will not be the one used.
+    kv('stored', color.red(`✗ skill config — but a STALE '${COOKIE_SECRET_NAME}' secret could not be cleared`));
+  }
+  if (stored === 'config-shadowed') {
+    console.log('');
+    console.log(color.red(`  This cookie is valid but will NOT be used: credential resolution checks the`));
+    console.log(color.red(`  '${COOKIE_SECRET_NAME}' secret before the skill config, and the OLD secret from a`));
+    console.log(color.red(`  previous login is still there (possibly expired) and could not be removed.`));
+    console.log(color.dim(`  Fix by hand, then re-run 'aem-ext auth status' to confirm:`));
+    console.log(color.dim(`    ${fixHint}`));
+    process.exit(1);
+  }
   console.log('');
   console.log(color.dim('  This cookie lasts up to 24h — much longer than the ~20-minute IMS token, but'));
   console.log(color.dim('  still short of a 365-day key: aem-ext auth key create --register --save-secret'));
@@ -1435,10 +1471,15 @@ async function cmdGet() {
   if (typeof out === 'string' && out) {
     await fs.writeFile(out, res.text);
     console.log('');
-    console.log(`  ${color.green('✓')} saved ${res.text.length} bytes to ${out}`);
+    // res.text.length is UTF-16 code units, not bytes — a document with em-dashes,
+    // curly quotes, etc. undercounts (measured: a real page's footer.html reported
+    // 11789 "bytes" here while the file on disk was 11982 bytes, exactly the 193
+    // extra bytes its 94 em-dashes/©/· cost when re-encoded as UTF-8). The content
+    // written to disk was always byte-correct; only this printed count was wrong.
+    console.log(`  ${color.green('✓')} saved ${Buffer.byteLength(res.text, 'utf8')} bytes to ${out}`);
     return;
   }
-  if (flags.json) { cli.out({ path: documentPath(t.path), bytes: res.text.length, html: res.text }); return; }
+  if (flags.json) { cli.out({ path: documentPath(t.path), bytes: Buffer.byteLength(res.text, 'utf8'), html: res.text }); return; }
   process.stdout.write(res.text);
 }
 
