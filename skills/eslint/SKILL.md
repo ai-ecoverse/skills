@@ -80,8 +80,9 @@ eslint --no-config-lookup --rule '{"eqeqeq":"error"}' src/app.js
 ### Ignores
 
 Top-level `ignores`-only config entries are applied by this wrapper, because
-`Linter` does not honor global ignores on its own. `node_modules` and `.git` are
-never walked into.
+`Linter` does not honor global ignores on its own. A `name` alongside `ignores`
+still counts, so ESLint's own `globalIgnores(patterns, name)` helper works.
+`node_modules` and `.git` are never walked into.
 
 Patterns are evaluated in order, so a later `!` pattern re-includes what an
 earlier one ignored — `ignores: ['**/*.js', '!src/**/*.js']` lints `src` and
@@ -101,7 +102,8 @@ reported positions match the real file. Findings that belong only to that
 injected wrapper are dropped, so no rule reports against a line the file does not
 have. `--fix` writes back only when the fix left the wrapper untouched; a rule
 that reindents the whole body (`indent`) is reported as unfixable and the file is
-left alone.
+left alone. When a fix is discarded that way the file is re-linted unfixed, so
+the findings you see are the ones still in it and the exit code reflects them.
 
 These scripts run with SLICC's realm globals, so give them to ESLint or
 `no-undef` flags every one of them:
@@ -124,6 +126,11 @@ export default [
 `compact` prints one line per finding. `json` prints one document on stdout with
 `summary` and `results` fields, where each result carries ESLint's own message
 objects; nothing is written to stderr and the exit code does not change.
+
+Under `--fix-dry-run`, a result whose code would change also carries the fixed
+source in `output`, the way real ESLint's JSON formatter does. stdout stays a
+single document, so `--stdin --fix-dry-run --json` is still parseable — read the
+fixed code from `results[0].output` rather than from the stream.
 
 ## Exit codes
 

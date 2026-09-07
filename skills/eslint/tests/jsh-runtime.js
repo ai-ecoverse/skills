@@ -58,11 +58,14 @@ function makeFs(files, dirs) {
     async writeFile(p, data) {
       store.set(p, String(data));
     },
-    async unlink(p) {
+    async rm(p) {
       store.delete(p);
     },
     async mkdir(p) {
       extraDirs.add(p);
+    },
+    async exists(p) {
+      return store.has(p) || isDir(p);
     },
     async stat(p) {
       // The SLICC shell fs exposes isFile/isDirectory as booleans, not as the
@@ -72,10 +75,7 @@ function makeFs(files, dirs) {
       if (isDir(p)) return { isFile: false, isDirectory: true, size: 0 };
       throw enoent(p);
     },
-    async lstat(p) {
-      return fs.stat(p);
-    },
-    async readdir(p) {
+    async readDir(p) {
       const prefix = p.endsWith('/') ? p : `${p}/`;
       const names = new Set();
       for (const key of store.keys()) {
@@ -88,11 +88,24 @@ function makeFs(files, dirs) {
       if (names.size === 0 && !isDir(p)) throw enoent(p);
       return [...names];
     },
-    async realpath(p) {
-      return p;
-    },
   };
-  return { fs, store };
+
+  // Only the methods the VFS bridge documents are exposed (readFile, writeFile,
+  // readDir, exists, stat, mkdir, rm). The bridge happens to carry lowercase
+  // node aliases such as `readdir` and `unlink`, but a skill that reaches for
+  // one is relying on something undocumented, so it must fail here rather than
+  // pass in tests and drift when the alias goes away.
+  return {
+    fs: new Proxy(fs, {
+      get(target, prop) {
+        if (typeof prop === 'string' && !(prop in target)) {
+          throw new Error(`jsh-runtime: fs.${prop} is not part of the VFS bridge`);
+        }
+        return target[prop];
+      },
+    }),
+    store,
+  };
 }
 
 /**
@@ -110,6 +123,11 @@ function makeFs(files, dirs) {
  */
 async function runEslint(opts = {}) {
   const { fs, store } = makeFs(opts.files || {}, opts.dirs);
+  if (opts.breakReadDir) {
+    fs.readDir = async () => {
+      throw new Error(opts.breakReadDir);
+    };
+  }
   const cwd = opts.cwd || '/workspace/proj';
   const stdout = [];
   const stderr = [];
@@ -258,14 +276,21 @@ function compileHelper(src) {
  * the helper's own global-ignore evaluation and wrapper-message filtering are
  * exercised rather than reimplemented in the test.
  */
-async function runGeneratedHelper(helperSrc, request, verify, config) {
+async function runGeneratedHelper(helperSrc, request, verify, config, opts = {}) {
   const { minimatch } = require('minimatch');
   class FakeLinter {
     verify(source, _config, path) {
       return verify(source, path);
     }
     verifyAndFix(source, _config, path) {
-      return { output: source, fixed: false, messages: verify(source, path) };
+      const messages = verify(source, path);
+      // `fixesWrapper` reproduces a fixer that also rewrote the injected
+      // scaffold (as `semi` does to the generated `})`), so `unwrap` rejects the
+      // output and the fix has to be discarded.
+      if (opts.fixesWrapper) {
+        return { output: `${source.replace(/\}\)$/, '});')}`, fixed: true, messages };
+      }
+      return { output: source, fixed: false, messages };
     }
   }
   let out = '';

@@ -150,6 +150,20 @@ test('a directory is walked, skipping node_modules and .git', async () => {
   assert.ok(!paths.some((p) => p.includes('/.git/')));
 });
 
+test('an unreadable directory fails loudly instead of looking clean', async () => {
+  // Swallowing the read error yields "no lintable files" and exit 0, which is
+  // indistinguishable from a tree with nothing wrong in it.
+  const r = await runEslint({
+    argv: ['.'],
+    files: BASE_FILES,
+    breakReadDir: 'EIO: device is on fire',
+  });
+  assert.equal(r.exitCode, 2);
+  assert.match(r.stderr, /could not read the target tree/);
+  assert.match(r.stderr, /device is on fire/);
+  assert.ok(!/no lintable files/.test(r.stderr));
+});
+
 test('--ext narrows which extensions are walked', async () => {
   const r = await runEslint({
     argv: ['--ext', '.mjs', '.'],
@@ -318,6 +332,57 @@ test('a fix that rewrote the .jsh wrapper leaves the file alone', async () => {
   assert.equal(r.read('/workspace/proj/s.jsh'), 'return 1\n');
 });
 
+test('a discarded wrapper fix still reports the real violations', async () => {
+  // `verifyAndFix` returns only what is LEFT after fixing. When the fix is
+  // thrown away because it rewrote the wrapper, those leftovers describe a file
+  // that will never exist — `semi` can fix the body and the generated `})` in
+  // one pass and report nothing, so the run would exit 0 over an unfixed file.
+  let firstCall = true;
+  const helperSrc = (await runEslint({ argv: ['a.js'], files: BASE_FILES })).helperSources[0];
+  const results = await runGeneratedHelper(
+    helperSrc,
+    {
+      op: 'lint',
+      fix: true,
+      basePath: '/workspace/proj',
+      files: [{ path: '/workspace/proj/s.jsh', source: 'var a = 1\n', explicit: true }],
+    },
+    // verifyAndFix's residue is empty; a plain verify still sees the violation.
+    () => {
+      if (firstCall) {
+        firstCall = false;
+        return [];
+      }
+      return [{ ruleId: 'semi', severity: 2, message: 'Missing semicolon', line: 2, endLine: 2 }];
+    },
+    undefined,
+    { fixesWrapper: true }
+  );
+  assert.equal(results[0].wrapUnfixable, true);
+  assert.equal(results[0].output, null, 'the file must be left alone');
+  assert.equal(results[0].messages.length, 1, 'the violation must survive the discard');
+  assert.equal(results[0].messages[0].ruleId, 'semi');
+});
+
+test('a global-ignores block that carries a name is still honored', async () => {
+  // ESLint's own globalIgnores(patterns, name) helper returns { name, ignores },
+  // and requiring `ignores` to be the only key walks those trees anyway.
+  const results = await runGeneratedHelper(
+    (await runEslint({ argv: ['a.js'], files: BASE_FILES })).helperSources[0],
+    {
+      op: 'lint',
+      basePath: '/workspace/proj',
+      files: [{ path: '/workspace/proj/dist/bundle.js', source: 'var a = 1\n', explicit: false }],
+    },
+    () => [],
+    [
+      { name: 'my/global-ignores', ignores: ['dist/**'] },
+      { files: ['**/*.js'], rules: {} },
+    ]
+  );
+  assert.deepEqual(results, [], 'a named ignores-only block is a global ignore');
+});
+
 /* ---------------------------- helper failures ----------------------------- */
 
 test('a missing module is rewritten into the ipk install line', async () => {
@@ -427,6 +492,20 @@ test('--fix-dry-run with --stdin prints the fixed buffer and writes nothing', as
   });
   assert.match(r.stdout, /var piped = 1;/);
   assert.equal(r.read('/workspace/proj/src/app.js'), 'const real = 1;\n');
+});
+
+test('--stdin --fix-dry-run --json still emits exactly one JSON document', async () => {
+  // Printing the fixed buffer after the document leaves stdout unparseable,
+  // which breaks every machine consumer of a documented flag combination.
+  const r = await runEslint({
+    argv: ['--stdin', '--stdin-filename', 'src/app.js', '--fix-dry-run', '--json'],
+    files: BASE_FILES,
+    stdin: 'var piped = 1\n',
+    helper: withMessages([], 'var piped = 1;\n'),
+  });
+  const doc = JSON.parse(r.stdout);
+  assert.equal(doc.results[0].output, 'var piped = 1;\n', 'the fix belongs in the document');
+  assert.equal(r.stdout.trimEnd().split('\n').length, 1, 'one line, one document');
 });
 
 test('a bare --stdin creates no stdin.js placeholder', async () => {

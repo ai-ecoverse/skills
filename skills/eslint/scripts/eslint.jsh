@@ -247,12 +247,11 @@ function hasLintableExtension(path, extensions) {
 }
 
 async function walkDir(dir, extensions, out) {
-  let names;
-  try {
-    names = await fs.readdir(dir);
-  } catch {
-    return;
-  }
+  // `readDir` is the VFS bridge's name for this. A lowercase `readdir` alias
+  // happens to exist, but the documented surface is `readDir` and a read that
+  // fails must not be mistaken for an empty directory: silently returning here
+  // reports "no lintable files" and exits 0, which reads as a clean tree.
+  const names = await fs.readDir(dir);
   for (const name of names) {
     if (name === 'node_modules' || name === '.git') continue;
     const full = dir === '/' ? `/${name}` : `${dir}/${name}`;
@@ -358,11 +357,16 @@ if (configArray.length === 0) {
 
 // Flat config: an entry carrying ONLY \`ignores\` is a GLOBAL ignore.
 // \`Linter.verify\` does not apply those, so they are applied here.
+// \`name\` does not make an entry a normal config: ESLint's own
+// \`globalIgnores(patterns, name)\` helper returns \`{ name, ignores }\`, and
+// hand-written configs label their ignore block the same way. Requiring
+// \`ignores\` to be the ONLY key would walk those ignored trees anyway.
 const globalIgnores = [];
 for (const entry of configArray) {
   if (!entry || typeof entry !== 'object') continue;
-  const keys = Object.keys(entry);
-  if (keys.length === 1 && keys[0] === 'ignores' && Array.isArray(entry.ignores)) {
+  if (!Array.isArray(entry.ignores)) continue;
+  const significant = Object.keys(entry).filter((k) => k !== 'name');
+  if (significant.length === 1 && significant[0] === 'ignores') {
     globalIgnores.push(...entry.ignores);
   }
 }
@@ -456,8 +460,17 @@ async function lintOne(file) {
         result.output = fixed.output;
       } else {
         const candidate = unwrap(fixed.output);
-        if (candidate === null) result.wrapUnfixable = true;
-        else result.output = candidate;
+        if (candidate === null) {
+          result.wrapUnfixable = true;
+          // \`verifyAndFix\` reports only what is left AFTER fixing. Since this
+          // fix is being thrown away, those leftovers describe a file that will
+          // not exist: \`semi\` can fix the user's code and the generated \`})\`
+          // in one pass, returning zero messages, which would exit 0 over a
+          // file that still violates the rule. Re-lint the original instead.
+          result.messages = shiftLines(linter.verify(source, configArray, file.path));
+        } else {
+          result.output = candidate;
+        }
       }
     }
   } else {
@@ -584,6 +597,10 @@ function formatJson(results, totals) {
       messages: r.messages,
       errorCount: r.messages.filter((m) => m.severity === 2).length,
       warningCount: r.messages.filter((m) => m.severity === 1).length,
+      // Real ESLint's JSON formatter carries the fixed source in `output`, and
+      // so must this one: the alternative is printing the buffer after the
+      // document, which leaves stdout unparseable.
+      ...(r.output === null ? {} : { output: r.output }),
     })),
   })}\n`;
 }
@@ -652,7 +669,8 @@ async function runHelper(request, configPath) {
     // argv form never builds a command line at all.
     return await exec.spawn(['node', helperPath, JSON.stringify(request)]);
   } finally {
-    await fs.unlink(helperPath).catch(() => {});
+    // `rm` is the bridge's documented removal call; `unlink` is only an alias.
+    await fs.rm(helperPath).catch(() => {});
   }
 }
 
@@ -742,7 +760,15 @@ if (args.stdin) {
     explicit: true,
   });
 } else {
-  const expanded = await expandTargets(args.paths, args.extensions);
+  let expanded;
+  try {
+    expanded = await expandTargets(args.paths, args.extensions);
+  } catch (e) {
+    // An unreadable directory must not be reported as an empty one, or a tree
+    // that was never inspected looks like a tree with nothing wrong in it.
+    fail(`could not read the target tree: ${e.message}`, 2);
+    return;
+  }
   missing = expanded.missing;
   for (const target of expanded.files) {
     inputs.push({ path: target.path, source: null, explicit: target.explicit });
@@ -820,7 +846,9 @@ else {
   if (text) process.stdout.write(text);
 }
 
-if (args.fixDryRun) {
+// The JSON reporter already carried `output`, and stdout must stay a single
+// document, so this reporting step belongs to the text reporters only.
+if (args.fixDryRun && args.format !== 'json') {
   for (const result of results) {
     if (result.output === null) continue;
     // Piped code has no file to rewrite, so the fixed buffer IS the result —
