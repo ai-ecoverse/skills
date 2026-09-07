@@ -120,24 +120,31 @@ const time = require('sliccy:time'); // only used by `monday`
 const fs = require('fs'); // plain node-ish builtin, not a sliccy: module
 
 // ─── Auth ────────────────────────────────────────────────────────────────────
+// Token resolution is deferred until after --help / --version (slicc#2921).
+// `skill.token('github')` at module load ran before the help router, so
+// `gh --help` / `gh pr --help` died with "No GitHub token available" and
+// agents could not even list subcommands. Real commands still require a token.
 
 let personalToken;
-try {
-  personalToken = await skill.token('github');
-} catch {
-  // Fallback to legacy methods
-  const _tokenResult = await exec('git config github.token 2>/dev/null');
-  personalToken = _tokenResult.stdout.trim() || process.env.GITHUB_TOKEN || '';
-}
 
-if (!personalToken) {
-  cli.die(
-    "No GitHub token available. skill.token('github') failed, `git config github.token` is unset, " +
-    'and GITHUB_TOKEN is not set in the environment. Run `oauth-token github` to obtain a token, then ' +
-    'either let skill.token(\'github\') pick it up automatically or set it explicitly with ' +
-    '`export GITHUB_TOKEN="$(oauth-token github)"` or `git config github.token "$(oauth-token github)"`.',
-    { prefix: 'gh' }
-  );
+async function resolvePersonalToken() {
+  try {
+    personalToken = await skill.token('github');
+  } catch {
+    // Fallback to legacy methods
+    const _tokenResult = await exec('git config github.token 2>/dev/null');
+    personalToken = _tokenResult.stdout.trim() || process.env.GITHUB_TOKEN || '';
+  }
+
+  if (!personalToken) {
+    cli.die(
+      "No GitHub token available. skill.token('github') failed, `git config github.token` is unset, " +
+      'and GITHUB_TOKEN is not set in the environment. Run `oauth-token github` to obtain a token, then ' +
+      'either let skill.token(\'github\') pick it up automatically or set it explicitly with ' +
+      '`export GITHUB_TOKEN="$(oauth-token github)"` or `git config github.token "$(oauth-token github)"`.',
+      { prefix: 'gh' }
+    );
+  }
 }
 
 // ─── AI attribution (ai-aligned-gh) ──────────────────────────────────────────
@@ -3810,8 +3817,10 @@ ${color.bold('REPO')}
 
 const argv = process.argv.slice(2);
 
-// --help / -h is handled FIRST — before dispatch, before any argument
-// validation — so it can never be mistaken for a subcommand or a PR number.
+// --help / -h is handled FIRST — before token resolution, before dispatch,
+// before any argument validation — so agents can discover the CLI without a
+// GitHub token (slicc#2921) and so help can never be mistaken for a
+// subcommand or a PR number.
 const HELP_FLAGS = ['--help', '-h', '-?'];
 
 // Help wins early, but must never swallow a help-looking *value*: `gh issue
@@ -3879,6 +3888,8 @@ if (argv[0] === 'version' || argv[0] === '--version') {
   console.log(GH_VERSION);
   process.exit(0);
 }
+
+await resolvePersonalToken();
 
 const cmd  = argv[0];
 const sub  = argv[1];

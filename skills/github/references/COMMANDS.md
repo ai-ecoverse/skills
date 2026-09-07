@@ -15,7 +15,7 @@ gh version
 `--help` wins over everything, even after boolean flags — `gh pr merge 42 --squash --help`
 prints help instead of merging. The terse `-h`/`-?` counts as help while still in the leading
 command words, and always on a state-changing command; pass a literal `-h` after `--`
-(`gh vars set FOO -- -h`).
+(`gh vars set FOO -- -h`). `--help` and `gh version` / `--version` work without a GitHub token.
 
 ## `--json` / `--jq`
 

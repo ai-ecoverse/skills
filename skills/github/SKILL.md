@@ -23,7 +23,8 @@ allowed_tools:
 defaults. No `curl | jq` pipelines.
 
 Run `gh --help`, `gh <command> --help` or `gh <command> <subcommand> --help` — every command
-is self-documenting. Full reference: [`references/COMMANDS.md`](references/COMMANDS.md).
+is self-documenting, and help plus `gh version` work without a GitHub token. Full reference:
+[`references/COMMANDS.md`](references/COMMANDS.md).
 
 ## Authentication
 

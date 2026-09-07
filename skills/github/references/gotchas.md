@@ -101,8 +101,9 @@ field errors with the list of valid ones — no silent empty output.
 ## `--help` works on every command
 
 `gh <cmd> --help`, `gh <cmd> <sub> --help` and `gh help <cmd> [<sub>]` all print scoped usage
-and exit 0. Help is intercepted before argument validation, so `gh pr watch --help` prints
-usage rather than complaining about a missing PR number.
+and exit 0. Help (and `gh version` / `--version`) is intercepted before token resolution
+and before argument validation, so `gh pr watch --help` prints usage rather than
+complaining about a missing GitHub token or PR number.
 
 ## Uploading binary or non-ASCII content via the Contents API
 
