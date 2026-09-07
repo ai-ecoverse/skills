@@ -84,6 +84,10 @@ const HLX5_DA_BASE = 'https://admin.da.live';
 
 // Session-secret name searched during credential resolution.
 const SECRET_NAME = 'aem.apikey';
+// Session-secret name for the auth_token cookie harvested by 'auth login'. Same
+// storage mechanism as SECRET_NAME (`secret set`/`secret get`, session-scoped, no
+// --persist) so credential resolution only has to know about one storage pattern.
+const COOKIE_SECRET_NAME = 'aem.authcookie';
 // Hosts an API-key secret must be scoped to for the fetch proxy to unmask it.
 const SECRET_DOMAINS = 'api.aem.live,admin.hlx.page,admin.aem.live';
 
@@ -99,7 +103,8 @@ aem-ext — AEM Edge Delivery Services CLI with long-lived API-key auth
 
 USAGE
   aem-ext auth status [--org <o> --site <s>] [--json]
-  aem-ext auth login [--idp google|microsoft|adobe] [--select-account] [--print-url] [--hlx5] [--json]
+  aem-ext auth login [--idp adobe|google|microsoft|adobe-stage] [--select-account]
+                     [--print-url] [--timeout <sec>] [--hlx5] [--json]
   aem-ext auth key create --org <o> --site <s> [--roles <r,r>] [--description <d>]
                           [--expires-in <seconds>] [--register] [--save-secret [name]] [--json]
   aem-ext auth key list --org <o> --site <s> [--json]
@@ -117,14 +122,23 @@ CREDENTIAL RESOLUTION (first match wins)
   1. --api-key <value>, or the AEM_API_KEY environment variable
   2. the '${SECRET_NAME}' secret, or --secret-name <name>
      (secret set ${SECRET_NAME} <key> --domain "${SECRET_DOMAINS}")
-  3. an auth_token cookie stored by 'aem-ext auth login'
+  3. an auth_token cookie from 'aem-ext auth login' — lasts up to 24h. Stored the
+     same way (secret '${COOKIE_SECRET_NAME}'), falling back to the skill config if
+     the secrets manager rejects the write. Session-only, never sent expired.
   4. the Adobe IMS user token from skill.token('adobe')  (expires in ~20 minutes)
 
 THE HEADER RULE (verified live — the schemes do NOT cross over)
   admin API key   ->  X-Auth-Token: <key>            (Authorization: token <key> also works)
   IMS user token  ->  Authorization: Bearer <token>
-  login cookie    ->  Cookie: auth_token=<value>
+  login cookie    ->  Cookie: auth_token=<value>     (curl ONLY, see below)
   Using Bearer with an API key, or X-Auth-Token with an IMS token, returns 401.
+
+A LOGIN COOKIE ONLY AUTHENTICATES THROUGH curl, NEVER fetch()
+  SLICC's global fetch() goes through the browser Fetch API, which silently strips
+  a caller-set Cookie header — but curl does not (verified live 2026-09-07: GET, PUT
+  and POST all authenticated against api.aem.live with curl -H "Cookie: ...").
+  This script therefore sends every cookie-credentialed request through curl. A
+  cookie credential is never handed to fetch().
 
 HELIX 6: A NEW KEY IS 401 UNTIL IT IS REGISTERED
   Contrary to https://www.aem.live/docs/admin-apikeys, a freshly minted key is NOT
@@ -148,8 +162,11 @@ FLAGS
   --api <host>      Use a different Helix 6 host
   --json            Raw JSON output
   --confirm         Required for destructive operations
+  --idp <name>      'auth login': adobe (default) | google | microsoft | adobe-stage
   --print-url       'auth login': resolve and print the IDP URL, do not drive a browser
   --select-account  'auth login': use the IDP's _sa link (?selectAccount=true)
+  --timeout <s>     'auth login': seconds to wait for the login to reach /profile
+                    before giving up (default 120)
   --output <path>   Write 'get' output to a VFS file
   --expires-in <s>  Key lifetime in seconds (1..31536000). On Helix 6 this is minted
                     through the Helix 5 compat route, which is the only one that
@@ -272,6 +289,31 @@ function rule() {
 
 // ── credential resolution ─────────────────────────────────────────────────────
 
+// The secrets manager has been observed to hang far past a normal request (verified
+// live 2026-09-07: a `secret set` call outlived a 600s budget at least once, though a
+// second attempt in the same session finished in under a minute) and 'secret set
+// --persist' has separately been reported failing with "Failed to fetch". Bound any
+// call on this path so a bad backend degrades to the skill-config fallback instead of
+// hanging 'auth login' forever — never design a step around waiting on an unbounded
+// external call. exec.start()'s handle is the only killable primitive exec.spawn()
+// doesn't give us.
+async function execWithTimeout(argv, timeoutMs) {
+  const h = exec.start(argv);
+  h.stdin.end();
+  let timedOut = false;
+  const timeoutPromise = new Promise((resolve) => {
+    setTimeout(() => {
+      timedOut = true;
+      resolve({ exitCode: 1, stdout: '', stderr: `timed out after ${timeoutMs}ms` });
+    }, timeoutMs);
+  });
+  const result = await Promise.race([h.done, timeoutPromise]);
+  if (timedOut) {
+    try { h.kill('SIGTERM'); } catch { /* best effort */ }
+  }
+  return result;
+}
+
 async function readSecretValue(name) {
   const r = await exec.spawn(['secret', 'get', name]);
   if (r.exitCode !== 0) return null;
@@ -311,14 +353,41 @@ async function credential() {
       };
       return _cred;
     }
-    const cfg = (await skill.config()) || {}; // a bare Promise is always truthy
-    if (cfg.authToken) {
-      _cred = {
-        kind: 'cookie',
-        source: `auth login cookie (${cfg.authHost || 'api.aem.live'}, saved ${cfg.authTokenSavedAt || 'unknown'})`,
-        value: cfg.authToken,
-      };
-      return _cred;
+    // Auth-cookie credential (up to 24h), harvested by 'auth login'. Stored the same
+    // way as the API key above (a session secret) so this reuses readSecretValue()
+    // rather than inventing a second storage mechanism; skill.config() is only a
+    // fallback for when the secrets manager itself is unavailable (see cmdAuthLogin).
+    const cookieSecretValue = await readSecretValue(COOKIE_SECRET_NAME);
+    let cookieValue = null;
+    let cookieSource = null;
+    if (cookieSecretValue) {
+      cookieValue = cookieSecretValue;
+      cookieSource = `secret ${COOKIE_SECRET_NAME}`;
+    } else {
+      const cfg = (await skill.config()) || {}; // a bare Promise is always truthy
+      if (cfg.authToken) {
+        cookieValue = cfg.authToken;
+        cookieSource = `auth login cookie (${cfg.authHost || 'api.aem.live'}, saved ${cfg.authTokenSavedAt || 'unknown'}, skill config — secrets manager was unavailable at login time)`;
+      }
+    }
+    if (cookieValue) {
+      const masked = looksMasked(cookieValue);
+      const claims = masked ? null : decodeJwt(cookieValue);
+      // TRAP: a stale cookie is byte-identical to a fresh one — the only way to
+      // tell is to decode `exp` and compare to now, BEFORE using or presenting it
+      // (found the hard way: a 50h-expired cookie produced a plain 401, no
+      // different from a wrong credential). A masked cookie can't be decoded here
+      // at all, so it is passed through and left to the live request to decide —
+      // same tradeoff the API-key path already makes for a masked secret.
+      const expired = claims && claims.exp ? claims.exp * 1000 <= Date.now() : false;
+      if (!expired) {
+        _cred = { kind: 'cookie', source: cookieSource, value: cookieValue, masked };
+        return _cred;
+      }
+      cli.warn(
+        `ignoring the stored auth_token cookie: it expired ${relTime(claims.exp)} — run 'aem-ext auth login' again.`,
+        { prefix: PREFIX },
+      );
     }
   }
 
@@ -338,6 +407,7 @@ async function credential() {
     `  Long-lived (365 days):  aem-ext auth key create --org <o> --site <s> --register --save-secret\n` +
     `  Existing key:           secret set ${SECRET_NAME} <key> --domain "${SECRET_DOMAINS}"\n` +
     '                          or pass --api-key <key> / set AEM_API_KEY\n' +
+    '  Session (up to 24h):   aem-ext auth login\n' +
     '  Short-lived (~20 min):  oauth-token adobe',
     { prefix: PREFIX },
   );
@@ -381,7 +451,7 @@ function shellQuote(a) {
 }
 
 // curl form of the same header rule authHeaders() applies: API keys use X-Auth-Token,
-// IMS tokens use Authorization: Bearer. They do not cross over.
+// IMS tokens use Authorization: Bearer, cookies use Cookie. They do not cross over.
 function authCurlArgs(cred) {
   const h = authHeaders(cred);
   const out = [];
@@ -389,24 +459,71 @@ function authCurlArgs(cred) {
   return out;
 }
 
+// A cookie credential's request, routed through curl (see the file-header note:
+// fetch() strips Cookie, curl does not — verified live 2026-09-07). exec.spawn takes
+// an argv array, so nothing here is shell-interpolated.
+async function curlAuthFetch(method, url, cred, opts = {}) {
+  const headers = { ...authHeaders(cred), ...(opts.headers || {}) };
+  if (opts.contentType) headers['Content-Type'] = opts.contentType;
+  const args = ['curl', '-sS', '-X', method];
+  for (const [k, v] of Object.entries(headers)) args.push('-H', `${k}: ${v}`);
+  // Every current caller sends a small JSON body at most (content commands that can
+  // reach this path — list/get/status/preview/publish — send none at all; PUT has
+  // its own byte-faithful curl path in cmdPut and never reaches here). --data-raw is
+  // fine for that size; large/binary bodies belong in cmdPut's --data-binary @file.
+  if (opts.body !== undefined && opts.body !== null && opts.body !== '') {
+    args.push('--data-raw', String(opts.body));
+  }
+  args.push('-w', '\n%{http_code}', url);
+
+  let r;
+  try {
+    r = await exec.spawn(args);
+  } catch (err) {
+    cli.die(`request to ${url} failed: ${err.message}`, { prefix: PREFIX });
+  }
+  if (r.exitCode !== 0) {
+    cli.die(`request to ${url} failed: ${(r.stderr || r.stdout || '').trim().slice(0, 300)}`, { prefix: PREFIX });
+  }
+
+  const lines = (r.stdout || '').split('\n');
+  const status = parseInt(lines.pop(), 10);
+  const text = lines.join('\n');
+  const looksHtml = /^\s*(<!DOCTYPE|<html)/i.test(text);
+  let json = null;
+  if (!looksHtml && text) {
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = null;
+    }
+  }
+  return {
+    status,
+    ok: status >= 200 && status < 300,
+    text,
+    json,
+    looksHtml,
+    // The sandboxed curl available here has no -D/-i (verified: `curl --help`
+    // lists neither), so response headers — and therefore x-error — are not
+    // observable on this path. dieOnError() still has status + body to work with.
+    xError: '',
+    cred,
+    url,
+    method,
+  };
+}
+
 // ── HTTP (one wrapper — see the header note on why not http.client) ───────────
 
 async function apiFetch(method, url, opts = {}) {
   const cred = opts.cred || (await credential());
-  // SLICC's fetch() goes through the browser Fetch API, which SILENTLY STRIPS a
-  // caller-supplied Cookie header (skills/secret-sauce/SKILL.md). A cookie credential
-  // would therefore make an unauthenticated request that looks like an auth failure.
-  // Fail loudly instead (review: Codex P2). curl DOES carry the header, which is why
-  // 'aem-ext put' works on any credential.
+  // A cookie credential authenticates ONLY through curl (file-header note). Route it
+  // there transparently instead of refusing the request — this is what makes
+  // 'auth login' usable for every content verb, not just 'put' (which already had
+  // its own curl path).
   if (cred.kind === 'cookie') {
-    cli.die(
-      'the auth_token cookie credential cannot be used for this request: the browser Fetch\n' +
-      '  API strips Cookie headers, so it would be sent unauthenticated.\n' +
-      '  Use a long-lived API key instead:\n' +
-      `    aem-ext auth key create --org <org> --site <site> --register --save-secret\n` +
-      '  or force the IMS token with --ims.',
-      { prefix: PREFIX },
-    );
+    return curlAuthFetch(method, url, cred, opts);
   }
   const headers = { ...authHeaders(cred), ...(opts.headers || {}) };
   if (opts.contentType) headers['Content-Type'] = opts.contentType;
@@ -468,6 +585,16 @@ function dieOnError(res, hint) {
         { prefix: PREFIX },
       );
     }
+    if (res.cred.kind === 'cookie') {
+      cli.die(
+        `${hint}: ${res.status} with the auth_token cookie from ${res.cred.source}.\n` +
+        '  Cookies last up to 24h and are not renewed automatically. Log in again:\n' +
+        '    aem-ext auth login\n' +
+        '  Or switch to a 365-day key:  aem-ext auth key create --org <o> --site <s> --register --save-secret\n' +
+        (detail ? `  server said: ${detail}` : ''),
+        { prefix: PREFIX },
+      );
+    }
     cli.die(
       `${hint}: ${res.status} with the IMS user token (these expire after ~20 minutes).\n` +
       '  Refresh it:  oauth-token adobe\n' +
@@ -492,8 +619,6 @@ function isHelix5() {
 }
 
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-// Escape every RegExp metacharacter, not just '.' (review: Copilot).
-function reEscape(str) { return String(str).replace(/[.*+?^${}()|[\]\\]/g, (m) => "\\" + m); }
 
 function requireOrgSite(usage) {
   const org = flag('org');
@@ -698,7 +823,7 @@ async function cmdAuthStatus() {
     ? `${color.green('admin API key')} (long-lived, up to 365 days)`
     : out.credential.type === 'ims-user-token'
       ? `${color.yellow('Adobe IMS user token')} (short-lived, ~20 minutes in practice)`
-      : color.yellow('auth_token cookie (session-scoped)'));
+      : color.cyan('auth_token cookie (browser login, up to 24h)'));
   kv('source', out.credential.source);
   kv('header', out.credential.header);
   if (cred.masked) kv('value', color.dim('masked by the secrets manager — unmasked server-side by the fetch proxy'));
@@ -788,60 +913,142 @@ async function cmdAuthLogin() {
     return;
   }
 
-  // Browser-driven harvest. Marked BEST EFFORT: the cookie flow itself
-  // (auth_token, OpenAPI security scheme AuthCookie, in: cookie) is documented and
-  // the /login JSON above is verified, but this interactive path was NOT verified
-  // live — see the PR body and SKILL.md.
-  const browser = require('sliccy:browser');
+  // Browser-driven harvest — verified live 2026-09-07 against ai-ecoverse/slicc-website
+  // (Helix 6): opened https://api.aem.live/auth/adobe, the existing Adobe SSO session
+  // redirected straight to /profile with no interaction in ~8s, and the harvested
+  // cookie authenticated GET /profile, GET source/<path>, PUT source/<path>, POST
+  // preview/<path> and POST live/<path> — all with `curl -H "Cookie: auth_token=..."`.
+  //
+  // This drives the browser with `exec.spawn(['playwright-cli', ...])` rather than
+  // `require('sliccy:browser')`. Two reasons, both load-bearing:
+  //   1. browser.ensureTab()/createPage() hardcodes Target.createTarget background:
+  //      true with no override (realm-host.ts) — there is no way to foreground a tab
+  //      it opens. A hidden tab both throttles any JS-heavy step in the IDP flow
+  //      (~117x, per playwright-cli's own docs) and hides an interactive login (a
+  //      password prompt, an MFA step) from the human who needs to complete it.
+  //      `playwright-cli tab-new <url> --foreground` is the only way to get a
+  //      visible tab.
+  //   2. `playwright-cli cookie-get` prints "name=value" plus tab-separated metadata
+  //      (Domain=/Path=/Secure=/HttpOnly=/Expires=), not the bare value — see the
+  //      parsing below. `browser.cookie()` returns the bare value in this runtime
+  //      (realm-host.ts's getCookie() returns `hit.value` only), but linkedin.jsh
+  //      found a bridge revision that changed that shape once already, so the same
+  //      defensive stripping is applied here regardless of which path is used.
+  const timeoutSec = Number(flag('timeout')) || 120;
   console.log('');
-  console.log(`  Opening ${loginUrl} — complete the login in the browser.`);
-  let tab;
-  try {
-    tab = await browser.ensureTab(loginUrl, { matchUrl: new RegExp(reEscape(base.replace(/^https?:\/\//, ''))) });
-  } catch (err) {
+  console.log(`  Opening ${loginUrl} in a foreground tab — complete the login there if prompted.`);
+
+  const openRes = await exec.spawn(['playwright-cli', 'tab-new', loginUrl, '--foreground']);
+  if (openRes.exitCode !== 0) {
     cli.die(
-      `could not drive the browser (${err.message}).\n` +
-      `  Run 'aem-ext auth login --print-url', log in manually, then retry.\n` +
+      `could not open a browser tab (${(openRes.stderr || openRes.stdout || '').trim().slice(0, 300)}).\n` +
+      "  Run 'aem-ext auth login --print-url', log in manually in any tab, then retry.\n" +
       '  Or skip cookies entirely and use a 365-day key: aem-ext auth key create ... --register --save-secret',
       { prefix: PREFIX },
     );
   }
+  const openMatch = /\[targetId:\s*([0-9A-Fa-f]+)\]/.exec(openRes.stdout || '');
+  if (!openMatch) {
+    cli.die(`could not find a tab id in: ${(openRes.stdout || '').trim().slice(0, 200)}`, { prefix: PREFIX });
+  }
+  const tab = openMatch[1];
 
-  const deadlineMs = Date.now() + 120000;
-  let cookie = null;
+  const profileUrl = `${base}/profile`;
+  const deadlineMs = Date.now() + timeoutSec * 1000;
+  let reachedProfile = false;
   while (Date.now() < deadlineMs) {
-    try {
-      cookie = await browser.cookie(tab, 'auth_token');
-    } catch {
-      cookie = null;
-    }
-    if (cookie) break;
+    const evalRes = await exec.spawn(['playwright-cli', 'eval', `--tab=${tab}`, '(()=>location.href)()']);
+    const href = (evalRes.stdout || '').trim();
+    if (href === profileUrl || href === `${profileUrl}/`) { reachedProfile = true; break; }
     await new Promise((r) => setTimeout(r, 2000));
   }
-  if (!cookie) {
+  if (!reachedProfile) {
     cli.die(
-      'no auth_token cookie appeared within 120s — the login did not complete.\n' +
-      '  Retry, or prefer a 365-day API key: aem-ext auth key create --org <o> --site <s> --register --save-secret',
+      `login did not reach ${profileUrl} within ${timeoutSec}s.\n` +
+      `  The tab (targetId ${tab}) is still open — finish the login there, then retry, or pass --timeout <sec>.\n` +
+      "  Or run 'aem-ext auth login --print-url' and log in manually.",
       { prefix: PREFIX },
     );
   }
 
-  const value = typeof cookie === 'string' ? cookie : cookie.value;
-  await skill.config({
-    authToken: value,
-    authTokenSavedAt: new Date().toISOString(),
-    authHost: base.replace(/^https?:\/\//, ''),
-  });
+  const cookieRes = await exec.spawn(['playwright-cli', 'cookie-get', `--tab=${tab}`, 'auth_token']);
+  if (cookieRes.exitCode !== 0) {
+    cli.die(
+      `no auth_token cookie on ${base} after login (${(cookieRes.stderr || '').trim().slice(0, 200)}).\n` +
+      '  Retry, or prefer a 365-day API key: aem-ext auth key create --org <o> --site <s> --register --save-secret',
+      { prefix: PREFIX },
+    );
+  }
+  // `cookie-get` prints "auth_token=<jwt>" plus tab-separated metadata — strip the
+  // name= prefix AND cut at the first tab/whitespace. Naively using the raw line as
+  // the cookie value sends "Cookie: auth_token=auth_token=eyJ...", a 401 that gives
+  // no hint what went wrong.
+  let value = (cookieRes.stdout || '').trim();
+  value = value.replace(/^auth_token=/, '');
+  value = value.split(/[\t\r\n]/)[0].trim();
+  if (!value) cli.die(`empty auth_token cookie on ${base}`, { prefix: PREFIX });
 
+  // A stale cookie is byte-identical to a fresh one and fails with a plain 401.
+  // Decode `exp` and refuse to store/use anything already expired.
+  const claims = decodeJwt(value);
+  if (!claims || !claims.exp) {
+    cli.die(
+      'the auth_token cookie did not decode as a JWT with an exp claim — refusing to store an unverifiable credential.',
+      { prefix: PREFIX },
+    );
+  }
+  if (claims.exp * 1000 <= Date.now()) {
+    cli.die(
+      `the harvested auth_token cookie is already EXPIRED (${relTime(claims.exp)}). Retry the login.`,
+      { prefix: PREFIX },
+    );
+  }
+
+  // Store it exactly the way 'auth key create --save-secret' stores an API key: a
+  // session secret (no --persist), scoped to the same hosts, unmasked server-side
+  // for curl/fetch. 'secret set ... --persist' has been observed to fail with
+  // "Failed to fetch" in this environment; this path never uses --persist, but if
+  // the secrets manager rejects even the session-only write, fall back to
+  // skill.config() (this script's other pre-existing persistence mechanism) rather
+  // than losing the credential.
+  let stored = 'secret';
+  const setRes = await execWithTimeout(
+    ['secret', 'set', COOKIE_SECRET_NAME, value, '--domain', SECRET_DOMAINS],
+    20000,
+  );
+  if (setRes.exitCode !== 0) {
+    stored = 'config';
+    await skill.config({
+      authToken: value,
+      authTokenSavedAt: new Date().toISOString(),
+      authHost: base.replace(/^https?:\/\//, ''),
+    });
+  }
+
+  const closeRes = await exec.spawn(['playwright-cli', 'tab-close', `--tab=${tab}`]);
+  if (closeRes.exitCode !== 0) {
+    cli.warn(`could not close the login tab (targetId ${tab}) — close it manually if it lingers.`, { prefix: PREFIX });
+  }
+
+  const expiresIso = new Date(claims.exp * 1000).toISOString();
+  const expiresRel = relTime(claims.exp);
   if (flags.json) {
-    cli.out({ stored: true, host: base, idp, cookie: 'auth_token', length: String(value).length });
+    cli.out({
+      idp, stored, email: claims.email || null, name: claims.name || null,
+      expires: expiresIso, expiresIn: expiresRel,
+    });
     return;
   }
-  section('Login');
+  section('Logged in');
   kv('idp', idp);
-  kv('cookie', `${color.green('✓')} auth_token stored in the skill config (session-scoped)`);
+  if (claims.email) kv('email', `${claims.email}${claims.name ? ` (${claims.name})` : ''}`);
+  kv('expires', `${expiresIso} ${color.dim(`(${expiresRel})`)}`);
+  kv('stored', stored === 'secret'
+    ? `${color.green('✓')} secret ${COOKIE_SECRET_NAME} (session-scoped; not persisted across restarts)`
+    : `${color.yellow('~')} skill config — the secrets manager rejected the write; still session-scoped`);
   console.log('');
-  console.log(color.dim('  Session cookies still expire. For long jobs use: aem-ext auth key create --register --save-secret'));
+  console.log(color.dim('  This cookie lasts up to 24h — much longer than the ~20-minute IMS token, but'));
+  console.log(color.dim('  still short of a 365-day key: aem-ext auth key create --register --save-secret'));
 }
 
 // ── auth key create ───────────────────────────────────────────────────────────

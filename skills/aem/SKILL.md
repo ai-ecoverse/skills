@@ -1,6 +1,6 @@
 ---
 name: aem
-description: AEM Edge Delivery Services (EDS) skill for reading, writing, previewing, and publishing EDS pages via the `aem` CLI. Use when the user asks about AEM Edge Delivery Services, EDS pages, Franklin, Helix, AEM EDS, edge delivery content, document-based authoring, or needs to list, get, put, preview, publish, or upload content in AEM EDS. Supports the full get→edit→put→preview→publish pipeline, on both Helix 5 (admin.hlx.page, admin.da.live) and Helix 6 (api.aem.live Source Bus) sites. Also provides `aem-ext` for long-lived authentication: minting, listing, registering and revoking AEM admin API keys (365-day, `X-Auth-Token`) so long content jobs survive the ~20-minute Adobe IMS token expiry. Use `aem-ext` when the user mentions API keys, admin keys, apiKeys, token expiry, "authentication keeps expiring", 401 from AEM, `access.admin.apiKeyId`, or wants a non-interactive/long-running AEM job.
+description: AEM Edge Delivery Services (EDS) skill for reading, writing, previewing, and publishing EDS pages via the `aem` CLI. Use when the user asks about AEM Edge Delivery Services, EDS pages, Franklin, Helix, AEM EDS, edge delivery content, document-based authoring, or needs to list, get, put, preview, publish, or upload content in AEM EDS. Supports the full get→edit→put→preview→publish pipeline, on both Helix 5 (admin.hlx.page, admin.da.live) and Helix 6 (api.aem.live Source Bus) sites. Also provides `aem-ext` for longer-lived authentication: `aem-ext auth login` drives a browser IDP login for a ~24-hour session cookie, and `aem-ext auth key create` mints/registers/revokes 365-day admin API keys (`X-Auth-Token`) — either survives the ~20-minute Adobe IMS token expiry. Use `aem-ext` when the user mentions login, logging in, session expired, "auth expired", API keys, admin keys, apiKeys, token expiry, "authentication keeps expiring", 401 from AEM, `access.admin.apiKeyId`, or wants a non-interactive/long-running AEM job.
 allowed-tools: bash
 ---
 
@@ -10,40 +10,97 @@ Shell command for AEM Edge Delivery Services. Manages EDS page content.
 
 ## Authentication
 
-Two commands, two credential styles:
+Two commands, three credential styles:
 
 - `aem` — Adobe IMS user token only. Run `oauth-token adobe` (auto-triggered on first
   use). No manual configuration needed. **In practice that token stops working after
-  ~20 minutes**, which breaks long content jobs.
-- `aem-ext` — the same content verbs plus AEM **admin API keys**, which last up to
-  **365 days**. Use it for long or unattended jobs. See
-  [Long-lived API keys (`aem-ext`)](#long-lived-api-keys-aem-ext) and
-  `references/api-keys.md`.
+  ~20 minutes**, which breaks long content jobs, and `oauth-token adobe --force-login`
+  is not guaranteed to recover it (it can answer "interactive login was not completed"
+  with no consent window).
+- `aem-ext` — the same content verbs plus two longer-lived credentials:
+  - `aem-ext auth login` drives a browser IDP login and harvests the session's
+    `auth_token` cookie — **up to 24 hours**, no key management needed. See
+    [Browser login (`aem-ext auth login`)](#browser-login-aem-ext-auth-login).
+  - `aem-ext auth key create` mints an AEM **admin API key**, up to **365 days**. See
+    [Long-lived API keys (`aem-ext`)](#long-lived-api-keys-aem-ext) and
+    `references/api-keys.md`.
 
-### The header rule (verified live 2026-09-03)
+  Full write-up of all three credentials, the header rule, and the traps found while
+  building the login flow: `references/auth.md`.
 
-The two credential types use different auth schemes and **do not cross over**:
+### The header rule (verified live 2026-09-07)
+
+The three credential types use different auth schemes and **do not cross over**:
 
 | Credential | Header | Lifetime |
 |---|---|---|
 | Adobe IMS user token | `Authorization: Bearer <token>` | ~20 minutes in practice |
 | Admin API key (a JWT) | `X-Auth-Token: <key>` (or `Authorization: token <key>`) | up to 365 days |
-| `auth login` cookie | `Cookie: auth_token=<value>` | session (curl paths only — see note) |
+| `auth login` cookie | `Cookie: auth_token=<value>` | up to 24h (curl only — see below) |
 
 Sending `Bearer <api-key>` returns 401, and so does `X-Auth-Token: <ims-token>`. An API
 key sent with the wrong scheme looks exactly like an expired credential.
+
+**The cookie authenticates only through curl, never through `fetch()`.** SLICC's
+global `fetch()` goes through the browser Fetch API, which silently strips a
+caller-set `Cookie` header — that part of the earlier claim in this file was correct.
+What was wrong was the conclusion drawn from it: **`curl` does not strip `Cookie`**,
+and `aem.jsh`/`aem-ext.jsh` already shell out to `curl` for some operations, so a
+cookie credential is fully usable — verified live 2026-09-07 (GET, PUT and POST all
+authenticated against `api.aem.live` with `curl -H "Cookie: auth_token=..."`).
+`aem-ext` routes every cookie-credentialed request through `curl` accordingly; it is
+never handed to `fetch()`.
 
 ### Credential resolution order (`aem-ext`)
 
 1. `--api-key <value>`, or the `AEM_API_KEY` environment variable
 2. the `aem.apikey` secret (or `--secret-name <name>`), via the `secret` command
-3. an `auth_token` cookie stored by `aem-ext auth login` — **limited**: SLICC's `fetch()`
-   silently strips `Cookie` headers, so this credential is refused with an actionable error
-   on the JSON/API routes. Prefer a long-lived API key.
+3. an `auth_token` cookie from `aem-ext auth login` (up to 24h) — stored the same way
+   as the API key (secret `aem.authcookie`), falling back to the skill config if the
+   secrets manager rejects the write
 4. the Adobe IMS user token from `skill.token('adobe')`
 
 `--ims` skips 1–3 and forces the IMS token. Minting, registering and revoking keys
-always require the IMS token — an API key cannot write site config.
+always require the IMS token — neither an API key nor a login cookie can write site
+config.
+
+## Browser login (`aem-ext auth login`)
+
+```bash
+aem-ext auth login                              # Adobe IDP, foreground browser tab
+aem-ext auth login --idp google --select-account # pick an IDP, force an account chooser
+aem-ext auth login --print-url                   # just resolve the IDP URL, don't drive a browser
+aem-ext auth status                              # confirm identity + expiry after logging in
+```
+
+`GET https://api.aem.live/login` answers JSON with one link per identity provider
+(`adobe`, `google`, `microsoft`, `adobe-stage`); `auth login` opens the resolved link in
+a **foreground** browser tab (`playwright-cli tab-new <url> --foreground`, not the
+`sliccy:browser` bridge — that bridge's `ensureTab`/`createPage` always opens in the
+background with no override, which would both hide an interactive login from the user
+and throttle any JS-heavy IDP step). If the user already has an SSO session, the tab
+redirects straight to `/profile` with no interaction — verified live 2026-09-07,
+~8-28 seconds end to end against `ai-ecoverse/slicc-website`. Otherwise, complete the
+login in that visible tab and `aem-ext` keeps polling until it reaches `/profile`
+(`--timeout <sec>`, default 120).
+
+Three traps found while building this, all handled in `aem-ext.jsh` — see
+`references/auth.md` for the detail:
+
+1. `playwright-cli cookie-get auth_token` prints `auth_token=<jwt>` plus
+   tab-separated metadata, not the bare value. Using the raw line as the cookie value
+   sends `Cookie: auth_token=auth_token=eyJ...` — a 401 with no hint why.
+2. `Buffer.from(x, 'base64url')` throws in this runtime; decoding a JWT needs the
+   manual `-`/`_` → `+`/`/` swap and `=` padding instead.
+3. A cookie that expired hours ago decodes exactly like a fresh one and fails with a
+   plain 401. `exp` is checked against "now" before the cookie is stored or used.
+
+The harvested cookie is stored the same way `auth key create --save-secret` stores an
+API key (`secret set`, session-scoped, no `--persist`), falling back to the skill
+config if the secrets manager rejects even that — it has been observed to hang far
+longer than a normal request, and `secret set --persist` has separately failed with
+"Failed to fetch" in this environment, so `auth login` bounds that call and degrades
+rather than hanging.
 
 ## Usage
 
@@ -72,8 +129,9 @@ management:
 
 - `aem-ext auth status [--org <o> --site <s>] [--json]` — which credential wins, its
   type, subject/roles/expiry, and whether it really has access to the site
-- `aem-ext auth login [--idp google|microsoft|adobe] [--print-url]` — IDP login,
-  harvesting the `auth_token` cookie (browser flow unverified; `--print-url` verified)
+- `aem-ext auth login [--idp adobe|google|microsoft|adobe-stage] [--select-account] [--print-url] [--timeout <sec>]` —
+  foreground-browser IDP login, harvesting the `auth_token` cookie (up to 24h; verified
+  live 2026-09-07, see [Browser login](#browser-login-aem-ext-auth-login))
 - `aem-ext auth key create --org <o> --site <s> [--roles admin] [--description <d>] [--expires-in <s>] [--register] [--save-secret [name]]` — mint a key
 - `aem-ext auth key list --org <o> --site <s>` — keys with their registration state
 - `aem-ext auth key register --org <o> --site <s> --id <jti>` — the Helix 6 registration step
