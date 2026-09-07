@@ -2,19 +2,18 @@
 name: aem
 description: |
   AEM Edge Delivery Services (EDS) skill for reading, writing, previewing, and
-  publishing EDS pages via the `aem` CLI. Use when the user asks about AEM Edge
-  Delivery Services, EDS pages, Franklin, Helix, AEM EDS, edge delivery content,
-  document-based authoring, or needs to list, get, put, preview, publish, or
-  upload content in AEM EDS. Supports the full get→edit→put→preview→publish
-  pipeline, on both Helix 5 (admin.hlx.page, admin.da.live) and Helix 6
-  (api.aem.live Source Bus) sites. Also provides `aem-ext` for longer-lived
-  authentication: `aem-ext auth login` drives a browser IDP login for a
-  ~24-hour session cookie, and `aem-ext auth key create` mints/registers/revokes
-  365-day admin API keys (`X-Auth-Token`) — either survives the ~20-minute Adobe
-  IMS token expiry. Use `aem-ext` when the user mentions login, logging in,
-  session expired, "auth expired", API keys, admin keys, apiKeys, token expiry,
-  "authentication keeps expiring", 401 from AEM, `access.admin.apiKeyId`, or
-  wants a non-interactive/long-running AEM job.
+  publishing EDS pages via the `aem` CLI. Use for AEM Edge Delivery Services,
+  EDS pages, Franklin, Helix, AEM EDS, edge delivery content, document-based
+  authoring, or to list, get, put, preview, publish, or upload content in AEM
+  EDS. Supports the full get→edit→put→preview→publish pipeline on Helix 5
+  (admin.hlx.page, admin.da.live) and Helix 6 (api.aem.live Source Bus) sites.
+  Also provides `aem-ext` for longer-lived auth: `aem-ext auth login` gets a
+  ~24-hour session cookie via a browser IDP login, and `aem-ext auth key
+  create` mints/registers/revokes 365-day admin API keys (`X-Auth-Token`) —
+  both outlast the ~20-minute Adobe IMS token. Use `aem-ext` for login,
+  session expired, auth expired, API keys, admin keys, apiKeys, token expiry,
+  authentication keeps expiring, 401 from AEM, `access.admin.apiKeyId`, or a
+  non-interactive/long-running AEM job.
 allowed-tools: bash
 ---
 
