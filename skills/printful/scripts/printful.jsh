@@ -1117,16 +1117,23 @@ async function cmdOrderConfirm(positional, flags) {
       { prefix: 'printful' },
     );
   }
+  // `pending` is a PAID, queued order — but a failure lands there first, so the
+  // distinction that matters is whether it HELD a payable status for the whole
+  // window (confirmedPaid) or we simply ran out of time still looking.
   console.log('');
   console.log(
     c.green('✓ confirmed') +
       `  ${c.cyan(String(o.id || id))}  ${o.status || ''}` +
-      (confirmedPaid ? '' : c.dim('  (status not yet settled)')),
+      (confirmedPaid ? c.dim(`  (held for ${num(flags.timeout, 45)}s)`) : c.dim('  (not settled yet)')),
   );
   if (o.costs) console.log(`  charged   ${o.costs.currency || ''} ${o.costs.total || ''}`);
-  if (!confirmedPaid) {
-    console.log(c.dim(`  verify: printful order get ${o.id || id}`));
-  }
+  console.log(
+    c.dim(
+      confirmedPaid
+        ? `  confirm the debit in the dashboard — no API exposes the wallet balance`
+        : `  verify: printful order get ${o.id || id}`,
+    ),
+  );
 }
 
 // ─── api escape hatch ────────────────────────────────────────────────────────
