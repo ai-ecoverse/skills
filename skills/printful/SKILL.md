@@ -35,6 +35,7 @@ printful catalog product 71            # Bella + Canvas 3001
 printful catalog variants 71 --color Black --size M
 
 printful store product create --name "My tee" --variant-id 4017 --file-id <file-id> --confirm
+printful mockup <sync-product-id> --serve   # PNGs into the VFS + ![](…) links
 printful order create --variant-id 4017 --file-id <file-id> \
   --name "Jane Doe" --address1 "1 Example St" --city Berlin --country DE --zip 10115
 printful order confirm <order-id> --confirm  # CHARGES the account — preview without this flag
@@ -74,11 +75,17 @@ sandbox-only path will sit in `status: waiting` forever. Host the PNG first
 Poll `GET /files/{id}` until `status` is `ok` or `failed`. A 3000×4800 RGBA PNG
 is plenty for a DTG chest print (Printful asks ≥1500×3000 @ 150 dpi).
 
+**The library is write-and-remember.** `GET /files` is **410 (permanently
+removed)** and `DELETE /files/{id}` is 404, so you cannot list or delete over
+the API — keep the id `files add` returns, and delete in the web UI. Mockups are
+the exception worth automating: `printful mockup <product-id> --serve` pulls the
+rendered previews into the VFS and prints `![](…)` links.
+
 ## Orders vs store products vs templates
 
 | Surface | What it is | Where it shows |
 |---|---|---|
-| File library | Print files, hashed, reusable | API `GET /files` |
+| File library | Print files, hashed, reusable | `files get <id>` only — see below |
 | Sync / store product | Named SKU + variant + file, no charge | API `GET /store/products` — **not** "Meine Produkte" |
 | Product template | Design Maker save | Dashboard → Meine Produkte |
 | Order | A shipment. Draft = no charge; confirm = pay | Dashboard → Bestellungen |
