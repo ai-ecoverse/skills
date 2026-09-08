@@ -98,7 +98,15 @@ never charges, and it takes no `--confirm` flag. Passing one is rejected with
 a pointer to the confirm step, so a caller cannot believe a charge happened.
 
 `order confirm` is the only paid step and is gated: without `--confirm` it
-prints the order id, status and cost, then exits 0.
+prints the order id, status and cost, then exits 0. `--timeout <seconds>`
+(default 45) bounds how long it waits for the charge to settle.
+
+**A 200 from `/confirm` does not mean you were charged.** Printful accepts the
+order, then bills asynchronously. With no billing method the call returns 200
+with `status: "pending"` and `error: null`, and only flips to `failed`
+("No payment method added") a moment later. `order confirm` therefore polls
+until the status settles and **exits 1 with Printful's reason** if it failed —
+in `--json` mode too. Never treat the POST's success as payment.
 
 Recipient fields map to the API `recipient` object. `--country` is an ISO
 code (`DE`, `US`). `--state` is required for US/CA/AU.
