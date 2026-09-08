@@ -15,8 +15,8 @@ resolve real ones from `GET /stores` and `GET /files`.
 |---|---|
 | `whoami` / `stores` | `GET /stores` |
 | `auth login --token` | `GET /stores` (validation only) |
-| `files list` | `GET /files?limit&offset` |
 | `files get` / `files wait` | `GET /files/{id}` |
+| `mockup` | `GET /store/products/{id}` → files of `type: "preview"` |
 | `files add` | `POST /files` `{url, filename}` |
 | `catalog product` | `GET /products/{id}` |
 | `catalog variants` | `GET /products/{id}` then filter `result.variants` |
@@ -92,6 +92,41 @@ Live shape (2026-08-25): a 2996×4778 RGBA PNG of 694026 bytes came back
 with a numeric `id`, a 32-char hex `hash`, `mime_type: "image/png"`, the
 decoded pixel dimensions, and `status: "ok"` in under 3s when served from
 a `serve --ttl 1d` URL.
+
+## Endpoints Printful has withdrawn (measured 2026-09-08)
+
+Both are still present in the published docs, so re-check before assuming a
+caller is at fault:
+
+| Call | Response |
+|---|---|
+| `GET /files` | **410** `This API endpoint has been permanently removed` |
+| `DELETE /files/{id}` | **404** `NotFound` |
+
+Consequence: the file library is **append-only and unlistable** over the API.
+`files add` returning an id is the only record you get — persist it. Deleting a
+print file requires the web UI. `store product get <id>` is the one way to
+recover which files are attached to something.
+
+`DELETE /store/products/{id}` *does* work (200 with an empty `result`), so
+products are removable even though their files are not.
+
+## Mockups
+
+Creating a sync product kicks off asynchronous mockup rendering; the results
+arrive as extra entries in each variant's `files` array with `type: "preview"`
+and a `preview_url` / `thumbnail_url` on `files.cdn.printful.com`. They are
+absent for the first few seconds, which is why `cmdMockup` polls
+`GET /store/products/{id}` rather than reading once.
+
+There is no endpoint that returns mockups for an existing product — the Mockup
+Generator API (`POST /mockup-generator/create-task/{id}`) renders *new* ones
+from a print file and is a different flow with its own task polling and daily
+allowance. For "show me what I just made", reading the product is cheaper.
+
+`printful mockup --serve` writes an `index.html` contact sheet before calling
+`serve`, because `serve` exits 1 with `entry file not found` on a directory
+without one.
 
 ## Store products vs templates vs the dashboard
 
