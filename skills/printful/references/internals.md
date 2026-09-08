@@ -1,0 +1,230 @@
+# Maintainer notes
+
+`scripts/printful.jsh` is the only HTTP client. Token resolution, host
+allow-listing, 401 handling and error formatting exist in exactly one place.
+
+Wire formats below were verified against a live Printful account on
+**2026-08-25**. Account-specific values are redacted — customer id,
+environment id, store id, file ids and sync-product ids are all
+per-tenant, so treat every id in this document as a placeholder and
+resolve real ones from `GET /stores` and `GET /files`.
+
+## Endpoint map
+
+| Command | Endpoint |
+|---|---|
+| `whoami` / `stores` | `GET /stores` |
+| `auth login --token` | `GET /stores` (validation only) |
+| `files get` / `files wait` | `GET /files/{id}` |
+| `mockup` | `GET /store/products/{id}` → files of `type: "preview"` |
+| `files add` | `POST /files` `{url, filename}` |
+| `catalog product` | `GET /products/{id}` |
+| `catalog variants` | `GET /products/{id}` then filter `result.variants` |
+| `store products` | `GET /store/products` |
+| `store product get` | `GET /store/products/{id}` |
+| `store product create` | `POST /store/products` |
+| `orders` | `GET /orders` |
+| `order get` | `GET /orders/{id}` |
+| `order create` | `POST /orders` (draft unless `?confirm=1`) |
+| `order confirm` | `POST /orders/{id}/confirm` |
+| GraphQL mint | `POST https://www.printful.com/graphql` from a dashboard tab |
+
+Auth header is `Authorization: Bearer <private_token>` plus
+`Accept: application/json`. Account-level tokens also need
+`X-PF-Store-Id: <store_id>`.
+
+Docs: <https://developers.printful.com/docs/>
+(`#tag/File-Library-API-examples`, `#tag/Orders-API-examples`,
+`#tag/Using-Private-Token`).
+
+## Token handling
+
+Resolution order: `--token` flag → stored config → GraphQL mint from a
+logged-in dashboard tab (only on `auth login` without `--token`).
+
+Private tokens are minted in the Developer Portal
+(<https://developers.printful.com/tokens>) **or** via dashboard GraphQL.
+The portal itself is a Nuxt app on `developers.printful.com` that talks to
+`https://www.printful.com/graphql` after an OAuth bounce
+(`/oauth/authorize?client_id=printful-dev-portal`).
+
+Mint mutation (captured 2026-08-25 from `_nuxt/cc18ace.js`):
+
+```
+mutation devPortalCreateTokenMutation($input: DevPortalTokenInput!) {
+  devPortal {
+    devPortalCreateToken(input: $input) {
+      id tokenId name email createdAt expiresAt lastAccess rawAccessToken
+      scopes { scope title }
+    }
+  }
+}
+```
+
+`DevPortalTokenInput`: `{ name, email, expiresAt (ISO8601 Zulu string — a
+unix timestamp is rejected), tokenType: "store"|"environment", storeId
+(required for store), scopes: [String!] }`.
+
+Valid **store** scopes: `orders`, `orders/read`, `sync_products`,
+`sync_products/read`, `file_library`, `file_library/read`, `webhooks`,
+`webhooks/read`. `product_templates` is Account-only — sending it on a
+store token returns
+`Scope "product_templates" is not valid for type "store"`.
+
+CSRF for the GraphQL POST comes from
+`PF.Config.PUSHER_CONFIG.CSRF_TOKEN` (or `<meta name="csrf-token">`) on
+`www.printful.com`. `api.printful.com` is CORS-blocked from that origin
+(`TypeError: Failed to fetch`) — harvest/mint the token in page context,
+then call REST from the sandbox.
+
+`browser.eval` opportunistically JSON-parses page results; accept both a
+string and an already-parsed object when reading `PF.Customer`.
+
+## Files
+
+`POST /files` is URL-only. Printful's workers GET the URL; there is no
+multipart upload on this endpoint. A freshly created file has
+`status: "waiting"`, `size: 0`, `width: null` until processing finishes,
+then `status: "ok"` with hash / mime / pixel size. Failed fetches stay
+`waiting` or flip to `failed`.
+
+Live shape (2026-08-25): a 2996×4778 RGBA PNG of 694026 bytes came back
+with a numeric `id`, a 32-char hex `hash`, `mime_type: "image/png"`, the
+decoded pixel dimensions, and `status: "ok"` in under 3s when served from
+a `serve --ttl 1d` URL.
+
+## Endpoints Printful has withdrawn (measured 2026-09-08)
+
+Both are still present in the published docs, so re-check before assuming a
+caller is at fault:
+
+| Call | Response |
+|---|---|
+| `GET /files` | **410** `This API endpoint has been permanently removed` |
+| `DELETE /files/{id}` | **404** `NotFound` |
+
+Consequence: the file library is **append-only and unlistable** over the API.
+`files add` returning an id is the only record you get — persist it. Deleting a
+print file requires the web UI. `store product get <id>` is the one way to
+recover which files are attached to something.
+
+`DELETE /store/products/{id}` *does* work (200 with an empty `result`), so
+products are removable even though their files are not.
+
+## Confirming an order is asynchronous (measured 2026-09-08)
+
+`POST /orders/{id}/confirm` returning **200** means *accepted*, not *paid*.
+Observed twice on an account with no billing method:
+
+| t | `GET /orders/{id}` |
+|---|---|
+| immediately after 200 | `status: "pending"`, `error: null` |
+| ~1 min later | `status: "failed"`, `error: "No payment method added"` |
+
+So the naive `✓ charged` off the POST response is wrong precisely when the
+user needs to know it failed. `cmdOrderConfirm` polls until the status reaches
+a terminal value and dies with `o.error` on `failed`.
+
+Statuses seen: `draft` → `pending` → (`inprocess` → `fulfilled`) or `failed`.
+`canceled` and `onhold` also exist. `failed` is **recoverable** — the order
+keeps its items and recipient, so a retry after fixing billing is just another
+`confirm`, not a re-create.
+
+### Billing methods need a billing address first
+
+Printful will not attach *any* billing method — PayPal included — until the
+billing-address form is complete. `Abrechnung → Zahlungsmethoden`
+(`/dashboard/billing/billing-methods`) shows
+`Fülle bitte die Abrechnungsinformationen aus, um eine Abrechnungsmethode
+hinzuzufügen!` and `Keine Abrechnungsmethode ausgewählt` until name, address,
+city, country and ZIP are saved. Linking PayPal at the account level is **not**
+sufficient; the API cannot see it and `confirm` fails with
+`No payment method added`.
+
+`/dashboard/billing` redirects to `/dashboard/billing/wallet`;
+`/dashboard/billing-methods` (no `billing/` prefix) is a 404.
+
+### The Printful Wallet is the way past a blocked billing method
+
+A prepaid **wallet** balance pays for orders without any billing method
+attached, which is the escape hatch when the billing-address form cannot be
+completed (its reCAPTCHA failed to render, 2026-09-08). Printful's own copy
+says the wallet exists to avoid *"fehlgeschlagene Bestellungen aufgrund
+unzureichender Mittel"*.
+
+Confirmed end-to-end: with a funded EUR wallet and **no** billing method on the
+account, `POST /orders/{id}/confirm` on a previously-`failed` order succeeded,
+the order moved to `pending` → *"Abwicklung wird vorbereitet"*, and the wallet
+balance dropped by exactly the order total.
+
+**The wallet is invisible to the v1 API.** All of these 404:
+
+```
+GET /wallets   /wallet   /billing/wallet   /store/wallet   /billing/balance
+```
+
+So a balance can only be read from `/dashboard/billing/wallet` in a browser.
+Do not gate automation on a balance check — there is nothing to check. Instead
+run `order confirm` and let the settled-status polling report the outcome; an
+insufficient balance surfaces as `failed` with a reason, same as a missing
+billing method.
+
+Wallets are **per currency** and non-transferable: a EUR order cannot draw on a
+USD wallet. The page also exposes *automatische Aufladung* (auto top-up) —
+worth confirming its state before relying on a balance persisting.
+
+## Mockups
+
+Creating a sync product kicks off asynchronous mockup rendering; the results
+arrive as extra entries in each variant's `files` array with `type: "preview"`
+and a `preview_url` / `thumbnail_url` on `files.cdn.printful.com`. They are
+absent for the first few seconds, which is why `cmdMockup` polls
+`GET /store/products/{id}` rather than reading once.
+
+There is no endpoint that returns mockups for an existing product — the Mockup
+Generator API (`POST /mockup-generator/create-task/{id}`) renders *new* ones
+from a print file and is a different flow with its own task polling and daily
+allowance. For "show me what I just made", reading the product is cheaper.
+
+`printful mockup --serve` writes an `index.html` contact sheet before calling
+`serve`, because `serve` exits 1 with `entry file not found` on a directory
+without one.
+
+## Store products vs templates vs the dashboard
+
+`POST /store/products` creates a **sync product** on the token's store.
+On a native "Personal orders" store (`type: "native"`):
+
+- It does **not** appear under Dashboard → Meine Produkte (that list is
+  Design Maker **templates**).
+- Dashboard → Stores still shows the "connect a shop" empty state,
+  because a native store is not a Shopify/Etsy integration.
+
+The mockup file (`type: "preview"`) is generated asynchronously after
+create; `GET /store/products/{id}` includes it once ready.
+
+Bella + Canvas 3001 is catalog product **71**. Black / M is variant
+**4017** (in stock for DE, 2026-08-25). Front placement file type is
+`front` on create and comes back as `default` on read.
+
+## Design Maker UI (do not automate)
+
+Measured 2026-08-25 on `/dashboard/order/update` with product 71:
+
+- The Design Maker file-library dialog (`Dateibibliothek`) has a hidden
+  `<input type=file>` (`#file-library-upload-*`) plus a Vue drop zone.
+- `playwright-cli upload` / `drop` / setting `input.files` + dispatching
+  `change` never produces a network request. Terms checkbox
+  (`#file-library-copyright`) also does not stay checked via DOM.
+- "Mit dem Designen beginnen" on the catalog PDP is a Vue submit that
+  does not navigate; the working entry is
+  `/dashboard/order/update` → search → pick product.
+- DTFlex upsell overlay intercepts clicks until dismissed.
+
+Use the File Library API instead. Leave the UI for humans.
+
+## Host allow-list
+
+Only `api.printful.com` receives the Bearer token. GraphQL minting uses
+the dashboard tab's cookies, not the token. `printful api` rejects any
+other host.

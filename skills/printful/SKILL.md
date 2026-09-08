@@ -1,0 +1,116 @@
+---
+name: printful
+description: >
+  Print-on-demand via the Printful REST API (api.printful.com) — private-token
+  auth, file-library uploads, catalog lookup, store/sync products, and draft or
+  confirmed orders. Use when the user mentions Printful, print-on-demand, POD
+  tees/hoodies, Bella+Canvas, DTG, mockups, Printful file library, sync products,
+  or wants to upload artwork and order merch without clicking through
+  printful.com. Triggers on "printful", "print on demand", "POD order", "upload
+  a print file", "Bella Canvas 3001", "draft a Printful order". Not Printify,
+  not Gelato, not Spreadshirt — those are different vendors.
+allowed-tools: bash
+command: printful
+script: scripts/printful.jsh
+---
+
+# Printful
+
+Talk to [Printful's REST API](https://developers.printful.com/docs/) from the
+shell. Skip the Design Maker UI — its file-library drop zone does not accept
+automated uploads (measured 2026-08-25). Auth is a **private token**; API calls
+go from the sandbox, never from a `printful.com` tab (CORS).
+
+## Quick start
+
+```bash
+printful auth login --token <tok>     # once; mint at developers.printful.com/tokens
+printful whoami                       # customer + store (token last-4 only)
+printful stores                       # native / shopify / … including "Personal orders"
+
+printful files add --url https://example.com/art.png --filename art.png
+printful files get <file-id>           # poll until status=ok (width/height/hash)
+
+printful catalog product 71            # Bella + Canvas 3001
+printful catalog variants 71 --color Black --size M
+
+printful store product create --name "My tee" --variant-id 4017 --file-id <file-id> --confirm
+printful mockup <sync-product-id> --serve   # PNGs into the VFS + ![](…) links
+printful order create --variant-id 4017 --file-id <file-id> \
+  --name "Jane Doe" --address1 "1 Example St" --city Berlin --country DE --zip 10115
+printful order confirm <order-id> --confirm  # CHARGES the account — preview without this flag
+                                             # polls until settled; exits 1 if billing failed
+```
+
+`--json` on any command dumps the raw payload. Mutations that create store
+products or charge money need `--confirm`; without it they print the request
+and exit 0.
+
+## Authentication
+
+Preferred: a **store-level private token** from
+<https://developers.printful.com/tokens> (scopes `orders`, `file_library`,
+`sync_products`), stored with `printful auth login --token <tok>`. The token is
+validated against `GET /stores` before being saved and **never printed** —
+`printful auth status` shows only the last four characters.
+
+Fallback, if a logged-in `www.printful.com` dashboard tab is open:
+`printful auth login` (no `--token`) mints a store token via the dashboard
+GraphQL (`devPortalCreateTokenMutation`) and stores it. That still needs the
+human to have signed in to Printful once.
+
+`product_templates` is **Account-only** — a store token with that scope is
+rejected. Pass `X-PF-Store-Id` only for account-level tokens; store tokens
+already have a store baked in.
+
+CORS: `fetch('https://api.printful.com/…')` from a Printful tab throws
+`TypeError: Failed to fetch`. Always call the API from this CLI.
+
+## Files must be publicly fetchable
+
+`POST /files` takes a URL. Printful's servers GET it; a `file://` or
+sandbox-only path will sit in `status: waiting` forever. Host the PNG first
+(`serve --ttl 1d --no-bridge <dir>`) or pass an already-public `--url`.
+`printful files add --path ./art.png` does the serve step for you.
+
+Poll `GET /files/{id}` until `status` is `ok` or `failed`. A 3000×4800 RGBA PNG
+is plenty for a DTG chest print (Printful asks ≥1500×3000 @ 150 dpi).
+
+**The library is write-and-remember.** `GET /files` is **410 (permanently
+removed)** and `DELETE /files/{id}` is 404, so you cannot list or delete over
+the API — keep the id `files add` returns, and delete in the web UI. Mockups are
+the exception worth automating: `printful mockup <product-id> --serve` pulls the
+rendered previews into the VFS and prints `![](…)` links.
+
+## Orders vs store products vs templates
+
+| Surface | What it is | Where it shows |
+|---|---|---|
+| File library | Print files, hashed, reusable | `files get <id>` only — see below |
+| Sync / store product | Named SKU + variant + file, no charge | API `GET /store/products` — **not** "Meine Produkte" |
+| Product template | Design Maker save | Dashboard → Meine Produkte |
+| Order | A shipment. Draft = no charge; confirm = pay | Dashboard → Bestellungen |
+
+Creating a sync product does **not** put it in "Meine Produkte". That list is
+templates. Personal-orders (native) stores also don't appear as a connected
+Shopify/Etsy shop on the Stores page.
+
+## Don't
+
+- Don't drive the Design Maker file-library with `playwright-cli drop` /
+  hidden `<input type=file>` — the Vue handler never fires (2026-08-25).
+- Don't confirm an order without an explicit user "yes, charge me".
+- Don't read a 200 from `/orders/{id}/confirm` as "charged" — billing settles
+  asynchronously and lands on `failed` with `error` set. Poll the status.
+- Don't assume a PayPal account linked at the Printful account level is a usable
+  billing method: it needs a complete billing address first, or `confirm` fails
+  with `No payment method added`. A prepaid **wallet** balance pays without any
+  billing method — but no API endpoint exposes it, so read it in the dashboard
+  and let `order confirm` report the outcome.
+- Don't print the private token. Don't embed a customer or store id as a
+  fallback — resolve from `GET /stores`.
+- Don't call `api.printful.com` from page context.
+
+Per-command flags: [`references/COMMANDS.md`](references/COMMANDS.md).
+Endpoint map, GraphQL mint, CORS, and the UI traps:
+[`references/internals.md`](references/internals.md).
