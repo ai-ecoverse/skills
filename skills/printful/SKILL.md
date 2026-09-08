@@ -39,6 +39,7 @@ printful mockup <sync-product-id> --serve   # PNGs into the VFS + ![](…) links
 printful order create --variant-id 4017 --file-id <file-id> \
   --name "Jane Doe" --address1 "1 Example St" --city Berlin --country DE --zip 10115
 printful order confirm <order-id> --confirm  # CHARGES the account — preview without this flag
+                                             # polls until settled; exits 1 if billing failed
 ```
 
 `--json` on any command dumps the raw payload. Mutations that create store
@@ -99,6 +100,11 @@ Shopify/Etsy shop on the Stores page.
 - Don't drive the Design Maker file-library with `playwright-cli drop` /
   hidden `<input type=file>` — the Vue handler never fires (2026-08-25).
 - Don't confirm an order without an explicit user "yes, charge me".
+- Don't read a 200 from `/orders/{id}/confirm` as "charged" — billing settles
+  asynchronously and lands on `failed` with `error` set. Poll the status.
+- Don't assume a PayPal account linked at the Printful account level is a usable
+  billing method: it needs a complete billing address first, or `confirm` fails
+  with `No payment method added`.
 - Don't print the private token. Don't embed a customer or store id as a
   fallback — resolve from `GET /stores`.
 - Don't call `api.printful.com` from page context.
