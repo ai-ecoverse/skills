@@ -66,12 +66,15 @@ appear under Meine Produkte.
 |---|---|
 | `printful orders` | `--limit N`, `--offset N`, `--status` |
 | `printful order get <id>` | — |
-| `printful order create` | `--variant-id`, `--file-id` / `--file-url`, `--quantity N`, `--name`, `--address1`, `--address2`, `--city`, `--state`, `--country`, `--zip`, `--confirm` |
+| `printful order create` | `--variant-id`, `--file-id` / `--file-url`, `--quantity N`, `--name`, `--address1`, `--address2`, `--city`, `--state`, `--country`, `--zip` |
 | `printful order confirm <id>` | `--confirm` |
 
-`order create` without `--confirm` POSTs a **draft** (`?confirm=0` is the
-API default) — no charge. `order confirm` is the paid step and is gated:
-without `--confirm` it prints the order id and cost, then exits 0.
+`order create` **always** POSTs a draft (`confirm=0`, the API default) — it
+never charges, and it takes no `--confirm` flag. Passing one is rejected with
+a pointer to the confirm step, so a caller cannot believe a charge happened.
+
+`order confirm` is the only paid step and is gated: without `--confirm` it
+prints the order id, status and cost, then exits 0.
 
 Recipient fields map to the API `recipient` object. `--country` is an ISO
 code (`DE`, `US`). `--state` is required for US/CA/AU.
