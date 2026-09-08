@@ -111,6 +111,39 @@ recover which files are attached to something.
 `DELETE /store/products/{id}` *does* work (200 with an empty `result`), so
 products are removable even though their files are not.
 
+## Confirming an order is asynchronous (measured 2026-09-08)
+
+`POST /orders/{id}/confirm` returning **200** means *accepted*, not *paid*.
+Observed twice on an account with no billing method:
+
+| t | `GET /orders/{id}` |
+|---|---|
+| immediately after 200 | `status: "pending"`, `error: null` |
+| ~1 min later | `status: "failed"`, `error: "No payment method added"` |
+
+So the naive `✓ charged` off the POST response is wrong precisely when the
+user needs to know it failed. `cmdOrderConfirm` polls until the status reaches
+a terminal value and dies with `o.error` on `failed`.
+
+Statuses seen: `draft` → `pending` → (`inprocess` → `fulfilled`) or `failed`.
+`canceled` and `onhold` also exist. `failed` is **recoverable** — the order
+keeps its items and recipient, so a retry after fixing billing is just another
+`confirm`, not a re-create.
+
+### Billing methods need a billing address first
+
+Printful will not attach *any* billing method — PayPal included — until the
+billing-address form is complete. `Abrechnung → Zahlungsmethoden`
+(`/dashboard/billing/billing-methods`) shows
+`Fülle bitte die Abrechnungsinformationen aus, um eine Abrechnungsmethode
+hinzuzufügen!` and `Keine Abrechnungsmethode ausgewählt` until name, address,
+city, country and ZIP are saved. Linking PayPal at the account level is **not**
+sufficient; the API cannot see it and `confirm` fails with
+`No payment method added`.
+
+`/dashboard/billing` redirects to `/dashboard/billing/wallet`;
+`/dashboard/billing-methods` (no `billing/` prefix) is a 404.
+
 ## Mockups
 
 Creating a sync product kicks off asynchronous mockup rendering; the results
