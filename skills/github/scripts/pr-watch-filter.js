@@ -49,7 +49,13 @@ function findWatchWebhook(stdout, name) {
       return fields.length > 1 && fields[1] === name;
     });
   if (!line) return null;
-  return { id: line.trim().split(/\s+/)[0], filtered: line.includes('[filtered]') };
+  // `webhook list` renders the delivery target as a trailing `-> <unit>`
+  // column, after the url and before the optional `[filtered]` marker. It is
+  // the only way to tell which unit an existing watch delivers to, so surface
+  // it; `target` is null when the column is absent or unparseable.
+  const targetMatch = line.match(/\s->\s+(\S+)/);
+  const target = targetMatch && !targetMatch[1].startsWith('[') ? targetMatch[1] : null;
+  return { id: line.trim().split(/\s+/)[0], filtered: line.includes('[filtered]'), target };
 }
 
 module.exports = { buildPrWatchFilter, composePrWatchFilter, findWatchWebhook };
