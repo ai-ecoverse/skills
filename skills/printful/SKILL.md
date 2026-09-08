@@ -29,15 +29,15 @@ printful whoami                       # customer + store (token last-4 only)
 printful stores                       # native / shopify / … including "Personal orders"
 
 printful files add --url https://example.com/art.png --filename art.png
-printful files get 1044863309         # poll until status=ok (width/height/hash)
+printful files get <file-id>           # poll until status=ok (width/height/hash)
 
-printful catalog product 71           # Bella + Canvas 3001
+printful catalog product 71            # Bella + Canvas 3001
 printful catalog variants 71 --color Black --size M
 
-printful store product create --name "My tee" --variant-id 4017 --file-id 1044863309 --confirm
-printful order create --variant-id 4017 --file-id 1044863309 \
-  --name "Lars Trieloff" --address1 "…" --city Berlin --country DE --zip 10115
-printful order confirm 123 --confirm  # CHARGES the account — preview without this flag
+printful store product create --name "My tee" --variant-id 4017 --file-id <file-id> --confirm
+printful order create --variant-id 4017 --file-id <file-id> \
+  --name "Jane Doe" --address1 "1 Example St" --city Berlin --country DE --zip 10115
+printful order confirm <order-id> --confirm  # CHARGES the account — preview without this flag
 ```
 
 `--json` on any command dumps the raw payload. Mutations that create store
