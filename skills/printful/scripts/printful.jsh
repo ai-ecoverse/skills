@@ -225,7 +225,7 @@ async function api(pathOrUrl, opts = {}) {
 }
 
 function unwrap(res) {
-  if (res && Object.prototype.hasOwnProperty.call(res, 'result')) return res.result;
+  if (res && typeof res === 'object' && Object.hasOwn(res, 'result')) return res.result;
   return res;
 }
 
@@ -425,37 +425,73 @@ async function cmdAuthStatus(flags) {
     console.log(c.dim(`  printful auth login --token <tok>   (create one at ${TOKEN_UI})`));
     return;
   }
+  // Validate non-fatally: api() calls cli.die() on 401/403, which throws
+  // NodeExitError. Rethrowing that here would abort `auth status` — the one
+  // command whose entire job is to REPORT a rejected token. So probe with a
+  // raw fetch and translate the status into `valid` instead.
   let stores = [];
   let valid = true;
+  let httpStatus = null;
   try {
-    const res = unwrap(await api('/stores', { flags }));
-    stores = Array.isArray(res) ? res : [];
+    const token = await getToken(flags);
+    const headers = { Authorization: `Bearer ${token}`, Accept: 'application/json' };
+    const storeOverride = str(flags['store-id'] || flags.storeId) || cfg.store_id;
+    if (storeOverride && cfg.token_source === 'account-token') {
+      headers['X-PF-Store-Id'] = String(storeOverride);
+    }
+    const res = await fetch(resolveUrl('/stores'), { headers });
+    httpStatus = res.status;
+    const text = await res.text();
+    if (!res.ok) {
+      valid = false;
+    } else {
+      let parsed = {};
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        parsed = {};
+      }
+      const list = unwrap(parsed);
+      stores = Array.isArray(list) ? list : [];
+    }
   } catch (err) {
-    if (err?.name === 'NodeExitError') throw err;
+    if (err?.name === 'NodeExitError') throw err; // no token stored at all
     valid = false;
   }
   const expired = cfg.token_expires_at ? new Date(cfg.token_expires_at) < new Date() : false;
   if (flags.json) {
     cli.out({
       authenticated: valid,
-      token: maskToken(cfg.token),
+      http_status: httpStatus,
+      token: maskToken(activeToken || cfg.token),
       source: cfg.token_source || 'unknown',
       expires_at: cfg.token_expires_at || null,
       expired,
       store_id: cfg.store_id || null,
       stores,
     });
+    if (!valid) process.exit(1); // non-zero on failure even in --json mode
     return;
   }
   console.log('');
-  console.log(`  ${valid ? c.green('authenticated') : c.red('token rejected')}`);
-  console.log(`  token     ${c.dim(maskToken(cfg.token))}`);
+  console.log(
+    `  ${valid ? c.green('authenticated') : c.red('token rejected')}` +
+      (valid || httpStatus === null ? '' : c.dim(`  (HTTP ${httpStatus})`)),
+  );
+  console.log(`  token     ${c.dim(maskToken(activeToken || cfg.token))}`);
   console.log(`  source    ${cfg.token_source || 'unknown'}`);
   if (cfg.token_expires_at) {
     console.log(`  expires   ${cfg.token_expires_at}${expired ? c.red('  EXPIRED') : ''}`);
   }
   for (const s of stores) {
     console.log(`  store     ${c.cyan(s.id)}  ${s.name}  ${c.dim(s.type || '')}`);
+  }
+  if (!valid) {
+    console.log('');
+    console.log(
+      c.dim(`  Re-authenticate: printful auth login --token <tok>   (${TOKEN_UI})`),
+    );
+    process.exit(1);
   }
 }
 
@@ -625,12 +661,33 @@ async function cmdFilesAdd(flags) {
   }
   const res = await api('/files', { method: 'POST', body: { url, filename }, flags });
   let f = unwrap(res) || {};
-  if (bool(flags.wait) && f.id) {
-    f = (await waitForFile(f.id, flags, num(flags.timeout, 60))) || f;
+  const waited = bool(flags.wait) && !!f.id;
+  const timeout = num(flags.timeout, 60);
+  if (waited) {
+    f = (await waitForFile(f.id, flags, timeout)) || f;
   }
+
+  // With --wait the caller is asking "is this file usable yet". Printing a
+  // success line for a `failed` or still-pending file would let automation
+  // attach an unusable print file to an order, so mirror `files wait` and
+  // fail loudly. Without --wait, `waiting` is the expected outcome.
+  const unusable = waited && f.status !== 'ok';
+
   if (flags.json) {
     cli.out(res.result ? { ...res, result: f } : f);
+    if (unusable) process.exit(1); // non-zero on failure even in --json mode
     return;
+  }
+  if (unusable) {
+    const detail = f.message ? `: ${f.message}` : '';
+    if (f.status === 'failed') {
+      cli.die(`File ${f.id} failed processing${detail}`, { prefix: 'printful' });
+    }
+    cli.die(
+      `File ${f.id} still ${f.status || 'pending'} after ${timeout}s${detail}\n` +
+        `  Retry with a longer wait: printful files wait ${f.id} --timeout 180`,
+      { prefix: 'printful' },
+    );
   }
   console.log('');
   console.log(c.green('✓ uploaded') + `  ${c.cyan(c.bold(String(f.id)))}  ${f.filename || filename}`);
@@ -860,6 +917,18 @@ async function cmdOrderCreate(flags) {
     cli.die(
       'usage: printful order create --variant-id N --file-id F --name "…" --address1 "…" --city C --country DE --zip Z\n' +
         '  Posts a DRAFT (no charge). Then: printful order confirm <id> --confirm',
+      { prefix: 'printful' },
+    );
+  }
+  // `order create` is deliberately draft-only, so --confirm has no meaning
+  // here. Silently ignoring it would let a caller believe they had paid;
+  // reject it and point at the one command that does charge.
+  if (bool(flags.confirm)) {
+    cli.die(
+      'order create never charges, so --confirm is not accepted here.\n' +
+        '  It always posts a draft. To pay for it afterwards:\n' +
+        '    printful order create …            # returns <order-id>\n' +
+        '    printful order confirm <order-id> --confirm',
       { prefix: 'printful' },
     );
   }
