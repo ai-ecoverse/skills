@@ -26,16 +26,40 @@ Global conventions:
 
 | Command | Flags |
 |---|---|
-| `printful files list` | `--limit N`, `--offset N` |
 | `printful files get <id>` | — |
 | `printful files add` | `--url <https>`, `--path <vfs>`, `--filename <name>`, `--wait` |
 | `printful files wait <id>` | `--timeout <seconds>` (default 60) |
+
+**There is no `files list`.** `GET /files` answers **410 "This API endpoint has
+been permanently removed"** (measured 2026-09-08) even though it is still in
+Printful's docs. `printful files list` exits 1 with that explanation rather than
+letting a 410 look like an outage. The library is also append-only over the API
+— `DELETE /files/<id>` is 404, so removing a file needs the web UI. Record the
+id when you upload; `store product get <id>` shows the files on a product.
 
 `files add --url` POSTs `{url, filename}` to `/files`. `files add --path`
 requires a public URL — the CLI `serve`s the parent directory with
 `--ttl 1d --no-bridge` and POSTs that URL. `--wait` polls until `status=ok`
 or `failed`. Printful GETs the URL from their network; a sandbox-only path
 never leaves `waiting`.
+
+## Mockups
+
+| Command | Flags |
+|---|---|
+| `printful mockup <sync-product-id>` | `--out <dir>` (default `/workspace/printful-mockups`), `--serve`, `--timeout <seconds>` (default 60) |
+
+Printful renders mockups asynchronously **after** a sync product is created and
+attaches them to each variant as files of `type: "preview"`. There is no
+"get mockups" endpoint for an existing product, so this reads them off
+`GET /store/products/{id}` and polls until they appear.
+
+Each preview is downloaded into the VFS and printed as a markdown
+`![variant](url)` line. `--serve` publishes the directory (7-day TTL) and points
+the links at that URL, so they render in a chat client — a bare VFS path does
+not. `--serve` also writes an `index.html` contact sheet, both because `serve`
+requires an entry file and because it gives you one page showing every variant.
+Without `--serve` the links point at Printful's CDN.
 
 ## Catalog
 
