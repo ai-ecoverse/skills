@@ -1075,14 +1075,58 @@ async function cmdOrderConfirm(positional, flags) {
     return;
   }
   const res = await api(`/orders/${encodeURIComponent(id)}/confirm`, { method: 'POST', flags });
-  const o = unwrap(res) || {};
+  let o = unwrap(res) || {};
+
+  // A 200 from /confirm only means Printful ACCEPTED the order — billing is
+  // charged asynchronously. Measured 2026-09-08: with no billing method on the
+  // account, /confirm returned 200 with `status: "pending"` and `error: null`,
+  // and the order only flipped to `failed` ("No payment method added") a beat
+  // later. Reporting "charged" off the POST is therefore a lie in the exact
+  // case the user most needs to hear about, so settle the status first.
+  const settled = new Set(['failed', 'canceled', 'draft']);
+  const paid = new Set(['pending', 'inprocess', 'onhold', 'partial', 'fulfilled']);
+  const deadline = Date.now() + num(flags.timeout, 45) * 1000;
+  let confirmedPaid = false;
+  for (;;) {
+    if (settled.has(String(o.status))) break;
+    if (paid.has(String(o.status)) && Date.now() >= deadline) {
+      confirmedPaid = true; // held a payable status for the whole window
+      break;
+    }
+    if (Date.now() >= deadline) break;
+    await new Promise((r) => setTimeout(r, 3000));
+    o = unwrap(await api(`/orders/${encodeURIComponent(id)}`, { flags })) || o;
+    if (String(o.status) === 'failed') break;
+  }
+
+  const failed = String(o.status) === 'failed';
   if (flags.json) {
-    cli.out(res);
+    cli.out(o.status ? { ...res, result: o } : res);
+    if (failed) process.exit(1); // non-zero on failure even in --json mode
     return;
   }
+  if (failed) {
+    // o.error carries Printful's reason, e.g. "No payment method added".
+    cli.die(
+      `Order ${o.id || id} FAILED — not charged.\n` +
+        `  reason: ${o.error || 'none given by the API'}\n` +
+        '  Printful gates every billing method (PayPal included) behind a complete\n' +
+        '  billing address: Abrechnung → Zahlungsmethoden → fill the address form,\n' +
+        '  add the method, then retry:\n' +
+        `    printful order confirm ${o.id || id} --confirm`,
+      { prefix: 'printful' },
+    );
+  }
   console.log('');
-  console.log(c.green('✓ confirmed') + `  ${c.cyan(String(o.id || id))}  ${o.status || ''}`);
+  console.log(
+    c.green('✓ confirmed') +
+      `  ${c.cyan(String(o.id || id))}  ${o.status || ''}` +
+      (confirmedPaid ? '' : c.dim('  (status not yet settled)')),
+  );
   if (o.costs) console.log(`  charged   ${o.costs.currency || ''} ${o.costs.total || ''}`);
+  if (!confirmedPaid) {
+    console.log(c.dim(`  verify: printful order get ${o.id || id}`));
+  }
 }
 
 // ─── api escape hatch ────────────────────────────────────────────────────────
