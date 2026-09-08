@@ -3,9 +3,11 @@
 `scripts/printful.jsh` is the only HTTP client. Token resolution, host
 allow-listing, 401 handling and error formatting exist in exactly one place.
 
-Verified live against Lars Trieloff's account on **2026-08-25** (Printful
-customer `15477720`, environment `15376040`, native store `18658067`
-"Personal orders").
+Wire formats below were verified against a live Printful account on
+**2026-08-25**. Account-specific values are redacted — customer id,
+environment id, store id, file ids and sync-product ids are all
+per-tenant, so treat every id in this document as a placeholder and
+resolve real ones from `GET /stores` and `GET /files`.
 
 ## Endpoint map
 
@@ -86,9 +88,10 @@ multipart upload on this endpoint. A freshly created file has
 then `status: "ok"` with hash / mime / pixel size. Failed fetches stay
 `waiting` or flip to `failed`.
 
-Live example (2026-08-25): 2996×4778 RGBA PNG, 694026 bytes → file id
-`1044863309`, hash `bf4dce1a5bf7c4925e93b3b6bba03105`, processed in <3s
-from a `serve --ttl 1d` URL.
+Live shape (2026-08-25): a 2996×4778 RGBA PNG of 694026 bytes came back
+with a numeric `id`, a 32-char hex `hash`, `mime_type: "image/png"`, the
+decoded pixel dimensions, and `status: "ok"` in under 3s when served from
+a `serve --ttl 1d` URL.
 
 ## Store products vs templates vs the dashboard
 
