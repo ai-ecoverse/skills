@@ -1512,22 +1512,49 @@ async function prWatch(args) {
   if (!values.number) cli.die('pr watch: PR number required\n' + usage);
   const num = validateNum(values.number, 'PR number');
   const userFilter = flags.filter || null;
-  const scoopName = flags.scoop || process.env.SLICC_SCOOP || null;
+  // Which unit receives the licks: an explicit --scoop wins, else the unit
+  // SLICC identifies us as. SLICC_LICK_TARGET is deliberately unset for the
+  // default root cone, so null is a legitimate outcome and not an error —
+  // `webhook create` with no --scoop routes deliveries back to the calling
+  // unit ("Omit for your own cone"), so let core decide in that case.
+  const scoopName = flags.scoop || process.env.SLICC_LICK_TARGET || null;
   const repo = await repoFrom('pr watch', flags, repoArg);
-
-  if (!scoopName) {
-    cli.die(
-      'pr watch: no scoop specified and none could be inferred from the environment. ' +
-      'Pass --scoop <name> explicitly (the name of the scoop that should receive PR update licks).'
-    );
-  }
 
   const hookName = watchHookName(repo, num);
 
   const existing = await findExistingWatchWebhook(hookName);
   if (existing && existing.filtered) {
-    console.log(sym('success') + ' Already watching PR ' + color.cyan('#' + num) + ' in ' + repo + ' (webhook ' + color.gray(existing.id) + '). Nothing to do.');
-    return;
+    // A filtered watch already exists, but it delivers to whichever unit
+    // created it — not necessarily this caller. Reporting "nothing to do"
+    // without checking that would hand back a success while the licks go
+    // somewhere else, so only short-circuit on a target we can prove matches.
+    // Anything else falls through to the create → repoint → delete path below,
+    // which retargets the watch without ever letting delivery go dark.
+    if (scoopName && existing.target === scoopName) {
+      console.log(sym('success') + ' Already watching PR ' + color.cyan('#' + num) + ' in ' + repo + ' (webhook ' + color.gray(existing.id) + '). Nothing to do.');
+      return;
+    }
+    if (!scoopName) {
+      // Default root cone: SLICC_LICK_TARGET is unset for it by design and no
+      // shell command reports a unit its own name, so there is nothing to
+      // compare `existing.target` against. Retargeting on that basis would
+      // churn the webhook id on every re-run of an already-correct watch, and
+      // claiming success would be the very bug above — so report what is
+      // actually known and name the remedy.
+      console.log(sym('pending') + ' PR ' + color.cyan('#' + num) + ' in ' + repo
+        + ' is already being watched (webhook ' + color.gray(existing.id) + ')'
+        + (existing.target ? ' → ' + existing.target : ''));
+      cli.warn(
+        'pr watch: those licks are delivered to ' + (existing.target || 'the unit that created the watch')
+        + ', which cannot be confirmed to be you: SLICC_LICK_TARGET is unset for the default root cone '
+        + 'and nothing reports a cone its own name, so no target was resolved to compare against. '
+        + 'Left untouched. If you are not ' + (existing.target || 'that unit') + ', take it over with '
+        + '`gh pr unwatch ' + num + ' ' + repo + '` then `gh pr watch ' + num + ' ' + repo + '`, '
+        + 'or say who should receive them with `gh pr watch ' + num + ' ' + repo + ' --scoop <unit>`.'
+      );
+      return;
+    }
+    // Target is known and differs (or its column was unreadable) — retarget.
   }
 
   // GitHub webhooks are repository-wide, so filter on the SLICC side before
@@ -1546,8 +1573,10 @@ async function prWatch(args) {
   );
   const filter = composePrWatchFilter(defaultFilter, userFilter);
 
-  // 1. Create the SLICC-side webhook endpoint.
-  const createCmd = `webhook create --scoop ${escapeShellArg(scoopName)} ` +
+  // 1. Create the SLICC-side webhook endpoint. Omit --scoop entirely when no
+  // target was resolved, so core routes the licks back to the calling unit.
+  const createCmd = 'webhook create ' +
+    (scoopName ? `--scoop ${escapeShellArg(scoopName)} ` : '') +
     `--name ${escapeShellArg(hookName)} --filter ${escapeShellArg(filter)}`;
   let createResult;
   try { createResult = await exec(createCmd); }
@@ -1560,9 +1589,11 @@ async function prWatch(args) {
     cli.die('pr watch: could not parse `webhook create` output — got:\n' + createResult.stdout);
   }
 
-  // 2. Register that URL as a real GitHub repo webhook. Legacy watches had no
-  // SLICC filter; repoint their existing GitHub hook before deleting the old
-  // endpoint so delivery remains live throughout the upgrade.
+  // 2. Register that URL as a real GitHub repo webhook. Reused for two kinds of
+  // migration — a legacy watch that has no SLICC filter, and a watch pointing
+  // at the wrong unit — since `webhook` has no update/retarget verb, so both
+  // mean a new endpoint and a new url. Repoint the existing GitHub hook before
+  // deleting the old endpoint so delivery never goes dark in between.
   let hook;
   try {
     let existingHook = null;
@@ -1588,14 +1619,18 @@ async function prWatch(args) {
   if (existing) {
     try {
       const deleted = await exec(`webhook delete ${escapeShellArg(existing.id)}`);
-      if (deleted.exitCode !== 0) cli.warn('pr watch: upgraded delivery but could not delete legacy SLICC webhook ' + existing.id);
+      if (deleted.exitCode !== 0) cli.warn('pr watch: migrated delivery but could not delete the superseded SLICC webhook ' + existing.id);
     } catch {
-      cli.warn('pr watch: upgraded delivery but could not delete legacy SLICC webhook ' + existing.id);
+      cli.warn('pr watch: migrated delivery but could not delete the superseded SLICC webhook ' + existing.id);
     }
   }
 
-  console.log(sym('success') + (existing ? ' Upgraded watch for PR ' : ' Watching PR ') + color.cyan('#' + num) + ' in ' + repo);
-  console.log(color.gray('SLICC webhook:  ') + webhookId + ' (' + hookName + ') → ' + scoopName);
+  // `existing.filtered` here means the filter was already current, so the only
+  // reason we rebuilt the watch was to move it to a different unit.
+  const verb = !existing ? ' Watching PR ' : existing.filtered ? ' Retargeted watch for PR ' : ' Upgraded watch for PR ';
+  console.log(sym('success') + verb + color.cyan('#' + num) + ' in ' + repo);
+  console.log(color.gray('SLICC webhook:  ') + webhookId + ' (' + hookName + ') → '
+    + (scoopName || 'this unit (routed by SLICC core)'));
   console.log(color.gray('GitHub hook:    ') + hook.id);
   console.log(color.gray('Events:         ') + WATCH_EVENTS.join(', '));
   console.log(color.gray('Stop watching:  ') + 'gh pr unwatch ' + num + ' ' + repo);
@@ -3320,7 +3355,8 @@ const HELP = {
           '--watch                   install the event-driven watch (SLICC equivalent of upstream polling;',
           '                          mutates the repo — see `gh pr watch`)',
           '--filter <js>             passed through to the watch; drops events before they reach the scoop',
-          '--scoop <name>            scoop that should receive the watch licks'],
+          '--scoop <name>            unit that should receive the watch licks',
+          '                          (default: the calling cone or scoop)'],
         notes: ['JSON fields: ' + PR_CHECKS_FIELDS.join(', ')],
       },
       create: {
@@ -3399,7 +3435,7 @@ const HELP = {
         desc: 'Watch a PR event-driven: PR/review/CI events arrive as licks',
         flags: [REPO_HELP,
           '--filter <js>             additional predicate ANDed with the automatic PR-scoped filter',
-          '--scoop <name>            receiving scoop (default: $SLICC_SCOOP)'],
+          '--scoop <name>            receiving unit (default: the calling cone or scoop)'],
         notes: [
           'Installs a PR-filtered SLICC webhook plus a GitHub repo webhook. Idempotent.',
           'Mutates the repository. Tear it down with `gh pr unwatch <num>`.',
