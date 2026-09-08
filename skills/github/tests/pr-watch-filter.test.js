@@ -110,10 +110,34 @@ test('distinguishes filtered watches from legacy endpoints', () => {
   assert.deepEqual(findWatchWebhook(output, 'pr-owner-repo-267-watch'), {
     id: 'old-id',
     filtered: false,
+    target: 'scoop',
   });
   assert.deepEqual(findWatchWebhook(output, 'pr-owner-repo-268-watch'), {
     id: 'new-id',
     filtered: true,
+    target: 'scoop',
   });
   assert.equal(findWatchWebhook(output, 'pr-owner-repo-26-watch'), null);
+});
+
+test('reports the delivery target so a watch can be reconciled', () => {
+  const output = [
+    'Active webhooks:',
+    '  a1  pr-owner-repo-1-watch  https://example.test/a1  -> cone-helix  [filtered]',
+    '  a2  pr-owner-repo-2-watch  https://example.test/a2  -> gh-watch-scoop-scoop',
+    '  a3  pr-owner-repo-3-watch  https://example.test/a3  [filtered]',
+    '  a4  pr-owner-repo-4-watch  https://example.test/a4  ->  [filtered]',
+    '',
+  ].join('\n');
+
+  assert.equal(findWatchWebhook(output, 'pr-owner-repo-1-watch').target, 'cone-helix');
+  assert.equal(findWatchWebhook(output, 'pr-owner-repo-2-watch').target, 'gh-watch-scoop-scoop');
+  // No target column at all, and a target column with nothing in it, must both
+  // read as "unknown" rather than as a unit literally named `[filtered]`.
+  assert.equal(findWatchWebhook(output, 'pr-owner-repo-3-watch').target, null);
+  assert.equal(findWatchWebhook(output, 'pr-owner-repo-4-watch').target, null);
+  // Parsing the target must not disturb the other two fields.
+  assert.equal(findWatchWebhook(output, 'pr-owner-repo-3-watch').filtered, true);
+  assert.equal(findWatchWebhook(output, 'pr-owner-repo-2-watch').filtered, false);
+  assert.equal(findWatchWebhook(output, 'pr-owner-repo-1-watch').id, 'a1');
 });
