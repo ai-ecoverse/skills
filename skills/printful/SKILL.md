@@ -104,7 +104,9 @@ Shopify/Etsy shop on the Stores page.
   asynchronously and lands on `failed` with `error` set. Poll the status.
 - Don't assume a PayPal account linked at the Printful account level is a usable
   billing method: it needs a complete billing address first, or `confirm` fails
-  with `No payment method added`.
+  with `No payment method added`. A prepaid **wallet** balance pays without any
+  billing method — but no API endpoint exposes it, so read it in the dashboard
+  and let `order confirm` report the outcome.
 - Don't print the private token. Don't embed a customer or store id as a
   fallback — resolve from `GET /stores`.
 - Don't call `api.printful.com` from page context.
