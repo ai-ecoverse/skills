@@ -38,11 +38,15 @@ USAGE
   printful whoami                       Customer stores (token last-4 only)
   printful stores
 
-  printful files list [--limit N]
   printful files get <id>
   printful files add --url <https> [--filename n] [--wait]
   printful files add --path <vfs-file> [--wait]
   printful files wait <id> [--timeout 60]
+                                        (files list is gone — API returns 410)
+
+  printful mockup <sync-product-id> [--out <dir>] [--serve]
+                                        Pull mockup PNGs into the VFS + print
+                                        a markdown ![](…) link for each
 
   printful catalog product <id>         e.g. 71 = Bella + Canvas 3001
   printful catalog variants <id> [--color Black] [--size M] [--in-stock]
@@ -535,28 +539,21 @@ async function cmdStores(flags) {
 
 // ─── files ───────────────────────────────────────────────────────────────────
 
-async function cmdFilesList(flags) {
-  const limit = num(flags.limit, 20);
-  const offset = num(flags.offset, 0);
-  const res = await api(`/files${qs({ limit, offset })}`, { flags });
-  const list = unwrap(res);
-  const files = Array.isArray(list) ? list : [];
-  if (flags.json) {
-    cli.out(res);
-    return;
-  }
-  console.log('');
-  if (!files.length) {
-    console.log(c.dim('  No files found.'));
-    return;
-  }
-  for (const f of files) {
-    const dim = f.width && f.height ? `${f.width}×${f.height}` : '';
-    console.log(
-      `  ${c.cyan(c.bold(String(f.id)))}  ${(f.filename || f.url || '').slice(0, 40).padEnd(40)}  ` +
-        `${c.dim(f.status || '')}  ${c.dim(dim)}`,
-    );
-  }
+/** `GET /files` is gone: measured 2026-09-08, the API answers
+ *  410 "This API endpoint has been permanently removed". It is still in
+ *  Printful's own docs, so an agent will reach for it by reflex — fail with
+ *  the alternatives rather than let a 410 look like a transient outage. */
+async function cmdFilesList() {
+  cli.die(
+    'Printful removed GET /files — it answers 410 (permanently removed).\n' +
+      '  There is no way to enumerate the file library over the API.\n' +
+      '  Instead:\n' +
+      '    printful files get <id>              a file you know the id of\n' +
+      '    printful store product get <id>      the files attached to a product\n' +
+      '  Track ids yourself when you upload; the library is append-only\n' +
+      '  (DELETE /files/<id> is 404 — deleting needs the web UI).',
+    { prefix: 'printful' },
+  );
 }
 
 async function cmdFilesGet(positional, flags) {
@@ -695,6 +692,119 @@ async function cmdFilesAdd(flags) {
   if (f.width) console.log(`  pixels    ${f.width}×${f.height}`);
   if (f.status === 'waiting') {
     console.log(c.dim(`  poll: printful files wait ${f.id}`));
+  }
+}
+
+// ─── mockups ─────────────────────────────────────────────────────────────────
+
+/** Printful renders mockups asynchronously after a sync product is created and
+ *  attaches them as `type: "preview"` files on each variant. There is no
+ *  "get mockups" endpoint for an existing product — you read them off the
+ *  product. Poll, because immediately after create the previews are absent. */
+async function collectPreviews(productId, flags, timeoutSec) {
+  const deadline = Date.now() + timeoutSec * 1000;
+  let variants = [];
+  for (;;) {
+    const data = unwrap(await api(`/store/products/${encodeURIComponent(productId)}`, { flags })) || {};
+    variants = data.sync_variants || [];
+    const found = [];
+    for (const v of variants) {
+      for (const f of v.files || []) {
+        if (f.type !== 'preview') continue;
+        const url = f.preview_url || f.thumbnail_url || f.url;
+        if (url) found.push({ variant: v.name || String(v.id), variantId: v.id, url, fileId: f.id });
+      }
+    }
+    if (found.length || Date.now() >= deadline) return found;
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+}
+
+function slug(s) {
+  return String(s)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60) || 'mockup';
+}
+
+async function cmdMockup(positional, flags) {
+  const id = str(positional[0]);
+  if (!id) {
+    cli.die(
+      'usage: printful mockup <sync-product-id> [--out <dir>] [--serve] [--timeout 60]\n' +
+        '  Find ids with: printful store products',
+      { prefix: 'printful' },
+    );
+  }
+  const outDir = str(flags.out) || '/workspace/printful-mockups';
+  const timeout = num(flags.timeout, 60);
+  const previews = await collectPreviews(id, flags, timeout);
+  if (!previews.length) {
+    cli.die(
+      `No mockup previews on product ${id} after ${timeout}s.\n` +
+        '  Printful renders them a few seconds after create — retry with --timeout 120.',
+      { prefix: 'printful' },
+    );
+  }
+
+  await fs.mkdir(outDir, { recursive: true });
+  const saved = [];
+  for (const p of previews) {
+    const name = `${slug(p.variant)}-${p.fileId || p.variantId}.png`;
+    const dest = `${outDir.replace(/\/$/, '')}/${name}`;
+    await fs.fetchToFile(p.url, dest);
+    const st = await fs.stat(dest).catch(() => null);
+    saved.push({ ...p, path: dest, name, bytes: st ? st.size : null });
+  }
+
+  // A VFS path is not loadable by a chat client, so --serve mints a real URL
+  // and the markdown link points at that. Without it, link to Printful's CDN.
+  // `serve` requires an entry file in the directory (it exits 1 with
+  // "entry file not found" otherwise), so write a contact sheet first — that
+  // doubles as a browsable gallery of every variant.
+  let base = null;
+  if (bool(flags.serve)) {
+    const sheet =
+      '<!doctype html><meta charset="utf-8"><title>Printful mockups</title>\n' +
+      '<style>body{margin:0;padding:24px;background:#111;color:#eee;' +
+      'font:14px/1.4 system-ui,sans-serif}h1{font-size:16px;font-weight:600}' +
+      'figure{margin:0 0 24px}img{max-width:min(600px,100%);height:auto;' +
+      'background:#fff;border-radius:8px}figcaption{padding:8px 0;color:#aaa}</style>\n' +
+      `<h1>Printful mockups — product ${id}</h1>\n` +
+      saved
+        .map(
+          (s) =>
+            `<figure><img src="./${encodeURIComponent(s.name)}" alt="${s.variant}">` +
+            `<figcaption>${s.variant}</figcaption></figure>`,
+        )
+        .join('\n');
+    await fs.writeFile(`${outDir.replace(/\/$/, '')}/index.html`, sheet);
+    const { stdout, stderr, exitCode } = await Promise.resolve(
+      exec.spawn(['serve', '--ttl', '7d', '--no-bridge', outDir]),
+    );
+    const m = String(stdout || '').match(/https:\/\/[^\s)]+/);
+    if (exitCode !== 0 || !m) {
+      cli.warn(
+        `serve failed (${exitCode}): ${String(stderr || stdout).trim().slice(0, 160)} — falling back to Printful CDN links`,
+        { prefix: 'printful' },
+      );
+    } else {
+      base = m[0].replace(/\/index\.html$/i, '').replace(/\/$/, '');
+    }
+  }
+
+  if (flags.json) {
+    cli.out(saved.map((s) => ({ ...s, link: base ? `${base}/${s.name}` : s.url })));
+    return;
+  }
+  console.log('');
+  console.log(c.green(`✓ ${saved.length} mockup(s)`) + c.dim(`  → ${outDir}`));
+  for (const s of saved) {
+    console.log('');
+    console.log(`  ${c.cyan(c.bold(s.variant))}${s.bytes ? c.dim(`  ${s.bytes}B`) : ''}`);
+    console.log(`  ${c.dim(s.path)}`);
+    console.log(`  ![${s.variant}](${base ? `${base}/${s.name}` : s.url})`);
   }
 }
 
@@ -1058,6 +1168,8 @@ async function main() {
         prefix: 'printful',
       });
     }
+
+    if (s === 'mockup' || s === 'mockups') return await cmdMockup(positional, flags);
 
     if (s === 'catalog') {
       if (p0 === 'product' || p0 === 'get') return await cmdCatalogProduct(positional.slice(1), flags);
