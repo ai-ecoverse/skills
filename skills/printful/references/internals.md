@@ -144,6 +144,35 @@ sufficient; the API cannot see it and `confirm` fails with
 `/dashboard/billing` redirects to `/dashboard/billing/wallet`;
 `/dashboard/billing-methods` (no `billing/` prefix) is a 404.
 
+### The Printful Wallet is the way past a blocked billing method
+
+A prepaid **wallet** balance pays for orders without any billing method
+attached, which is the escape hatch when the billing-address form cannot be
+completed (its reCAPTCHA failed to render, 2026-09-08). Printful's own copy
+says the wallet exists to avoid *"fehlgeschlagene Bestellungen aufgrund
+unzureichender Mittel"*.
+
+Confirmed end-to-end: with a funded EUR wallet and **no** billing method on the
+account, `POST /orders/{id}/confirm` on a previously-`failed` order succeeded,
+the order moved to `pending` → *"Abwicklung wird vorbereitet"*, and the wallet
+balance dropped by exactly the order total.
+
+**The wallet is invisible to the v1 API.** All of these 404:
+
+```
+GET /wallets   /wallet   /billing/wallet   /store/wallet   /billing/balance
+```
+
+So a balance can only be read from `/dashboard/billing/wallet` in a browser.
+Do not gate automation on a balance check — there is nothing to check. Instead
+run `order confirm` and let the settled-status polling report the outcome; an
+insufficient balance surfaces as `failed` with a reason, same as a missing
+billing method.
+
+Wallets are **per currency** and non-transferable: a EUR order cannot draw on a
+USD wallet. The page also exposes *automatische Aufladung* (auto top-up) —
+worth confirming its state before relying on a balance persisting.
+
 ## Mockups
 
 Creating a sync product kicks off asynchronous mockup rendering; the results
