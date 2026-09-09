@@ -989,7 +989,13 @@ function loadState() {
   }
 }
 
+// _stateReady is set in the sprinkle-init handler below.
+// Guards saveState so a re-mount never clobbers the persisted queue with the
+// startup-empty state (the host sends sprinkle-init AFTER our scripts run).
+let _stateReady = false;
+
 function saveState() {
+  if (!_stateReady) return;
   slicc.setState({ ...state });
 }
 
@@ -1879,7 +1885,28 @@ function renderIcons() {
 // ═══════════════════════════════════════════════════
 //  INIT
 // ═══════════════════════════════════════════════════
-(async function init() {
+// ── deferred init — wait for sprinkle-init to seed getState() ───────────────
+//
+// WHY: the SLICC host injects the bridge script before our scripts, so the
+// bridge's own message listener is registered first. The host sends
+// 'sprinkle-init' from the iframe's load event, which fires AFTER our
+// scripts execute. So slicc.getState() returns null when our code first
+// runs — calling loadState() synchronously at startup always returns empty.
+//
+// CLOBBER PATH (before this fix):
+//   1. init() runs → loadState() → getState() = null → state stays empty
+//   2. renderQueue() renders nothing
+//   3. showView('queue') → saveState() → setState({items:[]}) → localStorage wiped
+//   4. sprinkle-init arrives too late; init already ran with empty state
+//
+// FIX: listen for 'sprinkle-init'. The bridge listener runs first (FIFO)
+// and sets _state = savedState. Our listener then calls loadState() and
+// finds the real data. saveState() is no-op until _stateReady=true so the
+// clobber in step 3 never happens.
+window.addEventListener('message', function onSprinkleInit(e) {
+  if (!e.data || e.data.type !== 'sprinkle-init') return;
+  window.removeEventListener('message', onSprinkleInit);
+  _stateReady = true;
   loadState();
 
   // Restore annotations panel state
@@ -1890,16 +1917,17 @@ function renderIcons() {
 
   if (state.view === 'document' && state.docPath) {
     // Restore doc view
-    document.getElementById('doc-filename').textContent = state.docTitle || state.docPath.split('/').pop();
+    document.getElementById('doc-filename').textContent =
+      state.docTitle || state.docPath.split('/').pop();
     renderAnnotationsList();
     updateSubmitBtn();
     showView('document');
-    await openDocument(state.docPath, state.docTitle);
+    openDocument(state.docPath, state.docTitle);
   } else {
     renderQueue();
     showView('queue');
   }
-})();
+}, false);
 </script>
 </body>
 </html>
