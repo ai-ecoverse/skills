@@ -2,7 +2,7 @@
 
 Agent skills for the [SLICC](https://github.com/ai-ecoverse/slicc) runtime. Each skill lives in `skills/<name>/` with a required `SKILL.md` and optional `scripts/*.jsh`, `references/`, `assets/`. `SKILL.md` frontmatter: `name`, `description`, `allowed-tools: bash`, optionally `command:` + `script:` to wire the shell command explicitly. The `description` doubles as the activation prompt — make it long and trigger-phrase-rich.
 
-The rest of this file is about writing `.jsh` scripts well. It is distilled from the slicc runtime source (ground truth), all 31 `.jsh` files in this repo, and 175 PRs of review history. Precedence when sources disagree: slicc source code > this file > header comments in old scripts > slicc's `docs/*.md` (several are drifted — `shell-reference.md`'s QuickJS claim is wrong, and `node-compat-shims.md` overstates the `process`/`crypto`/`assert`/`util` shims). **When in doubt about the runtime surface, probe it** (`typeof process.argv.parseFlags`) — half the fleet's header comments fossilized a mid-migration state and are wrong.
+This file covers `.jsh` scripts, page observers, and sprinkle UIs. The script guidance is distilled from the slicc runtime source (ground truth), all 31 `.jsh` files in this repo, and 175 PRs of review history. Precedence when sources disagree: slicc source code > this file > header comments in old scripts > slicc's `docs/*.md` (several are drifted — `shell-reference.md`'s QuickJS claim is wrong, and `node-compat-shims.md` overstates the `process`/`crypto`/`assert`/`util` shims). **When in doubt about the runtime surface, probe it** (`typeof process.argv.parseFlags`) — half the fleet's header comments fossilized a mid-migration state and are wrong.
 
 ## 1. Execution model
 
@@ -243,3 +243,56 @@ External-CLI-plus-manual-secret-wiring skills lost historically (#52 abandoned);
 ## 13. .bsh observers (page-injected, not realm)
 
 `.bsh` files are JavaScript **injected into the target page via CDP on navigation** — no realm, no `sliccy:` bridges, no `require` (bundle first: `ipk add <pkg>` then `ipx esbuild --bundle`). Filename maps to hostname: `-.okta.com.bsh` = `*.okta.com` wildcard, `login.okta.com.bsh` = exact; `// @match <glob>` directives (first 10 lines) restrict further. Scanned under `/workspace` and `/shared`. Rules from `skills/secret-sauce/references/observers.md`: pick the cheapest observer (webhook/SSE > PerformanceObserver > MutationObserver > polling), guard injection idempotently, post via `fetch().catch(() => {})` — an observer must never throw. Shell work belongs in a `.jsh`, not a `.bsh`.
+
+## 14. Keep sprinkle UIs consistent
+
+- **Start with a sibling UI.** Compare the same kind of task before choosing controls or spacing. [Review](skills/review/templates/review.shtml) and [Loose ends](skills/loose-ends/templates/loose-ends.shtml) are examples of lists of work for a human. Their shared foundation covers typography, buttons, badges, icons, and focus styles. Keep those conventions aligned when editing duplicated styles; each installed skill must still work on its own.
+- **Use semantic theme tokens.** Build on the host's `--s2-*` content, background, border, font, and radius tokens. Check foreground/background pairs in both themes, including muted text, inputs, selection, hover, and disabled states. Use the existing type hierarchy and icon scale; status must also have a text label, not only a color.
+- **Design the narrow rail first.** Measure the sprinkle's actual width inside the browser window. Use wrapping, `min-width: 0`, and container queries where layout depends on panel width. Long titles and paths must not push actions outside the panel. Keep action labels visible; omit decorative icons before turning understandable controls into unexplained symbols.
+- **Give related actions a stable order.** In a review/work queue, keep Preview and secondary actions together, with the primary approval/publication action at the far right. Let rows wrap cleanly when necessary. Put infrequent tools in a labeled disclosure so the work stays prominent. A clickable headline and its Preview control should open the same preview implementation; HTML, Markdown, and other renderers should share the surrounding review flow.
+- **Let the producer supply domain wording.** Review's `primaryActionLabel` defaults to Approve; AEM sources supply Publish. Carry configurable fields through the skill instructions, CLI, source protocol, and queue upserts. Document defaults and override precedence, preserve omitted fields, and render labels via `textContent`. Keep dispatch behavior explicit and separate from the displayed caption. See the [Review source protocol](skills/review/references/SOURCE_PROTOCOL.md).
+- **Treat keyboard and state feedback as part of the design.** Use native buttons and links, accessible names, visible focus, and predictable focus return after closing a preview or composer. Loading, empty, failed, pending, and completed states need readable explanations. Distinguish a saved draft from a sent request and an acknowledged result.
+
+## 15. Test the rendered UI and its lifecycle
+
+For a UI change, define the flow before testing: entry point → user action → visible result → persisted state or emitted event. Use the actual SLICC harness for integration checks; a passing unit test or standalone HTML render does not exercise the host bridge. For documentation-only edits, check the instructions, links, and diff; a harness run is unnecessary.
+
+### Harness and fixtures
+
+1. **Reuse the intended harness.** Inventory existing sessions and follow the user's choice; use the oldest when requested. Record the checkout, runtime, and selected browser target so tests do not drift into another session. Run one browser driver at a time against that harness. Connect the available browser tooling or Playwright/CDP to its existing browser.
+2. **Verify the installed files.** A host checkout and the harness VFS are different filesystems. Sync the changed skill, including scripts/assets, then install its template in `/shared/sprinkles/<name>/`. `sprinkle refresh` discovers files but does not reload an open panel. For an already-installed Review skill, run this inside SLICC after syncing the edited files:
+
+   ```sh
+   cp /workspace/skills/review/templates/review.shtml /shared/sprinkles/review/review.shtml
+   sprinkle close review
+   sprinkle refresh
+   sprinkle open review
+   ```
+
+   Confirm the new UI is visible before interpreting test results. Probe APIs in the realm that calls them; verify `.jsh` worker and sprinkle iframe bridges separately.
+3. **Seed through the real contract.** Use the skill's CLI or messages such as `load-items` and `ensure-item`. Use reproducible example data with realistic titles, paths, counts, and mixed statuses. Add long content, an empty queue, and relevant loading/error cases. Keep fixtures in their own namespace and preserve the user's existing drafts and queue.
+
+### Four-mode check
+
+For changes to a rail's layout or shared controls, check the same content in all four combinations. These widths are practical starting points; also exercise a changed breakpoint or other supported surface when relevant.
+
+| Theme | Narrow rail | Wide rail |
+| --- | --- | --- |
+| Light | 320 px | 640 px |
+| Dark | 320 px | 640 px |
+
+Set the host theme and the actual rail width. Measure the panel's bounding box; a 1440 px browser viewport can still contain a 320 px rail. After reconnecting browser automation, recheck viewport and panel dimensions. Inspect wrapping, horizontal overflow, clipped menus/composers, scroll behavior, contrast, action order, and focus visibility. Check both the initial viewport and content reached by scrolling.
+
+### Interaction and persistence checks
+
+- **Exercise the visible entry points.** Click the control, test keyboard activation, and inspect the resulting DOM/state. For iframe previews, scope locators and selection to the asset frame. Test every supported format affected by the change. For annotations, include repeated phrases and a selection across inline elements, then verify the saved and dispatched quote context identifies the selected occurrence.
+- **Check the full state lifecycle.** Save a draft, switch items, reload the source, close/reopen the panel, and confirm the draft remains attached to the correct item. Delay initialization or source reads where relevant: startup must not overwrite saved state with an empty default, and an old response must not replace a newer selection.
+- **Verify the action and acknowledgement.** Inspect the emitted action, item ID, path, and payload. Check pending-state disabling, repeat clicks, failure/retry, and acknowledgement. Use a test recipient for dispatch checks that would otherwise publish, send messages, or invoke an editing agent; say where that test stops. It proves the UI handoff, not the external operation. Keep the authenticated integration checks from §11 when those operations change.
+- **Clean up instrumentation in `finally`.** Remove the exact listeners/interceptors you installed, including capture listeners that call `stopImmediatePropagation`, and remove temporary fixture commands. Restore test-modified state and leave the intended harness usable. An orphaned test receiver can silently swallow the user's next real action.
+- **Pair browser checks with focused regression tests.** Test contracts such as upsert preservation, CLI override precedence, event payloads, and duplicate dispatch with the shipped implementation. Use browser checks for DOM ranges, iframe behavior, focus, and layout. Add tests for behavior at risk; avoid tests that only repeat static markup. After a fix, rerun the failed flow and affected modes. On the host, Review uses `node --test skills/review/tests/*.test.js`; run `npm run lint:jsh` when `.jsh`/`.bsh` files change.
+
+### Screenshot and PR evidence
+
+Capture before/after screenshots with the same fixtures, theme, rail width, and scroll position. Wait for observable readiness (content loaded, intended state visible) rather than an arbitrary sleep. Inspect each image before claiming the layout works. Capture the whole sprinkle, and include the interaction/error state when that is what changed. Include the surrounding host when dock placement or resizing matters. Keep temporary scripts and captures outside the repository unless they are intended fixtures.
+
+Attach screenshots to the UI PR with captions identifying theme, rail width, and state. Uploaded image URLs must actually render on GitHub; local file links in a PR body are not attachments. State which flows and runtime were tested, whether dispatch used a test recipient, relevant console errors, and any untested behavior. Check the final PR body after upload and replace stale “after” images when the design changes. The Review work in [PR #369](https://github.com/ai-ecoverse/skills/pull/369) provides examples of the four-mode evidence and protocol tests.
