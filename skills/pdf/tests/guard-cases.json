@@ -1,0 +1,87 @@
+[
+ {
+  "name": "font: Google copyright notice",
+  "expectOk": false,
+  "text": "Copyright 2012 Google Inc. All Rights Reserved.\nNotoSans-BoldItalic\nRegular\nVersion 1.06"
+ },
+ {
+  "name": "font: SIL Open Font License block",
+  "expectOk": false,
+  "text": "This Font Software is licensed under the SIL Open Font License, Version 1.1.\nReserved Font Name NotoSans."
+ },
+ {
+  "name": "font: Adobe UCS CMap resource",
+  "expectOk": false,
+  "text": "/CIDInit /ProcSet findresource begin\n/CMapName /Adobe-Identity-UCS def\nbegincmap\n1 begincodespacerange"
+ },
+ {
+  "name": "font: TrueType glyph table tags",
+  "expectOk": false,
+  "text": "glyf hmtx maxp loca head cvt  fpgm prep name post OS/2 cmap"
+ },
+ {
+  "name": "font: PostScript Type1 header",
+  "expectOk": false,
+  "text": "%!PS-AdobeFont-1.0: NotoSans 001.000\n/FontName /NotoSans def\n/Encoding StandardEncoding def"
+ },
+ {
+  "name": "cid: Identity-H glyph indices (measured $QH\\x037H\\x03)",
+  "expectOk": false,
+  "text": "$QH\u00037H\u0003\n"
+ },
+ {
+  "name": "cid: longer glyph-index mojibake, no control chars",
+  "expectOk": false,
+  "text": "Qhk Trz Wgm Bdx Ktp Nvf Zrq Hbj Lcm Vkd Prw Xtn"
+ },
+ {
+  "name": "glyph-table binary noise",
+  "expectOk": false,
+  "text": "\u0000\u0001\u0002\u0000\u0004\u0000\u0010\u0000\u0000\u0003ÿþ\u0000\u0001\u0000\u0000\u0000\u0002"
+ },
+ {
+  "name": "empty output",
+  "expectOk": false,
+  "text": ""
+ },
+ {
+  "name": "whitespace only",
+  "expectOk": false,
+  "text": "   \n\t\n  "
+ },
+ {
+  "name": "digits/punct only, zero alphabetic words",
+  "expectOk": false,
+  "text": "1234 5678 90.12 ---- ==== 4242"
+ },
+ {
+  "name": "real: Cloudflare-shaped invoice",
+  "expectOk": true,
+  "text": "Cloudflare, Inc.\n101 Townsend Street\nSan Francisco, CA 94107\n\nInvoice Number 1234567\nInvoice Date August 1, 2026\n\nDescription  Quantity  Amount\nWorkers Paid Plan  1  5.00\nTotal Due USD 5.00\n"
+ },
+ {
+  "name": "real: simple fixture text",
+  "expectOk": true,
+  "text": "INVOICE ACME CORP\nTotal Due 4242 USD\nHello World Fixture\nLine item: Widget x3 at 14.00\n"
+ },
+ {
+  "name": "real: prose paragraph",
+  "expectOk": true,
+  "text": "The quick brown fox jumps over the lazy dog. Extraction of text from a portable document format file requires mapping glyph identifiers back to Unicode code points."
+ },
+ {
+  "name": "real: German text with umlauts",
+  "expectOk": true,
+  "text": "Rechnung fuer Ihre Bestellung. Gesamtbetrag einschliesslich Mehrwertsteuer betraegt zweiundvierzig Euro und fuenfzig Cent."
+ },
+ {
+  "name": "real: short ToUnicode-decoded token",
+  "expectOk": true,
+  "text": "PAIDYID\n"
+ },
+ {
+  "name": "real: text mentioning the word copyright without a year",
+  "expectOk": true,
+  "text": "All content on this invoice page is subject to copyright and remains the property of the issuing company under applicable law."
+ }
+]
