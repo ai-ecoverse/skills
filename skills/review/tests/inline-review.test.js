@@ -17,6 +17,78 @@ function store(state) {
   )(state);
 }
 
+test('open-file overrides the queued source and title while retaining item metadata', () => {
+  const item = { id: 'draft', path: '/old.md', title: 'Old title', type: 'document' };
+  const open = new Function(
+    'state',
+    'openPreview',
+    extract('function openDocument(', 'async function openPreview(') + '\nreturn openDocument;'
+  )({ items: [item] }, (preview) => preview);
+  assert.deepEqual(open('/moved.md', 'Revised title', 'draft'), {
+    ...item,
+    path: '/moved.md',
+    title: 'Revised title',
+  });
+  assert.deepEqual(open('/moved.md', null, 'draft'), { ...item, path: '/moved.md' });
+  assert.deepEqual(open('/old.md', 'Title only'), { ...item, title: 'Title only' });
+  assert.equal(item.path, '/old.md', 'a preview override does not mutate the queue');
+  assert.deepEqual(open('/new.md', 'New document', 'new'), {
+    id: 'new',
+    path: '/new.md',
+    title: 'New document',
+  });
+});
+
+test('text anchors use the selected occurrence, including normalized boundary whitespace', () => {
+  const anchorFor = new Function(
+    'textOf',
+    'selectorFor',
+    extract('function anchorFor(', 'function selectForComment(') + '\nreturn anchorFor;'
+  )(
+    (el) => el.textContent.replace(/\s+/g, ' ').trim(),
+    () => '#paragraph'
+  );
+  const source = '  First: echo.\n\t Next:   echo. Last: echo.  ';
+  const el = { textContent: source, localName: 'p', closest: () => null };
+  const second = source.indexOf('echo', source.indexOf('echo') + 1);
+  const cases = [
+    {
+      start: source.indexOf('echo'),
+      end: source.indexOf('echo') + 4,
+      prefix: 'First: ',
+      suffix: '. Next: echo. Last: echo.',
+    },
+    { start: second, end: second + 4, prefix: 'First: echo. Next: ', suffix: '. Last: echo.' },
+    { start: second - 2, end: second + 4, prefix: 'First: echo. Next: ', suffix: '. Last: echo.' },
+    { start: 0, end: source.length, prefix: '', suffix: '' },
+  ];
+  for (const { start, end, prefix, suffix } of cases) {
+    const range = {
+      startContainer: el,
+      startOffset: start,
+      toString: () => source.slice(start, end),
+      cloneRange: () => ({
+        selectNodeContents: () => {},
+        setEnd: (node, offset) => {
+          assert.equal(node, el);
+          assert.equal(offset, start);
+        },
+        toString: () => source.slice(0, start),
+      }),
+    };
+    const quote = range.toString().replace(/\s+/g, ' ').trim();
+    const anchor = anchorFor(el, quote, range);
+    assert.equal(anchor.prefix, prefix);
+    assert.equal(anchor.suffix, suffix);
+    assert.equal(anchor.kind, 'text');
+    assert.equal(anchor.quote, quote);
+  }
+  const whole = anchorFor(el, source.replace(/\s+/g, ' ').trim(), null);
+  assert.equal(whole.kind, 'element');
+  assert.equal(whole.prefix, '');
+  assert.equal(whole.suffix, '');
+});
+
 test('drafts are keyed to the source and survive switching documents or preview URLs', () => {
   const state = { docItem: { path: '/shared/a.md', previewUrl: 'https://one.test/a' } };
   const s = store(state);

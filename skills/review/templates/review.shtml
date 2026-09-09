@@ -1362,7 +1362,8 @@ function currentDocument() {
 }
 function annotations() { return currentDocument().annotations; }
 function openDocument(path, title, id) {
-  return openPreview(state.items.find(i => id ? i.id === id : i.path === path) || {id, path, title});
+  const item = state.items.find(i => id ? i.id === id : i.path === path);
+  return openPreview({...item, id:id ?? item?.id, path, title:title ?? item?.title});
 }
 async function openPreview(item, focusTitle = true) {
   const epoch = ++previewEpoch;
@@ -1509,17 +1510,26 @@ function selectorFor(el) {
   }
   return parts.length ? 'body > ' + parts.join(' > ') : 'body';
 }
-function anchorFor(el, text, selection) {
+function anchorFor(el, text, range) {
   const scope = textOf(el);
-  const start = scope.indexOf(text);
+  let start = scope.indexOf(text);
+  if (range) {
+    const before = range.cloneRange();
+    before.selectNodeContents(el);
+    before.setEnd(range.startContainer, range.startOffset);
+    // Include leading selected whitespace before normalizing the prefix so a
+    // range that starts inside a whitespace run still points to the exact quote.
+    const leading = range.toString().match(/^\s*/)[0];
+    start = (before.toString() + leading).replace(/\s+/g, ' ').trimStart().length;
+  }
   return {selector:selectorFor(el), quote:text, elementText:scope, tag:el.localName,
     prefix:start > 0 ? scope.slice(Math.max(0,start-40),start) : '', suffix:start >= 0 ? scope.slice(start+text.length,start+text.length+40) : '',
-    kind:selection ? 'text' : 'element', scene:el.closest('[data-scene]')?.dataset.scene || '',
+    kind:range ? 'text' : 'element', scene:el.closest('[data-scene]')?.dataset.scene || '',
     token:el.closest('[data-fountain-token]')?.dataset.fountainToken || ''};
 }
-function selectForComment(el, text, selection = false) {
+function selectForComment(el, text, range = null) {
   if (!el || !text) return;
-  pendingSelection = {text, anchor:anchorFor(el,text,selection)};
+  pendingSelection = {text, anchor:anchorFor(el,text,range)};
   previewReturnFocus = el;
   const doc = previewFrame.contentDocument;
   doc.querySelectorAll('[data-rv-hover]').forEach(n=>n.removeAttribute('data-rv-hover'));
@@ -1539,9 +1549,10 @@ function bindPreview(doc) {
     if (!annotateActive || pendingSelection) return;
     const selection = doc.getSelection();
     if (!selection || selection.isCollapsed || !selection.toString().trim()) return;
-    const container = selection.getRangeAt(0).commonAncestorContainer;
+    const range = selection.getRangeAt(0);
+    const container = range.commonAncestorContainer;
     const element = container.nodeType === 1 ? container : container.parentElement;
-    selectForComment(element, selection.toString().replace(/\s+/g, ' ').trim(), true);
+    selectForComment(element, range.toString().replace(/\s+/g, ' ').trim(), range);
   });
   doc.addEventListener('click', e => {
     // Preview links and controls select content; they never navigate away from saved comments.
@@ -1551,7 +1562,7 @@ function bindPreview(doc) {
     if (sel && !sel.isCollapsed && sel.toString().trim()) {
       const range = sel.getRangeAt(0);
       const el = range.commonAncestorContainer.nodeType === 1 ? range.commonAncestorContainer : range.commonAncestorContainer.parentElement;
-      selectForComment(el,sel.toString().replace(/\s+/g,' ').trim(),true);
+      selectForComment(el,range.toString().replace(/\s+/g,' ').trim(),range);
     } else { const el = target(e.target); selectForComment(el,textOf(el)); }
   },true);
   doc.addEventListener('keydown', e => {
