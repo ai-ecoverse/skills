@@ -6,174 +6,196 @@
   <title>Loose ends</title>
   <link rel="icon" href="list-checks" />
   <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-    body {
-      font-family: var(--s2-font-family, system-ui, sans-serif);
-      background: var(--s2-bg-base);
-      color: var(--fg);
-      font-size: 13px;
-      line-height: 1.5;
-      overflow-x: hidden;
+    /* Work-list foundation: keep this block aligned in Review and Loose ends.
+           Each sprinkle stays self-contained when installed on its own. */
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
     }
-
+    :root {
+      color-scheme: dark;
+      --fg: var(--s2-content-default, #e8e8e8);
+      --fg-muted: var(--s2-content-secondary, #b0b0b0);
+      --line: var(--s2-border-subtle, #454545);
+      --link: #8ab4ff;
+      --action: #2563eb;
+    }
+    :root.theme-light {
+      color-scheme: light;
+      --link: #245cc5;
+    }
+    body {
+      font: 14px/1.5 var(--s2-font-family, system-ui, sans-serif);
+      background: var(--s2-bg-base, #1a1a1a);
+      color: var(--fg);
+    }
     #app {
-      /* Robust theme tokens: prefer the canonical S2 content token, then the
-         legacy alias — so text stays readable in light AND dark mode. */
-      --fg: var(--s2-content-default, var(--s2-fg));
-      --fg-muted: color-mix(in srgb, var(--fg) 60%, transparent);
-      --fg-faint: color-mix(in srgb, var(--fg) 42%, transparent);
-      --line: color-mix(in srgb, var(--fg) 12%, transparent);
       display: flex;
       flex-direction: column;
       height: 100vh;
       overflow: hidden;
     }
-
-    /* ── Top bar ── */
     .top-bar {
       display: flex;
       align-items: center;
-      gap: var(--s2-spacing-100, 8px);
-      padding: 11px 14px;
+      gap: 8px;
+      padding: 12px 16px;
       border-bottom: 1px solid var(--line);
       flex-shrink: 0;
-      min-height: 44px;
+      min-height: 48px;
     }
-    .top-bar > .sprinkle-icon { color: var(--fg-muted); }
     .top-bar-title {
-      font-weight: 600;
-      font-size: 13px;
       flex: 1;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      color: var(--fg);
+      min-width: 0;
+      font-size: 14px;
+      font-weight: 600;
+      overflow-wrap: anywhere;
     }
-
-    /* ── Pill count badge ── */
+    .top-bar > .sprinkle-icon {
+      color: var(--fg-muted);
+    }
     .badge {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      min-width: 18px;
-      height: 18px;
+      min-width: 22px;
+      height: 22px;
       padding: 0 6px;
-      border-radius: var(--s2-radius-pill, 9999px);
-      font-size: 10px;
-      font-weight: 700;
-      background: color-mix(in srgb, var(--fg) 10%, transparent);
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      background: var(--s2-bg-layer-2);
       color: var(--fg-muted);
-      line-height: 1;
       flex-shrink: 0;
     }
-    .badge.zero { display: none; }
-
-    /* ── Buttons (the only rounded elements — S2 mandates pill buttons) ── */
+    .badge.zero {
+      display: none;
+    }
     .sprinkle-btn {
+      box-shadow: none;
       display: inline-flex;
       align-items: center;
       justify-content: center;
       gap: 5px;
-      border-radius: var(--s2-radius-pill, 9999px);
-      border: 1px solid transparent;
-      cursor: pointer;
+      min-height: 34px;
+      padding: 6px 12px;
+      border: 1px solid var(--line);
+      border-radius: var(--s2-radius-pill, 999px);
+      background: transparent;
+      color: var(--fg);
       font-family: inherit;
-      font-size: 12px;
-      font-weight: 500;
-      padding: 5px 12px;
-      transition: background 0.15s, opacity 0.15s, border-color 0.15s;
-      white-space: nowrap;
+      font-size: 13px;
       line-height: 1.3;
+      font-weight: 500;
+      cursor: pointer;
+      white-space: nowrap;
     }
-    .sprinkle-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .sprinkle-btn:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    .sprinkle-btn:not(:disabled):hover {
+      background: var(--s2-bg-layer-2);
+    }
     .sprinkle-btn--primary {
-      background: var(--s2-accent);
-      color: var(--s2-gray-25, var(--s2-bg-base));
+      background: var(--action);
+      border-color: var(--action);
+      color: #fff;
     }
-    .sprinkle-btn--primary:not(:disabled):hover { opacity: 0.88; }
-    .sprinkle-btn--ghost {
+    .sprinkle-btn--primary:not(:disabled):hover {
+      background: #1d4ed8;
+    }
+    .sprinkle-btn--ghost,
+    .sprinkle-btn--secondary {
       background: transparent;
       color: var(--fg-muted);
-      border-color: var(--line);
     }
-    .sprinkle-btn--ghost:not(:disabled):hover {
-      background: color-mix(in srgb, var(--fg) 6%, transparent);
-      color: var(--fg);
+    .sprinkle-btn--icon {
+      min-width: 34px;
+      padding: 6px;
     }
-
-    /* ── Icons ── */
+    :where(button, a, summary, input, textarea):focus-visible {
+      outline: 2px solid var(--link);
+      outline-offset: 2px;
+    }
     .sprinkle-icon {
       width: 14px;
       height: 14px;
       stroke-width: 2;
       flex-shrink: 0;
     }
-    .sprinkle-icon.sm { width: 12px; height: 12px; }
-    .sprinkle-icon.lg { width: 16px; height: 16px; }
-
-    /* ── Typography ── */
+    .sprinkle-icon.sm {
+      width: 12px;
+      height: 12px;
+    }
+    .sprinkle-icon.lg {
+      width: 16px;
+      height: 16px;
+    }
+    .sprinkle-heading {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--fg);
+    }
+    .sprinkle-body {
+      font-size: 14px;
+      color: var(--fg);
+    }
     .sprinkle-detail {
-      font-size: 11px;
+      font-size: 12px;
       color: var(--fg-muted);
     }
-
-    /* ── List scroll ── */
-    #list-scroll {
-      flex: 1;
-      overflow-y: auto;
-      padding: 2px 0 24px;
-    }
-    #list-scroll::-webkit-scrollbar { width: 4px; }
-    #list-scroll::-webkit-scrollbar-track { background: transparent; }
-    #list-scroll::-webkit-scrollbar-thumb {
-      background: color-mix(in srgb, var(--fg) 15%, transparent);
-      border-radius: 2px;
-    }
-
-    /* ── Empty state ── */
     .empty-state {
       display: flex;
       flex-direction: column;
       align-items: center;
-      justify-content: center;
       gap: 8px;
       padding: 48px 20px;
       color: var(--fg-muted);
       text-align: center;
     }
-    .empty-state .sprinkle-icon { width: 32px; height: 32px; color: var(--fg-faint); }
-
-    /* ── Task row (flat — separated by hairline dividers, no card/shadow) ── */
-    .task-item {
-      padding: 13px 14px;
-      border-bottom: 1px solid var(--line);
-      transition: opacity 0.25s ease, transform 0.25s ease, background 0.12s;
+    .empty-state .sprinkle-icon {
+      width: 32px;
+      height: 32px;
     }
-    .task-item:last-child { border-bottom: none; }
-    .task-item:hover { background: color-mix(in srgb, var(--fg) 3.5%, transparent); }
+
+    #list-scroll {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      padding-bottom: 24px;
+    }
+    .task-item {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--line);
+      transition:
+        opacity 0.2s,
+        transform 0.2s;
+    }
+    .task-item:hover {
+      background: color-mix(in srgb, var(--fg) 3.5%, transparent);
+    }
     .task-item.leaving {
       opacity: 0;
       transform: translateX(16px);
     }
-
     .task-title {
+      font-size: 14px;
       font-weight: 600;
-      font-size: 13px;
-      color: var(--fg);
-      line-height: 1.35;
-      margin-bottom: 3px;
+      line-height: 1.4;
+      margin-bottom: 6px;
+      overflow-wrap: anywhere;
     }
-
-    /* ── Human-facing summary (always visible) ── */
     .task-summary {
-      font-size: 12px;
       color: var(--fg-muted);
+      font-size: 13px;
       line-height: 1.5;
       white-space: pre-wrap;
+      overflow-wrap: anywhere;
     }
-
-    /* ── Skill tags ── */
     .task-tags {
       display: flex;
       flex-wrap: wrap;
@@ -183,198 +205,192 @@
     .task-tag {
       display: inline-flex;
       align-items: center;
-      gap: 3px;
-      font-size: 10px;
-      font-weight: 500;
-      padding: 2px 8px;
-      border-radius: var(--s2-radius-pill, 9999px);
-      background: color-mix(in srgb, var(--s2-accent) 12%, transparent);
-      color: var(--s2-accent);
-      line-height: 1.5;
-    }
-    .task-tag .sprinkle-icon { width: 9px; height: 9px; opacity: 0.8; }
-
-    /* ── Agent-facing detail (collapsible, offset by a rule — not a box) ── */
-    .task-context {
+      gap: 4px;
       font-size: 12px;
-      margin-top: 6px;
+      padding: 2px 7px;
+      border-radius: 6px;
+      color: var(--fg-muted);
+      background: var(--s2-bg-layer-2);
+    }
+    .task-tag .sprinkle-icon {
+      width: 11px;
+      height: 11px;
+    }
+    .task-context {
+      margin-top: 4px;
+      font-size: 13px;
     }
     .task-context > summary {
-      list-style: none;
       cursor: pointer;
-      outline: none;
-      display: inline-flex;
-      align-items: center;
-      gap: 3px;
-      color: var(--s2-accent);
-      font-weight: 500;
-      font-size: 11px;
-    }
-    .task-context > summary::-webkit-details-marker { display: none; }
-    .task-context > summary .chev { transition: transform 0.15s ease; }
-    .task-context[open] > summary .chev { transform: rotate(90deg); }
-    .task-context > summary .lbl-close { display: none; }
-    .task-context[open] > summary .lbl-open { display: none; }
-    .task-context[open] > summary .lbl-close { display: inline; }
-    /* .full is a sibling of <summary>, so native <details> hides it while
-       collapsed and reveals it on open — no duplicated text. */
-    .task-context .full {
-      color: var(--fg);
-      line-height: 1.55;
-      white-space: pre-wrap;
-      margin-top: 6px;
-      padding-left: 10px;
-      border-left: 2px solid var(--line);
-      font-size: 12px;
-    }
-
-    /* ── Meta row: created date + session provenance ── */
-    .task-meta {
-      display: flex;
-      align-items: center;
-      gap: 14px;
-      margin-top: 9px;
-      flex-wrap: wrap;
-    }
-    .task-date,
-    .task-session {
       display: inline-flex;
       align-items: center;
       gap: 4px;
-      font-size: 10.5px;
-      color: var(--fg-faint);
-      line-height: 1;
+      min-height: 32px;
+      color: var(--fg-muted);
+      font-size: 13px;
+      list-style: none;
+    }
+    .task-context > summary::-webkit-details-marker {
+      display: none;
+    }
+    .task-context[open] > summary .chev {
+      transform: rotate(90deg);
+    }
+    .task-context > summary .lbl-close,
+    .task-context[open] > summary .lbl-open {
+      display: none;
+    }
+    .task-context[open] > summary .lbl-close {
+      display: inline;
+    }
+    .task-context .full {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      border-left: 2px solid var(--line);
+      padding-left: 12px;
+      margin: 4px 0 8px;
+    }
+    .task-meta {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 6px 12px;
+      margin-top: 8px;
+    }
+    .task-date,
+    .task-session,
+    .snoozed-until {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      color: var(--fg-muted);
+      font-size: 12px;
     }
     .task-session {
       background: none;
       border: none;
-      padding: 0;
-      cursor: pointer;
+      padding: 4px 0;
+      min-height: 32px;
       font-family: inherit;
+      cursor: pointer;
+      text-decoration: underline;
+      text-underline-offset: 3px;
     }
-    .task-session:hover { color: var(--s2-accent); }
-    .task-date .sprinkle-icon,
-    .task-session .sprinkle-icon { width: 11px; height: 11px; }
-
-    /* ── Actions row ── */
     .task-actions {
       display: flex;
-      gap: 6px;
       align-items: center;
-      margin-top: 11px;
       flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 8px;
     }
-
-    /* Clickable URLs inside the agent brief */
-    .task-context .full a.task-link,
-    a.task-link {
-      color: var(--s2-accent, #3b82f6);
-      text-decoration: underline;
-      text-underline-offset: 2px;
+    .view-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      min-height: 32px;
+      background: none;
+      border: none;
+      font: inherit;
+      font-size: 13px;
+      padding: 0;
       cursor: pointer;
-      word-break: break-all;
     }
-    a.task-link:hover { opacity: 0.85; }
-
-    /* ── Snooze section subheader (flat disclosure — hairline, no box) ── */
+    .task-link {
+      color: var(--link);
+      text-decoration: underline;
+      text-underline-offset: 3px;
+      overflow-wrap: anywhere;
+    }
     .snooze-subhead {
       display: flex;
       align-items: center;
       gap: 6px;
-      padding: 10px 14px;
+      padding: 12px 16px;
+      border: 0;
       border-bottom: 1px solid var(--line);
-      border-top: 1px solid var(--line);
-      cursor: pointer;
-      user-select: none;
       color: var(--fg-muted);
-      font-size: 11px;
-      font-weight: 600;
-      background: none;
+      font: 600 13px/1.5 var(--s2-font-family, system-ui, sans-serif);
+      background: var(--s2-bg-layer-1);
       width: 100%;
       text-align: left;
-      font-family: inherit;
+      cursor: pointer;
     }
-    .snooze-subhead:hover { background: color-mix(in srgb, var(--fg) 3.5%, transparent); }
-    .snooze-subhead > .sprinkle-icon { color: var(--fg-faint); }
-    .snooze-subhead .chev { transition: transform 0.15s ease; margin-left: auto; }
-    .snooze-subhead.collapsed .chev { transform: rotate(-90deg); }
-
-    /* ── Compact greyed snoozed row ── */
-    .task-item.snoozed { opacity: 0.65; }
-    .task-item.snoozed .task-title { font-size: 12.5px; margin-bottom: 2px; }
-    .snoozed-until {
-      font-size: 11px;
-      color: var(--fg-faint);
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      line-height: 1;
+    .snooze-subhead .chev {
+      margin-left: auto;
+    }
+    .snooze-subhead.collapsed .chev {
+      transform: rotate(-90deg);
     }
     .snoozed-meta {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 10px;
-      margin-top: 6px;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 8px;
     }
-    .snoozed-meta .sprinkle-icon { width: 11px; height: 11px; }
-
-    /* ── Snooze menu (popover — flat, dark-mode safe) ── */
-    .snooze-menu-wrap { position: relative; display: inline-flex; }
+    .snooze-menu-wrap {
+      position: relative;
+      display: inline-flex;
+    }
     .snooze-menu {
       position: absolute;
       z-index: 50;
       bottom: calc(100% + 6px);
-      left: 0;
-      min-width: 176px;
+      right: 0;
+      min-width: 192px;
       background: var(--s2-bg-elevated, var(--s2-bg-base));
       border: 1px solid var(--line);
-      border-radius: var(--s2-radius-l, 10px);
-      box-shadow: var(--s2-shadow-elevated, 0 6px 20px rgba(0,0,0,0.28));
+      border-radius: 8px;
+      box-shadow: 0 4px 16px #0002;
       padding: 4px;
       display: none;
       flex-direction: column;
-      gap: 1px;
     }
-    .snooze-menu.open { display: flex; }
+    .snooze-menu.open {
+      display: flex;
+    }
     .snooze-menu-item {
       display: flex;
       align-items: center;
       gap: 8px;
-      padding: 7px 10px;
-      border-radius: var(--s2-radius-default, 8px);
+      padding: 8px;
+      min-height: 34px;
+      border-radius: 4px;
       background: none;
       border: none;
-      cursor: pointer;
-      font-family: inherit;
-      font-size: 12px;
       color: var(--fg);
+      font: inherit;
+      font-size: 13px;
       text-align: left;
-      width: 100%;
-      line-height: 1.3;
+      cursor: pointer;
     }
-    .snooze-menu-item:hover { background: color-mix(in srgb, var(--fg) 8%, transparent); }
-    .snooze-menu-item .sprinkle-icon { color: var(--fg-muted); }
-    .snooze-menu-item .sub { color: var(--fg-faint); font-size: 10.5px; margin-left: auto; }
+    .snooze-menu-item:hover {
+      background: var(--s2-bg-layer-2);
+    }
+    .snooze-menu-item .sub {
+      font-size: 12px;
+      color: var(--fg-muted);
+      margin-left: auto;
+    }
     .snooze-menu-date {
       display: none;
-      padding: 6px 8px 4px;
+      padding: 8px;
       border-top: 1px solid var(--line);
-      margin-top: 2px;
     }
-    .snooze-menu-date.open { display: block; }
-    .snooze-menu-date input[type="date"] {
+    .snooze-menu-date.open {
+      display: block;
+    }
+    .snooze-menu-date input {
       width: 100%;
-      background: var(--s2-bg-base);
+      min-height: 34px;
+      padding: 6px;
       border: 1px solid var(--line);
-      border-radius: var(--s2-radius-default, 8px);
+      border-radius: 4px;
+      background: var(--s2-bg-base);
       color: var(--fg);
-      font-family: inherit;
-      font-size: 12px;
-      padding: 5px 8px;
-      outline: none;
+      font: inherit;
     }
-    .snooze-menu-date input[type="date"]:focus { border-color: var(--s2-accent); }
   </style>
 </head>
 <body>
@@ -900,7 +916,7 @@ function createTaskCard(task) {
     const label = viewIsMap ? 'Map' : 'View';
     const title = viewIsMap ? 'Open map in a new tab' : 'Open in a new tab';
     viewBtnHtml =
-      '<button type="button" class="sprinkle-btn sprinkle-btn--ghost view-btn" title="' + esc(title) + '" data-url="' + esc(viewUrl) + '">' +
+      '<button type="button" class="task-link view-btn" title="' + esc(title) + '" data-url="' + esc(viewUrl) + '">' +
         '<i data-lucide="' + icon + '" class="sprinkle-icon sm"></i> ' + label +
       '</button>';
   }
@@ -911,11 +927,11 @@ function createTaskCard(task) {
     tagsBlock +
     detailBlock +
     metaBlock +
+    viewBtnHtml +
     '<div class="task-actions">' +
       '<button class="sprinkle-btn sprinkle-btn--primary" onclick="slicc.lick(' + doData + ')">' +
         '<i data-lucide="arrow-right" class="sprinkle-icon sm"></i> Do' +
       '</button>' +
-      viewBtnHtml +
       '<button class="sprinkle-btn sprinkle-btn--ghost done-btn">' +
         '<i data-lucide="check" class="sprinkle-icon sm"></i> Done' +
       '</button>' +

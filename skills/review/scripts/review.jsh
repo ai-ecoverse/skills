@@ -17,10 +17,17 @@ function helpText() {
   return [
     'Usage: review ingest [sources...] --path PATH [--id ID] [--title T]',
     '                    [--preview-url URL] [--live-url URL] [--dry-run]',
+    '                    [--org ORG --site SITE] (for aem-ext)',
     '       review sources',
+    '       review sweep --org ORG --site SITE [--never-published] [--stale]',
+    '                   [--include-assets] [--dry-run]',
     '',
     'Discover review-compatible commands and attach their findings to the',
     'review sprinkle. Protocol: skills/review/references/SOURCE_PROTOCOL.md',
+    '',
+    'review sweep populates the backlog from an AEM site by diffing the',
+    'preview/ and live/ partition trees. Requires aem-ext on PATH and a',
+    'valid AEM credential (aem-ext auth status).',
     '',
     'Default sources (if installed): ' + KNOWN_INTEGRATIONS.join(', '),
     'Missing sources are skipped. The queue works with none of them.',
@@ -57,6 +64,12 @@ async function discover(named) {
 async function invokeSource(cmd, filePath, id) {
   const argv = [cmd, 'review', '--path', filePath];
   if (id) argv.push('--id', id);
+  if (cmd === 'aem-ext') {
+    const org = flags.org || flags.o;
+    const site = flags.site || flags.repo;
+    if (org) argv.push('--org', String(org));
+    if (site) argv.push('--site', String(site));
+  }
   process.stderr.write('[review] invoking: ' + argv.join(' ') + '\n');
   const result = await exec.spawn(argv);
   if (result.exitCode !== 0) {
@@ -103,9 +116,119 @@ async function sprinkleSend(msg) {
   return r;
 }
 
-function stableCardId(filePath) {
+function stableCardId(filePath, sources) {
+  const org = flags.org || flags.o;
+  const site = flags.site || flags.repo;
+  if (sources.includes('aem-ext') && org && site) {
+    const relPath = String(filePath).replace(/^\//, '').replace(/\.(md|html|docx)$/, '');
+    return 'aem:' + encodeURIComponent(org) + '/' + encodeURIComponent(site) + ':' + relPath;
+  }
   // Full path so /a/README.md and /b/README.md never share a card.
   return 'review:' + String(filePath);
+}
+
+// ── review sweep ──────────────────────────────────────────────────────────────
+//
+// Enumerate AEM pages as review cards by calling `aem-ext sweep` and mapping
+// its NDJSON output into ensure-item + add-findings sprinkle messages.
+//
+// This is the enumeration half of the review-AEM integration. The per-path
+// enrichment half is `aem-ext review --path PATH` (review SOURCE_PROTOCOL.md).
+// See skills/review/references/AEM-SOURCE.md for the design rationale.
+
+async function cmdSweep() {
+  const org = flags.org || flags.o;
+  const site = flags.site || flags.repo;
+  if (!org || !site) {
+    process.stderr.write('[review sweep] error: --org ORG and --site SITE are required\n');
+    process.exit(2);
+  }
+  const isDryRun = flags['dry-run'] || flags.dryRun;
+
+  // Build aem-ext sweep argv
+  const sweepArgs = ['aem-ext', 'sweep', '--org', String(org), '--site', String(site)];
+  if (flags['never-published']) sweepArgs.push('--never-published');
+  if (flags['stale']) sweepArgs.push('--stale');
+  if (flags['include-assets']) sweepArgs.push('--include-assets');
+
+  process.stderr.write('[review sweep] running: ' + sweepArgs.join(' ') + '\n');
+
+  const result = await exec.spawn(sweepArgs);
+  if (result.exitCode !== 0) {
+    const detail = (result.stderr || result.stdout || '').toString().trim().slice(0, 300);
+    process.stderr.write('[review sweep] aem-ext sweep failed: ' + detail + '\n');
+    process.exit(1);
+  }
+
+  // Print aem-ext stderr through to our stderr
+  if (result.stderr) process.stderr.write(String(result.stderr));
+
+  const lines = String(result.stdout || '')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.startsWith('{'));
+
+  if (lines.length === 0) {
+    process.stderr.write('[review sweep] no cards emitted — backlog is clean\n');
+    process.exit(0);
+  }
+
+  if (isDryRun) {
+    process.stderr.write('[review sweep] dry-run: ' + lines.length + ' card(s):\n');
+    for (const line of lines) process.stdout.write(line + '\n');
+    process.exit(0);
+  }
+
+  let pushed = 0;
+  let failed = 0;
+  for (const line of lines) {
+    let card;
+    try {
+      card = JSON.parse(line);
+    } catch {
+      process.stderr.write('[review sweep] WARNING: skipping non-JSON line\n');
+      failed++;
+      continue;
+    }
+    if (!card || typeof card !== 'object' || !card.id) {
+      process.stderr.write('[review sweep] WARNING: skipping card without id\n');
+      failed++;
+      continue;
+    }
+
+    try {
+      await sprinkleSend({
+        action: 'ensure-item',
+        id: card.id,
+        title: card.title || card.id,
+        path: card.path || '',
+        previewUrl: card.previewUrl || '',
+        liveUrl: card.liveUrl || '',
+      });
+      await sprinkleSend({
+        action: 'add-findings',
+        id: card.id,
+        source: card.source || 'aem-source',
+        summary: card.summary || '',
+        severity: card.severity || 'info',
+        findings: Array.isArray(card.findings) ? card.findings : [],
+        ts: card.ts,
+      });
+      pushed++;
+    } catch (err) {
+      process.stderr.write(
+        '[review sweep] failed to push card ' + card.id + ': ' +
+        (err && err.message ? err.message : String(err)) + '\n',
+      );
+      failed++;
+    }
+  }
+
+  process.stderr.write(
+    '[review sweep] pushed ' + pushed + ' card(s) to sprinkle' +
+    (failed ? '; ' + failed + ' failed' : '') + '\n',
+  );
+  if (failed > 0) process.exit(1);
 }
 
 const parsed = process.argv.parseFlags();
@@ -120,6 +243,11 @@ try {
   if (!cmd) {
     process.stderr.write(helpText());
     process.exit(2);
+  }
+
+  if (cmd === 'sweep') {
+    await cmdSweep();
+    process.exit(0);
   }
 
   if (cmd === 'sources') {
@@ -151,7 +279,7 @@ try {
 
   // Pin the card id before any source runs so a failed Pangram cannot change
   // which card the cliché source (or a later retry) attaches to.
-  const id = flags.id ? String(flags.id) : stableCardId(filePath);
+  const id = flags.id ? String(flags.id) : stableCardId(filePath, sources);
 
   const contributions = [];
   const jobs = sources.map((s) => invokeSource(s, filePath, id));
