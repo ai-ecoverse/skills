@@ -51,7 +51,9 @@ separate from stdout; `--json` returns `{command, stdout, stderr, exitCode}`.
 
 `sprinkle open phone-view` opens a panel that mirrors the device and lets you
 drive it — click the canvas to tap, plus Home / Back / Recents buttons. Input
-travels over the same ADB connection as the video.
+travels over the same ADB connection as the video. Connect stays disabled while
+connecting or disconnecting; after Stop or the end of the stream, it becomes
+available once interface release and device close finish.
 
 The device H.264-encodes its own display (`screenrecord --output-format=h264`),
 the frames arrive over the same WebUSB pipe as everything else, and WebCodecs

@@ -168,6 +168,7 @@
 
       let session = null;
       let connecting = false;
+      let teardownPending = null;
       const statusEl = document.getElementById('status');
       const canvas = document.getElementById('screen');
       const ctx = canvas.getContext('2d');
@@ -176,8 +177,8 @@
       function syncControls() {
         const connected = !!session && !session.stopped;
         const connectBtn = document.getElementById('connect-btn');
-        connectBtn.disabled = connecting || connected;
-        connectBtn.textContent = connecting ? 'Connecting…' : connected ? 'Connected' : 'Connect';
+        connectBtn.disabled = connecting || connected || !!teardownPending;
+        connectBtn.textContent = teardownPending ? 'Disconnecting…' : connecting ? 'Connecting…' : connected ? 'Connected' : 'Connect';
         document.querySelectorAll('[data-connected]').forEach(btn => { btn.disabled = !connected; });
         document.getElementById('empty-state').hidden = connected;
         canvas.hidden = !connected;
@@ -460,7 +461,7 @@
 
       // ── session ───────────────────────────────────────────────────────
       async function start() {
-        if (session || connecting) return;
+        if (session || connecting || teardownPending) return;
         connecting = true;
         syncControls();
         // Tracked outside `session` so a failure between open() and the
@@ -609,12 +610,23 @@
       }
 
       async function teardown() {
+        if (teardownPending) return teardownPending;
         const s = session; session = null;
-        syncControls();
         if (!s) return;
         if (s.ticker) clearInterval(s.ticker);
-        try { await slicc.usb.releaseInterface(s.device.handle, s.iface.interfaceNumber); } catch { /* ignore */ }
-        try { await slicc.usb.close(s.device.handle); } catch { /* ignore */ }
+        // Defer cleanup until the shared promise is assigned, including when
+        // a USB bridge call throws synchronously. Reconnect stays blocked until
+        // both release and close have settled.
+        teardownPending = Promise.resolve().then(async () => {
+          try { await slicc.usb.releaseInterface(s.device.handle, s.iface.interfaceNumber); } catch { /* ignore */ }
+          try { await slicc.usb.close(s.device.handle); } catch { /* ignore */ }
+        });
+        syncControls();
+        try { await teardownPending; }
+        finally {
+          teardownPending = null;
+          syncControls();
+        }
       }
 
       /** Send a keyevent over a fresh exec stream on the live connection. */
