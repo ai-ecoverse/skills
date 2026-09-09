@@ -689,6 +689,43 @@
       animation: dotBlink 1s ease-in-out infinite;
     }
     .queue-item.acting { opacity: 0.85; }
+    /* ── in-sprinkle preview iframe drawer ────────────────────────── */
+    .pf-backdrop {
+      position: fixed; inset: 0; z-index: 900;
+      background: rgba(0,0,0,0.52);
+      display: flex; align-items: stretch; justify-content: flex-end;
+    }
+    .pf-backdrop.pf-hidden { display: none; }
+    .pf-drawer {
+      width: min(900px, 96vw);
+      display: flex; flex-direction: column;
+      background: var(--s2-surface, #fff);
+      box-shadow: -4px 0 28px rgba(0,0,0,0.2);
+    }
+    .pf-toolbar {
+      display: flex; align-items: center; gap: 6px;
+      padding: 5px 10px;
+      border-bottom: 1px solid var(--s2-border, #e2e8f0);
+      flex-shrink: 0;
+      background: var(--s2-surface-raised, #f8fafc);
+    }
+    .pf-url {
+      flex: 1; font-size: 11px; color: var(--s2-text-muted, #64748b);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .pf-btn {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 3px 9px; border-radius: 4px; border: 1px solid transparent;
+      cursor: pointer; font-size: 11px; font-family: inherit; white-space: nowrap;
+      background: var(--s2-surface-alt, #e2e8f0); color: var(--s2-text, #1e293b);
+    }
+    .pf-btn:hover { filter: brightness(0.94); }
+    .pf-btn-pin {
+      background: var(--s2-accent, #6366f1); color: #fff;
+      border-color: transparent;
+    }
+    .pf-frame { flex: 1; border: none; width: 100%; background: #fff; }
+
   </style>
 </head>
 <body>
@@ -1064,6 +1101,49 @@ function renderQueue() {
   renderIcons();
 }
 
+
+// ── in-sprinkle preview frame ─────────────────────────────────────────────
+// FRAMING: use-case-pages--slicc-website--ai-ecoverse.aem.page sends no
+// X-Frame-Options and no frame-ancestors in its CSP, so embedding is allowed.
+//
+// PINNING: Pin Review injects JS into the page DOM. That requires a real
+// browser tab — the DOM of a cross-origin iframe is inaccessible. This drawer
+// is for VIEWING; click "Open in tab to pin" to get the full Pin Review flow.
+function showPreviewFrame(url, itemId) {
+  let bd = document.getElementById('pf-backdrop');
+  if (!bd) {
+    bd = document.createElement('div');
+    bd.id = 'pf-backdrop';
+    bd.className = 'pf-backdrop pf-hidden';
+    bd.innerHTML =
+      '<div class="pf-drawer">' +
+        '<div class="pf-toolbar">' +
+          '<span class="pf-url" id="pf-url-label"></span>' +
+          '<button class="pf-btn pf-btn-pin" id="pf-pin-btn">\uD83D\uDCCC Open in tab to pin</button>' +
+          '<button class="pf-btn" id="pf-close-btn">&#x2715; Close</button>' +
+        '</div>' +
+        '<iframe class="pf-frame" id="pf-frame" allow="fullscreen" referrerpolicy="no-referrer"></iframe>' +
+      '</div>';
+    document.getElementById('app').appendChild(bd);
+    document.getElementById('pf-close-btn').addEventListener('click', () => {
+      bd.classList.add('pf-hidden');
+      document.getElementById('pf-frame').src = 'about:blank';
+    });
+    bd.addEventListener('click', (e) => {
+      if (e.target === bd) {
+        bd.classList.add('pf-hidden');
+        document.getElementById('pf-frame').src = 'about:blank';
+      }
+    });
+  }
+  document.getElementById('pf-url-label').textContent = url;
+  document.getElementById('pf-frame').src = url;
+  document.getElementById('pf-pin-btn').onclick = () => {
+    slicc.lick({ action: 'open-preview', data: { id: itemId, url } });
+  };
+  bd.classList.remove('pf-hidden');
+}
+
 function makeIconLink(href, icon, label) {
   const a = document.createElement('a');
   a.className = 'item-link';
@@ -1129,7 +1209,7 @@ function createItemCard(item) {
     const prevLink = makeIconLink(item.previewUrl, 'eye', 'Preview');
     prevLink.addEventListener('click', (e) => {
       e.preventDefault();
-      slicc.lick({ action: 'open-preview', data: { id: item.id, url: item.previewUrl } });
+      showPreviewFrame(item.previewUrl, item.id);
     });
     linksEl.appendChild(prevLink);
   }
@@ -1137,7 +1217,7 @@ function createItemCard(item) {
     const liveLink = makeIconLink(item.liveUrl, 'external-link', 'Live');
     liveLink.addEventListener('click', (e) => {
       e.preventDefault();
-      slicc.lick({ action: 'open-preview', data: { id: item.id, url: item.liveUrl } });
+      showPreviewFrame(item.liveUrl, item.id);
     });
     linksEl.appendChild(liveLink);
   }
