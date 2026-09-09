@@ -188,6 +188,7 @@
     }
     #queue-scroll {
       flex: 1;
+      min-height: 0;          /* classic flex fix: allow child to scroll instead of pushing parent */
       overflow-y: auto;
       padding: 8px;
       display: flex;
@@ -221,18 +222,33 @@
       box-shadow: var(--s2-shadow-container);
       overflow: hidden;
       transition: box-shadow 0.15s;
+      flex-shrink: 0;         /* keep natural height — parent scrolls, not us */
     }
     .queue-item:hover { box-shadow: var(--s2-shadow-elevated); }
 
-    .item-main {
+    /* card body: content region above the action footer */
+    .item-body {
       padding: 10px 12px 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
     }
     .item-header {
       display: flex;
-      align-items: flex-start;
-      gap: 8px;
-      margin-bottom: 6px;
+      align-items: center;
+      gap: 7px;
     }
+    /* secondary line: path or URL, sits beneath the title */
+    .item-meta {
+      font-size: 10.5px;
+      color: var(--s2-fg-secondary, var(--s2-fg));
+      opacity: 0.65;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      padding-left: 15px;  /* optical indent matching dot width */
+    }
+    .item-meta[hidden] { display: none !important; }
 
     /* Status dot */
     .status-dot {
@@ -258,7 +274,7 @@
     .item-links {
       display: flex;
       gap: 6px;
-      margin-bottom: 8px;
+      margin: 0;
       flex-wrap: wrap;
     }
     .item-link {
@@ -275,37 +291,43 @@
     }
     .item-link:hover { background: color-mix(in srgb, var(--s2-accent) 16%, transparent); }
 
-    .item-actions {
-      display: flex;
-      gap: 5px;
-      flex-wrap: wrap;
-      align-items: center;
-    }
+    /* status badge in the header, right-aligned */
     .item-status-label {
       margin-left: auto;
+      flex-shrink: 0;
       font-size: 10px;
-      font-weight: 600;
+      font-weight: 700;
       text-transform: uppercase;
       letter-spacing: 0.05em;
       padding: 2px 7px;
       border-radius: var(--s2-radius-pill, 999px);
     }
     .item-status-label.pending {
-      background: color-mix(in srgb, var(--s2-notice) 10%, transparent);
+      background: color-mix(in srgb, var(--s2-notice) 12%, transparent);
       color: var(--s2-notice);
     }
     .item-status-label.published {
-      background: color-mix(in srgb, var(--s2-positive) 10%, transparent);
+      background: color-mix(in srgb, var(--s2-positive) 12%, transparent);
       color: var(--s2-positive);
     }
     .item-status-label.deferred {
-      background: color-mix(in srgb, var(--s2-fg) 8%, transparent);
+      background: color-mix(in srgb, var(--s2-fg) 10%, transparent);
       color: var(--s2-fg-secondary, var(--s2-fg));
+    }
+    /* action footer: always visible, visually separated from body */
+    .item-footer {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      flex-wrap: wrap;
+      padding: 6px 12px 8px;
+      border-top: 1px solid color-mix(in srgb, var(--s2-fg) 7%, transparent);
+      background: color-mix(in srgb, var(--s2-bg-base, var(--s2-bg)) 40%, transparent);
     }
 
     /* Integration findings (review source protocol) */
     .findings {
-      margin: 0 0 8px;
+      margin: 0;
       display: flex;
       flex-direction: column;
       gap: 6px;
@@ -1170,25 +1192,26 @@ function createItemCard(item) {
 
   // Static structural HTML — no user-controlled values inlined.
   div.innerHTML =
-    '<div class="item-main">' +
+    '<div class="item-body">' +
       '<div class="item-header">' +
         '<div class="status-dot"></div>' +
         '<div class="item-title"></div>' +
-      '</div>' +
-      '<div class="item-links" hidden></div>' +
-      '<div class="findings" hidden></div>' +
-      '<div class="item-actions">' +
-        '<button class="sprinkle-btn sprinkle-btn--positive action-btn" data-action="publish">' +
-          '<i data-lucide="check-circle" class="sprinkle-icon sm"></i> Publish' +
-        '</button>' +
-        '<button class="sprinkle-btn sprinkle-btn--notice action-btn" data-action="comment">' +
-          '<i data-lucide="message-circle" class="sprinkle-icon sm"></i> Comment' +
-        '</button>' +
-        '<button class="sprinkle-btn sprinkle-btn--secondary action-btn" data-action="defer">' +
-          '<i data-lucide="clock" class="sprinkle-icon sm"></i> Defer' +
-        '</button>' +
         '<span class="item-status-label"></span>' +
       '</div>' +
+      '<div class="item-meta" hidden></div>' +
+      '<div class="findings" hidden></div>' +
+      '<div class="item-links" hidden></div>' +
+    '</div>' +
+    '<div class="item-footer">' +
+      '<button class="sprinkle-btn sprinkle-btn--positive action-btn" data-action="publish">' +
+        '<i data-lucide="check-circle" class="sprinkle-icon sm"></i> Publish' +
+      '</button>' +
+      '<button class="sprinkle-btn sprinkle-btn--notice action-btn" data-action="comment">' +
+        '<i data-lucide="message-circle" class="sprinkle-icon sm"></i> Comment' +
+      '</button>' +
+      '<button class="sprinkle-btn sprinkle-btn--secondary action-btn" data-action="defer">' +
+        '<i data-lucide="clock" class="sprinkle-icon sm"></i> Defer' +
+      '</button>' +
     '</div>' +
     '<div class="comment-row">' +
       '<div class="comment-inner">' +
@@ -1202,6 +1225,7 @@ function createItemCard(item) {
 
   const dot         = div.querySelector('.status-dot');
   const titleEl     = div.querySelector('.item-title');
+  const metaEl      = div.querySelector('.item-meta');
   const linksEl     = div.querySelector('.item-links');
   const labelEl     = div.querySelector('.item-status-label');
   const commentRow  = div.querySelector('.comment-row');
@@ -1210,6 +1234,12 @@ function createItemCard(item) {
   // User-controlled values — assigned via safe APIs (textContent / element props).
   dot.classList.add(statusLabel);
   titleEl.textContent = item.title || item.id || '';
+
+  // Secondary meta line: path > previewUrl hostname > nothing
+  const metaText = item.path || (item.previewUrl ? (() => {
+    try { return new URL(item.previewUrl).pathname; } catch { return item.previewUrl; }
+  })() : '');
+  if (metaText) { metaEl.textContent = metaText; metaEl.hidden = false; }
 
   if (item.previewUrl && isSafeUrl(item.previewUrl)) {
     const prevLink = makeIconLink(item.previewUrl, 'eye', 'Preview');
