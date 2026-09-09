@@ -194,6 +194,7 @@
     }
     .queue-item {
       border-bottom: 1px solid var(--line);
+      container-type: inline-size;
     }
     .queue-item:hover {
       background: color-mix(in srgb, var(--fg) 3.5%, transparent);
@@ -234,6 +235,21 @@
       line-height: 1.4;
       overflow-wrap: anywhere;
     }
+    .item-title-preview {
+      border: 0;
+      padding: 0;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+      text-align: start;
+      overflow-wrap: anywhere;
+      cursor: pointer;
+    }
+    .item-title-preview:hover {
+      color: var(--link);
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
     .item-status-label {
       font-size: 12px;
       color: var(--fg-muted);
@@ -251,12 +267,6 @@
       gap: 6px 12px;
       padding: 8px 16px 14px;
     }
-    .item-links {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 4px 12px;
-      width: 100%;
-    }
     .item-link {
       border:0; background:transparent; padding:0; font-family:inherit; cursor:pointer;
       display: inline-flex;
@@ -271,7 +281,16 @@
     .item-footer-actions {
       display: flex;
       flex-wrap: wrap;
+      align-items: center;
       gap: 6px;
+      width: 100%;
+    }
+    .item-footer-actions [data-action="publish"] {
+      margin-inline-start: auto;
+    }
+    @container (max-width: 380px) {
+      .item-footer-actions .action-btn { padding-inline: 8px; }
+      .item-footer-actions .action-btn .sprinkle-icon { display: none; }
     }
     .queue-item[data-status="published"] [data-action="publish"],
     .queue-item[data-status="published"] [data-action="defer"],
@@ -1047,16 +1066,15 @@ function createItemCard(item) {
       '<div class="findings" hidden></div>' +
     '</div>' +
     '<div class="item-footer">' +
-      '<div class="item-links" hidden></div>' +
       '<div class="item-footer-actions">' +
-        '<button class="sprinkle-btn sprinkle-btn--primary action-btn" data-action="publish">' +
-          '<i data-lucide="check-circle" class="sprinkle-icon sm"></i> Publish' +
-        '</button>' +
         '<button class="sprinkle-btn sprinkle-btn--ghost action-btn" data-action="comment">' +
           '<i data-lucide="message-circle" class="sprinkle-icon sm"></i> Comment' +
         '</button>' +
         '<button class="sprinkle-btn sprinkle-btn--secondary action-btn" data-action="defer">' +
           '<i data-lucide="clock" class="sprinkle-icon sm"></i> Defer' +
+        '</button>' +
+        '<button class="sprinkle-btn sprinkle-btn--primary action-btn" data-action="publish">' +
+          '<i data-lucide="check-circle" class="sprinkle-icon sm"></i> Publish' +
         '</button>' +
       '</div>' +
     '</div>' +
@@ -1073,7 +1091,7 @@ function createItemCard(item) {
   const dot         = div.querySelector('.status-dot');
   const titleEl     = div.querySelector('.item-title');
   const metaEl      = div.querySelector('.item-meta');
-  const linksEl     = div.querySelector('.item-links');
+  const actionsEl   = div.querySelector('.item-footer-actions');
   const labelEl     = div.querySelector('.item-status-label');
   const commentRow  = div.querySelector('.comment-row');
   const commentInput = div.querySelector('.comment-input');
@@ -1096,9 +1114,15 @@ function createItemCard(item) {
     preview.type = 'button';
     preview.innerHTML = '<i data-lucide="eye" class="sprinkle-icon sm"></i> Preview';
     preview.addEventListener('click', () => openPreview(item));
-    linksEl.appendChild(preview);
+    actionsEl.prepend(preview);
+    const titlePreview = document.createElement('button');
+    titlePreview.type = 'button';
+    titlePreview.className = 'item-title-preview';
+    titlePreview.textContent = titleEl.textContent;
+    titlePreview.title = 'Preview ' + titleEl.textContent;
+    titlePreview.addEventListener('click', () => openPreview(item));
+    titleEl.replaceChildren(titlePreview);
   }
-  linksEl.hidden = linksEl.childNodes.length === 0;
 
   labelEl.classList.add(statusLabel);
   labelEl.textContent = statusLabel;
