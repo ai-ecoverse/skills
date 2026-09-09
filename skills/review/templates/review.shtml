@@ -700,27 +700,34 @@
       box-shadow: -4px 0 28px rgba(0,0,0,0.2);
     }
     .pf-toolbar {
-      display: flex; align-items: center; gap: 6px;
-      padding: 5px 10px;
-      border-bottom: 1px solid var(--s2-border, #e2e8f0);
+      display: flex; align-items: center; gap: 4px;
+      padding: 4px 8px;
+      border-bottom: 1px solid color-mix(in srgb, var(--s2-fg) 8%, transparent);
       flex-shrink: 0;
-      background: var(--s2-surface-raised, #f8fafc);
+      background: color-mix(in srgb, var(--s2-fg) 4%, transparent);
     }
     .pf-url {
-      flex: 1; font-size: 11px; color: var(--s2-text-muted, #64748b);
+      flex: 1; font-size: 10.5px; color: var(--s2-fg-secondary, #94a3b8);
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      min-width: 0;
     }
+    /* pf-btn mirrors .sprinkle-btn--secondary but smaller */
     .pf-btn {
       display: inline-flex; align-items: center; gap: 4px;
-      padding: 3px 9px; border-radius: 4px; border: 1px solid transparent;
+      padding: 3px 8px; border-radius: 4px; border: none;
       cursor: pointer; font-size: 11px; font-family: inherit; white-space: nowrap;
-      background: var(--s2-surface-alt, #e2e8f0); color: var(--s2-text, #1e293b);
+      background: color-mix(in srgb, var(--s2-fg) 8%, transparent);
+      color: var(--s2-fg); flex-shrink: 0;
+      transition: background 0.15s, color 0.15s;
     }
-    .pf-btn:hover { filter: brightness(0.94); }
-    .pf-btn-pin {
-      background: var(--s2-accent, #6366f1); color: #fff;
-      border-color: transparent;
+    .pf-btn:hover { background: color-mix(in srgb, var(--s2-fg) 14%, transparent); }
+    /* active = accent background, same dimensions — color change only */
+    .pf-btn.active {
+      background: var(--s2-accent); color: var(--s2-bg-base, #161927);
     }
+    .pf-btn.active:hover { opacity: 0.88; }
+    /* close button: icon-only, slightly narrower */
+    .pf-btn-close { padding: 3px 6px; }
     .pf-frame { flex: 1; border: none; width: 100%; background: #fff; }
 
   </style>
@@ -1106,44 +1113,162 @@ function renderQueue() {
 
 
 // ── in-sprinkle preview frame ─────────────────────────────────────────────
-// FRAMING: use-case-pages--slicc-website--ai-ecoverse.aem.page sends no
-// X-Frame-Options and no frame-ancestors in its CSP, so embedding is allowed.
-//
-// PINNING: Pin Review injects JS into the page DOM. That requires a real
-// browser tab — the DOM of a cross-origin iframe is inaccessible. This drawer
-// is for VIEWING; click "Open in tab to pin" to get the full Pin Review flow.
+// FRAMING: no X-Frame-Options / frame-ancestors on the aem.page host.
+// PINNING: cross-origin iframe DOM is inaccessible, so Pin Review operates
+// by opening a REAL browser tab via slicc.exec and injecting the overlay
+// there — no lick → cone round-trip needed.
+// SPECK: local chrome-extension:// previews only; button is shown but the
+// sprinkle shows a tooltip when clicked on remote https pages.
+
+let _pfTabId = null;          // tab id opened by the drawer's "Open in tab"
+let _pfPinActive = false;     // drawer Pin Review toggle state
+let _pfSpeckActive = false;   // drawer Speck Fix toggle state
+
+// Open a foreground tab via exec and return its id.
+async function pfOpenTab(pageUrl) {
+  const r = await slicc.exec.spawn(['playwright-cli', 'open', pageUrl, '--foreground']);
+  const m = (r.stdout || '').match(/\[targetId:\s*([^\]]+)\]/);
+  if (!m) throw new Error('playwright-cli open: could not parse tab id\n' + r.stdout);
+  return m[1].trim();
+}
+
+// Inject the Pin Review overlay into a tab via exec.
+// addMode=true → crosshair on; false → display only.
+async function pfInjectOverlay(tabId, addMode) {
+  const flag = addMode ? 'true' : 'false';
+  // Seed wantAdd flag and clear stale pins
+  await slicc.exec.spawn(['playwright-cli', 'eval', '--tab', tabId,
+    '(function(){window.__sliccWantAdd=' + flag + ';if(!window.__sliccReviewAll)window.__sliccReviewAll=[];})()']);
+  // Inject the overlay
+  return slicc.exec.spawn(['playwright-cli', 'eval-file',
+    '/shared/review-overlay/enter.resolved.js', '--tab', tabId]);
+}
+
+// Sync the visual state of both Pin Review drawer buttons (color only).
+function pfSyncPinBtn() {
+  const btn = document.getElementById('pf-drawer-pin-btn');
+  if (btn) btn.classList.toggle('active', _pfPinActive);
+}
+function pfSyncSpeckBtn() {
+  const btn = document.getElementById('pf-drawer-speck-btn');
+  if (btn) btn.classList.toggle('active', _pfSpeckActive);
+}
+
 function showPreviewFrame(url, itemId) {
   let bd = document.getElementById('pf-backdrop');
   if (!bd) {
     bd = document.createElement('div');
     bd.id = 'pf-backdrop';
     bd.className = 'pf-backdrop pf-hidden';
+    // All icons use data-lucide; renderIcons() is called after append.
     bd.innerHTML =
       '<div class="pf-drawer">' +
         '<div class="pf-toolbar">' +
           '<span class="pf-url" id="pf-url-label"></span>' +
-          '<button class="pf-btn pf-btn-pin" id="pf-pin-btn">\uD83D\uDCCC Open in tab to pin</button>' +
-          '<button class="pf-btn" id="pf-close-btn">&#x2715; Close</button>' +
+          '<button class="pf-btn" id="pf-drawer-pin-btn" title="Pin Review — open tab and inject overlay">' +
+            '<i data-lucide="map-pin" class="sprinkle-icon sm"></i><span>Pin Review</span>' +
+          '</button>' +
+          '<button class="pf-btn" id="pf-drawer-speck-btn" title="Speck Fix (local previews only)">' +
+            '<i data-lucide="sparkles" class="sprinkle-icon sm"></i><span>Speck Fix</span>' +
+          '</button>' +
+          '<button class="pf-btn" id="pf-open-tab-btn" title="Open in a real browser tab">' +
+            '<i data-lucide="external-link" class="sprinkle-icon sm"></i><span>Open in tab</span>' +
+          '</button>' +
+          '<button class="pf-btn pf-btn-close" id="pf-close-btn" title="Close preview">' +
+            '<i data-lucide="x" class="sprinkle-icon sm"></i>' +
+          '</button>' +
         '</div>' +
         '<iframe class="pf-frame" id="pf-frame" allow="fullscreen" referrerpolicy="no-referrer"></iframe>' +
       '</div>';
     document.getElementById('app').appendChild(bd);
+    renderIcons(); // render lucide icons in the toolbar
+
     document.getElementById('pf-close-btn').addEventListener('click', () => {
+      _pfPinActive = false; _pfSpeckActive = false;
+      pfSyncPinBtn(); pfSyncSpeckBtn();
       bd.classList.add('pf-hidden');
       document.getElementById('pf-frame').src = 'about:blank';
     });
     bd.addEventListener('click', (e) => {
       if (e.target === bd) {
+        _pfPinActive = false; _pfSpeckActive = false;
+        pfSyncPinBtn(); pfSyncSpeckBtn();
         bd.classList.add('pf-hidden');
         document.getElementById('pf-frame').src = 'about:blank';
       }
     });
+
+    // ── Drawer: "Open in tab" ──────────────────────────────────────────────
+    // Opens a real foreground tab via slicc.exec (no lick needed) and
+    // injects the Pin Review display overlay immediately.
+    document.getElementById('pf-open-tab-btn').addEventListener('click', async () => {
+      const btn = document.getElementById('pf-open-tab-btn');
+      btn.disabled = true;
+      try {
+        const frameUrl = document.getElementById('pf-frame').src || url;
+        _pfTabId = await pfOpenTab(frameUrl);
+        await pfInjectOverlay(_pfTabId, false); // display mode
+        // If pin review is already active in drawer, switch tab to add mode
+        if (_pfPinActive) await pfInjectOverlay(_pfTabId, true);
+      } catch (e) {
+        console.error('[pf] open-tab error:', e.message || e);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    // ── Drawer: Pin Review toggle ──────────────────────────────────────────
+    // Mutually exclusive with Speck. Opens/uses the real tab via exec.
+    document.getElementById('pf-drawer-pin-btn').addEventListener('click', async () => {
+      _pfPinActive = !_pfPinActive;
+      if (_pfPinActive) { _pfSpeckActive = false; pfSyncSpeckBtn(); }
+      pfSyncPinBtn();
+      const frameUrl = document.getElementById('pf-frame').src || url;
+      if (!_pfTabId) {
+        // No tab yet — open one first
+        const btn = document.getElementById('pf-drawer-pin-btn');
+        btn.disabled = true;
+        try {
+          _pfTabId = await pfOpenTab(frameUrl);
+        } catch(e) {
+          console.error('[pf] pin open error:', e.message || e);
+          _pfPinActive = false; pfSyncPinBtn(); btn.disabled = false; return;
+        }
+        btn.disabled = false;
+      }
+      try {
+        await pfInjectOverlay(_pfTabId, _pfPinActive);
+      } catch(e) {
+        console.error('[pf] pin inject error:', e.message || e);
+      }
+      // Sync top-bar pin-review button color
+      const topBtn = document.getElementById('review-mode-btn');
+      if (topBtn) topBtn.classList.toggle('active', _pfPinActive);
+    });
+
+    // ── Drawer: Speck Fix toggle ───────────────────────────────────────────
+    // Local chrome-extension:// previews only. On remote pages, noop with note.
+    document.getElementById('pf-drawer-speck-btn').addEventListener('click', async () => {
+      const frameUrl = document.getElementById('pf-frame').src || '';
+      const isLocal = /^chrome-extension:\/\//.test(frameUrl);
+      if (!isLocal) {
+        // Remote page — Speck can't inject; keep button un-active
+        console.info('[pf] Speck Fix is available on locally-served chrome-extension:// previews only.');
+        return;
+      }
+      _pfSpeckActive = !_pfSpeckActive;
+      if (_pfSpeckActive) { _pfPinActive = false; pfSyncPinBtn(); }
+      pfSyncSpeckBtn();
+      // Fire the top-bar toggle-speck lick so the cone can bootstrap Speck
+      slicc.lick({ action: 'toggle-speck', data: { active: _pfSpeckActive } });
+    });
   }
+
   document.getElementById('pf-url-label').textContent = url;
   document.getElementById('pf-frame').src = url;
-  document.getElementById('pf-pin-btn').onclick = () => {
-    slicc.lick({ action: 'open-preview', data: { id: itemId, url } });
-  };
+  // Reset pin/tab state when a new URL is opened
+  _pfTabId = null; _pfPinActive = false; _pfSpeckActive = false;
+  pfSyncPinBtn(); pfSyncSpeckBtn();
   bd.classList.remove('pf-hidden');
 }
 
@@ -1676,9 +1801,7 @@ let reviewModeActive = false;
 document.getElementById('review-mode-btn').addEventListener('click', () => {
   reviewModeActive = !reviewModeActive;
   const btn = document.getElementById('review-mode-btn');
-  const label = document.getElementById('review-mode-label');
-  btn.classList.toggle('active', reviewModeActive);
-  label.textContent = reviewModeActive ? 'Exit Pin Review' : 'Pin Review';
+  btn.classList.toggle('active', reviewModeActive); // color only — label stays "Pin Review"
   slicc.lick({ action: 'toggle-review-mode', data: { active: reviewModeActive } });
 });
 
@@ -1687,9 +1810,7 @@ let speckActive = false;
 document.getElementById('speck-btn').addEventListener('click', () => {
   speckActive = !speckActive;
   const btn = document.getElementById('speck-btn');
-  const label = document.getElementById('speck-label');
-  btn.classList.toggle('active', speckActive);
-  label.textContent = speckActive ? 'Speck Fix On' : 'Speck Fix';
+  btn.classList.toggle('active', speckActive); // color only — label stays "Speck Fix"
   slicc.lick({ action: 'toggle-speck', data: { active: speckActive } });
 });
 
@@ -1847,17 +1968,13 @@ slicc.on('update', async (msg) => {
   else if (msg.action === 'set-review-mode') {
     reviewModeActive = !!msg.active;
     const btn = document.getElementById('review-mode-btn');
-    const label = document.getElementById('review-mode-label');
-    if (btn) btn.classList.toggle('active', reviewModeActive);
-    if (label) label.textContent = reviewModeActive ? 'Exit Pin Review' : 'Pin Review';
+    if (btn) btn.classList.toggle('active', reviewModeActive); // color only
   }
 
   else if (msg.action === 'set-speck') {
     speckActive = !!msg.active;
     const btn = document.getElementById('speck-btn');
-    const label = document.getElementById('speck-label');
-    if (btn) btn.classList.toggle('active', speckActive);
-    if (label) label.textContent = speckActive ? 'Speck Fix On' : 'Speck Fix';
+    if (btn) btn.classList.toggle('active', speckActive); // color only
   }
 
   else if (msg.action === 'clear-pins') {
