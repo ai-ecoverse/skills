@@ -22,24 +22,16 @@
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-    /*
-      Color strategy: documented S2 tokens (--s2-bg-base/layer-1/layer-2,
-      --s2-accent, --s2-positive, --s2-negative, --s2-gray-25) for fills, and
-      light-dark() for any text / border that previously relied on the
-      undocumented --s2-text-primary / --s2-text-secondary / --s2-border-default
-      tokens. Those tokens resolved fine in dark mode (their fallbacks were
-      light grays) but produced invisible light-gray-on-white text in light
-      mode — that's the contrast bug the user reported. light-dark() requires
-      color-scheme: light dark on an ancestor; we set it on :root.
-    */
-    :root { color-scheme: light dark; }
+    /* Native controls and light-dark() follow the app, even when the OS differs. */
+    :root { color-scheme: dark; }
+    :root.theme-light { color-scheme: light; }
 
     html, body {
       height: 100%;
       overflow: hidden;
       font-family: var(--s2-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
       font-size: 13px;
-      color: light-dark(#1a1a1a, #e8e8e8);
+      color: var(--s2-content-default);
       background: var(--s2-bg-base, #1a1a1a);
     }
 
@@ -53,8 +45,9 @@
     .toolbar {
       display: flex;
       align-items: center;
-      gap: var(--s2-spacing-200, 12px);
-      padding: 8px var(--s2-spacing-300, 16px);
+      gap: 8px;
+      flex-wrap: wrap;
+      padding: 12px var(--s2-spacing-300, 16px);
       background: var(--s2-bg-layer-1, #252525);
       border-bottom: 1px solid light-dark(#d8d8d8, #3a3a3a);
       flex-shrink: 0;
@@ -62,7 +55,7 @@
     }
 
     .toolbar-title {
-      font-weight: 700;
+      font-weight: 600;
       font-size: 14px;
       display: flex;
       align-items: center;
@@ -73,6 +66,8 @@
     .toolbar-title svg { opacity: 0.7; }
 
     .btn {
+      min-height: 34px;
+      font-family: inherit;
       display: inline-flex;
       align-items: center;
       justify-content: center;
@@ -90,21 +85,22 @@
     .btn svg { width: 14px; height: 14px; }
 
     .btn-play {
-      background: var(--s2-positive, #0a0);
-      color: var(--s2-gray-25, #fff);
+      background: #2563eb;
+      color: #fff;
     }
     .btn-play:hover { filter: brightness(1.15); }
 
     .btn-stop {
-      background: var(--s2-negative, #d00);
-      color: var(--s2-gray-25, #fff);
+      background: transparent;
+      color: var(--s2-content-default);
+      border: 1px solid var(--s2-border-subtle);
     }
     .btn-stop:hover { filter: brightness(1.15); }
 
     .btn-icon {
       background: transparent;
       border: 1px solid light-dark(#d0d0d0, #444);
-      color: light-dark(#1a1a1a, #e8e8e8);
+      color: var(--s2-content-default);
       padding: 6px;
       width: 32px;
       height: 32px;
@@ -127,7 +123,7 @@
     .tempo-value {
       font-size: 12px;
       font-weight: 700;
-      color: light-dark(#1a1a1a, #e8e8e8);
+      color: var(--s2-content-default);
       min-width: 28px;
       text-align: center;
     }
@@ -269,7 +265,7 @@
       border-radius: var(--s2-radius-pill, 9999px);
       background: var(--s2-bg-elevated, light-dark(#fff, #2a2a2a));
       border: 1px solid light-dark(#c8c8c8, #3a3a3a);
-      color: light-dark(#1a1a1a, #e8e8e8);
+      color: var(--s2-content-default);
       font-size: 12px;
       font-weight: 600;
       cursor: pointer;
@@ -281,18 +277,18 @@
     .preset-card:hover {
       background: light-dark(#f0f0f0, #383838);
       border-color: light-dark(#a0a0a0, #555);
-      color: light-dark(#1a1a1a, #e8e8e8);
+      color: var(--s2-content-default);
     }
 
     .preset-card.active {
-      background: var(--s2-accent, #39f);
-      border-color: var(--s2-accent, #39f);
-      color: var(--s2-gray-25, #fff);
+      background: #2563eb;
+      border-color: #2563eb;
+      color: #fff;
     }
 
     .preset-card.active:hover {
       filter: brightness(1.08);
-      color: var(--s2-gray-25, #fff);
+      color: #fff;
     }
 
     .preset-card-name {
@@ -339,7 +335,17 @@
     .status-info { color: light-dark(#555, #a0a0a0); }
 
     .error-text { color: var(--s2-negative, #e44); }
-  </style>
+      .preset-card { min-height: 34px; font-family: inherit; }
+    :where(button, input):focus-visible { outline: 2px solid light-dark(#245cc5, #8ab4ff); outline-offset: 2px; }
+    .tempo-group { min-width: 0; }
+    @media (max-width: 540px) {
+      .toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; }
+      .toolbar-title { min-width: 0; }
+      .tempo-group { grid-column: 1 / -1; width: 100%; margin: 0; min-height: 32px; }
+      .tempo-group input { flex: 1; min-width: 48px; }
+      .btn { padding-inline: 12px; }
+    }
+</style>
 </head>
 <body>
   <div id="app">
@@ -358,9 +364,9 @@
         Stop
       </button>
       <div class="tempo-group">
-        <span class="tempo-label">BPM</span>
-        <input type="range" id="tempoSlider" min="60" max="200" value="120" oninput="handleTempo(this.value)">
-        <span class="tempo-value" id="tempoValue">120</span>
+        <label class="tempo-label" for="tempoSlider">Tempo</label>
+        <input type="range" id="tempoSlider" min="60" max="200" value="120" aria-label="Tempo in beats per minute" oninput="handleTempo(this.value)">
+        <span class="tempo-value" id="tempoValue">120</span><span class="tempo-label">BPM</span>
       </div>
     </div>
 
@@ -699,9 +705,9 @@ note("<c3 eb3 g3 bb3>(3,8)")
           var p = cat.items[j];
           var id = cat.category + '-' + j;
           var tip = (p.name + ' — ' + p.desc).replace(/"/g, '&quot;');
-          html += '<div class="preset-card" data-cat="' + i + '" data-idx="' + j + '" id="preset-' + id + '" title="' + tip + '" onclick="loadPreset(' + i + ',' + j + ')">';
+          html += '<button type="button" aria-pressed="false" class="preset-card" data-cat="' + i + '" data-idx="' + j + '" id="preset-' + id + '" title="' + tip + '" onclick="loadPreset(' + i + ',' + j + ')">';
           html += '<span class="preset-card-name">' + p.name + '</span>';
-          html += '</div>';
+          html += '</button>';
         }
         html += '</div>';
       }
@@ -719,9 +725,9 @@ note("<c3 eb3 g3 bb3>(3,8)")
 
       // Update active state
       var cards = document.querySelectorAll('.preset-card');
-      for (var i = 0; i < cards.length; i++) cards[i].classList.remove('active');
+      for (var i = 0; i < cards.length; i++) { cards[i].classList.remove('active'); cards[i].setAttribute('aria-pressed', 'false'); }
       var activeCard = document.getElementById('preset-' + PRESETS[catIdx].category + '-' + itemIdx);
-      if (activeCard) activeCard.classList.add('active');
+      if (activeCard) { activeCard.classList.add('active'); activeCard.setAttribute('aria-pressed', 'true'); }
 
       // Auto-play (handlePlay sends the lick event)
       await handlePlay();
