@@ -8,70 +8,7 @@
 <style>
   * { box-sizing: border-box; }
 
-  /* No `color` was ever set here -- every element that doesn't set its own
-     (h2 titles, field/checkbox labels, plain notes) fell back to the
-     browser's UA default text color for an unstyled element. That default
-     is NOT static: with `color-scheme: light dark` previously declared on
-     `:root` (added only to anchor the light-dark() calls this round
-     removed -- see .im-video-wrap/audio,video.im-review-media below), the
-     UA default text color tracks the OS `prefers-color-scheme`, not this
-     app's `.theme-light` class. Confirmed empirically via the dark-mode
-     self-test check below: `getComputedStyle(document.body).color` stayed
-     `rgb(255,255,255)` across a `.theme-light` toggle that correctly
-     flipped every other measured token -- i.e. body text was ALWAYS white,
-     invisible (contrast 1:1) against the light theme's white page
-     background, and only "worked" in dark mode by coincidence of matching
-     the sandbox's OS preference. Fix (at the time): set a real,
-     class-tracked color explicitly and remove the now-unused
-     `color-scheme` declaration, since nothing here called `light-dark()`
-     anymore.
-
-     THAT REMOVAL HAD A SECOND, UNNOTICED EFFECT: `color-scheme` doesn't
-     only gate `light-dark()` -- it's also what tells the UA which palette
-     to use for native form-control rendering (an <input>/<textarea>/
-     <select>'s own default background/chrome, not just the CSS `color`
-     property, which is set separately via the S2 token below).  Without
-     it, `.sprinkle-text-field` -- whose OWN css sets no
-     background/color at all (see the single `resize`/`font-family`/
-     `min-height` rule below; it relies entirely on this UA default plus
-     whatever else cascades in) -- fell back to the browser's LIGHT
-     default background in BOTH themes, while its text `color` (an S2
-     token) correctly tracked the app theme independently. Result:
-     confirmed via getComputedStyle() (see the
-     "form-controls-readable-in-both-themes" self-test check) --
-     `background-color: rgb(255,255,255)` on every .sprinkle-text-field
-     element in BOTH theme states (never changed), paired with
-     `color: rgb(232,232,232)` in dark mode specifically -- 1.23:1
-     contrast, exactly the user's "white background, bright text" report.
-     Light mode's background happened to also be white, so it "worked"
-     there purely by coincidence (18.58:1), same shape of bug as the body
-     text one above.
-
-     FIX, part 1: restore `color-scheme`, but CLASS-DRIVEN instead of the
-     old `light dark` (OS-driven) value -- `:root { color-scheme: dark; }`
-     with `:root.theme-light { color-scheme: light; }` override. This
-     does not reintroduce the original bug: `light dark` let the UA
-     pick EITHER palette based on the OS preference with no author
-     control; a single fixed value per class selector is entirely
-     class-driven, tracking `.theme-light` exactly like every `--s2-*`
-     token already does, never the OS.
-
-     Tried this FIRST, alone, and re-ran the self-test before writing
-     part 2 below: NO EFFECT. background-color measured bit-for-bit
-     identical (rgb(255,255,255), both theme states) before and after
-     adding this rule -- this render path evidently does not apply
-     `color-scheme` to native form-control background here, whatever the
-     reason. Left in anyway (harmless, and may still matter for other
-     native chrome this file doesn't otherwise control, e.g. checkbox
-     rendering, a native <select> popup panel) -- but the actual fix for
-     the reported bug is part 2, explicit background/color on
-     `.sprinkle-text-field` itself (see that rule's own comment, a little
-     further down), which IS what empirically fixed it. Root cause was
-     therefore BOTH, in a sense: the missing `color-scheme` broke the one
-     lever that COULD have fixed this for free, but in THIS environment
-     that lever turned out to be inert for backgrounds regardless -- the
-     framework class shipping with no background/color of its own is what
-     actually required a direct fix. */
+  /* The app theme, including native controls, follows the host class. */
   :root { color-scheme: dark; }
   :root.theme-light { color-scheme: light; }
 
@@ -80,12 +17,14 @@
     padding: 0;
     background: var(--s2-bg-base);
     color: var(--s2-content-default);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    font-family: var(--s2-font-family, system-ui, sans-serif);
+    font-size: 14px;
+    line-height: 1.5;
   }
 
   body {
-    padding: var(--s2-spacing-300);
-    padding-bottom: var(--s2-spacing-600);
+    padding: 16px;
+    padding-bottom: 24px;
   }
 
   /* EXACTLY ONE element owns the measure and the centring: the outermost
@@ -101,12 +40,8 @@
   .im-stack { display: flex; flex-direction: column; gap: var(--s2-spacing-300); width: 100%; max-width: none; margin: 0; }
   body > .im-stack { max-width: 720px; margin: 0 auto; }
 
-  /* Each screen's own padding -- previously provided by the .im-card box
-     that wrapped each <section>. The box (background/shadow/radius) is
-     gone -- the sprinkle already renders inside a panel, so a nested card
-     was a redundant box -- but the SPACING it provided is preserved here
-     so content never butts against the panel edge. */
-  .im-screen { padding: var(--s2-spacing-300); }
+  /* The outer body owns the rail gutter; nested screens do not add another. */
+  .im-screen { padding: 0; }
 
   /* Still used for individual test-search result rows (see onTestSearch) --
      small elevated chips, not a full-screen wrapper. */
@@ -167,19 +102,14 @@
      column does not. The basis is therefore scoped to row context only. */
   .im-field { display: flex; flex-direction: column; gap: var(--s2-spacing-100); }
   .im-row > .im-field { flex: 1 1 220px; }
-  .im-field label { font-size: 0.85em; font-weight: 600; }
+  .im-field label { font-size: 13px; font-weight: 600; }
   .im-field--checkbox { flex-direction: row; align-items: center; gap: var(--s2-spacing-100); flex: 0 0 auto; }
 
   textarea.sprinkle-text-field { resize: vertical; font-family: inherit; min-height: 6.5em; }
 
-  /* The briefing is the most important input on the screen and the live config
-     value is ~3,300 characters. MEASURED before the fix: 97.6px tall = 5.7
-     visible lines against a 1047px scrollHeight, i.e. clipped mid-sentence.
-     Deliberately scoped to this one field: the rule above is a GLOBAL
-     textarea.sprinkle-text-field rule, and raising it would give every
-     textarea in the app a 20-line box. resize: vertical is inherited from that
-     global rule and stays, so it can still be dragged. */
-  #im-brief { min-height: 24em; }
+  /* Show a useful excerpt while keeping setup actions in the first viewport.
+     The field remains scrollable and can be resized for longer briefs. */
+  #im-brief { min-height: 10em; height: clamp(140px, 24vh, 220px); }
 
   /* .sprinkle-text-field itself (the framework class, applied to every
      <textarea>/<input type="text">/<select> in this file) sets no
@@ -253,7 +183,7 @@
 
   /* Was `opacity: 0.75` -- same reasoning as .im-tab above. */
   .im-note {
-    font-size: 0.82em;
+    font-size: 12px;
     color: var(--s2-content-secondary);
     line-height: 1.4;
   }
@@ -419,7 +349,7 @@
      case something starts using it later. */
   .im-speaking-idle { color: var(--s2-content-secondary); }
 
-  .im-screen-title { margin: 0 0 4px 0; font-size: 1.15em; font-weight: 700; }
+  .im-screen-title { margin: 0 0 4px 0; font-size: 14px; font-weight: 600; }
   /* Was `opacity: 0.7` -- same reasoning as .im-tab/.im-note above. */
   .im-screen-sub { margin: 0 0 var(--s2-spacing-200) 0; font-size: 0.85em; color: var(--s2-content-secondary); }
 
@@ -427,6 +357,12 @@
      light-dark(#111,#000), an OS-driven near-black-both-ways pair that
      could desync from the app's class-based theme toggle. */
   audio, video.im-review-media { width: 100%; border-radius: var(--s2-radius-default); background: var(--s2-bg-sunken); }
+  .sprinkle-btn { box-shadow: none; min-height: 34px; font-family: inherit; font-size: 13px; }
+  .sprinkle-btn--primary { background: #2563eb; color: #fff; border-color: #2563eb; }
+  .sprinkle-btn--primary:not(:disabled):hover { background: #1d4ed8; }
+  .sprinkle-text-field { min-height: 36px; padding: 8px 10px; border: 1px solid var(--s2-border-subtle); border-radius: 6px; font: inherit; }
+  :where(button, input, select, textarea):focus-visible { outline: 2px solid var(--s2-content-default); outline-offset: 2px; }
+  @media (max-width: 399px) { .im-btn-slot, .im-btn-slot__cell, #im-enable-btn, #im-start-btn { width: 100%; } }
 </style>
 </head>
 <body>
@@ -481,7 +417,7 @@
              cannot collide with anything. -->
         <div class="im-btn-slot" id="im-btn-slot" data-state="enable">
           <span class="im-btn-slot__cell im-btn-slot__cell--enable">
-            <button id="im-enable-btn" type="button" class="sprinkle-btn sprinkle-btn--secondary">Enable mic &amp; camera</button>
+            <button id="im-enable-btn" type="button" class="sprinkle-btn sprinkle-btn--primary">Enable mic &amp; camera</button>
           </span>
           <span class="im-btn-slot__cell im-btn-slot__cell--start">
             <button id="im-start-btn" type="button" class="sprinkle-btn sprinkle-btn--primary" disabled>Start interview</button>
