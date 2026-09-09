@@ -27,14 +27,11 @@ local folder of `.md`/`.txt` notes) plus web/X search, for a short,
 configurable session (default 5 minutes). The session is recorded,
 transcribed with timestamps, and saved as a reviewable artifact
 (`transcript.json`/`transcript.md`, `session.json`, `diagnostics.json`,
-and the recordings). Video is captured from **every connected camera at
-once**: the selected hero camera as `human.webm` plus each additional
-camera as a synchronized `video/angleN.webm`, with the shared microphone
-muxed identically into every file and per-stream timing recorded in
-`sync.json`, so a session can be re-cut from multiple angles. The agent's
-own voice is saved separately as `agent.webm`. See
-`references/multi-camera-recording.md` for the sync model and the
-camera-open reliability behavior.
+and the recordings). Every connected camera is recorded at once — the hero
+as `human.webm`, any extra angles as `video/angleN.webm`, and the agent's
+voice as `agent.webm` — kept in sync via `sync.json`. See
+`references/multi-camera-recording.md` for the sync model and camera-open
+reliability behavior.
 
 This skill has two parts:
 
@@ -105,6 +102,28 @@ Every `brief`/`set`/`reset` best-effort pushes a live-reload notice to an
 already-open sprinkle (no need to close and reopen it after a config
 change) — pass `--no-notify` to skip this for scripted use.
 
+### Checkpoints for destructive / batch commands
+
+These commands change or overwrite state without an interactive prompt, so
+validate around them:
+
+- **Before `reset`** — it overwrites `config.json` with defaults immediately
+  (no confirmation, no automatic backup). Capture the current settings first
+  so you can restore them:
+  ```
+  interview-me config                # print current settings, or back up the file:
+  cp /shared/sprinkles/interview-me/config.json /shared/sprinkles/interview-me/config.backup.json
+  ```
+  Afterwards, restore a saved briefing with `interview-me brief --file <path>`.
+- **After `collections ingest`** — it uploads/attaches each `.md`/`.txt` and
+  reports `Ingested N file(s)`. Confirm the documents are actually retrievable
+  before relying on them:
+  ```
+  interview-me collections docs <collection_id>     # per file: STATUS + CHUNKS
+  interview-me collections search <collection_id> "a question your notes answer"
+  ```
+  A non-empty `search` result confirms the collection is grounded and ready.
+
 ## Requirements
 
 - SLICC **>= 6.113.0** (uses `FormData`/`Blob` request bodies in `fetch`
@@ -117,24 +136,25 @@ change) — pass `--no-notify` to skip this for scripted use.
 
 ## What this is not
 
-This skill does not itself replicate the realtime voice session, wrap-up
-logic, transcript merging, or dark-mode-aware UI — all of that lives in
-the sprinkle's own code (`assets/sprinkle/`), which the CLI installs
-verbatim. If you need to understand *how* the voice session behaves (tool
-calls, wrap-up timing, transcription semantics), see `references/` rather
-than re-deriving it from the xAI API docs — several of the details there
-are non-obvious and were found by empirical testing against the live API,
-not from the published reference docs.
+The realtime voice session, wrap-up logic, transcript merging, and UI live
+in the sprinkle's own code (`assets/sprinkle/`), which the CLI installs
+verbatim — not in the CLI itself. To understand *how* the session behaves
+(tool calls, wrap-up timing, transcription semantics), read `references/`:
+those findings came from empirical testing against the live API, not the
+published docs.
 
 ## Directory layout
 
 ```
 SKILL.md
-scripts/interview-me.jsh       CLI (install, config, collections)
+config.example.json             example of the config shape, with placeholders
+scripts/interview-me.jsh        CLI (install, config, collections)
+
 assets/sprinkle/                the sprinkle installed by `interview-me install`
   interview-me.shtml
   lib/*.js
 assets/kb/README.md             notes on preparing a local knowledge-base folder
+
 references/                     empirical findings about the realtime API
   server-side-tool-calls.md
   transcription-semantics.md
@@ -142,5 +162,4 @@ references/                     empirical findings about the realtime API
   steering-mid-session.md
   sprinkle-module-loading.md
   multi-camera-recording.md
-config.example.json             example of the config shape, with placeholders
 ```
