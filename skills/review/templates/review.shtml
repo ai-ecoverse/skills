@@ -2027,20 +2027,19 @@ function renderIcons() {
 // and sets _state = savedState. Our listener then calls loadState() and
 // finds the real data. saveState() is no-op until _stateReady=true so the
 // clobber in step 3 never happens.
-window.addEventListener('message', function onSprinkleInit(e) {
-  if (!e.data || e.data.type !== 'sprinkle-init') return;
-  window.removeEventListener('message', onSprinkleInit);
+// doInit() is called from the sprinkle-init handler (primary path) and
+// from a 900ms safety timer (fallback if the message races or is lost).
+let _initDone = false;
+function doInit() {
+  if (_initDone) return;
+  _initDone = true;
   _stateReady = true;
   loadState();
-
-  // Restore annotations panel state
   if (state.annotationsOpen) {
     document.getElementById('annotations-list').classList.add('open');
     document.getElementById('ann-chevron').classList.add('open');
   }
-
   if (state.view === 'document' && state.docPath) {
-    // Restore doc view
     document.getElementById('doc-filename').textContent =
       state.docTitle || state.docPath.split('/').pop();
     renderAnnotationsList();
@@ -2051,7 +2050,17 @@ window.addEventListener('message', function onSprinkleInit(e) {
     renderQueue();
     showView('queue');
   }
+}
+
+window.addEventListener('message', function onSprinkleInit(e) {
+  if (!e.data || e.data.type !== 'sprinkle-init') return;
+  window.removeEventListener('message', onSprinkleInit);
+  doInit();
 }, false);
+
+// Safety net: if sprinkle-init never arrives (race or missed message),
+// run init after 900ms so the panel never stays permanently blank.
+setTimeout(function() { doInit(); }, 900);
 </script>
 </body>
 </html>
