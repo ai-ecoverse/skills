@@ -1622,9 +1622,9 @@ async function walkPartition(org, site, env) {
   return { files, calls };
 }
 
-// Build a stable review-card id from a content path.
-function reviewId(relPath) {
-  return 'aem:' + String(relPath).replace(/^\//, '').replace(/\.(md|html|docx)$/, '');
+// Keep identical paths in different AEM sites on separate review cards.
+function reviewId(org, site, relPath) {
+  return 'aem:' + encodeURIComponent(org) + '/' + encodeURIComponent(site) + ':' + String(relPath).replace(/^\//, '').replace(/\.(md|html|docx)$/, '');
 }
 
 // Build a card title from a web path.
@@ -1683,7 +1683,7 @@ async function cmdSweep() {
     if (!isPageFile(relPath)) continue;
 
     const webPath = contentPathToWebPath(relPath);
-    const id = reviewId(relPath);
+    const id = reviewId(org, site, relPath);
     const title = reviewTitle(webPath);
     const pUrl = `https://main--${site}--${org}.aem.page${webPath}`;
     const lUrl = `https://main--${site}--${org}.aem.live${webPath}`;
@@ -1754,7 +1754,7 @@ async function cmdReviewSource() {
   const ts = new Date().toISOString();
   const relPath = String(rawPath).replace(/^\//, '');
   const webPath = contentPathToWebPath(relPath);
-  const id = flag('id') || reviewId(relPath);
+  const id = flag('id') || reviewId(org, site, relPath);
   const title = reviewTitle(webPath);
   const pUrl = `https://main--${site}--${org}.aem.page${webPath}`;
   const lUrl = `https://main--${site}--${org}.aem.live${webPath}`;

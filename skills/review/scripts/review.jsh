@@ -17,6 +17,7 @@ function helpText() {
   return [
     'Usage: review ingest [sources...] --path PATH [--id ID] [--title T]',
     '                    [--preview-url URL] [--live-url URL] [--dry-run]',
+    '                    [--org ORG --site SITE] (for aem-ext)',
     '       review sources',
     '       review sweep --org ORG --site SITE [--never-published] [--stale]',
     '                   [--include-assets] [--dry-run]',
@@ -63,6 +64,12 @@ async function discover(named) {
 async function invokeSource(cmd, filePath, id) {
   const argv = [cmd, 'review', '--path', filePath];
   if (id) argv.push('--id', id);
+  if (cmd === 'aem-ext') {
+    const org = flags.org || flags.o;
+    const site = flags.site || flags.repo;
+    if (org) argv.push('--org', String(org));
+    if (site) argv.push('--site', String(site));
+  }
   process.stderr.write('[review] invoking: ' + argv.join(' ') + '\n');
   const result = await exec.spawn(argv);
   if (result.exitCode !== 0) {
@@ -109,7 +116,13 @@ async function sprinkleSend(msg) {
   return r;
 }
 
-function stableCardId(filePath) {
+function stableCardId(filePath, sources) {
+  const org = flags.org || flags.o;
+  const site = flags.site || flags.repo;
+  if (sources.includes('aem-ext') && org && site) {
+    const relPath = String(filePath).replace(/^\//, '').replace(/\.(md|html|docx)$/, '');
+    return 'aem:' + encodeURIComponent(org) + '/' + encodeURIComponent(site) + ':' + relPath;
+  }
   // Full path so /a/README.md and /b/README.md never share a card.
   return 'review:' + String(filePath);
 }
@@ -174,10 +187,12 @@ async function cmdSweep() {
       card = JSON.parse(line);
     } catch {
       process.stderr.write('[review sweep] WARNING: skipping non-JSON line\n');
+      failed++;
       continue;
     }
     if (!card || typeof card !== 'object' || !card.id) {
       process.stderr.write('[review sweep] WARNING: skipping card without id\n');
+      failed++;
       continue;
     }
 
@@ -213,6 +228,7 @@ async function cmdSweep() {
     '[review sweep] pushed ' + pushed + ' card(s) to sprinkle' +
     (failed ? '; ' + failed + ' failed' : '') + '\n',
   );
+  if (failed > 0) process.exit(1);
 }
 
 const parsed = process.argv.parseFlags();
@@ -263,7 +279,7 @@ try {
 
   // Pin the card id before any source runs so a failed Pangram cannot change
   // which card the cliché source (or a later retry) attaches to.
-  const id = flags.id ? String(flags.id) : stableCardId(filePath);
+  const id = flags.id ? String(flags.id) : stableCardId(filePath, sources);
 
   const contributions = [];
   const jobs = sources.map((s) => invokeSource(s, filePath, id));

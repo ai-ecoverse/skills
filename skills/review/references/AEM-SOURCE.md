@@ -131,8 +131,8 @@ review ingest aem-ext --path /drafts/wac-demo.md --org ai-ecoverse --site slicc-
 The limitation: `aem-ext` cannot be added to `KNOWN_INTEGRATIONS` in
 `review.jsh` for auto-discovery, because the enrichment invocation needs
 `--org` and `--site` which the discovery protocol does not pass. Named
-invocation (`review ingest aem-ext --path PATH --org O --site S`) works once
-those flags are forwarded — a future enhancement.
+invocation (`review ingest aem-ext --path PATH --org O --site S`) forwards the
+site flags to `aem-ext`. They are not passed to unrelated review sources.
 
 ## Implementation
 
@@ -149,7 +149,7 @@ aem-ext sweep --org ORG --site SITE
 
 Outputs NDJSON. Walks `preview/` and `live/` in parallel via `apiFetch` with
 the existing credential resolution (API key or cookie). Each line is a valid
-`SOURCE_PROTOCOL.md` object (`source: "aem-source"`, stable `id: "aem:<path>"`).
+`SOURCE_PROTOCOL.md` object (`source: "aem-source"`, stable `id: "aem:<org>/<site>:<path>"`).
 
 ### `aem-ext review` (enrichment)
 
@@ -259,10 +259,13 @@ the tab navigates. This is already a Pin Review requirement.
   `secret get`; its masked value is passed to curl, which unmasks it
   server-side. The value never appears in stdout, code, or logs.
 
+Card IDs include the organization and site, so the same path in two sites
+remains two cards. Ingest and sweep use the same ID; an explicit `--id` overrides
+it for ingest. A sweep exits nonzero if any card cannot be delivered, while
+continuing through the remaining cards and reporting the totals.
+
 ## Future work
 
-- Forward `--org` / `--site` through `review ingest` so `aem-ext` can be
-  added to `KNOWN_INTEGRATIONS` for auto-discovery.
 - Stale-check fixture: modify one preview file without publishing to generate
   a reproducible stale case for CI.
 - Incremental sweeps: cache the previous tree snapshot and only emit delta
