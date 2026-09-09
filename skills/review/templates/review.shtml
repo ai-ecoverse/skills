@@ -190,10 +190,10 @@
       flex: 1;
       min-height: 0;
       overflow-y: auto;
-      padding: 6px 8px;
+      padding: 0;
       display: flex;
       flex-direction: column;
-      gap: 4px;
+      gap: 0;
     }
     #queue-scroll::-webkit-scrollbar { width: 4px; }
     #queue-scroll::-webkit-scrollbar-track { background: transparent; }
@@ -215,16 +215,15 @@
     }
     .empty-state .sprinkle-icon { width: 32px; height: 32px; opacity: 0.4; }
 
-    /* ── Queue item card ── */
+    /* ── Queue item row — plain zebra list, no card chrome ── */
     .queue-item {
-      background: var(--s2-bg-elevated);
-      border-radius: var(--s2-radius-default, 8px);
-      box-shadow: var(--s2-shadow-container);
-      overflow: hidden;
-      transition: box-shadow 0.15s;
-      flex-shrink: 0;         /* keep natural height — parent scrolls, not us */
+      flex-shrink: 0;
+      border-bottom: 1px solid color-mix(in srgb, var(--s2-fg) 5%, transparent);
     }
-    .queue-item:hover { box-shadow: var(--s2-shadow-elevated); }
+    /* zebra: two very close shades, barely-there tint difference */
+    .queue-item:nth-child(odd)  { background: color-mix(in srgb, var(--s2-fg) 2%, transparent); }
+    .queue-item:nth-child(even) { background: color-mix(in srgb, var(--s2-fg) 5%, transparent); }
+    .queue-item:hover { background: color-mix(in srgb, var(--s2-fg) 9%, transparent); }
 
     /* card body: content region above the action footer */
     .item-body {
