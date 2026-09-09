@@ -5,7 +5,8 @@ description: >
   location pins directly on a live web page via a sprinkle dashboard. Use when
   the user has content to review, approve, annotate, or mark up — pages pending
   publish, PRs needing signoff, documents, or a rendered web page they want to
-  pin comments on. Includes Pin Review (click-to-comment markers on the active
+  pin comments on. Supports HTML, Markdown, and Fountain in one iframe with element/text comments
+  and explicit dispatch to the agent. Includes Pin Review (click-to-comment markers on the active
   tab, persistent and mark-as-done), Speck Fix (element-level AI editing on
   locally-served pages), and AEM Source (populate the backlog from an AEM
   preview/live tree diff via `review sweep`). Triggers on 'review queue',
@@ -18,25 +19,13 @@ allowed-tools: bash
 
 # Review
 
-## Scope — record only, never auto-apply
+## Scope — save first, act only on an explicit request
 
-The review skill **records reviews**: it captures pins, comments, and
-publish/defer status into a persistent queue, and surfaces them to the user.
-It does **not** act on the feedback. A pin that says "this image is dull" or
-"swap these two elements" is an *annotation to record*, not an instruction to
-execute.
-
-**Never silently edit the reviewed artifact (the page, document, or PR) in
-response to a pin or comment.** Applying a change is always the user's
-decision. The user acts on recorded feedback themselves — explicitly, or via
-the **Speck Fix** layer (element-level AI editing on local previews; see
-[`SPECK-FIX.md`](references/SPECK-FIX.md)), which is user-driven by design.
-
-When a pin or comment arrives, the only correct actions are: store it
-(`add-pin` / `add-comment`), keep its marker/queue state in sync, and report
-it to the user. If the user then wants the change made, they will say so or
-reach for Speck — at which point editing happens through that explicit path,
-not as an implicit consequence of the review.
+Saving a comment records feedback; it does not authorize editing the asset.
+**Send to agent** is the explicit request to apply the collected revisions.
+Handle that `submit-revisions` batch as described below. A standalone pin or
+`comment` event remains record-only. The external Speck Fix tool is also an
+explicit editing path; it is separate from the preview's draft comments.
 
 ## Quick-Start Workflow
 
@@ -56,6 +45,29 @@ not as an implicit consequence of the review.
 > **Template file:** The sprinkle HTML template lives at `/workspace/skills/review/templates/review.shtml`. Inspect that file directly for markup structure, CSS variables, and advanced configuration options.
 
 > **Reloading after edits:** `sprinkle refresh` only re-scans the VFS — it does NOT reload an already-open panel. To pick up template changes, **close then reopen**: `sprinkle close review && sprinkle refresh && sprinkle open review`, then re-send `load-items`. When editing the template from a scoop, prefer `sed`/shell edits over `edit_file` (the latter has had sync issues on the shared sprinkle path) and verify with `grep` afterwards.
+
+## Preview and annotate
+
+Each queue card has one **Preview** button. It opens an iframe for local HTML,
+Markdown, or Fountain. If a local file cannot be read and the card supplies a
+preview/live URL, Review fetches that page through SLICC and displays a static
+snapshot in the same iframe. Remote pages have an **Open source** link. Asset
+scripts, forms, and navigation are inactive while reviewing.
+
+1. Click **Preview**. HTML retains its styling; Markdown uses readable document
+   typography. Fountain uses the Save the Cat renderer (install `save-the-cat`
+   if Review reports that renderer is unavailable).
+2. With **Annotate** on, click an element or select text. Keyboard reviewers can
+   Tab to a block and press Enter. Type feedback and choose **Save comment**;
+   Escape cancels. Toggle Annotate off to read without opening the composer.
+3. Comments stay with the asset when switching cards, reloading, or reopening
+   the panel. Clicking a comment's quote returns to the corresponding passage.
+   If that passage changed, Review preserves the quote and reports the mismatch.
+4. Choose **Send to agent** to dispatch draft comments. Previously sent comments
+   are not sent again. The panel shows that the batch is awaiting the agent.
+
+Read [INLINE-REVIEW.md](references/INLINE-REVIEW.md) when implementing a renderer,
+handling review batches, or troubleshooting anchors and delivery.
 
 ## Scoop Workflow
 
@@ -111,7 +123,7 @@ The sprinkle fires these licks back to the cone:
 | `publish` | `{ id, path, url }` | User clicks Publish |
 | `comment` | `{ id, path, url, comment }` | User submits a comment |
 | `defer` | `{ id, path, url }` | User clicks Defer |
-| `submit-revisions` | `{ path, revisions: [{ text, note }] }` | User submits annotations |
+| `submit-revisions` | `{ id, path, url, format, batchId, revisions: [{ id, text, note, anchor }] }` | User explicitly sends saved comments to the agent |
 | `toggle-review-mode` | `{ active:bool }` | User toggles the **Pin Review** button |
 | `toggle-speck` | `{ active:bool }` | User toggles the **Speck Fix** button |
 | `comment-done` | `{ num, done, itemId, cid }` | User clicks the ✓/✗ "done" button on a comment line (only fired for pin comments, which carry `num`) |
@@ -123,11 +135,12 @@ The sprinkle accepts these inbound messages (`sprinkle send review`):
 |--------|---------|--------|
 | `load-items` | `{ items:[...] }` | Replace the queue |
 | `update-status` | `{ id, status }` | Set item status (pending/published/deferred) |
-| `open-file` | `{ path, title }` | Open a document for annotation |
+| `open-file` | `{ path, title, id? }` | Open the same iframe preview used by queue cards |
+| `revisions-result` | `{ batchId, status: "applied" or "failed", message? }` | Acknowledge a batch; applied comments are retained, failed comments become retryable drafts |
 | `add-comment` | `{ id, comment, num? }` | Append a comment to an item's log. A numeric `num` marks it as a *pin* comment (links to a page marker) |
-| `ensure-item` | `{ id, title?, previewUrl?, liveUrl?, path? }` | Upsert a queue item by id — creates the card if missing, updates it in place if it already exists, and leaves every other item untouched (unlike `load-items`, which replaces the whole queue). Only the fields present in the message are written; unsupplied fields keep their current values, and `status` is **never** modified by `ensure-item` (publish/defer state is owned by the panel and only changed via `update-status`). Comments already attached to the card survive the update. Used by the webhook handler to auto-create a per-page review entry on the first pin, and to repoint an existing card at a new `path`/`previewUrl` |
+| `ensure-item` | `{ id, title?, previewUrl?, liveUrl?, path? }` | Upsert only supplied fields; preserve status, comments, and other cards (see the upsert example above) |
 | `set-comment-done` | `{ id, num, done }` | Set a comment line's done-state directly by `num` (crosses it off / un-crosses). Used to restore done-state when re-populating comment lines from the durable store; complements `comment-done` (the lick fired when the user clicks the ✗ button) |
-| `add-pin` | `{ id, comment, num, pin }` | Like `add-comment`, **plus** stores the full positional marker `pin` (`{num, comment, pageX, pageY, selector, url, ts}`) in the durable slicc-backed store keyed by `pin.url`. Use this (not `add-comment`) for pin clicks |
+| `add-pin` | `{ id, comment, num, pin }` | Append the comment and persist the positional marker by `pin.url`; use for page pins |
 | `set-pin-done` | `{ url, num, done }` | Persist a pin's done-state in the durable store (echo this when handling a `comment-done` lick for a pin so the store stays in sync) |
 | `request-pins` | `{ url }` | Ask the sprinkle to emit a `pins` lick with the durable markers stored for `url` (seed-back before injection) |
 | `remove-pin` | `{ url, num }` | Delete a single pin from the durable store for `url` AND remove its comment line from the queue |
@@ -137,7 +150,20 @@ The sprinkle accepts these inbound messages (`sprinkle send review`):
 | `add-findings` | `{ id, source, summary?, severity?, findings? }` | Attach one integration's result to a card (creates the card if missing). Re-running the same `source` replaces that block; other sources stay. See [Integrations](#integrations). |
 | `clear-findings` | `{ id, source? }` | Drop one source's findings on a card, or every source if `source` is omitted. |
 
-### Handling licks (cone)
+### Handling revision batches (cone)
+
+For `submit-revisions`, deduplicate by `batchId`, verify each quote/anchor against
+the current source, then carry out the requested changes. Edit `path`, never a
+rendered HTML snapshot. For a URL-only asset, identify the editable source first;
+if it is unavailable, return `failed` with an actionable explanation.
+
+After applying the batch, send `revisions-result` with `status:"applied"`, then
+reopen/reload the preview to verify the result. On failure, send `status:"failed"`
+with a short `message`; the panel preserves the notes and enables retry. Do not
+acknowledge success before checking the actual edited source. See
+[the protocol and example](references/INLINE-REVIEW.md).
+
+### Handling other licks (cone)
 
 Forward lick events to the owning scoop using this pattern:
 
@@ -148,175 +174,16 @@ Execute the action, then push status update: sprinkle send review '{\"action\":\
 
 A `publish` lick resolves to `"status":"published"`; `defer` resolves to `"status":"deferred"`; `comment` needs no status update.
 
-## Pin Review (click-to-comment on a live page)
+## External browser pages
 
-The sprinkle top bar has a **Pin Review** toggle that controls *adding* location pins to the active
-tab. Markers are always visible once the display overlay is injected; the toggle only turns the
-add-mode crosshair on/off. There is no in-page banner.
-
-> **Architecture** — dual-store persistence, overlay versioning, element positioning, and the
-> `__sliccReviewAll`/`sessionStorage` precedence rules live in [`PIN-REVIEW-INTERNALS.md`](references/PIN-REVIEW-INTERNALS.md). Read it
-> when pins go missing, duplicate, or land in the wrong spot.
-
-### Overlay assets (`overlay/`)
-- `enter.js` — the full overlay. Has TWO placeholders, `sed` into a resolved copy `enter.resolved.js`:
-  - `__WEBHOOK_URL__` (comment/pin webhook) — **required** at setup. Resolve from the live
-    `review-marker` webhook URL.
-  - `__SPECK_WEBHOOK_URL__` (speck-fix webhook) — **optional / lazy**. Resolve it to an empty string
-    at first setup if Speck isn't wired yet; the Speck Fix lazy-load bootstrap (§ Lazy auto-load on
-    first use) fills it in and re-injects the overlay the first time the user clicks **✨ Fix with
-    Speck**. An empty value just means the Speck button is inert until that first click — Pin Review
-    works fully without it.
-- `exit.js` — turns OFF add mode (removes crosshair + open popups). Keeps markers visible.
-- `remove-marker.js` — hide/restore one marker. Reads `window.__rvRemoveNum` + `window.__rvRemoveDone`
-  set just before eval.
-- `drain.js` / `reset.js` — poll committed comments / clear all marker state.
-
-### Setup
-1. Create a webhook routed to the `review` scoop: `webhook create --scoop review --name review-marker`.
-2. `sed` its URL into `enter.resolved.js` for `__WEBHOOK_URL__`.
-3. After any session resume, rebuild `enter.resolved.js` from `webhook list` — the URL regenerates
-   across sessions. (Stale-URL symptom: pins POST opaquely but never arrive; `state.pins` stays empty.)
-
-### Inject the overlay
-Set `window.__sliccWantAdd` (true = add mode, false = display-only) in an inline eval **before**
-eval-ing `enter.resolved.js`:
-```bash
-printf '(function(){window.__sliccWantAdd=false;})();' > /tmp/wantNoAdd.js
-playwright-cli eval-file /tmp/wantNoAdd.js --tab <id>
-playwright-cli eval-file /shared/review-overlay/enter.resolved.js --tab <id>
-```
-**Checkpoint** — the inject eval returns `{status:"active",...}` on first inject or
-`{status:"reinjected",...}` on a refresh, with `markers`/`existing` equal to the expected pin count.
-Confirm the version:
-```bash
-playwright-cli eval --tab <id> "window.__sliccOverlayVersion"   # must return 4
-```
-
-### Seed from durable state (fresh tab / after restart)
-When a tab's `sessionStorage` may be empty (new tab, restarted browser, different machine), prime the
-overlay from slicc state first: send `request-pins {url}`, await the `pins` lick, then write its array
-into `window.__sliccReviewAll` in the same inline eval that sets `__sliccWantAdd`:
-```bash
-# PINS_JSON is the `pins` array from the request-pins → pins lick
-printf '(function(){window.__sliccWantAdd=false;window.__sliccReviewAll=%s;})();' "$PINS_JSON" > /tmp/seed.js
-playwright-cli eval-file /tmp/seed.js --tab <id>
-playwright-cli eval-file /shared/review-overlay/enter.resolved.js --tab <id>
-```
-**Only seed with the real durable array — never an empty/stale one.** A non-empty `__sliccReviewAll`
-wins over `sessionStorage` and clobbers visible pins (see [`PIN-REVIEW-INTERNALS.md`](references/PIN-REVIEW-INTERNALS.md)). On a same-session
-reload, skip seeding and let the cache serve.
-
-**Checkpoint** — after seeding, the marker count must equal `PINS_JSON` length:
-```bash
-playwright-cli eval --tab <id> "(window.__sliccReviewAll||[]).length"
-```
-If it's 0 after a seed, you seeded an empty array — set `window.__sliccReviewAll=[]` and re-inject to
-fall back to sessionStorage.
-
-### `toggle-review-mode` lick handler (cone)
-- `active:true` → set `__sliccWantAdd=true`, eval `enter.resolved.js` (markers + crosshair). First
-  remove any Speck layer and sync `set-speck active:false` (mutually exclusive — see [`SPECK-FIX.md`](references/SPECK-FIX.md)).
-- `active:false` → eval `exit.js` (add mode off, crosshair off, markers stay).
-
-### Keep pins visible across reloads (mandatory while review is active)
-
-Pins live in the durable store, but the on-page **markers are erased whenever the
-tab reloads or navigates** — a reload clears the injected overlay (`window.__sliccOverlayVersion`
-goes back to `none`). While the review skill is active on a page, the cone is responsible for
-**re-painting the markers after every reload/navigation** so the user always sees their pins.
-
-The rule: **always keep the display overlay (`wantAdd=false`) injected on a pinned page** so pins
-stay visible even with Pin Review off — including after Speck reloads, manual reloads, and
-re-opening the page in a new tab.
-
-Re-paint procedure (run whenever the page may have reloaded, or whenever the user reports pins
-missing):
-
-1. Check the tab's overlay state: `playwright-cli eval --tab <id> "window.__sliccOverlayVersion || 'none'"`.
-   `none` (or a version below the expected `4`) means the overlay was cleared and must be re-injected.
-2. Ask the sprinkle for the authoritative pins: `sprinkle send review '{"action":"request-pins","url":"<url>"}'`,
-   then await the `pins` lick.
-3. Seed the real array and inject the **display** overlay in the same step:
-   ```bash
-   printf '(function(){window.__sliccWantAdd=false;window.__sliccReviewAll=%s;})();' "$PINS_JSON" > /tmp/seed.js
-   playwright-cli eval-file /tmp/seed.js --tab <id>
-   playwright-cli eval-file /shared/review-overlay/enter.resolved.js --tab <id>
-   ```
-   (Use `__sliccWantAdd=true` instead only if add-mode should also be on — e.g. Pin Review toggled on.)
-4. Verify: `(window.__sliccReviewAll||[]).length` equals the pin count and `window.__sliccOverlayVersion` is `4`.
-
-Never seed an empty/stale array over a non-empty store (it clobbers visible pins — see
-[`PIN-REVIEW-INTERNALS.md`](references/PIN-REVIEW-INTERNALS.md)). On a *same-session* reload where `sessionStorage` still holds the markers,
-re-injecting the overlay alone is enough and seeding can be skipped; when in doubt, seed from the
-durable `request-pins` array.
-
-### Comment / pin flow
-Each pin click opens a popup; on save it drops a numbered marker AND POSTs the full marker object to
-the webhook. The `review` scoop pushes it into the sprinkle via **`add-pin`** with: a plain-text
-display string `PIN #<num>: <comment>` (ASCII only — the sprinkle renders the icon itself), the
-top-level numeric `num`, and the whole payload as `pin`. Use `add-comment` only for non-pin comments.
-
-> **Record only.** Storing the pin is the *complete* handling of a pin click. Do **not** go on to edit
-> the page/artifact to satisfy the pin's request (see § Scope). The change is the user's call, made
-> explicitly or through Speck Fix.
-```bash
-sprinkle send review '{"action":"add-pin","id":"page-1","num":3,
-  "comment":"PIN #3: tighten the hero copy",
-  "pin":{"num":3,"comment":"tighten the hero copy","pageX":420,"pageY":680,
-         "selector":".hero h1","relX":0.5,"relY":0.5,"url":"https://preview.example.com/x","ts":1733400000000}}'
-```
-
-### Auto-created per-page entries
-Dropping a pin on ANY page auto-creates that page's review entry. The webhook handler derives a stable
-item id from the pin's `url`, sends `ensure-item` to create or refresh the card, then `add-pin` to that
-id. Never hardcode a single target id.
-
-### Remote pages
-Pin Review works on remote http(s) sites too — the overlay POSTs with `mode:'no-cors'`. Only
-**Fix with Speck** is local-only (see [`SPECK-FIX.md`](references/SPECK-FIX.md)).
-
-### Mark done (✗ per comment line)
-Toggling a pin comment's done button fires `comment-done {num,done,itemId,cid}`. Cone handler: set
-`window.__rvRemoveNum=<num>; window.__rvRemoveDone=<bool>`, eval `remove-marker.js` (re-renders
-markers, hiding done pins), then echo to durable storage so a re-seed reflects it:
-```bash
-sprinkle send review '{"action":"set-pin-done","url":"https://preview.example.com/security","num":3,"done":true}'
-```
-
-## Speck Fix (element-level AI editing)
-
-Optional add-on: run Speck's element-level AI editing on locally-served preview pages. The sprinkle
-has a **Speck Fix** toggle, and each marker tooltip shows a "✨ Fix with Speck" button (local previews
-only). Pin Review and Speck Fix are mutually exclusive.
-
-### Lazy auto-load on first use (cone handler for `toggle-speck` / "Fix with Speck")
-
-Speck is **loaded on demand**, not as a manual prerequisite. The user should be able to click
-**✨ Fix with Speck** (or the **Speck Fix** toggle) and have it just work — the click is what triggers
-the skill to load. When the cone receives a `toggle-speck {active:true}` lick (or an `inject-speck`
-event) and Speck is **not yet set up**, the handler must bootstrap it automatically before proceeding,
-then carry out the original request. Do not silently no-op on an unresolved `__SPECK_WEBHOOK_URL__`.
-
-Bootstrap procedure (idempotent — skip any step already done):
-
-1. **Install the skill if missing:** check for `speck` on disk; if absent, run
-   `upskill ai-ecoverse/skills --skill speck`.
-2. **Ensure the `speck-worker` scoop exists** (with `/tmp/` write access and the standing duties to
-   handle the two webhooks — see [`SPECK-FIX.md`](references/SPECK-FIX.md)). Create it if missing.
-3. **Ensure the two webhooks exist and are routed to `speck-worker`:** `speck-fix` (handles
-   `inject-speck`) and `speck-lick` (element-instruction events). Create any that are missing.
-4. **Resolve `__SPECK_WEBHOOK_URL__`:** re-build `enter.resolved.js` from the *current* `speck-fix`
-   webhook URL (webhook URLs regenerate across sessions — always read the live URL from
-   `webhook list`, never reuse a cached one), then re-inject the overlay so the tooltip button POSTs
-   to a live endpoint.
-5. **Proceed with the original request** — inject Speck on the active tab and sync the sprinkle
-   (`set-speck active:true`, `set-review-mode active:false`).
-
-Tell the user briefly that Speck is loading on first use; subsequent clicks are instant because the
-bootstrap is idempotent.
-
-**Full setup steps and architecture → [`SPECK-FIX.md`](references/SPECK-FIX.md).**
+For an already-open live tab, expand **Tools for an external browser tab**.
+Pin Review records location markers; Speck Fix applies explicitly requested
+local-page edits. These tools do not control the queue's preview iframe.
+Read [EXTERNAL-PAGES.md](references/EXTERNAL-PAGES.md) for setup, overlay
+injection, persistence, and Speck bootstrap. The iframe workflow requires no
+webhook, separate tab, or Speck worker. For missing or displaced external pins,
+read [PIN-REVIEW-INTERNALS.md](references/PIN-REVIEW-INTERNALS.md); for external
+page editing setup, read [SPECK-FIX.md](references/SPECK-FIX.md).
 
 ## In-flight indicators and failure recovery
 

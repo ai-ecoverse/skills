@@ -258,6 +258,7 @@
       width: 100%;
     }
     .item-link {
+      border:0; background:transparent; padding:0; font-family:inherit; cursor:pointer;
       display: inline-flex;
       align-items: center;
       gap: 4px;
@@ -431,109 +432,26 @@
       overflow: hidden;
     }
 
-    #doc-scroll {
-      flex: 1;
-      overflow-y: auto;
-      padding: 14px 14px 80px;
-    }
-    #doc-scroll::-webkit-scrollbar {
-      width: 4px;
-    }
-    #doc-scroll::-webkit-scrollbar-track {
-      background: transparent;
-    }
-    #doc-scroll::-webkit-scrollbar-thumb {
-      background: color-mix(in srgb, var(--fg) 15%, transparent);
-      border-radius: 2px;
-    }
-
-    /* Doc rendered content */
-    #doc-content {
-      line-height: 1.65;
-      font-size: 13px;
-      color: var(--fg);
-    }
-    #doc-content h1 {
-      font-size: 1.4em;
-      font-weight: 700;
-      margin: 0 0 0.6em;
-      line-height: 1.25;
-    }
-    #doc-content h2 {
-      font-size: 1.2em;
-      font-weight: 700;
-      margin: 1.1em 0 0.45em;
-    }
-    #doc-content h3 {
-      font-size: 1.05em;
-      font-weight: 600;
-      margin: 1em 0 0.4em;
-    }
-    #doc-content h4,
-    #doc-content h5,
-    #doc-content h6 {
-      font-size: 0.95em;
-      font-weight: 600;
-      margin: 0.9em 0 0.35em;
-    }
-    #doc-content p {
-      margin: 0 0 0.75em;
-    }
-    #doc-content ul,
-    #doc-content ol {
-      margin: 0 0 0.75em 1.3em;
-    }
-    #doc-content li {
-      margin-bottom: 0.25em;
-    }
-    #doc-content code {
-      font-family: ui-monospace, "Fira Code", monospace;
-      font-size: 0.88em;
-      background: color-mix(in srgb, var(--fg) 8%, transparent);
-      padding: 1px 5px;
-      border-radius: 4px;
-    }
-    #doc-content pre {
-      background: color-mix(in srgb, var(--fg) 6%, transparent);
-      border: 1px solid color-mix(in srgb, var(--fg) 10%, transparent);
-      border-radius: var(--s2-radius-default, 8px);
-      padding: 10px 12px;
-      overflow-x: auto;
-      margin: 0 0 0.75em;
-    }
-    #doc-content pre code {
-      background: none;
-      padding: 0;
-    }
-    #doc-content a {
-      color: var(--s2-accent);
-      text-decoration: underline;
-    }
-    #doc-content hr {
-      border: none;
-      border-top: 1px solid color-mix(in srgb, var(--fg) 12%, transparent);
-      margin: 1em 0;
-    }
-    #doc-content blockquote {
-      border-left: 3px solid var(--s2-accent);
-      padding-left: 10px;
-      margin: 0 0 0.75em;
-      color: var(--fg-muted);
-      opacity: 0.85;
-    }
-    #doc-content strong {
-      font-weight: 700;
-    }
-    #doc-content em {
-      font-style: italic;
-    }
-
-    /* Text highlight from selection */
-    .doc-highlight {
-      background: color-mix(in srgb, var(--s2-accent) 22%, transparent);
-      border-radius: 2px;
-      cursor: pointer;
-    }
+    details.page-tools { display:block; }
+    details.page-tools summary { display:list-item; cursor:pointer; }
+    details.page-tools[open] .page-tools-actions { margin-top:8px; }
+    .preview-tools [aria-pressed="true"] { border-color:var(--link); color:var(--link); background:color-mix(in srgb,var(--link) 12%,transparent); }
+    #doc-scroll { flex:1; min-height:120px; position:relative; display:flex; }
+    #doc-content { flex:1; min-width:0; display:flex; }
+    #asset-frame { width:100%; height:100%; border:0; background:var(--s2-bg-base); }
+    .preview-tools { display:flex; gap:8px; flex-wrap:wrap; align-items:center; padding:8px 12px; border-bottom:1px solid var(--line); }
+    .preview-tools .sprinkle-btn { font-size:12px; }
+    #preview-help { flex-basis:100%; color:var(--fg-muted); font-size:12px; }
+    #preview-status { color:var(--fg-muted); font-size:12px; padding:0 0 6px; }
+    #annotations-toggle { width:100%; border:0; color:inherit; background:transparent; font:inherit; text-align:left; }
+    #annotations-list.open { max-height:min(230px,30vh); }
+    .annotation-jump { color:var(--link); text-align:left; font:inherit; border:0; width:100%; cursor:pointer; }
+    .annotation-state { font-size:11px; color:var(--fg-muted); }
+    #annotation-popup { max-width:calc(100vw - 24px); max-height:calc(100vh - 24px); overflow:auto; }
+    #annotation-popup:focus-within { border-color:var(--s2-accent); }
+    #annotation-note { min-height:72px; }
+    .preview-error { align-self:center; padding:24px; overflow-wrap:anywhere; }
+    #doc-filename:focus-visible { outline:2px solid var(--link); outline-offset:4px; }
 
     /* ── Annotation popup ── */
     #annotation-popup {
@@ -752,84 +670,6 @@
     .queue-item.acting {
       opacity: 0.85;
     }
-    /* ── in-sprinkle preview iframe drawer ────────────────────────── */
-    .pf-backdrop {
-      position: fixed;
-      inset: 0;
-      z-index: 900;
-      background: rgba(0, 0, 0, 0.52);
-      display: flex;
-      align-items: stretch;
-      justify-content: flex-end;
-    }
-    .pf-backdrop.pf-hidden {
-      display: none;
-    }
-    .pf-drawer {
-      width: min(900px, 96vw);
-      display: flex;
-      flex-direction: column;
-      background: var(--s2-surface, #fff);
-      box-shadow: -4px 0 28px rgba(0, 0, 0, 0.2);
-    }
-    .pf-toolbar {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      padding: 4px 8px;
-      border-bottom: 1px solid color-mix(in srgb, var(--fg) 8%, transparent);
-      flex-shrink: 0;
-      background: color-mix(in srgb, var(--fg) 4%, transparent);
-    }
-    .pf-url {
-      flex: 1;
-      font-size: 10.5px;
-      color: var(--s2-fg-secondary, #94a3b8);
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      min-width: 0;
-    }
-    /* pf-btn mirrors .sprinkle-btn--secondary but smaller */
-    .pf-btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      padding: 3px 8px;
-      border-radius: 4px;
-      border: none;
-      cursor: pointer;
-      font-size: 11px;
-      font-family: inherit;
-      white-space: nowrap;
-      background: color-mix(in srgb, var(--fg) 8%, transparent);
-      color: var(--fg);
-      flex-shrink: 0;
-      transition:
-        background 0.15s,
-        color 0.15s;
-    }
-    .pf-btn:hover {
-      background: color-mix(in srgb, var(--fg) 14%, transparent);
-    }
-    /* active = accent background, same dimensions — color change only */
-    .pf-btn.active {
-      background: var(--s2-accent);
-      color: var(--s2-bg-base, #161927);
-    }
-    .pf-btn.active:hover {
-      opacity: 0.88;
-    }
-    /* close button: icon-only, slightly narrower */
-    .pf-btn-close {
-      padding: 3px 6px;
-    }
-    .pf-frame {
-      flex: 1;
-      border: none;
-      width: 100%;
-      background: #fff;
-    }
   </style>
 </head>
 <body>
@@ -843,8 +683,8 @@
       <span class="top-bar-title">Review</span>
       <span id="queue-count-badge" class="badge zero">0</span>
     </div>
-    <div class="page-tools">
-      <span class="page-tools-label">Tools for the active browser tab</span>
+    <details class="page-tools">
+      <summary class="page-tools-label">Tools for an external browser tab</summary>
       <div class="page-tools-actions">
       <button class="sprinkle-btn sprinkle-btn--secondary" id="review-mode-btn" aria-pressed="false" title="Click-to-comment on the visible page">
         <i data-lucide="mouse-pointer-click" class="sprinkle-icon sm"></i>
@@ -855,7 +695,7 @@
         <span id="speck-label">Speck Fix</span>
       </button>
     </div>
-    </div>
+    </details>
     <div id="queue-scroll">
       <div class="empty-state" id="empty-state">
         <i data-lucide="inbox" class="sprinkle-icon"></i>
@@ -872,41 +712,48 @@
       <button class="sprinkle-btn sprinkle-btn--ghost sprinkle-btn--icon" id="back-btn" title="Back to queue">
         <i data-lucide="arrow-left" class="sprinkle-icon"></i>
       </button>
-      <span class="top-bar-title sprinkle-detail" id="doc-filename">document.md</span>
+      <h1 class="top-bar-title" id="doc-filename" tabindex="-1">Preview</h1>
     </div>
 
+    <div class="preview-tools">
+      <button class="sprinkle-btn sprinkle-btn--secondary" id="annotate-btn" aria-pressed="true">Annotate</button>
+      <button class="sprinkle-btn sprinkle-btn--ghost" id="reload-preview-btn">Reload</button>
+      <a class="item-link" id="preview-source-link" target="_blank" rel="noopener noreferrer" hidden>Open source ↗</a>
+      <p id="preview-help">Click an element or select text to leave a comment.</p>
+    </div>
     <div id="doc-scroll">
       <div id="doc-content"></div>
     </div>
 
     <!-- Annotations panel -->
     <div id="annotations-section">
-      <div class="annotations-header" id="annotations-toggle">
+      <button class="annotations-header" id="annotations-toggle" aria-expanded="false" aria-controls="annotations-list">
         <i data-lucide="message-square-text" class="sprinkle-icon sm"></i>
-        <span class="annotations-title">Annotations</span>
+        <span class="annotations-title">Comments</span>
         <span id="ann-count-badge" class="badge zero">0</span>
         <i data-lucide="chevron-up" class="sprinkle-icon sm annotations-chevron" id="ann-chevron"></i>
-      </div>
+      </button>
       <div id="annotations-list"></div>
     </div>
 
     <div id="submit-row">
+      <p id="preview-status" role="status" aria-live="polite"></p>
       <button class="sprinkle-btn sprinkle-btn--primary" id="submit-btn" style="width:100%" disabled>
         <i data-lucide="send" class="sprinkle-icon"></i>
-        Submit Revisions
+        Send to agent
       </button>
     </div>
   </div>
 </div>
 
 <!-- ── Annotation popup ── -->
-<div id="annotation-popup">
-  <div id="annotation-popup-label">Add annotation</div>
+<div id="annotation-popup" role="dialog" aria-modal="false" aria-labelledby="annotation-popup-label">
+  <div id="annotation-popup-label">Comment on selection</div>
   <div id="annotation-selected-text"></div>
-  <textarea id="annotation-note" placeholder="Enter your revision note..."></textarea>
+  <textarea id="annotation-note" aria-label="Comment on selection" placeholder="What should change here?"></textarea>
   <div class="popup-actions">
     <button class="sprinkle-btn sprinkle-btn--primary" id="popup-save-btn" style="flex:1">
-      <i data-lucide="check" class="sprinkle-icon"></i> Save
+      <i data-lucide="check" class="sprinkle-icon"></i> Save comment
     </button>
     <button class="sprinkle-btn sprinkle-btn--secondary" id="popup-cancel-btn">
       Cancel
@@ -1030,53 +877,6 @@ function mdToHtml(md) {
 }
 
 // ═══════════════════════════════════════════════════
-//  HTML SANITIZER (for .html/.htm document content)
-//  <template> parses content inertly — no images load,
-//  no scripts run. We strip dangerous tags + attrs
-//  before letting the cleaned tree touch a live DOM.
-// ═══════════════════════════════════════════════════
-const DANGEROUS_TAGS = new Set([
-  'script', 'iframe', 'object', 'embed', 'link', 'meta', 'style', 'base'
-]);
-const DANGEROUS_URL_RE = /^(javascript|data|vbscript):/i;
-
-function sanitizeHtml(html) {
-  const tpl = document.createElement('template');
-  tpl.innerHTML = String(html ?? '');
-  cleanNodes(tpl.content);
-  return tpl.innerHTML;
-}
-
-function cleanNodes(root) {
-  for (const node of Array.from(root.childNodes)) {
-    if (node.nodeType !== 1) continue;
-    const tag = node.tagName.toLowerCase();
-    if (DANGEROUS_TAGS.has(tag)) {
-      node.remove();
-      continue;
-    }
-    for (const attr of Array.from(node.attributes)) {
-      const name = attr.name.toLowerCase();
-      const val = attr.value || '';
-      if (name.startsWith('on')) {
-        node.removeAttribute(attr.name);
-      } else if ((name === 'href' || name === 'src' || name === 'xlink:href') && DANGEROUS_URL_RE.test(val.trim())) {
-        node.removeAttribute(attr.name);
-      } else if (name === 'srcdoc') {
-        node.removeAttribute(attr.name);
-      }
-    }
-    cleanNodes(node);
-  }
-}
-
-// Strip full HTML doc to body content
-function extractBody(html) {
-  const m = String(html ?? '').match(/<body[^>]*>([\s\S]*?)<\/body>/i);
-  return m ? m[1] : html;
-}
-
-// ═══════════════════════════════════════════════════
 //  STATE
 // ═══════════════════════════════════════════════════
 let state = {
@@ -1087,18 +887,29 @@ let state = {
   pins: {},   // { [url]: [ {num, comment, pageX, pageY, selector, relX, relY, url, ts, done} ] }
   docPath: null,
   docTitle: null,
-  annotations: [],
+  annotations: [], // legacy current-document annotations; migrated on first preview
+  documents: {},
+  docItem: null,
   annotationsOpen: false,
 };
 
-function loadState() {
-  const saved = slicc.getState();
-  if (saved && typeof saved === 'object') {
-    state = Object.assign(state, saved);
-  }
+function loadState(saved = slicc.getState()) {
+  if (saved && typeof saved === 'object') state = Object.assign(state, saved);
 }
 
-// _stateReady is set in the sprinkle-init handler below.
+// Older standalone renderers omit sprinkle-init. Their host and iframe share
+// the same sprinkle state store; read it before enabling any writes.
+// A cross-origin frame must wait for the host's state-bearing init message.
+function standaloneSavedState() {
+  try {
+    // Reading the parent's storage throws for an isolated origin. srcdoc's
+    // location.origin is 'null' even when it inherits its parent's origin.
+    const raw = parent.localStorage.getItem('slicc-sprinkle-state:' + (slicc.name || 'review'));
+    return raw ? JSON.parse(raw) : {};
+  } catch (_) { return undefined; }
+}
+
+// _stateReady is set only after hydration below.
 // Guards saveState so a re-mount never clobbers the persisted queue with the
 // startup-empty state (the host sends sprinkle-init AFTER our scripts run).
 let _stateReady = false;
@@ -1217,178 +1028,6 @@ function renderQueue() {
 }
 
 
-// ── in-sprinkle preview frame ─────────────────────────────────────────────
-// FRAMING: no X-Frame-Options / frame-ancestors on the aem.page host.
-// PINNING: cross-origin iframe DOM is inaccessible, so Pin Review operates
-// by opening a REAL browser tab via slicc.exec and injecting the overlay
-// there — no lick → cone round-trip needed.
-// SPECK: local chrome-extension:// previews only; button is shown but the
-// sprinkle shows a tooltip when clicked on remote https pages.
-
-let _pfTabId = null;          // tab id opened by the drawer's "Open in tab"
-let _pfPinActive = false;     // drawer Pin Review toggle state
-let _pfSpeckActive = false;   // drawer Speck Fix toggle state
-
-// Open a foreground tab via exec and return its id.
-async function pfOpenTab(pageUrl) {
-  const r = await slicc.exec.spawn(['playwright-cli', 'open', pageUrl, '--foreground']);
-  const m = (r.stdout || '').match(/\[targetId:\s*([^\]]+)\]/);
-  if (!m) throw new Error('playwright-cli open: could not parse tab id\n' + r.stdout);
-  return m[1].trim();
-}
-
-// Inject the Pin Review overlay into a tab via exec.
-// addMode=true → crosshair on; false → display only.
-async function pfInjectOverlay(tabId, addMode) {
-  const flag = addMode ? 'true' : 'false';
-  // Seed wantAdd flag and clear stale pins
-  await slicc.exec.spawn(['playwright-cli', 'eval', '--tab', tabId,
-    '(function(){window.__sliccWantAdd=' + flag + ';if(!window.__sliccReviewAll)window.__sliccReviewAll=[];})()']);
-  // Inject the overlay
-  return slicc.exec.spawn(['playwright-cli', 'eval-file',
-    '/shared/review-overlay/enter.resolved.js', '--tab', tabId]);
-}
-
-// Sync the visual state of both Pin Review drawer buttons (color only).
-function pfSyncPinBtn() {
-  const btn = document.getElementById('pf-drawer-pin-btn');
-  if (btn) btn.classList.toggle('active', _pfPinActive);
-}
-function pfSyncSpeckBtn() {
-  const btn = document.getElementById('pf-drawer-speck-btn');
-  if (btn) btn.classList.toggle('active', _pfSpeckActive);
-}
-
-function showPreviewFrame(url, itemId) {
-  let bd = document.getElementById('pf-backdrop');
-  if (!bd) {
-    bd = document.createElement('div');
-    bd.id = 'pf-backdrop';
-    bd.className = 'pf-backdrop pf-hidden';
-    // All icons use data-lucide; renderIcons() is called after append.
-    bd.innerHTML =
-      '<div class="pf-drawer">' +
-        '<div class="pf-toolbar">' +
-          '<span class="pf-url" id="pf-url-label"></span>' +
-          '<button class="pf-btn" id="pf-drawer-pin-btn" title="Pin Review — open tab and inject overlay">' +
-            '<i data-lucide="map-pin" class="sprinkle-icon sm"></i><span>Pin Review</span>' +
-          '</button>' +
-          '<button class="pf-btn" id="pf-drawer-speck-btn" title="Speck Fix (local previews only)">' +
-            '<i data-lucide="sparkles" class="sprinkle-icon sm"></i><span>Speck Fix</span>' +
-          '</button>' +
-          '<button class="pf-btn" id="pf-open-tab-btn" title="Open in a real browser tab">' +
-            '<i data-lucide="external-link" class="sprinkle-icon sm"></i><span>Open in tab</span>' +
-          '</button>' +
-          '<button class="pf-btn pf-btn-close" id="pf-close-btn" title="Close preview">' +
-            '<i data-lucide="x" class="sprinkle-icon sm"></i>' +
-          '</button>' +
-        '</div>' +
-        '<iframe class="pf-frame" id="pf-frame" allow="fullscreen" referrerpolicy="no-referrer"></iframe>' +
-      '</div>';
-    document.getElementById('app').appendChild(bd);
-    renderIcons(); // render lucide icons in the toolbar
-
-    document.getElementById('pf-close-btn').addEventListener('click', () => {
-      _pfPinActive = false; _pfSpeckActive = false;
-      pfSyncPinBtn(); pfSyncSpeckBtn();
-      bd.classList.add('pf-hidden');
-      document.getElementById('pf-frame').src = 'about:blank';
-    });
-    bd.addEventListener('click', (e) => {
-      if (e.target === bd) {
-        _pfPinActive = false; _pfSpeckActive = false;
-        pfSyncPinBtn(); pfSyncSpeckBtn();
-        bd.classList.add('pf-hidden');
-        document.getElementById('pf-frame').src = 'about:blank';
-      }
-    });
-
-    // ── Drawer: "Open in tab" ──────────────────────────────────────────────
-    // Opens a real foreground tab via slicc.exec (no lick needed) and
-    // injects the Pin Review display overlay immediately.
-    document.getElementById('pf-open-tab-btn').addEventListener('click', async () => {
-      const btn = document.getElementById('pf-open-tab-btn');
-      btn.disabled = true;
-      try {
-        const frameUrl = document.getElementById('pf-frame').src || url;
-        _pfTabId = await pfOpenTab(frameUrl);
-        await pfInjectOverlay(_pfTabId, false); // display mode
-        // If pin review is already active in drawer, switch tab to add mode
-        if (_pfPinActive) await pfInjectOverlay(_pfTabId, true);
-      } catch (e) {
-        console.error('[pf] open-tab error:', e.message || e);
-      } finally {
-        btn.disabled = false;
-      }
-    });
-
-    // ── Drawer: Pin Review toggle ──────────────────────────────────────────
-    // Mutually exclusive with Speck. Opens/uses the real tab via exec.
-    document.getElementById('pf-drawer-pin-btn').addEventListener('click', async () => {
-      _pfPinActive = !_pfPinActive;
-      if (_pfPinActive) { _pfSpeckActive = false; pfSyncSpeckBtn(); }
-      pfSyncPinBtn();
-      const frameUrl = document.getElementById('pf-frame').src || url;
-      if (!_pfTabId) {
-        // No tab yet — open one first
-        const btn = document.getElementById('pf-drawer-pin-btn');
-        btn.disabled = true;
-        try {
-          _pfTabId = await pfOpenTab(frameUrl);
-        } catch(e) {
-          console.error('[pf] pin open error:', e.message || e);
-          _pfPinActive = false; pfSyncPinBtn(); btn.disabled = false; return;
-        }
-        btn.disabled = false;
-      }
-      try {
-        await pfInjectOverlay(_pfTabId, _pfPinActive);
-      } catch(e) {
-        console.error('[pf] pin inject error:', e.message || e);
-      }
-      // Sync top-bar pin-review button color
-      const topBtn = document.getElementById('review-mode-btn');
-      if (topBtn) topBtn.classList.toggle('active', _pfPinActive);
-    });
-
-    // ── Drawer: Speck Fix toggle ───────────────────────────────────────────
-    // Local chrome-extension:// previews only. On remote pages, noop with note.
-    document.getElementById('pf-drawer-speck-btn').addEventListener('click', async () => {
-      const frameUrl = document.getElementById('pf-frame').src || '';
-      const isLocal = /^chrome-extension:\/\//.test(frameUrl);
-      if (!isLocal) {
-        // Remote page — Speck can't inject; keep button un-active
-        console.info('[pf] Speck Fix is available on locally-served chrome-extension:// previews only.');
-        return;
-      }
-      _pfSpeckActive = !_pfSpeckActive;
-      if (_pfSpeckActive) { _pfPinActive = false; pfSyncPinBtn(); }
-      pfSyncSpeckBtn();
-      // Fire the top-bar toggle-speck lick so the cone can bootstrap Speck
-      slicc.lick({ action: 'toggle-speck', data: { active: _pfSpeckActive } });
-    });
-  }
-
-  document.getElementById('pf-url-label').textContent = url;
-  document.getElementById('pf-frame').src = url;
-  // Reset pin/tab state when a new URL is opened
-  _pfTabId = null; _pfPinActive = false; _pfSpeckActive = false;
-  pfSyncPinBtn(); pfSyncSpeckBtn();
-  bd.classList.remove('pf-hidden');
-}
-
-function makeIconLink(href, icon, label) {
-  const a = document.createElement('a');
-  a.className = 'item-link';
-  a.href = href;
-  a.target = '_blank';
-  a.rel = 'noopener noreferrer';
-  // Icon is a constant string from us — safe to use innerHTML for the <i>.
-  a.innerHTML = '<i data-lucide="' + escAttr(icon) + '" class="sprinkle-icon sm"></i>';
-  a.appendChild(document.createTextNode(label));
-  return a;
-}
-
 function createItemCard(item) {
   const div = document.createElement('div');
   div.className = 'queue-item';
@@ -1448,34 +1087,16 @@ function createItemCard(item) {
     try { return new URL(item.previewUrl).pathname; } catch { return item.previewUrl; }
   })() : '');
   if (metaText) { metaEl.textContent = metaText; metaEl.hidden = false; }
+  const savedNotes = state.documents?.[documentKey(item)]?.annotations || [];
+  if (savedNotes.length) { metaEl.textContent += ' · ' + savedNotes.length + ' comment' + (savedNotes.length === 1 ? '' : 's'); metaEl.hidden = false; }
 
-  if (item.previewUrl && isSafeUrl(item.previewUrl)) {
-    const prevLink = makeIconLink(item.previewUrl, 'eye', 'Preview');
-    prevLink.addEventListener('click', (e) => {
-      e.preventDefault();
-      showPreviewFrame(item.previewUrl, item.id);
-    });
-    linksEl.appendChild(prevLink);
-  }
-  if (item.liveUrl && isSafeUrl(item.liveUrl)) {
-    const liveLink = makeIconLink(item.liveUrl, 'external-link', 'Live');
-    liveLink.addEventListener('click', (e) => {
-      e.preventDefault();
-      showPreviewFrame(item.liveUrl, item.id);
-    });
-    linksEl.appendChild(liveLink);
-  }
-  if (item.path) {
-    const reviewLink = document.createElement('a');
-    reviewLink.className = 'item-link';
-    reviewLink.href = '#';
-    reviewLink.innerHTML = '<i data-lucide="file-text" class="sprinkle-icon sm"></i>';
-    reviewLink.appendChild(document.createTextNode('Review'));
-    reviewLink.addEventListener('click', (e) => {
-      e.preventDefault();
-      openDocument(item.path, item.title || null);
-    });
-    linksEl.appendChild(reviewLink);
+  if (item.path || /^https?:\/\//i.test(item.previewUrl || item.liveUrl || '')) {
+    const preview = document.createElement('button');
+    preview.className = 'item-link';
+    preview.type = 'button';
+    preview.innerHTML = '<i data-lucide="eye" class="sprinkle-icon sm"></i> Preview';
+    preview.addEventListener('click', () => openPreview(item));
+    linksEl.appendChild(preview);
   }
   linksEl.hidden = linksEl.childNodes.length === 0;
 
@@ -1716,192 +1337,322 @@ function toggleComment(id) {
 // ═══════════════════════════════════════════════════
 //  DOCUMENT VIEW
 // ═══════════════════════════════════════════════════
-async function openDocument(path, title) {
-  // Only reset annotations when switching to a *different* document.
-  // Re-opening the same path (e.g. on session restore) preserves them.
-  const isNewDoc = state.docPath !== path;
-  state.docPath = path;
-  state.docTitle = title || path.split('/').pop();
-  if (isNewDoc) {
+// The primitive exec bridge works on runtimes predating exec.spawn's jsh migration.
+function quoteArg(value) { return "'" + String(value).replace(/'/g, "'\\''") + "'"; }
+async function previewCommand(command) {
+  let timer;
+  try {
+    return await Promise.race([slicc.exec(command), new Promise((_, reject) => {
+      timer = setTimeout(() => reject(Error('Preview timed out. Check the source and retry.')), 25000);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+let previewEpoch = 0;
+let previewFrame = null;
+let annotateActive = true;
+let pendingSelection = null;
+let previewReturnFocus = null;
+const BLOCKS = 'h1,h2,h3,h4,h5,h6,p,li,blockquote,pre,td,th,figcaption,img,button,a,section,article,div';
+const textOf = el => (el?.textContent || el?.getAttribute('alt') || '').replace(/\s+/g, ' ').trim();
+function documentKey(item) { return item.path ? 'path:' + item.path : 'url:' + (item.previewUrl || item.liveUrl || ''); }
+function currentDocument() {
+  const key = documentKey(state.docItem || {path:state.docPath});
+  if (!state.documents) state.documents = {};
+  return state.documents[key] ||= {annotations:[]};
+}
+function annotations() { return currentDocument().annotations; }
+function openDocument(path, title, id) {
+  return openPreview(state.items.find(i => id ? i.id === id : i.path === path) || {id, path, title});
+}
+async function openPreview(item, focusTitle = true) {
+  const epoch = ++previewEpoch;
+  hidePopup();
+  previewFrame = null;
+  const legacyPath = state.docPath;
+  state.docItem = {...item};
+  state.docPath = item.path || '';
+  state.docTitle = item.title || (item.path || item.previewUrl || item.liveUrl || 'Preview').split('/').pop();
+  const doc = currentDocument();
+  if (state.annotations?.length && legacyPath === item.path && !doc.annotations.length) {
+    doc.annotations = state.annotations.map(a => ({...a, id:String(a.id)}));
     state.annotations = [];
   }
-  saveState();
-
-  const docContent = document.getElementById('doc-content');
   document.getElementById('doc-filename').textContent = state.docTitle;
-  docContent.innerHTML =
-    '<div class="doc-loading">' +
-      '<i data-lucide="loader" class="sprinkle-icon spin" style="width:24px;height:24px"></i>' +
-      '<span class="sprinkle-detail">Loading…</span>' +
-    '</div>';
-  renderAnnotationsList();
-  updateSubmitBtn();
+  const content = document.getElementById('doc-content');
+  content.innerHTML = '<div class="doc-loading" role="status">Loading preview…</div>';
+  const sourceLink = document.getElementById('preview-source-link');
+  const url = item.previewUrl || item.liveUrl || '';
+  sourceLink.hidden = !/^https?:\/\//i.test(url);
+  sourceLink.href = sourceLink.hidden ? '#' : url;
   showView('document');
-
+  renderAnnotationsList(); updateSubmitBtn();
+  if (focusTitle) document.getElementById('doc-filename').focus();
   try {
-    const raw = await slicc.readFile(path);
-    let html;
-    if (path.endsWith('.html') || path.endsWith('.htm')) {
-      const body = /<!DOCTYPE|<html/i.test(raw) ? extractBody(raw) : raw;
-      html = sanitizeHtml(body);
+    let raw, format, base = item.path;
+    if (/\.fountain$/i.test(item.path || '')) {
+      const r = await previewCommand('fountain render ' + quoteArg(item.path) + ' --json');
+      if (r.exitCode !== 0) throw Error('Fountain renderer unavailable. Install the save-the-cat skill and retry. ' + (r.stderr || ''));
+      const result = JSON.parse(r.stdout);
+      if (typeof result.html !== 'string') throw Error('Fountain renderer returned no document.');
+      raw = result.html; format = 'fountain';
     } else {
-      html = mdToHtml(raw);
+      if (item.path) {
+        try { raw = await slicc.readFile(item.path); } catch (e) { if (!/^https?:\/\//i.test(url)) throw e; }
+      }
+      if (raw === undefined) {
+        if (!/^https?:\/\//i.test(url)) throw Error('No readable file or preview URL.');
+        const r = await previewCommand('curl -fL --max-time 20 ' + quoteArg(url));
+        if (r.exitCode !== 0) throw Error('Could not fetch the preview. ' + (r.stderr || 'Check the URL and your access.'));
+        raw = r.stdout; base = url;
+      }
+      format = /\.(md|markdown)([?#]|$)/i.test(base || '') ? 'markdown' : 'html';
+      if (format === 'markdown') raw = '<!doctype html><html><body><main class="review-markdown">' + mdToHtml(raw) + '</main></body></html>';
     }
-    docContent.innerHTML = html;
-  } catch (err) {
-    docContent.innerHTML = '';
-    const wrap = document.createElement('div');
-    wrap.className = 'doc-loading';
-    wrap.innerHTML = '<i data-lucide="alert-circle" class="sprinkle-icon" style="width:24px;height:24px;color:var(--s2-negative)"></i>';
-    const span = document.createElement('span');
-    span.className = 'sprinkle-detail';
-    span.textContent = 'Failed to load: ' + ((err && err.message) ? err.message : String(err));
-    wrap.appendChild(span);
-    docContent.appendChild(wrap);
+    const html = await preparePreview(raw, base, format);
+    if (epoch !== previewEpoch) return;
+    doc.format = format;
+    const iframe = document.createElement('iframe');
+    iframe.id = 'asset-frame'; iframe.title = 'Review asset: ' + state.docTitle;
+    // Parent-side listeners annotate this inert document. Asset code never runs.
+    iframe.setAttribute('sandbox', 'allow-same-origin');
+    iframe.referrerPolicy = 'no-referrer';
+    iframe.addEventListener('load', () => {
+      if (epoch !== previewEpoch || !iframe.contentDocument?.body) return;
+      previewFrame = iframe;
+      bindPreview(iframe.contentDocument);
+      paintAnnotations(); syncAnnotate();
+    });
+    iframe.srcdoc = html;
+    content.replaceChildren(iframe);
+    saveState();
+  } catch (error) {
+    if (epoch !== previewEpoch) return;
+    content.innerHTML = '<div class="preview-error"><strong>Could not load preview</strong><p></p></div>';
+    content.querySelector('p').textContent = error.message || String(error);
   }
-  renderIcons();
 }
-
-// ── Text selection → annotation popup ──
-let pendingSelection = null;
-
-document.addEventListener('mouseup', (e) => {
-  if (!document.getElementById('doc-view').classList.contains('visible')) return;
-  // Don't trigger inside the popup itself
-  if (e.target.closest('#annotation-popup')) return;
-
-  const sel = window.getSelection();
-  if (!sel || sel.isCollapsed || !sel.toString().trim()) {
-    // If clicking outside popup, hide it
-    if (!e.target.closest('#annotation-popup')) hidePopup();
-    return;
+async function preparePreview(raw, base, format) {
+  const doc = new DOMParser().parseFromString(raw, 'text/html');
+  doc.querySelectorAll('script,iframe,object,embed,base,meta,form input[type=submit]').forEach(n => n.remove());
+  for (const el of doc.querySelectorAll('*')) {
+    for (const a of [...el.attributes]) {
+      if (/^on/i.test(a.name) || ['srcdoc','autofocus','formaction','action'].includes(a.name) || (/^(href|src|xlink:href)$/i.test(a.name) && /^\s*(javascript|vbscript):/i.test(a.value))) el.removeAttribute(a.name);
+    }
   }
-
-  const selectedText = sel.toString().trim();
-  const docContent = document.getElementById('doc-content');
-  if (!docContent.contains(sel.anchorNode)) return;
-
-  pendingSelection = { text: selectedText, range: sel.getRangeAt(0).cloneRange() };
-
-  // Position popup above selection
-  const rect = sel.getRangeAt(0).getBoundingClientRect();
-  showPopup(rect, selectedText);
-});
-
-function showPopup(rect, text) {
+  const remote = /^https?:\/\//i.test(base || '');
+  const localPath = (value, from = base) => new URL(value, 'https://vfs.invalid' + from).pathname;
+  async function resource(value, from = base) {
+    if (/^(https?:|data:|blob:|#)/i.test(value)) return value;
+    if (remote) return new URL(value, base).href;
+    const path = localPath(value, from);
+    const type = ({png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',gif:'image/gif',webp:'image/webp',svg:'image/svg+xml',woff:'font/woff',woff2:'font/woff2'})[path.split('.').pop().toLowerCase()];
+    if (!type) return '';
+    try {
+      const bytes = await slicc.readFileBinary(decodeURIComponent(path));
+      let data = ''; for (const b of bytes) data += String.fromCharCode(b);
+      return 'data:' + type + ';base64,' + btoa(data);
+    } catch (_) { return ''; }
+  }
+  async function cssUrls(css, from) {
+    const matches = [...css.matchAll(/url\(\s*(['"]?)(.*?)\1\s*\)/gi)];
+    for (const m of matches) css = css.replace(m[0], 'url("' + (await resource(m[2], from)).replace(/"/g,'%22') + '")');
+    return css;
+  }
+  for (const link of [...doc.querySelectorAll('link')]) {
+    if (link.rel !== 'stylesheet') { link.remove(); continue; }
+    if (remote || /^https?:\/\//i.test(link.getAttribute('href') || '')) {
+      link.setAttribute('href', new URL(link.getAttribute('href'), remote ? base : undefined).href);
+    } else {
+      const cssPath = localPath(link.getAttribute('href') || '');
+      try { const style = doc.createElement('style'); style.textContent = await cssUrls(await slicc.readFile(decodeURIComponent(cssPath)), cssPath); link.replaceWith(style); }
+      catch (_) { link.remove(); }
+    }
+  }
+  for (const img of doc.querySelectorAll('img')) {
+    img.removeAttribute('srcset');
+    img.src = await resource(img.getAttribute('src') || '');
+  }
+  for (const style of doc.querySelectorAll('style')) style.textContent = await cssUrls(style.textContent, base);
+  for (const el of doc.querySelectorAll('[style]')) el.setAttribute('style', await cssUrls(el.getAttribute('style'), base));
+  if (remote) { const b = doc.createElement('base'); b.href = base; doc.head.prepend(b); }
+  const csp = doc.createElement('meta'); csp.httpEquiv = 'Content-Security-Policy';
+  csp.content = "default-src 'none'; script-src 'none'; style-src 'unsafe-inline' https: http:; img-src data: blob: https: http:; font-src data: https: http:; base-uri https: http:; form-action 'none'";
+  doc.head.prepend(csp);
+  const style = doc.createElement('style');
+  style.id = 'review-theme';
+  doc.head.append(style);
+  doc.documentElement.dataset.reviewFormat = format;
+  // Avoid a foreign page's tabindex taking the reviewer out of the preview.
+  doc.body.setAttribute('tabindex','0');
+  return '<!doctype html>' + doc.documentElement.outerHTML;
+}
+function themePreview() {
+  const doc = previewFrame?.contentDocument;
+  if (!doc) return;
+  const css = getComputedStyle(document.documentElement);
+  const fg = css.getPropertyValue('--fg').trim() || '#242424';
+  const bg = css.getPropertyValue('--s2-bg-base').trim() || '#fff';
+  const paper = css.getPropertyValue('--s2-bg-elevated').trim() || bg;
+  const line = css.getPropertyValue('--line').trim() || '#777';
+  const accent = css.getPropertyValue('--link').trim() || '#2563eb';
+  const mode = document.documentElement.classList.contains('theme-light') ? 'light' : 'dark';
+  doc.getElementById('review-theme').textContent = `:root{color-scheme:${mode};--review-fg:${fg};--review-bg:${bg};--review-paper:${paper};--review-line:${line}}body{margin:0;color:var(--review-fg);background:var(--review-bg)}.review-markdown{font:15px/1.65 system-ui,sans-serif;max-width:760px;padding:clamp(18px,5vw,36px);margin:auto;overflow-wrap:anywhere}.review-markdown h1{font-size:1.65em;line-height:1.2}.review-markdown h2{font-size:1.3em}.review-markdown pre{overflow:auto;padding:12px;background:var(--review-paper)}.review-markdown a{color:${accent}}.review-markdown blockquote{margin-left:0;padding-left:16px;border-left:3px solid ${accent}}img{max-width:100%}html [data-rv-hover],html [data-rv-selected]{outline:2px solid ${accent}!important;outline-offset:3px!important}html [data-rv-notes]{box-shadow:inset 3px 0 0 ${accent}!important}html [data-rv-selected]{background-color:color-mix(in srgb,${accent} 12%,transparent)!important}html[data-rv-annotate=true] body{cursor:crosshair}::selection{background:color-mix(in srgb,${accent} 30%,transparent)}:focus-visible{outline:2px solid ${accent};outline-offset:3px}`;
+}
+new MutationObserver(themePreview).observe(document.documentElement,{attributes:true,attributeFilter:['class','style']});
+function selectorFor(el) {
+  if (el.id && el.ownerDocument.querySelectorAll('#' + CSS.escape(el.id)).length === 1) return '#' + CSS.escape(el.id);
+  const parts = [];
+  while (el && el.tagName !== 'BODY') {
+    const siblings = [...el.parentElement.children].filter(n => n.tagName === el.tagName);
+    parts.unshift(el.localName + ':nth-of-type(' + (siblings.indexOf(el) + 1) + ')');
+    el = el.parentElement;
+  }
+  return parts.length ? 'body > ' + parts.join(' > ') : 'body';
+}
+function anchorFor(el, text, selection) {
+  const scope = textOf(el);
+  const start = scope.indexOf(text);
+  return {selector:selectorFor(el), quote:text, elementText:scope, tag:el.localName,
+    prefix:start > 0 ? scope.slice(Math.max(0,start-40),start) : '', suffix:start >= 0 ? scope.slice(start+text.length,start+text.length+40) : '',
+    kind:selection ? 'text' : 'element', scene:el.closest('[data-scene]')?.dataset.scene || '',
+    token:el.closest('[data-fountain-token]')?.dataset.fountainToken || ''};
+}
+function selectForComment(el, text, selection = false) {
+  if (!el || !text) return;
+  pendingSelection = {text, anchor:anchorFor(el,text,selection)};
+  previewReturnFocus = el;
+  const doc = previewFrame.contentDocument;
+  doc.querySelectorAll('[data-rv-hover]').forEach(n=>n.removeAttribute('data-rv-hover'));
+  doc.querySelectorAll('[data-rv-selected]').forEach(n=>n.removeAttribute('data-rv-selected'));
+  el.setAttribute('data-rv-selected','');
+  showPopup(text);
+}
+function bindPreview(doc) {
+  themePreview();
+  const target = el => el?.closest(BLOCKS);
+  doc.addEventListener('mouseover', e => {
+    doc.querySelectorAll('[data-rv-hover]').forEach(n=>n.removeAttribute('data-rv-hover'));
+    if (annotateActive && !pendingSelection) target(e.target)?.setAttribute('data-rv-hover','');
+  });
+  doc.addEventListener('mouseout', e=>target(e.target)?.removeAttribute('data-rv-hover'));
+  doc.addEventListener('mouseup', () => {
+    if (!annotateActive || pendingSelection) return;
+    const selection = doc.getSelection();
+    if (!selection || selection.isCollapsed || !selection.toString().trim()) return;
+    const container = selection.getRangeAt(0).commonAncestorContainer;
+    const element = container.nodeType === 1 ? container : container.parentElement;
+    selectForComment(element, selection.toString().replace(/\s+/g, ' ').trim(), true);
+  });
+  doc.addEventListener('click', e => {
+    // Preview links and controls select content; they never navigate away from saved comments.
+    e.preventDefault();
+    if (!annotateActive || pendingSelection) return;
+    const sel = doc.getSelection();
+    if (sel && !sel.isCollapsed && sel.toString().trim()) {
+      const range = sel.getRangeAt(0);
+      const el = range.commonAncestorContainer.nodeType === 1 ? range.commonAncestorContainer : range.commonAncestorContainer.parentElement;
+      selectForComment(el,sel.toString().replace(/\s+/g,' ').trim(),true);
+    } else { const el = target(e.target); selectForComment(el,textOf(el)); }
+  },true);
+  doc.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { hidePopup(); return; }
+    if (e.key === 'Enter' && annotateActive && target(e.target)) { e.preventDefault(); selectForComment(target(e.target),textOf(target(e.target))); }
+  });
+  // Native keyboard navigation exposes blocks without a separate annotation mode.
+  doc.querySelectorAll('h1,h2,h3,h4,p,li,blockquote,pre,td,th,img').forEach(el => {
+    if (textOf(el)) { el.tabIndex = 0; el.setAttribute('aria-keyshortcuts', 'Enter'); el.title = 'Press Enter to comment'; }
+  });
+}
+function syncAnnotate() {
+  document.getElementById('annotate-btn').setAttribute('aria-pressed',String(annotateActive));
+  previewFrame?.contentDocument?.documentElement.setAttribute('data-rv-annotate',String(annotateActive));
+  document.getElementById('preview-help').textContent = annotateActive ? 'Click an element or select text. Tab + Enter works too.' : 'Reading mode. Turn on Annotate to leave comments.';
+}
+function findAnchor(ann) {
+  const doc = previewFrame?.contentDocument;
+  if (!doc || !ann.anchor) return null;
+  let el; try { el = doc.querySelector(ann.anchor.selector); } catch (_) {}
+  const matchesAnchor = node => node && textOf(node) === ann.anchor.elementText &&
+    (!ann.anchor.scene || node.closest('[data-scene]')?.dataset.scene === ann.anchor.scene);
+  if (matchesAnchor(el)) return el;
+  const matches = [...doc.querySelectorAll(BLOCKS)].filter(matchesAnchor);
+  // Don't silently attach feedback to a different repeated passage after an edit.
+  return matches.length === 1 ? matches[0] : null;
+}
+function paintAnnotations() {
+  const doc = previewFrame?.contentDocument;
+  if (!doc) return;
+  doc.querySelectorAll('[data-rv-notes]').forEach(n=>n.removeAttribute('data-rv-notes'));
+  annotations().forEach(ann=>{const el=findAnchor(ann);if(el&&!ann.applied)el.setAttribute('data-rv-notes','');});
+}
+function showPopup(text) {
   const popup = document.getElementById('annotation-popup');
   document.getElementById('annotation-selected-text').textContent = text;
   document.getElementById('annotation-note').value = '';
   popup.classList.add('visible');
-
-  // Position after layout has settled — reading offsetHeight on the same
-  // frame we toggled `display: flex` returns 0 on the very first reveal.
-  requestAnimationFrame(() => {
-    const pw = popup.offsetWidth || 260;
-    const ph = popup.offsetHeight;
-    let left = rect.left + rect.width / 2 - pw / 2;
-    let top  = rect.top - ph - 8;
-    if (left < 4) left = 4;
-    if (left + pw > window.innerWidth - 4) left = window.innerWidth - pw - 4;
-    if (top < 4) top = rect.bottom + 8;
-    popup.style.left = left + 'px';
-    popup.style.top  = top  + 'px';
-  });
-  setTimeout(() => document.getElementById('annotation-note').focus(), 60);
-  renderIcons();
+  popup.style.left = '12px'; popup.style.right = '12px'; popup.style.bottom = '12px'; popup.style.top = 'auto'; popup.style.width = 'auto';
+  document.getElementById('annotation-note').focus();
 }
-
 function hidePopup() {
   document.getElementById('annotation-popup').classList.remove('visible');
   pendingSelection = null;
+  previewFrame?.contentDocument?.querySelectorAll('[data-rv-selected]').forEach(n=>n.removeAttribute('data-rv-selected'));
 }
-
-document.getElementById('popup-cancel-btn').addEventListener('click', hidePopup);
-
-document.getElementById('popup-save-btn').addEventListener('click', () => {
-  const note = document.getElementById('annotation-note').value.trim();
-  if (!note || !pendingSelection) return;
-
-  // Highlight selected text
-  try {
-    const span = document.createElement('span');
-    span.className = 'doc-highlight';
-    span.title = note;
-    pendingSelection.range.surroundContents(span);
-  } catch (_) { /* cross-node selections — skip highlight */ }
-
-  state.annotations.push({ text: pendingSelection.text, note, id: Date.now() });
-  saveState();
-  hidePopup();
-  window.getSelection()?.removeAllRanges();
-  renderAnnotationsList();
-  updateSubmitBtn();
-  // Auto-open annotations panel
-  if (!state.annotationsOpen) toggleAnnotationsPanel(true);
+function cancelComment() { const target=previewReturnFocus;hidePopup();target?.focus(); }
+document.getElementById('popup-cancel-btn').addEventListener('click',cancelComment);
+document.getElementById('annotation-popup').addEventListener('keydown',e=>{
+  if(e.key==='Escape'){e.preventDefault();cancelComment();}
+  if((e.ctrlKey||e.metaKey)&&e.key==='Enter'){e.preventDefault();document.getElementById('popup-save-btn').click();}
 });
-
-// ── Annotations list ──
+document.getElementById('popup-save-btn').addEventListener('click',()=>{
+  const note=document.getElementById('annotation-note').value.trim();
+  if(!note||!pendingSelection)return;
+  annotations().push({id:crypto.randomUUID(),text:pendingSelection.text,note,anchor:pendingSelection.anchor});
+  saveState();cancelComment();paintAnnotations();renderAnnotationsList();updateSubmitBtn();toggleAnnotationsPanel(true);
+});
 function renderAnnotationsList() {
-  const list  = document.getElementById('annotations-list');
-  const badge = document.getElementById('ann-count-badge');
-  const count = state.annotations.length;
-  badge.textContent = count;
-  badge.className   = 'badge' + (count === 0 ? ' zero' : '');
-
-  list.innerHTML = '';
-  state.annotations.forEach((ann, idx) => {
-    const item = document.createElement('div');
-    item.className = 'annotation-item';
-    const truncated = ann.text.length > 60 ? ann.text.slice(0, 60) + '…' : ann.text;
-    item.innerHTML =
-      '<div class="annotation-body">' +
-        '<div class="annotation-selected sprinkle-detail">"' + escHtml(truncated) + '"</div>' +
-        '<div class="annotation-note-text sprinkle-body">' + escHtml(ann.note) + '</div>' +
-      '</div>' +
-      '<button class="annotation-remove" title="Remove annotation">' +
-        '<i data-lucide="x" class="sprinkle-icon sm"></i>' +
-      '</button>';
-    item.querySelector('.annotation-remove').addEventListener('click', () => removeAnnotation(idx));
-    list.appendChild(item);
+  const list=document.getElementById('annotations-list'),badge=document.getElementById('ann-count-badge');
+  const notes=annotations(); badge.textContent=notes.length;badge.className='badge'+(notes.length?'':' zero');list.replaceChildren();
+  notes.forEach((ann,index)=>{
+    const row=document.createElement('div');row.className='annotation-item';
+    const body=document.createElement('div');body.className='annotation-body';
+    const jump=document.createElement('button');jump.className='annotation-selected annotation-jump';jump.textContent=(index+1)+'. '+ann.text;jump.title='Show commented section';
+    jump.addEventListener('click',()=>{const el=findAnchor(ann);if(el){el.scrollIntoView({block:'center'});el.focus();el.setAttribute('data-rv-selected','');}else document.getElementById('preview-status').textContent='This passage has changed. The original quote is preserved in the comment.';});
+    const note=document.createElement('p');note.className='annotation-note-text';note.textContent=ann.note;
+    const status=document.createElement('p');status.className='annotation-state';status.textContent=ann.applied?'Applied':ann.batchId?'Sent · awaiting agent':ann.deliveryError||'Draft';
+    const remove=document.createElement('button');remove.className='annotation-remove';remove.textContent='×';remove.setAttribute('aria-label','Remove comment '+(index+1));remove.disabled=!!ann.batchId;
+    remove.addEventListener('click',()=>{notes.splice(index,1);saveState();paintAnnotations();renderAnnotationsList();updateSubmitBtn();});
+    body.append(jump,note,status);row.append(body,remove);list.append(row);
   });
-  renderIcons();
 }
-
-function removeAnnotation(idx) {
-  state.annotations.splice(idx, 1);
-  saveState();
-  renderAnnotationsList();
-  updateSubmitBtn();
-}
-
 function updateSubmitBtn() {
-  const btn = document.getElementById('submit-btn');
-  btn.disabled = state.annotations.length === 0;
+  const count=annotations().filter(a=>!a.batchId).length;
+  const btn=document.getElementById('submit-btn');btn.disabled=!count;
+  btn.textContent=count?'Send '+count+' comment'+(count===1?'':'s')+' to agent':'Send to agent';
+  const error=annotations().find(a=>a.deliveryError)?.deliveryError;
+  const waiting=annotations().some(a=>a.batchId&&!a.applied);
+  document.getElementById('preview-status').textContent=error||(count?'Comments stay here until you send them.':waiting?'Comments sent. Waiting for the agent.':annotations().length?'All comments applied. Reload to see the changes.':'No comments yet.');
 }
-
-document.getElementById('submit-btn').addEventListener('click', () => {
-  if (state.annotations.length === 0) return;
-  slicc.lick({
-    action: 'submit-revisions',
-    data: { path: state.docPath, revisions: state.annotations.map(a => ({ text: a.text, note: a.note })) }
-  });
+document.getElementById('submit-btn').addEventListener('click',()=>{
+  const pending=annotations().filter(a=>!a.batchId);if(!pending.length)return;
+  const batchId=crypto.randomUUID(),item=state.docItem;
+  // Persist before emitting so another click/re-mount cannot dispatch the same batch twice.
+  pending.forEach(a=>{a.batchId=batchId;delete a.deliveryError;});saveState();
+  try {
+    slicc.lick({action:'submit-revisions',data:{id:item.id,path:item.path||'',url:item.previewUrl||item.liveUrl||'',format:currentDocument().format,batchId,
+      revisions:pending.map(a=>({id:a.id,text:a.text,note:a.note,anchor:a.anchor}))}});
+  } catch(error) { pending.forEach(a=>{delete a.batchId;a.deliveryError=error.message;});saveState(); }
+  renderAnnotationsList();updateSubmitBtn();
 });
-
-// ── Annotations panel toggle ──
-document.getElementById('annotations-toggle').addEventListener('click', () => toggleAnnotationsPanel());
-
+document.getElementById('annotations-toggle').addEventListener('click',()=>toggleAnnotationsPanel());
 function toggleAnnotationsPanel(forceOpen) {
-  const list    = document.getElementById('annotations-list');
-  const chevron = document.getElementById('ann-chevron');
-  if (forceOpen !== undefined) {
-    state.annotationsOpen = forceOpen;
-  } else {
-    state.annotationsOpen = !state.annotationsOpen;
-  }
-  saveState();
-  list.classList.toggle('open', state.annotationsOpen);
-  chevron.classList.toggle('open', state.annotationsOpen);
+  state.annotationsOpen=forceOpen===undefined?!state.annotationsOpen:forceOpen;saveState();
+  document.getElementById('annotations-list').classList.toggle('open',state.annotationsOpen);
+  document.getElementById('ann-chevron').classList.toggle('open',state.annotationsOpen);
+  document.getElementById('annotations-toggle').setAttribute('aria-expanded',String(state.annotationsOpen));
 }
+document.getElementById('annotate-btn').addEventListener('click',()=>{annotateActive=!annotateActive;hidePopup();syncAnnotate();});
+document.getElementById('reload-preview-btn').addEventListener('click',()=>openPreview(state.docItem));
 
 // ── Review mode toggle ──
 let reviewModeActive = false;
@@ -1923,8 +1674,11 @@ document.getElementById('speck-btn').addEventListener('click', () => {
 
 // ── Back button ──
 document.getElementById('back-btn').addEventListener('click', () => {
+  previewEpoch++;
   hidePopup();
+  renderQueue();
   showView('queue');
+  cardElements.get(state.docItem?.id)?.card.querySelector('.item-link')?.focus();
 });
 
 // ═══════════════════════════════════════════════════
@@ -1972,7 +1726,7 @@ slicc.on('update', async (msg) => {
   }
 
   else if (msg.action === 'open-file') {
-    await openDocument(msg.path, msg.title || null);
+    await openDocument(msg.path, msg.title || null, msg.id);
   }
 
   else if (msg.action === 'add-comment') {
@@ -2072,6 +1826,18 @@ slicc.on('update', async (msg) => {
     }
   }
 
+  else if (msg.action === 'revisions-result') {
+    Object.values(state.documents || {}).forEach(doc => {
+      (doc.annotations || []).forEach(ann => {
+        if (ann.batchId === msg.batchId) {
+          if (msg.status === 'failed') { delete ann.batchId; ann.deliveryError = msg.message || 'Agent could not process these comments. Retry when ready.'; }
+          else if (msg.status === 'applied') { ann.applied = true; delete ann.deliveryError; }
+        }
+      });
+    });
+    saveState(); paintAnnotations(); renderAnnotationsList(); updateSubmitBtn();
+  }
+
   else if (msg.action === 'set-review-mode') {
     reviewModeActive = !!msg.active;
     const btn = document.getElementById('review-mode-btn');
@@ -2116,43 +1882,22 @@ function renderIcons() {
 // ═══════════════════════════════════════════════════
 //  INIT
 // ═══════════════════════════════════════════════════
-// ── deferred init — wait for sprinkle-init to seed getState() ───────────────
-//
-// WHY: the SLICC host injects the bridge script before our scripts, so the
-// bridge's own message listener is registered first. The host sends
-// 'sprinkle-init' from the iframe's load event, which fires AFTER our
-// scripts execute. So slicc.getState() returns null when our code first
-// runs — calling loadState() synchronously at startup always returns empty.
-//
-// CLOBBER PATH (before this fix):
-//   1. init() runs → loadState() → getState() = null → state stays empty
-//   2. renderQueue() renders nothing
-//   3. showView('queue') → saveState() → setState({items:[]}) → localStorage wiped
-//   4. sprinkle-init arrives too late; init already ran with empty state
-//
-// FIX: listen for 'sprinkle-init'. The bridge listener runs first (FIFO)
-// and sets _state = savedState. Our listener then calls loadState() and
-// finds the real data. saveState() is no-op until _stateReady=true so the
-// clobber in step 3 never happens.
-// doInit() is called from the sprinkle-init handler (primary path) and
-// from a 900ms safety timer (fallback if the message races or is lost).
+// Hydrate before writing. Modern hosts send sprinkle-init; older standalone
+// hosts omit it, so the fallback reads their shared persisted store directly.
+// An inaccessible or corrupt store stays in a waiting state, never an empty save.
 let _initDone = false;
-function doInit() {
+function doInit(saved) {
   if (_initDone) return;
   _initDone = true;
   _stateReady = true;
-  loadState();
+  loadState(saved);
+  document.getElementById('annotations-toggle').setAttribute('aria-expanded',String(state.annotationsOpen));
   if (state.annotationsOpen) {
     document.getElementById('annotations-list').classList.add('open');
     document.getElementById('ann-chevron').classList.add('open');
   }
-  if (state.view === 'document' && state.docPath) {
-    document.getElementById('doc-filename').textContent =
-      state.docTitle || state.docPath.split('/').pop();
-    renderAnnotationsList();
-    updateSubmitBtn();
-    showView('document');
-    openDocument(state.docPath, state.docTitle);
+  if (state.view === 'document' && (state.docItem || state.docPath)) {
+    openPreview(state.docItem || {path:state.docPath,title:state.docTitle});
   } else {
     renderQueue();
     showView('queue');
@@ -2162,12 +1907,17 @@ function doInit() {
 window.addEventListener('message', function onSprinkleInit(e) {
   if (!e.data || e.data.type !== 'sprinkle-init') return;
   window.removeEventListener('message', onSprinkleInit);
-  doInit();
+  doInit(slicc.getState());
 }, false);
 
-// Safety net: if sprinkle-init never arrives (race or missed message),
-// run init after 900ms so the panel never stays permanently blank.
-setTimeout(function() { doInit(); }, 900);
+// A missing init event is not permission to assume an empty saved queue.
+setTimeout(function() {
+  if (_initDone) return;
+  const saved = standaloneSavedState();
+  if (saved !== undefined) { doInit(saved); return; }
+  queueView.classList.remove('hidden'); queueView.classList.add('visible');
+  document.querySelector('#empty-state').textContent = 'Waiting for saved reviews…';
+}, 900);
 </script>
 </body>
 </html>
