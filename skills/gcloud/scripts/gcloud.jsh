@@ -54,6 +54,28 @@ async function saveConfig(updates) {
  *  to undefined so they never leak into URLs or config. */
 function str(v) { return typeof v === 'string' ? v : undefined; }
 
+/**
+ * Parse a "how many/how far" flag (e.g. --limit, --max-pages) that must be a
+ * positive integer when supplied. Returns `def` when the flag was omitted
+ * entirely. Dies (non-zero exit) for anything else that isn't a positive
+ * integer — a bare flag with no value, "0", a negative number, or a
+ * non-numeric string. This matters because a silently-accepted --max-pages 0
+ * makes the pagination loop do zero work and report "no results", which
+ * looks exactly like a real empty result instead of a typo'd flag.
+ */
+function positiveIntFlag(flags, name, def) {
+  const raw = flags[name];
+  if (raw === undefined) return def;
+  if (raw === true || String(raw).trim() === '') {
+    cli.die(`--${name} requires a numeric value (got none).`, { prefix: 'gcloud' });
+  }
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1) {
+    cli.die(`--${name} must be a positive integer, got "${raw}".`, { prefix: 'gcloud' });
+  }
+  return n;
+}
+
 async function exchangeCode(code) {
   const body = new URLSearchParams({
     grant_type:    'authorization_code',
@@ -506,6 +528,10 @@ async function cmdDnsZonesList(flags) {
     const vis = z.visibility && z.visibility !== 'public' ? c.dim(`[${z.visibility}]`) : '';
     console.log(`  ${c.cyan(c.bold(z.name))}  ${c.dim(z.dnsName)}  ${vis}`.trimEnd());
     if (z.description) console.log(`      ${c.dim(z.description)}`);
+    if (z.labels && Object.keys(z.labels).length) {
+      const pairs = Object.entries(z.labels).map(([k, v]) => `${k}:${v}`).join(', ');
+      console.log(`      ${c.dim('labels: ' + pairs)}`);
+    }
     if (Array.isArray(z.nameServers) && z.nameServers.length) {
       console.log(`      ${c.dim('NS: ' + z.nameServers.join(', '))}`);
     }
@@ -599,6 +625,67 @@ function rrdataLines(r) {
   // Fallback: unknown policy shape — show something rather than nothing.
   if (!lines.length) lines.push(c.dim('routing policy: ' + JSON.stringify(rp)));
   return lines;
+}
+
+/**
+ * Cloud DNS change history for a managed zone. The API has no server-side
+ * time filter, so --since is applied client-side against each change's
+ * startTime; because /changes is sorted descending by changeSequence (and we
+ * request it that way), we can stop paging the moment we see a change older
+ * than --since rather than walking the whole history.
+ */
+async function cmdDnsChangesList(positional, flags) {
+  const project = await requireProject(flags);
+  const zone = positional[0];
+  if (!zone) {
+    cli.die('usage: gcloud dns changes list <zone> [--limit 20] [--since ISO8601] [--project P]', { prefix: 'gcloud' });
+  }
+  const limit = positiveIntFlag(flags, 'limit', 20);
+  const sinceRaw = str(flags.since);
+  let sinceMs;
+  if (sinceRaw) {
+    sinceMs = Date.parse(sinceRaw);
+    if (!Number.isFinite(sinceMs)) {
+      cli.die(`Invalid --since value: ${sinceRaw} (expected ISO8601, e.g. 2026-09-01T00:00:00Z)`, { prefix: 'gcloud' });
+    }
+  }
+  const base = `${DNS_BASE}/projects/${encodeURIComponent(project)}/managedZones/${encodeURIComponent(zone)}/changes`;
+  // Page size independent of --limit: a small --limit shouldn't force a
+  // round-trip per change when walking back to satisfy --since.
+  const pageSize = Math.min(Math.max(limit, 20), 500);
+  const changes = [];
+  let pageToken = '';
+  let stopped = false;
+  for (let i = 0; i < 200 && !stopped; i++) {
+    const qs = ['sortBy=changeSequence', 'sortOrder=descending', `maxResults=${encodeURIComponent(pageSize)}`];
+    if (pageToken) qs.push(`pageToken=${encodeURIComponent(pageToken)}`);
+    const data = await gfetch(`${base}?${qs.join('&')}`);
+    for (const ch of (data.changes || [])) {
+      if (sinceMs !== undefined) {
+        const t = Date.parse(ch.startTime);
+        if (Number.isFinite(t) && t < sinceMs) { stopped = true; break; }
+      }
+      changes.push(ch);
+      if (changes.length >= limit) { stopped = true; break; }
+    }
+    if (stopped || !data.nextPageToken) break;
+    pageToken = data.nextPageToken;
+  }
+  if (flags.json) { cli.out(changes); return; }
+  if (!changes.length) { console.log(c.dim('  No changes found.')); return; }
+  console.log('');
+  for (const ch of changes) {
+    const statusFmt = ch.status === 'done' ? c.green(ch.status) : c.yellow(ch.status || '?');
+    console.log(`  ${c.cyan(c.bold(ch.startTime || '?'))}  ${c.dim('id:' + ch.id)}  ${statusFmt}`);
+    for (const a of (ch.additions || [])) {
+      console.log(c.green(`      + ${a.type.padEnd(6)} ${a.name}  ttl:${a.ttl}`));
+      for (const line of changeDetailLines(a)) console.log(c.green(`          ${line}`));
+    }
+    for (const d of (ch.deletions || [])) {
+      console.log(c.red(`      - ${d.type.padEnd(6)} ${d.name}  ttl:${d.ttl}`));
+      for (const line of changeDetailLines(d)) console.log(c.red(`          ${line}`));
+    }
+  }
 }
 
 /** add = upsert (replace existing rrset of same name+type); remove = delete it. */
@@ -720,11 +807,132 @@ async function cmdDns(positional, flags) {
   if (group === 'records' && (action === 'list' || !action)) return await cmdDnsRecordsList(rest, flags);
   if (group === 'records' && action === 'add') return await cmdDnsRecordsChange(rest, flags, 'add');
   if (group === 'records' && (action === 'remove' || action === 'delete')) return await cmdDnsRecordsChange(rest, flags, 'remove');
+  if (group === 'changes' && (action === 'list' || !action)) return await cmdDnsChangesList(rest, flags);
   if (group === 'logging' && (action === 'status' || !action)) return await cmdDnsLoggingStatus(rest, flags);
   if (group === 'logging' && action === 'enable') return await cmdDnsLoggingSet(rest, flags, 'enable');
   if (group === 'logging' && action === 'disable') return await cmdDnsLoggingSet(rest, flags, 'disable');
   cli.die(
-    'usage:\n  gcloud dns zones list\n  gcloud dns zones create <name> --dns-name <domain.> --confirm\n  gcloud dns records list <zone> [--name N] [--type T]\n  gcloud dns records add <zone> <name> <type> <data>... [--ttl 300] --confirm\n  gcloud dns records add <zone> <name> <type> --routing-policy wrr --routing-policy-data "W:rrdata;W:rrdata" [--ttl 300] --confirm\n  gcloud dns records remove <zone> <name> <type> --confirm\n  gcloud dns logging status <zone>\n  gcloud dns logging enable <zone> --confirm\n  gcloud dns logging disable <zone> --confirm',
+    'usage:\n  gcloud dns zones list\n  gcloud dns zones create <name> --dns-name <domain.> --confirm\n  gcloud dns records list <zone> [--name N] [--type T]\n  gcloud dns records add <zone> <name> <type> <data>... [--ttl 300] --confirm\n  gcloud dns records add <zone> <name> <type> --routing-policy wrr --routing-policy-data "W:rrdata;W:rrdata" [--ttl 300] --confirm\n  gcloud dns records remove <zone> <name> <type> --confirm\n  gcloud dns changes list <zone> [--limit 20] [--since ISO8601]\n  gcloud dns logging status <zone>\n  gcloud dns logging enable <zone> --confirm\n  gcloud dns logging disable <zone> --confirm\n\n  Note: "dns changes" is Cloud DNS change history (record diffs over time).\n  "dns logging" is Cloud DNS QUERY logging (on/off). "gcloud logging read"\n  is a separate top-level command for Cloud Logging entries/audit logs.',
+    { prefix: 'gcloud' },
+  );
+}
+
+// ── Cloud Logging ────────────────────────────────────────────────────────────
+
+const LOGGING_BASE = 'https://logging.googleapis.com/v2';
+
+/** Best-effort one-line summary for a log entry. Audit-log entries carry the
+ *  interesting bits under protoPayload; fall back to text/json payloads for
+ *  everything else. */
+function loggingEntrySummary(e) {
+  const pp = e.protoPayload || {};
+  if (pp.methodName || pp.authenticationInfo || pp.resourceName) {
+    const who = pp.authenticationInfo?.principalEmail || '(unknown principal)';
+    return `${who}  ${pp.methodName || '?'}  ${pp.resourceName || ''}`.trimEnd();
+  }
+  if (e.textPayload) return e.textPayload;
+  if (e.jsonPayload) return JSON.stringify(e.jsonPayload);
+  return '(no payload)';
+}
+
+/**
+ * Cloud Logging entries — primarily for audit-log forensics.
+ *
+ * CRITICAL: entries:list returns SPARSE PAGES. Verified live: a filter that
+ * matched exactly 2 entries returned 15 consecutive pages containing only a
+ * nextPageToken (no "entries" key at all), and only yielded the 2 entries on
+ * the 16th page. A naive "stop at first page without entries" implementation
+ * would silently report no results for queries that do have results — so we
+ * keep following nextPageToken until it's absent, --limit is satisfied, or
+ * --max-pages is hit (and say so explicitly if the page cap is what stopped us,
+ * rather than implying the result set is complete).
+ */
+async function cmdLoggingRead(positional, flags) {
+  const project = await requireProject(flags);
+  const userFilter = positional.join(' ');
+  if (!userFilter) {
+    cli.die(
+      'usage: gcloud logging read <filter> [--limit 20] [--since ISO8601] [--max-pages 25] [--project P]\n' +
+      '  Note: inside logName=, encode "/" as %2F, e.g.\n' +
+      '  logName="projects/P/logs/cloudaudit.googleapis.com%2Factivity"',
+      { prefix: 'gcloud' },
+    );
+  }
+  const limit = positiveIntFlag(flags, 'limit', 20);
+  const maxPages = positiveIntFlag(flags, 'max-pages', 25);
+  const sinceRaw = str(flags.since);
+  let filter = userFilter;
+  if (sinceRaw) {
+    const sinceMs = Date.parse(sinceRaw);
+    if (!Number.isFinite(sinceMs)) {
+      cli.die(`Invalid --since value: ${sinceRaw} (expected ISO8601, e.g. 2026-09-01T00:00:00Z)`, { prefix: 'gcloud' });
+    }
+    filter = `timestamp>="${sinceRaw}" AND (${userFilter})`;
+  }
+
+  const entries = [];
+  let pageToken = '';
+  let pagesFetched = 0;
+  let hitPageCap = false;
+  while (pagesFetched < maxPages) {
+    pagesFetched++;
+    const body = {
+      resourceNames: [`projects/${project}`],
+      filter,
+      orderBy: 'timestamp desc',
+      pageSize: 1000,
+    };
+    if (pageToken) body.pageToken = pageToken;
+    const data = await gfetch(`${LOGGING_BASE}/entries:list`, { method: 'POST', body });
+    for (const e of (data.entries || [])) {
+      entries.push(e);
+      if (entries.length >= limit) break;
+    }
+    if (entries.length >= limit) break;
+    if (!data.nextPageToken) { pageToken = ''; break; }
+    pageToken = data.nextPageToken;
+    if (pagesFetched >= maxPages) { hitPageCap = true; break; }
+  }
+
+  if (flags.json) {
+    // Carry the truncation signal into JSON too — a machine consumer has no
+    // other way to tell "these are all the matches" apart from "the scan
+    // stopped at --max-pages with more pages left unread" (the array itself
+    // looks identical either way). Same fields drive the human warning below.
+    cli.out({
+      entries,
+      truncated: hitPageCap,
+      pagesFetched,
+      nextPageToken: hitPageCap ? pageToken : null,
+    });
+    return;
+  }
+  if (!entries.length) {
+    console.log(c.dim('  No log entries found.'));
+    if (hitPageCap) {
+      console.log(c.yellow(`  Stopped after --max-pages ${maxPages} pages (entries:list pages sparsely — a real`));
+      console.log(c.yellow('  match may still exist further back). Re-run with a higher --max-pages.'));
+    }
+    return;
+  }
+  console.log('');
+  for (const e of entries) {
+    const sev = e.severity ? ` ${c.yellow(e.severity)}` : '';
+    console.log(`  ${c.cyan(c.bold(e.timestamp || '?'))}${sev}  ${loggingEntrySummary(e)}`);
+  }
+  if (hitPageCap) {
+    console.log('');
+    console.log(c.yellow(`  Stopped after --max-pages ${maxPages} pages (entries:list can page sparsely —`));
+    console.log(c.yellow('  more matches may exist further back). Re-run with a higher --max-pages to see more.'));
+  }
+}
+
+async function cmdLogging(positional, flags) {
+  const action = positional[0];
+  const rest = positional.slice(1);
+  if (action === 'read') return await cmdLoggingRead(rest, flags);
+  cli.die(
+    'usage: gcloud logging read <filter> [--limit 20] [--since ISO8601] [--max-pages 25] [--project P]',
     { prefix: 'gcloud' },
   );
 }
@@ -900,9 +1108,16 @@ USAGE
   gcloud dns records add    <zone> <name> <type> --routing-policy wrr
          --routing-policy-data "W:rrdata;W:rrdata" [--ttl 300] --confirm
   gcloud dns records remove <zone> <name> <type> --confirm
+  gcloud dns changes list <zone> [--limit 20] [--since ISO8601]
+         Cloud DNS change history (record diffs over time). Distinct from
+         "dns logging" below (that's DNS query logging, not changes).
   gcloud dns logging status  <zone> [--project P]   Query-logging state for a zone
   gcloud dns logging enable  <zone> [--project P] --confirm
   gcloud dns logging disable <zone> [--project P] --confirm
+
+  gcloud logging read <filter> [--limit 20] [--since ISO8601] [--max-pages 25]
+         Cloud Logging entries (e.g. audit logs). Encode "/" as %2F inside
+         logName=, e.g. logName="projects/P/logs/cloudaudit.googleapis.com%2Factivity"
 
   gcloud billing accounts list                      Billing accounts you can access
   gcloud billing accounts describe <ACCOUNT_ID>
@@ -952,6 +1167,7 @@ async function main() {
     if (s === 'services') return await cmdServices(positional, flags);
     if (s === 'run') return await cmdRun(flags);
     if (s === 'dns') return await cmdDns(positional, flags);
+    if (s === 'logging') return await cmdLogging(positional, flags);
     if (s === 'billing') return await cmdBilling(positional, flags);
     if (s === 'api') return await cmdApi(positional, flags);
 

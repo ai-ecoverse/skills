@@ -1,6 +1,6 @@
 ---
 name: gcloud
-description: Interact with Google Cloud Platform from the command line via the `gcloud` CLI — list projects, Compute Engine instances and zones, Cloud Storage buckets, enabled services (APIs), and Cloud Run services, or make authenticated raw calls to any Google Cloud REST API. Authenticates by reusing the Google Cloud SDK's own public OAuth client through `oauth-token --intercept`, so a human completes the standard Google consent screen once and tokens auto-refresh thereafter — no service account key or pre-provisioned secret needed. Use whenever the user mentions Google Cloud, GCP, gcloud, Compute Engine, GCE, Cloud Storage, GCS buckets, Cloud Run, Google Cloud projects, enabled APIs/services, or wants to query or automate anything on Google Cloud without clicking through the Cloud Console. Activate on "gcloud", "google cloud", "GCP", "compute engine", "gcs bucket", "cloud run", "my gcp projects", "list instances", or related Google Cloud workflows.
+description: Interact with Google Cloud Platform from the command line via the `gcloud` CLI — list projects, Compute Engine instances, Cloud Storage buckets, enabled services (APIs), and Cloud Run services, manage Cloud DNS zones, records and change history, query Cloud Logging entries including audit logs, or make authenticated raw calls to any Google Cloud REST API. Authenticates by reusing the Google Cloud SDK's own public OAuth client through `oauth-token --intercept`, so a human completes the Google consent screen once and tokens auto-refresh thereafter — no service account key needed. Use whenever the user mentions Google Cloud, GCP, gcloud, Compute Engine, Cloud Storage, Cloud Run, Cloud DNS change history, Cloud Logging, audit logs, who changed or deleted a DNS record, or wants to automate anything on Google Cloud without the Cloud Console. Activate on "gcloud", "google cloud", "GCP", "gcs bucket", "cloud run", "dns change history", "audit log", "who deleted this record", or related Google Cloud workflows.
 allowed-tools: bash
 command: gcloud
 script: scripts/gcloud.jsh
@@ -67,9 +67,11 @@ Override per-call with `--project <id>` (or `-p`).
 | `gcloud dns records add <zone> <name> <type> <data>... [--ttl 300] --confirm` | Add/replace a record set |
 | `gcloud dns records add <zone> <name> <type> --routing-policy wrr --routing-policy-data "W:rrdata;W:rrdata" --confirm` | Add/replace a weighted round-robin record set |
 | `gcloud dns records remove <zone> <name> <type> --confirm` | Delete a record set |
+| `gcloud dns changes list <zone> [--limit 20] [--since ISO8601]` | Cloud DNS change history (record diffs) for a zone |
 | `gcloud dns logging status <zone>` | Show whether query logging is enabled for a zone |
 | `gcloud dns logging enable <zone> --confirm` | Enable Cloud DNS query logging on a zone |
 | `gcloud dns logging disable <zone> --confirm` | Disable query logging on a zone |
+| `gcloud logging read <filter> [--limit 20] [--since ISO8601] [--max-pages 25]` | Cloud Logging entries (e.g. audit logs) matching a filter |
 | `gcloud billing accounts list` | Billing accounts you can access |
 | `gcloud billing accounts describe <ACCOUNT_ID>` | Details for one billing account |
 | `gcloud billing accounts get-iam-policy <ACCOUNT_ID>` | IAM bindings on a billing account |
@@ -105,6 +107,10 @@ gcloud dns records add my-zone example.com TXT "v=spf1 include:_spf.google.com ~
 gcloud dns records remove my-zone old.example.com CNAME --confirm
 ```
 
+`dns zones list` also prints each zone's `labels` (when it has any) — these
+are load-bearing in some setups (e.g. selecting which zones a monitoring
+workflow watches), so they're no longer visible only via `--json`.
+
 Names are normalized to FQDNs (a trailing dot is appended if missing), and TXT
 values are auto-quoted. `add` is an upsert — it replaces an existing record set
 of the same name+type in one transactional change (Cloud DNS requires
@@ -125,8 +131,7 @@ record, not just a plain one — pass `--routing-policy wrr` with
 weighted groups, `,` separates rrdatas sharing a weight):
 
 ```bash
-# Flatten a mostly-inactive WRR wildcard to a fixed CNAME (cheaper: plain queries
-# bill as "DNS Query" $0.40/M vs "Routing Policy Query" $0.70/M):
+# Flatten a mostly-inactive WRR wildcard to a fixed CNAME:
 gcloud dns records add my-zone '*.example.com.' CNAME target.example.net. --ttl 300 --confirm
 
 # Reconstruct the weighted policy (rollback), e.g. 100% weight to one target:
@@ -141,16 +146,83 @@ restores plain→WRR — the conversion is fully reversible with the skill.
 **Query logging.** `gcloud dns logging status <zone>` reports whether a managed
 zone records DNS queries (via the zone's `cloudLoggingConfig.enableLogging`
 flag). `enable`/`disable` toggle it and, like every mutation, require
-`--confirm` — without it they print a preview only. Enabling logging is not
-free: DNS query logs bill through Cloud Logging ingestion at $0.50/GiB after the
-first 50 GiB/project/month (the enable preview repeats this so it isn't a
-surprise).
+`--confirm` — without it they print a preview only.
 
 ```bash
 gcloud dns logging status hlx-live
 gcloud dns logging enable hlx-live --confirm
 gcloud dns logging disable hlx-live --confirm
 ```
+
+**Change history.** `gcloud dns changes list <zone>` shows Cloud DNS's own
+change log for a managed zone — every `changes` resource Cloud DNS recorded,
+each with a `startTime`, `id`, `status`, and the additions/deletions that made
+up that change (rendered the same way as `records list`, including routing-
+policy targets for weighted/geo/failover records). This is **not** the same
+thing as query logging above: `dns logging` toggles whether individual DNS
+*queries* get logged; `dns changes list` is the zone's built-in history of
+*configuration changes* (record adds/removes), and needs no logging enabled at
+all — Cloud DNS keeps it regardless.
+
+```bash
+gcloud dns changes list aem-live --limit 5
+gcloud dns changes list aem-live --since 2026-09-01T00:00:00Z
+gcloud dns changes list aem-live --json
+```
+
+The underlying `managedZones.changes.list` API has no server-side time filter,
+so `--since` is applied client-side against each change's `startTime`. Results
+come back sorted descending by `changeSequence` (newest first), so the command
+stops paging as soon as it sees a change older than `--since` rather than
+walking the zone's entire history. `--limit` (default 20) caps how many
+changes are fetched/printed independent of `--since`.
+
+### Cloud Logging
+
+`gcloud logging read <filter>` lists Cloud Logging entries for the active
+project — the main use case is audit-log forensics (who did what, when):
+
+```bash
+gcloud logging read 'protoPayload.methodName="dns.managedZones.delete"' --limit 10
+gcloud logging read 'logName="projects/helix-225321/logs/cloudaudit.googleapis.com%2Factivity" AND protoPayload.methodName="dns.managedZones.delete"'
+gcloud logging read 'severity>=ERROR' --since 2026-09-01T00:00:00Z --json
+```
+
+The `filter` is the same
+[Cloud Logging query language](https://cloud.google.com/logging/docs/view/logging-query-language)
+`gcloud logging read`/the Console's Logs Explorer use. **Gotcha:** inside a
+`logName=` clause the `/` in the log id must be percent-encoded as `%2F` —
+`cloudaudit.googleapis.com/activity` becomes
+`cloudaudit.googleapis.com%2Factivity` — otherwise Cloud Logging silently
+treats it as a different (non-matching) string. `--since` is folded into the
+filter as `timestamp>="<ISO>" AND (<your filter>)`; it isn't a separate API
+parameter.
+
+Rendering: audit-log entries (`protoPayload`) show `timestamp`, `severity` (if
+present), the principal email, `methodName`, and `resourceName`. Other entries
+fall back to `textPayload`/`jsonPayload`. `--json` returns
+`{ entries, truncated, pagesFetched, nextPageToken }` rather than a bare
+array — `truncated`/`nextPageToken` are how a script detects an incomplete
+scan (see below) without parsing the human-readable warning.
+
+**Pagination is sparse — read this before assuming "no results" is real.**
+`entries:list` does not reliably put matching entries on the first page it
+returns, even when a filter matches only a couple of entries in the whole
+project. Verified live against `helix-225321`: a filter matching exactly 2
+entries returned **15 consecutive pages containing only a `nextPageToken` and
+no `entries` key at all**, with the 2 matching entries only appearing on the
+**16th** page. `logging read` therefore keeps following `nextPageToken` until
+it is empty, `--limit` is satisfied, or `--max-pages` (default 25) is hit —
+never stopping just because one page came back empty. If the page cap is what
+stopped the search, the command says so explicitly (`Stopped after --max-pages
+N pages…`) in both the human output and `--json` (`truncated: true`, plus the
+trailing `nextPageToken` to resume from) instead of implying the result set is
+complete.
+
+`--limit` and `--max-pages` (and `dns changes list`'s `--limit`) must be
+positive integers — `0`, a negative number, or a non-numeric value is
+rejected with an error instead of silently doing zero work and reporting an
+empty result.
 
 ### Cloud Billing
 
@@ -240,34 +312,25 @@ The billing account is resolved automatically from the project (override with
 
 ## How authentication works
 
-The Google Cloud SDK ships a **public "desktop app" OAuth client** — its client
-id and secret are compiled into the gcloud source
-(`CLOUDSDK_CLIENT_ID` = `32555940559.apps.googleusercontent.com`,
-`CLOUDSDK_CLIENT_NOTSOSECRET`). Desktop clients are non-confidential by design:
-Google protects them with loopback redirect-URI matching, not by keeping the
-"secret" secret. This skill reuses that client so that completing the normal
-Google consent screen yields a real `cloud-platform`-scoped token — exactly the
-credential `gcloud auth login` produces — without registering a new OAuth app or
-provisioning a service account key.
+The Google Cloud SDK ships a **public "desktop app" OAuth client**
+(`CLIENT_ID` = `32555940559.apps.googleusercontent.com`, plus
+`CLOUDSDK_CLIENT_NOTSOSECRET`). Desktop clients are non-confidential by
+design — Google protects them via loopback redirect-URI matching, not by
+keeping the "secret" secret — so this skill reuses that same client to get a
+real `cloud-platform`-scoped token via the normal Google consent screen.
 
 - Authorize endpoint: `https://accounts.google.com/o/oauth2/auth`
 - Token endpoint: `https://oauth2.googleapis.com/token`
 - Redirect: `http://127.0.0.1:8085/` (loopback; captured by `oauth-token --intercept`)
 - Scopes: `openid https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/cloud-platform`
 
-If Google ever rotates the Cloud SDK client credentials, update the `CLIENT_ID`
-/ `CLIENT_SECRET` constants at the top of `scripts/gcloud.jsh` from the current
-gcloud source.
+If Google ever rotates the Cloud SDK client credentials, update the
+`CLIENT_ID`/`CLIENT_SECRET` constants at the top of `scripts/gcloud.jsh`.
 
 ### Security notes
 
-- The authorization-code flow here does **not** use PKCE (SLICC's intercept
-  mode can't inject an authorize-side `code_challenge`). The captured `code` is
-  handled entirely inside the script and exchanged immediately — it is never
-  printed to stdout — which keeps the exposure window minimal. See the gmail
-  skill's `references/oauth-bootstrap.md` for the fuller discussion of this
-  trade-off for public clients.
-- Tokens live in the skill config, not in stdout. `gcloud logout` revokes the
+- No PKCE: SLICC's intercept mode can't inject an authorize-side
+  `code_challenge`. The captured code is exchanged for tokens immediately and
+  never printed to stdout, keeping the exposure window minimal.
+- Tokens live in the skill config, not stdout. `gcloud logout` revokes the
   refresh token at Google and clears local state.
-- The consent screen will show "Google Cloud SDK" as the requesting app,
-  because that is the client being reused.
