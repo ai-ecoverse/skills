@@ -336,7 +336,7 @@
     font-size: 24px;
     font-weight: 700;
     letter-spacing: -0.02em;
-    margin-bottom: 8px;
+    margin: 0 0 8px;
   }
 
   .note-detail-meta {
@@ -639,7 +639,7 @@
   .sprinkle-btn { box-shadow: none; min-height: 34px; font-family: inherit; font-size: 13px; }
   .sprinkle-text-field { min-height: 36px; padding: 8px 10px; border: 1px solid var(--s2-border-subtle); border-radius: 6px; background: var(--s2-bg-layer-1); color: var(--s2-content-default); font: inherit; }
   .sprinkle-text-field::placeholder { color: var(--s2-content-secondary); }
-  :where(button, a, input, textarea):focus-visible { outline: 2px solid light-dark(#245cc5, #8ab4ff); outline-offset: 2px; }
+  :where(button, a, input, textarea, [tabindex="-1"]):focus-visible { outline: 2px solid light-dark(#245cc5, #8ab4ff); outline-offset: 2px; }
 </style>
 </head>
 <body>
@@ -1001,7 +1001,7 @@
     var html = '<div class="note-list">';
     html += '<div class="stats-bar"><span><strong>' + notes.length + '</strong> notes</span></div>';
     notes.forEach(function(note) {
-      html += '<button type="button" class="note-row" onclick="openNote(\'' + escapeAttr(note.path) + '\')">';
+      html += '<button type="button" class="note-row" data-note-path="' + escapeHtml(note.path) + '" onclick="openNote(\'' + escapeAttr(note.path) + '\')">';
       html += '<span class="note-row-title">' + escapeHtml(note.title) + '</span>';
       html += '<span class="note-row-summary">' + escapeHtml(note.summary) + '</span>';
       html += '<span class="cat-badge cat-badge--' + note.category + '">' + escapeHtml(note.category) + '</span>';
@@ -1050,9 +1050,12 @@
 
     try {
       var content = await slicc.readFile(path);
+      if (currentView !== 'detail' || currentNote !== note) return;
       renderDetail(note, content);
     } catch(e) {
-      contentEl.innerHTML = '<div class="empty-state"><div class="empty-state-label">Could not load note</div><div class="empty-state-detail">' + escapeHtml(path) + '</div></div>';
+      if (currentView !== 'detail' || currentNote !== note) return;
+      contentEl.innerHTML = '<div class="empty-state"><h1 id="note-title" tabindex="-1" class="empty-state-label">Could not load note</h1><div class="empty-state-detail">' + escapeHtml(path) + '</div><button class="sprinkle-btn sprinkle-btn--secondary" onclick="goBack()">Back to list</button></div>';
+      document.getElementById('note-title').focus();
     }
   }
 
@@ -1062,7 +1065,7 @@
 
     html += '<div class="note-detail-header">';
     html += '<div style="margin-bottom:8px"><button class="sprinkle-btn sprinkle-btn--secondary" onclick="goBack()" style="font-size:12px">Back to list</button></div>';
-    html += '<div class="note-detail-title">' + escapeHtml(note.title) + '</div>';
+    html += '<h1 id="note-title" tabindex="-1" class="note-detail-title">' + escapeHtml(note.title) + '</h1>';
     html += '<div class="note-detail-meta">';
     html += '<span class="cat-badge cat-badge--' + note.category + '">' + escapeHtml(note.category) + '</span>';
     html += '<span class="note-path">' + escapeHtml(note.path) + '</span>';
@@ -1074,12 +1077,18 @@
 
     contentEl.innerHTML = html;
     contentEl.scrollTop = 0;
+    document.getElementById('note-title').focus();
   }
 
   function goBack() {
+    var previousPath = currentNote && currentNote.path;
     currentView = 'list';
     currentNote = null;
     renderList();
+    var row = Array.from(document.querySelectorAll('[data-note-path]')).find(function(button) {
+      return button.dataset.notePath === previousPath;
+    });
+    if (row) row.focus();
   }
 
   function navigateToNote(filename) {
@@ -1359,7 +1368,7 @@
         var title = r.title || path.replace(/.*\//, '').replace(/\.md$/, '').replace(/-/g, ' ');
         var summary = r.summary || '';
         var category = r.category || 'tech';
-        html += '<button type="button" class="note-row" onclick="openNote(\'' + escapeAttr(path) + '\')">';
+        html += '<button type="button" class="note-row" data-note-path="' + escapeHtml(path) + '" onclick="openNote(\'' + escapeAttr(path) + '\')">';
         html += '<span class="note-row-title">' + escapeHtml(title) + '</span>';
         html += '<span class="note-row-summary">' + escapeHtml(summary) + '</span>';
         html += '<span class="cat-badge cat-badge--' + category + '">' + escapeHtml(category) + '</span>';
