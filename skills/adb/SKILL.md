@@ -18,10 +18,9 @@ script: scripts/adb.jsh
 
 # adb Skill
 
-An ADB client implemented in the SLICC realm. It speaks the ADB wire protocol
-(`CNXN` / `AUTH` / `OPEN` / `OKAY` / `WRTE` / `CLSE`) straight down a WebUSB bulk
-pipe, so there is no host `adb` binary and no adb server in the loop — SLICC *is*
-the ADB host.
+Run ADB commands in the SLICC shell. The bundled [client](scripts/adb.jsh)
+speaks the ADB wire protocol directly over WebUSB; inspect it when debugging
+authentication or transfer errors.
 
 ## Usage
 
@@ -51,18 +50,12 @@ separate from stdout; `--json` returns `{command, stdout, stderr, exitCode}`.
 
 `sprinkle open phone-view` opens a panel that mirrors the device and lets you
 drive it — click the canvas to tap, plus Home / Back / Recents buttons. Input
-travels over the same ADB connection as the video.
+travels over the same ADB connection as the video. Connect stays disabled while
+connecting or disconnecting; after Stop or the end of the stream, it becomes
+available once interface release and device close finish.
 
-The device H.264-encodes its own display (`screenrecord --output-format=h264`),
-the frames arrive over the same WebUSB pipe as everything else, and WebCodecs
-decodes them to a canvas. No host `adb`, no intermediate server, no file on the
-device.
-
-**A still screen produces almost no frames.** `screenrecord` captures from
-SurfaceFlinger, which only produces buffers when something actually changes, so
-a motionless home screen legitimately sits at one frame after the initial
-keyframe. The status line shows a running frame and byte count so that reads as
-idle rather than broken.
+**A still screen produces almost no frames.** Check the frame and byte counts
+while changing the phone's screen before treating an idle stream as broken.
 
 Requires SLICC **6.135.0+** — sprinkles could not perform USB transfers before
 that, only `list`/`request`/`open`/`close`.
@@ -84,6 +77,28 @@ that, only `list`/`request`/`open`/`close`.
      Limitations).
 
    Override the path with `--key`, or persist one via skill config (`keyPath`).
+4. **Verify authentication.** Run `adb connect` in SLICC and expect a device
+   banner. If the interface is busy, stop the host adb server as described under
+   Limitations. If the key is unauthorized, use a key the device already trusts.
+
+## Capture and retrieve an image
+
+After setup, run these commands in the SLICC shell with the viewer stopped.
+For multiple devices, put `--serial <serial from adb devices>` before each
+subcommand.
+
+```sh
+adb devices
+adb connect
+adb shell getprop ro.product.model
+adb screencap /shared/phone-screen.png
+adb shell screencap -p /sdcard/Download/slicc-capture.png
+adb pull /sdcard/Download/slicc-capture.png /shared/phone-pulled.png
+```
+
+The first capture writes directly to the VFS; the second creates a file on the
+phone and demonstrates pulling it back. Confirm both `/shared` images open and
+show the phone's screen. Stop and report a failed command before continuing.
 
 ## How auth works
 
