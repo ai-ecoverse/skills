@@ -54,6 +54,28 @@ async function saveConfig(updates) {
  *  to undefined so they never leak into URLs or config. */
 function str(v) { return typeof v === 'string' ? v : undefined; }
 
+/**
+ * Parse a "how many/how far" flag (e.g. --limit, --max-pages) that must be a
+ * positive integer when supplied. Returns `def` when the flag was omitted
+ * entirely. Dies (non-zero exit) for anything else that isn't a positive
+ * integer — a bare flag with no value, "0", a negative number, or a
+ * non-numeric string. This matters because a silently-accepted --max-pages 0
+ * makes the pagination loop do zero work and report "no results", which
+ * looks exactly like a real empty result instead of a typo'd flag.
+ */
+function positiveIntFlag(flags, name, def) {
+  const raw = flags[name];
+  if (raw === undefined) return def;
+  if (raw === true || String(raw).trim() === '') {
+    cli.die(`--${name} requires a numeric value (got none).`, { prefix: 'gcloud' });
+  }
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1) {
+    cli.die(`--${name} must be a positive integer, got "${raw}".`, { prefix: 'gcloud' });
+  }
+  return n;
+}
+
 async function exchangeCode(code) {
   const body = new URLSearchParams({
     grant_type:    'authorization_code',
@@ -618,7 +640,7 @@ async function cmdDnsChangesList(positional, flags) {
   if (!zone) {
     cli.die('usage: gcloud dns changes list <zone> [--limit 20] [--since ISO8601] [--project P]', { prefix: 'gcloud' });
   }
-  const limit = Number.isFinite(parseInt(flags.limit, 10)) ? parseInt(flags.limit, 10) : 20;
+  const limit = positiveIntFlag(flags, 'limit', 20);
   const sinceRaw = str(flags.since);
   let sinceMs;
   if (sinceRaw) {
@@ -836,8 +858,8 @@ async function cmdLoggingRead(positional, flags) {
       { prefix: 'gcloud' },
     );
   }
-  const limit = Number.isFinite(parseInt(flags.limit, 10)) ? parseInt(flags.limit, 10) : 20;
-  const maxPages = Number.isFinite(parseInt(flags['max-pages'], 10)) ? parseInt(flags['max-pages'], 10) : 25;
+  const limit = positiveIntFlag(flags, 'limit', 20);
+  const maxPages = positiveIntFlag(flags, 'max-pages', 25);
   const sinceRaw = str(flags.since);
   let filter = userFilter;
   if (sinceRaw) {
@@ -872,7 +894,19 @@ async function cmdLoggingRead(positional, flags) {
     if (pagesFetched >= maxPages) { hitPageCap = true; break; }
   }
 
-  if (flags.json) { cli.out(entries); return; }
+  if (flags.json) {
+    // Carry the truncation signal into JSON too — a machine consumer has no
+    // other way to tell "these are all the matches" apart from "the scan
+    // stopped at --max-pages with more pages left unread" (the array itself
+    // looks identical either way). Same fields drive the human warning below.
+    cli.out({
+      entries,
+      truncated: hitPageCap,
+      pagesFetched,
+      nextPageToken: hitPageCap ? pageToken : null,
+    });
+    return;
+  }
   if (!entries.length) {
     console.log(c.dim('  No log entries found.'));
     if (hitPageCap) {

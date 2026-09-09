@@ -131,8 +131,7 @@ record, not just a plain one — pass `--routing-policy wrr` with
 weighted groups, `,` separates rrdatas sharing a weight):
 
 ```bash
-# Flatten a mostly-inactive WRR wildcard to a fixed CNAME (cheaper: plain queries
-# bill as "DNS Query" $0.40/M vs "Routing Policy Query" $0.70/M):
+# Flatten a mostly-inactive WRR wildcard to a fixed CNAME:
 gcloud dns records add my-zone '*.example.com.' CNAME target.example.net. --ttl 300 --confirm
 
 # Reconstruct the weighted policy (rollback), e.g. 100% weight to one target:
@@ -147,10 +146,7 @@ restores plain→WRR — the conversion is fully reversible with the skill.
 **Query logging.** `gcloud dns logging status <zone>` reports whether a managed
 zone records DNS queries (via the zone's `cloudLoggingConfig.enableLogging`
 flag). `enable`/`disable` toggle it and, like every mutation, require
-`--confirm` — without it they print a preview only. Enabling logging is not
-free: DNS query logs bill through Cloud Logging ingestion at $0.50/GiB after the
-first 50 GiB/project/month (the enable preview repeats this so it isn't a
-surprise).
+`--confirm` — without it they print a preview only.
 
 ```bash
 gcloud dns logging status hlx-live
@@ -204,8 +200,10 @@ parameter.
 
 Rendering: audit-log entries (`protoPayload`) show `timestamp`, `severity` (if
 present), the principal email, `methodName`, and `resourceName`. Other entries
-fall back to `textPayload`/`jsonPayload`. `--json` returns the raw entry
-objects.
+fall back to `textPayload`/`jsonPayload`. `--json` returns
+`{ entries, truncated, pagesFetched, nextPageToken }` rather than a bare
+array — `truncated`/`nextPageToken` are how a script detects an incomplete
+scan (see below) without parsing the human-readable warning.
 
 **Pagination is sparse — read this before assuming "no results" is real.**
 `entries:list` does not reliably put matching entries on the first page it
@@ -217,8 +215,14 @@ no `entries` key at all**, with the 2 matching entries only appearing on the
 it is empty, `--limit` is satisfied, or `--max-pages` (default 25) is hit —
 never stopping just because one page came back empty. If the page cap is what
 stopped the search, the command says so explicitly (`Stopped after --max-pages
-N pages…`) instead of implying the result set is complete; raise `--max-pages`
-to search further back.
+N pages…`) in both the human output and `--json` (`truncated: true`, plus the
+trailing `nextPageToken` to resume from) instead of implying the result set is
+complete.
+
+`--limit` and `--max-pages` (and `dns changes list`'s `--limit`) must be
+positive integers — `0`, a negative number, or a non-numeric value is
+rejected with an error instead of silently doing zero work and reporting an
+empty result.
 
 ### Cloud Billing
 
@@ -308,34 +312,25 @@ The billing account is resolved automatically from the project (override with
 
 ## How authentication works
 
-The Google Cloud SDK ships a **public "desktop app" OAuth client** — its client
-id and secret are compiled into the gcloud source
-(`CLOUDSDK_CLIENT_ID` = `32555940559.apps.googleusercontent.com`,
-`CLOUDSDK_CLIENT_NOTSOSECRET`). Desktop clients are non-confidential by design:
-Google protects them with loopback redirect-URI matching, not by keeping the
-"secret" secret. This skill reuses that client so that completing the normal
-Google consent screen yields a real `cloud-platform`-scoped token — exactly the
-credential `gcloud auth login` produces — without registering a new OAuth app or
-provisioning a service account key.
+The Google Cloud SDK ships a **public "desktop app" OAuth client**
+(`CLIENT_ID` = `32555940559.apps.googleusercontent.com`, plus
+`CLOUDSDK_CLIENT_NOTSOSECRET`). Desktop clients are non-confidential by
+design — Google protects them via loopback redirect-URI matching, not by
+keeping the "secret" secret — so this skill reuses that same client to get a
+real `cloud-platform`-scoped token via the normal Google consent screen.
 
 - Authorize endpoint: `https://accounts.google.com/o/oauth2/auth`
 - Token endpoint: `https://oauth2.googleapis.com/token`
 - Redirect: `http://127.0.0.1:8085/` (loopback; captured by `oauth-token --intercept`)
 - Scopes: `openid https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/cloud-platform`
 
-If Google ever rotates the Cloud SDK client credentials, update the `CLIENT_ID`
-/ `CLIENT_SECRET` constants at the top of `scripts/gcloud.jsh` from the current
-gcloud source.
+If Google ever rotates the Cloud SDK client credentials, update the
+`CLIENT_ID`/`CLIENT_SECRET` constants at the top of `scripts/gcloud.jsh`.
 
 ### Security notes
 
-- The authorization-code flow here does **not** use PKCE (SLICC's intercept
-  mode can't inject an authorize-side `code_challenge`). The captured `code` is
-  handled entirely inside the script and exchanged immediately — it is never
-  printed to stdout — which keeps the exposure window minimal. See the gmail
-  skill's `references/oauth-bootstrap.md` for the fuller discussion of this
-  trade-off for public clients.
-- Tokens live in the skill config, not in stdout. `gcloud logout` revokes the
+- No PKCE: SLICC's intercept mode can't inject an authorize-side
+  `code_challenge`. The captured code is exchanged for tokens immediately and
+  never printed to stdout, keeping the exposure window minimal.
+- Tokens live in the skill config, not stdout. `gcloud logout` revokes the
   refresh token at Google and clears local state.
-- The consent screen will show "Google Cloud SDK" as the requesting app,
-  because that is the client being reused.
