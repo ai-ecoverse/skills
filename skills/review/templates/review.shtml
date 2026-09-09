@@ -1126,10 +1126,20 @@ function createItemCard(item) {
   titleEl.textContent = item.title || item.id || '';
 
   if (item.previewUrl && isSafeUrl(item.previewUrl)) {
-    linksEl.appendChild(makeIconLink(item.previewUrl, 'eye', 'Preview'));
+    const prevLink = makeIconLink(item.previewUrl, 'eye', 'Preview');
+    prevLink.addEventListener('click', (e) => {
+      e.preventDefault();
+      slicc.lick({ action: 'open-preview', data: { id: item.id, url: item.previewUrl } });
+    });
+    linksEl.appendChild(prevLink);
   }
   if (item.liveUrl && isSafeUrl(item.liveUrl)) {
-    linksEl.appendChild(makeIconLink(item.liveUrl, 'external-link', 'Live'));
+    const liveLink = makeIconLink(item.liveUrl, 'external-link', 'Live');
+    liveLink.addEventListener('click', (e) => {
+      e.preventDefault();
+      slicc.lick({ action: 'open-preview', data: { id: item.id, url: item.liveUrl } });
+    });
+    linksEl.appendChild(liveLink);
   }
   if (item.path) {
     const reviewLink = document.createElement('a');
