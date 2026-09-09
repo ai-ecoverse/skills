@@ -3,40 +3,155 @@
   <head>
     <title>Phone</title>
     <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="icon" href="smartphone" />
     <style>
-      * { box-sizing: border-box; margin: 0; padding: 0; }
-      body {
-        font-family: var(--s2-font-family, -apple-system, system-ui, sans-serif);
-        background: transparent;
-        color: var(--s2-content-default, #e8e8e8);
-        display: flex; flex-direction: column; gap: 10px; padding: 10px;
-      }
-      #status { font-size: 12px; color: var(--s2-content-muted, #9a9a9a); min-height: 16px; }
-      #status.err { color: var(--s2-negative, #ff6b6b); }
-      #screen {
-        width: 100%; max-width: 360px; margin: 0 auto; border-radius: 12px;
-        background: #000; display: block; cursor: crosshair;
-        border: 1px solid var(--s2-border-subtle, #3a3a3a);
-      }
-      #bar { display: flex; gap: 6px; justify-content: center; flex-wrap: wrap; }
-      button {
-        height: 30px; padding: 0 12px; border-radius: 9999px; cursor: pointer;
-        background: var(--s2-bg-elevated, #2c2c2c); color: inherit;
-        border: 1px solid var(--s2-border-subtle, #3a3a3a); font-size: 12px;
-      }
-      button:hover { background: var(--s2-bg-hover, #3a3a3a); }
-    </style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      font-family: var(--s2-font-family, -apple-system, system-ui, sans-serif);
+      background: var(--s2-bg-base);
+      color: var(--s2-content-default, #e8e8e8);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding: 16px;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    #status {
+      font-size: 12px;
+      color: var(--s2-content-secondary, #b0b0b0);
+      min-height: 16px;
+    }
+    #status.err {
+      color: var(--s2-negative, #ff6b6b);
+    }
+    #screen {
+      width: 100%;
+      max-width: 360px;
+      margin: 0 auto;
+      border-radius: 12px;
+      background: #000;
+      display: block;
+      cursor: crosshair;
+      border: 1px solid var(--s2-border-subtle, #3a3a3a);
+    }
+    #bar {
+      display: flex;
+      gap: 6px;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+    button {
+      min-height: 34px;
+      padding: 0 12px;
+      border-radius: 9999px;
+      cursor: pointer;
+      background: var(--s2-bg-elevated, #2c2c2c);
+      color: inherit;
+      border: 1px solid var(--s2-border-subtle, #3a3a3a);
+      font-size: 13px;
+      font-family: inherit;
+    }
+    button:not(:disabled):hover {
+      background: var(--s2-bg-hover, #3a3a3a);
+    }
+    :root {
+      color-scheme: dark;
+    }
+    :root.theme-light {
+      color-scheme: light;
+    }
+    [hidden] {
+      display: none !important;
+    }
+    .top-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    h1 {
+      flex: 1;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    #connect-btn {
+      background: #2563eb;
+      color: #fff;
+      border-color: #2563eb;
+    }
+    #connect-btn:not(:disabled):hover {
+      background: #1d4ed8;
+    }
+    button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    button:focus-visible {
+      outline: 2px solid var(--s2-content-default);
+      outline-offset: 2px;
+    }
+    #empty-state {
+      padding: 32px 0 20px;
+      max-width: 360px;
+      margin: 0 auto;
+    }
+    .phone-icon {
+      display: block;
+      width: 40px;
+      height: 40px;
+      margin-bottom: 16px;
+      color: var(--s2-content-secondary);
+    }
+    h2 {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+    #empty-state p,
+    #empty-state li {
+      color: var(--s2-content-secondary);
+      font-size: 13px;
+    }
+    #empty-state ol {
+      padding-left: 20px;
+      margin-top: 16px;
+    }
+    #empty-state li + li {
+      margin-top: 10px;
+    }
+    code {
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+  </style>
   </head>
   <body>
-    <div id="status">idle</div>
-    <canvas id="screen" width="720" height="1568"></canvas>
-    <div id="bar">
-      <button onclick="start()">Connect</button>
-      <button onclick="key('KEYCODE_HOME')">Home</button>
-      <button onclick="key('KEYCODE_BACK')">Back</button>
-      <button onclick="key('KEYCODE_APP_SWITCH')">Recents</button>
-      <button onclick="stop()">Stop</button>
+    <div class="top-bar">
+      <h1>Phone View</h1>
+      <button id="connect-btn" onclick="start()">Connect</button>
+    </div>
+    <div id="status" role="status" aria-live="polite">No device connected</div>
+    <section id="empty-state" aria-labelledby="empty-title">
+      <svg class="phone-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M10 18h4"/></svg>
+      <h2 id="empty-title">Your phone, alongside your work</h2>
+      <p>Connect an Android device to view its screen and control it from this panel.</p>
+      <ol>
+        <li>Plug in your phone and enable USB debugging.</li>
+        <li>Run <code>usb request</code> in the Slicc terminal and choose your phone.</li>
+        <li>Provide an ADB key the phone already trusts at <code>/workspace/.adb/adbkey</code>, then select Connect.</li>
+      </ol>
+    </section>
+    <canvas id="screen" width="720" height="1568" aria-label="Connected Android screen — click to tap" hidden></canvas>
+    <div id="bar" aria-label="Phone controls">
+      <button data-connected onclick="key('KEYCODE_HOME')" disabled>Home</button>
+      <button data-connected onclick="key('KEYCODE_BACK')" disabled>Back</button>
+      <button data-connected onclick="key('KEYCODE_APP_SWITCH')" disabled>Recents</button>
+      <button data-connected onclick="stop()" disabled>Stop</button>
     </div>
 
     <script>
@@ -52,10 +167,22 @@
       const enc = new TextEncoder(), dec = new TextDecoder();
 
       let session = null;
+      let connecting = false;
       const statusEl = document.getElementById('status');
       const canvas = document.getElementById('screen');
       const ctx = canvas.getContext('2d');
       const say = (m, isErr) => { statusEl.textContent = m; statusEl.className = isErr ? 'err' : ''; };
+
+      function syncControls() {
+        const connected = !!session && !session.stopped;
+        const connectBtn = document.getElementById('connect-btn');
+        connectBtn.disabled = connecting || connected;
+        connectBtn.textContent = connecting ? 'Connecting…' : connected ? 'Connected' : 'Connect';
+        document.querySelectorAll('[data-connected]').forEach(btn => { btn.disabled = !connected; });
+        document.getElementById('empty-state').hidden = connected;
+        canvas.hidden = !connected;
+      }
+
 
       // ── RSA (PKCS#1 v1.5 over a raw 20-byte token) ────────────────────
       const SHA1_DIGEST_INFO = new Uint8Array([
@@ -333,7 +460,9 @@
 
       // ── session ───────────────────────────────────────────────────────
       async function start() {
-        if (session) { say('already streaming'); return; }
+        if (session || connecting) return;
+        connecting = true;
+        syncControls();
         // Tracked outside `session` so a failure between open() and the
         // session assignment still releases the device; teardown() alone
         // would have nothing to release and the interface would stay claimed.
@@ -383,7 +512,14 @@
             const mb = (session.bytes / 1048576).toFixed(1);
             say(`streaming ${label} · ${session.frames} frames · ${mb} MB`);
           }, 1000);
-          void pump(adb, size);
+          connecting = false;
+          syncControls();
+          void pump(adb, size).catch(async err => {
+            if (session?.adb === adb) {
+              say('Stream ended: ' + (err.message || err) + '. Connect to retry.', true);
+              await teardown();
+            }
+          });
         } catch (err) {
           say(String(err.message || err), true);
           await teardown();
@@ -393,6 +529,9 @@
             }
             try { await slicc.usb.close(opened); } catch { /* ignore */ }
           }
+        } finally {
+          connecting = false;
+          syncControls();
         }
       }
 
@@ -451,14 +590,18 @@
             splitter.push(bytes);
           }, () => !session || session.stopped);
         } catch (err) {
-          if (session && !session.stopped) say('stream: ' + (err.message || err), true);
+          if (session?.adb === adb && !session.stopped) say('Stream ended: ' + (err.message || err) + '. Connect to retry.', true);
         } finally {
           try { await decoder.close(); } catch { /* already closed */ }
+          if (session?.adb === adb) {
+            if (!statusEl.classList.contains('err')) say('Stream ended. Connect to retry.');
+            await teardown();
+          }
         }
       }
 
       async function stop() {
-        if (!session) { say('idle'); return; }
+        if (!session) return;
         session.stopped = true;
         const n = session.frames;
         await teardown();
@@ -467,6 +610,7 @@
 
       async function teardown() {
         const s = session; session = null;
+        syncControls();
         if (!s) return;
         if (s.ticker) clearInterval(s.ticker);
         try { await slicc.usb.releaseInterface(s.device.handle, s.iface.interfaceNumber); } catch { /* ignore */ }
