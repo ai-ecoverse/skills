@@ -8,13 +8,16 @@
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+  :root { color-scheme: dark; }
+  :root.theme-light { color-scheme: light; }
+
   html, body {
     height: 100%;
-    color-scheme: light dark;
+
     font-family: var(--s2-font-family, system-ui, -apple-system, sans-serif);
     font-size: 14px;
-    color: light-dark(#111111, #e8e8e8);
-    background: light-dark(#ffffff, #1c1c1e);
+    color: var(--s2-content-default);
+    background: var(--s2-bg-base);
   }
 
   .app {
@@ -37,19 +40,18 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 10px 12px 6px;
+    padding: 12px 16px 8px;
   }
 
   .topbar-title {
-    font-size: 16px;
-    font-weight: 700;
-    letter-spacing: -0.02em;
+    font-size: 14px;
+    font-weight: 600;
     flex: 1;
     color: light-dark(#111111, #f0f0f0);
   }
 
   .topbar-row2 {
-    padding: 0 12px 8px;
+    padding: 0 16px 8px;
   }
 
   .topbar-row2 input {
@@ -57,14 +59,14 @@
   }
 
   .topbar-pills {
-    padding: 0 12px 10px;
+    padding: 0 16px 12px;
     overflow-x: auto;
     white-space: nowrap;
     -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
+    scrollbar-width: thin;
   }
 
-  .topbar-pills::-webkit-scrollbar { display: none; }
+  .topbar-pills::-webkit-scrollbar { height: 4px; }
 
   .pill {
     display: inline-flex;
@@ -114,8 +116,8 @@
 
   /* ── Sidebar (wide only) ── */
   .sidebar {
-    width: 260px;
-    min-width: 260px;
+    width: 200px;
+    min-width: 200px;
     background: light-dark(#f5f5f7, #242426);
     border-right: 1px solid light-dark(rgba(0,0,0,0.08), rgba(255,255,255,0.08));
     display: flex;
@@ -125,7 +127,7 @@
 
   .sidebar-header {
     padding: 20px 16px 12px;
-    border-bottom: 1px solid color-mix(in srgb, var(--s2-color) 8%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, var(--s2-content-default) 8%, transparent);
   }
 
   .sidebar-title {
@@ -136,7 +138,7 @@
 
   .sidebar-subtitle {
     font-size: 11.5px;
-    color: color-mix(in srgb, var(--s2-color) 55%, transparent);
+    color: color-mix(in srgb, var(--s2-content-default) 55%, transparent);
     margin-top: 2px;
   }
 
@@ -159,7 +161,7 @@
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.06em;
-    color: color-mix(in srgb, var(--s2-color) 45%, transparent);
+    color: color-mix(in srgb, var(--s2-content-default) 45%, transparent);
     padding: 12px 10px 4px;
   }
 
@@ -177,7 +179,7 @@
   }
 
   .nav-item:hover {
-    background: color-mix(in srgb, var(--s2-color) 6%, transparent);
+    background: color-mix(in srgb, var(--s2-content-default) 6%, transparent);
   }
 
   .nav-item.active {
@@ -189,8 +191,8 @@
   .nav-count {
     font-size: 11px;
     font-weight: 600;
-    color: color-mix(in srgb, var(--s2-color) 40%, transparent);
-    background: color-mix(in srgb, var(--s2-color) 8%, transparent);
+    color: color-mix(in srgb, var(--s2-content-default) 40%, transparent);
+    background: color-mix(in srgb, var(--s2-content-default) 8%, transparent);
     padding: 1px 7px;
     border-radius: var(--s2-radius-pill);
     min-width: 22px;
@@ -217,7 +219,7 @@
     align-items: center;
     gap: 8px;
     padding: 10px 24px;
-    border-bottom: 1px solid color-mix(in srgb, var(--s2-color) 8%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, var(--s2-content-default) 8%, transparent);
     background: var(--s2-bg-layer-1);
     min-height: 48px;
     flex-shrink: 0;
@@ -243,13 +245,13 @@
     justify-content: center;
     height: 100%;
     gap: 16px;
-    color: color-mix(in srgb, var(--s2-color) 50%, transparent);
+    color: color-mix(in srgb, var(--s2-content-default) 50%, transparent);
   }
 
   .spinner {
     width: 28px;
     height: 28px;
-    border: 3px solid color-mix(in srgb, var(--s2-color) 12%, transparent);
+    border: 3px solid color-mix(in srgb, var(--s2-content-default) 12%, transparent);
     border-top-color: var(--s2-accent);
     border-radius: 50%;
     animation: spin 0.7s linear infinite;
@@ -266,7 +268,7 @@
     display: flex;
     align-items: baseline;
     gap: 12px;
-    padding: 10px 12px;
+    padding: 14px 4px;
     border-radius: var(--s2-radius-default);
     cursor: pointer;
     transition: background 0.1s;
@@ -327,14 +329,14 @@
   .note-detail-header {
     margin-bottom: 24px;
     padding-bottom: 16px;
-    border-bottom: 1px solid color-mix(in srgb, var(--s2-color) 8%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, var(--s2-content-default) 8%, transparent);
   }
 
   .note-detail-title {
     font-size: 24px;
     font-weight: 700;
     letter-spacing: -0.02em;
-    margin-bottom: 8px;
+    margin: 0 0 8px;
   }
 
   .note-detail-meta {
@@ -345,7 +347,7 @@
 
   .note-path {
     font-size: 11.5px;
-    color: color-mix(in srgb, var(--s2-color) 40%, transparent);
+    color: color-mix(in srgb, var(--s2-content-default) 40%, transparent);
     font-family: monospace;
   }
 
@@ -375,7 +377,7 @@
     margin: 0 0 12px;
     background: color-mix(in srgb, var(--s2-accent) 4%, transparent);
     border-radius: 0 var(--s2-radius-default) var(--s2-radius-default) 0;
-    color: color-mix(in srgb, var(--s2-color) 80%, transparent);
+    color: color-mix(in srgb, var(--s2-content-default) 80%, transparent);
   }
 
   .md-content blockquote p:last-child { margin-bottom: 0; }
@@ -383,13 +385,13 @@
   .md-content code {
     font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
     font-size: 0.88em;
-    background: color-mix(in srgb, var(--s2-color) 7%, transparent);
+    background: color-mix(in srgb, var(--s2-content-default) 7%, transparent);
     padding: 2px 5px;
     border-radius: 4px;
   }
 
   .md-content pre {
-    background: color-mix(in srgb, var(--s2-color) 6%, transparent);
+    background: color-mix(in srgb, var(--s2-content-default) 6%, transparent);
     padding: 14px 16px;
     border-radius: var(--s2-radius-default);
     overflow-x: auto;
@@ -412,7 +414,7 @@
 
   .md-content hr {
     border: none;
-    border-top: 1px solid color-mix(in srgb, var(--s2-color) 10%, transparent);
+    border-top: 1px solid color-mix(in srgb, var(--s2-content-default) 10%, transparent);
     margin: 20px 0;
   }
 
@@ -424,14 +426,14 @@
   }
 
   .md-content th, .md-content td {
-    border: 1px solid color-mix(in srgb, var(--s2-color) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--s2-content-default) 12%, transparent);
     padding: 6px 10px;
     text-align: left;
   }
 
   .md-content th {
     font-weight: 600;
-    background: color-mix(in srgb, var(--s2-color) 4%, transparent);
+    background: color-mix(in srgb, var(--s2-content-default) 4%, transparent);
   }
 
   /* ── Wikilinks ── */
@@ -469,7 +471,7 @@
     align-items: center;
     justify-content: center;
     height: 300px;
-    color: color-mix(in srgb, var(--s2-color) 40%, transparent);
+    color: color-mix(in srgb, var(--s2-content-default) 40%, transparent);
     gap: 8px;
   }
 
@@ -512,7 +514,7 @@
     align-items: center;
     justify-content: space-between;
     padding: 16px 20px;
-    border-bottom: 1px solid color-mix(in srgb, var(--s2-color) 8%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, var(--s2-content-default) 8%, transparent);
     font-weight: 700;
     font-size: 15px;
   }
@@ -522,7 +524,7 @@
     border: none;
     font-size: 20px;
     cursor: pointer;
-    color: color-mix(in srgb, var(--s2-color) 50%, transparent);
+    color: color-mix(in srgb, var(--s2-content-default) 50%, transparent);
     padding: 0 4px;
     line-height: 1;
   }
@@ -536,7 +538,7 @@
 
   .dialog-footer {
     padding: 12px 20px;
-    border-top: 1px solid color-mix(in srgb, var(--s2-color) 8%, transparent);
+    border-top: 1px solid color-mix(in srgb, var(--s2-content-default) 8%, transparent);
     display: flex;
     justify-content: flex-end;
     gap: 8px;
@@ -563,7 +565,7 @@
 
   .sidebar-nav::-webkit-scrollbar-thumb,
   .content::-webkit-scrollbar-thumb {
-    background: color-mix(in srgb, var(--s2-color) 15%, transparent);
+    background: color-mix(in srgb, var(--s2-content-default) 15%, transparent);
     border-radius: 3px;
   }
 
@@ -585,7 +587,7 @@
   }
 
   .content {
-    padding: 12px;
+    padding: 0 16px 16px;
   }
 
   .note-detail-title {
@@ -601,8 +603,8 @@
     flex-basis: 100%;
   }
 
-  /* ── Wide layout (≥640px): sidebar + two-column ── */
-  @media (min-width: 640px) {
+  /* Reserve the sidebar for a canvas wide enough to preserve the reading column. */
+  @media (min-width: 900px) {
     .app {
       flex-direction: row;
     }
@@ -627,21 +629,17 @@
       font-size: 24px;
     }
 
-    .note-row {
-      flex-wrap: nowrap;
-      gap: 12px;
-    }
-
-    .note-row-title {
-      white-space: nowrap;
-      flex-basis: auto;
-    }
-
-    .note-row-summary {
-      flex-basis: auto;
-      white-space: nowrap;
-    }
+    .note-row { gap: 6px 12px; }
   }
+  .note-row, .nav-item { width: 100%; text-align: left; font-family: inherit; background: transparent; color: inherit; border: 0; }
+  .note-row { border-bottom: 1px solid var(--s2-border-subtle); border-radius: 0; }
+  .nav-item { gap: 8px; min-height: 34px; }
+  .nav-item > span:first-child { white-space: nowrap; }
+  .pill { font-family: inherit; min-height: 34px; }
+  .sprinkle-btn { box-shadow: none; min-height: 34px; font-family: inherit; font-size: 13px; }
+  .sprinkle-text-field { min-height: 36px; padding: 8px 10px; border: 1px solid var(--s2-border-subtle); border-radius: 6px; background: var(--s2-bg-layer-1); color: var(--s2-content-default); font: inherit; }
+  .sprinkle-text-field::placeholder { color: var(--s2-content-secondary); }
+  :where(button, a, input, textarea, [tabindex="-1"]):focus-visible { outline: 2px solid light-dark(#245cc5, #8ab4ff); outline-offset: 2px; }
 </style>
 </head>
 <body>
@@ -658,7 +656,7 @@
     </div>
     <!-- Row 2: search -->
     <div class="topbar-row2">
-      <input type="text" class="sprinkle-text-field" placeholder="Search notes..." id="topbarSearchInput" oninput="handleSearch(this.value)">
+      <input type="text" class="sprinkle-text-field" aria-label="Search notes" placeholder="Search notes..." id="topbarSearchInput" oninput="handleSearch(this.value)">
     </div>
     <!-- Row 3: category pills -->
     <div class="topbar-pills" id="topbarPills">
@@ -673,7 +671,7 @@
       <div class="sidebar-subtitle">Knowledge Base</div>
     </div>
     <div class="sidebar-search">
-      <input type="text" class="sprinkle-text-field" placeholder="Search notes..." id="searchInput" oninput="handleSearch(this.value)">
+      <input type="text" class="sprinkle-text-field" aria-label="Search notes" placeholder="Search notes..." id="searchInput" oninput="handleSearch(this.value)">
     </div>
     <div class="sidebar-nav" id="sidebarNav">
       <!-- Populated by JS -->
@@ -702,7 +700,7 @@
   <div class="dialog-box">
     <div class="dialog-header">
       <span>Query Result</span>
-      <button class="dialog-close" onclick="closeDialog()">&times;</button>
+      <button aria-label="Close dialog" class="dialog-close" onclick="closeDialog()">&times;</button>
     </div>
     <div class="dialog-body md-content" id="queryDialogBody"></div>
     <div class="dialog-footer">
@@ -716,7 +714,7 @@
   <div class="dialog-box" style="max-width:500px">
     <div class="dialog-header">
       <span>Ingest Source</span>
-      <button class="dialog-close" onclick="closeIngestDialog()">&times;</button>
+      <button aria-label="Close dialog" class="dialog-close" onclick="closeIngestDialog()">&times;</button>
     </div>
     <div class="dialog-body" style="display:flex;flex-direction:column;gap:14px">
       <p class="sprinkle-detail" style="margin:0;line-height:1.5">Add a new source to your knowledge base. Provide a URL to fetch, a file path to read, or paste text directly.</p>
@@ -741,7 +739,7 @@
   <div class="dialog-box" style="max-width:500px">
     <div class="dialog-header">
       <span>Query Wiki</span>
-      <button class="dialog-close" onclick="closeQueryInputDialog()">&times;</button>
+      <button aria-label="Close dialog" class="dialog-close" onclick="closeQueryInputDialog()">&times;</button>
     </div>
     <div class="dialog-body" style="display:flex;flex-direction:column;gap:14px">
       <p class="sprinkle-detail" style="margin:0;line-height:1.5">Ask a question about the knowledge base. The agent will search across all notes and synthesize an answer.</p>
@@ -926,10 +924,10 @@
       else count = noteIndex.filter(function(n) { return n.category === cat.id; }).length;
 
       var active = currentCategory === cat.id ? ' active' : '';
-      html += '<span class="pill' + active + '" onclick="selectCategory(\'' + cat.id + '\')">';
+      html += '<button type="button" aria-pressed="' + (currentCategory === cat.id) + '" class="pill' + active + '" onclick="selectCategory(\'' + cat.id + '\')">';
       html += escapeHtml(cat.label);
       html += '<span class="pill-count">' + count + '</span>';
-      html += '</span>';
+      html += '</button>';
     });
     var pillsEl = document.getElementById('topbarPills');
     if (pillsEl) pillsEl.innerHTML = html;
@@ -945,10 +943,10 @@
       else count = noteIndex.filter(function(n) { return n.category === cat.id; }).length;
 
       var active = currentCategory === cat.id ? ' active' : '';
-      html += '<div class="nav-item' + active + '" onclick="selectCategory(\'' + cat.id + '\')">';
+      html += '<button type="button" aria-pressed="' + (currentCategory === cat.id) + '" class="nav-item' + active + '" onclick="selectCategory(\'' + cat.id + '\')">';
       html += '<span>' + escapeHtml(cat.label) + '</span>';
       html += '<span class="nav-count">' + count + '</span>';
-      html += '</div>';
+      html += '</button>';
     });
     var navEl = document.getElementById('sidebarNav');
     if (navEl) navEl.innerHTML = html;
@@ -1003,11 +1001,11 @@
     var html = '<div class="note-list">';
     html += '<div class="stats-bar"><span><strong>' + notes.length + '</strong> notes</span></div>';
     notes.forEach(function(note) {
-      html += '<div class="note-row" onclick="openNote(\'' + escapeAttr(note.path) + '\')">';
+      html += '<button type="button" class="note-row" data-note-path="' + escapeHtml(note.path) + '" onclick="openNote(\'' + escapeAttr(note.path) + '\')">';
       html += '<span class="note-row-title">' + escapeHtml(note.title) + '</span>';
       html += '<span class="note-row-summary">' + escapeHtml(note.summary) + '</span>';
       html += '<span class="cat-badge cat-badge--' + note.category + '">' + escapeHtml(note.category) + '</span>';
-      html += '</div>';
+      html += '</button>';
     });
     html += '</div>';
 
@@ -1052,9 +1050,12 @@
 
     try {
       var content = await slicc.readFile(path);
+      if (currentView !== 'detail' || currentNote !== note) return;
       renderDetail(note, content);
     } catch(e) {
-      contentEl.innerHTML = '<div class="empty-state"><div class="empty-state-label">Could not load note</div><div class="empty-state-detail">' + escapeHtml(path) + '</div></div>';
+      if (currentView !== 'detail' || currentNote !== note) return;
+      contentEl.innerHTML = '<div class="empty-state"><h1 id="note-title" tabindex="-1" class="empty-state-label">Could not load note</h1><div class="empty-state-detail">' + escapeHtml(path) + '</div><button class="sprinkle-btn sprinkle-btn--secondary" onclick="goBack()">Back to list</button></div>';
+      document.getElementById('note-title').focus();
     }
   }
 
@@ -1064,7 +1065,7 @@
 
     html += '<div class="note-detail-header">';
     html += '<div style="margin-bottom:8px"><button class="sprinkle-btn sprinkle-btn--secondary" onclick="goBack()" style="font-size:12px">Back to list</button></div>';
-    html += '<div class="note-detail-title">' + escapeHtml(note.title) + '</div>';
+    html += '<h1 id="note-title" tabindex="-1" class="note-detail-title">' + escapeHtml(note.title) + '</h1>';
     html += '<div class="note-detail-meta">';
     html += '<span class="cat-badge cat-badge--' + note.category + '">' + escapeHtml(note.category) + '</span>';
     html += '<span class="note-path">' + escapeHtml(note.path) + '</span>';
@@ -1076,12 +1077,18 @@
 
     contentEl.innerHTML = html;
     contentEl.scrollTop = 0;
+    document.getElementById('note-title').focus();
   }
 
   function goBack() {
+    var previousPath = currentNote && currentNote.path;
     currentView = 'list';
     currentNote = null;
     renderList();
+    var row = Array.from(document.querySelectorAll('[data-note-path]')).find(function(button) {
+      return button.dataset.notePath === previousPath;
+    });
+    if (row) row.focus();
   }
 
   function navigateToNote(filename) {
@@ -1361,11 +1368,11 @@
         var title = r.title || path.replace(/.*\//, '').replace(/\.md$/, '').replace(/-/g, ' ');
         var summary = r.summary || '';
         var category = r.category || 'tech';
-        html += '<div class="note-row" onclick="openNote(\'' + escapeAttr(path) + '\')">';
+        html += '<button type="button" class="note-row" data-note-path="' + escapeHtml(path) + '" onclick="openNote(\'' + escapeAttr(path) + '\')">';
         html += '<span class="note-row-title">' + escapeHtml(title) + '</span>';
         html += '<span class="note-row-summary">' + escapeHtml(summary) + '</span>';
         html += '<span class="cat-badge cat-badge--' + category + '">' + escapeHtml(category) + '</span>';
-        html += '</div>';
+        html += '</button>';
       });
       html += '</div>';
       contentEl.innerHTML = html;

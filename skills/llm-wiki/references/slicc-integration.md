@@ -12,7 +12,9 @@ behaviors work without any framework wiring.
   `wiki read`, `wiki stats`, `wiki orphans`, `wiki links`, `wiki recent`,
   `wiki log`). It reads the wiki root defined by its `WIKI_ROOT` constant.
 - `llm-wiki.shtml` — a sprinkle browser (sidebar nav, search, wikilinks, and
-  query / ingest dialogs).
+  query / ingest dialogs). Opening a note focuses its heading; Back to list
+  restores focus to the note row. Load failures focus an error heading and keep
+  a Back button available.
 
 ## Wiring the sprinkle and scoop
 
