@@ -185,3 +185,15 @@ test('does not switch away from the document view', () => {
   q.send({ action: 'ensure-item', id: 'page-1', title: 'Renamed' });
   assert.deepEqual(q.counters.views, ['queue']);
 });
+
+test('primary action labels survive enrichment and can be replaced or reset', () => {
+  const h = makeHandler({ items: [], comments: {}, view: 'queue' });
+  h.send({ action: 'ensure-item', id: 'page', primaryActionLabel: 'Publish' });
+  assert.equal(h.state.items[0].primaryActionLabel, 'Publish');
+  h.send({ action: 'ensure-item', id: 'page', title: 'Enriched page' });
+  assert.equal(h.state.items[0].primaryActionLabel, 'Publish');
+  h.send({ action: 'ensure-item', id: 'page', primaryActionLabel: 'Accept' });
+  assert.equal(h.state.items[0].primaryActionLabel, 'Accept');
+  h.send({ action: 'ensure-item', id: 'page', primaryActionLabel: '' });
+  assert.equal(h.state.items[0].primaryActionLabel, '');
+});

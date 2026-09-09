@@ -287,6 +287,9 @@
     }
     .item-footer-actions [data-action="publish"] {
       margin-inline-start: auto;
+      max-width: 100%;
+      white-space: normal;
+      overflow-wrap: anywhere;
     }
     @container (max-width: 380px) {
       .item-footer-actions .action-btn { padding-inline: 8px; }
@@ -1047,6 +1050,11 @@ function renderQueue() {
 }
 
 
+function primaryActionLabel(item) {
+  return typeof item.primaryActionLabel === 'string' && item.primaryActionLabel.trim()
+    ? item.primaryActionLabel.trim() : 'Approve';
+}
+
 function createItemCard(item) {
   const div = document.createElement('div');
   div.className = 'queue-item';
@@ -1074,7 +1082,7 @@ function createItemCard(item) {
           '<i data-lucide="clock" class="sprinkle-icon sm"></i> Defer' +
         '</button>' +
         '<button class="sprinkle-btn sprinkle-btn--primary action-btn" data-action="publish">' +
-          '<i data-lucide="check-circle" class="sprinkle-icon sm"></i> Publish' +
+          '<i data-lucide="check-circle" class="sprinkle-icon sm"></i> <span class="primary-action-label"></span>' +
         '</button>' +
       '</div>' +
     '</div>' +
@@ -1099,6 +1107,7 @@ function createItemCard(item) {
   // User-controlled values — assigned via safe APIs (textContent / element props).
   dot.classList.add(statusLabel);
   titleEl.textContent = item.title || item.id || '';
+  div.querySelector('.primary-action-label').textContent = primaryActionLabel(item);
 
   // Secondary meta line: path > previewUrl hostname > nothing
   const metaText = item.path || (item.previewUrl ? (() => {
@@ -1735,20 +1744,24 @@ slicc.on('update', async (msg) => {
     // alone, and `status` is deliberately never touched — the panel owns
     // publish/defer state.
     if (!state.items) state.items = [];
-    const existing = state.items.find(it => it.id === msg.id);
+    let existing = state.items.find(it => it.id === msg.id);
     if (!existing) {
-      state.items.push({
+      existing = {
         id: msg.id,
         title: msg.title || msg.id,
         path: msg.path || '',
         previewUrl: msg.previewUrl || '',
         liveUrl: msg.liveUrl || '',
         status: 'pending'
-      });
+      };
+      state.items.push(existing);
     } else {
       ['title', 'path', 'previewUrl', 'liveUrl'].forEach(k => {
         if (msg[k] !== undefined && msg[k] !== null) existing[k] = msg[k];
       });
+    }
+    if (msg.primaryActionLabel !== undefined && msg.primaryActionLabel !== null) {
+      existing.primaryActionLabel = msg.primaryActionLabel;
     }
     saveState();
     // renderQueue() re-reads state.comments per card, so comment logs survive.

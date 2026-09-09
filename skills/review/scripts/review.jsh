@@ -4,6 +4,7 @@
 // Usage:
 //   review ingest [sources...] --path PATH [--id ID] [--title T]
 //                [--preview-url URL] [--live-url URL] [--dry-run]
+//                [--primary-action-label LABEL]
 //   review sources
 //
 // Sources write one JSON object to stdout. This command ensure-item + add-findings.
@@ -17,10 +18,11 @@ function helpText() {
   return [
     'Usage: review ingest [sources...] --path PATH [--id ID] [--title T]',
     '                    [--preview-url URL] [--live-url URL] [--dry-run]',
+    '                    [--primary-action-label LABEL]',
     '                    [--org ORG --site SITE] (for aem-ext)',
     '       review sources',
     '       review sweep --org ORG --site SITE [--never-published] [--stale]',
-    '                   [--include-assets] [--dry-run]',
+    '                   [--include-assets] [--dry-run] [--primary-action-label LABEL]',
     '',
     'Discover review-compatible commands and attach their findings to the',
     'review sprinkle. Protocol: skills/review/references/SOURCE_PROTOCOL.md',
@@ -31,11 +33,16 @@ function helpText() {
     '',
     'Default sources (if installed): ' + KNOWN_INTEGRATIONS.join(', '),
     'Missing sources are skipped. The queue works with none of them.',
+    'Primary action label: CLI override > source label > Approve (Publish for AEM).',
   ].join('\n') + '\n';
 }
 
 function escapeShellArg(s) {
   return "'" + String(s).replace(/'/g, `'\\''`) + "'";
+}
+
+function actionLabel(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
 async function which(cmd) {
@@ -173,12 +180,6 @@ async function cmdSweep() {
     process.exit(0);
   }
 
-  if (isDryRun) {
-    process.stderr.write('[review sweep] dry-run: ' + lines.length + ' card(s):\n');
-    for (const line of lines) process.stdout.write(line + '\n');
-    process.exit(0);
-  }
-
   let pushed = 0;
   let failed = 0;
   for (const line of lines) {
@@ -195,6 +196,13 @@ async function cmdSweep() {
       failed++;
       continue;
     }
+    const primaryActionLabel = actionLabel(flags['primary-action-label']) ||
+      actionLabel(card.primaryActionLabel) || 'Publish';
+    if (isDryRun) {
+      process.stdout.write(JSON.stringify({ ...card, primaryActionLabel }) + '\n');
+      pushed++;
+      continue;
+    }
 
     try {
       await sprinkleSend({
@@ -204,6 +212,7 @@ async function cmdSweep() {
         path: card.path || '',
         previewUrl: card.previewUrl || '',
         liveUrl: card.liveUrl || '',
+        primaryActionLabel,
       });
       await sprinkleSend({
         action: 'add-findings',
@@ -225,7 +234,8 @@ async function cmdSweep() {
   }
 
   process.stderr.write(
-    '[review sweep] pushed ' + pushed + ' card(s) to sprinkle' +
+    (isDryRun ? '[review sweep] dry-run: ' : '[review sweep] pushed ') + pushed +
+    (isDryRun ? ' card(s)' : ' card(s) to sprinkle') +
     (failed ? '; ' + failed + ' failed' : '') + '\n',
   );
   if (failed > 0) process.exit(1);
@@ -243,6 +253,9 @@ try {
   if (!cmd) {
     process.stderr.write(helpText());
     process.exit(2);
+  }
+  if (flags['primary-action-label'] !== undefined && !actionLabel(flags['primary-action-label'])) {
+    cli.die('--primary-action-label requires a non-empty label', { exitCode: 2, prefix: '' });
   }
 
   if (cmd === 'sweep') {
@@ -296,6 +309,9 @@ try {
     path: filePath,
     previewUrl: flags['preview-url'] || flags.previewUrl || '',
     liveUrl: flags['live-url'] || flags.liveUrl || '',
+    primaryActionLabel: actionLabel(flags['primary-action-label']) ||
+      contributions.map((c) => actionLabel(c.primaryActionLabel)).find(Boolean) ||
+      (sources.includes('aem-ext') ? 'Publish' : undefined),
     contributions,
   };
 
@@ -312,6 +328,7 @@ try {
       path: filePath,
       previewUrl: payload.previewUrl || undefined,
       liveUrl: payload.liveUrl || undefined,
+      primaryActionLabel: payload.primaryActionLabel,
     });
     for (const c of contributions) {
       await sprinkleSend({

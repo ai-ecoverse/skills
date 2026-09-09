@@ -1,7 +1,7 @@
 ---
 name: review
 description: >
-  Track review items (publish/comment/defer), annotate documents, and leave
+  Track review items (approve/publish/comment/defer), annotate documents, and leave
   location pins directly on a live web page via a sprinkle dashboard. Use when
   the user has content to review, approve, annotate, or mark up — pages pending
   publish, PRs needing signoff, documents, or a rendered web page they want to
@@ -82,6 +82,24 @@ sprinkle send review '{"action":"load-items","items":[
 ]}'
 ```
 
+The primary button defaults to **Approve**. For a publication queue, set
+`primaryActionLabel:"Publish"` on each item. AEM sources supply this automatically.
+The same field works in `load-items`, `ensure-item`, and source contributions:
+
+```bash
+sprinkle send review '{"action":"ensure-item","id":"page-1","primaryActionLabel":"Publish"}'
+review ingest --path /shared/draft.md --primary-action-label 'Approve'
+```
+
+`review ingest` and `review sweep` accept `--primary-action-label LABEL`; it
+overrides the source label. Omitting the field in an upsert preserves the
+existing label; sending `""` resets it to Approve. Labels are plain text.
+This is presentation metadata: the existing `publish` lick and
+`pending`/`published`/`deferred` status protocol remain unchanged. The owning
+skill handles that primary action according to its workflow; a label alone
+does not add publication behavior. See [the source protocol](references/SOURCE_PROTOCOL.md)
+when implementing a producer.
+
 ### Opening a document for annotation
 
 ```bash
@@ -98,12 +116,12 @@ sprinkle send review '{"action":"update-status","id":"page-1","status":"publishe
 
 `ensure-item` is a true upsert: it creates the card when the `id` is new and
 updates it in place when the `id` already exists, without disturbing the rest of
-the queue. Only the fields you send (`title`, `path`, `previewUrl`, `liveUrl`) are
+the queue. Only the fields you send (`title`, `path`, `previewUrl`, `liveUrl`, `primaryActionLabel`) are
 written — anything you omit keeps its current value, and the item's `status` is
 never modified, so a published or deferred card does not silently revert to
 pending. Existing comments on the card are preserved.
 
-A card whose Publish/Defer lick is still in flight (awaiting `update-status`)
+A card whose primary action/Defer lick is still in flight (awaiting `update-status`)
 stays disabled across the re-render, so an `ensure-item` cannot re-enable its
 buttons and invite a duplicate lick.
 
@@ -120,7 +138,7 @@ The sprinkle fires these licks back to the cone:
 
 | Action | Data | When |
 |--------|------|------|
-| `publish` | `{ id, path, url }` | User clicks Publish |
+| `publish` | `{ id, path, url }` | User clicks the primary action (Approve by default, Publish for AEM) |
 | `comment` | `{ id, path, url, comment }` | User submits a comment |
 | `defer` | `{ id, path, url }` | User clicks Defer |
 | `submit-revisions` | `{ id, path, url, format, batchId, revisions: [{ id, text, note, anchor }] }` | User explicitly sends saved comments to the agent |
@@ -138,7 +156,7 @@ The sprinkle accepts these inbound messages (`sprinkle send review`):
 | `open-file` | `{ path, title, id? }` | Open the same iframe preview used by queue cards |
 | `revisions-result` | `{ batchId, status: "applied" or "failed", message? }` | Acknowledge a batch; applied comments are retained, failed comments become retryable drafts |
 | `add-comment` | `{ id, comment, num? }` | Append a comment to an item's log. A numeric `num` marks it as a *pin* comment (links to a page marker) |
-| `ensure-item` | `{ id, title?, previewUrl?, liveUrl?, path? }` | Upsert only supplied fields; preserve status, comments, and other cards (see the upsert example above) |
+| `ensure-item` | `{ id, title?, previewUrl?, liveUrl?, path?, primaryActionLabel? }` | Upsert only supplied fields; preserve status, comments, and other cards (see the upsert example above) |
 | `set-comment-done` | `{ id, num, done }` | Set a comment line's done-state directly by `num` (crosses it off / un-crosses). Used to restore done-state when re-populating comment lines from the durable store; complements `comment-done` (the lick fired when the user clicks the ✗ button) |
 | `add-pin` | `{ id, comment, num, pin }` | Append the comment and persist the positional marker by `pin.url`; use for page pins |
 | `set-pin-done` | `{ url, num, done }` | Persist a pin's done-state in the durable store (echo this when handling a `comment-done` lick for a pin so the store stays in sync) |

@@ -17,6 +17,18 @@ function store(state) {
   )(state);
 }
 
+test('primary labels default to Approve and accept only non-empty source text', () => {
+  const label = new Function(
+    extract('function primaryActionLabel(', 'function createItemCard(') +
+      '\nreturn primaryActionLabel;'
+  )();
+  for (const value of [undefined, null, '', '  ', false, 42, {}]) {
+    assert.equal(label({ primaryActionLabel: value }), 'Approve');
+  }
+  assert.equal(label({ primaryActionLabel: ' Publish ' }), 'Publish');
+  assert.equal(label({ primaryActionLabel: 'Accept draft' }), 'Accept draft');
+});
+
 test('open-file overrides the queued source and title while retaining item metadata', () => {
   const item = { id: 'draft', path: '/old.md', title: 'Old title', type: 'document' };
   const open = new Function(

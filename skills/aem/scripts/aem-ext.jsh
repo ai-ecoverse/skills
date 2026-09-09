@@ -1693,6 +1693,7 @@ async function cmdSweep() {
       if (!includeNP) continue;
       const card = {
         source: 'aem-source',
+        primaryActionLabel: 'Publish',
         id,
         title,
         path: '/' + relPath,
@@ -1714,6 +1715,7 @@ async function cmdSweep() {
         if (!includeStale) continue;
         const card = {
           source: 'aem-source',
+          primaryActionLabel: 'Publish',
           id,
           title,
           path: '/' + relPath,
@@ -1800,6 +1802,7 @@ async function cmdReviewSource() {
 
   const card = {
     source: 'aem-source',
+    primaryActionLabel: 'Publish',
     id,
     title,
     path: '/' + relPath,
