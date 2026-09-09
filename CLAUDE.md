@@ -260,7 +260,7 @@ For a UI change, define the flow before testing: entry point → user action →
 ### Harness and fixtures
 
 1. **Reuse the intended harness.** Inventory existing sessions and follow the user's choice; use the oldest when requested. Record the checkout, runtime, and selected browser target so tests do not drift into another session. Run one browser driver at a time against that harness. Connect the available browser tooling or Playwright/CDP to its existing browser.
-2. **Verify the installed files.** A host checkout and the harness VFS are different filesystems. Sync the changed skill, including scripts/assets, then install its template in `/shared/sprinkles/<name>/`. `sprinkle refresh` discovers files but does not reload an open panel. For an already-installed Review skill, run this inside SLICC after syncing the edited files:
+2. **Install the complete runtime bundle.** A host checkout and the harness VFS are different filesystems. Sync the changed skill, including scripts/assets, then run its documented bootstrap/install command. For example, [`interview-me install`](skills/interview-me/SKILL.md#setup-first-time) refreshes both the template and its imported `lib/*.js` under `/shared/sprinkles/interview-me/` while preserving user configuration and recordings. If there is no installer, copy the complete browser runtime bundle to its documented location, preserving relative paths for modules, styles, and images as well as the template. Preserve existing user state/configuration. `sprinkle refresh` discovers files but does not reload an open panel. The following template-only copy applies to Review's current single-file UI, after syncing its other changed skill files into the VFS:
 
    ```sh
    cp /workspace/skills/review/templates/review.shtml /shared/sprinkles/review/review.shtml
@@ -269,8 +269,8 @@ For a UI change, define the flow before testing: entry point → user action →
    sprinkle open review
    ```
 
-   Confirm the new UI is visible before interpreting test results. Probe APIs in the realm that calls them; verify `.jsh` worker and sprinkle iframe bridges separately.
-3. **Seed through the real contract.** Use the skill's CLI or messages such as `load-items` and `ensure-item`. Use reproducible example data with realistic titles, paths, counts, and mixed statuses. Add long content, an empty queue, and relevant loading/error cases. Keep fixtures in their own namespace and preserve the user's existing drafts and queue.
+   Confirm the new UI and its imported modules are loaded before interpreting test results. Probe APIs in the realm that calls them; verify `.jsh` worker and sprinkle iframe bridges separately.
+3. **Seed through the real contract without replacing user data.** In a reused harness, prefer an upsert such as Review's `ensure-item`, with unique test-owned IDs. Use reproducible example data with realistic titles, paths, counts, mixed statuses, long content, and relevant loading/error cases; clean up only the fixtures created by the run. Review's `load-items` replaces and immediately persists the entire queue; namespacing its items does not protect existing entries. Test queue replacement and empty states in isolated test state where possible. If an occupied panel must be used, first snapshot its full persisted state (including the queue, drafts, and comments), verify the backup is readable, and restore it in `finally`, then verify it survives reopening. Prevent concurrent edits during replacement/restoration; if that cannot be ensured, use isolated test state instead of restoring an old snapshot over newer work.
 
 ### Four-mode check
 
