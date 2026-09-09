@@ -1,56 +1,90 @@
 ---
 name: save-the-cat
-description: Screenwriting assistant using Blake Snyder's Save the Cat! methodology. Helps with high-concept ideas, loglines, hero design, the 15-beat Beat Sheet (BS2), the Board, story genres, and diagnostics. Use when writing screenplays, developing movie structure, creating beat sheets, crafting loglines, building a board, or analyzing script structure.
+description: Screenwriting assistant using Blake Snyder's Save the Cat! methodology. Helps with high-concept ideas, loglines, hero design, the 15-beat Beat Sheet (BS2), the Board, story genres, and diagnostics. Use when writing screenplays, developing movie structure, creating beat sheets, crafting loglines, building a board, or analyzing script structure, previewing .fountain files, or leaving scene and dialogue feedback on a screenplay.
+allowed-tools: bash
+command: fountain
+script: scripts/fountain.jsh
 ---
 
 > **Attribution**: This skill provides original reference guides inspired by Blake Snyder's *Save the Cat!* methodology. It is not affiliated with or endorsed by Blake Snyder Enterprises. For the complete methodology, please refer to the original *Save the Cat!* books. All content in these files is an independent summary intended for educational use.
 
 # Save the Cat! Screenwriting Assistant
 
-A comprehensive screenwriting tool based on Blake Snyder's "Save the Cat!" methodology - the industry-standard approach to crafting commercial, audience-pleasing screenplays.
+Develop and diagnose screenplays using Blake Snyder's Save the Cat! framework.
+Use the reference guides for story decisions and the Fountain preview for
+feedback on the actual script.
+
+## Preview and review a Fountain screenplay
+
+Keep the screenplay in a `.fountain` source file. The bundled `fountain` command
+renders title pages, scene headings, action, dialogue, parentheticals, dual
+dialogue, transitions, emphasis, and page breaks. It includes the MIT-licensed
+[fountain-js 1.2.4 parser](assets/vendor/fountain-js/README.md); no network or
+package installation is needed at runtime.
+
+```sh
+fountain render /shared/draft.fountain --out /shared/draft.html
+fountain review /shared/draft.fountain
+```
+
+For a concrete first input, save this as `/shared/draft.fountain`:
+
+```fountain
+Title: Night Shift
+Author: Example Writer
+
+INT. OBSERVATORY - NIGHT
+
+A green light blinks in the empty room.
+
+MARA
+(quietly)
+Somebody is still out there.
+```
+
+Before `fountain review`, install the `review` skill, follow its Quick-Start
+Workflow to assign the owning scoop, and run `sprinkle open review`. If the
+panel template is not installed yet, copy it first:
+
+```sh
+mkdir -p /shared/sprinkles/review
+cp /workspace/skills/review/templates/review.shtml /shared/sprinkles/review/review.shtml
+sprinkle refresh
+sprinkle open review
+```
+
+`fountain review` adds the source to the queue and opens its rendered screenplay
+in Review's iframe. If Review is closed, it reports a
+delivery error; open the panel and retry.
+
+In the preview, click a scene, action paragraph, or dialogue block, or select a
+passage. Type a comment and choose **Save comment**. Comments remain drafts when
+the user switches assets or reloads. **Send to agent** explicitly dispatches the
+collected feedback with the source path, quote, scene, and token anchor.
+
+When handling a `submit-revisions` event, edit the `.fountain` source, matching
+the quoted text and scene against the current file before changing it. Treat
+token indexes as hints: inserting an earlier scene shifts them. Do not edit the
+generated HTML. Follow Review's batch acknowledgement protocol after applying
+or failing a batch, then reload the preview to verify the source renders.
+Saving a comment alone does not authorize an edit.
+
+For renderer options, limitations, and the JSON contract consumed by Review,
+read [references/fountain.md](references/fountain.md).
 
 ## Quick Reference
 
-### The Blake Snyder Beat Sheet (BS2)
+### Structure and genre
 
-The 15 beats for a 110-page screenplay:
+Use the 15-beat Beat Sheet to map the hero's change across setup, disruption,
+choice, rising stakes, loss, and resolution. Read
+[references/beat-sheet.md](references/beat-sheet.md) for every beat, its page
+target, and examples; verify the opposing Opening/Final Images and
+Midpoint/All Is Lost before building scenes.
 
-| Beat | Page | Purpose |
-|------|------|---------|
-| Opening Image | 1 | "Before" snapshot, opposite of final image |
-| Theme Stated | 5 | Someone states the theme; hero doesn't get it yet |
-| Set-Up | 1-10 | Introduce characters, show "Six Things That Need Fixing" |
-| Catalyst | 12 | Life-changing incident that kicks off the story |
-| Debate | 12-25 | "Should I go? Dare I go?" - last chance to back out |
-| Break into Two | 25 | Hero CHOOSES to enter the upside-down world |
-| B Story | 30 | Usually love story; carries the theme |
-| Fun and Games | 30-55 | Promise of the premise; trailer moments |
-| Midpoint | 55 | False victory or false defeat; stakes raised |
-| Bad Guys Close In | 55-75 | External/internal forces tighten grip |
-| All Is Lost | 75 | Opposite of midpoint; "whiff of death" |
-| Dark Night of the Soul | 75-85 | Beaten and knows it; darkness before dawn |
-| Break into Three | 85 | A + B stories merge; solution emerges |
-| Finale | 85-110 | Apply lessons; dispatch bad guys; new world |
-| Final Image | 110 | "After" snapshot; proof of change |
-
-**For detailed beat descriptions and examples**: See [references/beat-sheet.md](references/beat-sheet.md)
-
-### The 10 Snyder Genres
-
-Every movie fits one of these structural categories:
-
-1. **Monster in the House** - Jaws, Alien (monster + confined space + sin)
-2. **Golden Fleece** - Star Wars, Wizard of Oz (road journey, internal growth)
-3. **Out of the Bottle** - Liar Liar, Groundhog Day (wish/curse, magic lesson)
-4. **Dude with a Problem** - Die Hard, Titanic (ordinary person, extraordinary situation)
-5. **Rites of Passage** - Ordinary People (life transitions, surrender to accept)
-6. **Buddy Love** - Rain Man, all romcoms (two halves of a whole)
-7. **Whydunit** - Chinatown, JFK (dark discovery about humanity)
-8. **The Fool Triumphant** - Forrest Gump, Being There (underdog vs establishment)
-9. **Institutionalized** - The Godfather, M*A*S*H (group dynamics, who's crazier?)
-10. **Superhero** - Batman, Gladiator (extraordinary person, ordinary world)
-
-**For genre rules and requirements**: See [references/genres.md](references/genres.md)
+Choose the story's structural genre before developing the Board. Read
+[references/genres.md](references/genres.md) for the ten Snyder genres and their
+required ingredients, then justify the choice against the actual premise.
 
 ### Logline Formula
 
@@ -99,6 +133,8 @@ Copy this checklist:
 - [ ] Confirm "whiff of death" at All Is Lost
 - [ ] Build The Board: 40 scene cards with +/- and >< on each
 - [ ] Color-code A/B stories to verify weaving and focus
+- [ ] Check the Board against the Beat Sheet: every turning point has a scene, a clear cause, and an observable change
+- [ ] Write the draft as `.fountain`, run `fountain review <path>`, and verify one scene, dialogue block, and saved comment in the rendered preview
 
 ### Diagnosing a Problematic Script
 
@@ -113,6 +149,8 @@ Copy this checklist:
 - [ ] Verify all characters have "limp and eyepatch" (memorable traits)
 - [ ] Test for primal motivations (survival, sex, protection, fear of death)
 - [ ] Check for Too Much Marzipan (overstuffed concept / Black Vet)
+- [ ] Rank the findings by story impact, cite the scene or dialogue that supports each, and propose one concrete revision per finding
+- [ ] After revisions, re-read the affected beats and verify that the change resolves the cited problem without breaking adjacent scenes
 
 **For detailed diagnostics**: See [references/diagnostics.md](references/diagnostics.md)
 

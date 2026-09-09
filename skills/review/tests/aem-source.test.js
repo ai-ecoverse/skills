@@ -113,6 +113,8 @@ test('sweep and enrichment IDs keep identical paths in different sites separate'
   assert.equal(first.id, 'aem:org-one/site-one:index');
   assert.equal((await aemCard('org-one', 'site-one', 'review')).id, first.id);
   assert.equal((await aemCard('org-one', 'site-one', 'review', 'explicit')).id, 'explicit');
+  assert.equal(first.primaryActionLabel, 'Publish');
+  assert.equal((await aemCard('org-one', 'site-one', 'review')).primaryActionLabel, 'Publish');
 });
 
 test('ingest forwards site flags only to AEM and uses the sweep card ID', async () => {
@@ -183,3 +185,74 @@ for (const failAction of ['ensure-item', 'add-findings', null]) {
     assert.match(result.stderr, failAction ? /pushed 1 card\(s\).*1 failed/ : /pushed 2 card\(s\)/);
   });
 }
+
+test('ingest carries source labels, with the CLI override taking priority', async () => {
+  for (const override of [undefined, "Accept 'draft' <literally>"]) {
+    const result = await review(
+      'ingest',
+      { path: '/draft.md', 'primary-action-label': override },
+      ['custom'],
+      async (argv) => ({
+        exitCode: 0,
+        stdout:
+          argv[0] === 'custom'
+            ? JSON.stringify({ source: 'custom', primaryActionLabel: 'Accept' })
+            : '',
+      })
+    );
+    assert.equal(result.code, 0);
+    const message = JSON.parse(result.calls.find((argv) => argv[0] === 'sprinkle')[3]);
+    assert.equal(message.primaryActionLabel, override || 'Accept');
+  }
+});
+
+test('ingest without a label preserves an existing label; AEM defaults to Publish', async () => {
+  for (const source of ['custom', 'aem-ext']) {
+    const result = await review('ingest', { path: '/draft.md' }, [source], async (argv) => ({
+      exitCode: 0,
+      stdout: argv[0] === source ? JSON.stringify({ source }) : '',
+    }));
+    assert.equal(result.code, 0);
+    const message = JSON.parse(result.calls.find((argv) => argv[0] === 'sprinkle')[3]);
+    assert.equal(message.primaryActionLabel, source === 'aem-ext' ? 'Publish' : undefined);
+  }
+});
+
+test('sweep dry-run and delivered cards use the same label precedence', async () => {
+  for (const sourceLabel of [undefined, 'Release']) {
+    for (const override of [undefined, 'Approve']) {
+      for (const dryRun of [true, false]) {
+        const result = await review(
+          'sweep',
+          { org: 'example', site: 'docs', 'dry-run': dryRun, 'primary-action-label': override },
+          [],
+          async (argv) => ({
+            exitCode: 0,
+            stdout:
+              argv[0] === 'aem-ext'
+                ? JSON.stringify({ id: 'page', primaryActionLabel: sourceLabel })
+                : '',
+          })
+        );
+        assert.equal(result.code, 0);
+        const message = dryRun
+          ? JSON.parse(result.stdout)
+          : JSON.parse(result.calls.find((argv) => argv[0] === 'sprinkle')[3]);
+        assert.equal(message.primaryActionLabel, override || sourceLabel || 'Publish');
+        if (dryRun)
+          assert.equal(
+            result.calls.some((argv) => argv[0] === 'sprinkle'),
+            false
+          );
+      }
+    }
+  }
+});
+
+test('empty or non-string CLI labels fail before invoking a source', async () => {
+  for (const value of ['', ' ', true, ['Publish', 'Approve']]) {
+    const result = await review('ingest', { path: '/draft.md', 'primary-action-label': value });
+    assert.equal(result.code, 2);
+    assert.equal(result.calls.length, 0);
+  }
+});

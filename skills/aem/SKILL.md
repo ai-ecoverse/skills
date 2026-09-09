@@ -150,6 +150,10 @@ management:
 - `aem-ext auth key register --org <o> --site <s> --id <jti>` — the Helix 6 registration step
 - `aem-ext auth key delete --org <o> --site <s> --id <jti> --confirm` — revoke
 - `aem-ext list|get|put|status|preview|publish` — content verbs on the resolved credential
+- `aem-ext review --path PATH --org O --site S` and `aem-ext sweep --org O --site S` —
+  read-only Review sources; emitted cards set `primaryActionLabel:"Publish"`.
+  Use `review ingest aem-ext` or `review sweep` to populate the queue; their
+  `--primary-action-label LABEL` flag overrides that caption.
 
 ## Architecture version: Helix 5 and Helix 6
 

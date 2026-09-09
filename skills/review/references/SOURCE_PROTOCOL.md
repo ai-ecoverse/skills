@@ -45,6 +45,7 @@ One object per invocation. `source` is required; everything else is used if pres
 | `path` | no | string | File path shown on the card. |
 | `previewUrl` | no | string | Preview link. |
 | `liveUrl` | no | string | Live link. |
+| `primaryActionLabel` | no | string | Primary button text. Defaults to `Approve`; AEM sources emit `Publish`. |
 | `summary` | no | string | One-line result shown on the card (`Mixed · 60% AI-assisted`). |
 | `severity` | no | `info` \| `warn` \| `fail` | Badge colour. Default `info`. |
 | `findings` | no | array | Detail rows. Each item: `{ title, body?, severity?, line?, start?, end? }`. |
@@ -81,12 +82,36 @@ Empty `findings` with a `summary` is a successful clean check, not a skip.
 `review ingest` translates each contribution into two inbound sprinkle messages
 (see `templates/review.shtml`):
 
-1. `ensure-item` — upsert the card (`id`, `title`, `path`, `previewUrl`, `liveUrl`). Status is never touched.
+1. `ensure-item` — upsert the card (`id`, `title`, `path`, `previewUrl`, `liveUrl`, `primaryActionLabel`). Status is never touched.
 2. `add-findings` — `{ id, source, summary, severity, findings, ts }` stored at `state.findings[id][source]`. Re-running a source replaces that source's block; other sources on the same card stay.
 
 The panel also accepts `clear-findings` `{ id, source? }`. Omit `source` to drop every integration on that card.
 
 Sources must not send these themselves.
+
+### Primary action labels
+
+Use `primaryActionLabel` on a contribution, a `load-items` card, or an
+`ensure-item` message. The panel renders a non-empty string as plain text;
+missing, blank, or invalid labels display **Approve**. An upsert that omits
+the field preserves its current value; `primaryActionLabel:""` resets it.
+
+`review ingest` chooses the CLI `--primary-action-label LABEL` first, then the
+first non-empty source label in source argument order. Without either, it
+omits the field so enrichment preserves an existing label. New cards default
+to Approve. AEM ingest and sweep fall back to Publish for older AEM producers;
+current `aem-ext review` and `aem-ext sweep` explicitly emit Publish.
+`review sweep` accepts the same CLI override, including in `--dry-run` output.
+
+```bash
+review ingest mysource --path /shared/draft.md --primary-action-label 'Accept'
+review sweep --org example --site docs --primary-action-label 'Publish' --dry-run
+```
+
+This field changes the caption only. The primary action still emits the
+existing `publish` lick `{id,path,url}` and uses the existing status protocol,
+so producers and owning skills retain their action handlers. Do not choose
+an operation by parsing the label.
 
 ## How `review ingest` consumes the contract
 

@@ -119,6 +119,11 @@ review ingest aem-ext --path /drafts/wac-demo.md --org ai-ecoverse --site slicc-
 `pangram`/`check-llm-cliches` sources are untouched — they still run via
 `review ingest` on individual paths.
 
+Both AEM producers emit `primaryActionLabel:"Publish"`; Review forwards it
+to the card. Other review items default to Approve. A caller can override
+the label with `review ingest` or `review sweep --primary-action-label LABEL`.
+This does not change the existing `publish` event or execute a publication.
+
 ### Trade-offs
 
 | Factor | Two-command approach | Single `--path .` approach |
