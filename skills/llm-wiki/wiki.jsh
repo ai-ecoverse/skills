@@ -2,7 +2,47 @@
 const fs = require('fs');
 const WIKI_ROOT = '/mnt/kb';
 const RAW_DIR = WIKI_ROOT + '/_raw';
-const CATS = ['people', 'work', 'creative', 'tech', 'taste', 'life', 'events', 'places'];
+const nk = (s) => String(s).normalize('NFC');
+
+let CATS = null; // populated once by discoverCats()
+
+async function discoverCats(soft) {
+  if (CATS) return CATS;
+  const root = [], nested = [];
+  try {
+    const top = await fs.readDir(WIKI_ROOT);
+    for (const e of top) {
+      const n = en(e);
+      if (!n || n.startsWith('_') || n.startsWith('.')) continue;
+      const dp = WIKI_ROOT + '/' + n;
+      try {
+        const es = await fs.readDir(dp);
+        if (es.some(f => { const fn = en(f); return fn && fn.endsWith('.md'); }))
+          root.push(n);
+        if (n === 'projects') {
+          for (const pe of es) {
+            const pn = en(pe);
+            if (!pn || pn.startsWith('_') || pn.startsWith('.')) continue;
+            const pp = dp + '/' + pn;
+            try {
+              const pes = await fs.readDir(pp);
+              if (pes.some(f => { const fn = en(f); return fn && fn.endsWith('.md'); }))
+                nested.push('projects/' + pn);
+            } catch (_) {}
+          }
+        }
+      } catch (_) {} // not a directory or unreadable
+    }
+  } catch (e) {
+    if (soft) return [];
+    console.error('Error discovering categories: ' + e.message);
+    process.exit(1);
+  }
+  root.sort((a, b) => a.localeCompare(b));
+  nested.sort((a, b) => a.localeCompare(b));
+  CATS = root.concat(nested);
+  return CATS;
+}
 
 const args = process.argv.slice(2);
 const sub = (args[0] || '').toLowerCase();
@@ -30,25 +70,32 @@ function t(f) {
 }
 
 async function find(name) {
+  const cats = await discoverCats();
   let c = null, s = name;
   if (name.includes('/')) {
     const p = name.split('/');
-    c = p[0];
-    s = p.slice(1).join('/');
+    // Support projects/<name>/page as well as cat/page
+    if (p[0] === 'projects' && p.length >= 3) {
+      c = p[0] + '/' + p[1];
+      s = p.slice(2).join('/');
+    } else {
+      c = p[0];
+      s = p.slice(1).join('/');
+    }
   }
   s = s.replace(/\.md$/, '');
-  const ds = c ? [c] : CATS;
+  const ds = c ? [c] : cats;
   for (const d of ds) {
     const p = WIKI_ROOT + '/' + d + '/' + s + '.md';
     if (await fs.exists(p)) return { cat: d, file: s + '.md', path: p };
   }
-  const l = s.toLowerCase();
+  const l = nk(s).toLowerCase();
   for (const d of ds) {
     try {
       const es = await fs.readDir(WIKI_ROOT + '/' + d);
       for (const e of es) {
         const n = en(e);
-        if (n && n.replace(/\.md$/, '').toLowerCase() === l) return { cat: d, file: n, path: WIKI_ROOT + '/' + d + '/' + n };
+        if (n && nk(n).replace(/\.md$/, '').toLowerCase() === l) return { cat: d, file: n, path: WIKI_ROOT + '/' + d + '/' + n };
       }
     } catch (_) {}
   }
@@ -66,18 +113,19 @@ function wl(c) {
 }
 
 async function cmdSearch() {
+  const cats = await discoverCats();
   const term = args.slice(1).join(' ');
   if (!term) { console.error('Usage: wiki search <term>'); process.exit(1); }
-  const lo = term.toLowerCase(), pages = await catDirs(CATS);
+  const lo = nk(term).toLowerCase(), pages = await catDirs(cats);
   let h = 0;
   for (const p of pages) {
     if (h >= 20) break;
-    const nm = p.file.toLowerCase().includes(lo);
+    const nm = nk(p.file).toLowerCase().includes(lo);
     let lm = null;
     try {
       const c = await fs.readFile(p.path);
       for (const line of c.split('\n')) {
-        if (line.toLowerCase().includes(lo)) { lm = line.trim(); break; }
+        if (nk(line).toLowerCase().includes(lo)) { lm = line.trim(); break; }
       }
     } catch (_) { continue; }
     if (nm || lm) { console.log('  ' + p.cat + '/' + p.file + '  —  ' + (lm || t(p.file))); h++; }
@@ -87,9 +135,14 @@ async function cmdSearch() {
 }
 
 async function cmdList() {
-  const c = args[1] ? args[1].toLowerCase() : null;
-  if (c && !CATS.includes(c)) { console.error('Unknown category: ' + c + '\nCategories: ' + CATS.join(', ')); process.exit(1); }
-  const pages = await catDirs(c ? [c] : CATS);
+  const cats = await discoverCats();
+  let c = null;
+  if (args[1]) {
+    const want = nk(args[1]).toLowerCase();
+    c = cats.find(x => nk(x).toLowerCase() === want) || null;
+    if (!c) { console.error('Unknown category: ' + args[1] + '\nCategories: ' + cats.join(', ')); process.exit(1); }
+  }
+  const pages = await catDirs(c ? [c] : cats);
   if (!pages.length) { console.log(c ? 'No pages in ' + c + '.' : 'No wiki pages found.'); return; }
   let cur = null;
   for (const p of pages) {
@@ -112,13 +165,14 @@ async function cmdRead() {
 }
 
 async function cmdStats() {
+  const cats = await discoverCats();
   const rows = [];
   let tot = 0;
-  for (const c of CATS) {
+  for (const c of cats) {
     try {
       const es = await fs.readDir(WIKI_ROOT + '/' + c);
       const md = es.filter(e => { const n = en(e); return n && n.endsWith('.md'); });
-      if (md.length) rows.push('  ' + c.padEnd(12) + ' ' + md.length);
+      if (md.length) rows.push('  ' + c.padEnd(24) + ' ' + md.length);
       tot += md.length;
     } catch (_) {}
   }
@@ -138,16 +192,17 @@ async function cmdStats() {
   }
   console.log('Wiki pages by category:');
   for (const row of rows) console.log(row);
-  console.log('  ' + 'total'.padEnd(12) + ' ' + tot);
+  console.log('  ' + 'total'.padEnd(24) + ' ' + tot);
   console.log('\nRaw source files: ' + rc);
   if (ea && la) console.log('  Date range: ' + ea + ' to ' + la);
   let tl = 0;
-  const pages = await catDirs(CATS);
+  const pages = await catDirs(cats);
   for (const p of pages) { try { tl += wl(await fs.readFile(p.path)).length; } catch (_) {} }
   console.log('\nTotal wikilinks: ' + tl);
 }
 
 async function cmdLinks() {
+  const cats = await discoverCats();
   const name = args.slice(1).join(' ');
   if (!name) { console.error('Usage: wiki links <note-name>'); process.exit(1); }
   const n = await find(name);
@@ -158,10 +213,10 @@ async function cmdLinks() {
   console.log('Outbound (' + ob.length + '):');
   if (!ob.length) console.log('  (none)');
   else for (const l of ob.sort()) console.log('  -> [[' + l + ']]');
-  const nm = n.file.replace(/\.md$/, ''), pages = await catDirs(CATS), ib = [];
+  const nm = nk(n.file).replace(/\.md$/, ''), pages = await catDirs(cats), ib = [];
   for (const p of pages) {
-    if (p.path === n.path) continue;
-    try { if (wl(await fs.readFile(p.path)).some(l => l === nm)) ib.push(p.cat + '/' + p.file); } catch (_) {}
+    if (nk(p.path) === nk(n.path)) continue;
+    try { if (wl(await fs.readFile(p.path)).some(l => nk(l) === nm)) ib.push(p.cat + '/' + p.file); } catch (_) {}
   }
   console.log('\nInbound (' + ib.length + '):');
   if (!ib.length) console.log('  (none)');
@@ -169,13 +224,14 @@ async function cmdLinks() {
 }
 
 async function cmdOrphans() {
-  const pages = await catDirs(CATS), linked = new Set();
+  const cats = await discoverCats();
+  const pages = await catDirs(cats), linked = new Set();
   let readable = 0;
   for (const p of pages) {
     try {
       const c = await fs.readFile(p.path);
       readable++;
-      for (const l of wl(c)) linked.add(l);
+      for (const l of wl(c)) linked.add(nk(l));
     } catch (_) {}
   }
   if (readable === 0) {
@@ -183,7 +239,7 @@ async function cmdOrphans() {
     process.exit(1);
   }
   const orph = [];
-  for (const p of pages) { const s = p.file.replace(/\.md$/, ''); if (!linked.has(s)) orph.push(p.cat + '/' + p.file); }
+  for (const p of pages) { const s = nk(p.file).replace(/\.md$/, ''); if (!linked.has(s)) orph.push(p.cat + '/' + p.file); }
   if (!orph.length) { console.log('No orphan pages found.'); return; }
   console.log('Orphan pages (' + orph.length + '):\n');
   for (const o of orph) console.log('  ' + o);
@@ -225,8 +281,10 @@ async function cmdLog() {
   } catch (e) { console.error('Error: ' + e.message); process.exit(1); }
 }
 
-function cmdHelp() {
-  console.log('wiki — LLM wiki knowledge base CLI\n\nUsage: wiki <command> [args]\n\nCommands:\n  search <term>      Search wiki pages by title and content (max 20 results)\n  list [category]    List all wiki pages, optionally filtered by category\n  read <note>        Display a wiki page (accepts name, name.md, or category/name)\n  stats              Pages per category, raw file count, date range, wikilink count\n  links <note>       Show inbound and outbound wikilinks for a note\n  orphans            Find pages with zero inbound links\n  recent [n]         Show N most recent raw source files (default 10)\n  log [n]            Show last N log.md entries (default 10)\n  help               Show this help\n\nCategories: ' + CATS.join(', ') + '\nWiki root:  ' + WIKI_ROOT);
+async function cmdHelp() {
+  const cats = await discoverCats(true);
+  const catLine = cats.length ? cats.join(', ') : '(none discovered at ' + WIKI_ROOT + ')';
+  console.log('wiki — LLM wiki knowledge base CLI\n\nUsage: wiki <command> [args]\n\nCommands:\n  search <term>      Search wiki pages by title and content (max 20 results)\n  list [category]    List all wiki pages, optionally filtered by category\n  read <note>        Display a wiki page (accepts name, name.md, or category/name)\n  stats              Pages per category, raw file count, date range, wikilink count\n  links <note>       Show inbound and outbound wikilinks for a note\n  orphans            Find pages with zero inbound links\n  recent [n]         Show N most recent raw source files (default 10)\n  log [n]            Show last N log.md entries (default 10)\n  help               Show this help\n\nCategories: ' + catLine + '\nWiki root:  ' + WIKI_ROOT);
 }
 
 switch (sub) {
@@ -238,6 +296,6 @@ switch (sub) {
   case 'orphans': await cmdOrphans(); break;
   case 'recent': await cmdRecent(); break;
   case 'log': await cmdLog(); break;
-  case 'help': cmdHelp(); break;
-  default: cmdHelp(); break;
+  case 'help': await cmdHelp(); break;
+  default: await cmdHelp(); break;
 }
