@@ -22,14 +22,15 @@ function helpText() {
     '                    [--org ORG --site SITE] (for aem-ext)',
     '       review sources',
     '       review sweep --org ORG --site SITE [--never-published] [--stale]',
-    '                   [--include-assets] [--dry-run] [--primary-action-label LABEL]',
+    '                   [--include-assets] [--snapshot NAME] [--dry-run]',
+    '                   [--primary-action-label LABEL]',
     '',
     'Discover review-compatible commands and attach their findings to the',
     'review sprinkle. Protocol: skills/review/references/SOURCE_PROTOCOL.md',
     '',
     'review sweep populates the backlog from an AEM site by diffing the',
-    'preview/ and live/ partition trees. Requires aem-ext on PATH and a',
-    'valid AEM credential (aem-ext auth status).',
+    'preview/ and live/ partition trees, or by enumerating a snapshot',
+    '(--snapshot NAME). Requires aem-ext on PATH and a valid AEM credential.',
     '',
     'Default sources (if installed): ' + KNOWN_INTEGRATIONS.join(', '),
     'Missing sources are skipped. The queue works with none of them.',
@@ -157,6 +158,10 @@ async function cmdSweep() {
   if (flags['never-published']) sweepArgs.push('--never-published');
   if (flags['stale']) sweepArgs.push('--stale');
   if (flags['include-assets']) sweepArgs.push('--include-assets');
+  const snapshotName = flags.snapshot || flags['snapshot'];
+  if (typeof snapshotName === 'string' && snapshotName) {
+    sweepArgs.push('--snapshot', snapshotName);
+  }
 
   process.stderr.write('[review sweep] running: ' + sweepArgs.join(' ') + '\n');
 
@@ -307,8 +312,10 @@ try {
     id,
     title,
     path: filePath,
-    previewUrl: flags['preview-url'] || flags.previewUrl || '',
-    liveUrl: flags['live-url'] || flags.liveUrl || '',
+    previewUrl: flags['preview-url'] || flags.previewUrl ||
+      (contributions.find((c) => c.previewUrl) || {}).previewUrl || '',
+    liveUrl: flags['live-url'] || flags.liveUrl ||
+      (contributions.find((c) => c.liveUrl) || {}).liveUrl || '',
     primaryActionLabel: actionLabel(flags['primary-action-label']) ||
       contributions.map((c) => actionLabel(c.primaryActionLabel)).find(Boolean) ||
       (sources.includes('aem-ext') ? 'Publish' : undefined),
