@@ -224,7 +224,7 @@ review ingest --path /shared/page.md --id page-1
 review ingest pangram --path /shared/page.md --dry-run
 ```
 
-`review ingest` discovers `pangram` and `check-llm-cliches` on PATH (both optional; missing commands are skipped), runs `[cmd] review --path PATH`, then `ensure-item` + `add-findings` on the sprinkle. Findings render on the card. The queue works with zero integrations installed.
+`review ingest` discovers `pangram` and `check-llm-cliches` on PATH (both optional; missing commands are skipped), runs `[cmd] review --path PATH`, then `ensure-item` + `add-findings` on the sprinkle. Each source appears as a collapsed disclosure showing its name and severity. Expand it to read the source's summary and finding rows, including summary-only results. Findings and external-tab tools use the same chevron style as Loose ends; mouse, Enter, and Space use native disclosure behavior. The queue works with zero integrations installed.
 
 To add a source: implement `[cmd] review --path PATH [--id ID]`, then either name it (`review ingest mysource --path FILE`) or add it to `KNOWN_INTEGRATIONS` in `scripts/review.jsh`.
 

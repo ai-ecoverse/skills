@@ -182,10 +182,8 @@
       border-bottom: 1px solid var(--line);
     }
     .page-tools-label {
-      display: block;
       color: var(--fg-muted);
-      font-size: 12px;
-      margin-bottom: 6px;
+      font-size: 13px;
     }
     .page-tools-actions {
       display: flex;
@@ -306,19 +304,36 @@
       gap: 4px;
     }
     .findings-head {
-      cursor: pointer;
       color: var(--fg-muted);
       font-size: 13px;
       min-height: 32px;
       padding: 5px 0;
     }
+    .findings-head,
+    .page-tools > summary {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      min-height: 32px;
+      cursor: pointer;
+      list-style: none;
+    }
+    .findings-head::-webkit-details-marker,
+    .page-tools > summary::-webkit-details-marker { display: none; }
+    .disclosure-chevron { flex-shrink: 0; }
+    details[open] > summary .disclosure-chevron { transform: rotate(90deg); }
     .findings-badge {
       color: var(--fg);
       font-weight: 600;
+      min-width: 0;
+      overflow-wrap: anywhere;
     }
     .findings-summary {
       display: block;
-      margin-left: 15px;
+      margin: 0 0 8px 18px;
+      color: var(--fg-muted);
+      font-size: 13px;
+      overflow-wrap: anywhere;
     }
     .findings-list {
       margin: 4px 0 8px 16px;
@@ -454,8 +469,6 @@
       overflow: hidden;
     }
 
-    details.page-tools { display:block; }
-    details.page-tools summary { display:list-item; cursor:pointer; }
     details.page-tools[open] .page-tools-actions { margin-top:8px; }
     .preview-tools [aria-pressed="true"] { border-color:var(--link); color:var(--link); background:color-mix(in srgb,var(--link) 12%,transparent); }
     #doc-scroll { flex:1; min-height:120px; position:relative; display:flex; }
@@ -706,7 +719,7 @@
       <span id="queue-count-badge" class="badge zero">0</span>
     </div>
     <details class="page-tools">
-      <summary class="page-tools-label">Tools for an external browser tab</summary>
+      <summary class="page-tools-label"><i data-lucide="chevron-right" class="sprinkle-icon sm disclosure-chevron" aria-hidden="true"></i><span>Tools for an external browser tab</span></summary>
       <div class="page-tools-actions">
       <button class="sprinkle-btn sprinkle-btn--secondary" id="review-mode-btn" aria-pressed="false" title="Click-to-comment on the visible page">
         <i data-lucide="mouse-pointer-click" class="sprinkle-icon sm"></i>
@@ -973,6 +986,10 @@ function renderFindings(itemId, container) {
     wrap.className = 'findings-block';
     const head = document.createElement('summary');
     head.className = 'findings-head';
+    const chevron = document.createElement('i');
+    chevron.setAttribute('data-lucide', 'chevron-right');
+    chevron.setAttribute('aria-hidden', 'true');
+    chevron.className = 'sprinkle-icon sm disclosure-chevron';
     const badge = document.createElement('span');
     const sev = block.severity === 'fail' || block.severity === 'warn' ? block.severity : 'info';
     badge.className = 'findings-badge ' + sev;
@@ -980,9 +997,12 @@ function renderFindings(itemId, container) {
     const summary = document.createElement('span');
     summary.className = 'findings-summary';
     summary.textContent = block.summary || '';
+    head.appendChild(chevron);
     head.appendChild(badge);
-    head.appendChild(summary);
     wrap.appendChild(head);
+    // <summary> is always visible. The source explanation must be its
+    // sibling so even a result without finding rows can actually collapse.
+    if (summary.textContent) wrap.appendChild(summary);
     const list = document.createElement('ul');
     list.className = 'findings-list';
     (block.findings || []).forEach((f) => {
