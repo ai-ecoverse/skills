@@ -6,7 +6,7 @@ const nk = (s) => String(s).normalize('NFC');
 
 let CATS = null; // populated once by discoverCats()
 
-async function discoverCats() {
+async function discoverCats(soft) {
   if (CATS) return CATS;
   const root = [], nested = [];
   try {
@@ -34,6 +34,7 @@ async function discoverCats() {
       } catch (_) {} // not a directory or unreadable
     }
   } catch (e) {
+    if (soft) return [];
     console.error('Error discovering categories: ' + e.message);
     process.exit(1);
   }
@@ -124,7 +125,7 @@ async function cmdSearch() {
     try {
       const c = await fs.readFile(p.path);
       for (const line of c.split('\n')) {
-        if (line.toLowerCase().includes(lo)) { lm = line.trim(); break; }
+        if (nk(line).toLowerCase().includes(lo)) { lm = line.trim(); break; }
       }
     } catch (_) { continue; }
     if (nm || lm) { console.log('  ' + p.cat + '/' + p.file + '  —  ' + (lm || t(p.file))); h++; }
@@ -135,8 +136,12 @@ async function cmdSearch() {
 
 async function cmdList() {
   const cats = await discoverCats();
-  const c = args[1] ? args[1].toLowerCase() : null;
-  if (c && !cats.includes(c)) { console.error('Unknown category: ' + c + '\nCategories: ' + cats.join(', ')); process.exit(1); }
+  let c = null;
+  if (args[1]) {
+    const want = nk(args[1]).toLowerCase();
+    c = cats.find(x => nk(x).toLowerCase() === want) || null;
+    if (!c) { console.error('Unknown category: ' + args[1] + '\nCategories: ' + cats.join(', ')); process.exit(1); }
+  }
   const pages = await catDirs(c ? [c] : cats);
   if (!pages.length) { console.log(c ? 'No pages in ' + c + '.' : 'No wiki pages found.'); return; }
   let cur = null;
@@ -277,8 +282,9 @@ async function cmdLog() {
 }
 
 async function cmdHelp() {
-  const cats = await discoverCats();
-  console.log('wiki — LLM wiki knowledge base CLI\n\nUsage: wiki <command> [args]\n\nCommands:\n  search <term>      Search wiki pages by title and content (max 20 results)\n  list [category]    List all wiki pages, optionally filtered by category\n  read <note>        Display a wiki page (accepts name, name.md, or category/name)\n  stats              Pages per category, raw file count, date range, wikilink count\n  links <note>       Show inbound and outbound wikilinks for a note\n  orphans            Find pages with zero inbound links\n  recent [n]         Show N most recent raw source files (default 10)\n  log [n]            Show last N log.md entries (default 10)\n  help               Show this help\n\nCategories: ' + cats.join(', ') + '\nWiki root:  ' + WIKI_ROOT);
+  const cats = await discoverCats(true);
+  const catLine = cats.length ? cats.join(', ') : '(none discovered at ' + WIKI_ROOT + ')';
+  console.log('wiki — LLM wiki knowledge base CLI\n\nUsage: wiki <command> [args]\n\nCommands:\n  search <term>      Search wiki pages by title and content (max 20 results)\n  list [category]    List all wiki pages, optionally filtered by category\n  read <note>        Display a wiki page (accepts name, name.md, or category/name)\n  stats              Pages per category, raw file count, date range, wikilink count\n  links <note>       Show inbound and outbound wikilinks for a note\n  orphans            Find pages with zero inbound links\n  recent [n]         Show N most recent raw source files (default 10)\n  log [n]            Show last N log.md entries (default 10)\n  help               Show this help\n\nCategories: ' + catLine + '\nWiki root:  ' + WIKI_ROOT);
 }
 
 switch (sub) {
