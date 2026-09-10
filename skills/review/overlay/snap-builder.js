@@ -1,11 +1,16 @@
 (async () => {
-  // Wait for EDS decoration: body.appear + all sections loaded + readyState complete
+  // Wait for readiness. EDS pages ship body{display:none} until scripts add body.appear and
+  // decorate main .section[data-section-status="loaded"] — wait for that. A non-EDS page has no
+  // "main .section", so it is ready once readyState is complete (avoids an EDS-only 20s stall).
   const deadline = Date.now() + 20000;
   while (Date.now() < deadline) {
-    const appear = document.body.classList.contains('appear');
-    const secs = document.querySelectorAll('main .section');
-    const loaded = [...secs].filter(s => s.dataset.sectionStatus === 'loaded').length;
-    if (appear && secs.length > 0 && loaded === secs.length && document.readyState === 'complete') break;
+    if (document.readyState === 'complete') {
+      const secs = document.querySelectorAll('main .section');
+      if (secs.length === 0) break; // not an EDS page — nothing more to wait for
+      const appear = document.body.classList.contains('appear');
+      const loaded = [...secs].filter(s => s.dataset.sectionStatus === 'loaded').length;
+      if (appear && loaded === secs.length) break;
+    }
     await new Promise(r => setTimeout(r, 400));
   }
   // Scroll to trigger lazy-loaded sections/images
@@ -13,10 +18,19 @@
   for (let y = 0; y <= h; y += 600) { window.scrollTo(0, y); await new Promise(r => setTimeout(r, 200)); }
   window.scrollTo(0, 0);
   await new Promise(r => setTimeout(r, 800));
-  // Inline all CSS (same-origin sheets are readable in a real tab)
+  // Inline all CSS (same-origin sheets are readable in a real tab). Resolve each sheet's relative
+  // url(...) refs against THAT sheet's own href — not the document root — so e.g. url('./x.woff2')
+  // in /styles/theme.css becomes /styles/x.woff2, not /x.woff2 (fonts/backgrounds would 404).
   const styleBlocks = [];
   for (const sheet of document.styleSheets) {
-    try { styleBlocks.push([...sheet.cssRules].map(r => r.cssText).join('\n')); } catch (_) {}
+    let cssText;
+    try { cssText = [...sheet.cssRules].map(r => r.cssText).join('\n'); } catch (_) { continue; }
+    const sheetBase = sheet.href || location.href;
+    cssText = cssText.replace(
+      /url\(['"]?(?!data:|https?:|\/\/)([^'")]+)['"]?\)/g,
+      (m, p) => { try { return 'url("' + new URL(p, sheetBase).href + '")'; } catch { return m; } }
+    );
+    styleBlocks.push(cssText);
   }
   // Clone and sanitise
   const dc = document.documentElement.cloneNode(true);
@@ -40,12 +54,8 @@
       try { return new URL(u, location.href).href + (w ? ' ' + w : ''); } catch { return p; }
     }).join(', ');
   });
-  // Absolutize CSS url() refs
-  const B = location.origin + '/';
-  const absCSS = styleBlocks.join('\n').replace(
-    /url\(['"]?(?!data:|https?:|\/\/)([^'")]+)['"]?\)/g,
-    (m, p) => { try { return 'url("' + new URL(p, B).href + '")'; } catch { return m; } }
-  );
+  // CSS url() refs were already absolutized per-sheet above.
+  const absCSS = styleBlocks.join('\n');
   // Inject into head
   const head = dc.querySelector('head');
   const base = document.createElement('base'); base.href = location.origin + '/';

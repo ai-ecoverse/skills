@@ -1363,6 +1363,15 @@ function toggleCommentDone(itemId, cid) {
   const c = list.find(x => x.cid === cid);
   if (!c) return;
   c.done = !c.done;
+  // Keep the DURABLE positional marker in sync: state.pins[].done drives the seeded overlay and
+  // is a SEPARATE flag from the comment's done. Without this, re-opening the source re-seeds the
+  // marker as not-done and a completed marker reappears. (Marker num is global across pin urls.)
+  if (typeof c.num === 'number' && state.pins) {
+    Object.keys(state.pins).forEach((u) => {
+      const p = state.pins[u].find((x) => x.num === c.num);
+      if (p) p.done = c.done;
+    });
+  }
   saveState();
   // Re-render the comments log for this item
   const el = cardElements.get(itemId);
@@ -1370,10 +1379,12 @@ function toggleCommentDone(itemId, cid) {
     el.commentsLog.innerHTML = '';
     sortedComments(list).forEach(x => renderCommentEntry(el.commentsLog, x, itemId));
   }
-  // Part B5: update the review tab's overlay directly — no lick needed.
-  // Replicates what the scoop did: set __rvRemoveNum/__rvRemoveDone + eval remove-marker.js.
-  // Falls back silently if no review tab is open or the eval fails.
-  if (typeof c.num === 'number' && reviewTabId) {
+  // Part B5: update the OPEN review tab's overlay directly — no lick needed. Only when the tab
+  // belongs to the currently-viewed card (reviewTabUrl matches + same item) so we never toggle a
+  // marker on the wrong page. Falls back silently if no matching tab or the eval fails.
+  const curUrl = state.docItem && (state.docItem.previewUrl || state.docItem.liveUrl || '');
+  if (typeof c.num === 'number' && reviewTabId && reviewTabUrl === curUrl
+      && state.docItem && state.docItem.id === itemId) {
     slicc.readFile('/workspace/skills/review/overlay/remove-marker.js').then(rmSrc => {
       const code = 'window.__rvRemoveNum=' + c.num + ';window.__rvRemoveDone=' + c.done + ';\n' + rmSrc;
       return slicc.browser.evalAsync({ targetId: reviewTabId }, code);
@@ -1402,7 +1413,13 @@ function quoteArg(value) { return "'" + String(value).replace(/'/g, "'\\''") + "
 // Populated by captureSnapshot(); busted by the Reload button.
 const snapshotCache = new Map();
 // Tab opened by "Open source ↗" — all direct-browser ops (Pin Review, comment-done) target it.
+// reviewTabUrl binds that tab to the card it was opened for, so a stale tab left over from a
+// previously-viewed card is never targeted (its pins/markers would land on the wrong page).
 let reviewTabId = null;
+let reviewTabUrl = null;
+// Toggle state hoisted here (ahead of openPreview) so openPreview can reset it on card change.
+let reviewModeActive = false;
+let speckActive = false;
 
 // captureSnapshot(url, epoch): render the page in a real playwright tab so EDS
 // JS runs and decorates the DOM, inline all CSS, absolutize all resource URLs,
@@ -1469,6 +1486,14 @@ async function openPreview(item, focusTitle = true) {
   previewFrame = null;
   const legacyPath = state.docPath;
   state.docItem = {...item};
+  // A newly-viewed card invalidates any tab opened via "Open source" for the PREVIOUS card:
+  // clear the binding + toggle UI so Pin Review/Speck never target a stale, wrong-page tab.
+  reviewTabId = null; reviewTabUrl = null;
+  reviewModeActive = false; speckActive = false;
+  ['review-mode-btn', 'speck-btn'].forEach((bid) => {
+    const b = document.getElementById(bid);
+    if (b) { b.classList.remove('active'); b.setAttribute('aria-pressed', 'false'); }
+  });
   state.docPath = item.path || '';
   state.docTitle = item.title || (item.path || item.previewUrl || item.liveUrl || 'Preview').split('/').pop();
   const doc = currentDocument();
@@ -1799,6 +1824,7 @@ document.getElementById('preview-source-link').addEventListener('click', async (
     if (!tabMatch) throw new Error('tab open failed');
     const tabId = tabMatch[1].trim();
     reviewTabId = tabId;   // Part B: remember tab for Pin Review / comment-done
+    reviewTabUrl = url;    // bind it to this card's URL (guards against stale cross-card targeting)
     // (b) Read overlay source + seed pins + inject — single browser.evalAsync call.
     //     Merges what was previously 2 subprocess evals (seed + eval-file).
     const pinUrl = url;
@@ -1821,13 +1847,21 @@ document.getElementById('preview-source-link').addEventListener('click', async (
 // ── Pin Review toggle — Part B3: direct slicc.browser injection, no lick ─────
 // Formerly emitted toggle-review-mode lick → scoop seeded pins + injected overlay.
 // Now the sprinkle does it directly: read pins from state, evalAsync entry or exit.
-let reviewModeActive = false;
+// (reviewModeActive is declared above, next to reviewTabId.)
 document.getElementById('review-mode-btn').addEventListener('click', async () => {
   reviewModeActive = !reviewModeActive;
   const btn = document.getElementById('review-mode-btn');
   btn.classList.toggle('active', reviewModeActive);
   btn.setAttribute('aria-pressed', String(reviewModeActive));
-  if (!reviewTabId) return;  // no review tab open yet — noop until "Open source" clicked
+  // Use the direct-browser path ONLY when we hold a tab opened for THIS card. If not — a
+  // local chrome-extension:// preview (Open source is hidden, so reviewTabId is never set),
+  // or a card switched since the tab was opened — fall back to the agent lick, which can
+  // locate/open the correct preview tab. This restores local-preview Pin Review activation.
+  const curUrl = state.docItem && (state.docItem.previewUrl || state.docItem.liveUrl || '');
+  if (!reviewTabId || reviewTabUrl !== curUrl) {
+    slicc.lick({ action: 'toggle-review-mode', data: { url: curUrl, active: reviewModeActive } });
+    return;
+  }
   try {
     if (reviewModeActive) {
       // Inject / re-inject overlay in add mode, seeding stored pins first.
@@ -1861,7 +1895,7 @@ document.getElementById('review-mode-btn').addEventListener('click', async () =>
 // On remote https pages the page CSP blocks injection and the lick fires a
 // useless cone round-trip. Short-circuit early; keep lick for local previews
 // because bootstrap (upskill + webhook wiring) genuinely needs agent intelligence.
-let speckActive = false;
+// (speckActive is declared above, next to reviewTabId.)
 document.getElementById('speck-btn').addEventListener('click', () => {
   speckActive = !speckActive;
   const btn = document.getElementById('speck-btn');
