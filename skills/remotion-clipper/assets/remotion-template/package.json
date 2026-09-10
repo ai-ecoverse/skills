@@ -10,7 +10,7 @@
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "remotion": "4.0.523",
-    "zod": "4.4.3"
+    "zod": "4.6.2"
   },
   "devDependencies": {
     "@remotion/eslint-config-flat": "4.0.520",
