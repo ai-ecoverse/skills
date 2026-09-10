@@ -1,4 +1,5 @@
 // wiki.jsh — CLI for the LLM wiki knowledge base at /mnt/kb
+const fs = require('fs');
 const WIKI_ROOT = '/mnt/kb';
 const RAW_DIR = WIKI_ROOT + '/_raw';
 const CATS = ['people', 'work', 'creative', 'tech', 'taste', 'life', 'events', 'places'];
@@ -111,17 +112,16 @@ async function cmdRead() {
 }
 
 async function cmdStats() {
-  console.log('Wiki pages by category:');
+  const rows = [];
   let tot = 0;
   for (const c of CATS) {
     try {
       const es = await fs.readDir(WIKI_ROOT + '/' + c);
       const md = es.filter(e => { const n = en(e); return n && n.endsWith('.md'); });
-      if (md.length) console.log('  ' + c.padEnd(12) + ' ' + md.length);
+      if (md.length) rows.push('  ' + c.padEnd(12) + ' ' + md.length);
       tot += md.length;
     } catch (_) {}
   }
-  console.log('  ' + 'total'.padEnd(12) + ' ' + tot);
   let rc = 0, ea = null, la = null;
   try {
     const re = await fs.readDir(RAW_DIR);
@@ -132,6 +132,13 @@ async function cmdStats() {
     ds.sort();
     if (ds.length) { ea = ds[0]; la = ds[ds.length - 1]; }
   } catch (_) {}
+  if (tot === 0 && rc === 0) {
+    console.error('Error: No wiki pages or raw source files found at ' + WIKI_ROOT + '.');
+    process.exit(1);
+  }
+  console.log('Wiki pages by category:');
+  for (const row of rows) console.log(row);
+  console.log('  ' + 'total'.padEnd(12) + ' ' + tot);
   console.log('\nRaw source files: ' + rc);
   if (ea && la) console.log('  Date range: ' + ea + ' to ' + la);
   let tl = 0;
@@ -163,7 +170,18 @@ async function cmdLinks() {
 
 async function cmdOrphans() {
   const pages = await catDirs(CATS), linked = new Set();
-  for (const p of pages) { try { for (const l of wl(await fs.readFile(p.path))) linked.add(l); } catch (_) {} }
+  let readable = 0;
+  for (const p of pages) {
+    try {
+      const c = await fs.readFile(p.path);
+      readable++;
+      for (const l of wl(c)) linked.add(l);
+    } catch (_) {}
+  }
+  if (readable === 0) {
+    console.error('Error: No wiki pages could be read at ' + WIKI_ROOT + '.');
+    process.exit(1);
+  }
   const orph = [];
   for (const p of pages) { const s = p.file.replace(/\.md$/, ''); if (!linked.has(s)) orph.push(p.cat + '/' + p.file); }
   if (!orph.length) { console.log('No orphan pages found.'); return; }
