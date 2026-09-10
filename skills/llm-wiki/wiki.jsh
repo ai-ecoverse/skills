@@ -2,7 +2,8 @@
 const fs = require('fs');
 const WIKI_ROOT = '/mnt/kb';
 const RAW_DIR = WIKI_ROOT + '/_raw';
-const CATS = ['people', 'work', 'creative', 'tech', 'taste', 'life', 'events', 'places'];
+const CATS = ['people', 'work', 'creative', 'tech', 'taste', 'life', 'events', 'places', 'landlording'];
+const nk = (s) => String(s).normalize('NFC');
 
 const args = process.argv.slice(2);
 const sub = (args[0] || '').toLowerCase();
@@ -42,13 +43,13 @@ async function find(name) {
     const p = WIKI_ROOT + '/' + d + '/' + s + '.md';
     if (await fs.exists(p)) return { cat: d, file: s + '.md', path: p };
   }
-  const l = s.toLowerCase();
+  const l = nk(s).toLowerCase();
   for (const d of ds) {
     try {
       const es = await fs.readDir(WIKI_ROOT + '/' + d);
       for (const e of es) {
         const n = en(e);
-        if (n && n.replace(/\.md$/, '').toLowerCase() === l) return { cat: d, file: n, path: WIKI_ROOT + '/' + d + '/' + n };
+        if (n && nk(n).replace(/\.md$/, '').toLowerCase() === l) return { cat: d, file: n, path: WIKI_ROOT + '/' + d + '/' + n };
       }
     } catch (_) {}
   }
@@ -68,11 +69,11 @@ function wl(c) {
 async function cmdSearch() {
   const term = args.slice(1).join(' ');
   if (!term) { console.error('Usage: wiki search <term>'); process.exit(1); }
-  const lo = term.toLowerCase(), pages = await catDirs(CATS);
+  const lo = nk(term).toLowerCase(), pages = await catDirs(CATS);
   let h = 0;
   for (const p of pages) {
     if (h >= 20) break;
-    const nm = p.file.toLowerCase().includes(lo);
+    const nm = nk(p.file).toLowerCase().includes(lo);
     let lm = null;
     try {
       const c = await fs.readFile(p.path);
@@ -158,10 +159,10 @@ async function cmdLinks() {
   console.log('Outbound (' + ob.length + '):');
   if (!ob.length) console.log('  (none)');
   else for (const l of ob.sort()) console.log('  -> [[' + l + ']]');
-  const nm = n.file.replace(/\.md$/, ''), pages = await catDirs(CATS), ib = [];
+  const nm = nk(n.file).replace(/\.md$/, ''), pages = await catDirs(CATS), ib = [];
   for (const p of pages) {
-    if (p.path === n.path) continue;
-    try { if (wl(await fs.readFile(p.path)).some(l => l === nm)) ib.push(p.cat + '/' + p.file); } catch (_) {}
+    if (nk(p.path) === nk(n.path)) continue;
+    try { if (wl(await fs.readFile(p.path)).some(l => nk(l) === nm)) ib.push(p.cat + '/' + p.file); } catch (_) {}
   }
   console.log('\nInbound (' + ib.length + '):');
   if (!ib.length) console.log('  (none)');
@@ -175,7 +176,7 @@ async function cmdOrphans() {
     try {
       const c = await fs.readFile(p.path);
       readable++;
-      for (const l of wl(c)) linked.add(l);
+      for (const l of wl(c)) linked.add(nk(l));
     } catch (_) {}
   }
   if (readable === 0) {
@@ -183,7 +184,7 @@ async function cmdOrphans() {
     process.exit(1);
   }
   const orph = [];
-  for (const p of pages) { const s = p.file.replace(/\.md$/, ''); if (!linked.has(s)) orph.push(p.cat + '/' + p.file); }
+  for (const p of pages) { const s = nk(p.file).replace(/\.md$/, ''); if (!linked.has(s)) orph.push(p.cat + '/' + p.file); }
   if (!orph.length) { console.log('No orphan pages found.'); return; }
   console.log('Orphan pages (' + orph.length + '):\n');
   for (const o of orph) console.log('  ' + o);
