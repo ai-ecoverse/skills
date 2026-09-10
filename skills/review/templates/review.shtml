@@ -1363,6 +1363,15 @@ function toggleCommentDone(itemId, cid) {
   const c = list.find(x => x.cid === cid);
   if (!c) return;
   c.done = !c.done;
+  // Keep the DURABLE positional marker in sync: state.pins[].done drives the seeded overlay and
+  // is a SEPARATE flag from the comment's done. Without this, re-opening the source re-seeds the
+  // marker as not-done and a completed marker reappears. (Marker num is global across pin urls.)
+  if (typeof c.num === 'number' && state.pins) {
+    Object.keys(state.pins).forEach((u) => {
+      const p = state.pins[u].find((x) => x.num === c.num);
+      if (p) p.done = c.done;
+    });
+  }
   saveState();
   // Re-render the comments log for this item
   const el = cardElements.get(itemId);
@@ -1370,9 +1379,17 @@ function toggleCommentDone(itemId, cid) {
     el.commentsLog.innerHTML = '';
     sortedComments(list).forEach(x => renderCommentEntry(el.commentsLog, x, itemId));
   }
-  // If this is a pin comment, tell the cone to update the page overlay
-  if (typeof c.num === 'number') {
-    slicc.lick({ action: 'comment-done', data: { num: c.num, done: c.done, itemId, cid } });
+  // Part B5: update the OPEN review tab's overlay directly — no lick needed. Only when the tab
+  // belongs to the currently-viewed card (reviewTabUrl matches + same item) so we never toggle a
+  // marker on the wrong page. Falls back silently if no matching tab or the eval fails.
+  const curUrl = state.docItem && (state.docItem.previewUrl || state.docItem.liveUrl || '');
+  if (typeof c.num === 'number' && reviewTabId && reviewTabUrl === curUrl
+      && state.docItem && state.docItem.id === itemId) {
+    slicc.readFile('/workspace/skills/review/overlay/remove-marker.js').then(rmSrc => {
+      const code = 'window.__rvRemoveNum=' + c.num + ';window.__rvRemoveDone=' + c.done + ';\n' + rmSrc;
+      return slicc.browser.evalAsync({ targetId: reviewTabId }, code);
+    }).catch(() => {});  // non-fatal if tab closed or overlay not injected
+    // NOTE: slicc.lick('comment-done') removed. Scoop-side handler now obsolete for this path.
   }
 }
 
@@ -1392,6 +1409,51 @@ function toggleComment(id) {
 // ═══════════════════════════════════════════════════
 // The primitive exec bridge works on runtimes predating exec.spawn's jsh migration.
 function quoteArg(value) { return "'" + String(value).replace(/'/g, "'\\''") + "'"; }
+// ── Plan-B snapshot cache (url → decorated HTML string) ──────────────────────
+// Populated by captureSnapshot(); busted by the Reload button.
+const snapshotCache = new Map();
+// Tab opened by "Open source ↗" — all direct-browser ops (Pin Review, comment-done) target it.
+// reviewTabUrl binds that tab to the card it was opened for, so a stale tab left over from a
+// previously-viewed card is never targeted (its pins/markers would land on the wrong page).
+let reviewTabId = null;
+let reviewTabUrl = null;
+// Toggle state hoisted here (ahead of openPreview) so openPreview can reset it on card change.
+let reviewModeActive = false;
+let speckActive = false;
+
+// captureSnapshot(url, epoch): render the page in a real playwright tab so EDS
+// JS runs and decorates the DOM, inline all CSS, absolutize all resource URLs,
+// strip scripts, and return a self-contained HTML string ready for preparePreview.
+// Falls back to null on timeout/error so the caller can degrade to curl.
+async function captureSnapshot(url, epoch) {
+  // Return cached result if available (busted by Reload button).
+  if (snapshotCache.has(url)) return snapshotCache.get(url);
+  // The snapshot builder is a static file installed alongside the sprinkle.
+  // It runs in the real playwright tab where EDS JS executes normally.
+  const builderPath = '/workspace/skills/review/overlay/snap-builder.js';
+  // Open a FOREGROUND tab — hidden tabs throttle IntersectionObserver so EDS
+  // lazy-loading stalls and sections never reach status="loaded".
+  const openRes = await slicc.exec.spawn(['playwright-cli', 'open', url, '--foreground']);
+  const tabMatch = (openRes.stdout || '').match(/\[targetId:\s*([^\]]+)\]/);
+  if (!tabMatch) return null;  // playwright unavailable — degrade to curl
+  const tabId = tabMatch[1].trim();
+  try {
+    if (epoch !== previewEpoch) return null;
+    // Part A1: use slicc.browser.evalAsync instead of playwright-cli eval-file subprocess.
+    // No temp file, no stdout pipe — evalAsync returns the value directly via structured clone.
+    const builderSrc = await slicc.readFile(builderPath);
+    const resultStr = await slicc.browser.evalAsync({ targetId: tabId }, builderSrc);
+    if (epoch !== previewEpoch) return null;
+    const { html } = JSON.parse(typeof resultStr === 'string' ? resultStr : JSON.stringify(resultStr));
+    if (html) snapshotCache.set(url, html);
+    return html || null;
+  } catch (_) {
+    return null;  // builder failed — caller falls back to curl
+  } finally {
+    // tab-close still goes through exec (no slicc.browser.close exists).
+    slicc.exec.spawn(['playwright-cli', 'tab-close', '--tab', tabId]).catch(() => {});
+  }
+}
 async function previewCommand(command) {
   let timer;
   try {
@@ -1424,6 +1486,14 @@ async function openPreview(item, focusTitle = true) {
   previewFrame = null;
   const legacyPath = state.docPath;
   state.docItem = {...item};
+  // A newly-viewed card invalidates any tab opened via "Open source" for the PREVIOUS card:
+  // clear the binding + toggle UI so Pin Review/Speck never target a stale, wrong-page tab.
+  reviewTabId = null; reviewTabUrl = null;
+  reviewModeActive = false; speckActive = false;
+  ['review-mode-btn', 'speck-btn'].forEach((bid) => {
+    const b = document.getElementById(bid);
+    if (b) { b.classList.remove('active'); b.setAttribute('aria-pressed', 'false'); }
+  });
   state.docPath = item.path || '';
   state.docTitle = item.title || (item.path || item.previewUrl || item.liveUrl || 'Preview').split('/').pop();
   const doc = currentDocument();
@@ -1455,9 +1525,18 @@ async function openPreview(item, focusTitle = true) {
       }
       if (raw === undefined) {
         if (!/^https?:\/\//i.test(url)) throw Error('No readable file or preview URL.');
-        const r = await previewCommand('curl -fL --max-time 20 ' + quoteArg(url));
-        if (r.exitCode !== 0) throw Error('Could not fetch the preview. ' + (r.stderr || 'Check the URL and your access.'));
-        raw = r.stdout; base = url;
+        // Plan-B: render in a real playwright tab so EDS JS decorates the page.
+        // Falls back to plain curl if the snapshot pipeline fails or times out.
+        const snapped = await captureSnapshot(url, epoch);
+        if (snapped) {
+          raw = snapped; base = url;
+          format = 'html';  // snapshot is already full HTML, not markdown
+        } else {
+          // Degraded path: plain curl → inert undecorated render (better than nothing).
+          const r = await previewCommand('curl -fL --max-time 20 ' + quoteArg(url));
+          if (r.exitCode !== 0) throw Error('Could not fetch the preview. ' + (r.stderr || 'Check the URL and your access.'));
+          raw = r.stdout; base = url;
+        }
       }
       format = /\.(md|markdown)([?#]|$)/i.test(base || '') ? 'markdown' : 'html';
       if (format === 'markdown') raw = '<!doctype html><html><body><main class="review-markdown">' + mdToHtml(raw) + '</main></body></html>';
@@ -1536,6 +1615,9 @@ async function preparePreview(raw, base, format) {
   style.id = 'review-theme';
   doc.head.append(style);
   doc.documentElement.dataset.reviewFormat = format;
+  // AEM Edge Delivery hides <body> until scripts.js adds `.appear` (FOUC guard).
+  // The preview is inert (scripts never run), so add it here or the frame is blank.
+  doc.body.classList.add('appear');
   // Avoid a foreign page's tabindex taking the reviewer out of the preview.
   doc.body.setAttribute('tabindex','0');
   return '<!doctype html>' + doc.documentElement.outerHTML;
@@ -1716,23 +1798,128 @@ function toggleAnnotationsPanel(forceOpen) {
   document.getElementById('annotations-toggle').setAttribute('aria-expanded',String(state.annotationsOpen));
 }
 document.getElementById('annotate-btn').addEventListener('click',()=>{annotateActive=!annotateActive;hidePopup();syncAnnotate();});
-document.getElementById('reload-preview-btn').addEventListener('click',()=>openPreview(state.docItem));
-
-// ── Review mode toggle ──
-let reviewModeActive = false;
-document.getElementById('review-mode-btn').addEventListener('click', () => {
-  reviewModeActive = !reviewModeActive;
-  const btn = document.getElementById('review-mode-btn');
-  btn.classList.toggle('active', reviewModeActive); btn.setAttribute('aria-pressed', String(reviewModeActive)); // color only — label stays "Pin Review"
-  slicc.lick({ action: 'toggle-review-mode', data: { active: reviewModeActive } });
+document.getElementById('reload-preview-btn').addEventListener('click', () => {
+  // Bust the snapshot cache for the current card's URL so re-capture runs fresh.
+  const reloadUrl = state.docItem && (state.docItem.previewUrl || state.docItem.liveUrl || '');
+  if (reloadUrl) snapshotCache.delete(reloadUrl);
+  openPreview(state.docItem);
 });
 
-// ── Speck toggle ──
-let speckActive = false;
+// ── "Open source ↗" — foreground tab + Pin Review overlay ──────────────────
+// Part A2: collapsed from 3 exec spawns to 1 exec + 1 slicc.browser.evalAsync.
+//   exec(playwright-cli open --foreground) is kept because slicc.browser.ensureTab
+//   does not foreground an existing tab and EDS IntersectionObserver needs a visible tab.
+//   The two overlay evals (seed flags + enter.resolved.js) are merged into one evalAsync.
+document.getElementById('preview-source-link').addEventListener('click', async (e) => {
+  e.preventDefault();
+  const url = state.docItem && (state.docItem.previewUrl || state.docItem.liveUrl || '');
+  if (!url) return;
+  const link = e.currentTarget;
+  link.textContent = 'Opening…';
+  const _t0 = Date.now();
+  try {
+    // (a) One exec spawn to open a foreground tab (no foreground API on slicc.browser).
+    const openRes = await slicc.exec.spawn(['playwright-cli', 'open', url, '--foreground']);
+    const tabMatch = (openRes.stdout || '').match(/\[targetId:\s*([^\]]+)\]/);
+    if (!tabMatch) throw new Error('tab open failed');
+    const tabId = tabMatch[1].trim();
+    reviewTabId = tabId;   // Part B: remember tab for Pin Review / comment-done
+    reviewTabUrl = url;    // bind it to this card's URL (guards against stale cross-card targeting)
+    // (b) Read overlay source + seed pins + inject — single browser.evalAsync call.
+    //     Merges what was previously 2 subprocess evals (seed + eval-file).
+    const pinUrl = url;
+    const storedPins = (state.pins && state.pins[pinUrl]) || [];
+    const overlaySrc = await slicc.readFile('/shared/review-overlay/enter.resolved.js');
+    const seedAndInject =
+      '(function(){' +
+        'window.__sliccWantAdd=false;' +
+        'window.__sliccReviewAll=' + JSON.stringify(storedPins) + ';' +
+      '})();\n' + overlaySrc;
+    await slicc.browser.evalAsync({ targetId: tabId }, seedAndInject);
+    console.log('[review] open-source latency:', Date.now() - _t0, 'ms');
+  } catch (_) {
+    // Overlay injection failure is non-fatal — tab still opened.
+  } finally {
+    link.textContent = 'Open source ↗';
+  }
+});
+
+// ── Pin Review toggle — Part B3: direct slicc.browser injection, no lick ─────
+// Formerly emitted toggle-review-mode lick → scoop seeded pins + injected overlay.
+// Now the sprinkle does it directly: read pins from state, evalAsync entry or exit.
+// (reviewModeActive is declared above, next to reviewTabId.)
+document.getElementById('review-mode-btn').addEventListener('click', async () => {
+  reviewModeActive = !reviewModeActive;
+  const btn = document.getElementById('review-mode-btn');
+  btn.classList.toggle('active', reviewModeActive);
+  btn.setAttribute('aria-pressed', String(reviewModeActive));
+  // Use the direct-browser path ONLY when we hold a tab opened for THIS card. If not — a
+  // local chrome-extension:// preview (Open source is hidden, so reviewTabId is never set),
+  // or a card switched since the tab was opened — fall back to the agent lick, which can
+  // locate/open the correct preview tab. This restores local-preview Pin Review activation.
+  const curUrl = state.docItem && (state.docItem.previewUrl || state.docItem.liveUrl || '');
+  if (!reviewTabId || reviewTabUrl !== curUrl) {
+    slicc.lick({ action: 'toggle-review-mode', data: { url: curUrl, active: reviewModeActive } });
+    return;
+  }
+  try {
+    if (reviewModeActive) {
+      // Inject / re-inject overlay in add mode, seeding stored pins first.
+      const url = state.docItem && (state.docItem.previewUrl || state.docItem.liveUrl || '');
+      const storedPins = (state.pins && url && state.pins[url]) || [];
+      const overlaySrc = await slicc.readFile('/shared/review-overlay/enter.resolved.js');
+      const inject =
+        '(function(){' +
+          'window.__sliccWantAdd=true;' +
+          'window.__sliccReviewAll=' + JSON.stringify(storedPins) + ';' +
+        '})();\n' + overlaySrc;
+      await slicc.browser.evalAsync({ targetId: reviewTabId }, inject);
+      // Mutually exclusive with Speck: turn Speck off if active.
+      if (speckActive) {
+        speckActive = false;
+        document.getElementById('speck-btn').classList.remove('active');
+        document.getElementById('speck-btn').setAttribute('aria-pressed', 'false');
+      }
+    } else {
+      // Exit add mode (crosshair off, markers stay).
+      const exitSrc = await slicc.readFile('/workspace/skills/review/overlay/exit.js');
+      await slicc.browser.evalAsync({ targetId: reviewTabId }, exitSrc);
+    }
+  } catch (_) { /* overlay op failed — UI state already toggled, not fatal */ }
+  // NOTE: slicc.lick removed. Scoop-side toggle-review-mode handler is now obsolete
+  // for the mechanical overlay op; it may still handle legacy external callers.
+});
+
+// ── Speck toggle — Part B4: skip lick for remote pages (Speck can't inject) ──
+// Speck Fix is local-preview only (chrome-extension:// via the EDS preview SW).
+// On remote https pages the page CSP blocks injection and the lick fires a
+// useless cone round-trip. Short-circuit early; keep lick for local previews
+// because bootstrap (upskill + webhook wiring) genuinely needs agent intelligence.
+// (speckActive is declared above, next to reviewTabId.)
 document.getElementById('speck-btn').addEventListener('click', () => {
   speckActive = !speckActive;
   const btn = document.getElementById('speck-btn');
-  btn.classList.toggle('active', speckActive); btn.setAttribute('aria-pressed', String(speckActive)); // color only — label stays "Speck Fix"
+  btn.classList.toggle('active', speckActive);
+  btn.setAttribute('aria-pressed', String(speckActive));
+  // Detect the review tab's protocol: remote https → Speck can't inject, skip lick.
+  const isLocal = /^chrome-extension:\/\//.test(
+    (state.docItem && (state.docItem.previewUrl || state.docItem.liveUrl)) || ''
+  );
+  if (!isLocal) {
+    // Revert the toggle — Speck is unavailable on remote pages.
+    speckActive = false;
+    btn.classList.remove('active');
+    btn.setAttribute('aria-pressed', 'false');
+    console.info('[review] Speck Fix is local chrome-extension:// previews only.');
+    return;
+  }
+  // Local preview: Speck bootstrap requires agent (upskill + webhooks). Keep lick.
+  // Mutually exclusive with Pin Review.
+  if (speckActive && reviewModeActive) {
+    reviewModeActive = false;
+    document.getElementById('review-mode-btn').classList.remove('active');
+    document.getElementById('review-mode-btn').setAttribute('aria-pressed', 'false');
+  }
   slicc.lick({ action: 'toggle-speck', data: { active: speckActive } });
 });
 
@@ -1869,6 +2056,9 @@ slicc.on('update', async (msg) => {
   }
 
   else if (msg.action === 'request-pins') {
+    // Part B6: this round-trip is no longer used internally — B3 seeds pins directly
+    // into the tab via slicc.browser.evalAsync at inject time. Handler kept for
+    // backwards-compat with any external callers (e.g. legacy scoop code).
     const url = msg.url;
     const pins = (state.pins && state.pins[url]) ? state.pins[url] : [];
     slicc.lick({ action: 'pins', data: { url, pins } });
