@@ -10,9 +10,9 @@ description: |
   render, and the `remotion` CLI: `inspect` / `validate` / `stage` / `transcode` /
   `render` (in-browser, via `@remotion/web-renderer`). Triggers on "clip this
   interview", "cut this into TikToks", "vertical video edit", "split-screen interview",
-  "EDL", "crop to 9:16", "talking-head video export". Also load this to inspect a
-  video/audio file's dimensions, duration, or codec WITHOUT ffmpeg
-  (`@remotion/media-parser` does it natively in SLICC).
+  "EDL", ".mp4", ".webm", "crop to 9:16", "talking-head video export". Also load
+  this to inspect a video/audio file's dimensions, duration, or codec WITHOUT
+  ffmpeg (`@remotion/media-parser` does it natively in SLICC).
 allowed-tools: bash
 ---
 
@@ -25,9 +25,11 @@ every subcommand runs entirely in-browser, no external host, no ffmpeg.
 - `remotion inspect` — dimensions/duration/codec of a file, via `@remotion/media-parser`.
 - `remotion validate` — EDL schema checks + real in-point/duration cross-checks against
   the actual media.
-- `remotion stage` — real byte copies (never symlinks) of every source an EDL
-  references, laid out the way a Remotion project's `public/assets/` expects.
+- `remotion stage` — copies every source an EDL references into the layout a
+  Remotion project's `public/assets/` expects.
 - `remotion transcode` — whole-file container/codec transcode via `@remotion/webcodecs`.
+- `remotion render` — in-browser encode via `@remotion/web-renderer`.
+- `remotion filmstrip` — contact sheet of sampled frames, so output can be looked at.
 
 ## Setup (one time)
 
@@ -40,42 +42,43 @@ Module resolution for `.jsh` scripts walks up from the script's own directory, n
 shell's cwd — install from inside this skill's directory (or run `ipk install` with no
 args from here), not from wherever you happen to be when you first use it.
 
-## Quick start
+## End-to-end workflow
 
-```bash
-remotion inspect footage.webm --json          # dimensions/duration/codec, no ffmpeg
-remotion validate edl.json                     # schema + real in-point/duration checks
-remotion stage edl.json /tmp/staged            # real copies (not symlinks) of every source
-remotion transcode footage.mp4 out.webm        # whole-file transcode, no external host
-```
+1. **Inspect** the source: `remotion inspect footage.webm --json` — dimensions,
+   duration, codec.
+2. **Author** the EDL JSON (schema below).
+3. **Validate**: `remotion validate edl.json`. If validate fails, fix the EDL and
+   re-run validate until it passes. Do not stage or render a failing EDL.
+4. **Stage**: `remotion stage edl.json /tmp/staged` — copies every referenced
+   source, plus a rewritten EDL at `/tmp/staged/edl.staged.json`.
+5. **Render**: `remotion render edl.json /tmp/out` — writes `/tmp/out/edl.mp4` by
+   default. See **Known limitations**.
+6. **Filmstrip**: `remotion filmstrip /tmp/out/edl.mp4 --frames=6 --width=160` —
+   look at the result rather than trusting it.
+
+Optional, if inspect shows a container/codec you need to convert:
+`remotion transcode footage.mp4 out.webm` (see **Known limitations**).
 
 ## Rendering — in the browser
 
 Render with **`@remotion/web-renderer`**. It renders a Remotion composition to canvas
 and encodes with mediabunny, so it needs a browser but NOT a headless-Chromium binary and
-NOT native ffmpeg. Measured here: a 1080x1920 h264 mp4 in **410ms** for 4.6s of synthetic
-output, and a real 7-segment cut with two video sources in **50s** for 29.9s of output
-(decode-bound, so real footage runs slower than realtime; do not quote the synthetic
-figure for real work).
+NOT native ffmpeg.
 
 It needs a real DOM, so it runs in a served page rather than in a `.jsh` realm —
-`require('@remotion/web-renderer')` from a script fails. Load the package through an
-importmap of pinned, `external`-ised esm.sh builds so exactly one copy of `react`,
-`react-dom`, `remotion` and `mediabunny` is shared; the package's own
-`dist/esm/index.mjs` imports bare `react` and cannot be loaded from `node_modules`
-in a browser. Compositions use `React.createElement` — no JSX, no build step.
+`require('@remotion/web-renderer')` from a script fails. Load the package through
+an importmap of pinned, `external`-ised esm.sh builds so exactly one copy of
+`react`, `react-dom`, `remotion` and `mediabunny` is shared — `render` copies
+`assets/remotion-harness/` (working importmap included); do not load
+`dist/esm/index.mjs` from `node_modules` in a browser (it imports bare `react`).
+Compositions use `React.createElement` — no JSX, no build step.
 
 Trimming and compositing live in the **composition** (`trimBefore`/`trimAfter` and
-ordinary CSS layout), not in `@remotion/webcodecs`. `convertMedia` is whole-file only
-with no time range, which is why it cannot serve as a renderer — but that was never the
-right layer for a cut.
+ordinary CSS layout), not in `@remotion/webcodecs`. See **Known limitations** for
+background-tab slowdown, `convertMedia` whole-file-only, and the synthetic 410ms figure.
 
-Three traps worth knowing before you spend an hour on them:
+Two traps worth knowing before you spend an hour on them:
 
-- **A hidden tab is ~117x slower and will not load media at all.** The same render
-  measured 146ms visible and 17097ms hidden, with byte-identical output, and a
-  `<video>` in a background tab sits at `readyState 0` forever. Foreground the tab
-  before rendering.
 - **Pin codec profile AND level to the resolution.** `avc1.42E01E` is baseline level
   3.0: `true` at 640x480, `false` at 1080x1920. That is a level limit, not a missing
   codec — `avc1.42E034` and `avc1.640028` both encode 1080x1920. A bare
@@ -84,8 +87,7 @@ Three traps worth knowing before you spend an hour on them:
   fails with `No font filename provided` because the wasm core ships no font, and
   supplying one from the VFS fails with `cannot open resource`.
 
-`references/render-target.md` documents the reasoning, including the earlier wrong
-conclusion that rendering was impossible here and why it was reached.
+`references/render-target.md` documents the mechanism and measured numbers.
 
 ## The EDL schema
 
@@ -117,7 +119,7 @@ but is not yet wired into the template's render logic (see `references/findings.
 |---|---|
 | `remotion inspect <file> [--json]` | dimensions/duration/codec via `@remotion/media-parser` — no ffmpeg |
 | `remotion validate <edl.json> [--no-check-media]` | schema checks + (default) real in-point/duration cross-checks |
-| `remotion stage <edl.json> <dir>` | real byte copies of every referenced source into `<dir>/assets`, plus a rewritten EDL |
+| `remotion stage <edl.json> <dir>` | copies every referenced source into `<dir>/assets`, plus a rewritten EDL |
 | `remotion transcode <src> <out> [--container webm\|mp4]` | whole-file container/codec transcode via `@remotion/webcodecs`, fully in-browser |
 | `remotion render <edl.json> <dir> [--index N] [--out <path>]` | renders the EDL to an mp4 in the browser via `@remotion/web-renderer`. Whole EDL by default; `--index N` for one segment |
 | `remotion filmstrip <file> [--frames=N] [--width=N]` | contact sheet of evenly-sampled frames, so output can be LOOKED at rather than trusted |
@@ -150,15 +152,19 @@ shape (`{durationInSeconds, source: {src, inSec}}` or `{..., top, bottom}` for s
 
 ## Known limitations (read before promising more than this does)
 
-- **Real footage renders SLOWER than realtime.** Decode-bound, not encode-bound:
-  50s for a 29.9s output with two video sources. A synthetic composition (text on a
-  background) hit 410ms for 4.6s, i.e. ~11x faster than realtime — do not quote that
-  figure for real work, it is not representative.
-- **`convertMedia` cannot trim.** `remotion transcode` is whole-file only. Cutting
-  belongs to the composition (`trimBefore`/`trimAfter`), which is what `render` uses.
-- **A background tab is ~117x slower and will not load media at all.** `render`
-  foregrounds its tab for this reason; if something else steals focus mid-render, the
-  render still completes but takes far longer.
+- **A background tab is ~117x slower and will not load media at all.** The same render
+  measured 146ms visible and 17097ms hidden, with byte-identical output, and a
+  `<video>` in a background tab sits at `readyState 0` forever. Foreground the tab
+  before rendering. `render` foregrounds its tab; if something else steals focus
+  mid-render, the render still completes but takes far longer.
+- **`convertMedia` cannot trim / is whole-file only.** It has no time range, so it
+  cannot serve as a renderer. `remotion transcode` is whole-file only. Cutting belongs
+  to the composition (`trimBefore`/`trimAfter`), which is what `render` uses.
+- **The synthetic 410ms figure is not representative of real work.** A 1080x1920 h264
+  mp4 of 4.6s synthetic output (text on a background) rendered in 410ms (~11x faster
+  than realtime). Real footage is decode-bound and slower than realtime: 50s for a
+  29.9s output of a 7-segment cut with two video sources. Do not quote 410ms for real
+  footage.
 - **Sources over ~25 MiB cannot be served directly**, so `render` splits them into
   ~8 MiB parts and reassembles them in-page. Upstream: `ai-ecoverse/slicc#2852`.
 - **Symlinked assets in a Remotion project's `public/` break `remotion render`**
