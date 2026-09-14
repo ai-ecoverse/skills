@@ -51,9 +51,10 @@ args from here), not from wherever you happen to be when you first use it.
    re-run validate until it passes. Do not stage or render a failing EDL.
 4. **Stage**: `remotion stage edl.json /tmp/staged` — copies every referenced
    source, plus a rewritten EDL at `/tmp/staged/edl.staged.json`.
-5. **Render**: `remotion render edl.json /tmp/out` — writes `/tmp/out/edl.mp4` by
-   default. See **Known limitations**.
-6. **Filmstrip**: `remotion filmstrip /tmp/out/edl.mp4 --frames=6 --width=160` —
+5. **Render**: `remotion render edl.json /tmp/staged` — same directory as stage
+   so the copies are reused; writes `/tmp/staged/edl.mp4` by default. See
+   **Known limitations**.
+6. **Filmstrip**: `remotion filmstrip /tmp/staged/edl.mp4 --frames=6 --width=160` —
    look at the result rather than trusting it.
 
 Optional, if inspect shows a container/codec you need to convert:
