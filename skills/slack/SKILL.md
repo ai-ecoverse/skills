@@ -1,14 +1,15 @@
 ---
 name: slack
 description: Interact with Slack via its Web API — read messages, post to channels,
-  search channels, read threads, find and look up users by name, username, or email, view activity/notifications, manage
+  search message text, search channels, read threads, find and look up users by name, username, or email, view activity/notifications, manage
   Slack support requests, and watch channels for new messages in real time. Supports
   multiple workspaces with auto-detection from the active tab. Use when the user wants
-  to check Slack messages, post a Slack message, search Slack channels, read Slack
-  threads, get Slack user info, view Slack notifications or activity feed, manage Slack
-  support tickets/help requests, watch a channel for updates, or automate any Slack task.
-  Triggers on mentions of Slack, channels, DMs, threads, messages, Slackbot,
-  notifications, activity, support requests, help requests, or watching/monitoring.
+  to check Slack messages, post a Slack message, search Slack messages or message text,
+  search Slack channels, read Slack threads, get Slack user info, view Slack notifications
+  or activity feed, manage Slack support tickets/help requests, watch a channel for
+  updates, or automate any Slack task. Triggers on mentions of Slack, channels, DMs,
+  threads, messages, Slackbot, notifications, activity, support requests, help requests,
+  watching/monitoring, or searching message text.
 allowed-tools: bash
 ---
 
@@ -50,6 +51,10 @@ slack post W5BPKRLUA "Hey, quick question..."   # user ID → DM opened automati
 
 # Search for channels
 slack channels --search=one-aem
+
+# Search message text (not users -- use "slack find" for users)
+slack search "deploy failed"
+slack search '"AdobeSkills/1.0"' --ws=T06DUTYDQ   # exact phrase
 
 # Read a thread (file/image attachments are shown with their [F...] id)
 slack thread C087NCG774J 1774539502.747989
@@ -312,6 +317,41 @@ Internals: `references/watch-architecture.md`.
 Search for channels by name. Uses `search.modules` API (the standard
 `conversations.list` is restricted on enterprise grids). Returns channel ID, name,
 member count, and purpose.
+
+### slack search \<query\> [--limit=N] [--page=N] [--sort=timestamp|score] [--json]
+
+Search message text across the workspace using Slack's `search.messages` API.
+Returns matching messages with timestamps, channels, authors, text snippets, and
+permalinks. Default limit is 20, sorted by `timestamp` (newest first). Results are
+scoped to the token's workspace, so `--ws=<ID>` selects which workspace is searched.
+
+**This searches messages.** To search users, use `slack find`. To search channels,
+use `slack channels --search`.
+
+**Flags:**
+- `--limit=N` -- number of results per page (default 20)
+- `--page=N` -- page number, 1-based (default 1)
+- `--sort=timestamp|score` -- sort order (default `timestamp`)
+- `--json` -- dump the raw API response
+
+**Exact-phrase matching.** Slack tokenizes unquoted terms and matches loosely. For
+example, searching `AdobeSkills` returned 678 hits because it also matched
+`adobe/skills`. Wrapping the term in double quotes makes it an exact phrase:
+`"AdobeSkills/1.0"` returned 0 hits. When hunting an exact string, always quote it.
+
+```bash
+# Search for messages mentioning a topic
+slack search "deploy failed"
+
+# Exact phrase -- the double quotes are part of the query
+slack search '"AdobeSkills/1.0"' --ws=T06DUTYDQ
+
+# Page through results sorted by relevance
+slack search "incident postmortem" --sort=score --page=2
+
+# Raw JSON for scripting
+slack search "outage" --limit=5 --json | jq '.messages.matches[].permalink'
+```
 
 ### slack thread \<channel_id\> \<thread_ts\> [--limit=N] [--json]
 

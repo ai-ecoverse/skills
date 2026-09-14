@@ -1427,6 +1427,71 @@ const commands = {
     }
   },
 
+  // Search message text across the workspace via search.messages.
+  // Distinct from `find` (which searches USERS) and `channels --search` (which
+  // searches CHANNELS). This searches MESSAGE CONTENT.
+  async search(args, globalFlags) {
+    const { flags, positional } = parseArgs(args);
+    // The query may contain spaces and embedded double-quotes (for exact-phrase
+    // search), so join all non-flag argv into one string. parseArgs already
+    // strips flags; positional words are the query tokens.
+    const query = positional.join(' ').trim();
+
+    if (!query) {
+      console.error('Usage: slack search <query> [--limit=N] [--page=N] [--sort=timestamp|score] [--json]');
+      console.error('Search message text. Wrap terms in double quotes for exact-phrase matching.');
+      console.error('  (To search users, use "slack find". To search channels, use "slack channels --search".)');
+      process.exit(1);
+    }
+
+    const wsId = await resolveWorkspace(globalFlags);
+    const count = flags.limit || '20';
+    const page = flags.page || '1';
+    const sort = flags.sort || 'timestamp';
+    const params = { query, count, page, sort, highlight: '0' };
+
+    const data = await slackApi('search.messages', params, wsId);
+    if (!data.ok) {
+      console.error('Error:', data.error);
+      process.exit(1);
+    }
+
+    // --json emits the raw API response so jq can consume it.
+    if (flags.json) {
+      console.log(JSON.stringify(data, null, 2));
+      return;
+    }
+
+    const messages = data.messages || {};
+    const matches = messages.matches || [];
+    const total = messages.total || 0;
+    const paging = messages.paging || {};
+
+    if (total === 0) {
+      console.log(`No messages found matching "${query}".`);
+      return;
+    }
+
+    console.log(`Found ${total} message(s) matching "${query}":\n`);
+    for (const m of matches) {
+      const time = formatTimestamp(m.ts);
+      const ch = m.channel || {};
+      const chanLabel = ch.name ? `#${ch.name}` : (ch.id || '(unknown)');
+      const author = m.username || m.user || '(unknown)';
+      // Truncate long messages to keep output scannable; preserve the first
+      // few lines so multi-line content stays readable.
+      let text = (m.text || '').replace(/\n/g, '\n    ');
+      if (text.length > 300) text = text.slice(0, 297) + '...';
+      const link = m.permalink || '';
+      console.log(`  [${time}] ${chanLabel} | ${author}: ${text}`);
+      if (link) console.log(`    ${link}`);
+    }
+
+    if (paging.pages && paging.pages > paging.page) {
+      console.log(`\n--- Page ${paging.page} of ${paging.pages} (${total} total). Use --page=${paging.page + 1} for more. ---`);
+    }
+  },
+
   async thread(args, globalFlags) {
     const { flags, positional } = parseArgs(args);
     const channel = positional[0];
@@ -2651,6 +2716,8 @@ if (!cmd || cmd === 'help' || cmd === '--help') {
   console.log('                                           Upload a file to a channel/DM/thread');
   console.log('  download <file_id> [--out=<path>]         Download a file (e.g. thread image) locally');
   console.log('  channels --search=<term>                  Search for channels');
+  console.log('  search <query> [--limit=N] [--page=N] [--sort=timestamp|score] [--json]');
+  console.log('                                           Search message text (not users — see find)');
   console.log('  thread <channel_id> <thread_ts> [--limit] [--json]');
   console.log('                                           Read thread replies (shows [F...] file ids)');
   console.log('  find <name, username, or email> [--limit=N] Search users by name/username/email → user IDs');
