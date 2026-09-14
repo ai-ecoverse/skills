@@ -272,7 +272,12 @@ class AdbTransport {
     // promise but the underlying transferIn stays pending in the bridge and
     // swallows the next real packet, desyncing every read after it.
     if (this.shouldReset) {
-      try { await this.device.reset(); } catch { /* not fatal */ }
+      try { await this.device.reset(); } catch { /* not fatal */
+        console.error(
+          'adb: warning: USB reset failed to clear endpoint buffers; ' +
+          'the handshake may encounter stale frames.'
+        );
+      }
     }
     await this.device.claimInterface(this.iface.interfaceNumber);
     this.claimed = true;
@@ -371,8 +376,11 @@ async function handshake(transport, key) {
     if (msg.cmd === A_AUTH && msg.arg0 === AUTH_TOKEN) {
       if (++attempts > MAX_AUTH_ATTEMPTS) {
         throw new Error(
-          'device rejected the signature — this key is not authorized.\n' +
-          "  Point --key at a key the device already trusts (the host's\n" +
+          `authentication did not complete after ${attempts} A_AUTH TOKEN frames.\n` +
+          '  Either this key is not trusted by the device, or the USB transport\n' +
+          '  is desynced with stale A_AUTH frames from a previous killed session.\n' +
+          '  A retry (optionally with --no-reset) may clear a stale transport.\n' +
+          "  If the key is not trusted, point --key at one the device already trusts (the host's\n" +
           '  ~/.android/adbkey is the usual one). Enrolling a NEW key is not\n' +
           '  supported yet: that needs the AUTH RSAPUBLICKEY frame, which this\n' +
           '  client does not send, so no on-device approval prompt will appear\n' +
