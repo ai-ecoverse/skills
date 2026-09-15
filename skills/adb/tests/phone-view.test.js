@@ -7,22 +7,41 @@ const test = require('node:test');
 const source = fs.readFileSync(path.join(__dirname, '../phone-view.shtml'), 'utf8');
 const scripts = [...source.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
 
-function panel(list = async () => [], usb = {}) {
+function panel(list = async () => [], usb = {}, timers = {}) {
   const controls = Array.from({ length: 4 }, () => ({ disabled: true }));
   const elements = {
-    status: { textContent: 'No device connected', className: '' },
+    status: {
+      textContent: 'No device connected',
+      className: '',
+      classList: { contains: (name) => elements.status.className.split(/\s+/).includes(name) },
+    },
     screen: { hidden: true, getContext: () => ({}), addEventListener() {} },
     'empty-state': { hidden: false },
     'connect-btn': { textContent: 'Connect', disabled: false },
   };
   const calls = [];
+  class FakeVideoDecoder {
+    constructor() {
+      this.state = 'configured';
+    }
+    configure() {}
+    decode() {}
+    async close() {
+      this.state = 'closed';
+    }
+  }
   const context = vm.createContext({
     TextEncoder,
     TextDecoder,
     Uint8Array,
     DataView,
+    performance,
     setInterval,
     clearInterval,
+    setTimeout: timers.setTimeout ?? setTimeout,
+    clearTimeout: timers.clearTimeout ?? clearTimeout,
+    VideoDecoder: FakeVideoDecoder,
+    EncodedVideoChunk: class {},
     document: { getElementById: (id) => elements[id], querySelectorAll: () => controls },
     slicc: {
       usb: {
@@ -67,6 +86,156 @@ test('a pending connection disables Connect and ignores duplicate starts', async
   assert.equal(p.elements['connect-btn'].disabled, false);
 });
 
+test('a rejected mid-stream read retains its cause and enables retry', async () => {
+  let reads = 0;
+  const p = panel(undefined, {
+    transferOut: async () => {},
+    transferIn: async () => {
+      if (reads++ === 0) {
+        const bytes = new Uint8Array(24);
+        const view = new DataView(bytes.buffer);
+        view.setUint32(0, 0x59414b4f, true); // A_OKAY: stream opened
+        view.setUint32(4, 9, true); // remote id
+        view.setUint32(8, 2, true); // first local stream id
+        return { bytes };
+      }
+      throw new Error('transport lost');
+    },
+  });
+  await p.run(`
+    const adb = new Adb(1, { epIn: 2, epOut: 3 });
+    session = {
+      device: { handle: 1 }, iface: { interfaceNumber: 4 }, adb,
+      stopped: false, frames: 0, bytes: 0, size: { w: 720, h: 1568 },
+      lastByteAt: performance.now(),
+    };
+    syncControls();
+    pump(adb, session.size);
+  `);
+  assert.equal(reads, 2);
+  assert.match(p.elements.status.textContent, /Stream ended: transport lost/);
+  assert.equal(p.elements.status.className, 'err');
+  assert.equal(p.elements['connect-btn'].disabled, false);
+  assert.deepEqual(p.calls, ['release', 'close']);
+});
+
+test('a never-settling transferIn is bounded', async () => {
+  const p = panel(undefined, { transferIn: () => new Promise(() => {}) });
+  await assert.rejects(
+    p.run('new Adb(1, { epIn: 2 }, { read: 5 }).readExact(1)'),
+    /read timed out/
+  );
+});
+
+test('a healthy idle stream gets a long read timeout', () => {
+  let transferInCalls = 0;
+  let scheduledDelay = 0;
+  const p = panel(
+    undefined,
+    {
+      transferIn: () => {
+        transferInCalls++;
+        return new Promise(() => {});
+      },
+    },
+    {
+      setTimeout: (_callback, delay) => {
+        scheduledDelay = delay;
+        return 1;
+      },
+      clearTimeout: () => {},
+    }
+  );
+  void p.run('new Adb(1, { epIn: 2 }).readExact(1)');
+  assert.equal(transferInCalls, 1);
+  assert.equal(p.run('STREAM_READ_TIMEOUT_MS'), 30 * 60_000);
+  assert.ok(scheduledDelay > 29 * 60_000);
+});
+
+test('a warn status survives the pump finally path', async () => {
+  // When a stream stalls into the amber warning and then ends cleanly (no
+  // rejection), pump's real finally block must NOT overwrite the warning with
+  // the bland "Stream ended. Connect to retry." message. Exercises the actual
+  // pump() → adb.stream() → dispatchLoop path, not a copy of the guard.
+  let reads = 0;
+  const p = panel(undefined, {
+    transferOut: async () => {},
+    transferIn: async () => {
+      reads++;
+      if (reads === 1) {
+        // A_OKAY — the stream is accepted by the device.
+        const bytes = new Uint8Array(24);
+        const view = new DataView(bytes.buffer);
+        view.setUint32(0, 0x59414b4f, true); // A_OKAY
+        view.setUint32(4, 9, true); // remote id
+        view.setUint32(8, 2, true); // first local stream id
+        return { bytes };
+      }
+      if (reads === 2) {
+        // Before the stream ends, put the session in the stale/warn state
+        // as if the ticker's reportStreamStatus had fired after a long quiet.
+        p.run(`
+          session.lastByteAt = performance.now() - NO_DATA_WARNING_MS;
+          reportStreamStatus('test phone');
+        `);
+        assert.equal(p.elements.status.className, 'warn');
+        assert.match(p.elements.status.textContent, /no data for/);
+        // A_CLSE — clean stream end (no error). This makes stream() resolve
+        // without rejection, so pump's catch is skipped and only finally runs.
+        const bytes = new Uint8Array(24);
+        const view = new DataView(bytes.buffer);
+        view.setUint32(0, 0x45534c43, true); // A_CLSE
+        view.setUint32(4, 9, true); // remote id (arg0)
+        view.setUint32(8, 2, true); // local stream id (arg1)
+        return { bytes };
+      }
+      // dispatchLoop exits when streams.size === 0; should not reach here.
+      return new Promise(() => {});
+    },
+  });
+  await p.run(`
+    const adb = new Adb(1, { epIn: 2, epOut: 3 });
+    session = {
+      device: { handle: 1 }, iface: { interfaceNumber: 4 }, adb,
+      stopped: false, frames: 0, bytes: 0, size: { w: 720, h: 1568 },
+      lastByteAt: performance.now(),
+    };
+    syncControls();
+    pump(adb, session.size);
+  `);
+  // pump's finally has now run. The warn status must have survived.
+  assert.equal(reads, 2);
+  assert.equal(p.elements.status.className, 'warn');
+  assert.match(p.elements.status.textContent, /no data for/);
+  assert.equal(p.elements['connect-btn'].disabled, false);
+  assert.deepEqual(p.calls, ['release', 'close']);
+});
+
+test('lack of byte progress changes the streaming status', () => {
+  const p = panel();
+  p.run(`
+    session = {
+      stopped: false, frames: 7, bytes: 1024,
+      lastByteAt: performance.now() - NO_DATA_WARNING_MS,
+    };
+    reportStreamStatus('test phone');
+  `);
+  assert.match(p.elements.status.textContent, /no data for 45s/);
+  assert.match(p.elements.status.textContent, /disconnected or claimed elsewhere/);
+  assert.equal(p.elements.status.className, 'warn');
+});
+
+test('a ticker update cannot overwrite a latched stream error', () => {
+  const p = panel();
+  p.run(`
+    session = { stopped: false, frames: 7, bytes: 1024, lastByteAt: performance.now() };
+    say('Stream ended: transport lost. Connect to retry.', true);
+    reportStreamStatus('test phone');
+  `);
+  assert.equal(p.elements.status.textContent, 'Stream ended: transport lost. Connect to retry.');
+  assert.equal(p.elements.status.className, 'err');
+});
+
 test('Stop releases the connection and restores the disconnected controls', async () => {
   const p = panel();
   p.run(
@@ -90,24 +259,30 @@ for (const cleanupFails of [false, true]) {
       let releases = 0;
       let closes = 0;
       let starts = 0;
-      const p = panel(async () => {
-        starts++;
-        return [];
-      }, {
-        releaseInterface: () => {
-          releases++;
-          return new Promise((resolve, reject) => {
-            finishRelease = () => cleanupFails ? reject(new Error('release failed')) : resolve();
-          });
+      const p = panel(
+        async () => {
+          starts++;
+          return [];
         },
-        close: () => {
-          closes++;
-          return new Promise((resolve, reject) => {
-            finishClose = () => cleanupFails ? reject(new Error('close failed')) : resolve();
-          });
-        },
-      });
-      p.run('session = { device: { handle: 1 }, iface: { interfaceNumber: 2 }, frames: 7 }; syncControls();');
+        {
+          releaseInterface: () => {
+            releases++;
+            return new Promise((resolve, reject) => {
+              finishRelease = () =>
+                cleanupFails ? reject(new Error('release failed')) : resolve();
+            });
+          },
+          close: () => {
+            closes++;
+            return new Promise((resolve, reject) => {
+              finishClose = () => (cleanupFails ? reject(new Error('close failed')) : resolve());
+            });
+          },
+        }
+      );
+      p.run(
+        'session = { device: { handle: 1 }, iface: { interfaceNumber: 2 }, frames: 7 }; syncControls();'
+      );
       const pending = p.run(trigger);
       const duplicate = p.run('teardown()');
       await new Promise(setImmediate);
