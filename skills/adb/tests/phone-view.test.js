@@ -7,7 +7,7 @@ const test = require('node:test');
 const source = fs.readFileSync(path.join(__dirname, '../phone-view.shtml'), 'utf8');
 const scripts = [...source.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
 
-function panel(list = async () => [], usb = {}) {
+function panel(list = async () => [], usb = {}, timers = {}) {
   const controls = Array.from({ length: 4 }, () => ({ disabled: true }));
   const elements = {
     status: {
@@ -38,8 +38,8 @@ function panel(list = async () => [], usb = {}) {
     performance,
     setInterval,
     clearInterval,
-    setTimeout,
-    clearTimeout,
+    setTimeout: timers.setTimeout ?? setTimeout,
+    clearTimeout: timers.clearTimeout ?? clearTimeout,
     VideoDecoder: FakeVideoDecoder,
     EncodedVideoChunk: class {},
     document: { getElementById: (id) => elements[id], querySelectorAll: () => controls },
@@ -127,35 +127,29 @@ test('a never-settling transferIn is bounded', async () => {
   );
 });
 
-test('a healthy idle stream survives the read timeout', async () => {
-  // An idle screen produces no data, so transferIn stays pending for minutes.
-  // The stream-read timeout must be long enough that it never kills a healthy
-  // idle session — it is a backstop for an infinite hang, not a diagnostic.
-  // The 45-second amber warning is the real user-facing signal.
+test('a healthy idle stream gets a long read timeout', () => {
   let transferInCalls = 0;
-  const p = panel(undefined, {
-    transferIn: () => {
-      transferInCalls++;
-      // Simulate an idle screen: transferIn never completes.
-      return new Promise(() => {});
+  let scheduledDelay = 0;
+  const p = panel(
+    undefined,
+    {
+      transferIn: () => {
+        transferInCalls++;
+        return new Promise(() => {});
+      },
     },
-  });
-  // Verify the constant is at least 30 minutes — long enough that no
-  // plausible idle period trips it.
-  const ms = p.run('STREAM_READ_TIMEOUT_MS');
-  assert.ok(ms >= 30 * 60_000, `STREAM_READ_TIMEOUT_MS should be >= 30 min, got ${ms}`);
-
-  // Start a readExact with the default timeout. If the timeout were still
-  // 5 minutes, this would reject; at 30 minutes, it should NOT reject within
-  // a short window. We race the readExact against a short timer.
-  const raceResult = await p.run(`
-    Promise.race([
-      new Adb(1, { epIn: 2 }).readExact(1).then(() => 'data'),
-      new Promise(resolve => setTimeout(() => resolve('still-alive'), 50)),
-    ])
-  `);
-  assert.equal(raceResult, 'still-alive', 'readExact must not reject while idle');
-  assert.ok(transferInCalls >= 1, 'transferIn should have been called');
+    {
+      setTimeout: (_callback, delay) => {
+        scheduledDelay = delay;
+        return 1;
+      },
+      clearTimeout: () => {},
+    }
+  );
+  void p.run('new Adb(1, { epIn: 2 }).readExact(1)');
+  assert.equal(transferInCalls, 1);
+  assert.equal(p.run('STREAM_READ_TIMEOUT_MS'), 30 * 60_000);
+  assert.ok(scheduledDelay > 29 * 60_000);
 });
 
 test('a warn status survives the pump finally path', async () => {
