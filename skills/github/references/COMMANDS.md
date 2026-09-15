@@ -80,6 +80,8 @@ gh pr comment 42 --body "LGTM"               # or: gh pr comment 42 "LGTM"; --bo
 gh pr checkout 42                            # prints git fetch/checkout commands, does not execute
 gh pr watch 42                               # PR-scoped; --filter <js> adds a predicate; --scoop <name>
 gh pr unwatch 42
+gh pr ready 42                               # mark draft PR ready for review (GraphQL mutation)
+gh pr ready 42 --undo                        # convert back to draft
 ```
 
 - `pr create`: `--head` is the branch to merge from; `--base` defaults to the repo's default
@@ -116,6 +118,9 @@ gh pr unwatch 42
   `GET /repos/{owner}/{repo}/pulls/{n}/files` (filename + patch per file). `--repo` /
   `-R` and a trailing `owner/repo` work as elsewhere. A missing PR exits 1 with a
   clear error and no stdout.
+- `pr ready` uses the GraphQL `markPullRequestReadyForReview` mutation (the REST API has no
+  draft toggle). `--undo` calls `convertPullRequestToDraft`. No-ops when the PR is already in
+  the target state.
 
 ## Issues
 
@@ -161,6 +166,7 @@ conclusion is printed instead. `run view` also lists failed steps inline in its 
 ```bash
 gh repo view                                 # --json --jq
 gh repo archive owner/repo                   # irreversible without admin unarchive
+gh repo clone owner/repo [dir]               # --depth N, -b/--branch B, -- <git flags>
 gh branch create my-feature --from develop   # or --from=<sha>
 gh branch delete my-feature
 gh content put README.md ./local.md "Update README" --branch my-feature
@@ -168,6 +174,10 @@ gh content put README.md ./local.md "Update README" --branch my-feature
 
 `content put` reads a local VFS file, base64-encodes it and creates or updates it via the
 Contents API, handling the SHA lookup for existing files.
+
+`repo clone` shells out to `git clone` with the public HTTPS URL; ambient credentials provide
+auth without embedding a token in the URL. For forks, an `upstream` remote is added
+automatically. Errors on non-empty destinations or inaccessible repos.
 
 ## Releases, search, Actions variables
 

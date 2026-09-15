@@ -7,12 +7,13 @@ description: >
   Use this skill for any GitHub task: listing, viewing, diffing, or editing pull requests, checking CI
   checks and failed job logs, merging PRs, posting comments, checking out branches, viewing issues,
   inspecting workflow runs, listing releases, searching PRs or issues, managing Actions variables,
-  creating branches, pushing file content, archiving repos, managing org-owned Projects (v2),
-  or calling any GitHub API endpoint directly.
+  creating branches, pushing file content, archiving repos, cloning repos, managing org-owned Projects (v2),
+  marking PRs ready for review, or calling any GitHub API endpoint directly.
   Trigger on requests like "list open PRs", "show the PR diff", "search issues", "check CI status",
   "why did CI fail", "merge this PR", "what issues are open", "has this been filed",
   "show the latest release", "post a comment on PR #42", "set a repo variable",
-  "create a branch", "push this file", "list my GitHub projects".
+  "create a branch", "push this file", "list my GitHub projects",
+  "mark this PR ready for review", "clone this repo".
 allowed_tools:
   - bash
 ---
@@ -129,6 +130,7 @@ gh pr checks <num> -R owner/repo && gh pr merge <num> --squash --delete-branch -
 ```bash
 gh pr watch <num>      # PR/review/CI events arrive as licks (idempotent)
 gh pr unwatch <num>    # tear down when the PR reaches a terminal state
+gh pr ready <num>      # mark a draft PR ready for review; --undo reverts to draft
 ```
 
 `pr watch` installs a webhook, so it mutates the repo. Events are filtered to the target PR
@@ -140,8 +142,8 @@ self-echo-detection pattern and the stop condition.
 
 ## Mutating and destructive operations
 
-`pr edit`, `pr merge`, `pr close`, `issue close`, `branch delete`, `repo archive`, `content put`,
-`vars set` and `pr watch`/`pr unwatch` change remote state. Before running one, confirm the
+`pr edit`, `pr merge`, `pr close`, `pr ready`, `issue close`, `branch delete`, `repo archive`,
+`content put`, `vars set` and `pr watch`/`pr unwatch` change remote state. Before running one, confirm the
 target with its read counterpart (`gh pr view <num>`, `gh pr checks <num>`,
 `gh branch`/`gh repo view`) — and never act on a PR number you have not just read back.
 
