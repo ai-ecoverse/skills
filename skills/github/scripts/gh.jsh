@@ -560,6 +560,7 @@ const FLAG_SPECS = {
     jq: { type: 'string', short: 'q' },
     field: { type: 'string', short: 'f' },
     'raw-field': { type: 'string', short: 'F' },
+    'input': { type: 'string' },
   },
   monday: {
     limit: { type: 'string' },
@@ -3238,10 +3239,11 @@ function typedApiField(value) {
 }
 
 async function apiPassthrough(args) {
-  const usage = 'usage: gh api <path> [-X METHOD] [-f key=value]... [-F key=value]... [--jq <expr>]';
+  const usage = 'usage: gh api <path> [-X METHOD] [-f key=value]... [-F key=value]... [--input <file>] [--jq <expr>]';
   if (!args[0]) cli.die(usage);
-  let method = 'GET', methodExplicit = false, jqExpr = null, stdinValue;
+  let method = 'GET', methodExplicit = false, jqExpr = null, stdinValue, inputFile = null;
   const fields = {};
+  let hasFieldFlags = false;
   const positional = [];
   const readTypedField = async (value) => {
     if (value === '@-') {
@@ -3258,6 +3260,12 @@ async function apiPassthrough(args) {
     }
     return typedApiField(value);
   };
+
+  // Known flags for `gh api` — used to reject unknown flags.
+  const KNOWN_API_FLAGS = new Set([
+    '-X', '--method', '--jq', '-q', '-f', '--raw-field', '-F', '--field', '--input',
+  ]);
+
   for (let i = 0; i < args.length; i++) {
     // Upstream spells the verb -X/--method and the filter --jq/-q; both work.
     if ((args[i] === '-X' || args[i] === '--method') && args[i+1]) {
@@ -3270,23 +3278,61 @@ async function apiPassthrough(args) {
     }
     else if ((args[i] === '--jq' || args[i] === '-q') && args[i+1]) { jqExpr = args[++i]; }
     else if (args[i].startsWith('--jq=')) { jqExpr = args[i].slice(5); }
+    else if (args[i] === '--input' && args[i+1]) { inputFile = args[++i]; }
+    else if (args[i].startsWith('--input=')) { inputFile = args[i].slice(8); }
     else if ((args[i] === '-f' || args[i] === '--raw-field') && args[i+1]) {
+      hasFieldFlags = true;
       const [k, ...vParts] = args[++i].split('=');
       assignField(fields, k, vParts.join('='));
     }
     else if ((args[i] === '-F' || args[i] === '--field') && args[i+1]) {
+      hasFieldFlags = true;
       const [k, ...vParts] = args[++i].split('=');
       assignField(fields, k, await readTypedField(vParts.join('=')));
+    }
+    else if (args[i].startsWith('-') && args[i].length > 1) {
+      // Unknown flag — reject it loudly instead of silently dropping it.
+      const flag = args[i].includes('=') ? args[i].slice(0, args[i].indexOf('=')) : args[i];
+      if (!KNOWN_API_FLAGS.has(flag)) {
+        cli.die(`api: unknown flag '${flag}'. Run \`gh api --help\` for usage.`);
+      }
     }
     else positional.push(args[i]);
   }
 
+  // --input is mutually exclusive with -f/-F field flags.
+  if (inputFile !== null && hasFieldFlags) {
+    cli.die('api: --input is mutually exclusive with -f/--raw-field and -F/--field. Pass one or the other.');
+  }
+
+  // Read the --input body (file or stdin).
+  let inputBody = null;
+  if (inputFile !== null) {
+    if (inputFile === '-') {
+      try { inputBody = String((await process.stdin.read()) ?? ''); }
+      catch (e) { cli.die(`api: could not read stdin for --input -: ${e.message}`); }
+    } else {
+      try { inputBody = await fs.readFile(inputFile); }
+      catch (e) { cli.die(`api: could not read --input ${inputFile}: ${e.message}`); }
+    }
+  }
+
   const path = positional[0];
-  if (!methodExplicit && Object.keys(fields).length) method = 'POST';
+  if (!methodExplicit && (Object.keys(fields).length || inputBody !== null)) method = 'POST';
 
   try {
     const opts = {};
-    if (Object.keys(fields).length) {
+    if (inputBody !== null) {
+      // --input sends the file content as-is (JSON body) for non-GET methods.
+      // For GET, convert the JSON into query parameters (matching real gh).
+      if (method === 'GET') {
+        try { opts.params = JSON.parse(inputBody); }
+        catch (e) { cli.die(`api: --input file is not valid JSON (needed for GET query params): ${e.message}`); }
+      } else {
+        try { opts.body = JSON.parse(inputBody); }
+        catch (e) { cli.die(`api: --input file is not valid JSON: ${e.message}`); }
+      }
+    } else if (Object.keys(fields).length) {
       if (method === 'GET') opts.params = fields;
       else opts.body = fields;
     }
@@ -3697,17 +3743,19 @@ const HELP = {
   api: {
     summary: 'Raw GitHub REST API passthrough',
     standalone: {
-      usage: ['gh api <path> [-X METHOD] [-f key=value]... [-F key=value]... [--jq <expr>]'],
+      usage: ['gh api <path> [-X METHOD] [-f key=value]... [-F key=value]... [--input <file>] [--jq <expr>]'],
       desc: 'Call any REST endpoint with this tool\u2019s auth',
       flags: ['-X, --method <verb>       GET (default), POST, PUT, PATCH, DELETE',
         '-f, --raw-field <key=value> raw string; fields imply POST when -X is omitted',
         '-F, --field <key=value>   typed field; @file reads UTF-8 and @- reads stdin',
+        '--input <file>            read the request body from a JSON file (use - for stdin); mutually exclusive with -f/-F',
         '-q, --jq <expr>           filter the response through a jq expression'],
       notes: ['-F converts true, false, null, and integers; other values stay strings.',
         '-F means --field for gh api, but --body-file for gh issue/pr create and edit.',
         'Use -f key=@mention when a literal string should begin with @.',
         "Field keys accept bracket notation: -f 'tree[0][path]=x' and",
-        '-f \'parents[]=sha\' build {"tree":[{"path":"x"}],"parents":["sha"]}.'],
+        '-f \'parents[]=sha\' build {"tree":[{"path":"x"}],"parents":["sha"]}.',
+        'Unknown flags are rejected with an error — check spelling if a flag is not recognised.'],
     },
   },
   auth: {
