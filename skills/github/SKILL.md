@@ -155,6 +155,6 @@ target with its read counterpart (`gh pr view <num>`, `gh pr checks <num>`,
 |---|---|
 | `git clone` aborts with `ENOENT mkdir <Foo.graffle>` | `git init` + `git fetch` + sparse-checkout excluding the path |
 | `git clone --depth=1` rejects the flag | Use `init` + `fetch` |
-| `curl --data @file` → `400 Problems parsing JSON` | Use `gh api -f key=value`, or `fetch()` from node |
+| `curl --data @file` → `400 Problems parsing JSON` | Use `gh api --input file.json`, `-f key=value`, or `fetch()` from node |
 | Uploaded files arrive as mojibake | Use `fs.readFileBinary` before `btoa` |
 | Need to commit a symlink | Git Data API with `mode: 120000` |

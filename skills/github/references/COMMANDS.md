@@ -212,8 +212,10 @@ gh api /repos/owner/repo/git/refs -X POST -f ref=refs/heads/new-branch -f sha=ab
 ```
 
 `-X`/`--method`, `-f`/`--raw-field key=value` (raw strings), `-F`/`--field key=value`
-(typed values; `@file` and `@-` read UTF-8 or stdin), `--jq`/`-q`. Fields imply POST unless
-`-X` is explicit; use `-f key=@mention` for a literal leading `@`. See [`gotchas.md`](gotchas.md).
+(typed values; `@file` and `@-` read UTF-8 or stdin), `--input <file>` (send a JSON file as
+the request body; use `-` for stdin; mutually exclusive with `-f`/`-F`),
+`--jq`/`-q`. Fields and `--input` imply POST unless `-X` is explicit; use `-f key=@mention`
+for a literal leading `@`. Unknown flags are rejected. See [`gotchas.md`](gotchas.md).
 
 ## Auth
 
