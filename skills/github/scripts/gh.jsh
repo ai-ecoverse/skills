@@ -156,7 +156,7 @@ const BROKER_URL = process.env.AS_A_BOT_URL || 'https://as-bot-worker.minivelos.
 const BOT_CACHE = '/.cache/ai-aligned-gh/token';
 
 const WRITE_OPS = {
-  pr:            ['merge','comment','create','edit','close','review'],
+  pr:            ['merge','comment','create','edit','close','review','ready'],
   issue:         ['create','edit','close','comment'],
   vars:          ['set'],
   release:       ['create','upload','delete'],
@@ -436,6 +436,10 @@ const FLAG_SPECS = {
     'delete-branch': { type: 'bool', short: 'd' },
     comment: { type: 'string', short: 'c' },
   },
+  'pr ready': {
+    ...REPO_FLAG,
+    undo: { type: 'bool' },
+  },
   'issue list': {
     ...REPO_FLAG, ...JSON_FLAGS,
     state: { type: 'string', short: 's' },
@@ -499,6 +503,10 @@ const FLAG_SPECS = {
   },
   'repo view': { ...REPO_FLAG, ...JSON_FLAGS },
   'repo archive': { ...REPO_FLAG },
+  'repo clone': {
+    depth: { type: 'string' },
+    branch: { type: 'string', short: 'b' },
+  },
   'run list': {
     ...REPO_FLAG, ...JSON_FLAGS,
     limit: { type: 'string', short: 'L' },
@@ -1765,6 +1773,61 @@ async function prDiff(args) {
 
   if (!files.length) return;
   console.log(files.map(fileToUnifiedDiff).join('\n'));
+}
+
+// ─── pr ready ────────────────────────────────────────────────────────────────
+// Marks a draft PR ready for review (or reverts to draft with --undo).
+// The REST API has no draft toggle — the only path is the GraphQL mutations
+// markPullRequestReadyForReview / convertPullRequestToDraft, which need the
+// PR's global node ID (fetched from the REST endpoint).
+
+async function prReady(args) {
+  const { flags, positional } = parseArgs('pr ready', args, FLAG_SPECS['pr ready']);
+  const { values, repoArg } = distribute('pr ready', positional, ['number'], flags);
+  if (!values.number) cli.die('pr ready: PR number required');
+  const num = validateNum(values.number, 'PR number');
+  const repo = await repoFrom('pr ready', flags, repoArg);
+
+  // Fetch the PR to get its node_id and current draft state.
+  let pr;
+  try { pr = await api.get(`/repos/${repo}/pulls/${num}`); }
+  catch (e) {
+    if (isNotFound(e)) cli.die('pr ready: pull request #' + num + ' not found in ' + repo);
+    fail('pr ready', e);
+  }
+
+  const nodeId = pr.node_id;
+  if (!nodeId) cli.die('pr ready: could not resolve node ID for PR #' + num);
+
+  if (flags.undo) {
+    // Convert to draft
+    if (pr.draft) {
+      console.log(color.gray('PR #' + num + ' is already a draft'));
+      return;
+    }
+    const mutation = `mutation($id: ID!) { convertPullRequestToDraft(input: {pullRequestId: $id}) { pullRequest { isDraft } } }`;
+    try {
+      const res = await api.post('/graphql', { body: { query: mutation, variables: { id: nodeId } } });
+      if (res && res.errors && res.errors.length) {
+        cli.die('pr ready --undo: GraphQL error: ' + res.errors[0].message);
+      }
+    } catch (e) { fail('pr ready --undo', e); }
+    console.log(sym('success') + ' Converted PR ' + color.cyan('#' + num) + ' back to draft');
+  } else {
+    // Mark ready for review
+    if (!pr.draft) {
+      console.log(color.gray('PR #' + num + ' is already marked ready for review'));
+      return;
+    }
+    const mutation = `mutation($id: ID!) { markPullRequestReadyForReview(input: {pullRequestId: $id}) { pullRequest { isDraft } } }`;
+    try {
+      const res = await api.post('/graphql', { body: { query: mutation, variables: { id: nodeId } } });
+      if (res && res.errors && res.errors.length) {
+        cli.die('pr ready: GraphQL error: ' + res.errors[0].message);
+      }
+    } catch (e) { fail('pr ready', e); }
+    console.log(sym('success') + ' PR ' + color.cyan('#' + num) + ' is now ready for review');
+  }
 }
 
 // ─── issue list ──────────────────────────────────────────────────────────────
@@ -3131,6 +3194,117 @@ async function repoArchive(args) {
   } catch (e) { fail('repo archive', e); }
 }
 
+// ─── repo clone ──────────────────────────────────────────────────────────────
+// Clones a repository via `git clone` using the public HTTPS URL.
+//
+// Authentication: plain `git clone https://github.com/<nwo>.git` inherits the
+// ambient credential helper in this runtime (verified). We deliberately do NOT
+// embed a token into the URL — that would leak it into `.git/config` where
+// any process (or a pushed dotfile) could read it. The credential helper
+// approach keeps the token out of the repository metadata entirely.
+
+async function repoClone(args) {
+  // repo clone uses a hand-rolled parser because the first positional is an
+  // owner/repo nwo (not a -R flag), and everything after `--` is forwarded
+  // verbatim to git clone. parseArgs would try to interpret those.
+  const passthrough = [];
+  let nwo = null;
+  let dir = null;
+  let depth = null;
+  let branch = null;
+  let seenDash = false;
+
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--') { seenDash = true; continue; }
+    if (seenDash) { passthrough.push(a); continue; }
+    if (a === '--help' || a === '-h' || a === '-?') {
+      showScopedHelp('repo', 'clone');
+      return;
+    }
+    if (a === '--depth' && i + 1 < args.length) { depth = args[++i]; continue; }
+    if (a.startsWith('--depth=')) { depth = a.slice('--depth='.length); continue; }
+    if ((a === '-b' || a === '--branch') && i + 1 < args.length) { branch = args[++i]; continue; }
+    if (a.startsWith('--branch=')) { branch = a.slice('--branch='.length); continue; }
+    // First non-flag positional is the nwo, second is the directory.
+    if (a[0] !== '-') {
+      if (!nwo) nwo = a;
+      else if (!dir) dir = a;
+      else passthrough.push(a);
+      continue;
+    }
+    // Unknown flag — forward to git clone.
+    passthrough.push(a);
+  }
+
+  if (!nwo) cli.die('repo clone: owner/repo required\nUsage: gh repo clone <owner/repo> [directory] [-- <git-flags>...]');
+  // Allow full URLs as well as owner/repo shorthand.
+  let cloneUrl;
+  if (/^https?:\/\//.test(nwo) || nwo.includes('@')) {
+    cloneUrl = nwo;
+    // Extract nwo for display from a GitHub URL.
+    const m = nwo.match(/github\.com[/:]([^/]+\/[^/.]+)/);
+    if (m) nwo = m[1];
+  } else {
+    validateRepo(nwo);
+    cloneUrl = `https://github.com/${nwo}.git`;
+  }
+
+  // Pre-check: destination directory.
+  if (dir) {
+    try {
+      const st = await fs.stat(dir);
+      if (st) {
+        // Check if it's a non-empty directory.
+        const entries = await fs.readDir(dir);
+        if (entries && entries.length > 0) {
+          cli.die(`repo clone: destination '${dir}' already exists and is not empty`);
+        }
+      }
+    } catch (e) {
+      if (e?.name === 'NodeExitError') throw e; // re-throw cli.die
+      /* stat threw because the path does not exist — that's fine */
+    }
+  }
+
+  // Verify the repo exists (and is accessible) before running git clone, so
+  // we can produce a clear error message instead of a git stderr dump.
+  try { await api.get(`/repos/${nwo}`); }
+  catch (e) {
+    if (isNotFound(e)) cli.die('repo clone: repository ' + nwo + ' not found (or you do not have access)');
+    fail('repo clone', e);
+  }
+
+  // Build the git clone argv.
+  const gitArgs = ['git', 'clone'];
+  if (depth) gitArgs.push('--depth', String(depth));
+  if (branch) gitArgs.push('--branch', branch);
+  gitArgs.push(...passthrough);
+  gitArgs.push(cloneUrl);
+  if (dir) gitArgs.push(dir);
+
+  const result = await exec.spawn(gitArgs);
+  if (result.exitCode !== 0) {
+    const msg = (result.stderr || '').trim();
+    cli.die('repo clone: git clone failed' + (msg ? ': ' + msg : ''), { prefix: 'gh' });
+  }
+
+  const dest = dir || nwo.split('/').pop().replace(/\.git$/, '');
+  console.log(sym('success') + ' Cloned ' + color.cyan(nwo) + ' into ' + color.cyan(dest));
+
+  // For forks, add an upstream remote pointing at the parent.
+  try {
+    const repoData = await api.get(`/repos/${nwo}`);
+    if (repoData.fork && repoData.parent) {
+      const parentUrl = repoData.parent.clone_url || `https://github.com/${repoData.parent.full_name}.git`;
+      const upstreamResult = await exec.spawn(['git', '-C', dest, 'remote', 'add', 'upstream', parentUrl]);
+      if (upstreamResult.exitCode === 0) {
+        console.log(color.gray('  Added upstream remote: ' + repoData.parent.full_name));
+      }
+    }
+  } catch { /* non-fatal — the clone itself succeeded */ }
+}
+
 // ─── branch create ───────────────────────────────────────────────────────────
 
 async function branchCreate(args) {
@@ -3848,6 +4022,15 @@ const HELP = {
           'from each file\'s filename and patch. Missing PRs exit 1 with no stdout.',
         ],
       },
+      ready: {
+        usage: ['gh pr ready <num> [--undo] [-R owner/repo]', 'gh pr ready <num> [repo]'],
+        desc: 'Mark a draft PR ready for review, or revert to draft with --undo',
+        flags: [REPO_HELP, '--undo                    convert back to draft instead'],
+        notes: [
+          'Uses the GraphQL markPullRequestReadyForReview / convertPullRequestToDraft mutations',
+          '(the REST API has no draft toggle).',
+        ],
+      },
     },
   },
   issue: {
@@ -3929,6 +4112,20 @@ const HELP = {
         usage: ['gh repo archive [-R owner/repo]', 'gh repo archive [repo]'],
         desc: 'Archive a repository (irreversible without admin unarchive)',
         flags: [REPO_HELP],
+      },
+      clone: {
+        usage: ['gh repo clone <owner/repo> [directory] [-- <git-flags>...]', 'gh repo clone <owner/repo> [dir] [--depth N] [-b branch]'],
+        desc: 'Clone a repository (adds upstream remote for forks)',
+        flags: [
+          '--depth <n>               create a shallow clone with n commits',
+          '-b, --branch <name>       branch to check out',
+          '--                        pass remaining flags verbatim to git clone',
+        ],
+        notes: [
+          'Uses the public HTTPS clone URL; ambient credentials provide auth.',
+          'Does not embed a token in the URL (avoids leaking it into .git/config).',
+          'For forks, an upstream remote pointing at the parent is added automatically.',
+        ],
       },
     },
   },
@@ -4236,6 +4433,7 @@ ${color.bold('COMMANDS')}
   ${color.cyan('pr checkout')}   <num> [repo]                                 Print checkout commands
   ${color.cyan('pr watch')}      <num> [--filter <js>] [--scoop <name>]       Watch a PR via webhook
   ${color.cyan('pr unwatch')}    <num> [repo]                                 Stop watching a PR
+  ${color.cyan('pr ready')}      <num> [--undo] [repo]                         Mark draft PR ready / revert
   ${color.cyan('issue list')}    [--state S] [--search Q] [--json] [repo]     List issues
   ${color.cyan('issue view')}    <num> [--json] [--comments] [repo]           View issue details
   ${color.cyan('issue create')}  --title T --body B [--label L] [repo]        Create issue
@@ -4244,6 +4442,7 @@ ${color.bold('COMMANDS')}
   ${color.cyan('issue edit')}    <num> [--title T] [--add-label L] [--state S]  Edit an issue
   ${color.cyan('repo view')}     [--json] [repo]                              Show repository info
   ${color.cyan('repo archive')}  [repo]                                       Archive a repository
+  ${color.cyan('repo clone')}    <owner/repo> [dir] [--depth N] [-b branch]   Clone a repository
   ${color.cyan('run list')}      [--branch B] [--json] [repo]                 List recent workflow runs
   ${color.cyan('run view')}      <run_id> [--log-failed] [--json] [repo]      Run details, jobs and logs
   ${color.cyan('release list')}  [--json] [repo]                              List recent releases
@@ -4375,9 +4574,9 @@ if (cmd === 'monday') { await mondayGh(argv.slice(1)); process.exit(0); }
 if (cmd === 'mcp') { await mcpPassthrough(argv.slice(1)); process.exit(0); }
 
 const dispatch = {
-  pr:      { list: () => prList(rest),      view: () => prView(rest),    checks: () => prChecks(rest), merge: () => prMerge(rest), close: () => prClose(rest), comment: () => prComment(rest), checkout: () => prCheckout(rest), create: () => prCreate(rest), edit: () => prEdit(rest), watch: () => prWatch(rest), unwatch: () => prUnwatch(rest), diff: () => prDiff(rest) },
+  pr:      { list: () => prList(rest),      view: () => prView(rest),    checks: () => prChecks(rest), merge: () => prMerge(rest), close: () => prClose(rest), comment: () => prComment(rest), checkout: () => prCheckout(rest), create: () => prCreate(rest), edit: () => prEdit(rest), watch: () => prWatch(rest), unwatch: () => prUnwatch(rest), diff: () => prDiff(rest), ready: () => prReady(rest) },
   issue:   { list: () => issueList(rest),   view: () => issueView(rest), create: () => issueCreate(rest), comment: () => issueComment(rest), close: () => issueClose(rest), edit: () => issueEdit(rest) },
-  repo:    { view: () => repoView(rest), archive: () => repoArchive(rest) },
+  repo:    { view: () => repoView(rest), archive: () => repoArchive(rest), clone: () => repoClone(rest) },
   branch:  { create: () => branchCreate(rest), delete: () => branchDelete(rest) },
   content: { put: () => contentPut(rest) },
   run:     { list: () => runList(rest),     view: () => runView(rest) },
