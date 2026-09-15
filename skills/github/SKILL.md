@@ -4,16 +4,16 @@ description: >
   Interact with GitHub via gh.jsh — a GitHub CLI for SLICC agents that accepts the real
   GitHub CLI's syntax (--title/--body, -R owner/repo, --json [fields], --jq, --help on every
   command) as well as its own positional forms.
-  Use this skill for any GitHub task: listing, viewing, diffing, or editing pull requests, checking CI
-  checks and failed job logs, merging PRs, posting comments, checking out branches, viewing issues,
-  inspecting workflow runs, listing releases, searching PRs or issues, managing Actions variables,
-  creating branches, pushing file content, archiving repos, cloning repos, managing org-owned Projects (v2),
-  marking PRs ready for review, or calling any GitHub API endpoint directly.
-  Trigger on requests like "list open PRs", "show the PR diff", "search issues", "check CI status",
+  Use for any GitHub task: listing, viewing, diffing, or editing pull requests, checking CI
+  and failed job logs, merging PRs, posting comments, checking out branches, viewing issues,
+  workflow runs, releases, searching PRs or issues, managing Actions variables,
+  creating branches, pushing file content, archiving/cloning repos, marking PRs ready
+  for review, managing org-owned Projects (v2), or calling any GitHub API endpoint directly.
+  Trigger on "list open PRs", "show the PR diff", "search issues", "check CI",
   "why did CI fail", "merge this PR", "what issues are open", "has this been filed",
-  "show the latest release", "post a comment on PR #42", "set a repo variable",
-  "create a branch", "push this file", "list my GitHub projects",
-  "mark this PR ready for review", "clone this repo".
+  "show the latest release", "comment on PR #42", "set a repo variable",
+  "create a branch", "push this file", "list my GitHub projects", "clone this repo",
+  "mark PR ready for review".
 allowed_tools:
   - bash
 ---
