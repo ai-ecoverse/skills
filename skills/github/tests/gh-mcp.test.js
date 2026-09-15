@@ -1,0 +1,459 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const { createRequire } = require('node:module');
+const test = require('node:test');
+
+const target = path.resolve(__dirname, '../scripts/gh.jsh');
+const source = fs.readFileSync(target, 'utf8');
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+
+class NodeExitError extends Error {
+  constructor(message, exitCode = 1) {
+    super(message);
+    this.name = 'NodeExitError';
+    this.exitCode = exitCode;
+  }
+}
+
+// Minimal MCP server stub: collects fetch calls and returns canned responses.
+function mcpFetchStub(scenario = {}) {
+  const calls = [];
+  return {
+    calls,
+    fn: async (url, opts) => {
+      const call = { url: String(url), opts };
+      calls.push(call);
+
+      // Server card endpoint (no auth required)
+      if (String(url).includes('server-card')) {
+        return {
+          ok: true,
+          status: 200,
+          statusText: 'OK',
+          headers: new Map([['content-type', 'application/json']]),
+          json: async () => scenario.card || {
+            name: 'test-server',
+            title: 'Test MCP Server',
+            description: 'A test server',
+            version: '1.0.0',
+            remotes: [{ type: 'streamable-http', url: 'https://api.githubcopilot.com/mcp/' }],
+          },
+          text: async () => JSON.stringify(scenario.card || { name: 'test-server' }),
+        };
+      }
+
+      // Domain guard simulation
+      if (scenario.domainGuard) {
+        throw new Error('Secret oauth.github.token is not allowed for domain api.githubcopilot.com');
+      }
+
+      // Auth failure simulation
+      if (scenario.authFail) {
+        return {
+          ok: false,
+          status: 401,
+          statusText: 'Unauthorized',
+          headers: new Map([['content-type', 'text/plain']]),
+          text: async () => 'bad request: missing required Authorization header',
+          json: async () => ({ error: 'unauthorized' }),
+        };
+      }
+
+      // Parse the request body to determine which JSON-RPC method was called
+      let body = {};
+      if (opts?.body) {
+        try { body = JSON.parse(opts.body); } catch { /* ignore */ }
+      }
+
+      const responseHeaders = new Map([
+        ['content-type', 'application/json'],
+        ['mcp-session-id', 'test-session-123'],
+      ]);
+
+      // initialize response
+      if (body.method === 'initialize') {
+        return {
+          ok: true, status: 200, statusText: 'OK',
+          headers: responseHeaders,
+          json: async () => ({
+            jsonrpc: '2.0', id: body.id,
+            result: {
+              protocolVersion: '2025-03-26',
+              serverInfo: { name: 'github-mcp-server', version: '1.0.0' },
+              capabilities: { tools: {} },
+            },
+          }),
+          text: async () => '',
+        };
+      }
+
+      // notifications/initialized (no response body expected)
+      if (body.method === 'notifications/initialized') {
+        return {
+          ok: true, status: 200, statusText: 'OK',
+          headers: responseHeaders,
+          json: async () => ({}),
+          text: async () => '',
+        };
+      }
+
+      // tools/list response
+      if (body.method === 'tools/list') {
+        return {
+          ok: true, status: 200, statusText: 'OK',
+          headers: responseHeaders,
+          json: async () => ({
+            jsonrpc: '2.0', id: body.id,
+            result: {
+              tools: scenario.tools || [
+                { name: 'get_me', description: 'Get the authenticated user', inputSchema: { type: 'object', properties: {} } },
+                { name: 'get_file_contents', description: 'Get file contents from a repo', inputSchema: { type: 'object', properties: { owner: { type: 'string' }, repo: { type: 'string' }, path: { type: 'string' } } } },
+              ],
+            },
+          }),
+          text: async () => '',
+        };
+      }
+
+      // tools/call response
+      if (body.method === 'tools/call') {
+        return {
+          ok: true, status: 200, statusText: 'OK',
+          headers: responseHeaders,
+          json: async () => ({
+            jsonrpc: '2.0', id: body.id,
+            result: {
+              content: scenario.callResult || [{ type: 'text', text: '{"login":"testuser","id":12345}' }],
+            },
+          }),
+          text: async () => '',
+        };
+      }
+
+      // Default response
+      return {
+        ok: true, status: 200, statusText: 'OK',
+        headers: responseHeaders,
+        json: async () => ({ jsonrpc: '2.0', id: body.id, result: {} }),
+        text: async () => '',
+      };
+    },
+  };
+}
+
+async function runGh(args, scenario = {}) {
+  const calls = [];
+  const stdout = [];
+  const stderr = [];
+  const fetchStub = mcpFetchStub(scenario);
+
+  const api = {
+    get: async (requestPath, options) => {
+      calls.push({ method: 'get', path: requestPath, options });
+      if (requestPath === '/user') return { login: 'viewer' };
+      return {};
+    },
+    patch: async () => assert.fail('unexpected PATCH'),
+    post: async () => assert.fail('unexpected POST'),
+    delete: async () => assert.fail('unexpected DELETE'),
+    put: async () => assert.fail('unexpected PUT'),
+  };
+
+  const cli = {
+    die: (message, options) => {
+      throw new NodeExitError(String(message), options?.exitCode ?? 1);
+    },
+    help: (message) => {
+      stdout.push(String(message));
+      throw new NodeExitError('help', 0);
+    },
+    out: (value) => stdout.push(typeof value === 'string' ? value : JSON.stringify(value)),
+    warn: (message) => stderr.push(String(message)),
+  };
+
+  const color = new Proxy({}, { get: () => (value) => String(value) });
+  const fmt = new Proxy(
+    { date: (value) => String(value), col: (s, w) => String(s).padEnd(w) },
+    { get: (object, key) => object[key] || ((value) => String(value)) }
+  );
+  const exec = async (cmd) => {
+    // Simulate git config gh-mcp-token lookup
+    if (typeof cmd === 'string' && cmd.includes('gh-mcp-token')) {
+      return { stdout: scenario.gitMcpToken || '', stderr: '', exitCode: scenario.gitMcpToken ? 0 : 1 };
+    }
+    return { stdout: '', stderr: '', exitCode: 1 };
+  };
+  exec.spawn = exec;
+  exec.start = exec;
+
+  const mockFs = {
+    readFile: async () => '',
+    writeFile: async () => {},
+    readFileBinary: async (filePath) => {
+      if (scenario.inputFileContent) return new TextEncoder().encode(scenario.inputFileContent);
+      throw new Error('file not found: ' + filePath);
+    },
+  };
+
+  const mocks = {
+    'sliccy:skill': {
+      token: async (provider) => {
+        if (scenario.tokenError) throw scenario.tokenError;
+        if (Object.hasOwn(scenario, 'token')) return scenario.token;
+        return 'fake-github-token';
+      },
+      config: async () => null,
+    },
+    'sliccy:cli': cli,
+    'sliccy:fmt': fmt,
+    'sliccy:color': color,
+    'sliccy:http': { client: () => api },
+    'sliccy:exec': exec,
+    'sliccy:time': {},
+    fs: mockFs,
+  };
+
+  const realRequire = createRequire(target);
+  const mockRequire = (id) => (Object.hasOwn(mocks, id) ? mocks[id] : realRequire(id));
+  const mockProcess = {
+    argv: ['node', target, ...args],
+    env: scenario.env || {},
+    stdin: { read: async () => scenario.stdinContent || '' },
+    exit: (code) => { throw new NodeExitError('exit', code); },
+  };
+  const mockConsole = {
+    log: (message) => stdout.push(String(message)),
+    info: (message) => stdout.push(String(message)),
+    warn: (message) => stderr.push(String(message)),
+    error: (message) => stderr.push(String(message)),
+  };
+
+  try {
+    await new AsyncFunction('require', 'process', 'console', 'fetch', source)(
+      mockRequire, mockProcess, mockConsole, fetchStub.fn,
+    );
+    return { calls, stdout, stderr, fetchCalls: fetchStub.calls };
+  } catch (error) {
+    return { error, calls, stdout, stderr, fetchCalls: fetchStub.calls };
+  }
+}
+
+// ─── Help tests ────────────────────────────────────────────────────────────
+
+test('gh mcp --help prints usage without a token', async () => {
+  const result = await runGh(['mcp', '--help'], { tokenError: new Error('no token') });
+  assert.equal(result.error?.exitCode, 0);
+  const output = result.stdout.join('\n');
+  assert.match(output, /SUBCOMMANDS/);
+  assert.match(output, /tools/);
+  assert.match(output, /call/);
+  assert.match(output, /server-card/);
+  assert.match(output, /raw/);
+});
+
+test('gh mcp tools --help prints tool-specific usage', async () => {
+  const result = await runGh(['mcp', 'tools', '--help'], { tokenError: new Error('no token') });
+  assert.equal(result.error?.exitCode, 0);
+  const output = result.stdout.join('\n');
+  assert.match(output, /--json/);
+  assert.match(output, /--jq/);
+});
+
+test('gh mcp call --help prints call-specific usage', async () => {
+  const result = await runGh(['mcp', 'call', '--help'], { tokenError: new Error('no token') });
+  assert.equal(result.error?.exitCode, 0);
+  const output = result.stdout.join('\n');
+  assert.match(output, /-F.*--field/);
+  assert.match(output, /-f.*--raw-field/);
+});
+
+test('gh mcp raw --help prints raw-specific usage', async () => {
+  const result = await runGh(['mcp', 'raw', '--help'], { tokenError: new Error('no token') });
+  assert.equal(result.error?.exitCode, 0);
+  const output = result.stdout.join('\n');
+  assert.match(output, /--params/);
+  assert.match(output, /--init/);
+});
+
+// ─── Server card tests ────────────────────────────────────────────────────
+
+test('gh mcp server-card fetches and displays the card', async () => {
+  const result = await runGh(['mcp', 'server-card'], { tokenError: new Error('no token') });
+  assert.equal(result.error?.exitCode, 0);
+  const output = result.stdout.join('\n');
+  assert.match(output, /Test MCP Server/);
+  // Should have called the server-card endpoint
+  assert.ok(result.fetchCalls.some(c => c.url.includes('server-card')));
+});
+
+test('gh mcp server-card --json returns raw JSON', async () => {
+  const card = { name: 'test', title: 'Test', version: '1.0.0' };
+  const result = await runGh(['mcp', 'server-card', '--json'], { tokenError: new Error('no token'), card });
+  assert.equal(result.error?.exitCode, 0);
+  const output = result.stdout.join('');
+  const parsed = JSON.parse(output);
+  assert.equal(parsed.name, 'test');
+});
+
+// ─── Tools list tests ─────────────────────────────────────────────────────
+
+test('gh mcp tools lists available tools', async () => {
+  const result = await runGh(['mcp', 'tools'], { env: { GITHUB_MCP_TOKEN: 'test-token' } });
+  assert.equal(result.error?.exitCode, 0);
+  const output = result.stdout.join('\n');
+  assert.match(output, /get_me/);
+  assert.match(output, /get_file_contents/);
+  assert.match(output, /2 tools/);
+});
+
+test('gh mcp tools --json returns raw JSON', async () => {
+  const result = await runGh(['mcp', 'tools', '--json'], { env: { GITHUB_MCP_TOKEN: 'test-token' } });
+  assert.equal(result.error?.exitCode, 0);
+  const parsed = JSON.parse(result.stdout.join(''));
+  assert.ok(Array.isArray(parsed));
+  assert.equal(parsed.length, 2);
+  assert.equal(parsed[0].name, 'get_me');
+});
+
+// ─── Tool call tests ──────────────────────────────────────────────────────
+
+test('gh mcp call invokes a tool with -F fields', async () => {
+  const result = await runGh(
+    ['mcp', 'call', 'get_file_contents', '-F', 'owner=octocat', '-F', 'repo=hello', '-F', 'path=README.md'],
+    { env: { GITHUB_MCP_TOKEN: 'test-token' } },
+  );
+  assert.equal(result.error?.exitCode, 0);
+  // Should have made fetch calls: initialize, initialized notification, tools/call
+  const mcpCalls = result.fetchCalls.filter(c => c.url.includes('/mcp/') && !c.url.includes('server-card'));
+  assert.ok(mcpCalls.length >= 2, `expected at least 2 MCP calls, got ${mcpCalls.length}`);
+
+  // Verify the tool call had the right arguments
+  const toolCallFetch = mcpCalls.find(c => {
+    if (!c.opts?.body) return false;
+    try {
+      const body = JSON.parse(c.opts.body);
+      return body.method === 'tools/call';
+    } catch { return false; }
+  });
+  assert.ok(toolCallFetch, 'expected a tools/call fetch');
+  const toolBody = JSON.parse(toolCallFetch.opts.body);
+  assert.equal(toolBody.params.name, 'get_file_contents');
+  assert.deepEqual(toolBody.params.arguments, { owner: 'octocat', repo: 'hello', path: 'README.md' });
+});
+
+test('gh mcp call with -f sends raw string fields', async () => {
+  const result = await runGh(
+    ['mcp', 'call', 'get_me', '-f', 'detail=true'],
+    { env: { GITHUB_MCP_TOKEN: 'test-token' } },
+  );
+  assert.equal(result.error?.exitCode, 0);
+  const toolCallFetch = result.fetchCalls.find(c => {
+    if (!c.opts?.body) return false;
+    try { return JSON.parse(c.opts.body).method === 'tools/call'; } catch { return false; }
+  });
+  const toolBody = JSON.parse(toolCallFetch.opts.body);
+  // -f sends as string, not boolean
+  assert.equal(toolBody.params.arguments.detail, 'true');
+});
+
+test('gh mcp call with -F type-converts values', async () => {
+  const result = await runGh(
+    ['mcp', 'call', 'test_tool', '-F', 'count=42', '-F', 'active=true', '-F', 'label=hello'],
+    { env: { GITHUB_MCP_TOKEN: 'test-token' } },
+  );
+  assert.equal(result.error?.exitCode, 0);
+  const toolCallFetch = result.fetchCalls.find(c => {
+    if (!c.opts?.body) return false;
+    try { return JSON.parse(c.opts.body).method === 'tools/call'; } catch { return false; }
+  });
+  const toolBody = JSON.parse(toolCallFetch.opts.body);
+  assert.equal(toolBody.params.arguments.count, 42);
+  assert.equal(toolBody.params.arguments.active, true);
+  assert.equal(toolBody.params.arguments.label, 'hello');
+});
+
+test('gh mcp call without tool name dies with usage', async () => {
+  const result = await runGh(['mcp', 'call'], { env: { GITHUB_MCP_TOKEN: 'test-token' } });
+  assert.equal(result.error?.exitCode, 1);
+  assert.match(result.error.message, /usage.*gh mcp call/i);
+});
+
+// ─── Auth error tests ─────────────────────────────────────────────────────
+
+test('gh mcp tools dies with domain guard error', async () => {
+  const result = await runGh(['mcp', 'tools'], { domainGuard: true });
+  assert.equal(result.error?.exitCode, 1);
+  assert.match(result.error.message, /domain/i);
+  assert.match(result.error.message, /GITHUB_MCP_TOKEN/);
+});
+
+test('gh mcp tools dies on auth failure from server', async () => {
+  const result = await runGh(['mcp', 'tools'], { env: { GITHUB_MCP_TOKEN: 'bad-token' }, authFail: true });
+  assert.equal(result.error?.exitCode, 1);
+  assert.match(result.error.message, /401/);
+});
+
+// ─── Raw subcommand tests ─────────────────────────────────────────────────
+
+test('gh mcp raw sends arbitrary method', async () => {
+  const result = await runGh(
+    ['mcp', 'raw', 'tools/list', '--init'],
+    { env: { GITHUB_MCP_TOKEN: 'test-token' } },
+  );
+  assert.equal(result.error?.exitCode, 0);
+  // Should have at least 3 calls: initialize, initialized, tools/list
+  const mcpCalls = result.fetchCalls.filter(c => c.url.includes('/mcp/') && !c.url.includes('server-card'));
+  assert.ok(mcpCalls.length >= 3, `expected >= 3 MCP calls with --init, got ${mcpCalls.length}`);
+});
+
+test('gh mcp raw without method dies with usage', async () => {
+  const result = await runGh(['mcp', 'raw'], { env: { GITHUB_MCP_TOKEN: 'test-token' } });
+  assert.equal(result.error?.exitCode, 1);
+  assert.match(result.error.message, /usage.*gh mcp raw/i);
+});
+
+// ─── Unknown subcommand test ──────────────────────────────────────────────
+
+test('gh mcp unknown-sub dies with error', async () => {
+  const result = await runGh(['mcp', 'bogus'], { env: { GITHUB_MCP_TOKEN: 'test-token' } });
+  assert.equal(result.error?.exitCode, 1);
+  assert.match(result.error.message, /unknown mcp subcommand.*bogus/i);
+});
+
+// ─── Token resolution tests ──────────────────────────────────────────────
+
+test('gh mcp tools uses GITHUB_MCP_TOKEN from env', async () => {
+  const result = await runGh(['mcp', 'tools'], { env: { GITHUB_MCP_TOKEN: 'env-token' } });
+  assert.equal(result.error?.exitCode, 0);
+  // Check that the fetch used the env token
+  const authCall = result.fetchCalls.find(c =>
+    c.opts?.headers?.Authorization === 'Bearer env-token'
+  );
+  assert.ok(authCall, 'expected fetch with env token in Authorization header');
+});
+
+test('gh mcp tools uses git config token when env not set', async () => {
+  const result = await runGh(['mcp', 'tools'], { gitMcpToken: 'git-config-token' });
+  assert.equal(result.error?.exitCode, 0);
+  const authCall = result.fetchCalls.find(c =>
+    c.opts?.headers?.Authorization === 'Bearer git-config-token'
+  );
+  assert.ok(authCall, 'expected fetch with git config token in Authorization header');
+});
+
+// ─── Session handling test ────────────────────────────────────────────────
+
+test('gh mcp tools sends Mcp-Session-Id on subsequent calls', async () => {
+  const result = await runGh(['mcp', 'tools'], { env: { GITHUB_MCP_TOKEN: 'test-token' } });
+  assert.equal(result.error?.exitCode, 0);
+  // After initialize returns a session id, tools/list should include it
+  const mcpCalls = result.fetchCalls.filter(c =>
+    c.url.includes('/mcp/') && !c.url.includes('server-card')
+  );
+  // Find a call after initialize that includes the session header
+  const sessionCalls = mcpCalls.filter(c =>
+    c.opts?.headers?.['Mcp-Session-Id'] === 'test-session-123'
+  );
+  assert.ok(sessionCalls.length > 0, 'expected at least one call with Mcp-Session-Id header');
+});

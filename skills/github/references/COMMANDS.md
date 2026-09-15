@@ -222,3 +222,15 @@ for a literal leading `@`. Unknown flags are rejected. See [`gotchas.md`](gotcha
 ```bash
 gh auth        # token source, authenticated user, AI-attribution status
 ```
+
+## MCP server passthrough
+
+```bash
+gh mcp tools                                        # list available MCP tools
+gh mcp call <tool> [-F key=value]... [-f key=value]  # invoke a tool
+gh mcp server-card                                  # show the server card
+gh mcp raw <method> [--init] [--params JSON]        # raw JSON-RPC
+```
+
+Requires a separate `GITHUB_MCP_TOKEN` or `git config gh-mcp-token` — the managed
+token is domain-locked to `api.github.com`. See [`mcp.md`](mcp.md) for full reference.

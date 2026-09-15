@@ -145,6 +145,32 @@ self-echo-detection pattern and the stop condition.
 target with its read counterpart (`gh pr view <num>`, `gh pr checks <num>`,
 `gh branch`/`gh repo view`) — and never act on a PR number you have not just read back.
 
+## MCP server passthrough
+
+`gh mcp` is an authenticated passthrough to GitHub's remote MCP server at
+`api.githubcopilot.com/mcp/`. It exposes Copilot-specific tools (e.g.
+`assign_copilot_to_issue`, `request_copilot_review`, `create_pull_request_with_copilot`)
+that have no REST API equivalent.
+
+```bash
+gh mcp tools                                        # list available MCP tools
+gh mcp call get_me                                  # invoke a tool
+gh mcp call get_file_contents -F owner=octocat -F repo=Hello-World -F path=README.md
+gh mcp server-card                                  # show the MCP server card
+gh mcp raw tools/list --init                        # raw JSON-RPC escape hatch
+```
+
+**Auth:** the managed `skill.token('github')` is domain-locked to `api.github.com` and
+cannot reach `api.githubcopilot.com`. Provide a PAT separately:
+
+```bash
+export GITHUB_MCP_TOKEN="ghp_…"
+# or persistently:
+git config gh-mcp-token "ghp_…"
+```
+
+See [`references/mcp.md`](references/mcp.md) for the full subcommand reference.
+
 ## References
 
 - [`references/COMMANDS.md`](references/COMMANDS.md) — every command, flag and `--json` field

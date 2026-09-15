@@ -3356,6 +3356,351 @@ async function apiPassthrough(args) {
   } catch (e) { fail('api ' + path, e); }
 }
 
+// ─── mcp (GitHub MCP server passthrough) ─────────────────────────────────────
+// Authenticated passthrough to GitHub's remote MCP server at
+// api.githubcopilot.com/mcp/ — mirrors the ergonomics of `gh api` for the
+// JSON-RPC based MCP protocol. Auth note: the managed OAuth token
+// (skill.token('github')) is domain-locked to api.github.com by the SLICC
+// runtime. This code falls back to a GITHUB_MCP_TOKEN environment variable or
+// gh-mcp-token git config for authenticating against api.githubcopilot.com.
+
+const MCP_ENDPOINT = 'https://api.githubcopilot.com/mcp/';
+const MCP_CARD_URL = 'https://api.githubcopilot.com/mcp/server-card';
+let _mcpSessionId = null;
+
+async function resolveMcpToken() {
+  // 1. Try the managed GitHub token — works only if the runtime allows it for
+  //    api.githubcopilot.com (today it does not, but may in the future).
+  // 2. Fall back to explicit env/config for the Copilot domain.
+  const envToken = process.env.GITHUB_MCP_TOKEN || '';
+  if (envToken) return envToken;
+
+  try {
+    const gitResult = await exec('git config gh-mcp-token 2>/dev/null');
+    if (gitResult.stdout.trim()) return gitResult.stdout.trim();
+  } catch { /* no git config */ }
+
+  // 3. Try the managed token last — it will fail at fetch time if the domain is
+  //    not allow-listed, but we surface a clear error in mcpFetch rather than
+  //    dying here so the user gets actionable guidance.
+  return personalToken || '';
+}
+
+async function mcpFetch(method, params, requestId) {
+  const token = await resolveMcpToken();
+  if (!token) {
+    cli.die(
+      'No token available for the GitHub MCP server.\n' +
+      'The managed GitHub token (skill.token) is domain-locked to api.github.com and cannot\n' +
+      'authenticate against api.githubcopilot.com. Provide a GitHub PAT with Copilot access:\n\n' +
+      '  export GITHUB_MCP_TOKEN="ghp_…"\n' +
+      '  # or persistently:\n' +
+      '  git config gh-mcp-token "ghp_…"\n',
+      { prefix: 'gh mcp' }
+    );
+  }
+
+  const body = {
+    jsonrpc: '2.0',
+    id: requestId ?? 1,
+    method,
+    params: params || {},
+  };
+
+  const headers = {
+    'Content-Type': 'application/json',
+    'Accept': 'application/json, text/event-stream',
+    'Authorization': `Bearer ${token}`,
+  };
+  if (_mcpSessionId) headers['Mcp-Session-Id'] = _mcpSessionId;
+
+  let res;
+  try {
+    res = await fetch(MCP_ENDPOINT, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    if (/not allowed for domain/i.test(e.message)) {
+      cli.die(
+        'The runtime blocked the token for api.githubcopilot.com (domain guard).\n' +
+        'The managed GitHub OAuth token is restricted to api.github.com.\n' +
+        'Provide a separate PAT for the MCP server:\n\n' +
+        '  export GITHUB_MCP_TOKEN="ghp_…"\n' +
+        '  # or persistently:\n' +
+        '  git config gh-mcp-token "ghp_…"\n',
+        { prefix: 'gh mcp' }
+      );
+    }
+    throw e;
+  }
+
+  // Capture session id for subsequent requests
+  const sessionHeader = res.headers.get('mcp-session-id');
+  if (sessionHeader) _mcpSessionId = sessionHeader;
+
+  const contentType = res.headers.get('content-type') || '';
+
+  if (res.status === 401 || res.status === 403) {
+    const errBody = await res.text();
+    cli.die(
+      `MCP server returned ${res.status}: ${errBody.slice(0, 200)}\n` +
+      'The token may lack Copilot entitlement or the required scopes.\n' +
+      'Ensure your PAT has access to GitHub Copilot features.',
+      { prefix: 'gh mcp' }
+    );
+  }
+
+  if (!res.ok) {
+    const errBody = await res.text();
+    cli.die(`MCP server returned ${res.status}: ${errBody.slice(0, 500)}`, { prefix: 'gh mcp' });
+  }
+
+  // Handle SSE responses — collect all data events into a single result
+  if (contentType.includes('text/event-stream')) {
+    const text = await res.text();
+    const events = [];
+    for (const line of text.split('\n')) {
+      if (line.startsWith('data: ')) {
+        try { events.push(JSON.parse(line.slice(6))); } catch { /* skip non-JSON lines */ }
+      }
+    }
+    // Return the last JSON-RPC result event, or the collected array
+    const rpcResult = events.find(e => e.id === (requestId ?? 1) && e.result);
+    return rpcResult || (events.length === 1 ? events[0] : { events });
+  }
+
+  return res.json();
+}
+
+async function mcpInitialize() {
+  const result = await mcpFetch('initialize', {
+    protocolVersion: '2025-03-26',
+    capabilities: {},
+    clientInfo: { name: 'gh.jsh-mcp', version: '1.0.0' },
+  }, 1);
+
+  // Send initialized notification (no id — it's a notification)
+  const token = await resolveMcpToken();
+  const headers = {
+    'Content-Type': 'application/json',
+    'Accept': 'application/json, text/event-stream',
+    'Authorization': `Bearer ${token}`,
+  };
+  if (_mcpSessionId) headers['Mcp-Session-Id'] = _mcpSessionId;
+  try {
+    await fetch(MCP_ENDPOINT, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+    });
+  } catch { /* best-effort notification */ }
+
+  return result;
+}
+
+async function mcpToolsList() {
+  await mcpInitialize();
+  return await mcpFetch('tools/list', {}, 2);
+}
+
+async function mcpToolCall(toolName, args) {
+  await mcpInitialize();
+  return await mcpFetch('tools/call', { name: toolName, arguments: args }, 2);
+}
+
+async function cmdMcpTools(args) {
+  const flags = {};
+  let jqExpr = null;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--json') flags.json = true;
+    else if ((args[i] === '--jq' || args[i] === '-q') && args[i + 1]) jqExpr = args[++i];
+    else if (args[i].startsWith('--jq=')) jqExpr = args[i].slice(5);
+  }
+
+  const result = await mcpToolsList();
+  const tools = result?.result?.tools || result?.tools || [];
+
+  if (flags.json || jqExpr) {
+    if (jqExpr) {
+      console.log(await applyJq(jqExpr, tools));
+    } else {
+      cli.out(tools);
+    }
+    return;
+  }
+
+  if (!tools.length) {
+    console.log(color.dim('  No tools available.'));
+    return;
+  }
+
+  console.log(color.bold('GitHub MCP Server — available tools') + '\n');
+  for (const tool of tools) {
+    const name = tool.name || '(unnamed)';
+    const desc = tool.description || '';
+    // Truncate long descriptions for the table view
+    const shortDesc = desc.length > 80 ? desc.slice(0, 77) + '...' : desc;
+    console.log('  ' + color.cyan(fmt.col(name, 42)) + color.dim(shortDesc));
+  }
+  console.log('\n' + color.gray(`  ${tools.length} tools. Use --json for full schema, or gh mcp call <tool> to invoke one.`));
+}
+
+async function cmdMcpCall(args) {
+  const toolName = args[0];
+  if (!toolName) cli.die('usage: gh mcp call <tool> [-F key=value]... [-f key=value]... [--jq <expr>]', { prefix: 'gh mcp' });
+
+  const toolArgs = {};
+  let jqExpr = null;
+  const readTypedField = (value) => {
+    if (value === 'true') return true;
+    if (value === 'false') return false;
+    if (value === 'null') return null;
+    if (/^-?(?:0|[1-9]\d*)$/.test(value)) return Number(value);
+    return value;
+  };
+
+  for (let i = 1; i < args.length; i++) {
+    if ((args[i] === '-F' || args[i] === '--field') && args[i + 1]) {
+      const [k, ...vParts] = args[++i].split('=');
+      assignField(toolArgs, k, readTypedField(vParts.join('=')));
+    } else if ((args[i] === '-f' || args[i] === '--raw-field') && args[i + 1]) {
+      const [k, ...vParts] = args[++i].split('=');
+      assignField(toolArgs, k, vParts.join('='));
+    } else if ((args[i] === '--jq' || args[i] === '-q') && args[i + 1]) {
+      jqExpr = args[++i];
+    } else if (args[i].startsWith('--jq=')) {
+      jqExpr = args[i].slice(5);
+    }
+  }
+
+  const result = await mcpToolCall(toolName, toolArgs);
+  const content = result?.result?.content || result?.content || result;
+
+  if (jqExpr && typeof content === 'object') {
+    console.log(await applyJq(jqExpr, content));
+  } else {
+    cli.out(content);
+  }
+}
+
+async function cmdMcpServerCard(args) {
+  const flags = {};
+  let jqExpr = null;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--json') flags.json = true;
+    else if ((args[i] === '--jq' || args[i] === '-q') && args[i + 1]) jqExpr = args[++i];
+    else if (args[i].startsWith('--jq=')) jqExpr = args[i].slice(5);
+  }
+
+  const res = await fetch(MCP_CARD_URL, {
+    headers: { 'Accept': 'application/mcp-server-card+json' },
+  });
+
+  if (!res.ok) {
+    cli.die(`Failed to fetch server card: ${res.status} ${res.statusText}`, { prefix: 'gh mcp' });
+  }
+
+  const card = await res.json();
+
+  if (flags.json || jqExpr) {
+    if (jqExpr) {
+      console.log(await applyJq(jqExpr, card));
+    } else {
+      cli.out(card);
+    }
+    return;
+  }
+
+  console.log(color.bold(card.title || card.name || 'GitHub MCP Server'));
+  if (card.description) console.log('  ' + color.dim(card.description));
+  if (card.version) console.log('  ' + color.dim('Version: ' + card.version));
+  if (card.websiteUrl) console.log('  ' + color.dim('Website: ' + card.websiteUrl));
+  if (card.remotes) {
+    for (const r of card.remotes) {
+      console.log('  ' + color.cyan('Endpoint: ' + r.url) + '  ' + color.dim('(' + r.type + ')'));
+    }
+  }
+}
+
+async function cmdMcpRaw(args) {
+  const method = args[0];
+  if (!method) cli.die('usage: gh mcp raw <method> [--input <file>] [--params \'{"key":"value"}\']', { prefix: 'gh mcp' });
+
+  let params = {};
+  let jqExpr = null;
+  let requestId = 1;
+  for (let i = 1; i < args.length; i++) {
+    if (args[i] === '--input' && args[i + 1]) {
+      const filePath = args[++i];
+      try {
+        const content = filePath === '-'
+          ? String((await process.stdin.read()) ?? '')
+          : new TextDecoder().decode(await fs.readFileBinary(filePath));
+        params = JSON.parse(content);
+      } catch (e) {
+        cli.die(`Could not read/parse input: ${e.message}`, { prefix: 'gh mcp' });
+      }
+    } else if (args[i] === '--params' && args[i + 1]) {
+      try { params = JSON.parse(args[++i]); }
+      catch (e) { cli.die(`Invalid --params JSON: ${e.message}`, { prefix: 'gh mcp' }); }
+    } else if (args[i] === '--id' && args[i + 1]) {
+      requestId = parseInt(args[++i], 10);
+    } else if ((args[i] === '--jq' || args[i] === '-q') && args[i + 1]) {
+      jqExpr = args[++i];
+    } else if (args[i].startsWith('--jq=')) {
+      jqExpr = args[i].slice(5);
+    } else if (args[i] === '--init') {
+      // Initialize first, then send the method
+      await mcpInitialize();
+    }
+  }
+
+  const result = await mcpFetch(method, params, requestId);
+
+  if (jqExpr && typeof result === 'object') {
+    console.log(await applyJq(jqExpr, result));
+  } else {
+    cli.out(result);
+  }
+}
+
+async function mcpPassthrough(args) {
+  const sub = args[0];
+  const rest = args.slice(1);
+
+  if (!sub || sub === '--help' || sub === '-h' || sub === '-?' || sub === 'help') {
+    showScopedHelp('mcp', null);
+    return;
+  }
+
+  // Check help for subcommands
+  if (rest.includes('--help') || rest.includes('-h') || rest.includes('-?')) {
+    showScopedHelp('mcp', sub);
+    return;
+  }
+
+  try {
+    switch (sub) {
+      case 'tools':       await cmdMcpTools(rest); break;
+      case 'call':        await cmdMcpCall(rest); break;
+      case 'server-card': await cmdMcpServerCard(rest); break;
+      case 'raw':         await cmdMcpRaw(rest); break;
+      default:
+        cli.die(
+          `unknown mcp subcommand: '${sub}'.\n` +
+          'Available: tools, call, server-card, raw\n' +
+          'Run `gh mcp --help` for usage.',
+          { prefix: 'gh mcp' }
+        );
+    }
+  } catch (err) {
+    if (err?.name === 'NodeExitError') throw err;
+    cli.die('mcp ' + sub + ' failed: ' + (err.body?.message || err.message), { prefix: 'gh mcp' });
+  }
+}
+
 // ─── help ────────────────────────────────────────────────────────────────────
 // Every command and subcommand group is self-documenting, and --help/-h is
 // intercepted BEFORE any argument validation (see the router at the bottom) so
@@ -3767,6 +4112,44 @@ const HELP = {
       notes: ["Token resolution: skill.token('github'), then `git config github.token`, then $GITHUB_TOKEN."],
     },
   },
+  mcp: {
+    summary: 'Authenticated passthrough to GitHub\u2019s remote MCP server',
+    subs: {
+      tools: {
+        usage: ['gh mcp tools [--json] [--jq <expr>]'],
+        desc: 'List tools exposed by the MCP server',
+        flags: ['--json                    raw JSON output',
+          '-q, --jq <expr>           filter --json output through a jq expression'],
+      },
+      call: {
+        usage: ['gh mcp call <tool> [-F key=value]... [-f key=value]... [--jq <expr>]'],
+        desc: 'Invoke an MCP tool with typed fields',
+        flags: ['-F, --field <key=value>   typed field (booleans, numbers auto-converted)',
+          '-f, --raw-field <key=value> raw string field',
+          '-q, --jq <expr>           filter output through a jq expression'],
+        notes: ['Field parsing follows the same rules as `gh api -F`/-f.',
+          'Example: gh mcp call get_me',
+          'Example: gh mcp call get_file_contents -F owner=octocat -F repo=Hello-World -F path=README.md'],
+      },
+      'server-card': {
+        usage: ['gh mcp server-card [--json] [--jq <expr>]'],
+        desc: 'Fetch and display the MCP server card (no auth required)',
+        flags: ['--json                    raw JSON output',
+          '-q, --jq <expr>           filter --json output through a jq expression'],
+      },
+      raw: {
+        usage: ['gh mcp raw <method> [--params \'{"key":"value"}\'] [--input <file>] [--init] [--jq <expr>]'],
+        desc: 'Send an arbitrary JSON-RPC method to the MCP server',
+        flags: ['--params <json>           JSON object for the params field',
+          '--input <file>            read params from a JSON file (- for stdin)',
+          '--id <n>                  JSON-RPC request id (default 1)',
+          '--init                    send initialize + initialized before the request',
+          '-q, --jq <expr>           filter output through a jq expression'],
+        notes: ['For methods that require a session, use --init to establish one first.',
+          'Example: gh mcp raw tools/list --init'],
+      },
+    },
+  },
   monday: {
     summary: 'Monday-protocol inbox (machine-readable JSON)',
     standalone: {
@@ -3876,6 +4259,10 @@ ${color.bold('COMMANDS')}
   ${color.cyan('project add-draft')}  <org> <project_number> <title> [body]    Create a draft item
   ${color.cyan('project set-title')}  <org> <project_number> <item_id> <title>  Rename a project item
   ${color.cyan('api')}           <path> [-X METHOD] [-f key=val]... [--jq E]  Raw API call
+  ${color.cyan('mcp tools')}     [--json]                                     List MCP server tools
+  ${color.cyan('mcp call')}      <tool> [-F key=val]... [--jq E]              Invoke an MCP tool
+  ${color.cyan('mcp server-card')} [--json]                                   Show MCP server card
+  ${color.cyan('mcp raw')}       <method> [--init] [--params JSON]            Raw JSON-RPC call
   ${color.cyan('notifications list')}  [--all] [-p] [-n N] [--json]           List notifications
   ${color.cyan('notifications read')}  [-R owner/repo]                        Mark notifications as read
   ${color.cyan('auth')}          status                                       Show auth status
@@ -3985,6 +4372,7 @@ if (cmd === 'api') { await apiPassthrough(argv.slice(1)); process.exit(0); }
 // flag. Slicing 2 silently ate `--limit` (the first flag monday passes), which
 // left limit pinned at its 50 default while --depth/--date still parsed.
 if (cmd === 'monday') { await mondayGh(argv.slice(1)); process.exit(0); }
+if (cmd === 'mcp') { await mcpPassthrough(argv.slice(1)); process.exit(0); }
 
 const dispatch = {
   pr:      { list: () => prList(rest),      view: () => prView(rest),    checks: () => prChecks(rest), merge: () => prMerge(rest), close: () => prClose(rest), comment: () => prComment(rest), checkout: () => prCheckout(rest), create: () => prCreate(rest), edit: () => prEdit(rest), watch: () => prWatch(rest), unwatch: () => prUnwatch(rest), diff: () => prDiff(rest) },
