@@ -153,35 +153,62 @@ test('a healthy idle stream gets a long read timeout', () => {
 });
 
 test('a warn status survives the pump finally path', async () => {
-  // When a stream stalls into the amber warning and then ends without a
-  // rejection, pump's finally block must NOT overwrite the warning with a
-  // bland "Stream ended" message. The stall reason must survive.
-  const p = panel();
-  // Set up the warn state as reportStreamStatus would.
-  p.run(`
+  // When a stream stalls into the amber warning and then ends cleanly (no
+  // rejection), pump's real finally block must NOT overwrite the warning with
+  // the bland "Stream ended. Connect to retry." message. Exercises the actual
+  // pump() → adb.stream() → dispatchLoop path, not a copy of the guard.
+  let reads = 0;
+  const p = panel(undefined, {
+    transferOut: async () => {},
+    transferIn: async () => {
+      reads++;
+      if (reads === 1) {
+        // A_OKAY — the stream is accepted by the device.
+        const bytes = new Uint8Array(24);
+        const view = new DataView(bytes.buffer);
+        view.setUint32(0, 0x59414b4f, true); // A_OKAY
+        view.setUint32(4, 9, true); // remote id
+        view.setUint32(8, 2, true); // first local stream id
+        return { bytes };
+      }
+      if (reads === 2) {
+        // Before the stream ends, put the session in the stale/warn state
+        // as if the ticker's reportStreamStatus had fired after a long quiet.
+        p.run(`
+          session.lastByteAt = performance.now() - NO_DATA_WARNING_MS;
+          reportStreamStatus('test phone');
+        `);
+        assert.equal(p.elements.status.className, 'warn');
+        assert.match(p.elements.status.textContent, /no data for/);
+        // A_CLSE — clean stream end (no error). This makes stream() resolve
+        // without rejection, so pump's catch is skipped and only finally runs.
+        const bytes = new Uint8Array(24);
+        const view = new DataView(bytes.buffer);
+        view.setUint32(0, 0x45534c43, true); // A_CLSE
+        view.setUint32(4, 9, true); // remote id (arg0)
+        view.setUint32(8, 2, true); // local stream id (arg1)
+        return { bytes };
+      }
+      // dispatchLoop exits when streams.size === 0; should not reach here.
+      return new Promise(() => {});
+    },
+  });
+  await p.run(`
+    const adb = new Adb(1, { epIn: 2, epOut: 3 });
     session = {
-      device: { handle: 1 }, iface: { interfaceNumber: 2 },
-      adb: { dummy: true }, stopped: false, frames: 7, bytes: 1024,
-      lastByteAt: performance.now() - NO_DATA_WARNING_MS,
+      device: { handle: 1 }, iface: { interfaceNumber: 4 }, adb,
+      stopped: false, frames: 0, bytes: 0, size: { w: 720, h: 1568 },
+      lastByteAt: performance.now(),
     };
-    reportStreamStatus('test phone');
+    syncControls();
+    pump(adb, session.size);
   `);
-  // Confirm the warning is active.
+  // pump's finally has now run. The warn status must have survived.
+  assert.equal(reads, 2);
   assert.equal(p.elements.status.className, 'warn');
   assert.match(p.elements.status.textContent, /no data for/);
-
-  // Now simulate what pump's finally block does: check the guard and call say().
-  // This mirrors phone-view.shtml's finally block logic.
-  const overwritten = p.run(`
-    const before = statusEl.textContent;
-    if (!statusEl.classList.contains('err') && !statusEl.classList.contains('warn')) {
-      say('Stream ended. Connect to retry.');
-    }
-    statusEl.textContent !== before
-  `);
-  assert.equal(overwritten, false, 'pump finally must not overwrite a warn status');
-  assert.match(p.elements.status.textContent, /no data for/);
-  assert.equal(p.elements.status.className, 'warn');
+  assert.equal(p.elements['connect-btn'].disabled, false);
+  assert.deepEqual(p.calls, ['release', 'close']);
 });
 
 test('lack of byte progress changes the streaming status', () => {
