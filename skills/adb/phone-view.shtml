@@ -167,7 +167,7 @@
       const ADB_CLASS = 0xff, ADB_SUBCLASS = 0x42, ADB_PROTOCOL = 0x01;
       const KEY_PATH = '/workspace/.adb/adbkey';
       const CONTROL_TRANSFER_TIMEOUT_MS = 10_000;
-      const STREAM_READ_TIMEOUT_MS = 5 * 60_000;
+      const STREAM_READ_TIMEOUT_MS = 30 * 60_000;
       const NO_DATA_WARNING_MS = 45_000;
       const u32 = (v) => v >>> 0;
       const enc = new TextEncoder(), dec = new TextDecoder();
@@ -303,6 +303,10 @@
           this.reading = false;
         }
 
+        // When the timeout wins, the underlying transferIn/transferOut is NOT
+        // cancelled and stays pending — any bytes it later delivers are dropped.
+        // Acceptable: the failure path tears the session down and reconnects
+        // with a fresh handle, same as the shell client (scripts/adb.jsh:290-297).
         async withTimeout(operation, timeoutMs, message) {
           let timer;
           try {
@@ -655,7 +659,7 @@
         } finally {
           try { await decoder.close(); } catch { /* already closed */ }
           if (session?.adb === adb) {
-            if (!statusEl.classList.contains('err')) say('Stream ended. Connect to retry.');
+            if (!statusEl.classList.contains('err') && !statusEl.classList.contains('warn')) say('Stream ended. Connect to retry.');
             await teardown();
           }
         }

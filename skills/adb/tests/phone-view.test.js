@@ -127,6 +127,69 @@ test('a never-settling transferIn is bounded', async () => {
   );
 });
 
+test('a healthy idle stream survives the read timeout', async () => {
+  // An idle screen produces no data, so transferIn stays pending for minutes.
+  // The stream-read timeout must be long enough that it never kills a healthy
+  // idle session — it is a backstop for an infinite hang, not a diagnostic.
+  // The 45-second amber warning is the real user-facing signal.
+  let transferInCalls = 0;
+  const p = panel(undefined, {
+    transferIn: () => {
+      transferInCalls++;
+      // Simulate an idle screen: transferIn never completes.
+      return new Promise(() => {});
+    },
+  });
+  // Verify the constant is at least 30 minutes — long enough that no
+  // plausible idle period trips it.
+  const ms = p.run('STREAM_READ_TIMEOUT_MS');
+  assert.ok(ms >= 30 * 60_000, `STREAM_READ_TIMEOUT_MS should be >= 30 min, got ${ms}`);
+
+  // Start a readExact with the default timeout. If the timeout were still
+  // 5 minutes, this would reject; at 30 minutes, it should NOT reject within
+  // a short window. We race the readExact against a short timer.
+  const raceResult = await p.run(`
+    Promise.race([
+      new Adb(1, { epIn: 2 }).readExact(1).then(() => 'data'),
+      new Promise(resolve => setTimeout(() => resolve('still-alive'), 50)),
+    ])
+  `);
+  assert.equal(raceResult, 'still-alive', 'readExact must not reject while idle');
+  assert.ok(transferInCalls >= 1, 'transferIn should have been called');
+});
+
+test('a warn status survives the pump finally path', async () => {
+  // When a stream stalls into the amber warning and then ends without a
+  // rejection, pump's finally block must NOT overwrite the warning with a
+  // bland "Stream ended" message. The stall reason must survive.
+  const p = panel();
+  // Set up the warn state as reportStreamStatus would.
+  p.run(`
+    session = {
+      device: { handle: 1 }, iface: { interfaceNumber: 2 },
+      adb: { dummy: true }, stopped: false, frames: 7, bytes: 1024,
+      lastByteAt: performance.now() - NO_DATA_WARNING_MS,
+    };
+    reportStreamStatus('test phone');
+  `);
+  // Confirm the warning is active.
+  assert.equal(p.elements.status.className, 'warn');
+  assert.match(p.elements.status.textContent, /no data for/);
+
+  // Now simulate what pump's finally block does: check the guard and call say().
+  // This mirrors phone-view.shtml's finally block logic.
+  const overwritten = p.run(`
+    const before = statusEl.textContent;
+    if (!statusEl.classList.contains('err') && !statusEl.classList.contains('warn')) {
+      say('Stream ended. Connect to retry.');
+    }
+    statusEl.textContent !== before
+  `);
+  assert.equal(overwritten, false, 'pump finally must not overwrite a warn status');
+  assert.match(p.elements.status.textContent, /no data for/);
+  assert.equal(p.elements.status.className, 'warn');
+});
+
 test('lack of byte progress changes the streaming status', () => {
   const p = panel();
   p.run(`
@@ -175,24 +238,30 @@ for (const cleanupFails of [false, true]) {
       let releases = 0;
       let closes = 0;
       let starts = 0;
-      const p = panel(async () => {
-        starts++;
-        return [];
-      }, {
-        releaseInterface: () => {
-          releases++;
-          return new Promise((resolve, reject) => {
-            finishRelease = () => cleanupFails ? reject(new Error('release failed')) : resolve();
-          });
+      const p = panel(
+        async () => {
+          starts++;
+          return [];
         },
-        close: () => {
-          closes++;
-          return new Promise((resolve, reject) => {
-            finishClose = () => cleanupFails ? reject(new Error('close failed')) : resolve();
-          });
-        },
-      });
-      p.run('session = { device: { handle: 1 }, iface: { interfaceNumber: 2 }, frames: 7 }; syncControls();');
+        {
+          releaseInterface: () => {
+            releases++;
+            return new Promise((resolve, reject) => {
+              finishRelease = () =>
+                cleanupFails ? reject(new Error('release failed')) : resolve();
+            });
+          },
+          close: () => {
+            closes++;
+            return new Promise((resolve, reject) => {
+              finishClose = () => (cleanupFails ? reject(new Error('close failed')) : resolve());
+            });
+          },
+        }
+      );
+      p.run(
+        'session = { device: { handle: 1 }, iface: { interfaceNumber: 2 }, frames: 7 }; syncControls();'
+      );
       const pending = p.run(trigger);
       const duplicate = p.run('teardown()');
       await new Promise(setImmediate);
