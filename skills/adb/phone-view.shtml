@@ -30,6 +30,9 @@
     #status.err {
       color: var(--s2-negative, #ff6b6b);
     }
+    #status.warn {
+      color: var(--s2-notice, #f5a623);
+    }
     #screen {
       width: 100%;
       max-width: 360px;
@@ -163,16 +166,30 @@
       const A_OKAY = 0x59414b4f, A_CLSE = 0x45534c43, A_WRTE = 0x45545257;
       const ADB_CLASS = 0xff, ADB_SUBCLASS = 0x42, ADB_PROTOCOL = 0x01;
       const KEY_PATH = '/workspace/.adb/adbkey';
+      const CONTROL_TRANSFER_TIMEOUT_MS = 10_000;
+      const STREAM_READ_TIMEOUT_MS = 5 * 60_000;
+      const NO_DATA_WARNING_MS = 45_000;
       const u32 = (v) => v >>> 0;
       const enc = new TextEncoder(), dec = new TextDecoder();
 
       let session = null;
       let connecting = false;
       let teardownPending = null;
+      let errorLatched = false;
       const statusEl = document.getElementById('status');
       const canvas = document.getElementById('screen');
       const ctx = canvas.getContext('2d');
-      const say = (m, isErr) => { statusEl.textContent = m; statusEl.className = isErr ? 'err' : ''; };
+      const say = (m, isErr) => {
+        if (errorLatched && !isErr) return;
+        statusEl.textContent = m;
+        statusEl.className = isErr ? 'err' : '';
+        errorLatched ||= !!isErr;
+      };
+      const warn = (m) => {
+        if (errorLatched) return;
+        statusEl.textContent = m;
+        statusEl.className = 'warn';
+      };
 
       function syncControls() {
         const connected = !!session && !session.stopped;
@@ -269,9 +286,11 @@
       }
 
       class Adb {
-        constructor(handle, iface) {
+        constructor(handle, iface, timeouts = {}) {
           this.handle = handle;
           this.iface = iface;
+          this.readTimeoutMs = timeouts.read ?? STREAM_READ_TIMEOUT_MS;
+          this.writeTimeoutMs = timeouts.write ?? CONTROL_TRANSFER_TIMEOUT_MS;
           this.pending = new Uint8Array(0);
           this.nextLocalId = 1;
           // One reader, many streams. Unique local ids alone are not
@@ -284,6 +303,20 @@
           this.reading = false;
         }
 
+        async withTimeout(operation, timeoutMs, message) {
+          let timer;
+          try {
+            return await Promise.race([
+              operation,
+              new Promise((_, reject) => {
+                timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+              }),
+            ]);
+          } finally {
+            clearTimeout(timer);
+          }
+        }
+
         async write(cmd, arg0, arg1, payload = new Uint8Array(0)) {
           const pkt = new Uint8Array(24 + payload.length), dv = new DataView(pkt.buffer);
           let sum = 0; for (const b of payload) sum = u32(sum + b);
@@ -291,14 +324,26 @@
           dv.setUint32(12, payload.length, true); dv.setUint32(16, sum, true);
           dv.setUint32(20, u32(cmd ^ 0xffffffff), true);
           pkt.set(payload, 24);
-          await slicc.usb.transferOut(this.handle, this.iface.epOut, pkt);
+          await this.withTimeout(
+            slicc.usb.transferOut(this.handle, this.iface.epOut, pkt),
+            this.writeTimeoutMs,
+            'write timed out'
+          );
         }
 
-        async readExact(n) {
+        async readExact(n, timeoutMs = this.readTimeoutMs) {
+          let deadline = performance.now() + timeoutMs;
           while (this.pending.length < n) {
-            const r = await slicc.usb.transferIn(this.handle, this.iface.epIn, Math.max(n - this.pending.length, 16384));
+            const remainingMs = deadline - performance.now();
+            if (remainingMs <= 0) throw new Error('read timed out');
+            const r = await this.withTimeout(
+              slicc.usb.transferIn(this.handle, this.iface.epIn, Math.max(n - this.pending.length, 16384)),
+              remainingMs,
+              'read timed out'
+            );
             const chunk = r.bytes;
             if (!chunk.length) continue;
+            deadline = performance.now() + timeoutMs;
             const merged = new Uint8Array(this.pending.length + chunk.length);
             merged.set(this.pending, 0); merged.set(chunk, this.pending.length);
             this.pending = merged;
@@ -308,12 +353,12 @@
           return out;
         }
 
-        async read() {
-          const head = await this.readExact(24);
+        async read(timeoutMs = this.readTimeoutMs) {
+          const head = await this.readExact(24, timeoutMs);
           const dv = new DataView(head.buffer, head.byteOffset, head.byteLength);
           const cmd = dv.getUint32(0, true), arg0 = dv.getUint32(4, true);
           const arg1 = dv.getUint32(8, true), length = dv.getUint32(12, true);
-          const data = length ? await this.readExact(length) : new Uint8Array(0);
+          const data = length ? await this.readExact(length, timeoutMs) : new Uint8Array(0);
           return { cmd, arg0, arg1, data };
         }
 
@@ -341,7 +386,7 @@
         async connect(key) {
           await this.write(A_CNXN, 0x01000001, 256 * 1024, enc.encode('host::features=shell_v2,cmd,exec\0'));
           for (let attempts = 0; attempts < 4; ) {
-            const m = await this.read();
+            const m = await this.read(this.writeTimeoutMs);
             if (m.cmd === A_CNXN) return dec.decode(m.data).replace(/\0+$/, '');
             if (m.cmd === A_AUTH && m.arg0 === 1) {
               attempts++;
@@ -460,8 +505,21 @@
       }
 
       // ── session ───────────────────────────────────────────────────────
+      function reportStreamStatus(label) {
+        if (!session || session.stopped) return;
+        const mb = (session.bytes / 1048576).toFixed(1);
+        const quietForMs = performance.now() - session.lastByteAt;
+        if (quietForMs >= NO_DATA_WARNING_MS) {
+          const quietForSeconds = Math.floor(quietForMs / 1000);
+          warn(`no data for ${quietForSeconds}s — device may have been disconnected or claimed elsewhere`);
+          return;
+        }
+        say(`streaming ${label} · ${session.frames} frames · ${mb} MB`);
+      }
+
       async function start() {
         if (session || connecting || teardownPending) return;
+        errorLatched = false;
         connecting = true;
         syncControls();
         // Tracked outside `session` so a failure between open() and the
@@ -502,17 +560,16 @@
           const size = await sizeOf(adb);
           canvas.width = size.w; canvas.height = size.h;
 
-          session = { device, iface, adb, stopped: false, frames: 0, bytes: 0, size };
+          session = {
+            device, iface, adb, stopped: false, frames: 0, bytes: 0, size,
+            lastByteAt: performance.now(),
+          };
           const label = `${model} · ${size.w}×${size.h}`;
           say(`streaming ${label}`);
-          // screenrecord only emits when the display actually changes, so a
-          // still screen legitimately shows no new frames. Surfacing the count
-          // keeps that from reading as a hang.
-          session.ticker = setInterval(() => {
-            if (!session || session.stopped) return;
-            const mb = (session.bytes / 1048576).toFixed(1);
-            say(`streaming ${label} · ${session.frames} frames · ${mb} MB`);
-          }, 1000);
+          // screenrecord only emits when the display changes. Keep reporting
+          // counters, but stop claiming the stream is live when no bytes have
+          // arrived for long enough to indicate a lost or stalled transport.
+          session.ticker = setInterval(() => reportStreamStatus(label), 1000);
           connecting = false;
           syncControls();
           void pump(adb, size).catch(async err => {
@@ -587,7 +644,10 @@
         const service = `exec:screenrecord --output-format=h264 --time-limit 0 --size ${size.w}x${size.h} -`;
         try {
           await adb.stream(service, (bytes) => {
-            if (session) session.bytes += bytes.length;
+            if (session) {
+              session.bytes += bytes.length;
+              session.lastByteAt = performance.now();
+            }
             splitter.push(bytes);
           }, () => !session || session.stopped);
         } catch (err) {
