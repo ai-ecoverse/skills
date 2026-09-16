@@ -1,7 +1,10 @@
-// wiki.jsh — CLI for the LLM wiki knowledge base at /mnt/kb
+// wiki.jsh — CLI for the LLM wiki knowledge base
+// Default wiki root: /mnt/kb. Override via --root, WIKI_ROOT, or the config file.
 const fs = require('fs');
-const WIKI_ROOT = '/mnt/kb';
-const RAW_DIR = WIKI_ROOT + '/_raw';
+const DEFAULT_WIKI_ROOT = '/mnt/kb';
+let WIKI_ROOT = DEFAULT_WIKI_ROOT;
+let RAW_DIR = WIKI_ROOT + '/_raw';
+let ROOT_SOURCE = 'built-in default';
 const nk = (s) => String(s).normalize('NFC');
 
 let CATS = null; // populated once by discoverCats()
@@ -44,11 +47,170 @@ async function discoverCats(soft) {
   return CATS;
 }
 
-const args = process.argv.slice(2);
+function takeRootFlag(argv) {
+  const out = [];
+  let rootFlag = null;
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--root') {
+      if (i + 1 >= argv.length) {
+        console.error('Error: --root requires a path');
+        process.exit(1);
+      }
+      rootFlag = argv[i + 1];
+      i++;
+      continue;
+    }
+    out.push(argv[i]);
+  }
+  return { args: out, rootFlag: rootFlag };
+}
+
+const taken = takeRootFlag(process.argv.slice(2));
+const args = taken.args;
+const rootFlag = taken.rootFlag;
 const sub = (args[0] || '').toLowerCase();
 
 function en(e) {
   return typeof e === 'string' ? e : e.name;
+}
+
+function configFilePath() {
+  const override = process.env.WIKI_CONFIG;
+  if (override) return override;
+  // Config MUST live outside the skill directory: `upskill update` overwrites
+  // the skill tree, which would destroy config stored there.
+  const home = process.env.HOME;
+  if (home) return home + '/.config/wiki/config.json';
+  return '/tmp/wiki-config.json';
+}
+
+function parentDir(p) {
+  const s = String(p);
+  const i = s.lastIndexOf('/');
+  if (i < 0) return '';
+  if (i === 0) return '/';
+  return s.slice(0, i);
+}
+
+function rootLine() {
+  return 'Wiki root:  ' + WIKI_ROOT + ' (' + ROOT_SOURCE + ')';
+}
+
+async function readConfigObject() {
+  const p = configFilePath();
+  try {
+    if (!(await fs.exists(p))) return {};
+    const raw = await fs.readFile(p);
+    const text = String(raw || '');
+    if (!text.trim()) return {};
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch (e) {
+      console.error('Warning: ignoring malformed config file ' + p + ': ' + e.message);
+      return {};
+    }
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      console.error('Warning: ignoring malformed config file ' + p + ': expected a JSON object');
+      return {};
+    }
+    return parsed;
+  } catch (e) {
+    console.error('Warning: could not read config file ' + p + ': ' + e.message);
+    return {};
+  }
+}
+
+async function writeConfigObject(obj) {
+  const p = configFilePath();
+  const dir = parentDir(p);
+  if (dir && !(await fs.exists(dir))) {
+    try {
+      await fs.mkdir(dir);
+    } catch (e) {
+      console.error('Error: cannot create config directory ' + dir + ': ' + e.message);
+      process.exit(1);
+    }
+  }
+  try {
+    await fs.writeFile(p, JSON.stringify(obj, null, 2) + '\n');
+  } catch (e) {
+    console.error('Error: cannot write config file ' + p + ': ' + e.message);
+    process.exit(1);
+  }
+}
+
+async function resolveRoot(flag) {
+  if (flag) {
+    WIKI_ROOT = flag;
+    RAW_DIR = WIKI_ROOT + '/_raw';
+    ROOT_SOURCE = '--root flag';
+    return;
+  }
+  const envRoot = process.env.WIKI_ROOT;
+  if (envRoot) {
+    WIKI_ROOT = envRoot;
+    RAW_DIR = WIKI_ROOT + '/_raw';
+    ROOT_SOURCE = 'WIKI_ROOT env';
+    return;
+  }
+  const cfg = await readConfigObject();
+  if (cfg && typeof cfg.root === 'string' && cfg.root) {
+    WIKI_ROOT = cfg.root;
+    RAW_DIR = WIKI_ROOT + '/_raw';
+    ROOT_SOURCE = 'from config ' + configFilePath();
+    return;
+  }
+  WIKI_ROOT = DEFAULT_WIKI_ROOT;
+  RAW_DIR = WIKI_ROOT + '/_raw';
+  ROOT_SOURCE = 'built-in default';
+}
+
+async function countCategoryMd(root) {
+  let n = 0;
+  try {
+    const top = await fs.readDir(root);
+    for (const e of top) {
+      const name = en(e);
+      if (!name || name.startsWith('_') || name.startsWith('.')) continue;
+      const dp = root + '/' + name;
+      try {
+        const es = await fs.readDir(dp);
+        for (const f of es) {
+          const fn = en(f);
+          if (fn && fn.endsWith('.md')) n++;
+        }
+        if (name === 'projects') {
+          for (const pe of es) {
+            const pn = en(pe);
+            if (!pn || pn.startsWith('_') || pn.startsWith('.')) continue;
+            try {
+              const pes = await fs.readDir(dp + '/' + pn);
+              for (const f of pes) {
+                const fn = en(f);
+                if (fn && fn.endsWith('.md')) n++;
+              }
+            } catch (_) {}
+          }
+        }
+      } catch (_) {}
+    }
+  } catch (_) {}
+  return n;
+}
+
+async function notFound(name) {
+  console.error('Page not found: ' + name);
+  let n = 0;
+  try {
+    const cats = await discoverCats(true);
+    const pages = await catDirs(cats);
+    n = pages.length;
+  } catch (_) {}
+  if (!n) {
+    console.error('The wiki root ' + WIKI_ROOT + ' (' + ROOT_SOURCE + ') contains zero pages. You may be pointed at an empty or wrong tree.');
+  }
+  process.exit(1);
 }
 
 async function catDirs(cs) {
@@ -156,7 +318,7 @@ async function cmdRead() {
   const name = args.slice(1).join(' ');
   if (!name) { console.error('Usage: wiki read <note-name>'); process.exit(1); }
   const n = await find(name);
-  if (!n) { console.error('Page not found: ' + name); process.exit(1); }
+  if (!n) { await notFound(name); }
   try {
     const c = await fs.readFile(n.path);
     console.log('[' + n.cat + '/' + n.file + ']\n');
@@ -186,6 +348,7 @@ async function cmdStats() {
     ds.sort();
     if (ds.length) { ea = ds[0]; la = ds[ds.length - 1]; }
   } catch (_) {}
+  console.log(rootLine());
   if (tot === 0 && rc === 0) {
     console.error('Error: No wiki pages or raw source files found at ' + WIKI_ROOT + '.');
     process.exit(1);
@@ -206,7 +369,7 @@ async function cmdLinks() {
   const name = args.slice(1).join(' ');
   if (!name) { console.error('Usage: wiki links <note-name>'); process.exit(1); }
   const n = await find(name);
-  if (!n) { console.error('Page not found: ' + name); process.exit(1); }
+  if (!n) { await notFound(name); }
   let ob = [];
   try { ob = [...new Set(wl(await fs.readFile(n.path)))]; } catch (e) { console.error('Error: ' + e.message); process.exit(1); }
   console.log('Links for: ' + n.cat + '/' + n.file + '\n');
@@ -281,11 +444,99 @@ async function cmdLog() {
   } catch (e) { console.error('Error: ' + e.message); process.exit(1); }
 }
 
+async function configSetRoot(path) {
+  if (!(await fs.exists(path))) {
+    console.error('Error: path does not exist: ' + path);
+    process.exit(1);
+  }
+  let st;
+  try {
+    st = await fs.stat(path);
+  } catch (e) {
+    console.error('Error: cannot stat ' + path + ': ' + e.message);
+    process.exit(1);
+  }
+  if (!st || !st.isDirectory) {
+    console.error('Error: not a directory: ' + path);
+    process.exit(1);
+  }
+  const n = await countCategoryMd(path);
+  if (n === 0) {
+    console.error('Warning: ' + path + ' exists but contains no .md pages in any category subdirectory (a fresh wiki is legitimate).');
+  }
+  const cfg = await readConfigObject();
+  cfg.root = path;
+  await writeConfigObject(cfg);
+  console.log('Set root = ' + path);
+}
+
+async function configUnsetRoot() {
+  const p = configFilePath();
+  if (!(await fs.exists(p))) {
+    console.log('root is not set (no config file at ' + p + ')');
+    return;
+  }
+  const cfg = await readConfigObject();
+  if (!('root' in cfg)) {
+    console.log('root is not set in ' + p);
+    return;
+  }
+  delete cfg.root;
+  await writeConfigObject(cfg);
+  console.log('Unset root in ' + p);
+}
+
+async function cmdConfig() {
+  const action = (args[1] || 'list').toLowerCase();
+  if (action === 'list') {
+    console.log(rootLine());
+    console.log('Config file: ' + configFilePath());
+    return;
+  }
+  if (action === 'path') {
+    console.log(configFilePath());
+    return;
+  }
+  if (action === 'get') {
+    const key = args[2];
+    if (key !== 'root') {
+      console.error('Usage: wiki config get root');
+      process.exit(1);
+    }
+    console.log(WIKI_ROOT);
+    return;
+  }
+  if (action === 'set') {
+    const key = args[2];
+    const val = args.slice(3).join(' ');
+    if (key !== 'root' || !val) {
+      console.error('Usage: wiki config set root <path>');
+      process.exit(1);
+    }
+    await configSetRoot(val);
+    return;
+  }
+  if (action === 'unset') {
+    const key = args[2];
+    if (key !== 'root') {
+      console.error('Usage: wiki config unset root');
+      process.exit(1);
+    }
+    await configUnsetRoot();
+    return;
+  }
+  console.error('Unknown config command: ' + action);
+  console.error('Usage: wiki config [list|path|get root|set root <path>|unset root]');
+  process.exit(1);
+}
+
 async function cmdHelp() {
   const cats = await discoverCats(true);
   const catLine = cats.length ? cats.join(', ') : '(none discovered at ' + WIKI_ROOT + ')';
-  console.log('wiki — LLM wiki knowledge base CLI\n\nUsage: wiki <command> [args]\n\nCommands:\n  search <term>      Search wiki pages by title and content (max 20 results)\n  list [category]    List all wiki pages, optionally filtered by category\n  read <note>        Display a wiki page (accepts name, name.md, or category/name)\n  stats              Pages per category, raw file count, date range, wikilink count\n  links <note>       Show inbound and outbound wikilinks for a note\n  orphans            Find pages with zero inbound links\n  recent [n]         Show N most recent raw source files (default 10)\n  log [n]            Show last N log.md entries (default 10)\n  help               Show this help\n\nCategories: ' + catLine + '\nWiki root:  ' + WIKI_ROOT);
+  console.log('wiki — LLM wiki knowledge base CLI\n\nUsage: wiki [--root <path>] <command> [args]\n\nCommands:\n  search <term>      Search wiki pages by title and content (max 20 results)\n  list [category]    List all wiki pages, optionally filtered by category\n  read <note>        Display a wiki page (accepts name, name.md, or category/name)\n  stats              Pages per category, raw file count, date range, wikilink count\n  links <note>       Show inbound and outbound wikilinks for a note\n  orphans            Find pages with zero inbound links\n  recent [n]         Show N most recent raw source files (default 10)\n  log [n]            Show last N log.md entries (default 10)\n  config [list]      Show resolved root, its source, and the config file path\n  config get root    Print the resolved wiki root\n  config set root <path>  Persist wiki root (must exist and be a directory)\n  config unset root  Remove the root key from the config file\n  config path        Print the config file path\n  help               Show this help\n\nCategories: ' + catLine + '\n' + rootLine());
 }
+
+await resolveRoot(rootFlag);
 
 switch (sub) {
   case 'search': await cmdSearch(); break;
@@ -296,6 +547,7 @@ switch (sub) {
   case 'orphans': await cmdOrphans(); break;
   case 'recent': await cmdRecent(); break;
   case 'log': await cmdLog(); break;
+  case 'config': await cmdConfig(); break;
   case 'help': await cmdHelp(); break;
   default: await cmdHelp(); break;
 }

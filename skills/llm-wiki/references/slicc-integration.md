@@ -10,7 +10,9 @@ behaviors work without any framework wiring.
   dedicated agent that handles query / ingest / lint events).
 - `wiki.jsh` — a small CLI for quick lookups (`wiki list`, `wiki search`,
   `wiki read`, `wiki stats`, `wiki orphans`, `wiki links`, `wiki recent`,
-  `wiki log`). It reads the wiki root defined by its `WIKI_ROOT` constant.
+  `wiki log`, `wiki config`). The wiki root is resolved from `--root`, the
+  `WIKI_ROOT` env var, `root` in `~/.config/wiki/config.json` (`WIKI_CONFIG`
+  overrides the file path), then the built-in default `/mnt/kb`.
 - `llm-wiki.shtml` — a sprinkle browser (sidebar nav, search, wikilinks, and
   query / ingest dialogs). Opening a note focuses its heading; Back to list
   restores focus to the note row. Load failures focus an error heading and keep

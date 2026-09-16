@@ -3,7 +3,8 @@ name: llm-wiki
 description: Build and maintain a persistent, interlinked markdown wiki knowledge base
   from raw sources. Use when the user wants to create a knowledge base, build a wiki,
   ingest articles or papers into a KB, query accumulated knowledge, organize research
-  notes, or lint a wiki for broken links and orphan pages. Triggers on mentions of
+  notes, lint a wiki for broken links and orphan pages, or point the bundled wiki CLI
+  at a different root (`wiki config`, WIKI_ROOT, --root). Triggers on mentions of
   knowledge base, wiki, KB, ingest, research notes, or personal wiki.
 ---
 
@@ -30,6 +31,8 @@ When the user asks to set up an LLM wiki, or when this skill is first activated:
 1. **Locate or create the wiki root.** Ask where the knowledge base lives (e.g. `/mnt/kb`).
    Use an existing wiki if there is one. If starting fresh, create `<root>/WIKI.md`
    (schema), `<root>/index.md` (empty catalog), and `<root>/log.md` (empty log).
+   Persist the chosen root with `wiki config set root <path>` so the bundled CLI
+   agrees with the schema (see [Wiki root (CLI)](#wiki-root-cli)).
 2. **Write the schema.** Use the default in [`references/wiki-schema.md`](references/wiki-schema.md)
    unless the user wants a different layout (that file also lists the constants to
    keep in sync with the bundled CLI).
@@ -37,6 +40,33 @@ When the user asks to set up an LLM wiki, or when this skill is first activated:
 Running under SLICC? See [`references/slicc-integration.md`](references/slicc-integration.md)
 to wire the sprinkle browser, the `wiki-ops` scoop, and the `wiki.jsh` CLI. None of
 that is required for plain-markdown use.
+
+## Wiki root (CLI)
+
+The bundled `wiki.jsh` CLI (`wiki search`, `wiki list`, `wiki read`, …) resolves
+its wiki root in this order, highest priority first:
+
+1. `--root <path>` — per-invocation flag, accepted before or after the subcommand
+2. `WIKI_ROOT` environment variable
+3. `root` key in the config file
+4. Built-in default `/mnt/kb` (unchanged)
+
+Config file: `${HOME}/.config/wiki/config.json` (override the path with `WIKI_CONFIG`).
+It lives **outside the skill directory** so `upskill update` cannot destroy it.
+Unknown keys are preserved on write. A missing, empty, or malformed file is ignored
+(with a warning that names the file) and resolution falls through to the next layer.
+
+```bash
+wiki config                 # resolved root, which layer, config path
+wiki config get root
+wiki config set root /path  # path must exist and be a directory
+wiki config unset root
+wiki config path
+```
+
+`wiki help` and `wiki stats` print the resolved root and which layer it came from.
+If a page lookup fails against a tree with zero pages, the error names the root
+and source so a wrong/empty tree is obvious — not a missing page.
 
 ## Wikilink validation
 
