@@ -341,10 +341,15 @@ not guess a destructive route. If the site is actually Helix 6, pass `--hlx6`.
 
 Path handling is split on purpose. `live` and `preview` match `preview` / `publish`:
 a leading slash and a trailing `.html` are stripped; asset extensions (`.pdf`, `.png`,
-…) are kept. `source` matches `get` / `put` / `upload`: pages are stored as `*.html` on
-the Source Bus, so a page path is normalized to `.html` before DELETE. Using the
-stripped operation path for source returns 404 and leaves the document in place
-(hit live 2026-09-17).
+…) are kept. `source` is **not** inferred from the suffix: `cmdPut` always stores
+`*.html` (so `put /guides/v1.2` lands at `guides/v1.2.html`) while `cmdUpload` stores
+the path as given (so `upload x.png /hero` lands at `hero`). Delete GETs both
+candidates on the source route — that GET is a reliable oracle, unlike live/preview
+GET which keep returning 200 after a 204 — and deletes the one that exists. If both
+exist it refuses the source stage rather than guessing; if neither exists it says so
+and names both paths checked, instead of treating a 404 as silent success. `--dry-run`
+probes too and prints the resolved source URL. `aem delete --help` prints usage and
+exits 0.
 
 ## Typical Workflow
 

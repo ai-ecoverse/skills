@@ -328,6 +328,22 @@ async function aemDelete(url) {
   }
 }
 
+// Source GET is a reliable existence oracle (verified 2026-09-17: 404 after a
+// successful source DELETE). Live/preview GET are not — do not reuse this for those.
+async function aemGetStatus(url) {
+  try {
+    const resp = await aemApi.get(url, { raw: true });
+    return resp.status;
+  } catch (err) {
+    if (err && err.name === 'NodeExitError') throw err;
+    if (err && (err.status === 401 || err.status === 403)) {
+      process.stderr.write('aem: authentication failed (token may be expired). Run: oauth-token adobe\n');
+      process.exit(1);
+    }
+    return (err && err.status) || 0;
+  }
+}
+
 // ── Path normalization ─────────────────────────────────────────
 
 function normalizeAemPath(pagePath) {
@@ -336,18 +352,42 @@ function normalizeAemPath(pagePath) {
   return p + '.html';
 }
 
-// preview/publish (and DELETE live|preview) strip a trailing .html; the Source
-// Bus stores pages as *.html (cmdGet/cmdPut) and assets with their own
-// extension (cmdUpload). Mixing those up 404s the source DELETE and leaves
-// the document in place (hit live 2026-09-17 on a drafts/*.html scratch page).
+// preview/publish (and DELETE live|preview) strip a trailing .html.
 function operationPath(pagePath) {
   return pagePath.replace(/^\//, '').replace(/\.html$/, '');
 }
 
-function sourceContentPath(pagePath) {
-  const p = pagePath.replace(/^\//, '');
-  if (/\.[a-z0-9]+$/i.test(p) && !/\.html$/i.test(p)) return p;
-  return normalizeAemPath(pagePath);
+// Source Bus candidates: the path as given, and the put/get page form (*.html).
+// cmdPut always appends .html; cmdUpload stores the path as given. Inferring
+// the type from the suffix is wrong for `put /guides/v1.2` (stored as
+// guides/v1.2.html) and `upload x.png /hero` (stored as hero). Probe GET on
+// the source route instead — that GET is a reliable oracle (404 after delete),
+// unlike GET live/preview which keep returning 200 after a 204.
+function sourceCandidates(pagePath) {
+  const given = pagePath.replace(/^\//, '');
+  const html = normalizeAemPath(pagePath);
+  const out = [];
+  if (given) out.push(given);
+  if (html && html !== given) out.push(html);
+  return out;
+}
+
+async function probeSource(target, args, pagePath) {
+  const checked = [];
+  for (const p of sourceCandidates(pagePath)) {
+    const url = await operationUrl('source', target, args, p, { verified: true });
+    const status = await aemGetStatus(url);
+    checked.push({
+      path: p,
+      url,
+      status,
+      exists: status >= 200 && status < 300,
+    });
+  }
+  const found = checked.filter((c) => c.exists);
+  if (found.length === 1) return { kind: 'one', chosen: found[0], checked };
+  if (found.length === 0) return { kind: 'none', checked };
+  return { kind: 'both', checked };
 }
 
 // ── Subcommands ────────────────────────────────────────────────
@@ -549,6 +589,7 @@ async function cmdUpload(args) {
 // must not delete). Checked before resolveBackend / any network call.
 const DELETE_BOOL_FLAGS = new Set([
   '--yes', '--dry-run', '--unpublish-only', '--verify', '--hlx6', '--hlx5',
+  '--help', '-h',
 ]);
 const DELETE_VALUE_FLAGS = new Set(['--org', '--repo', '--site', '--ref', '--api']);
 
@@ -568,6 +609,10 @@ function rejectUnknownDeleteFlags(args) {
 }
 
 async function cmdDelete(args) {
+  if (args.includes('--help') || args.includes('-h')) {
+    cmdHelp();
+    return;
+  }
   rejectUnknownDeleteFlags(args);
   const target = resolveTarget(args);
   if (!target) {
@@ -576,10 +621,8 @@ async function cmdDelete(args) {
   }
 
   // live/preview: same path as cmdPreview/cmdPublish (strip trailing .html).
-  // source: same path as cmdGet/cmdPut/cmdUpload (pages are *.html; assets keep
-  // .pdf/.png/...). Using the operation path for source 404s and leaves the file.
+  // source: probe which candidate exists rather than inferring from the suffix.
   const path = operationPath(target.path);
-  const srcPath = sourceContentPath(target.path);
   if (!path) {
     process.stderr.write('aem: refusing to delete the site root. Pass a specific path.\n');
     process.exit(1);
@@ -595,62 +638,95 @@ async function cmdDelete(args) {
     process.exit(1);
   }
 
+  await getToken();
+
   const unpublishOnly = args.includes('--unpublish-only');
-  const stages = unpublishOnly ? ['live', 'preview'] : ['live', 'preview', 'source'];
-  const planned = [];
-  for (const verb of stages) {
-    const stagePath = verb === 'source' ? srcPath : path;
-    planned.push({ verb, url: await operationUrl(verb, target, args, stagePath, { verified: true }) });
+  const planned = [
+    { verb: 'live', url: await operationUrl('live', target, args, path, { verified: true }) },
+    { verb: 'preview', url: await operationUrl('preview', target, args, path, { verified: true }) },
+  ];
+  if (!unpublishOnly) {
+    const probe = await probeSource(target, args, target.path);
+    if (probe.kind === 'one') {
+      planned.push({ verb: 'source', url: probe.chosen.url });
+    } else {
+      planned.push({ verb: 'source', skip: probe.kind, checked: probe.checked });
+    }
+  }
+
+  function writePlan(write, header) {
+    write(header);
+    for (const item of planned) {
+      if (item.skip === 'none') {
+        write(`  ${'source'.padEnd(8)} skipped (neither source candidate exists; checked):\n`);
+        for (const c of item.checked) write(`           GET ${c.status || 'error'}  ${c.url}\n`);
+      } else if (item.skip === 'both') {
+        write(`  ${'source'.padEnd(8)} skipped (both source candidates exist; pass the exact path):\n`);
+        for (const c of item.checked) write(`           GET ${c.status || 'error'}  ${c.url}\n`);
+      } else {
+        write(`  ${item.verb.padEnd(8)} ${item.url}\n`);
+      }
+    }
   }
 
   const dryRun = args.includes('--dry-run');
   const yes = args.includes('--yes');
 
   if (dryRun) {
-    process.stdout.write('aem delete --dry-run: would DELETE in this order (no requests sent):\n');
-    for (const { verb, url } of planned) {
-      process.stdout.write(`  ${verb.padEnd(8)} ${url}\n`);
-    }
+    writePlan(
+      (s) => process.stdout.write(s),
+      'aem delete --dry-run: would DELETE in this order (no mutating requests sent):\n',
+    );
     return;
   }
 
   if (!yes) {
-    process.stderr.write('aem: delete is destructive; nothing was changed. Re-run with --yes to DELETE in this order:\n');
-    for (const { verb, url } of planned) {
-      process.stderr.write(`  ${verb.padEnd(8)} ${url}\n`);
-    }
+    writePlan(
+      (s) => process.stderr.write(s),
+      'aem: delete is destructive; nothing was changed. Re-run with --yes to DELETE in this order:\n',
+    );
     process.stderr.write('     Or pass --dry-run to print the URLs and exit 0 without changes.\n');
     process.exit(1);
   }
-
-  await getToken();
 
   // Order is mandatory: unpublish live, then preview, then remove source.
   // Deleting source first can strand a published copy whose source is gone
   // (verified 2026-09-17 against ai-ecoverse/slicc-website).
   let unpublishFailed = false;
   let anyFailed = false;
-  for (const { verb, url } of planned) {
-    if (verb === 'source' && unpublishFailed) {
+  for (const item of planned) {
+    if (item.verb === 'source' && item.skip) {
+      const reason = item.skip === 'both'
+        ? 'both source candidates exist; pass the exact path'
+        : 'neither source candidate exists; not treated as success';
+      process.stderr.write(`  ${'source'.padEnd(8)} skipped (${reason}):\n`);
+      for (const c of item.checked) {
+        process.stderr.write(`           GET ${c.status || 'error'}  ${c.url}\n`);
+      }
+      anyFailed = true;
+      continue;
+    }
+    if (item.verb === 'source' && unpublishFailed) {
       process.stderr.write(
         `  ${'source'.padEnd(8)} skipped (live or preview failed; source left intact to avoid stranding a published copy)\n`,
       );
       anyFailed = true;
       continue;
     }
-    const result = await aemDelete(url);
-    // 2xx succeeds. 404 means already gone — still safe to continue, so it
-    // does not skip the source stage the way a real unpublish failure would.
+    const result = await aemDelete(item.url);
+    // live/preview: 404 means already unpublished. source: 404 here is only
+    // reached after a probe found this exact URL, so it is a race, not a
+    // wrong-path miss.
     const ok = (result.status >= 200 && result.status < 300) || result.status === 404;
     const extra = result.status === 404
       ? ' (already gone)'
       : (result.error ? `  ${String(result.error).slice(0, 160)}` : '');
-    const line = `  ${verb.padEnd(8)} HTTP ${result.status || 'error'}  ${url}${extra}\n`;
+    const line = `  ${item.verb.padEnd(8)} HTTP ${result.status || 'error'}  ${item.url}${extra}\n`;
     if (ok) process.stdout.write(line);
     else process.stderr.write(line);
     if (!ok) {
       anyFailed = true;
-      if (verb === 'live' || verb === 'preview') unpublishFailed = true;
+      if (item.verb === 'live' || item.verb === 'preview') unpublishFailed = true;
     }
   }
 
@@ -719,6 +795,7 @@ Delete flags:
   --verify         After deleting, poll aem.page / aem.live for 404. Do not GET
                    the admin API — it keeps returning 200 after a successful 204.
   Unknown flags are rejected. A typo of --dry-run must not delete.
+  --help, -h       Show this help and exit 0
 
 Architecture version:
   Sites on Helix 6 answer on https://api.aem.live with paths of the shape
