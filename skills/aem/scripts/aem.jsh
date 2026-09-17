@@ -264,21 +264,23 @@ async function aemPutRaw(url, token, filePath, contentType) {
   return { status, body };
 }
 
-// ── Preview / publish routing ──────────────────────────────────
+// ── Preview / publish / delete routing ────────────────
 //
-// The Helix 6 shape for these is /<org>/sites/<site>/preview|live/<path>, taken
-// from the architecture design notes and NOT verified against a live site here.
-// Rather than POST to a guessed route on somebody's production site, an
-// auto-detected Helix 6 site refuses and asks for an explicit flag.
+// Helix 6 shape: /<org>/sites/<site>/<verb>/<path> on api.aem.live.
+// POST preview|live is still unverified design intent here, so an auto-detected
+// Helix 6 site refuses those and asks for --hlx6.
+// DELETE live, then preview, then source WAS verified (12/12 HTTP 204, empty
+// body) on 2026-09-17 against ai-ecoverse/slicc-website, so delete passes
+// { verified: true } and does not require --hlx6.
 
 function explicitHelix6(args) {
   return args.includes('--hlx6') || !!getFlag(args, '--api');
 }
 
-async function operationUrl(verb, target, args, path) {
+async function operationUrl(verb, target, args, path, opts = {}) {
   const backend = await resolveBackend(target, args);
   if (backend.version === 6) {
-    if (!explicitHelix6(args)) {
+    if (!opts.verified && !explicitHelix6(args)) {
       process.stderr.write(
         `aem: ${target.org}/${target.repo} answers on the Helix 6 API, and the Helix 6 '${verb}' route is unverified design intent.\n` +
         `     Re-run with --hlx6 to try it anyway, or with --hlx5 to use ${AEM_ADMIN_BASE}.\n`,
@@ -304,12 +306,48 @@ function parseOperationResponse(body, label) {
   }
 }
 
+// DELETE against the admin API. Success is HTTP 204 with an empty body
+// (verified 2026-09-17, 12/12 on ai-ecoverse/slicc-website). Do NOT run that
+// body through JSON.parse — parseOperationResponse is for POST preview/publish
+// payloads. http.client with { raw: true } already returns { status, body }
+// and treats an empty JSON body as null rather than throwing.
+async function aemDelete(url) {
+  try {
+    const resp = await aemApi.delete(url, { raw: true });
+    return { status: resp.status };
+  } catch (err) {
+    if (err && err.name === 'NodeExitError') throw err;
+    if (err && (err.status === 401 || err.status === 403)) {
+      process.stderr.write('aem: authentication failed (token may be expired). Run: oauth-token adobe\n');
+      process.exit(1);
+    }
+    return {
+      status: (err && err.status) || 0,
+      error: (err && (err.body?.message || err.message)) || 'HTTP DELETE failed',
+    };
+  }
+}
+
 // ── Path normalization ─────────────────────────────────────────
 
 function normalizeAemPath(pagePath) {
   let p = pagePath.replace(/^\//, '').replace(/\.html$/, '');
   if (p.endsWith('/')) p += 'index';
   return p + '.html';
+}
+
+// preview/publish (and DELETE live|preview) strip a trailing .html; the Source
+// Bus stores pages as *.html (cmdGet/cmdPut) and assets with their own
+// extension (cmdUpload). Mixing those up 404s the source DELETE and leaves
+// the document in place (hit live 2026-09-17 on a drafts/*.html scratch page).
+function operationPath(pagePath) {
+  return pagePath.replace(/^\//, '').replace(/\.html$/, '');
+}
+
+function sourceContentPath(pagePath) {
+  const p = pagePath.replace(/^\//, '');
+  if (/\.[a-z0-9]+$/i.test(p) && !/\.html$/i.test(p)) return p;
+  return normalizeAemPath(pagePath);
 }
 
 // ── Subcommands ────────────────────────────────────────────────
@@ -505,6 +543,130 @@ async function cmdUpload(args) {
   process.stdout.write(`Uploaded: ${filePath} -> ${aemPath}\n`);
 }
 
+async function cmdDelete(args) {
+  const target = resolveTarget(args);
+  if (!target) {
+    process.stderr.write('Usage: aem delete <eds-url-or-path> [--yes] [--dry-run] [--unpublish-only] [--verify]\n');
+    process.exit(1);
+  }
+
+  // live/preview: same path as cmdPreview/cmdPublish (strip trailing .html).
+  // source: same path as cmdGet/cmdPut/cmdUpload (pages are *.html; assets keep
+  // .pdf/.png/...). Using the operation path for source 404s and leaves the file.
+  const path = operationPath(target.path);
+  const srcPath = sourceContentPath(target.path);
+  if (!path) {
+    process.stderr.write('aem: refusing to delete the site root. Pass a specific path.\n');
+    process.exit(1);
+  }
+
+  const backend = await resolveBackend(target, args);
+  if (backend.version === 5) {
+    process.stderr.write(
+      'aem: delete is not supported on Helix 5.\n' +
+      `     DELETE has not been tested against ${AEM_ADMIN_BASE} or ${DA_ADMIN_BASE}, and this CLI will not guess a destructive route.\n` +
+      '     If this site is actually Helix 6, re-run with --hlx6.\n',
+    );
+    process.exit(1);
+  }
+
+  const unpublishOnly = args.includes('--unpublish-only');
+  const stages = unpublishOnly ? ['live', 'preview'] : ['live', 'preview', 'source'];
+  const planned = [];
+  for (const verb of stages) {
+    const stagePath = verb === 'source' ? srcPath : path;
+    planned.push({ verb, url: await operationUrl(verb, target, args, stagePath, { verified: true }) });
+  }
+
+  const dryRun = args.includes('--dry-run');
+  const yes = args.includes('--yes');
+
+  if (dryRun) {
+    process.stdout.write('aem delete --dry-run: would DELETE in this order (no requests sent):\n');
+    for (const { verb, url } of planned) {
+      process.stdout.write(`  ${verb.padEnd(8)} ${url}\n`);
+    }
+    return;
+  }
+
+  if (!yes) {
+    process.stderr.write('aem: delete is destructive; nothing was changed. Re-run with --yes to DELETE in this order:\n');
+    for (const { verb, url } of planned) {
+      process.stderr.write(`  ${verb.padEnd(8)} ${url}\n`);
+    }
+    process.stderr.write('     Or pass --dry-run to print the URLs and exit 0 without changes.\n');
+    process.exit(1);
+  }
+
+  await getToken();
+
+  // Order is mandatory: unpublish live, then preview, then remove source.
+  // Deleting source first can strand a published copy whose source is gone
+  // (verified 2026-09-17 against ai-ecoverse/slicc-website).
+  let unpublishFailed = false;
+  let anyFailed = false;
+  for (const { verb, url } of planned) {
+    if (verb === 'source' && unpublishFailed) {
+      process.stderr.write(
+        `  ${'source'.padEnd(8)} skipped (live or preview failed; source left intact to avoid stranding a published copy)\n`,
+      );
+      anyFailed = true;
+      continue;
+    }
+    const result = await aemDelete(url);
+    // 2xx succeeds. 404 means already gone — still safe to continue, so it
+    // does not skip the source stage the way a real unpublish failure would.
+    const ok = (result.status >= 200 && result.status < 300) || result.status === 404;
+    const extra = result.status === 404
+      ? ' (already gone)'
+      : (result.error ? `  ${String(result.error).slice(0, 160)}` : '');
+    const line = `  ${verb.padEnd(8)} HTTP ${result.status || 'error'}  ${url}${extra}\n`;
+    if (ok) process.stdout.write(line);
+    else process.stderr.write(line);
+    if (!ok) {
+      anyFailed = true;
+      if (verb === 'live' || verb === 'preview') unpublishFailed = true;
+    }
+  }
+
+  if (args.includes('--verify')) {
+    // CRITICAL TRAP (verified 2026-09-17 on ai-ecoverse/slicc-website): after a
+    // successful 204, GET .../live/<path> and GET .../preview/<path> on the
+    // admin API still return 200, while GET .../source/<path> correctly returns
+    // 404. Only the delivery hosts tell the truth. Never use an admin GET as
+    // the success oracle — that would report a false failure and invite a
+    // destructive retry.
+    const delivery = [
+      { label: 'preview', url: `https://${target.ref}--${target.repo}--${target.org}.aem.page/${path}` },
+      { label: 'live', url: `https://${target.ref}--${target.repo}--${target.org}.aem.live/${path}` },
+    ];
+    const attempts = 4;
+    for (const d of delivery) {
+      let status = 0;
+      for (let i = 0; i < attempts; i++) {
+        try {
+          const resp = await fetch(d.url, { method: 'GET', redirect: 'follow' });
+          status = resp.status;
+        } catch {
+          status = 0;
+        }
+        if (status === 404) break;
+        if (i + 1 < attempts) {
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+      }
+      const line = `  verify   ${d.label.padEnd(8)} HTTP ${status || 'error'}  ${d.url}\n`;
+      if (status === 404) process.stdout.write(line);
+      else {
+        process.stderr.write(line);
+        anyFailed = true;
+      }
+    }
+  }
+
+  if (anyFailed) process.exit(1);
+}
+
 function cmdHelp() {
   process.stdout.write(`aem -- AEM Edge Delivery Services CLI
 
@@ -521,7 +683,16 @@ Commands:
   preview <url>               Trigger AEM preview
   publish <url>               Trigger AEM publish
   upload <vfs-file> <url>     Upload a VFS file (media)
+  delete <url> --yes          Unpublish live & preview, then delete source
+  unpublish <url> --yes       Alias for delete --unpublish-only (leave source)
   help                        Show this help
+
+Delete flags:
+  --yes            Required to actually delete. Without it, print the plan and exit 1.
+  --dry-run        Print the DELETE URLs, make no mutating calls, exit 0
+  --unpublish-only live + preview only; do not delete source
+  --verify         After deleting, poll aem.page / aem.live for 404. Do not GET
+                   the admin API — it keeps returning 200 after a successful 204.
 
 Architecture version:
   Sites on Helix 6 answer on https://api.aem.live with paths of the shape
@@ -535,9 +706,10 @@ Architecture version:
   --api <host>     Use a different Helix 6 host (implies --hlx6)
   --site <name>    Alias for --repo
 
-  get, put, list and upload are verified against Helix 6. preview and publish
-  use the documented Helix 6 route but it is unverified, so on a Helix 6 site
-  they require an explicit --hlx6.
+  get, put, list, upload and delete are verified against Helix 6. preview and
+  publish use the documented Helix 6 route but it is unverified, so on a Helix 6
+  site they require an explicit --hlx6. delete on Helix 5 is refused: the
+  destructive route has not been tested against admin.hlx.page / admin.da.live.
 
 Authentication:
   Uses oauth-token adobe (auto-triggers login if needed).
@@ -551,6 +723,9 @@ Examples:
   aem preview https://main--myrepo--myorg.aem.page/page
   aem publish https://main--myrepo--myorg.aem.page/page
   aem upload /workspace/image.png https://main--myrepo--myorg.aem.page/media_123.png
+  aem delete https://main--myrepo--myorg.aem.page/assets/old.pdf --dry-run
+  aem delete https://main--myrepo--myorg.aem.page/assets/old.pdf --yes
+  aem unpublish https://main--myrepo--myorg.aem.page/page --yes
 
   # Or with flags:
   aem list /products --org myorg --repo myrepo
@@ -588,6 +763,12 @@ switch (command) {
     break;
   case 'upload':
     await cmdUpload(subArgs);
+    break;
+  case 'delete':
+    await cmdDelete(subArgs);
+    break;
+  case 'unpublish':
+    await cmdDelete(['--unpublish-only', ...subArgs]);
     break;
   case 'help':
   case '--help':
