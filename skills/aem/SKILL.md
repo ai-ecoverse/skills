@@ -1,11 +1,11 @@
 ---
 name: aem
 description: |
-  AEM Edge Delivery Services (EDS) skill for reading, writing, previewing, and
-  publishing EDS pages via the `aem` CLI. Use for AEM Edge Delivery Services,
-  EDS pages, Franklin, Helix, AEM EDS, edge delivery content, document-based
-  authoring, or to list, get, put, preview, publish, or upload content in AEM
-  EDS. Supports the full get→edit→put→preview→publish pipeline on Helix 5
+  AEM Edge Delivery Services (EDS) skill for the `aem` CLI. Use for AEM Edge
+  Delivery Services, EDS pages, Franklin, Helix, AEM EDS, edge delivery
+  content, document-based authoring, or to list, get, put, preview, publish,
+  upload, unpublish, or delete content in AEM EDS, including to remove a published page or asset.
+  Supports the get→edit→put→preview→publish pipeline on Helix 5
   (admin.hlx.page, admin.da.live) and Helix 6 (api.aem.live Source Bus) sites.
   Also provides `aem-ext` for longer-lived auth: `aem-ext auth login` gets a
   ~24-hour session cookie via a browser IDP login, and `aem-ext auth key
@@ -135,6 +135,8 @@ Or use `--org`/`--repo` flags with a plain path.
 - `aem preview <url>` — Trigger AEM preview
 - `aem publish <url>` — Trigger AEM publish
 - `aem upload <vfs-file> <url>` — Upload a media file
+- `aem delete <url> --yes` — Unpublish live and preview, then delete source
+- `aem unpublish <url> --yes` — Alias for `delete --unpublish-only` (leave source)
 - `aem help` — Show usage
 
 `aem-ext` mirrors the content verbs on the new credential resolution and adds key
@@ -215,13 +217,16 @@ The wider Helix 6 surface, from the architecture design notes, is
 
 ### What is verified and what is not
 
-`list`, `get`, `put` and `upload` were exercised by hand against a live Helix 6
-site. The `preview` and `live` routes are taken from the design notes and have
-not been verified, so on a site detected as Helix 6 those two commands stop and
-ask for an explicit `--hlx6` rather than POSTing to a guessed route on a
-production site. Binary media through the Source Bus uses the same raw `PUT` as
-HTML and is untested, so `upload` reports the HTTP status it received instead of
-claiming success.
+`list`, `get`, `put`, `upload` and `delete` were exercised by hand against a live
+Helix 6 site. The `preview` and `live` *POST* routes are taken from the design
+notes and have not been verified in `aem`, so on a site detected as Helix 6 those
+two commands stop and ask for an explicit `--hlx6` rather than POSTing to a
+guessed route on a production site. `delete` uses the same Helix 6 path shape
+but **DELETE** of `live`, then `preview`, then `source` is verified (HTTP 204,
+empty body, 2026-09-17 on `ai-ecoverse/slicc-website`), so it does not require
+`--hlx6`. Binary media through the Source Bus uses the same raw `PUT` as HTML
+and is untested, so `upload` reports the HTTP status it received instead of
+claiming success. `delete` on Helix 5 is refused — see [Deleting content](#deleting-content).
 
 **Update 2026-09-03:** Helix 6 `POST .../preview/<path>` and `GET .../status/<path>`
 were verified live (200 with an admin API key), so `aem-ext` treats them as supported.
@@ -293,6 +298,59 @@ before and after so the merge is visible.
 Full endpoint/auth reference, including everything that was and was not verified:
 `references/api-keys.md`.
 
+## Deleting content
+
+`aem delete` is destructive and will not fire on a bare invocation. Stdin in this
+runtime is one-shot and buffered, so there is no interactive y/n prompt — pass
+`--yes` to proceed.
+
+```
+aem delete <eds-url-or-path> [--yes] [--dry-run] [--unpublish-only] [--verify] [--hlx6]
+aem unpublish <eds-url-or-path> --yes    # same as delete --unpublish-only
+```
+
+- Without `--yes`: print the DELETE URLs it *would* call, exit non-zero, change nothing.
+- `--dry-run`: print the same URLs, make zero mutating network calls, exit 0.
+- `--unpublish-only` (or the `unpublish` alias): DELETE `live` and `preview` only;
+  leave `source` intact.
+- `--verify`: after deleting, poll the **delivery** hosts (`aem.page` / `aem.live`)
+  for HTTP 404. Do not confirm success with an admin GET — see the trap below.
+- Unknown flags are rejected before any network call. A typo such as `--dry-runn`
+  with `--yes` must not fail open and delete. Other verbs still swallow unknown
+  flags; that leniency is unchanged.
+
+Order is mandatory and encoded in the command: **live, then preview, then source**.
+Unpublish before removing the source, otherwise a published copy can be stranded
+with no source left to unpublish from.
+
+Success is HTTP **204 with an empty body**. The CLI does not run that body through
+a JSON parser (`parseOperationResponse` is for POST preview/publish payloads).
+
+**Admin GET is not an oracle.** After a successful 204, `GET .../live/<path>` and
+`GET .../preview/<path>` on `api.aem.live` still return 200, while
+`GET .../source/<path>` correctly returns 404. Only the delivery hosts tell the
+truth (`https://main--<repo>--<org>.aem.page/<path>` and `.aem.live/<path>` return
+404). Using the admin GET as a success check would report a false failure and
+invite a destructive retry. Verified 2026-09-17 against `ai-ecoverse/slicc-website`
+(12/12 DELETEs returned 204; delivery hosts 404; admin live/preview GET still 200).
+
+Helix 6 is the verified backend for delete; `--hlx6` / `--api <host>` still work
+because the command goes through `operationUrl()`. **Helix 5 is refused** — DELETE
+has not been tested against `admin.hlx.page` or `admin.da.live`, and this CLI will
+not guess a destructive route. If the site is actually Helix 6, pass `--hlx6`.
+
+Path handling is split on purpose. `live` and `preview` match `preview` / `publish`:
+a leading slash and a trailing `.html` are stripped; asset extensions (`.pdf`, `.png`,
+…) are kept. `source` is **not** inferred from the suffix: `cmdPut` always stores
+`*.html` (so `put /guides/v1.2` lands at `guides/v1.2.html`) while `cmdUpload` stores
+the path as given (so `upload x.png /hero` lands at `hero`). Delete GETs both
+candidates on the source route — that GET is a reliable oracle, unlike live/preview
+GET which keep returning 200 after a 204 — and deletes the one that exists. If both
+exist it refuses the source stage rather than guessing; if neither exists it says so
+and names both paths checked, instead of treating a 404 as silent success. `--dry-run`
+probes too and prints the resolved source URL. `aem delete --help` prints usage and
+exits 0.
+
 ## Typical Workflow
 
 For editing a page, follow this sequence:
@@ -331,6 +389,9 @@ aem put https://main--myrepo--myorg.aem.page/page /workspace/page.html
 aem preview https://main--myrepo--myorg.aem.page/page
 aem publish https://main--myrepo--myorg.aem.page/page
 aem upload /workspace/image.png https://main--myrepo--myorg.aem.page/media_123.png
+aem delete https://main--myrepo--myorg.aem.page/assets/old.pdf --dry-run
+aem delete https://main--myrepo--myorg.aem.page/assets/old.pdf --yes
+aem unpublish https://main--myrepo--myorg.aem.page/page --yes
 
 # Helix 6 site: same commands, backend detected automatically
 aem list https://main--aem-website--adobe.aem.page/blog
