@@ -46,6 +46,21 @@ function actionLabel(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
+// Filing cone folder (slicc#3212 Layer C). $SLICC_CONE is out of scope;
+// cones and scoops both publish $TMPDIR as /tmp/<cone> or /tmp/<cone>/<scoop>.
+function filingCone(env) {
+  const tmp = env && typeof env.TMPDIR === 'string' ? env.TMPDIR : '';
+  if (!tmp) return undefined;
+  const parts = tmp.split('/').filter(Boolean);
+  const i = parts.indexOf('tmp');
+  return i >= 0 && parts[i + 1] ? parts[i + 1] : undefined;
+}
+
+function withFilingCone(msg, env) {
+  const cone = filingCone(env || (typeof process !== 'undefined' ? process.env : undefined));
+  return cone ? { ...msg, cone } : msg;
+}
+
 async function which(cmd) {
   const r = await exec('which ' + escapeShellArg(cmd) + ' 2>/dev/null');
   if (r.exitCode === 0) return true;
@@ -204,13 +219,13 @@ async function cmdSweep() {
     const primaryActionLabel = actionLabel(flags['primary-action-label']) ||
       actionLabel(card.primaryActionLabel) || 'Publish';
     if (isDryRun) {
-      process.stdout.write(JSON.stringify({ ...card, primaryActionLabel }) + '\n');
+      process.stdout.write(JSON.stringify(withFilingCone({ ...card, primaryActionLabel })) + '\n');
       pushed++;
       continue;
     }
 
     try {
-      await sprinkleSend({
+      await sprinkleSend(withFilingCone({
         action: 'ensure-item',
         id: card.id,
         title: card.title || card.id,
@@ -218,7 +233,7 @@ async function cmdSweep() {
         previewUrl: card.previewUrl || '',
         liveUrl: card.liveUrl || '',
         primaryActionLabel,
-      });
+      }));
       await sprinkleSend({
         action: 'add-findings',
         id: card.id,
@@ -328,7 +343,7 @@ try {
   }
 
   try {
-    await sprinkleSend({
+    await sprinkleSend(withFilingCone({
       action: 'ensure-item',
       id,
       title,
@@ -336,7 +351,7 @@ try {
       previewUrl: payload.previewUrl || undefined,
       liveUrl: payload.liveUrl || undefined,
       primaryActionLabel: payload.primaryActionLabel,
-    });
+    }));
     for (const c of contributions) {
       await sprinkleSend({
         action: 'add-findings',

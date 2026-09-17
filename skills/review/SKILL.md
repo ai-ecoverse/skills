@@ -116,7 +116,7 @@ sprinkle send review '{"action":"update-status","id":"page-1","status":"publishe
 
 `ensure-item` is a true upsert: it creates the card when the `id` is new and
 updates it in place when the `id` already exists, without disturbing the rest of
-the queue. Only the fields you send (`title`, `path`, `previewUrl`, `liveUrl`, `primaryActionLabel`) are
+the queue. Only the fields you send (`title`, `path`, `previewUrl`, `liveUrl`, `primaryActionLabel`, `cone`) are
 written — anything you omit keeps its current value, and the item's `status` is
 never modified, so a published or deferred card does not silently revert to
 pending. Existing comments on the card are preserved.
@@ -138,10 +138,10 @@ The sprinkle fires these licks back to the cone:
 
 | Action | Data | When |
 |--------|------|------|
-| `publish` | `{ id, path, url }` | User clicks the primary action (Approve by default, Publish for AEM) |
-| `comment` | `{ id, path, url, comment }` | User submits a comment |
-| `defer` | `{ id, path, url }` | User clicks Defer |
-| `submit-revisions` | `{ id, path, url, format, batchId, revisions: [{ id, text, note, anchor }] }` | User explicitly sends saved comments to the agent |
+| `publish` | `{ id, path, url }` | User clicks the primary action (Approve by default, Publish for AEM). Passes Layer-B `target` set to the card's filing `cone` when present. |
+| `comment` | `{ id, path, url, comment }` | User submits a comment. Passes `target` from the card's `cone` when present. |
+| `defer` | `{ id, path, url }` | User clicks Defer. Passes `target` from the card's `cone` when present. |
+| `submit-revisions` | `{ id, path, url, format, batchId, revisions: [{ id, text, note, anchor }] }` | User explicitly sends saved comments to the agent. Passes `target` from the card's `cone` when present. |
 | `toggle-review-mode` | `{ active:bool }` | User toggles the **Pin Review** button |
 | `toggle-speck` | `{ active:bool }` | User toggles the **Speck Fix** button |
 | `comment-done` | `{ num, done, itemId, cid }` | User clicks the ✓/✗ "done" button on a comment line (only fired for pin comments, which carry `num`) |
@@ -156,7 +156,7 @@ The sprinkle accepts these inbound messages (`sprinkle send review`):
 | `open-file` | `{ path, title, id? }` | Open the same iframe preview used by queue cards |
 | `revisions-result` | `{ batchId, status: "applied" or "failed", message? }` | Acknowledge a batch; applied comments are retained, failed comments become retryable drafts |
 | `add-comment` | `{ id, comment, num? }` | Append a comment to an item's log. A numeric `num` marks it as a *pin* comment (links to a page marker) |
-| `ensure-item` | `{ id, title?, previewUrl?, liveUrl?, path?, primaryActionLabel? }` | Upsert only supplied fields; preserve status, comments, and other cards (see the upsert example above) |
+| `ensure-item` | `{ id, title?, previewUrl?, liveUrl?, path?, primaryActionLabel?, cone? }` | Upsert only supplied fields; preserve status, comments, and other cards (see the upsert example above). `cone` is the filing cone folder; cone-bound licks pass it as `slicc.lick({ target })`. |
 | `set-comment-done` | `{ id, num, done }` | Set a comment line's done-state directly by `num` (crosses it off / un-crosses). Used to restore done-state when re-populating comment lines from the durable store; complements `comment-done` (the lick fired when the user clicks the ✗ button) |
 | `add-pin` | `{ id, comment, num, pin }` | Append the comment and persist the positional marker by `pin.url`; use for page pins |
 | `set-pin-done` | `{ url, num, done }` | Persist a pin's done-state in the durable store (echo this when handling a `comment-done` lick for a pin so the store stays in sync) |

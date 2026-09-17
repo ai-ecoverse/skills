@@ -151,6 +151,16 @@ function isSnoozed(t, now) {
   return !isNaN(ts) && ts > (now == null ? Date.now() : now);
 }
 
+// Filing cone folder (slicc#3212 Layer C). $SLICC_CONE is out of scope;
+// cones and scoops both publish $TMPDIR as /tmp/<cone> or /tmp/<cone>/<scoop>.
+function filingCone(env) {
+  const tmp = env && typeof env.TMPDIR === 'string' ? env.TMPDIR : '';
+  if (!tmp) return undefined;
+  const parts = tmp.split('/').filter(Boolean);
+  const i = parts.indexOf('tmp');
+  return i >= 0 && parts[i + 1] ? parts[i + 1] : undefined;
+}
+
 
 async function reseed(name, storePath) {
   const store = readStore(storePath);
@@ -205,6 +215,14 @@ async function main() {
       };
     }
     const existing = store.tasks.findIndex((t) => t.id === id);
+    const prev = existing !== -1 ? store.tasks[existing] : null;
+    const explicitCone = typeof args.cone === 'string' && args.cone.trim() ? args.cone.trim() : '';
+    if (explicitCone) task.cone = explicitCone;
+    else if (prev && prev.cone) task.cone = prev.cone;
+    else {
+      const cone = filingCone(process.env);
+      if (cone) task.cone = cone;
+    }
     if (existing !== -1) store.tasks[existing] = { ...store.tasks[existing], ...task };
     else store.tasks.push(task);
     writeStore(storePath, store);
@@ -357,7 +375,7 @@ async function main() {
     `  loose-ends bootstrap [--name <n>] [--store <path>] [--template <path>]\n` +
     `  loose-ends reseed    [--name <n>] [--store <path>]\n` +
     `  loose-ends list      [--snoozed] [--json]\n` +
-    `  loose-ends create --title <t> [--summary <s>] [--detail <d>] [--url <href>] [--skills a,b] [--id <id>] [--snooze <when>]\n` +
+    `  loose-ends create --title <t> [--summary <s>] [--detail <d>] [--url <href>] [--skills a,b] [--id <id>] [--snooze <when>] [--cone <folder>]\n` +
     `  loose-ends done <id>\n` +
     `  loose-ends snooze <id> <tomorrow|monday|week|YYYY-MM-DD>\n` +
     `  loose-ends unsnooze <id>\n` +

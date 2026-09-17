@@ -23,8 +23,14 @@ try {
     } else cli.out(flags.json ? result : result.html);
   } else {
     const id = 'review:' + file;
+    const tmp = process.env && typeof process.env.TMPDIR === 'string' ? process.env.TMPDIR : '';
+    const parts = tmp.split('/').filter(Boolean);
+    const ti = parts.indexOf('tmp');
+    const cone = ti >= 0 && parts[ti + 1] ? parts[ti + 1] : undefined;
+    const ensure = { action: 'ensure-item', id, path: file, title: flags.title || result.title };
+    if (cone) ensure.cone = cone;
     for (const msg of [
-      { action: 'ensure-item', id, path: file, title: flags.title || result.title },
+      ensure,
       { action: 'open-file', id, path: file, title: flags.title || result.title },
     ]) {
       const r = await exec.spawn(['sprinkle', 'send', 'review', JSON.stringify(msg)]);

@@ -48,7 +48,7 @@ loose-ends list --snoozed --json    # filter/format
 loose-ends create --title "Ping Marta re: Code Europe slot" \
   --summary "Waiting on her reply to the abstract" \
   --detail "Full brief: contacts, links, next steps…" \
-  --skills gmail,outlook [--id le-custom] [--snooze monday]
+  --skills gmail,outlook [--id le-custom] [--snooze monday] [--cone cone-adobe]
 loose-ends done   <id>              # remove
 loose-ends snooze <id> <tomorrow|monday|week|YYYY-MM-DD>   # hide until (09:00 local)
 loose-ends unsnooze <id>            # wake now
@@ -74,6 +74,7 @@ the matching panel message; a failed/absent send prints a note and is non-fatal
       "created": "2026-07-30T17:15:00Z",
       "skills": ["sessionize", "gmail"],
       "snoozedUntil": null,
+      "cone": "cone-adobe",
       "session": {
         "id": "c20ed555-454d-4bc1-925c-2d11f7e2074d",
         "file": "2026-07-30T17-23-30-891Z-slicc-speaking-talks-and-loose-ends.md",
@@ -92,6 +93,7 @@ the matching panel message; a failed/absent send prints a note and is non-fatal
 - `created` — ISO timestamp (informational; rendered on the card).
 - `skills` — optional `string[]` of the SLICC skills involved (e.g. `["sessionize","gmail"]`). Rendered as tag chips on the card and passed through to the monday item.
 - `snoozedUntil` — optional ISO timestamp. When set to a **future** time the task is *snoozed*: the panel renders it, greyed and compact, in a collapsed "Snoozed (N)" section at the **bottom** of the list, and it is **excluded** from `loose-ends monday` output (it isn't "open now"). Absent, `null`, or a **past** timestamp = active (a passed snooze auto-resurfaces to the active list). See [Snooze](#snooze).
+- `cone` — filing cone folder stamped at `create` from `$TMPDIR` (`/tmp/<cone>` or `/tmp/<cone>/<scoop>`). Cone-bound panel actions (`do`, `open-session`) pass it as Layer-B `slicc.lick({ target })` so a weeks-old panel still delivers to the filer. Scoop-local actions (`snooze`, `unsnooze`, `done`, `request-load`) omit `target`. Override with `--cone <folder>`. Optional on legacy rows.
 - `session` — provenance into `/sessions/`: `{ id, file, at }` linking the task back to the conversation that spawned it (see [Session provenance](#session-provenance)). Optional.
 - Bump the top-level `updated` on every store write.
 
@@ -201,10 +203,10 @@ The panel fires these licks back to the cone as `[Sprinkle Event: loose-ends]`:
 
 | Action | Data | When | Cone handler |
 |--------|------|------|--------------|
-| `do`   | `{ id, title, summary, detail, url? }` | User clicks **Do** | Start working the task now, using `detail` as the agent brief (`summary` gives the human framing). If `url` is present (or a clear primary link is in the brief), open it with `open <url>` as the first step so the human sees the artifact immediately. The row stays in the list (a "Do" is not a completion). **When the work is finished, do NOT auto-remove it — report the result and ask the user whether to tie it up** (they may have more to add). See "Always confirm before tying up a loose end". |
+| `do`   | `{ id, title, summary, detail, url? }` | User clicks **Do**. When the task has `cone`, the lick also carries `target` set to that filing cone. | Start working the task now, using `detail` as the agent brief (`summary` gives the human framing). If `url` is present (or a clear primary link is in the brief), open it with `open <url>` as the first step so the human sees the artifact immediately. The row stays in the list (a "Do" is not a completion). **When the work is finished, do NOT auto-remove it — report the result and ask the user whether to tie it up** (they may have more to add). See "Always confirm before tying up a loose end". |
 | *(panel-local)* | View / Map button | User clicks **View** or **Map** | Handled inside the sprinkle via `slicc.exec('open …')` — **no lick, no cone turn**. |
 | `done` | `{ id, title }` | User clicks **Done** | The panel already removed the row optimistically. Remove that `id` from `/shared/loose-ends.json` and bump `updated`. No panel round-trip needed. |
-| `open-session` | `{ id, file, at }` | User clicks the **"from &lt;date&gt;"** provenance link | Open the originating transcript at `/sessions/<file>` (e.g. `read_file`) and surface it to the user — the conversation this loose end came from. |
+| `open-session` | `{ id, file, at }` | User clicks the **"from &lt;date&gt;"** provenance link. When the task has `cone`, the lick also carries `target` set to that filing cone. | Open the originating transcript at `/sessions/<file>` (e.g. `read_file`) and surface it to the user — the conversation this loose end came from. |
 | `snooze` | `{ id, title, until }` | User picks a snooze preset (Tomorrow / Next Monday / Next week / Pick a date) | The panel already moved the row to the snoozed section optimistically. Set that task's `snoozedUntil = until` (ISO) in `/shared/loose-ends.json` and bump `updated`. No panel round-trip needed. |
 | `unsnooze` | `{ id, title }` | User clicks **Wake now** on a snoozed row | The panel already moved the row back to active optimistically. Clear (delete or `null`) that task's `snoozedUntil` in the store and bump `updated`. |
 | `request-load` | `{ instanceId, reason, detail, mountedAt }` — e.g. `{"action":"request-load","instanceId":"a1b2c3d4","reason":"store-unreachable","detail":"exec-timeout","mountedAt":"2026-08-18T16:20:00.000Z"}` | Panel `init` when it could **not** hydrate from the store itself (neither `slicc.readFile` nor `slicc.exec` worked in the sandbox, or the store was unusable) | Reseed the panel from the store: `sprinkle send loose-ends '{"action":"load-items","tasks":[ ...store tasks... ]}'` (delegate to the scoop). This is the safety net behind self-hydration. The payload is **additive** — `action` is still the first key and owners keying only on it are unaffected. Use `instanceId` to triage repeats: **different** `instanceId` values mean repeated *mounts* (normal on multi-runtime setups, where a follower panel's VFS bridges are not backed by the leader's storage, so every mount legitimately asks for a push), while repeats with the **same** `instanceId` mean a real loop in one panel. `reason` is `store-unreachable` \| `store-corrupt` \| `no-bridge`; `detail` is the finer cause (`exec-timeout`, `exec-nonzero`, `exec-threw`, `readfile-timeout`, `readfile-empty`, `readfile-threw`, `no-bridge`, or `null`). The panel rate-limits itself (one ask per 5s, doubling to at most one per minute while unanswered, reset by the next `load-items`) — it is a floor, not a cap, so an instance that never gets data keeps asking slowly rather than going silent. |

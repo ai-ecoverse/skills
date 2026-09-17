@@ -55,7 +55,8 @@ async function review(
   command,
   flags,
   sources = [],
-  spawn = async () => ({ exitCode: 0, stdout: '' })
+  spawn = async () => ({ exitCode: 0, stdout: '' }),
+  env = {}
 ) {
   let stdout = '';
   let stderr = '';
@@ -86,6 +87,7 @@ async function review(
       {
         argv,
         exit,
+        env,
         stdout: {
           write: (s) => {
             stdout += s;
@@ -247,6 +249,54 @@ test('sweep dry-run and delivered cards use the same label precedence', async ()
       }
     }
   }
+});
+
+test('ingest and sweep stamp the filing cone from TMPDIR on ensure-item', async () => {
+  const env = { TMPDIR: '/tmp/cone-adobe/review' };
+  const ingest = await review(
+    'ingest',
+    { path: '/draft.md' },
+    ['custom'],
+    async (argv) => ({
+      exitCode: 0,
+      stdout: argv[0] === 'custom' ? JSON.stringify({ source: 'custom' }) : '',
+    }),
+    env
+  );
+  assert.equal(ingest.code, 0);
+  const ingestMsg = JSON.parse(ingest.calls.find((argv) => argv[0] === 'sprinkle')[3]);
+  assert.equal(ingestMsg.action, 'ensure-item');
+  assert.equal(ingestMsg.cone, 'cone-adobe');
+
+  const sweep = await review(
+    'sweep',
+    { org: 'example', site: 'docs' },
+    [],
+    async (argv) => ({
+      exitCode: 0,
+      stdout: argv[0] === 'aem-ext' ? '{"id":"page"}\n' : '',
+    }),
+    env
+  );
+  assert.equal(sweep.code, 0);
+  const sweepMsg = JSON.parse(
+    sweep.calls.find((argv) => argv[0] === 'sprinkle' && JSON.parse(argv[3]).action === 'ensure-item')[3]
+  );
+  assert.equal(sweepMsg.cone, 'cone-adobe');
+});
+
+test('ingest omits cone when TMPDIR is unset', async () => {
+  const result = await review(
+    'ingest',
+    { path: '/draft.md' },
+    ['custom'],
+    async (argv) => ({
+      exitCode: 0,
+      stdout: argv[0] === 'custom' ? JSON.stringify({ source: 'custom' }) : '',
+    })
+  );
+  const message = JSON.parse(result.calls.find((argv) => argv[0] === 'sprinkle')[3]);
+  assert.equal(message.cone, undefined);
 });
 
 test('empty or non-string CLI labels fail before invoking a source', async () => {

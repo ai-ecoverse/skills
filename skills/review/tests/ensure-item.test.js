@@ -186,6 +186,29 @@ test('does not switch away from the document view', () => {
   assert.deepEqual(q.counters.views, ['queue']);
 });
 
+test('stores a supplied cone on create and does not drop it on later enrichment', () => {
+  const h = makeHandler({ items: [], comments: {}, view: 'queue' });
+  h.send({ action: 'ensure-item', id: 'page-1', title: 'Security Page', cone: 'cone-adobe' });
+  assert.equal(h.state.items[0].cone, 'cone-adobe');
+  h.send({ action: 'ensure-item', id: 'page-1', path: '/shared/readable/security.md' });
+  assert.equal(h.state.items[0].cone, 'cone-adobe', 'omitting cone must not drop the filing owner');
+  h.send({ action: 'ensure-item', id: 'page-1', cone: 'cone-helix' });
+  assert.equal(h.state.items[0].cone, 'cone-helix', 'a supplied cone is written like other allowlisted fields');
+});
+
+test('unknown fields stay dropped; cone is allowlisted', () => {
+  const h = makeHandler({ items: [], comments: {}, view: 'queue' });
+  h.send({
+    action: 'ensure-item',
+    id: 'page-1',
+    title: 'Security Page',
+    cone: 'cone-adobe',
+    mystery: 'nope',
+  });
+  assert.equal(h.state.items[0].cone, 'cone-adobe');
+  assert.equal(h.state.items[0].mystery, undefined);
+});
+
 test('primary action labels survive enrichment and can be replaced or reset', () => {
   const h = makeHandler({ items: [], comments: {}, view: 'queue' });
   h.send({ action: 'ensure-item', id: 'page', primaryActionLabel: 'Publish' });
