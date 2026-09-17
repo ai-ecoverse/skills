@@ -82,7 +82,7 @@ Empty `findings` with a `summary` is a successful clean check, not a skip.
 `review ingest` translates each contribution into two inbound sprinkle messages
 (see `templates/review.shtml`):
 
-1. `ensure-item` — upsert the card (`id`, `title`, `path`, `previewUrl`, `liveUrl`, `primaryActionLabel`). Status is never touched.
+1. `ensure-item` — upsert the card (`id`, `title`, `path`, `previewUrl`, `liveUrl`, `primaryActionLabel`, and `cone` when `$TMPDIR` names a filing cone). Status is never touched. `cone` is stamped by `review ingest` / `review sweep`, not by sources.
 2. `add-findings` — `{ id, source, summary, severity, findings, ts }` stored at `state.findings[id][source]`. Re-running a source replaces that source's block; other sources on the same card stay.
 
 The panel also accepts `clear-findings` `{ id, source? }`. Omit `source` to drop every integration on that card.

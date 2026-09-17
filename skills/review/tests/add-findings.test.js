@@ -55,6 +55,19 @@ function makeHandler(action, initialState) {
   };
 }
 
+test('add-findings keeps a supplied cone when it creates a missing card', () => {
+  const h = makeHandler('add-findings', { items: [], findings: {}, view: 'queue' });
+  h.send({
+    action: 'add-findings',
+    id: 'page-1',
+    source: 'pangram',
+    summary: 'Human',
+    cone: 'cone-adobe',
+    findings: [],
+  });
+  assert.equal(h.state.items[0].cone, 'cone-adobe');
+});
+
 test('add-findings creates a card when the id is unknown', () => {
   const h = makeHandler('add-findings', { items: [], findings: {}, view: 'queue' });
   h.send({

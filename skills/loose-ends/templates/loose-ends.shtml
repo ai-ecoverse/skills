@@ -559,6 +559,14 @@ function fmtSnoozeUntil(iso) {
   } catch (e) { return ''; }
 }
 
+// Cone-bound licks (slicc#3212 Layer C) carry `target` so Do / open-session
+// reach the filing cone. Scoop-local actions omit it.
+function lickPayload(action, data, cone) {
+  const event = { action: action, data: data };
+  if (cone) event.target = cone;
+  return event;
+}
+
 // ── Snooze predicates + time math ──────────────────────────────────
 // A task is snoozed iff snoozedUntil is set AND still in the future.
 // A passed snoozedUntil auto-resurfaces (treated as active).
@@ -858,10 +866,10 @@ function createTaskCard(task) {
 
   // Lick payload — the cone acts on `detail`; `summary` gives it the human framing.
   // Include url so a Do handler can open it without re-deriving.
-  const doData = esc(JSON.stringify({ action: 'do', data: {
+  const doData = esc(JSON.stringify(lickPayload('do', {
     id: task.id, title: task.title, summary, detail, skills: task.skills || [],
     url: viewUrl || task.url || ''
-  } }));
+  }, task.cone)));
 
   // If there's no explicit summary, fall back to showing the detail as the
   // visible line (so nothing is hidden behind the collapsed brief).
@@ -900,9 +908,9 @@ function createTaskCard(task) {
     metaInner += '<span class="task-date"><i data-lucide="clock" class="sprinkle-icon sm"></i>' + escHtml(created) + '</span>';
   }
   if (session && (session.file || session.id)) {
-    const sessData = esc(JSON.stringify({ action: 'open-session', data: {
+    const sessData = esc(JSON.stringify(lickPayload('open-session', {
       id: session.id || '', file: session.file || '', at: session.at || ''
-    } }));
+    }, task.cone)));
     const sessLabel = session.at ? fmtDate(session.at) : (session.file ? session.file.slice(0, 10) : 'session');
     metaInner += '<button class="task-session" onclick="slicc.lick(' + sessData + ')" title="Open the session this came from">' +
       '<i data-lucide="history" class="sprinkle-icon sm"></i>from ' + escHtml(sessLabel) + '</button>';

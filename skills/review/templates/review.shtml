@@ -1163,10 +1163,7 @@ function createItemCard(item) {
   div.querySelector('.send-comment-btn').addEventListener('click', () => {
     const comment = commentInput.value.trim();
     if (!comment) return;
-    slicc.lick({
-      action: 'comment',
-      data: { id: item.id, path: item.path, url: item.liveUrl || item.previewUrl || '', comment }
-    });
+    lickBound('comment', { id: item.id, path: item.path, url: item.liveUrl || item.previewUrl || '', comment }, item.cone);
     commentInput.value = '';
     appendCommentEntry(item.id, comment);
     commentRow.classList.remove('open');
@@ -1193,6 +1190,15 @@ function createItemCard(item) {
   return div;
 }
 
+// Cone-bound licks (slicc#3212 Layer C): pass the filing cone as Layer-B
+// `target` so a weeks-old panel still delivers to the filer. Omit target when
+// the card has no owner — Layer A then uses the opening cone.
+function lickBound(action, data, cone) {
+  const event = { action: action, data: data };
+  if (cone) event.target = cone;
+  slicc.lick(event);
+}
+
 function handleItemAction(action, id) {
   const item = state.items.find(i => i.id === id);
   if (!item) return;
@@ -1200,10 +1206,7 @@ function handleItemAction(action, id) {
   if (action === 'publish' || action === 'defer') {
     // Mark as in-flight; the cone is expected to confirm via `update-status`.
     setItemActing(id, true);
-    slicc.lick({
-      action,
-      data: { id, path: item.path, url: item.liveUrl || item.previewUrl || '' }
-    });
+    lickBound(action, { id, path: item.path, url: item.liveUrl || item.previewUrl || '' }, item.cone);
   } else if (action === 'comment') {
     toggleComment(id);
   }
@@ -1785,8 +1788,8 @@ document.getElementById('submit-btn').addEventListener('click',()=>{
   // Persist before emitting so another click/re-mount cannot dispatch the same batch twice.
   pending.forEach(a=>{a.batchId=batchId;delete a.deliveryError;});saveState();
   try {
-    slicc.lick({action:'submit-revisions',data:{id:item.id,path:item.path||'',url:item.previewUrl||item.liveUrl||'',format:currentDocument().format,batchId,
-      revisions:pending.map(a=>({id:a.id,text:a.text,note:a.note,anchor:a.anchor}))}});
+    lickBound('submit-revisions',{id:item.id,path:item.path||'',url:item.previewUrl||item.liveUrl||'',format:currentDocument().format,batchId,
+      revisions:pending.map(a=>({id:a.id,text:a.text,note:a.note,anchor:a.anchor}))}, item.cone);
   } catch(error) { pending.forEach(a=>{delete a.batchId;a.deliveryError=error.message;});saveState(); }
   renderAnnotationsList();updateSubmitBtn();
 });
@@ -1961,9 +1964,10 @@ slicc.on('update', async (msg) => {
         liveUrl: msg.liveUrl || '',
         status: 'pending'
       };
+      if (msg.cone !== undefined && msg.cone !== null) existing.cone = msg.cone;
       state.items.push(existing);
     } else {
-      ['title', 'path', 'previewUrl', 'liveUrl'].forEach(k => {
+      ['title', 'path', 'previewUrl', 'liveUrl', 'cone'].forEach(k => {
         if (msg[k] !== undefined && msg[k] !== null) existing[k] = msg[k];
       });
     }
@@ -1994,14 +1998,16 @@ slicc.on('update', async (msg) => {
     if (!msg.id || !msg.source) return;
     if (!state.items) state.items = [];
     if (!state.items.find(it => it.id === msg.id)) {
-      state.items.push({
+      const created = {
         id: msg.id,
         title: msg.title || msg.id,
         path: msg.path || '',
         previewUrl: msg.previewUrl || '',
         liveUrl: msg.liveUrl || '',
         status: 'pending'
-      });
+      };
+      if (msg.cone !== undefined && msg.cone !== null) created.cone = msg.cone;
+      state.items.push(created);
     }
     if (!state.findings) state.findings = {};
     if (!state.findings[msg.id]) state.findings[msg.id] = {};

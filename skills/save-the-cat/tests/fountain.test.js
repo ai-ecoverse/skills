@@ -44,7 +44,7 @@ test('empty, CRLF, Unicode, forced headings and dialogue are handled', () => {
   assert.ok(result.html.includes('ÉLISE'));
 });
 
-async function run(args, delivery = 0) {
+async function run(args, delivery = 0, env = {}) {
   const messages = [],
     output = [],
     written = [];
@@ -88,7 +88,7 @@ async function run(args, delivery = 0) {
     'require',
     'process',
     program
-  )(req, { argv, cwd: () => '/shared' });
+  )(req, { argv, cwd: () => '/shared', env });
   return { messages, output, written };
 }
 
@@ -106,9 +106,19 @@ test('review opens the source, preserves literal paths, and reports failed deliv
   const [item, open] = r.messages.map((a) => JSON.parse(a[3]));
   assert.equal(item.path, '/shared/' + name);
   assert.equal(item.action, 'ensure-item');
+  assert.equal(item.cone, undefined);
   assert.equal(open.path, item.path);
   assert.equal(open.id, item.id);
   await assert.rejects(run(['review', 'draft.fountain'], 1), /Open the Review sprinkle/);
+});
+
+test('review stamps the filing cone from TMPDIR on ensure-item', async () => {
+  const r = await run(['review', 'draft.fountain'], 0, { TMPDIR: '/tmp/cone-helix' });
+  const item = JSON.parse(r.messages[0][3]);
+  assert.equal(item.action, 'ensure-item');
+  assert.equal(item.cone, 'cone-helix');
+  const open = JSON.parse(r.messages[1][3]);
+  assert.equal(open.cone, undefined);
 });
 
 test('render refuses to overwrite its Fountain source', async () => {

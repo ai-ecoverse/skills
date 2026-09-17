@@ -131,6 +131,7 @@ function dispatch(notes, fail = false) {
       events.push(event);
     },
   };
+  const lickBoundSrc = extract('function lickBound(', 'function handleItemAction(');
   const code = extract(
     "document.getElementById('submit-btn').addEventListener",
     "document.getElementById('annotations-toggle').addEventListener"
@@ -145,12 +146,12 @@ function dispatch(notes, fail = false) {
     'renderAnnotationsList',
     'updateSubmitBtn',
     'crypto',
-    code
+    lickBoundSrc + '\n' + code
   )(
     document,
     slicc,
     () => notes,
-    { docItem: { id: 'script', path: '/shared/draft.fountain' } },
+    { docItem: { id: 'script', path: '/shared/draft.fountain', cone: 'cone-adobe' } },
     () => ({ format: 'fountain' }),
     () => saves.push(JSON.parse(JSON.stringify(notes))),
     () => {},
@@ -169,6 +170,7 @@ test('dispatch sends only drafts with anchors and records the batch before deliv
   d.click();
   d.click();
   assert.equal(d.events.length, 1);
+  assert.equal(d.events[0].target, 'cone-adobe');
   assert.equal(d.events[0].data.path, '/shared/draft.fountain');
   assert.equal(d.events[0].data.format, 'fountain');
   assert.deepEqual(d.events[0].data.revisions, [
