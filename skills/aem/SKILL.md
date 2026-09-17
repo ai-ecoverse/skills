@@ -1,15 +1,12 @@
 ---
 name: aem
 description: |
-  AEM Edge Delivery Services (EDS) skill for reading, writing, previewing,
-  publishing, unpublishing, and deleting EDS pages via the `aem` CLI. Use for
-  AEM Edge Delivery Services, EDS pages, Franklin, Helix, AEM EDS, edge delivery
+  AEM Edge Delivery Services (EDS) skill for the `aem` CLI. Use for AEM Edge
+  Delivery Services, EDS pages, Franklin, Helix, AEM EDS, edge delivery
   content, document-based authoring, or to list, get, put, preview, publish,
-  upload, unpublish, or delete content in AEM EDS. Supports the full
-  get→edit→put→preview→publish pipeline and `aem delete` (unpublish live and
-  preview, then remove source) on Helix 6 (api.aem.live Source Bus); Helix 5
-  (admin.hlx.page, admin.da.live) is supported for read/write/preview/publish
-  but `delete` is refused because that destructive route is untested.
+  upload, unpublish, or delete content in AEM EDS, including to remove a published page or asset.
+  Supports the get→edit→put→preview→publish pipeline on Helix 5
+  (admin.hlx.page, admin.da.live) and Helix 6 (api.aem.live Source Bus) sites.
   Also provides `aem-ext` for longer-lived auth: `aem-ext auth login` gets a
   ~24-hour session cookie via a browser IDP login, and `aem-ext auth key
   create` mints/registers/revokes 365-day admin API keys (`X-Auth-Token`) —
