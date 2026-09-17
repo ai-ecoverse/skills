@@ -186,6 +186,39 @@ test('does not switch away from the document view', () => {
   assert.deepEqual(q.counters.views, ['queue']);
 });
 
+test('ensure-item copies cone onto the open document snapshot of the same card', () => {
+  const open = {
+    id: 'page-1',
+    path: '/preview-override.md',
+    title: 'Override',
+    cone: 'cone-old',
+  };
+  const h = makeHandler({
+    items: [{ ...baseItem, cone: 'cone-old' }],
+    comments: {},
+    view: 'document',
+    docItem: open,
+  });
+  h.send({ action: 'ensure-item', id: 'page-1', cone: 'cone-adobe' });
+  assert.equal(h.state.items[0].cone, 'cone-adobe');
+  assert.equal(h.state.docItem.cone, 'cone-adobe');
+  assert.equal(h.state.docItem.path, '/preview-override.md', 'open-file path overlay is left alone');
+  assert.equal(h.state.docItem.title, 'Override');
+  assert.deepEqual(h.counters.views, [], 'document view is left alone');
+});
+
+test('ensure-item does not retarget a different open document', () => {
+  const h = makeHandler({
+    items: [{ ...baseItem }],
+    comments: {},
+    view: 'document',
+    docItem: { id: 'other', cone: 'cone-keep' },
+  });
+  h.send({ action: 'ensure-item', id: 'page-1', cone: 'cone-adobe' });
+  assert.equal(h.state.items[0].cone, 'cone-adobe');
+  assert.equal(h.state.docItem.cone, 'cone-keep');
+});
+
 test('stores a supplied cone on create and does not drop it on later enrichment', () => {
   const h = makeHandler({ items: [], comments: {}, view: 'queue' });
   h.send({ action: 'ensure-item', id: 'page-1', title: 'Security Page', cone: 'cone-adobe' });
