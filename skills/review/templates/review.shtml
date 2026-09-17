@@ -1199,6 +1199,14 @@ function lickBound(action, data, cone) {
   slicc.lick(event);
 }
 
+// Prefer the live queue card over state.docItem: openPreview clones the card,
+// and ensure-item / load-items can restamp cone while that snapshot is open.
+function filingConeOf(item) {
+  if (!item) return undefined;
+  const queued = state.items && state.items.find(it => it.id === item.id);
+  return (queued && queued.cone) || item.cone;
+}
+
 function handleItemAction(action, id) {
   const item = state.items.find(i => i.id === id);
   if (!item) return;
@@ -1789,7 +1797,7 @@ document.getElementById('submit-btn').addEventListener('click',()=>{
   pending.forEach(a=>{a.batchId=batchId;delete a.deliveryError;});saveState();
   try {
     lickBound('submit-revisions',{id:item.id,path:item.path||'',url:item.previewUrl||item.liveUrl||'',format:currentDocument().format,batchId,
-      revisions:pending.map(a=>({id:a.id,text:a.text,note:a.note,anchor:a.anchor}))}, item.cone);
+      revisions:pending.map(a=>({id:a.id,text:a.text,note:a.note,anchor:a.anchor}))}, filingConeOf(item));
   } catch(error) { pending.forEach(a=>{delete a.batchId;a.deliveryError=error.message;});saveState(); }
   renderAnnotationsList();updateSubmitBtn();
 });
@@ -1973,6 +1981,12 @@ slicc.on('update', async (msg) => {
     }
     if (msg.primaryActionLabel !== undefined && msg.primaryActionLabel !== null) {
       existing.primaryActionLabel = msg.primaryActionLabel;
+    }
+    // openPreview cloned this card into state.docItem; keep cone in sync so a
+    // submit-revisions without close/reopen still targets the filer. Do not
+    // copy path/title — open-file overlays those on the snapshot only.
+    if (state.docItem && state.docItem.id === existing.id && existing.cone !== undefined) {
+      state.docItem.cone = existing.cone;
     }
     saveState();
     // renderQueue() re-reads state.comments per card, so comment logs survive.

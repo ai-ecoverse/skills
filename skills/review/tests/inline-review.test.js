@@ -114,7 +114,7 @@ test('drafts are keyed to the source and survive switching documents or preview 
   assert.equal(s.annotations().length, 0);
 });
 
-function dispatch(notes, fail = false) {
+function dispatch(notes, fail = false, extraState = {}) {
   let click;
   const events = [],
     saves = [];
@@ -151,7 +151,11 @@ function dispatch(notes, fail = false) {
     document,
     slicc,
     () => notes,
-    { docItem: { id: 'script', path: '/shared/draft.fountain', cone: 'cone-adobe' } },
+    {
+      docItem: { id: 'script', path: '/shared/draft.fountain', cone: 'cone-adobe' },
+      items: [],
+      ...extraState,
+    },
     () => ({ format: 'fountain' }),
     () => saves.push(JSON.parse(JSON.stringify(notes))),
     () => {},
@@ -178,6 +182,19 @@ test('dispatch sends only drafts with anchors and records the batch before deliv
   ]);
   assert.equal(d.saves[0][1].batchId, d.events[0].data.batchId);
   assert.equal(notes[0].batchId, 'previous');
+});
+
+test('submit-revisions uses the queue card cone when the open snapshot is stale', () => {
+  const notes = [
+    { id: 'new', text: 'Hello', note: 'Quieter', anchor: { scene: 'INT. ROOM', token: '7' } },
+  ];
+  const d = dispatch(notes, false, {
+    docItem: { id: 'script', path: '/shared/draft.fountain', cone: 'cone-old' },
+    items: [{ id: 'script', path: '/shared/draft.fountain', cone: 'cone-helix' }],
+  });
+  d.click();
+  assert.equal(d.events[0].target, 'cone-helix');
+  assert.equal(d.events[0].data.path, '/shared/draft.fountain');
 });
 
 test('a synchronous delivery failure restores drafts rather than losing feedback', () => {
