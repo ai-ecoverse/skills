@@ -6,14 +6,14 @@
   "license": "UNLICENSED",
   "private": true,
   "dependencies": {
-    "@remotion/cli": "4.0.525",
+    "@remotion/cli": "4.0.526",
     "react": "19.3.0",
     "react-dom": "19.3.0",
-    "remotion": "4.0.525",
+    "remotion": "4.0.526",
     "zod": "4.6.5"
   },
   "devDependencies": {
-    "@remotion/eslint-config-flat": "4.0.525",
+    "@remotion/eslint-config-flat": "4.0.526",
     "@types/react": "19.3.0",
     "@types/web": "0.0.356",
     "eslint": "10.10.0",
