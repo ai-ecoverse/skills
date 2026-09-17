@@ -543,7 +543,32 @@ async function cmdUpload(args) {
   process.stdout.write(`Uploaded: ${filePath} -> ${aemPath}\n`);
 }
 
+// delete/unpublish only. Other verbs still swallow unknown flags via
+// positionals(); tightening that is a separate decision. A mistyped safety
+// flag on a destructive verb must not fail open (e.g. `--yes --dry-runn`
+// must not delete). Checked before resolveBackend / any network call.
+const DELETE_BOOL_FLAGS = new Set([
+  '--yes', '--dry-run', '--unpublish-only', '--verify', '--hlx6', '--hlx5',
+]);
+const DELETE_VALUE_FLAGS = new Set(['--org', '--repo', '--site', '--ref', '--api']);
+
+function rejectUnknownDeleteFlags(args) {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (!a.startsWith('-')) continue;
+    if (DELETE_BOOL_FLAGS.has(a)) continue;
+    if (DELETE_VALUE_FLAGS.has(a)) {
+      i++;
+      continue;
+    }
+    process.stderr.write(`error: unknown option ${a}\n`);
+    process.stderr.write("See 'aem --help'.\n");
+    process.exit(1);
+  }
+}
+
 async function cmdDelete(args) {
+  rejectUnknownDeleteFlags(args);
   const target = resolveTarget(args);
   if (!target) {
     process.stderr.write('Usage: aem delete <eds-url-or-path> [--yes] [--dry-run] [--unpublish-only] [--verify]\n');
@@ -693,6 +718,7 @@ Delete flags:
   --unpublish-only live + preview only; do not delete source
   --verify         After deleting, poll aem.page / aem.live for 404. Do not GET
                    the admin API — it keeps returning 200 after a successful 204.
+  Unknown flags are rejected. A typo of --dry-run must not delete.
 
 Architecture version:
   Sites on Helix 6 answer on https://api.aem.live with paths of the shape

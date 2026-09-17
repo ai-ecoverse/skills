@@ -315,6 +315,9 @@ aem unpublish <eds-url-or-path> --yes    # same as delete --unpublish-only
   leave `source` intact.
 - `--verify`: after deleting, poll the **delivery** hosts (`aem.page` / `aem.live`)
   for HTTP 404. Do not confirm success with an admin GET — see the trap below.
+- Unknown flags are rejected before any network call. A typo such as `--dry-runn`
+  with `--yes` must not fail open and delete. Other verbs still swallow unknown
+  flags; that leniency is unchanged.
 
 Order is mandatory and encoded in the command: **live, then preview, then source**.
 Unpublish before removing the source, otherwise a published copy can be stranded
