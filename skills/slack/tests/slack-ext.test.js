@@ -121,6 +121,12 @@ async function load(opts) {
       stdout.push(String(message));
       throw new NodeExitError('help', 0);
     },
+    out(value) {
+      stdout.push(typeof value === 'string' ? value : JSON.stringify(value, null, 2));
+    },
+    warn(message) {
+      stderr.push(String(message));
+    },
   };
 
   const colorStub = new Proxy(
@@ -135,9 +141,26 @@ async function load(opts) {
     'sliccy:cli': cliStub,
     'sliccy:color': colorStub,
     'sliccy:exec': { exec: async () => ({ exitCode: 0, stdout: '', stderr: '' }) },
+    // The `app` manifest subcommands (added later on the same branch) require
+    // sliccy:http and sliccy:skill at module scope. They are stubbed to THROW if
+    // a user-management command ever reaches them: these commands must keep
+    // going through browser.fetch with the xoxc session token, never through the
+    // bearer-token App Manifest client. See tests/slack-ext-app.test.js for the
+    // app-command harness.
+    'sliccy:http': {
+      client: () => ({
+        post: async () => {
+          throw new Error('user-management commands must not use the App Manifest HTTP client');
+        },
+      }),
+    },
+    'sliccy:skill': { config: async () => null },
     fs: {
       readFile: async () => {
         throw new Error('ENOENT');
+      },
+      writeFile: async () => {
+        throw new Error('EACCES');
       },
     },
   };
