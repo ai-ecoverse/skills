@@ -87,12 +87,18 @@ class NodeExitError extends Error {
  * @param {object}  [opts.files]      path -> file contents for the fs stub
  * @param {string|null} [opts.token]  value of $SLACK_APP_CONFIG_TOKEN (null = unset)
  * @param {object}  [opts.config]     skill.config() return value
+ * @param {string|null} [opts.refreshToken] value of $SLACK_APP_REFRESH_TOKEN
+ * @param {boolean} [opts.configWriteFails] make skill.config(patch) throw
  */
 async function load(opts) {
   const options = opts || {};
   const httpCalls = [];
   const writes = [];
   const browserUses = [];
+  const configWrites = [];
+  // One ordered timeline of every observable side effect, so ordering invariants
+  // (persist-before-anything-else on token-rotate) can be asserted.
+  const events = [];
   const stdout = [];
   const stderr = [];
 
@@ -101,6 +107,17 @@ async function load(opts) {
   function defaultResponse(method) {
     if (method === 'apps.manifest.export') return { ok: true, manifest: live };
     if (method === 'apps.manifest.validate') return { ok: true, errors: [] };
+    if (method === 'apps.manifest.update') return { ok: true, permissions_updated: false };
+    if (method === 'tooling.tokens.rotate') {
+      return {
+        ok: true,
+        token: 'xoxe.xoxp-rotated-access-token',
+        refresh_token: 'xoxe-1-rotated-refresh-token',
+        team_id: 'T06DUTYDQ',
+        iat: 1789000000,
+        exp: 1789043200,
+      };
+    }
     return { ok: false, error: 'not_mocked' };
   }
 
@@ -120,11 +137,13 @@ async function load(opts) {
               clientOpts && typeof clientOpts.token === 'function'
                 ? clientOpts.token()
                 : clientOpts && clientOpts.token,
+            hasTokenConfig: Boolean(clientOpts && clientOpts.token),
             headers: (postOpts && postOpts.headers) || {},
             body: bodyText,
             params,
             raw: Boolean(postOpts && postOpts.raw),
           });
+          events.push({ type: 'http', method: method });
           const responses = options.responses || {};
           const body = Object.prototype.hasOwnProperty.call(responses, method)
             ? responses[method]
@@ -187,12 +206,24 @@ async function load(opts) {
     },
   };
 
+  // skill.config() with no argument READS; with a patch it PERSISTS. Both are
+  // recorded, the write lands on the shared timeline, and it can be made to fail.
+  const skillStub = {
+    async config(patch) {
+      if (patch === undefined) return options.config || null;
+      configWrites.push(patch);
+      events.push({ type: 'persist', patch: patch });
+      if (options.configWriteFails) throw new Error('EACCES: skill config not writable');
+      return patch;
+    },
+  };
+
   const mocks = {
     'sliccy:browser': browserStub,
     'sliccy:cli': cliStub,
     'sliccy:color': colorStub,
     'sliccy:http': httpStub,
-    'sliccy:skill': { config: async () => options.config || null },
+    'sliccy:skill': skillStub,
     'sliccy:exec': { exec: async () => ({ exitCode: 0, stdout: '', stderr: '' }) },
     fs: fsStub,
   };
@@ -214,17 +245,33 @@ return {
   manifestApi,
   getAppConfigToken,
   renderValidationErrors,
+  deepClone,
+  deepOverlay,
+  ensureObjectPath,
+  parseList,
+  applyAddRemove,
+  sameDeletion,
+  maskToken,
+  updateFromLiveManifest,
   cmdApp,
   cmdAppExport,
   cmdAppShow,
   cmdAppValidate,
   cmdAppDiff,
+  cmdAppSetScopes,
+  cmdAppSetEvents,
+  cmdAppSetRequestUrl,
+  cmdAppApply,
+  cmdAppTokenRotate,
 };
 `;
 
   const env = {};
   if (options.token !== null) {
     env.SLACK_APP_CONFIG_TOKEN = options.token || TEST_TOKEN;
+  }
+  if (options.refreshToken) {
+    env.SLACK_APP_REFRESH_TOKEN = options.refreshToken;
   }
 
   const mockProcess = {
@@ -236,7 +283,11 @@ return {
   };
 
   const mockConsole = {
-    log: (msg) => stdout.push(String(msg === undefined ? '' : msg)),
+    log: (msg) => {
+      const line = String(msg === undefined ? '' : msg);
+      stdout.push(line);
+      events.push({ type: 'out', line: line });
+    },
     error: (msg) => stderr.push(String(msg === undefined ? '' : msg)),
     warn: (msg) => stderr.push(String(msg === undefined ? '' : msg)),
   };
@@ -249,12 +300,26 @@ return {
     httpCalls,
     writes,
     browserUses,
+    configWrites,
+    events,
     stdout,
     stderr,
     live,
     text: () => stdout.join('\n'),
     errText: () => stderr.join('\n'),
     methods: () => httpCalls.map((c) => c.method),
+    // Every call that CHANGES something on Slack's side.
+    writeCalls: () =>
+      httpCalls.filter(
+        (c) => c.method === 'apps.manifest.update' || c.method === 'tooling.tokens.rotate'
+      ),
+    updateCalls: () => httpCalls.filter((c) => c.method === 'apps.manifest.update'),
+    // The manifest actually put on the wire, parsed back from the form body.
+    sentManifest: () => {
+      const call = httpCalls.find((c) => c.method === 'apps.manifest.update');
+      assert.ok(call, 'expected an apps.manifest.update call');
+      return JSON.parse(call.params.manifest);
+    },
   };
 }
 
@@ -814,10 +879,11 @@ test('no app subcommand issues apps.manifest.create or apps.manifest.delete', as
 // ── group dispatch ────────────────────────────────────────────────────────────
 
 test('an unknown app subcommand lists the available ones and calls nothing', async () => {
-  const h = await load({ argv: ['app', 'set-scopes', APP_ID] });
+  const h = await load({ argv: ['app', 'set-colour', APP_ID] });
   const err = await expectDie(() => h.mod.cmdApp());
-  assert.match(err.message, /Unknown app subcommand: set-scopes/);
+  assert.match(err.message, /Unknown app subcommand: set-colour/);
   assert.match(err.message, /export, show, validate, diff/);
+  assert.match(err.message, /set-scopes, set-events, set-request-url, apply/);
   assert.equal(h.httpCalls.length, 0);
 });
 
@@ -833,6 +899,728 @@ test('app show with no app id prints a usage line', async () => {
   const err = await expectDie(() => h.mod.cmdApp());
   assert.match(err.message, /Usage: slack-ext app show <app_id>/);
   assert.equal(h.httpCalls.length, 0);
+});
+
+
+// ══ WRITES ════════════════════════════════════════════════════════════════════
+//
+// Every test below asserts on the manifest actually put on the wire
+// (h.sentManifest(), parsed back out of the form body), not on an intermediate
+// object, so an implementation that quietly sent a fragment could not pass.
+
+// ── The shared write path: export first, or do not write at all ────────────────
+
+test('write helper exports the live manifest before updating', async () => {
+  const h = await load({
+    argv: ['app', 'set-scopes', APP_ID, '--add=reactions:read', '--confirm'],
+  });
+  await h.mod.cmdAppSetScopes();
+  // Order matters: the export is what the payload is built from.
+  assert.deepEqual(h.methods(), ['apps.manifest.export', 'apps.manifest.update']);
+});
+
+test('write helper refuses to update when the export fails', async () => {
+  const h = await load({
+    argv: ['app', 'set-scopes', APP_ID, '--add=reactions:read', '--confirm'],
+    responses: { 'apps.manifest.export': { ok: false, error: 'ratelimited' } },
+  });
+  const err = await expectDie(() => h.mod.cmdAppSetScopes());
+  assert.match(err.message, /ratelimited/);
+  assert.equal(h.updateCalls().length, 0, 'no update may be attempted without a live export');
+});
+
+test('write helper refuses to update when the export carries no manifest', async () => {
+  const h = await load({
+    argv: ['app', 'set-events', APP_ID, '--add=app_mention', '--confirm'],
+    responses: { 'apps.manifest.export': { ok: true } },
+  });
+  const err = await expectDie(() => h.mod.cmdAppSetEvents());
+  assert.match(err.message, /no manifest/i);
+  assert.equal(h.updateCalls().length, 0);
+});
+
+test('every untouched leaf of the 14-field manifest survives a write', async () => {
+  const h = await load({
+    argv: ['app', 'set-scopes', APP_ID, '--add=reactions:read', '--confirm'],
+  });
+  await h.mod.cmdAppSetScopes();
+
+  const sent = h.sentManifest();
+  const before = h.mod.manifestLeaves(LIVE_MANIFEST, '', {});
+  const after = h.mod.manifestLeaves(sent, '', {});
+
+  // Same leaf set: nothing dropped, nothing invented.
+  assert.deepEqual(Object.keys(after).sort(), Object.keys(before).sort());
+  assert.equal(Object.keys(after).length, 14);
+  for (const pointer of Object.keys(before)) {
+    if (pointer === '/oauth_config/scopes/bot') continue;
+    assert.deepEqual(
+      after[pointer],
+      before[pointer],
+      'leaf ' + pointer + ' must survive the write untouched'
+    );
+  }
+});
+
+test('the payload is a complete manifest, not a fragment', async () => {
+  const h = await load({
+    argv: ['app', 'set-events', APP_ID, '--add=app_mention', '--confirm'],
+  });
+  await h.mod.cmdAppSetEvents();
+
+  const sent = h.sentManifest();
+  assert.ok(sent.display_information, 'display_information must be present');
+  assert.ok(sent.features && sent.features.bot_user, 'bot user must be present');
+  assert.ok(sent.oauth_config && sent.oauth_config.scopes, 'scopes must be present');
+  assert.ok(sent.settings, 'settings must be present');
+  assert.equal(sent.display_information.description, LIVE_MANIFEST.display_information.description);
+});
+
+// ── set-scopes ────────────────────────────────────────────────────────────────
+
+test('set-scopes --add keeps all six scopes and appends the new one', async () => {
+  const h = await load({
+    argv: ['app', 'set-scopes', APP_ID, '--add=reactions:read', '--confirm'],
+  });
+  await h.mod.cmdAppSetScopes();
+
+  const sent = h.sentManifest();
+  assert.deepEqual(sent.oauth_config.scopes.bot, [
+    'channels:manage',
+    'channels:read',
+    'chat:write',
+    'im:write',
+    'users:read',
+    'users:read.email',
+    'reactions:read',
+  ]);
+  // The other array must not move.
+  assert.deepEqual(sent.settings.event_subscriptions.bot_events, ['channel_created', 'team_join']);
+});
+
+test('set-scopes --add accepts a comma-separated list and ignores duplicates', async () => {
+  const h = await load({
+    argv: ['app', 'set-scopes', APP_ID, '--add=reactions:read,chat:write,reactions:read', '--confirm'],
+  });
+  await h.mod.cmdAppSetScopes();
+  const scopes = h.sentManifest().oauth_config.scopes.bot;
+  assert.equal(scopes.filter((s) => s === 'reactions:read').length, 1);
+  assert.equal(scopes.filter((s) => s === 'chat:write').length, 1, 'already present, not doubled');
+  assert.equal(scopes.length, 7);
+});
+
+test('set-scopes --remove removes only the named scope', async () => {
+  const h = await load({
+    argv: ['app', 'set-scopes', APP_ID, '--remove=users:read.email', '--confirm'],
+  });
+  await h.mod.cmdAppSetScopes();
+
+  const sent = h.sentManifest();
+  assert.deepEqual(sent.oauth_config.scopes.bot, [
+    'channels:manage',
+    'channels:read',
+    'chat:write',
+    'im:write',
+    'users:read',
+  ]);
+  assert.deepEqual(sent.settings.event_subscriptions.bot_events, ['channel_created', 'team_join']);
+});
+
+test('set-scopes --remove of an intentional scope needs no --allow-deletions', async () => {
+  const h = await load({
+    argv: ['app', 'set-scopes', APP_ID, '--remove=im:write', '--confirm'],
+  });
+  await h.mod.cmdAppSetScopes();
+  assert.equal(h.updateCalls().length, 1, 'a requested removal proceeds with --confirm alone');
+  assert.ok(!h.sentManifest().oauth_config.scopes.bot.includes('im:write'));
+});
+
+test('set-scopes --remove of an absent scope changes nothing and writes nothing', async () => {
+  const h = await load({
+    argv: ['app', 'set-scopes', APP_ID, '--remove=files:write', '--confirm'],
+  });
+  await h.mod.cmdAppSetScopes();
+  assert.equal(h.updateCalls().length, 0, 'no-op must not call update');
+  assert.match(h.text(), /No change needed/i);
+});
+
+test('set-scopes rejects a malformed scope name before any API call', async () => {
+  const h = await load({
+    argv: ['app', 'set-scopes', APP_ID, '--add=Chat Write; rm -rf /', '--confirm'],
+  });
+  const err = await expectDie(() => h.mod.cmdAppSetScopes());
+  assert.match(err.message, /Invalid scope/);
+  assert.equal(h.httpCalls.length, 0);
+});
+
+test('set-scopes with neither --add nor --remove dies without calling Slack', async () => {
+  const h = await load({ argv: ['app', 'set-scopes', APP_ID, '--confirm'] });
+  const err = await expectDie(() => h.mod.cmdAppSetScopes());
+  assert.match(err.message, /Nothing to do/);
+  assert.equal(h.httpCalls.length, 0);
+});
+
+// ── set-events ────────────────────────────────────────────────────────────────
+
+test('set-events --remove removes only the named event and leaves scopes untouched', async () => {
+  const h = await load({
+    argv: ['app', 'set-events', APP_ID, '--remove=team_join', '--confirm'],
+  });
+  await h.mod.cmdAppSetEvents();
+
+  const sent = h.sentManifest();
+  assert.deepEqual(sent.settings.event_subscriptions.bot_events, ['channel_created']);
+  // The team_join case must not take the scopes with it.
+  assert.deepEqual(sent.oauth_config.scopes.bot, LIVE_MANIFEST.oauth_config.scopes.bot);
+  assert.equal(sent.oauth_config.scopes.bot.length, 6);
+  assert.equal(sent.settings.event_subscriptions.request_url, LIVE_MANIFEST.settings.event_subscriptions.request_url);
+});
+
+test('set-events --add appends without disturbing the existing events or scopes', async () => {
+  const h = await load({
+    argv: ['app', 'set-events', APP_ID, '--add=app_mention,message.im', '--confirm'],
+  });
+  await h.mod.cmdAppSetEvents();
+
+  const sent = h.sentManifest();
+  assert.deepEqual(sent.settings.event_subscriptions.bot_events, [
+    'channel_created',
+    'team_join',
+    'app_mention',
+    'message.im',
+  ]);
+  assert.deepEqual(sent.oauth_config.scopes.bot, LIVE_MANIFEST.oauth_config.scopes.bot);
+});
+
+test('set-events on a manifest without event_subscriptions creates the path only', async () => {
+  const bare = {
+    display_information: { name: 'Bare App' },
+    oauth_config: { scopes: { bot: ['chat:write'] } },
+    settings: { socket_mode_enabled: true },
+  };
+  const h = await load({
+    argv: ['app', 'set-events', APP_ID, '--add=app_mention', '--confirm'],
+    live: bare,
+  });
+  await h.mod.cmdAppSetEvents();
+
+  const sent = h.sentManifest();
+  assert.deepEqual(sent.settings.event_subscriptions.bot_events, ['app_mention']);
+  assert.equal(sent.settings.socket_mode_enabled, true, 'sibling settings preserved');
+  assert.deepEqual(sent.oauth_config.scopes.bot, ['chat:write']);
+});
+
+// ── set-request-url ───────────────────────────────────────────────────────────
+
+test('set-request-url changes only the request URL', async () => {
+  const h = await load({
+    argv: ['app', 'set-request-url', APP_ID, 'https://relay.example.com/slack', '--confirm'],
+  });
+  await h.mod.cmdAppSetRequestUrl();
+
+  const sent = h.sentManifest();
+  assert.equal(sent.settings.event_subscriptions.request_url, 'https://relay.example.com/slack');
+  assert.deepEqual(sent.settings.event_subscriptions.bot_events, ['channel_created', 'team_join']);
+  assert.deepEqual(sent.oauth_config.scopes.bot, LIVE_MANIFEST.oauth_config.scopes.bot);
+  assert.equal(Object.keys(h.mod.manifestLeaves(sent, '', {})).length, 14);
+});
+
+test('set-request-url rejects a non-https URL and a missing URL', async () => {
+  const bad = await load({
+    argv: ['app', 'set-request-url', APP_ID, 'http://insecure.example.com', '--confirm'],
+  });
+  const badErr = await expectDie(() => bad.mod.cmdAppSetRequestUrl());
+  assert.match(badErr.message, /https/);
+  assert.equal(bad.httpCalls.length, 0);
+
+  const missing = await load({ argv: ['app', 'set-request-url', APP_ID, '--confirm'] });
+  const missingErr = await expectDie(() => missing.mod.cmdAppSetRequestUrl());
+  assert.match(missingErr.message, /Usage: slack-ext app set-request-url/);
+  assert.equal(missing.httpCalls.length, 0);
+});
+
+// ── apply ─────────────────────────────────────────────────────────────────────
+
+test('apply with a display_information-only file REFUSES and names what would be lost', async () => {
+  const partial = { display_information: clone(LIVE_MANIFEST.display_information) };
+  const h = await load({
+    argv: ['app', 'apply', APP_ID, '--manifest=/tmp/partial.json', '--confirm'],
+    files: { '/tmp/partial.json': JSON.stringify(partial) },
+  });
+
+  const err = await expectDie(() => h.mod.cmdAppApply());
+  // The refusal itself must name the casualties.
+  assert.match(err.message, /unrequested deletion/i);
+  assert.match(err.message, /\/features\/bot_user\/display_name/);
+  assert.match(err.message, /\/oauth_config\/scopes\/bot/);
+  assert.match(err.message, /\/settings\/event_subscriptions\/bot_events/);
+  assert.match(err.message, /--allow-deletions/);
+  assert.equal(h.updateCalls().length, 0, 'nothing may be written when deletions are refused');
+});
+
+test('apply with --allow-deletions proceeds and sends the file as the complete manifest', async () => {
+  const partial = { display_information: clone(LIVE_MANIFEST.display_information) };
+  const h = await load({
+    argv: [
+      'app',
+      'apply',
+      APP_ID,
+      '--manifest=/tmp/partial.json',
+      '--allow-deletions',
+      '--confirm',
+    ],
+    files: { '/tmp/partial.json': JSON.stringify(partial) },
+  });
+
+  await h.mod.cmdAppApply();
+  assert.equal(h.updateCalls().length, 1);
+  assert.deepEqual(h.sentManifest(), partial, 'the file becomes the whole manifest');
+  assert.match(h.text(), /DELETIONS \(11\)/, 'the diff is still shown in full');
+});
+
+test('apply of a superset file writes it and reports no deletions', async () => {
+  const candidate = clone(LIVE_MANIFEST);
+  candidate.oauth_config.scopes.bot.push('reactions:read');
+  candidate.settings.is_mcp_enabled = true;
+  const h = await load({
+    argv: ['app', 'apply', APP_ID, '--manifest=/tmp/full.json', '--confirm'],
+    files: { '/tmp/full.json': JSON.stringify(candidate) },
+  });
+
+  await h.mod.cmdAppApply();
+  const sent = h.sentManifest();
+  assert.equal(sent.settings.is_mcp_enabled, true);
+  assert.ok(sent.oauth_config.scopes.bot.includes('reactions:read'));
+  assert.equal(sent.display_information.description, LIVE_MANIFEST.display_information.description);
+  // When the file omits nothing, the overlay and the file are the same object
+  // graph, so the operator gets exactly what the diff promised.
+  assert.deepEqual(sent, candidate);
+  assert.match(h.text(), /No deletions/);
+});
+
+test('deepOverlay keeps every live field a partial candidate omits (defense in depth)', async () => {
+  const h = await load({ argv: ['app', 'show', APP_ID] });
+  const partial = { display_information: { name: 'Renamed' } };
+  const merged = h.mod.deepOverlay(h.mod.deepClone(LIVE_MANIFEST), partial);
+
+  // Even if the deletion gate were bypassed, the payload built without
+  // --allow-deletions cannot drop a field: it starts from the live export.
+  assert.equal(merged.display_information.name, 'Renamed');
+  assert.equal(merged.display_information.description, LIVE_MANIFEST.display_information.description);
+  assert.deepEqual(merged.oauth_config.scopes.bot, LIVE_MANIFEST.oauth_config.scopes.bot);
+  assert.equal(Object.keys(h.mod.manifestLeaves(merged, '', {})).length, 14);
+});
+
+test('deepOverlay replaces arrays wholesale, matching Slack semantics', async () => {
+  const h = await load({ argv: ['app', 'show', APP_ID] });
+  const merged = h.mod.deepOverlay(h.mod.deepClone(LIVE_MANIFEST), {
+    oauth_config: { scopes: { bot: ['chat:write'] } },
+  });
+  assert.deepEqual(merged.oauth_config.scopes.bot, ['chat:write']);
+});
+
+// ── The deletion gate: requested vs unrequested ───────────────────────────────
+
+test('the deletion gate blocks a deletion the command did not declare', async () => {
+  const h = await load({ argv: ['app', 'set-scopes', APP_ID, '--add=x:y', '--confirm'] });
+
+  const err = await expectDie(() =>
+    h.mod.updateFromLiveManifest({
+      appId: APP_ID,
+      token: TEST_TOKEN,
+      action: 'set-scopes',
+      summary: [],
+      mutate: (manifest) => {
+        delete manifest.display_information.description;
+        return manifest;
+      },
+      intentional: [],
+      rerun: 'x',
+    })
+  );
+  assert.match(err.message, /unrequested deletion/i);
+  assert.match(err.message, /\/display_information\/description/);
+  assert.equal(h.updateCalls().length, 0);
+});
+
+test('the deletion gate allows a deletion the command declared', async () => {
+  const h = await load({ argv: ['app', 'set-events', APP_ID, '--remove=team_join', '--confirm'] });
+
+  const result = await h.mod.updateFromLiveManifest({
+    appId: APP_ID,
+    token: TEST_TOKEN,
+    action: 'set-events',
+    summary: [],
+    mutate: (manifest) => {
+      manifest.settings.event_subscriptions.bot_events = ['channel_created'];
+      return manifest;
+    },
+    intentional: () => [
+      { pointer: '/settings/event_subscriptions/bot_events', value: 'team_join', entry: true },
+    ],
+    rerun: 'x',
+  });
+
+  assert.equal(result.updated, true);
+  assert.equal(h.updateCalls().length, 1);
+});
+
+test('an unrequested deletion is blocked even when a requested one is declared', async () => {
+  const h = await load({ argv: ['app', 'set-events', APP_ID, '--remove=team_join', '--confirm'] });
+
+  const err = await expectDie(() =>
+    h.mod.updateFromLiveManifest({
+      appId: APP_ID,
+      token: TEST_TOKEN,
+      action: 'set-events',
+      summary: [],
+      mutate: (manifest) => {
+        manifest.settings.event_subscriptions.bot_events = ['channel_created'];
+        delete manifest.settings.event_subscriptions.request_url;
+        return manifest;
+      },
+      intentional: () => [
+        { pointer: '/settings/event_subscriptions/bot_events', value: 'team_join', entry: true },
+      ],
+      rerun: 'x',
+    })
+  );
+  assert.match(err.message, /\/settings\/event_subscriptions\/request_url/);
+  assert.doesNotMatch(err.message, /- \/settings\/event_subscriptions\/bot_events/);
+  assert.equal(h.updateCalls().length, 0);
+});
+
+test('--allow-deletions overrides the gate for an unrequested deletion', async () => {
+  const h = await load({
+    argv: ['app', 'set-scopes', APP_ID, '--add=x:y', '--allow-deletions', '--confirm'],
+  });
+
+  const result = await h.mod.updateFromLiveManifest({
+    appId: APP_ID,
+    token: TEST_TOKEN,
+    action: 'set-scopes',
+    summary: [],
+    mutate: (manifest) => {
+      delete manifest.display_information.description;
+      return manifest;
+    },
+    intentional: [],
+    rerun: 'x',
+  });
+  assert.equal(result.updated, true);
+  assert.equal(h.updateCalls().length, 1);
+});
+
+// ── --confirm guards: zero write calls ────────────────────────────────────────
+
+test('set-scopes without --confirm performs zero write calls', async () => {
+  const h = await load({ argv: ['app', 'set-scopes', APP_ID, '--add=reactions:read'] });
+  await h.mod.cmdAppSetScopes();
+  assert.equal(h.writeCalls().length, 0);
+  assert.deepEqual(h.methods(), ['apps.manifest.export'], 'export is a read, and it is all');
+  assert.match(h.text(), /No --confirm/);
+  assert.match(h.text(), /--confirm to apply/);
+});
+
+test('set-events without --confirm performs zero write calls', async () => {
+  const h = await load({ argv: ['app', 'set-events', APP_ID, '--remove=team_join'] });
+  await h.mod.cmdAppSetEvents();
+  assert.equal(h.writeCalls().length, 0);
+  assert.match(h.text(), /No --confirm/);
+});
+
+test('set-request-url without --confirm performs zero write calls', async () => {
+  const h = await load({
+    argv: ['app', 'set-request-url', APP_ID, 'https://relay.example.com/slack'],
+  });
+  await h.mod.cmdAppSetRequestUrl();
+  assert.equal(h.writeCalls().length, 0);
+  assert.match(h.text(), /No --confirm/);
+});
+
+test('apply without --confirm performs zero write calls', async () => {
+  const candidate = clone(LIVE_MANIFEST);
+  candidate.settings.is_mcp_enabled = true;
+  const h = await load({
+    argv: ['app', 'apply', APP_ID, '--manifest=/tmp/c.json'],
+    files: { '/tmp/c.json': JSON.stringify(candidate) },
+  });
+  await h.mod.cmdAppApply();
+  assert.equal(h.writeCalls().length, 0);
+  assert.match(h.text(), /No --confirm/);
+});
+
+test('token-rotate without --confirm performs zero write calls', async () => {
+  const h = await load({
+    argv: ['app', 'token-rotate'],
+    refreshToken: 'xoxe-1-old-refresh-token',
+  });
+  await h.mod.cmdAppTokenRotate();
+  assert.equal(h.writeCalls().length, 0);
+  assert.equal(h.httpCalls.length, 0, 'a rotate must never be speculative');
+  assert.equal(h.configWrites.length, 0);
+  assert.match(h.text(), /INVALIDATES/);
+});
+
+// ── permissions_updated: the reinstall signal ─────────────────────────────────
+
+test('permissions_updated true produces a visible REINSTALL warning', async () => {
+  const h = await load({
+    argv: ['app', 'set-scopes', APP_ID, '--add=reactions:read', '--confirm'],
+    responses: { 'apps.manifest.update': { ok: true, permissions_updated: true } },
+  });
+  await h.mod.cmdAppSetScopes();
+
+  const text = h.text();
+  assert.match(text, /REINSTALL REQUIRED/);
+  assert.match(text, /permissions_updated = true/);
+  assert.match(text, /does NOT carry it|reissued/, 'must explain the stale bot token');
+  assert.match(text, new RegExp(APP_ID), 'must point at the app to reinstall');
+});
+
+test('permissions_updated false produces no reinstall warning', async () => {
+  const h = await load({
+    argv: ['app', 'set-events', APP_ID, '--add=app_mention', '--confirm'],
+    responses: { 'apps.manifest.update': { ok: true, permissions_updated: false } },
+  });
+  await h.mod.cmdAppSetEvents();
+
+  const text = h.text();
+  assert.doesNotMatch(text, /REINSTALL REQUIRED/);
+  assert.match(text, /permissions_updated = false/);
+});
+
+test('a missing permissions_updated is treated as false, not as a reinstall', async () => {
+  const h = await load({
+    argv: ['app', 'set-events', APP_ID, '--add=app_mention', '--confirm'],
+    responses: { 'apps.manifest.update': { ok: true } },
+  });
+  await h.mod.cmdAppSetEvents();
+  assert.doesNotMatch(h.text(), /REINSTALL REQUIRED/);
+});
+
+test('write --json emits a machine-readable result including reinstall_required', async () => {
+  const h = await load({
+    argv: ['app', 'set-scopes', APP_ID, '--add=reactions:read', '--confirm', '--json'],
+    responses: { 'apps.manifest.update': { ok: true, permissions_updated: true } },
+  });
+  await h.mod.cmdAppSetScopes();
+
+  const payload = JSON.parse(h.text());
+  assert.equal(payload.updated, true);
+  assert.equal(payload.permissions_updated, true);
+  assert.equal(payload.reinstall_required, true);
+  assert.equal(payload.action, 'set-scopes');
+  assert.ok(payload.diff, 'the diff travels with the result');
+});
+
+// ── HTTP 200 + ok:false on a write ────────────────────────────────────────────
+
+test('ok:false with HTTP 200 fails the update even when the body looks usable', async () => {
+  // Adversarial: HTTP 200, permissions_updated present, ok:false. Only the
+  // body.ok check can reject this.
+  const h = await load({
+    argv: ['app', 'set-scopes', APP_ID, '--add=reactions:read', '--confirm'],
+    status: 200,
+    responses: {
+      'apps.manifest.update': { ok: false, error: 'invalid_manifest', permissions_updated: true },
+    },
+  });
+  const err = await expectDie(() => h.mod.cmdAppSetScopes());
+  assert.match(err.message, /invalid_manifest/);
+  assert.doesNotMatch(h.text(), /Updated /, 'nothing may be reported as updated');
+  assert.doesNotMatch(h.text(), /REINSTALL REQUIRED/);
+});
+
+// ── token-rotate ──────────────────────────────────────────────────────────────
+
+test('token-rotate sends refresh_token form-encoded with no Authorization header', async () => {
+  const h = await load({
+    argv: ['app', 'token-rotate', '--refresh-token=xoxe-1-old-refresh-token', '--confirm'],
+  });
+  await h.mod.cmdAppTokenRotate();
+
+  assert.deepEqual(h.methods(), ['tooling.tokens.rotate']);
+  const call = h.httpCalls[0];
+  assert.equal(call.params.refresh_token, 'xoxe-1-old-refresh-token');
+  assert.match(String(call.headers['content-type']), /application\/x-www-form-urlencoded/);
+  // Measured: a bearer header alongside refresh_token produced invalid_auth.
+  assert.equal(call.hasTokenConfig, false, 'the rotate call must carry no bearer token');
+});
+
+test('token-rotate persists the new pair BEFORE anything else happens with it', async () => {
+  const h = await load({
+    argv: ['app', 'token-rotate', '--refresh-token=xoxe-1-old-refresh-token', '--confirm'],
+  });
+  await h.mod.cmdAppTokenRotate();
+
+  assert.equal(h.configWrites.length, 1, 'exactly one persist');
+  assert.equal(h.configWrites[0].appConfigToken, 'xoxe.xoxp-rotated-access-token');
+  assert.equal(h.configWrites[0].appRefreshToken, 'xoxe-1-rotated-refresh-token');
+
+  // The rotate has already invalidated the old refresh token, so the persist must
+  // be the FIRST thing that happens after the response: any output before it is a
+  // window in which a crash loses the only usable credential.
+  const kinds = h.events.map((e) => e.type);
+  const rotateAt = kinds.indexOf('http');
+  const persistAt = kinds.indexOf('persist');
+  const firstOutAt = kinds.indexOf('out');
+  assert.ok(rotateAt >= 0 && persistAt >= 0, 'both events observed');
+  assert.ok(persistAt > rotateAt, 'persist after the rotate response');
+  assert.ok(
+    firstOutAt === -1 || persistAt < firstOutAt,
+    'persist must precede every line of output about the new pair'
+  );
+});
+
+test('token-rotate prints the new pair when persisting fails instead of swallowing it', async () => {
+  const h = await load({
+    argv: ['app', 'token-rotate', '--refresh-token=xoxe-1-old-refresh-token', '--confirm'],
+    configWriteFails: true,
+  });
+  await h.mod.cmdAppTokenRotate();
+
+  const text = h.text();
+  assert.match(text, /COULD NOT PERSIST/);
+  assert.match(text, /EACCES/);
+  // Last resort: the old refresh token is already dead, so losing this is worse
+  // than printing it.
+  assert.match(text, /xoxe\.xoxp-rotated-access-token/);
+  assert.match(text, /xoxe-1-rotated-refresh-token/);
+  assert.match(text, /NOT STORED/);
+});
+
+test('token-rotate masks the tokens on the success path', async () => {
+  const h = await load({
+    argv: ['app', 'token-rotate', '--refresh-token=xoxe-1-old-refresh-token', '--confirm'],
+  });
+  await h.mod.cmdAppTokenRotate();
+  const text = h.text();
+  assert.match(text, /Rotated app configuration token/);
+  assert.doesNotMatch(text, /xoxe\.xoxp-rotated-access-token/, 'no full token in the transcript');
+  assert.match(text, /xoxe\.xoxp-\.\.\./, 'masked form shown instead');
+  assert.match(text, /previous refresh token is now invalid/i);
+});
+
+test('token-rotate reads the refresh token from env then skill config', async () => {
+  const fromEnv = await load({
+    argv: ['app', 'token-rotate', '--confirm'],
+    refreshToken: 'xoxe-1-env-refresh',
+  });
+  await fromEnv.mod.cmdAppTokenRotate();
+  assert.equal(fromEnv.httpCalls[0].params.refresh_token, 'xoxe-1-env-refresh');
+
+  const fromConfig = await load({
+    argv: ['app', 'token-rotate', '--confirm'],
+    config: { appRefreshToken: 'xoxe-1-config-refresh' },
+  });
+  await fromConfig.mod.cmdAppTokenRotate();
+  assert.equal(fromConfig.httpCalls[0].params.refresh_token, 'xoxe-1-config-refresh');
+});
+
+test('token-rotate dies with minting instructions when no refresh token exists', async () => {
+  const h = await load({ argv: ['app', 'token-rotate', '--confirm'] });
+  const err = await expectDie(() => h.mod.cmdAppTokenRotate());
+  assert.match(err.message, /No refresh token/);
+  assert.match(err.message, /api\.slack\.com\/apps/);
+  assert.equal(h.httpCalls.length, 0);
+});
+
+test('token-rotate maps invalid_refresh_token to a single-use explanation', async () => {
+  const h = await load({
+    argv: ['app', 'token-rotate', '--refresh-token=xoxe-1-stale', '--confirm'],
+    responses: { 'tooling.tokens.rotate': { ok: false, error: 'invalid_refresh_token' } },
+  });
+  const err = await expectDie(() => h.mod.cmdAppTokenRotate());
+  assert.match(err.message, /invalid_refresh_token/);
+  assert.match(err.message, /single-use/);
+  assert.equal(h.configWrites.length, 0, 'nothing may be persisted on a failed rotate');
+});
+
+test('token-rotate refuses to discard the old credential when the pair is missing', async () => {
+  const h = await load({
+    argv: ['app', 'token-rotate', '--refresh-token=xoxe-1-old', '--confirm'],
+    responses: { 'tooling.tokens.rotate': { ok: true, token: 'xoxe.xoxp-only-half' } },
+  });
+  const err = await expectDie(() => h.mod.cmdAppTokenRotate());
+  assert.match(err.message, /without a token pair/);
+  assert.equal(h.configWrites.length, 0);
+});
+
+// ── create/delete remain unreachable from the write paths ─────────────────────
+
+test('no write path issues apps.manifest.create or apps.manifest.delete', async () => {
+  const candidate = clone(LIVE_MANIFEST);
+  candidate.settings.is_mcp_enabled = true;
+  const files = { '/tmp/w.json': JSON.stringify(candidate) };
+  const observed = [];
+
+  for (const argv of [
+    ['app', 'set-scopes', APP_ID, '--add=reactions:read', '--confirm'],
+    ['app', 'set-events', APP_ID, '--remove=team_join', '--confirm'],
+    ['app', 'set-request-url', APP_ID, 'https://relay.example.com/slack', '--confirm'],
+    ['app', 'apply', APP_ID, '--manifest=/tmp/w.json', '--confirm'],
+    ['app', 'token-rotate', '--refresh-token=xoxe-1-old', '--confirm'],
+  ]) {
+    const h = await load({ argv, files });
+    await h.mod.cmdApp();
+    observed.push(...h.methods());
+  }
+
+  assert.ok(observed.length >= 9, 'each command must have reached the API');
+  const allowed = new Set(['apps.manifest.export', 'apps.manifest.update', 'tooling.tokens.rotate']);
+  for (const method of observed) {
+    assert.ok(allowed.has(method), 'unexpected method called: ' + method);
+  }
+});
+
+test('all five write subcommands are reachable through the app dispatcher', async () => {
+  const candidate = clone(LIVE_MANIFEST);
+  candidate.settings.is_mcp_enabled = true;
+  const files = { '/tmp/w.json': JSON.stringify(candidate) };
+
+  const cases = [
+    [['app', 'set-scopes', APP_ID, '--add=reactions:read', '--confirm'], 'apps.manifest.update'],
+    [['app', 'set-events', APP_ID, '--add=app_mention', '--confirm'], 'apps.manifest.update'],
+    [
+      ['app', 'set-request-url', APP_ID, 'https://relay.example.com/slack', '--confirm'],
+      'apps.manifest.update',
+    ],
+    [['app', 'apply', APP_ID, '--manifest=/tmp/w.json', '--confirm'], 'apps.manifest.update'],
+    [['app', 'token-rotate', '--refresh-token=xoxe-1-old', '--confirm'], 'tooling.tokens.rotate'],
+  ];
+
+  for (const [argv, expected] of cases) {
+    const h = await load({ argv, files });
+    await h.mod.cmdApp();
+    assert.ok(h.methods().includes(expected), argv.join(' ') + ' must call ' + expected);
+  }
+});
+
+// ── pure helpers used by the write path ──────────────────────────────────────
+
+test('applyAddRemove reports added, removed and skipped removals', async () => {
+  const h = await load({ argv: ['app', 'show', APP_ID] });
+  const r = h.mod.applyAddRemove(['a', 'b', 'c'], ['d', 'b'], ['a', 'zz']);
+  assert.deepEqual(r.next, ['b', 'c', 'd']);
+  assert.deepEqual(r.added, ['d']);
+  assert.deepEqual(r.removed, ['a']);
+  assert.deepEqual(r.skippedRemovals, ['zz']);
+});
+
+test('parseList splits on commas and whitespace and rejects a valueless flag', async () => {
+  const h = await load({ argv: ['app', 'show', APP_ID] });
+  assert.deepEqual(h.mod.parseList('a,b , c', 'add'), ['a', 'b', 'c']);
+  assert.deepEqual(h.mod.parseList(undefined, 'add'), []);
+  await expectDie(async () => h.mod.parseList(true, 'add'));
+});
+
+test('maskToken never reveals the whole value', async () => {
+  const h = await load({ argv: ['app', 'show', APP_ID] });
+  const masked = h.mod.maskToken('xoxe.xoxp-1234567890-abcdefghij');
+  assert.doesNotMatch(masked, /1234567890-abcdefghij/);
+  assert.match(masked, /^xoxe\.xoxp/);
+  assert.match(masked, /chars/);
 });
 
 // ── Mutation matrix ───────────────────────────────────────────────────────────
