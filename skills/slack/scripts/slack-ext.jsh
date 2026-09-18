@@ -982,9 +982,17 @@ async function getAppConfigToken() {
 }
 
 // A null/absent token builds a client with NO Authorization header. That is not
-// an oversight: tooling.tokens.rotate authenticates by argument, and a bearer
-// header sent alongside the refresh_token took precedence and produced
-// invalid_auth (measured 2026-09-18).
+// an oversight: tooling.tokens.rotate authenticates BY ARGUMENT (refresh_token),
+// so no bearer is required and none is sent.
+//
+// An earlier version of this comment claimed a bearer header "took precedence and
+// produced invalid_auth". That was re-probed and did NOT reproduce: with a bogus
+// refresh_token the answer is invalid_refresh_token whether or not an
+// Authorization header is present, and a bearer with no refresh_token gives
+// invalid_arguments -- never invalid_auth. Sending no header remains correct, but
+// because it is NOT REQUIRED rather than because it is harmful. Behaviour with a
+// VALID refresh token plus a bearer is still untested (no spare token to burn),
+// so do not add a header on the assumption that it is harmless either.
 function appApiClient(token) {
   const config = {
     baseUrl: SLACK_API_BASE,
@@ -1902,7 +1910,9 @@ async function cmdAppApply() {
 // 2026-09-18, refresh_token=<bogus> returns invalid_refresh_token, token=<bogus>
 // returns invalid_auth, and no params returns invalid_arguments ("missing
 // required field: refresh_token"). An Authorization header sent alongside a bogus
-// refresh_token took precedence and produced invalid_auth, so the call is made
+// refresh_token was suspected to take precedence, but that did NOT reproduce on
+// re-probe (see the note above the manifest client). No header is sent because
+// none is needed, not because one is known to break the call.
 // WITHOUT one.
 
 const REFRESH_TOKEN_ENV = 'SLACK_APP_REFRESH_TOKEN';
