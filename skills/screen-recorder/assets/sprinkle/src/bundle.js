@@ -344,7 +344,7 @@
   function createBeeper() {
     let ctx = null;
     let unavailable = false;
-    const counters = { ticksScheduled: 0, ticksPlayed: 0, gosScheduled: 0, gosPlayed: 0, lastError: null };
+    const counters = { ticksScheduled: 0, ticksPlayed: 0, gosScheduled: 0, gosPlayed: 0, stopChimesScheduled: 0, stopChimesPlayed: 0, lastError: null };
     async function arm() {
       if (unavailable) return null;
       try {
@@ -395,6 +395,16 @@
       counters.ticksScheduled++;
       if (beep(660, 0.09)) counters.ticksPlayed++;
     }
+    function stopChime() {
+      counters.stopChimesScheduled += 2;
+      if (!ctx || unavailable) {
+        counters.lastError = unavailable ? "audio unavailable" : "context not armed";
+        return;
+      }
+      const t0 = ctx.currentTime;
+      if (beep(880, 0.11, t0, 0.24)) counters.stopChimesPlayed++;
+      if (beep(587, 0.16, t0 + 0.13, 0.24)) counters.stopChimesPlayed++;
+    }
     function go() {
       counters.gosScheduled += 3;
       if (!ctx || unavailable) {
@@ -426,10 +436,12 @@
         ticksPlayed: counters.ticksPlayed,
         finalBeepsScheduled: counters.gosScheduled,
         finalBeepsPlayed: counters.gosPlayed,
+        stopChimesScheduled: counters.stopChimesScheduled,
+        stopChimesPlayed: counters.stopChimesPlayed,
         lastError: counters.lastError
       };
     }
-    return { arm, tick, go, state, report, close };
+    return { arm, tick, go, stopChime, state, report, close };
   }
 
   // shared/sprinkles/recording-setup/src/tabs.js
@@ -640,6 +652,15 @@
     const id = String(targetId).replace(/[^A-Za-z0-9]/g, "");
     return 'playwright-cli eval "JSON.stringify({ow:outerWidth,oh:outerHeight,iw:innerWidth,ih:innerHeight,dpr:devicePixelRatio})" --tab=' + id;
   }
+  function geometryIsCoherent(g) {
+    if (!g) return false;
+    const n = (v) => typeof v === "number" && isFinite(v) && v > 0;
+    if (!n(g.ow) || !n(g.oh) || !n(g.iw) || !n(g.ih)) return false;
+    if (g.iw > g.ow || g.ih > g.oh) return false;
+    const chrome = g.oh - g.ih;
+    if (chrome < 0 || chrome > 200) return false;
+    return true;
+  }
   function parseGeometry(stdout) {
     const s = String(stdout || "");
     const m = s.match(/\{[^{}]*"ow"[\s\S]*?\}/);
@@ -654,13 +675,29 @@
       }
     }
   }
+  var MIN_WINDOW_WIDTH = 500;
   function checkDisplayFit(w, h, scr) {
     const s = scr || (typeof screen !== "undefined" ? screen : null);
     const availWidth = s && s.availWidth ? s.availWidth : null;
     const availHeight = s && s.availHeight ? s.availHeight : null;
-    const out = { availWidth, availHeight, fitsDisplay: true, clampedAxes: [] };
-    if (!w || !h || availWidth == null || availHeight == null) return out;
-    if (w > availWidth) out.clampedAxes.push("width");
+    const out = {
+      availWidth,
+      availHeight,
+      fitsDisplay: true,
+      clampedAxes: [],
+      minWidth: MIN_WINDOW_WIDTH,
+      belowMinWidth: false
+    };
+    if (!w || !h) return out;
+    if (w < MIN_WINDOW_WIDTH) {
+      out.belowMinWidth = true;
+      out.clampedAxes.push("width");
+    }
+    if (availWidth == null || availHeight == null) {
+      out.fitsDisplay = out.clampedAxes.length === 0;
+      return out;
+    }
+    if (w > availWidth && !out.clampedAxes.includes("width")) out.clampedAxes.push("width");
     if (h > availHeight) out.clampedAxes.push("height");
     out.fitsDisplay = out.clampedAxes.length === 0;
     return out;
@@ -684,16 +721,25 @@
         continue;
       }
       const axes = fit.clampedAxes;
-      const reason = axes.length === 2 ? "too large for this display" : axes[0] === "height" ? "too tall for this display" : "too wide for this display";
+      const reason = fit.belowMinWidth ? axes.length === 2 ? "narrower than Chrome's " + fit.minWidth + "px minimum, and too tall" : "narrower than Chrome's " + fit.minWidth + "px minimum window width" : axes.length === 2 ? "too large for this display" : axes[0] === "height" ? "too tall for this display" : "too wide for this display";
       out.push({ value: v, fits: false, reason, suffix: " (" + reason + ")" });
     }
     return out;
   }
   function displayFitWarning(w, h, fit) {
     if (!fit || fit.fitsDisplay || !fit.clampedAxes.length) return null;
-    const axes = fit.clampedAxes.join(" and ");
-    const capped = Math.min(w, fit.availWidth) + "x" + Math.min(h, fit.availHeight);
-    return "Requested " + w + "x" + h + " does not fit the usable display (" + fit.availWidth + "x" + fit.availHeight + " CSS px). Chrome will clamp the " + axes + " silently, so the window will be about " + capped + " and the recording will be captured at that size, not the size you asked for.";
+    const reasons = [];
+    if (fit.belowMinWidth) {
+      reasons.push("width " + w + " is below Chrome's " + fit.minWidth + "px minimum window width");
+    } else if (fit.availWidth != null && w > fit.availWidth) {
+      reasons.push("width " + w + " exceeds the usable " + fit.availWidth);
+    }
+    if (fit.availHeight != null && h > fit.availHeight) {
+      reasons.push("height " + h + " exceeds the usable " + fit.availHeight);
+    }
+    const achievedW = fit.belowMinWidth ? fit.minWidth : fit.availWidth != null ? Math.min(w, fit.availWidth) : w;
+    const achievedH = fit.availHeight != null ? Math.min(h, fit.availHeight) : h;
+    return "Clamped silently: " + reasons.join("; ") + ". You will get about " + achievedW + "x" + achievedH + " and the recording is captured at that size.";
   }
   function describeTargetWindow(opts) {
     const o = opts || {};
@@ -877,6 +923,8 @@
     popupFeatures,
     windowGeometryCmd,
     parseGeometry,
+    geometryIsCoherent,
+    MIN_WINDOW_WIDTH,
     describeTargetWindow,
     openTargetWindow,
     openTargetWindowApi,
