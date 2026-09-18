@@ -1,0 +1,1328 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GitHub work</title>
+    <link rel="icon" href="git-pull-request" />
+    <style>
+      /* ------------------------------------------------------------------
+         UNWIRED DRAFT (rev 2, design review applied).
+
+         Colour rules, unchanged:
+           - every colour is a var(--s2-*) token, or a var(--uxc-*-subtle-*)
+             pair from the sprinkle style guide where S2 has no hue (see the
+             GITHUB SEMANTICS block below);
+           - every var() fallback chains to another token, never a literal;
+           - no @media (prefers-color-scheme): the host toggles .theme-light
+             on this document's <html> and the tokens swap in lockstep.
+
+         Corner budget (review item 1): the shell has none, the accordion
+         groups have none, only cards are rounded — one level, not three.
+         ------------------------------------------------------------------ */
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      :root {
+        color-scheme: dark;
+        --line: var(--s2-border-subtle, var(--s2-bg-layer-2));
+        --fg: var(--s2-content-default);
+        --fg-muted: var(--s2-content-secondary, var(--s2-content-default));
+        --fg-faint: var(--s2-content-tertiary, var(--s2-content-secondary));
+
+        /* ------------- GITHUB STATE PALETTE (pass 3, item 2) -------------
+           Hue accuracy to GitHub wins over semantic naming here, so state
+           colours come from the hue-specific --uxc-<hue>-subtle-* pairs
+           (theme-aware, contrast-checked as a pair). Each one degrades to an
+           S2 token if a --uxc-* is ever absent. NON-state chrome — surfaces,
+           text, borders, radii, spacing, type — stays purely --s2-*.
+
+           GitHub's convention                    this panel uses
+           open issue/PR, CI success, approved    --uxc-positive-subtle-text
+           in progress (no GitHub equivalent)     --uxc-accent-subtle-text
+           CI pending, waiting, merge queue       --uxc-yellow-subtle-text
+           CI failure, conflicts, changes req.    --uxc-negative-subtle-text
+           merged, closed-as-completed            --uxc-purple-subtle-text
+           draft PR                               --s2-content-tertiary — NOT
+             --uxc-gray-subtle-text (#292929/#cfcfcf: that is body text, so
+             draft would read as emphasised rather than muted) and NOT
+             --s2-gray-500, which is #8f8f8f light but #6e6e6e dark, i.e. it
+             gets DARKER on the dark theme and loses glyph contrast.
+             content-tertiary (#717171/#8a8a8a) inverts correctly and lands
+             closest to GitHub's own muted grey (#6e7781/#8b949e).
+           ---------------------------------------------------------------- */
+        --gh-open: var(--uxc-positive-subtle-text, var(--s2-positive));
+        --gh-progress: var(--uxc-accent-subtle-text, var(--s2-accent));
+        --gh-pending: var(--uxc-yellow-subtle-text, var(--s2-notice));
+        --gh-fail: var(--uxc-negative-subtle-text, var(--s2-negative));
+        --gh-draft: var(--s2-content-tertiary, var(--s2-content-secondary));
+        --gh-merged: var(--uxc-purple-subtle-text, var(--s2-accent));
+        --gh-neutral: var(--s2-content-tertiary, var(--s2-content-secondary));
+      }
+      :root.theme-light {
+        color-scheme: light;
+      }
+
+      body {
+        font:
+          14px/1.45 var(--s2-font-family, system-ui),
+          sans-serif;
+        background: var(--s2-bg-base);
+        color: var(--fg);
+        padding: var(--s2-spacing-200, 12px);
+        /* No fixed height and no overflow:hidden — the panel scrolls. */
+      }
+
+      /* --- header ------------------------------------------------------ */
+      .head {
+        padding-bottom: var(--s2-spacing-100, 8px);
+      }
+      .head-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .head-row h1 {
+        font-size: 15px;
+        font-weight: 700;
+      }
+      .head-row .count-total {
+        margin-left: auto;
+        color: var(--fg-muted);
+        font-size: var(--s2-font-size-75, 12px);
+      }
+      .head-row > .sprinkle-icon {
+        color: var(--fg-muted);
+      }
+
+      /* Project filter row (review item 4). Everything clickable in this
+         panel is a .sprinkle-btn; nothing else is allowed to look clickable. */
+      .filters {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: var(--s2-spacing-100, 8px);
+      }
+      .btn-mini.sprinkle-btn {
+        height: 26px;
+        padding: 0 10px;
+        font-size: var(--s2-font-size-75, 12px);
+        font-weight: 600;
+        box-shadow: none;
+      }
+      /* Controls must not share a surface colour with the card they sit on,
+         in either theme — otherwise only the hairline border says "button". */
+      .btn-mini.sprinkle-btn--secondary {
+        background: var(--s2-bg-elevated);
+      }
+      .btn-mini.sprinkle-btn .n {
+        color: inherit;
+        opacity: 0.7;
+      }
+      /* Inert controls: real buttons, deliberately not wired in this draft.
+         They keep button chrome (so they read as controls) but not the
+         pointer cursor (so they do not promise a working click). */
+      .btn-inert.sprinkle-btn {
+        cursor: default;
+      }
+
+      /* --- accordion groups (review items 1 + 3) ----------------------- */
+      .grp {
+        border-top: 1px solid var(--line);
+      }
+      .grp > summary {
+        list-style: none;
+        cursor: pointer;
+        padding: 9px 2px;
+      }
+      .grp > summary::-webkit-details-marker {
+        display: none;
+      }
+      .grp > summary:hover {
+        background: var(--s2-bg-layer-1);
+      }
+      /* The flex row lives on a wrapper INSIDE <summary> so nothing of ours
+         sets `display` on the element that owns collapse behaviour. */
+      .grp-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .grp-row .chev {
+        color: var(--fg-faint);
+        transition: transform var(--s2-transition-default, 0.13s ease);
+      }
+      .grp[open] > summary .chev {
+        transform: rotate(90deg);
+      }
+      .grp-row .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: var(--s2-radius-pill, 9999px);
+        background: var(--tone);
+      }
+      .grp-row .name {
+        font-weight: 600;
+      }
+      .grp-row .n {
+        margin-left: auto;
+        color: var(--fg-muted);
+        font-size: var(--s2-font-size-75, 12px);
+      }
+
+      /* --- card grid (review item 2): up to three abreast, no media
+         queries. Each column is at least a third of the row, so auto-fit
+         can never make a fourth; below 3x--card-min it reflows to 2 then 1.
+         Width comes from the panel, not the viewport. ------------------- */
+      .card-grid {
+        --cols: 3;
+        --grid-gap: var(--s2-spacing-200, 12px);
+        --card-min: 250px;
+        display: grid;
+        gap: var(--grid-gap);
+        align-items: start;
+        grid-template-columns: repeat(
+          auto-fit,
+          minmax(
+            max(var(--card-min), calc((100% - (var(--cols) - 1) * var(--grid-gap)) / var(--cols))),
+            1fr
+          )
+        );
+        /* Item A: every row is the same height, and every row is as tall as
+           the tallest card in the whole grid — no pixel constant anywhere.
+           Cards stretch into their cell (default `stretch` alignment). */
+        grid-auto-rows: 1fr;
+        padding-bottom: var(--s2-spacing-300, 16px);
+      }
+
+      /* --- card -------------------------------------------------------- */
+      /* .sprinkle-card supplies border, shadow and background. We retune
+         padding, radius and height, but NEVER `display` — the framework owns
+         that. All internal layout therefore lives on .card-inner. */
+      .card.sprinkle-card {
+        padding: var(--s2-spacing-200, 12px);
+        border-radius: var(--s2-radius-default, 8px);
+        background: var(--s2-bg-layer-1);
+        height: 100%;
+      }
+      /* Item A: fixed row order with the footer pinned to the bottom edge.
+         Row 4 (the status block) absorbs the slack, so the button/timestamp
+         row sits flush at the bottom however short the text above it is. */
+      .card-inner {
+        display: grid;
+        grid-template-rows: auto auto auto 1fr auto;
+        row-gap: 6px;
+        height: 100%;
+      }
+      /* The framework lifts a card's shadow on hover. A card is not
+         clickable (only its link and its three buttons are), so kill the
+         affordance and keep the resting shadow. */
+      .card.sprinkle-card:hover {
+        box-shadow: var(--s2-shadow-container);
+      }
+
+      /* Item C: the progress bar IS the card's top border. Negative margins
+         cancel the card padding *and* its border, so the bar covers the
+         border line, and its top corners use the card's radius so nothing
+         square pokes out. .sprinkle-progress-bar keeps its own
+         overflow:hidden, which clips the fill to those corners.
+         `width: auto` is required: the framework sets width:100%, which
+         ignores the negative margins and leaves the bar 26px short. */
+      .bar-top.sprinkle-progress-bar {
+        margin: calc(-1 * (var(--s2-spacing-200, 12px) + 1px))
+          calc(-1 * (var(--s2-spacing-200, 12px) + 1px)) 0;
+        width: auto;
+        border-radius: var(--s2-radius-default, 8px) var(--s2-radius-default, 8px) 0 0;
+        height: 4px;
+      }
+
+      .row-top {
+        display: flex;
+        flex-wrap: nowrap;
+        align-items: center;
+        gap: 6px;
+        /* Item A: pin this row to the glyph's height so a card with tags is
+           not taller than one without. nowrap matters as much as min-height:
+           if the ref and the tags are allowed to wrap onto a second line, a
+           narrow panel makes tagged cards ~23px taller than untagged ones. */
+        min-height: 20px;
+      }
+      /* Item D: this is the state signal. Glyph is primary, colour secondary.
+         The NAME sits on this SPAN, not on the <svg>: Chrome does not render a
+         tooltip from a `title` ATTRIBUTE on an SVG element (SVG wants a
+         <title> child), so the span carries title + role=img + aria-label and
+         the glyph inside is aria-hidden. */
+      .state-icon {
+        display: inline-flex;
+        align-items: center;
+        color: var(--tone);
+        flex: none;
+      }
+      .ref {
+        display: inline-flex;
+        align-items: center;
+        font-family: var(--s2-font-mono, ui-monospace), monospace;
+        font-size: var(--s2-font-size-75, 12px);
+        color: var(--fg);
+        text-decoration: none;
+        /* Shrink and ellipsize rather than wrap (see .row-top). */
+        min-width: 0;
+        overflow: hidden;
+      }
+      /* The emphasised part of the identifier carries the item's state tone,
+         the same --gh-* value as the state glyph and the top bar (pass 4).
+         --tone is set on the .card element, so it inherits here. The muted
+         `org/` prefix above is deliberately left on --fg-faint. */
+      .ref .num {
+        color: var(--tone);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .ref .org {
+        color: var(--fg-faint);
+        white-space: nowrap;
+      }
+      .ref:hover .num {
+        text-decoration: underline;
+      }
+
+      /* Labels (review item 11): flat, no border, no shadow — a tag, not a
+         control. GitHub renders labels as pills, so keep the shape. */
+      .tags {
+        display: flex;
+        flex-wrap: nowrap;
+        gap: 4px;
+        margin-left: auto;
+        overflow: hidden;
+        flex: 0 1 auto;
+        min-width: 0;
+      }
+      .tag {
+        font-size: var(--s2-font-size-50, 11px);
+        line-height: 1.5;
+        padding: 0 6px;
+        border-radius: var(--s2-radius-pill, 9999px);
+        background: var(--uxc-gray-subtle-bg, var(--s2-bg-layer-2));
+        color: var(--uxc-gray-subtle-text, var(--s2-content-secondary));
+        white-space: nowrap;
+      }
+      .title {
+        font-size: var(--s2-font-size-100, 14px);
+        font-weight: 600;
+        line-height: 1.3;
+        overflow-wrap: anywhere;
+        /* Item A: card height must not depend on how long a title is, or
+           cards in different groups end up different heights. Exactly two
+           lines — clamped if longer, reserved if shorter — with the full
+           text in title=. `em` keeps it tied to the type, not to a pixel. */
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+        line-clamp: 2;
+        overflow: hidden;
+        min-height: calc(2 * 1.3em);
+      }
+      /* Item D: the textual state chip is gone — glyph + colour + tooltip
+         carry the state now, with the coloured top bar as second carrier.
+         The --gh-draft / --gh-merged badge tints died with the chip; those
+         hues live on in the --gh-* custom properties. */
+      .status {
+        font-size: var(--s2-font-size-75, 12px);
+        /* Item A: the height reservation in .card-body is expressed in this
+           token, so the text must use it too — otherwise the inherited 1.45
+           body line-height makes any card with a note 4px taller. */
+        line-height: var(--s2-line-height-75, 16px);
+        color: var(--fg-muted);
+        overflow-wrap: anywhere;
+        /* Item A: variable-length text would break equal heights, so clamp
+           to two lines. Full sentence stays in title=. This is the one
+           deliberate overflow:hidden in the panel. */
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+        line-clamp: 2;
+        overflow: hidden;
+      }
+      .note {
+        font-size: var(--s2-font-size-75, 12px);
+        line-height: var(--s2-line-height-75, 16px);
+        color: var(--fg-faint);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      /* Items B + G: icon-only buttons at one end, timestamp at the other. */
+      .foot {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .acts {
+        display: flex;
+        gap: 4px;
+      }
+      /* Row 4 of the card: holds the clamped status (+ optional note) and
+         absorbs the height slack, so its content stays top-aligned.
+         Item A: reserving three lines (2 status + 1 note) makes the card's
+         height identical in EVERY group, not just within one grid — the
+         reservation is expressed in a line-height token, not a pixel guess. */
+      .card-body {
+        display: grid;
+        align-content: start;
+        row-gap: 4px;
+        min-height: calc(3 * var(--s2-line-height-75, 16px) + 4px);
+      }
+      /* Item B: icon-only and square, so three fit beside the timestamp even
+         in a one-column rail. */
+      .icon-btn.sprinkle-btn {
+        width: 26px;
+        height: 26px;
+        padding: 0;
+        box-shadow: none;
+        background: var(--s2-bg-elevated);
+      }
+      /* Review item 12: relative time, bottom-right, exact value in title. */
+      .when {
+        margin-left: auto;
+        color: var(--fg-faint);
+        font-size: var(--s2-font-size-75, 12px);
+        white-space: nowrap;
+      }
+      .empty {
+        color: var(--fg-faint);
+        font-size: var(--s2-font-size-75, 12px);
+        padding-bottom: var(--s2-spacing-200, 12px);
+      }
+      footer {
+        margin-top: var(--s2-spacing-200, 12px);
+        padding-top: var(--s2-spacing-100, 8px);
+        border-top: 1px solid var(--line);
+        color: var(--fg-faint);
+        font-size: var(--s2-font-size-50, 11px);
+      }
+    </style>
+  </head>
+
+  <body>
+    <main id="app"></main>
+
+    <script type="module">
+      /* ==================================================================
+         GitHub work dashboard — UNWIRED DRAFT, rev 2.
+         No GitHub API, no `gh`, no network, no polling. Renders from FIXTURE.
+
+         Interactive surface (deliberately small):
+           - project filter chips: filter locally, no lick, no I/O;
+           - accordion open/close: native <details>;
+           - the three per-card actions and the project `+`: rendered INERT,
+             no handlers, no slicc.lick — wiring is a later job.
+         ================================================================== */
+
+      /* ------------------------------------------------------------------
+         1. TUNABLE CONSTANTS
+         ------------------------------------------------------------------ */
+
+      // Stall limit in hours for the stages an AGENT owns (thread started,
+      // working, draft PR).
+      const STALL_AFTER_HOURS = 6;
+      // Review waits on other humans, so tolerate far longer.
+      const REVIEW_STALL_AFTER_HOURS = 24;
+      // The merge queue should move in minutes.
+      const MERGE_QUEUE_STALL_AFTER_HOURS = 2;
+      // Per-stage overrides of STALL_AFTER_HOURS (internal stage number -> h).
+      const STALL_AFTER_HOURS_BY_STAGE = {
+        6: REVIEW_STALL_AFTER_HOURS,
+        8: MERGE_QUEUE_STALL_AFTER_HOURS,
+      };
+      // Snooze backoff: snoozeCount (re-snoozes with NOTHING changed) indexes
+      // this table for the next snooze length. Clamped at the end.
+      const FIB_BACKOFF_DAYS = [1, 1, 2, 3, 5, 8, 13, 21];
+
+      // Internal stage numbers. NEVER rendered (review item 5) — they remain
+      // the sort key and the input to the category derivation.
+      const WORKING_STAGES = [2, 4, 5, 6, 8];
+      const DONE_STAGES = [10, 11];
+      // Merged-but-unreleased counts as waiting-on-the-release-train.
+      const RELEASE_WAIT_IS_SNOOZE = true;
+
+      // Fixed clock so the grouping is stable whenever the panel is opened.
+      // When wired to live data: `const NOW = new Date()`.
+      const NOW = new Date('2026-09-18T14:00:00Z');
+
+      /* ------------------------------------------------------------------
+         2. STATE MODEL
+
+         Internally an item still carries a numeric stage (1..11) and an
+         optional substage ('5a'..'8b'); that is how work is ordered and how
+         the category is derived. The UI shows only the NAME of the state and
+         a coloured progress bar (review item 5).
+
+         `tone` names a GitHub semantic; the CSS maps each tone to an S2
+         token in one place (see the GITHUB SEMANTICS block in <style>).
+         ------------------------------------------------------------------ */
+
+      /* Item D: the glyph is the PRIMARY state signal, colour is secondary,
+         and the label reaches assistive tech through title + aria-label.
+         Every state therefore needs its OWN glyph — the four failure states
+         are shape-coded (circle / triangle / octagon / square) precisely
+         because they all share the red tone. `glyphCollisions` in
+         window.__ghDashboard asserts the distinctness. */
+      const STATE = {
+        1: { label: 'open issue', icon: 'circle-dot', tone: 'open', progress: 8 },
+        2: { label: 'thread started', icon: 'message-square', tone: 'progress', progress: 18 },
+        3: { label: 'needs guidance', icon: 'circle-help', tone: 'pending', progress: 22 },
+        4: { label: 'agent working', icon: 'bot', tone: 'progress', progress: 36 },
+        5: {
+          label: 'draft PR, CI running',
+          icon: 'git-pull-request-draft',
+          tone: 'draft',
+          progress: 50,
+        },
+        '5a': { label: 'CI failing', icon: 'circle-x', tone: 'fail', progress: 50 },
+        '5b': { label: 'merge conflicts', icon: 'triangle-alert', tone: 'fail', progress: 50 },
+        6: { label: 'in review', icon: 'eye', tone: 'progress', progress: 64 },
+        '6a': { label: 'approved', icon: 'thumbs-up', tone: 'open', progress: 70 },
+        '6b': {
+          label: 'changes requested',
+          icon: 'message-square-warning',
+          tone: 'fail',
+          progress: 64,
+        },
+        7: { label: 'ready to merge', icon: 'circle-check-big', tone: 'open', progress: 76 },
+        8: { label: 'in merge queue', icon: 'list-ordered', tone: 'pending', progress: 86 },
+        '8a': {
+          label: 'merge queue conflicts',
+          icon: 'octagon-alert',
+          tone: 'fail',
+          progress: 86,
+        },
+        '8b': { label: 'merge queue checks failed', icon: 'square-x', tone: 'fail', progress: 86 },
+        9: { label: 'merged, awaiting release', icon: 'git-merge', tone: 'merged', progress: 94 },
+        10: { label: 'released', icon: 'package-check', tone: 'open', progress: 100 },
+        11: { label: 'closed', icon: 'circle-check', tone: 'merged', progress: 100 },
+      };
+
+      // Where a failure state sends the work back to. Internal only — never
+      // rendered (review item 13); a human decides between guidance and
+      // straight rework anyway.
+      const BOUNCE_DEFAULTS = { '5a': 4, '5b': 4, '6b': 3, '8a': 4, '8b': 4 };
+
+      // tone -> the CSS custom property for the bar, and the badge class for
+      // the chip. positive/accent/notice/negative come from the framework;
+      // the two GitHub hues S2 lacks are defined in <style>.
+      // tone -> the CSS custom property used for BOTH the state glyph's
+      // colour and the top bar's fill. (The badge classes are gone with the
+      // textual chip.) The two GitHub hues S2 lacks are noted in <style>.
+      const TONE = {
+        open: 'var(--gh-open)',
+        progress: 'var(--gh-progress)',
+        pending: 'var(--gh-pending)',
+        fail: 'var(--gh-fail)',
+        draft: 'var(--gh-draft)',
+        merged: 'var(--gh-merged)',
+      };
+
+      const CATEGORIES = {
+        'needs-attention': {
+          label: 'Needs attention',
+          tone: 'var(--gh-pending)',
+          // Pass-3 item 1: no group renders its explainer as visible prose.
+          // Every group's `lead` reaches the reader through the summary's
+          // title= only, so all five behave identically.
+          lead: 'Issues to dispatch, and open questions pointed at you.',
+        },
+        active: {
+          label: 'Actively being worked on',
+          tone: 'var(--gh-progress)',
+          lead: 'An agent is busy; you are waiting on the agent.',
+        },
+        snoozed: {
+          label: 'Snoozed',
+          tone: 'var(--gh-neutral)',
+          lead: 'Waiting on something else — an upstream release, an external dependency, another human. Fibonacci backoff while nothing changes; a comment cancels the snooze.',
+        },
+        stalled: {
+          label: 'Stalled',
+          tone: 'var(--gh-fail)',
+          lead: 'Looks like it is working, but nothing has moved for longer than the state allows.',
+        },
+        done: {
+          label: 'Done',
+          tone: 'var(--gh-open)',
+          lead: 'Released or closed. Terminal states have no home in the four working categories, so they get their own group.',
+        },
+      };
+
+      // Rendering order, and which groups start open (review item 3).
+      const ORDER = ['needs-attention', 'stalled', 'active', 'snoozed', 'done'];
+      const OPEN_BY_DEFAULT = ['needs-attention', 'stalled'];
+
+      /* ------------------------------------------------------------------
+         3. CATEGORY DERIVATION — one pure function over one item record.
+            categorize(item, now) -> { category, reason }
+            `reason` is kept for debugging (window.__ghDashboard); it is no
+            longer rendered — the card shows a human status line instead
+            (review item 10).
+
+         PRECEDENCE (explicit, highest first):
+           0. DONE (released / closed) wins over everything: it is over.
+           1. A HUMAN IS BLOCKED beats a snooze — changes requested, a thread
+              asking for guidance, or an all-green PR nobody queued. A snooze
+              is a promise that nothing needs you yet; these falsify it.
+           2. SNOOZE beats STALLED: silence is exactly what was asked for.
+              Merged-awaiting-release is treated the same way. A snooze is
+              void once a comment lands after it was set.
+           3. Undispatched issue (open, no thread) -> needs attention.
+           4. STALLED: a working state idle longer than its limit.
+           5. ACTIVE: everything else in a working state.
+           6. Fallback -> needs attention: an item we cannot classify is a
+              bug in this function, so surface it rather than hide it.
+         ------------------------------------------------------------------ */
+
+      function hoursSince(iso, now) {
+        return (now - new Date(iso)) / 36e5;
+      }
+
+      /** Snooze state, including "a comment cancels the snooze". */
+      function snoozeState(item, now = NOW) {
+        if (!item.snoozedUntil) return { present: false, active: false };
+        const until = new Date(item.snoozedUntil);
+        const since = item.snoozedAt ? new Date(item.snoozedAt) : null;
+        const commentedAfter =
+          !!item.lastCommentAt && !!since && new Date(item.lastCommentAt) > since;
+        const step = item.snoozeCount ?? 0;
+        const idx = Math.min(step, FIB_BACKOFF_DAYS.length - 1);
+        return {
+          present: true,
+          active: !commentedAfter && until > now,
+          expired: until <= now,
+          cancelledByComment: commentedAfter,
+          until,
+          step,
+          days: FIB_BACKOFF_DAYS[idx],
+          nextDays: FIB_BACKOFF_DAYS[Math.min(step + 1, FIB_BACKOFF_DAYS.length - 1)],
+          reason: item.snoozeReason || null,
+        };
+      }
+
+      function stallLimitFor(stage) {
+        return STALL_AFTER_HOURS_BY_STAGE[stage] ?? STALL_AFTER_HOURS;
+      }
+
+      /** THE pure function. No I/O, no clock read — `now` is injected. */
+      function categorize(item, now = NOW) {
+        const stage = item.stage;
+        const sub = item.substage || null;
+        const idle = hoursSince(item.lastActivityAt, now);
+        const snooze = snoozeState(item, now);
+
+        if (DONE_STAGES.includes(stage)) {
+          return { category: 'done', reason: stage === 10 ? 'released' : 'closed' };
+        }
+        if (sub === '6b') return { category: 'needs-attention', reason: 'changes requested' };
+        if (stage === 3) return { category: 'needs-attention', reason: 'thread wants guidance' };
+        if (stage === 7) return { category: 'needs-attention', reason: 'all green, not queued' };
+
+        if (snooze.active) {
+          return {
+            category: 'snoozed',
+            reason: `snoozed ${snooze.days}d (backoff step ${snooze.step})`,
+          };
+        }
+        if (stage === 9 && RELEASE_WAIT_IS_SNOOZE) {
+          return { category: 'snoozed', reason: 'waiting on the release train' };
+        }
+        if (stage === 1 && !item.thread) {
+          return { category: 'needs-attention', reason: 'no thread yet' };
+        }
+        if (WORKING_STAGES.includes(stage)) {
+          const limit = stallLimitFor(stage);
+          if (idle >= limit) {
+            return { category: 'stalled', reason: `idle ${Math.round(idle)}h, limit ${limit}h` };
+          }
+          return { category: 'active', reason: `moved ${Math.round(idle)}h ago` };
+        }
+        return { category: 'needs-attention', reason: 'unclassified — surfaced deliberately' };
+      }
+
+      /* ------------------------------------------------------------------
+         4. FIXTURE — hardcoded sample data. Two kinds of record:
+
+            - REAL: public issues and PRs in ai-ecoverse/slicc and
+              ai-ecoverse/skills, with their real numbers, titles and states
+              as measured 2026-09-18. Verifiable on GitHub.
+            - SYNTHETIC (`synthetic: true`, and marked with a
+              "---- SYNTHETIC" comment): fabricated to populate every
+              category and state. These live in example-org/example-repo so
+              an invented title can never be mistaken for a claim about a
+              real issue. `synthetic` is kept in the record but is NEVER
+              rendered.
+
+            All `thr_example*` thread ids are placeholders, not ids on any
+            real bb instance. Reviewer handles are placeholders too.
+
+            `status` is the one-line human summary shown on the card. When
+            wired, it will be generated per item by
+            bedrock-camp:global.anthropic.claude-haiku-4-5-20251001-v1:0
+            from the item's timeline; `statusSource` distinguishes
+            'placeholder' (hand-written here) from 'agent' (model-written).
+         ------------------------------------------------------------------ */
+
+      const FIXTURE = [
+        // ---- real: fresh issues, nothing dispatched yet -----------------
+        {
+          id: '3285',
+          repo: 'ai-ecoverse/slicc',
+          kind: 'issue',
+          title: 'child_process: `env` lost when the spawned file is the shell',
+          url: 'https://github.com/ai-ecoverse/slicc/issues/3285',
+          stage: 1,
+          thread: null,
+          openedAt: '2026-09-18T09:12:00Z',
+          lastActivityAt: '2026-09-18T09:12:00Z',
+          labels: ['bug'],
+          status: 'Clear repro in the report; nobody has picked it up.',
+          statusSource: 'placeholder',
+        },
+        {
+          id: '3283',
+          repo: 'ai-ecoverse/slicc',
+          kind: 'issue',
+          title: 'cost: per-scoop `model` disagrees with the model in use',
+          url: 'https://github.com/ai-ecoverse/slicc/issues/3283',
+          stage: 1,
+          thread: null,
+          openedAt: '2026-09-18T07:40:00Z',
+          lastActivityAt: '2026-09-18T07:40:00Z',
+          labels: ['bug', 'cost'],
+          status: 'The cost panel and the model actually in use disagree; no thread yet.',
+          statusSource: 'placeholder',
+        },
+        {
+          id: '389',
+          repo: 'ai-ecoverse/skills',
+          kind: 'issue',
+          title: '25 test files are never executed: no CI test job',
+          url: 'https://github.com/ai-ecoverse/skills/issues/389',
+          stage: 1,
+          thread: null,
+          openedAt: '2026-09-17T08:05:00Z',
+          lastActivityAt: '2026-09-17T08:05:00Z',
+          labels: ['ci'],
+          status: 'Twenty-five test files sit unexecuted because the repo has no test job.',
+          statusSource: 'placeholder',
+        },
+        {
+          id: '380',
+          repo: 'ai-ecoverse/skills',
+          kind: 'issue',
+          // Title was not captured when this sample was measured; left
+          // explicit so we notice it when we wire the API up.
+          title: '(title not captured)',
+          url: 'https://github.com/ai-ecoverse/skills/issues/380',
+          stage: 1,
+          thread: null,
+          openedAt: '2026-09-14T11:20:00Z',
+          lastActivityAt: '2026-09-14T11:20:00Z',
+          labels: [],
+          status: 'Filed four days ago and untouched since.',
+          statusSource: 'placeholder',
+        },
+
+        // ---- SYNTHETIC: changes requested, and deliberately also snoozed
+        // ---- so the "a blocked human outranks a snooze" rule is visible.
+        {
+          synthetic: true,
+          id: '101',
+          repo: 'example-org/example-repo',
+          kind: 'pr',
+          title: 'refactor(sprinkle): guard the collapsible body against author display rules',
+          url: 'https://github.com/example-org/example-repo/pull/101',
+          stage: 6,
+          substage: '6b',
+          bounceTo: 3,
+          thread: { id: 'thr_example05', provider: 'claude-code', state: 'idle' },
+          openedAt: '2026-09-16T13:00:00Z',
+          lastActivityAt: '2026-09-17T18:20:00Z',
+          labels: ['sprinkles'],
+          reviewers: ['@reviewer-b (changes requested)'],
+          snoozedAt: '2026-09-17T19:00:00Z',
+          snoozedUntil: '2026-09-20T19:00:00Z',
+          snoozeCount: 2,
+          snoozeReason: 'snoozed by hand',
+          status: 'A reviewer wants a different approach to the guard; the thread is waiting on you.',
+          statusSource: 'placeholder',
+        },
+
+        // ---- real: upstream-blocked backlog, explicitly snoozed ---------
+        {
+          id: '3123',
+          repo: 'ai-ecoverse/slicc',
+          kind: 'issue',
+          title: 'ls with multiple file operands inserts blank lines',
+          url: 'https://github.com/ai-ecoverse/slicc/issues/3123',
+          stage: 1,
+          thread: null,
+          openedAt: '2026-09-05T10:30:00Z',
+          lastActivityAt: '2026-09-15T09:00:00Z',
+          labels: ['backlog-skipped'],
+          blockedOn: 'upstream just-bash 3.5.0 release',
+          snoozedAt: '2026-09-17T09:00:00Z',
+          snoozedUntil: '2026-09-20T09:00:00Z',
+          snoozeCount: 3, // FIB_BACKOFF_DAYS[3] = 3 days
+          snoozeReason: 'waiting on just-bash 3.5.0',
+          status: 'Nothing to do until just-bash 3.5.0 ships.',
+          statusSource: 'placeholder',
+        },
+        {
+          id: '2950',
+          repo: 'ai-ecoverse/slicc',
+          kind: 'issue',
+          title: 'standalone diff shim defaults to unified output',
+          url: 'https://github.com/ai-ecoverse/slicc/issues/2950',
+          stage: 1,
+          thread: null,
+          openedAt: '2026-08-21T15:10:00Z',
+          lastActivityAt: '2026-09-02T12:00:00Z',
+          labels: ['backlog-skipped'],
+          blockedOn: 'upstream just-bash 3.5.0 release',
+          snoozedAt: '2026-09-14T08:00:00Z',
+          snoozedUntil: '2026-09-22T08:00:00Z',
+          snoozeCount: 5, // FIB_BACKOFF_DAYS[5] = 8 days — deep backoff
+          snoozeReason: 'nothing changed in five rounds',
+          status: 'Same upstream release blocks it; five snooze rounds with no change.',
+          statusSource: 'placeholder',
+        },
+
+        // ---- real: the bb thread that produced #3239 and #3238 and then
+        // ---- went idle. It still looks like live work, hence stalled.
+        {
+          id: 'thr_example03',
+          repo: 'ai-ecoverse/slicc',
+          kind: 'thread',
+          title: 'Investigate serve limits',
+          url: 'bb thread thr_example03',
+          stage: 2,
+          thread: { id: 'thr_example03', provider: 'claude-code', state: 'idle' },
+          openedAt: '2026-09-17T11:05:00Z',
+          lastActivityAt: '2026-09-17T18:10:00Z',
+          producedPrs: ['slicc#3239', 'slicc#3238'],
+          labels: [],
+          status: 'Both of its PRs shipped, but the thread never closed out and has gone quiet.',
+          statusSource: 'placeholder',
+        },
+
+        // ---- SYNTHETIC: conflicts, then silence -> stalled --------------
+        {
+          synthetic: true,
+          id: '102',
+          repo: 'example-org/example-repo',
+          kind: 'pr',
+          title: 'fix(hear): drop the stale transcript cache between runs',
+          url: 'https://github.com/example-org/example-repo/pull/102',
+          stage: 5,
+          substage: '5b',
+          bounceTo: 4,
+          thread: { id: 'thr_example02', provider: 'claude-code', state: 'idle' },
+          openedAt: '2026-09-16T16:40:00Z',
+          lastActivityAt: '2026-09-17T07:00:00Z',
+          labels: [],
+          status: 'Conflicts landed yesterday morning and the agent never came back to them.',
+          statusSource: 'placeholder',
+        },
+
+        // ---- SYNTHETIC: the live band -----------------------------------
+        {
+          synthetic: true,
+          id: 'thr_example07',
+          repo: 'example-org/example-repo',
+          kind: 'thread',
+          title: 'Wire a CI test job for the skills repo',
+          url: 'bb thread thr_example07',
+          stage: 4,
+          thread: { id: 'thr_example07', provider: 'claude-code', state: 'working' },
+          openedAt: '2026-09-18T12:30:00Z',
+          lastActivityAt: '2026-09-18T13:48:00Z',
+          labels: [],
+          status: 'Agent is writing the workflow file right now.',
+          statusSource: 'placeholder',
+        },
+        {
+          synthetic: true,
+          id: '103',
+          repo: 'example-org/example-repo',
+          kind: 'pr',
+          title: 'test(shell): cover env passthrough when the spawned file is the shell',
+          url: 'https://github.com/example-org/example-repo/pull/103',
+          stage: 5,
+          thread: { id: 'thr_example09', provider: 'claude-code', state: 'working' },
+          openedAt: '2026-09-18T13:20:00Z',
+          lastActivityAt: '2026-09-18T13:52:00Z',
+          labels: ['draft'],
+          ci: 'pending',
+          status: 'Fresh draft, CI started eight minutes ago.',
+          statusSource: 'placeholder',
+        },
+        {
+          synthetic: true,
+          id: '104',
+          repo: 'example-org/example-repo',
+          kind: 'pr',
+          title: 'fix(ls): suppress the blank line between file operands',
+          url: 'https://github.com/example-org/example-repo/pull/104',
+          stage: 5,
+          substage: '5a',
+          bounceTo: 4,
+          thread: { id: 'thr_example04', provider: 'claude-code', state: 'working' },
+          openedAt: '2026-09-18T10:05:00Z',
+          lastActivityAt: '2026-09-18T13:15:00Z',
+          labels: [],
+          ci: 'failing (shell/e2e)',
+          status: 'The shell e2e job is red; the agent is already digging into it.',
+          statusSource: 'placeholder',
+        },
+        {
+          synthetic: true,
+          id: '105',
+          repo: 'example-org/example-repo',
+          kind: 'pr',
+          title: 'feat(sprinkle): stage badges on work cards',
+          url: 'https://github.com/example-org/example-repo/pull/105',
+          stage: 6,
+          substage: '6a',
+          thread: { id: 'thr_example06', provider: 'claude-code', state: 'idle' },
+          openedAt: '2026-09-17T09:00:00Z',
+          lastActivityAt: '2026-09-18T11:00:00Z',
+          labels: ['sprinkles'],
+          reviewers: ['@reviewer-a (approved)'],
+          status: 'A reviewer approved it three hours ago; it can go into the queue.',
+          statusSource: 'placeholder',
+        },
+        {
+          synthetic: true,
+          id: '106',
+          repo: 'example-org/example-repo',
+          kind: 'pr',
+          title: 'fix(serve): re-register previews after a host reset',
+          url: 'https://github.com/example-org/example-repo/pull/106',
+          stage: 8,
+          thread: { id: 'thr_example01', provider: 'claude-code', state: 'idle' },
+          openedAt: '2026-09-18T08:00:00Z',
+          lastActivityAt: '2026-09-18T13:35:00Z',
+          labels: [],
+          status: 'Sitting in the merge queue with checks running.',
+          statusSource: 'placeholder',
+        },
+        // SYNTHETIC: shows "comments cancel a snooze" — snoozed to the 21st,
+        // but a reviewer commented 40 minutes ago, so it is live again.
+        {
+          synthetic: true,
+          id: '107',
+          repo: 'example-org/example-repo',
+          kind: 'pr',
+          title: 'feat(host): expose runtime ids to `sprinkle send`',
+          url: 'https://github.com/example-org/example-repo/pull/107',
+          stage: 6,
+          thread: { id: 'thr_example08', provider: 'claude-code', state: 'idle' },
+          openedAt: '2026-09-15T14:00:00Z',
+          lastActivityAt: '2026-09-18T13:20:00Z',
+          lastCommentAt: '2026-09-18T13:20:00Z',
+          snoozedAt: '2026-09-17T10:00:00Z',
+          snoozedUntil: '2026-09-21T10:00:00Z',
+          snoozeCount: 4,
+          snoozeReason: 'was waiting on a reviewer',
+          labels: [],
+          reviewers: ['@reviewer-a (commented)'],
+          status: 'A reviewer commented forty minutes ago, which woke this back up.',
+          statusSource: 'placeholder',
+        },
+
+        // ---- SYNTHETIC: merged, waiting for a release cut ---------------
+        {
+          synthetic: true,
+          id: '108',
+          repo: 'example-org/example-repo',
+          kind: 'pr',
+          title: 'fix(memory): keep a complete draft across a wall-clock trip',
+          url: 'https://github.com/example-org/example-repo/pull/108',
+          stage: 9,
+          mergedAt: '2026-09-18T06:30:00Z',
+          openedAt: '2026-09-17T20:00:00Z',
+          lastActivityAt: '2026-09-18T06:30:00Z',
+          labels: [],
+          blockedOn: 'next release cut',
+          status: 'Merged this morning; waits for the next release cut.',
+          statusSource: 'placeholder',
+        },
+
+        // ---- real: shipped and closed -----------------------------------
+        {
+          id: '3239',
+          repo: 'ai-ecoverse/slicc',
+          kind: 'pr',
+          title: 'feat(serve): honour HTTP Range on live and --ttl previews',
+          url: 'https://github.com/ai-ecoverse/slicc/pull/3239',
+          stage: 10,
+          mergedAt: '2026-09-17T17:45:00Z',
+          openedAt: '2026-09-17T14:00:00Z',
+          lastActivityAt: '2026-09-17T17:45:00Z',
+          labels: ['released'],
+          fromThread: 'thr_example03',
+          status: 'Shipped yesterday evening with Range support on both preview kinds.',
+          statusSource: 'placeholder',
+        },
+        {
+          id: '3238',
+          repo: 'ai-ecoverse/slicc',
+          kind: 'pr',
+          title: 'fix(preview): quota only --ttl snapshots; expire live previews with the leader',
+          url: 'https://github.com/ai-ecoverse/slicc/pull/3238',
+          stage: 10,
+          mergedAt: '2026-09-17T17:07:00Z',
+          openedAt: '2026-09-17T13:30:00Z',
+          lastActivityAt: '2026-09-17T17:07:00Z',
+          labels: ['released'],
+          fromThread: 'thr_example03',
+          status: 'Shipped; live previews now expire with the leader instead of eating quota.',
+          statusSource: 'placeholder',
+        },
+        {
+          id: '3213',
+          repo: 'ai-ecoverse/slicc',
+          kind: 'issue',
+          title: 'serve: previews accumulate against an undocumented quota',
+          url: 'https://github.com/ai-ecoverse/slicc/issues/3213',
+          stage: 11,
+          openedAt: '2026-09-16T09:00:00Z',
+          lastActivityAt: '2026-09-17T17:50:00Z',
+          labels: ['released'],
+          fixedBy: ['slicc#3238', 'slicc#3239'],
+          status: 'Closed by the two serve fixes that went out yesterday.',
+          statusSource: 'placeholder',
+        },
+        {
+          id: '3157',
+          repo: 'ai-ecoverse/slicc',
+          kind: 'issue',
+          title: 'Memory dreamer: a wall-clock trip discards a COMPLETE draft',
+          url: 'https://github.com/ai-ecoverse/slicc/issues/3157',
+          stage: 11,
+          openedAt: '2026-09-12T18:00:00Z',
+          lastActivityAt: '2026-09-17T12:00:00Z',
+          labels: [],
+          fixedBy: ['slicc#3202'],
+          status: 'Fixed by #3202 and closed as completed.',
+          statusSource: 'placeholder',
+        },
+      ];
+
+      /* ------------------------------------------------------------------
+         5. RENDER
+         ------------------------------------------------------------------ */
+
+      // Local view state. Nothing here leaves the panel.
+      const view = {
+        project: 'all',
+        open: new Set(OPEN_BY_DEFAULT),
+      };
+
+      function fmtHours(h) {
+        if (h < 1) return `${Math.round(h * 60)}m`;
+        if (h < 48) return `${Math.round(h)}h`;
+        const d = Math.floor(h / 24);
+        return `${d}d`;
+      }
+
+      function fmtWhen(iso) {
+        return new Date(iso).toISOString().slice(0, 16).replace('T', ' ') + 'Z';
+      }
+
+      function esc(s) {
+        return String(s).replace(
+          /[&<>"']/g,
+          (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c],
+        );
+      }
+
+      function el(tag, cls, text) {
+        const n = document.createElement(tag);
+        if (cls) n.className = cls;
+        if (text !== undefined) n.textContent = text;
+        return n;
+      }
+
+      function icon(name, extra) {
+        const i = el('i', 'sprinkle-icon' + (extra ? ' ' + extra : ''));
+        i.dataset.lucide = name;
+        return i;
+      }
+
+      function stateOf(item) {
+        return STATE[item.substage || item.stage];
+      }
+
+      function shortRepo(repo) {
+        return repo.split('/')[1] || repo;
+      }
+
+      /** Item B: the three per-card actions, ICON-ONLY. Rendered but INERT:
+          no handlers, no licks. Each carries an aria-label (its accessible
+          name, since there is no visible text) and a title stating exactly
+          what it will do once wired — including the concrete jump target. */
+      function actions(item) {
+        const wrap = el('div', 'acts');
+        const target = item.thread
+          ? `bb thread ${item.thread.id}`
+          : item.kind === 'thread'
+            ? `bb thread ${item.id}`
+            : 'a new scoop (no thread exists yet)';
+        const sn = snoozeState(item, NOW);
+        const nextDays = sn.present ? sn.nextDays : FIB_BACKOFF_DAYS[0];
+        const specs = [
+          [
+            'alarm-clock',
+            'Snooze',
+            `Snooze for ${nextDays}d (next Fibonacci step) and hide it until then; a new comment cancels the snooze. Not wired in this draft.`,
+          ],
+          [
+            'check',
+            'Done',
+            'Mark this done and drop it out of the working categories without touching GitHub. Not wired in this draft.',
+          ],
+          ['log-in', 'Jump in', `Open ${target}. Not wired in this draft.`],
+        ];
+        for (const [ic, label, title] of specs) {
+          const b = el('button', 'sprinkle-btn sprinkle-btn--secondary icon-btn btn-inert');
+          b.type = 'button';
+          b.setAttribute('aria-disabled', 'true');
+          b.setAttribute('aria-label', label);
+          b.title = title;
+          b.appendChild(icon(ic));
+          wrap.appendChild(b);
+        }
+        return wrap;
+      }
+
+      function card(item) {
+        const st = stateOf(item);
+        const tone = TONE[st.tone];
+        const c = el('article', 'card sprinkle-card');
+        c.style.setProperty('--tone', tone);
+        const inner = el('div', 'card-inner');
+
+        // Row 1 — item C: the bar is the card's top border.
+        // Pass-3 item 3: the internal stage/substage id lives in this
+        // tooltip and nowhere else. No number is ever rendered as text; this
+        // is the recovery path when an item looks miscategorised.
+        const bar = el('div', 'bar-top sprinkle-progress-bar');
+        bar.style.setProperty('--progress', st.progress + '%');
+        bar.style.setProperty('--fill-color', tone);
+        bar.setAttribute('role', 'presentation');
+        bar.title = `stage ${item.substage || item.stage} · ${st.label} · ${st.progress}%`;
+        inner.appendChild(bar);
+
+        // Row 2 — item D: coloured state glyph, then org/repo#id, then tags
+        // pushed to the right-hand end (item F). The accessible name and the
+        // tooltip live on the wrapping span, not the <svg> (see .state-icon).
+        const top = el('div', 'row-top');
+        const stateWrap = el('span', 'state-icon');
+        stateWrap.title = st.label;
+        stateWrap.setAttribute('role', 'img');
+        stateWrap.setAttribute('aria-label', st.label);
+        const glyph = icon(st.icon, 'sprinkle-icon--l');
+        glyph.setAttribute('aria-hidden', 'true');
+        stateWrap.appendChild(glyph);
+        top.appendChild(stateWrap);
+
+        const ref = el('a', 'ref');
+        if (item.url.startsWith('http')) {
+          ref.href = item.url;
+          ref.target = '_blank';
+          ref.rel = 'noreferrer';
+        }
+        ref.title = item.url;
+        ref.appendChild(el('span', 'org', item.repo.split('/')[0] + '/'));
+        ref.appendChild(
+          el(
+            'span',
+            'num',
+            item.kind === 'thread'
+              ? `${shortRepo(item.repo)} · ${item.id}`
+              : `${shortRepo(item.repo)}#${item.id}`,
+          ),
+        );
+        top.appendChild(ref);
+        if (item.labels && item.labels.length) {
+          const tags = el('div', 'tags');
+          for (const l of item.labels) tags.appendChild(el('span', 'tag', l));
+          top.appendChild(tags);
+        }
+        inner.appendChild(top);
+
+        // Row 3 — title (clamped to two lines; full text in the tooltip)
+        const h = el('h3', 'title', item.title);
+        h.title = item.title;
+        inner.appendChild(h);
+
+        // Row 4 — the slack-absorbing block: clamped status + optional note
+        const body = el('div', 'card-body');
+        const status = el('p', 'status', item.status);
+        status.title = item.status; // clamped in CSS; nothing is lost
+        body.appendChild(status);
+        const sn = snoozeState(item, NOW);
+        if (sn.active) {
+          const n = el('p', 'note', `Snoozed until ${fmtWhen(item.snoozedUntil)} · ${sn.days}d step`);
+          n.title = `Snoozed until ${fmtWhen(item.snoozedUntil)} (Fibonacci step ${sn.step} = ${sn.days}d; next round ${sn.nextDays}d)`;
+          body.appendChild(n);
+        } else if (item.blockedOn) {
+          const n = el('p', 'note', `Blocked on ${item.blockedOn}`);
+          n.title = `Blocked on ${item.blockedOn}`;
+          body.appendChild(n);
+        }
+        inner.appendChild(body);
+
+        // Row 5 — items B + G: buttons left, relative time right, pinned to
+        // the card's bottom edge.
+        const foot = el('div', 'foot');
+        foot.appendChild(actions(item));
+        const when = el('time', 'when', fmtHours(hoursSince(item.lastActivityAt, NOW)) + ' ago');
+        when.dateTime = item.lastActivityAt;
+        when.title = `Last activity ${fmtWhen(item.lastActivityAt)}`;
+        foot.appendChild(when);
+        inner.appendChild(foot);
+
+        c.appendChild(inner);
+        return c;
+      }
+
+      function group(key, items) {
+        const meta = CATEGORIES[key];
+        const d = el('details', 'grp');
+        d.dataset.cat = key;
+        d.open = view.open.has(key);
+        d.style.setProperty('--tone', meta.tone);
+        d.addEventListener('toggle', () => {
+          // Keep open/closed state across filter re-renders.
+          if (d.open) view.open.add(key);
+          else view.open.delete(key);
+        });
+
+        const s = document.createElement('summary');
+        s.title = meta.lead; // review item 8: explainers live here
+        const row = el('div', 'grp-row'); // wrapper owns the flex, not <summary>
+        row.appendChild(icon('chevron-right', 'chev'));
+        row.appendChild(el('span', 'dot'));
+        row.appendChild(el('span', 'name', meta.label));
+        row.appendChild(el('span', 'n', String(items.length)));
+        s.appendChild(row);
+        d.appendChild(s);
+
+        const grid = el('div', 'card-grid');
+        if (!items.length) {
+          d.appendChild(el('p', 'empty', 'Nothing here.'));
+        } else {
+          for (const it of items) grid.appendChild(card(it));
+          d.appendChild(grid);
+        }
+        return d;
+      }
+
+      function projectFilters(counts, total) {
+        const wrap = el('div', 'filters');
+        const mk = (key, label, n, title) => {
+          const b = el('button', 'sprinkle-btn btn-mini');
+          b.type = 'button';
+          b.classList.add(
+            view.project === key ? 'sprinkle-btn--primary' : 'sprinkle-btn--secondary',
+          );
+          b.title = title;
+          b.appendChild(el('span', null, label));
+          if (n !== null) b.appendChild(el('span', 'n', String(n)));
+          b.addEventListener('click', () => {
+            view.project = key;
+            render();
+          });
+          return b;
+        };
+        wrap.appendChild(mk('all', 'All projects', total, 'Show items from every project'));
+        for (const [repo, n] of counts) {
+          wrap.appendChild(mk(repo, repo, n, `Show only ${repo}`));
+        }
+        const add = el('button', 'sprinkle-btn sprinkle-btn--secondary btn-mini btn-inert');
+        add.type = 'button';
+        add.setAttribute('aria-disabled', 'true');
+        add.title =
+          'Add a project to watch: will prompt for an org/repo, verify access, and persist it to the watch list. Not wired in this draft.';
+        add.appendChild(icon('plus'));
+        wrap.appendChild(add);
+        return wrap;
+      }
+
+      function render() {
+        const app = document.getElementById('app');
+        app.textContent = '';
+
+        // Project list is derived from the fixture (review item 4).
+        const projectCounts = new Map();
+        for (const it of FIXTURE) {
+          projectCounts.set(it.repo, (projectCounts.get(it.repo) || 0) + 1);
+        }
+        const projects = [...projectCounts.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+
+        const visible = FIXTURE.filter((it) => view.project === 'all' || it.repo === view.project);
+        const buckets = {};
+        for (const k of ORDER) buckets[k] = [];
+        for (const it of visible) buckets[categorize(it, NOW).category].push(it);
+        for (const k of ORDER) {
+          buckets[k].sort((a, b) => new Date(b.lastActivityAt) - new Date(a.lastActivityAt));
+        }
+
+        const head = el('div', 'head');
+        const hrow = el('div', 'head-row');
+        hrow.appendChild(icon('git-pull-request', 'sprinkle-icon--l'));
+        hrow.appendChild(el('h1', null, 'GitHub work'));
+        hrow.appendChild(el('span', 'count-total', `${visible.length} of ${FIXTURE.length} items`));
+        head.appendChild(hrow);
+        head.appendChild(projectFilters(projects, FIXTURE.length));
+        app.appendChild(head);
+
+        for (const k of ORDER) app.appendChild(group(k, buckets[k]));
+
+        // Pass-3 item 1: the "unwired draft" footer line is deliberately NOT
+        // rendered — the fact lives here in the source instead of consuming
+        // panel space. This panel makes no GitHub calls, and the three card
+        // actions plus the project + stay inert until a later wiring job.
+
+        // Lucide renders the data-lucide placeholders we just created.
+        if (window.LucideIcons) window.LucideIcons.render();
+
+        // Debug handle: derivation reasons live here, not in the UI.
+        // glyphCollisions must stay empty — item D depends on the glyph, not
+        // the colour, being the distinguishing signal.
+        const seen = {};
+        const glyphCollisions = [];
+        for (const [k, v] of Object.entries(STATE)) {
+          if (seen[v.icon]) glyphCollisions.push(`${v.icon}: ${seen[v.icon]} + ${k}`);
+          else seen[v.icon] = k;
+        }
+        window.__ghDashboard = {
+          FIXTURE,
+          categorize,
+          NOW,
+          view,
+          STATE,
+          glyphCollisions,
+          verdicts: FIXTURE.map((it) => ({ id: it.id, ...categorize(it, NOW) })),
+        };
+      }
+
+      render();
+    </script>
+  </body>
+</html>
