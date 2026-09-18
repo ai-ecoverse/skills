@@ -104,7 +104,7 @@ Commands:
       Remove a guest from a channel (conversations.kick).
       Requires --ws and --channel. Without --confirm, shows what would happen.
 
-App manifest commands (read-only), for app configuration instead of users:
+App manifest commands, for app configuration instead of users:
 
   app export <app_id> [--out=<file>] [--json]
       Fetch the live app manifest (apps.manifest.export) and pretty-print it,
@@ -126,6 +126,44 @@ App manifest commands (read-only), for app configuration instead of users:
       Slack has no merge semantics: an omitted field is REMOVED and arrays are
       REPLACED WHOLESALE, so deletions are the silent-damage case.
 
+  app set-scopes <app_id> [--add=a,b] [--remove=c,d] [--confirm]
+      Add and/or remove bot scopes (/oauth_config/scopes/bot). Export, adjust
+      that one array, update with the complete manifest. Reports
+      permissions_updated; when true, the app must be REINSTALLED before the
+      new scope reaches the live bot token.
+
+  app set-events <app_id> [--add=a,b] [--remove=c,d] [--confirm]
+      Add and/or remove subscribed bot events
+      (/settings/event_subscriptions/bot_events). Touches nothing else.
+
+  app set-request-url <app_id> <https url> [--confirm]
+      Set the event-subscription request URL.
+      Slack VERIFIES the URL immediately on save: it posts a url_verification
+      challenge and REJECTS the update unless the endpoint echoes the challenge
+      value back. The endpoint must already be live and answering before this
+      command is run.
+
+  app apply <app_id> --manifest=<file> [--allow-deletions] [--confirm]
+      Apply a manifest file. The file is overlaid on a fresh live export, so a
+      field the file omits is PRESERVED rather than deleted. The diff shown is
+      live-vs-FILE, so you still see everything the file leaves out. If that
+      diff contains deletions the command REFUSES and names them; pass
+      --allow-deletions to send the file as the complete manifest and really
+      delete them.
+
+  app token-rotate [--refresh-token=<tok>] [--confirm] [--json]
+      Rotate the app configuration token pair (tooling.tokens.rotate).
+      A rotate INVALIDATES the refresh token it consumes, so never run it
+      speculatively. The new pair is written to the skill config BEFORE
+      anything else happens with it; if that write fails the pair is printed
+      so the credential is not lost.
+
+Every mutating app command requires --confirm and prints the full diff first.
+Any deletion the command was not explicitly asked to make is a hard stop, even
+with --confirm: re-run with --allow-deletions once every named deletion is
+intended. Writes always export the live manifest first and send the complete
+result, because apps.manifest.update deletes anything the payload omits.
+
 These app commands need an APP CONFIGURATION TOKEN (xoxe.xoxp-...), which is a
 third credential: not a bot xoxb token and not the xoxc session token used by
 every other command here. There is deliberately no fallback between them.
@@ -133,8 +171,7 @@ Set it with --token=<tok>, $SLACK_APP_CONFIG_TOKEN, or in the skill config under
 "appConfigToken". Minting the first one is a human step in the browser:
 api.slack.com/apps -> Your App Configuration Tokens -> Generate Token.
 
-Mutating manifest commands are NOT part of this command set yet. Two manifest
-methods will never be wired up at all: apps.manifest.create and
+Two manifest methods will never be wired up: apps.manifest.create and
 apps.manifest.delete. Deleting a Slack app is unrecoverable, and there is no
 reason for a CLI to offer it.
 
@@ -153,6 +190,10 @@ Examples:
   slack-ext app export A0123456789 --out=./manifest.json
   slack-ext app validate A0123456789 --manifest=./manifest.json
   slack-ext app diff A0123456789 --manifest=./manifest.json
+  slack-ext app set-scopes A0123456789 --add=chat:write --confirm
+  slack-ext app set-events A0123456789 --remove=team_join --confirm
+  slack-ext app set-request-url A0123456789 https://relay.example.com --confirm
+  slack-ext app apply A0123456789 --manifest=./manifest.json --confirm
 
 See also: slack user <id> (read-only profile from the standard slack CLI)
 `;
@@ -162,7 +203,7 @@ See also: slack user <id> (read-only profile from the standard slack CLI)
 // Flags that take no value (presence = true). This explicit set is required
 // because the generic parser cannot distinguish a boolean flag from a
 // value-less flag when the next token looks like a value.
-const BOOL_FLAGS = new Set(['confirm', 'json', 'help', 'h']);
+const BOOL_FLAGS = new Set(['confirm', 'json', 'help', 'h', 'allow-deletions']);
 
 function parseArgv(argv) {
   const f = Object.create(null);
@@ -940,13 +981,18 @@ async function getAppConfigToken() {
   return token;
 }
 
+// A null/absent token builds a client with NO Authorization header. That is not
+// an oversight: tooling.tokens.rotate authenticates by argument, and a bearer
+// header sent alongside the refresh_token took precedence and produced
+// invalid_auth (measured 2026-09-18).
 function appApiClient(token) {
-  return http.client({
+  const config = {
     baseUrl: SLACK_API_BASE,
-    token: () => token,
     retry: { on: [429, 500, 502, 503, 504], maxAttempts: 3 },
     timeoutMs: 60000,
-  });
+  };
+  if (token) config.token = () => token;
+  return http.client(config);
 }
 
 // Low-level call. Returns the PARSED BODY, never a status code, because Slack
@@ -1323,6 +1369,73 @@ async function cmdAppValidate() {
   console.log('');
 }
 
+// ── Diff rendering (shared by `app diff` and every write command) ─────────────
+//
+// `emit` is injected so the write path can render the very same diff, and so
+// --json mode can suppress the human rendering without a second code path.
+
+function renderDiffBody(diff, emit) {
+  // Deletions first and loudest: they are the silent-damage case.
+  if (diff.deletions.length > 0) {
+    emit('');
+    emit(
+      '  ' +
+        color.cyan(
+          color.bold('DELETIONS (' + diff.deletions.length + ') — these would be REMOVED')
+        )
+    );
+    for (const d of diff.deletions) {
+      const suffix = d.entry ? ' ' + color.dim('(array entry)') : '';
+      emit('    ' + color.red('- ' + d.pointer) + '  ' + formatLeaf(d.value) + suffix);
+    }
+  }
+
+  if (diff.modifications.length > 0) {
+    emit('');
+    emit('  ' + color.cyan(color.bold('Modifications (' + diff.modifications.length + ')')));
+    for (const m of diff.modifications) {
+      emit(
+        '    ' + color.yellow('~ ' + m.pointer) + '  ' + formatLeaf(m.from) + ' -> ' +
+          formatLeaf(m.to)
+      );
+    }
+  }
+
+  if (diff.additions.length > 0) {
+    emit('');
+    emit('  ' + color.cyan(color.bold('Additions (' + diff.additions.length + ')')));
+    for (const a of diff.additions) {
+      const suffix = a.entry ? ' ' + color.dim('(array entry)') : '';
+      emit('    ' + color.green('+ ' + a.pointer) + '  ' + formatLeaf(a.value) + suffix);
+    }
+  }
+}
+
+function renderDeletionWarning(diff, emit) {
+  if (diff.deletions.length === 0) {
+    emit(color.dim('  No deletions. Additions/modifications only.'));
+    return;
+  }
+  emit(
+    color.red('  WARNING: ' + diff.deletions.length + ' field(s)/entry(ies) would be DELETED.')
+  );
+  emit(
+    '  apps.manifest.update has no merge semantics: a field omitted from the\n' +
+      '  payload is REMOVED, and arrays are REPLACED WHOLESALE. Validation will\n' +
+      '  NOT stop this — a partial manifest returns ok=true.'
+  );
+  const bg = diff.deletions.find((d) => d.pointer === '/display_information/background_color');
+  if (bg) {
+    emit(
+      color.dim(
+        '  (Measured exception: display_information.background_color survives\n' +
+          '  omission because it can never be null. It is the ONLY field observed\n' +
+          '  to do so — do not generalise from it.)'
+      )
+    );
+  }
+}
+
 // ── Command: app diff ────────────────────────────────────────────────────────
 
 async function cmdAppDiff() {
@@ -1347,61 +1460,585 @@ async function cmdAppDiff() {
     return;
   }
 
-  // Deletions first and loudest: they are the silent-damage case.
-  if (diff.deletions.length > 0) {
-    section('DELETIONS (' + diff.deletions.length + ') — these would be REMOVED');
-    for (const d of diff.deletions) {
-      const suffix = d.entry ? ' ' + color.dim('(array entry)') : '';
-      console.log(
-        '    ' + color.red('- ' + d.pointer) + '  ' + formatLeaf(d.value) + suffix
-      );
-    }
-  }
-
-  if (diff.modifications.length > 0) {
-    section('Modifications (' + diff.modifications.length + ')');
-    for (const m of diff.modifications) {
-      console.log(
-        '    ' + color.yellow('~ ' + m.pointer) + '  ' + formatLeaf(m.from) + ' -> ' +
-          formatLeaf(m.to)
-      );
-    }
-  }
-
-  if (diff.additions.length > 0) {
-    section('Additions (' + diff.additions.length + ')');
-    for (const a of diff.additions) {
-      const suffix = a.entry ? ' ' + color.dim('(array entry)') : '';
-      console.log('    ' + color.green('+ ' + a.pointer) + '  ' + formatLeaf(a.value) + suffix);
-    }
-  }
-
+  const emit = (line) => console.log(line);
+  renderDiffBody(diff, emit);
   console.log('');
-  if (diff.deletions.length > 0) {
-    console.log(
-      color.red(
-        '  WARNING: ' + diff.deletions.length + ' field(s)/entry(ies) would be DELETED.'
-      )
-    );
-    console.log(
-      '  apps.manifest.update has no merge semantics: a field omitted from the\n' +
-        '  payload is REMOVED, and arrays are REPLACED WHOLESALE. Validation will\n' +
-        '  NOT stop this — a partial manifest returns ok=true.'
-    );
-    const bg = diff.deletions.find((d) => d.pointer === '/display_information/background_color');
-    if (bg) {
-      console.log(
-        color.dim(
-          '  (Measured exception: display_information.background_color survives\n' +
-            '  omission because it can never be null. It is the ONLY field observed\n' +
-            '  to do so — do not generalise from it.)'
-        )
+  renderDeletionWarning(diff, emit);
+  console.log('');
+}
+
+// ══ WRITES ════════════════════════════════════════════════════════════════
+//
+// EVERY manifest write goes through updateFromLiveManifest() below. That is not
+// a style preference: apps.manifest.update has no merge semantics (omitting a
+// field DELETES it, arrays are REPLACED WHOLESALE, and a partial manifest
+// VALIDATES ok=true), so a payload built from anything other than a fresh export
+// silently strips whatever it does not mention. The helper exports first, refuses
+// to continue if the export failed or carried no manifest, mutates a CLONE of
+// that object, and sends the COMPLETE result. There is no other call site for
+// apps.manifest.update in this file.
+
+const UPDATE_METHOD = 'apps.manifest.update';
+
+function deepClone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+// Walk/create an object path inside an ALREADY-EXPORTED manifest. Used only to
+// reach the field a command owns; it never invents a manifest.
+function ensureObjectPath(root, keys) {
+  let node = root;
+  for (const key of keys) {
+    if (!isPlainObject(node[key])) node[key] = {};
+    node = node[key];
+  }
+  return node;
+}
+
+// Overlay a user-supplied manifest onto the live export: present fields win,
+// arrays replace wholesale (matching Slack), and fields the file omits are kept
+// from the export. This is what makes `app apply` incapable of deleting anything
+// unless --allow-deletions is given.
+function deepOverlay(base, patch) {
+  for (const key of Object.keys(patch)) {
+    const value = patch[key];
+    if (isPlainObject(value) && isPlainObject(base[key])) {
+      deepOverlay(base[key], value);
+      continue;
+    }
+    base[key] = isPlainObject(value) || Array.isArray(value) ? deepClone(value) : value;
+  }
+  return base;
+}
+
+function sameDeletion(a, b) {
+  return a.pointer === b.pointer && JSON.stringify(a.value) === JSON.stringify(b.value);
+}
+
+function parseList(raw, label) {
+  if (raw === undefined) return [];
+  if (raw === true) {
+    cli.die('--' + label + ' needs a value, e.g. --' + label + '=channels:read', {
+      prefix: PREFIX,
+    });
+  }
+  const items = String(raw)
+    .split(/[,\s]+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  const seen = new Set();
+  const out = [];
+  for (const item of items) {
+    if (seen.has(item)) continue;
+    seen.add(item);
+    out.push(item);
+  }
+  return out;
+}
+
+function validateNames(names, pattern, what) {
+  for (const name of names) {
+    if (!pattern.test(name)) {
+      cli.die(
+        'Invalid ' + what + ' "' + name + '".\n' +
+          '  Expected lowercase names such as channels:read or team_join, comma-separated.',
+        { prefix: PREFIX }
       );
     }
+  }
+}
+
+// Apply --add/--remove to an array of names, preserving existing order and
+// appending additions. Returns the new array plus exactly what changed, so the
+// caller can declare its intentional deletions to the safety gate.
+function applyAddRemove(current, add, remove) {
+  const existing = Array.isArray(current) ? current.slice() : [];
+  const removed = remove.filter((name) => existing.includes(name));
+  const skippedRemovals = remove.filter((name) => !existing.includes(name));
+  const added = add.filter((name) => !existing.includes(name));
+  const next = existing.filter((name) => !removed.includes(name)).concat(added);
+  return { next: next, added: added, removed: removed, skippedRemovals: skippedRemovals };
+}
+
+function reinstallWarning(emit, appId) {
+  emit('');
+  emit(color.red(color.bold('  REINSTALL REQUIRED (permissions_updated = true)')));
+  emit(
+    '  Slack reports that this update changed the app\'s permissions. The change is\n' +
+      '  live in the app CONFIGURATION but the existing bot token does NOT carry it:\n' +
+      '  a scope only reaches the token when the app is REINSTALLED and the token is\n' +
+      '  reissued. Until then calls with the old token keep failing on missing_scope.\n' +
+      '  Reinstall at api.slack.com/apps/' + appId + '/install-on-team, then replace the\n' +
+      '  stored bot token with the newly issued one.'
+  );
+}
+
+/**
+ * The single write path. Export -> modify a clone -> diff -> gate -> update.
+ *
+ * spec.appId       app id to export and update
+ * spec.token       app configuration token
+ * spec.action      human label, e.g. 'set-scopes'
+ * spec.summary     [[label, value], ...] rendered above the diff
+ * spec.mutate      (clone(liveManifest)) => next manifest (must return the WHOLE manifest)
+ * spec.diffAgainst the object compared with live for the SAFETY diff. Defaults to
+ *                  the payload. `app apply` passes the user's FILE here, because
+ *                  its payload is the file overlaid on the live export: the
+ *                  overlay cannot delete anything, so diffing it would hide
+ *                  exactly the omissions the operator has to see.
+ * spec.intentional [{pointer, value}] deletions this command means to make, or a
+ *                  function returning them (read after mutate has run)
+ * spec.rerun       the command line to re-run with --confirm
+ */
+async function updateFromLiveManifest(spec) {
+  const emit = flags.json ? () => {} : (line) => console.log(line);
+
+  // 1. ALWAYS export first. No export, no write — a write built on anything else
+  //    would delete every field it failed to mention. exportLiveManifest() dies
+  //    unless body.ok is true AND a manifest object came back.
+  const live = await exportLiveManifest(spec.appId, spec.token);
+
+  // 2. Mutate a CLONE of the live manifest, never a fresh object.
+  const next = spec.mutate(deepClone(live));
+  if (!isPlainObject(next)) {
+    cli.die('Internal error: ' + spec.action + ' produced no manifest object.', { prefix: PREFIX });
+  }
+
+  // 3. Diff and always show it. The comparison target is what the OPERATOR asked
+  //    for, which for `apply` is the file itself rather than the safer overlay.
+  const compare = spec.diffAgainst ? spec.diffAgainst : next;
+  const diff = diffManifests(live, compare);
+  emit('');
+  emit('  ' + color.cyan(color.bold('app ' + spec.action + ' — proposed change')));
+  emit('    ' + 'App:'.padEnd(14) + ' ' + spec.appId);
+  for (const [label, value] of spec.summary || []) {
+    emit('    ' + (label + ':').padEnd(14) + ' ' + value);
+  }
+  if (!diff.changed) {
+    emit('');
+    emit(color.dim('  No change needed — the live manifest already matches.'));
+    emit('');
+    if (flags.json) cli.out({ action: spec.action, app_id: spec.appId, changed: false, diff: diff });
+    return { updated: false, reason: 'no-change', diff: diff, live: live, next: next };
+  }
+  renderDiffBody(diff, emit);
+
+  // 4. Deletion gate. Deletions the command declared (a --remove the operator
+  //    asked for) are expected; anything else is UNEXPECTED and blocked unless
+  //    --allow-deletions is passed on top of --confirm. The three measured
+  //    hazards all surface here as deletions.
+  const intentional =
+    typeof spec.intentional === 'function' ? spec.intentional() : spec.intentional || [];
+  const unexpected = diff.deletions.filter(
+    (d) => !intentional.some((i) => sameDeletion(i, d))
+  );
+  const allowDeletions = Boolean(flags['allow-deletions']);
+  const blocked = unexpected.length > 0 && !allowDeletions;
+
+  emit('');
+  renderDeletionWarning(diff, emit);
+
+  if (blocked) {
+    const named = unexpected
+      .map((d) => '    - ' + d.pointer + '  ' + formatLeaf(d.value) + (d.entry ? ' (entry)' : ''))
+      .join('\n');
+    // Hard stop, even with --confirm: the operator asked for one thing and the
+    // payload would remove something else.
+    cli.die(
+      'Refusing to update ' + spec.appId + ': ' + unexpected.length +
+        ' unrequested deletion(s).\n' + named + '\n' +
+        '  These fields exist on the live app and are absent from the payload, so\n' +
+        '  apps.manifest.update would REMOVE them (omission deletes; arrays are\n' +
+        '  replaced wholesale). Nothing was changed.\n' +
+        '  If every deletion above is intended, re-run with --allow-deletions.',
+      { prefix: PREFIX }
+    );
+  }
+
+  // 5. THE --confirm GATE. The only place apps.manifest.update can be reached is
+  //    below this return.
+  if (!flags.confirm) {
+    emit('');
+    emit(color.yellow('  No --confirm: nothing was changed.'));
+    emit(color.dim('  Re-run with --confirm to apply: ' + spec.rerun));
+    emit('');
+    if (flags.json) {
+      cli.out({
+        action: spec.action,
+        app_id: spec.appId,
+        changed: true,
+        confirmed: false,
+        updated: false,
+        diff: diff,
+      });
+    }
+    return { updated: false, reason: 'no-confirm', diff: diff, live: live, next: next };
+  }
+
+  // 6. Update with the COMPLETE manifest object (a JSON string on the wire).
+  const result = await manifestCall(
+    UPDATE_METHOD,
+    { app_id: spec.appId, manifest: JSON.stringify(next) },
+    spec.token,
+    'update the manifest for ' + spec.appId
+  );
+
+  // 7. permissions_updated is the ONLY signal that the live bot token is now
+  //    stale. Ignoring it is how "I added the scope but it still 403s" happens.
+  const permissionsUpdated = result.permissions_updated === true;
+  emit('');
+  emit('  ' + color.green('\u2713') + ' Updated ' + spec.appId + ' (' + spec.action + ')');
+  emit('    ' + 'Deleted:'.padEnd(14) + ' ' + String(diff.deletions.length));
+  emit('    ' + 'Modified:'.padEnd(14) + ' ' + String(diff.modifications.length));
+  emit('    ' + 'Added:'.padEnd(14) + ' ' + String(diff.additions.length));
+  if (permissionsUpdated) {
+    reinstallWarning(emit, spec.appId);
   } else {
-    console.log(color.dim('  No deletions. Additions/modifications only.'));
+    emit(color.dim('    permissions_updated = false — no reinstall needed.'));
   }
+  emit('');
+
+  if (flags.json) {
+    cli.out({
+      action: spec.action,
+      app_id: spec.appId,
+      changed: true,
+      confirmed: true,
+      updated: true,
+      permissions_updated: permissionsUpdated,
+      reinstall_required: permissionsUpdated,
+      diff: diff,
+    });
+  }
+
+  return {
+    updated: true,
+    permissionsUpdated: permissionsUpdated,
+    diff: diff,
+    live: live,
+    next: next,
+    result: result,
+  };
+}
+
+// ── Command: app set-scopes ───────────────────────────────────────────────────
+
+const SCOPE_PATTERN = /^[a-z0-9_.:-]+$/;
+const EVENT_PATTERN = /^[a-z0-9_.]+$/;
+
+async function cmdAppSetScopes() {
+  const appId = requireAppId('set-scopes');
+  const add = parseList(flags.add, 'add');
+  const remove = parseList(flags.remove, 'remove');
+  if (add.length === 0 && remove.length === 0) {
+    cli.die(
+      'Nothing to do. Pass --add=<scope,...> and/or --remove=<scope,...>.\n' +
+        '  Usage: slack-ext app set-scopes <app_id> [--add=a,b] [--remove=c] [--confirm]',
+      { prefix: PREFIX }
+    );
+  }
+  validateNames(add, SCOPE_PATTERN, 'scope');
+  validateNames(remove, SCOPE_PATTERN, 'scope');
+
+  const token = await getAppConfigToken();
+  let change = null;
+
+  return updateFromLiveManifest({
+    appId: appId,
+    token: token,
+    action: 'set-scopes',
+    summary: [
+      ['Add', add.length ? add.join(', ') : color.dim('(none)')],
+      ['Remove', remove.length ? remove.join(', ') : color.dim('(none)')],
+      ['Field', '/oauth_config/scopes/bot'],
+    ],
+    // Touches oauth_config.scopes.bot and nothing else.
+    mutate: (manifest) => {
+      const scopes = ensureObjectPath(manifest, ['oauth_config', 'scopes']);
+      change = applyAddRemove(scopes.bot, add, remove);
+      scopes.bot = change.next;
+      return manifest;
+    },
+    // The removals this command was ASKED for are expected deletions; read after
+    // mutate() has run, which is why this is a function and not an array.
+    intentional: () =>
+      (change ? change.removed : []).map((scope) => ({
+        pointer: '/oauth_config/scopes/bot',
+        value: scope,
+        entry: true,
+      })),
+    rerun:
+      'slack-ext app set-scopes ' + appId +
+      (add.length ? ' --add=' + add.join(',') : '') +
+      (remove.length ? ' --remove=' + remove.join(',') : '') + ' --confirm',
+  });
+}
+
+// ── Command: app set-events ───────────────────────────────────────────────────
+
+async function cmdAppSetEvents() {
+  const appId = requireAppId('set-events');
+  const add = parseList(flags.add, 'add');
+  const remove = parseList(flags.remove, 'remove');
+  if (add.length === 0 && remove.length === 0) {
+    cli.die(
+      'Nothing to do. Pass --add=<event,...> and/or --remove=<event,...>.\n' +
+        '  Usage: slack-ext app set-events <app_id> [--add=a,b] [--remove=c] [--confirm]',
+      { prefix: PREFIX }
+    );
+  }
+  validateNames(add, EVENT_PATTERN, 'event');
+  validateNames(remove, EVENT_PATTERN, 'event');
+
+  const token = await getAppConfigToken();
+  let change = null;
+
+  return updateFromLiveManifest({
+    appId: appId,
+    token: token,
+    action: 'set-events',
+    summary: [
+      ['Add', add.length ? add.join(', ') : color.dim('(none)')],
+      ['Remove', remove.length ? remove.join(', ') : color.dim('(none)')],
+      ['Field', '/settings/event_subscriptions/bot_events'],
+    ],
+    // Touches settings.event_subscriptions.bot_events and nothing else — in
+    // particular it must never touch oauth_config.scopes.
+    mutate: (manifest) => {
+      const events = ensureObjectPath(manifest, ['settings', 'event_subscriptions']);
+      change = applyAddRemove(events.bot_events, add, remove);
+      events.bot_events = change.next;
+      return manifest;
+    },
+    intentional: () =>
+      (change ? change.removed : []).map((event) => ({
+        pointer: '/settings/event_subscriptions/bot_events',
+        value: event,
+        entry: true,
+      })),
+    rerun:
+      'slack-ext app set-events ' + appId +
+      (add.length ? ' --add=' + add.join(',') : '') +
+      (remove.length ? ' --remove=' + remove.join(',') : '') + ' --confirm',
+  });
+}
+
+// ── Command: app set-request-url ─────────────────────────────────────────────
+
+async function cmdAppSetRequestUrl() {
+  const appId = requireAppId('set-request-url');
+  const url = words[3];
+  if (!url) {
+    cli.die(
+      'Usage: slack-ext app set-request-url <app_id> <https url> [--confirm]',
+      { prefix: PREFIX }
+    );
+  }
+  if (!/^https:\/\/[^\s]+$/.test(url)) {
+    cli.die(
+      'Invalid request URL "' + url + '". Slack requires an https:// URL.',
+      { prefix: PREFIX }
+    );
+  }
+
+  const token = await getAppConfigToken();
+
+  return updateFromLiveManifest({
+    appId: appId,
+    token: token,
+    action: 'set-request-url',
+    summary: [
+      ['URL', url],
+      ['Field', '/settings/event_subscriptions/request_url'],
+    ],
+    // Slack VERIFIES this URL at save time: it posts a url_verification
+    // challenge and the update is rejected unless the endpoint echoes the
+    // challenge value back. The endpoint must be live BEFORE this runs.
+    mutate: (manifest) => {
+      const events = ensureObjectPath(manifest, ['settings', 'event_subscriptions']);
+      events.request_url = url;
+      return manifest;
+    },
+    intentional: [],
+    rerun: 'slack-ext app set-request-url ' + appId + ' ' + url + ' --confirm',
+  });
+}
+
+// ── Command: app apply ───────────────────────────────────────────────────────
+
+async function cmdAppApply() {
+  const appId = requireAppId('apply');
+  const candidate = await readManifestFile('app apply');
+  const token = await getAppConfigToken();
+  const allowDeletions = Boolean(flags['allow-deletions']);
+
+  return updateFromLiveManifest({
+    appId: appId,
+    token: token,
+    action: 'apply',
+    summary: [
+      ['Manifest', String(flags.manifest)],
+      ['Mode', allowDeletions ? 'full replace (--allow-deletions)' : 'overlay on live export'],
+    ],
+    // The file is OVERLAID on the live export, so a field the file omits is kept
+    // rather than deleted. With --allow-deletions the file is taken as the
+    // complete manifest, which is what actually performs the deletions the diff
+    // reported. Either way the payload starts from a fresh export, and the diff
+    // is computed live-vs-FILE (diffAgainst below) so the operator sees every
+    // omission even though the overlay would not act on it.
+    mutate: (manifest) =>
+      allowDeletions ? deepClone(candidate) : deepOverlay(manifest, candidate),
+    diffAgainst: candidate,
+    intentional: [],
+    rerun:
+      'slack-ext app apply ' + appId + ' --manifest=' + String(flags.manifest) +
+      (allowDeletions ? ' --allow-deletions' : '') + ' --confirm',
+  });
+}
+
+// ── Command: app token-rotate ────────────────────────────────────────────────
+//
+// tooling.tokens.rotate authenticates BY ARGUMENT, not by header: measured
+// 2026-09-18, refresh_token=<bogus> returns invalid_refresh_token, token=<bogus>
+// returns invalid_auth, and no params returns invalid_arguments ("missing
+// required field: refresh_token"). An Authorization header sent alongside a bogus
+// refresh_token took precedence and produced invalid_auth, so the call is made
+// WITHOUT one.
+
+const REFRESH_TOKEN_ENV = 'SLACK_APP_REFRESH_TOKEN';
+const REFRESH_TOKEN_CONFIG_KEY = 'appRefreshToken';
+
+function maskToken(value) {
+  const s = String(value || '');
+  if (s.length <= 12) return '(' + s.length + ' chars)';
+  return s.slice(0, 10) + '...' + s.slice(-4) + ' (' + s.length + ' chars)';
+}
+
+async function cmdAppTokenRotate() {
+  let refresh =
+    typeof flags['refresh-token'] === 'string' && flags['refresh-token']
+      ? flags['refresh-token']
+      : '';
+  let source = refresh ? '--refresh-token' : '';
+  if (!refresh && process.env && process.env[REFRESH_TOKEN_ENV]) {
+    refresh = process.env[REFRESH_TOKEN_ENV];
+    source = '$' + REFRESH_TOKEN_ENV;
+  }
+  if (!refresh) {
+    const cfg = (await skill.config()) || {};
+    if (cfg[REFRESH_TOKEN_CONFIG_KEY]) {
+      refresh = cfg[REFRESH_TOKEN_CONFIG_KEY];
+      source = 'skill config ' + REFRESH_TOKEN_CONFIG_KEY;
+    }
+  }
+  if (!refresh) {
+    cli.die(
+      'No refresh token. Pass --refresh-token=<tok>, export ' + REFRESH_TOKEN_ENV + ',\n' +
+        '  or store one in the skill config as "' + REFRESH_TOKEN_CONFIG_KEY + '".\n' +
+        '  The refresh token is issued next to the app configuration token at\n' +
+        '  api.slack.com/apps -> "Your App Configuration Tokens".',
+      { prefix: PREFIX }
+    );
+  }
+
+  // Rotation is ONE-SHOT AND DESTRUCTIVE: a successful rotate INVALIDATES the
+  // refresh token that was just used. Never rotate speculatively — only on this
+  // explicit command (or in response to a 401) — which is why --confirm is
+  // required even though nothing about the app itself changes.
+  if (!flags.confirm) {
+    section('Would rotate app configuration token (no --confirm, nothing done)');
+    kv('Refresh', maskToken(refresh));
+    kv('Source', source);
+    kv('Via', 'tooling.tokens.rotate');
+    console.log('');
+    console.log(
+      color.yellow('  A rotate INVALIDATES the refresh token it consumes.') + '\n' +
+        '  The new pair is written to the skill config BEFORE anything else happens\n' +
+        '  with it; if that write fails the new pair is printed so it is not lost.\n' +
+        '  Only a human can mint a replacement (api.slack.com/apps), so do not run\n' +
+        '  this unless the current token actually needs replacing.'
+    );
+    console.log(color.dim('  Re-run with --confirm to rotate.'));
+    console.log('');
+    return { rotated: false };
+  }
+
+  // No bearer header here (see the note above): the refresh token IS the credential.
+  const data = await manifestApi('tooling.tokens.rotate', { refresh_token: refresh }, null);
+  if (!data.ok) {
+    if (data.error === 'invalid_refresh_token') {
+      cli.die(
+        'Slack rejected the refresh token (invalid_refresh_token).\n' +
+          '  A refresh token is single-use: if it was already rotated, the pair from\n' +
+          '  that rotation is the current one. If it is lost, mint a new token by hand\n' +
+          '  at api.slack.com/apps -> "Your App Configuration Tokens".',
+        { prefix: PREFIX }
+      );
+    }
+    dieOnManifestError('tooling.tokens.rotate', data, 'rotate the app configuration token');
+  }
+  if (!data.token || !data.refresh_token) {
+    cli.die(
+      'tooling.tokens.rotate returned ok without a token pair — refusing to discard\n' +
+        '  the old credential. Raw response keys: ' + Object.keys(data).join(', '),
+      { prefix: PREFIX }
+    );
+  }
+
+  // PERSIST FIRST, BEFORE ANY OTHER USE OF THE NEW PAIR. The rotate above has
+  // already invalidated the old refresh token, so from this moment the ONLY copy
+  // of a usable credential is in `data`. If this process dies before the write
+  // lands, the credential is gone permanently and only a human can mint another.
+  // That is why persistence happens here and not after the summary, and why a
+  // failed write falls back to printing the pair.
+  let persisted = false;
+  let persistError = '';
+  try {
+    await skill.config({
+      [APP_TOKEN_CONFIG_KEY]: data.token,
+      [REFRESH_TOKEN_CONFIG_KEY]: data.refresh_token,
+    });
+    persisted = true;
+  } catch (e) {
+    if (e && e.name === 'NodeExitError') throw e;
+    persistError = (e && e.message) || String(e);
+  }
+
+  if (!persisted) {
+    // Last resort. Printing a secret is normally forbidden (it lands in the
+    // transcript), but the old refresh token is ALREADY dead: losing this pair
+    // means a human has to mint a replacement by hand. Surfacing beats swallowing.
+    console.log('');
+    console.log(color.red('  COULD NOT PERSIST THE NEW TOKEN PAIR: ' + persistError));
+    console.log(color.red('  Store these NOW — the previous refresh token is already invalid:'));
+    console.log('    ' + APP_TOKEN_CONFIG_KEY + ' = ' + data.token);
+    console.log('    ' + REFRESH_TOKEN_CONFIG_KEY + ' = ' + data.refresh_token);
+    console.log('');
+  }
+
+  section('Rotated app configuration token');
+  kv('Access', maskToken(data.token));
+  kv('Refresh', maskToken(data.refresh_token));
+  kv('Stored', persisted ? 'skill config' : color.red('NOT STORED — see above'));
+  if (data.exp) kv('Expires', String(data.exp) + ' (unix)');
+  if (data.team_id) kv('Team', String(data.team_id));
   console.log('');
+  console.log(color.dim('  The previous refresh token is now invalid — it cannot be reused.'));
+  console.log('');
+
+  if (flags.json) {
+    // Never the token values: this output lands in the agent transcript.
+    cli.out({
+      rotated: true,
+      persisted: persisted,
+      access_token: maskToken(data.token),
+      refresh_token: maskToken(data.refresh_token),
+      exp: data.exp,
+      team_id: data.team_id,
+    });
+  }
+
+  return { rotated: true, persisted: persisted };
 }
 
 // ── app group dispatch ──────────────────────────────────────────────────────
@@ -1412,12 +2049,18 @@ async function cmdApp() {
   if (sub === 'show') return cmdAppShow();
   if (sub === 'validate') return cmdAppValidate();
   if (sub === 'diff') return cmdAppDiff();
+  if (sub === 'set-scopes') return cmdAppSetScopes();
+  if (sub === 'set-events') return cmdAppSetEvents();
+  if (sub === 'set-request-url') return cmdAppSetRequestUrl();
+  if (sub === 'apply') return cmdAppApply();
+  if (sub === 'token-rotate') return cmdAppTokenRotate();
   cli.die(
     'Unknown app subcommand: ' + (sub || '(none)') + '\n' +
-      '  Available: export, show, validate, diff\n' +
-      '  Manifest writes are not implemented here; apps.manifest.create and\n' +
-      '  apps.manifest.delete are deliberately never wired up (deleting a Slack\n' +
-      '  app is unrecoverable).',
+      '  Read-only: export, show, validate, diff\n' +
+      '  Writes (need --confirm): set-scopes, set-events, set-request-url, apply,\n' +
+      '  token-rotate\n' +
+      '  apps.manifest.create and apps.manifest.delete are deliberately never wired\n' +
+      '  up (deleting a Slack app is unrecoverable).',
     { prefix: PREFIX }
   );
 }
