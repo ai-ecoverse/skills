@@ -9,7 +9,8 @@ description: Interact with Slack via its Web API — read messages, post to chan
   or activity feed, manage Slack support tickets/help requests, watch a channel for
   updates, or automate any Slack task. Triggers on mentions of Slack, channels, DMs,
   threads, messages, Slackbot, notifications, activity, support requests, help requests,
-  watching/monitoring, or searching message text.
+  watching/monitoring, or searching message text. Also provides slack-ext for admin
+  user-management: convert members to guests, manage guest channels.
 allowed-tools: bash
 ---
 
@@ -554,8 +555,129 @@ Auth is the existing browser session cookie at
 `adobe-dx-support.enterprise.slack.com` — no separate token, since the
 `playwright-cli` commands run in the tab context.
 
+## Admin user management (`slack-ext`)
+
+`slack-ext` exposes Slack's legacy `users.admin.*` namespace for converting
+users between account types and managing guest channel access. It is a
+separate command from `slack` because it uses admin-only API methods that
+require a different usage pattern and carry stronger safety requirements.
+
+**Important caveats before using:**
+
+- **Audit attribution**: every change runs as the admin user whose `xoxc`
+  session token is in use. Slack's audit log attributes the change to THAT
+  HUMAN, not to a bot or app. Operators must understand this before using
+  these commands.
+- **Token restriction**: bot tokens (`xoxb`) are rejected with
+  `not_allowed_token_type`. Only the `xoxc` browser session token works.
+- **Undocumented legacy endpoints**: these methods live in the
+  `users.admin.*` namespace, which is separate from the documented
+  `admin.users.*` namespace. They are not in Slack's public API docs and
+  could change without notice.
+- **Dry-run by default**: every mutating command prints what would happen
+  and exits without making any API call unless `--confirm` is supplied.
+
+### Quick start
+
+```bash
+# Check a user's current type and guest channels
+slack-ext --ws=T06DUTYDQ status W5BPKRLUA
+
+# Convert a member to a single-channel guest (dry run first)
+slack-ext --ws=T06DUTYDQ set-single W5BPKRLUA --channel=C0899S7HV0E
+slack-ext --ws=T06DUTYDQ set-single W5BPKRLUA --channel=C0899S7HV0E --confirm
+
+# Convert a member to a multi-channel guest
+slack-ext --ws=T06DUTYDQ set-multi W5BPKRLUA --confirm
+
+# Promote a guest back to regular member (inverse of set-single / set-multi)
+slack-ext --ws=T06DUTYDQ set-member W5BPKRLUA --confirm
+
+# Add or remove a channel on a multi-channel guest
+slack-ext --ws=T06DUTYDQ add-channel W5BPKRLUA --channel=C0899S7HV0E --confirm
+slack-ext --ws=T06DUTYDQ remove-channel W5BPKRLUA --channel=C0899S7HV0E --confirm
+```
+
+### Available commands
+
+#### slack-ext status \<user_id\>
+
+Show the user's current account type and, for guests, the channels they
+have access to. Read-only; no `--confirm` needed.
+
+Output includes: real name, username, display name, account type
+(regular / multi-channel guest / single-channel guest / bot / deactivated),
+and a channel list for guests.
+
+```bash
+slack-ext --ws=T06DUTYDQ status W5BPKRLUA
+slack-ext --ws=T06DUTYDQ status W5BPKRLUA --json   # include raw users.info object
+```
+
+#### slack-ext set-single \<user_id\> --channel=\<ID\> [--confirm]
+
+Convert a member to a **single-channel guest** (Slack API:
+`users.admin.setUltraRestricted`). The user loses access to all channels
+except the specified one. Requires `--ws` and `--channel`. Without
+`--confirm`, shows what would happen and exits without changing anything.
+
+The API parameter is `channel` (singular) — passing `channels` returns
+`invalid_arguments`. This is a known gotcha; the code and tests enforce it.
+
+#### slack-ext set-multi \<user_id\> [--confirm]
+
+Convert a member to a **multi-channel guest** (API: `users.admin.setRestricted`).
+After converting, use `add-channel` to grant channel access. Requires `--ws`.
+
+#### slack-ext set-member \<user_id\> [--confirm]
+
+Promote a guest back to a **regular member** (API: `users.admin.setRegular`).
+This is the inverse of `set-single` and `set-multi`. Requires `--ws`.
+
+#### slack-ext add-channel \<user_id\> --channel=\<ID\> [--confirm]
+
+Invite a multi-channel guest to an additional channel (`conversations.invite`).
+Requires `--ws` and `--channel`. Already-in-channel returns a no-op message.
+
+#### slack-ext remove-channel \<user_id\> --channel=\<ID\> [--confirm]
+
+Remove a guest from a channel (`conversations.kick`). Requires `--ws` and
+`--channel`. Not-in-channel returns a no-op message.
+
+### Safety policy
+
+Every mutating command enforces four checks before touching Slack:
+
+1. **Explicit confirmation** — `--confirm` is required. Without it the
+   command prints a full dry-run summary and exits 0.
+2. **User resolution** — the target user's real name, handle, and current
+   account type are displayed before any change.
+3. **Bot refusal** — bot users are always rejected. Bot account types are
+   owned by their app; forcing them to guest status would be destructive.
+4. **Already-in-state** — if the user is already in the requested state
+   the command says so and exits without calling Slack.
+
+### Workspace ID (`--ws`)
+
+All commands accept `--ws=<TEAM_ID>` (or `--workspace=<TEAM_ID>`). For
+mutating commands it is required, because `team_id` is a required API
+parameter and silently defaulting to the wrong workspace could affect the
+wrong person. For `status` it falls back to auto-detection from the Slack
+tab URL.
+
+Run `slack workspaces` to list available workspace IDs.
+
+### Verifying without side effects
+
+To confirm that auth, permissions, and parameter shape are all correct
+without changing a real user, use a deliberately invalid user id such as
+`U000000BOGUS0`. A correctly formed call returns `user_not_found`, which
+proves the token and method are working. This was used to verify all three
+`users.admin.*` methods before filing the PR that added this feature.
+
 ## References
 
-- `references/endpoints.md` — full Slack Web API endpoint documentation.
+- `references/endpoints.md` — full Slack Web API endpoint documentation,
+  including the `users.admin.*` admin methods.
 - `references/watch-architecture.md` — internals of `slack watch` and of
   `slack post`'s reply auto-watch (observer, filter, TTL teardown, state files).
