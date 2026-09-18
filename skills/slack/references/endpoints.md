@@ -434,3 +434,119 @@ Common errors:
 - `invalid_auth` — Token expired or invalid
 - `token_not_found` — No token found for the specified workspace ID
 - `ratelimited` — Rate limited; check `Retry-After` header
+
+## Admin User-Management Methods (`users.admin.*`)
+
+These are **undocumented legacy methods** used by `slack-ext`. They are NOT
+the same as the documented `admin.users.*` namespace (those return
+`not_allowed_token_type` for xoxc session tokens and need an org-level app
+token with `admin.users:write`).
+
+**Verification method (no credentials needed):** `POST https://slack.com/api/<method>`
+returns `{"ok":false,"error":"not_authed"}` for real methods and
+`{"ok":false,"error":"unknown_method"}` for nonexistent ones. All methods
+below were verified real on 2026-09-18.
+
+**Token requirement:** these methods reject bot tokens (`xoxb`) with
+`not_allowed_token_type`. They work only with an xoxc admin user token.
+The `xoxc` token MUST travel with Slack's `d` session cookie;
+`slack-ext.jsh` uses `browser.fetch` (same-origin XHR) which sends cookies
+automatically.
+
+**Audit note:** calls are attributed in Slack's audit log to the admin user
+whose token is in use, not to an app.
+
+### POST /api/users.admin.setUltraRestricted
+
+Convert a user to a **single-channel guest** (ultra-restricted).
+
+**Parameters:**
+| Param | Required | Description |
+|-------|----------|-------------|
+| token | yes | xoxc admin user token |
+| user | yes | User ID (e.g. `W5BPKRLUA`) |
+| team_id | yes | Workspace team ID (e.g. `T06DUTYDQ`) |
+| channel | yes | **Singular** — the one channel the guest may access |
+
+**GOTCHA — `channel` vs `channels`:** the parameter is `channel` (singular).
+Passing `channels` (plural) returns `invalid_arguments`. Verified both ways
+2026-09-18. The `slack-ext.jsh` code and its tests enforce this.
+
+**Response on success:** `{"ok": true}`
+
+**Verification probe (no auth needed):**
+```
+POST https://slack.com/api/users.admin.setUltraRestricted  →  not_authed  (method exists)
+POST https://slack.com/api/admin.users.setUltraRestricted  →  unknown_method  (DOES NOT EXIST)
+```
+
+**Test with bogus user:** `user=U000000BOGUS0` returns `user_not_found`,
+confirming auth, permissions, and parameter shape without changing anyone.
+
+### POST /api/users.admin.setRestricted
+
+Convert a user to a **multi-channel guest** (restricted).
+
+**Parameters:**
+| Param | Required | Description |
+|-------|----------|-------------|
+| token | yes | xoxc admin user token |
+| user | yes | User ID |
+| team_id | yes | Workspace team ID |
+
+No `channel` parameter. After converting, use `conversations.invite` to
+grant channel access.
+
+**Response on success:** `{"ok": true}`
+
+**Verification probe:**
+```
+POST https://slack.com/api/users.admin.setRestricted   →  not_authed  (real)
+POST https://slack.com/api/admin.users.setRestricted   →  unknown_method  (DOES NOT EXIST)
+```
+
+### POST /api/users.admin.setRegular
+
+Promote a guest back to a **regular member**. The inverse of
+`setRestricted` and `setUltraRestricted`.
+
+**Parameters:**
+| Param | Required | Description |
+|-------|----------|-------------|
+| token | yes | xoxc admin user token |
+| user | yes | User ID |
+| team_id | yes | Workspace team ID |
+
+**Response on success:** `{"ok": true}`
+
+### POST /api/conversations.invite (for guest channel management)
+
+Invite a user (including a multi-channel guest) to a channel. Used by
+`slack-ext add-channel`.
+
+**Parameters:**
+| Param | Required | Description |
+|-------|----------|-------------|
+| token | yes | xoxc token |
+| channel | yes | Channel ID |
+| users | yes | Comma-separated user IDs |
+
+**Common errors:**
+- `already_in_channel` — user is already a member (treated as no-op)
+- `cant_invite_self` — cannot invite the token owner
+
+### POST /api/conversations.kick (for guest channel management)
+
+Remove a user from a channel. Used by `slack-ext remove-channel`.
+
+**Parameters:**
+| Param | Required | Description |
+|-------|----------|-------------|
+| token | yes | xoxc token |
+| channel | yes | Channel ID |
+| user | yes | User ID (singular) |
+
+**Common errors:**
+- `not_in_channel` — user is not in the channel (treated as no-op)
+- `cant_kick_self` — cannot kick the token owner
+- `cant_kick_from_general` — some workspaces protect #general
