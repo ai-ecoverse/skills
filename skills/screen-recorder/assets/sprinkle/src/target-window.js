@@ -1,26 +1,5 @@
 // "Open Target Window" — open a REAL, correctly-sized window to record.
 //
-// STATUS: FALLBACK PATH (runtimes before SLICC 6.169.0).
-//
-// 6.169.0 added real window verbs to the `sliccy:browser` jsh module --
-// `openWindow(url,{width,height,left,top,state,decorated,focus})`,
-// `windowBounds(tab)` and `setWindowBounds(tab,bounds)` -- and those are now the
-// primary route. Prefer them: they need no click, they hand back a TabHandle that
-// every other verb accepts, and they can produce a DECORATED window (title bar +
-// URL bar) at an exact size, which this module fundamentally cannot.
-//
-// This popup path is kept because before 6.169.0 there was NO window API at all.
-// Its limitation is structural: `popup=yes` is what makes Chrome honour the size
-// features, so the result always has popup chrome (measured 67px vs 87px
-// decorated) and can never show a URL bar.
-//
-// UNIT DIFFERENCE -- do not port numbers between the two routes:
-//   window.open(...,'width=W,height=H')  sizes the CONTENT area
-//   browser.openWindow({width,height})   sizes the FRAME, chrome included
-// Measured on 6.169.0: openWindow height 600 -> outerHeight 600, innerHeight 513
-// (87px chrome). Copying a window.open size straight into openWindow leaves the
-// content area short by the chrome height.
-//
 // WHY THIS EXISTS
 // `playwright-cli resize` sets the VIEWPORT only and drops devicePixelRatio
 // from 2 to 1, so "Force tab size" actively LOWERED capture quality and never
@@ -30,10 +9,6 @@
 //
 // `window.open` with width/height features sizes a REAL window and KEEPS dpr 2,
 // so the same two numbers finally mean what the UI claims.
-//
-// Capture resolution is FRAME x dpr. On 6.169.0 read dpr from
-// `browser.windowBounds(tab).dpr` rather than assuming 2; on this path it must be
-// measured over CDP because the opener cannot read a cross-origin popup.
 //
 // MEASURED (live, human-clicked; not reproducible from an agent shell):
 //  * requested 1280x800 -> outer 1280x843, inner 1280x776, dpr 2,
@@ -52,14 +27,65 @@
 //    eval` returns no handle. Only a real gesture can open a popup.
 //  * A DIP cannot open a popup at all, but a `target=_blank` anchor DOES open a
 //    tab -- unsized, inheriting the opener's dimensions.
-//  * There is no CDP passthrough in `playwright-cli`. That USED to mean OS-window
-//    sizing was unreachable -- no longer true: `require('sliccy:browser')`
-//    .setWindowBounds(tab, bounds) does it directly on 6.169.0+, and returns the
-//    ACHIEVED bounds because Chrome clamps silently (measured: requesting height
-//    1080 yielded 841, with top moved to availTop 33, and nothing threw).
+//  * There is no CDP passthrough in `playwright-cli`, so `Browser.setWindowBounds`
+//    (the only API that truly sizes an OS window) is unreachable.
 //
 // HARD PROHIBITION: never call `playwright-cli resize` on the window opened
 // here. It would undo the dpr 2 this path exists to preserve, irreversibly.
+
+
+/**
+ * Normalise a typed URL so `www.example.com` works.
+ *
+ * Rules:
+ *  - no scheme        -> prepend https://
+ *  - explicit http:// -> LEFT ALONE (never silently upgraded; the user asked for it)
+ *  - about:/file:/chrome: -> left alone, returned as-is for the caller to judge
+ *  - bare localhost / 127.0.0.1 / host:port -> https:// too, but http is common for
+ *    localhost so it is preserved when typed explicitly
+ * Returns the string to display back in the field (so the user sees what will open).
+ */
+export function normalizeUrlInput(raw) {
+  const t = String(raw == null ? '' : raw).trim();
+  if (!t) return '';
+  // Already has a scheme? Leave it exactly as typed.
+  //
+  // CAREFUL: `host:port` looks exactly like `scheme:rest` to a naive regex, so
+  // `localhost:8080` was being left un-normalised (measured in the unit tests).
+  // A real scheme is followed by `//` (http://, file:///) or by a non-digit
+  // opaque part (mailto:a, about:blank); `name:8080` is a host and a port.
+  const schemeM = /^([a-zA-Z][a-zA-Z0-9+.-]*):(.*)$/.exec(t);
+  if (schemeM) {
+    const rest = schemeM[2];
+    const looksLikePort = /^\d+(?:[/?#]|$)/.test(rest);
+    if (!looksLikePort) return t;
+    // else: fall through and treat the whole thing as host:port
+  }
+  // Protocol-relative //host -> https:
+  if (t.slice(0, 2) === '//') return 'https:' + t;
+  return 'https://' + t;
+}
+
+/**
+ * Build the autocomplete entries for #startUrl from the live tab list.
+ * De-duplicates by URL, drops non-navigable entries, keeps the title as the
+ * <option> label where one exists.
+ */
+export function urlSuggestions(tabs) {
+  const skip = /^(about:|chrome:|chrome-extension:|devtools:|blob:|data:)/i;
+  const seen = new Set();
+  const out = [];
+  for (const t of tabs || []) {
+    const u = t && t.url ? String(t.url) : '';
+    if (!u || skip.test(u)) continue;
+    // Only offer things a popup could actually navigate to.
+    if (!/^https?:\/\//i.test(u)) continue;
+    if (seen.has(u)) continue;
+    seen.add(u);
+    out.push({ url: u, title: (t.title || '').trim() });
+  }
+  return out;
+}
 
 /** Accept only http/https. Rejects javascript:, data:, file:, and junk. */
 export function validateUrl(raw) {
@@ -93,6 +119,9 @@ export function shellQuoteUrl(url) {
 }
 
 /** `popup=yes` is what makes Chrome treat the size features as a real window. */
+// NOTE the unit difference vs openTargetWindowApi: these features size the
+// CONTENT area, while openWindow sizes the FRAME. Same numbers mean different
+// windows -- they differ by the chrome height (67 popup / 87 decorated, measured).
 export function popupFeatures(w, h) {
   return 'popup=yes,width=' + (w | 0) + ',height=' + (h | 0) + ',left=40,top=60';
 }
@@ -125,6 +154,94 @@ export function parseGeometry(stdout) {
   }
 }
 
+
+/**
+ * Does a requested window size fit the usable display area?
+ *
+ * MEASURED DEFECT (take 2026-09-18T07-58-49-077Z): Lars requested 1080x1080 and
+ * Chrome SILENTLY CLAMPED it -- the decoded frame was 2160x1618, i.e. an achieved
+ * outer size of 1080x809 at dpr 2: width exact, height short by 271px, no error
+ * anywhere. The display is only 1470x956 CSS px (capture.settings 2940x1912 / dpr
+ * 2), so a 1080-tall window never could have fitted.
+ *
+ * THE KEY INSIGHT: `sized: true` means "the size features were ACCEPTED", NOT
+ * "the requested size was ACHIEVED". Trusting `requested` would have written
+ * 1080x1080 into the manifest -- a success-shaped wrong answer.
+ *
+ * availWidth/availHeight (not width/height) is the right bound: it excludes OS
+ * chrome such as the menu bar and dock, which is exactly what limits a window.
+ */
+export function checkDisplayFit(w, h, scr) {
+  const s = scr || (typeof screen !== 'undefined' ? screen : null);
+  const availWidth = s && s.availWidth ? s.availWidth : null;
+  const availHeight = s && s.availHeight ? s.availHeight : null;
+  const out = { availWidth, availHeight, fitsDisplay: true, clampedAxes: [] };
+  if (!w || !h || availWidth == null || availHeight == null) return out;
+  if (w > availWidth) out.clampedAxes.push('width');
+  if (h > availHeight) out.clampedAxes.push('height');
+  out.fitsDisplay = out.clampedAxes.length === 0;
+  return out;
+}
+
+
+/**
+ * Decide which #sizePreset options are physically impossible on THIS display.
+ *
+ * MEASURED: on Lars's 1470x956 CSS-px display, 4 of the 7 shipped presets cannot
+ * exist -- 1920x1080 (both axes), 1080x1920 and 1080x1080 (too tall), and he
+ * picked 1080x1080, which Chrome clamped SILENTLY to 1080x809.
+ *
+ * Read from `screen` at RUNTIME -- never hard-code a display size; 1470x956 is
+ * one machine's. Recomputed whenever the panel re-renders, so reopening on a
+ * different display re-evaluates.
+ *
+ * @returns {Array<{value,fits,reason,suffix}>} one entry per preset value
+ */
+export function presetFitness(values, scr) {
+  const out = [];
+  for (const v of values || []) {
+    if (!v) { // the "Custom…" entry
+      out.push({ value: v, fits: true, reason: null, suffix: '' });
+      continue;
+    }
+    const m = /^(\d+)x(\d+)$/.exec(v);
+    if (!m) { out.push({ value: v, fits: true, reason: null, suffix: '' }); continue; }
+    const w = +m[1], h = +m[2];
+    const fit = checkDisplayFit(w, h, scr);
+    if (fit.fitsDisplay) { out.push({ value: v, fits: true, reason: null, suffix: '' }); continue; }
+    const axes = fit.clampedAxes;
+    const reason =
+      axes.length === 2 ? 'too large for this display'
+      : axes[0] === 'height' ? 'too tall for this display'
+      : 'too wide for this display';
+    out.push({ value: v, fits: false, reason, suffix: ' (' + reason + ')' });
+  }
+  return out;
+}
+
+/** Human-readable warning for the panel, or null when the request fits. */
+export function displayFitWarning(w, h, fit) {
+  if (!fit || fit.fitsDisplay || !fit.clampedAxes.length) return null;
+  const axes = fit.clampedAxes.join(' and ');
+  const capped =
+    Math.min(w, fit.availWidth) + 'x' + Math.min(h, fit.availHeight);
+  return (
+    'Requested ' +
+    w +
+    'x' +
+    h +
+    ' does not fit the usable display (' +
+    fit.availWidth +
+    'x' +
+    fit.availHeight +
+    ' CSS px). Chrome will clamp the ' +
+    axes +
+    ' silently, so the window will be about ' +
+    capped +
+    ' and the recording will be captured at that size, not the size you asked for.'
+  );
+}
+
 /**
  * Turn measured geometry into the manifest's targetWindow block.
  *
@@ -146,6 +263,13 @@ export function describeTargetWindow(opts) {
     dpr: g ? g.dpr : null,
     predictedFrame: g && g.dpr ? Math.round(g.ow * g.dpr) + 'x' + Math.round(g.oh * g.dpr) : null,
   };
+  // Display bounds recorded even when the CDP geometry probe could not run --
+  // that is exactly the case where the manifest was previously unable to explain
+  // a clamped window (all geometry null, note said only "could not be measured").
+  const fit = o.fit || null;
+  out.availWidth = fit ? fit.availWidth : null;
+  out.availHeight = fit ? fit.availHeight : null;
+  out.fitsDisplay = fit ? fit.fitsDisplay : null;
   if (!o.openedVia) {
     out.note = 'no target window was opened';
   } else if (!out.sized) {
@@ -154,7 +278,21 @@ export function describeTargetWindow(opts) {
       out.openedVia +
       ' (no handle, so size features could not apply) — it inherits the opener’s dimensions; size it manually before recording';
   } else if (!g) {
-    out.note = 'opened at the requested size, but the achieved geometry could not be measured';
+    // Honest: never fabricate outerAfter from `requested`. But DO say when the
+    // request could not have been honoured, which is knowable without the probe.
+    out.note =
+      'opened, but the achieved geometry could not be measured (no target id)' +
+      (fit && !fit.fitsDisplay
+        ? ' — and the requested ' +
+          out.requested +
+          ' does NOT fit the usable display ' +
+          fit.availWidth +
+          'x' +
+          fit.availHeight +
+          ', so Chrome clamped the ' +
+          fit.clampedAxes.join(' and ') +
+          '; `sized: true` means the size features were accepted, not achieved'
+        : '');
   } else {
     const exact = out.requested === out.outerAfter;
     out.note =
@@ -168,13 +306,75 @@ export function describeTargetWindow(opts) {
       out.predictedFrame +
       (exact
         ? ''
-        : ' (requested ' + out.requested + '; Chrome adjusts height for window chrome)');
+        : ' (requested ' +
+          out.requested +
+          '; ' +
+          (fit && !fit.fitsDisplay
+            ? 'CLAMPED on ' +
+              fit.clampedAxes.join(' and ') +
+              ' — it exceeds the usable display ' +
+              fit.availWidth +
+              'x' +
+              fit.availHeight
+            : 'Chrome adjusts height for window chrome') +
+          ')');
   }
   return out;
 }
 
 /**
- * Attempt the sized popup. Returns {handle, openedVia, sized}.
+ * PRIMARY PATH (SLICC 6.169.0+). Open a DECORATED window at an exact FRAME size.
+ *
+ * `slicc.browser.openWindow` sizes the FRAME (chrome included) and preserves dpr.
+ * The frame is the interesting number because CAPTURE RESOLUTION FOLLOWS FROM IT
+ * -- it determines the video size. Measured on 6.169.0: requesting 1000x700 gave
+ * outer 1000x700 with chrome 87 (a real title/URL bar; popup mode is 67) and
+ * dpr 2 preserved. The popup path below fundamentally cannot do that.
+ *
+ * Needs NO user activation -- verified by opening a window from a jsh script,
+ * which has none at all. So it is safe to `await`, unlike `window.open`.
+ *
+ * BUT the size still is not guaranteed: Chrome clamps to the usable display
+ * silently. Caller must keep using checkDisplayFit() + the geometry probe and
+ * prefer capture.width/height over any prediction.
+ *
+ * Returns the fallback's shape plus `targetId`, so the caller can skip URL
+ * matching entirely.
+ */
+export async function openTargetWindowApi(url, w, h, api) {
+  const B =
+    api || (typeof slicc !== 'undefined' && slicc && slicc.browser) || null;
+  if (!B || typeof B.openWindow !== 'function') {
+    return { handle: null, openedVia: null, sized: false, unavailable: true };
+  }
+  const opts = { decorated: true };
+  if (w && h) {
+    opts.width = w | 0;
+    opts.height = h | 0;
+  }
+  try {
+    const tab = await B.openWindow(url, opts);
+    const targetId = (tab && (tab.targetId || tab)) || null;
+    if (!targetId) return { handle: null, openedVia: null, sized: false };
+    return {
+      handle: null,
+      targetId: targetId,
+      openedVia: 'slicc.browser.openWindow',
+      sized: !!(w && h),
+      decorated: true,
+    };
+  } catch (e) {
+    return {
+      handle: null,
+      openedVia: null,
+      sized: false,
+      error: (e && e.message) || String(e),
+    };
+  }
+}
+
+/**
+ * FALLBACK PATH (runtimes before 6.169.0). Attempt the sized popup.
  *
  * MUST be called from a real click handler: CDP eval has no user activation, and
  * a full-document sprinkle renders in a SANDBOXED iframe which may withhold
@@ -216,7 +416,68 @@ export function openTargetWindow(url, w, h, win) {
   }
 }
 
-/** Find the just-opened window in tab-list by URL. Most recent match wins. */
+
+/**
+ * Resolve the popup's CDP target id by SET DIFFERENCE against a pre-open snapshot.
+ *
+ * MEASURED FAILURE that motivated this (take 2026-09-18T07-58-49-077Z):
+ * `findTargetId` matched on URL, and `https://www.yahoo.de/` REDIRECTS to a
+ * different host (`consent.yahoo.com/v2/collectConsent?...`, the GDPR
+ * interstitial). Exact, host+path and hostname matching all missed, so targetId
+ * was null -- and because it was null the foreground step and the CDP geometry
+ * probe never ran at all (manifest: config.tabId null, targetWindow.targetId
+ * null, foregroundedTab null, outerAfter/dpr/predictedFrame all null).
+ *
+ * Identity beats URL matching: whatever the popup navigates to, it is the target
+ * that was NOT in the list a moment ago. That is redirect-proof and does not
+ * depend on the URL at all.
+ *
+ * Second failure mode: racing the popup while it is still on `about:blank`, so
+ * the caller must POLL (bounded) rather than ask once.
+ *
+ * @param {string[]} before target ids present before window.open
+ * @param {string[]} after  target ids present now
+ * @returns {string|null} the single new id, or null when it is ambiguous/absent
+ */
+export function newTargetId(before, after) {
+  const prev = new Set(before || []);
+  const added = (after || []).filter((id) => !prev.has(id));
+  // Exactly one new target is the unambiguous case. If several appeared (the user
+  // opened something else at the same instant) we do NOT guess -- the caller
+  // falls back to URL matching, which is at least explainable.
+  if (added.length === 1) return added[0];
+  return null;
+}
+
+/** Ids only, for set-difference snapshots. */
+export function tabIds(tabs) {
+  return (tabs || []).map((t) => t.id).filter(Boolean);
+}
+
+/** A target id is useless until it has navigated off about:blank. */
+export function isNavigated(tabs, id) {
+  const t = (tabs || []).find((x) => x.id === id);
+  if (!t) return false;
+  const u = String(t.url || '');
+  return !!u && u !== 'about:blank' && u !== 'about:newtab' && u !== 'chrome://newtab/';
+}
+
+/** Did the popup land somewhere other than what we asked for? */
+export function landedElsewhere(tabs, id, requestedUrl) {
+  const t = (tabs || []).find((x) => x.id === id);
+  if (!t || !t.url) return null;
+  let a, b;
+  try { a = new URL(t.url); } catch (e) { return null; }
+  try { b = new URL(requestedUrl); } catch (e) { return null; }
+  if (a.hostname === b.hostname) return null;
+  return { landed: t.url, requested: requestedUrl, landedHost: a.hostname, requestedHost: b.hostname };
+}
+
+/**
+ * LAST-RESORT fallback: find the window by URL. Kept because it is explainable,
+ * but it CANNOT survive a cross-host redirect -- see newTargetId above, which is
+ * the primary strategy.
+ */
 export function findTargetId(tabs, url) {
   if (!tabs || !tabs.length) return null;
   let target;
