@@ -36,8 +36,10 @@ Separate files per track is deliberate — it is what lets an editor re-cut voic
 
 1. **Video sources** — cameras, or `No camera`. One `getUserMedia` for cam+mic, so one permission prompt.
 2. **Microphone** — optional.
-3. **Starting URL** — opens a target window at a chosen size, or record a tab already open.
-4. **Force window size** — the capture window's **frame** size in DIP pixels, chrome included.
+3. **Starting URL** — opened as its own window at the size below.
+4. **Target Window Size** — the capture window's **frame** size in DIP pixels, chrome included.
+   Chrome enforces a **500 px minimum width** and clamps height to `screen.availHeight`, both
+   silently; the panel greys out presets it cannot deliver and reports what was actually achieved.
 5. **Driver script** — an optional `sh` script that drives the page while recording.
 6. **Countdown** — recorded, then trimmed via `countdownMs`.
 7. **Max duration** — a ladder from 1 s to 1 h, or ∞ (no auto-stop).
@@ -77,6 +79,28 @@ popup chrome only, and it cannot produce a decorated window. See `references/win
 
 On completion the panel sends a `recording-complete` lick carrying the folder and manifest; on a failed assembly it sends `recording-failed` and keeps the raw parts.
 
+## Driving it from the command line
+
+`screen-recorder` (a `.jsh` companion) prefills the panel and reads takes back, so the only
+human steps are the two buttons — `getDisplayMedia` needs a real user gesture, so starting a
+recording cannot be automated.
+
+```bash
+screen-recorder config set startUrl=https://example.com/ width=1280 height=800 maxDurationSec=30
+screen-recorder config get                 # what the panel will prefill with
+screen-recorder open                       # open the panel
+# → human clicks Open Target Window, then Start recording
+screen-recorder manifest                   # summarise the newest take
+screen-recorder manifest <folder> --json   # the raw manifest
+screen-recorder captures                   # every take, newest last
+```
+
+Config lands in `/shared/sprinkles/recording-setup/config.json` and an already-open panel picks
+it up live (`sprinkle send … reloadconfig`). Values are validated before they reach the UI: a
+width below 500 warns, a non-integer or non-http URL is refused. `manifest` leads with
+`capture.width/height` — the only authoritative frame size — and flags a `predictedFrame` that
+disagrees with it, plus any failed part or dropped chunk.
+
 ## Reading the manifest
 
 ```sh
@@ -105,3 +129,5 @@ ffmpeg -ss 5 -i screen.webm -i mic.webm -c:v libvpx-vp9 -c:a copy cut.webm
 - `references/window-sizing.md` — the `sliccy:browser` window API (frame units, silent clamping, `availHeight`), plus the pre-6.169.0 fallback routes and why most of them fail.
 - `references/driver-scripts.md` — the driver contract (`REC_TAB`, `REC_DIR`, `REC_W`, `REC_H`) and why an exit code is not proof of a recording.
 - `references/manifest.md` — every field, and the traps behind each.
+- `scripts/screen-recorder.jsh` — the companion CLI (`config get/set/clear/keys`, `open`,
+  `captures`, `manifest`).
