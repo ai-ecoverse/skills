@@ -13,6 +13,8 @@
 // plus a best-effort `sprinkle send` so an already-open panel live-reloads.
 
 const cli = require('sliccy:cli');
+const exec = require('sliccy:exec');
+const skill = require('sliccy:skill');
 const fs = require('fs');
 
 // ─── paths ───────────────────────────────────────────────────────────────
@@ -35,12 +37,28 @@ const CAPTURES_DIR = '/workspace/captures';
 // availHeight is per-machine so it cannot be validated here -- the panel warns.
 const MIN_WINDOW_WIDTH = 500;
 
+// The SAME construction as the sprinkle's duration-ladder.js, not a hand-copied
+// list -- my first attempt hardcoded 1/2/3/90/900/2700, none of which are on the
+// real ladder, which would have rejected valid values and accepted unusable ones.
+// The panel can only select these, so anything else is unrepresentable.
+const DURATION_LADDER = (() => {
+  const v = [0];
+  for (let s = 5; s <= 120; s += 5) v.push(s); // 5..120 step 5
+  for (let s = 150; s <= 600; s += 30) v.push(s); // 2m30..10m step 30
+  for (let s = 720; s <= 3600; s += 120) v.push(s); // 12m..60m step 2m
+  return v;
+})();
+
 const FIELDS = {
   startUrl: { type: 'url', help: 'URL the target window opens' },
   width: { type: 'int', min: 1, help: `target window FRAME width (Chrome minimum ${MIN_WINDOW_WIDTH})` },
   height: { type: 'int', min: 1, help: 'target window FRAME height (incl. chrome)' },
   countdownSec: { type: 'int', min: 0, max: 60, help: 'recorded countdown, trimmed via manifest countdownMs' },
-  maxDurationSec: { type: 'int', min: 0, help: 'auto-stop after N seconds (0 = single screenshot)' },
+  // The panel's #maxDur is a LADDER INDEX, and applyConfigFile only matches an
+  // EXACT ladder value -- a non-ladder number would be written here, silently
+  // ignored by the panel, and leave whatever was selected (initially 0 =
+  // screenshot). So validate against the ladder rather than accepting any int.
+  maxDurationSec: { type: 'ladder', help: 'auto-stop seconds on the panel ladder (0=screenshot, 5..120 by 5, 150..600 by 30, 720..3600 by 120)' },
   driver: { type: 'str', help: 'driver script path, run against the target window' },
 };
 
@@ -54,6 +72,17 @@ function parseValue(key, raw) {
     if (!Number.isInteger(n)) cli.die(`${key} must be an integer, got '${raw}'`);
     if (spec.min != null && n < spec.min) cli.die(`${key} must be >= ${spec.min}, got ${n}`);
     if (spec.max != null && n > spec.max) cli.die(`${key} must be <= ${spec.max}, got ${n}`);
+    return n;
+  }
+  if (spec.type === 'ladder') {
+    const n = Number(raw);
+    if (!Number.isInteger(n)) cli.die(`${key} must be an integer, got '${raw}'`);
+    if (!DURATION_LADDER.includes(n)) {
+      cli.die(
+        `${key}=${n} is not on the panel's duration ladder, so the panel would ignore it. ` +
+          `Nearest valid: ${DURATION_LADDER.reduce((a, b) => (Math.abs(b - n) < Math.abs(a - n) ? b : a))}`
+      );
+    }
     return n;
   }
   if (spec.type === 'url') {
@@ -158,17 +187,27 @@ async function readManifest(folder) {
 function summarise(m, folder) {
   const cap = m.capture || {};
   const tw = m.targetWindow || {};
+  const tracks = m.tracks || [];
   const lines = [];
   lines.push(`folder        ${folder}`);
   lines.push(`mode          ${m.mode}  (${m.stopReason}, ${Math.round((m.durationMs || 0) / 1000)}s)`);
-  lines.push(`CAPTURED      ${cap.width}x${cap.height} @ ${cap.frameRate}fps   <- authoritative frame`);
+  // A SCREENSHOT take has no `capture` object -- its dimensions live on the
+  // single track. Printing the video-style line unconditionally yielded
+  // `CAPTURED undefinedxundefined @ undefinedfps`.
+  const shot = tracks.find((t) => t && t.kind === 'image') || (m.mode === 'screenshot' ? tracks[0] : null);
+  if (cap.width && cap.height) {
+    lines.push(`CAPTURED      ${cap.width}x${cap.height} @ ${cap.frameRate}fps   <- authoritative frame`);
+  } else if (shot && shot.width && shot.height) {
+    lines.push(`CAPTURED      ${shot.width}x${shot.height}  (single frame)   <- authoritative`);
+  } else {
+    lines.push('CAPTURED      (no geometry recorded — check the manifest directly)');
+  }
   if (tw.predictedFrame && tw.predictedFrame !== `${cap.width}x${cap.height}`) {
     lines.push(`  predicted   ${tw.predictedFrame}  (DISAGREES with captured — trust captured)`);
   }
   lines.push(`window        requested ${tw.requested || '-'} -> outer ${tw.outerAfter || '-'} @ dpr ${tw.dpr ?? '-'}`);
   lines.push(`opened via    ${tw.openedVia || '-'}${tw.sized ? ' (sized)' : ' (UNSIZED)'}`);
   if (tw.fitsDisplay === false) lines.push(`  NOTE        request did not fit: ${tw.note || 'clamped'}`);
-  const tracks = m.tracks || [];
   for (const t of tracks) {
     lines.push(
       `track ${String(t.name).padEnd(7)} ${t.file}  ${t.bytes} B  ${t.containerDurationSec}s  ` +
@@ -201,6 +240,7 @@ function summarise(m, folder) {
 
 const HELP = `screen-recorder — companion CLI for the recording-setup sprinkle
 
+  install                     copy the panel into /shared/sprinkles/recording-setup
   config get [<key>]          print the stored config (or one key)
   config set <key=value> …    set fields, then live-reload an open panel
   config clear                delete the stored config
@@ -280,6 +320,35 @@ async function main(argv) {
       return;
     }
     cli.die(`unknown config subcommand '${sub}'`);
+  }
+
+  if (cmd === 'install') {
+    // SKILL.md documents this as the first-time bootstrap. It must exist, or a
+    // fresh install has no panel at all. Copies the skill's own asset tree into
+    // the sprinkle dir WITHOUT touching config.json or captures.
+    const src = `${skill.dir}/assets/sprinkle`;
+    if (!(await fs.exists(`${src}/recording-setup.shtml`))) {
+      cli.die(`cannot find the panel at ${src}/recording-setup.shtml`);
+    }
+    await fs.mkdir(SPRINKLE_DIR).catch(() => {});
+    await fs.mkdir(`${SPRINKLE_DIR}/src`).catch(() => {});
+    const copied = [];
+    for (const rel of ['recording-setup.shtml', 'build.sh', 'splice.js']) {
+      if (!(await fs.exists(`${src}/${rel}`))) continue;
+      await fs.writeFile(`${SPRINKLE_DIR}/${rel}`, await fs.readFile(`${src}/${rel}`));
+      copied.push(rel);
+    }
+    for (const rel of await fs.readDir(`${src}/src`).catch(() => [])) {
+      const name = typeof rel === 'string' ? rel : rel && rel.name;
+      if (!name || !name.endsWith('.js')) continue;
+      await fs.writeFile(`${SPRINKLE_DIR}/src/${name}`, await fs.readFile(`${src}/src/${name}`));
+      copied.push(`src/${name}`);
+    }
+    const r = await exec('sprinkle refresh');
+    console.log(`installed ${copied.length} file(s) into ${SPRINKLE_DIR}`);
+    console.log(r.exitCode === 0 ? '(sprinkle list refreshed)' : '(run `sprinkle refresh` yourself)');
+    console.log('config.json and /workspace/captures were left untouched.');
+    return;
   }
 
   if (cmd === 'open') {
