@@ -139,6 +139,33 @@ export function windowGeometryCmd(targetId) {
   );
 }
 
+/**
+ * Reject a geometry reading that cannot describe one window.
+ *
+ * MEASURED 2026-09-18 (capture 15-56-28): a manifest recorded
+ * `outerAfter "500x841"` with `innerAfter "1200x714"` -- inner LARGER than outer,
+ * which is impossible for a single window. 1200x714 is the SLICC app tab's own
+ * viewport, so at least part of that reading came from the wrong surface.
+ *
+ * ROOT CAUSE NOT ESTABLISHED. Both numbers come from one `JSON.stringify` in one
+ * `playwright-cli eval --tab=<id>`, so a single wrong tab cannot explain a mixed
+ * result; a stitched/multi-object stdout parse is the leading theory but is
+ * unproven. Until it is understood, REFUSE the reading rather than write a
+ * self-contradictory manifest: a wrong chrome height (841-714=127 instead of the
+ * true 87) would silently poison anything deriving chrome from the artefact.
+ */
+export function geometryIsCoherent(g) {
+  if (!g) return false;
+  const n = (v) => typeof v === 'number' && isFinite(v) && v > 0;
+  if (!n(g.ow) || !n(g.oh) || !n(g.iw) || !n(g.ih)) return false;
+  // A window's content box can never exceed its frame.
+  if (g.iw > g.ow || g.ih > g.oh) return false;
+  // Chrome height is a small positive number; a huge gap means mixed surfaces.
+  const chrome = g.oh - g.ih;
+  if (chrome < 0 || chrome > 200) return false;
+  return true;
+}
+
 export function parseGeometry(stdout) {
   const s = String(stdout || '');
   const m = s.match(/\{[^{}]*"ow"[\s\S]*?\}/);
@@ -171,13 +198,32 @@ export function parseGeometry(stdout) {
  * availWidth/availHeight (not width/height) is the right bound: it excludes OS
  * chrome such as the menu bar and dock, which is exactly what limits a window.
  */
+export const MIN_WINDOW_WIDTH = 500;
+
 export function checkDisplayFit(w, h, scr) {
   const s = scr || (typeof screen !== 'undefined' ? screen : null);
   const availWidth = s && s.availWidth ? s.availWidth : null;
   const availHeight = s && s.availHeight ? s.availHeight : null;
-  const out = { availWidth, availHeight, fitsDisplay: true, clampedAxes: [] };
-  if (!w || !h || availWidth == null || availHeight == null) return out;
-  if (w > availWidth) out.clampedAxes.push('width');
+  const out = {
+    availWidth,
+    availHeight,
+    fitsDisplay: true,
+    clampedAxes: [],
+    minWidth: MIN_WINDOW_WIDTH,
+    belowMinWidth: false,
+  };
+  if (!w || !h) return out;
+  // Chrome's own MINIMUM WINDOW WIDTH, which availWidth cannot explain.
+  // MEASURED: 390 -> 500, 400 -> 500, 450 -> 500, 500 -> 500 exact, 600 -> 600.
+  if (w < MIN_WINDOW_WIDTH) {
+    out.belowMinWidth = true;
+    out.clampedAxes.push('width');
+  }
+  if (availWidth == null || availHeight == null) {
+    out.fitsDisplay = out.clampedAxes.length === 0;
+    return out;
+  }
+  if (w > availWidth && !out.clampedAxes.includes('width')) out.clampedAxes.push('width');
   if (h > availHeight) out.clampedAxes.push('height');
   out.fitsDisplay = out.clampedAxes.length === 0;
   return out;
@@ -210,8 +256,14 @@ export function presetFitness(values, scr) {
     const fit = checkDisplayFit(w, h, scr);
     if (fit.fitsDisplay) { out.push({ value: v, fits: true, reason: null, suffix: '' }); continue; }
     const axes = fit.clampedAxes;
-    const reason =
-      axes.length === 2 ? 'too large for this display'
+    // `belowMinWidth` is NOT a display problem -- 390 is far below the 1470
+    // available, yet Chrome still widens it to 500. Calling that "too wide for
+    // this display" would be the same false attribution the warning copy had.
+    const reason = fit.belowMinWidth
+      ? (axes.length === 2
+          ? 'narrower than Chrome\'s ' + fit.minWidth + 'px minimum, and too tall'
+          : 'narrower than Chrome\'s ' + fit.minWidth + 'px minimum window width')
+      : axes.length === 2 ? 'too large for this display'
       : axes[0] === 'height' ? 'too tall for this display'
       : 'too wide for this display';
     out.push({ value: v, fits: false, reason, suffix: ' (' + reason + ')' });
@@ -222,23 +274,33 @@ export function presetFitness(values, scr) {
 /** Human-readable warning for the panel, or null when the request fits. */
 export function displayFitWarning(w, h, fit) {
   if (!fit || fit.fitsDisplay || !fit.clampedAxes.length) return null;
-  const axes = fit.clampedAxes.join(' and ');
-  const capped =
-    Math.min(w, fit.availWidth) + 'x' + Math.min(h, fit.availHeight);
+  // Terse, and per-cause. The previous copy attributed EVERY clamp to the display
+  // -- measured wrong: a 390-wide request is clamped to 500 by Chrome's minimum
+  // window width, and 390 is nowhere near the 1470 available. Saying "it exceeds
+  // the usable display" there is simply false.
+  const reasons = [];
+  if (fit.belowMinWidth) {
+    reasons.push('width ' + w + ' is below Chrome\'s ' + fit.minWidth + 'px minimum window width');
+  } else if (fit.availWidth != null && w > fit.availWidth) {
+    reasons.push('width ' + w + ' exceeds the usable ' + fit.availWidth);
+  }
+  if (fit.availHeight != null && h > fit.availHeight) {
+    reasons.push('height ' + h + ' exceeds the usable ' + fit.availHeight);
+  }
+  const achievedW = fit.belowMinWidth
+    ? fit.minWidth
+    : fit.availWidth != null
+      ? Math.min(w, fit.availWidth)
+      : w;
+  const achievedH = fit.availHeight != null ? Math.min(h, fit.availHeight) : h;
   return (
-    'Requested ' +
-    w +
+    'Clamped silently: ' +
+    reasons.join('; ') +
+    '. You will get about ' +
+    achievedW +
     'x' +
-    h +
-    ' does not fit the usable display (' +
-    fit.availWidth +
-    'x' +
-    fit.availHeight +
-    ' CSS px). Chrome will clamp the ' +
-    axes +
-    ' silently, so the window will be about ' +
-    capped +
-    ' and the recording will be captured at that size, not the size you asked for.'
+    achievedH +
+    ' and the recording is captured at that size.'
   );
 }
 
