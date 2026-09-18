@@ -342,7 +342,9 @@
             <span class="item__num">3</span>
             <span class="item__title">Starting URL</span>
           </div>
-          <input id="startUrl" type="text" placeholder="https://…" />
+          <input id="startUrl" type="text" placeholder="https://…" list="urlSuggest" autocomplete="off" />
+          <!-- Populated from the live tab list; refreshed with the tab picker. -->
+          <datalist id="urlSuggest"></datalist>
           <div class="hint" id="urlHint">
             Opened as its own window at the size below, so the recorded frame is what you asked for.
           </div>
@@ -359,11 +361,11 @@
           </details>
         </div>
 
-        <!-- 4. Force tab size -->
+        <!-- 4. Force window size -->
         <div class="item">
           <div class="item__top">
             <span class="item__num">4</span>
-            <span class="item__title">Force tab size</span>
+            <span class="item__title">Force window size</span>
           </div>
           <select id="sizePreset">
             <option value="">Custom…</option>
@@ -393,6 +395,8 @@
             the height slightly for window chrome — the achieved size is measured and reported, not
             assumed. 9:16 vertical is what remotion-clipper renders for TikTok/Reels/Shorts.
           </div>
+          <div class="hint" id="presetHint"></div>
+          <div class="warn bad" id="fitWarn" hidden></div>
           <div class="warn" id="resizeWarn" hidden></div>
         </div>
 
@@ -523,7 +527,7 @@
   };
   var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   function createChunkFlusher({
-    slicc,
+    slicc: slicc2,
     withTimeout: withTimeout2,
     partsDir,
     name,
@@ -600,7 +604,7 @@
     }
     async function ensureDir() {
       if (!dirReady) {
-        dirReady = attempt("mkdir", () => slicc.mkdir(partsDir), partWriteTimeoutMs).catch((err) => {
+        dirReady = attempt("mkdir", () => slicc2.mkdir(partsDir), partWriteTimeoutMs).catch((err) => {
           dirReady = null;
           throw err;
         });
@@ -628,7 +632,7 @@
             const bytes = new Uint8Array(
               await new Blob(batch.map((b) => b.blob)).arrayBuffer()
             );
-            await attempt(`write-part-${partIndex}`, () => slicc.writeFileBinary(partName(partIndex), bytes), partWriteTimeoutMs);
+            await attempt(`write-part-${partIndex}`, () => slicc2.writeFileBinary(partName(partIndex), bytes), partWriteTimeoutMs);
             stats.partsWritten++;
             stats.bytesWritten += bytes.length;
             stats.chunksFlushed += batch.length;
@@ -694,10 +698,10 @@
         const expectedBytes = stats.bytesWritten;
         let method = null;
         let err0 = null;
-        if (typeof slicc.exec === "function") {
+        if (typeof slicc2.exec === "function") {
           try {
             const cmd = `cd ${partsDir} && cat *.part > ${destPath}`;
-            const r = await attempt("assemble-exec", () => slicc.exec(cmd), assembleTimeoutMs);
+            const r = await attempt("assemble-exec", () => slicc2.exec(cmd), assembleTimeoutMs);
             if (r && r.exitCode === 0) method = "exec-cat";
             else err0 = new Error(`exec exit ${r && r.exitCode}: ${String(r && r.stderr || "").slice(0, 200)}`);
           } catch (err) {
@@ -709,17 +713,17 @@
         if (!method) {
           diag("chunk-flush:assemble-fallback", { name, reason: err0 && err0.message });
           try {
-            const entries = await attempt("readDir-parts", () => slicc.readDir(partsDir), assembleTimeoutMs);
+            const entries = await attempt("readDir-parts", () => slicc2.readDir(partsDir), assembleTimeoutMs);
             const names = (entries || []).map((e) => typeof e === "string" ? e : e && e.name).filter((n) => n && n.endsWith(".part")).sort();
             const buf = new Uint8Array(expectedBytes);
             let off = 0;
             for (const n of names) {
-              const part = await attempt(`read-part-${n}`, () => slicc.readFileBinary(`${partsDir}/${n}`), partWriteTimeoutMs);
+              const part = await attempt(`read-part-${n}`, () => slicc2.readFileBinary(`${partsDir}/${n}`), partWriteTimeoutMs);
               const u8 = part instanceof Uint8Array ? part : new Uint8Array(part);
               buf.set(u8, off);
               off += u8.length;
             }
-            await attempt("write-assembled", () => slicc.writeFileBinary(destPath, buf.subarray(0, off)), assembleTimeoutMs);
+            await attempt("write-assembled", () => slicc2.writeFileBinary(destPath, buf.subarray(0, off)), assembleTimeoutMs);
             method = "page-fallback";
           } catch (err) {
             stats.assembly = { ok: false, method: "failed", reason: err && err.message, expectedBytes };
@@ -729,7 +733,7 @@
         }
         let actualBytes = null;
         try {
-          const st = await attempt("stat-assembled", () => slicc.stat(destPath), partWriteTimeoutMs);
+          const st = await attempt("stat-assembled", () => slicc2.stat(destPath), partWriteTimeoutMs);
           actualBytes = st && (st.size != null ? st.size : st.length);
         } catch (err) {
           actualBytes = null;
@@ -752,21 +756,21 @@
        * So: `exec` `rm -rf` first, then an explicit file-by-file fallback.
        */
       async cleanup() {
-        if (typeof slicc.exec === "function") {
+        if (typeof slicc2.exec === "function") {
           try {
-            const r = await attempt("cleanup-exec", () => slicc.exec(`rm -rf ${partsDir}`), assembleTimeoutMs);
+            const r = await attempt("cleanup-exec", () => slicc2.exec(`rm -rf ${partsDir}`), assembleTimeoutMs);
             if (r && r.exitCode === 0) return true;
           } catch (err) {
           }
         }
         try {
-          const entries = await attempt("cleanup-readdir", () => slicc.readDir(partsDir), assembleTimeoutMs);
+          const entries = await attempt("cleanup-readdir", () => slicc2.readDir(partsDir), assembleTimeoutMs);
           for (const e of entries || []) {
             const n = typeof e === "string" ? e : e && e.name;
-            if (n) await slicc.rm(`${partsDir}/${n}`).catch(() => {
+            if (n) await slicc2.rm(`${partsDir}/${n}`).catch(() => {
             });
           }
-          await slicc.rm(partsDir).catch(() => {
+          await slicc2.rm(partsDir).catch(() => {
           });
           return true;
         } catch (err) {
@@ -1077,7 +1081,50 @@
     return () => changes;
   }
 
+  // shared/sprinkles/recording-setup/src/track-spread.js
+  function trackDurationSpreadMs(tracks) {
+    const ds = (tracks || []).map((t) => t && typeof t.containerDurationSec === "number" ? t.containerDurationSec : null).filter((d) => d != null && isFinite(d) && d > 0);
+    if (ds.length < 2) return null;
+    return Math.round((Math.max.apply(null, ds) - Math.min.apply(null, ds)) * 1e3);
+  }
+  function shortestTrack(tracks) {
+    let best = null;
+    for (const t of tracks || []) {
+      const d = t && typeof t.containerDurationSec === "number" ? t.containerDurationSec : null;
+      if (d == null || !isFinite(d) || d <= 0) continue;
+      if (!best || d < best.containerDurationSec) best = t;
+    }
+    return best ? { name: best.name, file: best.file, containerDurationSec: best.containerDurationSec } : null;
+  }
+  var TRACK_SPREAD_NOTE = "Tracks do NOT end together. trackDurationSpreadMs is the max-minus-min of the per-track container durations and is INHERENT to capture, not a trim artefact: MediaRecorder stops each recorder independently and the video encoder drops its final partial GOP, so the video track ends first (measured 19.116s video vs 19.919s audio = 803ms, with startOffsetMs ~0 for both, and the gap survives trimming unchanged). Anything muxing these tracks must pad or trim to the SHORTER stream (ffmpeg: -shortest) rather than assume equal length. This is separate from the -c copy keyframe-snap desync noted above.";
+
   // shared/sprinkles/recording-setup/src/target-window.js
+  function normalizeUrlInput(raw) {
+    const t = String(raw == null ? "" : raw).trim();
+    if (!t) return "";
+    const schemeM = /^([a-zA-Z][a-zA-Z0-9+.-]*):(.*)$/.exec(t);
+    if (schemeM) {
+      const rest = schemeM[2];
+      const looksLikePort = /^\d+(?:[/?#]|$)/.test(rest);
+      if (!looksLikePort) return t;
+    }
+    if (t.slice(0, 2) === "//") return "https:" + t;
+    return "https://" + t;
+  }
+  function urlSuggestions(tabs) {
+    const skip = /^(about:|chrome:|chrome-extension:|devtools:|blob:|data:)/i;
+    const seen = /* @__PURE__ */ new Set();
+    const out = [];
+    for (const t of tabs || []) {
+      const u = t && t.url ? String(t.url) : "";
+      if (!u || skip.test(u)) continue;
+      if (!/^https?:\/\//i.test(u)) continue;
+      if (seen.has(u)) continue;
+      seen.add(u);
+      out.push({ url: u, title: (t.title || "").trim() });
+    }
+    return out;
+  }
   function validateUrl(raw) {
     const s = String(raw == null ? "" : raw).trim();
     if (!s) return { ok: false, reason: "empty" };
@@ -1121,6 +1168,47 @@
       }
     }
   }
+  function checkDisplayFit(w, h, scr) {
+    const s = scr || (typeof screen !== "undefined" ? screen : null);
+    const availWidth = s && s.availWidth ? s.availWidth : null;
+    const availHeight = s && s.availHeight ? s.availHeight : null;
+    const out = { availWidth, availHeight, fitsDisplay: true, clampedAxes: [] };
+    if (!w || !h || availWidth == null || availHeight == null) return out;
+    if (w > availWidth) out.clampedAxes.push("width");
+    if (h > availHeight) out.clampedAxes.push("height");
+    out.fitsDisplay = out.clampedAxes.length === 0;
+    return out;
+  }
+  function presetFitness(values, scr) {
+    const out = [];
+    for (const v of values || []) {
+      if (!v) {
+        out.push({ value: v, fits: true, reason: null, suffix: "" });
+        continue;
+      }
+      const m = /^(\d+)x(\d+)$/.exec(v);
+      if (!m) {
+        out.push({ value: v, fits: true, reason: null, suffix: "" });
+        continue;
+      }
+      const w = +m[1], h = +m[2];
+      const fit = checkDisplayFit(w, h, scr);
+      if (fit.fitsDisplay) {
+        out.push({ value: v, fits: true, reason: null, suffix: "" });
+        continue;
+      }
+      const axes = fit.clampedAxes;
+      const reason = axes.length === 2 ? "too large for this display" : axes[0] === "height" ? "too tall for this display" : "too wide for this display";
+      out.push({ value: v, fits: false, reason, suffix: " (" + reason + ")" });
+    }
+    return out;
+  }
+  function displayFitWarning(w, h, fit) {
+    if (!fit || fit.fitsDisplay || !fit.clampedAxes.length) return null;
+    const axes = fit.clampedAxes.join(" and ");
+    const capped = Math.min(w, fit.availWidth) + "x" + Math.min(h, fit.availHeight);
+    return "Requested " + w + "x" + h + " does not fit the usable display (" + fit.availWidth + "x" + fit.availHeight + " CSS px). Chrome will clamp the " + axes + " silently, so the window will be about " + capped + " and the recording will be captured at that size, not the size you asked for.";
+  }
   function describeTargetWindow(opts) {
     const o = opts || {};
     const g = o.geometry || null;
@@ -1135,17 +1223,51 @@
       dpr: g ? g.dpr : null,
       predictedFrame: g && g.dpr ? Math.round(g.ow * g.dpr) + "x" + Math.round(g.oh * g.dpr) : null
     };
+    const fit = o.fit || null;
+    out.availWidth = fit ? fit.availWidth : null;
+    out.availHeight = fit ? fit.availHeight : null;
+    out.fitsDisplay = fit ? fit.fitsDisplay : null;
     if (!o.openedVia) {
       out.note = "no target window was opened";
     } else if (!out.sized) {
       out.note = "window opened UNSIZED via " + out.openedVia + " (no handle, so size features could not apply) \u2014 it inherits the opener\u2019s dimensions; size it manually before recording";
     } else if (!g) {
-      out.note = "opened at the requested size, but the achieved geometry could not be measured";
+      out.note = "opened, but the achieved geometry could not be measured (no target id)" + (fit && !fit.fitsDisplay ? " \u2014 and the requested " + out.requested + " does NOT fit the usable display " + fit.availWidth + "x" + fit.availHeight + ", so Chrome clamped the " + fit.clampedAxes.join(" and ") + "; `sized: true` means the size features were accepted, not achieved" : "");
     } else {
       const exact = out.requested === out.outerAfter;
-      out.note = "opened via " + out.openedVia + "; achieved outer " + out.outerAfter + " at dpr " + g.dpr + " \u2192 frame \u2248 " + out.predictedFrame + (exact ? "" : " (requested " + out.requested + "; Chrome adjusts height for window chrome)");
+      out.note = "opened via " + out.openedVia + "; achieved outer " + out.outerAfter + " at dpr " + g.dpr + " \u2192 frame \u2248 " + out.predictedFrame + (exact ? "" : " (requested " + out.requested + "; " + (fit && !fit.fitsDisplay ? "CLAMPED on " + fit.clampedAxes.join(" and ") + " \u2014 it exceeds the usable display " + fit.availWidth + "x" + fit.availHeight : "Chrome adjusts height for window chrome") + ")");
     }
     return out;
+  }
+  async function openTargetWindowApi(url, w, h, api) {
+    const B = api || typeof slicc !== "undefined" && slicc && slicc.browser || null;
+    if (!B || typeof B.openWindow !== "function") {
+      return { handle: null, openedVia: null, sized: false, unavailable: true };
+    }
+    const opts = { decorated: true };
+    if (w && h) {
+      opts.width = w | 0;
+      opts.height = h | 0;
+    }
+    try {
+      const tab = await B.openWindow(url, opts);
+      const targetId = tab && (tab.targetId || tab) || null;
+      if (!targetId) return { handle: null, openedVia: null, sized: false };
+      return {
+        handle: null,
+        targetId,
+        openedVia: "slicc.browser.openWindow",
+        sized: !!(w && h),
+        decorated: true
+      };
+    } catch (e) {
+      return {
+        handle: null,
+        openedVia: null,
+        sized: false,
+        error: e && e.message || String(e)
+      };
+    }
   }
   function openTargetWindow(url, w, h, win) {
     const W = win || window;
@@ -1177,6 +1299,38 @@
     } catch (e) {
       return { handle: null, openedVia: null, sized: false, error: e && e.message || String(e) };
     }
+  }
+  function newTargetId(before, after) {
+    const prev = new Set(before || []);
+    const added = (after || []).filter((id) => !prev.has(id));
+    if (added.length === 1) return added[0];
+    return null;
+  }
+  function tabIds(tabs) {
+    return (tabs || []).map((t) => t.id).filter(Boolean);
+  }
+  function isNavigated(tabs, id) {
+    const t = (tabs || []).find((x) => x.id === id);
+    if (!t) return false;
+    const u = String(t.url || "");
+    return !!u && u !== "about:blank" && u !== "about:newtab" && u !== "chrome://newtab/";
+  }
+  function landedElsewhere(tabs, id, requestedUrl) {
+    const t = (tabs || []).find((x) => x.id === id);
+    if (!t || !t.url) return null;
+    let a, b;
+    try {
+      a = new URL(t.url);
+    } catch (e) {
+      return null;
+    }
+    try {
+      b = new URL(requestedUrl);
+    } catch (e) {
+      return null;
+    }
+    if (a.hostname === b.hostname) return null;
+    return { landed: t.url, requested: requestedUrl, landedHost: a.hostname, requestedHost: b.hostname };
   }
   function findTargetId(tabs, url) {
     if (!tabs || !tabs.length) return null;
@@ -1239,7 +1393,20 @@
     parseGeometry,
     describeTargetWindow,
     openTargetWindow,
-    findTargetId
+    openTargetWindowApi,
+    findTargetId,
+    checkDisplayFit,
+    displayFitWarning,
+    newTargetId,
+    tabIds,
+    isNavigated,
+    landedElsewhere,
+    normalizeUrlInput,
+    urlSuggestions,
+    presetFitness,
+    trackDurationSpreadMs,
+    shortestTrack,
+    TRACK_SPREAD_NOTE
   };
 })();
     </script>
@@ -1469,6 +1636,7 @@
             // Denial leaves `No camera` / `No microphone` selected, which is a
             // legal configuration — screen-only recording still works.
             resetPickers();
+      refreshPresetFitness();
             revealDeviceControls(); // a denial still needs `No camera` visible
             $('camHint').textContent = denied
               ? 'Permission denied — screen-only recording is still possible (zero video sources is legal).'
@@ -1591,12 +1759,73 @@
           opt.title = (t.title ? t.title + '\n' : '') + t.url;
           sel.appendChild(opt);
         });
+        refreshUrlSuggestions(tabs); // #4: keep autocomplete in step with the picker
         $('tabHint').textContent =
           tabs.length +
           ' tab(s) found' +
           (r && r.exitCode ? ' (tab-list exit ' + r.exitCode + ')' : '') +
           '. Drive the app in a separate tab — never in this panel.';
       }
+      // ---------- #1: disable physically-impossible presets ----------
+      // Read from `screen` at RUNTIME; 1470x956 is one machine's, never hard-coded.
+      // Recomputed on every call so reopening on another display re-evaluates.
+      function refreshPresetFitness() {
+        var sel = $('sizePreset');
+        var vals = [];
+        for (var i = 0; i < sel.options.length; i++) vals.push(sel.options[i].value);
+        var fit = presetFitness(vals, window.screen);
+        var blocked = 0;
+        for (var j = 0; j < sel.options.length; j++) {
+          var o = sel.options[j];
+          var f = fit[j];
+          // Keep a pristine label so repeated calls never double-annotate.
+          if (o.dataset.baseLabel == null) o.dataset.baseLabel = o.textContent;
+          o.textContent = o.dataset.baseLabel + (f && f.suffix ? f.suffix : '');
+          o.disabled = !!(f && !f.fits);
+          if (o.disabled) blocked++;
+        }
+        var s2 = window.screen || {};
+        $('presetHint').textContent =
+          blocked
+            ? blocked +
+              ' preset(s) disabled — larger than this display\u2019s usable area (' +
+              (s2.availWidth || '?') +
+              '\u00d7' +
+              (s2.availHeight || '?') +
+              ' CSS px).'
+            : '';
+      }
+
+      // ---------- #4: autocomplete from the live tab list ----------
+      function refreshUrlSuggestions(tabs) {
+        var dl = $('urlSuggest');
+        if (!dl) return;
+        dl.innerHTML = '';
+        var items = urlSuggestions(tabs || []);
+        for (var i = 0; i < items.length; i++) {
+          var o = document.createElement('option');
+          o.value = items[i].url;
+          if (items[i].title) o.label = items[i].title;
+          dl.appendChild(o);
+        }
+      }
+
+      // ---------- #3: prepend https:// on blur ----------
+      // Shows the normalised value back so the user sees what will actually open.
+      // An explicit http:// is left alone -- never silently upgraded.
+      function normalizeUrlField() {
+        var el = $('startUrl');
+        var before = el.value;
+        var after = normalizeUrlInput(before);
+        if (after !== before) {
+          el.value = after;
+          log('URL normalised to ' + after);
+        }
+        updateHints();
+      }
+      $('startUrl').addEventListener('blur', normalizeUrlField);
+      $('startUrl').addEventListener('change', normalizeUrlField);
+
       $('tabRefresh').onclick = loadTabs;
 
       // ---------- Open Target Window ----------
@@ -1631,12 +1860,42 @@
           showOpenResult('warn bad', 'Enter an http/https URL first (' + v.reason + ').');
           return;
         }
+        // Check the display bounds BEFORE opening: Chrome clamps an oversized
+        // request SILENTLY (measured: 1080x1080 requested on a 1470x956 display
+        // became 1080x809 — height short by 271px, no error). `sized:true` only
+        // means the size features were accepted, never that they were achieved.
+        var fit = checkDisplayFit(c.tabW, c.tabH, window.screen);
+        state.displayFit = fit;
+        var fitWarn = displayFitWarning(c.tabW, c.tabH, fit);
+        if (fitWarn) log('display fit: ' + fitWarn);
         btn.disabled = true;
         btn.textContent = 'Opening\u2026';
-        // Synchronous, inside the gesture -- any await before this would spend the
-        // user activation and the popup would be blocked.
-        var opened = openTargetWindow(v.url, c.tabW, c.tabH, window);
+        // Snapshot the CDP target ids BEFORE opening, so the popup can be found by
+        // SET DIFFERENCE rather than by URL. NOT awaited here: awaiting before
+        // window.open would spend the user activation and the popup would be
+        // blocked. The promise is consumed after the open instead.
+        var beforeIdsP = withTimeout(slicc.exec('playwright-cli tab-list'), 6000, 'tab-list-before')
+          .then(function (rr) {
+            return tabIds(parseTabList(rr && rr.stdout));
+          })
+          .catch(function () {
+            return null; // snapshot unavailable -> fall back to URL matching
+          });
+        // PRIMARY (6.169.0+): slicc.browser.openWindow sizes the FRAME and gives a
+        // DECORATED window (URL bar visible). The frame is the size that matters --
+        // capture resolution follows from it. Needs no user activation (verified
+        // from jsh, which has none), so awaiting here is safe.
+        var opened = await openTargetWindowApi(v.url, c.tabW, c.tabH);
+        if (opened.unavailable) {
+          // FALLBACK (pre-6.169.0). MUST stay synchronous inside the gesture: an
+          // await before window.open spends the user activation and Chrome blocks
+          // the popup. Popup chrome only (67px, no URL bar) -- a browser
+          // limitation, not a setting.
+          log('openWindow unavailable -> window.open fallback (popup chrome)');
+          opened = openTargetWindow(v.url, c.tabW, c.tabH, window);
+        }
         state.targetHandle = opened.handle || null;
+        if (opened.targetId) state.targetId = opened.targetId;
         log(
           'open target: via ' +
             (opened.openedVia || 'nothing') +
@@ -1656,14 +1915,71 @@
           return;
         }
 
-        // Discover the new target id so foregrounding, REC_TAB and the geometry
-        // probe all keep working. Bounded: a failure must never block a take.
+        // Discover the popup's CDP target id. Without it, foregrounding, REC_TAB
+        // and the geometry probe are ALL skipped -- which is exactly what happened
+        // on the 2026-09-18 take: https://www.yahoo.de/ redirected to
+        // consent.yahoo.com, URL matching missed, and targetId/foregroundedTab/
+        // outerAfter/dpr/predictedFrame were all null.
+        //
+        // Primary strategy: SET DIFFERENCE against the pre-open snapshot -- the new
+        // target is the popup whatever it navigates to. Polled, because a popup
+        // still on about:blank is not yet useful. URL matching is last resort.
+        var beforeIds = await beforeIdsP;
         var targetId = null;
-        try {
-          var r = await withTimeout(slicc.exec('playwright-cli tab-list'), 6000, 'tab-list');
-          targetId = findTargetId(parseTabList(r && r.stdout), v.url);
-        } catch (e) {
-          log('tab-list after open failed: ' + (e && e.message));
+        var idVia = null;
+        var landed = null;
+        var attempts = 0;
+        for (var att = 0; att < 6 && !targetId; att++) {
+          attempts = att + 1;
+          if (att) await new Promise(function (r2) { setTimeout(r2, 400); });
+          var tabsNow = null;
+          try {
+            var rr2 = await withTimeout(
+              slicc.exec('playwright-cli tab-list'),
+              6000,
+              'tab-list-after',
+            );
+            tabsNow = parseTabList(rr2 && rr2.stdout);
+          } catch (e) {
+            log('tab-list after open failed: ' + (e && e.message));
+            continue;
+          }
+          var cand = beforeIds ? newTargetId(beforeIds, tabIds(tabsNow)) : null;
+          if (cand) {
+            // Wait for it to leave about:blank so the geometry probe is meaningful.
+            if (!isNavigated(tabsNow, cand) && att < 5) continue;
+            targetId = cand;
+            idVia = 'set-difference';
+            landed = landedElsewhere(tabsNow, cand, v.url);
+            break;
+          }
+          // Last resort: URL matching. Cannot survive a cross-host redirect.
+          var byUrl = findTargetId(tabsNow, v.url);
+          if (byUrl) {
+            targetId = byUrl;
+            idVia = 'url-match';
+            break;
+          }
+        }
+        if (targetId) {
+          log('target id ' + targetId + ' resolved via ' + idVia + ' after ' + attempts + ' attempt(s)');
+          if (landed) {
+            log(
+              'note: the popup landed on a DIFFERENT host than requested — ' +
+                landed.requestedHost +
+                ' \u2192 ' +
+                landed.landedHost +
+                ' (' +
+                landed.landed.slice(0, 90) +
+                '); URL matching would have missed this',
+            );
+          }
+        } else {
+          log(
+            'WARNING: could not resolve the target window id after ' +
+              attempts +
+              ' attempt(s) — foregrounding and the geometry probe will be SKIPPED for this take',
+          );
         }
 
         // Measure the ACHIEVED geometry over CDP. The sprinkle's own handle cannot
@@ -1691,7 +2007,19 @@
           sized: opened.sized,
           targetId: targetId,
           geometry: geom,
+          fit: fit,
         });
+        // So the user learns from the manifest WHY foregrounding/geometry were
+        // skipped, instead of discovering it afterwards.
+        desc.targetIdVia = idVia;
+        desc.targetIdAttempts = attempts;
+        desc.landedElsewhere = landed || null;
+        desc.foregroundingAvailable = !!targetId;
+        if (!targetId) {
+          desc.note =
+            (desc.note || '') +
+            ' — target id UNRESOLVED, so foregrounding and the CDP geometry probe were skipped';
+        }
         state.targetWindow = desc;
         // Make it the recording target so foregrounding / REC_TAB / driver use it.
         if (targetId) {
@@ -1699,7 +2027,7 @@
           log('target window tab id ' + targetId);
         }
         log('open target: ' + desc.note);
-        showOpenResult(desc.sized ? 'warn ok' : 'warn', desc.note);
+        showOpenResult(desc.sized && desc.fitsDisplay !== false ? 'warn ok' : 'warn', desc.note);
         updateHints();
         btn.disabled = false;
         btn.textContent = 'Open Target Window';
@@ -1731,7 +2059,20 @@
       var parseGeometry = __rec.parseGeometry;
       var describeTargetWindow = __rec.describeTargetWindow;
       var openTargetWindow = __rec.openTargetWindow;
+      var openTargetWindowApi = __rec.openTargetWindowApi;
       var findTargetId = __rec.findTargetId;
+      var checkDisplayFit = __rec.checkDisplayFit;
+      var newTargetId = __rec.newTargetId;
+      var tabIds = __rec.tabIds;
+      var isNavigated = __rec.isNavigated;
+      var landedElsewhere = __rec.landedElsewhere;
+      var normalizeUrlInput = __rec.normalizeUrlInput;
+      var urlSuggestions = __rec.urlSuggestions;
+      var presetFitness = __rec.presetFitness;
+      var displayFitWarning = __rec.displayFitWarning;
+      var trackDurationSpreadMs = __rec.trackDurationSpreadMs;
+      var shortestTrack = __rec.shortestTrack;
+      var TRACK_SPREAD_NOTE = __rec.TRACK_SPREAD_NOTE;
       var probeCaptureGeometry = __rec.probeCaptureGeometry;
       var watchCaptureResize = __rec.watchCaptureResize;
 
@@ -1791,6 +2132,19 @@
         // Warn at CONFIGURE time, not only in the log after the fact: for a
         // window/monitor capture this cannot change the frame and it drops
         // devicePixelRatio to 1, which makes the recording look worse.
+        // Display-bounds warning, shown as soon as a size is typed — i.e. BEFORE
+        // the window is opened and before recording starts.
+        var fitNow = checkDisplayFit(c.tabW, c.tabH, window.screen);
+        var fitMsg = displayFitWarning(c.tabW, c.tabH, fitNow);
+        var fw = $('fitWarn');
+        if (fitMsg) {
+          fw.hidden = false;
+          fw.className = 'warn bad';
+          fw.textContent = fitMsg;
+        } else {
+          fw.hidden = true;
+        }
+
         var rw = $('resizeWarn');
         if (c.tabW && c.tabH) {
           rw.hidden = false;
@@ -2710,6 +3064,10 @@
             durationMs: durationMs,
             countdownMs: sess.cfg.countdownSec * 1000,
             maxStartSkewMs: sess.maxStartSkewMs,
+            // Max-minus-min of the per-track container durations. The tracks START
+            // together (maxStartSkewMs ~0) but do NOT END together — see notes[].
+            trackDurationSpreadMs: trackDurationSpreadMs(tracks),
+            shortestTrack: shortestTrack(tracks),
             displaySurface: sess.displaySurface,
             capture: (function () {
               var c = sess.capture || null;
@@ -2745,9 +3103,10 @@
             notes: [
               'countdownMs is the trim-in point: the countdown WAS recorded, cut it away.',
               'startOffsetMs is the timeline origin (never the first chunk flush).',
+              TRACK_SPREAD_NOTE,
               'TRIM WITH AN ACCURATE SEEK, NOT -c copy. MEASURED: `ffmpeg -ss 5 -c copy` snaps to the nearest keyframe and yielded 23.845s for screen vs 25.000s for mic on a 30s take -- a ~1.15s A/V desync. Use -ss AFTER -i, or -accurate_seek, or re-encode.',
               'capture.width/height come from the decoded stream (videoWidth/videoHeight). capture.settingsWidth/Height are track.getSettings(), which reported the DISPLAY (2940x1912) rather than the captured window (2848x750) on a measured take -- prefer width/height, and check geometrySource.',
-              'forcedTabSize is what was REQUESTED of playwright-cli resize; it sets viewport metrics and does NOT resize the OS window, so it never describes the frame.',
+              'forcedTabSize (key kept for compatibility; the UI now calls it window size) is the size REQUESTED of window.open. It is not necessarily achieved: Chrome clamps silently to the usable display, so check targetWindow.fitsDisplay/availWidth/availHeight and prefer capture.width/height for the real frame.',
             ],
           };
           await slicc.writeFile(sess.folder + '/manifest.json', JSON.stringify(manifest, null, 2));
