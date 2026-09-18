@@ -1,4 +1,3 @@
-#!/usr/bin/env jsh
 // screen-recorder — companion CLI for the recording-setup sprinkle.
 //
 // Pre-populates the panel's fields and reads back what a take actually produced,
