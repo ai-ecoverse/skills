@@ -9,7 +9,9 @@ description: Interact with Slack via its Web API — read messages, post to chan
   or activity feed, manage Slack support tickets/help requests, watch a channel for
   updates, or automate any Slack task. Triggers on mentions of Slack, channels, DMs,
   threads, messages, Slackbot, notifications, activity, support requests, help requests,
-  watching/monitoring, or searching message text.
+  watching/monitoring, or searching message text. Also provides slack-ext for admin
+  user-management (guest conversion, guest channels) and Slack app manifest
+  reads and diffs.
 allowed-tools: bash
 ---
 
@@ -554,8 +556,406 @@ Auth is the existing browser session cookie at
 `adobe-dx-support.enterprise.slack.com` — no separate token, since the
 `playwright-cli` commands run in the tab context.
 
+## Admin user management (`slack-ext`)
+
+`slack-ext` exposes Slack's legacy `users.admin.*` namespace for converting
+users between account types and managing guest channel access. It is a
+separate command from `slack` because it uses admin-only API methods that
+require a different usage pattern and carry stronger safety requirements.
+
+**Important caveats before using:**
+
+- **Audit attribution**: every change runs as the admin user whose `xoxc`
+  session token is in use. Slack's audit log attributes the change to THAT
+  HUMAN, not to a bot or app. Operators must understand this before using
+  these commands.
+- **Token restriction**: bot tokens (`xoxb`) are rejected with
+  `not_allowed_token_type`. Only the `xoxc` browser session token works.
+- **Undocumented legacy endpoints**: these methods live in the
+  `users.admin.*` namespace, which is separate from the documented
+  `admin.users.*` namespace. They are not in Slack's public API docs and
+  could change without notice.
+- **Dry-run by default**: every mutating command prints what would happen
+  and exits without making any API call unless `--confirm` is supplied.
+
+### Quick start
+
+```bash
+# Check a user's current type and guest channels
+slack-ext --ws=T06DUTYDQ status W5BPKRLUA
+
+# Convert a member to a single-channel guest (dry run first)
+slack-ext --ws=T06DUTYDQ set-single W5BPKRLUA --channel=C0899S7HV0E
+slack-ext --ws=T06DUTYDQ set-single W5BPKRLUA --channel=C0899S7HV0E --confirm
+
+# Convert a member to a multi-channel guest
+slack-ext --ws=T06DUTYDQ set-multi W5BPKRLUA --confirm
+
+# Promote a guest back to regular member (inverse of set-single / set-multi)
+slack-ext --ws=T06DUTYDQ set-member W5BPKRLUA --confirm
+
+# Add or remove a channel on a multi-channel guest
+slack-ext --ws=T06DUTYDQ add-channel W5BPKRLUA --channel=C0899S7HV0E --confirm
+slack-ext --ws=T06DUTYDQ remove-channel W5BPKRLUA --channel=C0899S7HV0E --confirm
+```
+
+### Available commands
+
+#### slack-ext status \<user_id\>
+
+Show the user's current account type and, for guests, the channels they
+have access to. Read-only; no `--confirm` needed.
+
+Output includes: real name, username, display name, account type
+(regular / multi-channel guest / single-channel guest / bot / deactivated),
+and a channel list for guests.
+
+```bash
+slack-ext --ws=T06DUTYDQ status W5BPKRLUA
+slack-ext --ws=T06DUTYDQ status W5BPKRLUA --json   # include raw users.info object
+```
+
+#### slack-ext set-single \<user_id\> --channel=\<ID\> [--confirm]
+
+Convert a member to a **single-channel guest** (Slack API:
+`users.admin.setUltraRestricted`). The user loses access to all channels
+except the specified one. Requires `--ws` and `--channel`. Without
+`--confirm`, shows what would happen and exits without changing anything.
+
+The API parameter is `channel` (singular) — passing `channels` returns
+`invalid_arguments`. This is a known gotcha; the code and tests enforce it.
+
+#### slack-ext set-multi \<user_id\> [--confirm]
+
+Convert a member to a **multi-channel guest** (API: `users.admin.setRestricted`).
+After converting, use `add-channel` to grant channel access. Requires `--ws`.
+
+#### slack-ext set-member \<user_id\> [--confirm]
+
+Promote a guest back to a **regular member** (API: `users.admin.setRegular`).
+This is the inverse of `set-single` and `set-multi`. Requires `--ws`.
+
+#### slack-ext add-channel \<user_id\> --channel=\<ID\> [--confirm]
+
+Invite a multi-channel guest to an additional channel (`conversations.invite`).
+Requires `--ws` and `--channel`. Already-in-channel returns a no-op message.
+
+#### slack-ext remove-channel \<user_id\> --channel=\<ID\> [--confirm]
+
+Remove a guest from a channel (`conversations.kick`). Requires `--ws` and
+`--channel`. Not-in-channel returns a no-op message.
+
+### Safety policy
+
+Every mutating command enforces four checks before touching Slack:
+
+1. **Explicit confirmation** — `--confirm` is required. Without it the
+   command prints a full dry-run summary and exits 0.
+2. **User resolution** — the target user's real name, handle, and current
+   account type are displayed before any change.
+3. **Bot refusal** — bot users are always rejected. Bot account types are
+   owned by their app; forcing them to guest status would be destructive.
+4. **Already-in-state** — if the user is already in the requested state
+   the command says so and exits without calling Slack.
+
+### Workspace ID (`--ws`)
+
+All commands accept `--ws=<TEAM_ID>` (or `--workspace=<TEAM_ID>`). For
+mutating commands it is required, because `team_id` is a required API
+parameter and silently defaulting to the wrong workspace could affect the
+wrong person. For `status` it falls back to auto-detection from the Slack
+tab URL.
+
+Run `slack workspaces` to list available workspace IDs.
+
+### Verifying without side effects
+
+To confirm that auth, permissions, and parameter shape are all correct
+without changing a real user, use a deliberately invalid user id such as
+`U000000BOGUS0`. A correctly formed call returns `user_not_found`, which
+proves the token and method are working. This was used to verify all three
+`users.admin.*` methods before filing the PR that added this feature.
+
+## App manifest management (`slack-ext app`)
+
+`slack-ext app` wraps Slack's **App Manifest API** so app configuration (name,
+bot scopes, event subscriptions) can be read, reviewed and changed from the CLI
+instead of the app-settings web UI. Reads — `export`, `show`, `validate`, `diff`.
+Writes (all requiring `--confirm`) — `set-scopes`, `set-events`,
+`set-request-url`, `apply`, `token-rotate`.
+
+Why an API and not the web UI: `api.slack.com/apps/<id>/oauth` now 302s into
+`app.slack.com/app-settings/...`, part of the Slack client SPA. In a fresh tab
+it renders zero controls and takes 30+ seconds when it renders at all, and its
+workspace picker is a Slack Kit `.c-basic-select` that ignores every synthetic
+event (clicks on the placeholder and on `.c-select_button`, Enter/Space/ArrowDown
+KeyboardEvents, and a full pointerdown/mousedown/pointerup/mouseup/click
+sequence all leave `aria-expanded="false"`). Verified 2026-09-18. There is
+deliberately no browser automation in these commands.
+
+### The export-modify-update rule
+
+`apps.manifest.update` has **no merge semantics**. Measured live, 2026-09-18:
+
+- **Omitting a field DELETES it.** Omitting `display_information.description`
+  removed it from the live app.
+- **Arrays are REPLACED WHOLESALE.** Sending `bot_events: ["channel_created"]`
+  removed `team_join` outright.
+- **A partial manifest VALIDATES `ok=true`.** A `display_information`-only
+  payload passes `apps.manifest.validate` (re-confirmed live with a real app
+  configuration token), so the API will accept a payload that silently strips
+  the bot user, every scope and every event subscription. The validator catches
+  only *some* incoherence, which is worse than blanket rejection: the dangerous
+  payloads are the ones that pass.
+
+Therefore **every write exports the live manifest, modifies that object, and
+sends the complete result** — never a hand-written partial. This is enforced
+structurally: all five write commands go through one internal helper
+(`updateFromLiveManifest`) that exports first, refuses to continue if the export
+failed or carried no manifest, mutates a clone of it, and is the only call site
+for `apps.manifest.update` in the file.
+
+One measured exception: `display_information.background_color` survived being
+omitted, because it can never be null. That is one field, **not** merge
+semantics — generalising from it is exactly the wrong conclusion.
+
+### The `--allow-deletions` gate
+
+Before any write, the command prints the same leaf-by-leaf diff `app diff`
+produces, and then classifies the deletions:
+
+- **Requested** deletions — what `set-scopes --remove` / `set-events --remove`
+  were explicitly asked to drop — proceed with `--confirm` alone.
+- **Unrequested** deletions — anything outside the field the command owns, and
+  every omission in an `app apply` file — are a **hard stop even with
+  `--confirm`**. The refusal names each one by JSON pointer and nothing is sent.
+  Re-run with `--allow-deletions` once every named deletion is intended.
+
+`app apply` has a second layer: without `--allow-deletions` its payload is the
+file **overlaid on a fresh live export**, so a field the file omits is preserved
+rather than deleted, while the diff shown is still live-vs-FILE so the operator
+sees every omission. With `--allow-deletions` the file is sent as the complete
+manifest and the deletions really happen. The gate and the overlay are
+independent, so a bug in one does not silently wipe an app.
+
+### `permissions_updated` means REINSTALL
+
+`permissions_updated: true` in the update response means the app must be
+**reinstalled** before a newly added scope reaches the live bot token — adding a
+scope to the configuration alone does not grant it, and calls with the old token
+keep failing on `missing_scope` until it is reissued. Every write command surfaces
+this prominently; `--json` reports it as `permissions_updated` and
+`reinstall_required`.
+
+`apps.manifest.create` and `apps.manifest.delete` are real methods and are
+**deliberately never wired up**. Deleting a Slack app is unrecoverable, and
+there is no reason for a CLI to offer it; a guard in the script refuses those
+two method names before any request is made.
+
+### Authentication (a third, separate credential)
+
+These commands use an **app configuration token** (`xoxe.xoxp-...`) sent as
+`Authorization: Bearer <token>`. It is **not** the bot `xoxb` token and **not**
+the `xoxc` session token every other command in this skill uses. There is no
+fallback between them: `xoxb-` and `xoxc-` values are rejected with an
+explanatory error rather than being tried.
+
+Resolution order: `--token=<tok>` → `$SLACK_APP_CONFIG_TOKEN` → skill config key
+`appConfigToken`.
+
+Minting the first token is a **human step in the browser and cannot be
+automated** (the workspace picker is the unautomatable Slack Kit control
+described above):
+
+1. Open `api.slack.com/apps`.
+2. Scroll to **Your App Configuration Tokens**.
+3. **Generate Token** → pick a workspace → **Generate**.
+
+These tokens are short-lived and are rotated with `slack-ext app token-rotate`
+(see below). A SLICC masked secret works: a session secret named
+`SLACK_APP_CONFIG_TOKEN` scoped to `slack.com` is unmasked by the kernel at
+request time. The script therefore does **not** shape-check the token value
+beyond rejecting `xoxb-`/`xoxc-`, because a masked secret is opaque hex inside
+the script.
+
+### Quick start
+
+```bash
+# Human summary of the live app configuration
+slack-ext app show A0123456789
+
+# Save the live manifest, edit it, then see exactly what an update would change
+slack-ext app export A0123456789 --out=./manifest.json
+slack-ext app diff A0123456789 --manifest=./manifest.json
+
+# Ask Slack whether a candidate manifest is well-formed
+slack-ext app validate A0123456789 --manifest=./manifest.json
+
+# Writes: dry run first (prints the diff, changes nothing), then --confirm
+slack-ext app set-scopes A0123456789 --add=reactions:read
+slack-ext app set-scopes A0123456789 --add=reactions:read --confirm
+slack-ext app set-events A0123456789 --remove=team_join --confirm
+slack-ext app set-request-url A0123456789 https://relay.example.com/slack --confirm
+slack-ext app apply A0123456789 --manifest=./manifest.json --confirm
+
+# Rotate the configuration token pair (invalidates the old refresh token)
+slack-ext app token-rotate --confirm
+```
+
+### Available commands
+
+#### slack-ext app export \<app_id\> [--out=\<file\>] [--json]
+
+Fetch the live manifest (`apps.manifest.export`) and pretty-print it, or write
+it to `--out=<file>`. The file form also reports the leaf-field count and prints
+the matching `app diff` command. A real manifest is small — the app used to
+verify this feature has 14 leaf fields / 709 bytes.
+
+#### slack-ext app show \<app_id\> [--json]
+
+Human summary of the live manifest: app name, description and colour, bot user
+display name and always-online flag, every bot scope, the event-subscription
+request URL and each subscribed bot event, plus the notable booleans
+(socket mode, org deploy, token rotation, app-level token rotation, MCP, PKCE).
+
+#### slack-ext app validate \<app_id\> --manifest=\<file\> [--json]
+
+Validate a candidate manifest file (`apps.manifest.validate`). Each error is
+rendered with its **JSON pointer** into the manifest, e.g.
+
+```text
+✗ [illegal_bot_scopes] Illegal bot scopes found `this:is:not:a:real:scope`
+  pointer: /oauth_config/scopes/bot
+```
+
+Exits non-zero when the manifest is rejected. **A pass does not mean safe** — a
+partial manifest validates `ok=true`, so the command tells you to run `app diff`
+before applying anything.
+
+#### slack-ext app diff \<app_id\> --manifest=\<file\> [--json]
+
+Compare a candidate manifest against a fresh live export, leaf field by leaf
+field, and report three separate buckets:
+
+- **DELETIONS** — present live, absent in the candidate. Printed first, in red,
+  with a warning that these fields would be removed and an explanation that
+  arrays are replaced wholesale. Array entries count individually: `bot_events`
+  going from `["channel_created","team_join"]` to `["channel_created"]` is
+  reported as a deletion of `team_join`, not as a modification.
+- **Modifications** — `pointer  old -> new`.
+- **Additions** — fields and array entries the candidate adds.
+
+An identical candidate prints "No changes". `--json` emits
+`{deletions, additions, modifications, changed}` with a JSON pointer on every
+entry. This is the command to run before any manual manifest edit is applied.
+
+#### slack-ext app set-scopes \<app_id\> [--add=a,b] [--remove=c,d] [--confirm]
+
+Add and/or remove bot scopes (`/oauth_config/scopes/bot`). Exports the live
+manifest, adjusts that one array, and updates with the complete result; every
+other field of the manifest travels back unchanged. Additions are appended in
+order and duplicates are ignored; a `--remove` of a scope that is not present is
+reported and changes nothing. At least one of `--add` / `--remove` is required,
+and names are validated (`channels:read`-style) before anything is sent.
+
+```bash
+slack-ext app set-scopes A0123456789 --add=reactions:read            # dry run
+slack-ext app set-scopes A0123456789 --add=reactions:read --confirm
+slack-ext app set-scopes A0123456789 --remove=users:read.email --confirm
+```
+
+A removal you asked for does **not** need `--allow-deletions`. If the diff shows
+any deletion outside `/oauth_config/scopes/bot`, the command refuses.
+
+Almost always reports `permissions_updated: true` — **reinstall the app** before
+expecting the new scope to work.
+
+#### slack-ext app set-events \<app_id\> [--add=a,b] [--remove=c,d] [--confirm]
+
+Same shape for subscribed bot events
+(`/settings/event_subscriptions/bot_events`). Touches nothing else — in
+particular not the scopes array, which is the failure this command's tests pin
+down (`bot_events` and `scopes.bot` are both arrays that Slack replaces
+wholesale). If the manifest has no `event_subscriptions` block yet, the path is
+created and its siblings are left alone.
+
+```bash
+slack-ext app set-events A0123456789 --add=app_mention --confirm
+slack-ext app set-events A0123456789 --remove=team_join --confirm
+```
+
+#### slack-ext app set-request-url \<app_id\> \<https url\> [--confirm]
+
+Set `/settings/event_subscriptions/request_url`. Requires an `https://` URL.
+
+**Slack verifies the URL immediately on save**: it posts a `url_verification`
+challenge and rejects the update unless the endpoint echoes the `challenge` value
+back. The endpoint must already be deployed and answering before this command is
+run, otherwise the update fails and nothing changes.
+
+#### slack-ext app apply \<app_id\> --manifest=\<file\> [--allow-deletions] [--confirm]
+
+Apply a manifest file — the round trip for `app export --out=...`, edit, apply.
+
+The diff shown is live-vs-FILE, so every field the file omits appears as a
+deletion. Without `--allow-deletions` the command refuses when there is any, and
+its payload is the file overlaid on a fresh export (so it could not delete
+anything even if the gate were bypassed). With `--allow-deletions` the file is
+sent as the complete manifest and the deletions take effect.
+
+```bash
+slack-ext app export A0123456789 --out=./manifest.json
+$EDITOR ./manifest.json
+slack-ext app diff  A0123456789 --manifest=./manifest.json     # review first
+slack-ext app apply A0123456789 --manifest=./manifest.json --confirm
+```
+
+#### slack-ext app token-rotate [--refresh-token=\<tok\>] [--confirm] [--json]
+
+Rotate the app configuration token pair via `tooling.tokens.rotate`. The refresh
+token is read from `--refresh-token`, `$SLACK_APP_REFRESH_TOKEN`, or the skill
+config key `appRefreshToken`.
+
+**A rotate INVALIDATES the refresh token it consumes.** Consequences designed
+around:
+
+- `--confirm` is required even though nothing about the app changes, because a
+  speculative rotate throws away a working credential. Rotate on demand, or in
+  response to a `401`/`invalid_auth` — never "just in case".
+- The new pair is written to the skill config (`appConfigToken`,
+  `appRefreshToken`) **before anything else happens with it**. Between the API
+  response and that write, the process holds the only usable copy of the
+  credential: if it died there, only a human could mint a replacement.
+- **If persisting fails, the new pair is printed to stdout.** Printing a secret
+  is normally forbidden because output lands in the agent transcript, but the old
+  refresh token is already dead at that point, so surfacing beats losing it. On
+  the success path only masked forms are shown.
+- `invalid_refresh_token` is reported with the single-use explanation: if the
+  token was already rotated, the pair from *that* rotation is the live one.
+- A response that is `ok` but missing either half of the pair is refused rather
+  than treated as a rotation, so a partial response cannot make the CLI discard
+  a still-valid credential.
+
+### App manifest wire facts (verified live 2026-09-18)
+
+- Requests are **form-encoded** (`application/x-www-form-urlencoded`); a JSON
+  body is rejected with `invalid_arguments`. The `manifest` parameter is a JSON
+  **string**.
+- **Slack answers HTTP 200 with `ok:false` on failure** — a bogus bearer token
+  returned HTTP 200 + `invalid_auth`, and a bad app id returned HTTP 200 +
+  `invalid_app_id`. `body.ok` is the only verdict; reading the HTTP status would
+  report every error as a success.
+- `apps.manifest.export` and `apps.manifest.validate` both answer `not_authed`
+  to an unauthenticated probe (a nonexistent method answers `unknown_method`),
+  which is how the method names were confirmed without a credential.
+- Sending `; charset=utf-8` on the content-type makes Slack add
+  `warning: "superfluous_charset"` to the response body. Harmless.
+
 ## References
 
-- `references/endpoints.md` — full Slack Web API endpoint documentation.
+- `references/endpoints.md` — full Slack Web API endpoint documentation,
+  including the `users.admin.*` admin methods and the `apps.manifest.*` App
+  Manifest API (wire format, update semantics, and the methods deliberately left
+  unwired).
 - `references/watch-architecture.md` — internals of `slack watch` and of
   `slack post`'s reply auto-watch (observer, filter, TTL teardown, state files).
