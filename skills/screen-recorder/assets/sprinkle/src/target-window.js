@@ -1,5 +1,26 @@
 // "Open Target Window" — open a REAL, correctly-sized window to record.
 //
+// STATUS: FALLBACK PATH (runtimes before SLICC 6.169.0).
+//
+// 6.169.0 added real window verbs to the `sliccy:browser` jsh module --
+// `openWindow(url,{width,height,left,top,state,decorated,focus})`,
+// `windowBounds(tab)` and `setWindowBounds(tab,bounds)` -- and those are now the
+// primary route. Prefer them: they need no click, they hand back a TabHandle that
+// every other verb accepts, and they can produce a DECORATED window (title bar +
+// URL bar) at an exact size, which this module fundamentally cannot.
+//
+// This popup path is kept because before 6.169.0 there was NO window API at all.
+// Its limitation is structural: `popup=yes` is what makes Chrome honour the size
+// features, so the result always has popup chrome (measured 67px vs 87px
+// decorated) and can never show a URL bar.
+//
+// UNIT DIFFERENCE -- do not port numbers between the two routes:
+//   window.open(...,'width=W,height=H')  sizes the CONTENT area
+//   browser.openWindow({width,height})   sizes the FRAME, chrome included
+// Measured on 6.169.0: openWindow height 600 -> outerHeight 600, innerHeight 513
+// (87px chrome). Copying a window.open size straight into openWindow leaves the
+// content area short by the chrome height.
+//
 // WHY THIS EXISTS
 // `playwright-cli resize` sets the VIEWPORT only and drops devicePixelRatio
 // from 2 to 1, so "Force tab size" actively LOWERED capture quality and never
@@ -9,6 +30,10 @@
 //
 // `window.open` with width/height features sizes a REAL window and KEEPS dpr 2,
 // so the same two numbers finally mean what the UI claims.
+//
+// Capture resolution is FRAME x dpr. On 6.169.0 read dpr from
+// `browser.windowBounds(tab).dpr` rather than assuming 2; on this path it must be
+// measured over CDP because the opener cannot read a cross-origin popup.
 //
 // MEASURED (live, human-clicked; not reproducible from an agent shell):
 //  * requested 1280x800 -> outer 1280x843, inner 1280x776, dpr 2,
@@ -27,8 +52,11 @@
 //    eval` returns no handle. Only a real gesture can open a popup.
 //  * A DIP cannot open a popup at all, but a `target=_blank` anchor DOES open a
 //    tab -- unsized, inheriting the opener's dimensions.
-//  * There is no CDP passthrough in `playwright-cli`, so `Browser.setWindowBounds`
-//    (the only API that truly sizes an OS window) is unreachable.
+//  * There is no CDP passthrough in `playwright-cli`. That USED to mean OS-window
+//    sizing was unreachable -- no longer true: `require('sliccy:browser')`
+//    .setWindowBounds(tab, bounds) does it directly on 6.169.0+, and returns the
+//    ACHIEVED bounds because Chrome clamps silently (measured: requesting height
+//    1080 yielded 841, with top moved to availTop 33, and nothing threw).
 //
 // HARD PROHIBITION: never call `playwright-cli resize` on the window opened
 // here. It would undo the dpr 2 this path exists to preserve, irreversibly.
