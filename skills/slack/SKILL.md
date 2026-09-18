@@ -10,7 +10,7 @@ description: Interact with Slack via its Web API — read messages, post to chan
   updates, or automate any Slack task. Triggers on mentions of Slack, channels, DMs,
   threads, messages, Slackbot, notifications, activity, support requests, help requests,
   watching/monitoring, or searching message text. Also provides slack-ext for admin
-  user-management: convert members to guests, manage guest channels.
+  user-management (convert members to guests, manage guest channels).
 allowed-tools: bash
 ---
 
