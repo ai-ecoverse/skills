@@ -624,11 +624,14 @@ incoherence (omitting `oauth_config` fails with
 blanket rejection: the dangerous payloads are the ones that pass. Use
 `slack-ext app diff` before applying a manifest.
 
-### POST /api/apps.manifest.update — not wired up (semantics documented)
+### POST /api/apps.manifest.update
 
-Parameters `app_id` + `manifest`; returns `{ok, permissions_updated}`.
+Parameters `app_id` + `manifest` (a JSON string); returns
+`{ok, permissions_updated}`. Used by `slack-ext app set-scopes`, `set-events`,
+`set-request-url` and `apply` — all of which route through one internal helper
+that exports the live manifest first and sends the complete result.
 
-Measured semantics, which any future write path must respect:
+Measured semantics, which every write path must respect:
 
 - **No merge semantics: an omitted field is DELETED** (omitting
   `display_information.description` removed it).
@@ -641,21 +644,37 @@ Measured semantics, which any future write path must respect:
   reinstalled.
 
 So a write must always export the live manifest, modify that object, and send the
-complete result.
+complete result. `slack-ext` enforces that structurally: `updateFromLiveManifest`
+is the only call site for this method, it refuses to proceed when the export
+failed or returned no manifest, and it blocks any deletion the command was not
+explicitly asked to make unless `--allow-deletions` is passed on top of
+`--confirm`.
 
-### POST /api/tooling.tokens.rotate — not wired up
+`permissions_updated` is surfaced on every write. When it is `true` the operator
+is told to reinstall the app at
+`api.slack.com/apps/<app_id>/install-on-team`, because the previously issued bot
+token does not carry the new scope until it is reissued.
 
-Rotates an app configuration token. Authenticates **by argument, not header**:
+### POST /api/tooling.tokens.rotate
+
+Rotates an app configuration token; used by `slack-ext app token-rotate`.
+Returns `{ok, token, refresh_token, team_id, user_id, iat, exp}`.
+Authenticates **by argument, not header**:
 `refresh_token=<bogus>` returns `invalid_refresh_token` (param name confirmed),
 `token=<bogus>` returns `invalid_auth`, and no params returns `invalid_arguments`
 with `missing required field: refresh_token`. Sending an `Authorization: Bearer`
 header alongside a bogus `refresh_token` returned `invalid_auth`, so the header
 takes precedence — a rotate call should be made without one.
 
-Hazard for whoever wires this up: **a rotate invalidates the old refresh token**.
-If the process dies between rotating and persisting, the credential is lost
-permanently. Persist the new pair before using the new access token, and never
-rotate speculatively.
+Hazard: **a rotate invalidates the old refresh token.** If the process dies
+between rotating and persisting, the credential is lost permanently and only a
+human can mint a replacement. `slack-ext app token-rotate` therefore requires
+`--confirm` (never rotate speculatively — only on demand or after a 401), writes
+the new pair to the skill config **before anything else happens with it**, and
+falls back to printing the pair on stdout if that write fails: the old refresh
+token is already dead by then, so surfacing the credential beats losing it. A
+response that is `ok` but missing either half of the pair is refused rather than
+treated as a successful rotation.
 
 ### POST /api/apps.manifest.create, POST /api/apps.manifest.delete — never wired up
 
