@@ -3,7 +3,9 @@
 // MEASURED DEFECT (30s take, /workspace/captures/2026-09-17T15-47-32-388Z):
 // `track.getSettings()` reported **2940x1912** while the encoded frames were
 // constant **2848x750** (sampled at t=0.5/2/4.5/6/28s -- not a mid-stream
-// change). 2940x1912 / 2 = 1470x956, a standard MacBook Air scaled screen;
+// change). 2940x1912 / 2 = 1470x956, a standard MacBook Air scaled screen
+// (screen.width/height -- NOT the usable area, which is availHeight 841; 956 is
+// the right number HERE because getSettings() reported the whole display);
 // 2848x750 / 2 = 1424x375, the Chrome window. So for
 // `displaySurface: "window"` getSettings() described the DISPLAY, not the
 // captured surface.
