@@ -43,6 +43,7 @@ import {
   describeResize,
 } from './tabs.js';
 import { probeCaptureGeometry, watchCaptureResize } from './capture-geometry.js';
+import { trackDurationSpreadMs, shortestTrack, TRACK_SPREAD_NOTE } from './track-spread.js';
 import {
   validateUrl,
   shellQuoteUrl,
@@ -51,7 +52,17 @@ import {
   parseGeometry,
   describeTargetWindow,
   openTargetWindow,
+  openTargetWindowApi,
   findTargetId,
+  checkDisplayFit,
+  displayFitWarning,
+  newTargetId,
+  tabIds,
+  isNavigated,
+  landedElsewhere,
+  normalizeUrlInput,
+  urlSuggestions,
+  presetFitness,
 } from './target-window.js';
 
 window.__rec = {
@@ -82,5 +93,18 @@ window.__rec = {
   parseGeometry,
   describeTargetWindow,
   openTargetWindow,
+  openTargetWindowApi,
   findTargetId,
+  checkDisplayFit,
+  displayFitWarning,
+  newTargetId,
+  tabIds,
+  isNavigated,
+  landedElsewhere,
+  normalizeUrlInput,
+  urlSuggestions,
+  presetFitness,
+  trackDurationSpreadMs,
+  shortestTrack,
+  TRACK_SPREAD_NOTE,
 };
