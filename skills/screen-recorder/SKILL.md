@@ -37,12 +37,43 @@ Separate files per track is deliberate — it is what lets an editor re-cut voic
 1. **Video sources** — cameras, or `No camera`. One `getUserMedia` for cam+mic, so one permission prompt.
 2. **Microphone** — optional.
 3. **Starting URL** — opens a target window at a chosen size, or record a tab already open.
-4. **Force tab size** — the popup's `window.open` dimensions.
+4. **Force window size** — the capture window's **frame** size in DIP pixels, chrome included.
 5. **Driver script** — an optional `sh` script that drives the page while recording.
 6. **Countdown** — recorded, then trimmed via `countdownMs`.
 7. **Max duration** — a ladder from 1 s to 1 h, or ∞ (no auto-stop).
 
 Then **Open Target Window** → **Start recording** / **Take screenshot**.
+
+## Opening the capture window from an agent
+
+On **SLICC 6.169.0+** use the `sliccy:browser` window verbs — no click needed, and this is the
+only route that yields a **decorated** window (title bar and URL bar) at an exact size:
+
+```js
+const browser = require('sliccy:browser');
+const tab = await browser.openWindow('https://example.com',
+  { width: 900, height: 600, left: 50, top: 50, decorated: true });
+
+const b = await browser.windowBounds(tab);       // {left,top,width,height,state,dpr}
+const frame = { w: b.width * b.dpr, h: b.height * b.dpr };   // capture resolution
+```
+
+Three rules, each measured rather than assumed:
+
+- **`width`/`height` are FRAME pixels, chrome included** — requesting height 600 gave
+  `outerHeight` 600 and `innerHeight` 513 (87px of chrome). `window.open` sizes the **content
+  area** instead, so the two are not interchangeable at the same numbers.
+- **Read bounds back; requests are clamped silently.** `setWindowBounds(tab, {height:1080})`
+  returned an achieved height of **841** with `top` moved to 33, and nothing threw. The return
+  value is authoritative.
+- **The usable ceiling is `screen.availHeight` (841 here), not `screen.height` (956)** —
+  discover it at runtime; those are one machine's numbers.
+
+The returned `TabHandle` works with every other verb (`eval`, `fetch`, `cookie`, …), so it is a
+drop-in for `findTab`/`ensureTab`.
+
+**Before 6.169.0** there was no window API, so the panel's `window.open` popup is the fallback —
+popup chrome only, and it cannot produce a decorated window. See `references/window-sizing.md`.
 
 On completion the panel sends a `recording-complete` lick carrying the folder and manifest; on a failed assembly it sends `recording-failed` and keeps the raw parts.
 
@@ -71,6 +102,6 @@ ffmpeg -ss 5 -i screen.webm -i mic.webm -c:v libvpx-vp9 -c:a copy cut.webm
 ## Reference
 
 - `references/recording-mechanics.md` — why the page must not navigate, one-call-then-split, streamed chunk flushing and verified assembly.
-- `references/window-sizing.md` — measured behaviour of every window-sizing route, and which one preserves `devicePixelRatio`.
+- `references/window-sizing.md` — the `sliccy:browser` window API (frame units, silent clamping, `availHeight`), plus the pre-6.169.0 fallback routes and why most of them fail.
 - `references/driver-scripts.md` — the driver contract (`REC_TAB`, `REC_DIR`, `REC_W`, `REC_H`) and why an exit code is not proof of a recording.
 - `references/manifest.md` — every field, and the traps behind each.
