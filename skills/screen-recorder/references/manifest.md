@@ -63,9 +63,19 @@ MediaRecorder writes no EBML duration.
 the tab is the frame. Otherwise it records that the viewport changed while the OS window did
 not, and whether `devicePixelRatio` dropped.
 
-`targetWindow.sized` is true only when a real `window.open` handle allowed size features to
-apply; the anchor fallback reports `sized: false` and `openedVia: "anchor"`.
-`predictedFrame` is `outerWidth × dpr` — cross-check it against `capture.width/height`.
+`targetWindow.sized` is true only when the window was actually sized. On the pre-6.169.0
+`window.open` fallback that means a real handle allowed the size features to apply; the anchor
+fallback reports `sized: false` and `openedVia: "anchor"`.
+
+`predictedFrame` is `frame × dpr` — cross-check it against `capture.width/height`. On 6.169.0+
+take both from `browser.windowBounds(tab)`, whose `width`/`height` are **frame** DIP pixels
+(chrome included) and whose `dpr` should be read rather than assumed.
+
+**`sized: true` never means "the requested size was achieved."** Chrome clamps to the usable
+display area without raising an error — requesting a 1080-tall window yielded **841**
+(`screen.availHeight`, not `screen.height` 956) with `top` moved to `availTop` 33. Always
+prefer the read-back bounds over the request, and discover `availWidth`/`availHeight`/`availTop`
+at runtime rather than hardcoding one machine's numbers.
 
 ## Failure honesty
 
