@@ -22,7 +22,7 @@ export function createBeeper() {
   // consistent with "beeps played to headphones/muted output" and "beeps never
   // fired". A mic recording cannot distinguish those, so the beeper records its
   // OWN outcome into the manifest and the next take is decided from data.
-  const counters = { ticksScheduled: 0, ticksPlayed: 0, gosScheduled: 0, gosPlayed: 0, lastError: null };
+  const counters = { ticksScheduled: 0, ticksPlayed: 0, gosScheduled: 0, gosPlayed: 0, stopChimesScheduled: 0, stopChimesPlayed: 0, lastError: null };
 
   /**
    * Construct + resume the context. MUST be called from a user-gesture handler.
@@ -90,6 +90,31 @@ export function createBeeper() {
     if (beep(660, 0.09)) counters.ticksPlayed++;
   }
 
+  /**
+   * Timer-stop chime: a DESCENDING two-tone, deliberately unlike `go()`'s three
+   * ascending-pitch beeps, so "recording started" and "recording stopped by the
+   * timer" are distinguishable by ear alone -- which matters when the operator is
+   * looking at the recorded window, not at this panel.
+   *
+   * Only fired for stopReason 'max-duration'. A manual Stop needs no cue (the
+   * human already knows) and a track-ended stop is usually the share dialog
+   * closing, which has its own system sound.
+   *
+   * NOTE this plays AFTER the recorders are told to stop, so it is not in the
+   * captured audio -- the countdown ticks ARE (on purpose, they are the trim-in
+   * reference); this one deliberately is not.
+   */
+  function stopChime() {
+    counters.stopChimesScheduled += 2;
+    if (!ctx || unavailable) {
+      counters.lastError = unavailable ? 'audio unavailable' : 'context not armed';
+      return;
+    }
+    const t0 = ctx.currentTime;
+    if (beep(880, 0.11, t0, 0.24)) counters.stopChimesPlayed++;
+    if (beep(587, 0.16, t0 + 0.13, 0.24)) counters.stopChimesPlayed++;
+  }
+
   /** Zero/GO: three shorter, higher beeps in quick succession. */
   function go() {
     counters.gosScheduled += 3;
@@ -134,9 +159,11 @@ export function createBeeper() {
       ticksPlayed: counters.ticksPlayed,
       finalBeepsScheduled: counters.gosScheduled,
       finalBeepsPlayed: counters.gosPlayed,
+      stopChimesScheduled: counters.stopChimesScheduled,
+      stopChimesPlayed: counters.stopChimesPlayed,
       lastError: counters.lastError,
     };
   }
 
-  return { arm, tick, go, state, report, close };
+  return { arm, tick, go, stopChime, state, report, close };
 }
