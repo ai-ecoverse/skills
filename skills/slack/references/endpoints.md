@@ -550,3 +550,124 @@ Remove a user from a channel. Used by `slack-ext remove-channel`.
 - `not_in_channel` — user is not in the channel (treated as no-op)
 - `cant_kick_self` — cannot kick the token owner
 - `cant_kick_from_general` — some workspaces protect #general
+
+## App Manifest API (`apps.manifest.*`, `tooling.tokens.rotate`)
+
+A different API surface from everything above: `https://slack.com/api/` over
+plain HTTPS (not same-origin XHR), authenticated with an **app configuration
+token** (`xoxe.xoxp-...`) in an `Authorization: Bearer` header. This is a third
+credential — not the `xoxb` bot token, not the `xoxc` session token used by every
+other endpoint in this document. Used by `slack-ext app`.
+
+Transport: `Content-Type: application/x-www-form-urlencoded`. A JSON request body
+is rejected with `invalid_arguments`. The `manifest` parameter is a JSON
+**string**, not a nested object.
+
+**Failure is signalled in the body, not the status.** Every failure observed
+returned **HTTP 200** with `{"ok":false,"error":"..."}` — a bogus bearer token
+gave `invalid_auth`, a bad app id gave `invalid_app_id`. Check `body.ok`.
+
+Getting the first token is a manual browser step and cannot be automated:
+`api.slack.com/apps` → "Your App Configuration Tokens" → Generate Token → pick a
+workspace → Generate. (The workspace picker is a Slack Kit `.c-basic-select`
+that ignores synthetic events entirely.)
+
+### POST /api/apps.manifest.export
+
+Fetch the live manifest of an app. Used by `slack-ext app export`, `app show`
+and `app diff`.
+
+**Parameters:**
+| Param | Required | Description |
+|-------|----------|-------------|
+| app_id | yes | App ID (e.g. `A0123456789`) |
+
+**Returns:** `{ok: true, manifest: {...}}`. A real manifest is small: the app used
+to verify this had **14 leaf fields / 709 bytes** — `display_information`
+(`name`, `description`, `background_color`), `features.bot_user`
+(`display_name`, `always_online`), `oauth_config` (`scopes.bot[]`,
+`pkce_enabled`), and `settings` (`event_subscriptions.request_url`,
+`event_subscriptions.bot_events[]`, `org_deploy_enabled`,
+`socket_mode_enabled`, `token_rotation_enabled`,
+`app_level_token_rotation_enabled`, `is_mcp_enabled`).
+
+**Common errors:** `invalid_auth` (bad/expired config token), `invalid_app_id`,
+`app_not_found`.
+
+### POST /api/apps.manifest.validate
+
+Validate a candidate manifest without changing anything. Used by
+`slack-ext app validate`.
+
+**Parameters:**
+| Param | Required | Description |
+|-------|----------|-------------|
+| manifest | yes | The manifest as a JSON string |
+| app_id | no | Validate against an existing app |
+
+**Returns:** `{ok: true, errors: []}` when valid. When invalid:
+`{ok: false, error: "invalid_manifest", errors: [...]}`, where each error carries
+a **JSON pointer** — captured live:
+
+```json
+{"ok":false,"error":"invalid_manifest","errors":[{"code":"illegal_bot_scopes",
+"message":"Illegal bot scopes found `this:is:not:a:real:scope`",
+"pointer":"/oauth_config/scopes/bot"}]}
+```
+
+**A PASS DOES NOT MEAN SAFE.** A `display_information`-only payload returns
+`ok:true, errors: []` (confirmed live), even though applying it would strip the
+bot user, every scope and every event subscription. Validation catches only some
+incoherence (omitting `oauth_config` fails with
+`requires_a_bot_scope@/features/bot_user` and
+`target_component_is_null@/settings/event_subscriptions`), which is worse than
+blanket rejection: the dangerous payloads are the ones that pass. Use
+`slack-ext app diff` before applying a manifest.
+
+### POST /api/apps.manifest.update — not wired up (semantics documented)
+
+Parameters `app_id` + `manifest`; returns `{ok, permissions_updated}`.
+
+Measured semantics, which any future write path must respect:
+
+- **No merge semantics: an omitted field is DELETED** (omitting
+  `display_information.description` removed it).
+- **Arrays are REPLACED WHOLESALE** (`bot_events: ["channel_created"]` removed
+  `team_join`).
+- The single exception measured was `display_information.background_color`, which
+  survived omission because it can never be null. One field, not a pattern.
+- **`permissions_updated: true` means a REINSTALL is required**: a scope added to
+  the configuration does not reach the live bot token until the app is
+  reinstalled.
+
+So a write must always export the live manifest, modify that object, and send the
+complete result.
+
+### POST /api/tooling.tokens.rotate — not wired up
+
+Rotates an app configuration token. Authenticates **by argument, not header**:
+`refresh_token=<bogus>` returns `invalid_refresh_token` (param name confirmed),
+`token=<bogus>` returns `invalid_auth`, and no params returns `invalid_arguments`
+with `missing required field: refresh_token`. Sending an `Authorization: Bearer`
+header alongside a bogus `refresh_token` returned `invalid_auth`, so the header
+takes precedence — a rotate call should be made without one.
+
+Hazard for whoever wires this up: **a rotate invalidates the old refresh token**.
+If the process dies between rotating and persisting, the credential is lost
+permanently. Persist the new pair before using the new access token, and never
+rotate speculatively.
+
+### POST /api/apps.manifest.create, POST /api/apps.manifest.delete — never wired up
+
+Both are real methods (`not_authed` on an unauthenticated probe). `slack-ext`
+refuses both by name before any request is made: deleting a Slack app is
+unrecoverable and there is no reason for a CLI to offer it. Use
+`api.slack.com/apps` if you really mean it.
+
+### Probing a method name without a credential
+
+`curl -s -X POST https://slack.com/api/<method>` with no auth distinguishes real
+from imaginary methods: a real method answers `{"ok":false,"error":"not_authed"}`,
+a nonexistent one answers `{"ok":false,"error":"unknown_method"}`. No credential,
+no side effects. All five `apps.manifest.*` methods answer `not_authed`;
+`apps.manifest.nonexistent` answers `unknown_method`.
