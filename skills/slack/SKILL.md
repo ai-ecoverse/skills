@@ -10,7 +10,8 @@ description: Interact with Slack via its Web API — read messages, post to chan
   updates, or automate any Slack task. Triggers on mentions of Slack, channels, DMs,
   threads, messages, Slackbot, notifications, activity, support requests, help requests,
   watching/monitoring, or searching message text. Also provides slack-ext for admin
-  user-management (convert members to guests, manage guest channels).
+  user-management (guest conversion, guest channels) and Slack app manifest
+  reads and diffs.
 allowed-tools: bash
 ---
 
@@ -675,9 +676,163 @@ without changing a real user, use a deliberately invalid user id such as
 proves the token and method are working. This was used to verify all three
 `users.admin.*` methods before filing the PR that added this feature.
 
+## App manifest management (`slack-ext app`)
+
+`slack-ext app` wraps Slack's **App Manifest API** so app configuration (name,
+bot scopes, event subscriptions) can be read and reviewed from the CLI instead
+of the app-settings web UI. Read-only today: `export`, `show`, `validate`,
+`diff`.
+
+Why an API and not the web UI: `api.slack.com/apps/<id>/oauth` now 302s into
+`app.slack.com/app-settings/...`, part of the Slack client SPA. In a fresh tab
+it renders zero controls and takes 30+ seconds when it renders at all, and its
+workspace picker is a Slack Kit `.c-basic-select` that ignores every synthetic
+event (clicks on the placeholder and on `.c-select_button`, Enter/Space/ArrowDown
+KeyboardEvents, and a full pointerdown/mousedown/pointerup/mouseup/click
+sequence all leave `aria-expanded="false"`). Verified 2026-09-18. There is
+deliberately no browser automation in these commands.
+
+### The export-modify-update rule
+
+`apps.manifest.update` has **no merge semantics**. Measured live, 2026-09-18:
+
+- **Omitting a field DELETES it.** Omitting `display_information.description`
+  removed it from the live app.
+- **Arrays are REPLACED WHOLESALE.** Sending `bot_events: ["channel_created"]`
+  removed `team_join` outright.
+- **A partial manifest VALIDATES `ok=true`.** A `display_information`-only
+  payload passes `apps.manifest.validate` (re-confirmed live with a real app
+  configuration token), so the API will accept a payload that silently strips
+  the bot user, every scope and every event subscription. The validator catches
+  only *some* incoherence, which is worse than blanket rejection: the dangerous
+  payloads are the ones that pass.
+
+Therefore **any write must export the live manifest, modify that object, and
+send the complete result** — never a hand-written partial. `slack-ext app diff`
+is the pre-flight check for that: it compares a candidate against a fresh live
+export, leaf field by leaf field, and lists every **deletion** separately from
+modifications and additions.
+
+One measured exception: `display_information.background_color` survived being
+omitted, because it can never be null. That is one field, **not** merge
+semantics — generalising from it is exactly the wrong conclusion.
+
+When a write path is added, `permissions_updated: true` in the update response
+means the app must be **reinstalled** before a newly added scope reaches the live
+bot token. Adding a scope to the configuration alone does not grant it.
+
+`apps.manifest.create` and `apps.manifest.delete` are real methods and are
+**deliberately never wired up**. Deleting a Slack app is unrecoverable, and
+there is no reason for a CLI to offer it; a guard in the script refuses those
+two method names before any request is made.
+
+### Authentication (a third, separate credential)
+
+These commands use an **app configuration token** (`xoxe.xoxp-...`) sent as
+`Authorization: Bearer <token>`. It is **not** the bot `xoxb` token and **not**
+the `xoxc` session token every other command in this skill uses. There is no
+fallback between them: `xoxb-` and `xoxc-` values are rejected with an
+explanatory error rather than being tried.
+
+Resolution order: `--token=<tok>` → `$SLACK_APP_CONFIG_TOKEN` → skill config key
+`appConfigToken`.
+
+Minting the first token is a **human step in the browser and cannot be
+automated** (the workspace picker is the unautomatable Slack Kit control
+described above):
+
+1. Open `api.slack.com/apps`.
+2. Scroll to **Your App Configuration Tokens**.
+3. **Generate Token** → pick a workspace → **Generate**.
+
+These tokens are short-lived and are rotated through `tooling.tokens.rotate`
+(not wired up here yet). A SLICC masked secret works: a session secret named
+`SLACK_APP_CONFIG_TOKEN` scoped to `slack.com` is unmasked by the kernel at
+request time. The script therefore does **not** shape-check the token value
+beyond rejecting `xoxb-`/`xoxc-`, because a masked secret is opaque hex inside
+the script.
+
+### Quick start
+
+```bash
+# Human summary of the live app configuration
+slack-ext app show A0123456789
+
+# Save the live manifest, edit it, then see exactly what an update would change
+slack-ext app export A0123456789 --out=./manifest.json
+slack-ext app diff A0123456789 --manifest=./manifest.json
+
+# Ask Slack whether a candidate manifest is well-formed
+slack-ext app validate A0123456789 --manifest=./manifest.json
+```
+
+### Available commands
+
+#### slack-ext app export \<app_id\> [--out=\<file\>] [--json]
+
+Fetch the live manifest (`apps.manifest.export`) and pretty-print it, or write
+it to `--out=<file>`. The file form also reports the leaf-field count and prints
+the matching `app diff` command. A real manifest is small — the app used to
+verify this feature has 14 leaf fields / 709 bytes.
+
+#### slack-ext app show \<app_id\> [--json]
+
+Human summary of the live manifest: app name, description and colour, bot user
+display name and always-online flag, every bot scope, the event-subscription
+request URL and each subscribed bot event, plus the notable booleans
+(socket mode, org deploy, token rotation, app-level token rotation, MCP, PKCE).
+
+#### slack-ext app validate \<app_id\> --manifest=\<file\> [--json]
+
+Validate a candidate manifest file (`apps.manifest.validate`). Each error is
+rendered with its **JSON pointer** into the manifest, e.g.
+
+```text
+✗ [illegal_bot_scopes] Illegal bot scopes found `this:is:not:a:real:scope`
+  pointer: /oauth_config/scopes/bot
+```
+
+Exits non-zero when the manifest is rejected. **A pass does not mean safe** — a
+partial manifest validates `ok=true`, so the command tells you to run `app diff`
+before applying anything.
+
+#### slack-ext app diff \<app_id\> --manifest=\<file\> [--json]
+
+Compare a candidate manifest against a fresh live export, leaf field by leaf
+field, and report three separate buckets:
+
+- **DELETIONS** — present live, absent in the candidate. Printed first, in red,
+  with a warning that these fields would be removed and an explanation that
+  arrays are replaced wholesale. Array entries count individually: `bot_events`
+  going from `["channel_created","team_join"]` to `["channel_created"]` is
+  reported as a deletion of `team_join`, not as a modification.
+- **Modifications** — `pointer  old -> new`.
+- **Additions** — fields and array entries the candidate adds.
+
+An identical candidate prints "No changes". `--json` emits
+`{deletions, additions, modifications, changed}` with a JSON pointer on every
+entry. This is the command to run before any manual manifest edit is applied.
+
+### App manifest wire facts (verified live 2026-09-18)
+
+- Requests are **form-encoded** (`application/x-www-form-urlencoded`); a JSON
+  body is rejected with `invalid_arguments`. The `manifest` parameter is a JSON
+  **string**.
+- **Slack answers HTTP 200 with `ok:false` on failure** — a bogus bearer token
+  returned HTTP 200 + `invalid_auth`, and a bad app id returned HTTP 200 +
+  `invalid_app_id`. `body.ok` is the only verdict; reading the HTTP status would
+  report every error as a success.
+- `apps.manifest.export` and `apps.manifest.validate` both answer `not_authed`
+  to an unauthenticated probe (a nonexistent method answers `unknown_method`),
+  which is how the method names were confirmed without a credential.
+- Sending `; charset=utf-8` on the content-type makes Slack add
+  `warning: "superfluous_charset"` to the response body. Harmless.
+
 ## References
 
 - `references/endpoints.md` — full Slack Web API endpoint documentation,
-  including the `users.admin.*` admin methods.
+  including the `users.admin.*` admin methods and the `apps.manifest.*` App
+  Manifest API (wire format, update semantics, and the methods deliberately left
+  unwired).
 - `references/watch-architecture.md` — internals of `slack watch` and of
   `slack post`'s reply auto-watch (observer, filter, TTL teardown, state files).
