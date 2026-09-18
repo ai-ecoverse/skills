@@ -343,29 +343,18 @@
             <span class="item__title">Starting URL</span>
           </div>
           <input id="startUrl" type="text" placeholder="https://…" list="urlSuggest" autocomplete="off" />
-          <!-- Populated from the live tab list; refreshed with the tab picker. -->
+          <!-- Populated from the live tab list (read once at boot). -->
           <datalist id="urlSuggest"></datalist>
           <div class="hint" id="urlHint">
             Opened as its own window at the size below, so the recorded frame is what you asked for.
           </div>
-          <!-- The tab picker is KEPT, de-emphasised: recording an already-open,
-               already-authenticated tab is a legitimate need. Both paths converge
-               on one target id. -->
-          <details id="tabFallback">
-            <summary class="hint">…or record a tab that is already open</summary>
-            <div class="row" style="margin-top: 8px">
-              <select id="tabPick" class="grow"></select>
-              <button id="tabRefresh" type="button" class="icon">Refresh</button>
-            </div>
-            <div class="hint" id="tabHint">Used only when the URL above is empty.</div>
-          </details>
         </div>
 
-        <!-- 4. Force window size -->
+        <!-- 4. Target Window Size -->
         <div class="item">
           <div class="item__top">
             <span class="item__num">4</span>
-            <span class="item__title">Force window size</span>
+            <span class="item__title">Target Window Size</span>
           </div>
           <select id="sizePreset">
             <option value="">Custom…</option>
@@ -382,19 +371,8 @@
             <span class="hint">x</span>
             <input id="tabH" type="number" min="0" step="1" placeholder="height" />
           </div>
-          <!-- These numbers now drive `window.open(url, name, 'popup=yes,width=..,height=..')`,
-               which sizes a REAL window and KEEPS devicePixelRatio 2. The old
-               `playwright-cli resize` path set the viewport only and dropped dpr to 1
-               (irreversibly), which is why this replaced it. MEASURED: 1280x800
-               requested -> outer 1280x843, dpr 2, frame 2560x1686; and outer
-               1424x375 @ dpr2 -> ffprobe frames exactly 2848x750. -->
-          <div class="hint">
-            Size of the window "Open Target Window" creates. <strong>devicePixelRatio is
-            preserved</strong>, so the recorded frame is about
-            <strong>outer width × dpr</strong> (measured: 1424 × 2 = 2848 px wide). Chrome adjusts
-            the height slightly for window chrome — the achieved size is measured and reported, not
-            assumed. 9:16 vertical is what remotion-clipper renders for TikTok/Reels/Shorts.
-          </div>
+          
+          
           <div class="hint" id="presetHint"></div>
           <div class="warn bad" id="fitWarn" hidden></div>
           <div class="warn" id="resizeWarn" hidden></div>
@@ -437,8 +415,7 @@
             <span class="hint">seconds</span>
           </div>
           <div class="hint">
-            Recording starts immediately so nothing is missed; the countdown is recorded and stored
-            as the manifest trim-in point (<code>countdownMs</code>).
+            Recorded, then trimmed via the manifest's <code>countdownMs</code>.
           </div>
         </div>
 
@@ -464,10 +441,6 @@
              no target window, so the start button is NEVER gated on it. -->
         <div class="start">
           <button id="openWinBtn" type="button">Open Target Window</button>
-          <div class="hint" id="openWinHint">
-            Opens the URL above as a correctly-sized window, then measures what Chrome actually gave
-            it. Optional — skip it to record your screen or an existing window.
-          </div>
           <div id="openWinResult" class="warn" hidden></div>
           <button id="startBtn" type="button" class="primary">Start recording</button>
           <div class="hint" id="startHint"></div>
@@ -858,7 +831,7 @@
   function createBeeper() {
     let ctx = null;
     let unavailable = false;
-    const counters = { ticksScheduled: 0, ticksPlayed: 0, gosScheduled: 0, gosPlayed: 0, lastError: null };
+    const counters = { ticksScheduled: 0, ticksPlayed: 0, gosScheduled: 0, gosPlayed: 0, stopChimesScheduled: 0, stopChimesPlayed: 0, lastError: null };
     async function arm() {
       if (unavailable) return null;
       try {
@@ -909,6 +882,16 @@
       counters.ticksScheduled++;
       if (beep(660, 0.09)) counters.ticksPlayed++;
     }
+    function stopChime() {
+      counters.stopChimesScheduled += 2;
+      if (!ctx || unavailable) {
+        counters.lastError = unavailable ? "audio unavailable" : "context not armed";
+        return;
+      }
+      const t0 = ctx.currentTime;
+      if (beep(880, 0.11, t0, 0.24)) counters.stopChimesPlayed++;
+      if (beep(587, 0.16, t0 + 0.13, 0.24)) counters.stopChimesPlayed++;
+    }
     function go() {
       counters.gosScheduled += 3;
       if (!ctx || unavailable) {
@@ -940,10 +923,12 @@
         ticksPlayed: counters.ticksPlayed,
         finalBeepsScheduled: counters.gosScheduled,
         finalBeepsPlayed: counters.gosPlayed,
+        stopChimesScheduled: counters.stopChimesScheduled,
+        stopChimesPlayed: counters.stopChimesPlayed,
         lastError: counters.lastError
       };
     }
-    return { arm, tick, go, state, report, close };
+    return { arm, tick, go, stopChime, state, report, close };
   }
 
   // shared/sprinkles/recording-setup/src/tabs.js
@@ -1154,6 +1139,15 @@
     const id = String(targetId).replace(/[^A-Za-z0-9]/g, "");
     return 'playwright-cli eval "JSON.stringify({ow:outerWidth,oh:outerHeight,iw:innerWidth,ih:innerHeight,dpr:devicePixelRatio})" --tab=' + id;
   }
+  function geometryIsCoherent(g) {
+    if (!g) return false;
+    const n = (v) => typeof v === "number" && isFinite(v) && v > 0;
+    if (!n(g.ow) || !n(g.oh) || !n(g.iw) || !n(g.ih)) return false;
+    if (g.iw > g.ow || g.ih > g.oh) return false;
+    const chrome = g.oh - g.ih;
+    if (chrome < 0 || chrome > 200) return false;
+    return true;
+  }
   function parseGeometry(stdout) {
     const s = String(stdout || "");
     const m = s.match(/\{[^{}]*"ow"[\s\S]*?\}/);
@@ -1168,13 +1162,29 @@
       }
     }
   }
+  var MIN_WINDOW_WIDTH = 500;
   function checkDisplayFit(w, h, scr) {
     const s = scr || (typeof screen !== "undefined" ? screen : null);
     const availWidth = s && s.availWidth ? s.availWidth : null;
     const availHeight = s && s.availHeight ? s.availHeight : null;
-    const out = { availWidth, availHeight, fitsDisplay: true, clampedAxes: [] };
-    if (!w || !h || availWidth == null || availHeight == null) return out;
-    if (w > availWidth) out.clampedAxes.push("width");
+    const out = {
+      availWidth,
+      availHeight,
+      fitsDisplay: true,
+      clampedAxes: [],
+      minWidth: MIN_WINDOW_WIDTH,
+      belowMinWidth: false
+    };
+    if (!w || !h) return out;
+    if (w < MIN_WINDOW_WIDTH) {
+      out.belowMinWidth = true;
+      out.clampedAxes.push("width");
+    }
+    if (availWidth == null || availHeight == null) {
+      out.fitsDisplay = out.clampedAxes.length === 0;
+      return out;
+    }
+    if (w > availWidth && !out.clampedAxes.includes("width")) out.clampedAxes.push("width");
     if (h > availHeight) out.clampedAxes.push("height");
     out.fitsDisplay = out.clampedAxes.length === 0;
     return out;
@@ -1198,16 +1208,25 @@
         continue;
       }
       const axes = fit.clampedAxes;
-      const reason = axes.length === 2 ? "too large for this display" : axes[0] === "height" ? "too tall for this display" : "too wide for this display";
+      const reason = fit.belowMinWidth ? axes.length === 2 ? "narrower than Chrome's " + fit.minWidth + "px minimum, and too tall" : "narrower than Chrome's " + fit.minWidth + "px minimum window width" : axes.length === 2 ? "too large for this display" : axes[0] === "height" ? "too tall for this display" : "too wide for this display";
       out.push({ value: v, fits: false, reason, suffix: " (" + reason + ")" });
     }
     return out;
   }
   function displayFitWarning(w, h, fit) {
     if (!fit || fit.fitsDisplay || !fit.clampedAxes.length) return null;
-    const axes = fit.clampedAxes.join(" and ");
-    const capped = Math.min(w, fit.availWidth) + "x" + Math.min(h, fit.availHeight);
-    return "Requested " + w + "x" + h + " does not fit the usable display (" + fit.availWidth + "x" + fit.availHeight + " CSS px). Chrome will clamp the " + axes + " silently, so the window will be about " + capped + " and the recording will be captured at that size, not the size you asked for.";
+    const reasons = [];
+    if (fit.belowMinWidth) {
+      reasons.push("width " + w + " is below Chrome's " + fit.minWidth + "px minimum window width");
+    } else if (fit.availWidth != null && w > fit.availWidth) {
+      reasons.push("width " + w + " exceeds the usable " + fit.availWidth);
+    }
+    if (fit.availHeight != null && h > fit.availHeight) {
+      reasons.push("height " + h + " exceeds the usable " + fit.availHeight);
+    }
+    const achievedW = fit.belowMinWidth ? fit.minWidth : fit.availWidth != null ? Math.min(w, fit.availWidth) : w;
+    const achievedH = fit.availHeight != null ? Math.min(h, fit.availHeight) : h;
+    return "Clamped silently: " + reasons.join("; ") + ". You will get about " + achievedW + "x" + achievedH + " and the recording is captured at that size.";
   }
   function describeTargetWindow(opts) {
     const o = opts || {};
@@ -1391,6 +1410,8 @@
     popupFeatures,
     windowGeometryCmd,
     parseGeometry,
+    geometryIsCoherent,
+    MIN_WINDOW_WIDTH,
     describeTargetWindow,
     openTargetWindow,
     openTargetWindowApi,
@@ -1734,37 +1755,12 @@
       // Each line: [TARGETID] url "title". Anchor on the leading bracket and
       // the LAST quoted run, because URLs can contain both brackets and quotes.
 
+      // The tab <select> is gone. Target-id discovery still needs the tab list
+      // (set-difference before/after opening the window), and that lives in
+      // openTarget() -- so this is now a no-op kept only so the existing call
+      // sites and the 'reset' update handler do not have to special-case it.
       async function loadTabs() {
-        var sel = $('tabPick');
-        sel.innerHTML = '';
-        sel.appendChild(new Option('Loading…', ''));
-        var r;
-        try {
-          r = await slicc.exec('playwright-cli tab-list');
-        } catch (err) {
-          r = { stdout: '', stderr: String(err && err.message), exitCode: 1 };
-        }
-        var tabs = parseTabList(r && r.stdout);
-        state.tabs = tabs;
-        sel.innerHTML = '';
-        sel.appendChild(new Option('None', ''));
-        tabs.forEach(function (t) {
-          // A <select> is as wide as its widest <option>: a 90-char label
-          // measured ~630px against the ~302px of content a 360px rail gives,
-          // which is what made the panel scroll sideways. 38 chars fits; the
-          // full text stays reachable via the option's title tooltip.
-          var full = t.title || t.url || t.id;
-          var label = full.length > 38 ? full.slice(0, 37) + '\u2026' : full;
-          var opt = new Option(label, t.id);
-          opt.title = (t.title ? t.title + '\n' : '') + t.url;
-          sel.appendChild(opt);
-        });
-        refreshUrlSuggestions(tabs); // #4: keep autocomplete in step with the picker
-        $('tabHint').textContent =
-          tabs.length +
-          ' tab(s) found' +
-          (r && r.exitCode ? ' (tab-list exit ' + r.exitCode + ')' : '') +
-          '. Drive the app in a separate tab — never in this panel.';
+        return;
       }
       // ---------- #1: disable physically-impossible presets ----------
       // Read from `screen` at RUNTIME; 1470x956 is one machine's, never hard-coded.
@@ -1826,7 +1822,6 @@
       $('startUrl').addEventListener('blur', normalizeUrlField);
       $('startUrl').addEventListener('change', normalizeUrlField);
 
-      $('tabRefresh').onclick = loadTabs;
 
       // ---------- Open Target Window ----------
       // Runs in a REAL click handler, which is the only context that can open a
@@ -1994,6 +1989,17 @@
               'window-geometry',
             );
             geom = parseGeometry(g && g.stdout);
+            // MEASURED: a reading once came back outer 500x841 with inner 1200x714
+            // (the SLICC app tab's viewport) -- inner > outer is impossible, and a
+            // manifest carrying it yields a chrome height of 127 instead of 87.
+            // Refuse it rather than record a self-contradictory artefact.
+            if (geom && !geometryIsCoherent(geom)) {
+              log(
+                'geometry probe INCOHERENT (outer ' + geom.ow + 'x' + geom.oh +
+                  ' vs inner ' + geom.iw + 'x' + geom.ih + ') — discarded',
+              );
+              geom = null;
+            }
           } catch (e) {
             log('geometry probe failed: ' + (e && e.message));
           }
@@ -2056,6 +2062,7 @@
       var validateUrl = __rec.validateUrl;
       var shellQuoteUrl = __rec.shellQuoteUrl;
       var windowGeometryCmd = __rec.windowGeometryCmd;
+      var geometryIsCoherent = __rec.geometryIsCoherent;
       var parseGeometry = __rec.parseGeometry;
       var describeTargetWindow = __rec.describeTargetWindow;
       var openTargetWindow = __rec.openTargetWindow;
@@ -2088,13 +2095,13 @@
           cams: state.cams.slice(),
           micDeviceId: $('micPick').value || '',
           micLabel: $('micPick').value ? $('micPick').options[$('micPick').selectedIndex].textContent : '',
-          // The opened target window wins; the picker is the fallback for
-          // recording something already open. Both converge on one id.
-          tabId: state.targetTabId || $('tabPick').value || '',
+          // Only the window this panel opened is ever a target now -- the
+          // "record an already-open tab" path was removed as unnecessary.
+          tabId: state.targetTabId || '',
           startUrl: ($('startUrl').value || '').trim(),
-          // True only for a tab-picker target: `resize` is FORBIDDEN on a popup we
-          // opened (it would drop dpr 2->1 irreversibly).
-          resizeAllowed: !state.targetTabId && !!$('tabPick').value,
+          // Always false now: with the tab picker gone, every target is a window
+          // THIS panel opened, and `resize` on it would drop dpr 2->1 irreversibly.
+          resizeAllowed: false,
           tabW: num('tabW'),
           tabH: num('tabH'),
           driver: ($('driver').value || '').trim(),
@@ -2145,18 +2152,11 @@
           fw.hidden = true;
         }
 
+        // The viewport-resize warning is GONE with the tab-picker path: the window
+        // is opened at the requested FRAME size via slicc.browser.openWindow, so
+        // `playwright-cli resize` (and its irreversible dpr 2->1) never applies.
         var rw = $('resizeWarn');
-        if (c.tabW && c.tabH) {
-          rw.hidden = false;
-          rw.className = 'warn';
-          rw.textContent =
-            'Forcing ' + c.tabW + 'x' + c.tabH + ' resizes the page VIEWPORT only — the OS window ' +
-            'is untouched, and devicePixelRatio drops to 1 (lower captured quality). If you record ' +
-            'a window or a screen, the frame comes from the OS window, so size the window yourself ' +
-            'and leave this empty. Useful only when you share the tab itself.';
-        } else {
-          rw.hidden = true;
-        }
+        if (rw) rw.hidden = true;
 
         var parts = [];
         parts.push(c.cams.length + ' camera(s)');
@@ -2165,6 +2165,9 @@
         if (c.tabW && c.tabH && c.tabId) parts.push('resize ' + c.tabW + 'x' + c.tabH);
         parts.push(shot ? 'screenshot' : infinite ? 'unlimited' : formatDuration(c.maxDurationSec));
         if (c.driver) parts.push('driver ' + c.driver);
+        // Diagnostic, not instruction: dimmed so it reads as debug output rather
+        // than something the operator must act on.
+        $('startHint').style.opacity = '0.5';
         $('startHint').textContent =
           parts.join(' · ') + ' · Chrome will ask for permissions on this click.';
       }
@@ -2216,7 +2219,7 @@
         stepCountdown(1);
       };
 
-      ['micPick', 'tabPick', 'tabW', 'tabH', 'driver', 'countdown', 'maxDur'].forEach(
+      ['micPick', 'tabW', 'tabH', 'driver', 'countdown', 'maxDur'].forEach(
         function (id) {
           $(id).addEventListener('change', updateHints);
           $(id).addEventListener('input', updateHints);
@@ -2865,6 +2868,11 @@
         // huge timeout -- absent. `null * 1000` would be 0 and stop instantly.)
         if (cfg.maxDurationSec !== null) {
           var maxTimer = setTimeout(function () {
+            // Distinct DESCENDING two-tone so "stopped by the timer" is audible
+            // while the operator is watching the RECORDED window, not this panel.
+            // Fired before stopAll so it cannot be mistaken for a teardown sound;
+            // it is outside the captured audio either way.
+            if (state.beeper && state.beeper.stopChime) state.beeper.stopChime();
             stopAll('max-duration');
           }, cfg.maxDurationSec * 1000);
           sess.timers.push(maxTimer);
@@ -3262,6 +3270,170 @@
           }, 'image/png');
         });
       }
+
+      // ---------- updates from the scoop ----------
+      slicc.on('update', function (data) {
+        if (!data) return;
+        if (data.status === 'reset') {
+          state.session = null;
+          state.running = false;
+          clearErr();
+          view('setup');
+          loadTabs();
+        }
+        if (data.status === 'note' && data.message) {
+          log('scoop: ' + data.message);
+        }
+        // `screen-recorder config set …` pushes this so an ALREADY-OPEN panel
+        // picks the new values up without a reload.
+        if (data.type === 'reloadconfig') applyConfigFile(true);
+      });
+
+      // ---------- config.json (companion CLI) ----------
+      // ONE place decides where the sprinkle's runtime config lives; the CLI
+      // (scripts/screen-recorder.jsh) has the same constant and the two must
+      // agree. Shape is flat and matches the input ids, so adding a field to the
+      // panel needs no CLI change beyond its allow-list.
+      var CONFIG_FILE = '/shared/sprinkles/recording-setup/config.json';
+
+      // Every key the CLI may set, mapped to the DOM id it fills. Anything not
+      // listed is ignored rather than trusted -- the file is agent-writable.
+      var CONFIG_FIELDS = {
+        startUrl: 'startUrl',
+        width: 'tabW',
+        height: 'tabH',
+        countdownSec: 'countdown',
+        driver: 'driver',
+      };
+
+      async function readConfigFile() {
+        try {
+          var r = await slicc.readFile(CONFIG_FILE);
+          if (!r) return null;
+          return JSON.parse(String(r));
+        } catch (e) {
+          return null; // absent or malformed -> panel defaults, never a hard fail
+        }
+      }
+
+      async function applyConfigFile(announce) {
+        var cfg = await readConfigFile();
+        if (!cfg) return false;
+        var applied = [];
+        Object.keys(CONFIG_FIELDS).forEach(function (key) {
+          if (cfg[key] === undefined || cfg[key] === null || cfg[key] === '') return;
+          var el = $(CONFIG_FIELDS[key]);
+          if (!el) return;
+          el.value = String(cfg[key]);
+          applied.push(key);
+        });
+        // maxDurationSec is a LADDER INDEX in the UI, not seconds, so it cannot be
+        // assigned directly -- find the index whose value matches.
+        if (cfg.maxDurationSec !== undefined && cfg.maxDurationSec !== null) {
+          var sel = $('maxDur');
+          for (var i = 0; i < sel.options.length; i++) {
+            if (durationForIndex(i) === cfg.maxDurationSec) { sel.value = String(i); applied.push('maxDurationSec'); break; }
+          }
+        }
+        if (applied.length) {
+          syncPresetFromInputs();
+          updateHints();
+          if (announce) log('config applied: ' + applied.join(', '));
+        }
+        return applied.length > 0;
+      }
+
+      // ---------- boot ----------
+      // NO enumerateDevices() at boot: pre-grant it only yields unusable
+      // placeholder entries. The pickers start at `No camera` / `No microphone`
+      // and the real request happens when the user opens a dropdown.
+      resetPickers();
+      renderCams();
+      updateHints();
+      loadTabs();
+      // Prefill from the companion CLI's config.json, if one exists.
+      applyConfigFile(false);
+      if (window.LucideIcons && LucideIcons.render) LucideIcons.render();
+    </script>
+  </body>
+</html>
+    }
+      function canvasToBlob(canvas) {
+        return new Promise(function (resolve, reject) {
+          canvas.toBlob(function (b) {
+            b ? resolve(b) : reject(new Error('canvas.toBlob returned null'));
+          }, 'image/png');
+        });
+      }
+
+      // ---------- updates from the scoop ----------
+      slicc.on('update', function (data) {
+        if (!data) return;
+        if (data.status === 'reset') {
+          state.session = null;
+          state.running = false;
+          clearErr();
+          view('setup');
+          loadTabs();
+        }
+        if (data.status === 'note' && data.message) {
+          log('scoop: ' + data.message);
+        }
+      });
+
+      // ---------- boot ----------
+      // NO enumerateDevices() at boot: pre-grant it only yields unusable
+      // placeholder entries. The pickers start at `No camera` / `No microphone`
+      // and the real request happens when the user opens a dropdown.
+      resetPickers();
+      renderCams();
+      updateHints();
+      loadTabs();
+      if (window.LucideIcons && LucideIcons.render) LucideIcons.render();
+    </script>
+  </body>
+</html>
+deIcons.render) LucideIcons.render();
+    </script>
+  </body>
+</html>
+    }
+      function canvasToBlob(canvas) {
+        return new Promise(function (resolve, reject) {
+          canvas.toBlob(function (b) {
+            b ? resolve(b) : reject(new Error('canvas.toBlob returned null'));
+          }, 'image/png');
+        });
+      }
+
+      // ---------- updates from the scoop ----------
+      slicc.on('update', function (data) {
+        if (!data) return;
+        if (data.status === 'reset') {
+          state.session = null;
+          state.running = false;
+          clearErr();
+          view('setup');
+          loadTabs();
+        }
+        if (data.status === 'note' && data.message) {
+          log('scoop: ' + data.message);
+        }
+      });
+
+      // ---------- boot ----------
+      // NO enumerateDevices() at boot: pre-grant it only yields unusable
+      // placeholder entries. The pickers start at `No camera` / `No microphone`
+      // and the real request happens when the user opens a dropdown.
+      resetPickers();
+      renderCams();
+      updateHints();
+      loadTabs();
+      if (window.LucideIcons && LucideIcons.render) LucideIcons.render();
+    </script>
+  </body>
+</html>
+
 
       // ---------- updates from the scoop ----------
       slicc.on('update', function (data) {
