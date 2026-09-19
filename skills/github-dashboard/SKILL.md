@@ -149,9 +149,9 @@ All at the top of the script, named for tuning:
 Each card shows one plain sentence of status. In the fixture every record
 carries `statusSource: 'placeholder'` because the sentences are hand-written.
 When wired, they are intended to be generated per item from the item's timeline
-by a cheap model (`bedrock-camp:global.anthropic.claude-haiku-4-5-20251001-v1:0`),
-and such records should carry `statusSource: 'agent'` so the two can be told
-apart.
+by a cheap model such as `claude-haiku` — pick whatever small, fast model your
+own provider offers — and such records should carry `statusSource: 'agent'` so
+the two can be told apart.
 
 ## Colours
 

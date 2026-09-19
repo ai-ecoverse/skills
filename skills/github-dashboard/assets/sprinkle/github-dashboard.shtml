@@ -193,10 +193,8 @@
             1fr
           )
         );
-        /* Item A: every row is the same height, and every row is as tall as
-           the tallest card in the whole grid — no pixel constant anywhere.
-           Cards stretch into their cell (default `stretch` alignment). */
-        grid-auto-rows: 1fr;
+        /* Cards size to their own content (pass 5): no grid-auto-rows, so a
+           row is only as tall as each card needs. */
         padding-bottom: var(--s2-spacing-300, 16px);
       }
 
@@ -208,16 +206,14 @@
         padding: var(--s2-spacing-200, 12px);
         border-radius: var(--s2-radius-default, 8px);
         background: var(--s2-bg-layer-1);
-        height: 100%;
       }
       /* Item A: fixed row order with the footer pinned to the bottom edge.
          Row 4 (the status block) absorbs the slack, so the button/timestamp
          row sits flush at the bottom however short the text above it is. */
       .card-inner {
         display: grid;
-        grid-template-rows: auto auto auto 1fr auto;
+        grid-template-rows: auto auto auto auto auto;
         row-gap: 6px;
-        height: 100%;
       }
       /* The framework lifts a card's shadow on hover. A card is not
          clickable (only its link and its three buttons are), so kill the
@@ -246,10 +242,10 @@
         flex-wrap: nowrap;
         align-items: center;
         gap: 6px;
-        /* Item A: pin this row to the glyph's height so a card with tags is
-           not taller than one without. nowrap matters as much as min-height:
-           if the ref and the tags are allowed to wrap onto a second line, a
-           narrow panel makes tagged cards ~23px taller than untagged ones. */
+        /* nowrap and the 20px floor are about THIS row, not about equalising
+           cards: without nowrap the ref and tags wrap onto a second line in a
+           narrow panel, and the floor matches the state glyph's own size so
+           the row cannot collapse if the glyph fails to render. */
         min-height: 20px;
       }
       /* Item D: this is the state signal. Glyph is primary, colour secondary.
@@ -280,6 +276,10 @@
          `org/` prefix above is deliberately left on --fg-faint. */
       .ref .num {
         color: var(--tone);
+        /* The number is the primary token in the identifier; on draft cards it
+           shares the prefix's grey, so weight carries the emphasis instead of
+           colour (pass 5). Colour values are untouched. */
+        font-weight: 600;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -317,16 +317,8 @@
         font-weight: 600;
         line-height: 1.3;
         overflow-wrap: anywhere;
-        /* Item A: card height must not depend on how long a title is, or
-           cards in different groups end up different heights. Exactly two
-           lines — clamped if longer, reserved if shorter — with the full
-           text in title=. `em` keeps it tied to the type, not to a pixel. */
-        display: -webkit-box;
-        -webkit-box-orient: vertical;
-        -webkit-line-clamp: 2;
-        line-clamp: 2;
-        overflow: hidden;
-        min-height: calc(2 * 1.3em);
+        /* Pass 5: no clamp and no reserve — the title wraps to as many lines
+           as it needs and the card grows with it. */
       }
       /* Item D: the textual state chip is gone — glyph + colour + tooltip
          carry the state now, with the coloured top bar as second carrier.
@@ -334,9 +326,8 @@
          hues live on in the --gh-* custom properties. */
       .status {
         font-size: var(--s2-font-size-75, 12px);
-        /* Item A: the height reservation in .card-body is expressed in this
-           token, so the text must use it too — otherwise the inherited 1.45
-           body line-height makes any card with a note 4px taller. */
+        /* Pinned to the token (not the inherited 1.45) so status and note
+           share one rhythm. */
         line-height: var(--s2-line-height-75, 16px);
         color: var(--fg-muted);
         overflow-wrap: anywhere;
@@ -367,16 +358,12 @@
         display: flex;
         gap: 4px;
       }
-      /* Row 4 of the card: holds the clamped status (+ optional note) and
-         absorbs the height slack, so its content stays top-aligned.
-         Item A: reserving three lines (2 status + 1 note) makes the card's
-         height identical in EVERY group, not just within one grid — the
-         reservation is expressed in a line-height token, not a pixel guess. */
+      /* Row 4 of the card: the status (+ optional note). Pass 5 removed the
+         three-line reservation, so this block is only as tall as its text. */
       .card-body {
         display: grid;
         align-content: start;
         row-gap: 4px;
-        min-height: calc(3 * var(--s2-line-height-75, 16px) + 4px);
       }
       /* Item B: icon-only and square, so three fit beside the timestamp even
          in a one-column rail. */
@@ -668,9 +655,9 @@
             real bb instance. Reviewer handles are placeholders too.
 
             `status` is the one-line human summary shown on the card. When
-            wired, it will be generated per item by
-            bedrock-camp:global.anthropic.claude-haiku-4-5-20251001-v1:0
-            from the item's timeline; `statusSource` distinguishes
+            wired, it will be generated per item from the item's timeline by
+            a cheap model such as `claude-haiku` (use whatever small, fast
+            model your own provider offers); `statusSource` distinguishes
             'placeholder' (hand-written here) from 'agent' (model-written).
          ------------------------------------------------------------------ */
 
