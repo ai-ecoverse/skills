@@ -3,15 +3,16 @@ name: tst
 description: |
   Use this when you need to run or write automated tests for JavaScript or TypeScript inside
   SLICC with the bundled `tst` runner. Triggers on "run the tests", "write a test for this",
-  "add unit tests", "does SLICC have a test runner", "node --test doesn't work here",
-  "tst: no test files matched", "prove the bug is fixed", "make the test fail first", or a repo
-  whose `*.test.js` files were written for CI and have never been executed anywhere. Covers the
-  `tst` CLI (default `**/*.test.{js,ts}` glob from cwd, `--reporter=tap|spec`, exit codes), the
-  `tst` module's assertions (`is`, `ok`, `same`, `not`, `any`, `almost`, `throws`, `rejects`,
-  `fail`, `pass`), `test.skip`/`only`/`todo`/`demo`, per-test `timeout`/`retry`/`data`, async
-  tests, why `node:test`, `vitest` and `node:assert` are unavailable in a test realm, and the
-  RED-first / byte-identical-revert / mutation discipline that proves a test exercises the
-  defect instead of merely existing. Not for Playwright or browser-UI testing.
+  "add unit tests", "node --test doesn't work here", "tst: no test files matched",
+  "tst: TypeScript 6 is not installed", "prove the bug is fixed", or a repo whose `*.test.js`
+  files were written for CI and have never been executed anywhere.
+  Covers the one-time TypeScript install `tst` needs before its first run, the `tst` CLI
+  (default `**/*.test.{js,ts}` glob from cwd, `--reporter=tap|spec`, exit codes), the `tst`
+  module's assertions (`is`, `ok`, `same`, `not`, `any`, `almost`, `throws`, `rejects`),
+  `test.skip`/`only`/`todo`/`demo`, per-test `timeout`/`retry`/`data`, async tests, why
+  `node:test`, `vitest` and `node:assert` are unavailable, and the RED-first /
+  byte-identical-revert / mutation discipline that proves a test exercises the defect instead of
+  merely existing. Not for Playwright or browser-UI testing.
 allowed-tools: bash
 ---
 
@@ -19,6 +20,43 @@ allowed-tools: bash
 
 `tst` is SLICC's bundled test runner. It executes `*.test.js` and `*.test.ts` files, each in its
 own realm, and reports TAP by default.
+
+## Step zero: TypeScript must be installed once
+
+`tst` transpiles `.ts` through the TypeScript compiler, and it resolves that compiler **from disk
+before it runs anything** — including a suite made only of `.js` files. On an instance where
+TypeScript has never been installed, every invocation fails like this:
+
+```text
+$ cd /tmp/tstprobe && tst a.test.js
+tst: TypeScript 6 is not installed in node_modules: run `ipk add -g typescript@6.0.3`
+  (no network fallback; searched from /tmp/tstprobe:
+   /tmp/tstprobe/node_modules, /tmp/node_modules, /node_modules, /shared/lib/node_modules)
+```
+
+Install it once per instance, then re-run:
+
+```bash
+ipk add -g typescript@6.0.3     # 'add' and 'install' are the same verb; typescript@6 also works
+ipk list -g                     # confirm: typescript@6.0.3
+```
+
+What is known about this, stated separately from what is guessed:
+
+- **Measured.** With the package absent from all four searched paths, the command above fails for a
+  plain `.js` test file. Running `ipk add -g typescript@6.0.3` — which installs into
+  `/shared/lib/node_modules/typescript` — makes the identical command succeed. Two states, one
+  variable, same build.
+- **Measured.** Moving that same package aside *after* a successful run changes nothing: `tst`
+  keeps running both `.js` tests and freshly created `.ts` tests, exit 0.
+- **Inferred, not proven.** The compiler is resolved from disk at first use and then held in memory
+  for the rest of the session, which is why the error is reachable only *before* the first
+  successful run and why no filesystem change can re-trigger it afterwards. A cold start could not
+  be forced to confirm this, so treat the caching as the best available explanation rather than
+  established behaviour. What matters operationally is the first bullet: install TypeScript before
+  your first `tst` invocation on a fresh instance.
+
+## Running it
 
 ```bash
 tst                          # default glob **/*.test.{js,ts}, walked from cwd
@@ -365,7 +403,7 @@ module that exports the object.
 | A file produces no TAP output at all and exits 1 | It threw while loading — a bad import, or an assertion at module scope outside any `test()` |
 | `local-require resolve error: Debug Failure. Output generation failed` | A relative `.json` import. Convert the fixture to a `.js` module |
 | `tst: cannot require ./mod.js` for a file that exists | The specifier was computed, not a literal. Only literal relative specifiers get bundled |
-| `tst: TypeScript 6 is not installed in node_modules` | Reported on an earlier build. It did **not** reproduce on the build this skill was written against — `.ts` test files still transpiled with the global `typescript` package removed. If you do hit it: `ipk install -g typescript@6` |
+| `tst: TypeScript 6 is not installed in node_modules` | The compiler has never been installed on this instance, and `tst` needs it before it runs anything — even a `.js`-only suite. `ipk add -g typescript@6.0.3`, then re-run. Expect this only on the first invocation of a session: once a run has succeeded, the error stops being reachable even if the package is removed (see Step zero) |
 
 ## Reference
 
