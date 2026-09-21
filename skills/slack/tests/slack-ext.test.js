@@ -177,7 +177,11 @@ async function load(opts) {
 
   // Strip the trailing `await main()` so the module does not auto-execute
   let source = fs.readFileSync(SCRIPT, 'utf8');
-  source = source.replace(/\ntry \{[\s\S]*$/, '\n');
+  // Anchor on the actual trailer (`try { await main(); }`), NOT on the first
+  // top-level `try {` in the file. The greedy form truncated the module at the
+  // first top-level try block, which silently discarded ~1800 lines and made
+  // every test fail with '<fn> is not defined'.
+  source = source.replace(/\ntry \{\s*\n\s*await main\(\);[\s\S]*$/, '\n');
 
   // Append exports of the key internal functions for direct testing
   source += `
