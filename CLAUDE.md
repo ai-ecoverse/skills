@@ -239,6 +239,7 @@ External-CLI-plus-manual-secret-wiring skills lost historically (#52 abandoned);
 - Fork PRs can't reach secret-gated CI; maintainers re-push the branch in-repo rather than using `pull_request_target` (#119→#125, #149).
 - When parallel agents produce duplicate PRs, the first-opened, independently verified one wins — even over a more complete later duplicate (#191 vs #199).
 - Before "fixing" an assumption about the runtime, read the slicc source — the `scripts/`-dir "fix" was a no-op because discovery is recursive (#81).
+- Skill self-tests that should run in CI import `tst`, not `node:test`. The Skill integration workflow boots a live SLICC leader, installs each affected skill, and runs `tst` (#389).
 
 ## 13. .bsh observers (page-injected, not realm)
 
@@ -289,10 +290,20 @@ Set the host theme and the actual rail width. Measure the panel's bounding box; 
 - **Check the full state lifecycle.** Save a draft, switch items, reload the source, close/reopen the panel, and confirm the draft remains attached to the correct item. Delay initialization or source reads where relevant: startup must not overwrite saved state with an empty default, and an old response must not replace a newer selection.
 - **Verify the action and acknowledgement.** Inspect the emitted action, item ID, path, and payload. Check pending-state disabling, repeat clicks, failure/retry, and acknowledgement. Use a test recipient for dispatch checks that would otherwise publish, send messages, or invoke an editing agent; say where that test stops. It proves the UI handoff, not the external operation. Keep the authenticated integration checks from §11 when those operations change.
 - **Clean up instrumentation in `finally`.** Remove the exact listeners/interceptors you installed, including capture listeners that call `stopImmediatePropagation`, and remove temporary fixture commands. Restore test-modified state and leave the intended harness usable. An orphaned test receiver can silently swallow the user's next real action.
-- **Pair browser checks with focused regression tests.** Test contracts such as upsert preservation, CLI override precedence, event payloads, and duplicate dispatch with the shipped implementation. Use browser checks for DOM ranges, iframe behavior, focus, and layout. Add tests for behavior at risk; avoid tests that only repeat static markup. After a fix, rerun the failed flow and affected modes. On the host, Review uses `node --test skills/review/tests/*.test.js`; run `npm run lint:jsh` when `.jsh`/`.bsh` files change.
+- **Pair browser checks with focused regression tests.** Test contracts such as upsert preservation, CLI override precedence, event payloads, and duplicate dispatch with the shipped implementation. Use browser checks for DOM ranges, iframe behavior, focus, and layout. Add tests for behavior at risk; avoid tests that only repeat static markup. After a fix, rerun the failed flow and affected modes. Host-side Review tests still use `node --test skills/review/tests/*.test.js` and are skipped by the live SLICC job until they import `tst` (see §16). Run `npm run lint:jsh` when `.jsh`/`.bsh` files change.
 
 ### Screenshot and PR evidence
 
 Capture before/after screenshots with the same fixtures, theme, rail width, and scroll position. Wait for observable readiness (content loaded, intended state visible) rather than an arbitrary sleep. Inspect each image before claiming the layout works. Capture the whole sprinkle, and include the interaction/error state when that is what changed. Include the surrounding host when dock placement or resizing matters. Keep temporary scripts and captures outside the repository unless they are intended fixtures.
 
 Attach screenshots to the UI PR with captions identifying theme, rail width, and state. Uploaded image URLs must actually render on GitHub; local file links in a PR body are not attachments. State which flows and runtime were tested, whether dispatch used a test recipient, relevant console errors, and any untested behavior. Check the final PR body after upload and replace stale “after” images when the design changes. The Review work in [PR #369](https://github.com/ai-ecoverse/skills/pull/369) provides examples of the four-mode evidence and protocol tests.
+
+## 16. Skill self-tests (live SLICC CI)
+
+`.github/workflows/skill-integration.yml` boots a hosted SLICC leader on the GitHub runner ([`packages/github-workflow`](https://github.com/ai-ecoverse/slicc/tree/main/packages/github-workflow)), copies each canonical skill the PR touched into `/workspace/skills/<name>`, and self-tests it with the bundled `tst` runner.
+
+- **Runner.** There is no `node --test` in SLICC (`node: unsupported option '--test'`, exit 9) and no `node:assert`. Write `*.test.{js,ts}` files that `import test, { is } from 'tst'`. `require('node:test')` files are detected and skipped — they cannot load in the test realm (#389).
+- **Prerequisite.** `tst` resolves TypeScript from disk before it runs anything, including a `.js`-only suite. The job runs `ipk add -g typescript@6.0.3` once per instance.
+- **What the job proves.** The skill installs on a live leader, and every `tst` file in it exits 0. A missing suite is an install-only skip, not a failure. A failing canary (the runner itself) fails the check.
+- **Realm limits.** A tst file can import `'tst'` and literal relative specifiers. `fs`, `path`, and every `sliccy:*` bridge fail with `tst: cannot require <name>`, so bridge-using modules need their I/O injected. Presence is not function: prove new assertions RED against the unfixed code before you keep them.
+

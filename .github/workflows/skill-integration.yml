@@ -1,0 +1,202 @@
+name: Skill integration
+
+# Live-SLICC self-test for skills touched by a PR.
+#
+# 1. Detect which canonical skills changed (same matcher as tessl-review).
+# 2. Boot a hosted SLICC leader on the runner via ai-ecoverse/slicc's
+#    github-workflow composite actions.
+# 3. Copy each affected skill from the PR checkout into /workspace/skills/<name>.
+# 4. Install TypeScript (tst's first-use prerequisite), prove the bundled `tst`
+#    runner with a canary suite, then run every *.test.{js,ts} file that imports
+#    `tst`. Files that require('node:test') are skipped — they cannot load in the
+#    SLICC test realm (ai-ecoverse/skills#389).
+# 5. The job fails when the canary, an install, or a tst suite fails. Skips are
+#    reported in the step summary and do not fail the check.
+#
+# No model provider is required: the leader is driven with `slicc exec`, not a prompt.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'skills/**'
+      - '.github/workflows/skill-integration.yml'
+      - 'tools/detect-skill-integration.mjs'
+      - 'tools/detect-skill-integration.test.mjs'
+      - 'tools/detect-tessl-changes.mjs'
+      - 'tools/run-skill-integration.sh'
+  workflow_dispatch:
+    inputs:
+      skill:
+        description: Canonical skill name to test. Empty tests every canonical skill.
+        required: false
+        default: ''
+
+concurrency:
+  group: skill-integration-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  integrate:
+    name: Live SLICC self-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Unit-test the detector
+        run: node --test tools/detect-skill-integration.test.mjs
+
+      - name: Detect affected skills
+        id: detect
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          DISPATCH_SKILL: ${{ github.event.inputs.skill || '' }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/skill-integration"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ -n "$DISPATCH_SKILL" ]; then
+              DETECTED=$(node tools/detect-skill-integration.mjs \
+                --tsv-file "$RUNNER_TEMP/skill-integration/targets.tsv" \
+                --skill "$DISPATCH_SKILL")
+            else
+              DETECTED=$(node tools/detect-skill-integration.mjs \
+                --tsv-file "$RUNNER_TEMP/skill-integration/targets.tsv" \
+                --all)
+            fi
+          else
+            CHANGED_FILES=$(git diff --name-only "origin/$BASE_REF...HEAD")
+            DETECTED=$(printf '%s\n' "$CHANGED_FILES" | node tools/detect-skill-integration.mjs \
+              --tsv-file "$RUNNER_TEMP/skill-integration/targets.tsv")
+          fi
+          printf '%s\n' "$DETECTED" | tee "$RUNNER_TEMP/skill-integration/targets.json"
+          echo "has_skills=$(jq -r .has_skills <<< "$DETECTED")" >> "$GITHUB_OUTPUT"
+          echo "has_tst=$(jq -r .has_tst <<< "$DETECTED")" >> "$GITHUB_OUTPUT"
+          echo "Detected: $DETECTED"
+
+      - name: Start SLICC leader
+        id: leader
+        uses: ai-ecoverse/slicc/packages/github-workflow/actions/start-leader@main
+        with:
+          duration: 20m
+          mounts: |
+            ${{ github.workspace }}:/mnt/repo
+
+      - name: Install the slicc CLI
+        if: steps.leader.outcome == 'success'
+        uses: ai-ecoverse/slicc/packages/github-workflow/actions/install-cli@main
+
+      - name: Upload target list into the leader
+        id: targets
+        if: steps.leader.outcome == 'success'
+        uses: ai-ecoverse/slicc/packages/github-workflow/actions/write-file@main
+        with:
+          join-url: ${{ steps.leader.outputs.join-url }}
+          path: /tmp/skill-integration-targets.tsv
+          local: ${{ runner.temp }}/skill-integration/targets.tsv
+
+      - name: Install skills and run tst
+        id: selftest
+        if: steps.leader.outcome == 'success' && steps.targets.outcome == 'success'
+        uses: ai-ecoverse/slicc/packages/github-workflow/actions/exec@main
+        with:
+          join-url: ${{ steps.leader.outputs.join-url }}
+          command: bash /mnt/repo/tools/run-skill-integration.sh /tmp/skill-integration-targets.tsv
+          timeout: 15m
+          fail-on-error: 'false'
+          output-file: ${{ runner.temp }}/skill-integration/selftest-stdout.txt
+
+      - name: Fetch the report
+        if: always() && steps.leader.outcome == 'success'
+        continue-on-error: true
+        uses: ai-ecoverse/slicc/packages/github-workflow/actions/read-file@main
+        with:
+          join-url: ${{ steps.leader.outputs.join-url }}
+          path: /workspace/skill-integration/report.md
+          local: ${{ runner.temp }}/skill-integration/report.md
+
+      - name: Fetch the status gate
+        if: always() && steps.leader.outcome == 'success'
+        continue-on-error: true
+        uses: ai-ecoverse/slicc/packages/github-workflow/actions/read-file@main
+        with:
+          join-url: ${{ steps.leader.outputs.join-url }}
+          path: /workspace/skill-integration/status
+          local: ${{ runner.temp }}/skill-integration/status
+
+      - name: Publish summary and gate the check
+        if: always()
+        run: |
+          set -euo pipefail
+          REPORT="$RUNNER_TEMP/skill-integration/report.md"
+          STATUS_FILE="$RUNNER_TEMP/skill-integration/status"
+          STDOUT="$RUNNER_TEMP/skill-integration/selftest-stdout.txt"
+
+          {
+            if [ -f "$REPORT" ]; then
+              cat "$REPORT"
+            else
+              echo '## Skill integration'
+              echo
+              echo 'No report came back from the leader.'
+            fi
+            echo
+            echo '### Job'
+            echo
+            echo "- leader: \`${{ steps.leader.outcome }}\`"
+            echo "- self-test step: \`${{ steps.selftest.outcome }}\` (exit ${{ steps.selftest.outputs.exit-code || 'n/a' }})"
+            echo "- has_skills: \`${{ steps.detect.outputs.has_skills }}\`"
+            echo "- has_tst: \`${{ steps.detect.outputs.has_tst }}\`"
+            if [ -f "$STDOUT" ]; then
+              echo
+              echo '<details><summary>Leader stdout</summary>'
+              echo
+              echo '```'
+              cat "$STDOUT"
+              echo '```'
+              echo
+              echo '</details>'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${{ steps.detect.outcome }}" != 'success' ]; then
+            echo '::error::Failed to detect affected skills'
+            exit 1
+          fi
+          if [ "${{ steps.leader.outcome }}" != 'success' ]; then
+            echo '::error::SLICC leader failed to boot'
+            exit 1
+          fi
+          STATUS=$(tr -d '[:space:]' < "$STATUS_FILE" 2>/dev/null || echo missing)
+          if [ "$STATUS" != pass ]; then
+            echo "::error::Skill integration self-test failed (status=$STATUS)"
+            exit 1
+          fi
+          if [ "${{ steps.selftest.outputs.exit-code }}" != '0' ]; then
+            echo "::error::slicc exec exited ${{ steps.selftest.outputs.exit-code }}"
+            exit 1
+          fi
+
+      - name: Stop leader
+        if: always()
+        uses: ai-ecoverse/slicc/packages/github-workflow/actions/stop-leader@main
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: skill-integration
+          path: |
+            ${{ runner.temp }}/skill-integration/
+            ${{ runner.temp }}/slicc-gw/*.log
+          if-no-files-found: ignore
