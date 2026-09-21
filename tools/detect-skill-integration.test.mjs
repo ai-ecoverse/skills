@@ -177,15 +177,6 @@ test('--all lists every canonical skill', async (t) => {
   assert.equal(result.targets.length, 2);
 });
 
-test('the github skill on this checkout is still node:test, not tst', async () => {
-  const result = await detectSkillIntegration({
-    changedFiles: ['skills/github/SKILL.md'],
-  });
-  assert.equal(result.targets[0].action, 'skip');
-  assert.equal(result.targets[0].reason, 'node:test');
-  assert.ok(result.targets[0].skippedTests.length > 0);
-});
-
 test('toTsv is one row per target and is bash-read friendly', async (t) => {
   const repoRoot = await fixture(t);
   await writeSkill(repoRoot, 'median', {

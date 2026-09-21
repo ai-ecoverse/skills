@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # run-skill-integration.sh — install changed skills on a live SLICC leader and self-test with tst.
 #
-# Usage (inside the leader's virtual shell):
+# Usage (inside the leader's virtual shell — just-bash, no trap/pipefail):
 #   bash /mnt/repo/tools/run-skill-integration.sh /tmp/skill-integration-targets.tsv
 #
 # Record columns (pipe-separated): name, action (tst|skip), reason, comma-separated tst paths, skipped-test count.
@@ -14,8 +14,6 @@ TARGETS=${1:-/tmp/skill-integration-targets.tsv}
 REPO=${REPO_MOUNT:-/mnt/repo}
 SKILLS_ROOT=/workspace/skills
 REPORT_DIR=/workspace/skill-integration
-SAFE_NAME='^[a-z0-9][a-z0-9-]*$'
-SAFE_TEST='^[A-Za-z0-9._/-]+$'
 
 failed=0
 canary_rc=1
@@ -66,28 +64,26 @@ write_report() {
   fi
 }
 
-trap write_report EXIT
+finish() {
+  write_report
+  if [ "$failed" -ne 0 ]; then
+    echo 'SKILL_INTEGRATION_STATUS=fail'
+    exit 1
+  fi
+  echo 'SKILL_INTEGRATION_STATUS=pass'
+  exit 0
+}
 
 if [ ! -d "$REPO/skills" ]; then
   die_env "repo mount missing: $REPO/skills (expected the PR checkout at $REPO)"
-  exit 1
-fi
-
-if ! command -v ipk >/dev/null 2>&1; then
-  die_env 'ipk is not on PATH — this job must run on a SLICC leader'
-  exit 1
-fi
-
-if ! command -v tst >/dev/null 2>&1; then
-  die_env 'tst is not on PATH — the bundled test runner is missing'
-  exit 1
+  finish
 fi
 
 echo '::group::ipk add -g typescript@6.0.3'
 if ! ipk add -g typescript@6.0.3; then
   echo '::endgroup::'
   die_env 'ipk add -g typescript@6.0.3 failed (tst will not run without TypeScript 6)'
-  exit 1
+  finish
 fi
 ipk list -g || true
 echo '::endgroup::'
@@ -102,7 +98,9 @@ test('tst runner is alive', () => {
 EOF
   echo '::group::tst canary'
   canary_rc=0
-  (cd /tmp/tst-canary && tst --reporter=tap) >/tmp/tst-canary/canary.tap 2>&1 || canary_rc=$?
+  cd /tmp/tst-canary
+  tst --reporter=tap > /tmp/tst-canary/canary.tap 2>&1 || canary_rc=$?
+  cd "$REPO"
   cat /tmp/tst-canary/canary.tap
   cp /tmp/tst-canary/canary.tap "$REPORT_DIR/canary.tap"
   echo '::endgroup::'
@@ -151,6 +149,7 @@ install_skill() {
   return 0
 }
 
+# just-bash has no arrays: rebuild $@ from a comma-separated list.
 run_tst() {
   name=$1
   tests_csv=$2
@@ -159,18 +158,18 @@ run_tst() {
   set --
   old_ifs=$IFS
   IFS=,
-  # shellcheck disable=SC2086
   for rel in $tests_csv; do
     IFS=$old_ifs
     case "$rel" in
       '') continue ;;
-    esac
-    if ! printf '%s' "$rel" | grep -Eq "$SAFE_TEST"; then
-      echo "::error title=$name tst::refusing unsafe test path $rel"
-      return 1
-    fi
-    case "$rel" in
-      *..*) echo "::error title=$name tst::refusing test path $rel"; return 1 ;;
+      *..*|/*|*/)
+        echo "::error title=$name tst::refusing test path $rel"
+        return 1
+        ;;
+      *[!A-Za-z0-9._/-]*)
+        echo "::error title=$name tst::refusing unsafe test path $rel"
+        return 1
+        ;;
     esac
     set -- "$@" "$rel"
   done
@@ -181,7 +180,9 @@ run_tst() {
   fi
   echo "::group::tst $name $*"
   rc=0
-  (cd "$dst" && tst --reporter=tap "$@") >"$tap" 2>&1 || rc=$?
+  cd "$dst"
+  tst --reporter=tap "$@" >"$tap" 2>&1 || rc=$?
+  cd "$REPO"
   cat "$tap"
   echo '::endgroup::'
   if [ "$rc" -ne 0 ]; then
@@ -204,12 +205,23 @@ while IFS='|' read -r name action reason tst_tests skip_count || [ -n "${name:-}
   case "$name" in
     '' | '#'*) continue ;;
   esac
-  if ! printf '%s' "$name" | grep -Eq "$SAFE_NAME"; then
-    echo "::error title=skill integration::refusing unsafe skill name $name"
-    append_row "$name" '—' 'refused' 'fail'
-    failed=1
-    continue
-  fi
+  case "$name" in
+    *[!a-z0-9-]* | '' | -*)
+      echo "::error title=skill integration::refusing unsafe skill name $name"
+      append_row "$name" '—' 'refused' 'fail'
+      failed=1
+      continue
+      ;;
+  esac
+  case "$name" in
+    [a-z0-9]*) ;;
+    *)
+      echo "::error title=skill integration::refusing unsafe skill name $name"
+      append_row "$name" '—' 'refused' 'fail'
+      failed=1
+      continue
+      ;;
+  esac
 
   echo "::group::install $name"
   if ! install_skill "$name"; then
@@ -280,9 +292,4 @@ while IFS='|' read -r name action reason tst_tests skip_count || [ -n "${name:-}
   } >>"$REPORT_DIR/details.md"
 done <"$TARGETS"
 
-if [ "$failed" -ne 0 ]; then
-  echo 'SKILL_INTEGRATION_STATUS=fail'
-  exit 1
-fi
-echo 'SKILL_INTEGRATION_STATUS=pass'
-exit 0
+finish

@@ -11,6 +11,7 @@
 // prove anything about the live Brave/Exa/Tavily responses.
 
 const { readFileSync } = require('node:fs');
+const path = require('node:path');
 
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 
@@ -74,6 +75,9 @@ async function runJsh(scriptPath, argv, env, fetchImpl) {
   const req = (name) => {
     if (name === 'sliccy:cli') return cli;
     if (name === 'sliccy:color') return color;
+    if (name.startsWith('./') || name.startsWith('../')) {
+      return require(path.join(path.dirname(scriptPath), name));
+    }
     throw new Error(`jsh-runtime: unsupported require(${name})`);
   };
 
