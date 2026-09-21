@@ -239,7 +239,11 @@ async function load(opts) {
   };
 
   let source = fs.readFileSync(SCRIPT, 'utf8');
-  source = source.replace(/\ntry \{[\s\S]*$/, '\n');
+  // Anchor on the actual trailer (`try { await main(); }`), NOT on the first
+  // top-level `try {` in the file. The greedy form truncated the module at the
+  // first top-level try block, which silently discarded ~1800 lines and made
+  // every test fail with '<fn> is not defined'.
+  source = source.replace(/\ntry \{\s*\n\s*await main\(\);[\s\S]*$/, '\n');
   source += `
 return {
   parseArgv,
@@ -1617,7 +1621,21 @@ test('parseList splits on commas and whitespace and rejects a valueless flag', a
   const h = await load({ argv: ['app', 'show', APP_ID] });
   assert.deepEqual(h.mod.parseList('a,b , c', 'add'), ['a', 'b', 'c']);
   assert.deepEqual(h.mod.parseList(undefined, 'add'), []);
-  await expectDie(async () => h.mod.parseList(true, 'add'));
+  // parseList now lives in the pure ./argv.js module, which must not depend on
+  // sliccy:cli, so a valueless flag THROWS instead of calling cli.die. The
+  // user-visible behaviour is unchanged and was measured end to end:
+  //   jsh scripts/slack-ext.jsh app set-scopes A0C2DNYR0TF --add
+  //   -> "slack-ext: --add needs a value, e.g. --add=channels:read", exit 1
+  // because the top-level catch around main() converts the throw via cli.die.
+  // What matters here is that it REFUSES and names the flag - not the class.
+  let plErr;
+  try {
+    h.mod.parseList(true, 'add');
+  } catch (e) {
+    plErr = e;
+  }
+  assert.ok(plErr, 'a valueless --add must be refused, not silently treated as empty');
+  assert.match(plErr.message, /--add needs a value/);
 });
 
 test('maskToken never reveals the whole value', async () => {
