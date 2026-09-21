@@ -69,13 +69,15 @@ async function findGSCTab() {
 // ─── Fetch + parse ────────────────────────────────────────────────────────────
 
 /** Fetch the Search Console performance page via curlwright, returning the raw
- *  HTML string. The request runs inside the GSC tab, carrying its cookies. */
-async function fetchGSCPage(tab, property) {
+ *  HTML string. The request runs inside the GSC tab, carrying its cookies.
+ *
+ *  `opts` is passed to buildReportUrl: { breakdown, query }. */
+async function fetchGSCPage(tab, property, opts = {}) {
   // The account slot comes from the tab, never hard-coded: fetching under the
   // wrong slot returns 200 with a no-access page, which reads like a permission
   // problem. See accountSlotFromUrl in gsc-parse.js.
   const slot = parse.accountSlotFromUrl(tab.url);
-  const url = parse.buildReportUrl(property, slot);
+  const url = parse.buildReportUrl(property, slot, opts);
 
   const { stdout, stderr, exitCode } = await exec.spawn([
     'curlwright', '--tab=' + tab.targetId, '-s', '-S',
@@ -234,6 +236,117 @@ async function cmdQueries(flags) {
   console.log('');
 }
 
+/** Top pages by clicks, optionally restricted to one exact query.
+ *
+ *  The query-filtered form is the one that answers "which URL earns this query's
+ *  impressions" — a question the query table cannot answer at all. */
+async function cmdPages(flags) {
+  const property = resolveProperty(flags);
+  const limit = parseInt(flags.limit, 10) || 0;
+  const query = typeof flags.query === 'string' ? flags.query.trim() : '';
+  if (flags.query !== undefined && query === '') {
+    cli.die('--query needs a value, e.g. --query slicc.', { prefix: 'search-console' });
+  }
+
+  const tab = await findGSCTab();
+  const html = await fetchGSCPage(tab, property, {
+    breakdown: 'page',
+    ...(query ? { query } : {}),
+  });
+  const blocks = orDie(() => parse.parseDataBlocks(html));
+
+  // Before reading a single row: make Search Console state that it applied the
+  // filter. An ignored parameter comes back as HTTP 200 with the UNFILTERED
+  // report, so without this check "pages for query X" would quietly become "all
+  // pages" — the silent-wrong-answer failure this skill exists to avoid.
+  if (query) orDie(() => parse.assertQueryFilterApplied(blocks, query));
+
+  // A filter matching nothing yields totals of [0, 0, "NaN", "NaN"].
+  const { totals } = orDie(() => parse.parseTotalsAndDaily(blocks, { allowNoData: !!query }));
+  const pages = orDie(() => parse.parsePageTable(blocks));
+
+  const shown = limit > 0 ? pages.slice(0, limit) : pages;
+  const delta = parse.pageTableDelta(totals, pages);
+
+  if (flags.json) {
+    cli.out({
+      property,
+      query: query || null,
+      pages: shown,
+      pageTableTotals: { clicks: delta.pageClicks, impressions: delta.pageImpressions },
+      reportTotals: totals,
+      difference: {
+        clicks: delta.clickDelta,
+        impressions: delta.impressionDelta,
+        pageSumExceedsTotals: delta.exceedsTotals,
+      },
+    });
+    return;
+  }
+
+  const scope = query ? `query "${query}"` : 'all queries';
+  console.log('');
+  console.log(`  ${c.bold('Property')}  ${property}  (${scope}, ${pages.length} pages)`);
+  console.log('');
+
+  if (shown.length === 0) {
+    console.log(`  No pages earned impressions for ${scope}.`);
+    console.log(`  ${c.dim('Search Console echoed the filter back, so it was applied and matched nothing.')}`);
+    console.log('');
+    return;
+  }
+
+  printPageRows(shown);
+  printPageFooter({ pages, totals, delta, query });
+}
+
+function printPageRows(shown) {
+  const pw = Math.max(6, ...shown.map((p) => p.page.length));
+  console.log(
+    `  ${c.dim('Page'.padEnd(pw))} ${c.dim('Clicks'.padStart(8))} ${c.dim('Impressions'.padStart(13))} ` +
+    `${c.dim('CTR'.padStart(8))} ${c.dim('Position'.padStart(10))}`,
+  );
+  for (const p of shown) {
+    console.log(
+      `  ${p.page.padEnd(pw)} ${String(p.clicks).padStart(8)} ${String(p.impressions).padStart(13)} ` +
+      `${(p.ctr * 100).toFixed(1).padStart(7)}% ${p.position.toFixed(1).padStart(10)}`,
+    );
+  }
+}
+
+/** The page column does not add up to the totals in either direction, and the two
+ *  directions mean different things, so neither is left implied. */
+function printPageFooter({ pages, totals, delta, query }) {
+  console.log('');
+  console.log(
+    `  ${c.dim('Page table:')} ${delta.pageClicks} clicks, ${delta.pageImpressions} impressions` +
+    ` (${pages.length} pages)`,
+  );
+  console.log(
+    `  ${c.dim(query ? 'Totals for this query:' : 'Property totals:')} ${c.bold(String(totals.clicks))} clicks, ` +
+    `${c.bold(String(totals.impressions))} impressions`,
+  );
+  if (delta.exceedsTotals) {
+    console.log(
+      `  ${c.dim('Page sum exceeds totals by:')} ${delta.clickDelta} clicks, ` +
+      `${delta.impressionDelta} impressions ` +
+      `(+${delta.clickDeltaPct.toFixed(0)}% / +${delta.impressionDeltaPct.toFixed(0)}%)`,
+    );
+    console.log(
+      `  ${c.dim('Note:')} page rows count per page, the totals per search. One result page listing` +
+      ' two of your URLs',
+    );
+    console.log('        counts twice here and once in the totals, so this column is not a total.');
+  } else if (delta.clickDelta < 0 || delta.impressionDelta < 0) {
+    console.log(
+      `  ${c.dim('Unattributed gap:')} ${-delta.clickDelta} clicks, ${-delta.impressionDelta} impressions` +
+      ` (${(-delta.clickDeltaPct).toFixed(0)}% / ${(-delta.impressionDeltaPct).toFixed(0)}% not attributed)`,
+    );
+    console.log(`  ${c.dim('Note:')} the page table did not account for every total; do not sum it into one.`);
+  }
+  console.log('');
+}
+
 async function cmdVerify(flags) {
   const property = resolveProperty(flags);
   const tab = await findGSCTab();
@@ -276,6 +389,7 @@ of your logged-in search.google.com tab.
 USAGE
   search-console performance [--property P] [--days N] [--json]
   search-console queries     [--property P] [--limit N] [--json]
+  search-console pages       [--property P] [--limit N] [--query Q] [--json]
   search-console verify      [--property P]
 
 COMMANDS
@@ -286,13 +400,19 @@ COMMANDS
                 named-query sums alongside property totals so the anonymised
                 gap is visible. --limit caps the number of rows printed.
 
+  pages         Per-page breakdown sorted by clicks descending. --query Q
+                restricts it to the pages that earned that EXACT query, which
+                is how you find which URL ranks for a term. The page column
+                does not add up to the totals; the footer prints the difference.
+
   verify        Cross-check parsed ds:9 totals against the scorecard values
                 the page itself renders. Exits non-zero on mismatch.
 
 OPTIONS
   --property P  Search Console property (default: sc-domain:sliccy.com)
   --days N      Show only the last N days (performance only)
-  --limit N     Show only the top N queries (queries only)
+  --limit N     Show only the top N rows (queries, pages)
+  --query Q     Restrict pages to one exact query (pages only)
   --json        Machine-readable JSON output
   --help        Show this help
 
@@ -333,6 +453,32 @@ OPTIONS
   --json        JSON output
 `.trim();
 
+const PAGES_HELP = `
+search-console pages — per-page performance table.
+
+USAGE
+  search-console pages [--property P] [--limit N] [--query Q] [--json]
+
+Lists the pages Search Console reports for the property, sorted by clicks
+descending, from the page breakdown (ds:16 fetched with breakdown=page).
+
+With --query Q the rows are the pages that earned impressions for that EXACT
+query, and the totals shown are that query's own totals. Exact, not "contains":
+--query slicc excludes "sliccy" and "slicc ai". Search Console has to echo the
+filter back in the response or the command fails, because an ignored filter
+parameter returns the unfiltered report with HTTP 200.
+
+The page sums and the totals are printed separately because they disagree by
+design: one result page listing two of your URLs counts twice in this table and
+once in the totals, so the column can exceed the total it sits under.
+
+OPTIONS
+  --property P  Search Console property (default: sc-domain:sliccy.com)
+  --limit N     Show only the top N pages
+  --query Q     Only pages that earned this exact query
+  --json        JSON output
+`.trim();
+
 const VERIFY_HELP = `
 search-console verify — cross-check parsed totals against displayed values.
 
@@ -352,24 +498,27 @@ const parsed     = process.argv.parseFlags();
 const subcommand = parsed.subcommand || '';
 const flags      = parsed.flags;
 
+const COMMANDS = {
+  performance: { run: cmdPerformance, help: PERF_HELP },
+  queries:     { run: cmdQueries,     help: QUERIES_HELP },
+  pages:       { run: cmdPages,       help: PAGES_HELP },
+  verify:      { run: cmdVerify,      help: VERIFY_HELP },
+};
+
 async function main() {
-  if (flags.help || flags.h) {
-    if (subcommand === 'performance') cli.help(PERF_HELP);
-    if (subcommand === 'queries')     cli.help(QUERIES_HELP);
-    if (subcommand === 'verify')      cli.help(VERIFY_HELP);
-    cli.help(HELP);
-  }
+  const command = COMMANDS[subcommand];
+  if (flags.help || flags.h) cli.help(command ? command.help : HELP);
   if (!subcommand || subcommand === 'help') cli.help(HELP);
 
-  try {
-    if (subcommand === 'performance') return await cmdPerformance(flags);
-    if (subcommand === 'queries')     return await cmdQueries(flags);
-    if (subcommand === 'verify')      return await cmdVerify(flags);
-
+  if (!command) {
     cli.die(
       `unknown command: ${subcommand}\nRun 'search-console --help' for usage.`,
       { prefix: 'search-console' },
     );
+  }
+
+  try {
+    return await command.run(flags);
   } catch (err) {
     if (err?.name === 'NodeExitError') throw err;
     cli.die(err.message, { prefix: 'search-console' });

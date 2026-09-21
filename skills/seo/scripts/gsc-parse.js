@@ -10,6 +10,35 @@
  *  capped rather than complete. Not a documented figure. */
 const QUERY_TABLE_ROW_CAP = 1000;
 
+/** Dimension ids Search Console tags a breakdown table with, at
+ *  `data[0][5][0][0]`. Verified 2026-09-21 by fetching each breakdown and reading
+ *  the id beside the table's own dimension name ("QUERIES", "PAGES", ...). */
+const DIMENSION = { date: 1, query: 2, page: 3, country: 4, searchAppearance: 8 };
+
+/** The active breakdown table always lands in ds:16, whatever dimension it holds:
+ *  with no `breakdown` parameter that is the query table (id 2), with
+ *  `breakdown=page` the page table (id 3). Same key, different content — so the id
+ *  has to be checked, or an ignored parameter would print query strings under a
+ *  "Page" heading. */
+const BREAKDOWN_BLOCK = 'ds:16';
+
+/** Where a page row keeps its URL inside the row label array. Measured: the label
+ *  is 41 long with the URL at 40 and nothing else but a `1` at 16, on every row of
+ *  the unfiltered and both filtered page reports (2026-09-21). Query rows put
+ *  their label at [0] instead, so the two are not interchangeable. */
+const PAGE_URL_INDEX = 40;
+
+/** Operator ids in an echoed query filter, read off the URLs the Search Console UI
+ *  itself produces: "Exact query" gives `&query=!slicc` and echoes operator 1;
+ *  "Queries containing" gives `&query=*slicc` and echoes operator 2. */
+const QUERY_FILTER_OPERATOR = { exact: 1, contains: 2 };
+
+/** The operator prefix this skill sends. Exact, not "contains": "which page earned
+ *  the impressions for this query" is a question about one query, and `*slicc`
+ *  folds in `sliccy` and `slicc ai` (measured: 4 pages / 527 impressions for
+ *  `*slicc` against 2 pages / 380 for `!slicc`). */
+const EXACT_QUERY_PREFIX = '!';
+
 class GscParseError extends Error {
   constructor(message) {
     super(message);
@@ -48,13 +77,20 @@ function accountSlotFromUrl(url) {
  *  ("Klicks insgesamt"), which alone would only break `verify`; the real hazard
  *  is that it also localizes NUMBER FORMAT, rendering 2778 as title="2.778" and
  *  6.9% as "6,9 %". Parsed with English rules that silently becomes 2.778 — a
- *  wrong number rather than an error. Measured against hl=de. */
-function buildReportUrl(property, slot) {
+ *  wrong number rather than an error. Measured against hl=de.
+ *
+ *  `opts.breakdown` selects which table is inlined into ds:16 ('page' for page
+ *  rows) and `opts.query` adds an exact-query filter. Both parameter shapes were
+ *  taken from the URLs the Search Console UI produced when its own Pages tab and
+ *  "Exact query" filter were clicked, rather than invented. */
+function buildReportUrl(property, slot, opts = {}) {
   const seg = slot == null ? '' : `/u/${slot}`;
-  return (
+  let url =
     `https://search.google.com${seg}/search-console/performance/search-analytics` +
-    `?resource_id=${encodeURIComponent(property)}&hl=en`
-  );
+    `?resource_id=${encodeURIComponent(property)}&hl=en`;
+  if (opts.breakdown) url += `&breakdown=${encodeURIComponent(opts.breakdown)}`;
+  if (opts.query) url += `&query=${EXACT_QUERY_PREFIX}${encodeURIComponent(opts.query)}`;
+  return url;
 }
 
 /** What to tell the user when the no-access page comes back.
@@ -131,8 +167,14 @@ function parseDataBlocks(html) {
  *
  *  Totals come from the totals tuple and NEVER from summing the query table:
  *  Search Console omits anonymised rare queries from the table while still
- *  counting them in the totals, so a table sum under-reports badly. */
-function parseTotalsAndDaily(blocks) {
+ *  counting them in the totals, so a table sum under-reports badly.
+ *
+ *  `opts.allowNoData` covers one measured shape that is not a reshape: a filtered
+ *  report matching nothing returns the tuple [0, 0, "NaN", "NaN"], because a CTR
+ *  and a position are undefined with no impressions. Only the two ratios may be
+ *  non-numeric, and only while both counts are zero, so the guard against a
+ *  reshaped index still fires on everything else. */
+function parseTotalsAndDaily(blocks, opts = {}) {
   const d = blocks['ds:9'];
   if (!d) {
     fail(
@@ -157,6 +199,13 @@ function parseTotalsAndDaily(blocks) {
     ctr: totalsTuple[2],
     position: totalsTuple[3],
   };
+
+  const noData =
+    opts.allowNoData === true && totals.clicks === 0 && totals.impressions === 0;
+  if (noData) {
+    if (typeof totals.ctr !== 'number' || Number.isNaN(totals.ctr)) totals.ctr = 0;
+    if (typeof totals.position !== 'number' || Number.isNaN(totals.position)) totals.position = 0;
+  }
 
   // A reshape that lands a string or undefined here would otherwise print as a
   // confident wrong number, so reject non-numbers explicitly.
@@ -191,6 +240,52 @@ function parseTotalsAndDaily(blocks) {
   return { totals, daily };
 }
 
+/** Decode the metric arrays of one table row, for any dimension.
+ *
+ *  Metric arrays are self-describing: element 8 is a type id, so metrics are read
+ *  by tag rather than by column order. 5 = clicks, 6 = impressions, 7 = CTR,
+ *  8 = position. Clicks/impressions carry the value at [1]; the two ratios carry
+ *  it in a trailing slot, so the last non-null element is taken. Page rows use the
+ *  identical encoding as query rows — checked, not assumed: a page row's clicks
+ *  and impressions arrays are also 9 long with the value at [1], and its CTR and
+ *  position arrays 45 and 44 long with the value last. */
+function readRowMetrics(container) {
+  let clicks = 0;
+  let impressions = 0;
+  let ctr = 0;
+  let position = 0;
+
+  for (let i = 1; i < container.length; i++) {
+    const metric = container[i];
+    if (!Array.isArray(metric)) continue;
+    const typeId = metric[8];
+    if (typeId === 5) {
+      clicks = metric[1] || 0;
+    } else if (typeId === 6) {
+      impressions = metric[1] || 0;
+    } else if (typeId === 7 || typeId === 8) {
+      let value = 0;
+      for (let j = metric.length - 1; j > 8; j--) {
+        if (metric[j] != null) {
+          value = metric[j];
+          break;
+        }
+      }
+      if (typeId === 7) ctr = value;
+      else position = value;
+    }
+  }
+
+  return { clicks, impressions, ctr, position };
+}
+
+/** The dimension id of the breakdown table currently inlined into ds:16, or null
+ *  when the block or the tag is absent. */
+function tableDimensionId(blocks, key = BREAKDOWN_BLOCK) {
+  const id = blocks?.[key]?.[0]?.[5]?.[0]?.[0];
+  return typeof id === 'number' ? id : null;
+}
+
 /** Parse ds:16 → array of { query, clicks, impressions, ctr, position },
  *  sorted by clicks then impressions, both descending. */
 function parseQueryTable(blocks) {
@@ -207,6 +302,17 @@ function parseQueryTable(blocks) {
     fail('ds:16 query rows not found at data[1][0]. The UI may have reshaped.');
   }
 
+  // ds:16 holds whichever breakdown the URL asked for, so a request that
+  // accidentally carried breakdown=page would fill this table with page URLs.
+  // Refuse that rather than listing URLs in a column headed "Query".
+  if (tableDimensionId(blocks) === DIMENSION.page) {
+    fail(
+      'ds:16 holds the page table (dimension 3), not the query table. The request\n' +
+      'asked for the page breakdown. This is a bug in search-console, not in the\n' +
+      'Search Console page.',
+    );
+  }
+
   const queries = [];
   for (const row of rows) {
     const container = row?.[0];
@@ -215,45 +321,168 @@ function parseQueryTable(blocks) {
     const query = container[0]?.[0];
     if (typeof query !== 'string') continue;
 
-    let clicks = 0;
-    let impressions = 0;
-    let ctr = 0;
-    let position = 0;
-
-    // Metric arrays are self-describing: element 8 is a type id, so metrics are
-    // read by tag rather than by column order. 5 = clicks, 6 = impressions,
-    // 7 = CTR, 8 = position. Clicks/impressions carry the value at [1]; the two
-    // ratios carry it in a trailing slot, so take the last non-null.
-    for (let i = 1; i < container.length; i++) {
-      const metric = container[i];
-      if (!Array.isArray(metric)) continue;
-      const typeId = metric[8];
-      if (typeId === 5) {
-        clicks = metric[1] || 0;
-      } else if (typeId === 6) {
-        impressions = metric[1] || 0;
-      } else if (typeId === 7) {
-        for (let j = metric.length - 1; j > 8; j--) {
-          if (metric[j] != null) {
-            ctr = metric[j];
-            break;
-          }
-        }
-      } else if (typeId === 8) {
-        for (let j = metric.length - 1; j > 8; j--) {
-          if (metric[j] != null) {
-            position = metric[j];
-            break;
-          }
-        }
-      }
-    }
-
-    queries.push({ query, clicks, impressions, ctr, position });
+    queries.push({ query, ...readRowMetrics(container) });
   }
 
   queries.sort((a, b) => b.clicks - a.clicks || b.impressions - a.impressions);
   return queries;
+}
+
+/** Parse the page breakdown (ds:16 fetched with `breakdown=page`) into an array of
+ *  { page, clicks, impressions, ctr, position }, sorted by clicks then impressions,
+ *  both descending.
+ *
+ *  Two guards matter more than the decoding:
+ *
+ *  1. The dimension id is checked. The page table occupies the SAME ds:16 key as
+ *     the query table; if `breakdown=page` were renamed by a UI release the
+ *     response would be a perfectly well-formed QUERY table, and a parser that
+ *     only read offsets would print `sliccy` and `slicc ai` as if they were URLs.
+ *  2. Rows that carry no URL at the measured index fail the whole parse rather
+ *     than being skipped. Skipping would turn a shifted label index into a silent
+ *     "no pages found", which reads like a property with no traffic. */
+function parsePageTable(blocks) {
+  const d = blocks[BREAKDOWN_BLOCK];
+  if (!d) {
+    fail(
+      'No ds:16 page block for this property. Most likely the signed-in account\n' +
+      'has no access to it. Less likely, Google reshaped the page.',
+    );
+  }
+
+  const dim = tableDimensionId(blocks);
+  if (dim !== DIMENSION.page) {
+    fail(
+      `ds:16 carries dimension ${dim === null ? 'none' : dim}, not the page` +
+      ` dimension (${DIMENSION.page}).\n` +
+      'The breakdown=page parameter was not honoured, so these rows are some other\n' +
+      'breakdown — query rows would otherwise be printed as page URLs. Check\n' +
+      'whether the Search Console UI still uses &breakdown=page for its Pages tab.',
+    );
+  }
+
+  // A filter that matches nothing returns data[1][0] = null, not an empty array.
+  // Measured with an exact-query filter on a query the property never served.
+  const rows = d?.[1]?.[0];
+  if (rows === null || rows === undefined) return [];
+  if (!Array.isArray(rows)) {
+    fail('ds:16 page rows not found at data[1][0]. The UI may have reshaped.');
+  }
+
+  const pages = [];
+  let unlabelled = 0;
+  for (const row of rows) {
+    const container = row?.[0];
+    if (!Array.isArray(container) || container.length < 2) {
+      unlabelled++;
+      continue;
+    }
+
+    const page = container[0]?.[PAGE_URL_INDEX];
+    if (typeof page !== 'string' || !/^https?:\/\//.test(page)) {
+      unlabelled++;
+      continue;
+    }
+
+    pages.push({ page, ...readRowMetrics(container) });
+  }
+
+  if (unlabelled > 0 && pages.length === 0) {
+    fail(
+      `ds:16 returned ${unlabelled} page rows but no URL at label index ` +
+      `${PAGE_URL_INDEX} in any of them.\n` +
+      'The row label has probably been reshaped. Reporting "no pages" here would\n' +
+      'read like a property with no traffic, so this fails instead.',
+    );
+  }
+
+  pages.sort((a, b) => b.clicks - a.clicks || b.impressions - a.impressions);
+  return pages;
+}
+
+/** The filters Search Console echoes back in a block header, at data[0][5][3].
+ *  Returns [{ dimensionId, values, operator }]. The search-type entry
+ *  (dimension 6, ["WEB"]) is present on every report and comes back with it.
+ *
+ *  This echo is what makes a filter verifiable rather than hoped-for: the request
+ *  puts the filter in the URL, and the response states which filters it applied. */
+function appliedFilters(blocks, key = BREAKDOWN_BLOCK) {
+  const raw = blocks?.[key]?.[0]?.[5]?.[3];
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((f) => Array.isArray(f))
+    .map((f) => ({
+      dimensionId: f[0],
+      values: Array.isArray(f[1]) ? f[1] : [],
+      operator: typeof f[2] === 'number' ? f[2] : null,
+    }));
+}
+
+/** Raise unless the response states it applied the exact-query filter that was
+ *  requested, on BOTH the table block and the totals block.
+ *
+ *  Without this the failure mode is the worst kind: an unrecognised or renamed URL
+ *  parameter is ignored, Search Console returns HTTP 200 with the UNFILTERED
+ *  report, and "pages for the query X" silently becomes "all pages". Checking ds:9
+ *  as well as ds:16 matters because the totals printed beside the table have to be
+ *  the filtered totals; an unfiltered ds:9 would make a 380-impression query look
+ *  like a 2778-impression one. */
+function assertQueryFilterApplied(blocks, query, keys = [BREAKDOWN_BLOCK, 'ds:9']) {
+  const wanted = String(query).trim().toLowerCase();
+  for (const key of keys) {
+    const filters = appliedFilters(blocks, key);
+    const match = filters.find(
+      (f) =>
+        f.dimensionId === DIMENSION.query &&
+        f.values.some((v) => String(v).trim().toLowerCase() === wanted),
+    );
+    if (!match) {
+      const seen = filters.length
+        ? filters.map((f) => `[${f.dimensionId}, ${JSON.stringify(f.values)}, ${f.operator}]`).join(' ')
+        : 'none';
+      fail(
+        `Search Console did not apply the query filter "${query}" to ${key}.\n` +
+        `Filters it reports for that block: ${seen}\n` +
+        'The response is therefore the unfiltered report and these rows would not\n' +
+        'be the pages for that query. Most likely Search Console changed the\n' +
+        '&query= filter parameter; check what its own UI puts in the URL.',
+      );
+    }
+    if (match.operator !== QUERY_FILTER_OPERATOR.exact) {
+      fail(
+        `Search Console applied the query filter "${query}" to ${key} with operator ` +
+        `${match.operator}, not exact (${QUERY_FILTER_OPERATOR.exact}).\n` +
+        'A "contains" match would fold in every query containing this string, so the\n' +
+        'rows would not belong to this query alone.',
+      );
+    }
+  }
+}
+
+/** How the page table relates to the totals for the same period.
+ *
+ *  Unlike the query table, the page table can OVERSHOOT the totals. Measured on
+ *  sc-domain:sliccy.com, 2026-09-21: 8 page rows summing to 194 clicks /
+ *  3569 impressions against property totals of 192 / 2778 — 28% more impressions
+ *  than the property earned. So neither direction of difference may be presented
+ *  as "the rest is anonymised", and the column must never be summed into a total.
+ *
+ *  `exceedsTotals` distinguishes the two cases for the caller, which needs
+ *  different wording for each. */
+function pageTableDelta(totals, pages) {
+  const pageClicks = pages.reduce((a, p) => a + p.clicks, 0);
+  const pageImpressions = pages.reduce((a, p) => a + p.impressions, 0);
+  const clickDelta = pageClicks - totals.clicks;
+  const impressionDelta = pageImpressions - totals.impressions;
+  return {
+    pageClicks,
+    pageImpressions,
+    clickDelta,
+    impressionDelta,
+    clickDeltaPct: totals.clicks ? (clickDelta / totals.clicks) * 100 : 0,
+    impressionDeltaPct: totals.impressions ? (impressionDelta / totals.impressions) * 100 : 0,
+    exceedsTotals: clickDelta > 0 || impressionDelta > 0,
+  };
 }
 
 /** Extract the values the page itself renders in its scorecards, for cross-checking.
@@ -386,6 +615,10 @@ function compareTotalsWithUI(totals, ui) {
 module.exports = {
   GscParseError,
   QUERY_TABLE_ROW_CAP,
+  DIMENSION,
+  BREAKDOWN_BLOCK,
+  PAGE_URL_INDEX,
+  QUERY_FILTER_OPERATOR,
   accountSlotFromUrl,
   buildReportUrl,
   looksLikeNoAccessPage,
@@ -395,6 +628,11 @@ module.exports = {
   parseDataBlocks,
   parseTotalsAndDaily,
   parseQueryTable,
+  parsePageTable,
+  tableDimensionId,
+  appliedFilters,
+  assertQueryFilterApplied,
+  pageTableDelta,
   parseUIScorecards,
   parseUINumber,
   anonymisedGap,
