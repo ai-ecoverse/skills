@@ -409,15 +409,6 @@ test('set-member refuses bot user', async () => {
 
 // ── Already-in-state tests ────────────────────────────────────────────────────
 
-test('set-single is no-op when user is already a single-channel guest', async () => {
-  const h = await load({
-    argv: ['--ws=T06DUTYDQ', 'set-single', 'U12345', '--channel=C456', '--confirm'],
-    user: { is_restricted: true, is_ultra_restricted: true, deleted: false, is_bot: false },
-  });
-  await h.mod.cmdSetSingle();
-  assert.equal(h.adminCalls().length, 0, 'should not call setUltraRestricted for already-SCG');
-  assert.match(h.text(), /no change needed/i, 'should say no change needed');
-});
 
 test('set-multi is no-op when user is already a multi-channel guest', async () => {
   const h = await load({
@@ -553,7 +544,10 @@ test('parseArgv treats --confirm as a boolean flag (no value consumed)', async (
 //              "set-member refuses bot user"
 //
 // MUTATION 4: Remove the already-in-state check for set-single
-//   Caught by: "set-single is no-op when user is already a single-channel guest"
+//   Caught by: "set-single: guest already in B with --channel=B is a no-op"
+//   NOTE: the original test here asserted the no-op from account type ALONE, with no
+//   convs fixture, which is the very defect Codex finding 2 reported. It was removed;
+//   the superseding test supplies the current channel and asserts the true no-op.
 //
 // MUTATION 5: Remove the already-in-state check for set-multi
 //   Caught by: "set-multi is no-op when user is already a multi-channel guest"
