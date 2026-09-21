@@ -17,6 +17,23 @@ const exec    = require('sliccy:exec');
 const c       = require('sliccy:color');
 const browser = require('sliccy:browser');
 
+const parse = require('./gsc-parse.js');
+
+/** The parsing module raises GscParseError instead of exiting, so it stays
+ *  importable by the tst suite. Translate that into the CLI contract here:
+ *  a one-line diagnosis and a non-zero exit. Anything else is a real bug and
+ *  is left to propagate. */
+function orDie(fn) {
+  try {
+    return fn();
+  } catch (err) {
+    if (err?.name === 'GscParseError') {
+      cli.die(err.message, { prefix: 'search-console' });
+    }
+    throw err;
+  }
+}
+
 const DEFAULT_PROPERTY = 'sc-domain:sliccy.com';
 
 /** Search Console properties are either a domain property (`sc-domain:example.com`)
@@ -24,8 +41,7 @@ const DEFAULT_PROPERTY = 'sc-domain:sliccy.com';
  *  rather than fetching a page that cannot contain a report. */
 function resolveProperty(flags) {
   const property = flags.property || DEFAULT_PROPERTY;
-  if (typeof property !== 'string' ||
-      !(/^sc-domain:[a-z0-9.-]+$/i.test(property) || /^https?:\/\/[^\s]+$/i.test(property))) {
+  if (!parse.isValidProperty(property)) {
     cli.die(
       `Invalid --property "${property}".\n` +
       'Use a domain property ("sc-domain:example.com") or a URL-prefix property\n' +
@@ -81,13 +97,11 @@ async function fetchGSCPage(tab, property) {
       { prefix: 'search-console' },
     );
   }
+
   // A dead session does NOT 404: curlwright follows the redirect and returns 200
   // with a Google sign-in page, which is far larger than any size heuristic would
-  // catch. The account-chooser machinery puts accounts.google.com/signin in the
-  // GOOD page too (measured), so that is NOT a usable marker; the title is.
-  const looksLikeLogin =
-    /<title>[^<]*Sign in[^<]*<\/title>/i.test(body);
-  if (looksLikeLogin || body.length < 1000) {
+  // catch. The marker choice is explained in gsc-parse.js.
+  if (parse.looksLikeSignInPage(body) || body.length < 1000) {
     cli.die(
       `Got a sign-in page instead of the report for "${property}".\n` +
       'The search.google.com session has expired. Open Search Console in the\n' +
@@ -98,200 +112,14 @@ async function fetchGSCPage(tab, property) {
   return body;
 }
 
-/** Extract all AF_initDataCallback blocks from the HTML, keyed by ds:N.
- *  Each value is the parsed JSON of the `data:` field. */
-function parseDataBlocks(html) {
-  const blocks = {};
-  const re = /AF_initDataCallback\(\{key:\s*'(ds:\d+)',\s*hash:\s*'[^']*',\s*data:([\s\S]*?),\s*sideChannel:\s*\{/g;
-  for (const m of html.matchAll(re)) {
-    const key = m[1];
-    let raw = m[2];
-    // Unescape \xNN sequences
-    raw = raw.replace(/\\x([0-9a-fA-F]{2})/g, (_, hex) =>
-      String.fromCharCode(parseInt(hex, 16)),
-    );
-    try {
-      blocks[key] = JSON.parse(raw);
-    } catch {
-      // Record the error but don't die — caller checks required blocks.
-    }
-  }
-  if (Object.keys(blocks).length === 0) {
-    cli.die(
-      'No AF_initDataCallback blocks in the response, so this is not a Search\n' +
-      'Console report page. Either the session expired or the URL changed.\n' +
-      'Open Search Console signed in and retry.',
-      { prefix: 'search-console' },
-    );
-  }
-  return blocks;
-}
-
-/** Parse ds:9 → { totals: {clicks,impressions,ctr,position}, daily: [...] }.
- *  Dies if the block is absent or reshaped. */
-function parseTotalsAndDaily(blocks) {
-  const d = blocks['ds:9'];
-  if (!d) cli.die(
-    'No ds:9 report block for this property. Most likely the signed-in account\n' +
-    'has no access to it (check the property name against the Search Console\n' +
-    'property picker). Less likely, Google reshaped the page.',
-    { prefix: 'search-console' },
-  );
-
-  // data[1][1][1] = [clicks, impressions, ctr, position]
-  const totalsTuple = d?.[1]?.[1]?.[1];
-  if (!Array.isArray(totalsTuple) || totalsTuple.length < 4) {
-    cli.die(
-      'ds:9 totals tuple not found at data[1][1][1]. The UI may have reshaped.\n' +
-      'Got: ' + JSON.stringify(d?.[1]?.[1]),
-      { prefix: 'search-console' },
-    );
-  }
-
-  const totals = {
-    clicks:      totalsTuple[0],
-    impressions: totalsTuple[1],
-    ctr:         totalsTuple[2],
-    position:    totalsTuple[3],
-  };
-
-  // Validate that totals contain numbers, not NaN or undefined.
-  for (const [k, v] of Object.entries(totals)) {
-    if (typeof v !== 'number' || Number.isNaN(v)) {
-      cli.die(`ds:9 totals.${k} is ${v}, not a valid number.`, { prefix: 'search-console' });
-    }
-  }
-
-  // data[1][0] = daily rows: [epochMs, [clicks, impressions, ctr, position], ...]
-  const dailyRaw = d?.[1]?.[0];
-  if (!Array.isArray(dailyRaw)) {
-    cli.die('ds:9 daily rows not found at data[1][0].', { prefix: 'search-console' });
-  }
-
-  const daily = dailyRaw.map((row) => {
-    const epochMs = row[0];
-    const metrics = row[1]; // [clicks, impressions, ctr, position]
-    if (!Array.isArray(metrics) || metrics.length < 2) return null;
-    // Handle "NaN" strings for days with no data
-    const clicks      = typeof metrics[0] === 'number' ? metrics[0] : 0;
-    const impressions = typeof metrics[1] === 'number' ? metrics[1] : 0;
-    const ctrVal      = typeof metrics[2] === 'number' ? metrics[2] : 0;
-    const posVal      = typeof metrics[3] === 'number' ? metrics[3] : 0;
-    return {
-      date: new Date(epochMs).toISOString().slice(0, 10),
-      clicks,
-      impressions,
-      ctr: ctrVal,
-      position: posVal,
-    };
-  }).filter(Boolean);
-
-  return { totals, daily };
-}
-
-/** Parse ds:16 → array of { query, clicks, impressions, ctr, position }.
- *  Dies if the block is absent or reshaped. */
-function parseQueryTable(blocks) {
-  const d = blocks['ds:16'];
-  if (!d) cli.die(
-    'No ds:16 query block for this property. Most likely the signed-in account\n' +
-    'has no access to it. Less likely, Google reshaped the page.',
-    { prefix: 'search-console' },
-  );
-
-  const rows = d?.[1]?.[0];
-  if (!Array.isArray(rows)) {
-    cli.die(
-      'ds:16 query rows not found at data[1][0]. The UI may have reshaped.',
-      { prefix: 'search-console' },
-    );
-  }
-
-  const queries = [];
-  for (const row of rows) {
-    const container = row?.[0];
-    if (!Array.isArray(container) || container.length < 2) continue;
-
-    const query = container[0]?.[0];
-    if (typeof query !== 'string') continue;
-
-    let clicks = 0, impressions = 0, ctr = 0, position = 0;
-
-    // Metric arrays: element at index 8 is the type id.
-    // Type 5 = clicks (value at [1]), type 6 = impressions (value at [1]),
-    // type 7 = CTR (value at long index, last non-null), type 8 = position (ditto).
-    for (let i = 1; i < container.length; i++) {
-      const metric = container[i];
-      if (!Array.isArray(metric)) continue;
-      const typeId = metric[8];
-      if (typeId === 5)      clicks      = metric[1] || 0;
-      else if (typeId === 6) impressions = metric[1] || 0;
-      else if (typeId === 7) {
-        // CTR is at the last non-null position after index 8
-        for (let j = metric.length - 1; j > 8; j--) {
-          if (metric[j] != null) { ctr = metric[j]; break; }
-        }
-      } else if (typeId === 8) {
-        for (let j = metric.length - 1; j > 8; j--) {
-          if (metric[j] != null) { position = metric[j]; break; }
-        }
-      }
-    }
-
-    queries.push({ query, clicks, impressions, ctr, position });
-  }
-
-  // Sort by clicks desc, then impressions desc.
-  queries.sort((a, b) => b.clicks - a.clicks || b.impressions - a.impressions);
-  return queries;
-}
-
-/** Extract the displayed scorecard values from the HTML for cross-checking.
- *  Returns { clicks, impressions, ctrPct, position } as the page renders them. */
-function parseUIScoreconds(html) {
-  // The scorecard label appears multiple times (in data attributes, aria labels,
-  // and the rendered text). The rendered scorecard uses this specific pattern:
-  //   >Total clicks</span></div><div class="nnLLaf ... title="196">196</div>
-  // We match on ">Label</span></div><div class=\"nnLLaf" to hit the right one.
-  const result = {};
-  const labels = [
-    { label: 'Total clicks',      key: 'clicks' },
-    { label: 'Total impressions', key: 'impressions' },
-    { label: 'Average CTR',       key: 'ctrPct' },
-    { label: 'Average position',  key: 'position' },
-  ];
-  for (const { label, key } of labels) {
-    const needle = '>' + label + '</span></div><div class="nnLLaf';
-    const idx = html.indexOf(needle);
-    if (idx < 0) continue;
-    const after = html.slice(idx, idx + 300);
-    const tm = after.match(/title="([^"]+)"/);
-    if (tm) result[key] = tm[1];
-  }
-  return result;
-}
-
-/** Parse a UI-formatted number: "196" → 196, "2,790" → 2790, "2.79K" → ~2790. */
-function parseUINumber(s) {
-  if (!s) return NaN;
-  // Remove commas
-  const n = s.replace(/,/g, '');
-  // Handle K suffix
-  if (n.endsWith('K')) return parseFloat(n.slice(0, -1)) * 1000;
-  if (n.endsWith('M')) return parseFloat(n.slice(0, -1)) * 1_000_000;
-  // Handle % suffix
-  if (n.endsWith('%')) return parseFloat(n.slice(0, -1));
-  return parseFloat(n);
-}
-
 // ─── Commands ─────────────────────────────────────────────────────────────────
 
 async function cmdPerformance(flags) {
   const property = resolveProperty(flags);
   const tab = await findGSCTab();
   const html = await fetchGSCPage(tab, property);
-  const blocks = parseDataBlocks(html);
-  const { totals, daily } = parseTotalsAndDaily(blocks);
+  const blocks = orDie(() => parse.parseDataBlocks(html));
+  const { totals, daily } = orDie(() => parse.parseTotalsAndDaily(blocks));
 
   const days = parseInt(flags.days, 10) || 0;
   const series = days > 0 ? daily.slice(-days) : daily;
@@ -331,9 +159,9 @@ async function cmdQueries(flags) {
   const limit = parseInt(flags.limit, 10) || 0;
   const tab = await findGSCTab();
   const html = await fetchGSCPage(tab, property);
-  const blocks = parseDataBlocks(html);
-  const { totals } = parseTotalsAndDaily(blocks);
-  const queries = parseQueryTable(blocks);
+  const blocks = orDie(() => parse.parseDataBlocks(html));
+  const { totals } = orDie(() => parse.parseTotalsAndDaily(blocks));
+  const queries = orDie(() => parse.parseQueryTable(blocks));
 
   const shown = limit > 0 ? queries.slice(0, limit) : queries;
 
@@ -394,69 +222,11 @@ async function cmdVerify(flags) {
   const property = resolveProperty(flags);
   const tab = await findGSCTab();
   const html = await fetchGSCPage(tab, property);
-  const blocks = parseDataBlocks(html);
-  const { totals } = parseTotalsAndDaily(blocks);
+  const blocks = orDie(() => parse.parseDataBlocks(html));
+  const { totals } = orDie(() => parse.parseTotalsAndDaily(blocks));
 
-  const ui = parseUIScoreconds(html);
-  const errors = [];
-
-  // --- Clicks: exact match ---
-  if (ui.clicks != null) {
-    const uiClicks = parseUINumber(ui.clicks);
-    if (totals.clicks !== uiClicks) {
-      errors.push(
-        `Clicks mismatch: parsed ds:9 = ${totals.clicks}, UI displays "${ui.clicks}" (${uiClicks})`,
-      );
-    }
-  } else {
-    errors.push('Could not find "Total clicks" scorecard in the page HTML.');
-  }
-
-  // --- Impressions: tolerance for K/M abbreviation ---
-  if (ui.impressions != null) {
-    const uiImpressions = parseUINumber(ui.impressions);
-    // The UI title= attribute has the exact number (e.g. "2,790"), but the
-    // displayed text uses "2.79K". We parse the title, so compare exactly
-    // when title is the raw number, or with ±5% tolerance for abbreviations.
-    const diff = Math.abs(totals.impressions - uiImpressions);
-    const tol = uiImpressions * 0.01; // 1% tolerance for rounding
-    if (diff > tol) {
-      errors.push(
-        `Impressions mismatch: parsed ds:9 = ${totals.impressions}, ` +
-        `UI displays "${ui.impressions}" (${uiImpressions}), diff=${diff}`,
-      );
-    }
-  } else {
-    errors.push('Could not find "Total impressions" scorecard in the page HTML.');
-  }
-
-  // --- CTR: tolerance for percentage rounding ---
-  if (ui.ctrPct != null) {
-    const uiCtrPct = parseUINumber(ui.ctrPct);
-    const parsedCtrPct = totals.ctr * 100;
-    // UI shows "7%" which is Math.round(7.025…) — allow ±1pp tolerance.
-    if (Math.abs(parsedCtrPct - uiCtrPct) > 1.0) {
-      errors.push(
-        `CTR mismatch: parsed ds:9 = ${parsedCtrPct.toFixed(2)}%, ` +
-        `UI displays "${ui.ctrPct}" (${uiCtrPct}%)`,
-      );
-    }
-  } else {
-    errors.push('Could not find "Average CTR" scorecard in the page HTML.');
-  }
-
-  // --- Position: tolerance for rounding ---
-  if (ui.position != null) {
-    const uiPos = parseUINumber(ui.position);
-    if (Math.abs(totals.position - uiPos) > 0.15) {
-      errors.push(
-        `Position mismatch: parsed ds:9 = ${totals.position.toFixed(2)}, ` +
-        `UI displays "${ui.position}" (${uiPos})`,
-      );
-    }
-  } else {
-    errors.push('Could not find "Average position" scorecard in the page HTML.');
-  }
+  const ui = parse.parseUIScorecards(html);
+  const errors = parse.compareTotalsWithUI(totals, ui);
 
   // Report.
   console.log('');
