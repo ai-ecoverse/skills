@@ -7,36 +7,10 @@
 const cli = require('sliccy:cli');
 const c = require('sliccy:color'); // former bare `c` color global
 const fs = require('fs'); // plain node-ish builtin, not a sliccy: module
+const { deriveSchema, firstRowError, setDerived } = require('./sheet.js');
 
 const { positional, flags } = process.argv.parseFlags();
 const [cmd, filePath, rowsArg] = positional;
-
-function deriveSchema(data) {
-  if (!data || data.length === 0) return null;
-  return Object.keys(data[0]);
-}
-
-function validateRows(rows, schema, sheetName) {
-  const label = sheetName ? `sheet "${sheetName}"` : 'sheet';
-  const schemaSet = new Set(schema);
-  for (let i = 0; i < rows.length; i++) {
-    const rowKeys = Object.keys(rows[i]);
-    const missing = schema.filter(k => !rowKeys.includes(k));
-    const extra = rowKeys.filter(k => !schemaSet.has(k));
-    if (missing.length || extra.length) {
-      const parts = [];
-      if (missing.length) parts.push(`missing: ${missing.join(', ')}`);
-      if (extra.length) parts.push(`unexpected: ${extra.join(', ')}`);
-      cli.die(`Row ${i} in ${label} is invalid — ${parts.join('; ')}\nExpected keys: ${schema.join(', ')}`);
-    }
-  }
-}
-
-function setDerived(sheetObj) {
-  sheetObj.total = sheetObj.data.length;
-  sheetObj.limit = sheetObj.data.length;
-  sheetObj.offset = 0;
-}
 
 const HELP = `
 da-live — Adobe Document Authoring sheet utility
@@ -80,7 +54,8 @@ if (cmd === 'write') {
 
     const schema = deriveSchema(sheet[sheetName].data);
     if (!schema) cli.die(`Sheet "${sheetName}" has no existing rows — cannot derive schema for validation.`);
-    validateRows(newRows, schema, sheetName);
+    const sheetProblem = firstRowError(newRows, schema, sheetName);
+    if (sheetProblem) cli.die(sheetProblem);
 
     sheet[sheetName].data = newRows;
     for (const name of sheet[':names']) setDerived(sheet[name]);
@@ -89,7 +64,8 @@ if (cmd === 'write') {
 
     const schema = deriveSchema(sheet.data);
     if (!schema) cli.die('Sheet has no existing rows — cannot derive schema for validation.');
-    validateRows(newRows, schema);
+    const problem = firstRowError(newRows, schema);
+    if (problem) cli.die(problem);
 
     sheet.data = newRows;
     setDerived(sheet);
