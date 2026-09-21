@@ -201,7 +201,17 @@ See also: slack user <id> (read-only profile from the standard slack CLI)
 // ── Argument parsing ──────────────────────────────────────────────────────────
 const { BOOL_FLAGS, parseArgv, parseList } = require('./argv.js');
 
-const parsed = parseArgv(process.argv.slice(2));
+// parseArgv throws on a malformed flag (e.g. --confirm=fasle). This call is at
+// module top level, OUTSIDE the try/catch that wraps main(), so the throw would
+// otherwise surface as an uncaught exception with a stack trace instead of the
+// clean refusal a CLI owes its caller. Exit code is 1 either way; this is about
+// the message, and about a malformed boolean never reaching a mutation guard.
+let parsed;
+try {
+  parsed = parseArgv(process.argv.slice(2));
+} catch (err) {
+  cli.die((err && err.message) || String(err), { prefix: PREFIX });
+}
 const flags = parsed.flags;
 const words = parsed.positional;
 
@@ -1152,11 +1162,6 @@ const { isPlainObject, pointerJoin, manifestLeaves, collectSubtree, diffManifest
 function formatLeaf(value) {
   if (Array.isArray(value)) return '[' + value.map((v) => JSON.stringify(v)).join(', ') + ']';
   return JSON.stringify(value);
-}
-
-
-    changed: deletions.length + additions.length + modifications.length > 0,
-  };
 }
 
 // ── Command: app export ──────────────────────────────────────────────────────
