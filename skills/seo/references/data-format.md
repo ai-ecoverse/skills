@@ -120,7 +120,10 @@ belonged to one query.
 own totals (3 clicks / 380 impressions rather than 192 / 2778). A filter matching
 nothing returns the totals tuple `[0, 0, "NaN", "NaN"]`, since a CTR and a position
 are undefined with zero impressions. That is data rather than a reshape, and is
-read as zeros only while both counts are zero.
+read as zeros only while both counts are zero **and the offending value is exactly
+the string `"NaN"`**. Coercing any other type there would switch off the reshape
+check in the one case where a wrong zero is hardest to notice — a query with no
+traffic looks the same either way.
 
 ## Why totals never come from a table
 
@@ -144,6 +147,12 @@ Measured 2026-09-21: 8 page rows summing to 194 clicks / 3569 impressions, while
 `ds:9` reported 192 / 2778 for the same period — 28% **more** impressions than
 the property earned. So the page table does not account for the property totals
 either, and it misses in the opposite direction.
+
+Clicks and impressions aggregate independently, so they can miss in OPPOSITE
+directions at once: +2 clicks against -100 impressions is possible. A single
+boolean cannot describe that, so `pageTableDelta` reports `direction` as `over`,
+`under` or `mixed`, and the footer only claims one direction when both metrics
+agree. Deriving the label from an OR of the two printed `+-10%`.
 
 The mechanism is aggregation level, not anonymisation: page rows count per page,
 property totals count per search. A single result page listing two of the site's

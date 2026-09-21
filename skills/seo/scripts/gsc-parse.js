@@ -10,6 +10,10 @@
  *  capped rather than complete. Not a documented figure. */
 const QUERY_TABLE_ROW_CAP = 1000;
 
+/** What ds:9 carries for CTR and position when a report has no data at all.
+ *  Measured as the string "NaN", not a numeric NaN. */
+const NO_DATA_SENTINEL = 'NaN';
+
 /** Dimension ids Search Console tags a breakdown table with, at
  *  `data[0][5][0][0]`. Verified 2026-09-21 by fetching each breakdown and reading
  *  the id beside the table's own dimension name ("QUERIES", "PAGES", ...). */
@@ -203,8 +207,12 @@ function parseTotalsAndDaily(blocks, opts = {}) {
   const noData =
     opts.allowNoData === true && totals.clicks === 0 && totals.impressions === 0;
   if (noData) {
-    if (typeof totals.ctr !== 'number' || Number.isNaN(totals.ctr)) totals.ctr = 0;
-    if (typeof totals.position !== 'number' || Number.isNaN(totals.position)) totals.position = 0;
+    // Only the exact sentinel Search Console was measured to send for an empty
+    // report. Coercing every non-number would disable the reshape check below
+    // precisely when a query has no traffic, which is when a wrong zero is
+    // hardest to notice.
+    if (totals.ctr === NO_DATA_SENTINEL) totals.ctr = 0;
+    if (totals.position === NO_DATA_SENTINEL) totals.position = 0;
   }
 
   // A reshape that lands a string or undefined here would otherwise print as a
@@ -387,12 +395,18 @@ function parsePageTable(blocks) {
     pages.push({ page, ...readRowMetrics(container) });
   }
 
-  if (unlabelled > 0 && pages.length === 0) {
+  // Any undecodable row is fatal, not just an all-undecodable response. A
+  // partially decoded table would be returned as if complete, and its summed
+  // columns would then understate real traffic — a wrong number, not an error,
+  // which is the failure class this skill exists to refuse. Measured: every row
+  // in every captured response carries a URL, so this costs nothing in practice.
+  if (unlabelled > 0) {
     fail(
-      `ds:16 returned ${unlabelled} page rows but no URL at label index ` +
-      `${PAGE_URL_INDEX} in any of them.\n` +
-      'The row label has probably been reshaped. Reporting "no pages" here would\n' +
-      'read like a property with no traffic, so this fails instead.',
+      `ds:16 returned ${unlabelled} of ${unlabelled + pages.length} page rows with\n` +
+      `no URL at label index ${PAGE_URL_INDEX}.\n` +
+      'The row label has probably been reshaped.\n' +
+      'Returning the rows that did decode would silently drop traffic, so this fails\n' +
+      'instead.',
     );
   }
 
@@ -482,6 +496,16 @@ function pageTableDelta(totals, pages) {
     clickDeltaPct: totals.clicks ? (clickDelta / totals.clicks) * 100 : 0,
     impressionDeltaPct: totals.impressions ? (impressionDelta / totals.impressions) * 100 : 0,
     exceedsTotals: clickDelta > 0 || impressionDelta > 0,
+    // Clicks and impressions aggregate independently and CAN move in opposite
+    // directions, so a single boolean cannot describe both. Callers label output
+    // from this instead: an OR of the two reads "exceeds" while one metric is
+    // short, which printed "+-10%".
+    direction:
+      clickDelta >= 0 && impressionDelta >= 0
+        ? 'over'
+        : clickDelta <= 0 && impressionDelta <= 0
+          ? 'under'
+          : 'mixed',
   };
 }
 
@@ -614,6 +638,7 @@ function compareTotalsWithUI(totals, ui) {
 
 module.exports = {
   GscParseError,
+  NO_DATA_SENTINEL,
   QUERY_TABLE_ROW_CAP,
   DIMENSION,
   BREAKDOWN_BLOCK,

@@ -617,3 +617,52 @@ test('an empty page table against zero totals does not divide by zero', () => {
   is(delta.impressionDeltaPct, 0);
   is(delta.exceedsTotals, false);
 });
+
+// ─── Review findings from PR #413 (all three were real) ──────────────────────
+
+test('a single undecodable page row is fatal, not silently dropped', () => {
+  // Finding: failing only when EVERY row is undecodable meant a partially
+  // decoded table was returned as if complete, and its summed columns then
+  // understated real traffic. A wrong number, not an error.
+  const good = pageRow('https://www.sliccy.com/a', 5, 9, 0.5, 2);
+  // Same row with the URL removed from its label — a reshape of one row only.
+  const bad = pageRow('https://www.sliccy.com/b', 3, 4, 0.7, 3);
+  bad[0][0][P.PAGE_URL_INDEX] = null;
+  is(P.parsePageTable(breakdownBlock(P.DIMENSION.page, [good])).length, 1, 'a decodable table still parses');
+  throws(
+    () => P.parsePageTable(breakdownBlock(P.DIMENSION.page, [good, bad])),
+    /1 of 2 page rows with/,
+  );
+});
+
+test('an empty report coerces only the measured "NaN" sentinel', () => {
+  // Finding: coercing every non-number disabled the reshape check exactly when a
+  // query has no traffic — the case where a wrong zero is hardest to spot.
+  const ok = P.parseTotalsAndDaily(ds9([0, 0, P.NO_DATA_SENTINEL, P.NO_DATA_SENTINEL]), { allowNoData: true });
+  is(ok.totals.ctr, 0);
+  is(ok.totals.position, 0);
+  // Anything else at those offsets is a reshape and must still be refused.
+  throws(
+    () => P.parseTotalsAndDaily(ds9([0, 0, { unexpected: true }, 'NaN']), { allowNoData: true }),
+    /not a valid number/,
+  );
+  throws(
+    () => P.parseTotalsAndDaily(ds9([0, 0, undefined, 'NaN']), { allowNoData: true }),
+    /not a valid number/,
+  );
+});
+
+test('mixed-direction page deltas are reported as mixed, not as an excess', () => {
+  // Finding: `exceedsTotals` is an OR, so one metric over and the other short
+  // labelled both as excesses and formatted the negative as "+-10%".
+  const mixed = P.pageTableDelta({ clicks: 100, impressions: 1000 }, [{ clicks: 102, impressions: 900 }]);
+  is(mixed.direction, 'mixed');
+  is(mixed.clickDelta, 2);
+  is(mixed.impressionDelta, -100);
+  ok(mixed.exceedsTotals, 'the legacy OR flag is still true, which is why callers must use direction');
+
+  is(P.pageTableDelta({ clicks: 100, impressions: 1000 }, [{ clicks: 102, impressions: 1100 }]).direction, 'over');
+  is(P.pageTableDelta({ clicks: 100, impressions: 1000 }, [{ clicks: 90, impressions: 900 }]).direction, 'under');
+  is(P.pageTableDelta({ clicks: 100, impressions: 1000 }, [{ clicks: 100, impressions: 1000 }]).direction, 'over',
+    'an exact match counts as over, so the zero case takes the non-shortfall wording');
+});

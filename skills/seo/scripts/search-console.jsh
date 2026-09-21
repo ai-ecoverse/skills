@@ -326,23 +326,35 @@ function printPageFooter({ pages, totals, delta, query }) {
     `  ${c.dim(query ? 'Totals for this query:' : 'Property totals:')} ${c.bold(String(totals.clicks))} clicks, ` +
     `${c.bold(String(totals.impressions))} impressions`,
   );
-  if (delta.exceedsTotals) {
+  // Clicks and impressions are aggregated independently, so they can diverge in
+  // OPPOSITE directions. Printing one label for both produced "+-28%" in that
+  // case, so each metric now carries its own sign and the label only claims a
+  // single direction when both metrics agree.
+  const signed = (n) => `${n >= 0 ? '+' : '-'}${Math.abs(n)}`;
+  const signedPct = (n) => `${n >= 0 ? '+' : '-'}${Math.abs(n).toFixed(0)}%`;
+  const bothOver = delta.direction === 'over';
+  const bothUnder = delta.direction === 'under';
+
+  if (delta.clickDelta !== 0 || delta.impressionDelta !== 0) {
+    let label = 'Page sum vs totals:';
+    if (bothOver) label = 'Page sum exceeds totals by:';
+    else if (bothUnder) label = 'Page sum falls short of totals by:';
     console.log(
-      `  ${c.dim('Page sum exceeds totals by:')} ${delta.clickDelta} clicks, ` +
-      `${delta.impressionDelta} impressions ` +
-      `(+${delta.clickDeltaPct.toFixed(0)}% / +${delta.impressionDeltaPct.toFixed(0)}%)`,
+      `  ${c.dim(label)} ${signed(delta.clickDelta)} clicks, ` +
+      `${signed(delta.impressionDelta)} impressions ` +
+      `(${signedPct(delta.clickDeltaPct)} / ${signedPct(delta.impressionDeltaPct)})`,
     );
-    console.log(
-      `  ${c.dim('Note:')} page rows count per page, the totals per search. One result page listing` +
-      ' two of your URLs',
-    );
-    console.log('        counts twice here and once in the totals, so this column is not a total.');
-  } else if (delta.clickDelta < 0 || delta.impressionDelta < 0) {
-    console.log(
-      `  ${c.dim('Unattributed gap:')} ${-delta.clickDelta} clicks, ${-delta.impressionDelta} impressions` +
-      ` (${(-delta.clickDeltaPct).toFixed(0)}% / ${(-delta.impressionDeltaPct).toFixed(0)}% not attributed)`,
-    );
-    console.log(`  ${c.dim('Note:')} the page table did not account for every total; do not sum it into one.`);
+    if (bothOver) {
+      console.log(
+        `  ${c.dim('Note:')} page rows count per page, the totals per search. One result page listing` +
+        ' two of your URLs',
+      );
+      console.log('        counts twice here and once in the totals, so this column is not a total.');
+    } else {
+      console.log(
+        `  ${c.dim('Note:')} the page table does not account for every total, so do not sum it into one.`,
+      );
+    }
   }
   console.log('');
 }
