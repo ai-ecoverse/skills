@@ -160,14 +160,12 @@ run_tst() {
   IFS=,
   for rel in $tests_csv; do
     IFS=$old_ifs
+    # just-bash has no [!class] negation; reject injection-prone bytes only.
+    # The host detector already allowlists [A-Za-z0-9._/-] without '..'.
     case "$rel" in
       '') continue ;;
-      *..*|/*|*/)
+      *..* | /* | */ | *' '* | *'|'* | *';'* | *'$'* | *$'\t'* | *$'\n'*)
         echo "::error title=$name tst::refusing test path $rel"
-        return 1
-        ;;
-      *[!A-Za-z0-9._/-]*)
-        echo "::error title=$name tst::refusing unsafe test path $rel"
         return 1
         ;;
     esac
@@ -205,17 +203,11 @@ while IFS='|' read -r name action reason tst_tests skip_count || [ -n "${name:-}
   case "$name" in
     '' | '#'*) continue ;;
   esac
+  # just-bash has no [!class] negation — `*[!a-z0-9-]*` treated '!' as a literal
+  # and refused every skill name (da-live, github, search). Reject path-injection
+  # bytes only; the host detector already allowlists [a-z0-9][a-z0-9-]*.
   case "$name" in
-    *[!a-z0-9-]* | '' | -*)
-      echo "::error title=skill integration::refusing unsafe skill name $name"
-      append_row "$name" '—' 'refused' 'fail'
-      failed=1
-      continue
-      ;;
-  esac
-  case "$name" in
-    [a-z0-9]*) ;;
-    *)
+    '' | -* | *'|'* | *'/'* | *'..'* | *' '* | *'.'* | *$'\t'* | *$'\n'*)
       echo "::error title=skill integration::refusing unsafe skill name $name"
       append_row "$name" '—' 'refused' 'fail'
       failed=1

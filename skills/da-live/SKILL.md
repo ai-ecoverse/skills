@@ -52,6 +52,8 @@ directly on the VFS path — read, edit, and write as you would any local file.
    cat /mnt/<mount-path>/data/sheet.json
    ```
 
+4. **If write fails**, read the error (missing or extra keys), rebuild the row JSON so every row matches the schema from step 1, and retry `da-live write`. Do not write the JSON directly to the VFS path as a workaround.
+
 ## Key rules
 
 - **Always** use `da-live write` to modify sheets — never write JSON directly to the VFS path.
