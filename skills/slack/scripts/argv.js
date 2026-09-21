@@ -1,9 +1,10 @@
 // argv.js — argument-parsing utilities shared by slack-ext.jsh.
 //
 // Deliberately free of `sliccy:*`, `fs`, and `path` so the tst suite can
-// import this module in the SLICC test realm (CLAUDE.md §16). The only I/O is
-// `console.error` + `process.exit(1)` on fatal parse errors — both are
-// available in every Node-like realm, including tst's sandbox.
+// import this module in the SLICC test realm (CLAUDE.md §16). Fatal parse
+// errors throw a plain Error so the caller can handle them and so the tst
+// realm's process.exitCode is not poisoned when throws() catches them.
+// In slack-ext.jsh the top-level try/catch passes those errors to cli.die.
 //
 // Consumed by slack-ext.jsh via `const { BOOL_FLAGS, parseArgv, parseList } = require('./argv.js');`
 
@@ -36,15 +37,10 @@ function parseArgv(argv) {
         } else if (lc === 'false' || lc === '0' || lc === 'no' || lc === 'off' || lc === '') {
           f[bname] = false;
         } else {
-          console.error(
-            'Error: --' + bname + '=' + bval + ' is not a valid boolean value.' +
-              '\n  Use --' +
-              bname +
-              ' (true) or --' +
-              bname +
-              '=false/true/yes/no/on/off/0/1.',
+          throw new Error(
+            '--' + bname + '=' + bval + ' is not a valid boolean value.' +
+              ' Use --' + bname + ' (true) or --' + bname + '=false/true/yes/no/on/off/0/1.',
           );
-          process.exit(1);
         }
       } else {
         f[bname] = bval;
@@ -71,10 +67,9 @@ function parseArgv(argv) {
 function parseList(raw, label) {
   if (raw === undefined) return [];
   if (raw === true) {
-    // Valueless flag: fatal. Use console.error + process.exit so this module
-    // stays free of sliccy:cli while keeping the same observable behaviour.
-    console.error('--' + label + ' needs a value, e.g. --' + label + '=channels:read');
-    process.exit(1);
+    // Valueless flag: throw so the caller (slack-ext.jsh's top-level catch ->
+    // cli.die) can report it. Throwing keeps process.exitCode clean in tst.
+    throw new Error('--' + label + ' needs a value, e.g. --' + label + '=channels:read');
   }
   const items = String(raw)
     .split(/[,\s]+/)
