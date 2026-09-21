@@ -71,10 +71,11 @@ async function findGSCTab() {
 /** Fetch the Search Console performance page via curlwright, returning the raw
  *  HTML string. The request runs inside the GSC tab, carrying its cookies. */
 async function fetchGSCPage(tab, property) {
-  const resourceId = encodeURIComponent(property);
-  const url =
-    `https://search.google.com/u/1/search-console/performance/search-analytics` +
-    `?resource_id=${resourceId}`;
+  // The account slot comes from the tab, never hard-coded: fetching under the
+  // wrong slot returns 200 with a no-access page, which reads like a permission
+  // problem. See accountSlotFromUrl in gsc-parse.js.
+  const slot = parse.accountSlotFromUrl(tab.url);
+  const url = parse.buildReportUrl(property, slot);
 
   const { stdout, stderr, exitCode } = await exec.spawn([
     'curlwright', '--tab=' + tab.targetId, '-s', '-S',
@@ -101,6 +102,10 @@ async function fetchGSCPage(tab, property) {
   // A dead session does NOT 404: curlwright follows the redirect and returns 200
   // with a Google sign-in page, which is far larger than any size heuristic would
   // catch. The marker choice is explained in gsc-parse.js.
+  if (parse.looksLikeNoAccessPage(body)) {
+    cli.die(parse.noAccessMessage(property, slot), { prefix: 'search-console' });
+  }
+
   if (parse.looksLikeSignInPage(body) || body.length < 1000) {
     cli.die(
       `Got a sign-in page instead of the report for "${property}".\n` +
@@ -165,12 +170,9 @@ async function cmdQueries(flags) {
 
   const shown = limit > 0 ? queries.slice(0, limit) : queries;
 
-  // Named-query sums.
-  let namedClicks = 0, namedImpressions = 0;
-  for (const q of queries) {
-    namedClicks += q.clicks;
-    namedImpressions += q.impressions;
-  }
+  // Named-query sums and the unattributed remainder (see gsc-parse.js).
+  const gap = parse.anonymisedGap(totals, queries);
+  const { namedClicks, namedImpressions } = gap;
 
   if (flags.json) {
     cli.out({
@@ -178,6 +180,11 @@ async function cmdQueries(flags) {
       queries: shown,
       namedQueryTotals: { clicks: namedClicks, impressions: namedImpressions },
       propertyTotals: totals,
+      unattributed: {
+        clicks: gap.clickGap,
+        impressions: gap.impressionGap,
+        tableLikelyTruncated: gap.tableLikelyTruncated,
+      },
     });
     return;
   }
@@ -207,13 +214,22 @@ async function cmdQueries(flags) {
     `  ${c.dim('Property totals:')} ${c.bold(String(totals.clicks))} clicks, ` +
     `${c.bold(String(totals.impressions))} impressions`,
   );
-  const clickGap = totals.clicks - namedClicks;
-  const impGap = totals.impressions - namedImpressions;
-  if (clickGap > 0 || impGap > 0) {
+  if (gap.clickGap > 0 || gap.impressionGap > 0) {
+    // Named "anonymised" only when the table is plausibly complete. Past the row
+    // cap the remainder also contains ordinary queries the table did not return,
+    // and calling that anonymisation would be a false explanation.
+    const label = gap.tableLikelyTruncated ? 'Unattributed gap:' : 'Anonymised gap:';
     console.log(
-      `  ${c.dim('Anonymised gap:')} ${clickGap} clicks, ${impGap} impressions` +
-      ` (${((clickGap / totals.clicks) * 100).toFixed(0)}% / ${((impGap / totals.impressions) * 100).toFixed(0)}% not attributed)`,
+      `  ${c.dim(label)} ${gap.clickGap} clicks, ${gap.impressionGap} impressions` +
+      ` (${gap.clickGapPct.toFixed(0)}% / ${gap.impressionGapPct.toFixed(0)}% not attributed)`,
     );
+    if (gap.tableLikelyTruncated) {
+      console.log(
+        `  ${c.dim('Note:')} the query table returned ${queries.length} rows and is probably` +
+        ' capped, so part of this gap is queries the table omitted rather than',
+      );
+      console.log('        queries Search Console anonymised.');
+    }
   }
   console.log('');
 }

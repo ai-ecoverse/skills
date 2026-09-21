@@ -6,6 +6,10 @@
 // keeps the branch that decides "the numbers are wrong" testable without a live
 // Search Console session.
 
+/** Conservative row count above which the inline query table is assumed to be
+ *  capped rather than complete. Not a documented figure. */
+const QUERY_TABLE_ROW_CAP = 1000;
+
 class GscParseError extends Error {
   constructor(message) {
     super(message);
@@ -23,6 +27,64 @@ function fail(message) {
 function isValidProperty(property) {
   if (typeof property !== 'string') return false;
   return /^sc-domain:[a-z0-9.-]+$/i.test(property) || /^https?:\/\/[^\s]+$/i.test(property);
+}
+
+/** The Google account slot ("/u/N/") a Search Console tab is signed in under.
+ *  Returns null when the URL carries no slot.
+ *
+ *  This must be taken from the tab rather than hard-coded: requesting a report
+ *  under the wrong slot returns HTTP 200 with an "Oops, you don't have access to
+ *  this property" page, so the mistake reads exactly like a missing permission.
+ *  Measured: /u/1 returns the report (20 data blocks), /u/0 and /u/7 return the
+ *  no-access page (6 blocks) for the same property. */
+function accountSlotFromUrl(url) {
+  const m = /^https?:\/\/search\.google\.com\/u\/(\d+)(?:\/|$)/.exec(String(url || ''));
+  return m ? m[1] : null;
+}
+
+/** Build the performance report URL for a property, under a given account slot.
+ *
+ *  `hl=en` is forced deliberately. A localized report renames the scorecards
+ *  ("Klicks insgesamt"), which alone would only break `verify`; the real hazard
+ *  is that it also localizes NUMBER FORMAT, rendering 2778 as title="2.778" and
+ *  6.9% as "6,9 %". Parsed with English rules that silently becomes 2.778 — a
+ *  wrong number rather than an error. Measured against hl=de. */
+function buildReportUrl(property, slot) {
+  const seg = slot == null ? '' : `/u/${slot}`;
+  return (
+    `https://search.google.com${seg}/search-console/performance/search-analytics` +
+    `?resource_id=${encodeURIComponent(property)}&hl=en`
+  );
+}
+
+/** What to tell the user when the no-access page comes back.
+ *
+ *  The cause differs by whether the tab carried an account slot, and so does the
+ *  fix, so the two are not collapsed into one message. Measured: a URL with no
+ *  "/u/N/" segment also returns the no-access page, so a slotless tab is a real
+ *  failure path rather than a harmless default. */
+function noAccessMessage(property, slot) {
+  if (slot == null) {
+    return (
+      `Search Console reports no access to "${property}".\n` +
+      'The browser tab URL carries no /u/N/ account slot, and a slotless request\n' +
+      'is not served the report. Reload Search Console in the tab (Google adds the\n' +
+      'slot on navigation) and retry. If the tab already shows the property, check\n' +
+      'the property name against the property picker.'
+    );
+  }
+  return (
+    `Search Console reports no access to "${property}" for account slot /u/${slot}/.\n` +
+    'Either the property name does not match one in the property picker, or the\n' +
+    'tab is signed in as a different Google account than the one the property\n' +
+    'belongs to. Both return this same page.'
+  );
+}
+
+/** Search Console answers a request for a property the signed-in account cannot
+ *  see with HTTP 200 and this page, not with 403. */
+function looksLikeNoAccessPage(html) {
+  return /<title>[^<]*don(?:&#39;|&#x27;|')t have access to this property/i.test(String(html));
 }
 
 /** A dead session does NOT 404: the fetch follows the redirect and returns 200
@@ -235,6 +297,13 @@ function parseUINumber(s) {
 function anonymisedGap(totals, queries) {
   const namedClicks = queries.reduce((a, q) => a + q.clicks, 0);
   const namedImpressions = queries.reduce((a, q) => a + q.impressions, 0);
+  // The inline table is not guaranteed to hold every named query: a large
+  // property's table is capped, and the rows beyond the cap are ordinary named
+  // queries, not anonymised ones. When the row count is at or above the cap the
+  // gap can no longer be attributed to anonymisation alone, so say so instead of
+  // labelling it wrongly. The exact cap is not documented and could not be
+  // measured here (the property under test returns 78 rows), so this is a
+  // conservative threshold, not a verified constant.
   const clickGap = totals.clicks - namedClicks;
   const impressionGap = totals.impressions - namedImpressions;
   return {
@@ -242,6 +311,7 @@ function anonymisedGap(totals, queries) {
     namedImpressions,
     clickGap,
     impressionGap,
+    tableLikelyTruncated: queries.length >= QUERY_TABLE_ROW_CAP,
     clickGapPct: totals.clicks ? (clickGap / totals.clicks) * 100 : 0,
     impressionGapPct: totals.impressions ? (impressionGap / totals.impressions) * 100 : 0,
   };
@@ -315,6 +385,11 @@ function compareTotalsWithUI(totals, ui) {
 
 module.exports = {
   GscParseError,
+  QUERY_TABLE_ROW_CAP,
+  accountSlotFromUrl,
+  buildReportUrl,
+  looksLikeNoAccessPage,
+  noAccessMessage,
   isValidProperty,
   looksLikeSignInPage,
   parseDataBlocks,

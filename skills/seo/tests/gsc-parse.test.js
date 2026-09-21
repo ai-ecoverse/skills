@@ -275,3 +275,61 @@ test('UI numbers parse through commas, abbreviations and percent signs', () => {
   is(P.parseUINumber('7%'), 7);
   ok(Number.isNaN(P.parseUINumber('')));
 });
+
+// ─── Account slot, locale and the no-access page ─────────────────────────────
+//
+// Three findings from review, each verified against the live endpoint before
+// being fixed. The slot one matters most: it worked only because the machine it
+// was written on happened to be signed in at /u/1.
+
+test('the account slot is taken from the tab URL, not assumed', () => {
+  is(P.accountSlotFromUrl('https://search.google.com/u/0/search-console/performance'), '0');
+  is(P.accountSlotFromUrl('https://search.google.com/u/3/search-console'), '3');
+  is(P.accountSlotFromUrl('https://search.google.com/search-console/performance'), null);
+  is(P.accountSlotFromUrl('https://evil.example/u/1/'), null, 'the host must match');
+  is(P.accountSlotFromUrl(undefined), null);
+});
+
+test('the report URL carries the tab slot and forces the English locale', () => {
+  const url = P.buildReportUrl('sc-domain:sliccy.com', '0');
+  ok(url.startsWith('https://search.google.com/u/0/search-console/'));
+  ok(url.includes('resource_id=sc-domain%3Asliccy.com'), 'the property must be encoded');
+  ok(url.includes('hl=en'));
+  // A slotless tab must not gain a fabricated /u/0.
+  ok(!P.buildReportUrl('sc-domain:sliccy.com', null).includes('/u/'));
+});
+
+test('the no-access page is recognised, since it arrives as HTTP 200', () => {
+  // Measured: requesting a property under the wrong account slot returns 200 with
+  // this title and no ds:9, which would otherwise be reported as a missing block.
+  ok(P.looksLikeNoAccessPage("<title>Oops, you don&#39;t have access to this property</title>"));
+  ok(P.looksLikeNoAccessPage("<title>Oops, you don't have access to this property</title>"));
+  is(P.looksLikeNoAccessPage('<title>Performance on Search results</title>'), false);
+});
+
+test('a capped query table is not labelled as anonymisation', () => {
+  // Past the row cap the remainder also holds ordinary queries the table never
+  // returned, so attributing all of it to anonymisation would be a false
+  // explanation of the user's own data.
+  const many = Array.from({ length: P.QUERY_TABLE_ROW_CAP }, (_, i) => ({
+    query: `q${i}`,
+    clicks: 1,
+    impressions: 1,
+  }));
+  ok(P.anonymisedGap({ clicks: 5000, impressions: 9000 }, many).tableLikelyTruncated);
+  is(P.anonymisedGap({ clicks: 196, impressions: 2790 }, many.slice(0, 78)).tableLikelyTruncated, false);
+});
+
+test('the no-access message distinguishes a wrong account from a slotless tab', () => {
+  // Measured: a URL with no /u/N/ segment is served the no-access page too, so
+  // the two causes need different advice — reload the tab, versus check the
+  // account. Collapsing them would send half the users to the wrong fix.
+  const withSlot = P.noAccessMessage('sc-domain:sliccy.com', '0');
+  ok(withSlot.includes('/u/0/'));
+  ok(withSlot.includes('different Google account'));
+
+  const slotless = P.noAccessMessage('sc-domain:sliccy.com', null);
+  ok(slotless.includes('no /u/N/ account slot'));
+  ok(slotless.includes('Reload'));
+  ok(!slotless.includes('different Google account'), 'slotless advice must not blame the account');
+});

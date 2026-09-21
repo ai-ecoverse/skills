@@ -105,6 +105,28 @@ confidently. A missing scorecard counts as a failure too — if the reference
 silently disappeared, a check that skipped it would start passing everything,
 so it fails closed.
 
+## Account, locale and table limits
+
+Three things the URL has to get right, each of which fails as HTTP 200 rather
+than an error:
+
+- **Account slot.** The `/u/N/` segment is taken from the discovered tab, never
+  assumed. Requesting a property under the wrong slot returns 200 with an
+  "Oops, you don't have access to this property" page — measured: `/u/1` returns
+  the report (20 data blocks), `/u/0` and `/u/7` return the no-access page (6).
+  So does a URL with no slot at all. That page is detected, and the advice differs
+  for a wrong account versus a slotless tab.
+- **Locale.** `hl=en` is forced. A localized report renames the scorecards
+  (`Klicks insgesamt`), which would only break `verify` — but it also localizes
+  **number format**, rendering 2778 as `title="2.778"` and 6.9% as `"6,9 %"`.
+  Parsed with English rules that becomes 2.778: a wrong number, not an error.
+  Measured against `hl=de`.
+- **Table size.** The inline query table is not guaranteed complete. At or above
+  a conservative 1000-row threshold the footer says `Unattributed gap` instead of
+  `Anonymised gap` and notes that part of the remainder is queries the table
+  omitted. The real cap is undocumented and could not be measured here (this
+  property returns 78 rows), so treat the threshold as a guard, not a fact.
+
 ## Fragility
 
 `ds:` indices and array offsets are undocumented, so a UI release can reshape
@@ -118,7 +140,7 @@ module with no `sliccy:` or `fs` imports, so the test suite can exercise it.
 
 ## Tests
 
-`tests/gsc-parse.test.js` (`tst`, 23 tests / 58 assertions) covers the totals
+`tests/gsc-parse.test.js` (`tst`, 28 tests / 77 assertions) covers the totals
 source, metric-by-type-id reading, the anonymised gap, property validation,
 sign-in detection and the `verify` comparison. Fixture shapes are copied from a
 live report, not invented, and inlined as literals because the test realm cannot
