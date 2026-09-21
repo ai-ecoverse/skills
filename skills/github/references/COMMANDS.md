@@ -217,11 +217,13 @@ field ID for you (project field updates are field-ID-based, not `{title: ...}`).
 
 ```bash
 gh api /repos/owner/repo
+gh api /repos/owner/repo -i                    # include response status and headers
 gh api /repos/owner/repo/git/ref/heads/main --jq .object.sha
 gh api /repos/owner/repo/git/refs -X POST -f ref=refs/heads/new-branch -f sha=abc123
 ```
 
-`-X`/`--method`, `-f`/`--raw-field key=value` (raw strings), `-F`/`--field key=value`
+`-i`/`--include` prints the response status and headers before the body. `-X`/`--method`,
+`-f`/`--raw-field key=value` (raw strings), `-F`/`--field key=value`
 (typed values; `@file` and `@-` read UTF-8 or stdin), `--input <file>` (send a JSON file as
 the request body; use `-` for stdin; mutually exclusive with `-f`/`-F`),
 `--jq`/`-q`. Fields and `--input` imply POST unless `-X` is explicit; use `-f key=@mention`

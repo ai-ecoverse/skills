@@ -30,6 +30,7 @@ async function runGh(args, scenario = {}) {
   const api = {
     get: async (requestPath, options) => {
       calls.push({ method: 'get', path: requestPath, options });
+      if (scenario.rawResponse && options?.raw) return scenario.rawResponse;
       if (requestPath === '/user') {
         if (scenario.failUserLookup) throw { body: { message: 'viewer unavailable' } };
         return scenario.authenticatedUser || { login: 'viewer' };
@@ -518,6 +519,46 @@ test('gh api preserves an explicit GET by sending fields as query parameters', a
   assert.deepEqual(writes(result), []);
 });
 
+test('gh api -i includes response status and headers before the body', async () => {
+  const result = await runGh(['api', '/repos/octo/repo', '-i'], {
+    rawResponse: {
+      status: 200,
+      headers: {
+        'x-ratelimit-remaining': '42',
+        date: 'Mon, 21 Sep 2026 08:00:00 GMT',
+      },
+      body: { full_name: 'octo/repo' },
+    },
+  });
+
+  assert.deepEqual(result.calls, [
+    { method: 'get', path: '/repos/octo/repo', options: { raw: true } },
+  ]);
+  assert.deepEqual(result.stdout, [
+    'HTTP/2.0 200 OK',
+    'Date: Mon, 21 Sep 2026 08:00:00 GMT',
+    'X-Ratelimit-Remaining: 42',
+    '',
+    '{"full_name":"octo/repo"}',
+  ]);
+});
+
+test('gh api --include applies --jq to the response body', async () => {
+  const result = await runGh(
+    ['api', '/rate_limit', '--include', '--jq', '.resources.core.remaining'],
+    {
+      rawResponse: {
+        status: 200,
+        headers: { 'x-ratelimit-remaining': '41' },
+        body: { resources: { core: { remaining: 41 } } },
+      },
+    }
+  );
+
+  assert.deepEqual(result.calls, [{ method: 'get', path: '/rate_limit', options: { raw: true } }]);
+  assert.deepEqual(result.stdout, ['HTTP/2.0 200 OK', 'X-Ratelimit-Remaining: 41', '', '41']);
+});
+
 test('gh api -F reads a multi-line UTF-8 file', async () => {
   const body = 'First line\nEmoji: 🐙\nCafé\n';
   const result = await runGh(['api', '/repos/octo/repo/issues', '-F', 'body=@/issue.md'], {
@@ -560,6 +601,7 @@ test('gh api help documents field behavior and the -F collision', async () => {
   assert.match(help, /@file reads UTF-8 and @- reads stdin/);
   assert.match(help, /-f, --raw-field/);
   assert.match(help, /-F, --field/);
+  assert.match(help, /-i, --include/);
   assert.match(help, /--body-file for gh issue\/pr/);
   assert.match(help, /-f key=@mention/);
 });
