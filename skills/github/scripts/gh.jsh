@@ -3412,10 +3412,88 @@ function typedApiField(value) {
   return value;
 }
 
+const HTTP_REASON_PHRASES = {
+  200: 'OK', 201: 'Created', 202: 'Accepted', 204: 'No Content',
+  301: 'Moved Permanently', 302: 'Found', 304: 'Not Modified',
+  400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found',
+  409: 'Conflict', 422: 'Unprocessable Entity', 429: 'Too Many Requests',
+  500: 'Internal Server Error', 502: 'Bad Gateway', 503: 'Service Unavailable',
+  504: 'Gateway Timeout',
+};
+
+function apiHeaderName(name) {
+  return name.split('-').map(part => part ? part[0].toUpperCase() + part.slice(1).toLowerCase() : part).join('-');
+}
+
+function printApiResponseHeaders(response) {
+  const reason = HTTP_REASON_PHRASES[response.status];
+  console.log(`HTTP/2.0 ${response.status}${reason ? ` ${reason}` : ''}`);
+  for (const [name, value] of Object.entries(response.headers || {}).sort(([a], [b]) => a.localeCompare(b))) {
+    console.log(`${apiHeaderName(name)}: ${value}`);
+  }
+  console.log('');
+}
+
+function appendApiQueryParam(searchParams, key, value) {
+  if (Array.isArray(value)) {
+    for (const item of value) searchParams.append(key, String(item));
+    return;
+  }
+  searchParams.append(key, String(value));
+}
+
+async function apiResponseWithHeaders(method, path, opts) {
+  const url = new URL(path, 'https://api.github.com');
+  if (url.origin !== 'https://api.github.com') {
+    cli.die('api: endpoint must be relative to https://api.github.com');
+  }
+  for (const [key, value] of Object.entries(opts.params || {})) {
+    appendApiQueryParam(url.searchParams, key, value);
+  }
+
+  const token = isAI && method !== 'GET' ? await getAttributedToken() : personalToken;
+  const headers = {
+    'Accept': 'application/vnd.github+json',
+    'Authorization': `Bearer ${token}`,
+    'User-Agent': 'gh.jsh/1.0',
+    'X-GitHub-Api-Version': '2022-11-28',
+  };
+  const init = { method, headers };
+  if (opts.body !== undefined) {
+    headers['Content-Type'] = 'application/json';
+    init.body = JSON.stringify(opts.body);
+  }
+
+  // http.client intentionally throws HttpError without response headers on
+  // non-2xx responses. The include form must use fetch so diagnostic headers
+  // such as X-RateLimit-* survive 403/429 responses (the main use for -i).
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
+  let response;
+  let text;
+  try {
+    response = await fetch(url.toString(), { ...init, signal: controller.signal });
+    text = await response.text();
+  } finally {
+    clearTimeout(timeout);
+  }
+  let body = text;
+  if (text) {
+    try { body = JSON.parse(text); } catch { /* non-JSON response body */ }
+  } else {
+    body = null;
+  }
+  return {
+    status: response.status,
+    headers: Object.fromEntries(response.headers.entries()),
+    body,
+  };
+}
+
 async function apiPassthrough(args) {
-  const usage = 'usage: gh api <path> [-X METHOD] [-f key=value]... [-F key=value]... [--input <file>] [--jq <expr>]';
+  const usage = 'usage: gh api <path> [-i|--include] [-X METHOD] [-f key=value]... [-F key=value]... [--input <file>] [--jq <expr>]';
   if (!args[0]) cli.die(usage);
-  let method = 'GET', methodExplicit = false, jqExpr = null, stdinValue, inputFile = null;
+  let method = 'GET', methodExplicit = false, jqExpr = null, stdinValue, inputFile = null, includeHeaders = false;
   const fields = {};
   let hasFieldFlags = false;
   const positional = [];
@@ -3437,7 +3515,7 @@ async function apiPassthrough(args) {
 
   // Known flags for `gh api` — used to reject unknown flags.
   const KNOWN_API_FLAGS = new Set([
-    '-X', '--method', '--jq', '-q', '-f', '--raw-field', '-F', '--field', '--input',
+    '-i', '--include', '-X', '--method', '--jq', '-q', '-f', '--raw-field', '-F', '--field', '--input',
   ]);
 
   for (let i = 0; i < args.length; i++) {
@@ -3452,6 +3530,7 @@ async function apiPassthrough(args) {
     }
     else if ((args[i] === '--jq' || args[i] === '-q') && args[i+1]) { jqExpr = args[++i]; }
     else if (args[i].startsWith('--jq=')) { jqExpr = args[i].slice(5); }
+    else if (args[i] === '-i' || args[i] === '--include') { includeHeaders = true; }
     else if (args[i] === '--input' && args[i+1]) { inputFile = args[++i]; }
     else if (args[i].startsWith('--input=')) { inputFile = args[i].slice(8); }
     else if ((args[i] === '-f' || args[i] === '--raw-field') && args[i+1]) {
@@ -3512,22 +3591,33 @@ async function apiPassthrough(args) {
     }
 
     let result;
-    switch (method) {
-      case 'GET':    result = await api.get(path, opts); break;
-      case 'POST':   result = await api.post(path, opts); break;
-      case 'PUT':    result = await api.put(path, opts); break;
-      case 'PATCH':  result = await api.patch(path, opts); break;
-      case 'DELETE': result = await api.delete(path, opts); break;
-      default:       result = await api.get(path, opts); break;
+    if (includeHeaders) {
+      result = await apiResponseWithHeaders(method, path, opts);
+    } else {
+      switch (method) {
+        case 'GET':    result = await api.get(path, opts); break;
+        case 'POST':   result = await api.post(path, opts); break;
+        case 'PUT':    result = await api.put(path, opts); break;
+        case 'PATCH':  result = await api.patch(path, opts); break;
+        case 'DELETE': result = await api.delete(path, opts); break;
+        default:       result = await api.get(path, opts); break;
+      }
     }
 
-    if (jqExpr && typeof result === 'object') {
+    const responseBody = includeHeaders ? result.body : result;
+    if (includeHeaders) printApiResponseHeaders(result);
+
+    if (jqExpr && typeof responseBody === 'object') {
       // Full jq when the shell provides it, path-evaluator fallback otherwise.
-      console.log(await applyJq(jqExpr, result));
+      console.log(await applyJq(jqExpr, responseBody));
     } else {
-      cli.out(result);
+      cli.out(responseBody);
     }
-  } catch (e) { fail('api ' + path, e); }
+    if (includeHeaders && (result.status < 200 || result.status >= 300)) process.exit(1);
+  } catch (e) {
+    if (e?.name === 'NodeExitError') throw e;
+    fail('api ' + path, e);
+  }
 }
 
 // ─── mcp (GitHub MCP server passthrough) ─────────────────────────────────────
@@ -4285,9 +4375,10 @@ const HELP = {
   api: {
     summary: 'Raw GitHub REST API passthrough',
     standalone: {
-      usage: ['gh api <path> [-X METHOD] [-f key=value]... [-F key=value]... [--input <file>] [--jq <expr>]'],
+      usage: ['gh api <path> [-i|--include] [-X METHOD] [-f key=value]... [-F key=value]... [--input <file>] [--jq <expr>]'],
       desc: 'Call any REST endpoint with this tool\u2019s auth',
-      flags: ['-X, --method <verb>       GET (default), POST, PUT, PATCH, DELETE',
+      flags: ['-i, --include             include response status and headers in output',
+        '-X, --method <verb>       GET (default), POST, PUT, PATCH, DELETE',
         '-f, --raw-field <key=value> raw string; fields imply POST when -X is omitted',
         '-F, --field <key=value>   typed field; @file reads UTF-8 and @- reads stdin',
         '--input <file>            read the request body from a JSON file (use - for stdin); mutually exclusive with -f/-F',

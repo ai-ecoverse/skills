@@ -18,6 +18,7 @@ class NodeExitError extends Error {
 
 async function runGh(args, scenario = {}) {
   const calls = [];
+  const fetchCalls = [];
   const stdout = [];
   const stderr = [];
   let stdinReadCount = 0;
@@ -126,17 +127,39 @@ async function runGh(args, scenario = {}) {
     warn: (message) => stderr.push(String(message)),
     error: (message) => stderr.push(String(message)),
   };
+  const mockFetch = async (url, init) => {
+    fetchCalls.push({ url: String(url), init });
+    const response = scenario.fetchResponse;
+    if (!response) assert.fail('unexpected fetch');
+    const headerEntries = Object.entries(response.headers || {});
+    return {
+      ok: response.status >= 200 && response.status < 300,
+      status: response.status,
+      statusText: response.statusText || '',
+      headers: {
+        entries: () => headerEntries[Symbol.iterator](),
+        get: (name) =>
+          headerEntries.find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1] ?? null,
+      },
+      text: async () =>
+        response.body === undefined
+          ? ''
+          : typeof response.body === 'string'
+            ? response.body
+            : JSON.stringify(response.body),
+    };
+  };
 
   try {
     await new AsyncFunction('require', 'process', 'console', 'fetch', source)(
       mockRequire,
       mockProcess,
       mockConsole,
-      async () => assert.fail('unexpected fetch')
+      mockFetch
     );
-    return { calls, stdinReadCount, stdout, stderr };
+    return { calls, fetchCalls, stdinReadCount, stdout, stderr };
   } catch (error) {
-    return { error, calls, stdinReadCount, stdout, stderr };
+    return { error, calls, fetchCalls, stdinReadCount, stdout, stderr };
   }
 }
 
@@ -518,6 +541,92 @@ test('gh api preserves an explicit GET by sending fields as query parameters', a
   assert.deepEqual(writes(result), []);
 });
 
+test('gh api -i includes response status and headers before the body', async () => {
+  const result = await runGh(['api', '/repos/octo/repo', '-i'], {
+    fetchResponse: {
+      status: 200,
+      headers: {
+        'x-ratelimit-remaining': '42',
+        date: 'Mon, 21 Sep 2026 08:00:00 GMT',
+      },
+      body: { full_name: 'octo/repo' },
+    },
+  });
+
+  assert.deepEqual(result.calls, []);
+  const [
+    {
+      init: { signal, ...init },
+      url,
+    },
+  ] = result.fetchCalls;
+  assert.ok(signal instanceof AbortSignal);
+  assert.deepEqual(
+    { url, init },
+    {
+      url: 'https://api.github.com/repos/octo/repo',
+      init: {
+        method: 'GET',
+        headers: {
+          Accept: 'application/vnd.github+json',
+          Authorization: 'Bearer fake',
+          'User-Agent': 'gh.jsh/1.0',
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+      },
+    }
+  );
+  assert.deepEqual(result.stdout, [
+    'HTTP/2.0 200 OK',
+    'Date: Mon, 21 Sep 2026 08:00:00 GMT',
+    'X-Ratelimit-Remaining: 42',
+    '',
+    '{"full_name":"octo/repo"}',
+  ]);
+});
+
+test('gh api --include applies --jq to the response body', async () => {
+  const result = await runGh(
+    ['api', '/rate_limit', '--include', '--jq', '.resources.core.remaining'],
+    {
+      fetchResponse: {
+        status: 200,
+        headers: { 'x-ratelimit-remaining': '41' },
+        body: { resources: { core: { remaining: 41 } } },
+      },
+    }
+  );
+
+  assert.deepEqual(result.calls, []);
+  assert.deepEqual(result.stdout, ['HTTP/2.0 200 OK', 'X-Ratelimit-Remaining: 41', '', '41']);
+});
+
+test('gh api -i preserves status, headers, and body for an error response', async () => {
+  const result = await runGh(['api', '/rate_limit', '-i'], {
+    fetchResponse: {
+      status: 403,
+      headers: {
+        'x-ratelimit-limit': '5000',
+        'x-ratelimit-remaining': '0',
+        'x-ratelimit-reset': '1789977600',
+      },
+      body: { message: 'API rate limit exceeded' },
+    },
+  });
+
+  assert.equal(result.error.name, 'NodeExitError');
+  assert.equal(result.error.exitCode, 1);
+  assert.deepEqual(result.calls, []);
+  assert.deepEqual(result.stdout, [
+    'HTTP/2.0 403 Forbidden',
+    'X-Ratelimit-Limit: 5000',
+    'X-Ratelimit-Remaining: 0',
+    'X-Ratelimit-Reset: 1789977600',
+    '',
+    '{"message":"API rate limit exceeded"}',
+  ]);
+});
+
 test('gh api -F reads a multi-line UTF-8 file', async () => {
   const body = 'First line\nEmoji: 🐙\nCafé\n';
   const result = await runGh(['api', '/repos/octo/repo/issues', '-F', 'body=@/issue.md'], {
@@ -560,6 +669,7 @@ test('gh api help documents field behavior and the -F collision', async () => {
   assert.match(help, /@file reads UTF-8 and @- reads stdin/);
   assert.match(help, /-f, --raw-field/);
   assert.match(help, /-F, --field/);
+  assert.match(help, /-i, --include/);
   assert.match(help, /--body-file for gh issue\/pr/);
   assert.match(help, /-f key=@mention/);
 });
