@@ -19,6 +19,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const fs = require('node:fs');
 const path = require('node:path');
+const { createRequire } = require('node:module');
 
 const SCRIPT = path.resolve(__dirname, '../scripts/slack-ext.jsh');
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
@@ -228,8 +229,12 @@ async function load(opts) {
     fs: fsStub,
   };
 
+  // Relative specifiers (./argv.js, ./manifest-diff.js) load the REAL extracted
+  // module from disk so the node:test suite exercises the same code as production.
+  const scriptRequire = createRequire(SCRIPT);
   const mockRequire = (id) => {
     if (Object.prototype.hasOwnProperty.call(mocks, id)) return mocks[id];
+    if (id.startsWith('./') || id.startsWith('../')) return scriptRequire(id);
     throw new Error('unexpected require(' + id + ')');
   };
 

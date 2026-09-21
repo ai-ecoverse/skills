@@ -199,63 +199,7 @@ See also: slack user <id> (read-only profile from the standard slack CLI)
 `;
 
 // ── Argument parsing ──────────────────────────────────────────────────────────
-
-// Flags that take no value (presence = true). This explicit set is required
-// because the generic parser cannot distinguish a boolean flag from a
-// value-less flag when the next token looks like a value.
-const BOOL_FLAGS = new Set(['confirm', 'json', 'help', 'h', 'allow-deletions']);
-
-function parseArgv(argv) {
-  const f = Object.create(null);
-  const pos = [];
-  for (let i = 0; i < argv.length; i += 1) {
-    const a = argv[i];
-    if (a === '--') {
-      pos.push(...argv.slice(i + 1));
-      break;
-    }
-    let m = /^--([^=]+)=([\s\S]*)$/.exec(a);
-    if (m) {
-      const bname = m[1];
-      const bval = m[2];
-      if (BOOL_FLAGS.has(bname)) {
-        // FINDING 1 FIX: normalize boolean flags in --name=value form so that
-        // --confirm=false stores a real boolean false (not the truthy string).
-        // An unrecognised value (typo like --confirm=fasle) is fatal — it must
-        // never accidentally authorise a mutation.
-        const lc = bval.toLowerCase();
-        if (lc === 'true' || lc === '1' || lc === 'yes' || lc === 'on') {
-          f[bname] = true;
-        } else if (lc === 'false' || lc === '0' || lc === 'no' || lc === 'off' || lc === '') {
-          f[bname] = false;
-        } else {
-          console.error(
-            'Error: --' + bname + '=' + bval + ' is not a valid boolean value.' +
-            '\n  Use --' + bname + ' (true) or --' + bname + '=false/true/yes/no/on/off/0/1.'
-          );
-          process.exit(1);
-        }
-      } else {
-        f[bname] = bval;
-      }
-      continue;
-    }
-    m = /^--(.+)$/.exec(a);
-    if (m) {
-      const name = m[1];
-      const next = argv[i + 1];
-      if (BOOL_FLAGS.has(name) || next === undefined || /^--/.test(next)) {
-        f[name] = true;
-        continue;
-      }
-      f[name] = next;
-      i += 1;
-      continue;
-    }
-    pos.push(a);
-  }
-  return { flags: f, positional: pos };
-}
+const { BOOL_FLAGS, parseArgv, parseList } = require('./argv.js');
 
 const parsed = parseArgv(process.argv.slice(2));
 const flags = parsed.flags;
@@ -1202,107 +1146,15 @@ async function readManifestFile(label) {
 
 // ── Leaf walking and diffing ─────────────────────────────────────────────────
 
-function isPlainObject(v) {
-  return v !== null && typeof v === 'object' && !Array.isArray(v);
-}
-
-// RFC 6901 escaping, so a pointer printed here can be pasted into any JSON
-// pointer tool and matches the pointers apps.manifest.validate returns.
-function pointerJoin(base, key) {
-  return base + '/' + String(key).replace(/~/g, '~0').replace(/\//g, '~1');
-}
-
+// isPlainObject, pointerJoin, manifestLeaves, collectSubtree, diffManifests
+// extracted to ./manifest-diff.js
+const { isPlainObject, pointerJoin, manifestLeaves, collectSubtree, diffManifests } = require('./manifest-diff.js');
 function formatLeaf(value) {
   if (Array.isArray(value)) return '[' + value.map((v) => JSON.stringify(v)).join(', ') + ']';
   return JSON.stringify(value);
 }
 
-// Flatten a manifest to JSON pointer -> value for every LEAF. An array is a leaf
-// because the API replaces arrays wholesale; its individual entries are compared
-// as a set by diffManifests so that a shrunk array reads as DELETED ENTRIES
-// rather than a modified blob.
-function manifestLeaves(value, base, out) {
-  const acc = out || {};
-  const prefix = base || '';
-  if (isPlainObject(value)) {
-    for (const key of Object.keys(value)) {
-      manifestLeaves(value[key], pointerJoin(prefix, key), acc);
-    }
-    if (Object.keys(value).length === 0) acc[prefix] = value;
-    return acc;
-  }
-  acc[prefix] = value;
-  return acc;
-}
 
-function collectSubtree(target, value, pointer, extra) {
-  const leaves = manifestLeaves(value, pointer, {});
-  for (const ptr of Object.keys(leaves)) {
-    target.push(Object.assign({ pointer: ptr, value: leaves[ptr] }, extra || {}));
-  }
-}
-
-// Compare a candidate manifest against the live one, leaf field by leaf field.
-//
-// Deletions are kept in their OWN bucket, never folded into modifications: a
-// field that is present live and absent in the candidate is REMOVED by an
-// update, and that is the silent-damage case this whole command exists for.
-// Array entries are compared as a set for the same reason — bot_events going
-// from ["channel_created","team_join"] to ["channel_created"] is a DELETION of
-// team_join, not a modification of bot_events.
-function diffManifests(live, candidate) {
-  const deletions = [];
-  const additions = [];
-  const modifications = [];
-
-  const walk = (a, b, pointer) => {
-    if (isPlainObject(a) && isPlainObject(b)) {
-      for (const key of Object.keys(a)) {
-        const ptr = pointerJoin(pointer, key);
-        if (!Object.hasOwn(b, key) || b[key] === undefined) {
-          collectSubtree(deletions, a[key], ptr);
-          continue;
-        }
-        walk(a[key], b[key], ptr);
-      }
-      for (const key of Object.keys(b)) {
-        if (Object.hasOwn(a, key) && a[key] !== undefined) continue;
-        collectSubtree(additions, b[key], pointerJoin(pointer, key));
-      }
-      return;
-    }
-
-    if (Array.isArray(a) && Array.isArray(b)) {
-      const keyOf = (v) => (typeof v === 'string' ? v : JSON.stringify(v));
-      const bKeys = new Set(b.map(keyOf));
-      const aKeys = new Set(a.map(keyOf));
-      for (const item of a) {
-        if (!bKeys.has(keyOf(item))) {
-          deletions.push({ pointer: pointer, value: item, entry: true });
-        }
-      }
-      for (const item of b) {
-        if (!aKeys.has(keyOf(item))) {
-          additions.push({ pointer: pointer, value: item, entry: true });
-        }
-      }
-      return;
-    }
-
-    if (isPlainObject(a) !== isPlainObject(b) || Array.isArray(a) !== Array.isArray(b)) {
-      modifications.push({ pointer: pointer, from: a, to: b, retyped: true });
-      return;
-    }
-
-    if (a !== b) modifications.push({ pointer: pointer, from: a, to: b });
-  };
-
-  walk(live, candidate, '');
-
-  return {
-    deletions: deletions,
-    additions: additions,
-    modifications: modifications,
     changed: deletions.length + additions.length + modifications.length > 0,
   };
 }
@@ -1599,26 +1451,7 @@ function sameDeletion(a, b) {
   return a.pointer === b.pointer && JSON.stringify(a.value) === JSON.stringify(b.value);
 }
 
-function parseList(raw, label) {
-  if (raw === undefined) return [];
-  if (raw === true) {
-    cli.die('--' + label + ' needs a value, e.g. --' + label + '=channels:read', {
-      prefix: PREFIX,
-    });
-  }
-  const items = String(raw)
-    .split(/[,\s]+/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-  const seen = new Set();
-  const out = [];
-  for (const item of items) {
-    if (seen.has(item)) continue;
-    seen.add(item);
-    out.push(item);
-  }
-  return out;
-}
+// parseList extracted to ./argv.js
 
 function validateNames(names, pattern, what) {
   for (const name of names) {
