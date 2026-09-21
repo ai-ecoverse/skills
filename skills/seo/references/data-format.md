@@ -30,7 +30,8 @@ is why this parses the page rather than a JSON endpoint.
 
 Blocks look like
 `AF_initDataCallback({key: 'ds:N', hash: '…', data:[…], sideChannel: {}});`
-and their payload is JSON once `\xNN` escapes are decoded.
+and their payload is JSON once `\xNN` escapes are decoded. Raw pages for every
+variant below are in `../fixtures/`, with the parameters that produced them.
 
 ### `ds:9` — totals and the daily series
 
@@ -39,20 +40,94 @@ and their payload is JSON once `\xNN` escapes are decoded.
 - Daily rows at `data[1][0]`, each `[epochMs, <that same 4-tuple>, …]`.
   Days with no data carry `"NaN"` strings and are read as zero.
 
-### `ds:16` — the per-query table
+### `ds:16` — the active breakdown table
 
-- Rows at `data[1][0]`; each row's container is at `row[0]`.
-- `container[0][0]` is the query string.
-- Remaining entries are metric arrays, each **self-describing**: index `[8]` is a
+ds:16 holds **whichever breakdown the URL asked for**, not the query table
+specifically. The dimension id sits at `data[0][5][0][0]`, and the block also
+names its own dimension in the column metadata at `data[1][1][0][9]`
+(`"QUERIES"`, `"PAGES"`, ...), which is how the ids below were read off rather
+than guessed:
+
+| dimension | id | how to request it |
+|---|---|---|
+| date | 1 | (ds:9 / ds:12) |
+| query | 2 | default — no `breakdown` parameter |
+| page | 3 | `&breakdown=page` |
+| country | 4 | inlined as ds:11 on every load |
+| search appearance | 8 | inlined as ds:13 |
+
+**Check the id before reading rows.** With `breakdown=page` ignored or renamed,
+the response is a perfectly well-formed query table at the same key, so a parser
+that only reads offsets prints `sliccy` and `slicc ai` in a column headed `Page`.
+That is why `parsePageTable` refuses any dimension but 3, and `parseQueryTable`
+refuses dimension 3.
+
+The parameter is not optional: the default report's HTML contains **no page URLs
+at all** (`grep -c automate-website-migration baseline.raw` → 0), while the
+`breakdown=page` response carries all 8 rows. The parameter name came from the
+URL the UI wrote when its own Pages tab was clicked, not from guesswork.
+
+Common to both tables:
+
+- Rows at `data[1][0]`; each row's container is at `row[0]`. A filter matching
+  nothing makes `data[1][0]` **`null`**, not an empty array.
+- `container[1..]` are metric arrays, each **self-describing**: index `[8]` is a
   type id — `5` = clicks, `6` = impressions, `7` = CTR, `8` = position.
   - Counts (5, 6) carry their value at `[1]`.
   - Ratios (7, 8) carry it in a **trailing** slot, at index 44 and 43 in the
     observed data, so the last non-null element is taken.
 
+Row labels differ, and are not interchangeable:
+
+| table | label position | observed label length |
+|---|---|---|
+| query (dim 2) | `container[0][0]` | 17 |
+| page (dim 3) | `container[0][40]` | 41 |
+
+Page rows carry the absolute URL (`https://www.sliccy.com/`), including anchors
+(`https://www.sliccy.com/#video`) as separate rows. Their metric arrays are
+identical to query rows' — checked, not assumed: 9 long for the counts, 45 and 44
+for CTR and position.
+
 Reading by type id rather than column order survives a reordering of the metric
 arrays, but not a renumbering of the type ids.
 
-## Why totals never come from the query table
+### Filters, and the echo that proves one was applied
+
+A filter is expressed in the URL, and Search Console **echoes back the filters it
+applied** in each block header at `data[0][5][3]`, as
+`[dimensionId, [values], operator, 0]`. The search-type entry `[6, ["WEB"]]` is
+always present.
+
+Both parameter shapes below were taken from the URL the Search Console UI itself
+produced when its Pages tab and its query filter were used — the UI does not
+change the URL when a table tab is clicked from the default view, but it does
+once a filter or breakdown is applied:
+
+| UI choice | URL | echoed operator |
+|---|---|---|
+| Exact query | `&query=!slicc` | 1 |
+| Queries containing | `&query=*slicc` | 2 |
+
+The skill sends the exact form and requires operator 1 on both `ds:16` and
+`ds:9`. The reason to check at all: an unrecognised filter parameter is ignored,
+the response is HTTP 200 with the **unfiltered** report, and every row looks
+valid. Measured by sending the filter as `&qquery=` — the command exits 1 naming
+the filters the response reported, instead of printing all 8 pages as if they
+belonged to one query.
+
+`ds:9` is filtered too, so with `&query=!slicc` the totals become that query's
+own totals (3 clicks / 380 impressions rather than 192 / 2778). A filter matching
+nothing returns the totals tuple `[0, 0, "NaN", "NaN"]`, since a CTR and a position
+are undefined with zero impressions. That is data rather than a reshape, and is
+read as zeros only while both counts are zero **and the offending value is exactly
+the string `"NaN"`**. Coercing any other type there would switch off the reshape
+check in the one case where a wrong zero is hardest to notice — a query with no
+traffic looks the same either way.
+
+## Why totals never come from a table
+
+### The query table under-reports
 
 Summing `ds:16` gave 76 clicks / 848 impressions while `ds:9` reported
 196 / 2790 for the same period. The table omits **anonymised rare queries**,
@@ -65,6 +140,31 @@ returned, so above a conservative 1000-row threshold it is labelled
 `Unattributed gap` instead of `Anonymised gap`. The real cap is undocumented and
 was **not** measured (the property under test returns 78 rows), so treat the
 threshold as a guard rather than a fact.
+
+### The page table over-reports
+
+Measured 2026-09-21: 8 page rows summing to 194 clicks / 3569 impressions, while
+`ds:9` reported 192 / 2778 for the same period — 28% **more** impressions than
+the property earned. So the page table does not account for the property totals
+either, and it misses in the opposite direction.
+
+Clicks and impressions aggregate independently, so they can miss in OPPOSITE
+directions at once: +2 clicks against -100 impressions is possible. A single
+boolean cannot describe that, so `pageTableDelta` reports `direction` as `over`,
+`under` or `mixed`, and the footer only claims one direction when both metrics
+agree. Deriving the label from an OR of the two printed `+-10%`.
+
+The mechanism is aggregation level, not anonymisation: page rows count per page,
+property totals count per search. A single result page listing two of the site's
+URLs is one property impression and two page impressions. Supporting measurement
+rather than assertion: filtering to the single query `slicc` gives page rows of
+380 + 1 = 381 against filtered totals of 380, an excess of exactly the one search
+that showed both `/` and `/automate-website-migration`. Anchor URLs
+(`/#video`, `/#use-cases`) also appear as their own rows.
+
+`search-console pages` therefore prints the page sum, the totals, and the signed
+difference on separate lines, with the over-count and under-count cases worded
+differently.
 
 ## Three ways the request fails as HTTP 200
 
@@ -119,6 +219,12 @@ equal the scorecards the page itself rendered. A missing scorecard counts as a
 failure too, because if the reference silently disappeared, a check that skipped
 it would start passing everything — the guard would evaporate exactly when the
 page changed.
+
+`verify` covers the totals, not the tables. The page table's own tripwires are
+the dimension-id check and the filter echo above; both were exercised against the
+real endpoint. The page-row label index (40) has no in-band description, so a
+reshape there is caught only by the fail-closed rule that page rows without a URL
+at that index raise instead of reporting "no pages".
 
 Parsing lives in `../scripts/gsc-parse.js`, free of `sliccy:` and `fs` imports so
 the test suite can exercise it; `../scripts/search-console.jsh` holds only tab
