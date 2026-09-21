@@ -216,7 +216,28 @@ function parseArgv(argv) {
     }
     let m = /^--([^=]+)=([\s\S]*)$/.exec(a);
     if (m) {
-      f[m[1]] = m[2];
+      const bname = m[1];
+      const bval = m[2];
+      if (BOOL_FLAGS.has(bname)) {
+        // FINDING 1 FIX: normalize boolean flags in --name=value form so that
+        // --confirm=false stores a real boolean false (not the truthy string).
+        // An unrecognised value (typo like --confirm=fasle) is fatal — it must
+        // never accidentally authorise a mutation.
+        const lc = bval.toLowerCase();
+        if (lc === 'true' || lc === '1' || lc === 'yes' || lc === 'on') {
+          f[bname] = true;
+        } else if (lc === 'false' || lc === '0' || lc === 'no' || lc === 'off' || lc === '') {
+          f[bname] = false;
+        } else {
+          console.error(
+            'Error: --' + bname + '=' + bval + ' is not a valid boolean value.' +
+            '\n  Use --' + bname + ' (true) or --' + bname + '=false/true/yes/no/on/off/0/1.'
+          );
+          process.exit(1);
+        }
+      } else {
+        f[bname] = bval;
+      }
       continue;
     }
     m = /^--(.+)$/.exec(a);
@@ -489,6 +510,12 @@ async function cmdStatus() {
   kv('Type', typeLabel);
   kv('Workspace', wsId);
 
+  // FINDING 3 FIX: distinguish success-with-channels, success-empty, and failure.
+  // An API failure must never be rendered as a statement of fact about the world.
+  // Collapsing !ok and ok+empty into "(none found)" was a false claim on enterprise_is_restricted
+  // or any other Slack error. convJsonStatus is also surfaced in --json output so scripted
+  // callers can detect a failure; the JSON shape changes for guest users (documented in report).
+  let convJsonStatus = null; // null = not a guest, otherwise { ok, channels?, error? }
   if (user.is_restricted || user.is_ultra_restricted) {
     // Fetch guest channel memberships
     const convData = await slackApi(
@@ -497,20 +524,44 @@ async function cmdStatus() {
       wsId,
       { fatal: false }
     );
-    if (convData.ok && Array.isArray(convData.channels) && convData.channels.length > 0) {
+    if (!convData.ok) {
+      // FAILURE path: state the fact and the actual error code.
+      section('Guest channels');
+      console.log(color.yellow('    API error: ' + convData.error));
+      console.log(color.yellow('    Cannot confirm channel access. Verify manually.'));
+      convJsonStatus = { ok: false, error: convData.error };
+    } else if (Array.isArray(convData.channels) && convData.channels.length > 0) {
+      // SUCCESS with channels
       section('Guest channels (' + convData.channels.length + ')');
       for (const ch of convData.channels) {
         console.log('    ' + (ch.name ? '#' + ch.name : ch.id) + ' (' + ch.id + ')');
       }
+      convJsonStatus = { ok: true, channels: convData.channels };
     } else {
+      // SUCCESS, but the guest has no channel memberships yet
       section('Guest channels');
-      console.log(color.dim('    (none found)'));
+      console.log(color.dim('    (none — guest has no channel access yet)'));
+      convJsonStatus = { ok: true, channels: [] };
     }
   }
 
   if (flags.json) {
     console.log('');
-    console.log(JSON.stringify(user, null, 2));
+    if (convJsonStatus === null) {
+      // Non-guest user: output user object unchanged
+      console.log(JSON.stringify(user, null, 2));
+    } else {
+      // Guest user: wrap user + channels info so scripted callers can detect
+      // a failed channels lookup. JSON shape change from plain user object to
+      // { user, channels } or { user, channels_error } for guest accounts.
+      const out = { user };
+      if (convJsonStatus.ok) {
+        out.channels = convJsonStatus.channels;
+      } else {
+        out.channels_error = convJsonStatus.error;
+      }
+      console.log(JSON.stringify(out, null, 2));
+    }
   }
 
   console.log('');
@@ -547,11 +598,36 @@ async function cmdSetSingle() {
     cli.die('User ' + userId + ' is deactivated. Reactivate them first.', { prefix: PREFIX });
   }
   if (user.is_ultra_restricted) {
-    section('No change needed');
-    kv('User', (user.real_name || user.name) + ' (' + user.id + ')');
-    kv('Already', 'single-channel guest');
-    console.log('');
-    return;
+    // FINDING 2 FIX: a single-channel guest is defined by (type, channel). Moving
+    // a guest from channel A to channel B is a real change. We must look up which
+    // channel the guest is currently in and only no-op when it matches the request.
+    // If the lookup fails, we cannot determine whether a change is needed and must
+    // say so — we must NOT claim "no change needed" on a failed API call.
+    const scgConv = await slackApi(
+      'users.conversations',
+      { user: userId, types: 'public_channel,private_channel', limit: '200' },
+      wsId,
+      { fatal: false }
+    );
+    if (!scgConv.ok) {
+      cli.die(
+        'Cannot determine current channel for single-channel guest ' + userId +
+          ': users.conversations failed (' + scgConv.error + ').' +
+          '\n  Cannot safely determine whether a change is needed. Resolve the API error first.',
+        { prefix: PREFIX }
+      );
+    }
+    const currentChannelIds = (scgConv.channels || []).map((c) => c.id);
+    if (currentChannelIds.length === 1 && currentChannelIds[0] === channelId) {
+      // True no-op: already in exactly the requested channel
+      section('No change needed');
+      kv('User', (user.real_name || user.name) + ' (' + user.id + ')');
+      kv('Already', 'single-channel guest in ' + channelId);
+      console.log('');
+      return;
+    }
+    // Guest is in a different channel (or no channels): fall through to the
+    // setUltraRestricted path to move them. The --confirm gate still applies below.
   }
 
   const params = buildSetUltraRestrictedParams(userId, channelId, wsId);

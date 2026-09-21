@@ -572,3 +572,293 @@ test('parseArgv treats --confirm as a boolean flag (no value consumed)', async (
 //
 // VERIFICATION EVIDENCE (mutation tests run before filing the PR):
 //   All mutations above were applied, the named test failed, and the mutation was reverted.
+
+// ── Finding 1: --confirm=value bool normalization ─────────────────────────────
+
+test('--confirm=false does NOT authorize a mutation (admin call must not happen)', async () => {
+  // The string "false" is truthy; before the fix it bypassed the --confirm guard.
+  // After the fix, --confirm=false is boolean false and the guard blocks the call.
+  let h;
+  try {
+    h = await load({
+      argv: ['--ws=T06DUTYDQ', 'set-single', 'U12345', '--channel=C456', '--confirm=false'],
+    });
+    await h.mod.cmdSetSingle();
+  } catch (e) {
+    if (e.name === 'NodeExitError' && e.exitCode === 0) {
+      /* expected: dry-run exit */
+    } else {
+      throw e;
+    }
+  }
+  assert.equal(
+    h.adminCalls().length,
+    0,
+    '--confirm=false must NOT issue the admin API call'
+  );
+});
+
+test('--confirm=false dry-run still mentions what would happen', async () => {
+  let h;
+  try {
+    h = await load({
+      argv: ['--ws=T06DUTYDQ', 'set-single', 'U12345', '--channel=C456', '--confirm=false'],
+    });
+    await h.mod.cmdSetSingle();
+  } catch (e) {
+    if (e.name !== 'NodeExitError' || e.exitCode !== 0) throw e;
+  }
+  assert.ok(
+    /would change|no --confirm|nothing changed/i.test(h.text()),
+    'dry-run output must describe the would-be change'
+  );
+});
+
+test('--confirm=true (equals form) DOES authorize the mutation', async () => {
+  const h = await load({
+    argv: ['--ws=T06DUTYDQ', 'set-single', 'U12345', '--channel=C456', '--confirm=true'],
+  });
+  await h.mod.cmdSetSingle();
+  assert.equal(
+    h.adminCalls().length,
+    1,
+    '--confirm=true must issue the admin API call'
+  );
+});
+
+test('--confirm=fasle (typo) is a fatal error, not an authorization', async () => {
+  // A typo in the value must never authorize a mutation. It must be a fatal
+  // error so the operator knows the flag was not understood.
+  let err;
+  try {
+    await load({
+      argv: ['--ws=T06DUTYDQ', 'set-single', 'U12345', '--channel=C456', '--confirm=fasle'],
+    });
+  } catch (e) {
+    err = e;
+  }
+  assert.ok(err, 'should have thrown an error');
+  assert.equal(err.name, 'NodeExitError', 'must exit non-zero');
+  assert.ok(err.exitCode !== 0, 'exit code must be non-zero');
+});
+
+test('parseArgv: --confirm=false stores false (not truthy string "false")', async () => {
+  const h = await load({ argv: ['status', 'U1'] });
+  const { parseArgv } = h.mod;
+  const r = parseArgv(['set-single', 'U1', '--confirm=false']);
+  assert.strictEqual(r.flags.confirm, false, '--confirm=false must be stored as boolean false');
+});
+
+test('parseArgv: --confirm=true stores true', async () => {
+  const h = await load({ argv: ['status', 'U1'] });
+  const { parseArgv } = h.mod;
+  const r = parseArgv(['set-single', 'U1', '--confirm=true']);
+  assert.strictEqual(r.flags.confirm, true, '--confirm=true must be stored as boolean true');
+});
+
+test('parseArgv: --confirm=yes, --confirm=1, --confirm=on all store true', async () => {
+  const h = await load({ argv: ['status', 'U1'] });
+  const { parseArgv } = h.mod;
+  assert.strictEqual(parseArgv(['x', '--confirm=yes']).flags.confirm, true);
+  assert.strictEqual(parseArgv(['x', '--confirm=1']).flags.confirm, true);
+  assert.strictEqual(parseArgv(['x', '--confirm=on']).flags.confirm, true);
+});
+
+test('parseArgv: --confirm=no, --confirm=0, --confirm=off all store false', async () => {
+  const h = await load({ argv: ['status', 'U1'] });
+  const { parseArgv } = h.mod;
+  assert.strictEqual(parseArgv(['x', '--confirm=no']).flags.confirm, false);
+  assert.strictEqual(parseArgv(['x', '--confirm=0']).flags.confirm, false);
+  assert.strictEqual(parseArgv(['x', '--confirm=off']).flags.confirm, false);
+});
+
+// ── Finding 2: set-single already-SCG channel comparison ─────────────────────
+
+test('set-single: guest already in A with --channel=B attempts the change', async () => {
+  // The guest is currently in C_OLD. We request C_NEW. This is a real change;
+  // setUltraRestricted MUST be called.
+  const h = await load({
+    argv: ['--ws=T06DUTYDQ', 'set-single', 'U12345', '--channel=CNEW', '--confirm'],
+    user: { is_restricted: true, is_ultra_restricted: true, deleted: false, is_bot: false },
+    convs: { ok: true, channels: [{ id: 'COLD', name: 'old-channel' }] },
+  });
+  await h.mod.cmdSetSingle();
+  assert.equal(
+    h.adminCalls().length,
+    1,
+    'must call setUltraRestricted when the requested channel differs from the current one'
+  );
+  const adminCall = h.calls.find((c) => c.method === 'users.admin.setUltraRestricted');
+  assert.ok(adminCall, 'call must be setUltraRestricted');
+  assert.ok(/channel=CNEW/.test(adminCall.opts.body), 'must use the new channel ID');
+});
+
+test('set-single: guest already in B with --channel=B is a no-op', async () => {
+  // The guest is already in the exact same channel. This is a true no-op.
+  const h = await load({
+    argv: ['--ws=T06DUTYDQ', 'set-single', 'U12345', '--channel=CSAME', '--confirm'],
+    user: { is_restricted: true, is_ultra_restricted: true, deleted: false, is_bot: false },
+    convs: { ok: true, channels: [{ id: 'CSAME', name: 'same-channel' }] },
+  });
+  await h.mod.cmdSetSingle();
+  assert.equal(h.adminCalls().length, 0, 'must NOT call setUltraRestricted when channel unchanged');
+  assert.ok(/no change needed/i.test(h.text()), 'must say no change needed');
+});
+
+test('set-single: failed users.conversations lookup is fatal, not "no change needed"', async () => {
+  // If we cannot determine the current channel, we must not claim anything about
+  // the account state. Claiming "no change needed" on a failed API call is
+  // dangerous — it could mask a real difference.
+  let err;
+  try {
+    const h = await load({
+      argv: ['--ws=T06DUTYDQ', 'set-single', 'U12345', '--channel=C456', '--confirm'],
+      user: { is_restricted: true, is_ultra_restricted: true, deleted: false, is_bot: false },
+      convs: { ok: false, error: 'enterprise_is_restricted' },
+    });
+    await h.mod.cmdSetSingle();
+  } catch (e) {
+    err = e;
+  }
+  assert.ok(err, 'should have thrown');
+  assert.equal(err.name, 'NodeExitError');
+  // Must NOT print "no change needed" — that would be a false claim
+  // (We can't check h.text() here since we don't have h in scope; the throw
+  //  itself is the proof that the command did not silently succeed or no-op.)
+});
+
+test('set-single: channel-change path respects --confirm gate', async () => {
+  // Even when a channel change is needed, the --confirm gate must block the call.
+  let h;
+  try {
+    h = await load({
+      argv: ['--ws=T06DUTYDQ', 'set-single', 'U12345', '--channel=CNEW'],
+      user: { is_restricted: true, is_ultra_restricted: true, deleted: false, is_bot: false },
+      convs: { ok: true, channels: [{ id: 'COLD', name: 'old-channel' }] },
+    });
+    await h.mod.cmdSetSingle();
+  } catch (e) {
+    if (e.name === 'NodeExitError' && e.exitCode === 0) {
+      /* expected dry-run exit */
+    } else {
+      throw e;
+    }
+  }
+  assert.equal(
+    h.adminCalls().length,
+    0,
+    'channel-change path must still require --confirm'
+  );
+});
+
+// ── Finding 3: cmdStatus users.conversations failure handling ─────────────────
+
+test('status: failed users.conversations does NOT print "(none found)"', async () => {
+  const h = await load({
+    argv: ['--ws=T06DUTYDQ', 'status', 'U12345'],
+    user: { is_restricted: true, is_ultra_restricted: false, deleted: false, is_bot: false },
+    convs: { ok: false, error: 'enterprise_is_restricted' },
+  });
+  await h.mod.cmdStatus();
+  const out = h.text();
+  assert.ok(
+    !/(none found)/i.test(out),
+    'must NOT print "(none found)" when the API call failed'
+  );
+});
+
+test('status: failed users.conversations prints the actual Slack error code', async () => {
+  const h = await load({
+    argv: ['--ws=T06DUTYDQ', 'status', 'U12345'],
+    user: { is_restricted: true, is_ultra_restricted: false, deleted: false, is_bot: false },
+    convs: { ok: false, error: 'enterprise_is_restricted' },
+  });
+  await h.mod.cmdStatus();
+  const out = h.text();
+  assert.ok(
+    /enterprise_is_restricted/.test(out),
+    'must print the actual Slack error code so the user knows what went wrong'
+  );
+});
+
+test('status: success with zero channels prints a distinct empty-state message', async () => {
+  const h = await load({
+    argv: ['--ws=T06DUTYDQ', 'status', 'U12345'],
+    user: { is_restricted: true, is_ultra_restricted: false, deleted: false, is_bot: false },
+    convs: { ok: true, channels: [] },
+  });
+  await h.mod.cmdStatus();
+  const out = h.text();
+  assert.ok(
+    !/(none found)/i.test(out),
+    'empty-success path must use a different message from the old "(none found)" bucket'
+  );
+  // Should say something about "none" or "no channel" but NOT "(none found)"
+  assert.ok(
+    /none|no channel/i.test(out),
+    'should still describe the empty state'
+  );
+});
+
+test('status --json: failed users.conversations produces channels_error in output', async () => {
+  const h = await load({
+    argv: ['--ws=T06DUTYDQ', 'status', 'U12345', '--json'],
+    user: { is_restricted: true, is_ultra_restricted: false, deleted: false, is_bot: false },
+    convs: { ok: false, error: 'enterprise_is_restricted' },
+  });
+  await h.mod.cmdStatus();
+  // Find the JSON line in stdout
+  const jsonLine = h.stdout.find((l) => {
+    try { JSON.parse(l); return true; } catch (e) { return false; }
+  });
+  assert.ok(jsonLine, 'should have a JSON output line');
+  const parsed = JSON.parse(jsonLine);
+  assert.ok(
+    parsed.channels_error === 'enterprise_is_restricted',
+    'channels_error must be present and equal to the Slack error code'
+  );
+});
+
+test('status --json: success with channels produces channels array in output', async () => {
+  const h = await load({
+    argv: ['--ws=T06DUTYDQ', 'status', 'U12345', '--json'],
+    user: { is_restricted: true, is_ultra_restricted: false, deleted: false, is_bot: false },
+    convs: { ok: true, channels: [{ id: 'C111', name: 'chan1' }] },
+  });
+  await h.mod.cmdStatus();
+  const jsonLine = h.stdout.find((l) => {
+    try { JSON.parse(l); return true; } catch (e) { return false; }
+  });
+  assert.ok(jsonLine, 'should have JSON output');
+  const parsed = JSON.parse(jsonLine);
+  assert.ok(Array.isArray(parsed.channels), 'channels must be an array in JSON output');
+  assert.equal(parsed.channels[0].id, 'C111', 'channel id must match');
+});
+
+// ── Updated mutation matrix (additions for the three findings) ────────────────
+//
+// MUTATION 10: In parseArgv, do NOT normalize BOOL_FLAGS in the --name=value branch
+//   (i.e. keep `f[m[1]] = m[2]` for all names, even bool ones)
+//   Caught by: "--confirm=false does NOT authorize a mutation"
+//              "parseArgv: --confirm=false stores false (not truthy string)"
+//
+// MUTATION 11: In parseArgv, accept --confirm=fasle (typo) silently as true
+//   Caught by: "--confirm=fasle (typo) is a fatal error"
+//
+// MUTATION 12: In set-single, keep the old "return immediately on is_ultra_restricted"
+//   without channel comparison
+//   Caught by: "set-single: guest already in A with --channel=B attempts the change"
+//
+// MUTATION 13: In set-single, call users.conversations but skip the fatal-error branch
+//   for !scgConv.ok (treat it as no change needed instead)
+//   Caught by: "set-single: failed users.conversations lookup is fatal"
+//
+// MUTATION 14: In cmdStatus, collapse !ok and ok+empty back into a single else branch
+//   Caught by: "status: failed users.conversations does NOT print (none found)"
+//              "status: failed users.conversations prints the actual Slack error code"
+//
+// MUTATION 15: In cmdStatus, omit channels_error from the JSON output on failure
+//   Caught by: "status --json: failed users.conversations produces channels_error"
+//
+// VERIFICATION: mutations 10-15 were each applied, the named test was confirmed to fail,
+// then the mutation was reverted. See report for details.
