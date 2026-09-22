@@ -1,179 +1,199 @@
 ---
 name: github-dashboard
 description: >
-  Installs and opens the `github-dashboard` sprinkle — a persistent panel
-  showing GitHub work as cards in four derived categories: needs attention,
-  actively being worked on, snoozed (with Fibonacci backoff), and stalled. Use
-  when the user asks for a GitHub work dashboard, a triage panel for issues and
-  PRs, "what needs my attention on GitHub", "what are my agents working on",
-  "what is stalled", "what did I snooze", or wants to review the state model
-  behind such a panel. Each card renders one pipeline state — open issue, draft
-  PR, CI failing, in review, changes requested, merge queue, merged, released —
-  as a coloured glyph and a coloured top border. THIS SKILL SHIPS AN UNWIRED DRAFT:
-  it renders a hardcoded sample fixture, makes no GitHub API or `gh` calls,
-  does not poll, and its three per-card actions (snooze, done, jump-in) and its
-  add-project button are inert. Install it to review the domain model, not to
-  see your real backlog.
+  Installs and opens the `github-dashboard` sprinkle — a persistent panel showing
+  GitHub work as cards in five derived groups: needs attention, actively being
+  worked on, snoozed (with Fibonacci backoff), stalled, and done. Use when the
+  user asks for a GitHub work dashboard, a triage panel for issues and PRs, "what
+  needs my attention on GitHub", "what are my agents working on", "what is
+  stalled", "what did I snooze", or wants to review the state model behind such a
+  panel. Each card renders one pipeline state — open issue, draft PR, CI failing,
+  in review, changes requested, merge queue, merged, released — as a coloured
+  glyph and a coloured top border. The panel reads a snapshot file produced by
+  `scripts/fetch-snapshot.mjs`, which calls the GitHub API; the panel itself
+  makes no network calls. WORK IN PROGRESS on a draft PR: the pieces described
+  below are implemented and tested, but this has only ever run against one
+  operator's repositories, so treat the numbers, the stage table and the
+  thread-linkage heuristics as provisional.
 allowed-tools: bash
 ---
 
 # github-dashboard
 
-A sprinkle panel that renders GitHub work as a card wall. The point of this
-skill, in its current state, is **the domain model** — how work is staged, and
-how a category is derived from a stage plus timestamps — not the data.
+A sprinkle panel that renders GitHub work as a card wall, plus the fetcher that
+produces the data it reads. Two programs, one file each, deliberately separate:
 
-## State of this skill: UNWIRED DRAFT
+- **`scripts/fetch-snapshot.mjs`** talks to GitHub (and optionally a bb server),
+  derives a stage per record, writes `snapshot.json` and `version.json`.
+- **`assets/sprinkle/github-dashboard.shtml`** is the panel. It reads those two
+  files through the sprinkle VFS bridge, derives a category from stage plus
+  timestamps, and writes only the operator's own marks. It makes no API calls.
 
-Read this before installing, and do not describe it to a user as a live
-dashboard:
+## State of this skill
 
-- **No network access of any kind.** No GitHub API, no `gh`, no `fetch`, no
-  polling, no `slicc.*` bridge calls. The panel is a single self-contained
-  `.shtml` file that renders one hardcoded array.
-- **The data is a fixture.** Twenty items: eleven are real public issues and
-  PRs from `ai-ecoverse/slicc` and `ai-ecoverse/skills` as they stood on
-  2026-09-18, and nine are synthetic records in `example-org/example-repo`,
-  fabricated to populate every category and state. Synthetic records carry
-  `synthetic: true` and a `// ---- SYNTHETIC` comment. All `thr_example*`
-  thread ids are placeholders.
-- **The three per-card buttons and the `+` are inert.** They render, they carry
-  `aria-label` and a `title` describing exactly what they will do once wired,
-  and they have no click handlers. Nothing in the panel can change anything.
-- **What does work**: the project filter chips (local filtering), the accordion
-  groups, and the category derivation, which runs for real over the fixture.
-- Wiring it to live data is a separate job. Until then the sample clock is
-  frozen (`NOW` is a constant) so the grouping is stable whenever you open it.
+Implemented and exercised: the five groups and their derivation, live updates by
+polling a hash file, markdown rendering of GitHub prose behind a sanitiser, a
+per-card quick view in two modes, three per-card actions that write local marks,
+a three-way Go control, and clickable follow-up actions that emit a lick to the
+cone. What is *not* settled:
+
+- it has run against one operator's repositories only, so the stage table and the
+  thread-linkage rules are tuned to one working style;
+- the status prose is model-written, and an action's stated evidence can be stale
+  by the time a human clicks it (see "Known problems");
+- nothing here has been reviewed by anyone but its author.
 
 ## Install
 
-There is no install script yet — it would be the first piece of wiring, and
-this draft deliberately stops short. Copy the asset into the sprinkle directory
-and open it:
-
-```bash
-mkdir -p /shared/sprinkles/github-dashboard
+```sh
+# 1. put the built panel where sprinkles live, and its data alongside
+mkdir -p /shared/sprinkles/github-dashboard/data
 cp assets/sprinkle/github-dashboard.shtml /shared/sprinkles/github-dashboard/
+cp assets/sprinkle/data-example/*.json     /shared/sprinkles/github-dashboard/data/
+
+# 2. say which repositories to follow (REQUIRED — there are no defaults)
+mkdir -p /shared/github-monitor
+cat > /shared/github-monitor/config.json <<'JSON'
+{
+  "version": 1,
+  "bbOrigin": "https://bb.example.invalid",
+  "repos": [{ "slug": "owner/repo", "bbProject": null }]
+}
+JSON
+
+# 3. open it
 sprinkle open github-dashboard
 ```
 
-SLICC discovers sprinkles from `/shared/sprinkles/`, not from a skill's own
-directory, which is why the copy is required. To pick up an edit, run
-`sprinkle close github-dashboard` then `sprinkle open github-dashboard` — never
-`sprinkle reload`, which leaves the iframe viewport at 0x0 (slicc#2942).
+The example data in step 1 is a hand-written fixture with four invented records:
+it exists so the panel renders something on first open. Replace it by running the
+fetcher:
 
-The panel is single-column safe but shows up to three cards abreast; pop it
-out to full screen from the rail header to see the three-column layout.
+```sh
+node scripts/fetch-snapshot.mjs                 # writes snapshot.json + version.json
+node scripts/fetch-snapshot.mjs --check-config  # resolve config and exit
+```
 
-## The domain model
+The fetcher needs a GitHub token in the environment it runs in. It refuses to
+start when `/shared/github-monitor/config.json` is missing rather than following
+repositories nobody chose.
 
-### Stages
+## Build
 
-Work moves through a pipeline. A stage is **stored on the item** — it is what
-the item *is*. Stages 1 and 3 can be skipped.
+The panel is a **built artifact**. Its markdown renderer is bundled from
+`src/markdown.js` plus two vendored libraries:
 
-| # | Stage | Substates |
-| --- | --- | --- |
-| 1 | open issue | |
-| 2 | thread started (a bb thread or a scoop) | |
-| 3 | thread needs guidance | |
-| 4 | thread is working | |
-| 5 | draft PR, waiting for CI | `5a` CI failing, `5b` merge conflicts — both bounce back to 4 |
-| 6 | full PR, waiting for reviews | `6a` approving reviews, `6b` changes requested — bounces back to 3 or 4 |
-| 7 | all-green PR: reviews addressed, CI green | |
-| 8 | PR in merge queue | `8a` queue conflicts, `8b` queue checks failed — both bounce back to 4 |
-| 9 | PR merged, not yet released | |
-| 10 | PR released | |
-| 11 | issue closed | |
+```sh
+./scripts/build.sh
+```
 
-**Stage numbers are never shown in the UI.** Each state is rendered as a
-distinct lucide glyph plus a colour, with the state name in `title` and
-`aria-label`; the numeric stage is recoverable only from the progress bar's
-tooltip, for debugging a miscategorised item.
+That is the whole command: no network, no package install (the dependencies are
+vendored under `src/vendor/`, with versions and hashes in `src/vendor/VENDOR.md`).
+The script detects whether it is running in this repository or next to a deployed
+panel, and is idempotent — run it twice and the artifact is byte-identical. It
+splices the bundle between the `GHD-BUNDLE` markers in the `.shtml`; never
+hand-edit that region.
 
-### Categories
+Do not edit `assets/sprinkle/github-dashboard.shtml` outside those markers
+expecting the build to preserve it — the rest of the file *is* the source and is
+edited directly; only the marked region is generated.
 
-A category is **derived, never stored** — `categorize(item, now)` is a pure
-function over one record, reading `(stage, substage, lastActivityAt,
-snoozedUntil, snoozedAt, lastCommentAt, thread)`:
+## Security: the markdown renderer is the sharp edge
 
-- **a. needs attention** — issues to dispatch and open questions aimed at the
-  human: stage 1 with no thread, stage 3, substate 6b, stage 7.
-- **b. actively being worked on** — an agent is busy and the human waits on the
-  agent: stages 2, 4, 5, 6, 8 with recent activity.
-- **c. snoozed** — both sides wait on something else: an external dependency,
-  another human, an upstream release. A human snoozes for a day, with
-  **Fibonacci backoff if nothing has changed**, and **a comment cancels the
-  snooze**. Stage 9 (merged, awaiting release) is treated as snoozed without
-  anyone typing a snooze.
-- **d. stalled** — it looks like it is working, but nothing has moved for
-  longer than the stage allows.
+The panel renders issue bodies and comments — text written by anyone who can
+comment on a followed repository. A sprinkle panel is **not** sandboxed from the
+filesystem: the bridge can enumerate sibling scoop folders, run shell commands,
+and read and write files. So script execution inside this panel is arbitrary
+command execution, and `marked(text)` into `innerHTML` would be a
+remote-code-execution path.
 
-Stages 10 and 11 are terminal and have **no home in the four categories**, so
-the panel gives them a fifth `done` group. See
-`references/domain-model.md` — that mismatch is one of the open questions.
+What the renderer does instead, argued at length in the header of
+`src/markdown.js`:
 
-### Precedence, highest first
+- marked → DOMPurify with an explicit tag/attribute allowlist → a DOM fragment
+  that is appended; untrusted HTML is never assigned to `innerHTML`;
+- links are restricted to http/https/mailto and forced to
+  `target="_blank" rel="noopener noreferrer"`;
+- **images render only from `github.com` and `*.githubusercontent.com`, over
+  https**, with the host decided by the URL API rather than a regex. `img` is
+  deliberately *not* in the sanitiser allowlist: the renderer emits an inert
+  placeholder and builds the `<img>` itself, so no unvetted `src` ever reaches an
+  image element. A trusted host can still redirect, so the allowlist bounds who
+  is asked, not who answers.
 
-Categories overlap, so the order is explicit and deliberate:
+The acceptance gate is 66 fixtures — `<script>`, `<img onerror>`, `<svg onload>`,
+`javascript:`/`data:`/`vbscript:` URLs, mXSS, host-lookalikes, credentials in the
+authority, attributes the policy does not allow:
 
-1. **Done** (stage 10/11) beats everything: a released or closed item cannot be
-   stalled or snoozed.
-2. **A blocked human** beats a snooze — substate 6b, stage 3, stage 7. A snooze
-   is a promise that nothing needs you yet; these falsify it.
-3. **Snooze beats stalled.** An explicitly snoozed item is not stalled; silence
-   is exactly what was asked for.
-4. Undispatched issue (stage 1, no thread) → needs attention.
-5. **Stalled** — a working stage idle past its limit.
-6. **Active** — anything else in a working stage.
-7. Fallback → needs attention. An unclassifiable item is a bug in the function,
-   so it is surfaced rather than hidden.
+```sh
+./scripts/build.sh                                   # regenerates the gate page
+open tests/xss-gate.html                             # verdict on the page and in the tab title
+```
 
-### Threshold constants
+It must read `GATE GREEN — 66 passed, 0 failed, window.__xssFired = never set`.
+Re-run it after any change to the renderer. The gate has been demonstrated to go
+**red** (a naive `innerHTML` build fails 25 of the 29 pre-image fixtures and
+executes; trusting any image host fails 14), which is the only reason to believe
+it works.
 
-All at the top of the script, named for tuning:
+## What the panel does
 
-| Constant | Value | Applies to |
-| --- | --- | --- |
-| `STALL_AFTER_HOURS` | 6 | stages 2, 4, 5 — the stages an agent owns |
-| `REVIEW_STALL_AFTER_HOURS` | 24 | stage 6 — reviewers are slower than agents |
-| `MERGE_QUEUE_STALL_AFTER_HOURS` | 2 | stage 8 — the queue should move in minutes |
-| `STALL_AFTER_HOURS_BY_STAGE` | `{6, 8}` | per-stage overrides of the default |
-| `FIB_BACKOFF_DAYS` | `[1,1,2,3,5,8,13,21]` | indexed by `snoozeCount`, clamped |
-| `WORKING_STAGES` | `[2,4,5,6,8]` | stages eligible for stalled/active |
-| `DONE_STAGES` | `[10,11]` | terminal stages |
-| `RELEASE_WAIT_IS_SNOOZE` | `true` | treat stage 9 as snoozed |
+- **Five groups**, derived — never stored: needs attention, stalled, actively
+  being worked on, snoozed, done. A sixth outcome, aged-out, is counted and
+  hidden. The derivation is one pure function (`categorize`) over stage plus
+  timestamps plus the operator's own marks.
+- **Live updates**: the panel polls a small `version.json` every five seconds and
+  reads the snapshot only when its content hash changes, then reconciles card by
+  card instead of re-rendering.
+- **Quick view**, in two modes from one resolver: hovering a card's status line
+  opens a non-modal view that takes no focus and closes shortly after the pointer
+  leaves both surfaces; clicking or pressing Enter opens a modal one that stays
+  until dismissed. Markdown is rendered lazily here and cached per record and
+  content hash.
+- **Three per-card actions**, all local: snooze (Fibonacci backoff, and in the
+  snoozed column the same control un-snoozes), done (a local mark; nothing is
+  written to GitHub), and a Go control with three destinations — the bb thread if
+  one is attached or linked, "start a scoop" for live work with no thread, or the
+  item on GitHub for finished work. A finished item never offers to start work.
+- **Follow-up actions** from the snapshot render as buttons in the quick view: a
+  *nudge* dispatches its instruction to the cone; a *clarification* is raised as a
+  question instead, because an agent cannot answer it.
+- Nothing the panel does writes to GitHub. Its only writes are
+  `data/user-state.json` (the operator's marks) and licks to the cone.
 
-### The status line
+## Known problems
 
-Each card shows one plain sentence of status. In the fixture every record
-carries `statusSource: 'placeholder'` because the sentences are hand-written.
-When wired, they are intended to be generated per item from the item's timeline
-by a cheap model such as `claude-haiku` — pick whatever small, fast model your
-own provider offers — and such records should carry `statusSource: 'agent'` so
-the two can be told apart.
-
-## Colours
-
-State colours come from the hue-specific `--uxc-<hue>-subtle-text` tokens
-through a `--gh-*` alias layer, chosen to match GitHub's own conventions:
-green for open/approved/released, red for CI failure and conflicts and changes
-requested, yellow for CI pending and the merge queue, purple for merged and
-closed-as-completed, grey for draft, blue for in-progress. Each alias falls
-back to an `--s2-*` token. Everything that is not a state colour — surfaces,
-text, borders, radii, spacing, type — uses `--s2-*` only. There are no literal
-colour values in the file, and no `@media (prefers-color-scheme)`: the host
-toggles a `.theme-light` class and the tokens swap.
-
-Measured contrast of the state colours against the card background is 4.60:1 to
-9.51:1 across both themes, so the identifier text clears 4.5:1 everywhere.
+- **An action's evidence can be false.** Follow-up actions are generated with the
+  snapshot and are not re-checked at click time, so an instruction can describe a
+  state that has since changed — including work that has already merged. Treat
+  the button as a request to look, not as a fact.
+- **Thread linkage is heuristic.** Linking a bb thread to a record requires an
+  explicit `#N` in the thread title; branch-name digits are rejected because they
+  truncate and collide. Expect misses rather than wrong links.
+- **Status prose is model-written** and cached per record and last-activity time.
+  It can be confidently wrong.
+- The panel holds an operator's marks in a plain JSON file with no schema
+  migration beyond a version field.
 
 ## Files
 
-- `assets/sprinkle/github-dashboard.shtml` — the whole panel: markup, CSS, the
-  state model, `categorize()`, and the fixture, in one self-contained file. It
-  deliberately uses no ES module imports: a sprinkle renders in an
-  `about:srcdoc` iframe, so relative specifiers resolve against the SPA shell
-  and silently return `index.html`.
-- `references/domain-model.md` — the state and category model in detail, plus
-  the open questions that will make wiring awkward.
+```
+SKILL.md                                  this file
+references/domain-model.md                stages, categories, and the derivation
+assets/sprinkle/github-dashboard.shtml    the panel (BUILT — see Build)
+assets/sprinkle/data-example/             synthetic snapshot + version, 4 records
+scripts/build.sh                          the one build command
+scripts/fetch-snapshot.mjs                the fetcher (GitHub + optional bb)
+src/markdown.js                           sanitising markdown renderer (bundled)
+src/vendor/                               pinned marked + DOMPurify, with hashes
+tests/xss-fixtures.json                   66 acceptance fixtures (data)
+tests/gate-runner.js                      the gate's assertions
+tests/xss-gate.html                       GENERATED by build.sh — open to run
+```
+
+## Colours
+
+Every colour is a design-system token or a token pair; there are no literal
+colour values and no `prefers-color-scheme` rules. Group tone, card border and
+state glyph all come from the same derived state, so a card cannot disagree with
+its column.
