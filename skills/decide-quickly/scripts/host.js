@@ -50,6 +50,18 @@ async function run(exec, argv) {
   return result;
 }
 
+function versionOfSpec(spec) {
+  const at = String(spec).lastIndexOf('@');
+  if (at <= 0) return null;
+  return spec.slice(at + 1);
+}
+
+function packageSatisfies(installedVersion, spec) {
+  const want = versionOfSpec(spec);
+  if (!want) return true;
+  return installedVersion === want;
+}
+
 async function packageDir(fs, name) {
   for (const root of PACKAGE_ROOTS) {
     const dir = `${root}/${name}`;
@@ -58,28 +70,61 @@ async function packageDir(fs, name) {
   return null;
 }
 
+async function readPackageVersion(fs, dir) {
+  const pkg = JSON.parse(await fs.readFile(`${dir}/package.json`));
+  return typeof pkg.version === 'string' ? pkg.version : '';
+}
+
 async function ensurePackage(exec, fs, spec, name) {
+  const want = versionOfSpec(spec);
   const existing = await packageDir(fs, name);
-  if (existing) return existing;
-  console.error(`${name}: ipk add -g ${spec}`);
+  if (existing) {
+    const got = await readPackageVersion(fs, existing);
+    if (packageSatisfies(got, spec)) return existing;
+    console.error(`${name}: have ${got || 'unknown'}, need ${want}`);
+  } else {
+    console.error(`${name}: ipk add -g ${spec}`);
+  }
   await run(exec, ['ipk', 'add', '-g', spec]);
   const installed = await packageDir(fs, name);
   if (!installed) {
-    throw new Error(`ipk add -g ${spec} finished, but ${name} is not under ${PACKAGE_ROOTS.join(' or ')}`);
+    throw new Error(
+      `ipk add -g ${spec} finished, but ${name} is not under ${PACKAGE_ROOTS.join(' or ')}`
+    );
+  }
+  const got = await readPackageVersion(fs, installed);
+  if (!packageSatisfies(got, spec)) {
+    throw new Error(`${name} is ${got || 'unknown'} after ipk add -g ${spec}`);
   }
   return installed;
 }
 
 async function ensureEsbuild(exec, fs) {
-  if (await packageDir(fs, 'esbuild-wasm')) return;
   const probe = await exec.spawn(['esbuild', '--version']);
-  const match = String(probe.stderr || probe.stdout || '').match(/esbuild-wasm@(\d+\.\d+\.\d+)/);
-  const spec = match ? `esbuild-wasm@${match[1]}` : ESBUILD_FALLBACK;
-  console.error(`esbuild: ipk add -g ${spec}`);
-  await run(exec, ['ipk', 'add', '-g', spec]);
-  if (!(await packageDir(fs, 'esbuild-wasm'))) {
-    throw new Error(`ipk add -g ${spec} finished, but esbuild-wasm is not installed`);
+  const text = `${probe.stderr || ''}\n${probe.stdout || ''}`;
+  const hinted = text.match(/esbuild-wasm@(\d+\.\d+\.\d+)/);
+  const printed = text.match(/\b(\d+\.\d+\.\d+)\b/);
+  const version =
+    (hinted && hinted[1]) ||
+    (probe.exitCode === 0 && printed && printed[1]) ||
+    versionOfSpec(ESBUILD_FALLBACK);
+  await ensurePackage(exec, fs, `esbuild-wasm@${version}`, 'esbuild-wasm');
+}
+
+// parseFlags is greedy: `--json billing:noul:…` stores the question as the
+// flag's string value. These names are booleans, so put that word back.
+function normalizeFlags(parsed, boolNames) {
+  for (const name of boolNames) {
+    const value = parsed.flags[name];
+    if (typeof value !== 'string') continue;
+    if (value === 'false' || value === '0') {
+      parsed.flags[name] = false;
+      continue;
+    }
+    parsed.flags[name] = true;
+    if (value !== 'true' && value !== '1' && value !== '') parsed.positional.push(value);
   }
+  return parsed;
 }
 
 async function readStamp(fs, stampPath) {
@@ -178,8 +223,11 @@ module.exports = {
   hasWebGpu,
   run,
   packageDir,
+  versionOfSpec,
+  packageSatisfies,
   ensurePackage,
   ensureEsbuild,
+  normalizeFlags,
   ensureBundle,
   hfDownload,
   reexec,

@@ -78,7 +78,7 @@ async function readArg(spec) {
 
 async function prepareRuntime() {
   const rebuilt = await host.ensureBundle(exec, fs, {
-    entry: process.argv[1].replace(/[^/]+$/, 'entry.mjs'),
+    entry: process.argv[1].replace(/[^/]+$/, 'kev-entry.mjs'),
     outfile: BUNDLE,
     packages: [{ spec: '@ai-ecoverse/kev.js@0.2.0', name: '@ai-ecoverse/kev.js' }],
   });
@@ -182,7 +182,12 @@ async function cmdAsk(flags, positionals) {
 }
 
 async function main() {
-  const parsed = process.argv.parseFlags();
+  const parsed = host.normalizeFlags(process.argv.parseFlags(), [
+    'json',
+    'date-facts',
+    'help',
+    'h',
+  ]);
   const flags = parsed.flags;
   const sub = parsed.subcommand || '';
   if (flags.help || flags.h || !sub || sub === 'help') {

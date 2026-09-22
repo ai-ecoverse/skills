@@ -81,7 +81,7 @@ async function readArg(spec) {
 
 async function prepareRuntime() {
   const rebuilt = await host.ensureBundle(exec, fs, {
-    entry: process.argv[1].replace(/[^/]+$/, 'entry.mjs'),
+    entry: process.argv[1].replace(/[^/]+$/, 'cua-entry.mjs'),
     outfile: BUNDLE,
     packages: [{ spec: '@ai-ecoverse/cua-s1.js@0.1.1', name: '@ai-ecoverse/cua-s1.js' }],
   });
@@ -193,7 +193,12 @@ async function cmdCommands(flags) {
 }
 
 async function main() {
-  const parsed = process.argv.parseFlags();
+  const parsed = host.normalizeFlags(process.argv.parseFlags(), [
+    'json',
+    'allow-submit',
+    'help',
+    'h',
+  ]);
   const flags = parsed.flags;
   const sub = parsed.subcommand || '';
   if (flags.help || flags.h || !sub || sub === 'help') {
