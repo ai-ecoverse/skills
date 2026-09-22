@@ -28,6 +28,8 @@ const {
   resolveAppOrRequestId,
   isValidPermissionType,
   VALID_PERMISSION_TYPES,
+  VALID_SEARCH_CHANNEL_TYPES,
+  VALID_CHANNEL_SORT_FIELDS,
   filterChannels,
   summarizeChannel,
   summarizeApproval,
@@ -126,37 +128,88 @@ test('buildConvertChannelParams has exactly one key', () => {
 
 // ── buildChannelSearchParams ──────────────────────────────────────────────────
 
-test('buildChannelSearchParams with no args uses limit=50', () => {
-  const p = buildChannelSearchParams('', 0, '');
+test('buildChannelSearchParams defaults: limit=50, search_channel_types=exclude_archived, sort=name, sort_dir=asc', () => {
+  const p = buildChannelSearchParams('', 0, '', '', '', '');
   is(p.limit, '50');
+  is(p.search_channel_types, 'exclude_archived');
+  is(p.sort, 'name');
+  is(p.sort_dir, 'asc');
+});
+
+test('buildChannelSearchParams: query always present (empty string)', () => {
+  const p = buildChannelSearchParams('', 10, '', '', '', '');
+  ok('query' in p);
+  is(p.query, '');
+});
+
+test('buildChannelSearchParams: cursor always present (empty string)', () => {
+  const p = buildChannelSearchParams('', 10, '', '', '', '');
+  ok('cursor' in p);
+  is(p.cursor, '');
+});
+
+test('buildChannelSearchParams: explicit search_channel_types respected', () => {
+  is(buildChannelSearchParams('', 10, '', 'all', '', '').search_channel_types, 'all');
+  is(buildChannelSearchParams('', 10, '', 'private', '', '').search_channel_types, 'private');
+  is(buildChannelSearchParams('', 10, '', 'archived', '', '').search_channel_types, 'archived');
+});
+
+test('buildChannelSearchParams: explicit sort respected', () => {
+  is(buildChannelSearchParams('', 10, '', '', 'member_count', '').sort, 'member_count');
+  is(buildChannelSearchParams('', 10, '', '', 'created', '').sort, 'created');
+});
+
+test('buildChannelSearchParams: explicit sort_dir=desc respected', () => {
+  is(buildChannelSearchParams('', 10, '', '', '', 'desc').sort_dir, 'desc');
 });
 
 test('buildChannelSearchParams includes query when provided', () => {
-  const p = buildChannelSearchParams('support', 10, '');
+  const p = buildChannelSearchParams('support', 10, '', '', '', '');
   is(p.query, 'support');
   is(p.limit, '10');
 });
 
-test('buildChannelSearchParams omits query when empty', () => {
-  const p = buildChannelSearchParams('', 10, '');
-  ok(!('query' in p));
-});
-
 test('buildChannelSearchParams never includes channel_ids (measured defect guard)', () => {
-  // channel_ids is silently ignored by Slack — passing it returns the
-  // unfiltered list confidently. This test verifies we never emit it.
-  const p = buildChannelSearchParams('anything', 50, '');
+  // channel_ids is silently ignored by Slack — passing it returns the unfiltered
+  // list confidently. This test verifies we never emit it.
+  const p = buildChannelSearchParams('anything', 50, '', 'all', 'name', 'asc');
   ok(!('channel_ids' in p));
 });
 
 test('buildChannelSearchParams includes cursor when provided', () => {
-  const p = buildChannelSearchParams('', 10, 'dXNlcjpV');
+  const p = buildChannelSearchParams('', 10, 'dXNlcjpV', '', '', '');
   is(p.cursor, 'dXNlcjpV');
 });
 
-test('buildChannelSearchParams omits cursor when empty', () => {
-  const p = buildChannelSearchParams('', 10, '');
-  ok(!('cursor' in p));
+// MUTATION TARGET: defaulting to 'all' instead of 'exclude_archived' silently
+// changes result counts (2072 all vs 1515 exclude_archived in this org).
+test('buildChannelSearchParams default is exclude_archived not all', () => {
+  const p = buildChannelSearchParams('', 10, '', '', '', '');
+  ok(p.search_channel_types !== 'all');
+  is(p.search_channel_types, 'exclude_archived');
+});
+
+// ── VALID_SEARCH_CHANNEL_TYPES and VALID_CHANNEL_SORT_FIELDS ──────────────────
+
+test('VALID_SEARCH_CHANNEL_TYPES has all 5 observed values', () => {
+  ok(VALID_SEARCH_CHANNEL_TYPES.has('all'));
+  ok(VALID_SEARCH_CHANNEL_TYPES.has('exclude_archived'));
+  ok(VALID_SEARCH_CHANNEL_TYPES.has('private'));
+  ok(VALID_SEARCH_CHANNEL_TYPES.has('private_exclude'));
+  ok(VALID_SEARCH_CHANNEL_TYPES.has('archived'));
+  is(VALID_SEARCH_CHANNEL_TYPES.size, 5);
+});
+
+test('VALID_CHANNEL_SORT_FIELDS: name, member_count, created are valid', () => {
+  ok(VALID_CHANNEL_SORT_FIELDS.has('name'));
+  ok(VALID_CHANNEL_SORT_FIELDS.has('member_count'));
+  ok(VALID_CHANNEL_SORT_FIELDS.has('created'));
+});
+
+test('VALID_CHANNEL_SORT_FIELDS: last_activity_ts not valid (returns invalid_sort live)', () => {
+  // Probed live 2026-09-22: last_activity_ts and num_members both return invalid_sort.
+  ok(!VALID_CHANNEL_SORT_FIELDS.has('last_activity_ts'));
+  ok(!VALID_CHANNEL_SORT_FIELDS.has('num_members'));
 });
 
 // ── buildApprovalsListParams ──────────────────────────────────────────────────
@@ -544,3 +597,13 @@ test('collectPages: missing items key returns empty chunk without error', async 
 // VERIFICATION RECORD:
 //   Each mutation G1-G10 was applied, the named test confirmed to fail,
 //   and then reverted. See PR description for details.
+
+// MUTATION G11: In buildChannelSearchParams, change default to 'all' (not 'exclude_archived')
+//   Caught by: tests 13, 22
+//   (Matters: 'all' returns 2072 channels, 'exclude_archived' returns 1515 in this org)
+//
+// MUTATION G12: In buildChannelSearchParams, omit query/cursor when empty (undefined)
+//   Caught by: tests 14, 15
+//   (query and cursor must be present even as empty strings, per observed API behaviour)
+//
+// VERIFICATION: G1-G12 each applied, named test confirmed to fail, mutation reverted.

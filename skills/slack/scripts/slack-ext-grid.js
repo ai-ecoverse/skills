@@ -31,10 +31,17 @@
 //   (vs workspace-level commands that use teams['T0385CHDU9E'].token).
 //   Both are xoxc tokens — same auth mechanism, different org/ws scopes.
 //
-// AUDIT: every call is attributed in the Slack audit log to the HUMAN whose
-//   xoxc token is in use. These are NOT bot operations. The adjacent project
-//   adobe-rnd/slack-automation performs writes as a bot so the audit trail
-//   names the app — this path cannot do that.
+// AUDIT ATTRIBUTION — IMPORTANT NUANCE:
+//   Session-token (xoxc) calls are INDISTINGUISHABLE FROM THE HUMAN'S OWN
+//   DIRECT ACTIONS in Slack's channel event history. A concrete case:
+//   #aem-fedex (C0C2CUUDWLE) was archived by Zapier at 2026-09-17T00:17:04Z;
+//   the channel event log records Lars Trieloff as the actor, not Zapier,
+//   because Zapier ran on his user OAuth token. These commands do the same.
+//   The Enterprise Audit Logs API (auditlogs:read scope) WOULD record the
+//   acting app and distinguish automation from a human click — but
+//   admin.audit.* methods return unknown_method (six variants probed, all
+//   unknown). There is currently no working API call that distinguishes an
+//   xoxc-based script from a human in the channel event log.
 //
 // CHANNEL COMMANDS — `admin.conversations.*`:
 //   admin.conversations.convertToPublic   takes channel_id (verified real)
@@ -113,12 +120,45 @@ function buildConvertChannelParams(channelId) {
 }
 
 // admin.conversations.search
-// NOTE: channel_ids parameter is SILENTLY IGNORED (measured defect). Never pass it.
-// Filter results locally using filterChannelsByName/Id after collecting pages.
-function buildChannelSearchParams(query, limit, cursor) {
-  const p = { limit: String(limit || 50) };
-  if (query) p.query = query;
-  if (cursor) p.cursor = cursor;
+//
+// Observed required/significant parameters (2026-09-22):
+//   search_channel_types — changes the result set materially:
+//     'all'              — all channels including archived and private
+//     'exclude_archived' — non-archived channels only (recommended default)
+//     'private'          — private channels only
+//     'private_exclude'  — similar to 'all' in observed behaviour
+//     'archived'         — archived channels only
+//     Note: Lars Trieloff observed omitting this returns invalid_arguments
+//     in the UI path; live probe 2026-09-22 returned ok:true without it,
+//     suggesting the API defaults internally. Include it explicitly anyway
+//     because 'all' vs 'exclude_archived' yields 2072 vs 1515 results —
+//     the difference is significant and silent.
+//   sort     — valid observed values: 'name', 'member_count', 'created'
+//              'last_activity_ts' and 'num_members' return invalid_sort
+//   sort_dir — 'asc' | 'desc'
+//   query    — may be empty string
+//   cursor   — may be empty string
+//
+// MEASURED DEFECT: channel_ids is SILENTLY IGNORED. Never pass it.
+// Filter results locally; see filterChannels() below.
+
+const VALID_SEARCH_CHANNEL_TYPES = new Set(
+  ['all', 'exclude_archived', 'private', 'private_exclude', 'archived']
+);
+const VALID_CHANNEL_SORT_FIELDS = new Set(['name', 'member_count', 'created']);
+
+function buildChannelSearchParams(query, limit, cursor, searchChannelTypes, sort, sortDir) {
+  const p = {
+    // Empty string is accepted; must be present.
+    query: query || '',
+    limit: String(limit || 50),
+    // Observed in UI; omitting silently defaults to something — include explicitly.
+    search_channel_types: searchChannelTypes || 'exclude_archived',
+    sort: sort || 'name',
+    sort_dir: sortDir || 'asc',
+    // Empty-string cursor is accepted and must be present once pagination starts.
+    cursor: cursor || '',
+  };
   return p;
 }
 
@@ -287,6 +327,8 @@ module.exports = {
   resolveAppOrRequestId,
   isValidPermissionType,
   VALID_PERMISSION_TYPES,
+  VALID_SEARCH_CHANNEL_TYPES,
+  VALID_CHANNEL_SORT_FIELDS,
   filterChannels,
   summarizeChannel,
   summarizeApproval,

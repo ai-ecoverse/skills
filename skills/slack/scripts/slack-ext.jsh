@@ -32,8 +32,10 @@
 //    which proves everything is right except the target. Verified live.
 //
 // 5. AUDIT ATTRIBUTION — these calls run as the admin user whose xoxc token is
-//    in use. Slack's audit log will attribute every change to THAT HUMAN, not to
-//    a bot or app. Operators must be aware before using these commands.
+//    in use. These calls are INDISTINGUISHABLE FROM THE HUMAN'S OWN DIRECT
+//    ACTIONS in Slack's channel event history. Enterprise Audit Logs would
+//    record the acting app, but admin.audit.* returns unknown_method.
+//    Operators must understand this before using these commands.
 //
 // 6. CHANNEL ADD/REMOVE — uses the standard documented conversations.invite and
 //    conversations.kick methods (both verified real via unauthenticated probe).
@@ -67,7 +69,9 @@ Admin user-management commands for Slack Enterprise Grid.
 Requires an open Slack tab (app.slack.com) logged in as an admin.
 
 IMPORTANT: These commands run as the admin whose token is in use. Every
-change is attributed to THAT HUMAN in Slack's audit log, not to a bot.
+call is indistinguishable from a direct human action in Slack's channel
+event history. Enterprise Audit Logs would record the acting app, but those
+API methods return unknown_method. See SKILL.md wire facts for details.
 These use undocumented legacy endpoints (users.admin.*) that could change
 without notice. Bot tokens (xoxb) are rejected; only xoxc session tokens work.
 
@@ -195,7 +199,8 @@ Examples:
   slack-ext app set-request-url A0123456789 https://relay.example.com --confirm
   slack-ext app apply A0123456789 --manifest=./manifest.json --confirm
 
-Enterprise Grid admin commands (use ORG-LEVEL token; audit log attributes changes to the human):
+Enterprise Grid admin commands (use ORG-LEVEL token; calls look like human actions in
+  channel event history — see SKILL.md attribution caveat):
 
   eg-status <user_id>
       Show enterprise-level user info: type, org membership, workspaces.
@@ -229,9 +234,12 @@ Enterprise Grid admin commands (use ORG-LEVEL token; audit log attributes change
 
 Channel management commands:
 
-  channel-search [--query=<q>] [--limit=<n>] [--max=<n>]
+  channel-search [--query=<q>] [--limit=<n>] [--max=<n>] [--types=<t>] [--sort=<s>] [--sort-dir=<d>]
       Enumerate channels via admin.conversations.search. Filters locally
       (channel_ids parameter is silently ignored by Slack — see wire facts).
+      --types: exclude_archived (default) | all | private | private_exclude | archived
+      --sort:  name (default) | member_count | created
+              (last_activity_ts returns invalid_sort — probed live)
 
   channel-to-public <channel_id> [--confirm]
       Convert a private channel to public. API: admin.conversations.convertToPublic.
@@ -667,7 +675,7 @@ async function cmdSetSingle() {
     kv('Workspace', wsId);
     console.log('');
     console.log(
-      color.yellow('  Audit: this change will be attributed to the admin whose token is in use.')
+      color.yellow('  xoxc: this call appears as a direct human action in channel event history.')
     );
     console.log(color.dim('  Re-run with --confirm to proceed.'));
     console.log('');
@@ -685,7 +693,7 @@ async function cmdSetSingle() {
   kv('Channel', channelId);
   kv('Workspace', wsId);
   console.log('');
-  console.log(color.dim('  Audit: change attributed to the admin user whose token was used.'));
+  console.log(color.dim('  xoxc session call: appears as the human's own action in channel event history.'));
   console.log('');
 }
 
@@ -734,7 +742,7 @@ async function cmdSetMulti() {
     kv('Workspace', wsId);
     console.log('');
     console.log(
-      color.yellow('  Audit: this change will be attributed to the admin whose token is in use.')
+      color.yellow('  xoxc: this call appears as a direct human action in channel event history.')
     );
     console.log(color.dim('  Re-run with --confirm to proceed.'));
     console.log('');
@@ -751,7 +759,7 @@ async function cmdSetMulti() {
   kv('New type', 'multi-channel guest');
   kv('Workspace', wsId);
   console.log('');
-  console.log(color.dim('  Audit: change attributed to the admin user whose token was used.'));
+  console.log(color.dim('  xoxc session call: appears as the human's own action in channel event history.'));
   console.log('');
 }
 
@@ -800,7 +808,7 @@ async function cmdSetMember() {
     kv('Workspace', wsId);
     console.log('');
     console.log(
-      color.yellow('  Audit: this change will be attributed to the admin whose token is in use.')
+      color.yellow('  xoxc: this call appears as a direct human action in channel event history.')
     );
     console.log(color.dim('  Re-run with --confirm to proceed.'));
     console.log('');
@@ -817,7 +825,7 @@ async function cmdSetMember() {
   kv('New type', 'regular member');
   kv('Workspace', wsId);
   console.log('');
-  console.log(color.dim('  Audit: change attributed to the admin user whose token was used.'));
+  console.log(color.dim('  xoxc session call: appears as the human's own action in channel event history.'));
   console.log('');
 }
 
@@ -860,7 +868,7 @@ async function cmdAddChannel() {
     kv('Workspace', wsId);
     console.log('');
     console.log(
-      color.yellow('  Audit: this change will be attributed to the admin whose token is in use.')
+      color.yellow('  xoxc: this call appears as a direct human action in channel event history.')
     );
     console.log(color.dim('  Re-run with --confirm to proceed.'));
     console.log('');
@@ -889,7 +897,7 @@ async function cmdAddChannel() {
   kv('Added to', channelId);
   kv('Workspace', wsId);
   console.log('');
-  console.log(color.dim('  Audit: change attributed to the admin user whose token was used.'));
+  console.log(color.dim('  xoxc session call: appears as the human's own action in channel event history.'));
   console.log('');
 }
 
@@ -932,7 +940,7 @@ async function cmdRemoveChannel() {
     kv('Workspace', wsId);
     console.log('');
     console.log(
-      color.yellow('  Audit: this change will be attributed to the admin whose token is in use.')
+      color.yellow('  xoxc: this call appears as a direct human action in channel event history.')
     );
     console.log(color.dim('  Re-run with --confirm to proceed.'));
     console.log('');
@@ -961,7 +969,7 @@ async function cmdRemoveChannel() {
   kv('Removed from', channelId);
   kv('Workspace', wsId);
   console.log('');
-  console.log(color.dim('  Audit: change attributed to the admin user whose token was used.'));
+  console.log(color.dim('  xoxc session call: appears as the human's own action in channel event history.'));
   console.log('');
 }
 
@@ -2128,8 +2136,10 @@ try {
 // AUDIT ATTRIBUTION — CRITICAL:
 //   Every call is attributed IN THE SLACK AUDIT LOG to the HUMAN whose xoxc
 //   session token is in use. These are NOT bot operations. The sibling project
-//   adobe-rnd/slack-automation performs writes as a bot so the audit trail names
-//   the app; this path cannot do that. Operators must understand this before use.
+//   adobe-rnd/slack-automation performs writes as a bot. The bot identity
+//   WOULD appear in Enterprise Audit Logs (auditlogs:read), but
+//   admin.audit.* returns unknown_method — so currently there is no working
+//   API call that distinguishes this script's actions from a human click. Operators must understand this before use.
 
 const {
   buildEgSetRestrictedParams,
@@ -2151,6 +2161,8 @@ const {
   summarizeApproval,
   classifyUser,
   collectPages,
+  VALID_SEARCH_CHANNEL_TYPES,
+  VALID_CHANNEL_SORT_FIELDS,
 } = require('./slack-ext-grid.js');
 
 // The Enterprise Grid org ID. Used as the "workspace" key when looking up the
@@ -2240,7 +2252,7 @@ async function cmdEgSetRestricted() {
   kv('Method', 'enterprise.users.admin.setRestricted');
   kv('Org', orgId);
   console.log('');
-  console.log(color.dim('  Audit: change attributed to the admin whose token is in use, not a bot.'));
+  console.log(color.dim('  xoxc session call: indistinguishable from a direct human action in channel event history.'));
   console.log('');
 
   if (!flags.confirm) {
@@ -2295,7 +2307,7 @@ async function cmdEgSetRegular() {
   kv('Method', 'enterprise.users.admin.setRegular');
   kv('Org', orgId);
   console.log('');
-  console.log(color.dim('  Audit: change attributed to the admin whose token is in use, not a bot.'));
+  console.log(color.dim('  xoxc session call: indistinguishable from a direct human action in channel event history.'));
   console.log('');
 
   if (!flags.confirm) {
@@ -2355,7 +2367,7 @@ async function cmdEgDeactivate() {
   kv('Org', orgId);
   console.log('');
   console.log(color.yellow('  NOTE: status=delete means DEACTIVATE. The account is recoverable.'));
-  console.log(color.dim('  Audit: change attributed to the admin whose token is in use, not a bot.'));
+  console.log(color.dim('  xoxc session call: indistinguishable from a direct human action in channel event history.'));
   console.log('');
 
   if (!flags.confirm) {
@@ -2414,7 +2426,7 @@ async function cmdEgForget() {
   console.log(color.red('  Guest flags are cleared. Messages lose author attribution.'));
   console.log(color.red('  CANNOT BE UNDONE. There is no undo, no support ticket that restores it.'));
   console.log('');
-  console.log(color.dim('  Audit: change attributed to the admin whose token is in use, not a bot.'));
+  console.log(color.dim('  xoxc session call: indistinguishable from a direct human action in channel event history.'));
   console.log('');
 
   if (!flags.confirm) {
@@ -2497,7 +2509,7 @@ async function cmdEgBulkGuest() {
   console.log('  Method: enterprise.users.admin.setRestricted');
   console.log('  Org:    ' + orgId);
   console.log('');
-  console.log(color.dim('  Audit: changes attributed to the admin whose token is in use, not a bot.'));
+  console.log(color.dim('  xoxc session calls: indistinguishable from direct human actions in channel event history.'));
   console.log('');
 
   if (!flags.confirm) {
@@ -2612,7 +2624,7 @@ async function cmdEgSetUltraRestricted() {
   kv('Method', 'enterprise.users.admin.setUltraRestricted (UNVERIFIED)');
   kv('Org', orgId);
   console.log('');
-  console.log(color.dim('  Audit: change attributed to the admin whose token is in use, not a bot.'));
+  console.log(color.dim('  xoxc session call: indistinguishable from a direct human action in channel event history.'));
   console.log('');
 
   if (!flags.confirm) {
@@ -2650,10 +2662,34 @@ async function cmdChannelSearch() {
   const query = flags.query || flags.q || words[1] || '';
   const limit = parseInt(flags.limit || '50', 10) || 50;
   const max = parseInt(flags.max || '0', 10) || 0;
+  // search_channel_types controls which channels are included:
+  //   exclude_archived (default) | all | private | private_exclude | archived
+  // This is a significant filter: 'all' returns ~2072, 'exclude_archived' ~1515.
+  const channelTypes = flags['search-channel-types'] || flags.types || 'exclude_archived';
+  const sort = flags.sort || 'name';
+  const sortDir = flags['sort-dir'] || 'asc';
+
+  if (!VALID_SEARCH_CHANNEL_TYPES.has(channelTypes)) {
+    cli.die(
+      'Invalid --search-channel-types value: ' + channelTypes + '\n' +
+        '  Valid values: ' + [...VALID_SEARCH_CHANNEL_TYPES].join(', '),
+      { prefix: PREFIX }
+    );
+  }
+  if (!VALID_CHANNEL_SORT_FIELDS.has(sort)) {
+    cli.die(
+      'Invalid --sort value: ' + sort + '\n' +
+        '  Valid values: ' + [...VALID_CHANNEL_SORT_FIELDS].join(', ') + '\n' +
+        '  Note: last_activity_ts returns invalid_sort (verified live).',
+      { prefix: PREFIX }
+    );
+  }
 
   section('Channel search');
   if (query) kv('Query', query);
   kv('Org', orgId);
+  kv('Types', channelTypes);
+  kv('Sort', sort + ' ' + sortDir);
   kv('Page limit', String(limit));
   if (max) kv('Max results', String(max));
   console.log('');
@@ -2664,11 +2700,10 @@ async function cmdChannelSearch() {
   const allChannels = [];
   let pages = 0;
   do {
-    const params = buildChannelSearchParams('', limit, cursor);
-    // NOTE: do NOT pass a query to the API here — Slack's query filtering is
-    // not reliable for exact ID matching (measured defect), so we collect all
-    // and filter locally. A text query is harmless and reduces pages fetched.
-    if (query && !/^C[A-Z0-9]+$/i.test(query)) params.query = query;
+    // Pass query to the API only for text searches (not ID lookups), to reduce
+    // pages fetched — but always filter locally for correctness.
+    const apiQuery = (query && !/^C[A-Z0-9]+$/i.test(query)) ? query : '';
+    const params = buildChannelSearchParams(apiQuery, limit, cursor, channelTypes, sort, sortDir);
     const data = await slackApi('admin.conversations.search', params, orgId, { fatal: false });
     if (!data.ok) cli.die('admin.conversations.search failed: ' + data.error, { prefix: PREFIX });
     pages += 1;
@@ -2677,7 +2712,7 @@ async function cmdChannelSearch() {
     if (max > 0 && allChannels.length >= max) { cursor = ''; break; }
   } while (cursor);
 
-  // Filter locally (handles exact ID lookup)
+  // Filter locally (handles exact ID lookup and ensures channel_ids defect doesn't bite)
   const filtered = filterChannels(allChannels, query);
 
   kv('Total (org)', String(allChannels.length) + (cursor ? '+' : '') + ' across ' + pages + ' page(s)');
@@ -2728,7 +2763,7 @@ async function cmdChannelToPublic() {
   kv('Method', 'admin.conversations.convertToPublic');
   kv('Org', orgId);
   console.log('');
-  console.log(color.dim('  Audit: change attributed to the admin whose token is in use, not a bot.'));
+  console.log(color.dim('  xoxc session call: indistinguishable from a direct human action in channel event history.'));
   console.log('');
 
   if (!flags.confirm) {
@@ -2769,7 +2804,7 @@ async function cmdChannelToPrivate() {
   console.log('');
   console.log(color.yellow('  IMPORTANT: after converting, conversations.info returns channel_not_found'));
   console.log(color.yellow('  for any non-member of the private channel. This is expected, not an error.'));
-  console.log(color.dim('  Audit: change attributed to the admin whose token is in use, not a bot.'));
+  console.log(color.dim('  xoxc session call: indistinguishable from a direct human action in channel event history.'));
   console.log('');
 
   if (!flags.confirm) {
@@ -2900,7 +2935,7 @@ async function cmdAdminAppApprove() {
     kv('Org', orgId);
   }
   console.log('');
-  console.log(color.dim('  Audit: change attributed to the admin whose token is in use, not a bot.'));
+  console.log(color.dim('  xoxc session call: indistinguishable from a direct human action in channel event history.'));
   console.log('');
 
   if (!flags.confirm) {
@@ -2956,7 +2991,7 @@ async function cmdAdminAppRestrict() {
     kv('Org', orgId);
   }
   console.log('');
-  console.log(color.dim('  Audit: change attributed to the admin whose token is in use, not a bot.'));
+  console.log(color.dim('  xoxc session call: indistinguishable from a direct human action in channel event history.'));
   console.log('');
 
   if (!flags.confirm) {
@@ -2996,7 +3031,7 @@ async function cmdAdminAppClear() {
   kv('Org', orgId);
   kv('Method', 'admin.apps.clearResolution');
   console.log('');
-  console.log(color.dim('  Audit: change attributed to the admin whose token is in use, not a bot.'));
+  console.log(color.dim('  xoxc session call: indistinguishable from a direct human action in channel event history.'));
   console.log('');
 
   if (!flags.confirm) {
@@ -3041,7 +3076,7 @@ async function cmdAdminAppPermissions() {
   kv('Permission type', permType);
   kv('Method', 'admin.apps.permissions.set');
   console.log('');
-  console.log(color.dim('  Audit: change attributed to the admin whose token is in use, not a bot.'));
+  console.log(color.dim('  xoxc session call: indistinguishable from a direct human action in channel event history.'));
   console.log('');
 
   if (!flags.confirm) {

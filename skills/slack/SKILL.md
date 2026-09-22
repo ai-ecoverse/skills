@@ -565,10 +565,15 @@ require a different usage pattern and carry stronger safety requirements.
 
 **Important caveats before using:**
 
-- **Audit attribution**: every change runs as the admin user whose `xoxc`
-  session token is in use. Slack's audit log attributes the change to THAT
-  HUMAN, not to a bot or app. Operators must understand this before using
-  these commands.
+- **Audit attribution**: these calls use the `xoxc` browser session token and
+  are **indistinguishable from the human's own direct actions** in Slack's
+  channel event history. A concrete case: `#aem-fedex` (`C0C2CUUDWLE`) was
+  archived by Zapier at 2026-09-17T00:17:04Z; the channel event log records
+  Lars Trieloff as the actor because Zapier ran on his user OAuth token — no
+  bot identity visible. These commands do the same thing. The Enterprise Audit
+  Logs API (`auditlogs:read`) would record the acting app, but `admin.audit.*`
+  methods return `unknown_method` (six variants probed). Operators must
+  understand this before using these commands.
 - **Token restriction**: bot tokens (`xoxb`) are rejected with
   `not_allowed_token_type`. Only the `xoxc` browser session token works.
 - **Undocumented legacy endpoints**: these methods live in the
@@ -969,11 +974,20 @@ the **org level** (`E06V3987PMY`, "Adobe Enterprise Support") rather than the wo
 
 ### CRITICAL: audit attribution
 
-**Every call is attributed in the Slack audit log to the HUMAN whose `xoxc` session token
-is in use — not to a bot, not to an app.** The sibling project `adobe-rnd/slack-automation`
-performs its writes as a bot so the audit trail names the app. These commands cannot do that.
-Every operator must understand that running `eg-set-restricted`, `eg-deactivate`, or any
-other write command identifies them personally in the audit log.
+Session-token (`xoxc`) calls are **indistinguishable from the human's own direct actions**
+in Slack's channel event history. A concrete, verified case: `#aem-fedex` (`C0C2CUUDWLE`)
+was archived by Zapier at 2026-09-17T00:17:04Z — the channel event log records Lars Trieloff
+as the actor, not Zapier, because Zapier's Slack action ran on his user OAuth token and
+carries no bot identity. Running `eg-deactivate`, `eg-set-restricted`, `channel-to-private`,
+or any other write command in this skill looks identical to the human performing the action
+themselves in the Slack UI.
+
+The Enterprise Audit Logs API (`auditlogs:read` scope) **would** record the acting app and
+distinguish automation from a human click — but `admin.audit.*` methods all return
+`unknown_method` (six variants probed on 2026-09-22; none exist). There is currently no
+working API call that distinguishes an `xoxc`-based script from a human in the channel
+event log. Do not document these calls as "attributed to the human in the audit log" —
+they ARE the human as far as any observable Slack record is concerned.
 
 ### Authentication
 
@@ -1084,15 +1098,31 @@ Make a single-channel guest at the org level.
 
 ### Channel management
 
-#### `channel-search [--query=<q>] [--limit=<n>] [--max=<n>] [--json]`
+#### `channel-search [--query=<q>] [--limit=<n>] [--max=<n>] [--types=<t>] [--sort=<s>] [--sort-dir=<d>] [--json]`
 
 Enumerate channels using `admin.conversations.search`.
+
+**Observed parameters (2026-09-22):**
+
+| Parameter | Values | Notes |
+|-----------|--------|-------|
+| `search_channel_types` | `exclude_archived` \| `all` \| `private` \| `private_exclude` \| `archived` | Materially changes results: `all` → 2072, `exclude_archived` → 1515. Default: `exclude_archived`. Lars Trieloff observed omitting this returns `invalid_arguments` in the UI path; the API appears to default internally but the param should always be included explicitly. |
+| `sort` | `name` \| `member_count` \| `created` | `last_activity_ts` and `num_members` return `invalid_sort` (probed live). |
+| `sort_dir` | `asc` \| `desc` | |
+| `query` | any string, including empty | |
+| `cursor` | any string, including empty | |
+
+**`--types` shorthand in this command:** `--types=all`, `--types=private`, `--types=archived`, etc.
 
 **Measured defect: `channel_ids` parameter is silently ignored.** Passing
 `channel_ids=C0634KMGW2G` (bare string) and `channel_ids=["C0634KMGW2G"]` (JSON array) both
 returned `{"ok":true}` with the **unfiltered full list** starting at `#general`. The
 command never passes `channel_ids`; it enumerates with cursor pagination and filters locally.
-This behaviour was verified live on 2026-09-22.
+
+**`archived` search_channel_types caveat:** Lars observed `archived` returning 0 results for
+a query that both `all` and `exclude_archived` matched. A probe on 2026-09-22 showed `archived`
+returning 1 result for the same query (a genuinely archived channel). The discrepancy may be
+query-specific. Do not treat a 0-result `archived` response as proof a channel was never archived.
 
 Response fields per channel: `id`, `name`, `purpose`, `member_count`, `external_user_count`,
 `channel_manager_count`, `created`, `creator_id`, `is_private`, `is_archived`, `is_general`,
