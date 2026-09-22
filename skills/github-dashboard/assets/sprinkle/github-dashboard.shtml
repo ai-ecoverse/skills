@@ -381,6 +381,16 @@
       .qv-act[data-kind='approve'] { border-left-color: var(--gh-open); }
       .qv-act[data-kind='nudge'] { border-left-color: var(--gh-progress); }
       .qv-act[data-kind='clarify'] { border-left-color: var(--gh-pending); }
+      /* An unknown kind is not an error, so it reads neutral, not alarming. */
+      .qv-act[data-kind-unknown='1'] { border-left-color: var(--gh-neutral); }
+      .qv-act .qv-act-inert {
+        display: flex;
+        align-items: center;
+        gap: var(--s2-spacing-75, 6px);
+        margin-top: var(--s2-spacing-75, 6px);
+        font-size: var(--s2-font-size-50, 11px);
+        color: var(--fg-faint);
+      }
       .qv-act .qv-act-label {
         font-size: var(--s2-font-size-75, 12px);
         font-weight: 600;
@@ -2681,6 +2691,88 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         return `${a.kind || 'action'}:${a.label || ''}`;
       }
 
+      /** PHASE 8C. ONE table, because the 7p bug was structural, not a missing
+          branch. That code asked `kind === 'clarify' ? … : …` in four separate
+          places, so every kind that was not `clarify` became a NUDGE: the `send`
+          glyph, the "Dispatch this instruction" label, and a `do-nudge` lick.
+          When the fetcher's agents started emitting `approve` actions ("Approve
+          and merge"), the panel silently offered to dispatch a GitHub WRITE as an
+          instruction. The fall-through DIRECTION was the whole defect — an
+          unrecognised kind landed on the most action-shaped branch there is.
+
+          These kinds are MODEL-GENERATED, so the next unknown one is a matter of
+          time. Hence: a kind must be REGISTERED to get a control, and anything
+          unregistered degrades to an inert, honest chip (see UNKNOWN_KIND). The
+          fall-through now points at "do nothing and say so" instead of "act".
+
+          Each entry owns every per-kind difference — glyph, button copy, aria
+          text, the lick name, and the note the cone receives — so adding a kind
+          is one object and no other edit. */
+      const ACTION_KINDS = {
+        nudge: {
+          act: 'nudge',
+          icon: 'send',
+          cta: 'Dispatch this instruction',
+          aria: 'Dispatch this instruction to the cone',
+          lick: 'do-nudge',
+          note: 'A specific instruction from the github-dashboard panel. The panel did not spawn anything.',
+        },
+        clarify: {
+          act: 'clarify',
+          icon: 'message-circle-question',
+          cta: 'Raise with the cone',
+          aria: 'Raise this question with the cone',
+          lick: 'clarify-question',
+          note: 'A clarification from the github-dashboard panel: this needs a human decision, not agent work.',
+        },
+        /* approve — "Approve and merge", "Merge when ready". Both live examples
+           name a GITHUB WRITE, and this panel performs no writes. Delegating the
+           write to an agent would be worse, not better: it moves an irreversible
+           act further from the person answerable for it.
+
+           A navigation-only button was rejected because 7p measured that every
+           action's target.ref equals its own record, so it would duplicate the Go
+           control, which already opens the item.
+
+           What IS worth dispatching is the work that stops SHORT of the write:
+           read the item now and report whether approving looks safe. That has
+           value precisely BECAUSE the grounds the fetcher attached ("All 2 CI
+           checks passing") are a snapshot, and a snapshot's CI summary is the
+           thing this project has already watched rot — a panel once asserted
+           "2 of 45 checks running" on a PR that had already merged. Someone about
+           to click Merge wants a fresh read, not a cached one.
+
+           The lick is named for what it ASKS, not for the verb in the label:
+           review-before-approval, never do-approve. A lick name that reads as an
+           imperative to approve is how a mislabelled instruction turns into an
+           unwanted GitHub write at the other end. The note repeats the
+           prohibition in words, because the cone reads the note. */
+        approve: {
+          act: 'approve',
+          icon: 'scan-eye',
+          cta: 'Ask for a safety check',
+          aria: 'Ask the cone to check whether this is safe to approve',
+          lick: 'review-before-approval',
+          note:
+            'A PRE-APPROVAL REVIEW requested from the github-dashboard panel. Read the item and report whether approving looks safe. Do NOT approve, merge, or submit a review on GitHub — the approval is the operator\u2019s to give, and the panel performs no writes. The grounds quoted with this request came from a snapshot and may be stale; check the current state.',
+        },
+      };
+
+      /* The inert fallback. Deliberately NOT a disabled button: a disabled
+         control still says "there is an action here, you just cannot have it",
+         whereas the honest statement is "this panel does not know this kind".
+         Precedent: selectScoop was left unwired for the same reason — an honest
+         informational state beat a control that resolved false. */
+      const UNKNOWN_KIND = { icon: 'circle-dashed' };
+
+      /** The registered spec for an action, or null when the kind is unknown.
+          hasOwnProperty, so a kind called "constructor" or "toString" cannot
+          inherit a spec off Object.prototype and become dispatchable. */
+      function actionSpec(a) {
+        const k = a && typeof a.kind === 'string' ? a.kind : null;
+        return k && Object.prototype.hasOwnProperty.call(ACTION_KINDS, k) ? ACTION_KINDS[k] : null;
+      }
+
       /** Phase 7p, requested: "render the structured nudge/clarify actions as buttons"
           / "make the quick-view action boxes clickable".
 
@@ -2711,6 +2803,11 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
           the colour survives a reopen and a 7f reconcile, and a second click
           clears it. */
       async function actionClick(item, action, btn) {
+        // Defence in depth: an unregistered kind gets no control at all, so
+        // arriving here means something else went wrong. Refuse anyway: no
+        // lick, no store write.
+        const spec = actionSpec(action);
+        if (!spec) return;
         const key = actionKey(action);
         const already = (item.actionsDispatched || {})[key];
         if (already) {
@@ -2743,7 +2840,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         slicc.lick({
           // Two distinct actions, because the cone should do two different things:
           // carry out an instruction, or bring a question to the operator.
-          action: action.kind === 'clarify' ? 'clarify-question' : 'do-nudge',
+          action: spec.lick,
           data: {
             key: recordKey(item),
             repo: item.repo,
@@ -2759,10 +2856,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
             targetUrl: (action.target && action.target.url) || null,
             bbProject: bbProject(item.repo) || null,
             requestedAt: at,
-            note:
-              action.kind === 'clarify'
-                ? 'A clarification from the github-dashboard panel: this needs a human decision, not agent work.'
-                : 'A specific instruction from the github-dashboard panel. The panel did not spawn anything.',
+            note: spec.note,
           },
           // Same routing rule as start-scoop: the cone's bare FOLDER, hardcoded.
           target: 'cone',
@@ -2781,6 +2875,11 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
 
       function actionButtonTitle(action, at) {
         const what = action.label || 'this action';
+        if (action.kind === 'approve') {
+          return at
+            ? `Asked ${fmtWhen(at)}: a pre-approval review of “${what}” went to the cone and is recorded in data/user-state.json. It asked for a judgement, not an approval — approving is still yours. Click again to clear the mark (the sent request cannot be recalled).`
+            : `Ask the cone to review “${what}” and report whether approving looks safe. It does NOT approve, merge or submit a review, and neither does this panel — that stays with you. Worth asking because the grounds shown here came from a snapshot and may already be stale. Writes data/user-state.json; nothing is written to GitHub.`;
+        }
         if (action.kind === 'clarify') {
           return at
             ? `Raised ${fmtWhen(at)}: “${what}” went to the cone as a question for you, with its context. Recorded in data/user-state.json. Click again to clear the mark (the sent message cannot be recalled).`
@@ -2909,20 +3008,32 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
                 // already contains an anchor, and nesting interactive elements is
                 // invalid and unusable by keyboard. Tab reaches it inside the
                 // dialog because it is a plain button in flow order.
+                const spec = actionSpec(a);
+                if (!spec) {
+                  // Unknown kind: informational only, and NOTHING clickable. A
+                  // chip, not a button — no control to press, no listener to
+                  // fire, nothing that looks dispatchable.
+                  box.dataset.kindUnknown = '1';
+                  const chip = el('div', 'qv-act-inert');
+                  chip.appendChild(icon(UNKNOWN_KIND.icon));
+                  chip.appendChild(el('span', null, 'No action for \u201C' + a.kind + '\u201D in this panel'));
+                  chip.title =
+                    'This panel does not recognise the action kind \u201C' +
+                    a.kind +
+                    '\u201D, so it offers no control rather than guessing what to do with it. The follow-up itself is shown above exactly as the fetcher wrote it. Nothing was dispatched and nothing was written.';
+                  box.appendChild(chip);
+                  s.appendChild(box);
+                  continue;
+                }
                 const dispatchedAt = (item.actionsDispatched || {})[actionKey(a)] || null;
                 const row = el('div', 'qv-act-do');
                 const b = el('button', 'sprinkle-btn sprinkle-btn--secondary qv-act-btn');
                 b.type = 'button';
-                b.dataset.act = a.kind === 'clarify' ? 'clarify' : 'nudge';
-                b.dataset.icon = a.kind === 'clarify' ? 'message-circle-question' : 'send';
-                b.setAttribute(
-                  'aria-label',
-                  a.kind === 'clarify' ? 'Raise this question with the cone' : 'Dispatch this instruction to the cone',
-                );
+                b.dataset.act = spec.act;
+                b.dataset.icon = spec.icon;
+                b.setAttribute('aria-label', spec.aria);
                 b.appendChild(icon(b.dataset.icon));
-                b.appendChild(
-                  el('span', null, a.kind === 'clarify' ? 'Raise with the cone' : 'Dispatch this instruction'),
-                );
+                b.appendChild(el('span', null, spec.cta));
                 paintActionButton(b, a, dispatchedAt);
                 b.addEventListener('click', () => {
                   // Resolve the record at CLICK time (7f rule): a reconcile may

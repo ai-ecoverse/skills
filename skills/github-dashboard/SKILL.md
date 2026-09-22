@@ -78,6 +78,208 @@ The fetcher needs a GitHub token in the environment it runs in. It refuses to
 start when `/shared/github-monitor/config.json` is missing rather than following
 repositories nobody chose.
 
+## Keeping the snapshot fresh (the poller)
+
+The fetcher is a one-shot program. `scripts/poll.jsh` is the durable unit that
+runs it on a schedule, supervised by `jshd`:
+
+```sh
+jshd start -n github-dashboard-poll --enable --restart on-failure \
+  /shared/sprinkles/github-dashboard/poll.jsh
+
+jshd ls                                  # note: ls, not list
+jshd status github-dashboard-poll
+jshd logs   github-dashboard-poll -n 40  # one line per cycle
+```
+
+**Turning it off** — whoever installs this needs both:
+
+```sh
+jshd stop github-dashboard-poll   # stop now; the unit record and log remain,
+                                  # and --enable means a reload starts it again
+jshd disable github-dashboard-poll # leave it running but do not restore on reload
+jshd rm   github-dashboard-poll   # stop AND delete the unit record and its log
+```
+
+`stop` alone is not permanent while the unit is enabled: on the next reload the
+supervisor starts it again. Use `rm` (or `disable`) to mean it.
+
+### The interval, and why it is 30 minutes
+
+Measured, not guessed (two consecutive real runs against two repositories, ~100
+records):
+
+| run | wall | agent calls | status cache | GitHub requests |
+| --- | --- | --- | --- | --- |
+| 20 hours stale | 761 s | 21 | 10 hits / 21 misses | 187 |
+| warm, ~35 min later | 388 s | 9 | 25 hits / 9 misses | 185 |
+
+The status cache is keyed on each record's `lastActivityAt`, so a record costs an
+agent call only when it has **new activity**. That is the whole cost argument:
+
+- **Model spend tracks repository activity, not poll frequency.** Polling twice as
+  often does not double the agent calls; it splits the same work into smaller
+  runs. If anything, a longer interval is marginally cheaper, because several
+  changes to one record coalesce into a single call.
+- **What frequency multiplies is the fixed per-run cost**: ~185–190 GitHub
+  requests and the non-agent wall time. At 30 minutes that is ~380 requests/hour
+  against a 5,000/hour limit (~8%; measured 4,366/5,000 remaining after a run).
+- A warm run takes 6.5 minutes, so a 30-minute interval leaves the unit idle ~78%
+  of the time. Shorter intervals start eating their own tail for freshness the
+  panel cannot use — it already notices a new snapshot within five seconds.
+
+Override for a short proving run (the default stays 30 minutes):
+
+```sh
+jshd start -n github-dashboard-poll --enable --restart on-failure \
+  --env GHD_POLL_INTERVAL_MS=60000 /shared/sprinkles/github-dashboard/poll.jsh
+```
+
+### Failure behaviour
+
+A failing **fetch** cannot spin the unit: the fetch runs inside a try/catch, a
+non-zero exit is logged and counted, and after three consecutive failures the
+interval backs off to two hours until one succeeds. So a broken config or an
+expired credential cannot burn requests overnight. `--restart on-failure`
+therefore applies only to the unit script itself dying — which has been observed
+once, when a transient runtime asset-load failure killed a run after nine
+seconds. That run left the previous snapshot and its version file untouched.
+
+A cycle also refuses to start while the previous one is still running: they share
+the status cache and the output files.
+
+## Mirroring your marks back onto the card (the comment mirror)
+
+`scripts/mirror-comments.mjs` publishes **your own marks** onto the GitHub item
+they belong to, as a single comment it keeps converged:
+
+```
+node scripts/mirror-comments.mjs                 # dry run: prints the plan and the exact bodies
+node scripts/mirror-comments.mjs --live          # apply
+node scripts/mirror-comments.mjs --live --sweep  # also remove mirrors whose marks are gone
+```
+
+A mirrored comment looks like this, and this is the whole of it:
+
+```markdown
+<!-- ghd-mirror:v1 -->
+**Filed on my dashboard**
+
+- Snoozed until 2026-10-03
+- Handed to an agent from my dashboard on 2026-09-22
+- 1 follow-up dispatched from my dashboard, most recently 2026-09-22 (1 nudge)
+
+<sub>Posted and kept up to date automatically by my own GitHub dashboard. ...</sub>
+```
+
+### It publishes the fact, never the prose
+
+`data/user-state.json` holds free-text `snoozeReason` notes you wrote to
+yourself. **Those never leave the machine.** Only four fields are publishable —
+`snoozedUntil`, `doneAt`, `scoopRequestedAt`, `actionsDispatched` — and each
+renders as a fixed sentence plus a **date**; no stored string is ever
+interpolated into a body. `actionsDispatched` keys carry a model-generated
+label, so only the *kind* and the date are published, never the label.
+
+Two independent mechanisms enforce this, because a GitHub comment cannot be
+un-published: the field allowlist above, and a runtime **prose gate** that
+compares the composed body against every withheld value and aborts with exit 3,
+writing nothing, if any 16-character window of one appears. The gate has been
+proven to fire by deliberately adding `snoozeReason` to the allowlist in a copy.
+
+### An expired snooze is not published
+
+`snoozedUntil` is the only mark that points at the future, so it is the only one
+that can go stale: the day after "Snoozed until 2026-09-22" that comment asserts
+a filing state that has lapsed, on a public card, maintained by a bot. Once the
+instant passes, the fact is **dropped**; if that leaves nothing true, the comment
+is **deleted** — the same path as a cleared mark, and it needs no `--sweep`
+because the mark is still in `user-state.json` for the reconciler to find.
+
+The other three marks are historical — "marked done on", "handed to an agent on",
+"dispatched on" — and are as true next month as the day they happened, so they
+never expire.
+
+The boundary is the **exact instant**, reusing the panel's own test
+(`snoozeState`: `expired: until <= now`), not end-of-day. The mirror must never
+contradict the panel; `snoozedUntil` is computed as *click time + N days* so
+there is no day boundary to honour; and no user timezone is recorded anywhere, so
+an end-of-day rule would have to guess one. The body prints the date only
+(minimal disclosure), so on the final day the comment disappears part-way through
+a day it still names — correct, because the filing really has lapsed, and the
+panel remains the precise view, showing `2026-09-22 20:09Z`.
+
+> **If you ever implement `lastCommentAt`**, exclude comments carrying the
+> `ghd-mirror` marker. The panel already treats a snooze as cancelled when a
+> comment postdates it; that rule is inert today because the fetcher never
+> populates the field. Wire it up naively and the mirror's own comment cancels
+> every snooze it publishes, then deletes itself, then reposts — a flap on a
+> public card every 30 minutes.
+
+### Why a reconciler and not a button
+
+The comment is not posted by the panel's snooze button. This runtime delivers a
+lick more than once, so a write in the button path double-posts, and it would do
+nothing while the panel is closed. Instead the program compares desired state
+(your marks) with observed state (the card) and issues only the difference:
+
+| state | action |
+| --- | --- |
+| marks, no mirror | create (`gh issue comment`, which serves PRs too) |
+| marks, mirror differs | `PATCH /repos/:o/:r/issues/comments/:id` (no edit verb exists in `gh`) |
+| marks, mirror matches | nothing — no request |
+| no marks, mirror present | delete |
+
+Running it twice is indistinguishable from running it once, so a crash mid-write,
+a re-run and a replayed lick all converge. **There is no new local state**: the
+mirror is found by the invisible `<!-- ghd-mirror:v1 -->` marker plus the author
+login, read back from the API, so nothing can drift out of sync. Every write is
+verified by re-reading the card, because `gh` here can exit 0 while failing.
+
+The body is a **pure function of the marks** — deliberately no "last synced"
+timestamp, or a 30-minute poller would PATCH it for ever and notify everyone
+watching each time.
+
+Only marks are mirrored. Stage, CI and review state are derived and would rot on
+a public card unattended; attachments belong to the `github` skill.
+
+### The sweep, and what it costs
+
+When you clear the last mark the panel deletes the whole entry, so nothing local
+remembers where that mirror went — the common case, since a mark cleared at
+10:05 is already gone when the poller runs at 10:30. Finding those orphans needs
+a remote sweep, bounded to snapshot records with `commentsCount > 0` minus the
+marked keys. It is **off by default** because it was measured:
+
+| run | requests | wall |
+| --- | --- | --- |
+| marks only (5 marks) | 6 | 27 s |
+| with `--sweep` (87 candidate cards of 108) | 93 | 367 s |
+
+13.6x the cost, six minutes of a thirty-minute interval, to catch a rare event
+whose cost when missed is one stale "snoozed until …" comment. Re-measure if the
+repo set grows: it is linear in commented cards and latency-bound at ~4 s/GET.
+
+### Turning it on in the poller
+
+The poller runs the reconciler after each successful fetch, but **it is dormant
+unless asked**:
+
+```
+jshd start -n github-dashboard-poll --enable --restart on-failure \
+  --env GHD_MIRROR=dry ...          # reconcile and log the plan, write nothing
+  --env GHD_MIRROR=live ...         # write
+  --env GHD_MIRROR_SWEEP_EVERY=48   # sweep every N successful cycles (default 48 = daily)
+```
+
+Off by default on purpose: enabling it means an unattended unit writes to public
+cards, which should be a deliberate act by whoever starts the unit rather than a
+consequence of deploying a file. A mirror failure never fails the cycle — the
+fetch is the unit's job, and a GitHub hiccup must not trip the fetch backoff.
+
+Writes are confined to the repos in your config; a mark for any other repo is
+refused before a single request is made.
+
 ## Build
 
 The panel is a **built artifact**. Its markdown renderer is bundled from
@@ -161,6 +363,40 @@ it works.
 - Nothing the panel does writes to GitHub. Its only writes are
   `data/user-state.json` (the operator's marks) and licks to the cone.
 
+## Suggested follow-ups: which kinds get a control
+
+The fetcher's agents attach `actions` to a record, each with a `kind`. The panel
+renders one control per action, and **a kind must be registered to get one**:
+
+| kind | glyph | control | lick |
+| --- | --- | --- | --- |
+| `nudge` | `send` | Dispatch this instruction | `do-nudge` |
+| `clarify` | `message-circle-question` | Raise with the cone | `clarify-question` |
+| `approve` | `scan-eye` | Ask for a safety check | `review-before-approval` |
+| anything else | `circle-dashed` | **none** — an inert chip | none |
+
+`approve` actions in live data say "Approve and merge" and "Merge when ready".
+The panel performs no GitHub writes, and handing the write to an agent would be
+worse rather than better — it moves an irreversible act further from the person
+answerable for it. So the button asks for the work that stops SHORT of the write:
+read the item now and report whether approving looks safe. That is worth asking
+precisely because the grounds attached to the action ("All 2 CI checks passing")
+come from a snapshot, and a stale CI summary is a mistake this project has
+already made once. **The lick is named for what it asks** —
+`review-before-approval`, never `do-approve`: a name that reads as an imperative
+to approve is how a mislabelled instruction becomes an unwanted write at the
+other end, and the note repeats the prohibition in words.
+
+An **unregistered kind renders inert**: a chip saying "No action for “<kind>” in
+this panel", no button, no listener, nothing dispatchable. This is the important
+half. Before this, the code asked `kind === 'clarify' ? … : …` in four places, so
+every unrecognised kind fell through to NUDGE — wrong glyph, wrong copy, and a
+`do-nudge` lick that offered to dispatch a GitHub write as an instruction. The
+kinds are model-generated, so the next unknown one is a matter of time; the
+fall-through now points at "do nothing and say so".
+
+Adding a kind is one entry in `ACTION_KINDS` and no other edit.
+
 ## Known problems
 
 - **An action's evidence can be false.** Follow-up actions are generated with the
@@ -184,6 +420,8 @@ assets/sprinkle/github-dashboard.shtml    the panel (BUILT — see Build)
 assets/sprinkle/data-example/             synthetic snapshot + version, 4 records
 scripts/build.sh                          the one build command
 scripts/fetch-snapshot.mjs                the fetcher (GitHub + optional bb)
+scripts/poll.jsh                          the durable poller unit (jshd)
+scripts/mirror-comments.mjs               mirrors your marks onto the card (opt-in)
 src/markdown.js                           sanitising markdown renderer (bundled)
 src/vendor/                               pinned marked + DOMPurify, with hashes
 tests/xss-fixtures.json                   66 acceptance fixtures (data)
