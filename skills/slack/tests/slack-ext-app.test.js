@@ -1,7 +1,7 @@
 // Tests for the `app` manifest subcommands of skills/slack/scripts/slack-ext.jsh
 //
 // Run with:
-//   node --test skills/slack/tests/slack-ext-app.test.js
+//   tst <path-to-this-file>
 //
 // Same strategy as slack-ext.test.js: compile the REAL source (dropping the
 // trailing `await main()` so it does not auto-execute), inject mock sliccy:*
@@ -15,13 +15,15 @@
 //
 // The mutation matrix verified against these tests is recorded at the bottom.
 
-const assert = require('node:assert/strict');
-const test = require('node:test');
-const fs = require('node:fs');
-const path = require('node:path');
-const { createRequire } = require('node:module');
+import test, { is, ok, not, fail } from 'tst';
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+import * as _argvMod from '../scripts/argv.js';
+import * as _manifestDiffMod from '../scripts/manifest-diff.js';
+import * as _gridMod from '../scripts/slack-ext-grid.js';
 
-const SCRIPT = path.resolve(__dirname, '../scripts/slack-ext.jsh');
+const SCRIPT = fileURLToPath(new URL('../scripts/slack-ext.jsh', import.meta.url));
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 
 // The exact manifest observed live on 2026-09-18: 14 leaf fields, 709 bytes.
@@ -229,16 +231,26 @@ async function load(opts) {
     fs: fsStub,
   };
 
-  // Relative specifiers (./argv.js, ./manifest-diff.js) load the REAL extracted
-  // module from disk so the node:test suite exercises the same code as production.
-  const scriptRequire = createRequire(SCRIPT);
+  // Relative specifiers (./argv.js, ./manifest-diff.js, ./slack-ext-grid.js) are
+  // pre-loaded via static ESM imports above (the tst realm resolves imports statically
+  // but its createRequire shim does not resolve relative file-system paths).
+  const relativeModules = {
+    './argv.js': () => (_argvMod.default || _argvMod),
+    './manifest-diff.js': () => (_manifestDiffMod.default || _manifestDiffMod),
+    './slack-ext-grid.js': () => (_gridMod.default || _gridMod)
+  };
+  const scriptRequire = (id) => {
+    const key = id.replace(/^\.\.\/(scripts\/)?/, './');
+    if (Object.prototype.hasOwnProperty.call(relativeModules, key)) return relativeModules[key]();
+    throw new Error('unexpected relative require(' + id + ') — add a static import');
+  };
   const mockRequire = (id) => {
     if (Object.prototype.hasOwnProperty.call(mocks, id)) return mocks[id];
     if (id.startsWith('./') || id.startsWith('../')) return scriptRequire(id);
     throw new Error('unexpected require(' + id + ')');
   };
 
-  let source = fs.readFileSync(SCRIPT, 'utf8');
+  let source = readFileSync(SCRIPT, 'utf8');
   // Anchor on the actual trailer (`try { await main(); }`), NOT on the first
   // top-level `try {` in the file. The greedy form truncated the module at the
   // first top-level try block, which silently discarded ~1800 lines and made
@@ -326,7 +338,7 @@ return {
     // The manifest actually put on the wire, parsed back from the form body.
     sentManifest: () => {
       const call = httpCalls.find((c) => c.method === 'apps.manifest.update');
-      assert.ok(call, 'expected an apps.manifest.update call');
+      ok(call, 'expected an apps.manifest.update call');
       return JSON.parse(call.params.manifest);
     },
   };
@@ -339,8 +351,8 @@ async function expectDie(fn) {
   } catch (e) {
     err = e;
   }
-  assert.ok(err, 'expected the command to exit with an error');
-  assert.equal(err.name, 'NodeExitError', 'expected NodeExitError, got: ' + err.message);
+  ok(err, 'expected the command to exit with an error');
+  is(err.name, 'NodeExitError', 'expected NodeExitError, got: ' + err.message);
   return err;
 }
 
@@ -354,13 +366,13 @@ test('manifestLeaves flattens the live fixture to its 14 leaf fields', async () 
   const h = await load({ argv: ['app', 'show', APP_ID] });
   const leaves = h.mod.manifestLeaves(LIVE_MANIFEST, '', {});
   const keys = Object.keys(leaves).sort();
-  assert.equal(keys.length, 14, 'fixture has 14 leaves, got: ' + keys.join(','));
-  assert.ok(keys.includes('/display_information/description'));
-  assert.ok(keys.includes('/oauth_config/scopes/bot'));
-  assert.ok(keys.includes('/settings/event_subscriptions/bot_events'));
-  assert.ok(keys.includes('/settings/is_mcp_enabled'));
+  is(keys.length, 14, 'fixture has 14 leaves, got: ' + keys.join(','));
+  ok(keys.includes('/display_information/description'));
+  ok(keys.includes('/oauth_config/scopes/bot'));
+  ok(keys.includes('/settings/event_subscriptions/bot_events'));
+  ok(keys.includes('/settings/is_mcp_enabled'));
   // An array is ONE leaf: apps.manifest.update replaces arrays wholesale.
-  assert.deepEqual(leaves['/settings/event_subscriptions/bot_events'], [
+  is(leaves['/settings/event_subscriptions/bot_events'], [
     'channel_created',
     'team_join',
   ]);
@@ -368,9 +380,9 @@ test('manifestLeaves flattens the live fixture to its 14 leaf fields', async () 
 
 test('pointerJoin escapes ~ and / per RFC 6901', async () => {
   const h = await load({ argv: ['app', 'show', APP_ID] });
-  assert.equal(h.mod.pointerJoin('', 'settings'), '/settings');
-  assert.equal(h.mod.pointerJoin('/a', 'b/c'), '/a/b~1c');
-  assert.equal(h.mod.pointerJoin('/a', 'b~c'), '/a/b~0c');
+  is(h.mod.pointerJoin('', 'settings'), '/settings');
+  is(h.mod.pointerJoin('/a', 'b/c'), '/a/b~1c');
+  is(h.mod.pointerJoin('/a', 'b~c'), '/a/b~0c');
 });
 
 // ── diff: deletions are the whole point ───────────────────────────────────────
@@ -382,13 +394,13 @@ test('diff reports a missing display_information.description as a DELETION', asy
 
   const diff = h.mod.diffManifests(LIVE_MANIFEST, candidate);
 
-  assert.deepEqual(pointers(diff.deletions), ['/display_information/description']);
-  assert.equal(diff.deletions[0].value, LIVE_MANIFEST.display_information.description);
+  is(pointers(diff.deletions), ['/display_information/description']);
+  is(diff.deletions[0].value, LIVE_MANIFEST.display_information.description);
   // A deletion must NOT be reported as a modification: omitting a field DELETES
   // it (measured live 2026-09-18), which is a different hazard entirely.
-  assert.equal(diff.modifications.length, 0, 'must not be counted as a modification');
-  assert.equal(diff.additions.length, 0);
-  assert.equal(diff.changed, true);
+  is(diff.modifications.length, 0, 'must not be counted as a modification');
+  is(diff.additions.length, 0);
+  is(diff.changed, true);
 });
 
 test('diff reports bot_events shrinking 2 -> 1 as a DELETION of the removed entry', async () => {
@@ -400,12 +412,12 @@ test('diff reports bot_events shrinking 2 -> 1 as a DELETION of the removed entr
 
   // The team_join case: arrays are REPLACED WHOLESALE, so a shrunk array is a
   // deletion of the dropped entries — not a modification of the array.
-  assert.equal(diff.deletions.length, 1);
-  assert.equal(diff.deletions[0].pointer, '/settings/event_subscriptions/bot_events');
-  assert.equal(diff.deletions[0].value, 'team_join');
-  assert.equal(diff.deletions[0].entry, true, 'deletion must be marked as an array entry');
-  assert.equal(diff.modifications.length, 0, 'array shrinkage is not a modification');
-  assert.equal(diff.additions.length, 0);
+  is(diff.deletions.length, 1);
+  is(diff.deletions[0].pointer, '/settings/event_subscriptions/bot_events');
+  is(diff.deletions[0].value, 'team_join');
+  is(diff.deletions[0].entry, true, 'deletion must be marked as an array entry');
+  is(diff.modifications.length, 0, 'array shrinkage is not a modification');
+  is(diff.additions.length, 0);
 });
 
 test('diff reports a dropped bot scope as a DELETION of that scope entry', async () => {
@@ -417,19 +429,19 @@ test('diff reports a dropped bot scope as a DELETION of that scope entry', async
 
   const diff = h.mod.diffManifests(LIVE_MANIFEST, candidate);
 
-  assert.equal(diff.deletions.length, 1);
-  assert.equal(diff.deletions[0].pointer, '/oauth_config/scopes/bot');
-  assert.equal(diff.deletions[0].value, 'users:read.email');
-  assert.equal(diff.modifications.length, 0);
+  is(diff.deletions.length, 1);
+  is(diff.deletions[0].pointer, '/oauth_config/scopes/bot');
+  is(diff.deletions[0].value, 'users:read.email');
+  is(diff.modifications.length, 0);
 });
 
 test('diff on an identical manifest reports NO changes', async () => {
   const h = await load({ argv: ['app', 'diff', APP_ID] });
   const diff = h.mod.diffManifests(LIVE_MANIFEST, clone(LIVE_MANIFEST));
-  assert.equal(diff.deletions.length, 0);
-  assert.equal(diff.additions.length, 0);
-  assert.equal(diff.modifications.length, 0);
-  assert.equal(diff.changed, false);
+  is(diff.deletions.length, 0);
+  is(diff.additions.length, 0);
+  is(diff.modifications.length, 0);
+  is(diff.changed, false);
 });
 
 test('diff separates additions and modifications from deletions', async () => {
@@ -441,16 +453,16 @@ test('diff separates additions and modifications from deletions', async () => {
 
   const diff = h.mod.diffManifests(LIVE_MANIFEST, candidate);
 
-  assert.equal(diff.deletions.length, 0, 'nothing was removed');
-  assert.deepEqual(pointers(diff.additions), ['/settings/event_subscriptions/bot_events']);
-  assert.equal(diff.additions[0].value, 'app_mention');
-  assert.deepEqual(pointers(diff.modifications).sort(), [
+  is(diff.deletions.length, 0, 'nothing was removed');
+  is(pointers(diff.additions), ['/settings/event_subscriptions/bot_events']);
+  is(diff.additions[0].value, 'app_mention');
+  is(pointers(diff.modifications).sort(), [
     '/display_information/name',
     '/settings/socket_mode_enabled',
   ]);
   const socket = diff.modifications.find((m) => m.pointer === '/settings/socket_mode_enabled');
-  assert.equal(socket.from, false);
-  assert.equal(socket.to, true);
+  is(socket.from, false);
+  is(socket.to, true);
 });
 
 test('diff reports every stripped leaf of a display_information-only partial manifest', async () => {
@@ -462,14 +474,14 @@ test('diff reports every stripped leaf of a display_information-only partial man
   // This payload VALIDATES ok=true against Slack, which is exactly why diff has
   // to enumerate the damage: bot user, all scopes and all events would be gone.
   const ptrs = pointers(diff.deletions);
-  assert.ok(ptrs.includes('/features/bot_user/display_name'));
-  assert.ok(ptrs.includes('/features/bot_user/always_online'));
-  assert.ok(ptrs.includes('/oauth_config/scopes/bot'));
-  assert.ok(ptrs.includes('/settings/event_subscriptions/request_url'));
-  assert.ok(ptrs.includes('/settings/event_subscriptions/bot_events'));
-  assert.ok(ptrs.includes('/settings/is_mcp_enabled'));
-  assert.equal(diff.deletions.length, 11, 'all 11 non-display_information leaves');
-  assert.equal(diff.modifications.length, 0);
+  ok(ptrs.includes('/features/bot_user/display_name'));
+  ok(ptrs.includes('/features/bot_user/always_online'));
+  ok(ptrs.includes('/oauth_config/scopes/bot'));
+  ok(ptrs.includes('/settings/event_subscriptions/request_url'));
+  ok(ptrs.includes('/settings/event_subscriptions/bot_events'));
+  ok(ptrs.includes('/settings/is_mcp_enabled'));
+  is(diff.deletions.length, 11, 'all 11 non-display_information leaves');
+  is(diff.modifications.length, 0);
 });
 
 // ── diff rendering ────────────────────────────────────────────────────────────
@@ -486,14 +498,14 @@ test('app diff output flags deletions distinctly and warns they would be REMOVED
   await h.mod.cmdAppDiff();
 
   const text = h.text();
-  assert.match(text, /DELETIONS \(2\)/, 'deletions must have their own labelled section');
-  assert.match(text, /- \/display_information\/description/);
-  assert.match(text, /- \/settings\/event_subscriptions\/bot_events/);
-  assert.match(text, /team_join/, 'the dropped array entry must be named');
-  assert.match(text, /would be DELETED/, 'must warn loudly about deletions');
-  assert.match(text, /REPLACED WHOLESALE/, 'must explain array replacement');
+  ok(/DELETIONS \(2\)/.test(text), 'deletions must have their own labelled section');
+  ok(/- \/display_information\/description/.test(text), 'must match /- \/display_information\/description/');
+  ok(/- \/settings\/event_subscriptions\/bot_events/.test(text), 'must match /- \/settings\/event_subscriptions\/bot_events/');
+  ok(/team_join/.test(text), 'the dropped array entry must be named');
+  ok(/would be DELETED/.test(text), 'must warn loudly about deletions');
+  ok(/REPLACED WHOLESALE/.test(text), 'must explain array replacement');
   // The candidate is only ever compared against a fresh live export.
-  assert.deepEqual(h.methods(), ['apps.manifest.export']);
+  is(h.methods(), ['apps.manifest.export']);
 });
 
 test('app diff on an identical manifest prints no-changes and no deletion warning', async () => {
@@ -504,9 +516,9 @@ test('app diff on an identical manifest prints no-changes and no deletion warnin
   await h.mod.cmdAppDiff();
 
   const text = h.text();
-  assert.match(text, /No changes/i);
-  assert.doesNotMatch(text, /DELETIONS/);
-  assert.doesNotMatch(text, /would be DELETED/);
+  ok(/No changes/i.test(text), 'must match /No changes/i');
+  ok(!(/DELETIONS/.test(text)), 'must not match /DELETIONS/');
+  ok(!(/would be DELETED/.test(text)), 'must not match /would be DELETED/');
 });
 
 test('app diff --json emits separate deletions/additions/modifications buckets', async () => {
@@ -521,10 +533,10 @@ test('app diff --json emits separate deletions/additions/modifications buckets',
   await h.mod.cmdAppDiff();
 
   const payload = JSON.parse(h.text());
-  assert.deepEqual(pointers(payload.deletions), ['/settings/event_subscriptions/request_url']);
-  assert.deepEqual(pointers(payload.modifications), ['/settings/is_mcp_enabled']);
-  assert.equal(payload.additions.length, 0);
-  assert.equal(payload.changed, true);
+  is(pointers(payload.deletions), ['/settings/event_subscriptions/request_url']);
+  is(pointers(payload.modifications), ['/settings/is_mcp_enabled']);
+  is(payload.additions.length, 0);
+  is(payload.changed, true);
 });
 
 test('app diff notes the measured background_color exception when it is dropped', async () => {
@@ -538,16 +550,16 @@ test('app diff notes the measured background_color exception when it is dropped'
   await h.mod.cmdAppDiff();
 
   const text = h.text();
-  assert.match(text, /- \/display_information\/background_color/);
-  assert.match(text, /can never be null/, 'the one measured exception must be called out');
-  assert.match(text, /do not generalise/i);
+  ok(/- \/display_information\/background_color/.test(text), 'must match /- \/display_information\/background_color/');
+  ok(/can never be null/.test(text), 'the one measured exception must be called out');
+  ok(/do not generalise/i.test(text), 'must match /do not generalise/i');
 });
 
 test('app diff without --manifest dies with a usage message and calls nothing', async () => {
   const h = await load({ argv: ['app', 'diff', APP_ID] });
   const err = await expectDie(() => h.mod.cmdAppDiff());
-  assert.match(err.message, /--manifest/);
-  assert.equal(h.httpCalls.length, 0, 'no API call before the arguments are valid');
+  ok(/--manifest/.test(err.message), 'must match /--manifest/');
+  is(h.httpCalls.length, 0, 'no API call before the arguments are valid');
 });
 
 // ── show ──────────────────────────────────────────────────────────────────────
@@ -558,14 +570,14 @@ test('app show renders all 6 bot scopes and both bot events', async () => {
 
   const text = h.text();
   for (const scope of LIVE_MANIFEST.oauth_config.scopes.bot) {
-    assert.match(text, new RegExp(scope.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    ok(new RegExp(scope.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).test(text), 'scope ' + scope + ' must appear in output');
   }
-  assert.match(text, /Bot scopes \(6\)/);
-  assert.match(text, /Event subscriptions \(2\)/);
-  assert.match(text, /channel_created/);
-  assert.match(text, /team_join/);
-  assert.equal(h.methods().length, 1);
-  assert.equal(h.methods()[0], 'apps.manifest.export');
+  ok(/Bot scopes \(6\)/.test(text), 'must match /Bot scopes \(6\)/');
+  ok(/Event subscriptions \(2\)/.test(text), 'must match /Event subscriptions \(2\)/');
+  ok(/channel_created/.test(text), 'must match /channel_created/');
+  ok(/team_join/.test(text), 'must match /team_join/');
+  is(h.methods().length, 1);
+  is(h.methods()[0], 'apps.manifest.export');
 });
 
 test('app show renders name, bot user, request URL and the notable booleans', async () => {
@@ -573,13 +585,13 @@ test('app show renders name, bot user, request URL and the notable booleans', as
   await h.mod.cmdAppShow();
 
   const text = h.text();
-  assert.match(text, /AEM Ops Automation/);
-  assert.match(text, /slack-automation-relay\.adobeaem\.workers\.dev/);
-  assert.match(text, /Socket mode/);
-  assert.match(text, /Org deploy/);
-  assert.match(text, /MCP/);
-  assert.match(text, /PKCE/);
-  assert.match(text, new RegExp(APP_ID));
+  ok(/AEM Ops Automation/.test(text), 'must match /AEM Ops Automation/');
+  ok(/slack-automation-relay\.adobeaem\.workers\.dev/.test(text), 'must match /slack-automation-relay\.adobeaem\.workers\.dev/');
+  ok(/Socket mode/.test(text), 'must match /Socket mode/');
+  ok(/Org deploy/.test(text), 'must match /Org deploy/');
+  ok(/MCP/.test(text), 'must match /MCP/');
+  ok(/PKCE/.test(text), 'must match /PKCE/');
+  ok(new RegExp(APP_ID).test(text), 'must match new RegExp(APP_ID)');
 });
 
 test('app show handles a manifest with no bot user and no events without crashing', async () => {
@@ -592,9 +604,9 @@ test('app show handles a manifest with no bot user and no events without crashin
   await h.mod.cmdAppShow();
 
   const text = h.text();
-  assert.match(text, /Bare App/);
-  assert.match(text, /Bot scopes \(0\)/);
-  assert.match(text, /no bot user/i);
+  ok(/Bare App/.test(text), 'must match /Bare App/');
+  ok(/Bot scopes \(0\)/.test(text), 'must match /Bot scopes \(0\)/');
+  ok(/no bot user/i.test(text), 'must match /no bot user/i');
 });
 
 // ── export ────────────────────────────────────────────────────────────────────
@@ -604,20 +616,20 @@ test('app export pretty-prints the live manifest', async () => {
   await h.mod.cmdAppExport();
 
   const parsed = JSON.parse(h.text());
-  assert.deepEqual(parsed, LIVE_MANIFEST);
-  assert.deepEqual(h.methods(), ['apps.manifest.export']);
-  assert.equal(h.writes.length, 0, 'no file written without --out');
+  is(parsed, LIVE_MANIFEST);
+  is(h.methods(), ['apps.manifest.export']);
+  is(h.writes.length, 0, 'no file written without --out');
 });
 
 test('app export --out writes the manifest to the file and reports the leaf count', async () => {
   const h = await load({ argv: ['app', 'export', APP_ID, '--out=/tmp/out.json'] });
   await h.mod.cmdAppExport();
 
-  assert.equal(h.writes.length, 1);
-  assert.equal(h.writes[0].path, '/tmp/out.json');
-  assert.deepEqual(JSON.parse(h.writes[0].contents), LIVE_MANIFEST);
-  assert.match(h.text(), /Leaves/);
-  assert.match(h.text(), /14/);
+  is(h.writes.length, 1);
+  is(h.writes[0].path, '/tmp/out.json');
+  is(JSON.parse(h.writes[0].contents), LIVE_MANIFEST);
+  ok(/Leaves/.test(h.text()), 'must match /Leaves/');
+  ok(/14/.test(h.text()), 'must match /14/');
 });
 
 test('app export dies when the response carries no manifest object', async () => {
@@ -626,7 +638,7 @@ test('app export dies when the response carries no manifest object', async () =>
     responses: { 'apps.manifest.export': { ok: true } },
   });
   const err = await expectDie(() => h.mod.cmdAppExport());
-  assert.match(err.message, /no manifest/i);
+  ok(/no manifest/i.test(err.message), 'must match /no manifest/i');
 });
 
 // ── validate ──────────────────────────────────────────────────────────────────
@@ -660,12 +672,12 @@ test('app validate renders each error with its JSON pointer', async () => {
 
   const err = await expectDie(() => h.mod.cmdAppValidate());
   const text = h.text();
-  assert.match(text, /illegal_bot_scopes/);
-  assert.match(text, /Illegal bot scopes found/);
+  ok(/illegal_bot_scopes/.test(text), 'must match /illegal_bot_scopes/');
+  ok(/Illegal bot scopes found/.test(text), 'must match /Illegal bot scopes found/');
   // The pointer is the only thing that says WHERE the problem is.
-  assert.match(text, /pointer/i, 'the pointer must be labelled in the output');
-  assert.match(text, /\/oauth_config\/scopes\/bot/, 'the JSON pointer itself must be printed');
-  assert.match(err.message, /rejected by apps\.manifest\.validate/);
+  ok(/pointer/i.test(text), 'the pointer must be labelled in the output');
+  ok(/\/oauth_config\/scopes\/bot/.test(text), 'the JSON pointer itself must be printed');
+  ok(/rejected by apps\.manifest\.validate/.test(err.message), 'must match /rejected by apps\.manifest\.validate/');
 });
 
 test('app validate renders multiple errors each with its own pointer', async () => {
@@ -689,9 +701,9 @@ test('app validate renders multiple errors each with its own pointer', async () 
 
   await expectDie(() => h.mod.cmdAppValidate());
   const text = h.text();
-  assert.match(text, /INVALID \(2 error\(s\)\)/);
-  assert.match(text, /\/features\/bot_user/);
-  assert.match(text, /\/settings\/event_subscriptions/);
+  ok(/INVALID \(2 error\(s\)\)/.test(text), 'must match /INVALID \(2 error\(s\)\)/');
+  ok(/\/features\/bot_user/.test(text), 'must match /\/features\/bot_user/');
+  ok(/\/settings\/event_subscriptions/.test(text), 'must match /\/settings\/event_subscriptions/');
 });
 
 test('app validate sends the manifest as a JSON string with the app_id', async () => {
@@ -701,11 +713,11 @@ test('app validate sends the manifest as a JSON string with the app_id', async (
   });
   await h.mod.cmdAppValidate();
 
-  assert.deepEqual(h.methods(), ['apps.manifest.validate']);
+  is(h.methods(), ['apps.manifest.validate']);
   const call = h.httpCalls[0];
-  assert.equal(call.params.app_id, APP_ID);
-  assert.equal(typeof call.params.manifest, 'string', 'manifest must be a JSON string');
-  assert.deepEqual(JSON.parse(call.params.manifest), LIVE_MANIFEST);
+  is(call.params.app_id, APP_ID);
+  is(typeof call.params.manifest, 'string', 'manifest must be a JSON string');
+  is(JSON.parse(call.params.manifest), LIVE_MANIFEST);
 });
 
 test('app validate on a valid manifest still warns that valid does not mean safe', async () => {
@@ -716,10 +728,10 @@ test('app validate on a valid manifest still warns that valid does not mean safe
   await h.mod.cmdAppValidate();
 
   const text = h.text();
-  assert.match(text, /Manifest valid/);
-  assert.match(text, /VALID DOES NOT MEAN SAFE/);
-  assert.match(text, /partial manifest validates ok=true/i);
-  assert.match(text, /app diff/, 'must point at the diff command');
+  ok(/Manifest valid/.test(text), 'must match /Manifest valid/');
+  ok(/VALID DOES NOT MEAN SAFE/.test(text), 'must match /VALID DOES NOT MEAN SAFE/');
+  ok(/partial manifest validates ok=true/i.test(text), 'must match /partial manifest validates ok=true/i');
+  ok(/app diff/.test(text), 'must point at the diff command');
 });
 
 test('app validate dies on a manifest file that is not valid JSON', async () => {
@@ -728,8 +740,8 @@ test('app validate dies on a manifest file that is not valid JSON', async () => 
     files: { '/tmp/broken.json': '{ not json' },
   });
   const err = await expectDie(() => h.mod.cmdAppValidate());
-  assert.match(err.message, /not valid JSON/);
-  assert.equal(h.httpCalls.length, 0);
+  ok(/not valid JSON/.test(err.message), 'must match /not valid JSON/');
+  is(h.httpCalls.length, 0);
 });
 
 test('app validate dies when the manifest file is missing', async () => {
@@ -737,8 +749,8 @@ test('app validate dies when the manifest file is missing', async () => {
     argv: ['app', 'validate', APP_ID, '--manifest=/tmp/absent.json'],
   });
   const err = await expectDie(() => h.mod.cmdAppValidate());
-  assert.match(err.message, /Could not read manifest file/);
-  assert.equal(h.httpCalls.length, 0);
+  ok(/Could not read manifest file/.test(err.message), 'must match /Could not read manifest file/');
+  is(h.httpCalls.length, 0);
 });
 
 // ── HTTP 200 + ok:false is a FAILURE ──────────────────────────────────────────
@@ -754,8 +766,8 @@ test('ok:false with HTTP 200 fails the export even when a manifest is present', 
     },
   });
   const err = await expectDie(() => h.mod.cmdAppShow());
-  assert.match(err.message, /ratelimited/, 'the Slack error code must be surfaced');
-  assert.doesNotMatch(h.text(), /Bot scopes/, 'nothing may be rendered from a failed response');
+  ok(/ratelimited/.test(err.message), 'the Slack error code must be surfaced');
+  ok(!(/Bot scopes/.test(h.text())), 'nothing may be rendered from a failed response');
 });
 
 test('ok:false invalid_auth with HTTP 200 is reported as a token failure', async () => {
@@ -765,8 +777,8 @@ test('ok:false invalid_auth with HTTP 200 is reported as a token failure', async
     responses: { 'apps.manifest.export': { ok: false, error: 'invalid_auth' } },
   });
   const err = await expectDie(() => h.mod.cmdAppExport());
-  assert.match(err.message, /invalid_auth/);
-  assert.match(err.message, /SLACK_APP_CONFIG_TOKEN/, 'must say how to supply a good token');
+  ok(/invalid_auth/.test(err.message), 'must match /invalid_auth/');
+  ok(/SLACK_APP_CONFIG_TOKEN/.test(err.message), 'must say how to supply a good token');
 });
 
 test('ok:false with HTTP 200 fails validate even when errors[] is absent', async () => {
@@ -777,15 +789,15 @@ test('ok:false with HTTP 200 fails validate even when errors[] is absent', async
     responses: { 'apps.manifest.validate': { ok: false, error: 'app_not_found' } },
   });
   const err = await expectDie(() => h.mod.cmdAppValidate());
-  assert.match(err.message, /app_not_found|app id/i);
-  assert.doesNotMatch(h.text(), /Manifest valid/);
+  ok(/app_not_found|app id/i.test(err.message), 'must match /app_not_found|app id/i');
+  ok(!(/Manifest valid/.test(h.text())), 'must not match /Manifest valid/');
 });
 
 test('every app request is read with raw:true so body.ok is available', async () => {
   const h = await load({ argv: ['app', 'export', APP_ID] });
   await h.mod.cmdAppExport();
-  assert.equal(h.httpCalls[0].raw, true);
-  assert.equal(h.httpCalls[0].baseUrl, 'https://slack.com/api');
+  is(h.httpCalls[0].raw, true);
+  is(h.httpCalls[0].baseUrl, 'https://slack.com/api');
 });
 
 // ── wire format and credential separation ─────────────────────────────────────
@@ -796,48 +808,48 @@ test('app requests are form-encoded and bearer-authenticated with the config tok
 
   const call = h.httpCalls[0];
   const ct = call.headers['content-type'] || call.headers['Content-Type'];
-  assert.match(String(ct), /application\/x-www-form-urlencoded/);
-  assert.equal(call.body, 'app_id=' + APP_ID, 'body must be form-encoded, not JSON');
-  assert.equal(call.token, TEST_TOKEN, 'the app configuration token must authenticate the call');
+  ok(/application\/x-www-form-urlencoded/.test(String(ct)), 'must match /application\/x-www-form-urlencoded/');
+  is(call.body, 'app_id=' + APP_ID, 'body must be form-encoded, not JSON');
+  is(call.token, TEST_TOKEN, 'the app configuration token must authenticate the call');
 });
 
 test('app commands never touch the browser session (no xoxc fallback)', async () => {
   const h = await load({ argv: ['app', 'show', APP_ID] });
   await h.mod.cmdAppShow();
-  assert.deepEqual(h.browserUses, [], 'no browser/tab/localStorage access from app commands');
+  is(h.browserUses, [], 'no browser/tab/localStorage access from app commands');
 });
 
 test('getAppConfigToken prefers --token, then env, then skill config', async () => {
   const fromFlag = await load({ argv: ['app', 'show', APP_ID, '--token=xoxe.xoxp-flag'] });
-  assert.equal(await fromFlag.mod.getAppConfigToken(), 'xoxe.xoxp-flag');
+  is(await fromFlag.mod.getAppConfigToken(), 'xoxe.xoxp-flag');
 
   const fromEnv = await load({ argv: ['app', 'show', APP_ID] });
-  assert.equal(await fromEnv.mod.getAppConfigToken(), TEST_TOKEN);
+  is(await fromEnv.mod.getAppConfigToken(), TEST_TOKEN);
 
   const fromConfig = await load({
     argv: ['app', 'show', APP_ID],
     token: null,
     config: { appConfigToken: 'xoxe.xoxp-from-config' },
   });
-  assert.equal(await fromConfig.mod.getAppConfigToken(), 'xoxe.xoxp-from-config');
+  is(await fromConfig.mod.getAppConfigToken(), 'xoxe.xoxp-from-config');
 });
 
 test('getAppConfigToken refuses a bot token and a session token', async () => {
   const bot = await load({ argv: ['app', 'show', APP_ID], token: 'xoxb-1234' });
   const botErr = await expectDie(() => bot.mod.getAppConfigToken());
-  assert.match(botErr.message, /BOT token/i);
+  ok(/BOT token/i.test(botErr.message), 'must match /BOT token/i');
 
   const session = await load({ argv: ['app', 'show', APP_ID], token: 'xoxc-1234' });
   const sessionErr = await expectDie(() => session.mod.getAppConfigToken());
-  assert.match(sessionErr.message, /SESSION token/i);
+  ok(/SESSION token/i.test(sessionErr.message), 'must match /SESSION token/i');
 });
 
 test('getAppConfigToken dies with the manual minting steps when nothing is set', async () => {
   const h = await load({ argv: ['app', 'show', APP_ID], token: null });
   const err = await expectDie(() => h.mod.getAppConfigToken());
-  assert.match(err.message, /No app configuration token/);
-  assert.match(err.message, /api\.slack\.com\/apps/);
-  assert.match(err.message, /Generate Token/);
+  ok(/No app configuration token/.test(err.message), 'must match /No app configuration token/');
+  ok(/api\.slack\.com\/apps/.test(err.message), 'must match /api\.slack\.com\/apps/');
+  ok(/Generate Token/.test(err.message), 'must match /Generate Token/');
 });
 
 // ── create/delete are unreachable ─────────────────────────────────────────────
@@ -848,13 +860,13 @@ test('manifestApi refuses apps.manifest.create and apps.manifest.delete', async 
   const createErr = await expectDie(() =>
     h.mod.manifestApi('apps.manifest.create', {}, TEST_TOKEN)
   );
-  assert.match(createErr.message, /apps\.manifest\.create/);
+  ok(/apps\.manifest\.create/.test(createErr.message), 'must match /apps\.manifest\.create/');
   const deleteErr = await expectDie(() =>
     h.mod.manifestApi('apps.manifest.delete', { app_id: APP_ID }, TEST_TOKEN)
   );
-  assert.match(deleteErr.message, /unrecoverable/i);
+  ok(/unrecoverable/i.test(deleteErr.message), 'must match /unrecoverable/i');
 
-  assert.equal(h.httpCalls.length, 0, 'the guard must fire before any request is made');
+  is(h.httpCalls.length, 0, 'the guard must fire before any request is made');
 });
 
 test('no app subcommand issues apps.manifest.create or apps.manifest.delete', async () => {
@@ -874,15 +886,15 @@ test('no app subcommand issues apps.manifest.create or apps.manifest.delete', as
     observed.push(...h.methods());
   }
 
-  assert.ok(observed.length >= 4, 'each subcommand must have called the API');
+  ok(observed.length >= 4, 'each subcommand must have called the API');
   for (const method of observed) {
-    assert.ok(
+    ok(
       method === 'apps.manifest.export' || method === 'apps.manifest.validate',
       'unexpected method called: ' + method
     );
   }
-  assert.ok(!observed.includes('apps.manifest.create'));
-  assert.ok(!observed.includes('apps.manifest.delete'));
+  ok(!observed.includes('apps.manifest.create'));
+  ok(!observed.includes('apps.manifest.delete'));
 });
 
 // ── group dispatch ────────────────────────────────────────────────────────────
@@ -890,24 +902,24 @@ test('no app subcommand issues apps.manifest.create or apps.manifest.delete', as
 test('an unknown app subcommand lists the available ones and calls nothing', async () => {
   const h = await load({ argv: ['app', 'set-colour', APP_ID] });
   const err = await expectDie(() => h.mod.cmdApp());
-  assert.match(err.message, /Unknown app subcommand: set-colour/);
-  assert.match(err.message, /export, show, validate, diff/);
-  assert.match(err.message, /set-scopes, set-events, set-request-url, apply/);
-  assert.equal(h.httpCalls.length, 0);
+  ok(/Unknown app subcommand: set-colour/.test(err.message), 'must match /Unknown app subcommand: set-colour/');
+  ok(/export, show, validate, diff/.test(err.message), 'must match /export, show, validate, diff/');
+  ok(/set-scopes, set-events, set-request-url, apply/.test(err.message), 'must match /set-scopes, set-events, set-request-url, apply/');
+  is(h.httpCalls.length, 0);
 });
 
 test('app subcommands reject a malformed app id before calling the API', async () => {
   const h = await load({ argv: ['app', 'show', 'not-an-app-id'] });
   const err = await expectDie(() => h.mod.cmdApp());
-  assert.match(err.message, /Invalid app id/);
-  assert.equal(h.httpCalls.length, 0);
+  ok(/Invalid app id/.test(err.message), 'must match /Invalid app id/');
+  is(h.httpCalls.length, 0);
 });
 
 test('app show with no app id prints a usage line', async () => {
   const h = await load({ argv: ['app', 'show'] });
   const err = await expectDie(() => h.mod.cmdApp());
-  assert.match(err.message, /Usage: slack-ext app show <app_id>/);
-  assert.equal(h.httpCalls.length, 0);
+  ok(/Usage: slack-ext app show <app_id>/.test(err.message), 'must match /Usage: slack-ext app show <app_id>/');
+  is(h.httpCalls.length, 0);
 });
 
 
@@ -925,7 +937,7 @@ test('write helper exports the live manifest before updating', async () => {
   });
   await h.mod.cmdAppSetScopes();
   // Order matters: the export is what the payload is built from.
-  assert.deepEqual(h.methods(), ['apps.manifest.export', 'apps.manifest.update']);
+  is(h.methods(), ['apps.manifest.export', 'apps.manifest.update']);
 });
 
 test('write helper refuses to update when the export fails', async () => {
@@ -934,8 +946,8 @@ test('write helper refuses to update when the export fails', async () => {
     responses: { 'apps.manifest.export': { ok: false, error: 'ratelimited' } },
   });
   const err = await expectDie(() => h.mod.cmdAppSetScopes());
-  assert.match(err.message, /ratelimited/);
-  assert.equal(h.updateCalls().length, 0, 'no update may be attempted without a live export');
+  ok(/ratelimited/.test(err.message), 'must match /ratelimited/');
+  is(h.updateCalls().length, 0, 'no update may be attempted without a live export');
 });
 
 test('write helper refuses to update when the export carries no manifest', async () => {
@@ -944,8 +956,8 @@ test('write helper refuses to update when the export carries no manifest', async
     responses: { 'apps.manifest.export': { ok: true } },
   });
   const err = await expectDie(() => h.mod.cmdAppSetEvents());
-  assert.match(err.message, /no manifest/i);
-  assert.equal(h.updateCalls().length, 0);
+  ok(/no manifest/i.test(err.message), 'must match /no manifest/i');
+  is(h.updateCalls().length, 0);
 });
 
 test('every untouched leaf of the 14-field manifest survives a write', async () => {
@@ -959,11 +971,11 @@ test('every untouched leaf of the 14-field manifest survives a write', async () 
   const after = h.mod.manifestLeaves(sent, '', {});
 
   // Same leaf set: nothing dropped, nothing invented.
-  assert.deepEqual(Object.keys(after).sort(), Object.keys(before).sort());
-  assert.equal(Object.keys(after).length, 14);
+  is(Object.keys(after).sort(), Object.keys(before).sort());
+  is(Object.keys(after).length, 14);
   for (const pointer of Object.keys(before)) {
     if (pointer === '/oauth_config/scopes/bot') continue;
-    assert.deepEqual(
+    is(
       after[pointer],
       before[pointer],
       'leaf ' + pointer + ' must survive the write untouched'
@@ -978,11 +990,11 @@ test('the payload is a complete manifest, not a fragment', async () => {
   await h.mod.cmdAppSetEvents();
 
   const sent = h.sentManifest();
-  assert.ok(sent.display_information, 'display_information must be present');
-  assert.ok(sent.features && sent.features.bot_user, 'bot user must be present');
-  assert.ok(sent.oauth_config && sent.oauth_config.scopes, 'scopes must be present');
-  assert.ok(sent.settings, 'settings must be present');
-  assert.equal(sent.display_information.description, LIVE_MANIFEST.display_information.description);
+  ok(sent.display_information, 'display_information must be present');
+  ok(sent.features && sent.features.bot_user, 'bot user must be present');
+  ok(sent.oauth_config && sent.oauth_config.scopes, 'scopes must be present');
+  ok(sent.settings, 'settings must be present');
+  is(sent.display_information.description, LIVE_MANIFEST.display_information.description);
 });
 
 // ── set-scopes ────────────────────────────────────────────────────────────────
@@ -994,7 +1006,7 @@ test('set-scopes --add keeps all six scopes and appends the new one', async () =
   await h.mod.cmdAppSetScopes();
 
   const sent = h.sentManifest();
-  assert.deepEqual(sent.oauth_config.scopes.bot, [
+  is(sent.oauth_config.scopes.bot, [
     'channels:manage',
     'channels:read',
     'chat:write',
@@ -1004,7 +1016,7 @@ test('set-scopes --add keeps all six scopes and appends the new one', async () =
     'reactions:read',
   ]);
   // The other array must not move.
-  assert.deepEqual(sent.settings.event_subscriptions.bot_events, ['channel_created', 'team_join']);
+  is(sent.settings.event_subscriptions.bot_events, ['channel_created', 'team_join']);
 });
 
 test('set-scopes --add accepts a comma-separated list and ignores duplicates', async () => {
@@ -1013,9 +1025,9 @@ test('set-scopes --add accepts a comma-separated list and ignores duplicates', a
   });
   await h.mod.cmdAppSetScopes();
   const scopes = h.sentManifest().oauth_config.scopes.bot;
-  assert.equal(scopes.filter((s) => s === 'reactions:read').length, 1);
-  assert.equal(scopes.filter((s) => s === 'chat:write').length, 1, 'already present, not doubled');
-  assert.equal(scopes.length, 7);
+  is(scopes.filter((s) => s === 'reactions:read').length, 1);
+  is(scopes.filter((s) => s === 'chat:write').length, 1, 'already present, not doubled');
+  is(scopes.length, 7);
 });
 
 test('set-scopes --remove removes only the named scope', async () => {
@@ -1025,14 +1037,14 @@ test('set-scopes --remove removes only the named scope', async () => {
   await h.mod.cmdAppSetScopes();
 
   const sent = h.sentManifest();
-  assert.deepEqual(sent.oauth_config.scopes.bot, [
+  is(sent.oauth_config.scopes.bot, [
     'channels:manage',
     'channels:read',
     'chat:write',
     'im:write',
     'users:read',
   ]);
-  assert.deepEqual(sent.settings.event_subscriptions.bot_events, ['channel_created', 'team_join']);
+  is(sent.settings.event_subscriptions.bot_events, ['channel_created', 'team_join']);
 });
 
 test('set-scopes --remove of an intentional scope needs no --allow-deletions', async () => {
@@ -1040,8 +1052,8 @@ test('set-scopes --remove of an intentional scope needs no --allow-deletions', a
     argv: ['app', 'set-scopes', APP_ID, '--remove=im:write', '--confirm'],
   });
   await h.mod.cmdAppSetScopes();
-  assert.equal(h.updateCalls().length, 1, 'a requested removal proceeds with --confirm alone');
-  assert.ok(!h.sentManifest().oauth_config.scopes.bot.includes('im:write'));
+  is(h.updateCalls().length, 1, 'a requested removal proceeds with --confirm alone');
+  ok(!h.sentManifest().oauth_config.scopes.bot.includes('im:write'));
 });
 
 test('set-scopes --remove of an absent scope changes nothing and writes nothing', async () => {
@@ -1049,8 +1061,8 @@ test('set-scopes --remove of an absent scope changes nothing and writes nothing'
     argv: ['app', 'set-scopes', APP_ID, '--remove=files:write', '--confirm'],
   });
   await h.mod.cmdAppSetScopes();
-  assert.equal(h.updateCalls().length, 0, 'no-op must not call update');
-  assert.match(h.text(), /No change needed/i);
+  is(h.updateCalls().length, 0, 'no-op must not call update');
+  ok(/No change needed/i.test(h.text()), 'must match /No change needed/i');
 });
 
 test('set-scopes rejects a malformed scope name before any API call', async () => {
@@ -1058,15 +1070,15 @@ test('set-scopes rejects a malformed scope name before any API call', async () =
     argv: ['app', 'set-scopes', APP_ID, '--add=Chat Write; rm -rf /', '--confirm'],
   });
   const err = await expectDie(() => h.mod.cmdAppSetScopes());
-  assert.match(err.message, /Invalid scope/);
-  assert.equal(h.httpCalls.length, 0);
+  ok(/Invalid scope/.test(err.message), 'must match /Invalid scope/');
+  is(h.httpCalls.length, 0);
 });
 
 test('set-scopes with neither --add nor --remove dies without calling Slack', async () => {
   const h = await load({ argv: ['app', 'set-scopes', APP_ID, '--confirm'] });
   const err = await expectDie(() => h.mod.cmdAppSetScopes());
-  assert.match(err.message, /Nothing to do/);
-  assert.equal(h.httpCalls.length, 0);
+  ok(/Nothing to do/.test(err.message), 'must match /Nothing to do/');
+  is(h.httpCalls.length, 0);
 });
 
 // ── set-events ────────────────────────────────────────────────────────────────
@@ -1078,11 +1090,11 @@ test('set-events --remove removes only the named event and leaves scopes untouch
   await h.mod.cmdAppSetEvents();
 
   const sent = h.sentManifest();
-  assert.deepEqual(sent.settings.event_subscriptions.bot_events, ['channel_created']);
+  is(sent.settings.event_subscriptions.bot_events, ['channel_created']);
   // The team_join case must not take the scopes with it.
-  assert.deepEqual(sent.oauth_config.scopes.bot, LIVE_MANIFEST.oauth_config.scopes.bot);
-  assert.equal(sent.oauth_config.scopes.bot.length, 6);
-  assert.equal(sent.settings.event_subscriptions.request_url, LIVE_MANIFEST.settings.event_subscriptions.request_url);
+  is(sent.oauth_config.scopes.bot, LIVE_MANIFEST.oauth_config.scopes.bot);
+  is(sent.oauth_config.scopes.bot.length, 6);
+  is(sent.settings.event_subscriptions.request_url, LIVE_MANIFEST.settings.event_subscriptions.request_url);
 });
 
 test('set-events --add appends without disturbing the existing events or scopes', async () => {
@@ -1092,13 +1104,13 @@ test('set-events --add appends without disturbing the existing events or scopes'
   await h.mod.cmdAppSetEvents();
 
   const sent = h.sentManifest();
-  assert.deepEqual(sent.settings.event_subscriptions.bot_events, [
+  is(sent.settings.event_subscriptions.bot_events, [
     'channel_created',
     'team_join',
     'app_mention',
     'message.im',
   ]);
-  assert.deepEqual(sent.oauth_config.scopes.bot, LIVE_MANIFEST.oauth_config.scopes.bot);
+  is(sent.oauth_config.scopes.bot, LIVE_MANIFEST.oauth_config.scopes.bot);
 });
 
 test('set-events on a manifest without event_subscriptions creates the path only', async () => {
@@ -1114,9 +1126,9 @@ test('set-events on a manifest without event_subscriptions creates the path only
   await h.mod.cmdAppSetEvents();
 
   const sent = h.sentManifest();
-  assert.deepEqual(sent.settings.event_subscriptions.bot_events, ['app_mention']);
-  assert.equal(sent.settings.socket_mode_enabled, true, 'sibling settings preserved');
-  assert.deepEqual(sent.oauth_config.scopes.bot, ['chat:write']);
+  is(sent.settings.event_subscriptions.bot_events, ['app_mention']);
+  is(sent.settings.socket_mode_enabled, true, 'sibling settings preserved');
+  is(sent.oauth_config.scopes.bot, ['chat:write']);
 });
 
 // ── set-request-url ───────────────────────────────────────────────────────────
@@ -1128,10 +1140,10 @@ test('set-request-url changes only the request URL', async () => {
   await h.mod.cmdAppSetRequestUrl();
 
   const sent = h.sentManifest();
-  assert.equal(sent.settings.event_subscriptions.request_url, 'https://relay.example.com/slack');
-  assert.deepEqual(sent.settings.event_subscriptions.bot_events, ['channel_created', 'team_join']);
-  assert.deepEqual(sent.oauth_config.scopes.bot, LIVE_MANIFEST.oauth_config.scopes.bot);
-  assert.equal(Object.keys(h.mod.manifestLeaves(sent, '', {})).length, 14);
+  is(sent.settings.event_subscriptions.request_url, 'https://relay.example.com/slack');
+  is(sent.settings.event_subscriptions.bot_events, ['channel_created', 'team_join']);
+  is(sent.oauth_config.scopes.bot, LIVE_MANIFEST.oauth_config.scopes.bot);
+  is(Object.keys(h.mod.manifestLeaves(sent, '', {})).length, 14);
 });
 
 test('set-request-url rejects a non-https URL and a missing URL', async () => {
@@ -1139,13 +1151,13 @@ test('set-request-url rejects a non-https URL and a missing URL', async () => {
     argv: ['app', 'set-request-url', APP_ID, 'http://insecure.example.com', '--confirm'],
   });
   const badErr = await expectDie(() => bad.mod.cmdAppSetRequestUrl());
-  assert.match(badErr.message, /https/);
-  assert.equal(bad.httpCalls.length, 0);
+  ok(/https/.test(badErr.message), 'must match /https/');
+  is(bad.httpCalls.length, 0);
 
   const missing = await load({ argv: ['app', 'set-request-url', APP_ID, '--confirm'] });
   const missingErr = await expectDie(() => missing.mod.cmdAppSetRequestUrl());
-  assert.match(missingErr.message, /Usage: slack-ext app set-request-url/);
-  assert.equal(missing.httpCalls.length, 0);
+  ok(/Usage: slack-ext app set-request-url/.test(missingErr.message), 'must match /Usage: slack-ext app set-request-url/');
+  is(missing.httpCalls.length, 0);
 });
 
 // ── apply ─────────────────────────────────────────────────────────────────────
@@ -1159,12 +1171,12 @@ test('apply with a display_information-only file REFUSES and names what would be
 
   const err = await expectDie(() => h.mod.cmdAppApply());
   // The refusal itself must name the casualties.
-  assert.match(err.message, /unrequested deletion/i);
-  assert.match(err.message, /\/features\/bot_user\/display_name/);
-  assert.match(err.message, /\/oauth_config\/scopes\/bot/);
-  assert.match(err.message, /\/settings\/event_subscriptions\/bot_events/);
-  assert.match(err.message, /--allow-deletions/);
-  assert.equal(h.updateCalls().length, 0, 'nothing may be written when deletions are refused');
+  ok(/unrequested deletion/i.test(err.message), 'must match /unrequested deletion/i');
+  ok(/\/features\/bot_user\/display_name/.test(err.message), 'must match /\/features\/bot_user\/display_name/');
+  ok(/\/oauth_config\/scopes\/bot/.test(err.message), 'must match /\/oauth_config\/scopes\/bot/');
+  ok(/\/settings\/event_subscriptions\/bot_events/.test(err.message), 'must match /\/settings\/event_subscriptions\/bot_events/');
+  ok(/--allow-deletions/.test(err.message), 'must match /--allow-deletions/');
+  is(h.updateCalls().length, 0, 'nothing may be written when deletions are refused');
 });
 
 test('apply with --allow-deletions proceeds and sends the file as the complete manifest', async () => {
@@ -1182,9 +1194,9 @@ test('apply with --allow-deletions proceeds and sends the file as the complete m
   });
 
   await h.mod.cmdAppApply();
-  assert.equal(h.updateCalls().length, 1);
-  assert.deepEqual(h.sentManifest(), partial, 'the file becomes the whole manifest');
-  assert.match(h.text(), /DELETIONS \(11\)/, 'the diff is still shown in full');
+  is(h.updateCalls().length, 1);
+  is(h.sentManifest(), partial, 'the file becomes the whole manifest');
+  ok(/DELETIONS \(11\)/.test(h.text()), 'the diff is still shown in full');
 });
 
 test('apply of a superset file writes it and reports no deletions', async () => {
@@ -1198,13 +1210,13 @@ test('apply of a superset file writes it and reports no deletions', async () => 
 
   await h.mod.cmdAppApply();
   const sent = h.sentManifest();
-  assert.equal(sent.settings.is_mcp_enabled, true);
-  assert.ok(sent.oauth_config.scopes.bot.includes('reactions:read'));
-  assert.equal(sent.display_information.description, LIVE_MANIFEST.display_information.description);
+  is(sent.settings.is_mcp_enabled, true);
+  ok(sent.oauth_config.scopes.bot.includes('reactions:read'));
+  is(sent.display_information.description, LIVE_MANIFEST.display_information.description);
   // When the file omits nothing, the overlay and the file are the same object
   // graph, so the operator gets exactly what the diff promised.
-  assert.deepEqual(sent, candidate);
-  assert.match(h.text(), /No deletions/);
+  is(sent, candidate);
+  ok(/No deletions/.test(h.text()), 'must match /No deletions/');
 });
 
 test('deepOverlay keeps every live field a partial candidate omits (defense in depth)', async () => {
@@ -1214,10 +1226,10 @@ test('deepOverlay keeps every live field a partial candidate omits (defense in d
 
   // Even if the deletion gate were bypassed, the payload built without
   // --allow-deletions cannot drop a field: it starts from the live export.
-  assert.equal(merged.display_information.name, 'Renamed');
-  assert.equal(merged.display_information.description, LIVE_MANIFEST.display_information.description);
-  assert.deepEqual(merged.oauth_config.scopes.bot, LIVE_MANIFEST.oauth_config.scopes.bot);
-  assert.equal(Object.keys(h.mod.manifestLeaves(merged, '', {})).length, 14);
+  is(merged.display_information.name, 'Renamed');
+  is(merged.display_information.description, LIVE_MANIFEST.display_information.description);
+  is(merged.oauth_config.scopes.bot, LIVE_MANIFEST.oauth_config.scopes.bot);
+  is(Object.keys(h.mod.manifestLeaves(merged, '', {})).length, 14);
 });
 
 test('deepOverlay replaces arrays wholesale, matching Slack semantics', async () => {
@@ -1225,7 +1237,7 @@ test('deepOverlay replaces arrays wholesale, matching Slack semantics', async ()
   const merged = h.mod.deepOverlay(h.mod.deepClone(LIVE_MANIFEST), {
     oauth_config: { scopes: { bot: ['chat:write'] } },
   });
-  assert.deepEqual(merged.oauth_config.scopes.bot, ['chat:write']);
+  is(merged.oauth_config.scopes.bot, ['chat:write']);
 });
 
 // ── The deletion gate: requested vs unrequested ───────────────────────────────
@@ -1247,9 +1259,9 @@ test('the deletion gate blocks a deletion the command did not declare', async ()
       rerun: 'x',
     })
   );
-  assert.match(err.message, /unrequested deletion/i);
-  assert.match(err.message, /\/display_information\/description/);
-  assert.equal(h.updateCalls().length, 0);
+  ok(/unrequested deletion/i.test(err.message), 'must match /unrequested deletion/i');
+  ok(/\/display_information\/description/.test(err.message), 'must match /\/display_information\/description/');
+  is(h.updateCalls().length, 0);
 });
 
 test('the deletion gate allows a deletion the command declared', async () => {
@@ -1270,8 +1282,8 @@ test('the deletion gate allows a deletion the command declared', async () => {
     rerun: 'x',
   });
 
-  assert.equal(result.updated, true);
-  assert.equal(h.updateCalls().length, 1);
+  is(result.updated, true);
+  is(h.updateCalls().length, 1);
 });
 
 test('an unrequested deletion is blocked even when a requested one is declared', async () => {
@@ -1294,9 +1306,9 @@ test('an unrequested deletion is blocked even when a requested one is declared',
       rerun: 'x',
     })
   );
-  assert.match(err.message, /\/settings\/event_subscriptions\/request_url/);
-  assert.doesNotMatch(err.message, /- \/settings\/event_subscriptions\/bot_events/);
-  assert.equal(h.updateCalls().length, 0);
+  ok(/\/settings\/event_subscriptions\/request_url/.test(err.message), 'must match /\/settings\/event_subscriptions\/request_url/');
+  ok(!(/- \/settings\/event_subscriptions\/bot_events/.test(err.message)), 'must not match /- \/settings\/event_subscriptions\/bot_events/');
+  is(h.updateCalls().length, 0);
 });
 
 test('--allow-deletions overrides the gate for an unrequested deletion', async () => {
@@ -1316,8 +1328,8 @@ test('--allow-deletions overrides the gate for an unrequested deletion', async (
     intentional: [],
     rerun: 'x',
   });
-  assert.equal(result.updated, true);
-  assert.equal(h.updateCalls().length, 1);
+  is(result.updated, true);
+  is(h.updateCalls().length, 1);
 });
 
 // ── --confirm guards: zero write calls ────────────────────────────────────────
@@ -1325,17 +1337,17 @@ test('--allow-deletions overrides the gate for an unrequested deletion', async (
 test('set-scopes without --confirm performs zero write calls', async () => {
   const h = await load({ argv: ['app', 'set-scopes', APP_ID, '--add=reactions:read'] });
   await h.mod.cmdAppSetScopes();
-  assert.equal(h.writeCalls().length, 0);
-  assert.deepEqual(h.methods(), ['apps.manifest.export'], 'export is a read, and it is all');
-  assert.match(h.text(), /No --confirm/);
-  assert.match(h.text(), /--confirm to apply/);
+  is(h.writeCalls().length, 0);
+  is(h.methods(), ['apps.manifest.export'], 'export is a read, and it is all');
+  ok(/No --confirm/.test(h.text()), 'must match /No --confirm/');
+  ok(/--confirm to apply/.test(h.text()), 'must match /--confirm to apply/');
 });
 
 test('set-events without --confirm performs zero write calls', async () => {
   const h = await load({ argv: ['app', 'set-events', APP_ID, '--remove=team_join'] });
   await h.mod.cmdAppSetEvents();
-  assert.equal(h.writeCalls().length, 0);
-  assert.match(h.text(), /No --confirm/);
+  is(h.writeCalls().length, 0);
+  ok(/No --confirm/.test(h.text()), 'must match /No --confirm/');
 });
 
 test('set-request-url without --confirm performs zero write calls', async () => {
@@ -1343,8 +1355,8 @@ test('set-request-url without --confirm performs zero write calls', async () => 
     argv: ['app', 'set-request-url', APP_ID, 'https://relay.example.com/slack'],
   });
   await h.mod.cmdAppSetRequestUrl();
-  assert.equal(h.writeCalls().length, 0);
-  assert.match(h.text(), /No --confirm/);
+  is(h.writeCalls().length, 0);
+  ok(/No --confirm/.test(h.text()), 'must match /No --confirm/');
 });
 
 test('apply without --confirm performs zero write calls', async () => {
@@ -1355,8 +1367,8 @@ test('apply without --confirm performs zero write calls', async () => {
     files: { '/tmp/c.json': JSON.stringify(candidate) },
   });
   await h.mod.cmdAppApply();
-  assert.equal(h.writeCalls().length, 0);
-  assert.match(h.text(), /No --confirm/);
+  is(h.writeCalls().length, 0);
+  ok(/No --confirm/.test(h.text()), 'must match /No --confirm/');
 });
 
 test('token-rotate without --confirm performs zero write calls', async () => {
@@ -1365,10 +1377,10 @@ test('token-rotate without --confirm performs zero write calls', async () => {
     refreshToken: 'xoxe-1-old-refresh-token',
   });
   await h.mod.cmdAppTokenRotate();
-  assert.equal(h.writeCalls().length, 0);
-  assert.equal(h.httpCalls.length, 0, 'a rotate must never be speculative');
-  assert.equal(h.configWrites.length, 0);
-  assert.match(h.text(), /INVALIDATES/);
+  is(h.writeCalls().length, 0);
+  is(h.httpCalls.length, 0, 'a rotate must never be speculative');
+  is(h.configWrites.length, 0);
+  ok(/INVALIDATES/.test(h.text()), 'must match /INVALIDATES/');
 });
 
 // ── permissions_updated: the reinstall signal ─────────────────────────────────
@@ -1381,10 +1393,10 @@ test('permissions_updated true produces a visible REINSTALL warning', async () =
   await h.mod.cmdAppSetScopes();
 
   const text = h.text();
-  assert.match(text, /REINSTALL REQUIRED/);
-  assert.match(text, /permissions_updated = true/);
-  assert.match(text, /does NOT carry it|reissued/, 'must explain the stale bot token');
-  assert.match(text, new RegExp(APP_ID), 'must point at the app to reinstall');
+  ok(/REINSTALL REQUIRED/.test(text), 'must match /REINSTALL REQUIRED/');
+  ok(/permissions_updated = true/.test(text), 'must match /permissions_updated = true/');
+  ok(/does NOT carry it|reissued/.test(text), 'must explain the stale bot token');
+  ok(new RegExp(APP_ID).test(text), 'must point at the app to reinstall');
 });
 
 test('permissions_updated false produces no reinstall warning', async () => {
@@ -1395,8 +1407,8 @@ test('permissions_updated false produces no reinstall warning', async () => {
   await h.mod.cmdAppSetEvents();
 
   const text = h.text();
-  assert.doesNotMatch(text, /REINSTALL REQUIRED/);
-  assert.match(text, /permissions_updated = false/);
+  ok(!(/REINSTALL REQUIRED/.test(text)), 'must not match /REINSTALL REQUIRED/');
+  ok(/permissions_updated = false/.test(text), 'must match /permissions_updated = false/');
 });
 
 test('a missing permissions_updated is treated as false, not as a reinstall', async () => {
@@ -1405,7 +1417,7 @@ test('a missing permissions_updated is treated as false, not as a reinstall', as
     responses: { 'apps.manifest.update': { ok: true } },
   });
   await h.mod.cmdAppSetEvents();
-  assert.doesNotMatch(h.text(), /REINSTALL REQUIRED/);
+  ok(!(/REINSTALL REQUIRED/.test(h.text())), 'must not match /REINSTALL REQUIRED/');
 });
 
 test('write --json emits a machine-readable result including reinstall_required', async () => {
@@ -1416,11 +1428,11 @@ test('write --json emits a machine-readable result including reinstall_required'
   await h.mod.cmdAppSetScopes();
 
   const payload = JSON.parse(h.text());
-  assert.equal(payload.updated, true);
-  assert.equal(payload.permissions_updated, true);
-  assert.equal(payload.reinstall_required, true);
-  assert.equal(payload.action, 'set-scopes');
-  assert.ok(payload.diff, 'the diff travels with the result');
+  is(payload.updated, true);
+  is(payload.permissions_updated, true);
+  is(payload.reinstall_required, true);
+  is(payload.action, 'set-scopes');
+  ok(payload.diff, 'the diff travels with the result');
 });
 
 // ── HTTP 200 + ok:false on a write ────────────────────────────────────────────
@@ -1436,9 +1448,9 @@ test('ok:false with HTTP 200 fails the update even when the body looks usable', 
     },
   });
   const err = await expectDie(() => h.mod.cmdAppSetScopes());
-  assert.match(err.message, /invalid_manifest/);
-  assert.doesNotMatch(h.text(), /Updated /, 'nothing may be reported as updated');
-  assert.doesNotMatch(h.text(), /REINSTALL REQUIRED/);
+  ok(/invalid_manifest/.test(err.message), 'must match /invalid_manifest/');
+  ok(!(/Updated /.test(h.text())), 'nothing may be reported as updated');
+  ok(!(/REINSTALL REQUIRED/.test(h.text())), 'must not match /REINSTALL REQUIRED/');
 });
 
 // ── token-rotate ──────────────────────────────────────────────────────────────
@@ -1449,12 +1461,12 @@ test('token-rotate sends refresh_token form-encoded with no Authorization header
   });
   await h.mod.cmdAppTokenRotate();
 
-  assert.deepEqual(h.methods(), ['tooling.tokens.rotate']);
+  is(h.methods(), ['tooling.tokens.rotate']);
   const call = h.httpCalls[0];
-  assert.equal(call.params.refresh_token, 'xoxe-1-old-refresh-token');
-  assert.match(String(call.headers['content-type']), /application\/x-www-form-urlencoded/);
+  is(call.params.refresh_token, 'xoxe-1-old-refresh-token');
+  ok(/application\/x-www-form-urlencoded/.test(String(call.headers['content-type'])), 'must match /application\/x-www-form-urlencoded/');
   // Measured: a bearer header alongside refresh_token produced invalid_auth.
-  assert.equal(call.hasTokenConfig, false, 'the rotate call must carry no bearer token');
+  is(call.hasTokenConfig, false, 'the rotate call must carry no bearer token');
 });
 
 test('token-rotate persists the new pair BEFORE anything else happens with it', async () => {
@@ -1463,9 +1475,9 @@ test('token-rotate persists the new pair BEFORE anything else happens with it', 
   });
   await h.mod.cmdAppTokenRotate();
 
-  assert.equal(h.configWrites.length, 1, 'exactly one persist');
-  assert.equal(h.configWrites[0].appConfigToken, 'xoxe.xoxp-rotated-access-token');
-  assert.equal(h.configWrites[0].appRefreshToken, 'xoxe-1-rotated-refresh-token');
+  is(h.configWrites.length, 1, 'exactly one persist');
+  is(h.configWrites[0].appConfigToken, 'xoxe.xoxp-rotated-access-token');
+  is(h.configWrites[0].appRefreshToken, 'xoxe-1-rotated-refresh-token');
 
   // The rotate has already invalidated the old refresh token, so the persist must
   // be the FIRST thing that happens after the response: any output before it is a
@@ -1474,9 +1486,9 @@ test('token-rotate persists the new pair BEFORE anything else happens with it', 
   const rotateAt = kinds.indexOf('http');
   const persistAt = kinds.indexOf('persist');
   const firstOutAt = kinds.indexOf('out');
-  assert.ok(rotateAt >= 0 && persistAt >= 0, 'both events observed');
-  assert.ok(persistAt > rotateAt, 'persist after the rotate response');
-  assert.ok(
+  ok(rotateAt >= 0 && persistAt >= 0, 'both events observed');
+  ok(persistAt > rotateAt, 'persist after the rotate response');
+  ok(
     firstOutAt === -1 || persistAt < firstOutAt,
     'persist must precede every line of output about the new pair'
   );
@@ -1490,13 +1502,13 @@ test('token-rotate prints the new pair when persisting fails instead of swallowi
   await h.mod.cmdAppTokenRotate();
 
   const text = h.text();
-  assert.match(text, /COULD NOT PERSIST/);
-  assert.match(text, /EACCES/);
+  ok(/COULD NOT PERSIST/.test(text), 'must match /COULD NOT PERSIST/');
+  ok(/EACCES/.test(text), 'must match /EACCES/');
   // Last resort: the old refresh token is already dead, so losing this is worse
   // than printing it.
-  assert.match(text, /xoxe\.xoxp-rotated-access-token/);
-  assert.match(text, /xoxe-1-rotated-refresh-token/);
-  assert.match(text, /NOT STORED/);
+  ok(/xoxe\.xoxp-rotated-access-token/.test(text), 'must match /xoxe\.xoxp-rotated-access-token/');
+  ok(/xoxe-1-rotated-refresh-token/.test(text), 'must match /xoxe-1-rotated-refresh-token/');
+  ok(/NOT STORED/.test(text), 'must match /NOT STORED/');
 });
 
 test('token-rotate masks the tokens on the success path', async () => {
@@ -1505,10 +1517,10 @@ test('token-rotate masks the tokens on the success path', async () => {
   });
   await h.mod.cmdAppTokenRotate();
   const text = h.text();
-  assert.match(text, /Rotated app configuration token/);
-  assert.doesNotMatch(text, /xoxe\.xoxp-rotated-access-token/, 'no full token in the transcript');
-  assert.match(text, /xoxe\.xoxp-\.\.\./, 'masked form shown instead');
-  assert.match(text, /previous refresh token is now invalid/i);
+  ok(/Rotated app configuration token/.test(text), 'must match /Rotated app configuration token/');
+  ok(!(/xoxe\.xoxp-rotated-access-token/.test(text)), 'no full token in the transcript');
+  ok(/xoxe\.xoxp-\.\.\./.test(text), 'masked form shown instead');
+  ok(/previous refresh token is now invalid/i.test(text), 'must match /previous refresh token is now invalid/i');
 });
 
 test('token-rotate reads the refresh token from env then skill config', async () => {
@@ -1517,22 +1529,22 @@ test('token-rotate reads the refresh token from env then skill config', async ()
     refreshToken: 'xoxe-1-env-refresh',
   });
   await fromEnv.mod.cmdAppTokenRotate();
-  assert.equal(fromEnv.httpCalls[0].params.refresh_token, 'xoxe-1-env-refresh');
+  is(fromEnv.httpCalls[0].params.refresh_token, 'xoxe-1-env-refresh');
 
   const fromConfig = await load({
     argv: ['app', 'token-rotate', '--confirm'],
     config: { appRefreshToken: 'xoxe-1-config-refresh' },
   });
   await fromConfig.mod.cmdAppTokenRotate();
-  assert.equal(fromConfig.httpCalls[0].params.refresh_token, 'xoxe-1-config-refresh');
+  is(fromConfig.httpCalls[0].params.refresh_token, 'xoxe-1-config-refresh');
 });
 
 test('token-rotate dies with minting instructions when no refresh token exists', async () => {
   const h = await load({ argv: ['app', 'token-rotate', '--confirm'] });
   const err = await expectDie(() => h.mod.cmdAppTokenRotate());
-  assert.match(err.message, /No refresh token/);
-  assert.match(err.message, /api\.slack\.com\/apps/);
-  assert.equal(h.httpCalls.length, 0);
+  ok(/No refresh token/.test(err.message), 'must match /No refresh token/');
+  ok(/api\.slack\.com\/apps/.test(err.message), 'must match /api\.slack\.com\/apps/');
+  is(h.httpCalls.length, 0);
 });
 
 test('token-rotate maps invalid_refresh_token to a single-use explanation', async () => {
@@ -1541,9 +1553,9 @@ test('token-rotate maps invalid_refresh_token to a single-use explanation', asyn
     responses: { 'tooling.tokens.rotate': { ok: false, error: 'invalid_refresh_token' } },
   });
   const err = await expectDie(() => h.mod.cmdAppTokenRotate());
-  assert.match(err.message, /invalid_refresh_token/);
-  assert.match(err.message, /single-use/);
-  assert.equal(h.configWrites.length, 0, 'nothing may be persisted on a failed rotate');
+  ok(/invalid_refresh_token/.test(err.message), 'must match /invalid_refresh_token/');
+  ok(/single-use/.test(err.message), 'must match /single-use/');
+  is(h.configWrites.length, 0, 'nothing may be persisted on a failed rotate');
 });
 
 test('token-rotate refuses to discard the old credential when the pair is missing', async () => {
@@ -1552,8 +1564,8 @@ test('token-rotate refuses to discard the old credential when the pair is missin
     responses: { 'tooling.tokens.rotate': { ok: true, token: 'xoxe.xoxp-only-half' } },
   });
   const err = await expectDie(() => h.mod.cmdAppTokenRotate());
-  assert.match(err.message, /without a token pair/);
-  assert.equal(h.configWrites.length, 0);
+  ok(/without a token pair/.test(err.message), 'must match /without a token pair/');
+  is(h.configWrites.length, 0);
 });
 
 // ── create/delete remain unreachable from the write paths ─────────────────────
@@ -1576,10 +1588,10 @@ test('no write path issues apps.manifest.create or apps.manifest.delete', async 
     observed.push(...h.methods());
   }
 
-  assert.ok(observed.length >= 9, 'each command must have reached the API');
+  ok(observed.length >= 9, 'each command must have reached the API');
   const allowed = new Set(['apps.manifest.export', 'apps.manifest.update', 'tooling.tokens.rotate']);
   for (const method of observed) {
-    assert.ok(allowed.has(method), 'unexpected method called: ' + method);
+    ok(allowed.has(method), 'unexpected method called: ' + method);
   }
 });
 
@@ -1602,7 +1614,7 @@ test('all five write subcommands are reachable through the app dispatcher', asyn
   for (const [argv, expected] of cases) {
     const h = await load({ argv, files });
     await h.mod.cmdApp();
-    assert.ok(h.methods().includes(expected), argv.join(' ') + ' must call ' + expected);
+    ok(h.methods().includes(expected), argv.join(' ') + ' must call ' + expected);
   }
 });
 
@@ -1611,16 +1623,16 @@ test('all five write subcommands are reachable through the app dispatcher', asyn
 test('applyAddRemove reports added, removed and skipped removals', async () => {
   const h = await load({ argv: ['app', 'show', APP_ID] });
   const r = h.mod.applyAddRemove(['a', 'b', 'c'], ['d', 'b'], ['a', 'zz']);
-  assert.deepEqual(r.next, ['b', 'c', 'd']);
-  assert.deepEqual(r.added, ['d']);
-  assert.deepEqual(r.removed, ['a']);
-  assert.deepEqual(r.skippedRemovals, ['zz']);
+  is(r.next, ['b', 'c', 'd']);
+  is(r.added, ['d']);
+  is(r.removed, ['a']);
+  is(r.skippedRemovals, ['zz']);
 });
 
 test('parseList splits on commas and whitespace and rejects a valueless flag', async () => {
   const h = await load({ argv: ['app', 'show', APP_ID] });
-  assert.deepEqual(h.mod.parseList('a,b , c', 'add'), ['a', 'b', 'c']);
-  assert.deepEqual(h.mod.parseList(undefined, 'add'), []);
+  is(h.mod.parseList('a,b , c', 'add'), ['a', 'b', 'c']);
+  is(h.mod.parseList(undefined, 'add'), []);
   // parseList now lives in the pure ./argv.js module, which must not depend on
   // sliccy:cli, so a valueless flag THROWS instead of calling cli.die. The
   // user-visible behaviour is unchanged and was measured end to end:
@@ -1634,16 +1646,16 @@ test('parseList splits on commas and whitespace and rejects a valueless flag', a
   } catch (e) {
     plErr = e;
   }
-  assert.ok(plErr, 'a valueless --add must be refused, not silently treated as empty');
-  assert.match(plErr.message, /--add needs a value/);
+  ok(plErr, 'a valueless --add must be refused, not silently treated as empty');
+  ok(/--add needs a value/.test(plErr.message), 'must match /--add needs a value/');
 });
 
 test('maskToken never reveals the whole value', async () => {
   const h = await load({ argv: ['app', 'show', APP_ID] });
   const masked = h.mod.maskToken('xoxe.xoxp-1234567890-abcdefghij');
-  assert.doesNotMatch(masked, /1234567890-abcdefghij/);
-  assert.match(masked, /^xoxe\.xoxp/);
-  assert.match(masked, /chars/);
+  ok(!(/1234567890-abcdefghij/.test(masked)), 'must not match /1234567890-abcdefghij/');
+  ok(/^xoxe\.xoxp/.test(masked), 'must match /^xoxe\.xoxp/');
+  ok(/chars/.test(masked), 'must match /chars/');
 });
 
 // ── Mutation matrix ───────────────────────────────────────────────────────────

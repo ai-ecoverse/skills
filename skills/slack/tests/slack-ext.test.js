@@ -1,7 +1,7 @@
 // Tests for skills/slack/scripts/slack-ext.jsh
 //
 // Run with:
-//   node --test skills/slack/tests/slack-ext.test.js
+//   tst <path-to-this-file>
 //
 // Strategy: compile the real source (removing the trailing `await main()` so
 // it does not auto-execute), inject mock sliccy:* modules and a stub browser,
@@ -11,13 +11,15 @@
 // Mutation verification is documented inline: each test names the mutation that
 // would break it, and the section at the bottom records the verification matrix.
 
-const assert = require('node:assert/strict');
-const test = require('node:test');
-const fs = require('node:fs');
-const path = require('node:path');
-const { createRequire } = require('node:module');
+import test, { is, ok, not, fail } from 'tst';
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+import * as _argvMod from '../scripts/argv.js';
+import * as _manifestDiffMod from '../scripts/manifest-diff.js';
+import * as _gridMod from '../scripts/slack-ext-grid.js';
 
-const SCRIPT = path.resolve(__dirname, '../scripts/slack-ext.jsh');
+const SCRIPT = fileURLToPath(new URL('../scripts/slack-ext.jsh', import.meta.url));
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 
 // ── Test harness ──────────────────────────────────────────────────────────────
@@ -166,9 +168,19 @@ async function load(opts) {
     },
   };
 
-  // Relative specifiers (./argv.js, ./manifest-diff.js) load the REAL extracted
-  // module from disk so the node:test suite exercises the same code as production.
-  const scriptRequire = createRequire(SCRIPT);
+  // Relative specifiers (./argv.js, ./manifest-diff.js, ./slack-ext-grid.js) are
+  // pre-loaded via static ESM imports above (the tst realm resolves imports statically
+  // but its createRequire shim does not resolve relative file-system paths).
+  const relativeModules = {
+    './argv.js': () => (_argvMod.default || _argvMod),
+    './manifest-diff.js': () => (_manifestDiffMod.default || _manifestDiffMod),
+    './slack-ext-grid.js': () => (_gridMod.default || _gridMod)
+  };
+  const scriptRequire = (id) => {
+    const key = id.replace(/^\.\.\/(scripts\/)?/, './');
+    if (Object.prototype.hasOwnProperty.call(relativeModules, key)) return relativeModules[key]();
+    throw new Error('unexpected relative require(' + id + ') — add a static import');
+  };
   const mockRequire = (id) => {
     if (Object.prototype.hasOwnProperty.call(mocks, id)) return mocks[id];
     if (id.startsWith('./') || id.startsWith('../')) return scriptRequire(id);
@@ -176,7 +188,7 @@ async function load(opts) {
   };
 
   // Strip the trailing `await main()` so the module does not auto-execute
-  let source = fs.readFileSync(SCRIPT, 'utf8');
+  let source = readFileSync(SCRIPT, 'utf8');
   // Anchor on the actual trailer (`try { await main(); }`), NOT on the first
   // top-level `try {` in the file. The greedy form truncated the module at the
   // first top-level try block, which silently discarded ~1800 lines and made
@@ -241,31 +253,31 @@ return {
 test('userTypeLabel: regular member', async () => {
   const h = await load({ argv: ['status', 'U1'] });
   const { userTypeLabel } = h.mod;
-  assert.equal(userTypeLabel({ is_bot: false, is_restricted: false, is_ultra_restricted: false, deleted: false }), 'regular');
+  is(userTypeLabel({ is_bot: false, is_restricted: false, is_ultra_restricted: false, deleted: false }), 'regular');
 });
 
 test('userTypeLabel: multi-channel guest', async () => {
   const h = await load({ argv: ['status', 'U1'] });
   const { userTypeLabel } = h.mod;
-  assert.equal(userTypeLabel({ is_bot: false, is_restricted: true, is_ultra_restricted: false, deleted: false }), 'multi-channel guest');
+  is(userTypeLabel({ is_bot: false, is_restricted: true, is_ultra_restricted: false, deleted: false }), 'multi-channel guest');
 });
 
 test('userTypeLabel: single-channel guest', async () => {
   const h = await load({ argv: ['status', 'U1'] });
   const { userTypeLabel } = h.mod;
-  assert.equal(userTypeLabel({ is_bot: false, is_restricted: true, is_ultra_restricted: true, deleted: false }), 'single-channel guest');
+  is(userTypeLabel({ is_bot: false, is_restricted: true, is_ultra_restricted: true, deleted: false }), 'single-channel guest');
 });
 
 test('userTypeLabel: bot', async () => {
   const h = await load({ argv: ['status', 'U1'] });
   const { userTypeLabel } = h.mod;
-  assert.equal(userTypeLabel({ is_bot: true, is_restricted: false, is_ultra_restricted: false, deleted: false }), 'bot');
+  is(userTypeLabel({ is_bot: true, is_restricted: false, is_ultra_restricted: false, deleted: false }), 'bot');
 });
 
 test('userTypeLabel: deactivated', async () => {
   const h = await load({ argv: ['status', 'U1'] });
   const { userTypeLabel } = h.mod;
-  assert.equal(userTypeLabel({ is_bot: false, is_restricted: false, is_ultra_restricted: false, deleted: true }), 'deactivated');
+  is(userTypeLabel({ is_bot: false, is_restricted: false, is_ultra_restricted: false, deleted: true }), 'deactivated');
 });
 
 // ── Parameter name tests — these are the most safety-critical ─────────────────
@@ -277,29 +289,29 @@ test('buildSetUltraRestrictedParams uses "channel" (singular), not "channels"', 
 
   // CRITICAL: the API requires `channel` (singular). Passing `channels` returns
   // invalid_arguments. Verified live 2026-09-18.
-  assert.equal(params.channel, 'C456', 'must use "channel" (singular)');
-  assert.equal(params.channels, undefined, 'must NOT have "channels" (plural)');
-  assert.equal(params.user, 'U123');
-  assert.equal(params.team_id, 'T789');
+  is(params.channel, 'C456', 'must use "channel" (singular)');
+  is(params.channels, undefined, 'must NOT have "channels" (plural)');
+  is(params.user, 'U123');
+  is(params.team_id, 'T789');
 });
 
 test('buildSetRestrictedParams includes user and team_id', async () => {
   const h = await load({ argv: ['status', 'U1'] });
   const { buildSetRestrictedParams } = h.mod;
   const params = buildSetRestrictedParams('U123', 'T789');
-  assert.equal(params.user, 'U123');
-  assert.equal(params.team_id, 'T789');
+  is(params.user, 'U123');
+  is(params.team_id, 'T789');
   // setRestricted does NOT take a channel parameter
-  assert.equal(params.channel, undefined);
+  is(params.channel, undefined);
 });
 
 test('buildSetRegularParams includes user and team_id', async () => {
   const h = await load({ argv: ['status', 'U1'] });
   const { buildSetRegularParams } = h.mod;
   const params = buildSetRegularParams('U123', 'T789');
-  assert.equal(params.user, 'U123');
-  assert.equal(params.team_id, 'T789');
-  assert.equal(params.channel, undefined);
+  is(params.user, 'U123');
+  is(params.team_id, 'T789');
+  is(params.channel, undefined);
 });
 
 // ── --confirm guard tests ─────────────────────────────────────────────────────
@@ -314,9 +326,9 @@ test('set-single without --confirm makes no admin API call', async () => {
   } catch (e) {
     if (e.name === 'NodeExitError' && e.exitCode === 0) { /* ok */ } else throw e;
   }
-  assert.equal(h.adminCalls().length, 0, 'no admin API call without --confirm');
+  is(h.adminCalls().length, 0, 'no admin API call without --confirm');
   const text = h.text();
-  assert.match(text, /no --confirm|nothing changed/i, 'should mention --confirm required');
+  ok(/no --confirm|nothing changed/i.test(text), 'should mention --confirm required');
 });
 
 test('set-multi without --confirm makes no admin API call', async () => {
@@ -327,7 +339,7 @@ test('set-multi without --confirm makes no admin API call', async () => {
   } catch (e) {
     if (e.name === 'NodeExitError' && e.exitCode === 0) { /* ok */ } else throw e;
   }
-  assert.equal(h.adminCalls().length, 0, 'no admin API call without --confirm');
+  is(h.adminCalls().length, 0, 'no admin API call without --confirm');
 });
 
 test('set-member without --confirm makes no admin API call', async () => {
@@ -341,7 +353,7 @@ test('set-member without --confirm makes no admin API call', async () => {
   } catch (e) {
     if (e.name === 'NodeExitError' && e.exitCode === 0) { /* ok */ } else throw e;
   }
-  assert.equal(h.adminCalls().length, 0, 'no admin API call without --confirm');
+  is(h.adminCalls().length, 0, 'no admin API call without --confirm');
 });
 
 test('add-channel without --confirm makes no mutating API call', async () => {
@@ -352,7 +364,7 @@ test('add-channel without --confirm makes no mutating API call', async () => {
   } catch (e) {
     if (e.name === 'NodeExitError' && e.exitCode === 0) { /* ok */ } else throw e;
   }
-  assert.equal(h.mutatingCalls().length, 0, 'no mutating call without --confirm');
+  is(h.mutatingCalls().length, 0, 'no mutating call without --confirm');
 });
 
 test('remove-channel without --confirm makes no mutating API call', async () => {
@@ -363,7 +375,7 @@ test('remove-channel without --confirm makes no mutating API call', async () => 
   } catch (e) {
     if (e.name === 'NodeExitError' && e.exitCode === 0) { /* ok */ } else throw e;
   }
-  assert.equal(h.mutatingCalls().length, 0, 'no mutating call without --confirm');
+  is(h.mutatingCalls().length, 0, 'no mutating call without --confirm');
 });
 
 // ── Bot user rejection tests ──────────────────────────────────────────────────
@@ -379,9 +391,9 @@ test('set-single refuses bot user', async () => {
   } catch (e) {
     err = e;
   }
-  assert.ok(err, 'should have thrown');
-  assert.equal(err.name, 'NodeExitError');
-  assert.match(err.message, /bot/i, 'error message should mention bot');
+  ok(err, 'should have thrown');
+  is(err.name, 'NodeExitError');
+  ok(/bot/i.test(err.message), 'error message should mention bot');
 });
 
 test('set-multi refuses bot user', async () => {
@@ -395,9 +407,9 @@ test('set-multi refuses bot user', async () => {
   } catch (e) {
     err = e;
   }
-  assert.ok(err, 'should have thrown');
-  assert.equal(err.name, 'NodeExitError');
-  assert.match(err.message, /bot/i);
+  ok(err, 'should have thrown');
+  is(err.name, 'NodeExitError');
+  ok(/bot/i.test(err.message), 'must match /bot/i');
 });
 
 test('set-member refuses bot user', async () => {
@@ -411,9 +423,9 @@ test('set-member refuses bot user', async () => {
   } catch (e) {
     err = e;
   }
-  assert.ok(err, 'should have thrown');
-  assert.equal(err.name, 'NodeExitError');
-  assert.match(err.message, /bot/i);
+  ok(err, 'should have thrown');
+  is(err.name, 'NodeExitError');
+  ok(/bot/i.test(err.message), 'must match /bot/i');
 });
 
 // ── Already-in-state tests ────────────────────────────────────────────────────
@@ -425,8 +437,8 @@ test('set-multi is no-op when user is already a multi-channel guest', async () =
     user: { is_restricted: true, is_ultra_restricted: false, deleted: false, is_bot: false },
   });
   await h.mod.cmdSetMulti();
-  assert.equal(h.adminCalls().length, 0, 'should not call setRestricted for already-MCG');
-  assert.match(h.text(), /no change needed/i);
+  is(h.adminCalls().length, 0, 'should not call setRestricted for already-MCG');
+  ok(/no change needed/i.test(h.text()), 'must match /no change needed/i');
 });
 
 test('set-member is no-op when user is already a regular member', async () => {
@@ -435,8 +447,8 @@ test('set-member is no-op when user is already a regular member', async () => {
     user: { is_restricted: false, is_ultra_restricted: false, deleted: false, is_bot: false },
   });
   await h.mod.cmdSetMember();
-  assert.equal(h.adminCalls().length, 0, 'should not call setRegular for already-member');
-  assert.match(h.text(), /no change needed/i);
+  is(h.adminCalls().length, 0, 'should not call setRegular for already-member');
+  ok(/no change needed/i.test(h.text()), 'must match /no change needed/i');
 });
 
 // ── Confirmed mutation tests ──────────────────────────────────────────────────
@@ -448,15 +460,15 @@ test('set-single with --confirm calls users.admin.setUltraRestricted with channe
   await h.mod.cmdSetSingle();
 
   const adminCall = h.calls.find((c) => c.method === 'users.admin.setUltraRestricted');
-  assert.ok(adminCall, 'users.admin.setUltraRestricted must be called');
+  ok(adminCall, 'users.admin.setUltraRestricted must be called');
 
   // Verify the URLSearchParams body contains 'channel' (singular)
   const body = adminCall.opts && adminCall.opts.body;
-  assert.ok(body, 'call must have a body');
-  assert.match(body, /channel=C456/, 'body must contain channel=C456');
-  assert.doesNotMatch(body, /channels=/, 'body must NOT contain channels= (plural)');
-  assert.match(body, /user=U12345/, 'body must contain user=U12345');
-  assert.match(body, /team_id=T06DUTYDQ/, 'body must contain team_id=T06DUTYDQ');
+  ok(body, 'call must have a body');
+  ok(/channel=C456/.test(body), 'body must contain channel=C456');
+  ok(!(/channels=/.test(body)), 'body must NOT contain channels= (plural)');
+  ok(/user=U12345/.test(body), 'body must contain user=U12345');
+  ok(/team_id=T06DUTYDQ/.test(body), 'body must contain team_id=T06DUTYDQ');
 });
 
 test('set-multi with --confirm calls users.admin.setRestricted', async () => {
@@ -466,10 +478,10 @@ test('set-multi with --confirm calls users.admin.setRestricted', async () => {
   await h.mod.cmdSetMulti();
 
   const adminCall = h.calls.find((c) => c.method === 'users.admin.setRestricted');
-  assert.ok(adminCall, 'users.admin.setRestricted must be called');
+  ok(adminCall, 'users.admin.setRestricted must be called');
   const body = adminCall.opts && adminCall.opts.body;
-  assert.match(body, /user=U12345/);
-  assert.match(body, /team_id=T06DUTYDQ/);
+  ok(/user=U12345/.test(body), 'must match /user=U12345/');
+  ok(/team_id=T06DUTYDQ/.test(body), 'must match /team_id=T06DUTYDQ/');
 });
 
 test('set-member with --confirm calls users.admin.setRegular', async () => {
@@ -480,10 +492,10 @@ test('set-member with --confirm calls users.admin.setRegular', async () => {
   await h.mod.cmdSetMember();
 
   const adminCall = h.calls.find((c) => c.method === 'users.admin.setRegular');
-  assert.ok(adminCall, 'users.admin.setRegular must be called');
+  ok(adminCall, 'users.admin.setRegular must be called');
   const body = adminCall.opts && adminCall.opts.body;
-  assert.match(body, /user=U12345/);
-  assert.match(body, /team_id=T06DUTYDQ/);
+  ok(/user=U12345/.test(body), 'must match /user=U12345/');
+  ok(/team_id=T06DUTYDQ/.test(body), 'must match /team_id=T06DUTYDQ/');
 });
 
 test('add-channel with --confirm calls conversations.invite', async () => {
@@ -493,10 +505,10 @@ test('add-channel with --confirm calls conversations.invite', async () => {
   await h.mod.cmdAddChannel();
 
   const inviteCall = h.calls.find((c) => c.method === 'conversations.invite');
-  assert.ok(inviteCall, 'conversations.invite must be called');
+  ok(inviteCall, 'conversations.invite must be called');
   const body = inviteCall.opts && inviteCall.opts.body;
-  assert.match(body, /channel=C456/);
-  assert.match(body, /users=U12345/);
+  ok(/channel=C456/.test(body), 'must match /channel=C456/');
+  ok(/users=U12345/.test(body), 'must match /users=U12345/');
 });
 
 test('remove-channel with --confirm calls conversations.kick', async () => {
@@ -506,10 +518,10 @@ test('remove-channel with --confirm calls conversations.kick', async () => {
   await h.mod.cmdRemoveChannel();
 
   const kickCall = h.calls.find((c) => c.method === 'conversations.kick');
-  assert.ok(kickCall, 'conversations.kick must be called');
+  ok(kickCall, 'conversations.kick must be called');
   const body = kickCall.opts && kickCall.opts.body;
-  assert.match(body, /channel=C456/);
-  assert.match(body, /user=U12345/);
+  ok(/channel=C456/.test(body), 'must match /channel=C456/');
+  ok(/user=U12345/.test(body), 'must match /user=U12345/');
 });
 
 // ── parseArgv: BOOL_FLAGS includes confirm ────────────────────────────────────
@@ -520,16 +532,16 @@ test('parseArgv treats --confirm as a boolean flag (no value consumed)', async (
 
   // Without --confirm
   const a = parseArgv(['set-single', 'U1', '--channel=C2', '--ws=T3']);
-  assert.equal(a.flags.confirm, undefined);
+  is(a.flags.confirm, undefined);
 
   // With --confirm as the last flag (no next token)
   const b = parseArgv(['set-single', 'U1', '--channel=C2', '--ws=T3', '--confirm']);
-  assert.equal(b.flags.confirm, true);
+  is(b.flags.confirm, true);
 
   // With --confirm followed by a positional — must not consume the positional as value
   const c = parseArgv(['set-single', '--confirm', 'U1']);
-  assert.equal(c.flags.confirm, true);
-  assert.deepEqual(c.positional, ['set-single', 'U1']);
+  is(c.flags.confirm, true);
+  is(c.positional, ['set-single', 'U1']);
 });
 
 // ── Mutation test documentation ────────────────────────────────────────────────
@@ -594,7 +606,7 @@ test('--confirm=false does NOT authorize a mutation (admin call must not happen)
       throw e;
     }
   }
-  assert.equal(
+  is(
     h.adminCalls().length,
     0,
     '--confirm=false must NOT issue the admin API call'
@@ -611,7 +623,7 @@ test('--confirm=false dry-run still mentions what would happen', async () => {
   } catch (e) {
     if (e.name !== 'NodeExitError' || e.exitCode !== 0) throw e;
   }
-  assert.ok(
+  ok(
     /would change|no --confirm|nothing changed/i.test(h.text()),
     'dry-run output must describe the would-be change'
   );
@@ -622,7 +634,7 @@ test('--confirm=true (equals form) DOES authorize the mutation', async () => {
     argv: ['--ws=T06DUTYDQ', 'set-single', 'U12345', '--channel=C456', '--confirm=true'],
   });
   await h.mod.cmdSetSingle();
-  assert.equal(
+  is(
     h.adminCalls().length,
     1,
     '--confirm=true must issue the admin API call'
@@ -640,39 +652,39 @@ test('--confirm=fasle (typo) is a fatal error, not an authorization', async () =
   } catch (e) {
     err = e;
   }
-  assert.ok(err, 'should have thrown an error');
-  assert.equal(err.name, 'NodeExitError', 'must exit non-zero');
-  assert.ok(err.exitCode !== 0, 'exit code must be non-zero');
+  ok(err, 'should have thrown an error');
+  is(err.name, 'NodeExitError', 'must exit non-zero');
+  ok(err.exitCode !== 0, 'exit code must be non-zero');
 });
 
 test('parseArgv: --confirm=false stores false (not truthy string "false")', async () => {
   const h = await load({ argv: ['status', 'U1'] });
   const { parseArgv } = h.mod;
   const r = parseArgv(['set-single', 'U1', '--confirm=false']);
-  assert.strictEqual(r.flags.confirm, false, '--confirm=false must be stored as boolean false');
+  is(r.flags.confirm, false, '--confirm=false must be stored as boolean false');
 });
 
 test('parseArgv: --confirm=true stores true', async () => {
   const h = await load({ argv: ['status', 'U1'] });
   const { parseArgv } = h.mod;
   const r = parseArgv(['set-single', 'U1', '--confirm=true']);
-  assert.strictEqual(r.flags.confirm, true, '--confirm=true must be stored as boolean true');
+  is(r.flags.confirm, true, '--confirm=true must be stored as boolean true');
 });
 
 test('parseArgv: --confirm=yes, --confirm=1, --confirm=on all store true', async () => {
   const h = await load({ argv: ['status', 'U1'] });
   const { parseArgv } = h.mod;
-  assert.strictEqual(parseArgv(['x', '--confirm=yes']).flags.confirm, true);
-  assert.strictEqual(parseArgv(['x', '--confirm=1']).flags.confirm, true);
-  assert.strictEqual(parseArgv(['x', '--confirm=on']).flags.confirm, true);
+  is(parseArgv(['x', '--confirm=yes']).flags.confirm, true);
+  is(parseArgv(['x', '--confirm=1']).flags.confirm, true);
+  is(parseArgv(['x', '--confirm=on']).flags.confirm, true);
 });
 
 test('parseArgv: --confirm=no, --confirm=0, --confirm=off all store false', async () => {
   const h = await load({ argv: ['status', 'U1'] });
   const { parseArgv } = h.mod;
-  assert.strictEqual(parseArgv(['x', '--confirm=no']).flags.confirm, false);
-  assert.strictEqual(parseArgv(['x', '--confirm=0']).flags.confirm, false);
-  assert.strictEqual(parseArgv(['x', '--confirm=off']).flags.confirm, false);
+  is(parseArgv(['x', '--confirm=no']).flags.confirm, false);
+  is(parseArgv(['x', '--confirm=0']).flags.confirm, false);
+  is(parseArgv(['x', '--confirm=off']).flags.confirm, false);
 });
 
 // ── Finding 2: set-single already-SCG channel comparison ─────────────────────
@@ -686,14 +698,14 @@ test('set-single: guest already in A with --channel=B attempts the change', asyn
     convs: { ok: true, channels: [{ id: 'COLD', name: 'old-channel' }] },
   });
   await h.mod.cmdSetSingle();
-  assert.equal(
+  is(
     h.adminCalls().length,
     1,
     'must call setUltraRestricted when the requested channel differs from the current one'
   );
   const adminCall = h.calls.find((c) => c.method === 'users.admin.setUltraRestricted');
-  assert.ok(adminCall, 'call must be setUltraRestricted');
-  assert.ok(/channel=CNEW/.test(adminCall.opts.body), 'must use the new channel ID');
+  ok(adminCall, 'call must be setUltraRestricted');
+  ok(/channel=CNEW/.test(adminCall.opts.body), 'must use the new channel ID');
 });
 
 test('set-single: guest already in B with --channel=B is a no-op', async () => {
@@ -704,8 +716,8 @@ test('set-single: guest already in B with --channel=B is a no-op', async () => {
     convs: { ok: true, channels: [{ id: 'CSAME', name: 'same-channel' }] },
   });
   await h.mod.cmdSetSingle();
-  assert.equal(h.adminCalls().length, 0, 'must NOT call setUltraRestricted when channel unchanged');
-  assert.ok(/no change needed/i.test(h.text()), 'must say no change needed');
+  is(h.adminCalls().length, 0, 'must NOT call setUltraRestricted when channel unchanged');
+  ok(/no change needed/i.test(h.text()), 'must say no change needed');
 });
 
 test('set-single: failed users.conversations lookup is fatal, not "no change needed"', async () => {
@@ -723,8 +735,8 @@ test('set-single: failed users.conversations lookup is fatal, not "no change nee
   } catch (e) {
     err = e;
   }
-  assert.ok(err, 'should have thrown');
-  assert.equal(err.name, 'NodeExitError');
+  ok(err, 'should have thrown');
+  is(err.name, 'NodeExitError');
   // Must NOT print "no change needed" — that would be a false claim
   // (We can't check h.text() here since we don't have h in scope; the throw
   //  itself is the proof that the command did not silently succeed or no-op.)
@@ -747,7 +759,7 @@ test('set-single: channel-change path respects --confirm gate', async () => {
       throw e;
     }
   }
-  assert.equal(
+  is(
     h.adminCalls().length,
     0,
     'channel-change path must still require --confirm'
@@ -764,7 +776,7 @@ test('status: failed users.conversations does NOT print "(none found)"', async (
   });
   await h.mod.cmdStatus();
   const out = h.text();
-  assert.ok(
+  ok(
     !/(none found)/i.test(out),
     'must NOT print "(none found)" when the API call failed'
   );
@@ -778,7 +790,7 @@ test('status: failed users.conversations prints the actual Slack error code', as
   });
   await h.mod.cmdStatus();
   const out = h.text();
-  assert.ok(
+  ok(
     /enterprise_is_restricted/.test(out),
     'must print the actual Slack error code so the user knows what went wrong'
   );
@@ -792,12 +804,12 @@ test('status: success with zero channels prints a distinct empty-state message',
   });
   await h.mod.cmdStatus();
   const out = h.text();
-  assert.ok(
+  ok(
     !/(none found)/i.test(out),
     'empty-success path must use a different message from the old "(none found)" bucket'
   );
   // Should say something about "none" or "no channel" but NOT "(none found)"
-  assert.ok(
+  ok(
     /none|no channel/i.test(out),
     'should still describe the empty state'
   );
@@ -814,9 +826,9 @@ test('status --json: failed users.conversations produces channels_error in outpu
   const jsonLine = h.stdout.find((l) => {
     try { JSON.parse(l); return true; } catch (e) { return false; }
   });
-  assert.ok(jsonLine, 'should have a JSON output line');
+  ok(jsonLine, 'should have a JSON output line');
   const parsed = JSON.parse(jsonLine);
-  assert.ok(
+  ok(
     parsed.channels_error === 'enterprise_is_restricted',
     'channels_error must be present and equal to the Slack error code'
   );
@@ -832,10 +844,10 @@ test('status --json: success with channels produces channels array in output', a
   const jsonLine = h.stdout.find((l) => {
     try { JSON.parse(l); return true; } catch (e) { return false; }
   });
-  assert.ok(jsonLine, 'should have JSON output');
+  ok(jsonLine, 'should have JSON output');
   const parsed = JSON.parse(jsonLine);
-  assert.ok(Array.isArray(parsed.channels), 'channels must be an array in JSON output');
-  assert.equal(parsed.channels[0].id, 'C111', 'channel id must match');
+  ok(Array.isArray(parsed.channels), 'channels must be an array in JSON output');
+  is(parsed.channels[0].id, 'C111', 'channel id must match');
 });
 
 // ── Updated mutation matrix (additions for the three findings) ────────────────
