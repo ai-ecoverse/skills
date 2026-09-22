@@ -116,7 +116,7 @@ function argValue(flag) {
   return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : null;
 }
 
-const MONITOR_CONFIG_PATH = '/shared/github-monitor/config.json';
+const MONITOR_CONFIG_PATH = argValue('--config') || '/shared/github-monitor/config.json';
 
 // The set this dashboard was built on, used ONLY when the config file does not
 // exist yet. Not a default to fall back to when the file is broken.
@@ -166,7 +166,7 @@ function loadMonitorConfig() {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) configError('the top level must be a JSON object');
   if (parsed.version !== 1) configError(`unsupported "version": ${JSON.stringify(parsed.version)} (this fetcher understands 1)`);
   if (!Array.isArray(parsed.repos)) configError('"repos" must be an array');
-  if (!parsed.repos.length) configError('"repos" is empty — there is nothing to monitor. Delete the file to fall back to the built-in repos.');
+  if (!parsed.repos.length) configError('"repos" is empty — there is nothing to monitor. Add at least one { "slug": "owner/repo", "bbProject": null } entry; there are no built-in repositories.');
   const bbOrigin = typeof parsed.bbOrigin === 'string' ? parsed.bbOrigin.trim().replace(/\/+$/, '') : '';
   if (!/^https?:\/\/[^\s/]+$/.test(bbOrigin)) configError(`"bbOrigin" must be an http(s) origin, got ${JSON.stringify(parsed.bbOrigin)}`);
 
@@ -1791,12 +1791,18 @@ const snapshot = {
 
 fs.mkdirSync('/shared/sprinkles/github-dashboard/data', { recursive: true });
 const snapshotBody = JSON.stringify(snapshot, null, 2);
-fs.writeFileSync(OUT, snapshotBody);
+// Write to a sibling temp file and rename. rename(2) is atomic within a
+// filesystem, so a reader sees either the previous snapshot or the new one and
+// never a half-written one. A killed run leaves the .tmp behind, harmlessly.
+const OUT_TMP = OUT + '.tmp';
+fs.writeFileSync(OUT_TMP, snapshotBody);
+fs.renameSync(OUT_TMP, OUT);
 // ... and only now the version file, so it can never point at a half-written
 // snapshot. The hash is over the exact bytes just written.
 const snapshotHash = crypto.createHash('sha256').update(snapshotBody).digest('hex');
+const VERSION_TMP = VERSION_OUT + '.tmp';
 fs.writeFileSync(
-  VERSION_OUT,
+  VERSION_TMP,
   JSON.stringify(
     {
       generatedAt: snapshot.meta.generatedAt,
@@ -1811,6 +1817,9 @@ fs.writeFileSync(
     2,
   ) + '\n',
 );
+// Last write of the run, and the one the panel is watching: only now can an open
+// panel see a new hash, and by now the snapshot it names is complete on disk.
+fs.renameSync(VERSION_TMP, VERSION_OUT);
 
 console.log(`records        : ${records.length}`);
 console.log(`requests       : ${log.length}`);
