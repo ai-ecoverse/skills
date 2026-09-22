@@ -195,6 +195,77 @@ Examples:
   slack-ext app set-request-url A0123456789 https://relay.example.com --confirm
   slack-ext app apply A0123456789 --manifest=./manifest.json --confirm
 
+Enterprise Grid admin commands (use ORG-LEVEL token; audit log attributes changes to the human):
+
+  eg-status <user_id>
+      Show enterprise-level user info: type, org membership, workspaces.
+
+  eg-set-restricted <user_id> [--confirm]
+      Make a full member a MULTI-CHANNEL GUEST at the org level.
+      API: enterprise.users.admin.setRestricted. Reads back state to verify.
+
+  eg-set-regular <user_id> [--confirm]
+      Promote a guest back to a FULL MEMBER at the org level.
+      API: enterprise.users.admin.setRegular. Reads back state to verify.
+
+  eg-deactivate <user_id> [--confirm]
+      DEACTIVATE a user (reversible). API: enterprise.users.admin.setStatus
+      with status=delete. TRAP: 'delete' means deactivate, NOT permanent delete.
+      The reactivation status value is unknown — do not guess it.
+
+  eg-forget <user_id> [--confirm]
+      PERMANENTLY scrub user identity (GDPR). real_name → 'Deactivated User',
+      handle → deactivateduser<N>. API: users.admin.profileDeidentify.
+      IRREVERSIBLE. Separate command; never a flag on eg-deactivate.
+
+  eg-bulk-guest [<user_id>...] [--file=<path>] [--confirm]
+      Convert a list of full members to multi-channel guests.
+      Reads back each user after the call to confirm the state change.
+      Primary use: convert vendor accounts from full member to guest.
+
+  eg-set-ultra-restricted <user_id> [--confirm]
+      ** UNVERIFIED endpoint ** Make a single-channel guest at org level.
+      Method exists but ok:true was never observed. Do not use in production.
+
+Channel management commands:
+
+  channel-search [--query=<q>] [--limit=<n>] [--max=<n>]
+      Enumerate channels via admin.conversations.search. Filters locally
+      (channel_ids parameter is silently ignored by Slack — see wire facts).
+
+  channel-to-public <channel_id> [--confirm]
+      Convert a private channel to public. API: admin.conversations.convertToPublic.
+
+  channel-to-private <channel_id> [--confirm]
+      Convert a public channel to private. API: admin.conversations.convertToPrivate.
+      After conversion, conversations.info returns channel_not_found for non-members
+      — this is expected, not an error.
+
+Slack Connect approvals:
+
+  approvals [--query=<q>] [--limit=<n>] [--all]
+      List Slack Connect shared channel invite approvals.
+      API: conversations.sharedApprovals.list. Paginates automatically.
+
+App governance commands:
+
+  admin-app approve <app_id|request_id> [--confirm]
+      Approve an app. request_id (I…) is SINGLE-USE — once resolved, further
+      calls with the same request_id return request_already_resolved.
+      To reverse a resolved request, use the app_id (A…).
+
+  admin-app restrict <app_id|request_id> [--confirm]
+      Restrict an app. Same single-use request_id caveat applies.
+
+  admin-app clear <app_id> [--confirm]
+      Clear the approval/restriction resolution for an app.
+
+  admin-app permissions <app_id> --type=<no_one|everyone|named_entities> [--confirm]
+      Set install permissions for an app.
+
+  admin-app list [--restricted]
+      List approved apps (default) or restricted apps (--restricted).
+
 See also: slack user <id> (read-only profile from the standard slack CLI)
 `;
 
@@ -2006,6 +2077,26 @@ async function main() {
   if (cmd === 'remove-channel') return cmdRemoveChannel();
   if (cmd === 'app') return cmdApp();
 
+  // ── Enterprise Grid commands ──
+  if (cmd === 'eg-status') return cmdEgStatus();
+  if (cmd === 'eg-set-restricted') return cmdEgSetRestricted();
+  if (cmd === 'eg-set-regular') return cmdEgSetRegular();
+  if (cmd === 'eg-deactivate') return cmdEgDeactivate();
+  if (cmd === 'eg-forget') return cmdEgForget();
+  if (cmd === 'eg-bulk-guest') return cmdEgBulkGuest();
+  if (cmd === 'eg-set-ultra-restricted') return cmdEgSetUltraRestricted();
+
+  // ── Channel management ──
+  if (cmd === 'channel-search') return cmdChannelSearch();
+  if (cmd === 'channel-to-public') return cmdChannelToPublic();
+  if (cmd === 'channel-to-private') return cmdChannelToPrivate();
+
+  // ── Slack Connect approvals ──
+  if (cmd === 'approvals') return cmdApprovals();
+
+  // ── App governance ──
+  if (cmd === 'admin-app') return cmdAdminApp();
+
   cli.die(
     'Unknown command: ' + cmd + '\n  Run \'slack-ext --help\' for usage.',
     { prefix: PREFIX }
@@ -2018,3 +2109,1042 @@ try {
   if (err && err.name === 'NodeExitError') throw err;
   cli.die((err && err.message) || String(err), { prefix: PREFIX });
 }
+
+// ══ Enterprise Grid admin commands (`slack-ext eg-*`, `channel-*`, etc.) ══════
+//
+// These commands use the enterprise.users.admin.* API namespace, which operates
+// at the org level (org ID E06V3987PMY) rather than the workspace level.
+//
+// KEY DIFFERENCES FROM users.admin.* COMMANDS ABOVE:
+//   • These take only a `user` param (no `team_id`) because they operate at
+//     the Enterprise Grid org level.
+//   • The token used is the ORG-LEVEL xoxc token from localStorage key
+//     `teams['E06V3987PMY']`, not the workspace-level `teams['T0385CHDU9E']`.
+//   • API methods: enterprise.users.admin.{setRestricted,setRegular,setStatus}
+//     and users.admin.profileDeidentify (org-wide GDPR forget).
+//   • Verified live 2026-09-22: bogus-user probe returns user_not_found (not
+//     unknown_method) for all methods, confirming the endpoints are real.
+//
+// AUDIT ATTRIBUTION — CRITICAL:
+//   Every call is attributed IN THE SLACK AUDIT LOG to the HUMAN whose xoxc
+//   session token is in use. These are NOT bot operations. The sibling project
+//   adobe-rnd/slack-automation performs writes as a bot so the audit trail names
+//   the app; this path cannot do that. Operators must understand this before use.
+
+const {
+  buildEgSetRestrictedParams,
+  buildEgSetRegularParams,
+  buildEgSetStatusParams,
+  buildDeidentifyParams,
+  buildEgSetUltraRestrictedParams,
+  buildConvertChannelParams,
+  buildChannelSearchParams,
+  buildApprovalsListParams,
+  buildAppApproveRestrictParams,
+  buildAppClearResolutionParams,
+  buildAppPermissionsParams,
+  buildAppListParams,
+  resolveAppOrRequestId,
+  isValidPermissionType,
+  filterChannels,
+  summarizeChannel,
+  summarizeApproval,
+  classifyUser,
+  collectPages,
+} = require('./slack-ext-grid.js');
+
+// The Enterprise Grid org ID. Used as the "workspace" key when looking up the
+// org-level xoxc token from localStorage (teams['E06V3987PMY'].token).
+const ORG_ID = 'E06V3987PMY';
+
+// ── Helper: resolve enterprise workspace / org ─────────────────────────────────
+//
+// Enterprise commands default to --org=E06V3987PMY but accept --org=<other> for
+// other grids. For mutations, requiring an explicit --org prevents silent
+// collateral damage to a different org.
+
+async function resolveOrg(forMutation) {
+  const orgId = flags.org || ORG_ID;
+  if (!/^E[A-Z0-9]+$/.test(orgId)) {
+    cli.die(
+      'Invalid org ID "' + orgId + '". Expected E-prefixed alphanumeric (e.g. E06V3987PMY).',
+      { prefix: PREFIX }
+    );
+  }
+  if (forMutation && flags.org && flags.org !== ORG_ID) {
+    // Explicitly-set non-default org for a mutation — fine, but warn.
+    console.error(color.yellow('  Warning: operating on org ' + flags.org + ' (not the default E06V3987PMY).'));
+  }
+  return orgId;
+}
+
+// ── Command: eg-status ────────────────────────────────────────────────────────
+//
+// Reads and displays the enterprise-level user state for one user.
+
+async function cmdEgStatus() {
+  const userId = words[1];
+  if (!userId) {
+    cli.die('Usage: slack-ext eg-status <user_id>', { prefix: PREFIX });
+  }
+  const orgId = await resolveOrg(false);
+  const data = await slackApi('users.info', { user: userId }, orgId, { fatal: false });
+  if (!data.ok) {
+    if (data.error === 'user_not_found') cli.die('User not found: ' + userId, { prefix: PREFIX });
+    cli.die('users.info failed: ' + data.error, { prefix: PREFIX });
+  }
+  const user = data.user;
+  const uType = classifyUser(user);
+  section('Enterprise user: ' + userId);
+  kv('Name', (user.real_name || user.name || '(none)') + ' (' + user.id + ')');
+  kv('Handle', '@' + (user.name || '?'));
+  kv('Type', uType);
+  const eu = user.enterprise_user;
+  if (eu) {
+    kv('Org', eu.enterprise_name + ' (' + eu.enterprise_id + ')');
+    kv('Workspaces', eu.teams ? eu.teams.join(', ') : '(none)');
+  }
+  console.log('');
+  console.log(color.dim('  Read-only; no --confirm required.'));
+  console.log('');
+  if (flags.json) cli.out({ user });
+}
+
+// ── Command: eg-set-restricted (multi-channel guest) ─────────────────────────
+
+async function cmdEgSetRestricted() {
+  const userId = words[1];
+  if (!userId) cli.die('Usage: slack-ext eg-set-restricted <user_id> [--confirm]', { prefix: PREFIX });
+  const orgId = await resolveOrg(true);
+
+  const data = await slackApi('users.info', { user: userId }, orgId, { fatal: false });
+  if (!data.ok) {
+    if (data.error === 'user_not_found') cli.die('User not found: ' + userId, { prefix: PREFIX });
+    cli.die('users.info failed: ' + data.error, { prefix: PREFIX });
+  }
+  const user = data.user;
+  if (user.is_bot) cli.die('Cannot change account type of a bot user.', { prefix: PREFIX });
+  if (user.is_restricted && !user.is_ultra_restricted) {
+    section('No change needed');
+    kv('User', (user.real_name || user.name) + ' (' + userId + ')');
+    kv('Current type', 'multi-channel guest (already)');
+    console.log('');
+    return;
+  }
+
+  const params = buildEgSetRestrictedParams(userId);
+
+  section(flags.confirm ? 'Making multi-channel guest (org-level)' : 'Dry run — would make multi-channel guest (org-level)');
+  kv('User', (user.real_name || user.name) + ' (' + userId + ')');
+  kv('Current type', classifyUser(user));
+  kv('Method', 'enterprise.users.admin.setRestricted');
+  kv('Org', orgId);
+  console.log('');
+  console.log(color.dim('  Audit: change attributed to the admin whose token is in use, not a bot.'));
+  console.log('');
+
+  if (!flags.confirm) {
+    console.log(color.yellow('  No --confirm; nothing changed. Re-run with --confirm to apply.'));
+    console.log('');
+    return;
+  }
+
+  const result = await slackApi('enterprise.users.admin.setRestricted', params, orgId, { fatal: false });
+  if (!result.ok) {
+    cli.die('enterprise.users.admin.setRestricted failed: ' + result.error, { prefix: PREFIX });
+  }
+
+  // Read back to confirm — ok:true alone is not evidence.
+  const verify = await slackApi('users.info', { user: userId }, orgId, { fatal: false });
+  const newType = verify.ok ? classifyUser(verify.user) : '(read-back failed: ' + verify.error + ')';
+  section('Done');
+  kv('User', (user.real_name || user.name) + ' (' + userId + ')');
+  kv('New type', newType);
+  kv('Expected', 'multi-channel guest');
+  kv('Match', newType === 'multi-channel guest' ? color.green('yes') : color.red('NO — verify manually'));
+  console.log('');
+}
+
+// ── Command: eg-set-regular (full member) ─────────────────────────────────────
+
+async function cmdEgSetRegular() {
+  const userId = words[1];
+  if (!userId) cli.die('Usage: slack-ext eg-set-regular <user_id> [--confirm]', { prefix: PREFIX });
+  const orgId = await resolveOrg(true);
+
+  const data = await slackApi('users.info', { user: userId }, orgId, { fatal: false });
+  if (!data.ok) {
+    if (data.error === 'user_not_found') cli.die('User not found: ' + userId, { prefix: PREFIX });
+    cli.die('users.info failed: ' + data.error, { prefix: PREFIX });
+  }
+  const user = data.user;
+  if (user.is_bot) cli.die('Cannot change account type of a bot user.', { prefix: PREFIX });
+  if (!user.is_restricted && !user.is_ultra_restricted && !user.deleted) {
+    section('No change needed');
+    kv('User', (user.real_name || user.name) + ' (' + userId + ')');
+    kv('Current type', 'regular member (already)');
+    console.log('');
+    return;
+  }
+
+  const params = buildEgSetRegularParams(userId);
+
+  section(flags.confirm ? 'Promoting to full member (org-level)' : 'Dry run — would promote to full member (org-level)');
+  kv('User', (user.real_name || user.name) + ' (' + userId + ')');
+  kv('Current type', classifyUser(user));
+  kv('Method', 'enterprise.users.admin.setRegular');
+  kv('Org', orgId);
+  console.log('');
+  console.log(color.dim('  Audit: change attributed to the admin whose token is in use, not a bot.'));
+  console.log('');
+
+  if (!flags.confirm) {
+    console.log(color.yellow('  No --confirm; nothing changed. Re-run with --confirm to apply.'));
+    console.log('');
+    return;
+  }
+
+  const result = await slackApi('enterprise.users.admin.setRegular', params, orgId, { fatal: false });
+  if (!result.ok) {
+    cli.die('enterprise.users.admin.setRegular failed: ' + result.error, { prefix: PREFIX });
+  }
+
+  const verify = await slackApi('users.info', { user: userId }, orgId, { fatal: false });
+  const newType = verify.ok ? classifyUser(verify.user) : '(read-back failed: ' + verify.error + ')';
+  section('Done');
+  kv('User', (user.real_name || user.name) + ' (' + userId + ')');
+  kv('New type', newType);
+  kv('Match', newType === 'regular' ? color.green('yes') : color.red('NO — verify manually'));
+  console.log('');
+}
+
+// ── Command: eg-deactivate ────────────────────────────────────────────────────
+//
+// Deactivates a user via enterprise.users.admin.setStatus with status='delete'.
+// 'delete' is the observed wire value; it means DEACTIVATE (reversible).
+// The reactivating status value is NOT KNOWN — do not guess it.
+
+async function cmdEgDeactivate() {
+  const userId = words[1];
+  if (!userId) cli.die('Usage: slack-ext eg-deactivate <user_id> [--confirm]', { prefix: PREFIX });
+  const orgId = await resolveOrg(true);
+
+  const data = await slackApi('users.info', { user: userId }, orgId, { fatal: false });
+  if (!data.ok) {
+    if (data.error === 'user_not_found') cli.die('User not found: ' + userId, { prefix: PREFIX });
+    cli.die('users.info failed: ' + data.error, { prefix: PREFIX });
+  }
+  const user = data.user;
+  if (user.is_bot) cli.die('Cannot deactivate a bot user via this command.', { prefix: PREFIX });
+  if (user.deleted) {
+    section('No change needed');
+    kv('User', (user.real_name || user.name) + ' (' + userId + ')');
+    kv('Status', 'already deactivated');
+    console.log('');
+    return;
+  }
+
+  // status='delete' = DEACTIVATE. Reversible. 'delete' does NOT mean permanent delete.
+  const params = buildEgSetStatusParams(userId, 'delete');
+
+  section(flags.confirm ? 'Deactivating user (org-level)' : 'Dry run — would deactivate (org-level)');
+  kv('User', (user.real_name || user.name) + ' (' + userId + ')');
+  kv('Current type', classifyUser(user));
+  kv('Method', 'enterprise.users.admin.setStatus');
+  kv('status param', '"delete" (= deactivate, NOT permanent; reversible)');
+  kv('Org', orgId);
+  console.log('');
+  console.log(color.yellow('  NOTE: status=delete means DEACTIVATE. The account is recoverable.'));
+  console.log(color.dim('  Audit: change attributed to the admin whose token is in use, not a bot.'));
+  console.log('');
+
+  if (!flags.confirm) {
+    console.log(color.yellow('  No --confirm; nothing changed. Re-run with --confirm to apply.'));
+    console.log('');
+    return;
+  }
+
+  const result = await slackApi('enterprise.users.admin.setStatus', params, orgId, { fatal: false });
+  if (!result.ok) {
+    cli.die('enterprise.users.admin.setStatus failed: ' + result.error, { prefix: PREFIX });
+  }
+
+  const verify = await slackApi('users.info', { user: userId }, orgId, { fatal: false });
+  const newType = verify.ok ? classifyUser(verify.user) : '(read-back failed: ' + verify.error + ')';
+  section('Done');
+  kv('User', (user.real_name || user.name) + ' (' + userId + ')');
+  kv('New type', newType);
+  kv('Match', newType === 'deactivated' ? color.green('yes') : color.red('NO — verify manually'));
+  console.log('');
+}
+
+// ── Command: eg-forget (GDPR, IRREVERSIBLE) ────────────────────────────────────
+//
+// DESIGN DECISION: this command must NEVER be a flag on eg-deactivate and must
+// NEVER run inside an unattended bulk loop. It is its own command with an
+// explicit named-user confirmation at runtime.
+//
+// users.admin.profileDeidentify effect (PERMANENT, CANNOT BE UNDONE):
+//   real_name → "Deactivated User"
+//   handle    → "deactivateduser<N>"
+//   guest flags cleared
+//   The user's messages remain but lose author attribution.
+
+async function cmdEgForget() {
+  const userId = words[1];
+  if (!userId) cli.die('Usage: slack-ext eg-forget <user_id> [--confirm]', { prefix: PREFIX });
+  const orgId = await resolveOrg(true);
+
+  const data = await slackApi('users.info', { user: userId }, orgId, { fatal: false });
+  if (!data.ok) {
+    if (data.error === 'user_not_found') cli.die('User not found: ' + userId, { prefix: PREFIX });
+    cli.die('users.info failed: ' + data.error, { prefix: PREFIX });
+  }
+  const user = data.user;
+  const displayName = (user.real_name || user.name || userId);
+  const handle = user.name || userId;
+
+  section('GDPR FORGET — IRREVERSIBLE');
+  kv('User', displayName + ' (' + userId + ')');
+  kv('Handle', '@' + handle);
+  kv('Method', 'users.admin.profileDeidentify');
+  console.log('');
+  console.log(color.red('  !! IRREVERSIBLE !! This permanently scrubs the user\'s identity.'));
+  console.log(color.red('  real_name → "Deactivated User", handle → deactivateduser<N>'));
+  console.log(color.red('  Guest flags are cleared. Messages lose author attribution.'));
+  console.log(color.red('  CANNOT BE UNDONE. There is no undo, no support ticket that restores it.'));
+  console.log('');
+  console.log(color.dim('  Audit: change attributed to the admin whose token is in use, not a bot.'));
+  console.log('');
+
+  if (!flags.confirm) {
+    console.log(color.yellow('  No --confirm; nothing changed.'));
+    console.log(color.yellow('  To proceed, re-run with --confirm. This confirms you have verified'));
+    console.log(color.yellow('  the user ID above is the correct account and you accept it is permanent.'));
+    console.log('');
+    return;
+  }
+
+  // Extra safety: print the target name and ID in the final confirmation so
+  // there is no ambiguity about what will be forgotten.
+  console.log(color.red('  Proceeding. Target: ' + displayName + ' (' + userId + ')'));
+  console.log('');
+
+  const params = buildDeidentifyParams(userId);
+  const result = await slackApi('users.admin.profileDeidentify', params, orgId, { fatal: false });
+  if (!result.ok) {
+    cli.die('users.admin.profileDeidentify failed: ' + result.error, { prefix: PREFIX });
+  }
+
+  // Read back to confirm — what we expect is real_name = 'Deactivated User'.
+  const verify = await slackApi('users.info', { user: userId }, orgId, { fatal: false });
+  section('Forgot user (PERMANENT)');
+  if (verify.ok) {
+    kv('ID', userId);
+    kv('Real name now', verify.user.real_name || '(empty)');
+    kv('Handle now', '@' + (verify.user.name || '?'));
+  } else {
+    kv('ID', userId);
+    kv('Read-back', 'failed: ' + verify.error);
+  }
+  console.log('');
+}
+
+// ── Command: eg-bulk-guest ─────────────────────────────────────────────────────
+//
+// Convert a list of full members to multi-channel guests via
+// enterprise.users.admin.setRestricted. The primary motivating use case: convert
+// 14 vendor accounts that are currently full members.
+//
+// Input: user IDs as positional args, or --file=<path> (one ID per line, # comments).
+// Each user is read back via users.info after the call to confirm the change.
+// ok:true alone is not treated as evidence.
+
+async function cmdEgBulkGuest() {
+  const orgId = await resolveOrg(true);
+
+  // Collect user IDs from positional args and/or --file.
+  let userIds = words.slice(1).filter(Boolean);
+  if (flags.file) {
+    const filePath = flags.file === true ? null : flags.file;
+    if (!filePath) cli.die('--file requires a file path: --file=<path>', { prefix: PREFIX });
+    let raw;
+    try {
+      raw = fs.readFileSync(filePath, 'utf8');
+    } catch (e) {
+      cli.die('Cannot read file ' + filePath + ': ' + (e.message || e), { prefix: PREFIX });
+    }
+    const lines = raw.split('\n').map(s => s.trim()).filter(s => s && !s.startsWith('#'));
+    for (const line of lines) {
+      const parts = line.split(/\s+/);
+      if (/^U[A-Z0-9]+$/i.test(parts[0])) userIds.push(parts[0]);
+    }
+  }
+
+  // Deduplicate
+  userIds = [...new Set(userIds)];
+
+  if (userIds.length === 0) {
+    cli.die(
+      'No user IDs provided. Pass them as arguments or use --file=<path>.\n' +
+        '  Example: slack-ext eg-bulk-guest U12345 U67890 --confirm\n' +
+        '  Example: slack-ext eg-bulk-guest --file=vendors.txt --confirm',
+      { prefix: PREFIX }
+    );
+  }
+
+  section(flags.confirm ? 'Bulk guest conversion (' + userIds.length + ' users)' : 'Dry run — bulk guest conversion (' + userIds.length + ' users)');
+  console.log('  Method: enterprise.users.admin.setRestricted');
+  console.log('  Org:    ' + orgId);
+  console.log('');
+  console.log(color.dim('  Audit: changes attributed to the admin whose token is in use, not a bot.'));
+  console.log('');
+
+  if (!flags.confirm) {
+    console.log('  Users that WOULD be converted:');
+    for (const uid of userIds) console.log('    ' + uid);
+    console.log('');
+    console.log(color.yellow('  No --confirm; nothing changed. Re-run with --confirm to apply.'));
+    console.log('');
+    return;
+  }
+
+  const results = [];
+  for (const userId of userIds) {
+    // Look up current state
+    const info = await slackApi('users.info', { user: userId }, orgId, { fatal: false });
+    if (!info.ok) {
+      results.push({ userId, status: 'error', detail: 'users.info: ' + info.error });
+      continue;
+    }
+    const user = info.user;
+    const displayName = (user.real_name || user.name || userId);
+
+    // Skip bots
+    if (user.is_bot) {
+      results.push({ userId, status: 'skipped', detail: 'bot user — skipped' });
+      continue;
+    }
+    // Already a multi-channel guest
+    if (user.is_restricted && !user.is_ultra_restricted) {
+      results.push({ userId, status: 'no-op', detail: displayName + ' already multi-channel guest' });
+      continue;
+    }
+
+    const params = buildEgSetRestrictedParams(userId);
+    const result = await slackApi('enterprise.users.admin.setRestricted', params, orgId, { fatal: false });
+    if (!result.ok) {
+      results.push({ userId, status: 'error', detail: 'setRestricted: ' + result.error });
+      continue;
+    }
+
+    // Read back to confirm
+    const verify = await slackApi('users.info', { user: userId }, orgId, { fatal: false });
+    if (!verify.ok) {
+      results.push({ userId, status: 'ok-unconfirmed', detail: displayName + ' — read-back failed: ' + verify.error });
+      continue;
+    }
+    const newType = classifyUser(verify.user);
+    const confirmed = newType === 'multi-channel guest';
+    results.push({
+      userId,
+      status: confirmed ? 'ok' : 'mismatch',
+      detail: displayName + ' → ' + newType + (confirmed ? '' : ' (expected multi-channel guest)'),
+    });
+  }
+
+  // Summary table
+  section('Results (' + results.length + ' users)');
+  for (const r of results) {
+    const badge =
+      r.status === 'ok' ? color.green('  ok       ') :
+      r.status === 'no-op' ? color.dim('  no-op    ') :
+      r.status === 'skipped' ? color.dim('  skipped  ') :
+      r.status === 'ok-unconfirmed' ? color.yellow('  unconfirmed') :
+      color.red('  ERROR    ');
+    console.log(badge + ' ' + r.userId + '  ' + r.detail);
+  }
+  console.log('');
+  const errors = results.filter(r => r.status === 'error' || r.status === 'mismatch');
+  if (errors.length > 0) {
+    console.log(color.red('  ' + errors.length + ' user(s) had errors or mismatches — review above.'));
+  } else {
+    console.log(color.green('  All users processed without errors.'));
+  }
+  console.log('');
+
+  if (flags.json) cli.out({ results });
+}
+
+// ── Command: eg-set-ultra-restricted (UNVERIFIED) ─────────────────────────────
+//
+// ** UNVERIFIED endpoint. The method enterprise.users.admin.setUltraRestricted
+// is real (probe 2026-09-22 returned user_not_found, not unknown_method) but
+// ok:true was NEVER OBSERVED from a live admin UI session. The parameter
+// shape (just `user`, no `channel`) is a best-effort inference. Do NOT use
+// this command in production until it has been verified against a live account
+// and the channel restriction behaviour confirmed. **
+
+async function cmdEgSetUltraRestricted() {
+  const userId = words[1];
+  if (!userId) cli.die('Usage: slack-ext eg-set-ultra-restricted <user_id> [--confirm]', { prefix: PREFIX });
+  const orgId = await resolveOrg(true);
+
+  console.log('');
+  console.log(color.yellow('  WARNING: enterprise.users.admin.setUltraRestricted is UNVERIFIED.'));
+  console.log(color.yellow('  The endpoint is real but ok:true was never observed from the UI.'));
+  console.log(color.yellow('  Behaviour and parameter shape are unconfirmed. Do not use in production.'));
+  console.log('');
+
+  const data = await slackApi('users.info', { user: userId }, orgId, { fatal: false });
+  if (!data.ok) {
+    if (data.error === 'user_not_found') cli.die('User not found: ' + userId, { prefix: PREFIX });
+    cli.die('users.info failed: ' + data.error, { prefix: PREFIX });
+  }
+  const user = data.user;
+  if (user.is_bot) cli.die('Cannot change account type of a bot user.', { prefix: PREFIX });
+
+  const params = buildEgSetUltraRestrictedParams(userId);
+
+  section(flags.confirm ? 'Making single-channel guest, org-level (UNVERIFIED)' : 'Dry run — would make single-channel guest, org-level (UNVERIFIED)');
+  kv('User', (user.real_name || user.name) + ' (' + userId + ')');
+  kv('Current type', classifyUser(user));
+  kv('Method', 'enterprise.users.admin.setUltraRestricted (UNVERIFIED)');
+  kv('Org', orgId);
+  console.log('');
+  console.log(color.dim('  Audit: change attributed to the admin whose token is in use, not a bot.'));
+  console.log('');
+
+  if (!flags.confirm) {
+    console.log(color.yellow('  No --confirm; nothing changed.'));
+    console.log('');
+    return;
+  }
+
+  const result = await slackApi('enterprise.users.admin.setUltraRestricted', params, orgId, { fatal: false });
+  if (!result.ok) {
+    cli.die('enterprise.users.admin.setUltraRestricted failed: ' + result.error + '\n  (This endpoint is unverified — the error may indicate wrong parameter shape.)', { prefix: PREFIX });
+  }
+
+  const verify = await slackApi('users.info', { user: userId }, orgId, { fatal: false });
+  const newType = verify.ok ? classifyUser(verify.user) : '(read-back failed: ' + verify.error + ')';
+  section('Done (UNVERIFIED endpoint)');
+  kv('User', (user.real_name || user.name) + ' (' + userId + ')');
+  kv('New type', newType);
+  kv('Expected', 'single-channel guest');
+  kv('Match', newType === 'single-channel guest' ? color.green('yes') : color.red('NO — verify manually (endpoint unverified)'));
+  console.log('');
+}
+
+// ══ Channel management ════════════════════════════════════════════════════════
+
+// ── Command: channel-search ────────────────────────────────────────────────────
+//
+// Enumerates channels via admin.conversations.search and optionally filters
+// locally. IMPORTANT: the channel_ids filter parameter is SILENTLY IGNORED by
+// Slack — never pass it; always filter locally. See measured defect in
+// slack-ext-grid.js wire facts.
+
+async function cmdChannelSearch() {
+  const orgId = await resolveOrg(false);
+  const query = flags.query || flags.q || words[1] || '';
+  const limit = parseInt(flags.limit || '50', 10) || 50;
+  const max = parseInt(flags.max || '0', 10) || 0;
+
+  section('Channel search');
+  if (query) kv('Query', query);
+  kv('Org', orgId);
+  kv('Page limit', String(limit));
+  if (max) kv('Max results', String(max));
+  console.log('');
+  console.log(color.dim('  NOTE: channel_ids filter is silently ignored by Slack — filtering locally.'));
+  console.log('');
+
+  let cursor = '';
+  const allChannels = [];
+  let pages = 0;
+  do {
+    const params = buildChannelSearchParams('', limit, cursor);
+    // NOTE: do NOT pass a query to the API here — Slack's query filtering is
+    // not reliable for exact ID matching (measured defect), so we collect all
+    // and filter locally. A text query is harmless and reduces pages fetched.
+    if (query && !/^C[A-Z0-9]+$/i.test(query)) params.query = query;
+    const data = await slackApi('admin.conversations.search', params, orgId, { fatal: false });
+    if (!data.ok) cli.die('admin.conversations.search failed: ' + data.error, { prefix: PREFIX });
+    pages += 1;
+    for (const ch of (data.conversations || [])) allChannels.push(ch);
+    cursor = data.next_cursor || '';
+    if (max > 0 && allChannels.length >= max) { cursor = ''; break; }
+  } while (cursor);
+
+  // Filter locally (handles exact ID lookup)
+  const filtered = filterChannels(allChannels, query);
+
+  kv('Total (org)', String(allChannels.length) + (cursor ? '+' : '') + ' across ' + pages + ' page(s)');
+  kv('Matching', String(filtered.length));
+  console.log('');
+
+  if (filtered.length === 0) {
+    console.log('  (no channels matched)');
+    console.log('');
+    return;
+  }
+
+  // Table output
+  const cols = [
+    { h: 'ID',       w: 12 },
+    { h: 'Name',     w: 32 },
+    { h: 'Members',  w: 8 },
+    { h: 'Private',  w: 8 },
+    { h: 'Archived', w: 9 },
+  ];
+  const header = cols.map(c => c.h.padEnd(c.w)).join('  ');
+  console.log('  ' + color.bold(header));
+  console.log('  ' + '\u2500'.repeat(header.length));
+  for (const ch of filtered.slice(0, max || filtered.length)) {
+    const row = [
+      (ch.id || '').padEnd(cols[0].w),
+      (ch.name || '').slice(0, cols[1].w - 1).padEnd(cols[1].w),
+      String(ch.member_count || 0).padEnd(cols[2].w),
+      (ch.is_private ? 'yes' : 'no').padEnd(cols[3].w),
+      (ch.is_archived ? 'yes' : 'no').padEnd(cols[4].w),
+    ].join('  ');
+    console.log('  ' + row);
+  }
+  console.log('');
+
+  if (flags.json) cli.out({ channels: filtered.map(summarizeChannel), total: filtered.length });
+}
+
+// ── Command: channel-to-public ────────────────────────────────────────────────
+
+async function cmdChannelToPublic() {
+  const channelId = words[1];
+  if (!channelId) cli.die('Usage: slack-ext channel-to-public <channel_id> [--confirm]', { prefix: PREFIX });
+  const orgId = await resolveOrg(true);
+
+  section(flags.confirm ? 'Converting to public' : 'Dry run — would convert to public');
+  kv('Channel', channelId);
+  kv('Method', 'admin.conversations.convertToPublic');
+  kv('Org', orgId);
+  console.log('');
+  console.log(color.dim('  Audit: change attributed to the admin whose token is in use, not a bot.'));
+  console.log('');
+
+  if (!flags.confirm) {
+    console.log(color.yellow('  No --confirm; nothing changed. Re-run with --confirm to apply.'));
+    console.log('');
+    return;
+  }
+
+  const params = buildConvertChannelParams(channelId);
+  const result = await slackApi('admin.conversations.convertToPublic', params, orgId, { fatal: false });
+  if (!result.ok) {
+    cli.die('admin.conversations.convertToPublic failed: ' + result.error, { prefix: PREFIX });
+  }
+  section('Done');
+  kv('Channel', channelId);
+  kv('Visibility', 'public');
+  console.log('');
+}
+
+// ── Command: channel-to-private ───────────────────────────────────────────────
+//
+// PRIVATE CHANNEL INVISIBILITY WARNING:
+// After converting to private, conversations.info returns channel_not_found for
+// non-members, conversations.genericInfo returns ok:true with an EMPTY array,
+// and the edge cache returns the id under failed_ids. This is expected behaviour
+// for a private channel, NOT a sign of an error — but it looks exactly like a
+// deleted channel to any caller that does not know to check failed_ids.
+
+async function cmdChannelToPrivate() {
+  const channelId = words[1];
+  if (!channelId) cli.die('Usage: slack-ext channel-to-private <channel_id> [--confirm]', { prefix: PREFIX });
+  const orgId = await resolveOrg(true);
+
+  section(flags.confirm ? 'Converting to private' : 'Dry run — would convert to private');
+  kv('Channel', channelId);
+  kv('Method', 'admin.conversations.convertToPrivate');
+  kv('Org', orgId);
+  console.log('');
+  console.log(color.yellow('  IMPORTANT: after converting, conversations.info returns channel_not_found'));
+  console.log(color.yellow('  for any non-member of the private channel. This is expected, not an error.'));
+  console.log(color.dim('  Audit: change attributed to the admin whose token is in use, not a bot.'));
+  console.log('');
+
+  if (!flags.confirm) {
+    console.log(color.yellow('  No --confirm; nothing changed. Re-run with --confirm to apply.'));
+    console.log('');
+    return;
+  }
+
+  const params = buildConvertChannelParams(channelId);
+  const result = await slackApi('admin.conversations.convertToPrivate', params, orgId, { fatal: false });
+  if (!result.ok) {
+    cli.die('admin.conversations.convertToPrivate failed: ' + result.error, { prefix: PREFIX });
+  }
+  section('Done');
+  kv('Channel', channelId);
+  kv('Visibility', 'private');
+  console.log('');
+  console.log(color.dim('  Note: conversations.info will now return channel_not_found for non-members.'));
+  console.log(color.dim('  Use admin.conversations.search to confirm the channel still exists.'));
+  console.log('');
+}
+
+// ══ Slack Connect approvals ════════════════════════════════════════════════════
+
+// ── Command: approvals ─────────────────────────────────────────────────────────
+
+async function cmdApprovals() {
+  const orgId = await resolveOrg(false);
+  const limit = parseInt(flags.limit || '25', 10) || 25;
+  const query = flags.query || flags.q || '';
+  const showAll = flags.all;
+
+  section('Slack Connect shared approvals');
+  kv('Org', orgId);
+  if (query) kv('Query', query);
+  console.log('');
+
+  // Collect pages
+  const collected = await collectPages(
+    async (cursor) => {
+      const params = buildApprovalsListParams(limit, query, cursor);
+      return slackApi('conversations.sharedApprovals.list', params, orgId, { fatal: false });
+    },
+    'approvals',
+    showAll ? 0 : (flags.max ? parseInt(flags.max, 10) : 200)
+  );
+
+  if (collected.error) {
+    cli.die('conversations.sharedApprovals.list failed: ' + collected.error, { prefix: PREFIX });
+  }
+
+  kv('Total fetched', String(collected.total_fetched));
+  console.log('');
+
+  if (collected.items.length === 0) {
+    console.log('  (no approvals found)');
+    console.log('');
+    return;
+  }
+
+  // Table
+  const cols = [
+    { h: 'ID',          w: 14 },
+    { h: 'Partner org', w: 26 },
+    { h: 'Channel',     w: 22 },
+    { h: 'Status',      w: 12 },
+    { h: 'Expires',     w: 12 },
+  ];
+  const header = cols.map(c => c.h.padEnd(c.w)).join('  ');
+  console.log('  ' + color.bold(header));
+  console.log('  ' + '\u2500'.repeat(header.length));
+  for (const a of collected.items) {
+    const s = summarizeApproval(a);
+    const expiry = s.expires ? new Date(s.expires * 1000).toISOString().slice(0, 10) : '-';
+    const row = [
+      (s.id || '').padEnd(cols[0].w),
+      (s.partner_org || '').slice(0, cols[1].w - 1).padEnd(cols[1].w),
+      (s.channel || '').slice(0, cols[2].w - 1).padEnd(cols[2].w),
+      (s.status || '').padEnd(cols[3].w),
+      expiry.padEnd(cols[4].w),
+    ].join('  ');
+    console.log('  ' + row);
+  }
+  console.log('');
+
+  if (flags.json) cli.out({ approvals: collected.items.map(summarizeApproval), total: collected.total_fetched });
+}
+
+// ══ App governance ════════════════════════════════════════════════════════════
+
+// ── Command: admin-app approve ─────────────────────────────────────────────────
+//
+// Approve an app install request or an already-resolved app.
+// SINGLE-USE request_id: once a request is approved, trying to restrict the
+// same request_id returns request_already_resolved. Use app_id+enterprise_id
+// to reverse a resolved request.
+
+async function cmdAdminAppApprove() {
+  const input = words[1];
+  if (!input) {
+    cli.die(
+      'Usage: slack-ext admin-app approve <app_id|request_id> [--confirm]\n' +
+        '  app_id (A…) — approve a previously resolved app\n' +
+        '  request_id (I…) — approve a pending install request (SINGLE-USE)',
+      { prefix: PREFIX }
+    );
+  }
+  const resolved = resolveAppOrRequestId(input);
+  if (!resolved) {
+    cli.die(
+      'Invalid id "' + input + '". App IDs start with A (e.g. A0123456789);\n' +
+        '  install request IDs start with I (e.g. I0C3EKRE3S5).',
+      { prefix: PREFIX }
+    );
+  }
+  const orgId = await resolveOrg(true);
+  const params = buildAppApproveRestrictParams(Object.assign({ enterpriseId: orgId }, resolved));
+
+  section(flags.confirm ? 'Approving app' : 'Dry run — would approve app');
+  if (resolved.requestId) {
+    kv('Request ID', resolved.requestId);
+    console.log('');
+    console.log(color.yellow('  SINGLE-USE: a request_id can only be resolved once. If you approve then'));
+    console.log(color.yellow('  try to restrict the same request_id, Slack returns request_already_resolved.'));
+    console.log(color.yellow('  To reverse, use the app_id (A…) + enterprise_id instead.'));
+  } else {
+    kv('App ID', resolved.appId);
+    kv('Org', orgId);
+  }
+  console.log('');
+  console.log(color.dim('  Audit: change attributed to the admin whose token is in use, not a bot.'));
+  console.log('');
+
+  if (!flags.confirm) {
+    console.log(color.yellow('  No --confirm; nothing changed. Re-run with --confirm to apply.'));
+    console.log('');
+    return;
+  }
+
+  const result = await slackApi('admin.apps.approve', params, orgId, { fatal: false });
+  if (!result.ok) {
+    if (result.error === 'request_already_resolved') {
+      cli.die(
+        'request_already_resolved: this request_id was already actioned.\n' +
+          '  To change the resolution, use the app_id (A…) + enterprise_id.',
+        { prefix: PREFIX }
+      );
+    }
+    cli.die('admin.apps.approve failed: ' + result.error, { prefix: PREFIX });
+  }
+  section('Done');
+  kv('Approved', input);
+  console.log('');
+}
+
+// ── Command: admin-app restrict ────────────────────────────────────────────────
+
+async function cmdAdminAppRestrict() {
+  const input = words[1];
+  if (!input) {
+    cli.die(
+      'Usage: slack-ext admin-app restrict <app_id|request_id> [--confirm]\n' +
+        '  request_id is SINGLE-USE — see admin-app approve for details.',
+      { prefix: PREFIX }
+    );
+  }
+  const resolved = resolveAppOrRequestId(input);
+  if (!resolved) {
+    cli.die(
+      'Invalid id "' + input + '". App IDs start with A; request IDs start with I.',
+      { prefix: PREFIX }
+    );
+  }
+  const orgId = await resolveOrg(true);
+  const params = buildAppApproveRestrictParams(Object.assign({ enterpriseId: orgId }, resolved));
+
+  section(flags.confirm ? 'Restricting app' : 'Dry run — would restrict app');
+  if (resolved.requestId) {
+    kv('Request ID', resolved.requestId);
+    console.log('');
+    console.log(color.yellow('  SINGLE-USE: a request_id can only be resolved once.'));
+  } else {
+    kv('App ID', resolved.appId);
+    kv('Org', orgId);
+  }
+  console.log('');
+  console.log(color.dim('  Audit: change attributed to the admin whose token is in use, not a bot.'));
+  console.log('');
+
+  if (!flags.confirm) {
+    console.log(color.yellow('  No --confirm; nothing changed. Re-run with --confirm to apply.'));
+    console.log('');
+    return;
+  }
+
+  const result = await slackApi('admin.apps.restrict', params, orgId, { fatal: false });
+  if (!result.ok) {
+    if (result.error === 'request_already_resolved') {
+      cli.die(
+        'request_already_resolved: this request_id was already actioned.\n' +
+          '  To change the resolution, use the app_id (A…) + enterprise_id.',
+        { prefix: PREFIX }
+      );
+    }
+    cli.die('admin.apps.restrict failed: ' + result.error, { prefix: PREFIX });
+  }
+  section('Done');
+  kv('Restricted', input);
+  console.log('');
+}
+
+// ── Command: admin-app clear ───────────────────────────────────────────────────
+
+async function cmdAdminAppClear() {
+  const appId = words[1];
+  if (!appId || !/^A[A-Z0-9]+$/i.test(appId)) {
+    cli.die('Usage: slack-ext admin-app clear <app_id> [--confirm]  (app_id starts with A)', { prefix: PREFIX });
+  }
+  const orgId = await resolveOrg(true);
+  const params = buildAppClearResolutionParams(appId, orgId);
+
+  section(flags.confirm ? 'Clearing app resolution' : 'Dry run — would clear app resolution');
+  kv('App ID', appId);
+  kv('Org', orgId);
+  kv('Method', 'admin.apps.clearResolution');
+  console.log('');
+  console.log(color.dim('  Audit: change attributed to the admin whose token is in use, not a bot.'));
+  console.log('');
+
+  if (!flags.confirm) {
+    console.log(color.yellow('  No --confirm; nothing changed. Re-run with --confirm to apply.'));
+    console.log('');
+    return;
+  }
+
+  const result = await slackApi('admin.apps.clearResolution', params, orgId, { fatal: false });
+  if (!result.ok) {
+    cli.die('admin.apps.clearResolution failed: ' + result.error, { prefix: PREFIX });
+  }
+  section('Done');
+  kv('Cleared', appId);
+  console.log('');
+}
+
+// ── Command: admin-app permissions ────────────────────────────────────────────
+
+async function cmdAdminAppPermissions() {
+  const appId = words[1];
+  const permType = flags.type || flags['permission-type'];
+  if (!appId || !/^A[A-Z0-9]+$/i.test(appId)) {
+    cli.die(
+      'Usage: slack-ext admin-app permissions <app_id> --type=<permission_type> [--confirm]\n' +
+        '  --type values: no_one | everyone | named_entities',
+      { prefix: PREFIX }
+    );
+  }
+  if (!permType || !isValidPermissionType(permType)) {
+    cli.die(
+      '--type is required and must be one of: no_one, everyone, named_entities\n' +
+        '  Got: ' + (permType || '(none)'),
+      { prefix: PREFIX }
+    );
+  }
+  const orgId = await resolveOrg(true);
+  const params = buildAppPermissionsParams(appId, permType);
+
+  section(flags.confirm ? 'Setting app permissions' : 'Dry run — would set app permissions');
+  kv('App ID', appId);
+  kv('Permission type', permType);
+  kv('Method', 'admin.apps.permissions.set');
+  console.log('');
+  console.log(color.dim('  Audit: change attributed to the admin whose token is in use, not a bot.'));
+  console.log('');
+
+  if (!flags.confirm) {
+    console.log(color.yellow('  No --confirm; nothing changed. Re-run with --confirm to apply.'));
+    console.log('');
+    return;
+  }
+
+  const result = await slackApi('admin.apps.permissions.set', params, orgId, { fatal: false });
+  if (!result.ok) {
+    cli.die('admin.apps.permissions.set failed: ' + result.error, { prefix: PREFIX });
+  }
+  section('Done');
+  kv('App ID', appId);
+  kv('permission_type', result.permission_type || permType);
+  if (result.channel_restriction_mode) kv('channel_restriction_mode', result.channel_restriction_mode);
+  console.log('');
+  if (flags.json) cli.out({ ok: true, permission_type: result.permission_type, channel_restriction_mode: result.channel_restriction_mode });
+}
+
+// ── Command: admin-app list ────────────────────────────────────────────────────
+
+async function cmdAdminAppList() {
+  const orgId = await resolveOrg(false);
+  const restricted = flags.restricted || words[1] === 'restricted';
+  const method = restricted ? 'admin.apps.restricted.list' : 'admin.apps.approved.list';
+  const listKey = restricted ? 'restricted_apps' : 'approved_apps';
+  const limit = parseInt(flags.limit || '50', 10) || 50;
+
+  section(restricted ? 'Restricted apps' : 'Approved apps');
+  kv('Org', orgId);
+  kv('Method', method);
+  console.log('');
+
+  const collected = await collectPages(
+    async (cursor) => {
+      const params = buildAppListParams(orgId, limit, cursor);
+      const data = await slackApi(method, params, orgId, { fatal: false });
+      // Normalize key: API uses approved_apps / restricted_apps
+      if (data.ok && !data[listKey]) {
+        // Some versions use 'apps' as the key
+        data[listKey] = data.apps || [];
+      }
+      return data;
+    },
+    listKey,
+    0
+  );
+
+  if (collected.error) {
+    cli.die(method + ' failed: ' + collected.error, { prefix: PREFIX });
+  }
+
+  kv('Total', String(collected.total_fetched));
+  console.log('');
+
+  if (collected.items.length === 0) {
+    console.log('  (none found)');
+    console.log('');
+    return;
+  }
+
+  const cols = [
+    { h: 'App ID',   w: 12 },
+    { h: 'Name',     w: 34 },
+    { h: 'Internal', w: 9 },
+    { h: 'Updated',  w: 12 },
+  ];
+  const header = cols.map(c => c.h.padEnd(c.w)).join('  ');
+  console.log('  ' + color.bold(header));
+  console.log('  ' + '\u2500'.repeat(header.length));
+  for (const entry of collected.items) {
+    const app = entry.app || entry;
+    const updated = entry.date_updated
+      ? new Date(entry.date_updated * 1000).toISOString().slice(0, 10)
+      : '-';
+    const row = [
+      (app.id || '').padEnd(cols[0].w),
+      (app.name || '').slice(0, cols[1].w - 1).padEnd(cols[1].w),
+      (app.is_internal ? 'yes' : 'no').padEnd(cols[2].w),
+      updated.padEnd(cols[3].w),
+    ].join('  ');
+    console.log('  ' + row);
+  }
+  console.log('');
+
+  if (flags.json) cli.out({ apps: collected.items, total: collected.total_fetched });
+}
+
+// ── Enterprise Grid dispatch ───────────────────────────────────────────────────
+
+async function cmdAdminApp() {
+  const sub = words[1] || '';
+  if (sub === 'approve') return cmdAdminAppApprove();
+  if (sub === 'restrict') return cmdAdminAppRestrict();
+  if (sub === 'clear') return cmdAdminAppClear();
+  if (sub === 'permissions') return cmdAdminAppPermissions();
+  if (sub === 'list') return cmdAdminAppList();
+  cli.die(
+    'Unknown admin-app subcommand: ' + (sub || '(none)') + '\n' +
+      '  Read-only: list\n' +
+      '  Writes (need --confirm): approve, restrict, clear, permissions',
+    { prefix: PREFIX }
+  );
+}
+
