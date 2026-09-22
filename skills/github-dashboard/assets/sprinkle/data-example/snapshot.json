@@ -1,0 +1,134 @@
+{
+  "version": 1,
+  "generatedAt": "2026-01-15T09:00:00.000Z",
+  "meta": {
+    "generator": "hand-written example fixture (not produced by fetch-snapshot.mjs)",
+    "bbOrigin": "https://bb.example.invalid",
+    "repos": [
+      {
+        "slug": "example-org/example-app",
+        "bbProject": null
+      }
+    ],
+    "note": "Synthetic data for review. Point the panel at a real snapshot to see real work.",
+    "windowDays": 5,
+    "threadLinkage": {
+      "projects": {},
+      "linked": 0,
+      "listing": {
+        "limit": 2000,
+        "returned": 0,
+        "possiblyTruncated": false
+      }
+    }
+  },
+  "records": [
+    {
+      "id": "101",
+      "repo": "example-org/example-app",
+      "kind": "pr",
+      "title": "fix(api): reject empty page tokens",
+      "url": "https://github.com/example-org/example-app/pull/101",
+      "stage": 6,
+      "openedAt": "2026-01-14T03:00:00.000Z",
+      "lastActivityAt": "2026-01-15T07:00:00.000Z",
+      "labels": [
+        "api",
+        "bug"
+      ],
+      "status": "In review; one reviewer has not responded for two days.",
+      "statusLong": "Review requested twice. CI is green. The change is small: a guard plus a test.\n\n- guard added in `pageToken()`\n- one regression test",
+      "bodyExcerpt": "## Summary\n\nAn empty `pageToken` used to return the first page silently. It now 400s.\n\n## Why\n\nA caller looping on the token never terminated.",
+      "ci": "passing",
+      "commentsCount": 3,
+      "recentComments": [
+        {
+          "at": "2026-01-15T07:00:00.000Z",
+          "text": "Could you add a test for the empty-string case? Otherwise this looks right to me."
+        }
+      ],
+      "actions": [
+        {
+          "kind": "nudge",
+          "label": "Chase the second reviewer",
+          "because": "requested 2 days ago, no response",
+          "grounds": "stage",
+          "target": {
+            "type": "pr",
+            "ref": "example-org/example-app#101",
+            "url": "https://github.com/example-org/example-app/pull/101"
+          }
+        }
+      ]
+    },
+    {
+      "id": "102",
+      "repo": "example-org/example-app",
+      "kind": "issue",
+      "title": "Decide the retry policy for the uploader",
+      "url": "https://github.com/example-org/example-app/issues/102",
+      "stage": 1,
+      "openedAt": "2026-01-10T09:00:00.000Z",
+      "lastActivityAt": "2026-01-11T09:00:00.000Z",
+      "labels": [
+        "question"
+      ],
+      "status": "Open issue; nothing has moved for four days.",
+      "bodyExcerpt": "Two options: exponential backoff capped at a minute, or a fixed three attempts. The choice affects the queue depth.",
+      "commentsCount": 1,
+      "recentComments": [
+        {
+          "at": "2026-01-11T09:00:00.000Z",
+          "text": "Both are fine operationally. This needs a product call."
+        }
+      ],
+      "actions": [
+        {
+          "kind": "clarify",
+          "label": "Choose backoff or fixed retries",
+          "because": "the implementation is blocked on the choice",
+          "grounds": "comment",
+          "target": {
+            "type": "issue",
+            "ref": "example-org/example-app#102",
+            "url": "https://github.com/example-org/example-app/issues/102"
+          }
+        }
+      ]
+    },
+    {
+      "id": "103",
+      "repo": "example-org/example-app",
+      "kind": "pr",
+      "title": "perf(ui): memoise the row renderer",
+      "url": "https://github.com/example-org/example-app/pull/103",
+      "stage": 4,
+      "openedAt": "2026-01-15T01:00:00.000Z",
+      "lastActivityAt": "2026-01-15T08:00:00.000Z",
+      "labels": [
+        "ui"
+      ],
+      "status": "An agent is working on it; CI is running.",
+      "ci": "running",
+      "commentsCount": 0,
+      "recentComments": []
+    },
+    {
+      "id": "104",
+      "repo": "example-org/example-app",
+      "kind": "pr",
+      "title": "chore(deps): bump the test runner",
+      "url": "https://github.com/example-org/example-app/pull/104",
+      "stage": 10,
+      "openedAt": "2026-01-13T07:00:00.000Z",
+      "lastActivityAt": "2026-01-14T13:00:00.000Z",
+      "labels": [
+        "dependencies"
+      ],
+      "status": "Released.",
+      "ci": "passing",
+      "commentsCount": 0,
+      "recentComments": []
+    }
+  ]
+}
