@@ -693,7 +693,7 @@ async function cmdSetSingle() {
   kv('Channel', channelId);
   kv('Workspace', wsId);
   console.log('');
-  console.log(color.dim('  xoxc session call: appears as the human's own action in channel event history.'));
+  console.log(color.dim("  xoxc session call: appears as the human's own action in channel event history."));
   console.log('');
 }
 
@@ -759,7 +759,7 @@ async function cmdSetMulti() {
   kv('New type', 'multi-channel guest');
   kv('Workspace', wsId);
   console.log('');
-  console.log(color.dim('  xoxc session call: appears as the human's own action in channel event history.'));
+  console.log(color.dim("  xoxc session call: appears as the human's own action in channel event history."));
   console.log('');
 }
 
@@ -825,7 +825,7 @@ async function cmdSetMember() {
   kv('New type', 'regular member');
   kv('Workspace', wsId);
   console.log('');
-  console.log(color.dim('  xoxc session call: appears as the human's own action in channel event history.'));
+  console.log(color.dim("  xoxc session call: appears as the human's own action in channel event history."));
   console.log('');
 }
 
@@ -897,7 +897,7 @@ async function cmdAddChannel() {
   kv('Added to', channelId);
   kv('Workspace', wsId);
   console.log('');
-  console.log(color.dim('  xoxc session call: appears as the human's own action in channel event history.'));
+  console.log(color.dim("  xoxc session call: appears as the human's own action in channel event history."));
   console.log('');
 }
 
@@ -969,7 +969,7 @@ async function cmdRemoveChannel() {
   kv('Removed from', channelId);
   kv('Workspace', wsId);
   console.log('');
-  console.log(color.dim('  xoxc session call: appears as the human's own action in channel event history.'));
+  console.log(color.dim("  xoxc session call: appears as the human's own action in channel event history."));
   console.log('');
 }
 
