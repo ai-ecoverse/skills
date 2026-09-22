@@ -3,8 +3,10 @@
 // Run from skills/slack/:
 //   tst tests/slack-ext-grid.test.js
 //
-// This file imports only `tst` and the relative module. No node:test, no fs,
-// no path, no sliccy:* — runs in the SLICC test realm as-is.
+// This file imports only `tst` and the relative module — no builtin test runner,
+// no fs, no path, no sliccy:* — so it runs in the SLICC test realm as-is, and no
+// integration detector can class it as a skip. Do not name that runner even in a
+// comment here: a substring-based detector would skip this file for mentioning it.
 //
 // Covers: parameter builders, ID classifiers, channel helpers, approval
 // helpers, user classification, and the pagination utility.
