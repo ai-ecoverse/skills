@@ -1,7 +1,8 @@
 // kev — typed decisions from a local Kev model.
-// First ask installs @ai-ecoverse/kev.js, bundles it with esbuild, stages
-// onnxruntime-web, and downloads one q8f32 variant with hf. A bundle written
-// in this process is invisible to require(), so that first ask re-execs once.
+// First ask installs @ai-ecoverse/kev.js, bundles it with esbuild and stages
+// onnxruntime-web. A bundle written in this process is invisible to
+// require(), so that first ask re-execs once. Weights come from `kev pull`,
+// which runs slicc's `hf`; ask stops with that command when they are missing.
 
 const cli = require('sliccy:cli');
 const fs = require('fs');
@@ -17,8 +18,13 @@ kev — typed decisions from a local Kev model
 
 USAGE
   kev ask [name:type:instruction ...] [options]
+  kev pull [--model 0.8b|4b|9b]
   kev prepare
 
+  pull                 Download one model's q8f32 weights with slicc's hf
+                       (0.8b 800 MB, 4b 4.7 GB, 9b 8.8 GB). Run it again after an
+                       interruption: files already at full size are skipped.
+                       Progress: /tmp/kev/pull.log
   prepare              Install the kev bundle and onnxruntime-web, then exit
 
   ask                  Score questions against a piece of text
@@ -28,13 +34,13 @@ USAGE
                        --state file|-     text to judge (default: stdin when piped)
                        --questions file   System One questions JSON, instead of positionals
                        --model 0.8b|4b|9b default 0.8b (4b is 4.7 GB, 9b is 8.8 GB)
-                       --from path        weight directory (default: hf download of q8f32)
+                       --from path        weight directory (default: what kev pull fetched)
                        --date-facts       append day counts between absolute dates
                        --json             print the System One response
 
 A question with spaces in the instruction is one quoted argument.
-The first ask downloads the weights (~800 MB for 0.8b q8f32) and needs
-onnxruntime-web, installed with ipk on that first run.
+Run kev pull once before the first ask. The first ask installs onnxruntime-web
+and the kev bundle with ipk.
 Nothing in the answer is free text: each question picks one of the options you gave it.
 `.trim();
 
@@ -76,6 +82,10 @@ async function cmdAsk(flags, positionals) {
   }
   const modelName = flags.model || '0.8b';
   if (!runtime.MODELS[modelName]) cli.die('--model must be 0.8b, 4b, or 9b', { prefix: 'kev' });
+  if (!flags.from) {
+    const status = await runtime.weightsStatus(fs, modelName);
+    if (status.missing.length) cli.die(runtime.missingWeightsMessage(status), { prefix: 'kev' });
+  }
   await prepareRuntime();
   const parsedQuestions = flags.questions
     ? questions.parseQuestionsJson(await readArg(flags.questions))
@@ -106,6 +116,18 @@ async function cmdAsk(flags, positionals) {
   process.stdout.write(questions.formatAnswers(response.answers));
 }
 
+async function cmdPull(flags) {
+  const modelName = flags.model || '0.8b';
+  if (!runtime.MODELS[modelName]) cli.die('--model must be 0.8b, 4b, or 9b', { prefix: 'kev' });
+  const status = await runtime.pullWeights(fs, exec, modelName, (line) => console.error(line));
+  if (status.missing.length) {
+    cli.die(`${status.missing.length} files are still missing. Run kev pull --model ${modelName} again.`, {
+      prefix: 'kev',
+    });
+  }
+  console.log(`kev-${modelName}: ${status.files} files in ${status.base}`);
+}
+
 async function main() {
   const parsed = host.normalizeFlags(process.argv.parseFlags(), [
     'json',
@@ -121,6 +143,7 @@ async function main() {
   }
   try {
     if (sub === 'ask') await cmdAsk(flags, parsed.positional.slice(1));
+    else if (sub === 'pull') await cmdPull(flags);
     else if (sub === 'prepare') {
       await prepareRuntime();
       console.error('kev: runtime ready');
