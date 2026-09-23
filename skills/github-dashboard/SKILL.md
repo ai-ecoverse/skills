@@ -209,12 +209,14 @@ an end-of-day rule would have to guess one. The body prints the date only
 a day it still names — correct, because the filing really has lapsed, and the
 panel remains the precise view, showing `2026-09-22 20:09Z`.
 
-> **If you ever implement `lastCommentAt`**, exclude comments carrying the
-> `ghd-mirror` marker. The panel already treats a snooze as cancelled when a
-> comment postdates it; that rule is inert today because the fetcher never
-> populates the field. Wire it up naively and the mirror's own comment cancels
-> every snooze it publishes, then deletes itself, then reposts — a flap on a
-> public card every 30 minutes.
+> **`lastCommentAt` must ignore the mirror's own comment.** The panel treats a
+> snooze as cancelled when a comment postdates it, so the fetcher excludes
+> comments that carry the `ghd-mirror` marker and were written by the
+> authenticated user, and Bot-authored comments. Without that, the mirror's own
+> post would make every snooze it publishes look cancelled in the panel, and
+> re-snoozing would restart the backoff. The damage stays local: the mirror
+> decides a snooze from its expiry alone, never from comments, so it neither
+> deletes nor re-posts.
 
 ### Why a reconciler and not a button
 
