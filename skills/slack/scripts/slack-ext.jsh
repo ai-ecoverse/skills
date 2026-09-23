@@ -2111,12 +2111,6 @@ async function main() {
   );
 }
 
-try {
-  await main();
-} catch (err) {
-  if (err && err.name === 'NodeExitError') throw err;
-  cli.die((err && err.message) || String(err), { prefix: PREFIX });
-}
 
 // ══ Enterprise Grid admin commands (`slack-ext eg-*`, `channel-*`, etc.) ══════
 //
@@ -3183,3 +3177,18 @@ async function cmdAdminApp() {
   );
 }
 
+// ── Entry point ─────────────────────────────────────────────────────────────
+//
+// This MUST stay the last top-level statement in the file. main() runs as soon
+// as it is reached, and function declarations hoist but `const` does not: any
+// top-level `const`/`let` below this point is still in its temporal dead zone
+// when a command reads it. That shipped once - every eg-* and channel-* command
+// died with "Cannot access 'ORG_ID' before initialization" - while the suites
+// passed, because they strip from here to EOF and so never loaded that code.
+// tests/slack-ext.test.js asserts nothing follows this block.
+try {
+  await main();
+} catch (err) {
+  if (err && err.name === 'NodeExitError') throw err;
+  cli.die((err && err.message) || String(err), { prefix: PREFIX });
+}

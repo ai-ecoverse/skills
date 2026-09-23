@@ -74,7 +74,11 @@ async function load(opts) {
     async localStorage(tab, key) {
       if (key === 'localConfig_v2') {
         return JSON.stringify({
-          teams: { T06DUTYDQ: { token: 'xoxc-test-token' } },
+          teams: {
+            T06DUTYDQ: { token: 'xoxc-test-token' },
+            // Org-level token, used by the Enterprise Grid (eg-*) commands.
+            E06V3987PMY: { token: 'xoxc-test-org-token' },
+          },
         });
       }
       return null;
@@ -102,6 +106,10 @@ async function load(opts) {
       }
       // users.admin.setRegular
       if (method === 'users.admin.setRegular') {
+        return { body: opts.adminResult || { ok: true } };
+      }
+      // enterprise.users.admin.* (Grid writes)
+      if (method.startsWith('enterprise.users.admin.')) {
         return { body: opts.adminResult || { ok: true } };
       }
       // conversations.invite
@@ -193,6 +201,10 @@ async function load(opts) {
   // top-level `try {` in the file. The greedy form truncated the module at the
   // first top-level try block, which silently discarded ~1800 lines and made
   // every test fail with '<fn> is not defined'.
+  // opts.runMain compiles the file UNMODIFIED, so main() runs exactly as it does
+  // when a user types the command. That is the only mode that can see a
+  // top-level ordering bug such as a const read in its temporal dead zone.
+  if (!opts.runMain) {
   source = source.replace(/\ntry \{\s*\n\s*await main\(\);[\s\S]*$/, '\n');
 
   // Append exports of the key internal functions for direct testing
@@ -209,8 +221,11 @@ return {
   cmdSetMember,
   cmdAddChannel,
   cmdRemoveChannel,
+  cmdEgStatus,
+  cmdEgSetRestricted,
 };
 `;
+  }
 
   const mockProcess = {
     argv: ['node', SCRIPT, ...opts.argv],
@@ -227,10 +242,18 @@ return {
   };
 
   const factory = new AsyncFunction('require', 'process', 'console', source);
-  const mod = await factory(mockRequire, mockProcess, mockConsole);
+  let mod = null;
+  let runError = null;
+  try {
+    mod = await factory(mockRequire, mockProcess, mockConsole);
+  } catch (e) {
+    if (!opts.runMain) throw e;
+    runError = e;
+  }
 
   return {
     mod,
+    runError,
     calls,
     stdout,
     stderr,
@@ -877,3 +900,65 @@ test('status --json: success with channels produces channels array in output', a
 //
 // VERIFICATION: mutations 10-15 were each applied, the named test was confirmed to fail,
 // then the mutation was reverted. See report for details.
+
+// ── Entry-point ordering (temporal dead zone) ──────────────────────────────────
+//
+// Every eg-* and channel-* command once died on invocation with
+// "Cannot access 'ORG_ID' before initialization": the `await main()` trailer sat
+// above the Grid section, so main() ran before that section's top-level consts
+// were initialised. All other tests missed it because they strip from the trailer
+// to EOF, which removed the Grid section before compiling. These tests close that.
+
+const ENTRY_TRAILER = /\ntry \{\s*\n\s*await main\(\);\s*\n\} catch \(err\) \{[\s\S]*?\n\}\n/;
+
+test('entry point: nothing but whitespace follows the await main() trailer', () => {
+  const src = readFileSync(SCRIPT, 'utf8');
+  const m = ENTRY_TRAILER.exec(src);
+  ok(m, 'the await main() trailer must exist');
+  const after = src.slice(m.index + m[0].length);
+  is(after.trim(), '', 'no top-level statement may follow the trailer (found: ' + after.trim().slice(0, 60) + ')');
+});
+
+test('entry point: every top-level const/let is declared before main() runs', () => {
+  const src = readFileSync(SCRIPT, 'utf8');
+  const m = ENTRY_TRAILER.exec(src);
+  ok(m, 'the await main() trailer must exist');
+  const late = src.slice(m.index).split('\n').filter((l) => /^(const|let) /.test(l));
+  is(late.length, 0, 'top-level declarations after the trailer: ' + late.join(' | '));
+});
+
+test('eg-status runs end to end from the real entry point', async () => {
+  const h = await load({ runMain: true, argv: ['eg-status', 'U12345'] });
+  const msg = h.runError ? String(h.runError.message) : '';
+  ok(!/before initialization/.test(msg), 'must not hit a temporal dead zone: ' + msg);
+  ok(!h.runError || h.runError.exitCode === 0, 'must not exit non-zero: ' + msg);
+  ok(h.apiCalls().includes('users.info'), 'must call users.info; calls were ' + h.apiCalls().join(','));
+  ok(/Enterprise user: U12345/.test(h.text()), 'must print the enterprise user section');
+});
+
+test('eg-set-restricted from the real entry point makes no write without --confirm', async () => {
+  const h = await load({ runMain: true, argv: ['eg-set-restricted', 'U12345'] });
+  const msg = h.runError ? String(h.runError.message) : '';
+  ok(!/before initialization/.test(msg), 'must not hit a temporal dead zone: ' + msg);
+  const writes = h.calls.filter((c) => c.method.startsWith('enterprise.users.admin.'));
+  is(writes.length, 0, 'dry run must make zero enterprise.users.admin.* calls');
+});
+
+test('eg-set-restricted --confirm reaches the Grid write method', async () => {
+  // Control for the test above: proves the dry-run assertion is not vacuously
+  // true because the command never got far enough to write at all.
+  const h = await load({ runMain: true, argv: ['eg-set-restricted', 'U12345', '--confirm'] });
+  const msg = h.runError ? String(h.runError.message) : '';
+  ok(!/before initialization/.test(msg), 'must not hit a temporal dead zone: ' + msg);
+  ok(
+    h.apiCalls().includes('enterprise.users.admin.setRestricted'),
+    'with --confirm the write must be issued; calls were ' + h.apiCalls().join(',')
+  );
+});
+
+test('the stripped harness now includes Grid code', async () => {
+  const h = await load({ argv: ['eg-status', 'U12345'] });
+  is(typeof h.mod.cmdEgStatus, 'function', 'cmdEgStatus must survive the strip');
+  await h.mod.cmdEgStatus();
+  ok(/Enterprise user: U12345/.test(h.text()), 'cmdEgStatus must print the enterprise user section');
+});
