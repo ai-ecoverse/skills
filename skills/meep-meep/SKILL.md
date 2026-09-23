@@ -7,8 +7,9 @@ description: >
   search it, fill and submit a form, pick an autocomplete suggestion or a
   date, click through to a result, or run the link, search, and Google
   Flights demos. The local `kev` model (decide-quickly) decides on device for
-  free; `--decider agent` asks slicc's `agent` command instead, which also
-  handles goals about position such as "the top story". The model never
+  free; `--decider agent` asks slicc's `agent` command instead. Best on
+  long, many-step goals; for goals about position such as "the top story",
+  let an agent drive playwright-cli itself. The model never
   writes a selector, a coordinate, or JavaScript: it picks one ref that
   playwright-cli snapshot printed.
 allowed-tools: bash
@@ -35,15 +36,17 @@ It prints the step count, the time, and the final address. `--json` prints `ok`,
 
 ## Choosing a decider
 
-| Goal (2026-09-23, two runs each) | kev-9b | agent, Haiku 4.5 | agent + playwright-cli alone, Haiku 4.5 |
+| Goal (2026-09-23, median of 2–3 runs) | kev-9b | agent, Haiku 4.5 | agent + playwright-cli alone, Haiku 4.5 |
 | --- | --- | --- | --- |
-| Google Flights with dates (9 steps) | 70 s, $0 | 49 s, $0.08 | 193 s, $0.22 |
-| httpbin order form (4 steps) | 27 s, $0 | 23 s, $0.03 | 36 s, $0.06 |
-| Wikipedia search (2 steps) | 19 s, $0 | 15 s, $0.02 | 50 s, $0.13 |
-| Hacker News top story's comments | fails | 26 s, $0.01 | 38 s, $0.18 |
+| Google Flights with dates (9 steps) | 69 s, $0 | 51 s, $0.08 | 104 s, $0.25 |
+| httpbin order form (4 steps) | 27 s, $0 | 24 s, $0.03 | 26 s, $0.04 |
+| Wikipedia search (2 steps) | 19 s, $0 | 16 s, $0.02 | 32 s, $0.06 |
+| Hacker News top story's comments | fails 2 of 2 | fails 1 of 3 | 22 s, $0.05 |
 
-- **`--decider kev`** (default): free, and the page stays on the device. It loads in about 4 s per run, and each step takes 1–6 s. It only types values the goal spells out: each `"quoted string"` and each capitalised name (`Berlin`). Quote dates: `Type "Sep 30" into Departure`. It fails at goals about position, because each control carries only its own label.
-- **`--decider agent`**: each step is one `agent` call. The scoop may run no command and must answer with a menu id and, for a type action, the text. `--model` takes any id from `models` (default `claude-haiku-4-5`). A step takes 3–7 s. Its spend shows in `cost`.
+webrunner pays off on long goals: on Flights it took half the time of an agent driving playwright-cli itself, at a third of the cost. On goals of a few steps, a bare agent is about as fast.
+
+- **`--decider kev`** (default): free, and the page stays on the device. It loads in about 4 s per run, and each step takes 1–6 s. It only types values the goal spells out: each `"quoted string"` and each capitalised name (`Berlin`). Quote dates: `Type "Sep 30" into Departure`. It fails at goals about position, because each control carries only its own label: every "N comments" link looks the same.
+- **`--decider agent`**: each step is one `agent` call. The scoop may run no command and must answer with a menu id and, for a type action, the text. `--model` takes any id from `models` (default `claude-haiku-4-5`). A step takes 3–7 s. Its spend shows in `cost`. It sees the same labels as kev, so it can also miss goals about position.
 
 ## When it stops
 
