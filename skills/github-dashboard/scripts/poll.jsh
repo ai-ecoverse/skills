@@ -86,6 +86,46 @@ function readVersion() {
   }
 }
 
+/* ---- 8< summariseFailure ---------------------------------------------------
+   Turn a failed child's stderr into ONE log line, MESSAGE FIRST.
+
+   The first version took the TAIL of stderr (`.split('\n').slice(-2)`), and on
+   a node-style stack the tail is two stack FRAMES — the message is the HEAD.
+   Three real failures (2026-09-23 at 05:07Z, 05:37Z and 06:07Z) therefore
+   logged nothing but `at async tl (...)` and could not be diagnosed from the
+   log at all. A reader needs WHAT failed before WHERE, so frames are demoted:
+   every non-frame line is kept first, then up to two frames if they still fit.
+
+   Frames-only input keeps its frames: they are then the only evidence there is,
+   and a blank summary would be worse than a bare location.
+
+   Pure, and fenced by these markers so the test can evaluate THIS text rather
+   than a copy of it that would quietly drift. */
+const FAILURE_SUMMARY_CAP = 300;
+
+function summariseFailure(text, cap) {
+  const limit = typeof cap === 'number' && cap > 0 ? cap : FAILURE_SUMMARY_CAP;
+  const lines = String(text == null ? '' : text)
+    .replace(/\r/g, '')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+  if (lines.length === 0) return '(child wrote nothing to stderr or stdout)';
+  const isFrame = (l) => /^at\s/.test(l);
+  const messages = lines.filter((l) => !isFrame(l));
+  const frames = lines.filter(isFrame);
+  let out = (messages.length > 0 ? messages : frames).join(' | ');
+  if (messages.length > 0) {
+    for (const f of frames.slice(0, 2)) {
+      const next = out + ' | ' + f;
+      if (next.length > limit) break;
+      out = next;
+    }
+  }
+  return out.length > limit ? out.slice(0, limit - 1) + '\u2026' : out;
+}
+/* ---- >8 end summariseFailure ---------------------------------------------- */
+
 function schedule() {
   if (timer) clearTimeout(timer);
   const wait = failures >= FAILURES_BEFORE_BACKOFF ? BACKOFF_MS : NORMAL_MS;
@@ -114,7 +154,16 @@ async function mirror() {
       .filter((l) => /done —|PROSE GATE|REFUSED|FAILED/.test(l))
       .slice(-4)
       .join(' :: ');
-    log(`  mirror (${MIRROR_MODE}${sweep ? ', swept' : ''}): exit ${code} in ${secs}s :: ${tail || 'no summary line'}`);
+    // A non-zero exit usually prints no summary at all, and the reason is on
+    // stderr — which this used to discard, logging only 'no summary line'. A
+    // transient mirror failure at 11:32Z on 2026-09-23 was undiagnosable for
+    // exactly that reason. Success path unchanged; failures reuse the fetch
+    // path's message-first summary.
+    const detail =
+      code === 0
+        ? tail || 'no summary line'
+        : summariseFailure(`${tail}\n${(r && r.stderr) || ''}\n${(r && r.stdout) || ''}`);
+    log(`  mirror (${MIRROR_MODE}${sweep ? ', swept' : ''}): exit ${code} in ${secs}s :: ${detail}`);
     if (code === 3) log('  mirror: PROSE GATE tripped — nothing was written, and this needs a human');
   } catch (err) {
     log(`  mirror: threw after ${((Date.now() - t0) / 1000).toFixed(1)}s (cycle unaffected): ${String((err && err.message) || err).slice(0, 200)}`);
@@ -140,7 +189,7 @@ async function cycle() {
     const code = r && r.exitCode !== undefined && r.exitCode !== null ? r.exitCode : 0;
     if (code !== 0) {
       failures += 1;
-      const why = String((r && r.stderr) || (r && r.stdout) || '').trim().split('\n').slice(-2).join(' | ').slice(0, 200);
+      const why = summariseFailure((r && r.stderr) || (r && r.stdout) || '');
       log(`cycle ${cycles}: FETCH FAILED exit=${code} after ${secs}s (consecutive failures: ${failures}) :: ${why}`);
     } else {
       failures = 0;
