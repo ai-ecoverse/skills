@@ -47,3 +47,19 @@ seconds. That run left the previous snapshot and its version file untouched.
 
 A cycle also refuses to start while the previous one is still running: they share
 the status cache and the output files.
+
+## Agent-spend ledger
+
+Each cycle the fetcher records its status-model calls in the snapshot's
+`meta.agentLedger` and appends one JSON line to `data/agent-ledger.jsonl`, capped
+at the newest 2000 lines and 1,000,000 bytes (if the append fails, the cycle's
+spend is still in `meta.agentLedger`). `poll.jsh` logs it as one line per cycle:
+
+```
+  agents: 5 calls (haiku-4-5), 514.9 s agent time (max 103.6 s), 70 cached, 0 failed
+```
+
+`agent` exposes no token counts, so there is no cost figure: `tokens` and
+`costEstimate` are `null`, with the reason in `tokensWhy` and `costWhy`. Tests:
+`tests/agent-ledger.test.js` (the ledger) and `tests/poll-ledger.test.js` (the
+log line).
