@@ -78,15 +78,16 @@
  * That is honest — the filing really has lapsed — and the panel remains the
  * precise view, showing `2026-09-22 20:09Z`.
  *
- * A LATENT TRAP, recorded because it is one implementation away. The panel also
- * treats a snooze as dead when a comment postdates it (`cancelledByComment`,
- * from `lastCommentAt`). That rule is INERT today: the fetcher never populates
- * `lastCommentAt` ("would need a comments fetch per item"), and 0 of 109 records
- * carry it. If anyone ever implements it, THIS PROGRAM'S OWN COMMENT WOULD
- * CANCEL EVERY SNOOZE IT PUBLISHES — post, next fetch sees a newer comment,
- * panel un-snoozes, mirror deletes its comment, `lastCommentAt` reverts, snooze
- * looks live again, mirror re-posts: a flap on a public card every 30 minutes.
- * Whoever adds `lastCommentAt` must exclude comments carrying this marker.
+ * THIS PROGRAM'S OWN COMMENT AND `lastCommentAt`. The panel treats a snooze as
+ * cancelled when a comment postdates it (`cancelledByComment`, from
+ * `lastCommentAt`, which the fetcher populates since 2026-09-23). The fetcher
+ * therefore EXCLUDES comments that carry this marker AND were written by the
+ * authenticated user, plus Bot-authored comments, so this program's post does
+ * not cancel the snooze it publishes. Had it counted, the damage would be local,
+ * not a public flap: this program decides a snooze from its expiry alone
+ * (`snoozeLapsed(snoozedUntil)`), never from comments, so it would neither
+ * delete nor re-post. The panel would show the snooze as cancelled, and
+ * re-snoozing would restart its backoff. Keep the exclusion in the fetcher.
  *
  * `actionsDispatched` deserves a specific note. Its keys are `kind:label` and
  * the LABEL IS MODEL-GENERATED text ("Ask the author whether the flaky test is

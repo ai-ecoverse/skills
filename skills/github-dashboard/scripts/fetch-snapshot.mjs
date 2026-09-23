@@ -369,6 +369,12 @@ const OUT = argValue('--out') || '/shared/sprinkles/github-dashboard/data/snapsh
       this runtime, and a stale-mtime false negative is the worst failure mode
       available here: the panel would silently stop updating and look fine. */
 const VERSION_OUT = argValue('--out') ? OUT.replace(/[.]json$/, '') + '.version.json' : '/shared/sprinkles/github-dashboard/data/version.json';
+/* --scratch <dir> redirects the run's scratch/audit files (thread-link audit,
+   merge audit, last-comment audit, progress log, request log). Default is the
+   historical /tmp/ghd, so a normal run behaves exactly as before; a test run
+   given --out/--cache/--scratch touches nothing the live poller reads. */
+const SCRATCH_DIR = argValue('--scratch') || '/tmp/ghd';
+fs.mkdirSync(SCRATCH_DIR, { recursive: true });
 const API = 'https://api.github.com';
 
 /* ------------------------------------------------------------------ requests */
@@ -407,7 +413,7 @@ async function fetchWithRetry(url, init, label) {
   throw new Error(`${label} failed after ${MAX_ATTEMPTS} attempts: ${String(lastErr && lastErr.message || lastErr)}`);
 }
 
-async function api(path, { allow404 = false } = {}) {
+async function api(path, { allow404 = false, withLink = false } = {}) {
   const url = path.startsWith('http') ? path : `${API}/${path.replace(/^\//, '')}`;
   const res = await fetchWithRetry(url, {
     headers: {
@@ -436,6 +442,9 @@ async function api(path, { allow404 = false } = {}) {
   const json = await res.json();
   // The empty-string trap, generalised: never let an absent value flow onward.
   if (json === null || json === undefined) throw new Error(`empty body on ${path}`);
+  // Opt-in, for the paginated comments read: the Link header says whether the
+  // page asked for really is the last one. Every other caller is unchanged.
+  if (withLink) return { body: json, link: h('link') || null };
   return json;
 }
 
@@ -853,6 +862,218 @@ function stageFromThread(rec, t) {
   return { stage: 2, why: `bb thread exists but is archived: work was started, then abandoned (status=${t.status})` };
 }
 
+/* ---- 8< lastComment -------------------------------------------------------
+   lastCommentAt: the created_at of the newest issue-thread comment that is
+   HUMAN FOLLOW-UP. The panel's snoozeState() reads it as
+     !!item.lastCommentAt && !!since && new Date(item.lastCommentAt) > since
+   (since = snoozedAt), so a string that Date parses, or null, is the contract.
+
+   THE HAZARD THIS EXISTS TO PREVENT. mirror-comments.mjs posts ONE comment per
+   marked item ("Snoozed until <date>"), as the authenticated user, carrying the
+   invisible marker below. Counted naively, that comment postdates the snooze it
+   announces, so the panel cancels the snooze, the mirror then deletes its
+   comment, the next cycle reposts it: a post/delete flap on a PUBLIC card every
+   30 minutes, notifying every watcher. So a comment does NOT count when:
+     1. its body contains the marker AND its author is the authenticated user.
+        BOTH, so nobody else can suppress a real signal by pasting the marker;
+     2. its author is a bot (user.type === 'Bot': release notices, dispatchers).
+   Everything else counts, including the user's own ordinary comments.
+
+   created_at, not updated_at: "a comment after the snooze" means a comment
+   WRITTEN after it. Editing an old comment is not new follow-up, and counting
+   edits would let a typo fix cancel a snooze. The panel needs nothing else.
+
+   SCOPE: issue-thread comments only (/issues/:n/comments, which also carries a
+   PR's conversation tab). PR review comments (inline, on the diff) and review
+   bodies are NOT included.
+
+   Without the authenticated login the mirror's comment cannot be told apart,
+   so every entry point REFUSES rather than guess. The caller then leaves the
+   field absent, which is exactly the pre-existing (inert) behaviour.
+
+   Pure (the phase driver takes its I/O as arguments), and fenced by these
+   markers so the test evaluates THIS text rather than a copy that could drift. */
+const GHD_MIRROR_MARKER = '<!-- ghd-mirror:v1 -->';
+const COMMENTS_PER_PAGE = 100;
+const MAX_COMMENT_PAGES_BACK = 10;
+
+function requireLogin(selfLogin, where) {
+  if (typeof selfLogin !== 'string' || !selfLogin.trim()) {
+    throw new TypeError(`${where}: the authenticated login is required — without it the mirror's own comment would count and cancel the snooze it publishes`);
+  }
+  return selfLogin.trim().toLowerCase();
+}
+
+/** Does this one comment count as human follow-up? */
+function commentCounts(c, selfLogin) {
+  const self = requireLogin(selfLogin, 'commentCounts');
+  if (!c || typeof c !== 'object') return false;
+  const user = c.user && typeof c.user === 'object' ? c.user : null;
+  if (user && user.type === 'Bot') return false;
+  const login = user && typeof user.login === 'string' ? user.login.toLowerCase() : '';
+  const body = typeof c.body === 'string' ? c.body : '';
+  if (login === self && body.includes(GHD_MIRROR_MARKER)) return false;
+  return true;
+}
+
+/** ISO UTC created_at of the newest counting comment, or null. Order-free. */
+function newestQualifyingCommentAt(comments, selfLogin) {
+  requireLogin(selfLogin, 'newestQualifyingCommentAt');
+  let bestMs = -Infinity;
+  for (const c of Array.isArray(comments) ? comments : []) {
+    if (!commentCounts(c, selfLogin)) continue;
+    const ms = Date.parse(c.created_at);
+    if (Number.isFinite(ms) && ms > bestMs) bestMs = ms;
+  }
+  return bestMs === -Infinity ? null : new Date(bestMs).toISOString().replace('.000Z', 'Z');
+}
+
+/** A merged card (PR + absorbed issue): the newest KNOWN value wins; null only
+    when both sides are known-empty; undefined (field absent) when unknown. */
+function combineLastCommentAt(a, b) {
+  const known = [a, b].filter((v) => typeof v === 'string' && Number.isFinite(Date.parse(v)));
+  if (known.length) return known.reduce((m, v) => (Date.parse(v) > Date.parse(m) ? v : m));
+  if (a === null && b === null) return null;
+  return undefined;
+}
+
+/** Page number of rel="last" in a GitHub Link header, or null. */
+function lastPageFromLink(link) {
+  if (!link) return null;
+  for (const part of String(link).split(',')) {
+    const m = part.match(/<([^>]+)>\s*;\s*rel="([^"]+)"/);
+    if (!m || !m[2].split(/\s+/).includes('last')) continue;
+    const p = m[1].match(/[?&]page=(\d+)/);
+    if (p) return Number(p[1]);
+  }
+  return null;
+}
+
+/** Read a thread FROM THE END. The list is oldest-first, so the newest comment
+    is on the last page, whose number the payload's comment count already gives
+    (ceil(count / per_page)): normally ONE request, however long the thread. If
+    the count was stale and Link names a different last page, jump there once.
+    Walk back a page only while the page in hand holds nothing that counts (a
+    tail of bot or mirror comments). getPage(page) -> { comments, link }. */
+async function fetchLastCommentAt({ count, selfLogin, getPage, perPage = COMMENTS_PER_PAGE }) {
+  requireLogin(selfLogin, 'fetchLastCommentAt');
+  let page = Math.max(1, Math.ceil((Number(count) || 0) / perPage));
+  let res = await getPage(page);
+  let requests = 1;
+  const last = lastPageFromLink(res && res.link);
+  if (last && last !== page) {
+    page = last;
+    res = await getPage(page);
+    requests += 1;
+  }
+  // For the audit only: what a naive "newest comment" would have said.
+  let newestAnyMs = -Infinity;
+  for (const c of (res && res.comments) || []) {
+    const ms = Date.parse(c && c.created_at);
+    if (Number.isFinite(ms) && ms > newestAnyMs) newestAnyMs = ms;
+  }
+  const newestAnyAt = newestAnyMs === -Infinity ? null : new Date(newestAnyMs).toISOString().replace('.000Z', 'Z');
+  for (let back = 0; ; back += 1) {
+    const at = newestQualifyingCommentAt((res && res.comments) || [], selfLogin);
+    if (at) return { at, requests, newestAnyAt };
+    if (page <= 1) return { at: null, requests, newestAnyAt };
+    // Unknown, not "none": a null here would claim a thread has no follow-up.
+    if (back >= MAX_COMMENT_PAGES_BACK) return { at: undefined, requests, newestAnyAt, truncated: true };
+    page -= 1;
+    res = await getPage(page);
+    requests += 1;
+  }
+}
+
+/** The whole phase, I/O injected. Mutates each record's lastCommentAt and the
+    cache (shape { login, entries }), and returns stats plus a per-record audit.
+    Request budget:
+      - commentsCount === 0  -> null, no request;
+      - cache hit            -> cached value, no request. A hit needs the SAME
+        lastActivityAt (the status cache's key) AND commentsCount (a deletion
+        moves the count even if it did not move updated_at) AND login;
+      - otherwise            -> GET /user once per run (only when something
+        missed), then usually one page per missed record.
+    A failed or truncated read leaves the field ABSENT and nothing cached. */
+async function lastCommentPhase({ records, cache, getLogin, getPage }) {
+  const stats = { artifacts: records.length, zeroComments: 0, cacheHits: 0, fetched: 0, failed: 0, pageRequests: 0, loginRequests: 0, invalidatedByLogin: 0, pruned: 0, loginError: null };
+  const audit = [];
+  const failures = [];
+  const entries = cache.entries || (cache.entries = {});
+  const live = new Set();
+  const hits = [];
+  let misses = [];
+  for (const rec of records) {
+    const key = `${rec.repo}#${rec.id}`;
+    const count = rec.commentsCount ?? 0;
+    if (count === 0) {
+      rec.lastCommentAt = null;
+      stats.zeroComments += 1;
+      audit.push({ key, commentsCount: 0, source: 'zero', lastCommentAt: null });
+      continue;
+    }
+    live.add(key);
+    const e = entries[key];
+    const hit = e && e.lastActivityAt === rec.lastActivityAt && e.commentsCount === count && typeof e.login === 'string' && 'lastCommentAt' in e;
+    (hit ? hits : misses).push({ rec, key, count, e });
+  }
+  let login = null;
+  if (misses.length) {
+    try {
+      stats.loginRequests += 1;
+      login = requireLogin(await getLogin(), 'lastCommentPhase');
+    } catch (err) {
+      stats.loginError = String((err && err.message) || err).slice(0, 200);
+    }
+  }
+  // A value computed for a different identity is not a hit: under that login
+  // this user's mirror comments would have counted.
+  const applied = login ? hits.filter((h) => h.e.login === login) : hits;
+  if (login) {
+    const moved = hits.filter((h) => h.e.login !== login);
+    stats.invalidatedByLogin = moved.length;
+    misses = misses.concat(moved);
+  }
+  for (const h of applied) {
+    h.rec.lastCommentAt = h.e.lastCommentAt;
+    stats.cacheHits += 1;
+    audit.push({ key: h.key, commentsCount: h.count, lastActivityAt: h.rec.lastActivityAt, source: 'cache', lastCommentAt: h.e.lastCommentAt });
+  }
+  for (const m of misses) {
+    if (!login) {
+      delete m.rec.lastCommentAt;
+      stats.failed += 1;
+      audit.push({ key: m.key, commentsCount: m.count, source: 'unknown-login', lastCommentAt: undefined });
+      continue;
+    }
+    try {
+      const r = await fetchLastCommentAt({ count: m.count, selfLogin: login, getPage: (p) => getPage(m.rec, p) });
+      stats.pageRequests += r.requests;
+      if (r.at === undefined) throw new Error(`walked back ${MAX_COMMENT_PAGES_BACK} pages without a counting comment`);
+      m.rec.lastCommentAt = r.at;
+      entries[m.key] = { lastActivityAt: m.rec.lastActivityAt, commentsCount: m.count, login, lastCommentAt: r.at };
+      stats.fetched += 1;
+      audit.push({ key: m.key, commentsCount: m.count, lastActivityAt: m.rec.lastActivityAt, source: 'fetched', requests: r.requests, lastCommentAt: r.at, newestAnyAt: r.newestAnyAt });
+    } catch (err) {
+      delete m.rec.lastCommentAt;
+      delete entries[m.key];
+      stats.failed += 1;
+      failures.push({ key: m.key, error: String((err && err.message) || err).slice(0, 200) });
+      audit.push({ key: m.key, commentsCount: m.count, source: 'failed', lastCommentAt: undefined });
+    }
+  }
+  // Only records in this window are worth remembering.
+  for (const k of Object.keys(entries)) {
+    if (!live.has(k)) {
+      delete entries[k];
+      stats.pruned += 1;
+    }
+  }
+  if (login) cache.login = login;
+  return { stats, audit, failures, login };
+}
+/* ---- >8 end lastComment ---------------------------------------------------- */
+
 /* --------------------------------------------------------------------- main */
 
 const records = [];
@@ -952,6 +1173,45 @@ for (const full of REPOS) {
   }
 }
 
+/* ---- lastCommentAt, per ARTIFACT (before the phase-4 merge absorbs issues) --
+   The cache lives in the status cache file (same --cache path, same writer),
+   under its own `comments` section, so a status-cache reader that predates it
+   is unaffected. See lastCommentPhase() for the budget rules. */
+function loadCommentCache() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(STATUS_CACHE_PATH, 'utf8'));
+    const c = parsed && parsed.comments;
+    if (c && c.entries && typeof c.entries === 'object') return { login: c.login || null, entries: c.entries };
+  } catch (err) {
+    if (err.code !== 'ENOENT') console.error(`[comments] WARNING: cache unreadable (${err.message}); comment reads start cold`);
+  }
+  return { login: null, entries: {} };
+}
+const commentCache = loadCommentCache();
+const commentCacheLoaded = Object.keys(commentCache.entries).length;
+let lastComment = { stats: null, failures: [], audit: [], login: null };
+const lastCommentRequestsBefore = log.length;
+try {
+  lastComment = await lastCommentPhase({
+    records,
+    cache: commentCache,
+    getLogin: async () => must((await api('user')).login, 'authenticated login (GET /user)'),
+    getPage: async (rec, page) => {
+      const [o, n] = rec.repo.split('/');
+      const r = await api(`repos/${o}/${n}/issues/${rec.id}/comments?per_page=${COMMENTS_PER_PAGE}&page=${page}`, { withLink: true });
+      return { comments: r.body, link: r.link };
+    },
+  });
+} catch (err) {
+  // Never fatal: the field stays absent, which is the pre-existing behaviour.
+  for (const r of records) if ((r.commentsCount ?? 0) > 0) delete r.lastCommentAt;
+  notes.push(`lastCommentAt phase failed, field left absent: ${String(err.message).slice(0, 200)}`);
+}
+const lastCommentRequests = log.length - lastCommentRequestsBefore;
+if (lastComment.stats && lastComment.stats.loginError) notes.push(`lastCommentAt: GET /user failed (${lastComment.stats.loginError}); records needing a read left without the field`);
+for (const f of lastComment.failures) notes.push(`lastCommentAt: ${f.key} left absent: ${f.error}`);
+fs.writeFileSync(`${SCRATCH_DIR}/last-comment-audit.json`, JSON.stringify({ stats: lastComment.stats, requests: lastCommentRequests, cacheLoaded: commentCacheLoaded, audit: lastComment.audit }, null, 2));
+
 /* ---- phase 3a: attach bb threads, and let them express stages 2/3/4 ---- */
 const { byRepo: threadsByRepo, diag: bbDiag, listing: threadListing } = loadThreads();
 for (const d of bbDiag) notes.push(d);
@@ -1025,7 +1285,7 @@ for (const rec of records) {
     stage: rec.stage,
   });
 }
-fs.writeFileSync('/tmp/ghd/thread-link-audit.json', JSON.stringify({ linked: linkAudit, rejected }, null, 2));
+fs.writeFileSync(`${SCRATCH_DIR}/thread-link-audit.json`, JSON.stringify({ linked: linkAudit, rejected }, null, 2));
 
 /* ---- phase 4: one card per piece of work, PR > issue > thread ----------
 
@@ -1101,6 +1361,11 @@ try {
     // The card's idleness must reflect the newest activity of either artefact.
     lead.lastActivityAt = maxDate(lead.lastActivityAt, issue.lastActivityAt);
     lead.commentsCount = (lead.commentsCount || 0) + (issue.commentsCount || 0);
+    // One card, one comment signal: a comment on EITHER artefact is follow-up
+    // on this work. Mirror comments were already excluded per artefact.
+    const lc = combineLastCommentAt(lead.lastCommentAt, issue.lastCommentAt);
+    if (lc === undefined) delete lead.lastCommentAt;
+    else lead.lastCommentAt = lc;
     absorbed.add(issueKey);
     mergeAudit.merged.push({
       card: `${lead.repo}#${lead.id}`, lead: 'pr', leadTitle: lead.title, leadStage: lead.substage || lead.stage,
@@ -1168,7 +1433,7 @@ try {
   notes.push(`closing-link merge skipped: ${String(err.message).slice(0, 200)}`);
   mergeAudit.error = String(err.message).slice(0, 300);
 }
-fs.writeFileSync('/tmp/ghd/merge-audit.json', JSON.stringify(mergeAudit, null, 2));
+fs.writeFileSync(`${SCRATCH_DIR}/merge-audit.json`, JSON.stringify(mergeAudit, null, 2));
 
 records.sort((a, b) => new Date(b.lastActivityAt) - new Date(a.lastActivityAt));
 
@@ -1500,6 +1765,11 @@ function writeStatusCache() {
           model: STATUS_MODEL,
           updatedAt: new Date().toISOString(),
           entries: statusCache.entries,
+          comments: {
+            note: 'lastCommentAt per artefact. A hit needs the same lastActivityAt AND commentsCount AND login; mirror (marker + own login) and bot comments are excluded. Pruned to the current window each run.',
+            login: commentCache.login,
+            entries: commentCache.entries,
+          },
         },
         null,
         1,
@@ -1601,7 +1871,7 @@ console.log(`status cache   : ${cacheStats.loadedEntries} entries loaded from ${
         console.log(line);
         // Stdout is buffered until exit when this run is detached, so progress
         // also goes to a file that can be tailed while it works.
-        try { fs.appendFileSync("/tmp/ghd/p7b-progress.log", line + "\n"); } catch {}
+        try { fs.appendFileSync(`${SCRATCH_DIR}/p7b-progress.log`, line + "\n"); } catch {}
       }
       if (!g) {
         fellBack.push({ key: `${rec.repo}#${rec.id}`, reason: 'agent failed or returned unusable output' });
@@ -1770,8 +2040,25 @@ const snapshot = {
       fixedBy: 'needs timeline/closing-reference crawl; not attempted in phase 1',
       fromThread: 'SLICC linkage, not on GitHub',
       producedPrs: 'SLICC linkage, not on GitHub',
-      lastCommentAt: 'would need a comments fetch per item; not needed by categorize()',
       synthetic: 'fixture bookkeeping; these records are real',
+    },
+    lastComment: {
+      field: 'lastCommentAt: ISO UTC created_at of the newest issue-thread comment that counts, null when none does, ABSENT when it could not be determined this run',
+      consumer: "the panel's snoozeState(): new Date(lastCommentAt) > snoozedAt cancels a snooze",
+      excluded: [
+        'the dashboard comment mirror: body contains <!-- ghd-mirror:v1 --> AND the author is the authenticated user (both, so pasting the marker suppresses nothing). Counting it would make every published snooze cancel itself and the mirror flap post/delete on a public card each cycle',
+        "bot authors (user.type === 'Bot')",
+      ],
+      timestamp: 'created_at, not updated_at: an edit to an old comment is not new follow-up',
+      scope: 'issue-thread comments (/issues/:n/comments, which includes PR conversation comments). PR review comments and review bodies are NOT included',
+      mergedCards: 'newest across the lead PR and any absorbed issue',
+      budget: 'no request when commentsCount is 0 or the cached entry has the same lastActivityAt + commentsCount + login; otherwise GET /user once per run plus normally ONE page per record, read from the end (page = ceil(count/100), corrected by Link rel="last")',
+      requests: lastCommentRequests,
+      cacheEntriesLoaded: commentCacheLoaded,
+      ...(lastComment.stats || { error: 'phase did not run' }),
+      populated: records.filter((r) => typeof r.lastCommentAt === 'string').length,
+      nulls: records.filter((r) => r.lastCommentAt === null).length,
+      absent: records.filter((r) => !('lastCommentAt' in r)).length,
     },
     derivedWhenPresent: {
       ci: 'from check-runs on the PR head sha',
@@ -1789,7 +2076,7 @@ const snapshot = {
   records,
 };
 
-fs.mkdirSync('/shared/sprinkles/github-dashboard/data', { recursive: true });
+fs.mkdirSync(require('path').dirname(OUT), { recursive: true });
 const snapshotBody = JSON.stringify(snapshot, null, 2);
 // Write to a sibling temp file and rename. rename(2) is atomic within a
 // filesystem, so a reader sees either the previous snapshot or the new one and
@@ -1830,6 +2117,11 @@ console.log(`by repo        : ${JSON.stringify(records.reduce((a, r) => ((a[r.re
 console.log(`substages      : ${JSON.stringify(records.filter((r) => r.substage).map((r) => `${r.repo}#${r.id}:${r.substage}`))}`);
 console.log(`threads linked : ${records.filter((r) => r.thread).length} of ${records.length} (rejected candidates: ${rejected.length})`);
 console.log(`merges         : ${mergeAudit.merged.length} (graphql cost ${closingCost}); out-of-window secondary: ${mergeAudit.secondaryOutOfWindow.length}; rejected: ${mergeAudit.rejected.length}`);
+{
+  const s = lastComment.stats;
+  const withAt = records.filter((r) => typeof r.lastCommentAt === 'string').length;
+  console.log(`last comment   : ${withAt} of ${records.length} cards carry lastCommentAt; ${lastCommentRequests} requests` + (s ? ` (${s.pageRequests} pages + ${s.loginRequests} /user) — ${s.zeroComments} zero-comment skipped, ${s.cacheHits} cache hits, ${s.fetched} fetched, ${s.failed} failed` : ' (phase failed)'));
+}
 console.log(`model          : ${STATUS_MODEL}`);
 console.log(`status agents  : ${modelCalls} calls (concurrency ${STATUS_CONCURRENCY}), ${generated} generated, ${fellBack.length} fell back, ${(statusWallClockMs / 1000).toFixed(1)}s wall clock`);
 console.log(`status cache   : ${cacheStats.hits} hits, ${cacheStats.misses} misses (${cacheStats.staleActivity} stale activity, ${cacheStats.staleContract} stale contract), ${Object.keys(statusCache.entries).length} entries stored`);
@@ -1843,5 +2135,5 @@ if (lens.length) {
 console.log(`actions        : ${actionStats.recordsWithActions} records carry actions, ${actionStats.kept} kept of ${actionStats.emitted} emitted (nudge ${actionStats.byKind.nudge}, approve ${actionStats.byKind.approve}, clarify ${actionStats.byKind.clarify}); dropped ${JSON.stringify(actionStats.dropped)}`);
 console.log(`wrote          : ${OUT} (${fs.statSync(OUT).size} bytes)`);
 console.log(`version        : ${VERSION_OUT} — sha256 ${snapshotHash.slice(0, 16)}…, ${records.length} records (written after the snapshot)`);
-fs.writeFileSync('/tmp/ghd/request-log.json', JSON.stringify(log, null, 2));
-console.log(`request log    : /tmp/ghd/request-log.json`);
+fs.writeFileSync(`${SCRATCH_DIR}/request-log.json`, JSON.stringify(log, null, 2));
+console.log(`request log    : ${SCRATCH_DIR}/request-log.json`);
