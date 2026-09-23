@@ -1,10 +1,13 @@
 ---
 name: decide-quickly
 description: >
-  Classify, score, and rate a piece of text with `kev ask`, and plan how to
-  fill a web form with `cua-s1`. Use when classifying text, rating urgency
-  or tone, deciding yes or no, or planning form fills (fill, check, click,
-  or skip) from a document. The cone still applies the result.
+  Classify, score, and rate a piece of text on device with the local Kev
+  model (`kev ask`), and plan how to fill a web form from a document with
+  `cua-s1`. Use when classifying a ticket, email, or message, rating urgency
+  or tone, answering a yes/no question about text, picking one of several
+  labels, or planning form fills (fill, check, click, or skip) from a
+  playwright-cli snapshot and a Label: value document. Both print typed
+  answers; nothing is clicked until you run the printed commands.
 allowed-tools: bash
 ---
 
