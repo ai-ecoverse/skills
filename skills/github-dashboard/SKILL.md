@@ -2,18 +2,18 @@
 name: github-dashboard
 description: >
   Installs and runs the `github-dashboard` sprinkle, a panel showing GitHub
-  issues and PRs as cards in five derived groups: needs attention, actively being
-  worked on, snoozed (Fibonacci backoff), stalled, and done. Each card renders one
-  pipeline state (open issue, draft PR, CI failing, in review, changes requested,
-  merge queue, merged, released) as a coloured glyph and top border. Covers the
-  fetcher that calls the GitHub API and writes the snapshot the panel reads (the
-  panel makes no network calls), the poller that refreshes it, and an opt-in
-  mirror of your marks onto GitHub comments. Use when the user asks for a GitHub
-  work dashboard, a triage panel for issues and PRs, "what needs my attention on
-  GitHub", "what are my agents working on", "what is stalled", "what did I
-  snooze", or wants to review the state model behind such a panel. Work in
-  progress, run against one operator's repositories only: treat its numbers,
-  stage table and thread-linkage rules as provisional.
+  issues and PRs as cards in five derived groups: needs attention, actively
+  being worked on, snoozed (Fibonacci backoff), stalled, and done. Each card
+  renders one pipeline state (open issue, draft PR, CI failing, in review,
+  changes requested, merge queue, merged, released) as a coloured glyph and top
+  border. Covers the fetcher that calls the GitHub API and writes the snapshot
+  the panel reads (the panel makes no network calls), the poller that refreshes
+  it, and an opt-in mirror of the operator's own marks onto GitHub comments. Use
+  when the user asks for a GitHub work dashboard, a triage panel for issues and
+  PRs, "what needs my attention on GitHub", "what are my agents working on",
+  "what is stalled", "what did I snooze", or wants to review the state model
+  behind such a panel. Work in progress, run against one operator's repositories
+  only: treat its numbers, stage table and thread-linkage rules as provisional.
 allowed-tools: bash
 ---
 
@@ -24,12 +24,12 @@ produces the data it reads. Two programs, one file each, deliberately separate:
 
 - **`scripts/fetch-snapshot.mjs`** talks to GitHub (and optionally a bb server),
   derives a stage per record, writes `snapshot.json` and `version.json`.
-- **`assets/sprinkle/github-dashboard.shtml`** is the panel. It reads those two
-  files through the sprinkle VFS bridge, derives a category from stage plus
-  timestamps, and writes only the operator's own marks. It makes no API calls.
+- **`github-dashboard.shtml`**, in `assets/sprinkle/`, is the panel. It reads
+  those two files through the sprinkle VFS bridge, derives a category from stage
+  plus timestamps, and writes only the operator's own marks. It makes no API
+  calls.
 
-How stage and category are modelled, and why, is in `references/domain-model.md`
-— the part of this skill most worth reviewing.
+How stage and category are modelled, and why, is in `references/domain-model.md`.
 
 ## State of this skill
 
@@ -37,21 +37,18 @@ Implemented and exercised: the five groups and their derivation, live updates by
 polling a hash file, markdown rendering of GitHub prose behind a sanitiser, a
 per-card quick view in two modes, three per-card actions that write local marks,
 a three-way Go control, and clickable follow-up actions that emit a lick to the
-cone. What is *not* settled:
-
-- it has run against one operator's repositories only, so the stage table and the
-  thread-linkage rules are tuned to one working style;
-- the status prose is model-written, and an action's stated evidence can be stale
-  by the time a human clicks it (see "Known problems");
-- nothing here has been reviewed by anyone but its author.
+cone. What is not settled is the provisional caveat in the description and the
+list under "Known problems"; nothing here has been reviewed by anyone but its
+author.
 
 ## Install
 
 ```sh
 # 1. put the built panel where sprinkles live, and its data alongside
 mkdir -p /shared/sprinkles/github-dashboard/data
-cp assets/sprinkle/github-dashboard.shtml /shared/sprinkles/github-dashboard/
-cp assets/sprinkle/data-example/*.json     /shared/sprinkles/github-dashboard/data/
+( cd assets/sprinkle &&
+  cp github-dashboard.shtml /shared/sprinkles/github-dashboard/ &&
+  cp data-example/*.json    /shared/sprinkles/github-dashboard/data/ )
 
 # 2. say which repositories to follow (REQUIRED — there are no defaults)
 mkdir -p /shared/github-monitor
@@ -133,8 +130,8 @@ jshd start -n github-dashboard-poll --enable --restart on-failure \
 A failing fetch cannot spin the unit: it is logged and counted, and after three
 consecutive failures the interval backs off to two hours until one succeeds. A
 cycle refuses to start while the previous one is still running. The
-measurements behind the interval, and the full failure behaviour, are in
-`references/poller.md`.
+measurements behind the interval, the full failure behaviour and the per-cycle
+agent-spend ledger (`data/agent-ledger.jsonl`) are in `references/poller.md`.
 
 ## Mirroring your marks back onto the card (the comment mirror)
 
@@ -199,10 +196,13 @@ Start with `dry` and read the logged plan. Enabling `live` means an unattended
 unit writes to public cards, which should be a deliberate act by whoever starts
 the unit. A mirror failure never fails the cycle.
 
-## Build
+## Build (needs the source tree)
 
-The panel is a **built artifact**. Its markdown renderer is bundled from
-`src/markdown.js` plus two vendored libraries:
+The panel is a **built artifact**, committed built: installing never needs this
+step. Rebuild after changing the renderer, from a checkout of the skill's
+repository: `src/` and `tests/` are not in Tessl's skill-review bundle, and
+without `src/` the build stops with `build: src/markdown.js missing`. The
+renderer is bundled from `src/markdown.js` plus two vendored libraries:
 
 ```sh
 ./scripts/build.sh
@@ -212,10 +212,9 @@ That is the whole command: no network, no package install (the dependencies are
 vendored under `src/vendor/`, with versions and hashes in `src/vendor/VENDOR.md`).
 The script detects whether it is running in this repository or next to a deployed
 panel, and is idempotent — run it twice and the artifact is byte-identical. It
-splices the bundle between the `GHD-BUNDLE` markers in
-`assets/sprinkle/github-dashboard.shtml`: only that marked region is generated,
-so never hand-edit it. The rest of the file *is* the source and is edited
-directly.
+splices the bundle between the `GHD-BUNDLE` markers in the panel's
+`github-dashboard.shtml`: only that marked region is generated, so never
+hand-edit it. The rest of the file *is* the source and is edited directly.
 
 ## Security: the markdown renderer is the sharp edge
 
@@ -232,7 +231,8 @@ any change to `src/markdown.js` must keep:
   decided by the URL API; `img` is not in the allowlist — the renderer builds
   the `<img>` itself from an inert placeholder.
 
-After any change to the renderer, rebuild and run the 66-fixture gate:
+After any change to the renderer, rebuild and run the 66-fixture gate from the
+repository checkout (`tests/xss-gate.html` is generated, not committed):
 
 ```sh
 ./scripts/build.sh                                   # regenerates the gate page
@@ -299,28 +299,45 @@ next unknown one is a matter of time. Adding a kind is one entry in
 
 ## Files
 
+Everything the panel, fetcher, poller and mirror need at run time, and all that
+Tessl's skill-review bundle contains:
+
 ```
-SKILL.md                                  this file
-references/domain-model.md                stages, categories, and the derivation
-references/poller.md                      interval measurements, failure behaviour
-references/comment-mirror.md              the mirror's publishing rules and their reasons
-references/action-kinds.md                why approve asks for a check; unknown kinds inert
-references/panel.md                       the panel's behaviour, piece by piece
-references/security.md                    the renderer's threat model and the gate's evidence
-assets/sprinkle/github-dashboard.shtml    the panel (BUILT — see Build)
-assets/sprinkle/data-example/             synthetic snapshot + version, 4 records
-scripts/build.sh                          the one build command
-scripts/fetch-snapshot.mjs                the fetcher (GitHub + optional bb)
-scripts/poll.jsh                          the durable poller unit (jshd)
-scripts/mirror-comments.mjs               mirrors your marks onto the card (opt-in)
-src/markdown.js                           sanitising markdown renderer (bundled)
-src/vendor/                               pinned marked + DOMPurify, with hashes
-tests/xss-fixtures.json                   66 acceptance fixtures (data)
-tests/gate-runner.js                      the gate's assertions
-tests/xss-gate.html                       GENERATED by build.sh — open to run
-tests/last-comment.test.js                unit test: lastCommentAt ignores the mirror
-tests/poll-summary.test.js                unit test: the poller's failure summary
-tests/snapshot-age.test.js                unit test: the live snapshot age
+SKILL.md                      this file
+references/
+  domain-model.md             stages, categories, and the derivation
+  poller.md                   interval measurements, failure behaviour, spend ledger
+  comment-mirror.md           the mirror's publishing rules and their reasons
+  action-kinds.md             why approve asks for a check; unknown kinds inert
+  panel.md                    the panel's behaviour, piece by piece
+  security.md                 the renderer's threat model and the gate's evidence
+assets/sprinkle/
+  github-dashboard.shtml      the panel (BUILT — see Build)
+  data-example/               synthetic snapshot + version, 4 records
+scripts/
+  build.sh                    the one build command (needs src/, see Build)
+  fetch-snapshot.mjs          the fetcher (GitHub + optional bb)
+  workdays-shared.cjs         working-day arithmetic the fetcher loads from beside itself
+  poll.jsh                    the durable poller unit (jshd)
+  mirror-comments.mjs         mirrors the operator's marks onto the card (opt-in)
+```
+
+Repository checkout only, for building and testing:
+
+```
+src/
+  markdown.js                 sanitising markdown renderer (bundled into the panel)
+  vendor/                     pinned marked + DOMPurify; versions and hashes in VENDOR.md
+tests/
+  xss-fixtures.json           66 acceptance fixtures (data)
+  gate-runner.js              the gate's assertions
+  xss-gate.html               GENERATED by build.sh (git-ignored) — open to run
+  *.test.js                   unit tests, one file per behaviour — for example
+                              last-comment (lastCommentAt ignores the mirror),
+                              mirror-exclusion, mirror-retry, poll-summary (the
+                              poller's failure summary), snapshot-age, live-clock,
+                              agent-ledger and poll-ledger (the spend ledger)
+  qv-fake-dom.js              fake DOM the quick-view test drives
 ```
 
 ## Colours
