@@ -74,3 +74,15 @@ test('a complete model has nothing missing', async () => {
   );
   is(status.missing, []);
 });
+
+test('a bundle built from an older kev.js pin is not ready', async () => {
+  const ort = '/shared/lib/node_modules/onnxruntime-web/dist/ort.wasm.bundle.min.mjs';
+  const files = (stamp) => ({
+    [runtime.BUNDLE]: 'bundle',
+    [`${runtime.BUNDLE}.stamp`]: `${stamp}\n`,
+    [ort]: 'ort',
+  });
+  is(await runtime.ready(fakeFs(files('@ai-ecoverse/kev.js@0.2.0'))), false);
+  is(await runtime.ready(fakeFs(files(runtime.KEV_SPEC))), true);
+  is(await runtime.ready(fakeFs({ [runtime.BUNDLE]: 'bundle', [ort]: 'ort' })), false, 'no stamp');
+});

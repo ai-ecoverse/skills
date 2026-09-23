@@ -56,7 +56,7 @@ async function prepareRuntime() {
   const rebuilt = await host.ensureBundle(exec, fs, {
     entry: process.argv[1].replace(/[^/]+$/, 'kev-entry.mjs'),
     outfile: runtime.BUNDLE,
-    packages: [{ spec: '@ai-ecoverse/kev.js@0.2.0', name: '@ai-ecoverse/kev.js' }],
+    packages: [{ spec: runtime.KEV_SPEC, name: runtime.KEV_NAME }],
   });
   const ortReady =
     (await fs.exists('/shared/lib/node_modules/onnxruntime-web/dist/ort.wasm.bundle.min.mjs')) ||

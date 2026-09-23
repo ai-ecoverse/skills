@@ -42,7 +42,7 @@ It prints the step count, the time, and the final address. `--json` prints `ok`,
 | Wikipedia search (2 steps) | 19 s, $0 | 15 s, $0.02 | 50 s, $0.13 |
 | Hacker News top story's comments | fails | 26 s, $0.01 | 38 s, $0.18 |
 
-- **`--decider kev`** (default): free, and the page stays on the device. It loads in 7–8 s per run, and each step takes 1–6 s. It only types values the goal spells out: each `"quoted string"` and each capitalised name (`Berlin`). Quote dates: `Type "Sep 30" into Departure`. It fails at goals about position, because each control carries only its own label.
+- **`--decider kev`** (default): free, and the page stays on the device. It loads in about 4 s per run, and each step takes 1–6 s. It only types values the goal spells out: each `"quoted string"` and each capitalised name (`Berlin`). Quote dates: `Type "Sep 30" into Departure`. It fails at goals about position, because each control carries only its own label.
 - **`--decider agent`**: each step is one `agent` call. The scoop may run no command and must answer with a menu id and, for a type action, the text. `--model` takes any id from `models` (default `claude-haiku-4-5`). A step takes 3–7 s. Its spend shows in `cost`.
 
 ## When it stops

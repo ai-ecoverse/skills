@@ -1,12 +1,14 @@
 // Load a Kev model once and keep it. kev.jsh opens one per ask; webrunner
 // opens one per run and asks it every step. Loading kev-9b reads 325 weight
-// files (7-8 s from OPFS on WebGPU, measured 2026-09-23); a warm ask is the
-// forward pass alone.
+// files (about 4 s from OPFS on WebGPU with kev.js 0.4, measured 2026-09-23);
+// a warm ask is the forward pass alone.
 // fs is passed in, like host.js, so tests can load this without the realm.
 
 const host = require('./host.js');
 
 const BUNDLE = '/shared/cache/kev/bundle.cjs';
+const KEV_NAME = '@ai-ecoverse/kev.js';
+const KEV_SPEC = `${KEV_NAME}@0.4.0`;
 const DEST = '/workspace/models/ai-ecoverse/kev.js';
 const MODELS = { '0.8b': 'kev-0.8b', '4b': 'kev-4b', '9b': 'kev-9b' };
 const ORT_DIRS = [
@@ -150,54 +152,20 @@ async function pullWeights(fs, exec, model, log = () => {}) {
   return after;
 }
 
-function previewPath(input) {
-  const url =
-    typeof input === 'string' ? input : input instanceof URL ? input.href : input && input.url;
-  if (typeof url !== 'string') return null;
-  const at = url.indexOf('/preview/');
-  if (at < 0) return null;
-  return decodeURIComponent(url.slice(at + '/preview'.length).split('?')[0]);
-}
-
-// Weight shards are read from the VFS in this worker. The preview service
-// worker's copy of a 32–50 MB OPFS file comes back EINVAL once hundreds of
-// them are in flight.
-function installVfsFetch(fs) {
-  if (globalThis.fetch.__kevVfs) return;
-  const nativeFetch = globalThis.fetch.bind(globalThis);
-  const vfsFetch = async (input, init) => {
-    const path = previewPath(input);
-    if (!path || !path.startsWith('/')) return nativeFetch(input, init);
-    const bytes = await fs.readFileBinary(path);
-    const body = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-    return new Response(body, {
-      status: 200,
-      headers: {
-        'content-type': 'application/octet-stream',
-        'content-length': String(body.byteLength),
-      },
-    });
-  };
-  vfsFetch.__kevVfs = true;
-  globalThis.fetch = vfsFetch;
-}
-
 async function openOn(fs, base, dateFacts, providers, log, requireBundle) {
   const kind = providers[0] === 'webgpu' ? 'webgpu' : 'wasm';
   log(`kev: runtime ${kind}${host.hasWebGpu() ? '' : ' (navigator.gpu absent in this worker)'}`);
   const ort = await loadOrt(fs, kind);
-  const url = host.previewUrl(base.endsWith('/') ? base : `${base}/`);
-  installVfsFetch(fs);
+  const root = base.replace(/\/$/, '');
   let finished = 0;
-  return loadKev(requireBundle)(url, {
+  // kev.js 0.4 reads a bundle in place through this function: no preview
+  // URL, no fetch, no Cache Storage. A shard shorter than the manifest says
+  // fails by name; weightsStatus still runs first so the message names kev pull.
+  return loadKev(requireBundle)((rel) => fs.readFileBinary(`${root}/${rel}`), {
     ort,
     variant: 'q8f32',
     executionProviders: providers,
     dateFacts,
-    // One shard at a time. A parallel pair of 50 MB preview reads was the HTTP 500.
-    concurrency: 1,
-    // The bytes already live in the VFS. Cache Storage quota is smaller than the 9b graph.
-    cacheName: null,
     onPhase: (phase) => log(`kev: phase ${phase}`),
     onProgress: (progress) => {
       if (progress.total && progress.loaded === progress.total) {
@@ -234,8 +202,17 @@ async function openModel(fs, exec, opts = {}) {
   }
 }
 
+// The bundle's stamp names the kev.js it was built from. A bundle from an
+// older pin is not ready: kev prepare rebuilds it.
 async function ready(fs) {
   if (!(await fs.exists(BUNDLE))) return false;
+  let stamp = '';
+  try {
+    stamp = String(await fs.readFile(`${BUNDLE}.stamp`)).trim();
+  } catch {
+    return false;
+  }
+  if (stamp !== KEV_SPEC) return false;
   for (const dir of ORT_DIRS) {
     if (await fs.exists(`${dir}/ort.wasm.bundle.min.mjs`)) return true;
   }
@@ -244,6 +221,8 @@ async function ready(fs) {
 
 module.exports = {
   BUNDLE,
+  KEV_NAME,
+  KEV_SPEC,
   DEST,
   MODELS,
   SIZES,
