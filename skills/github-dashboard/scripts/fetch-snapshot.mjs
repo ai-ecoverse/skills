@@ -31,7 +31,11 @@ const fs = require('fs');
 const crypto = require('crypto');
 // Phase 7b: the panel's own working-day arithmetic, so the "this record will be
 // hidden, do not spawn an agent" test is the same rule the panel classifies by.
-const { workingDaysSince } = require('/tmp/ghd/workdays-shared.cjs');
+// Shipped beside this file (it used to be required from /tmp/ghd/, scratch that a
+// clean install does not have). A LITERAL relative path: this realm resolves it
+// against this file, independent of the cwd; a computed path (new URL(..., import.meta.url))
+// was not found by the realm's require, measured 2026-09-23.
+const { workingDaysSince } = require('./workdays-shared.cjs');
 
 /* Phase 7b: the fetcher obtains its own credential.
 
@@ -640,7 +644,7 @@ async function closingLinks(records) {
         counterEvents: timelineItems(last:20, itemTypes:[${COUNTER_EVENT_TYPES.join(',')}]) {
           totalCount
           nodes { __typename
-            ... on IssueComment { createdAt body }
+            ... on IssueComment { createdAt body author { login __typename } }
             ... on LabeledEvent { createdAt }
             ... on UnlabeledEvent { createdAt }
             ... on AssignedEvent { createdAt }
@@ -655,27 +659,34 @@ async function closingLinks(records) {
       pullRequest(number:${r.id}) { number state isDraft
         closingIssuesReferences(first:10) {
           totalCount nodes { number state title url labels(first:20){nodes{name}} repository { nameWithOwner } } } } }`).join('');
+  // viewer { login } is the authenticated identity at no extra request, so the
+  // mirror exclusion below holds even on a run whose comment phase was all
+  // cache hits (and so never called GET /user).
   const data = await graphql(`query {${iq}${pq}
+ viewer { login }
  rateLimit { cost remaining nodeCount } }`);
+  const viewerLogin = data.viewer && typeof data.viewer.login === 'string' && data.viewer.login ? data.viewer.login : null;
   const counters = {};
   issues.forEach((r, i) => {
     const node = data['i' + i] && data['i' + i].issue;
     if (!node) return;
-    const evs = (node.counterEvents && node.counterEvents.nodes ? node.counterEvents.nodes : [])
-      .filter((e) => e && e.createdAt)
-      .map((e) => ({ type: e.__typename, at: e.createdAt, body: e.body || null }));
-    // The counter resets on the LATEST qualifying event; with none, the issue's
-    // own creation is the start. updated_at is NOT used: measured on a real PR
-    // it equals created_at while a LabeledEvent exists 2s later, and on
-    // another it tracked a label change exactly — it is not a faithful
-    // instrument either way.
-    const latest = evs.reduce((m, e) => (m && m.at >= e.at ? m : e), null);
-    counters[`${r.repo}#${r.id}`] = {
-      resetAt: latest ? latest.at : node.createdAt,
-      resetBy: latest ? latest.type : 'IssueCreated',
-      qualifyingCount: node.counterEvents ? node.counterEvents.totalCount : 0,
-      recent: evs.slice(-5),
-    };
+    // updated_at is NOT used: measured on a real PR it equals created_at while
+    // a LabeledEvent exists 2s later, and on another it tracked a label change
+    // exactly — it is not a faithful instrument either way.
+    // Fail safe: with no identity the mirror cannot be told apart, so the
+    // counter is left UNDETERMINED rather than reset by our own comment.
+    if (!viewerLogin) {
+      counters[`${r.repo}#${r.id}`] = { undeterminedLogin: true };
+      return;
+    }
+    counters[`${r.repo}#${r.id}`] = counterFromTimeline({
+      nodes: node.counterEvents ? node.counterEvents.nodes : [],
+      totalCount: node.counterEvents ? node.counterEvents.totalCount : 0,
+      createdAt: node.createdAt,
+      selfLogin: viewerLogin,
+      maxComments: MAX_COMMENTS,
+      commentChars: COMMENT_CHARS,
+    });
   });
   const closedBy = {};
   issues.forEach((r, i) => {
@@ -698,7 +709,7 @@ async function closingLinks(records) {
       labels: (iss.labels && iss.labels.nodes ? iss.labels.nodes.map((l) => l.name) : []),
     }));
   });
-  return { closedBy, closes, counters, cost: data.rateLimit ? data.rateLimit.cost : null };
+  return { closedBy, closes, counters, viewerLogin, cost: data.rateLimit ? data.rateLimit.cost : null };
 }
 
 /* ------------------------------------------------------- bb thread linkage
@@ -891,6 +902,11 @@ function stageFromThread(rec, t) {
    so every entry point REFUSES rather than guess. The caller then leaves the
    field absent, which is exactly the pre-existing (inert) behaviour.
 
+   THE SAME PREDICATE (commentCounts) also filters every other comment-derived
+   field: commentsCount (lastCommentPhase), counterResetAt and recentComments
+   (counterFromTimeline, via commentFromGraphql), and the updated_at bump in
+   lastActivityAt (activityWithoutExcluded). One rule, no copies.
+
    Pure (the phase driver takes its I/O as arguments), and fenced by these
    markers so the test evaluates THIS text rather than a copy that could drift. */
 const GHD_MIRROR_MARKER = '<!-- ghd-mirror:v1 -->';
@@ -957,15 +973,28 @@ function lastPageFromLink(link) {
     tail of bot or mirror comments). getPage(page) -> { comments, link }. */
 async function fetchLastCommentAt({ count, selfLogin, getPage, perPage = COMMENTS_PER_PAGE }) {
   requireLogin(selfLogin, 'fetchLastCommentAt');
+  // Every comment on every page read, deduplicated, so the SAME predicate can
+  // also say how many comments were excluded and when the newest excluded one
+  // was written or edited (commentsCount and lastActivityAt need both).
+  const seen = new Map();
+  const note = (r, p) => {
+    ((r && r.comments) || []).forEach((c, i) => seen.set(c && c.id != null ? `id:${c.id}` : `p${p}:${i}`, c));
+  };
   let page = Math.max(1, Math.ceil((Number(count) || 0) / perPage));
   let res = await getPage(page);
+  note(res, page);
   let requests = 1;
   const last = lastPageFromLink(res && res.link);
   if (last && last !== page) {
     page = last;
     res = await getPage(page);
+    note(res, page);
     requests += 1;
   }
+  // The page the walk starts from is the true last page iff Link names no
+  // later one (GitHub omits rel="last" on the last page itself).
+  const topIsLast = !lastPageFromLink(res && res.link) || lastPageFromLink(res && res.link) === page;
+  const done = (out) => Object.assign(out, excludedSummary([...seen.values()], selfLogin), { complete: topIsLast && page <= 1 });
   // For the audit only: what a naive "newest comment" would have said.
   let newestAnyMs = -Infinity;
   for (const c of (res && res.comments) || []) {
@@ -975,19 +1004,116 @@ async function fetchLastCommentAt({ count, selfLogin, getPage, perPage = COMMENT
   const newestAnyAt = newestAnyMs === -Infinity ? null : new Date(newestAnyMs).toISOString().replace('.000Z', 'Z');
   for (let back = 0; ; back += 1) {
     const at = newestQualifyingCommentAt((res && res.comments) || [], selfLogin);
-    if (at) return { at, requests, newestAnyAt };
-    if (page <= 1) return { at: null, requests, newestAnyAt };
+    if (at) return done({ at, requests, newestAnyAt });
+    if (page <= 1) return done({ at: null, requests, newestAnyAt });
     // Unknown, not "none": a null here would claim a thread has no follow-up.
-    if (back >= MAX_COMMENT_PAGES_BACK) return { at: undefined, requests, newestAnyAt, truncated: true };
+    if (back >= MAX_COMMENT_PAGES_BACK) return done({ at: undefined, requests, newestAnyAt, truncated: true });
     page -= 1;
     res = await getPage(page);
+    note(res, page);
     requests += 1;
   }
 }
 
+/** What the shared predicate EXCLUDED from a set of REST comments: how many,
+    and the newest instant any of them was created or edited (an edit to the
+    mirror's comment bumps the issue's updated_at just as a post does). */
+function excludedSummary(comments, selfLogin) {
+  requireLogin(selfLogin, 'excludedSummary');
+  let excludedCount = 0;
+  let countedSeen = 0;
+  let latestMs = -Infinity;
+  for (const c of comments || []) {
+    if (!c || typeof c !== 'object') continue;
+    if (commentCounts(c, selfLogin)) {
+      countedSeen += 1;
+      continue;
+    }
+    excludedCount += 1;
+    for (const t of [c.created_at, c.updated_at]) {
+      const ms = Date.parse(t);
+      if (Number.isFinite(ms) && ms > latestMs) latestMs = ms;
+    }
+  }
+  return { excludedCount, countedSeen, excludedLatestAt: latestMs === -Infinity ? null : new Date(latestMs).toISOString().replace('.000Z', 'Z') };
+}
+
+/** A GraphQL comment node in the REST shape commentCounts() reads, so the
+    timeline-derived fields use the SAME predicate rather than a copy of it.
+    GraphQL types an app author as __typename 'Bot' (REST: user.type 'Bot'). */
+function commentFromGraphql(node) {
+  const a = node && node.author;
+  return {
+    user: a ? { login: a.login, type: a.__typename === 'Bot' ? 'Bot' : 'User' } : null,
+    body: node ? node.body : null,
+    created_at: node ? node.createdAt : null,
+  };
+}
+
+/** The five-working-day counter and the model's recent comments, from the
+    GraphQL timeline, AS IF every excluded comment did not exist. With nothing
+    excluded the result is exactly what the previous inline code produced.
+    Undetermined (resetAt undefined, so the panel falls back to lastActivityAt)
+    only when EVERY event in the window was excluded and older ones exist
+    beyond it: the true reset event is then out of sight. */
+function counterFromTimeline({ nodes, totalCount, createdAt, selfLogin, maxComments, commentChars }) {
+  requireLogin(selfLogin, 'counterFromTimeline');
+  const all = (nodes || []).filter((e) => e && e.createdAt);
+  const evs = [];
+  let excluded = 0;
+  for (const e of all) {
+    if (e.__typename === 'IssueComment' && !commentCounts(commentFromGraphql(e), selfLogin)) {
+      excluded += 1;
+      continue;
+    }
+    evs.push({ type: e.__typename, at: e.createdAt, body: e.body || null });
+  }
+  // The counter resets on the LATEST qualifying event; with none, the issue's
+  // own creation is the start.
+  const latest = evs.reduce((m, e) => (m && m.at >= e.at ? m : e), null);
+  const undetermined = !latest && excluded > 0 && (Number(totalCount) || 0) > all.length;
+  const recentComments = evs
+    .slice(-5)
+    .filter((e) => e.type === 'IssueComment' && e.body)
+    .slice(-maxComments)
+    .map((e) => ({ at: e.at, text: String(e.body).slice(0, commentChars) }));
+  return {
+    resetAt: undetermined ? undefined : latest ? latest.at : createdAt,
+    resetBy: undetermined ? undefined : latest ? latest.type : 'IssueCreated',
+    qualifyingCount: Math.max(0, (Number(totalCount) || 0) - excluded),
+    excluded,
+    latestCountedAt: latest ? latest.at : null,
+    recentComments,
+  };
+}
+
+/** lastActivityAt without the bump an EXCLUDED comment gave issue.updated_at.
+
+    updated_at cannot be filtered per comment: it is one timestamp for the whole
+    item. But when it coincides (within toleranceMs) with the newest instant an
+    excluded comment was created or edited, that comment IS what moved it, and
+    the honest activity is the newest of every OTHER signal already in hand:
+    CI, reviews, merge, creation, closure, counted comments, counted timeline
+    events. No extra request. If anything later moved updated_at, it no longer
+    coincides and the raw value stands. Unknown excluded data -> raw value. */
+function activityWithoutExcluded({ raw, updatedAt, excludedLatestAt, others, toleranceMs = 2000 }) {
+  if (!updatedAt || !excludedLatestAt) return { at: raw, adjusted: false };
+  const u = Date.parse(updatedAt);
+  const x = Date.parse(excludedLatestAt);
+  if (!Number.isFinite(u) || !Number.isFinite(x) || Math.abs(u - x) > toleranceMs) return { at: raw, adjusted: false };
+  const ms = (others || []).map((t) => Date.parse(t)).filter(Number.isFinite);
+  if (!ms.length) return { at: raw, adjusted: false };
+  const at = new Date(Math.max(...ms)).toISOString().replace('.000Z', 'Z');
+  if (Date.parse(at) >= Date.parse(raw)) return { at: raw, adjusted: false };
+  return { at, adjusted: true };
+}
+
 /** The whole phase, I/O injected. Mutates each record's lastCommentAt and the
     cache (shape { login, entries }), and returns stats plus a per-record audit.
-    Request budget:
+    Also sets commentsTotal (raw GitHub count) and lowers commentsCount by the
+    comments the shared predicate excludes, and returns excludedAt[key] (the
+    newest excluded create/edit, null if none, absent if unknown) for the
+    lastActivityAt correction. Request budget:
       - commentsCount === 0  -> null, no request;
       - cache hit            -> cached value, no request. A hit needs the SAME
         lastActivityAt (the status cache's key) AND commentsCount (a deletion
@@ -996,6 +1122,7 @@ async function fetchLastCommentAt({ count, selfLogin, getPage, perPage = COMMENT
         missed), then usually one page per missed record.
     A failed or truncated read leaves the field ABSENT and nothing cached. */
 async function lastCommentPhase({ records, cache, getLogin, getPage }) {
+  const excludedAt = {};
   const stats = { artifacts: records.length, zeroComments: 0, cacheHits: 0, fetched: 0, failed: 0, pageRequests: 0, loginRequests: 0, invalidatedByLogin: 0, pruned: 0, loginError: null };
   const audit = [];
   const failures = [];
@@ -1008,13 +1135,17 @@ async function lastCommentPhase({ records, cache, getLogin, getPage }) {
     const count = rec.commentsCount ?? 0;
     if (count === 0) {
       rec.lastCommentAt = null;
+      rec.commentsTotal = 0;
+      excludedAt[key] = null;
       stats.zeroComments += 1;
       audit.push({ key, commentsCount: 0, source: 'zero', lastCommentAt: null });
       continue;
     }
     live.add(key);
     const e = entries[key];
-    const hit = e && e.lastActivityAt === rec.lastActivityAt && e.commentsCount === count && typeof e.login === 'string' && 'lastCommentAt' in e;
+    rec.commentsTotal = count;
+    // v2 entries also carry the exclusion counts; a v1 entry is re-read ONCE.
+    const hit = e && e.v === 2 && e.lastActivityAt === rec.lastActivityAt && e.commentsCount === count && typeof e.login === 'string' && 'lastCommentAt' in e;
     (hit ? hits : misses).push({ rec, key, count, e });
   }
   let login = null;
@@ -1036,6 +1167,8 @@ async function lastCommentPhase({ records, cache, getLogin, getPage }) {
   }
   for (const h of applied) {
     h.rec.lastCommentAt = h.e.lastCommentAt;
+    h.rec.commentsCount = h.e.commentsCounted;
+    excludedAt[h.key] = h.e.excludedLatestAt;
     stats.cacheHits += 1;
     audit.push({ key: h.key, commentsCount: h.count, lastActivityAt: h.rec.lastActivityAt, source: 'cache', lastCommentAt: h.e.lastCommentAt });
   }
@@ -1051,9 +1184,14 @@ async function lastCommentPhase({ records, cache, getLogin, getPage }) {
       stats.pageRequests += r.requests;
       if (r.at === undefined) throw new Error(`walked back ${MAX_COMMENT_PAGES_BACK} pages without a counting comment`);
       m.rec.lastCommentAt = r.at;
-      entries[m.key] = { lastActivityAt: m.rec.lastActivityAt, commentsCount: m.count, login, lastCommentAt: r.at };
+      // Exact when every page was read (every thread today); otherwise the raw
+      // count minus what the pages read excluded, an upper bound.
+      const counted = r.complete ? r.countedSeen : Math.max(0, m.count - r.excludedCount);
+      m.rec.commentsCount = counted;
+      excludedAt[m.key] = r.excludedLatestAt;
+      entries[m.key] = { v: 2, lastActivityAt: m.rec.lastActivityAt, commentsCount: m.count, login, lastCommentAt: r.at, commentsCounted: counted, excludedCount: r.excludedCount, excludedLatestAt: r.excludedLatestAt, complete: r.complete };
       stats.fetched += 1;
-      audit.push({ key: m.key, commentsCount: m.count, lastActivityAt: m.rec.lastActivityAt, source: 'fetched', requests: r.requests, lastCommentAt: r.at, newestAnyAt: r.newestAnyAt });
+      audit.push({ key: m.key, commentsCount: m.count, commentsCounted: counted, excludedCount: r.excludedCount, excludedLatestAt: r.excludedLatestAt, lastActivityAt: m.rec.lastActivityAt, source: 'fetched', requests: r.requests, lastCommentAt: r.at, newestAnyAt: r.newestAnyAt });
     } catch (err) {
       delete m.rec.lastCommentAt;
       delete entries[m.key];
@@ -1070,7 +1208,7 @@ async function lastCommentPhase({ records, cache, getLogin, getPage }) {
     }
   }
   if (login) cache.login = login;
-  return { stats, audit, failures, login };
+  return { stats, audit, failures, login, excludedAt };
 }
 /* ---- >8 end lastComment ---------------------------------------------------- */
 
@@ -1078,6 +1216,7 @@ async function lastCommentPhase({ records, cache, getLogin, getPage }) {
 
 const records = [];
 const notes = [];
+const derivedInputs = new Map();
 const perRepo = {};
 
 for (const full of REPOS) {
@@ -1165,9 +1304,17 @@ for (const full of REPOS) {
     const bodyText = (isPr ? pr.body : it.body) || '';
     if (bodyText.trim()) rec.bodyExcerpt = bodyText.trim().slice(0, BODY_CHARS);
 
-    rec.status = derivedStatus({
+    const statusInput = {
       kind: rec.kind, stage: rec.stage, stateReason, merged, draft: isPr ? !!pr.draft : false,
       ci: ci.text, reviewers: review.reviewers, mergeableState, commentsCount: it.comments,
+    };
+    rec.status = derivedStatus(statusInput);
+    // Kept OUT of the record: what the mirror-exclusion pass needs later.
+    // updatedAt is the one input an excluded comment can move; the rest cannot.
+    derivedInputs.set(rec, {
+      statusInput,
+      updatedAt: it.updated_at || null,
+      others: [it.created_at, it.closed_at, ci.lastCompleted, review.lastSubmitted, isPr ? pr.merged_at : null].filter(Boolean),
     });
     records.push(rec);
   }
@@ -1210,6 +1357,29 @@ try {
 const lastCommentRequests = log.length - lastCommentRequestsBefore;
 if (lastComment.stats && lastComment.stats.loginError) notes.push(`lastCommentAt: GET /user failed (${lastComment.stats.loginError}); records needing a read left without the field`);
 for (const f of lastComment.failures) notes.push(`lastCommentAt: ${f.key} left absent: ${f.error}`);
+for (const r of records) {
+  const d = derivedInputs.get(r);
+  if (d && r.commentsCount !== d.statusInput.commentsCount) r.status = derivedStatus({ ...d.statusInput, commentsCount: r.commentsCount });
+}
+
+/* lastActivityAt without our own comment's bump (see activityWithoutExcluded).
+   Runs per ARTEFACT, before the merge, so a merged card takes the max of
+   corrected values. counter may be null (GraphQL failed): the other signals
+   still stand. The raw value is kept as lastActivityAtRaw when it differs. */
+const activityAudit = [];
+function applyActivityExclusion(rec, counter) {
+  const d = derivedInputs.get(rec);
+  const key = `${rec.repo}#${rec.id}`;
+  const excludedLatestAt = lastComment.excludedAt ? lastComment.excludedAt[key] : undefined;
+  if (!d || excludedLatestAt === undefined) return;
+  const others = d.others.concat([rec.lastCommentAt, counter && counter.latestCountedAt].filter(Boolean));
+  const out = activityWithoutExcluded({ raw: rec.lastActivityAt, updatedAt: d.updatedAt, excludedLatestAt, others });
+  if (!out.adjusted) return;
+  activityAudit.push({ key, raw: rec.lastActivityAt, adjusted: out.at, updatedAt: d.updatedAt, excludedLatestAt });
+  rec.lastActivityAtRaw = rec.lastActivityAt;
+  rec.lastActivityAt = out.at;
+}
+let activityExclusionApplied = false;
 fs.writeFileSync(`${SCRATCH_DIR}/last-comment-audit.json`, JSON.stringify({ stats: lastComment.stats, requests: lastCommentRequests, cacheLoaded: commentCacheLoaded, audit: lastComment.audit }, null, 2));
 
 /* ---- phase 3a: attach bb threads, and let them express stages 2/3/4 ---- */
@@ -1306,22 +1476,26 @@ fs.writeFileSync(`${SCRATCH_DIR}/thread-link-audit.json`, JSON.stringify({ linke
 let closingCost = null;
 const mergeAudit = { merged: [], rejected: [], secondaryOutOfWindow: [] };
 try {
-  const { closedBy, closes, counters, cost } = await closingLinks(records);
+  const { closedBy, closes, counters, viewerLogin, cost } = await closingLinks(records);
   closingCost = cost;
-  // Five-working-day counter input, on every issue record.
+  if (!viewerLogin) notes.push('GraphQL viewer login missing: stall counters and recent comments left undetermined rather than risk counting the mirror');
+  // Five-working-day counter input, on every issue record. Excluded comments
+  // (the mirror's, bots') neither reset it nor reach the model as text.
   for (const r of records) {
     const c = counters[`${r.repo}#${r.id}`];
-    if (!c) continue;
-    r.counterResetAt = c.resetAt;
-    r.counterResetBy = c.resetBy;
+    if (!c || c.undeterminedLogin) continue;
+    if (c.resetAt !== undefined) {
+      r.counterResetAt = c.resetAt;
+      r.counterResetBy = c.resetBy;
+    } else {
+      notes.push(`${r.repo}#${r.id}: every timeline event in the window was excluded; stall counter left undetermined`);
+    }
     r.counterQualifyingEvents = c.qualifyingCount;
     // Comment text for the status model — the substance a title cannot carry.
-    const comments = (c.recent || [])
-      .filter((e) => e.type === 'IssueComment' && e.body)
-      .slice(-MAX_COMMENTS)
-      .map((e) => ({ at: e.at, text: String(e.body).slice(0, COMMENT_CHARS) }));
-    if (comments.length) r.recentComments = comments;
+    if (c.recentComments.length) r.recentComments = c.recentComments;
   }
+  for (const r of records) applyActivityExclusion(r, counters[`${r.repo}#${r.id}`] || null);
+  activityExclusionApplied = true;
   const byKey = new Map(records.map((r) => [`${r.repo}#${r.id}`, r]));
   const absorbed = new Set();
 
@@ -1359,8 +1533,13 @@ try {
     }
     if (issue.thread && !lead.thread) lead.thread = issue.thread;
     // The card's idleness must reflect the newest activity of either artefact.
+    const rawActivity = maxDate(lead.lastActivityAtRaw || lead.lastActivityAt, issue.lastActivityAtRaw || issue.lastActivityAt);
     lead.lastActivityAt = maxDate(lead.lastActivityAt, issue.lastActivityAt);
+    if (rawActivity !== lead.lastActivityAt) lead.lastActivityAtRaw = rawActivity;
+    else delete lead.lastActivityAtRaw;
+    const total = (lead.commentsTotal ?? lead.commentsCount ?? 0) + (issue.commentsTotal ?? issue.commentsCount ?? 0);
     lead.commentsCount = (lead.commentsCount || 0) + (issue.commentsCount || 0);
+    lead.commentsTotal = total;
     // One card, one comment signal: a comment on EITHER artefact is follow-up
     // on this work. Mirror comments were already excluded per artefact.
     const lc = combineLastCommentAt(lead.lastCommentAt, issue.lastCommentAt);
@@ -1432,7 +1611,9 @@ try {
 } catch (err) {
   notes.push(`closing-link merge skipped: ${String(err.message).slice(0, 200)}`);
   mergeAudit.error = String(err.message).slice(0, 300);
+  if (!activityExclusionApplied) for (const r of records) applyActivityExclusion(r, null);
 }
+fs.writeFileSync(`${SCRATCH_DIR}/activity-exclusion-audit.json`, JSON.stringify(activityAudit, null, 2));
 fs.writeFileSync(`${SCRATCH_DIR}/merge-audit.json`, JSON.stringify(mergeAudit, null, 2));
 
 records.sort((a, b) => new Date(b.lastActivityAt) - new Date(a.lastActivityAt));
@@ -1958,7 +2139,7 @@ const snapshot = {
       doneColumnPolicy: {
         rule: 'phase 7g: NO agent call for any record in the done column (stage 10/11). Cached prose from when the record was live is still served, because the cache key includes lastActivityAt and so cannot be stale; nothing is written to the cache for a done record. A reopened PR moves lastActivityAt, which retires the entry and earns a fresh call once the record leaves the column.',
         why: 'nobody reads the done column. The 7b rule skipped only the aged-out tail (3 of 101 on a Monday) while 82 records sat in done.',
-        workingDayArithmetic: "the panel's own workingDaysSince, shared via /tmp/ghd/workdays-shared.cjs and drift-tested against the panel copy",
+        workingDayArithmetic: "the panel's own workingDaysSince, shipped beside the fetcher as workdays-shared.cjs (a copy of the panel's inline implementation)",
         skippedDoneColumn: cacheStats.skippedDoneColumn,
         servedFromCache: cacheStats.doneServedFromCache,
         keptMechanical: cacheStats.doneMechanical,
@@ -2056,6 +2237,14 @@ const snapshot = {
       requests: lastCommentRequests,
       cacheEntriesLoaded: commentCacheLoaded,
       ...(lastComment.stats || { error: 'phase did not run' }),
+      alsoAppliedTo: {
+        commentsCount: 'issue-thread comments minus excluded ones (exact when every page was read, which is every thread today). commentsTotal keeps the raw GitHub count; a consumer that must find cards which CAN hold a mirror comment (the mirror orphan sweep) needs commentsTotal',
+        counterResetAt: 'GraphQL timeline with excluded IssueComments dropped (authors + viewer login fetched in the same batched query, no extra request); undetermined only if every event in the last-20 window was excluded and older ones exist',
+        recentComments: 'excluded comments never reach the status model or the quick view',
+        lastActivityAt: 'issue.updated_at cannot be filtered per comment. When it coincides (<= 2 s) with the newest create/edit of an excluded comment, it is replaced by the newest of the other signals already fetched (CI, reviews, merge, created/closed, counted comments, counted timeline events); lastActivityAtRaw keeps the original. No extra request',
+        notCovered: 'a DELETED mirror comment still bumps updated_at once (nothing left to attribute it to), and PR events that only updated_at records (a push without CI, a PR label change) are lost when the bump is attributed',
+        activityAdjusted: activityAudit.length,
+      },
       populated: records.filter((r) => typeof r.lastCommentAt === 'string').length,
       nulls: records.filter((r) => r.lastCommentAt === null).length,
       absent: records.filter((r) => !('lastCommentAt' in r)).length,
@@ -2120,6 +2309,7 @@ console.log(`merges         : ${mergeAudit.merged.length} (graphql cost ${closin
 {
   const s = lastComment.stats;
   const withAt = records.filter((r) => typeof r.lastCommentAt === 'string').length;
+  console.log(`mirror/bot excl: commentsCount lowered on ${records.filter((r) => r.commentsTotal !== undefined && r.commentsCount < r.commentsTotal).length} cards, lastActivityAt corrected on ${activityAudit.length} artefacts`);
   console.log(`last comment   : ${withAt} of ${records.length} cards carry lastCommentAt; ${lastCommentRequests} requests` + (s ? ` (${s.pageRequests} pages + ${s.loginRequests} /user) — ${s.zeroComments} zero-comment skipped, ${s.cacheHits} cache hits, ${s.fetched} fetched, ${s.failed} failed` : ' (phase failed)'));
 }
 console.log(`model          : ${STATUS_MODEL}`);

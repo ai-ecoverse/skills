@@ -1026,6 +1026,12 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
            - the project `+`: still INERT, no handler.
          ================================================================== */
 
+      /* GHD-CLASSIFY:START (phase 8e) ------------------------------------
+         From here to the matching END marker is PURE: constants and functions of
+         (record, now). tests/live-clock.test.js cuts it out of the BUILT panel
+         and runs it, so it must not reach DOM, module state or a clock.
+         ------------------------------------------------------------------ */
+
       /* ------------------------------------------------------------------
          1. TUNABLE CONSTANTS
          ------------------------------------------------------------------ */
@@ -1082,10 +1088,12 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
       // Merged-but-unreleased counts as waiting-on-the-release-train.
       const RELEASE_WAIT_IS_SNOOZE = true;
 
-      // Live clock. This MUST move together with the switch to live records:
-      // with a frozen NOW, 24 of 30 live records have activity in the future,
-      // idle times go negative and the stalled group silently under-reports.
-      const NOW = new Date();
+      // Phase 8e: there is NO module clock. Until 8e a `const NOW = new Date()`
+      // stood here, fixed when the panel opened, and every reader below drifted
+      // on a panel left open: labels stopped counting, nothing ever stalled,
+      // expired snoozes stayed snoozed, the done pile never aged out. Every
+      // function here takes `now` (ms or Date) from its caller; the caller's
+      // clock is PASS_NOW (see "LIVE CLOCK", next to the 8d age tick).
 
       /* ------------------------------------------------------------------
          2. STATE MODEL
@@ -1282,7 +1290,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
       }
 
       /** Snooze state, including "a comment cancels the snooze". */
-      function snoozeState(item, now = NOW) {
+      function snoozeState(item, now) {
         if (!item.snoozedUntil) return { present: false, active: false };
         const until = new Date(item.snoozedUntil);
         const since = item.snoozedAt ? new Date(item.snoozedAt) : null;
@@ -1308,7 +1316,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
       }
 
       /** THE pure function. No I/O, no clock read — `now` is injected. */
-      function categorize(item, now = NOW) {
+      function categorize(item, now) {
         const stage = item.stage;
         const sub = item.substage || null;
         const idle = hoursSince(item.lastActivityAt, now);
@@ -1390,6 +1398,37 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         }
         return { category: 'needs-attention', reason: 'unclassified — surfaced deliberately' };
       }
+
+      /* Phase 8e: the clock-dependent reads the DOM side needs, kept pure. */
+
+      /** A card's "Xh ago". Clamped at zero: a record whose activity is later
+          than this runtime's clock (a follower's clock, or activity after the
+          pass) reads "0m ago", never "-30m ago". */
+      function whenLabel(iso, now) {
+        return fmtHours(Math.max(0, hoursSince(iso, now))) + ' ago';
+      }
+
+      /** Keys whose category at `now` differs from the one the list on screen
+          was built with (`renderedCats`: key -> category, 'aged-out'
+          included). Records the list never showed are not drift. */
+      function categoryDrift(records, renderedCats, now, keyOf) {
+        const drift = [];
+        for (const r of records) {
+          const k = keyOf(r);
+          if (!renderedCats.has(k)) continue;
+          const cat = categorize(r, now).category;
+          if (cat !== renderedCats.get(k)) drift.push({ key: k, from: renderedCats.get(k), to: cat });
+        }
+        return drift;
+      }
+
+      /** May a CLOCK-driven regroup move cards now? Only when nobody can be
+          mid-interaction: the panel is hidden, or no quick view is open, the
+          pointer is outside the panel and keyboard focus is not in the list. */
+      function canRegroup(s) {
+        return !!s.hidden || (!s.dialogOpen && !s.pointerInside && !s.focusInside);
+      }
+      /* GHD-CLASSIFY:END ------------------------------------------------- */
 
       /* ------------------------------------------------------------------
          4. DATA SOURCE — the live snapshot, read from the VFS.
@@ -1676,7 +1715,8 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
           That is the same single-distinction discipline QV_MODE uses for the
           quick view: a control whose behaviour depends on the column but whose
           appearance does not is the original bug restated. */
-      function snoozeSpec(item, now = NOW) {
+      /* GHD-SNOOZESPEC:START */
+      function snoozeSpec(item, now) {
         const sn = snoozeState(item, now);
         const inSnoozedColumn = categorize(item, now).category === 'snoozed';
         const nextStep =
@@ -1715,6 +1755,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
             ' Writes snoozedUntil/snoozedAt/snoozeCount to data/user-state.json. A comment after the snooze cancels it. Nothing is written to GitHub.',
         };
       }
+      /* GHD-SNOOZESPEC:END */
 
       /** Snooze. Honours what the Snoozed group's copy already promised:
           "Fibonacci backoff while nothing changes; a comment cancels the
@@ -1729,7 +1770,9 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         // liveRecord at click time — a stale snoozeCount computing the wrong
         // backoff step was exactly that bug). The reconciler relabels this button
         // in the same pass that moves its card, so label and action stay in step.
-        if (snoozeSpec(item).mode === 'unsnooze') return unsnoozeClick(item);
+        // 8e: PASS_NOW, the clock the button was LABELLED with, so the click does
+        // what the button says even if a snooze has expired since.
+        if (snoozeSpec(item, PASS_NOW).mode === 'unsnooze') return unsnoozeClick(item);
         const prev = snoozeState(item, new Date());
         const advance = prev.present && !prev.cancelledByComment;
         const step = advance
@@ -1890,7 +1933,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
           flickers is worse than one that is merely stable and correct. Status is
           reported in the quick view instead, fetched live at the moment it is
           shown. */
-      function goTarget(item, now = NOW) {
+      function goTarget(item, now) {
         const thr = threadFor(item);
         if (thr) {
           const project = thr.project || bbProject(item.repo);
@@ -2040,6 +2083,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         open: new Set(OPEN_BY_DEFAULT),
       };
 
+      /* GHD-FMT:START */
       function fmtHours(h) {
         if (h < 1) return `${Math.round(h * 60)}m`;
         if (h < 48) return `${Math.round(h)}h`;
@@ -2050,6 +2094,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
       function fmtWhen(iso) {
         return new Date(iso).toISOString().slice(0, 16).replace('T', ' ') + 'Z';
       }
+      /* GHD-FMT:END */
 
       function esc(s) {
         return String(s).replace(
@@ -2222,7 +2267,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         };
 
         // --- 1. snooze / un-snooze (phase 7k) ---------------------------
-        const spec = snoozeSpec(item);
+        const spec = snoozeSpec(item, PASS_NOW);
         const snoozeBtn = mk(spec.icon, spec.label, spec.title);
         snoozeBtn.dataset.mode = spec.mode;
         snoozeBtn.setAttribute('aria-pressed', spec.pressed);
@@ -2242,7 +2287,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         wrap.appendChild(doneBtn);
 
         // --- 3. go: thread / start a scoop / GitHub (phase 7n) ----------
-        const tgt = goTarget(item);
+        const tgt = goTarget(item, PASS_NOW);
         if (tgt.mode === 'start') {
           // Phase 7c, requested: dispatch is confirmed by the BUTTON'S COLOUR, not by
           // copy. The label stays "Start a scoop" in every state — a label that
@@ -2324,7 +2369,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
           otherwise the first incremental update rebuilds every card's notes. */
       function noteSpecs(item) {
         const notes = [];
-        const sn = snoozeState(item, NOW);
+        const sn = snoozeState(item, PASS_NOW);
         if (sn.active) {
           notes.push({
             text: `Snoozed until ${fmtWhen(item.snoozedUntil)} · ${sn.days}d step`,
@@ -2530,7 +2575,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         // the card's bottom edge.
         const foot = el('div', 'foot');
         foot.appendChild(actions(item));
-        const when = el('time', 'when', fmtHours(hoursSince(item.lastActivityAt, NOW)) + ' ago');
+        const when = el('time', 'when', whenLabel(item.lastActivityAt, PASS_NOW));
         when.dateTime = item.lastActivityAt;
         when.title = `Last activity ${fmtWhen(item.lastActivityAt)}`;
         foot.appendChild(when);
@@ -2559,6 +2604,10 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
          crossing a card on its way somewhere else.
          ------------------------------------------------------------------ */
 
+      /* GHD-QV-STATE:START (phase 8f): quick-view state, its close handling and
+         the page lock. tests/quickview-close.test.js cuts this region and the
+         GHD-QV-OPEN one out of the BUILT panel and drives them against a fake
+         <dialog> whose close event is queued, as Chromium queues it. */
       const QUICK_VIEW_HOVER_MS = 500;
       /* Phase 7i: how long the pointer may be over NEITHER the card nor the quick
          view before it closes. 350 ms, chosen against two pressures:
@@ -2577,6 +2626,10 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
       const QUICK_VIEW_CLOSE_MS = 350;
       let QV_DIALOG = null;
       let QV_RETURN_FOCUS = null;
+      // Phase 8f: what opened the view (the hovered description, or the card or
+      // description that was clicked). A PROMOTED view takes its focus-return
+      // target from here, since the hover that opened it recorded none.
+      let QV_OPENER = null;
       let QV_HOVER_TIMER = null;
       /* 'hover' — opened because the pointer rested on a description: NON-MODAL
             (so the page outside stays live and pointer-out is observable), takes
@@ -2631,6 +2684,64 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         QV_SCROLL_LOCK = null;
       }
 
+      /* Phase 8f: the three close decisions, as pure functions of the state they
+         depend on, so each path is decided in one place.
+
+         qvCloseAction: what the dialog's `close` EVENT may do. Chromium fires it
+         at the next rendered frame, not synchronously, so a view closed and
+         reopened before a frame is drawn receives the FIRST close's event while
+         it is open again. That event is STALE: it belongs to the session that
+         ended. Acting on it (as 8e did) released a live modal's page lock and
+         set QV_MODE to null under it. A stale event therefore leaves mode, focus
+         and the grace timer alone. The one thing it may still do is drop a lock
+         that no open view owns: the lock is held exactly while a MODAL view is
+         open, so if the reopened view is non-modal (hover, or promoted) the
+         lock left by the ended modal session must go. The reopened view gets
+         its own close event when it really closes, and that one does all of it.
+
+         qvEscapeAction: a MODAL view is closed by the platform (Escape fires
+         `cancel`, then `close`), so the panel keeps out of its way. A NON-modal
+         view, hover or promoted, gets no platform Escape (closedBy "none"), so
+         the panel closes it. Focus goes back to the opener only if the keyboard
+         was in the view (or nowhere): a promoted view is non-modal, so the user
+         may be typing in the page behind it, and Escape must not yank focus.
+
+         qvOutsideAction: an outside press closes only a HOVER view. A PROMOTED
+         view stays open, deliberately. It is non-modal, so the page behind it
+         is live, and a press there is far more likely to be the reader using
+         the page (scrolling, a filter, selecting text to copy) with the view
+         kept beside it than a request to dismiss it; the user promoted it by
+         clicking INTO it precisely so it would stop evaporating. It still
+         closes by its close button and, since 8f, by Escape. A MODAL view's
+         outside click is its backdrop, handled on the dialog itself: there
+         the page is inert, so the press cannot mean anything else. */
+      function qvCloseAction(s) {
+        if (s.open) return { stale: true, unlock: !s.modal, resetMode: false, restoreFocus: false };
+        return { stale: false, unlock: true, resetMode: true, restoreFocus: true };
+      }
+
+      function qvEscapeAction(s) {
+        if (!s.open || s.modal) return { close: false };
+        if (s.mode === 'hover') return { close: true, reason: 'escape-hover', returnFocus: false };
+        if (s.mode === 'committed') {
+          return { close: true, reason: 'escape-promoted', returnFocus: !!(s.focusInView || s.focusOnBody) };
+        }
+        return { close: false };
+      }
+
+      function qvOutsideAction(s) {
+        return { close: !!(s.open && !s.modal && s.mode === 'hover' && !s.targetInView) };
+      }
+
+      /** Where focus returns for a view opened from `trigger`: the trigger if it
+          can take focus, else its card's description (a card is an <article>
+          and cannot). */
+      function qvFocusTarget(trigger) {
+        if (!trigger) return null;
+        if (typeof trigger.matches === 'function' && trigger.matches('[tabindex], a, button, summary')) return trigger;
+        return (trigger.querySelector && trigger.querySelector('.status[data-qv]')) || null;
+      }
+
       function quickViewDialog() {
         if (QV_DIALOG) return QV_DIALOG;
         const d = document.createElement('dialog');
@@ -2664,16 +2775,30 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         // handler the document can still be inert from showModal(), and a
         // focus() call there is silently refused — measured, not assumed.
         d.addEventListener('close', () => {
+          // Phase 8f: decided by qvCloseAction, above. A stale event (the dialog
+          // is OPEN again) touches nothing that belongs to the reopened view.
+          const a = qvCloseAction({ open: d.open, modal: d.matches(':modal') });
+          // Phase 7o: a no-op unless a modal view took the lock. Every real close
+          // (button, Escape, backdrop, the hover grace timer, a probe) arrives
+          // here with the dialog closed and releases it.
+          if (a.unlock) unlockPageScroll();
+          if (a.stale) return;
           cancelQuickViewClose();
-          // Phase 7o: unconditional, and a no-op unless this view took the lock.
-          // Every close path (button, Escape, outside click, the reconciler's
-          // .qv-gone notice, a probe) therefore releases it.
-          unlockPageScroll();
           QV_MODE = null;
           const back = QV_RETURN_FOCUS;
+          const key = d.dataset.key;
           QV_RETURN_FOCUS = null;
+          QV_OPENER = null;
           setTimeout(() => {
-            if (back && document.contains(back)) back.focus();
+            // A full render() (a filter click behind a non-modal view) replaces
+            // the cards, so fall back to the same card's description by key.
+            const target =
+              back && document.contains(back)
+                ? back
+                : back && key
+                  ? document.querySelector(`.card[data-key="${key}"] .status[data-qv]`)
+                  : null;
+            if (target) target.focus();
           }, 0);
         });
         document.body.appendChild(d);
@@ -2681,23 +2806,43 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
 
         /* A NON-modal <dialog> gets none of the platform's dismissal behaviour,
            so Escape has to be handled here. These two document listeners are
-           added once, with the dialog, and act ONLY on a hover-opened view: the
-           modal case already gets Escape from the platform's `cancel` event and
-           outside-clicks from its backdrop. */
+           added once, with the dialog. Escape closes every NON-modal view, hover
+           or promoted (8f: a promoted view used to ignore it); an outside press
+           closes only a hover view. The modal case gets Escape from the
+           platform's `cancel` event and outside clicks from its backdrop. See
+           qvEscapeAction / qvOutsideAction for why. */
         document.addEventListener('keydown', (e) => {
-          if (e.key !== 'Escape') return;
-          if (QV_DIALOG && QV_DIALOG.open && QV_MODE === 'hover') {
-            e.preventDefault();
-            QV_DIALOG.close('escape-nonmodal');
+          if (e.key !== 'Escape' || !QV_DIALOG) return;
+          const a = document.activeElement;
+          const esc = qvEscapeAction({
+            open: QV_DIALOG.open,
+            modal: QV_DIALOG.matches(':modal'),
+            mode: QV_MODE,
+            focusInView: !!a && QV_DIALOG.contains(a),
+            focusOnBody: !a || a === document.body,
+          });
+          if (!esc.close) return;
+          e.preventDefault();
+          if (esc.returnFocus) {
+            if (!QV_RETURN_FOCUS) QV_RETURN_FOCUS = qvFocusTarget(QV_OPENER);
+          } else {
+            QV_RETURN_FOCUS = null;
           }
+          QV_DIALOG.close(esc.reason);
         });
         document.addEventListener('mousedown', (e) => {
-          if (QV_DIALOG && QV_DIALOG.open && QV_MODE === 'hover' && !QV_DIALOG.contains(e.target)) {
-            QV_DIALOG.close('outside-nonmodal');
-          }
+          if (!QV_DIALOG) return;
+          const out = qvOutsideAction({
+            open: QV_DIALOG.open,
+            modal: QV_DIALOG.matches(':modal'),
+            mode: QV_MODE,
+            targetInView: QV_DIALOG.contains(e.target),
+          });
+          if (out.close) QV_DIALOG.close('outside-nonmodal');
         });
         return d;
       }
+      /* GHD-QV-STATE:END */
 
       function qvSection(heading, buildBody) {
         const s = el('div', 'qv-sect');
@@ -3151,7 +3296,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         // Your own marks, so the quick view explains a coloured button.
         const marks = [];
         if (item.doneAt) marks.push(`marked done locally ${fmtWhen(item.doneAt)} — nothing was written to GitHub`);
-        const sn = snoozeState(item, NOW);
+        const sn = snoozeState(item, PASS_NOW);
         if (sn.present) {
           marks.push(
             sn.cancelledByComment
@@ -3197,6 +3342,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
           card ever seeing the pointer leave — so no amount of extra mouseleave
           handlers could have fixed this. With show() the identical call lands on
           the description, i.e. the page outside is live again. */
+      /* GHD-QV-OPEN:START */
       function openQuickView(item, trigger, mode = 'committed') {
         const d = quickViewDialog();
         if (d.open) {
@@ -3208,6 +3354,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
             const swapped = buildQuickView(item);
             d.appendChild(swapped.inner);
             d.dataset.key = recordKey(item);
+            QV_OPENER = trigger; // 8f: a later promotion returns focus HERE
             if (window.LucideIcons) window.LucideIcons.render();
             cancelQuickViewClose();
           }
@@ -3225,13 +3372,8 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         // that opens the quick view again. Without this, closing after a card
         // click drops the keyboard user at the top of the document.
         // A hover-opened view never took focus, so it has none to give back.
-        QV_RETURN_FOCUS =
-          mode === 'hover'
-            ? null
-            : trigger && typeof trigger.matches === 'function' && trigger.matches('[tabindex], a, button, summary')
-              ? trigger
-              : (trigger && trigger.querySelector && trigger.querySelector('.status[data-qv]')) ||
-                document.activeElement;
+        QV_OPENER = trigger;
+        QV_RETURN_FOCUS = mode === 'hover' ? null : qvFocusTarget(trigger) || document.activeElement;
         if (mode === 'hover') {
           d.classList.add('is-hover');
           // show() takes focus (the dialog focusing steps run for non-modal too),
@@ -3294,7 +3436,11 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         if (QV_MODE !== 'hover') return;
         QV_MODE = 'committed';
         cancelQuickViewClose();
+        // Phase 8f: a promoted view is committed, so it now has a card to hand
+        // focus back to (7i contract); the hover that opened it recorded none.
+        QV_RETURN_FOCUS = qvFocusTarget(QV_OPENER);
       }
+      /* GHD-QV-OPEN:END */
 
       /* ------------------------------------------------------------------
          5c. LIVE INCREMENTAL UPDATES (phase 7f)
@@ -3584,7 +3730,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
 
         const when = c.querySelector('.when');
         if (when) {
-          set(when, 'textContent', fmtHours(hoursSince(item.lastActivityAt, NOW)) + ' ago');
+          set(when, 'textContent', whenLabel(item.lastActivityAt, PASS_NOW));
           set(when, 'dateTime', item.lastActivityAt);
           set(when, 'title', `Last activity ${fmtWhen(item.lastActivityAt)}`);
         }
@@ -3610,7 +3756,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
           // snooze moves one in. Label, accessible state, title AND glyph all
           // follow the spec; the glyph swap mirrors the .state-icon pattern in
           // updateCard (compare the seeded name, rebuild only on a real change).
-          const spec = snoozeSpec(item);
+          const spec = snoozeSpec(item, PASS_NOW);
           attr(snoozeBtn, 'aria-label', spec.label);
           attr(snoozeBtn, 'aria-pressed', spec.pressed);
           if (snoozeBtn.dataset.mode !== spec.mode) {
@@ -3636,7 +3782,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
           attr(doneBtn, 'aria-pressed', item.doneAt ? 'true' : 'false');
         }
         const goSlot = kids[2];
-        const tgt = goTarget(item);
+        const tgt = goTarget(item, PASS_NOW);
         // Phase 7n: the go control has THREE modes, two of which are anchors, so
         // comparing tag names is not enough — compare the seeded mode. A mode
         // change means a different destination, icon and handler, so the slot is
@@ -3706,6 +3852,9 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
       /** THE reconciler. Same inputs as render(), but it edits the DOM it finds
           instead of replacing it. */
       function reconcile(parsed, version) {
+        // 8e: a reconcile regroups, so it takes the time fresh (the full-render
+        // branch below takes it again in render(); same instant, give or take).
+        const nowMs = clockPass();
         const app = document.getElementById('app');
         if (LOAD_ERROR || !app.querySelector('details.grp')) {
           // Nothing to reconcile against (the panel is showing an error, or has
@@ -3738,8 +3887,10 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         const buckets = {};
         for (const k of ORDER) buckets[k] = [];
         const agedOut = [];
+        const cats = new Map();
         for (const it of visible) {
-          const cat = categorize(it, NOW).category;
+          const cat = categorize(it, nowMs).category;
+          cats.set(recordKey(it), cat);
           if (!buckets[cat]) {
             agedOut.push(it);
             continue;
@@ -3749,6 +3900,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         for (const k of ORDER) {
           buckets[k].sort((a, b) => new Date(b.lastActivityAt) - new Date(a.lastActivityAt));
         }
+        RENDERED_CATS = cats; // 8e: what the tick compares against
 
         const existing = new Map();
         for (const c of app.querySelectorAll('.card')) {
@@ -4020,9 +4172,9 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
          code rather than a copy of it. Keep everything it needs inside the
          markers.
 
-         The age is measured against a LIVE clock on every call. The module's
-         NOW is fixed when the panel opens, so an age computed from it (which is
-         what the header did before 8d) never advances.
+         The age is measured against a LIVE clock on every call. (Before 8d the
+         header computed it from the module's NOW, which was fixed at open and
+         so never advanced; 8e removed that clock altogether.)
          ------------------------------------------------------------------ */
 
       // Warn once the snapshot is older than 65 min = 2 x poll.jsh NORMAL_MS
@@ -4114,8 +4266,9 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
       /* GHD-SNAPSHOT-AGE:END ------------------------------------------------ */
 
       /* The header element that shows snapshotAgeState(). It is repainted IN
-         PLACE by a timer, by the full render and by the 7f reconcile; the timer
-         touches only this element, never the record list.
+         PLACE by a timer, by the full render and by the 7f reconcile. The timer
+         (onClockTick, phase 8e) also repaints card time labels, and regroups
+         only at an idle boundary; see LIVE CLOCK below.
 
          Announcements go through ONE persistent live region (#snap-age-live, a
          role="status" sibling of #app), not through the visible element: the
@@ -4177,14 +4330,103 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         return s;
       }
 
+      /* ------------------------------------------------------------------
+         LIVE CLOCK (phase 8e)
+
+         PASS_NOW is the instant the list on screen was built at. render() and
+         reconcile() take it fresh (clockPass), and everything they build (the
+         group, the snooze note, the snooze button's mode, the Go control) reads
+         PASS_NOW, so one card never mixes two clocks.
+
+         Between passes the 30 s tick from 8d does two things and nothing else:
+           1. repaints the TIME LABELS in place (each card's "Xh ago", from the
+              <time datetime> it already carries): text only, no re-render and
+              no re-categorising, so nothing moves under the pointer;
+           2. asks whether time alone has moved a card to another group (a
+              snooze expired, a card stalled, a done item aged out). If so it
+              REGROUPS through the 7f reconciler (same records, fresh clock),
+              but only at an idle boundary (canRegroup): panel hidden, or no
+              quick view open, pointer outside the panel and focus not in the
+              list. Otherwise it waits and asks again on the next tick.
+         Why not wait for the next snapshot, which regroups anyway? Because the
+         case that matters is the one where none comes: on 2026-09-23 there was
+         none for 6 h 38 min, and an expired snooze would have stayed hidden in
+         Snoozed for all of it. Why not regroup at once? A card that moves while
+         the reader is pointing at it or has it open is the one thing 7f was
+         built to avoid; time-driven moves can wait a few seconds for the
+         pointer to leave. A snapshot's own reconcile is unchanged (7f).
+         ------------------------------------------------------------------ */
+      let PASS_NOW = Date.now();
+      let RENDERED_CATS = new Map();
+      let POINTER_INSIDE = false;
+      const clockTick = { ticks: 0, labelsRepainted: 0, driftSeen: 0, deferred: 0, regroups: 0, last: null };
+
+      function clockPass() {
+        PASS_NOW = Date.now();
+        return PASS_NOW;
+      }
+
+      // Pointer presence, for the idle boundary. pointerout with no
+      // relatedTarget means the pointer left this document (the iframe).
+      document.addEventListener('pointerover', () => { POINTER_INSIDE = true; }, { passive: true });
+      document.addEventListener('pointerout', (e) => { if (!e.relatedTarget) POINTER_INSIDE = false; }, { passive: true });
+
+      function interactionState() {
+        const app = document.getElementById('app');
+        const a = document.activeElement;
+        return {
+          hidden: document.visibilityState === 'hidden',
+          dialogOpen: !!(QV_DIALOG && QV_DIALOG.open),
+          pointerInside: POINTER_INSIDE,
+          focusInside: document.hasFocus() && !!a && a !== document.body && !!app && app.contains(a),
+        };
+      }
+
+      /** Text-only repaint of every card's "Xh ago". Returns how many changed. */
+      function repaintTimeLabels(nowMs) {
+        let n = 0;
+        for (const w of document.querySelectorAll('#app .card .when')) {
+          if (!w.dateTime) continue;
+          const t = whenLabel(w.dateTime, nowMs);
+          if (w.textContent !== t) {
+            w.textContent = t;
+            n++;
+          }
+        }
+        return n;
+      }
+
+      function onClockTick() {
+        const nowMs = Date.now();
+        clockTick.ticks++;
+        paintSnapshotAge(nowMs);
+        if (LOAD_ERROR || !document.querySelector('#app details.grp')) return;
+        clockTick.labelsRepainted += repaintTimeLabels(nowMs);
+        const visible = RECORDS.filter((it) => view.project === 'all' || it.repo === view.project);
+        const drift = categoryDrift(visible, RENDERED_CATS, nowMs, recordKey);
+        if (!drift.length) return;
+        clockTick.driftSeen++;
+        const s = interactionState();
+        clockTick.last = { at: new Date(nowMs).toISOString(), drift, state: s };
+        if (!canRegroup(s)) {
+          clockTick.deferred++;
+          return;
+        }
+        clockTick.regroups++;
+        reconcile({ records: RECORDS, meta: META }, { generatedAt: META ? META.generatedAt : null, regroup: 'clock' });
+      }
+
       function startAgeClock() {
         if (AGE_TIMER) clearInterval(AGE_TIMER);
-        AGE_TIMER = setInterval(() => paintSnapshotAge(), SNAPSHOT_AGE_TICK_MS);
+        AGE_TIMER = setInterval(() => onClockTick(), SNAPSHOT_AGE_TICK_MS);
       }
 
       // Kept adjacent to render() so the logic harness (which cuts the module
       // at `await loadSnapshot()`) can import these without the DOM.
       function render() {
+        // 8e: every full render takes the time fresh; nothing below reads a
+        // clock of its own.
+        const nowMs = clockPass();
         const app = document.getElementById('app');
         // A click re-renders the whole panel, so keep the reader where they
         // were: without this, acting on a card low in the Done pile throws the
@@ -4223,8 +4465,10 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         // rendered. Counting it keeps the panel honest about what it is holding
         // back rather than silently shrinking.
         const agedOut = [];
+        const cats = new Map();
         for (const it of visible) {
-          const cat = categorize(it, NOW).category;
+          const cat = categorize(it, nowMs).category;
+          cats.set(recordKey(it), cat);
           if (!buckets[cat]) {
             agedOut.push(it);
             continue;
@@ -4234,6 +4478,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         for (const k of ORDER) {
           buckets[k].sort((a, b) => new Date(b.lastActivityAt) - new Date(a.lastActivityAt));
         }
+        RENDERED_CATS = cats; // 8e: what the tick compares against
 
         const head = el('div', 'head');
         const hrow = el('div', 'head-row');
@@ -4324,7 +4569,17 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
           goTarget,
           threadFor,
           ATTACHMENTS: () => ATTACHMENTS,
-          NOW,
+          // 8e: the instant the list on screen was built at (a Date, for probes
+          // that read .NOW). The pure functions take now explicitly.
+          NOW: new Date(PASS_NOW),
+          passNow: () => PASS_NOW,
+          renderedCats: () => Object.fromEntries(RENDERED_CATS),
+          clockTick,
+          onClockTick,
+          whenLabel,
+          categoryDrift,
+          canRegroup,
+          interactionState,
           view,
           STATE,
           glyphCollisions: glyphCollisions || [],
@@ -4346,6 +4601,11 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
           QUICK_VIEW_HOVER_MS,
           QUICK_VIEW_CLOSE_MS,
           quickViewMode: () => QV_MODE,
+          // Phase 8f: pure close decisions + the page-lock state, for probes.
+          qvCloseAction,
+          qvEscapeAction,
+          qvOutsideAction,
+          quickViewLocked: () => !!QV_SCROLL_LOCK,
           // Phase 7f: live incremental updates.
           VERSION_PATH,
           POLL_MS,
@@ -4369,7 +4629,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
             if (typeof versionPath === 'string' && versionPath) VERSION_PATH = versionPath;
             return { SNAPSHOT_PATH, VERSION_PATH };
           },
-          verdicts: RECORDS.map((it) => ({ id: it.id, ...categorize(it, NOW) })),
+          verdicts: RECORDS.map((it) => ({ id: it.id, ...categorize(it, PASS_NOW) })),
         };
       }
 
