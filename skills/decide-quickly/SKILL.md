@@ -29,6 +29,8 @@ node /workspace/skills/decide-quickly/scripts/cua-s1.jsh --help
 - [scripts/kev.jsh](scripts/kev.jsh) runs `kev`.
 - [scripts/cua-s1.jsh](scripts/cua-s1.jsh) runs `cua-s1`.
 - [scripts/host.js](scripts/host.js) installs packages, bundles, and downloads weights.
+- [scripts/kev-runtime.js](scripts/kev-runtime.js) opens a Kev model and keeps it. A script that asks many questions (meep-meep's `webrunner`) loads it once instead of starting `kev ask` for each question.
+- [scripts/pull-kev.jsh](scripts/pull-kev.jsh) resumes an interrupted kev-9b weight download.
 - [scripts/questions.js](scripts/questions.js) parses question shorthand.
 - [scripts/elements.js](scripts/elements.js) turns a snapshot into fields.
 - [scripts/commands.js](scripts/commands.js) turns a plan into `playwright-cli` lines.
@@ -45,6 +47,8 @@ The first `kev ask` or `cua-s1 plan` installs its packages, bundles them, downlo
 - Weights: `hf download` (Kev q8f32, or the 3.3 MB cua-s1 graph)
 
 A package already on disk is reused only when its version matches that pin.
+
+`kev prepare` does the install and bundle steps without asking anything. Another script can run it before loading `kev-runtime.js`. A bundle written in the current process can't be `require()`d, so that script must pass its own `require('/shared/cache/kev/bundle.cjs')` as `requireBundle` and restart once after `prepare`.
 
 `--json`, `--date-facts`, and `--allow-submit` are booleans. A question or path written after one of them stays an argument.
 
