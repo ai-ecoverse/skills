@@ -1,6 +1,7 @@
 // Load a Kev model once and keep it. kev.jsh opens one per ask; webrunner
 // opens one per run and asks it every step. Loading kev-9b reads 325 weight
-// files (about 55 s on WebGPU); a warm ask is the forward pass alone.
+// files (7-8 s from OPFS on WebGPU, measured 2026-09-23); a warm ask is the
+// forward pass alone.
 // fs is passed in, like host.js, so tests can load this without the realm.
 
 const host = require('./host.js');

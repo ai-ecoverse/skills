@@ -32,9 +32,25 @@ On success it prints the step count, the time, and the final address. `--json` p
 1. `playwright-cli snapshot` lists the page. Every textbox, searchbox, combobox, and clickable control with a ref becomes a candidate.
 2. The runner builds one menu: `type "<value>" into <field>` for each field and each value in the goal, the 16 highest-ranked clicks, and `wait`. Clicks rank higher when they sit in a `search`, `form`, or dialog landmark, when they are new since the last step (an autocomplete list), and when they share words with the goal. Banner and footer controls and long promo labels rank lower.
 3. The decider answers one choice over that menu. Its state is the goal, the actions already taken, and the offered controls with their current values.
-   - `--decider kev` (default): kev-9b is loaded once per run, which takes about 30 s. A step takes 0.5–7 s, depending on menu size.
+   - `--decider kev` (default): kev-9b is loaded once per run (7–8 s from OPFS). A step takes 1–6 s, depending on menu size.
    - `--decider agent`: each step is one `agent` call. The spawned scoop may run no command. Its StructuredOutput must name a menu id. `--model` takes any id the `models` command lists (default `claude-haiku-4-5`). Its spend shows up in `cost`.
 4. `playwright-cli click` or `fill` applies the chosen ref. Refs are dead after the action, so the next step starts with a new snapshot.
+
+## Choosing a decider
+
+Measured on 2026-09-23 in a standalone harness (kev-9b on WebGPU, Bedrock models), two runs each:
+
+| Goal | kev-9b | agent, Haiku 4.5 | agent + playwright-cli alone, Haiku 4.5 |
+| --- | --- | --- | --- |
+| Google Flights, Berlin to London with dates (9 steps) | 70 s, $0 | 49 s, $0.08 | 193 s, $0.22 |
+| httpbin order form (4 steps) | 27 s, $0 | 23 s, $0.03 | 36 s, $0.06 |
+| Wikipedia search (2 steps) | 19 s, $0 | 15 s, $0.02 | 50 s, $0.13 |
+| Hacker News top story's comments (1 step) | fails | 26 s, $0.01 | 38 s, $0.18 |
+
+- kev costs nothing and keeps the page on the device. Loading it takes 7–8 s per run, and a step takes 1–6 s.
+- An `agent` step takes 3–7 s, most of it spent starting the scoop.
+- kev fails at goals about position, such as "the top story": the menu lists each control by its own label only, so every "N comments" link looks the same.
+- Use `--decider agent` for those goals.
 
 ## Values to type
 
