@@ -8,7 +8,7 @@
 //   jshd stop   github-dashboard-poll      # stop, keep the unit record
 //   jshd rm     github-dashboard-poll      # stop and delete the unit + log
 //
-// WHY 30 MINUTES, from measurement rather than a default (numbers in SKILL.md):
+// WHY 30 MINUTES, from measurement rather than a default (numbers in references/poller.md):
 //   • The status cache is keyed on each record's lastActivityAt, so a record
 //     costs an agent call only when it has NEW activity. Agent spend therefore
 //     tracks repository activity, NOT poll frequency — polling more often splits
@@ -126,6 +126,22 @@ function summariseFailure(text, cap) {
 }
 /* ---- >8 end summariseFailure ---------------------------------------------- */
 
+/* ---- 8< ledgerLogLine ------------------------------------------------------
+   The fetcher's agent-spend summary, as ONE poll-log line.
+
+   The success path logs nothing the fetcher printed: the cycle line is built
+   from version.json alone, and stdout is otherwise dropped. So the ledger has
+   to be lifted out of stdout explicitly, from the fetcher's own
+   "agent ledger   : ..." line. A fetcher that predates the ledger prints no
+   such line, and that is said rather than silently omitted.
+
+   Pure and fenced so tests/poll-ledger.test.js evaluates this exact text. */
+function ledgerLogLine(stdout) {
+  const m = String(stdout == null ? '' : stdout).match(/^agent ledger\s*:\s*(.+)$/m);
+  return m ? `  agents: ${m[1].trim().slice(0, 200)}` : '  agents: (no "agent ledger" line in the fetcher output)';
+}
+/* ---- >8 end ledgerLogLine -------------------------------------------------- */
+
 function schedule() {
   if (timer) clearTimeout(timer);
   const wait = failures >= FAILURES_BEFORE_BACKOFF ? BACKOFF_MS : NORMAL_MS;
@@ -200,6 +216,7 @@ async function cycle() {
           (after ? `generatedAt ${after.generatedAt}, ${after.records} records, hash ${after.hash}` : 'no version file') +
           (before ? ` (was ${before.generatedAt}, hash ${before.hash}${moved ? ', ADVANCED' : ', unchanged'})` : ''),
       );
+      log(ledgerLogLine(r && r.stdout));
       okCycles += 1;
       await mirror();
     }

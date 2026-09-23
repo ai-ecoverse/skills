@@ -1821,6 +1821,160 @@ function parseStatusJson(text) {
   return JSON.parse(t.slice(start, end + 1));
 }
 
+/* ---- 8< agentLedger ------------------------------------------------------
+   AGENT-SPEND LEDGER. `cost --json` does not record `agent` one-shot spend at
+   all (ai-ecoverse/slicc#3437; re-measured 2026-09-23: a haiku one-shot left
+   the 19 cost entries unchanged), so this fetcher keeps its own account.
+
+   WHAT IS MEASURABLE, established with a real call on 2026-09-23
+   (`agent --model global.anthropic.claude-haiku-4-5-20251001-v1:0 --thinking
+   off . '' 'Reply with exactly: OK'`): stdout "OK\n", stderr empty, exit 0,
+   98.6 s wall. The command returns ONLY the final message. Its transcript
+   (/tmp/agent-<name>-<ts>.md) records jid, exit code, turns, messages and the
+   text, and no token counts, no cost and no model id. `agent --help` offers no
+   usage flag. So the ledger records what the caller can see: call count, the
+   model id WE passed, wall ms per call, prompt and response CHARACTERS, exit
+   code, and why a call failed.
+
+   NO COST ESTIMATE, on purpose. The only price source is the catalog in
+   `models --json` ($/Mtok), but a spawned agent runs with its own system
+   prompt and tool definitions that the caller never sees, so prompt
+   characters x price would understate the real input by an unknown factor.
+   A number that looks like a cost but is not one is worse than none.
+
+   "calls" counts EVERY agent invocation, including the one-shot length retry,
+   so it can exceed meta.statusGeneration.modelCalls, which counts records.
+
+   Pure (exec, parse and the clock are injected) and fenced, so
+   tests/agent-ledger.test.js evaluates this exact text. */
+const AGENT_LEDGER_FILE = 'agent-ledger.jsonl';
+// Newest lines kept. 2000 lines = ~41 days at one cycle per 30 minutes; the
+// byte cap bounds the file even if lines grow (a cold run with many calls).
+const AGENT_LEDGER_MAX_LINES = 2000;
+const AGENT_LEDGER_MAX_BYTES = 1000000;
+// Per-call detail carried into each jsonl line (all of it stays in the snapshot meta).
+const AGENT_LEDGER_CALLS_PER_LINE = 40;
+
+function newAgentLedger() {
+  return { calls: [] };
+}
+
+/** Run ONE agent call through exec, time it, classify it, record it.
+    Never throws. Returns { g, warning, entry }: g is the parsed answer, or
+    null when the call failed (exit != 0, unparseable, or no usable short). */
+async function runStatusAgent({ exec, cmd, key, attempt, model, promptChars, ledger, parse, minShortChars = 4, now = () => Date.now() }) {
+  const t0 = now();
+  let r;
+  try {
+    r = await exec(cmd);
+  } catch (err) {
+    r = { exitCode: -1, stdout: '', stderr: String((err && err.message) || err) };
+  }
+  const ms = Math.max(0, now() - t0);
+  const stdout = String((r && r.stdout) || '');
+  const stderr = String((r && r.stderr) || '');
+  const entry = { key, attempt, model, ms, promptChars, outputChars: stdout.length, exitCode: r ? r.exitCode : null, outcome: 'ok' };
+  let g = null;
+  let warning = null;
+  if (entry.exitCode !== 0) {
+    entry.outcome = 'exit';
+    warning = `agent failed for ${key} (exit ${entry.exitCode}): ${stderr.trim().slice(0, 160)}`;
+  } else {
+    try {
+      g = parse(stdout);
+    } catch (err) {
+      entry.outcome = 'unparseable';
+      warning = `unparseable output for ${key}: ${err.message}; got: ${stdout.trim().slice(0, 160)}`;
+    }
+    if (entry.outcome === 'ok' && (!g || typeof g.short !== 'string' || g.short.trim().length < minShortChars)) {
+      entry.outcome = 'unusable';
+      warning = `no usable "short" for ${key}`;
+    }
+  }
+  ledger.calls.push(entry);
+  return { g: entry.outcome === 'ok' ? g : null, warning, entry };
+}
+
+/** "global.anthropic.claude-haiku-4-5-20251001-v1:0" -> "haiku-4-5". */
+function shortModelName(id) {
+  const m = String(id || '').match(/claude-([a-z]+)-(\d+)-(\d+)/);
+  return m ? `${m[1]}-${m[2]}-${m[3]}` : String(id || 'unknown');
+}
+
+/** One cycle's account. cacheStats is the fetcher's status-cache tally: every
+    hit there is a model call that did NOT happen. */
+function summariseAgentLedger(ledger, { cacheStats = {}, statusPhaseWallMs = null, records = null, at = null } = {}) {
+  const calls = ledger.calls;
+  const ms = calls.map((c) => c.ms);
+  const failures = { exit: 0, unparseable: 0, unusable: 0 };
+  for (const c of calls) if (c.outcome !== 'ok') failures[c.outcome] = (failures[c.outcome] || 0) + 1;
+  const failed = calls.length - calls.filter((c) => c.outcome === 'ok').length;
+  const hits = (cacheStats.hits || 0) + (cacheStats.doneServedFromCache || 0);
+  const total = ms.reduce((a, b) => a + b, 0);
+  return {
+    at,
+    calls: calls.length,
+    firstAttempts: calls.filter((c) => c.attempt === 'first').length,
+    retries: calls.filter((c) => c.attempt === 'retry').length,
+    models: [...new Set(calls.map((c) => c.model))],
+    ok: calls.length - failed,
+    failed,
+    failures,
+    wallMs: { total, max: ms.length ? Math.max(...ms) : 0, mean: ms.length ? Math.round(total / ms.length) : 0 },
+    statusPhaseWallMs,
+    promptChars: calls.reduce((a, c) => a + (c.promptChars || 0), 0),
+    outputChars: calls.reduce((a, c) => a + (c.outputChars || 0), 0),
+    tokens: null,
+    tokensWhy: 'agent reports no usage: stdout is the final message only, the transcript has no token counts, and cost --json does not record agent one-shots (slicc#3437)',
+    costEstimate: null,
+    costWhy: 'omitted: chars x catalog price would ignore the spawned agent\'s own system prompt and tools, so it would understate spend by an unknown factor',
+    cache: {
+      servedWithoutCall: hits,
+      hits: cacheStats.hits || 0,
+      doneServedFromCache: cacheStats.doneServedFromCache || 0,
+      doneMechanical: cacheStats.doneMechanical || 0,
+      misses: cacheStats.misses || 0,
+    },
+    records,
+    perCall: calls.map((c) => ({ ...c })),
+  };
+}
+
+/** The one line poll.jsh copies into its log. */
+function formatLedgerLine(sum) {
+  const models = sum.models.length ? sum.models.map(shortModelName).join(', ') : 'no model called';
+  const retry = sum.retries ? ` incl. ${sum.retries} retr${sum.retries === 1 ? 'y' : 'ies'}` : '';
+  return (
+    `${sum.calls} call${sum.calls === 1 ? '' : 's'}${retry} (${models}), ${(sum.wallMs.total / 1000).toFixed(1)} s agent time` +
+    (sum.calls ? ` (max ${(sum.wallMs.max / 1000).toFixed(1)} s)` : '') +
+    `, ${sum.cache.servedWithoutCall} cached, ${sum.failed} failed`
+  );
+}
+
+/** The jsonl record: the summary, with per-call detail truncated. */
+function ledgerJsonLine(sum) {
+  const { perCall, ...rest } = sum;
+  const line = { ...rest, perCall: perCall.slice(0, AGENT_LEDGER_CALLS_PER_LINE).map((c) => [c.key, c.attempt, c.ms, c.promptChars, c.outputChars, c.outcome]) };
+  if (perCall.length > AGENT_LEDGER_CALLS_PER_LINE) line.perCallTruncated = perCall.length - AGENT_LEDGER_CALLS_PER_LINE;
+  return JSON.stringify(line);
+}
+
+/** Append one line and keep only the newest lines within BOTH caps. Blank
+    lines are dropped; the newest line is always kept. Returns the file text. */
+function capJsonl(existing, line, { maxLines = AGENT_LEDGER_MAX_LINES, maxBytes = AGENT_LEDGER_MAX_BYTES } = {}) {
+  const enc = new TextEncoder();
+  const lines = String(existing || '').split('\n').filter((l) => l.trim().length > 0);
+  lines.push(String(line));
+  let keep = lines.slice(-Math.max(1, maxLines));
+  let bytes = keep.reduce((a, l) => a + enc.encode(l).length + 1, 0);
+  while (keep.length > 1 && bytes > maxBytes) {
+    bytes -= enc.encode(keep[0]).length + 1;
+    keep = keep.slice(1);
+  }
+  return keep.join('\n') + '\n';
+}
+/* ---- >8 end agentLedger ---------------------------------------------------- */
+
 /** One agent for one record. Never throws: a failure returns null and the
  *  caller keeps the mechanical status for that item.
  *  Phase 7b: ONE retry when the card text comes back too short. A retry costs
@@ -1845,23 +1999,13 @@ async function generateStatusFor(rec) {
        • WALL TIME IS FIXED OVERHEAD, not generation: ~74s per call in isolation,
          inflating to ~174s each when six run at once. The only lever on the
          status phase is FEWER CALLS — which is what the done-column skip does. */
-    const cmd = `agent --model ${shellArg(STATUS_MODEL)} --thinking off . ${shellArg('')} ${shellArg(buildStatusPrompt(rec, { stricterLength }))}`;
-    const r = await execAsync(cmd);
-    if (r.exitCode !== 0) {
-      console.error(`[status] WARNING: agent failed for ${key} (exit ${r.exitCode}): ${r.stderr.trim().slice(0, 160)}`);
-      return null;
-    }
-    let g;
-    try {
-      g = parseStatusJson(r.stdout);
-    } catch (err) {
-      console.error(`[status] WARNING: unparseable output for ${key}: ${err.message}; got: ${r.stdout.trim().slice(0, 160)}`);
-      return null;
-    }
-    if (!g || typeof g.short !== 'string' || g.short.trim().length < 4) {
-      console.error(`[status] WARNING: no usable "short" for ${key}`);
-      return null;
-    }
+    const prompt = buildStatusPrompt(rec, { stricterLength });
+    const cmd = `agent --model ${shellArg(STATUS_MODEL)} --thinking off . ${shellArg('')} ${shellArg(prompt)}`;
+    const { g, warning } = await runStatusAgent({
+      exec: execAsync, cmd, key, attempt: stricterLength ? 'retry' : 'first',
+      model: STATUS_MODEL, promptChars: prompt.length, ledger: agentLedger, parse: parseStatusJson,
+    });
+    if (warning) console.error(`[status] WARNING: ${warning}`);
     return g;
   };
   let g = await attempt(false);
@@ -1879,6 +2023,7 @@ async function generateStatusFor(rec) {
 /* Bounded concurrency, monday-style: a plain Promise.all over every record
    would spawn 101 simultaneous agents. */
 let modelCalls = 0;
+const agentLedger = newAgentLedger();
 let generated = 0;
 const fellBack = [];
 const statusWallClockStart = Date.now();
@@ -2081,6 +2226,22 @@ actionStats.recordsWithActions = records.filter((r) => Array.isArray(r.actions) 
 // proves the file is current.
 writeStatusCache();
 
+const agentLedgerSummary = summariseAgentLedger(agentLedger, { cacheStats, statusPhaseWallMs: statusWallClockMs, records: records.length, at: new Date().toISOString() });
+const AGENT_LEDGER_PATH = require('path').join(require('path').dirname(STATUS_CACHE_PATH), AGENT_LEDGER_FILE);
+{
+  // Written BEFORE the snapshot, so spend is on record even if a later write
+  // fails. Never fatal. Atomic: temp file, then rename.
+  try {
+    let prev = '';
+    try { prev = fs.readFileSync(AGENT_LEDGER_PATH, 'utf8'); } catch (err) { if (err.code !== 'ENOENT') throw err; }
+    const next = capJsonl(prev, ledgerJsonLine(agentLedgerSummary));
+    fs.writeFileSync(AGENT_LEDGER_PATH + '.tmp', next);
+    fs.renameSync(AGENT_LEDGER_PATH + '.tmp', AGENT_LEDGER_PATH);
+  } catch (err) {
+    console.error(`[ledger] WARNING: could not append ${AGENT_LEDGER_PATH} (${err.message}); the cycle's spend is still in meta.agentLedger`);
+  }
+}
+
 const snapshot = {
   meta: {
     generatedAt: new Date().toISOString(),
@@ -2105,6 +2266,12 @@ const snapshot = {
       placeholder: 'human-authored prose (fixture only, no longer produced)',
       derived: 'mechanically composed from measured fields by this script',
       agent: `written by the ${STATUS_MODEL} model from the measured fields in one batched call; the mechanical string is kept as statusMechanical`,
+    },
+    agentLedger: {
+      ...agentLedgerSummary,
+      file: AGENT_LEDGER_PATH,
+      fileCap: `newest ${AGENT_LEDGER_MAX_LINES} lines AND at most ${AGENT_LEDGER_MAX_BYTES} bytes; ${AGENT_LEDGER_CALLS_PER_LINE} per-call entries per line`,
+      measuredFrom: 'the caller side of each agent invocation: wall ms, prompt and response characters, exit code, parse outcome',
     },
     statusGeneration: {
       model: STATUS_MODEL,
@@ -2313,6 +2480,8 @@ console.log(`merges         : ${mergeAudit.merged.length} (graphql cost ${closin
   console.log(`last comment   : ${withAt} of ${records.length} cards carry lastCommentAt; ${lastCommentRequests} requests` + (s ? ` (${s.pageRequests} pages + ${s.loginRequests} /user) — ${s.zeroComments} zero-comment skipped, ${s.cacheHits} cache hits, ${s.fetched} fetched, ${s.failed} failed` : ' (phase failed)'));
 }
 console.log(`model          : ${STATUS_MODEL}`);
+console.log(`agent ledger   : ${formatLedgerLine(agentLedgerSummary)}`);
+console.log(`ledger file    : ${AGENT_LEDGER_PATH}`);
 console.log(`status agents  : ${modelCalls} calls (concurrency ${STATUS_CONCURRENCY}), ${generated} generated, ${fellBack.length} fell back, ${(statusWallClockMs / 1000).toFixed(1)}s wall clock`);
 console.log(`status cache   : ${cacheStats.hits} hits, ${cacheStats.misses} misses (${cacheStats.staleActivity} stale activity, ${cacheStats.staleContract} stale contract), ${Object.keys(statusCache.entries).length} entries stored`);
 console.log(`done column    : ${cacheStats.skippedDoneColumn} records skipped entirely (no agent) — ${cacheStats.doneServedFromCache} served cached prose, ${cacheStats.doneMechanical} kept the mechanical line (${cacheStats.skippedAgedOut} of them also aged out)`);
