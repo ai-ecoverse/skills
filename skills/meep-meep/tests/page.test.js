@@ -156,16 +156,27 @@ test('the fingerprint ignores ref renumbering', () => {
   ok(page.fingerprint(a) !== page.fingerprint(c));
 });
 
-test('a runtime URL is not prefixed twice', () => {
-  const config = { BEDROCK_REGION: 'https://bedrock-runtime.us-west-2.amazonaws.com' };
-  is(page.runtimeBase(config), 'https://bedrock-runtime.us-west-2.amazonaws.com');
-  is(page.regionName(config), 'us-west-2');
-  is(
-    page.runtimeBase({ BEDROCK_REGION: 'eu-central-1' }),
-    'https://bedrock-runtime.eu-central-1.amazonaws.com'
-  );
+test('the menu stays within kev option limit with many fields and goal values', () => {
+  const lines = ['Page URL: https://example.com/form', '- rootwebarea'];
+  for (let i = 1; i <= 8; i++) lines.push(`  - textbox "Field ${i}" [ref=f${i}]: ""`);
+  for (let i = 1; i <= 20; i++) lines.push(`  - button "Button ${i}" [ref=b${i}]`);
+  const shot = page.parseSnapshot(lines.join('\n'));
+  const candidates = Array.from({ length: 40 }, (_, i) => `Value${i}`);
+  const menu = page.buildMenu(shot, 'Fill the form', { candidates, offerDone: true });
+  ok(menu.length <= page.MAX_OPTIONS, `menu has ${menu.length} options`);
+  is(menu.filter((a) => a.operation === 'CLICK').length, page.MAX_CLICKS, 'clicks keep their places');
+  ok(menu.some((a) => a.id === 'WAIT'), 'WAIT is offered');
+  ok(menu.some((a) => a.id === 'DONE'), 'DONE is offered');
+  is(new Set(menu.map((a) => a.id)).size, menu.length, 'ids are unique');
 });
 
-test('extractJson ignores prose around the object', () => {
-  is(page.extractJson('sure\n{"action":"WAIT"}\n'), { action: 'WAIT' });
+test('the agent schema allows only menu ids and asks for text on its own key', () => {
+  const menu = page.buildMenu(page.parseSnapshot(SNAPSHOT), 'Enter London', {});
+  const schema = page.decisionSchema(menu);
+  is(schema.properties.action.enum, menu.map((a) => a.id));
+  is(schema.required, ['action']);
+  ok(menu.some((a) => a.id === 'type:e3' && a.text === null), 'a field without goal values has one type action');
+  const prompt = page.agentPrompt('Goal: Enter London', menu);
+  ok(prompt.includes('type:e3  type into textbox "Where to?"'));
+  ok(prompt.includes('StructuredOutput'));
 });
