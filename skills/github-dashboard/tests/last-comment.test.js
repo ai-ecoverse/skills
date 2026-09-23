@@ -5,9 +5,6 @@ import test, { is, ok, throws } from 'tst';
 // GHD_FETCHER points at an alternative file, used to show which tests go RED
 // against a naive "newest comment" variant.
 const fs = require('fs');
-// Default: the skill-repo layout (tests/ next to scripts/) or the deployed layout
-// (tests/ next to the fetcher), the same two layouts build.sh knows. import.meta.url
-// keeps this independent of the cwd; the realm's readFileSync wants a path string.
 const FILE = (process.env && process.env.GHD_FETCHER) ||
   ['../scripts/fetch-snapshot.mjs', '../fetch-snapshot.mjs']
     .map((p) => new URL(p, import.meta.url).pathname)
@@ -167,7 +164,7 @@ test('B1 cold: zero-comment records cost nothing, others one page, one /user', a
 });
 
 test('B2 warm, nothing changed: ZERO requests, values served from cache', async () => {
-  const cache = { login: ME, entries: { 'o/r#2': { lastActivityAt: 'A2', commentsCount: 1, login: ME, lastCommentAt: null }, 'o/r#3': { lastActivityAt: 'A3', commentsCount: 2, login: ME, lastCommentAt: '2026-09-20T00:00:00Z' }, 'o/r#9': { lastActivityAt: 'Z', commentsCount: 1, login: ME, lastCommentAt: null } } };
+  const cache = { login: ME, entries: { 'o/r#2': { v: 2, lastActivityAt: 'A2', commentsCount: 1, login: ME, lastCommentAt: null, commentsCounted: 1, excludedLatestAt: null }, 'o/r#3': { v: 2, lastActivityAt: 'A3', commentsCount: 2, login: ME, lastCommentAt: '2026-09-20T00:00:00Z' }, 'o/r#9': { v: 2, lastActivityAt: 'Z', commentsCount: 1, login: ME, lastCommentAt: null, commentsCounted: 1, excludedLatestAt: null } } };
   const records = [{ repo: 'o/r', id: '2', commentsCount: 1, lastActivityAt: 'A2' }, { repo: 'o/r', id: '3', commentsCount: 2, lastActivityAt: 'A3' }];
   const h = phaseHarness({});
   const out = await M.lastCommentPhase({ records, cache, getLogin: h.getLogin, getPage: h.getPage });
@@ -178,7 +175,7 @@ test('B2 warm, nothing changed: ZERO requests, values served from cache', async 
 });
 
 test('B3 a changed lastActivityAt OR commentsCount re-reads only that record', async () => {
-  const cache = { login: ME, entries: { 'o/r#2': { lastActivityAt: 'A2', commentsCount: 1, login: ME, lastCommentAt: null }, 'o/r#3': { lastActivityAt: 'A3', commentsCount: 2, login: ME, lastCommentAt: 'x' } } };
+  const cache = { login: ME, entries: { 'o/r#2': { v: 2, lastActivityAt: 'A2', commentsCount: 1, login: ME, lastCommentAt: null, commentsCounted: 1, excludedLatestAt: null }, 'o/r#3': { v: 2, lastActivityAt: 'A3', commentsCount: 2, login: ME, lastCommentAt: 'x' } } };
   const records = [{ repo: 'o/r', id: '2', commentsCount: 2, lastActivityAt: 'A2' }, { repo: 'o/r', id: '3', commentsCount: 2, lastActivityAt: 'A3' }];
   const h = phaseHarness({ 'o/r#2': [c('bob', 'User', '2026-09-23T10:00:00Z')] });
   await M.lastCommentPhase({ records, cache, getLogin: h.getLogin, getPage: h.getPage });
@@ -187,7 +184,7 @@ test('B3 a changed lastActivityAt OR commentsCount re-reads only that record', a
 });
 
 test('B4 an entry written under another login is not a hit', async () => {
-  const cache = { login: 'other', entries: { 'o/r#2': { lastActivityAt: 'A2', commentsCount: 1, login: 'other', lastCommentAt: '2026-09-22T20:21:17Z' }, 'o/r#3': { lastActivityAt: 'OLD', commentsCount: 1, login: 'other', lastCommentAt: null } } };
+  const cache = { login: 'other', entries: { 'o/r#2': { v: 2, lastActivityAt: 'A2', commentsCount: 1, login: 'other', lastCommentAt: '2026-09-22T20:21:17Z' }, 'o/r#3': { v: 2, lastActivityAt: 'OLD', commentsCount: 1, login: 'other', lastCommentAt: null } } };
   const records = [{ repo: 'o/r', id: '2', commentsCount: 1, lastActivityAt: 'A2' }, { repo: 'o/r', id: '3', commentsCount: 1, lastActivityAt: 'A3' }];
   const h = phaseHarness({ 'o/r#2': [c(ME, 'User', '2026-09-22T20:21:17Z', mirrorBody)], 'o/r#3': [] });
   const out = await M.lastCommentPhase({ records, cache, getLogin: h.getLogin, getPage: h.getPage });

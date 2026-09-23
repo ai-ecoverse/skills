@@ -313,9 +313,93 @@ function showBody(body) {
 
 /* ---------------------------------- gh ----------------------------------- */
 
-let requests = 0;
+/* ---- 8< gh -----------------------------------------------------------------
+   Every GitHub request this program makes goes through gh() below.
 
-function gh(args, { allowFail = false } = {}) {
+   ONE BOUNDED RETRY, FOR READS ONLY. On 2026-09-23 (13:26Z and 17:36Z) the
+   first request of a run, GET /user, failed with
+     HTTP 502 Bad Gateway https://api.github.com/user:
+     {"error":"Proxy fetch failed: ... (AsyncHTTPClient.HTTPClientError error 1.)"}
+   The 502 came from the local proxy's HTTP client, not from GitHub, and the
+   whole cycle's reconcile was lost to it. So a request is retried exactly once,
+   after GH_RETRY_DELAY_MS, when BOTH hold:
+     - it is a plain `gh api <path> [--jq <expr>]` read (isRetryableGet), and
+     - the failure is transient (isTransientGhFailure): HTTP 502/503/504, or a
+       network-level failure with no 4xx status ("Proxy fetch failed", ...).
+   Writes are NEVER retried: a POST, PATCH or DELETE whose response was lost
+   may already have taken effect, and a retried create would post a DUPLICATE
+   comment on a public card. `gh issue comment` (the create) is not `gh api`
+   and is therefore never retried. 4xx failures (401/403/404/422) are not
+   transient and are never retried. The check is an allowlist: any argv this
+   code does not recognise as a plain read is treated as a write.
+
+   A retry prints ONE stdout line ("  retry    ...") and is counted into the
+   final "done —" line, which is the line poll.jsh keeps on success. When the
+   retry also fails, the thrown message has the SAME format as before (poll.jsh
+   summariseFailure parses it) and carries the final attempt's stderr.
+
+   Fenced by these markers so tests/mirror-retry.test.js evaluates THIS text.
+   The mirror itself must never be imported: loading it runs a reconcile. */
+
+let requests = 0;
+let retries = 0;
+
+const GH_RETRY_DELAY_MS = 2000;
+
+/** True only for `gh api <path>` with nothing but --jq/-q and an optional
+    explicit GET. Field flags (-f/-F/--input) make `gh api` default to POST,
+    so their presence alone disqualifies a request. */
+function isRetryableGet(args) {
+  if (!Array.isArray(args) || args[0] !== 'api') return false;
+  let path = 0;
+  for (let i = 1; i < args.length; i += 1) {
+    const a = String(args[i]);
+    if (a === '--jq' || a === '-q') {
+      if (i + 1 >= args.length) return false;
+      i += 1;
+    } else if (a.startsWith('--jq=')) {
+      /* filter only */
+    } else if (a === '-X' || a === '--method') {
+      if (i + 1 >= args.length || String(args[i + 1]).toUpperCase() !== 'GET') return false;
+      i += 1;
+    } else if (a.startsWith('--method=')) {
+      if (a.slice(9).toUpperCase() !== 'GET') return false;
+    } else if (a.startsWith('-')) {
+      return false;
+    } else {
+      path += 1;
+    }
+  }
+  return path === 1;
+}
+
+/** Transient = the request probably never got a GitHub answer. An explicit
+    4xx status is always final, whatever the body says. */
+function isTransientGhFailure(text) {
+  const s = String(text == null ? '' : text);
+  const m = s.match(/\bHTTP (\d{3})\b/);
+  if (m) {
+    const code = Number(m[1]);
+    if (code === 502 || code === 503 || code === 504) return true;
+    if (code >= 400 && code < 500) return false;
+  }
+  return /Proxy fetch failed|Failed to fetch|fetch failed|NetworkError|network error|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket hang up|timed out/i.test(s);
+}
+
+function sleepSync(ms) {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+    return;
+  } catch {
+    /* no blocking wait in this realm: fall back to a bounded spin */
+  }
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    /* spin */
+  }
+}
+
+function ghOnce(args) {
   requests += 1;
   const r = spawnSync('gh', args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   const stdout = r.stdout || '';
@@ -323,11 +407,26 @@ function gh(args, { allowFail = false } = {}) {
   // `gh` here can exit 0 while reporting an error, so treat a stderr error
   // marker as failure too rather than trusting the status alone.
   const failed = r.status !== 0 || /^(error|fatal)\b/i.test(stderr);
-  if (failed && !allowFail) {
-    throw new Error(`gh ${args.slice(0, 3).join(' ')} failed (status ${r.status}): ${stderr.slice(0, 300)}`);
-  }
   return { ok: !failed, status: r.status, stdout, stderr };
 }
+
+function gh(args, { allowFail = false } = {}) {
+  let r = ghOnce(args);
+  if (!r.ok && isRetryableGet(args) && isTransientGhFailure(r.stderr)) {
+    retries += 1;
+    const why = (r.stderr.split('\n')[0] || `status ${r.status}`).slice(0, 160);
+    console.log(
+      `  retry    gh ${args.slice(0, 3).join(' ')} — transient failure, retrying once in ${GH_RETRY_DELAY_MS / 1000} s: ${why}`,
+    );
+    sleepSync(GH_RETRY_DELAY_MS);
+    r = ghOnce(args);
+  }
+  if (!r.ok && !allowFail) {
+    throw new Error(`gh ${args.slice(0, 3).join(' ')} failed (status ${r.status}): ${r.stderr.slice(0, 300)}`);
+  }
+  return r;
+}
+/* ---- >8 end gh ------------------------------------------------------------ */
 
 function ghJson(args) {
   const { stdout } = gh(args);
@@ -532,7 +631,10 @@ function main(argv) {
     if (snapshot) {
       const marked = new Set(Object.keys(items));
       const candidates = (snapshot.records || []).filter(
-        (r) => (r.commentsCount || 0) > 0 && allowed.has(r.repo) && !marked.has(`${r.repo}#${r.id}`),
+        // commentsTotal is the RAW count: since the fetcher stopped counting our own
+        // comment in commentsCount, a card whose only comment IS the mirror reads 0
+        // there, and it is exactly the card that can hold an orphan.
+        (r) => ((r.commentsTotal ?? r.commentsCount) || 0) > 0 && allowed.has(r.repo) && !marked.has(`${r.repo}#${r.id}`),
       );
       console.log(`  sweep    ${candidates.length} unmarked card(s) with comments, looking for stale mirrors`);
       for (const rec of candidates) {
@@ -559,8 +661,9 @@ function main(argv) {
   }
 
   summary.requests = requests;
+  summary.retries = retries;
   console.log(
-    `${mode} done — created ${summary.created.length}, patched ${summary.patched.length}, deleted ${summary.deleted.length}, noop ${summary.noop.length}, refused ${summary.refused.length}, failed ${summary.failed.length}; ${requests} API requests`,
+    `${mode} done — created ${summary.created.length}, patched ${summary.patched.length}, deleted ${summary.deleted.length}, noop ${summary.noop.length}, refused ${summary.refused.length}, failed ${summary.failed.length}; ${requests} API requests${retries ? `, ${retries} GET(s) retried after a transient failure` : ''}`,
   );
   if (!opt.live) console.log('nothing was written (dry run); pass --live to apply');
   if (opt.json) console.log(JSON.stringify(summary, null, 2));
