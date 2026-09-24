@@ -3403,11 +3403,29 @@
           applied.push(key);
         });
         // maxDurationSec is a LADDER INDEX in the UI, not seconds, so it cannot be
-        // assigned directly -- find the index whose value matches.
-        if (cfg.maxDurationSec !== undefined && cfg.maxDurationSec !== null) {
-          var sel = $('maxDur');
-          for (var i = 0; i < sel.options.length; i++) {
-            if (durationForIndex(i) === cfg.maxDurationSec) { sel.value = String(i); applied.push('maxDurationSec'); break; }
+        // assigned directly -- map the value back to its index.
+        //
+        // Two bugs lived here. (1) This iterated `sel.options`, but #maxDur is an
+        // <input type="range"> and a range has NO .options collection, so the loop
+        // threw a TypeError for EVERY numeric duration. Because the throw landed
+        // before syncPresetFromInputs()/updateHints() below, a CLI-written config
+        // half-applied: startUrl/width/height took effect while the slider stayed
+        // at index 0 -- i.e. silently in SCREENSHOT mode instead of recording.
+        // (2) `!== null` skipped the infinity step, which is a REAL config value
+        // (the manifest records maxDurationSec: null), so ∞ was unreachable from
+        // the CLI. null now maps to INFINITY_INDEX explicitly.
+        if (cfg.maxDurationSec !== undefined) {
+          var idx =
+            cfg.maxDurationSec === null
+              ? INFINITY_INDEX
+              : DURATION_LADDER.indexOf(cfg.maxDurationSec);
+          // -1 => a value the slider cannot represent; leave the slider alone and
+          // say so, rather than silently recording in the wrong mode.
+          if (idx >= 0) {
+            $('maxDur').value = String(idx);
+            applied.push('maxDurationSec');
+          } else {
+            log('config: maxDurationSec=' + cfg.maxDurationSec + ' is not on the duration ladder — slider unchanged');
           }
         }
         if (applied.length) {
