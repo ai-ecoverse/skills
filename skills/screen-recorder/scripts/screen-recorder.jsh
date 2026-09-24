@@ -58,7 +58,10 @@ const FIELDS = {
   // EXACT ladder value -- a non-ladder number would be written here, silently
   // ignored by the panel, and leave whatever was selected (initially 0 =
   // screenshot). So validate against the ladder rather than accepting any int.
-  maxDurationSec: { type: 'ladder', help: 'auto-stop seconds on the panel ladder (0=screenshot, 5..120 by 5, 150..600 by 30, 720..3600 by 120)' },
+  maxDurationSec: {
+    type: 'ladder',
+    help: 'auto-stop seconds: 0=screenshot, ladder (5..120 by 5, 150..600 by 30, 720..3600 by 120), or inf/null=no auto-stop',
+  },
   driver: { type: 'str', help: 'driver script path, run against the target window' },
 };
 
@@ -75,8 +78,16 @@ function parseValue(key, raw) {
     return n;
   }
   if (spec.type === 'ladder') {
+    // The slider's top notch is one PAST the ladder and means "no auto-stop",
+    // stored as null (the manifest records maxDurationSec: null). It is a real
+    // config value, not a missing one, so the CLI must be able to express it --
+    // it was previously rejected as a malformed integer, leaving the panel's
+    // infinity step reachable by dragging but not from the CLI.
+    if (/^(inf|infinity|null|none|unlimited)$/i.test(String(raw).trim())) return null;
     const n = Number(raw);
-    if (!Number.isInteger(n)) cli.die(`${key} must be an integer, got '${raw}'`);
+    if (!Number.isInteger(n)) {
+      cli.die(`${key} must be an integer, or inf/null for no auto-stop, got '${raw}'`);
+    }
     if (!DURATION_LADDER.includes(n)) {
       cli.die(
         `${key}=${n} is not on the panel's duration ladder, so the panel would ignore it. ` +
