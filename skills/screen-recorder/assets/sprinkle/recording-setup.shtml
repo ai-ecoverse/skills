@@ -164,6 +164,29 @@
         opacity: 0.7;
         line-height: 1.4;
       }
+      /* Drag-invariant height for a text node whose content changes per slider
+         step. The max-duration readout/hint swap between a 33-char string and a
+         144-char one, so the row grew mid-drag and shoved the Start button under
+         the pointer.
+
+         A min-height in lines does NOT work: how many lines a string wraps to
+         depends on the rail width (this panel must survive ~360px as well as its
+         720px max), so any hard-coded reserve is wrong at some width. Instead
+         stack a hidden GHOST holding the longest possible string in the same grid
+         cell as the live text: the cell is then max(ghost, live) at every width,
+         with no magic numbers and no resize listener. Ghost text is assigned in JS
+         from the same constants updateHints() uses, so it cannot drift. */
+      .stack {
+        display: grid;
+      }
+      .stack > * {
+        grid-area: 1 / 1;
+      }
+      .stack__ghost {
+        visibility: hidden;
+        pointer-events: none;
+        user-select: none;
+      }
       .warn {
         font-size: 12px;
         line-height: 1.4;
@@ -427,8 +450,19 @@
           </div>
           <!-- max MUST equal DURATION_LADDER.length (66) = INFINITY_INDEX. -->
           <input id="maxDur" type="range" min="0" max="66" step="1" value="0" />
-          <div class="readout" id="maxDurReadout"></div>
-          <div class="hint" id="maxDurHint"></div>
+          <!-- Ghost-stacked so the row height is the tallest of the three regimes
+               (screenshot / numeric / infinity) at ANY rail width — without this
+               the Start button moved under the pointer mid-drag. Ghost text is
+               set by reserveHintHeights() from the same strings updateHints()
+               renders, so the two cannot drift apart. -->
+          <div class="stack">
+            <div class="readout stack__ghost" id="maxDurReadoutGhost" aria-hidden="true"></div>
+            <div class="readout" id="maxDurReadout"></div>
+          </div>
+          <div class="stack">
+            <div class="hint stack__ghost" id="maxDurHintGhost" aria-hidden="true"></div>
+            <div class="hint" id="maxDurHint"></div>
+          </div>
         </div>
 
         <!-- The screen/window/tab picker is raised by Chrome inside getDisplayMedia()
@@ -2110,6 +2144,47 @@
         };
       }
 
+      // Single source of truth for the three max-duration regimes' copy, so the
+      // invisible sizing ghosts below cannot drift from what is actually rendered.
+      var DUR_READOUT = {
+        shot: '0s — single screenshot',
+        infinite: '\u221e — no auto-stop (stop manually or via “Stop sharing”)',
+        numeric: function (secs) {
+          return formatDuration(secs) + ' — auto-stop';
+        },
+      };
+      var DUR_HINT = {
+        shot: 'Takes ONE frame (screen.png) instead of a recording.',
+        infinite:
+          'No max-duration timer is set. The only stop triggers are the screen track ending and the Stop button; the manifest records maxDurationSec: null.',
+        numeric: function (secs) {
+          return 'Records and auto-stops after ' + formatDuration(secs) + '.';
+        },
+      };
+
+      // Reserve the tallest regime in each stacked cell. Longest-by-characters is
+      // the right proxy here because all three strings share one font and the
+      // ghost wraps under the identical width constraint as the live node — so the
+      // browser, not this code, decides the line count at the current rail width.
+      // 3600 is the ladder's largest finite value, i.e. the longest numeric form.
+      function reserveHintHeights() {
+        var longest = function (cands) {
+          return cands.reduce(function (a, b) {
+            return b.length > a.length ? b : a;
+          });
+        };
+        $('maxDurReadoutGhost').textContent = longest([
+          DUR_READOUT.shot,
+          DUR_READOUT.infinite,
+          DUR_READOUT.numeric(3600),
+        ]);
+        $('maxDurHintGhost').textContent = longest([
+          DUR_HINT.shot,
+          DUR_HINT.infinite,
+          DUR_HINT.numeric(3600),
+        ]);
+      }
+
       function updateHints() {
         var c = readConfig();
         var infinite = c.maxDurationSec === null;
@@ -2117,15 +2192,15 @@
 
         // Readout: honest about all three regimes.
         $('maxDurReadout').textContent = shot
-          ? '0s — single screenshot'
+          ? DUR_READOUT.shot
           : infinite
-            ? '\u221e — no auto-stop (stop manually or via “Stop sharing”)'
-            : formatDuration(c.maxDurationSec) + ' — auto-stop';
+            ? DUR_READOUT.infinite
+            : DUR_READOUT.numeric(c.maxDurationSec);
         $('maxDurHint').textContent = shot
-          ? 'Takes ONE frame (screen.png) instead of a recording.'
+          ? DUR_HINT.shot
           : infinite
-            ? 'No max-duration timer is set. The only stop triggers are the screen track ending and the Stop button; the manifest records maxDurationSec: null.'
-            : 'Records and auto-stops after ' + formatDuration(c.maxDurationSec) + '.';
+            ? DUR_HINT.infinite
+            : DUR_HINT.numeric(c.maxDurationSec);
         $('startBtn').textContent = shot
           ? 'Take screenshot'
           : c.countdownSec > 0
@@ -3349,6 +3424,10 @@
       // and the real request happens when the user opens a dropdown.
       resetPickers();
       renderCams();
+      // Before the first updateHints(): fills the invisible sizing ghosts so the
+      // max-duration row is already at its tallest regime's height, and dragging
+      // the slider to ∞ cannot reflow the Start button under the pointer.
+      reserveHintHeights();
       updateHints();
       loadTabs();
       // Prefill from the companion CLI's config.json, if one exists.
