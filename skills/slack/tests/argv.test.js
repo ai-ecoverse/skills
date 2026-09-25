@@ -157,3 +157,10 @@ test('parseList with valueless flag (true) is fatal', () => {
   // raw === true means the flag was passed without a value; process.exit(1) throws.
   throws(() => parseList(true, 'scopes'));
 });
+
+test('--allow-shared is boolean and never swallows the next positional', () => {
+  const r = parseArgv(['channel-archive', '--allow-shared', 'C04633RSEDU']);
+  is(r.flags['allow-shared'], true);
+  is(r.positional.join(','), 'channel-archive,C04633RSEDU');
+  is(parseArgv(['x', '--allow-shared=false']).flags['allow-shared'], false);
+});

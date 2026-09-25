@@ -43,9 +43,15 @@ class NodeExitError extends Error {
  * @param {object}  [opts.inviteResult] conversations.invite response body
  * @param {object}  [opts.kickResult]   conversations.kick response body
  * @param {string}  [opts.tabUrl] override the Slack tab URL
+ * @param {function} [opts.api]   (method, params) => body | undefined. Consulted
+ *                                first; undefined falls through to the defaults.
+ * @param {boolean} [opts.fakeTimers] replace setTimeout inside the script with
+ *                                one that fires at once and records each delay
+ *                                in h.sleeps (the read-back waits 5 s per retry).
  */
 async function load(opts) {
   const calls = [];
+  const sleeps = [];
   const stdout = [];
   const stderr = [];
 
@@ -85,7 +91,16 @@ async function load(opts) {
     },
     async fetch(tab, url, fetchOpts) {
       const method = url.replace('/api/', '');
-      calls.push({ method, opts: fetchOpts });
+      const params = {};
+      if (fetchOpts && typeof fetchOpts.body === 'string') {
+        for (const [k, v] of new URLSearchParams(fetchOpts.body)) if (k !== 'token') params[k] = v;
+      }
+      calls.push({ method, opts: fetchOpts, params });
+
+      if (opts.api) {
+        const custom = opts.api(method, params);
+        if (custom !== undefined) return { body: custom };
+      }
 
       // users.info
       if (method === 'users.info') {
@@ -125,8 +140,9 @@ async function load(opts) {
   };
 
   const cliStub = {
-    die(message, _options) {
-      throw new NodeExitError(String(message), 1);
+    die(message, options) {
+      const code = options && typeof options === 'object' && options.exitCode !== undefined ? options.exitCode : 1;
+      throw new NodeExitError(String(message), code);
     },
     help(message) {
       stdout.push(String(message));
@@ -241,11 +257,18 @@ return {
     warn: (msg) => stderr.push(String(msg === undefined ? '' : msg)),
   };
 
-  const factory = new AsyncFunction('require', 'process', 'console', source);
+  const scriptSetTimeout = opts.fakeTimers
+    ? (fn, ms) => {
+        sleeps.push(ms);
+        Promise.resolve().then(fn);
+        return 0;
+      }
+    : setTimeout;
+  const factory = new AsyncFunction('require', 'process', 'console', 'setTimeout', source);
   let mod = null;
   let runError = null;
   try {
-    mod = await factory(mockRequire, mockProcess, mockConsole);
+    mod = await factory(mockRequire, mockProcess, mockConsole, scriptSetTimeout);
   } catch (e) {
     if (!opts.runMain) throw e;
     runError = e;
@@ -255,6 +278,7 @@ return {
     mod,
     runError,
     calls,
+    sleeps,
     stdout,
     stderr,
     text: () => stdout.join('\n'),
@@ -961,4 +985,213 @@ test('the stripped harness now includes Grid code', async () => {
   is(typeof h.mod.cmdEgStatus, 'function', 'cmdEgStatus must survive the strip');
   await h.mod.cmdEgStatus();
   ok(/Enterprise user: U12345/.test(h.text()), 'cmdEgStatus must print the enterprise user section');
+});
+
+// ── channel-archive / channel-unarchive through the real entry point ──────────
+//
+// runMain: the file is compiled UNMODIFIED and main() dispatches the command
+// exactly as a user typing it would. opts.api answers the Slack methods;
+// opts.fakeTimers makes the 5 s read-back delay instant and records it.
+
+const ARCH_NOW = Date.now();
+const archChan = (over) =>
+  Object.assign(
+    {
+      id: 'C04633RSEDU',
+      name: 'assets-adidas',
+      is_private: true,
+      is_archived: false,
+      member_count: 6,
+      external_user_count: 0,
+      is_ext_shared: false,
+      is_pending_ext_shared: false,
+      is_org_shared: false,
+      // 1282 days ago, in MICROSECONDS as on the wire
+      last_activity_ts: (ARCH_NOW - 1282 * 86400000 - 3600000) * 1000,
+    },
+    over || {}
+  );
+
+// states: channel per admin.conversations.search call (the last one repeats).
+function archApi(states, extra) {
+  let n = 0;
+  const x = extra || {};
+  return (method, params) => {
+    if (method === 'admin.conversations.search') {
+      const st = states[Math.min(n, states.length - 1)];
+      n += 1;
+      return { ok: true, conversations: st ? [st] : [], next_cursor: '' };
+    }
+    if (method === 'conversations.info') return { ok: false, error: 'channel_not_found' };
+    if (method === 'admin.conversations.archive' || method === 'admin.conversations.unarchive') {
+      return x.writeResult || { ok: true };
+    }
+    return undefined;
+  };
+}
+
+const ARCH_WRITES = ['admin.conversations.archive', 'admin.conversations.unarchive'];
+const archWrites = (h) => h.calls.filter((c) => ARCH_WRITES.includes(c.method)).length;
+const archSeq = (h) => h.apiCalls().join(',');
+const exitOf = (h) => (h.runError ? h.runError.exitCode : 0);
+const errOf = (h) => (h.runError ? String(h.runError.message) : '');
+
+test('channel-archive dry run (entry point): reads state, prints it, makes no write', async () => {
+  const h = await load({ runMain: true, fakeTimers: true, argv: ['channel-archive', 'C04633RSEDU'], api: archApi([archChan()]) });
+  is(errOf(h), '');
+  is(exitOf(h), 0);
+  is(archSeq(h), 'admin.conversations.search');
+  is(archWrites(h), 0);
+  const t = h.text();
+  ok(/#assets-adidas \(C04633RSEDU\)/.test(t), 'prints name and id');
+  ok(/Visibility:\s+private/.test(t), 'prints visibility');
+  ok(/Archived:\s+no/.test(t), 'prints archived state');
+  ok(/Members:\s+6/.test(t), 'prints member count');
+  ok(/External:\s+0 users/.test(t), 'prints external users');
+  ok(/Shared:\s+not ext-shared/.test(t), 'prints sharing');
+  ok(/Last activity: \d{4}-\d{2}-\d{2} \(1282 days idle\)/.test(t), 'prints date and days idle');
+  ok(/--confirm would: re-read this channel/.test(t), 'says what --confirm would do');
+  ok(/indistinguishable from a direct human action/.test(t), 'attribution notice');
+});
+
+test('channel-archive dry run (entry point) with --max-members=2 shows the members-over-limit refusal', async () => {
+  const h = await load({ runMain: true, argv: ['channel-archive', 'C04633RSEDU', '--max-members=2'], api: archApi([archChan()]) });
+  is(exitOf(h), 0);
+  is(archWrites(h), 0);
+  ok(/--confirm would REFUSE: members-over-limit \(6 members > --max-members=2\)/.test(h.text()), h.text());
+});
+
+test('channel-archive --confirm (entry point): re-check, archive, read-back, confirmed', async () => {
+  const h = await load({
+    runMain: true,
+    fakeTimers: true,
+    argv: ['channel-archive', 'C04633RSEDU', '--confirm', '--max-members=10', '--min-idle-days=365'],
+    api: archApi([archChan(), archChan({ is_archived: true, member_count: -1 })]),
+  });
+  is(errOf(h), '');
+  is(archSeq(h), 'admin.conversations.search,admin.conversations.archive,admin.conversations.search');
+  const w = h.calls.find((c) => c.method === 'admin.conversations.archive');
+  is(JSON.stringify(w.params), '{"channel_id":"C04633RSEDU"}');
+  ok(/archived \(confirmed\)/.test(h.text()));
+});
+
+test('channel-archive --confirm uses the ORG token, not a workspace token', async () => {
+  const h = await load({
+    runMain: true,
+    fakeTimers: true,
+    argv: ['channel-archive', 'C04633RSEDU', '--confirm'],
+    api: archApi([archChan(), archChan({ is_archived: true })]),
+  });
+  const w = h.calls.find((c) => c.method === 'admin.conversations.archive');
+  is(new URLSearchParams(w.opts.body).get('token'), 'xoxc-test-org-token');
+});
+
+test('channel-archive --confirm members-over-limit (entry point): exit 1, named, no write', async () => {
+  const h = await load({ runMain: true, argv: ['channel-archive', 'C04633RSEDU', '--confirm', '--max-members=2'], api: archApi([archChan()]) });
+  is(exitOf(h), 1);
+  ok(/refused: members-over-limit/.test(errOf(h)), errOf(h));
+  is(archWrites(h), 0);
+});
+
+test('channel-archive --confirm members-unknown (entry point): null count refused, no write', async () => {
+  const h = await load({
+    runMain: true,
+    argv: ['channel-archive', 'C04633RSEDU', '--confirm', '--max-members=100'],
+    api: archApi([archChan({ member_count: null })]),
+  });
+  is(exitOf(h), 1);
+  ok(/refused: members-unknown/.test(errOf(h)), errOf(h));
+  is(archWrites(h), 0);
+});
+
+test('channel-archive --confirm already-archived (entry point): exit 0, no write', async () => {
+  const h = await load({
+    runMain: true,
+    argv: ['channel-archive', 'C0634KMGW2G', '--confirm'],
+    api: archApi([archChan({ id: 'C0634KMGW2G', name: 'aem-axeno1', is_private: false, is_archived: true, member_count: -1 })]),
+  });
+  is(errOf(h), '');
+  is(exitOf(h), 0);
+  is(archSeq(h), 'admin.conversations.search');
+  ok(/already-archived: nothing to do/.test(h.text()));
+});
+
+test('channel-archive --confirm read-back exhausted (entry point): unconfirmed, exit 3, 10 s apart', async () => {
+  const h = await load({ runMain: true, fakeTimers: true, argv: ['channel-archive', 'C04633RSEDU', '--confirm'], api: archApi([archChan()]) });
+  is(exitOf(h), 3);
+  is(archWrites(h), 1);
+  ok(/archived \(unconfirmed: search index did not reflect it after 10 attempts\)/.test(h.text()), h.text());
+  is(h.sleeps.join(','), '10000,10000,10000,10000,10000,10000,10000,10000,10000');
+});
+
+test('channel-archive --confirm read-back lag (entry point): confirms on a later attempt', async () => {
+  const h = await load({
+    runMain: true,
+    fakeTimers: true,
+    argv: ['channel-archive', 'C04633RSEDU', '--confirm'],
+    api: archApi([archChan(), archChan(), archChan({ is_archived: true })]),
+  });
+  is(exitOf(h), 0);
+  is(archSeq(h), 'admin.conversations.search,admin.conversations.archive,admin.conversations.search,admin.conversations.search');
+  is(h.sleeps.join(','), '10000');
+  ok(/after 2 attempt/.test(h.text()));
+});
+
+test('channel-archive --confirm not-found (entry point): exit 1, named, no write', async () => {
+  const h = await load({ runMain: true, argv: ['channel-archive', 'C0NOTHERE01', '--confirm'], api: archApi([null]) });
+  is(exitOf(h), 1);
+  ok(/refused: not-found/.test(errOf(h)), errOf(h));
+  is(archWrites(h), 0);
+});
+
+test('channel-archive --confirm write error (entry point): API error surfaced, exit 1', async () => {
+  const h = await load({
+    runMain: true,
+    argv: ['channel-archive', 'C04633RSEDU', '--confirm'],
+    api: archApi([archChan()], { writeResult: { ok: false, error: 'restricted_action' } }),
+  });
+  is(exitOf(h), 1);
+  ok(/admin.conversations.archive failed: restricted_action/.test(errOf(h)), errOf(h));
+});
+
+test('channel-archive --json (entry point) emits the result object', async () => {
+  const h = await load({ runMain: true, argv: ['channel-archive', 'C04633RSEDU', '--json'], api: archApi([archChan()]) });
+  const j = JSON.parse(h.stdout.find((s) => s.startsWith('{')));
+  is(j.mode, 'dry-run');
+  is(j.state.member_count, 6);
+  is(j.decision.outcome, 'proceed');
+});
+
+test('channel-archive rejects a malformed --max-members before any API call', async () => {
+  const h = await load({ runMain: true, argv: ['channel-archive', 'C04633RSEDU', '--max-members=lots', '--confirm'], api: archApi([archChan()]) });
+  is(exitOf(h), 1);
+  ok(/--max-members needs a non-negative integer/.test(errOf(h)), errOf(h));
+  is(h.calls.length, 0);
+});
+
+test('channel-unarchive --confirm (entry point): re-check, unarchive, read-back', async () => {
+  const h = await load({
+    runMain: true,
+    fakeTimers: true,
+    argv: ['channel-unarchive', 'C0634KMGW2G', '--confirm'],
+    api: archApi([archChan({ id: 'C0634KMGW2G', is_archived: true }), archChan({ id: 'C0634KMGW2G', is_archived: false })]),
+  });
+  is(errOf(h), '');
+  is(archSeq(h), 'admin.conversations.search,admin.conversations.unarchive,admin.conversations.search');
+  ok(/unarchived \(confirmed\)/.test(h.text()));
+});
+
+test('channel-unarchive dry run (entry point): no write; --max-members is refused as archive-only', async () => {
+  const dry = await load({ runMain: true, argv: ['channel-unarchive', 'C0634KMGW2G'], api: archApi([archChan({ id: 'C0634KMGW2G', is_archived: true })]) });
+  is(exitOf(dry), 0);
+  is(archWrites(dry), 0);
+  const bad = await load({ runMain: true, argv: ['channel-unarchive', 'C0634KMGW2G', '--max-members=1'], api: archApi([archChan()]) });
+  is(exitOf(bad), 1);
+  is(bad.calls.length, 0);
+});
+
+test('help lists channel-archive and channel-unarchive', async () => {
+  const h = await load({ runMain: true, argv: ['--help'] });
+  ok(/channel-archive <channel_id>/.test(h.text()));
+  ok(/channel-unarchive <channel_id>/.test(h.text()));
 });

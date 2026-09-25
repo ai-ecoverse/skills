@@ -11,7 +11,7 @@
 // Flags that take no value (presence = true). This explicit set is required
 // because the generic parser cannot distinguish a boolean flag from a
 // value-less flag when the next token looks like a value.
-const BOOL_FLAGS = new Set(['confirm', 'json', 'help', 'h', 'allow-deletions']);
+const BOOL_FLAGS = new Set(['confirm', 'json', 'help', 'h', 'allow-deletions', 'allow-shared']);
 
 function parseArgv(argv) {
   const f = Object.create(null);

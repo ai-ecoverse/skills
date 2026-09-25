@@ -551,6 +551,81 @@ Remove a user from a channel. Used by `slack-ext remove-channel`.
 - `cant_kick_self` — cannot kick the token owner
 - `cant_kick_from_general` — some workspaces protect #general
 
+## Enterprise Grid Channel Admin (`admin.conversations.*`)
+
+Used by `slack-ext channel-search`, `channel-to-public`, `channel-to-private`,
+`channel-archive` and `channel-unarchive`. All take the **org-level** xoxc token
+(`localStorage['localConfig_v2'].teams['E06V3987PMY'].token`) and go through
+`browser.fetch` from the Slack tab like every other xoxc call. Calls are
+indistinguishable from the admin doing it by hand in channel event history.
+
+### POST /api/admin.conversations.archive
+
+Archive a channel. Used by `slack-ext channel-archive`.
+
+| Param | Required | Description |
+|-------|----------|-------------|
+| token | yes | org-level xoxc token |
+| channel_id | yes | Channel ID |
+
+Measured 2026-09-25: works on **private channels the admin is not a member of**
+and answers `{"ok":true}` with no warning. `ok:true` is not proof of the new
+state; read it back through `admin.conversations.search` (below), with retries.
+
+### POST /api/admin.conversations.unarchive
+
+Unarchive a channel. Used by `slack-ext channel-unarchive`. Same parameters and
+token as `admin.conversations.archive`.
+
+### POST /api/admin.conversations.search
+
+Org-wide channel search; the only state read that sees private channels the
+admin is not in (`conversations.info` answers `channel_not_found` for those).
+
+| Param | Required | Description |
+|-------|----------|-------------|
+| token | yes | org-level xoxc token |
+| query | yes | May be empty. `query=<channel id>` finds that channel (below) |
+| limit | yes | **1 to 20.** `limit=21` answers `invalid_arguments` |
+| search_channel_types | yes | `all`, `exclude_archived`, `private`, `private_exclude`, `archived`. `private_archive` answers `invalid_search_channel_type` |
+| sort | yes | `name`, `member_count`, `created` (`last_activity_ts` answers `invalid_sort`) |
+| sort_dir | yes | `asc` / `desc` |
+| cursor | yes | Empty for the first page; then `next_cursor` |
+
+Response: `{ok, conversations: [...], next_cursor}`. Fields used by
+`channel-archive`: `id`, `name`, `is_private`, `is_archived`, `member_count`,
+`external_user_count`, `is_ext_shared`, `is_pending_ext_shared`,
+`is_org_shared`, `conversation_host_id`, `last_activity_ts`.
+
+Wire facts (measured 2026-09-25 unless noted):
+
+- **`channel_ids` is silently ignored** (2026-09-22): the response is the
+  unfiltered list. Never filter with it.
+- **`query=<channel id>` finds the channel.** 40 of 40 sampled channels
+  (public, private including non-member, archived, ext-shared) came back for
+  their own id, each as the only hit; `search_channel_types=all` is needed to
+  include archived ones. A partial id matches nothing; a bogus id answers zero
+  results. Still match on `id` locally.
+- **`last_activity_ts` is microseconds** (16 digits): `1686690712432979` is
+  2023-06-13T21:11:52.432Z. Divide by 1000 for JavaScript milliseconds.
+- **`member_count` is `-1` for archived channels** (all 14 archived channels in
+  the sample). Treat `-1`, `null` and a missing field as unknown, never zero.
+- **`conversation_host_id`** appears on ext-shared channels only. It equals the
+  org id (`E06V3987PMY`) when this org hosts the channel; any other value is a
+  channel hosted by another org.
+- **The index lags a write by several seconds.** Right after
+  `admin.conversations.archive` the channel was not reported archived. On the
+  live round trip for `slack-ext channel-archive` (2026-09-25): an unarchive
+  showed after ~5 s; an archive read `is_archived: false`, then the channel was
+  **missing from the index entirely**, then `is_archived: true` 38 to 51 s after
+  the write. `conversations.info` (public channel) showed it archived at once.
+  A read-back has to retry (`slack-ext` uses 10 attempts, 10 s apart, 90 s) and
+  report "unconfirmed", not "failed", when it runs out. A read right after an
+  unarchive can still say archived, so a "nothing to do" answer that soon after
+  a write can be stale.
+- **Every write updates `last_activity_ts`** to the write time (both archive and
+  unarchive, measured), so a channel archived today reads as 0 days idle.
+
 ## App Manifest API (`apps.manifest.*`, `tooling.tokens.rotate`)
 
 A different API surface from everything above: `https://slack.com/api/` over
