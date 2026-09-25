@@ -39,7 +39,7 @@ node /workspace/skills/decide-quickly/scripts/cua-s1.jsh --help
 
 The first `kev ask` or `cua-s1 plan` installs its packages, bundles them, downloads weights, and runs again so the bundle can be loaded.
 
-- Kev: `ipk add -g @ai-ecoverse/kev.js@0.2.0`
+- Kev: `ipk add -g @ai-ecoverse/kev.js@0.5.0`
 - cua-s1: `ipk add -g @ai-ecoverse/cua-s1.js@0.1.1`
 - Both: `esbuild-wasm`, then `esbuild --bundle`, then `ipk add -g onnxruntime-web@1.30.0`
 - Weights: `hf download` (Kev q8f32, or the 3.3 MB cua-s1 graph)
