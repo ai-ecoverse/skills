@@ -1479,3 +1479,70 @@ test('flow --confirm --allow-shared with missing sharing flags: refused sharing-
 //   drop the typeof boolean check. Caught by: "classifyChannelHost: missing or
 //   non-boolean ...", "evaluateChannelGuards: sharing-unknown refuses ...",
 //   "flow --confirm --allow-shared with missing sharing flags ...".
+
+// ── Codex round 4 (P2): conversations.info ok:true without a usable channel ────
+
+const EMPTY_SEARCH = { ok: true, conversations: [], next_cursor: '' };
+
+test('lookupChannel: conversations.info ok:true without a usable channel is malformed_response, not not-found', async () => {
+  for (const info of [
+    { ok: true },
+    { ok: true, channel: null },
+    { ok: true, channel: { id: 'C04633RSEDU' } },
+    { ok: true, channel: { id: 'C04633RSEDU', name: '' } },
+    { ok: true, channel: { id: 'C04633RSEDU', name: 42 } },
+    { ok: true, channel: { id: 'C0SOMEOTHER', name: 'other-channel' } },
+  ]) {
+    const h = rawCall((m) => (m === S ? EMPTY_SEARCH : info));
+    const r = await lookupChannel(h.call, 'C04633RSEDU');
+    is(r.found, false);
+    is(r.error, 'conversations.info: malformed_response', JSON.stringify(info));
+    is(h.calls.filter((c) => c.method === S).length, 1, 'no name search on a malformed info answer');
+  }
+});
+
+test('lookupChannel: conversations.info ok:true with this channel and a name still drives the name search (control)', async () => {
+  let n = 0;
+  const h = rawCall((m) => {
+    if (m === S) return (n += 1) === 1 ? EMPTY_SEARCH : { ok: true, conversations: [chan()], next_cursor: '' };
+    return { ok: true, channel: { id: 'C04633RSEDU', name: 'assets-adidas' } };
+  });
+  const r = await lookupChannel(h.call, 'C04633RSEDU');
+  is(r.found, true);
+  is(r.via, 'name');
+});
+
+test('flow --confirm: malformed conversations.info fallback is read-error (exit 1), no decision, no write', async () => {
+  const h = rawCall((m) => (m === S ? EMPTY_SEARCH : m === 'conversations.info' ? { ok: true } : { ok: true }));
+  const r = await runChannelArchiveFlow({
+    action: 'archive', channelId: 'C04633RSEDU', orgId: ORG, confirm: true,
+    maxMembers: null, minIdleDays: null, call: h.call, sleep: async () => {}, now: () => NOW_MS,
+  });
+  is(r.status, 'read-error');
+  is(r.decision, null);
+  is(h.calls.filter((c) => c.method === A).length, 0);
+});
+
+test('flow --confirm: a write answering a non-boolean ok is an error, not a success', async () => {
+  for (const [wr, err] of [[{ ok: 'false' }, 'malformed_response'], [{ ok: 1 }, 'malformed_response'], [null, 'no_response'], [{ ok: false }, 'no_response']]) {
+    const h = stub({ writeResult: wr === null ? undefined : wr });
+    if (wr === null) {
+      // stub() falls back to {ok:true} for undefined; use a raw call for a missing body.
+      const raw = rawCall((m) => (m === S ? { ok: true, conversations: [chan()], next_cursor: '' } : m === A ? null : { ok: false, error: 'channel_not_found' }));
+      const r = await runChannelArchiveFlow({ action: 'archive', channelId: 'C04633RSEDU', orgId: ORG, confirm: true, maxMembers: null, minIdleDays: null, call: raw.call, sleep: async () => {}, now: () => NOW_MS });
+      is(r.status, 'error');
+      is(r.write.error, err);
+      continue;
+    }
+    const r = await h.run({ confirm: true });
+    is(r.status, 'error', JSON.stringify(wr));
+    is(r.write.ok, false);
+    is(r.write.error, err, JSON.stringify(wr));
+    is(r.readback, null, 'no read-back after a failed write');
+  }
+});
+
+// MUTATION M10 (malformed info read as a miss): in lookupChannel, drop the
+//   ok:true channel check (accept any ok:true, name = ch && ch.name).
+//   Caught by: "lookupChannel: conversations.info ok:true without a usable
+//   channel ...", "flow --confirm: malformed conversations.info fallback ...".

@@ -1564,3 +1564,39 @@ test('channel-unarchive --confirm (entry point): missing sharing flags refused s
   ok(/refused: sharing-unknown/.test(errOf(h)), errOf(h));
   is(archWrites(h), 0);
 });
+
+// ── Codex round 4 (P2): malformed conversations.info fallback (entry point) ────
+
+test('channel-archive --confirm (entry point): search miss + conversations.info {ok:true} fails, not not-found', async () => {
+  const h = await load({
+    runMain: true,
+    argv: ['channel-archive', 'C04633RSEDU', '--confirm'],
+    api: (m) =>
+      m === 'admin.conversations.search'
+        ? { ok: true, conversations: [], next_cursor: '' }
+        : m === 'conversations.info'
+          ? { ok: true }
+          : undefined,
+  });
+  is(exitOf(h), 1);
+  ok(/channel lookup failed \(conversations\.info: malformed_response\)/.test(errOf(h)), errOf(h));
+  ok(!/not-found/.test(errOf(h)));
+  is(archWrites(h), 0);
+});
+
+test('channel-archive --json (entry point): malformed conversations.info is a read-error JSON document', async () => {
+  const h = await load({
+    runMain: true,
+    argv: ['channel-archive', 'C04633RSEDU', '--json'],
+    api: (m) =>
+      m === 'admin.conversations.search'
+        ? { ok: true, conversations: [], next_cursor: '' }
+        : m === 'conversations.info'
+          ? { ok: true, channel: { id: 'C04633RSEDU' } }
+          : undefined,
+  });
+  is(exitOf(h), 1);
+  const j = onlyJson(h);
+  is(j.status, 'read-error');
+  ok(/conversations\.info: malformed_response/.test(j.error), j.error);
+});

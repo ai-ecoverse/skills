@@ -606,6 +606,8 @@ function evaluateChannelGuards(action, state, opts) {
 //     -> error lookup_truncated (the rest was never looked at)
 //   - conversations.info failing with anything but channel_not_found
 //     -> error (the name fallback never ran)
+//   - conversations.info ok:true without this channel's id and a string name
+//     -> error conversations.info: malformed_response
 // This helper never calls channel-search and has no --max-style cap that can
 // end a search early and call it empty.
 async function lookupChannel(call, channelId, opts) {
@@ -635,9 +637,15 @@ async function lookupChannel(call, channelId, opts) {
     if (!info || typeof info !== 'object') {
       return { found: false, channel: null, via: 'id', error: 'no_response' };
     }
-    if (info.ok && info.channel && info.channel.name) {
-      name = info.channel.name;
-    } else if (!info.ok && info.error !== 'channel_not_found') {
+    if (info.ok === true) {
+      // ok:true must carry THIS channel with a usable name; anything else is an
+      // incomplete read, never a reason to report not-found.
+      const ch = info.channel;
+      if (!ch || typeof ch !== 'object' || ch.id !== channelId || typeof ch.name !== 'string' || !ch.name) {
+        return { found: false, channel: null, via: 'id', error: 'conversations.info: malformed_response' };
+      }
+      name = ch.name;
+    } else if (info.error !== 'channel_not_found') {
       // channel_not_found is the expected answer for a private channel the
       // admin is not in. Anything else means the fallback did not run.
       return { found: false, channel: null, via: 'id', error: 'conversations.info: ' + (info.error || 'no_response') };
@@ -734,7 +742,14 @@ async function runChannelArchiveFlow(spec) {
   }
 
   const w = await spec.call(method, buildArchiveChannelParams(spec.channelId));
-  result.write = { method: method, ok: !!(w && w.ok), error: w && !w.ok ? w.error || 'no_response' : null };
+  // Only ok === true is a successful write; a missing body, ok:false or a
+  // non-boolean ok (e.g. "false") is an error.
+  const wrote = !!w && typeof w === 'object' && w.ok === true;
+  result.write = {
+    method: method,
+    ok: wrote,
+    error: wrote ? null : !w || typeof w !== 'object' ? 'no_response' : w.ok === false ? w.error || 'no_response' : 'malformed_response',
+  };
   if (!result.write.ok) {
     result.status = 'error';
     result.exitCode = 1;

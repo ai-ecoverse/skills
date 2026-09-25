@@ -665,7 +665,9 @@ search.** Everything short of that fails the command (exit 1, "whether the
 channel exists is UNKNOWN"), never a `not-found`: no body, `ok:false`, `ok:true`
 without a `conversations` array (`malformed_response`), the page cap reached
 with a cursor still pending (`lookup_truncated`), or `conversations.info`
-failing with anything other than the expected `channel_not_found`. The helper
+failing with anything other than the expected `channel_not_found`, or
+answering `ok:true` without this channel's `id` and a string `name`. A write
+counts only when it answers `ok === true`. The helper
 does not use `channel-search` and has no `--max`. `--json` emits a result
 object on every path, including failures and zero matches.
 
