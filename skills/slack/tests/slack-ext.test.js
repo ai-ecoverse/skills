@@ -1531,3 +1531,36 @@ test('parse failure on another command with --json is unchanged (scope: archive 
 // MUTATION M8 (parse failure answered in text only): in the top-level
 //   parseArgv catch, drop the jsonInvocation / cli.out block. Caught by every
 //   "--json parse failure ... entire stdout is one JSON document" test.
+
+// ── Codex round 3 (P1): missing sharing flags fail closed (entry point) ────────
+
+test('channel-archive --confirm --allow-shared (entry point): missing is_ext_shared refused sharing-unknown, no write', async () => {
+  const h = await load({
+    runMain: true,
+    argv: ['channel-archive', 'C04633RSEDU', '--confirm', '--allow-shared'],
+    api: archApi([archChan({ is_ext_shared: undefined })]),
+  });
+  is(exitOf(h), 1);
+  ok(/refused: sharing-unknown/.test(errOf(h)), errOf(h));
+  is(archWrites(h), 0);
+});
+
+test('channel-archive dry run --json (entry point): missing is_pending_ext_shared reported as would-refuse sharing-unknown', async () => {
+  const h = await load({ runMain: true, argv: ['channel-archive', 'C04633RSEDU', '--json'], api: archApi([archChan({ is_pending_ext_shared: undefined })]) });
+  is(exitOf(h), 0);
+  const j = onlyJson(h);
+  is(j.decision.reason, 'sharing-unknown');
+  is(j.state.host, 'sharing-unknown');
+  is(archWrites(h), 0);
+});
+
+test('channel-unarchive --confirm (entry point): missing sharing flags refused sharing-unknown, no write', async () => {
+  const h = await load({
+    runMain: true,
+    argv: ['channel-unarchive', 'C0634KMGW2G', '--confirm'],
+    api: archApi([archChan({ id: 'C0634KMGW2G', is_archived: true, is_ext_shared: 'false' })]),
+  });
+  is(exitOf(h), 1);
+  ok(/refused: sharing-unknown/.test(errOf(h)), errOf(h));
+  is(archWrites(h), 0);
+});

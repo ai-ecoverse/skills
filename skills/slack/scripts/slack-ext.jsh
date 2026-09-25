@@ -263,7 +263,8 @@ Channel management commands:
       sharing/host, last activity + days idle, and what --confirm would do.
       --confirm re-reads the channel immediately before the write and refuses,
       naming the reason, when a guard does not hold:
-        not-found, ext-shared-hosted-elsewhere, ext-shared-host-unknown,
+        not-found, sharing-unknown (Slack did not report the sharing flags),
+        ext-shared-hosted-elsewhere, ext-shared-host-unknown,
         ext-shared-requires-allow-shared (a Slack Connect channel we host:
         archiving DISCONNECTS every external org, and unarchiving does not
         reconnect them; pass --allow-shared, and the output then names the
@@ -2892,6 +2893,7 @@ async function cmdChannelToPrivate() {
 // read: it answers channel_not_found for a private channel the admin is not in.
 
 function describeSharing(st) {
+  if (st.host === 'sharing-unknown') return 'UNKNOWN (Slack did not report is_ext_shared / is_pending_ext_shared as booleans)';
   if (st.host === 'not-shared') return st.is_org_shared ? 'org-shared (internal), not ext-shared' : 'not ext-shared';
   const pending = st.is_pending_ext_shared && !st.is_ext_shared ? 'ext-share PENDING' : 'ext-shared';
   const orgs = (st.external_team_ids || []).length;

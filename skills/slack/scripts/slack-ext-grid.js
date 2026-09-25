@@ -403,8 +403,15 @@ function knownCount(n) {
   return typeof n === 'number' && Number.isInteger(n) && n >= 0 ? n : null;
 }
 
-// 'not-shared' | 'us' | 'other' | 'unknown'
+// 'not-shared' | 'us' | 'other' | 'unknown' | 'sharing-unknown'
+// 'sharing-unknown': is_ext_shared or is_pending_ext_shared is missing or not a
+// boolean. This is an undocumented endpoint; an absent flag must never be read
+// as "not shared", or a confirmed archive would skip every Slack Connect guard
+// and disconnect external organisations without --allow-shared.
 function classifyChannelHost(c, orgId) {
+  if (typeof c.is_ext_shared !== 'boolean' || typeof c.is_pending_ext_shared !== 'boolean') {
+    return 'sharing-unknown';
+  }
   const shared = c.is_ext_shared === true || c.is_pending_ext_shared === true;
   if (!shared) return 'not-shared';
   const host = c.conversation_host_id;
@@ -463,7 +470,7 @@ function normalizeChannelState(c, orgId, nowMs) {
 // takes a new Slack Connect invitation. Returns null for a channel that is not
 // ext-shared or pending.
 function sharedArchiveImpact(state) {
-  if (!state || state.host === 'not-shared') return null;
+  if (!state || state.host === 'not-shared' || state.host === 'sharing-unknown') return null;
   const users = state.external_user_count;
   const orgs = state.external_team_ids || [];
   const pending = state.pending_external_team_ids || [];
@@ -512,6 +519,14 @@ function evaluateChannelGuards(action, state, opts) {
   }
   if (action === 'unarchive' && !state.is_archived) {
     return guardResult('noop', 'not-archived', 'the channel is not archived');
+  }
+  if (state.host === 'sharing-unknown') {
+    return guardResult(
+      'refuse',
+      'sharing-unknown',
+      'Slack did not report is_ext_shared / is_pending_ext_shared as booleans; ' +
+        'cannot tell whether archiving would disconnect external organisations'
+    );
   }
   if (state.host === 'other') {
     return guardResult(

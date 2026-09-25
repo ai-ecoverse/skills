@@ -1430,3 +1430,52 @@ test('checkChannelArchiveArgs: unarchive refuses archive-only flags and typos', 
   is(checkChannelArchiveArgs('unarchive', { confrm: true }, P).errors[0].message, 'unknown-flag: --confrm (did you mean --confirm?)');
   is(checkChannelArchiveArgs('unarchive', { confirm: true, json: true }, P).ok, true);
 });
+
+// ── Codex round 3 (P1): missing sharing flags are UNKNOWN, never "not shared" ──
+
+test('classifyChannelHost: missing or non-boolean is_ext_shared / is_pending_ext_shared is sharing-unknown', () => {
+  for (const over of [
+    { is_ext_shared: undefined },
+    { is_pending_ext_shared: undefined },
+    { is_ext_shared: undefined, is_pending_ext_shared: undefined },
+    { is_ext_shared: 'true' },
+    { is_ext_shared: 1 },
+    { is_pending_ext_shared: null },
+  ]) {
+    is(classifyChannelHost(chan(over), ORG), 'sharing-unknown', JSON.stringify(over));
+  }
+  is(classifyChannelHost(chan(), ORG), 'not-shared', 'control: both real booleans, false');
+});
+
+test('evaluateChannelGuards: sharing-unknown refuses archive even with --allow-shared', () => {
+  const st = normalizeChannelState(chan({ is_ext_shared: undefined }), ORG, NOW_MS);
+  const d = evaluateChannelGuards('archive', st, { orgId: ORG, allowShared: true });
+  is(d.outcome, 'refuse');
+  is(d.reason, 'sharing-unknown');
+  is(sharedArchiveImpact(st), null, 'no made-up disconnect count for an unknown sharing state');
+});
+
+test('evaluateChannelGuards: sharing-unknown refuses unarchive too', () => {
+  const st = normalizeChannelState(chan({ is_archived: true, is_pending_ext_shared: undefined }), ORG, NOW_MS);
+  is(evaluateChannelGuards('unarchive', st, { orgId: ORG }).reason, 'sharing-unknown');
+});
+
+test('evaluateChannelGuards: an archived channel with missing sharing flags is still already-archived (no write)', () => {
+  const st = normalizeChannelState(chan({ is_archived: true, is_ext_shared: undefined }), ORG, NOW_MS);
+  is(evaluateChannelGuards('archive', st, { orgId: ORG }).reason, 'already-archived');
+});
+
+test('flow --confirm --allow-shared with missing sharing flags: refused sharing-unknown, no archive call', async () => {
+  const h = stub({ states: [chan({ is_ext_shared: undefined, is_pending_ext_shared: undefined })] });
+  const r = await h.run({ confirm: true, allowShared: true });
+  is(r.status, 'refused');
+  is(r.decision.reason, 'sharing-unknown');
+  is(r.exitCode, 1);
+  is(h.seq(), S);
+  is(writes(h), 0);
+});
+
+// MUTATION M9 (absent sharing flag read as false): in classifyChannelHost,
+//   drop the typeof boolean check. Caught by: "classifyChannelHost: missing or
+//   non-boolean ...", "evaluateChannelGuards: sharing-unknown refuses ...",
+//   "flow --confirm --allow-shared with missing sharing flags ...".

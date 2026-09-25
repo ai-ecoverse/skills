@@ -678,6 +678,7 @@ read-back (10 attempts, 10 s apart, until `is_archived` flips).
 |---------|------|------|
 | `not-found` | no channel with this id in search | 1 |
 | `already-archived` / `not-archived` | nothing to do, no write | **0** |
+| `sharing-unknown` | `is_ext_shared` or `is_pending_ext_shared` missing or not a boolean (never read as "not shared") | 1 |
 | `ext-shared-hosted-elsewhere` | ext-shared, `conversation_host_id` is not this org | 1 |
 | `ext-shared-host-unknown` | ext-shared, no `conversation_host_id` | 1 |
 | `ext-shared-requires-allow-shared` | archive only: ext-shared, hosted by this org, no `--allow-shared` | 1 |
