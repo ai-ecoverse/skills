@@ -979,14 +979,14 @@ async function cmdRpc() {
   // `--json '{...}'` swallows the body as the flag's value; take it back.
   const rawBody = positional[3] ?? (typeof flags.json === 'string' ? flags.json : undefined);
   const body = await readRpcInput(rawBody);
+  // Non-2xx already exits non-zero inside request(); this handles a 2xx whose
+  // envelope still says ok:false. --json prints the envelope either way, but a
+  // rejected call must not exit 0, or scripts read a failed mutation as success.
   const data = await request('post', `/plugins/${plugin}/rpc/${method}`, { body });
-  if (flags.json) {
-    cli.out(data);
-    return;
-  }
-  if (data && typeof data === 'object' && data.ok === false) {
-    die(`${plugin}.${method} failed — ${JSON.stringify(data.error ?? null)}`);
-  }
+  const failed = data && typeof data === 'object' && data.ok === false;
+  if (flags.json) cli.out(data);
+  if (failed) die(`${plugin}.${method} failed — ${JSON.stringify(data.error ?? null)}`);
+  if (flags.json) return;
   const result = data && typeof data === 'object' && 'result' in data ? data.result : data;
   cli.out(result === undefined ? null : result);
 }

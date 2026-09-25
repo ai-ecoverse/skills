@@ -136,3 +136,48 @@ test('rpc surfaces a server error with its status', async () => {
   ok(/unknown_method/u.test(run.error.message));
   ok(!run.error.message.includes(CREDENTIAL));
 });
+
+// A 2xx whose envelope says ok:false is a rejected call. --json still prints
+// the raw envelope, but the exit must be non-zero so a script cannot read a
+// failed (possibly mutating) RPC as success.
+const rejected = { ok: false, error: { code: 'invalid_input', message: 'title is required' } };
+const rejectedIn200 = () => ({ status: 200, body: rejected });
+
+test('rpc --json prints an ok:false envelope and exits non-zero', async () => {
+  const run = await runBb(['rpc', 'github', 'createIssue', '{"repo":"owner/repo"}', '--json'], {
+    server: rejectedIn200,
+  });
+  is(run.out, [rejected]);
+  is(JSON.parse(run.stdout), rejected);
+  is(run.exitCode, 1);
+  ok(/github\.createIssue failed/u.test(run.stderr));
+  ok(!run.stdout.includes('failed'));
+});
+
+test('rpc --json with an ok:true envelope exits 0', async () => {
+  const run = await runBb(['rpc', 'github', 'listLinks', '--json'], {
+    server: envelope({ links: {} }),
+  });
+  is(run.exitCode, 0);
+  is(run.out, [{ ok: true, result: { links: {} } }]);
+  is(run.stderr, '');
+});
+
+test('rpc without --json exits non-zero on an ok:false envelope and prints no result', async () => {
+  const run = await runBb(['rpc', 'github', 'createIssue', '{"repo":"owner/repo"}'], {
+    server: rejectedIn200,
+  });
+  is(run.exitCode, 1);
+  is(run.out, []);
+  ok(/github\.createIssue failed/u.test(run.stderr));
+  ok(/invalid_input/u.test(run.error.message));
+});
+
+test('rpc --json on a non-2xx still exits non-zero through request()', async () => {
+  const run = await runBb(['rpc', 'github', 'createIssue', '{}', '--json'], {
+    server: () => ({ status: 400, body: rejected }),
+  });
+  is(run.exitCode, 1);
+  is(run.out, []);
+  ok(/returned 400 for \/plugins\/github\/rpc\/createIssue/u.test(run.error.message));
+});
