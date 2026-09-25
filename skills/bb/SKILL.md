@@ -10,7 +10,10 @@ description: |
   SLICC with a bb server ("pair with bb", "connect to my bb", "bb machine
   code"). Mirrors the official `bb` CLI: `bb thread list|show|log|output|tell|
   spawn|stop|wait|search`, `bb project list|show`, `bb status`, plus
-  `bb pair`/`bb unpair` for credential setup.
+  `bb pair`/`bb unpair` for credential setup. Also lists every thread with
+  `bb thread list --all` (paged by offset) and calls any plugin RPC with
+  `bb rpc <plugin> <method>`, such as the github plugin's issue/PR-to-thread
+  links or the pull request of a thread's worktree.
 allowed-tools: bash
 command: bb
 script: scripts/bb.jsh
@@ -103,7 +106,7 @@ bb project list [--json]
 bb project show <id> [--json]
 
 bb thread list [--project <id>] [--parent-thread <id>] [--archived]
-               [--include-hidden] [--limit <n>] [--json]
+               [--include-hidden] [--limit <n>] [--offset <n>] [--all] [--json]
 bb thread show [<id>] [--self] [--json]
 bb thread log [<id>] [--self] [--limit <n>] [--after-seq <n>] [--json]
 bb thread output [<id>] [--self] [--json]
@@ -118,10 +121,67 @@ bb thread wait <id> [--status <status>] [--timeout <seconds>]
                [--poll-interval <ms>] [--json]
 bb thread search <query> [--limit <n>] [--json]
 bb thread queue list [<id>] [--self] [--json]
+
+bb rpc <plugin> <method> [<json> | -] [--json]   Call a plugin RPC
 ```
 
 Every command takes `--json` and prints the raw API response. `--self` targets
 the thread stored by `bb self <id>` (or `BB_THREAD_ID` when the runtime sets it).
+
+## Paging thread lists
+
+`GET /api/v1/threads` returns rows and never a total, so `bb thread list` shows
+one page: `--limit` rows (default 20) starting at `--offset` (default 0). The
+limit goes to the server as given; there is no client-side ceiling.
+
+- A page that comes back full may not be the end. `thread list` then prints a
+  note on stderr naming the next `--offset` and `--all`; stdout, and so `--json`,
+  is unchanged.
+- `--all` reads 200-row pages until a short page and prints every thread,
+  `--json` included (one merged array). Filters apply to every page, and
+  `--offset` sets where it starts. `--all` with `--limit` is refused.
+- The list is ordered live. A thread created while you page pushes rows down, so
+  one can come back on two pages; `--all` keeps the first copy of each id.
+  Paging is not a snapshot: a thread created mid-run at a position already read
+  is missed, and one archived mid-run can shift another past the reader.
+
+```bash
+bb thread list --project <project-id> --all --json
+bb thread list --limit 50 --offset 100
+```
+
+## Plugin RPCs
+
+bb plugins expose RPC methods at `POST /api/v1/plugins/<plugin>/rpc/<method>`
+with a JSON body (the method's input, `null` when it takes none). `bb rpc` calls
+one through the same authenticated request path as every other command:
+
+- The body is the `<json>` argument, stdin with `-`, or `null` when omitted.
+- It prints the `result`; `--json` prints the raw `{"ok":true,"result":…}` envelope.
+- Plugin and method names must match `^[a-z0-9][a-z0-9-]*$` and
+  `^[A-Za-z_][A-Za-z0-9_]*$` (64 characters at most), so a name cannot add path
+  segments or a query string.
+
+Examples, from the github plugin:
+
+```bash
+# issue/PR-to-thread links: {"links":{"pr:<owner>/<repo>#<n>":[{"threadId":…}]}}
+bb rpc github listLinks
+
+# the pull request of a thread's worktree environment: {"pull":{"repo":…,"number":…,"environmentId":…}}
+# pull is null when none resolves, which is the usual answer for an archived thread
+bb rpc github pullForThread '{"threadId":"<thread-id>"}'
+echo '{"threadId":"<thread-id>"}' | bb rpc github pullForThread -
+```
+
+RPCs are not all read-only: github's `createIssue`, `commentPull` and
+`startWork` write to GitHub or start agent work. Confirm before calling one that
+mutates.
+
+`bb rpc connect createMachineCode` is refused. Its result is a one-time pairing
+code that anyone can redeem for a durable machine credential, so printing it
+would leak a secret into the transcript. `bb attach` mints and redeems one
+without showing it.
 
 ## Notes
 
