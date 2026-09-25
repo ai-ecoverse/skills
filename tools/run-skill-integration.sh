@@ -6,7 +6,7 @@
 #
 # Record columns (pipe-separated): name, action (tst|skip), reason, comma-separated tst paths, skipped-test count.
 # Writes /workspace/skill-integration/{report.md,status,*.tap} and exits 0 only when
-# the canary passed, every skill installed, and every tst suite passed. Skips are not failures.
+# the canary passed, every skill installed, every skill has a tst suite, and every tst suite passed.
 
 set -eu
 
@@ -269,19 +269,29 @@ while IFS='|' read -r name action reason tst_tests skip_count || [ -n "${name:-}
 
   case "$reason" in
     node:test)
-      selftest="skipped · $skip_count node:test file(s) — port to tst to run here (#389)"
-      echo "::notice file=skills/$name/SKILL.md,title=$name::Skipped $skip_count node:test file(s). Port them to tst to run on this job."
+      selftest="no tst suite · $skip_count node:test file(s) do not run in SLICC (#389)"
+      echo "::error file=skills/$name/SKILL.md,title=$name::No in-SLICC tst suite. $skip_count file(s) import node:test, which cannot load here. Add a *.test.js that imports tst."
       ;;
-    none) selftest='skipped · no *.test.{js,ts} suite' ;;
-    unknown) selftest="skipped · $skip_count test file(s) do not import tst" ;;
-    *) selftest="skipped · ${reason:-none}" ;;
+    none)
+      selftest='no tst suite'
+      echo "::error file=skills/$name/SKILL.md,title=$name::No in-SLICC tst suite. Add a *.test.js that imports tst (see CLAUDE.md §16)."
+      ;;
+    unknown)
+      selftest="no tst suite · $skip_count test file(s) do not import tst"
+      echo "::error file=skills/$name/SKILL.md,title=$name::No in-SLICC tst suite. Test files must import tst."
+      ;;
+    *)
+      selftest="no tst suite · ${reason:-none}"
+      echo "::error file=skills/$name/SKILL.md,title=$name::No in-SLICC tst suite ($reason)."
+      ;;
   esac
-  append_row "$name" '✓' "$selftest" 'skip'
+  append_row "$name" '✓' "$selftest" 'fail'
   {
     echo
     printf '### `%s`\n\n' "$name"
     printf 'Installed to `/workspace/skills/%s`. %s.\n' "$name" "$selftest"
   } >>"$REPORT_DIR/details.md"
+  failed=1
 done <"$TARGETS"
 
 finish

@@ -239,7 +239,7 @@ External-CLI-plus-manual-secret-wiring skills lost historically (#52 abandoned);
 - Fork PRs can't reach secret-gated CI; maintainers re-push the branch in-repo rather than using `pull_request_target` (#119→#125, #149).
 - When parallel agents produce duplicate PRs, the first-opened, independently verified one wins — even over a more complete later duplicate (#191 vs #199).
 - Before "fixing" an assumption about the runtime, read the slicc source — the `scripts/`-dir "fix" was a no-op because discovery is recursive (#81).
-- Skill self-tests that should run in CI import `tst`, not `node:test`. The Skill integration workflow boots a live SLICC leader, installs each affected skill, and runs `tst` (#389).
+- Skill self-tests that should run in CI import `tst`, not `node:test`. The Skill integration workflow boots a live SLICC leader, installs each affected skill, and runs `tst`. A changed skill with no tst suite fails the check (#389).
 
 ## 13. .bsh observers (page-injected, not realm)
 
@@ -302,9 +302,9 @@ Attach screenshots to the UI PR with captions identifying theme, rail width, and
 
 `.github/workflows/skill-integration.yml` boots a hosted SLICC leader on the GitHub runner ([`packages/github-workflow`](https://github.com/ai-ecoverse/slicc/tree/main/packages/github-workflow)), copies each canonical skill the PR touched into `/workspace/skills/<name>`, and self-tests it with the bundled `tst` runner.
 
-- **Runner.** There is no `node --test` in SLICC (`node: unsupported option '--test'`, exit 9) and no `node:assert`. Write `*.test.{js,ts}` files that `import test, { is } from 'tst'`. `require('node:test')` files are detected and skipped — they cannot load in the test realm (#389).
+- **Runner.** There is no `node --test` in SLICC (`node: unsupported option '--test'`, exit 9) and no `node:assert`. Write `*.test.{js,ts}` files that `import test, { is } from 'tst'`. `require('node:test')` files cannot load in the test realm and do not satisfy the gate (#389).
 - **Prerequisite.** `tst` resolves TypeScript from disk before it runs anything, including a `.js`-only suite. The job runs `ipk add -g typescript@6.0.3` once per instance.
-- **What the job proves.** The skill installs on a live leader, and every `tst` file in it exits 0. A missing suite is an install-only skip, not a failure. A failing canary (the runner itself) fails the check.
+- **What the job proves.** Every skill the PR touched has at least one tst file; the skill installs on a live leader; every tst file exits 0. A missing suite fails the check before the leader boots. A failing canary (the runner itself) fails the check.
 - **Realm limits.** Measured 2026-09-22, correcting an earlier over-broad claim that `fs` and `path` fail here. Node builtins DO load, by `import` or `require`: `node:fs`, bare `fs`, `path`, and `node:module`'s `createRequire` all resolve. `skills/slack/tests/slack-ext{,-app}.test.js` rely on this to compile the real `.jsh` from disk, and run in CI (88 tests / 392 assertions and 41 / 87). The real limits are narrower:
   - `createRequire` resolves `node:` builtins but NOT relative filesystem paths, so import sibling modules with a literal relative specifier and substitute them into any mock `require`.
   - A real bridge such as `sliccy:browser` loads; a name that does not exist fails with `unknown sliccy: module <name>`, which is a typo, not a sandbox restriction. Bridge-using modules still want their I/O injected, so tests stay offline and deterministic.

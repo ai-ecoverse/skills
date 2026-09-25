@@ -69,6 +69,7 @@ test('detects a skill with a tst suite', async (t) => {
     skills: ['skills/median'],
     has_skills: true,
     has_tst: true,
+    missing_tst: [],
     targets: [
       {
         name: 'median',
@@ -96,6 +97,7 @@ test('skips node:test files instead of sending them to tst', async (t) => {
   });
 
   assert.equal(result.has_tst, false);
+  assert.deepEqual(result.missing_tst, ['search']);
   assert.deepEqual(result.targets[0], {
     name: 'search',
     path: 'skills/search',
@@ -120,6 +122,7 @@ test('runs only the tst files when a skill mixes runners', async (t) => {
   });
 
   assert.equal(result.has_tst, true);
+  assert.deepEqual(result.missing_tst, []);
   assert.deepEqual(result.targets[0].action, 'tst');
   assert.deepEqual(result.targets[0].reason, 'partial');
   assert.deepEqual(result.targets[0].tstTests, ['tests/new.test.ts']);
@@ -128,7 +131,7 @@ test('runs only the tst files when a skill mixes runners', async (t) => {
   ]);
 });
 
-test('a skill with no tests is an install-only skip', async (t) => {
+test('a skill with no tests is listed as missing tst', async (t) => {
   const repoRoot = await fixture(t);
   await writeSkill(repoRoot, 'docs-only');
 
@@ -140,6 +143,7 @@ test('a skill with no tests is an install-only skip', async (t) => {
   assert.deepEqual(result.targets[0].action, 'skip');
   assert.deepEqual(result.targets[0].reason, 'none');
   assert.equal(result.has_tst, false);
+  assert.deepEqual(result.missing_tst, ['docs-only']);
 });
 
 test('ignores deleted skills and non-skill paths', async (t) => {
@@ -148,7 +152,13 @@ test('ignores deleted skills and non-skill paths', async (t) => {
     changedFiles: ['skills/deleted/SKILL.md', '.github/workflows/skill-integration.yml'],
     repoRoot,
   });
-  assert.deepEqual(result, { skills: [], has_skills: false, has_tst: false, targets: [] });
+  assert.deepEqual(result, {
+    skills: [],
+    has_skills: false,
+    has_tst: false,
+    missing_tst: [],
+    targets: [],
+  });
 });
 
 test('does not walk node_modules for test files', async (t) => {
@@ -175,6 +185,7 @@ test('--all lists every canonical skill', async (t) => {
   const result = await detectSkillIntegration({ repoRoot, all: true });
   assert.deepEqual(result.skills, ['skills/alpha', 'skills/beta']);
   assert.equal(result.targets.length, 2);
+  assert.deepEqual(result.missing_tst, ['alpha', 'beta']);
 });
 
 test('toTsv is one row per target and is bash-read friendly', async (t) => {
