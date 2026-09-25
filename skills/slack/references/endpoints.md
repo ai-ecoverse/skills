@@ -632,7 +632,9 @@ Wire facts (measured 2026-09-25 unless noted):
 - **External organisations** are `connected_team_ids` minus this org
   (`E06V3987PMY`) and its own workspaces (`internal_team_ids`,
   `context_team_id`), e.g. `["T0BQQL6FJ","E06V3987PMY","E08CP5WPXGT"]` is 2
-  external orgs. Pending invitations are in `pending_connected_team_ids`.
+  external orgs. Pending invitations are in `pending_connected_team_ids`. A missing
+  or non-array list is **unknown** (`null` in the `--json` impact), and the text says
+  the count could not be determined; it is never shown as 0.
 - **`slack-ext channel-search --json` drops `is_ext_shared`,
   `is_pending_ext_shared` and `conversation_host_id`** (its `summarizeChannel`
   keeps neither). Anything that has to tell internal from shared or

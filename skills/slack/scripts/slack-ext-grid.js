@@ -423,12 +423,16 @@ function classifyChannelHost(c, orgId) {
 // org and its own workspaces (internal_team_ids, context_team_id). Measured:
 // connected_team_ids is e.g. ["T038ARP0G", "E06V3987PMY"] for a channel we
 // host with one partner.
+// A missing or non-array list is UNKNOWN: returns null, never [] (an empty list
+// would claim "0 external organisations" and understate what an archive cuts off).
+// A malformed internal_team_ids can only overstate the external count.
 function externalTeamIds(ids, c, orgId) {
+  if (!Array.isArray(ids)) return null;
   const own = new Set([orgId]);
   for (const t of Array.isArray(c.internal_team_ids) ? c.internal_team_ids : []) own.add(t);
   if (c.context_team_id) own.add(c.context_team_id);
   const out = [];
-  for (const t of Array.isArray(ids) ? ids : []) {
+  for (const t of ids) {
     if (t && !own.has(t) && !out.includes(t)) out.push(t);
   }
   return out;
@@ -472,23 +476,29 @@ function normalizeChannelState(c, orgId, nowMs) {
 function sharedArchiveImpact(state) {
   if (!state || state.host === 'not-shared' || state.host === 'sharing-unknown') return null;
   const users = state.external_user_count;
-  const orgs = state.external_team_ids || [];
-  const pending = state.pending_external_team_ids || [];
+  const orgs = state.external_team_ids; // null = unknown
+  const pending = state.pending_external_team_ids; // null = unknown
   const usersText =
     users === null ? 'an unknown number of external users' : users + ' external user' + (users === 1 ? '' : 's');
   const orgsText =
-    orgs.length + ' external organisation' + (orgs.length === 1 ? '' : 's') +
-    (orgs.length ? ' (' + orgs.join(', ') + ')' : '');
+    orgs === null
+      ? 'an unknown number of external organisations (Slack did not report connected_team_ids; ' +
+        'the count could not be determined)'
+      : orgs.length + ' external organisation' + (orgs.length === 1 ? '' : 's') +
+        (orgs.length ? ' (' + orgs.join(', ') + ')' : '');
   let text = 'Archiving will disconnect ' + usersText + ' from ' + orgsText + '.';
-  if (pending.length) {
+  if (pending === null) {
+    text += ' It may also end pending Slack Connect invitations: Slack did not report ' +
+      'pending_connected_team_ids, so their number could not be determined.';
+  } else if (pending.length) {
     text += ' It also ends ' + pending.length + ' pending Slack Connect invitation' +
       (pending.length === 1 ? '' : 's') + ' (' + pending.join(', ') + ').';
   }
   text += ' Unarchiving will NOT reconnect them: that needs a new Slack Connect invitation.';
   return {
     external_users: users,
-    external_team_ids: orgs.slice(),
-    pending_external_team_ids: pending.slice(),
+    external_team_ids: orgs === null ? null : orgs.slice(),
+    pending_external_team_ids: pending === null ? null : pending.slice(),
     reversible: false,
     text: text,
   };

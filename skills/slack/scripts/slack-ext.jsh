@@ -2896,8 +2896,8 @@ function describeSharing(st) {
   if (st.host === 'sharing-unknown') return 'UNKNOWN (Slack did not report is_ext_shared / is_pending_ext_shared as booleans)';
   if (st.host === 'not-shared') return st.is_org_shared ? 'org-shared (internal), not ext-shared' : 'not ext-shared';
   const pending = st.is_pending_ext_shared && !st.is_ext_shared ? 'ext-share PENDING' : 'ext-shared';
-  const orgs = (st.external_team_ids || []).length;
-  const ext = orgs + ' external org' + (orgs === 1 ? '' : 's');
+  const orgs = st.external_team_ids === null ? null : st.external_team_ids.length;
+  const ext = orgs === null ? 'unknown number of external orgs' : orgs + ' external org' + (orgs === 1 ? '' : 's');
   if (st.host === 'us') return pending + ', hosted by this org (' + st.conversation_host_id + '), ' + ext;
   if (st.host === 'other') return pending + ', hosted by ANOTHER org (' + st.conversation_host_id + ')';
   return pending + ', host unknown';

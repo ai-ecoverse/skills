@@ -1167,7 +1167,11 @@ const connectChan = (over) =>
 test('externalTeamIds: drops this org, its internal workspaces and context team', () => {
   const c = connectChan({ connected_team_ids: ['T0BQQL6FJ', ORG, 'T0385CHDU9E', 'E08CP5WPXGT', 'T0BQQL6FJ'] });
   is(externalTeamIds(c.connected_team_ids, c, ORG).join(','), 'T0BQQL6FJ,E08CP5WPXGT');
-  is(externalTeamIds(undefined, c, ORG).length, 0);
+  // A missing list is UNKNOWN (null), never an empty list (Codex round 5).
+  is(externalTeamIds(undefined, c, ORG), null);
+  is(externalTeamIds(null, c, ORG), null);
+  is(externalTeamIds('T0BQQL6FJ', c, ORG), null);
+  is(externalTeamIds([], c, ORG).length, 0, 'an actual empty list stays empty');
 });
 
 test('sharedArchiveImpact: says N external users, M organisations, and NOT reversible', () => {
@@ -1546,3 +1550,45 @@ test('flow --confirm: a write answering a non-boolean ok is an error, not a succ
 //   ok:true channel check (accept any ok:true, name = ch && ch.name).
 //   Caught by: "lookupChannel: conversations.info ok:true without a usable
 //   channel ...", "flow --confirm: malformed conversations.info fallback ...".
+
+// ── Codex round 5 (P2): missing connected-team lists are unknown, never 0 ──────
+
+test('sharedArchiveImpact: missing connected_team_ids is "could not be determined", never 0 organisations', () => {
+for (const ids of [undefined, null, 'T0BQQL6FJ', { a: 1 }]) {
+const st = normalizeChannelState(connectChan({ connected_team_ids: ids }), ORG, NOW_MS);
+const imp = sharedArchiveImpact(st);
+is(imp.external_team_ids, null, JSON.stringify(ids));
+ok(imp.text.includes('an unknown number of external organisations'), imp.text);
+ok(imp.text.includes('could not be determined'), imp.text);
+ok(!/\b0 external organisations\b/.test(imp.text), 'must not claim 0: ' + imp.text);
+ok(imp.text.includes('Unarchiving will NOT reconnect them'), imp.text);
+}
+});
+
+test('sharedArchiveImpact: missing pending_connected_team_ids is unknown, never "no pending invitations"', () => {
+const st = normalizeChannelState(connectChan({ pending_connected_team_ids: undefined }), ORG, NOW_MS);
+const imp = sharedArchiveImpact(st);
+is(imp.pending_external_team_ids, null);
+ok(imp.text.includes('pending_connected_team_ids, so their number could not be determined'), imp.text);
+is(imp.external_team_ids.join(','), 'T0BQQL6FJ,E08CP5WPXGT', 'a present connected list is still counted');
+});
+
+test('ext-shared-requires-allow-shared refusal with a missing connected list says unknown, not 0', () => {
+const st = normalizeChannelState(connectChan({ connected_team_ids: undefined }), ORG, NOW_MS);
+const d = evaluateChannelGuards('archive', st, { orgId: ORG });
+is(d.reason, 'ext-shared-requires-allow-shared');
+ok(d.detail.includes('an unknown number of external organisations'), d.detail);
+});
+
+test('sharedArchiveImpact: real empty lists still read as 0 (control)', () => {
+const st = normalizeChannelState(connectChan({ connected_team_ids: [ORG], pending_connected_team_ids: [] }), ORG, NOW_MS);
+const imp = sharedArchiveImpact(st);
+is(imp.external_team_ids.length, 0);
+ok(imp.text.includes('from 0 external organisations.'), imp.text);
+});
+
+// MUTATION M11 (unknown list read as empty): in externalTeamIds, return []
+//   instead of null for a non-array. Caught by: "externalTeamIds: drops this
+//   org ...", "sharedArchiveImpact: missing connected_team_ids ...",
+//   "... missing pending_connected_team_ids ...", "ext-shared-requires-allow-shared
+//   refusal with a missing connected list ...".

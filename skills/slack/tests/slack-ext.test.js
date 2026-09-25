@@ -1600,3 +1600,28 @@ test('channel-archive --json (entry point): malformed conversations.info is a re
   is(j.status, 'read-error');
   ok(/conversations\.info: malformed_response/.test(j.error), j.error);
 });
+
+// ── Codex round 5 (P2): missing connected-team lists (entry point) ────────────
+
+test('channel-archive dry run --allow-shared (entry point): missing connected_team_ids warns "unknown", never 0', async () => {
+  const h = await load({ runMain: true, argv: ['channel-archive', 'C03GXBSC72T', '--allow-shared'], api: archApi([connectArch({ connected_team_ids: undefined })]) });
+  is(exitOf(h), 0);
+  const t = h.text();
+  ok(/WARNING: Archiving will disconnect 41 external users from an unknown number of external organisations/.test(t), t);
+  ok(/could not be determined/.test(t), t);
+  ok(!/0 external organisations/.test(t), t);
+  ok(/unknown number of external orgs/.test(t), 'the Shared: line says unknown too');
+  is(archWrites(h), 0);
+});
+
+test('channel-archive --json dry run (entry point): impact.external_team_ids is null, not []', async () => {
+  const h = await load({
+    runMain: true,
+    argv: ['channel-archive', 'C03GXBSC72T', '--allow-shared', '--json'],
+    api: archApi([connectArch({ connected_team_ids: undefined, pending_connected_team_ids: 'bogus' })]),
+  });
+  const j = onlyJson(h);
+  is(j.impact.external_team_ids, null);
+  is(j.impact.pending_external_team_ids, null);
+  is(j.state.external_team_ids, null);
+});
