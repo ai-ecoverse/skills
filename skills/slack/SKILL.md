@@ -1,17 +1,18 @@
 ---
 name: slack
-description: Interact with Slack via its Web API — read messages, post to channels,
-  search message text, search channels, read threads, find and look up users by name, username, or email, view activity/notifications, manage
-  Slack support requests, and watch channels for new messages in real time. Supports
-  multiple workspaces with auto-detection from the active tab. Use when the user wants
-  to check Slack messages, post a Slack message, search Slack messages or message text,
-  search Slack channels, read Slack threads, get Slack user info, view Slack notifications
-  or activity feed, manage Slack support tickets/help requests, watch a channel for
-  updates, or automate any Slack task. Triggers on mentions of Slack, channels, DMs,
-  threads, messages, Slackbot, notifications, activity, support requests, help requests,
-  watching/monitoring, or searching message text. Also provides slack-ext for admin
-  user-management (guest conversion, guest channels) and Slack app manifest
-  reads and diffs.
+description: Slack Web API client — read Slack messages, post to Slack channels, search
+  Slack message text and channels, read Slack threads, find and look up Slack users by
+  name, username, or email, view Slack activity and notifications, manage Slack support
+  requests, and watch Slack channels for new messages in real time. Multi-workspace,
+  auto-detected from the active tab. Use when the user wants to check, post, or search
+  Slack messages or message text, search Slack channels, read Slack threads, get Slack
+  user info, view Slack notifications or activity feed, manage Slack support
+  tickets/help requests, watch a Slack channel for updates, or automate any Slack task.
+  Triggers on mentions of Slack, Slack channels, DMs, threads, or messages, Slackbot,
+  Slack notifications, Slack channel activity, Slack support or help requests,
+  watching/monitoring a Slack channel, or searching Slack message text. Also provides
+  slack-ext for admin user-management (guest conversion, guest channels) and Slack app
+  manifest reads and diffs.
 allowed-tools: bash
 ---
 
@@ -280,39 +281,9 @@ slack post C087NCG774J "no sticker please" --no-sign
 
 #### Auto-watch for replies, 1 hour (default-on)
 
-After a successful post, replies are watched for **one hour**, then the watch
-tears itself down. It is silent when idle: a notification arrives only on a
-genuine new reply — never a tick, never a poll.
-
-- **Where replies go** — **back to the cone that posted**, so they surface in the
-  chat that sent the message. The target is the posting cone's own
-  `SLICC_LICK_TARGET` (set by the runtime for every cone that is not the default
-  root); with it unset the lick is left untargeted and the runtime picks the
-  default root. `--watch-scoop=<name>` routes them to another scoop instead.
-- **One watch per channel, and every cone shares them.** The state files live in
-  the shared `/workspace/skills/slack/`, so if another cone is already watching
-  that channel the post extends that watch and warns you whose it is, printing the
-  `slack watch … --force` command to take it over. `slack watches` names the owner.
-- **Scope** — channels with **more than 100 members** are watched **thread-only**
-  (the thread you replied into, or the new message's own). Everything smaller,
-  and every DM, is watched **whole-channel** — which also catches thread replies.
-- **Your own messages never notify.** Posting again into a live watch silently
-  **extends the hour**.
-- `--no-watch` opts out.
-
-```bash
-# Default: signs + watches for replies for 1h, routing back to this cone
-slack post C087NCG774J "Anyone around to review PR 42?"
-#   Signed with :icecream:
-#   Watching channel+thread for replies for 1h (routes to cone-helix)
-#   (default root, SLICC_LICK_TARGET unset → "routes to the default root cone")
-# Route replies to a specific scoop instead of this cone
-slack post C087NCG774J "ping" --watch-scoop=my-monitor
-# Post without watching
-slack post C087NCG774J "fire and forget" --no-watch
-```
-
-Internals: `references/watch-architecture.md`.
+After a successful post, replies are watched for **one hour** and routed back to the cone that
+posted (`--watch-scoop=<name>` routes elsewhere, `--no-watch` opts out); your own messages never
+notify. Scope, sharing and routing rules: `references/watch-architecture.md`, "Auto-watch for replies".
 
 ### slack channels [--search=term]
 
@@ -565,15 +536,8 @@ require a different usage pattern and carry stronger safety requirements.
 
 **Important caveats before using:**
 
-- **Audit attribution**: these calls use the `xoxc` browser session token and
-  are **indistinguishable from the human's own direct actions** in Slack's
-  channel event history. A concrete case: `#aem-fedex` (`C0C2CUUDWLE`) was
-  archived by Zapier at 2026-09-17T00:17:04Z; the channel event log records
-  Lars Trieloff as the actor because Zapier ran on his user OAuth token — no
-  bot identity visible. These commands do the same thing. The Enterprise Audit
-  Logs API (`auditlogs:read`) would record the acting app, but `admin.audit.*`
-  methods return `unknown_method` (six variants probed). Operators must
-  understand this before using these commands.
+- **Audit attribution**: these calls are **indistinguishable from the human's own direct
+  actions** in Slack's channel event history. Read "CRITICAL: audit attribution" below first.
 - **Token restriction**: bot tokens (`xoxb`) are rejected with
   `not_allowed_token_type`. Only the `xoxc` browser session token works.
 - **Undocumented legacy endpoints**: these methods live in the
@@ -962,6 +926,9 @@ around:
   including the `users.admin.*` admin methods and the `apps.manifest.*` App
   Manifest API (wire format, update semantics, and the methods deliberately left
   unwired).
+- `references/enterprise-grid.md` — the Enterprise Grid admin commands (`eg-*`, `channel-*`,
+  `approvals`, `admin-app`): authentication, per-command APIs and parameters, wire facts, and
+  what remains unverified.
 - `references/watch-architecture.md` — internals of `slack watch` and of
   `slack post`'s reply auto-watch (observer, filter, TTL teardown, state files).
 
@@ -989,237 +956,23 @@ working API call that distinguishes an `xoxc`-based script from a human in the c
 event log. Do not document these calls as "attributed to the human in the audit log" —
 they ARE the human as far as any observable Slack record is concerned.
 
-### Authentication
-
-Enterprise Grid commands use the org-level `xoxc` token from the browser's `localStorage`,
-at key `teams['E06V3987PMY'].token`. The `xoxc` token is only valid together with the
-browser's `d` session cookie, so calls **must** go through the browser tab via
-`browser.fetch` (same-origin XHR). `SLICC`'s own `fetch()` strips cookies and would
-silently fail. This is the same mechanism as every other `slack-ext` command.
-
-### Dry-run default
-
-Every mutating command defaults to dry-run and requires `--confirm` to act. The dry-run
-output shows exactly which API method would be called and with which parameters.
-
----
-
-### Enterprise user lifecycle
-
-#### `eg-set-restricted <user_id> [--confirm]`
-
-Make a full member a **multi-channel guest** at the org level.
-
-- API: `enterprise.users.admin.setRestricted`
-- Parameter: `user` (just the user ID — no `team_id`)
-- Verified: `{"ok":true}` observed from the UI. Bogus-user probe → `user_not_found`.
-- Reads back `users.info` after the call. `{"ok":true}` alone is not treated as evidence.
-- Observed `_x_reason=enterprise-set-multi-channel-guest` from the UI.
-
-#### `eg-set-regular <user_id> [--confirm]`
-
-Promote a guest back to a **full member** at the org level.
-
-- API: `enterprise.users.admin.setRegular`
-- Parameter: `user`
-- Verified: `{"ok":true}` observed. Bogus-user probe → `user_not_found`.
-- Reads back `users.info` after the call.
-- Observed `_x_reason=OrgMembers_setToMember`.
-
-#### `eg-deactivate <user_id> [--confirm]`
-
-**Deactivate** a user account (reversible).
-
-- API: `enterprise.users.admin.setStatus` with `status=delete`
-- **THE STATUS=DELETE TRAP:** `status=delete` means **deactivate** (the user is disabled
-  and cannot sign in). It does NOT permanently delete the account. The account is
-  recoverable. The value `"delete"` is the wire string observed from the live UI;
-  changing it to `"inactive"`, `"disabled"`, or anything else calls a different operation.
-- The reactivation `status` value is **NOT KNOWN**. Do not guess it.
-- Verified: `{"ok":true}` observed. Bogus-user probe → `invalid_user` (different from
-  `user_not_found` — this endpoint validates the user field differently).
-- Observed `_x_reason=deactivateMembers`.
-
-#### `eg-forget <user_id> [--confirm]`
-
-**GDPR-style permanent identity scrub. IRREVERSIBLE.**
-
-- API: `users.admin.profileDeidentify` (workspace-level namespace, org-wide effect)
-- Effect: `real_name` → `"Deactivated User"`, handle → `"deactivateduser<N>"`,
-  guest flags cleared. The user's messages remain but lose author attribution.
-- **CANNOT BE UNDONE.** There is no support ticket that restores it.
-- Design decision: this is its own command and **must never be a flag on `eg-deactivate`**
-  and **must never run inside an unattended bulk loop without per-user confirmation.**
-  The `--confirm` flag is the confirmation; the dry-run output names the user explicitly.
-- Verified: `{"ok":true}` observed. Bogus-user probe → `user_not_found`.
-- Observed `_x_reason=forget-user`.
-
-#### `eg-bulk-guest [<user_id>...] [--file=<path>] [--confirm]`
-
-Convert a list of full members to multi-channel guests. The primary motivating use case is
-converting 14 vendor accounts that are currently full members.
-
-- API: `enterprise.users.admin.setRestricted` called once per user
-- Input: space-separated user IDs as positional arguments, or `--file=<path>` (one ID per
-  line; lines starting with `#` are comments).
-- Per-user read-back: each user's type is confirmed via `users.info` after the call.
-  `{"ok":true}` alone is not accepted as evidence.
-- Already-guests are no-ops. Bots are skipped with a warning. Errors are collected and
-  reported in the final summary; the command continues to the next user rather than aborting.
-
-Example:
-
-```bash
-# Dry run first
-slack-ext eg-bulk-guest U12345 U67890 UABCDE --org=E06V3987PMY
-
-# With a file
-echo "U12345\nU67890\nUABCDE" > vendors.txt
-slack-ext eg-bulk-guest --file=vendors.txt
-
-# Confirm
-slack-ext eg-bulk-guest --file=vendors.txt --confirm
-```
-
-#### `eg-set-ultra-restricted <user_id> [--confirm]`  — **UNVERIFIED**
-
-Make a single-channel guest at the org level.
-
-- API: `enterprise.users.admin.setUltraRestricted`
-- **UNVERIFIED:** The endpoint is real (bogus-user probe → `user_not_found`, not
-  `unknown_method`), but `{"ok":true}` was **never observed** from a live admin UI session.
-  The parameter shape (just `user`, no `channel`) is a best-effort inference from the
-  method naming pattern.
-- **Do not use in production** until the method has been confirmed to produce the expected
-  state change against a real account.
-- Clearly marked in code comments and in the command output.
-
----
-
-### Channel management
-
-#### `channel-search [--query=<q>] [--limit=<n>] [--max=<n>] [--types=<t>] [--sort=<s>] [--sort-dir=<d>] [--json]`
-
-Enumerate channels using `admin.conversations.search`.
-
-**Observed parameters (2026-09-22):**
-
-| Parameter | Values | Notes |
-|-----------|--------|-------|
-| `search_channel_types` | `exclude_archived` \| `all` \| `private` \| `private_exclude` \| `archived` | Materially changes results: `all` → 2072, `exclude_archived` → 1515. Default: `exclude_archived`. Lars Trieloff observed omitting this returns `invalid_arguments` in the UI path; the API appears to default internally but the param should always be included explicitly. |
-| `sort` | `name` \| `member_count` \| `created` | `last_activity_ts` and `num_members` return `invalid_sort` (probed live). |
-| `sort_dir` | `asc` \| `desc` | |
-| `query` | any string, including empty | |
-| `cursor` | any string, including empty | |
-
-**`--types` shorthand in this command:** `--types=all`, `--types=private`, `--types=archived`, etc.
-
-**Measured defect: `channel_ids` parameter is silently ignored.** Passing
-`channel_ids=C0634KMGW2G` (bare string) and `channel_ids=["C0634KMGW2G"]` (JSON array) both
-returned `{"ok":true}` with the **unfiltered full list** starting at `#general`. The
-command never passes `channel_ids`; it enumerates with cursor pagination and filters locally.
-
-**`archived` search_channel_types caveat:** Lars observed `archived` returning 0 results for
-a query that both `all` and `exclude_archived` matched. A probe on 2026-09-22 showed `archived`
-returning 1 result for the same query (a genuinely archived channel). The discrepancy may be
-query-specific. Do not treat a 0-result `archived` response as proof a channel was never archived.
-
-Response fields per channel: `id`, `name`, `purpose`, `member_count`, `external_user_count`,
-`channel_manager_count`, `created`, `creator_id`, `is_private`, `is_archived`, `is_general`,
-`last_activity_ts`.
-
-#### `channel-to-public <channel_id> [--confirm]`
-
-Convert a private channel to public.
-
-- API: `admin.conversations.convertToPublic`
-- Parameter: `channel_id` (verified live 2026-09-22; bogus ID → `channel_not_found`)
-
-#### `channel-to-private <channel_id> [--confirm]`
-
-Convert a public channel to private.
-
-- API: `admin.conversations.convertToPrivate`
-- Parameter: `channel_id`
-- **PRIVATE CHANNEL INVISIBILITY:** after converting to private, the channel becomes
-  invisible to any caller who is not a member:
-  - `conversations.info` returns `channel_not_found`
-  - `conversations.genericInfo` returns `{"ok":true}` with an **empty array**
-  - The edge cache returns the channel id under `failed_ids`
-  
-  This is **expected behaviour**, not a sign that the channel was deleted. The command warns
-  about this and suggests using `channel-search` to confirm the channel still exists.
-
----
-
-### Slack Connect approvals
-
-#### `approvals [--query=<q>] [--limit=<n>] [--all] [--json]`
-
-List Slack Connect shared channel invite approvals.
-
-- API: `conversations.sharedApprovals.list`
-- Sort: `date_expire` descending (most-recently-expiring first)
-- Paginates automatically via `response_metadata.next_cursor`
-- Response per approval: `id` (e.g. `I0C3EKRE3S5`), `connecting_team{id,name,icon}`,
-  `channel{name}`, `status`, `date_expire`
-- Verified live: 977 total approvals in the org at time of measurement.
-- `--all` removes the default 200-item cap. Use with care on large orgs.
-
----
-
-### App governance
-
-#### `admin-app approve <app_id|request_id> [--confirm]`
-
-Approve an app for the org.
-
-- API: `admin.apps.approve`
-- Accepts a pending install `request_id` (starts with `I`) **or** an `app_id` (starts with
-  `A`) + the org's `enterprise_id`.
-- **SINGLE-USE `request_id`:** a `request_id` can only be resolved **once**. Approving an
-  already-resolved `request_id` returns `{"ok":false,"error":"request_already_resolved"}`.
-  The command surfaces this error rather than swallowing it. To reverse a resolution, use
-  the `app_id` form.
-
-#### `admin-app restrict <app_id|request_id> [--confirm]`
-
-Restrict an app for the org. Same single-use `request_id` caveat applies.
-
-- API: `admin.apps.restrict`
-- `request_already_resolved` is surfaced explicitly with instructions to use `app_id` instead.
-
-#### `admin-app clear <app_id> [--confirm]`
-
-Clear the current approval or restriction decision for an app.
-
-- API: `admin.apps.clearResolution`
-- Parameters: `app_id` + `enterprise_id`
-
-#### `admin-app permissions <app_id> --type=<no_one|everyone|named_entities> [--confirm]`
-
-Set the install-permission policy for an app.
-
-- API: `admin.apps.permissions.set`
-- Observed valid `permission_type` values: `no_one`, `everyone`, `named_entities`
-- Response echoes `{ok, permission_type, channel_restriction_mode}`
-
-#### `admin-app list [--restricted] [--json]`
-
-List approved or restricted apps.
-
-- API: `admin.apps.approved.list` (default) or `admin.apps.restricted.list` (with `--restricted`)
-- Parameter: `enterprise_id` + `limit`
-- Entry shape: `{app:{id,name,…}, scopes, date_updated, last_resolved_by, domains}`
-- Paginates automatically.
-
----
-
-### What remains unverified
-
-| Item | Status | Reason |
-|------|--------|--------|
-| `enterprise.users.admin.setUltraRestricted` | Endpoint real, behaviour unverified | Probe returns `user_not_found` (not `unknown_method`), but `{"ok":true}` was never observed from the UI. Parameter shape unknown. |
-| `enterprise.users.admin.setStatus` reactivation value | Unknown | The deactivation value `"delete"` was observed. The reactivation value was not. Do not guess. |
-| `admin.apps.permissions.set` with `named_entities` entity list | Partial | The method and three `permission_type` values are verified. The additional parameters for specifying named entities in `named_entities` mode were not observed. |
-
+### Commands
+
+Every write is a dry run unless `--confirm` is given. Full per-command reference (APIs, parameters,
+wire facts, authentication, what remains unverified): `references/enterprise-grid.md`.
+
+- `eg-set-restricted <user_id> [--confirm]` — full member → multi-channel guest; reads the state back.
+- `eg-set-regular <user_id> [--confirm]` — guest → full member; reads the state back.
+- `eg-deactivate <user_id> [--confirm]` — deactivate (reversible); the wire value `status=delete` does not delete.
+- `eg-forget <user_id> [--confirm]` — GDPR identity scrub, **IRREVERSIBLE**; never a flag, never in an unattended loop.
+- `eg-bulk-guest [<user_id>...] [--file=<path>] [--confirm]` — many members → multi-channel guests, per-user read-back.
+- `eg-set-ultra-restricted <user_id> [--confirm]` — **UNVERIFIED**; do not use in production.
+- `channel-search [--query=<q>] [--types=<t>] [--limit=<n>] [--json]` — read-only channel enumeration, filtered locally.
+- `channel-to-public <channel_id> [--confirm]` — private → public.
+- `channel-to-private <channel_id> [--confirm]` — public → private; the channel then looks deleted to non-members.
+- `approvals [--query=<q>] [--all] [--json]` — read-only list of Slack Connect invite approvals.
+- `admin-app approve <app_id|request_id> [--confirm]` — approve an app; a `request_id` is single-use.
+- `admin-app restrict <app_id|request_id> [--confirm]` — restrict an app; same single-use `request_id` caveat.
+- `admin-app clear <app_id> [--confirm]` — clear an app's approval or restriction.
+- `admin-app permissions <app_id> --type=<no_one|everyone|named_entities> [--confirm]` — install policy.
+- `admin-app list [--restricted] [--json]` — read-only list of approved or restricted apps.
