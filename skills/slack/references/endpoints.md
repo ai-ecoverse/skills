@@ -586,7 +586,7 @@ admin is not in (`conversations.info` answers `channel_not_found` for those).
 |-------|----------|-------------|
 | token | yes | org-level xoxc token |
 | query | yes | May be empty. `query=<channel id>` finds that channel (below) |
-| limit | yes | **1 to 20.** `limit=21` answers `invalid_arguments` |
+| limit | yes | **1 to 20.** `limit=21` answers `invalid_arguments`. `slack-ext channel-search` defaults to 50 and so fails unless `--limit=20` is passed |
 | search_channel_types | yes | `all`, `exclude_archived`, `private`, `private_exclude`, `archived`. `private_archive` answers `invalid_search_channel_type` |
 | sort | yes | `name`, `member_count`, `created` (`last_activity_ts` answers `invalid_sort`) |
 | sort_dir | yes | `asc` / `desc` |

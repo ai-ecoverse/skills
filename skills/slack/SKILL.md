@@ -959,9 +959,8 @@ around:
 ## References
 
 - `references/endpoints.md` — full Slack Web API endpoint documentation,
-  including the `users.admin.*` admin methods, the Enterprise Grid
-  `admin.conversations.*` channel methods (archive, unarchive, search), and the
-  `apps.manifest.*` App Manifest API (wire format, update semantics, and the methods deliberately left
+  including the `users.admin.*` admin methods and the `apps.manifest.*` App
+  Manifest API (wire format, update semantics, and the methods deliberately left
   unwired).
 - `references/watch-architecture.md` — internals of `slack watch` and of
   `slack post`'s reply auto-watch (observer, filter, TTL teardown, state files).
@@ -979,7 +978,7 @@ Session-token (`xoxc`) calls are **indistinguishable from the human's own direct
 in Slack's channel event history. A concrete, verified case: `#aem-fedex` (`C0C2CUUDWLE`)
 was archived by Zapier at 2026-09-17T00:17:04Z — the channel event log records Lars Trieloff
 as the actor, not Zapier, because Zapier's Slack action ran on his user OAuth token and
-carries no bot identity. Running `eg-deactivate`, `eg-set-restricted`, `channel-to-private`, `channel-archive`,
+carries no bot identity. Running `eg-deactivate`, `eg-set-restricted`, `channel-to-private`,
 or any other write command in this skill looks identical to the human performing the action
 themselves in the Slack UI.
 
@@ -1113,8 +1112,6 @@ Enumerate channels using `admin.conversations.search`.
 | `query` | any string, including empty | |
 | `cursor` | any string, including empty | |
 
-**Known bug: the default `--limit` of 50 fails.** `admin.conversations.search` rejects `limit` above 20 with `invalid_arguments` (measured 2026-09-25). Pass `--limit=20` until the default is capped.
-
 **`--types` shorthand in this command:** `--types=all`, `--types=private`, `--types=archived`, etc.
 
 **Measured defect: `channel_ids` parameter is silently ignored.** Passing
@@ -1153,26 +1150,11 @@ Convert a public channel to private.
   This is **expected behaviour**, not a sign that the channel was deleted. The command warns
   about this and suggests using `channel-search` to confirm the channel still exists.
 
-#### `channel-archive <channel_id> [--confirm] [--max-members=N] [--min-idle-days=N] [--allow-shared] [--json]` / `channel-unarchive <channel_id> [--confirm] [--json]`
+#### `channel-archive` / `channel-unarchive`
 
-`admin.conversations.archive` / `unarchive` (org token; works on private channels the admin is
-not in). The dry run reads and prints the channel's current state and what `--confirm` would do.
-`--confirm` re-reads it immediately before the write, refuses by name (exit 1) if a guard fails,
-then reads the result back with retries because the search index lags the write by up to ~50 s:
-`archived (confirmed)` exits 0, `archived (unconfirmed: …)` exits **3**.
-Refusals: `not-found`, `ext-shared-hosted-elsewhere`, `ext-shared-host-unknown`,
-`ext-shared-requires-allow-shared`, `members-over-limit` / `members-unknown` (archived
-channels report `member_count: -1`; any negative or non-finite count is unknown, never 0),
-`active-recently` / `activity-unknown`, `archived-unknown`. `already-archived` /
-`not-archived` exit 0, checked before any member guard.
-
-**Archiving a Slack Connect channel we host disconnects every external organisation** (measured
-on 5 of 5: afterwards `is_ext_shared: false`, `external_user_count: 0`,
-`connected_team_ids: []`). `channel-unarchive` restores the channel but, by inference (not
-tested), not the connections; those need a new Slack Connect invitation. So such channels are
-refused unless `--allow-shared` is given, and then the dry run and the confirm output say how
-many external users and organisations will be cut off. Guards, wire facts and exit codes: `references/endpoints.md`,
-"Enterprise Grid Channel Admin".
+- `channel-archive <channel_id> [--confirm] [--max-members=N] [--min-idle-days=N] [--allow-shared]`: dry run by default; Slack Connect channels need `--allow-shared`.
+- `channel-unarchive <channel_id> [--confirm]`: dry run by default.
+- Guards, refusals, exit codes and wire facts: `references/endpoints.md`, "Enterprise Grid Channel Admin".
 
 ---
 
