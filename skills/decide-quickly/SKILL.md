@@ -67,7 +67,7 @@ kev ask --json --state ticket.txt --questions questions.json
 
 `questions.json` maps a name to a question. Choice `criteria` is an object. Score `criteria` is an array of strings, low to high.
 
-Stdout is the name, the answer, and a probability, separated by tabs. A score answer is the option nearest the expected level, the higher one on an exact tie. `--json` prints the System One response. `--date-facts` adds day counts between absolute dates.
+Stdout is the name, the answer, and a probability, separated by tabs. For a score question the answer is the most likely option, and the number is a confidence measured around that same option. `--json` prints the System One response. `--date-facts` adds day counts between absolute dates.
 
 | Model | Variant | Approx size |
 | --- | --- | --- |

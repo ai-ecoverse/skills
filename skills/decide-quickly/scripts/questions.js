@@ -123,30 +123,27 @@ function formatProbability(value) {
   return value.toFixed(2);
 }
 
-// A score answer carries `score`, the expected level (sum of level × probability,
-// so usually fractional), and `legend`, which maps each level index ("0", "1", …)
-// to its option. The printed label is the option at the level nearest `score`:
-// a half rounds up, as noul prints yes at exactly 0.5, and a score past either
-// end takes the end label. Only numeric legend keys count as levels. With no
-// usable legend or score the number is printed, as before.
+// A score answer carries `probabilities` and `legend`, both keyed by level index
+// ("0", "1", …), and `score`, the expected level. The printed label is the most
+// probable level, which is also the level kev.js measures `confidence` around.
+// A tie goes to the lowest level, as kev.js's own argmax does. Without a usable
+// distribution, or a legend entry for that level, the number is printed.
 function scoreLabel(answer) {
-  const score = answer.score;
+  const probabilities =
+    answer.probabilities && typeof answer.probabilities === 'object' ? answer.probabilities : {};
   const legend = answer.legend && typeof answer.legend === 'object' ? answer.legend : {};
   let best = null;
-  if (typeof score === 'number' && Number.isFinite(score)) {
-    for (const key of Object.keys(legend)) {
-      if (!/^\d+$/.test(key)) continue;
-      const level = Number(key);
-      if (best === null) {
-        best = level;
-        continue;
-      }
-      const gap = Math.abs(level - score);
-      const bestGap = Math.abs(best - score);
-      if (gap < bestGap || (gap === bestGap && level > best)) best = level;
+  let bestP = 0;
+  for (const [key, p] of Object.entries(probabilities)) {
+    if (!/^\d+$/.test(key) || typeof p !== 'number' || !Number.isFinite(p)) continue;
+    const level = Number(key);
+    if (best === null || p > bestP || (p === bestP && level < best)) {
+      best = level;
+      bestP = p;
     }
   }
-  return best === null ? String(score) : String(legend[String(best)]);
+  const label = best === null ? undefined : legend[String(best)];
+  return label === undefined || label === null ? String(answer.score) : String(label);
 }
 
 function formatAnswers(answers) {
