@@ -749,6 +749,123 @@ async function runChannelArchiveFlow(spec) {
   return result;
 }
 
+// ── Argument validation for channel-archive / channel-unarchive ──────────────
+//
+// Fail CLOSED on anything the command does not understand. parseArgv keeps
+// unknown flags, so a typo such as --max-member=2 used to leave the real guard
+// unset (null) and let a confirmed archive proceed without the guard the
+// operator believed was active. Every flag name is checked against an
+// explicit allow-list, every guard value must parse, and a stray positional
+// word (e.g. `max-members=2` without dashes) is refused too.
+
+// Global flags this CLI reads (see main(), resolveWorkspace, resolveOrg).
+const CHANNEL_GLOBAL_FLAGS = ['ws', 'workspace', 'org', 'json', 'confirm', 'help', 'h'];
+const CHANNEL_COMMAND_FLAGS = {
+  archive: ['max-members', 'min-idle-days', 'allow-shared'],
+  unarchive: [],
+};
+const ARCHIVE_ONLY_FLAGS = CHANNEL_COMMAND_FLAGS.archive;
+
+function editDistance(a, b) {
+  const m = a.length;
+  const n = b.length;
+  const prev = [];
+  for (let j = 0; j <= n; j += 1) prev[j] = j;
+  for (let i = 1; i <= m; i += 1) {
+    let diag = prev[0];
+    prev[0] = i;
+    for (let j = 1; j <= n; j += 1) {
+      const tmp = prev[j];
+      prev[j] = Math.min(prev[j] + 1, prev[j - 1] + 1, diag + (a[i - 1] === b[j - 1] ? 0 : 1));
+      diag = tmp;
+    }
+  }
+  return prev[n];
+}
+
+// Closest allowed flag, or null. Hyphens are ignored so --allowshared finds
+// --allow-shared; otherwise at most 3 edits.
+function suggestFlag(name, allowed) {
+  const bare = (s) => String(s).toLowerCase().replace(/[-_]/g, '');
+  let best = null;
+  let bestD = Infinity;
+  for (const cand of allowed) {
+    if (cand.length < 2) continue;
+    const d = bare(name) === bare(cand) ? 0 : editDistance(String(name).toLowerCase(), cand);
+    if (d < bestD) {
+      best = cand;
+      bestD = d;
+    }
+  }
+  return bestD <= 3 ? best : null;
+}
+
+// A guard count: a plain non-negative integer, nothing else.
+// undefined -> { ok:true, value:null } (flag not given).
+// true (valueless), '', 'abc', '-3', '2.5', '1e3', ' 2' -> { ok:false }.
+function parseGuardCount(raw) {
+  if (raw === undefined) return { ok: true, value: null };
+  if (typeof raw !== 'string' || !/^\d+$/.test(raw)) return { ok: false, value: null };
+  const n = Number(raw);
+  if (!Number.isSafeInteger(n)) return { ok: false, value: null };
+  return { ok: true, value: n };
+}
+
+// Validate everything the command was given, before any Slack call.
+// flags: parsed flag object; positional: all positional words, i.e.
+// [command, channel_id, ...anything else]. Anything after the channel id is refused.
+// Returns { ok, errors: [{ code, flag?, suggestion?, message }], maxMembers, minIdleDays }.
+function checkChannelArchiveArgs(action, flags, positional) {
+  const allowed = CHANNEL_GLOBAL_FLAGS.concat(CHANNEL_COMMAND_FLAGS[action] || []);
+  const errors = [];
+  for (const name of Object.keys(flags || {})) {
+    if (allowed.includes(name)) continue;
+    if (action === 'unarchive' && ARCHIVE_ONLY_FLAGS.includes(name)) {
+      errors.push({
+        code: 'archive-only-flag',
+        flag: '--' + name,
+        message: 'archive-only-flag: --' + name + ' applies to channel-archive only',
+      });
+      continue;
+    }
+    const suggestion = suggestFlag(name, allowed);
+    errors.push({
+      code: 'unknown-flag',
+      flag: '--' + name,
+      suggestion: suggestion ? '--' + suggestion : null,
+      message:
+        'unknown-flag: --' + name + (suggestion ? ' (did you mean --' + suggestion + '?)' : ''),
+    });
+  }
+  const extra = (positional || []).slice(2);
+  for (const word of extra) {
+    errors.push({
+      code: 'unexpected-argument',
+      message: 'unexpected-argument: "' + word + '" (flags need a leading --)',
+    });
+  }
+  let maxMembers = null;
+  let minIdleDays = null;
+  if (action === 'archive') {
+    for (const name of ['max-members', 'min-idle-days']) {
+      const r = parseGuardCount(flags ? flags[name] : undefined);
+      if (!r.ok) {
+        const shown = flags[name] === true ? '(no value)' : JSON.stringify(flags[name]);
+        errors.push({
+          code: 'invalid-value',
+          flag: '--' + name,
+          message: 'invalid-value: --' + name + ' needs a non-negative integer, got ' + shown,
+        });
+      } else if (name === 'max-members') {
+        maxMembers = r.value;
+      } else {
+        minIdleDays = r.value;
+      }
+    }
+  }
+  return { ok: errors.length === 0, errors: errors, maxMembers: maxMembers, minIdleDays: minIdleDays };
+}
+
 // ── Exports ────────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -793,4 +910,11 @@ module.exports = {
   lookupChannel,
   readBackArchived,
   runChannelArchiveFlow,
+  // Argument validation
+  CHANNEL_GLOBAL_FLAGS,
+  CHANNEL_COMMAND_FLAGS,
+  editDistance,
+  suggestFlag,
+  parseGuardCount,
+  checkChannelArchiveArgs,
 };

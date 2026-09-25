@@ -687,6 +687,22 @@ read-back (10 attempts, 10 s apart, until `is_archived` flips).
 | `active-recently` | `--min-idle-days` given, idle fewer than N days | 1 |
 | `archived-unknown` | Slack did not report `is_archived` | 1 |
 
+**Arguments fail closed.** Before any Slack call, on the dry run and with
+`--confirm` alike, every flag name is checked against an allow-list: the
+command's own flags plus the globals `--ws`, `--workspace`, `--org`, `--json`,
+`--confirm`, `--help`. `parseArgv` keeps unknown flags, so without this a typo
+such as `--max-member=2` left the real guard unset and a confirmed archive
+went ahead without it. Refusals, all exit 1: `unknown-flag: --max-member (did
+you mean --max-members?)`; `invalid-value` for a guard that is not a plain
+non-negative integer (`abc`, empty, `-3`, `2.5`, or no value); `unexpected-argument`
+for a stray word such as `max-members=2`; `archive-only-flag` for a guard given to
+`channel-unarchive`.
+
+**`--json` is one JSON document.** With `--json`, stdout carries only the result
+object on every path (dry run, refusal, success, unconfirmed, write error,
+read error, argument error, no Slack tab), with `status`, `exitCode` and the
+attribution notice as `notice`. Error text also goes to stderr.
+
 Write results: `archived (confirmed)` exit 0; `archived (unconfirmed: search
 index did not reflect it after N attempts)` exit 3 (`ok:true` was returned; run
 the dry run again later); the API error exit 1.

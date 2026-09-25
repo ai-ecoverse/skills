@@ -45,6 +45,7 @@ class NodeExitError extends Error {
  * @param {string}  [opts.tabUrl] override the Slack tab URL
  * @param {function} [opts.api]   (method, params) => body | undefined. Consulted
  *                                first; undefined falls through to the defaults.
+ * @param {boolean} [opts.noTab]  browser.findTab finds no Slack tab.
  * @param {boolean} [opts.fakeTimers] replace setTimeout inside the script with
  *                                one that fires at once and records each delay
  *                                in h.sleeps (the read-back waits 5 s per retry).
@@ -75,7 +76,7 @@ async function load(opts) {
 
   const browserStub = {
     async findTab() {
-      return fakeTab;
+      return opts.noTab ? null : fakeTab;
     },
     async localStorage(tab, key) {
       if (key === 'localConfig_v2') {
@@ -1036,6 +1037,21 @@ const archSeq = (h) => h.apiCalls().join(',');
 const exitOf = (h) => (h.runError ? h.runError.exitCode : 0);
 const errOf = (h) => (h.runError ? String(h.runError.message) : '');
 
+// --json contract: stdout is exactly ONE JSON document and nothing else. The
+// whole of stdout must parse; a human line anywhere breaks the parse.
+function onlyJson(h) {
+  is(h.stdout.length, 1, 'stdout must hold exactly one write in --json mode, got ' + h.stdout.length + ': ' + JSON.stringify(h.stdout).slice(0, 300));
+  const whole = h.stdout.join('\n');
+  let parsed = null;
+  try {
+    parsed = JSON.parse(whole);
+  } catch (e) {
+    fail('entire stdout must parse as JSON: ' + e.message + ' -- stdout was: ' + whole.slice(0, 300));
+  }
+  ok(parsed && typeof parsed === 'object' && !Array.isArray(parsed), 'stdout must be a JSON object');
+  return parsed;
+}
+
 test('channel-archive dry run (entry point): reads state, prints it, makes no write', async () => {
   const h = await load({ runMain: true, fakeTimers: true, argv: ['channel-archive', 'C04633RSEDU'], api: archApi([archChan()]) });
   is(errOf(h), '');
@@ -1156,7 +1172,7 @@ test('channel-archive --confirm write error (entry point): API error surfaced, e
 
 test('channel-archive --json (entry point) emits the result object', async () => {
   const h = await load({ runMain: true, argv: ['channel-archive', 'C04633RSEDU', '--json'], api: archApi([archChan()]) });
-  const j = JSON.parse(h.stdout.find((s) => s.startsWith('{')));
+  const j = onlyJson(h);
   is(j.mode, 'dry-run');
   is(j.state.member_count, 6);
   is(j.decision.outcome, 'proceed');
@@ -1321,7 +1337,7 @@ test('channel-archive --json (entry point): a failed lookup still emits a JSON r
     api: (m) => (m === 'admin.conversations.search' ? { ok: true } : undefined),
   });
   is(exitOf(h), 1);
-  const j = JSON.parse(h.stdout.find((s) => s.startsWith('{')));
+  const j = onlyJson(h);
   is(j.status, 'read-error');
   is(j.state, null);
   is(j.decision, null);
@@ -1330,6 +1346,143 @@ test('channel-archive --json (entry point): a failed lookup still emits a JSON r
 test('channel-archive --json (entry point): a genuine not-found also emits JSON', async () => {
   const h = await load({ runMain: true, argv: ['channel-archive', 'C0NOTHERE01', '--json'], api: archApi([null]) });
   is(exitOf(h), 0);
-  const j = JSON.parse(h.stdout.find((s) => s.startsWith('{')));
+  const j = onlyJson(h);
   is(j.decision.reason, 'not-found');
 });
+
+// ── P1: misspelled or invalid guard flags fail CLOSED, before any Slack call ──
+//
+// parseArgv keeps unknown flags. The command used to read only the correctly
+// spelled keys, so --max-member=2 left the guard null and a confirmed archive
+// went ahead without it. Every case below must exit non-zero with a named
+// error and make ZERO Slack API calls, on the dry run and with --confirm.
+
+const REFUSED_ARGS = [
+  ['--max-member=2', ['--max-member=2'], /unknown-flag: --max-member \(did you mean --max-members\?\)/],
+  ['--min-idle-day=180', ['--min-idle-day=180'], /unknown-flag: --min-idle-day \(did you mean --min-idle-days\?\)/],
+  ['--allowshared', ['--allowshared'], /unknown-flag: --allowshared \(did you mean --allow-shared\?\)/],
+  ['--max-members=abc', ['--max-members=abc'], /invalid-value: --max-members needs a non-negative integer, got "abc"/],
+  ['--max-members= (empty)', ['--max-members='], /invalid-value: --max-members needs a non-negative integer, got ""/],
+  ['--min-idle-days=-3', ['--min-idle-days=-3'], /invalid-value: --min-idle-days needs a non-negative integer, got "-3"/],
+  ['--max-members (no value)', ['--max-members'], /invalid-value: --max-members needs a non-negative integer, got \(no value\)/],
+  ['--max-members=2.5', ['--max-members=2.5'], /invalid-value: --max-members/],
+  ['--confrm (typo of --confirm)', ['--confrm'], /unknown-flag: --confrm \(did you mean --confirm\?\)/],
+  ['stray positional max-members=2', ['max-members=2'], /unexpected-argument: "max-members=2"/],
+];
+
+for (const [label, extra, want] of REFUSED_ARGS) {
+  for (const confirm of [true, false]) {
+    test('channel-archive ' + label + (confirm ? ' --confirm' : ' (dry run)') + ' (entry point): refused, no Slack call', async () => {
+      const argv = ['channel-archive', 'C04633RSEDU'].concat(extra, confirm ? ['--confirm'] : []);
+      const h = await load({ runMain: true, fakeTimers: true, argv, api: archApi([archChan(), archChan({ is_archived: true })]) });
+      ok(exitOf(h) !== 0, 'must exit non-zero, got ' + exitOf(h));
+      ok(want.test(errOf(h)), 'named error expected, got: ' + errOf(h));
+      is(h.calls.length, 0, 'no Slack call may be made; calls were ' + archSeq(h));
+    });
+  }
+}
+
+test('channel-archive --allowshared before the id (entry point): refused, the id is not silently swallowed', async () => {
+  // parseArgv hands the next word to an unknown flag as its value.
+  const h = await load({ runMain: true, argv: ['channel-archive', '--allowshared', 'C04633RSEDU', '--confirm'], api: archApi([archChan()]) });
+  ok(exitOf(h) !== 0);
+  ok(/unknown-flag: --allowshared/.test(errOf(h)), errOf(h));
+  is(h.calls.length, 0);
+});
+
+test('channel-unarchive --confrm / --max-members (entry point): refused, no Slack call', async () => {
+  const a = await load({ runMain: true, argv: ['channel-unarchive', 'C0634KMGW2G', '--confrm'], api: archApi([archChan({ is_archived: true })]) });
+  ok(/unknown-flag: --confrm \(did you mean --confirm\?\)/.test(errOf(a)), errOf(a));
+  is(a.calls.length, 0);
+  const b = await load({ runMain: true, argv: ['channel-unarchive', 'C0634KMGW2G', '--max-members=2', '--confirm'], api: archApi([archChan({ is_archived: true })]) });
+  ok(/archive-only-flag: --max-members applies to channel-archive only/.test(errOf(b)), errOf(b));
+  is(b.calls.length, 0);
+});
+
+test('channel-archive correctly spelled guards --confirm (entry point): CONTROL, proceeds to the write', async () => {
+  // Proves the refusals above are not vacuous: the same argv shape with the
+  // right spelling gets as far as the archive call.
+  const h = await load({
+    runMain: true,
+    fakeTimers: true,
+    argv: ['--ws=T0385CHDU9E', 'channel-archive', 'C04633RSEDU', '--max-members=10', '--min-idle-days=180', '--allow-shared', '--confirm', '--org=E06V3987PMY'],
+    api: archApi([archChan(), archChan({ is_archived: true })]),
+  });
+  is(errOf(h), '');
+  is(archSeq(h), 'admin.conversations.search,admin.conversations.archive,admin.conversations.search');
+});
+
+test('channel-archive correctly spelled guards, dry run (entry point): CONTROL, reads state', async () => {
+  const h = await load({ runMain: true, argv: ['channel-archive', 'C04633RSEDU', '--max-members=10', '--min-idle-days=180'], api: archApi([archChan()]) });
+  is(exitOf(h), 0);
+  is(archSeq(h), 'admin.conversations.search');
+});
+
+// ── P2: --json writes exactly one JSON document to stdout, on every path ──────
+
+const JSON_PATHS = [
+  ['dry run, proceed', ['channel-archive', 'C04633RSEDU'], [archChan()], {}, 0, 'dry-run'],
+  ['dry run, would refuse', ['channel-archive', 'C04633RSEDU', '--max-members=2'], [archChan()], {}, 0, 'dry-run'],
+  ['confirm, refused', ['channel-archive', 'C04633RSEDU', '--confirm', '--max-members=2'], [archChan()], {}, 1, 'refused'],
+  ['confirm, already-archived', ['channel-archive', 'C04633RSEDU', '--confirm'], [archChan({ is_archived: true, member_count: -1 })], {}, 0, 'already-archived'],
+  ['confirm, success', ['channel-archive', 'C04633RSEDU', '--confirm'], [archChan(), archChan({ is_archived: true })], {}, 0, 'archived (confirmed)'],
+  ['confirm, unconfirmed', ['channel-archive', 'C04633RSEDU', '--confirm'], [archChan()], {}, 3, 'archived (unconfirmed: search index did not reflect it after 10 attempts)'],
+  ['confirm, write error', ['channel-archive', 'C04633RSEDU', '--confirm'], [archChan()], { writeResult: { ok: false, error: 'restricted_action' } }, 1, 'error'],
+  ['dry run, not-found', ['channel-archive', 'C0NOTHERE01'], [null], {}, 0, 'dry-run'],
+  ['unarchive, success', ['channel-unarchive', 'C04633RSEDU', '--confirm'], [archChan({ is_archived: true }), archChan()], {}, 0, 'unarchived (confirmed)'],
+  ['unknown flag', ['channel-archive', 'C04633RSEDU', '--max-member=2', '--confirm'], [archChan()], {}, 1, 'unknown-flag'],
+  ['invalid value', ['channel-archive', 'C04633RSEDU', '--min-idle-days=-3'], [archChan()], {}, 1, 'invalid-value'],
+  ['missing channel id', ['channel-archive'], [archChan()], {}, 1, 'usage'],
+  ['invalid channel id', ['channel-archive', 'not-an-id'], [archChan()], {}, 1, 'usage'],
+  ['invalid --org', ['channel-archive', 'C04633RSEDU', '--org=bogus'], [archChan()], {}, 1, 'invalid-value'],
+];
+
+for (const [label, argv, states, extra, code, status] of JSON_PATHS) {
+  test('--json ' + label + ' (entry point): entire stdout is one JSON document', async () => {
+    const h = await load({ runMain: true, fakeTimers: true, argv: argv.concat(['--json']), api: archApi(states, extra) });
+    is(exitOf(h), code, 'exit code; error was: ' + errOf(h));
+    const j = onlyJson(h);
+    is(j.status, status);
+    is(j.exitCode, code);
+    is(j.notice, 'xoxc session call: indistinguishable from a direct human action in channel event history.');
+  });
+}
+
+test('--json read-error (entry point): entire stdout is one JSON document', async () => {
+  const h = await load({ runMain: true, argv: ['channel-archive', 'C04633RSEDU', '--json'], api: (m) => (m === 'admin.conversations.search' ? { ok: true } : undefined) });
+  is(exitOf(h), 1);
+  const j = onlyJson(h);
+  is(j.status, 'read-error');
+  ok(/malformed_response/.test(j.error), j.error);
+});
+
+test('--json with no Slack tab (entry point): entire stdout is one JSON document', async () => {
+  const h = await load({ runMain: true, noTab: true, argv: ['channel-archive', 'C04633RSEDU', '--json'], api: archApi([archChan()]) });
+  is(exitOf(h), 1);
+  const j = onlyJson(h);
+  is(j.status, 'no-slack-tab');
+  is(h.calls.length, 0);
+});
+
+test('--json unknown flag lists every error with its suggestion', async () => {
+  const h = await load({ runMain: true, argv: ['channel-archive', 'C04633RSEDU', '--max-member=2', '--allowshared', '--json'], api: archApi([archChan()]) });
+  const j = onlyJson(h);
+  is(j.status, 'unknown-flag');
+  is(j.errors.map((e) => e.flag + '>' + e.suggestion).join(','), '--max-member>--max-members,--allowshared>--allow-shared');
+  is(h.calls.length, 0);
+});
+
+test('without --json the human output is unchanged (attribution notice still printed)', async () => {
+  const h = await load({ runMain: true, argv: ['channel-archive', 'C04633RSEDU'], api: archApi([archChan()]) });
+  ok(/indistinguishable from a direct human action/.test(h.text()));
+  ok(/Dry run: channel-archive/.test(h.text()));
+  ok(h.stdout.length > 5);
+});
+
+// MUTATION M6 (allow-list disabled): in checkChannelArchiveArgs, skip the
+//   unknown-flag push. Caught by every "channel-archive --max-member=2 ...",
+//   "--min-idle-day=180 ...", "--allowshared ...", "--confrm ..." test, and
+//   "--json unknown flag ...".
+// MUTATION M7 (a human line in JSON mode): print the attribution line with
+//   console.log instead of say(). Caught by every "--json ... entire stdout is
+//   one JSON document" test that reaches the flow.

@@ -1359,3 +1359,74 @@ test('flow dry run with a malformed body: read-error (exit 1), not a not-found r
 //   Array.isArray(r.conversations) check with `(r.conversations || [])`.
 //   Caught by: "lookupChannel: ok:true with no conversations array is
 //   malformed_response ...", "flow dry run with a malformed body ...".
+
+// ── argument validation (channel-archive / channel-unarchive) ─────────────────
+
+const { suggestFlag, parseGuardCount, checkChannelArchiveArgs, editDistance, CHANNEL_GLOBAL_FLAGS } =
+  gridMod.default || gridMod;
+const P = ['channel-archive', 'C04633RSEDU'];
+
+test('suggestFlag: singular, missing hyphen and typo map to the real flag', () => {
+  const allowed = CHANNEL_GLOBAL_FLAGS.concat(['max-members', 'min-idle-days', 'allow-shared']);
+  is(suggestFlag('max-member', allowed), 'max-members');
+  is(suggestFlag('min-idle-day', allowed), 'min-idle-days');
+  is(suggestFlag('allowshared', allowed), 'allow-shared');
+  is(suggestFlag('confrm', allowed), 'confirm');
+  is(suggestFlag('completely-unrelated-thing', allowed), null);
+  is(editDistance('kitten', 'sitting'), 3);
+});
+
+test('parseGuardCount: only plain non-negative integers', () => {
+  is(JSON.stringify(parseGuardCount(undefined)), '{"ok":true,"value":null}');
+  is(parseGuardCount('0').value, 0);
+  is(parseGuardCount('180').value, 180);
+  for (const bad of [true, '', 'abc', '-3', '2.5', '1e3', ' 2', '+2', '0x10', '99999999999999999999']) {
+    is(parseGuardCount(bad).ok, false, 'must reject ' + JSON.stringify(bad));
+  }
+});
+
+test('checkChannelArchiveArgs: every global and command flag is accepted', () => {
+  const r = checkChannelArchiveArgs(
+    'archive',
+    { ws: 'T0385CHDU9E', workspace: 'T1', org: 'E06V3987PMY', json: true, confirm: true, 'max-members': '2', 'min-idle-days': '180', 'allow-shared': true },
+    P
+  );
+  is(r.ok, true, JSON.stringify(r.errors));
+  is(r.maxMembers, 2);
+  is(r.minIdleDays, 180);
+});
+
+test('checkChannelArchiveArgs: unknown flags fail closed with the named code and a suggestion', () => {
+  const r = checkChannelArchiveArgs('archive', { 'max-member': '2', confirm: true }, P);
+  is(r.ok, false);
+  is(r.errors[0].code, 'unknown-flag');
+  is(r.errors[0].message, 'unknown-flag: --max-member (did you mean --max-members?)');
+  is(r.maxMembers, null, 'the misspelled guard must never populate the real one');
+});
+
+test('checkChannelArchiveArgs: an unknown flag with no near match still fails', () => {
+  const r = checkChannelArchiveArgs('archive', { 'totally-new': '1' }, P);
+  is(r.ok, false);
+  is(r.errors[0].message, 'unknown-flag: --totally-new');
+});
+
+test('checkChannelArchiveArgs: bad guard values are invalid-value, never null', () => {
+  for (const [name, raw] of [['max-members', 'abc'], ['max-members', ''], ['min-idle-days', '-3'], ['max-members', true]]) {
+    const r = checkChannelArchiveArgs('archive', { [name]: raw }, P);
+    is(r.ok, false, name + '=' + JSON.stringify(raw));
+    is(r.errors[0].code, 'invalid-value');
+  }
+});
+
+test('checkChannelArchiveArgs: a stray positional word is refused', () => {
+  const r = checkChannelArchiveArgs('archive', {}, ['channel-archive', 'C04633RSEDU', 'max-members=2']);
+  is(r.ok, false);
+  is(r.errors[0].code, 'unexpected-argument');
+});
+
+test('checkChannelArchiveArgs: unarchive refuses archive-only flags and typos', () => {
+  is(checkChannelArchiveArgs('unarchive', { 'max-members': '2' }, P).errors[0].code, 'archive-only-flag');
+  is(checkChannelArchiveArgs('unarchive', { 'allow-shared': true }, P).errors[0].code, 'archive-only-flag');
+  is(checkChannelArchiveArgs('unarchive', { confrm: true }, P).errors[0].message, 'unknown-flag: --confrm (did you mean --confirm?)');
+  is(checkChannelArchiveArgs('unarchive', { confirm: true, json: true }, P).ok, true);
+});
