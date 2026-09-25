@@ -5,6 +5,32 @@ summarised in SKILL.md ("Enterprise Grid admin commands"). Read SKILL.md's
 "CRITICAL: audit attribution" first: every write here is indistinguishable from the
 human doing it by hand.
 
+## Contents
+
+- [Authentication](#authentication)
+- [Dry-run default](#dry-run-default)
+- [Enterprise user lifecycle](#enterprise-user-lifecycle)
+  - [`eg-status <user_id> [--json]`](#eg-status-user_id---json)
+  - [`eg-set-restricted <user_id> [--confirm]`](#eg-set-restricted-user_id---confirm)
+  - [`eg-set-regular <user_id> [--confirm]`](#eg-set-regular-user_id---confirm)
+  - [`eg-deactivate <user_id> [--confirm]`](#eg-deactivate-user_id---confirm)
+  - [`eg-forget <user_id> [--confirm]`](#eg-forget-user_id---confirm)
+  - [`eg-bulk-guest [<user_id>...] [--file=<path>] [--confirm]`](#eg-bulk-guest-user_id---filepath---confirm)
+  - [`eg-set-ultra-restricted <user_id> [--confirm]`  — **UNVERIFIED**](#eg-set-ultra-restricted-user_id---confirm---unverified)
+- [Channel management](#channel-management)
+  - [`channel-search [--query=<q>] [--limit=<n>] [--max=<n>] [--types=<t>] [--sort=<s>] [--sort-dir=<d>] [--json]`](#channel-search---queryq---limitn---maxn---typest---sorts---sort-dird---json)
+  - [`channel-to-public <channel_id> [--confirm]`](#channel-to-public-channel_id---confirm)
+  - [`channel-to-private <channel_id> [--confirm]`](#channel-to-private-channel_id---confirm)
+- [Slack Connect approvals](#slack-connect-approvals)
+  - [`approvals [--query=<q>] [--limit=<n>] [--all] [--json]`](#approvals---queryq---limitn---all---json)
+- [App governance](#app-governance)
+  - [`admin-app approve <app_id|request_id> [--confirm]`](#admin-app-approve-app_idrequest_id---confirm)
+  - [`admin-app restrict <app_id|request_id> [--confirm]`](#admin-app-restrict-app_idrequest_id---confirm)
+  - [`admin-app clear <app_id> [--confirm]`](#admin-app-clear-app_id---confirm)
+  - [`admin-app permissions <app_id> --type=<no_one|everyone|named_entities> [--confirm]`](#admin-app-permissions-app_id---typeno_oneeveryonenamed_entities---confirm)
+  - [`admin-app list [--restricted] [--json]`](#admin-app-list---restricted---json)
+- [What remains unverified](#what-remains-unverified)
+
 ### Authentication
 
 Enterprise Grid commands use the org-level `xoxc` token from the browser's `localStorage`,
@@ -21,6 +47,16 @@ output shows exactly which API method would be called and with which parameters.
 ---
 
 ### Enterprise user lifecycle
+
+#### `eg-status <user_id> [--json]`
+
+Show a user's enterprise-level state. **Read-only**; no `--confirm`.
+
+- API: `users.info` with the org-level token (parameter `user`)
+- Prints name and id, handle, type (regular / multi-channel guest / single-channel guest /
+  bot / deactivated) and, from `enterprise_user`, the org (`enterprise_name`, `enterprise_id`)
+  and its workspaces (`teams`). `--json` also prints the raw `user` object.
+- `user_not_found` is reported as "User not found: <user_id>".
 
 #### `eg-set-restricted <user_id> [--confirm]`
 

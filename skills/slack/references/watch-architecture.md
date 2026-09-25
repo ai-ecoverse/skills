@@ -7,6 +7,22 @@ behaviour. Read the rest when debugging a watch that stopped firing, when changi
 the implementation, or when you need to know exactly what state and background
 tasks a watch leaves behind.
 
+## Contents
+
+- [Auto-watch for replies (user-facing behaviour)](#auto-watch-for-replies-user-facing-behaviour)
+- [Pipeline](#pipeline)
+- [WebSocket observer mechanism and selector shape](#websocket-observer-mechanism-and-selector-shape)
+- [Subscription lifetime, and why deleting the webhook is the kill-switch](#subscription-lifetime-and-why-deleting-the-webhook-is-the-kill-switch)
+- [Socket-capture timing (the first ≤10 seconds)](#socket-capture-timing-the-first-10-seconds)
+- [Genuine-reply webhook filter (auto-watch only)](#genuine-reply-webhook-filter-auto-watch-only)
+- [Scope decision: `conversations.info` `num_members`](#scope-decision-conversationsinfo-num_members)
+- [Routing](#routing)
+- [One-hour TTL and the one-shot teardown crontask](#one-hour-ttl-and-the-one-shot-teardown-crontask)
+- [TTL extension](#ttl-extension)
+- [Shared state across cones](#shared-state-across-cones)
+- [State files](#state-files)
+- [Recovery after a page reload](#recovery-after-a-page-reload)
+
 ## Auto-watch for replies (user-facing behaviour)
 
 After a successful post, replies are watched for **one hour**, then the watch
