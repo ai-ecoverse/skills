@@ -1212,10 +1212,44 @@ async function lastCommentPhase({ records, cache, getLogin, getPage }) {
 }
 /* ---- >8 end lastComment ---------------------------------------------------- */
 
+/* ---- 8< renovateFilter ----------------------------------------------------
+   Renovate's Dependency Dashboard issue is never a card. Operator rule,
+   2026-09-25: "the renovate dependency dashboard issue is a special case: we
+   should always filter it out."
+
+   All three terms, applied to the RAW issue from the issues list (the only
+   place the author is available; records do not carry it):
+     1. an issue, not a PR (no pull_request field). Renovate's update PRs
+        ("chore(deps): update ...") are real work and stay;
+     2. authored by Renovate (login matches /renovate/i, e.g. "renovate[bot]"),
+        so a human issue that happens to be titled "Dependency Dashboard" stays;
+     3. the title matches /dependency dashboard/i, OR the body carries
+        Renovate's fixed opening sentence. The title is configurable
+        (dependencyDashboardTitle); the sentence is not.
+
+   Dropped BEFORE a record is built, so it costs no status-model call and is
+   not counted anywhere. The count is published in meta.filtered, so the drop
+   is visible rather than silent.
+
+   Pure and fenced so tests/renovate-filter.test.js evaluates this exact text. */
+const RENOVATE_DASHBOARD_SENTENCE = 'This issue lists Renovate updates and detected dependencies';
+
+function isRenovateDependencyDashboard(it) {
+  if (!it || typeof it !== 'object') return false;
+  if (it.pull_request) return false;
+  const login = it.user && typeof it.user.login === 'string' ? it.user.login : '';
+  if (!/renovate/i.test(login)) return false;
+  const title = typeof it.title === 'string' ? it.title : '';
+  const body = typeof it.body === 'string' ? it.body : '';
+  return /dependency dashboard/i.test(title) || body.includes(RENOVATE_DASHBOARD_SENTENCE);
+}
+/* ---- >8 end renovateFilter ------------------------------------------------- */
+
 /* --------------------------------------------------------------------- main */
 
 const records = [];
 const notes = [];
+const filteredOut = { renovateDependencyDashboard: [] };
 const derivedInputs = new Map();
 const perRepo = {};
 
@@ -1231,9 +1265,16 @@ for (const full of REPOS) {
 
   // One page of the most recently updated items covers open work plus recent
   // closures. Issues endpoint returns issues AND pull requests.
-  const items = await api(
+  const listed = await api(
     `repos/${owner}/${name}/issues?state=all&sort=updated&direction=desc&per_page=100`,
   );
+  // The earliest point: before the window, before any per-item request, before
+  // a record exists. Nothing below ever sees the dashboard issue.
+  const items = listed.filter((it) => {
+    if (!isRenovateDependencyDashboard(it)) return true;
+    filteredOut.renovateDependencyDashboard.push(`${full}#${it.number}`);
+    return false;
+  });
   perRepo[full] = { openIssuesCount: repo.open_issues_count, windowSize: items.length, latestTag };
 
   const cutoff = Date.now() - CLOSED_WINDOW_HOURS * 3600e3;
@@ -2426,6 +2467,11 @@ const snapshot = {
       stateReason: 'measured: issue state_reason, or merged / closed_unmerged / open for PRs',
       stageWhy: 'audit trail for the stage decision (not consumed by the panel)',
     },
+    filtered: {
+      renovateDependencyDashboard: filteredOut.renovateDependencyDashboard.length,
+      renovateDependencyDashboardKeys: filteredOut.renovateDependencyDashboard,
+      rule: 'an ISSUE (not a PR) authored by /renovate/i whose title matches /dependency dashboard/i or whose body contains "' + RENOVATE_DASHBOARD_SENTENCE + '". Dropped from the issues list before any record is built: no status-model call, not in records, counts, thread linkage or merges. Operator rule, 2026-09-25',
+    },
     threadRecordsOmitted: "kind:'thread' records model SLICC threads and have no GitHub source; emitting them would invent work",
     notes,
   },
@@ -2465,6 +2511,7 @@ fs.writeFileSync(
 fs.renameSync(VERSION_TMP, VERSION_OUT);
 
 console.log(`records        : ${records.length}`);
+console.log(`filtered       : ${filteredOut.renovateDependencyDashboard.length} Renovate Dependency Dashboard issue(s) dropped${filteredOut.renovateDependencyDashboard.length ? ' (' + filteredOut.renovateDependencyDashboard.join(', ') + ')' : ''}`);
 console.log(`requests       : ${log.length}`);
 console.log(`rate limit     : remaining ${rl.remaining}/${rl.limit} (started at ${rl.firstRemaining}), reset ${new Date(Number(rl.reset) * 1000).toISOString()}`);
 console.log(`by stage       : ${JSON.stringify(records.reduce((a, r) => ((a[r.stage] = (a[r.stage] || 0) + 1), a), {}))}`);

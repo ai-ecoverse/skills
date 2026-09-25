@@ -1055,6 +1055,12 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
       // Phase 5, requested: "an open issue without work or comments should move from
       // needs attention to stalled after five working days". WORKING days, so
       // weekends do not burn the clock down.
+      // Amended 2026-09-25 (operator): a comment RESETS the five-working-day clock; it
+      // does not exempt the issue. Until then an issue with even one comment could
+      // never stall (ai-ecoverse/skills#360: one comment, 12.1 working days idle,
+      // held in needs-attention). The clock is counterResetAt, which the fetcher
+      // moves on every qualifying timeline event, human comments included, and
+      // never on the mirror's own comments or a Bot's.
       const ISSUE_STALL_AFTER_WORKING_DAYS = 5;
 
       // Phase 6b, the original spec for the done pile: two working days,
@@ -1219,13 +1225,17 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
               Merged-awaiting-release is treated the same way. A snooze is
               void once a comment lands after it was set.
            3. Undispatched issue (open, no thread) -> needs attention, EXCEPT
-              3a. An open issue with no work and no comments that has been
-                  untouched for ISSUE_STALL_AFTER_WORKING_DAYS working days
-                  -> STALLED. This is a deliberate exception to the ordering:
-                  step 3 would otherwise hold it in needs-attention for ever.
-                  Nothing else moves; the counter comes from the GitHub
-                  timeline (counterResetAt), never from updated_at, and
-                  cross-references and mentions do not reset it.
+              3a. An open issue with no work (no thread, no closing PR) that
+                  has been untouched for ISSUE_STALL_AFTER_WORKING_DAYS working
+                  days -> STALLED. This is a deliberate exception to the
+                  ordering: step 3 would otherwise hold it in needs-attention
+                  for ever. Nothing else moves; the counter comes from the
+                  GitHub timeline (counterResetAt), never from updated_at, and
+                  cross-references and mentions do not reset it. Since
+                  2026-09-25 comments do not exempt an issue: a human comment
+                  is a qualifying event, so it RESETS the counter (mirror and
+                  Bot comments do not), and an issue that goes quiet again
+                  stalls five working days later like any other.
            4. STALLED: a working state idle longer than its limit.
            5. ACTIVE: everything else in a working state.
            6. Fallback -> needs attention: an item we cannot classify is a
@@ -1268,23 +1278,20 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         return workingMsBetween(iso, now) / WORKING_DAY_MS;
       }
 
-      /** An open issue with nothing to show: no closing PR, no thread of any
-          kind, no comments. Exactly the population the five-working-day rule
-          applies to. */
-      function isUntouchedOpenIssue(item) {
-        return (
-          item.kind === 'issue' &&
-          item.stage === 1 &&
-          !item.thread &&
-          !item.hasClosingPr &&
-          (item.commentsCount ?? 0) === 0
-        );
+      /** An open issue nobody has started work on: no closing PR and no thread
+          of any kind. Exactly the population the five-working-day rule applies
+          to. Comments do NOT exclude an issue (2026-09-25; until then this was
+          isUntouchedOpenIssue and required commentsCount === 0): they reset the
+          clock instead, through counterResetAt, see untouchedWorkingDays(). */
+      function isUndispatchedOpenIssue(item) {
+        return item.kind === 'issue' && item.stage === 1 && !item.thread && !item.hasClosingPr;
       }
 
       /** Working days since the last event that counts as "something happened
           to this issue". The fetcher supplies counterResetAt from the GitHub
-          timeline (filtered to real changes); lastActivityAt is only a fallback
-          for a record written before that field existed. */
+          timeline (filtered to real changes, human comments included; the
+          mirror's own comments and Bots' excluded); lastActivityAt is only a
+          fallback for a record written before that field existed. */
       function untouchedWorkingDays(item, now) {
         return workingDaysSince(item.counterResetAt || item.lastActivityAt, now);
       }
@@ -1374,7 +1381,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         }
         if (stage === 1 && !item.thread) {
           // 3a: the five-working-day exception (see the precedence note above).
-          if (isUntouchedOpenIssue(item)) {
+          if (isUndispatchedOpenIssue(item)) {
             const wd = untouchedWorkingDays(item, now);
             if (wd >= ISSUE_STALL_AFTER_WORKING_DAYS) {
               return {

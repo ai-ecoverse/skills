@@ -141,9 +141,16 @@ approximation differently.
 ### 7. Stages 1 and 3 are skippable, so absence is ambiguous — ANSWERED: an explicit exception
 
 A stage-1 issue with no thread and one whose thread has not registered yet are
-indistinguishable in a single record, so untouched open issues get their own rule:
-no closing PR, no thread, no comments, and five *working* days of silence before
-they count as stalled. Everything else at stage 1 stays in needs-attention.
+indistinguishable in a single record, so undispatched open issues get their own rule:
+no closing PR, no thread, and five *working* days of silence before they count as
+stalled. Everything else at stage 1 stays in needs-attention. A comment does not
+exempt an issue (amended 2026-09-25): a human comment is a qualifying event that
+resets the counter, while mirror and Bot comments do not. Before the amendment, an
+issue with a single old comment could never stall.
+
+Renovate's Dependency Dashboard issue is never a card: the fetcher drops it from
+the issues list before any record is built, and counts the drop in
+`meta.filtered`. Renovate's update PRs are real work and stay.
 
 ## UI decisions that came out of review, and what they cost
 
