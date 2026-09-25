@@ -63,3 +63,39 @@ spend is still in `meta.agentLedger`). `poll.jsh` logs it as one line per cycle:
 `costEstimate` are `null`, with the reason in `tokensWhy` and `costWhy`. Tests:
 `tests/agent-ledger.test.js` (the ledger) and `tests/poll-ledger.test.js` (the
 log line).
+
+## Fast thread state
+
+`scripts/thread-poll.jsh` (unit `github-dashboard-threads`) lists the live bb
+threads of every configured project once a minute and writes
+`data/threads.json`: for each thread, the fields the panel needs (`state`, `live`,
+`archived`, `busy`, `hasPendingInteraction`, `queuedWork`, `updatedAt`). `live`
+and `busy` are decided once, from the raw thread, by `thread-stage-shared.cjs`.
+The file is rewritten only when that content changes (a hash without timestamps),
+through a temporary file and a rename, so the panel never reads half a file.
+
+The panel reads the file on its five-second tick and overlays the state onto
+threads the snapshot already links; it never adds a link. An entry older than the
+snapshot's copy of the thread is ignored, and a thread missing from the file
+keeps its snapshot state. Open issues then take their stage from the fresh state:
+
+| thread | open issue |
+| --- | --- |
+| waiting on the operator (pending interaction) | needs attention |
+| busy (running, queued, or with active background work) | active |
+| **settled**: live, nothing in flight, nothing pending (idle or error) | needs attention, "thread settled" |
+| archived | the snapshot's stage, on the usual clock |
+
+A settled issue stalls after five working days without activity, counted from the
+later of the thread's `updatedAt` and the issue's own activity. Pull requests keep
+their GitHub-driven stages; the overlay does not change them.
+
+bb reports a running thread as status `active` (as well as through its activity
+counts), so `active` counts as busy. The fetcher and the panel share one copy of
+the stage mapping: `thread-stage-shared.cjs`, embedded in the panel by
+`scripts/embed-thread-stage.js`; `tests/thread-stage-drift.test.js` fails if the
+copies diverge.
+
+Cost: one bb list call per project per minute (about 5 to 20 seconds per run
+measured), no GitHub requests and no model calls. Unchanged runs are folded into
+one log line per 30 minutes.

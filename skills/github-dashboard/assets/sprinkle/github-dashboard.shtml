@@ -1293,6 +1293,16 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
                   is a qualifying event, so it RESETS the counter (mirror and
                   Bot comments do not), and an issue that goes quiet again
                   stalls five working days later like any other.
+              3b. An open issue whose linked thread has SETTLED (live, nothing
+                  in flight, nothing pending; status=error included) ->
+                  needs attention, "thread settled": the agent has stopped and
+                  the next move is a human's (operator, 2026-09-25). Until then
+                  such an issue sat in ACTIVE, stage 2, for six hours. Its own
+                  stall clock: STALLED after ISSUE_STALL_AFTER_WORKING_DAYS
+                  working days since the thread settled (thread.updatedAt, or
+                  lastActivityAt if later). Busy stays active (4), pending
+                  interaction stays stage 3, archived-only stays stage 2 on the
+                  working-stage clock. PRs are untouched: GitHub drives them.
            4. STALLED: a working state idle longer than its limit.
            5. ACTIVE: everything else in a working state.
            6. Fallback -> needs attention: an item we cannot classify is a
@@ -1352,6 +1362,198 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
       function untouchedWorkingDays(item, now) {
         return workingDaysSince(item.counterResetAt || item.lastActivityAt, now);
       }
+
+      // The thread-derived stage rule and the thread-state overlay, embedded VERBATIM
+      // from thread-stage-shared.cjs (the fetcher's require()able copy). Edit the
+      // module and re-embed; tests/thread-stage-drift.test.js fails on any drift.
+      /* ---- 8< THREAD-STAGE ------------------------------------------------------
+         Two thread shapes, kept apart on purpose:
+           RAW      a bb thread as `bb thread list --json` returns it (archivedAt,
+                    deletedAt, status, activity, queuedWork, hasPendingInteraction).
+                    Read ONLY by threadIsLive, threadIsBusy and threadStateOf.
+           SUMMARY  what a snapshot record carries as `record.thread` and what
+                    data/threads.json holds: { state, live, archived, busy,
+                    hasPendingInteraction, queuedWork, updatedAt, ... }. live and
+                    busy are computed ONCE, from RAW, where RAW is read (the
+                    fetcher's link builder; thread-poll.jsh via threadStateOf).
+         Everything else here takes a SUMMARY and reads only live, archived, busy
+         and hasPendingInteraction (state and queuedWork only for the `why` text).
+
+         WHY THE SPLIT MATTERS. The fetcher's own stageFromThread reads RAW fields,
+         but its call site passes the SUMMARY (stageFromThread(rec, rec.thread)).
+         On a summary those RAW fields are absent, so every archived thread counts
+         as live, a busy thread is seen only through queuedWork, and stageWhy says
+         "status=undefined" (live, 2026-09-25: slicc#3482, archived and state=error,
+         "bb thread exists and is idle (status=undefined)"). */
+
+      /** RAW bb statuses that mean an agent is running. "running"/"working" are the
+          fetcher's (and the bb CLI status icon's). "active" is ADDED: it is what the
+          bb API reports for a running thread (measured 2026-09-25:
+          status "active", runtime.displayStatus "active", no active counts, then
+          "idle" with a new updatedAt once it finished). Without it such a thread
+          would read settled while its agent works. The one deliberate difference
+          from the fetcher's threadIsBusy; tests/thread-stage-drift.test.js D2. */
+      const THREAD_BUSY_STATUSES = ['active', 'running', 'working'];
+
+      /** RAW. Live = exists, not archived/deleted. */
+      function threadIsLive(t) {
+        return !t.archivedAt && !t.deletedAt;
+      }
+
+      /** RAW. Anything in flight: active agents, commands, goals, plan mode or
+          workflows; queued work; or a running status. */
+      function threadIsBusy(t) {
+        const a = t.activity || {};
+        const counts =
+          (a.activeBackgroundAgentCount || 0) +
+          (a.activeBackgroundCommandCount || 0) +
+          (a.activeGoalCount || 0) +
+          (a.activePlanModeCount || 0) +
+          (a.activeWorkflowCount || 0);
+        const queued = t.queuedWork && t.queuedWork !== 'none';
+        const running = THREAD_BUSY_STATUSES.includes(t.status);
+        return counts > 0 || !!queued || running;
+      }
+
+      /** RAW -> the SUMMARY fields categorisation needs, with the names and
+          encodings of the fetcher's link summary (state = bb status, updatedAt ISO).
+          live and busy are decided HERE, once. */
+      function threadStateOf(t) {
+        return {
+          state: t.status || null,
+          archived: !!t.archivedAt,
+          live: threadIsLive(t),
+          busy: threadIsBusy(t),
+          hasPendingInteraction: !!t.hasPendingInteraction,
+          queuedWork: t.queuedWork || null,
+          updatedAt: t.updatedAt ? new Date(t.updatedAt).toISOString() : null,
+        };
+      }
+
+      /** The fields an overlay may refresh. Everything else on record.thread (id,
+          title, branch, matchedBy, provider) is the LINK, and belongs to the
+          snapshot. */
+      const THREAD_STATE_FIELDS = ['state', 'archived', 'live', 'busy', 'hasPendingInteraction', 'queuedWork', 'updatedAt'];
+
+      /** SUMMARY. What the thread is doing, one word: 'pending' (waits for input),
+          'busy' (busy: in flight or queued, as decided from RAW), 'settled' (live,
+          not busy, nothing pending; status=error included), 'archived' (not live:
+          archived or deleted), or null (no thread). */
+      function threadPhase(th) {
+        if (!th) return null;
+        if (!th.live || th.archived) return 'archived';
+        if (th.hasPendingInteraction) return 'pending';
+        if (th.busy) return 'busy';
+        return 'settled';
+      }
+
+      /**
+       * SUMMARY. STAGE MAPPING, thread-derived part: the fetcher's intended
+       * mapping (its stageFromThread doc comment, with phase 5's archived -> 2). OPEN ISSUES only (rec.stage 1,
+       * i.e. before any thread spoke): a PR's own GitHub state is the better signal,
+       * so a thread never sets a PR's stage.
+       *   pending interaction -> 3 needs guidance
+       *   busy / queued       -> 4 agent working
+       *   settled             -> 2 thread started, settled: true (the panel files it
+       *                          under needs-attention, see threadSettledIssue)
+       *   archived / deleted  -> 2 (work started, then abandoned; unchanged)
+       */
+      function stageFromThread(rec, th) {
+        if (!rec || rec.kind !== 'issue' || rec.stage !== 1 || !th) return null;
+        const phase = threadPhase(th);
+        if (phase === 'pending') return { stage: 3, why: 'bb thread is waiting for input (hasPendingInteraction)' };
+        if (phase === 'busy') return { stage: 4, why: `bb thread has work in flight (status=${th.state}, queuedWork=${th.queuedWork})` };
+        if (phase === 'settled') {
+          return { stage: 2, settled: true, why: `bb thread settled: live, nothing in flight, nothing pending (status=${th.state})` };
+        }
+        return { stage: 2, why: `bb thread exists but is archived: work was started, then abandoned (status=${th.state})` };
+      }
+
+      /** The stage a record had before its thread spoke, when the thread drives
+          it: 1 for an open issue (stages 1-4), null for anything else (PRs, closed
+          issues), which an overlay must leave alone. */
+      function threadDrivenBaseStage(rec) {
+        if (!rec || rec.kind !== 'issue') return null;
+        return [1, 2, 3, 4].includes(rec.stage) ? 1 : null;
+      }
+
+      /** The open issue whose linked thread has settled: the card that belongs in
+          needs-attention. Stage 2 with a settled thread, nothing else. */
+      function threadSettledIssue(item) {
+        return !!item && item.kind === 'issue' && item.stage === 2 && threadPhase(item.thread) === 'settled';
+      }
+
+      /** Where a settled issue's stall clock starts: the thread's updatedAt, or the
+          record's lastActivityAt if that is later. Either may be absent. */
+      function threadSettledSince(item) {
+        const a = item && item.thread && item.thread.updatedAt ? Date.parse(item.thread.updatedAt) : NaN;
+        const b = item && item.lastActivityAt ? Date.parse(item.lastActivityAt) : NaN;
+        const m = Math.max(Number.isFinite(a) ? a : -Infinity, Number.isFinite(b) ? b : -Infinity);
+        return Number.isFinite(m) ? new Date(m).toISOString() : null;
+      }
+
+      /**
+       * Overlay fresh thread state (the parsed data/threads.json) onto records, in
+       * place, and recompute the thread-derived stage. IDEMPOTENT: every pass first
+       * undoes the previous one from record.__threadOverlay, so it can run again on
+       * the same records whenever either file changes.
+       *   - LINKS stay the snapshot's: a record without thread.id is skipped, no
+       *     thread is added or removed, and only THREAD_STATE_FIELDS are copied.
+       *   - A thread MISSING from the file keeps its snapshot state.
+       *   - An entry OLDER than the snapshot's (updatedAt earlier) is ignored, so a
+       *     poller that has died cannot roll a newer snapshot back.
+       * Returns counts, for the debug handle.
+       */
+      function overlayThreadState(records, file) {
+        const stats = { linked: 0, refreshed: 0, missing: 0, older: 0, stageChanged: 0, phaseChanged: 0 };
+        const map = file && file.threads && typeof file.threads === 'object' ? file.threads : null;
+        for (const r of records || []) {
+          const prev = r.__threadOverlay;
+          if (prev) {
+            r.thread = prev.thread;
+            r.stage = prev.stage;
+            if (prev.hadStageWhy) r.stageWhy = prev.stageWhy;
+            else delete r.stageWhy;
+            delete r.__threadOverlay;
+          }
+          const th = r.thread;
+          if (!th || typeof th !== 'object' || !th.id) continue;
+          stats.linked++;
+          const e = map && Object.prototype.hasOwnProperty.call(map, th.id) ? map[th.id] : null;
+          if (!e || typeof e !== 'object') {
+            stats.missing++;
+            continue;
+          }
+          const fresh = e.updatedAt ? Date.parse(e.updatedAt) : NaN;
+          const snap = th.updatedAt ? Date.parse(th.updatedAt) : NaN;
+          if (Number.isFinite(fresh) && Number.isFinite(snap) && fresh < snap) {
+            stats.older++;
+            continue;
+          }
+          const saved = { thread: th, stage: r.stage, stageWhy: r.stageWhy, hadStageWhy: Object.prototype.hasOwnProperty.call(r, 'stageWhy') };
+          const next = Object.assign({}, th);
+          for (const f of THREAD_STATE_FIELDS) if (Object.prototype.hasOwnProperty.call(e, f)) next[f] = e[f];
+          r.thread = next;
+          const base = threadDrivenBaseStage(r);
+          if (base !== null) {
+            const p = stageFromThread({ kind: r.kind, stage: base }, next);
+            if (p) {
+              r.stage = p.stage;
+              r.stageWhy = p.why;
+            }
+          }
+          const from = threadPhase(th);
+          const to = threadPhase(next);
+          saved.phaseFrom = from;
+          saved.phaseTo = to;
+          r.__threadOverlay = saved;
+          stats.refreshed++;
+          if (r.stage !== saved.stage) stats.stageChanged++;
+          if (from !== to) stats.phaseChanged++;
+        }
+        return stats;
+      }
+      /* ---- >8 end THREAD-STAGE -------------------------------------------------- */
 
       /** Snooze state, including "a comment cancels the snooze". */
       function snoozeState(item, now) {
@@ -1435,6 +1637,21 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         }
         if (stage === 9 && RELEASE_WAIT_IS_SNOOZE) {
           return { category: 'snoozed', reason: 'waiting on the release train' };
+        }
+        if (threadSettledIssue(item)) {
+          // 3b: the settled thread (see the precedence note above).
+          const since = threadSettledSince(item);
+          const wd = since ? workingDaysSince(since, now) : 0;
+          if (wd >= ISSUE_STALL_AFTER_WORKING_DAYS) {
+            return {
+              category: 'stalled',
+              reason: `thread settled ${wd.toFixed(1)} working days ago (limit ${ISSUE_STALL_AFTER_WORKING_DAYS})`,
+            };
+          }
+          return {
+            category: 'needs-attention',
+            reason: `thread settled, ${wd.toFixed(1)} of ${ISSUE_STALL_AFTER_WORKING_DAYS} working days`,
+          };
         }
         if (stage === 1 && !item.thread) {
           // 3a: the five-working-day exception (see the precedence note above).
@@ -2577,6 +2794,8 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         if (item.statusSource && item.statusSource !== 'agent') {
           hover.push('(status composed mechanically, not model-written)');
         }
+        const threadNote = threadStatusNote(item);
+        if (threadNote) hover.push(threadNote);
         status.title = hover.join('\n\n');
         // Phase 7c: the description is the quick view's handle. Hover (delayed)
         // for the mouse, Enter/Space for the keyboard, and it is focusable so a
@@ -3213,6 +3432,8 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
             if (item.statusSource && item.statusSource !== 'agent') provenance.push('composed mechanically, not model-written');
             if (item.statusCached) provenance.push(`served from the status cache (written ${fmtWhen(item.statusCached)})`);
             if (item.stageWhy) provenance.push(`state derived because: ${item.stageWhy}`);
+            const threadNote = threadStatusNote(item);
+            if (threadNote) provenance.push(threadNote.slice(1, -1));
             if (provenance.length) s.appendChild(el('p', 'qv-act-why', provenance.join(' · ')));
           }),
         );
@@ -3532,6 +3753,69 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
       let VERSION_PATH = '/shared/sprinkles/github-dashboard/data/version.json';
       const POLL_MS = 5000;
       let LAST_SNAPSHOT_HASH = null;
+
+      /* FRESH THREAD STATE (2026-09-25). thread-poll.jsh rewrites
+         data/threads.json within about a minute of a linked bb thread changing
+         (the full cycle that writes the snapshot runs every ~34 min). The same
+         5 s tick reads it; a new contentHash re-applies the overlay and
+         regroups through the reconciler. overlayThreadState (THREAD-STAGE, in
+         GHD-CLASSIFY) refreshes the STATE of threads the snapshot already
+         links and recomputes their open issue's stage; it never adds or drops
+         a link, a thread absent from the file keeps the snapshot's state, and
+         an entry older than the snapshot's is ignored. An absent or unreadable
+         file is not an error: the panel keeps the overlay it has, or none. */
+      let THREADS_PATH = '/shared/sprinkles/github-dashboard/data/threads.json';
+      let THREAD_FILE = null;
+      let LAST_THREADS_HASH = null;
+      let THREAD_OVERLAY_STATS = null;
+      const threadUpdate = { reads: 0, readFailures: 0, hashChanges: 0, reconciles: 0, lastError: null, lastHash: null, generatedAt: null };
+
+      /** Read threads.json; adopt it when its contentHash moved. Returns true
+          when it did. Never throws. */
+      async function refreshThreadState() {
+        if (typeof slicc === 'undefined' || typeof slicc.readFile !== 'function') return false;
+        let f;
+        try {
+          if (typeof slicc.exists === 'function' && !(await slicc.exists(THREADS_PATH))) return false;
+          f = JSON.parse(await slicc.readFile(THREADS_PATH));
+          threadUpdate.reads++;
+        } catch (err) {
+          threadUpdate.readFailures++;
+          threadUpdate.lastError = 'threads: ' + String((err && err.message) || err).slice(0, 120);
+          return false;
+        }
+        if (!f || typeof f.contentHash !== 'string' || !f.threads || typeof f.threads !== 'object') {
+          threadUpdate.readFailures++;
+          threadUpdate.lastError = 'threads: wrong shape (no contentHash or threads)';
+          return false;
+        }
+        threadUpdate.lastHash = f.contentHash;
+        if (f.contentHash === LAST_THREADS_HASH) return false;
+        LAST_THREADS_HASH = f.contentHash;
+        THREAD_FILE = f;
+        threadUpdate.hashChanges++;
+        threadUpdate.generatedAt = f.generatedAt || null;
+        return true;
+      }
+
+      /** Fold the fresh thread state onto RECORDS. Idempotent (the overlay
+          undoes its previous pass first), so render() and reconcile() both run
+          it on every pass, like applyUserState(). */
+      function applyThreadOverlay() {
+        THREAD_OVERLAY_STATS = overlayThreadState(RECORDS, THREAD_FILE);
+      }
+
+      /** The card's status line comes from the last full cycle (and the
+          fetcher's status cache is keyed on GitHub activity, not thread
+          state), so after the overlay it can say "agent working" on a settled
+          card. When the overlay moved the thread to another phase, say so where
+          the status is explained (its tooltip and the quick view) instead of
+          rewriting model prose. */
+      function threadStatusNote(item) {
+        const o = item && item.__threadOverlay;
+        if (!o || !o.phaseFrom || !o.phaseTo || o.phaseFrom === o.phaseTo) return null;
+        return `(status written when the bb thread was ${o.phaseFrom}; it is ${o.phaseTo} now)`;
+      }
       let POLL_TIMER = null;
       let POLL_BUSY = false;
       const liveUpdate = {
@@ -3566,8 +3850,11 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
       async function pollForUpdates() {
         if (POLL_BUSY) return;
         POLL_BUSY = true;
+        let threadsMoved = false;
+        let reconciled = false;
         try {
           liveUpdate.polls++;
+          threadsMoved = await refreshThreadState();
           const v = await readVersion();
           if (!v) return;
           liveUpdate.lastHash = v.snapshotHash;
@@ -3606,8 +3893,17 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
           // holding it between polls is fine.
           await loadAttachments();
           reconcile(parsed, v);
+          reconciled = true;
         } finally {
-          POLL_BUSY = false;
+          try {
+            // Fresh thread state with no new snapshot: same records, re-overlaid.
+            if (threadsMoved && !reconciled && !LOAD_ERROR) {
+              threadUpdate.reconciles++;
+              reconcile({ records: RECORDS, meta: META }, { generatedAt: META ? META.generatedAt : null, regroup: 'threads' });
+            }
+          } finally {
+            POLL_BUSY = false;
+          }
         }
       }
 
@@ -3746,6 +4042,8 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
           if (item.statusSource && item.statusSource !== 'agent') {
             hover.push('(status composed mechanically, not model-written)');
           }
+          const threadNote = threadStatusNote(item);
+          if (threadNote) hover.push(threadNote);
           set(status, 'title', hover.join('\n\n'));
           if (status.getAttribute('aria-label') !== `Quick view: ${item.title}`) {
             status.setAttribute('aria-label', `Quick view: ${item.title}`);
@@ -3945,6 +4243,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         // The 7a overlay runs on EVERY update, not just on load. Without it an
         // incoming snapshot (which knows nothing about clicks) would visibly undo
         // an optimistic snooze/done while its store write was still in flight.
+        applyThreadOverlay();
         applyUserState();
 
         const visible = RECORDS.filter((it) => view.project === 'all' || it.repo === view.project);
@@ -4764,7 +5063,9 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         LABEL_IDF = labelIdf(RECORDS).idf;
 
         // Phase 7a: fold user intent onto the records before anything reads
-        // them. categorize() stays pure; what changed is its input.
+        // them. categorize() stays pure; what changed is its input. The fresh
+        // thread state goes first: it can change a stage, user state cannot.
+        applyThreadOverlay();
         applyUserState();
 
         // Project list is derived from the live records.
@@ -4932,6 +5233,12 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
           POLL_MS,
           liveUpdate,
           lastSnapshotHash: LAST_SNAPSHOT_HASH,
+          // Fresh thread state (thread-poll.jsh -> data/threads.json).
+          THREADS_PATH,
+          threadUpdate,
+          threadOverlay: THREAD_OVERLAY_STATS,
+          lastThreadsHash: LAST_THREADS_HASH,
+          refreshThreadState,
           pollForUpdates,
           startPolling,
           stopPolling,
@@ -4945,10 +5252,11 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
           paintSnapshotAge,
           // Tests drive the panel through prepared snapshots; only a probe should
           // ever repoint these, and only at files under a scoop workspace.
-          setPaths: (snapshotPath, versionPath) => {
+          setPaths: (snapshotPath, versionPath, threadsPath) => {
             if (typeof snapshotPath === 'string' && snapshotPath) SNAPSHOT_PATH = snapshotPath;
             if (typeof versionPath === 'string' && versionPath) VERSION_PATH = versionPath;
-            return { SNAPSHOT_PATH, VERSION_PATH };
+            if (typeof threadsPath === 'string' && threadsPath) THREADS_PATH = threadsPath;
+            return { SNAPSHOT_PATH, VERSION_PATH, THREADS_PATH };
           },
           verdicts: RECORDS.map((it) => ({ id: it.id, ...categorize(it, PASS_NOW) })),
         };
@@ -4973,6 +5281,9 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         // failed read must not stop the panel, it just leaves the map empty and
         // the fetcher's own linkage takes over.
         await loadAttachments();
+        // Fresh thread state (thread-poll.jsh) before the first render, so the
+        // first paint already has it. Absent file: no overlay, no complaint.
+        await refreshThreadState();
         const t2 = performance.now();
         render();
         const t3 = performance.now();

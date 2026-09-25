@@ -36,6 +36,7 @@ const crypto = require('crypto');
 // against this file, independent of the cwd; a computed path (new URL(..., import.meta.url))
 // was not found by the realm's require, measured 2026-09-23.
 const { workingDaysSince } = require('./workdays-shared.cjs');
+const { stageFromThread: stageFromThreadSummary } = require('./thread-stage-shared.cjs');
 
 /* Phase 7b: the fetcher obtains its own credential.
 
@@ -784,7 +785,7 @@ function threadIsBusy(t) {
     (a.activePlanModeCount || 0) +
     (a.activeWorkflowCount || 0);
   const queued = t.queuedWork && t.queuedWork !== 'none';
-  const running = t.status === 'running' || t.status === 'working';
+  const running = t.status === 'running' || t.status === 'working' || t.status === 'active';
   return counts > 0 || !!queued || running;
 }
 
@@ -1708,7 +1709,7 @@ const { rejected, stats: linkStats } = linkThreads({ records, threadsByRepo, pul
 const refsCarried = carryRefsThreads({ records, prInfo });
 for (const rec of records) {
   if (!rec.thread) continue;
-  const promoted = stageFromThread(rec, rec.thread);
+  const promoted = stageFromThreadSummary(rec, rec.thread);
   if (promoted) {
     rec.stage = promoted.stage;
     rec.stageWhy = promoted.why;

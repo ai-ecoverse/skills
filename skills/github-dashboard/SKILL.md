@@ -87,10 +87,10 @@ of a successful run the panel replaces the fixture with your records.
 
 The fetcher is a one-shot program. `scripts/poll.jsh` is the durable unit that
 runs it on a schedule, supervised by `jshd`. The unit runs the fetcher and the
-mirror from the deployed sprinkle directory, so copy all four there first (the fetcher loads `workdays-shared.cjs` from beside itself):
+mirror from the deployed sprinkle directory, so copy all five there first (the fetcher loads `workdays-shared.cjs` and `thread-stage-shared.cjs` from beside itself):
 
 ```sh
-cp scripts/poll.jsh scripts/fetch-snapshot.mjs scripts/workdays-shared.cjs scripts/mirror-comments.mjs \
+cp scripts/poll.jsh scripts/fetch-snapshot.mjs scripts/workdays-shared.cjs scripts/thread-stage-shared.cjs scripts/mirror-comments.mjs \
    /shared/sprinkles/github-dashboard/
 
 jshd start -n github-dashboard-poll --enable --restart on-failure \
@@ -115,6 +115,18 @@ jshd rm   github-dashboard-poll   # stop AND delete the unit record and its log
 
 `stop` alone is not permanent while the unit is enabled: on the next reload the
 supervisor starts it again. Use `rm` (or `disable`) to mean it.
+
+**Fast thread state (optional).** A second unit refreshes linked bb threads
+every minute, so a card follows its agent without waiting for the next cycle:
+
+```sh
+cp scripts/thread-poll.jsh /shared/sprinkles/github-dashboard/
+jshd start -n github-dashboard-threads --enable --restart on-failure --cwd /tmp \
+  /shared/sprinkles/github-dashboard/thread-poll.jsh \
+  --out /shared/sprinkles/github-dashboard/data/threads.json
+```
+
+What it writes and how the panel uses it: [references/poller.md](references/poller.md#fast-thread-state).
 
 The default interval is 30 minutes. Model spend tracks repository activity, not
 poll frequency, because the status cache is keyed on each record's
