@@ -614,8 +614,9 @@ proves the token and method are working. This was used to verify all three
 ## App manifest management (`slack-ext app`)
 
 `slack-ext app` reads and changes Slack app configuration (App Manifest API, separate app configuration token); every write needs `--confirm`.
-Updates have no merge semantics (omitted fields are deleted), so writes export-modify-update, deletions need `--allow-deletions`,
-and `permissions_updated: true` means reinstall. Commands, credential and wire facts: `references/app-manifest.md`.
+Updates have no merge semantics (omitted fields are deleted), so writes export-modify-update. A removal you asked for (`--remove`) needs only
+`--confirm`; an unrequested deletion, including every omission in an `app apply` file, is refused unless `--allow-deletions` is given.
+`permissions_updated: true` means reinstall; `token-rotate` invalidates the old refresh token. Reference: `references/app-manifest.md`.
 
 ## References
 
@@ -666,7 +667,7 @@ wire facts, authentication, what remains unverified): `references/enterprise-gri
 - `eg-set-restricted <user_id> [--confirm]` — full member → multi-channel guest; reads the state back.
 - `eg-set-regular <user_id> [--confirm]` — guest → full member; reads the state back.
 - `eg-deactivate <user_id> [--confirm]` — deactivate (reversible); the wire value `status=delete` does not delete.
-- `eg-forget <user_id> [--confirm]` — GDPR identity scrub, **IRREVERSIBLE**; never a flag, never in an unattended loop.
+- `eg-forget <user_id> [--confirm]` — GDPR identity scrub, **IRREVERSIBLE**; never a flag, never in an unattended loop without per-user confirmation.
 - `eg-bulk-guest [<user_id>...] [--file=<path>] [--confirm]` — many members → multi-channel guests, per-user read-back.
 - `eg-set-ultra-restricted <user_id> [--confirm]` — **UNVERIFIED**; do not use in production.
 - `channel-search [--query=<q>] [--types=<t>] [--limit=<n>] [--json]` — read-only channel enumeration, filtered locally.
