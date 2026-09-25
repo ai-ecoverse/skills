@@ -1153,41 +1153,19 @@ Convert a public channel to private.
   This is **expected behaviour**, not a sign that the channel was deleted. The command warns
   about this and suggests using `channel-search` to confirm the channel still exists.
 
-#### `channel-archive <channel_id> [--confirm] [--max-members=N] [--min-idle-days=N] [--allow-shared] [--json]`
+#### `channel-archive <channel_id> [--confirm] [--max-members=N] [--min-idle-days=N] [--allow-shared] [--json]` / `channel-unarchive <channel_id> [--confirm] [--json]`
 
-Archive a channel via `admin.conversations.archive` (org token; works on private channels the
-admin is not in, and answers `ok:true` with no warning, so the result is read back).
-
-1. **Dry run** (no `--confirm`) reads the channel and prints its current state (visibility,
-   archived, members, external users, sharing/host, last activity + days idle), then what
-   `--confirm` would do or which refusal would apply. Never writes; exits 0.
-2. **`--confirm`** re-reads the channel immediately before the write and refuses by name (exit 1)
-   if a guard no longer holds. State does change in between: a channel checked at 1 member had 4,
-   45 s later.
-3. **Read-back**: polls until `is_archived: true`, 10 attempts 10 s apart, because the search
-   index lags a write (measured 38-51 s for an archive). Prints `archived (confirmed)` (exit 0),
-   `archived (unconfirmed: search index did not reflect it after N attempts)` (exit **3**: the
-   write said `ok:true`; dry-run again later), or the API error (exit 1).
-
+`admin.conversations.archive` / `unarchive` (org token; works on private channels the admin is
+not in). The dry run reads and prints the channel's current state and what `--confirm` would do.
+`--confirm` re-reads it immediately before the write, refuses by name (exit 1) if a guard fails,
+then reads the result back with retries because the search index lags the write by up to ~50 s:
+`archived (confirmed)` exits 0, `archived (unconfirmed: …)` exits **3**.
 Refusals: `not-found`, `ext-shared-hosted-elsewhere`, `ext-shared-host-unknown`,
-`ext-shared-requires-allow-shared`, `members-over-limit` / `members-unknown` (with
-`--max-members`; a null or `-1` count is unknown, never 0), `active-recently` /
-`activity-unknown` (with `--min-idle-days`), `archived-unknown`. `already-archived` is "nothing
-to do" and exits **0**.
-
-**Ext-shared channels this org hosts need `--allow-shared`**: archiving one ends every connected
-external org's access, which the member and idle guards do not measure. Channels hosted by
-another org are always refused.
-
-#### `channel-unarchive <channel_id> [--confirm] [--json]`
-
-`admin.conversations.unarchive`, with the same dry run, pre-write re-check and read-back (until
-`is_archived: false`). Refuses `not-found`, `ext-shared-hosted-elsewhere`,
-`ext-shared-host-unknown`, `archived-unknown`; `not-archived` exits 0.
-
-Wire facts behind both (the `limit <= 20` cap, `query=<channel id>` lookup, microsecond
-`last_activity_ts`, `member_count: -1`, the index lag, and why `conversations.info` cannot be
-the read): `references/endpoints.md`, "Enterprise Grid Channel Admin".
+`ext-shared-requires-allow-shared` (this org hosts it; archiving ends external access),
+`members-over-limit` / `members-unknown` (a null or `-1` count is never read as 0),
+`active-recently` / `activity-unknown`, `archived-unknown`. `already-archived` /
+`not-archived` exit 0. Guards, wire facts and exit codes: `references/endpoints.md`,
+"Enterprise Grid Channel Admin".
 
 ---
 

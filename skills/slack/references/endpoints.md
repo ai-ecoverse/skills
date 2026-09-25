@@ -613,7 +613,7 @@ Wire facts (measured 2026-09-25 unless noted):
 - **`conversation_host_id`** appears on ext-shared channels only. It equals the
   org id (`E06V3987PMY`) when this org hosts the channel; any other value is a
   channel hosted by another org.
-- **The index lags a write by several seconds.** Right after
+- **The index lags a write, by up to ~50 s.** Right after
   `admin.conversations.archive` the channel was not reported archived. On the
   live round trip for `slack-ext channel-archive` (2026-09-25): an unarchive
   showed after ~5 s; an archive read `is_archived: false`, then the channel was
@@ -625,6 +625,42 @@ Wire facts (measured 2026-09-25 unless noted):
   a write can be stale.
 - **Every write updates `last_activity_ts`** to the write time (both archive and
   unarchive, measured), so a channel archived today reads as 0 days idle.
+
+### How `slack-ext channel-archive` / `channel-unarchive` use these
+
+**State read.** `admin.conversations.search` with `query=<channel id>`,
+`search_channel_types=all`, `limit=20`, matched on `id` locally. On a miss:
+`conversations.info` for the name (works for public channels and ones the admin
+is in), then `query=<name>`. Up to 5 pages per query, never a full-org scan
+(~104 calls at limit 20); a false miss can only cause a `not-found` refusal.
+
+**Flow.** Dry run: read, evaluate guards, print state and what `--confirm` would
+do; never writes, exits 0. `--confirm`: the read IS the pre-write re-check
+(nothing between it and the write), then guards, then the write, then the
+read-back (10 attempts, 10 s apart, until `is_archived` flips).
+
+| Refusal | When | Exit |
+|---------|------|------|
+| `not-found` | no channel with this id in search | 1 |
+| `already-archived` / `not-archived` | nothing to do, no write | **0** |
+| `ext-shared-hosted-elsewhere` | ext-shared, `conversation_host_id` is not this org | 1 |
+| `ext-shared-host-unknown` | ext-shared, no `conversation_host_id` | 1 |
+| `ext-shared-requires-allow-shared` | archive only: ext-shared, hosted by this org, no `--allow-shared` | 1 |
+| `members-unknown` | `--max-members` given, count null / missing / `-1` | 1 |
+| `members-over-limit` | `--max-members` given, count greater than N | 1 |
+| `activity-unknown` | `--min-idle-days` given, `last_activity_ts` missing or unparseable | 1 |
+| `active-recently` | `--min-idle-days` given, idle fewer than N days | 1 |
+| `archived-unknown` | Slack did not report `is_archived` | 1 |
+
+Write results: `archived (confirmed)` exit 0; `archived (unconfirmed: search
+index did not reflect it after N attempts)` exit 3 (`ok:true` was returned; run
+the dry run again later); the API error exit 1.
+
+**Why `--allow-shared`:** archiving an ext-shared channel this org hosts ends
+every connected external org's access to it. `member_count` and idle days say
+nothing about who on the partner side still depends on it, and the partner
+cannot undo it, so it takes an explicit flag. `channel-unarchive` needs no flag
+(it restores access that existed) but its dry run says so.
 
 ## App Manifest API (`apps.manifest.*`, `tooling.tokens.rotate`)
 
