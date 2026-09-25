@@ -4,6 +4,37 @@ Base URL: `/api/` (same-origin XHR from `app.slack.com`)
 Auth: `xoxc-*` token from `localStorage` key `localConfig_v2` → `.teams[<workspaceId>].token`
 Transport: XHR with `Content-Type: application/x-www-form-urlencoded` and `withCredentials: true`
 
+## Contents
+
+- [Authentication](#authentication)
+- [Endpoints](#endpoints)
+  - [POST /api/conversations.history](#post-apiconversationshistory)
+  - [POST /api/conversations.replies](#post-apiconversationsreplies)
+  - [POST /api/chat.postMessage](#post-apichatpostmessage)
+  - [POST /api/reactions.add](#post-apireactionsadd)
+  - [POST /api/conversations.open](#post-apiconversationsopen)
+  - [POST /api/conversations.info](#post-apiconversationsinfo)
+  - [POST /api/auth.test](#post-apiauthtest)
+  - [POST /api/users.info](#post-apiusersinfo)
+  - [POST /api/search.modules](#post-apisearchmodules)
+  - [POST /api/chat.attachmentAction](#post-apichatattachmentaction)
+- [Enterprise Grid Restrictions](#enterprise-grid-restrictions)
+  - [POST /api/activity.feed](#post-apiactivityfeed)
+- [Error Handling](#error-handling)
+- [Admin User-Management Methods (`users.admin.*`)](#admin-user-management-methods-usersadmin)
+  - [POST /api/users.admin.setUltraRestricted](#post-apiusersadminsetultrarestricted)
+  - [POST /api/users.admin.setRestricted](#post-apiusersadminsetrestricted)
+  - [POST /api/users.admin.setRegular](#post-apiusersadminsetregular)
+  - [POST /api/conversations.invite (for guest channel management)](#post-apiconversationsinvite-for-guest-channel-management)
+  - [POST /api/conversations.kick (for guest channel management)](#post-apiconversationskick-for-guest-channel-management)
+- [App Manifest API (`apps.manifest.*`, `tooling.tokens.rotate`)](#app-manifest-api-appsmanifest-toolingtokensrotate)
+  - [POST /api/apps.manifest.export](#post-apiappsmanifestexport)
+  - [POST /api/apps.manifest.validate](#post-apiappsmanifestvalidate)
+  - [POST /api/apps.manifest.update](#post-apiappsmanifestupdate)
+  - [POST /api/tooling.tokens.rotate](#post-apitoolingtokensrotate)
+  - [POST /api/apps.manifest.create, POST /api/apps.manifest.delete — never wired up](#post-apiappsmanifestcreate-post-apiappsmanifestdelete--never-wired-up)
+  - [Probing a method name without a credential](#probing-a-method-name-without-a-credential)
+
 ## Authentication
 
 All requests include:
