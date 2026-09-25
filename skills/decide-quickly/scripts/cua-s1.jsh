@@ -42,27 +42,18 @@ Run playwright-cli snapshot first. Selects and radios are left out.
 The first plan needs onnxruntime-web, installed with ipk on that first run.
 `.trim();
 
-async function loadOrt() {
-  const dirs = [
-    '/shared/lib/node_modules/onnxruntime-web/dist',
-    '/workspace/node_modules/onnxruntime-web/dist',
-  ];
-  let last;
-  for (const dir of dirs) {
-    const file = `${dir}/ort.wasm.bundle.min.mjs`;
-    if (!(await fs.exists(file))) continue;
-    try {
-      const loaded = await host.nativeImport(host.previewUrl(file));
-      const ort = loaded.InferenceSession ? loaded : loaded.default;
-      if (!ort || !ort.InferenceSession) throw new Error('ort bundle has no InferenceSession');
-      host.configureOrt(ort, dir);
-      return ort;
-    } catch (err) {
-      if (err && err.name === 'NodeExitError') throw err;
-      last = err;
-    }
-  }
-  throw last || new Error('onnxruntime-web wasm bundle is missing. Run ipk add -g onnxruntime-web.');
+// Load only the copy prepareRuntime checked. Falling through to another root
+// would load a copy whose version nobody looked at.
+async function loadOrt(ortDir) {
+  const dist = `${ortDir}/dist`;
+  const file = `${dist}/ort.wasm.bundle.min.mjs`;
+  if (!(await fs.exists(file))) throw new Error(`onnxruntime-web: ${file} is missing`);
+  const loaded = await host.nativeImport(host.previewUrl(file));
+  const ort = loaded.InferenceSession ? loaded : loaded.default;
+  if (!ort || !ort.InferenceSession) throw new Error('ort bundle has no InferenceSession');
+  host.checkOrtVersion(ort, ortDir);
+  host.configureOrt(ort, dist);
+  return ort;
 }
 
 function loadApi() {
@@ -85,14 +76,8 @@ async function prepareRuntime() {
     outfile: BUNDLE,
     packages: [{ spec: '@ai-ecoverse/cua-s1.js@0.1.1', name: '@ai-ecoverse/cua-s1.js' }],
   });
-  const ortReady =
-    (await fs.exists('/shared/lib/node_modules/onnxruntime-web/dist/ort.wasm.bundle.min.mjs')) ||
-    (await fs.exists('/workspace/node_modules/onnxruntime-web/dist/ort.wasm.bundle.min.mjs'));
-  let installedOrt = false;
-  if (!ortReady) {
-    await host.ensurePackage(exec, fs, 'onnxruntime-web@1.30.0', 'onnxruntime-web');
-    installedOrt = true;
-  }
+  const ortCopy = await host.ensureOrt(exec, fs);
+  const installedOrt = ortCopy.installed;
   if (rebuilt || installedOrt) {
     if (process.env[READY] === '1') {
       cli.die('installed the cua-s1 bundle but this process cannot require it yet. Run the command again.', {
@@ -101,6 +86,7 @@ async function prepareRuntime() {
     }
     await host.reexec(exec, READY);
   }
+  return ortCopy.dir;
 }
 
 async function downloadWeights() {
@@ -150,7 +136,7 @@ async function cmdElements(flags) {
 }
 
 async function cmdPlan(flags) {
-  await prepareRuntime();
+  const ortDir = await prepareRuntime();
   const loaded = await formFromFlags(flags);
   if (loaded.elements.length === 0) {
     cli.die('the snapshot has no text fields, checkboxes, or buttons', { prefix: 'cua-s1' });
@@ -164,7 +150,7 @@ async function cmdPlan(flags) {
   console.error(
     `cua-s1: runtime wasm${host.hasWebGpu() ? '' : ' (navigator.gpu is not required)'}`
   );
-  const ortLoaded = await loadOrt();
+  const ortLoaded = await loadOrt(ortDir);
   const url = host.previewUrl(base.endsWith('/') ? base : `${base}/`);
   const api = loadApi();
   const model = await api.loadCuaS1(url, { ort: ortLoaded });

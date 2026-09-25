@@ -5,6 +5,11 @@
 
 const PACKAGE_ROOTS = ['/shared/lib/node_modules', '/workspace/node_modules'];
 const ESBUILD_FALLBACK = 'esbuild-wasm@0.28.2';
+// kev and cua-s1 load the same global copy, so they share one pin.
+const ORT_SPEC = 'onnxruntime-web@1.30.0';
+const ORT_NAME = 'onnxruntime-web';
+// The file the loaders probe for. The first root that has it is the copy loaded.
+const ORT_PROBE = 'dist/ort.wasm.bundle.min.mjs';
 
 function parentDir(path) {
   const index = path.lastIndexOf('/');
@@ -97,6 +102,79 @@ async function ensurePackage(exec, fs, spec, name) {
     throw new Error(`${name} is ${got || 'unknown'} after ipk add -g ${spec}`);
   }
   return installed;
+}
+
+/**
+ * Decide whether a pinned copy has to be installed.
+ * copies: [{ dir, hasProbe, version }] in PACKAGE_ROOTS order. version is null
+ * when package.json is missing or unreadable.
+ * The loader takes the first copy that has the probe file, so only that copy is
+ * judged: a pinned copy later in the order does not rescue a stale earlier one.
+ * The pin is exact, so a newer copy is replaced too.
+ */
+function planPinnedCopy(copies, want) {
+  const loaded = copies.find((copy) => copy.hasProbe);
+  if (!loaded) return { install: true, dir: null, version: null };
+  return { install: loaded.version !== want, dir: loaded.dir, version: loaded.version };
+}
+
+function describeCopy(plan, name, probe) {
+  if (!plan.dir) return `no ${name}/${probe} under ${PACKAGE_ROOTS.join(' or ')}`;
+  return `${plan.dir} is ${plan.version || 'unknown (no readable package.json)'}`;
+}
+
+async function listCopies(fs, name, probe) {
+  const copies = [];
+  for (const root of PACKAGE_ROOTS) {
+    const dir = `${root}/${name}`;
+    const hasProbe = await fs.exists(`${dir}/${probe}`);
+    let version = null;
+    if (hasProbe) {
+      try {
+        version = (await readPackageVersion(fs, dir)) || null;
+      } catch {
+        version = null;
+      }
+    }
+    copies.push({ dir, hasProbe, version });
+  }
+  return copies;
+}
+
+/**
+ * Make the copy the loader will pick match spec exactly, installing with
+ * ipk add -g when it does not. Returns { dir, installed }. Throws, naming both
+ * versions and the path, when the install does not fix the loaded copy.
+ */
+async function ensurePinnedCopy(exec, fs, spec, name, probe) {
+  const want = versionOfSpec(spec);
+  const before = planPinnedCopy(await listCopies(fs, name, probe), want);
+  if (!before.install) return { dir: before.dir, installed: false };
+  console.error(`${name}: ${describeCopy(before, name, probe)}, need ${want}; ipk add -g ${spec}`);
+  await run(exec, ['ipk', 'add', '-g', spec]);
+  const after = planPinnedCopy(await listCopies(fs, name, probe), want);
+  if (after.install) {
+    throw new Error(
+      `${name}: need ${want}, but after ipk add -g ${spec} ${describeCopy(after, name, probe)}`
+    );
+  }
+  return { dir: after.dir, installed: true };
+}
+
+function ensureOrt(exec, fs) {
+  return ensurePinnedCopy(exec, fs, ORT_SPEC, ORT_NAME, ORT_PROBE);
+}
+
+// ort.env.versions.web is set by onnxruntime-web's own entry point. Absent
+// means an unusual build: the package.json check already ran, so let it pass.
+function checkOrtVersion(ort, dir) {
+  const want = versionOfSpec(ORT_SPEC);
+  const versions = ort && ort.env && ort.env.versions;
+  const got = versions && versions.web;
+  if (typeof got === 'string' && got !== want) {
+    throw new Error(`${ORT_NAME}: loaded ${got} from ${dir}, need ${want}`);
+  }
+  return ort;
 }
 
 async function ensureEsbuild(exec, fs) {
@@ -218,6 +296,8 @@ function configureOrt(ort, distDir) {
 
 module.exports = {
   PACKAGE_ROOTS,
+  ORT_SPEC,
+  ORT_PROBE,
   resolvePath,
   previewUrl,
   hasWebGpu,
@@ -226,6 +306,10 @@ module.exports = {
   versionOfSpec,
   packageSatisfies,
   ensurePackage,
+  planPinnedCopy,
+  ensurePinnedCopy,
+  ensureOrt,
+  checkOrtVersion,
   ensureEsbuild,
   normalizeFlags,
   ensureBundle,
