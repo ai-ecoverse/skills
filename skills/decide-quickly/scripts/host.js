@@ -8,8 +8,10 @@ const ESBUILD_FALLBACK = 'esbuild-wasm@0.28.2';
 // kev and cua-s1 load the same global copy, so they share one pin.
 const ORT_SPEC = 'onnxruntime-web@1.30.0';
 const ORT_NAME = 'onnxruntime-web';
-// The file the loaders probe for. The first root that has it is the copy loaded.
-const ORT_PROBE = 'dist/ort.wasm.bundle.min.mjs';
+// Every bundle the scripts may import: kev takes webgpu when navigator.gpu
+// exists and retries on wasm; cua-s1 takes wasm. A root counts as a copy only
+// with all of them, so the copy judged is the copy that serves whichever loads.
+const ORT_BUNDLES = ['dist/ort.wasm.bundle.min.mjs', 'dist/ort.webgpu.bundle.min.mjs'];
 
 function parentDir(path) {
   const index = path.lastIndexOf('/');
@@ -106,10 +108,12 @@ async function ensurePackage(exec, fs, spec, name) {
 
 /**
  * Decide whether a pinned copy has to be installed.
- * copies: [{ dir, hasProbe, version }] in PACKAGE_ROOTS order. version is null
- * when package.json is missing or unreadable.
- * The loader takes the first copy that has the probe file, so only that copy is
- * judged: a pinned copy later in the order does not rescue a stale earlier one.
+ * copies: [{ dir, hasProbe, version }] in PACKAGE_ROOTS order. hasProbe is true
+ * only when the root has every probed file; version is null when package.json
+ * is missing or unreadable.
+ * The first complete copy is the one loaded, so only that copy is judged: a
+ * pinned copy later in the order does not rescue a stale earlier one, and a
+ * partial root earlier in the order is skipped.
  * The pin is exact, so a newer copy is replaced too.
  */
 function planPinnedCopy(copies, want) {
@@ -118,16 +122,25 @@ function planPinnedCopy(copies, want) {
   return { install: loaded.version !== want, dir: loaded.dir, version: loaded.version };
 }
 
-function describeCopy(plan, name, probe) {
-  if (!plan.dir) return `no ${name}/${probe} under ${PACKAGE_ROOTS.join(' or ')}`;
-  return `${plan.dir} is ${plan.version || 'unknown (no readable package.json)'}`;
+function describeCopy(plan, copies, probes) {
+  if (plan.dir) return `${plan.dir} is ${plan.version || 'unknown (no readable package.json)'}`;
+  const roots = copies.map((copy) =>
+    copy.missing.length === probes.length
+      ? `${copy.dir} is absent`
+      : `${copy.dir} lacks ${copy.missing.join(', ')}`
+  );
+  return `no copy has ${probes.join(' and ')}: ${roots.join('; ')}`;
 }
 
-async function listCopies(fs, name, probe) {
+async function listCopies(fs, name, probes) {
   const copies = [];
   for (const root of PACKAGE_ROOTS) {
     const dir = `${root}/${name}`;
-    const hasProbe = await fs.exists(`${dir}/${probe}`);
+    const missing = [];
+    for (const probe of probes) {
+      if (!(await fs.exists(`${dir}/${probe}`))) missing.push(probe);
+    }
+    const hasProbe = missing.length === 0;
     let version = null;
     if (hasProbe) {
       try {
@@ -136,7 +149,7 @@ async function listCopies(fs, name, probe) {
         version = null;
       }
     }
-    copies.push({ dir, hasProbe, version });
+    copies.push({ dir, hasProbe, version, missing });
   }
   return copies;
 }
@@ -146,23 +159,25 @@ async function listCopies(fs, name, probe) {
  * ipk add -g when it does not. Returns { dir, installed }. Throws, naming both
  * versions and the path, when the install does not fix the loaded copy.
  */
-async function ensurePinnedCopy(exec, fs, spec, name, probe) {
+async function ensurePinnedCopy(exec, fs, spec, name, probes) {
   const want = versionOfSpec(spec);
-  const before = planPinnedCopy(await listCopies(fs, name, probe), want);
+  const copiesBefore = await listCopies(fs, name, probes);
+  const before = planPinnedCopy(copiesBefore, want);
   if (!before.install) return { dir: before.dir, installed: false };
-  console.error(`${name}: ${describeCopy(before, name, probe)}, need ${want}; ipk add -g ${spec}`);
+  const why = describeCopy(before, copiesBefore, probes);
+  console.error(`${name}: ${why}, need ${want}; ipk add -g ${spec}`);
   await run(exec, ['ipk', 'add', '-g', spec]);
-  const after = planPinnedCopy(await listCopies(fs, name, probe), want);
+  const copiesAfter = await listCopies(fs, name, probes);
+  const after = planPinnedCopy(copiesAfter, want);
   if (after.install) {
-    throw new Error(
-      `${name}: need ${want}, but after ipk add -g ${spec} ${describeCopy(after, name, probe)}`
-    );
+    const still = describeCopy(after, copiesAfter, probes);
+    throw new Error(`${name}: need ${want}, but after ipk add -g ${spec} ${still}`);
   }
   return { dir: after.dir, installed: true };
 }
 
 function ensureOrt(exec, fs) {
-  return ensurePinnedCopy(exec, fs, ORT_SPEC, ORT_NAME, ORT_PROBE);
+  return ensurePinnedCopy(exec, fs, ORT_SPEC, ORT_NAME, ORT_BUNDLES);
 }
 
 // ort.env.versions.web is set by onnxruntime-web's own entry point. Absent
@@ -297,7 +312,7 @@ function configureOrt(ort, distDir) {
 module.exports = {
   PACKAGE_ROOTS,
   ORT_SPEC,
-  ORT_PROBE,
+  ORT_BUNDLES,
   resolvePath,
   previewUrl,
   hasWebGpu,

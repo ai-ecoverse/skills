@@ -9,9 +9,20 @@ const GLOBAL = '/shared/lib/node_modules/onnxruntime-web';
 const LOCAL = '/workspace/node_modules/onnxruntime-web';
 const PIN = host.versionOfSpec(host.ORT_SPEC);
 
-// A copy is what an install leaves: package.json plus the probed bundle.
-function copy(dir, version) {
-  const files = { [`${dir}/${host.ORT_PROBE}`]: '// bundle' };
+// The bundles an onnxruntime-web install ships, spelled out rather than read
+// from host.js, so this file also runs against an older host.js.
+const WASM = 'dist/ort.wasm.bundle.min.mjs';
+const WEBGPU = 'dist/ort.webgpu.bundle.min.mjs';
+
+// kev.jsh: webgpu when navigator.gpu exists, and wasm for the retry. cua-s1: wasm.
+function bundleFor(kind) {
+  return kind === 'webgpu' ? WEBGPU : WASM;
+}
+
+// A copy is what an install leaves: package.json plus its bundles.
+function copy(dir, version, bundles = [WASM, WEBGPU]) {
+  const files = {};
+  for (const bundle of bundles) files[`${dir}/${bundle}`] = '// bundle';
   if (version != null) files[`${dir}/package.json`] = JSON.stringify({ version });
   return files;
 }
@@ -27,22 +38,23 @@ function fakeFs(files) {
   };
 }
 
-// ipk add -g writes the global root. installs is the version it leaves there.
-function fakeExec(fs, installs) {
+// ipk add -g writes the global root. installs is the version it leaves there,
+// bundles the files it leaves.
+function fakeExec(fs, installs, bundles) {
   const calls = [];
   return {
     calls,
     spawn: async (argv) => {
       calls.push(argv.join(' '));
-      Object.assign(fs.files, copy(GLOBAL, installs));
+      Object.assign(fs.files, copy(GLOBAL, installs, bundles));
       return { exitCode: 0, stdout: '', stderr: '' };
     },
   };
 }
 
-async function gate(files, installs = PIN) {
+async function gate(files, installs = PIN, bundles = undefined) {
   const fs = fakeFs({ ...files });
-  const exec = fakeExec(fs, installs);
+  const exec = fakeExec(fs, installs, bundles);
   let result = null;
   let error = '';
   try {
@@ -50,7 +62,7 @@ async function gate(files, installs = PIN) {
   } catch (err) {
     error = err.message;
   }
-  return { result, error, calls: exec.calls };
+  return { result, error, calls: exec.calls, fs };
 }
 
 test('the pin is one exact version', () => {
@@ -143,5 +155,53 @@ test('both scripts gate onnxruntime-web through host.ensureOrt only', async () =
     is([script, source.includes('host.ensureOrt(exec, fs)')], [script, true]);
     is([script, source.includes('onnxruntime-web@')], [script, false]);
     is([script, source.includes('node_modules/onnxruntime-web')], [script, false]);
+  }
+});
+
+// Codex review on #432: the gate probed only the wasm bundle, so an exact-version
+// root without the webgpu bundle passed, kev's webgpu load failed, and it fell
+// back to wasm although the next root had a complete copy.
+test('webgpu: a first root without the webgpu bundle yields to a complete later copy', async () => {
+  const { result, calls, fs } = await gate({
+    ...copy(GLOBAL, PIN, [WASM]),
+    ...copy(LOCAL, PIN),
+  });
+  is(calls, []);
+  is(result, { dir: LOCAL, installed: false });
+  // What kev loads with navigator.gpu present, then on its wasm retry.
+  is(await fs.exists(`${result.dir}/${bundleFor('webgpu')}`), true);
+  is(await fs.exists(`${result.dir}/${bundleFor('wasm')}`), true);
+});
+
+test('no webgpu: a complete exact copy is used as is', async () => {
+  const { result, calls, fs } = await gate(copy(GLOBAL, PIN));
+  is(calls, []);
+  is(result, { dir: GLOBAL, installed: false });
+  is(await fs.exists(`${result.dir}/${bundleFor('wasm')}`), true);
+});
+
+test('no webgpu: a wasm-only copy is still reinstalled, so every worker gets one copy', async () => {
+  const { result, calls, fs } = await gate(copy(GLOBAL, PIN, [WASM]));
+  is(calls, [`ipk add -g ${host.ORT_SPEC}`]);
+  is(result, { dir: GLOBAL, installed: true });
+  is(await fs.exists(`${GLOBAL}/${WEBGPU}`), true);
+});
+
+test('an install that leaves out the webgpu bundle names the file and the path', async () => {
+  const { result, error } = await gate(copy(GLOBAL, PIN, [WASM]), PIN, [WASM]);
+  is(result, null);
+  is(error.includes(`${GLOBAL} lacks ${WEBGPU}`), true);
+  is(error.includes(`${LOCAL} is absent`), true);
+});
+
+test('the gate probes every bundle the scripts import', async () => {
+  const probed = host.ORT_BUNDLES || [];
+  for (const script of ['scripts/kev.jsh', 'scripts/cua-s1.jsh']) {
+    const source = String(await realFs.readFile(script));
+    const imported = source.match(/ort\.[a-z]+\.bundle\.min\.mjs/g) || [];
+    is([script, imported.length > 0], [script, true]);
+    for (const name of imported) {
+      is([script, name, probed.includes(`dist/${name}`)], [script, name, true]);
+    }
   }
 });
