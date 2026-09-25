@@ -123,6 +123,32 @@ function formatProbability(value) {
   return value.toFixed(2);
 }
 
+// A score answer carries `score`, the expected level (sum of level × probability,
+// so usually fractional), and `legend`, which maps each level index ("0", "1", …)
+// to its option. The printed label is the option at the level nearest `score`:
+// a half rounds up, as noul prints yes at exactly 0.5, and a score past either
+// end takes the end label. Only numeric legend keys count as levels. With no
+// usable legend or score the number is printed, as before.
+function scoreLabel(answer) {
+  const score = answer.score;
+  const legend = answer.legend && typeof answer.legend === 'object' ? answer.legend : {};
+  let best = null;
+  if (typeof score === 'number' && Number.isFinite(score)) {
+    for (const key of Object.keys(legend)) {
+      if (!/^\d+$/.test(key)) continue;
+      const level = Number(key);
+      if (best === null) {
+        best = level;
+        continue;
+      }
+      const gap = Math.abs(level - score);
+      const bestGap = Math.abs(best - score);
+      if (gap < bestGap || (gap === bestGap && level > best)) best = level;
+    }
+  }
+  return best === null ? String(score) : String(legend[String(best)]);
+}
+
 function formatAnswers(answers) {
   const lines = [];
   for (const [name, answer] of Object.entries(answers)) {
@@ -135,8 +161,7 @@ function formatAnswers(answers) {
       lines.push(`${name}\t${answer.choice}\t${formatProbability(answer.confidence)}`);
       continue;
     }
-    const level = answer.legend[String(answer.score)] ?? String(answer.score);
-    lines.push(`${name}\t${level}\t${formatProbability(answer.confidence)}`);
+    lines.push(`${name}\t${scoreLabel(answer)}\t${formatProbability(answer.confidence)}`);
   }
   return lines.length === 0 ? '' : `${lines.join('\n')}\n`;
 }
