@@ -601,6 +601,13 @@ Wire facts (measured 2026-09-25 unless noted):
 
 - **`channel_ids` is silently ignored** (2026-09-22): the response is the
   unfiltered list. Never filter with it.
+- **`query` is not a reliable server-side filter.** Measured 2026-09-25:
+  `query=concierge` (`search_channel_types=all`, `limit=20`) returned 2078
+  channels over 105 pages, essentially the whole org; only 5 have "concierge" in
+  their name. `query=zzqq-no-such-channel-xyz` returned 0. Always match results
+  locally, and treat a search as complete only once `next_cursor` is empty: a
+  cap on rows fetched before the local match silently drops matches (this is
+  the `channel-search --max` bug).
 - **`query=<channel id>` finds the channel.** 40 of 40 sampled channels
   (public, private including non-member, archived, ext-shared) came back for
   their own id, each as the only hit; `search_channel_types=all` is needed to
@@ -653,7 +660,14 @@ Wire facts (measured 2026-09-25 unless noted):
 `search_channel_types=all`, `limit=20`, matched on `id` locally. On a miss:
 `conversations.info` for the name (works for public channels and ones the admin
 is in), then `query=<name>`. Up to 5 pages per query, never a full-org scan
-(~104 calls at limit 20); a false miss can only cause a `not-found` refusal.
+(~104 calls at limit 20). **`not-found` is reported only after a complete
+search.** Everything short of that fails the command (exit 1, "whether the
+channel exists is UNKNOWN"), never a `not-found`: no body, `ok:false`, `ok:true`
+without a `conversations` array (`malformed_response`), the page cap reached
+with a cursor still pending (`lookup_truncated`), or `conversations.info`
+failing with anything other than the expected `channel_not_found`. The helper
+does not use `channel-search` and has no `--max`. `--json` emits a result
+object on every path, including failures and zero matches.
 
 **Flow.** Dry run: read, evaluate guards, print state and what `--confirm` would
 do; never writes, exits 0. `--confirm`: the read IS the pre-write re-check

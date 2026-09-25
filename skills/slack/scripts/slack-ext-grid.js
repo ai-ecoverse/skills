@@ -579,7 +579,20 @@ function evaluateChannelGuards(action, state, opts) {
 // 2. On a miss: take the name from opts.name, else from conversations.info
 //    (public channels and channels the admin is in), and search by name.
 // Returns { found, channel, via, error }. A miss is { found:false } and the
-// caller refuses as not-found; a false miss can only cause a refusal.
+// caller refuses as not-found.
+//
+// "Not found" is only reported after a COMPLETE search. Anything short of that
+// is an error, never a miss (channel-search has shipped both of these as a
+// false "no channels matched": --max dropping matches, and --json printing no
+// JSON on zero results):
+//   - no body, ok:false, or ok:true without a conversations array
+//     -> error (no_response / the Slack error / malformed_response)
+//   - the page cap reached while a next_cursor is still pending
+//     -> error lookup_truncated (the rest was never looked at)
+//   - conversations.info failing with anything but channel_not_found
+//     -> error (the name fallback never ran)
+// This helper never calls channel-search and has no --max-style cap that can
+// end a search early and call it empty.
 async function lookupChannel(call, channelId, opts) {
   const o = opts || {};
   const maxPages = o.maxPages || CHANNEL_LOOKUP_MAX_PAGES;
@@ -587,14 +600,16 @@ async function lookupChannel(call, channelId, opts) {
     let cursor = '';
     for (let page = 0; page < maxPages; page += 1) {
       const r = await call('admin.conversations.search', buildChannelLookupParams(query, cursor));
-      if (!r || !r.ok) return { error: (r && r.error) || 'no_response' };
-      const hit = (r.conversations || []).find((c) => c && c.id === channelId);
+      if (!r || typeof r !== 'object') return { error: 'no_response' };
+      if (!r.ok) return { error: r.error || 'no_response' };
+      if (!Array.isArray(r.conversations)) return { error: 'malformed_response' };
+      const hit = r.conversations.find((c) => c && c.id === channelId);
       if (hit) return { channel: hit };
       const meta = r.response_metadata || {};
       cursor = r.next_cursor || meta.next_cursor || '';
-      if (!cursor) break;
+      if (!cursor) return { channel: null };
     }
-    return { channel: null };
+    return { error: 'lookup_truncated' };
   }
   const byId = await searchFor(channelId);
   if (byId.error) return { found: false, channel: null, via: 'id', error: byId.error };
@@ -602,7 +617,16 @@ async function lookupChannel(call, channelId, opts) {
   let name = o.name || null;
   if (!name) {
     const info = await call('conversations.info', { channel: channelId });
-    if (info && info.ok && info.channel && info.channel.name) name = info.channel.name;
+    if (!info || typeof info !== 'object') {
+      return { found: false, channel: null, via: 'id', error: 'no_response' };
+    }
+    if (info.ok && info.channel && info.channel.name) {
+      name = info.channel.name;
+    } else if (!info.ok && info.error !== 'channel_not_found') {
+      // channel_not_found is the expected answer for a private channel the
+      // admin is not in. Anything else means the fallback did not run.
+      return { found: false, channel: null, via: 'id', error: 'conversations.info: ' + (info.error || 'no_response') };
+    }
   }
   if (!name) return { found: false, channel: null, via: 'id' };
   const byName = await searchFor(name);
@@ -671,7 +695,7 @@ async function runChannelArchiveFlow(spec) {
   const found = await lookupChannel(spec.call, spec.channelId);
   if (found.error) {
     result.status = 'read-error';
-    result.error = 'admin.conversations.search failed: ' + found.error;
+    result.error = 'channel lookup failed (' + found.error + '): whether the channel exists is UNKNOWN, so nothing was changed';
     result.exitCode = 1;
     return result;
   }

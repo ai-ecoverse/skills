@@ -1288,3 +1288,48 @@ test('channel-unarchive dry run (entry point) warns that connections are not res
   is(exitOf(h), 0);
   ok(/unarchiving is not expected to reconnect them/.test(h.text()), h.text());
 });
+
+// ── An incomplete read is a failure, never "not found" (entry point) ──────────
+
+test('channel-archive (entry point): ok:true body without conversations fails, not not-found', async () => {
+  const h = await load({
+    runMain: true,
+    argv: ['channel-archive', 'C04633RSEDU', '--confirm'],
+    api: (m) => (m === 'admin.conversations.search' ? { ok: true } : undefined),
+  });
+  is(exitOf(h), 1);
+  ok(/channel lookup failed \(malformed_response\)/.test(errOf(h)), errOf(h));
+  ok(!/not-found/.test(errOf(h)), 'must not be reported as not-found');
+  is(archWrites(h), 0);
+});
+
+test('channel-archive (entry point): a missing response body fails, not not-found', async () => {
+  const h = await load({
+    runMain: true,
+    argv: ['channel-archive', 'C04633RSEDU'],
+    api: (m) => (m === 'admin.conversations.search' ? null : undefined),
+  });
+  is(exitOf(h), 1);
+  ok(/channel lookup failed \(xhr_error\)/.test(errOf(h)), errOf(h));
+  ok(!/not-found/.test(errOf(h)));
+});
+
+test('channel-archive --json (entry point): a failed lookup still emits a JSON result', async () => {
+  const h = await load({
+    runMain: true,
+    argv: ['channel-archive', 'C04633RSEDU', '--json'],
+    api: (m) => (m === 'admin.conversations.search' ? { ok: true } : undefined),
+  });
+  is(exitOf(h), 1);
+  const j = JSON.parse(h.stdout.find((s) => s.startsWith('{')));
+  is(j.status, 'read-error');
+  is(j.state, null);
+  is(j.decision, null);
+});
+
+test('channel-archive --json (entry point): a genuine not-found also emits JSON', async () => {
+  const h = await load({ runMain: true, argv: ['channel-archive', 'C0NOTHERE01', '--json'], api: archApi([null]) });
+  is(exitOf(h), 0);
+  const j = JSON.parse(h.stdout.find((s) => s.startsWith('{')));
+  is(j.decision.reason, 'not-found');
+});

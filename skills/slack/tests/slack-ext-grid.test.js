@@ -1250,3 +1250,112 @@ test('state read uses the RAW search entry: fields channel-search --json drops s
 //   already-archived check below the member-count guard.
 //   Caught by: "... ARCHIVED channel with member_count -1 reports already-archived ...",
 //   "flow --confirm: archived channel with member_count -1 reports already-archived ...".
+
+// ── A lookup that did not complete is a FAILURE, never "not found" ────────────
+//
+// channel-search has shipped two false "no channels matched" answers: --max
+// dropping matches, and --json printing no JSON on zero results. A false
+// not-found here would say a channel does not exist when it does. So every
+// incomplete read must surface as an error.
+
+function rawCall(fn) {
+  const calls = [];
+  const call = async (method, params) => {
+    calls.push({ method, params });
+    return fn(method, params, calls.length);
+  };
+  return { call, calls };
+}
+
+test('lookupChannel: no body at all is an error, not not-found', async () => {
+  const h = rawCall(() => undefined);
+  const r = await lookupChannel(h.call, 'C04633RSEDU');
+  is(r.found, false);
+  is(r.error, 'no_response');
+});
+
+test('lookupChannel: null / non-object body is an error, not not-found', async () => {
+  for (const body of [null, 'oops', 42]) {
+    const r = await lookupChannel(rawCall(() => body).call, 'C04633RSEDU');
+    is(r.error, 'no_response', 'body=' + JSON.stringify(body));
+  }
+});
+
+test('lookupChannel: ok:true with no conversations array is malformed_response, not not-found', async () => {
+  for (const body of [{ ok: true }, { ok: true, conversations: null }, { ok: true, conversations: {} }]) {
+    const h = rawCall((m) => (m === 'admin.conversations.search' ? body : { ok: false, error: 'channel_not_found' }));
+    const r = await lookupChannel(h.call, 'C04633RSEDU');
+    is(r.found, false);
+    is(r.error, 'malformed_response', JSON.stringify(body));
+    is(h.calls.length, 1, 'must stop at the malformed page, not fall back and call it a miss');
+  }
+});
+
+test('lookupChannel: page cap reached with a cursor pending is lookup_truncated, not not-found', async () => {
+  const h = rawCall(() => ({ ok: true, conversations: [chan({ id: 'C0OTHER0001' })], next_cursor: 'more' }));
+  const r = await lookupChannel(h.call, 'C04633RSEDU');
+  is(r.found, false);
+  is(r.error, 'lookup_truncated');
+  is(h.calls.filter((c) => c.method === S).length, 5);
+});
+
+test('lookupChannel: a complete search with no hit (cursor exhausted) IS not-found', async () => {
+  // Control for the three tests above: a genuine, complete miss stays a miss.
+  const h = rawCall((m) =>
+    m === 'admin.conversations.search'
+      ? { ok: true, conversations: [chan({ id: 'C0OTHER0001' })], next_cursor: '' }
+      : { ok: false, error: 'channel_not_found' }
+  );
+  const r = await lookupChannel(h.call, 'C04633RSEDU');
+  is(r.found, false);
+  is(r.error, undefined);
+});
+
+test('lookupChannel: conversations.info failing with anything but channel_not_found is an error', async () => {
+  const miss = { ok: true, conversations: [], next_cursor: '' };
+  const r1 = await lookupChannel(
+    rawCall((m) => (m === S ? miss : { ok: false, error: 'ratelimited' })).call,
+    'C04633RSEDU'
+  );
+  is(r1.error, 'conversations.info: ratelimited');
+  const r2 = await lookupChannel(rawCall((m) => (m === S ? miss : undefined)).call, 'C04633RSEDU');
+  is(r2.error, 'no_response');
+});
+
+test('lookupChannel: never calls channel-search-style params (no max, no channel_ids)', async () => {
+  const h = rawCall((m) => (m === S ? { ok: true, conversations: [], next_cursor: '' } : { ok: false, error: 'channel_not_found' }));
+  await lookupChannel(h.call, 'C04633RSEDU');
+  for (const c of h.calls.filter((x) => x.method === S)) {
+    is(c.params.max, undefined);
+    is(c.params.channel_ids, undefined);
+    is(c.params.limit, '20');
+  }
+});
+
+test('flow --confirm with a missing body: read-error, exit 1, no decision, no write', async () => {
+  const h = rawCall(() => undefined);
+  const r = await runChannelArchiveFlow({
+    action: 'archive', channelId: 'C04633RSEDU', orgId: ORG, confirm: true,
+    maxMembers: null, minIdleDays: null, call: h.call, sleep: async () => {}, now: () => NOW_MS,
+  });
+  is(r.status, 'read-error');
+  is(r.exitCode, 1);
+  is(r.decision, null, 'must not be evaluated as not-found');
+  is(h.calls.filter((c) => c.method === A).length, 0);
+});
+
+test('flow dry run with a malformed body: read-error (exit 1), not a not-found report', async () => {
+  const h = rawCall(() => ({ ok: true }));
+  const r = await runChannelArchiveFlow({
+    action: 'archive', channelId: 'C04633RSEDU', orgId: ORG, confirm: false,
+    maxMembers: null, minIdleDays: null, call: h.call, sleep: async () => {}, now: () => NOW_MS,
+  });
+  is(r.status, 'read-error');
+  is(r.exitCode, 1);
+  ok(/malformed_response/.test(r.error), r.error);
+});
+
+// MUTATION M5 (malformed body read as empty): in lookupChannel, replace the
+//   Array.isArray(r.conversations) check with `(r.conversations || [])`.
+//   Caught by: "lookupChannel: ok:true with no conversations array is
+//   malformed_response ...", "flow dry run with a malformed body ...".
