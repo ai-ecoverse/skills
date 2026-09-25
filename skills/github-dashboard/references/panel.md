@@ -24,8 +24,16 @@ updates, the quick view, the per-card actions and follow-up actions.
 - **Follow-up actions** from the snapshot render as buttons in the quick view: a
   *nudge* dispatches its instruction to the cone; a *clarification* is raised as a
   question instead, because an agent cannot answer it.
+- **Adding a repository**: the `+` at the end of the project chips opens an
+  `owner/repo` field in place. Enter runs `gh monitor add <owner/repo>`, which
+  checks the repository on GitHub, resolves its bb project and adds it to the
+  watch list; the repository appears after the next poll. When no bb project
+  resolves, append a `proj_` id or `none` to the same field and press Enter
+  again. The text is validated against a strict `owner/repo` pattern and quoted
+  before anything runs. This needs a github skill that provides `gh monitor`.
 - Nothing the panel does writes to GitHub. Its only writes are
-  `data/user-state.json` (the operator's marks) and licks to the cone.
+  `data/user-state.json` (the operator's marks), licks to the cone, and the watch
+  list, through `gh monitor add`.
 
 The stage table, the precedence between overlapping groups, snooze semantics
 and the answered and open design questions are in domain-model.md, alongside
