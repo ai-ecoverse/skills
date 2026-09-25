@@ -54,6 +54,10 @@ const skill = require('sliccy:skill');
 const fs = require('fs');
 
 const PREFIX = 'slack-ext';
+// Declared up here: the parseArgv catch below uses it at module init, before
+// the channel-archive section would have initialised it (temporal dead zone).
+const CHANNEL_ATTRIBUTION =
+  'xoxc session call: indistinguishable from a direct human action in channel event history.';
 const SLACK_DOMAIN = 'app.slack.com';
 
 // App Manifest API (see the `app` section below). Called over plain HTTPS with a
@@ -311,7 +315,7 @@ See also: slack user <id> (read-only profile from the standard slack CLI)
 `;
 
 // ── Argument parsing ──────────────────────────────────────────────────────────
-const { BOOL_FLAGS, parseArgv, parseList } = require('./argv.js');
+const { BOOL_FLAGS, parseArgv, parseList, jsonInvocation } = require('./argv.js');
 
 // parseArgv throws on a malformed flag (e.g. --confirm=fasle). This call is at
 // module top level, OUTSIDE the try/catch that wraps main(), so the throw would
@@ -322,7 +326,21 @@ let parsed;
 try {
   parsed = parseArgv(process.argv.slice(2));
 } catch (err) {
-  cli.die((err && err.message) || String(err), { prefix: PREFIX });
+  const message = (err && err.message) || String(err);
+  // channel-archive / channel-unarchive promise ONE JSON document on stdout
+  // in --json mode, including this path (e.g. --allow-shared=maybe).
+  const j = jsonInvocation(process.argv.slice(2), ['channel-archive', 'channel-unarchive']);
+  if (j) {
+    cli.out({
+      notice: CHANNEL_ATTRIBUTION,
+      action: j.command.replace('channel-', ''),
+      channel_id: j.channelId,
+      status: 'invalid-value',
+      error: 'invalid-value: ' + message,
+      exitCode: 1,
+    });
+  }
+  cli.die(message, { prefix: PREFIX });
 }
 const flags = parsed.flags;
 const words = parsed.positional;
@@ -2872,9 +2890,6 @@ async function cmdChannelToPrivate() {
 // search_channel_types=all, matched on id locally (measured: finds the channel,
 // private non-member and archived included). conversations.info cannot be the
 // read: it answers channel_not_found for a private channel the admin is not in.
-
-const CHANNEL_ATTRIBUTION =
-  'xoxc session call: indistinguishable from a direct human action in channel event history.';
 
 function describeSharing(st) {
   if (st.host === 'not-shared') return st.is_org_shared ? 'org-shared (internal), not ext-shared' : 'not ext-shared';

@@ -85,4 +85,21 @@ function parseList(raw, label) {
   return out;
 }
 
-module.exports = { BOOL_FLAGS, parseArgv, parseList };
+// When parseArgv itself throws (e.g. --allow-shared=maybe), no command has
+// run yet, so nothing can emit the command's JSON result. This scans the RAW
+// argv for a JSON-mode invocation of one of `commands` so the caller can emit
+// a JSON error document instead of leaving stdout empty.
+// Returns { command, channelId } or null. --json counts only as a bare flag or
+// with a true value (--json=true/1/yes/on); a malformed --json value is itself
+// the parse error and is answered in plain text.
+function jsonInvocation(argv, commands) {
+  const list = Array.isArray(argv) ? argv : [];
+  const json = list.some((a) => a === '--json' || /^--json=(true|1|yes|on)$/i.test(a));
+  if (!json) return null;
+  const idx = list.findIndex((a) => commands.includes(a));
+  if (idx < 0) return null;
+  const next = list[idx + 1];
+  return { command: list[idx], channelId: next && /^[CG][A-Z0-9]{6,}$/.test(next) ? next : null };
+}
+
+module.exports = { BOOL_FLAGS, parseArgv, parseList, jsonInvocation };

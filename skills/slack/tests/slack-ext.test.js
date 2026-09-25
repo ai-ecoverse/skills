@@ -1486,3 +1486,48 @@ test('without --json the human output is unchanged (attribution notice still pri
 // MUTATION M7 (a human line in JSON mode): print the attribution line with
 //   console.log instead of say(). Caught by every "--json ... entire stdout is
 //   one JSON document" test that reaches the flow.
+
+// ── Codex round 2 (P2): a parseArgv failure in --json mode still emits JSON ────
+//
+// parseArgv throws at module init for a malformed boolean (e.g.
+// --allow-shared=maybe), before any command runs. The top-level catch now emits
+// the JSON error document for channel-archive / channel-unarchive.
+
+const PARSE_FAILURES = [
+  ['--allow-shared=maybe', ['channel-archive', 'C04633RSEDU', '--allow-shared=maybe', '--json'], 'archive'],
+  ['--confirm=fasle', ['channel-archive', 'C04633RSEDU', '--confirm=fasle', '--json'], 'archive'],
+  ['unarchive --confirm=maybe', ['channel-unarchive', 'C0634KMGW2G', '--confirm=maybe', '--json'], 'unarchive'],
+  ['--json=true form', ['--ws=T0385CHDU9E', 'channel-archive', 'C04633RSEDU', '--allow-shared=2', '--json=true'], 'archive'],
+];
+
+for (const [label, argv, action] of PARSE_FAILURES) {
+  test('--json parse failure ' + label + ' (entry point): entire stdout is one JSON document, no Slack call', async () => {
+    const h = await load({ runMain: true, argv, api: archApi([archChan()]) });
+    is(exitOf(h), 1);
+    ok(/is not a valid boolean value/.test(errOf(h)), errOf(h));
+    const j = onlyJson(h);
+    is(j.status, 'invalid-value');
+    is(j.action, action);
+    ok(/^invalid-value: --[a-z-]+=\S+ is not a valid boolean value/.test(j.error), j.error);
+    is(j.exitCode, 1);
+    is(j.notice, 'xoxc session call: indistinguishable from a direct human action in channel event history.');
+    is(h.calls.length, 0);
+  });
+}
+
+test('parse failure WITHOUT --json (entry point): plain error only, nothing on stdout', async () => {
+  const h = await load({ runMain: true, argv: ['channel-archive', 'C04633RSEDU', '--allow-shared=maybe'], api: archApi([archChan()]) });
+  is(exitOf(h), 1);
+  is(h.stdout.length, 0);
+  is(h.calls.length, 0);
+});
+
+test('parse failure on another command with --json is unchanged (scope: archive commands only)', async () => {
+  const h = await load({ runMain: true, argv: ['eg-status', 'U12345', '--confirm=fasle', '--json'] });
+  is(exitOf(h), 1);
+  is(h.stdout.length, 0);
+});
+
+// MUTATION M8 (parse failure answered in text only): in the top-level
+//   parseArgv catch, drop the jsonInvocation / cli.out block. Caught by every
+//   "--json parse failure ... entire stdout is one JSON document" test.
