@@ -171,12 +171,66 @@
         color: inherit;
         opacity: 0.7;
       }
-      /* Inert controls: real buttons that do nothing YET. They keep button
-         chrome (so they read as controls) but not the pointer cursor (so they
-         do not promise a working click). Phase 7a wired the three per-card
-         actions, so the only survivor is the project `+`. */
-      .btn-inert.sprinkle-btn {
-        cursor: default;
+      /* Phase 8g: the project +. It was the last inert control; it now runs
+         `gh monitor add`. Clicking it swaps the + IN PLACE for one text field
+         with the chips' height, so the row keeps its grid; the result line
+         takes the row's full width underneath, aligned with the chips. The
+         field is the host's .sprinkle-text-field (its colours and states),
+         sized here only. */
+      .add-field {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+      }
+      .add-input.sprinkle-text-field {
+        height: 26px;
+        width: 30ch;
+        padding: 0 10px;
+        font-family: var(--s2-font-mono, ui-monospace, monospace);
+        font-size: var(--s2-font-size-75, 12px);
+      }
+      .add-input[aria-invalid='true'] {
+        border-color: var(--s2-negative);
+      }
+      .add-field.is-busy .add-input.sprinkle-text-field {
+        padding-right: 28px; /* room for the ring */
+      }
+      .add-input:disabled {
+        cursor: progress;
+        opacity: 0.7;
+      }
+      /* Busy: a ring inside the field's right edge, shown only while the
+         command runs. Border colours, so it themes with the tokens. */
+      .add-spin {
+        position: absolute;
+        right: 8px;
+        width: 12px;
+        height: 12px;
+        border-radius: var(--s2-radius-pill, 9999px);
+        border: 2px solid var(--s2-content-tertiary, var(--s2-content-secondary));
+        border-top-color: var(--s2-content-default);
+        animation: add-spin 0.8s linear infinite;
+      }
+      @keyframes add-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .add-spin {
+          animation-duration: 3s;
+        }
+      }
+      .add-msg {
+        flex-basis: 100%;
+        font-size: var(--s2-font-size-75, 12px);
+        color: var(--s2-content-secondary, var(--s2-content-default));
+      }
+      .add-msg:empty {
+        display: none;
+      }
+      .add-msg[data-kind='error'] {
+        color: var(--s2-negative);
       }
 
       /* --- phase 7c: quick view ----------------------------------------
@@ -1023,7 +1077,10 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
            - the three per-card actions (phase 7a): snooze and done write USER
              STATE to a second VFS file and re-render; go navigates. NONE of
              them writes to GitHub, and the panel still makes no GitHub calls;
-           - the project `+`: still INERT, no handler.
+           - the project `+` (phase 8g): runs `gh monitor add <owner/repo>`
+             through slicc.exec, which verifies the repo on GitHub (a READ) and
+             writes /shared/github-monitor/config.json. Nothing is written to
+             GitHub. The new repo appears after the poller's next run.
          ================================================================== */
 
       /* GHD-CLASSIFY:START (phase 8e) ------------------------------------
@@ -4136,14 +4193,266 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         for (const [repo, n] of counts) {
           wrap.appendChild(mk(repo, repo, n, `Show only ${repo}`));
         }
-        const add = el('button', 'sprinkle-btn sprinkle-btn--secondary btn-mini btn-inert');
-        add.type = 'button';
-        add.setAttribute('aria-disabled', 'true');
-        add.title =
-          'Add a project to watch: will prompt for an org/repo, verify access, and persist it to the watch list. Not wired in this draft.';
-        add.appendChild(icon('plus'));
-        wrap.appendChild(add);
+        // Phase 8g: the + (or its field, if open) and its result line.
+        wrap.appendChild(addControl());
+        wrap.appendChild(addMessage());
         return wrap;
+      }
+
+      /* GHD-ADDREPO:START (phase 8g) ----------------------------------------
+         The project +: what the operator typed -> the ONE shell command run,
+         and the command's output -> one terse line. PURE (no DOM, no slicc),
+         so tests/add-repo.test.js cuts this region out of the built panel.
+
+         The argument goes to a SHELL (slicc.exec takes a command string), so
+         injection is ruled out twice: the text must match a strict pattern
+         BEFORE anything runs, and every argument is single-quoted anyway.
+
+         Input grammar, one line:  owner/repo [proj_xxxxxxxx | none]
+         The optional second word exists for ONE case: `gh monitor add` refuses
+         to guess when it cannot resolve the repo's bb project (none, several,
+         or bb unreachable) and demands --bb-project or --no-bb-project. The
+         error line then says to append a proj_ id or "none" and press Enter
+         again, so the choice needs no second control.
+         ------------------------------------------------------------------ */
+      // gh.jsh's MONITOR_SLUG_RE, verbatim: each side starts with a letter or
+      // digit and continues with letters, digits, dots, dashes or underscores.
+      const ADD_SLUG_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
+      const ADD_BB_PROJECT_RE = /^proj_[A-Za-z0-9]+$/;
+      const ADD_MAX_LEN = 160; // GitHub: owner <= 39, repo <= 100
+      // The poller waits 30 min after each run finishes and a run takes a few
+      // minutes, so a new repo shows up after about 34 min.
+      const ADD_POLL_EVERY_MIN = 34;
+      const ADD_HINT = 'Use owner/repo, optionally followed by a proj_ id or none.';
+
+      /** Single-quote for a POSIX shell. Validated input never contains a
+          quote; this is the second line of defence, not the first. */
+      function shellQuote(v) {
+        return "'" + String(v).split("'").join("'\\''") + "'";
+      }
+
+      /** text -> { ok, slug, bb, cmd } or { ok: false, why }. bb is undefined
+          (let gh resolve it), null (--no-bb-project) or a proj_ id. */
+      function buildAddCommand(text) {
+        const t = typeof text === 'string' ? text.trim() : '';
+        if (!t) return { ok: false, why: ADD_HINT };
+        if (t.length > ADD_MAX_LEN) return { ok: false, why: 'Too long for owner/repo.' };
+        const words = t.split(/ +/);
+        if (words.length > 2 || !ADD_SLUG_RE.test(words[0])) return { ok: false, why: ADD_HINT };
+        let bb;
+        if (words.length === 2) {
+          if (words[1] === 'none') bb = null;
+          else if (ADD_BB_PROJECT_RE.test(words[1])) bb = words[1];
+          else return { ok: false, why: ADD_HINT };
+        }
+        const slug = words[0];
+        let cmd = 'gh monitor add ' + shellQuote(slug);
+        if (bb === null) cmd += ' --no-bb-project';
+        else if (bb) cmd += ' --bb-project ' + shellQuote(bb);
+        return { ok: true, slug, bb, cmd };
+      }
+
+      /** The command's first meaningful line: ANSI colour removed, the
+          "Error:" / "gh:" prefix and "monitor add:" removed, no stack frames,
+          cut to one short line. */
+      function shortError(text) {
+        const lines = String(text || '')
+          .replace(/\u001b\[[0-9;]*[A-Za-z]/g, '')
+          .split('\n')
+          .map((l) => l.trim())
+          .filter((l) => l && !/^at\s/.test(l));
+        let first = (lines[0] || '').replace(/^(Error|gh):\s*/i, '').replace(/^monitor add:\s*/, '');
+        if (first.length > 140) first = first.slice(0, 139) + '\u2026';
+        return first;
+      }
+
+      /** slicc.exec result (or { timedOut: true }) -> { ok, kind, text }. */
+      function summarizeAdd(res, built) {
+        const slug = built.slug;
+        if (res && res.timedOut) {
+          return { ok: false, kind: 'timeout', text: `No answer yet for ${slug}. It may still finish; check gh monitor list.` };
+        }
+        const out = String((res && res.stdout) || '').replace(/\u001b\[[0-9;]*[A-Za-z]/g, '');
+        const err = String((res && res.stderr) || '');
+        const code = res ? res.exitCode : undefined;
+        // exit 0 alone is not trusted: gh prints "Monitoring <slug>" on success.
+        if (code === 0 && /Monitoring\s+\S+/.test(out)) {
+          const canonical = (out.match(/Monitoring\s+(\S+)/) || [])[1] || slug;
+          return { ok: true, kind: 'added', text: `${canonical} added. It appears after the next poll, in about ${ADD_POLL_EVERY_MIN} min.` };
+        }
+        const e = err || out;
+        if (/is already monitored/.test(e)) return { ok: false, kind: 'duplicate', text: `${slug} is already watched.` };
+        if (/redirects to \S+, which is already monitored/.test(e)) return { ok: false, kind: 'duplicate', text: shortError(e) };
+        if (/returned 404/.test(e)) return { ok: false, kind: 'not-found', text: `${slug} not found, or private to this token.` };
+        if (/no bb project could be resolved/.test(e)) {
+          return { ok: false, kind: 'bb-choice', text: `No bb project for ${slug}. Append a proj_ id or none, then Enter.` };
+        }
+        if (/matches \d+ bb projects/.test(e)) {
+          const ids = [...new Set(e.match(/proj_[A-Za-z0-9]+/g) || [])].join(', ');
+          return { ok: false, kind: 'bb-choice', text: `${slug} matches several bb projects (${ids}). Append one, then Enter.` };
+        }
+        if (/could not ask bb/.test(e)) {
+          return { ok: false, kind: 'bb-choice', text: 'bb did not answer. Append a proj_ id or none, then Enter.' };
+        }
+        if (/no bb project has id/.test(e)) return { ok: false, kind: 'bb-id', text: shortError(e) };
+        const first = shortError(e);
+        return { ok: false, kind: 'failed', text: first || `gh monitor add failed (exit ${code === undefined ? '?' : code}).` };
+      }
+      /* GHD-ADDREPO:END */
+
+      /* The project + in the DOM. State lives here, not in the nodes, because a
+         full render() (any filter click) rebuilds the row: an open field keeps
+         its text and a running command keeps its busy state across it. */
+      const ADD_TIMEOUT_MS = 60000;
+      const ADD = { open: false, value: '', busy: false, msg: '', kind: null, attempt: 0 };
+
+      function addControl() {
+        if (!ADD.open) {
+          const b = el('button', 'sprinkle-btn sprinkle-btn--secondary btn-mini add-ctl');
+          b.type = 'button';
+          b.setAttribute('aria-label', 'Add a repository to watch');
+          b.title = 'Add a repository to watch (gh monitor add owner/repo)';
+          b.appendChild(icon('plus'));
+          b.addEventListener('click', () => {
+            ADD.open = true;
+            ADD.msg = '';
+            repaintAdd(true);
+          });
+          return b;
+        }
+        const f = el('span', 'add-field add-ctl');
+        const input = el('input', 'sprinkle-text-field add-input');
+        input.type = 'text';
+        input.placeholder = 'owner/repo';
+        input.setAttribute('aria-label', 'Repository to watch, as owner/repo');
+        input.autocomplete = 'off';
+        input.spellcheck = false;
+        input.value = ADD.value;
+        input.disabled = ADD.busy;
+        input.setAttribute('aria-busy', ADD.busy ? 'true' : 'false');
+        input.setAttribute('aria-invalid', ADD.kind && ADD.kind !== 'added' && !ADD.busy ? 'true' : 'false');
+        input.addEventListener('input', () => {
+          ADD.value = input.value;
+          input.setAttribute('aria-invalid', 'false');
+        });
+        input.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            submitAdd();
+          } else if (e.key === 'Escape') {
+            // Handled here, not by the quick view's document-level Escape.
+            e.preventDefault();
+            e.stopPropagation();
+            cancelAdd();
+          }
+        });
+        input.addEventListener('blur', () => {
+          if (!ADD.busy && !input.value.trim()) cancelAdd();
+        });
+        f.appendChild(input);
+        if (ADD.busy) {
+          f.classList.add('is-busy');
+          f.appendChild(el('span', 'add-spin'));
+        }
+        return f;
+      }
+
+      function addMessage() {
+        const m = el('p', 'add-msg', ADD.msg);
+        m.setAttribute('role', 'status');
+        m.setAttribute('aria-live', 'polite');
+        if (ADD.kind) m.dataset.kind = ADD.kind === 'added' ? 'ok' : 'error';
+        return m;
+      }
+
+      /** Swap the + / field and the result line in place, nothing else. */
+      function repaintAdd(focus) {
+        const row = document.querySelector('#app .filters');
+        if (!row) return;
+        const oldCtl = row.querySelector('.add-ctl');
+        const oldMsg = row.querySelector('.add-msg');
+        const ctl = addControl();
+        if (oldCtl) row.replaceChild(ctl, oldCtl);
+        else row.appendChild(ctl);
+        const msg = addMessage();
+        if (oldMsg) {
+          // Keep the live region's node when only its text changes, so the
+          // update is announced.
+          oldMsg.textContent = ADD.msg;
+          if (msg.dataset.kind) oldMsg.dataset.kind = msg.dataset.kind;
+          else delete oldMsg.dataset.kind;
+        } else row.appendChild(msg);
+        if (window.LucideIcons) window.LucideIcons.render();
+        const input = ctl.querySelector ? ctl.querySelector('input') : null;
+        if (focus && input && !input.disabled) input.focus();
+      }
+
+      function cancelAdd() {
+        ADD.open = false;
+        ADD.value = '';
+        ADD.msg = '';
+        ADD.kind = null;
+        repaintAdd(false);
+        const plus = document.querySelector('#app .filters .add-ctl');
+        if (plus) plus.focus();
+      }
+
+      async function submitAdd() {
+        if (ADD.busy) return;
+        const built = buildAddCommand(ADD.value);
+        if (!built.ok) {
+          ADD.msg = built.why;
+          ADD.kind = 'invalid';
+          repaintAdd(true);
+          return;
+        }
+        if (typeof slicc === 'undefined' || typeof slicc.exec !== 'function') {
+          ADD.msg = 'This panel cannot run commands here (no slicc.exec).';
+          ADD.kind = 'failed';
+          repaintAdd(true);
+          return;
+        }
+        const attempt = ++ADD.attempt;
+        ADD.busy = true;
+        ADD.msg = `Adding ${built.slug}\u2026`;
+        ADD.kind = null;
+        repaintAdd(false);
+        const settle = (res) => {
+          if (attempt !== ADD.attempt) return; // a newer attempt owns the field
+          const s = summarizeAdd(res, built);
+          ADD.busy = false;
+          ADD.msg = s.text;
+          ADD.kind = s.kind;
+          if (s.ok) {
+            ADD.open = false;
+            ADD.value = '';
+          }
+          repaintAdd(!s.ok);
+          if (s.ok) {
+            const plus = document.querySelector('#app .filters .add-ctl');
+            if (plus && document.activeElement === document.body) plus.focus();
+          }
+        };
+        // exec latency from a panel is not bounded (measured in 7n), so the
+        // field is handed back after ADD_TIMEOUT_MS; a late answer still lands.
+        let timedOut = false;
+        const timer = setTimeout(() => {
+          timedOut = true;
+          settle({ timedOut: true });
+        }, ADD_TIMEOUT_MS);
+        let res;
+        try {
+          res = await slicc.exec(built.cmd);
+        } catch (err) {
+          res = { exitCode: -1, stdout: '', stderr: String((err && err.message) || err) };
+        }
+        clearTimeout(timer);
+        if (timedOut) {
+          // Late: only report it if nobody has started another attempt since.
+          if (attempt === ADD.attempt && !ADD.busy) settle(res);
+          return;
+        }
+        settle(res);
       }
 
       /** Visible, specific failure. Names the problem and the path, and
@@ -4533,8 +4842,9 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
 
         // Pass-3 item 1: the "unwired draft" footer line is deliberately NOT
         // rendered — the fact lives here in the source instead of consuming
-        // panel space. This panel makes no GitHub calls, and the three card
-        // actions plus the project + stay inert until a later wiring job.
+        // panel space. The three card actions write only local user state; the
+        // project + (phase 8g) runs `gh monitor add`, which reads GitHub and
+        // writes the watch list, never GitHub itself.
 
         // Lucide renders the data-lucide placeholders we just created.
         if (window.LucideIcons) window.LucideIcons.render();
@@ -4608,6 +4918,10 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
           QUICK_VIEW_HOVER_MS,
           QUICK_VIEW_CLOSE_MS,
           quickViewMode: () => QV_MODE,
+          // Phase 8g: the project + (pure pieces + its state), for probes.
+          buildAddCommand,
+          summarizeAdd,
+          addState: () => ({ ...ADD }),
           // Phase 8f: pure close decisions + the page-lock state, for probes.
           qvCloseAction,
           qvEscapeAction,
