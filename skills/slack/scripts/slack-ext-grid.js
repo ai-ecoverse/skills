@@ -628,7 +628,10 @@ async function lookupChannel(call, channelId, opts) {
     for (let page = 0; page < maxPages; page += 1) {
       const r = await call('admin.conversations.search', buildChannelLookupParams(query, cursor));
       if (!r || typeof r !== 'object') return { error: 'no_response' };
-      if (!r.ok) return { error: r.error || 'no_response' };
+      // Only the boolean true is success. A truthy non-boolean (e.g. ok:"false")
+      // is malformed: never trust channel state from it (writes are strict too).
+      if (r.ok === false) return { error: r.error || 'no_response' };
+      if (r.ok !== true) return { error: 'malformed_response' };
       if (!Array.isArray(r.conversations)) return { error: 'malformed_response' };
       const hit = r.conversations.find((c) => c && c.id === channelId);
       if (hit) return { channel: hit };
@@ -655,6 +658,9 @@ async function lookupChannel(call, channelId, opts) {
         return { found: false, channel: null, via: 'id', error: 'conversations.info: malformed_response' };
       }
       name = ch.name;
+    } else if (info.ok !== false) {
+      // ok is neither true nor false: malformed, not a miss.
+      return { found: false, channel: null, via: 'id', error: 'conversations.info: malformed_response' };
     } else if (info.error !== 'channel_not_found') {
       // channel_not_found is the expected answer for a private channel the
       // admin is not in. Anything else means the fallback did not run.

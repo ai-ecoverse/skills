@@ -1625,3 +1625,28 @@ test('channel-archive --json dry run (entry point): impact.external_team_ids is 
   is(j.impact.pending_external_team_ids, null);
   is(j.state.external_team_ids, null);
 });
+
+// ── Codex round 6 (P2): a truthy non-boolean ok never authorizes an archive ────
+
+test('channel-archive --confirm (entry point): search {ok:"false"} with a matching row fails closed, no archive call', async () => {
+  const h = await load({
+    runMain: true,
+    argv: ['channel-archive', 'C04633RSEDU', '--confirm'],
+    api: (m) => (m === 'admin.conversations.search' ? { ok: 'false', conversations: [archChan()], next_cursor: '' } : undefined),
+  });
+  is(exitOf(h), 1);
+  ok(/channel lookup failed \(malformed_response\)/.test(errOf(h)), errOf(h));
+  is(archWrites(h), 0);
+});
+
+test('channel-archive --json (entry point): search {ok:"false"} is a read-error JSON document', async () => {
+  const h = await load({
+    runMain: true,
+    argv: ['channel-archive', 'C04633RSEDU', '--json'],
+    api: (m) => (m === 'admin.conversations.search' ? { ok: 'false', conversations: [archChan()], next_cursor: '' } : undefined),
+  });
+  is(exitOf(h), 1);
+  const j = onlyJson(h);
+  is(j.status, 'read-error');
+  is(j.state, null);
+});

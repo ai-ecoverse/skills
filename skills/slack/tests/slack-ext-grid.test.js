@@ -1592,3 +1592,53 @@ ok(imp.text.includes('from 0 external organisations.'), imp.text);
 //   org ...", "sharedArchiveImpact: missing connected_team_ids ...",
 //   "... missing pending_connected_team_ids ...", "ext-shared-requires-allow-shared
 //   refusal with a missing connected list ...".
+
+// ── Codex round 6 (P2): only ok === true is a successful read ──────────────────
+//
+// A truthy non-boolean ok (e.g. "false") must never let a matching row through:
+// that row could authorize a confirmed archive. Writes are already strict.
+
+test('lookupChannel: search ok that is not the boolean true is malformed_response, even with a matching row', async () => {
+  for (const ok of ['false', 'true', 1, undefined, null]) {
+    const h = rawCall((m) => (m === S ? { ok, conversations: [chan()], next_cursor: '' } : { ok: false, error: 'channel_not_found' }));
+    const r = await lookupChannel(h.call, 'C04633RSEDU');
+    is(r.found, false, 'ok=' + JSON.stringify(ok));
+    is(r.channel, null);
+    is(r.error, 'malformed_response', 'ok=' + JSON.stringify(ok));
+  }
+});
+
+test('lookupChannel: search ok:false still reports the Slack error (control)', async () => {
+  const r = await lookupChannel(rawCall(() => ({ ok: false, error: 'ratelimited' })).call, 'C04633RSEDU');
+  is(r.error, 'ratelimited');
+});
+
+test('lookupChannel: conversations.info with a non-boolean ok is malformed, never the expected miss', async () => {
+  const miss = { ok: true, conversations: [], next_cursor: '' };
+  for (const ok of ['false', 0, undefined]) {
+    const r = await lookupChannel(rawCall((m) => (m === S ? miss : { ok, error: 'channel_not_found' })).call, 'C04633RSEDU');
+    is(r.error, 'conversations.info: malformed_response', 'ok=' + JSON.stringify(ok));
+  }
+  // control: the real boolean false + channel_not_found is the expected private-channel miss
+  const r = await lookupChannel(rawCall((m) => (m === S ? miss : { ok: false, error: 'channel_not_found' })).call, 'C04633RSEDU');
+  is(r.found, false);
+  is(r.error, undefined);
+});
+
+test('flow --confirm: search {ok:"false"} with a matching row is read-error, no decision, no archive call', async () => {
+  const h = rawCall((m) => (m === S ? { ok: 'false', conversations: [chan()], next_cursor: '' } : { ok: true }));
+  const r = await runChannelArchiveFlow({
+    action: 'archive', channelId: 'C04633RSEDU', orgId: ORG, confirm: true,
+    maxMembers: null, minIdleDays: null, call: h.call, sleep: async () => {}, now: () => NOW_MS,
+  });
+  is(r.status, 'read-error');
+  is(r.decision, null);
+  is(r.exitCode, 1);
+  is(h.calls.filter((c) => c.method === A).length, 0);
+});
+
+// MUTATION M12 (truthy ok trusted): in lookupChannel, drop the
+//   `if (r.ok !== true) return { error: 'malformed_response' };` line.
+//   Caught by: "lookupChannel: search ok that is not the boolean true ...",
+//   "flow --confirm: search {ok:\"false\"} with a matching row ...", and the
+//   entry-point test "channel-archive --confirm (entry point): search {ok:"false"} ...".
