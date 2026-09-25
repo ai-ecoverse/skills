@@ -140,6 +140,9 @@ limit goes to the server as given; there is no client-side ceiling.
 - `--all` reads 200-row pages until a short page and prints every thread,
   `--json` included (one merged array). Filters apply to every page, and
   `--offset` sets where it starts. `--all` with `--limit` is refused.
+- Hidden threads are left out unless `--include-hidden` is passed, and they are
+  left out of every page, so a count without it can sit well below the project's
+  real total. Pass it whenever the goal is every thread.
 - The list is ordered live. A thread created while you page pushes rows down, so
   one can come back on two pages; `--all` keeps the first copy of each id.
   Paging is not a snapshot: a thread created mid-run at a position already read
