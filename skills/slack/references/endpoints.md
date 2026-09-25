@@ -4,6 +4,39 @@ Base URL: `/api/` (same-origin XHR from `app.slack.com`)
 Auth: `xoxc-*` token from `localStorage` key `localConfig_v2` → `.teams[<workspaceId>].token`
 Transport: XHR with `Content-Type: application/x-www-form-urlencoded` and `withCredentials: true`
 
+## Contents
+
+- [Authentication](#authentication)
+- [Endpoints](#endpoints)
+  - [POST /api/conversations.history](#post-apiconversationshistory)
+  - [POST /api/conversations.replies](#post-apiconversationsreplies)
+  - [POST /api/chat.postMessage](#post-apichatpostmessage)
+  - [POST /api/reactions.add](#post-apireactionsadd)
+  - [POST /api/conversations.open](#post-apiconversationsopen)
+  - [POST /api/conversations.info](#post-apiconversationsinfo)
+  - [POST /api/auth.test](#post-apiauthtest)
+  - [POST /api/users.info](#post-apiusersinfo)
+  - [POST /api/search.modules](#post-apisearchmodules)
+  - [POST /api/chat.attachmentAction](#post-apichatattachmentaction)
+- [Enterprise Grid Restrictions](#enterprise-grid-restrictions)
+  - [POST /api/activity.feed](#post-apiactivityfeed)
+- [Error Handling](#error-handling)
+- [Admin User-Management Methods (`users.admin.*`)](#admin-user-management-methods-usersadmin)
+  - [POST /api/users.admin.setUltraRestricted](#post-apiusersadminsetultrarestricted)
+  - [POST /api/users.admin.setRestricted](#post-apiusersadminsetrestricted)
+  - [POST /api/users.admin.setRegular](#post-apiusersadminsetregular)
+  - [POST /api/conversations.invite (for guest channel management)](#post-apiconversationsinvite-for-guest-channel-management)
+  - [POST /api/conversations.kick (for guest channel management)](#post-apiconversationskick-for-guest-channel-management)
+- [Enterprise Grid channel search (`admin.conversations.search`)](#enterprise-grid-channel-search-adminconversationssearch)
+  - [POST /api/admin.conversations.search](#post-apiadminconversationssearch)
+- [App Manifest API (`apps.manifest.*`, `tooling.tokens.rotate`)](#app-manifest-api-appsmanifest-toolingtokensrotate)
+  - [POST /api/apps.manifest.export](#post-apiappsmanifestexport)
+  - [POST /api/apps.manifest.validate](#post-apiappsmanifestvalidate)
+  - [POST /api/apps.manifest.update](#post-apiappsmanifestupdate)
+  - [POST /api/tooling.tokens.rotate](#post-apitoolingtokensrotate)
+  - [POST /api/apps.manifest.create, POST /api/apps.manifest.delete — never wired up](#post-apiappsmanifestcreate-post-apiappsmanifestdelete--never-wired-up)
+  - [Probing a method name without a credential](#probing-a-method-name-without-a-credential)
+
 ## Authentication
 
 All requests include:
@@ -551,31 +584,12 @@ Remove a user from a channel. Used by `slack-ext remove-channel`.
 - `cant_kick_self` — cannot kick the token owner
 - `cant_kick_from_general` — some workspaces protect #general
 
-## Enterprise Grid Channel Admin (`admin.conversations.*`)
+## Enterprise Grid channel search (`admin.conversations.search`)
 
-Used by `slack-ext channel-search`, `channel-to-public`, `channel-to-private`,
-`channel-archive` and `channel-unarchive`. All take the **org-level** xoxc token
-(`localStorage['localConfig_v2'].teams['E06V3987PMY'].token`) and go through
-`browser.fetch` from the Slack tab like every other xoxc call. Calls are
-indistinguishable from the admin doing it by hand in channel event history.
-
-### POST /api/admin.conversations.archive
-
-Archive a channel. Used by `slack-ext channel-archive`.
-
-| Param | Required | Description |
-|-------|----------|-------------|
-| token | yes | org-level xoxc token |
-| channel_id | yes | Channel ID |
-
-Measured 2026-09-25: works on **private channels the admin is not a member of**
-and answers `{"ok":true}` with no warning. `ok:true` is not proof of the new
-state; read it back through `admin.conversations.search` (below), with retries.
-
-### POST /api/admin.conversations.unarchive
-
-Unarchive a channel. Used by `slack-ext channel-unarchive`. Same parameters and
-token as `admin.conversations.archive`.
+Endpoint contract used by `slack-ext channel-search` and by `channel-archive` / `channel-unarchive`.
+The archive and unarchive methods, the wire facts measured on this method (the `query=<channel id>`
+lookup, microsecond timestamps, `member_count: -1`, the index lag) and how `slack-ext` uses them:
+`references/enterprise-grid.md`, "Enterprise Grid Channel Admin".
 
 ### POST /api/admin.conversations.search
 
@@ -585,7 +599,7 @@ admin is not in (`conversations.info` answers `channel_not_found` for those).
 | Param | Required | Description |
 |-------|----------|-------------|
 | token | yes | org-level xoxc token |
-| query | yes | May be empty. `query=<channel id>` finds that channel (below) |
+| query | yes | May be empty. `query=<channel id>` finds that channel (see `references/enterprise-grid.md`) |
 | limit | yes | **1 to 20.** `limit=21` answers `invalid_arguments`. `slack-ext channel-search` defaults to 50 and so fails unless `--limit=20` is passed |
 | search_channel_types | yes | `all`, `exclude_archived`, `private`, `private_exclude`, `archived`. `private_archive` answers `invalid_search_channel_type` |
 | sort | yes | `name`, `member_count`, `created` (`last_activity_ts` answers `invalid_sort`) |
@@ -596,135 +610,6 @@ Response: `{ok, conversations: [...], next_cursor}`. Fields used by
 `channel-archive`: `id`, `name`, `is_private`, `is_archived`, `member_count`,
 `external_user_count`, `is_ext_shared`, `is_pending_ext_shared`,
 `is_org_shared`, `conversation_host_id`, `last_activity_ts`.
-
-Wire facts (measured 2026-09-25 unless noted):
-
-- **`channel_ids` is silently ignored** (2026-09-22): the response is the
-  unfiltered list. Never filter with it.
-- **`query` is not a reliable server-side filter.** Measured 2026-09-25:
-  `query=concierge` (`search_channel_types=all`, `limit=20`) returned 2078
-  channels over 105 pages, essentially the whole org; only 5 have "concierge" in
-  their name. `query=zzqq-no-such-channel-xyz` returned 0. Always match results
-  locally, and treat a search as complete only once `next_cursor` is empty: a
-  cap on rows fetched before the local match silently drops matches (this is
-  the `channel-search --max` bug).
-- **`query=<channel id>` finds the channel.** 40 of 40 sampled channels
-  (public, private including non-member, archived, ext-shared) came back for
-  their own id, each as the only hit; `search_channel_types=all` is needed to
-  include archived ones. A partial id matches nothing; a bogus id answers zero
-  results. Still match on `id` locally.
-- **`last_activity_ts` is microseconds** (16 digits): `1686690712432979` is
-  2023-06-13T21:11:52.432Z. Divide by 1000 for JavaScript milliseconds.
-- **`member_count` is `-1` for archived channels** (all 14 archived channels in
-  the sample; also measured on 2026-09-25 ~13:20 UTC), not null or missing. Treat
-  ANY negative or non-finite count, `null` and a missing field as unknown,
-  never zero: a plain `members <= max` check would PASS `-1`. Check
-  `is_archived` before any member guard, so an archived channel reads as
-  already archived, not as an unknown count.
-- **Archiving a Slack Connect channel we host disconnects every external
-  organisation.** Measured on 5 of 5 channels (2026-09-25 ~13:20 UTC). Before:
-  `is_ext_shared: true`, `external_user_count` 2 to 4, connected teams present.
-  After `admin.conversations.archive`: `is_ext_shared: false`,
-  `is_pending_ext_shared: false`, `external_user_count: 0`,
-  `connected_team_ids: []`. `admin.conversations.unarchive` restores the channel
-  but almost certainly NOT the connections, which would need a new Slack Connect
-  invitation. That last point is an inference; it was not tested live.
-- **External organisations** are `connected_team_ids` minus this org
-  (`E06V3987PMY`) and its own workspaces (`internal_team_ids`,
-  `context_team_id`), e.g. `["T0BQQL6FJ","E06V3987PMY","E08CP5WPXGT"]` is 2
-  external orgs. Pending invitations are in `pending_connected_team_ids`. A missing
-  or non-array list is **unknown** (`null` in the `--json` impact), and the text says
-  the count could not be determined; it is never shown as 0.
-- **`slack-ext channel-search --json` drops `is_ext_shared`,
-  `is_pending_ext_shared` and `conversation_host_id`** (its `summarizeChannel`
-  keeps neither). Anything that has to tell internal from shared or
-  hosted-elsewhere channels must read the raw `admin.conversations.search`
-  entry, as `channel-archive` does.
-- **`conversation_host_id`** appears on ext-shared channels only. It equals the
-  org id (`E06V3987PMY`) when this org hosts the channel; any other value is a
-  channel hosted by another org.
-- **The index lags a write, by up to ~50 s.** Right after
-  `admin.conversations.archive` the channel was not reported archived. On the
-  live round trip for `slack-ext channel-archive` (2026-09-25): an unarchive
-  showed after ~5 s; an archive read `is_archived: false`, then the channel was
-  **missing from the index entirely**, then `is_archived: true` 38 to 51 s after
-  the write. `conversations.info` (public channel) showed it archived at once.
-  A read-back has to retry (`slack-ext` uses 10 attempts, 10 s apart, 90 s) and
-  report "unconfirmed", not "failed", when it runs out. A read right after an
-  unarchive can still say archived, so a "nothing to do" answer that soon after
-  a write can be stale.
-- **Every write updates `last_activity_ts`** to the write time (both archive and
-  unarchive, measured), so a channel archived today reads as 0 days idle.
-
-### How `slack-ext channel-archive` / `channel-unarchive` use these
-
-**State read.** `admin.conversations.search` with `query=<channel id>`,
-`search_channel_types=all`, `limit=20`, matched on `id` locally. On a miss:
-`conversations.info` for the name (works for public channels and ones the admin
-is in), then `query=<name>`. Up to 5 pages per query, never a full-org scan
-(~104 calls at limit 20). **`not-found` is reported only after a complete
-search.** Everything short of that fails the command (exit 1, "whether the
-channel exists is UNKNOWN"), never a `not-found`: no body, `ok:false`, `ok:true`
-without a `conversations` array (`malformed_response`), the page cap reached
-with a cursor still pending (`lookup_truncated`), or `conversations.info`
-failing with anything other than the expected `channel_not_found`, or
-answering `ok:true` without this channel's `id` and a string `name`. A write
-counts only when it answers `ok === true`. The helper
-does not use `channel-search` and has no `--max`. `--json` emits a result
-object on every path, including failures and zero matches.
-
-**Flow.** Dry run: read, evaluate guards, print state and what `--confirm` would
-do; never writes, exits 0. `--confirm`: the read IS the pre-write re-check
-(nothing between it and the write), then guards, then the write, then the
-read-back (10 attempts, 10 s apart, until `is_archived` flips).
-
-| Refusal | When | Exit |
-|---------|------|------|
-| `not-found` | no channel with this id in search | 1 |
-| `already-archived` / `not-archived` | nothing to do, no write | **0** |
-| `sharing-unknown` | `is_ext_shared` or `is_pending_ext_shared` missing or not a boolean (never read as "not shared") | 1 |
-| `ext-shared-hosted-elsewhere` | ext-shared, `conversation_host_id` is not this org | 1 |
-| `ext-shared-host-unknown` | ext-shared, no `conversation_host_id` | 1 |
-| `ext-shared-requires-allow-shared` | archive only: ext-shared, hosted by this org, no `--allow-shared` | 1 |
-| `members-unknown` | `--max-members` given, count null / missing / negative (`-1`) / non-finite | 1 |
-| `members-over-limit` | `--max-members` given, count greater than N | 1 |
-| `activity-unknown` | `--min-idle-days` given, `last_activity_ts` missing or unparseable | 1 |
-| `active-recently` | `--min-idle-days` given, idle fewer than N days | 1 |
-| `archived-unknown` | Slack did not report `is_archived` | 1 |
-
-**Arguments fail closed.** Before any Slack call, on the dry run and with
-`--confirm` alike, every flag name is checked against an allow-list: the
-command's own flags plus the globals `--ws`, `--workspace`, `--org`, `--json`,
-`--confirm`, `--help`. `parseArgv` keeps unknown flags, so without this a typo
-such as `--max-member=2` left the real guard unset and a confirmed archive
-went ahead without it. Refusals, all exit 1: `unknown-flag: --max-member (did
-you mean --max-members?)`; `invalid-value` for a guard that is not a plain
-non-negative integer (`abc`, empty, `-3`, `2.5`, or no value); `unexpected-argument`
-for a stray word such as `max-members=2`; `archive-only-flag` for a guard given to
-`channel-unarchive`.
-
-**`--json` is one JSON document.** With `--json`, stdout carries only the result
-object on every path (dry run, refusal, success, unconfirmed, write error,
-read error, argument error, no Slack tab), with `status`, `exitCode` and the
-attribution notice as `notice`. Error text also goes to stderr.
-
-Write results: `archived (confirmed)` exit 0; `archived (unconfirmed: search
-index did not reflect it after N attempts)` exit 3 (`ok:true` was returned; run
-the dry run again later); the API error exit 1.
-
-**Why `--allow-shared`:** archiving a Slack Connect channel this org hosts
-disconnects every external organisation (measured, above), and unarchiving is
-not expected to reconnect them. The archive is therefore not fully reversible
-for a shared channel, and `member_count` / idle days say nothing about who on
-the partner side still depends on it. Without the flag the command refuses with
-`ext-shared-requires-allow-shared`; with it, the dry run and the confirm output
-both say, in plain words, "Archiving will disconnect N external users from M
-external organisations (...). Unarchiving will NOT reconnect them: that needs a
-new Slack Connect invitation." The `--json` result carries the same as
-`impact` (`external_users`, `external_team_ids`, `pending_external_team_ids`,
-`reversible: false`), and the confirm output prints the sharing state read
-back after the write. `channel-unarchive` takes no `--allow-shared`; its dry run
-notes that connections a previous archive cut are not expected to come back.
 
 ## App Manifest API (`apps.manifest.*`, `tooling.tokens.rotate`)
 

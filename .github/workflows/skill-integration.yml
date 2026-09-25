@@ -10,8 +10,8 @@ name: Skill integration
 #    runner with a canary suite, then run every *.test.{js,ts} file that imports
 #    `tst`. Files that require('node:test') are skipped — they cannot load in the
 #    SLICC test realm (ai-ecoverse/skills#389).
-# 5. The job fails when the canary, an install, or a tst suite fails. Skips are
-#    reported in the step summary and do not fail the check.
+# 5. The job fails when a changed skill has no tst suite, the canary fails, an
+#    install fails, or a tst suite fails. `node:test` files do not count.
 #
 # No model provider is required: the leader is driven with `slicc exec`, not a prompt.
 
@@ -83,7 +83,25 @@ jobs:
           printf '%s\n' "$DETECTED" | tee "$RUNNER_TEMP/skill-integration/targets.json"
           echo "has_skills=$(jq -r .has_skills <<< "$DETECTED")" >> "$GITHUB_OUTPUT"
           echo "has_tst=$(jq -r .has_tst <<< "$DETECTED")" >> "$GITHUB_OUTPUT"
+          echo "missing_tst=$(jq -c .missing_tst <<< "$DETECTED")" >> "$GITHUB_OUTPUT"
           echo "Detected: $DETECTED"
+
+      - name: Require an in-SLICC tst suite
+        id: require-tst
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.skill != ''
+        env:
+          MISSING_TST: ${{ steps.detect.outputs.missing_tst }}
+        run: |
+          set -euo pipefail
+          if [ "$MISSING_TST" = '[]' ] || [ -z "$MISSING_TST" ]; then
+            echo 'Every targeted skill has a tst suite.'
+            exit 0
+          fi
+          jq -r '.[]' <<< "$MISSING_TST" | while IFS= read -r skill; do
+            echo "::error file=skills/$skill/SKILL.md,title=$skill::No in-SLICC tst suite. Add a *.test.js that imports tst (see CLAUDE.md §16). node:test files do not count."
+          done
+          echo "missing_tst skills: $MISSING_TST"
+          exit 1
 
       - name: Start SLICC leader
         id: leader
@@ -158,6 +176,7 @@ jobs:
             echo "- self-test step: \`${{ steps.selftest.outcome }}\` (exit ${{ steps.selftest.outputs.exit-code || 'n/a' }})"
             echo "- has_skills: \`${{ steps.detect.outputs.has_skills }}\`"
             echo "- has_tst: \`${{ steps.detect.outputs.has_tst }}\`"
+            echo "- missing_tst: \`${{ steps.detect.outputs.missing_tst }}\`"
             if [ -f "$STDOUT" ]; then
               echo
               echo '<details><summary>Leader stdout</summary>'
@@ -172,6 +191,10 @@ jobs:
 
           if [ "${{ steps.detect.outcome }}" != 'success' ]; then
             echo '::error::Failed to detect affected skills'
+            exit 1
+          fi
+          if [ "${{ steps.require-tst.outcome }}" = 'failure' ]; then
+            echo '::error::A changed skill has no in-SLICC tst suite'
             exit 1
           fi
           if [ "${{ steps.leader.outcome }}" != 'success' ]; then
