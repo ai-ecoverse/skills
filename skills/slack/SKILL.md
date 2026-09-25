@@ -959,8 +959,9 @@ around:
 ## References
 
 - `references/endpoints.md` — full Slack Web API endpoint documentation,
-  including the `users.admin.*` admin methods and the `apps.manifest.*` App
-  Manifest API (wire format, update semantics, and the methods deliberately left
+  including the `users.admin.*` admin methods, the Enterprise Grid
+  `admin.conversations.*` channel methods (archive, unarchive, search), and the
+  `apps.manifest.*` App Manifest API (wire format, update semantics, and the methods deliberately left
   unwired).
 - `references/watch-architecture.md` — internals of `slack watch` and of
   `slack post`'s reply auto-watch (observer, filter, TTL teardown, state files).
@@ -1154,84 +1155,39 @@ Convert a public channel to private.
 
 #### `channel-archive <channel_id> [--confirm] [--max-members=N] [--min-idle-days=N] [--allow-shared] [--json]`
 
-Archive a channel. API: `admin.conversations.archive` with `channel_id`, org-level token
-(`E06V3987PMY`, the same one `channel-to-public` uses). It works on private channels the
-admin is **not** a member of, and answers `{"ok":true}` with no warning — so `ok:true` is not
-treated as proof; the state is read back.
+Archive a channel via `admin.conversations.archive` (org token; works on private channels the
+admin is not in, and answers `ok:true` with no warning, so the result is read back).
 
-**Dry run (no `--confirm`) reads the channel** and prints its current state: name, private or
-public, archived, members, external users, ext-shared/host, and last activity as a date plus
-days idle. Then it says exactly what `--confirm` would do, or which refusal would apply. It
-never writes and exits 0.
+1. **Dry run** (no `--confirm`) reads the channel and prints its current state (visibility,
+   archived, members, external users, sharing/host, last activity + days idle), then what
+   `--confirm` would do or which refusal would apply. Never writes; exits 0.
+2. **`--confirm`** re-reads the channel immediately before the write and refuses by name (exit 1)
+   if a guard no longer holds. State does change in between: a channel checked at 1 member had 4,
+   45 s later.
+3. **Read-back**: polls until `is_archived: true`, 10 attempts 10 s apart, because the search
+   index lags a write (measured 38-51 s for an archive). Prints `archived (confirmed)` (exit 0),
+   `archived (unconfirmed: search index did not reflect it after N attempts)` (exit **3**: the
+   write said `ok:true`; dry-run again later), or the API error (exit 1).
 
-**`--confirm` re-reads the channel immediately before the write** (nothing sits between that
-read and the write) and refuses, with a named reason and exit 1, when a guard no longer holds.
-State changes between a decision and the act: a channel checked at 1 member had 4 members 45 s
-later, when it was archived.
+Refusals: `not-found`, `ext-shared-hosted-elsewhere`, `ext-shared-host-unknown`,
+`ext-shared-requires-allow-shared`, `members-over-limit` / `members-unknown` (with
+`--max-members`; a null or `-1` count is unknown, never 0), `active-recently` /
+`activity-unknown` (with `--min-idle-days`), `archived-unknown`. `already-archived` is "nothing
+to do" and exits **0**.
 
-| Reason | When | Exit |
-|--------|------|------|
-| `not-found` | No channel with this id in `admin.conversations.search` | 1 |
-| `already-archived` | Already archived: nothing to do, no call made | **0** |
-| `ext-shared-hosted-elsewhere` | Ext-shared and `conversation_host_id` is another org | 1 |
-| `ext-shared-host-unknown` | Ext-shared but no `conversation_host_id` | 1 |
-| `ext-shared-requires-allow-shared` | Ext-shared and hosted by this org, without `--allow-shared` | 1 |
-| `members-unknown` | `--max-members` given and the count is null / undefined / `-1` (never read as 0) | 1 |
-| `members-over-limit` | `--max-members` given and the member count is greater than it | 1 |
-| `activity-unknown` | `--min-idle-days` given and `last_activity_ts` is missing or unparseable | 1 |
-| `active-recently` | `--min-idle-days` given and the channel was active more recently than that | 1 |
-| `archived-unknown` | Slack did not report `is_archived` | 1 |
-
-**Ext-shared channels hosted by this org need `--allow-shared`.** Archiving one ends every
-connected external org's access to it, which neither `--max-members` nor `--min-idle-days`
-measures (`member_count` does not tell you who on the other side still uses it). A channel
-hosted by another org is always refused.
-
-**Read-back.** After `ok:true` the command polls `admin.conversations.search` until it reports
-`is_archived: true`: 10 attempts, 10 s apart (t = 0 to 90 s), because the search index lags a
-write. Measured on the live round trip (2026-09-25, `C0634KMGW2G`): an unarchive showed in the
-index after ~5 s; an archive still read `is_archived: false`, then dropped out of the index
-entirely, then read `is_archived: true` between 38 s and 51 s after the write, while
-`conversations.info` reported it archived at once. A 30 s window was not enough. Results:
-
-- `archived (confirmed)` — exit 0
-- `archived (unconfirmed: search index did not reflect it after N attempts)` — exit **3**. The
-  write answered `ok:true`; re-run the dry run later to check.
-- the API error from the write — exit 1
-
-How the channel id is resolved: `admin.conversations.search` with `query=<channel id>` and
-`search_channel_types=all`, matched on `id` locally. Measured 2026-09-25: this finds the channel
-(40 of 40 sampled, including private non-member, archived and ext-shared channels; a partial or
-bogus id matches nothing). On a miss it falls back to `conversations.info` for the name and
-searches by name. `conversations.info` cannot be the primary read: it answers
-`channel_not_found` for a private channel the admin is not in.
+**Ext-shared channels this org hosts need `--allow-shared`**: archiving one ends every connected
+external org's access, which the member and idle guards do not measure. Channels hosted by
+another org are always refused.
 
 #### `channel-unarchive <channel_id> [--confirm] [--json]`
 
-Unarchive a channel. API: `admin.conversations.unarchive` with `channel_id`. Same dry run,
-pre-write re-check and read-back (until `is_archived: false`) as `channel-archive`. Refusals:
-`not-found`, `ext-shared-hosted-elsewhere`, `ext-shared-host-unknown`, `archived-unknown`.
-`not-archived` is "nothing to do" and exits 0. The member and idle guards do not apply
-(`--max-members`, `--min-idle-days`, `--allow-shared` are rejected); archived channels report
-`member_count: -1` anyway.
+`admin.conversations.unarchive`, with the same dry run, pre-write re-check and read-back (until
+`is_archived: false`). Refuses `not-found`, `ext-shared-hosted-elsewhere`,
+`ext-shared-host-unknown`, `archived-unknown`; `not-archived` exits 0.
 
-**`admin.conversations.search` wire facts these commands depend on (measured 2026-09-25):**
-
-- `limit` must be **<= 20**. `limit=21` answers `invalid_arguments`. (`channel-search`'s default
-  of 50 is affected; see its entry.)
-- Valid `search_channel_types` include `all`, `private`, `archived`, `exclude_archived`;
-  `private_archive` answers `invalid_search_channel_type`.
-- `channel_ids` is silently ignored; `query=<id>` is what finds one channel.
-- `last_activity_ts` is **microseconds** (16 digits, e.g. `1686690712432979` =
-  2023-06-13T21:11:52Z). Treating it as seconds or milliseconds is off by 10^6 / 10^3.
-- `member_count` is `-1` for archived channels: unknown, not a count.
-- `conversation_host_id` is present on ext-shared channels only; `E06V3987PMY` means this org
-  hosts it.
-- Every write updates `last_activity_ts` to the write time (measured for both archive and
-  unarchive), so a channel archived today reads as 0 days idle.
-- Because of the index lag, a `channel-archive` run within seconds of an unarchive can still see
-  `is_archived: true` and answer `already-archived` (nothing to do). After a write, wait for
-  the read-back to confirm before acting on the channel again.
+Wire facts behind both (the `limit <= 20` cap, `query=<channel id>` lookup, microsecond
+`last_activity_ts`, `member_count: -1`, the index lag, and why `conversations.info` cannot be
+the read): `references/endpoints.md`, "Enterprise Grid Channel Admin".
 
 ---
 
