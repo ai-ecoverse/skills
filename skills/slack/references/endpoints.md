@@ -609,7 +609,28 @@ Wire facts (measured 2026-09-25 unless noted):
 - **`last_activity_ts` is microseconds** (16 digits): `1686690712432979` is
   2023-06-13T21:11:52.432Z. Divide by 1000 for JavaScript milliseconds.
 - **`member_count` is `-1` for archived channels** (all 14 archived channels in
-  the sample). Treat `-1`, `null` and a missing field as unknown, never zero.
+  the sample; also measured on 2026-09-25 ~13:20 UTC), not null or missing. Treat
+  ANY negative or non-finite count, `null` and a missing field as unknown,
+  never zero: a plain `members <= max` check would PASS `-1`. Check
+  `is_archived` before any member guard, so an archived channel reads as
+  already archived, not as an unknown count.
+- **Archiving a Slack Connect channel we host disconnects every external
+  organisation.** Measured on 5 of 5 channels (2026-09-25 ~13:20 UTC). Before:
+  `is_ext_shared: true`, `external_user_count` 2 to 4, connected teams present.
+  After `admin.conversations.archive`: `is_ext_shared: false`,
+  `is_pending_ext_shared: false`, `external_user_count: 0`,
+  `connected_team_ids: []`. `admin.conversations.unarchive` restores the channel
+  but almost certainly NOT the connections, which would need a new Slack Connect
+  invitation. That last point is an inference; it was not tested live.
+- **External organisations** are `connected_team_ids` minus this org
+  (`E06V3987PMY`) and its own workspaces (`internal_team_ids`,
+  `context_team_id`), e.g. `["T0BQQL6FJ","E06V3987PMY","E08CP5WPXGT"]` is 2
+  external orgs. Pending invitations are in `pending_connected_team_ids`.
+- **`slack-ext channel-search --json` drops `is_ext_shared`,
+  `is_pending_ext_shared` and `conversation_host_id`** (its `summarizeChannel`
+  keeps neither). Anything that has to tell internal from shared or
+  hosted-elsewhere channels must read the raw `admin.conversations.search`
+  entry, as `channel-archive` does.
 - **`conversation_host_id`** appears on ext-shared channels only. It equals the
   org id (`E06V3987PMY`) when this org hosts the channel; any other value is a
   channel hosted by another org.
@@ -646,7 +667,7 @@ read-back (10 attempts, 10 s apart, until `is_archived` flips).
 | `ext-shared-hosted-elsewhere` | ext-shared, `conversation_host_id` is not this org | 1 |
 | `ext-shared-host-unknown` | ext-shared, no `conversation_host_id` | 1 |
 | `ext-shared-requires-allow-shared` | archive only: ext-shared, hosted by this org, no `--allow-shared` | 1 |
-| `members-unknown` | `--max-members` given, count null / missing / `-1` | 1 |
+| `members-unknown` | `--max-members` given, count null / missing / negative (`-1`) / non-finite | 1 |
 | `members-over-limit` | `--max-members` given, count greater than N | 1 |
 | `activity-unknown` | `--min-idle-days` given, `last_activity_ts` missing or unparseable | 1 |
 | `active-recently` | `--min-idle-days` given, idle fewer than N days | 1 |
@@ -656,11 +677,19 @@ Write results: `archived (confirmed)` exit 0; `archived (unconfirmed: search
 index did not reflect it after N attempts)` exit 3 (`ok:true` was returned; run
 the dry run again later); the API error exit 1.
 
-**Why `--allow-shared`:** archiving an ext-shared channel this org hosts ends
-every connected external org's access to it. `member_count` and idle days say
-nothing about who on the partner side still depends on it, and the partner
-cannot undo it, so it takes an explicit flag. `channel-unarchive` needs no flag
-(it restores access that existed) but its dry run says so.
+**Why `--allow-shared`:** archiving a Slack Connect channel this org hosts
+disconnects every external organisation (measured, above), and unarchiving is
+not expected to reconnect them. The archive is therefore not fully reversible
+for a shared channel, and `member_count` / idle days say nothing about who on
+the partner side still depends on it. Without the flag the command refuses with
+`ext-shared-requires-allow-shared`; with it, the dry run and the confirm output
+both say, in plain words, "Archiving will disconnect N external users from M
+external organisations (...). Unarchiving will NOT reconnect them: that needs a
+new Slack Connect invitation." The `--json` result carries the same as
+`impact` (`external_users`, `external_team_ids`, `pending_external_team_ids`,
+`reversible: false`), and the confirm output prints the sharing state read
+back after the write. `channel-unarchive` takes no `--allow-shared`; its dry run
+notes that connections a previous archive cut are not expected to come back.
 
 ## App Manifest API (`apps.manifest.*`, `tooling.tokens.rotate`)
 

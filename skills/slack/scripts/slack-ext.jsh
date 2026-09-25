@@ -260,8 +260,10 @@ Channel management commands:
       --confirm re-reads the channel immediately before the write and refuses,
       naming the reason, when a guard does not hold:
         not-found, ext-shared-hosted-elsewhere, ext-shared-host-unknown,
-        ext-shared-requires-allow-shared (we host it; archiving ends external
-        access; pass --allow-shared), members-over-limit / members-unknown
+        ext-shared-requires-allow-shared (a Slack Connect channel we host:
+        archiving DISCONNECTS every external org, and unarchiving does not
+        reconnect them; pass --allow-shared, and the output then names the
+        external users and orgs that will be cut off), members-over-limit / members-unknown
         (--max-members; an unknown count is never read as 0),
         active-recently / activity-unknown (--min-idle-days).
       already-archived is 'nothing to do' and exits 0.
@@ -2877,7 +2879,9 @@ function parseCountFlag(name) {
 function describeSharing(st) {
   if (st.host === 'not-shared') return st.is_org_shared ? 'org-shared (internal), not ext-shared' : 'not ext-shared';
   const pending = st.is_pending_ext_shared && !st.is_ext_shared ? 'ext-share PENDING' : 'ext-shared';
-  if (st.host === 'us') return pending + ', hosted by this org (' + st.conversation_host_id + ')';
+  const orgs = (st.external_team_ids || []).length;
+  const ext = orgs + ' external org' + (orgs === 1 ? '' : 's');
+  if (st.host === 'us') return pending + ', hosted by this org (' + st.conversation_host_id + '), ' + ext;
   if (st.host === 'other') return pending + ', hosted by ANOTHER org (' + st.conversation_host_id + ')';
   return pending + ', host unknown';
 }
@@ -2961,8 +2965,12 @@ async function cmdChannelArchiveOrUnarchive(action) {
         '  --confirm would: re-read this channel, re-apply the guards, call ' + result.method +
           ' (channel_id=' + channelId + '), then read it back.'
       );
-      if (action === 'unarchive' && result.state && result.state.host === 'us') {
-        console.log(color.yellow('  Unarchiving an ext-shared channel restores external orgs\' access to it.'));
+      if (result.impact && result.state.host === 'us') {
+        console.log(color.red('  WARNING: ' + result.impact.text));
+      }
+      if (action === 'unarchive') {
+        console.log(color.dim('  If this was a Slack Connect channel, archiving disconnected its external orgs;'));
+        console.log(color.dim('  unarchiving is not expected to reconnect them (a new invitation is needed).'));
       }
     }
     const guards = [];
@@ -2992,11 +3000,18 @@ async function cmdChannelArchiveOrUnarchive(action) {
     cli.die(result.method + ' failed: ' + result.write.error, { prefix: PREFIX });
   }
 
+  if (result.impact && result.state.host === 'us') {
+    console.log(color.red('  --allow-shared given. ' + result.impact.text));
+    console.log('');
+  }
   section(result.status);
   kv('Channel', '#' + (result.state.name || '?') + ' (' + channelId + ')');
   kv('Write', result.method + ' -> ok');
   kv('Read-back', (result.readback.confirmed ? 'confirmed' : 'NOT confirmed') + ' after ' + result.readback.attempts + ' attempt(s)');
-  if (result.readback.state) kv('Archived now', result.readback.state.is_archived ? 'yes' : 'no');
+  if (result.readback.state) {
+    kv('Archived now', result.readback.state.is_archived ? 'yes' : 'no');
+    if (result.impact && result.state.host === 'us') kv('Shared now', describeSharing(result.readback.state));
+  }
   console.log('');
   if (flags.json) cli.out(result);
   if (!result.readback.confirmed) {

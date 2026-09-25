@@ -1161,10 +1161,17 @@ not in). The dry run reads and prints the channel's current state and what `--co
 then reads the result back with retries because the search index lags the write by up to ~50 s:
 `archived (confirmed)` exits 0, `archived (unconfirmed: …)` exits **3**.
 Refusals: `not-found`, `ext-shared-hosted-elsewhere`, `ext-shared-host-unknown`,
-`ext-shared-requires-allow-shared` (this org hosts it; archiving ends external access),
-`members-over-limit` / `members-unknown` (a null or `-1` count is never read as 0),
+`ext-shared-requires-allow-shared`, `members-over-limit` / `members-unknown` (archived
+channels report `member_count: -1`; any negative or non-finite count is unknown, never 0),
 `active-recently` / `activity-unknown`, `archived-unknown`. `already-archived` /
-`not-archived` exit 0. Guards, wire facts and exit codes: `references/endpoints.md`,
+`not-archived` exit 0, checked before any member guard.
+
+**Archiving a Slack Connect channel we host disconnects every external organisation** (measured
+on 5 of 5: afterwards `is_ext_shared: false`, `external_user_count: 0`,
+`connected_team_ids: []`). `channel-unarchive` restores the channel but, by inference (not
+tested), not the connections; those need a new Slack Connect invitation. So such channels are
+refused unless `--allow-shared` is given, and then the dry run and the confirm output say how
+many external users and organisations will be cut off. Guards, wire facts and exit codes: `references/endpoints.md`,
 "Enterprise Grid Channel Admin".
 
 ---

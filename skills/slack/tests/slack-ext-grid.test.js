@@ -1090,3 +1090,163 @@ test('flow: every search call in every path uses limit 20', async () => {
 //   Caught by: "evaluateChannelGuards: members-unknown for null AND -1 ...",
 //   "flow --confirm refusal members-unknown ...", "flow --confirm
 //   members-unknown: member_count null is refused, never read as 0".
+
+// ── member_count: -1 (measured on archived channels) and Slack Connect impact ──
+
+const { externalTeamIds, sharedArchiveImpact, summarizeChannel: _summarize } = gridMod.default || gridMod;
+
+test('knownCount: any negative or non-finite count is unknown', () => {
+  for (const n of [-1, -5, -0.5, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+    is(knownCount(n), null, 'knownCount(' + n + ')');
+  }
+});
+
+test('evaluateChannelGuards: member_count -1 on an ACTIVE channel is members-unknown, not a pass', () => {
+  // A plain `members <= max` check would pass -1 for any max.
+  const st = normalizeChannelState(chan({ is_archived: false, member_count: -1 }), ORG, NOW_MS);
+  is(st.member_count, null);
+  const d = evaluateChannelGuards('archive', st, { orgId: ORG, maxMembers: 0 });
+  is(d.outcome, 'refuse');
+  is(d.reason, 'members-unknown');
+});
+
+test('evaluateChannelGuards: NaN / Infinity / -5 member counts are members-unknown', () => {
+  for (const mc of [Number.NaN, Number.POSITIVE_INFINITY, -5]) {
+    const st = normalizeChannelState(chan({ member_count: mc }), ORG, NOW_MS);
+    is(evaluateChannelGuards('archive', st, { orgId: ORG, maxMembers: 100 }).reason, 'members-unknown', String(mc));
+  }
+});
+
+test('evaluateChannelGuards: ARCHIVED channel with member_count -1 reports already-archived, not members-unknown', () => {
+  const st = normalizeChannelState(chan({ is_archived: true, member_count: -1 }), ORG, NOW_MS);
+  const d = evaluateChannelGuards('archive', st, { orgId: ORG, maxMembers: 2, minIdleDays: 30 });
+  is(d.outcome, 'noop');
+  is(d.reason, 'already-archived');
+});
+
+test('flow --confirm: active channel with member_count -1 is refused members-unknown, no archive call', async () => {
+  const h = stub({ states: [chan({ is_archived: false, member_count: -1 })] });
+  const r = await h.run({ confirm: true, maxMembers: 50 });
+  is(r.status, 'refused');
+  is(r.decision.reason, 'members-unknown');
+  is(r.exitCode, 1);
+  is(h.seq(), S);
+  is(writes(h), 0);
+});
+
+test('flow --confirm: archived channel with member_count -1 reports already-archived, exit 0, no write', async () => {
+  const h = stub({ states: [chan({ is_archived: true, member_count: -1 })] });
+  const r = await h.run({ confirm: true, maxMembers: 2 });
+  is(r.status, 'already-archived');
+  is(r.decision.reason, 'already-archived');
+  is(r.exitCode, 0);
+  is(writes(h), 0);
+});
+
+// Measured shape of a Slack Connect channel we host (aem-pga-tour, read-only).
+const connectChan = (over) =>
+  chan(
+    Object.assign(
+      {
+        id: 'C03GXBSC72T',
+        name: 'aem-pga-tour',
+        is_private: false,
+        member_count: 116,
+        external_user_count: 41,
+        is_ext_shared: true,
+        conversation_host_id: ORG,
+        context_team_id: 'T0385CHDU9E',
+        connected_team_ids: ['T0BQQL6FJ', ORG, 'E08CP5WPXGT'],
+        pending_connected_team_ids: [],
+        internal_team_ids: ['T0385CHDU9E'],
+      },
+      over || {}
+    )
+  );
+
+test('externalTeamIds: drops this org, its internal workspaces and context team', () => {
+  const c = connectChan({ connected_team_ids: ['T0BQQL6FJ', ORG, 'T0385CHDU9E', 'E08CP5WPXGT', 'T0BQQL6FJ'] });
+  is(externalTeamIds(c.connected_team_ids, c, ORG).join(','), 'T0BQQL6FJ,E08CP5WPXGT');
+  is(externalTeamIds(undefined, c, ORG).length, 0);
+});
+
+test('sharedArchiveImpact: says N external users, M organisations, and NOT reversible', () => {
+  const imp = sharedArchiveImpact(normalizeChannelState(connectChan(), ORG, NOW_MS));
+  is(imp.external_users, 41);
+  is(imp.external_team_ids.join(','), 'T0BQQL6FJ,E08CP5WPXGT');
+  is(imp.reversible, false);
+  ok(imp.text.includes('Archiving will disconnect 41 external users from 2 external organisations'), imp.text);
+  ok(imp.text.includes('Unarchiving will NOT reconnect them'), imp.text);
+});
+
+test('sharedArchiveImpact: unknown external count is said as unknown, never 0', () => {
+  const imp = sharedArchiveImpact(normalizeChannelState(connectChan({ external_user_count: -1 }), ORG, NOW_MS));
+  is(imp.external_users, null);
+  ok(imp.text.includes('an unknown number of external users'), imp.text);
+});
+
+test('sharedArchiveImpact: pending invitations are named; not-shared channels have no impact', () => {
+  const imp = sharedArchiveImpact(
+    normalizeChannelState(connectChan({ pending_connected_team_ids: ['T0PENDING1'] }), ORG, NOW_MS)
+  );
+  ok(imp.text.includes('1 pending Slack Connect invitation (T0PENDING1)'), imp.text);
+  is(sharedArchiveImpact(normalizeChannelState(chan(), ORG, NOW_MS)), null);
+});
+
+test('ext-shared-requires-allow-shared refusal names the disconnect in plain words', () => {
+  const d = evaluateChannelGuards('archive', normalizeChannelState(connectChan(), ORG, NOW_MS), { orgId: ORG });
+  is(d.reason, 'ext-shared-requires-allow-shared');
+  ok(d.detail.includes('disconnect 41 external users from 2 external organisations'), d.detail);
+  ok(d.detail.includes('--allow-shared'), d.detail);
+});
+
+test('already-archived is checked before the Slack Connect guard', () => {
+  const st = normalizeChannelState(connectChan({ is_archived: true, member_count: -1 }), ORG, NOW_MS);
+  is(evaluateChannelGuards('archive', st, { orgId: ORG }).reason, 'already-archived');
+});
+
+test('flow dry run on a Slack Connect channel without --allow-shared: refusal + impact, no write', async () => {
+  const h = stub({ states: [connectChan()] });
+  const r = await h.run({ channelId: 'C03GXBSC72T' });
+  is(h.seq(), S);
+  is(r.decision.reason, 'ext-shared-requires-allow-shared');
+  is(r.impact.external_users, 41);
+  is(r.impact.reversible, false);
+});
+
+test('flow --confirm --allow-shared on a Slack Connect channel: re-check, archive, read-back; impact reported', async () => {
+  const after = connectChan({
+    is_archived: true,
+    member_count: -1,
+    is_ext_shared: false,
+    external_user_count: 0,
+    connected_team_ids: [],
+  });
+  const h = stub({ states: [connectChan(), after] });
+  const r = await h.run({ channelId: 'C03GXBSC72T', confirm: true, allowShared: true });
+  is(h.seq(), [S, A, S].join(','));
+  is(r.status, 'archived (confirmed)');
+  is(r.impact.external_team_ids.length, 2);
+  is(r.readback.state.is_ext_shared, false);
+  is(r.readback.state.external_team_ids.length, 0);
+});
+
+test('state read uses the RAW search entry: fields channel-search --json drops still drive the guards', () => {
+  const raw = connectChan();
+  const summary = _summarize(raw);
+  is(summary.is_ext_shared, undefined, 'summarizeChannel drops is_ext_shared (known follow-up)');
+  is(summary.conversation_host_id, undefined);
+  const st = normalizeChannelState(raw, ORG, NOW_MS);
+  is(st.is_ext_shared, true);
+  is(st.conversation_host_id, ORG);
+  is(st.host, 'us');
+});
+
+// MUTATION M3 (-1 accepted as a count): in knownCount, drop `&& n >= 0`.
+//   Caught by: "knownCount: any negative or non-finite count is unknown",
+//   "evaluateChannelGuards: member_count -1 on an ACTIVE channel ...",
+//   "flow --confirm: active channel with member_count -1 is refused ...".
+// MUTATION M4 (member guard before already-archived): move the
+//   already-archived check below the member-count guard.
+//   Caught by: "... ARCHIVED channel with member_count -1 reports already-archived ...",
+//   "flow --confirm: archived channel with member_count -1 reports already-archived ...".

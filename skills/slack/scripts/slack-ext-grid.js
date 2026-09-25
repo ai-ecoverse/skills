@@ -395,8 +395,10 @@ function idleDaysSince(lastMs, nowMs) {
 }
 
 // A member / external-user count is only a count when it is a non-negative
-// integer. null, undefined and -1 (what Slack reports for archived channels)
-// are UNKNOWN and must never be read as zero.
+// integer. null, undefined, NaN, Infinity and ANY negative value are UNKNOWN
+// and must never be read as zero. Measured 2026-09-25: an archived channel
+// reports member_count: -1 (not null), so a plain `members <= max` check
+// would PASS it. Everything downstream compares only the value returned here.
 function knownCount(n) {
   return typeof n === 'number' && Number.isInteger(n) && n >= 0 ? n : null;
 }
@@ -408,6 +410,21 @@ function classifyChannelHost(c, orgId) {
   const host = c.conversation_host_id;
   if (!host) return 'unknown';
   return host === orgId ? 'us' : 'other';
+}
+
+// External organisations connected to a channel: connected_team_ids minus this
+// org and its own workspaces (internal_team_ids, context_team_id). Measured:
+// connected_team_ids is e.g. ["T038ARP0G", "E06V3987PMY"] for a channel we
+// host with one partner.
+function externalTeamIds(ids, c, orgId) {
+  const own = new Set([orgId]);
+  for (const t of Array.isArray(c.internal_team_ids) ? c.internal_team_ids : []) own.add(t);
+  if (c.context_team_id) own.add(c.context_team_id);
+  const out = [];
+  for (const t of Array.isArray(ids) ? ids : []) {
+    if (t && !own.has(t) && !out.includes(t)) out.push(t);
+  }
+  return out;
 }
 
 // Normalise one admin.conversations.search entry into the fields the guards
@@ -427,10 +444,46 @@ function normalizeChannelState(c, orgId, nowMs) {
     is_org_shared: c.is_org_shared === true,
     conversation_host_id: c.conversation_host_id || null,
     host: classifyChannelHost(c, orgId),
+    // Read from the RAW search entry: channel-search's summarizeChannel drops
+    // is_ext_shared, is_pending_ext_shared, conversation_host_id and these.
+    external_team_ids: externalTeamIds(c.connected_team_ids, c, orgId),
+    pending_external_team_ids: externalTeamIds(c.pending_connected_team_ids, c, orgId),
     last_activity_ts: c.last_activity_ts === undefined ? null : c.last_activity_ts,
     last_activity_ms: lastMs,
     last_activity_date: lastMs === null ? null : new Date(lastMs).toISOString().slice(0, 10),
     idle_days: idleDaysSince(lastMs, nowMs),
+  };
+}
+
+// What archiving a Slack Connect channel we host does to its partners, in
+// plain words. Measured 2026-09-25 on 5 of 5 channels: after
+// admin.conversations.archive the channel reads is_ext_shared:false,
+// is_pending_ext_shared:false, external_user_count:0, connected_team_ids:[].
+// Unarchiving is inferred (not tested) NOT to restore the connections; that
+// takes a new Slack Connect invitation. Returns null for a channel that is not
+// ext-shared or pending.
+function sharedArchiveImpact(state) {
+  if (!state || state.host === 'not-shared') return null;
+  const users = state.external_user_count;
+  const orgs = state.external_team_ids || [];
+  const pending = state.pending_external_team_ids || [];
+  const usersText =
+    users === null ? 'an unknown number of external users' : users + ' external user' + (users === 1 ? '' : 's');
+  const orgsText =
+    orgs.length + ' external organisation' + (orgs.length === 1 ? '' : 's') +
+    (orgs.length ? ' (' + orgs.join(', ') + ')' : '');
+  let text = 'Archiving will disconnect ' + usersText + ' from ' + orgsText + '.';
+  if (pending.length) {
+    text += ' It also ends ' + pending.length + ' pending Slack Connect invitation' +
+      (pending.length === 1 ? '' : 's') + ' (' + pending.join(', ') + ').';
+  }
+  text += ' Unarchiving will NOT reconnect them: that needs a new Slack Connect invitation.';
+  return {
+    external_users: users,
+    external_team_ids: orgs.slice(),
+    pending_external_team_ids: pending.slice(),
+    reversible: false,
+    text: text,
   };
 }
 
@@ -479,8 +532,8 @@ function evaluateChannelGuards(action, state, opts) {
       return guardResult(
         'refuse',
         'ext-shared-requires-allow-shared',
-        'ext-shared channel hosted by this org; archiving ends every external org\'s access. ' +
-          'Pass --allow-shared to archive it anyway'
+        'Slack Connect channel hosted by this org. ' + sharedArchiveImpact(state).text +
+          ' Pass --allow-shared to archive it anyway'
       );
     }
     if (o.maxMembers !== null && o.maxMembers !== undefined) {
@@ -625,6 +678,7 @@ async function runChannelArchiveFlow(spec) {
   result.lookup_via = found.found ? found.via : null;
   result.state = found.found ? normalizeChannelState(found.channel, spec.orgId, spec.now()) : null;
   result.decision = evaluateChannelGuards(action, result.state, guardOpts);
+  result.impact = action === 'archive' ? sharedArchiveImpact(result.state) : null;
 
   if (!spec.confirm) {
     result.status = 'dry-run';
@@ -709,6 +763,8 @@ module.exports = {
   knownCount,
   classifyChannelHost,
   normalizeChannelState,
+  externalTeamIds,
+  sharedArchiveImpact,
   evaluateChannelGuards,
   lookupChannel,
   readBackArchived,

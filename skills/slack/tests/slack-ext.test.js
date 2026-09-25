@@ -1195,3 +1195,96 @@ test('help lists channel-archive and channel-unarchive', async () => {
   ok(/channel-archive <channel_id>/.test(h.text()));
   ok(/channel-unarchive <channel_id>/.test(h.text()));
 });
+
+// ── member_count -1 and Slack Connect channels through the real entry point ────
+
+const connectArch = (over) =>
+  archChan(
+    Object.assign(
+      {
+        id: 'C03GXBSC72T',
+        name: 'aem-pga-tour',
+        is_private: false,
+        member_count: 116,
+        external_user_count: 41,
+        is_ext_shared: true,
+        conversation_host_id: 'E06V3987PMY',
+        context_team_id: 'T0385CHDU9E',
+        connected_team_ids: ['T0BQQL6FJ', 'E06V3987PMY', 'E08CP5WPXGT'],
+        pending_connected_team_ids: [],
+        internal_team_ids: ['T0385CHDU9E'],
+      },
+      over || {}
+    )
+  );
+
+test('channel-archive --confirm (entry point): ACTIVE channel with member_count -1 refused members-unknown', async () => {
+  const h = await load({
+    runMain: true,
+    argv: ['channel-archive', 'C04633RSEDU', '--confirm', '--max-members=50'],
+    api: archApi([archChan({ is_archived: false, member_count: -1 })]),
+  });
+  is(exitOf(h), 1);
+  ok(/refused: members-unknown/.test(errOf(h)), errOf(h));
+  is(archWrites(h), 0);
+});
+
+test('channel-archive --confirm (entry point): ARCHIVED channel with -1 and --max-members is already-archived, exit 0', async () => {
+  const h = await load({
+    runMain: true,
+    argv: ['channel-archive', 'C0634KMGW2G', '--confirm', '--max-members=2'],
+    api: archApi([archChan({ id: 'C0634KMGW2G', is_archived: true, member_count: -1 })]),
+  });
+  is(errOf(h), '');
+  is(exitOf(h), 0);
+  ok(/already-archived: nothing to do/.test(h.text()));
+  is(archWrites(h), 0);
+});
+
+test('channel-archive dry run (entry point) on a Slack Connect channel: refusal names the disconnect', async () => {
+  const h = await load({ runMain: true, argv: ['channel-archive', 'C03GXBSC72T'], api: archApi([connectArch()]) });
+  is(exitOf(h), 0);
+  is(archWrites(h), 0);
+  const t = h.text();
+  ok(/--confirm would REFUSE: ext-shared-requires-allow-shared/.test(t), t);
+  ok(/disconnect 41 external users from 2 external organisations/.test(t), t);
+});
+
+test('channel-archive dry run --allow-shared (entry point): plain-words warning, still no write', async () => {
+  const h = await load({ runMain: true, argv: ['channel-archive', 'C03GXBSC72T', '--allow-shared'], api: archApi([connectArch()]) });
+  is(exitOf(h), 0);
+  is(archWrites(h), 0);
+  const t = h.text();
+  ok(/WARNING: Archiving will disconnect 41 external users from 2 external organisations \(T0BQQL6FJ, E08CP5WPXGT\)/.test(t), t);
+  ok(/Unarchiving will NOT reconnect them/.test(t), t);
+  ok(/--confirm would: re-read this channel/.test(t), t);
+});
+
+test('channel-archive --confirm without --allow-shared (entry point): Slack Connect channel refused, no write', async () => {
+  const h = await load({ runMain: true, argv: ['channel-archive', 'C03GXBSC72T', '--confirm'], api: archApi([connectArch()]) });
+  is(exitOf(h), 1);
+  ok(/refused: ext-shared-requires-allow-shared/.test(errOf(h)), errOf(h));
+  is(archWrites(h), 0);
+});
+
+test('channel-archive --confirm --allow-shared (entry point): archives, says what it disconnected, reads sharing back', async () => {
+  const after = connectArch({ is_archived: true, member_count: -1, is_ext_shared: false, external_user_count: 0, connected_team_ids: [] });
+  const h = await load({
+    runMain: true,
+    fakeTimers: true,
+    argv: ['channel-archive', 'C03GXBSC72T', '--confirm', '--allow-shared'],
+    api: archApi([connectArch(), after]),
+  });
+  is(errOf(h), '');
+  is(archSeq(h), 'admin.conversations.search,admin.conversations.archive,admin.conversations.search');
+  const t = h.text();
+  ok(/--allow-shared given\. Archiving will disconnect 41 external users from 2 external organisations/.test(t), t);
+  ok(/Unarchiving will NOT reconnect them/.test(t), t);
+  ok(/Shared now:\s+not ext-shared/.test(t), t);
+});
+
+test('channel-unarchive dry run (entry point) warns that connections are not restored', async () => {
+  const h = await load({ runMain: true, argv: ['channel-unarchive', 'C0634KMGW2G'], api: archApi([archChan({ id: 'C0634KMGW2G', is_archived: true })]) });
+  is(exitOf(h), 0);
+  ok(/unarchiving is not expected to reconnect them/.test(h.text()), h.text());
+});
