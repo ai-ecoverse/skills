@@ -54,6 +54,10 @@ const skill = require('sliccy:skill');
 const fs = require('fs');
 
 const PREFIX = 'slack-ext';
+// Declared up here: the parseArgv catch below uses it at module init, before
+// the channel-archive section would have initialised it (temporal dead zone).
+const CHANNEL_ATTRIBUTION =
+  'xoxc session call: indistinguishable from a direct human action in channel event history.';
 const SLACK_DOMAIN = 'app.slack.com';
 
 // App Manifest API (see the `app` section below). Called over plain HTTPS with a
@@ -190,6 +194,8 @@ Examples:
   slack-ext --ws=T06DUTYDQ set-member W5BPKRLUA --confirm
   slack-ext --ws=T06DUTYDQ add-channel W5BPKRLUA --channel=C0899S7HV0E --confirm
   slack-ext --ws=T06DUTYDQ remove-channel W5BPKRLUA --channel=C0899S7HV0E --confirm
+  slack-ext channel-archive C04633RSEDU --max-members=2 --min-idle-days=180
+  slack-ext channel-archive C04633RSEDU --max-members=2 --min-idle-days=180 --confirm
   slack-ext app show A0123456789
   slack-ext app export A0123456789 --out=./manifest.json
   slack-ext app validate A0123456789 --manifest=./manifest.json
@@ -249,6 +255,38 @@ Channel management commands:
       After conversion, conversations.info returns channel_not_found for non-members
       — this is expected, not an error.
 
+  channel-archive <channel_id> [--confirm] [--max-members=N] [--min-idle-days=N]
+                  [--allow-shared] [--json]
+      Archive a channel (admin.conversations.archive, org token; works on
+      private channels the admin is not in). The dry run READS the channel and
+      prints its state: visibility, archived, members, external users,
+      sharing/host, last activity + days idle, and what --confirm would do.
+      --confirm re-reads the channel immediately before the write and refuses,
+      naming the reason, when a guard does not hold:
+        not-found, sharing-unknown (Slack did not report the sharing flags),
+        ext-shared-hosted-elsewhere, ext-shared-host-unknown,
+        ext-shared-requires-allow-shared (a Slack Connect channel we host:
+        archiving DISCONNECTS every external org, and unarchiving does not
+        reconnect them; pass --allow-shared, and the output then names the
+        external users and orgs that will be cut off), members-over-limit / members-unknown
+        (--max-members; an unknown count is never read as 0),
+        active-recently / activity-unknown (--min-idle-days).
+      already-archived is 'nothing to do' and exits 0.
+      After the write the state is read back, retrying because the search
+      index lags a write (measured up to ~51 s): 10 attempts, 10 s apart.
+      Exit: 0 done/nothing to do/dry run, 1 refused or API error,
+            3 written but the read-back never showed it (unconfirmed).
+      Unknown or misspelled flags (unknown-flag, with a suggestion), a bad
+      guard value (invalid-value) and a stray word (unexpected-argument)
+      are refused before any Slack call, dry run included.
+      --json: stdout is exactly one JSON document on every path (the
+      attribution notice is its 'notice' field); errors also go to stderr.
+
+  channel-unarchive <channel_id> [--confirm] [--json]
+      Unarchive a channel (admin.conversations.unarchive). Same dry run,
+      re-check and read-back as channel-archive. Refuses not-found and
+      ext-shared-hosted-elsewhere; not-archived is 'nothing to do' (exit 0).
+
 Slack Connect approvals:
 
   approvals [--query=<q>] [--limit=<n>] [--all]
@@ -278,7 +316,7 @@ See also: slack user <id> (read-only profile from the standard slack CLI)
 `;
 
 // ── Argument parsing ──────────────────────────────────────────────────────────
-const { BOOL_FLAGS, parseArgv, parseList } = require('./argv.js');
+const { BOOL_FLAGS, parseArgv, parseList, jsonInvocation } = require('./argv.js');
 
 // parseArgv throws on a malformed flag (e.g. --confirm=fasle). This call is at
 // module top level, OUTSIDE the try/catch that wraps main(), so the throw would
@@ -289,7 +327,21 @@ let parsed;
 try {
   parsed = parseArgv(process.argv.slice(2));
 } catch (err) {
-  cli.die((err && err.message) || String(err), { prefix: PREFIX });
+  const message = (err && err.message) || String(err);
+  // channel-archive / channel-unarchive promise ONE JSON document on stdout
+  // in --json mode, including this path (e.g. --allow-shared=maybe).
+  const j = jsonInvocation(process.argv.slice(2), ['channel-archive', 'channel-unarchive']);
+  if (j) {
+    cli.out({
+      notice: CHANNEL_ATTRIBUTION,
+      action: j.command.replace('channel-', ''),
+      channel_id: j.channelId,
+      status: 'invalid-value',
+      error: 'invalid-value: ' + message,
+      exitCode: 1,
+    });
+  }
+  cli.die(message, { prefix: PREFIX });
 }
 const flags = parsed.flags;
 const words = parsed.positional;
@@ -2098,6 +2150,8 @@ async function main() {
   if (cmd === 'channel-search') return cmdChannelSearch();
   if (cmd === 'channel-to-public') return cmdChannelToPublic();
   if (cmd === 'channel-to-private') return cmdChannelToPrivate();
+  if (cmd === 'channel-archive') return cmdChannelArchive();
+  if (cmd === 'channel-unarchive') return cmdChannelUnarchive();
 
   // ── Slack Connect approvals ──
   if (cmd === 'approvals') return cmdApprovals();
@@ -2157,6 +2211,8 @@ const {
   collectPages,
   VALID_SEARCH_CHANNEL_TYPES,
   VALID_CHANNEL_SORT_FIELDS,
+  runChannelArchiveFlow,
+  checkChannelArchiveArgs,
 } = require('./slack-ext-grid.js');
 
 // The Enterprise Grid org ID. Used as the "workspace" key when looking up the
@@ -2819,6 +2875,239 @@ async function cmdChannelToPrivate() {
   console.log(color.dim('  Note: conversations.info will now return channel_not_found for non-members.'));
   console.log(color.dim('  Use admin.conversations.search to confirm the channel still exists.'));
   console.log('');
+}
+
+// ── Commands: channel-archive / channel-unarchive ─────────────────────────────
+//
+// The flow lives in slack-ext-grid.js (runChannelArchiveFlow) with call/sleep/
+// now injected; this wrapper wires it to the org token and renders the result.
+//
+// Unlike channel-to-public/-private, the dry run READS the channel and prints
+// its current state; --confirm re-reads it immediately before the write and
+// refuses with a named reason if a guard no longer holds; and the write is read
+// back (with retries, because the search index lags a write by several seconds).
+//
+// id -> state: admin.conversations.search with query=<channel id> and
+// search_channel_types=all, matched on id locally (measured: finds the channel,
+// private non-member and archived included). conversations.info cannot be the
+// read: it answers channel_not_found for a private channel the admin is not in.
+
+function describeSharing(st) {
+  if (st.host === 'sharing-unknown') {
+    if (st.sharing_conflicts && st.sharing_conflicts.length) {
+      return 'UNKNOWN (flags say not shared, but the row reports ' + st.sharing_conflicts.join('; ') + ')';
+    }
+    return 'UNKNOWN (Slack did not report is_ext_shared / is_pending_ext_shared as booleans)';
+  }
+  if (st.host === 'not-shared') return st.is_org_shared ? 'org-shared (internal), not ext-shared' : 'not ext-shared';
+  const pending = st.is_pending_ext_shared && !st.is_ext_shared ? 'ext-share PENDING' : 'ext-shared';
+  const orgs = st.external_team_ids === null ? null : st.external_team_ids.length;
+  const ext = orgs === null ? 'unknown number of external orgs' : orgs + ' external org' + (orgs === 1 ? '' : 's');
+  if (st.host === 'us') return pending + ', hosted by this org (' + st.conversation_host_id + '), ' + ext;
+  if (st.host === 'other') return pending + ', hosted by ANOTHER org (' + st.conversation_host_id + ')';
+  return pending + ', host unknown';
+}
+
+function renderChannelState(st) {
+  kv('Channel', '#' + (st.name || '?') + ' (' + st.id + ')');
+  kv('Visibility', st.is_private ? 'private' : 'public');
+  kv('Archived', st.is_archived === null ? 'unknown' : st.is_archived ? 'yes' : 'no');
+  kv(
+    'Members',
+    st.member_count === null
+      ? 'unknown (Slack reported ' + JSON.stringify(st.member_count_raw) + ')'
+      : String(st.member_count)
+  );
+  kv('External', st.external_user_count === null ? 'unknown' : String(st.external_user_count) + ' users');
+  kv('Shared', describeSharing(st));
+  kv(
+    'Last activity',
+    st.last_activity_date === null
+      ? 'unknown (last_activity_ts=' + JSON.stringify(st.last_activity_ts) + ')'
+      : st.last_activity_date + ' (' + st.idle_days + ' days idle)'
+  );
+}
+
+async function cmdChannelArchiveOrUnarchive(action) {
+  const cmd = 'channel-' + action;
+  const json = flags.json === true;
+  const channelId = words[1] || null;
+  const usage =
+    action === 'archive'
+      ? 'Usage: slack-ext channel-archive <channel_id> [--confirm] [--max-members=N] [--min-idle-days=N] [--allow-shared] [--json]'
+      : 'Usage: slack-ext channel-unarchive <channel_id> [--confirm] [--json]';
+
+  // --json: stdout carries exactly ONE JSON document on every path, and no
+  // human text. Human output goes through say(); errors still reach stderr via
+  // cli.die, which never writes to stdout.
+  let emitted = false;
+  const emit = (obj) => {
+    if (json && !emitted) {
+      emitted = true;
+      cli.out(Object.assign({ notice: CHANNEL_ATTRIBUTION }, obj));
+    }
+  };
+  const say = (line) => {
+    if (!json) console.log(line === undefined ? '' : line);
+  };
+  const fail = (status, message, extra, exitCode) => {
+    const code = exitCode || 1;
+    emit(
+      Object.assign(
+        { action, channel_id: channelId, mode: flags.confirm === true ? 'confirm' : 'dry-run' },
+        extra || {},
+        { status, error: message, exitCode: code }
+      )
+    );
+    cli.die(message, { prefix: PREFIX, exitCode: code });
+  };
+
+  try {
+    // 1. Arguments, before ANY Slack call (dry run and --confirm alike).
+    //    Unknown or misspelled flags and bad guard values fail closed.
+    const args = checkChannelArchiveArgs(action, flags, words);
+    if (!args.ok) {
+      const first = args.errors[0];
+      fail(first.code, args.errors.map((e) => e.message).join('; ') + '\n' + usage, {
+        errors: args.errors,
+      });
+    }
+    if (!channelId) fail('usage', usage);
+    if (!/^[CG][A-Z0-9]{6,}$/.test(channelId)) {
+      fail('usage', 'Invalid channel id "' + channelId + '". Expected e.g. C04633RSEDU.\n' + usage);
+    }
+    // resolveOrg and findSlackTab would cli.die from inside, which cannot
+    // carry a JSON document; check both here first.
+    if (flags.org !== undefined && (typeof flags.org !== 'string' || !/^E[A-Z0-9]+$/.test(flags.org))) {
+      fail('invalid-value', 'invalid-value: --org needs an E-prefixed org id (e.g. E06V3987PMY)');
+    }
+    const tab =
+      (await browser.findTab({ domain: SLACK_DOMAIN, urlMatch: /\/client\/[A-Z0-9]+/ })) ||
+      (await browser.findTab({ domain: SLACK_DOMAIN }));
+    if (!tab) fail('no-slack-tab', 'No Slack tab found. Open app.slack.com in your browser and try again.');
+    const orgId = await resolveOrg(true);
+    const maxMembers = args.maxMembers;
+    const minIdleDays = args.minIdleDays;
+
+    const result = await runChannelArchiveFlow({
+      action,
+      channelId,
+      orgId,
+      confirm: flags.confirm === true,
+      maxMembers,
+      minIdleDays,
+      allowShared: flags['allow-shared'] === true,
+      call: (method, params) => slackApi(method, params, orgId, { fatal: false }),
+      sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+      now: () => Date.now(),
+    });
+
+    const verb = action === 'archive' ? 'archive' : 'unarchive';
+    if (!json) {
+      section(result.mode === 'dry-run' ? 'Dry run: ' + cmd + ' (current state)' : cmd + ' (state re-read just before the write)');
+      if (result.state) renderChannelState(result.state);
+      else kv('Channel', channelId + ' (not found)');
+      kv('Org', orgId);
+      kv('Method', result.method);
+    }
+    say('');
+    say(color.dim('  ' + CHANNEL_ATTRIBUTION));
+    say('');
+
+    if (result.status === 'read-error') fail('read-error', result.error, result);
+
+    const d = result.decision;
+    if (result.mode === 'dry-run') {
+      if (d.outcome === 'noop') {
+        say(color.green('  ' + d.reason + ': nothing to do. --confirm would make no call.'));
+      } else if (d.outcome === 'refuse') {
+        say(color.red('  --confirm would REFUSE: ' + d.reason + ' (' + d.detail + ')'));
+      } else {
+        say(
+          '  --confirm would: re-read this channel, re-apply the guards, call ' + result.method +
+            ' (channel_id=' + channelId + '), then read it back.'
+        );
+        if (result.impact && result.state.host === 'us') say(color.red('  WARNING: ' + result.impact.text));
+        if (action === 'unarchive') {
+          say(color.dim('  If this was a Slack Connect channel, archiving disconnected its external orgs;'));
+          say(color.dim('  unarchiving is not expected to reconnect them (a new invitation is needed).'));
+        }
+      }
+      const guards = [];
+      if (maxMembers !== null) guards.push('--max-members=' + maxMembers);
+      if (minIdleDays !== null) guards.push('--min-idle-days=' + minIdleDays);
+      if (flags['allow-shared'] === true) guards.push('--allow-shared');
+      if (guards.length) say(color.dim('  Guards: ' + guards.join(' ')));
+      say(color.yellow('  No --confirm; nothing changed.'));
+      say(color.dim('  State can change before you confirm; --confirm re-reads it first.'));
+      say('');
+      emit(result);
+      return;
+    }
+
+    if (d.outcome === 'noop') {
+      say(color.green('  ' + d.reason + ': nothing to do. No call made.'));
+      say('');
+      emit(result);
+      return;
+    }
+    if (d.outcome === 'refuse') {
+      fail('refused', 'refused: ' + d.reason + ' (' + d.detail + '). Nothing changed.', result);
+    }
+    if (result.status === 'error') {
+      fail('error', result.method + ' failed: ' + result.write.error, result);
+    }
+
+    if (result.impact && result.state.host === 'us') {
+      say(color.red('  --allow-shared given. ' + result.impact.text));
+      say('');
+    }
+    if (!json) {
+      section(result.status);
+      kv('Channel', '#' + (result.state.name || '?') + ' (' + channelId + ')');
+      kv('Write', result.method + ' -> ok');
+      kv('Read-back', (result.readback.confirmed ? 'confirmed' : 'NOT confirmed') + ' after ' + result.readback.attempts + ' attempt(s)');
+      if (result.readback.state) {
+        kv('Archived now', result.readback.state.is_archived ? 'yes' : 'no');
+        if (result.impact && result.state.host === 'us') kv('Shared now', describeSharing(result.readback.state));
+      }
+    }
+    say('');
+    if (!result.readback.confirmed) {
+      fail(
+        result.status,
+        verb + ' call answered ok:true but the search index did not show the new state after ' +
+          result.readback.attempts + ' attempts. Check again with: slack-ext ' + cmd + ' ' + channelId,
+        result,
+        3
+      );
+    }
+    emit(result);
+  } catch (err) {
+    // Last resort: a failure not anticipated above still yields one JSON
+    // document in --json mode before the error propagates.
+    if (json && !emitted) {
+      emit({
+        action,
+        channel_id: channelId,
+        status: 'error',
+        error:
+          err && err.name === 'NodeExitError'
+            ? 'exited before a result was produced; see stderr'
+            : String((err && err.message) || err),
+        exitCode: (err && (err.exitCode || err.code)) || 1,
+      });
+    }
+    throw err;
+  }
+}
+
+async function cmdChannelArchive() {
+  return cmdChannelArchiveOrUnarchive('archive');
+}
+
+async function cmdChannelUnarchive() {
+  return cmdChannelArchiveOrUnarchive('unarchive');
 }
 
 // ══ Slack Connect approvals ════════════════════════════════════════════════════

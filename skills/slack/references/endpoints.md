@@ -27,6 +27,8 @@ Transport: XHR with `Content-Type: application/x-www-form-urlencoded` and `withC
   - [POST /api/users.admin.setRegular](#post-apiusersadminsetregular)
   - [POST /api/conversations.invite (for guest channel management)](#post-apiconversationsinvite-for-guest-channel-management)
   - [POST /api/conversations.kick (for guest channel management)](#post-apiconversationskick-for-guest-channel-management)
+- [Enterprise Grid channel search (`admin.conversations.search`)](#enterprise-grid-channel-search-adminconversationssearch)
+  - [POST /api/admin.conversations.search](#post-apiadminconversationssearch)
 - [App Manifest API (`apps.manifest.*`, `tooling.tokens.rotate`)](#app-manifest-api-appsmanifest-toolingtokensrotate)
   - [POST /api/apps.manifest.export](#post-apiappsmanifestexport)
   - [POST /api/apps.manifest.validate](#post-apiappsmanifestvalidate)
@@ -581,6 +583,33 @@ Remove a user from a channel. Used by `slack-ext remove-channel`.
 - `not_in_channel` — user is not in the channel (treated as no-op)
 - `cant_kick_self` — cannot kick the token owner
 - `cant_kick_from_general` — some workspaces protect #general
+
+## Enterprise Grid channel search (`admin.conversations.search`)
+
+Endpoint contract used by `slack-ext channel-search` and by `channel-archive` / `channel-unarchive`.
+The archive and unarchive methods, the wire facts measured on this method (the `query=<channel id>`
+lookup, microsecond timestamps, `member_count: -1`, the index lag) and how `slack-ext` uses them:
+`references/enterprise-grid.md`, "Enterprise Grid Channel Admin".
+
+### POST /api/admin.conversations.search
+
+Org-wide channel search; the only state read that sees private channels the
+admin is not in (`conversations.info` answers `channel_not_found` for those).
+
+| Param | Required | Description |
+|-------|----------|-------------|
+| token | yes | org-level xoxc token |
+| query | yes | May be empty. `query=<channel id>` finds that channel (see `references/enterprise-grid.md`) |
+| limit | yes | **1 to 20.** `limit=21` answers `invalid_arguments`. `slack-ext channel-search` defaults to 50 and so fails unless `--limit=20` is passed |
+| search_channel_types | yes | `all`, `exclude_archived`, `private`, `private_exclude`, `archived`. `private_archive` answers `invalid_search_channel_type` |
+| sort | yes | `name`, `member_count`, `created` (`last_activity_ts` answers `invalid_sort`) |
+| sort_dir | yes | `asc` / `desc` |
+| cursor | yes | Empty for the first page; then `next_cursor` |
+
+Response: `{ok, conversations: [...], next_cursor}`. Fields used by
+`channel-archive`: `id`, `name`, `is_private`, `is_archived`, `member_count`,
+`external_user_count`, `is_ext_shared`, `is_pending_ext_shared`,
+`is_org_shared`, `conversation_host_id`, `last_activity_ts`.
 
 ## App Manifest API (`apps.manifest.*`, `tooling.tokens.rotate`)
 

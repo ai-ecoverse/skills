@@ -673,6 +673,8 @@ wire facts, authentication, what remains unverified): `references/enterprise-gri
 - `channel-search [--query=<q>] [--types=<t>] [--limit=<n>] [--json]` — read-only channel enumeration, filtered locally.
 - `channel-to-public <channel_id> [--confirm]` — private → public.
 - `channel-to-private <channel_id> [--confirm]` — public → private; the channel then looks deleted to non-members.
+- `channel-archive <channel_id> [--confirm] [--max-members=N] [--min-idle-days=N] [--allow-shared] [--json]` — archive; dry run reads state, `--confirm` re-checks every guard then reads back; Slack Connect channels need `--allow-shared` (archiving disconnects every external org).
+- `channel-unarchive <channel_id> [--confirm] [--json]` — unarchive, with the same dry run, re-check and read-back.
 - `approvals [--query=<q>] [--all] [--json]` — read-only list of Slack Connect invite approvals.
 - `admin-app approve <app_id|request_id> [--confirm]` — approve an app; a `request_id` is single-use.
 - `admin-app restrict <app_id|request_id> [--confirm]` — restrict an app; same single-use `request_id` caveat.
