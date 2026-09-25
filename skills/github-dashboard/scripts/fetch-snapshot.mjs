@@ -712,29 +712,47 @@ async function closingLinks(records) {
   return { closedBy, closes, counters, viewerLogin, cost: data.rateLimit ? data.rateLimit.cost : null };
 }
 
-/* ------------------------------------------------------- bb thread linkage
+/* ---- 8< threadLinks --------------------------------------------------------
+   bb thread <-> GitHub record LINKING. Rules approved by the operator on
+   2026-09-25; evidence in the bb-association audit (final addendum, A3/A4).
 
-   MATCHING RULE (two independent signals, per bb project -> repo):
+   A thread links to a record ONLY within the repo its bb project maps to, and
+   every link carries matchedBy:
 
-     A. branch  — environmentBranchName matching  ^bb/.*-(\d+)-thr_[a-z0-9]+$
-                  i.e. the digits immediately before the -thr_ suffix.
-     B. title   — an explicit "#<digits>" reference anywhere in title or
-                  titleFallback (so a fully-qualified "owner/repo#N" matches too).
+     'title' / 'both'  UNCHANGED issue signal: an explicit "#N" in the thread
+                       title or titleFallback (so "owner/repo#N" matches too).
+                       The branch pattern ^bb/.*-(N)-thr_x may only corroborate
+                       one ('both'); branch digits alone are rejected (measured
+                       2026-09-21: -331 was a truncation of #3310, -380 named an
+                       unrelated issue). Bare numbers, a number anywhere in the
+                       branch, and fuzzy title overlap are deliberately NOT
+                       signals: the audit measured them as alternates or noise.
+     'pr-env'          bb's own github plugin, `bb rpc github pullForThread`: the
+                       PR of a LIVE thread's environment. Exact, but IGNORED when
+                       several live threads in the listing share that
+                       environmentId (the audit found 17 live threads on one
+                       environment, all resolving to one old closed PR).
+     'pr-branch'       the fallback, and the only PR signal for ARCHIVED threads:
+                       the PR's head branch (head repo = this repo) equals the
+                       thread's environmentBranchName AND the thread was updated
+                       at or after the PR was created. The time condition removes
+                       Renovate's branch-name reuse (3 false links without it, 0
+                       with it).
+     'pr-env+branch'   both PR signals agree. A title match on the same pair is
+                       joined with '+', e.g. 'title+pr-env'.
+     'refs-pr'         carry-over: an ISSUE in the window with no thread of its
+                       own inherits the thread of a PR in the window (same repo)
+                       whose title or body says "Refs #N", "Ref #N" or
+                       "References #N" (case-insensitive). Non-closing only:
+                       closing references already fold the issue into the PR card.
 
-   A thread links to a record iff the record's repo maps to the thread's
-   project AND the record's number is in that thread's candidate set. When
-   several threads match one record, the most recently updated one wins and
-   threadCandidates records how many matched.
+   WHICH THREAD WINS when several match one record: a link that includes
+   'pr-env' outranks one that does not ("A is exact, B is the fallback"); within
+   a rank the most recently updated thread wins, as before, and threadCandidates
+   counts every matching thread.
 
-   FALSE-POSITIVE RISK: signal A can pick up a slug that merely ends in a
-   number ("bb/bump-node-20-thr_x" yields 20). Signal B is far safer because
-   "#" is an explicit reference. Every link therefore carries
-   thread.matchedBy ('both' | 'title' | 'branch') so a wrong link is
-   auditable, and a candidate number that is not a record in the window is
-   simply dropped. Bare version strings ("4.131.1") are never candidates:
-   signal B requires the "#".
-   ------------------------------------------------------------------------ */
-
+   Pure: bb and GitHub data come in as arguments. Fenced, so
+   tests/thread-links.test.js evaluates this exact text. */
 const BRANCH_RE = /^bb\/.*?-(\d+)-thr_[a-z0-9]+$/;
 const HASH_RE = /#(\d+)/g;
 
@@ -751,41 +769,258 @@ function threadCandidates(t) {
   return { fromBranch, fromTitle };
 }
 
-/* Phase 7h (thread listing).
+/** Live = exists, not archived/deleted. Archived threads are still attached
+ *  (the work happened there) but never imply live agent activity. */
+function threadIsLive(t) {
+  return !t.archivedAt && !t.deletedAt;
+}
 
-   `bb thread list` USED TO BE CALLED WITH NO LIMIT, which silently returned only
-   the most recent 20 threads per project. Three records still inside the fetch
-   window lost their thread link when bb's list rolled
-   past them, and `threads linked` drifted 13 → 10 with nothing in the log to say
-   why. That is the worst failure shape available: quiet, plausible, and it only
-   ever gets worse as threads accumulate.
+function threadIsBusy(t) {
+  const a = t.activity || {};
+  const counts =
+    (a.activeBackgroundAgentCount || 0) +
+    (a.activeBackgroundCommandCount || 0) +
+    (a.activeGoalCount || 0) +
+    (a.activePlanModeCount || 0) +
+    (a.activeWorkflowCount || 0);
+  const queued = t.queuedWork && t.queuedWork !== 'none';
+  const running = t.status === 'running' || t.status === 'working';
+  return counts > 0 || !!queued || running;
+}
 
-   Measured, and reproduced independently:
-     • no limit          → 20 rows, a truncated page;
-     • --limit 200/500/1000 → 200 rows every time, so 200 is the REAL count, not a
-       ceiling. A limit of 200 would have looked exactly like a truncated read;
-     • skills has 14 threads at any limit;
-     • there is NO --offset, page or cursor — `bb thread list` offers only
-       [--include-hidden] [--limit <n>] [--json]. Pagination is not available, so
-       a generous limit is the only mechanism and THE GUARD BELOW IS THE ONLY WAY
-       a future truncation can be noticed at all.
+/** "Refs #N" / "Ref #N" / "References #N", case-insensitive, same repo only
+    (a repo-qualified "other/repo#N" has no space before the '#', so it never
+    matches). Returns the set of N as strings. */
+const REFS_RE = /\b(?:refs?|references)\s+#(\d+)\b/gi;
+function nonClosingRefs(...texts) {
+  const out = new Set();
+  for (const text of texts) {
+    if (!text) continue;
+    for (const m of String(text).matchAll(REFS_RE)) out.add(m[1]);
+  }
+  return out;
+}
 
-   Hence 2000, not 500: a busy project can already hold hundreds, and threads only accumulate.
+function threadUpdatedMs(t) {
+  const ms = new Date(t && t.updatedAt).getTime();
+  return Number.isFinite(ms) ? ms : NaN;
+}
 
-   --include-hidden is passed. Measured: it changes nothing today (200 and 14
-   either way; every thread reports visibility "visible"). It is passed anyway for
-   CONSISTENCY with the archived-thread policy — an archived thread already links,
-   because the work happened there, and "hidden" is a weaker signal than
-   "archived": it hides a thread from someone's bb sidebar, it does not mean the
-   work is irrelevant to a GitHub item that names it. The hidden count is recorded
-   per project so that if hidden threads ever appear and prove unwanted, the
-   decision can be revisited against data rather than reversed on a hunch. */
-const THREAD_LIST_LIMIT = Number(argValue('--thread-limit')) > 0 ? Number(argValue('--thread-limit')) : 2000;
+/** environmentId -> number of LIVE threads on it, for ids used more than once. */
+function sharedEnvironmentIds(threads) {
+  const n = new Map();
+  for (const t of threads || []) {
+    if (!t || !t.environmentId || !threadIsLive(t)) continue;
+    n.set(t.environmentId, (n.get(t.environmentId) || 0) + 1);
+  }
+  for (const [k, v] of n) if (v < 2) n.delete(k);
+  return n;
+}
+
+/** Feature-detect `bb rpc` from the output of a bare `bb rpc`. Both the old and
+    the new bb exit non-zero here, so only the message tells them apart:
+    new bb prints its rpc usage (before any request); old bb prints
+    "unknown command: rpc". Anything else counts as unavailable. */
+function detectBbRpc(r) {
+  const text = String(((r && r.stdout) || '') + '\n' + ((r && r.stderr) || '')).replace(/\u001b\[[0-9;]*m/g, '');
+  if (/usage:\s*bb rpc\b/.test(text)) return { available: true, why: 'bb rpc present' };
+  if (/unknown command:\s*rpc\b/.test(text)) return { available: false, why: 'bb rpc is unknown to the installed bb skill (it arrives with skills#435)' };
+  const first = text.split('\n').map((l) => l.trim()).filter(Boolean)[0] || '(no output)';
+  return { available: false, why: `bb rpc probe unclear (exit ${r && r.exitCode}): ${first.slice(0, 120)}` };
+}
+
+/** The pull from `bb rpc github pullForThread ... --json`: the envelope is
+    {ok, result: {pull: {repo, number, environmentId} | null}}. Throws on
+    ok:false or on any other shape, so an error is never read as "no PR". */
+function parsePullForThread(stdout) {
+  const j = JSON.parse(String(stdout || '').trim());
+  if (!j || typeof j !== 'object' || j.ok === false) throw new Error(`pullForThread not ok: ${JSON.stringify(j && j.error ? j.error : j).slice(0, 160)}`);
+  if (!j.result || typeof j.result !== 'object' || !('pull' in j.result)) throw new Error('pullForThread: unexpected envelope');
+  const p = j.result.pull;
+  if (p === null) return null;
+  if (!p || typeof p.repo !== 'string' || !Number.isFinite(Number(p.number))) throw new Error('pullForThread: malformed pull');
+  return { repo: p.repo, number: String(Number(p.number)), environmentId: p.environmentId || null };
+}
+
+function threadRef(t, matchedBy) {
+  return {
+    id: t.id,
+    provider: t.providerId || null,
+    state: t.status || null,
+    title: t.title || t.titleFallback || null,
+    branch: t.environmentBranchName || null,
+    archived: !!t.archivedAt,
+    live: threadIsLive(t),
+    busy: threadIsBusy(t),
+    hasPendingInteraction: !!t.hasPendingInteraction,
+    queuedWork: t.queuedWork || null,
+    updatedAt: t.updatedAt ? new Date(t.updatedAt).toISOString() : null,
+    matchedBy,
+  };
+}
+
+const linkRank = (c) => (/pr-env/.test(c.matchedBy) ? 2 : 1);
+
+function offerThread(rec, cand) {
+  rec.threadCandidates = (rec.threadCandidates || 0) + 1;
+  const cur = rec.thread;
+  if (!cur || linkRank(cand) > linkRank(cur) || (linkRank(cand) === linkRank(cur) && (cand.updatedAt || '') > (cur.updatedAt || ''))) rec.thread = cand;
+}
+
+/** Attach threads to records (mutates rec.thread / rec.threadCandidates).
+    pulls: Map threadId -> pull|null (only for threads that were asked).
+    prInfo: Map "owner/repo#N" -> { headRef, headRepo, createdAt, refs:Set }. */
+function linkThreads({ records, threadsByRepo, pulls = new Map(), prInfo = new Map() }) {
+  const rejected = [];
+  const stats = { prEnvSharedEnvIgnored: 0, prEnvOtherRepo: 0, prEnvNoRecord: 0, prEnvNoEnvironmentId: 0, prBranchBeforePr: 0, prBranchForkHead: 0 };
+  const byKey = new Map(records.map((r) => [`${r.repo}#${r.id}`, r]));
+  const shared = sharedEnvironmentIds(Object.values(threadsByRepo).flat());
+  const reject = (t, repo, number, matchedBy, reason) =>
+    rejected.push({ thread: t.id, repo, number: String(number), matchedBy, threadTitle: t.title || t.titleFallback || null, reason });
+  for (const repo of Object.keys(threadsByRepo)) {
+    const prs = records.filter((r) => r.repo === repo && r.kind === 'pr' && prInfo.has(`${r.repo}#${r.id}`));
+    for (const t of threadsByRepo[repo]) {
+      const hits = new Map();
+      const hit = (num) => {
+        if (!hits.has(num)) hits.set(num, { title: null, env: false, branch: false });
+        return hits.get(num);
+      };
+      // 1. title "#N" (unchanged rule)
+      const { fromBranch, fromTitle } = threadCandidates(t);
+      for (const num of new Set([...fromBranch, ...fromTitle])) {
+        const m = fromBranch.has(num) && fromTitle.has(num) ? 'both' : fromTitle.has(num) ? 'title' : 'branch';
+        if (m === 'branch') { reject(t, repo, num, m, 'branch digits only, no explicit #N reference — not trusted'); continue; }
+        if (!byKey.has(`${repo}#${num}`)) { reject(t, repo, num, m, 'no record with that number in the window'); continue; }
+        hit(num).title = m;
+      }
+      // 2. pr-env: bb's pullForThread, live threads only
+      if (threadIsLive(t) && pulls.has(t.id)) {
+        const pull = pulls.get(t.id);
+        if (pull) {
+          const envCount = t.environmentId ? shared.get(t.environmentId) || 1 : 0;
+          if (!t.environmentId) {
+            stats.prEnvNoEnvironmentId++;
+            reject(t, pull.repo, pull.number, 'pr-env', 'pr-env: the thread has no environmentId, so sharing cannot be ruled out — ignored');
+          } else if (envCount > 1) {
+            stats.prEnvSharedEnvIgnored++;
+            reject(t, pull.repo, pull.number, 'pr-env', `pr-env: environment ${t.environmentId} is shared by ${envCount} live threads — ignored`);
+          } else if (pull.repo !== repo) {
+            stats.prEnvOtherRepo++;
+            reject(t, pull.repo, pull.number, 'pr-env', `pr-env: the PR is in ${pull.repo}, but this thread's project maps to ${repo}`);
+          } else {
+            const r = byKey.get(`${repo}#${pull.number}`);
+            if (!r || r.kind !== 'pr') {
+              stats.prEnvNoRecord++;
+              reject(t, repo, pull.number, 'pr-env', 'pr-env: no PR record with that number in the window');
+            } else hit(String(pull.number)).env = true;
+          }
+        }
+      }
+      // 3. pr-branch: head branch == thread branch, thread updated >= PR created
+      const branch = t.environmentBranchName || '';
+      if (branch) {
+        for (const pr of prs) {
+          const info = prInfo.get(`${pr.repo}#${pr.id}`);
+          if (!info.headRef || info.headRef !== branch) continue;
+          if (info.headRepo !== repo) {
+            stats.prBranchForkHead++;
+            reject(t, repo, pr.id, 'pr-branch', `pr-branch: the PR head is in ${info.headRepo || 'an unknown repo'}, not ${repo}`);
+            continue;
+          }
+          if (!(threadUpdatedMs(t) >= Date.parse(info.createdAt))) {
+            stats.prBranchBeforePr++;
+            reject(t, repo, pr.id, 'pr-branch', 'pr-branch: the thread was last updated before the PR was created (branch-name reuse)');
+            continue;
+          }
+          hit(pr.id).branch = true;
+        }
+      }
+      for (const [num, h] of hits) {
+        const prPart = h.env && h.branch ? 'pr-env+branch' : h.env ? 'pr-env' : h.branch ? 'pr-branch' : '';
+        const matchedBy = [h.title, prPart].filter(Boolean).join('+');
+        if (matchedBy) offerThread(byKey.get(`${repo}#${num}`), threadRef(t, matchedBy));
+      }
+    }
+  }
+  return { rejected, stats };
+}
+
+/** 'refs-pr': issues with no thread inherit one from a referencing PR. Run
+    AFTER linkThreads. Returns Map issueKey -> [referencing PR keys that carry
+    a thread]; those PRs also drive the issue's aging (applyRefsAging). */
+function carryRefsThreads({ records, prInfo = new Map() }) {
+  const carried = new Map();
+  for (const rec of records) {
+    if (rec.kind !== 'issue' || rec.thread) continue;
+    const refs = records.filter((p) => {
+      if (p.kind !== 'pr' || p.repo !== rec.repo || !p.thread) return false;
+      const info = prInfo.get(`${p.repo}#${p.id}`);
+      return !!(info && info.refs && info.refs.has(rec.id));
+    });
+    if (!refs.length) continue;
+    for (const p of refs) offerThread(rec, { ...p.thread, matchedBy: 'refs-pr', viaPr: `${p.repo}#${p.id}` });
+    carried.set(`${rec.repo}#${rec.id}`, refs.map((p) => `${p.repo}#${p.id}`));
+  }
+  return carried;
+}
+
+/** Newest of the issue's own activity and its referencing PRs' activity. */
+function carriedActivity(own, others) {
+  const all = [own, ...(others || [])].filter((v) => typeof v === 'string' && Number.isFinite(Date.parse(v)));
+  if (!all.length) return { at: own, carried: false };
+  const at = all.reduce((m, v) => (Date.parse(v) > Date.parse(m) ? v : m));
+  return { at, carried: typeof own === 'string' && Date.parse(at) > Date.parse(own) };
+}
+
+/** Aging for refs-pr issues, so active umbrella work does not read as stalled:
+    lastActivityAt becomes max(own, referencing PRs). OPEN issues only (a closed
+    issue's done-column retention is left alone). The own value is kept as
+    lastActivityAtOwn, which is what the status cache keys on, so a moving PR
+    does not re-trigger the issue's status-model call. Returns the count. */
+function applyRefsAging(records, carried) {
+  const byKey = new Map(records.map((r) => [`${r.repo}#${r.id}`, r]));
+  let n = 0;
+  for (const [key, prKeys] of carried) {
+    const rec = byKey.get(key);
+    if (!rec || rec.kind !== 'issue' || rec.stage === 11) continue;
+    const out = carriedActivity(rec.lastActivityAt, prKeys.map((k) => byKey.get(k) && byKey.get(k).lastActivityAt));
+    if (!out.carried) continue;
+    rec.lastActivityAtOwn = rec.lastActivityAt;
+    rec.lastActivityAt = out.at;
+    rec.activityCarriedFrom = prKeys;
+    n++;
+  }
+  return n;
+}
+/* ---- >8 end threadLinks ---------------------------------------------------- */
+
+/* Thread listing (phase 7h, corrected 2026-09-25).
+
+   `bb thread list` with NO limit returns only the most recent 20 threads per
+   project; that once dropped three in-window links with nothing in the log.
+
+   The bb SKILL clamps --limit to 200, silently: --limit 500/1000/2000 all
+   return 200 rows. So 200 is the skill's ceiling, NOT a project's real size. Measured
+   2026-09-25: the slicc project holds 891+ threads (a full export had 894) and
+   still returns 200; skills has 16. The listing is ordered newest first.
+
+   OPERATOR DECISION (2026-09-25): keep the TOP 200 threads per project and do
+   not page. The audit found every real in-window association inside the top
+   200; the older threads are history. A page of exactly 200 is therefore
+   EXPECTED for a busy project, and is logged as information, not a warning.
+
+   --include-hidden is passed. It does matter: the slicc project has 203 hidden
+   threads in its full list. It is kept for CONSISTENCY with the
+   archived-thread policy: an archived thread still links, because the work
+   happened there, and "hidden" is a weaker signal than "archived" (it hides a
+   thread from someone's bb sidebar). The hidden count in each page is
+   recorded per project so the decision can be revisited against data. */
+const THREAD_LIST_LIMIT = Number(argValue('--thread-limit')) > 0 ? Number(argValue('--thread-limit')) : 200;
 
 function loadThreads() {
   const byRepo = {};
   const diag = [];
-  const listing = { limitRequested: THREAD_LIST_LIMIT, noPagination: 'bb thread list has no offset/page/cursor: a high limit plus the equals-limit guard is the only truncation defence', perProject: {} };
+  const listing = { limitRequested: THREAD_LIST_LIMIT, policy: 'top 200 threads per project, newest first, no paging (operator decision 2026-09-25; the bb skill clamps --limit to 200)', perProject: {} };
   for (const [repo, project] of Object.entries(BB_PROJECT)) {
     let raw;
     try {
@@ -808,41 +1043,14 @@ function loadThreads() {
     byRepo[repo] = Array.isArray(list) ? list : [];
     const returned = byRepo[repo].length;
     const hidden = byRepo[repo].filter((t) => t.visibility && t.visibility !== 'visible').length;
-    // THE GUARD. A count exactly equal to the limit is indistinguishable from a
-    // complete read, and with no cursor there is nothing else to check, so it is
-    // reported as a suspicion rather than swallowed.
-    const possiblyTruncated = returned === THREAD_LIST_LIMIT;
-    listing.perProject[repo] = { project, returned, hidden, possiblyTruncated };
-    if (possiblyTruncated) {
-      const warning =
-        `bb thread list returned EXACTLY the requested limit (${returned}) for ${repo} — that is what a ` +
-        'TRUNCATED read looks like, and bb offers no cursor to check. Thread links may be missing. ' +
-        `Re-run with a higher --thread-limit (currently ${THREAD_LIST_LIMIT}) and compare the count.`;
-      diag.push(warning);
-      console.error(`\n[bb] WARNING: ${warning}\n`);
-    }
-    console.log(`bb threads     : ${repo} → ${returned} threads (limit ${THREAD_LIST_LIMIT}${hidden ? `, ${hidden} hidden` : ''})${possiblyTruncated ? '  ← SUSPECT TRUNCATION' : ''}`);
+    const live = byRepo[repo].filter(threadIsLive).length;
+    // A full page is the design, not a defect: the project simply has more
+    // threads than the top-N kept. Recorded, and logged as information.
+    const fullPage = returned >= THREAD_LIST_LIMIT;
+    listing.perProject[repo] = { project, returned, hidden, live, fullPage };
+    console.log(`bb threads     : ${repo} → ${returned} threads (limit ${THREAD_LIST_LIMIT}, ${live} live${hidden ? `, ${hidden} hidden` : ''})${fullPage ? ` — full page: the newest ${THREAD_LIST_LIMIT} are kept by design` : ''}`);
   }
   return { byRepo, diag, listing };
-}
-
-/** Live = exists, not archived/deleted. Archived threads are still attached
- *  (the work happened there) but never imply live agent activity. */
-function threadIsLive(t) {
-  return !t.archivedAt && !t.deletedAt;
-}
-
-function threadIsBusy(t) {
-  const a = t.activity || {};
-  const counts =
-    (a.activeBackgroundAgentCount || 0) +
-    (a.activeBackgroundCommandCount || 0) +
-    (a.activeGoalCount || 0) +
-    (a.activePlanModeCount || 0) +
-    (a.activeWorkflowCount || 0);
-  const queued = t.queuedWork && t.queuedWork !== 'none';
-  const running = t.status === 'running' || t.status === 'working';
-  return counts > 0 || !!queued || running;
 }
 
 /**
@@ -1250,6 +1458,9 @@ function isRenovateDependencyDashboard(it) {
 const records = [];
 const notes = [];
 const filteredOut = { renovateDependencyDashboard: [] };
+// Per-PR inputs for thread linking, from the PR detail call already made (no
+// extra request): head branch + head repo, creation time, and non-closing refs.
+const prInfo = new Map();
 const derivedInputs = new Map();
 const perRepo = {};
 
@@ -1290,6 +1501,12 @@ for (const full of REPOS) {
 
     if (isPr) {
       pr = await api(`repos/${owner}/${name}/pulls/${num}`);
+      prInfo.set(`${full}#${num}`, {
+        headRef: (pr.head && pr.head.ref) || null,
+        headRepo: (pr.head && pr.head.repo && pr.head.repo.full_name) || null,
+        createdAt: pr.created_at || null,
+        refs: nonClosingRefs(pr.title || it.title, pr.body || ''),
+      });
       const headSha = pr.head?.sha;
       // The empty-string trap: only build the check-runs path from a verified sha.
       if (pr.state === 'open') {
@@ -1421,62 +1638,74 @@ function applyActivityExclusion(rec, counter) {
   rec.lastActivityAt = out.at;
 }
 let activityExclusionApplied = false;
+let refsAged = 0;
 fs.writeFileSync(`${SCRATCH_DIR}/last-comment-audit.json`, JSON.stringify({ stats: lastComment.stats, requests: lastCommentRequests, cacheLoaded: commentCacheLoaded, audit: lastComment.audit }, null, 2));
 
 /* ---- phase 3a: attach bb threads, and let them express stages 2/3/4 ---- */
 const { byRepo: threadsByRepo, diag: bbDiag, listing: threadListing } = loadThreads();
 for (const d of bbDiag) notes.push(d);
 
-const linkAudit = [];
-const rejected = [];
-for (const repo of Object.keys(threadsByRepo)) {
-  for (const t of threadsByRepo[repo]) {
-    const { fromBranch, fromTitle } = threadCandidates(t);
-    const all = new Set([...fromBranch, ...fromTitle]);
-    if (!all.size) continue;
-    for (const num of all) {
-      const rec = records.find((r) => r.repo === repo && r.id === num);
-      const matchedBy = fromBranch.has(num) && fromTitle.has(num) ? 'both' : fromTitle.has(num) ? 'title' : 'branch';
-      // MEASURED 2026-09-21: branch digits alone are NOT trustworthy. Two real
-      // counter-examples in this data set:
-      //   bb/adb-honest-auth-failure-diagnostics-380-thr_example -> "380",
-      //     but that thread is "Fix misleading adb signature error message"
-      //     while #380 in this repo is a different issue entirely. Wrong link.
-      //   bb/fail-loudly-on-duplicate-skill-command-names-331-thr_example -> "331",
-      //     a TRUNCATION of #3310; #331 is an unrelated dependency bump.
-      // So an explicit "#N" reference is required; branch digits may only
-      // corroborate one ('both'). A wrong link is worse than no link.
-      if (matchedBy === 'branch') {
-        rejected.push({ thread: t.id, repo, number: num, matchedBy, threadTitle: t.title || t.titleFallback || null, reason: 'branch digits only, no explicit #N reference — not trusted' });
-        continue;
+/* Signal A ('pr-env'): bb's pullForThread for LIVE threads. Feature-detected
+   once per run, because `bb rpc` only exists from skills#435 on; when it is
+   unknown the signal is skipped and said so, and the run carries on. Threads on
+   an environment shared by several live threads are not asked at all: their
+   answer would be ignored (see linkThreads). Cost is measured per cycle. */
+const PR_ENV_CONCURRENCY = 4;
+const prEnv = { status: 'not run', liveThreads: 0, skippedSharedEnv: 0, calls: 0, wallMs: 0, maxCallMs: 0, pulls: 0, nulls: 0, errors: 0, errorSamples: [] };
+const pulls = new Map();
+{
+  const probe = await execAsync('bb rpc');
+  const det = detectBbRpc(probe);
+  if (!det.available) {
+    prEnv.status = `skipped: ${det.why}`;
+    console.log(`bb pr-env      : SKIPPED — ${det.why}`);
+  } else {
+    const shared = sharedEnvironmentIds(Object.values(threadsByRepo).flat());
+    const live = Object.values(threadsByRepo).flat().filter((t) => threadIsLive(t) && /^thr_[A-Za-z0-9]+$/.test(String(t.id)));
+    const targets = live.filter((t) => !(t.environmentId && (shared.get(t.environmentId) || 1) > 1));
+    prEnv.liveThreads = live.length;
+    prEnv.skippedSharedEnv = live.length - targets.length;
+    const t0 = Date.now();
+    let next = 0;
+    const worker = async () => {
+      while (next < targets.length) {
+        const t = targets[next++];
+        const c0 = Date.now();
+        const r = await execAsync(`bb rpc github pullForThread ${shellArg(JSON.stringify({ threadId: t.id }))} --json`);
+        const ms = Date.now() - c0;
+        prEnv.calls++;
+        prEnv.maxCallMs = Math.max(prEnv.maxCallMs, ms);
+        try {
+          if (r.exitCode !== 0) throw new Error(`exit ${r.exitCode}: ${String(r.stderr || r.stdout).trim().slice(0, 120)}`);
+          const pull = parsePullForThread(r.stdout);
+          pulls.set(t.id, pull);
+          if (pull) prEnv.pulls++;
+          else prEnv.nulls++;
+        } catch (err) {
+          prEnv.errors++;
+          if (prEnv.errorSamples.length < 5) prEnv.errorSamples.push({ thread: t.id, error: String(err.message).slice(0, 160) });
+        }
       }
-      if (!rec) {
-        rejected.push({ thread: t.id, repo, number: num, matchedBy, threadTitle: t.title || t.titleFallback || null, reason: 'no record with that number in the window' });
-        continue;
-      }
-      const cand = {
-        id: t.id,
-        provider: t.providerId || null,
-        state: t.status || null,
-        title: t.title || t.titleFallback || null,
-        branch: t.environmentBranchName || null,
-        archived: !!t.archivedAt,
-        live: threadIsLive(t),
-        busy: threadIsBusy(t),
-        hasPendingInteraction: !!t.hasPendingInteraction,
-        queuedWork: t.queuedWork || null,
-        updatedAt: t.updatedAt ? new Date(t.updatedAt).toISOString() : null,
-        matchedBy,
-      };
-      if (!rec.thread || (cand.updatedAt || '') > (rec.thread.updatedAt || '')) {
-        rec.threadCandidates = (rec.threadCandidates || 0) + (rec.thread ? 1 : 1);
-        rec.thread = cand;
-      } else {
-        rec.threadCandidates = (rec.threadCandidates || 1) + 1;
-      }
-    }
+    };
+    await Promise.all(Array.from({ length: Math.min(PR_ENV_CONCURRENCY, targets.length) }, worker));
+    prEnv.wallMs = Date.now() - t0;
+    prEnv.status = 'ran';
+    console.log(`bb pr-env      : ${prEnv.calls} pullForThread calls in ${(prEnv.wallMs / 1000).toFixed(1)} s (max ${(prEnv.maxCallMs / 1000).toFixed(1)} s), ${prEnv.pulls} PRs, ${prEnv.nulls} null, ${prEnv.errors} errors, ${prEnv.skippedSharedEnv} live threads not asked (shared environment)`);
   }
 }
+
+// The linker's inputs, for offline audit and replay (scratch only).
+fs.writeFileSync(`${SCRATCH_DIR}/thread-link-inputs.json`, JSON.stringify({
+  records: records.map((r) => ({ repo: r.repo, id: r.id, kind: r.kind, stage: r.stage, title: r.title })),
+  prInfo: Object.fromEntries([...prInfo].map(([k, v]) => [k, { ...v, refs: [...v.refs] }])),
+  threadsByRepo,
+  pulls: Object.fromEntries(pulls),
+  prEnv,
+}, null, 1));
+
+const linkAudit = [];
+const { rejected, stats: linkStats } = linkThreads({ records, threadsByRepo, pulls, prInfo });
+const refsCarried = carryRefsThreads({ records, prInfo });
 for (const rec of records) {
   if (!rec.thread) continue;
   const promoted = stageFromThread(rec, rec.thread);
@@ -1490,6 +1719,7 @@ for (const rec of records) {
     threadId: rec.thread.id,
     threadTitle: rec.thread.title,
     matchedBy: rec.thread.matchedBy,
+    viaPr: rec.thread.viaPr || undefined,
     branch: rec.thread.branch,
     live: rec.thread.live,
     candidates: rec.threadCandidates || 1,
@@ -1537,6 +1767,7 @@ try {
   }
   for (const r of records) applyActivityExclusion(r, counters[`${r.repo}#${r.id}`] || null);
   activityExclusionApplied = true;
+  refsAged = applyRefsAging(records, refsCarried);
   const byKey = new Map(records.map((r) => [`${r.repo}#${r.id}`, r]));
   const absorbed = new Set();
 
@@ -1574,8 +1805,8 @@ try {
     }
     if (issue.thread && !lead.thread) lead.thread = issue.thread;
     // The card's idleness must reflect the newest activity of either artefact.
-    const rawActivity = maxDate(lead.lastActivityAtRaw || lead.lastActivityAt, issue.lastActivityAtRaw || issue.lastActivityAt);
-    lead.lastActivityAt = maxDate(lead.lastActivityAt, issue.lastActivityAt);
+    const rawActivity = maxDate(lead.lastActivityAtRaw || lead.lastActivityAt, issue.lastActivityAtRaw || issue.lastActivityAtOwn || issue.lastActivityAt);
+    lead.lastActivityAt = maxDate(lead.lastActivityAt, issue.lastActivityAtOwn || issue.lastActivityAt);
     if (rawActivity !== lead.lastActivityAt) lead.lastActivityAtRaw = rawActivity;
     else delete lead.lastActivityAtRaw;
     const total = (lead.commentsTotal ?? lead.commentsCount ?? 0) + (issue.commentsTotal ?? issue.commentsCount ?? 0);
@@ -1652,7 +1883,10 @@ try {
 } catch (err) {
   notes.push(`closing-link merge skipped: ${String(err.message).slice(0, 200)}`);
   mergeAudit.error = String(err.message).slice(0, 300);
-  if (!activityExclusionApplied) for (const r of records) applyActivityExclusion(r, null);
+  if (!activityExclusionApplied) {
+    for (const r of records) applyActivityExclusion(r, null);
+    refsAged = applyRefsAging(records, refsCarried);
+  }
 }
 fs.writeFileSync(`${SCRATCH_DIR}/activity-exclusion-audit.json`, JSON.stringify(activityAudit, null, 2));
 fs.writeFileSync(`${SCRATCH_DIR}/merge-audit.json`, JSON.stringify(mergeAudit, null, 2));
@@ -2097,14 +2331,16 @@ const cacheStats = { loadedEntries: Object.keys(statusCache.entries).length, hit
 function cacheLookup(rec) {
   const e = statusCache.entries[`${rec.repo}#${rec.id}`];
   if (!e) return null;
-  if (e.lastActivityAt !== rec.lastActivityAt) { cacheStats.staleActivity++; return null; }
+  // refs-pr aging moves lastActivityAt with a referencing PR; the cache keys on
+  // the record's OWN activity so that does not re-trigger a status-model call.
+  if (e.lastActivityAt !== (rec.lastActivityAtOwn || rec.lastActivityAt)) { cacheStats.staleActivity++; return null; }
   if (e.promptVersion !== PROMPT_VERSION || e.model !== STATUS_MODEL) { cacheStats.staleContract++; return null; }
   return e;
 }
 
 function cacheStore(rec, payload) {
   statusCache.entries[`${rec.repo}#${rec.id}`] = {
-    lastActivityAt: rec.lastActivityAt,
+    lastActivityAt: rec.lastActivityAtOwn || rec.lastActivityAt,
     promptVersion: PROMPT_VERSION,
     model: STATUS_MODEL,
     generatedAt: new Date().toISOString(),
@@ -2401,11 +2637,14 @@ const snapshot = {
       fields: 'counterResetAt, counterResetBy, counterQualifyingEvents on every issue record; hasClosingPr marks an issue whose closing PR is outside the window',
     },
     threadLinkage: {
-      rule: 'REQUIRED: an explicit "#N" in the thread title or titleFallback, where N is also a record in this window. The branch pattern ^bb/.*-(N)-thr_x may only corroborate (matchedBy "both"); branch digits alone are rejected because they truncate (a slug ending -331 meant #3310) and can name an unrelated number (a slug ending -380 belonged to a different adb thread).',
+      rule: 'within the repo a thread\'s bb project maps to. Issues: an explicit "#N" in the thread title or titleFallback (branch digits only corroborate, matchedBy "both"). PRs: pr-env (bb pullForThread, live threads, ignored on environments shared by several live threads), pr-branch (head branch = thread branch, same-repo head, thread updated >= PR created), pr-env+branch when both agree; a pr-env link outranks the rest, otherwise the most recently updated thread wins. refs-pr: an issue with no thread inherits the thread of a PR whose title/body says Refs/Ref/References #N (same repo), and while OPEN its lastActivityAt is max(own, those PRs) with the own value kept as lastActivityAtOwn (the status-cache key). Operator-approved 2026-09-25.',
+      bySignal: linkAudit.reduce((a, l) => ((a[l.matchedBy] = (a[l.matchedBy] || 0) + 1), a), {}),
+      bySignalScope: 'per artefact at link time, before the phase-4 merge folds issues into PR cards',
+      prEnv,
+      linkerStats: linkStats,
+      refsPr: { linked: refsCarried.size, activityCarried: refsAged, issues: [...refsCarried.keys()] },
       projects: BB_PROJECT,
-      // Phase 7h: how the thread list was READ, so a truncated read can never
-      // hide again. possiblyTruncated means the count equalled the requested
-      // limit, which is indistinguishable from a complete read (bb has no cursor).
+      // How the thread list was read: the top THREAD_LIST_LIMIT per project, by design.
       listing: threadListing,
       linked: records.filter((r) => r.thread).length,
       unlinked: records.filter((r) => !r.thread).length,
@@ -2518,7 +2757,7 @@ console.log(`by stage       : ${JSON.stringify(records.reduce((a, r) => ((a[r.st
 console.log(`by kind        : ${JSON.stringify(records.reduce((a, r) => ((a[r.kind] = (a[r.kind] || 0) + 1), a), {}))}`);
 console.log(`by repo        : ${JSON.stringify(records.reduce((a, r) => ((a[r.repo] = (a[r.repo] || 0) + 1), a), {}))}`);
 console.log(`substages      : ${JSON.stringify(records.filter((r) => r.substage).map((r) => `${r.repo}#${r.id}:${r.substage}`))}`);
-console.log(`threads linked : ${records.filter((r) => r.thread).length} of ${records.length} (rejected candidates: ${rejected.length})`);
+console.log(`threads linked : ${records.filter((r) => r.thread).length} of ${records.length} (rejected candidates: ${rejected.length}); by signal ${JSON.stringify(linkAudit.reduce((a, l) => ((a[l.matchedBy] = (a[l.matchedBy] || 0) + 1), a), {}))}; refs-pr aging on ${refsAged}`);
 console.log(`merges         : ${mergeAudit.merged.length} (graphql cost ${closingCost}); out-of-window secondary: ${mergeAudit.secondaryOutOfWindow.length}; rejected: ${mergeAudit.rejected.length}`);
 {
   const s = lastComment.stats;
