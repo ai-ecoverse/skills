@@ -1642,3 +1642,61 @@ test('flow --confirm: search {ok:"false"} with a matching row is read-error, no 
 //   Caught by: "lookupChannel: search ok that is not the boolean true ...",
 //   "flow --confirm: search {ok:\"false\"} with a matching row ...", and the
 //   entry-point test "channel-archive --confirm (entry point): search {ok:"false"} ...".
+
+// ── Codex round 7 (P1): contradictory Slack Connect metadata is sharing-unknown ─
+
+test('classifyChannelHost: both flags false but the row shows sharing evidence is sharing-unknown', () => {
+const cases = [
+[{ external_user_count: 3 }, 'external_user_count 3'],
+[{ connected_team_ids: ['T0BQQL6FJ', ORG] }, 'external connected_team_ids T0BQQL6FJ'],
+[{ pending_connected_team_ids: ['T0PENDING1'] }, 'external pending_connected_team_ids T0PENDING1'],
+[{ conversation_host_id: 'E01UA4N2G78' }, 'conversation_host_id E01UA4N2G78'],
+[{ conversation_host_id: ORG }, 'conversation_host_id ' + ORG],
+];
+for (const [over, reason] of cases) {
+const c = chan(Object.assign({ is_ext_shared: false, is_pending_ext_shared: false }, over));
+is(classifyChannelHost(c, ORG), 'sharing-unknown', JSON.stringify(over));
+const st = normalizeChannelState(c, ORG, NOW_MS);
+ok(st.sharing_conflicts.includes(reason), JSON.stringify(st.sharing_conflicts));
+}
+});
+
+test('classifyChannelHost: consistent not-shared rows stay not-shared (controls)', () => {
+for (const over of [
+{},
+{ connected_team_ids: null, external_user_count: 0 },
+{ connected_team_ids: [ORG, 'T0385CHDU9E'], internal_team_ids: ['T0385CHDU9E'] },
+{ external_user_count: -1 },
+{ pending_connected_team_ids: [] },
+]) {
+is(classifyChannelHost(chan(over), ORG), 'not-shared', JSON.stringify(over));
+}
+});
+
+test('evaluateChannelGuards: contradictory metadata refuses archive even with --allow-shared, naming the evidence', () => {
+const st = normalizeChannelState(chan({ external_user_count: 4, conversation_host_id: ORG }), ORG, NOW_MS);
+const d = evaluateChannelGuards('archive', st, { orgId: ORG, allowShared: true });
+is(d.outcome, 'refuse');
+is(d.reason, 'sharing-unknown');
+ok(d.detail.includes('is_ext_shared and is_pending_ext_shared are false, but the same row reports external_user_count 4'), d.detail);
+ok(d.detail.includes('conversation_host_id ' + ORG), d.detail);
+});
+
+test('flow --confirm --allow-shared with contradictory metadata: refused sharing-unknown, no archive call', async () => {
+const h = stub({ states: [chan({ connected_team_ids: ['T04650MFY', ORG], external_user_count: 2 })] });
+const r = await h.run({ confirm: true, allowShared: true });
+is(r.status, 'refused');
+is(r.decision.reason, 'sharing-unknown');
+is(writes(h), 0);
+});
+
+test('an archived channel with contradictory metadata is still already-archived (no write)', () => {
+const st = normalizeChannelState(chan({ is_archived: true, member_count: -1, conversation_host_id: ORG }), ORG, NOW_MS);
+is(evaluateChannelGuards('archive', st, { orgId: ORG }).reason, 'already-archived');
+});
+
+// MUTATION M13 (contradictions ignored): in classifyChannelHost, return
+//   'not-shared' whenever both flags are false. Caught by: "classifyChannelHost:
+//   both flags false but the row shows sharing evidence ...", "evaluateChannelGuards:
+//   contradictory metadata refuses ...", "flow --confirm --allow-shared with
+//   contradictory metadata ...", and the entry-point contradiction test.

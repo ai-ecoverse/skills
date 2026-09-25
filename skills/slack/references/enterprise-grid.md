@@ -347,6 +347,18 @@ read-back (10 attempts, 10 s apart, until `is_archived` flips).
 | `active-recently` | `--min-idle-days` given, idle fewer than N days | 1 |
 | `archived-unknown` | Slack did not report `is_archived` | 1 |
 
+**`sharing-unknown` also covers contradictions.** When `is_ext_shared` and
+`is_pending_ext_shared` are both `false` but the same row reports a positive
+`external_user_count`, an external team in `connected_team_ids` or
+`pending_connected_team_ids`, or any `conversation_host_id`, the two flags are not
+trusted: the channel is `sharing-unknown` and both commands refuse (`--allow-shared`
+does not override it), naming the evidence (`sharing_conflicts` in `--json`). A consistent
+non-shared row never trips this (measured: no host id on 25 of 25 non-ext-shared
+channels; `connected_team_ids` null and 0 external users on the non-shared channels read).
+Trade-off: whether an archive leaves `conversation_host_id` on a formerly shared channel was
+not measured; if it does, `channel-unarchive` refuses that channel, and it has to be
+unarchived in the Slack admin UI.
+
 **Arguments fail closed.** Before any Slack call, on the dry run and with
 `--confirm` alike, every flag name is checked against an allow-list: the
 command's own flags plus the globals `--ws`, `--workspace`, `--org`, `--json`,

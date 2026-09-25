@@ -403,6 +403,23 @@ function knownCount(n) {
   return typeof n === 'number' && Number.isInteger(n) && n >= 0 ? n : null;
 }
 
+// Evidence of Slack Connect sharing in a row whose is_ext_shared and
+// is_pending_ext_shared are both false. Measured: every non-ext-shared channel
+// in a 40-channel sample had no conversation_host_id, and the non-shared
+// channels read had connected_team_ids null and 0 external users, so on a
+// consistent row this is empty. Returns a list of human-readable reasons.
+function sharingConflicts(c, orgId) {
+  const out = [];
+  const ext = knownCount(c.external_user_count);
+  if (ext !== null && ext > 0) out.push('external_user_count ' + ext);
+  const connected = externalTeamIds(c.connected_team_ids, c, orgId);
+  if (connected && connected.length) out.push('external connected_team_ids ' + connected.join(','));
+  const pending = externalTeamIds(c.pending_connected_team_ids, c, orgId);
+  if (pending && pending.length) out.push('external pending_connected_team_ids ' + pending.join(','));
+  if (c.conversation_host_id) out.push('conversation_host_id ' + c.conversation_host_id);
+  return out;
+}
+
 // 'not-shared' | 'us' | 'other' | 'unknown' | 'sharing-unknown'
 // 'sharing-unknown': is_ext_shared or is_pending_ext_shared is missing or not a
 // boolean. This is an undocumented endpoint; an absent flag must never be read
@@ -413,7 +430,10 @@ function classifyChannelHost(c, orgId) {
     return 'sharing-unknown';
   }
   const shared = c.is_ext_shared === true || c.is_pending_ext_shared === true;
-  if (!shared) return 'not-shared';
+  // Both flags false is trusted only if nothing else in the same row contradicts
+  // it; otherwise a confirmed archive would skip --allow-shared and could cut
+  // partner organisations off irreversibly.
+  if (!shared) return sharingConflicts(c, orgId).length ? 'sharing-unknown' : 'not-shared';
   const host = c.conversation_host_id;
   if (!host) return 'unknown';
   return host === orgId ? 'us' : 'other';
@@ -455,6 +475,11 @@ function normalizeChannelState(c, orgId, nowMs) {
     is_org_shared: c.is_org_shared === true,
     conversation_host_id: c.conversation_host_id || null,
     host: classifyChannelHost(c, orgId),
+    sharing_conflicts:
+      typeof c.is_ext_shared === 'boolean' && typeof c.is_pending_ext_shared === 'boolean' &&
+      !c.is_ext_shared && !c.is_pending_ext_shared
+        ? sharingConflicts(c, orgId)
+        : [],
     // Read from the RAW search entry: channel-search's summarizeChannel drops
     // is_ext_shared, is_pending_ext_shared, conversation_host_id and these.
     external_team_ids: externalTeamIds(c.connected_team_ids, c, orgId),
@@ -531,11 +556,14 @@ function evaluateChannelGuards(action, state, opts) {
     return guardResult('noop', 'not-archived', 'the channel is not archived');
   }
   if (state.host === 'sharing-unknown') {
+    const why = state.sharing_conflicts && state.sharing_conflicts.length
+      ? 'is_ext_shared and is_pending_ext_shared are false, but the same row reports ' +
+        state.sharing_conflicts.join('; ')
+      : 'Slack did not report is_ext_shared / is_pending_ext_shared as booleans';
     return guardResult(
       'refuse',
       'sharing-unknown',
-      'Slack did not report is_ext_shared / is_pending_ext_shared as booleans; ' +
-        'cannot tell whether archiving would disconnect external organisations'
+      why + '; cannot tell whether archiving would disconnect external organisations'
     );
   }
   if (state.host === 'other') {

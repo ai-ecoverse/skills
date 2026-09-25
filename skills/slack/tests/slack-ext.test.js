@@ -1284,7 +1284,10 @@ test('channel-archive --confirm without --allow-shared (entry point): Slack Conn
 });
 
 test('channel-archive --confirm --allow-shared (entry point): archives, says what it disconnected, reads sharing back', async () => {
-  const after = connectArch({ is_archived: true, member_count: -1, is_ext_shared: false, external_user_count: 0, connected_team_ids: [] });
+  // The measured post-archive row (5 of 5): flags false, 0 external users, no connected
+  // teams. Whether conversation_host_id survives an archive was not measured; see the
+  // next test for a row that keeps it.
+  const after = connectArch({ is_archived: true, member_count: -1, is_ext_shared: false, external_user_count: 0, connected_team_ids: [], conversation_host_id: undefined });
   const h = await load({
     runMain: true,
     fakeTimers: true,
@@ -1649,4 +1652,41 @@ test('channel-archive --json (entry point): search {ok:"false"} is a read-error 
   const j = onlyJson(h);
   is(j.status, 'read-error');
   is(j.state, null);
+});
+
+// ── Codex round 7 (P1): contradictory Slack Connect metadata (entry point) ────
+
+test('channel-archive --confirm --allow-shared (entry point): flags false but external users + host id -> refused sharing-unknown, no write', async () => {
+  const h = await load({
+    runMain: true,
+    argv: ['channel-archive', 'C04633RSEDU', '--confirm', '--allow-shared'],
+    api: archApi([archChan({ is_ext_shared: false, is_pending_ext_shared: false, external_user_count: 3, conversation_host_id: 'E06V3987PMY' })]),
+  });
+  is(exitOf(h), 1);
+  ok(/refused: sharing-unknown \(is_ext_shared and is_pending_ext_shared are false, but the same row reports external_user_count 3/.test(errOf(h)), errOf(h));
+  is(archWrites(h), 0);
+});
+
+test('channel-archive dry run --json (entry point): contradictory row reports sharing-unknown with its evidence', async () => {
+  const h = await load({
+    runMain: true,
+    argv: ['channel-archive', 'C04633RSEDU', '--json'],
+    api: archApi([archChan({ connected_team_ids: ['T04650MFY', 'E06V3987PMY'] })]),
+  });
+  const j = onlyJson(h);
+  is(j.decision.reason, 'sharing-unknown');
+  is(j.state.sharing_conflicts.join('|'), 'external connected_team_ids T04650MFY');
+});
+
+test('channel-archive --confirm --allow-shared (entry point): a read-back row that keeps conversation_host_id prints Shared now UNKNOWN', async () => {
+  const after = connectArch({ is_archived: true, member_count: -1, is_ext_shared: false, external_user_count: 0, connected_team_ids: [] });
+  const h = await load({
+    runMain: true,
+    fakeTimers: true,
+    argv: ['channel-archive', 'C03GXBSC72T', '--confirm', '--allow-shared'],
+    api: archApi([connectArch(), after]),
+  });
+  is(errOf(h), '');
+  ok(/archived \(confirmed\)/.test(h.text()));
+  ok(/Shared now:\s+UNKNOWN \(flags say not shared, but the row reports conversation_host_id E06V3987PMY\)/.test(h.text()), h.text());
 });

@@ -2893,7 +2893,12 @@ async function cmdChannelToPrivate() {
 // read: it answers channel_not_found for a private channel the admin is not in.
 
 function describeSharing(st) {
-  if (st.host === 'sharing-unknown') return 'UNKNOWN (Slack did not report is_ext_shared / is_pending_ext_shared as booleans)';
+  if (st.host === 'sharing-unknown') {
+    if (st.sharing_conflicts && st.sharing_conflicts.length) {
+      return 'UNKNOWN (flags say not shared, but the row reports ' + st.sharing_conflicts.join('; ') + ')';
+    }
+    return 'UNKNOWN (Slack did not report is_ext_shared / is_pending_ext_shared as booleans)';
+  }
   if (st.host === 'not-shared') return st.is_org_shared ? 'org-shared (internal), not ext-shared' : 'not ext-shared';
   const pending = st.is_pending_ext_shared && !st.is_ext_shared ? 'ext-share PENDING' : 'ext-shared';
   const orgs = st.external_team_ids === null ? null : st.external_team_ids.length;
