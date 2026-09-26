@@ -1,8 +1,9 @@
-const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const { createRequire } = require('node:module');
-const test = require('node:test');
+import test, { fail, is, not, ok } from 'tst';
+import { createRequire } from 'node:module';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const target = path.resolve(__dirname, '../scripts/gh.jsh');
 const source = fs.readFileSync(target, 'utf8');
@@ -49,7 +50,7 @@ async function runGh(args, scenario = {}) {
     patch: record('patch'),
     post: record('post'),
     delete: record('delete'),
-    put: async () => assert.fail('unexpected PUT'),
+    put: async () => fail('unexpected PUT'),
   };
   const cli = {
     die: (message, options) => {
@@ -130,7 +131,7 @@ async function runGh(args, scenario = {}) {
   const mockFetch = async (url, init) => {
     fetchCalls.push({ url: String(url), init });
     const response = scenario.fetchResponse;
-    if (!response) assert.fail('unexpected fetch');
+    if (!response) fail('unexpected fetch');
     const headerEntries = Object.entries(response.headers || {});
     return {
       ok: response.status >= 200 && response.status < 300,
@@ -170,12 +171,12 @@ function writes(result) {
 test('exposes pr edit in top-level, group, and scoped help', async () => {
   for (const args of [['--help'], ['pr', '--help']]) {
     const result = await runGh(args);
-    assert.equal(result.error.exitCode, 0);
-    assert.match(result.stdout.join('\n'), /pr edit/);
+    is(result.error.exitCode, 0);
+    ok((/pr edit/).test(result.stdout.join('\n')));
   }
 
   const result = await runGh(['pr', 'edit', '--help']);
-  assert.equal(result.error.exitCode, 0);
+  is(result.error.exitCode, 0);
   const help = result.stdout.join('\n');
   for (const flag of [
     '--repo',
@@ -194,14 +195,14 @@ test('exposes pr edit in top-level, group, and scoped help', async () => {
     '--json',
     '--jq',
   ])
-    assert.match(help, new RegExp(flag));
-  assert.match(help, /use "-" for stdin/);
-  assert.match(help, /use @me for yourself/);
-  assert.doesNotMatch(help, /--(?:add|remove)-project/);
+    ok((new RegExp(flag)).test(help));
+  ok((/use "-" for stdin/).test(help));
+  ok((/use @me for yourself/).test(help));
+  ok(!(/--(?:add|remove)-project/).test(help));
 
   const terseHelp = await runGh(['pr', 'edit', '42', '--title', 'T', '-h', '-R', 'octo/repo']);
-  assert.equal(terseHelp.error.exitCode, 0);
-  assert.deepEqual(writes(terseHelp), []);
+  is(terseHelp.error.exitCode, 0);
+  is(writes(terseHelp), []);
 });
 
 test('rejects parser and validation errors before any write', async () => {
@@ -253,10 +254,10 @@ test('rejects parser and validation errors before any write', async () => {
   ];
   for (const [args, message, scenario] of cases) {
     const result = await runGh(args, scenario);
-    assert.equal(result.error.name, 'NodeExitError');
-    assert.notEqual(result.error.exitCode, 0);
-    assert.match(result.error.message, message);
-    assert.deepEqual(writes(result), []);
+    is(result.error.name, 'NodeExitError');
+    not(result.error.exitCode, 0);
+    ok((message).test(result.error.message));
+    is(writes(result), []);
   }
 });
 
@@ -274,7 +275,7 @@ test('dispatches pull fields and body files to the pull endpoint', async () => {
     '-R',
     'octo/repo',
   ]);
-  assert.deepEqual(writes(result), [
+  is(writes(result), [
     {
       method: 'patch',
       path: '/repos/octo/repo/pulls/42',
@@ -283,36 +284,36 @@ test('dispatches pull fields and body files to the pull endpoint', async () => {
   ]);
 
   result = await runGh(['pr', 'edit', '42', '-F', '/body.md', '-R', 'octo/repo']);
-  assert.deepEqual(writes(result)[0].options.body, { body: 'from file' });
+  is(writes(result)[0].options.body, { body: 'from file' });
 
   result = await runGh(['pr', 'edit', '42', '--body', '', '-R', 'octo/repo'], {
     pull: { body: 'existing body' },
   });
-  assert.deepEqual(writes(result)[0].options.body, { body: '' });
+  is(writes(result)[0].options.body, { body: '' });
 
   result = await runGh(['pr', 'edit', '42', '-F', '/newline.md', '-R', 'octo/repo'], {
     bodyFiles: { '/newline.md': 'from file\n' },
   });
-  assert.deepEqual(writes(result)[0].options.body, { body: 'from file\n' });
+  is(writes(result)[0].options.body, { body: 'from file\n' });
 
   result = await runGh(['pr', 'edit', '42', '--title', 'T'], {
     inferredRepo: 'inferred/repo',
   });
-  assert.equal(writes(result)[0].path, '/repos/inferred/repo/pulls/42');
+  is(writes(result)[0].path, '/repos/inferred/repo/pulls/42');
 });
 
 test('reads --body-file - from one-shot stdin without changing file behavior', async () => {
   let result = await runGh(['pr', 'edit', '42', '--body-file', '-', '-R', 'octo/repo'], {
     stdin: 'from stdin\n',
   });
-  assert.equal(result.stdinReadCount, 1);
-  assert.deepEqual(writes(result)[0].options.body, { body: 'from stdin\n' });
+  is(result.stdinReadCount, 1);
+  is(writes(result)[0].options.body, { body: 'from stdin\n' });
 
   result = await runGh(['pr', 'edit', '42', '--body-file', '/body.md', '-R', 'octo/repo'], {
     stdin: 'must not be read',
   });
-  assert.equal(result.stdinReadCount, 0);
-  assert.deepEqual(writes(result)[0].options.body, { body: 'from file' });
+  is(result.stdinReadCount, 0);
+  is(writes(result)[0].options.body, { body: 'from file' });
 });
 
 test('rejects stdin conflicts and read failures before any write', async () => {
@@ -320,16 +321,16 @@ test('rejects stdin conflicts and read failures before any write', async () => {
     ['pr', 'edit', '42', '--body', 'inline', '--body-file', '-', '-R', 'octo/repo'],
     { stdin: 'must not be read' }
   );
-  assert.match(result.error.message, /body specified twice/);
-  assert.equal(result.stdinReadCount, 0);
-  assert.deepEqual(writes(result), []);
+  ok((/body specified twice/).test(result.error.message));
+  is(result.stdinReadCount, 0);
+  is(writes(result), []);
 
   result = await runGh(['pr', 'edit', '42', '--body-file', '-', '-R', 'octo/repo'], {
     stdinError: new Error('stdin unavailable'),
   });
-  assert.match(result.error.message, /could not read stdin.*stdin unavailable/);
-  assert.equal(result.stdinReadCount, 1);
-  assert.deepEqual(writes(result), []);
+  ok((/could not read stdin.*stdin unavailable/).test(result.error.message));
+  is(result.stdinReadCount, 1);
+  is(writes(result), []);
 });
 
 test('preserves and de-duplicates labels and assignees at the issues endpoint', async () => {
@@ -356,7 +357,7 @@ test('preserves and de-duplicates labels and assignees at the issues endpoint', 
       },
     }
   );
-  assert.deepEqual(writes(result), [
+  is(writes(result), [
     {
       method: 'patch',
       path: '/repos/octo/repo/issues/42',
@@ -370,7 +371,7 @@ test('resolves @me for assignee additions and removals', async () => {
     authenticatedUser: { login: 'octocat' },
     issue: { labels: [], assignees: [{ login: 'keep-user' }] },
   });
-  assert.deepEqual(writes(result)[0].options.body, {
+  is(writes(result)[0].options.body, {
     assignees: ['keep-user', 'octocat', 'bob'],
   });
 
@@ -378,17 +379,17 @@ test('resolves @me for assignee additions and removals', async () => {
     authenticatedUser: { login: 'octocat' },
     issue: { labels: [], assignees: [{ login: 'keep-user' }, { login: 'octocat' }] },
   });
-  assert.deepEqual(writes(result)[0].options.body, { assignees: ['keep-user'] });
+  is(writes(result)[0].options.body, { assignees: ['keep-user'] });
 });
 
 test('fails authenticated-user lookup before any assignee write', async () => {
   const result = await runGh(['pr', 'edit', '42', '--add-assignee', '@me', '-R', 'octo/repo'], {
     failUserLookup: true,
   });
-  assert.equal(result.error.name, 'NodeExitError');
-  assert.match(result.error.message, /could not resolve @me.*viewer unavailable/);
-  assert.deepEqual(writes(result), []);
-  assert.deepEqual(result.calls, [{ method: 'get', path: '/user', options: undefined }]);
+  is(result.error.name, 'NodeExitError');
+  ok((/could not resolve @me.*viewer unavailable/).test(result.error.message));
+  is(writes(result), []);
+  is(result.calls, [{ method: 'get', path: '/user', options: undefined }]);
 });
 
 test('dispatches user and team reviewer additions and removals', async () => {
@@ -403,7 +404,7 @@ test('dispatches user and team reviewer additions and removals', async () => {
     '-R',
     'octo/repo',
   ]);
-  assert.deepEqual(writes(result), [
+  is(writes(result), [
     {
       method: 'post',
       path: '/repos/octo/repo/pulls/42/requested_reviewers',
@@ -432,14 +433,14 @@ test('emits selected fields from the updated PR with --json', async () => {
     ['pr', 'edit', '42', '--title', 'After', '--json', 'number,title,url', '-R', 'octo/repo'],
     scenario
   );
-  assert.deepEqual(writes(result), [
+  is(writes(result), [
     {
       method: 'patch',
       path: '/repos/octo/repo/pulls/42',
       options: { body: { title: 'After' } },
     },
   ]);
-  assert.deepEqual(JSON.parse(result.stdout.join('\n')), {
+  is(JSON.parse(result.stdout.join('\n')), {
     number: 42,
     title: 'After',
     url: 'https://example.test/pr/42',
@@ -449,7 +450,7 @@ test('emits selected fields from the updated PR with --json', async () => {
     ['pr', 'edit', '42', '--title', 'After', '--json', '-R', 'octo/repo'],
     scenario
   );
-  assert.equal(JSON.parse(result.stdout.join('\n')).title, 'After');
+  is(JSON.parse(result.stdout.join('\n')).title, 'After');
 
   result = await runGh(
     [
@@ -467,41 +468,41 @@ test('emits selected fields from the updated PR with --json', async () => {
     ],
     scenario
   );
-  assert.equal(result.stdout.join('\n'), 'After');
+  is(result.stdout.join('\n'), 'After');
 });
 
 test('reports semantic no-ops without a PATCH', async () => {
   let result = await runGh(['pr', 'edit', '42', '--title', 'Same', '-R', 'octo/repo'], {
     pull: { title: 'Same', body: '', base: { ref: 'main' } },
   });
-  assert.deepEqual(writes(result), []);
-  assert.match(result.stdout.join('\n'), /No changes/);
-  assert.doesNotMatch(result.stdout.join('\n'), /Edited PR/);
+  is(writes(result), []);
+  ok((/No changes/).test(result.stdout.join('\n')));
+  ok(!(/Edited PR/).test(result.stdout.join('\n')));
 
   result = await runGh(['pr', 'edit', '42', '--add-label', 'ready', '-R', 'octo/repo'], {
     pull: { title: 'Same', body: '', base: { ref: 'main' } },
     issue: { labels: [{ name: 'ready' }], assignees: [] },
   });
-  assert.deepEqual(writes(result), []);
-  assert.match(result.stdout.join('\n'), /No changes/);
+  is(writes(result), []);
+  ok((/No changes/).test(result.stdout.join('\n')));
 });
 
 test('repo inference failure recommends the explicit -R form', async () => {
   const result = await runGh(['pr', 'edit', '42', '--title', 'T']);
-  assert.match(result.error.message, /-R owner\/repo/);
-  assert.deepEqual(writes(result), []);
+  ok((/-R owner\/repo/).test(result.error.message));
+  is(writes(result), []);
 });
 
 test('resolves named milestones and clears milestones', async () => {
   let result = await runGh(['pr', 'edit', '42', '--milestone', 'Sprint', '-R', 'octo/repo'], {
     milestones: [{ title: 'Sprint', number: 7 }],
   });
-  assert.deepEqual(writes(result)[0].options.body, { milestone: 7 });
+  is(writes(result)[0].options.body, { milestone: 7 });
 
   result = await runGh(['pr', 'edit', '42', '--remove-milestone', '-R', 'octo/repo'], {
     issue: { labels: [], assignees: [], milestone: { number: 7 } },
   });
-  assert.deepEqual(writes(result)[0].options.body, { milestone: null });
+  is(writes(result)[0].options.body, { milestone: null });
 });
 
 test('gh api fields imply POST and preserve typed versus raw semantics', async () => {
@@ -518,8 +519,8 @@ test('gh api fields imply POST and preserve typed versus raw semantics', async (
     'version=1.0',
   ]);
 
-  assert.equal(result.error.exitCode, 0);
-  assert.deepEqual(writes(result), [
+  is(result.error.exitCode, 0);
+  is(writes(result), [
     {
       method: 'post',
       path: '/repos/octo/repo/issues',
@@ -531,14 +532,14 @@ test('gh api fields imply POST and preserve typed versus raw semantics', async (
 test('gh api preserves an explicit GET by sending fields as query parameters', async () => {
   const result = await runGh(['api', '/search/issues', '-X', 'GET', '-f', 'q=repo:octo/repo']);
 
-  assert.deepEqual(result.calls, [
+  is(result.calls, [
     {
       method: 'get',
       path: '/search/issues',
       options: { params: { q: 'repo:octo/repo' } },
     },
   ]);
-  assert.deepEqual(writes(result), []);
+  is(writes(result), []);
 });
 
 test('gh api -i includes response status and headers before the body', async () => {
@@ -553,15 +554,15 @@ test('gh api -i includes response status and headers before the body', async () 
     },
   });
 
-  assert.deepEqual(result.calls, []);
+  is(result.calls, []);
   const [
     {
       init: { signal, ...init },
       url,
     },
   ] = result.fetchCalls;
-  assert.ok(signal instanceof AbortSignal);
-  assert.deepEqual(
+  ok(signal instanceof AbortSignal);
+  is(
     { url, init },
     {
       url: 'https://api.github.com/repos/octo/repo',
@@ -576,7 +577,7 @@ test('gh api -i includes response status and headers before the body', async () 
       },
     }
   );
-  assert.deepEqual(result.stdout, [
+  is(result.stdout, [
     'HTTP/2.0 200 OK',
     'Date: Mon, 21 Sep 2026 08:00:00 GMT',
     'X-Ratelimit-Remaining: 42',
@@ -597,8 +598,8 @@ test('gh api --include applies --jq to the response body', async () => {
     }
   );
 
-  assert.deepEqual(result.calls, []);
-  assert.deepEqual(result.stdout, ['HTTP/2.0 200 OK', 'X-Ratelimit-Remaining: 41', '', '41']);
+  is(result.calls, []);
+  is(result.stdout, ['HTTP/2.0 200 OK', 'X-Ratelimit-Remaining: 41', '', '41']);
 });
 
 test('gh api -i preserves status, headers, and body for an error response', async () => {
@@ -614,10 +615,10 @@ test('gh api -i preserves status, headers, and body for an error response', asyn
     },
   });
 
-  assert.equal(result.error.name, 'NodeExitError');
-  assert.equal(result.error.exitCode, 1);
-  assert.deepEqual(result.calls, []);
-  assert.deepEqual(result.stdout, [
+  is(result.error.name, 'NodeExitError');
+  is(result.error.exitCode, 1);
+  is(result.calls, []);
+  is(result.stdout, [
     'HTTP/2.0 403 Forbidden',
     'X-Ratelimit-Limit: 5000',
     'X-Ratelimit-Remaining: 0',
@@ -633,8 +634,8 @@ test('gh api -F reads a multi-line UTF-8 file', async () => {
     bodyFiles: { '/issue.md': body },
   });
 
-  assert.deepEqual(writes(result)[0].options.body, { body });
-  assert.equal(result.stdinReadCount, 0);
+  is(writes(result)[0].options.body, { body });
+  is(result.stdinReadCount, 0);
 });
 
 test('gh api -F reads @- from stdin', async () => {
@@ -642,42 +643,42 @@ test('gh api -F reads @- from stdin', async () => {
     stdin: 'Line one\nLine two\n',
   });
 
-  assert.deepEqual(writes(result)[0].options.body, { body: 'Line one\nLine two\n' });
-  assert.equal(result.stdinReadCount, 1);
+  is(writes(result)[0].options.body, { body: 'Line one\nLine two\n' });
+  is(result.stdinReadCount, 1);
 });
 
 test('gh api reports -F file errors with the literal-mention alternative', async () => {
   const result = await runGh(['api', '/repos/octo/repo/issues', '-F', 'body=@octocat']);
 
-  assert.equal(result.error.name, 'NodeExitError');
-  assert.match(result.error.message, /could not read -F value from octocat/);
-  assert.match(result.error.message, /Use -f key=@mention/);
-  assert.deepEqual(writes(result), []);
+  is(result.error.name, 'NodeExitError');
+  ok((/could not read -F value from octocat/).test(result.error.message));
+  ok((/Use -f key=@mention/).test(result.error.message));
+  is(writes(result), []);
 });
 
 test('gh api accepts a legitimate value beginning with @ via -f', async () => {
   const result = await runGh(['api', '/repos/octo/repo/issues', '-f', 'body=@octocat']);
 
-  assert.deepEqual(writes(result)[0].options.body, { body: '@octocat' });
+  is(writes(result)[0].options.body, { body: '@octocat' });
 });
 
 test('gh api help documents field behavior and the -F collision', async () => {
   const result = await runGh(['api', '--help']);
-  assert.equal(result.error.exitCode, 0);
+  is(result.error.exitCode, 0);
   const help = result.stdout.join('\n');
-  assert.match(help, /fields imply POST/);
-  assert.match(help, /@file reads UTF-8 and @- reads stdin/);
-  assert.match(help, /-f, --raw-field/);
-  assert.match(help, /-F, --field/);
-  assert.match(help, /-i, --include/);
-  assert.match(help, /--body-file for gh issue\/pr/);
-  assert.match(help, /-f key=@mention/);
+  ok((/fields imply POST/).test(help));
+  ok((/@file reads UTF-8 and @- reads stdin/).test(help));
+  ok((/-f, --raw-field/).test(help));
+  ok((/-F, --field/).test(help));
+  ok((/-i, --include/).test(help));
+  ok((/--body-file for gh issue\/pr/).test(help));
+  ok((/-f key=@mention/).test(help));
 });
 
 test('propagates API failures as command errors', async () => {
   const result = await runGh(['pr', 'edit', '42', '--title', 'T', '-R', 'octo/repo'], {
     failWrite: true,
   });
-  assert.equal(result.error.name, 'NodeExitError');
-  assert.equal(result.error.message, 'pr edit failed: boom');
+  is(result.error.name, 'NodeExitError');
+  is(result.error.message, 'pr edit failed: boom');
 });

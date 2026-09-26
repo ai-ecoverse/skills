@@ -1,8 +1,9 @@
-const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const { createRequire } = require('node:module');
-const test = require('node:test');
+import test, { fail, is, ok } from 'tst';
+import { createRequire } from 'node:module';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const target = path.resolve(__dirname, '../scripts/gh.jsh');
 const source = fs.readFileSync(target, 'utf8');
@@ -45,7 +46,7 @@ async function runGh(args, scenario = {}) {
     patch: record('patch'),
     post: record('post'),
     delete: record('delete'),
-    put: async () => assert.fail('unexpected PUT'),
+    put: async () => fail('unexpected PUT'),
   };
   const cli = {
     die: (message, options) => {
@@ -129,7 +130,7 @@ async function runGh(args, scenario = {}) {
       mockRequire,
       mockProcess,
       mockConsole,
-      async () => assert.fail('unexpected fetch')
+      async () => fail('unexpected fetch')
     );
     return { calls, stdout, stderr, execResults };
   } catch (error) {
@@ -151,10 +152,10 @@ test('pr ready: marks a draft PR ready for review via GraphQL', async () => {
     },
   });
   const graphqlCall = result.calls.find((c) => c.path === '/graphql');
-  assert.ok(graphqlCall, 'should call /graphql');
-  assert.match(graphqlCall.options.body.query, /markPullRequestReadyForReview/);
-  assert.equal(graphqlCall.options.body.variables.id, 'PR_test123');
-  assert.match(result.stdout.join('\n'), /ready for review/);
+  ok(graphqlCall, 'should call /graphql');
+  ok((/markPullRequestReadyForReview/).test(graphqlCall.options.body.query));
+  is(graphqlCall.options.body.variables.id, 'PR_test123');
+  ok((/ready for review/).test(result.stdout.join('\n')));
 });
 
 test('pr ready --undo: converts a non-draft PR to draft via GraphQL', async () => {
@@ -163,10 +164,10 @@ test('pr ready --undo: converts a non-draft PR to draft via GraphQL', async () =
     graphqlResponse: { data: { convertPullRequestToDraft: { pullRequest: { isDraft: true } } } },
   });
   const graphqlCall = result.calls.find((c) => c.path === '/graphql');
-  assert.ok(graphqlCall, 'should call /graphql');
-  assert.match(graphqlCall.options.body.query, /convertPullRequestToDraft/);
-  assert.equal(graphqlCall.options.body.variables.id, 'PR_test123');
-  assert.match(result.stdout.join('\n'), /back to draft/);
+  ok(graphqlCall, 'should call /graphql');
+  ok((/convertPullRequestToDraft/).test(graphqlCall.options.body.query));
+  is(graphqlCall.options.body.variables.id, 'PR_test123');
+  ok((/back to draft/).test(result.stdout.join('\n')));
 });
 
 test('pr ready: skips when PR is already ready', async () => {
@@ -174,8 +175,8 @@ test('pr ready: skips when PR is already ready', async () => {
     pull: { number: 42, draft: false, node_id: 'PR_test123', head: { sha: 'abc' } },
   });
   const graphqlCalls = result.calls.filter((c) => c.path === '/graphql');
-  assert.equal(graphqlCalls.length, 0, 'should not call GraphQL when already ready');
-  assert.match(result.stdout.join('\n'), /already marked ready/);
+  is(graphqlCalls.length, 0, 'should not call GraphQL when already ready');
+  ok((/already marked ready/).test(result.stdout.join('\n')));
 });
 
 test('pr ready --undo: skips when PR is already a draft', async () => {
@@ -183,22 +184,22 @@ test('pr ready --undo: skips when PR is already a draft', async () => {
     pull: { number: 42, draft: true, node_id: 'PR_test123', head: { sha: 'abc' } },
   });
   const graphqlCalls = result.calls.filter((c) => c.path === '/graphql');
-  assert.equal(graphqlCalls.length, 0, 'should not call GraphQL when already draft');
-  assert.match(result.stdout.join('\n'), /already a draft/);
+  is(graphqlCalls.length, 0, 'should not call GraphQL when already draft');
+  ok((/already a draft/).test(result.stdout.join('\n')));
 });
 
 test('pr ready: requires a PR number', async () => {
   const result = await runGh(['pr', 'ready', '-R', 'octo/repo']);
-  assert.equal(result.error.name, 'NodeExitError');
-  assert.match(result.error.message, /PR number required/);
-  assert.deepEqual(writes(result), []);
+  is(result.error.name, 'NodeExitError');
+  ok((/PR number required/).test(result.error.message));
+  is(writes(result), []);
 });
 
 test('pr ready: rejects invalid PR numbers', async () => {
   const result = await runGh(['pr', 'ready', 'nope', '-R', 'octo/repo']);
-  assert.equal(result.error.name, 'NodeExitError');
-  assert.match(result.error.message, /positive integer/);
-  assert.deepEqual(writes(result), []);
+  is(result.error.name, 'NodeExitError');
+  ok((/positive integer/).test(result.error.message));
+  is(writes(result), []);
 });
 
 test('pr ready: reports GraphQL errors', async () => {
@@ -206,37 +207,37 @@ test('pr ready: reports GraphQL errors', async () => {
     pull: { number: 42, draft: true, node_id: 'PR_test123', head: { sha: 'abc' } },
     graphqlResponse: { errors: [{ message: 'Token lacks scope' }] },
   });
-  assert.equal(result.error.name, 'NodeExitError');
-  assert.match(result.error.message, /GraphQL error.*Token lacks scope/);
+  is(result.error.name, 'NodeExitError');
+  ok((/GraphQL error.*Token lacks scope/).test(result.error.message));
 });
 
 test('pr ready: reports not found errors', async () => {
   const result = await runGh(['pr', 'ready', '999', '-R', 'octo/repo'], {
     failPrGet: { status: 404, body: { message: 'Not Found' } },
   });
-  assert.equal(result.error.name, 'NodeExitError');
-  assert.match(result.error.message, /not found/);
+  is(result.error.name, 'NodeExitError');
+  ok((/not found/).test(result.error.message));
 });
 
 test('pr ready: exposes help with --help', async () => {
   const result = await runGh(['pr', 'ready', '--help']);
-  assert.equal(result.error.exitCode, 0);
+  is(result.error.exitCode, 0);
   const help = result.stdout.join('\n');
-  assert.match(help, /--undo/);
-  assert.match(help, /--repo/);
-  assert.match(help, /GraphQL/);
+  ok((/--undo/).test(help));
+  ok((/--repo/).test(help));
+  ok((/GraphQL/).test(help));
 });
 
 test('pr ready: appears in pr group help', async () => {
   const result = await runGh(['pr', '--help']);
-  assert.equal(result.error.exitCode, 0);
-  assert.match(result.stdout.join('\n'), /ready/);
+  is(result.error.exitCode, 0);
+  ok((/ready/).test(result.stdout.join('\n')));
 });
 
 test('pr ready: appears in top-level help', async () => {
   const result = await runGh(['--help']);
-  assert.equal(result.error.exitCode, 0);
-  assert.match(result.stdout.join('\n'), /pr ready/);
+  is(result.error.exitCode, 0);
+  ok((/pr ready/).test(result.stdout.join('\n')));
 });
 
 // ─── repo clone ──────────────────────────────────────────────────────────────
@@ -245,12 +246,12 @@ test('repo clone: clones a repository via exec.spawn', async () => {
   const result = await runGh(['repo', 'clone', 'octo/repo'], {
     repo: { full_name: 'octo/repo', fork: false },
   });
-  assert.ok(result.execResults.length >= 1, 'should call exec.spawn');
+  ok(result.execResults.length >= 1, 'should call exec.spawn');
   const cloneCall = result.execResults[0];
-  assert.deepEqual(cloneCall[0], 'git');
-  assert.deepEqual(cloneCall[1], 'clone');
-  assert.ok(cloneCall.includes('https://github.com/octo/repo.git'), 'should use HTTPS URL');
-  assert.match(result.stdout.join('\n'), /Cloned.*octo\/repo/);
+  is(cloneCall[0], 'git');
+  is(cloneCall[1], 'clone');
+  ok(cloneCall.includes('https://github.com/octo/repo.git'), 'should use HTTPS URL');
+  ok((/Cloned.*octo\/repo/).test(result.stdout.join('\n')));
 });
 
 test('repo clone: supports --depth flag', async () => {
@@ -259,8 +260,8 @@ test('repo clone: supports --depth flag', async () => {
   });
   const cloneCall = result.execResults[0];
   const depthIdx = cloneCall.indexOf('--depth');
-  assert.ok(depthIdx >= 0, 'should include --depth');
-  assert.equal(cloneCall[depthIdx + 1], '1');
+  ok(depthIdx >= 0, 'should include --depth');
+  is(cloneCall[depthIdx + 1], '1');
 });
 
 test('repo clone: supports -b/--branch flag', async () => {
@@ -269,8 +270,8 @@ test('repo clone: supports -b/--branch flag', async () => {
   });
   const cloneCall = result.execResults[0];
   const branchIdx = cloneCall.indexOf('--branch');
-  assert.ok(branchIdx >= 0, 'should include --branch');
-  assert.equal(cloneCall[branchIdx + 1], 'dev');
+  ok(branchIdx >= 0, 'should include --branch');
+  is(cloneCall[branchIdx + 1], 'dev');
 });
 
 test('repo clone: supports custom directory', async () => {
@@ -278,7 +279,7 @@ test('repo clone: supports custom directory', async () => {
     repo: { full_name: 'octo/repo', fork: false },
   });
   const cloneCall = result.execResults[0];
-  assert.ok(cloneCall.includes('/tmp/mydir'), 'should include the target directory');
+  ok(cloneCall.includes('/tmp/mydir'), 'should include the target directory');
 });
 
 test('repo clone: passes flags after -- to git', async () => {
@@ -286,14 +287,14 @@ test('repo clone: passes flags after -- to git', async () => {
     repo: { full_name: 'octo/repo', fork: false },
   });
   const cloneCall = result.execResults[0];
-  assert.ok(cloneCall.includes('--single-branch'), 'should forward --single-branch');
-  assert.ok(cloneCall.includes('--no-tags'), 'should forward --no-tags');
+  ok(cloneCall.includes('--single-branch'), 'should forward --single-branch');
+  ok(cloneCall.includes('--no-tags'), 'should forward --no-tags');
 });
 
 test('repo clone: rejects missing owner/repo', async () => {
   const result = await runGh(['repo', 'clone']);
-  assert.equal(result.error.name, 'NodeExitError');
-  assert.match(result.error.message, /owner\/repo required/);
+  is(result.error.name, 'NodeExitError');
+  ok((/owner\/repo required/).test(result.error.message));
 });
 
 test('repo clone: rejects non-empty destination', async () => {
@@ -301,17 +302,17 @@ test('repo clone: rejects non-empty destination', async () => {
     repo: { full_name: 'octo/repo', fork: false },
     existingDirs: { '/existing': ['file1.txt', 'file2.txt'] },
   });
-  assert.equal(result.error.name, 'NodeExitError');
-  assert.match(result.error.message, /already exists and is not empty/);
-  assert.equal(result.execResults.length, 0, 'should not spawn git');
+  is(result.error.name, 'NodeExitError');
+  ok((/already exists and is not empty/).test(result.error.message));
+  is(result.execResults.length, 0, 'should not spawn git');
 });
 
 test('repo clone: reports nonexistent repo', async () => {
   const result = await runGh(['repo', 'clone', 'octo/nonexistent'], {
     failRepoGet: { status: 404, body: { message: 'Not Found' } },
   });
-  assert.equal(result.error.name, 'NodeExitError');
-  assert.match(result.error.message, /not found/);
+  is(result.error.name, 'NodeExitError');
+  ok((/not found/).test(result.error.message));
 });
 
 test('repo clone: reports git clone failure', async () => {
@@ -319,8 +320,8 @@ test('repo clone: reports git clone failure', async () => {
     repo: { full_name: 'octo/repo', fork: false },
     spawnResult: { stdout: '', stderr: 'fatal: something went wrong', exitCode: 128 },
   });
-  assert.equal(result.error.name, 'NodeExitError');
-  assert.match(result.error.message, /git clone failed/);
+  is(result.error.name, 'NodeExitError');
+  ok((/git clone failed/).test(result.error.message));
 });
 
 test('repo clone: adds upstream remote for forks', async () => {
@@ -332,11 +333,11 @@ test('repo clone: adds upstream remote for forks', async () => {
     },
   });
   // First exec.spawn is git clone, second is git remote add upstream
-  assert.ok(result.execResults.length >= 2, 'should call exec.spawn at least twice');
+  ok(result.execResults.length >= 2, 'should call exec.spawn at least twice');
   const upstreamCall = result.execResults[1];
-  assert.ok(upstreamCall.includes('remote'), 'second call should be git remote');
-  assert.ok(upstreamCall.includes('upstream'), 'should add upstream remote');
-  assert.match(result.stdout.join('\n'), /upstream.*upstream\/repo/);
+  ok(upstreamCall.includes('remote'), 'second call should be git remote');
+  ok(upstreamCall.includes('upstream'), 'should add upstream remote');
+  ok((/upstream.*upstream\/repo/).test(result.stdout.join('\n')));
 });
 
 test('repo clone: does not embed token in URL', async () => {
@@ -345,27 +346,27 @@ test('repo clone: does not embed token in URL', async () => {
   });
   const cloneCall = result.execResults[0];
   const urlArg = cloneCall.find((a) => a.includes('github.com'));
-  assert.ok(urlArg, 'should have a GitHub URL argument');
-  assert.doesNotMatch(urlArg, /fake|token|Bearer/, 'should not embed token in URL');
+  ok(urlArg, 'should have a GitHub URL argument');
+  ok(!(/fake|token|Bearer/).test(urlArg), 'should not embed token in URL');
 });
 
 test('repo clone: exposes help with --help', async () => {
   const result = await runGh(['repo', 'clone', '--help']);
-  assert.equal(result.error.exitCode, 0);
+  is(result.error.exitCode, 0);
   const help = result.stdout.join('\n');
-  assert.match(help, /--depth/);
-  assert.match(help, /--branch/);
-  assert.match(help, /upstream/);
+  ok((/--depth/).test(help));
+  ok((/--branch/).test(help));
+  ok((/upstream/).test(help));
 });
 
 test('repo clone: appears in repo group help', async () => {
   const result = await runGh(['repo', '--help']);
-  assert.equal(result.error.exitCode, 0);
-  assert.match(result.stdout.join('\n'), /clone/);
+  is(result.error.exitCode, 0);
+  ok((/clone/).test(result.stdout.join('\n')));
 });
 
 test('repo clone: appears in top-level help', async () => {
   const result = await runGh(['--help']);
-  assert.equal(result.error.exitCode, 0);
-  assert.match(result.stdout.join('\n'), /repo clone/);
+  is(result.error.exitCode, 0);
+  ok((/repo clone/).test(result.stdout.join('\n')));
 });
