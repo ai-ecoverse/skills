@@ -661,14 +661,17 @@ function requestLoad(reason, detail) {
     requestLoadLastAt = now;
     requestLoadGapMs = Math.min(
       requestLoadGapMs * REQUEST_LOAD_BACKOFF_FACTOR, REQUEST_LOAD_MAX_GAP_MS);
-    // `action` stays first and unchanged — the extra keys are additive, so
-    // owners that key only on `action` keep working untouched.
+    // The runtime forwards only action, data and target from a sprinkle lick,
+    // so every diagnostic field rides inside `data`; a top-level key would be
+    // dropped in transit. Owners that key only on `action` are unaffected.
     slicc.lick({
       action: 'request-load',
-      instanceId: INSTANCE_ID,
-      reason: reason,
-      detail: detail || null,
-      mountedAt: MOUNTED_AT
+      data: {
+        instanceId: INSTANCE_ID,
+        reason: reason,
+        detail: detail || null,
+        mountedAt: MOUNTED_AT
+      }
     });
   } catch (e) {}
 }
@@ -680,11 +683,14 @@ function requestLoad(reason, detail) {
 function emitLoadAck(count) {
   try {
     if (!slicc.lick) return;
+    // Fields inside `data`: the runtime drops any other top-level key.
     slicc.lick({
       action: 'load-ack',
-      instanceId: INSTANCE_ID,
-      count: count,
-      at: new Date().toISOString()
+      data: {
+        instanceId: INSTANCE_ID,
+        count: count,
+        at: new Date().toISOString()
+      }
     });
   } catch (e) {}
 }
