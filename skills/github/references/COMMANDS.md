@@ -21,7 +21,7 @@ command words, and always on a state-changing command; pass a literal `-h` after
 
 Available on: `pr view`, `pr list`, `pr edit`, `pr checks`, `issue view`, `issue list`, `run list`,
 `run view`, `repo view`, `release list`, `vars list`, `notifications list`, `search prs`,
-`search issues`, `project list`, `project list-items`.
+`search issues`, `project list`, `project list-items`, `monitor list`.
 
 ```bash
 gh pr view 123 --json statusCheckRollup,reviews,comments,mergeable
@@ -212,6 +212,74 @@ gh project set-title myorg 2 215884384 "New title"
 `add-draft` creates a draft issue — an item that lives only inside the project with no linked
 repository until someone converts it in GitHub's UI. `set-title` looks up the item's own title
 field ID for you (project field updates are field-ID-based, not `{title: ...}`).
+
+## Dashboard monitoring (`monitor`)
+
+Owns `/shared/github-monitor/config.json`, the list of repositories the github-dashboard
+sprinkle fetches. Not a GitHub API surface — the only API call is the one `add` makes to prove
+the repository exists and is reachable with your token.
+
+```bash
+gh monitor list                                  # --json [slug,bbProject,source], --jq
+gh monitor add octocat/Hello-World               # resolves the bb project from `bb project list`
+gh monitor add some/repo --bb-project proj_xxxxxxxxxx
+gh monitor add some/repo --no-bb-project         # record null as a deliberate decision
+gh monitor rm octocat/Hello-World
+```
+
+Schema (v1, owned by these verbs, validated by the fetcher):
+
+```json
+{ "version": 1,
+  "bbOrigin": "https://bb.example.invalid",
+  "repos": [ { "slug": "owner/repo", "bbProject": "proj_xxx" } ] }
+```
+
+`repos` is an array so `add` appends, `rm` filters and `list` prints in order, and an object
+entry leaves room for future per-repo fields without a migration (unknown fields are preserved
+verbatim across edits). `slug` is the identity; a duplicate is an error, not a dedupe.
+**`bbProject` must be present and may be `null`** — bb thread state is not on GitHub and that id
+is its only source, so `add` is required to decide rather than leave it out.
+
+bb project resolution order, and why it is not just the name:
+
+| Tier | Signal | Notes |
+|---|---|---|
+| 1 | `gitRemoteUrl` of a bb project matches `owner/repo` | Handles `https://` and `git@host:` forms; the project's name is irrelevant |
+| 2 | bb project **named** exactly the repo part of the slug | Fallback only — used when no project declares the repo as a remote |
+| — | 0 candidates, or >1 in either tier | **Error.** `--bb-project <id>` or `--no-bb-project` |
+
+A name-only match cannot be trusted on its own: a bb project named `skills` can be
+`octocat/skills` while `other/skills` belongs to the project named `other-skills`, and two
+distinct projects can share one git remote. An explicit `--bb-project` is verified against
+`bb project list` and a nonexistent id is rejected.
+
+Exit codes: `1` for anything the caller can fix (bad slug, duplicate, 404, unresolved bb
+project, unknown flag, removing the last repo); `2` when the **existing** config is malformed,
+matching the fetcher's own code for that case — it refuses to edit a file it cannot parse rather
+than overwrite whatever is in there.
+
+Writes are atomic: the new content is serialised once, validated as bytes, staged as a sibling
+`config.json.tmp-*`, read back and re-validated, then renamed over the target. Any failure
+leaves the original byte-identical and removes the temp file.
+
+`rm` does **not** prune the repo's entries from the dashboard's `data/user-state.json` or
+`data/status-cache.json`; they are keyed `owner/repo#number`, so leaving them makes
+remove-then-re-add lossless and they are inert while the repo is unmonitored.
+
+Environment overrides, for testing only:
+
+| Variable | Effect |
+|---|---|
+| `GH_MONITOR_CONFIG=<path>` | Redirect the family at a scratch config. The fetcher always reads the real path, so this only moves `gh monitor`. |
+| `GH_MONITOR_FAULT=corrupt-temp` | Truncate the staged temp file, so the round-trip check rejects it |
+| `GH_MONITOR_FAULT=throw-before-rename` | Fail between staging and rename |
+
+Acceptance test for anything this writes:
+
+```bash
+node /shared/sprinkles/github-dashboard/fetch-snapshot.mjs --check-config   # exit 0 = accepted
+```
 
 ## Raw API passthrough
 

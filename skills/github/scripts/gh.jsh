@@ -501,6 +501,16 @@ const FLAG_SPECS = {
     ...PROJECT_OWNER_FLAG,
     title: { type: 'string', short: 't' },
   },
+  // `monitor` is repo-scoped by argument, not by the ambient git remote: the
+  // monitored set is a property of the dashboard, so REPO_FLAG's -R is offered
+  // as an alias for the positional but inference from cwd is deliberately not.
+  'monitor add': {
+    ...REPO_FLAG,
+    'bb-project': { type: 'string' },
+    'no-bb-project': { type: 'bool' },
+  },
+  'monitor list': { ...JSON_FLAGS },
+  'monitor rm': { ...REPO_FLAG },
   'repo view': { ...REPO_FLAG, ...JSON_FLAGS },
   'repo archive': { ...REPO_FLAG },
   'repo clone': {
@@ -2244,6 +2254,553 @@ async function projectSetTitle(args) {
     });
     console.log(sym('success') + ' Updated item ' + color.cyan(String(itemId)) + ' title to: ' + newTitle);
   } catch (e) { fail('project set-title', e); }
+}
+
+// ─── monitor (github-dashboard monitored-repo config) ────────────────────────
+//
+// `gh monitor add|list|rm` OWNS /shared/github-monitor/config.json. The
+// github-dashboard sprinkle's fetcher
+// (/shared/sprinkles/github-dashboard/fetch-snapshot.mjs) only READS that file
+// and refuses to fetch when it is malformed, so this family's contract is:
+// never leave a file behind that the fetcher would reject.
+//
+// The schema is the fetcher's, not ours — it is documented in the fetcher's
+// "monitor config" header and reproduced here only as validation. The rules
+// that matter, and why each one is a rule rather than a convenience:
+//
+//  • `repos` is an ARRAY of objects, so `add` appends, `rm` filters and `list`
+//    prints in order. Not a map keyed by slug: an object entry leaves room for
+//    future per-repo fields (enabled, labels, window overrides) without a
+//    migration.
+//  • `slug` is the identity, and a duplicate is an ERROR. Two entries for one
+//    repo means this command lost track, and the human should hear about it
+//    instead of getting a silent dedupe.
+//  • `bbProject` MUST BE PRESENT and may be explicitly `null`. This is the
+//    deliberately awkward one. bb thread state is not on GitHub; that map is
+//    its only source. A repo whose project id was merely FORGOTTEN produces
+//    dashboard cards that can never link to a thread, and nothing about the
+//    card looks wrong. So `add` has to DECIDE: resolve a real id, or record
+//    `null` to say "this repo has no bb project" on purpose. `add` therefore
+//    refuses to guess — no flag and no confident resolution is a hard error,
+//    never a quiet `null`.
+//  • `version: 1`. The fetcher understands exactly 1 and refuses anything else,
+//    so this command neither writes nor rewrites a different version.
+//
+// VALIDATION IS DELIBERATELY DUPLICATED from the fetcher rather than imported:
+// the fetcher is a sprinkle-side ESM script that exits the process on a config
+// error, and `gh` must not exit on its behalf or depend on its presence. The
+// authoritative acceptance test is still the fetcher itself:
+//     node /shared/sprinkles/github-dashboard/fetch-snapshot.mjs --check-config
+// which resolves the config, prints it and exits 0 without fetching.
+
+const MONITOR_CONFIG_DEFAULT = '/shared/github-monitor/config.json';
+
+// The repo set the dashboard falls back to when the config file does not exist.
+// Kept in sync with BUILTIN_REPOS / BUILTIN_BB_ORIGIN in the github-dashboard
+// skill's fetch-snapshot.mjs, which is the source of truth. The shipped fetcher
+// has NO built-in repos (it refuses to start without a config), so this is
+// empty and the origin is a placeholder. It stays a list for one reason: were
+// built-ins ever reintroduced, CREATING the file would change the fetcher's
+// behaviour from "fall back to these" to "use exactly what is in the file", so
+// an `add` that created a file containing only the new repo would SILENTLY DROP
+// the repos the dashboard was already showing. `add` seeds them instead, and
+// says so.
+const MONITOR_BUILTIN_REPOS = [];
+const MONITOR_BUILTIN_BB_ORIGIN = 'https://bb.example.invalid';
+
+// The fetcher's slug regex, which is STRICTER than this CLI's validateRepo():
+// it forbids a leading dot or dash on either side. `gh monitor add .x/y` must
+// fail here rather than write a config the fetcher then rejects with exit 2.
+const MONITOR_SLUG_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const MONITOR_BB_PROJECT_RE = /^proj_[A-Za-z0-9]+$/;
+
+// Test/ops override: point the whole family at a scratch config so the verbs
+// can be exercised without touching the live file. The FETCHER hardcodes the
+// real path, so this only redirects `gh monitor`.
+function monitorConfigPath() {
+  const p = process.env.GH_MONITOR_CONFIG;
+  return p && p.trim() ? p.trim() : MONITOR_CONFIG_DEFAULT;
+}
+
+// Validates RAW TEXT the way the fetcher does, and returns either
+// { ok: true, config } or { ok: false, why }. Never exits: callers decide
+// whether a bad config is the human's problem (reading an existing file) or an
+// internal invariant violation (about to install bytes we generated).
+function validateMonitorText(raw) {
+  const bad = (why) => ({ ok: false, why });
+  if (!raw.trim()) return bad('the file is empty');
+  let parsed;
+  try { parsed = JSON.parse(raw); }
+  catch (e) { return bad('not valid JSON — ' + e.message); }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return bad('the top level must be a JSON object');
+  if (parsed.version !== 1) return bad(`unsupported "version": ${JSON.stringify(parsed.version)} (the fetcher understands 1)`);
+  if (!Array.isArray(parsed.repos)) return bad('"repos" must be an array');
+  // The fetcher treats an EMPTY repos array as an error ("there is nothing to
+  // monitor"), so this command must never write one. See monitorRm().
+  if (!parsed.repos.length) return bad('"repos" is empty — the fetcher refuses this (there are no built-in repos to fall back to)');
+  const bbOrigin = typeof parsed.bbOrigin === 'string' ? parsed.bbOrigin.trim().replace(/\/+$/, '') : '';
+  if (!/^https?:\/\/[^\s/]+$/.test(bbOrigin)) return bad(`"bbOrigin" must be an http(s) origin, got ${JSON.stringify(parsed.bbOrigin)}`);
+
+  const repos = [];
+  const seen = new Set();
+  for (const [i, entry] of parsed.repos.entries()) {
+    const at = `repos[${i}]`;
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return bad(`${at} must be an object`);
+    const slug = typeof entry.slug === 'string' ? entry.slug.trim() : '';
+    if (!MONITOR_SLUG_RE.test(slug)) return bad(`${at}.slug must be "owner/repo", got ${JSON.stringify(entry.slug)}`);
+    if (seen.has(slug)) return bad(`${at}.slug duplicates an earlier entry (${slug})`);
+    seen.add(slug);
+    if (!('bbProject' in entry)) {
+      return bad(
+        `${at} (${slug}) has no "bbProject" key — thread state comes only from bb, so a missing ` +
+        'id would silently produce cards that can never link to a thread. Set a proj_... id, or null.'
+      );
+    }
+    const bbProject = entry.bbProject === null ? null
+      : typeof entry.bbProject === 'string' ? entry.bbProject.trim() : undefined;
+    if (bbProject === undefined || (bbProject !== null && !MONITOR_BB_PROJECT_RE.test(bbProject))) {
+      return bad(`${at}.bbProject must be a "proj_..." id or null, got ${JSON.stringify(entry.bbProject)}`);
+    }
+    repos.push({ ...entry, slug, bbProject });
+  }
+  return { ok: true, config: { ...parsed, bbOrigin, repos } };
+}
+
+// Reads the config for a command. `source` distinguishes a real file from the
+// fetcher's absent-file fallback, because the two look identical in a repo
+// listing and are NOT the same state: with no file the dashboard is showing the
+// built-ins, and the first `add` changes who decides.
+function readMonitorConfig(cmdLabel) {
+  const path = monitorConfigPath();
+  let raw;
+  try {
+    raw = fs.readFileSync(path, 'utf8');
+  } catch (e) {
+    if (e.code === 'ENOENT' || /no such file|not found|ENOENT/i.test(e.message || '')) {
+      return {
+        path,
+        source: 'builtin-fallback',
+        config: { version: 1, bbOrigin: MONITOR_BUILTIN_BB_ORIGIN, repos: MONITOR_BUILTIN_REPOS.map((r) => ({ ...r })) },
+      };
+    }
+    cli.die(`${cmdLabel}: cannot read ${path} — ${e.message}`, { prefix: 'gh' });
+  }
+  const check = validateMonitorText(raw);
+  if (!check.ok) {
+    // Exit 2 on purpose: the same code the fetcher uses for "this config is
+    // broken", so a caller can tell a bad config from a bad command line.
+    cli.die(
+      `${cmdLabel}: ${path} is not a valid monitor config:\n  ${check.why}\n` +
+      'Refusing to act on it — this is the same thing the dashboard fetcher refuses (it exits 2 and\n' +
+      'does not fetch), and rewriting a file this command cannot parse would destroy whatever is\n' +
+      'actually in there. Fix it by hand.',
+      { prefix: 'gh', exitCode: 2 }
+    );
+  }
+  return { path, source: 'file', config: check.config };
+}
+
+// Installs a new config ATOMICALLY, and only if the exact bytes validate.
+//
+// Order matters, and every step exists because of a way this can go wrong:
+//   1. serialise once — the bytes checked are the bytes installed;
+//   2. validate those bytes (not the object) against the fetcher's rules;
+//   3. write a sibling temp file — same directory, so the rename is a same-
+//      filesystem metadata operation and cannot half-copy;
+//   4. read the temp file BACK and validate again, which is what proves the
+//      write actually landed rather than that writeFileSync returned;
+//   5. rename over the target — the single step that makes the change visible.
+// A failure at any point leaves the original file byte-for-byte untouched,
+// because nothing has touched the target path yet. The temp file is removed on
+// every failure path so a crashed run cannot leave litter that looks like config.
+// Serialises the config in the SHAPE THE FILE IS ALREADY IN: one line per repo
+// entry. `JSON.stringify(cfg, null, 2)` would explode each entry over four
+// lines, so the first `add` would reformat every existing line and every later
+// diff of a hand-maintained file would be mostly noise. Keeping the layout also
+// makes add-then-rm a byte-for-byte round trip, which is the strongest form of
+// the losslessness this command claims.
+//
+// Key order is pinned (version, bbOrigin, then any other top-level keys, then
+// repos; slug, bbProject, then any other per-repo keys) so that unknown future
+// fields survive an edit instead of being dropped or shuffled.
+function serializeMonitorEntry(entry) {
+  const keys = ['slug', 'bbProject', ...Object.keys(entry).filter((k) => k !== 'slug' && k !== 'bbProject')];
+  return '    { ' + keys.map((k) => `${JSON.stringify(k)}: ${JSON.stringify(entry[k])}`).join(', ') + ' }';
+}
+
+function serializeMonitorConfig(config) {
+  const head = [`  "version": ${JSON.stringify(config.version)}`, `  "bbOrigin": ${JSON.stringify(config.bbOrigin)}`];
+  for (const k of Object.keys(config)) {
+    if (k === 'version' || k === 'bbOrigin' || k === 'repos') continue;
+    head.push(`  ${JSON.stringify(k)}: ${JSON.stringify(config[k])}`);
+  }
+  return `{\n${head.join(',\n')},\n  "repos": [\n${config.repos.map(serializeMonitorEntry).join(',\n')}\n  ]\n}\n`;
+}
+
+function writeMonitorConfig(cmdLabel, path, config) {
+  const json = serializeMonitorConfig(config);
+
+  const pre = validateMonitorText(json);
+  if (!pre.ok) {
+    cli.die(
+      `${cmdLabel}: refusing to write ${path} — the config this would produce is invalid:\n  ${pre.why}\n` +
+      'Nothing was written; the existing file is unchanged.',
+      { prefix: 'gh' }
+    );
+  }
+
+  const tmp = `${path}.tmp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const scrub = () => { try { fs.rmSync(tmp); } catch {} };
+
+  // Fault injection for durability testing only (GH_MONITOR_FAULT):
+  //   corrupt-temp        — truncate the temp file after writing it
+  //   throw-before-rename — fail between the write and the rename
+  // Off unless the env var is set. It exists because "the original survives a
+  // failed write" is a claim that has to be demonstrable, not asserted.
+  const fault = process.env.GH_MONITOR_FAULT || '';
+
+  try {
+    fs.writeFileSync(tmp, json);
+    if (fault === 'corrupt-temp') fs.writeFileSync(tmp, json.slice(0, Math.floor(json.length / 2)));
+    if (fault === 'throw-before-rename') throw new Error('simulated failure between write and rename (GH_MONITOR_FAULT=throw-before-rename)');
+  } catch (e) {
+    scrub();
+    cli.die(
+      `${cmdLabel}: could not stage the new config at ${tmp} — ${e.message}\n` +
+      `${path} is unchanged.`,
+      { prefix: 'gh' }
+    );
+  }
+
+  let back;
+  try { back = fs.readFileSync(tmp, 'utf8'); }
+  catch (e) {
+    scrub();
+    cli.die(`${cmdLabel}: staged config at ${tmp} could not be read back — ${e.message}\n${path} is unchanged.`, { prefix: 'gh' });
+  }
+
+  const post = validateMonitorText(back);
+  if (back !== json || !post.ok) {
+    scrub();
+    cli.die(
+      `${cmdLabel}: the staged config did not survive the round-trip, so it was discarded:\n` +
+      `  ${back !== json ? 'bytes read back differ from bytes written' : post.why}\n` +
+      `${path} is unchanged.`,
+      { prefix: 'gh' }
+    );
+  }
+
+  try { fs.renameSync(tmp, path); }
+  catch (e) {
+    scrub();
+    cli.die(`${cmdLabel}: could not install the new config over ${path} — ${e.message}\n${path} is unchanged.`, { prefix: 'gh' });
+  }
+  return json.length;
+}
+
+// ── bb project resolution ────────────────────────────────────────────────────
+//
+// `bb project list --json` carries `gitRemoteUrl` per project, which is a far
+// better signal than the project NAME, and these cases show why matching on
+// name alone would be wrong:
+//   • a project "other-skills" can have remote other/skills while the project
+//     "skills" has remote octocat/skills — a name match on "skills" picks by luck;
+//   • a project "hello-web" can have remote octocat/Hello-World, so its name
+//     matches no repo at all;
+//   • TWO projects can share one git remote, so even the good signal can be
+//     ambiguous.
+// Hence: remote match first, name match only as a fallback, and more than one
+// candidate in either tier is an AMBIGUITY ERROR rather than a coin flip.
+
+function bbRemoteToSlug(url) {
+  if (typeof url !== 'string' || !url) return null;
+  // https://github.com/owner/repo(.git) and git@github.com:owner/repo(.git)
+  const m = url.match(/github\.com[:/]+([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/i);
+  return m ? `${m[1]}/${m[2]}` : null;
+}
+
+async function bbProjectIndex() {
+  const r = await exec('bb project list --json 2>/dev/null');
+  if (r.exitCode !== 0 || !r.stdout.trim()) {
+    return { ok: false, why: (r.stderr || '').trim() || `bb project list exited ${r.exitCode}`, projects: [] };
+  }
+  let parsed;
+  try { parsed = JSON.parse(r.stdout); }
+  catch (e) { return { ok: false, why: `bb project list --json did not return JSON (${e.message})`, projects: [] }; }
+  if (!Array.isArray(parsed)) return { ok: false, why: 'bb project list --json did not return an array', projects: [] };
+  return {
+    ok: true,
+    projects: parsed
+      .filter((p) => p && typeof p.id === 'string')
+      .map((p) => ({ id: p.id, name: typeof p.name === 'string' ? p.name : '', slug: bbRemoteToSlug(p.gitRemoteUrl) })),
+  };
+}
+
+function resolveBbProject(index, slug) {
+  if (!index.ok) return { status: 'unavailable', why: index.why };
+  const want = slug.toLowerCase();
+  const repoName = slug.split('/')[1].toLowerCase();
+
+  const byRemote = index.projects.filter((p) => p.slug && p.slug.toLowerCase() === want);
+  if (byRemote.length === 1) return { status: 'resolved', id: byRemote[0].id, how: `git remote of bb project "${byRemote[0].name}"` };
+  if (byRemote.length > 1) return { status: 'ambiguous', how: 'git remote', candidates: byRemote };
+
+  const byName = index.projects.filter((p) => p.name && p.name.toLowerCase() === repoName);
+  if (byName.length === 1) return { status: 'resolved', id: byName[0].id, how: `bb project named "${byName[0].name}" (name match — no bb project declares this repo as its git remote)` };
+  if (byName.length > 1) return { status: 'ambiguous', how: 'project name', candidates: byName };
+
+  return { status: 'none' };
+}
+
+const MONITOR_NO_BB_CONSEQUENCE =
+  'Without a bb project id, this repo\u2019s dashboard cards can never link to a bb thread, and\n' +
+  'nothing about the cards looks broken — which is why this is an error and not a silent null.';
+
+// ── gh monitor add ───────────────────────────────────────────────────────────
+
+async function monitorAdd(args) {
+  const usage = 'usage: gh monitor add <owner/repo> [--bb-project proj_xxx | --no-bb-project]';
+  const { flags, positional } = parseArgs('monitor add', args, FLAG_SPECS['monitor add'], { rejectUnknown: true });
+  const { values } = distribute('monitor add', positional, ['slug'], { slug: flags.repo ?? null });
+  if (!values.slug) cli.die('monitor add: owner/repo required\n' + usage);
+
+  const slug = String(values.slug).trim();
+  if (!MONITOR_SLUG_RE.test(slug)) {
+    cli.die(
+      `monitor add: invalid repository "${slug}" — expected owner/repo, where each side starts with a\n` +
+      'letter or digit and continues with letters, digits, dots, dashes or underscores.\n' + usage
+    );
+  }
+
+  const explicit = flags['bb-project'];
+  const none = !!flags['no-bb-project'];
+  if (explicit && none) {
+    cli.die('monitor add: --bb-project and --no-bb-project contradict each other. Pass one.');
+  }
+  if (explicit && !MONITOR_BB_PROJECT_RE.test(String(explicit).trim())) {
+    cli.die(`monitor add: --bb-project must look like proj_xxxxxxxxxx (got ${JSON.stringify(explicit)})`);
+  }
+
+  const { path, source, config } = readMonitorConfig('monitor add');
+
+  // Duplicate is an error, never a dedupe — see the header. Checked before the
+  // API call so a duplicate costs nothing and reports the same way every time.
+  const existing = config.repos.find((r) => r.slug.toLowerCase() === slug.toLowerCase());
+  if (existing) {
+    cli.die(
+      `monitor add: ${existing.slug} is already monitored (bbProject: ${existing.bbProject === null ? 'null' : existing.bbProject}).\n` +
+      'Duplicates are an error rather than a silent no-op, because two entries for one repo would mean\n' +
+      'this command lost track of the file. Use `gh monitor list` to see the set, or `gh monitor rm` first.'
+    );
+  }
+
+  // One API call, and it does double duty: existence and accessibility. GitHub
+  // answers 404 for "no such repo" AND for "private and your token cannot see
+  // it", so the message has to name both possibilities rather than claim one.
+  let repo;
+  try {
+    repo = await api.get(`/repos/${slug}`);
+  } catch (e) {
+    if (isNotFound(e)) {
+      cli.die(
+        `monitor add: GitHub returned 404 for ${slug}.\n` +
+        'That means either the repository does not exist (check the spelling and the owner), or it is\n' +
+        'private and this token cannot see it. GitHub deliberately does not distinguish the two.\n' +
+        'Check `gh auth` for the token in use, then `gh repo view ' + slug + '` to confirm.',
+        { prefix: 'gh' }
+      );
+    }
+    fail('monitor add', e);
+  }
+  const canonical = repo.full_name || slug;
+  if (canonical.toLowerCase() !== slug.toLowerCase()) {
+    cli.warn(`monitor add: GitHub canonicalised ${slug} to ${canonical} (renamed or redirected) — storing ${canonical}`);
+  }
+  // Re-check the duplicate against the CANONICAL name: owner/repo may have been
+  // renamed, and the redirect would otherwise smuggle in a second entry for a
+  // repo that is already monitored under its new name.
+  const dupCanonical = config.repos.find((r) => r.slug.toLowerCase() === canonical.toLowerCase());
+  if (dupCanonical) {
+    cli.die(
+      `monitor add: ${slug} redirects to ${dupCanonical.slug}, which is already monitored.\n` +
+      'Adding it would put two entries in the config for one repository, which the fetcher rejects.'
+    );
+  }
+
+  let bbProject;
+  let bbHow;
+  if (none) {
+    bbProject = null;
+    bbHow = '--no-bb-project (recorded as an explicit decision)';
+  } else if (explicit) {
+    bbProject = String(explicit).trim();
+    const index = await bbProjectIndex();
+    if (index.ok) {
+      const hit = index.projects.find((p) => p.id === bbProject);
+      if (!hit) {
+        cli.die(
+          `monitor add: no bb project has id ${bbProject}.\n` +
+          'bb answered, so this id is wrong rather than unverifiable. Run `bb project list` and pass an\n' +
+          'id from it, or `--no-bb-project` to record that this repo has no bb project.\n' +
+          MONITOR_NO_BB_CONSEQUENCE
+        );
+      }
+      bbHow = `--bb-project (verified against bb: "${hit.name}")`;
+    } else {
+      cli.warn(`monitor add: could not verify ${bbProject} against bb (${index.why}) — trusting the flag`);
+      bbHow = '--bb-project (unverified — bb could not be queried)';
+    }
+  } else {
+    const index = await bbProjectIndex();
+    const res = resolveBbProject(index, canonical);
+    if (res.status === 'resolved') {
+      bbProject = res.id;
+      bbHow = `resolved from ${res.how}`;
+    } else if (res.status === 'ambiguous') {
+      cli.die(
+        `monitor add: ${canonical} matches ${res.candidates.length} bb projects by ${res.how}, so this command\n` +
+        'will not guess which one owns the threads:\n' +
+        res.candidates.map((p) => `  ${p.id}  ${p.name}${p.slug ? '  (' + p.slug + ')' : ''}`).join('\n') + '\n' +
+        'Pick one with --bb-project <id>, or pass --no-bb-project.\n' + MONITOR_NO_BB_CONSEQUENCE
+      );
+    } else if (res.status === 'unavailable') {
+      cli.die(
+        `monitor add: could not ask bb which project belongs to ${canonical} (${res.why}).\n` +
+        'Pass --bb-project <proj_...> explicitly, or --no-bb-project to record that there is none.\n' +
+        MONITOR_NO_BB_CONSEQUENCE
+      );
+    } else {
+      cli.die(
+        `monitor add: no bb project could be resolved for ${canonical}.\n` +
+        'No bb project declares it as a git remote, and none is named "' + canonical.split('/')[1] + '".\n' +
+        'Pass --bb-project <proj_...> (see `bb project list`), or --no-bb-project to record deliberately\n' +
+        'that this repo has no bb project.\n' + MONITOR_NO_BB_CONSEQUENCE
+      );
+    }
+  }
+
+  const next = {
+    ...config,
+    version: 1,
+    bbOrigin: config.bbOrigin || MONITOR_BUILTIN_BB_ORIGIN,
+    repos: [...config.repos.map((r) => ({ ...r })), { slug: canonical, bbProject }],
+  };
+
+  if (source === 'builtin-fallback' && !MONITOR_BUILTIN_REPOS.length) {
+    console.log(color.yellow(
+      `${path} did not exist, so it is being created with this repo only.\n` +
+      `bbOrigin is set to the placeholder ${next.bbOrigin}: edit it to your bb origin, or bb thread\n` +
+      'links from the dashboard will not resolve.'
+    ));
+  } else if (source === 'builtin-fallback') {
+    console.log(color.yellow(
+      `${path} did not exist, so the dashboard was using its ${MONITOR_BUILTIN_REPOS.length} built-in repos.\n` +
+      'Creating the file makes it authoritative, so those repos are seeded into it — otherwise this add\n' +
+      'would silently REMOVE them from the dashboard:\n' +
+      MONITOR_BUILTIN_REPOS.map((r) => '  ' + r.slug).join('\n')
+    ));
+  }
+
+  writeMonitorConfig('monitor add', path, next);
+
+  console.log(`${sym('success')} Monitoring ${color.bold(canonical)}`);
+  console.log(`  bb project   : ${bbProject === null ? color.yellow('null — no bb thread links for this repo') : color.cyan(bbProject)}`);
+  console.log(`  ${color.gray('via ' + bbHow)}`);
+  console.log(`  visibility   : ${repo.private ? color.yellow('private') : 'public'}${repo.archived ? color.yellow(' (archived)') : ''}`);
+  console.log(`  config       : ${path} — ${next.repos.length} repo${next.repos.length === 1 ? '' : 's'}`);
+  if (bbProject === null) {
+    console.log(color.yellow('  Note: cards for this repo can never link to a bb thread. Re-add with --bb-project to change that.'));
+  }
+  console.log(color.gray('  The dashboard picks this up on the fetcher\u2019s next run.'));
+}
+
+// ── gh monitor list ──────────────────────────────────────────────────────────
+
+const MONITOR_LIST_FIELDS = ['slug', 'bbProject', 'source'];
+
+async function monitorList(args) {
+  const { flags, positional } = parseArgs('monitor list', args, FLAG_SPECS['monitor list'], { rejectUnknown: true });
+  distribute('monitor list', positional, [], flags);
+  const { path, source, config } = readMonitorConfig('monitor list');
+
+  const fields = parseFields('monitor list', flags.json, MONITOR_LIST_FIELDS);
+  if (fields !== undefined) {
+    await outputJson(config.repos.map((r) => pickFields({
+      slug: r.slug,
+      bbProject: r.bbProject,          // null is meaningful, and stays null
+      source,                          // 'file' | 'builtin-fallback'
+    }, fields)), flags);
+    return;
+  }
+
+  if (source === 'builtin-fallback' && !MONITOR_BUILTIN_REPOS.length) {
+    console.log(color.yellow(`${path} does not exist — nothing is monitored, and the fetcher refuses to start without it. \`gh monitor add <owner/repo>\` creates it.`));
+  } else if (source === 'builtin-fallback') {
+    console.log(color.yellow(`${path} does not exist — these are the fetcher\u2019s built-in fallback repos, not a configured set.`));
+  }
+  const rows = config.repos.map((r) => [
+    color.bold(r.slug),
+    r.bbProject === null ? color.yellow('null (no bb project)') : color.cyan(r.bbProject),
+  ]);
+  console.log(fmt.table(rows, [38]));
+  const without = config.repos.filter((r) => r.bbProject === null).length;
+  console.log(color.gray(
+    `${config.repos.length} repo${config.repos.length === 1 ? '' : 's'} \u00b7 bbOrigin ${config.bbOrigin} \u00b7 ${path}` +
+    (without ? ` \u00b7 ${without} without a bb project (cards cannot link to a thread)` : '')
+  ));
+}
+
+// ── gh monitor rm ────────────────────────────────────────────────────────────
+
+async function monitorRm(args) {
+  const usage = 'usage: gh monitor rm <owner/repo>';
+  const { flags, positional } = parseArgs('monitor rm', args, FLAG_SPECS['monitor rm'], { rejectUnknown: true });
+  const { values } = distribute('monitor rm', positional, ['slug'], { slug: flags.repo ?? null });
+  if (!values.slug) cli.die('monitor rm: owner/repo required\n' + usage);
+  const slug = String(values.slug).trim();
+
+  const { path, source, config } = readMonitorConfig('monitor rm');
+  const hit = config.repos.find((r) => r.slug.toLowerCase() === slug.toLowerCase());
+  if (!hit) {
+    cli.die(
+      `monitor rm: ${slug} is not monitored${source === 'builtin-fallback' ? ` (${path} does not exist${MONITOR_BUILTIN_REPOS.length ? '; the dashboard is on its built-in fallback set' : ''})` : ''}.\n` +
+      'Currently monitored:\n' + config.repos.map((r) => '  ' + r.slug).join('\n') + '\n' +
+      'Nothing was changed.'
+    );
+  }
+
+  // The fetcher rejects an empty `repos` array outright, so removing the last
+  // entry cannot be written — it would leave a config that refuses to fetch.
+  // Deleting the file is the supported way to get back to the fallback set, and
+  // that is the human's call, not this command's.
+  if (config.repos.length === 1) {
+    cli.die(
+      `monitor rm: ${hit.slug} is the only monitored repo, and the fetcher refuses a config with an empty\n` +
+      '"repos" array (a dashboard with nothing to fetch would look merely quiet). Nothing was changed.\n' +
+      `To stop monitoring everything, delete ${path} — the fetcher then refuses to start until a config exists.`
+    );
+  }
+
+  const next = { ...config, version: 1, repos: config.repos.filter((r) => r !== hit).map((r) => ({ ...r })) };
+
+  if (source === 'builtin-fallback') {
+    console.log(color.yellow(
+      `${path} did not exist, so ${hit.slug} came from the fetcher\u2019s built-in fallback set.\n` +
+      'Writing the file now is what makes the removal stick.'
+    ));
+  }
+
+  writeMonitorConfig('monitor rm', path, next);
+
+  console.log(`${sym('success')} Stopped monitoring ${color.bold(hit.slug)}`);
+  console.log(`  config       : ${path} — ${next.repos.length} repo${next.repos.length === 1 ? '' : 's'} left`);
+  // Deliberate non-action, stated out loud so it does not read like an omission.
+  console.log(color.gray(
+    '  Left in place on purpose: this repo\u2019s rows in the dashboard\u2019s\n' +
+    '  data/user-state.json and data/status-cache.json. They are keyed owner/repo#number, so leaving\n' +
+    '  them makes rm-then-re-add lossless (read/pinned state and cached status survive), and they are\n' +
+    '  inert while the repo is unmonitored because nothing looks them up.'
+  ));
 }
 
 // ─── repo view ───────────────────────────────────────────────────────────────
@@ -4372,6 +4929,35 @@ const HELP = {
       },
     },
   },
+  monitor: {
+    summary: 'Which repos the github-dashboard sprinkle watches (owns /shared/github-monitor/config.json)',
+    subs: {
+      add: {
+        usage: [
+          'gh monitor add <owner/repo>',
+          'gh monitor add <owner/repo> --bb-project proj_xxxxxxxxxx',
+          'gh monitor add <owner/repo> --no-bb-project',
+        ],
+        desc: 'Start monitoring a repository (verifies it exists, resolves its bb project)',
+        flags: [
+          '-R, --repo <owner/repo>   the repository (alternative to the positional)',
+          '--bb-project <proj_id>    use this bb project id, verified against `bb project list`',
+          '--no-bb-project           record null on purpose: this repo has no bb project, so its',
+          '                          cards can never link to a bb thread',
+        ],
+      },
+      list: {
+        usage: ['gh monitor list', 'gh monitor list --json [slug,bbProject,source]'],
+        desc: 'List the monitored repos and their bb project (null is shown as such)',
+        flags: [JSON_HELP, JQ_HELP],
+      },
+      rm: {
+        usage: ['gh monitor rm <owner/repo>'],
+        desc: 'Stop monitoring a repository (dashboard read/pin state is kept on purpose)',
+        flags: ['-R, --repo <owner/repo>   the repository (alternative to the positional)'],
+      },
+    },
+  },
   api: {
     summary: 'Raw GitHub REST API passthrough',
     standalone: {
@@ -4548,6 +5134,9 @@ ${color.bold('COMMANDS')}
   ${color.cyan('project list-items')} <org> <project_number>                   List items in a project
   ${color.cyan('project add-draft')}  <org> <project_number> <title> [body]    Create a draft item
   ${color.cyan('project set-title')}  <org> <project_number> <item_id> <title>  Rename a project item
+  ${color.cyan('monitor add')}    <owner/repo> [--bb-project P|--no-bb-project]  Watch a repo on the dashboard
+  ${color.cyan('monitor list')}   [--json]                                     List dashboard-monitored repos
+  ${color.cyan('monitor rm')}     <owner/repo>                                 Stop watching a repo
   ${color.cyan('api')}           <path> [-X METHOD] [-f key=val]... [--jq E]  Raw API call
   ${color.cyan('mcp tools')}     [--json]                                     List MCP server tools
   ${color.cyan('mcp call')}      <tool> [-F key=val]... [--jq E]              Invoke an MCP tool
@@ -4690,6 +5279,7 @@ const dispatch = {
   vars:    { list: () => varsList(rest),    set:  () => varsSet(rest) },
   notifications: { list: () => notificationsList(rest), read: () => notificationsRead(rest) },
   project: { list: () => projectList(rest), 'list-items': () => projectListItems(rest), 'add-draft': () => projectAddDraft(rest), 'set-title': () => projectSetTitle(rest) },
+  monitor: { add: () => monitorAdd(rest), list: () => monitorList(rest), rm: () => monitorRm(rest) },
 };
 
 if (!dispatch[cmd]) cli.die("unknown command: '" + cmd + "'. Run gh --help for usage.");
