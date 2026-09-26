@@ -37,28 +37,19 @@ onnxruntime-web, installed with ipk on that first run.
 Nothing in the answer is free text: each question picks one of the options you gave it.
 `.trim();
 
-async function loadOrt(kind) {
+// Load only the copy prepareRuntime checked. Falling through to another root
+// would load a copy whose version nobody looked at.
+async function loadOrt(kind, ortDir) {
   const fileName = kind === 'webgpu' ? 'ort.webgpu.bundle.min.mjs' : 'ort.wasm.bundle.min.mjs';
-  const dirs = [
-    '/shared/lib/node_modules/onnxruntime-web/dist',
-    '/workspace/node_modules/onnxruntime-web/dist',
-  ];
-  let last;
-  for (const dir of dirs) {
-    const file = `${dir}/${fileName}`;
-    if (!(await fs.exists(file))) continue;
-    try {
-      const loaded = await host.nativeImport(host.previewUrl(file));
-      const ort = loaded.InferenceSession ? loaded : loaded.default;
-      if (!ort || !ort.InferenceSession) throw new Error('ort bundle has no InferenceSession');
-      host.configureOrt(ort, dir);
-      return ort;
-    } catch (err) {
-      if (err && err.name === 'NodeExitError') throw err;
-      last = err;
-    }
-  }
-  throw last || new Error(`onnxruntime-web ${fileName} is missing. Run ipk add -g onnxruntime-web.`);
+  const dist = `${ortDir}/dist`;
+  const file = `${dist}/${fileName}`;
+  if (!(await fs.exists(file))) throw new Error(`onnxruntime-web: ${file} is missing`);
+  const loaded = await host.nativeImport(host.previewUrl(file));
+  const ort = loaded.InferenceSession ? loaded : loaded.default;
+  if (!ort || !ort.InferenceSession) throw new Error('ort bundle has no InferenceSession');
+  host.checkOrtVersion(ort, ortDir);
+  host.configureOrt(ort, dist);
+  return ort;
 }
 
 function loadKev() {
@@ -82,14 +73,8 @@ async function prepareRuntime() {
     outfile: BUNDLE,
     packages: [{ spec: '@ai-ecoverse/kev.js@0.2.0', name: '@ai-ecoverse/kev.js' }],
   });
-  const ortReady =
-    (await fs.exists('/shared/lib/node_modules/onnxruntime-web/dist/ort.wasm.bundle.min.mjs')) ||
-    (await fs.exists('/workspace/node_modules/onnxruntime-web/dist/ort.wasm.bundle.min.mjs'));
-  let installedOrt = false;
-  if (!ortReady) {
-    await host.ensurePackage(exec, fs, 'onnxruntime-web@1.30.0', 'onnxruntime-web');
-    installedOrt = true;
-  }
+  const ortCopy = await host.ensureOrt(exec, fs);
+  const installedOrt = ortCopy.installed;
   if (rebuilt || installedOrt) {
     if (process.env[READY] === '1') {
       cli.die('installed the kev bundle but this process cannot require it yet. Run kev ask again.', {
@@ -98,6 +83,7 @@ async function prepareRuntime() {
     }
     await host.reexec(exec, READY);
   }
+  return ortCopy.dir;
 }
 
 async function ensureWeights(model, from) {
@@ -128,10 +114,10 @@ async function ensureWeights(model, from) {
   return base;
 }
 
-async function openModel(base, dateFacts, providers) {
+async function openModel(base, dateFacts, providers, ortDir) {
   const kind = providers[0] === 'webgpu' ? 'webgpu' : 'wasm';
   console.error(`kev: runtime ${kind}${host.hasWebGpu() ? '' : ' (navigator.gpu absent in this worker)'}`);
-  const ort = await loadOrt(kind);
+  const ort = await loadOrt(kind, ortDir);
   const url = host.previewUrl(base.endsWith('/') ? base : `${base}/`);
   return loadKev()(url, {
     ort,
@@ -147,7 +133,7 @@ async function cmdAsk(flags, positionals) {
   }
   const modelName = flags.model || '0.8b';
   if (!MODELS[modelName]) cli.die('--model must be 0.8b, 4b, or 9b', { prefix: 'kev' });
-  await prepareRuntime();
+  const ortDir = await prepareRuntime();
   const parsedQuestions = flags.questions
     ? questions.parseQuestionsJson(await readArg(flags.questions))
     : questions.parseQuestionPositionals(positionals);
@@ -163,12 +149,12 @@ async function cmdAsk(flags, positionals) {
   const providers = host.hasWebGpu() ? ['webgpu', 'wasm'] : ['wasm'];
   let model;
   try {
-    model = await openModel(base, dateFacts, providers);
+    model = await openModel(base, dateFacts, providers, ortDir);
   } catch (err) {
     if (err && err.name === 'NodeExitError') throw err;
     if (providers[0] !== 'webgpu') throw err;
     console.error(`kev: webgpu failed (${err.message}); retrying on wasm`);
-    model = await openModel(base, dateFacts, ['wasm']);
+    model = await openModel(base, dateFacts, ['wasm'], ortDir);
   }
   const response = await model.systemOne(
     { state: questions.parseStateText(String(stateText)), questions: parsedQuestions },
