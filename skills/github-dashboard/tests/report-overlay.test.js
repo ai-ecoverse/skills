@@ -17,7 +17,7 @@ import test, { is, ok } from 'tst';
      GHD_PANEL=... GHD_REPORT_OVERLAY=... tst tests/report-overlay.test.js
 
    Fake ids only: octocat/hello-world, thr_example01, bb.example.invalid. */
-const { fs, locate, paths, fenced, panelModule, fnBody, stripComments, record, H, iso } =
+const { fs, locate, paths, fenced, panelModule, fnBody, stripComments, recThread, record, H, iso } =
   require('./thread-helpers.js');
 
 const modPath = () =>
@@ -591,4 +591,137 @@ test('W4 refreshReports(): missing file = no reports, a change is adopted once, 
   delete files['/tmp/r.json'];
   is(await run.refresh(), true, 'deleted: a change');
   is(run.file(), null, '... to no reports');
+});
+
+// ---- S1-S3: a live working report replaces "Start a scoop" ------------------------
+
+/** goTarget and its helpers from the module script, on top of GHD-CLASSIFY +
+    GHD-FMT, with scoopClick wired to a spy store and a spy bridge. */
+function goSlot(passNow) {
+  const src = fs.readFileSync(paths.panel(), 'utf8');
+  const script = panelModule();
+  const fn = (name, args) => {
+    const b = fnBody(script, name);
+    if (!b) throw new Error(`no function ${name} in the panel`);
+    return `function ${name}(${args}) ${b}`;
+  };
+  return new Function(
+    'mutateStore',
+    'slicc',
+    [
+      'let META = null; let ATTACHMENTS = {};',
+      region(src, 'CLASSIFY'),
+      region(src, 'FMT'),
+      `let PASS_NOW = ${Number(passNow)};`,
+      fn('recordKey', 'item'),
+      fn('bbProject', 'repo'),
+      fn('threadFor', 'item'),
+      fn('goTarget', 'item, now'),
+      fn('startButtonTitle', 'item, tgt'),
+      `async ${fn('scoopClick', 'item')}`,
+      'return { goTarget, startButtonTitle, scoopClick };',
+    ].join('\n')
+  );
+}
+
+test('S1 startControlFor: only an APPLIED working report stands for a started scoop', () => {
+  const sc = (rec, rep, opts) => mod().startControlFor(over(rec, rep, opts));
+  is(
+    JSON.stringify(sc(issue(), report({ thread: scoop }))),
+    JSON.stringify({ dispatched: true, by: 'octocat-scoop', at: iso(NOW - 1 * H) }),
+    'applied working, scoop'
+  );
+  is(sc(issue(), report({})).by, 'bb thread thr_example01', 'applied working, bb thread');
+  is(sc(issue(), report({ thread: null })).by, null, 'applied working, no agent named');
+  is(sc(issue(), report({ at: iso(NOW - 7 * H) })), null, 'stale working');
+  is(sc(issue(), report({ status: 'needs-attention', note: 'x' })), null, 'needs-attention');
+  is(sc(issue(), report({ status: 'done' })), null, 'done');
+  is(sc(issue(), null), null, 'no report');
+  is(
+    sc(issue({ stage: 11, stateReason: 'completed' }), report({})),
+    null,
+    'ignored: GitHub closed it'
+  );
+  is(sc(issue(), report({}), { snoozed: true }), null, 'held back by a snooze');
+  ok(
+    typeof P.reportOverlay === 'function' &&
+      /function startControlFor\(/.test(fs.readFileSync(paths.panel(), 'utf8')),
+    'embedded'
+  );
+});
+
+test('S2 the Go slot: dispatched "Working: <who> reported <when>" in place of Start a scoop', () => {
+  const { goTarget, startButtonTitle } = goSlot(NOW)(null, null);
+  const t = (rec) => goTarget(rec, NOW);
+  const sc = t(withReport(issue(), report({ thread: scoop })));
+  is(sc.mode, 'start', 'same control, same markup');
+  ok(sc.reported && sc.reported.dispatched, 'applied working scoop: dispatched');
+  is(sc.title, 'Working: octocat-scoop reported 2026-09-30 11:00Z');
+  is(
+    startButtonTitle(
+      withReport(issue({ scoopRequestedAt: iso(NOW - 3 * H) }), report({ thread: scoop })),
+      sc
+    ),
+    sc.title,
+    'the report line wins over an older mark'
+  );
+  const b = t(withReport(issue(), report({})));
+  is(b.mode, 'start');
+  ok(b.reported, 'applied working bb: dispatched too');
+  is(b.title, 'Working: bb thread thr_example01 reported 2026-09-30 11:00Z');
+  const stale = t(withReport(issue(), report({ thread: scoop, at: iso(NOW - 7 * H) })));
+  is(stale.mode, 'start');
+  is(stale.reported, undefined, 'stale scoop: the plain Start a scoop');
+  ok(/^No bb thread is attached/.test(stale.title), 'unchanged title');
+  is(
+    t(withReport(issue(), report({ at: iso(NOW - 7 * H) }))).mode,
+    'thread',
+    'stale bb: the reported thread link, as before'
+  );
+  const na = t(
+    withReport(issue(), report({ status: 'needs-attention', thread: scoop, note: 'x' }))
+  );
+  is(na.mode, 'start');
+  is(na.reported, undefined, 'needs-attention: unchanged');
+  is(t(issue()).reported, undefined, 'no report: unchanged');
+  is(t(issue()).mode, 'start');
+  const linked = issue({ stage: 2, thread: recThread({ id: 'thr_example02' }) });
+  is(
+    t(withReport(linked, report({ thread: scoop }))).mode,
+    'thread',
+    'a linked thread keeps its Go to thread'
+  );
+});
+
+test('S3 a click on the reported control sends nothing and writes nothing; card and update agree', async () => {
+  const licks = [];
+  const writes = [];
+  const store = async (item) => {
+    writes.push(item.id);
+    return true;
+  };
+  const bridge = { lick: (x) => licks.push(x) };
+  const { scoopClick } = goSlot(NOW)(store, bridge);
+  await scoopClick(withReport(issue(), report({ thread: scoop })));
+  await scoopClick(withReport(issue(), report({})));
+  is(licks.length, 0, 'applied working (scoop, bb): no start-scoop lick');
+  is(writes.length, 0, '... and no store write');
+  await scoopClick(withReport(issue(), report({ thread: scoop, at: iso(NOW - 7 * H) })));
+  is(licks.length, 1, 'stale: the click dispatches as before');
+  is(licks[0].action, 'start-scoop');
+  const src = stripComments(panelModule());
+  const acts = fnBody(src, 'actions');
+  const upd = fnBody(src, 'updateActions');
+  ok(
+    /const dispatched = !!item\.scoopRequestedAt \|\| !!tgt\.reported;/.test(acts),
+    'card(): dispatched style'
+  );
+  ok(
+    /const dispatched = !!item\.scoopRequestedAt \|\| !!tgt\.reported;/.test(upd),
+    'reconcile: dispatched style'
+  );
+  ok(
+    /startButtonTitle\(item, tgt\)/.test(acts) && /startButtonTitle\(item, tgt\)/.test(upd),
+    'one title function'
+  );
 });

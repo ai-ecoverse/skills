@@ -1738,6 +1738,22 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         return out;
       }
 
+      /** What the Go slot shows in place of "Start a scoop", given reportOverlay()'s
+          result. An APPLIED working report means the work has started, so the
+          control must not offer to start it again (a second click dispatched a
+          duplicate scoop): { dispatched: true, by, at }, rendered in the panel's
+          existing dispatched style as "Working: <by> reported <when>". by is the
+          scoop's name, "bb thread <id>", or null when the report names no agent.
+          null (the control stays as it is) for no report, a needs-attention or done
+          report, and a working report that is stale, superseded, snoozed or ignored
+          because GitHub closed or merged the item. */
+      function startControlFor(overlay) {
+        if (!overlay || overlay.effect !== 'applied' || overlay.status !== 'working') return null;
+        const r = overlay.reporter;
+        const by = r ? (r.kind === 'bb' ? `bb thread ${r.id}` : r.name) : null;
+        return { dispatched: true, by, at: overlay.at };
+      }
+
       /** Hang each record's report (and, for a bb reporter, that thread's
           threads.json entry) on the record as __report / __reportThread, so
           categorize(item, now) can stay a function of the item. IDEMPOTENT: every pass
@@ -2491,6 +2507,20 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
           shown. */
       function goTarget(item, now) {
         const thr = threadFor(item);
+        // An APPLIED working report (startControlFor, REPORT-OVERLAY): the work
+        // has started, so the start slot shows the dispatched state instead of
+        // offering to start it again. It outranks the reported thread's own
+        // link, never an attached or snapshot-linked thread.
+        const reported = startControlFor(reportFor(item, now));
+        if (reported && (!thr || thr.source === 'report')) {
+          return {
+            mode: 'start',
+            icon: 'rocket',
+            label: 'Start a scoop',
+            reported,
+            title: `Working: ${reported.by ? reported.by + ' ' : ''}reported ${fmtWhen(reported.at)}`,
+          };
+        }
         if (thr) {
           const project = thr.project || bbProject(item.repo);
           const url = thr.url
@@ -2578,10 +2608,25 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         }
       }
 
+      /** The start slot's title: a live working report first (goTarget's
+          "Working: … reported …"), then the operator's own dispatch mark, then
+          the plain offer. One function, so card() and updateActions() agree. */
+      function startButtonTitle(item, tgt) {
+        if (tgt.reported || !item.scoopRequestedAt) return tgt.title;
+        return (
+          `Dispatched ${fmtWhen(item.scoopRequestedAt)}: a start-scoop request for ${recordKey(item)} ` +
+          'went to the cone and is recorded in data/user-state.json. The panel did not spawn ' +
+          'anything itself. Click again to clear the mark (the sent request cannot be recalled).'
+        );
+      }
+
       /** File a scoop request. Two effects, both visible: the mark is
           persisted (so it survives a reopen) and a lick is sent to the owning
           scoop. A second click clears only the local mark. */
       async function scoopClick(item) {
+        // A live working report: the work has started. No second request, and
+        // no store write, while it holds (the control shows it as dispatched).
+        if (goTarget(item, PASS_NOW).reported) return;
         if (item.scoopRequestedAt) {
           await mutateStore(item, (e) => delete e.scoopRequestedAt, 'clearing the scoop request');
           return;
@@ -2866,14 +2911,9 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
           // Colour keeps the state, aria-pressed keeps it for assistive tech, and
           // the quick view lists the dispatch time under "Your marks", so nothing
           // depends on colour alone.
-          const b = mk(tgt.icon, tgt.label, tgt.title);
-          const dispatched = !!item.scoopRequestedAt;
-          if (dispatched) {
-            b.title =
-              `Dispatched ${fmtWhen(item.scoopRequestedAt)}: a start-scoop request for ${recordKey(item)} ` +
-              'went to the cone and is recorded in data/user-state.json. The panel did not spawn ' +
-              'anything itself. Click again to clear the mark (the sent request cannot be recalled).';
-          }
+          const b = mk(tgt.icon, tgt.label, startButtonTitle(item, tgt));
+          // Dispatched: the operator's own request, or a live working report.
+          const dispatched = !!item.scoopRequestedAt || !!tgt.reported;
           b.classList.toggle('is-dispatched', dispatched);
           b.setAttribute('aria-pressed', dispatched ? 'true' : 'false');
           b.dataset.go = tgt.mode;
@@ -4661,15 +4701,15 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
           changed = true;
         }
         if (goSlot && wantTag === 'BUTTON') {
-          const dispatched = !!item.scoopRequestedAt;
+          const dispatched = !!item.scoopRequestedAt || !!tgt.reported;
           if (goSlot.classList.contains('is-dispatched') !== dispatched) {
             goSlot.classList.toggle('is-dispatched', dispatched);
             changed = true;
           }
           attr(goSlot, 'aria-pressed', dispatched ? 'true' : 'false');
         }
-        if (goSlot && goSlot.title !== tgt.title && !item.scoopRequestedAt) {
-          goSlot.title = tgt.title;
+        if (goSlot && wantTag === 'BUTTON' && goSlot.title !== startButtonTitle(item, tgt)) {
+          goSlot.title = startButtonTitle(item, tgt);
           changed = true;
         }
         return changed;

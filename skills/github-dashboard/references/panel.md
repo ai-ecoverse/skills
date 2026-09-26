@@ -30,8 +30,12 @@ updates, the quick view, the per-card actions and follow-up actions.
   stall limit. The operator's done mark outranks every report. An active
   snooze holds back working and done reports. The card shows one meta line:
   the status, the reporter (a bb thread links to its URL, a scoop is a name),
-  the reported PR (linked at once) and the time. The rules and their order are
-  in reports.md.
+  the reported PR (linked at once) and the time. An applied `working` report
+  means the work has started, so the Go slot shows the dispatched state,
+  `Working: <scoop or bb thread> reported <when>`, in place of Start a scoop,
+  and a click sends nothing. A stale, superseded or ignored report, or a
+  needs-attention report, leaves the control as it is. The rules and their
+  order are in reports.md.
 - **Request licks carry reporting instructions**: every lick the panel sends to
   the cone (`start-scoop`, `do-nudge`, `clarify-question`,
   `review-before-approval`) has `data.report`, the exact `gh dashboard`
