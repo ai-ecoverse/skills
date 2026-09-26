@@ -86,8 +86,9 @@ sharepoint download <site-id> --drive <drive-id> --item <item-id> --out /workspa
 
 `sharepoint search "<query>"` without `--site` searches the whole tenant
 (everything the signed-in user can see) via Graph's `/search/query`. Adding
-`--site <site-id>` scopes to one site. Results include the item's `webUrl` —
-prefer showing that to the user over a bare Graph id so they can click through.
+`--site <site-id>` resolves that id to the site's `webUrl` and scopes via KQL
+`path:"…"`. Results include the item's `webUrl` — prefer showing that to the
+user over a bare Graph id so they can click through.
 
 ## Don't
 
