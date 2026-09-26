@@ -1,10 +1,13 @@
 ---
 name: decide-quickly
 description: >
-  Classify, score, and rate a piece of text with `kev ask`, and plan how to
-  fill a web form with `cua-s1`. Use when classifying text, rating urgency
-  or tone, deciding yes or no, or planning form fills (fill, check, click,
-  or skip) from a document. The cone still applies the result.
+  Classify, score, and rate a piece of text on device with the local Kev
+  model (`kev ask`), and plan how to fill a web form from a document with
+  `cua-s1`. Use when classifying a ticket, email, or message, rating urgency
+  or tone, answering a yes/no question about text, picking one of several
+  labels, or planning form fills (fill, check, click, or skip) from a
+  playwright-cli snapshot and a Label: value document. Both print typed
+  answers; nothing is clicked until you run the printed commands.
 allowed-tools: bash
 ---
 
@@ -29,6 +32,7 @@ node /workspace/skills/decide-quickly/scripts/cua-s1.jsh --help
 - [scripts/kev.jsh](scripts/kev.jsh) runs `kev`.
 - [scripts/cua-s1.jsh](scripts/cua-s1.jsh) runs `cua-s1`.
 - [scripts/host.js](scripts/host.js) installs packages, bundles, and downloads weights.
+- [scripts/kev-runtime.js](scripts/kev-runtime.js) opens a Kev model and keeps it. A script that asks many questions (meep-meep's `webrunner`) loads it once instead of starting `kev ask` for each question. It also checks and pulls the weights.
 - [scripts/questions.js](scripts/questions.js) parses question shorthand.
 - [scripts/elements.js](scripts/elements.js) turns a snapshot into fields.
 - [scripts/commands.js](scripts/commands.js) turns a plan into `playwright-cli` lines.
@@ -37,14 +41,24 @@ node /workspace/skills/decide-quickly/scripts/cua-s1.jsh --help
 
 ## First run
 
-The first `kev ask` or `cua-s1 plan` installs its packages, bundles them, downloads weights, and runs again so the bundle can be loaded.
+Kev weights come first. `kev pull` downloads one model's q8f32 files with slicc's built-in `hf`:
 
-- Kev: `ipk add -g @ai-ecoverse/kev.js@0.2.0`
+```bash
+kev pull                  # 0.8b, 800 MB
+kev pull --model 9b       # 8.8 GB
+```
+
+If it stops, run it again: `hf` skips files that are already at full size. Progress goes to `/tmp/kev/pull.log`. Without the weights, `kev ask` stops and prints the `kev pull` line to run.
+
+After that, the first `kev ask` or `cua-s1 plan` installs its packages, bundles them, and runs again so the bundle can be loaded. `cua-s1` still downloads its 3.3 MB graph with `hf` on that first run.
+
+- Kev: `ipk add -g @ai-ecoverse/kev.js@0.4.0`
 - cua-s1: `ipk add -g @ai-ecoverse/cua-s1.js@0.1.1`
 - Both: `esbuild-wasm`, then `esbuild --bundle`, then `ipk add -g onnxruntime-web@1.30.0`
-- Weights: `hf download` (Kev q8f32, or the 3.3 MB cua-s1 graph)
 
 A package already on disk is reused only when its version matches that pin.
+
+`kev prepare` does the install and bundle steps without asking anything. Another script can run it before loading `kev-runtime.js`. A bundle written in the current process can't be `require()`d, so that script must pass its own `require('/shared/cache/kev/bundle.cjs')` as `requireBundle` and restart once after `prepare`.
 
 `--json`, `--date-facts`, and `--allow-submit` are booleans. A question or path written after one of them stays an argument.
 
@@ -75,7 +89,7 @@ Stdout is the name, the answer, and a probability, separated by tabs. `--json` p
 | `--model 4b` | q8f32 | 4.7 GB |
 | `--model 9b` | q8f32 | 8.8 GB |
 
-Weights land in `/workspace/models/ai-ecoverse/kev.js/kev-<size>`. `--from` uses a directory you already have and skips the download.
+`kev pull` puts the weights in `/workspace/models/ai-ecoverse/kev.js/kev-<size>`. `--from` uses a directory you already have instead.
 
 Kev does not click. You apply the judgment.
 
