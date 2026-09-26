@@ -85,6 +85,9 @@ if ! ipk add -g typescript@6.0.3; then
   die_env 'ipk add -g typescript@6.0.3 failed (tst will not run without TypeScript 6)'
   finish
 fi
+# eslint.jsh (and its generated helper) require('minimatch'). Install it for
+# every skill run — tiny, and avoids a skill-specific branch in this script.
+ipk add -g minimatch@9.0.5 || true
 ipk list -g || true
 echo '::endgroup::'
 

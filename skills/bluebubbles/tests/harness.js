@@ -1,4 +1,4 @@
-// Shared loader for the bluebubbles .jsh script under `node:test`.
+// Shared loader for the bluebubbles .jsh script under `tst`.
 //
 // Same technique as tests/redaction.test.js (and skills/github/tests): compile
 // the script as an AsyncFunction with stub `sliccy:*` modules, drop the trailing
@@ -6,9 +6,11 @@
 // so HTTP can be faked. Function declarations are assignable bindings inside the
 // wrapper scope, which is what makes `setApi()` work without touching the script.
 
-const fs = require('node:fs');
-const path = require('node:path');
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT = path.resolve(__dirname, '../scripts/bluebubbles.jsh');
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 
@@ -74,7 +76,7 @@ return {
       exists: (file) => files.has(file),
     },
     os: { homedir: () => '/home/test' },
-    path: require('node:path'),
+    path,
     'sliccy:cli': {
       die: (message) => {
         const err = new Error(String(message));
@@ -138,4 +140,4 @@ return {
   };
 }
 
-module.exports = { load, SCRIPT };
+export { load, SCRIPT };

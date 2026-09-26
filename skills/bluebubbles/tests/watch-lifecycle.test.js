@@ -15,11 +15,10 @@
 //   active, undiscoverable forwarding pair. The write is now wrapped and both
 //   fresh endpoints are deleted before the error propagates.
 
-const assert = require('node:assert/strict');
-const test = require('node:test');
+import test, { is, ok } from 'tst';
+import * as _mod_0 from './harness.js';
 
-const { load } = require('./harness.js');
-
+const { load } = _mod_0.default || _mod_0;
 const WATCH_DIR = '/home/test/.bluebubbles-watches';
 const STATE_FILE = `${WATCH_DIR}/all-imsg-inbox.json`;
 
@@ -78,7 +77,7 @@ async function expectDie(fn) {
   try {
     await fn();
   } catch (err) {
-    assert.equal(err.name, 'NodeExitError', `expected a die(), got: ${err.stack}`);
+    is(err.name, 'NodeExitError', `expected a die(), got: ${err.stack}`);
     return err.message;
   }
   throw new Error('expected the command to die, it returned normally');
@@ -90,41 +89,41 @@ test('--force keeps the old watch alive when the SLICC webhook cannot be created
   const bb = await load({ api: bbOk, exec: execCreateFails, files: withOldState() });
 
   const message = await expectDie(() => bb.cmdWatch({ scoop: 'imsg-inbox', force: true }));
-  assert.match(message, /webhook create failed/);
+  ok((/webhook create failed/).test(message));
 
   // Nothing was retired. Pre-fix: 1 `webhook delete slicc-OLD` + 1 DELETE
   // /api/v1/webhook/41 + 1 rm of the state file, all before this point.
   const deletes = bb.execCommands().filter((c) => c.startsWith('webhook delete'));
-  assert.deepEqual(deletes, [], `old SLICC webhook was deleted: ${deletes.join(', ')}`);
-  assert.deepEqual(
+  is(deletes, [], `old SLICC webhook was deleted: ${deletes.join(', ')}`);
+  is(
     bb.apiCalls().filter((c) => c.startsWith('DELETE')),
     [],
     'old BlueBubbles webhook was deleted'
   );
-  assert.deepEqual(
+  is(
     bb.log.filter((e) => e.kind === 'rm'),
     [],
     'state file was removed'
   );
 
   // The old watch is still discoverable to `watches` / `unwatch`.
-  assert.ok(bb.files.has(STATE_FILE), 'state file must survive a failed replacement');
-  assert.deepEqual(JSON.parse(bb.files.get(STATE_FILE)), OLD_STATE);
+  ok(bb.files.has(STATE_FILE), 'state file must survive a failed replacement');
+  is(JSON.parse(bb.files.get(STATE_FILE)), OLD_STATE);
 });
 
 test('--force keeps the old watch alive when the BlueBubbles webhook cannot be registered', async () => {
   const bb = await load({ api: bbRegisterFails, exec: execOk(), files: withOldState() });
 
   const message = await expectDie(() => bb.cmdWatch({ scoop: 'imsg-inbox', force: true }));
-  assert.match(message, /BlueBubbles webhook register failed/);
+  ok((/BlueBubbles webhook register failed/).test(message));
 
   // The half-created *new* SLICC webhook is cleaned up …
-  assert.deepEqual(bb.execCommands().filter((c) => c.includes('webhook delete')), [
+  is(bb.execCommands().filter((c) => c.includes('webhook delete')), [
     "webhook delete 'slicc-NEW'",
   ]);
   // … and the *old* pair is untouched and still recorded.
-  assert.ok(!bb.execCommands().some((c) => c.includes('slicc-OLD')), 'old SLICC webhook retired');
-  assert.deepEqual(JSON.parse(bb.files.get(STATE_FILE)), OLD_STATE);
+  ok(!bb.execCommands().some((c) => c.includes('slicc-OLD')), 'old SLICC webhook retired');
+  is(JSON.parse(bb.files.get(STATE_FILE)), OLD_STATE);
 });
 
 test('--force retires the old pair only after the replacement is persisted', async () => {
@@ -141,16 +140,16 @@ test('--force retires the old pair only after the replacement is persisted', asy
         (e.kind === 'api' && e.method === 'DELETE')
     )
     .map((e) => (e.kind === 'writeFile' ? 'persist' : e.kind === 'exec' ? 'retire-slicc' : 'retire-bb'));
-  assert.deepEqual(order, ['persist', 'retire-slicc', 'retire-bb']);
+  is(order, ['persist', 'retire-slicc', 'retire-bb']);
 
   // The old endpoints are gone, the new ones are on disk.
-  assert.ok(bb.execCommands().includes("webhook delete 'slicc-OLD'"));
-  assert.ok(bb.apiCalls().includes('DELETE /api/v1/webhook/41'));
+  ok(bb.execCommands().includes("webhook delete 'slicc-OLD'"));
+  ok(bb.apiCalls().includes('DELETE /api/v1/webhook/41'));
   const persisted = JSON.parse(bb.files.get(STATE_FILE));
-  assert.equal(persisted.sliccWebhookId, 'slicc-NEW');
-  assert.equal(persisted.bbWebhookId, 77);
-  assert.equal(persisted.password, undefined, 'state must never carry a password');
-  assert.deepEqual(bb.out[0].replaced, { sliccWebhookId: 'slicc-OLD', bbWebhookId: 41 });
+  is(persisted.sliccWebhookId, 'slicc-NEW');
+  is(persisted.bbWebhookId, 77);
+  is(persisted.password, undefined, 'state must never carry a password');
+  is(bb.out[0].replaced, { sliccWebhookId: 'slicc-OLD', bbWebhookId: 41 });
 });
 
 // ── :1112 — roll back both webhooks when persistence fails ─────────────────
@@ -170,19 +169,19 @@ test('a failed state write deletes both freshly created webhooks', async () => {
 
   // Pre-fix: 0 deletes, and the raw EACCES reached the top-level handler while
   // both endpoints stayed live and unrecorded. Post-fix: 2 deletes.
-  assert.deepEqual(bb.execCommands().filter((c) => c.includes('webhook delete')), [
+  is(bb.execCommands().filter((c) => c.includes('webhook delete')), [
     "webhook delete 'slicc-NEW'",
   ]);
-  assert.deepEqual(bb.apiCalls().filter((c) => c.startsWith('DELETE')), [
+  is(bb.apiCalls().filter((c) => c.startsWith('DELETE')), [
     'DELETE /api/v1/webhook/77',
   ]);
 
   // The message says what happened and what was rolled back.
-  assert.match(message, /could not write watch state/);
-  assert.match(message, /Rolled back/);
-  assert.ok(message.includes('slicc-NEW'), 'names the SLICC webhook it removed');
-  assert.ok(message.includes('77'), 'names the BlueBubbles webhook it removed');
-  assert.ok(!bb.files.has(STATE_FILE), 'no state file for a watch that does not exist');
+  ok((/could not write watch state/).test(message));
+  ok((/Rolled back/).test(message));
+  ok(message.includes('slicc-NEW'), 'names the SLICC webhook it removed');
+  ok(message.includes('77'), 'names the BlueBubbles webhook it removed');
+  ok(!bb.files.has(STATE_FILE), 'no state file for a watch that does not exist');
 });
 
 test('when rollback itself fails the ids are printed so the pair can be cleaned up by hand', async () => {
@@ -213,9 +212,9 @@ test('when rollback itself fails the ids are printed so the pair can be cleaned 
 
   const message = await expectDie(() => bb.cmdWatch({ scoop: 'imsg-inbox' }));
 
-  assert.match(message, /Rollback incomplete/);
-  assert.match(message, /webhook delete slicc-NEW/);
-  assert.match(message, /DELETE \/api\/v1\/webhook\/77/);
+  ok((/Rollback incomplete/).test(message));
+  ok((/webhook delete slicc-NEW/).test(message));
+  ok((/DELETE \/api\/v1\/webhook\/77/).test(message));
 });
 
 test('a rolled-back state write leaves an existing --force watch explicitly intact', async () => {
@@ -232,11 +231,11 @@ test('a rolled-back state write leaves an existing --force watch explicitly inta
     bb.cmdWatch({ scoop: 'imsg-inbox', force: true })
   );
 
-  assert.match(message, /previous watch is untouched/);
-  assert.ok(message.includes('slicc-OLD'));
+  ok((/previous watch is untouched/).test(message));
+  ok(message.includes('slicc-OLD'));
   // The old pair was never retired, and its state is still the file on disk.
-  assert.ok(!bb.execCommands().some((c) => c.includes('slicc-OLD')));
-  assert.deepEqual(JSON.parse(bb.files.get(STATE_FILE)), OLD_STATE);
+  ok(!bb.execCommands().some((c) => c.includes('slicc-OLD')));
+  is(JSON.parse(bb.files.get(STATE_FILE)), OLD_STATE);
 });
 
 test('no watch error message can carry the server password', async () => {
@@ -253,6 +252,6 @@ test('no watch error message can carry the server password', async () => {
   });
 
   const message = await expectDie(() => bb.cmdWatch({ scoop: 'imsg-inbox' }));
-  assert.ok(!message.includes(SECRET), `password leaked: ${message}`);
-  assert.match(message, /password=\*\*\*/);
+  ok(!message.includes(SECRET), `password leaked: ${message}`);
+  ok((/password=\*\*\*/).test(message));
 });
