@@ -1,3 +1,9 @@
+import test, { is, ok } from 'tst';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
 // Behaviour tests for the in-flight ("acting") card state in
 // templates/review.shtml, run with:
 //
@@ -12,11 +18,6 @@
 // As in ensure-item.test.js, the real functions are extracted from the shipped
 // template and compiled against stubs, rather than copied here.
 
-const assert = require('node:assert/strict');
-const test = require('node:test');
-const fs = require('node:fs');
-const path = require('node:path');
-
 const TEMPLATE = path.join(__dirname, '..', 'templates', 'review.shtml');
 const source = fs.readFileSync(TEMPLATE, 'utf8');
 
@@ -24,7 +25,7 @@ const source = fs.readFileSync(TEMPLATE, 'utf8');
 function extractFunction(name) {
   const lines = source.split('\n');
   const start = lines.findIndex((l) => l.startsWith('function ' + name + '('));
-  assert.ok(start >= 0, name + ' not found in template');
+  ok(start >= 0, name + ' not found in template');
   let end = -1;
   for (let i = start + 1; i < lines.length; i++) {
     if (lines[i] === '}') {
@@ -32,7 +33,7 @@ function extractFunction(name) {
       break;
     }
   }
-  assert.ok(end > start, 'end of ' + name + ' not found');
+  ok(end > start, 'end of ' + name + ' not found');
   return lines.slice(start, end + 1).join('\n');
 }
 
@@ -96,12 +97,12 @@ test('marking a card acting disables its actions', () => {
   p.setItemActing('page-1', true);
 
   const el = p.cardElements.get('page-1');
-  assert.equal(el.classes.has('acting'), true);
-  assert.equal(
+  is(el.classes.has('acting'), true);
+  is(
     el.buttons.every((b) => b.disabled),
     true
   );
-  assert.equal(p.actingItems.has('page-1'), true);
+  is(p.actingItems.has('page-1'), true);
 });
 
 test('a re-render keeps an in-flight card busy (the P2 regression)', () => {
@@ -112,8 +113,8 @@ test('a re-render keeps an in-flight card busy (the P2 regression)', () => {
   p.render();
 
   const el = p.cardElements.get('page-1');
-  assert.equal(el.classes.has('acting'), true, 'busy marker survives the render');
-  assert.equal(
+  is(el.classes.has('acting'), true, 'busy marker survives the render');
+  is(
     el.buttons.every((b) => b.disabled),
     true,
     'no duplicate publish/defer lick is possible'
@@ -126,8 +127,8 @@ test('a re-render does not make other cards busy', () => {
   p.render();
 
   const other = p.cardElements.get('pr-42');
-  assert.equal(other.classes.has('acting'), false);
-  assert.equal(
+  is(other.classes.has('acting'), false);
+  is(
     other.buttons.some((b) => b.disabled),
     false
   );
@@ -140,9 +141,9 @@ test('clearing the in-flight state re-enables the actions', () => {
   p.render();
 
   const el = p.cardElements.get('page-1');
-  assert.equal(el.classes.has('acting'), false);
-  assert.equal(p.actingItems.has('page-1'), false);
-  assert.equal(
+  is(el.classes.has('acting'), false);
+  is(p.actingItems.has('page-1'), false);
+  is(
     el.buttons.some((b) => b.disabled),
     false
   );
@@ -155,48 +156,45 @@ test('an item dropped from the queue loses its in-flight marker', () => {
   // load-items replaces the queue without page-1 ...
   p.state.items = [{ id: 'pr-42', title: 'PR #42', status: 'pending' }];
   p.render();
-  assert.equal(p.actingItems.has('page-1'), false, 'stale marker pruned');
+  is(p.actingItems.has('page-1'), false, 'stale marker pruned');
 
   // ... and a later re-add must not come back busy.
   p.state.items.push({ id: 'page-1', title: 'Security Page', status: 'pending' });
   p.render();
-  assert.equal(p.cardElements.get('page-1').classes.has('acting'), false);
+  is(p.cardElements.get('page-1').classes.has('acting'), false);
 });
 
 test('setItemActing on an unrendered id records without throwing', () => {
   const p = makePanel(ITEMS.map((i) => ({ ...i })));
   p.setItemActing('not-rendered', true);
-  assert.equal(p.actingItems.has('not-rendered'), true);
+  is(p.actingItems.has('not-rendered'), true);
   // The id is not in state.items, so the next render prunes it.
   p.render();
-  assert.equal(p.actingItems.has('not-rendered'), false);
+  is(p.actingItems.has('not-rendered'), false);
 });
 
 // ── Source-level assertions: the mechanism must be wired into the real paths ──
 
 test('renderQueue prunes stale in-flight ids', () => {
   const renderQueue = extractFunction('renderQueue');
-  assert.match(renderQueue, /\[\.\.\.actingItems\]\.forEach/);
-  assert.match(renderQueue, /actingItems\.delete\(id\)/);
+  ok((/\[\.\.\.actingItems\]\.forEach/).test(renderQueue));
+  ok((/actingItems\.delete\(id\)/).test(renderQueue));
 });
 
 test('createItemCard reapplies the marker for in-flight items', () => {
   const createItemCard = extractFunction('createItemCard');
-  assert.match(
-    createItemCard,
-    /if \(actingItems\.has\(item\.id\)\) applyItemActing\(item\.id, true\)/
-  );
+  ok((/if \(actingItems\.has\(item\.id\)\) applyItemActing\(item\.id, true\)/).test(createItemCard));
 });
 
 test('update-status clears the in-flight record', () => {
   const updateItemStatus = extractFunction('updateItemStatus');
-  assert.match(updateItemStatus, /actingItems\.delete\(id\)/);
+  ok((/actingItems\.delete\(id\)/).test(updateItemStatus));
 });
 
 test('the in-flight set is not part of persisted state', () => {
   // saveState() persists `state`; a busy card must not survive a reload, because
   // there is no in-flight lick left to answer it.
-  assert.match(source, /^const actingItems = new Set\(\);$/m);
-  assert.doesNotMatch(source, /state\.actingItems/);
-  assert.doesNotMatch(source, /actingItems:/);
+  ok((/^const actingItems = new Set\(\);$/m).test(source));
+  ok(!(/state\.actingItems/).test(source));
+  ok(!(/actingItems:/).test(source));
 });

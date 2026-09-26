@@ -1,3 +1,9 @@
+import test, { is, ok } from 'tst';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
 // Behaviour tests for the `add-findings` / `clear-findings` inbound-message
 // handlers in templates/review.shtml, run with:
 //
@@ -5,18 +11,13 @@
 //
 // Same extract-and-compile approach as ensure-item.test.js.
 
-const assert = require('node:assert/strict');
-const test = require('node:test');
-const fs = require('node:fs');
-const path = require('node:path');
-
 const TEMPLATE = path.join(__dirname, '..', 'templates/review.shtml');
 
 function extractBranch(action) {
   const src = fs.readFileSync(TEMPLATE, 'utf8');
   const needle = "msg.action === '" + action + "'";
   const start = src.indexOf(needle);
-  assert.ok(start >= 0, action + ' branch not found in template');
+  ok(start >= 0, action + ' branch not found in template');
   const brace = src.indexOf('{', start);
   let depth = 0;
   let end = -1;
@@ -30,7 +31,7 @@ function extractBranch(action) {
       }
     }
   }
-  assert.ok(end > brace, 'end of ' + action + ' branch not found');
+  ok(end > brace, 'end of ' + action + ' branch not found');
   return src.slice(brace + 1, end);
 }
 
@@ -65,7 +66,7 @@ test('add-findings keeps a supplied cone when it creates a missing card', () => 
     cone: 'cone-adobe',
     findings: [],
   });
-  assert.equal(h.state.items[0].cone, 'cone-adobe');
+  is(h.state.items[0].cone, 'cone-adobe');
 });
 
 test('add-findings creates a card when the id is unknown', () => {
@@ -78,12 +79,12 @@ test('add-findings creates a card when the id is unknown', () => {
     severity: 'info',
     findings: [],
   });
-  assert.equal(h.state.items.length, 1);
-  assert.equal(h.state.items[0].id, 'page-1');
-  assert.equal(h.state.items[0].status, 'pending');
-  assert.equal(h.state.findings['page-1'].pangram.summary, 'Human');
-  assert.equal(h.counters.saves, 1);
-  assert.equal(h.counters.renders, 1);
+  is(h.state.items.length, 1);
+  is(h.state.items[0].id, 'page-1');
+  is(h.state.items[0].status, 'pending');
+  is(h.state.findings['page-1'].pangram.summary, 'Human');
+  is(h.counters.saves, 1);
+  is(h.counters.renders, 1);
 });
 
 test('add-findings replaces one source and leaves the other', () => {
@@ -105,17 +106,17 @@ test('add-findings replaces one source and leaves the other', () => {
     severity: 'fail',
     findings: [{ title: 'AI-Generated', body: 'High confidence' }],
   });
-  assert.equal(h.state.findings['page-1'].pangram.summary, 'AI · 100%');
-  assert.equal(h.state.findings['page-1'].pangram.severity, 'fail');
-  assert.equal(h.state.findings['page-1']['check-llm-cliches'].summary, '4 matches');
-  assert.equal(h.state.items[0].status, 'pending');
+  is(h.state.findings['page-1'].pangram.summary, 'AI · 100%');
+  is(h.state.findings['page-1'].pangram.severity, 'fail');
+  is(h.state.findings['page-1']['check-llm-cliches'].summary, '4 matches');
+  is(h.state.items[0].status, 'pending');
 });
 
 test('add-findings ignores a message without source', () => {
   const h = makeHandler('add-findings', { items: [], findings: {}, view: 'queue' });
   h.send({ action: 'add-findings', id: 'page-1', summary: 'nope' });
-  assert.equal(h.state.items.length, 0);
-  assert.deepEqual(h.state.findings, {});
+  is(h.state.items.length, 0);
+  is(h.state.findings, {});
 });
 
 test('clear-findings drops one source', () => {
@@ -129,8 +130,8 @@ test('clear-findings drops one source', () => {
     },
   });
   h.send({ action: 'clear-findings', id: 'page-1', source: 'pangram' });
-  assert.equal(h.state.findings['page-1'].pangram, undefined);
-  assert.equal(h.state.findings['page-1']['check-llm-cliches'].summary, 'clean');
+  is(h.state.findings['page-1'].pangram, undefined);
+  is(h.state.findings['page-1']['check-llm-cliches'].summary, 'clean');
 });
 
 test('clear-findings without source drops the card bucket', () => {
@@ -139,5 +140,5 @@ test('clear-findings without source drops the card bucket', () => {
     findings: { 'page-1': { pangram: { summary: 'Human' } } },
   });
   h.send({ action: 'clear-findings', id: 'page-1' });
-  assert.equal(h.state.findings['page-1'], undefined);
+  is(h.state.findings['page-1'], undefined);
 });
