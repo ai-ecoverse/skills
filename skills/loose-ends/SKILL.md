@@ -1,6 +1,6 @@
 ---
 name: loose-ends
-description: "A persistent to-do / follow-up list that lives in a sprinkle panel alongside the chat. Use when the user wants to track loose ends, open follow-ups, waiting-on-others items, or 'things I still need to do' across sessions — a durable backlog the cone maintains and resurfaces. Each item has a title and a rich context blob (why it's open, what to do, links). The panel offers three actions per row: 'Do' (hand the item to the cone to work on now), 'Snooze' (hide it until Tomorrow / Next Monday / Next week / a picked date, then auto-resurface), and 'Done' (remove it). Triggers on 'loose ends', 'my to-do list', 'open follow-ups', 'things I still need to do', 'track this for later', 'add a loose end', 'snooze this until', 'mute until Monday', 'what's still open'."
+description: "Persistent to-do / follow-up list in a sprinkle panel. Use when the user wants to track loose ends, open follow-ups, waiting-on-others items, or things still to do across sessions. Each item has a title plus context; the panel offers Do (hand to the cone now), Snooze (hide until Tomorrow / Next Monday / Next week / a date), and Done. Triggers on 'loose ends', 'my to-do list', 'open follow-ups', 'things I still need to do', 'track this for later', 'add a loose end', 'snooze this until', 'mute until Monday', 'what's still open'."
 allowed-tools: bash
 ---
 
@@ -41,6 +41,9 @@ The scoop is a puppet: the store is what matters. If the scoop dies, recreate it
 and reseed from the store (see [Resurrecting](#resurrecting-in-a-new-session)).
 
 ### CLI — the mutation & reporting API
+
+Implemented by the bundled [`scripts/loose-ends.jsh`](scripts/loose-ends.jsh).
+Flags below are the full reference — other sections link here instead of repeating them.
 
 ```bash
 loose-ends list                     # active + snoozed, human-readable
@@ -145,7 +148,8 @@ loose-ends reseed      # just re-send load-items from the store to an open panel
 
 Options (all `--long` form): `--name <n>` (default `loose-ends`),
 `--store <path>` (default `/shared/loose-ends.json`),
-`--template <path>` (default the skill's `templates/loose-ends.shtml`).
+`--template <path>` (default the skill-bundled [`templates/loose-ends.shtml`](templates/loose-ends.shtml),
+copied into `/shared/sprinkles/loose-ends/` on bootstrap).
 
 `bootstrap`/`reseed` drive `sprinkle` lifecycle — run them from the owning scoop.
 The mutation commands (`create`/`done`/`snooze`/`unsnooze`) and `list`/`monday`
@@ -154,14 +158,15 @@ the panel).
 
 ## Adding, updating, and removing tasks
 
-**Prefer the CLI** — one atomic command writes the store *and* syncs the panel:
+**Prefer the CLI** — one atomic command writes the store *and* syncs the panel.
+Full flag reference is under [CLI — the mutation & reporting API](#cli--the-mutation--reporting-api);
+typical calls:
 
 ```bash
-loose-ends create --title "…" --summary "human what & why" \
-  --detail "agent brief: steps, contacts, paths, links" --skills gmail,outlook
-loose-ends done   le-foo          # remove
-loose-ends snooze le-foo monday   # hide until (tomorrow|monday|week|YYYY-MM-DD)
-loose-ends unsnooze le-foo        # wake now
+loose-ends create --title "…" --summary "…" --detail "…" --skills gmail,outlook
+loose-ends done   le-foo
+loose-ends snooze le-foo monday
+loose-ends unsnooze le-foo
 ```
 
 `create` upserts by `--id` (auto-generated `le-<slug>` when omitted) and accepts
@@ -294,30 +299,21 @@ It reads the store and emits one monday item per task. Notes:
   then `loose-ends reseed`.
 - **No emojis in the UI** — the panel uses Lucide icons (`list-checks`, `check`,
   `arrow-right`), per the SLICC style guide.
-- **Template:** `templates/loose-ends.shtml` (full-document mode). On open it
-  **self-hydrates from the store** so closing + reopening never loses the list.
-  Its `init` reads `STORE_PATH` (default `/shared/loose-ends.json`) — trying
-  `slicc.readFile()` first, then `slicc.exec('cat …')` — and renders from that.
-  If **neither** works in the sandbox, it fires a `request-load` lick and the
-  cone reseeds (see the lick table). `slicc.setState`/`getState` is only a
+- **Template:** the skill ships [`templates/loose-ends.shtml`](templates/loose-ends.shtml)
+  (full-document mode); bootstrap installs it under `/shared/sprinkles/loose-ends/`.
+  On open it **self-hydrates from the store** so closing + reopening never loses
+  the list. Its `init` reads `STORE_PATH` (default `/shared/loose-ends.json`) —
+  trying `slicc.readFile()` first, then `slicc.exec('cat …')` — and renders from
+  that. If **neither** works in the sandbox, it fires a `request-load` lick and
+  the cone reseeds (see the lick table). `slicc.setState`/`getState` is only a
   same-session cache and does **not** survive a full close+reopen — that was the
   original "empty after reopen" bug. **Test hydration with `sprinkle close` +
   `sprinkle open`, not `sprinkle reload`** (reload keeps the state cache and
   masks the problem). If your store lives elsewhere, change the `STORE_PATH`
-  constant near the top of the script.
-- **`request-load` diagnostics:** when that safety net fires, the lick says why.
-  `reason` is `store-unreachable` (the store could not be read), `store-corrupt`
-  (read, but the JSON was broken or had no `tasks` array) or `no-bridge`
-  (neither `slicc.exec` nor `slicc.readFile` exists in this sandbox); `detail`
-  narrows a failed read to `exec-timeout`, `exec-nonzero`, `exec-threw`,
-  `readfile-timeout`, `readfile-empty` or `readfile-threw`. A per-mount
-  `instanceId` plus `mountedAt` separate repeated mounts from a repeating panel.
-  Asks are rate-limited (one per 5s, doubling to a one-per-minute ceiling while
-  unanswered, reset by the next `load-items`), so a loop degrades to a slow
-  heartbeat and an instance that never receives data is never silenced.
-  Applying a `load-items` push makes the panel emit `load-ack`
-  (`{ action, instanceId, count, at }`), which is how the owner confirms the
-  push reached the instance that asked.
+  constant near the top of the template.
+- **`request-load` diagnostics:** `reason` / `detail` / `instanceId` / rate limits /
+  `load-ack` are defined in the lick table — use that as the source of truth when
+  triageing a mount that cannot self-hydrate.
   **The panel-side floor cannot stop a remount storm.** It lives inside one
   document, so it only protects against an instance that asks repeatedly. If the
   host recreates the panel document on a timer — observed at roughly 30-second
