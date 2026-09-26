@@ -6,10 +6,15 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const reviewSource = fs.readFileSync(path.join(__dirname, '../scripts/review.jsh'), 'utf8');
-const aemSource = fs.readFileSync(path.join(__dirname, '../../aem/scripts/aem-ext.jsh'), 'utf8');
+// Live SLICC CI installs only the skill under test. Cross-skill aemCard
+// fixtures need skills/aem; skip those cases when it is absent.
+const aemPath = path.join(__dirname, '../../aem/scripts/aem-ext.jsh');
+const hasAem = fs.existsSync(aemPath);
+const aemSource = hasAem ? fs.readFileSync(aemPath, 'utf8') : '';
 const aemStart = aemSource.indexOf('function treeListUrl(');
 const aemEnd = aemSource.indexOf('// ── dispatch', aemStart);
-ok(aemStart >= 0 && aemEnd > aemStart, 'AEM review command section must exist');
+const aemOnly = hasAem ? test : test.skip;
+if (hasAem) ok(aemStart >= 0 && aemEnd > aemStart, 'AEM review command section must exist');
 
 async function aemCard(org, site, command = 'sweep', id) {
   let stdout = '';
@@ -108,7 +113,7 @@ async function review(
   return { code, stdout, stderr, calls };
 }
 
-test('sweep and enrichment IDs keep identical paths in different sites separate', async () => {
+aemOnly('sweep and enrichment IDs keep identical paths in different sites separate', async () => {
   const first = await aemCard('org-one', 'site-one');
   const second = await aemCard('org-one', 'site-two');
   const third = await aemCard('org-two', 'site-one');
@@ -120,7 +125,7 @@ test('sweep and enrichment IDs keep identical paths in different sites separate'
   is((await aemCard('org-one', 'site-one', 'review')).primaryActionLabel, 'Publish');
 });
 
-test('ingest forwards site flags only to AEM and uses the sweep card ID', async () => {
+aemOnly('ingest forwards site flags only to AEM and uses the sweep card ID', async () => {
   const card = await aemCard('example', 'docs');
   const result = await review(
     'ingest',

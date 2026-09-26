@@ -226,7 +226,9 @@ test('anchor recovery verifies content and rejects an ambiguous relocated quote'
   candidates = [match, { ...match }];
   is(find(ann), null);
   old.textContent = 'Original paragraph';
-  is(find(ann), old);
+  // Identity, not deep equality — old and match share the same properties once
+  // the selector target is valid again; is() would also pass for match.
+  ok(find(ann) === old, 'recovered selector target by identity');
 });
 
 test('command arguments preserve quotes and shell metacharacters literally', () => {
