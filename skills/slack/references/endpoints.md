@@ -4,6 +4,39 @@ Base URL: `/api/` (same-origin XHR from `app.slack.com`)
 Auth: `xoxc-*` token from `localStorage` key `localConfig_v2` → `.teams[<workspaceId>].token`
 Transport: XHR with `Content-Type: application/x-www-form-urlencoded` and `withCredentials: true`
 
+## Contents
+
+- [Authentication](#authentication)
+- [Endpoints](#endpoints)
+  - [POST /api/conversations.history](#post-apiconversationshistory)
+  - [POST /api/conversations.replies](#post-apiconversationsreplies)
+  - [POST /api/chat.postMessage](#post-apichatpostmessage)
+  - [POST /api/reactions.add](#post-apireactionsadd)
+  - [POST /api/conversations.open](#post-apiconversationsopen)
+  - [POST /api/conversations.info](#post-apiconversationsinfo)
+  - [POST /api/auth.test](#post-apiauthtest)
+  - [POST /api/users.info](#post-apiusersinfo)
+  - [POST /api/search.modules](#post-apisearchmodules)
+  - [POST /api/chat.attachmentAction](#post-apichatattachmentaction)
+- [Enterprise Grid Restrictions](#enterprise-grid-restrictions)
+  - [POST /api/activity.feed](#post-apiactivityfeed)
+- [Error Handling](#error-handling)
+- [Admin User-Management Methods (`users.admin.*`)](#admin-user-management-methods-usersadmin)
+  - [POST /api/users.admin.setUltraRestricted](#post-apiusersadminsetultrarestricted)
+  - [POST /api/users.admin.setRestricted](#post-apiusersadminsetrestricted)
+  - [POST /api/users.admin.setRegular](#post-apiusersadminsetregular)
+  - [POST /api/conversations.invite (for guest channel management)](#post-apiconversationsinvite-for-guest-channel-management)
+  - [POST /api/conversations.kick (for guest channel management)](#post-apiconversationskick-for-guest-channel-management)
+- [Enterprise Grid channel search (`admin.conversations.search`)](#enterprise-grid-channel-search-adminconversationssearch)
+  - [POST /api/admin.conversations.search](#post-apiadminconversationssearch)
+- [App Manifest API (`apps.manifest.*`, `tooling.tokens.rotate`)](#app-manifest-api-appsmanifest-toolingtokensrotate)
+  - [POST /api/apps.manifest.export](#post-apiappsmanifestexport)
+  - [POST /api/apps.manifest.validate](#post-apiappsmanifestvalidate)
+  - [POST /api/apps.manifest.update](#post-apiappsmanifestupdate)
+  - [POST /api/tooling.tokens.rotate](#post-apitoolingtokensrotate)
+  - [POST /api/apps.manifest.create, POST /api/apps.manifest.delete — never wired up](#post-apiappsmanifestcreate-post-apiappsmanifestdelete--never-wired-up)
+  - [Probing a method name without a credential](#probing-a-method-name-without-a-credential)
+
 ## Authentication
 
 All requests include:
@@ -434,3 +467,286 @@ Common errors:
 - `invalid_auth` — Token expired or invalid
 - `token_not_found` — No token found for the specified workspace ID
 - `ratelimited` — Rate limited; check `Retry-After` header
+
+## Admin User-Management Methods (`users.admin.*`)
+
+These are **undocumented legacy methods** used by `slack-ext`. They are NOT
+the same as the documented `admin.users.*` namespace (those return
+`not_allowed_token_type` for xoxc session tokens and need an org-level app
+token with `admin.users:write`).
+
+**Verification method (no credentials needed):** `POST https://slack.com/api/<method>`
+returns `{"ok":false,"error":"not_authed"}` for real methods and
+`{"ok":false,"error":"unknown_method"}` for nonexistent ones. All methods
+below were verified real on 2026-09-18.
+
+**Token requirement:** these methods reject bot tokens (`xoxb`) with
+`not_allowed_token_type`. They work only with an xoxc admin user token.
+The `xoxc` token MUST travel with Slack's `d` session cookie;
+`slack-ext.jsh` uses `browser.fetch` (same-origin XHR) which sends cookies
+automatically.
+
+**Audit note:** calls are attributed in Slack's audit log to the admin user
+whose token is in use, not to an app.
+
+### POST /api/users.admin.setUltraRestricted
+
+Convert a user to a **single-channel guest** (ultra-restricted).
+
+**Parameters:**
+| Param | Required | Description |
+|-------|----------|-------------|
+| token | yes | xoxc admin user token |
+| user | yes | User ID (e.g. `W5BPKRLUA`) |
+| team_id | yes | Workspace team ID (e.g. `T06DUTYDQ`) |
+| channel | yes | **Singular** — the one channel the guest may access |
+
+**GOTCHA — `channel` vs `channels`:** the parameter is `channel` (singular).
+Passing `channels` (plural) returns `invalid_arguments`. Verified both ways
+2026-09-18. The `slack-ext.jsh` code and its tests enforce this.
+
+**Response on success:** `{"ok": true}`
+
+**Verification probe (no auth needed):**
+```
+POST https://slack.com/api/users.admin.setUltraRestricted  →  not_authed  (method exists)
+POST https://slack.com/api/admin.users.setUltraRestricted  →  unknown_method  (DOES NOT EXIST)
+```
+
+**Test with bogus user:** `user=U000000BOGUS0` returns `user_not_found`,
+confirming auth, permissions, and parameter shape without changing anyone.
+
+### POST /api/users.admin.setRestricted
+
+Convert a user to a **multi-channel guest** (restricted).
+
+**Parameters:**
+| Param | Required | Description |
+|-------|----------|-------------|
+| token | yes | xoxc admin user token |
+| user | yes | User ID |
+| team_id | yes | Workspace team ID |
+
+No `channel` parameter. After converting, use `conversations.invite` to
+grant channel access.
+
+**Response on success:** `{"ok": true}`
+
+**Verification probe:**
+```
+POST https://slack.com/api/users.admin.setRestricted   →  not_authed  (real)
+POST https://slack.com/api/admin.users.setRestricted   →  unknown_method  (DOES NOT EXIST)
+```
+
+### POST /api/users.admin.setRegular
+
+Promote a guest back to a **regular member**. The inverse of
+`setRestricted` and `setUltraRestricted`.
+
+**Parameters:**
+| Param | Required | Description |
+|-------|----------|-------------|
+| token | yes | xoxc admin user token |
+| user | yes | User ID |
+| team_id | yes | Workspace team ID |
+
+**Response on success:** `{"ok": true}`
+
+### POST /api/conversations.invite (for guest channel management)
+
+Invite a user (including a multi-channel guest) to a channel. Used by
+`slack-ext add-channel`.
+
+**Parameters:**
+| Param | Required | Description |
+|-------|----------|-------------|
+| token | yes | xoxc token |
+| channel | yes | Channel ID |
+| users | yes | Comma-separated user IDs |
+
+**Common errors:**
+- `already_in_channel` — user is already a member (treated as no-op)
+- `cant_invite_self` — cannot invite the token owner
+
+### POST /api/conversations.kick (for guest channel management)
+
+Remove a user from a channel. Used by `slack-ext remove-channel`.
+
+**Parameters:**
+| Param | Required | Description |
+|-------|----------|-------------|
+| token | yes | xoxc token |
+| channel | yes | Channel ID |
+| user | yes | User ID (singular) |
+
+**Common errors:**
+- `not_in_channel` — user is not in the channel (treated as no-op)
+- `cant_kick_self` — cannot kick the token owner
+- `cant_kick_from_general` — some workspaces protect #general
+
+## Enterprise Grid channel search (`admin.conversations.search`)
+
+Endpoint contract used by `slack-ext channel-search` and by `channel-archive` / `channel-unarchive`.
+The archive and unarchive methods, the wire facts measured on this method (the `query=<channel id>`
+lookup, microsecond timestamps, `member_count: -1`, the index lag) and how `slack-ext` uses them:
+`references/enterprise-grid.md`, "Enterprise Grid Channel Admin".
+
+### POST /api/admin.conversations.search
+
+Org-wide channel search; the only state read that sees private channels the
+admin is not in (`conversations.info` answers `channel_not_found` for those).
+
+| Param | Required | Description |
+|-------|----------|-------------|
+| token | yes | org-level xoxc token |
+| query | yes | May be empty. `query=<channel id>` finds that channel (see `references/enterprise-grid.md`) |
+| limit | yes | **1 to 20.** `limit=21` answers `invalid_arguments`. `slack-ext channel-search` defaults to 50 and so fails unless `--limit=20` is passed |
+| search_channel_types | yes | `all`, `exclude_archived`, `private`, `private_exclude`, `archived`. `private_archive` answers `invalid_search_channel_type` |
+| sort | yes | `name`, `member_count`, `created` (`last_activity_ts` answers `invalid_sort`) |
+| sort_dir | yes | `asc` / `desc` |
+| cursor | yes | Empty for the first page; then `next_cursor` |
+
+Response: `{ok, conversations: [...], next_cursor}`. Fields used by
+`channel-archive`: `id`, `name`, `is_private`, `is_archived`, `member_count`,
+`external_user_count`, `is_ext_shared`, `is_pending_ext_shared`,
+`is_org_shared`, `conversation_host_id`, `last_activity_ts`.
+
+## App Manifest API (`apps.manifest.*`, `tooling.tokens.rotate`)
+
+A different API surface from everything above: `https://slack.com/api/` over
+plain HTTPS (not same-origin XHR), authenticated with an **app configuration
+token** (`xoxe.xoxp-...`) in an `Authorization: Bearer` header. This is a third
+credential — not the `xoxb` bot token, not the `xoxc` session token used by every
+other endpoint in this document. Used by `slack-ext app`.
+
+Transport: `Content-Type: application/x-www-form-urlencoded`. A JSON request body
+is rejected with `invalid_arguments`. The `manifest` parameter is a JSON
+**string**, not a nested object.
+
+**Failure is signalled in the body, not the status.** Every failure observed
+returned **HTTP 200** with `{"ok":false,"error":"..."}` — a bogus bearer token
+gave `invalid_auth`, a bad app id gave `invalid_app_id`. Check `body.ok`.
+
+Getting the first token is a manual browser step and cannot be automated:
+`api.slack.com/apps` → "Your App Configuration Tokens" → Generate Token → pick a
+workspace → Generate. (The workspace picker is a Slack Kit `.c-basic-select`
+that ignores synthetic events entirely.)
+
+### POST /api/apps.manifest.export
+
+Fetch the live manifest of an app. Used by `slack-ext app export`, `app show`
+and `app diff`.
+
+**Parameters:**
+| Param | Required | Description |
+|-------|----------|-------------|
+| app_id | yes | App ID (e.g. `A0123456789`) |
+
+**Returns:** `{ok: true, manifest: {...}}`. A real manifest is small: the app used
+to verify this had **14 leaf fields / 709 bytes** — `display_information`
+(`name`, `description`, `background_color`), `features.bot_user`
+(`display_name`, `always_online`), `oauth_config` (`scopes.bot[]`,
+`pkce_enabled`), and `settings` (`event_subscriptions.request_url`,
+`event_subscriptions.bot_events[]`, `org_deploy_enabled`,
+`socket_mode_enabled`, `token_rotation_enabled`,
+`app_level_token_rotation_enabled`, `is_mcp_enabled`).
+
+**Common errors:** `invalid_auth` (bad/expired config token), `invalid_app_id`,
+`app_not_found`.
+
+### POST /api/apps.manifest.validate
+
+Validate a candidate manifest without changing anything. Used by
+`slack-ext app validate`.
+
+**Parameters:**
+| Param | Required | Description |
+|-------|----------|-------------|
+| manifest | yes | The manifest as a JSON string |
+| app_id | no | Validate against an existing app |
+
+**Returns:** `{ok: true, errors: []}` when valid. When invalid:
+`{ok: false, error: "invalid_manifest", errors: [...]}`, where each error carries
+a **JSON pointer** — captured live:
+
+```json
+{"ok":false,"error":"invalid_manifest","errors":[{"code":"illegal_bot_scopes",
+"message":"Illegal bot scopes found `this:is:not:a:real:scope`",
+"pointer":"/oauth_config/scopes/bot"}]}
+```
+
+**A PASS DOES NOT MEAN SAFE.** A `display_information`-only payload returns
+`ok:true, errors: []` (confirmed live), even though applying it would strip the
+bot user, every scope and every event subscription. Validation catches only some
+incoherence (omitting `oauth_config` fails with
+`requires_a_bot_scope@/features/bot_user` and
+`target_component_is_null@/settings/event_subscriptions`), which is worse than
+blanket rejection: the dangerous payloads are the ones that pass. Use
+`slack-ext app diff` before applying a manifest.
+
+### POST /api/apps.manifest.update
+
+Parameters `app_id` + `manifest` (a JSON string); returns
+`{ok, permissions_updated}`. Used by `slack-ext app set-scopes`, `set-events`,
+`set-request-url` and `apply` — all of which route through one internal helper
+that exports the live manifest first and sends the complete result.
+
+Measured semantics, which every write path must respect:
+
+- **No merge semantics: an omitted field is DELETED** (omitting
+  `display_information.description` removed it).
+- **Arrays are REPLACED WHOLESALE** (`bot_events: ["channel_created"]` removed
+  `team_join`).
+- The single exception measured was `display_information.background_color`, which
+  survived omission because it can never be null. One field, not a pattern.
+- **`permissions_updated: true` means a REINSTALL is required**: a scope added to
+  the configuration does not reach the live bot token until the app is
+  reinstalled.
+
+So a write must always export the live manifest, modify that object, and send the
+complete result. `slack-ext` enforces that structurally: `updateFromLiveManifest`
+is the only call site for this method, it refuses to proceed when the export
+failed or returned no manifest, and it blocks any deletion the command was not
+explicitly asked to make unless `--allow-deletions` is passed on top of
+`--confirm`.
+
+`permissions_updated` is surfaced on every write. When it is `true` the operator
+is told to reinstall the app at
+`api.slack.com/apps/<app_id>/install-on-team`, because the previously issued bot
+token does not carry the new scope until it is reissued.
+
+### POST /api/tooling.tokens.rotate
+
+Rotates an app configuration token; used by `slack-ext app token-rotate`.
+Returns `{ok, token, refresh_token, team_id, user_id, iat, exp}`.
+Authenticates **by argument, not header**:
+`refresh_token=<bogus>` returns `invalid_refresh_token` (param name confirmed),
+`token=<bogus>` returns `invalid_auth`, and no params returns `invalid_arguments`
+with `missing required field: refresh_token`. Sending an `Authorization: Bearer`
+header alongside a bogus `refresh_token` returned `invalid_auth`, so the header
+takes precedence — a rotate call should be made without one.
+
+Hazard: **a rotate invalidates the old refresh token.** If the process dies
+between rotating and persisting, the credential is lost permanently and only a
+human can mint a replacement. `slack-ext app token-rotate` therefore requires
+`--confirm` (never rotate speculatively — only on demand or after a 401), writes
+the new pair to the skill config **before anything else happens with it**, and
+falls back to printing the pair on stdout if that write fails: the old refresh
+token is already dead by then, so surfacing the credential beats losing it. A
+response that is `ok` but missing either half of the pair is refused rather than
+treated as a successful rotation.
+
+### POST /api/apps.manifest.create, POST /api/apps.manifest.delete — never wired up
+
+Both are real methods (`not_authed` on an unauthenticated probe). `slack-ext`
+refuses both by name before any request is made: deleting a Slack app is
+unrecoverable and there is no reason for a CLI to offer it. Use
+`api.slack.com/apps` if you really mean it.
+
+### Probing a method name without a credential
+
+`curl -s -X POST https://slack.com/api/<method>` with no auth distinguishes real
+from imaginary methods: a real method answers `{"ok":false,"error":"not_authed"}`,
+a nonexistent one answers `{"ok":false,"error":"unknown_method"}`. No credential,
+no side effects. All five `apps.manifest.*` methods answer `not_authed`;
+`apps.manifest.nonexistent` answers `unknown_method`.

@@ -1,18 +1,24 @@
 // Minimal emulation of the SLICC `.jsh` runtime, enough to exercise
-// scripts/search.jsh under `node --test`:
+// scripts/search.jsh under `tst`:
 //
 //   • the script body is compiled as an AsyncFunction (top-level await is legal)
 //   • require('sliccy:cli' | 'sliccy:color') resolve to stubs
 //   • cli.die / cli.help throw NodeExitError, which maps to the exit code
 //   • fetch is scriptable, and every request is recorded for assertions
+//   • relative script siblings are pre-loaded via static ESM imports (tst's
+//     createRequire shim resolves node: builtins but not relative VFS paths)
 //
 // It is a stand-in for the real runtime, not a replica: it proves argument
 // handling, provider payloads, normalization and exit codes, and it does NOT
 // prove anything about the live Brave/Exa/Tavily responses.
 
-const { readFileSync } = require('node:fs');
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import * as _htmlMod from '../scripts/html.js';
 
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+const htmlModule = _htmlMod.default || _htmlMod;
 
 class NodeExitError extends Error {
   constructor(code) {
@@ -26,7 +32,7 @@ class NodeExitError extends Error {
  * Run a .jsh file. Returns { exitCode, stdout, stderr }.
  * stdout/stderr are captured as strings, exactly as the runtime buffers them.
  */
-async function runJsh(scriptPath, argv, env, fetchImpl) {
+export async function runJsh(scriptPath, argv, env, fetchImpl) {
   const src = readFileSync(scriptPath, 'utf8');
   const stdout = [];
   const stderr = [];
@@ -71,9 +77,14 @@ async function runJsh(scriptPath, argv, env, fetchImpl) {
     },
   };
 
+  const relativeModules = {
+    './html.js': () => htmlModule,
+  };
+
   const req = (name) => {
     if (name === 'sliccy:cli') return cli;
     if (name === 'sliccy:color') return color;
+    if (Object.hasOwn(relativeModules, name)) return relativeModules[name]();
     throw new Error(`jsh-runtime: unsupported require(${name})`);
   };
 
@@ -108,7 +119,7 @@ function abortError() {
  *   • an Error instance               → thrown as a network error
  * The returned function exposes `.calls` — every { url, init } seen.
  */
-function mockFetch(handler) {
+export function mockFetch(handler) {
   const calls = [];
   const impl = async (url, init = {}) => {
     if (init.signal && init.signal.aborted) throw abortError();
@@ -152,4 +163,4 @@ function mockFetch(handler) {
   return impl;
 }
 
-module.exports = { runJsh, mockFetch };
+export default { runJsh, mockFetch };

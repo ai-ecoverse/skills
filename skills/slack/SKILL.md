@@ -1,15 +1,18 @@
 ---
 name: slack
-description: Interact with Slack via its Web API — read messages, post to channels,
-  search message text, search channels, read threads, find and look up users by name, username, or email, view activity/notifications, manage
-  Slack support requests, and watch channels for new messages in real time. Supports
-  multiple workspaces with auto-detection from the active tab. Use when the user wants
-  to check Slack messages, post a Slack message, search Slack messages or message text,
-  search Slack channels, read Slack threads, get Slack user info, view Slack notifications
-  or activity feed, manage Slack support tickets/help requests, watch a channel for
-  updates, or automate any Slack task. Triggers on mentions of Slack, channels, DMs,
-  threads, messages, Slackbot, notifications, activity, support requests, help requests,
-  watching/monitoring, or searching message text.
+description: Slack Web API client — read Slack messages, post to Slack channels, search
+  Slack message text and channels, read Slack threads, find and look up Slack users by
+  name, username, or email, view Slack activity and notifications, manage Slack support
+  requests, and watch Slack channels for new messages in real time. Multi-workspace,
+  auto-detected from the active tab. Use when the user wants to check, post, or search
+  Slack messages or message text, search Slack channels, read Slack threads, get Slack
+  user info, view Slack notifications or activity feed, manage Slack support
+  tickets/help requests, watch a Slack channel for updates, or automate any Slack task.
+  Triggers on mentions of Slack, Slack channels, DMs, threads, or messages, Slackbot,
+  Slack notifications, Slack channel activity, Slack support or help requests,
+  watching/monitoring a Slack channel, or searching Slack message text. Also provides
+  slack-ext for admin user-management (guest conversion, guest channels) and Slack app
+  manifest reads and diffs.
 allowed-tools: bash
 ---
 
@@ -278,39 +281,9 @@ slack post C087NCG774J "no sticker please" --no-sign
 
 #### Auto-watch for replies, 1 hour (default-on)
 
-After a successful post, replies are watched for **one hour**, then the watch
-tears itself down. It is silent when idle: a notification arrives only on a
-genuine new reply — never a tick, never a poll.
-
-- **Where replies go** — **back to the cone that posted**, so they surface in the
-  chat that sent the message. The target is the posting cone's own
-  `SLICC_LICK_TARGET` (set by the runtime for every cone that is not the default
-  root); with it unset the lick is left untargeted and the runtime picks the
-  default root. `--watch-scoop=<name>` routes them to another scoop instead.
-- **One watch per channel, and every cone shares them.** The state files live in
-  the shared `/workspace/skills/slack/`, so if another cone is already watching
-  that channel the post extends that watch and warns you whose it is, printing the
-  `slack watch … --force` command to take it over. `slack watches` names the owner.
-- **Scope** — channels with **more than 100 members** are watched **thread-only**
-  (the thread you replied into, or the new message's own). Everything smaller,
-  and every DM, is watched **whole-channel** — which also catches thread replies.
-- **Your own messages never notify.** Posting again into a live watch silently
-  **extends the hour**.
-- `--no-watch` opts out.
-
-```bash
-# Default: signs + watches for replies for 1h, routing back to this cone
-slack post C087NCG774J "Anyone around to review PR 42?"
-#   Signed with :icecream:
-#   Watching channel+thread for replies for 1h (routes to cone-helix)
-#   (default root, SLICC_LICK_TARGET unset → "routes to the default root cone")
-# Route replies to a specific scoop instead of this cone
-slack post C087NCG774J "ping" --watch-scoop=my-monitor
-# Post without watching
-slack post C087NCG774J "fire and forget" --no-watch
-```
-
-Internals: `references/watch-architecture.md`.
+After a successful post, replies are watched for **one hour** and routed back to the cone that
+posted (`--watch-scoop=<name>` routes elsewhere, `--no-watch` opts out); your own messages never
+notify. Scope, sharing and routing rules: `references/watch-architecture.md`, "Auto-watch for replies".
 
 ### slack channels [--search=term]
 
@@ -517,45 +490,194 @@ for DM channel lookup instead.
 
 ## Slack Support Portal
 
-The `slack-support` script manages help requests on Adobe's Slack Support Portal
-(`adobe-dx-support.enterprise.slack.com`). It scrapes the server-rendered portal
-using `playwright-cli` — no REST API is available. Requires an open browser tab
-at the support portal domain.
+`slack-support` lists, views, replies to, creates and resolves help requests on Adobe's Slack
+Support Portal by scraping it in an open browser tab. Commands and topics: `references/support-portal.md`.
+
+## Admin user management (`slack-ext`)
+
+`slack-ext` exposes Slack's legacy `users.admin.*` namespace for converting
+users between account types and managing guest channel access. It is a
+separate command from `slack` because it uses admin-only API methods that
+require a different usage pattern and carry stronger safety requirements.
+
+**Important caveats before using:**
+
+- **Audit attribution**: these calls are **indistinguishable from the human's own direct
+  actions** in Slack's channel event history. Read "CRITICAL: audit attribution" below first.
+- **Token restriction**: bot tokens (`xoxb`) are rejected with
+  `not_allowed_token_type`. Only the `xoxc` browser session token works.
+- **Undocumented legacy endpoints**: these methods live in the
+  `users.admin.*` namespace, which is separate from the documented
+  `admin.users.*` namespace. They are not in Slack's public API docs and
+  could change without notice.
+- **Dry-run by default**: every mutating command prints what would happen
+  and exits without making any API call unless `--confirm` is supplied.
 
 ### Quick start
 
 ```bash
-# List all help requests, or only the open ones
-slack-support list
-slack-support list --status=open
-# View a specific request with its comment thread
-slack-support view 6750592
-# Reply to a request
-slack-support reply 6750592 "Thanks, that fixed it."
-# Create a new request
-slack-support create --topic=slack-connect --title="Connect issue" "Cannot invite external user"
-# Resolve a request
-slack-support resolve 6750592
+# Check a user's current type and guest channels
+slack-ext --ws=T06DUTYDQ status W5BPKRLUA
+
+# Convert a member to a single-channel guest (dry run first)
+slack-ext --ws=T06DUTYDQ set-single W5BPKRLUA --channel=C0899S7HV0E
+slack-ext --ws=T06DUTYDQ set-single W5BPKRLUA --channel=C0899S7HV0E --confirm
+
+# Convert a member to a multi-channel guest
+slack-ext --ws=T06DUTYDQ set-multi W5BPKRLUA --confirm
+
+# Promote a guest back to regular member (inverse of set-single / set-multi)
+slack-ext --ws=T06DUTYDQ set-member W5BPKRLUA --confirm
+
+# Add or remove a channel on a multi-channel guest
+slack-ext --ws=T06DUTYDQ add-channel W5BPKRLUA --channel=C0899S7HV0E --confirm
+slack-ext --ws=T06DUTYDQ remove-channel W5BPKRLUA --channel=C0899S7HV0E --confirm
 ```
 
 ### Available commands
 
-- `slack-support list [--status=open|closed|all]` — request ID, status, title and
-  last-updated date. Default `all`.
-- `slack-support view <id>` — details plus the comment thread.
-- `slack-support reply <id> <message>` — add a reply to an existing request.
-- `slack-support create --topic=<topic> --title=<title> <message>` — open a new
-  request. Topics: `audio-video`, `billing-plans`, `connection-trouble`,
-  `managing-channels`, `managing-members`, `notifications`, `signing-in`,
-  `slack-connect`, `workflow-builder`, `workspace-migration`.
-- `slack-support resolve <id>` — mark a request resolved.
+#### slack-ext status \<user_id\>
 
-Auth is the existing browser session cookie at
-`adobe-dx-support.enterprise.slack.com` — no separate token, since the
-`playwright-cli` commands run in the tab context.
+Show the user's current account type and, for guests, the channels they
+have access to. Read-only; no `--confirm` needed.
+
+Output includes: real name, username, display name, account type
+(regular / multi-channel guest / single-channel guest / bot / deactivated),
+and a channel list for guests.
+
+```bash
+slack-ext --ws=T06DUTYDQ status W5BPKRLUA
+slack-ext --ws=T06DUTYDQ status W5BPKRLUA --json   # include raw users.info object
+```
+
+#### slack-ext set-single \<user_id\> --channel=\<ID\> [--confirm]
+
+Convert a member to a **single-channel guest** (Slack API:
+`users.admin.setUltraRestricted`). The user loses access to all channels
+except the specified one. Requires `--ws` and `--channel`. Without
+`--confirm`, shows what would happen and exits without changing anything.
+
+The API parameter is `channel` (singular) — passing `channels` returns
+`invalid_arguments`. This is a known gotcha; the code and tests enforce it.
+
+#### slack-ext set-multi \<user_id\> [--confirm]
+
+Convert a member to a **multi-channel guest** (API: `users.admin.setRestricted`).
+After converting, use `add-channel` to grant channel access. Requires `--ws`.
+
+#### slack-ext set-member \<user_id\> [--confirm]
+
+Promote a guest back to a **regular member** (API: `users.admin.setRegular`).
+This is the inverse of `set-single` and `set-multi`. Requires `--ws`.
+
+#### slack-ext add-channel \<user_id\> --channel=\<ID\> [--confirm]
+
+Invite a multi-channel guest to an additional channel (`conversations.invite`).
+Requires `--ws` and `--channel`. Already-in-channel returns a no-op message.
+
+#### slack-ext remove-channel \<user_id\> --channel=\<ID\> [--confirm]
+
+Remove a guest from a channel (`conversations.kick`). Requires `--ws` and
+`--channel`. Not-in-channel returns a no-op message.
+
+### Safety policy
+
+Every mutating command enforces four checks before touching Slack:
+
+1. **Explicit confirmation** — `--confirm` is required. Without it the
+   command prints a full dry-run summary and exits 0.
+2. **User resolution** — the target user's real name, handle, and current
+   account type are displayed before any change.
+3. **Bot refusal** — bot users are always rejected. Bot account types are
+   owned by their app; forcing them to guest status would be destructive.
+4. **Already-in-state** — if the user is already in the requested state
+   the command says so and exits without calling Slack.
+
+### Workspace ID (`--ws`)
+
+All commands accept `--ws=<TEAM_ID>` (or `--workspace=<TEAM_ID>`). For
+mutating commands it is required, because `team_id` is a required API
+parameter and silently defaulting to the wrong workspace could affect the
+wrong person. For `status` it falls back to auto-detection from the Slack
+tab URL.
+
+Run `slack workspaces` to list available workspace IDs.
+
+### Verifying without side effects
+
+To confirm that auth, permissions, and parameter shape are all correct
+without changing a real user, use a deliberately invalid user id such as
+`U000000BOGUS0`. A correctly formed call returns `user_not_found`, which
+proves the token and method are working. This was used to verify all three
+`users.admin.*` methods before filing the PR that added this feature.
+
+## App manifest management (`slack-ext app`)
+
+`slack-ext app` reads and changes Slack app configuration (App Manifest API, separate app configuration token); every write needs `--confirm`.
+Updates have no merge semantics (omitted fields are deleted), so writes export-modify-update. A removal you asked for (`--remove`) needs only
+`--confirm`; an unrequested deletion, including every omission in an `app apply` file, is refused unless `--allow-deletions` is given.
+`permissions_updated: true` means reinstall; `token-rotate` invalidates the old refresh token. Reference: `references/app-manifest.md`.
 
 ## References
 
-- `references/endpoints.md` — full Slack Web API endpoint documentation.
+- `references/endpoints.md` — full Slack Web API endpoint documentation,
+  including the `users.admin.*` admin methods and the `apps.manifest.*` App
+  Manifest API (wire format, update semantics, and the methods deliberately left
+  unwired).
+- `references/app-manifest.md` — `slack-ext app`: the export-modify-update rule, the
+  `--allow-deletions` gate, reinstall on `permissions_updated`, the app configuration token, and
+  every `app` subcommand.
+- `references/enterprise-grid.md` — the Enterprise Grid admin commands (`eg-*`, `channel-*`,
+  `approvals`, `admin-app`): authentication, per-command APIs and parameters, wire facts, and
+  what remains unverified.
 - `references/watch-architecture.md` — internals of `slack watch` and of
   `slack post`'s reply auto-watch (observer, filter, TTL teardown, state files).
+- `references/support-portal.md` — `slack-support` commands and help-request topics.
+
+## Enterprise Grid admin commands (`slack-ext eg-*`, `channel-*`, `approvals`, `admin-app`)
+
+These commands use Slack's internal admin API namespaces — `enterprise.users.admin.*`,
+`admin.conversations.*`, `conversations.sharedApprovals.list`, and `admin.apps.*` — all
+observed returning `{"ok":true}` in a live browser session (2026-09-22). They operate at
+the **org level** (`E06V3987PMY`, "Adobe Enterprise Support") rather than the workspace level.
+
+### CRITICAL: audit attribution
+
+Session-token (`xoxc`) calls are **indistinguishable from the human's own direct actions**
+in Slack's channel event history. A concrete, verified case: `#aem-fedex` (`C0C2CUUDWLE`)
+was archived by Zapier at 2026-09-17T00:17:04Z — the channel event log records Lars Trieloff
+as the actor, not Zapier, because Zapier's Slack action ran on his user OAuth token and
+carries no bot identity. Running `eg-deactivate`, `eg-set-restricted`, `channel-to-private`,
+or any other write command in this skill looks identical to the human performing the action
+themselves in the Slack UI.
+
+The Enterprise Audit Logs API (`auditlogs:read` scope) **would** record the acting app and
+distinguish automation from a human click — but `admin.audit.*` methods all return
+`unknown_method` (six variants probed on 2026-09-22; none exist). There is currently no
+working API call that distinguishes an `xoxc`-based script from a human in the channel
+event log. Do not document these calls as "attributed to the human in the audit log" —
+they ARE the human as far as any observable Slack record is concerned.
+
+### Commands
+
+Every write is a dry run unless `--confirm` is given. Full per-command reference (APIs, parameters,
+wire facts, authentication, what remains unverified): `references/enterprise-grid.md`.
+
+- `eg-status <user_id> [--json]` — read-only: the user's type, org and workspaces; no `--confirm`.
+- `eg-set-restricted <user_id> [--confirm]` — full member → multi-channel guest; reads the state back.
+- `eg-set-regular <user_id> [--confirm]` — guest → full member; reads the state back.
+- `eg-deactivate <user_id> [--confirm]` — deactivate (reversible); the wire value `status=delete` does not delete.
+- `eg-forget <user_id> [--confirm]` — GDPR identity scrub, **IRREVERSIBLE**; never a flag, never in an unattended loop without per-user confirmation.
+- `eg-bulk-guest [<user_id>...] [--file=<path>] [--confirm]` — many members → multi-channel guests, per-user read-back.
+- `eg-set-ultra-restricted <user_id> [--confirm]` — **UNVERIFIED**; do not use in production.
+- `channel-search [--query=<q>] [--types=<t>] [--limit=<n>] [--json]` — read-only channel enumeration, filtered locally.
+- `channel-to-public <channel_id> [--confirm]` — private → public.
+- `channel-to-private <channel_id> [--confirm]` — public → private; the channel then looks deleted to non-members.
+- `channel-archive <channel_id> [--confirm] [--max-members=N] [--min-idle-days=N] [--allow-shared] [--json]` — archive; dry run reads state, `--confirm` re-checks every guard then reads back; Slack Connect channels need `--allow-shared` (archiving disconnects every external org).
+- `channel-unarchive <channel_id> [--confirm] [--json]` — unarchive, with the same dry run, re-check and read-back.
+- `approvals [--query=<q>] [--all] [--json]` — read-only list of Slack Connect invite approvals.
+- `admin-app approve <app_id|request_id> [--confirm]` — approve an app; a `request_id` is single-use.
+- `admin-app restrict <app_id|request_id> [--confirm]` — restrict an app; same single-use `request_id` caveat.
+- `admin-app clear <app_id> [--confirm]` — clear an app's approval or restriction.
+- `admin-app permissions <app_id> --type=<no_one|everyone|named_entities> [--confirm]` — install policy.
+- `admin-app list [--restricted] [--json]` — read-only list of approved or restricted apps.

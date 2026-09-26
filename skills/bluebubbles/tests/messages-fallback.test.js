@@ -13,11 +13,10 @@
 // Post-fix the fallback filter is unconditional: no match ⇒ empty result plus a
 // pointer to `bluebubbles chats`.
 
-const assert = require('node:assert/strict');
-const test = require('node:test');
+import test, { is, ok } from 'tst';
+import * as _mod_0 from './harness.js';
 
-const { load } = require('./harness.js');
-
+const { load } = _mod_0.default || _mod_0;
 const TARGET = 'friend@example.com';
 
 // Recent messages from three *other* conversations. None of them belongs to
@@ -70,11 +69,11 @@ test('fallback scan with no match returns nothing, not every recent conversation
 
   await bb.cmdMessages([TARGET], { json: true });
 
-  assert.equal(bb.out.length, 1);
+  is(bb.out.length, 1);
   const payload = bb.out[0];
 
   // The core assertion: zero messages. Pre-fix this was UNRELATED.length (3).
-  assert.equal(
+  is(
     payload.messages.length,
     0,
     `leaked ${payload.messages.length} unrelated message(s): ` +
@@ -84,20 +83,20 @@ test('fallback scan with no match returns nothing, not every recent conversation
   // And nothing from another conversation survived in any shape.
   const blob = JSON.stringify(payload);
   for (const m of UNRELATED) {
-    assert.ok(!blob.includes(m.text), `unrelated message leaked into --json: ${m.text}`);
-    assert.ok(!blob.includes(m.guid), `unrelated message guid leaked: ${m.guid}`);
+    ok(!blob.includes(m.text), `unrelated message leaked into --json: ${m.text}`);
+    ok(!blob.includes(m.guid), `unrelated message guid leaked: ${m.guid}`);
   }
 
   // The user is told why the result is empty and how to recover.
-  assert.match(payload.note, /no messages matched/i);
-  assert.match(payload.note, /bluebubbles chats/);
-  assert.ok(payload.note.includes(TARGET));
+  ok((/no messages matched/i).test(payload.note));
+  ok((/bluebubbles chats/).test(payload.note));
+  ok(payload.note.includes(TARGET));
 
   // It really was the fallback path (broad query, no chatGuid).
   const queries = bb.log.filter((e) => e.kind === 'api' && e.apiPath === '/api/v1/message/query');
-  assert.equal(queries.length, 2);
-  assert.ok(queries[0].body.chatGuid, 'first attempt is scoped by chat guid');
-  assert.ok(!queries[1].body.chatGuid, 'retry is the broad scan');
+  is(queries.length, 2);
+  ok(queries[0].body.chatGuid, 'first attempt is scoped by chat guid');
+  ok(!queries[1].body.chatGuid, 'retry is the broad scan');
 });
 
 test('human output for an empty fallback says so and points at bluebubbles chats', async () => {
@@ -106,10 +105,10 @@ test('human output for an empty fallback says so and points at bluebubbles chats
   await bb.cmdMessages([TARGET], {});
   const text = bb.text();
 
-  assert.match(text, new RegExp(`No messages found for ${TARGET}`));
-  assert.match(text, /bluebubbles chats/);
+  ok((new RegExp(`No messages found for ${TARGET}`)).test(text));
+  ok((/bluebubbles chats/).test(text));
   for (const m of UNRELATED) {
-    assert.ok(!text.includes(m.text), `unrelated message printed: ${m.text}`);
+    ok(!text.includes(m.text), `unrelated message printed: ${m.text}`);
   }
 });
 
@@ -126,9 +125,9 @@ test('fallback keeps the messages that do belong to the target', async () => {
   await bb.cmdMessages([TARGET], { json: true });
   const payload = bb.out[0];
 
-  assert.equal(payload.messages.length, 1);
-  assert.equal(payload.messages[0].guid, 'mine1');
-  assert.equal(payload.note, undefined, 'no note when the scan did match');
+  is(payload.messages.length, 1);
+  is(payload.messages[0].guid, 'mine1');
+  is(payload.note, undefined, 'no note when the scan did match');
 });
 
 test('a server-scoped query that returns nothing is still an honest empty result', async () => {
@@ -139,7 +138,7 @@ test('a server-scoped query that returns nothing is still an honest empty result
       return { status: 200, data: [{ guid: `any;-;${TARGET}`, participants: [{ address: TARGET }] }] };
     }
     if (apiPath === '/api/v1/message/query') {
-      assert.ok(opts.body.chatGuid, 'must stay on the scoped query');
+      ok(opts.body.chatGuid, 'must stay on the scoped query');
       return { status: 200, data: [] };
     }
     throw new Error(`unexpected ${apiPath}`);
@@ -147,6 +146,6 @@ test('a server-scoped query that returns nothing is still an honest empty result
   const bb = await load({ api });
 
   await bb.cmdMessages([TARGET], { json: true });
-  assert.equal(bb.out[0].messages.length, 0);
-  assert.equal(bb.out[0].note, undefined);
+  is(bb.out[0].messages.length, 0);
+  is(bb.out[0].note, undefined);
 });

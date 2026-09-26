@@ -1,12 +1,13 @@
+import test, { is, ok } from 'tst';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
 // Filing-cone stamp on `loose-ends create` (slicc#3212 Layer C).
 // Run with:
 //
-//   node --test skills/loose-ends/tests/filing-cone.test.js
-
-const assert = require('node:assert/strict');
-const test = require('node:test');
-const fs = require('node:fs');
-const path = require('node:path');
+//   tst skills/loose-ends/tests/filing-cone.test.js
 
 const SCRIPT = path.join(__dirname, '..', 'scripts', 'loose-ends.jsh');
 const source = fs.readFileSync(SCRIPT, 'utf8');
@@ -14,7 +15,7 @@ const source = fs.readFileSync(SCRIPT, 'utf8');
 function extractFunction(name) {
   const lines = source.split('\n');
   const start = lines.findIndex((l) => l.startsWith('function ' + name + '('));
-  assert.ok(start >= 0, name + ' not found in script');
+  ok(start >= 0, name + ' not found in script');
   let end = -1;
   for (let i = start + 1; i < lines.length; i++) {
     if (lines[i] === '}') {
@@ -22,7 +23,7 @@ function extractFunction(name) {
       break;
     }
   }
-  assert.ok(end > start, 'end of ' + name + ' not found');
+  ok(end > start, 'end of ' + name + ' not found');
   return lines.slice(start, end + 1).join('\n');
 }
 
@@ -93,40 +94,40 @@ async function runCreate(args, { env = {}, store = { updated: null, tasks: [] } 
 
 test('filingCone reads the cone folder from TMPDIR for cones and scoops', () => {
   const parse = filingCone();
-  assert.equal(parse({ TMPDIR: '/tmp/cone-adobe' }), 'cone-adobe');
-  assert.equal(parse({ TMPDIR: '/tmp/cone-adobe/loose-ends-scoop' }), 'cone-adobe');
-  assert.equal(parse({ TMPDIR: '/tmp/cone' }), 'cone');
-  assert.equal(parse({ TMPDIR: '' }), undefined);
-  assert.equal(parse({}), undefined);
-  assert.equal(parse(undefined), undefined);
+  is(parse({ TMPDIR: '/tmp/cone-adobe' }), 'cone-adobe');
+  is(parse({ TMPDIR: '/tmp/cone-adobe/loose-ends-scoop' }), 'cone-adobe');
+  is(parse({ TMPDIR: '/tmp/cone' }), 'cone');
+  is(parse({ TMPDIR: '' }), undefined);
+  is(parse({}), undefined);
+  is(parse(undefined), undefined);
 });
 
 test('create stamps the filing cone from TMPDIR', async () => {
   const r = await runCreate(['create', '--title', 'Ping Marta', '--id', 'le-marta'], {
     env: { TMPDIR: '/tmp/cone-adobe/loose-ends-scoop' },
   });
-  assert.equal(r.exitCode, 0);
-  assert.equal(r.stored.tasks.length, 1);
-  assert.equal(r.stored.tasks[0].id, 'le-marta');
-  assert.equal(r.stored.tasks[0].cone, 'cone-adobe');
+  is(r.exitCode, 0);
+  is(r.stored.tasks.length, 1);
+  is(r.stored.tasks[0].id, 'le-marta');
+  is(r.stored.tasks[0].cone, 'cone-adobe');
 });
 
 test('create --cone overrides TMPDIR and upsert keeps the original owner', async () => {
   const first = await runCreate(['create', '--title', 'Ping Marta', '--id', 'le-marta', '--cone', 'cone-helix'], {
     env: { TMPDIR: '/tmp/cone-adobe' },
   });
-  assert.equal(first.stored.tasks[0].cone, 'cone-helix');
+  is(first.stored.tasks[0].cone, 'cone-helix');
 
   const second = await runCreate(['create', '--title', 'Ping Marta again', '--id', 'le-marta'], {
     env: { TMPDIR: '/tmp/cone-adobe' },
     store: first.stored,
   });
-  assert.equal(second.stored.tasks.length, 1);
-  assert.equal(second.stored.tasks[0].title, 'Ping Marta again');
-  assert.equal(second.stored.tasks[0].cone, 'cone-helix', 'upsert must not steal the filing cone');
+  is(second.stored.tasks.length, 1);
+  is(second.stored.tasks[0].title, 'Ping Marta again');
+  is(second.stored.tasks[0].cone, 'cone-helix', 'upsert must not steal the filing cone');
 });
 
 test('create without TMPDIR leaves cone unset', async () => {
   const r = await runCreate(['create', '--title', 'No cone', '--id', 'le-none']);
-  assert.equal(r.stored.tasks[0].cone, undefined);
+  is(r.stored.tasks[0].cone, undefined);
 });

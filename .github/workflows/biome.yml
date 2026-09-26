@@ -29,5 +29,14 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      # Parse first: a syntax error makes every lint finding downstream noise,
+      # and unlike Biome this has no maxSize limit, so the >1 MiB generated
+      # bundles are covered too.
+      - name: Test the .jsh parse checker
+        run: node --test tools/check-jsh-parse.test.mjs
+
+      - name: Parse-check .jsh/.bsh skills
+        run: npm run check:jsh-parse
+
       - name: Lint .jsh/.bsh skills
         run: npm run lint:jsh

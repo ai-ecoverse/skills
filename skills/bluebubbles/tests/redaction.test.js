@@ -1,3 +1,9 @@
+import test, { is, ok } from 'tst';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
 // Regression test for the `?password=` leak in scripts/bluebubbles.jsh.
 //
 // The password is sent as a query parameter, so it lands inside the request URL
@@ -8,16 +14,10 @@
 // in clear text.
 //
 // Convention: same as skills/github/tests and skills/search/tests — plain
-// `node:test` + `node:assert`, run with `node --test skills/bluebubbles/tests`.
-// The .jsh script is compiled as an AsyncFunction with stub `sliccy:*` modules
-// (the pattern used by skills/github/tests/gh-pr-edit-command.test.js), the
-// trailing `await main()` is dropped, and the redaction helpers are returned so
-// they can be exercised directly.
-
-const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const test = require('node:test');
+// `tst` assertions. The .jsh script is compiled as an AsyncFunction with stub
+// `sliccy:*` modules (the pattern used by skills/github/tests), the trailing
+// `await main()` is dropped, and the redaction helpers are returned so they can
+// be exercised directly.
 
 const SCRIPT = path.resolve(__dirname, '../scripts/bluebubbles.jsh');
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
@@ -39,7 +39,7 @@ return {
   const stubs = {
     fs: { readFile: async () => null, exists: () => false },
     os: { homedir: () => '/home/test' },
-    path: require('node:path'),
+    path,
     'sliccy:cli': {
       die: (message) => {
         const err = new Error(String(message));
@@ -88,13 +88,13 @@ test('the formatted error string never carries the password', async () => {
   };
 
   const formatted = `Contacts unavailable: ${bbErrorMessage(err)}`;
-  assert.ok(!formatted.includes(SECRET), `password leaked: ${formatted}`);
-  assert.match(formatted, /password=\*\*\*/);
-  assert.match(formatted, /Origin DNS error/, 'the useful diagnostic must survive');
+  ok(!formatted.includes(SECRET), `password leaked: ${formatted}`);
+  ok((/password=\*\*\*/).test(formatted));
+  ok((/Origin DNS error/).test(formatted), 'the useful diagnostic must survive');
 
   // The fix is one choke point, so no future call site can bypass it.
-  assert.ok(safeErrorText, 'safeErrorText() choke point must exist');
-  assert.ok(registerSecret, 'registerSecret() must exist');
+  ok(safeErrorText, 'safeErrorText() choke point must exist');
+  ok(registerSecret, 'registerSecret() must exist');
 });
 
 test('safeErrorText masks password= anywhere, in any case, url-encoded too', async () => {
@@ -113,30 +113,30 @@ test('safeErrorText masks password= anywhere, in any case, url-encoded too', asy
 
   for (const input of cases) {
     const out = safeErrorText(input);
-    assert.ok(!out.includes(SECRET), `leaked in: ${input}`);
-    assert.ok(!out.includes('p%40ss'), `leaked url-encoded value in: ${input}`);
-    assert.match(out, /password=\*\*\*/i, `not masked: ${input}`);
+    ok(!out.includes(SECRET), `leaked in: ${input}`);
+    ok(!out.includes('p%40ss'), `leaked url-encoded value in: ${input}`);
+    ok((/password=\*\*\*/i).test(out), `not masked: ${input}`);
   }
 
   // Value ends at & — the rest of the query string is preserved.
-  assert.equal(safeErrorText(`&password=${SECRET}&limit=5`), '&password=***&limit=5');
+  is(safeErrorText(`&password=${SECRET}&limit=5`), '&password=***&limit=5');
 });
 
 test('a password field echoed back inside a JSON body is masked', async () => {
   const { safeErrorText } = await loadHelpers();
   const body = JSON.stringify({ error: 'bad request', password: SECRET, limit: 5 });
   const out = safeErrorText(`Send rejected (400): ${body}`);
-  assert.ok(!out.includes(SECRET), out);
-  assert.match(out, /"password":"\*\*\*"/);
-  assert.match(out, /"limit":5/);
+  ok(!out.includes(SECRET), out);
+  ok((/"password":"\*\*\*"/).test(out));
+  ok((/"limit":5/).test(out));
 });
 
 test('the literal secret is masked even without a password= prefix', async () => {
   const { safeErrorText, registerSecret } = await loadHelpers();
   registerSecret(SECRET);
   const out = safeErrorText(`unexpected echo of credentials: ${SECRET} (sorry)`);
-  assert.ok(!out.includes(SECRET), out);
-  assert.match(out, /\*\*\*/);
+  ok(!out.includes(SECRET), out);
+  ok((/\*\*\*/).test(out));
 });
 
 test('stripPasswordFromUrl still masks the url field', async () => {
@@ -144,10 +144,10 @@ test('stripPasswordFromUrl still masks the url field', async () => {
   const masked = stripPasswordFromUrl(
     `https://tunnel.example.com/api/v1/ping?password=${SECRET}&limit=1`
   );
-  assert.ok(!masked.includes(SECRET), masked);
-  assert.match(masked, /password=\*\*\*/);
-  assert.match(masked, /limit=1/);
+  ok(!masked.includes(SECRET), masked);
+  ok((/password=\*\*\*/).test(masked));
+  ok((/limit=1/).test(masked));
   // Non-URL input must not throw and must still be redacted.
   const junk = stripPasswordFromUrl(`not a url password=${SECRET}`);
-  assert.ok(!junk.includes(SECRET), junk);
+  ok(!junk.includes(SECRET), junk);
 });
