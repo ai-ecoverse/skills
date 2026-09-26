@@ -5,8 +5,25 @@ import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// SLICC's test realm has no setImmediate (browser DedicatedWorker). Polyfill
+// before any test schedules on it — Node provides the real one.
+const setImmediate =
+  globalThis.setImmediate || ((fn, ...args) => setTimeout(fn, 0, ...args));
+
 const source = fs.readFileSync(path.join(__dirname, '../phone-view.shtml'), 'utf8');
-const scripts = [...source.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+// SLICC's node:vm keeps `let`/`const` in a per-script lexical env, so a later
+// `runInContext('session = …')` writes a global property instead of updating
+// the binding closed over by pump/reportStreamStatus/syncControls. Node's vm
+// shares those bindings across runs. Promote the mutable session state to
+// `var` so both realms share one binding (page behavior unchanged — still one
+// script tag).
+const scripts = [...source.matchAll(/<script>([\s\S]*?)<\/script>/g)]
+  .map((m) => m[1])
+  .join('\n')
+  .replace(/\blet session = null;/, 'var session = null;')
+  .replace(/\blet connecting = false;/, 'var connecting = false;')
+  .replace(/\blet teardownPending = null;/, 'var teardownPending = null;')
+  .replace(/\blet errorLatched = false;/, 'var errorLatched = false;');
 
 function panel(list = async () => [], usb = {}, timers = {}) {
   const controls = Array.from({ length: 4 }, () => ({ disabled: true }));
@@ -14,7 +31,10 @@ function panel(list = async () => [], usb = {}, timers = {}) {
     status: {
       textContent: 'No device connected',
       className: '',
-      classList: { contains: (name) => elements.status.className.split(/\s+/).includes(name) },
+      classList: {
+        contains: (name) =>
+          elements.status.className.split(/\s+/).filter(Boolean).includes(name),
+      },
     },
     screen: { hidden: true, getContext: () => ({}), addEventListener() {} },
     'empty-state': { hidden: false },
@@ -31,18 +51,38 @@ function panel(list = async () => [], usb = {}, timers = {}) {
       this.state = 'closed';
     }
   }
+  // Stable monotonic clock — SLICC's performance may be missing or epoch-based.
+  let nowMs = 1_000_000;
+  const perf = { now: () => nowMs };
   const context = vm.createContext({
     TextEncoder,
     TextDecoder,
     Uint8Array,
     DataView,
-    performance,
+    Array,
+    Object,
+    Promise,
+    Error,
+    Math,
+    JSON,
+    BigInt: globalThis.BigInt,
+    parseInt,
+    setImmediate,
+    queueMicrotask: globalThis.queueMicrotask || ((fn) => Promise.resolve().then(fn)),
+    performance: perf,
     setInterval,
     clearInterval,
     setTimeout: timers.setTimeout ?? setTimeout,
     clearTimeout: timers.clearTimeout ?? clearTimeout,
+    console,
+    Map,
+    Set,
     VideoDecoder: FakeVideoDecoder,
-    EncodedVideoChunk: class {},
+    EncodedVideoChunk: class {
+      constructor(init) {
+        Object.assign(this, init);
+      }
+    },
     document: { getElementById: (id) => elements[id], querySelectorAll: () => controls },
     slicc: {
       usb: {
@@ -54,7 +94,17 @@ function panel(list = async () => [], usb = {}, timers = {}) {
     },
   });
   vm.runInContext(scripts, context);
-  return { elements, controls, calls, run: (code) => vm.runInContext(code, context) };
+  return {
+    elements,
+    controls,
+    calls,
+    advance(ms) {
+      nowMs += ms;
+    },
+    // Return the completion value as-is. Callers `await` when the snippet
+    // ends on a Promise (e.g. `pump(...)`); sync snippets stay sync.
+    run: (code) => vm.runInContext(code, context),
+  };
 }
 
 test('no granted device leaves a useful error and enables retry', async () => {
@@ -103,7 +153,7 @@ test('a rejected mid-stream read retains its cause and enables retry', async () 
       throw new Error('transport lost');
     },
   });
-  await p.run(`
+  await p.run(`(async () => {
     const adb = new Adb(1, { epIn: 2, epOut: 3 });
     session = {
       device: { handle: 1 }, iface: { interfaceNumber: 4 }, adb,
@@ -111,8 +161,8 @@ test('a rejected mid-stream read retains its cause and enables retry', async () 
       lastByteAt: performance.now(),
     };
     syncControls();
-    pump(adb, session.size);
-  `);
+    await pump(adb, session.size);
+  })()`);
   is(reads, 2);
   ok((/Stream ended: transport lost/).test(p.elements.status.textContent));
   is(p.elements.status.className, 'err');
@@ -191,7 +241,7 @@ test('a warn status survives the pump finally path', async () => {
       return new Promise(() => {});
     },
   });
-  await p.run(`
+  await p.run(`(async () => {
     const adb = new Adb(1, { epIn: 2, epOut: 3 });
     session = {
       device: { handle: 1 }, iface: { interfaceNumber: 4 }, adb,
@@ -199,8 +249,8 @@ test('a warn status survives the pump finally path', async () => {
       lastByteAt: performance.now(),
     };
     syncControls();
-    pump(adb, session.size);
-  `);
+    await pump(adb, session.size);
+  })()`);
   // pump's finally has now run. The warn status must have survived.
   is(reads, 2);
   is(p.elements.status.className, 'warn');

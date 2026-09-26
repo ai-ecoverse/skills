@@ -1,11 +1,50 @@
 import test, { is, ok, rejects } from 'tst';
-import * as _mod_0 from '../assets/render-fountain.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const { renderFountain } = _mod_0.default || _mod_0;
+// Skill root when `tst` runs from the installed skill dir (CI + local harness).
+// Avoid import.meta.url — some SLICC module graphs reject it when a CJS vendor
+// package is pulled into the static import graph.
+const ROOT = process.cwd();
+
+// fountain-js is CJS with extensionless requires; SLICC's createRequire cannot
+// resolve relative VFS paths. Load the vendor tree by eval, then inject Fountain
+// into render-fountain.js the same way.
+function loadCjsFromDir(dir, rel) {
+  let full = path.join(dir, rel);
+  if (!full.endsWith('.js') && !fs.existsSync(full)) full = `${full}.js`;
+  const src = fs.readFileSync(full, 'utf8');
+  const mod = { exports: {} };
+  const req = (id) => {
+    if (id.startsWith('./')) return loadCjsFromDir(dir, id.slice(2));
+    throw new Error('unexpected require(' + id + ')');
+  };
+  new Function('require', 'module', 'exports', '__dirname', '__filename', src)(
+    req,
+    mod,
+    mod.exports,
+    path.dirname(full),
+    full
+  );
+  return mod.exports;
+}
+
+function loadRenderFountain() {
+  const Fountain = loadCjsFromDir(
+    path.join(ROOT, 'assets/vendor/fountain-js'),
+    'index.js'
+  ).Fountain;
+  const src = fs.readFileSync(path.join(ROOT, 'assets/render-fountain.js'), 'utf8');
+  const module = { exports: {} };
+  const req = (id) => {
+    if (id === './vendor/fountain-js') return { Fountain };
+    throw new Error('unexpected require(' + id + ')');
+  };
+  new Function('require', 'module', 'exports', src)(req, module, module.exports);
+  return module.exports.renderFountain || module.exports;
+}
+const renderFountain = loadRenderFountain();
+
 const source =
   'Title: Last Signal\nAuthor: Example Writer\n\nINT. OBSERVATORY - NIGHT #1#\n\nA **green light** blinks.\n\nMARA\n(quietly)\nSomebody is there.\n\nELI ^\nOr the machine is remembering.\n\n> CUT TO:\n\nEXT. MOUNTAIN - DAWN\n\n===\n\n[[private note]]\n\n/* omitted action */\n';
 
@@ -62,10 +101,31 @@ async function run(args, delivery = 0, env = {}) {
     }
     return { positional, flags };
   };
+  // Provide a full path surface — path.posix alone is undefined in SLICC's
+  // path shim, which made path.resolve throw and every command exit 1.
+  const pathStub = {
+    resolve: (...parts) => {
+      const joined = parts
+        .filter((p) => p != null && p !== '')
+        .map(String)
+        .join('/');
+      if (joined.startsWith('/')) return joined.replace(/\/+/g, '/');
+      return ('/shared/' + joined).replace(/\/+/g, '/');
+    },
+    dirname: (p) => {
+      const s = String(p);
+      const i = s.lastIndexOf('/');
+      return i <= 0 ? '/' : s.slice(0, i);
+    },
+    basename: (p) => String(p).split('/').pop(),
+    join: (...parts) => parts.filter(Boolean).join('/').replace(/\/+/g, '/'),
+    posix: null,
+  };
+  pathStub.posix = pathStub;
   const req = (id) => {
     if (id === 'fs')
       return { readFile: async () => source, writeFile: async (...a) => written.push(a) };
-    if (id === 'path') return path.posix;
+    if (id === 'path') return pathStub;
     if (id === '../assets/render-fountain.js') return { renderFountain };
     if (id === 'sliccy:exec')
       return {
@@ -86,12 +146,17 @@ async function run(args, delivery = 0, env = {}) {
       };
     throw Error('Unexpected dependency: ' + id);
   };
-  const program = fs.readFileSync(path.join(__dirname, '../scripts/fountain.jsh'), 'utf8');
-  await new (Object.getPrototypeOf(async function () {}).constructor)(
-    'require',
-    'process',
-    program
-  )(req, { argv, cwd: () => '/shared', env });
+  const program = fs.readFileSync(path.join(ROOT, 'scripts/fountain.jsh'), 'utf8');
+  try {
+    await new (Object.getPrototypeOf(async function () {}).constructor)(
+      'require',
+      'process',
+      program
+    )(req, { argv, cwd: () => '/shared', env });
+  } catch (err) {
+    if (err?.name === 'NodeExitError') throw err;
+    throw err;
+  }
   return { messages, output, written };
 }
 

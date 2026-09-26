@@ -29,12 +29,13 @@ messages are ESLint's own.
 ## Install prerequisites
 
 ```bash
-ipk add -g eslint @eslint/js esbuild-wasm
+ipk add -g eslint @eslint/js esbuild-wasm minimatch
 ```
 
-All three are needed: `eslint` supplies the linter, `@eslint/js` supplies the
-`js.configs.*` presets most configs extend (ESLint no longer bundles it), and
-`esbuild-wasm` is what lets an ESM `eslint.config.js` load at all. A missing
+All four are needed: `eslint` supplies the linter, `@eslint/js` supplies the
+`js.configs.*` presets most configs extend (ESLint no longer bundles it),
+`esbuild-wasm` is what lets an ESM `eslint.config.js` load at all, and
+`minimatch` evaluates ignore globs in the generated helper. A missing
 package surfaces as a single error naming this command.
 
 `eslint --version` prints the installed ESLint version and needs no config.

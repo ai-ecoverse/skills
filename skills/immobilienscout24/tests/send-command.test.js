@@ -4,7 +4,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-const require = createRequire(import.meta.url);
+// Named nodeRequire — SLICC's tst wraps suites as AsyncFunction('require', …),
+// so `const require = …` collides with that parameter (`Identifier 'require'
+// has already been declared`).
+const nodeRequire = createRequire(import.meta.url);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -42,13 +45,13 @@ function loadHelpers() {
   const factory = new Function(
     'WWW',
     'cli',
-    'require',
-    `${body}
+    'nodeRequire',
+    `${body.replace(/\brequire\s*\(/g, 'nodeRequire(')}
     return { MAX_MESSAGE_CHARS, DEFAULT_SEND_TAGS, SEND_ALIASES, threadUrl, sendUrl,
              readMessageBody, parseTags };`
   );
   return {
-    ...factory('https://www.immobilienscout24.de', cli, require),
+    ...factory('https://www.immobilienscout24.de', cli, nodeRequire),
     dieCalls,
   };
 }

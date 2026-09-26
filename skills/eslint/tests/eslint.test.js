@@ -15,7 +15,16 @@
 import test, { is, ok } from 'tst';
 import * as _mod_0 from './jsh-runtime.js';
 
-const { runEslint, compileHelper, runGeneratedHelper } = _mod_0.default || _mod_0;
+const { runEslint, compileHelper, runGeneratedHelper: runGeneratedHelperRaw } =
+  _mod_0.default || _mod_0;
+// Bare require in this ESM test sees ipk packages; jsh-runtime's require
+// (createRequire from its own path) does not. Inject the real minimatch.
+const { minimatch: realMinimatch } = require('minimatch');
+const runGeneratedHelper = (helperSrc, request, verify, config, opts = {}) =>
+  runGeneratedHelperRaw(helperSrc, request, verify, config, {
+    ...opts,
+    minimatch: realMinimatch,
+  });
 const FLAT_CONFIG = 'export default [{ files: ["**/*.js"], rules: { semi: "error" } }];\n';
 const BASE_FILES = {
   '/workspace/proj/eslint.config.js': FLAT_CONFIG,

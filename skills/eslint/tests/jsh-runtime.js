@@ -15,10 +15,12 @@
 // shape of the helper request — it does NOT prove anything about real ESLint's
 // findings, which is what the live-harness verification in the PR body covers.
 
-const { readFileSync } = require('node:fs');
-const { resolve } = require('node:path');
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const SCRIPT = resolve(__dirname, '../scripts/eslint.jsh');
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const SCRIPT = path.resolve(__dirname, '../scripts/eslint.jsh');
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 
 class NodeExitError extends Error {
@@ -277,7 +279,19 @@ function compileHelper(src) {
  * exercised rather than reimplemented in the test.
  */
 async function runGeneratedHelper(helperSrc, request, verify, config, opts = {}) {
-  const { minimatch } = require('minimatch');
+  // Prefer an injected minimatch (ESM test file's bare require sees ipk).
+  // Fallback: package name, then the absolute ipk install path — createRequire
+  // from this file cannot resolve ipk package names in the SLICC realm.
+  let minimatch = opts.minimatch;
+  if (typeof minimatch !== 'function') {
+    try {
+      minimatch = require('minimatch').minimatch;
+    } catch {
+      const { createRequire } = require('node:module');
+      const abs = '/shared/lib/node_modules/minimatch/dist/commonjs/index.js';
+      minimatch = createRequire(abs)(abs).minimatch;
+    }
+  }
   class FakeLinter {
     verify(source, _config, path) {
       return verify(source, path);
@@ -317,4 +331,5 @@ async function runGeneratedHelper(helperSrc, request, verify, config, opts = {})
   return JSON.parse(out);
 }
 
-module.exports = { runEslint, compileHelper, runGeneratedHelper, NodeExitError };
+export { runEslint, compileHelper, runGeneratedHelper, NodeExitError };
+export default { runEslint, compileHelper, runGeneratedHelper, NodeExitError };
