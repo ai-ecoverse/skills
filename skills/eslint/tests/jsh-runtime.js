@@ -1,5 +1,5 @@
 // Minimal emulation of the SLICC `.jsh` runtime, enough to exercise
-// scripts/eslint.jsh under `node --test`:
+// scripts/eslint.jsh under `tst`:
 //
 //   • the script body is compiled as an AsyncFunction (top-level await is legal)
 //   • require('sliccy:cli' | 'sliccy:color' | 'sliccy:exec' | 'fs') → stubs

@@ -1,7 +1,7 @@
 // Behaviour tests for scripts/eslint.jsh, run against the .jsh runtime stub in
 // jsh-runtime.js:
 //
-//   node --test skills/eslint/tests/eslint.test.js
+//   tst skills/eslint/tests/eslint.test.js
 //
 // The linting itself belongs to real ESLint and is not faked here: the helper is
 // stubbed, so what these tests prove is everything the wrapper owns — argument
@@ -12,10 +12,10 @@
 // and the real minimatch, because its ignore-ordering and wrapper-filtering
 // logic is where the subtle bugs were.
 
-const { test } = require('node:test');
-const assert = require('node:assert');
-const { runEslint, compileHelper, runGeneratedHelper } = require('./jsh-runtime.js');
+import test, { is, ok } from 'tst';
+import * as _mod_0 from './jsh-runtime.js';
 
+const { runEslint, compileHelper, runGeneratedHelper } = _mod_0.default || _mod_0;
 const FLAT_CONFIG = 'export default [{ files: ["**/*.js"], rules: { semi: "error" } }];\n';
 const BASE_FILES = {
   '/workspace/proj/eslint.config.js': FLAT_CONFIG,
@@ -40,16 +40,16 @@ function withMessages(messages, output = null) {
 
 test('--help prints usage and the install line, and exits 0', async () => {
   const r = await runEslint({ argv: ['--help'] });
-  assert.equal(r.exitCode, 0);
-  assert.match(r.stdout, /Usage:/);
-  assert.match(r.stdout, /ipk add -g eslint @eslint\/js esbuild-wasm/);
-  assert.deepEqual(r.argvCalls, [], 'help must not invoke the helper');
+  is(r.exitCode, 0);
+  ok((/Usage:/).test(r.stdout));
+  ok((/ipk add -g eslint @eslint\/js esbuild-wasm/).test(r.stdout));
+  is(r.argvCalls, [], 'help must not invoke the helper');
 });
 
 test('an unknown option exits 2 and names it', async () => {
   const r = await runEslint({ argv: ['--nope', 'a.js'], files: BASE_FILES });
-  assert.equal(r.exitCode, 2);
-  assert.match(r.stderr, /unknown option: --nope/);
+  is(r.exitCode, 2);
+  ok((/unknown option: --nope/).test(r.stderr));
 });
 
 test('--version answers before target or config resolution', async () => {
@@ -60,15 +60,15 @@ test('--version answers before target or config resolution', async () => {
     files: {},
     helper: () => ({ stdout: JSON.stringify({ version: '10.10.0' }) }),
   });
-  assert.equal(r.exitCode, 0);
-  assert.equal(r.stdout.trim(), '10.10.0');
-  assert.equal(r.lastRequest().op, 'version');
+  is(r.exitCode, 0);
+  is(r.stdout.trim(), '10.10.0');
+  is(r.lastRequest().op, 'version');
 });
 
 test('--fix and --fix-dry-run are mutually exclusive', async () => {
   const r = await runEslint({ argv: ['--fix', '--fix-dry-run', 'a.js'], files: BASE_FILES });
-  assert.equal(r.exitCode, 2);
-  assert.match(r.stderr, /cannot be used together/);
+  is(r.exitCode, 2);
+  ok((/cannot be used together/).test(r.stderr));
 });
 
 /* ---------------------------- config discovery ---------------------------- */
@@ -81,8 +81,8 @@ test('discovery walks toward / and embeds the config as a require literal', asyn
       '/workspace/proj/src/deep/x.js': 'var x = 1\n',
     },
   });
-  assert.equal(r.exitCode, 0);
-  assert.match(r.helperSources[0], /require\("\/workspace\/proj\/eslint\.config\.js"\)/);
+  is(r.exitCode, 0);
+  ok((/require\("\/workspace\/proj\/eslint\.config\.js"\)/).test(r.helperSources[0]));
 });
 
 test('a directory target starts discovery AT the directory', async () => {
@@ -94,8 +94,8 @@ test('a directory target starts discovery AT the directory', async () => {
       '/workspace/proj/a.js': 'var a = 1\n',
     },
   });
-  assert.equal(r.exitCode, 0);
-  assert.match(r.helperSources[0], /require\("\/workspace\/proj\/eslint\.config\.js"\)/);
+  is(r.exitCode, 0);
+  ok((/require\("\/workspace\/proj\/eslint\.config\.js"\)/).test(r.helperSources[0]));
 });
 
 test('a TypeScript config is rejected with a precise message', async () => {
@@ -106,14 +106,14 @@ test('a TypeScript config is rejected with a precise message', async () => {
       '/workspace/proj/a.js': 'var a = 1\n',
     },
   });
-  assert.equal(r.exitCode, 2);
-  assert.match(r.stderr, /TypeScript/);
+  is(r.exitCode, 2);
+  ok((/TypeScript/).test(r.stderr));
 });
 
 test('no config and no --rule exits 2 naming the search start', async () => {
   const r = await runEslint({ argv: ['a.js'], files: { '/workspace/proj/a.js': 'var a = 1\n' } });
-  assert.equal(r.exitCode, 2);
-  assert.match(r.stderr, /no flat config found from \/workspace\/proj/);
+  is(r.exitCode, 2);
+  ok((/no flat config found from \/workspace\/proj/).test(r.stderr));
 });
 
 test('--no-config-lookup with --rule derives concrete file patterns', async () => {
@@ -123,11 +123,11 @@ test('--no-config-lookup with --rule derives concrete file patterns', async () =
     argv: ['--no-config-lookup', '--rule', '{"eqeqeq":"error"}', 'a.js'],
     files: { '/workspace/proj/a.js': 'var a = 1\n' },
   });
-  assert.equal(r.exitCode, 0);
+  is(r.exitCode, 0);
   const req = r.lastRequest();
-  assert.deepEqual(req.rules, { eqeqeq: 'error' });
-  assert.ok(req.filePatterns.includes('**/*.js'), 'expected concrete patterns');
-  assert.ok(!req.filePatterns.includes('**/*'), 'a universal pattern opts nothing in');
+  is(req.rules, { eqeqeq: 'error' });
+  ok(req.filePatterns.includes('**/*.js'), 'expected concrete patterns');
+  ok(!req.filePatterns.includes('**/*'), 'a universal pattern opts nothing in');
 });
 
 /* ---------------------------- target expansion ---------------------------- */
@@ -144,10 +144,10 @@ test('a directory is walked, skipping node_modules and .git', async () => {
     },
   });
   const paths = r.lastRequest().files.map((f) => f.path);
-  assert.ok(paths.includes('/workspace/proj/a.js'));
-  assert.ok(paths.includes('/workspace/proj/src/b.js'));
-  assert.ok(!paths.some((p) => p.includes('node_modules')));
-  assert.ok(!paths.some((p) => p.includes('/.git/')));
+  ok(paths.includes('/workspace/proj/a.js'));
+  ok(paths.includes('/workspace/proj/src/b.js'));
+  ok(!paths.some((p) => p.includes('node_modules')));
+  ok(!paths.some((p) => p.includes('/.git/')));
 });
 
 test('an unreadable directory fails loudly instead of looking clean', async () => {
@@ -158,10 +158,10 @@ test('an unreadable directory fails loudly instead of looking clean', async () =
     files: BASE_FILES,
     breakReadDir: 'EIO: device is on fire',
   });
-  assert.equal(r.exitCode, 2);
-  assert.match(r.stderr, /could not read the target tree/);
-  assert.match(r.stderr, /device is on fire/);
-  assert.ok(!/no lintable files/.test(r.stderr));
+  is(r.exitCode, 2);
+  ok((/could not read the target tree/).test(r.stderr));
+  ok((/device is on fire/).test(r.stderr));
+  ok(!/no lintable files/.test(r.stderr));
 });
 
 test('--ext narrows which extensions are walked', async () => {
@@ -174,21 +174,21 @@ test('--ext narrows which extensions are walked', async () => {
     },
   });
   const paths = r.lastRequest().files.map((f) => f.path);
-  assert.deepEqual(paths, ['/workspace/proj/b.mjs']);
+  is(paths, ['/workspace/proj/b.mjs']);
 });
 
 test('a missing target is reported and exits 2', async () => {
   const r = await runEslint({ argv: ['nope.js'], files: BASE_FILES });
-  assert.equal(r.exitCode, 2);
-  assert.match(r.stderr, /nope\.js: no such file or directory/);
+  is(r.exitCode, 2);
+  ok((/nope\.js: no such file or directory/).test(r.stderr));
 });
 
 test('a named file is marked explicit; a walked one is not', async () => {
   const named = await runEslint({ argv: ['a.js'], files: BASE_FILES });
-  assert.equal(named.lastRequest().files[0].explicit, true);
+  is(named.lastRequest().files[0].explicit, true);
   const walked = await runEslint({ argv: ['.'], files: BASE_FILES });
   const entry = walked.lastRequest().files.find((f) => f.path.endsWith('/a.js'));
-  assert.equal(entry.explicit, false);
+  is(entry.explicit, false);
 });
 
 /* ------------------------------- reporting -------------------------------- */
@@ -199,10 +199,10 @@ const ONE_ERROR = [
 
 test('stylish reports the finding and exits 1', async () => {
   const r = await runEslint({ argv: ['a.js'], files: BASE_FILES, helper: withMessages(ONE_ERROR) });
-  assert.equal(r.exitCode, 1);
-  assert.match(r.stdout, /\/workspace\/proj\/a\.js/);
-  assert.match(r.stdout, /1:10\s+error\s+Missing semicolon\s+semi/);
-  assert.match(r.stdout, /1 problem \(1 error, 0 warnings\)/);
+  is(r.exitCode, 1);
+  ok((/\/workspace\/proj\/a\.js/).test(r.stdout));
+  ok((/1:10\s+error\s+Missing semicolon\s+semi/).test(r.stdout));
+  ok((/1 problem \(1 error, 0 warnings\)/).test(r.stdout));
 });
 
 test('--json writes one document and nothing to stderr', async () => {
@@ -212,11 +212,11 @@ test('--json writes one document and nothing to stderr', async () => {
     helper: withMessages(ONE_ERROR),
   });
   const doc = JSON.parse(r.stdout);
-  assert.deepEqual(doc.summary, { errors: 1, warnings: 0, filesLinted: 1, fixedFiles: 0 });
-  assert.equal(doc.results[0].filePath, '/workspace/proj/a.js');
-  assert.equal(doc.results[0].errorCount, 1);
-  assert.equal(doc.results[0].messages[0].ruleId, 'semi');
-  assert.equal(r.stderr, '');
+  is(doc.summary, { errors: 1, warnings: 0, filesLinted: 1, fixedFiles: 0 });
+  is(doc.results[0].filePath, '/workspace/proj/a.js');
+  is(doc.results[0].errorCount, 1);
+  is(doc.results[0].messages[0].ruleId, 'semi');
+  is(r.stderr, '');
 });
 
 test('--format json is the same reporter as --json', async () => {
@@ -230,7 +230,7 @@ test('--format json is the same reporter as --json', async () => {
     files: BASE_FILES,
     helper: withMessages(ONE_ERROR),
   });
-  assert.equal(a.stdout, b.stdout);
+  is(a.stdout, b.stdout);
 });
 
 test('compact prints one line per finding', async () => {
@@ -239,7 +239,7 @@ test('compact prints one line per finding', async () => {
     files: BASE_FILES,
     helper: withMessages(ONE_ERROR),
   });
-  assert.equal(
+  is(
     r.stdout.trim(),
     '/workspace/proj/a.js: line 1, col 10, error - Missing semicolon (semi)'
   );
@@ -247,14 +247,14 @@ test('compact prints one line per finding', async () => {
 
 test('an unknown formatter exits 2', async () => {
   const r = await runEslint({ argv: ['--format', 'nope', 'a.js'], files: BASE_FILES });
-  assert.equal(r.exitCode, 2);
-  assert.match(r.stderr, /unknown formatter: nope/);
+  is(r.exitCode, 2);
+  ok((/unknown formatter: nope/).test(r.stderr));
 });
 
 test('a clean run prints nothing and exits 0', async () => {
   const r = await runEslint({ argv: ['a.js'], files: BASE_FILES });
-  assert.equal(r.exitCode, 0);
-  assert.equal(r.stdout, '');
+  is(r.exitCode, 0);
+  is(r.stdout, '');
 });
 
 test('--quiet drops warnings but keeps a fatal parse error', async () => {
@@ -266,9 +266,9 @@ test('--quiet drops warnings but keeps a fatal parse error', async () => {
       { ruleId: null, severity: 2, message: 'Parsing error: boom', line: 1, column: 1 },
     ]),
   });
-  assert.ok(!r.stdout.includes('unused'), 'warning should be dropped');
-  assert.match(r.stdout, /Parsing error: boom/);
-  assert.equal(r.exitCode, 1);
+  ok(!r.stdout.includes('unused'), 'warning should be dropped');
+  ok((/Parsing error: boom/).test(r.stdout));
+  is(r.exitCode, 1);
 });
 
 test('--max-warnings turns warnings into a failure', async () => {
@@ -278,14 +278,14 @@ test('--max-warnings turns warnings into a failure', async () => {
     files: BASE_FILES,
     helper: withMessages(warning),
   });
-  assert.equal(under.exitCode, 0);
+  is(under.exitCode, 0);
   const over = await runEslint({
     argv: ['--max-warnings', '0', 'a.js'],
     files: BASE_FILES,
     helper: withMessages(warning),
   });
-  assert.equal(over.exitCode, 1);
-  assert.match(over.stderr, /exceeded the --max-warnings limit of 0/);
+  is(over.exitCode, 1);
+  ok((/exceeded the --max-warnings limit of 0/).test(over.stderr));
 });
 
 /* --------------------------------- fixes ---------------------------------- */
@@ -296,8 +296,8 @@ test('--fix writes the fixed output back through the shell fs', async () => {
     files: BASE_FILES,
     helper: withMessages([], 'var a = 1;\n'),
   });
-  assert.equal(r.exitCode, 0);
-  assert.equal(r.read('/workspace/proj/a.js'), 'var a = 1;\n');
+  is(r.exitCode, 0);
+  is(r.read('/workspace/proj/a.js'), 'var a = 1;\n');
 });
 
 test('--fix-dry-run reports the rewrite and writes nothing', async () => {
@@ -306,8 +306,8 @@ test('--fix-dry-run reports the rewrite and writes nothing', async () => {
     files: BASE_FILES,
     helper: withMessages([], 'var a = 1;\n'),
   });
-  assert.equal(r.read('/workspace/proj/a.js'), 'var a = 1\n');
-  assert.match(r.stderr, /--fix would rewrite/);
+  is(r.read('/workspace/proj/a.js'), 'var a = 1\n');
+  ok((/--fix would rewrite/).test(r.stderr));
 });
 
 test('a fix that rewrote the .jsh wrapper leaves the file alone', async () => {
@@ -328,8 +328,8 @@ test('a fix that rewrote the .jsh wrapper leaves the file alone', async () => {
       ),
     }),
   });
-  assert.match(r.stderr, /rewrote the script wrapper/);
-  assert.equal(r.read('/workspace/proj/s.jsh'), 'return 1\n');
+  ok((/rewrote the script wrapper/).test(r.stderr));
+  is(r.read('/workspace/proj/s.jsh'), 'return 1\n');
 });
 
 test('a discarded wrapper fix still reports the real violations', async () => {
@@ -358,10 +358,10 @@ test('a discarded wrapper fix still reports the real violations', async () => {
     undefined,
     { fixesWrapper: true }
   );
-  assert.equal(results[0].wrapUnfixable, true);
-  assert.equal(results[0].output, null, 'the file must be left alone');
-  assert.equal(results[0].messages.length, 1, 'the violation must survive the discard');
-  assert.equal(results[0].messages[0].ruleId, 'semi');
+  is(results[0].wrapUnfixable, true);
+  is(results[0].output, null, 'the file must be left alone');
+  is(results[0].messages.length, 1, 'the violation must survive the discard');
+  is(results[0].messages[0].ruleId, 'semi');
 });
 
 test('a global-ignores block that carries a name is still honored', async () => {
@@ -380,7 +380,7 @@ test('a global-ignores block that carries a name is still honored', async () => 
       { files: ['**/*.js'], rules: {} },
     ]
   );
-  assert.deepEqual(results, [], 'a named ignores-only block is a global ignore');
+  is(results, [], 'a named ignores-only block is a global ignore');
 });
 
 /* ---------------------------- helper failures ----------------------------- */
@@ -394,9 +394,9 @@ test('a missing module is rewritten into the ipk install line', async () => {
       exitCode: 1,
     }),
   });
-  assert.equal(r.exitCode, 2);
-  assert.match(r.stderr, /eslint is not installed/);
-  assert.match(r.stderr, /ipk add -g eslint @eslint\/js esbuild-wasm/);
+  is(r.exitCode, 2);
+  ok((/eslint is not installed/).test(r.stderr));
+  ok((/ipk add -g eslint @eslint\/js esbuild-wasm/).test(r.stderr));
 });
 
 test('a missing scoped module is named', async () => {
@@ -408,7 +408,7 @@ test('a missing scoped module is named', async () => {
       exitCode: 1,
     }),
   });
-  assert.match(r.stderr, /@eslint\/js is not installed/);
+  ok((/@eslint\/js is not installed/).test(r.stderr));
 });
 
 test('unparseable helper output surfaces with the helper stderr attached', async () => {
@@ -417,28 +417,28 @@ test('unparseable helper output surfaces with the helper stderr attached', async
     files: BASE_FILES,
     helper: () => ({ stdout: 'not json', stderr: 'something went sideways' }),
   });
-  assert.equal(r.exitCode, 2);
-  assert.match(r.stderr, /could not parse helper output/);
-  assert.match(r.stderr, /something went sideways/);
+  is(r.exitCode, 2);
+  ok((/could not parse helper output/).test(r.stderr));
+  ok((/something went sideways/).test(r.stderr));
 });
 
 test('the generated helper is removed from the VFS afterwards', async () => {
   const r = await runEslint({ argv: ['a.js'], files: BASE_FILES });
   const helperPath = r.argvCalls[0][1];
-  assert.match(helperPath, /^\/tmp\/\.eslint-helper-/);
-  assert.match(r.helperSources[0], /require\('eslint\/universal'\)/);
-  assert.equal(r.read(helperPath), undefined, 'helper must not outlive the run');
+  ok((/^\/tmp\/\.eslint-helper-/).test(helperPath));
+  ok((/require\('eslint\/universal'\)/).test(r.helperSources[0]));
+  is(r.read(helperPath), undefined, 'helper must not outlive the run');
 });
 
 /* ------------------- the request never reaches a shell -------------------- */
 
 test('the helper request is passed as argv, not interpolated into a command', async () => {
   const r = await runEslint({ argv: ['a.js'], files: BASE_FILES });
-  assert.equal(r.argvCalls.length, 1);
-  assert.deepEqual(r.stringCalls, [], 'no command string may be built');
+  is(r.argvCalls.length, 1);
+  is(r.stringCalls, [], 'no command string may be built');
   const [bin, , payload] = r.argvCalls[0];
-  assert.equal(bin, 'node');
-  assert.equal(JSON.parse(payload).op, 'lint');
+  is(bin, 'node');
+  is(JSON.parse(payload).op, 'lint');
 });
 
 test('a command-substitution payload travels through untouched', async () => {
@@ -453,10 +453,10 @@ test('a command-substitution payload travels through untouched', async () => {
     stdin: nasty,
   });
   const request = JSON.parse(r.argvCalls[0][2]);
-  assert.equal(request.files[0].source, nasty);
-  assert.equal(request.files[0].path, '/workspace/proj/src/$(id).js');
-  assert.equal(r.read('/workspace/pwned'), undefined);
-  assert.deepEqual(r.stringCalls, []);
+  is(request.files[0].source, nasty);
+  is(request.files[0].path, '/workspace/proj/src/$(id).js');
+  is(r.read('/workspace/pwned'), undefined);
+  is(r.stringCalls, []);
 });
 
 test('the generated helper parses as JavaScript', async () => {
@@ -464,7 +464,7 @@ test('the generated helper parses as JavaScript', async () => {
   // newline where `\\n` was meant yields a broken script whose only symptom is
   // an opaque helper failure at runtime.
   const r = await runEslint({ argv: ['a.js'], files: BASE_FILES });
-  assert.doesNotThrow(() => compileHelper(r.helperSources[0]));
+  compileHelper(r.helperSources[0]);
 });
 
 /* ------------------------- stdin is never written ------------------------- */
@@ -477,10 +477,10 @@ test('--fix with --stdin is refused rather than writing the virtual filename', a
     files: { ...BASE_FILES, '/workspace/proj/src/app.js': 'const real = 1;\n' },
     stdin: 'var piped = 1\n',
   });
-  assert.equal(r.exitCode, 2);
-  assert.match(r.stderr, /not available for piped-in code/);
-  assert.equal(r.read('/workspace/proj/src/app.js'), 'const real = 1;\n');
-  assert.deepEqual(r.argvCalls, [], 'it never reached the helper');
+  is(r.exitCode, 2);
+  ok((/not available for piped-in code/).test(r.stderr));
+  is(r.read('/workspace/proj/src/app.js'), 'const real = 1;\n');
+  is(r.argvCalls, [], 'it never reached the helper');
 });
 
 test('--fix-dry-run with --stdin prints the fixed buffer and writes nothing', async () => {
@@ -490,8 +490,8 @@ test('--fix-dry-run with --stdin prints the fixed buffer and writes nothing', as
     stdin: 'var piped = 1\n',
     helper: withMessages([], 'var piped = 1;\n'),
   });
-  assert.match(r.stdout, /var piped = 1;/);
-  assert.equal(r.read('/workspace/proj/src/app.js'), 'const real = 1;\n');
+  ok((/var piped = 1;/).test(r.stdout));
+  is(r.read('/workspace/proj/src/app.js'), 'const real = 1;\n');
 });
 
 test('--stdin --fix-dry-run --json still emits exactly one JSON document', async () => {
@@ -504,19 +504,19 @@ test('--stdin --fix-dry-run --json still emits exactly one JSON document', async
     helper: withMessages([], 'var piped = 1;\n'),
   });
   const doc = JSON.parse(r.stdout);
-  assert.equal(doc.results[0].output, 'var piped = 1;\n', 'the fix belongs in the document');
-  assert.equal(r.stdout.trimEnd().split('\n').length, 1, 'one line, one document');
+  is(doc.results[0].output, 'var piped = 1;\n', 'the fix belongs in the document');
+  is(r.stdout.trimEnd().split('\n').length, 1, 'one line, one document');
 });
 
 test('a bare --stdin creates no stdin.js placeholder', async () => {
   const r = await runEslint({ argv: ['--stdin'], files: BASE_FILES, stdin: 'var piped = 1\n' });
-  assert.equal(r.read('/workspace/proj/stdin.js'), undefined);
+  is(r.read('/workspace/proj/stdin.js'), undefined);
 });
 
 test('--stdin cannot be combined with file arguments', async () => {
   const r = await runEslint({ argv: ['--stdin', 'a.js'], files: BASE_FILES, stdin: 'x' });
-  assert.equal(r.exitCode, 2);
-  assert.match(r.stderr, /cannot be combined with file arguments/);
+  is(r.exitCode, 2);
+  ok((/cannot be combined with file arguments/).test(r.stderr));
 });
 
 /* ------------------ the helper's own global-ignore logic ------------------ */
@@ -545,7 +545,7 @@ test('a later negated ignore pattern re-includes the path', async () => {
     noFindings,
     [{ ignores: ['**/*.js', '!src/**/*.js'] }, { files: ['**/*.js'], rules: {} }]
   );
-  assert.deepEqual(
+  is(
     results.map((r) => r.path),
     ['/workspace/proj/src/app.js']
   );
@@ -562,7 +562,7 @@ test('a pattern after the negation re-ignores the path', async () => {
     noFindings,
     [{ ignores: ['**/*.js', '!src/**/*.js', 'src/app.js'] }, { files: ['**/*.js'], rules: {} }]
   );
-  assert.deepEqual(results, [], 'precedence is order, not "negations win"');
+  is(results, [], 'precedence is order, not "negations win"');
 });
 
 test('an explicitly named ignored file is reported, not silently skipped', async () => {
@@ -576,8 +576,8 @@ test('an explicitly named ignored file is reported, not silently skipped', async
     noFindings,
     [{ ignores: ['skipme.js'] }, { files: ['**/*.js'], rules: {} }]
   );
-  assert.equal(results.length, 1);
-  assert.match(results[0].messages[0].message, /ignored because of a matching ignore pattern/);
+  is(results.length, 1);
+  ok((/ignored because of a matching ignore pattern/).test(results[0].messages[0].message));
 });
 
 /* ---------------- the helper's own wrapper-message filtering -------------- */
@@ -604,7 +604,7 @@ test('a finding entirely inside the injected prefix is dropped', async () => {
       },
     ]
   );
-  assert.deepEqual(results[0].messages, []);
+  is(results[0].messages, []);
 });
 
 test('a finding that starts in the wrapper but spans the body is kept', async () => {
@@ -613,8 +613,8 @@ test('a finding that starts in the wrapper but spans the body is kept', async ()
     jshRequest('const x = 1\nconst y = 2\n'),
     () => [{ ruleId: 'indent', severity: 2, message: 'Expected indentation', line: 1, endLine: 3 }]
   );
-  assert.equal(results[0].messages.length, 1);
-  assert.equal(results[0].messages[0].ruleId, 'indent');
+  is(results[0].messages.length, 1);
+  is(results[0].messages[0].ruleId, 'indent');
 });
 
 test('a finding on the injected suffix line is dropped', async () => {
@@ -625,7 +625,7 @@ test('a finding on the injected suffix line is dropped', async () => {
     jshRequest('const x = 1\nconst y = 2\n'),
     () => [{ ruleId: 'eol-last', severity: 1, message: 'Newline required', line: 5, endLine: 5 }]
   );
-  assert.deepEqual(results[0].messages, []);
+  is(results[0].messages, []);
 });
 
 test('a fatal parse error is never dropped, even on a wrapper line', async () => {
@@ -642,8 +642,8 @@ test('a fatal parse error is never dropped, even on a wrapper line', async () =>
       },
     ]
   );
-  assert.equal(results[0].messages.length, 1);
-  assert.equal(results[0].messages[0].fatal, true);
+  is(results[0].messages.length, 1);
+  is(results[0].messages[0].fatal, true);
 });
 
 test('an ordinary body finding shifts back by the prefix line, column intact', async () => {
@@ -661,6 +661,6 @@ test('an ordinary body finding shifts back by the prefix line, column intact', a
       },
     ]
   );
-  assert.equal(results[0].messages[0].line, 1);
-  assert.equal(results[0].messages[0].column, 10);
+  is(results[0].messages[0].line, 1);
+  is(results[0].messages[0].column, 10);
 });

@@ -10,11 +10,10 @@
 //   4. A second send of the same text inside the dupe window is refused with
 //      zero additional POSTs (unless --force).
 
-const assert = require('node:assert/strict');
-const test = require('node:test');
+import test, { is, ok, rejects } from 'tst';
+import * as _mod_0 from './harness.js';
 
-const { load } = require('./harness.js');
-
+const { load } = _mod_0.default || _mod_0;
 const TARGET = 'lars@trieloff.net';
 const GUID = `iMessage;-;${TARGET}`;
 const TEXT = 'bb-send-fire-forget self-test — ignore';
@@ -81,11 +80,11 @@ test('200 accept + verify → delivered, single POST', async () => {
   const srv = server({ sendStatus: 200, thread: [] });
   const bb = await load({ api: srv.api });
   await bb.cmdSend([TARGET, TEXT], { json: true });
-  assert.equal(srv.posts(), 1);
-  assert.equal(bb.out.length, 1);
-  assert.equal(bb.out[0].status, 'delivered');
-  assert.equal(bb.out[0].verified, true);
-  assert.equal(bb.out[0].httpStatus, 200);
+  is(srv.posts(), 1);
+  is(bb.out.length, 1);
+  is(bb.out[0].status, 'delivered');
+  is(bb.out[0].verified, true);
+  is(bb.out[0].httpStatus, 200);
 });
 
 test('HTTP 500 after send + message visible → delivered, single POST (no retry)', async () => {
@@ -95,32 +94,32 @@ test('HTTP 500 after send + message visible → delivered, single POST (no retry
   const srv = server({ sendStatus: 500, thread, landOnAccept: false });
   const bb = await load({ api: srv.api });
   await bb.cmdSend([TARGET, TEXT], { json: true, force: true });
-  assert.equal(srv.posts(), 1, 'must not retry the POST on 5xx');
-  assert.equal(bb.out[0].status, 'delivered');
-  assert.equal(bb.out[0].verified, true);
-  assert.equal(bb.out[0].soft, true);
-  assert.equal(bb.out[0].httpStatus, 500);
+  is(srv.posts(), 1, 'must not retry the POST on 5xx');
+  is(bb.out[0].status, 'delivered');
+  is(bb.out[0].verified, true);
+  is(bb.out[0].soft, true);
+  is(bb.out[0].httpStatus, 500);
 });
 
 test('HTTP 500 and nothing in thread → soft_5xx_unverified, does not throw', async () => {
   const srv = server({ sendStatus: 500, thread: [], landOnAccept: false });
   const bb = await load({ api: srv.api });
   await bb.cmdSend([TARGET, 'never-lands-text'], { json: true });
-  assert.equal(srv.posts(), 1);
-  assert.equal(bb.out[0].status, 'soft_5xx_unverified');
-  assert.equal(bb.out[0].verified, false);
-  assert.equal(bb.out[0].soft, true);
-  assert.match(bb.out[0].note, /do NOT retry send blindly/i);
+  is(srv.posts(), 1);
+  is(bb.out[0].status, 'soft_5xx_unverified');
+  is(bb.out[0].verified, false);
+  is(bb.out[0].soft, true);
+  ok((/do NOT retry send blindly/i).test(bb.out[0].note));
 });
 
 test('timeout → timeout_unverified, single POST', async () => {
   const srv = server({ sendTimeout: true, thread: [] });
   const bb = await load({ api: srv.api });
   await bb.cmdSend([TARGET, 'timeout-text'], { json: true });
-  assert.equal(srv.posts(), 1);
-  assert.equal(bb.out[0].status, 'timeout_unverified');
-  assert.equal(bb.out[0].timedOut, true);
-  assert.equal(bb.out[0].verified, false);
+  is(srv.posts(), 1);
+  is(bb.out[0].status, 'timeout_unverified');
+  is(bb.out[0].timedOut, true);
+  is(bb.out[0].verified, false);
 });
 
 test('duplicate outbound text within window is refused with zero POSTs', async () => {
@@ -128,10 +127,10 @@ test('duplicate outbound text within window is refused with zero POSTs', async (
   const srv = server({ thread });
   const bb = await load({ api: srv.api });
   await bb.cmdSend([TARGET, TEXT], { json: true });
-  assert.equal(srv.posts(), 0, 'must not POST when duplicate is already in thread');
-  assert.equal(bb.out[0].status, 'duplicate');
-  assert.equal(bb.out[0].verified, true);
-  assert.match(bb.out[0].note, /--force/);
+  is(srv.posts(), 0, 'must not POST when duplicate is already in thread');
+  is(bb.out[0].status, 'duplicate');
+  is(bb.out[0].verified, true);
+  ok((/--force/).test(bb.out[0].note));
 });
 
 test('--force bypasses the duplicate guard and POSTs once', async () => {
@@ -139,18 +138,18 @@ test('--force bypasses the duplicate guard and POSTs once', async () => {
   const srv = server({ sendStatus: 200, thread });
   const bb = await load({ api: srv.api });
   await bb.cmdSend([TARGET, TEXT], { json: true, force: true });
-  assert.equal(srv.posts(), 1);
-  assert.ok(['delivered', 'accepted_unverified'].includes(bb.out[0].status));
+  is(srv.posts(), 1);
+  ok(['delivered', 'accepted_unverified'].includes(bb.out[0].status));
 });
 
 test('HTTP 400 is a hard failure (throws), no soft path', async () => {
   const srv = server({ sendStatus: 400, thread: [] });
   const bb = await load({ api: srv.api });
-  await assert.rejects(
+  await rejects(
     () => bb.cmdSend([TARGET, 'bad'], { json: true }),
     (err) => err.name === 'NodeExitError' && /400/.test(err.message),
   );
-  assert.equal(srv.posts(), 1);
+  is(srv.posts(), 1);
 });
 
 test('human output on soft 5xx tells the operator to verify, not resend', async () => {
@@ -158,7 +157,7 @@ test('human output on soft 5xx tells the operator to verify, not resend', async 
   const bb = await load({ api: srv.api });
   await bb.cmdSend([TARGET, 'human-soft'], {});
   const text = bb.text();
-  assert.match(text, /soft-failed|do not resend/i);
-  assert.match(text, /bluebubbles messages/);
-  assert.match(text, /soft_5xx_unverified|status:/i);
+  ok((/soft-failed|do not resend/i).test(text));
+  ok((/bluebubbles messages/).test(text));
+  ok((/soft_5xx_unverified|status:/i).test(text));
 });

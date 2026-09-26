@@ -8,7 +8,7 @@
     "format": "biome format --write",
     "lint:jsh": "bash tools/lint-jsh.sh",
     "check": "biome check",
-    "test": "node --test \"skills/*/tests/*.test.js\"",
+    "test": "node --test \"tools/*.test.mjs\"",
     "check:jsh-parse": "node tools/check-jsh-parse.mjs"
   },
   "devDependencies": {

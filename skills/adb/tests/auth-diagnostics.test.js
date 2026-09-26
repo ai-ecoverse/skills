@@ -1,13 +1,14 @@
-const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const test = require('node:test');
+import test, { is, ok, rejects } from 'tst';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const source = fs.readFileSync(path.join(__dirname, '../scripts/adb.jsh'), 'utf8');
 
 function loadClient() {
   const end = source.indexOf('const SHELL_V2_STDOUT');
-  assert.ok(end > 0, 'ADB handshake block not found');
+  ok(end > 0, 'ADB handshake block not found');
   const warnings = [];
   // Evaluate the actual .jsh helpers without running the CLI. Stub signing so
   // these diagnostic tests need no private key or connected device.
@@ -36,32 +37,26 @@ for (const repeated of [false, true]) {
     const transport = {
       writeMessage: async (...args) => writes.push(args),
       readMessage: async () => {
-        assert.ok(messages.length, 'handshake read beyond the auth limit');
+        ok(messages.length, 'handshake read beyond the auth limit');
         return messages.shift();
       },
     };
-    await assert.rejects(handshake(transport, null), (error) => {
-      assert.match(error.message, /after 4 A_AUTH TOKEN frames/);
-      assert.match(error.message, /Either this key is not trusted by the device/);
-      assert.match(error.message, /USB transport\n {2}is desynced with stale A_AUTH frames/);
-      assert.match(error.message, /previous killed session/);
-      assert.match(
-        error.message,
-        /retry \(optionally with --no-reset\) may clear a stale transport/
-      );
-      assert.match(error.message, /--key/);
-      assert.match(error.message, /~\/\.android\/adbkey/);
-      assert.match(error.message, /Enrolling a NEW key is not\n {2}supported/);
-      assert.match(error.message, /AUTH RSAPUBLICKEY frame, which this\n {2}client does not send/);
-      assert.match(error.message, /no on-device approval prompt will appear/);
-      assert.doesNotMatch(
-        error.message,
-        /device rejected the signature — this key is not authorized/
-      );
+    await rejects(() => handshake(transport, null), (error) => {
+      ok((/after 4 A_AUTH TOKEN frames/).test(error.message));
+      ok((/Either this key is not trusted by the device/).test(error.message));
+      ok((/USB transport\n {2}is desynced with stale A_AUTH frames/).test(error.message));
+      ok((/previous killed session/).test(error.message));
+      ok((/retry \(optionally with --no-reset\) may clear a stale transport/).test(error.message));
+      ok((/--key/).test(error.message));
+      ok((/~\/\.android\/adbkey/).test(error.message));
+      ok((/Enrolling a NEW key is not\n {2}supported/).test(error.message));
+      ok((/AUTH RSAPUBLICKEY frame, which this\n {2}client does not send/).test(error.message));
+      ok((/no on-device approval prompt will appear/).test(error.message));
+      ok(!(/device rejected the signature — this key is not authorized/).test(error.message));
       return true;
     });
-    assert.equal(messages.length, 0);
-    assert.deepEqual(
+    is(messages.length, 0);
+    is(
       writes.map(([cmd, arg0]) => [cmd, arg0]),
       [[A_CNXN, 0x01000001], ...Array.from({ length: 3 }, () => [A_AUTH, AUTH_SIGNATURE])]
     );
@@ -88,19 +83,19 @@ for (const reset of ['failed', 'successful', 'skipped']) {
     };
     const transport = new AdbTransport(device, 100, { reset: reset !== 'skipped' });
     await transport.open();
-    assert.equal(transport.claimed, true);
-    assert.deepEqual(calls, [
+    is(transport.claimed, true);
+    is(calls, [
       'open',
       'configure',
       ...(reset === 'skipped' ? [] : ['reset']),
       'claim 0',
     ]);
     if (reset === 'failed') {
-      assert.equal(warnings.length, 1);
-      assert.match(warnings[0], /warning: USB reset failed to clear endpoint buffers/);
-      assert.match(warnings[0], /handshake may encounter stale frames/);
+      is(warnings.length, 1);
+      ok((/warning: USB reset failed to clear endpoint buffers/).test(warnings[0]));
+      ok((/handshake may encounter stale frames/).test(warnings[0]));
     } else {
-      assert.deepEqual(warnings, []);
+      is(warnings, []);
     }
     transport.writeMessage = async () => {};
     transport.readMessage = async () => ({
@@ -108,7 +103,7 @@ for (const reset of ['failed', 'successful', 'skipped']) {
       arg1: 4096,
       data: new TextEncoder().encode('device::\0'),
     });
-    assert.equal(await handshake(transport, null), 'device::');
-    assert.equal(transport.maxPayload, 4096);
+    is(await handshake(transport, null), 'device::');
+    is(transport.maxPayload, 4096);
   });
 }
