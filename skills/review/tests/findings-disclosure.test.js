@@ -1,12 +1,13 @@
-const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const test = require('node:test');
+import test, { is, ok } from 'tst';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const template = fs.readFileSync(path.join(__dirname, '../templates/review.shtml'), 'utf8');
 const start = template.indexOf('function renderFindings(');
 const end = template.indexOf('\n}\n', start) + 2;
-assert.ok(start >= 0 && end > start, 'shipped findings renderer exists');
+ok(start >= 0 && end > start, 'shipped findings renderer exists');
 
 // Record DOM construction without supplying an HTML parser: source-provided
 // text must be assigned as text, and the native disclosure body must be a
@@ -50,13 +51,13 @@ test('a source explanation collapses even when it has no finding rows', () => {
   const { container } = render({ summary: 'Preview only · never published', findings: [] });
   const details = container.childNodes[0];
   const [summary, body] = details.childNodes;
-  assert.equal(details.tagName, 'details');
-  assert.equal(summary.tagName, 'summary');
-  assert.equal(summary.textContent, 'checker · Info');
-  assert.equal(body.textContent, 'Preview only · never published');
-  assert.equal(details.attributes.open, undefined, 'starts collapsed');
+  is(details.tagName, 'details');
+  is(summary.tagName, 'summary');
+  is(summary.textContent, 'checker · Info');
+  is(body.textContent, 'Preview only · never published');
+  is(details.attributes.open, undefined, 'starts collapsed');
   const chevron = summary.childNodes.find((node) => node.attributes['data-lucide']);
-  assert.equal(chevron.attributes['aria-hidden'], 'true', 'decorative icon has no spoken label');
+  is(chevron.attributes['aria-hidden'], 'true', 'decorative icon has no spoken label');
 });
 
 test('explanations and finding rows remain literal text outside the trigger', () => {
@@ -67,11 +68,11 @@ test('explanations and finding rows remain literal text outside the trigger', ()
     findings: [{ title: 'Heading', body: text }, { body: 'Body only' }],
   });
   const [summary, explanation, list] = container.childNodes[0].childNodes;
-  assert.equal(summary.textContent, 'checker · Needs attention');
-  assert.equal(explanation.textContent, text);
-  assert.equal(explanation.childNodes.length, 0);
-  assert.equal(list.tagName, 'ul');
-  assert.deepEqual(
+  is(summary.textContent, 'checker · Needs attention');
+  is(explanation.textContent, text);
+  is(explanation.childNodes.length, 0);
+  is(list.tagName, 'ul');
+  is(
     list.childNodes.map((node) => node.textContent),
     ['Heading: ' + text, 'Body only']
   );
@@ -81,6 +82,6 @@ test('clearing findings removes the disclosure instead of retaining its old body
   const { state, container, renderFindings } = render({ summary: 'Old result' });
   state.findings.page = {};
   renderFindings('page', container);
-  assert.equal(container.hidden, true);
-  assert.equal(container.childNodes.length, 0);
+  is(container.hidden, true);
+  is(container.childNodes.length, 0);
 });

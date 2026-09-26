@@ -1,12 +1,14 @@
-const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const test = require('node:test');
+import test, { is, ok } from 'tst';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
 const template = fs.readFileSync(path.join(__dirname, '../templates/review.shtml'), 'utf8');
 function extract(start, end) {
   const a = template.indexOf(start),
     b = template.indexOf(end, a);
-  assert.ok(a >= 0 && b > a, 'shipped preview implementation is present');
+  ok(a >= 0 && b > a, 'shipped preview implementation is present');
   return template.slice(a, b);
 }
 function store(state) {
@@ -23,10 +25,10 @@ test('primary labels default to Approve and accept only non-empty source text', 
       '\nreturn primaryActionLabel;'
   )();
   for (const value of [undefined, null, '', '  ', false, 42, {}]) {
-    assert.equal(label({ primaryActionLabel: value }), 'Approve');
+    is(label({ primaryActionLabel: value }), 'Approve');
   }
-  assert.equal(label({ primaryActionLabel: ' Publish ' }), 'Publish');
-  assert.equal(label({ primaryActionLabel: 'Accept draft' }), 'Accept draft');
+  is(label({ primaryActionLabel: ' Publish ' }), 'Publish');
+  is(label({ primaryActionLabel: 'Accept draft' }), 'Accept draft');
 });
 
 test('open-file overrides the queued source and title while retaining item metadata', () => {
@@ -36,15 +38,15 @@ test('open-file overrides the queued source and title while retaining item metad
     'openPreview',
     extract('function openDocument(', 'async function openPreview(') + '\nreturn openDocument;'
   )({ items: [item] }, (preview) => preview);
-  assert.deepEqual(open('/moved.md', 'Revised title', 'draft'), {
+  is(open('/moved.md', 'Revised title', 'draft'), {
     ...item,
     path: '/moved.md',
     title: 'Revised title',
   });
-  assert.deepEqual(open('/moved.md', null, 'draft'), { ...item, path: '/moved.md' });
-  assert.deepEqual(open('/old.md', 'Title only'), { ...item, title: 'Title only' });
-  assert.equal(item.path, '/old.md', 'a preview override does not mutate the queue');
-  assert.deepEqual(open('/new.md', 'New document', 'new'), {
+  is(open('/moved.md', null, 'draft'), { ...item, path: '/moved.md' });
+  is(open('/old.md', 'Title only'), { ...item, title: 'Title only' });
+  is(item.path, '/old.md', 'a preview override does not mutate the queue');
+  is(open('/new.md', 'New document', 'new'), {
     id: 'new',
     path: '/new.md',
     title: 'New document',
@@ -82,23 +84,23 @@ test('text anchors use the selected occurrence, including normalized boundary wh
       cloneRange: () => ({
         selectNodeContents: () => {},
         setEnd: (node, offset) => {
-          assert.equal(node, el);
-          assert.equal(offset, start);
+          is(node, el);
+          is(offset, start);
         },
         toString: () => source.slice(0, start),
       }),
     };
     const quote = range.toString().replace(/\s+/g, ' ').trim();
     const anchor = anchorFor(el, quote, range);
-    assert.equal(anchor.prefix, prefix);
-    assert.equal(anchor.suffix, suffix);
-    assert.equal(anchor.kind, 'text');
-    assert.equal(anchor.quote, quote);
+    is(anchor.prefix, prefix);
+    is(anchor.suffix, suffix);
+    is(anchor.kind, 'text');
+    is(anchor.quote, quote);
   }
   const whole = anchorFor(el, source.replace(/\s+/g, ' ').trim(), null);
-  assert.equal(whole.kind, 'element');
-  assert.equal(whole.prefix, '');
-  assert.equal(whole.suffix, '');
+  is(whole.kind, 'element');
+  is(whole.prefix, '');
+  is(whole.suffix, '');
 });
 
 test('drafts are keyed to the source and survive switching documents or preview URLs', () => {
@@ -106,12 +108,12 @@ test('drafts are keyed to the source and survive switching documents or preview 
   const s = store(state);
   s.annotations().push({ id: 'a', note: 'Keep this draft' });
   state.docItem = { path: '/shared/b.md' };
-  assert.equal(s.annotations().length, 0);
+  is(s.annotations().length, 0);
   s.annotations().push({ id: 'b' });
   state.docItem = { path: '/shared/a.md', previewUrl: 'https://two.test/a' };
-  assert.deepEqual(s.annotations(), [{ id: 'a', note: 'Keep this draft' }]);
+  is(s.annotations(), [{ id: 'a', note: 'Keep this draft' }]);
   state.docItem = { previewUrl: 'https://one.test/a' };
-  assert.equal(s.annotations().length, 0);
+  is(s.annotations().length, 0);
 });
 
 function dispatch(notes, fail = false, extraState = {}) {
@@ -173,15 +175,15 @@ test('dispatch sends only drafts with anchors and records the batch before deliv
   const d = dispatch(notes);
   d.click();
   d.click();
-  assert.equal(d.events.length, 1);
-  assert.equal(d.events[0].target, 'cone-adobe');
-  assert.equal(d.events[0].data.path, '/shared/draft.fountain');
-  assert.equal(d.events[0].data.format, 'fountain');
-  assert.deepEqual(d.events[0].data.revisions, [
+  is(d.events.length, 1);
+  is(d.events[0].target, 'cone-adobe');
+  is(d.events[0].data.path, '/shared/draft.fountain');
+  is(d.events[0].data.format, 'fountain');
+  is(d.events[0].data.revisions, [
     { id: 'new', text: 'Hello', note: 'Quieter', anchor: { scene: 'INT. ROOM', token: '7' } },
   ]);
-  assert.equal(d.saves[0][1].batchId, d.events[0].data.batchId);
-  assert.equal(notes[0].batchId, 'previous');
+  is(d.saves[0][1].batchId, d.events[0].data.batchId);
+  is(notes[0].batchId, 'previous');
 });
 
 test('submit-revisions uses the queue card cone when the open snapshot is stale', () => {
@@ -193,17 +195,17 @@ test('submit-revisions uses the queue card cone when the open snapshot is stale'
     items: [{ id: 'script', path: '/shared/draft.fountain', cone: 'cone-helix' }],
   });
   d.click();
-  assert.equal(d.events[0].target, 'cone-helix');
-  assert.equal(d.events[0].data.path, '/shared/draft.fountain');
+  is(d.events[0].target, 'cone-helix');
+  is(d.events[0].data.path, '/shared/draft.fountain');
 });
 
 test('a synchronous delivery failure restores drafts rather than losing feedback', () => {
   const notes = [{ id: 'new', text: 'Hello', note: 'Quieter' }];
   const d = dispatch(notes, true);
   d.click();
-  assert.equal(notes[0].batchId, undefined);
-  assert.equal(notes[0].deliveryError, 'Bridge unavailable');
-  assert.equal(notes[0].note, 'Quieter');
+  is(notes[0].batchId, undefined);
+  is(notes[0].deliveryError, 'Bridge unavailable');
+  is(notes[0].note, 'Quieter');
 });
 
 test('anchor recovery verifies content and rejects an ambiguous relocated quote', () => {
@@ -220,18 +222,18 @@ test('anchor recovery verifies content and rejects an ambiguous relocated quote'
     extract('function findAnchor(', 'function paintAnnotations(') + '\nreturn findAnchor;'
   )(previewFrame, (e) => e.textContent, 'p');
   const ann = { anchor: { selector: '#same-id', elementText: 'Original paragraph' } };
-  assert.equal(find(ann), match);
+  is(find(ann), match);
   candidates = [match, { ...match }];
-  assert.equal(find(ann), null);
+  is(find(ann), null);
   old.textContent = 'Original paragraph';
-  assert.equal(find(ann), old);
+  is(find(ann), old);
 });
 
 test('command arguments preserve quotes and shell metacharacters literally', () => {
   const quote = new Function(
     extract('function quoteArg(', 'let previewEpoch') + '\nreturn quoteArg;'
   )();
-  assert.equal(quote("a '$(echo x)'.fountain"), "'a '\\''$(echo x)'\\''.fountain'");
+  is(quote("a '$(echo x)'.fountain"), "'a '\\''$(echo x)'\\''.fountain'");
 });
 
 test('standalone hydration reads durable state and waits if the host store is inaccessible', () => {
@@ -243,12 +245,12 @@ test('standalone hydration reads durable state and waits if the host store is in
   const read = new Function('parent', 'slicc', source + '\nreturn standaloneSavedState;');
   const storage = {
     getItem: (key) => {
-      assert.equal(key, 'slicc-sprinkle-state:review');
+      is(key, 'slicc-sprinkle-state:review');
       return JSON.stringify(saved);
     },
   };
-  assert.deepEqual(read({ localStorage: storage }, { name: 'review' })(), saved);
-  assert.equal(
+  is(read({ localStorage: storage }, { name: 'review' })(), saved);
+  is(
     read(
       {
         get localStorage() {
@@ -259,7 +261,7 @@ test('standalone hydration reads durable state and waits if the host store is in
     )(),
     undefined
   );
-  assert.equal(read({ localStorage: { getItem: () => '{bad' } }, {})(), undefined);
+  is(read({ localStorage: { getItem: () => '{bad' } }, {})(), undefined);
 });
 
 test('Fountain anchors never follow matching dialogue into a different scene', () => {
@@ -273,7 +275,7 @@ test('Fountain anchors never follow matching dialogue into a different scene', (
     'BLOCKS',
     extract('function findAnchor(', 'function paintAnnotations(') + '\nreturn findAnchor;'
   )(frame, (e) => e.textContent, 'p');
-  assert.equal(
+  is(
     find({ anchor: { selector: '#fountain-4', elementText: 'Yes.', scene: 'INT. KITCHEN' } }),
     null
   );

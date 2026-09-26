@@ -1,3 +1,9 @@
+import test, { is, ok } from 'tst';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
 // Behaviour tests for the `ensure-item` inbound-message handler in
 // templates/review.shtml, run with:
 //
@@ -10,18 +16,13 @@
 // the shipped file (rather than copying it here) keeps the test honest: if the
 // branch is renamed or removed, extraction fails and the test fails.
 
-const assert = require('node:assert/strict');
-const test = require('node:test');
-const fs = require('node:fs');
-const path = require('node:path');
-
 const TEMPLATE = path.join(__dirname, '..', 'templates', 'review.shtml');
 
 /** Pull the body of the `ensure-item` branch out of the template source. */
 function extractEnsureItemBody() {
   const lines = fs.readFileSync(TEMPLATE, 'utf8').split('\n');
   const start = lines.findIndex((l) => l.includes("msg.action === 'ensure-item'"));
-  assert.ok(start >= 0, 'ensure-item branch not found in template');
+  ok(start >= 0, 'ensure-item branch not found in template');
   let end = -1;
   for (let i = start + 1; i < lines.length; i++) {
     if (lines[i] === '  }') {
@@ -29,7 +30,7 @@ function extractEnsureItemBody() {
       break;
     }
   }
-  assert.ok(end > start, 'end of ensure-item branch not found');
+  ok(end > start, 'end of ensure-item branch not found');
   return lines.slice(start + 1, end).join('\n');
 }
 
@@ -80,8 +81,8 @@ test('creates a card when the id is unknown', () => {
     previewUrl: 'https://preview.example.com/new',
   });
 
-  assert.equal(h.state.items.length, 1);
-  assert.deepEqual(h.state.items[0], {
+  is(h.state.items.length, 1);
+  is(h.state.items[0], {
     id: 'page-2',
     title: 'New Page',
     path: '/shared/new.md',
@@ -89,8 +90,8 @@ test('creates a card when the id is unknown', () => {
     liveUrl: '',
     status: 'pending',
   });
-  assert.equal(h.counters.renders, 1);
-  assert.equal(h.counters.saves, 1);
+  is(h.counters.renders, 1);
+  is(h.counters.saves, 1);
 });
 
 test('updates an existing card in place (the upsert half of the contract)', () => {
@@ -105,10 +106,10 @@ test('updates an existing card in place (the upsert half of the contract)', () =
     path: '/shared/readable/security.md',
   });
 
-  assert.equal(h.state.items.length, 1, 'no duplicate card is created');
-  assert.equal(h.state.items[0].path, '/shared/readable/security.md');
-  assert.equal(h.counters.renders, 1, 'the change is re-rendered');
-  assert.equal(h.counters.saves, 1, 'the change is persisted');
+  is(h.state.items.length, 1, 'no duplicate card is created');
+  is(h.state.items[0].path, '/shared/readable/security.md');
+  is(h.counters.renders, 1, 'the change is re-rendered');
+  is(h.counters.saves, 1, 'the change is persisted');
 });
 
 test('leaves unsupplied fields and status untouched', () => {
@@ -116,10 +117,10 @@ test('leaves unsupplied fields and status untouched', () => {
   h.send({ action: 'ensure-item', id: 'page-1', path: '/shared/readable/security.md' });
 
   const item = h.state.items[0];
-  assert.equal(item.title, baseItem.title);
-  assert.equal(item.previewUrl, baseItem.previewUrl);
-  assert.equal(item.liveUrl, baseItem.liveUrl);
-  assert.equal(item.status, 'published', 'status must never be reset by ensure-item');
+  is(item.title, baseItem.title);
+  is(item.previewUrl, baseItem.previewUrl);
+  is(item.liveUrl, baseItem.liveUrl);
+  is(item.status, 'published', 'status must never be reset by ensure-item');
 });
 
 test('updates every supplied field, including empty strings', () => {
@@ -133,7 +134,7 @@ test('updates every supplied field, including empty strings', () => {
     liveUrl: '',
   });
 
-  assert.deepEqual(h.state.items[0], {
+  is(h.state.items[0], {
     id: 'page-1',
     title: 'Security Page (v2)',
     path: '',
@@ -148,8 +149,8 @@ test('does not disturb other items in the queue', () => {
   const h = makeHandler({ items: [{ ...baseItem }, other], comments: {}, view: 'queue' });
   h.send({ action: 'ensure-item', id: 'page-1', title: 'Renamed' });
 
-  assert.equal(h.state.items.length, 2);
-  assert.deepEqual(h.state.items[1], other);
+  is(h.state.items.length, 2);
+  is(h.state.items[1], other);
 });
 
 test('preserves comments already attached to the card', () => {
@@ -162,8 +163,8 @@ test('preserves comments already attached to the card', () => {
   const h = makeHandler({ items: [{ ...baseItem }], comments, view: 'queue' });
   h.send({ action: 'ensure-item', id: 'page-1', path: '/shared/readable/security.md' });
 
-  assert.deepEqual(h.state.comments, comments, 'comment log survives the update');
-  assert.deepEqual(
+  is(h.state.comments, comments, 'comment log survives the update');
+  is(
     h.counters.renderedComments,
     comments,
     'the re-render still has the comments to draw'
@@ -173,17 +174,17 @@ test('preserves comments already attached to the card', () => {
 test('initialises a missing items array', () => {
   const h = makeHandler({ comments: {}, view: 'queue' });
   h.send({ action: 'ensure-item', id: 'page-9', title: 'Nine' });
-  assert.equal(h.state.items.length, 1);
+  is(h.state.items.length, 1);
 });
 
 test('does not switch away from the document view', () => {
   const h = makeHandler({ items: [{ ...baseItem }], comments: {}, view: 'document' });
   h.send({ action: 'ensure-item', id: 'page-1', title: 'Renamed' });
-  assert.deepEqual(h.counters.views, [], 'document view is left alone');
+  is(h.counters.views, [], 'document view is left alone');
 
   const q = makeHandler({ items: [{ ...baseItem }], comments: {}, view: 'queue' });
   q.send({ action: 'ensure-item', id: 'page-1', title: 'Renamed' });
-  assert.deepEqual(q.counters.views, ['queue']);
+  is(q.counters.views, ['queue']);
 });
 
 test('ensure-item copies cone onto the open document snapshot of the same card', () => {
@@ -200,11 +201,11 @@ test('ensure-item copies cone onto the open document snapshot of the same card',
     docItem: open,
   });
   h.send({ action: 'ensure-item', id: 'page-1', cone: 'cone-adobe' });
-  assert.equal(h.state.items[0].cone, 'cone-adobe');
-  assert.equal(h.state.docItem.cone, 'cone-adobe');
-  assert.equal(h.state.docItem.path, '/preview-override.md', 'open-file path overlay is left alone');
-  assert.equal(h.state.docItem.title, 'Override');
-  assert.deepEqual(h.counters.views, [], 'document view is left alone');
+  is(h.state.items[0].cone, 'cone-adobe');
+  is(h.state.docItem.cone, 'cone-adobe');
+  is(h.state.docItem.path, '/preview-override.md', 'open-file path overlay is left alone');
+  is(h.state.docItem.title, 'Override');
+  is(h.counters.views, [], 'document view is left alone');
 });
 
 test('ensure-item does not retarget a different open document', () => {
@@ -215,18 +216,18 @@ test('ensure-item does not retarget a different open document', () => {
     docItem: { id: 'other', cone: 'cone-keep' },
   });
   h.send({ action: 'ensure-item', id: 'page-1', cone: 'cone-adobe' });
-  assert.equal(h.state.items[0].cone, 'cone-adobe');
-  assert.equal(h.state.docItem.cone, 'cone-keep');
+  is(h.state.items[0].cone, 'cone-adobe');
+  is(h.state.docItem.cone, 'cone-keep');
 });
 
 test('stores a supplied cone on create and does not drop it on later enrichment', () => {
   const h = makeHandler({ items: [], comments: {}, view: 'queue' });
   h.send({ action: 'ensure-item', id: 'page-1', title: 'Security Page', cone: 'cone-adobe' });
-  assert.equal(h.state.items[0].cone, 'cone-adobe');
+  is(h.state.items[0].cone, 'cone-adobe');
   h.send({ action: 'ensure-item', id: 'page-1', path: '/shared/readable/security.md' });
-  assert.equal(h.state.items[0].cone, 'cone-adobe', 'omitting cone must not drop the filing owner');
+  is(h.state.items[0].cone, 'cone-adobe', 'omitting cone must not drop the filing owner');
   h.send({ action: 'ensure-item', id: 'page-1', cone: 'cone-helix' });
-  assert.equal(h.state.items[0].cone, 'cone-helix', 'a supplied cone is written like other allowlisted fields');
+  is(h.state.items[0].cone, 'cone-helix', 'a supplied cone is written like other allowlisted fields');
 });
 
 test('unknown fields stay dropped; cone is allowlisted', () => {
@@ -238,18 +239,18 @@ test('unknown fields stay dropped; cone is allowlisted', () => {
     cone: 'cone-adobe',
     mystery: 'nope',
   });
-  assert.equal(h.state.items[0].cone, 'cone-adobe');
-  assert.equal(h.state.items[0].mystery, undefined);
+  is(h.state.items[0].cone, 'cone-adobe');
+  is(h.state.items[0].mystery, undefined);
 });
 
 test('primary action labels survive enrichment and can be replaced or reset', () => {
   const h = makeHandler({ items: [], comments: {}, view: 'queue' });
   h.send({ action: 'ensure-item', id: 'page', primaryActionLabel: 'Publish' });
-  assert.equal(h.state.items[0].primaryActionLabel, 'Publish');
+  is(h.state.items[0].primaryActionLabel, 'Publish');
   h.send({ action: 'ensure-item', id: 'page', title: 'Enriched page' });
-  assert.equal(h.state.items[0].primaryActionLabel, 'Publish');
+  is(h.state.items[0].primaryActionLabel, 'Publish');
   h.send({ action: 'ensure-item', id: 'page', primaryActionLabel: 'Accept' });
-  assert.equal(h.state.items[0].primaryActionLabel, 'Accept');
+  is(h.state.items[0].primaryActionLabel, 'Accept');
   h.send({ action: 'ensure-item', id: 'page', primaryActionLabel: '' });
-  assert.equal(h.state.items[0].primaryActionLabel, '');
+  is(h.state.items[0].primaryActionLabel, '');
 });

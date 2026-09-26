@@ -1,14 +1,15 @@
-const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const vm = require('node:vm');
-const test = require('node:test');
+import test, { is, ok } from 'tst';
+import fs from 'node:fs';
+import path from 'node:path';
+import vm from 'node:vm';
+import { fileURLToPath } from 'node:url';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const reviewSource = fs.readFileSync(path.join(__dirname, '../scripts/review.jsh'), 'utf8');
 const aemSource = fs.readFileSync(path.join(__dirname, '../../aem/scripts/aem-ext.jsh'), 'utf8');
 const aemStart = aemSource.indexOf('function treeListUrl(');
 const aemEnd = aemSource.indexOf('// ── dispatch', aemStart);
-assert.ok(aemStart >= 0 && aemEnd > aemStart, 'AEM review command section must exist');
+ok(aemStart >= 0 && aemEnd > aemStart, 'AEM review command section must exist');
 
 async function aemCard(org, site, command = 'sweep', id) {
   let stdout = '';
@@ -111,12 +112,12 @@ test('sweep and enrichment IDs keep identical paths in different sites separate'
   const first = await aemCard('org-one', 'site-one');
   const second = await aemCard('org-one', 'site-two');
   const third = await aemCard('org-two', 'site-one');
-  assert.equal(new Set([first.id, second.id, third.id]).size, 3);
-  assert.equal(first.id, 'aem:org-one/site-one:index');
-  assert.equal((await aemCard('org-one', 'site-one', 'review')).id, first.id);
-  assert.equal((await aemCard('org-one', 'site-one', 'review', 'explicit')).id, 'explicit');
-  assert.equal(first.primaryActionLabel, 'Publish');
-  assert.equal((await aemCard('org-one', 'site-one', 'review')).primaryActionLabel, 'Publish');
+  is(new Set([first.id, second.id, third.id]).size, 3);
+  is(first.id, 'aem:org-one/site-one:index');
+  is((await aemCard('org-one', 'site-one', 'review')).id, first.id);
+  is((await aemCard('org-one', 'site-one', 'review', 'explicit')).id, 'explicit');
+  is(first.primaryActionLabel, 'Publish');
+  is((await aemCard('org-one', 'site-one', 'review')).primaryActionLabel, 'Publish');
 });
 
 test('ingest forwards site flags only to AEM and uses the sweep card ID', async () => {
@@ -130,9 +131,9 @@ test('ingest forwards site flags only to AEM and uses the sweep card ID', async 
       stdout: JSON.stringify({ source: argv[0], id: argv[argv.indexOf('--id') + 1] }),
     })
   );
-  assert.equal(result.code, 0);
-  assert.equal(JSON.parse(result.stdout).id, card.id);
-  assert.deepEqual(result.calls[0], [
+  is(result.code, 0);
+  is(JSON.parse(result.stdout).id, card.id);
+  is(result.calls[0], [
     'aem-ext',
     'review',
     '--path',
@@ -144,7 +145,7 @@ test('ingest forwards site flags only to AEM and uses the sweep card ID', async 
     '--site',
     'docs',
   ]);
-  assert.deepEqual(result.calls[1], ['pangram', 'review', '--path', '/index.md', '--id', card.id]);
+  is(result.calls[1], ['pangram', 'review', '--path', '/index.md', '--id', card.id]);
 });
 
 test('ingest preserves explicit IDs and passes org/site aliases as literal argv values', async () => {
@@ -154,8 +155,8 @@ test('ingest preserves explicit IDs and passes org/site aliases as literal argv 
     ['aem-ext'],
     async () => ({ exitCode: 0, stdout: '{"source":"aem-source"}' })
   );
-  assert.equal(result.code, 0);
-  assert.deepEqual(result.calls[0], [
+  is(result.code, 0);
+  is(result.calls[0], [
     'aem-ext',
     'review',
     '--path',
@@ -180,11 +181,11 @@ for (const failAction of ['ensure-item', 'add-findings', null]) {
         stderr: 'unavailable',
       };
     });
-    assert.equal(result.code, failAction ? 1 : 0);
-    assert.ok(
+    is(result.code, failAction ? 1 : 0);
+    ok(
       result.calls.some((argv) => argv[0] === 'sprinkle' && JSON.parse(argv[3]).id === 'second')
     );
-    assert.match(result.stderr, failAction ? /pushed 1 card\(s\).*1 failed/ : /pushed 2 card\(s\)/);
+    ok((failAction ? /pushed 1 card\(s\).*1 failed/ : /pushed 2 card\(s\)/).test(result.stderr));
   });
 }
 
@@ -202,9 +203,9 @@ test('ingest carries source labels, with the CLI override taking priority', asyn
             : '',
       })
     );
-    assert.equal(result.code, 0);
+    is(result.code, 0);
     const message = JSON.parse(result.calls.find((argv) => argv[0] === 'sprinkle')[3]);
-    assert.equal(message.primaryActionLabel, override || 'Accept');
+    is(message.primaryActionLabel, override || 'Accept');
   }
 });
 
@@ -214,9 +215,9 @@ test('ingest without a label preserves an existing label; AEM defaults to Publis
       exitCode: 0,
       stdout: argv[0] === source ? JSON.stringify({ source }) : '',
     }));
-    assert.equal(result.code, 0);
+    is(result.code, 0);
     const message = JSON.parse(result.calls.find((argv) => argv[0] === 'sprinkle')[3]);
-    assert.equal(message.primaryActionLabel, source === 'aem-ext' ? 'Publish' : undefined);
+    is(message.primaryActionLabel, source === 'aem-ext' ? 'Publish' : undefined);
   }
 });
 
@@ -236,13 +237,13 @@ test('sweep dry-run and delivered cards use the same label precedence', async ()
                 : '',
           })
         );
-        assert.equal(result.code, 0);
+        is(result.code, 0);
         const message = dryRun
           ? JSON.parse(result.stdout)
           : JSON.parse(result.calls.find((argv) => argv[0] === 'sprinkle')[3]);
-        assert.equal(message.primaryActionLabel, override || sourceLabel || 'Publish');
+        is(message.primaryActionLabel, override || sourceLabel || 'Publish');
         if (dryRun)
-          assert.equal(
+          is(
             result.calls.some((argv) => argv[0] === 'sprinkle'),
             false
           );
@@ -263,10 +264,10 @@ test('ingest and sweep stamp the filing cone from TMPDIR on ensure-item', async 
     }),
     env
   );
-  assert.equal(ingest.code, 0);
+  is(ingest.code, 0);
   const ingestMsg = JSON.parse(ingest.calls.find((argv) => argv[0] === 'sprinkle')[3]);
-  assert.equal(ingestMsg.action, 'ensure-item');
-  assert.equal(ingestMsg.cone, 'cone-adobe');
+  is(ingestMsg.action, 'ensure-item');
+  is(ingestMsg.cone, 'cone-adobe');
 
   const sweep = await review(
     'sweep',
@@ -278,11 +279,11 @@ test('ingest and sweep stamp the filing cone from TMPDIR on ensure-item', async 
     }),
     env
   );
-  assert.equal(sweep.code, 0);
+  is(sweep.code, 0);
   const sweepMsg = JSON.parse(
     sweep.calls.find((argv) => argv[0] === 'sprinkle' && JSON.parse(argv[3]).action === 'ensure-item')[3]
   );
-  assert.equal(sweepMsg.cone, 'cone-adobe');
+  is(sweepMsg.cone, 'cone-adobe');
 });
 
 test('ingest omits cone when TMPDIR is unset', async () => {
@@ -296,13 +297,13 @@ test('ingest omits cone when TMPDIR is unset', async () => {
     })
   );
   const message = JSON.parse(result.calls.find((argv) => argv[0] === 'sprinkle')[3]);
-  assert.equal(message.cone, undefined);
+  is(message.cone, undefined);
 });
 
 test('empty or non-string CLI labels fail before invoking a source', async () => {
   for (const value of ['', ' ', true, ['Publish', 'Approve']]) {
     const result = await review('ingest', { path: '/draft.md', 'primary-action-label': value });
-    assert.equal(result.code, 2);
-    assert.equal(result.calls.length, 0);
+    is(result.code, 2);
+    is(result.calls.length, 0);
   }
 });
