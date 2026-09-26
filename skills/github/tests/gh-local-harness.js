@@ -30,6 +30,8 @@ class NodeExitError extends Error {
  * scenario.repos     { 'owner/repo': { full_name, private } } for GET /repos/{slug}
  * scenario.bb        array returned by `bb project list --json` (omit: bb fails)
  * scenario.source    override the gh.jsh source (used by the red proofs)
+ * scenario.fs        replace the `fs` gh.jsh sees (wrap it to fail a step or to
+ *                    simulate a concurrent writer)
  * Returns { code, error, stdout, stderr, calls, execs, tokenCalls }; code is the
  * exit code (0 when the command returned normally).
  */
@@ -105,7 +107,7 @@ export async function runGh(args, scenario = {}) {
     'sliccy:http': { client: () => api },
     'sliccy:exec': exec,
     'sliccy:time': {},
-    fs,
+    fs: scenario.fs || fs,
   };
   const relativeModules = {
     './pr-watch-filter.js': () => _prWatchFilterMod.default || _prWatchFilterMod,
@@ -151,10 +153,15 @@ export async function runGh(args, scenario = {}) {
   return result;
 }
 
-/** A fresh scratch directory under /tmp for one test. */
-export function scratchDir(label) {
+/**
+ * A fresh scratch directory under /tmp for one test. Created with the ASYNC fs:
+ * in this realm mkdirSync only updates the sync snapshot cache until the file
+ * ends, so the live VFS (which async calls, and gh dashboard, see) would not
+ * have the directory yet.
+ */
+export async function scratchDir(label) {
   const dir = `/tmp/gh-tst-${label}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  fs.mkdirSync(dir, { recursive: true });
+  await fs.mkdir(dir, { recursive: true });
   return dir;
 }
 

@@ -18,8 +18,8 @@ const BB = [
   },
 ];
 
-function setup(label) {
-  const dir = scratchDir(label);
+async function setup(label) {
+  const dir = await scratchDir(label);
   const file = `${dir}/config.json`;
   return { dir, file, env: { GH_MONITOR_CONFIG: file } };
 }
@@ -27,7 +27,7 @@ function setup(label) {
 const run = (args, s, extra = {}) => runGh(args, { env: s.env, repos: REPOS, bb: BB, ...extra });
 
 test('monitor list on an absent config says nothing is monitored; --json is []', async () => {
-  const s = setup('mon-absent');
+  const s = await setup('mon-absent');
   const r = await run(['monitor', 'list'], s);
   is(r.code, 0, r.err);
   ok(/does not exist — nothing is monitored/.test(r.out), r.out);
@@ -38,7 +38,7 @@ test('monitor list on an absent config says nothing is monitored; --json is []',
 });
 
 test('monitor add creates the config, resolving the bb project by git remote', async () => {
-  const s = setup('mon-add');
+  const s = await setup('mon-add');
   const r = await run(['monitor', 'add', 'octocat/Hello-World'], s);
   is(r.code, 0, r.err);
   ok(/Monitoring octocat\/Hello-World/.test(r.out), 'the panel keys success on this line');
@@ -59,7 +59,7 @@ test('monitor add creates the config, resolving the bb project by git remote', a
 });
 
 test('monitor add --no-bb-project appends null; list --json keeps order and source', async () => {
-  const s = setup('mon-null');
+  const s = await setup('mon-null');
   is((await run(['monitor', 'add', 'octocat/Hello-World'], s)).code, 0);
   const r = await run(['monitor', 'add', 'octocat/Spoon-Knife', '--no-bb-project'], s);
   is(r.code, 0, r.err);
@@ -71,7 +71,7 @@ test('monitor add --no-bb-project appends null; list --json keeps order and sour
 });
 
 test('monitor add rejects a bad slug, contradicting flags, a duplicate and an unresolved bb project', async () => {
-  const s = setup('mon-reject');
+  const s = await setup('mon-reject');
   const bad = await run(['monitor', 'add', '.x/y'], s);
   is(bad.code, 1);
   ok(/invalid repository/.test(bad.err), bad.err);
@@ -98,7 +98,7 @@ test('monitor add rejects a bad slug, contradicting flags, a duplicate and an un
 });
 
 test('monitor rm removes; add-then-rm is a byte round trip; the last repo cannot be removed', async () => {
-  const s = setup('mon-rm');
+  const s = await setup('mon-rm');
   is((await run(['monitor', 'add', 'octocat/Hello-World'], s)).code, 0);
   const one = fs.readFileSync(s.file, 'utf8');
   is((await run(['monitor', 'add', 'octocat/Spoon-Knife', '--no-bb-project'], s)).code, 0);
@@ -118,7 +118,7 @@ test('monitor rm removes; add-then-rm is a byte round trip; the last repo cannot
 });
 
 test('monitor refuses a malformed config with exit 2 and leaves it alone', async () => {
-  const s = setup('mon-bad');
+  const s = await setup('mon-bad');
   fs.writeFileSync(s.file, '{"version": 1, "repos": [');
   const r = await run(['monitor', 'add', 'octocat/Hello-World'], s);
   is(r.code, 2);
@@ -127,7 +127,7 @@ test('monitor refuses a malformed config with exit 2 and leaves it alone', async
 });
 
 test('a failed monitor write leaves the original and no temp file (GH_MONITOR_FAULT)', async () => {
-  const s = setup('mon-fault');
+  const s = await setup('mon-fault');
   is((await run(['monitor', 'add', 'octocat/Hello-World'], s)).code, 0);
   const before = fs.readFileSync(s.file, 'utf8');
   for (const fault of ['throw-before-rename', 'corrupt-temp']) {

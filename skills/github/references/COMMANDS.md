@@ -21,7 +21,8 @@ command words, and always on a state-changing command; pass a literal `-h` after
 
 Available on: `pr view`, `pr list`, `pr edit`, `pr checks`, `issue view`, `issue list`, `run list`,
 `run view`, `repo view`, `release list`, `vars list`, `notifications list`, `search prs`,
-`search issues`, `project list`, `project list-items`, `monitor list`.
+`search issues`, `project list`, `project list-items`, `monitor list`. `dashboard update` and
+`dashboard show` take a bare `--json` (the stored entry, no field selection).
 
 ```bash
 gh pr view 123 --json statusCheckRollup,reviews,comments,mergeable
@@ -280,6 +281,56 @@ Acceptance test for anything this writes:
 ```bash
 node /shared/sprinkles/github-dashboard/fetch-snapshot.mjs --check-config   # exit 0 = accepted
 ```
+
+## Dashboard agent reports (`dashboard`)
+
+Owns the github-dashboard sprinkle's `data/reports.json`
+(default `/shared/sprinkles/github-dashboard/data/reports.json`): what an agent working an
+item reports about it. Local only: no GitHub call, and no token needed.
+
+```bash
+gh dashboard update <owner/repo#N> [--status working|needs-attention|done|clear]
+    [--thread <bb-thread-url|scoop-name>] [--pr <ref>] [--note <text>] [--file <path>] [--json]
+gh dashboard show [<owner/repo#N>] [--json] [--file <path>]
+gh dashboard clear <owner/repo#N> [--file <path>]
+```
+
+| Flag | Accepts | Stored as |
+|---|---|---|
+| key | `owner/repo#N` only. Anything else is a usage error (exit 1). | the entry's key |
+| `--status` | `working`, `needs-attention`, `done`; `clear` deletes the entry and cannot be combined with other fields | `"status"` |
+| `--thread` | a URL whose path has a `thr_[a-z0-9]+` segment, e.g. `https://bb.example.invalid/projects/proj_example01/threads/thr_example01` | `{"kind":"bb","id","url"}` |
+|  | a scoop name: letters, digits, `-`, `_`, no scheme, no slash | `{"kind":"scoop","name"}` |
+|  | a bare `thr_…` is **rejected**: pass the thread URL, because the id does not say which bb host it is on | — |
+| `--pr` | `N`, `#N` (both in the key's repo), `owner/repo#N`, `https://github.com/owner/repo/pull/N` | `"owner/repo#N"` |
+| `--note` | any text | `"note"` |
+
+At least one of `--status`, `--thread`, `--pr`, `--note` is required. Updates **merge**:
+the flags given overwrite their fields, and the other fields, including unknown ones, are
+kept. Every update sets `at` (ISO) and appends a compact entry to `history` (the fields it
+set, with `thread` as `bb:<id>`/`scoop:<name>` and `note` cut to 120 characters), which
+keeps the last 20. `update` prints one line with what is now recorded; `--json` prints the
+stored entry. `show` without a key lists every report (`--json`: the `reports` object); with
+a key it prints that report and its history, and a missing key is exit 1. Clearing an entry
+that is not there is a no-op (exit 0) that writes nothing.
+
+File format:
+
+```json
+{ "version": 1,
+  "reports": {
+    "owner/repo#N": { "status": "working", "thread": { "kind": "scoop", "name": "my-scoop" },
+                      "pr": "owner/repo#M", "note": "…", "at": "2026-…Z", "history": [ … ] } } }
+```
+
+Writes use the async (live) fs. The new file is staged as a sibling `reports.json.tmp-*` and
+read back. The target is then re-read, and the temp is renamed over it only if the target is
+still the version the update merged into. Otherwise the temp is dropped and the update is
+merged into the newer version, up to 5 attempts. Any failure removes the temp and leaves the
+file byte-identical. A file that does not parse, or is not `version: 1` with a `reports`
+object, is refused with exit 2. A missing data directory is an error: the command does not
+create directories. The full format is in the github-dashboard skill's
+`references/reports.md`.
 
 ## Raw API passthrough
 

@@ -511,6 +511,18 @@ const FLAG_SPECS = {
   },
   'monitor list': { ...JSON_FLAGS },
   'monitor rm': { ...REPO_FLAG },
+  // `dashboard` is keyed by its <owner/repo#N> argument; --file redirects the
+  // reports file (tests point it at /tmp).
+  'dashboard update': {
+    status: { type: 'string' },
+    thread: { type: 'string' },
+    pr: { type: 'string' },
+    note: { type: 'string' },
+    file: { type: 'string' },
+    json: { type: 'bool' },
+  },
+  'dashboard show': { file: { type: 'string' }, json: { type: 'bool' } },
+  'dashboard clear': { file: { type: 'string' }, json: { type: 'bool' } },
   'repo view': { ...REPO_FLAG, ...JSON_FLAGS },
   'repo archive': { ...REPO_FLAG },
   'repo clone': {
@@ -2803,6 +2815,371 @@ async function monitorRm(args) {
   ));
 }
 
+// ─── dashboard (github-dashboard agent reports) ──────────────────────────────
+//
+// `gh dashboard update|show|clear` OWNS the github-dashboard sprinkle's
+// data/reports.json: what an agent working an item says about it (status, the
+// agent thread doing the work, the PR it opened, a short note). The panel and
+// the fetcher only READ this file. Format (documented in the github-dashboard
+// skill's references/reports.md and in this skill's COMMANDS.md):
+//
+//   { "version": 1,
+//     "reports": {
+//       "owner/repo#N": { "status", "thread", "pr", "note", "at", "history": [...] } } }
+//
+// Local only: nothing here calls GitHub, so the family runs before token
+// resolution (see the router) and works in a scoop with no GitHub credential.
+//
+// WRITES go through the ASYNC fs API on purpose. In a jsh realm the sync API
+// (readFileSync/renameSync) is served from a snapshot cache taken when the
+// script starts, and cache-only mutations are flushed after it ends, so a sync
+// re-read cannot see a concurrent writer and a sync rename is not the moment
+// the file changes. The async calls go to the live VFS: readFile reads what is
+// there now, and rename is the VFS's native rename (a single metadata update
+// under the VFS write lock), so a reader sees either the old file or the new
+// one, never a prefix of it.
+
+const DASHBOARD_REPORTS_DEFAULT = '/shared/sprinkles/github-dashboard/data/reports.json';
+const DASHBOARD_HISTORY_CAP = 20;
+const DASHBOARD_HISTORY_NOTE_MAX = 120;
+const DASHBOARD_MAX_ATTEMPTS = 5;
+const DASHBOARD_STATUSES = ['working', 'needs-attention', 'done'];
+// owner/repo is MONITOR_SLUG_RE (the fetcher's stricter slug rule), then #N.
+const DASHBOARD_KEY_RE = /^([A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*)#([1-9][0-9]*)$/;
+const DASHBOARD_BB_THREAD_ID_RE = /^thr_[a-z0-9]+$/;
+// A bb thread id as one whole path segment of a thread URL.
+const DASHBOARD_BB_THREAD_IN_PATH_RE = /(?:^|\/)(thr_[a-z0-9]+)(?=\/|$)/;
+const DASHBOARD_SCOOP_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+const DASHBOARD_URL_SCHEME_RE = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//;
+const DASHBOARD_PR_URL_RE =
+  /^https?:\/\/(?:www\.)?github\.com\/([A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*)\/pull\/([1-9][0-9]*)(?:[/?#].*)?$/;
+
+const DASHBOARD_UPDATE_USAGE =
+  'usage: gh dashboard update <owner/repo#N> [--status working|needs-attention|done|clear]\n' +
+  '                           [--thread <bb-thread-url|scoop-name>] [--pr <ref>] [--note <text>]\n' +
+  '                           [--file <path>] [--json]';
+
+function dashboardKey(cmdLabel, raw, usage) {
+  const key = typeof raw === 'string' ? raw.trim() : '';
+  if (!key) cli.die(`${cmdLabel}: <owner/repo#N> required\n${usage}`);
+  const m = key.match(DASHBOARD_KEY_RE);
+  if (!m) {
+    cli.die(
+      `${cmdLabel}: invalid key ${JSON.stringify(key)} — expected owner/repo#N (e.g. octocat/Hello-World#42),\n` +
+      'the issue or PR the report is about.\n' + usage
+    );
+  }
+  return { key, repo: m[1], number: Number(m[2]) };
+}
+
+// ONE flag for both agent kinds, told apart by FORMAT, never by host name:
+//   https://<any-host>/…/thr_xxx/…  → a bb thread (the URL is what makes it
+//                                     openable, so it is kept whole)
+//   my-scoop_1                      → a SLICC scoop, by name
+//   thr_xxx (no URL)                → rejected: a bare id does not say which bb
+//                                     host it lives on, so the panel could never
+//                                     open it
+function dashboardThread(raw) {
+  const v = typeof raw === 'string' ? raw.trim() : '';
+  if (!v) cli.die('dashboard update: --thread needs a value: a bb thread URL or a scoop name');
+  if (DASHBOARD_URL_SCHEME_RE.test(v)) {
+    let url;
+    try { url = new URL(v); } catch { url = null; }
+    if (!url || (url.protocol !== 'https:' && url.protocol !== 'http:')) {
+      cli.die(`dashboard update: --thread ${JSON.stringify(v)} is not an http(s) URL`);
+    }
+    const m = url.pathname.match(DASHBOARD_BB_THREAD_IN_PATH_RE);
+    if (!m) {
+      cli.die(
+        `dashboard update: --thread ${JSON.stringify(v)} is a URL with no bb thread id (thr_…) in its path.\n` +
+        'Pass the bb thread\u2019s own URL, or a scoop name for a SLICC scoop.'
+      );
+    }
+    return { kind: 'bb', id: m[1], url: url.href };
+  }
+  if (DASHBOARD_BB_THREAD_ID_RE.test(v) || /^thr_/i.test(v)) {
+    cli.die(
+      `dashboard update: --thread ${v} looks like a bare bb thread id. Pass the thread URL instead\n` +
+      '(https://<your-bb-host>/…/threads/' + v + '): the id alone does not say which bb host the\n' +
+      'thread lives on, so the dashboard could not link to it.'
+    );
+  }
+  if (DASHBOARD_SCOOP_RE.test(v)) return { kind: 'scoop', name: v };
+  cli.die(
+    `dashboard update: --thread ${JSON.stringify(v)} is neither a bb thread URL (https://…/thr_…) nor a\n` +
+    'scoop name (letters, digits, - and _; no scheme, no slash).'
+  );
+}
+
+// N, #N, owner/repo#N or a GitHub PR URL → owner/repo#N. A bare number is a
+// PR in the key's own repo.
+function dashboardPr(raw, keyRepo) {
+  const v = typeof raw === 'string' ? raw.trim() : '';
+  let m = v.match(/^#?([1-9][0-9]*)$/);
+  if (m) return `${keyRepo}#${m[1]}`;
+  m = v.match(DASHBOARD_KEY_RE);
+  if (m) return `${m[1]}#${m[2]}`;
+  m = v.match(DASHBOARD_PR_URL_RE);
+  if (m) return `${m[1]}#${m[2]}`;
+  cli.die(
+    `dashboard update: --pr ${JSON.stringify(v)} is not a PR reference. Use N, #N, owner/repo#N or\n` +
+    'https://github.com/owner/repo/pull/N.'
+  );
+}
+
+function dashboardThreadLabel(t) {
+  if (!t) return null;
+  return t.kind === 'bb' ? `bb:${t.id}` : t.kind === 'scoop' ? `scoop:${t.name}` : JSON.stringify(t);
+}
+
+function dashboardReportsPath(flags) {
+  const p = typeof flags.file === 'string' ? flags.file.trim() : '';
+  return p || DASHBOARD_REPORTS_DEFAULT;
+}
+
+function dashboardIsEnoent(e) {
+  return e?.code === 'ENOENT' || /ENOENT|no such file|not found/i.test(e?.message || '');
+}
+
+// Live read. null = the file does not exist (a legitimate "no reports yet").
+async function dashboardReadRaw(path) {
+  try { return await fs.readFile(path); }
+  catch (e) {
+    if (dashboardIsEnoent(e)) return null;
+    throw e;
+  }
+}
+
+function validateDashboardText(raw) {
+  const bad = (why) => ({ ok: false, why });
+  if (!raw.trim()) return bad('the file is empty');
+  let parsed;
+  try { parsed = JSON.parse(raw); }
+  catch (e) { return bad('not valid JSON — ' + e.message); }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return bad('the top level must be a JSON object');
+  if (parsed.version !== 1) return bad(`unsupported "version": ${JSON.stringify(parsed.version)} (this command understands 1)`);
+  const reports = parsed.reports;
+  if (!reports || typeof reports !== 'object' || Array.isArray(reports)) return bad('"reports" must be an object keyed owner/repo#N');
+  for (const [k, entry] of Object.entries(reports)) {
+    if (!DASHBOARD_KEY_RE.test(k)) return bad(`key ${JSON.stringify(k)} is not owner/repo#N`);
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return bad(`reports[${JSON.stringify(k)}] must be an object`);
+  }
+  return { ok: true, data: parsed };
+}
+
+function parseDashboardFile(cmdLabel, path, raw) {
+  if (raw === null) return { version: 1, reports: {} };
+  const check = validateDashboardText(raw);
+  if (!check.ok) {
+    // Exit 2, like `gh monitor`: a broken file is not a bad command line, and
+    // rewriting a file this command cannot parse would destroy what is in it.
+    cli.die(
+      `${cmdLabel}: ${path} is not a valid reports file:\n  ${check.why}\n` +
+      'Refusing to act on it. Fix it by hand, or delete it to start from no reports.',
+      { prefix: 'gh', exitCode: 2 }
+    );
+  }
+  return check.data;
+}
+
+function serializeDashboard(data) {
+  return JSON.stringify(data, null, 2) + '\n';
+}
+
+// Read → mutate → write, safely against a concurrent writer and a failed write.
+//
+//   1. read the live file (raw bytes), parse, apply `mutate` to the parsed copy;
+//   2. serialise once and validate those exact bytes;
+//   3. stage them in a sibling temp file (same directory, so the rename is a
+//      same-filesystem metadata operation) and read the temp back;
+//   4. RE-READ the live file immediately before the rename. If it is no longer
+//      the bytes step 1 merged into, someone else wrote in between: discard the
+//      temp and start again from their version, so their update is merged,
+//      never clobbered;
+//   5. rename the temp over the target — the one step that makes it visible.
+// Any failure removes the temp and leaves the target byte-for-byte as it was.
+// The VFS has no compare-and-swap, so steps 4 and 5 are two calls; the window
+// between them is one RPC, not a whole read-merge-write.
+//
+// `mutate(data)` returns undefined for "nothing to write", or any value, which
+// is returned to the caller after a successful write. There is no fault-injection
+// switch: the tests wrap `fs` itself to fail a step or to write concurrently.
+async function dashboardMutate(cmdLabel, path, mutate) {
+  const dir = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) || '/' : '.';
+  for (let attempt = 1; attempt <= DASHBOARD_MAX_ATTEMPTS; attempt++) {
+    const before = await dashboardReadRaw(path);
+    const data = parseDashboardFile(cmdLabel, path, before);
+    const result = mutate(data);
+    if (result === undefined) return { written: false };
+
+    const json = serializeDashboard(data);
+    const pre = validateDashboardText(json);
+    if (!pre.ok) {
+      cli.die(`${cmdLabel}: refusing to write ${path} — the result would be invalid: ${pre.why}\nNothing was written.`, { prefix: 'gh' });
+    }
+    if (before === null && !(await fs.exists(dir))) {
+      cli.die(
+        `${cmdLabel}: ${dir} does not exist. Is the github-dashboard sprinkle installed? ` +
+        '(use --file <path> to write somewhere else)',
+        { prefix: 'gh' }
+      );
+    }
+
+    const tmp = `${path}.tmp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const scrub = async () => { try { await fs.rm(tmp); } catch {} };
+    try {
+      await fs.writeFile(tmp, json);
+      const back = await fs.readFile(tmp);
+      if (back !== json) throw new Error('the staged file read back differently from what was written');
+    } catch (e) {
+      await scrub();
+      cli.die(`${cmdLabel}: could not stage the update at ${tmp} — ${e.message}\n${path} is unchanged.`, { prefix: 'gh' });
+    }
+
+    const now = await dashboardReadRaw(path);
+    if (now !== before) {
+      await scrub();
+      continue; // a concurrent writer got in first: merge into their version
+    }
+    try {
+      await fs.rename(tmp, path);
+    } catch (e) {
+      await scrub();
+      cli.die(`${cmdLabel}: could not install the update over ${path} — ${e.message}\n${path} is unchanged.`, { prefix: 'gh' });
+    }
+    return { written: true, result };
+  }
+  cli.die(
+    `${cmdLabel}: ${path} kept changing underneath this update (${DASHBOARD_MAX_ATTEMPTS} attempts), so it was\n` +
+    'not written rather than risk overwriting someone else\u2019s report. Run it again.',
+    { prefix: 'gh' }
+  );
+}
+
+function dashboardSummary(key, entry) {
+  if (!entry) return `${key}: no report`;
+  const parts = [`status ${entry.status ?? '-'}`];
+  if (entry.thread) parts.push(`thread ${dashboardThreadLabel(entry.thread)}`);
+  if (entry.pr) parts.push(`pr ${entry.pr}`);
+  if (entry.note) parts.push(`note ${JSON.stringify(entry.note)}`);
+  return `${key}: ${parts.join(', ')} (at ${entry.at})`;
+}
+
+// ── gh dashboard update ──────────────────────────────────────────────────────
+
+async function dashboardUpdate(args) {
+  const usage = DASHBOARD_UPDATE_USAGE;
+  const { flags, positional } = parseArgs('dashboard update', args, FLAG_SPECS['dashboard update'], { rejectUnknown: true });
+  if (positional.length > 1) cli.die(`dashboard update: one <owner/repo#N> expected, got ${positional.length}\n${usage}`);
+  const { key, repo } = dashboardKey('dashboard update', positional[0], usage);
+
+  const status = flags.status === undefined ? undefined : String(flags.status).trim();
+  if (status !== undefined && status !== 'clear' && !DASHBOARD_STATUSES.includes(status)) {
+    cli.die(`dashboard update: --status must be one of ${[...DASHBOARD_STATUSES, 'clear'].join(', ')} (got ${JSON.stringify(status)})\n${usage}`);
+  }
+  const given = ['thread', 'pr', 'note'].filter((f) => flags[f] !== undefined);
+  if (status === 'clear') {
+    if (given.length) {
+      cli.die(`dashboard update: --status clear deletes the report, so ${given.map((f) => '--' + f).join(', ')} cannot go with it`);
+    }
+    return dashboardRemove('dashboard update', key, flags);
+  }
+  if (status === undefined && !given.length) {
+    cli.die(`dashboard update: nothing to record — pass at least one of --status, --thread, --pr, --note\n${usage}`);
+  }
+
+  // Validate every flag BEFORE touching the file.
+  const set = {};
+  if (status !== undefined) set.status = status;
+  if (flags.thread !== undefined) set.thread = dashboardThread(String(flags.thread));
+  if (flags.pr !== undefined) set.pr = dashboardPr(String(flags.pr), repo);
+  if (flags.note !== undefined) set.note = String(flags.note);
+
+  const path = dashboardReportsPath(flags);
+  const { result: entry } = await dashboardMutate('dashboard update', path, (data) => {
+    const prev = data.reports[key] || {};
+    const at = new Date().toISOString();
+    const step = { at };
+    if ('status' in set) step.status = set.status;
+    if ('thread' in set) step.thread = dashboardThreadLabel(set.thread);
+    if ('pr' in set) step.pr = set.pr;
+    if ('note' in set) {
+      step.note = set.note.length > DASHBOARD_HISTORY_NOTE_MAX
+        ? set.note.slice(0, DASHBOARD_HISTORY_NOTE_MAX - 1) + '\u2026'
+        : set.note;
+    }
+    const history = [...(Array.isArray(prev.history) ? prev.history : []), step].slice(-DASHBOARD_HISTORY_CAP);
+    const next = {
+      status: 'status' in set ? set.status : (prev.status ?? null),
+      thread: 'thread' in set ? set.thread : (prev.thread ?? null),
+      pr: 'pr' in set ? set.pr : (prev.pr ?? null),
+      note: 'note' in set ? set.note : (prev.note ?? null),
+      at,
+      history,
+    };
+    // Unknown fields a later version (or a hand edit) put on the entry survive.
+    for (const k of Object.keys(prev)) if (!(k in next)) next[k] = prev[k];
+    data.reports[key] = next;
+    return next;
+  });
+
+  if (flags.json) { console.log(JSON.stringify(entry, null, 2)); return; }
+  console.log(`${sym('success')} ${dashboardSummary(key, entry)}`);
+}
+
+// ── gh dashboard clear (and update --status clear) ───────────────────────────
+
+async function dashboardRemove(cmdLabel, key, flags) {
+  const path = dashboardReportsPath(flags);
+  const { written } = await dashboardMutate(cmdLabel, path, (data) => {
+    if (!Object.hasOwn(data.reports, key)) return undefined;
+    delete data.reports[key];
+    return true;
+  });
+  if (flags.json) { console.log('null'); return; }
+  console.log(written
+    ? `${sym('success')} ${key}: report cleared`
+    : `${key}: no report recorded, nothing to clear`);
+}
+
+async function dashboardClear(args) {
+  const usage = 'usage: gh dashboard clear <owner/repo#N> [--file <path>]';
+  const { flags, positional } = parseArgs('dashboard clear', args, FLAG_SPECS['dashboard clear'], { rejectUnknown: true });
+  if (positional.length > 1) cli.die(`dashboard clear: one <owner/repo#N> expected, got ${positional.length}\n${usage}`);
+  const { key } = dashboardKey('dashboard clear', positional[0], usage);
+  return dashboardRemove('dashboard clear', key, flags);
+}
+
+// ── gh dashboard show ────────────────────────────────────────────────────────
+
+async function dashboardShow(args) {
+  const usage = 'usage: gh dashboard show [<owner/repo#N>] [--json] [--file <path>]';
+  const { flags, positional } = parseArgs('dashboard show', args, FLAG_SPECS['dashboard show'], { rejectUnknown: true });
+  if (positional.length > 1) cli.die(`dashboard show: at most one <owner/repo#N>, got ${positional.length}\n${usage}`);
+  const path = dashboardReportsPath(flags);
+  const data = parseDashboardFile('dashboard show', path, await dashboardReadRaw(path));
+
+  if (positional.length) {
+    const { key } = dashboardKey('dashboard show', positional[0], usage);
+    const entry = data.reports[key];
+    if (!entry) cli.die(`dashboard show: no report for ${key} in ${path}`);
+    if (flags.json) { console.log(JSON.stringify(entry, null, 2)); return; }
+    console.log(dashboardSummary(key, entry));
+    const history = Array.isArray(entry.history) ? entry.history : [];
+    for (const h of history) {
+      const bits = Object.entries(h).filter(([k]) => k !== 'at').map(([k, v]) => `${k} ${typeof v === 'string' ? v : JSON.stringify(v)}`);
+      console.log(color.gray(`  ${h.at}  ${bits.join(', ')}`));
+    }
+    return;
+  }
+
+  if (flags.json) { console.log(JSON.stringify(data.reports, null, 2)); return; }
+  const keys = Object.keys(data.reports).sort();
+  if (!keys.length) { console.log(color.gray(`No reports · ${path}`)); return; }
+  for (const k of keys) console.log(dashboardSummary(k, data.reports[k]));
+  console.log(color.gray(`${keys.length} report${keys.length === 1 ? '' : 's'} · ${path}`));
+}
+
 // ─── repo view ───────────────────────────────────────────────────────────────
 
 const REPO_FIELDS = [
@@ -4958,6 +5335,42 @@ const HELP = {
       },
     },
   },
+  dashboard: {
+    summary: 'What agents report about dashboard items (owns the github-dashboard data/reports.json)',
+    subs: {
+      update: {
+        usage: [
+          'gh dashboard update <owner/repo#N> [--status working|needs-attention|done|clear]',
+          '    [--thread <bb-thread-url|scoop-name>] [--pr <ref>] [--note <text>] [--file <path>] [--json]',
+        ],
+        desc: 'Record or change the report for an issue/PR (given flags overwrite, the rest are kept)',
+        flags: [
+          '--status <s>              working, needs-attention, done, or clear (deletes the report)',
+          '--thread <ref>            the agent doing the work: a bb thread URL (https://…/thr_xxx…)',
+          '                          or a SLICC scoop name; a bare thr_ id is rejected',
+          '--pr <ref>                N, #N, owner/repo#N or a GitHub PR URL; stored as owner/repo#N',
+          '--note <text>             a short free-text note',
+          '--file <path>             reports file (default ' + DASHBOARD_REPORTS_DEFAULT + ')',
+          '--json                    print the stored entry as JSON',
+        ],
+        notes: [
+          'Every update stamps "at" and appends to the entry\u2019s history (last ' + DASHBOARD_HISTORY_CAP + ' kept).',
+          'Local only: no GitHub call and no token needed. The write is staged in a sibling temp',
+          'file and renamed into place, after re-reading the file so a concurrent update is merged.',
+        ],
+      },
+      show: {
+        usage: ['gh dashboard show [--json] [--file <path>]', 'gh dashboard show <owner/repo#N> [--json] [--file <path>]'],
+        desc: 'List every report, or one report with its history',
+        flags: ['--json                    print the stored reports (or the one entry) as JSON', '--file <path>             reports file'],
+      },
+      clear: {
+        usage: ['gh dashboard clear <owner/repo#N> [--file <path>]'],
+        desc: 'Delete the report for an issue/PR (same as update --status clear)',
+        flags: ['--file <path>             reports file'],
+      },
+    },
+  },
   api: {
     summary: 'Raw GitHub REST API passthrough',
     standalone: {
@@ -5137,6 +5550,9 @@ ${color.bold('COMMANDS')}
   ${color.cyan('monitor add')}    <owner/repo> [--bb-project P|--no-bb-project]  Watch a repo on the dashboard
   ${color.cyan('monitor list')}   [--json]                                     List dashboard-monitored repos
   ${color.cyan('monitor rm')}     <owner/repo>                                 Stop watching a repo
+  ${color.cyan('dashboard update')} <o/r#N> [--status S] [--thread T] [--pr P] [--note N]  Record an agent report
+  ${color.cyan('dashboard show')}   [<o/r#N>] [--json]                        List agent reports
+  ${color.cyan('dashboard clear')}  <o/r#N>                                   Delete an agent report
   ${color.cyan('api')}           <path> [-X METHOD] [-f key=val]... [--jq E]  Raw API call
   ${color.cyan('mcp tools')}     [--json]                                     List MCP server tools
   ${color.cyan('mcp call')}      <tool> [-F key=val]... [--jq E]              Invoke an MCP tool
@@ -5249,6 +5665,26 @@ if (argv[0] === 'mcp' && argv[1] === 'server-card') {
   } catch (err) {
     if (err?.name === 'NodeExitError') throw err;
     cli.die('mcp server-card failed: ' + (err.body?.message || err.message), { prefix: 'gh mcp' });
+  }
+  process.exit(0);
+}
+
+// `gh dashboard` is local-only (it writes the github-dashboard's reports.json and
+// never calls GitHub), so like `mcp server-card` it runs without a GitHub token.
+if (argv[0] === 'dashboard') {
+  const dashboardSubs = { update: dashboardUpdate, show: dashboardShow, clear: dashboardClear };
+  const run = dashboardSubs[argv[1]];
+  if (!run) {
+    cli.die(
+      "unknown subcommand: 'dashboard " + (argv[1] || '') + "'. Run `gh dashboard --help` for this " +
+      'command\u2019s subcommands, or `gh --help` for everything.'
+    );
+  }
+  try {
+    await run(argv.slice(2));
+  } catch (err) {
+    if (err?.name === 'NodeExitError') throw err;
+    cli.die('dashboard ' + argv[1] + ' failed: ' + (err.body?.message || err.message), { prefix: 'gh' });
   }
   process.exit(0);
 }

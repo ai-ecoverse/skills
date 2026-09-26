@@ -9,13 +9,15 @@ description: >
   workflow runs, releases, searching PRs or issues, managing Actions variables,
   creating branches, pushing file content, archiving/cloning repos, marking PRs ready
   for review, managing org-owned Projects (v2), choosing which repositories the
-  github-dashboard sprinkle monitors, or calling any GitHub API endpoint directly.
+  github-dashboard sprinkle monitors, recording an agent's status report on a dashboard
+  item, or calling any GitHub API endpoint directly.
   Trigger on "list open PRs", "show the PR diff", "search issues", "check CI",
   "why did CI fail", "merge this PR", "what issues are open", "has this been filed",
   "show the latest release", "comment on PR #42", "set a repo variable",
   "create a branch", "push this file", "list my GitHub projects", "clone this repo",
   "mark PR ready for review", "monitor this repo on the dashboard",
-  "add a repo to the sidebar", "which repos are we monitoring".
+  "add a repo to the sidebar", "which repos are we monitoring",
+  "report status to the dashboard".
 allowed_tools:
   - bash
 ---
@@ -190,6 +192,20 @@ file exactly.
 Testing override: `GH_MONITOR_CONFIG=/tmp/x.json` points the family at a scratch config (the
 fetcher always reads the real path). `GH_MONITOR_FAULT=corrupt-temp|throw-before-rename` injects
 a mid-write failure to demonstrate that a failed write leaves the original untouched.
+
+### Report what an agent is doing on a dashboard item
+
+```bash
+gh dashboard update octocat/Hello-World#42 --status working --thread my-scoop
+gh dashboard update octocat/Hello-World#42 --pr 57 --note "fix pushed"   # merges; status kept
+gh dashboard show [octocat/Hello-World#42] [--json]
+gh dashboard clear octocat/Hello-World#42
+```
+
+These write the github-dashboard's `data/reports.json`, locally and without a GitHub token.
+`--thread` takes a bb thread **URL** or a scoop name, never a bare `thr_` id. `--pr` takes `N`,
+`#N`, `owner/repo#N` or a PR URL. Test with `--file /tmp/…`. Flags and format:
+[`references/COMMANDS.md`](references/COMMANDS.md#dashboard-agent-reports-dashboard).
 
 ## Mutating and destructive operations
 
