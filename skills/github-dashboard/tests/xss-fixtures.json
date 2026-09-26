@@ -1,0 +1,951 @@
+{
+  "note": "Acceptance gate for src/markdown.js. Every fixture is text that could arrive in a GitHub issue body or comment. A panel XSS is arbitrary command execution with full VFS access (the sprinkle bridge exposes exec/readDir/writeFile/rm/fetch/agent), so each case must be shown BOTH not to execute and not to leave the dangerous attribute or scheme in the resulting DOM. Fixtures that set window.__xssFired are the execution canaries. Phase 7m adds the trusted-image-host cases: imgSrcAllOf/imgAttrs assertions inspect the built <img>, which the panel creates itself from a vetted, NORMALISED URL — no src from input is ever assigned to an img element.",
+  "fixtures": [
+    {
+      "id": "script-tag",
+      "md": "hello <script>window.__xssFired='script-tag'</script> world",
+      "expect": {
+        "noTags": [
+          "script"
+        ],
+        "textContains": "hello"
+      }
+    },
+    {
+      "id": "img-onerror",
+      "md": "![x](y) <img src=x onerror=\"window.__xssFired='img-onerror'\">",
+      "expect": {
+        "noTags": [
+          "img"
+        ],
+        "noAttrs": [
+          "onerror",
+          "src"
+        ]
+      }
+    },
+    {
+      "id": "svg-onload",
+      "md": "<svg onload=\"window.__xssFired='svg-onload'\"><circle r=10 /></svg>",
+      "expect": {
+        "noTags": [
+          "svg",
+          "circle"
+        ],
+        "noAttrs": [
+          "onload"
+        ]
+      }
+    },
+    {
+      "id": "link-javascript",
+      "md": "[click me](javascript:window.__xssFired='link-js')",
+      "expect": {
+        "noHrefScheme": [
+          "javascript:"
+        ],
+        "textContains": "click me"
+      }
+    },
+    {
+      "id": "link-javascript-obfuscated",
+      "md": "[obf](java\tscript:window.__xssFired='obf')",
+      "expect": {
+        "noHrefScheme": [
+          "javascript:",
+          "java"
+        ]
+      }
+    },
+    {
+      "id": "link-javascript-entity",
+      "md": "[ent](&#106;avascript:window.__xssFired='ent')",
+      "expect": {
+        "noHrefScheme": [
+          "javascript:"
+        ]
+      }
+    },
+    {
+      "id": "link-data-html",
+      "md": "[data](data:text/html;base64,PHNjcmlwdD53aW5kb3cuX194c3NGaXJlZD0nZGF0YSc8L3NjcmlwdD4=)",
+      "expect": {
+        "noHrefScheme": [
+          "data:"
+        ]
+      }
+    },
+    {
+      "id": "link-vbscript",
+      "md": "[vb](vbscript:msgbox(1))",
+      "expect": {
+        "noHrefScheme": [
+          "vbscript:"
+        ]
+      }
+    },
+    {
+      "id": "img-data-uri",
+      "md": "![i](data:image/svg+xml;base64,PHN2ZyBvbmxvYWQ9J3dpbmRvdy5fX3hzc0ZpcmVkPSJpbWciJz48L3N2Zz4=)",
+      "expect": {
+        "noTags": [
+          "img"
+        ],
+        "noHrefScheme": [
+          "data:"
+        ]
+      }
+    },
+    {
+      "id": "img-untrusted-host",
+      "md": "![badge](https://img.shields.io/badge/a-b.svg)",
+      "expect": {
+        "noTags": [
+          "img"
+        ],
+        "noAttrs": [
+          "src"
+        ]
+      },
+      "note": "7m: an untrusted host still becomes a link, never an <img>."
+    },
+    {
+      "id": "iframe",
+      "md": "<iframe src=\"https://example.com/x\" onload=\"window.__xssFired='iframe'\"></iframe>",
+      "expect": {
+        "noTags": [
+          "iframe"
+        ],
+        "noAttrs": [
+          "src",
+          "onload"
+        ]
+      }
+    },
+    {
+      "id": "object-embed",
+      "md": "<object data=\"javascript:window.__xssFired='object'\"></object><embed src=\"x.swf\">",
+      "expect": {
+        "noTags": [
+          "object",
+          "embed"
+        ],
+        "noAttrs": [
+          "data",
+          "src"
+        ]
+      }
+    },
+    {
+      "id": "handler-on-allowed-tag",
+      "md": "<p onmouseover=\"window.__xssFired='handler'\" onclick=\"window.__xssFired='handler2'\">hover me</p>",
+      "expect": {
+        "noAttrs": [
+          "onmouseover",
+          "onclick"
+        ],
+        "textContains": "hover me"
+      }
+    },
+    {
+      "id": "html-in-fenced-code",
+      "md": "```html\n<script>window.__xssFired='fenced'</script>\n```",
+      "expect": {
+        "noTags": [
+          "script"
+        ],
+        "hasTags": [
+          "pre",
+          "code"
+        ],
+        "textContains": "<script>"
+      }
+    },
+    {
+      "id": "html-in-inline-code",
+      "md": "inline `<img src=x onerror=window.__xssFired='inline'>` span",
+      "expect": {
+        "noTags": [
+          "img"
+        ],
+        "hasTags": [
+          "code"
+        ],
+        "textContains": "onerror"
+      },
+      "note": "The dangerous string must survive as TEXT inside <code> — that is correct rendering. The gate therefore checks attributes, never serialised HTML, or escaped text trips it."
+    },
+    {
+      "id": "target-from-input",
+      "md": "<a href=\"https://example.com\" target=\"_self\" rel=\"opener\">link</a>",
+      "expect": {
+        "anchorsAllBlank": true
+      }
+    },
+    {
+      "id": "malformed-nesting",
+      "md": "<div><p><a href=\"javascript:window.__xssFired='mal'\"><svg><script>window.__xssFired='mal2'</script></a></p>",
+      "expect": {
+        "noTags": [
+          "script",
+          "svg"
+        ],
+        "noHrefScheme": [
+          "javascript:"
+        ]
+      }
+    },
+    {
+      "id": "mxss-style-comment",
+      "md": "<style><!--</style><img src=x onerror=\"window.__xssFired='mxss'\">--></style>",
+      "expect": {
+        "noTags": [
+          "style",
+          "img"
+        ],
+        "noAttrs": [
+          "onerror"
+        ]
+      }
+    },
+    {
+      "id": "form-input",
+      "md": "<form action=\"https://evil.example/x\"><input name=a value=b><button formaction=\"javascript:window.__xssFired='form'\">go</button></form>",
+      "expect": {
+        "noTags": [
+          "form",
+          "input",
+          "button"
+        ],
+        "noAttrs": [
+          "formaction",
+          "action"
+        ]
+      }
+    },
+    {
+      "id": "base-tag",
+      "md": "<base href=\"https://evil.example/\">[rel](https://example.com/ok)",
+      "expect": {
+        "noTags": [
+          "base"
+        ]
+      }
+    },
+    {
+      "id": "meta-refresh",
+      "md": "<meta http-equiv=\"refresh\" content=\"0;url=javascript:window.__xssFired='meta'\">",
+      "expect": {
+        "noTags": [
+          "meta"
+        ],
+        "noAttrs": [
+          "http-equiv",
+          "content"
+        ]
+      }
+    },
+    {
+      "id": "noscript-bypass",
+      "md": "<noscript><p title=\"</noscript><img src=x onerror=window.__xssFired='ns'>\">x</p></noscript>",
+      "expect": {
+        "noTags": [
+          "noscript",
+          "img"
+        ],
+        "noAttrs": [
+          "onerror"
+        ]
+      }
+    },
+    {
+      "id": "style-attr",
+      "md": "<p style=\"background:url(javascript:window.__xssFired='style')\">styled</p>",
+      "expect": {
+        "noAttrs": [
+          "style"
+        ],
+        "textContains": "styled"
+      }
+    },
+    {
+      "id": "template-tag",
+      "md": "<template><img src=x onerror=window.__xssFired='tpl'></template>",
+      "expect": {
+        "noTags": [
+          "template",
+          "img"
+        ]
+      }
+    },
+    {
+      "id": "animation-handler",
+      "md": "<p onanimationstart=\"window.__xssFired='anim'\">a</p><p onbegin=\"window.__xssFired='anim2'\">b</p>",
+      "expect": {
+        "noAttrs": [
+          "onanimationstart",
+          "onbegin"
+        ]
+      }
+    },
+    {
+      "id": "legit-markdown",
+      "md": "## Heading\n\nSome **bold**, some `code`, a [real link](https://example.com/page?a=1&b=2).\n\n- item one\n- item two\n\n> quoted\n\n```js\nconst a = 1;\n```\n\n| a | b |\n| - | - |\n| 1 | 2 |\n",
+      "expect": {
+        "hasTags": [
+          "h2",
+          "strong",
+          "code",
+          "a",
+          "ul",
+          "li",
+          "blockquote",
+          "pre",
+          "table"
+        ],
+        "anchorsAllBlank": true,
+        "textContains": "item two"
+      }
+    },
+    {
+      "id": "legit-github-html",
+      "md": "<sup>[**Backlog Dispatcher**](https://cosmos.example/session?agentId=01M2)</sup>\n\nSkipped by the dispatcher.",
+      "expect": {
+        "hasTags": [
+          "sup",
+          "a",
+          "strong"
+        ],
+        "anchorsAllBlank": true,
+        "textContains": "Skipped by the dispatcher"
+      }
+    },
+    {
+      "id": "details-summary",
+      "md": "<details><summary>more</summary>\n\nhidden **body**\n\n</details>",
+      "expect": {
+        "hasTags": [
+          "details",
+          "summary"
+        ],
+        "textContains": "hidden"
+      }
+    },
+    {
+      "id": "mailto-and-relative",
+      "md": "[mail](mailto:a@b.example) and [rel](/relative/path) and [frag](#anchor)",
+      "expect": {
+        "noHrefScheme": [
+          "/relative",
+          "#anchor"
+        ],
+        "hasTags": [
+          "span"
+        ],
+        "textContains": "frag",
+        "anchorsAllBlank": true
+      },
+      "note": "mailto survives (allowlisted); a relative href and a bare fragment are dropped to text, because the panel has no routes for them to mean anything."
+    },
+    {
+      "id": "img-ok-github-attachment",
+      "md": "![shot](https://github.com/user-attachments/assets/aaa.png)",
+      "expect": {
+        "hasTags": [
+          "img"
+        ],
+        "imgSrcAllOf": [
+          "https://"
+        ],
+        "imgAttrs": {
+          "loading": "lazy",
+          "decoding": "async",
+          "referrerpolicy": "no-referrer"
+        },
+        "noAttrs": [
+          "srcset",
+          "usemap",
+          "onerror",
+          "onload"
+        ]
+      },
+      "note": "the modern upload URL"
+    },
+    {
+      "id": "img-ok-user-images",
+      "md": "![shot](https://user-images.githubusercontent.com/1/a.png)",
+      "expect": {
+        "hasTags": [
+          "img"
+        ],
+        "imgSrcAllOf": [
+          "https://"
+        ],
+        "imgAttrs": {
+          "loading": "lazy",
+          "decoding": "async",
+          "referrerpolicy": "no-referrer"
+        },
+        "noAttrs": [
+          "srcset",
+          "usemap",
+          "onerror",
+          "onload"
+        ]
+      },
+      "note": "legacy drag-drop uploads"
+    },
+    {
+      "id": "img-ok-raw",
+      "md": "![shot](https://raw.githubusercontent.com/o/r/main/a.png)",
+      "expect": {
+        "hasTags": [
+          "img"
+        ],
+        "imgSrcAllOf": [
+          "https://"
+        ],
+        "imgAttrs": {
+          "loading": "lazy",
+          "decoding": "async",
+          "referrerpolicy": "no-referrer"
+        },
+        "noAttrs": [
+          "srcset",
+          "usemap",
+          "onerror",
+          "onload"
+        ]
+      },
+      "note": "raw repo content"
+    },
+    {
+      "id": "img-ok-avatars",
+      "md": "![shot](https://avatars.githubusercontent.com/u/1?v=4)",
+      "expect": {
+        "hasTags": [
+          "img"
+        ],
+        "imgSrcAllOf": [
+          "https://"
+        ],
+        "imgAttrs": {
+          "loading": "lazy",
+          "decoding": "async",
+          "referrerpolicy": "no-referrer"
+        },
+        "noAttrs": [
+          "srcset",
+          "usemap",
+          "onerror",
+          "onload"
+        ]
+      },
+      "note": "avatars"
+    },
+    {
+      "id": "img-ok-objects",
+      "md": "![shot](https://objects.githubusercontent.com/gh-release-asset/1)",
+      "expect": {
+        "hasTags": [
+          "img"
+        ],
+        "imgSrcAllOf": [
+          "https://"
+        ],
+        "imgAttrs": {
+          "loading": "lazy",
+          "decoding": "async",
+          "referrerpolicy": "no-referrer"
+        },
+        "noAttrs": [
+          "srcset",
+          "usemap",
+          "onerror",
+          "onload"
+        ]
+      },
+      "note": "release assets and LFS"
+    },
+    {
+      "id": "img-ok-camo",
+      "md": "![shot](https://camo.githubusercontent.com/abcdef)",
+      "expect": {
+        "hasTags": [
+          "img"
+        ],
+        "imgSrcAllOf": [
+          "https://"
+        ],
+        "imgAttrs": {
+          "loading": "lazy",
+          "decoding": "async",
+          "referrerpolicy": "no-referrer"
+        },
+        "noAttrs": [
+          "srcset",
+          "usemap",
+          "onerror",
+          "onload"
+        ]
+      },
+      "note": "GitHub's own image proxy"
+    },
+    {
+      "id": "img-ok-apex",
+      "md": "![shot](https://githubusercontent.com/x.png)",
+      "expect": {
+        "hasTags": [
+          "img"
+        ],
+        "imgSrcAllOf": [
+          "https://"
+        ],
+        "imgAttrs": {
+          "loading": "lazy",
+          "decoding": "async",
+          "referrerpolicy": "no-referrer"
+        },
+        "noAttrs": [
+          "srcset",
+          "usemap",
+          "onerror",
+          "onload"
+        ]
+      },
+      "note": "the apex host itself"
+    },
+    {
+      "id": "img-ok-mixed-case",
+      "md": "![shot](https://GitHub.com/User-Attachments/Assets/B.PNG)",
+      "expect": {
+        "hasTags": [
+          "img"
+        ],
+        "imgSrcAllOf": [
+          "https://"
+        ],
+        "imgAttrs": {
+          "loading": "lazy",
+          "decoding": "async",
+          "referrerpolicy": "no-referrer"
+        },
+        "noAttrs": [
+          "srcset",
+          "usemap",
+          "onerror",
+          "onload"
+        ]
+      },
+      "note": "case folded by the URL API"
+    },
+    {
+      "id": "img-ok-trailing-dot",
+      "md": "![shot](https://github.com./x.png)",
+      "expect": {
+        "hasTags": [
+          "img"
+        ],
+        "imgSrcAllOf": [
+          "https://"
+        ],
+        "imgAttrs": {
+          "loading": "lazy",
+          "decoding": "async",
+          "referrerpolicy": "no-referrer"
+        },
+        "noAttrs": [
+          "srcset",
+          "usemap",
+          "onerror",
+          "onload"
+        ]
+      },
+      "note": "a trailing root dot is the same host"
+    },
+    {
+      "id": "img-ok-pct-encoded",
+      "md": "![shot](https://%67ithub.com/x.png)",
+      "expect": {
+        "hasTags": [
+          "img"
+        ],
+        "imgSrcAllOf": [
+          "https://"
+        ],
+        "imgAttrs": {
+          "loading": "lazy",
+          "decoding": "async",
+          "referrerpolicy": "no-referrer"
+        },
+        "noAttrs": [
+          "srcset",
+          "usemap",
+          "onerror",
+          "onload"
+        ]
+      },
+      "note": "percent-encoded host decodes to github.com"
+    },
+    {
+      "id": "img-ok-default-port",
+      "md": "![shot](https://github.com:443/x.png)",
+      "expect": {
+        "hasTags": [
+          "img"
+        ],
+        "imgSrcAllOf": [
+          "https://"
+        ],
+        "imgAttrs": {
+          "loading": "lazy",
+          "decoding": "async",
+          "referrerpolicy": "no-referrer"
+        },
+        "noAttrs": [
+          "srcset",
+          "usemap",
+          "onerror",
+          "onload"
+        ]
+      },
+      "note": "the default port explicitly"
+    },
+    {
+      "id": "img-no-backslash-authority",
+      "md": "![shot](https://github.com\\@evil.com/x.png)",
+      "expect": {
+        "noTags": [
+          "img"
+        ],
+        "textContains": "shot"
+      },
+      "note": "markdown escaping turns \\@ into @ before the URL is ever parsed, so this arrives as credentials-in-authority and is rejected. Outside markdown a backslash would end the authority and the host really would be github.com — the URL API handles that too, which is why this is not a regex."
+    },
+    {
+      "id": "img-ok-idna-dot",
+      "md": "![shot](https://github。com/x.png)",
+      "expect": {
+        "hasTags": [
+          "img"
+        ],
+        "imgSrcAllOf": [
+          "https://"
+        ],
+        "imgAttrs": {
+          "loading": "lazy",
+          "decoding": "async",
+          "referrerpolicy": "no-referrer"
+        },
+        "noAttrs": [
+          "srcset",
+          "usemap",
+          "onerror",
+          "onload"
+        ]
+      },
+      "note": "IDNA maps the ideographic full stop to a dot: really github.com"
+    },
+    {
+      "id": "img-ok-protocol-relative-trusted",
+      "md": "![shot](//raw.githubusercontent.com/x.png)",
+      "expect": {
+        "hasTags": [
+          "img"
+        ],
+        "imgSrcAllOf": [
+          "https://"
+        ],
+        "imgAttrs": {
+          "loading": "lazy",
+          "decoding": "async",
+          "referrerpolicy": "no-referrer"
+        },
+        "noAttrs": [
+          "srcset",
+          "usemap",
+          "onerror",
+          "onload"
+        ]
+      },
+      "note": "resolves to https on a trusted host; the panel uses the NORMALISED href, so the browser cannot resolve it differently"
+    },
+    {
+      "id": "img-ok-svg",
+      "md": "![diagram](https://raw.githubusercontent.com/o/r/main/d.svg)",
+      "expect": {
+        "hasTags": [
+          "img"
+        ],
+        "imgSrcAllOf": [
+          ".svg"
+        ],
+        "noTags": [
+          "script",
+          "svg"
+        ]
+      },
+      "note": "SVG from a trusted host IS allowed: script inside an SVG does not execute when it is loaded through <img> (no scripted content in an image document). Stated deliberately, not by accident."
+    },
+    {
+      "id": "img-ok-alt-preserved",
+      "md": "![a screenshot of the failure](https://user-images.githubusercontent.com/1/b.png)",
+      "expect": {
+        "hasTags": [
+          "img"
+        ],
+        "imgAttrs": {
+          "alt": "a screenshot of the failure"
+        }
+      },
+      "note": "alt text survives"
+    },
+    {
+      "id": "img-no-credentials",
+      "md": "![shot](https://github.com@evil.com/x.png)",
+      "expect": {
+        "noTags": [
+          "img"
+        ],
+        "textContains": "shot"
+      },
+      "note": "credentials in the authority: the host is evil.com"
+    },
+    {
+      "id": "img-no-userpass",
+      "md": "![shot](https://user:pass@github.com/x.png)",
+      "expect": {
+        "noTags": [
+          "img"
+        ],
+        "textContains": "shot"
+      },
+      "note": "any credentials at all are refused"
+    },
+    {
+      "id": "img-no-suffix-lookalike",
+      "md": "![shot](https://evil-github.com/x.png)",
+      "expect": {
+        "noTags": [
+          "img"
+        ],
+        "textContains": "shot"
+      },
+      "note": "merely ends with the allowed string"
+    },
+    {
+      "id": "img-no-prefix-lookalike",
+      "md": "![shot](https://githubusercontent.com.evil.com/x.png)",
+      "expect": {
+        "noTags": [
+          "img"
+        ],
+        "textContains": "shot"
+      },
+      "note": "allowed string used as a prefix"
+    },
+    {
+      "id": "img-no-subdomain-lookalike",
+      "md": "![shot](https://github.com.evil.com/x.png)",
+      "expect": {
+        "noTags": [
+          "img"
+        ],
+        "textContains": "shot"
+      },
+      "note": "subdomain-looking prefix"
+    },
+    {
+      "id": "img-no-sub-prefix-lookalike",
+      "md": "![shot](https://user-images.githubusercontent.com.evil.com/x.png)",
+      "expect": {
+        "noTags": [
+          "img"
+        ],
+        "textContains": "shot"
+      },
+      "note": "full subdomain as a prefix"
+    },
+    {
+      "id": "img-no-no-dot-suffix",
+      "md": "![shot](https://notgithubusercontent.com/x.png)",
+      "expect": {
+        "noTags": [
+          "img"
+        ],
+        "textContains": "shot"
+      },
+      "note": "suffix without the separating dot"
+    },
+    {
+      "id": "img-no-pct-encoded-dot",
+      "md": "![shot](https://github%2ecom.evil.com/x.png)",
+      "expect": {
+        "noTags": [
+          "img"
+        ],
+        "textContains": "shot"
+      },
+      "note": "a percent-encoded dot does not smuggle the host"
+    },
+    {
+      "id": "img-no-custom-port",
+      "md": "![shot](https://github.com:8443/x.png)",
+      "expect": {
+        "noTags": [
+          "img"
+        ],
+        "textContains": "shot"
+      },
+      "note": "no legitimate GitHub image uses a custom port"
+    },
+    {
+      "id": "img-no-protocol-relative-evil",
+      "md": "![shot](//evil.com/x.png)",
+      "expect": {
+        "noTags": [
+          "img"
+        ],
+        "textContains": "shot"
+      },
+      "note": "protocol-relative to an untrusted host"
+    },
+    {
+      "id": "img-no-relative-path",
+      "md": "![shot](/relative/x.png)",
+      "expect": {
+        "noTags": [
+          "img"
+        ],
+        "textContains": "shot"
+      },
+      "note": "a relative path resolves against a sentinel base, never the panel origin"
+    },
+    {
+      "id": "img-no-http-trusted",
+      "md": "![shot](http://github.com/x.png)",
+      "expect": {
+        "noTags": [
+          "img"
+        ],
+        "textContains": "shot"
+      },
+      "note": "https only, even on a trusted host"
+    },
+    {
+      "id": "img-no-http-raw",
+      "md": "![shot](http://raw.githubusercontent.com/x.png)",
+      "expect": {
+        "noTags": [
+          "img"
+        ],
+        "textContains": "shot"
+      },
+      "note": "https only"
+    },
+    {
+      "id": "img-no-javascript",
+      "md": "![shot](javascript:window.__xssFired=\"img-js\")",
+      "expect": {
+        "noTags": [
+          "img"
+        ],
+        "textContains": "shot"
+      },
+      "note": "scheme"
+    },
+    {
+      "id": "img-no-data",
+      "md": "![shot](data:image/svg+xml;base64,PHN2ZyBvbmxvYWQ9J3dpbmRvdy5fX3hzc0ZpcmVkPSJkIic+PC9zdmc+)",
+      "expect": {
+        "noTags": [
+          "img"
+        ],
+        "textContains": "shot"
+      },
+      "note": "scheme"
+    },
+    {
+      "id": "img-no-blob",
+      "md": "![shot](blob:https://github.com/abc)",
+      "expect": {
+        "noTags": [
+          "img"
+        ],
+        "textContains": "shot"
+      },
+      "note": "scheme"
+    },
+    {
+      "id": "img-no-vbscript",
+      "md": "![shot](vbscript:msgbox(1))",
+      "expect": {
+        "noTags": [
+          "img"
+        ],
+        "textContains": "shot"
+      },
+      "note": "scheme"
+    },
+    {
+      "id": "img-raw-tag-handlers",
+      "md": "<img src=\"https://github.com/user-attachments/assets/a.png\" onerror=\"window.__xssFired='img-onerror-trusted'\" onload=\"window.__xssFired='img-onload-trusted'\">",
+      "expect": {
+        "noTags": [
+          "img"
+        ],
+        "noAttrs": [
+          "onerror",
+          "onload",
+          "src"
+        ]
+      },
+      "note": "A RAW <img> tag is dropped entirely (img is not in the sanitiser allowlist; only markdown images become pictures), so a permitted tag can never bring its handlers."
+    },
+    {
+      "id": "img-raw-tag-extra-attrs",
+      "md": "<img src=\"https://raw.githubusercontent.com/a.png\" srcset=\"https://evil.com/x 2x\" usemap=\"#m\" loading=\"eager\" referrerpolicy=\"unsafe-url\" width=\"9999\">",
+      "expect": {
+        "noTags": [
+          "img"
+        ],
+        "noAttrs": [
+          "srcset",
+          "usemap",
+          "loading",
+          "referrerpolicy",
+          "width",
+          "src"
+        ]
+      },
+      "note": "srcset is the interesting one: it would smuggle a second, unchecked host past a src-only check."
+    },
+    {
+      "id": "img-placeholder-forged",
+      "md": "<span data-img-src=\"https://evil.com/x.png\">forged</span>",
+      "expect": {
+        "noTags": [
+          "img"
+        ],
+        "noAttrs": [
+          "src"
+        ]
+      },
+      "note": "The placeholder the renderer uses is re-validated by the post-pass, so forging one in raw HTML cannot load an untrusted image."
+    },
+    {
+      "id": "img-placeholder-forged-trusted",
+      "md": "<span data-img-src=\"https://github.com/user-attachments/assets/ok.png\">forged-ok</span>",
+      "expect": {
+        "hasTags": [
+          "img"
+        ],
+        "imgAttrs": {
+          "referrerpolicy": "no-referrer",
+          "alt": "forged-ok"
+        }
+      },
+      "note": "A forged placeholder pointing at a TRUSTED host does render — which is the same thing the feature already permits, and it is stated here so the behaviour is deliberate."
+    }
+  ]
+}
