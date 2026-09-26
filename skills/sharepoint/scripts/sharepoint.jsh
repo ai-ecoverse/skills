@@ -19,6 +19,11 @@
 const browser = require('sliccy:browser');
 const C = require('sliccy:color');
 const fs = require('fs');
+const {
+  isSharePointHostname,
+  parseSiteUrl,
+  buildScopedSearchQuery,
+} = require('./helpers.js');
 
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
 const TOKEN_PATH = '/shared/.sharepoint-token';
@@ -33,6 +38,9 @@ const TOKEN_PATH = '/shared/.sharepoint-token';
 // (<tenant>.sharepoint.com), so a literal 'sharepoint.com' entry here never
 // matches a real tab. Use `urlMatch` (regex) for the wildcard SharePoint case
 // instead, and exact `domain` for the fixed Microsoft hosts.
+//
+// Strategy 2 (scratch-tab network capture) still needs a real *.sharepoint.com
+// tab — Outlook/M365 hosts do not serve `/_layouts/15/sharepoint.aspx/*`.
 const M365_EXACT_DOMAINS = [
   'outlook.office.com',
   'outlook.cloud.microsoft',
@@ -261,7 +269,10 @@ async function captureTokenFromNetwork(tabId) {
   } catch {
     return null; // can't determine the tenant hostname — nothing safe to do
   }
-  if (!hostname) return null;
+  // Scratch URL is SPO-only. An Outlook/M365 tab can still feed strategy 1
+  // (MSAL cache), but opening outlook.office.com/_layouts/... 404s and never
+  // mints a Graph bearer — skip strategy 2 instead of probing a dead URL.
+  if (!isSharePointHostname(hostname)) return null;
 
   const scratch = await browser.openWindow(`https://${hostname}/_layouts/15/sharepoint.aspx/build`, {
     focus: false,
@@ -332,10 +343,11 @@ async function getToken() {
 
   die(
     'Could not extract a SharePoint/Graph token. Open a SharePoint site (e.g. ' +
-    'https://<tenant>.sharepoint.com) or https://outlook.office.com in your ' +
-    'browser and try again. If a tab is open and this still fails, the ' +
-    'signed-in token may lack Sites.Read.All/Files.Read.All — check with your ' +
-    'tenant admin.'
+    'https://<tenant>.sharepoint.com) in your browser and try again. An Outlook ' +
+    'tab alone is enough only when its MSAL cache still holds a plaintext Graph ' +
+    'token with Sites/Files scopes — otherwise a SharePoint tab is required. If ' +
+    'a SharePoint tab is open and this still fails, the signed-in token may lack ' +
+    'Sites.Read.All/Files.Read.All — check with your tenant admin.'
   );
 }
 
@@ -444,24 +456,6 @@ async function graphPost(token, path, body) {
   return res.json();
 }
 
-// ─── URL parsing ──────────────────────────────────────────────────────────────
-// https://contoso.sharepoint.com/sites/Marketing → hostname + server-relative
-// path, used with Graph's /sites/{hostname}:{server-relative-path} shorthand.
-function parseSiteUrl(input) {
-  let s = String(input).trim();
-  if (!/^https?:\/\//i.test(s) && s.includes(':')) {
-    // already in "hostname:/path" form
-    const [hostname, ...rest] = s.split(':');
-    return { hostname, path: rest.join(':') || '' };
-  }
-  try {
-    const u = new URL(s);
-    return { hostname: u.hostname, path: u.pathname.replace(/\/$/, '') };
-  } catch {
-    die(`Could not parse SharePoint URL: ${input}`);
-  }
-}
-
 // ─── Commands ─────────────────────────────────────────────────────────────────
 
 async function cmdSites() {
@@ -485,7 +479,13 @@ async function cmdSite() {
   const token = await getToken();
   const input = positional[0];
   if (!input) die('sharepoint site requires a URL, e.g. https://contoso.sharepoint.com/sites/Marketing');
-  const { hostname, path } = parseSiteUrl(input);
+  let hostname;
+  let path;
+  try {
+    ({ hostname, path } = parseSiteUrl(input));
+  } catch (e) {
+    die(e.message);
+  }
   const graphPath = path ? `/sites/${hostname}:${path}` : `/sites/${hostname}`;
   const site = await graphGet(token, graphPath);
   if (flags.json) return out(site);
@@ -683,9 +683,22 @@ async function cmdSearch() {
     size: limit,
   };
   if (flags.site) {
-    // Graph search scoping by site works via a queryString region filter on
-    // driveItem/listItem entities; sites are matched separately.
-    request.query.queryString = `${query} path:"${flags.site}"`;
+    // KQL path: needs a SharePoint URL, not a Graph composite site id. Agents
+    // pass the id from `sharepoint site` / `sites`, so resolve webUrl first.
+    // A raw https URL is accepted as-is for callers that already have one.
+    let scopeUrl = String(flags.site);
+    if (!/^https?:\/\//i.test(scopeUrl)) {
+      const site = await graphGet(token, `/sites/${scopeUrl}`);
+      scopeUrl = site.webUrl || '';
+      if (!scopeUrl) {
+        die(`could not resolve webUrl for site id ${flags.site}`);
+      }
+    }
+    try {
+      request.query.queryString = buildScopedSearchQuery(query, scopeUrl);
+    } catch (e) {
+      die(e.message);
+    }
   }
 
   const data = await graphPost(token, '/search/query', { requests: [request] });

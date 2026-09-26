@@ -122,8 +122,10 @@ sharepoint search "budget 2026" --json
 
 Uses Graph `POST /search/query` with `entityTypes` set from `--entity`
 (repeatable, default all three). Without `--site`, searches everything the
-signed-in user's token can see tenant-wide. Prints `name`/`title`, `webUrl`,
-and a short snippet per hit.
+signed-in user's token can see tenant-wide. With `--site <site-id>`, the CLI
+resolves the Graph site id to its `webUrl` and scopes via KQL
+`path:"<webUrl>/"`. A raw `https://…` site URL is also accepted. Prints
+`name`/`title`, `webUrl`, and a short snippet per hit.
 
 ## lists / list-items
 
@@ -147,8 +149,11 @@ Token is extracted automatically from an open Microsoft 365 browser tab
 (SharePoint, Outlook, or the M365 app launcher all share the same MSAL cache
 for the signed-in tenant) — same mechanism as the `outlook` skill's token
 extraction, retargeted at the `graph.microsoft.com` audience instead of
-`outlook.office.com`. Falls back to `/shared/.sharepoint-token` when no tab is
-open. If neither works, the command says exactly which URL to open.
+`outlook.office.com`. When the MSAL cache is encrypted, a scratch-tab network
+capture runs as a fallback — that path requires a real `*.sharepoint.com` tab
+(Outlook alone is not enough for the scratch URL). Falls back to
+`/shared/.sharepoint-token` when no tab is open. If neither works, the command
+says exactly which URL to open.
 
 Required scopes: `Sites.Read.All` (or `Sites.ReadWrite.All`, which also
 satisfies read) plus `Files.Read.All` for content/download. A token missing
