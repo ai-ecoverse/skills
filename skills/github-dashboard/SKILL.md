@@ -323,6 +323,7 @@ references/
   action-kinds.md             why approve asks for a check; unknown kinds inert
   panel.md                    the panel's behaviour, piece by piece
   security.md                 the renderer's threat model and the gate's evidence
+  reports.md                  data/reports.json, the agent reports `gh dashboard` writes
 assets/sprinkle/
   github-dashboard.shtml      the panel (BUILT — see Build)
   data-example/               synthetic snapshot + version, 4 records
