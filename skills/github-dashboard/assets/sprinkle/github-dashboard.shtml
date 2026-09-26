@@ -792,8 +792,10 @@
       /* Phase 4: a card can represent an issue + its PR (+ a bb thread). The
          PR leads (it is the .ref), and everything else is listed here so the
          reader can SEE the card covers several artefacts and can reach each
-         one. Links, not controls. */
-      .also {
+         one. Links, not controls. The agent-report line (.report-line) wears
+         the same meta style. */
+      .also,
+      .report-line {
         display: flex;
         flex-wrap: wrap;
         gap: 2px 8px;
@@ -1274,7 +1276,17 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
             (review item 10).
 
          PRECEDENCE (explicit, highest first):
-           0. DONE (released / closed) wins over everything: it is over.
+           0. DONE (released / closed) wins over everything: it is over. The
+              operator's own done mark (doneAt) is checked before it.
+           0b. AN AGENT'S REPORT (data/reports.json, see REPORT-OVERLAY): working
+              -> active, needs-attention -> needs attention (its note is the
+              reason), done -> done (two working days' retention from the
+              report, like doneAt). It sits below the done mark and decides
+              nothing when GitHub has closed or merged the item, when GitHub
+              activity is newer than a done/needs-attention report, when a
+              working report is older than STALL_AFTER_HOURS, or when an
+              active snooze holds back a working/done report; the steps below
+              then run as if there were no report.
            1. A HUMAN IS BLOCKED beats a snooze — changes requested, a thread
               asking for guidance, or an all-green PR nobody queued. A snooze
               is a promise that nothing needs you yet; these falsify it.
@@ -1555,6 +1567,234 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
       }
       /* ---- >8 end THREAD-STAGE -------------------------------------------------- */
 
+      // What an agent's report (data/reports.json, written only by `gh dashboard`)
+      // does to a card, embedded VERBATIM from report-overlay-shared.cjs. Edit the
+      // module and re-embed (scripts/embed-report-overlay.js);
+      // tests/report-overlay.test.js R0 fails on any drift.
+      /* ---- 8< REPORT-OVERLAY ----------------------------------------------------
+         reportOverlay(record, report, now, opts) -> what the report does to the card.
+
+         PRECEDENCE, highest first. The panel's categorize() consults this right
+         after the operator's own done mark, so the mark still outranks everything.
+           1. GITHUB WINS. A closed or merged item (stage 9/10/11, a mergedAt, or a
+              stateReason other than open/reopened) ignores its report: the normal
+              closed/merged stage applies.                        effect 'github'
+           2. A done or needs-attention report is SUPERSEDED by GitHub activity
+              newer than the report (record.lastActivityAt > report.at; the fetcher
+              already strips the mirror's own comments from lastActivityAt).
+                                                                  effect 'superseded'
+           3. A working report goes STALE after the panel's stall limit for the
+              stage an agent owns (opts.staleAfterHours: the panel passes
+              stallLimitFor(REPORT_WORKING_STAGE), i.e. STALL_AFTER_HOURS = 6 h),
+              measured from report.at, the same `idle >= limit` test categorize()
+              applies to an Active card. Also stale when threads.json says the
+              reporting bb thread is archived or gone.            effect 'stale'
+           4. An ACTIVE SNOOZE (opts.snoozed) keeps its place: it holds working and
+              done reports back, exactly as it holds back the GitHub signals it
+              already outranks. needs-attention breaks through, like the other
+              "a human is blocked" signals do.                    effect 'snoozed'
+           5. Otherwise the report decides the column: working -> active,
+              needs-attention -> needs-attention (the note is the reason),
+              done -> done.                                       effect 'applied'
+         A report with no status, or no valid `at`, decides nothing ('none',
+         'invalid'). Whatever the effect, the reporter and the reported PR are still
+         returned as links: the card shows who reported, even when GitHub won.
+
+         `stage` is the stage the card's glyph should show: an open issue (stage 1-4,
+         before GitHub has a PR to speak for it) reads 4 "agent working" on an applied
+         working report and 3 "needs guidance" on needs-attention. Never a PR: its own
+         GitHub state is the better signal, the same rule stageFromThread keeps. */
+
+      const REPORT_STATUSES = ['working', 'needs-attention', 'done'];
+      /** The stage whose stall limit a working report inherits: 4, "agent working". */
+      const REPORT_WORKING_STAGE = 4;
+      /** Fallback for opts.staleAfterHours: the panel's STALL_AFTER_HOURS. */
+      const REPORT_STALE_AFTER_HOURS = 6;
+      const REPORT_CATEGORY = { working: 'active', 'needs-attention': 'needs-attention', done: 'done' };
+      /** The writer's own rules (gh dashboard): owner/repo#N, thr_ ids, scoop names. */
+      const REPORT_KEY_RE = /^([A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*)#([1-9][0-9]*)$/;
+      const REPORT_THREAD_ID_RE = /^thr_[a-z0-9]+$/;
+      const REPORT_SCOOP_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+
+      /** Closed or merged on GitHub: the item is over, whatever an agent said. */
+      function reportGithubFinished(rec) {
+        if (!rec) return false;
+        if ([9, 10, 11].includes(rec.stage)) return true;
+        if (rec.mergedAt) return true;
+        const sr = rec.stateReason;
+        return typeof sr === 'string' && sr !== '' && sr !== 'open' && sr !== 'reopened';
+      }
+
+      /** Who reported. bb: { kind, id, url, label, threadState } where threadState is
+          the thread's data/threads.json entry when the file has it (null otherwise).
+          scoop: { kind, name, url: null, label }; a scoop has no URL to open. */
+      function reportReporter(report, threadEntry) {
+        const t = report && report.thread;
+        if (!t || typeof t !== 'object') return null;
+        if (t.kind === 'bb' && typeof t.id === 'string' && REPORT_THREAD_ID_RE.test(t.id)) {
+          const url = typeof t.url === 'string' && /^https?:\/\//i.test(t.url) ? t.url : null;
+          const threadState = threadEntry && typeof threadEntry === 'object' ? threadEntry : null;
+          return { kind: 'bb', id: t.id, url, label: t.id, threadState };
+        }
+        if (t.kind === 'scoop' && typeof t.name === 'string' && REPORT_SCOOP_RE.test(t.name)) {
+          return { kind: 'scoop', name: t.name, url: null, label: t.name, threadState: null };
+        }
+        return null;
+      }
+
+      /** The reported PR as a GitHub link, straight from its owner/repo#N: it links
+          at once, before any fetcher run knows the PR exists. null when the value is
+          not a PR key, or names the card's own item. */
+      function reportPrLink(pr, rec) {
+        if (typeof pr !== 'string') return null;
+        const m = pr.match(REPORT_KEY_RE);
+        if (!m) return null;
+        if (rec && `${rec.repo}#${rec.id}` === pr) return null;
+        return {
+          key: pr,
+          url: `https://github.com/${m[1]}/pull/${m[2]}`,
+          label: `${m[1].split('/')[1]}#${m[2]}`,
+        };
+      }
+
+      /** The effect of one report on one record at `now` (ms or Date).
+          opts: { thread: threads.json entry for a bb reporter, staleAfterHours,
+          snoozed: the record's snooze is active }. */
+      function reportOverlay(rec, report, now, opts) {
+        const o = opts || {};
+        const out = {
+          present: false,
+          status: null,
+          effect: 'none',
+          category: null,
+          stage: null,
+          reason: null,
+          at: null,
+          note: null,
+          reporter: null,
+          links: { thread: null, pr: null },
+        };
+        if (!report || typeof report !== 'object') return out;
+        out.present = true;
+        const status = REPORT_STATUSES.includes(report.status) ? report.status : null;
+        out.status = status;
+        out.note = typeof report.note === 'string' && report.note.trim() ? report.note.trim() : null;
+        const atMs = typeof report.at === 'string' ? Date.parse(report.at) : NaN;
+        out.at = Number.isFinite(atMs) ? new Date(atMs).toISOString() : null;
+        out.reporter = reportReporter(report, o.thread);
+        if (out.reporter && out.reporter.url) {
+          out.links.thread = { url: out.reporter.url, label: out.reporter.label };
+        }
+        out.links.pr = reportPrLink(report.pr, rec);
+        if (!status) return out;
+        if (!Number.isFinite(atMs)) {
+          out.effect = 'invalid';
+          out.reason = `${status} report has no valid time`;
+          return out;
+        }
+        if (reportGithubFinished(rec)) {
+          out.effect = 'github';
+          out.reason = `${status} report ignored: the item is closed or merged on GitHub`;
+          return out;
+        }
+        const nowMs = typeof now === 'number' ? now : new Date(now).getTime();
+        if (status === 'working') {
+          const limit = Number.isFinite(o.staleAfterHours) ? o.staleAfterHours : REPORT_STALE_AFTER_HOURS;
+          const age = (nowMs - atMs) / 36e5;
+          const th = out.reporter && out.reporter.threadState;
+          if (th && (th.archived || th.live === false)) {
+            out.effect = 'stale';
+            out.reason = 'working report from a bb thread that is archived now';
+            return out;
+          }
+          if (age >= limit) {
+            out.effect = 'stale';
+            out.reason = `working report ${Math.round(age)}h old, limit ${limit}h`;
+            return out;
+          }
+        } else {
+          const act = rec && rec.lastActivityAt ? Date.parse(rec.lastActivityAt) : NaN;
+          if (Number.isFinite(act) && act > atMs) {
+            out.effect = 'superseded';
+            out.reason = `${status} report superseded by GitHub activity after it`;
+            return out;
+          }
+        }
+        if (o.snoozed && status !== 'needs-attention') {
+          out.effect = 'snoozed';
+          out.reason = `${status} report held back by the snooze`;
+          return out;
+        }
+        out.effect = 'applied';
+        out.category = REPORT_CATEGORY[status];
+        if (rec && rec.kind === 'issue' && [1, 2, 3, 4].includes(rec.stage)) {
+          if (status === 'working') out.stage = 4;
+          else if (status === 'needs-attention') out.stage = 3;
+        }
+        const ageH = Math.round((nowMs - atMs) / 36e5);
+        if (status === 'working') out.reason = `agent reported working ${ageH}h ago`;
+        else if (status === 'needs-attention') out.reason = out.note || 'agent reported needs-attention';
+        else out.reason = 'agent reported done';
+        return out;
+      }
+
+      /** Hang each record's report (and, for a bb reporter, that thread's
+          threads.json entry) on the record as __report / __reportThread, so
+          categorize(item, now) can stay a function of the item. IDEMPOTENT: every pass
+          first removes the previous one. Keys match exactly, then case-insensitively
+          (GitHub owner and repo names are). A missing or malformed file = no reports.
+          Returns counts, for the debug handle. */
+      function attachReports(records, file, threadsFile) {
+        const stats = { reports: 0, matched: 0, unmatched: [] };
+        const map = file && file.reports && typeof file.reports === 'object' ? file.reports : null;
+        const threads =
+          threadsFile && threadsFile.threads && typeof threadsFile.threads === 'object'
+            ? threadsFile.threads
+            : null;
+        const byKey = new Map();
+        const byLower = new Map();
+        for (const r of records || []) {
+          delete r.__report;
+          delete r.__reportThread;
+          const k = `${r.repo}#${r.id}`;
+          byKey.set(k, r);
+          if (!byLower.has(k.toLowerCase())) byLower.set(k.toLowerCase(), r);
+        }
+        if (!map) return stats;
+        for (const [key, rep] of Object.entries(map)) {
+          if (!rep || typeof rep !== 'object') continue;
+          stats.reports++;
+          const r = byKey.get(key) || byLower.get(key.toLowerCase());
+          if (!r) {
+            stats.unmatched.push(key);
+            continue;
+          }
+          stats.matched++;
+          r.__report = rep;
+          const t = rep.thread;
+          const id = t && t.kind === 'bb' && typeof t.id === 'string' ? t.id : null;
+          const entry = id && threads && Object.hasOwn(threads, id) ? threads[id] : null;
+          if (entry && typeof entry === 'object') r.__reportThread = entry;
+        }
+        return stats;
+      }
+
+      /** The `report` field of every request lick the panel sends: the exact
+          commands, with this item's key filled in, that tell the recipient how to
+          report back. The <...> placeholders are the recipient's to fill. */
+      function reportInstructions(key) {
+        const k = String(key);
+        return {
+          how: 'Report progress with gh dashboard (see gh dashboard update --help).',
+          start: `gh dashboard update ${k} --status working --thread <bb-thread-url|scoop-name>`,
+          pr: `gh dashboard update ${k} --pr <number>`,
+          blocked: `gh dashboard update ${k} --status needs-attention --note "<why>"`,
+          done: `gh dashboard update ${k} --status done`,
+          clear: `gh dashboard clear ${k}`,
+        };
+      }
+      /* ---- >8 end REPORT-OVERLAY ------------------------------------------------ */
+
       /** Snooze state, including "a comment cancels the snooze". */
       function snoozeState(item, now) {
         if (!item.snoozedUntil) return { present: false, active: false };
@@ -1579,6 +1819,19 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
 
       function stallLimitFor(stage) {
         return STALL_AFTER_HOURS_BY_STAGE[stage] ?? STALL_AFTER_HOURS;
+      }
+
+      /** The record's agent report (attached by attachReports as __report, with
+          its bb thread's threads.json entry as __reportThread), evaluated at
+          `now`. A working report inherits the stall limit of stage 4, "agent
+          working" (STALL_AFTER_HOURS): the rule that moves an Active card to
+          Stalled is the rule that stops a report holding it in Active. */
+      function reportFor(item, now) {
+        return reportOverlay(item, item.__report || null, now, {
+          thread: item.__reportThread || null,
+          staleAfterHours: stallLimitFor(REPORT_WORKING_STAGE),
+          snoozed: snoozeState(item, now).active,
+        });
       }
 
       /** THE pure function. No I/O, no clock read — `now` is injected. */
@@ -1607,6 +1860,23 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
             reason: `marked done locally ${heldFor.toFixed(1)} working days ago (nothing written to GitHub)`,
           };
         }
+
+        // 0b: an agent's report (REPORT-OVERLAY above says when one applies).
+        // Closed/merged on GitHub, superseded, stale or snoozed: it decides
+        // nothing and the rules below run as if there were none.
+        const rep = reportFor(item, now);
+        if (rep.category === 'done') {
+          // Same retention as the local done mark, counted from the report.
+          const heldFor = workingDaysSince(rep.at, now);
+          if (heldFor > DONE_RETENTION_WORKING_DAYS) {
+            return {
+              category: 'aged-out',
+              reason: `agent reported done ${heldFor.toFixed(1)} working days ago (retention ${DONE_RETENTION_WORKING_DAYS})`,
+            };
+          }
+          return { category: 'done', reason: rep.reason };
+        }
+        if (rep.category) return { category: rep.category, reason: rep.reason };
 
         if (DONE_STAGES.includes(stage)) {
           // Retention, in WORKING days: a Friday release is still in the pile on
@@ -2181,6 +2451,11 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
           return { id: item.thread.id, project: null, source: 'snapshot', state: item.thread.state, archived: !!item.thread.archived, title: item.thread.title };
         }
         if (item.kind === 'thread') return { id: item.id, project: null, source: 'self' };
+        // Last: the bb thread an agent reported with `gh dashboard update
+        // --thread <url>`. Its URL is the writer's, kept whole, so no project
+        // lookup is needed. Only when nothing above names a thread.
+        const who = reportReporter(item.__report, null);
+        if (who && who.kind === 'bb' && who.url) return { id: who.id, project: null, source: 'report', url: who.url };
         return null;
       }
 
@@ -2218,14 +2493,16 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         const thr = threadFor(item);
         if (thr) {
           const project = thr.project || bbProject(item.repo);
-          const url = project
-            ? `${bbOrigin()}/projects/${project}/threads/${thr.id}`
-            : `${bbOrigin()}/threads/${thr.id}`;
+          const url = thr.url
+            ? thr.url
+            : project
+              ? `${bbOrigin()}/projects/${project}/threads/${thr.id}`
+              : `${bbOrigin()}/threads/${thr.id}`;
           return {
             mode: 'thread',
             icon: 'messages-square',
             url,
-            fallback: !project,
+            fallback: !project && !thr.url,
             label: 'Go to thread',
             title:
               `Open the bb thread ${thr.id}` +
@@ -2233,9 +2510,11 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
               (thr.archived ? ', archived' : '') +
               (thr.source === 'attachment'
                 ? ` — attached explicitly with \`gh pr attach\`${thr.attachedAt ? ' on ' + fmtWhen(thr.attachedAt) : ''}`
-                : ' — linked by the fetcher from the thread\'s own title and body') +
+                : thr.source === 'report'
+                  ? ' — reported by the agent with `gh dashboard update`'
+                  : ' — linked by the fetcher from the thread\'s own title and body') +
               `. Opens in a new tab: ${url}.` +
-              (project ? '' : ` This snapshot does not say which bb project ${item.repo} maps to, so this is the project-less URL form.`) +
+              (project || thr.url ? '' : ` This snapshot does not say which bb project ${item.repo} maps to, so this is the project-less URL form.`) +
               ' The thread’s live status is shown in the quick view, not here, because it changes by the second. Reads nothing, writes nothing.',
           };
         }
@@ -2316,8 +2595,8 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
           // PLAIN JSON ONLY. The payload survives structured clone across the
           // iframe boundary but is finally rendered with JSON.stringify, so a
           // Date, Map, Set, function or undefined would degrade on the way to
-          // the reader. Every field below is a string or null — `at` is already
-          // an ISO string, not a Date.
+          // the reader. Every field below is a string or null (`report`: an object
+          // of strings) — `at` is already an ISO string, not a Date.
           data: {
             key: recordKey(item),
             repo: item.repo,
@@ -2328,6 +2607,10 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
             bbProject: bbProject(item.repo) || null,
             requestedAt: at,
             note: 'Requested from the github-dashboard panel. The panel did not spawn anything.',
+            // How to report back: the exact `gh dashboard` commands for this
+            // key. Inside `data` because the runtime forwards only action, data
+            // and target.
+            report: reportInstructions(recordKey(item)),
           },
           // Route this to the CONE, not to the scoop that happens to own the
           // panel. The default (no target) is already the owning cone, so the
@@ -2506,7 +2789,10 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
       }
 
       function stateOf(item) {
-        return STATE[item.substage || item.stage];
+        // An applied agent report can move an open issue's glyph (REPORT-OVERLAY:
+        // working -> 4, needs-attention -> 3); a PR's always follows GitHub.
+        const reported = reportFor(item, PASS_NOW).stage;
+        return STATE[reported || item.substage || item.stage];
       }
 
       function shortRepo(repo) {
@@ -2650,6 +2936,11 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
           otherwise the first incremental update rebuilds every card's notes. */
       function noteSpecs(item) {
         const notes = [];
+        // An applied needs-attention report: its note is why the card is here.
+        const rep = reportFor(item, PASS_NOW);
+        if (rep.effect === 'applied' && rep.status === 'needs-attention' && rep.note) {
+          notes.push({ text: rep.note, title: `Needs attention, reported ${fmtWhen(rep.at)}: ${rep.note}` });
+        }
         const sn = snoozeState(item, PASS_NOW);
         if (sn.active) {
           notes.push({
@@ -2668,6 +2959,98 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
           });
         }
         return notes;
+      }
+
+      /** The agent-report line under the notes, as data (null: no report).
+          Shared by card() and updateCard(), and its JSON is the signature they
+          compare, so it carries no clock-relative text: the "2h ago" is a
+          <time> that repaintTimeLabels() keeps current. Who reported and when,
+          in the .also meta style: status word, reporter (a bb thread links to
+          its URL and shows its threads.json phase; a scoop is a name, not a
+          link), the reported PR (linked from its key at once), the time. */
+      function reportLineSpec(item) {
+        const rep = reportFor(item, PASS_NOW);
+        if (!rep.present) return null;
+        const WORD = { working: 'working', 'needs-attention': 'needs attention', done: 'done' };
+        const HELD = { github: 'ignored', superseded: 'superseded', stale: 'stale', invalid: 'ignored' };
+        const who = rep.reporter;
+        const phase = who && who.threadState ? threadPhase(who.threadState) : null;
+        const EFFECT = {
+          applied: rep.category ? `It puts the card in ${CATEGORIES[rep.category].label}.` : '',
+          github: 'Ignored: the item is closed or merged on GitHub, and GitHub wins.',
+          superseded: `Superseded: GitHub activity since (${item.lastActivityAt ? fmtWhen(item.lastActivityAt) : 'time unknown'}).`,
+          stale: `Stale (${rep.reason}): it no longer holds the card in ${CATEGORIES.active.label}.`,
+          snoozed: 'Held back by your snooze.',
+          invalid: 'Ignored: the report has no valid time.',
+          none: 'No status: it only says who is on it.',
+        };
+        const title = [
+          (rep.status ? `Reported ${rep.status}` : 'Reported') +
+            (who ? ` by ${who.kind === 'bb' ? 'bb thread' : 'scoop'} ${who.label}` : '') +
+            (rep.at ? ` at ${fmtWhen(rep.at)}` : '') +
+            '.',
+          rep.note ? `Note: ${rep.note}${/[.!?]$/.test(rep.note) ? '' : '.'}` : '',
+          EFFECT[rep.effect] || '',
+          'From data/reports.json, which only `gh dashboard` writes.',
+        ]
+          .filter(Boolean)
+          .join(' ');
+        return {
+          status: (rep.status ? WORD[rep.status] : 'reported') + (HELD[rep.effect] ? `, ${HELD[rep.effect]}` : ''),
+          who: who
+            ? {
+                kind: who.kind,
+                label: who.label,
+                url: who.url,
+                phase,
+                title:
+                  who.kind === 'bb'
+                    ? `bb thread ${who.id}` + (phase ? `, ${phase} (threads.json)` : '') + (who.url ? `. Opens ${who.url}` : '')
+                    : `scoop ${who.name}. Not a link: a scoop has no address to open.`,
+              }
+            : null,
+          pr: rep.links.pr,
+          at: rep.at,
+          title,
+        };
+      }
+
+      function reportLine(spec) {
+        const line = el('div', 'report-line');
+        line.title = spec.title;
+        const s = el('span', 'also-item');
+        s.appendChild(el('span', 'also-role', spec.status));
+        line.appendChild(s);
+        const ref = (text, url, title) => {
+          const r = el(url ? 'a' : 'span', 'also-ref', text);
+          if (url) {
+            r.href = url;
+            r.target = '_blank';
+            r.rel = 'noreferrer';
+          }
+          r.title = title;
+          return r;
+        };
+        if (spec.who) {
+          const w = el('span', 'also-item');
+          w.appendChild(el('span', 'also-role', spec.who.kind));
+          w.appendChild(ref(spec.who.label, spec.who.url, spec.who.title));
+          if (spec.who.phase) w.appendChild(el('span', 'also-role', spec.who.phase));
+          line.appendChild(w);
+        }
+        if (spec.pr) {
+          const p = el('span', 'also-item');
+          p.appendChild(el('span', 'also-role', 'pr'));
+          p.appendChild(ref(spec.pr.label, spec.pr.url, `${spec.pr.key}, reported by the agent. Opens ${spec.pr.url}`));
+          line.appendChild(p);
+        }
+        if (spec.at) {
+          const t = el('time', 'also-role rep-when', whenLabel(spec.at, PASS_NOW));
+          t.dateTime = spec.at;
+          t.title = `Reported ${fmtWhen(spec.at)}`;
+          line.appendChild(t);
+        }
+        return line;
       }
 
       function card(item) {
@@ -2842,6 +3225,10 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
           n.title = spec.title;
           body.appendChild(n);
         }
+        // Who reported, and when (gh dashboard), before the artefacts line.
+        const rspec = reportLineSpec(item);
+        body.dataset.reportSig = JSON.stringify(rspec);
+        if (rspec) body.appendChild(reportLine(rspec));
         // Phase 7a's "done locally" line and phase 7c's deliberate silence about
         // a dispatched scoop request both live in noteSpecs() now (7f), so card()
         // and the reconciler cannot drift apart.
@@ -3335,6 +3722,8 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
             bbProject: bbProject(item.repo) || null,
             requestedAt: at,
             note: spec.note,
+            // Same as start-scoop: how to report back, inside `data`.
+            report: reportInstructions(recordKey(item)),
           },
           // Same routing rule as start-scoop: the cone's bare FOLDER, hardcoded.
           target: 'cone',
@@ -3805,6 +4194,82 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         THREAD_OVERLAY_STATS = overlayThreadState(RECORDS, THREAD_FILE);
       }
 
+      /* AGENT REPORTS (phase 2 of `gh dashboard`). data/reports.json is written
+         only by the github skill's `gh dashboard update|clear` (whole-file
+         rename, so a read sees the old file or the new one). The same 5 s tick
+         reads it and adopts it when its text hash moves; a change alone
+         regroups through the reconciler, like threads.json. The file has no
+         contentHash field, so the panel hashes the text itself (FNV-1a: a
+         change detector, not a checksum). A MISSING file is normal and means
+         no reports; an unreadable or malformed one keeps the reports the panel
+         already has and is counted in reportUpdate. What a report does to a
+         card is REPORT-OVERLAY, in GHD-CLASSIFY. */
+      let REPORTS_PATH = '/shared/sprinkles/github-dashboard/data/reports.json';
+      let REPORTS_FILE = null;
+      let LAST_REPORTS_HASH = null;
+      let REPORT_ATTACH_STATS = null;
+      const reportUpdate = { reads: 0, readFailures: 0, hashChanges: 0, reconciles: 0, lastError: null, lastHash: null };
+
+      function textHash(s) {
+        let h = 0x811c9dc5;
+        for (let i = 0; i < s.length; i++) {
+          h ^= s.charCodeAt(i);
+          h = Math.imul(h, 0x01000193) >>> 0;
+        }
+        return `${s.length}:${h.toString(16)}`;
+      }
+
+      /** Read reports.json; adopt it when its text hash moved. Returns true
+          when it did. Never throws. */
+      async function refreshReports() {
+        if (typeof slicc === 'undefined' || typeof slicc.readFile !== 'function') return false;
+        let text;
+        try {
+          if (typeof slicc.exists === 'function' && !(await slicc.exists(REPORTS_PATH))) {
+            // No file: no reports. Drop any the panel held (a deleted file).
+            reportUpdate.lastHash = null;
+            if (LAST_REPORTS_HASH === null) return false;
+            LAST_REPORTS_HASH = null;
+            REPORTS_FILE = null;
+            reportUpdate.hashChanges++;
+            return true;
+          }
+          text = await slicc.readFile(REPORTS_PATH);
+          reportUpdate.reads++;
+        } catch (err) {
+          reportUpdate.readFailures++;
+          reportUpdate.lastError = 'reports: ' + String((err && err.message) || err).slice(0, 120);
+          return false;
+        }
+        const hash = textHash(typeof text === 'string' ? text : '');
+        reportUpdate.lastHash = hash;
+        if (hash === LAST_REPORTS_HASH) return false;
+        let f;
+        try {
+          f = JSON.parse(text);
+        } catch (err) {
+          reportUpdate.readFailures++;
+          reportUpdate.lastError = 'reports: ' + String((err && err.message) || err).slice(0, 120);
+          return false;
+        }
+        if (!f || typeof f !== 'object' || !f.reports || typeof f.reports !== 'object') {
+          reportUpdate.readFailures++;
+          reportUpdate.lastError = 'reports: wrong shape (no reports object)';
+          return false;
+        }
+        LAST_REPORTS_HASH = hash;
+        REPORTS_FILE = f;
+        reportUpdate.hashChanges++;
+        return true;
+      }
+
+      /** Hang each record's report on it. Idempotent, like applyThreadOverlay,
+          and run after it (a bb reporter's state comes from the same
+          threads.json) and before applyUserState. */
+      function applyReportOverlay() {
+        REPORT_ATTACH_STATS = attachReports(RECORDS, REPORTS_FILE, THREAD_FILE);
+      }
+
       /** The card's status line comes from the last full cycle (and the
           fetcher's status cache is keyed on GitHub activity, not thread
           state), so after the overlay it can say "agent working" on a settled
@@ -3851,10 +4316,12 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         if (POLL_BUSY) return;
         POLL_BUSY = true;
         let threadsMoved = false;
+        let reportsMoved = false;
         let reconciled = false;
         try {
           liveUpdate.polls++;
           threadsMoved = await refreshThreadState();
+          reportsMoved = await refreshReports();
           const v = await readVersion();
           if (!v) return;
           liveUpdate.lastHash = v.snapshotHash;
@@ -3900,6 +4367,10 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
             if (threadsMoved && !reconciled && !LOAD_ERROR) {
               threadUpdate.reconciles++;
               reconcile({ records: RECORDS, meta: META }, { generatedAt: META ? META.generatedAt : null, regroup: 'threads' });
+            } else if (reportsMoved && !reconciled && !LOAD_ERROR) {
+              // New reports with no new snapshot: same records, re-overlaid.
+              reportUpdate.reconciles++;
+              reconcile({ records: RECORDS, meta: META }, { generatedAt: META ? META.generatedAt : null, regroup: 'reports' });
             }
           } finally {
             POLL_BUSY = false;
@@ -4066,6 +4537,18 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
               p.title = n.title;
               body.insertBefore(p, anchor);
             }
+            changed = true;
+          }
+
+          // The agent-report line: rebuilt on a signature change, placed before
+          // the .also line so the order matches card().
+          const rspec = reportLineSpec(item);
+          const rsig = JSON.stringify(rspec);
+          if (body.dataset.reportSig !== rsig) {
+            body.dataset.reportSig = rsig;
+            const old = body.querySelector('.report-line');
+            if (old) old.remove();
+            if (rspec) body.insertBefore(reportLine(rspec), body.querySelector('.also'));
             changed = true;
           }
 
@@ -4244,6 +4727,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         // incoming snapshot (which knows nothing about clicks) would visibly undo
         // an optimistic snooze/done while its store write was still in flight.
         applyThreadOverlay();
+        applyReportOverlay();
         applyUserState();
 
         const visible = RECORDS.filter((it) => view.project === 'all' || it.repo === view.project);
@@ -5000,7 +5484,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
       /** Text-only repaint of every card's "Xh ago". Returns how many changed. */
       function repaintTimeLabels(nowMs) {
         let n = 0;
-        for (const w of document.querySelectorAll('#app .card .when')) {
+        for (const w of document.querySelectorAll('#app .card .when, #app .card .rep-when')) {
           if (!w.dateTime) continue;
           const t = whenLabel(w.dateTime, nowMs);
           if (w.textContent !== t) {
@@ -5065,7 +5549,9 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         // Phase 7a: fold user intent onto the records before anything reads
         // them. categorize() stays pure; what changed is its input. The fresh
         // thread state goes first: it can change a stage, user state cannot.
+        // Agent reports next: they read the same threads.json.
         applyThreadOverlay();
+        applyReportOverlay();
         applyUserState();
 
         // Project list is derived from the live records.
@@ -5239,6 +5725,14 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
           threadOverlay: THREAD_OVERLAY_STATS,
           lastThreadsHash: LAST_THREADS_HASH,
           refreshThreadState,
+          // Agent reports (gh dashboard -> data/reports.json).
+          REPORTS_PATH,
+          reportUpdate,
+          reportAttach: REPORT_ATTACH_STATS,
+          lastReportsHash: LAST_REPORTS_HASH,
+          refreshReports,
+          reportFor,
+          reportInstructions,
           pollForUpdates,
           startPolling,
           stopPolling,
@@ -5252,11 +5746,12 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
           paintSnapshotAge,
           // Tests drive the panel through prepared snapshots; only a probe should
           // ever repoint these, and only at files under a scoop workspace.
-          setPaths: (snapshotPath, versionPath, threadsPath) => {
+          setPaths: (snapshotPath, versionPath, threadsPath, reportsPath) => {
             if (typeof snapshotPath === 'string' && snapshotPath) SNAPSHOT_PATH = snapshotPath;
             if (typeof versionPath === 'string' && versionPath) VERSION_PATH = versionPath;
             if (typeof threadsPath === 'string' && threadsPath) THREADS_PATH = threadsPath;
-            return { SNAPSHOT_PATH, VERSION_PATH, THREADS_PATH };
+            if (typeof reportsPath === 'string' && reportsPath) REPORTS_PATH = reportsPath;
+            return { SNAPSHOT_PATH, VERSION_PATH, THREADS_PATH, REPORTS_PATH };
           },
           verdicts: RECORDS.map((it) => ({ id: it.id, ...categorize(it, PASS_NOW) })),
         };
@@ -5284,6 +5779,8 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         // Fresh thread state (thread-poll.jsh) before the first render, so the
         // first paint already has it. Absent file: no overlay, no complaint.
         await refreshThreadState();
+        // Agent reports (gh dashboard), likewise: absent file = no reports.
+        await refreshReports();
         const t2 = performance.now();
         render();
         const t3 = performance.now();
