@@ -123,6 +123,29 @@ function formatProbability(value) {
   return value.toFixed(2);
 }
 
+// A score answer carries `probabilities` and `legend`, both keyed by level index
+// ("0", "1", …), and `score`, the expected level. The printed label is the most
+// probable level, which is also the level kev.js measures `confidence` around.
+// A tie goes to the lowest level, as kev.js's own argmax does. Without a usable
+// distribution, or a legend entry for that level, the number is printed.
+function scoreLabel(answer) {
+  const probabilities =
+    answer.probabilities && typeof answer.probabilities === 'object' ? answer.probabilities : {};
+  const legend = answer.legend && typeof answer.legend === 'object' ? answer.legend : {};
+  let best = null;
+  let bestP = 0;
+  for (const [key, p] of Object.entries(probabilities)) {
+    if (!/^\d+$/.test(key) || typeof p !== 'number' || !Number.isFinite(p)) continue;
+    const level = Number(key);
+    if (best === null || p > bestP || (p === bestP && level < best)) {
+      best = level;
+      bestP = p;
+    }
+  }
+  const label = best === null ? undefined : legend[String(best)];
+  return label === undefined || label === null ? String(answer.score) : String(label);
+}
+
 function formatAnswers(answers) {
   const lines = [];
   for (const [name, answer] of Object.entries(answers)) {
@@ -135,8 +158,7 @@ function formatAnswers(answers) {
       lines.push(`${name}\t${answer.choice}\t${formatProbability(answer.confidence)}`);
       continue;
     }
-    const level = answer.legend[String(answer.score)] ?? String(answer.score);
-    lines.push(`${name}\t${level}\t${formatProbability(answer.confidence)}`);
+    lines.push(`${name}\t${scoreLabel(answer)}\t${formatProbability(answer.confidence)}`);
   }
   return lines.length === 0 ? '' : `${lines.join('\n')}\n`;
 }
