@@ -33,7 +33,7 @@ USAGE
   bb project show <id> [--json]
 
   bb thread list [--project <id>] [--parent-thread <id>] [--archived]
-                 [--include-hidden] [--limit <n>] [--json]
+                 [--include-hidden] [--limit <n>] [--offset <n>] [--all] [--json]
   bb thread show [<id>] [--self] [--json]
   bb thread log [<id>] [--self] [--limit <n>] [--after-seq <n>] [--json]
   bb thread output [<id>] [--self] [--json]
@@ -47,6 +47,14 @@ USAGE
   bb thread wait <id> [--status <status>] [--timeout <seconds>] [--poll-interval <ms>] [--json]
   bb thread search <query> [--limit <n>] [--json]
   bb thread queue list [<id>] [--self] [--json]
+
+  bb rpc <plugin> <method> [<json> | -] [--json]
+                 Call a plugin RPC; the body is <json>, stdin with '-', or null
+
+PAGING
+  thread list returns one page: --limit (default 20) rows from --offset (default 0).
+  A full page prints a stderr note naming the next --offset. --all pages until a
+  short page and prints every thread once (deduplicated by id), --json included.
 
 GLOBAL FLAGS
   --server <url>   bb origin for this call (also BB_SERVER_URL); overrides the paired one
@@ -613,6 +621,56 @@ async function cmdProjectShow() {
 }
 
 // ── commands: threads ─────────────────────────────────────────────────
+function nonNegativeIntFlag(name) {
+  const raw = flags[name];
+  if (raw === undefined) return undefined;
+  if (typeof raw !== 'string' || !/^\d+$/u.test(raw)) {
+    die(`--${name} must be a non-negative integer`);
+  }
+  return Number(raw);
+}
+
+/**
+ * Every page of `/threads` from `startOffset` on, until a short page.
+ *
+ * The list is ordered live, so a thread created or archived between two page
+ * reads shifts the rest by one: a row can come back on two pages. Keep the first
+ * copy of each id. A full page that adds no new id means offset is not
+ * advancing — stop and say so rather than loop forever.
+ */
+async function collectAllThreads(baseParams, startOffset) {
+  const PAGE_SIZE = 200;
+  const MAX_PAGES = 500;
+  const seen = new Set();
+  const threads = [];
+  for (let page = 0; page < MAX_PAGES; page += 1) {
+    const offset = startOffset + page * PAGE_SIZE;
+    const batch = await request('get', '/threads', {
+      params: { ...baseParams, limit: String(PAGE_SIZE), offset: String(offset) },
+    });
+    const rows = Array.isArray(batch) ? batch : batch?.threads || [];
+    let added = 0;
+    for (const thread of rows) {
+      const key = thread?.id;
+      if (key !== undefined && seen.has(key)) continue;
+      if (key !== undefined) seen.add(key);
+      threads.push(thread);
+      added += 1;
+    }
+    if (rows.length < PAGE_SIZE) return threads;
+    if (added === 0) {
+      cli.warn(
+        `offset ${offset} returned only threads already seen; stopping at ${threads.length}`,
+      );
+      return threads;
+    }
+  }
+  cli.warn(
+    `thread list stopped after ${MAX_PAGES} pages (${threads.length} threads); more may exist`,
+  );
+  return threads;
+}
+
 async function cmdThreadList() {
   const params = {};
   if (typeof flags.project === 'string') params.projectId = flags.project;
@@ -621,8 +679,30 @@ async function cmdThreadList() {
   if (flags.archived) params.archived = 'true';
   if (flags.unsectioned) params.unsectioned = 'true';
   if (flags['include-hidden']) params.includeHidden = 'true';
-  params.limit = String(clampInt(flags.limit, 20, 1, 200));
-  const data = await request('get', '/threads', { params });
+  const offset = nonNegativeIntFlag('offset');
+  let data;
+  if (flags.all) {
+    if (flags.limit !== undefined) {
+      die('--all reads every page; drop --limit (use --limit with --offset for one page)');
+    }
+    data = await collectAllThreads(params, offset ?? 0);
+  } else {
+    // No client-side ceiling: the server applies `limit` as given (it has no
+    // cap), and a clamp here silently truncated large requests.
+    const limit = clampInt(flags.limit, 20, 1, Number.MAX_SAFE_INTEGER);
+    params.limit = String(limit);
+    if (offset !== undefined) params.offset = String(offset);
+    data = await request('get', '/threads', { params });
+    const page = Array.isArray(data) ? data : data?.threads || [];
+    // The list carries no total, so a full page is the only sign of more rows.
+    if (page.length >= limit) {
+      const next = (offset ?? 0) + page.length;
+      cli.warn(
+        `thread list returned a full page of ${page.length}; more threads may exist — ` +
+          `next page: --offset ${next}, or --all for every thread`,
+      );
+    }
+  }
   if (flags.json) {
     cli.out(data);
     return;
@@ -856,6 +936,61 @@ async function cmdThreadSearch() {
   }
 }
 
+// ── commands: plugin rpc ──────────────────────────────────────────────
+// Mirrors bb's own plugin-id schema (lowercase, digits, dashes). Methods are
+// contract keys, so a plain identifier. Both land in the URL path, so anything
+// that could traverse (`..`, `/`) or open a query (`?`, `#`) is refused.
+const RPC_PLUGIN_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/u;
+const RPC_METHOD_PATTERN = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/u;
+const RPC_USAGE = 'usage: bb rpc <plugin> <method> [<json> | -] [--json]';
+
+async function readRpcInput(raw) {
+  if (raw === undefined) return null;
+  const text = raw === '-' ? await process.stdin.read() : raw;
+  if (text === null || text === undefined || String(text).trim() === '') {
+    if (raw === '-') return null;
+    die(`${RPC_USAGE} — the body is empty`);
+  }
+  try {
+    return JSON.parse(String(text));
+  } catch (err) {
+    die(`rpc input is not valid JSON — ${err.message}`);
+  }
+}
+
+async function cmdRpc() {
+  const plugin = positional[1];
+  const method = positional[2];
+  if (!plugin || !method || positional.length > 4) die(RPC_USAGE);
+  if (!RPC_PLUGIN_PATTERN.test(plugin)) {
+    die(`invalid plugin name "${plugin}" — expected ${RPC_PLUGIN_PATTERN.source}`);
+  }
+  if (!RPC_METHOD_PATTERN.test(method)) {
+    die(`invalid method name "${method}" — expected ${RPC_METHOD_PATTERN.source}`);
+  }
+  if (plugin === 'connect' && method === 'createMachineCode') {
+    // Its result is a live one-time pairing code, redeemable for a durable
+    // machine credential; printing it would put a secret in the transcript.
+    die(
+      `connect.createMachineCode returns a one-time pairing code — use 'bb attach', ` +
+        'which mints and redeems it without printing it',
+    );
+  }
+  // `--json '{...}'` swallows the body as the flag's value; take it back.
+  const rawBody = positional[3] ?? (typeof flags.json === 'string' ? flags.json : undefined);
+  const body = await readRpcInput(rawBody);
+  // Non-2xx already exits non-zero inside request(); this handles a 2xx whose
+  // envelope still says ok:false. --json prints the envelope either way, but a
+  // rejected call must not exit 0, or scripts read a failed mutation as success.
+  const data = await request('post', `/plugins/${plugin}/rpc/${method}`, { body });
+  const failed = data && typeof data === 'object' && data.ok === false;
+  if (flags.json) cli.out(data);
+  if (failed) die(`${plugin}.${method} failed — ${JSON.stringify(data.error ?? null)}`);
+  if (flags.json) return;
+  const result = data && typeof data === 'object' && 'result' in data ? data.result : data;
+  cli.out(result === undefined ? null : result);
+}
+
 // ── dispatch ──────────────────────────────────────────────────────────
 const THREAD_COMMANDS = {
   list: cmdThreadList,
@@ -878,6 +1013,7 @@ if (group === 'attach') return await cmdAttach();
     if (group === 'unpair') return await cmdUnpair();
     if (group === 'self') return await cmdSelf();
     if (group === 'status') return await cmdStatus();
+    if (group === 'rpc') return await cmdRpc();
     if (group === 'host') {
 const sub = positional[1] || 'list';
 if (sub === 'list') return await cmdHostList();
