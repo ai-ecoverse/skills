@@ -146,6 +146,18 @@ the time. Its tooltip says what the report did.
   own linkage come first.
 - A **scoop** reporter is its name, not a link, because a scoop has no address
   to open.
+- **A live working report replaces Start a scoop.** When a `working` report
+  is applied (not stale, superseded, snoozed, or ignored because GitHub closed
+  the item), the work has started. The Go slot then renders the existing
+  dispatched state (the same button, `is-dispatched`, `aria-pressed=true`)
+  instead of offering to start it again. Its title reads `Working: <scoop name
+  | bb thread thr_…> reported <when>`, and a click sends no lick and writes
+  nothing. This holds for scoop and bb reporters alike, and it replaces the
+  reported thread's own Go link while the report holds. An attached or
+  snapshot-linked thread keeps its Go to thread control. A stale, superseded
+  or ignored report, a `needs-attention` or `done` report, or no report leaves
+  the control as it was. The decision is `startControlFor()` in
+  `report-overlay-shared.cjs`.
 - A reported **`pr`** links to `https://github.com/<owner>/<repo>/pull/<N>`,
   built from the key. It links at once, before any fetcher run knows the PR
   exists.

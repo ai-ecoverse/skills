@@ -180,6 +180,22 @@ function reportOverlay(rec, report, now, opts) {
   return out;
 }
 
+/** What the Go slot shows in place of "Start a scoop", given reportOverlay()'s
+    result. An APPLIED working report means the work has started, so the
+    control must not offer to start it again (a second click dispatched a
+    duplicate scoop): { dispatched: true, by, at }, rendered in the panel's
+    existing dispatched style as "Working: <by> reported <when>". by is the
+    scoop's name, "bb thread <id>", or null when the report names no agent.
+    null (the control stays as it is) for no report, a needs-attention or done
+    report, and a working report that is stale, superseded, snoozed or ignored
+    because GitHub closed or merged the item. */
+function startControlFor(overlay) {
+  if (!overlay || overlay.effect !== 'applied' || overlay.status !== 'working') return null;
+  const r = overlay.reporter;
+  const by = r ? (r.kind === 'bb' ? `bb thread ${r.id}` : r.name) : null;
+  return { dispatched: true, by, at: overlay.at };
+}
+
 /** Hang each record's report (and, for a bb reporter, that thread's
     threads.json entry) on the record as __report / __reportThread, so
     categorize(item, now) can stay a function of the item. IDEMPOTENT: every pass
@@ -245,6 +261,7 @@ module.exports = {
   reportReporter,
   reportPrLink,
   reportOverlay,
+  startControlFor,
   attachReports,
   reportInstructions,
 };
