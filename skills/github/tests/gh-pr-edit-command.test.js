@@ -3,6 +3,9 @@ import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import * as _prWatchFilterMod from '../scripts/pr-watch-filter.js';
+import * as _assignFieldMod from '../scripts/assign-field.js';
+import * as _prEditMod from '../scripts/pr-edit.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const target = path.resolve(__dirname, '../scripts/gh.jsh');
@@ -105,8 +108,19 @@ async function runGh(args, scenario = {}) {
     'sliccy:time': {},
     fs: fileSystem,
   };
+  // Relative script siblings are pre-loaded via static ESM imports (tst's
+  // createRequire shim resolves node: builtins but not relative VFS paths).
+  const relativeModules = {
+    './pr-watch-filter.js': () => (_prWatchFilterMod.default || _prWatchFilterMod),
+    './assign-field.js': () => (_assignFieldMod.default || _assignFieldMod),
+    './pr-edit.js': () => (_prEditMod.default || _prEditMod),
+  };
   const realRequire = createRequire(target);
-  const mockRequire = (id) => (Object.hasOwn(mocks, id) ? mocks[id] : realRequire(id));
+  const mockRequire = (id) => {
+    if (Object.hasOwn(mocks, id)) return mocks[id];
+    if (Object.hasOwn(relativeModules, id)) return relativeModules[id]();
+    return realRequire(id);
+  };
   const mockProcess = {
     argv: ['node', target, ...args],
     env: {},
