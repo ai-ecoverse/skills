@@ -1,7 +1,7 @@
-const assert = require('node:assert/strict');
-const test = require('node:test');
-const { applyPrEdit, buildPrEditPlan } = require('../scripts/pr-edit.js');
+import test, { fail, is } from 'tst';
+import * as _mod_0 from '../scripts/pr-edit.js';
 
+const { applyPrEdit, buildPrEditPlan } = _mod_0.default || _mod_0;
 function plan(overrides = {}) {
   return buildPrEditPlan({
     currentLabels: [],
@@ -17,7 +17,7 @@ function plan(overrides = {}) {
 }
 
 test('plans only explicitly requested pull fields', () => {
-  assert.deepEqual(plan({ title: 'New title', body: 'New body', base: 'stable' }), {
+  is(plan({ title: 'New title', body: 'New body', base: 'stable' }), {
     pull: { title: 'New title', body: 'New body', base: 'stable' },
     issue: {},
     addReviewers: {},
@@ -35,7 +35,7 @@ test('preserves unrelated labels and assignees while de-duplicating edits', () =
     removeAssignees: ['bob'],
   });
 
-  assert.deepEqual(result.issue, {
+  is(result.issue, {
     labels: ['keep', 'new'],
     assignees: ['alice', 'carol'],
   });
@@ -47,11 +47,11 @@ test('builds de-duplicated user and team reviewer payloads with removals winning
     removeReviewers: ['remove-me', 'remove-me', 'acme/legacy'],
   });
 
-  assert.deepEqual(result.addReviewers, {
+  is(result.addReviewers, {
     reviewers: ['alice'],
     team_reviewers: ['platform'],
   });
-  assert.deepEqual(result.removeReviewers, {
+  is(result.removeReviewers, {
     reviewers: ['remove-me'],
     team_reviewers: ['legacy'],
   });
@@ -77,7 +77,7 @@ test('uses pull, issue, and requested-reviewer endpoints for each payload type',
 
   await applyPrEdit(api, 'octo/repo', 42, editPlan);
 
-  assert.deepEqual(calls, [
+  is(calls, [
     {
       method: 'patch',
       path: '/repos/octo/repo/pulls/42',
@@ -103,16 +103,16 @@ test('uses pull, issue, and requested-reviewer endpoints for each payload type',
 
 test('skips endpoints whose payloads are empty', async () => {
   const api = {
-    patch: async () => assert.fail('patch should not be called'),
-    post: async () => assert.fail('post should not be called'),
-    delete: async () => assert.fail('delete should not be called'),
+    patch: async () => fail('patch should not be called'),
+    post: async () => fail('post should not be called'),
+    delete: async () => fail('delete should not be called'),
   };
 
-  assert.deepEqual(await applyPrEdit(api, 'octo/repo', 42, plan()), {});
+  is(await applyPrEdit(api, 'octo/repo', 42, plan()), {});
 });
 
 test('omits semantic no-ops from pull and issue payloads', () => {
-  assert.deepEqual(
+  is(
     plan({
       currentTitle: 'Same',
       currentBody: 'Body\n',

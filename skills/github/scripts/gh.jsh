@@ -4650,6 +4650,20 @@ if (argv[0] === 'version' || argv[0] === '--version') {
   process.exit(0);
 }
 
+// `gh mcp server-card` hits a public endpoint (no Authorization header) — allow
+// it without a GitHub token so agents can discover the MCP server before auth.
+// Wrap like mcpPassthrough so network/JSON failures become a concise cli.die
+// instead of an uncaught stack (the early path skips that catch).
+if (argv[0] === 'mcp' && argv[1] === 'server-card') {
+  try {
+    await cmdMcpServerCard(argv.slice(2));
+  } catch (err) {
+    if (err?.name === 'NodeExitError') throw err;
+    cli.die('mcp server-card failed: ' + (err.body?.message || err.message), { prefix: 'gh mcp' });
+  }
+  process.exit(0);
+}
+
 await resolvePersonalToken();
 
 const cmd  = argv[0];

@@ -1,8 +1,12 @@
-const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const { createRequire } = require('node:module');
-const test = require('node:test');
+import test, { fail, is, ok } from 'tst';
+import { createRequire } from 'node:module';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import * as _prWatchFilterMod from '../scripts/pr-watch-filter.js';
+import * as _assignFieldMod from '../scripts/assign-field.js';
+import * as _prEditMod from '../scripts/pr-edit.js';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const target = path.resolve(__dirname, '../scripts/gh.jsh');
 const source = fs.readFileSync(target, 'utf8');
@@ -43,10 +47,10 @@ async function runGh(args, scenario = {}) {
       }
       return {};
     },
-    patch: async () => assert.fail('unexpected PATCH'),
-    post: async () => assert.fail('unexpected POST'),
-    delete: async () => assert.fail('unexpected DELETE'),
-    put: async () => assert.fail('unexpected PUT'),
+    patch: async () => fail('unexpected PATCH'),
+    post: async () => fail('unexpected POST'),
+    delete: async () => fail('unexpected DELETE'),
+    put: async () => fail('unexpected PUT'),
   };
   const cli = {
     die: (message, options) => {
@@ -85,8 +89,19 @@ async function runGh(args, scenario = {}) {
     'sliccy:time': {},
     fs: { readFile: async () => '', writeFile: async () => {} },
   };
+  // Relative script siblings are pre-loaded via static ESM imports (tst's
+  // createRequire shim resolves node: builtins but not relative VFS paths).
+  const relativeModules = {
+    './pr-watch-filter.js': () => (_prWatchFilterMod.default || _prWatchFilterMod),
+    './assign-field.js': () => (_assignFieldMod.default || _assignFieldMod),
+    './pr-edit.js': () => (_prEditMod.default || _prEditMod),
+  };
   const realRequire = createRequire(target);
-  const mockRequire = (id) => (Object.hasOwn(mocks, id) ? mocks[id] : realRequire(id));
+  const mockRequire = (id) => {
+    if (Object.hasOwn(mocks, id)) return mocks[id];
+    if (Object.hasOwn(relativeModules, id)) return relativeModules[id]();
+    return realRequire(id);
+  };
   const mockProcess = {
     argv: ['node', target, ...args],
     env: {},
@@ -107,7 +122,7 @@ async function runGh(args, scenario = {}) {
       mockRequire,
       mockProcess,
       mockConsole,
-      async () => assert.fail('unexpected fetch')
+      async () => fail('unexpected fetch')
     );
     return { calls, stdout, stderr };
   } catch (error) {
@@ -121,25 +136,25 @@ function searchCall(result) {
 
 test('exposes pr diff, search issues, and issue list --search in help', async () => {
   const top = await runGh(['--help']);
-  assert.equal(top.error.exitCode, 0);
+  is(top.error.exitCode, 0);
   const topHelp = top.stdout.join('\n');
-  assert.match(topHelp, /pr diff/);
-  assert.match(topHelp, /search issues/);
-  assert.match(topHelp, /--search/);
+  ok((/pr diff/).test(topHelp));
+  ok((/search issues/).test(topHelp));
+  ok((/--search/).test(topHelp));
 
   const prHelp = await runGh(['pr', 'diff', '--help']);
-  assert.equal(prHelp.error.exitCode, 0);
-  assert.match(prHelp.stdout.join('\n'), /--repo/);
-  assert.match(prHelp.stdout.join('\n'), /unified diff/);
+  is(prHelp.error.exitCode, 0);
+  ok((/--repo/).test(prHelp.stdout.join('\n')));
+  ok((/unified diff/).test(prHelp.stdout.join('\n')));
 
   const searchHelp = await runGh(['search', 'issues', '--help']);
-  assert.equal(searchHelp.error.exitCode, 0);
-  assert.match(searchHelp.stdout.join('\n'), /--repo/);
-  assert.match(searchHelp.stdout.join('\n'), /<query>/);
+  is(searchHelp.error.exitCode, 0);
+  ok((/--repo/).test(searchHelp.stdout.join('\n')));
+  ok((/<query>/).test(searchHelp.stdout.join('\n')));
 
   const issueHelp = await runGh(['issue', 'list', '--help']);
-  assert.equal(issueHelp.error.exitCode, 0);
-  assert.match(issueHelp.stdout.join('\n'), /--search/);
+  is(issueHelp.error.exitCode, 0);
+  ok((/--search/).test(issueHelp.stdout.join('\n')));
 });
 
 test('pr diff prints a reconstructed unified diff and honours --repo', async () => {
@@ -157,8 +172,8 @@ test('pr diff prints a reconstructed unified diff and honours --repo', async () 
       },
     ],
   });
-  assert.equal(result.error, undefined);
-  assert.deepEqual(
+  is(result.error, undefined);
+  is(
     result.calls.filter((c) => c.path.includes('/files')),
     [
       {
@@ -169,13 +184,13 @@ test('pr diff prints a reconstructed unified diff and honours --repo', async () 
     ]
   );
   const out = result.stdout.join('\n');
-  assert.match(out, /diff --git a\/src\/app\.js b\/src\/app\.js/);
-  assert.match(out, /--- a\/src\/app\.js/);
-  assert.match(out, /\+\+\+ b\/src\/app\.js/);
-  assert.match(out, /\+added/);
-  assert.match(out, /diff --git a\/new\.txt b\/new\.txt/);
-  assert.match(out, /new file mode 100644/);
-  assert.match(out, /--- \/dev\/null/);
+  ok((/diff --git a\/src\/app\.js b\/src\/app\.js/).test(out));
+  ok((/--- a\/src\/app\.js/).test(out));
+  ok((/\+\+\+ b\/src\/app\.js/).test(out));
+  ok((/\+added/).test(out));
+  ok((/diff --git a\/new\.txt b\/new\.txt/).test(out));
+  ok((/new file mode 100644/).test(out));
+  ok((/--- \/dev\/null/).test(out));
 });
 
 test('pr diff paginates the files endpoint', async () => {
@@ -191,26 +206,26 @@ test('pr diff paginates the files endpoint', async () => {
     },
   });
   const fileCalls = result.calls.filter((c) => c.path.includes('/files'));
-  assert.equal(fileCalls.length, 2);
-  assert.equal(fileCalls[1].options.params.page, 2);
-  assert.match(result.stdout.join('\n'), /diff --git a\/last\.txt b\/last\.txt/);
+  is(fileCalls.length, 2);
+  is(fileCalls[1].options.params.page, 2);
+  ok((/diff --git a\/last\.txt b\/last\.txt/).test(result.stdout.join('\n')));
 });
 
 test('pr diff exits 1 with a clear error and empty stdout when the PR is missing', async () => {
   const result = await runGh(['pr', 'diff', '999', '-R', 'octo/repo'], {
     filesError: { status: 404, body: { message: 'Not Found', status: '404' } },
   });
-  assert.equal(result.error.name, 'NodeExitError');
-  assert.equal(result.error.exitCode, 1);
-  assert.match(result.error.message, /pull request #999 not found in octo\/repo/);
-  assert.equal(result.stdout.join(''), '');
+  is(result.error.name, 'NodeExitError');
+  is(result.error.exitCode, 1);
+  ok((/pull request #999 not found in octo\/repo/).test(result.error.message));
+  is(result.stdout.join(''), '');
 });
 
 test('pr diff requires a PR number', async () => {
   const result = await runGh(['pr', 'diff', '-R', 'octo/repo']);
-  assert.equal(result.error.name, 'NodeExitError');
-  assert.match(result.error.message, /PR number required/);
-  assert.equal(result.calls.filter((c) => c.path.includes('/files')).length, 0);
+  is(result.error.name, 'NodeExitError');
+  ok((/PR number required/).test(result.error.message));
+  is(result.calls.filter((c) => c.path.includes('/files')).length, 0);
 });
 
 test('search issues queries GitHub issue search with --repo', async () => {
@@ -238,15 +253,15 @@ test('search issues queries GitHub issue search with --repo', async () => {
       },
     }
   );
-  assert.equal(result.error, undefined);
+  is(result.error, undefined);
   const call = searchCall(result);
-  assert.ok(call);
-  assert.match(call.options.params.q, /playwright upload binary/);
-  assert.match(call.options.params.q, /type:issue/);
-  assert.match(call.options.params.q, /repo:ai-ecoverse\/slicc/);
-  assert.doesNotMatch(call.options.params.q, /type:pr/);
-  assert.match(result.stdout.join('\n'), /#2880/);
-  assert.match(result.stdout.join('\n'), /gh shim: pr diff and search issues/);
+  ok(call);
+  ok((/playwright upload binary/).test(call.options.params.q));
+  ok((/type:issue/).test(call.options.params.q));
+  ok((/repo:ai-ecoverse\/slicc/).test(call.options.params.q));
+  ok(!(/type:pr/).test(call.options.params.q));
+  ok((/#2880/).test(result.stdout.join('\n')));
+  ok((/gh shim: pr diff and search issues/).test(result.stdout.join('\n')));
 });
 
 test('search issues supports --json and requires a query', async () => {
@@ -274,12 +289,12 @@ test('search issues supports --json and requires a query', async () => {
       },
     }
   );
-  assert.deepEqual(JSON.parse(json.stdout.join('\n')), [{ number: 7, title: 'fix login' }]);
+  is(JSON.parse(json.stdout.join('\n')), [{ number: 7, title: 'fix login' }]);
 
   const missing = await runGh(['search', 'issues', '-R', 'octo/repo']);
-  assert.equal(missing.error.name, 'NodeExitError');
-  assert.match(missing.error.message, /query required/);
-  assert.equal(searchCall(missing), undefined);
+  is(missing.error.name, 'NodeExitError');
+  ok((/query required/).test(missing.error.message));
+  is(searchCall(missing), undefined);
 });
 
 test('issue list --search hits search/issues instead of the unfiltered list', async () => {
@@ -316,24 +331,24 @@ test('issue list --search hits search/issues instead of the unfiltered list', as
       issues: [{ number: 1, title: 'unrelated recent issue', labels: [], pull_request: undefined }],
     }
   );
-  assert.equal(result.error, undefined);
-  assert.equal(
+  is(result.error, undefined);
+  is(
     result.calls.filter((c) => /\/repos\/.+\/issues$/.test(c.path)).length,
     0,
     'must not fall back to the unfiltered issues list'
   );
   const call = searchCall(result);
-  assert.ok(call);
-  assert.equal(call.options.params.per_page, 5);
-  assert.match(call.options.params.q, /playwright upload binary corrupt/);
-  assert.match(call.options.params.q, /repo:ai-ecoverse\/slicc/);
-  assert.match(call.options.params.q, /type:issue/);
-  assert.match(call.options.params.q, /state:open/);
-  assert.doesNotMatch(result.stderr.join('\n'), /unrecognised flag --search/);
-  assert.doesNotMatch(result.stderr.join('\n'), /ignoring unexpected extra argument/);
-  assert.match(result.stdout.join('\n'), /#2879/);
-  assert.match(result.stdout.join('\n'), /playwright upload binary corrupt/);
-  assert.doesNotMatch(result.stdout.join('\n'), /unrelated recent issue/);
+  ok(call);
+  is(call.options.params.per_page, 5);
+  ok((/playwright upload binary corrupt/).test(call.options.params.q));
+  ok((/repo:ai-ecoverse\/slicc/).test(call.options.params.q));
+  ok((/type:issue/).test(call.options.params.q));
+  ok((/state:open/).test(call.options.params.q));
+  ok(!(/unrecognised flag --search/).test(result.stderr.join('\n')));
+  ok(!(/ignoring unexpected extra argument/).test(result.stderr.join('\n')));
+  ok((/#2879/).test(result.stdout.join('\n')));
+  ok((/playwright upload binary corrupt/).test(result.stdout.join('\n')));
+  ok(!(/unrelated recent issue/).test(result.stdout.join('\n')));
 });
 
 test('issue list without --search still uses the issues list endpoint', async () => {
@@ -348,9 +363,9 @@ test('issue list without --search still uses the issues list endpoint', async ()
       },
     ],
   });
-  assert.equal(result.error, undefined);
-  assert.equal(searchCall(result), undefined);
-  assert.equal(result.calls[0].path, '/repos/octo/repo/issues');
-  assert.match(result.stdout.join('\n'), /#10/);
-  assert.doesNotMatch(result.stdout.join('\n'), /#11/);
+  is(result.error, undefined);
+  is(searchCall(result), undefined);
+  is(result.calls[0].path, '/repos/octo/repo/issues');
+  ok((/#10/).test(result.stdout.join('\n')));
+  ok(!(/#11/).test(result.stdout.join('\n')));
 });

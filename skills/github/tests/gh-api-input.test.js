@@ -1,8 +1,12 @@
-const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const { createRequire } = require('node:module');
-const test = require('node:test');
+import test, { fail, is, ok } from 'tst';
+import { createRequire } from 'node:module';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import * as _prWatchFilterMod from '../scripts/pr-watch-filter.js';
+import * as _assignFieldMod from '../scripts/assign-field.js';
+import * as _prEditMod from '../scripts/pr-edit.js';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const target = path.resolve(__dirname, '../scripts/gh.jsh');
 const source = fs.readFileSync(target, 'utf8');
@@ -81,8 +85,19 @@ async function runGh(args, scenario = {}) {
     'sliccy:time': {},
     fs: fileSystem,
   };
+  // Relative script siblings are pre-loaded via static ESM imports (tst's
+  // createRequire shim resolves node: builtins but not relative VFS paths).
+  const relativeModules = {
+    './pr-watch-filter.js': () => (_prWatchFilterMod.default || _prWatchFilterMod),
+    './assign-field.js': () => (_assignFieldMod.default || _assignFieldMod),
+    './pr-edit.js': () => (_prEditMod.default || _prEditMod),
+  };
   const realRequire = createRequire(target);
-  const mockRequire = (id) => (Object.hasOwn(mocks, id) ? mocks[id] : realRequire(id));
+  const mockRequire = (id) => {
+    if (Object.hasOwn(mocks, id)) return mocks[id];
+    if (Object.hasOwn(relativeModules, id)) return relativeModules[id]();
+    return realRequire(id);
+  };
   const mockProcess = {
     argv: ['node', target, ...args],
     env: {},
@@ -110,7 +125,7 @@ async function runGh(args, scenario = {}) {
       mockRequire,
       mockProcess,
       mockConsole,
-      async () => assert.fail('unexpected fetch')
+      async () => fail('unexpected fetch')
     );
     return { calls, stdinReadCount, stdout, stderr };
   } catch (error) {
@@ -129,8 +144,8 @@ test('gh api --input reads a JSON file and sends it as the POST body', async () 
     ['api', '/repos/octo/repo/issues', '-X', 'POST', '--input', '/body.json'],
     { bodyFiles: { '/body.json': '{"title":"from file","body":"hello"}' } }
   );
-  assert.equal(result.error.exitCode, 0);
-  assert.deepEqual(writes(result), [
+  is(result.error.exitCode, 0);
+  is(writes(result), [
     {
       method: 'post',
       path: '/repos/octo/repo/issues',
@@ -144,8 +159,8 @@ test('gh api --input implies POST when -X is not given', async () => {
     ['api', '/markdown', '--input', '/body.json'],
     { bodyFiles: { '/body.json': '{"text":"# hi"}' } }
   );
-  assert.equal(result.error.exitCode, 0);
-  assert.deepEqual(writes(result), [
+  is(result.error.exitCode, 0);
+  is(writes(result), [
     {
       method: 'post',
       path: '/markdown',
@@ -159,9 +174,9 @@ test('gh api --input - reads from stdin', async () => {
     ['api', '/markdown', '-X', 'POST', '--input', '-'],
     { stdin: '{"text":"# from stdin"}' }
   );
-  assert.equal(result.error.exitCode, 0);
-  assert.equal(result.stdinReadCount, 1);
-  assert.deepEqual(writes(result), [
+  is(result.error.exitCode, 0);
+  is(result.stdinReadCount, 1);
+  is(writes(result), [
     {
       method: 'post',
       path: '/markdown',
@@ -175,8 +190,8 @@ test('gh api --input=<file> accepts the equals form', async () => {
     ['api', '/markdown', '-X', 'POST', '--input=/body.json'],
     { bodyFiles: { '/body.json': '{"text":"equals form"}' } }
   );
-  assert.equal(result.error.exitCode, 0);
-  assert.deepEqual(writes(result)[0].options.body, { text: 'equals form' });
+  is(result.error.exitCode, 0);
+  is(writes(result)[0].options.body, { text: 'equals form' });
 });
 
 test('gh api --input errors on invalid JSON', async () => {
@@ -184,18 +199,18 @@ test('gh api --input errors on invalid JSON', async () => {
     ['api', '/markdown', '-X', 'POST', '--input', '/bad.json'],
     { bodyFiles: { '/bad.json': 'not valid json{' } }
   );
-  assert.equal(result.error.name, 'NodeExitError');
-  assert.equal(result.error.exitCode, 1);
-  assert.match(result.error.message, /not valid JSON/);
-  assert.deepEqual(writes(result), []);
+  is(result.error.name, 'NodeExitError');
+  is(result.error.exitCode, 1);
+  ok((/not valid JSON/).test(result.error.message));
+  is(writes(result), []);
 });
 
 test('gh api --input errors when file cannot be read', async () => {
   const result = await runGh(
     ['api', '/markdown', '-X', 'POST', '--input', '/nonexistent.json']
   );
-  assert.equal(result.error.name, 'NodeExitError');
-  assert.match(result.error.message, /could not read --input \/nonexistent\.json/);
+  is(result.error.name, 'NodeExitError');
+  ok((/could not read --input \/nonexistent\.json/).test(result.error.message));
 });
 
 test('gh api --input is mutually exclusive with -F', async () => {
@@ -203,9 +218,9 @@ test('gh api --input is mutually exclusive with -F', async () => {
     ['api', '/markdown', '--input', '/body.json', '-F', 'text=hello'],
     { bodyFiles: { '/body.json': '{"text":"hi"}' } }
   );
-  assert.equal(result.error.name, 'NodeExitError');
-  assert.match(result.error.message, /mutually exclusive/);
-  assert.deepEqual(writes(result), []);
+  is(result.error.name, 'NodeExitError');
+  ok((/mutually exclusive/).test(result.error.message));
+  is(writes(result), []);
 });
 
 test('gh api --input is mutually exclusive with -f', async () => {
@@ -213,30 +228,30 @@ test('gh api --input is mutually exclusive with -f', async () => {
     ['api', '/markdown', '--input', '/body.json', '-f', 'text=hello'],
     { bodyFiles: { '/body.json': '{"text":"hi"}' } }
   );
-  assert.equal(result.error.name, 'NodeExitError');
-  assert.match(result.error.message, /mutually exclusive/);
+  is(result.error.name, 'NodeExitError');
+  ok((/mutually exclusive/).test(result.error.message));
 });
 
 // ── unknown flag rejection ───────────────────────────────────────────────────
 
 test('gh api rejects unknown flags', async () => {
   const result = await runGh(['api', '/user', '--totally-bogus']);
-  assert.equal(result.error.name, 'NodeExitError');
-  assert.equal(result.error.exitCode, 1);
-  assert.match(result.error.message, /unknown flag '--totally-bogus'/);
-  assert.match(result.error.message, /--help/);
+  is(result.error.name, 'NodeExitError');
+  is(result.error.exitCode, 1);
+  ok((/unknown flag '--totally-bogus'/).test(result.error.message));
+  ok((/--help/).test(result.error.message));
 });
 
 test('gh api rejects unknown flags with =value form', async () => {
   const result = await runGh(['api', '/markdown', '--bogus=1']);
-  assert.equal(result.error.name, 'NodeExitError');
-  assert.match(result.error.message, /unknown flag '--bogus'/);
+  is(result.error.name, 'NodeExitError');
+  ok((/unknown flag '--bogus'/).test(result.error.message));
 });
 
 test('gh api rejects unknown short flags', async () => {
   const result = await runGh(['api', '/user', '-Z']);
-  assert.equal(result.error.name, 'NodeExitError');
-  assert.match(result.error.message, /unknown flag '-Z'/);
+  is(result.error.name, 'NodeExitError');
+  ok((/unknown flag '-Z'/).test(result.error.message));
 });
 
 // ── existing behaviour preservation ──────────────────────────────────────────
@@ -245,8 +260,8 @@ test('gh api -F still works after --input addition', async () => {
   const result = await runGh([
     'api', '/repos/octo/repo/issues', '-F', 'title=test', '-F', 'draft=true',
   ]);
-  assert.equal(result.error.exitCode, 0);
-  assert.deepEqual(writes(result), [
+  is(result.error.exitCode, 0);
+  is(writes(result), [
     {
       method: 'post',
       path: '/repos/octo/repo/issues',
@@ -257,15 +272,15 @@ test('gh api -F still works after --input addition', async () => {
 
 test('gh api plain GET still works', async () => {
   const result = await runGh(['api', '/user']);
-  assert.equal(result.error.exitCode, 0);
-  assert.deepEqual(result.calls, [
+  is(result.error.exitCode, 0);
+  is(result.calls, [
     { method: 'get', path: '/user', options: {} },
   ]);
 });
 
 test('gh api -X GET with fields sends params', async () => {
   const result = await runGh(['api', '/search/issues', '-X', 'GET', '-f', 'q=test']);
-  assert.deepEqual(result.calls, [
+  is(result.calls, [
     { method: 'get', path: '/search/issues', options: { params: { q: 'test' } } },
   ]);
 });
@@ -273,17 +288,17 @@ test('gh api -X GET with fields sends params', async () => {
 test('gh api --jq still works', async () => {
   const result = await runGh(['api', '/user', '--jq', '.login']);
   // jq handling runs after the API call; just verify the call was made
-  assert.equal(result.calls[0].method, 'get');
-  assert.equal(result.calls[0].path, '/user');
+  is(result.calls[0].method, 'get');
+  is(result.calls[0].path, '/user');
 });
 
 test('gh api help documents --input', async () => {
   const result = await runGh(['api', '--help']);
-  assert.equal(result.error.exitCode, 0);
+  is(result.error.exitCode, 0);
   const help = result.stdout.join('\n');
-  assert.match(help, /--input/);
-  assert.match(help, /mutually exclusive/);
-  assert.match(help, /Unknown flags are rejected/);
+  ok((/--input/).test(help));
+  ok((/mutually exclusive/).test(help));
+  ok((/Unknown flags are rejected/).test(help));
 });
 
 test('gh api --input with GET converts body to query params', async () => {
@@ -291,8 +306,8 @@ test('gh api --input with GET converts body to query params', async () => {
     ['api', '/search/issues', '-X', 'GET', '--input', '/query.json'],
     { bodyFiles: { '/query.json': '{"q":"repo:octo/repo","per_page":5}' } }
   );
-  assert.equal(result.error.exitCode, 0);
-  assert.deepEqual(result.calls, [
+  is(result.error.exitCode, 0);
+  is(result.calls, [
     {
       method: 'get',
       path: '/search/issues',
