@@ -12,7 +12,7 @@
     "check:jsh-parse": "node tools/check-jsh-parse.mjs"
   },
   "devDependencies": {
-    "@ai-ecoverse/biome-jsh": "6.144.0",
+    "@ai-ecoverse/biome-jsh": "6.178.1",
     "@biomejs/biome": "2.5.14",
     "minimatch": "10.2.6"
   }
