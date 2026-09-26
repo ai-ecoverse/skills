@@ -21,6 +21,21 @@ updates, the quick view, the per-card actions and follow-up actions.
   written to GitHub), and a Go control with three destinations — the bb thread if
   one is attached or linked, "start a scoop" for live work with no thread, or the
   item on GitHub for finished work. A finished item never offers to start work.
+- **Agent reports**: the same five-second tick reads `data/reports.json`, which
+  only `gh dashboard update|clear` writes, and overlays each report on its card.
+  `working` puts the card in Active, `needs-attention` in Needs attention with
+  the note as the reason, and `done` in Done. GitHub wins: a closed or merged
+  item ignores its report. A done or needs-attention report gives way to newer
+  GitHub activity, and a working report goes stale after the six-hour Active
+  stall limit. The operator's done mark outranks every report. An active
+  snooze holds back working and done reports. The card shows one meta line:
+  the status, the reporter (a bb thread links to its URL, a scoop is a name),
+  the reported PR (linked at once) and the time. The rules and their order are
+  in reports.md.
+- **Request licks carry reporting instructions**: every lick the panel sends to
+  the cone (`start-scoop`, `do-nudge`, `clarify-question`,
+  `review-before-approval`) has `data.report`, the exact `gh dashboard`
+  commands with the item's key filled in. See reports.md.
 - **Follow-up actions** from the snapshot render as buttons in the quick view: a
   *nudge* dispatches its instruction to the cone; a *clarification* is raised as a
   question instead, because an agent cannot answer it.
@@ -33,7 +48,7 @@ updates, the quick view, the per-card actions and follow-up actions.
   before anything runs. This needs a github skill that provides `gh monitor`.
 - Nothing the panel does writes to GitHub. Its only writes are
   `data/user-state.json` (the operator's marks), licks to the cone, and the watch
-  list, through `gh monitor add`.
+  list, through `gh monitor add`. It only reads `data/reports.json`.
 
 The stage table, the precedence between overlapping groups, snooze semantics
 and the answered and open design questions are in domain-model.md, alongside

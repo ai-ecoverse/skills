@@ -9,7 +9,8 @@ with what the answer cost.
 
 An item record carries a stage. Nothing stores a category — `categorize(item,
 now)` recomputes it on every render from `(stage, substage, lastActivityAt,
-snoozedUntil, snoozedAt, lastCommentAt, thread)`. That split is deliberate: a
+snoozedUntil, snoozedAt, lastCommentAt, thread)`, plus the item's agent report
+(see reports.md). That split is deliberate: a
 stored category drifts the moment a timestamp moves, and "stalled" is a
 statement about the clock, not about the item.
 

@@ -48,7 +48,8 @@ author.
 mkdir -p /shared/sprinkles/github-dashboard/data
 ( cd assets/sprinkle &&
   cp github-dashboard.shtml /shared/sprinkles/github-dashboard/ &&
-  cp data-example/*.json    /shared/sprinkles/github-dashboard/data/ )
+  cp data-example/snapshot.json data-example/version.json \
+     /shared/sprinkles/github-dashboard/data/ )
 
 # 2. say which repositories to follow (REQUIRED — there are no defaults)
 mkdir -p /shared/github-monitor
@@ -66,6 +67,9 @@ sprinkle open github-dashboard
 
 **Check:** the panel opens showing the example data — a hand-written fixture with
 four invented records that exists so the panel renders something on first open.
+`data-example/reports.json` is deliberately not copied: `data/reports.json`
+belongs to `gh dashboard`, and a copy would overwrite real agent reports on a
+reinstall. Copy it by hand only into a scratch data directory.
 
 Replace the fixture by running the fetcher:
 
@@ -267,8 +271,18 @@ red, are in `references/security.md`.
 - **Quick view** of a card's status, non-modal on hover, modal on click or Enter.
 - **Three per-card actions**, all local: snooze (Fibonacci backoff), done, and a
   Go control (the bb thread, "start a scoop", or the item on GitHub).
+- **Agent reports** from `data/reports.json`, which the github skill's
+  `gh dashboard update|clear` writes. `working` puts a card in Active,
+  `needs-attention` puts it in Needs attention with the note as the reason, and
+  `done` puts it in Done. GitHub wins once an item is closed or merged. Newer
+  GitHub activity supersedes a done or needs-attention report, and a working
+  report goes stale after the six-hour Active stall limit. Each card shows who
+  reported and when, with links to the bb thread and the reported PR. A missing
+  file means no reports. The rules are in
+  [references/reports.md](references/reports.md#what-the-panel-does-with-it).
 - Nothing the panel does writes to GitHub. Its only writes are
   `data/user-state.json` (the operator's marks) and licks to the cone.
+  `data/reports.json` is read, never written.
 
 The behaviour of each piece is in `references/panel.md`; the stage table, the
 precedence between overlapping groups, snooze semantics and the open design
@@ -285,6 +299,13 @@ renders one control per action, and **a kind must be registered to get one**:
 | `clarify` | `message-circle-question` | Raise with the cone | `clarify-question` |
 | `approve` | `scan-eye` | Ask for a safety check | `review-before-approval` |
 | anything else | `circle-dashed` | **none** — an inert chip | none |
+
+Every request lick (these three and the Go control's `start-scoop`) carries
+`data.report`: the exact `gh dashboard update|clear` commands with the item's
+key filled in, so the recipient knows how to report back to the card. The field
+sits inside `data`, because the runtime forwards only `action`, `data` and
+`target`. The existing `note` is unchanged. See
+[references/reports.md](references/reports.md#request-licks-carry-the-instructions).
 
 `approve` never approves: the panel performs no GitHub writes, so the button asks
 for the work that stops short of the write — read the item now and report whether
@@ -326,11 +347,13 @@ references/
   reports.md                  data/reports.json, the agent reports `gh dashboard` writes
 assets/sprinkle/
   github-dashboard.shtml      the panel (BUILT — see Build)
-  data-example/               synthetic snapshot + version, 4 records
+  data-example/               synthetic snapshot + version, 4 records, and 3 agent reports
 scripts/
   build.sh                    the one build command (needs src/, see Build)
   fetch-snapshot.mjs          the fetcher (GitHub + optional bb)
   workdays-shared.cjs         working-day arithmetic the fetcher loads from beside itself
+  report-overlay-shared.cjs   what an agent report does to a card (embedded in the panel)
+  embed-report-overlay.js     re-embed report-overlay-shared.cjs into the panel
   poll.jsh                    the durable poller unit (jshd)
   mirror-comments.mjs         mirrors the operator's marks onto the card (opt-in)
 ```
@@ -349,7 +372,8 @@ tests/
                               last-comment (lastCommentAt ignores the mirror),
                               mirror-exclusion, mirror-retry, poll-summary (the
                               poller's failure summary), snapshot-age, live-clock,
-                              agent-ledger and poll-ledger (the spend ledger)
+                              agent-ledger and poll-ledger (the spend ledger),
+                              report-overlay (agent reports and lick fields)
   qv-fake-dom.js              fake DOM the quick-view test drives
 ```
 
