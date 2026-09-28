@@ -16,8 +16,10 @@
 /* ---- 8< REPORT-OVERLAY ----------------------------------------------------
    reportOverlay(record, report, now, opts) -> what the report does to the card.
 
-   PRECEDENCE, highest first. The panel's categorize() consults this right
-   after the operator's own done mark, so the mark still outranks everything.
+   PRECEDENCE, highest first.
+     0. THE OPERATOR'S DONE MARK (record.doneAt, from user-state.json) retires
+        the report: it decides nothing and supplies no link. (categorize()
+        checks doneAt before it asks, too.)                  effect 'done-mark'
      1. GITHUB WINS. A closed or merged item (stage 9/10/11, a mergedAt, or a
         stateReason other than open/reopened) ignores its report: the normal
         closed/merged stage applies.                        effect 'github'
@@ -134,6 +136,11 @@ function reportOverlay(rec, report, now, opts) {
     out.reason = `${status} report has no valid time`;
     return out;
   }
+  if (rec && rec.doneAt) {
+    out.effect = 'done-mark';
+    out.reason = `${status} report retired by your done mark`;
+    return out;
+  }
   if (reportGithubFinished(rec)) {
     out.effect = 'github';
     out.reason = `${status} report ignored: the item is closed or merged on GitHub`;
@@ -194,6 +201,21 @@ function startControlFor(overlay) {
   const r = overlay.reporter;
   const by = r ? (r.kind === 'bb' ? `bb thread ${r.id}` : r.name) : null;
   return { dispatched: true, by, at: overlay.at };
+}
+
+/** The thread an APPLIED report names: the one explicit link from a card to
+    the agent on it (`gh dashboard update --thread`, owner decision
+    2026-09-28). A bb reporter yields { kind: 'bb', id, url }, the id being the
+    URL's thr_ segment and the URL kept for the link; a scoop reporter yields
+    { kind: 'scoop', name }, which has no URL. null for no report, a report
+    that names no agent, or one that is not applied (done mark, closed or
+    merged, superseded, stale, snoozed, no status). The panel puts this ABOVE
+    the snapshot's own thread linkage. */
+function reportThreadFor(overlay) {
+  if (!overlay || overlay.effect !== 'applied' || !overlay.reporter) return null;
+  const r = overlay.reporter;
+  if (r.kind === 'bb') return r.url ? { kind: 'bb', id: r.id, url: r.url } : null;
+  return { kind: 'scoop', name: r.name };
 }
 
 /** Hang each record's report (and, for a bb reporter, that thread's
@@ -262,6 +284,7 @@ module.exports = {
   reportPrLink,
   reportOverlay,
   startControlFor,
+  reportThreadFor,
   attachReports,
   reportInstructions,
 };

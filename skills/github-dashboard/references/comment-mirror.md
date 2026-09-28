@@ -76,7 +76,8 @@ timestamp, or a 30-minute poller would PATCH it for ever and notify everyone
 watching each time.
 
 Only marks are mirrored. Stage, CI and review state are derived and would rot on
-a public card unattended; attachments belong to the `github` skill.
+a public card unattended; thread links come from `gh dashboard` reports, which
+the `github` skill owns.
 
 ## The sweep, and what it costs
 

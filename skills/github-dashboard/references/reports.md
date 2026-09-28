@@ -105,7 +105,7 @@ control and the clock-driven regroup all see the same result.
 Precedence, highest first:
 
 1. **The operator's done mark** (`doneAt` in `user-state.json`). It
-   outranks every report, as it outranks GitHub.
+   outranks every report, as it outranks GitHub, and retires the report's link.
 2. **GitHub wins.** Once the item is closed or merged (stage 9, 10 or 11, a
    `mergedAt`, or a `stateReason` other than `open`/`reopened`), the report
    is ignored and the normal closed or merged stage applies.
@@ -141,9 +141,15 @@ the time. Its tooltip says what the report did.
 
 - A **bb** reporter links to the thread URL the writer stored. When
   `threads.json` has that thread, the line also shows the thread's phase
-  (busy, pending, settled or archived). When nothing else names a thread for
-  the card, the Go control opens this one. An attachment and the snapshot's
-  own linkage come first.
+  (busy, pending, settled or archived).
+- **The applied report is the only explicit thread link.** `gh dashboard update
+  --thread` replaces the retired `gh pr attach`; the panel no longer reads any
+  attachment store. Precedence: the applied report's thread, then the
+  snapshot's own linkage. A bb report's Go control opens the writer's URL (the
+  id is its `thr_` segment). A scoop report yields the scoop, which has no URL,
+  so it never becomes a Go link. A report that is not applied (done mark,
+  closed or merged, superseded, stale, snoozed) supplies no link, and the
+  snapshot link applies. The decision is `reportThreadFor()`.
 - A **scoop** reporter is its name, not a link, because a scoop has no address
   to open.
 - **A live working report replaces Start a scoop.** When a `working` report
@@ -153,8 +159,8 @@ the time. Its tooltip says what the report did.
   instead of offering to start it again. Its title reads `Working: <scoop name
   | bb thread thr_…> reported <when>`, and a click sends no lick and writes
   nothing. This holds for scoop and bb reporters alike, and it replaces the
-  reported thread's own Go link while the report holds. An attached or
-  snapshot-linked thread keeps its Go to thread control. A stale, superseded
+  reported thread's own Go link while the report holds, and a snapshot link as
+  well (the applied report comes first). A stale, superseded
   or ignored report, a `needs-attention` or `done` report, or no report leaves
   the control as it was. The decision is `startControlFor()` in
   `report-overlay-shared.cjs`.

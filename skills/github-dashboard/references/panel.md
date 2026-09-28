@@ -19,7 +19,7 @@ updates, the quick view, the per-card actions and follow-up actions.
 - **Three per-card actions**, all local: snooze (Fibonacci backoff, and in the
   snoozed column the same control un-snoozes), done (a local mark; nothing is
   written to GitHub), and a Go control with three destinations — the bb thread if
-  one is attached or linked, "start a scoop" for live work with no thread, or the
+  one is reported (`gh dashboard update --thread`) or linked, "start a scoop" for live work with no thread, or the
   item on GitHub for finished work. A finished item never offers to start work.
 - **Agent reports**: the same five-second tick reads `data/reports.json`, which
   only `gh dashboard update|clear` writes, and overlays each report on its card.

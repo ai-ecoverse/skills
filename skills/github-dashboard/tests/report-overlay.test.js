@@ -609,13 +609,13 @@ function goSlot(passNow) {
     'mutateStore',
     'slicc',
     [
-      'let META = null; let ATTACHMENTS = {};',
+      'let META = null;',
       region(src, 'CLASSIFY'),
       region(src, 'FMT'),
       `let PASS_NOW = ${Number(passNow)};`,
       fn('recordKey', 'item'),
       fn('bbProject', 'repo'),
-      fn('threadFor', 'item'),
+      fn('threadFor', 'item, now'),
       fn('goTarget', 'item, now'),
       fn('startButtonTitle', 'item, tgt'),
       `async ${fn('scoopClick', 'item')}`,
@@ -672,12 +672,10 @@ test('S2 the Go slot: dispatched "Working: <who> reported <when>" in place of St
   const stale = t(withReport(issue(), report({ thread: scoop, at: iso(NOW - 7 * H) })));
   is(stale.mode, 'start');
   is(stale.reported, undefined, 'stale scoop: the plain Start a scoop');
-  ok(/^No bb thread is attached/.test(stale.title), 'unchanged title');
-  is(
-    t(withReport(issue(), report({ at: iso(NOW - 7 * H) }))).mode,
-    'thread',
-    'stale bb: the reported thread link, as before'
-  );
+  ok(/^No thread reported or linked for /.test(stale.title), 'the plain start title');
+  const staleBb = t(withReport(issue(), report({ at: iso(NOW - 7 * H) })));
+  is(staleBb.mode, 'start', 'stale bb: a retired report supplies no link');
+  is(staleBb.reported, undefined);
   const na = t(
     withReport(issue(), report({ status: 'needs-attention', thread: scoop, note: 'x' }))
   );
@@ -686,10 +684,11 @@ test('S2 the Go slot: dispatched "Working: <who> reported <when>" in place of St
   is(t(issue()).reported, undefined, 'no report: unchanged');
   is(t(issue()).mode, 'start');
   const linked = issue({ stage: 2, thread: recThread({ id: 'thr_example02' }) });
+  ok(t(withReport(linked, report({ thread: scoop }))).reported, 'applied report > snapshot link');
   is(
-    t(withReport(linked, report({ thread: scoop }))).mode,
+    t(withReport(linked, report({ thread: scoop, at: iso(NOW - 7 * H) }))).mode,
     'thread',
-    'a linked thread keeps its Go to thread'
+    'a retired report: the snapshot link keeps working'
   );
 });
 
@@ -724,4 +723,90 @@ test('S3 a click on the reported control sends nothing and writes nothing; card 
     /startButtonTitle\(item, tgt\)/.test(acts) && /startButtonTitle\(item, tgt\)/.test(upd),
     'one title function'
   );
+});
+
+// ---- T1-T3: the report is the only explicit thread link --------------------------
+
+test('T1 an APPLIED bb-URL report yields its thread link, above the snapshot link; a scoop yields the scoop', () => {
+  const rt = (rec, rep) => mod().reportThreadFor(over(rec, rep));
+  is(
+    JSON.stringify(rt(issue(), report({}))),
+    JSON.stringify({ kind: 'bb', id: 'thr_example01', url: BB_URL }),
+    'bb: thr_ id + URL'
+  );
+  is(
+    JSON.stringify(rt(issue(), report({ thread: scoop }))),
+    JSON.stringify({ kind: 'scoop', name: 'octocat-scoop' }),
+    'scoop'
+  );
+  is(rt(issue(), report({ thread: null })), null, 'no agent named');
+  const { goTarget } = goSlot(NOW)(null, null);
+  const na = report({ status: 'needs-attention', note: 'x' });
+  const g = goTarget(withReport(issue(), na), NOW);
+  is(g.mode, 'thread');
+  is(g.url, BB_URL, "the link is the writer's URL");
+  ok(/gh dashboard update --thread/.test(g.title), g.title);
+  const linked = issue({ stage: 2, thread: recThread({ id: 'thr_example02' }) });
+  is(goTarget(withReport(linked, na), NOW).url, BB_URL, 'applied report thread > snapshot link');
+  ok(/thr_example02/.test(goTarget(linked, NOW).url), 'no report: the snapshot link, as before');
+});
+
+test('T2 a RETIRED report supplies no link: done mark, closed/merged, superseded, stale working', () => {
+  const rt = (rec, rep) => mod().reportThreadFor(over(rec, rep));
+  const retired = [
+    [
+      'done mark',
+      issue({ doneAt: iso(NOW - 1 * H) }),
+      report({ status: 'needs-attention', note: 'x' }),
+    ],
+    [
+      'closed',
+      issue({ stage: 11, stateReason: 'completed' }),
+      report({ status: 'needs-attention' }),
+    ],
+    [
+      'superseded',
+      issue({ lastActivityAt: iso(NOW - 1 * H) }),
+      report({ status: 'done', at: iso(NOW - 2 * H) }),
+    ],
+    ['stale working >6h', issue(), report({ at: iso(NOW - 7 * H) })],
+  ];
+  const { goTarget } = goSlot(NOW)(null, null);
+  for (const [why, rec, rep] of retired) {
+    is(rt(rec, rep), null, `${why}: reportThreadFor null`);
+    const g = goTarget(withReport(rec, rep), NOW);
+    ok(g.url !== BB_URL, `${why}: the Go control does not lead to the reported thread (${g.mode})`);
+    is(g.reported, undefined, `${why}: no dispatched state`);
+  }
+  is(
+    over(issue({ doneAt: iso(NOW - 1 * H) }), report({})).effect,
+    'done-mark',
+    'doneAt retires the report'
+  );
+  const linked = issue({ stage: 2, thread: recThread({ id: 'thr_example02' }) });
+  ok(
+    /thr_example02/.test(goTarget(withReport(linked, report({ at: iso(NOW - 7 * H) })), NOW).url),
+    'retired report: the snapshot link'
+  );
+});
+
+test('T3 no code path reads attachments.json (gh pr attach is retired)', () => {
+  const whole = fs.readFileSync(paths.panel(), 'utf8');
+  const needles = [
+    'attachments.json',
+    'ATTACHMENTS',
+    'loadAttachments',
+    'github-monitor/attach',
+    'gh pr attach',
+    "'attachment'",
+  ];
+  for (const needle of needles) ok(!whole.includes(needle), `panel has no ${needle}`);
+  const code = stripComments(panelModule());
+  ok(!/readFile\([^)]*attach/i.test(code), 'no readFile of an attachment store');
+  ok(!/ATTACH/.test(fnBody(code, 'threadFor')), 'threadFor reads no attachment map');
+  ok(
+    /reportThreadFor\(reportFor\(item, now\)\)/.test(fnBody(code, 'threadFor')),
+    'threadFor reads the applied report'
+  );
+  ok(!fs.readFileSync(modPath(), 'utf8').includes('attachments.json'), 'the shared module neither');
 });

@@ -1574,8 +1574,10 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
       /* ---- 8< REPORT-OVERLAY ----------------------------------------------------
          reportOverlay(record, report, now, opts) -> what the report does to the card.
 
-         PRECEDENCE, highest first. The panel's categorize() consults this right
-         after the operator's own done mark, so the mark still outranks everything.
+         PRECEDENCE, highest first.
+           0. THE OPERATOR'S DONE MARK (record.doneAt, from user-state.json) retires
+              the report: it decides nothing and supplies no link. (categorize()
+              checks doneAt before it asks, too.)                  effect 'done-mark'
            1. GITHUB WINS. A closed or merged item (stage 9/10/11, a mergedAt, or a
               stateReason other than open/reopened) ignores its report: the normal
               closed/merged stage applies.                        effect 'github'
@@ -1692,6 +1694,11 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
           out.reason = `${status} report has no valid time`;
           return out;
         }
+        if (rec && rec.doneAt) {
+          out.effect = 'done-mark';
+          out.reason = `${status} report retired by your done mark`;
+          return out;
+        }
         if (reportGithubFinished(rec)) {
           out.effect = 'github';
           out.reason = `${status} report ignored: the item is closed or merged on GitHub`;
@@ -1752,6 +1759,21 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         const r = overlay.reporter;
         const by = r ? (r.kind === 'bb' ? `bb thread ${r.id}` : r.name) : null;
         return { dispatched: true, by, at: overlay.at };
+      }
+
+      /** The thread an APPLIED report names: the one explicit link from a card to
+          the agent on it (`gh dashboard update --thread`, owner decision
+          2026-09-28). A bb reporter yields { kind: 'bb', id, url }, the id being the
+          URL's thr_ segment and the URL kept for the link; a scoop reporter yields
+          { kind: 'scoop', name }, which has no URL. null for no report, a report
+          that names no agent, or one that is not applied (done mark, closed or
+          merged, superseded, stale, snoozed, no status). The panel puts this ABOVE
+          the snapshot's own thread linkage. */
+      function reportThreadFor(overlay) {
+        if (!overlay || overlay.effect !== 'applied' || !overlay.reporter) return null;
+        const r = overlay.reporter;
+        if (r.kind === 'bb') return r.url ? { kind: 'bb', id: r.id, url: r.url } : null;
+        return { kind: 'scoop', name: r.name };
       }
 
       /** Hang each record's report (and, for a bb reporter, that thread's
@@ -2434,51 +2456,29 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
           — measured: it loads, but its title was the generic "Thread thr_…",
           so it is the second choice, not the first. A reachable second choice
           still beats a dead button. */
-      /* Phase 7n: the attachment map written by `gh pr attach`
-         (/shared/github-monitor/attachments.json, shape
-         {version, attachments:{"owner/repo#N":{thread, project, attachedAt}}}).
-
-         This is an EXPLICIT human-made link, so it outranks the fetcher's
-         heuristic thread linkage in the snapshot. It is a MAPPING, not a status,
-         so it is safe to hold in memory — unlike thread state, which is never
-         cached anywhere (see liveThreadStatus). Re-read whenever a new snapshot
-         lands, which is when a new attachment plausibly appears; a failure to
-         read leaves the map empty and the panel falls back to the snapshot. */
-      const ATTACHMENTS_PATH = '/shared/github-monitor/attachments.json';
-      let ATTACHMENTS = {};
-
-      async function loadAttachments() {
-        try {
-          const parsed = JSON.parse(await slicc.readFile(ATTACHMENTS_PATH));
-          ATTACHMENTS = parsed && typeof parsed.attachments === 'object' && parsed.attachments ? parsed.attachments : {};
-        } catch (err) {
-          ATTACHMENTS = {};
-        }
-      }
-
-      /** The thread this record is attached to, if any: the explicit attachment
-          first, then the snapshot's own linkage, then a thread record itself. */
-      function threadFor(item) {
-        const att = ATTACHMENTS[recordKey(item)];
-        if (att && att.thread) {
-          return { id: att.thread, project: att.project || null, source: 'attachment', attachedAt: att.attachedAt || null };
-        }
+      /** The thread a card links to, if any. PRECEDENCE: the thread an APPLIED
+          agent report names (reportThreadFor, REPORT-OVERLAY) first, then the
+          snapshot's own linkage, then a thread record itself. `gh dashboard
+          update --thread` is the only explicit link (owner decision
+          2026-09-28). A report that is not
+          applied (done mark, closed or merged, superseded, stale, snoozed)
+          supplies nothing. A bb report keeps the writer's URL, so no project
+          lookup is needed; a scoop report yields { scoop } and has no URL. */
+      function threadFor(item, now) {
+        const rt = reportThreadFor(reportFor(item, now));
+        if (rt && rt.kind === 'bb') return { id: rt.id, project: null, source: 'report', url: rt.url };
+        if (rt && rt.kind === 'scoop') return { scoop: rt.name, source: 'report' };
         if (item.thread && item.thread.id) {
           return { id: item.thread.id, project: null, source: 'snapshot', state: item.thread.state, archived: !!item.thread.archived, title: item.thread.title };
         }
         if (item.kind === 'thread') return { id: item.id, project: null, source: 'self' };
-        // Last: the bb thread an agent reported with `gh dashboard update
-        // --thread <url>`. Its URL is the writer's, kept whole, so no project
-        // lookup is needed. Only when nothing above names a thread.
-        const who = reportReporter(item.__report, null);
-        if (who && who.kind === 'bb' && who.url) return { id: who.id, project: null, source: 'report', url: who.url };
         return null;
       }
 
       /** Phase 7n: where the Go control leads. THREE destinations, one per card,
           each with its own icon — that is the whole point of the trichotomy:
 
-            'thread' — a bb thread is attached or linked. The conversation is
+            'thread' — a bb thread is reported or linked. The conversation is
                        where the work is; go there.
             'start'  — no thread AND the item is still live work, so the work has
                        not started: ask the cone to start a scoop.
@@ -2506,11 +2506,11 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
           reported in the quick view instead, fetched live at the moment it is
           shown. */
       function goTarget(item, now) {
-        const thr = threadFor(item);
+        const thr = threadFor(item, now);
         // An APPLIED working report (startControlFor, REPORT-OVERLAY): the work
         // has started, so the start slot shows the dispatched state instead of
         // offering to start it again. It outranks the reported thread's own
-        // link, never an attached or snapshot-linked thread.
+        // link; a snapshot link wins only over a report that names no agent.
         const reported = startControlFor(reportFor(item, now));
         if (reported && (!thr || thr.source === 'report')) {
           return {
@@ -2521,7 +2521,8 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
             title: `Working: ${reported.by ? reported.by + ' ' : ''}reported ${fmtWhen(reported.at)}`,
           };
         }
-        if (thr) {
+        // A scoop has no address: it never becomes a Go link.
+        if (thr && thr.id) {
           const project = thr.project || bbProject(item.repo);
           const url = thr.url
             ? thr.url
@@ -2538,11 +2539,9 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
               `Open the bb thread ${thr.id}` +
               (thr.title ? ` ("${thr.title}")` : '') +
               (thr.archived ? ', archived' : '') +
-              (thr.source === 'attachment'
-                ? ` — attached explicitly with \`gh pr attach\`${thr.attachedAt ? ' on ' + fmtWhen(thr.attachedAt) : ''}`
-                : thr.source === 'report'
-                  ? ' — reported by the agent with `gh dashboard update`'
-                  : ' — linked by the fetcher from the thread\'s own title and body') +
+              (thr.source === 'report'
+                ? ' — reported with `gh dashboard update --thread`'
+                : ' — linked by the fetcher from the thread\'s own title and body') +
               `. Opens in a new tab: ${url}.` +
               (project || thr.url ? '' : ` This snapshot does not say which bb project ${item.repo} maps to, so this is the project-less URL form.`) +
               ' The thread’s live status is shown in the quick view, not here, because it changes by the second. Reads nothing, writes nothing.',
@@ -2568,11 +2567,10 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
           icon: 'rocket',
           label: 'Start a scoop',
           title:
-            `No bb thread is attached or linked to ${recordKey(item)} and it is still live work, so the work has not started. This sends a ` +
-            'start-scoop request to the CONE (the panel routes this lick explicitly, not to the scoop that ' +
-            'owns the panel) and records it in data/user-state.json. ' +
-            'It does NOT spawn the agent itself — starting an agent is an irreversible remote write, so a ' +
-            'human-supervised cone decides. Click again to clear the mark (an already-sent request cannot be recalled).',
+            `No thread reported or linked for ${recordKey(item)}. Sends a start-scoop request to the cone and ` +
+            'records it in data/user-state.json; the panel spawns nothing. An agent already on it reports with ' +
+            `gh dashboard update ${recordKey(item)} --status working --thread <url|scoop>. ` +
+            'Click again to clear the mark (a sent request cannot be recalled).',
         };
       }
 
@@ -3012,11 +3010,12 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         const rep = reportFor(item, PASS_NOW);
         if (!rep.present) return null;
         const WORD = { working: 'working', 'needs-attention': 'needs attention', done: 'done' };
-        const HELD = { github: 'ignored', superseded: 'superseded', stale: 'stale', invalid: 'ignored' };
+        const HELD = { 'done-mark': 'ignored', github: 'ignored', superseded: 'superseded', stale: 'stale', invalid: 'ignored' };
         const who = rep.reporter;
         const phase = who && who.threadState ? threadPhase(who.threadState) : null;
         const EFFECT = {
           applied: rep.category ? `It puts the card in ${CATEGORIES[rep.category].label}.` : '',
+          'done-mark': 'Ignored: you marked this done.',
           github: 'Ignored: the item is closed or merged on GitHub, and GitHub wins.',
           superseded: `Superseded: GitHub activity since (${item.lastActivityAt ? fmtWhen(item.lastActivityAt) : 'time unknown'}).`,
           stale: `Stale (${rep.reason}): it no longer holds the card in ${CATEGORIES.active.label}.`,
@@ -4393,12 +4392,6 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
             return;
           }
           LAST_SNAPSHOT_HASH = v.snapshotHash;
-          // Phase 7n: a new snapshot is also the moment a new `gh pr attach`
-          // plausibly exists, so refresh the attachment map before reconciling —
-          // otherwise a freshly attached thread would not change the Go control
-          // until the panel was reopened. It is a mapping, not a status, so
-          // holding it between polls is fine.
-          await loadAttachments();
           reconcile(parsed, v);
           reconciled = true;
         } finally {
@@ -5712,7 +5705,6 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
           // single decision point; threadFor shows which source won.
           goTarget,
           threadFor,
-          ATTACHMENTS: () => ATTACHMENTS,
           // 8e: the instant the list on screen was built at (a Date, for probes
           // that read .NOW). The pure functions take now explicitly.
           NOW: new Date(PASS_NOW),
@@ -5811,11 +5803,6 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         // Phase 7a: user state is a SECOND read, and a failed one must not stop
         // the panel — the snapshot is still worth showing, minus the clicks.
         await loadUserState();
-        // Phase 7n: the attachment map decides the Go control's destination, so it
-        // has to be in hand before the first render. Same rule as user state: a
-        // failed read must not stop the panel, it just leaves the map empty and
-        // the fetcher's own linkage takes over.
-        await loadAttachments();
         // Fresh thread state (thread-poll.jsh) before the first render, so the
         // first paint already has it. Absent file: no overlay, no complaint.
         await refreshThreadState();
