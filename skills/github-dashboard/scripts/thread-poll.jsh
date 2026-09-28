@@ -123,6 +123,10 @@ function withTimeout(promise, ms, what) {
   ]).finally(() => clearTimeout(t));
 }
 
+// ANSI SGR matcher built from a char code so the source carries no literal
+// control character (Biome's noControlCharactersInRegex); same as aws-ext.jsh.
+const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
+
 /** One project's thread list. Never throws: { ok, threads } or { ok:false, error }. */
 async function listProject(ctx, project) {
   const t0 = ctx.now();
@@ -132,7 +136,7 @@ async function listProject(ctx, project) {
     const ms = ctx.now() - t0;
     const code = r && r.exitCode !== undefined && r.exitCode !== null ? r.exitCode : 0;
     if (code !== 0) {
-      const why = String((r && (r.stderr || r.stdout)) || '').replace(/\x1b\[[0-9;]*m/g, '').trim().slice(0, 200);
+      const why = String((r && (r.stderr || r.stdout)) || '').replace(ANSI, '').trim().slice(0, 200);
       return { ok: false, ms, error: `exit ${code}: ${why || '(no output)'}` };
     }
     let data;
