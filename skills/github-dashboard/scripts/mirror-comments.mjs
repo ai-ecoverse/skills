@@ -127,8 +127,8 @@
  * would publish rotting claims to public cards every 30 minutes — the failure
  * already observed once, where a panel asserted "2 of 45 checks running" on a
  * PR that had merged. A mark cannot rot that way: it is a statement about the
- * operator's intent, and it is true until he changes it. Attachments
- * (thread linkage) are also excluded: that store belongs to the `github` skill.
+ * operator's intent, and it is true until he changes it. Thread linkage is
+ * also excluded: it comes from `gh dashboard` reports, owned by the `github` skill.
  *
  * ---------------------------------------------------------------------------
  * HOW EACH ITEM IS RECONCILED
