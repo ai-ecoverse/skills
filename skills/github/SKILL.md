@@ -1,22 +1,18 @@
 ---
 name: github
 description: >
-  Interact with GitHub via gh.jsh — a GitHub CLI for SLICC agents that accepts the real
-  GitHub CLI's syntax (--title/--body, -R owner/repo, --json [fields], --jq, --help on every
-  command) as well as its own positional forms.
-  Use for any GitHub task: listing, viewing, diffing, or editing pull requests, checking CI
-  and failed job logs, merging PRs, posting comments, checking out branches, viewing issues,
-  workflow runs, releases, searching PRs or issues, managing Actions variables,
-  creating branches, pushing file content, archiving/cloning repos, marking PRs ready
-  for review, managing org-owned Projects (v2), choosing which repositories the
-  github-dashboard sprinkle monitors, recording an agent's status report on a dashboard
-  item, or calling any GitHub API endpoint directly.
-  Trigger on "list open PRs", "show the PR diff", "search issues", "check CI",
-  "why did CI fail", "merge this PR", "what issues are open", "has this been filed",
-  "show the latest release", "comment on PR #42", "set a repo variable",
-  "create a branch", "push this file", "list my GitHub projects", "clone this repo",
-  "mark PR ready for review", "monitor this repo on the dashboard",
-  "add a repo to the sidebar", "which repos are we monitoring",
+  Interact with GitHub via gh.jsh, a GitHub CLI for SLICC agents that accepts both the real
+  GitHub CLI's syntax (--title/--body, -R owner/repo, --json [fields], --jq, --help) and its
+  own positional forms.
+  Use for any GitHub task: listing, viewing, diffing, editing or merging pull requests and
+  marking them ready for review, checking CI and failed job logs, commenting on or searching
+  PRs and issues, viewing issues, workflow runs, releases, Actions variables, creating or
+  checking out branches, pushing file content, archiving/cloning repos, org-owned Projects
+  (v2), choosing which repos the github-dashboard sprinkle monitors, recording an agent's
+  status report on a dashboard item, or calling any GitHub API endpoint.
+  Trigger on "list open PRs", "show the PR diff", "why did CI fail", "merge this PR",
+  "has this been filed", "show the latest release", "set a repo variable",
+  "monitor this repo on the dashboard", "which repos are we monitoring",
   "report status to the dashboard".
 allowed_tools:
   - bash
