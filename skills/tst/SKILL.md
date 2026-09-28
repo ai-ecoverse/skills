@@ -76,19 +76,22 @@ on purpose at least once.
 
 ## The discipline
 
-Presence is not function. Follow these four steps in order every time you add a test for a bug.
+Presence is not function. Follow these five steps in order every time you add a test for a bug.
 
 1. **Extract into a scratch dir under `/tmp`.** `/tmp` needs no approval and is writable.
    Copy the module under test and write the test beside it, so nothing you do can damage the
-   real tree.
+   real tree. Keep a pristine copy (`cp mod.js mod.js.orig`) before you touch anything.
 2. **Run the suite against the current, unfixed code first, and prove each new assertion goes
    RED against the real defect.** Read the `actual:` value and confirm it is the defect you
    believe in. A test written after the fix proves only that the code still does what it does.
-3. **Revert the scratch copy byte-identically and confirm with `cmp`.** Keep a pristine copy
-   (`cp mod.js mod.js.orig`) before you touch anything. `cmp` is the only trustworthy identity
-   check — a skimmed diff or a matching byte size is not.
-4. **Mutate the code under test and confirm the suite goes red, then revert.** Flip one
-   condition. A suite that survives a mutation is not testing what you think it is.
+3. **Fix it and confirm GREEN.** Re-run until every new assertion passes, then keep the fixed
+   copy (`cp mod.js mod.js.fixed`). The fix you keep is the one you apply to the real tree.
+4. **Mutate the FIXED code and confirm the suite goes red, then restore the fixed copy and
+   confirm with `cmp`.** Flip one condition. A suite that survives a mutation is not testing
+   what you think it is. `cmp` is the only trustworthy identity check — a skimmed diff or a
+   matching byte size is not.
+5. **Revert the scratch copy to the pristine extract and confirm with `cmp`,** so re-running
+   the lab re-proves RED instead of quietly testing a local edit.
 
 ## Worked example, end to end
 
@@ -158,7 +161,7 @@ Note test 1: it passes against the buggy code, because `[3,1,2]` happens to sort
 lexicographically. That assertion is worthless as a regression test, and only the RED run reveals
 it. Tests 2 and 3 name the defect: `actual: 10` and `actual: 6`.
 
-**Fix it, then GREEN.**
+**Step 3 — fix it, then GREEN.**
 
 ```
 $ sed -i 's/\.sort();/.sort((a, b) => a - b);/' median.js
@@ -174,7 +177,7 @@ ok 4 - empty list is a RangeError
 exit=0
 ```
 
-**Step 4 — mutate, confirm red, revert.** Flip the odd/even condition:
+**Step 4 — mutate the fixed copy, confirm red, restore it.** Flip the odd/even condition:
 
 ```
 $ cp median.js median.js.fixed
@@ -216,8 +219,9 @@ $ cmp median.js median.js.fixed && echo "identical"
 identical
 ```
 
-The fix you keep is the one you apply to the real tree. Step 3 puts the scratch copy back to the
-pristine extract, so re-running the lab re-proves RED instead of quietly testing your local edit:
+**Step 5 — revert to the pristine extract.** The fix you keep is the one you apply to the real
+tree. Put the scratch copy back, so re-running the lab re-proves RED instead of quietly testing
+your local edit:
 
 ```
 $ cp median.js.orig median.js
