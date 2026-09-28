@@ -185,3 +185,48 @@ the issues list before any record is built, and counts the drop in
   `<dialog>` — and restores both the overflow and the scroll position on close.
 - **Dispatch is confirmed by colour and `aria-pressed`, never by new copy.** A
   label that changes to "requested" competes with the card's own status line.
+
+## A bb thread waiting on an answer (pull requests)
+
+Owner, 2026-09-28: "if a bb thread has the agent waiting, asking questions with a
+tool, then this absolutely needs attention. and if the bb thread has been waiting
+too long, then that's stalled".
+
+- **Waiting** is `hasPendingInteraction` on the thread, from `bb thread list`.
+  In bb's event log, an `AskUserQuestion` tool call opens an interaction
+  (`system/interaction/lifecycle`, `status: pending`, origin plugin
+  `ask-user-question`), and the agent's turn then ends. The thread's `status`
+  reads `idle` from then on, the same as a thread that simply finished, so only
+  `hasPendingInteraction` tells the two apart. The interaction resolves when the
+  answer is submitted.
+- **Since when** is bb's `latestAttentionAt`, carried in the thread summary as
+  `attentionAt`. In the measured case it equalled, to the millisecond, the
+  thread's last `turn/completed`. `updatedAt` is not used as the clock,
+  because it also moves when someone merely reads the thread or archives it. It
+  is the fallback for a summary written before `attentionAt` existed.
+- **Too long** is the existing `ISSUE_STALL_AFTER_WORKING_DAYS` (5 working
+  days, `workingDaysSince`): the limit a settled issue's thread already uses.
+  Both mean the agent has stopped and the next move is a human's.
+- **Scope**: open PRs only (stage 5 to 8, no `mergedAt`). A busy, settled or
+  archived thread leaves the PR's GitHub-driven category alone, as before: "one
+  card, PR leads" (question 2 above). Issues keep their own thread rules. A
+  pending issue is still stage 3, "thread wants guidance", with no stall clock.
+
+**Precedence in `categorize()`, highest first:**
+
+1. The operator's done mark (`doneAt`): done, then aged out.
+2. An applied `gh dashboard` report (reports.md): working goes to active,
+   needs-attention to needs attention, done to done.
+3. Released or closed on GitHub: done.
+4. **An open PR whose thread waits on an answer**: needs attention, or stalled
+   after five working days from `attentionAt`.
+5. Changes requested, a thread wanting guidance (stage 3), or an all-green PR
+   nobody queued: needs attention.
+6. An active snooze, then merged-awaiting-release: snoozed.
+7. A settled issue thread (needs attention, then stalled), an undispatched open
+   issue (needs attention, then stalled).
+8. A working stage idle past its limit: stalled. Otherwise active.
+
+So a waiting thread outranks a snooze, as the other blocked signals do. It does
+not outrank the done mark, an applied report or GitHub's closed or merged state.
+

@@ -856,6 +856,10 @@ function threadRef(t, matchedBy) {
     hasPendingInteraction: !!t.hasPendingInteraction,
     queuedWork: t.queuedWork || null,
     updatedAt: t.updatedAt ? new Date(t.updatedAt).toISOString() : null,
+    // bb latestAttentionAt: since when the thread waits on the operator (the
+    // panel's stall clock for a PR whose thread asks a question; see
+    // threadWaitingSince in thread-stage-shared.cjs).
+    attentionAt: t.latestAttentionAt ? new Date(t.latestAttentionAt).toISOString() : null,
     matchedBy,
   };
 }

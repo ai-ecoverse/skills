@@ -69,7 +69,8 @@ log line).
 `scripts/thread-poll.jsh` (unit `github-dashboard-threads`) lists the live bb
 threads of every configured project once a minute and writes
 `data/threads.json`: for each thread, the fields the panel needs (`state`, `live`,
-`archived`, `busy`, `hasPendingInteraction`, `queuedWork`, `updatedAt`). `live`
+`archived`, `busy`, `hasPendingInteraction`, `queuedWork`, `updatedAt`, and
+`attentionAt`, bb's `latestAttentionAt`). `live`
 and `busy` are decided once, from the raw thread, by `thread-stage-shared.cjs`.
 The file is rewritten only when that content changes (a hash without timestamps),
 through a temporary file and a rename, so the panel never reads half a file.
@@ -87,8 +88,15 @@ keeps its snapshot state. Open issues then take their stage from the fresh state
 | archived | the snapshot's stage, on the usual clock |
 
 A settled issue stalls after five working days without activity, counted from the
-later of the thread's `updatedAt` and the issue's own activity. Pull requests keep
-their GitHub-driven stages; the overlay does not change them.
+later of the thread's `updatedAt` and the issue's own activity.
+
+Pull requests keep their GitHub-driven stages, with one exception (owner,
+2026-09-28): an open PR (stage 5 to 8, not merged) whose linked live thread has a
+pending interaction, for example an `AskUserQuestion` tool call, goes to needs
+attention and shows "needs guidance". It stalls after five working days, counted
+from `attentionAt`. A busy, settled or archived thread never changes a PR's
+category. The PR's stage on the record stays the GitHub one. The rule and the
+precedence are in [domain-model.md](domain-model.md#a-bb-thread-waiting-on-an-answer-pull-requests).
 
 bb reports a running thread as status `active` (as well as through its activity
 counts), so `active` counts as busy. The fetcher and the panel share one copy of

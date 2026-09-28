@@ -106,7 +106,7 @@ test('P1 first run writes: live threads only, keyed by id, state fields only, tm
   is(r.wrote, true);
   const f = JSON.parse((await fs.promises.readFile(`${d}/threads.json`, 'utf8')));
   is(JSON.stringify(Object.keys(f.threads).sort()), JSON.stringify(['thr_example01', 'thr_example02', 'thr_example11']), 'archived thr_example03 is not in the file');
-  is(JSON.stringify(Object.keys(f.threads.thr_example01).sort()), JSON.stringify(['archived', 'busy', 'hasPendingInteraction', 'live', 'project', 'queuedWork', 'state', 'updatedAt']));
+  is(JSON.stringify(Object.keys(f.threads.thr_example01).sort()), JSON.stringify(['archived', 'attentionAt', 'busy', 'hasPendingInteraction', 'live', 'project', 'queuedWork', 'state', 'updatedAt']));
   is(f.threads.thr_example02.busy, true, 'status "active" is busy');
   is(f.threads.thr_example11.state, 'error');
   ok(/^[0-9a-f]{64}$/.test(f.contentHash), 'sha256 content hash');

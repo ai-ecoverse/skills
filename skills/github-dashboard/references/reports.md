@@ -132,7 +132,10 @@ Precedence, highest first:
    GitHub.
 
 A report with no `status`, or with an `at` that does not parse, decides
-nothing.
+nothing. When no report applies, the card's own rules run. The first of them is
+the bb-thread rule for open PRs: a thread waiting on an answer sends the PR to
+needs attention, ahead of a snooze. The full order is in
+[domain-model.md](domain-model.md#a-bb-thread-waiting-on-an-answer-pull-requests).
 
 **On the card.** Every report shows one line in the `.also` meta style, under
 the notes. The line holds the status word (with `stale`, `superseded` or
