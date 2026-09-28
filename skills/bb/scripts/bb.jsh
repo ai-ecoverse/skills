@@ -968,14 +968,6 @@ async function cmdRpc() {
   if (!RPC_METHOD_PATTERN.test(method)) {
     die(`invalid method name "${method}" — expected ${RPC_METHOD_PATTERN.source}`);
   }
-  if (plugin === 'connect' && method === 'createMachineCode') {
-    // Its result is a live one-time pairing code, redeemable for a durable
-    // machine credential; printing it would put a secret in the transcript.
-    die(
-      `connect.createMachineCode returns a one-time pairing code — use 'bb attach', ` +
-        'which mints and redeems it without printing it',
-    );
-  }
   // `--json '{...}'` swallows the body as the flag's value; take it back.
   const rawBody = positional[3] ?? (typeof flags.json === 'string' ? flags.json : undefined);
   const body = await readRpcInput(rawBody);

@@ -181,10 +181,10 @@ RPCs are not all read-only: github's `createIssue`, `commentPull` and
 `startWork` write to GitHub or start agent work. Confirm before calling one that
 mutates.
 
-`bb rpc connect createMachineCode` is refused. Its result is a one-time pairing
-code that anyone can redeem for a durable machine credential, so printing it
-would leak a secret into the transcript. `bb attach` mints and redeems one
-without showing it.
+`bb rpc connect createMachineCode` prints a one-time pairing code that can be
+redeemed for a durable credential, so treat it as a secret and do not paste it
+into shared places; `bb attach` mints and redeems one in a single step without
+showing it.
 
 ## Notes
 
