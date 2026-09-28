@@ -2513,13 +2513,10 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         // link; a snapshot link wins only over a report that names no agent.
         const reported = startControlFor(reportFor(item, now));
         if (reported && (!thr || thr.source === 'report')) {
-          return {
-            mode: 'start',
-            icon: 'rocket',
-            label: 'Start a scoop',
-            reported,
-            title: `Working: ${reported.by ? reported.by + ' ' : ''}reported ${fmtWhen(reported.at)}`,
-          };
+          // The accessible name says what the control now means: it no longer
+          // offers to start anything, so it must not be named "Start a scoop".
+          const working = `Working: ${reported.by ? reported.by + ' ' : ''}reported ${fmtWhen(reported.at)}`;
+          return { mode: 'start', icon: 'rocket', label: working, reported, title: working };
         }
         // A scoop has no address: it never becomes a Go link.
         if (thr && thr.id) {
@@ -2900,9 +2897,11 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         const tgt = goTarget(item, PASS_NOW);
         if (tgt.mode === 'start') {
           // Phase 7c, requested: dispatch is confirmed by the BUTTON'S COLOUR, not by
-          // copy. The label stays "Start a scoop" in every state — a label that
-          // changes to "Scoop requested" is a second status line competing with
-          // the card's own, and it moved the tag row.
+          // copy. The label stays "Start a scoop" for the operator's own dispatch
+          // (a toggle: pressed, and a click clears it) — a label that changes to
+          // "Scoop requested" is a second status line competing with the card's
+          // own. A live working report is different: the control no longer offers
+          // to start anything, so goTarget names it "Working: … reported …".
           //
           // Phase 7n: the GLYPH now carries DESTINATION, so it must not also
           // carry dispatch state — one symbol with two meanings is unreadable.
@@ -4700,6 +4699,8 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
             changed = true;
           }
           attr(goSlot, 'aria-pressed', dispatched ? 'true' : 'false');
+          // Same mode ('start') either way, so no rebuild: the name follows here.
+          attr(goSlot, 'aria-label', tgt.label);
         }
         if (goSlot && wantTag === 'BUTTON' && goSlot.title !== startButtonTitle(item, tgt)) {
           goSlot.title = startButtonTitle(item, tgt);

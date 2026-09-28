@@ -810,3 +810,115 @@ test('T3 no code path reads attachments.json (gh pr attach is retired)', () => {
   );
   ok(!fs.readFileSync(modPath(), 'utf8').includes('attachments.json'), 'the shared module neither');
 });
+
+// ---- A1: the Go slot's accessible name matches what it means ----------------------
+
+/** A minimal fake DOM: enough for actions() and updateActions() to build and
+    patch the three buttons. */
+function fakeDocument() {
+  const node = (tag) => {
+    const attrs = {};
+    const classes = new Set();
+    const n = {
+      tagName: tag.toUpperCase(),
+      children: [],
+      dataset: {},
+      title: '',
+      textContent: '',
+      style: {},
+      setAttribute: (k, v) => {
+        attrs[k] = String(v);
+      },
+      getAttribute: (k) => (k in attrs ? attrs[k] : null),
+      addEventListener: () => {},
+      appendChild: (c) => {
+        n.children.push(c);
+        return c;
+      },
+      replaceChild: (c, old) => {
+        n.children[n.children.indexOf(old)] = c;
+      },
+      remove: () => {},
+      classList: {
+        toggle: (c, on) => (on ? classes.add(c) : classes.delete(c)),
+        contains: (c) => classes.has(c),
+      },
+    };
+    Object.defineProperty(n, 'className', {
+      set: (v) => {
+        for (const c of v.split(' ')) classes.add(c);
+      },
+    });
+    return n;
+  };
+  return { createElement: node };
+}
+
+function actionsApi(passNow) {
+  const src = fs.readFileSync(paths.panel(), 'utf8');
+  const script = panelModule();
+  const fn = (name, args) => `function ${name}(${args}) ${fnBody(script, name)}`;
+  return new Function(
+    'document',
+    'window',
+    [
+      'let META = null; let RECORDS = [];',
+      region(src, 'CLASSIFY'),
+      region(src, 'SNOOZESPEC'),
+      region(src, 'FMT'),
+      `let PASS_NOW = ${Number(passNow)};`,
+      'const snoozeClick = () => {}; const doneClick = () => {}; const scoopClick = () => {};',
+      fn('recordKey', 'item'),
+      fn('bbProject', 'repo'),
+      fn('threadFor', 'item, now'),
+      fn('goTarget', 'item, now'),
+      fn('startButtonTitle', 'item, tgt'),
+      fn('liveRecord', 'key'),
+      fn('el', 'tag, cls, text'),
+      fn('icon', 'name, extra'),
+      fn('actions', 'item'),
+      fn('updateActions', 'wrap, item'),
+      'return { actions, updateActions };',
+    ].join('\n')
+  )(fakeDocument(), {});
+}
+
+test('A1 the start slot: aria-label = "Working: <who> reported <when>" when a report holds it, "Start a scoop" otherwise', () => {
+  const { actions, updateActions } = actionsApi(NOW);
+  const go = (wrap) => wrap.children[2];
+  const plain = go(actions(issue()));
+  is(plain.getAttribute('aria-label'), 'Start a scoop', 'no report: the offer');
+  is(plain.getAttribute('aria-pressed'), 'false');
+  const scoopBtn = go(actions(withReport(issue(), report({ thread: scoop }))));
+  is(
+    scoopBtn.getAttribute('aria-label'),
+    'Working: octocat-scoop reported 2026-09-30 11:00Z',
+    'scoop report: name'
+  );
+  is(scoopBtn.getAttribute('aria-label'), scoopBtn.title, 'name = title');
+  const bbBtn = go(actions(withReport(issue(), report({}))));
+  is(
+    bbBtn.getAttribute('aria-label'),
+    'Working: bb thread thr_example01 reported 2026-09-30 11:00Z',
+    'bb report: name'
+  );
+  const stale = go(actions(withReport(issue(), report({ thread: scoop, at: iso(NOW - 7 * H) }))));
+  is(stale.getAttribute('aria-label'), 'Start a scoop', 'stale report: the offer again');
+  const mine = go(actions(issue({ scoopRequestedAt: iso(NOW - 1 * H) })));
+  is(
+    mine.getAttribute('aria-label'),
+    'Start a scoop',
+    'own dispatch: a pressed toggle keeps its name'
+  );
+  is(mine.getAttribute('aria-pressed'), 'true');
+  // In place: the same button, the report arrives, then goes stale.
+  const wrap = actions(issue());
+  updateActions(wrap, withReport(issue(), report({ thread: scoop })));
+  is(
+    go(wrap).getAttribute('aria-label'),
+    'Working: octocat-scoop reported 2026-09-30 11:00Z',
+    'update: name follows'
+  );
+  updateActions(wrap, withReport(issue(), report({ thread: scoop, at: iso(NOW - 7 * H) })));
+  is(go(wrap).getAttribute('aria-label'), 'Start a scoop', 'update: and back');
+});
