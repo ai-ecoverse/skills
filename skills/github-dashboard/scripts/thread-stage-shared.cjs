@@ -148,21 +148,35 @@ function threadWaitingSince(th) {
 
 /** OWNER'S RULE, 2026-09-28: "if a bb thread has the agent waiting, asking
     questions with a tool, then this absolutely needs attention. and if the bb
-    thread has been waiting too long, then that's stalled". The one way a thread
-    speaks for a PR: an OPEN PR (stage 5-8, not merged) whose linked thread is
-    live with a pending interaction. The PR's GitHub stage stays on the record;
-    this only says the card belongs with the operator, from `since`. A busy,
-    settled or archived thread returns null: GitHub keeps driving the PR. */
-function prThreadWaiting(rec) {
-  if (!rec || rec.kind !== 'pr' || ![5, 6, 7, 8].includes(rec.stage) || rec.mergedAt) return null;
+    thread has been waiting too long, then that's stalled". An OPEN item whose
+    linked thread is live with a pending interaction: a PR at stage 5-8 and not
+    merged, or an issue at stage 1-4. Returns { kind, stage: 3, threadId, since,
+    why }; the panel files it under needs attention, then stalled once `since`
+    is ISSUE_STALL_AFTER_WORKING_DAYS working days old. A PR's GitHub stage
+    stays on the record; an issue's is 3 already (stageFromThread). A busy,
+    settled or archived thread returns null, and the item's other rules apply.
+    Cone, 2026-09-28: this OUTRANKS an applied working report (an agent blocked
+    on a question is not working); the panel decides that, see threadWaitFor. */
+function threadWaiting(rec) {
+  if (!rec) return null;
+  const open =
+    (rec.kind === 'pr' && [5, 6, 7, 8].includes(rec.stage) && !rec.mergedAt) ||
+    (rec.kind === 'issue' && [1, 2, 3, 4].includes(rec.stage));
+  if (!open) return null;
   const th = rec.thread;
   if (!th || threadPhase(th) !== 'pending') return null;
   return {
+    kind: rec.kind,
     stage: 3,
     threadId: th.id || null,
     since: threadWaitingSince(th),
     why: `bb thread ${th.id || '(no id)'} is waiting on an answer (hasPendingInteraction)`,
   };
+}
+
+/** threadWaiting, PRs only. */
+function prThreadWaiting(rec) {
+  return rec && rec.kind === 'pr' ? threadWaiting(rec) : null;
 }
 
 /** Where a settled issue's stall clock starts: the thread's updatedAt, or the
@@ -249,6 +263,7 @@ module.exports = {
   threadSettledIssue,
   threadSettledSince,
   threadWaitingSince,
+  threadWaiting,
   prThreadWaiting,
   overlayThreadState,
 };

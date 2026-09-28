@@ -171,7 +171,7 @@ test('W4 merged and closed PRs with a waiting thread: unchanged', () => {
   );
 });
 
-test('W5 issues are unchanged: a pending thread is stage 3 "thread wants guidance", no new stall', () => {
+test('W5 issues: a pending thread is stage 3 "thread wants guidance", and stalls after 5 working days (cone, 2026-09-28)', () => {
   const issue = record({
     repo: REPO,
     id: '42',
@@ -182,9 +182,51 @@ test('W5 issues are unchanged: a pending thread is stage 3 "thread wants guidanc
   const th = pending({ attentionAt: '2026-09-15T12:00:00.000Z' });
   const promoted = M.stageFromThread(issue, th);
   is(promoted.stage, 3);
-  const c = cat({ ...issue, stage: 3, thread: th });
-  is(c.category, 'needs-attention');
-  is(c.reason, 'thread wants guidance', 'the existing issue reason, even after 11 working days');
+  is(cat({ ...issue, stage: 3, thread: th }).category, 'stalled', '11 working days: stalled');
+  const at = (a) => cat({ ...issue, stage: 3, thread: pending({ attentionAt: a }) });
+  const fresh = at('2026-09-24T12:00:00.000Z');
+  is(fresh.category, 'needs-attention', '4.0 working days');
+  is(fresh.reason, 'thread wants guidance', 'the existing issue reason until it stalls');
+  is(at('2026-09-23T18:00:00.000Z').category, 'needs-attention', '4.75 working days');
+  const c5 = at('2026-09-23T12:00:00.000Z');
+  is(c5.category, 'stalled', '5.0 working days: stalled');
+  ok(
+    /^bb thread thr_example01 waiting on an answer 5\.0 working days \(limit 5\)$/.test(c5.reason),
+    c5.reason
+  );
+  is(
+    cat({
+      ...issue,
+      stage: 3,
+      thread: pending({ attentionAt: undefined, updatedAt: '2026-09-22T12:00:00.000Z' }),
+    }).category,
+    'stalled',
+    'fallback: updatedAt'
+  );
+  is(M.threadWaiting({ ...issue, stage: 3, thread: th }).kind, 'issue');
+  is(M.threadWaiting({ ...issue, stage: 11, thread: th }), null, 'a closed issue: no');
+  const settled = recThread({
+    id: 'thr_example01',
+    state: 'idle',
+    busy: false,
+    updatedAt: iso(NOW - 1 * H),
+  });
+  is(
+    cat({ ...issue, stage: 2, thread: settled }).reason.startsWith('thread settled'),
+    true,
+    'settled issue: unchanged'
+  );
+  const busy = recThread({
+    id: 'thr_example01',
+    state: 'active',
+    busy: true,
+    updatedAt: iso(NOW - 1 * H),
+  });
+  is(
+    cat({ ...issue, stage: 4, thread: busy, lastActivityAt: iso(NOW - 1 * H) }).category,
+    'active',
+    'busy issue: unchanged'
+  );
   is(
     M.prThreadWaiting({ ...issue, stage: 3, thread: th }),
     null,
@@ -192,7 +234,7 @@ test('W5 issues are unchanged: a pending thread is stage 3 "thread wants guidanc
   );
 });
 
-test('W6 precedence: done mark and an applied report first; a waiting thread beats a snooze', () => {
+test('W6 precedence: done mark first; a waiting thread beats a working report and a snooze', () => {
   is(cat(pr({ thread: pending(), doneAt: iso(NOW - 1 * H) })).category, 'done', 'your done mark');
   const working = {
     status: 'working',
@@ -204,8 +246,8 @@ test('W6 precedence: done mark and an applied report first; a waiting thread bea
   };
   is(
     cat({ ...pr({ thread: pending() }), __report: working }).category,
-    'active',
-    'an applied working report keeps its place'
+    'needs-attention',
+    'a waiting thread outranks an applied working report'
   );
   const stale = { ...working, at: iso(NOW - 7 * H) };
   is(
@@ -288,5 +330,119 @@ test('W8 the fetcher summary (threadRef) carries attentionAt', () => {
     threadRef({ id: 'thr_example01', status: 'idle', activity: {} }, 'title').attentionAt,
     null,
     'absent: null'
+  );
+});
+
+// ---- W9-W11: a waiting thread against an agent's report (cone, 2026-09-28) --------
+
+const workingReport = (thread) => ({
+  status: 'working',
+  thread: thread || { kind: 'scoop', name: 'octocat-scoop' },
+  pr: null,
+  note: null,
+  at: iso(NOW - 1 * H),
+  history: [],
+});
+const bbReport = (id) => ({
+  kind: 'bb',
+  id,
+  url: `https://bb.example.invalid/projects/proj_example01/threads/${id}`,
+});
+const issueRec = (over) =>
+  record({
+    repo: REPO,
+    id: '42',
+    kind: 'issue',
+    stage: 3,
+    lastActivityAt: iso(NOW - 3 * H),
+    ...over,
+  });
+
+test('W9 an applied WORKING report does not hold back a waiting thread: PR and issue -> Needs attention, glyph 3', () => {
+  for (const rep of [workingReport(), workingReport(bbReport('thr_example01'))]) {
+    const p = { ...pr({ thread: pending() }), __report: rep };
+    is(cat(p).category, 'needs-attention', `PR, ${rep.thread.kind} report`);
+    ok(/^bb thread thr_example01 is waiting on an answer\b/.test(cat(p).reason), cat(p).reason);
+    is(PANEL.stateOf(p), PANEL.STATE[3], 'PR glyph: needs guidance');
+    const i = { ...issueRec({ thread: pending() }), __report: rep };
+    is(cat(i).category, 'needs-attention', `issue, ${rep.thread.kind} report`);
+    is(
+      PANEL.stateOf(i),
+      PANEL.STATE[3],
+      'issue glyph: needs guidance, not the report\'s "agent working"'
+    );
+  }
+  const oldQ = {
+    ...pr({ thread: pending({ attentionAt: '2026-09-22T12:00:00.000Z' }) }),
+    __report: workingReport(),
+  };
+  is(cat(oldQ).category, 'stalled', 'and it still stalls');
+  is(
+    cat({ ...pr(), __report: workingReport() }).category,
+    'active',
+    'no waiting thread: the report holds, as before'
+  );
+});
+
+test('W10 the done mark, an applied done or needs-attention report still decide the card', () => {
+  const th = pending({ attentionAt: '2026-09-22T12:00:00.000Z' });
+  is(
+    cat({ ...pr({ thread: th }), doneAt: iso(NOW - 1 * H), __report: workingReport() }).category,
+    'done',
+    'done mark'
+  );
+  const done = { ...workingReport(), status: 'done' };
+  is(cat({ ...pr({ thread: th }), __report: done }).category, 'done', 'done report, PR');
+  is(cat({ ...issueRec({ thread: th }), __report: done }).category, 'done', 'done report, issue');
+  const na = { ...workingReport(), status: 'needs-attention', note: 'Pick the retry policy' };
+  const c = cat({ ...pr({ thread: th }), __report: na });
+  is(c.category, 'needs-attention', 'needs-attention report');
+  is(c.reason, 'Pick the retry policy', "the report's note stays the reason");
+  const closed = pr({
+    stage: 11,
+    stateReason: 'closed_unmerged',
+    lastActivityAt: iso(NOW - 5 * H),
+    thread: th,
+  });
+  is(cat({ ...closed, __report: workingReport() }).category, 'done', 'closed on GitHub');
+});
+
+test('W11 the Go slot for a working report + a waiting thread: Go to thread (the waiting one), never "Working: ..."', () => {
+  const src = fs.readFileSync(paths.panel(), 'utf8');
+  const script = panelModule();
+  const fn = (name, args) => `function ${name}(${args}) ${fnBody(script, name)}`;
+  const goTarget = new Function(
+    [
+      'let META = null;',
+      region(src, 'CLASSIFY'),
+      region(src, 'FMT'),
+      `let PASS_NOW = ${NOW};`,
+      fn('recordKey', 'item'),
+      fn('bbProject', 'repo'),
+      fn('threadFor', 'item, now'),
+      fn('goTarget', 'item, now'),
+      'return goTarget;',
+    ].join('\n')
+  )();
+  const cases = [
+    ['scoop report', workingReport()],
+    ['bb report naming another thread', workingReport(bbReport('thr_example02'))],
+  ];
+  for (const [why, rep] of cases) {
+    for (const rec of [pr({ thread: pending() }), issueRec({ thread: pending() })]) {
+      const g = goTarget({ ...rec, __report: rep }, NOW);
+      is(g.mode, 'thread', `${rec.kind}, ${why}: a thread link`);
+      is(g.reported, undefined, `${rec.kind}, ${why}: no dispatched state`);
+      is(g.label, 'Go to thread', 'the existing label');
+      ok(
+        /thr_example01/.test(g.url) && !/Working:/.test(g.title),
+        `${rec.kind}, ${why}: the waiting thread (${g.url})`
+      );
+    }
+  }
+  const held = goTarget({ ...pr(), __report: workingReport() }, NOW);
+  ok(
+    held.reported && /^Working: /.test(held.label),
+    'no waiting thread: the dispatched "Working: ..." state, as before'
   );
 });
