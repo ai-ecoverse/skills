@@ -102,14 +102,16 @@ test('rpc without a method prints usage and makes no request', async () => {
   is(run.calls.length, 0);
 });
 
-test('rpc refuses connect.createMachineCode and points at bb attach', async () => {
+test('rpc calls connect.createMachineCode like any other method', async () => {
   const run = await runBb(['rpc', 'connect', 'createMachineCode'], {
-    server: envelope({ code: 'one-time-code' }),
+    server: envelope({ code: 'fake-pairing-code' }),
   });
-  is(run.exitCode, 1);
-  ok(/bb attach/u.test(run.error.message));
-  is(run.calls.length, 0);
-  ok(!run.stdout.includes('one-time-code'));
+  is(run.exitCode, 0);
+  is(run.calls.length, 1);
+  is(run.calls[0].method, 'POST');
+  is(run.calls[0].url, `${SERVER}/api/v1/plugins/connect/rpc/createMachineCode`);
+  is(run.calls[0].body, 'null');
+  is(run.out, [{ code: 'fake-pairing-code' }]);
 });
 
 test('rpc reports a rejected credential exactly like other commands', async () => {
