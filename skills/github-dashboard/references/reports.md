@@ -132,9 +132,11 @@ Precedence, highest first:
    GitHub.
 
 A report with no `status`, or with an `at` that does not parse, decides
-nothing. When no report applies, the card's own rules run. The first of them is
-the bb-thread rule for open PRs: a thread waiting on an answer sends the PR to
-needs attention, ahead of a snooze. The full order is in
+nothing. One card rule outranks an applied `working` report: a linked live bb thread
+waiting on an answer sends an open PR or issue to needs attention (stalled after
+five working days). The Go slot is then that thread's Go to thread, not
+"Working: …". An applied `done` or `needs-attention` report still decides the
+card. The full order is in
 [domain-model.md](domain-model.md#a-bb-thread-waiting-on-an-answer-pull-requests).
 
 **On the card.** Every report shows one line in the `.also` meta style, under
@@ -165,8 +167,10 @@ the time. Its tooltip says what the report did.
   reported thread's own Go link while the report holds, and a snapshot link as
   well (the applied report comes first). A stale, superseded
   or ignored report, a `needs-attention` or `done` report, or no report leaves
-  the control as it was. The decision is `startControlFor()` in
-  `report-overlay-shared.cjs`.
+  the control as it was. So does a linked thread waiting on an answer: the
+  slot is then that thread's Go to thread. The decision is `startControlFor()`
+  in `report-overlay-shared.cjs`, with the waiting-thread check in the panel's
+  `goTarget`.
 - A reported **`pr`** links to `https://github.com/<owner>/<repo>/pull/<N>`,
   built from the key. It links at once, before any fetcher run knows the PR
   exists.

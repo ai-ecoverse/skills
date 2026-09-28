@@ -55,7 +55,8 @@ test('T3 busy stays ACTIVE; the SUMMARY\'s busy is the only busy input (decided 
 });
 
 test('T4 pending interaction stays stage 3 -> needs-attention "thread wants guidance"', () => {
-  const r = cat(record({ stage: 3, thread: recThread({ hasPendingInteraction: true }) }), NOW);
+  // A fresh wait: since 2026-09-28 a wait of 5+ working days stalls (pr-thread-wait W5).
+  const r = cat(record({ stage: 3, thread: recThread({ hasPendingInteraction: true, updatedAt: iso(NOW - 2 * H) }) }), NOW);
   is(r.category, 'needs-attention');
   is(r.reason, 'thread wants guidance');
 });

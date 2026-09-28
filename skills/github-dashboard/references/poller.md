@@ -82,7 +82,7 @@ keeps its snapshot state. Open issues then take their stage from the fresh state
 
 | thread | open issue |
 | --- | --- |
-| waiting on the operator (pending interaction) | needs attention |
+| waiting on the operator (pending interaction) | needs attention, then stalled after five working days from `attentionAt` |
 | busy (running, queued, or with active background work) | active |
 | **settled**: live, nothing in flight, nothing pending (idle or error) | needs attention, "thread settled" |
 | archived | the snapshot's stage, on the usual clock |
@@ -94,7 +94,8 @@ Pull requests keep their GitHub-driven stages, with one exception (owner,
 2026-09-28): an open PR (stage 5 to 8, not merged) whose linked live thread has a
 pending interaction, for example an `AskUserQuestion` tool call, goes to needs
 attention and shows "needs guidance". It stalls after five working days, counted
-from `attentionAt`. A busy, settled or archived thread never changes a PR's
+from `attentionAt`, like a waiting issue. For PRs and issues alike, a waiting
+thread outranks an applied `working` report. A busy, settled or archived thread never changes a PR's
 category. The PR's stage on the record stays the GitHub one. The rule and the
 precedence are in [domain-model.md](domain-model.md#a-bb-thread-waiting-on-an-answer-pull-requests).
 
