@@ -163,6 +163,7 @@ test('P4 one project FAILS (exit 1, throw, bad JSON, wrong shape, timeout): logg
     const what = JSON.stringify(bad);
     is(r.ok, true, `${what}: the run still completes`);
     ok(r.errors.some((e) => e.startsWith('proj_example02: ')), `${what}: error logged (${r.errors.join(' | ')})`);
+    if (bad.fail) ok(r.errors.includes('proj_example02: exit 1: bb: transport failure'), `ANSI colour codes stripped from bb stderr (${r.errors.join(' | ')})`);
     is(JSON.stringify(r.carried), JSON.stringify(['proj_example02']), `${what}: carried forward`);
     is(writes(run.ops), 0, `${what}: nothing changed elsewhere, so nothing written`);
     is((await fs.promises.readFile(`${d}/threads.json`, 'utf8')), before, `${what}: last good file intact`);
