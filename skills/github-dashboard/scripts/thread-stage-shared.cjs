@@ -75,13 +75,14 @@ function threadStateOf(t) {
     hasPendingInteraction: !!t.hasPendingInteraction,
     queuedWork: t.queuedWork || null,
     updatedAt: t.updatedAt ? new Date(t.updatedAt).toISOString() : null,
+    attentionAt: t.latestAttentionAt ? new Date(t.latestAttentionAt).toISOString() : null,
   };
 }
 
 /** The fields an overlay may refresh. Everything else on record.thread (id,
     title, branch, matchedBy, provider) is the LINK, and belongs to the
     snapshot. */
-const THREAD_STATE_FIELDS = ['state', 'archived', 'live', 'busy', 'hasPendingInteraction', 'queuedWork', 'updatedAt'];
+const THREAD_STATE_FIELDS = ['state', 'archived', 'live', 'busy', 'hasPendingInteraction', 'queuedWork', 'updatedAt', 'attentionAt'];
 
 /** SUMMARY. What the thread is doing, one word: 'pending' (waits for input),
     'busy' (busy: in flight or queued, as decided from RAW), 'settled' (live,
@@ -129,6 +130,39 @@ function threadDrivenBaseStage(rec) {
     needs-attention. Stage 2 with a settled thread, nothing else. */
 function threadSettledIssue(item) {
   return !!item && item.kind === 'issue' && item.stage === 2 && threadPhase(item.thread) === 'settled';
+}
+
+/** SUMMARY. Since when the thread has been waiting on the operator: bb's
+    latestAttentionAt, carried as attentionAt. Measured 2026-09-28: it equals,
+    to the millisecond, the thread's last turn/completed event, i.e. the moment
+    the agent stopped and handed the thread back; an AskUserQuestion tool call
+    opens a pending interaction (system/interaction/lifecycle, status pending,
+    origin ask-user-question) seconds before that turn ends. updatedAt is NOT
+    the clock: it also moves when someone merely reads the thread (lastReadAt)
+    or it is archived. updatedAt is the fallback for a summary written before
+    attentionAt existed. */
+function threadWaitingSince(th) {
+  if (!th) return null;
+  return th.attentionAt || th.updatedAt || null;
+}
+
+/** OWNER'S RULE, 2026-09-28: "if a bb thread has the agent waiting, asking
+    questions with a tool, then this absolutely needs attention. and if the bb
+    thread has been waiting too long, then that's stalled". The one way a thread
+    speaks for a PR: an OPEN PR (stage 5-8, not merged) whose linked thread is
+    live with a pending interaction. The PR's GitHub stage stays on the record;
+    this only says the card belongs with the operator, from `since`. A busy,
+    settled or archived thread returns null: GitHub keeps driving the PR. */
+function prThreadWaiting(rec) {
+  if (!rec || rec.kind !== 'pr' || ![5, 6, 7, 8].includes(rec.stage) || rec.mergedAt) return null;
+  const th = rec.thread;
+  if (!th || threadPhase(th) !== 'pending') return null;
+  return {
+    stage: 3,
+    threadId: th.id || null,
+    since: threadWaitingSince(th),
+    why: `bb thread ${th.id || '(no id)'} is waiting on an answer (hasPendingInteraction)`,
+  };
 }
 
 /** Where a settled issue's stall clock starts: the thread's updatedAt, or the
@@ -214,5 +248,7 @@ module.exports = {
   threadDrivenBaseStage,
   threadSettledIssue,
   threadSettledSince,
+  threadWaitingSince,
+  prThreadWaiting,
   overlayThreadState,
 };
