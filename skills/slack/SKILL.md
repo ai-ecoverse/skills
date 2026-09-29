@@ -675,7 +675,10 @@ wire facts, authentication, what remains unverified): `references/enterprise-gri
 - `channel-to-private <channel_id> [--confirm]` — public → private; the channel then looks deleted to non-members.
 - `channel-archive <channel_id> [--confirm] [--max-members=N] [--min-idle-days=N] [--allow-shared] [--json]` — archive; dry run reads state, `--confirm` re-checks every guard then reads back; Slack Connect channels need `--allow-shared` (archiving disconnects every external org).
 - `channel-unarchive <channel_id> [--confirm] [--json]` — unarchive, with the same dry run, re-check and read-back.
-- `approvals [--query=<q>] [--all] [--json]` — read-only list of Slack Connect invite approvals.
+- `approvals [--query=<q>] [--all] [--detail] [--json]` — read-only list of Slack Connect invite approvals; `--detail` adds inviter, invitee + org, sponsorship, and both sides' approval state (`Other org: NOT approved` = stalled on their side).
+- `approvals show <invite_id> [--json]` — the `--detail` view for one invite.
+- `connect-revoke <invite_id> --channel=<C…> [--confirm]` — revoke a Slack Connect invite; dry run shows the row, `--confirm` re-reads it (expects `expired`, else exit 3). `team_is_restricted` = workspace-scoped token; use the org token.
+- `--ws=<T…> guest-invite <email> --channel=<C…> [--confirm]` — invite a single-channel guest (`users.admin.inviteBulk`); emails the invitee on `--confirm`; exits 1 if any per-invite result failed. Wire contract: `references/endpoints.md`.
 - `admin-app approve <app_id|request_id> [--confirm]` — approve an app; a `request_id` is single-use.
 - `admin-app restrict <app_id|request_id> [--confirm]` — restrict an app; same single-use `request_id` caveat.
 - `admin-app clear <app_id> [--confirm]` — clear an app's approval or restriction.
