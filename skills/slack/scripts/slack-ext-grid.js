@@ -261,6 +261,139 @@ function summarizeApproval(a) {
   };
 }
 
+// ── Slack Connect invite diagnostics and guest invites ────────────────────────
+//
+// Wire facts, measured 2026-09-29 on an Enterprise Grid, ORG-level xoxc token
+// (localConfig_v2.teams[<E id>]), XHR from the app.slack.com page:
+//
+//   users.admin.inviteBulk — invite a guest to a WORKSPACE.
+//     team_id = the workspace id (T…), required on a grid.
+//     invites = JSON string [{"email":…,"type":"ultra_restricted","mode":"manual"}]
+//     channels = channel id (the web client sends a comma list)
+//     ultra_restricted=true, source=invite_modal, mode=manual
+//     -> {ok:true, invites:[{email, ok, invite_id:"I…", expiration_ts}]}
+//     Top-level ok:true does NOT mean every invite succeeded: check each
+//     per-invite ok. Only the single-channel guest type was tested. What
+//     expiration_ts expires (the invite, or the guest account) is unverified.
+//
+//   conversations.revokeSharedInvite — invite_id=I…, channel=C…
+//     ORG token -> {ok:true}; sharedApprovals.list then shows the invite with
+//     status:"expired" and date_expire ~ now. A WORKSPACE-scoped token (the one
+//     in <workspace>.slack.com/admin boot_data) -> team_is_restricted, and
+//     nothing changes.
+//
+//   conversations.sharedApprovals.list rows carry home_user (inviter),
+//   away_user (invitee, incl. team_id and profile.email), connecting_team
+//   {id, name, domain, requires_sponsorship}, home_date_approve,
+//   away_date_approve (0 = that side has NOT approved), approving_user_id,
+//   invite_date_created, date_expire, connection_status, status.
+
+// users.admin.inviteBulk, single-channel guest. The only invite type tested.
+function buildGuestInviteParams(email, channelId, teamId) {
+  return {
+    team_id: teamId,
+    invites: JSON.stringify([{ email: email, type: 'ultra_restricted', mode: 'manual' }]),
+    channels: channelId,
+    ultra_restricted: 'true',
+    source: 'invite_modal',
+    mode: 'manual',
+  };
+}
+
+// Per-invite results of an inviteBulk response. `failed` counts entries whose
+// own ok is not true, plus requested emails the response does not mention.
+function summarizeInviteResults(resp, requestedEmails) {
+  const rows = (resp && Array.isArray(resp.invites) ? resp.invites : []).map(function (i) {
+    return {
+      email: i.email,
+      ok: i.ok === true,
+      invite_id: i.invite_id || null,
+      expires: i.expiration_ts || null,
+      error: i.ok === true ? null : i.error || 'unknown_error',
+    };
+  });
+  const seen = new Set(rows.map(function (r) { return String(r.email || '').toLowerCase(); }));
+  for (const e of requestedEmails || []) {
+    if (!seen.has(String(e).toLowerCase())) {
+      rows.push({ email: e, ok: false, invite_id: null, expires: null, error: 'missing_from_response' });
+    }
+  }
+  const failed = rows.filter(function (r) { return !r.ok; }).length;
+  return { invites: rows, failed: failed, ok: rows.length > 0 && failed === 0 };
+}
+
+// conversations.revokeSharedInvite
+function buildRevokeSharedInviteParams(inviteId, channelId) {
+  return { invite_id: inviteId, channel: channelId };
+}
+
+function findApproval(rows, inviteId) {
+  return (rows || []).find(function (a) { return a && (a.id === inviteId || a.invite_id === inviteId); }) || null;
+}
+
+// Page through sharedApprovals.list until the row for inviteId turns up.
+// fetchPage: async (cursor) => list response body. Stops at the first match,
+// at the last page, or after maxPages. Returns { row, scanned, pages, error }.
+async function findApprovalPaged(fetchPage, inviteId, maxPages) {
+  const cap = maxPages || 200;
+  let cursor = '';
+  let scanned = 0;
+  let pages = 0;
+  do {
+    const r = await fetchPage(cursor);
+    if (!r || !r.ok) return { row: null, scanned: scanned, pages: pages, error: (r && r.error) || 'no_response' };
+    pages += 1;
+    const chunk = Array.isArray(r.approvals) ? r.approvals : [];
+    scanned += chunk.length;
+    const hit = findApproval(chunk, inviteId);
+    if (hit) return { row: hit, scanned: scanned, pages: pages, error: null };
+    const meta = r.response_metadata || {};
+    cursor = meta.next_cursor || r.next_cursor || '';
+  } while (cursor && pages < cap);
+  return { row: null, scanned: scanned, pages: pages, error: null };
+}
+
+// Diagnostic view of one sharedApprovals row. Built from an allowlist, so
+// icon/avatar fields (connecting_team.icon, profile.image_*) never pass through.
+function summarizeApprovalDetail(a) {
+  const home = a.home_user || {};
+  const away = a.away_user || {};
+  const awayProfile = away.profile || {};
+  const team = a.connecting_team || {};
+  const ch = a.channel || {};
+  const homeTs = Number(a.home_date_approve) || 0;
+  const awayTs = Number(a.away_date_approve) || 0;
+  let waitingOn = 'nobody';
+  if (!homeTs && !awayTs) waitingOn = 'both sides';
+  else if (!awayTs) waitingOn = 'other org';
+  else if (!homeTs) waitingOn = 'our side';
+  return {
+    id: a.id,
+    status: a.status,
+    connection_status: a.connection_status,
+    channel: { id: ch.id || null, name: ch.name || null },
+    inviter: { id: home.id || null, real_name: home.real_name || null },
+    invitee: {
+      id: away.id || null,
+      real_name: away.real_name || null,
+      email: awayProfile.email || null,
+      team_id: away.team_id || null,
+    },
+    connecting_team: {
+      id: team.id || null,
+      name: team.name || null,
+      domain: team.domain || null,
+      requires_sponsorship: team.requires_sponsorship === undefined ? null : !!team.requires_sponsorship,
+    },
+    home_approved: homeTs || 0,
+    away_approved: awayTs || 0,
+    approving_user_id: a.approving_user_id || null,
+    created: a.invite_date_created || null,
+    expires: a.date_expire || null,
+    waiting_on: waitingOn,
+  };
+}
+
 // ── User type classification ───────────────────────────────────────────────────
 //
 // Mirrors userTypeLabel() in slack-ext.jsh. Reproduced here so tests can exercise
@@ -967,6 +1100,13 @@ module.exports = {
   summarizeApproval,
   classifyUser,
   collectPages,
+  // Slack Connect invites and guest invites
+  buildGuestInviteParams,
+  summarizeInviteResults,
+  buildRevokeSharedInviteParams,
+  findApproval,
+  findApprovalPaged,
+  summarizeApprovalDetail,
   // Channel archive / unarchive
   CHANNEL_SEARCH_MAX_LIMIT,
   READBACK_ATTEMPTS,

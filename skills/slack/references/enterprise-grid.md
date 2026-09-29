@@ -408,6 +408,9 @@ List Slack Connect shared channel invite approvals.
   `channel{name}`, `status`, `date_expire`
 - Verified live: 977 total approvals in the org at time of measurement.
 - `--all` removes the default 200-item cap. Use with care on large orgs.
+- `--detail` (and `approvals show <invite_id>`) print inviter, invitee + org and both sides'
+  approval state; `connect-revoke` and `guest-invite` act on invites. Contracts, measured
+  2026-09-29: `references/endpoints.md`, "Slack Connect invites and guest invites".
 
 ---
 
