@@ -9,9 +9,9 @@
 // sliccy:* modules and a stub browser whose fetch plays the Slack API. Every id,
 // name and address here is a fake.
 
-import test, { is, ok } from 'tst';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import test, { is, ok } from 'tst';
 import * as _argvMod from '../scripts/argv.js';
 import * as _manifestDiffMod from '../scripts/manifest-diff.js';
 import * as _gridMod from '../scripts/slack-ext-grid.js';
@@ -88,11 +88,11 @@ async function load(opts) {
     async findTab() {
       return fakeTab;
     },
-    async localStorage(tab, key) {
+    async localStorage(_tab, key) {
       if (key !== 'localConfig_v2') return null;
       return JSON.stringify({ teams: { [WS]: { token: 'xoxc-test-ws' }, [ORG]: { token: 'xoxc-test-org' } } });
     },
-    async fetch(tab, url, fetchOpts) {
+    async fetch(_tab, url, fetchOpts) {
       const method = url.replace('/api/', '');
       const params = {};
       let token = null;
@@ -177,9 +177,9 @@ async function load(opts) {
     './slack-ext-grid.js': () => grid,
   };
   const mockRequire = (id) => {
-    if (Object.prototype.hasOwnProperty.call(mocks, id)) return mocks[id];
+    if (Object.hasOwn(mocks, id)) return mocks[id];
     const key = id.replace(/^\.\.\/(scripts\/)?/, './');
-    if (Object.prototype.hasOwnProperty.call(relativeModules, key)) return relativeModules[key]();
+    if (Object.hasOwn(relativeModules, key)) return relativeModules[key]();
     throw new Error('unexpected require(' + id + ')');
   };
   const mockProcess = {
