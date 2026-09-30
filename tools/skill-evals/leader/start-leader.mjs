@@ -20,6 +20,9 @@ import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
+const ATTEMPTS = 4;
+const RETRY_MS = 10_000;
+
 function fail(message) {
   console.log(`::error::skill-evals start-leader: ${message}`);
   process.exit(1);
@@ -43,16 +46,32 @@ if (seed) {
   if (sep <= 0 || !/^\/workspace\/bench-skills\/[a-z0-9][a-z0-9-]*$/.test(target))
     fail(`SKILL_EVALS_SEED must be <runner dir>:/workspace/bench-skills/<skill>, not "${seed}"`);
   if (!existsSync(source)) fail(`seed source ${source} does not exist`);
-  const { readState } = await import(join(scripts, 'gh-io.mjs'));
+  const { execOnLeader, readState } = await import(join(scripts, 'gh-io.mjs'));
   const url = readState()?.joinUrl;
   if (!url) fail('start-leader left no join URL in its state file');
-  const inject = spawnSync(process.execPath, [join(scripts, 'inject-files.mjs')], {
-    stdio: 'inherit',
-    env: { ...process.env, SLICC_JOIN_URL: url, INPUT_SOURCE: source, INPUT_TARGET: target },
-  });
-  if (inject.status !== 0) fail(`inject-files exited ${inject.status} for ${target}`);
-  const { execOnLeader } = await import(join(scripts, 'gh-io.mjs'));
-  const listing = execOnLeader(url, `ls ${target}`, { timeoutMs: 60_000 }).toString('utf8');
-  console.log(`[skill-evals] ${target}: ${listing.trim().split('\n').join(', ') || '(empty)'}`);
-  if (!listing.trim()) fail(`${target} is empty after the injection`);
+  // A leader that has just minted its join URL can still refuse a terminal
+  // (`slicc exec: terminal-open timed out after 10000ms`, Skill evals run 36735238551, 4th boot),
+  // and inject-files retries only failed dials. The injection is idempotent (tar overwrites), so
+  // retry it, then the listing, a few times before failing the boot.
+  let listing = '';
+  let last = '';
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
+    const inject = spawnSync(process.execPath, [join(scripts, 'inject-files.mjs')], {
+      stdio: 'inherit',
+      env: { ...process.env, SLICC_JOIN_URL: url, INPUT_SOURCE: source, INPUT_TARGET: target },
+    });
+    if (inject.status === 0) {
+      try {
+        listing = execOnLeader(url, `ls ${target}`, { timeoutMs: 60_000 }).toString('utf8').trim();
+        if (listing) break;
+        last = `${target} is empty after the injection`;
+      } catch (err) {
+        last = err.message;
+      }
+    } else last = `inject-files exited ${inject.status} for ${target}`;
+    console.log(`[skill-evals] injection attempt ${attempt}/${ATTEMPTS} failed: ${last}`);
+    if (attempt < ATTEMPTS) await new Promise((r) => setTimeout(r, RETRY_MS));
+  }
+  if (!listing) fail(last);
+  console.log(`[skill-evals] ${target}: ${listing.split('\n').join(', ')}`);
 }
