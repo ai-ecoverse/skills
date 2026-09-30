@@ -189,6 +189,7 @@ jobs:
             packages/bench
             packages/github-workflow
             packages/slicc-cli
+            packages/go-optel
 
       # node-server needs Node >= 22.19.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -196,7 +197,8 @@ jobs:
           node-version: '24'
 
       # The runner needs `prompt --allsettled`, `wait --allsettled` and `abort`, which ship with
-      # the pinned CLI source, not necessarily with the last release: build it.
+      # the pinned CLI source, not necessarily with the last release: build it. go.mod resolves
+      # go-optel from the sibling ../go-optel, hence that directory in the sparse checkout.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: slicc/packages/slicc-cli/go.mod
