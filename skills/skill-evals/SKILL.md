@@ -23,8 +23,10 @@ gives per-task scores and the with-minus-without lift in score, time and cost.
      for `without` (every scoop lists an installed skill; a staged copy cannot hide or replace it).
    - `harness scoop`: the `scoop_scoop` settings below.
 3. Create ONE harness scoop named `skill-evals` with the plan's `writablePaths` (its folder,
-   `/shared/`, and the fixture roots such as `/workspace/eval/`; without them every fixture
-   write escalates to you) and tell it to pass `background_after` >= the plan's
+   `/shared/`, and the fixture roots such as `/workspace/eval/`). A scoop without them cannot
+   stage fixtures: a write outside writablePaths escalates, and after a sudo grant it was measured
+   to land NOTHING. `run-one` reads each fixture back and fails the run if it is missing.
+   Tell it to pass `background_after` >= the plan's
    `bash_background_after` on each bash call. Feed it the run id and this loop:
    `skill-evals status <run-id>`, run the printed `next` command, repeat until `next` is
    `report`. It must stay otherwise idle: cost is the delta of its own `cost` row.
@@ -72,14 +74,16 @@ items that a tool call or printed output can prove.
 - Transcripts come from the user's real browser. They never leave the machine. `publish`
   uploads only `report.json`, `report.md` and records stripped of free text: ids, condition,
   scores, statuses, metrics. It refuses `ai-ecoverse/slicc-bench`.
+- Agents also write scratch files to `/tmp` outside their cwd. `run-one` lists them
+  (`tmp_leftovers`, and `report` adds a note). Remove them before the next run.
 - Runs are serial. Staging is global, so a `with` run must never overlap a `without` run of the
   same skill. `&` in one shell is sequential anyway.
 
 ## Cost
 
-Measured 2026-09-30 on haiku: a probe or judge costs about $0.03-0.05. Each spawn pays about
-24k cache-write tokens of system prompt. A short task run costs $0.05-0.50. Budget per run of
-the plan: task + judge. Add two probes per condition switch.
+Measured 2026-09-30 on haiku (tst-001, both conditions): the visibility probe cost $0.033 (25 s), each task run $0.065-0.067
+(41-52 s), and each judge $0.068 (48 s). Every spawn pays about 24k cache-write tokens of system
+prompt. Budget per plan run = task + judge, plus one probe per condition switch.
 
 ## Known limits
 

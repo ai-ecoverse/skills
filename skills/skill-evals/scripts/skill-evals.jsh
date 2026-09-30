@@ -369,9 +369,11 @@ report.json, report.md, report.dip.shtml, .agents/skills/<skill>/ (with only).
     const startedAt = new Date().toISOString();
     // Setup: stage fixtures (never over an existing file), then run/check steps.
     let setupError = null;
+    let preexisting = false;
     const setupLog = [];
     for (const f of task.slicc?.files ?? []) {
       if (await fs.exists(f.to)) {
+        preexisting = true;
         setupError = `${f.to} already exists (a previous run's teardown did not remove it)`;
         break;
       }
@@ -381,15 +383,26 @@ report.json, report.md, report.dip.shtml, .agents/skills/<skill>/ (with only).
       for (const f of task.slicc?.files ?? []) {
         await fs.mkdir(f.to.slice(0, f.to.lastIndexOf('/')), { recursive: true });
         await fs.writeFileBinary(f.to, await fs.readFileBinary(`${setDir}/${f.from}`));
+        // A write outside the scoop's writablePaths can return without error and land nothing
+        // (measured 2026-09-30, /workspace/eval/ after an "always" sudo grant): read it back.
+        if (!(await fs.exists(f.to))) {
+          setupError = `${f.to} did not land; add its root to the harness scoop's writablePaths`;
+          break;
+        }
       }
-      const s = await steps(task.setup, cwd);
-      setupLog.push(...s.log);
-      if (!s.ok) setupError = 'a setup step failed';
+      if (!setupError && !(await isDir(cwd))) setupError = `${cwd} did not land`;
+      if (!setupError) {
+        const s = await steps(task.setup, cwd);
+        setupLog.push(...s.log);
+        if (!s.ok) setupError = 'a setup step failed';
+      }
     }
     let call = { rc: null, stdout: '', stderr: '', ms: null, delta: null };
     let transcript = null;
+    let tmpNew = [];
     if (!setupError) {
       const before = await tmpTranscripts();
+      const tmpBefore = new Set(await fs.readDir('/tmp'));
       call = await timedAgent(
         H.agentArgv({
           cwd,
@@ -401,6 +414,10 @@ report.json, report.md, report.dip.shtml, .agents/skills/<skill>/ (with only).
         cwd
       );
       const fresh = [...(await tmpTranscripts())].filter((x) => !before.has(x));
+      // Files the agent left in /tmp outside its cwd are readable by the next run: report them.
+      tmpNew = (await fs.readDir('/tmp')).filter(
+        (x) => !tmpBefore.has(x) && !/^agent-.*\.md$/.test(x)
+      );
       const cands = [];
       for (const name of fresh) cands.push({ name, text: await fs.readFile(`/tmp/${name}`) });
       const hit = H.findTranscript(cands, uuid);
@@ -411,7 +428,10 @@ report.json, report.md, report.dip.shtml, .agents/skills/<skill>/ (with only).
         transcript = { ...H.parseTranscript(hit.text), file: hit.name };
       }
     }
-    const teardown = await steps(task.teardown, plan.run_dir);
+    // Never tear down files this run did not stage (they may be the user's own).
+    const teardown = preexisting
+      ? { ok: true, log: [], skipped: true }
+      : await steps(task.teardown, plan.run_dir);
     const record = H.buildRecord({
       plan,
       run,
@@ -424,6 +444,7 @@ report.json, report.md, report.dip.shtml, .agents/skills/<skill>/ (with only).
       setupError,
     });
     record.teardown_ok = teardown.ok;
+    record.tmp_leftovers = tmpNew.length;
     await writeJson(`${priv}/run.json`, {
       uuid,
       cwd,
@@ -434,6 +455,7 @@ report.json, report.md, report.dip.shtml, .agents/skills/<skill>/ (with only).
       stdout: call.stdout,
       stderr: call.stderr,
       transcript_file: transcript?.file ?? null,
+      tmp_new: tmpNew,
     });
     await writeJson(recPath, record);
     say(

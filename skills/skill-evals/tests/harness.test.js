@@ -369,7 +369,11 @@ test('aggregate: cells, lift via evals-format, spend by kind', () => {
 
 test('aggregate notes #3690, contamination and timeouts', () => {
   const extra = [
-    rec('demo-001', 'without', 2, 0.5, 1, 0.1, { attribution: 'contaminated', n: 7 }),
+    rec('demo-001', 'without', 2, 0.5, 1, 0.1, {
+      attribution: 'contaminated',
+      n: 7,
+      tmp_leftovers: 2,
+    }),
     rec('demo-001', 'with', 2, 0.5, 1, 0.1, {
       metrics: { duration: 1, cost: 0, timedOut: true },
       n: 8,
@@ -381,6 +385,7 @@ test('aggregate notes #3690, contamination and timeouts', () => {
     r.notes.some((n) => n.includes('contaminated')) &&
       r.notes.some((n) => n.includes('lower bound'))
   );
+  ok(r.notes.some((n) => n.startsWith('Runs 7 left files in /tmp')));
 });
 
 test('reportMarkdown shows the table, lift, spend and notes', () => {

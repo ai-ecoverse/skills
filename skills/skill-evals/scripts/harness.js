@@ -520,6 +520,12 @@ export function aggregate(plan, records, { preflights = [], blockScalar = false 
     notes.push(
       'Some runs timed out: their cost is a lower bound (the in-flight call is unbilled).'
     );
+  const left = records.filter((r) => r.tmp_leftovers > 0).map((r) => r.n);
+  if (left.length)
+    notes.push(
+      `Runs ${left.join(', ')} left files in /tmp outside their cwd; a later run can read them. ` +
+        'Their names are in the private run.json (tmp_new); remove them before the next run.'
+    );
   let liftResult;
   try {
     liftResult = lift(records.map((r) => ({ ...r, harness: HARNESS })));
