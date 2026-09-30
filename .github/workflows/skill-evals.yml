@@ -382,6 +382,7 @@ jobs:
           set -e
           cat "$RUNNER_TEMP/check.md"
           node tools/skill-evals/audit.mjs "$OUT" | tee "$RUNNER_TEMP/audit.md"
+          echo "::group::report.md"; cat "$OUT/report.md"; echo "::endgroup::"
           {
             echo "## Skill evals (host)"
             echo

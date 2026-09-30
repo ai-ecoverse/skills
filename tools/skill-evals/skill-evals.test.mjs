@@ -161,15 +161,15 @@ test('audit reads the transcript only and counts per condition', () => {
     result: { transcript },
   });
   const rows = [
-    auditTrace(trace('none', [{ text: 'nothing here' }])),
+    auditTrace(trace('none', [{ text: 'ls /workspace/.bench-skills-builtin' }])),
     auditTrace(trace('none+x', [{ tool: 'read_file', input: '/workspace/skills/x/SKILL.md' }])),
   ];
   assert.deepEqual(
-    rows.map((r) => [r.condition, r.skillMd, r.evalSet]),
+    rows.map((r) => [r.condition, r.skillMd, r.benchSkills, r.builtinStash, r.evalSet]),
     [
-      ['none', false, false],
-      ['none+x', true, false],
+      ['none', false, false, true, false],
+      ['none+x', true, false, false, false],
     ]
   );
-  assert.match(auditTable(rows), /\| ecoverse-x \| `none\+x` \| 1 \| 1 \| 0 \| 0 \|/);
+  assert.match(auditTable(rows), /\| ecoverse-x \| `none\+x` \| 1 \| 1 \| 0 \| 0 \| 0 \|/);
 });
