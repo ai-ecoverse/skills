@@ -22,8 +22,8 @@ NOT present: `process.platform`/`.arch`/`.version`/`.pid`/`.on`/`.nextTick`, `co
 
 `require()` resolves, in order: `sliccy:*` → served node builtins → everything else.
 
-- Served builtins: `fs`, `fs/promises`, `path`, `crypto`, `child_process`, `process`, `buffer`, `assert`, `util`, `events`, `os`, `stream`, `url`, `zlib`. `fs` is the VFS bridge: `readFile`, `writeFile`, `readFileBinary`, `writeFileBinary`, `readDir`, `exists`, `stat`, `mkdir`, `rm`, `fetchToFile` — methods live directly on the object (not only under `.promises`); no `watch`, no streams. Sync reads cap at 1 MB (`ENOSYNC`) — use async `readFile` for large files.
-- `http`/`https`/`net`/`tls`/`dns`/`vm`/`worker_threads` throw — use `fetch()`.
+- Served builtins (`kernel/realm/node-builtins.ts`): `fs`, `fs/promises`, `path`, `crypto`, `child_process`, `process`, `buffer`, `assert`, `assert/strict`, `util`, `events`, `os`, `stream`, `url`, `tty`, `readline`, `readline/promises`, `module`, `vm`. `fs` is the VFS bridge: `readFile`, `writeFile`, `readFileBinary`, `writeFileBinary`, `readDir`, `exists`, `stat`, `mkdir`, `rm`, `fetchToFile` — methods live directly on the object (not only under `.promises`); no `watch`, no streams. Sync reads cap at 1 MB (`ENOSYNC`) — use async `readFile` for large files.
+- Every other built-in throws (`http`/`https`/`net`/`tls`/`dns`/`zlib`/`worker_threads`, …): use `fetch()` for HTTP.
 - npm packages resolve only from ipk-installed VFS `node_modules` (`ipk install x`) — **no CDN fallback**. Native packages (`sharp`, `sqlite3`, `puppeteer`, `canvas`, …) hard-throw. `require('playwright')` returns a CDP-backed shim.
 - Shim gaps vs real Node: `crypto.createHash` supports only md5/sha1/sha256; `util` has only `format`/`formatWithOptions`/`inspect`/`inherits`/`promisify`; `assert` lacks `rejects`/`match`.
 
