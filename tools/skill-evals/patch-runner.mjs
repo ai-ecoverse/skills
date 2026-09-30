@@ -8,7 +8,7 @@
  * `builtin+<set>` condition errors before the agent starts: run.mjs builds the run id from
  * `pathSegment(config.skills)`, which keeps `+` (format.mjs pathSegment keeps [A-Za-z0-9._+-]),
  * and slicc-adapter.mjs refuses any run id outside /^[A-Za-z0-9._-]+$/ with `bad run id
- * tst-002-claude-sonnet-5-none+tst-r1-…` (Skill evals run 36722029540). The run id is an opaque
+ * tst-002-claude-sonnet-5-none+tst-r1-…` (Skill evals run 36722405889). The run id is an opaque
  * label (a per-run scratch dir on the leader, `run_id` in the record); record and trace PATHS
  * are built separately and keep the condition name. So this rewrites `+` to `-` in the run id
  * and nothing else.

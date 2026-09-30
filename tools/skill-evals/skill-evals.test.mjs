@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
+import { auditTable, auditTrace } from './audit.mjs';
 import { checkRecords, readRecords, stampRecords } from './check.mjs';
 import { ADAPTER_CHECK, patchRunId } from './patch-runner.mjs';
 import { entriesFor, missingFixtures, plan, selectFromChanges, selectFromInput } from './plan.mjs';
@@ -151,4 +152,24 @@ test('patch-runner rewrites + in the run id once, is idempotent, and refuses unk
   assert.equal(patchRunId(got.source, ADAPTER_CHECK).changed, false);
   assert.equal(patchRunId(run, 'if (!/^[A-Za-z0-9._+-]+$/.test(runId))').changed, false);
   assert.throws(() => patchRunId('const runId = other;', ADAPTER_CHECK), /found it 0 times/);
+});
+
+test('audit reads the transcript only and counts per condition', () => {
+  const trace = (skills, transcript) => ({
+    record: { benchmark: 'ecoverse-x', config: { skills } },
+    task: { rubric: 'skills/x/SKILL.md tasks.json' },
+    result: { transcript },
+  });
+  const rows = [
+    auditTrace(trace('none', [{ text: 'nothing here' }])),
+    auditTrace(trace('none+x', [{ tool: 'read_file', input: '/workspace/skills/x/SKILL.md' }])),
+  ];
+  assert.deepEqual(
+    rows.map((r) => [r.condition, r.skillMd, r.evalSet]),
+    [
+      ['none', false, false],
+      ['none+x', true, false],
+    ]
+  );
+  assert.match(auditTable(rows), /\| ecoverse-x \| `none\+x` \| 1 \| 1 \| 0 \| 0 \|/);
 });

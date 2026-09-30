@@ -64,7 +64,7 @@ env:
   SLICC_REF: 2fc68c083459c3511e4e980c177b910c5b356a89
   EVAL_MODEL: ${{ inputs.model || 'claude-sonnet-5' }}
   # Debugging only: comma-separated task ids to run instead of whole sets. Keep it empty.
-  EVAL_TASKS: 'tst-002'
+  EVAL_TASKS: ''
 
 jobs:
   plan:
@@ -146,6 +146,7 @@ jobs:
         with:
           name: skill-evals-plan-${{ github.run_id }}
           path: ${{ runner.temp }}/plan.json
+          retention-days: 7
 
       # Every job and every leader restart runs the same sliccy node-server, like bench.yml.
       - name: Gate on the Bedrock key and pin the sliccy version
@@ -380,12 +381,17 @@ jobs:
           check=$?
           set -e
           cat "$RUNNER_TEMP/check.md"
+          node tools/skill-evals/audit.mjs "$OUT" | tee "$RUNNER_TEMP/audit.md"
           {
             echo "## Skill evals (host)"
             echo
             echo "slicc runner \`$SLICC_REF\`, model \`$EVAL_MODEL\`. Scores measure; they do not gate this check."
             echo
             grep -v '^::' "$RUNNER_TEMP/check.md"
+            echo
+            echo "What each agent's transcript names (isolation audit, informational):"
+            echo
+            cat "$RUNNER_TEMP/audit.md"
             echo
             cat "$OUT/report.md"
           } >> "$GITHUB_STEP_SUMMARY"
