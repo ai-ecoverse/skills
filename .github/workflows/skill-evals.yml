@@ -12,11 +12,14 @@
 # (evals-format.js `validateSet`, harness `host`) and with the runner's own loader (`run.mjs
 # --plan`), and emits one matrix entry per skill and condition. Each `eval` job is ONE runner
 # invocation on its own GitHub-hosted runner:
-#   - `none`: no skills at all, and nothing mounted, so the agent cannot read the skill;
+#   - `none`: no skills at all, and the skill is never put on that leader, so the agent cannot
+#     read it;
 #   - `none+<skill>`: `tools/skill-evals/stage.mjs` copies `skills/<skill>/` WITHOUT `evals/`
-#     (the agent must not read the rubrics) to `stage/<skill>/<skill>/`, asserts SKILL.md, and
-#     the leader mounts `stage/<skill>` at `/workspace/bench-skills/<skill>`, which the runner
-#     copies into `/workspace/skills` (slicc-adapter.mjs:215-216).
+#     (the agent must not read the rubrics) to `stage/<skill>/<skill>/` and asserts SKILL.md;
+#     every leader boot injects `stage/<skill>` into the VFS at `/workspace/bench-skills/<skill>`
+#     (tools/skill-evals/leader/start-leader.mjs, which wraps slicc's start-leader.mjs), and the
+#     runner copies it into `/workspace/skills` (slicc-adapter.mjs:215-216). Not a node-server
+#     mount: the runner's `cp` from a mount fails on the current webapp (see that script).
 # `report` merges the out dirs with slicc's merge.mjs into one report and checks that every
 # planned run was judged.
 #
@@ -225,26 +228,28 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$ARM" != with ]; then
-            echo "mounts=" >> "$GITHUB_OUTPUT"
-            echo "condition none: nothing staged, nothing mounted"; exit 0
+            echo "seed=" >> "$GITHUB_OUTPUT"
+            echo "condition none: nothing staged, nothing put on the leader"; exit 0
           fi
           node tools/skill-evals/stage.mjs "$SKILL" "$RUNNER_TEMP/stage"
           find "$RUNNER_TEMP/stage" -type f | sort
-          echo "mounts=$RUNNER_TEMP/stage/$SKILL:/workspace/bench-skills/$SKILL" >> "$GITHUB_OUTPUT"
+          echo "seed=$RUNNER_TEMP/stage/$SKILL:/workspace/bench-skills/$SKILL" >> "$GITHUB_OUTPUT"
 
-      # run.mjs boots the leader itself with the start/stop-leader scripts, restarts it before
-      # EVERY task (--fresh-leader-every 1: the runner does not delete staged fixtures), and
-      # stops it at the end. The INPUT_* are what those scripts read (bench.yml:304-319).
+      # run.mjs boots the leader itself with the start/stop-leader scripts (here slicc's, wrapped
+      # to inject the staged set), restarts it before EVERY task (--fresh-leader-every 1: the
+      # runner does not delete staged fixtures), and stops it at the end. The INPUT_* are what
+      # slicc's scripts read (bench.yml:304-319).
       - name: Run and judge
         timeout-minutes: ${{ matrix.run_minutes }}
         env:
           AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
           BEDROCK_REGION: ${{ vars.RUM_AWS_REGION || 'us-west-2' }}
-          BENCH_LEADER_SCRIPTS: ${{ github.workspace }}/slicc/packages/github-workflow/scripts
+          BENCH_LEADER_SCRIPTS: ${{ github.workspace }}/tools/skill-evals/leader
+          SKILL_EVALS_SLICC_SCRIPTS: ${{ github.workspace }}/slicc/packages/github-workflow/scripts
+          SKILL_EVALS_SEED: ${{ steps.stage.outputs.seed }}
           INPUT_SLICC_VERSION: ${{ needs.plan.outputs.slicc-version }}
           INPUT_PIN_WEBAPP: 'false'
           INPUT_DURATION: ${{ matrix.job_minutes }}m
-          INPUT_MOUNTS: ${{ steps.stage.outputs.mounts }}
           INPUT_PROVIDER: bedrock-camp
           INPUT_PROVIDER_API_KEY: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
           INPUT_PROVIDER_BASE_URL: https://bedrock-runtime.${{ vars.RUM_AWS_REGION || 'us-west-2' }}.amazonaws.com
