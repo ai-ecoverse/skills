@@ -23,7 +23,9 @@ const kevArm = (id, model, args) => ({
 // it gets the first of each to know when to stop. The judge still checks them all. The bare
 // agent baseline runs on the #452 stack.
 export const arms = [
-  kevArm('kev-9b', '9b', ['--decider', 'kev', '--model', '9b']),
+  // #423's kev has no -vision models; its 0.8b and 4b are the text twins of #452's vision arms.
+  kevArm('kev-0.8b', '0.8b', ['--decider', 'kev', '--model', '0.8b']),
+  kevArm('kev-4b', '4b', ['--decider', 'kev', '--model', '4b']),
   {
     id: 'agent-decider',
     kind: 'skill',
