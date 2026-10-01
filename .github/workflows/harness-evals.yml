@@ -1,39 +1,39 @@
-# Harness evals: run browser goals against several harness arms (deciders, branches, or the bare
-# agent) on hosted SLICC leaders, judge every arm with ONE check, and report pass rates.
+# Harness evals: run a skill's browser goals against the harness arms its own adapter defines
+# (skills/<skill>/evals/harness/harness.mjs: deciders, model sizes, the bare agent), on hosted
+# SLICC leaders, judged by ONE check (the adapter's `judge`) on every arm's final page.
 #
-# The arms, the goals file and the check come from a config (tools/harness-evals/arms.json):
-#   - a `webrunner` arm checks out its `ref`, injects its skills into the leader's
-#     /workspace/skills (without evals/), pulls the kev models it needs, and runs
-#     `webrunner run … --json` per goal with its decider flags;
-#   - an `agent` arm runs one `slicc prompt` per goal with the leader's bundled skills.
-# Every run is judged by meep-meep's own success check (page.js checkExpect, from the config's
-# `check` ref) on the tabs it left open: the same bar for every arm. Placeholders in the goals
-# ({{date:+N:FMT}}, {{hn:top}}) are filled just before each run.
+# - pull_request: every skill the PR changes that has a harness adapter, at the PR's own code.
+#   To compare a branch, stack a PR on it. Same-repo heads only: forks get no Bedrock key.
+# - workflow_dispatch: `skills` = changed (against main, the default), all, or a comma list.
 #
-# GPU arms run on `cloud-run-gpu` (L4); their leaders set SLICC_CHROME_GPU=1 so Chrome keeps the
-# GPU and enables WebGPU (slicc node-server). Other arms run on `cloud-run-bench`. Dispatch only:
-# evals spend money and the GPU pool is small (3 at once).
+# Everything skill-specific (goals, arms, how a goal runs, the check, custom placeholders) lives
+# in the skill's folder; tools/harness-evals only drives it. GPU arms run on `cloud-run-gpu`
+# (L4) with SLICC_CHROME_GPU=1 so the leader's Chrome keeps the GPU and enables WebGPU; other
+# arms run on `cloud-run-bench`. slicc (leader scripts, CLI, node-server) is the latest release.
 name: Harness evals
 
 on:
+  pull_request:
+    paths:
+      - 'skills/**'
+      - 'tools/harness-evals/**'
+      - '.github/workflows/harness-evals.yml'
   workflow_dispatch:
     inputs:
-      config:
-        description: 'Arms config (path in this repo)'
-        default: 'tools/harness-evals/arms.json'
-      arms:
-        description: 'Arm ids, comma-separated, or all'
-        default: 'all'
+      skills:
+        description: 'Skills: changed (against main), all, or a comma list'
+        default: 'changed'
       repeats:
         description: 'Runs per goal and arm (1-10)'
         default: '3'
 
+# Evals spend money: a newer push waits for the running evals instead of cancelling them.
+concurrency:
+  group: harness-evals-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
-
-env:
-  # slicc's leader scripts and the CLI source (same pin as skill-evals.yml).
-  SLICC_REF: 8931cd52420231a5fcf477db2b3214b7398cc52b
 
 jobs:
   plan:
@@ -42,43 +42,48 @@ jobs:
     timeout-minutes: 10
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
+      run: ${{ steps.plan.outputs.run }}
       slicc-version: ${{ steps.plan.outputs.slicc-version }}
+      slicc-ref: ${{ steps.plan.outputs.slicc-ref }}
+      repeats: ${{ steps.plan.outputs.repeats }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
       - name: Unit-test the harness tools
         run: node --test tools/harness-evals/harness-evals.test.mjs
-      - name: Plan the arms
+      - name: Plan the skills and arms
         id: plan
         env:
-          CONFIG: ${{ inputs.config }}
-          ARMS: ${{ inputs.arms }}
-          REPEATS: ${{ inputs.repeats }}
+          WHICH: ${{ github.event_name == 'workflow_dispatch' && inputs.skills || 'changed' }}
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || 'origin/main' }}
+          REPEATS: ${{ github.event_name == 'workflow_dispatch' && inputs.repeats || '1' }}
+          HAS_KEY: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK != '' }}
         run: |
           set -euo pipefail
           if ! [[ "$REPEATS" =~ ^([1-9]|10)$ ]]; then echo "::error::repeats must be 1-10"; exit 1; fi
-          node --input-type=module -e '
-            import { readFileSync, appendFileSync } from "node:fs";
-            const cfg = JSON.parse(readFileSync(process.env.CONFIG, "utf8"));
-            const want = process.env.ARMS.trim();
-            const pick = want === "all" ? cfg.arms : cfg.arms.filter((a) => want.split(",").map((s) => s.trim()).includes(a.id));
-            if (!pick.length) { console.log("::error::no arm matches " + want); process.exit(1); }
-            const include = pick.map((a) => ({
-              id: a.id, ref: a.ref, runs_on: a.pool === "gpu" ? "cloud-run-gpu" : "cloud-run-bench",
-              gpu: a.pool === "gpu" ? "1" : "", skills: (a.skills ?? []).join(","), arm: JSON.stringify(a),
-              goals_ref: cfg.goals.ref, goals_path: cfg.goals.path, check_ref: cfg.check.ref, check_path: cfg.check.path,
-              repeats: process.env.REPEATS,
-            }));
-            appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`);
-            console.log(include.map((i) => `${i.id} on ${i.runs_on} at ${i.ref}`).join("\n"));
-          '
-          echo "slicc-version=$(npm view sliccy@latest version)" >> "$GITHUB_OUTPUT"
+          matrix="$(node tools/harness-evals/plan.mjs "$WHICH" "$BASE")"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "repeats=$REPEATS" >> "$GITHUB_OUTPUT"
+          n=$(jq '.include | length' <<< "$matrix")
+          jq -r '.include[] | "\(.skill)/\(.arm) on \(.runs_on)"' <<< "$matrix"
+          run=false
+          if [ "$n" -gt 0 ] && [ "$HAS_KEY" = true ]; then run=true; fi
+          if [ "$n" -gt 0 ] && [ "$HAS_KEY" != true ]; then echo "::notice::no Bedrock key (fork PR): validated only"; fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          # The leader's node-server, its scripts and the CLI all come from the latest release.
+          version="$(npm view sliccy@latest version)"
+          echo "slicc-version=$version" >> "$GITHUB_OUTPUT"
+          echo "slicc-ref=v$version" >> "$GITHUB_OUTPUT"
+          echo "slicc v$version, $n arm job(s), $REPEATS repeat(s)" >> "$GITHUB_STEP_SUMMARY"
 
   arm:
-    name: ${{ matrix.id }}
+    name: ${{ matrix.skill }} / ${{ matrix.arm }}
     needs: plan
+    if: needs.plan.outputs.run == 'true'
     runs-on: ${{ matrix.runs_on }}
     timeout-minutes: 240
     strategy:
@@ -87,23 +92,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - name: Check out the arm
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ matrix.ref }}
-          path: arm
-
-      - name: Check out the goals and the check
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ matrix.goals_ref }}
-          path: reference
-
-      - name: Check out ai-ecoverse/slicc at SLICC_REF
+      - name: Check out ai-ecoverse/slicc at the latest release
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: ai-ecoverse/slicc
-          ref: ${{ env.SLICC_REF }}
+          ref: ${{ needs.plan.outputs.slicc-ref }}
           path: slicc
           sparse-checkout: |
             packages/bench
@@ -120,7 +113,7 @@ jobs:
           go-version-file: slicc/packages/slicc-cli/go.mod
           cache-dependency-path: slicc/packages/slicc-cli/go.sum
 
-      - name: Install the slicc CLI (built from SLICC_REF)
+      - name: Install the slicc CLI (built from the release)
         uses: ./slicc/packages/github-workflow/actions/install-cli
         with:
           source: build
@@ -132,11 +125,11 @@ jobs:
           if [ -w /slicc ] 2>/dev/null; then exit 0; fi
           sudo mkdir -p /slicc && sudo chown "$(id -u)" /slicc
 
-      - name: Boot the leader and inject the arm's skills
+      - name: Boot the leader and inject the skill
         env:
           HARNESS_SLICC: ${{ github.workspace }}/slicc
-          HARNESS_SKILLS_DIR: ${{ github.workspace }}/arm/skills
-          HARNESS_SKILLS: ${{ matrix.skills }}
+          HARNESS_SKILLS_DIR: ${{ github.workspace }}/skills
+          HARNESS_SKILLS: ${{ matrix.inject }}
           SLICC_CHROME_GPU: ${{ matrix.gpu }}
           INPUT_SLICC_VERSION: ${{ needs.plan.outputs.slicc-version }}
           INPUT_PIN_WEBAPP: 'false'
@@ -152,10 +145,9 @@ jobs:
         timeout-minutes: 200
         env:
           HARNESS_SLICC: ${{ github.workspace }}/slicc
-          HARNESS_ARM: ${{ matrix.arm }}
-          HARNESS_GOALS: ${{ github.workspace }}/reference/${{ matrix.goals_path }}
-          HARNESS_PAGE_JS: ${{ github.workspace }}/reference/${{ matrix.check_path }}
-          HARNESS_REPEATS: ${{ matrix.repeats }}
+          HARNESS_SKILL_DIR: ${{ github.workspace }}/skills/${{ matrix.skill }}
+          HARNESS_ARM_ID: ${{ matrix.arm }}
+          HARNESS_REPEATS: ${{ needs.plan.outputs.repeats }}
           HARNESS_OUT: ${{ runner.temp }}/harness-out
         run: node tools/harness-evals/run-arm.mjs
 
@@ -183,7 +175,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: harness-evals-part-${{ github.run_id }}-${{ matrix.id }}
+          name: harness-evals-part-${{ github.run_id }}-${{ matrix.skill }}-${{ matrix.arm }}
           path: ${{ runner.temp }}/harness-out
           retention-days: 14
           if-no-files-found: ignore
@@ -191,7 +183,7 @@ jobs:
   report:
     name: Report
     needs: [plan, arm]
-    if: always() && needs.plan.result == 'success'
+    if: always() && needs.plan.outputs.run == 'true'
     runs-on: [self-hosted, cloud-run]
     timeout-minutes: 10
     steps:

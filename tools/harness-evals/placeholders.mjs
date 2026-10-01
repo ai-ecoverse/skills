@@ -1,17 +1,10 @@
 /**
- * goals — load a harness goals file and fill its run-time placeholders.
+ * placeholders — fill a goal's run-time placeholders, and validate a goals file.
  *
- * A goals file (`skills/<skill>/evals/harness/goals.json`) lists browser goals that every arm
- * gets with the same wording:
- *
- *   { "last_updated": "YYYY-MM-DD",
- *     "goals": [ { "id", "url", "goal", "expect": [..], "expect_url": [..], "max_steps" } ] }
- *
- * Placeholders, filled just before each run so that a goal and its check always agree:
- *   - `{{date:+N:FMT}}`: today (UTC) plus N days, formatted with YYYY, MMMM, MMM, MM, M, DD, D
- *     (Flights needs dates that are always in the future);
- *   - `{{hn:top}}`: the id of the first story on the Hacker News front page, so a check can
- *     require that story's comments page rather than any.
+ * Built in: `{{date:+N:FMT}}`, today (UTC) plus N days, formatted with YYYY, MMMM, MMM, MM, M,
+ * DD, D. Any other `{{name}}` belongs to the skill: its harness adapter resolves it
+ * (`placeholder(name)` in evals/harness/harness.mjs), just before the run. A placeholder nobody
+ * resolves fails the run rather than running a check that silently means something else.
  */
 
 const MONTHS = [
@@ -30,6 +23,7 @@ const MONTHS = [
 ];
 
 const PLACEHOLDER = /\{\{([^{}]+)\}\}/g;
+const DATE = /^date:([+-]\d+):(.+)$/;
 
 /** Format a UTC date with YYYY, MMMM, MMM, MM, M, DD, D (longest token first). */
 export function formatDate(date, fmt) {
@@ -57,30 +51,32 @@ export function formatDate(date, fmt) {
   });
 }
 
-/** The placeholders a text uses, e.g. ['date:+7:MMM D', 'hn:top']. */
+/** The placeholder names a text uses, e.g. ['date:+7:MMM D', 'hn:top']. */
 export function placeholders(text) {
   return [...String(text).matchAll(PLACEHOLDER)].map((m) => m[1].trim());
 }
 
-/**
- * Fill one text. ctx: { now: Date, hnTop: string|null }. An unknown placeholder, or `hn:top`
- * without a value, throws: a goal must never run with a check that silently means something else.
- */
-export function fillText(text, ctx) {
+/** The non-date placeholder names a goal needs from its skill's adapter. */
+export function customPlaceholders(goal) {
+  const names = [goal.goal, ...(goal.expect ?? []), ...(goal.expect_url ?? [])].flatMap(
+    placeholders
+  );
+  return [...new Set(names.filter((n) => !DATE.test(n)))];
+}
+
+/** Fill one text: dates relative to `now`, other names from `values` (must all be present). */
+export function fillText(text, { now, values = {} }) {
   return String(text).replace(PLACEHOLDER, (_, body) => {
     const name = body.trim();
-    const date = /^date:([+-]\d+):(.+)$/.exec(name);
+    const date = DATE.exec(name);
     if (date) {
-      const t = new Date(ctx.now.getTime());
+      const t = new Date(now.getTime());
       t.setUTCDate(t.getUTCDate() + Number(date[1]));
       return formatDate(t, date[2]);
     }
-    if (name === 'hn:top') {
-      if (!ctx.hnTop)
-        throw new Error('{{hn:top}} needs the Hacker News front page, which was not fetched');
-      return ctx.hnTop;
-    }
-    throw new Error(`unknown placeholder {{${name}}}`);
+    if (typeof values[name] !== 'string' || !values[name])
+      throw new Error(`placeholder {{${name}}} has no value`);
+    return values[name];
   });
 }
 
@@ -92,21 +88,6 @@ export function fillGoal(goal, ctx) {
     expect: (goal.expect ?? []).map((t) => fillText(t, ctx)),
     expect_url: (goal.expect_url ?? []).map((t) => fillText(t, ctx)),
   };
-}
-
-/** Whether a goal needs `{{hn:top}}` (so the driver fetches the front page only when needed). */
-export function needsHnTop(goal) {
-  return [goal.goal, ...(goal.expect ?? []), ...(goal.expect_url ?? [])].some((t) =>
-    placeholders(t).includes('hn:top')
-  );
-}
-
-/** The first story id on the Hacker News front page HTML, or null. */
-export function hnTopFromHtml(html) {
-  const m = /<tr[^>]*class=['"][^'"]*\bathing\b[^'"]*['"][^>]*\bid=['"](\d+)['"]/.exec(
-    String(html)
-  );
-  return m ? m[1] : null;
 }
 
 /** Problems with a goals document (empty when valid). */
@@ -133,10 +114,6 @@ export function validateGoals(doc) {
       errors.push(`${at}: needs expect or expect_url (a check)`);
     if (g.max_steps != null && !(Number.isInteger(g.max_steps) && g.max_steps > 0))
       errors.push(`${at}: max_steps must be a positive integer`);
-    for (const t of [g.goal, ...(g.expect ?? []), ...(g.expect_url ?? [])])
-      for (const p of placeholders(t))
-        if (!/^date:[+-]\d+:.+$/.test(p) && p !== 'hn:top')
-          errors.push(`${at}: unknown placeholder {{${p}}}`);
   }
   return errors;
 }
@@ -144,4 +121,14 @@ export function validateGoals(doc) {
 /** POSIX single-quote one shell word (the leader's shell is just-bash). */
 export function shellQuote(s) {
   return `'${String(s).replace(/'/g, `'\\''`)}'`;
+}
+
+/** Tab ids from `playwright-cli tab-list` output (`[<targetId>] <url> "<title>"`). */
+export function tabIds(listing) {
+  const ids = [];
+  for (const line of String(listing).split('\n')) {
+    const m = /^\s*(?:\d+\.\s*)?\[([A-Za-z0-9]{4,})\]/.exec(line);
+    if (m) ids.push(m[1]);
+  }
+  return ids;
 }
