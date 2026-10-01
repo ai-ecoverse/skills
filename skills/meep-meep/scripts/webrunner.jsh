@@ -39,7 +39,7 @@ USAGE
   webrunner run --url <url> --goal <text> [--expect <text>]... [--expect-url <text>]...
                 [--max-steps 8] [--decider kev|agent|hybrid] [--model <m>] [--from <dir>]
                 [--agent-model <m>] [--agent-thinking low] [--shrug 0.5] [--plan on|off]
-                [--vision] [--page-text on|off] [--viewport on|off] [--shots on|off]
+                [--vision] [--window WxH] [--page-text on|off] [--viewport on|off] [--shots on|off]
                 [--factor-text on|off] [--json]
   webrunner demo link|search|flights [--decider kev|agent|hybrid] [--model <m>] [--json]
   webrunner debug [<run-id>]
@@ -68,6 +68,9 @@ USAGE
                        and labelled with its ref. kev needs --model 4b-vision (the
                        default with --vision) or 0.8b-vision; the agent views the
                        image with \`open --view\`
+  --window WxH         resize the browser's viewport before the first step (device
+                       scale 1). With --vision the default is 1024x576, the size kev's
+                       vision input takes, so the screenshot is not scaled
   --page-text off      leave the page's text out of the state (controls only)
   --viewport off       offer every control in the snapshot, not only the visible ones
   --factor-text off    kev: one option per field and goal value, instead of picking
@@ -149,6 +152,17 @@ function previewUrl(vfsPath) {
   const origin =
     typeof location !== 'undefined' && location.origin ? location.origin : 'http://localhost:8787';
   return `${origin}/preview${path}`;
+}
+
+// The browser size: --window WxH, else the vision input size with --vision,
+// else the tab's own size.
+const VISION_WINDOW = { width: 1024, height: 576 };
+function parseWindow(value, vision) {
+  if (value === undefined || value === true || value === '') return vision ? VISION_WINDOW : null;
+  if (/^(off|none)$/i.test(String(value))) return null;
+  const m = /^(\d{3,4})x(\d{3,4})$/.exec(String(value));
+  if (!m) cli.die('--window is WIDTHxHEIGHT, e.g. 1024x576', { prefix: 'webrunner' });
+  return { width: Number(m[1]), height: Number(m[2]) };
 }
 
 // --flag alone is on; --flag off|false|no|0 is off; absent is the default.
@@ -602,6 +616,7 @@ async function runGoal(flags) {
     factorText: flags.decider !== 'agent' && onOff(flags['factor-text'], true),
     pageText: onOff(flags['page-text'], true),
     plan: onOff(flags.plan, true),
+    window: parseWindow(flags.window, onOff(flags.vision, false)),
   };
   if (opts.vision && !opts.shots) cli.die('--vision needs the screenshot: drop --shots off', { prefix: 'webrunner' });
   const started = Date.now();
@@ -659,6 +674,15 @@ async function cycles(flags, run) {
   const { opts, decider, trace, result, finish, candidates, hasCheck, maxSteps } = run;
   const tab = await openTab(flags.url);
   await say(`tab ${tab} ${flags.url}`);
+  // Size the browser, not the image: with --vision the viewport is the
+  // vision input (1024 x 576 = kev.js's 589,824-pixel cap, multiples of 32),
+  // and resize sets the device scale to 1, so the screenshot needs no
+  // scaling. At the default size a 1200 x 1279 viewport at DPR 2 came out
+  // 2400 x 2558 and was shrunk 3.2x, too small for kev to read status text.
+  if (opts.window) {
+    await sh(['playwright-cli', 'resize', String(opts.window.width), String(opts.window.height), `--tab=${tab}`]);
+    await say(`window ${opts.window.width}x${opts.window.height}`);
+  }
   await waitForPage(tab);
   const history = [];
   // What System 2 reads and writes: its plan and notes (System 1 sees them
@@ -749,7 +773,13 @@ async function cycles(flags, run) {
       image = marked.image;
       ori.state = `${ori.state}\nScreenshot: each offered control is boxed in red and labelled with its ref.`;
       await fs.writeFileBinary(trace.path(`${name}.vision.png`), marked.png);
-      record.vision = { image: `${name}.vision.png`, width: image.width, height: image.height, marks: marked.marks.length };
+      record.vision = {
+        image: `${name}.vision.png`,
+        width: image.width,
+        height: image.height,
+        marks: marked.marks.length,
+        scaled: marked.scale < 1 ? marked.scale : undefined,
+      };
     }
     record.orient = {
       state: ori.state,
@@ -965,6 +995,7 @@ async function demo(name, flags) {
     vision: flags.vision,
     'factor-text': flags['factor-text'],
     'page-text': flags['page-text'],
+    window: flags.window,
     viewport: flags.viewport,
     shots: flags.shots,
   });

@@ -1,5 +1,6 @@
 // The screenshot as a kev vision bundle sees it: scaled to kev.js's pixel
-// cap, with every control on the menu boxed and labelled with its ref, so
+// cap only when the window is bigger than that (webrunner sizes the window
+// to the cap with --vision), with every control on the menu boxed and labelled with its ref, so
 // an option such as click:e31 points at something visible (set-of-marks).
 // The canvas work needs a worker's createImageBitmap and OffscreenCanvas;
 // the layout is plain arithmetic and is tested on its own.
@@ -92,6 +93,7 @@ async function markedImage(bytes, menu, viewport, g = globalThis) {
     image: { width: pixels.width, height: pixels.height, data: pixels.data },
     png,
     marks,
+    scale: size.scale,
   };
 }
 
