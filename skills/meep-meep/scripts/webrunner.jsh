@@ -14,6 +14,7 @@ const fs = require('fs');
 const exec = require('sliccy:exec');
 const page = require('./page.js');
 const traceLib = require('./trace.js');
+const vision = require('./vision.js');
 const host = require('../../decide-quickly/scripts/host.js');
 const kevRuntime = require('../../decide-quickly/scripts/kev-runtime.js');
 
@@ -34,7 +35,7 @@ USAGE
   webrunner run --url <url> --goal <text> [--expect <text>]... [--expect-url <text>]...
                 [--max-steps 8] [--decider kev|agent|hybrid] [--model <m>] [--from <dir>]
                 [--agent-model <m>] [--shrug 0.5]
-                [--viewport on|off] [--shots on|off] [--json]
+                [--vision] [--viewport on|off] [--shots on|off] [--factor-text on|off] [--json]
   webrunner demo link|search|flights [--decider kev|agent|hybrid] [--model <m>] [--json]
   webrunner debug [<run-id>]
 
@@ -53,7 +54,12 @@ USAGE
                        step goes to the agent (System 2, --agent-model). It shrugs when
                        it picks SHRUG, its confidence is below --shrug (default
                        ${SHRUG_DEFAULT}), or it picks a field the goal gives no text for
+  --vision             also show kev the screenshot, each offered control boxed and
+                       labelled with its ref. Needs --model 4b-vision (the default
+                       with --vision) or 0.8b-vision
   --viewport off       offer every control in the snapshot, not only the visible ones
+  --factor-text off    kev: one option per field and goal value, instead of picking
+                       the field first and its text in a second, small question
   --shots off          skip the per-step screenshot
   --json               print the run summary as JSON (steps, seconds, result)
 
@@ -133,8 +139,10 @@ function previewUrl(vfsPath) {
   return `${origin}/preview${path}`;
 }
 
+// --flag alone is on; --flag off|false|no|0 is off; absent is the default.
 function onOff(value, fallback) {
-  if (value === undefined || value === true) return fallback;
+  if (value === undefined || value === null || value === '') return fallback;
+  if (value === true) return true;
   return !/^(off|false|no|0)$/i.test(String(value));
 }
 
@@ -187,9 +195,14 @@ async function ensureKevRuntime() {
 }
 
 async function kevDecider(flags) {
-  const size = flags.model || '9b';
+  const size = flags.model || (onOff(flags.vision, false) ? '4b-vision' : '9b');
+  if (onOff(flags.vision, false) && !size.endsWith('-vision')) {
+    cli.die('--vision needs a vision model: --model 4b-vision or 0.8b-vision', { prefix: 'webrunner' });
+  }
   if (!kevRuntime.MODELS[size]) {
-    cli.die('--model must be 0.8b, 4b, or 9b with --decider kev', { prefix: 'webrunner' });
+    cli.die(`--model must be one of ${Object.keys(kevRuntime.MODELS).join(', ')} with --decider kev`, {
+      prefix: 'webrunner',
+    });
   }
   if (!flags.from) {
     const status = await kevRuntime.weightsStatus(fs, size);
@@ -212,9 +225,10 @@ async function kevDecider(flags) {
   return {
     name: `kev ${size}`,
     loadMs,
-    async decide(state, menu) {
+    async decide(state, menu, extra = {}) {
       const response = await model.systemOne({
         state,
+        ...(extra.image ? { image: extra.image } : {}),
         questions: { action: page.menuQuestion(menu) },
       });
       const answer = response.answers.action;
@@ -224,8 +238,20 @@ async function kevDecider(flags) {
         .slice(0, 3)
         .map(([id, p]) => `${id}=${p}`)
         .join(' ');
-      const action = page.pickAction(menu, answer.choice);
-      return { action, confidence: answer.confidence, top, probabilities };
+      let action = page.pickAction(menu, answer.choice);
+      let textConfidence;
+      if (action.operation === 'TYPE_TEXT' && !action.text && action.candidates) {
+        // Same state, so kev.js reuses its cache: only the text options run.
+        const second = await model.systemOne({
+          state,
+          ...(extra.image ? { image: extra.image } : {}),
+          questions: { text: page.textQuestion(action) },
+        });
+        const pick = second.answers.text;
+        action = { ...action, text: action.candidates[Number(pick.choice.slice(1))] };
+        textConfidence = pick.confidence;
+      }
+      return { action, confidence: answer.confidence, textConfidence, top, probabilities };
     },
     async finished(state) {
       const response = await model.systemOne({
@@ -244,8 +270,8 @@ async function kevDecider(flags) {
 function kevOnly(fast) {
   return {
     ...fast,
-    async decide(state, menu) {
-      const first = await fast.decide(state, menu);
+    async decide(state, menu, extra) {
+      const first = await fast.decide(state, menu, extra);
       if (first.action.operation === 'TYPE_TEXT' && !first.action.text) {
         throw new Error('kev picked a field, but the goal has no value for it. Quote the text in --goal.');
       }
@@ -263,8 +289,8 @@ function hybridDecider(fast, slow, threshold) {
     name: `${fast.name} + ${slow.name}`,
     loadMs: fast.loadMs,
     shrugs: true,
-    async decide(state, menu) {
-      const first = await fast.decide(state, menu);
+    async decide(state, menu, extra) {
+      const first = await fast.decide(state, menu, extra);
       const reason = page.shrugReason(first, threshold);
       const system1 = {
         action: first.action.id,
@@ -484,6 +510,20 @@ function slimAction(action) {
   return out;
 }
 
+async function observeRecord(trace, obs, name) {
+  return {
+    url: obs.shot.url,
+    title: obs.shot.title,
+    viewport: obs.viewport,
+    screenshot: obs.screenshot,
+    snapshot: await trace.file(`${name}.snapshot.txt`, obs.raw),
+    elements: obs.shot.elements.map((element) => slim(element, obs.viewport)),
+    texts: obs.shot.texts.slice(0, 200),
+    ms: obs.ms,
+    commands: obs.commands,
+  };
+}
+
 async function runGoal(flags) {
   if (!flags.url) cli.die('--url is required', { prefix: 'webrunner' });
   if (!flags.goal) cli.die('--goal is required', { prefix: 'webrunner' });
@@ -498,7 +538,19 @@ async function runGoal(flags) {
   const parsedMax = parseInt(flags['max-steps'], 10);
   const maxSteps = Number.isFinite(parsedMax) ? Math.min(Math.max(parsedMax, 1), 50) : MAX_STEPS_DEFAULT;
   const hasCheck = Boolean(flags.expect || flags['expect-url']);
-  const opts = { viewport: onOff(flags.viewport, true), shots: onOff(flags.shots, true) };
+  const opts = {
+    viewport: onOff(flags.viewport, true),
+    shots: onOff(flags.shots, true),
+    vision: onOff(flags.vision, false),
+    // One type option per field and the text as a second question: kev's
+    // time grows with the menu (54 options took 5-6 s per step on Google
+    // Flights, 21 took 2 s; 2026-10-01). The agent writes text itself.
+    factorText: flags.decider !== 'agent' && onOff(flags['factor-text'], true),
+  };
+  if (opts.vision && flags.decider === 'agent') {
+    cli.die('--vision sends the screenshot to kev: use it with --decider kev or hybrid', { prefix: 'webrunner' });
+  }
+  if (opts.vision && !opts.shots) cli.die('--vision needs the screenshot: drop --shots off', { prefix: 'webrunner' });
   const started = Date.now();
   const decider = await makeDecider(flags);
   // The agent writes the text for a type action itself; kev can only pick
@@ -525,6 +577,7 @@ async function runGoal(flags) {
     maxSteps,
     candidates,
     viewport: opts.viewport,
+    vision: opts.vision,
   });
   await say(`run ${trace.id}`);
   const finish = async (ok, reason, url) => {
@@ -537,6 +590,20 @@ async function runGoal(flags) {
     return result;
   };
 
+  // A run that throws still ends its trace, so the debug page says why.
+  try {
+    return await cycles(flags, { opts, decider, trace, result, finish, candidates, hasCheck, maxSteps });
+  } catch (err) {
+    if (err && err.name === 'NodeExitError') throw err;
+    result.reason = `error: ${err.message || err}`;
+    result.seconds = (Date.now() - started) / 1000;
+    await trace.end(result);
+    throw err;
+  }
+}
+
+async function cycles(flags, run) {
+  const { opts, decider, trace, result, finish, candidates, hasCheck, maxSteps } = run;
   const tab = await openTab(flags.url);
   await say(`tab ${tab} ${flags.url}`);
   await waitForPage(tab);
@@ -551,17 +618,7 @@ async function runGoal(flags) {
 
     // Observe. After the first cycle this is the feedback on the last action.
     const obs = await observe(tab, prev, { ...opts, trace, name });
-    record.observe = {
-      url: obs.shot.url,
-      title: obs.shot.title,
-      viewport: obs.viewport,
-      screenshot: obs.screenshot,
-      snapshot: await trace.file(`${name}.snapshot.txt`, obs.raw),
-      elements: obs.shot.elements.map((element) => slim(element, obs.viewport)),
-      texts: obs.shot.texts.slice(0, 200),
-      ms: obs.ms,
-      commands: obs.commands,
-    };
+    record.observe = await observeRecord(trace, obs, name);
     record.diff = obs.diff;
     if (prev) {
       stalls = page.fingerprint(obs.shot, obs.viewport) === page.fingerprint(prev.shot, prev.viewport) ? stalls + 1 : 0;
@@ -587,7 +644,22 @@ async function runGoal(flags) {
       previousLabels,
       offerDone: !hasCheck,
       offerShrug: Boolean(decider.shrugs),
+      factorText: opts.factorText,
     });
+    // With --vision the decider also sees the screenshot, each offered
+    // control boxed and labelled with its ref.
+    let image = null;
+    if (opts.vision && obs.screenshot) {
+      const marked = await vision.markedImage(
+        await fs.readFileBinary(trace.path(obs.screenshot)),
+        ori.menu,
+        obs.viewport
+      );
+      image = marked.image;
+      ori.state = `${ori.state}\nScreenshot: each offered control is boxed in red and labelled with its ref.`;
+      await fs.writeFileBinary(trace.path(`${name}.vision.png`), marked.png);
+      record.vision = { image: `${name}.vision.png`, width: image.width, height: image.height, marks: marked.marks.length };
+    }
     record.orient = {
       state: ori.state,
       menu: ori.menu.map(slimAction),
@@ -622,7 +694,7 @@ async function runGoal(flags) {
     let decision;
     if (direct) decision = { action: direct, system: 'direct' };
     else if (choices.length === 1) decision = { action: choices[0], system: 'direct' };
-    else decision = { ...(await decider.decide(ori.state, ori.menu)), system: decider.name };
+    else decision = { system: decider.name, ...(await decider.decide(ori.state, ori.menu, { image })) };
     const decideMs = Date.now() - decideStarted;
     result.decideSeconds += decideMs / 1000;
     result.steps = step;
@@ -631,6 +703,7 @@ async function runGoal(flags) {
       system: decision.system,
       action: slimAction(action),
       confidence: decision.confidence == null ? null : decision.confidence,
+      textConfidence: decision.textConfidence == null ? null : decision.textConfidence,
       probabilities: decision.probabilities || null,
       prompt: decision.prompt || null,
       answer: decision.answer || null,
@@ -648,27 +721,49 @@ async function runGoal(flags) {
     if (action.operation === 'DONE') {
       pendingDone = true;
     } else {
+      // A failed action is feedback, not the end of the run: the control
+      // may have changed between the snapshot and the click (a price that
+      // finished loading renamed a Google Flights date button, 2026-10-01).
+      // The next cycle observes again and the decider hears what failed.
+      let failure = null;
       try {
         await act(tab, action, obs.viewport, commands);
       } catch (err) {
-        record.act = { commands, ms: Date.now() - actStarted, error: err.message };
-        await trace.step(record);
-        throw err;
+        if (err && err.name === 'NodeExitError') throw err;
+        failure = err.message || String(err);
+        await say(`         failed: ${failure}`);
       }
+      record.actError = failure;
       history.push({
         operation: action.operation,
         text: action.text || null,
         direction: action.direction || null,
         label: action.element ? action.element.label : '',
         role: action.element ? action.element.role : '',
+        failed: Boolean(failure),
       });
     }
     // Suggestion lists render a beat after the keystroke.
     await sh(['sleep', action.operation === 'TYPE_TEXT' ? '0.6' : '0.3'], commands);
-    record.act = { commands, ms: Date.now() - actStarted };
+    record.act = { commands, ms: Date.now() - actStarted, error: record.actError || undefined };
+    delete record.actError;
     await trace.step(record);
     previousLabels = new Set(obs.shot.elements.map((element) => element.label));
     prev = obs;
+  }
+  // The last action gets its feedback too: one more look for the check.
+  if (prev) {
+    const name = `step-${String(maxSteps + 1).padStart(2, '0')}`;
+    const last = await observe(tab, prev, { ...opts, trace, name });
+    const record = { step: maxSteps + 1, observe: await observeRecord(trace, last, name), diff: last.diff };
+    if (expected(last, flags)) {
+      record.outcome = 'check passed';
+      await trace.step(record);
+      await say(`step ${maxSteps + 1}  verified: ${last.shot.url}`);
+      return finish(true, 'check passed', last.shot.url);
+    }
+    record.outcome = 'out of steps';
+    await trace.step(record);
   }
   return finish(false, `stopped after ${maxSteps} steps without passing the check`);
 }
@@ -739,6 +834,8 @@ async function demo(name, flags) {
     from: flags.from,
     'agent-model': flags['agent-model'],
     shrug: flags.shrug,
+    vision: flags.vision,
+    'factor-text': flags['factor-text'],
     viewport: flags.viewport,
     shots: flags.shots,
   });
@@ -758,7 +855,7 @@ async function debug(id) {
 }
 
 async function main() {
-  const parsed = host.normalizeFlags(process.argv.parseFlags(), ['json', 'help', 'h']);
+  const parsed = host.normalizeFlags(process.argv.parseFlags(), ['json', 'help', 'h', 'vision']);
   const flags = parsed.flags;
   const sub = parsed.subcommand || '';
   if (flags.help || flags.h || !sub || sub === 'help') {

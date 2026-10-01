@@ -512,3 +512,73 @@ test('System 2 hears System 1 top choices without SHRUG', () => {
   );
   ok(prompt.indexOf(hint) < prompt.indexOf('Menu:'), 'the hint comes before the menu');
 });
+
+test('factored typing offers each field once and asks for its text separately', () => {
+  const shot = page.parseSnapshot(FLIGHTS);
+  const candidates = ['Berlin', 'London', 'Oct 8', 'Oct 15'];
+  const flat = page.buildMenu(shot, GOAL, { candidates });
+  const factored = page.buildMenu(shot, GOAL, { candidates, factorText: true });
+  const fields = shot.elements.filter((e) => e.kind === 'fill').length;
+  is(flat.filter((a) => a.operation === 'TYPE_TEXT').length, fields * candidates.length);
+  is(factored.filter((a) => a.operation === 'TYPE_TEXT').length, fields);
+  const from = factored.find((a) => a.id === 'type:e22');
+  is(from.text, null);
+  is(from.candidates, candidates);
+  const q = page.textQuestion(from);
+  is(q.criteria, { t0: 'Berlin', t1: 'London', t2: 'Oct 8', t3: 'Oct 15' });
+  ok(q.instructions.includes('combobox "Where from?"'));
+  is(
+    page.shrugReason(
+      { action: { ...from, text: 'Berlin' }, confidence: 0.9, textConfidence: 0.3 },
+      0.5
+    ),
+    'text confidence 0.30 < 0.5'
+  );
+});
+
+// Captured 2026-10-01 (run 2026-10-01T17-48-12-hn-kev): Hacker News exposes
+// its whole story table as one clickable row, and that row's 3,000-character
+// label made a one-step decision take 10 s.
+test('a container row is left out and long labels are cut', () => {
+  const table = `1. upvote Clef: our open-source decision models (cloudflare.com) ${'155 points | hide | 51 comments '.repeat(80)}`;
+  const shot = page.parseSnapshot(
+    [
+      'Page URL: https://news.ycombinator.com/',
+      `  - row "${table}" [ref=e22] [box=0,40,1200,2000]`,
+      `  - link "${'A very long story title '.repeat(8)}" [ref=e29] [box=10,60,400,20]`,
+      '  - link "51 comments" [ref=e41] [box=10,80,90,20]',
+    ].join('\n')
+  );
+  const ori = page.orient(
+    { shot, viewport: { width: 1200, height: 800, scrollY: 0, scrollHeight: 3000 }, diff: null },
+    { goal: 'Open the comments page of the top story', history: [], candidates: [] }
+  );
+  ok(!ori.menu.some((a) => a.id === 'click:e22'));
+  is(ori.excluded.find((x) => x.token === 'e22').reason, 'a container: label over 200 characters');
+  const title = ori.menu.find((a) => a.id === 'click:e29');
+  ok(title.describe.length < 130, 'the long title is cut in the menu');
+  ok(title.describe.endsWith('…"'));
+  ok(ori.state.length < 900, `the state stays short (${ori.state.length} chars)`);
+});
+
+test('a failed action is reported in the history', () => {
+  is(
+    page.describeStep({
+      operation: 'CLICK',
+      role: 'button',
+      label: 'Thursday, October 15, 2026 ????',
+      failed: true,
+    }),
+    'tried to click button "Thursday, October 15, 2026 ????" but it was gone'
+  );
+  is(
+    page.describeStep({
+      operation: 'TYPE_TEXT',
+      text: 'Oct 8',
+      role: 'textbox',
+      label: 'Departure',
+      failed: true,
+    }),
+    'tried to type "Oct 8" into textbox "Departure" but it was gone'
+  );
+});

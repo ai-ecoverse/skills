@@ -137,6 +137,18 @@ function parseSnapshot(text) {
   return { url, title, elements, texts };
 }
 
+// Labels in the state and the menu are cut here: a long label is page text,
+// and kev's time grows with every token of every option.
+const MAX_LABEL = 100;
+// A clickable whose label is this long is a container (Hacker News exposes
+// its whole story table as one row, 3,000 characters; 2026-10-01), not a target.
+const MAX_CONTROL_LABEL = 200;
+
+function shown(label) {
+  const text = String(label);
+  return text.length > MAX_LABEL ? `${text.slice(0, MAX_LABEL - 1)}…` : text;
+}
+
 // ── viewport ──────────────────────────────────────────────────────────
 
 /**
@@ -169,12 +181,18 @@ const MAX_OFFSCREEN = 4;
  * the ones left out with a reason, and which scroll actions make sense.
  */
 function inView(shot, goal, viewport) {
-  const placed = shot.elements.map((element) => ({ ...element, place: place(element, viewport) }));
-  if (!viewport) return { elements: placed, excluded: [], scroll: { up: false, down: false } };
+  const all = shot.elements.map((element) => ({ ...element, place: place(element, viewport) }));
+  const containers = all.filter((e) => e.kind === 'click' && e.label.length > MAX_CONTROL_LABEL);
+  const placed = all.filter((e) => !containers.includes(e));
+  const dropped = containers.map((element) => ({
+    element,
+    reason: `a container: label over ${MAX_CONTROL_LABEL} characters`,
+  }));
+  if (!viewport) return { elements: placed, excluded: dropped, scroll: { up: false, down: false } };
   const goalWords = new Set(words(goal));
   const kept = [];
   const offscreen = [];
-  const excluded = [];
+  const excluded = [...dropped];
   for (const element of placed) {
     if (element.place === 'in' || element.place === 'unknown') kept.push(element);
     else if (element.place === 'hidden' || element.place === 'aside') {
@@ -385,7 +403,19 @@ function buildMenu(shot, goal, opts = {}) {
   let room = MAX_OPTIONS - clicks.length - 5;
   const actions = [];
   for (const element of fields) {
-    if (candidates.length) {
+    if (candidates.length && opts.factorText) {
+      // One option per field; the text is a second, small question (textQuestion).
+      if (room-- > 0) {
+        actions.push({
+          id: `type:${element.token}`,
+          operation: 'TYPE_TEXT',
+          element,
+          text: null,
+          candidates,
+          describe: `type into ${element.role} "${shown(element.label)}" (a value from the goal)`,
+        });
+      }
+    } else if (candidates.length) {
       for (const text of candidates) {
         if (room-- <= 0) break;
         actions.push({
@@ -393,7 +423,7 @@ function buildMenu(shot, goal, opts = {}) {
           operation: 'TYPE_TEXT',
           element,
           text,
-          describe: `type "${text}" into ${element.role} "${element.label}"`,
+          describe: `type "${text}" into ${element.role} "${shown(element.label)}"`,
         });
       }
     } else if (room-- > 0) {
@@ -402,7 +432,7 @@ function buildMenu(shot, goal, opts = {}) {
         operation: 'TYPE_TEXT',
         element,
         text: null,
-        describe: `type into ${element.role} "${element.label}"`,
+        describe: `type into ${element.role} "${shown(element.label)}"`,
       });
     }
   }
@@ -411,7 +441,7 @@ function buildMenu(shot, goal, opts = {}) {
       id: `click:${element.token}`,
       operation: 'CLICK',
       element,
-      describe: `click ${element.role} "${element.label}"`,
+      describe: `click ${element.role} "${shown(element.label)}"`,
     });
   }
   if (scroll.down)
@@ -435,8 +465,12 @@ function buildMenu(shot, goal, opts = {}) {
 }
 
 function describeStep(entry) {
-  if (entry.operation === 'TYPE_TEXT') return `typed "${entry.text}" into "${entry.label}"`;
-  if (entry.operation === 'CLICK') return `clicked ${entry.role} "${entry.label}"`;
+  if (entry.failed) {
+    const what = entry.operation === 'TYPE_TEXT' ? `type "${entry.text}" into` : 'click';
+    return `tried to ${what} ${entry.role} "${shown(entry.label)}" but it was gone`;
+  }
+  if (entry.operation === 'TYPE_TEXT') return `typed "${entry.text}" into "${shown(entry.label)}"`;
+  if (entry.operation === 'CLICK') return `clicked ${entry.role} "${shown(entry.label)}"`;
   if (entry.operation === 'SCROLL') return `scrolled ${entry.direction}`;
   return entry.operation.toLowerCase();
 }
@@ -462,7 +496,7 @@ function compactState(goal, shot, menu, history, extra = {}) {
     if (added.has(element.token)) notes.push('new');
     if (PLACE_NOTE[element.place]) notes.push(PLACE_NOTE[element.place]);
     const note = notes.length ? ` (${notes.join(', ')})` : '';
-    controls.push(`  [${element.token}] ${element.role} "${element.label}"${value}${note}`);
+    controls.push(`  [${element.token}] ${element.role} "${shown(element.label)}"${value}${note}`);
   }
   const changes = describeDiff(extra.diff);
   const drift = driftLines(history, shot);
@@ -545,7 +579,7 @@ function checkExpect(obs, expect, expectUrl) {
  * menu and the state. Everything left out is listed with its reason, for
  * the debug page.
  * obs: { shot, viewport, diff }
- * opts: { goal, history, candidates, previousLabels, offerDone, offerShrug }
+ * opts: { goal, history, candidates, previousLabels, offerDone, offerShrug, factorText }
  */
 function orient(obs, opts) {
   const view = inView(obs.shot, opts.goal, obs.viewport);
@@ -555,6 +589,7 @@ function orient(obs, opts) {
     previousLabels: opts.previousLabels,
     offerDone: opts.offerDone,
     offerShrug: opts.offerShrug,
+    factorText: opts.factorText,
     scroll: view.scroll,
   });
   const offered = new Set(menu.filter((a) => a.element).map((a) => a.element.token));
@@ -571,6 +606,19 @@ function orient(obs, opts) {
   }
   const state = compactState(opts.goal, obs.shot, menu, opts.history, { diff: obs.diff });
   return { menu, state, excluded, scroll: view.scroll, placed: view.elements };
+}
+
+/**
+ * The second question of a factored type action: which goal value goes
+ * into the chosen field. Asked on the same state, which kev.js has cached,
+ * so it costs only the few options.
+ */
+function textQuestion(action) {
+  return {
+    type: 'choice',
+    instructions: `Which text from the goal goes into ${action.element.role} "${shown(action.element.label)}"?`,
+    criteria: Object.fromEntries(action.candidates.map((text, i) => [`t${i}`, text])),
+  };
 }
 
 function menuQuestion(menu) {
@@ -661,6 +709,9 @@ function shrugReason(first, threshold) {
   if (first.action.operation === 'TYPE_TEXT' && !first.action.text) {
     return 'picked a field with no value to type';
   }
+  if (typeof first.textConfidence === 'number' && first.textConfidence < threshold) {
+    return `text confidence ${first.textConfidence.toFixed(2)} < ${threshold}`;
+  }
   if (typeof first.confidence !== 'number' || first.confidence >= threshold) return '';
   // A long menu spreads the probability: Search at 0.39 with the next
   // option at 0.04 is a clear choice (Google Flights, 2026-10-01). Unsure
@@ -706,7 +757,9 @@ module.exports = {
   MAX_FIELDS,
   MAX_OPTIONS,
   MAX_OFFSCREEN,
+  MAX_LABEL,
   parseSnapshot,
+  shown,
   place,
   inView,
   diffShots,
@@ -724,6 +777,7 @@ module.exports = {
   buildMenu,
   compactState,
   menuQuestion,
+  textQuestion,
   pickAction,
   describeStep,
   fingerprint,

@@ -36,10 +36,12 @@ It prints the step count, the time, the final address, and the `webrunner debug 
 1. **Observe.** `playwright-cli snapshot --boxes` lists the page's fields and controls with their refs and on-screen boxes. The runner also reads the viewport and takes a screenshot (`--shots off` skips it). This observation is also the feedback on the last action.
 2. **Orient.** The runner compares the observation with the last one and builds one menu:
    - Controls outside the viewport are left out, unless the goal names them; `SCROLL_DOWN` and `SCROLL_UP` reach the rest. `--viewport off` offers every control.
-   - Each field gets `type "<value>" into <field>`. Clicks are ranked and the best 16 are kept: a click in a search form or dialog, a new one (a suggestion list), or one that shares words with the goal comes first. `wait` is always offered. The menu never exceeds kev's 255 options.
+   - Each field gets one `type into <field>` entry. When kev picks one, a second, small question picks which value from the goal to type (`--factor-text off` offers one entry per field and value instead). The agent writes the text itself. Clicks are ranked and the best 16 are kept: a click in a search form or dialog, a new one (a suggestion list), or one that shares words with the goal comes first. `wait` is always offered. The menu never exceeds kev's 255 options.
+   - A clickable whose label is over 200 characters is a container (a whole table exposed as one row), not a target, and is left out. Labels are cut at 100 characters.
    - The state the decider reads holds the goal, the actions taken, what the last action changed, and the offered controls. A new control is marked `(new)`. A field that no longer shows what was typed into it is listed under `Not as typed`.
+   - With `--vision`, the screenshot goes to kev too, each offered control boxed in red and labelled with its ref.
 3. **Decide.** The decider picks one entry. A Google consent wall, or a menu with nothing but `wait`, is answered without asking it.
-4. **Act.** The runner clicks the ref. For a type action it then selects the field's text and types keystrokes, which opens suggestion lists that `fill` would not. A scroll is a mouse wheel over the middle of the viewport.
+4. **Act.** The runner clicks the ref. For a type action it then selects the field's text and types keystrokes, which opens suggestion lists that `fill` would not. A scroll is a mouse wheel over the middle of the viewport. An action that fails (the control changed between the snapshot and the click) does not end the run: the next cycle observes again and the state says what failed.
 
 ## Choosing a decider
 
@@ -54,13 +56,14 @@ webrunner pays off on long goals: on Flights it took half the time of an agent d
 
 - **`--decider kev`** (default): free, and the page stays on the device. It loads in about 4 to 9 s per run, and each step takes 2 to 6 s, more on a long menu. It only types values the goal spells out: each `"quoted string"` and each capitalised name (`Berlin`). Quote dates: `Type "Sep 30" into Departure`. It fails at goals about position, because each control carries only its own label: every "N comments" link looks the same.
 - **`--decider agent`**: each step is one `agent` call. The scoop may run no command and must answer with a menu id and, for a type action, the text. `--model` takes any id from `models` (default `claude-haiku-4-5`). A step takes 3 to 7 s. Its spend shows in `cost`. It sees the same labels as kev, so it can also miss goals about position.
+- **`--vision`** (with `kev` or `hybrid`): kev also sees the screenshot. It needs a vision bundle, `--model 4b-vision` (the default with `--vision`, 5.4 GB) or `0.8b-vision`; there is no 9b one. A step takes about 1.5 s more. On 2026-10-01 kev-4b-vision passed Google Flights with the screenshot and failed it without (one run each).
 - **`--decider hybrid`**: kev decides each step (System 1). When it shrugs, the agent decides the step (System 2), told kev's top choices. Kev shrugs when it picks `SHRUG`, when it picks a field the goal has no text for, or when its top choice is below `--shrug` (default 0.5) and less than 3 times the runner-up. `--model` picks the kev size and `--agent-model` the agent. Only the steps kev is unsure of cost money.
 
 ## When it stops
 
 - **Passed:** every `--expect` text is on the page and the address contains every `--expect-url`. Both flags may repeat. A number at the end of an expected text must not run on, so `Oct 1` does not match `Oct 15`. With either flag set, `done` is not offered.
 - **Without a check:** `done` passes only when the next observation confirms the goal is finished. With `hybrid`, an unsure kev verdict goes to the agent.
-- **Stuck:** three actions in a row left the page unchanged (a scroll counts as a change), or `--max-steps` (default 8) ran out.
+- **Stuck:** three actions in a row left the page unchanged (a scroll counts as a change), or `--max-steps` (default 8) ran out. After the last step the page is observed once more, so a last action that reaches the goal still passes.
 
 ## When a run fails
 
@@ -78,7 +81,7 @@ webrunner pays off on long goals: on Flights it took half the time of an agent d
 
 ## Setup and page quirks
 
-- `--decider kev` needs `kev pull --model 9b` once. If it is interrupted, run it again: `hf` skips finished files. Progress goes to `/tmp/kev/pull.log`. Without the weights, `webrunner` stops before opening a tab and prints this command. `--from <dir>` uses weights you already have. The first kev run installs its runtime (`kev prepare`) and restarts once.
+- `--decider kev` needs `kev pull --model 9b` once (`kev pull --model 4b-vision` for `--vision`). If it is interrupted, run it again: `hf` skips finished files. Progress goes to `/tmp/kev/pull.log`. Without the weights, `webrunner` stops before opening a tab and prints this command. `--from <dir>` uses weights you already have. The first kev run installs its runtime (`kev prepare`) and restarts once.
 - `--decider agent` needs the provider the `agent` command uses. It downloads nothing. `hybrid` needs both.
 - A Google consent wall is dismissed with its `Reject all` ref, without asking the decider.
 - A Google Flights date typed into Return while the date picker is open is not committed until a date is clicked. The `Not as typed` lines show when the picker moved a date.

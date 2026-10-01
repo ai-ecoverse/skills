@@ -285,7 +285,9 @@ function renderStep(s) {
   if (s.orient) {
     parts.push(el('h2', {}, 'Orient', el('span', { class: 'ms' }, ms(s.orient.ms))));
     parts.push(el('div', { class: 'grid2' },
-      el('div', {}, el('h3', {}, 'State given to the decider'), el('pre', {}, s.orient.state)),
+      el('div', {}, el('h3', {}, 'State given to the decider'), el('pre', {}, s.orient.state),
+        s.vision ? el('div', {}, el('h3', {}, `Image given to the decider (${s.vision.width}×${s.vision.height}, ${s.vision.marks} marks)`),
+          el('img', { src: `${encodeURIComponent(runId)}/${s.vision.image}`, alt: `Marked screenshot at step ${s.step}`, style: 'max-width:100%;border:1px solid var(--line)' })) : ''),
       el('div', {}, el('h3', {}, `Menu (${s.orient.menu.length})`), menuView(s), excludedView(s))));
   }
   if (s.verify) {
