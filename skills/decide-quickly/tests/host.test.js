@@ -37,3 +37,23 @@ test('allow-submit does not keep the following path', () => {
   is(parsed.flags.json, false);
   is(parsed.positional, ['plan', '/tmp/form.txt']);
 });
+
+// slicc 98912fb gives the realm a global process with versions.node, and
+// onnxruntime-web's emscripten runtime then failed on worker_threads
+// (kev ask, cua-s1 and webrunner, seen 2026-10-01).
+test('a Node-looking process is marked as a renderer for emscripten', () => {
+  const saved = globalThis.process;
+  try {
+    globalThis.process = { versions: { node: '20.0.0' } };
+    host.configureOrt({ env: { wasm: { wasmPaths: 'x/' } } }, '/x');
+    is(globalThis.process.type, 'renderer');
+    globalThis.process = { versions: { node: '20.0.0' }, type: 'browser' };
+    host.browserForEmscripten();
+    is(globalThis.process.type, 'browser', 'a type the host set is left alone');
+    globalThis.process = { versions: {} };
+    host.browserForEmscripten();
+    is(globalThis.process.type, undefined, 'no Node, nothing to hide');
+  } finally {
+    globalThis.process = saved;
+  }
+});
