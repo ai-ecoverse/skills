@@ -35,7 +35,8 @@ USAGE
   webrunner run --url <url> --goal <text> [--expect <text>]... [--expect-url <text>]...
                 [--max-steps 8] [--decider kev|agent|hybrid] [--model <m>] [--from <dir>]
                 [--agent-model <m>] [--shrug 0.5]
-                [--vision] [--viewport on|off] [--shots on|off] [--factor-text on|off] [--json]
+                [--vision] [--page-text on|off] [--viewport on|off] [--shots on|off]
+                [--factor-text on|off] [--json]
   webrunner demo link|search|flights [--decider kev|agent|hybrid] [--model <m>] [--json]
   webrunner debug [<run-id>]
 
@@ -54,9 +55,11 @@ USAGE
                        step goes to the agent (System 2, --agent-model). It shrugs when
                        it picks SHRUG, its confidence is below --shrug (default
                        ${SHRUG_DEFAULT}), or it picks a field the goal gives no text for
-  --vision             also show kev the screenshot, each offered control boxed and
-                       labelled with its ref. Needs --model 4b-vision (the default
-                       with --vision) or 0.8b-vision
+  --vision             also show the decider the screenshot, each offered control boxed
+                       and labelled with its ref. kev needs --model 4b-vision (the
+                       default with --vision) or 0.8b-vision; the agent views the
+                       image with \`open --view\`
+  --page-text off      leave the page's text out of the state (controls only)
   --viewport off       offer every control in the snapshot, not only the visible ones
   --factor-text off    kev: one option per field and goal value, instead of picking
                        the field first and its text in a second, small question
@@ -151,20 +154,23 @@ function onOff(value, fallback) {
 // Each call spawns a scoop that may run no command; its StructuredOutput is
 // the decision. The scoop is billed like any other: see `cost`.
 function agentDecider(flags, model = flags.model || AGENT_MODEL_DEFAULT) {
-  const ask = (prompt, schema) =>
+  // With a marked screenshot the scoop may run `open --view` on it, so it
+  // sees what kev sees; otherwise it runs nothing.
+  const ask = (prompt, schema, look = false) =>
     agent(prompt, {
       model,
       thinking: 'off',
       schema,
       cwd: '/tmp/meep',
-      allowedCommands: 'true',
+      allowedCommands: look ? 'open' : 'true',
       readOnly: '/tmp/meep/',
     });
   return {
     name: `agent ${model}`,
-    async decide(state, menu, hint) {
-      const prompt = page.agentPrompt(state, menu, hint);
-      const answer = await ask(prompt, page.decisionSchema(menu));
+    takesHint: true,
+    async decide(state, menu, hint, extra = {}) {
+      const prompt = page.agentPrompt(state, menu, hint, extra.imagePath);
+      const answer = await ask(prompt, page.decisionSchema(menu), Boolean(extra.imagePath));
       const trail = { prompt, answer };
       const action = page.pickAction(menu, answer && answer.action);
       if (action.operation !== 'TYPE_TEXT' || action.text) return { action, ...trail };
@@ -301,7 +307,7 @@ function hybridDecider(fast, slow, threshold) {
       if (!reason) return { ...first, system: fast.name, system1 };
       const slowStarted = Date.now();
       const rest = menu.filter((action) => action.operation !== 'SHRUG');
-      const second = await slow.decide(state, rest, page.shrugHint(first, reason, menu));
+      const second = await slow.decide(state, rest, page.shrugHint(first, reason, menu), extra);
       return {
         ...second,
         system: slow.name,
@@ -546,10 +552,8 @@ async function runGoal(flags) {
     // time grows with the menu (54 options took 5-6 s per step on Google
     // Flights, 21 took 2 s; 2026-10-01). The agent writes text itself.
     factorText: flags.decider !== 'agent' && onOff(flags['factor-text'], true),
+    pageText: onOff(flags['page-text'], true),
   };
-  if (opts.vision && flags.decider === 'agent') {
-    cli.die('--vision sends the screenshot to kev: use it with --decider kev or hybrid', { prefix: 'webrunner' });
-  }
   if (opts.vision && !opts.shots) cli.die('--vision needs the screenshot: drop --shots off', { prefix: 'webrunner' });
   const started = Date.now();
   const decider = await makeDecider(flags);
@@ -645,6 +649,7 @@ async function cycles(flags, run) {
       offerDone: !hasCheck,
       offerShrug: Boolean(decider.shrugs),
       factorText: opts.factorText,
+      pageText: opts.pageText,
     });
     // With --vision the decider also sees the screenshot, each offered
     // control boxed and labelled with its ref.
@@ -694,7 +699,13 @@ async function cycles(flags, run) {
     let decision;
     if (direct) decision = { action: direct, system: 'direct' };
     else if (choices.length === 1) decision = { action: choices[0], system: 'direct' };
-    else decision = { system: decider.name, ...(await decider.decide(ori.state, ori.menu, { image })) };
+    else {
+      const extra = { image, imagePath: record.vision ? trace.path(record.vision.image) : null };
+      const answer = decider.takesHint
+        ? await decider.decide(ori.state, ori.menu, null, extra)
+        : await decider.decide(ori.state, ori.menu, extra);
+      decision = { system: decider.name, ...answer };
+    }
     const decideMs = Date.now() - decideStarted;
     result.decideSeconds += decideMs / 1000;
     result.steps = step;
@@ -836,6 +847,7 @@ async function demo(name, flags) {
     shrug: flags.shrug,
     vision: flags.vision,
     'factor-text': flags['factor-text'],
+    'page-text': flags['page-text'],
     viewport: flags.viewport,
     shots: flags.shots,
   });

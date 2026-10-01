@@ -582,3 +582,51 @@ test('a failed action is reported in the history', () => {
     'tried to type "Oct 8" into textbox "Departure" but it was gone'
   );
 });
+
+// Armchair Bike Touring (2026-10-01): the rules and the game's messages are
+// page text; the decider only saw the buttons.
+test('page text goes into the state, visible first, without the site chrome', () => {
+  const shot = page.parseSnapshot(
+    [
+      'Page URL: https://www.biketouringtips.com/ArmchairBikeTouring/',
+      '- rootwebarea',
+      '  - navigation',
+      '    - text "Home What\'s New Search Menu" [ref=e1] [box=0,0,800,20]',
+      '  - main',
+      '    - text "You\'ll be penalized if you ride further than 60 miles in one day." [ref=e2] [box=10,100,700,20]',
+      '    - text "0: Forest Mild Uphill Town" [ref=e3] [box=10,1500,300,20]',
+      '    - text "Everything\'s packed." [ref=e4] [box=10,80,300,20]',
+      '    - text "Everything\'s packed." [ref=e5] [box=10,2000,300,20]',
+      '    - text "hidden" [ref=e6] [box=0,0,0,0]',
+      '    - button "Start Tour" [ref=e16] [box=615,351,74,22]',
+    ].join('\n')
+  );
+  const viewport = { width: 1200, height: 800, scrollY: 0, scrollHeight: 2400 };
+  is(page.pageTextLines(shot, viewport), [
+    "  You'll be penalized if you ride further than 60 miles in one day.",
+    "  Everything's packed.",
+    '  0: Forest Mild Uphill Town',
+  ]);
+  const ori = page.orient(
+    { shot, viewport, diff: null },
+    { goal: 'Ride the tour', history: [], candidates: [] }
+  );
+  ok(ori.state.includes("Page text:\n  You'll be penalized"));
+  ok(ori.state.indexOf('Page text:') < ori.state.indexOf('Controls:'));
+  ok(
+    !page
+      .orient(
+        { shot, viewport, diff: null },
+        { goal: 'x', history: [], candidates: [], pageText: false }
+      )
+      .state.includes('Page text:')
+  );
+  const long = page.parseSnapshot(
+    Array.from(
+      { length: 100 },
+      (_, i) => `  - text "line ${i} ${'x'.repeat(40)}" [ref=t${i}]`
+    ).join('\n')
+  );
+  const lines = page.pageTextLines(long, null);
+  ok(lines.join('').length <= 1500 + lines.length * 2, 'capped');
+});
