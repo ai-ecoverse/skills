@@ -13,7 +13,7 @@
   },
   "devDependencies": {
     "@ai-ecoverse/biome-jsh": "6.203.1",
-    "@biomejs/biome": "2.5.14",
+    "@biomejs/biome": "2.5.15",
     "minimatch": "10.2.6"
   }
 }
