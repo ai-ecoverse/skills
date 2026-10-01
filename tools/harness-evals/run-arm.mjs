@@ -19,8 +19,8 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { loadAdapter } from './adapter.mjs';
 import {
-  customPlaceholders,
   fillGoal,
+  resolvePlaceholders,
   shellQuote,
   tabIds,
   validateGoals,
@@ -89,12 +89,10 @@ const agentPrompt = (g) =>
 const results = [];
 for (let rep = 1; rep <= repeats; rep += 1) {
   for (const raw of goals.goals) {
-    const values = {};
-    for (const name of customPlaceholders(raw)) {
-      if (typeof adapter.placeholder !== 'function')
-        throw new Error(`goal ${raw.id} uses {{${name}}} but the adapter resolves no placeholders`);
-      values[name] = String(await adapter.placeholder(name, { fetch }));
-    }
+    const values = await resolvePlaceholders(
+      raw,
+      typeof adapter.placeholder === 'function' && ((name) => adapter.placeholder(name, { fetch }))
+    );
     const g = fillGoal(raw, { now: new Date(), values });
     cli(['new-session', '--erase'], { timeoutMs: 60_000 });
     const before = tabs();

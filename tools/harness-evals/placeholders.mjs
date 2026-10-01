@@ -64,6 +64,24 @@ export function customPlaceholders(goal) {
   return [...new Set(names.filter((n) => !DATE.test(n)))];
 }
 
+/**
+ * Values for a goal's non-date placeholders, from `resolve(name)` (the adapter's `placeholder`).
+ * A missing resolver, or a value that is null, undefined, empty or not a string or number,
+ * refuses the goal: String(null) would otherwise run it with "null" in its goal and check.
+ */
+export async function resolvePlaceholders(goal, resolve) {
+  const values = {};
+  for (const name of customPlaceholders(goal)) {
+    if (typeof resolve !== 'function')
+      throw new Error(`goal ${goal.id} uses {{${name}}} but the adapter resolves no placeholders`);
+    const value = await resolve(name);
+    if (!['string', 'number'].includes(typeof value) || String(value) === '')
+      throw new Error(`goal ${goal.id}: {{${name}}} resolved to no value (${value})`);
+    values[name] = String(value);
+  }
+  return values;
+}
+
 /** Fill one text: dates relative to `now`, other names from `values` (must all be present). */
 export function fillText(text, { now, values = {} }) {
   return String(text).replace(PLACEHOLDER, (_, body) => {

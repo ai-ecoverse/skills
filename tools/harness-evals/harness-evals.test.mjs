@@ -9,12 +9,15 @@ import {
   fillGoal,
   fillText,
   formatDate,
+  resolvePlaceholders,
   shellQuote,
   tabIds,
   validateGoals,
 } from './placeholders.mjs';
 import { plan, touchedSkills } from './plan.mjs';
 import { markdown, readRecords, summarize } from './report.mjs';
+
+const is = (a, b, m) => assert.deepEqual(a, b, m);
 
 const NOW = new Date(Date.UTC(2026, 9, 1)); // 2026-10-01
 
@@ -40,6 +43,18 @@ test('custom placeholders come from the adapter, and a missing value refuses to 
   assert.deepEqual(customPlaceholders(goal), ['top']);
   assert.deepEqual(fillGoal(goal, { now: NOW, values: { top: '42' } }).expect_url, ['id=42', '2']);
   assert.throws(() => fillGoal(goal, { now: NOW, values: {} }), /\{\{top\}\} has no value/);
+});
+
+test('resolvePlaceholders refuses a missing, null or empty value instead of running "null"', async () => {
+  const goal = { id: 'hn', goal: 'open {{top}} on {{date:+1:D}}', expect_url: ['id={{top}}'] };
+  is(await resolvePlaceholders(goal, async () => 42), { top: '42' });
+  is(await resolvePlaceholders({ id: 'd', goal: '{{date:+1:D}}' }, undefined), {});
+  for (const bad of [null, undefined, '', {}])
+    await assert.rejects(
+      resolvePlaceholders(goal, async () => bad),
+      /\{\{top\}\} resolved to no value/
+    );
+  await assert.rejects(resolvePlaceholders(goal, false), /adapter resolves no placeholders/);
 });
 
 test('validateGoals accepts a goals file and rejects goals without a check', () => {
@@ -159,9 +174,10 @@ test('plan: only skills with an adapter, one entry per arm, agent arms keep a ba
   await assert.rejects(plan('plain', 'origin/main', root), /has no evals\/harness\/harness.mjs/);
 });
 
-test('report counts passes per arm and goal from records found recursively', () => {
+test('report keeps skills apart: the same arm id in two skills is two rows', () => {
   const dir = mkdtempSync(join(tmpdir(), 'harness-'));
-  const rec = (arm, goal, pass, extra = {}) => ({
+  const rec = (skill, arm, goal, pass, extra = {}) => ({
+    skill,
     arm,
     goal,
     repeat: 1,
@@ -175,20 +191,45 @@ test('report counts passes per arm and goal from records found recursively', () 
   });
   mkdirSync(join(dir, 'a/records'), { recursive: true });
   mkdirSync(join(dir, 'b/records'), { recursive: true });
-  writeFileSync(join(dir, 'a/records/1.json'), JSON.stringify(rec('kev', 'flights', true)));
+  writeFileSync(join(dir, 'a/records/1.json'), JSON.stringify(rec('meep', 'kev', 'flights', true)));
   writeFileSync(
     join(dir, 'a/records/2.json'),
-    JSON.stringify(rec('kev', 'hn', false, { error: 'x' }))
+    JSON.stringify(rec('meep', 'kev', 'hn', false, { error: 'x' }))
   );
   writeFileSync(
-    join(dir, 'b/records/3.json'),
-    JSON.stringify(rec('agent', 'flights', true, { cost_usd: 0.5 }))
+    join(dir, 'a/records/3.json'),
+    JSON.stringify(rec('meep', 'bare', 'flights', true))
+  );
+  writeFileSync(
+    join(dir, 'b/records/4.json'),
+    JSON.stringify(rec('other', 'bare', 'login', false, { cost_usd: 0.5 }))
   );
   const s = summarize(readRecords(dir));
-  assert.deepEqual(s.arms, ['agent', 'kev']);
-  const kev = s.rows.find((r) => r.arm === 'kev');
-  assert.equal(kev.passed, 1);
-  assert.equal(kev.errors, 1);
-  assert.deepEqual(kev.goals.hn, { passed: 0, runs: 1 });
-  assert.match(markdown(s), /\| kev \| 1\/2 \|/);
+  is(
+    s.skills.map((k) => k.skill),
+    ['meep', 'other']
+  );
+  const [meep, other] = s.skills;
+  is(meep.arms, ['bare', 'kev']);
+  is(meep.goals, ['flights', 'hn']);
+  const kev = meep.rows.find((r) => r.arm === 'kev');
+  is([kev.passed, kev.runs, kev.errors], [1, 2, 1]);
+  is(kev.goals.hn, { passed: 0, runs: 1 });
+  is(meep.rows.find((r) => r.arm === 'bare').runs, 1, "other's bare stays out of meep's");
+  is(other.rows, [
+    {
+      arm: 'bare',
+      runs: 1,
+      passed: 0,
+      self_passed: 0,
+      errors: 0,
+      median_seconds: 10,
+      median_steps: 3,
+      cost_usd: 0.5,
+      goals: { login: { passed: 0, runs: 1 } },
+    },
+  ]);
+  const md = markdown(s);
+  assert.match(md, /## meep[\s\S]*\| kev \| 1\/2 \|[\s\S]*## other[\s\S]*\| bare \| 0\/1 \|/);
+  assert.doesNotMatch(md, /meep-meep/);
 });
