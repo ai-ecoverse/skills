@@ -152,10 +152,22 @@ with their type and the flag to use, then exits without creating anything.
 Re-run with the missing flags.
 
 Fields with a closed set of allowed values — security level, a Team or other
-single-select custom field, a version — are accepted **by name**: the value you
-pass is matched case-insensitively against `createmeta`'s allowed values and
-sent as the `{id}` Jira requires. A name that matches nothing is passed through
-unchanged so Jira reports it, rather than being silently dropped.
+single-select custom field, components, versions — are accepted **by name**: the
+value you pass is matched case-insensitively against `createmeta`'s allowed
+values (by name, value or id) and sent in the shape that field takes.
+
+| `createmeta` reports | Sent as | Examples |
+|---|---|---|
+| `schema.type` other than `array`, option has an id | `{id}` | security level, Team, priority |
+| no id on the option | `{value}`, else `{name}` | some single-selects |
+| `schema.type: array` | `[{id}]`, wrapped even for one value | components, fixVersions, multi-selects |
+
+Array-typed fields take several values comma-separated
+(`--field-components "ACP,Viewer"`), matching `--labels` and `--components`.
+
+A name that matches nothing is passed through unchanged so Jira reports it,
+rather than being silently dropped — and for an array-typed field that applies
+to the whole value, since a half-resolved array earns a more confusing error.
 
 If the issue type name is wrong for the project, the command lists valid types
 for that project.
