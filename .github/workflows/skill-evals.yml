@@ -11,7 +11,7 @@
 # Shape: `plan` selects the skills, validates each set with the shared format module
 # (evals-format.js `validateSet`, harness `host`) and with the runner's own loader (`run.mjs
 # --plan`), and emits one matrix entry per skill and condition. Each `eval` job is ONE runner
-# invocation on its own GitHub-hosted runner:
+# invocation on its own `cloud-run-bench` runner (`plan` and `report` use the `cloud-run` pool):
 #   - `none`: no skills at all, and the skill is never put on that leader, so the agent cannot
 #     read it;
 #   - `none+<skill>`: `tools/skill-evals/stage.mjs` copies `skills/<skill>/` WITHOUT `evals/`
