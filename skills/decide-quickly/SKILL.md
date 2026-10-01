@@ -52,7 +52,7 @@ If it stops, run it again: `hf` skips files that are already at full size. Progr
 
 After that, the first `kev ask` or `cua-s1 plan` installs its packages, bundles them, and runs again so the bundle can be loaded. `cua-s1` still downloads its 3.3 MB graph with `hf` on that first run.
 
-- Kev: `ipk add -g @ai-ecoverse/kev.js@0.4.0`
+- Kev: `ipk add -g @ai-ecoverse/kev.js@0.6.0`
 - cua-s1: `ipk add -g @ai-ecoverse/cua-s1.js@0.1.1`
 - Both: `esbuild-wasm`, then `esbuild --bundle`, then `ipk add -g onnxruntime-web@1.30.0`
 
@@ -88,6 +88,10 @@ Stdout is the name, the answer, and a probability, separated by tabs. `--json` p
 | `--model 0.8b` (default) | q8f32 | 800 MB |
 | `--model 4b` | q8f32 | 4.7 GB |
 | `--model 9b` | q8f32 | 8.8 GB |
+| `--model 0.8b-vision` | q8f32 + vision tower | 1 GB |
+| `--model 4b-vision` | q8f32 + vision tower | 5.4 GB |
+
+A `-vision` bundle is the same model behind Qwen3.5's stock vision tower, so a request may also carry an image (meep-meep's `webrunner --vision` sends the page's screenshot). Text requests answer as the text bundle does.
 
 `kev pull` puts the weights in `/workspace/models/ai-ecoverse/kev.js/kev-<size>`. `--from` uses a directory you already have instead.
 

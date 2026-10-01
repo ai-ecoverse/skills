@@ -8,9 +8,17 @@ const host = require('./host.js');
 
 const BUNDLE = '/shared/cache/kev/bundle.cjs';
 const KEV_NAME = '@ai-ecoverse/kev.js';
-const KEV_SPEC = `${KEV_NAME}@0.4.0`;
+const KEV_SPEC = `${KEV_NAME}@0.6.0`;
 const DEST = '/workspace/models/ai-ecoverse/kev.js';
-const MODELS = { '0.8b': 'kev-0.8b', '4b': 'kev-4b', '9b': 'kev-9b' };
+// A -vision bundle is the same decoder behind Qwen3.5's stock vision tower:
+// a request may then carry a screenshot (kev.js 0.5+). There is no 9b one.
+const MODELS = {
+  '0.8b': 'kev-0.8b',
+  '4b': 'kev-4b',
+  '9b': 'kev-9b',
+  '0.8b-vision': 'kev-0.8b-vision',
+  '4b-vision': 'kev-4b-vision',
+};
 const ORT_DIRS = [
   '/shared/lib/node_modules/onnxruntime-web/dist',
   '/workspace/node_modules/onnxruntime-web/dist',
@@ -51,7 +59,13 @@ function loadKev(requireBundle) {
 }
 
 const REPO = 'ai-ecoverse/kev.js';
-const SIZES = { '0.8b': '800 MB', '4b': '4.7 GB', '9b': '8.8 GB' };
+const SIZES = {
+  '0.8b': '800 MB',
+  '4b': '4.7 GB',
+  '9b': '8.8 GB',
+  '0.8b-vision': '1 GB',
+  '4b-vision': '5.4 GB',
+};
 // hf prints one line per file and the shell shows output only at exit, so
 // kev pull asks for a batch at a time and logs each batch here.
 const PULL_LOG = '/tmp/kev/pull.log';
@@ -60,14 +74,16 @@ const PULL_BATCH = 12;
 function variantFiles(manifest) {
   const variant = manifest.variants && manifest.variants.q8f32;
   if (!variant) throw new Error('the manifest has no q8f32 variant');
+  const tower = manifest.vision;
   const rels = [
     manifest.files.tokenizer,
     manifest.files.tokenizer_config,
     manifest.files.head,
     variant.model,
     ...(variant.data || []),
+    ...(tower ? [tower.model, ...(tower.data || [])] : []),
   ];
-  return { rels, sizes: variant.sizes || {} };
+  return { rels, sizes: { ...(variant.sizes || {}), ...((tower && tower.sizes) || {}) } };
 }
 
 /**
@@ -76,7 +92,7 @@ function variantFiles(manifest) {
  */
 async function weightsStatus(fs, model) {
   const prefix = MODELS[model];
-  if (!prefix) throw new Error('--model must be 0.8b, 4b, or 9b');
+  if (!prefix) throw new Error(`--model must be one of ${Object.keys(MODELS).join(', ')}`);
   const base = `${DEST}/${prefix}`;
   const status = { model, base, manifest: false, files: 0, missing: ['manifest.json'] };
   if (!(await fs.exists(`${base}/manifest.json`))) return status;
@@ -121,7 +137,7 @@ async function appendPullLog(fs, line) {
 /** Download the missing files of one model with the shell `hf` command. */
 async function pullWeights(fs, exec, model, log = () => {}) {
   const prefix = MODELS[model];
-  if (!prefix) throw new Error('--model must be 0.8b, 4b, or 9b');
+  if (!prefix) throw new Error(`--model must be one of ${Object.keys(MODELS).join(', ')}`);
   const note = async (line) => {
     log(line);
     await appendPullLog(fs, line);
@@ -158,7 +174,7 @@ async function openOn(fs, base, dateFacts, providers, log, requireBundle) {
   const ort = await loadOrt(fs, kind);
   const root = base.replace(/\/$/, '');
   let finished = 0;
-  // kev.js 0.4 reads a bundle in place through this function: no preview
+  // kev.js 0.4+ reads a bundle in place through this function: no preview
   // URL, no fetch, no Cache Storage. A shard shorter than the manifest says
   // fails by name; weightsStatus still runs first so the message names kev pull.
   return loadKev(requireBundle)((rel) => fs.readFileBinary(`${root}/${rel}`), {

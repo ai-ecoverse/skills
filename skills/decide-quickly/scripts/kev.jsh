@@ -81,7 +81,7 @@ async function cmdAsk(flags, positionals) {
     cli.die('pass questions as --questions or as positionals, not both', { prefix: 'kev' });
   }
   const modelName = flags.model || '0.8b';
-  if (!runtime.MODELS[modelName]) cli.die('--model must be 0.8b, 4b, or 9b', { prefix: 'kev' });
+  if (!runtime.MODELS[modelName]) cli.die(`--model must be one of ${Object.keys(runtime.MODELS).join(', ')}`, { prefix: 'kev' });
   if (!flags.from) {
     const status = await runtime.weightsStatus(fs, modelName);
     if (status.missing.length) cli.die(runtime.missingWeightsMessage(status), { prefix: 'kev' });
@@ -118,7 +118,7 @@ async function cmdAsk(flags, positionals) {
 
 async function cmdPull(flags) {
   const modelName = flags.model || '0.8b';
-  if (!runtime.MODELS[modelName]) cli.die('--model must be 0.8b, 4b, or 9b', { prefix: 'kev' });
+  if (!runtime.MODELS[modelName]) cli.die(`--model must be one of ${Object.keys(runtime.MODELS).join(', ')}`, { prefix: 'kev' });
   const status = await runtime.pullWeights(fs, exec, modelName, (line) => console.error(line));
   if (status.missing.length) {
     cli.die(`${status.missing.length} files are still missing. Run kev pull --model ${modelName} again.`, {
