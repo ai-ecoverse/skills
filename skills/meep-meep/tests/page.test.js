@@ -798,3 +798,20 @@ test('System 2 plans and notes are cleaned and capped, and notes accumulate', ()
   ok(!page.planPrompt('g', 's', 0).includes('attached image'));
   is(page.PLAN_SCHEMA.required, ['plan', 'notes']);
 });
+
+// Captured 2026-10-01: a System 2 scoop called StructuredOutput 120+ times
+// in one agent() call, one "action" per call.
+test('every agent prompt says StructuredOutput is one decision, called once', () => {
+  const menu = page.buildMenu(page.parseSnapshot(SNAPSHOT), 'x', {});
+  for (const prompt of [
+    page.agentPrompt('Goal: x', menu),
+    page.system2Prompt({ goal: 'g', trail: [], state: 's', menu }),
+  ]) {
+    ok(prompt.includes('Call StructuredOutput exactly once: it returns ONE decision'));
+  }
+  ok(
+    page
+      .planPrompt('g', 's')
+      .includes('Call StructuredOutput exactly once, with the whole plan, then stop.')
+  );
+});
