@@ -151,6 +151,12 @@ If any required fields are not covered by the provided flags, it prints them
 with their type and the flag to use, then exits without creating anything.
 Re-run with the missing flags.
 
+Fields with a closed set of allowed values — security level, a Team or other
+single-select custom field, a version — are accepted **by name**: the value you
+pass is matched case-insensitively against `createmeta`'s allowed values and
+sent as the `{id}` Jira requires. A name that matches nothing is passed through
+unchanged so Jira reports it, rather than being silently dropped.
+
 If the issue type name is wrong for the project, the command lists valid types
 for that project.
 
