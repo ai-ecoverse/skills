@@ -10,8 +10,9 @@
  * Prints the matrix JSON (`{ include: [...] }`) on stdout.
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { ADAPTER, loadAdapter } from './adapter.mjs';
 import { validateGoals } from './placeholders.mjs';
 
@@ -60,7 +61,8 @@ export async function plan(which, base, root = process.cwd()) {
   return { include };
 }
 
-if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
+// realpath: argv[1] keeps symlinks (macOS /tmp), import.meta.url doesn't.
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   const [which = 'changed', base = 'origin/main'] = process.argv.slice(2);
   process.stdout.write(`${JSON.stringify(await plan(which, base))}\n`);
 }

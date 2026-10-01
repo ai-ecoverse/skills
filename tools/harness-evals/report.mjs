@@ -6,8 +6,16 @@
  *
  *   node tools/harness-evals/report.mjs <dir with records/*.json, searched recursively> <out dir>
  */
-import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 export function readRecords(dir) {
   const walk = (d) =>
@@ -62,7 +70,8 @@ export function markdown(summary) {
   return `# Harness evals\n\nA pass is meep-meep's own success check applied to the final page of every arm; "self-reported" is the arm's own verdict (webrunner arms only).\n\n${head}\n${sep}\n${lines.join('\n')}\n`;
 }
 
-if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
+// realpath: argv[1] keeps symlinks (macOS /tmp), import.meta.url doesn't.
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   const [dir, outDir] = process.argv.slice(2);
   const summary = summarize(readRecords(dir));
   mkdirSync(outDir, { recursive: true });
