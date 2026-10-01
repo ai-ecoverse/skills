@@ -19,7 +19,8 @@
 #     every leader boot injects `stage/<skill>` into the VFS at `/workspace/bench-skills/<skill>`
 #     (tools/skill-evals/leader/start-leader.mjs, which wraps slicc's start-leader.mjs), and the
 #     runner copies it into `/workspace/skills` (slicc-adapter.mjs:215-216). Not a node-server
-#     mount: the runner's `cp` from a mount fails on the current webapp (see that script).
+#     mount: before slicc #3703 the runner's `cp` from a mount failed, and injecting into the
+#     VFS stays simpler (see that script).
 # `report` merges the out dirs with slicc's merge.mjs into one report and checks that every
 # planned run was judged.
 #
