@@ -3,6 +3,7 @@ import {
   arms,
   command,
   containsValue,
+  heldArms,
   hnTopFromHtml,
   judge,
   placeholder,
@@ -36,7 +37,7 @@ test('containsValue skips a number that runs on, and finds a later exact one', (
 });
 
 test('command quotes the goal and repeats --expect and --expect-url', () => {
-  const arm = arms.find((a) => a.id === 'kev-4b-vision');
+  const arm = heldArms.find((a) => a.id === 'hybrid-4b-vision');
   const goal = {
     url: 'https://x/',
     goal: `it's "here"`,
@@ -46,12 +47,12 @@ test('command quotes the goal and repeats --expect and --expect-url', () => {
   };
   is(
     command(goal, arm, { shellQuote: quote }),
-    `'webrunner' 'run' '--url' 'https://x/' '--goal' 'it'\\''s "here"' '--expect' 'a' '--expect' 'b' '--expect-url' '/p' '--max-steps' '6' '--decider' 'kev' '--model' '4b-vision' '--vision' '--json'`
+    `'webrunner' 'run' '--url' 'https://x/' '--goal' 'it'\\''s "here"' '--expect' 'a' '--expect' 'b' '--expect-url' '/p' '--max-steps' '6' '--decider' 'hybrid' '--model' '4b-vision' '--vision' '--json'`
   );
 });
 
 test('every skill arm pulls the kev model it decides with', () => {
-  for (const arm of arms.filter((a) => a.pool === 'gpu')) {
+  for (const arm of [...arms, ...heldArms].filter((a) => a.pool === 'gpu')) {
     const i = arm.args.indexOf('--model');
     const model = arm.args.includes('--vision') && i < 0 ? '4b-vision' : arm.args[i + 1];
     is(arm.setup, [`kev pull --model ${model}`], arm.id);

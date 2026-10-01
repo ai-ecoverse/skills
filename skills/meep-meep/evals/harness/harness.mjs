@@ -19,28 +19,25 @@ const kevArm = (id, model, args) => ({
   args,
 });
 
+// The realistic configuration is always hybrid: a kev vision bundle as
+// System 1 and System 2 at its default, claude-sonnet-5-5 with thinking low.
+const hybridArm = (model) =>
+  kevArm(`hybrid-${model}`, model, ['--decider', 'hybrid', '--model', model, '--vision']);
+
 export const arms = [
-  kevArm('kev-0.8b-vision', '0.8b-vision', [
-    '--decider',
-    'kev',
-    '--model',
-    '0.8b-vision',
-    '--vision',
-  ]),
-  kevArm('kev-4b-vision', '4b-vision', ['--decider', 'kev', '--model', '4b-vision', '--vision']),
-  // HELD (2026-10-01): the arms below run agent() scoops, and a scoop's
-  // allowedCommands is not a hard allowlist: an unlisted command escalates
-  // to the cone. Live, a System 2 scoop allowed only `open --view` drove
-  // playwright-cli itself for 100+ steps through cone approvals. Re-enable
-  // once slicc's `agent` takes images and can deny instead of escalate, and
-  // webrunner uses that.
-  // kevArm('hybrid-4b-vision', '4b-vision', ['--decider', 'hybrid', '--model', '4b-vision', '--vision']),
-  // { id: 'agent-decider', kind: 'skill', pool: 'bench', skills: ['decide-quickly'],
-  //   args: ['--decider', 'agent', '--model', AGENT_MODEL] },
-  // { id: 'agent-vision', kind: 'skill', pool: 'bench', skills: ['decide-quickly'],
-  //   args: ['--decider', 'agent', '--model', AGENT_MODEL, '--vision'] },
+  // HELD (2026-10-01): hybrid runs System 2 as an agent() scoop, and a
+  // scoop's allowedCommands is not a hard allowlist: an unlisted command
+  // escalates to the cone. Live, a System 2 scoop allowed only
+  // `open --view` drove playwright-cli itself for 100+ steps through cone
+  // approvals. Re-enable once slicc's `agent` takes images and can deny
+  // instead of escalate, and webrunner uses that.
+  // hybridArm('0.8b-vision'),
+  // hybridArm('4b-vision'),
   { id: 'playwright-agent', kind: 'agent', pool: 'bench', model: AGENT_MODEL },
 ];
+
+/** The arms held above, for the test that checks their shape. */
+export const heldArms = [hybridArm('0.8b-vision'), hybridArm('4b-vision')];
 
 /** One goal as a `webrunner run` command line. */
 export function command(goal, arm, { shellQuote }) {
