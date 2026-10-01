@@ -68,7 +68,7 @@ webrunner pays off on long goals: on Flights it took half the time of an agent d
 
 - **Passed:** every `--expect` text is on the page and the address contains every `--expect-url`. Both flags may repeat. A number at the end of an expected text must not run on, so `Oct 1` does not match `Oct 15`. With either flag set, `done` is not offered.
 - **Without a check:** `done` passes only when the next observation confirms the goal is finished. With `hybrid`, an unsure kev verdict goes to the agent.
-- **Stuck:** three actions in a row left the page unchanged (a scroll counts as a change), or `--max-steps` (default 8) ran out. After the last step the page is observed once more, so a last action that reaches the goal still passes.
+- **Stuck:** three actions in a row made no progress: the page (its snapshot and its screenshot, so a change drawn on a canvas counts) stayed the same or went back to how it was a few steps before. Or `--max-steps` (default 8, at most 200) ran out. After the last step the page is observed once more, so a last action that reaches the goal still passes.
 
 ## When a run fails
 

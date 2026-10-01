@@ -494,7 +494,8 @@ function compactState(goal, shot, menu, history, extra = {}) {
   // The last action changed nothing: say so, and mark its control, so the
   // decider tries something else instead of pressing it again.
   const last = history[history.length - 1];
-  const stuck = last && extra.diff && !changes.length && last.label ? last : null;
+  const stuck =
+    last && extra.diff && !changes.length && !extra.pixelsChanged && last.label ? last : null;
   // Back to a page seen `cycle` observations ago: the actions since then
   // undid each other (a Show / Hide details toggle, 2026-10-01).
   const circling = new Set(
@@ -533,7 +534,9 @@ function compactState(goal, shot, menu, history, extra = {}) {
           'Last action changed:',
           ...(changes.length
             ? changes
-            : ['  nothing visible: doing the same again will not help; try another control']),
+            : extra.pixelsChanged
+              ? ['  the page looks different, but no control or text changed (a picture or canvas)']
+              : ['  nothing visible: doing the same again will not help; try another control']),
         ]
       : []),
     ...(extra.cycle
@@ -694,6 +697,7 @@ function orient(obs, opts) {
     diff: obs.diff,
     pageText,
     cycle: opts.cycle || 0,
+    pixelsChanged: Boolean(opts.pixelsChanged),
     plan: opts.plan,
     notes: opts.notes,
   });
@@ -703,7 +707,7 @@ function orient(obs, opts) {
     excluded,
     scroll: view.scroll,
     placed: view.elements,
-    avoid: avoidKeys(opts.history, obs.diff, opts.cycle || 0),
+    avoid: avoidKeys(opts.history, opts.pixelsChanged ? null : obs.diff, opts.cycle || 0),
   };
 }
 

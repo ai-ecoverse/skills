@@ -23,6 +23,8 @@ const KEV_SCRIPT = `${__dirname}/../../decide-quickly/scripts/kev.jsh`;
 const DEBUG_PAGE = `${__dirname}/../assets/debug.html`;
 const READY = 'WEBRUNNER_KEV_READY';
 const MAX_STEPS_DEFAULT = 8;
+// A game tour takes 40 steps a day; 50 cut a 100-mile tour short (2026-10-01).
+const MAX_STEPS_CAP = 200;
 const STALL_LIMIT = 3;
 const AGENT_MODEL_DEFAULT = 'claude-haiku-4-5';
 // Below this kev confidence, --decider hybrid hands the step to the agent.
@@ -432,6 +434,17 @@ async function makeDecider(flags) {
 
 // ── observe ───────────────────────────────────────────────────────────
 
+// FNV-1a over the screenshot's bytes: equal pixels encode to equal PNGs.
+function hashBytes(bytes) {
+  const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+  let h = 0x811c9dc5;
+  for (let i = 0; i < data.length; i++) {
+    h ^= data[i];
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return `${data.length}:${h.toString(16)}`;
+}
+
 const VIEWPORT_JS =
   'JSON.stringify({ width: innerWidth, height: innerHeight, scrollY: Math.round(scrollY), scrollHeight: document.documentElement.scrollHeight })';
 
@@ -629,7 +642,7 @@ async function runGoal(flags) {
   await fs.mkdir('/tmp/meep', { recursive: true });
   await fs.writeFile(LOG_PATH, '');
   const parsedMax = parseInt(flags['max-steps'], 10);
-  const maxSteps = Number.isFinite(parsedMax) ? Math.min(Math.max(parsedMax, 1), 50) : MAX_STEPS_DEFAULT;
+  const maxSteps = Number.isFinite(parsedMax) ? Math.min(Math.max(parsedMax, 1), MAX_STEPS_CAP) : MAX_STEPS_DEFAULT;
   const hasCheck = Boolean(flags.expect || flags['expect-url']);
   const opts = {
     viewport: onOff(flags.viewport, true),
@@ -714,6 +727,7 @@ async function cycles(flags, run) {
   // in its state) and the trail of recent steps with what each one changed.
   const memory = { plan: [], notes: [], trail: [] };
   let prevImagePath = null;
+  let prevPixels = '';
   let prev = null;
   let previousLabels = null;
   let stalls = 0;
@@ -729,7 +743,12 @@ async function cycles(flags, run) {
     record.diff = obs.diff;
     // No progress is the same page as last time, or a page from a few
     // cycles back: actions that undo each other (a toggle) are a stall too.
-    const fp = page.fingerprint(obs.shot, obs.viewport);
+    // The snapshot cannot see a canvas: buying food in Armchair Bike Touring
+    // changed only the drawn status panel, and three purchases read as a
+    // stall (2026-10-01). The screenshot's bytes count too.
+    const pixels = obs.screenshot ? hashBytes(await fs.readFileBinary(trace.path(obs.screenshot))) : '';
+    const pixelsChanged = Boolean(pixels && prevPixels && pixels !== prevPixels);
+    const fp = `${page.fingerprint(obs.shot, obs.viewport)}\npixels=${pixels}`;
     const cycle = page.cycleBack(seenPages, fp);
     if (prev) {
       stalls = fp === seenPages[seenPages.length - 1] || cycle ? stalls + 1 : 0;
@@ -769,6 +788,7 @@ async function cycles(flags, run) {
       factorText: opts.factorText,
       pageText: opts.pageText,
       cycle,
+      pixelsChanged,
     };
     // The original plan: System 2 writes it from the goal and the first
     // observation, before System 1 takes a step.
@@ -931,6 +951,7 @@ async function cycles(flags, run) {
     await trace.step(record);
     previousLabels = new Set(obs.shot.elements.map((element) => element.label));
     prevImagePath = record.vision ? trace.path(record.vision.image) : null;
+    prevPixels = pixels;
     prev = obs;
   }
   // The last action gets its feedback too: one more look for the check.

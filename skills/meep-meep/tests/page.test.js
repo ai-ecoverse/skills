@@ -867,3 +867,19 @@ test('System 1 shrugs when it repeats a dead or circling control', () => {
     ['button|Show details', 'button|Hide details']
   );
 });
+
+// Captured 2026-10-01 (run 2026-10-01T19-51-45-armchair-bike): buying food
+// changed only the canvas status panel; the snapshot looked the same, so
+// the state said "nothing visible" and the stall brake ended the run.
+test('a change only in the pixels is not "nothing visible" and not a dead control', () => {
+  const shot = page.parseSnapshot('  - button "Buy and Eat" [ref=e56]');
+  const history = [{ operation: 'CLICK', role: 'button', label: 'Buy and Eat' }];
+  const obs = { shot, viewport: null, diff: page.diffShots(shot, shot) };
+  const canvas = page.orient(obs, { goal: 'Eat', history, candidates: [], pixelsChanged: true });
+  ok(canvas.state.includes('the page looks different, but no control or text changed'));
+  ok(!canvas.state.includes('(no effect last time)'));
+  is(canvas.avoid.size, 0);
+  const dead = page.orient(obs, { goal: 'Eat', history, candidates: [] });
+  ok(dead.state.includes('nothing visible'));
+  ok(dead.avoid.has('button|Buy and Eat'));
+});
