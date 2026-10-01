@@ -30,6 +30,13 @@ export const arms = [
     skills: ['decide-quickly'],
     args: ['--decider', 'agent', '--model', AGENT_MODEL],
   },
+  {
+    id: 'agent-vision',
+    kind: 'skill',
+    pool: 'bench',
+    skills: ['decide-quickly'],
+    args: ['--decider', 'agent', '--model', AGENT_MODEL, '--vision'],
+  },
   { id: 'playwright-agent', kind: 'agent', pool: 'bench', model: AGENT_MODEL },
 ];
 
