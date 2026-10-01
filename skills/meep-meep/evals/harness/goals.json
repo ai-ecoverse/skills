@@ -1,0 +1,37 @@
+{
+  "last_updated": "2026-10-01",
+  "goals": [
+    {
+      "id": "flights",
+      "url": "https://www.google.com/travel/flights?hl=en&gl=us&curr=USD",
+      "goal": "Search Google Flights from Berlin to London. Type Berlin into Where from and pick the Berlin suggestion, type London into Where to and pick the London suggestion. Type \"{{date:+7:MMM D}}\" into Departure and \"{{date:+14:MMM D}}\" into Return, then press Search. Keep Round trip, Economy and one passenger.",
+      "expect": ["London", "{{date:+7:MMM D}}", "{{date:+14:MMM D}}"],
+      "expect_url": ["/travel/flights/search"],
+      "max_steps": 14
+    },
+    {
+      "id": "wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Main_Page",
+      "goal": "Search Wikipedia for \"Kurt Gödel\" and open his article.",
+      "expect": [],
+      "expect_url": ["/wiki/Kurt_G"],
+      "max_steps": 6
+    },
+    {
+      "id": "httpbin",
+      "url": "https://httpbin.org/forms/post",
+      "goal": "Enter \"Ada Lovelace\" as the customer name and \"555-0142\" as the telephone, choose the Medium pizza size, then press Submit order.",
+      "expect": ["Ada Lovelace", "555-0142", "medium"],
+      "expect_url": ["httpbin.org/post"],
+      "max_steps": 8
+    },
+    {
+      "id": "hackernews",
+      "url": "https://news.ycombinator.com/",
+      "goal": "Open the comments page of the top story on Hacker News.",
+      "expect": [],
+      "expect_url": ["news.ycombinator.com/item?id={{hn:top}}"],
+      "max_steps": 6
+    }
+  ]
+}
