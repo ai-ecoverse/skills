@@ -377,7 +377,7 @@ function hybridDecider(fast, slow, threshold) {
     plan: (goal, state, imagePath) => slow.plan(goal, state, imagePath),
     async decide(state, menu, extra = {}) {
       const first = await fast.decide(state, menu, extra);
-      const reason = page.shrugReason(first, threshold);
+      const reason = page.shrugReason(first, threshold, { avoid: extra.avoid });
       const system1 = {
         action: first.action.id,
         confidence: first.confidence,
@@ -848,6 +848,7 @@ async function cycles(flags, run) {
         // For System 2: the page now and one step earlier.
         imagePaths: [imagePath, prevImagePath].filter(Boolean),
         context: { goal: flags.goal, plan: memory.plan, notes: memory.notes, trail: memory.trail },
+        avoid: ori.avoid,
       };
       const answer = decider.takesHint
         ? await decider.decide(ori.state, ori.menu, null, extra)

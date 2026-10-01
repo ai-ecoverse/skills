@@ -815,3 +815,55 @@ test('every agent prompt says StructuredOutput is one decision, called once', ()
       .includes('Call StructuredOutput exactly once, with the whole plan, then stop.')
   );
 });
+
+// Captured 2026-10-01 (bike tour on slicc #3746): kev pressed "Buy and Eat"
+// again right after a press that changed nothing, at 0.45, far ahead of the
+// runner-up, so it did not shrug.
+test('System 1 shrugs when it repeats a dead or circling control', () => {
+  const shot = page.parseSnapshot(
+    '  - button "Buy and Eat" [ref=e56]\n  - link "Rice and Beans (400 Cals) $2.50" [ref=e21]'
+  );
+  const history = [{ operation: 'CLICK', role: 'button', label: 'Buy and Eat' }];
+  const ori = page.orient(
+    { shot, viewport: null, diff: page.diffShots(shot, shot) },
+    { goal: 'Eat', history, candidates: [] }
+  );
+  ok(ori.avoid.has('button|Buy and Eat'));
+  const buy = ori.menu.find((a) => a.id === 'click:e56');
+  const probabilities = { 'click:e56': 0.45, 'click:e21': 0.05 };
+  is(
+    page.shrugReason({ action: buy, confidence: 0.45, probabilities }, 0.5, { avoid: ori.avoid }),
+    'picked a control that had no effect or went in circles'
+  );
+  is(
+    page.shrugReason({ action: buy, confidence: 0.45, probabilities }, 0.5),
+    '',
+    'without the avoid set it stands'
+  );
+  const rice = ori.menu.find((a) => a.id === 'click:e21');
+  is(
+    page.shrugReason({ action: rice, confidence: 0.9, probabilities }, 0.5, { avoid: ori.avoid }),
+    ''
+  );
+  const moved = page.parseSnapshot(
+    '  - button "Buy and Eat" [ref=e56]\n  - text "Calories Eaten: 400" [ref=t1]'
+  );
+  is(
+    page.avoidKeys(history, page.diffShots(shot, moved), 0).size,
+    0,
+    'a press that changed something is fine'
+  );
+  is(
+    [
+      ...page.avoidKeys(
+        [
+          { role: 'button', label: 'Show details' },
+          { role: 'button', label: 'Hide details' },
+        ],
+        null,
+        2
+      ),
+    ],
+    ['button|Show details', 'button|Hide details']
+  );
+});

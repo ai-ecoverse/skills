@@ -697,7 +697,14 @@ function orient(obs, opts) {
     plan: opts.plan,
     notes: opts.notes,
   });
-  return { menu, state, excluded, scroll: view.scroll, placed: view.elements };
+  return {
+    menu,
+    state,
+    excluded,
+    scroll: view.scroll,
+    placed: view.elements,
+    avoid: avoidKeys(opts.history, obs.diff, opts.cycle || 0),
+  };
 }
 
 /**
@@ -824,8 +831,29 @@ function agentPrompt(state, menu, hint, imageCount = 0) {
  * first: { action, confidence }. Kev's probabilities are calibrated (each
  * checkpoint's fitted temperature), so a low top probability means unsure.
  */
-function shrugReason(first, threshold) {
+/**
+ * Controls System 1 should not press without a second opinion: the one
+ * whose last press changed nothing, and the ones a circle went through.
+ * Keys are role|label, as the state marks them.
+ */
+function avoidKeys(history, diff, cycle) {
+  const keys = new Set();
+  const last = history && history[history.length - 1];
+  if (last && last.label && diff && !describeDiff(diff).length)
+    keys.add(`${last.role}|${last.label}`);
+  if (cycle) for (const h of history.slice(-cycle)) if (h.label) keys.add(`${h.role}|${h.label}`);
+  return keys;
+}
+
+function shrugReason(first, threshold, opts = {}) {
   if (first.action.operation === 'SHRUG') return 'chose SHRUG';
+  // kev pressed "Buy and Eat" again right after a press that did nothing,
+  // at 0.45 and far ahead of the runner-up (Armchair Bike Touring,
+  // 2026-10-01): repeating a dead or circling action is not its call.
+  const element = first.action.element;
+  if (element && opts.avoid && opts.avoid.has(`${element.role}|${element.label}`)) {
+    return 'picked a control that had no effect or went in circles';
+  }
   if (first.action.operation === 'TYPE_TEXT' && !first.action.text) {
     return 'picked a field with no value to type';
   }
@@ -1020,6 +1048,7 @@ module.exports = {
   checkExpect,
   shrugReason,
   shrugHint,
+  avoidKeys,
   planLines,
   trailLines,
   system2Prompt,
