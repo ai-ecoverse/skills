@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   detect:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, cloud-run]
     outputs:
       skills: ${{ steps.detect.outputs.skills }}
       has_skills: ${{ steps.detect.outputs.has_skills }}

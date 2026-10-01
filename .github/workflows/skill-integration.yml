@@ -42,7 +42,7 @@ permissions:
 jobs:
   integrate:
     name: Live SLICC self-test
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, cloud-run]
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7

@@ -18,7 +18,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, cloud-run]
     defaults:
       run:
         working-directory: skills/pandoc/scripts
