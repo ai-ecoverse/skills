@@ -164,19 +164,351 @@ test('the menu stays within kev option limit with many fields and goal values', 
   const candidates = Array.from({ length: 40 }, (_, i) => `Value${i}`);
   const menu = page.buildMenu(shot, 'Fill the form', { candidates, offerDone: true });
   ok(menu.length <= page.MAX_OPTIONS, `menu has ${menu.length} options`);
-  is(menu.filter((a) => a.operation === 'CLICK').length, page.MAX_CLICKS, 'clicks keep their places');
-  ok(menu.some((a) => a.id === 'WAIT'), 'WAIT is offered');
-  ok(menu.some((a) => a.id === 'DONE'), 'DONE is offered');
+  is(
+    menu.filter((a) => a.operation === 'CLICK').length,
+    page.MAX_CLICKS,
+    'clicks keep their places'
+  );
+  ok(
+    menu.some((a) => a.id === 'WAIT'),
+    'WAIT is offered'
+  );
+  ok(
+    menu.some((a) => a.id === 'DONE'),
+    'DONE is offered'
+  );
   is(new Set(menu.map((a) => a.id)).size, menu.length, 'ids are unique');
 });
 
 test('the agent schema allows only menu ids and asks for text on its own key', () => {
   const menu = page.buildMenu(page.parseSnapshot(SNAPSHOT), 'Enter London', {});
   const schema = page.decisionSchema(menu);
-  is(schema.properties.action.enum, menu.map((a) => a.id));
+  is(
+    schema.properties.action.enum,
+    menu.map((a) => a.id)
+  );
   is(schema.required, ['action']);
-  ok(menu.some((a) => a.id === 'type:e3' && a.text === null), 'a field without goal values has one type action');
+  ok(
+    menu.some((a) => a.id === 'type:e3' && a.text === null),
+    'a field without goal values has one type action'
+  );
   const prompt = page.agentPrompt('Goal: Enter London', menu);
   ok(prompt.includes('type:e3  type into textbox "Where to?"'));
   ok(prompt.includes('StructuredOutput'));
+});
+
+// ── viewport, diff, orient ────────────────────────────────────────────
+
+const VIEWPORT = { width: 1280, height: 800, scrollY: 0, scrollHeight: 2400 };
+const BOXED = [
+  'Page URL: https://news.example.com/',
+  'Page Title: News',
+  '- rootwebarea "News"',
+  '  - banner',
+  '    - link "Home" [ref=e1] [box=10,10,60,20]',
+  '  - main',
+  '    - searchbox "Search news" [ref=e2] [box=100,60,300,32]: ""',
+  '    - link "Top story about comets" [ref=e3] [box=20,120,400,20]',
+  '    - link "Skip to content" [ref=e4] [box=0,0,0,0]',
+  '    - link "Carousel next" [ref=e5] [box=1400,300,40,40]',
+  '    - link "Older comets archive" [ref=e6] [box=20,1600,200,20]',
+  '    - link "Unrelated footer link" [ref=e7] [box=20,2300,200,20]',
+  '  - alert "Saved"',
+].join('\n');
+
+test('a box is read off the ref line and the value after it still parses', () => {
+  const shot = page.parseSnapshot(BOXED);
+  const search = shot.elements.find((e) => e.token === 'e2');
+  is(search.box, [100, 60, 300, 32]);
+  is(search.value, undefined, 'an empty value stays empty');
+  const filled = page.parseSnapshot('  - textbox "Name" [ref=e9] [box=1,2,3,4]: "Ada"');
+  is(filled.elements[0].value, 'Ada');
+  is(filled.elements[0].label, 'Name');
+  is(shot.texts, [{ role: 'alert', text: 'Saved' }]);
+});
+
+test('place sorts elements by the viewport', () => {
+  const shot = page.parseSnapshot(BOXED);
+  const where = Object.fromEntries(shot.elements.map((e) => [e.token, page.place(e, VIEWPORT)]));
+  is(where, { e1: 'in', e2: 'in', e3: 'in', e4: 'hidden', e5: 'aside', e6: 'below', e7: 'below' });
+  is(page.place(shot.elements[0], null), 'unknown', 'no viewport, no judgement');
+});
+
+test('inView keeps the visible controls, off-screen ones the goal names, and offers scrolls', () => {
+  const shot = page.parseSnapshot(BOXED);
+  const view = page.inView(shot, 'Open the comets archive', VIEWPORT);
+  is(
+    view.elements.map((e) => e.token),
+    ['e1', 'e2', 'e3', 'e6']
+  );
+  const reasons = Object.fromEntries(view.excluded.map((x) => [x.element.token, x.reason]));
+  is(reasons, { e4: 'zero size', e5: 'scrolled sideways', e7: 'below the visible area' });
+  is(view.scroll, { up: false, down: true });
+  const scrolled = page.inView(shot, 'x', { ...VIEWPORT, scrollY: 1600 });
+  ok(scrolled.scroll.up, 'scrolled down, so up is offered');
+});
+
+test('the menu offers scrolls only when there is somewhere to scroll', () => {
+  const shot = page.parseSnapshot(BOXED);
+  const down = page.buildMenu(shot, 'x', { scroll: { up: false, down: true } }).map((a) => a.id);
+  ok(down.includes('SCROLL_DOWN'));
+  ok(!down.includes('SCROLL_UP'));
+  const none = page.buildMenu(shot, 'x', {}).map((a) => a.id);
+  ok(!none.some((id) => id.startsWith('SCROLL')));
+});
+
+test('diffShots matches elements by role and label, not by ref', () => {
+  const before = page.parseSnapshot(FLIGHTS);
+  before.viewport = { ...VIEWPORT };
+  const after = page.parseSnapshot(
+    FLIGHTS.replace(/ref=e(\d+)/g, (_, n) => `ref=e${Number(n) + 500}`)
+      .replace('combobox "Where from?" [ref=e522]', 'combobox "Where from?" [ref=e522]: "Berlin"')
+      .replace('  - link "Footer 0" [ref=e600]\n', '') +
+      '\n  - option "Berlin, Germany" [ref=e900]\n  - alert "Choose a destination"'
+  );
+  after.viewport = { ...VIEWPORT, scrollY: 300 };
+  const diff = page.diffShots(before, after);
+  is(diff.url, null);
+  is(diff.added, [{ token: 'e900', role: 'option', label: 'Berlin, Germany' }]);
+  is(diff.removed, [{ token: 'e100', role: 'link', label: 'Footer 0' }]);
+  is(diff.changed, [
+    { token: 'e522', role: 'combobox', label: 'Where from?', from: '', to: 'Berlin' },
+  ]);
+  is(diff.texts, [{ role: 'alert', text: 'Choose a destination' }]);
+  is(diff.scrolled, 300);
+  const lines = page.describeDiff(diff);
+  ok(lines.some((l) => l.includes('combobox "Where from?" now = "Berlin"')));
+  ok(lines.some((l) => l.includes('new message: "Choose a destination"')));
+  ok(lines.some((l) => l.includes('1 new control: option "Berlin, Germany"')));
+  is(page.diffShots(null, after), null, 'the first observation has nothing to compare');
+});
+
+test('repeated labels are diffed by count', () => {
+  const a = page.parseSnapshot('  - link "12 comments" [ref=e1]\n  - link "12 comments" [ref=e2]');
+  const b = page.parseSnapshot(
+    '  - link "12 comments" [ref=e5]\n  - link "12 comments" [ref=e6]\n  - link "12 comments" [ref=e7]'
+  );
+  is(
+    page.diffShots(a, b).added.map((e) => e.token),
+    ['e7']
+  );
+  is(page.diffShots(b, a).removed.length, 1);
+});
+
+test('orient builds the state with changes, new marks and places, and explains every exclusion', () => {
+  const prevShot = page.parseSnapshot(BOXED);
+  const shot = page.parseSnapshot(
+    `${BOXED}\n    - option "Comets 2026" [ref=e8] [box=100,92,300,24]`
+  );
+  const obs = { shot, viewport: VIEWPORT, diff: page.diffShots(prevShot, shot) };
+  const ori = page.orient(obs, {
+    goal: 'Open the comets archive',
+    history: [{ operation: 'TYPE_TEXT', text: 'comets', label: 'Search news', role: 'searchbox' }],
+    candidates: [],
+    offerDone: false,
+  });
+  ok(ori.state.includes('Last action changed:\n  1 new control: option "Comets 2026"'));
+  ok(ori.state.includes('[e8] option "Comets 2026" (new)'));
+  ok(ori.state.includes('[e6] link "Older comets archive" (below the visible area)'));
+  ok(
+    !ori.state.includes('Unrelated footer'),
+    'an off-screen control the goal does not name is left out'
+  );
+  ok(ori.menu.some((a) => a.id === 'SCROLL_DOWN'));
+  const reasons = Object.fromEntries(ori.excluded.map((x) => [x.token, x.reason]));
+  is(reasons.e7, 'below the visible area');
+  is(reasons.e4, 'zero size');
+  const first = page.orient(
+    { shot, viewport: VIEWPORT, diff: null },
+    { goal: 'x', history: [], candidates: [] }
+  );
+  ok(!first.state.includes('Last action changed'), 'no change report before the first action');
+});
+
+test('the state says when the last action changed nothing', () => {
+  const shot = page.parseSnapshot(BOXED);
+  const ori = page.orient(
+    { shot, viewport: VIEWPORT, diff: page.diffShots(shot, shot) },
+    { goal: 'x', history: [{ operation: 'WAIT' }], candidates: [] }
+  );
+  ok(ori.state.includes('Last action changed:\n  nothing visible'));
+});
+
+test('without a viewport every control is a candidate, as before', () => {
+  const shot = page.parseSnapshot(BOXED);
+  const ori = page.orient(
+    { shot, viewport: null, diff: null },
+    { goal: 'x', history: [], candidates: [] }
+  );
+  is(ori.excluded, []);
+  ok(!ori.menu.some((a) => a.operation === 'SCROLL'));
+});
+
+test('a scroll changes the fingerprint even when the snapshot does not', () => {
+  const shot = page.parseSnapshot(BOXED);
+  ok(page.fingerprint(shot, { scrollY: 0 }) !== page.fingerprint(shot, { scrollY: 640 }));
+  is(page.fingerprint(shot), page.fingerprint(shot));
+});
+
+test('a Google consent wall is answered without the decider', () => {
+  const wall = page.parseSnapshot(
+    'Page URL: https://consent.google.com/ml?continue=x\n  - button "Accept all" [ref=e3]\n  - button "Reject all" [ref=e4]'
+  );
+  is(page.directAction(wall, '').id, 'click:e4');
+  is(page.directAction(page.parseSnapshot(SNAPSHOT), SNAPSHOT), null);
+});
+
+// Captured 2026-10-01 (webrunner run 2026-10-01T17-32-09-flights): a range
+// picker moved the departure to the return date, and a check on "London"
+// alone passed the run.
+test('a field that no longer shows what was typed is reported', () => {
+  const history = [
+    { operation: 'TYPE_TEXT', text: 'Oct 8', label: 'Departure', role: 'textbox' },
+    { operation: 'TYPE_TEXT', text: 'Oct 15', label: 'Return', role: 'textbox' },
+    { operation: 'TYPE_TEXT', text: 'Berlin', label: 'Where from?', role: 'combobox' },
+  ];
+  const shot = page.parseSnapshot(
+    [
+      '  - combobox "Where from?" [ref=e22]: "Berlin"',
+      '  - textbox "Departure" [ref=e25]: "Thu, Oct 15"',
+      '  - textbox "Return" [ref=e26]: "Thu, Oct 15"',
+    ].join('\n')
+  );
+  is(page.driftLines(history, shot), [
+    '  textbox "Departure" was typed "Oct 8" but shows "Thu, Oct 15"',
+  ]);
+  const state = page.compactState('g', shot, page.buildMenu(shot, 'g', {}), history);
+  ok(state.includes('Not as typed:\n  textbox "Departure" was typed "Oct 8"'));
+  const fine = page.parseSnapshot('  - textbox "Departure" [ref=e25]: "Thu, Oct 8"');
+  is(page.driftLines(history.slice(0, 1), fine), [], 'a reformatted value still matches');
+});
+
+test('a number in an expected text does not match a longer number', () => {
+  ok(page.containsValue('departure thu, oct 15', 'oct 15'));
+  ok(!page.containsValue('departure thu, oct 15', 'oct 1'));
+  ok(page.containsValue('oct 15, then oct 1.', 'oct 1'), 'a later exact match still counts');
+  ok(page.containsValue('anything', ''));
+});
+
+test('every --expect and --expect-url must match', () => {
+  const obs = {
+    shot: { url: 'https://www.google.com/travel/flights/search?tfs=x' },
+    raw: 'textbox "Departure": "Thu, Oct 15"\ntextbox "Return": "Thu, Oct 15"\nLondon',
+  };
+  ok(page.checkExpect(obs, 'London', '/travel/flights/search'));
+  ok(
+    !page.checkExpect(obs, ['London', 'Oct 8', 'Oct 15'], '/travel/flights/search'),
+    'the wrong departure fails'
+  );
+  ok(!page.checkExpect(obs, ['London', 'Oct 1'], null), 'Oct 1 is not Oct 15');
+  ok(!page.checkExpect(obs, null, ['/search', '/hotels']));
+  ok(!page.checkExpect(obs, null, null), 'no check, no pass');
+});
+
+test('a page that changed almost completely is not marked new control by control', () => {
+  const before = page.parseSnapshot(FLIGHTS);
+  const after = page.parseSnapshot(
+    [
+      'Page URL: https://www.google.com/travel/flights/search',
+      ...Array.from({ length: 30 }, (_, i) => `  - link "Result ${i}" [ref=r${i}]`),
+    ].join('\n')
+  );
+  const diff = page.diffShots(before, after);
+  ok(diff.replaced);
+  const lines = page.describeDiff(diff);
+  ok(lines.some((l) => l.includes('the page changed almost completely (30 new controls')));
+  ok(!lines.some((l) => l.includes('new control:') || l.includes('new controls:')));
+  const ori = page.orient(
+    { shot: after, viewport: null, diff },
+    { goal: 'x', history: [{ operation: 'WAIT' }], candidates: [] }
+  );
+  ok(!ori.state.includes('(new)'));
+});
+
+test('SHRUG is offered only when asked and keeps the menu within the option limit', () => {
+  const shot = page.parseSnapshot(SNAPSHOT);
+  ok(!page.buildMenu(shot, 'x', {}).some((a) => a.id === 'SHRUG'));
+  const menu = page.buildMenu(shot, 'x', {
+    offerShrug: true,
+    offerDone: true,
+    scroll: { up: true, down: true },
+  });
+  is(menu[menu.length - 1].id, 'SHRUG');
+  const lines = ['Page URL: https://example.com/form', '- rootwebarea'];
+  for (let i = 1; i <= 8; i++) lines.push(`  - textbox "Field ${i}" [ref=f${i}]: ""`);
+  for (let i = 1; i <= 20; i++) lines.push(`  - button "Button ${i}" [ref=b${i}]`);
+  const big = page.buildMenu(page.parseSnapshot(lines.join('\n')), 'x', {
+    candidates: Array.from({ length: 40 }, (_, i) => `V${i}`),
+    offerDone: true,
+    offerShrug: true,
+    scroll: { up: true, down: true },
+  });
+  ok(big.length <= page.MAX_OPTIONS, `menu has ${big.length} options`);
+});
+
+test('System 1 shrugs when it says so, is unsure, or has no text to type', () => {
+  const click = { id: 'click:e1', operation: 'CLICK' };
+  is(page.shrugReason({ action: click, confidence: 0.9 }, 0.5), '');
+  // Captured 2026-10-01 (run 2026-10-01T17-40-36-flights, kev-9b), steps 8 and 10.
+  is(
+    page.shrugReason(
+      {
+        action: { id: 'click:e31', operation: 'CLICK' },
+        confidence: 0.1094,
+        probabilities: { 'click:e31': 0.1094, 'type:e3:Oct 15': 0.105, SCROLL_DOWN: 0.0767 },
+      },
+      0.5
+    ),
+    'confidence 0.11 < 0.5, runner-up 0.10'
+  );
+  is(
+    page.shrugReason(
+      {
+        action: { id: 'click:e27', operation: 'CLICK' },
+        confidence: 0.39,
+        probabilities: { 'click:e27': 0.39, 'click:e19': 0.0417 },
+      },
+      0.5
+    ),
+    '',
+    'a low top choice far ahead of the rest stands'
+  );
+  is(
+    page.shrugReason({ action: click, confidence: 0.31 }, 0.5),
+    'confidence 0.31 < 0.5, runner-up 0.00'
+  );
+  is(
+    page.shrugReason({ action: { id: 'SHRUG', operation: 'SHRUG' }, confidence: 0.9 }, 0.5),
+    'chose SHRUG'
+  );
+  is(
+    page.shrugReason(
+      { action: { id: 'type:e3', operation: 'TYPE_TEXT', text: null }, confidence: 0.9 },
+      0.5
+    ),
+    'picked a field with no value to type'
+  );
+  is(
+    page.shrugReason({ action: click }, 0.5),
+    '',
+    'no confidence (a direct action) is not a shrug'
+  );
+});
+
+test('System 2 hears System 1 top choices without SHRUG', () => {
+  const menu = page.buildMenu(page.parseSnapshot(SNAPSHOT), 'x', { offerShrug: true });
+  const hint = page.shrugHint(
+    { probabilities: { 'click:e1': 0.4, SHRUG: 0.35, 'click:e2': 0.2, WAIT: 0.05 } },
+    'confidence 0.40 < 0.5',
+    menu
+  );
+  ok(hint.startsWith('A fast model was unsure here (confidence 0.40 < 0.5). Its top choices:'));
+  ok(hint.includes('click:e1 (40%)  click link "Incompleteness theorems"'));
+  ok(!hint.includes('SHRUG'));
+  const prompt = page.agentPrompt(
+    'Goal: x',
+    menu.filter((a) => a.id !== 'SHRUG'),
+    hint
+  );
+  ok(prompt.indexOf(hint) < prompt.indexOf('Menu:'), 'the hint comes before the menu');
 });

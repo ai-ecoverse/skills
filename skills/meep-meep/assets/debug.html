@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>webrunner debug</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fff; --panel: #f6f7f9; --line: #d9dce1; --text: #1d2026; --muted: #5d6470;
+    --accent: #2563eb; --ok: #15803d; --bad: #b91c1c; --warn: #b45309; --new: #c026d3;
+    --chosen: #16a34a; --menu: #2563eb; --excluded: #6b7280;
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15171b; --panel: #1d2026; --line: #343943; --text: #e6e8eb; --muted: #9aa3af;
+      --accent: #60a5fa; --ok: #4ade80; --bad: #f87171; --warn: #fbbf24; --new: #e879f9;
+      --chosen: #4ade80; --menu: #60a5fa; --excluded: #9ca3af;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); }
+  header { padding: 12px 16px; border-bottom: 1px solid var(--line); display: flex; gap: 16px; align-items: baseline; flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0; }
+  header .goal { flex: 1 1 400px; min-width: 0; color: var(--muted); }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; border: 1px solid currentColor; white-space: nowrap; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); } .warn { color: var(--warn); } .muted { color: var(--muted); }
+  main { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr); min-height: calc(100vh - 50px); }
+  nav { border-right: 1px solid var(--line); background: var(--panel); overflow: auto; max-height: calc(100vh - 50px); position: sticky; top: 0; }
+  nav button { display: block; width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: inherit; padding: 8px 12px; font: inherit; cursor: pointer; }
+  nav button:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+  nav button[aria-current="true"] { background: color-mix(in srgb, var(--accent) 16%, transparent); box-shadow: inset 3px 0 var(--accent); }
+  nav button:focus-visible, summary:focus-visible, select:focus-visible, label:focus-within { outline: 2px solid var(--accent); outline-offset: -2px; }
+  nav .what { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  nav .meta { font-size: 12px; color: var(--muted); }
+  section.step { padding: 12px 16px 48px; min-width: 0; overflow-wrap: anywhere; }
+  h2 { font-size: 15px; margin: 20px 0 8px; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+  h2 .ms { font-weight: normal; font-size: 12px; color: var(--muted); }
+  pre { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; overflow: auto; white-space: pre-wrap; word-break: break-word; margin: 0; font-size: 12.5px; max-height: 420px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; border-bottom: 1px solid var(--line); padding: 4px 6px; vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  td.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  tr.chosen td { background: color-mix(in srgb, var(--chosen) 14%, transparent); }
+  .bar { height: 8px; background: var(--accent); border-radius: 4px; min-width: 1px; }
+  .shot { position: relative; display: inline-block; max-width: 100%; border: 1px solid var(--line); }
+  .shot img { display: block; max-width: 100%; height: auto; }
+  .box { position: absolute; border: 2px solid var(--menu); pointer-events: auto; }
+  .box.chosen { border-color: var(--chosen); border-width: 3px; background: color-mix(in srgb, var(--chosen) 18%, transparent); }
+  .box.new { border-color: var(--new); border-style: dashed; }
+  .box.excluded { border-color: var(--excluded); border-style: dotted; border-width: 1px; }
+  .box span { position: absolute; top: -1px; left: -1px; font-size: 10px; line-height: 12px; padding: 0 3px; background: var(--menu); color: #fff; }
+  .box.chosen span { background: var(--chosen); }
+  .box.new span { background: var(--new); }
+  .box.excluded span { background: var(--excluded); }
+  .toggles { display: flex; gap: 12px; flex-wrap: wrap; margin: 6px 0; font-size: 13px; }
+  details { margin: 6px 0; }
+  summary { cursor: pointer; color: var(--muted); }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
+  .diff li { margin: 2px 0; }
+  .add { color: var(--ok); } .rem { color: var(--bad); } .chg { color: var(--warn); }
+  .empty { color: var(--muted); padding: 24px 16px; }
+  select { font: inherit; }
+  code { font-size: 12.5px; }
+  @media (max-width: 720px) { main { grid-template-columns: 1fr; } nav { position: static; max-height: 240px; border-right: 0; border-bottom: 1px solid var(--line); } }
+</style>
+</head>
+<body>
+<header>
+  <h1>webrunner debug</h1>
+  <select id="runs" aria-label="Run"></select>
+  <span id="result"></span>
+  <span class="goal" id="goal"></span>
+</header>
+<main>
+  <nav id="steps" aria-label="Steps"></nav>
+  <section class="step" id="detail"><p class="empty">Loading…</p></section>
+</main>
+<script>
+'use strict';
+const $ = (sel) => document.querySelector(sel);
+const params = new URLSearchParams(location.search);
+let runId = params.get('run');
+let lines = [];
+let current = Number(params.get('step')) || 0;
+let timer = null;
+const show = { menu: true, chosen: true, new: true, excluded: false };
+
+function el(tag, attrs, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k === 'class') node.className = v;
+    else if (k === 'style') node.setAttribute('style', v);
+    else if (k.startsWith('on')) node.addEventListener(k.slice(2), v);
+    else node.setAttribute(k, v === true ? '' : v);
+  }
+  for (const child of children.flat()) {
+    if (child == null || child === false) continue;
+    node.append(child instanceof Node ? child : document.createTextNode(String(child)));
+  }
+  return node;
+}
+const ms = (v) => (v == null ? '' : v >= 1000 ? `${(v / 1000).toFixed(1)} s` : `${v} ms`);
+const pct = (p) => (p == null ? '' : `${(p * 100).toFixed(1)}%`);
+
+async function fetchText(path) {
+  const res = await fetch(`${path}${path.includes('?') ? '&' : '?'}t=${Date.now()}`, { cache: 'no-store' });
+  if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
+  return res.text();
+}
+
+async function loadRuns() {
+  let runs = [];
+  try { runs = JSON.parse(await fetchText('index.json')); } catch { runs = []; }
+  const select = $('#runs');
+  select.replaceChildren(...runs.map((r) => el('option', { value: r.id, selected: r.id === runId },
+    `${r.ok === true ? '✓' : r.ok === false ? '✗' : '…'} ${r.id}`)));
+  if (!runId && runs.length) runId = runs[0].id;
+  if (runId && !runs.some((r) => r.id === runId)) select.prepend(el('option', { value: runId, selected: true }, runId));
+  select.onchange = () => { runId = select.value; current = 0; history.replaceState(null, '', `?run=${encodeURIComponent(runId)}`); load(); };
+}
+
+async function load() {
+  clearTimeout(timer);
+  if (!runId) { $('#detail').replaceChildren(el('p', { class: 'empty' }, 'No runs yet. Run webrunner, then reload.')); return; }
+  try {
+    const text = await fetchText(`${encodeURIComponent(runId)}/trace.jsonl`);
+    lines = text.split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  } catch (err) {
+    $('#detail').replaceChildren(el('p', { class: 'empty' }, String(err.message || err)));
+    return;
+  }
+  render();
+  // A run still in progress has no end line: keep reading it.
+  if (!lines.some((l) => l.type === 'end')) timer = setTimeout(load, 2000);
+}
+
+const startLine = () => lines.find((l) => l.type === 'start') || {};
+const endLine = () => lines.find((l) => l.type === 'end');
+const stepLines = () => lines.filter((l) => l.type === 'step');
+
+function render() {
+  const start = startLine();
+  const end = endLine();
+  $('#goal').textContent = start.goal || '';
+  $('#result').replaceChildren(
+    end ? el('span', { class: `badge ${end.ok ? 'ok' : 'bad'}` }, end.ok ? 'passed' : 'failed') : el('span', { class: 'badge warn' }, 'running'),
+    ' ', el('span', { class: 'muted' }, [start.decider, end ? `${end.steps} steps · ${end.seconds?.toFixed?.(1)} s` : null, end && !end.ok ? end.reason : null].filter(Boolean).join(' · '))
+  );
+  const steps = stepLines();
+  if (!steps.length) { $('#steps').replaceChildren(); $('#detail').replaceChildren(el('p', { class: 'empty' }, 'No steps yet.')); return; }
+  if (current < 1 || current > steps.length) current = steps.length;
+  $('#steps').replaceChildren(...steps.map((s, i) => {
+    const d = s.decide;
+    const what = s.outcome ? s.outcome : d ? d.action.describe + (d.action.text && !/^type "/.test(d.action.describe) ? ` "${d.action.text}"` : '') : '';
+    const conf = d?.system1?.shrug ? ` · shrug ${pct(d.system1.confidence)} → S2` : d && d.confidence != null ? ` · ${pct(d.confidence)}` : '';
+    const cls = s.act && s.act.error ? 'bad' : s.outcome && /passed|confirmed/.test(s.outcome) ? 'ok' : '';
+    return el('button', { 'aria-current': i + 1 === current ? 'true' : 'false', onclick: () => select(i + 1) },
+      el('span', { class: `what ${cls}` }, `${s.step}. ${what}`),
+      el('span', { class: 'meta' }, `${d ? d.system : ''}${conf} · ${ms((s.observe?.ms || 0) + (s.orient?.ms || 0) + (d?.ms || 0) + (s.act?.ms || 0))}`));
+  }));
+  renderStep(steps[current - 1]);
+}
+
+function select(n) {
+  current = n;
+  const url = new URL(location.href);
+  url.searchParams.set('step', n);
+  history.replaceState(null, '', url);
+  render();
+  $('#steps').querySelector('[aria-current="true"]')?.focus();
+}
+
+function shotView(s) {
+  const o = s.observe;
+  if (!o.screenshot) return el('p', { class: 'muted' }, 'No screenshot (--shots off).');
+  const wrap = el('div', { class: 'shot' });
+  const img = el('img', { src: `${encodeURIComponent(runId)}/${o.screenshot}`, alt: `Screenshot at step ${s.step}` });
+  wrap.append(img);
+  const vw = o.viewport?.width;
+  const vh = o.viewport?.height;
+  const menuTokens = new Set((s.orient?.menu || []).map((a) => a.token).filter(Boolean));
+  const excluded = new Map((s.orient?.excluded || []).map((e) => [e.token, e.reason]));
+  const added = new Set(s.diff?.replaced ? [] : (s.diff?.added || []).map((e) => e.token));
+  const chosen = s.decide?.action?.token;
+  const draw = () => {
+    wrap.querySelectorAll('.box').forEach((b) => b.remove());
+    const w = vw || img.naturalWidth;
+    const h = vh || img.naturalHeight;
+    if (!w || !h) return;
+    for (const e of o.elements || []) {
+      if (!e.box || e.box[2] === 0 || e.box[3] === 0) continue;
+      let kind = null;
+      if (e.token === chosen && show.chosen) kind = 'chosen';
+      else if (menuTokens.has(e.token) && show.menu) kind = 'menu';
+      else if (added.has(e.token) && show.new) kind = 'new';
+      else if (excluded.has(e.token) && show.excluded) kind = 'excluded';
+      if (!kind) continue;
+      const [x, y, bw, bh] = e.box;
+      if (y + bh <= 0 || y >= h) continue;
+      const title = `${e.token} ${e.role} "${e.label}"${excluded.has(e.token) ? ` — ${excluded.get(e.token)}` : ''}`;
+      wrap.append(el('div', {
+        class: `box ${kind === 'menu' ? '' : kind}`,
+        title,
+        style: `left:${(x / w) * 100}%;top:${(y / h) * 100}%;width:${(bw / w) * 100}%;height:${(bh / h) * 100}%`,
+      }, el('span', {}, e.token)));
+    }
+  };
+  img.addEventListener('load', draw);
+  const toggles = el('div', { class: 'toggles' }, ...Object.keys(show).map((k) =>
+    el('label', {}, el('input', { type: 'checkbox', checked: show[k], onchange: (ev) => { show[k] = ev.target.checked; draw(); } }), ` ${k}`)));
+  return el('div', {}, toggles, wrap);
+}
+
+function diffView(diff) {
+  if (!diff) return el('p', { class: 'muted' }, 'First observation: nothing to compare.');
+  const items = [];
+  if (diff.url) items.push(el('li', { class: 'chg' }, `address: ${diff.url.from} → ${diff.url.to}`));
+  if (diff.title) items.push(el('li', { class: 'chg' }, `title: ${diff.title.from} → ${diff.title.to}`));
+  if (diff.scrolled) items.push(el('li', { class: 'chg' }, `scrolled ${diff.scrolled} px`));
+  for (const c of diff.changed) items.push(el('li', { class: 'chg' }, `~ [${c.token}] ${c.role} "${c.label}": "${c.from}" → "${c.to}"`));
+  for (const a of diff.added) items.push(el('li', { class: 'add' }, `+ [${a.token}] ${a.role} "${a.label}"`));
+  for (const r of diff.removed) items.push(el('li', { class: 'rem' }, `− ${r.role} "${r.label}"`));
+  for (const t of diff.texts) items.push(el('li', { class: 'add' }, `+ ${t.role}: ${t.text}`));
+  if (!items.length) return el('p', { class: 'warn' }, 'Nothing changed.');
+  return el('ul', { class: 'diff' }, items.slice(0, 200));
+}
+
+function menuView(s) {
+  const d = s.decide;
+  // After a shrug the probabilities shown are System 1's: the agent gives none.
+  const probs = d?.probabilities || d?.system1?.probabilities || {};
+  const s1 = d?.system1?.action;
+  const chosen = d?.action?.id;
+  const rows = (s.orient?.menu || []).map((a) => ({ ...a, p: probs[a.id] }));
+  if (Object.keys(probs).length) rows.sort((a, b) => (b.p ?? -1) - (a.p ?? -1));
+  return el('table', {},
+    el('thead', {}, el('tr', {}, el('th', {}, 'id'), el('th', {}, 'action'), el('th', {}, 'p'), el('th', { style: 'width:30%' }, ''))),
+    el('tbody', {}, rows.map((a) => el('tr', { class: a.id === chosen ? 'chosen' : '' },
+      el('td', {}, el('code', {}, a.id), s1 && a.id === s1 && a.id !== chosen ? el('span', { class: 'warn' }, ' ← System 1') : ''),
+      el('td', {}, a.describe), el('td', { class: 'num' }, pct(a.p)),
+      el('td', {}, a.p != null ? el('div', { class: 'bar', style: `width:${Math.max(a.p * 100, 0.5)}%` }) : '')))));
+}
+
+function excludedView(s) {
+  const byToken = new Map((s.observe?.elements || []).map((e) => [e.token, e]));
+  const list = s.orient?.excluded || [];
+  if (!list.length) return el('p', { class: 'muted' }, 'Nothing left out.');
+  return el('details', {}, el('summary', {}, `${list.length} controls left out of the menu`),
+    el('table', {}, el('tbody', {}, list.map((x) => {
+      const e = byToken.get(x.token) || {};
+      return el('tr', {}, el('td', {}, el('code', {}, x.token)), el('td', {}, `${e.role || ''} "${e.label || ''}"`), el('td', { class: 'muted' }, x.reason));
+    }))));
+}
+
+function commandsView(commands) {
+  if (!commands?.length) return el('p', { class: 'muted' }, 'No commands.');
+  return el('table', {},
+    el('thead', {}, el('tr', {}, el('th', {}, 'command'), el('th', {}, 'exit'), el('th', {}, 'time'))),
+    el('tbody', {}, commands.map((c) => el('tr', {},
+      el('td', {}, el('code', {}, c.argv.join(' ')),
+        c.stdout || c.stderr ? el('details', {}, el('summary', {}, 'output'), el('pre', {}, [c.stdout, c.stderr && `[stderr]\n${c.stderr}`].filter(Boolean).join('\n'))) : ''),
+      el('td', { class: `num ${c.exitCode ? 'bad' : ''}` }, c.exitCode), el('td', { class: 'num' }, ms(c.ms))))));
+}
+
+function renderStep(s) {
+  const o = s.observe || {};
+  const d = s.decide;
+  const parts = [];
+  parts.push(el('h2', {}, `Step ${s.step}`, s.outcome ? el('span', { class: `badge ${/passed|confirmed/.test(s.outcome) ? 'ok' : 'bad'}` }, s.outcome) : ''));
+  parts.push(el('p', { class: 'muted' }, `${o.title || ''} — ${o.url || ''}`,
+    o.viewport ? ` · viewport ${o.viewport.width}×${o.viewport.height}, scrollY ${o.viewport.scrollY} of ${o.viewport.scrollHeight}` : ''));
+
+  parts.push(el('h2', {}, 'Observe', el('span', { class: 'ms' }, ms(o.ms))));
+  parts.push(shotView(s));
+  parts.push(el('details', {}, el('summary', {}, 'raw snapshot'), el('pre', { 'data-src': o.snapshot }, 'loading…')));
+  parts.push(el('details', {}, el('summary', {}, 'observe commands'), commandsView(o.commands)));
+
+  parts.push(el('h2', {}, 'What the last action changed'));
+  parts.push(diffView(s.diff));
+
+  if (s.orient) {
+    parts.push(el('h2', {}, 'Orient', el('span', { class: 'ms' }, ms(s.orient.ms))));
+    parts.push(el('div', { class: 'grid2' },
+      el('div', {}, el('h3', {}, 'State given to the decider'), el('pre', {}, s.orient.state)),
+      el('div', {}, el('h3', {}, `Menu (${s.orient.menu.length})`), menuView(s), excludedView(s))));
+  }
+  if (s.verify) {
+    parts.push(el('h2', {}, 'DONE check'), el('pre', {}, JSON.stringify(s.verify, null, 2)));
+  }
+  if (d) {
+    parts.push(el('h2', {}, 'Decide', el('span', { class: 'ms' }, `${d.system} · ${ms(d.ms)}`)));
+    parts.push(el('p', {}, el('strong', {}, d.action.describe), d.action.text ? ` — text "${d.action.text}"` : '',
+      d.confidence != null ? el('span', { class: 'muted' }, ` · confidence ${pct(d.confidence)}`) : ''));
+    if (d.system1) {
+      const s1 = d.system1;
+      parts.push(el('p', { class: s1.shrug ? 'warn' : 'muted' },
+        `System 1 chose ${s1.action} at ${pct(s1.confidence)}`,
+        s1.shrug ? ` — shrugged (${s1.shrug}); System 2 decided` : ' — kept'));
+    }
+    if (d.prompt) parts.push(el('details', {}, el('summary', {}, 'prompt'), el('pre', {}, d.prompt)));
+    if (d.answer) parts.push(el('details', {}, el('summary', {}, 'answer'), el('pre', {}, JSON.stringify(d.answer, null, 2))));
+  }
+  if (s.act) {
+    parts.push(el('h2', {}, 'Act', el('span', { class: 'ms' }, ms(s.act.ms))));
+    if (s.act.error) parts.push(el('p', { class: 'bad' }, s.act.error));
+    parts.push(commandsView(s.act.commands));
+  }
+  $('#detail').replaceChildren(...parts);
+  const pre = $('#detail pre[data-src]');
+  if (pre && o.snapshot) {
+    pre.closest('details').addEventListener('toggle', async () => {
+      if (pre.dataset.loaded) return;
+      pre.dataset.loaded = '1';
+      try { pre.textContent = await fetchText(`${encodeURIComponent(runId)}/${o.snapshot}`); } catch (err) { pre.textContent = String(err.message || err); }
+    }, { once: true });
+  }
+}
+
+document.addEventListener('keydown', (ev) => {
+  if (ev.target.closest('input, select, textarea')) return;
+  const n = stepLines().length;
+  if ((ev.key === 'ArrowDown' || ev.key === 'j') && current < n) { ev.preventDefault(); select(current + 1); }
+  if ((ev.key === 'ArrowUp' || ev.key === 'k') && current > 1) { ev.preventDefault(); select(current - 1); }
+});
+
+loadRuns().then(load);
+</script>
+</body>
+</html>

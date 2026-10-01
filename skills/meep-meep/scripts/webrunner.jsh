@@ -1,53 +1,74 @@
-// webrunner — one snapshot, one typed decision, one browser action.
-// The decision is a single choice over concrete actions, each naming a ref
-// from the latest playwright-cli snapshot. With --decider kev the model is
-// loaded once per run and asked every step; with --decider agent each step
-// is one `agent` call whose StructuredOutput names the action (and the text,
-// for a type action).
+// webrunner — an OODA loop over a browser tab.
+//   Observe: one playwright-cli snapshot (with boxes), the viewport, a screenshot.
+//   Orient:  page.js keeps what is on screen, diffs it against the last
+//            observation, and builds one menu of concrete actions.
+//   Decide:  one choice over that menu, by kev (loaded once per run) or by
+//            one `agent` call whose StructuredOutput names the action.
+//   Act:     playwright-cli applies the chosen ref.
+// The next cycle's observation is the feedback on this cycle's action.
+// Every cycle is written to /tmp/meep/runs/<id>/trace.jsonl for `webrunner debug`.
 
 const agent = require('sliccy:agent');
 const cli = require('sliccy:cli');
 const fs = require('fs');
 const exec = require('sliccy:exec');
 const page = require('./page.js');
+const traceLib = require('./trace.js');
 const host = require('../../decide-quickly/scripts/host.js');
 const kevRuntime = require('../../decide-quickly/scripts/kev-runtime.js');
 
 const LOG_PATH = '/tmp/meep/webrunner.log';
 const KEV_SCRIPT = `${__dirname}/../../decide-quickly/scripts/kev.jsh`;
+const DEBUG_PAGE = `${__dirname}/../assets/debug.html`;
 const READY = 'WEBRUNNER_KEV_READY';
 const MAX_STEPS_DEFAULT = 8;
 const STALL_LIMIT = 3;
 const AGENT_MODEL_DEFAULT = 'claude-haiku-4-5';
+// Below this kev confidence, --decider hybrid hands the step to the agent.
+const SHRUG_DEFAULT = 0.5;
 
 const HELP = `
 webrunner — a browser loop with a typed action space
 
 USAGE
-  webrunner run --url <url> --goal <text> [--expect <text>] [--expect-url <text>]
-                [--max-steps 8] [--decider kev|agent] [--model <m>] [--from <dir>] [--json]
-  webrunner demo link|search|flights [--decider kev|agent] [--model <m>] [--json]
+  webrunner run --url <url> --goal <text> [--expect <text>]... [--expect-url <text>]...
+                [--max-steps 8] [--decider kev|agent|hybrid] [--model <m>] [--from <dir>]
+                [--agent-model <m>] [--shrug 0.5]
+                [--viewport on|off] [--shots on|off] [--json]
+  webrunner demo link|search|flights [--decider kev|agent|hybrid] [--model <m>] [--json]
+  webrunner debug [<run-id>]
 
   run                  Open the url and step until the check passes, the model is
                        stuck, or the step cap
   demo link            Open a local page and click the incompleteness article
   demo search          Type London into a local flight field and click Search
   demo flights         Search Berlin to London on Google Flights
+  debug                Open the step-by-step page for the latest run (or <run-id>)
 
   --decider kev        the local Kev model (default). --model 0.8b|4b|9b, default 9b.
                        Needs its weights: kev pull --model 9b (slicc's hf, 8.8 GB)
   --decider agent      one \`agent\` call per step. --model is any id the \`models\`
                        command lists, default ${AGENT_MODEL_DEFAULT}
+  --decider hybrid     kev decides (System 1, --model as for kev); when it shrugs the
+                       step goes to the agent (System 2, --agent-model). It shrugs when
+                       it picks SHRUG, its confidence is below --shrug (default
+                       ${SHRUG_DEFAULT}), or it picks a field the goal gives no text for
+  --viewport off       offer every control in the snapshot, not only the visible ones
+  --shots off          skip the per-step screenshot
   --json               print the run summary as JSON (steps, seconds, result)
 
-Each step offers one list of actions: type into a field, click a control, or wait.
-Every action names a ref from the latest snapshot, and playwright-cli applies that
-ref. With --expect or --expect-url the check decides success and DONE is not
-offered. Without them, DONE is offered and checked by a yes/no on a new snapshot.
-Three actions that leave the page unchanged stop the run.
+Each cycle observes the page, offers one list of actions (type into a field,
+click a control, scroll, or wait), asks the decider for one, and applies it.
+Every action names a ref from the latest snapshot. Controls outside the
+viewport are left out unless the goal names them; SCROLL_DOWN and SCROLL_UP
+reach the rest. With --expect or --expect-url (each may repeat; all must
+match) the check decides success and
+DONE is not offered. Without them, DONE is offered and checked on the next
+observation. Three actions that leave the page unchanged stop the run.
 
-Progress is appended to ${LOG_PATH} (the shell shows it only at exit), and
-each step's state and menu to /tmp/meep/step-<n>.txt.
+Progress is appended to ${LOG_PATH} (the shell shows it only at exit). Each
+run's steps, menus, decisions, screenshots and commands go to
+/tmp/meep/runs/<id>/; \`webrunner debug\` shows them.
 `.trim();
 
 const LINK_HTML = `<!doctype html>
@@ -80,8 +101,24 @@ async function say(line) {
   }
 }
 
-async function sh(argv) {
+// Every playwright-cli call of a cycle is recorded for the debug page.
+async function run(argv, rec) {
+  const started = Date.now();
   const result = await exec.spawn(argv);
+  if (rec) {
+    rec.push({
+      argv: argv.map((arg) => traceLib.clip(arg, 300)),
+      exitCode: result.exitCode,
+      ms: Date.now() - started,
+      stdout: traceLib.clip(result.stdout, 1200),
+      stderr: traceLib.clip(result.stderr, 1200),
+    });
+  }
+  return result;
+}
+
+async function sh(argv, rec) {
+  const result = await run(argv, rec);
   if (result.exitCode !== 0) {
     const detail = (result.stderr || result.stdout || '').trim().slice(0, 500);
     throw new Error(`${argv[0]} ${argv[1] || ''} failed (${result.exitCode})${detail ? `: ${detail}` : ''}`);
@@ -96,12 +133,16 @@ function previewUrl(vfsPath) {
   return `${origin}/preview${path}`;
 }
 
+function onOff(value, fallback) {
+  if (value === undefined || value === true) return fallback;
+  return !/^(off|false|no|0)$/i.test(String(value));
+}
+
 // ── deciders ──────────────────────────────────────────────────────────
 
 // Each call spawns a scoop that may run no command; its StructuredOutput is
 // the decision. The scoop is billed like any other: see `cost`.
-function agentDecider(flags) {
-  const model = flags.model || AGENT_MODEL_DEFAULT;
+function agentDecider(flags, model = flags.model || AGENT_MODEL_DEFAULT) {
   const ask = (prompt, schema) =>
     agent(prompt, {
       model,
@@ -113,17 +154,19 @@ function agentDecider(flags) {
     });
   return {
     name: `agent ${model}`,
-    async decide(state, menu) {
-      const answer = await ask(page.agentPrompt(state, menu), page.decisionSchema(menu));
+    async decide(state, menu, hint) {
+      const prompt = page.agentPrompt(state, menu, hint);
+      const answer = await ask(prompt, page.decisionSchema(menu));
+      const trail = { prompt, answer };
       const action = page.pickAction(menu, answer && answer.action);
-      if (action.operation !== 'TYPE_TEXT' || action.text) return { action };
+      if (action.operation !== 'TYPE_TEXT' || action.text) return { action, ...trail };
       const text = typeof answer.text === 'string' ? answer.text.trim() : '';
       if (!text || text.length > 2000) throw new Error(`${action.id} came back without text`);
-      return { action: { ...action, text } };
+      return { action: { ...action, text }, ...trail };
     },
     async finished(state) {
       const answer = await ask(page.finishedPrompt(state), page.FINISHED_SCHEMA);
-      return Boolean(answer && answer.finished === true);
+      return { finished: Boolean(answer && answer.finished === true), answer };
     },
   };
 }
@@ -175,16 +218,14 @@ async function kevDecider(flags) {
         questions: { action: page.menuQuestion(menu) },
       });
       const answer = response.answers.action;
-      const top = Object.entries(answer.probabilities || {})
+      const probabilities = answer.probabilities || {};
+      const top = Object.entries(probabilities)
         .sort((a, b) => b[1] - a[1])
         .slice(0, 3)
         .map(([id, p]) => `${id}=${p}`)
         .join(' ');
       const action = page.pickAction(menu, answer.choice);
-      if (action.operation === 'TYPE_TEXT' && !action.text) {
-        throw new Error('kev picked a field, but the goal has no value for it. Quote the text in --goal.');
-      }
-      return { action, confidence: answer.confidence, top };
+      return { action, confidence: answer.confidence, top, probabilities };
     },
     async finished(state) {
       const response = await model.systemOne({
@@ -193,35 +234,157 @@ async function kevDecider(flags) {
           finished: { type: 'noul', instructions: 'Does this page show every part of the goal finished?' },
         },
       });
-      return response.answers.finished.noul >= 0.5;
+      const p = response.answers.finished.noul;
+      return { finished: p >= 0.5, answer: { noul: p } };
     },
   };
 }
 
-// ── browser ───────────────────────────────────────────────────────────
-
-async function openTab(url) {
-  const stdout = await sh(['playwright-cli', 'open', url, '--foreground']);
-  const match = /targetId:\s*([^\]\s]+)/.exec(stdout);
-  if (match) return match[1];
-  throw new Error(`playwright-cli open did not report a tab: ${stdout.slice(0, 240)}`);
+// kev alone cannot invent text: a field without a goal value is a dead end.
+function kevOnly(fast) {
+  return {
+    ...fast,
+    async decide(state, menu) {
+      const first = await fast.decide(state, menu);
+      if (first.action.operation === 'TYPE_TEXT' && !first.action.text) {
+        throw new Error('kev picked a field, but the goal has no value for it. Quote the text in --goal.');
+      }
+      return first;
+    },
+  };
 }
 
-async function readShot(tab) {
-  const raw = await sh(['playwright-cli', 'snapshot', `--tab=${tab}`]);
+// System 1 decides; when it shrugs (picks SHRUG, is unsure, or picked a
+// field it has no text for), System 2 decides on the same state and menu,
+// told what System 1 was considering. DONE is checked by System 1 and,
+// when that is unsure, by System 2.
+function hybridDecider(fast, slow, threshold) {
+  return {
+    name: `${fast.name} + ${slow.name}`,
+    loadMs: fast.loadMs,
+    shrugs: true,
+    async decide(state, menu) {
+      const first = await fast.decide(state, menu);
+      const reason = page.shrugReason(first, threshold);
+      const system1 = {
+        action: first.action.id,
+        confidence: first.confidence,
+        probabilities: first.probabilities,
+        shrug: reason || null,
+      };
+      if (!reason) return { ...first, system: fast.name, system1 };
+      const slowStarted = Date.now();
+      const rest = menu.filter((action) => action.operation !== 'SHRUG');
+      const second = await slow.decide(state, rest, page.shrugHint(first, reason, menu));
+      return {
+        ...second,
+        system: slow.name,
+        system1,
+        system2Ms: Date.now() - slowStarted,
+        top: `${first.top}  → shrug (${reason})`,
+      };
+    },
+    async finished(state) {
+      const first = await fast.finished(state);
+      const p = first.answer && typeof first.answer.noul === 'number' ? first.answer.noul : null;
+      // A DONE verdict between 0.25 and 0.75 is a coin toss: ask System 2.
+      if (p == null || Math.abs(p - 0.5) >= 0.25) return { ...first, system: fast.name };
+      const second = await slow.finished(state);
+      return { ...second, system: slow.name, system1: first.answer };
+    },
+  };
+}
+
+async function makeDecider(flags) {
+  const name = flags.decider || 'kev';
+  if (name === 'agent') return agentDecider(flags);
+  if (name === 'kev') return kevOnly(await kevDecider(flags));
+  if (name === 'hybrid') {
+    const parsed = Number.parseFloat(flags.shrug);
+    const threshold = Number.isFinite(parsed) ? Math.min(Math.max(parsed, 0), 1) : SHRUG_DEFAULT;
+    return hybridDecider(
+      await kevDecider(flags),
+      agentDecider(flags, flags['agent-model'] || AGENT_MODEL_DEFAULT),
+      threshold
+    );
+  }
+  return cli.die('--decider is kev, agent, or hybrid', { prefix: 'webrunner' });
+}
+
+// ── observe ───────────────────────────────────────────────────────────
+
+const VIEWPORT_JS =
+  'JSON.stringify({ width: innerWidth, height: innerHeight, scrollY: Math.round(scrollY), scrollHeight: document.documentElement.scrollHeight })';
+
+function parseViewport(stdout) {
+  try {
+    const value = JSON.parse(String(stdout).trim());
+    const viewport = typeof value === 'string' ? JSON.parse(value) : value;
+    return viewport && viewport.height > 0 ? viewport : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * One look at the tab. → { shot, raw, viewport, diff, screenshot, commands, ms }
+ * `prev` is the last cycle's observation: the diff against it is the
+ * feedback on the last action.
+ */
+async function observe(tab, prev, opts) {
+  const started = Date.now();
+  const commands = [];
+  const argv = ['playwright-cli', 'snapshot', `--tab=${tab}`];
+  if (opts.viewport) argv.push('--boxes');
+  const raw = await sh(argv, commands);
   const shot = page.parseSnapshot(raw);
-  shot.raw = raw;
-  return shot;
+  let viewport = null;
+  if (opts.viewport) {
+    const evaluated = await run(['playwright-cli', 'eval', `--tab=${tab}`, VIEWPORT_JS], commands);
+    viewport = evaluated.exitCode === 0 ? parseViewport(evaluated.stdout) : null;
+  }
+  shot.viewport = viewport;
+  let screenshot = null;
+  if (opts.trace && opts.shots && opts.name) {
+    const name = `${opts.name}.png`;
+    const result = await run(
+      ['playwright-cli', 'screenshot', `--tab=${tab}`, `--filename=${opts.trace.path(name)}`],
+      commands
+    );
+    if (result.exitCode === 0) screenshot = name;
+  }
+  return {
+    shot,
+    raw,
+    viewport,
+    diff: page.diffShots(prev && prev.shot, shot),
+    screenshot,
+    commands,
+    ms: Date.now() - started,
+  };
 }
 
 // playwright-cli open returns while the tab still shows about:blank, and a
 // step spent there is a model call with nothing to choose (seen 2026-09-23).
 async function waitForPage(tab) {
   for (let i = 0; i < 20; i++) {
-    const shot = await readShot(tab);
+    const shot = page.parseSnapshot(await sh(['playwright-cli', 'snapshot', `--tab=${tab}`]));
     if (shot.url && shot.url !== 'about:blank' && shot.elements.length) return;
     await sh(['sleep', '0.5']);
   }
+}
+
+function expected(obs, flags) {
+  return page.checkExpect(obs, flags.expect, flags['expect-url']);
+}
+
+// ── act ───────────────────────────────────────────────────────────────
+
+async function openTab(url) {
+  const stdout = await sh(['playwright-cli', 'open', url, '--foreground']);
+  const match = /targetId:\s*([^\]\s]+)/.exec(stdout);
+  if (match) return match[1];
+  throw new Error(`playwright-cli open did not report a tab: ${stdout.slice(0, 240)}`);
 }
 
 // playwright-cli maps a ref to its DOM node by role + accessible name. When
@@ -256,10 +419,21 @@ const SELECT_FOCUSED = `(() => {
   return 'ok';
 })()`;
 
-async function act(tab, action) {
+/** Apply one action. Every playwright-cli call lands in `commands`. */
+async function act(tab, action, viewport, commands) {
   if (action.operation === 'WAIT') {
-    await sh(['sleep', '0.5']);
-    return '';
+    await sh(['sleep', '0.5'], commands);
+    return;
+  }
+  if (action.operation === 'SCROLL') {
+    // The wheel scrolls whatever is under the mouse, so put the mouse in the
+    // middle of the viewport first: at 0,0 it sits on a sticky header.
+    const width = viewport ? viewport.width : 1280;
+    const height = viewport ? viewport.height : 800;
+    const dy = Math.round(height * 0.8) * (action.direction === 'up' ? -1 : 1);
+    await sh(['playwright-cli', 'mousemove', `--tab=${tab}`, String(Math.round(width / 2)), String(Math.round(height / 2))], commands);
+    await sh(['playwright-cli', 'mousewheel', `--tab=${tab}`, '0', String(dy)], commands);
+    return;
   }
   const ref = action.element.token;
   // Text goes in as keystrokes. `fill` sets the value, but Google Flights'
@@ -267,71 +441,68 @@ async function act(tab, action) {
   // Return date field drops the value (both seen 2026-09-23). Click the
   // field, select what is there, and type.
   const keystrokes = action.operation === 'TYPE_TEXT';
-  const result = await exec.spawn(['playwright-cli', 'click', `--tab=${tab}`, ref]);
+  const result = await run(['playwright-cli', 'click', `--tab=${tab}`, ref], commands);
   if (result.exitCode === 0) {
-    if (!keystrokes) return result.stdout || '';
-    await sh(['sleep', '0.3']);
-    await sh(['playwright-cli', 'eval', `--tab=${tab}`, SELECT_FOCUSED]);
-    return sh(['playwright-cli', 'type', `--tab=${tab}`, '--', action.text]);
+    if (!keystrokes) return;
+    await sh(['sleep', '0.3'], commands);
+    await sh(['playwright-cli', 'eval', `--tab=${tab}`, SELECT_FOCUSED], commands);
+    await sh(['playwright-cli', 'type', `--tab=${tab}`, '--', action.text], commands);
+    return;
   }
   const detail = `${result.stderr || ''}${result.stdout || ''}`;
   if (!/Element not found|Unknown ref/.test(detail)) {
     throw new Error(`playwright-cli click ${ref} failed: ${detail.trim().slice(0, 300)}`);
   }
   await say(`         ${ref} has no node id; focusing "${action.element.label.trim()}" by name`);
-  const focused = await sh([
-    'playwright-cli',
-    'eval',
-    `--tab=${tab}`,
-    focusByName(action.element, action.operation === 'CLICK'),
-  ]);
+  const focused = await sh(
+    ['playwright-cli', 'eval', `--tab=${tab}`, focusByName(action.element, action.operation === 'CLICK')],
+    commands
+  );
   if (!focused.includes('ok')) throw new Error(`no visible control named "${action.element.label.trim()}"`);
   if (action.operation === 'TYPE_TEXT') {
-    await sh(['playwright-cli', 'type', `--tab=${tab}`, '--', action.text]);
+    await sh(['playwright-cli', 'type', `--tab=${tab}`, '--', action.text], commands);
   }
-  return focused;
-}
-
-// Google shows a consent wall outside the US. It covers the form, so it is
-// dismissed before the loop rather than spending a model step on it.
-async function dismissConsent(tab) {
-  const shot = await readShot(tab);
-  if (!shot.url.includes('consent.google.') && !/Before you continue/.test(shot.raw)) return;
-  const reject = shot.elements.find((e) => e.kind === 'click' && /^reject all$/i.test(e.label));
-  if (!reject) return;
-  await say(`consent: click ${reject.token} "${reject.label}"`);
-  await sh(['playwright-cli', 'click', `--tab=${tab}`, reject.token]);
-  await sh(['sleep', '1']);
-}
-
-function expected(shot, flags) {
-  if (!flags.expect && !flags['expect-url']) return false;
-  if (flags['expect-url'] && !shot.url.includes(flags['expect-url'])) return false;
-  if (flags.expect && !shot.raw.includes(flags.expect)) return false;
-  return true;
 }
 
 // ── loop ──────────────────────────────────────────────────────────────
 
-async function makeDecider(flags) {
-  const name = flags.decider || 'kev';
-  if (name === 'agent') return agentDecider(flags);
-  if (name === 'kev') return kevDecider(flags);
-  return cli.die('--decider is kev or agent', { prefix: 'webrunner' });
+// What the debug page needs of an element: enough to draw and name it.
+function slim(element, viewport) {
+  const where = page.place(element, viewport);
+  const out = { token: element.token, role: element.role, label: element.label, kind: element.kind };
+  if (element.value) out.value = element.value;
+  if (element.box) out.box = element.box;
+  if (element.region) out.region = element.region;
+  if (where !== 'unknown') out.place = where;
+  return out;
+}
+
+function slimAction(action) {
+  const out = { id: action.id, operation: action.operation, describe: action.describe };
+  if (action.element) out.token = action.element.token;
+  if (action.text) out.text = action.text;
+  return out;
 }
 
 async function runGoal(flags) {
   if (!flags.url) cli.die('--url is required', { prefix: 'webrunner' });
   if (!flags.goal) cli.die('--goal is required', { prefix: 'webrunner' });
+  let hostname = '';
+  try {
+    hostname = new URL(flags.url).hostname;
+  } catch {
+    cli.die(`--url is not a URL: ${flags.url}`, { prefix: 'webrunner' });
+  }
   await fs.mkdir('/tmp/meep', { recursive: true });
   await fs.writeFile(LOG_PATH, '');
   const parsedMax = parseInt(flags['max-steps'], 10);
   const maxSteps = Number.isFinite(parsedMax) ? Math.min(Math.max(parsedMax, 1), 50) : MAX_STEPS_DEFAULT;
   const hasCheck = Boolean(flags.expect || flags['expect-url']);
+  const opts = { viewport: onOff(flags.viewport, true), shots: onOff(flags.shots, true) };
   const started = Date.now();
   const decider = await makeDecider(flags);
   // The agent writes the text for a type action itself; kev can only pick
-  // values that the goal spells out.
+  // values that the goal spells out (and hybrid shrugs to the agent for the rest).
   const candidates = flags.decider === 'agent' ? [] : page.textCandidates(flags.goal);
   const result = {
     ok: false,
@@ -343,73 +514,161 @@ async function runGoal(flags) {
     decideSeconds: 0,
     url: flags.url,
   };
-  const finish = (ok, reason, url) => {
+  const trace = await traceLib.openTrace(fs, { label: flags.label || hostname });
+  result.run = trace.id;
+  await trace.start({
+    goal: flags.goal,
+    url: flags.url,
+    decider: decider.name,
+    loadSeconds: result.loadSeconds,
+    check: { expect: flags.expect || null, expectUrl: flags['expect-url'] || null },
+    maxSteps,
+    candidates,
+    viewport: opts.viewport,
+  });
+  await say(`run ${trace.id}`);
+  const finish = async (ok, reason, url) => {
     result.ok = ok;
     result.reason = reason;
     if (url) result.url = url;
     result.seconds = (Date.now() - started) / 1000;
     result.decideSeconds = Math.round(result.decideSeconds * 10) / 10;
+    await trace.end(result);
     return result;
   };
 
   const tab = await openTab(flags.url);
   await say(`tab ${tab} ${flags.url}`);
   await waitForPage(tab);
-  await dismissConsent(tab);
   const history = [];
+  let prev = null;
   let previousLabels = null;
   let stalls = 0;
+  let pendingDone = false;
   for (let step = 1; step <= maxSteps; step++) {
-    const shot = await readShot(tab);
-    if (expected(shot, flags)) {
-      await say(`step ${step}  verified: ${shot.url}`);
-      return finish(true, 'check passed', shot.url);
+    const name = `step-${String(step).padStart(2, '0')}`;
+    const record = { step };
+
+    // Observe. After the first cycle this is the feedback on the last action.
+    const obs = await observe(tab, prev, { ...opts, trace, name });
+    record.observe = {
+      url: obs.shot.url,
+      title: obs.shot.title,
+      viewport: obs.viewport,
+      screenshot: obs.screenshot,
+      snapshot: await trace.file(`${name}.snapshot.txt`, obs.raw),
+      elements: obs.shot.elements.map((element) => slim(element, obs.viewport)),
+      texts: obs.shot.texts.slice(0, 200),
+      ms: obs.ms,
+      commands: obs.commands,
+    };
+    record.diff = obs.diff;
+    if (prev) {
+      stalls = page.fingerprint(obs.shot, obs.viewport) === page.fingerprint(prev.shot, prev.viewport) ? stalls + 1 : 0;
     }
-    const menu = page.buildMenu(shot, flags.goal, { candidates, previousLabels, offerDone: !hasCheck });
-    const state = page.compactState(flags.goal, shot, menu, history);
-    await fs.writeFile(`/tmp/meep/step-${step}.txt`, `${state}\n\nMenu:\n${menu.map((a) => `  ${a.id}  ${a.describe}`).join('\n')}\n`);
+    if (expected(obs, flags)) {
+      record.outcome = 'check passed';
+      await trace.step(record);
+      await say(`step ${step}  verified: ${obs.shot.url}`);
+      return finish(true, 'check passed', obs.shot.url);
+    }
+    if (stalls >= STALL_LIMIT) {
+      record.outcome = 'stalled';
+      await trace.step(record);
+      return finish(false, `${STALL_LIMIT} actions in a row left the page unchanged`, obs.shot.url);
+    }
+
+    // Orient.
+    const orientStarted = Date.now();
+    const ori = page.orient(obs, {
+      goal: flags.goal,
+      history,
+      candidates,
+      previousLabels,
+      offerDone: !hasCheck,
+      offerShrug: Boolean(decider.shrugs),
+    });
+    record.orient = {
+      state: ori.state,
+      menu: ori.menu.map(slimAction),
+      excluded: ori.excluded,
+      scroll: ori.scroll,
+      ms: Date.now() - orientStarted,
+    };
+    await fs.writeFile(
+      `/tmp/meep/step-${step}.txt`,
+      `${ori.state}\n\nMenu:\n${ori.menu.map((a) => `  ${a.id}  ${a.describe}`).join('\n')}\n`
+    );
+
+    // A DONE from the last cycle is confirmed on this observation.
+    if (pendingDone) {
+      pendingDone = false;
+      const verdict = await decider.finished(ori.state);
+      record.verify = verdict;
+      if (verdict.finished) {
+        record.outcome = 'done, confirmed on the next observation';
+        await trace.step(record);
+        await say(`step ${step}  done, confirmed on the next observation`);
+        return finish(true, 'done, confirmed on the next observation', obs.shot.url);
+      }
+      await say(`step ${step}  DONE not confirmed`);
+    }
+
+    // Decide. Implicit guidance first: an observation that has one answer
+    // (a consent wall, a menu with nothing but WAIT) skips the decider.
     const decideStarted = Date.now();
-    // With nothing to act on, WAIT is the only choice: no model call.
-    const decision = menu.length === 1 ? { action: menu[0] } : await decider.decide(state, menu);
+    const direct = page.directAction(obs.shot, obs.raw);
+    const choices = ori.menu.filter((action) => action.operation !== 'SHRUG');
+    let decision;
+    if (direct) decision = { action: direct, system: 'direct' };
+    else if (choices.length === 1) decision = { action: choices[0], system: 'direct' };
+    else decision = { ...(await decider.decide(ori.state, ori.menu)), system: decider.name };
     const decideMs = Date.now() - decideStarted;
     result.decideSeconds += decideMs / 1000;
     result.steps = step;
     const action = decision.action;
+    record.decide = {
+      system: decision.system,
+      action: slimAction(action),
+      confidence: decision.confidence == null ? null : decision.confidence,
+      probabilities: decision.probabilities || null,
+      prompt: decision.prompt || null,
+      answer: decision.answer || null,
+      system1: decision.system1 || null,
+      ms: decideMs,
+    };
     const conf = decision.confidence == null ? '' : ` conf=${decision.confidence}`;
     const typed = action.operation === 'TYPE_TEXT' && !/^type "/.test(action.describe) ? ` "${action.text}"` : '';
     await say(`step ${step}  ${action.describe}${typed}  (${decideMs} ms${conf})`);
     if (decision.top) await say(`         top ${decision.top}`);
 
+    // Act.
+    const actStarted = Date.now();
+    const commands = [];
     if (action.operation === 'DONE') {
-      const after = await readShot(tab);
-      const afterMenu = page.buildMenu(after, flags.goal, { candidates });
-      if (await decider.finished(page.compactState(flags.goal, after, afterMenu, history))) {
-        await say(`step ${step}  done, confirmed on a second snapshot`);
-        return finish(true, 'done, confirmed on a second snapshot', after.url);
-      }
-      await say(`step ${step}  DONE not confirmed by the second snapshot`);
+      pendingDone = true;
     } else {
-      await act(tab, action);
+      try {
+        await act(tab, action, obs.viewport, commands);
+      } catch (err) {
+        record.act = { commands, ms: Date.now() - actStarted, error: err.message };
+        await trace.step(record);
+        throw err;
+      }
       history.push({
         operation: action.operation,
         text: action.text || null,
+        direction: action.direction || null,
         label: action.element ? action.element.label : '',
         role: action.element ? action.element.role : '',
       });
     }
-
     // Suggestion lists render a beat after the keystroke.
-    await sh(['sleep', action.operation === 'TYPE_TEXT' ? '0.6' : '0.3']);
-    const after = await readShot(tab);
-    if (expected(after, flags)) {
-      await say(`step ${step}  verified: ${after.url}`);
-      return finish(true, 'check passed', after.url);
-    }
-    stalls = page.fingerprint(after) === page.fingerprint(shot) ? stalls + 1 : 0;
-    if (stalls >= STALL_LIMIT) {
-      return finish(false, `${STALL_LIMIT} actions in a row left the page unchanged`, after.url);
-    }
-    previousLabels = new Set(shot.elements.map((element) => element.label));
+    await sh(['sleep', action.operation === 'TYPE_TEXT' ? '0.6' : '0.3'], commands);
+    record.act = { commands, ms: Date.now() - actStarted };
+    await trace.step(record);
+    previousLabels = new Set(obs.shot.elements.map((element) => element.label));
+    prev = obs;
   }
   return finish(false, `stopped after ${maxSteps} steps without passing the check`);
 }
@@ -422,8 +681,9 @@ function report(result, flags) {
       `${result.steps} steps, ${result.seconds.toFixed(1)} s (${result.decider}: ${load}decisions ${result.decideSeconds.toFixed(1)} s)`
     );
     console.log(result.url);
+    console.log(`debug: webrunner debug ${result.run}`);
   }
-  if (!result.ok) cli.die(result.reason, { prefix: 'webrunner' });
+  if (!result.ok) cli.die(`${result.reason} (webrunner debug ${result.run})`, { prefix: 'webrunner' });
 }
 
 // "Oct 7", the way Google Flights' date fields accept it.
@@ -455,7 +715,9 @@ function demoGoal(name) {
       url: 'https://www.google.com/travel/flights?hl=en&gl=us&curr=USD',
       // Google opens a date picker instead of searching when no dates are set.
       goal: `Search Google Flights from Berlin to London. Type Berlin into Where from and pick the Berlin suggestion, type London into Where to and pick the London suggestion. Type "${shortDate(7)}" into Departure and "${shortDate(14)}" into Return, then press Search. Keep Round trip, Economy and one passenger.`,
-      expect: 'London',
+      // Both dates, not only the city: a range picker can move the departure
+      // and still land on a London search (seen 2026-10-01).
+      expect: ['London', shortDate(7), shortDate(14)],
       'expect-url': '/travel/flights/search',
       'max-steps': '12',
     };
@@ -470,11 +732,29 @@ async function demo(name, flags) {
   const { page: local, ...goal } = spec;
   return runGoal({
     ...goal,
+    label: name,
     url: local ? previewUrl(local[0]) : goal.url,
     decider: flags.decider,
     model: flags.model,
     from: flags.from,
+    'agent-model': flags['agent-model'],
+    shrug: flags.shrug,
+    viewport: flags.viewport,
+    shots: flags.shots,
   });
+}
+
+// The debug page reads the runs over /preview, so it is copied next to them.
+async function debug(id) {
+  if (!(await fs.exists(DEBUG_PAGE))) cli.die(`the debug page is missing (${DEBUG_PAGE})`, { prefix: 'webrunner' });
+  await fs.mkdir(traceLib.RUNS, { recursive: true });
+  await fs.writeFile(`${traceLib.RUNS}/debug.html`, await fs.readFile(DEBUG_PAGE));
+  if (id && !(await fs.exists(`${traceLib.RUNS}/${id}/trace.jsonl`))) {
+    cli.die(`no run ${id} under ${traceLib.RUNS}`, { prefix: 'webrunner' });
+  }
+  const url = `${previewUrl(`${traceLib.RUNS}/debug.html`)}${id ? `?run=${encodeURIComponent(id)}` : ''}`;
+  await sh(['playwright-cli', 'open', url, '--foreground']);
+  console.log(url);
 }
 
 async function main() {
@@ -486,6 +766,10 @@ async function main() {
     return;
   }
   try {
+    if (sub === 'debug') {
+      await debug(parsed.positional[1] || '');
+      return;
+    }
     let result;
     if (sub === 'run') result = await runGoal(flags);
     else if (sub === 'demo') result = await demo(parsed.positional[1] || '', flags);
