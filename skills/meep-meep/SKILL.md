@@ -62,6 +62,7 @@ webrunner pays off on long goals: on Flights it took half the time of an agent d
   - **It answers with an action, an assessment, a rewritten plan, and notes** (lessons about the site, such as "select a food item before Buy and Eat"). The plan and notes go into kev's state on every later step, so System 1 follows them.
   - **System 2 also writes the first plan** from the goal and the first page, before step 1. `--plan off` skips that.
   - `--model` picks the kev size. Only the plan and the steps kev is unsure of cost money.
+- **`--decider system2`**: System 2 alone on every step, without kev: the same loop, plan, trail, notes and screenshots as `hybrid`, so the two differ only in kev (`--model`, default `claude-sonnet-5-5`). On the Armchair Bike Touring tour (2026-10-01, one run each), `hybrid` finished the 100 miles in 75 steps for about $1.70, while `system2` stalled mid-tour after 83 steps for about $3.60. During a ride it scrolled and clicked links looking for buttons instead of waiting.
 - **Agent calls never get commands.** In slicc an `agent()` scoop's allowed commands are not a hard limit: anything else escalates to the cone, which may approve it. A System 2 scoop allowed only `open --view` once drove the page itself for 100+ steps that way. webrunner therefore allows no command, attaches screenshots to the prompt (`agent --image`), and turns escalation off (`agent --no-escalate`). On a slicc without those options, System 2 sees no screenshot and the log warns that escalation cannot be prevented.
 
 ## When it stops

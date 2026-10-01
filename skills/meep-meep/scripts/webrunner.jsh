@@ -31,6 +31,8 @@ const AGENT_MODEL_DEFAULT = 'claude-haiku-4-5';
 const SHRUG_DEFAULT = 0.5;
 // System 2 deliberates, so it gets a stronger model and room to think.
 const SYSTEM2_MODEL_DEFAULT = 'claude-sonnet-5-5';
+// Deciders whose model writes the text of a type action itself.
+const AGENT_WRITES_TEXT = new Set(['agent', 'system2']);
 const SYSTEM2_THINKING_DEFAULT = 'low';
 const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'];
 
@@ -39,11 +41,11 @@ webrunner — a browser loop with a typed action space
 
 USAGE
   webrunner run --url <url> --goal <text> [--expect <text>]... [--expect-url <text>]...
-                [--max-steps 8] [--decider kev|agent|hybrid] [--model <m>] [--from <dir>]
+                [--max-steps 8] [--decider kev|agent|hybrid|system2] [--model <m>] [--from <dir>]
                 [--agent-model <m>] [--agent-thinking low] [--shrug 0.5] [--plan on|off]
                 [--vision] [--window WxH] [--page-text on|off] [--viewport on|off] [--shots on|off]
                 [--factor-text on|off] [--json]
-  webrunner demo link|search|flights [--decider kev|agent|hybrid] [--model <m>] [--json]
+  webrunner demo link|search|flights [--decider kev|agent|hybrid|system2] [--model <m>] [--json]
   webrunner debug [<run-id>]
 
   run                  Open the url and step until the check passes, the model is
@@ -57,6 +59,8 @@ USAGE
                        Needs its weights: kev pull --model 9b (slicc's hf, 8.8 GB)
   --decider agent      one \`agent\` call per step. --model is any id the \`models\`
                        command lists, default ${AGENT_MODEL_DEFAULT}
+  --decider system2    System 2 alone on every step (--model, default ${SYSTEM2_MODEL_DEFAULT}):
+                       the plan, trail, notes and screenshots of hybrid, without kev
   --decider hybrid     kev decides (System 1, --model as for kev); when it shrugs the
                        step goes to the agent (System 2, --agent-model, default
                        ${SYSTEM2_MODEL_DEFAULT}, thinking --agent-thinking ${SYSTEM2_THINKING_DEFAULT}). It shrugs when it
@@ -416,6 +420,23 @@ async function makeDecider(flags) {
   const name = flags.decider || 'kev';
   if (name === 'agent') return agentDecider(flags);
   if (name === 'kev') return kevOnly(await kevDecider(flags));
+  if (name === 'system2') {
+    // System 2 on every step, no kev: the same loop, plan, trail and notes
+    // as hybrid, so the two differ only in kev. Answers "is kev a helper?".
+    const slow = agentDecider(
+      flags,
+      flags.model || SYSTEM2_MODEL_DEFAULT,
+      THINKING_LEVELS.includes(flags['agent-thinking']) ? flags['agent-thinking'] : SYSTEM2_THINKING_DEFAULT
+    );
+    return {
+      name: `system2 ${slow.name.replace(/^agent /, '')}`,
+      plans: true,
+      plan: (goal, state, imagePath) => slow.plan(goal, state, imagePath),
+      decide: (state, menu, extra = {}) =>
+        slow.deliberate({ ...(extra.context || {}), state, imagePaths: extra.imagePaths }, menu),
+      finished: (state) => slow.finished(state),
+    };
+  }
   if (name === 'hybrid') {
     const parsed = Number.parseFloat(flags.shrug);
     const threshold = Number.isFinite(parsed) ? Math.min(Math.max(parsed, 0), 1) : SHRUG_DEFAULT;
@@ -429,7 +450,7 @@ async function makeDecider(flags) {
       threshold
     );
   }
-  return cli.die('--decider is kev, agent, or hybrid', { prefix: 'webrunner' });
+  return cli.die('--decider is kev, agent, hybrid, or system2', { prefix: 'webrunner' });
 }
 
 // ── observe ───────────────────────────────────────────────────────────
@@ -651,7 +672,7 @@ async function runGoal(flags) {
     // One type option per field and the text as a second question: kev's
     // time grows with the menu (54 options took 5-6 s per step on Google
     // Flights, 21 took 2 s; 2026-10-01). The agent writes text itself.
-    factorText: flags.decider !== 'agent' && onOff(flags['factor-text'], true),
+    factorText: !AGENT_WRITES_TEXT.has(flags.decider) && onOff(flags['factor-text'], true),
     pageText: onOff(flags['page-text'], true),
     plan: onOff(flags.plan, true),
     window: parseWindow(flags.window, onOff(flags.vision, false)),
@@ -661,7 +682,7 @@ async function runGoal(flags) {
   const decider = await makeDecider(flags);
   // The agent writes the text for a type action itself; kev can only pick
   // values that the goal spells out (and hybrid shrugs to the agent for the rest).
-  const candidates = flags.decider === 'agent' ? [] : page.textCandidates(flags.goal);
+  const candidates = AGENT_WRITES_TEXT.has(flags.decider) ? [] : page.textCandidates(flags.goal);
   const result = {
     ok: false,
     reason: '',
