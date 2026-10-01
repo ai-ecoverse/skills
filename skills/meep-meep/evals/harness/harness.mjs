@@ -28,28 +28,17 @@ export const arms = [
     '--vision',
   ]),
   kevArm('kev-4b-vision', '4b-vision', ['--decider', 'kev', '--model', '4b-vision', '--vision']),
-  // System 2 is the hybrid's default: claude-sonnet-5-5, thinking low.
-  kevArm('hybrid-4b-vision', '4b-vision', [
-    '--decider',
-    'hybrid',
-    '--model',
-    '4b-vision',
-    '--vision',
-  ]),
-  {
-    id: 'agent-decider',
-    kind: 'skill',
-    pool: 'bench',
-    skills: ['decide-quickly'],
-    args: ['--decider', 'agent', '--model', AGENT_MODEL],
-  },
-  {
-    id: 'agent-vision',
-    kind: 'skill',
-    pool: 'bench',
-    skills: ['decide-quickly'],
-    args: ['--decider', 'agent', '--model', AGENT_MODEL, '--vision'],
-  },
+  // HELD (2026-10-01): the arms below run agent() scoops, and a scoop's
+  // allowedCommands is not a hard allowlist: an unlisted command escalates
+  // to the cone. Live, a System 2 scoop allowed only `open --view` drove
+  // playwright-cli itself for 100+ steps through cone approvals. Re-enable
+  // once slicc's `agent` takes images and can deny instead of escalate, and
+  // webrunner uses that.
+  // kevArm('hybrid-4b-vision', '4b-vision', ['--decider', 'hybrid', '--model', '4b-vision', '--vision']),
+  // { id: 'agent-decider', kind: 'skill', pool: 'bench', skills: ['decide-quickly'],
+  //   args: ['--decider', 'agent', '--model', AGENT_MODEL] },
+  // { id: 'agent-vision', kind: 'skill', pool: 'bench', skills: ['decide-quickly'],
+  //   args: ['--decider', 'agent', '--model', AGENT_MODEL, '--vision'] },
   { id: 'playwright-agent', kind: 'agent', pool: 'bench', model: AGENT_MODEL },
 ];
 
