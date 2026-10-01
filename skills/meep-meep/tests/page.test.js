@@ -749,12 +749,13 @@ test('System 2 gets the trail, the plan, the notes, the hint, the images and the
     ],
     hint: 'A fast model was unsure here (confidence 0.06 < 0.5).',
     state: 'Goal: Eat, then ride\nControls:\n  [e1] link "x"',
-    imagePaths: ['/tmp/meep/runs/r/step-05.vision.png', '/tmp/meep/runs/r/step-04.vision.png'],
+    imageCount: 2,
     menu,
   });
-  ok(prompt.includes('open --view --size medium /tmp/meep/runs/r/step-05.vision.png'));
-  ok(prompt.includes('open --view --size medium /tmp/meep/runs/r/step-04.vision.png'));
-  ok(prompt.includes('the second is the page one step earlier'));
+  ok(prompt.includes('The attached images are the page now'));
+  ok(prompt.includes('then the page one step earlier'));
+  ok(!prompt.includes('open --view'), 'System 2 is never told to run a command');
+  ok(prompt.includes('must not run any command'));
   ok(prompt.includes('  1. Get Some Food'));
   ok(prompt.includes('  - select a food item before Buy and Eat'));
   ok(
@@ -766,7 +767,7 @@ test('System 2 gets the trail, the plan, the notes, the hint, the images and the
   ok(prompt.includes('A fast model was unsure here'));
   ok(prompt.includes('click:e1  click link "Incompleteness theorems"'));
   const blind = page.system2Prompt({ goal: 'g', trail: [], state: 's', menu });
-  ok(blind.includes('Do not run any command or read any file.'));
+  ok(blind.includes('must not run any command') && !blind.includes('attached image'));
   ok(blind.includes('(no steps yet)') && blind.includes('(none yet)'));
   const schema = page.system2Schema(menu);
   is(schema.required, ['action', 'assessment', 'plan', 'notes']);
@@ -793,6 +794,7 @@ test('System 2 plans and notes are cleaned and capped, and notes accumulate', ()
   );
   is(many.length, page.MAX_NOTES);
   is(many[many.length - 1], 'new', 'the newest note is kept');
-  ok(page.planPrompt('g', 's', '/x.png').includes('open --view --size medium /x.png'));
+  ok(page.planPrompt('g', 's', 1).includes('The attached image is the page now.'));
+  ok(!page.planPrompt('g', 's', 0).includes('attached image'));
   is(page.PLAN_SCHEMA.required, ['plan', 'notes']);
 });

@@ -67,7 +67,7 @@ USAGE
   --vision             also show the decider the screenshot, each offered control boxed
                        and labelled with its ref. kev needs --model 4b-vision (the
                        default with --vision) or 0.8b-vision; the agent views the
-                       image with \`open --view\`
+                       image attached to its prompt (slicc agent --image)
   --window WxH         resize the browser's viewport before the first step (device
                        scale 1). With --vision the default is 1024x576, the size kev's
                        vision input takes, so the screenshot is not scaled
@@ -176,26 +176,49 @@ function onOff(value, fallback) {
 
 // Each call spawns a scoop that may run no command; its StructuredOutput is
 // the decision. The scoop is billed like any other: see `cost`.
+// What this slicc's `agent` can do. A scoop's allowedCommands is not a hard
+// allowlist: an unlisted command escalates to the cone, which may approve
+// it. A System 2 scoop allowed only `open --view` drove playwright-cli
+// itself for 100+ steps that way (2026-10-01). So webrunner never grants a
+// command: screenshots go in as images, and escalation is switched off.
+// A slicc without those options gets no images and a warning.
+let agentCaps = null;
+async function agentCapabilities() {
+  if (agentCaps) return agentCaps;
+  const help = await exec.spawn(['agent', '--help']);
+  const text = `${help.stdout || ''}${help.stderr || ''}`;
+  agentCaps = { images: /--image\b/.test(text), noEscalate: /--no-escalate\b/.test(text) };
+  if (!agentCaps.noEscalate) {
+    await say('warning: this slicc cannot stop an agent() scoop from escalating commands to the cone');
+  }
+  return agentCaps;
+}
+
 function agentDecider(flags, model = flags.model || AGENT_MODEL_DEFAULT, thinking = 'off') {
-  // With a marked screenshot the scoop may run `open --view` on it, so it
-  // sees what kev sees; otherwise it runs nothing.
-  const ask = (prompt, schema, look = false) =>
-    agent(prompt, {
+  const ask = async (prompt, schema, images = []) => {
+    const caps = await agentCapabilities();
+    return agent(prompt, {
       model,
       thinking,
       schema,
       cwd: '/tmp/meep',
-      allowedCommands: look ? 'open' : 'true',
+      allowedCommands: 'true',
       readOnly: '/tmp/meep/',
+      ...(caps.noEscalate ? { escalate: false } : {}),
+      ...(caps.images && images.length ? { images } : {}),
     });
+  };
+  // Images only go along when this slicc can attach them.
+  const attachable = async (images) => ((await agentCapabilities()).images ? images.filter(Boolean) : []);
   return {
     name: `agent ${model}`,
     takesHint: true,
     // System 2: the trail, the plan and the notes, one or two screenshots;
     // it answers with an action, an assessment, a new plan and notes.
     async deliberate(ctx, menu) {
-      const prompt = page.system2Prompt({ ...ctx, menu });
-      const answer = await ask(prompt, page.system2Schema(menu), Boolean(ctx.imagePaths && ctx.imagePaths.length));
+      const images = await attachable(ctx.imagePaths || []);
+      const prompt = page.system2Prompt({ ...ctx, menu, imageCount: images.length });
+      const answer = await ask(prompt, page.system2Schema(menu), images);
       let action = page.pickAction(menu, answer && answer.action);
       if (action.operation === 'TYPE_TEXT' && !action.text) {
         const text = typeof answer.text === 'string' ? answer.text.trim() : '';
@@ -212,8 +235,9 @@ function agentDecider(flags, model = flags.model || AGENT_MODEL_DEFAULT, thinkin
       };
     },
     async plan(goal, state, imagePath) {
-      const prompt = page.planPrompt(goal, state, imagePath);
-      const answer = await ask(prompt, page.PLAN_SCHEMA, Boolean(imagePath));
+      const images = await attachable([imagePath]);
+      const prompt = page.planPrompt(goal, state, images.length);
+      const answer = await ask(prompt, page.PLAN_SCHEMA, images);
       return {
         prompt,
         answer,
@@ -222,8 +246,9 @@ function agentDecider(flags, model = flags.model || AGENT_MODEL_DEFAULT, thinkin
       };
     },
     async decide(state, menu, hint, extra = {}) {
-      const prompt = page.agentPrompt(state, menu, hint, extra.imagePath);
-      const answer = await ask(prompt, page.decisionSchema(menu), Boolean(extra.imagePath));
+      const images = await attachable([extra.imagePath]);
+      const prompt = page.agentPrompt(state, menu, hint, images.length);
+      const answer = await ask(prompt, page.decisionSchema(menu), images);
       const trail = { prompt, answer };
       const action = page.pickAction(menu, answer && answer.action);
       if (action.operation !== 'TYPE_TEXT' || action.text) return { action, ...trail };
