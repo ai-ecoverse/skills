@@ -2,7 +2,7 @@
 /**
  * report — merge harness-eval records (records/*.json from every arm job) into report.json and
  * report.md: per arm × goal the pass count, and per arm the pass rate, median time, steps and
- * spend. A pass is the shared check (judge.mjs); the arms' own verdicts appear as "self".
+ * spend. A pass is the skill adapter's `judge`, the same check for every arm; the arms' own verdicts appear as "self".
  *
  *   node tools/harness-evals/report.mjs <dir with records/*.json, searched recursively> <out dir>
  */
