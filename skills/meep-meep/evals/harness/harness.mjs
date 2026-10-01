@@ -20,9 +20,22 @@ const kevArm = (id, model, args) => ({
 });
 
 export const arms = [
-  kevArm('kev-9b', '9b', ['--decider', 'kev', '--model', '9b']),
-  kevArm('hybrid-9b', '9b', ['--decider', 'hybrid', '--model', '9b', '--agent-model', AGENT_MODEL]),
-  kevArm('kev-vision', '4b-vision', ['--decider', 'kev', '--vision']),
+  kevArm('kev-0.8b-vision', '0.8b-vision', [
+    '--decider',
+    'kev',
+    '--model',
+    '0.8b-vision',
+    '--vision',
+  ]),
+  kevArm('kev-4b-vision', '4b-vision', ['--decider', 'kev', '--model', '4b-vision', '--vision']),
+  // System 2 is the hybrid's default: claude-sonnet-5-5, thinking low.
+  kevArm('hybrid-4b-vision', '4b-vision', [
+    '--decider',
+    'hybrid',
+    '--model',
+    '4b-vision',
+    '--vision',
+  ]),
   {
     id: 'agent-decider',
     kind: 'skill',

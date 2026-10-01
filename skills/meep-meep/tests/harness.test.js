@@ -36,7 +36,7 @@ test('containsValue skips a number that runs on, and finds a later exact one', (
 });
 
 test('command quotes the goal and repeats --expect and --expect-url', () => {
-  const arm = arms.find((a) => a.id === 'kev-9b');
+  const arm = arms.find((a) => a.id === 'kev-4b-vision');
   const goal = {
     url: 'https://x/',
     goal: `it's "here"`,
@@ -46,7 +46,7 @@ test('command quotes the goal and repeats --expect and --expect-url', () => {
   };
   is(
     command(goal, arm, { shellQuote: quote }),
-    `'webrunner' 'run' '--url' 'https://x/' '--goal' 'it'\\''s "here"' '--expect' 'a' '--expect' 'b' '--expect-url' '/p' '--max-steps' '6' '--decider' 'kev' '--model' '9b' '--json'`
+    `'webrunner' 'run' '--url' 'https://x/' '--goal' 'it'\\''s "here"' '--expect' 'a' '--expect' 'b' '--expect-url' '/p' '--max-steps' '6' '--decider' 'kev' '--model' '4b-vision' '--vision' '--json'`
   );
 });
 
