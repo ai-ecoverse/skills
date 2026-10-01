@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { loadAdapter, validateArms } from './adapter.mjs';
+import { escalationDelta, escalationTotals, invalidReason } from './escalations.mjs';
 import {
   customPlaceholders,
   fillGoal,
@@ -223,6 +224,8 @@ test('report keeps skills apart: the same arm id in two skills is two rows', () 
       passed: 0,
       self_passed: 0,
       errors: 0,
+      invalid: 0,
+      escalations_allowed: 0,
       median_seconds: 10,
       median_steps: 3,
       cost_usd: 0.5,
@@ -232,4 +235,65 @@ test('report keeps skills apart: the same arm id in two skills is two rows', () 
   const md = markdown(s);
   assert.match(md, /## meep[\s\S]*\| kev \| 1\/2 \|[\s\S]*## other[\s\S]*\| bare \| 0\/1 \|/);
   assert.doesNotMatch(md, /meep-meep/);
+});
+
+test('escalations: totals need every row to carry the counter, deltas refuse a reset', () => {
+  const row = (asked, allowed, denied) => ({ name: 's', escalations: { asked, allowed, denied } });
+  is(escalationTotals(JSON.stringify({ scoops: [row(1, 1, 0), row(2, 0, 2)] })), {
+    asked: 3,
+    allowed: 1,
+    denied: 2,
+  });
+  is(escalationTotals(JSON.stringify({ scoops: [] })), { asked: 0, allowed: 0, denied: 0 });
+  is(
+    escalationTotals(JSON.stringify({ scoops: [row(0, 0, 0), { name: 'cone' }] })),
+    null,
+    'old leader'
+  );
+  is(escalationTotals('not json'), null);
+  is(escalationDelta({ asked: 1, allowed: 0, denied: 1 }, { asked: 4, allowed: 2, denied: 1 }), {
+    asked: 3,
+    allowed: 2,
+    denied: 0,
+  });
+  is(
+    escalationDelta({ asked: 5, allowed: 0, denied: 0 }, { asked: 0, allowed: 0, denied: 0 }),
+    null
+  );
+  is(escalationDelta(null, { asked: 0, allowed: 0, denied: 0 }), null);
+});
+
+test('a skill arm run with approved escalations is invalid; the cone agent arm is not', () => {
+  is(
+    invalidReason('skill', { asked: 3, allowed: 2, denied: 1 }),
+    '2 command(s) escalated to the cone and approved'
+  );
+  is(invalidReason('skill', { asked: 3, allowed: 0, denied: 3 }), null, 'denied is fine');
+  is(invalidReason('agent', { asked: 3, allowed: 3, denied: 0 }), null);
+  is(invalidReason('skill', null), null);
+});
+
+test('report leaves invalid runs out of every score and counts them', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'harness-'));
+  mkdirSync(join(dir, 'records'), { recursive: true });
+  const rec = (n, pass, invalid) => ({
+    skill: 'meep',
+    arm: 'hybrid',
+    goal: 'flights',
+    repeat: n,
+    pass,
+    self_ok: pass,
+    seconds: 10 * n,
+    steps: n,
+    cost_usd: 1,
+    escalations: { asked: invalid ? 5 : 0, allowed: invalid ? 5 : 0, denied: 0 },
+    invalid: invalid ? '5 command(s) escalated to the cone and approved' : null,
+    error: null,
+  });
+  writeFileSync(join(dir, 'records/1.json'), JSON.stringify(rec(1, false, false)));
+  writeFileSync(join(dir, 'records/2.json'), JSON.stringify(rec(2, true, true)));
+  const [row] = summarize(readRecords(dir)).skills[0].rows;
+  is([row.passed, row.runs, row.invalid, row.escalations_allowed], [0, 1, 1, 5]);
+  is([row.cost_usd, row.median_seconds, row.goals.flights], [1, 10, { passed: 0, runs: 1 }]);
+  assert.match(markdown(summarize(readRecords(dir))), /\| hybrid \| 0\/1 \| 0\/1 \|.*\| 0 \| 1 \|/);
 });

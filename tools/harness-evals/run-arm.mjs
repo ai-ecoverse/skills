@@ -18,6 +18,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { loadAdapter } from './adapter.mjs';
+import { escalationDelta, escalationTotals, invalidReason } from './escalations.mjs';
 import {
   fillGoal,
   resolvePlaceholders,
@@ -63,9 +64,12 @@ const cli = (args, { input, timeoutMs = 120_000 } = {}) =>
     maxBuffer: 64 * 1024 * 1024,
     env: { ...process.env, SLICC_NO_TUI: '1', NO_COLOR: '1' },
   });
+/** One `cost --json --all` reading: spend (bench adapter) and escalation counters. */
 const spend = () => {
   const r = trySh('cost --json --all', 60_000);
-  return r.ok ? bench.costTotals(r.out) : null;
+  return r.ok
+    ? { cost: bench.costTotals(r.out), escalations: escalationTotals(r.out) }
+    : { cost: null, escalations: null };
 };
 const tabs = () => tabIds(trySh('playwright-cli tab-list', 60_000).out);
 
@@ -77,6 +81,12 @@ if (arm.kind === 'agent') {
   if (m.status !== 0)
     throw new Error(`slicc model ${arm.model} failed: ${String(m.stderr ?? '').slice(-300)}`);
 }
+// A skill arm's runs only count when escalations can be counted (slicc #3746); stop before
+// setup (model downloads) instead of producing runs nobody can trust.
+if (arm.kind === 'skill' && !spend().escalations)
+  throw new Error(
+    'this leader reports no escalation counters (cost --json rows lack `escalations`; needs slicc #3746 in the release), so skill-arm runs could not be validated'
+  );
 for (const command of arm.setup ?? []) {
   const t0 = Date.now();
   sh(command, 30 * 60_000);
@@ -113,7 +123,9 @@ for (let rep = 1; rep <= repeats; rep += 1) {
         runError = `slicc prompt exited ${r.status}: ${String(r.stderr ?? '').slice(-300)}`;
     }
     const seconds = (Date.now() - t0) / 1000;
-    const delta = bench.spendDelta(costBefore, spend());
+    const costAfter = spend();
+    const delta = bench.spendDelta(costBefore.cost, costAfter.cost);
+    const escalations = escalationDelta(costBefore.escalations, costAfter.escalations);
     // One bar for every arm: the skill's judge on each tab the run left open.
     const opened = tabs().filter((id) => !before.includes(id));
     const judged = [];
@@ -148,6 +160,8 @@ for (let rep = 1; rep <= repeats; rep += 1) {
       decide_seconds: own?.decideSeconds ?? null,
       cost_usd: delta.costUsd,
       tokens: delta.tokens,
+      escalations,
+      invalid: invalidReason(arm.kind, escalations),
       tabs_judged: judged,
       error: runError,
       at: new Date().toISOString(),
@@ -158,7 +172,7 @@ for (let rep = 1; rep <= repeats; rep += 1) {
     );
     results.push(record);
     console.log(
-      `[harness] ${skill}/${arm.id} ${g.id} r${rep}: ${record.pass ? 'PASS' : 'fail'} (own ${record.self_ok}) ${seconds.toFixed(0)} s${delta.costUsd == null ? '' : ` $${delta.costUsd.toFixed(3)}`}${runError ? ` ERROR ${runError.slice(0, 120)}` : ''}`
+      `[harness] ${skill}/${arm.id} ${g.id} r${rep}: ${record.pass ? 'PASS' : 'fail'} (own ${record.self_ok}) ${seconds.toFixed(0)} s${delta.costUsd == null ? '' : ` $${delta.costUsd.toFixed(3)}`}${record.invalid ? ` INVALID: ${record.invalid}` : ''}${runError ? ` ERROR ${runError.slice(0, 120)}` : ''}`
     );
   }
 }

@@ -40,9 +40,11 @@ export function summarize(records) {
       const own = records.filter((r) => r.skill === skill);
       const arms = [...new Set(own.map((r) => r.arm))].sort();
       const goals = [...new Set(own.map((r) => r.goal))].sort();
-      const cell = (arm, goal) => own.filter((r) => r.arm === arm && r.goal === goal);
+      const cell = (arm, goal) => own.filter((r) => r.arm === arm && r.goal === goal && !r.invalid);
       const rows = arms.map((arm) => {
-        const rs = own.filter((r) => r.arm === arm);
+        // Invalid runs (escalations.mjs) are counted, never scored.
+        const all = own.filter((r) => r.arm === arm);
+        const rs = all.filter((r) => !r.invalid);
         const costs = rs.map((r) => r.cost_usd).filter((c) => typeof c === 'number');
         return {
           arm,
@@ -50,6 +52,8 @@ export function summarize(records) {
           passed: rs.filter((r) => r.pass).length,
           self_passed: rs.filter((r) => r.self_ok).length,
           errors: rs.filter((r) => r.error).length,
+          invalid: all.length - rs.length,
+          escalations_allowed: all.reduce((n, r) => n + (r.escalations?.allowed ?? 0), 0),
           median_seconds: median(rs.map((r) => r.seconds)),
           median_steps: median(rs.map((r) => r.steps)),
           cost_usd: costs.length ? costs.reduce((x, y) => x + y, 0) : null,
@@ -67,18 +71,18 @@ export function summarize(records) {
 }
 
 function table({ skill, goals, rows }) {
-  const head = `| arm | passed | ${goals.join(' | ')} | self-reported | median s | median steps | spend | errors |`;
-  const sep = `|${'---|'.repeat(goals.length + 7)}`;
+  const head = `| arm | passed | ${goals.join(' | ')} | self-reported | median s | median steps | spend | errors | invalid |`;
+  const sep = `|${'---|'.repeat(goals.length + 8)}`;
   const lines = rows.map(
     (r) =>
-      `| ${r.arm} | ${r.passed}/${r.runs} | ${goals.map((g) => `${r.goals[g].passed}/${r.goals[g].runs}`).join(' | ')} | ${r.self_passed} | ${r.median_seconds == null ? '–' : r.median_seconds.toFixed(0)} | ${r.median_steps ?? '–'} | ${r.cost_usd == null ? '–' : `$${r.cost_usd.toFixed(2)}`} | ${r.errors} |`
+      `| ${r.arm} | ${r.passed}/${r.runs} | ${goals.map((g) => `${r.goals[g].passed}/${r.goals[g].runs}`).join(' | ')} | ${r.self_passed} | ${r.median_seconds == null ? '–' : r.median_seconds.toFixed(0)} | ${r.median_steps ?? '–'} | ${r.cost_usd == null ? '–' : `$${r.cost_usd.toFixed(2)}`} | ${r.errors} | ${r.invalid} |`
   );
   return `## ${skill}\n\n${head}\n${sep}\n${lines.join('\n')}\n`;
 }
 
 export function markdown(summary) {
   const body = summary.skills.length ? summary.skills.map(table).join('\n') : 'No records.\n';
-  return `# Harness evals\n\nA pass is the skill adapter's \`judge\` applied to the final page of every arm; "self-reported" is the arm's own verdict (from the adapter's \`result\`, where it has one).\n\n${body}`;
+  return `# Harness evals\n\nA pass is the skill adapter's \`judge\` applied to the final page of every arm; "self-reported" is the arm's own verdict (from the adapter's \`result\`, where it has one). An invalid run (a skill arm whose scoops had commands approved by the cone) is counted under "invalid" and left out of every other column.\n\n${body}`;
 }
 
 // realpath: argv[1] keeps symlinks (macOS /tmp), import.meta.url doesn't.
