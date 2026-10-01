@@ -74,7 +74,12 @@ test('shellQuote survives quotes and spaces; tabIds reads tab-list lines', () =>
 test('validateArms checks ids, kinds, pools, skills, setup and agent models', () => {
   assert.deepEqual(
     validateArms([
-      { id: 'kev', kind: 'skill', pool: 'gpu', setup: ['kev pull --model 9b'] },
+      {
+        id: 'kev-0.8b-vision',
+        kind: 'skill',
+        pool: 'gpu',
+        setup: ['kev pull --model 0.8b-vision'],
+      },
       { id: 'bare', kind: 'agent', pool: 'bench', model: 'm' },
     ]),
     []

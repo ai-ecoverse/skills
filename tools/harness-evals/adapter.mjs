@@ -28,8 +28,9 @@ export function validateArms(arms) {
   const ids = new Set();
   for (const [i, a] of arms.entries()) {
     const at = `arms[${i}]`;
-    if (!/^[a-z0-9][a-z0-9-]*$/.test(String(a.id ?? '')))
-      errors.push(`${at}: id must be lowercase a-z0-9-`);
+    // Dots allowed for model sizes (kev-0.8b); ids name records, jobs and artifacts.
+    if (!/^[a-z0-9][a-z0-9.-]*$/.test(String(a.id ?? '')))
+      errors.push(`${at}: id must be lowercase a-z0-9.-`);
     else if (ids.has(a.id)) errors.push(`${at}: duplicate id ${a.id}`);
     ids.add(a.id);
     if (!['skill', 'agent'].includes(a.kind)) errors.push(`${at}: kind must be skill or agent`);
