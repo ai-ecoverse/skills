@@ -285,13 +285,32 @@ async function create(flags) {
   if (flags.labels)      fields.labels = flags.labels.split(',').map(l => l.trim());
   if (flags.components)  fields.components = flags.components.split(',').map(n => ({ name: n.trim() }));
 
+  // Coerce a plain string into the shape Jira expects for that field. Select,
+  // option, version, security-level and similar fields reject a bare string with
+  // "Could not find valid 'id' or 'value'", so when createmeta offers a closed set
+  // of allowed values we resolve the name the user typed to its id. This is what
+  // makes the `--field-<id> "<value>"` hint printed by the required-field prompt
+  // actually work; without it that hint always 400s.
+  const coerceField = (id, v) => {
+    if (typeof v !== 'string') return v;
+    const allowed = rawFields?.[id]?.allowedValues;
+    if (!Array.isArray(allowed) || allowed.length === 0) return v;
+    const want = v.trim().toLowerCase();
+    const hit = allowed.find((a) => [a.name, a.value, a.id]
+      .some((cand) => typeof cand === 'string' && cand.toLowerCase() === want));
+    if (!hit) return v; // let Jira report it rather than silently dropping the value
+    if (hit.id) return { id: String(hit.id) };
+    return hit.value !== undefined ? { value: hit.value } : { name: hit.name };
+  };
+
   // Handle raw --field-<id>=<value> overrides for custom fields before
   // required-field validation so these flags can satisfy required custom fields.
   for (const [k, v] of Object.entries(flags)) {
     if (k.startsWith('field-')) {
-      fields[k.slice(6)] = v;
+      fields[k.slice(6)] = coerceField(k.slice(6), v);
     } else if (k.startsWith('cf-')) {
-      fields[`customfield_${k.slice(3)}`] = v;
+      const id = `customfield_${k.slice(3)}`;
+      fields[id] = coerceField(id, v);
     }
   }
 
