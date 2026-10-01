@@ -174,7 +174,10 @@ jobs:
     name: ${{ matrix.skill }} / ${{ matrix.condition }}
     needs: plan
     if: needs.plan.outputs.run == 'true'
-    runs-on: ubuntu-latest
+    # The eval job holds the Bedrock key and runs hosted leaders with Chrome: it uses the
+    # benchmark pool (8 vCPU / 32 GiB, Chrome and fonts in the image), like slicc's bench.yml.
+    # Fork PRs never reach it: `plan` gates on the key, which forks don't receive.
+    runs-on: cloud-run-bench
     timeout-minutes: ${{ matrix.job_minutes }}
     strategy:
       fail-fast: false
