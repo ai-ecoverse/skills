@@ -331,7 +331,11 @@ test('the state says when the last action changed nothing', () => {
     { shot, viewport: VIEWPORT, diff: page.diffShots(shot, shot) },
     { goal: 'x', history: [{ operation: 'WAIT' }], candidates: [] }
   );
-  ok(ori.state.includes('Last action changed:\n  nothing visible'));
+  ok(
+    ori.state.includes(
+      'Last action changed:\n  nothing visible: doing the same again will not help'
+    )
+  );
 });
 
 test('without a viewport every control is a candidate, as before', () => {
@@ -544,7 +548,7 @@ test('a container row is left out and long labels are cut', () => {
   const shot = page.parseSnapshot(
     [
       'Page URL: https://news.ycombinator.com/',
-      `  - row "${table}" [ref=e22] [box=0,40,1200,2000]`,
+      `  - listitem "${table}" [ref=e22] [box=0,40,1200,2000]`,
       `  - link "${'A very long story title '.repeat(8)}" [ref=e29] [box=10,60,400,20]`,
       '  - link "51 comments" [ref=e41] [box=10,80,90,20]',
     ].join('\n')
@@ -629,4 +633,54 @@ test('page text goes into the state, visible first, without the site chrome', ()
   );
   const lines = page.pageTextLines(long, null);
   ok(lines.join('').length <= 1500 + lines.length * 2, 'capped');
+});
+
+// Captured 2026-10-01 (run 2026-10-01T18-39-47-armchair-bike): kev pressed
+// "Buy and Eat" three times with no food selected; the game's message sat in
+// a layout row, and a 100-mile terrain list filled the page text.
+test('a game message in a row is page text, and a no-effect action is marked', () => {
+  const raw = [
+    'Page URL: https://www.biketouringtips.com/ArmchairBikeTouring/',
+    '- rootwebarea',
+    '  - row "You\'re out of energy. You must stop and eat some food." [ref=e13]',
+    `  - text "${Array.from({ length: 100 }, (_, i) => `${i}: Valley Flat`).join(' ')}" [ref=e40]`,
+    '  - link "Pancakes (500 Cals) $3.00" [ref=e20]',
+    '  - button "Buy and Eat" [ref=e56]',
+  ].join('\n');
+  const shot = page.parseSnapshot(raw);
+  ok(!shot.elements.some((e) => e.role === 'row'), 'a row is not a control');
+  const history = [{ operation: 'CLICK', role: 'button', label: 'Buy and Eat' }];
+  const ori = page.orient(
+    { shot, viewport: null, diff: page.diffShots(shot, shot) },
+    { goal: 'Eat something', history, candidates: [] }
+  );
+  ok(ori.state.includes("  You're out of energy. You must stop and eat some food."));
+  ok(ori.state.includes('[e56] button "Buy and Eat" (no effect last time)'));
+  ok(!ori.state.includes('[e20] link "Pancakes (500 Cals) $3.00" (no effect'));
+  const terrain = ori.state.split('\n').find((l) => l.startsWith('  0: Valley Flat'));
+  ok(terrain.length <= 303, `one long text is cut (${terrain.length})`);
+});
+
+// Captured 2026-10-01 (run 2026-10-01T18-42-40-armchair-bike): Show details,
+// Hide details, Show details... each click changed the page, so the stall
+// brake never fired.
+test('a page seen a few cycles ago is a circle, and the state says so', () => {
+  is(page.cycleBack(['a', 'b'], 'a'), 2);
+  is(page.cycleBack(['a', 'b', 'c'], 'c'), 0, 'one back is a plain stall, not a circle');
+  is(page.cycleBack(['a', 'b', 'c', 'd', 'e'], 'a'), 0, 'outside the window');
+  is(page.cycleBack([], 'a'), 0);
+  const shot = page.parseSnapshot(
+    '  - button "Show details" [ref=e18]\n  - button "Return to taking a Photo" [ref=e17]'
+  );
+  const history = [
+    { operation: 'CLICK', role: 'button', label: 'Show details' },
+    { operation: 'CLICK', role: 'button', label: 'Hide details' },
+  ];
+  const ori = page.orient(
+    { shot, viewport: null, diff: null },
+    { goal: 'Ride the tour', history, candidates: [], cycle: 2 }
+  );
+  ok(ori.state.includes('Going in circles: the page is back to how it was 2 steps ago.'));
+  ok(ori.state.includes('[e18] button "Show details" (part of the circle)'));
+  ok(!ori.state.includes('Return to taking a Photo" (part'));
 });

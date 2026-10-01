@@ -615,6 +615,7 @@ async function cycles(flags, run) {
   let prev = null;
   let previousLabels = null;
   let stalls = 0;
+  const seenPages = [];
   let pendingDone = false;
   for (let step = 1; step <= maxSteps; step++) {
     const name = `step-${String(step).padStart(2, '0')}`;
@@ -624,9 +625,15 @@ async function cycles(flags, run) {
     const obs = await observe(tab, prev, { ...opts, trace, name });
     record.observe = await observeRecord(trace, obs, name);
     record.diff = obs.diff;
+    // No progress is the same page as last time, or a page from a few
+    // cycles back: actions that undo each other (a toggle) are a stall too.
+    const fp = page.fingerprint(obs.shot, obs.viewport);
+    const cycle = page.cycleBack(seenPages, fp);
     if (prev) {
-      stalls = page.fingerprint(obs.shot, obs.viewport) === page.fingerprint(prev.shot, prev.viewport) ? stalls + 1 : 0;
+      stalls = fp === seenPages[seenPages.length - 1] || cycle ? stalls + 1 : 0;
     }
+    seenPages.push(fp);
+    if (cycle) record.cycle = cycle;
     if (expected(obs, flags)) {
       record.outcome = 'check passed';
       await trace.step(record);
@@ -636,7 +643,7 @@ async function cycles(flags, run) {
     if (stalls >= STALL_LIMIT) {
       record.outcome = 'stalled';
       await trace.step(record);
-      return finish(false, `${STALL_LIMIT} actions in a row left the page unchanged`, obs.shot.url);
+      return finish(false, `${STALL_LIMIT} actions in a row made no progress (page unchanged or back to an earlier one)`, obs.shot.url);
     }
 
     // Orient.
@@ -650,6 +657,7 @@ async function cycles(flags, run) {
       offerShrug: Boolean(decider.shrugs),
       factorText: opts.factorText,
       pageText: opts.pageText,
+      cycle,
     });
     // With --vision the decider also sees the screenshot, each offered
     // control boxed and labelled with its ref.

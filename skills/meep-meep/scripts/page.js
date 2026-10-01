@@ -9,7 +9,10 @@ const LINE =
 const BOX = / \[box=(-?\d+),(-?\d+),(\d+),(\d+)\]/;
 // Lines without a ref that still tell the decider what happened: an error
 // message, a heading that appeared, a status line.
-const TEXT_ROLES = new Set(['alert', 'status', 'heading', 'statictext', 'text']);
+// A table row is read, not clicked: layout tables put a game's messages in
+// rows ("You're out of energy. You must stop and eat some food.", Armchair
+// Bike Touring 2026-10-01), and the controls inside a row have their own refs.
+const TEXT_ROLES = new Set(['alert', 'status', 'heading', 'statictext', 'text', 'row']);
 
 const CLICK_ROLES = new Set([
   'button',
@@ -21,7 +24,6 @@ const CLICK_ROLES = new Set([
   'menuitem',
   'option',
   'listitem',
-  'row',
   'gridcell',
   'treeitem',
 ]);
@@ -488,6 +490,16 @@ function compactState(goal, shot, menu, history, extra = {}) {
   const added = new Set(
     extra.diff && !extra.diff.replaced ? extra.diff.added.map((e) => e.token) : []
   );
+  const changes = describeDiff(extra.diff);
+  // The last action changed nothing: say so, and mark its control, so the
+  // decider tries something else instead of pressing it again.
+  const last = history[history.length - 1];
+  const stuck = last && extra.diff && !changes.length && last.label ? last : null;
+  // Back to a page seen `cycle` observations ago: the actions since then
+  // undid each other (a Show / Hide details toggle, 2026-10-01).
+  const circling = new Set(
+    extra.cycle ? history.slice(-extra.cycle).map((h) => `${h.role}|${h.label}`) : []
+  );
   const seen = new Set();
   const controls = [];
   for (const action of menu) {
@@ -497,17 +509,30 @@ function compactState(goal, shot, menu, history, extra = {}) {
     const value = element.kind === 'fill' ? ` = "${element.value || ''}"` : '';
     const notes = [];
     if (added.has(element.token)) notes.push('new');
+    if (stuck && `${element.role}|${element.label}` === `${stuck.role}|${stuck.label}`) {
+      notes.push('no effect last time');
+    }
+    if (circling.has(`${element.role}|${element.label}`)) notes.push('part of the circle');
     if (PLACE_NOTE[element.place]) notes.push(PLACE_NOTE[element.place]);
     const note = notes.length ? ` (${notes.join(', ')})` : '';
     controls.push(`  [${element.token}] ${element.role} "${shown(element.label)}"${value}${note}`);
   }
-  const changes = describeDiff(extra.diff);
   const drift = driftLines(history, shot);
   return [
     `Goal: ${goal}`,
     `Done so far: ${history.length ? history.map(describeStep).join('; ') : 'nothing yet'}`,
     ...(history.length
-      ? ['Last action changed:', ...(changes.length ? changes : ['  nothing visible'])]
+      ? [
+          'Last action changed:',
+          ...(changes.length
+            ? changes
+            : ['  nothing visible: doing the same again will not help; try another control']),
+        ]
+      : []),
+    ...(extra.cycle
+      ? [
+          `Going in circles: the page is back to how it was ${extra.cycle} steps ago. Do something that moves the goal forward instead.`,
+        ]
       : []),
     ...(drift.length ? ['Not as typed:', ...drift] : []),
     `Page: ${shot.title} (${shot.url})`,
@@ -522,6 +547,8 @@ function compactState(goal, shot, menu, history, extra = {}) {
 // rest of the page, up to this many characters. Text in the site's
 // navigation, banner and footer is left out.
 const MAX_PAGE_TEXT = 1500;
+// One long text (a 100-mile terrain list) must not crowd out the rest.
+const MAX_TEXT_ITEM = 300;
 const CHROME_REGIONS = new Set(['banner', 'navigation', 'contentinfo']);
 
 function pageTextLines(shot, viewport, max = MAX_PAGE_TEXT) {
@@ -530,7 +557,8 @@ function pageTextLines(shot, viewport, max = MAX_PAGE_TEXT) {
   const rest = [];
   for (const t of shot.texts || []) {
     if (CHROME_REGIONS.has(t.region)) continue;
-    const text = String(t.text).replace(/\s+/g, ' ').trim();
+    const full = String(t.text).replace(/\s+/g, ' ').trim();
+    const text = full.length > MAX_TEXT_ITEM ? `${full.slice(0, MAX_TEXT_ITEM - 1)}…` : full;
     if (!text || seen.has(text)) continue;
     seen.add(text);
     const where = place({ box: t.box }, viewport);
@@ -641,7 +669,11 @@ function orient(obs, opts) {
     });
   }
   const pageText = opts.pageText === false ? [] : pageTextLines(obs.shot, obs.viewport);
-  const state = compactState(opts.goal, obs.shot, menu, opts.history, { diff: obs.diff, pageText });
+  const state = compactState(opts.goal, obs.shot, menu, opts.history, {
+    diff: obs.diff,
+    pageText,
+    cycle: opts.cycle || 0,
+  });
   return { menu, state, excluded, scroll: view.scroll, placed: view.elements };
 }
 
@@ -686,6 +718,18 @@ function fingerprint(shot, viewport) {
     viewport ? `scrollY=${viewport.scrollY || 0}` : '',
     ...shot.elements.map((e) => `${e.role}|${e.label}|${e.value || ''}`),
   ].join('\n');
+}
+
+/**
+ * How many observations ago the page last looked exactly like this, when
+ * that was 2 or more cycles back (1 back is a plain stall), else 0.
+ * `seen` is the fingerprints of earlier observations, oldest first.
+ */
+function cycleBack(seen, fp, window = 4) {
+  for (let k = 2; k <= Math.min(window, seen.length); k++) {
+    if (seen[seen.length - k] === fp) return k;
+  }
+  return 0;
 }
 
 /**
@@ -828,6 +872,7 @@ module.exports = {
   pickAction,
   describeStep,
   fingerprint,
+  cycleBack,
   decisionSchema,
   agentPrompt,
   finishedPrompt,
