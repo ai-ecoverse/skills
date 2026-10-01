@@ -37,7 +37,7 @@ test('containsValue skips a number that runs on, and finds a later exact one', (
 });
 
 test('command quotes the goal and repeats --expect and --expect-url', () => {
-  const arm = heldArms.find((a) => a.id === 'hybrid-4b-vision');
+  const arm = [...arms, ...heldArms].find((a) => a.id === 'hybrid-4b-vision');
   const goal = {
     url: 'https://x/',
     goal: `it's "here"`,

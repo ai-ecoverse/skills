@@ -25,19 +25,16 @@ const hybridArm = (model) =>
   kevArm(`hybrid-${model}`, model, ['--decider', 'hybrid', '--model', model, '--vision']);
 
 export const arms = [
-  // HELD (2026-10-01): hybrid runs System 2 as an agent() scoop, and a
-  // scoop's allowedCommands is not a hard allowlist: an unlisted command
-  // escalates to the cone. Live, a System 2 scoop allowed only
-  // `open --view` drove playwright-cli itself for 100+ steps through cone
-  // approvals. Re-enable once slicc's `agent` takes images and can deny
-  // instead of escalate, and webrunner uses that.
-  // hybridArm('0.8b-vision'),
-  // hybridArm('4b-vision'),
+  // Safe since slicc #3746: webrunner's agent() calls run no command, get
+  // their screenshots as images (agent --image) and cannot escalate
+  // (agent --no-escalate). cost --json counts escalations per scoop.
+  hybridArm('0.8b-vision'),
+  hybridArm('4b-vision'),
   { id: 'playwright-agent', kind: 'agent', pool: 'bench', model: AGENT_MODEL },
 ];
 
-/** The arms held above, for the test that checks their shape. */
-export const heldArms = [hybridArm('0.8b-vision'), hybridArm('4b-vision')];
+/** Arms on hold. */
+export const heldArms = [];
 
 /** One goal as a `webrunner run` command line. */
 export function command(goal, arm, { shellQuote }) {
