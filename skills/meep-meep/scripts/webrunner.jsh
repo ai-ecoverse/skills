@@ -27,6 +27,10 @@ const STALL_LIMIT = 3;
 const AGENT_MODEL_DEFAULT = 'claude-haiku-4-5';
 // Below this kev confidence, --decider hybrid hands the step to the agent.
 const SHRUG_DEFAULT = 0.5;
+// System 2 deliberates, so it gets a stronger model and room to think.
+const SYSTEM2_MODEL_DEFAULT = 'claude-sonnet-5-5';
+const SYSTEM2_THINKING_DEFAULT = 'low';
+const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'];
 
 const HELP = `
 webrunner — a browser loop with a typed action space
@@ -34,7 +38,7 @@ webrunner — a browser loop with a typed action space
 USAGE
   webrunner run --url <url> --goal <text> [--expect <text>]... [--expect-url <text>]...
                 [--max-steps 8] [--decider kev|agent|hybrid] [--model <m>] [--from <dir>]
-                [--agent-model <m>] [--shrug 0.5]
+                [--agent-model <m>] [--agent-thinking low] [--shrug 0.5] [--plan on|off]
                 [--vision] [--page-text on|off] [--viewport on|off] [--shots on|off]
                 [--factor-text on|off] [--json]
   webrunner demo link|search|flights [--decider kev|agent|hybrid] [--model <m>] [--json]
@@ -52,9 +56,14 @@ USAGE
   --decider agent      one \`agent\` call per step. --model is any id the \`models\`
                        command lists, default ${AGENT_MODEL_DEFAULT}
   --decider hybrid     kev decides (System 1, --model as for kev); when it shrugs the
-                       step goes to the agent (System 2, --agent-model). It shrugs when
-                       it picks SHRUG, its confidence is below --shrug (default
-                       ${SHRUG_DEFAULT}), or it picks a field the goal gives no text for
+                       step goes to the agent (System 2, --agent-model, default
+                       ${SYSTEM2_MODEL_DEFAULT}, thinking --agent-thinking ${SYSTEM2_THINKING_DEFAULT}). It shrugs when it
+                       picks SHRUG, its confidence is below --shrug (default ${SHRUG_DEFAULT}) and
+                       under 3x the runner-up, or it picks a field the goal gives no text
+                       for. System 2 reads the recent steps, the plan and the notes, looks
+                       at the page, and may rewrite the plan and add notes, which System 1
+                       reads from then on. It writes the first plan before step 1
+                       (--plan off skips that)
   --vision             also show the decider the screenshot, each offered control boxed
                        and labelled with its ref. kev needs --model 4b-vision (the
                        default with --vision) or 0.8b-vision; the agent views the
@@ -153,13 +162,13 @@ function onOff(value, fallback) {
 
 // Each call spawns a scoop that may run no command; its StructuredOutput is
 // the decision. The scoop is billed like any other: see `cost`.
-function agentDecider(flags, model = flags.model || AGENT_MODEL_DEFAULT) {
+function agentDecider(flags, model = flags.model || AGENT_MODEL_DEFAULT, thinking = 'off') {
   // With a marked screenshot the scoop may run `open --view` on it, so it
   // sees what kev sees; otherwise it runs nothing.
   const ask = (prompt, schema, look = false) =>
     agent(prompt, {
       model,
-      thinking: 'off',
+      thinking,
       schema,
       cwd: '/tmp/meep',
       allowedCommands: look ? 'open' : 'true',
@@ -168,6 +177,36 @@ function agentDecider(flags, model = flags.model || AGENT_MODEL_DEFAULT) {
   return {
     name: `agent ${model}`,
     takesHint: true,
+    // System 2: the trail, the plan and the notes, one or two screenshots;
+    // it answers with an action, an assessment, a new plan and notes.
+    async deliberate(ctx, menu) {
+      const prompt = page.system2Prompt({ ...ctx, menu });
+      const answer = await ask(prompt, page.system2Schema(menu), Boolean(ctx.imagePaths && ctx.imagePaths.length));
+      let action = page.pickAction(menu, answer && answer.action);
+      if (action.operation === 'TYPE_TEXT' && !action.text) {
+        const text = typeof answer.text === 'string' ? answer.text.trim() : '';
+        if (!text || text.length > 2000) throw new Error(`${action.id} came back without text`);
+        action = { ...action, text };
+      }
+      return {
+        action,
+        prompt,
+        answer,
+        assessment: typeof answer.assessment === 'string' ? answer.assessment.trim().slice(0, 800) : '',
+        plan: page.cleanList(answer.plan, page.MAX_PLAN),
+        notes: page.cleanList(answer.notes, page.MAX_NOTES),
+      };
+    },
+    async plan(goal, state, imagePath) {
+      const prompt = page.planPrompt(goal, state, imagePath);
+      const answer = await ask(prompt, page.PLAN_SCHEMA, Boolean(imagePath));
+      return {
+        prompt,
+        answer,
+        plan: page.cleanList(answer && answer.plan, page.MAX_PLAN) || [],
+        notes: page.cleanList(answer && answer.notes, page.MAX_NOTES) || [],
+      };
+    },
     async decide(state, menu, hint, extra = {}) {
       const prompt = page.agentPrompt(state, menu, hint, extra.imagePath);
       const answer = await ask(prompt, page.decisionSchema(menu), Boolean(extra.imagePath));
@@ -295,7 +334,9 @@ function hybridDecider(fast, slow, threshold) {
     name: `${fast.name} + ${slow.name}`,
     loadMs: fast.loadMs,
     shrugs: true,
-    async decide(state, menu, extra) {
+    plans: true,
+    plan: (goal, state, imagePath) => slow.plan(goal, state, imagePath),
+    async decide(state, menu, extra = {}) {
       const first = await fast.decide(state, menu, extra);
       const reason = page.shrugReason(first, threshold);
       const system1 = {
@@ -307,7 +348,10 @@ function hybridDecider(fast, slow, threshold) {
       if (!reason) return { ...first, system: fast.name, system1 };
       const slowStarted = Date.now();
       const rest = menu.filter((action) => action.operation !== 'SHRUG');
-      const second = await slow.decide(state, rest, page.shrugHint(first, reason, menu), extra);
+      const second = await slow.deliberate(
+        { ...(extra.context || {}), state, hint: page.shrugHint(first, reason, menu), imagePaths: extra.imagePaths },
+        rest
+      );
       return {
         ...second,
         system: slow.name,
@@ -336,7 +380,11 @@ async function makeDecider(flags) {
     const threshold = Number.isFinite(parsed) ? Math.min(Math.max(parsed, 0), 1) : SHRUG_DEFAULT;
     return hybridDecider(
       await kevDecider(flags),
-      agentDecider(flags, flags['agent-model'] || AGENT_MODEL_DEFAULT),
+      agentDecider(
+        flags,
+        flags['agent-model'] || SYSTEM2_MODEL_DEFAULT,
+        THINKING_LEVELS.includes(flags['agent-thinking']) ? flags['agent-thinking'] : SYSTEM2_THINKING_DEFAULT
+      ),
       threshold
     );
   }
@@ -553,6 +601,7 @@ async function runGoal(flags) {
     // Flights, 21 took 2 s; 2026-10-01). The agent writes text itself.
     factorText: flags.decider !== 'agent' && onOff(flags['factor-text'], true),
     pageText: onOff(flags['page-text'], true),
+    plan: onOff(flags.plan, true),
   };
   if (opts.vision && !opts.shots) cli.die('--vision needs the screenshot: drop --shots off', { prefix: 'webrunner' });
   const started = Date.now();
@@ -612,6 +661,10 @@ async function cycles(flags, run) {
   await say(`tab ${tab} ${flags.url}`);
   await waitForPage(tab);
   const history = [];
+  // What System 2 reads and writes: its plan and notes (System 1 sees them
+  // in its state) and the trail of recent steps with what each one changed.
+  const memory = { plan: [], notes: [], trail: [] };
+  let prevImagePath = null;
   let prev = null;
   let previousLabels = null;
   let stalls = 0;
@@ -634,6 +687,15 @@ async function cycles(flags, run) {
     }
     seenPages.push(fp);
     if (cycle) record.cycle = cycle;
+    // This observation is the outcome of the last step on the trail.
+    const lastStep = memory.trail[memory.trail.length - 1];
+    if (lastStep) {
+      lastStep.changes = page.describeDiff(obs.diff);
+      if (!lastStep.outcome) {
+        if (cycle) lastStep.outcome = `the page went back to how it was ${cycle} steps ago`;
+        else if (obs.diff && !lastStep.changes.length) lastStep.outcome = 'no visible effect';
+      }
+    }
     if (expected(obs, flags)) {
       record.outcome = 'check passed';
       await trace.step(record);
@@ -648,7 +710,7 @@ async function cycles(flags, run) {
 
     // Orient.
     const orientStarted = Date.now();
-    const ori = page.orient(obs, {
+    const orientOpts = {
       goal: flags.goal,
       history,
       candidates,
@@ -658,7 +720,23 @@ async function cycles(flags, run) {
       factorText: opts.factorText,
       pageText: opts.pageText,
       cycle,
-    });
+    };
+    // The original plan: System 2 writes it from the goal and the first
+    // observation, before System 1 takes a step.
+    if (step === 1 && opts.plan && decider.plans) {
+      const planStarted = Date.now();
+      const first = page.orient(obs, orientOpts);
+      const written = await decider.plan(
+        flags.goal,
+        first.state,
+        opts.vision && obs.screenshot ? trace.path(obs.screenshot) : null
+      );
+      memory.plan = written.plan;
+      memory.notes = written.notes;
+      record.plan = { plan: written.plan, notes: written.notes, prompt: written.prompt, ms: Date.now() - planStarted };
+      await say(`plan (${((Date.now() - planStarted) / 1000).toFixed(1)} s): ${written.plan.join(' | ')}`);
+    }
+    const ori = page.orient(obs, { ...orientOpts, plan: memory.plan, notes: memory.notes });
     // With --vision the decider also sees the screenshot, each offered
     // control boxed and labelled with its ref.
     let image = null;
@@ -708,7 +786,14 @@ async function cycles(flags, run) {
     if (direct) decision = { action: direct, system: 'direct' };
     else if (choices.length === 1) decision = { action: choices[0], system: 'direct' };
     else {
-      const extra = { image, imagePath: record.vision ? trace.path(record.vision.image) : null };
+      const imagePath = record.vision ? trace.path(record.vision.image) : null;
+      const extra = {
+        image,
+        imagePath,
+        // For System 2: the page now and one step earlier.
+        imagePaths: [imagePath, prevImagePath].filter(Boolean),
+        context: { goal: flags.goal, plan: memory.plan, notes: memory.notes, trail: memory.trail },
+      };
       const answer = decider.takesHint
         ? await decider.decide(ori.state, ori.menu, null, extra)
         : await decider.decide(ori.state, ori.menu, extra);
@@ -729,6 +814,17 @@ async function cycles(flags, run) {
       system1: decision.system1 || null,
       ms: decideMs,
     };
+    // System 2 may rewrite the plan and add notes; System 1 reads them next.
+    if (decision.plan || decision.notes || decision.assessment) {
+      if (decision.plan && decision.plan.length) memory.plan = decision.plan;
+      if (decision.notes) memory.notes = page.mergeNotes(memory.notes, decision.notes);
+      record.decide.system2 = {
+        assessment: decision.assessment || '',
+        plan: memory.plan,
+        notes: memory.notes,
+      };
+      if (decision.assessment) await say(`         system 2: ${decision.assessment}`);
+    }
     const conf = decision.confidence == null ? '' : ` conf=${decision.confidence}`;
     const typed = action.operation === 'TYPE_TEXT' && !/^type "/.test(action.describe) ? ` "${action.text}"` : '';
     await say(`step ${step}  ${action.describe}${typed}  (${decideMs} ms${conf})`);
@@ -762,12 +858,23 @@ async function cycles(flags, run) {
         failed: Boolean(failure),
       });
     }
+    const shrugged = decision.system1 && decision.system1.shrug;
+    memory.trail.push({
+      step,
+      describe: action.describe,
+      text: action.operation === 'TYPE_TEXT' && !/^type "/.test(action.describe) ? action.text : null,
+      system: shrugged ? 'System 2' : decision.system1 ? 'System 1' : decision.system,
+      confidence: shrugged ? decision.system1.confidence : decision.confidence,
+      outcome: record.actError ? `failed: ${record.actError}` : '',
+    });
+    if (memory.trail.length > 20) memory.trail.shift();
     // Suggestion lists render a beat after the keystroke.
     await sh(['sleep', action.operation === 'TYPE_TEXT' ? '0.6' : '0.3'], commands);
     record.act = { commands, ms: Date.now() - actStarted, error: record.actError || undefined };
     delete record.actError;
     await trace.step(record);
     previousLabels = new Set(obs.shot.elements.map((element) => element.label));
+    prevImagePath = record.vision ? trace.path(record.vision.image) : null;
     prev = obs;
   }
   // The last action gets its feedback too: one more look for the check.
@@ -852,6 +959,8 @@ async function demo(name, flags) {
     model: flags.model,
     from: flags.from,
     'agent-model': flags['agent-model'],
+    'agent-thinking': flags['agent-thinking'],
+    plan: flags.plan,
     shrug: flags.shrug,
     vision: flags.vision,
     'factor-text': flags['factor-text'],

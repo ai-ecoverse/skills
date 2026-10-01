@@ -57,7 +57,11 @@ webrunner pays off on long goals: on Flights it took half the time of an agent d
 - **`--decider kev`** (default): free, and the page stays on the device. It loads in about 4 to 9 s per run, and each step takes 2 to 6 s, more on a long menu. It only types values the goal spells out: each `"quoted string"` and each capitalised name (`Berlin`). Quote dates: `Type "Sep 30" into Departure`. It fails at goals about position, because each control carries only its own label: every "N comments" link looks the same.
 - **`--decider agent`**: each step is one `agent` call. The scoop may run no command and must answer with a menu id and, for a type action, the text. `--model` takes any id from `models` (default `claude-haiku-4-5`). A step takes 3 to 7 s. Its spend shows in `cost`. It sees the same labels as kev, so it can also miss goals about position.
 - **`--vision`** (with `kev` or `hybrid`): kev also sees the screenshot. It needs a vision bundle, `--model 4b-vision` (the default with `--vision`, 5.4 GB) or `0.8b-vision`; there is no 9b one. A step takes about 1.5 s more. On 2026-10-01 kev-4b-vision passed Google Flights with the screenshot and failed it without (one run each).
-- **`--decider hybrid`**: kev decides each step (System 1). When it shrugs, the agent decides the step (System 2), told kev's top choices. Kev shrugs when it picks `SHRUG`, when it picks a field the goal has no text for, or when its top choice is below `--shrug` (default 0.5) and less than 3 times the runner-up. `--model` picks the kev size and `--agent-model` the agent. Only the steps kev is unsure of cost money.
+- **`--decider hybrid`**: kev decides each step (System 1). When it shrugs, the step goes to System 2: an agent with a stronger model (`--agent-model`, default `claude-sonnet-5-5`) and room to think (`--agent-thinking`, default `low`). Kev shrugs when it picks `SHRUG`, when it picks a field the goal has no text for, or when its top choice is below `--shrug` (default 0.5) and less than 3 times the runner-up.
+  - **System 2 deliberates rather than just picking.** It reads the goal, the plan, the notes, the last 6 steps (who decided, what each changed, which had no effect, failed or went in circles), kev's top choices, and the state and menu. With `--vision` it also looks at the marked screenshot now and one step earlier.
+  - **It answers with an action, an assessment, a rewritten plan, and notes** (lessons about the site, such as "select a food item before Buy and Eat"). The plan and notes go into kev's state on every later step, so System 1 follows them.
+  - **System 2 also writes the first plan** from the goal and the first page, before step 1. `--plan off` skips that.
+  - `--model` picks the kev size. Only the plan and the steps kev is unsure of cost money.
 
 ## When it stops
 
@@ -71,7 +75,7 @@ webrunner pays off on long goals: on Flights it took half the time of an agent d
    - **Observe:** the screenshot with the offered, chosen, and new controls outlined.
    - **What changed:** the controls that appeared, disappeared, or changed value since the last cycle.
    - **Orient:** the exact state and menu the decider saw, and every control that was left out with the reason.
-   - **Decide:** the probabilities of every option, kev's choice when it shrugged, and the agent's prompt and answer.
+   - **Decide:** the probabilities of every option, kev's choice when it shrugged, System 2's assessment, plan and notes, and the agent's prompt and answer. Step 1 also shows the original plan.
    - **Act:** every `playwright-cli` command with its output.
 2. Find the first wrong step. The page refreshes while a run is in progress. The files are in `/tmp/meep/runs/<run>/`: `trace.jsonl`, and a snapshot and screenshot per step. `/tmp/meep/webrunner.log` has the one-line-per-step log.
 3. If the right control is not on the menu, name it in the goal with the words its label uses. If it was left out as off-screen, name it, or check that the menu offered a scroll. If kev had no value to type, quote the value.

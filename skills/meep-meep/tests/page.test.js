@@ -684,3 +684,115 @@ test('a page seen a few cycles ago is a circle, and the state says so', () => {
   ok(ori.state.includes('[e18] button "Show details" (part of the circle)'));
   ok(!ori.state.includes('Return to taking a Photo" (part'));
 });
+
+// ── System 2 ──────────────────────────────────────────────────────────
+
+test('the plan and notes System 2 wrote are part of System 1 state', () => {
+  const shot = page.parseSnapshot(SNAPSHOT);
+  const ori = page.orient(
+    { shot, viewport: null, diff: null },
+    {
+      goal: 'Open the article',
+      history: [],
+      candidates: [],
+      plan: ['Click Incompleteness theorems', 'Check the heading says Gödel'],
+      notes: ['The Search link does nothing'],
+    }
+  );
+  ok(
+    ori.state.includes(
+      'Plan:\n  1. Click Incompleteness theorems\n  2. Check the heading says Gödel'
+    )
+  );
+  ok(ori.state.includes('Notes:\n  - The Search link does nothing'));
+  ok(ori.state.indexOf('Plan:') < ori.state.indexOf('Done so far:'));
+  const bare = page.orient(
+    { shot, viewport: null, diff: null },
+    { goal: 'x', history: [], candidates: [] }
+  );
+  ok(!bare.state.includes('Plan:'));
+});
+
+test('a long run keeps the last ten actions in the state', () => {
+  const history = Array.from({ length: 14 }, (_, i) => ({
+    operation: 'CLICK',
+    role: 'button',
+    label: `B${i}`,
+  }));
+  const state = page.compactState('g', page.parseSnapshot(SNAPSHOT), [], history);
+  ok(state.includes('Done so far: (4 earlier actions) clicked button "B4"'));
+  ok(!state.includes('"B3"'));
+});
+
+test('System 2 gets the trail, the plan, the notes, the hint, the images and the menu', () => {
+  const menu = page.buildMenu(page.parseSnapshot(SNAPSHOT), 'x', {});
+  const prompt = page.system2Prompt({
+    goal: 'Eat, then ride',
+    plan: ['Get Some Food', 'Start Riding'],
+    notes: ['select a food item before Buy and Eat'],
+    trail: [
+      {
+        step: 3,
+        describe: 'click button "Start Riding"',
+        system: 'System 1',
+        confidence: 0.55,
+        changes: ['  1 new control: button "Keep Riding"'],
+      },
+      {
+        step: 4,
+        describe: 'click button "Buy and Eat"',
+        system: 'System 1',
+        confidence: 0.66,
+        outcome: 'no visible effect',
+        changes: [],
+      },
+    ],
+    hint: 'A fast model was unsure here (confidence 0.06 < 0.5).',
+    state: 'Goal: Eat, then ride\nControls:\n  [e1] link "x"',
+    imagePaths: ['/tmp/meep/runs/r/step-05.vision.png', '/tmp/meep/runs/r/step-04.vision.png'],
+    menu,
+  });
+  ok(prompt.includes('open --view --size medium /tmp/meep/runs/r/step-05.vision.png'));
+  ok(prompt.includes('open --view --size medium /tmp/meep/runs/r/step-04.vision.png'));
+  ok(prompt.includes('the second is the page one step earlier'));
+  ok(prompt.includes('  1. Get Some Food'));
+  ok(prompt.includes('  - select a food item before Buy and Eat'));
+  ok(
+    prompt.includes(
+      '  step 3 (System 1 at 55%): click button "Start Riding"\n      1 new control: button "Keep Riding"'
+    )
+  );
+  ok(prompt.includes('  step 4 (System 1 at 66%): click button "Buy and Eat" [no visible effect]'));
+  ok(prompt.includes('A fast model was unsure here'));
+  ok(prompt.includes('click:e1  click link "Incompleteness theorems"'));
+  const blind = page.system2Prompt({ goal: 'g', trail: [], state: 's', menu });
+  ok(blind.includes('Do not run any command or read any file.'));
+  ok(blind.includes('(no steps yet)') && blind.includes('(none yet)'));
+  const schema = page.system2Schema(menu);
+  is(schema.required, ['action', 'assessment', 'plan', 'notes']);
+  is(
+    schema.properties.action.enum,
+    menu.map((a) => a.id)
+  );
+});
+
+test('System 2 plans and notes are cleaned and capped, and notes accumulate', () => {
+  is(page.cleanList(['  a ', '', 3, 'b'], 5), ['a', 'b']);
+  is(page.cleanList('not a list', 5), null);
+  is(
+    page.cleanList(
+      Array.from({ length: 20 }, (_, i) => `s${i}`),
+      page.MAX_PLAN
+    ).length,
+    page.MAX_PLAN
+  );
+  is(page.mergeNotes(['a', 'b'], ['b', 'c']), ['a', 'b', 'c']);
+  const many = page.mergeNotes(
+    Array.from({ length: 8 }, (_, i) => `n${i}`),
+    ['new']
+  );
+  is(many.length, page.MAX_NOTES);
+  is(many[many.length - 1], 'new', 'the newest note is kept');
+  ok(page.planPrompt('g', 's', '/x.png').includes('open --view --size medium /x.png'));
+  is(page.PLAN_SCHEMA.required, ['plan', 'notes']);
+});
