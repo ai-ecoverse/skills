@@ -298,7 +298,21 @@ function nativeImport(url) {
   return importer(url);
 }
 
+// slicc 98912fb (2026-09-23) puts the realm's process on globalThis with
+// versions.node set, so emscripten's own tools detect Node. onnxruntime-web
+// is emscripten output too: it then takes the Node path and fails with
+// "Failed to resolve module specifier 'worker_threads'". Emscripten treats
+// an Electron renderer (process.type === 'renderer') as a browser, which
+// this worker is. Set before the first session; the factory reads it then.
+function browserForEmscripten() {
+  const proc = globalThis.process;
+  if (proc && typeof proc === 'object' && proc.versions && proc.versions.node && !proc.type) {
+    proc.type = 'renderer';
+  }
+}
+
 function configureOrt(ort, distDir) {
+  browserForEmscripten();
   const wasm = ort && ort.env && ort.env.wasm;
   if (!wasm) return ort;
   if (!wasm.wasmPaths) {
@@ -334,4 +348,5 @@ module.exports = {
   reexec,
   nativeImport,
   configureOrt,
+  browserForEmscripten,
 };
