@@ -61,7 +61,7 @@ permissions:
 
 env:
   # The ONLY place slicc is pinned: the runner, the leader scripts, the CLI and the actions.
-  SLICC_REF: 2fc68c083459c3511e4e980c177b910c5b356a89
+  SLICC_REF: 8931cd52420231a5fcf477db2b3214b7398cc52b
   EVAL_MODEL: ${{ inputs.model || 'claude-sonnet-5' }}
   # Debugging only: comma-separated task ids to run instead of whole sets. Keep it empty.
   EVAL_TASKS: ''
@@ -194,11 +194,6 @@ jobs:
             packages/github-workflow
             packages/slicc-cli
             packages/go-optel
-
-      # Both arms run the same runner code: at SLICC_REF a `+` condition errors every run
-      # ("bad run id"), so the checked-out copy gets one strict, idempotent fix (see the script).
-      - name: Patch the runner's run id
-        run: node tools/skill-evals/patch-runner.mjs slicc
 
       # node-server needs Node >= 22.19.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0

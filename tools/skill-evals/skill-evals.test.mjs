@@ -5,7 +5,6 @@ import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { auditTable, auditTrace } from './audit.mjs';
 import { checkRecords, readRecords, stampRecords } from './check.mjs';
-import { ADAPTER_CHECK, patchRunId } from './patch-runner.mjs';
 import { entriesFor, missingFixtures, plan, selectFromChanges, selectFromInput } from './plan.mjs';
 import { stageSkill } from './stage.mjs';
 
@@ -141,17 +140,6 @@ test('stamp adds harness to every record, once', () => {
   assert.equal(stampRecords(dir, 'host'), 1);
   assert.equal(stampRecords(dir, 'host'), 0);
   assert.equal(readRecords(dir)[0].harness, 'host');
-});
-
-test('patch-runner rewrites + in the run id once, is idempotent, and refuses unknown code', () => {
-  // biome-ignore lint/suspicious/noTemplateCurlyInString: the literal source text of run.mjs
-  const run = 'const runId = `${a}-${safe(config.skills)}-r${r.repeat}-${b}`;';
-  const got = patchRunId(run, ADAPTER_CHECK);
-  assert.equal(got.changed, true);
-  assert.ok(got.source.includes("replaceAll('+', '-')"));
-  assert.equal(patchRunId(got.source, ADAPTER_CHECK).changed, false);
-  assert.equal(patchRunId(run, 'if (!/^[A-Za-z0-9._+-]+$/.test(runId))').changed, false);
-  assert.throws(() => patchRunId('const runId = other;', ADAPTER_CHECK), /found it 0 times/);
 });
 
 test('audit reads the transcript only and counts per condition', () => {
