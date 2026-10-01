@@ -26,6 +26,12 @@ export const arms = [
   // #423's kev has no -vision models; its 0.8b and 4b are the text twins of #452's vision arms.
   kevArm('kev-0.8b', '0.8b', ['--decider', 'kev', '--model', '0.8b']),
   kevArm('kev-4b', '4b', ['--decider', 'kev', '--model', '4b']),
+];
+
+// Held like #452's agent arms: a webrunner agent() scoop can escalate unlisted commands to the
+// cone, which approves them, so the decider may act on the page outside webrunner's loop. Back
+// in `arms` once slicc's agent can deny instead of escalate.
+export const heldArms = [
   {
     id: 'agent-decider',
     kind: 'skill',
