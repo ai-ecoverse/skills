@@ -108,3 +108,15 @@ test('a bundle built from an older kev.js pin is not ready', async () => {
     'an unpinned onnxruntime-web copy is not ready'
   );
 });
+
+// Diag round 2 on a hosted L4 leader (2026-10-02): the jsh worker's WebGPU
+// was "google swiftshader", and a 0.8b ask took 80 s.
+test('a software WebGPU adapter is recognised', () => {
+  const soft = runtime.isSoftwareAdapter;
+  is(soft({ info: { vendor: 'google', architecture: 'swiftshader' } }), true);
+  is(soft({ info: { vendor: 'google', description: 'SwiftShader Device (Subzero)' } }), true);
+  is(soft({ info: { vendor: 'nvidia', architecture: 'lovelace', isFallbackAdapter: true } }), true);
+  is(soft({ info: { vendor: 'nvidia', architecture: 'lovelace' } }), false);
+  is(soft({ info: { vendor: 'apple', architecture: 'metal-3' } }), false);
+  is(soft({}), false);
+});

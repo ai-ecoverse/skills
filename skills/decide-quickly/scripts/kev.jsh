@@ -36,6 +36,8 @@ USAGE
                        --model 0.8b|4b|9b default 0.8b (4b is 4.7 GB, 9b is 8.8 GB)
                        --from path        weight directory (default: what kev pull fetched)
                        --date-facts       append day counts between absolute dates
+                       --require-gpu      stop when WebGPU is a software adapter
+                                          (SwiftShader), instead of a ~10x slower ask
                        --json             print the System One response
 
 A question with spaces in the instruction is one quoted argument.
@@ -98,6 +100,7 @@ async function cmdAsk(flags, positionals) {
     from: flags.from || null,
     ortDir,
     dateFacts,
+    requireGpu: flags['require-gpu'] === true,
     log: (line) => console.error(line),
     requireBundle: () => require('/shared/cache/kev/bundle.cjs'),
   });
@@ -128,6 +131,7 @@ async function main() {
   const parsed = host.normalizeFlags(process.argv.parseFlags(), [
     'json',
     'date-facts',
+    'require-gpu',
     'help',
     'h',
   ]);

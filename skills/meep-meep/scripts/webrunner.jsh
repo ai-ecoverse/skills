@@ -96,6 +96,8 @@ USAGE
   --factor-text off    kev: one option per field and goal value, instead of picking
                        the field first and its text in a second, small question
   --shots off          skip the per-step screenshot
+  --require-gpu        kev: stop when WebGPU in this worker is a software
+                       adapter (SwiftShader) instead of running ~10x slower
   --time-limit S       end the run after S seconds, kev loading included, even
                        mid-step: the result says which step and what it was
                        waiting on (a kev decision, an agent call). Default none
@@ -360,6 +362,7 @@ async function kevDecider(flags) {
   const model = await kevRuntime.openModel(fs, exec, {
     model: size,
     from: flags.from || null,
+    requireGpu: onOff(flags['require-gpu'], false),
     log: (line) => {
       if (/phase (ready|session)|runtime|adapter|failed/.test(line)) say(line);
     },
@@ -1350,7 +1353,7 @@ async function debug(id) {
 }
 
 async function main() {
-  const parsed = host.normalizeFlags(process.argv.parseFlags(), ['json', 'help', 'h', 'vision']);
+  const parsed = host.normalizeFlags(process.argv.parseFlags(), ['json', 'help', 'h', 'vision', 'require-gpu']);
   const flags = parsed.flags;
   const sub = parsed.subcommand || '';
   if (flags.help || flags.h || !sub || sub === 'help') {

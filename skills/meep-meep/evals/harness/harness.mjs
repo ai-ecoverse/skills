@@ -21,8 +21,17 @@ const kevArm = (id, model, args) => ({
 
 // The realistic configuration is always hybrid: a kev vision bundle as
 // System 1 and System 2 at its default, claude-sonnet-5-5 with thinking low.
+// --require-gpu: a leader whose worker gets SwiftShader instead of the GPU
+// fails at once with that reason, instead of timing out at ~10x slower.
 const hybridArm = (model) =>
-  kevArm(`hybrid-${model}`, model, ['--decider', 'hybrid', '--model', model, '--vision']);
+  kevArm(`hybrid-${model}`, model, [
+    '--decider',
+    'hybrid',
+    '--model',
+    model,
+    '--vision',
+    '--require-gpu',
+  ]);
 
 export const arms = [
   // Safe since slicc #3746: webrunner's agent() calls run no command, get

@@ -194,7 +194,7 @@ async function openOn(fs, base, dateFacts, providers, log, requireBundle, ortDir
  * The worker's WebGPU adapter, logged by name, or null (also logged): a
  * navigator.gpu without an adapter cannot run a session.
  */
-async function webGpuAdapter(log) {
+async function webGpuAdapter(log, requireGpu) {
   if (!host.hasWebGpu()) return null;
   let adapter = null;
   try {
@@ -212,13 +212,32 @@ async function webGpuAdapter(log) {
     .filter(Boolean)
     .join(' ');
   log(`kev: webgpu adapter ${name || '(no info)'}`);
+  if (isSoftwareAdapter(adapter)) {
+    const what = `WebGPU in this worker is a software adapter (${name || 'fallback'}), not a GPU: every ask runs on the CPU, about 10x slower`;
+    if (requireGpu) throw new Error(`${what}. Give the worker the GPU, or drop --require-gpu.`);
+    log(`kev: WARNING ${what}`);
+  }
   return adapter;
+}
+
+/**
+ * Chrome's SwiftShader, or any adapter flagged as a fallback. A hosted L4
+ * leader's jsh worker got "google swiftshader" while its Vulkan init
+ * failed, and a 0.8b ask took 80 s (diag round 2, 2026-10-02).
+ */
+function isSoftwareAdapter(adapter) {
+  const info = adapter.info || {};
+  if (info.isFallbackAdapter === true || adapter.isFallbackAdapter === true) return true;
+  return /swiftshader/i.test(
+    `${info.vendor} ${info.architecture} ${info.device} ${info.description}`
+  );
 }
 
 /**
  * Open a model on WebGPU when the worker has it, falling back to wasm.
  * Weights are never downloaded here: a missing file is an error that names
- * `kev pull`. opts: { model, from, ortDir, dateFacts, log, requireBundle }
+ * `kev pull`. opts: { model, from, ortDir, dateFacts, log, requireBundle,
+ * requireGpu (refuse a software WebGPU adapter) }
  */
 async function openModel(fs, exec, opts = {}) {
   const log = opts.log || (() => {});
@@ -235,7 +254,7 @@ async function openModel(fs, exec, opts = {}) {
   // "runtime webgpu". A hosted L4 leader took 78-80 s per 0.8b ask where
   // the page took 10 s cold (2026-10-02). Now a WebGPU failure throws, and
   // the wasm retry below says so in the log.
-  const adapter = await webGpuAdapter(log);
+  const adapter = await webGpuAdapter(log, opts.requireGpu === true);
   const providers = adapter ? ['webgpu'] : ['wasm'];
   try {
     return await openOn(fs, base, dateFacts, providers, log, opts.requireBundle, opts.ortDir);
@@ -270,6 +289,7 @@ module.exports = {
   SIZES,
   PULL_LOG,
   openModel,
+  isSoftwareAdapter,
   weightsStatus,
   missingWeightsMessage,
   pullWeights,

@@ -54,7 +54,7 @@ test('command quotes the goal and repeats --expect and --expect-url', () => {
   };
   is(
     command(goal, arm, { shellQuote: quote }),
-    `'webrunner' 'run' '--url' 'https://x/' '--goal' 'it'\\''s "here"' '--expect' 'a' '--expect' 'b' '--expect-url' '/p' '--max-steps' '6' '--time-limit' '810' '--decider' 'hybrid' '--model' '4b-vision' '--vision' '--json'`
+    `'webrunner' 'run' '--url' 'https://x/' '--goal' 'it'\\''s "here"' '--expect' 'a' '--expect' 'b' '--expect-url' '/p' '--max-steps' '6' '--time-limit' '810' '--decider' 'hybrid' '--model' '4b-vision' '--vision' '--require-gpu' '--json'`
   );
 });
 

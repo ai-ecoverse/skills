@@ -60,7 +60,7 @@ A package already on disk is reused only when its version matches that pin.
 
 `kev prepare` does the install and bundle steps without asking anything. Another script can run it before loading `kev-runtime.js`. A bundle written in the current process can't be `require()`d, so that script must pass its own `require('/shared/cache/kev/bundle.cjs')` as `requireBundle` and restart once after `prepare`.
 
-`--json`, `--date-facts`, and `--allow-submit` are booleans. A question or path written after one of them stays an argument.
+`--json`, `--date-facts`, `--require-gpu`, and `--allow-submit` are booleans. A question or path written after one of them stays an argument.
 
 ## kev ask
 
@@ -94,6 +94,8 @@ Stdout is the name, the answer, and a probability, separated by tabs. For a scor
 A `-vision` bundle is the same model behind Qwen3.5's stock vision tower, so a request may also carry an image (meep-meep's `webrunner --vision` sends the page's screenshot). Text requests answer as the text bundle does.
 
 `kev pull` puts the weights in `/workspace/models/ai-ecoverse/kev.js/kev-<size>`. `--from` uses a directory you already have instead.
+
+Kev runs on WebGPU when the worker has an adapter, and on wasm otherwise. stderr names the adapter (`kev: webgpu adapter nvidia lovelace`). A software adapter such as Chrome's SwiftShader runs every ask on the CPU, about 10 times slower: a 0.8b ask took 80 s on a hosted L4 leader whose worker got SwiftShader. kev warns about it, and `--require-gpu` stops instead.
 
 Kev reads up to 65,536 tokens of state and truncates the rest. `kev ask` never re-downloads a `manifest.json` it already has. Weights fetched before the kev.js 0.6.0 bundles were published cover only 8,192 positions, so a long state fails with a `RangeError` that names the limit. Delete that `kev-<size>` directory to fetch the current bundle.
 
