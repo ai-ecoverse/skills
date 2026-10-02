@@ -40,6 +40,7 @@
       "expect": ["completed your first bicycle tour"],
       "expect_url": [],
       "max_steps": 150,
+      "timeout_s": 2100,
       "rubric": "# Rubric: Armchair Bike Touring, the 100-mile Newbie tour (meep-meep armchair-bike)\n\n## Source facts (verified 2026-10-02)\n- The game is https://www.biketouringtips.com/ArmchairBikeTouring/. Its scoring rules are on moreInfo.v3.html and are summarised in the task text.\n- Finishing the first tour shows: \"Congratulations! You have just completed your first bicycle tour. You rode the 100 miles in ...\". The end-of-day table lists \"Total Points All Tours <n>\" and any \"Penalties Assessed\" (for example \"Not Eating penalty -367\").\n- The status panel (calories used and eaten, budget, miles, the day's mileage limit, points) is drawn on a canvas: it shows in screenshots, not in page text.\n- A Road Angel meal or a side trip legitimately cuts the day's limit by 10; only riding past the limit is a mileage violation.\n- Live runs on 2026-10-01: one finished with -4255 points (Not Eating penalty on both days); one stopped at mile 96 with -2245.\n\n## Items\nA1_finished — The run shows the game's tour-completion message for the 100-mile tour in its final state or screenshots. Ending earlier, or the agent only claiming it finished, is violated.\nA2_points_floor — The last \"Total Points All Tours\" the game shows is -3000 or higher. Lower is violated; no points total shown anywhere is not_assessable.\nA3_points_positive — The last \"Total Points All Tours\" the game shows is 0 or higher.\nA4_no_forced_eating — The game never forced a stop to eat: no \"Not Eating penalty\" or forced-eating message on any day. Any such penalty is violated.\nA5_no_forced_night — The game never forced a stop for the night (the 500-point penalty). Any forced overnight stop is violated.\nA6_within_mileage — The rider never rode past the day's mileage limit (no next-day limit cut for riding too far). Cuts from Road Angel meals or side trips do not count.\nA7_within_budget — Spending stayed within the $150 budget: no over-budget penalty, and the remaining budget never went below $0.\nA8_repairs_without_hitchhiking — Every flat tire or broken spoke was repaired from the repair kit; no hitchhike to a bike store (minus 1000) happened. A run with no breakdowns is met.\n",
       "weights": {
         "A1_finished": 30,
@@ -60,6 +61,7 @@
       "expect": [],
       "expect_url": [],
       "max_steps": 150,
+      "timeout_s": 2100,
       "rubric": "# Rubric: Drug Wars, 30 days (meep-meep drugwars)\n\n## Source facts (verified 2026-10-02)\n- https://drugwars.online/game: after [ PLAY NOW ], the header reads \"DAY 1 / 30 > New York City\"; each drug row has Decrease / Increase / MAX / BUY with the drug and its price (\"Heroin $6,037\").\n- Score = Cash + Bank − Debt at the end of day 30. The game starts with a $5,500 loan at 10% a day; the bank pays 2% a day.\n- Travelling to another city takes a day; police, muggings and market swings happen at random.\n\n## Items\nA1_finished — The run reaches the end of day 30 and the game shows its final result. Ending earlier is violated.\nA2_debt_repaid — The $5,500 loan is paid back before the end (debt shown as $0 or gone).\nA3_net_worth_positive — The final score (cash + bank − debt) is above $0.\nA4_net_worth_50k — The final score is $50,000 or more.\nA5_net_worth_250k — The final score is $250,000 or more.\nA6_profitable_trade — At least one sale was made for more than the drug was bought for, as the trajectory or screenshots show.\nA7_survived — The game did not end early through arrest or death.\n",
       "weights": {
         "A1_finished": 30,
@@ -79,6 +81,7 @@
       "expect": [],
       "expect_url": [],
       "max_steps": 80,
+      "timeout_s": 1200,
       "rubric": "# Rubric: Seedship, found a colony (meep-meep seedship)\n\n## Source facts (verified 2026-10-02)\n- https://philome.la/johnayliff/seedship/play/index.html is a SugarCube story: its choices are links without href (\"New game\", \"Continue\", \"Found colony\", \"Move on\").\n- Each planet shows atmosphere, gravity, temperature, water and resources as far as the damaged scanners allow; travel between planets damages systems and kills colonists.\n- Founding a colony ends the game with a score breakdown: planet conditions, colonists, landing and construction systems, culture and science.\n\n## Items\nA1_colony_founded — The run founds a colony and the game shows its ending with the score breakdown. Losing every colonist, or stopping before landing, is violated.\nA2_breathable — The colony's planet has a breathable atmosphere, as the scan or the ending shows.\nA3_moderate_temperature — The colony's planet has a moderate temperature (not too hot or too cold), as the scan or the ending shows.\nA4_water — The colony's planet has water (oceans or planet-wide), as the scan or the ending shows.\nA5_colonists_majority — More than half the original colonists are alive at landing.\nA6_systems_intact — The landing and construction systems are at 50% or more at landing.\nA7_score_floor — The final score the game shows is 10,000 or more.\n",
       "weights": {
         "A1_colony_founded": 30,
@@ -98,6 +101,7 @@
       "expect": [],
       "expect_url": [],
       "max_steps": 60,
+      "timeout_s": 1000,
       "rubric": "# Rubric: The Password Game (meep-meep password)\n\n## Source facts (verified 2026-10-02)\n- https://neal.fun/password-game/ starts behind a consent dialog (Consent); the password field is a rich-text editor.\n- Rules appear one at a time as the earlier ones are satisfied, numbered Rule 1, Rule 2, ...; every rule must stay satisfied.\n- Progress = the highest rule shown with all rules satisfied.\n\n## Items\nA1_rule_5 — The game shows Rule 5 or a later rule.\nA2_rule_8 — The game shows Rule 8 or a later rule.\nA3_rule_12 — The game shows Rule 12 or a later rule.\nA4_rule_16 — The game shows Rule 16 or a later rule.\nA5_rule_20 — The game shows Rule 20 or a later rule.\n",
       "weights": {
         "A1_rule_5": 20,
@@ -115,6 +119,7 @@
       "expect": [],
       "expect_url": [],
       "max_steps": 60,
+      "timeout_s": 900,
       "rubric": "# Rubric: Universal Paperclips, a fixed number of steps (meep-meep paperclips)\n\n## Source facts (verified 2026-10-02)\n- https://www.decisionproblem.com/paperclips/index2.html shows Paperclips, Available Funds, Unsold Inventory, Price per Clip (lower / raise), Public Demand, Marketing Level, Wire with its cost, and later AutoClippers.\n- 1,000 clips made earns the first trust and opens projects; wire runs out unless bought.\n\n## Items\nA1_clips_500 — The Paperclips counter reaches 500 or more.\nA2_clips_1000 — The Paperclips counter reaches 1,000 or more.\nA3_clips_3000 — The Paperclips counter reaches 3,000 or more.\nA4_autoclipper — At least one AutoClipper was bought.\nA5_wire_bought — Wire was bought at least once.\nA6_selling — Clips kept selling: Unsold Inventory did not pile up for good, Available Funds grew.\nA7_marketing — The Marketing Level was raised at least once.\nA8_project — At least one project was bought.\n",
       "weights": {
         "A1_clips_500": 15,
@@ -135,6 +140,7 @@
       "expect": [],
       "expect_url": [],
       "max_steps": 80,
+      "timeout_s": 1200,
       "rubric": "# Rubric: Kittens Game, a fixed number of steps (meep-meep kittens)\n\n## Source facts (verified 2026-10-02)\n- https://kittensgame.com/web/ starts in the Bonfire tab with Gather catnip and Refine catnip; its buttons are divs.\n- Catnip fields grow catnip, huts bring kittens, kittens take jobs in the Village tab, a library opens the Science tab.\n\n## Items\nA1_catnip_field — At least one Catnip field was built.\nA2_hut — At least one Hut was built.\nA3_kittens_2 — The village has 2 or more kittens.\nA4_job — A kitten was given a job (farmer, woodcutter, ...).\nA5_library — A Library was built.\nA6_technology — A technology was researched in the Science tab.\nA7_kittens_5 — The village has 5 or more kittens.\n",
       "weights": {
         "A1_catnip_field": 15,
@@ -154,6 +160,7 @@
       "expect": [],
       "expect_url": [],
       "max_steps": 80,
+      "timeout_s": 1200,
       "rubric": "# Rubric: A Dark Room, a fixed number of steps (meep-meep darkroom)\n\n## Source facts (verified 2026-10-02)\n- https://adarkroom.doublespeakgames.com/ starts with \"light fire\" in a dark room; its buttons are divs.\n- The stranger by the fire becomes the builder; then wood can be gathered and the builder builds carts, huts and traps; villagers can be put to work; items can be crafted.\n\n## Items\nA1_fire_lit — The fire was lit and kept burning.\nA2_builder — The builder (the stranger) is awake and offers to build.\nA3_cart — A cart was built.\nA4_hut — At least one hut was built.\nA5_trap — At least one trap was built.\nA6_workers — At least one villager was put to work (gatherer, hunter, trapper, ...).\nA7_crafted — At least one item was crafted (for example a torch).\n",
       "weights": {
         "A1_fire_lit": 10,
