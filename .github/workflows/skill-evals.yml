@@ -11,7 +11,7 @@
 # Shape: `plan` selects the skills, validates each set with the shared format module
 # (evals-format.js `validateSet`, harness `host`) and with the runner's own loader (`run.mjs
 # --plan`), and emits one matrix entry per skill and condition. Each `eval` job is ONE runner
-# invocation on its own GitHub-hosted runner:
+# invocation on its own `cloud-run-bench` runner (plan and report stay GitHub-hosted):
 #   - `none`: no skills at all, and the skill is never put on that leader, so the agent cannot
 #     read it;
 #   - `none+<skill>`: `tools/skill-evals/stage.mjs` copies `skills/<skill>/` WITHOUT `evals/`
@@ -174,7 +174,9 @@ jobs:
     name: ${{ matrix.skill }} / ${{ matrix.condition }}
     needs: plan
     if: needs.plan.outputs.run == 'true'
-    runs-on: ubuntu-latest
+    # The heavy job (a hosted leader with Chrome, the Bedrock key) runs on the Cloud Run bench
+    # pool (8 vCPU / 32 GiB, Chrome and fonts in the image); plan and report stay GitHub-hosted.
+    runs-on: cloud-run-bench
     timeout-minutes: ${{ matrix.job_minutes }}
     strategy:
       fail-fast: false
