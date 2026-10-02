@@ -229,6 +229,12 @@ async function agentCapabilities() {
   return agentCaps;
 }
 
+// The text of a type answer, or '' when it is missing or too long.
+const textOf = (answer) => {
+  const text = answer && typeof answer.text === 'string' ? answer.text.trim() : '';
+  return text.length <= 2000 ? text : '';
+};
+
 function agentDecider(flags, model = flags.model || AGENT_MODEL_DEFAULT, thinking = 'off') {
   const ask = async (prompt, schema, images = []) => {
     const caps = await agentCapabilities();
@@ -257,18 +263,17 @@ function agentDecider(flags, model = flags.model || AGENT_MODEL_DEFAULT, thinkin
       let prompt = page.system2Prompt({ ...ctx, menu, imageCount: images.length });
       let answer = await ask(prompt, page.system2Schema(menu), images);
       let action = page.pickAction(menu, answer && answer.action);
-      const typed = (a) => (typeof a.text === 'string' ? a.text.trim() : '');
       // A type action with no text ended the run: "type:e2 came back without
       // text" on Wikipedia, eval round 37009340905 (2026-10-02). Ask once
       // more, saying so; then wait rather than fail.
-      if (action.operation === 'TYPE_TEXT' && !action.text && !(typed(answer) && typed(answer).length <= 2000)) {
+      if (action.operation === 'TYPE_TEXT' && !action.text && !textOf(answer)) {
         prompt = `${prompt}\n\nYour last answer chose ${action.id} but gave no \`text\`. A type action needs the exact text in \`text\`; or choose another action.`;
         answer = await ask(prompt, page.system2Schema(menu), images);
         action = page.pickAction(menu, answer && answer.action);
       }
       if (action.operation === 'TYPE_TEXT' && !action.text) {
-        const text = typed(answer);
-        if (text && text.length <= 2000) action = { ...action, text };
+        const text = textOf(answer);
+        if (text) action = { ...action, text };
         else {
           await say(`         system 2 chose ${action.id} twice without text; waiting instead`);
           action = menu.find((a) => a.operation === 'WAIT') || action;
@@ -315,14 +320,21 @@ function agentDecider(flags, model = flags.model || AGENT_MODEL_DEFAULT, thinkin
     },
     async decide(state, menu, hint, extra = {}) {
       const images = await attachable([extra.imagePath]);
-      const prompt = page.agentPrompt(state, menu, hint, images.length);
-      const answer = await ask(prompt, page.decisionSchema(menu), images);
+      let prompt = page.agentPrompt(state, menu, hint, images.length);
+      let answer = await ask(prompt, page.decisionSchema(menu), images);
+      let action = page.pickAction(menu, answer && answer.action);
+      // As in deliberate: a type action without text gets one more ask,
+      // then the step waits instead of ending the run.
+      if (action.operation === 'TYPE_TEXT' && !action.text && !textOf(answer)) {
+        prompt = `${prompt}\n\nYour last answer chose ${action.id} but gave no \`text\`. A type action needs the exact text in \`text\`; or choose another action.`;
+        answer = await ask(prompt, page.decisionSchema(menu), images);
+        action = page.pickAction(menu, answer && answer.action);
+      }
       const trail = { prompt, answer };
-      const action = page.pickAction(menu, answer && answer.action);
       if (action.operation !== 'TYPE_TEXT' || action.text) return { action, ...trail };
-      const text = typeof answer.text === 'string' ? answer.text.trim() : '';
-      if (!text || text.length > 2000) throw new Error(`${action.id} came back without text`);
-      return { action: { ...action, text }, ...trail };
+      if (textOf(answer)) return { action: { ...action, text: textOf(answer) }, ...trail };
+      await say(`         the agent chose ${action.id} twice without text; waiting instead`);
+      return { action: menu.find((a) => a.operation === 'WAIT') || action, ...trail };
     },
     async finished(state) {
       const answer = await ask(page.finishedPrompt(state), page.FINISHED_SCHEMA);
@@ -816,6 +828,10 @@ async function observeRecord(trace, obs, name) {
     snapshot: await trace.file(`${name}.snapshot.txt`, obs.raw),
     elements: obs.shot.elements.map((element) => slim(element, obs.viewport)),
     texts: obs.shot.texts.slice(0, 200),
+    // The page text as the decider would read it. A terminal observation
+    // (check passed, stalled, out of steps) has no orient, and the eval's
+    // judge and game metrics read the final page from here.
+    pageText: page.pageTextLines(obs.shot, obs.viewport).join('\n'),
     ms: obs.ms,
     commands: obs.commands,
   };
@@ -1333,6 +1349,27 @@ async function cycles(flags, run) {
       await trace.step(record);
       await say(`step ${maxSteps + 1}  verified: ${last.shot.url}`);
       return finish(true, 'check passed', last.shot.url);
+    }
+    // A DONE on the last permitted step is confirmed here, as on any other.
+    if (pendingDone) {
+      const ori = page.orient(last, {
+        goal: flags.goal,
+        history,
+        candidates,
+        offerDone: !hasCheck,
+        factorText: opts.factorText,
+        pageText: opts.pageText,
+        ...remembered(),
+      });
+      const verdict = await decider.finished(ori.state);
+      record.verify = verdict;
+      if (verdict.finished) {
+        record.outcome = 'done, confirmed on the next observation';
+        await trace.step(record);
+        await say(`step ${maxSteps + 1}  done, confirmed on the next observation`);
+        return finish(true, 'done, confirmed on the next observation', last.shot.url);
+      }
+      await say(`step ${maxSteps + 1}  DONE not confirmed`);
     }
     record.outcome = 'out of steps';
     await trace.step(record);

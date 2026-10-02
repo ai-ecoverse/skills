@@ -246,3 +246,38 @@ test('diagnostics keep the logs and the run trace, the newest run when none was 
   );
   is(await diagnostics({ own: null, list: async () => [] }), logs);
 });
+
+// Codex review of 969a51e: a check that passes ends the run on an
+// observation with no orient, and audited steps were labelled System 1.
+test('the judge trace keeps the terminal page and names audits as System 2', async () => {
+  const state = (text) => `Goal: g\nPage text:\n  ${text}\nControls:\n  [e1] button "x"`;
+  const lines = [
+    { type: 'start', goal: 'g' },
+    {
+      type: 'step',
+      step: 1,
+      observe: { screenshot: 'step-01.png' },
+      orient: { state: state('Total Points All Tours -13') },
+      decide: {
+        system: 'agent',
+        system1: { action: 'click:e1', oversight: { reason: 'base 0.01', chance: 0.01 } },
+        action: { describe: 'click button "Keep Riding"' },
+      },
+    },
+    {
+      type: 'step',
+      step: 2,
+      observe: {
+        screenshot: 'step-02.png',
+        pageText: '  Tour complete\n  Total Points All Tours 1059',
+      },
+      outcome: 'check passed',
+    },
+    { type: 'end', ok: true, reason: 'check passed', steps: 1 },
+  ];
+  const trace = await traceFromLines(lines, async () => null);
+  ok(trace.steps[0].startsWith('System 2 (audit): click button "Keep Riding"'));
+  ok(trace.steps[1].includes('page text: Tour complete Total Points All Tours 1059'));
+  ok(trace.finalResult.includes('Total Points All Tours 1059'));
+  is(trace.metrics, { points: 1059 }, 'the score from the final page, not the step before');
+});

@@ -186,15 +186,21 @@ const pageTextOf = (state) => {
 export async function traceFromLines(lines, screenshot, { shots = 4 } = {}) {
   const steps = [];
   let lastText = '';
-  let lastState = '';
+  let lastPage = '';
   const stepLines = lines.filter((l) => l.type === 'step');
   for (const s of stepLines) {
     const d = s.decide || {};
     const parts = [];
     if (s.review) parts.push(`plan review (${s.review.why}): ${s.review.assessment || ''}`);
     if (d.action) {
-      const who =
-        d.system1 && d.system1.shrug ? 'System 2' : d.system1 ? 'System 1' : d.system || '';
+      // A random or rut audit is System 2's decision too.
+      const who = !d.system1
+        ? d.system || ''
+        : d.system1.oversight
+          ? 'System 2 (audit)'
+          : d.system1.shrug
+            ? 'System 2'
+            : 'System 1';
       parts.push(`${who}: ${d.action.describe}${d.action.text ? ` "${d.action.text}"` : ''}`);
     }
     if (s.diff && s.diff.changed && s.diff.changed.length) {
@@ -203,9 +209,11 @@ export async function traceFromLines(lines, screenshot, { shots = 4 } = {}) {
     if (d.system2 && d.system2.assessment) parts.push(`assessment: ${d.system2.assessment}`);
     if (s.act && s.act.error) parts.push(`action failed: ${s.act.error}`);
     if (s.outcome) parts.push(`outcome: ${s.outcome}`);
+    // A terminal observation (check passed, out of steps) has no orient:
+    // its page text is on the observe record.
     const state = s.orient ? s.orient.state : '';
-    if (state) lastState = state;
-    const text = pageTextOf(state);
+    const text = state ? pageTextOf(state) : String((s.observe && s.observe.pageText) || '').trim();
+    if (text) lastPage = text;
     if (text && text !== lastText) {
       parts.push(`page text: ${text.replace(/\s+/g, ' ').slice(0, 600)}`);
       lastText = text;
@@ -213,7 +221,7 @@ export async function traceFromLines(lines, screenshot, { shots = 4 } = {}) {
     if (parts.length) steps.push(parts.join(' | '));
   }
   const end = lines.find((l) => l.type === 'end') || {};
-  const finalText = pageTextOf(lastState);
+  const finalText = lastPage;
   const finalResult = [
     `webrunner: ${end.ok ? 'passed' : 'did not pass'} (${end.reason || 'no end record'}) after ${end.steps ?? stepLines.length} steps.`,
     'Final page text:',
