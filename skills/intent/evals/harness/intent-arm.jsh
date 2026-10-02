@@ -190,6 +190,9 @@ async function main() {
     exitCode: done ? done.exitCode : null,
     steps: browsing.length,
     invocations,
+    // The caller's escape hatches: naming a ref after a "not sure", or the raw snapshot.
+    refCalls: browsing.filter((c) => /--ref[= ]/.test(c.command)).length,
+    fullCalls: browsing.filter((c) => /--full\b/.test(c.command)).length,
     toolCalls: calls.length,
     turns,
     usage,
