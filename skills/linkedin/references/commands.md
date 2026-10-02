@@ -1,7 +1,7 @@
 # linkedin command reference
 
 All commands are `linkedin <command> ...` (the skill's `scripts/linkedin.jsh`).
-Output is JSON on stdout unless noted.
+Output is JSON on stdout, except for the three messaging reads noted below.
 
 ## Setup and auth
 
@@ -55,10 +55,15 @@ when auditing what the page itself wrote (content log, cadence, voice analysis).
 
 ## Messaging
 
-- `inbox [--unread] [--limit N]` — recent conversations.
-- `messages <conversationUrn> [--limit N]` — messages in one conversation.
+`inbox`, `messages` and `search-contacts` print colored, human-readable text by default.
+Add `--json` for JSON, as the LAST argument: a bare flag followed by a word takes
+that word as its value, so `messages --json <urn>` would swallow the URN.
+`send` and `dm` always print JSON.
+
+- `inbox [--unread] [--limit N] [--json]` — recent conversations.
+- `messages <conversationUrn> [--limit N] [--json]` — messages in one conversation.
 - `send <conversationUrn> <text>` — send into an existing conversation.
-- `search-contacts <query>` — find messaging recipients.
+- `search-contacts <query> [--json]` — find messaging recipients.
 - `dm <profileUrn> <text>` — message a person, finding or creating the conversation.
 
 ## Monitoring
@@ -80,7 +85,7 @@ linkedin image /shared/media/hero.jpg "Meet gh-reaper" --alt="gh-reaper hero ban
 linkedin list --limit 5
 linkedin comments 7463311119181312000
 linkedin comment 7463311119181312000 "Thanks for the feedback!"
-linkedin inbox --unread
+linkedin inbox --unread --json
 linkedin dm "urn:li:fsd_profile:ACoAA..." "Hey, quick question..."
 linkedin monday --limit 20 --date 3d
 ```
