@@ -179,3 +179,13 @@ test('choiceQuestion: one option per candidate and a NONE', () => {
   ok(q.state.startsWith('Intent: press submit'));
   ok(lib.textSegments(FORM).some((s) => s.text === 'textbox "Customer name:" = ""'));
 });
+
+test('menuQuestion: webrunner wording for kev, ids that map back to refs', () => {
+  const cands = lib.controlCandidates([el('e2', 'textbox', 'Customer name:'), el('e29', 'button', 'Submit order')], null);
+  const q = lib.choiceQuestion('ACT', 'press submit', cands, { title: 'Pizza', url: 'https://x' }, { style: 'menu' });
+  is(Object.keys(q.question.criteria), ['type:e2', 'click:e29', 'NONE']);
+  is(q.question.criteria['click:e29'], 'click button "Submit order"');
+  ok(q.state.startsWith('Goal: press submit') && q.state.includes('  [e29] button "Submit order"'), q.state);
+  is([lib.refOf('click:e29'), lib.refOf('type:e2'), lib.refOf('e5')], ['e29', 'e2', 'e5']);
+  is(lib.SURE_BY_MODEL['4b-vision'], 0.7);
+});

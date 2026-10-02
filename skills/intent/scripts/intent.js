@@ -730,11 +730,9 @@ const NONE = 'NONE';
  * these". The state is the intent and where the page is; each option is a
  * candidate as describeControl/describeText reads it.
  */
-function choiceQuestion(kind, intent, shortlist, shot) {
-  const state = [
-    `Intent: ${squash(intent)}`,
-    `Page: ${shot.title || ''} (${shot.url || ''})`,
-  ].join('\n');
+function choiceQuestion(kind, intent, shortlist, shot, opts = {}) {
+  if (kind === 'ACT' && opts.style === 'menu') return menuQuestion(intent, shortlist, shot);
+  const state = [`Intent: ${squash(intent)}`, `Page: ${shot.title || ''} (${shot.url || ''})`].join('\n');
   const criteria = {};
   for (const c of shortlist) {
     criteria[c.type === 'control' ? c.ref : c.id] = c.type === 'control' ? describeControl(c) : describeText(c);
@@ -748,6 +746,31 @@ function choiceQuestion(kind, intent, shortlist, shot) {
         : 'Which text on the page shows whether the intent holds?';
   return { state, question: { type: 'choice', instructions, criteria } };
 }
+
+/**
+ * The ACT question as webrunner asks kev (meep-meep, #423): the intent as
+ * the goal, the shortlist as a Controls list in the state, and one action
+ * per control (click:eN, type:eN). On 400 Mind2Web intents kev-4b-vision
+ * picked right 88.6% of the time this way and 83.2% with the plain
+ * question above; the 0.8b bundles did as well or better (2026-10-03).
+ * Ids map back to refs with refOf.
+ */
+function menuQuestion(intent, shortlist, shot) {
+  const id = (c) => `${c.element.kind === 'fill' ? 'type' : 'click'}:${c.ref}`;
+  const criteria = {};
+  for (const c of shortlist) criteria[id(c)] = `${c.element.kind === 'fill' ? 'type into' : 'click'} ${describeControl(c)}`;
+  criteria[NONE] = 'none of these controls is the one the intent means';
+  const state = [
+    `Goal: ${squash(intent)}`,
+    `Page: ${shot.title || ''} (${shot.url || ''})`,
+    'Controls:',
+    ...shortlist.map((c) => `  [${c.ref}] ${describeControl(c)}`),
+  ].join('\n');
+  return { state, question: { type: 'choice', instructions: 'Which single action advances the goal next?', criteria } };
+}
+
+/** The ref an answer id names: e12 or click:e12. */
+const refOf = (id) => (id == null ? id : String(id).replace(/^(click|type):/, ''));
 
 /** The yes/no question for VERIFY and WAIT_FOR, over the evidence segments. */
 function claimQuestion(intent, evidence, shot) {
@@ -769,7 +792,14 @@ function claimQuestion(intent, evidence, shot) {
 // System 1 has its own: measured on 400 Mind2Web steps (2026-10-02/03, see
 // SKILL.md), at the threshold where about 3% of intents end in a wrong action.
 const SURE = 0.7;
-const SURE_BY_MODEL = { clef: 0.7, 'clef-flash': 0.7, kev: 0.4 };
+const SURE_BY_MODEL = {
+  clef: 0.7, // acts on 74.5% of intents, 3.3% wrong
+  'clef-flash': 0.7,
+  '4b-vision': 0.7, // 72%, 2.7% wrong
+  '0.8b-vision-wr1': 0.7, // the webrunner fine-tune: 74.5%, 5% wrong
+  '0.8b-vision': 0.4, // under-confident: 49%, 2.8% wrong
+  kev: 0.5, // any other bundle
+};
 
 /**
  * Whether to act on System 1's answer. → { pick, p, sure, ranked: [[id, p]] }
@@ -972,6 +1002,8 @@ module.exports = {
   describeText,
   lexicalRank,
   choiceQuestion,
+  menuQuestion,
+  refOf,
   claimQuestion,
   verdict,
   changeLines,

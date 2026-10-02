@@ -156,7 +156,8 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
       requireBundle,
     });
     const name = from ? `kev ${from.split('/').filter(Boolean).pop()}` : `kev ${size}`;
-    return { name, vision, loadMs: Date.now() - started, ask: (body) => model.systemOne(body) };
+    const key = from ? from.split('/').filter(Boolean).pop().replace(/^kev-/, '') : size;
+    return { name, key, kev: true, vision, loadMs: Date.now() - started, ask: (body) => model.systemOne(body) };
   }
 
   /**
@@ -178,7 +179,7 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
         );
       }
       const account = await cfAccount(flags, token);
-      s1 = { name: asked, vision: false, ask: system1.remoteSystemOne({ fetchFn: fetch, account, token, size: asked }) };
+      s1 = { name: asked, key: asked, kev: false, vision: false, ask: system1.remoteSystemOne({ fetchFn: fetch, account, token, size: asked }) };
     } else {
       s1 = await kevModel(asked, flags.from || null);
     }
@@ -249,8 +250,9 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
 
   /** The act-or-ask rule for this System 1, with --sure on top. */
   function policy(req, s1) {
-    const kev = /^kev /.test(s1.name);
-    return { sure: req.sure ?? (kev ? lib.SURE_BY_MODEL.kev : lib.SURE_BY_MODEL[s1.name] ?? lib.SURE), ignoreNone: kev };
+    const table = lib.SURE_BY_MODEL;
+    const sure = req.sure ?? table[s1.key] ?? (s1.kev ? table.kev : lib.SURE);
+    return { sure, ignoreNone: Boolean(s1.kev) };
   }
 
   async function chooseControl(req, s1, obs, parsed) {
@@ -258,10 +260,13 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     const ranked = lib.lexicalRank(candidates, lib.actQuery(req.intent, parsed), { op: parsed.op });
     const shortlist = ranked.slice(0, SHORTLIST_CONTROLS).map((r) => r.candidate);
     if (!shortlist.length) throw new IntentError('this page has no controls to act on');
-    const q = lib.choiceQuestion('ACT', req.intent, shortlist, obs.shot);
+    // kev answers webrunner's wording better; Clef was measured on the plain one.
+    const q = lib.choiceQuestion('ACT', req.intent, shortlist, obs.shot, { style: s1.kev ? 'menu' : 'plain' });
     const image = s1.vision ? await markedShot(obs.tab, shortlist, obs.viewport) : null;
     const res = await s1.ask({ state: q.state, questions: { action: q.question }, ...(image ? { image } : {}) });
-    const probs = probabilitiesOf(res.answers.action);
+    // Answer ids may be click:eN / type:eN: name them by ref from here on.
+    const probs = {};
+    for (const [id, p] of Object.entries(probabilitiesOf(res.answers.action))) probs[lib.refOf(id)] = p;
     const v = lib.verdict(probs, policy(req, s1));
     const byId = new Map(shortlist.map((c) => [c.ref, c]));
     return { v, byId, shortlist };
