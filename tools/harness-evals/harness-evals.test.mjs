@@ -22,8 +22,10 @@ import { plan, touchedSkills } from './plan.mjs';
 import { markdown, readRecords, summarize } from './report.mjs';
 import {
   checkTrace,
+  judgeAcrossModels,
   rubricRecord,
   rubricTask,
+  traceSize,
   transientJudgeError,
   validateRubric,
   withRetry,
@@ -620,4 +622,48 @@ test("plan shards repeats: one job per arm and repeat, each on its arm's pool", 
       'bare/r3@cloud-run-bench',
     ]
   );
+});
+
+test('a model whose requests keep failing hands the judgement to the next model', async () => {
+  const http500 = new Error('judge HTTP 500: unexpected error');
+  const calls = [];
+  const judgeAs = async (model) => {
+    calls.push(model);
+    if (model === 'luna') throw http500;
+    return { model };
+  };
+  const retry = { delays: [1, 1], sleep: async () => {} };
+  is(await judgeAcrossModels(judgeAs, ['luna', 'sol'], retry), { model: 'sol' });
+  is(calls, ['luna', 'luna', 'luna', 'sol']);
+  calls.length = 0;
+  const invalid = async (model) => {
+    calls.push(model);
+    throw new Error('judge output is invalid: z');
+  };
+  await assert.rejects(judgeAcrossModels(invalid, ['luna', 'sol'], retry), /invalid/);
+  is(calls, ['luna'], 'an invalid judgement is not a model outage');
+  await assert.rejects(
+    judgeAcrossModels(
+      async () => {
+        throw http500;
+      },
+      ['luna', 'sol'],
+      retry
+    ),
+    /HTTP 500/
+  );
+});
+
+test('traceSize summarizes what the judge was sent', () => {
+  is(
+    traceSize({ steps: ['ab', 'cde'], screenshots: [{ base64: 'AAAA' }, { base64: 'AAAAAAAA' }] }),
+    '2 steps / 5 chars, 2 screenshots / 0 KiB'
+  );
+  is(traceSize(null), '0 steps / 0 chars, 0 screenshots / 0 KiB');
+  is(
+    traceSize({ steps: 'a', screenshots: { x: 1 } }),
+    '0 steps / 0 chars, 0 screenshots / 0 KiB',
+    'malformed'
+  );
+  is(traceSize({ steps: ['x'], screenshots: [null] }), '1 steps / 1 chars, 1 screenshots / 0 KiB');
 });
