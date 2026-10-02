@@ -36,8 +36,14 @@ export function escalationDelta(before, after) {
   return Object.fromEntries(KEYS.map((k) => [k, after[k] - before[k]]));
 }
 
-/** Why a run doesn't count, or null when it does. */
+/**
+ * Why a run doesn't count, or null when it does. A skill run whose counters could not be read
+ * (a failed `cost` read, rows without counters, or a reset) can't be shown clean, so it doesn't
+ * count either.
+ */
 export function invalidReason(kind, escalations) {
-  if (kind !== 'skill' || !escalations?.allowed) return null;
+  if (kind !== 'skill') return null;
+  if (!escalations) return 'escalation counts unknown for this run';
+  if (!escalations.allowed) return null;
   return `${escalations.allowed} command(s) escalated to the cone and approved`;
 }

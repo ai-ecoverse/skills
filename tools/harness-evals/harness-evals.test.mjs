@@ -270,7 +270,8 @@ test('a skill arm run with approved escalations is invalid; the cone agent arm i
   );
   is(invalidReason('skill', { asked: 3, allowed: 0, denied: 3 }), null, 'denied is fine');
   is(invalidReason('agent', { asked: 3, allowed: 3, denied: 0 }), null);
-  is(invalidReason('skill', null), null);
+  is(invalidReason('skill', null), 'escalation counts unknown for this run');
+  is(invalidReason('agent', null), null);
 });
 
 test('report leaves invalid runs out of every score and counts them', () => {

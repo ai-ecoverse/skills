@@ -82,7 +82,7 @@ function table({ skill, goals, rows }) {
 
 export function markdown(summary) {
   const body = summary.skills.length ? summary.skills.map(table).join('\n') : 'No records.\n';
-  return `# Harness evals\n\nA pass is the skill adapter's \`judge\` applied to the final page of every arm; "self-reported" is the arm's own verdict (from the adapter's \`result\`, where it has one). An invalid run (a skill arm whose scoops had commands approved by the cone) is counted under "invalid" and left out of every other column.\n\n${body}`;
+  return `# Harness evals\n\nA pass is the skill adapter's \`judge\` applied to the final page of every arm; "self-reported" is the arm's own verdict (from the adapter's \`result\`, where it has one). An invalid run (a skill-arm run whose scoops had commands approved by the cone, or whose escalation counts could not be read) is counted under "invalid" and left out of every other column.\n\n${body}`;
 }
 
 // realpath: argv[1] keeps symlinks (macOS /tmp), import.meta.url doesn't.
