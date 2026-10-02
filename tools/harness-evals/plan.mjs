@@ -14,7 +14,7 @@ import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { ADAPTER, loadAdapter } from './adapter.mjs';
-import { validateGoals } from './placeholders.mjs';
+import { parseSuites, selectSuites, validateGoals } from './placeholders.mjs';
 import { hasRubric } from './rubric.mjs';
 
 /** Skill names under skills/ that a list of changed paths touches. */
@@ -27,7 +27,7 @@ export function touchedSkills(paths) {
   return [...names].sort();
 }
 
-export async function plan(which, base, root = process.cwd()) {
+export async function plan(which, base, root = process.cwd(), suites = ['default']) {
   const withAdapter = (name) => existsSync(join(root, 'skills', name, ADAPTER));
   let skills;
   if (which === 'all') skills = readdirSync(join(root, 'skills')).filter(withAdapter).sort();
@@ -57,6 +57,8 @@ export async function plan(which, base, root = process.cwd()) {
     )
       errors.push('goals with a rubric need the adapter to export judgeTrace for its skill arms');
     if (errors.length) throw new Error(`${goalsPath}: ${errors.join('; ')}`);
+    // A skill with no goal in the selected suites gets no jobs.
+    if (!selectSuites(doc.goals, suites).length) continue;
     for (const arm of adapter.arms)
       include.push({
         skill,
@@ -72,6 +74,8 @@ export async function plan(which, base, root = process.cwd()) {
 
 // realpath: argv[1] keeps symlinks (macOS /tmp), import.meta.url doesn't.
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
-  const [which = 'changed', base = 'origin/main'] = process.argv.slice(2);
-  process.stdout.write(`${JSON.stringify(await plan(which, base))}\n`);
+  const [which = 'changed', base = 'origin/main', suites = 'default'] = process.argv.slice(2);
+  process.stdout.write(
+    `${JSON.stringify(await plan(which, base, process.cwd(), parseSuites(suites)))}\n`
+  );
 }

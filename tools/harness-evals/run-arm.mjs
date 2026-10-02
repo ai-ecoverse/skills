@@ -12,7 +12,8 @@
  *     the arm's model.
  *
  * Env: HARNESS_SLICC (slicc checkout), HARNESS_SKILL_DIR, HARNESS_ARM_ID, HARNESS_REPEATS,
- * HARNESS_OUT, HARNESS_RUN_S (per-run timeout, default 900), plus SLICC_GW_HOME / SLICC_CLI.
+ * HARNESS_OUT, HARNESS_RUN_S (per-run timeout, default 900), HARNESS_SUITES (comma list, default
+ * `default`), plus SLICC_GW_HOME / SLICC_CLI.
  */
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -21,7 +22,10 @@ import { loadAdapter } from './adapter.mjs';
 import { escalationDelta, escalationTotals, invalidReason } from './escalations.mjs';
 import {
   fillGoal,
+  hasCheck,
+  parseSuites,
   resolvePlaceholders,
+  selectSuites,
   shellQuote,
   tabIds,
   validateGoals,
@@ -36,6 +40,7 @@ const { adapter, goalsPath } = await loadAdapter(skillDir);
 const arm = adapter.arms.find((a) => a.id === env('HARNESS_ARM_ID'));
 if (!arm) throw new Error(`${skill} has no arm ${env('HARNESS_ARM_ID')}`);
 const goals = JSON.parse(readFileSync(goalsPath, 'utf8'));
+const suites = parseSuites(env('HARNESS_SUITES'));
 const goalErrors = validateGoals(goals);
 if (goalErrors.length) throw new Error(`${goalsPath}: ${goalErrors.join('; ')}`);
 const repeats = Math.max(1, Number.parseInt(env('HARNESS_REPEATS', '1'), 10) || 1);
@@ -49,7 +54,7 @@ const url = io.readState()?.joinUrl;
 if (!url) throw new Error('no leader: start-leader left no join URL');
 
 // Goals with a rubric are also judged for partial credit, by the bench's judge (rubric.mjs).
-const rubricGoals = goals.goals.some(hasRubric);
+const rubricGoals = selectSuites(goals.goals, suites).some(hasRubric);
 let judgeRubric = null;
 let leader = null;
 if (rubricGoals) {
@@ -178,7 +183,7 @@ const agentPrompt = (g) =>
 
 const results = [];
 for (let rep = 1; rep <= repeats; rep += 1) {
-  for (const raw of goals.goals) {
+  for (const raw of selectSuites(goals.goals, suites)) {
     const values = await resolvePlaceholders(
       raw,
       typeof adapter.placeholder === 'function' && ((name) => adapter.placeholder(name, { fetch }))
@@ -260,7 +265,7 @@ for (let rep = 1; rep <= repeats; rep += 1) {
       kind: arm.kind,
       goal: g.id,
       repeat: rep,
-      pass: judged.some((j) => j.ok),
+      pass: hasCheck(g) ? judged.some((j) => j.ok) : null,
       self_ok: own && 'ok' in own ? Boolean(own.ok) : null,
       steps: own?.steps ?? null,
       seconds,
@@ -281,7 +286,7 @@ for (let rep = 1; rep <= repeats; rep += 1) {
     );
     results.push(record);
     console.log(
-      `[harness] ${skill}/${arm.id} ${g.id} r${rep}: ${record.pass ? 'PASS' : 'fail'} (own ${record.self_ok}) ${seconds.toFixed(0)} s${delta.costUsd == null ? '' : ` $${delta.costUsd.toFixed(3)}`}${rubric ? ` credit ${rubric.credit == null ? `error (${rubric.error})` : `${Math.round(rubric.credit * 100)}%`}` : ''}${record.invalid ? ` INVALID: ${record.invalid}` : ''}${runError ? ` ERROR ${runError.slice(0, 120)}` : ''}`
+      `[harness] ${skill}/${arm.id} ${g.id} r${rep}: ${record.pass == null ? 'no check' : record.pass ? 'PASS' : 'fail'} (own ${record.self_ok}) ${seconds.toFixed(0)} s${delta.costUsd == null ? '' : ` $${delta.costUsd.toFixed(3)}`}${rubric ? ` credit ${rubric.credit == null ? `error (${rubric.error})` : `${Math.round(rubric.credit * 100)}%`}` : ''}${record.invalid ? ` INVALID: ${record.invalid}` : ''}${runError ? ` ERROR ${runError.slice(0, 120)}` : ''}`
     );
   }
 }
