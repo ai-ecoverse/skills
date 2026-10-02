@@ -125,23 +125,27 @@ gh run view <run_id> --log-failed -R owner/repo      # the failing job's log
 gh pr checks <num> -R owner/repo && gh pr merge <num> --squash --delete-branch -R owner/repo
 ```
 
-### Merge through a merge queue, or with auto-merge
+### Merge, including through a merge queue
 
 ```bash
-gh pr merge <num> --auto -R owner/repo           # queue branch: enqueue; otherwise: enable auto-merge
-gh pr merge <num> --disable-auto -R owner/repo   # leave the queue, or disable auto-merge
-gh pr queue [branch] --json -R owner/repo        # position, state, number, headCommit (shim-only)
+gh pr merge <num> -R owner/repo                    # queue if the base has one, else merge directly
+gh pr merge <num> --merge-action direct_merge      # or merge_queue; --admin also bypasses rules
+gh pr merge <num> --auto -R owner/repo             # merge when requirements are met
+gh pr merge-status <num> <uuid> --wait             # follow a request later (shim-only)
+gh pr queue [branch] --json -R owner/repo          # queue entries: position, state (shim-only)
 ```
 
-The base branch has a merge queue when `GET /repos/{o}/{r}/rules/branches/{branch}` lists a
-`merge_queue` rule (rulesets included). There, plain `pr merge` and `--auto` both call
-`enqueuePullRequest` with `expectedHeadOid` set to the head just read, so a head that moved is
-refused, and print the entry's position and state. `--merge/--squash/--rebase` are ignored (the
-queue sets the method) and `--delete-branch` is an error. Without a queue, `--auto` calls
-`enablePullRequestAutoMerge` with the chosen method and prints GitHub's error verbatim if the
-repo disallows auto-merge. `--match-head-commit <sha>` refuses unless the head is that commit;
-`--admin` skips queue routing and issues the direct merge. `pr queue` is not in the real GitHub
-CLI; it exits 1 when the branch has no queue.
+`pr merge` uses GitHub's async merge API, pinned to the head it just read (a push in between
+cancels the merge), and waits up to `--timeout` (120 s) for the result:
+
+| Exit | Result |
+|---|---|
+| `0` | merged (prints the merge commit), or enqueued — in the queue, **not merged yet** |
+| `1` | failed (prints GitHub's message), or not mergeable (closed, draft) |
+| `8` | still pending — prints the `gh pr merge-status` command to check later (24 h) |
+
+`--disable-auto` leaves the queue or disables auto-merge. `--delete-branch` runs only after a
+merge. `--sync` forces the old synchronous merge (e.g. GitHub Enterprise Server).
 
 ### Stay in the loop on a PR without polling
 
