@@ -124,6 +124,17 @@ test('BOOL_FLAGS set contains confirm, json, help, h, allow-deletions', () => {
   ok(BOOL_FLAGS.has('allow-deletions'));
 });
 
+test('--session and --no-session are booleans and never swallow the app id', () => {
+  ok(BOOL_FLAGS.has('session'));
+  ok(BOOL_FLAGS.has('no-session'));
+  const r = parseArgv(['app', 'show', '--session', 'A0123456789']);
+  is(r.flags.session, true);
+  is(r.positional, ['app', 'show', 'A0123456789']);
+  const n = parseArgv(['app', 'show', '--no-session', 'A0123456789']);
+  is(n.flags['no-session'], true);
+  is(n.positional[2], 'A0123456789');
+});
+
 // ─── parseList ────────────────────────────────────────────────────────────────
 
 test('parseList splits on commas', () => {
