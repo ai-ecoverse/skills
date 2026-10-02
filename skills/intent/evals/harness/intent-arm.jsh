@@ -210,6 +210,7 @@ async function main() {
           }
         : null,
     finalUrl,
+    tab,
     answer: stdout.trim().slice(0, 500),
   };
   await fs.writeFile(`${dir}/result.json`, JSON.stringify(result, null, 2));

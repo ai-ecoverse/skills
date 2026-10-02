@@ -62,7 +62,21 @@ Enter is pressed in the page: slicc's `press Enter` sends no key code, so forms 
 
 `--model` picks it. The local kev bundles are the default; Clef runs on Cloudflare Workers AI and needs the `CLOUDFLARE_API_TOKEN` secret (domain api.cloudflare.com) and `--cf-account <id>` once (remembered).
 
-RESULTS_TABLE
+Measured 2026-10-02/03 on 400 Mind2Web test_website steps (median 129 controls a page), each with two intents written by Sonnet 5.5: one from a caller that saw the control's label ("informed"), one from a caller that never saw the page ("blind"). RETRIEVE and VERIFY: 88 questions and 86 claims (half false) on 11 live pages. Latency is per System 1 call on this Mac's GPU, shared with other work.
+
+| System 1 (`--model`) | ACT: right control, blind / informed | in top 3 | acts on (wrong actions) | RETRIEVE: right text / in top 3 | VERIFY | s per call |
+| --- | --- | --- | --- | --- | --- | --- |
+| `4b-vision` (default, 5.4 GB) | 84.9% / 92.3% (184 intents) | 95.1% | 72% (2.7%) at 0.7 | 86.4% / 92.0% | 93.0% | 2.9 |
+| `0.8b-vision` (1 GB) | 69.0% / 83.5% | 94.3% | 49% (2.8%) at 0.4 | 63.6% / 76.1% | 77.9% | 0.7 |
+| `--from …/kev-0.8b-vision-wr1` (a webrunner fine-tune, not published) | 80.0% / 88.5% | 95.0% | 74.5% (5.0%) at 0.7 | 67.0% / 83.0% | 75.6% | 0.7 |
+| `clef` (Workers AI) | 81.5% / 91.5% | 94.3% | 74.5% (3.3%) at 0.7 | 87.5% / 92.0% | 97.7% | 0.7 |
+
+How the stages were chosen:
+- **The words alone** rank the right control first for 81% of informed intents but only 54% of blind ones. For blind intents it is in the top 24 95% of the time, so the model gets 24.
+- **A 10-wise tournament over every control** (kev-0.6b-browser-use's method) was no better than the shortlist: kev-0.8b scored 65% vs 64%, and Clef 86.7% vs 86.1%. It was 3 to 9 times slower, and Workers AI rejected the largest pages.
+- **kev gets webrunner's wording:** the intent as a goal, the shortlist as a Controls list, the options as `click …`/`type into …`. With it, 4b-vision scores 88.6%; with a plain "which control does the intent mean" it scores 83.2%.
+- **kev's NONE does not veto:** the best other choice decides.
+- **Thresholds per bundle:** each is set where wrong actions stay at or under 5%.
 
 `--from <dir>` loads any kev bundle directory, such as a fine-tune (`--from /mnt/kev-models/kev-0.8b-vision-wr1`). A missing model stops with the command that gets it; nothing falls back to a guess.
 
