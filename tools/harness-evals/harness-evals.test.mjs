@@ -180,8 +180,15 @@ test('plan: only skills with an adapter, one entry per arm, agent arms keep a ba
   const root = fakeRepo();
   const { include } = await plan('all', 'origin/main', root);
   assert.deepEqual(include, [
-    { skill: 'demo', arm: 'fast', runs_on: 'cloud-run-gpu', gpu: '1', inject: 'demo,helper' },
-    { skill: 'demo', arm: 'bare', runs_on: 'cloud-run-bench', gpu: '', inject: '' },
+    {
+      skill: 'demo',
+      arm: 'fast',
+      repeat: 1,
+      runs_on: 'cloud-run-gpu',
+      gpu: '1',
+      inject: 'demo,helper',
+    },
+    { skill: 'demo', arm: 'bare', repeat: 1, runs_on: 'cloud-run-bench', gpu: '', inject: '' },
   ]);
   await assert.rejects(plan('plain', 'origin/main', root), /has no evals\/harness\/harness.mjs/);
 });
@@ -596,5 +603,21 @@ test('the judge is retried on transient Bedrock errors, not on invalid judgement
       { sleep: async () => {} }
     ),
     /HTTP 500/
+  );
+});
+
+test("plan shards repeats: one job per arm and repeat, each on its arm's pool", async () => {
+  const root = fakeRepo();
+  const { include } = await plan('demo', 'origin/main', root, ['default'], 3);
+  is(
+    include.map((e) => `${e.arm}/r${e.repeat}@${e.runs_on}`),
+    [
+      'fast/r1@cloud-run-gpu',
+      'fast/r2@cloud-run-gpu',
+      'fast/r3@cloud-run-gpu',
+      'bare/r1@cloud-run-bench',
+      'bare/r2@cloud-run-bench',
+      'bare/r3@cloud-run-bench',
+    ]
   );
 });

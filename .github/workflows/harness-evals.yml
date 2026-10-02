@@ -73,14 +73,14 @@ jobs:
           if ! [[ "$REPEATS" =~ ^([1-9]|10)$ ]]; then echo "::error::repeats must be 1-10"; exit 1; fi
           SUITES="${SUITES//[[:space:]]/}"  # "default, games" is a fine way to type it
           if ! [[ "$SUITES" =~ ^[a-z0-9][a-z0-9,-]*$ ]]; then echo "::error::suites must be a comma list of a-z0-9-"; exit 1; fi
-          matrix="$(node tools/harness-evals/plan.mjs "$WHICH" "$BASE" "$SUITES")"
+          matrix="$(node tools/harness-evals/plan.mjs "$WHICH" "$BASE" "$SUITES" "$REPEATS")"
           {
             echo "suites=$SUITES"
             echo "matrix=$matrix"
             echo "repeats=$REPEATS"
           } >> "$GITHUB_OUTPUT"
           n=$(jq '.include | length' <<< "$matrix")
-          jq -r '.include[] | "\(.skill)/\(.arm) on \(.runs_on)"' <<< "$matrix"
+          jq -r '.include[] | "\(.skill)/\(.arm) r\(.repeat) on \(.runs_on)"' <<< "$matrix"
           run=false
           if [ "$n" -gt 0 ] && [ "$HAS_KEY" = true ]; then run=true; fi
           if [ "$n" -gt 0 ] && [ "$HAS_KEY" != true ]; then echo "::notice::no Bedrock key (fork PR): validated only"; fi
@@ -89,10 +89,10 @@ jobs:
           version="$(npm view sliccy@latest version)"
           echo "slicc-version=$version" >> "$GITHUB_OUTPUT"
           echo "slicc-ref=v$version" >> "$GITHUB_OUTPUT"
-          echo "slicc v$version, $n arm job(s), $REPEATS repeat(s), suites $SUITES" >> "$GITHUB_STEP_SUMMARY"
+          echo "slicc v$version, $n job(s) (arms × $REPEATS repeat(s), one job each), suites $SUITES" >> "$GITHUB_STEP_SUMMARY"
 
   arm:
-    name: ${{ matrix.skill }} / ${{ matrix.arm }}
+    name: ${{ matrix.skill }} / ${{ matrix.arm }} / r${{ matrix.repeat }}
     needs: plan
     if: needs.plan.outputs.run == 'true'
     runs-on: ${{ matrix.runs_on }}
@@ -158,7 +158,7 @@ jobs:
           HARNESS_SLICC: ${{ github.workspace }}/slicc
           HARNESS_SKILL_DIR: ${{ github.workspace }}/skills/${{ matrix.skill }}
           HARNESS_ARM_ID: ${{ matrix.arm }}
-          HARNESS_REPEATS: ${{ needs.plan.outputs.repeats }}
+          HARNESS_REPEAT: ${{ matrix.repeat }}
           HARNESS_SUITES: ${{ needs.plan.outputs.suites }}
           HARNESS_OUT: ${{ runner.temp }}/harness-out
           # The rubric judge (goals with `rubric`/`weights`) calls Bedrock like the bench's judge.
@@ -189,7 +189,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: harness-evals-part-${{ github.run_id }}-${{ matrix.skill }}-${{ matrix.arm }}
+          name: harness-evals-part-${{ github.run_id }}-${{ matrix.skill }}-${{ matrix.arm }}-r${{ matrix.repeat }}
           path: ${{ runner.temp }}/harness-out
           retention-days: 14
           if-no-files-found: ignore
