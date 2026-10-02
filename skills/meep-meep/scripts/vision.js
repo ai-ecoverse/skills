@@ -97,4 +97,24 @@ async function markedImage(bytes, menu, viewport, g = globalThis) {
   };
 }
 
-module.exports = { MAX_PIXELS, fitSize, layoutMarks, markedImage };
+/**
+ * The same picture as a JPEG, for a remote decider. Workers AI estimates a
+ * request's tokens from its size, and a 240 KB marked PNG as a data URL
+ * came to ~81K tokens, past Clef's 64K window (2026-10-02).
+ */
+async function toJpeg(pngBytes, quality = 0.7) {
+  const g = globalThis;
+  const bitmap = await g.createImageBitmap(new g.Blob([pngBytes], { type: 'image/png' }));
+  const canvas = new g.OffscreenCanvas(bitmap.width, bitmap.height);
+  canvas.getContext('2d').drawImage(bitmap, 0, 0);
+  const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality });
+  return new Uint8Array(await blob.arrayBuffer());
+}
+
+module.exports = {
+  toJpeg,
+  MAX_PIXELS,
+  fitSize,
+  layoutMarks,
+  markedImage,
+};

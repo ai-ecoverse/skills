@@ -95,6 +95,12 @@ USAGE
                        (decisions, plan reviews), rotated every ${SESSION_TURNS} turns, so
                        earlier turns are cache reads (slicc#3760). Without it, each
                        call is a one-shot; both use agent --minimal when available
+  --model clef|clef-flash
+                       System 1 is Cloudflare's Clef decision model on Workers AI
+                       instead of local kev (same questions, screenshot included
+                       with --vision). Needs the CLOUDFLARE_API_TOKEN secret
+                       (domain api.cloudflare.com) and --cf-account <id> or
+                       CLOUDFLARE_ACCOUNT_ID
   --vision             also show the decider the screenshot, each offered control boxed
                        and labelled with its ref. kev needs --model 4b-vision (the
                        default with --vision) or 0.8b-vision; the agent views the
@@ -431,8 +437,102 @@ async function ensureKevRuntime() {
   });
 }
 
+// ── remote System 1: Cloudflare's Clef decision models ──────────────
+// Clef (Qwen 3.8-27B) and Clef-flash (Qwen 3.5-9B) on Workers AI answer
+// the same System One request as kev ({ state, questions }) and take
+// images as data URLs in `images` (probed 2026-10-02: `image` is
+// rejected). The token is a slicc secret scoped to api.cloudflare.com:
+// webrunner sends its masked value and the fetch proxy swaps in the real
+// one, so the token never reaches this script, its log or its trace.
+const REMOTE_MODELS = { clef: '@cf/cloudflare/clef', 'clef-flash': '@cf/cloudflare/clef-flash' };
+
+async function cloudflareToken() {
+  if (process.env.CLOUDFLARE_API_TOKEN) return process.env.CLOUDFLARE_API_TOKEN;
+  const got = await exec.spawn(['secret', 'get', 'CLOUDFLARE_API_TOKEN']);
+  const m = /CLOUDFLARE_API_TOKEN=(\S+)/.exec(got.stdout || '');
+  return m ? m[1] : '';
+}
+
+async function remoteDecider(flags, size) {
+  const account = flags['cf-account'] || process.env.CLOUDFLARE_ACCOUNT_ID;
+  const token = await cloudflareToken();
+  if (!account || !token) {
+    cli.die(
+      `--model ${size} runs on Cloudflare Workers AI. Store the API token as a secret (secret set CLOUDFLARE_API_TOKEN <token> --domain api.cloudflare.com) and pass --cf-account <account id> or set CLOUDFLARE_ACCOUNT_ID.`,
+      { prefix: 'webrunner' }
+    );
+  }
+  const url = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(account)}/ai/run/${REMOTE_MODELS[size]}`;
+  const ask = async (body, imagePath) => {
+    const payload = { model: size, ...body };
+    if (imagePath) {
+      const jpeg = Buffer.from(await vision.toJpeg(await fs.readFileBinary(imagePath)));
+      payload.images = [`data:image/jpeg;base64,${jpeg.toString('base64')}`];
+    }
+    status.phase = `a ${size} decision`;
+    for (let attempt = 1; ; attempt++) {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const text = await res.text();
+      let data = null;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = null;
+      }
+      if (res.ok && data && data.success) return data.result;
+      if (attempt < 3 && (res.status === 429 || res.status >= 500)) {
+        await new Promise((r) => setTimeout(r, 1000 * attempt));
+        continue;
+      }
+      if (res.status === 401 || res.status === 403) {
+        throw new Error(`Workers AI refused the token (HTTP ${res.status}); check the CLOUDFLARE_API_TOKEN secret and the account id`);
+      }
+      const why = data && data.errors && data.errors[0] ? data.errors[0].message : text.slice(0, 200);
+      throw new Error(`Workers AI ${size}: HTTP ${res.status}: ${why}`);
+    }
+  };
+  await say(`System 1: ${size} on Workers AI`);
+  return {
+    name: `${size} (Workers AI)`,
+    loadMs: 0,
+    async decide(state, menu, extra = {}) {
+      const img = extra.imagePath || null;
+      const response = await ask({ state, questions: { action: page.menuQuestion(menu) } }, img);
+      const answer = response.answers.action;
+      const probabilities = answer.probabilities || {};
+      const top = Object.entries(probabilities)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([id, p]) => `${id}=${p}`)
+        .join(' ');
+      let action = page.pickAction(menu, answer.choice);
+      let textConfidence;
+      if (action.operation === 'TYPE_TEXT' && !action.text && action.candidates) {
+        const second = await ask({ state, questions: { text: page.textQuestion(action) } }, img);
+        const pick = second.answers.text;
+        action = { ...action, text: action.candidates[Number(pick.choice.slice(1))] };
+        textConfidence = pick.confidence;
+      }
+      return { action, confidence: answer.confidence, textConfidence, top, probabilities };
+    },
+    async finished(state) {
+      const response = await ask({
+        state,
+        questions: { finished: { type: 'noul', instructions: 'Does this page show every part of the goal finished?' } },
+      });
+      const p = response.answers.finished.noul;
+      return { finished: p >= 0.5, answer: { noul: p } };
+    },
+  };
+}
+
 async function kevDecider(flags) {
   const size = flags.model || (onOff(flags.vision, false) ? '4b-vision' : '9b');
+  if (REMOTE_MODELS[size]) return remoteDecider(flags, size);
   if (onOff(flags.vision, false) && !size.endsWith('-vision')) {
     cli.die('--vision needs a vision model: --model 4b-vision or 0.8b-vision', { prefix: 'webrunner' });
   }
