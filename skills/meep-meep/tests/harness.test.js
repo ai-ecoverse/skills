@@ -172,3 +172,13 @@ test('metrics reads the game points off the final snapshot', () => {
   });
   is(metrics('- button "Start Riding" [ref=e28]', {}), { points: null });
 });
+
+// Lars, 2026-10-02: anything involving kev needs the GPU pool.
+test('every arm that runs kev is on the GPU pool', () => {
+  for (const arm of [...arms, ...heldArms]) {
+    const pullsKev = (arm.setup || []).some((s) => /\bkev pull\b/.test(s));
+    const i = (arm.args || []).indexOf('--decider');
+    const decidesWithKev = i >= 0 && ['kev', 'hybrid'].includes(arm.args[i + 1]);
+    if (pullsKev || decidesWithKev) is([arm.id, arm.pool], [arm.id, 'gpu']);
+  }
+});
