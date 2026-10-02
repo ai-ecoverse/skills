@@ -76,3 +76,29 @@ export function rubricRecord(j) {
     },
   };
 }
+
+/** A judge failure worth another try: a throttle, a 5xx, a dropped connection. */
+export const transientJudgeError = (err) =>
+  /HTTP (429|5\d\d)|throttl|timed? ?out|ECONNRESET|fetch failed|socket hang up/i.test(
+    String(err?.message ?? err)
+  );
+
+/**
+ * `fn` with retries on transient errors (Bedrock answered HTTP 500 on 3 of 21 judgements in
+ * run 37013006178). An invalid judgement is not transient: judgeWithFallback already repairs
+ * and falls back for those.
+ */
+export async function withRetry(
+  fn,
+  { delays = [15_000, 45_000], sleep, isTransient = transientJudgeError } = {}
+) {
+  const wait = sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (attempt >= delays.length || !isTransient(err)) throw err;
+      await wait(delays[attempt]);
+    }
+  }
+}
