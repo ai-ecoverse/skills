@@ -101,7 +101,9 @@ function parseSnapshot(text) {
   const texts = [];
   // [indent, role] of the open landmarks above the current line
   const stack = [];
+  let lineNo = 0;
   for (const line of String(text).split('\n')) {
+    lineNo++;
     const boxMatch = BOX.exec(line);
     const raw = boxMatch ? line.replace(BOX, '') : line;
     const urlMatch = /^Page URL:\s*(.*)$/.exec(raw.trim());
@@ -121,7 +123,7 @@ function parseSnapshot(text) {
     while (stack.length && stack[stack.length - 1][0] >= indent) stack.pop();
     if (LANDMARKS.has(role) || role === 'listbox') stack.push([indent, role]);
     if (TEXT_ROLES.has(role) && match[3]) {
-      const t = { role, text: unescapeYaml(match[3]) };
+      const t = { role, text: unescapeYaml(match[3]), seq: lineNo };
       if (match[4]) t.token = match[4];
       if (stack.length) t.region = stack[stack.length - 1][1];
       if (boxMatch) t.box = boxMatch.slice(1, 5).map(Number);
@@ -135,6 +137,7 @@ function parseSnapshot(text) {
       label: match[3] ? unescapeYaml(match[3]) : role,
       kind: FILL_ROLES.has(role) ? 'fill' : 'click',
       region: stack.length ? stack[stack.length - 1][1] : '',
+      seq: lineNo,
     };
     if (match[5] !== undefined && match[5] !== '') element.value = unescapeYaml(match[5]);
     if (boxMatch) element.box = boxMatch.slice(1, 5).map(Number);
@@ -229,20 +232,49 @@ function addRowContext(elements, texts) {
     const text = String(t.text).trim();
     return t.box && text.length >= 3 && !/^[\d\s.,+$−-]+$/.test(text) && !labels.has(text);
   });
+  // Text nodes often have no box (the snapshot cannot measure them; Drug
+  // Wars' "Heroin $6,037", 2026-10-02). Then the row is the nearest text
+  // line before the control in snapshot order: each row's label comes
+  // before its controls.
+  const ordered = (texts || []).filter((t) => {
+    const text = String(t.text).trim();
+    // A row label is short; a long text is a header or status block (Drug
+    // Wars' "CASH $2,000 BANK $0 DEBT ..." line before the first row).
+    return (
+      typeof t.seq === 'number' &&
+      text.length >= 3 &&
+      text.length <= 60 &&
+      !/^[\d\s.,+$−-]+$/.test(text) &&
+      !labels.has(text)
+    );
+  });
   return elements.map((e) => {
-    if ((count.get(e.label) || 0) < 2 || !e.box) return e;
-    const cy = e.box[1] + e.box[3] / 2;
-    const cx = e.box[0] + e.box[2] / 2;
+    if ((count.get(e.label) || 0) < 2) return e;
     let best = null;
-    for (const t of candidates) {
-      const [tx, ty, tw, th] = t.box;
-      if (cy < ty - 2 || cy > ty + th + 2) continue;
-      const d = Math.abs(tx + tw / 2 - cx);
-      if (!best || d < best.d) best = { d, text: String(t.text).replace(/\s+/g, ' ').trim() };
+    if (e.box) {
+      const cy = e.box[1] + e.box[3] / 2;
+      const cx = e.box[0] + e.box[2] / 2;
+      for (const t of candidates) {
+        const [tx, ty, tw, th] = t.box;
+        if (cy < ty - 2 || cy > ty + th + 2) continue;
+        const d = Math.abs(tx + tw / 2 - cx);
+        if (!best || d < best.d) best = { d, text: String(t.text).replace(/\s+/g, ' ').trim() };
+      }
+    }
+    if (!best && typeof e.seq === 'number') {
+      let before = null;
+      for (const t of ordered) {
+        if (t.seq < e.seq && e.seq - t.seq <= ROW_LOOKBACK) before = t;
+        if (t.seq > e.seq) break;
+      }
+      if (before) best = { text: String(before.text).replace(/\s+/g, ' ').trim() };
     }
     return best ? { ...e, context: shown(best.text) } : e;
   });
 }
+
+// How far back (in snapshot lines) a row label may be from its control.
+const ROW_LOOKBACK = 16;
 
 /** How a control is named in the menu and the state: its label, and its row when labels repeat. */
 const named = (element) =>

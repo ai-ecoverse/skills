@@ -224,7 +224,10 @@ test('a box is read off the ref line and the value after it still parses', () =>
   const filled = page.parseSnapshot('  - textbox "Name" [ref=e9] [box=1,2,3,4]: "Ada"');
   is(filled.elements[0].value, 'Ada');
   is(filled.elements[0].label, 'Name');
-  is(shot.texts, [{ role: 'alert', text: 'Saved' }]);
+  is(
+    shot.texts.map(({ role, text }) => ({ role, text })),
+    [{ role: 'alert', text: 'Saved' }]
+  );
 });
 
 test('place sorts elements by the viewport', () => {
@@ -274,7 +277,10 @@ test('diffShots matches elements by role and label, not by ref', () => {
   is(diff.changed, [
     { token: 'e522', role: 'combobox', label: 'Where from?', from: '', to: 'Berlin' },
   ]);
-  is(diff.texts, [{ role: 'alert', text: 'Choose a destination' }]);
+  is(
+    diff.texts.map(({ role, text }) => ({ role, text })),
+    [{ role: 'alert', text: 'Choose a destination' }]
+  );
   is(diff.scrolled, 300);
   const lines = page.describeDiff(diff);
   ok(lines.some((l) => l.includes('combobox "Where from?" now = "Berlin"')));
@@ -987,4 +993,32 @@ test('the seeded generator replays and the audit hint says System 1 was sure', (
     )
   );
   ok(hint.includes('Keep that choice if it is right'));
+});
+
+// Drug Wars live (2026-10-02, run 2026-10-02T09-27-50-drugwars): the drug
+// labels are text nodes without boxes, so System 2 saw a list of identical
+// BUY buttons and gave up. Each row's label comes before its controls.
+test('without boxes, a repeated control takes the text line before it as its row', () => {
+  const shot = page.parseSnapshot(
+    [
+      'Page URL: https://drugwars.online/game',
+      '- rootwebarea',
+      '  - text "CASH $2,000 BANK $0 DEBT $5,500 COAT 0/100 INVENTORY — 0 of 100 units used (0%) MARKET — New York City" [ref=e2]',
+      '  - text "Cocaine $15,236" [ref=e3]',
+      '  - button "Decrease" [ref=e4]',
+      '  - text "1" [ref=e6]',
+      '  - button "MAX" [ref=e9]',
+      '  - button "BUY" [ref=e10]',
+      '  - text "Heroin $6,037" [ref=e11]',
+      '  - button "Decrease" [ref=e12]',
+      '  - button "MAX" [ref=e17]',
+      '  - button "BUY" [ref=e18]',
+    ].join('\n')
+  );
+  const out = page.addRowContext(shot.elements, shot.texts);
+  const ctx = Object.fromEntries(out.map((e) => [e.token, e.context]));
+  is(ctx.e10, 'Cocaine $15,236');
+  is(ctx.e9, 'Cocaine $15,236', 'the digit-only "1" is skipped');
+  is(ctx.e18, 'Heroin $6,037');
+  is(ctx.e12, 'Heroin $6,037');
 });
