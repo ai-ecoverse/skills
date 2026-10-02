@@ -218,7 +218,9 @@ test('metrics reads each game’s own number', () => {
 });
 
 test('webrunner stops itself before the driver times out', () => {
-  is(timeLimit({}), 810, 'the default 900 s run');
+  is(timeLimit({}, {}), 810, 'the default 900 s run');
+  is(timeLimit({}, { HARNESS_RUN_S: '600' }), 540, "the driver's own timeout");
+  is(timeLimit({ timeout_s: 3600 }, { HARNESS_RUN_S: '600' }), 3240, 'a goal timeout_s wins');
   is(timeLimit({ timeout_s: 3600 }), 3240);
   is(timeLimit({ timeout_s: 120 }), 60);
   is(timeLimit({ timeout_s: 20 }), 30, 'never under 30 s');

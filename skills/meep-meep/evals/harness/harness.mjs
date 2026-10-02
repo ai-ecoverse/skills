@@ -38,9 +38,15 @@ export const heldArms = [];
 
 const RUN_S_DEFAULT = 900;
 
-/** webrunner's --time-limit: the driver's per-run timeout less 10%, at least a minute. */
-export function timeLimit(goal) {
-  const run = Number(goal.timeout_s) > 0 ? Number(goal.timeout_s) : RUN_S_DEFAULT;
+/**
+ * webrunner's --time-limit: the driver's per-run timeout less 10%, at
+ * least a minute: the goal's timeout_s, else the driver's HARNESS_RUN_S
+ * (diag rounds ran at 600 s, under the old fixed 810), else 900.
+ */
+export function timeLimit(goal, env = typeof process === 'undefined' ? {} : process.env) {
+  const fromEnv = Number.parseInt(env.HARNESS_RUN_S, 10);
+  const run =
+    Number(goal.timeout_s) > 0 ? Number(goal.timeout_s) : fromEnv > 0 ? fromEnv : RUN_S_DEFAULT;
   return Math.max(30, run - Math.max(60, Math.round(run * 0.1)));
 }
 
