@@ -1,19 +1,19 @@
 ---
 name: github
 description: >
-  Interact with GitHub via gh.jsh — a GitHub CLI for SLICC agents that accepts the real
-  GitHub CLI's syntax (--title/--body, -R owner/repo, --json [fields], --jq, --help on every
-  command) as well as its own positional forms.
-  Use for any GitHub task: listing, viewing, diffing, or editing pull requests, checking CI
-  and failed job logs, merging PRs, posting comments, checking out branches, viewing issues,
-  workflow runs, releases, searching PRs or issues, managing Actions variables,
-  creating branches, pushing file content, archiving/cloning repos, marking PRs ready
-  for review, managing org-owned Projects (v2), or calling any GitHub API endpoint directly.
-  Trigger on "list open PRs", "show the PR diff", "search issues", "check CI",
-  "why did CI fail", "merge this PR", "what issues are open", "has this been filed",
-  "show the latest release", "comment on PR #42", "set a repo variable",
-  "create a branch", "push this file", "list my GitHub projects", "clone this repo",
-  "mark PR ready for review".
+  Interact with GitHub via gh.jsh, a GitHub CLI for SLICC agents that accepts both the real
+  GitHub CLI's syntax (--title/--body, -R owner/repo, --json [fields], --jq, --help) and its
+  own positional forms.
+  Use for any GitHub task: listing, viewing, diffing, editing or merging pull requests and
+  marking them ready for review, checking CI and failed job logs, commenting on or searching
+  PRs and issues, viewing issues, workflow runs, releases, Actions variables, creating or
+  checking out branches, pushing file content, archiving/cloning repos, org-owned Projects
+  (v2), choosing which repos the github-dashboard sprinkle monitors, recording an agent's
+  status report on a dashboard item, or calling any GitHub API endpoint.
+  Trigger on "list open PRs", "show the PR diff", "why did CI fail", "merge this PR",
+  "has this been filed", "show the latest release", "set a repo variable",
+  "monitor this repo on the dashboard", "which repos are we monitoring",
+  "report status to the dashboard".
 allowed_tools:
   - bash
 ---
@@ -140,12 +140,77 @@ re-check live state first — see
 [`references/webhook-pr-monitoring.md`](references/webhook-pr-monitoring.md) for the
 self-echo-detection pattern and the stop condition.
 
+### Choose which repos the dashboard monitors
+
+```bash
+gh monitor list                                   # --json [slug,bbProject,source]
+gh monitor add octocat/Hello-World                # resolves the bb project itself
+gh monitor add some/repo --bb-project proj_xxxxxxxxxx
+gh monitor add some/repo --no-bb-project         # "this repo has no bb project", on purpose
+gh monitor rm octocat/Hello-World
+```
+
+These own `/shared/github-monitor/config.json`, which the github-dashboard sprinkle's fetcher
+reads to decide what to watch. The fetcher validates that file and **exits 2 without fetching**
+if it is malformed, so `gh monitor` writes it atomically (staged sibling file → read back →
+re-validated → renamed) and refuses to produce anything the fetcher would reject. Verify with
+the fetcher itself:
+
+```bash
+node /shared/sprinkles/github-dashboard/fetch-snapshot.mjs --check-config   # exit 0 = accepted
+```
+
+**`bbProject` is required and may be `null` — `add` will not guess.** bb thread state is not on
+GitHub, and that id is its only source, so a repo added without one produces dashboard cards
+that can never link to a thread and look perfectly fine while doing it. `add` resolves the id
+from `bb project list` by matching the project's **git remote** first and its **name** only as a
+fallback (a name match alone is unsafe: a bb project named `skills` can belong to `octocat/skills`
+while `other/skills` is the project named `other-skills`). If nothing resolves, or more than one
+project matches, it is an **error** telling you to pass `--bb-project` or `--no-bb-project` —
+never a silent `null`.
+
+| Situation | Exit | Behaviour |
+|---|---|---|
+| Repo already monitored | 1 | Error, not a silent dedupe — a duplicate means the command lost track |
+| Repo 404s | 1 | Names both causes: no such repo, **or** private and this token cannot see it |
+| bb project unresolved / ambiguous / bad id | 1 | Error naming the consequence; nothing written |
+| Existing config malformed | 2 | Same code the fetcher uses; refuses to edit rather than overwrite |
+| `rm` of the last remaining repo | 1 | The fetcher rejects an empty `repos`; nothing is written |
+| Config file absent | — | `add` creates it with that repo and the placeholder `bbOrigin` `https://bb.example.invalid`, and says to edit the origin; the shipped fetcher has no built-in repos to seed |
+
+`rm` deliberately leaves that repo's rows in the dashboard's `data/user-state.json` and
+`data/status-cache.json`. They are keyed `owner/repo#number`, so keeping them makes
+remove-then-re-add lossless (read/pinned state and cached status survive) and they are inert
+meanwhile, because nothing looks them up. The config edit itself is byte-stable too: one line
+per repo entry, unknown top-level and per-repo fields preserved, so `add` then `rm` restores the
+file exactly.
+
+Testing override: `GH_MONITOR_CONFIG=/tmp/x.json` points the family at a scratch config (the
+fetcher always reads the real path). `GH_MONITOR_FAULT=corrupt-temp|throw-before-rename` injects
+a mid-write failure to demonstrate that a failed write leaves the original untouched.
+
+### Report what an agent is doing on a dashboard item
+
+```bash
+gh dashboard update octocat/Hello-World#42 --status working --thread my-scoop
+gh dashboard update octocat/Hello-World#42 --pr 57 --note "fix pushed"   # merges; status kept
+gh dashboard show [octocat/Hello-World#42] [--json]
+gh dashboard clear octocat/Hello-World#42
+```
+
+These write the github-dashboard's `data/reports.json`, locally and without a GitHub token.
+`--thread` takes a bb thread **URL** or a scoop name, never a bare `thr_` id. `--pr` takes `N`,
+`#N`, `owner/repo#N` or a PR URL. Test with `--file /tmp/…`. Flags and format:
+[`references/COMMANDS.md`](references/COMMANDS.md#dashboard-agent-reports-dashboard).
+
 ## Mutating and destructive operations
 
 `pr edit`, `pr merge`, `pr close`, `pr ready`, `issue close`, `branch delete`, `repo archive`,
 `content put`, `vars set` and `pr watch`/`pr unwatch` change remote state. Before running one, confirm the
 target with its read counterpart (`gh pr view <num>`, `gh pr checks <num>`,
 `gh branch`/`gh repo view`) — and never act on a PR number you have not just read back.
+`monitor add`/`monitor rm` change no remote state, but they do change what the dashboard
+watches: confirm with `gh monitor list` first.
 
 ## MCP server passthrough
 

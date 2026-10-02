@@ -21,7 +21,8 @@ command words, and always on a state-changing command; pass a literal `-h` after
 
 Available on: `pr view`, `pr list`, `pr edit`, `pr checks`, `issue view`, `issue list`, `run list`,
 `run view`, `repo view`, `release list`, `vars list`, `notifications list`, `search prs`,
-`search issues`, `project list`, `project list-items`.
+`search issues`, `project list`, `project list-items`, `monitor list`. `dashboard update` and
+`dashboard show` take a bare `--json` (the stored entry, no field selection).
 
 ```bash
 gh pr view 123 --json statusCheckRollup,reviews,comments,mergeable
@@ -212,6 +213,124 @@ gh project set-title myorg 2 215884384 "New title"
 `add-draft` creates a draft issue — an item that lives only inside the project with no linked
 repository until someone converts it in GitHub's UI. `set-title` looks up the item's own title
 field ID for you (project field updates are field-ID-based, not `{title: ...}`).
+
+## Dashboard monitoring (`monitor`)
+
+Owns `/shared/github-monitor/config.json`, the list of repositories the github-dashboard
+sprinkle fetches. Not a GitHub API surface — the only API call is the one `add` makes to prove
+the repository exists and is reachable with your token.
+
+```bash
+gh monitor list                                  # --json [slug,bbProject,source], --jq
+gh monitor add octocat/Hello-World               # resolves the bb project from `bb project list`
+gh monitor add some/repo --bb-project proj_xxxxxxxxxx
+gh monitor add some/repo --no-bb-project         # record null as a deliberate decision
+gh monitor rm octocat/Hello-World
+```
+
+Schema (v1, owned by these verbs, validated by the fetcher):
+
+```json
+{ "version": 1,
+  "bbOrigin": "https://bb.example.invalid",
+  "repos": [ { "slug": "owner/repo", "bbProject": "proj_xxx" } ] }
+```
+
+`repos` is an array so `add` appends, `rm` filters and `list` prints in order, and an object
+entry leaves room for future per-repo fields without a migration (unknown fields are preserved
+verbatim across edits). `slug` is the identity; a duplicate is an error, not a dedupe.
+**`bbProject` must be present and may be `null`** — bb thread state is not on GitHub and that id
+is its only source, so `add` is required to decide rather than leave it out.
+
+bb project resolution order, and why it is not just the name:
+
+| Tier | Signal | Notes |
+|---|---|---|
+| 1 | `gitRemoteUrl` of a bb project matches `owner/repo` | Handles `https://` and `git@host:` forms; the project's name is irrelevant |
+| 2 | bb project **named** exactly the repo part of the slug | Fallback only — used when no project declares the repo as a remote |
+| — | 0 candidates, or >1 in either tier | **Error.** `--bb-project <id>` or `--no-bb-project` |
+
+A name-only match cannot be trusted on its own: a bb project named `skills` can be
+`octocat/skills` while `other/skills` belongs to the project named `other-skills`, and two
+distinct projects can share one git remote. An explicit `--bb-project` is verified against
+`bb project list` and a nonexistent id is rejected.
+
+Exit codes: `1` for anything the caller can fix (bad slug, duplicate, 404, unresolved bb
+project, unknown flag, removing the last repo); `2` when the **existing** config is malformed,
+matching the fetcher's own code for that case — it refuses to edit a file it cannot parse rather
+than overwrite whatever is in there.
+
+Writes are atomic: the new content is serialised once, validated as bytes, staged as a sibling
+`config.json.tmp-*`, read back and re-validated, then renamed over the target. Any failure
+leaves the original byte-identical and removes the temp file.
+
+`rm` does **not** prune the repo's entries from the dashboard's `data/user-state.json` or
+`data/status-cache.json`; they are keyed `owner/repo#number`, so leaving them makes
+remove-then-re-add lossless and they are inert while the repo is unmonitored.
+
+Environment overrides, for testing only:
+
+| Variable | Effect |
+|---|---|
+| `GH_MONITOR_CONFIG=<path>` | Redirect the family at a scratch config. The fetcher always reads the real path, so this only moves `gh monitor`. |
+| `GH_MONITOR_FAULT=corrupt-temp` | Truncate the staged temp file, so the round-trip check rejects it |
+| `GH_MONITOR_FAULT=throw-before-rename` | Fail between staging and rename |
+
+Acceptance test for anything this writes:
+
+```bash
+node /shared/sprinkles/github-dashboard/fetch-snapshot.mjs --check-config   # exit 0 = accepted
+```
+
+## Dashboard agent reports (`dashboard`)
+
+Owns the github-dashboard sprinkle's `data/reports.json`
+(default `/shared/sprinkles/github-dashboard/data/reports.json`): what an agent working an
+item reports about it. Local only: no GitHub call, and no token needed.
+
+```bash
+gh dashboard update <owner/repo#N> [--status working|needs-attention|done|clear]
+    [--thread <bb-thread-url|scoop-name>] [--pr <ref>] [--note <text>] [--file <path>] [--json]
+gh dashboard show [<owner/repo#N>] [--json] [--file <path>]
+gh dashboard clear <owner/repo#N> [--file <path>]
+```
+
+| Flag | Accepts | Stored as |
+|---|---|---|
+| key | `owner/repo#N` only. Anything else is a usage error (exit 1). | the entry's key |
+| `--status` | `working`, `needs-attention`, `done`; `clear` deletes the entry and cannot be combined with other fields | `"status"` |
+| `--thread` | a URL whose path has a `thr_[a-z0-9]+` segment, e.g. `https://bb.example.invalid/projects/proj_example01/threads/thr_example01` | `{"kind":"bb","id","url"}` |
+|  | a scoop name: letters, digits, `-`, `_`, no scheme, no slash | `{"kind":"scoop","name"}` |
+|  | a bare `thr_…` is **rejected**: pass the thread URL, because the id does not say which bb host it is on | — |
+| `--pr` | `N`, `#N` (both in the key's repo), `owner/repo#N`, `https://github.com/owner/repo/pull/N` | `"owner/repo#N"` |
+| `--note` | any text | `"note"` |
+
+At least one of `--status`, `--thread`, `--pr`, `--note` is required. Updates **merge**:
+the flags given overwrite their fields, and the other fields, including unknown ones, are
+kept. Every update sets `at` (ISO) and appends a compact entry to `history` (the fields it
+set, with `thread` as `bb:<id>`/`scoop:<name>` and `note` cut to 120 characters), which
+keeps the last 20. `update` prints one line with what is now recorded; `--json` prints the
+stored entry. `show` without a key lists every report (`--json`: the `reports` object); with
+a key it prints that report and its history, and a missing key is exit 1. Clearing an entry
+that is not there is a no-op (exit 0) that writes nothing.
+
+File format:
+
+```json
+{ "version": 1,
+  "reports": {
+    "owner/repo#N": { "status": "working", "thread": { "kind": "scoop", "name": "my-scoop" },
+                      "pr": "owner/repo#M", "note": "…", "at": "2026-…Z", "history": [ … ] } } }
+```
+
+Writes use the async (live) fs. The new file is staged as a sibling `reports.json.tmp-*` and
+read back. The target is then re-read, and the temp is renamed over it only if the target is
+still the version the update merged into. Otherwise the temp is dropped and the update is
+merged into the newer version, up to 5 attempts. Any failure removes the temp and leaves the
+file byte-identical. A file that does not parse, or is not `version: 1` with a `reports`
+object, is refused with exit 2. A missing data directory is an error: the command does not
+create directories. The full format is in the github-dashboard skill's
+`references/reports.md`.
 
 ## Raw API passthrough
 
