@@ -11,6 +11,8 @@
     --bg: #fff; --panel: #f6f7f9; --line: #d9dce1; --text: #1d2026; --muted: #5d6470;
     --accent: #2563eb; --ok: #15803d; --bad: #b91c1c; --warn: #b45309; --new: #c026d3;
     --chosen: #16a34a; --menu: #2563eb; --excluded: #6b7280;
+    /* who decided: System 1 (kev), System 2 after a shrug, a random audit, a plan review */
+    --s1: #0e7490; --s2: #c2410c; --audit: #7c3aed; --review: #be185d; --direct: #5d6470;
     font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
   }
   @media (prefers-color-scheme: dark) {
@@ -18,6 +20,7 @@
       --bg: #15171b; --panel: #1d2026; --line: #343943; --text: #e6e8eb; --muted: #9aa3af;
       --accent: #60a5fa; --ok: #4ade80; --bad: #f87171; --warn: #fbbf24; --new: #e879f9;
       --chosen: #4ade80; --menu: #60a5fa; --excluded: #9ca3af;
+      --s1: #22d3ee; --s2: #fb923c; --audit: #a78bfa; --review: #f472b6; --direct: #9aa3af;
     }
   }
   * { box-sizing: border-box; }
@@ -62,7 +65,18 @@
   .diff li { margin: 2px 0; }
   .add { color: var(--ok); } .rem { color: var(--bad); } .chg { color: var(--warn); }
   .empty { color: var(--muted); padding: 24px 16px; }
-  .system2 { border-left: 3px solid var(--warn); padding: 2px 12px; margin: 8px 0; }
+  .s1 { --c: var(--s1); } .s2 { --c: var(--s2); } .audit { --c: var(--audit); }
+  .review, .plan { --c: var(--review); } .direct { --c: var(--direct); }
+  .who { display: inline-block; padding: 0 6px; border-radius: 4px; font-size: 11px; font-weight: 600; line-height: 17px; white-space: nowrap;
+    color: var(--c); border: 1px solid var(--c); background: color-mix(in srgb, var(--c) 12%, transparent); }
+  .plan.who { border-style: dashed; }
+  .card { border-left: 4px solid var(--c); background: color-mix(in srgb, var(--c) 6%, transparent); border-radius: 0 6px 6px 0; padding: 4px 12px; margin: 8px 0; }
+  .card h3 { font-size: 13px; margin: 6px 0; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+  .card h3 .ms { font-weight: normal; font-size: 12px; color: var(--muted); }
+  nav .legend { padding: 8px 12px; border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; font-size: 12px; }
+  nav .legend select { margin-left: auto; font-size: 12px; }
+  nav button { border-left: 4px solid var(--c, transparent); }
+  nav .meta .who { margin-right: 4px; }
   select { font: inherit; }
   code { font-size: 12.5px; }
   @media (max-width: 720px) { main { grid-template-columns: 1fr; } nav { position: static; max-height: 240px; border-right: 0; border-bottom: 1px solid var(--line); } }
@@ -106,6 +120,30 @@ function el(tag, attrs, ...children) {
 }
 const ms = (v) => (v == null ? '' : v >= 1000 ? `${(v / 1000).toFixed(1)} s` : `${v} ms`);
 const pct = (p) => (p == null ? '' : `${(p * 100).toFixed(1)}%`);
+
+// Who decided a step. Each kind has a colour and always a text label.
+const WHO = {
+  s1: { short: 'S1', label: 'System 1', title: 'System 1 (kev) decided' },
+  s2: { short: 'S2', label: 'System 2', title: 'System 1 was unsure and handed the step to System 2' },
+  audit: { short: 'Audit', label: 'System 2 audit', title: 'System 1 was sure; System 2 reviewed the step at random' },
+  review: { short: 'Review', label: 'Plan review', title: 'System 2 rewrote the plan, notes and values; no action' },
+  plan: { short: 'Plan', label: 'Original plan', title: 'System 2 wrote the first plan' },
+  direct: { short: 'Direct', label: 'Direct', title: 'No decider: the page had one answer' },
+};
+function whoOf(d) {
+  if (!d) return null;
+  if (d.system === 'direct') return 'direct';
+  if (d.system1) return d.system1.oversight ? 'audit' : d.system1.shrug ? 's2' : 's1';
+  // kev alone, or an agent / System 2 decider without kev
+  return /^kev\b/.test(d.system || '') ? 's1' : 's2';
+}
+const chip = (kind, text, long) => el('span', { class: `who ${kind}`, title: WHO[kind].title }, text ?? (long ? WHO[kind].label : WHO[kind].short));
+let filter = 'all';
+const FILTERS = {
+  all: { label: 'All steps', keep: () => true },
+  s2: { label: 'System 2 only', keep: (s) => s.plan || s.review || ['s2', 'audit'].includes(whoOf(s.decide)) },
+  review: { label: 'Plans and reviews', keep: (s) => s.plan || s.review },
+};
 
 async function fetchText(path) {
   const res = await fetch(`${path}${path.includes('?') ? '&' : '?'}t=${Date.now()}`, { cache: 'no-store' });
@@ -154,16 +192,31 @@ function render() {
   const steps = stepLines();
   if (!steps.length) { $('#steps').replaceChildren(); $('#detail').replaceChildren(el('p', { class: 'empty' }, 'No steps yet.')); return; }
   if (current < 1 || current > steps.length) current = steps.length;
-  $('#steps').replaceChildren(...steps.map((s, i) => {
+  const count = { s1: 0, s2: 0, audit: 0, review: 0 };
+  for (const s of steps) {
+    const w = whoOf(s.decide);
+    if (w in count) count[w] += 1;
+    if (s.review) count.review += 1;
+  }
+  const legend = el('div', { class: 'legend' },
+    ...['s1', 's2', 'audit', 'review'].map((k) => chip(k, `${WHO[k].short} ${count[k]}`)),
+    el('select', { 'aria-label': 'Show steps', onchange: (ev) => { filter = ev.target.value; render(); } },
+      ...Object.entries(FILTERS).map(([k, f]) => el('option', { value: k, selected: k === filter }, f.label))));
+  const rows = steps.map((s, i) => [s, i]).filter(([s]) => FILTERS[filter].keep(s));
+  $('#steps').replaceChildren(legend, ...rows.map(([s, i]) => {
     const d = s.decide;
+    const who = whoOf(d);
     const what = s.outcome ? s.outcome : d ? d.action.describe + (d.action.text && !/^type "/.test(d.action.describe) ? ` "${d.action.text}"` : '') : '';
-    const conf = d?.system1?.oversight ? ` · audit → S2` : d?.system1?.shrug ? ` · shrug ${pct(d.system1.confidence)} → S2` : d && d.confidence != null ? ` · ${pct(d.confidence)}` : '';
-    const planned = s.plan ? ' · planned' : s.review ? ' · plan review' : '';
+    const conf = who === 's1' && d.confidence != null ? ` ${pct(d.confidence)}` : who === 's2' && d.system1 ? ` · kev ${pct(d.system1.confidence)}` : '';
     const cls = s.act && s.act.error ? 'bad' : s.outcome && /passed|confirmed/.test(s.outcome) ? 'ok' : '';
-    return el('button', { 'aria-current': i + 1 === current ? 'true' : 'false', onclick: () => select(i + 1) },
+    return el('button', { class: who || '', 'aria-current': i + 1 === current ? 'true' : 'false', onclick: () => select(i + 1) },
       el('span', { class: `what ${cls}` }, `${s.step}. ${what}`),
-      el('span', { class: 'meta' }, `${d ? d.system : ''}${conf}${planned} · ${ms((s.observe?.ms || 0) + (s.orient?.ms || 0) + (d?.ms || 0) + (s.act?.ms || 0))}`));
+      el('span', { class: 'meta' },
+        s.plan ? chip('plan') : '', s.review ? chip('review') : '',
+        who ? chip(who, `${WHO[who].short}${conf}`) : '',
+        ms((s.observe?.ms || 0) + (s.orient?.ms || 0) + (s.review?.ms || 0) + (d?.ms || 0) + (s.act?.ms || 0))));
   }));
+  if (!rows.length) $('#steps').append(el('p', { class: 'empty' }, 'No steps of this kind.'));
   renderStep(steps[current - 1]);
 }
 
@@ -242,7 +295,9 @@ function menuView(s) {
   return el('table', {},
     el('thead', {}, el('tr', {}, el('th', {}, 'id'), el('th', {}, 'action'), el('th', {}, 'p'), el('th', { style: 'width:30%' }, ''))),
     el('tbody', {}, rows.map((a) => el('tr', { class: a.id === chosen ? 'chosen' : '' },
-      el('td', {}, el('code', {}, a.id), s1 && a.id === s1 && a.id !== chosen ? el('span', { class: 'warn' }, ' ← System 1') : ''),
+      el('td', {}, el('code', {}, a.id), ' ',
+        s1 && a.id === s1 && a.id !== chosen ? chip('s1', '← System 1') : '',
+        a.id === chosen && ['s2', 'audit'].includes(whoOf(d)) ? chip(whoOf(d), `← ${WHO[whoOf(d)].label}`) : ''),
       el('td', {}, a.describe), el('td', { class: 'num' }, pct(a.p)),
       el('td', {}, a.p != null ? el('div', { class: 'bar', style: `width:${Math.max(a.p * 100, 0.5)}%` }) : '')))));
 }
@@ -284,15 +339,17 @@ function renderStep(s) {
     o.viewport ? ` · viewport ${o.viewport.width}×${o.viewport.height}, scrollY ${o.viewport.scrollY} of ${o.viewport.scrollHeight}` : ''));
 
   if (s.plan) {
-    parts.push(el('h2', {}, 'Original plan', el('span', { class: 'ms' }, `System 2 · ${ms(s.plan.ms)}`)));
-    parts.push(planView(s.plan.plan, s.plan.notes));
-    if (s.plan.prompt) parts.push(el('details', {}, el('summary', {}, 'plan prompt'), el('pre', {}, s.plan.prompt)));
+    parts.push(el('div', { class: 'card plan' },
+      el('h3', {}, chip('plan', null, true), 'System 2 wrote it before the first step', el('span', { class: 'ms' }, ms(s.plan.ms))),
+      planView(s.plan.plan, s.plan.notes),
+      s.plan.prompt ? el('details', {}, el('summary', {}, 'plan prompt'), el('pre', {}, s.plan.prompt)) : ''));
   }
   if (s.review) {
-    parts.push(el('div', { class: 'system2' },
-      el('h3', {}, 'Plan review', el('span', { class: 'ms' }, ` ${s.review.why} · ${ms(s.review.ms)}`)),
+    parts.push(el('div', { class: 'card review' },
+      el('h3', {}, chip('review', null, true), `System 2, no action: ${s.review.why}`, el('span', { class: 'ms' }, ms(s.review.ms))),
       s.review.assessment ? el('p', {}, s.review.assessment) : '',
       planView(s.review.plan, s.review.notes, s.review.values),
+      el('p', { class: 'muted' }, 'System 1 then decided this step with the new plan.'),
       s.review.prompt ? el('details', {}, el('summary', {}, 'review prompt'), el('pre', {}, s.review.prompt)) : ''));
   }
   parts.push(el('h2', {}, 'Observe', el('span', { class: 'ms' }, ms(o.ms))));
@@ -315,22 +372,29 @@ function renderStep(s) {
     parts.push(el('h2', {}, 'DONE check'), el('pre', {}, JSON.stringify(s.verify, null, 2)));
   }
   if (d) {
-    parts.push(el('h2', {}, 'Decide', el('span', { class: 'ms' }, `${d.system} · ${ms(d.ms)}`)));
+    const who = whoOf(d);
+    parts.push(el('h2', {}, 'Decide', chip(who, null, true), el('span', { class: 'ms' }, `${d.system} · ${ms(d.ms)}`)));
     parts.push(el('p', {}, el('strong', {}, d.action.describe), d.action.text ? ` — text "${d.action.text}"` : '',
       d.confidence != null ? el('span', { class: 'muted' }, ` · confidence ${pct(d.confidence)}`) : ''));
     if (d.system1) {
       const s1 = d.system1;
-      parts.push(el('p', { class: s1.shrug ? 'warn' : 'muted' },
-        `System 1 chose ${s1.action} at ${pct(s1.confidence)}`,
-        s1.shrug ? ` — shrugged (${s1.shrug}); System 2 decided`
-          : s1.oversight ? ` — audited at random (${s1.oversight.reason}, p=${s1.oversight.chance}); System 2 decided`
-          : ' — kept'));
+      const verdict = s1.shrug ? `unsure (${s1.shrug}), so it handed the step to System 2.`
+        : s1.oversight ? `sure, but System 2 audited the step at random (${s1.oversight.reason}, p=${s1.oversight.chance}).`
+        : 'sure: its choice was taken.';
+      parts.push(el('div', { class: 'card s1' },
+        el('h3', {}, chip('s1', 'System 1 (kev)'), `chose ${s1.action} at ${pct(s1.confidence)}`),
+        el('p', {}, verdict)));
+    } else if (who === 's1') {
+      parts.push(el('div', { class: 'card s1' }, el('h3', {}, chip('s1', 'System 1 (kev)'), 'decided alone')));
     }
-    if (d.system2) {
-      parts.push(el('div', { class: 'system2' },
-        el('h3', {}, 'System 2'),
-        d.system2.assessment ? el('p', {}, d.system2.assessment) : '',
-        planView(d.system2.plan, d.system2.notes, d.system2.values)));
+    if (d.system2 || (who === 's2' && !d.system1)) {
+      const audit = who === 'audit';
+      const kept = audit && d.system1 && d.system1.action === d.action.id;
+      parts.push(el('div', { class: `card ${audit ? 'audit' : 's2'}` },
+        el('h3', {}, chip(audit ? 'audit' : 's2', null, true),
+          audit ? (kept ? 'kept System 1\'s choice' : `changed ${d.system1?.action} to ${d.action.id}`) : `decided ${d.action.id}`),
+        d.system2?.assessment ? el('p', {}, d.system2.assessment) : '',
+        d.system2 ? planView(d.system2.plan, d.system2.notes, d.system2.values) : ''));
     }
     if (d.prompt) parts.push(el('details', {}, el('summary', {}, 'prompt'), el('pre', {}, d.prompt)));
     if (d.answer) parts.push(el('details', {}, el('summary', {}, 'answer'), el('pre', {}, JSON.stringify(d.answer, null, 2))));

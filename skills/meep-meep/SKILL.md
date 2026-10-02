@@ -77,7 +77,7 @@ webrunner pays off on long goals: on Flights it took half the time of an agent d
 
 ## When a run fails
 
-1. Run `webrunner debug` (or `webrunner debug <run>` from the failure message). It opens a page with one entry per cycle:
+1. Run `webrunner debug` (or `webrunner debug <run>` from the failure message). It opens a page with one entry per cycle. Each entry is labelled and coloured by who decided: S1 (kev), S2 (kev handed the step over), Audit (a random System 2 review), Review (a plan review before the step), and Plan (the original plan). The top of the step list counts each kind and can filter to System 2 steps, or to plans and reviews only. In each step's detail:
    - **Observe:** the screenshot with the offered, chosen, and new controls outlined.
    - **What changed:** the controls that appeared, disappeared, or changed value since the last cycle.
    - **Orient:** the exact state and menu the decider saw, and every control that was left out with the reason.
