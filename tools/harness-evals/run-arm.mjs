@@ -26,6 +26,7 @@ import {
   tabIds,
   validateGoals,
 } from './placeholders.mjs';
+import { checkTrace, hasRubric, rubricRecord, rubricTask } from './rubric.mjs';
 
 const env = (k, d) => (process.env[k] ?? d ?? '').trim();
 const SLICC = env('HARNESS_SLICC');
@@ -46,6 +47,33 @@ const vfs = await import(join(SLICC, 'packages/github-workflow/scripts/vfs-file.
 const bench = await import(join(SLICC, 'packages/bench/scripts/slicc-adapter.mjs'));
 const url = io.readState()?.joinUrl;
 if (!url) throw new Error('no leader: start-leader left no join URL');
+
+// Goals with a rubric are also judged for partial credit, by the bench's judge (rubric.mjs).
+const rubricGoals = goals.goals.some(hasRubric);
+let judgeRubric = null;
+let leader = null;
+if (rubricGoals) {
+  const judgeMod = await import(join(SLICC, 'packages/bench/scripts/judge.mjs'));
+  const upstream = await import(join(SLICC, 'packages/bench/scripts/upstream.mjs'));
+  const apiKey = process.env.AWS_BEARER_TOKEN_BEDROCK || process.env.BEDROCK_API_KEY;
+  if (!apiKey) throw new Error('goals with a rubric need AWS_BEARER_TOKEN_BEDROCK for the judge');
+  const spec = await upstream.loadFindingsSpec();
+  judgeRubric = (goal, trace) =>
+    judgeMod.judgeWithFallback({
+      spec,
+      task: rubricTask(goal),
+      trace,
+      model: judgeMod.DEFAULT_JUDGE_MODEL,
+      fallbackModel: judgeMod.DEFAULT_JUDGE_FALLBACK_MODEL,
+      apiKey,
+      region: process.env.BEDROCK_REGION || 'us-west-2',
+    });
+  // The bare agent's trace is the bench's: an async leader so screenshots run during the prompt.
+  if (arm.kind === 'agent') {
+    const executors = await import(join(SLICC, 'packages/bench/scripts/executors.mjs'));
+    leader = executors.createLeader({ url, cli: io.cliPath() });
+  }
+}
 
 const sh = (command, timeoutMs = 120_000) =>
   io.execOnLeader(url, command, { timeoutMs }).toString('utf8');
@@ -72,6 +100,58 @@ const spend = () => {
     : { cost: null, escalations: null };
 };
 const tabs = () => tabIds(trySh('playwright-cli tab-list', 60_000).out);
+
+/** VFS readers handed to the adapter's judgeTrace; paths are absolute and plain. */
+const safePath = (p) => /^\/[A-Za-z0-9._/-]+$/.test(p) && !p.includes('..');
+let readSeq = 0;
+function readBytes(path) {
+  if (!safePath(path)) throw new Error(`refusing to read ${path}`);
+  readSeq += 1;
+  const local = join(out, 'tmp', `read-${readSeq}`);
+  mkdirSync(join(out, 'tmp'), { recursive: true });
+  vfs.readVfsFile(url, path, local, 120_000);
+  return readFileSync(local);
+}
+const vfsReaders = {
+  readText: async (path) => readBytes(path).toString('utf8'),
+  readBase64: async (path) => readBytes(path).toString('base64'),
+  list: async (dir) => {
+    if (!safePath(dir)) throw new Error(`refusing to list ${dir}`);
+    const r = trySh(`ls -1 ${shellQuote(dir)}`, 60_000);
+    return r.ok
+      ? r.out
+          .split('\n')
+          .map((l) => l.trim())
+          .filter(Boolean)
+      : [];
+  },
+};
+
+/** The bare agent's run as the bench runs it: screenshots while it works, then its transcript. */
+async function agentRunWithTrace(g, rep) {
+  const tag = `${g.id}-r${rep}`;
+  const shotsDir = `/tmp/harness-shots/${tag}`;
+  await leader.exec(`rm -rf ${shotsDir} && mkdir -p ${shotsDir}`);
+  const shooter = bench.startCapture(leader, shotsDir);
+  const t0 = Date.now();
+  const r = await leader.cli(['prompt', '--allsettled', '2m', '-'], {
+    stdin: agentPrompt(g),
+    timeoutMs: runTimeoutMs,
+  });
+  const shots = await shooter.stop();
+  const { images } = await bench.readShots(leader, shots);
+  const { doc, info } = await bench.exportTranscript(leader, `/tmp/harness-transcript/${tag}`);
+  const trace = bench.traceFromResult({
+    transcript: doc,
+    transcriptExport: info,
+    finalText: (doc && bench.lastConeAssistantText(doc)) || r.stdout,
+    screenshots: images,
+    exitCode: r.status,
+    stderr: r.status !== 0 ? String(r.stderr ?? '').slice(-300) : '',
+    durationMs: Date.now() - t0,
+  });
+  return { r, trace };
+}
 
 mkdirSync(join(out, 'records'), { recursive: true });
 mkdirSync(join(out, 'artifacts'), { recursive: true });
@@ -110,10 +190,16 @@ for (let rep = 1; rep <= repeats; rep += 1) {
     const t0 = Date.now();
     let own = null;
     let runError = null;
+    let trace = null;
     if (arm.kind === 'skill') {
       const r = trySh(adapter.command(g, arm, { shellQuote }), runTimeoutMs);
       own = typeof adapter.result === 'function' ? adapter.result(r.out) : null;
       if (!r.ok && !own) runError = r.out.slice(0, 300);
+    } else if (leader && hasRubric(g)) {
+      const { r, trace: t } = await agentRunWithTrace(g, rep);
+      trace = t;
+      if (r.status !== 0)
+        runError = `slicc prompt exited ${r.status}: ${String(r.stderr ?? '').slice(-300)}`;
     } else {
       const r = cli(['prompt', '--allsettled', '2m', '-'], {
         input: agentPrompt(g),
@@ -129,9 +215,13 @@ for (let rep = 1; rep <= repeats; rep += 1) {
     // One bar for every arm: the skill's judge on each tab the run left open.
     const opened = tabs().filter((id) => !before.includes(id));
     const judged = [];
+    let metrics = null;
     for (const id of opened.length ? opened : tabs()) {
       const snap = trySh(`playwright-cli snapshot --tab=${id}`, 60_000);
       judged.push({ tab: id, ok: snap.ok && Boolean(adapter.judge(snap.out, g)) });
+      // The adapter's own numbers from the final page (a game's score), the same for every arm.
+      if (snap.ok && !metrics && typeof adapter.metrics === 'function')
+        metrics = adapter.metrics(snap.out, g) ?? null;
     }
     for (const id of opened) trySh(`playwright-cli tab-close --tab=${id}`, 30_000);
     for (const path of own?.artifacts ?? []) {
@@ -145,6 +235,23 @@ for (let rep = 1; rep <= repeats; rep += 1) {
         );
       } catch (e) {
         console.log(`::warning::artifact ${path}: ${e.message}`);
+      }
+    }
+    let rubric = null;
+    if (judgeRubric && hasRubric(g)) {
+      try {
+        if (arm.kind === 'skill') {
+          if (typeof adapter.judgeTrace !== 'function')
+            throw new Error('the adapter has no judgeTrace for a goal with a rubric');
+          trace = await adapter.judgeTrace({ goal: g, own, ...vfsReaders });
+        }
+        const problems = checkTrace(trace);
+        if (problems.length) throw new Error(`judge trace: ${problems.join('; ')}`);
+        rubric = rubricRecord(await judgeRubric(g, trace));
+        // A skill adapter may report its numbers with the trace instead of from the page.
+        if (!metrics && arm.kind === 'skill' && trace.metrics) metrics = trace.metrics;
+      } catch (e) {
+        rubric = { credit: null, error: String(e.message ?? e).slice(0, 300) };
       }
     }
     const record = {
@@ -162,6 +269,8 @@ for (let rep = 1; rep <= repeats; rep += 1) {
       tokens: delta.tokens,
       escalations,
       invalid: invalidReason(arm.kind, escalations),
+      rubric,
+      metrics,
       tabs_judged: judged,
       error: runError,
       at: new Date().toISOString(),
@@ -172,7 +281,7 @@ for (let rep = 1; rep <= repeats; rep += 1) {
     );
     results.push(record);
     console.log(
-      `[harness] ${skill}/${arm.id} ${g.id} r${rep}: ${record.pass ? 'PASS' : 'fail'} (own ${record.self_ok}) ${seconds.toFixed(0)} s${delta.costUsd == null ? '' : ` $${delta.costUsd.toFixed(3)}`}${record.invalid ? ` INVALID: ${record.invalid}` : ''}${runError ? ` ERROR ${runError.slice(0, 120)}` : ''}`
+      `[harness] ${skill}/${arm.id} ${g.id} r${rep}: ${record.pass ? 'PASS' : 'fail'} (own ${record.self_ok}) ${seconds.toFixed(0)} s${delta.costUsd == null ? '' : ` $${delta.costUsd.toFixed(3)}`}${rubric ? ` credit ${rubric.credit == null ? `error (${rubric.error})` : `${Math.round(rubric.credit * 100)}%`}` : ''}${record.invalid ? ` INVALID: ${record.invalid}` : ''}${runError ? ` ERROR ${runError.slice(0, 120)}` : ''}`
     );
   }
 }

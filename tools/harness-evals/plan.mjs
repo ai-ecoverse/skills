@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { ADAPTER, loadAdapter } from './adapter.mjs';
 import { validateGoals } from './placeholders.mjs';
+import { hasRubric } from './rubric.mjs';
 
 /** Skill names under skills/ that a list of changed paths touches. */
 export function touchedSkills(paths) {
@@ -46,7 +47,15 @@ export async function plan(which, base, root = process.cwd()) {
   const include = [];
   for (const skill of skills) {
     const { adapter, goalsPath } = await loadAdapter(join(root, 'skills', skill));
-    const errors = validateGoals(JSON.parse(readFileSync(goalsPath, 'utf8')));
+    const doc = JSON.parse(readFileSync(goalsPath, 'utf8'));
+    const errors = validateGoals(doc);
+    // A skill arm on a rubric goal needs the adapter to say what the judge reads.
+    if (
+      doc.goals?.some(hasRubric) &&
+      adapter.arms.some((a) => a.kind === 'skill') &&
+      typeof adapter.judgeTrace !== 'function'
+    )
+      errors.push('goals with a rubric need the adapter to export judgeTrace for its skill arms');
     if (errors.length) throw new Error(`${goalsPath}: ${errors.join('; ')}`);
     for (const arm of adapter.arms)
       include.push({

@@ -41,6 +41,11 @@ export function summarize(records) {
       const arms = [...new Set(own.map((r) => r.arm))].sort();
       const goals = [...new Set(own.map((r) => r.goal))].sort();
       const cell = (arm, goal) => own.filter((r) => r.arm === arm && r.goal === goal && !r.invalid);
+      // Mean rubric credit over the runs the judge scored (null when none were).
+      const credit = (rs) => {
+        const c = rs.map((r) => r.rubric?.credit).filter((x) => typeof x === 'number');
+        return c.length ? c.reduce((a, b) => a + b, 0) / c.length : null;
+      };
       const rows = arms.map((arm) => {
         // Invalid runs (escalations.mjs) are counted, never scored.
         const all = own.filter((r) => r.arm === arm);
@@ -53,6 +58,8 @@ export function summarize(records) {
           self_passed: rs.filter((r) => r.self_ok).length,
           errors: rs.filter((r) => r.error).length,
           invalid: all.length - rs.length,
+          credit: credit(rs),
+          rubric_errors: rs.filter((r) => r.rubric?.error).length,
           escalations_allowed: all.reduce((n, r) => n + (r.escalations?.allowed ?? 0), 0),
           median_seconds: median(rs.map((r) => r.seconds)),
           median_steps: median(rs.map((r) => r.steps)),
@@ -60,7 +67,11 @@ export function summarize(records) {
           goals: Object.fromEntries(
             goals.map((g) => [
               g,
-              { passed: cell(arm, g).filter((r) => r.pass).length, runs: cell(arm, g).length },
+              {
+                passed: cell(arm, g).filter((r) => r.pass).length,
+                runs: cell(arm, g).length,
+                credit: credit(cell(arm, g)),
+              },
             ])
           ),
         };
@@ -70,19 +81,21 @@ export function summarize(records) {
   };
 }
 
+const pct = (x) => `${Math.round(x * 100)}%`;
+
 function table({ skill, goals, rows }) {
-  const head = `| arm | passed | ${goals.join(' | ')} | self-reported | median s | median steps | spend | errors | invalid |`;
-  const sep = `|${'---|'.repeat(goals.length + 8)}`;
+  const head = `| arm | passed | ${goals.join(' | ')} | self-reported | median s | median steps | spend | credit | judge errors | errors | invalid |`;
+  const sep = `|${'---|'.repeat(goals.length + 10)}`;
   const lines = rows.map(
     (r) =>
-      `| ${r.arm} | ${r.passed}/${r.runs} | ${goals.map((g) => `${r.goals[g].passed}/${r.goals[g].runs}`).join(' | ')} | ${r.self_passed} | ${r.median_seconds == null ? '–' : r.median_seconds.toFixed(0)} | ${r.median_steps ?? '–'} | ${r.cost_usd == null ? '–' : `$${r.cost_usd.toFixed(2)}`} | ${r.errors} | ${r.invalid} |`
+      `| ${r.arm} | ${r.passed}/${r.runs} | ${goals.map((g) => `${r.goals[g].passed}/${r.goals[g].runs}${r.goals[g].credit == null ? '' : ` · ${pct(r.goals[g].credit)}`}`).join(' | ')} | ${r.self_passed} | ${r.median_seconds == null ? '–' : r.median_seconds.toFixed(0)} | ${r.median_steps ?? '–'} | ${r.cost_usd == null ? '–' : `$${r.cost_usd.toFixed(2)}`} | ${r.credit == null ? '–' : pct(r.credit)} | ${r.rubric_errors} | ${r.errors} | ${r.invalid} |`
   );
   return `## ${skill}\n\n${head}\n${sep}\n${lines.join('\n')}\n`;
 }
 
 export function markdown(summary) {
   const body = summary.skills.length ? summary.skills.map(table).join('\n') : 'No records.\n';
-  return `# Harness evals\n\nA pass is the skill adapter's \`judge\` applied to the final page of every arm; "self-reported" is the arm's own verdict (from the adapter's \`result\`, where it has one). An invalid run (a skill-arm run whose scoops had commands approved by the cone, or whose escalation counts could not be read) is counted under "invalid" and left out of every other column.\n\n${body}`;
+  return `# Harness evals\n\nA pass is the skill adapter's \`judge\` applied to the final page of every arm; "self-reported" is the arm's own verdict (from the adapter's \`result\`, where it has one). An invalid run (a skill-arm run whose scoops had commands approved by the cone, or whose escalation counts could not be read) is counted under "invalid" and left out of every other column. "credit" is the mean rubric score (the bench's judge, partial credit per rubric item) over the runs of goals that have a rubric; a goal cell shows it after its pass count. "judge errors" counts rubric judgements that failed: their runs are left out of credit, so a high credit with judge errors rests on fewer runs.\n\n${body}`;
 }
 
 // realpath: argv[1] keeps symlinks (macOS /tmp), import.meta.url doesn't.
