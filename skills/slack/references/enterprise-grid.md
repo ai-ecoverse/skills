@@ -168,8 +168,9 @@ Enumerate channels using `admin.conversations.search`.
 | `search_channel_types` | `exclude_archived` \| `all` \| `private` \| `private_exclude` \| `archived` | Materially changes results: `all` → 2072, `exclude_archived` → 1515. Default: `exclude_archived`. Lars Trieloff observed omitting this returns `invalid_arguments` in the UI path; the API appears to default internally but the param should always be included explicitly. |
 | `sort` | `name` \| `member_count` \| `created` | `last_activity_ts` and `num_members` return `invalid_sort` (probed live). |
 | `sort_dir` | `asc` \| `desc` | |
-| `query` | any string, including empty | |
+| `query` | any string, including empty | Word-prefix match on the name (2026-10-02): `santander` missed `#aem-gruposantander` (C09U7MX5R7X, renamed `#aem-santander` the same day), `antander` finds nothing. The command therefore sends an empty query and matches locally, unless `--server-query`. |
 | `cursor` | any string, including empty | |
+| `limit` | 2..20 | Measured 2026-10-02: 21 and 50 answer `invalid_arguments` (`must be less than 20 [json-pointer:/limit]`); 1 answers ok with zero rows. Clamped by the command; default 20. |
 
 **`--types` shorthand in this command:** `--types=all`, `--types=private`, `--types=archived`, etc.
 

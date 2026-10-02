@@ -604,14 +604,15 @@ admin is not in (`conversations.info` answers `channel_not_found` for those).
 | Param | Required | Description |
 |-------|----------|-------------|
 | token | yes | org-level xoxc token |
-| query | yes | May be empty. `query=<channel id>` finds that channel (see `references/enterprise-grid.md`) |
-| limit | yes | **1 to 20.** `limit=21` answers `invalid_arguments`. `slack-ext channel-search` defaults to 50 and so fails unless `--limit=20` is passed |
+| query | yes | May be empty. Matches word PREFIXES of the name (split on `-`): on 2026-10-02 `santander` found `#agents-santander` but not `#aem-gruposantander` (C09U7MX5R7X, since renamed `#aem-santander`), and `antander` found nothing. `query=<channel id>` finds that channel (see `references/enterprise-grid.md`) |
+| limit | yes | **2 to 20.** `limit=21`, `limit=50` and `limit=100` answer `invalid_arguments` with `response_metadata.messages: ["[ERROR] must be less than 20 [json-pointer:/limit]"]` (20 is accepted despite the wording: `limit=18/19/20` return 18/19/20 rows, measured 2026-10-02 with an empty query; every other param is accepted on its own at `limit=5`); `limit=0` answers `must be greater than 1`; `limit=1` answers `ok:true` with zero rows and no `next_cursor`. `slack-ext channel-search` pages 20 at a time and clamps `--limit` into 2..20 |
 | search_channel_types | yes | `all`, `exclude_archived`, `private`, `private_exclude`, `archived`. `private_archive` answers `invalid_search_channel_type` |
 | sort | yes | `name`, `member_count`, `created` (`last_activity_ts` answers `invalid_sort`) |
 | sort_dir | yes | `asc` / `desc` |
 | cursor | yes | Empty for the first page; then `next_cursor` |
 
-Response: `{ok, conversations: [...], next_cursor}`. Fields used by
+Response: `{ok, conversations: [...], next_cursor, total_count}`. On `invalid_arguments` the
+reason is in `response_metadata.messages` (a JSON-pointer to the rejected param). Fields used by
 `channel-archive`: `id`, `name`, `is_private`, `is_archived`, `member_count`,
 `external_user_count`, `is_ext_shared`, `is_pending_ext_shared`,
 `is_org_shared`, `conversation_host_id`, `last_activity_ts`.

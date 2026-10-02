@@ -244,8 +244,15 @@ Enterprise Grid admin commands (use ORG-LEVEL token; calls look like human actio
 Channel management commands:
 
   channel-search [--query=<q>] [--limit=<n>] [--max=<n>] [--types=<t>] [--sort=<s>] [--sort-dir=<d>]
-      Enumerate channels via admin.conversations.search. Filters locally
-      (channel_ids parameter is silently ignored by Slack — see wire facts).
+                 [--server-query] [--json]
+      Enumerate channels via admin.conversations.search, paging next_cursor to
+      the end, and match --query locally as a case-insensitive substring of the
+      name (or an exact channel id). channel_ids is silently ignored by Slack.
+      --limit: page size, 2..20 (default 20). Slack rejects more than 20 with
+               invalid_arguments; larger values are clamped.
+      --max:   stop after this many MATCHES (never caps rows before matching).
+      --server-query: send --query to Slack too. Faster, but Slack matches word
+               prefixes only: santander missed #aem-gruposantander.
       --types: exclude_archived (default) | all | private | private_exclude | archived
       --sort:  name (default) | member_count | created
               (last_activity_ts returns invalid_sort — probed live)
@@ -535,7 +542,9 @@ async function slackApi(method, params, workspaceId, opts) {
       cli.die('Rate limited by Slack. Wait a moment and try again.', { prefix: PREFIX });
     }
     if (!fatal) return data;
-    cli.die('Slack API error (' + method + '): ' + error, { prefix: PREFIX });
+    // slackErrorDetail appends response_metadata.messages, which is where Slack
+    // says WHICH argument an invalid_arguments rejected.
+    cli.die('Slack API error (' + method + '): ' + slackErrorDetail(data), { prefix: PREFIX });
   }
 
   return data;
@@ -2223,7 +2232,9 @@ const {
   buildDeidentifyParams,
   buildEgSetUltraRestrictedParams,
   buildConvertChannelParams,
-  buildChannelSearchParams,
+  CHANNEL_SEARCH_PAGE_MAX,
+  slackErrorDetail,
+  searchChannels,
   buildApprovalsListParams,
   buildAppApproveRestrictParams,
   buildAppClearResolutionParams,
@@ -2231,7 +2242,6 @@ const {
   buildAppListParams,
   resolveAppOrRequestId,
   isValidPermissionType,
-  filterChannels,
   summarizeChannel,
   summarizeApproval,
   classifyUser,
@@ -2742,8 +2752,11 @@ async function cmdEgSetUltraRestricted() {
 async function cmdChannelSearch() {
   const orgId = await resolveOrg(false);
   const query = flags.query || flags.q || words[1] || '';
-  const limit = parseInt(flags.limit || '50', 10) || 50;
+  // Page size. Slack accepts 2..20 only (limit=50 answered invalid_arguments,
+  // "must be less than 20 [json-pointer:/limit]"); the builder clamps.
+  const requestedLimit = parseInt(flags.limit || String(CHANNEL_SEARCH_PAGE_MAX), 10) || CHANNEL_SEARCH_PAGE_MAX;
   const max = parseInt(flags.max || '0', 10) || 0;
+  const serverQuery = !!flags['server-query'];
   // search_channel_types controls which channels are included:
   //   exclude_archived (default) | all | private | private_exclude | archived
   // This is a significant filter: 'all' returns ~2072, 'exclude_archived' ~1515.
@@ -2766,44 +2779,58 @@ async function cmdChannelSearch() {
       { prefix: PREFIX }
     );
   }
+  const limit = Math.min(CHANNEL_SEARCH_PAGE_MAX, Math.max(2, requestedLimit));
 
   section('Channel search');
   if (query) kv('Query', query);
   kv('Org', orgId);
   kv('Types', channelTypes);
   kv('Sort', sort + ' ' + sortDir);
-  kv('Page limit', String(limit));
+  kv('Page limit', String(limit) + (limit !== requestedLimit ? ' (clamped from ' + requestedLimit + '; Slack accepts 2..20)' : ''));
   if (max) kv('Max results', String(max));
   console.log('');
   console.log(color.dim('  NOTE: channel_ids filter is silently ignored by Slack — filtering locally.'));
+  if (query && serverQuery) {
+    console.log(color.dim('  NOTE: --server-query: Slack matches word prefixes only, infix matches are missed.'));
+  }
   console.log('');
 
-  let cursor = '';
-  const allChannels = [];
-  let pages = 0;
-  do {
-    // Pass query to the API only for text searches (not ID lookups), to reduce
-    // pages fetched — but always filter locally for correctness.
-    const apiQuery = (query && !/^C[A-Z0-9]+$/i.test(query)) ? query : '';
-    const params = buildChannelSearchParams(apiQuery, limit, cursor, channelTypes, sort, sortDir);
-    const data = await slackApi('admin.conversations.search', params, orgId, { fatal: false });
-    if (!data.ok) cli.die('admin.conversations.search failed: ' + data.error, { prefix: PREFIX });
-    pages += 1;
-    for (const ch of (data.conversations || [])) allChannels.push(ch);
-    cursor = data.next_cursor || '';
-    if (max > 0 && allChannels.length >= max) { cursor = ''; break; }
-  } while (cursor);
+  // One retry for a transient transport failure; Slack errors are not retried.
+  const call = async (method, params) => {
+    let data = await slackApi(method, params, orgId, { fatal: false });
+    for (let i = 0; i < 2 && data && (data.error === 'xhr_error' || data.error === 'ratelimited'); i += 1) {
+      await new Promise((r) => setTimeout(r, 2000 * (i + 1)));
+      data = await slackApi(method, params, orgId, { fatal: false });
+    }
+    return data;
+  };
+  const onPage = (p) => {
+    if (p.pages % 10 === 0) {
+      console.error(color.dim('  ... ' + p.fetched + (p.totalCount !== null ? '/' + p.totalCount : '') + ' channels scanned, ' + p.matches + ' matching'));
+    }
+  };
+  const res = await searchChannels(call, {
+    query, limit, types: channelTypes, sort, sortDir, serverQuery, max, onPage,
+  });
+  if (res.error) {
+    cli.die(
+      'admin.conversations.search failed: ' + res.error +
+        (res.pages ? ' (after ' + res.pages + ' page(s), ' + res.fetched + ' channels scanned)' : ''),
+      { prefix: PREFIX }
+    );
+  }
+  const filtered = res.matches;
 
-  // Filter locally (handles exact ID lookup and ensures channel_ids defect doesn't bite)
-  const filtered = filterChannels(allChannels, query);
-
-  kv('Total (org)', String(allChannels.length) + (cursor ? '+' : '') + ' across ' + pages + ' page(s)');
+  kv('Scanned', String(res.fetched) + (res.totalCount !== null ? ' of ' + res.totalCount : '') +
+    (res.complete ? '' : '+') + ' across ' + res.pages + ' page(s)' +
+    (res.complete ? '' : max && filtered.length >= max ? ' (stopped early: --max reached)' : ' (stopped at the page cap)'));
   kv('Matching', String(filtered.length));
   console.log('');
 
   if (filtered.length === 0) {
     console.log('  (no channels matched)');
     console.log('');
+    if (flags.json) cli.out({ channels: [], total: 0, scanned: res.fetched, complete: res.complete });
     return;
   }
 
@@ -2830,7 +2857,9 @@ async function cmdChannelSearch() {
   }
   console.log('');
 
-  if (flags.json) cli.out({ channels: filtered.map(summarizeChannel), total: filtered.length });
+  if (flags.json) {
+    cli.out({ channels: filtered.map(summarizeChannel), total: filtered.length, scanned: res.fetched, complete: res.complete });
+  }
 }
 
 // ── Command: channel-to-public ────────────────────────────────────────────────

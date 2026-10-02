@@ -76,3 +76,58 @@ export function rubricRecord(j) {
     },
   };
 }
+
+/** A judge failure worth another try: a throttle, a 5xx, a dropped connection. */
+export const transientJudgeError = (err) =>
+  /HTTP (429|5\d\d)|throttl|timed? ?out|ECONNRESET|fetch failed|socket hang up/i.test(
+    String(err?.message ?? err)
+  );
+
+/**
+ * `fn` with retries on transient errors (Bedrock answered HTTP 500 on 3 of 21 judgements in
+ * run 37013006178). An invalid judgement is not transient: judgeWithFallback already repairs
+ * and falls back for those.
+ */
+export async function withRetry(
+  fn,
+  { delays = [15_000, 45_000], sleep, isTransient = transientJudgeError } = {}
+) {
+  const wait = sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (attempt >= delays.length || !isTransient(err)) throw err;
+      await wait(delays[attempt]);
+    }
+  }
+}
+
+/**
+ * `judgeAs(model)` on each model in turn, each with its transient retries, moving on only when a
+ * model keeps failing transiently. Bedrock kept answering 5xx for the same long traces across all
+ * three tries (runs 37013006178 and 37038030725: the bike tour and Drug Wars); the bench's
+ * fallback judge takes over only an invalid judgement, not a failed request.
+ */
+export async function judgeAcrossModels(judgeAs, models, retry = {}) {
+  let last;
+  for (const model of models) {
+    try {
+      return await withRetry(() => judgeAs(model), retry);
+    } catch (err) {
+      if (!(retry.isTransient ?? transientJudgeError)(err)) throw err;
+      last = err;
+    }
+  }
+  throw last;
+}
+
+/** How big a judge trace is, for an error message: steps, characters, screenshots and bytes. */
+export function traceSize(trace) {
+  // Runs on the error path too, so a malformed trace (what checkTrace rejected) must not throw.
+  const steps = Array.isArray(trace?.steps) ? trace.steps : [];
+  const shots = Array.isArray(trace?.screenshots) ? trace.screenshots : [];
+  const chars = steps.reduce((n, x) => n + String(x).length, 0);
+  const bytes = shots.reduce((n, x) => n + Math.floor((String(x?.base64 ?? '').length * 3) / 4), 0);
+  return `${steps.length} steps / ${chars} chars, ${shots.length} screenshots / ${Math.round(bytes / 1024)} KiB`;
+}

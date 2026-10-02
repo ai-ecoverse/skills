@@ -12,7 +12,7 @@
  *     the arm's model.
  *
  * Env: HARNESS_SLICC (slicc checkout), HARNESS_SKILL_DIR, HARNESS_ARM_ID, HARNESS_REPEATS,
- * HARNESS_OUT, HARNESS_RUN_S (per-run timeout, default 900), HARNESS_SUITES (comma list, default
+ * HARNESS_REPEAT (this job's one repeat, when the plan shards), HARNESS_OUT, HARNESS_RUN_S (per-run timeout, default 900), HARNESS_SUITES (comma list, default
  * `default`), plus SLICC_GW_HOME / SLICC_CLI.
  */
 import { spawnSync } from 'node:child_process';
@@ -30,7 +30,14 @@ import {
   tabIds,
   validateGoals,
 } from './placeholders.mjs';
-import { checkTrace, hasRubric, rubricRecord, rubricTask } from './rubric.mjs';
+import {
+  checkTrace,
+  hasRubric,
+  judgeAcrossModels,
+  rubricRecord,
+  rubricTask,
+  traceSize,
+} from './rubric.mjs';
 
 const env = (k, d) => (process.env[k] ?? d ?? '').trim();
 const SLICC = env('HARNESS_SLICC');
@@ -43,7 +50,10 @@ const goals = JSON.parse(readFileSync(goalsPath, 'utf8'));
 const suites = parseSuites(env('HARNESS_SUITES'));
 const goalErrors = validateGoals(goals);
 if (goalErrors.length) throw new Error(`${goalsPath}: ${goalErrors.join('; ')}`);
+// One repeat per job when the plan shards (HARNESS_REPEAT); else every repeat in turn.
+const shard = Number.parseInt(env('HARNESS_REPEAT'), 10);
 const repeats = Math.max(1, Number.parseInt(env('HARNESS_REPEATS', '1'), 10) || 1);
+const reps = shard >= 1 ? [shard] : Array.from({ length: repeats }, (_, i) => i + 1);
 const out = env('HARNESS_OUT');
 const runTimeoutMs = (Number.parseInt(env('HARNESS_RUN_S', '900'), 10) || 900) * 1000;
 /** A goal's own `timeout_s` (long games) overrides the default per-run limit. */
@@ -65,16 +75,23 @@ if (rubricGoals) {
   const apiKey = process.env.AWS_BEARER_TOKEN_BEDROCK || process.env.BEDROCK_API_KEY;
   if (!apiKey) throw new Error('goals with a rubric need AWS_BEARER_TOKEN_BEDROCK for the judge');
   const spec = await upstream.loadFindingsSpec();
+  const primary = judgeMod.DEFAULT_JUDGE_MODEL;
+  const fallback = judgeMod.DEFAULT_JUDGE_FALLBACK_MODEL;
+  // luna (falling back to sol on an invalid judgement); when luna's requests keep failing, sol.
   judgeRubric = (goal, trace) =>
-    judgeMod.judgeWithFallback({
-      spec,
-      task: rubricTask(goal),
-      trace,
-      model: judgeMod.DEFAULT_JUDGE_MODEL,
-      fallbackModel: judgeMod.DEFAULT_JUDGE_FALLBACK_MODEL,
-      apiKey,
-      region: process.env.BEDROCK_REGION || 'us-west-2',
-    });
+    judgeAcrossModels(
+      (model) =>
+        judgeMod.judgeWithFallback({
+          spec,
+          task: rubricTask(goal),
+          trace,
+          model,
+          fallbackModel: model === primary ? fallback : undefined,
+          apiKey,
+          region: process.env.BEDROCK_REGION || 'us-west-2',
+        }),
+      [primary, fallback]
+    );
   // The bare agent's trace is the bench's: an async leader so screenshots run during the prompt.
   if (arm.kind === 'agent') {
     const executors = await import(join(SLICC, 'packages/bench/scripts/executors.mjs'));
@@ -220,7 +237,7 @@ const agentPrompt = (g) =>
   `Open ${g.url} in a new browser tab and do this there: ${g.goal}\nLeave the final page open in that tab when you are done.`;
 
 const results = [];
-for (let rep = 1; rep <= repeats; rep += 1) {
+for (const rep of reps) {
   for (const raw of selectSuites(goals.goals, suites)) {
     const values = await resolvePlaceholders(
       raw,
@@ -307,7 +324,10 @@ for (let rep = 1; rep <= repeats; rep += 1) {
         // A skill adapter may report its numbers with the trace instead of from the page.
         if (!metrics && arm.kind === 'skill' && trace.metrics) metrics = trace.metrics;
       } catch (e) {
-        rubric = { credit: null, error: String(e.message ?? e).slice(0, 300) };
+        rubric = {
+          credit: null,
+          error: `${String(e.message ?? e).slice(0, 240)} (trace: ${traceSize(trace)})`,
+        };
       }
     }
     const record = {

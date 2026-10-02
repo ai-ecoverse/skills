@@ -1690,3 +1690,92 @@ test('channel-archive --confirm --allow-shared (entry point): a read-back row th
   ok(/archived \(confirmed\)/.test(h.text()));
   ok(/Shared now:\s+UNKNOWN \(flags say not shared, but the row reports conversation_host_id E06V3987PMY\)/.test(h.text()), h.text());
 });
+
+// ── channel-search (entry point): the 2026-10-02 invalid_arguments bug ───────
+//
+// The fake enforces Slack's measured contract: limit outside 2..20 answers
+// invalid_arguments with response_metadata.messages naming the param.
+
+function csApi(pages) {
+  return (m, p) => {
+    if (m !== 'admin.conversations.search') return undefined;
+    const lim = Number(p.limit);
+    if (!(lim >= 2 && lim <= 20)) {
+      return {
+        ok: false,
+        error: 'invalid_arguments',
+        response_metadata: { messages: ['[ERROR] must be less than 20 [json-pointer:/limit]'] },
+      };
+    }
+    const idx = p.cursor ? Number(p.cursor.slice(1)) : 0;
+    return {
+      ok: true,
+      conversations: pages[idx],
+      total_count: pages.reduce((n, x) => n + x.length, 0),
+      next_cursor: idx + 1 < pages.length ? 'p' + (idx + 1) : '',
+    };
+  };
+}
+const csRow = (id, name) => ({ id, name, member_count: 4, is_private: false, is_archived: false });
+const CS_PAGES = [
+  [csRow('C06MDH3G9J5', 'aem-santanderemea'), csRow('C09U7MX5R7X', 'aem-gruposantander'), csRow('C1', 'general')],
+  [csRow('C0C5YLFVBDY', 'agents-santander'), csRow('C2', 'random')],
+];
+const csCalls = (h) => h.calls.filter((c) => c.method === 'admin.conversations.search');
+
+// MUTATION TARGET: restore `limit: String(limit || 50)` and the default
+// --limit of 50, and this fails exactly as the live command did.
+test('channel-search --query=santander (entry point): succeeds, pages to the end, lists infix matches', async () => {
+  const h = await load({ runMain: true, argv: ['channel-search', '--query=santander'], api: csApi(CS_PAGES) });
+  is(errOf(h), '');
+  is(exitOf(h), 0);
+  const calls = csCalls(h);
+  is(calls.length, 2);
+  is(calls.map((c) => c.params.cursor).join('|'), '|p1');
+  for (const c of calls) ok(Number(c.params.limit) <= 20, 'limit sent: ' + c.params.limit);
+  const t = h.text();
+  ok(/C0C5YLFVBDY\s+agents-santander/.test(t), t);
+  ok(/C09U7MX5R7X\s+aem-gruposantander/.test(t), t);
+  ok(!/\bgeneral\b/.test(t.split('Matching')[1] || ''), t);
+  ok(/Matching:\s+3/.test(t), t);
+});
+
+test('channel-search --limit=50 --types=all (entry point): the page size is clamped to 20', async () => {
+  const h = await load({ runMain: true, argv: ['channel-search', '--query=santander', '--limit=50', '--types=all'], api: csApi(CS_PAGES) });
+  is(errOf(h), '');
+  for (const c of csCalls(h)) {
+    is(c.params.limit, '20');
+    is(c.params.search_channel_types, 'all');
+  }
+  ok(/clamped from 50/.test(h.text()), h.text());
+});
+
+// MUTATION TARGET: drop slackErrorDetail from the die message.
+test('channel-search (entry point): a Slack error prints response_metadata.messages', async () => {
+  const h = await load({
+    runMain: true,
+    argv: ['channel-search', '--query=santander'],
+    api: (m) =>
+      m === 'admin.conversations.search'
+        ? { ok: false, error: 'invalid_arguments', response_metadata: { messages: ['[ERROR] must be less than 20 [json-pointer:/limit]'] } }
+        : undefined,
+  });
+  is(exitOf(h), 1);
+  ok(/admin\.conversations\.search failed: invalid_arguments \(\[ERROR\] must be less than 20 \[json-pointer:\/limit\]\)/.test(errOf(h)), errOf(h));
+});
+
+test('channel-search --max=1 (entry point): max caps matches, not rows scanned', async () => {
+  const h = await load({ runMain: true, argv: ['channel-search', '--query=santander', '--max=1'], api: csApi(CS_PAGES) });
+  is(errOf(h), '');
+  ok(/Matching:\s+1/.test(h.text()), h.text());
+  ok(/--max reached/.test(h.text()), h.text());
+});
+
+test('channel-search --json with zero matches (entry point) still emits JSON', async () => {
+  const h = await load({ runMain: true, argv: ['channel-search', '--query=nomatch-xyz', '--json'], api: csApi(CS_PAGES) });
+  is(errOf(h), '');
+  const j = JSON.parse(h.stdout[h.stdout.length - 1]);
+  is(j.total, 0);
+  is(j.complete, true);
+  is(j.scanned, 5);
+});

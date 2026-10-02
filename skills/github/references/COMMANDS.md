@@ -43,6 +43,8 @@ Field sets (see `gh <cmd> <sub> --help` for the authoritative list):
 | `pr edit` | same as `pr list` (the updated PR) |
 | `pr view` | all of `pr list` plus `merged mergeable mergeStateStatus mergeCommit additions deletions changedFiles commits commitsCount statusCheckRollup reviews reviewDecision comments` |
 | `pr checks` | `name state bucket status conclusion link workflow startedAt completedAt description` |
+| `pr merge-status` | `status details` (the API result; shim-only) |
+| `pr queue` | `position state number title url headCommit enqueuedAt estimatedTimeToMerge` (shim-only) |
 | `issue list` | `number title body state stateReason author url createdAt updatedAt closedAt labels assignees milestone commentsCount id` |
 | `issue view` | all of `issue list` plus `comments` (the comment array) |
 | `run list` | `databaseId number name displayTitle status conclusion event headBranch headSha workflowName workflowDatabaseId url createdAt updatedAt startedAt attempt` |
@@ -74,7 +76,13 @@ gh pr edit 42 --title "New title" --body-file ./body.md --base develop
 gh pr edit 42 --add-label ready --remove-label needs-info --add-assignee octocat
 gh pr edit 42 --add-reviewer octocat --add-reviewer acme/platform --milestone v2.0
 gh pr edit 42 --title "New title" --json number,title,url
-gh pr merge 42 --squash --delete-branch      # or --merge (default) / --rebase; --subject --body --body-file
+gh pr merge 42 --squash --delete-branch      # async merge API; --merge/--rebase; --subject --body --body-file
+gh pr merge 42 --merge-action merge_queue    # or default (implicit) / direct_merge; --admin = bypass_rules
+gh pr merge 42 --auto                        # queue branch: enqueue; mergeable: merge; else enable auto-merge
+gh pr merge 42 --disable-auto                # dequeue, or disable auto-merge
+gh pr merge 42 --match-head-commit <sha>     # refuse unless the PR head is <sha>; --timeout <s>; --sync
+gh pr merge-status 42 <uuid> --wait          # result of an async merge request (shim-only)
+gh pr queue main --json                      # merge-queue entries: position, state, PR, head (shim-only)
 gh pr close 42 --comment "superseded by #43" # --delete-branch
 gh pr comment 42 --body "LGTM"               # or: gh pr comment 42 "LGTM"; --body-file
 gh pr checkout 42                            # prints git fetch/checkout commands, does not execute
@@ -99,6 +107,35 @@ gh pr ready 42 --undo                        # convert back to draft
   `--remove-milestone`; at least one edit flag is required. `--json [fields]` returns the updated
   PR, while unknown flags are rejected before mutation. No project flags or implicit, branch,
   or URL selectors are supported.
+- `pr merge` resolves the PR head (REST), then calls `PUT /pulls/{n}/merge-async` with
+  `sha` = that head (always: a push in between cancels the merge), `merge_action` (`default`
+  unless `--merge-action`/`--admin`), `merge_method` only when `-m/-s/-r` is given,
+  `commit_title`/`commit_message` from `--subject`/`--body`, and `bypass_rules: true` for `--admin`
+  (which also implies `direct_merge`, as upstream `--admin` bypasses the queue). Responses:
+  - `202` pending -> polls `GET .../merge-async/{uuid}` at 1, 2, 4, 8 s, then every 10 s, up to
+    `--timeout` (default 120 s, max 3600; `0` = do not wait) and 200 polls;
+  - `200` already merged (merge commit) or already in the queue -> reported, no polling;
+  - `409` a request is already pending -> its uuid is followed (warning if it expects another head);
+  - `400` not mergeable (closed, draft) -> exit 1 with GitHub's message;
+  - `404` for a PR that was just read -> exit 1 naming `--sync`; never an automatic fallback.
+
+  Final states: `merged` (exit 0, merge commit), `enqueued` (exit 0 — in the queue, **not merged**),
+  `failed` (exit 1, message), still pending (exit 8, prints `gh pr merge-status <n> <uuid> --wait`).
+  `--delete-branch` runs only after `merged`.
+- `pr merge --auto` follows upstream: on a merge-queue branch (GraphQL `isMergeQueueEnabled`) it is
+  merge-async `default` (the queue waits for requirements); a PR already mergeable
+  (`CLEAN`/`HAS_HOOKS`/`UNSTABLE`) is merged with `direct_merge`; otherwise GraphQL
+  `enablePullRequestAutoMerge` arms auto-merge (no REST or async endpoint does). `--disable-auto`
+  uses GraphQL `dequeuePullRequest` / `disablePullRequestAutoMerge` (upstream never dequeues).
+- `--auto`, `--disable-auto` and `--admin` are mutually exclusive; any two exit 1 with upstream's
+  message ``specify only one of `--auto`, `--disable-auto`, or `--admin` `` before any API call.
+- `pr merge --sync` is the synchronous `PUT /pulls/{n}/merge` (still sent with `sha`), only on
+  request — e.g. GitHub Enterprise Server, whose published 3.22 description has no merge-async.
+- `pr merge-status <n> <uuid> [--wait] [--json]` is **not in the real GitHub CLI**: it reads
+  `GET .../merge-async/{uuid}` (results are kept 24 h; an expired or unknown uuid is a 404).
+- `pr queue [branch]` is **not in the real GitHub CLI**. It reads
+  `repository.mergeQueue(branch:)` (default: the repo default branch), lists entries in position
+  order, and exits 1 when the branch has no merge queue.
 - `pr checks` reports check-runs **and** commit statuses, bucketed `pass`/`fail`/`pending`/`skipping`.
   Commit statuses are read from the combined-status endpoint, so a context that first reported
   `failure` and later `success` counts once, as its current state.
