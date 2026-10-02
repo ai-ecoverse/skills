@@ -542,3 +542,12 @@ test('rubric-only goals: valid without a check, pass is null, scored by credit a
   is([row.passed, row.runs, row.goals.darkroom.runs, row.goals.darkroom.credit], [1, 1, 0, 0.85]);
   assert.match(markdown(s), /\| hybrid \| 1\/1 \| – · 85% \| 1\/1 \|/);
 });
+
+test('timeout_s: a goal may raise its own run limit, within reason', () => {
+  const goal = (t) => ({ id: 'g', url: 'https://x', goal: 'go', expect: ['x'], timeout_s: t });
+  is(validateGoals({ last_updated: '2026-10-02', goals: [goal(1800)] }), []);
+  for (const bad of [0, 7201, 1.5, '900'])
+    is(validateGoals({ last_updated: '2026-10-02', goals: [goal(bad)] }), [
+      'goals[0]: timeout_s must be an integer from 1 to 7200',
+    ]);
+});
