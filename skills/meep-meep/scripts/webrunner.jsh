@@ -23,6 +23,10 @@ const LOG_PATH = '/tmp/meep/webrunner.log';
 const KEV_SCRIPT = `${__dirname}/../../decide-quickly/scripts/kev.jsh`;
 const DEBUG_PAGE = `${__dirname}/../assets/debug.html`;
 const READY = 'WEBRUNNER_KEV_READY';
+// The parent's deadline (epoch ms) for a run that re-executes itself after
+// kev prepare, and how much earlier the child's limit fires.
+const DEADLINE_ENV = 'WEBRUNNER_DEADLINE';
+const CHILD_MARGIN_MS = 5000;
 const MAX_STEPS_DEFAULT = 8;
 // A game tour takes 40 steps a day; 50 cut a 100-mile tour short (2026-10-01).
 const MAX_STEPS_CAP = 1000;
@@ -133,7 +137,7 @@ const t0 = Date.now();
 // Where the run is, for a --time-limit that expires mid-step: the reason
 // names the step and what it was waiting on. stopped: the limit ended the
 // run, and a step still in flight must not act or finish again.
-const status = { step: 0, phase: 'starting', stopped: false };
+const status = { step: 0, phase: 'starting', stopped: false, deadline: 0, child: null };
 const stuckAt = () => (status.step ? `step ${status.step}, ${status.phase}` : status.phase);
 async function say(line) {
   const stamped = `[${((Date.now() - t0) / 1000).toFixed(1)}s] ${line}`;
@@ -320,7 +324,18 @@ async function ensureKevRuntime() {
   }
   await say('installing the kev runtime (kev prepare)');
   await sh(['node', KEV_SCRIPT, 'prepare']);
-  await host.reexec(exec, READY);
+  // The child does the whole run. It gets this run's deadline, a little
+  // earlier, so its own time limit fires first and names its real phase.
+  // Before, the parent fired at 540 s "during installing the kev runtime"
+  // while the child was already playing, and the child ran on (diag round
+  // 2 on the hosted L4 leader, 2026-10-02).
+  status.phase = 'the run after kev prepare (its log lines are above)';
+  await host.reexec(exec, READY, {
+    env: status.deadline ? { [DEADLINE_ENV]: String(status.deadline - CHILD_MARGIN_MS) } : {},
+    onStart: (handle) => {
+      status.child = handle;
+    },
+  });
 }
 
 async function kevDecider(flags) {
@@ -794,7 +809,11 @@ async function runGoal(flags) {
   const parsedMax = parseInt(flags['max-steps'], 10);
   const maxSteps = Number.isFinite(parsedMax) ? Math.min(Math.max(parsedMax, 1), MAX_STEPS_CAP) : MAX_STEPS_DEFAULT;
   const hasCheck = Boolean(flags.expect || flags['expect-url']);
-  const timeLimit = numberFlag(flags['time-limit'], 0, 0, TIME_LIMIT_CAP);
+  // A child re-run after kev prepare inherits what is left of the parent's limit.
+  const ownLimit = numberFlag(flags['time-limit'], 0, 0, TIME_LIMIT_CAP);
+  const inherited = Number(process.env[DEADLINE_ENV]);
+  const left = inherited > 0 ? Math.max(1, Math.floor((inherited - Date.now()) / 1000)) : 0;
+  const timeLimit = left && (!ownLimit || left < ownLimit) ? left : ownLimit;
   const opts = {
     viewport: onOff(flags.viewport, true),
     shots: onOff(flags.shots, true),
@@ -813,6 +832,7 @@ async function runGoal(flags) {
   };
   if (opts.vision && !opts.shots) cli.die('--vision needs the screenshot: drop --shots off', { prefix: 'webrunner' });
   const started = Date.now();
+  if (timeLimit) status.deadline = started + timeLimit * 1000;
   // The agent writes the text for a type action itself; kev can only pick
   // values that the goal spells out (and hybrid shrugs to the agent for the rest).
   const candidates = AGENT_WRITES_TEXT.has(flags.decider) ? [] : page.textCandidates(flags.goal);
@@ -884,13 +904,20 @@ async function runGoal(flags) {
   const EXPIRED = Symbol('expired');
   let timer;
   const expired = new Promise((resolve) => {
-    timer = setTimeout(() => resolve(EXPIRED), timeLimit * 1000);
+    timer = setTimeout(() => resolve(EXPIRED), Math.max(0, status.deadline - Date.now()));
   });
   const first = await Promise.race([work, expired]);
   clearTimeout(timer);
   if (first !== EXPIRED) return first;
   status.stopped = true;
   work.catch(() => {});
+  if (status.child) {
+    try {
+      status.child.kill('SIGTERM');
+    } catch {
+      // already gone
+    }
+  }
   const reason = `time limit of ${timeLimit} s reached during ${stuckAt()}`;
   await say(reason);
   return finish(false, reason);

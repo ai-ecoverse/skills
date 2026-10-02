@@ -277,12 +277,19 @@ function childEnv(extra) {
   return env;
 }
 
-async function reexec(exec, envName) {
+/**
+ * Run this script once more, in a child that can require what was just
+ * installed, and exit with its output and code. opts.env: more variables
+ * for the child; opts.onStart(handle): the running child, so a caller with
+ * a time limit can kill it instead of leaving it running.
+ */
+async function reexec(exec, envName, opts = {}) {
   const stdin = process.stdin.read();
   const handle = exec.start(['node', process.argv[1], ...process.argv.slice(2)], {
     stdin: stdin == null ? '' : stdin,
-    env: childEnv({ [envName]: '1' }),
+    env: childEnv({ ...(opts.env || {}), [envName]: '1' }),
   });
+  if (typeof opts.onStart === 'function') opts.onStart(handle);
   handle.stdin.end();
   const result = await handle.done;
   if (result.stdout) process.stdout.write(result.stdout);
