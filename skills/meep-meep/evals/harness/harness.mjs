@@ -56,6 +56,7 @@ export function result(stdout) {
       const r = JSON.parse(text);
       return {
         ok: Boolean(r.ok),
+        run: r.run || null,
         steps: r.steps,
         decideSeconds: r.decideSeconds,
         artifacts: r.run ? [`/tmp/meep/runs/${r.run}/trace.jsonl`] : [],
@@ -134,8 +135,9 @@ const pageTextOf = (state) => {
  * action, what it changed and System 2's assessment, plus the page text
  * whenever it changed; the final page in full; the last screenshots.
  * lines: the parsed trace.jsonl; screenshot(name) → base64 PNG or null.
+ * Pure: the driver's judgeTrace hook below feeds it from the leader's VFS.
  */
-export async function judgeTrace(lines, screenshot, { shots = 4 } = {}) {
+export async function traceFromLines(lines, screenshot, { shots = 4 } = {}) {
   const steps = [];
   let lastText = '';
   let lastState = '';
@@ -183,6 +185,36 @@ export async function judgeTrace(lines, screenshot, { shots = 4 } = {}) {
     screenshots,
     // Only the final page counts: an earlier day's table is not the result
     // (the solo pilot read -13 off day 1 while the game stood at -2245).
-    points: gamePoints(finalText),
+    metrics: { points: gamePoints(finalText) },
   };
+}
+
+/**
+ * The driver's hook for a goal with a rubric: read the run's trace and
+ * screenshots through its callbacks and return the judge's trace.
+ * own: result(stdout), which names the run directory.
+ */
+export async function judgeTrace({ own, readText, readBase64 }) {
+  const dir = own && own.run ? `/tmp/meep/runs/${own.run}` : null;
+  if (!dir) {
+    return {
+      steps: [],
+      finalResult: 'webrunner printed no run id, so there is no trace to judge.',
+      outputFilesText: '',
+      screenshots: [],
+      metrics: { points: null },
+    };
+  }
+  const text = await readText(`${dir}/trace.jsonl`);
+  const lines = String(text || '')
+    .split('\n')
+    .filter(Boolean)
+    .map((l) => JSON.parse(l));
+  return traceFromLines(lines, async (name) => {
+    try {
+      return await readBase64(`${dir}/${name}`);
+    } catch {
+      return null;
+    }
+  });
 }

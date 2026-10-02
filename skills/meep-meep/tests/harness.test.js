@@ -10,6 +10,7 @@ import {
   judgeTrace,
   placeholder,
   result,
+  traceFromLines,
 } from '../evals/harness/harness.mjs';
 
 const quote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
@@ -70,6 +71,7 @@ test('result reads the last JSON webrunner printed and keeps the trace', () => {
     'step 1 click\n{"note": 1}\n{\n  "ok": true,\n  "steps": 4,\n  "decideSeconds": 2.5,\n  "run": "r1"\n}\n';
   is(result(out), {
     ok: true,
+    run: 'r1',
     steps: 4,
     decideSeconds: 2.5,
     artifacts: ['/tmp/meep/runs/r1/trace.jsonl'],
@@ -98,7 +100,7 @@ test('the game points come from the last points table', () => {
   is(gamePoints('no table'), null);
 });
 
-test('judgeTrace builds the judge trace from webrunner lines and reads points off the final page only', async () => {
+test('traceFromLines builds the judge trace from webrunner lines and reads points off the final page only', async () => {
   const state = (text) => `Goal: g\nPage text:\n  ${text}\nControls:\n  [e1] button "x"`;
   const lines = [
     { type: 'start', goal: 'g' },
@@ -127,7 +129,9 @@ test('judgeTrace builds the judge trace from webrunner lines and reads points of
     },
     { type: 'end', ok: false, reason: 'stalled', steps: 2 },
   ];
-  const trace = await judgeTrace(lines, async (name) => (name === 'step-02.png' ? 'BASE64' : null));
+  const trace = await traceFromLines(lines, async (name) =>
+    name === 'step-02.png' ? 'BASE64' : null
+  );
   is(trace.steps.length, 2);
   ok(trace.steps[0].startsWith('System 1: click button "Start Riding"'));
   ok(trace.steps[1].includes('System 2: click link "Rice and Beans"'));
@@ -135,5 +139,28 @@ test('judgeTrace builds the judge trace from webrunner lines and reads points of
   ok(trace.finalResult.includes('did not pass (stalled) after 2 steps'));
   ok(trace.finalResult.includes('Riding'));
   is(trace.screenshots, [{ label: 'step-02.png', base64: 'BASE64', format: 'png' }]);
-  is(trace.points, null, 'the -13 on an earlier page is not the result');
+  is(trace.metrics, { points: null }, 'the -13 on an earlier page is not the result');
+
+  // The driver's hook reads the same run through its callbacks.
+  const files = {
+    '/tmp/meep/runs/r1/trace.jsonl': lines.map((l) => JSON.stringify(l)).join('\n'),
+  };
+  const hooked = await judgeTrace({
+    goal: { id: 'armchair-bike' },
+    own: result(JSON.stringify({ ok: false, run: 'r1', steps: 2 })),
+    readText: async (p) => files[p],
+    readBase64: async (p) => {
+      if (p !== '/tmp/meep/runs/r1/step-02.png') throw new Error('ENOENT');
+      return 'BASE64';
+    },
+    list: async () => [],
+  });
+  is(hooked.steps, trace.steps);
+  is(hooked.screenshots, trace.screenshots);
+  const none = await judgeTrace({
+    own: null,
+    readText: async () => '',
+    readBase64: async () => '',
+  });
+  ok(none.finalResult.includes('no run id'));
 });
