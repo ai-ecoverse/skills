@@ -1199,42 +1199,68 @@ function seededRandom(seed) {
   };
 }
 
-// A rut: System 1, sure of itself, picks the same action again and again.
-// Each click changes a counter, so it is neither a stall nor calm, and the
-// random audit almost never fires: kev-4b clicked "Make Paperclip" 59 of 60
-// steps and "Gather catnip" 74 of 80, with one audit each (eval round
-// 37013006178, 2026-10-02). After RUT_START identical choices System 2
-// audits the step. If it picks something else, the next audit of that
-// action comes after RUT_MIN; if it keeps it, the gap doubles up to RUT_MAX.
+// A rut: System 1, sure of itself, keeps choosing among one or two actions.
+// - One action: kev-4b clicked "Make Paperclip" 59 of 60 steps and "Gather
+//   catnip" 74 of 80, with one audit each (eval round 37013006178). Each
+//   click changed a counter, so it was neither a stall nor calm.
+// - Two alternating: kev-4b scrolled down, up, down, up on the bike tour
+//   for 17 steps at 0.89-0.93 until the no-progress stop (round
+//   37038030725, 2026-10-02).
+// When the last RUT_START choices of System 1 are one action, or two that
+// each come back at least twice, System 2 audits the step. If it picks something else, the next
+// audit of that pattern comes after RUT_MIN; if it keeps it, the gap
+// doubles, up to RUT_MAX.
 const RUT_START = 8;
 const RUT_MIN = 3;
 const RUT_MAX = 32;
+const RUT_DISTINCT = 2;
 
-/** An audit is due: System 1 is about to repeat `describe` for the limit-th time. */
+const rutKey = (actions) => [...new Set(actions)].sort().join('\n');
+
+/** An audit is due: with `describe`, System 1's recent choices make a rut. */
 function rutAudit(rut, describe) {
-  if (!rut || rut.describe !== describe || rut.count + 1 < rut.limit) return null;
+  if (!rut) return null;
+  const recent = [...rut.recent, describe].slice(-rut.limit);
+  if (recent.length < rut.limit) return null;
+  const distinct = [...new Set(recent)];
+  if (distinct.length > RUT_DISTINCT) return null;
+  // Two actions only count when both keep coming back: seven clicks and
+  // then a new one is System 1 moving on.
+  if (distinct.length === 2 && distinct.some((d) => recent.filter((r) => r === d).length < 2))
+    return null;
   return {
-    reason: `System 1 chose "${describe}" ${rut.count + 1} times in a row`,
+    reason:
+      distinct.length === 1
+        ? `System 1 chose "${describe}" ${recent.length} times in a row`
+        : `System 1 alternated between "${distinct[0]}" and "${distinct[1]}" for ${recent.length} steps`,
     chance: 1,
     rut: true,
+    key: rutKey(recent),
+    actions: distinct,
   };
 }
 
 /**
  * The rut after a step. step: { describe, by: 's1' | 'audit' | 'other',
- * rutAudit: the audit was a rut audit, kept: it kept System 1's choice }.
- * limits: per action, the repeats before its next audit (kept across runs
- * of the same action).
+ * audit: the rut audit's result (rutAudit) when this step was one }.
+ * limits: per pattern, the steps before its next audit.
  */
 function trackRut(rut, step, limits) {
-  const limitOf = (d) => limits.get(d) || RUT_START;
-  if (step.rutAudit && rut) {
-    limits.set(rut.describe, step.kept ? Math.min(RUT_MAX, rut.limit * 2) : RUT_MIN);
-    return { describe: rut.describe, count: step.kept ? 1 : 0, limit: limitOf(rut.describe) };
+  const limitFor = (recent) => limits.get(rutKey(recent)) || RUT_START;
+  if (step.audit && step.audit.rut) {
+    const kept = step.audit.actions.includes(step.describe);
+    const old = limits.get(step.audit.key) || RUT_START;
+    limits.set(step.audit.key, kept ? Math.min(RUT_MAX, old * 2) : RUT_MIN);
+    // Start over; the pattern's new limit applies once it shows again.
+    return {
+      recent: kept ? [step.describe] : [],
+      limit: kept ? limits.get(step.audit.key) : RUT_MIN,
+    };
   }
   if (step.by !== 's1') return null;
-  if (rut && rut.describe === step.describe) return { ...rut, count: rut.count + 1 };
-  return { describe: step.describe, count: 1, limit: limitOf(step.describe) };
+  const recent = [...((rut && rut.recent) || []), step.describe].slice(-RUT_MAX);
+  const limit = rut ? rut.limit : limitFor([step.describe]);
+  return { recent, limit };
 }
 
 /** What System 2 hears on an audit: System 1 was not unsure, this is a routine review. */

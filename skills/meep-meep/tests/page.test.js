@@ -1443,33 +1443,52 @@ test('a rut of identical System 1 choices brings a System 2 audit, sooner after 
   const mk = 'click button "Make Paperclip"';
   let rut = null;
   for (let i = 0; i < 7; i++) rut = page.trackRut(rut, { describe: mk, by: 's1' }, limits);
-  is(rut, { describe: mk, count: 7, limit: 8 });
-  is(page.rutAudit(rut, 'click button "AutoClippers"'), null, 'another action is no rut');
+  is(rut.recent.length, 7);
+  is(
+    page.rutAudit(rut, 'click button "AutoClippers"'),
+    null,
+    'one new action is System 1 moving on'
+  );
   const audit = page.rutAudit(rut, mk);
   is(audit.reason, `System 1 chose "${mk}" 8 times in a row`);
   ok(audit.rut && audit.chance === 1);
-  is(page.rutAudit({ describe: mk, count: 6, limit: 8 }, mk), null, 'not yet');
+  is(page.rutAudit({ recent: Array(6).fill(mk), limit: 8 }, mk), null, 'not yet');
 
-  // System 2 bought AutoClippers instead: the next audit of Make Paperclip comes after 3.
-  rut = page.trackRut(
-    rut,
-    { describe: 'click button "AutoClippers"', by: 'audit', rutAudit: true, kept: false },
-    limits
-  );
-  is(rut, { describe: mk, count: 0, limit: 3 });
+  // System 2 bought AutoClippers instead: the next audit of the pattern comes after 3.
+  rut = page.trackRut(rut, { describe: 'click button "AutoClippers"', by: 'audit', audit }, limits);
+  is(rut, { recent: [], limit: 3 });
   for (let i = 0; i < 2; i++) rut = page.trackRut(rut, { describe: mk, by: 's1' }, limits);
-  ok(page.rutAudit(rut, mk), 'three more and System 2 looks again');
+  const again = page.rutAudit(rut, mk);
+  ok(again, 'three more and System 2 looks again');
 
-  // It kept the click: the gap doubles.
-  rut = page.trackRut(rut, { describe: mk, by: 'audit', rutAudit: true, kept: true }, limits);
-  is(rut, { describe: mk, count: 1, limit: 6 });
+  // It kept the click: the gap doubles from 3 to 6.
+  rut = page.trackRut(rut, { describe: mk, by: 'audit', audit: again }, limits);
+  is(rut, { recent: [mk], limit: 6 });
 
-  is(page.trackRut(rut, { describe: mk, by: 'other' }, limits), null, 'a hand-over ends the run');
+  is(page.trackRut(rut, { describe: mk, by: 'other' }, limits), null, 'a hand-over ends the rut');
   ok(
     page
       .oversightHint({ action: { id: 'click:e9' }, confidence: 0.9 }, 'x', [], true)
       .startsWith('Rut check (x)')
   );
+});
+
+// Eval round 37038030725 (2026-10-02): kev-4b scrolled down, up, down, up
+// for 17 steps at 0.89-0.93, which "identical in a row" never caught.
+test('alternating between two actions is a rut too; three distinct actions are not', () => {
+  const limits = new Map();
+  const down = 'scroll down: the control the goal needs is further down the page';
+  const up = 'scroll up: the control the goal needs is further up the page';
+  let rut = null;
+  for (let i = 0; i < 7; i++)
+    rut = page.trackRut(rut, { describe: i % 2 ? up : down, by: 's1' }, limits);
+  const audit = page.rutAudit(rut, up);
+  ok(audit, 'down, up, down, up ... is caught at the 8th');
+  is(audit.reason, `System 1 alternated between "${down}" and "${up}" for 8 steps`);
+  let mixed = null;
+  for (const d of ['a', 'b', 'c', 'a', 'b', 'c', 'a'])
+    mixed = page.trackRut(mixed, { describe: d, by: 's1' }, limits);
+  is(page.rutAudit(mixed, 'b'), null, 'three actions in turn is progress, not a rut');
 });
 
 // slicc#3760 refuses to resume a session whose schema changed, and the

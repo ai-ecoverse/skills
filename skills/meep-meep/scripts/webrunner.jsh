@@ -971,7 +971,14 @@ async function runGoal(flags) {
     const decider = await makeDecider(flags);
     result.decider = decider.name;
     // Agent token use and cost, when this slicc reports it per call (slicc#3760).
-    if (decider.usage) result.agentUsage = decider.usage;
+    // (Left out when nothing was reported: a slicc without it read as 0 calls.)
+    if (decider.usage) {
+      Object.defineProperty(result, 'agentUsage', {
+        enumerable: true,
+        configurable: true,
+        get: () => (decider.usage.calls ? decider.usage : undefined),
+      });
+    }
     result.loadSeconds = decider.loadMs == null ? null : decider.loadMs / 1000;
     trace = await traceLib.openTrace(fs, { label: flags.label || hostname });
     result.run = trace.id;
@@ -1080,8 +1087,8 @@ async function cycles(flags, run) {
   // Oversight: each turn's change magnitude, and the seeded audit roll.
   const magnitudes = [];
   const roll = page.seededRandom(opts.seed);
-  // System 1 repeating one action (see page.trackRut), and per action the
-  // repeats before its next audit.
+  // System 1 stuck on one or two actions (see page.trackRut), and per
+  // pattern the steps before its next audit.
   let rut = null;
   const rutLimits = new Map();
   let prev = null;
@@ -1369,8 +1376,7 @@ async function cycles(flags, run) {
         {
           describe: action.describe,
           by: s1.oversight ? 'audit' : s1.shrug ? 'other' : 's1',
-          rutAudit: Boolean(s1.oversight && s1.oversight.rut),
-          kept: Boolean(s1.oversight && s1.oversight.rut) && rut && action.describe === rut.describe,
+          audit: s1.oversight && s1.oversight.rut ? s1.oversight : null,
         },
         rutLimits
       );
