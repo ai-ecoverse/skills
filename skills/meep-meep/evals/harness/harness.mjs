@@ -59,6 +59,26 @@ export function timeLimit(goal, env = typeof process === 'undefined' ? {} : proc
   return Math.max(30, run - Math.max(60, Math.round(run * 0.1)));
 }
 
+/**
+ * Leader files the driver keeps after every run, failed or timed out
+ * (#461): webrunner's log (truncated per run), kev's pull log, and the
+ * run's trace. Without a run id in the output (a timeout, a crash), the
+ * newest run directory. Ids are timestamps, so they sort in time order;
+ * index.json sorts after them and is not a run.
+ */
+export async function diagnostics({ own, list }) {
+  const keep = ['/tmp/meep/webrunner.log', '/tmp/kev/pull.log'];
+  let run = own && own.run;
+  if (!run) {
+    const ids = (await list('/tmp/meep/runs'))
+      .filter((n) => /^\d{4}-\d\d-\d\dT[\w.-]+$/.test(n))
+      .sort();
+    run = ids[ids.length - 1];
+  }
+  if (run) keep.push(`/tmp/meep/runs/${run}/trace.jsonl`);
+  return keep;
+}
+
 /** One goal as a `webrunner run` command line. */
 export function command(goal, arm, { shellQuote }) {
   const argv = ['webrunner', 'run', '--url', goal.url, '--goal', goal.goal];

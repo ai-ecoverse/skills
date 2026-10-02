@@ -5,6 +5,7 @@ import {
   arms,
   command,
   containsValue,
+  diagnostics,
   gamePoints,
   heldArms,
   hnTopFromHtml,
@@ -224,4 +225,24 @@ test('webrunner stops itself before the driver times out', () => {
   is(timeLimit({ timeout_s: 3600 }), 3240);
   is(timeLimit({ timeout_s: 120 }), 60);
   is(timeLimit({ timeout_s: 20 }), 30, 'never under 30 s');
+});
+
+test('diagnostics keep the logs and the run trace, the newest run when none was printed', async () => {
+  const list = async (dir) => {
+    is(dir, '/tmp/meep/runs');
+    return [
+      '2026-10-02T09-55-59-drugwars-online',
+      'index.json',
+      '2026-10-02T10-01-07-flights',
+      '2026-09-30T08-00-00-x',
+    ];
+  };
+  const logs = ['/tmp/meep/webrunner.log', '/tmp/kev/pull.log'];
+  is(await diagnostics({ own: { run: 'r1' }, list }), [...logs, '/tmp/meep/runs/r1/trace.jsonl']);
+  is(
+    await diagnostics({ own: null, list }),
+    [...logs, '/tmp/meep/runs/2026-10-02T10-01-07-flights/trace.jsonl'],
+    'index.json sorts last but is not a run'
+  );
+  is(await diagnostics({ own: null, list: async () => [] }), logs);
 });
