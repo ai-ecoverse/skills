@@ -16,7 +16,7 @@ import {
   result,
   timeLimit,
   traceFromLines,
-} from '../evals/harness/harness.mjs';
+} from '../evals/harness/adapter.js';
 
 const quote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 const shot = (url, ...lines) => [`- Page URL: ${url}`, '- Page Title: T', ...lines].join('\n');
