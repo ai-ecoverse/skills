@@ -2105,3 +2105,26 @@ test('token-rotate never falls back to the browser session', async () => {
 //             (remove the pointer line in renderValidationErrors)
 //   Caught by: "app validate renders each error with its JSON pointer"
 //              "app validate renders multiple errors each with its own pointer"
+//
+// Session-path mutations, measured 2026-10-02. Each was applied to a COPY of the
+// skill under /tmp (the checkout itself was never edited), the copy's suite was
+// run with tst against a green 111/111 baseline, and the copy was deleted.
+//
+// MUTATION 5: the changed-since-diff re-check is ignored
+//             (`if (!manifestsEqual(live, recheck))` -> `if (false && ...)`)
+//   Caught by: "a write refuses when the live manifest changed since the diff (config path)"
+//              "a write refuses when the live manifest changed since the diff (session path)"
+//
+// MUTATION 6: --session is ignored (`forceSession = false`)
+//   Caught by: "--session forces the browser session even when a config token is set"
+//              "contradictory auth flags are refused before anything is called"
+//
+// MUTATION 7: --no-session is ignored (getAppConfigToken always optional)
+//   Caught by: "--no-session forbids the fallback and dies with the minting steps"
+//
+// MUTATION 8: token-rotate's --session guard removed
+//   Caught by: "token-rotate refuses --session and touches nothing"
+//
+// MUTATION 9: the session is tried BEFORE the config token (skip the config branch)
+//   Caught by: 56 tests, among them "resolveAppAuth: --token beats env, config and
+//              the session" and "config transport: bearer over sliccy:http"
