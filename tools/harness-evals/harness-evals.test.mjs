@@ -17,6 +17,7 @@ import {
 } from './placeholders.mjs';
 import { plan, touchedSkills } from './plan.mjs';
 import { markdown, readRecords, summarize } from './report.mjs';
+import { checkTrace, rubricRecord, rubricTask, validateRubric } from './rubric.mjs';
 
 const is = (a, b, m) => assert.deepEqual(a, b, m);
 
@@ -215,7 +216,7 @@ test('report keeps skills apart: the same arm id in two skills is two rows', () 
   is(meep.goals, ['flights', 'hn']);
   const kev = meep.rows.find((r) => r.arm === 'kev');
   is([kev.passed, kev.runs, kev.errors], [1, 2, 1]);
-  is(kev.goals.hn, { passed: 0, runs: 1 });
+  is(kev.goals.hn, { passed: 0, runs: 1, credit: null });
   is(meep.rows.find((r) => r.arm === 'bare').runs, 1, "other's bare stays out of meep's");
   is(other.rows, [
     {
@@ -226,10 +227,12 @@ test('report keeps skills apart: the same arm id in two skills is two rows', () 
       errors: 0,
       invalid: 0,
       escalations_allowed: 0,
+      credit: null,
+      rubric_errors: 0,
       median_seconds: 10,
       median_steps: 3,
       cost_usd: 0.5,
-      goals: { login: { passed: 0, runs: 1 } },
+      goals: { login: { passed: 0, runs: 1, credit: null } },
     },
   ]);
   const md = markdown(s);
@@ -295,6 +298,161 @@ test('report leaves invalid runs out of every score and counts them', () => {
   writeFileSync(join(dir, 'records/2.json'), JSON.stringify(rec(2, true, true)));
   const [row] = summarize(readRecords(dir)).skills[0].rows;
   is([row.passed, row.runs, row.invalid, row.escalations_allowed], [0, 1, 1, 5]);
-  is([row.cost_usd, row.median_seconds, row.goals.flights], [1, 10, { passed: 0, runs: 1 }]);
+  is(
+    [row.cost_usd, row.median_seconds, row.goals.flights],
+    [1, 10, { passed: 0, runs: 1, credit: null }]
+  );
   assert.match(markdown(summarize(readRecords(dir))), /\| hybrid \| 0\/1 \| 0\/1 \|.*\| 0 \| 1 \|/);
+});
+
+const RUBRIC =
+  '## Source facts (verified 2026-10-02)\n- the tour is 100 miles\n\n## Items\nfinished — the tour is completed\nbudget — stayed within budget\n';
+
+test('rubric fields: both or neither, weights positive and named in the rubric', () => {
+  const at = 'goals[0]';
+  is(validateRubric({ id: 'g' }, at), []);
+  is(validateRubric({ rubric: RUBRIC, weights: { finished: 70, budget: 30 } }, at), []);
+  const errs = [
+    ...validateRubric({ weights: { finished: 1 } }, at),
+    ...validateRubric({ rubric: RUBRIC, weights: { finished: 0, ghost: 5 } }, at),
+    ...validateRubric({ rubric: RUBRIC }, at),
+  ].join('\n');
+  for (const want of [
+    'rubric must be non-empty',
+    'weight finished must be a positive',
+    'ghost is not named',
+    'weights must be an object',
+  ])
+    assert.match(errs, new RegExp(want));
+  is(
+    validateGoals({
+      last_updated: '2026-10-02',
+      goals: [
+        {
+          id: 'bike',
+          url: 'https://x',
+          goal: 'ride',
+          expect: ['done'],
+          rubric: RUBRIC,
+          weights: { finished: 1, ghost: 1 },
+        },
+      ],
+    }),
+    ['goals[0]: weight ghost is not named in the rubric']
+  );
+});
+
+test('the judge task and trace check match what the bench judge reads', () => {
+  is(
+    rubricTask({
+      id: 'bike',
+      goal: 'ride',
+      url: 'https://x',
+      rubric: RUBRIC,
+      weights: { finished: 1 },
+      expect: ['x'],
+    }),
+    {
+      id: 'bike',
+      task: 'ride',
+      website: 'https://x',
+      rubric: RUBRIC,
+      weights: { finished: 1 },
+    }
+  );
+  is(
+    checkTrace({
+      steps: ['a'],
+      finalResult: 'done',
+      screenshots: [{ label: 'end', format: 'png', base64: 'AA==' }],
+    }),
+    []
+  );
+  is(checkTrace(null), ['judgeTrace returned no object']);
+  is(checkTrace({ steps: 'a', screenshots: [{}] }).length, 2);
+});
+
+test('a judgement keeps credit, statuses and judge usage, never the judge text', () => {
+  const rec = rubricRecord({
+    judgement: { findings: [{ item: 'finished', status: 'met', evidence: 'page says DONE' }] },
+    result: {
+      score: 0.7,
+      verdict: false,
+      statuses: { finished: 'met', budget: 'violated' },
+      missing_items: [],
+      rh_zeroed: false,
+    },
+    usage: { inputTokens: 10, outputTokens: 2 },
+    imagesSent: true,
+    model: 'global.openai.gpt-5.6-luna',
+  });
+  is(rec, {
+    credit: 0.7,
+    all_met: false,
+    statuses: { finished: 'met', budget: 'violated' },
+    missing_items: [],
+    rh_zeroed: false,
+    judge: {
+      model: 'global.openai.gpt-5.6-luna',
+      images: true,
+      usage: { inputTokens: 10, outputTokens: 2 },
+    },
+  });
+  assert.doesNotMatch(JSON.stringify(rec), /page says/);
+});
+
+test('report: mean credit per arm and goal, from judged runs only', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'harness-'));
+  mkdirSync(join(dir, 'records'), { recursive: true });
+  const rec = (n, goal, rubric) => ({
+    skill: 'meep',
+    arm: 'hybrid',
+    goal,
+    repeat: n,
+    pass: true,
+    self_ok: true,
+    seconds: 1,
+    steps: 1,
+    cost_usd: 0,
+    error: null,
+    invalid: null,
+    rubric,
+  });
+  writeFileSync(join(dir, 'records/1.json'), JSON.stringify(rec(1, 'bike', { credit: 0.6 })));
+  writeFileSync(join(dir, 'records/2.json'), JSON.stringify(rec(2, 'bike', { credit: 0.4 })));
+  writeFileSync(
+    join(dir, 'records/3.json'),
+    JSON.stringify(rec(3, 'bike', { credit: null, error: 'judge down' }))
+  );
+  writeFileSync(join(dir, 'records/4.json'), JSON.stringify(rec(1, 'hn', null)));
+  const s = summarize(readRecords(dir));
+  const [row] = s.skills[0].rows;
+  is(
+    [row.credit, row.rubric_errors, row.goals.bike.credit, row.goals.hn.credit],
+    [0.5, 1, 0.5, null]
+  );
+  assert.match(markdown(s), /\| hybrid \| 4\/4 \| 3\/3 · 50% \| 1\/1 \|.*\| 50% \| 1 \| 0 \| 0 \|/);
+  assert.match(markdown(s), /\| judge errors \|/);
+});
+
+test('plan refuses rubric goals when a skill arm has no judgeTrace', async () => {
+  const root = fakeRepo();
+  const goalsFile = join(root, 'skills/demo/evals/harness/goals.json');
+  writeFileSync(
+    goalsFile,
+    JSON.stringify({
+      last_updated: '2026-10-02',
+      goals: [
+        {
+          id: 'bike',
+          url: 'https://x',
+          goal: 'ride',
+          expect: ['done'],
+          rubric: RUBRIC,
+          weights: { finished: 1 },
+        },
+      ],
+    })
+  );
+  await assert.rejects(plan('demo', 'origin/main', root), /export judgeTrace/);
 });

@@ -149,6 +149,8 @@ jobs:
           HARNESS_ARM_ID: ${{ matrix.arm }}
           HARNESS_REPEATS: ${{ needs.plan.outputs.repeats }}
           HARNESS_OUT: ${{ runner.temp }}/harness-out
+          # The rubric judge (goals with `rubric`/`weights`) calls Bedrock like the bench's judge.
+          AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
         run: node tools/harness-evals/run-arm.mjs
 
       - name: Collect the leader log
