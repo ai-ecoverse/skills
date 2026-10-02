@@ -389,7 +389,20 @@ const FLAG_SPECS = {
     subject: { type: 'string', short: 't' },
     body: { type: 'string', short: 'b' },
     'body-file': { type: 'string', short: 'F' },
+    auto: { type: 'bool' },
+    'disable-auto': { type: 'bool' },
+    admin: { type: 'bool' },
+    'match-head-commit': { type: 'string' },
+    'merge-action': { type: 'string' },
+    timeout: { type: 'string' },
+    sync: { type: 'bool' },
   },
+  'pr merge-status': {
+    ...REPO_FLAG, ...JSON_FLAGS,
+    wait: { type: 'bool' },
+    timeout: { type: 'string' },
+  },
+  'pr queue': { ...REPO_FLAG, ...JSON_FLAGS },
   'pr comment': {
     ...REPO_FLAG,
     body: { type: 'string', short: 'b' },
@@ -1217,6 +1230,169 @@ async function prChecks(args) {
 }
 
 // ─── pr merge ────────────────────────────────────────────────────────────────
+// Goes through GitHub's async merge API (GA 2026-10-01; the recommended path
+// for programmatic merges, and the only one that handles merge queues and
+// stacked PRs through REST):
+//   PUT /repos/{o}/{r}/pulls/{n}/merge-async        -> {status, details}
+//   GET /repos/{o}/{r}/pulls/{n}/merge-async/{uuid} -> {status, details}
+// status: pending (details.uuid) | merged (details.sha) | enqueued | failed
+// (details.message). HTTP 202 = new request (pending), 200 = already merged or
+// already queued, 409 = a request is already pending (its uuid), 400 = not
+// mergeable (failed). Both endpoints are identical in the published OpenAPI
+// descriptions for API versions 2022-11-28 and 2026-03-10, and a live GET sent
+// with this client's 2022-11-28 header resolved the route (404 for an unknown
+// uuid, documentation_url naming the async endpoint, 2026-10-02) — so no
+// version header override is sent.
+//
+// `sha` is ALWAYS sent (the head resolved just before the request): a push in
+// between cancels the merge instead of merging code nobody reviewed.
+//
+// GraphQL is still used where REST has no endpoint (verified against the
+// OpenAPI description): `--auto` without a merge queue
+// (enablePullRequestAutoMerge) and `--disable-auto` (dequeuePullRequest /
+// disablePullRequestAutoMerge). `--sync` keeps the synchronous
+// PUT /pulls/{n}/merge as an explicit opt-in only (e.g. GitHub Enterprise
+// Server, whose 3.22 description has no merge-async); it is never chosen
+// automatically.
+
+const MERGE_ACTIONS = ['default', 'direct_merge', 'merge_queue'];
+
+const PR_AUTO_STATE_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      id number headRefOid baseRefName mergeStateStatus
+      isInMergeQueue isMergeQueueEnabled
+      mergeQueueEntry { position state }
+      autoMergeRequest { enabledAt mergeMethod }
+    }
+  }
+}`;
+
+const DEQUEUE_MUTATION = `mutation($id: ID!) {
+  dequeuePullRequest(input: {id: $id}) { mergeQueueEntry { id position state } }
+}`;
+
+const ENABLE_AUTO_MERGE_MUTATION = `mutation($input: EnablePullRequestAutoMergeInput!) {
+  enablePullRequestAutoMerge(input: $input) {
+    pullRequest { autoMergeRequest { enabledAt mergeMethod } }
+  }
+}`;
+
+const DISABLE_AUTO_MERGE_MUTATION = `mutation($id: ID!) {
+  disablePullRequestAutoMerge(input: {pullRequestId: $id}) { clientMutationId }
+}`;
+
+// mergeStateStatus values upstream treats as "merge now" even under --auto.
+const IMMEDIATELY_MERGEABLE = ['CLEAN', 'HAS_HOOKS', 'UNSTABLE'];
+
+// Poll schedule for merge-async: 1, 2, 4, 8 s, then every 10 s, bounded by
+// --timeout (default 120 s) and a hard cap on the number of polls.
+// GH_MERGE_POLL_DELAYS_MS (comma list, last value repeats) is a test override.
+const MERGE_POLL_DELAYS_MS = [1000, 2000, 4000, 8000, 10000];
+const MERGE_POLL_DEFAULT_TIMEOUT_S = 120;
+const MERGE_POLL_MAX_POLLS = 200;
+
+// POST /graphql through the shared authenticated client. GraphQL reports most
+// failures as HTTP 200 + `errors`; those are surfaced verbatim, never guessed at.
+async function graphql(cmdLabel, query, variables) {
+  let res;
+  try { res = await api.post('/graphql', { body: { query, variables } }); }
+  catch (e) { fail(cmdLabel, e); }
+  if (res && Array.isArray(res.errors) && res.errors.length) {
+    cli.die(cmdLabel + ': GraphQL error: ' + res.errors.map(e => e.message).join('; '), { prefix: 'gh' });
+  }
+  return (res && res.data) || {};
+}
+
+function short(sha) { return sha ? String(sha).slice(0, 7) : '?'; }
+
+function mergeAsyncDetails(result) {
+  return (result && typeof result.details === 'object' && result.details) || {};
+}
+
+function pollDelays() {
+  const raw = process.env.GH_MERGE_POLL_DELAYS_MS;
+  if (raw === undefined || raw === '') return MERGE_POLL_DELAYS_MS;
+  const list = String(raw).split(',').map(s => Number(s.trim())).filter(n => Number.isFinite(n) && n >= 0);
+  return list.length ? list : MERGE_POLL_DELAYS_MS;
+}
+
+function parseTimeout(cmdLabel, raw) {
+  if (raw === undefined) return MERGE_POLL_DEFAULT_TIMEOUT_S;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) cli.die(`${cmdLabel}: --timeout must be a number of seconds >= 0 (got: ${JSON.stringify(raw)})`);
+  return Math.min(n, 3600);
+}
+
+function mergeStatusHint(repo, num, uuid) {
+  return `gh pr merge-status ${num} ${uuid} --wait -R ${repo}`;
+}
+
+async function getMergeAsync(cmdLabel, repo, num, uuid) {
+  try {
+    return await api.get(`/repos/${repo}/pulls/${num}/merge-async/${encodeURIComponent(uuid)}`);
+  } catch (e) {
+    if (isNotFound(e)) {
+      cli.die(`${cmdLabel}: no merge request ${uuid} for ${repo}#${num} — the uuid is wrong, or the ` +
+        'result expired (results are kept 24 h after their last update)');
+    }
+    fail(cmdLabel, e);
+  }
+}
+
+// Polls until the request leaves `pending` or the timeout elapses. Returns the
+// last result, with `timedOut: true` when it is still pending.
+async function pollMergeAsync(cmdLabel, repo, num, uuid, timeoutS) {
+  const delays = pollDelays();
+  const deadline = Date.now() + timeoutS * 1000;
+  let last = null;
+  for (let i = 0; i < MERGE_POLL_MAX_POLLS; i++) {
+    const delay = delays[Math.min(i, delays.length - 1)];
+    if (Date.now() + delay > deadline) break;
+    await new Promise(r => setTimeout(r, delay));
+    last = await getMergeAsync(cmdLabel, repo, num, uuid);
+    if (!last || last.status !== 'pending') return { result: last, timedOut: false };
+  }
+  return { result: last, timedOut: true };
+}
+
+// Exit code for a merge-async outcome: 0 merged/enqueued, 1 failed (or an
+// unknown status), 8 still pending — the same "still running" code as
+// `gh pr checks`.
+function mergeAsyncExitCode(outcome) {
+  const st = outcome.result && outcome.result.status;
+  if (outcome.timedOut || st === 'pending') return 8;
+  return st === 'merged' || st === 'enqueued' ? 0 : 1;
+}
+
+// Prints a final (or timed-out) merge-async result; returns mergeAsyncExitCode.
+function reportMergeAsync(repo, num, uuid, outcome) {
+  const res = outcome.result || {};
+  const d = mergeAsyncDetails(res);
+  if (outcome.timedOut || res.status === 'pending') {
+    console.log(color.yellow('●') + ` Merge request ${uuid} for PR #${num} is still pending` +
+      (d.message ? ` — ${d.message}` : ''));
+    console.log(color.gray('  Check later (results are kept 24 h): ' + mergeStatusHint(repo, num, uuid)));
+    return 8;
+  }
+  if (res.status === 'merged') {
+    console.log(sym('merged') + ' ' + color.green('Merged') + ` PR #${num}` + (d.sha ? ` — merge commit ${d.sha}` : '') +
+      (d.message ? color.gray(' (' + d.message + ')') : ''));
+    return 0;
+  }
+  if (res.status === 'enqueued') {
+    console.log(sym('success') + ` PR #${num} is in the merge queue — not merged yet` +
+      (d.message ? color.gray(' (' + d.message + ')') : ''));
+    console.log(color.gray(`  Follow it with: gh pr queue -R ${repo}  /  gh pr view ${num} -R ${repo}`));
+    return 0;
+  }
+  if (res.status === 'failed') {
+    console.log(sym('failure') + ' ' + color.red('Merge failed') + ` for PR #${num}: ` + (d.message || 'no message given'));
+    return 1;
+  }
+  console.log(color.yellow('!') + ` Merge request ${uuid || ''} returned an unexpected result: ${JSON.stringify(res)}`);
+  return 1;
+}
 
 async function prMerge(args) {
   const { flags, positional } = parseArgs('pr merge', args, FLAG_SPECS['pr merge']);
@@ -1225,20 +1401,194 @@ async function prMerge(args) {
   const num = validateNum(values.number, 'PR number');
   const chosen = ['merge', 'squash', 'rebase'].filter(m => flags[m]);
   if (chosen.length > 1) cli.die('pr merge: pick one of --merge, --squash, --rebase (got: ' + chosen.map(m => '--' + m).join(' ') + ')');
-  const method = chosen[0] || 'merge';
+  // Same three-way exclusivity, and the same message, as upstream gh (cli/cli
+  // pkg/cmd/pr/merge/merge.go, v2.96.0 and trunk): each flag asks for a
+  // different action (arm auto-merge, disarm it, merge now bypassing rules).
+  if ([flags.auto, flags['disable-auto'], flags.admin].filter(Boolean).length > 1) {
+    cli.die('pr merge: specify only one of `--auto`, `--disable-auto`, or `--admin`');
+  }
+  const action = flags['merge-action'];
+  if (action !== undefined && !MERGE_ACTIONS.includes(action)) {
+    cli.die('pr merge: --merge-action must be one of ' + MERGE_ACTIONS.join(', ') + ' (got: ' + JSON.stringify(action) + ')');
+  }
+  if (flags.auto && action !== undefined) cli.die('pr merge: --auto chooses the merge action itself; drop --merge-action');
+  if (flags.sync) {
+    const clash = ['auto', 'disable-auto', 'merge-action', 'admin'].filter(f => flags[f] !== undefined && flags[f] !== false);
+    if (clash.length) cli.die('pr merge: --sync (synchronous merge) cannot be combined with ' + clash.map(f => '--' + f).join(', '));
+  }
+  const matchHead = flags['match-head-commit'];
+  if (matchHead !== undefined && !/^[0-9a-f]{7,40}$/i.test(String(matchHead))) {
+    cli.die('pr merge: --match-head-commit must be a commit SHA (got: ' + JSON.stringify(matchHead) + ')');
+  }
+  const timeoutS = parseTimeout('pr merge', flags.timeout);
   const repo = await repoFrom('pr merge', flags, repoArg);
-
-  const body = { merge_method: method };
-  if (flags.subject) body.commit_title = flags.subject;
   const msg = await bodyFrom('pr merge', flags.body ?? null, flags['body-file']);
+  const [owner, name] = repo.split('/');
+  const method = chosen[0];
+
+  const refuseMovedHead = (head) => {
+    if (matchHead !== undefined && !String(head).toLowerCase().startsWith(String(matchHead).toLowerCase())) {
+      cli.die(`pr merge: refusing — PR #${num} head is ${head}, not --match-head-commit ${matchHead} ` +
+        '(the head moved; re-read the PR before merging)');
+    }
+  };
+
+  // --auto / --disable-auto need queue and auto-merge state, which only GraphQL has.
+  let gqlPr = null;
+  if (flags.auto || flags['disable-auto']) {
+    const data = await graphql('pr merge', PR_AUTO_STATE_QUERY, { owner, name, number: num });
+    gqlPr = data.repository && data.repository.pullRequest;
+    if (!gqlPr || !gqlPr.id) cli.die('pr merge: pull request #' + num + ' not found in ' + repo);
+  }
+
+  if (flags['disable-auto']) {
+    if (gqlPr.isInMergeQueue) {
+      await graphql('pr merge --disable-auto', DEQUEUE_MUTATION, { id: gqlPr.id });
+      console.log(sym('success') + ' Removed PR #' + num + ' from the merge queue for ' + color.cyan(gqlPr.baseRefName));
+    } else if (gqlPr.autoMergeRequest) {
+      await graphql('pr merge --disable-auto', DISABLE_AUTO_MERGE_MUTATION, { id: gqlPr.id });
+      console.log(sym('success') + ' Auto-merge disabled for PR #' + num);
+    } else {
+      console.log(color.gray('PR #' + num + ' has no auto-merge enabled and is not in a merge queue — nothing to disable'));
+    }
+    return;
+  }
+
+  // Resolve the head the request is pinned to.
+  let head;
+  let mergeAction = action || (flags.admin ? 'direct_merge' : 'default');
+  if (gqlPr) {
+    head = gqlPr.headRefOid;
+    refuseMovedHead(head);
+    if (!gqlPr.isMergeQueueEnabled && !IMMEDIATELY_MERGEABLE.includes(gqlPr.mergeStateStatus)) {
+      // Upstream --auto without a queue: arm auto-merge. No REST/async endpoint does this.
+      const input = { pullRequestId: gqlPr.id, expectedHeadOid: head };
+      if (method) input.mergeMethod = method.toUpperCase();
+      if (flags.subject) input.commitHeadline = flags.subject;
+      if (msg !== null && msg !== undefined) input.commitBody = msg;
+      await graphql('pr merge --auto', ENABLE_AUTO_MERGE_MUTATION, { input });
+      console.log(sym('success') + ` PR #${num} will be automatically merged${method ? ' via ' + method : ''} when all requirements are met`);
+      if (flags['delete-branch']) cli.warn('pr merge: --delete-branch skipped — the PR is not merged yet');
+      return;
+    }
+    // Queue branch: the queue already waits for requirements. Mergeable now: merge.
+    mergeAction = gqlPr.isMergeQueueEnabled ? 'default' : 'direct_merge';
+  } else {
+    let pr;
+    try { pr = await api.get(`/repos/${repo}/pulls/${num}`); }
+    catch (e) {
+      if (isNotFound(e)) cli.die('pr merge: pull request #' + num + ' not found in ' + repo);
+      fail('pr merge', e);
+    }
+    head = pr && pr.head && pr.head.sha;
+    if (!head) cli.die('pr merge: could not resolve the head commit of PR #' + num);
+    refuseMovedHead(head);
+  }
+
+  if (flags.sync) {
+    const body = { sha: head };
+    if (method) body.merge_method = method;
+    if (flags.subject) body.commit_title = flags.subject;
+    if (msg !== null && msg !== undefined) body.commit_message = msg;
+    try {
+      const res = await api.put(`/repos/${repo}/pulls/${num}/merge`, { body });
+      console.log(sym('merged') + ' ' + color.green('Merged') + ' PR #' + num + ' (synchronous)' + (res && res.sha ? ' — merge commit ' + res.sha : ''));
+    } catch (e) { fail('pr merge --sync', e); }
+    if (flags['delete-branch']) await deleteHeadBranch('pr merge', repo, num);
+    return;
+  }
+
+  const body = { sha: head, merge_action: mergeAction };
+  if (method) body.merge_method = method;
+  if (flags.subject) body.commit_title = flags.subject;
   if (msg !== null && msg !== undefined) body.commit_message = msg;
+  if (flags.admin) body.bypass_rules = true;
+  if (mergeAction === 'merge_queue' && (method || flags.subject || (msg !== null && msg !== undefined))) {
+    cli.warn('pr merge: --merge/--squash/--rebase/--subject/--body apply only to direct merges; the merge queue sets them');
+  }
 
+  let result;
+  let adopted = false;
   try {
-    const res = await api.put(`/repos/${repo}/pulls/${num}/merge`, { body });
-    console.log(sym('merged') + ' ' + color.green('Merged') + ' PR #' + num + ' via ' + method + (res.message ? ' — ' + res.message : ''));
-  } catch (e) { fail('pr merge', e); }
+    result = await api.put(`/repos/${repo}/pulls/${num}/merge-async`, { body });
+  } catch (e) {
+    const eb = e && e.body;
+    if (e && Number(e.status) === 409 && eb && mergeAsyncDetails(eb).uuid) {
+      result = eb;
+      adopted = true;
+    } else if (e && Number(e.status) === 400) {
+      cli.die(`pr merge: PR #${num} cannot be merged: ` + (mergeAsyncDetails(eb).message || eb?.message || e.message));
+    } else if (isNotFound(e)) {
+      cli.die(`pr merge: PUT merge-async returned 404 for ${repo}#${num}, which was just read — the async merge ` +
+        'API is not available on this host, or the token cannot write here. `--sync` uses the synchronous merge.');
+    } else {
+      fail('pr merge', e);
+    }
+  }
 
-  if (flags['delete-branch']) await deleteHeadBranch('pr merge', repo, num);
+  const d = mergeAsyncDetails(result);
+  let code;
+  if (result && result.status === 'pending' && d.uuid) {
+    if (adopted) {
+      console.log(color.yellow('!') + ` A merge request is already pending for PR #${num}: ${d.uuid} ` +
+        `(action ${d.merge_action}, method ${d.merge_method}, head ${short(d.expected_head_sha)}) — following it`);
+      if (d.expected_head_sha && d.expected_head_sha !== head) {
+        cli.warn(`pr merge: the pending request expects head ${short(d.expected_head_sha)}, the PR head is now ${short(head)}`);
+      }
+    } else {
+      console.log(color.gray(`Merge request ${d.uuid} accepted (action ${d.merge_action || mergeAction}, ` +
+        `head ${short(d.expected_head_sha || head)}); waiting up to ${timeoutS}s`));
+    }
+    const outcome = timeoutS > 0
+      ? await pollMergeAsync('pr merge', repo, num, d.uuid, timeoutS)
+      : { result, timedOut: true };
+    code = reportMergeAsync(repo, num, d.uuid, outcome);
+    result = outcome.result || result;
+  } else {
+    // 200: already merged, or already in the merge queue — final immediately.
+    code = reportMergeAsync(repo, num, null, { result, timedOut: false });
+  }
+
+  if (flags['delete-branch']) {
+    if (result && result.status === 'merged' && code === 0) await deleteHeadBranch('pr merge', repo, num);
+    else cli.warn('pr merge: --delete-branch skipped — the PR is not merged (yet)');
+  }
+  if (code !== 0) process.exit(code);
+}
+
+// ─── pr merge-status (shim-only) ─────────────────────────────────────────────
+// The real GitHub CLI has no command for an async merge request's result.
+
+const MERGE_STATUS_FIELDS = ['status', 'details'];
+
+async function prMergeStatus(args) {
+  const { flags, positional } = parseArgs('pr merge-status', args, FLAG_SPECS['pr merge-status']);
+  const { values, repoArg } = distribute('pr merge-status', positional, ['number', 'uuid'], flags);
+  if (!values.number) cli.die('pr merge-status: PR number required');
+  const num = validateNum(values.number, 'PR number');
+  const uuid = values.uuid;
+  if (!uuid || !/^[0-9a-f-]{8,64}$/i.test(String(uuid))) {
+    cli.die('pr merge-status: merge request uuid required (as printed by `gh pr merge`; got: ' + JSON.stringify(uuid ?? null) + ')');
+  }
+  const timeoutS = parseTimeout('pr merge-status', flags.timeout);
+  const repo = await repoFrom('pr merge-status', flags, repoArg);
+  let result = await getMergeAsync('pr merge-status', repo, num, uuid);
+  let timedOut = false;
+  if (flags.wait && result && result.status === 'pending' && timeoutS > 0) {
+    const outcome = await pollMergeAsync('pr merge-status', repo, num, uuid, timeoutS);
+    result = outcome.result || result;
+    timedOut = outcome.timedOut;
+  }
+  const outcome = { result, timedOut: timedOut || (result && result.status === 'pending') };
+  const fields = parseFields('pr merge-status', flags.json, MERGE_STATUS_FIELDS);
+  if (fields !== undefined) {
+    await outputJson(pickFields(result || {}, fields), flags);
+    const code = mergeAsyncExitCode(outcome);
+    if (code !== 0) process.exit(code);
+    return;
+  }
+  const code = reportMergeAsync(repo, num, uuid, outcome);
+  if (code !== 0) process.exit(code);
 }
 
 // Shared by `pr merge --delete-branch` / `pr close --delete-branch`.
@@ -1827,6 +2177,79 @@ async function prReady(args) {
       }
     } catch (e) { fail('pr ready', e); }
     console.log(sym('success') + ' PR ' + color.cyan('#' + num) + ' is now ready for review');
+  }
+}
+
+// ─── pr queue (shim-only) ────────────────────────────────────────────────────
+// The real GitHub CLI has no command that lists a merge queue (its
+// `pr view --json` exposes autoMergeRequest only). This reads
+// repository.mergeQueue(branch:) — null when the branch has no queue.
+
+const PR_QUEUE_FIELDS = [
+  'position', 'state', 'number', 'title', 'url', 'headCommit', 'enqueuedAt', 'estimatedTimeToMerge',
+];
+
+const MERGE_QUEUE_QUERY = `query($owner: String!, $name: String!, $branch: String!) {
+  repository(owner: $owner, name: $name) {
+    mergeQueue(branch: $branch) {
+      url
+      entries(first: 100) {
+        totalCount
+        nodes {
+          position state enqueuedAt estimatedTimeToMerge
+          pullRequest { number title url }
+          headCommit { oid }
+        }
+      }
+    }
+  }
+}`;
+
+function queueEntryJson(e) {
+  return {
+    position: e.position,
+    state: e.state,
+    number: e.pullRequest ? e.pullRequest.number : null,
+    title: e.pullRequest ? e.pullRequest.title : null,
+    url: e.pullRequest ? e.pullRequest.url : null,
+    headCommit: e.headCommit ? { oid: e.headCommit.oid } : null,
+    enqueuedAt: e.enqueuedAt,
+    estimatedTimeToMerge: e.estimatedTimeToMerge ?? null,
+  };
+}
+
+async function prQueue(args) {
+  const { flags, positional } = parseArgs('pr queue', args, FLAG_SPECS['pr queue']);
+  const { values, repoArg } = distribute('pr queue', positional, ['branch'], flags);
+  const fields = parseFields('pr queue', flags.json, PR_QUEUE_FIELDS);
+  const repo = await repoFrom('pr queue', flags, repoArg);
+  let branch = values.branch;
+  if (!branch) {
+    try { branch = (await api.get(`/repos/${repo}`)).default_branch; }
+    catch (e) { fail('pr queue', e); }
+    if (!branch) cli.die('pr queue: could not resolve the default branch of ' + repo + '; pass a branch');
+  }
+  const [owner, name] = repo.split('/');
+  const data = await graphql('pr queue', MERGE_QUEUE_QUERY, { owner, name, branch });
+  const mq = data.repository && data.repository.mergeQueue;
+  if (!mq) cli.die(`pr queue: ${repo} has no merge queue on ${branch}`);
+  const conn = mq.entries || {};
+  const entries = (conn.nodes || []).map(queueEntryJson).sort((a, b) => a.position - b.position);
+  if (conn.totalCount > entries.length) {
+    cli.warn(`pr queue: showing the first ${entries.length} of ${conn.totalCount} entries`);
+  }
+
+  if (fields !== undefined) {
+    await outputJson(entries.map(e => pickFields(e, fields)), flags);
+    return;
+  }
+  console.log('');
+  console.log('  ' + color.cyan(color.bold(`Merge queue ${repo}:${branch}`)) + color.dim('  ' + (mq.url || `https://github.com/${repo}/queue/${branch}`)));
+  console.log(color.dim('  ' + '─'.repeat(52)));
+  if (!entries.length) { console.log(color.dim('  Queue is empty.')); return; }
+  for (const e of entries) {
+    const head = e.headCommit && e.headCommit.oid ? e.headCommit.oid.slice(0, 7) : '-';
+    console.log(`  ${String(e.position).padStart(3)}  ${String(e.state).padEnd(16)}  #${e.number}  ${fmt.trunc(e.title || '', 50)}  ${color.dim(head)}`);
   }
 }
 
@@ -4059,16 +4482,55 @@ const HELP = {
         ],
       },
       merge: {
-        usage: ['gh pr merge <num> [--squash|--rebase|--merge] [--delete-branch]', 'gh pr merge <num> [--squash] [repo]'],
+        usage: ['gh pr merge <num> [--squash|--rebase|--merge] [--merge-action A] [--auto|--disable-auto] [--admin]', 'gh pr merge <num> [--squash] [repo]'],
         desc: 'Merge a pull request',
         flags: [REPO_HELP,
-          '-m, --merge               merge commit (default)',
+          '-m, --merge               merge commit',
           '-s, --squash              squash merge',
-          '-r, --rebase              rebase merge',
+          '-r, --rebase              rebase merge (no method flag: GitHub\'s default)',
           '-d, --delete-branch       delete the head branch afterwards',
           '-t, --subject <text>      commit title',
           '-b, --body <text>         commit message body',
-          '-F, --body-file <path>    read the commit message body from a file'],
+          '-F, --body-file <path>    read the commit message body from a file',
+          '--merge-action <a>        default (queue if the branch has one, else merge), direct_merge,',
+          '                          or merge_queue (shim-only flag; the API\'s merge_action)',
+          '--auto                    merge once requirements are met: queue branch -> enqueue;',
+          '                          mergeable now -> merge; otherwise enable auto-merge (GraphQL)',
+          '--disable-auto            remove the PR from the merge queue, or disable auto-merge',
+          '--admin                   bypass_rules: true, and merge directly (skips the queue)',
+          '--match-head-commit <sha> refuse unless the PR head is this commit',
+          '--timeout <s>             how long to wait for the result (default 120; 0 = do not wait)',
+          '--sync                    use the synchronous REST merge instead (shim-only; e.g. GHES)'],
+        notes: [
+          'Uses PUT /pulls/{n}/merge-async with sha = the head just read (a push in between cancels',
+          'the merge), then polls GET .../merge-async/{uuid} (1,2,4,8 s, then every 10 s) and prints',
+          'merged + merge commit, enqueued (in the queue, NOT merged), or failed + message.',
+          'Exit: 0 merged/enqueued, 1 failed, 8 still pending (prints the uuid and',
+          '`gh pr merge-status <num> <uuid>`). A request already pending (409) is followed, not',
+          'duplicated. --delete-branch runs only after a merge.',
+          '--auto, --disable-auto and --admin are mutually exclusive, as in upstream gh.',
+        ],
+      },
+      'merge-status': {
+        usage: ['gh pr merge-status <num> <uuid> [--wait] [--timeout <s>] [--json] [-R owner/repo]'],
+        desc: 'Result of an async merge request by uuid (shim-only)',
+        flags: [REPO_HELP, JSON_HELP, JQ_HELP,
+          '--wait                    poll until the request leaves pending',
+          '--timeout <s>             bound for --wait (default 120)'],
+        notes: [
+          'Not in the real GitHub CLI. GET /repos/{o}/{r}/pulls/{n}/merge-async/{uuid}; results are',
+          'kept 24 h. Same exit codes as `gh pr merge`. JSON fields: ' + MERGE_STATUS_FIELDS.join(', '),
+        ],
+      },
+      queue: {
+        usage: ['gh pr queue [<branch>] [--json [fields]] [-R owner/repo]', 'gh pr queue [<branch>] [repo]'],
+        desc: 'List a branch merge queue: position, state, PR, head commit (shim-only)',
+        flags: [REPO_HELP, JSON_HELP, JQ_HELP],
+        notes: [
+          'Not in the real GitHub CLI. Reads repository.mergeQueue(branch:) via GraphQL; the branch',
+          'defaults to the repo default branch. Exits 1 when the branch has no merge queue.',
+          'JSON fields: ' + PR_QUEUE_FIELDS.join(', '),
+        ],
       },
       close: {
         usage: ['gh pr close <num> [--comment <text>] [--delete-branch]', 'gh pr close <num> [repo]'],
@@ -4518,7 +4980,9 @@ ${color.bold('COMMANDS')}
   ${color.cyan('pr checks')}     <num> [--json] [--watch] [repo]              Per-check status for the PR head
   ${color.cyan('pr create')}     --title T --body B --head BR [--base M] [--draft]  Open a PR
   ${color.cyan('pr edit')}       <num> [--title T] [--base B] [--add-label L]  Edit a PR
-  ${color.cyan('pr merge')}      <num> [--squash|--rebase] [--delete-branch]  Merge a PR
+  ${color.cyan('pr merge')}      <num> [--squash|--rebase] [--auto] [--delete-branch]  Merge or enqueue a PR
+  ${color.cyan('pr merge-status')} <num> <uuid> [--wait] [--json]             Async merge result (shim-only)
+  ${color.cyan('pr queue')}      [branch] [--json] [repo]                     List a merge queue (shim-only)
   ${color.cyan('pr close')}      <num> [--comment T] [repo]                   Close a PR without merging
   ${color.cyan('pr comment')}    <num> --body T [repo]                        Post a comment
   ${color.cyan('pr checkout')}   <num> [repo]                                 Print checkout commands
@@ -4679,7 +5143,7 @@ if (cmd === 'monday') { await mondayGh(argv.slice(1)); process.exit(0); }
 if (cmd === 'mcp') { await mcpPassthrough(argv.slice(1)); process.exit(0); }
 
 const dispatch = {
-  pr:      { list: () => prList(rest),      view: () => prView(rest),    checks: () => prChecks(rest), merge: () => prMerge(rest), close: () => prClose(rest), comment: () => prComment(rest), checkout: () => prCheckout(rest), create: () => prCreate(rest), edit: () => prEdit(rest), watch: () => prWatch(rest), unwatch: () => prUnwatch(rest), diff: () => prDiff(rest), ready: () => prReady(rest) },
+  pr:      { list: () => prList(rest),      view: () => prView(rest),    checks: () => prChecks(rest), merge: () => prMerge(rest), close: () => prClose(rest), comment: () => prComment(rest), checkout: () => prCheckout(rest), create: () => prCreate(rest), edit: () => prEdit(rest), watch: () => prWatch(rest), unwatch: () => prUnwatch(rest), diff: () => prDiff(rest), ready: () => prReady(rest), queue: () => prQueue(rest), 'merge-status': () => prMergeStatus(rest) },
   issue:   { list: () => issueList(rest),   view: () => issueView(rest), create: () => issueCreate(rest), comment: () => issueComment(rest), close: () => issueClose(rest), edit: () => issueEdit(rest) },
   repo:    { view: () => repoView(rest), archive: () => repoArchive(rest), clone: () => repoClone(rest) },
   branch:  { create: () => branchCreate(rest), delete: () => branchDelete(rest) },
