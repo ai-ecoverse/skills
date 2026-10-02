@@ -8,6 +8,7 @@ import {
   hnTopFromHtml,
   judge,
   judgeTrace,
+  metrics,
   placeholder,
   result,
   traceFromLines,
@@ -163,4 +164,11 @@ test('traceFromLines builds the judge trace from webrunner lines and reads point
     readBase64: async () => '',
   });
   ok(none.finalResult.includes('no run id'));
+});
+
+test('metrics reads the game points off the final snapshot', () => {
+  is(metrics('- text "Total Points All Tours -4255" [ref=e40]', { id: 'armchair-bike' }), {
+    points: -4255,
+  });
+  is(metrics('- button "Start Riding" [ref=e28]', {}), { points: null });
 });

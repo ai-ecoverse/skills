@@ -218,3 +218,11 @@ export async function judgeTrace({ own, readText, readBase64 }) {
     }
   });
 }
+
+/**
+ * Metrics from the final page, for every arm (the driver calls this on the
+ * last snapshot, so the bare agent arm gets game points too).
+ */
+export function metrics(snapshot) {
+  return { points: gamePoints(snapshot) };
+}
