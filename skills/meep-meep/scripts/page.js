@@ -52,7 +52,13 @@ const STOP_WORDS = new Set(
 // kev.js rejects a choice with more than 255 options, and a long list
 // flattens its probabilities: 64 click targets topped out at 0.05 on the
 // Google Flights start page (measured 2026-09-22). Keep the menu short.
-const MAX_CLICKS = 16;
+// System 1's menu. 16 cut Drug Wars' MAX buttons and eight of ten cities,
+// so the run shuttled between two cities for 30 days (2026-10-02). kev's
+// time grows with the menu (about 0.1 s an option), so it stays bounded.
+const MAX_CLICKS = 40;
+// System 2 reads every control in view: it can afford the long menu, and a
+// control ranked out of System 1's menu was out of its reach too.
+const MAX_CLICKS_S2 = 200;
 const MAX_FIELDS = 8;
 const MAX_OPTIONS = 255;
 // System 1 stands by a low-probability choice that leads the runner-up by this factor.
@@ -532,7 +538,7 @@ function clickScore(element, goalWords, previousLabels) {
   return s;
 }
 
-function rankClicks(elements, goal, previousLabels) {
+function rankClicks(elements, goal, previousLabels, max = MAX_CLICKS) {
   const goalWords = new Set(words(goal));
   return elements
     .filter((element) => element.kind === 'click')
@@ -542,7 +548,7 @@ function rankClicks(elements, goal, previousLabels) {
       score: clickScore(element, goalWords, previousLabels),
     }))
     .sort((a, b) => b.score - a.score || a.index - b.index)
-    .slice(0, MAX_CLICKS)
+    .slice(0, max)
     .sort((a, b) => a.index - b.index)
     .map((item) => item.element);
 }
@@ -590,7 +596,7 @@ function valueFits(value, element) {
  */
 function buildMenu(shot, goal, opts = {}) {
   const fields = shot.elements.filter((element) => element.kind === 'fill').slice(0, MAX_FIELDS);
-  const clicks = rankClicks(shot.elements, goal, opts.previousLabels);
+  const clicks = rankClicks(shot.elements, goal, opts.previousLabels, opts.maxClicks);
   const values = opts.values || [];
   // System 2's values without a field are offered like the goal's.
   const general = values.filter((v) => !v.field).map((v) => v.text);
@@ -770,7 +776,8 @@ const MAX_DONE_SO_FAR = 10;
 function planLines(plan, notes) {
   const lines = [];
   if (plan && plan.length) lines.push('Plan:', ...plan.map((step, i) => `  ${i + 1}. ${step}`));
-  if (notes && notes.length) lines.push('Notes:', ...notes.map((note) => `  - ${note}`));
+  if (notes && notes.length)
+    lines.push('Notes:', ...notes.map((note, i) => `  N${i + 1}. ${note}`));
   return lines;
 }
 
@@ -897,15 +904,28 @@ function orient(obs, opts) {
     scroll: view.scroll,
     values: opts.values,
   });
+  // System 2's menu: the same, with every control in view.
+  const menuS2 = buildMenu(shot, opts.goal, {
+    candidates: opts.candidates,
+    previousLabels: opts.previousLabels,
+    offerDone: opts.offerDone,
+    offerShrug: false,
+    factorText: opts.factorText,
+    scroll: view.scroll,
+    values: opts.values,
+    maxClicks: MAX_CLICKS_S2,
+  });
   const offered = new Set(menu.filter((a) => a.element).map((a) => a.element.token));
+  const offeredS2 = new Set(menuS2.filter((a) => a.element).map((a) => a.element.token));
   const excluded = view.excluded.map(({ element, reason }) => ({ token: element.token, reason }));
   for (const element of view.elements) {
     if (offered.has(element.token)) continue;
+    const s2 = offeredS2.has(element.token) ? ' (System 2 sees it)' : '';
     excluded.push({
       token: element.token,
       reason:
         element.kind === 'click'
-          ? `ranked below the top ${MAX_CLICKS}`
+          ? `ranked below System 1's top ${MAX_CLICKS}${s2}`
           : `more than ${MAX_FIELDS} fields`,
     });
   }
@@ -920,6 +940,7 @@ function orient(obs, opts) {
   });
   return {
     menu,
+    menuS2,
     state,
     excluded,
     scroll: view.scroll,
@@ -1183,6 +1204,8 @@ function shrugHint(first, reason, menu) {
 
 const MAX_TRAIL = 6;
 const MAX_PLAN = 12;
+// Steps a hand-over may put at the top of the plan (plan reviews rewrite it).
+const MAX_PLAN_NEXT = 3;
 const MAX_NOTES = 8;
 // Values System 2 leaves for System 1 to type: 'type "foo-bar" into textbox
 // "Name"' becomes a menu option, so System 1 can fill the field alone.
@@ -1215,7 +1238,7 @@ function system2Prompt(ctx) {
   const images = ctx.imageCount || 0;
   const look = images
     ? [
-        `The attached image${images > 1 ? 's are' : ' is'} the page now, each offered control boxed in red and labelled with its ref${images > 1 ? ', then the page one step earlier' : ''}.`,
+        `The attached image${images > 1 ? 's are' : ' is'} the page now, each control System 1 was offered boxed in red and labelled with its ref${images > 1 ? ', then the page one step earlier' : ''}. Your menu below also lists the controls System 1 was not offered.`,
       ]
     : [];
   return [
@@ -1229,8 +1252,8 @@ function system2Prompt(ctx) {
     'Then answer with StructuredOutput:',
     '- action: one id copied from the menu (for a type action also `text`, the exact string, taken from the goal; never invent personal information);',
     '- assessment: two or three sentences on the situation and why this action;',
-    '- plan: the remaining steps to the goal, in order, short and concrete, naming controls by their labels. It replaces the current plan, so keep the steps that still stand. System 1 follows it;',
-    '- notes: lessons about this site that System 1 should keep (for example "select a food item before pressing Buy and Eat"), or [] when there is nothing new;',
+    PLAN_INSTRUCTION,
+    NOTES_INSTRUCTION,
     VALUES_INSTRUCTION,
     ...loadLines(ctx.load),
     '',
@@ -1245,6 +1268,62 @@ function system2Prompt(ctx) {
     'Menu:',
     ...ctx.menu.map((action) => `  ${action.id}  ${action.describe}`),
   ].join('\n');
+}
+
+const PLAN_INSTRUCTION = `- plan_done (optional): the numbers of plan steps that are now finished or no longer apply (2 for step 2); they are removed. plan_next (optional): up to ${MAX_PLAN_NEXT} short steps to put at the top of the plan, naming controls by their labels. You do not rewrite the plan here; plan reviews do. System 1 follows the plan;`;
+const NOTES_INSTRUCTION =
+  '- note_add (optional): new lessons about this site for System 1 (for example "select a food item before pressing Buy and Eat"); note_remove (optional): the numbers of notes that are wrong or outdated (2 for N2). Notes stay until removed;';
+
+const PLAN_EDIT_SCHEMA = {
+  plan_done: { type: 'array', items: { type: 'integer' }, maxItems: MAX_PLAN },
+  plan_next: { type: 'array', items: { type: 'string' }, maxItems: MAX_PLAN_NEXT },
+};
+
+// System 2 imitates the numbering it reads: "N9: SELL sells the whole
+// stack" (Drug Wars, 2026-10-02). The number is ours, not the text's.
+const stripNumber = (text) =>
+  String(text)
+    .replace(/^\s*(?:N\d+|\d+)\s*[.:)]\s*/i, '')
+    .trim();
+
+/**
+ * A hand-over's plan edits: drop the finished steps by number, then put up
+ * to MAX_PLAN_NEXT new steps at the top. Hand-overs used to rewrite the
+ * whole plan, 36 times in 56 Drug Wars steps, and a plan review's plan was
+ * replaced in the same step (2026-10-02). Returns { plan, done, added }.
+ */
+function applyPlan(old, doneNumbers, next) {
+  const current = [...(old || [])];
+  const drop = new Set(
+    (doneNumbers || [])
+      .map((n) => (typeof n === 'string' ? Number.parseInt(n, 10) : n))
+      .filter((n) => Number.isInteger(n) && n >= 1 && n <= current.length)
+  );
+  const done = current.filter((_, i) => drop.has(i + 1));
+  const rest = current.filter((_, i) => !drop.has(i + 1));
+  const added = (next || [])
+    .filter((t) => typeof t === 'string' && stripNumber(t))
+    .slice(0, MAX_PLAN_NEXT)
+    .map((t) => stripNumber(t).slice(0, 240));
+  return { plan: [...added, ...rest].slice(0, MAX_PLAN), done, added };
+}
+
+const NOTE_SCHEMA = {
+  note_add: { type: 'array', items: { type: 'string' }, maxItems: MAX_NOTES },
+  note_remove: { type: 'array', items: { type: 'integer' }, maxItems: MAX_NOTES },
+};
+
+/** Where the plan came from and the plans before it, for a review. */
+function planHistoryLines(history) {
+  const earlier = (history || []).slice(-4, -1);
+  if (!earlier.length) return [];
+  return [
+    'Earlier plans, oldest first:',
+    ...earlier.flatMap((h) => [
+      `  step ${h.step} (${h.by}):`,
+      ...h.plan.map((p, i) => `    ${i + 1}. ${p}`),
+    ]),
+  ];
 }
 
 const VALUES_INSTRUCTION = `- values (optional): up to ${MAX_VALUES} texts System 1 may type, each {text, field}, field the label of the field it belongs in (omit field for any field). System 1 cannot write text; with a value it gets 'type "<text>" into textbox "<field>"' as an option. Values come from the goal or the page, never invented personal information. It replaces the current values; leave it out to keep them.`;
@@ -1263,12 +1342,14 @@ const VALUES_SCHEMA = {
 function memoryLines(ctx) {
   return [
     `Goal: ${ctx.goal}`,
-    'Current plan:',
+    `Current plan${ctx.planFrom ? ` (${ctx.planFrom})` : ''}:`,
     ...(ctx.plan && ctx.plan.length
       ? ctx.plan.map((step, i) => `  ${i + 1}. ${step}`)
       : ['  (none yet)']),
     'Notes so far:',
-    ...(ctx.notes && ctx.notes.length ? ctx.notes.map((n) => `  - ${n}`) : ['  (none)']),
+    ...(ctx.notes && ctx.notes.length
+      ? ctx.notes.map((n, i) => `  N${i + 1}. ${n}`)
+      : ['  (none)']),
     'Values for System 1:',
     ...(ctx.values && ctx.values.length
       ? ctx.values.map((v) => `  - "${v.text}"${v.field ? ` into "${v.field}"` : ''}`)
@@ -1286,7 +1367,9 @@ const REVIEW_WINDOW = 10;
 const REVIEW_RATE = 6;
 const REVIEW_STREAK = 5;
 const REVIEW_COOLDOWN = 10;
-const REVIEW_TRAIL = 20;
+const REVIEW_TRAIL = 40;
+// Screenshots a plan review sees: the page now and at earlier steps.
+const REVIEW_IMAGES = 6;
 const LOAD_NUDGE = 0.4;
 
 /** asked: one boolean per step System 1 decided, true when it handed over. */
@@ -1328,7 +1411,13 @@ function loadLines(load) {
 function reviewPrompt(ctx) {
   return [
     `You are System 2 of a browser agent. A fast model (System 1) picks most actions and hands you the ones it is unsure about. ${ctx.why}: far too often.`,
-    ...(ctx.imageCount ? ['The attached image is the page now.'] : []),
+    ...(ctx.imageCount
+      ? [
+          ctx.imageCount > 1
+            ? `The ${ctx.imageCount} attached images are the page now, then at earlier steps, newest first (${(ctx.imageSteps || []).map((n) => `step ${n}`).join(', ')}).`
+            : 'The attached image is the page now.',
+        ]
+      : []),
     'This is a plan review. You take no action this turn; System 1 decides right after you, with what you write.',
     'You cannot act on the page and must not run any command or read any file.',
     'Call StructuredOutput exactly once, then stop.',
@@ -1337,18 +1426,19 @@ function reviewPrompt(ctx) {
     'Read the steps below. Work out why System 1 keeps handing over: a plan step it cannot match to a control, text it has no value for, a loop the plan does not cover, a goal the plan no longer fits.',
     'Then answer with StructuredOutput:',
     '- assessment: what has been happening and what you changed, two to four sentences;',
-    '- plan: the remaining steps, rewritten for System 1: concrete, in order, each naming a control as the menu below labels it. It replaces the current plan;',
-    '- notes: lessons about this site for System 1 (they replace the current notes, so keep the ones that still hold);',
+    '- plan: the remaining steps, rewritten for System 1: concrete, in order, each naming a control as the menu below labels it. It replaces the current plan, and later hand-overs keep it unless the situation changes;',
+    NOTES_INSTRUCTION,
     `- values: up to ${MAX_VALUES} texts System 1 may type, each {text, field}, field the label of the field it belongs in (omit field for any field). Values come from the goal or the page, never invented personal information. They replace the current values.`,
     '',
     ...memoryLines(ctx),
+    ...planHistoryLines(ctx.planHistory),
     `The last ${REVIEW_TRAIL} steps, oldest first:`,
     ...trailLines(ctx.trail, REVIEW_TRAIL),
     '',
     'What System 1 sees now:',
     ctx.state,
     '',
-    'Its menu:',
+    'Every control in view (System 1 is offered the first ones by rank):',
     ...ctx.menu.map((action) => `  ${action.id}  ${action.describe}`),
   ].join('\n');
 }
@@ -1358,10 +1448,10 @@ const REVIEW_SCHEMA = {
   properties: {
     assessment: { type: 'string' },
     plan: { type: 'array', items: { type: 'string' }, maxItems: MAX_PLAN },
-    notes: { type: 'array', items: { type: 'string' }, maxItems: MAX_NOTES },
+    ...NOTE_SCHEMA,
     values: VALUES_SCHEMA,
   },
-  required: ['assessment', 'plan', 'notes', 'values'],
+  required: ['assessment', 'plan', 'values'],
 };
 
 function system2Schema(menu) {
@@ -1371,11 +1461,11 @@ function system2Schema(menu) {
       action: { type: 'string', enum: menu.map((action) => action.id) },
       text: { type: 'string', description: 'The exact text to type, for a type action only.' },
       assessment: { type: 'string' },
-      plan: { type: 'array', items: { type: 'string' }, maxItems: MAX_PLAN },
-      notes: { type: 'array', items: { type: 'string' }, maxItems: MAX_NOTES },
+      ...PLAN_EDIT_SCHEMA,
+      ...NOTE_SCHEMA,
       values: VALUES_SCHEMA,
     },
-    required: ['action', 'assessment', 'plan', 'notes'],
+    required: ['action', 'assessment'],
   };
 }
 
@@ -1435,9 +1525,36 @@ function cleanList(value, max) {
 
 /** New notes are added to the old ones, newest kept when over the cap. */
 function mergeNotes(old, added) {
-  const all = [...(old || [])];
-  for (const note of added || []) if (!all.includes(note)) all.push(note);
-  return all.slice(-MAX_NOTES);
+  return applyNotes(old, added, []).notes;
+}
+
+/**
+ * System 2's note changes: remove by number (N1 is the first note shown),
+ * then add, skipping a note already there (case and spacing ignored).
+ * Over MAX_NOTES the oldest go. Notes used to only accumulate: Drug Wars
+ * kept "Cash is $0, so BUY is disabled" twice while it held $23,000
+ * (2026-10-02). Returns { notes, added, removed }.
+ */
+function applyNotes(old, add, remove) {
+  const key = (n) => String(n).toLowerCase().replace(/\s+/g, ' ').trim();
+  const current = [...(old || [])];
+  const drop = new Set(
+    (remove || [])
+      .map((n) => (typeof n === 'string' ? Number.parseInt(n.replace(/^N/i, ''), 10) : n))
+      .filter((n) => Number.isInteger(n) && n >= 1 && n <= current.length)
+  );
+  const removed = current.filter((_, i) => drop.has(i + 1));
+  const notes = current.filter((_, i) => !drop.has(i + 1));
+  const added = [];
+  for (const raw of add || []) {
+    if (typeof raw !== 'string' || !stripNumber(raw)) continue;
+    const note = stripNumber(raw).slice(0, 240);
+    if (notes.some((n) => key(n) === key(note))) continue;
+    notes.push(note);
+    added.push(note);
+  }
+  while (notes.length > MAX_NOTES) removed.push(notes.shift());
+  return { notes, added, removed };
 }
 
 function finishedPrompt(state) {
@@ -1493,6 +1610,11 @@ module.exports = {
   cleanList,
   cleanValues,
   mergeNotes,
+  applyNotes,
+  applyPlan,
+  MAX_PLAN_NEXT,
+  REVIEW_IMAGES,
+  REVIEW_TRAIL,
   valueFits,
   system2Load,
   reviewDue,

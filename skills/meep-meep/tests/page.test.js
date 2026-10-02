@@ -166,7 +166,7 @@ test('the menu stays within kev option limit with many fields and goal values', 
   ok(menu.length <= page.MAX_OPTIONS, `menu has ${menu.length} options`);
   is(
     menu.filter((a) => a.operation === 'CLICK').length,
-    page.MAX_CLICKS,
+    Math.min(20, page.MAX_CLICKS),
     'clicks keep their places'
   );
   ok(
@@ -710,7 +710,7 @@ test('the plan and notes System 2 wrote are part of System 1 state', () => {
       'Plan:\n  1. Click Incompleteness theorems\n  2. Check the heading says Gödel'
     )
   );
-  ok(ori.state.includes('Notes:\n  - The Search link does nothing'));
+  ok(ori.state.includes('Notes:\n  N1. The Search link does nothing'));
   ok(ori.state.indexOf('Plan:') < ori.state.indexOf('Done so far:'));
   const bare = page.orient(
     { shot, viewport: null, diff: null },
@@ -763,7 +763,7 @@ test('System 2 gets the trail, the plan, the notes, the hint, the images and the
   ok(!prompt.includes('open --view'), 'System 2 is never told to run a command');
   ok(prompt.includes('must not run any command'));
   ok(prompt.includes('  1. Get Some Food'));
-  ok(prompt.includes('  - select a food item before Buy and Eat'));
+  ok(prompt.includes('  N1. select a food item before Buy and Eat'));
   ok(
     prompt.includes(
       '  step 3 (System 1 at 55%): click button "Start Riding"\n      1 new control: button "Keep Riding"'
@@ -776,7 +776,7 @@ test('System 2 gets the trail, the plan, the notes, the hint, the images and the
   ok(blind.includes('must not run any command') && !blind.includes('attached image'));
   ok(blind.includes('(no steps yet)') && blind.includes('(none yet)'));
   const schema = page.system2Schema(menu);
-  is(schema.required, ['action', 'assessment', 'plan', 'notes']);
+  is(schema.required, ['action', 'assessment']);
   is(
     schema.properties.action.enum,
     menu.map((a) => a.id)
@@ -1161,8 +1161,8 @@ test('System 2 load: every prompt says how often System 1 handed over', () => {
   ok(calm.includes('values (optional)') && calm.includes('Values for System 1:\n  (none)'));
   is(
     page.system2Schema(menu).required,
-    ['action', 'assessment', 'plan', 'notes'],
-    'values stay optional'
+    ['action', 'assessment'],
+    'plan, notes and values stay optional: no plan keeps the current one'
   );
 });
 
@@ -1183,7 +1183,7 @@ test('a plan review is due at 6 of 10 hand-overs or 5 in a row, at most every 10
 
 test('the plan review takes no action and reads the long trail and the values', () => {
   const menu = page.buildMenu(page.parseSnapshot(SNAPSHOT), 'x', {});
-  const trail = Array.from({ length: 22 }, (_, i) => ({
+  const trail = Array.from({ length: 42 }, (_, i) => ({
     step: i + 1,
     describe: `click link "step${i + 1}"`,
     system: 'System 2',
@@ -1210,12 +1210,12 @@ test('the plan review takes no action and reads the long trail and the values', 
       '  step 3 (System 2 at 20%, System 1 unsure: confidence 0.20 < 0.5): click link "step3"'
     )
   );
-  ok(!prompt.includes('"step2"'), 'the last 20 steps only');
+  ok(!prompt.includes('"step2"'), 'the last 40 steps only');
   ok(
     prompt.includes('click:e1  click link "Incompleteness theorems"'),
     'the menu, for control names'
   );
-  is(page.REVIEW_SCHEMA.required, ['assessment', 'plan', 'notes', 'values']);
+  is(page.REVIEW_SCHEMA.required, ['assessment', 'plan', 'values']);
   ok(!('action' in page.REVIEW_SCHEMA.properties), 'no action to take');
 });
 
@@ -1289,4 +1289,120 @@ test('repeated controls pair with the scan by order, which also fixes their boxe
     [924, 332, 45, 32],
     'the mark goes on the right row'
   );
+});
+
+// Drug Wars, 2026-10-02: notes only accumulated, so "Cash is $0, so BUY is
+// disabled" stayed (twice) while the run held $23,000.
+test('System 2 adds and removes notes by number; the oldest go over the cap', () => {
+  const old = ['Cash is $0, so BUY is disabled.', 'Cookie banner can be ignored.'];
+  const r = page.applyNotes(
+    old,
+    ['Sell Heroin in New York.', 'cookie  banner can be IGNORED.'],
+    [1, 'N9', 'x']
+  );
+  is(r.notes, ['Cookie banner can be ignored.', 'Sell Heroin in New York.']);
+  is(r.added, ['Sell Heroin in New York.'], 'a duplicate in other case and spacing is not added');
+  is(r.removed, ['Cash is $0, so BUY is disabled.'], 'N9 and x name no note');
+  is(page.applyNotes(old, [], ['N2']).notes, ['Cash is $0, so BUY is disabled.'], '"N2" works too');
+  const full = Array.from({ length: page.MAX_NOTES }, (_, i) => `n${i}`);
+  const over = page.applyNotes(full, ['newest'], []);
+  is(over.notes.length, page.MAX_NOTES);
+  is(over.removed, ['n0'], 'the oldest goes, and the debug page shows it');
+  ok(
+    page.planLines([], ['a', 'b']).join('\n').includes('  N2. b'),
+    'System 1 sees the numbers too'
+  );
+});
+
+// Drug Wars step 43, 2026-10-02: 16 clicks cut the MAX buttons and eight of
+// ten cities, so the run shuttled between two cities.
+test("System 1's menu holds 40 clicks, and System 2's every control in view", () => {
+  const lines = ['Page URL: https://drugwars.online/game', '- rootwebarea'];
+  for (let i = 1; i <= 50; i++)
+    lines.push(`  - button "City ${i}" [ref=e${i}] [box=10,${10 + i},50,10]`);
+  const shot = page.parseSnapshot(lines.join('\n'));
+  const ori = page.orient(
+    { shot, viewport: { width: 1024, height: 900, scrollY: 0, scrollHeight: 900 }, diff: null },
+    { goal: 'Travel', history: [], candidates: [], offerShrug: true }
+  );
+  is(ori.menu.filter((a) => a.operation === 'CLICK').length, page.MAX_CLICKS);
+  is(ori.menuS2.filter((a) => a.operation === 'CLICK').length, 50);
+  ok(!ori.menuS2.some((a) => a.operation === 'SHRUG'), 'System 2 cannot shrug');
+  const cut = ori.excluded.find((x) => x.token === 'e50');
+  is(cut.reason, "ranked below System 1's top 40 (System 2 sees it)");
+});
+
+test('a hand-over only edits the plan; a review sees screenshots and earlier plans', () => {
+  const menu = page.buildMenu(page.parseSnapshot(SNAPSHOT), 'x', {});
+  const s2 = page.system2Prompt({
+    goal: 'g',
+    trail: [],
+    state: 's',
+    menu,
+    plan: ['a'],
+    planFrom: 'written at step 8 by a plan review',
+  });
+  ok(s2.includes('- plan_done (optional)') && s2.includes('You do not rewrite the plan here'));
+  ok(!('plan' in page.system2Schema(menu).properties), 'a hand-over cannot rewrite the plan');
+  ok(s2.includes('Current plan (written at step 8 by a plan review):'));
+  ok(s2.includes('note_remove (optional)'));
+  const review = page.reviewPrompt({
+    goal: 'g',
+    plan: ['c'],
+    notes: [],
+    values: [],
+    trail: [],
+    why: 'System 1 handed over the last 5 steps',
+    state: 's',
+    menu,
+    imageCount: 3,
+    imageSteps: [12, 11, 10],
+    planHistory: [
+      { step: 1, by: 'the original plan', plan: ['a'] },
+      { step: 5, by: 'System 2', plan: ['b'] },
+      { step: 9, by: 'System 2', plan: ['c'] },
+    ],
+  });
+  ok(
+    review.includes(
+      'The 3 attached images are the page now, then at earlier steps, newest first (step 12, step 11, step 10).'
+    )
+  );
+  ok(
+    review.includes(
+      'Earlier plans, oldest first:\n  step 1 (the original plan):\n    1. a\n  step 5 (System 2):\n    1. b'
+    )
+  );
+  ok(!review.includes('step 9 (System 2)'), 'the current plan is not repeated as an earlier one');
+});
+
+// Drug Wars, 2026-10-02: hand-overs rewrote the plan on 36 of 56 steps,
+// and System 2 copied our numbering into its notes ("N9: SELL sells ...").
+test('plan edits drop finished steps and put next steps on top; numbers are ours', () => {
+  const plan = ['Sell Heroin', 'Pay the debt', 'Bank the rest', 'Travel'];
+  const r = page.applyPlan(
+    plan,
+    [1, 9, 'x'],
+    ['1. Click SELL for Heroin', 'Scroll to PAY', 'a', 'b']
+  );
+  is(r.done, ['Sell Heroin']);
+  is(
+    r.added,
+    ['Click SELL for Heroin', 'Scroll to PAY', 'a'],
+    `at most ${page.MAX_PLAN_NEXT}, our numbering stripped`
+  );
+  is(r.plan, [
+    'Click SELL for Heroin',
+    'Scroll to PAY',
+    'a',
+    'Pay the debt',
+    'Bank the rest',
+    'Travel',
+  ]);
+  is(page.applyPlan(plan, [], []).plan, plan, 'no edits keep the plan');
+  is(page.applyPlan([], [], ['Start']).plan, ['Start'], 'an empty plan can grow');
+  is(page.applyNotes([], ['N9: SELL sells the whole stack.', '3) Ludes cost $15.'], []).added, [
+    'SELL sells the whole stack.',
+    'Ludes cost $15.',
+  ]);
 });

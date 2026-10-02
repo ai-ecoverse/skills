@@ -13,6 +13,8 @@
     --chosen: #16a34a; --menu: #2563eb; --excluded: #6b7280;
     /* who decided: System 1 (kev), System 2 after a shrug, a random audit, a plan review */
     --s1: #0e7490; --s2: #c2410c; --audit: #7c3aed; --review: #be185d; --direct: #5d6470;
+    /* sections of the state the decider reads */
+    --st-goal: #4338ca; --st-plan: #15803d; --st-notes: #a16207; --st-history: #6b7280; --st-page: #0369a1; --st-controls: #9333ea;
     font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
   }
   @media (prefers-color-scheme: dark) {
@@ -21,6 +23,7 @@
       --accent: #60a5fa; --ok: #4ade80; --bad: #f87171; --warn: #fbbf24; --new: #e879f9;
       --chosen: #4ade80; --menu: #60a5fa; --excluded: #9ca3af;
       --s1: #22d3ee; --s2: #fb923c; --audit: #a78bfa; --review: #f472b6; --direct: #9aa3af;
+      --st-goal: #a5b4fc; --st-plan: #4ade80; --st-notes: #facc15; --st-history: #9ca3af; --st-page: #7dd3fc; --st-controls: #d8b4fe;
     }
   }
   * { box-sizing: border-box; }
@@ -76,6 +79,15 @@
   nav .legend { padding: 8px 12px; border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; font-size: 12px; }
   nav .legend select { margin-left: auto; font-size: 12px; }
   nav button { border-left: 4px solid var(--c, transparent); }
+  pre.state { padding: 0; }
+  pre.state .sec { display: block; padding: 2px 10px 2px 8px; border-left: 4px solid var(--sc); }
+  pre.state .sec > b { color: var(--sc); }
+  .sec.goal { --sc: var(--st-goal); } .sec.plan { --sc: var(--st-plan); } .sec.notes { --sc: var(--st-notes); }
+  .sec.history { --sc: var(--st-history); } .sec.page { --sc: var(--st-page); } .sec.controls { --sc: var(--st-controls); }
+  .sec.other { --sc: var(--line); }
+  .keys { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 12px; margin: 4px 0; }
+  .keys span { border-left: 4px solid var(--sc); padding-left: 4px; }
+  .delta li.add::marker { content: '+ '; } .delta li.rem::marker { content: '− '; }
   nav .meta .who { margin-right: 4px; }
   select { font: inherit; }
   code { font-size: 12.5px; }
@@ -214,6 +226,7 @@ function render() {
       el('span', { class: 'meta' },
         s.plan ? chip('plan') : '', s.review ? chip('review') : '',
         who ? chip(who, `${WHO[who].short}${conf}`) : '',
+        d?.system2?.replanned ? el('span', { class: 'who review', title: 'System 2 edited the plan' }, 'plan edit') : '',
         ms((s.observe?.ms || 0) + (s.orient?.ms || 0) + (s.review?.ms || 0) + (d?.ms || 0) + (s.act?.ms || 0))));
   }));
   if (!rows.length) $('#steps').append(el('p', { class: 'empty' }, 'No steps of this kind.'));
@@ -323,6 +336,45 @@ function commandsView(commands) {
       el('td', { class: `num ${c.exitCode ? 'bad' : ''}` }, c.exitCode), el('td', { class: 'num' }, ms(c.ms))))));
 }
 
+// The state the decider reads, one coloured band per section.
+const SECTIONS = [
+  [/^Goal:/, 'goal', 'Goal'], [/^Plan:/, 'plan', 'Plan'], [/^Notes:/, 'notes', 'Notes'],
+  [/^(Done so far|Last action changed|Going in circles|Not as typed):?/, 'history', 'History'],
+  [/^(Page|Page text):/, 'page', 'Page'], [/^Controls:/, 'controls', 'Controls'],
+];
+function stateView(text) {
+  const pre = el('pre', { class: 'state' });
+  let sec = null;
+  for (const line of String(text || '').split('\n')) {
+    const hit = SECTIONS.find(([re]) => re.test(line));
+    if (hit || !sec) {
+      sec = el('span', { class: `sec ${hit ? hit[1] : 'other'}` });
+      pre.append(sec);
+    }
+    const colon = hit ? line.indexOf(':') + 1 : 0;
+    if (colon) sec.append(el('b', {}, line.slice(0, colon)), `${line.slice(colon)}\n`);
+    else sec.append(`${line}\n`);
+  }
+  const keys = el('div', { class: 'keys' }, ...SECTIONS.map(([, cls, label]) => el('span', { class: `sec ${cls}` }, label)));
+  return el('div', {}, keys, pre);
+}
+
+// What one System 2 hand-over changed in the plan.
+function planDelta(done, added) {
+  if (!(done && done.length) && !(added && added.length)) return el('p', { class: 'muted' }, 'Plan unchanged.');
+  return el('ul', { class: 'delta' },
+    ...(added || []).map((p) => el('li', { class: 'add' }, `next: ${p}`)),
+    ...(done || []).map((p) => el('li', { class: 'rem' }, `done: ${p}`)));
+}
+
+// What one System 2 call changed in the notes.
+function notesDelta(added, removed) {
+  if (!(added && added.length) && !(removed && removed.length)) return el('p', { class: 'muted' }, 'Notes unchanged.');
+  return el('ul', { class: 'delta' },
+    ...(added || []).map((n) => el('li', { class: 'add' }, `added: ${n}`)),
+    ...(removed || []).map((n) => el('li', { class: 'rem' }, `removed: ${n}`)));
+}
+
 function planView(plan, notes, values) {
   return el('div', {},
     plan && plan.length ? el('ol', {}, plan.map((p) => el('li', {}, p))) : el('p', { class: 'muted' }, 'No plan.'),
@@ -348,6 +400,7 @@ function renderStep(s) {
     parts.push(el('div', { class: 'card review' },
       el('h3', {}, chip('review', null, true), `System 2, no action: ${s.review.why}`, el('span', { class: 'ms' }, ms(s.review.ms))),
       s.review.assessment ? el('p', {}, s.review.assessment) : '',
+      notesDelta(s.review.notesAdded, s.review.notesRemoved),
       planView(s.review.plan, s.review.notes, s.review.values),
       el('p', { class: 'muted' }, 'System 1 then decided this step with the new plan.'),
       s.review.prompt ? el('details', {}, el('summary', {}, 'review prompt'), el('pre', {}, s.review.prompt)) : ''));
@@ -363,7 +416,7 @@ function renderStep(s) {
   if (s.orient) {
     parts.push(el('h2', {}, 'Orient', el('span', { class: 'ms' }, ms(s.orient.ms))));
     parts.push(el('div', { class: 'grid2' },
-      el('div', {}, el('h3', {}, 'State given to the decider'), el('pre', {}, s.orient.state),
+      el('div', {}, el('h3', {}, 'State given to the decider'), stateView(s.orient.state),
         s.vision ? el('div', {}, el('h3', {}, `Image given to the decider (${s.vision.width}×${s.vision.height}, ${s.vision.marks} marks)`),
           el('img', { src: `${encodeURIComponent(runId)}/${s.vision.image}`, alt: `Marked screenshot at step ${s.step}`, style: 'max-width:100%;border:1px solid var(--line)' })) : ''),
       el('div', {}, el('h3', {}, `Menu (${s.orient.menu.length})`), menuView(s), excludedView(s))));
@@ -394,7 +447,9 @@ function renderStep(s) {
         el('h3', {}, chip(audit ? 'audit' : 's2', null, true),
           audit ? (kept ? 'kept System 1\'s choice' : `changed ${d.system1?.action} to ${d.action.id}`) : `decided ${d.action.id}`),
         d.system2?.assessment ? el('p', {}, d.system2.assessment) : '',
-        d.system2 ? planView(d.system2.plan, d.system2.notes, d.system2.values) : ''));
+        d.system2 && d.system2.planDone ? planDelta(d.system2.planDone, d.system2.planAdded) : '',
+        d.system2 ? notesDelta(d.system2.notesAdded, d.system2.notesRemoved) : '',
+        d.system2 ? el('details', {}, el('summary', {}, 'the plan, notes and values after this step'), planView(d.system2.plan, d.system2.notes, d.system2.values)) : ''));
     }
     if (d.prompt) parts.push(el('details', {}, el('summary', {}, 'prompt'), el('pre', {}, d.prompt)));
     if (d.answer) parts.push(el('details', {}, el('summary', {}, 'answer'), el('pre', {}, JSON.stringify(d.answer, null, 2))));

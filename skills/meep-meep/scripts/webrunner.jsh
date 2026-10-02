@@ -249,8 +249,9 @@ function agentDecider(flags, model = flags.model || AGENT_MODEL_DEFAULT, thinkin
   return {
     name: `agent ${model}`,
     takesHint: true,
-    // System 2: the trail, the plan and the notes, one or two screenshots;
-    // it answers with an action, an assessment, a new plan and notes.
+    // System 2: the trail, the plan and the notes, one or two screenshots,
+    // and every control in view. It answers with an action and an
+    // assessment, and may rewrite the plan, change notes and set values.
     async deliberate(ctx, menu) {
       const images = await attachable(ctx.imagePaths || []);
       const prompt = page.system2Prompt({ ...ctx, menu, imageCount: images.length });
@@ -266,8 +267,11 @@ function agentDecider(flags, model = flags.model || AGENT_MODEL_DEFAULT, thinkin
         prompt,
         answer,
         assessment: typeof answer.assessment === 'string' ? answer.assessment.trim().slice(0, 800) : '',
-        plan: page.cleanList(answer.plan, page.MAX_PLAN),
-        notes: page.cleanList(answer.notes, page.MAX_NOTES),
+        // A hand-over edits the plan; only a plan review rewrites it.
+        planDone: answer.plan_done,
+        planNext: answer.plan_next,
+        noteAdd: answer.note_add,
+        noteRemove: answer.note_remove,
         values: page.cleanValues(answer.values),
       };
     },
@@ -281,7 +285,8 @@ function agentDecider(flags, model = flags.model || AGENT_MODEL_DEFAULT, thinkin
         answer,
         assessment: typeof answer.assessment === 'string' ? answer.assessment.trim().slice(0, 800) : '',
         plan: page.cleanList(answer.plan, page.MAX_PLAN),
-        notes: page.cleanList(answer.notes, page.MAX_NOTES),
+        noteAdd: answer.note_add,
+        noteRemove: answer.note_remove,
         values: page.cleanValues(answer.values),
       };
     },
@@ -455,7 +460,8 @@ function hybridDecider(fast, slow, threshold) {
       // A random audit: System 1 was sure, System 2 reviews the step anyway.
       if (!reason && extra.oversight) {
         system1.oversight = extra.oversight;
-        const rest = menu.filter((action) => action.operation !== 'SHRUG');
+        // System 2 chooses from every control in view, not System 1's top ones.
+        const rest = (extra.menuS2 || menu).filter((action) => action.operation !== 'SHRUG');
         const slowStarted = Date.now();
         const second = await slow.deliberate(
           {
@@ -476,7 +482,7 @@ function hybridDecider(fast, slow, threshold) {
       }
       if (!reason) return { ...first, system: fast.name, system1 };
       const slowStarted = Date.now();
-      const rest = menu.filter((action) => action.operation !== 'SHRUG');
+      const rest = (extra.menuS2 || menu).filter((action) => action.operation !== 'SHRUG');
       const second = await slow.deliberate(
         { ...(extra.context || {}), state, hint: page.shrugHint(first, reason, menu), imagePaths: extra.imagePaths },
         rest
@@ -517,7 +523,10 @@ async function makeDecider(flags) {
       plans: true,
       plan: (goal, state, imagePath) => slow.plan(goal, state, imagePath),
       decide: (state, menu, extra = {}) =>
-        slow.deliberate({ ...(extra.context || {}), state, imagePaths: extra.imagePaths }, menu),
+        slow.deliberate(
+          { ...(extra.context || {}), state, imagePaths: extra.imagePaths },
+          extra.menuS2 || menu
+        ),
       finished: (state) => slow.finished(state),
     };
   }
@@ -945,8 +954,23 @@ async function cycles(flags, run) {
   // What System 2 reads and writes: its plan and notes (System 1 sees them
   // in its state) and the trail of recent steps with what each one changed.
   // values: texts System 2 left for System 1 to type.
-  const memory = { plan: [], notes: [], values: [], trail: [] };
+  // planHistory: every plan with the step and who wrote it.
+  const memory = { plan: [], notes: [], values: [], trail: [], planHistory: [] };
   const remembered = () => ({ plan: memory.plan, notes: memory.notes, values: memory.values });
+  const setPlan = (plan, step, by) => {
+    memory.plan = plan;
+    memory.planHistory.push({ step, by, plan });
+    if (memory.planHistory.length > 12) memory.planHistory.shift();
+  };
+  const planContext = () => {
+    const last = memory.planHistory[memory.planHistory.length - 1];
+    return {
+      planFrom: last ? `written at step ${last.step} by ${last.by}` : '',
+      planHistory: memory.planHistory,
+    };
+  };
+  // The marked screenshot of each step, newest last, for plan reviews.
+  const shots = [];
   // System 2's load: per System 1 decision, did it hand over (a shrug)?
   // Random audits are our choice, not System 1's, and do not count.
   const asked = [];
@@ -1037,7 +1061,7 @@ async function cycles(flags, run) {
         first.state,
         opts.vision && obs.screenshot ? trace.path(obs.screenshot) : null
       );
-      memory.plan = written.plan;
+      setPlan(written.plan, step, 'the original plan');
       memory.notes = written.notes;
       record.plan = { plan: written.plan, notes: written.notes, prompt: written.prompt, ms: Date.now() - planStarted };
       await say(`plan (${((Date.now() - planStarted) / 1000).toFixed(1)} s): ${written.plan.join(' | ')}`);
@@ -1051,23 +1075,30 @@ async function cycles(flags, run) {
     if (due) {
       lastReview = step;
       const reviewStarted = Date.now();
+      // The page now, then earlier steps' marked screenshots, newest first.
+      const earlier = shots.slice(-(page.REVIEW_IMAGES - 1)).reverse();
       const reviewed = await decider.review({
         goal: flags.goal,
         ...remembered(),
+        ...planContext(),
         trail: memory.trail,
         why: due.why,
         state: ori.state,
-        menu: ori.menu.filter((action) => action.operation !== 'SHRUG'),
-        imagePaths: opts.vision && obs.screenshot ? [trace.path(obs.screenshot)] : [],
+        menu: ori.menuS2,
+        imagePaths: obs.screenshot ? [trace.path(obs.screenshot), ...earlier.map((e) => e.path)] : [],
+        imageSteps: obs.screenshot ? [step, ...earlier.map((e) => e.step)] : [],
       });
-      if (reviewed.plan && reviewed.plan.length) memory.plan = reviewed.plan;
-      if (reviewed.notes) memory.notes = reviewed.notes;
+      if (reviewed.plan && reviewed.plan.length) setPlan(reviewed.plan, step, 'a plan review');
+      const noted = page.applyNotes(memory.notes, reviewed.noteAdd, reviewed.noteRemove);
+      memory.notes = noted.notes;
       if (reviewed.values) memory.values = reviewed.values;
       record.review = {
         why: due.why,
         load: due.load,
         assessment: reviewed.assessment,
         ...remembered(),
+        notesAdded: noted.added,
+        notesRemoved: noted.removed,
         prompt: reviewed.prompt,
         answer: reviewed.answer,
         ms: Date.now() - reviewStarted,
@@ -1136,9 +1167,11 @@ async function cycles(flags, run) {
         imagePath,
         // For System 2: the page now and one step earlier.
         imagePaths: [imagePath, prevImagePath].filter(Boolean),
+        menuS2: ori.menuS2,
         context: {
           goal: flags.goal,
           ...remembered(),
+          ...planContext(),
           trail: memory.trail,
           load: decider.review ? page.system2Load(asked) : null,
         },
@@ -1171,12 +1204,23 @@ async function cycles(flags, run) {
       ms: decideMs,
     };
     // System 2 may rewrite the plan and add notes; System 1 reads them next.
-    if (decision.plan || decision.notes || decision.assessment) {
-      if (decision.plan && decision.plan.length) memory.plan = decision.plan;
-      if (decision.notes) memory.notes = page.mergeNotes(memory.notes, decision.notes);
+    // System 2 may edit the plan (finished steps out, next steps in), change notes and set values.
+    if (decision.assessment != null || decision.planDone || decision.planNext || decision.noteAdd || decision.noteRemove) {
+      const edit = page.applyPlan(memory.plan, decision.planDone, decision.planNext);
+      const replanned = Boolean(edit.done.length || edit.added.length);
+      if (replanned) {
+        setPlan(edit.plan, step, decision.system1 && decision.system1.oversight ? 'a System 2 audit' : 'System 2');
+      }
+      const noted = page.applyNotes(memory.notes, decision.noteAdd, decision.noteRemove);
+      memory.notes = noted.notes;
       if (decision.values) memory.values = decision.values;
       record.decide.system2 = {
         assessment: decision.assessment || '',
+        replanned,
+        planDone: edit.done,
+        planAdded: edit.added,
+        notesAdded: noted.added,
+        notesRemoved: noted.removed,
         ...remembered(),
       };
       if (decision.assessment) await say(`         system 2: ${decision.assessment}`);
@@ -1232,7 +1276,7 @@ async function cycles(flags, run) {
       shrug: decision.system1 && decision.system1.shrug ? decision.system1.shrug : null,
       outcome: record.actError ? `failed: ${record.actError}` : '',
     });
-    if (memory.trail.length > 20) memory.trail.shift();
+    if (memory.trail.length > page.REVIEW_TRAIL) memory.trail.shift();
     // Suggestion lists render a beat after the keystroke.
     await sh(['sleep', action.operation === 'TYPE_TEXT' ? '0.6' : '0.3'], commands);
     record.act = { commands, ms: Date.now() - actStarted, error: record.actError || undefined };
@@ -1240,6 +1284,10 @@ async function cycles(flags, run) {
     await trace.step(record);
     previousLabels = new Set(obs.shot.elements.map((element) => element.label));
     prevImagePath = record.vision ? trace.path(record.vision.image) : null;
+    if (prevImagePath) {
+      shots.push({ step, path: prevImagePath });
+      if (shots.length > page.REVIEW_IMAGES) shots.shift();
+    }
     prevPixels = pixels;
     prev = obs;
   }
