@@ -21,6 +21,7 @@ const { toolCalls, stats } = require('./transcript.js');
 const ARM_DIR = '/tmp/intent-arm';
 const MODEL_DEFAULT = 'claude-sonnet-5-5';
 const TOOLS = ['intent', 'playwright-cli'];
+const UTILITIES = ['grep', 'head', 'tail', 'sleep', 'sed', 'awk', 'cut', 'wc', 'sort', 'uniq', 'echo', 'cat', 'tr', 'jq'];
 
 const HELP = `
 intent-arm — run one goal with a Sonnet scoop that browses through one tool
@@ -95,7 +96,11 @@ async function main() {
 
   const cwd = `${dir}/scoop`;
   await fs.mkdir(cwd, { recursive: true });
-  const job = exec.start(['agent', '--model', model, '--no-escalate', '--usage', cwd, tool, prompt(url, goal, tool)]);
+  // Both arms get the same text utilities beside their browser tool: a
+  // playwright-cli scoop without grep, head or sleep could not page through
+  // a large snapshot and gave up on Wikipedia (2026-10-03).
+  const allowed = [tool, ...UTILITIES].join(',');
+  const job = exec.start(['agent', '--model', model, '--no-escalate', '--usage', cwd, allowed, prompt(url, goal, tool)]);
   // An open stdin keeps \`agent\` waiting before it starts (seen 2026-10-02).
   if (job.stdin && job.stdin.end) job.stdin.end();
   let timedOut = false;
