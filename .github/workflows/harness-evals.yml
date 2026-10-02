@@ -9,7 +9,7 @@
 # Everything skill-specific (goals, arms, how a goal runs, the check, custom placeholders) lives
 # in the skill's folder; tools/harness-evals only drives it. GPU arms run on `cloud-run-gpu`
 # (L4) with SLICC_CHROME_GPU=1 so the leader's Chrome keeps the GPU and enables WebGPU; other
-# arms run on `cloud-run-bench`. slicc (leader scripts, CLI, node-server) is the latest release.
+# arms run on `cloud-run-bench`. Plan and report are light and stay on GitHub-hosted runners. slicc (leader scripts, CLI, node-server) is the latest release.
 name: Harness evals
 
 on:
@@ -38,7 +38,7 @@ permissions:
 jobs:
   plan:
     name: Plan
-    runs-on: [self-hosted, cloud-run]
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
@@ -186,7 +186,7 @@ jobs:
     name: Report
     needs: [plan, arm]
     if: always() && needs.plan.outputs.run == 'true'
-    runs-on: [self-hosted, cloud-run]
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
