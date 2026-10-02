@@ -36,12 +36,23 @@ export const arms = [
 /** Arms on hold. */
 export const heldArms = [];
 
+const RUN_S_DEFAULT = 900;
+
+/** webrunner's --time-limit: the driver's per-run timeout less 10%, at least a minute. */
+export function timeLimit(goal) {
+  const run = Number(goal.timeout_s) > 0 ? Number(goal.timeout_s) : RUN_S_DEFAULT;
+  return Math.max(30, run - Math.max(60, Math.round(run * 0.1)));
+}
+
 /** One goal as a `webrunner run` command line. */
 export function command(goal, arm, { shellQuote }) {
   const argv = ['webrunner', 'run', '--url', goal.url, '--goal', goal.goal];
   for (const t of goal.expect ?? []) argv.push('--expect', t);
   for (const u of goal.expect_url ?? []) argv.push('--expect-url', u);
   if (goal.max_steps) argv.push('--max-steps', String(goal.max_steps));
+  // webrunner stops itself before the driver's timeout, so a stalled run
+  // still prints its result and says where it stuck.
+  argv.push('--time-limit', String(timeLimit(goal)));
   argv.push(...arm.args, '--json');
   return argv.map(shellQuote).join(' ');
 }

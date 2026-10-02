@@ -26,6 +26,7 @@ const READY = 'WEBRUNNER_KEV_READY';
 const MAX_STEPS_DEFAULT = 8;
 // A game tour takes 40 steps a day; 50 cut a 100-mile tour short (2026-10-01).
 const MAX_STEPS_CAP = 1000;
+const TIME_LIMIT_CAP = 86400;
 // --decider hybrid audits System 1 at this base chance per turn (page.oversightChance).
 const OVERSIGHT_DEFAULT = 0.01;
 const STALL_LIMIT = 3;
@@ -88,6 +89,9 @@ USAGE
   --factor-text off    kev: one option per field and goal value, instead of picking
                        the field first and its text in a second, small question
   --shots off          skip the per-step screenshot
+  --time-limit S       end the run after S seconds, kev loading included, even
+                       mid-step: the result says which step and what it was
+                       waiting on (a kev decision, an agent call). Default none
   --json               print the run summary as JSON (steps, seconds, result)
 
 Each cycle observes the page, offers one list of actions (type into a field,
@@ -123,6 +127,11 @@ const SEARCH_HTML = `<!doctype html>
 `;
 
 const t0 = Date.now();
+// Where the run is, for a --time-limit that expires mid-step: the reason
+// names the step and what it was waiting on. stopped: the limit ended the
+// run, and a step still in flight must not act or finish again.
+const status = { step: 0, phase: 'starting', stopped: false };
+const stuckAt = () => (status.step ? `step ${status.step}, ${status.phase}` : status.phase);
 async function say(line) {
   const stamped = `[${((Date.now() - t0) / 1000).toFixed(1)}s] ${line}`;
   console.error(stamped);
@@ -214,6 +223,7 @@ async function agentCapabilities() {
 function agentDecider(flags, model = flags.model || AGENT_MODEL_DEFAULT, thinking = 'off') {
   const ask = async (prompt, schema, images = []) => {
     const caps = await agentCapabilities();
+    status.phase = `an agent call (${model})`;
     return agent(prompt, {
       model,
       thinking,
@@ -309,7 +319,9 @@ async function kevDecider(flags) {
     const status = await kevRuntime.weightsStatus(fs, size);
     if (status.missing.length) cli.die(kevRuntime.missingWeightsMessage(status), { prefix: 'webrunner' });
   }
+  status.phase = 'installing the kev runtime';
   await ensureKevRuntime();
+  status.phase = `loading kev ${size}`;
   await say(`loading kev ${size}`);
   const loadStarted = Date.now();
   const model = await kevRuntime.openModel(fs, exec, {
@@ -327,6 +339,7 @@ async function kevDecider(flags) {
     name: `kev ${size}`,
     loadMs,
     async decide(state, menu, extra = {}) {
+      status.phase = `a kev ${size} decision`;
       const response = await model.systemOne({
         state,
         ...(extra.image ? { image: extra.image } : {}),
@@ -355,6 +368,7 @@ async function kevDecider(flags) {
       return { action, confidence: answer.confidence, textConfidence, top, probabilities };
     },
     async finished(state) {
+      status.phase = `a kev ${size} DONE check`;
       const response = await model.systemOne({
         state,
         questions: {
@@ -761,6 +775,7 @@ async function runGoal(flags) {
   const parsedMax = parseInt(flags['max-steps'], 10);
   const maxSteps = Number.isFinite(parsedMax) ? Math.min(Math.max(parsedMax, 1), MAX_STEPS_CAP) : MAX_STEPS_DEFAULT;
   const hasCheck = Boolean(flags.expect || flags['expect-url']);
+  const timeLimit = numberFlag(flags['time-limit'], 0, 0, TIME_LIMIT_CAP);
   const opts = {
     viewport: onOff(flags.viewport, true),
     shots: onOff(flags.shots, true),
@@ -779,60 +794,92 @@ async function runGoal(flags) {
   };
   if (opts.vision && !opts.shots) cli.die('--vision needs the screenshot: drop --shots off', { prefix: 'webrunner' });
   const started = Date.now();
-  const decider = await makeDecider(flags);
   // The agent writes the text for a type action itself; kev can only pick
   // values that the goal spells out (and hybrid shrugs to the agent for the rest).
   const candidates = AGENT_WRITES_TEXT.has(flags.decider) ? [] : page.textCandidates(flags.goal);
   const result = {
     ok: false,
     reason: '',
-    decider: decider.name,
+    decider: flags.decider || 'kev',
     steps: 0,
     seconds: 0,
-    loadSeconds: decider.loadMs == null ? null : decider.loadMs / 1000,
+    loadSeconds: null,
     decideSeconds: 0,
     url: flags.url,
   };
-  const trace = await traceLib.openTrace(fs, { label: flags.label || hostname });
-  result.run = trace.id;
-  await trace.start({
-    goal: flags.goal,
-    url: flags.url,
-    decider: decider.name,
-    loadSeconds: result.loadSeconds,
-    check: { expect: flags.expect || null, expectUrl: flags['expect-url'] || null },
-    maxSteps,
-    candidates,
-    viewport: opts.viewport,
-    vision: opts.vision,
-    oversight: opts.oversight,
-    seed: opts.seed,
-  });
-  await say(`run ${trace.id}`);
+  let trace = null;
+  let ended = false;
   const finish = async (ok, reason, url) => {
+    if (ended) return result;
+    ended = true;
     result.ok = ok;
     result.reason = reason;
     if (url) result.url = url;
     result.seconds = (Date.now() - started) / 1000;
     result.decideSeconds = Math.round(result.decideSeconds * 10) / 10;
-    await trace.end(result);
+    if (trace) await trace.end(result);
     return result;
   };
 
-  // A run that throws still ends its trace, so the debug page says why.
-  try {
-    return await cycles(flags, { opts, decider, trace, result, finish, candidates, hasCheck, maxSteps });
-  } catch (err) {
-    if (err && err.name === 'NodeExitError') throw err;
-    result.reason = `error: ${err.message || err}`;
-    result.seconds = (Date.now() - started) / 1000;
-    await trace.end(result);
-    throw err;
-  }
+  const work = (async () => {
+    status.phase = 'loading the decider';
+    const decider = await makeDecider(flags);
+    result.decider = decider.name;
+    result.loadSeconds = decider.loadMs == null ? null : decider.loadMs / 1000;
+    trace = await traceLib.openTrace(fs, { label: flags.label || hostname });
+    result.run = trace.id;
+    await trace.start({
+      goal: flags.goal,
+      url: flags.url,
+      decider: decider.name,
+      loadSeconds: result.loadSeconds,
+      check: { expect: flags.expect || null, expectUrl: flags['expect-url'] || null },
+      maxSteps,
+      timeLimit: timeLimit || null,
+      candidates,
+      viewport: opts.viewport,
+      vision: opts.vision,
+      oversight: opts.oversight,
+      seed: opts.seed,
+    });
+    await say(`run ${trace.id}`);
+    // A run that throws still ends its trace, so the debug page says why.
+    try {
+      return await cycles(flags, { opts, decider, trace, result, finish, candidates, hasCheck, maxSteps });
+    } catch (err) {
+      if (err && err.name === 'NodeExitError') throw err;
+      if (status.stopped) return result;
+      result.reason = `error: ${err.message || err}`;
+      result.seconds = (Date.now() - started) / 1000;
+      ended = true;
+      await trace.end(result);
+      throw err;
+    }
+  })();
+  if (!timeLimit) return work;
+
+  // The time limit covers everything, loading kev included. A step that
+  // never returns (a kev load or decision, an agent call) cannot end the
+  // run itself; the limit does, with the usual result and the place it
+  // stuck. Hosted runs that hit the harness's own timeout left nothing.
+  const EXPIRED = Symbol('expired');
+  let timer;
+  const expired = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(EXPIRED), timeLimit * 1000);
+  });
+  const first = await Promise.race([work, expired]);
+  clearTimeout(timer);
+  if (first !== EXPIRED) return first;
+  status.stopped = true;
+  work.catch(() => {});
+  const reason = `time limit of ${timeLimit} s reached during ${stuckAt()}`;
+  await say(reason);
+  return finish(false, reason);
 }
 
 async function cycles(flags, run) {
   const { opts, decider, trace, result, finish, candidates, hasCheck, maxSteps } = run;
+  status.phase = 'opening the tab';
   const tab = await openTab(flags.url);
   await say(`tab ${tab} ${flags.url}`);
   // Size the browser, not the image: with --vision the viewport is the
@@ -860,8 +907,11 @@ async function cycles(flags, run) {
   const seenPages = [];
   let pendingDone = false;
   for (let step = 1; step <= maxSteps; step++) {
+    if (status.stopped) return result;
     const name = `step-${String(step).padStart(2, '0')}`;
     const record = { step };
+    status.step = step;
+    status.phase = 'observe';
 
     // Observe. After the first cycle this is the feedback on the last action.
     const obs = await observe(tab, prev, { ...opts, trace, name });
@@ -908,6 +958,7 @@ async function cycles(flags, run) {
     }
 
     // Orient.
+    status.phase = 'orient';
     const orientStarted = Date.now();
     const orientOpts = {
       goal: flags.goal,
@@ -1043,6 +1094,8 @@ async function cycles(flags, run) {
     if (decision.top) await say(`         top ${decision.top}`);
 
     // Act.
+    if (status.stopped) return result;
+    status.phase = 'act';
     const actStarted = Date.now();
     const commands = [];
     if (action.operation === 'DONE') {
@@ -1224,9 +1277,14 @@ async function main() {
     else cli.die(`unknown command: ${sub}`, { prefix: 'webrunner' });
     report(result, flags);
   } catch (err) {
-    if (err && err.name === 'NodeExitError') throw err;
+    // process.exit, not cli.die's exit: only process.exit ends the script
+    // while work is still pending (a step the time limit cut off, a kev or
+    // agent call that never returns). cli.die, and a plain return, wait for
+    // it, and the result printed before stays unseen (measured 2026-10-02).
+    if (err && err.name === 'NodeExitError') process.exit(err.code ?? 1);
     cli.die(err.message || String(err), { prefix: 'webrunner' });
   }
+  if (sub === 'run' || sub === 'demo') process.exit(0);
 }
 
 await main();

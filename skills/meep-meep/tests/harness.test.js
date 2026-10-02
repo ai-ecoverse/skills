@@ -13,6 +13,7 @@ import {
   metrics,
   placeholder,
   result,
+  timeLimit,
   traceFromLines,
 } from '../evals/harness/harness.mjs';
 
@@ -53,7 +54,7 @@ test('command quotes the goal and repeats --expect and --expect-url', () => {
   };
   is(
     command(goal, arm, { shellQuote: quote }),
-    `'webrunner' 'run' '--url' 'https://x/' '--goal' 'it'\\''s "here"' '--expect' 'a' '--expect' 'b' '--expect-url' '/p' '--max-steps' '6' '--decider' 'hybrid' '--model' '4b-vision' '--vision' '--json'`
+    `'webrunner' 'run' '--url' 'https://x/' '--goal' 'it'\\''s "here"' '--expect' 'a' '--expect' 'b' '--expect-url' '/p' '--max-steps' '6' '--time-limit' '810' '--decider' 'hybrid' '--model' '4b-vision' '--vision' '--json'`
   );
 });
 
@@ -205,4 +206,11 @@ test('metrics reads each game’s own number', () => {
     for (const id of Object.keys(g.weights))
       ok(g.rubric.includes(`${id} — `), `${g.id} defines ${id}`);
   }
+});
+
+test('webrunner stops itself before the driver times out', () => {
+  is(timeLimit({}), 810, 'the default 900 s run');
+  is(timeLimit({ timeout_s: 3600 }), 3240);
+  is(timeLimit({ timeout_s: 120 }), 60);
+  is(timeLimit({ timeout_s: 20 }), 30, 'never under 30 s');
 });
