@@ -124,6 +124,10 @@ test('traceFromLines builds the judge trace from webrunner lines and reads point
       step: 2,
       observe: { screenshot: 'step-02.png' },
       orient: { state: state('Riding') },
+      review: {
+        why: 'System 1 handed over the last 5 steps',
+        assessment: 'Kev lacked the food name.',
+      },
       decide: {
         system: 'agent',
         system1: { action: 'click:e1', shrug: 'confidence 0.1 < 0.5' },
@@ -139,6 +143,11 @@ test('traceFromLines builds the judge trace from webrunner lines and reads point
   is(trace.steps.length, 2);
   ok(trace.steps[0].startsWith('System 1: click button "Start Riding"'));
   ok(trace.steps[1].includes('System 2: click link "Rice and Beans"'));
+  ok(
+    trace.steps[1].startsWith(
+      'plan review (System 1 handed over the last 5 steps): Kev lacked the food name.'
+    )
+  );
   ok(trace.steps[1].includes('assessment: Buy and Eat needs a selection first.'));
   ok(trace.finalResult.includes('did not pass (stalled) after 2 steps'));
   ok(trace.finalResult.includes('Riding'));

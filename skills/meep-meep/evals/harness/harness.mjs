@@ -156,6 +156,7 @@ export async function traceFromLines(lines, screenshot, { shots = 4 } = {}) {
   for (const s of stepLines) {
     const d = s.decide || {};
     const parts = [];
+    if (s.review) parts.push(`plan review (${s.review.why}): ${s.review.assessment || ''}`);
     if (d.action) {
       const who =
         d.system1 && d.system1.shrug ? 'System 2' : d.system1 ? 'System 1' : d.system || '';

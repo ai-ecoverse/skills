@@ -1066,6 +1066,159 @@ test('page disambiguators name repeated controls and win over the layout guess',
   );
 });
 
+test('System 2 values become typing options for System 1', () => {
+  const shot = page.parseSnapshot(SNAPSHOT);
+  const values = page.cleanValues([
+    { text: ' Paris ', field: 'where to?' },
+    { text: 'Rome' },
+    { text: 'Paris', field: 'Where to?' },
+    { text: '' },
+    { text: 'x'.repeat(201) },
+    { text: 'Oslo', field: 'Departure' },
+  ]);
+  is(values, [
+    { text: 'Paris', field: 'where to?' },
+    { text: 'Rome' },
+    { text: 'Oslo', field: 'Departure' },
+  ]);
+  is(page.cleanValues('nope'), null, 'no values: keep the old ones');
+  is(
+    page.cleanValues(Array.from({ length: 9 }, (_, i) => ({ text: `v${i}` }))).length,
+    page.MAX_VALUES
+  );
+
+  const flat = page.buildMenu(shot, 'Search', { candidates: ['Berlin'], values });
+  const typed = flat.filter((a) => a.operation === 'TYPE_TEXT').map((a) => a.describe);
+  is(typed, [
+    'type "Paris" into textbox "Where to?"',
+    'type "Berlin" into textbox "Where to?"',
+    'type "Rome" into textbox "Where to?"',
+  ]);
+
+  const factored = page.buildMenu(shot, 'Search', {
+    candidates: ['Berlin'],
+    values,
+    factorText: true,
+  });
+  const field = factored.filter((a) => a.operation === 'TYPE_TEXT');
+  is(
+    field.map((a) => a.id),
+    ['type:e3:Paris', 'type:e3']
+  );
+  is(field[0].text, 'Paris', 'a value for the field is spelled out, not factored');
+  is(field[1].candidates, ['Berlin', 'Rome']);
+  ok(field[1].describe.endsWith('(a value from the goal or the plan)'));
+  ok(page.textQuestion(field[1]).instructions.startsWith('Which of these texts goes into'));
+
+  // Without goal values, a field value still gives System 1 a complete option.
+  const own = page.buildMenu(shot, 'Search', { values: [{ text: 'Paris', field: 'Where to' }] });
+  ok(own.some((a) => a.id === 'type:e3:Paris' && a.text === 'Paris'));
+  is(
+    page.shrugReason({ action: own.find((a) => a.id === 'type:e3:Paris'), confidence: 0.9 }, 0.5),
+    '',
+    'no shrug: the option carries its text'
+  );
+
+  const el = { label: 'Your name', context: 'Billing' };
+  ok(page.valueFits({ field: 'your  NAME' }, el));
+  ok(page.valueFits({ field: 'name' }, el), 'a label containing the field fits');
+  ok(page.valueFits({ field: 'Your name for Billing' }, el), 'the field may carry the context');
+  ok(!page.valueFits({ field: 'nm' }, el), 'two letters are too short to match inside a label');
+  ok(!page.valueFits({}, el));
+});
+
+test('System 2 load: every prompt says how often System 1 handed over', () => {
+  is(page.system2Load([]), { asked: 0, of: 0, streak: 0 });
+  is(page.system2Load([true, false, true, true]), { asked: 3, of: 4, streak: 2 });
+  is(
+    page.system2Load([...Array(20).fill(true), false]),
+    { asked: 9, of: 10, streak: 0 },
+    'the last 10 only'
+  );
+
+  const menu = page.buildMenu(page.parseSnapshot(SNAPSHOT), 'x', {});
+  const calm = page.system2Prompt({
+    goal: 'g',
+    trail: [],
+    state: 's',
+    menu,
+    load: { asked: 1, of: 10, streak: 1 },
+  });
+  ok(calm.includes('System 1 handed over 1 of the last 10 steps.'));
+  ok(!calm.includes('That is often'));
+  const busy = page.system2Prompt({
+    goal: 'g',
+    trail: [],
+    state: 's',
+    menu,
+    load: { asked: 4, of: 10, streak: 0 },
+  });
+  ok(busy.includes('That is often'));
+  ok(
+    !page.system2Prompt({ goal: 'g', trail: [], state: 's', menu }).includes('handed over'),
+    'no load, no line'
+  );
+  ok(calm.includes('values (optional)') && calm.includes('Values for System 1:\n  (none)'));
+  is(
+    page.system2Schema(menu).required,
+    ['action', 'assessment', 'plan', 'notes'],
+    'values stay optional'
+  );
+});
+
+test('a plan review is due at 6 of 10 hand-overs or 5 in a row, at most every 10 steps', () => {
+  is(page.reviewDue([true, true, true, true], Infinity), null);
+  ok(
+    page.reviewDue([false, true, true, true, true, true], Infinity).why.includes('the last 5 steps')
+  );
+  const rate = page.reviewDue(
+    [true, false, true, false, true, true, false, true, true, false],
+    Infinity
+  );
+  ok(rate.why.includes('6 of the last 10 steps'));
+  is(rate.load.asked, 6);
+  is(page.reviewDue([true, true, true, true, true, true], 9), null, 'cooldown');
+  ok(page.reviewDue([true, true, true, true, true, true], 10));
+});
+
+test('the plan review takes no action and reads the long trail and the values', () => {
+  const menu = page.buildMenu(page.parseSnapshot(SNAPSHOT), 'x', {});
+  const trail = Array.from({ length: 22 }, (_, i) => ({
+    step: i + 1,
+    describe: `click link "step${i + 1}"`,
+    system: 'System 2',
+    confidence: 0.2,
+    shrug: 'confidence 0.20 < 0.5',
+  }));
+  const prompt = page.reviewPrompt({
+    goal: 'g',
+    plan: ['a'],
+    notes: [],
+    values: [{ text: 'foo-bar', field: 'Name' }],
+    trail,
+    why: 'System 1 handed over the last 5 steps',
+    state: 's',
+    menu,
+    imageCount: 1,
+  });
+  ok(prompt.includes('System 1 handed over the last 5 steps: far too often.'));
+  ok(prompt.includes('You take no action this turn'));
+  ok(prompt.includes('The attached image is the page now.'));
+  ok(prompt.includes('  - "foo-bar" into "Name"'));
+  ok(
+    prompt.includes(
+      '  step 3 (System 2 at 20%, System 1 unsure: confidence 0.20 < 0.5): click link "step3"'
+    )
+  );
+  ok(!prompt.includes('"step2"'), 'the last 20 steps only');
+  ok(
+    prompt.includes('click:e1  click link "Incompleteness theorems"'),
+    'the menu, for control names'
+  );
+  is(page.REVIEW_SCHEMA.required, ['assessment', 'plan', 'notes', 'values']);
+  ok(!('action' in page.REVIEW_SCHEMA.properties), 'no action to take');
+});
+
 // Captured 2026-10-02 (Drug Wars at 1024 x 576): the snapshot gave every
 // BUY the first one's box, so matching by box named all of them "Cocaine".
 test('repeated controls pair with the scan by order, which also fixes their boxes', () => {
