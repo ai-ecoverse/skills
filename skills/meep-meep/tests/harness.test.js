@@ -3,6 +3,7 @@ import {
   arms,
   command,
   containsValue,
+  heldArms,
   hnTopFromHtml,
   judge,
   placeholder,
@@ -83,4 +84,13 @@ test('hn:top reads the first story row, and refuses unknown names', async () => 
     threw = true;
   }
   ok(threw);
+});
+
+test('every arm that runs kev is on the GPU pool', () => {
+  const usesKev = (a) =>
+    (a.setup ?? []).some((c) => /^kev pull\b/.test(c)) ||
+    /--decider (kev|hybrid)\b/.test((a.args ?? []).join(' '));
+  const all = [...arms, ...heldArms];
+  ok(all.some(usesKev), 'at least one kev arm');
+  for (const a of all.filter(usesKev)) is(a.pool, 'gpu', a.id);
 });
