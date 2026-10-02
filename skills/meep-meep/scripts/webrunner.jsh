@@ -15,6 +15,7 @@ const exec = require('sliccy:exec');
 const page = require('./page.js');
 const traceLib = require('./trace.js');
 const vision = require('./vision.js');
+const pageScan = require('./page-scan.js');
 const host = require('../../decide-quickly/scripts/host.js');
 const kevRuntime = require('../../decide-quickly/scripts/kev-runtime.js');
 
@@ -501,31 +502,9 @@ function hashBytes(bytes) {
 const VIEWPORT_JS =
   'JSON.stringify({ width: innerWidth, height: innerHeight, scrollY: Math.round(scrollY), scrollHeight: document.documentElement.scrollHeight })';
 
-// Elements that act as buttons without a button role (a pointer cursor, an
-// onclick, a tabindex on a non-control, a button-ish class), with their own
-// text and box. page.promoteClickable makes them synthetic menu entries.
-const CLICKABLE_JS = `JSON.stringify((() => {
-  const out = [];
-  // An <a> without href is not a link to the accessibility tree (Seedship's
-  // "New game" is <a class="link-internal" tabindex="0">), so only real links
-  // and form controls are left to the snapshot.
-  const native = /^(BUTTON|INPUT|SELECT|TEXTAREA|SUMMARY|OPTION|LABEL)$/;
-  for (const el of document.querySelectorAll('body *')) {
-    if (out.length >= 200) break;
-    if (native.test(el.tagName) || (el.tagName === 'A' && el.hasAttribute('href'))) continue;
-    if (el.parentElement && el.parentElement.closest('a[href], button')) continue;
-    const cls = typeof el.className === 'string' ? el.className : '';
-    const pointer = getComputedStyle(el).cursor === 'pointer';
-    const parentPointer = el.parentElement && getComputedStyle(el.parentElement).cursor === 'pointer';
-    if (!((pointer && !parentPointer) || el.hasAttribute('onclick') || (el.tabIndex >= 0 && el.hasAttribute('tabindex')) || /\\b(btn|button|clickable)\\b/i.test(cls))) continue;
-    const text = (el.innerText || el.getAttribute('aria-label') || '').replace(/\\s+/g, ' ').trim();
-    if (!text || text.length > 60) continue;
-    const r = el.getBoundingClientRect();
-    if (!r.width || !r.height || r.bottom < 0 || r.top > innerHeight || r.right < 0 || r.left > innerWidth) continue;
-    out.push({ t: text, b: [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)] });
-  }
-  return out;
-})())`;
+// What the snapshot cannot tell the decider, read in the page each turn:
+// clickable divs and disambiguators for repeated controls (page-scan.js).
+const PAGE_SCAN_JS = `(${pageScan.scan.toString()})()`;
 
 // A synthetic button (page.promoteClickable) has no ref: click the element
 // under its box centre.
@@ -540,13 +519,16 @@ function clickAt(box) {
   })()`;
 }
 
-function parseFound(stdout) {
+function parseScan(stdout) {
   try {
     const value = JSON.parse(String(stdout).trim());
     const found = typeof value === 'string' ? JSON.parse(value) : value;
-    return Array.isArray(found) ? found : [];
+    return {
+      clickable: Array.isArray(found && found.clickable) ? found.clickable : [],
+      disambiguation: Array.isArray(found && found.disambiguation) ? found.disambiguation : [],
+    };
   } catch {
-    return [];
+    return { clickable: [], disambiguation: [] };
   }
 }
 
@@ -579,9 +561,14 @@ async function observe(tab, prev, opts) {
   }
   shot.viewport = viewport;
   let shotWithClicks = shot;
+  let disambiguation = [];
   if (opts.viewport) {
-    const found = await run(['playwright-cli', 'eval', `--tab=${tab}`, CLICKABLE_JS], commands);
-    if (found.exitCode === 0) shotWithClicks = page.promoteClickable(shot, parseFound(found.stdout), viewport);
+    const found = await run(['playwright-cli', 'eval', `--tab=${tab}`, PAGE_SCAN_JS], commands);
+    if (found.exitCode === 0) {
+      const scanned = parseScan(found.stdout);
+      shotWithClicks = page.promoteClickable(shot, scanned.clickable, viewport);
+      disambiguation = scanned.disambiguation;
+    }
   }
   let screenshot = null;
   if (opts.trace && opts.shots && opts.name) {
@@ -594,6 +581,7 @@ async function observe(tab, prev, opts) {
   }
   return {
     shot: shotWithClicks,
+    disambiguation,
     raw,
     viewport,
     diff: page.diffShots(prev && prev.shot, shotWithClicks),

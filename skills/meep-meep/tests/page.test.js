@@ -952,8 +952,8 @@ test('controls that share a label carry the text of their row', () => {
     { shot, viewport: { width: 1024, height: 576, scrollY: 0, scrollHeight: 576 }, diff: null },
     { goal: 'Buy Acid', history: [], candidates: [] }
   );
-  ok(ori.menu.some((a) => a.describe === 'click button "BUY" in row "Acid $2,758"'));
-  ok(ori.state.includes('[e10] button "BUY" in row "Heroin $6,037"'));
+  ok(ori.menu.some((a) => a.describe === 'click button "BUY" for "Acid $2,758"'));
+  ok(ori.state.includes('[e10] button "BUY" for "Heroin $6,037"'));
 });
 
 test('oversight: a small base chance, more after a big change or a long calm', () => {
@@ -1021,4 +1021,47 @@ test('without boxes, a repeated control takes the text line before it as its row
   is(ctx.e9, 'Cocaine $15,236', 'the digit-only "1" is skipped');
   is(ctx.e18, 'Heroin $6,037');
   is(ctx.e12, 'Heroin $6,037');
+});
+
+// The page reports disambiguators (page-scan.js); orient matches them to
+// snapshot controls by box. Checked in Chrome on table, card-grid and
+// link fixtures (2026-10-02).
+test('page disambiguators name repeated controls and win over the layout guess', () => {
+  const shot = page.parseSnapshot(
+    [
+      'Page URL: https://shop.example/',
+      '- rootwebarea',
+      '  - text "Blue T-shirt $19" [ref=e1]',
+      '  - button "Add to cart" [ref=e2] [box=10,100,120,30]',
+      '  - button "Add to cart" [ref=e3] [box=220,100,120,30]',
+      '  - button "Checkout" [ref=e4] [box=10,400,120,30]',
+    ].join('\n')
+  );
+  const items = [
+    { name: 'Add to cart', b: [0, 90, 200, 50], ctx: 'Blue T-shirt $19' },
+    { name: 'Add to cart', b: [210, 90, 200, 50], ctx: 'Red Mug $9' },
+  ];
+  const named = page.applyDisambiguation(shot.elements, items);
+  is(named.find((e) => e.token === 'e2').context, 'Blue T-shirt $19');
+  is(
+    named.find((e) => e.token === 'e3').context,
+    'Red Mug $9',
+    'the layout guess would have said "Blue T-shirt $19"'
+  );
+  is(named.find((e) => e.token === 'e4').context, undefined);
+  const ori = page.orient(
+    {
+      shot,
+      viewport: { width: 1024, height: 576, scrollY: 0, scrollHeight: 576 },
+      diff: null,
+      disambiguation: items,
+    },
+    { goal: 'Add the mug to the cart', history: [], candidates: [] }
+  );
+  ok(ori.menu.some((a) => a.describe === 'click button "Add to cart" for "Red Mug $9"'));
+  is(
+    page.applyDisambiguation(shot.elements, []),
+    shot.elements,
+    'nothing reported, nothing changes'
+  );
 });

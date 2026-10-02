@@ -219,6 +219,29 @@ function promoteClickable(shot, found, viewport) {
 }
 
 /**
+ * Context for repeated controls from the page itself (page-scan.js):
+ * `items` are [{ name, b: box, ctx }] for controls whose name repeats. Each
+ * is matched to a snapshot control by box: the item's box holds the
+ * control's centre, preferring the same name. The page knows the DOM (the
+ * row, card, fieldset or link a control belongs to), so this wins over the
+ * layout guess in addRowContext.
+ */
+function applyDisambiguation(elements, items) {
+  if (!items || !items.length) return elements;
+  return elements.map((e) => {
+    if (e.context || !e.box) return e;
+    const cx = e.box[0] + e.box[2] / 2;
+    const cy = e.box[1] + e.box[3] / 2;
+    const hits = items.filter(
+      ({ b }) => cx >= b[0] && cx <= b[0] + b[2] && cy >= b[1] && cy <= b[1] + b[3]
+    );
+    if (!hits.length) return e;
+    const same = hits.find((h) => h.name === e.label) || hits[0];
+    return { ...e, context: shown(same.ctx) };
+  });
+}
+
+/**
  * Controls that share a label (Drug Wars' BUY and MAX in every drug row,
  * Hacker News' "N comments") get the text on their row as context, so the
  * decider can tell them apart. Row = vertical overlap with the control's
@@ -249,7 +272,7 @@ function addRowContext(elements, texts) {
     );
   });
   return elements.map((e) => {
-    if ((count.get(e.label) || 0) < 2) return e;
+    if ((count.get(e.label) || 0) < 2 || e.context) return e;
     let best = null;
     if (e.box) {
       const cy = e.box[1] + e.box[3] / 2;
@@ -278,7 +301,7 @@ const ROW_LOOKBACK = 16;
 
 /** How a control is named in the menu and the state: its label, and its row when labels repeat. */
 const named = (element) =>
-  `${element.role} "${shown(element.label)}"${element.context ? ` in row "${element.context}"` : ''}`;
+  `${element.role} "${shown(element.label)}"${element.context ? ` for "${element.context}"` : ''}`;
 
 // ── viewport ──────────────────────────────────────────────────────────
 
@@ -797,7 +820,10 @@ function checkExpect(obs, expect, expectUrl) {
  */
 function orient(obs, opts) {
   const view = inView(obs.shot, opts.goal, obs.viewport);
-  view.elements = addRowContext(view.elements, obs.shot.texts);
+  view.elements = addRowContext(
+    applyDisambiguation(view.elements, obs.disambiguation),
+    obs.shot.texts
+  );
   const shot = { ...obs.shot, elements: view.elements };
   const menu = buildMenu(shot, opts.goal, {
     candidates: opts.candidates,
@@ -1240,6 +1266,7 @@ module.exports = {
   place,
   inView,
   promoteClickable,
+  applyDisambiguation,
   addRowContext,
   diffShots,
   describeDiff,
