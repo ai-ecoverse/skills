@@ -92,11 +92,12 @@ if (rubricGoals) {
         }),
       [primary, fallback]
     );
-  // The bare agent's trace is the bench's: an async leader so screenshots run during the prompt.
-  if (arm.kind === 'agent') {
-    const executors = await import(join(SLICC, 'packages/bench/scripts/executors.mjs'));
-    leader = executors.createLeader({ url, cli: io.cliPath() });
-  }
+}
+// The bare agent's trace is the bench's (screenshots while it works, then its transcript), for
+// every agent goal: the judge reads it for rubric goals, and it is kept for review on all.
+if (arm.kind === 'agent') {
+  const executors = await import(join(SLICC, 'packages/bench/scripts/executors.mjs'));
+  leader = executors.createLeader({ url, cli: io.cliPath() });
 }
 
 const sh = (command, timeoutMs = 120_000) =>
@@ -260,7 +261,7 @@ for (const rep of reps) {
       skillOut = r.out;
       if (!r.ok && !own)
         runError = `${r.error}${r.out.trim() ? ` | stdout tail: ${r.out.trim().slice(-300)}` : ''}`;
-    } else if (leader && hasRubric(g)) {
+    } else if (leader) {
       const { r, trace: t } = await agentRunWithTrace(g, rep);
       trace = t;
       if (r.status !== 0)
