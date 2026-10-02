@@ -52,10 +52,15 @@ const STOP_WORDS = new Set(
 // kev.js rejects a choice with more than 255 options, and a long list
 // flattens its probabilities: 64 click targets topped out at 0.05 on the
 // Google Flights start page (measured 2026-09-22). Keep the menu short.
-// System 1's menu. 16 cut Drug Wars' MAX buttons and eight of ten cities,
-// so the run shuttled between two cities for 30 days (2026-10-02). kev's
-// time grows with the menu (about 0.1 s an option), so it stays bounded.
-const MAX_CLICKS = 40;
+// System 1's menu. 16, ranked by the goal alone, cut Drug Wars' MAX
+// buttons and eight of ten cities, so the run shuttled between two cities
+// for 30 days. 40 reached them, but kev's probability spread so thin (top
+// option 7% of 44) that it handed over nearly every step (2026-10-02). So:
+// 24, ranked by the plan's next steps first (rankClicks).
+const MAX_CLICKS = 24;
+// Plan steps whose words rank System 1's menu, and their weight.
+const PLAN_RANK_STEPS = 3;
+const PLAN_WORD_WEIGHT = 2;
 // System 2 reads every control in view: it can afford the long menu, and a
 // control ranked out of System 1's menu was out of its reach too.
 const MAX_CLICKS_S2 = 200;
@@ -526,9 +531,15 @@ function words(text) {
 // goal uses come first. A control that was not on the previous page (an
 // autocomplete list, a dialog) is usually the thing to act on next. Long
 // labels are promo tiles and articles, not controls.
-function clickScore(element, goalWords, previousLabels) {
+function clickScore(element, goalWords, previousLabels, planWords) {
   const label = words(element.label);
   let s = label.filter((word) => goalWords.has(word)).length;
+  // The plan names the controls to use next ("Click MAX for Speed"): the
+  // label and its row context both count.
+  if (planWords && planWords.size) {
+    const named = new Set([...label, ...words(element.context || '')]);
+    s += PLAN_WORD_WEIGHT * [...named].filter((word) => planWords.has(word)).length;
+  }
   if (element.role === 'option' || element.role === 'menuitem') s += 2;
   if (element.role === 'button') s += 0.5;
   s += REGION_BONUS[element.region] || 0;
@@ -538,14 +549,15 @@ function clickScore(element, goalWords, previousLabels) {
   return s;
 }
 
-function rankClicks(elements, goal, previousLabels, max = MAX_CLICKS) {
+function rankClicks(elements, goal, previousLabels, max = MAX_CLICKS, plan = []) {
   const goalWords = new Set(words(goal));
+  const planWords = new Set(words((plan || []).slice(0, PLAN_RANK_STEPS).join(' ')));
   return elements
     .filter((element) => element.kind === 'click')
     .map((element, index) => ({
       element,
       index,
-      score: clickScore(element, goalWords, previousLabels),
+      score: clickScore(element, goalWords, previousLabels, planWords),
     }))
     .sort((a, b) => b.score - a.score || a.index - b.index)
     .slice(0, max)
@@ -596,7 +608,7 @@ function valueFits(value, element) {
  */
 function buildMenu(shot, goal, opts = {}) {
   const fields = shot.elements.filter((element) => element.kind === 'fill').slice(0, MAX_FIELDS);
-  const clicks = rankClicks(shot.elements, goal, opts.previousLabels, opts.maxClicks);
+  const clicks = rankClicks(shot.elements, goal, opts.previousLabels, opts.maxClicks, opts.plan);
   const values = opts.values || [];
   // System 2's values without a field are offered like the goal's.
   const general = values.filter((v) => !v.field).map((v) => v.text);
@@ -903,6 +915,7 @@ function orient(obs, opts) {
     factorText: opts.factorText,
     scroll: view.scroll,
     values: opts.values,
+    plan: opts.plan,
   });
   // System 2's menu: the same, with every control in view.
   const menuS2 = buildMenu(shot, opts.goal, {

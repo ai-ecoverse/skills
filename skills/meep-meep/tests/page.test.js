@@ -1316,7 +1316,7 @@ test('System 2 adds and removes notes by number; the oldest go over the cap', ()
 
 // Drug Wars step 43, 2026-10-02: 16 clicks cut the MAX buttons and eight of
 // ten cities, so the run shuttled between two cities.
-test("System 1's menu holds 40 clicks, and System 2's every control in view", () => {
+test("System 1's menu holds its top clicks, and System 2's every control in view", () => {
   const lines = ['Page URL: https://drugwars.online/game', '- rootwebarea'];
   for (let i = 1; i <= 50; i++)
     lines.push(`  - button "City ${i}" [ref=e${i}] [box=10,${10 + i},50,10]`);
@@ -1329,7 +1329,7 @@ test("System 1's menu holds 40 clicks, and System 2's every control in view", ()
   is(ori.menuS2.filter((a) => a.operation === 'CLICK').length, 50);
   ok(!ori.menuS2.some((a) => a.operation === 'SHRUG'), 'System 2 cannot shrug');
   const cut = ori.excluded.find((x) => x.token === 'e50');
-  is(cut.reason, "ranked below System 1's top 40 (System 2 sees it)");
+  is(cut.reason, `ranked below System 1's top ${page.MAX_CLICKS} (System 2 sees it)`);
 });
 
 test('a hand-over only edits the plan; a review sees screenshots and earlier plans', () => {
@@ -1405,4 +1405,26 @@ test('plan edits drop finished steps and put next steps on top; numbers are ours
     'SELL sells the whole stack.',
     'Ludes cost $15.',
   ]);
+});
+
+// Drug Wars, 2026-10-02: ranked by the goal alone, the controls the plan
+// named next ("Click MAX for Speed", a far city) fell out of System 1's menu.
+test("the plan's next steps rank System 1's menu", () => {
+  const lines = ['Page URL: https://drugwars.online/game', '- rootwebarea'];
+  for (let i = 1; i <= 40; i++) lines.push(`  - button "City ${i}" [ref=e${i}]`);
+  lines.push('  - button "Lagos" [ref=e98]', '  - button "MAX" [ref=e99]');
+  const shot = page.parseSnapshot(lines.join('\n'));
+  shot.elements.find((e) => e.token === 'e99').context = 'Speed';
+  const ids = (plan) =>
+    page
+      .buildMenu(shot, 'Play the game', { plan })
+      .filter((a) => a.operation === 'CLICK')
+      .map((a) => a.id);
+  ok(!ids([]).includes('click:e98'), 'without a plan, Lagos is past the cut');
+  ok(ids(['Travel to Lagos']).includes('click:e98'));
+  ok(ids(['Click MAX for Speed']).includes('click:e99'), 'the row context counts');
+  ok(
+    !ids(['a', 'b', 'c', 'Travel to Lagos']).includes('click:e98'),
+    'only the next three steps rank'
+  );
 });
