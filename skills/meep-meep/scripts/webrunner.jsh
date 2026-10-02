@@ -626,15 +626,59 @@ function kevOnly(fast) {
 // field it has no text for), System 2 decides on the same state and menu,
 // told what System 1 was considering. DONE is checked by System 1 and,
 // when that is unsure, by System 2.
+// A System 2 call that fails (Bedrock answered "Proxy fetch failed" three
+// times in a row and ended a Wikipedia run at step 6, 2026-10-02) does not
+// end the run: System 1's best choice stands, a review is skipped, and the
+// run starts without a plan. Each failure is logged and in the trace.
+const failedBecause = (err) => String((err && err.message) || err).slice(0, 300);
+const mustStop = (err) => (err && err.name === 'NodeExitError') || status.stopped;
+
+/** System 1's most likely action that is not SHRUG and that it can carry out; else WAIT. */
+function system1Best(first, menu) {
+  const byId = new Map(menu.map((a) => [a.id, a]));
+  const ranked = Object.entries(first.probabilities || {}).sort((a, b) => b[1] - a[1]);
+  for (const [id] of ranked) {
+    const a = byId.get(id);
+    if (!a || a.operation === 'SHRUG') continue;
+    if (a.operation === 'TYPE_TEXT' && !a.text) continue;
+    return a.id === first.action.id ? first.action : a;
+  }
+  return menu.find((a) => a.operation === 'WAIT') || first.action;
+}
+
 function hybridDecider(fast, slow, threshold) {
+  // System 2 failed: System 1's best choice stands.
+  const fallBack = async (err, first, menu, system1) => {
+    if (mustStop(err)) throw err;
+    system1.system2Error = failedBecause(err);
+    const action = system1Best(first, menu);
+    await say(`         system 2 failed (${system1.system2Error}); System 1 decides: ${action.describe}`);
+    return { ...first, action, system: fast.name, system1, top: `${first.top}  → system 2 failed` };
+  };
   return {
     name: `${fast.name} + ${slow.name}`,
     loadMs: fast.loadMs,
     shrugs: true,
     plans: true,
     usage: slow.usage,
-    plan: (goal, state, imagePath) => slow.plan(goal, state, imagePath),
-    review: (ctx) => slow.review(ctx),
+    async plan(goal, state, imagePath) {
+      try {
+        return await slow.plan(goal, state, imagePath);
+      } catch (err) {
+        if (mustStop(err)) throw err;
+        await say(`plan failed (${failedBecause(err)}); starting without one`);
+        return { plan: [], notes: [], prompt: '', answer: null, error: failedBecause(err) };
+      }
+    },
+    async review(ctx) {
+      try {
+        return await slow.review(ctx);
+      } catch (err) {
+        if (mustStop(err)) throw err;
+        await say(`         plan review failed (${failedBecause(err)}); skipped`);
+        return { assessment: '', plan: null, next: null, noteAdd: [], noteRemove: [], values: null, prompt: '', answer: null, error: failedBecause(err) };
+      }
+    },
     async decide(state, menu, extra = {}) {
       const first = await fast.decide(state, menu, extra);
       const reason = page.shrugReason(first, threshold, { avoid: extra.avoid });
@@ -652,15 +696,20 @@ function hybridDecider(fast, slow, threshold) {
         // System 2 chooses from every control in view, not System 1's top ones.
         const rest = (extra.menuS2 || menu).filter((action) => action.operation !== 'SHRUG');
         const slowStarted = Date.now();
-        const second = await slow.deliberate(
-          {
-            ...(extra.context || {}),
-            state,
-            hint: page.oversightHint(first, system1.oversight.reason, menu, Boolean(system1.oversight.rut)),
-            imagePaths: extra.imagePaths,
-          },
-          rest
-        );
+        let second;
+        try {
+          second = await slow.deliberate(
+            {
+              ...(extra.context || {}),
+              state,
+              hint: page.oversightHint(first, system1.oversight.reason, menu, Boolean(system1.oversight.rut)),
+              imagePaths: extra.imagePaths,
+            },
+            rest
+          );
+        } catch (err) {
+          return fallBack(err, first, menu, system1);
+        }
         return {
           ...second,
           system: slow.name,
@@ -672,10 +721,15 @@ function hybridDecider(fast, slow, threshold) {
       if (!reason) return { ...first, system: fast.name, system1 };
       const slowStarted = Date.now();
       const rest = (extra.menuS2 || menu).filter((action) => action.operation !== 'SHRUG');
-      const second = await slow.deliberate(
-        { ...(extra.context || {}), state, hint: page.shrugHint(first, reason, menu), imagePaths: extra.imagePaths },
-        rest
-      );
+      let second;
+      try {
+        second = await slow.deliberate(
+          { ...(extra.context || {}), state, hint: page.shrugHint(first, reason, menu), imagePaths: extra.imagePaths },
+          rest
+        );
+      } catch (err) {
+        return fallBack(err, first, menu, system1);
+      }
       return {
         ...second,
         system: slow.name,
@@ -1274,7 +1328,13 @@ async function cycles(flags, run) {
       );
       setPlan(written.plan, step, 'the original plan');
       memory.notes = written.notes;
-      record.plan = { plan: written.plan, notes: written.notes, prompt: written.prompt, ms: Date.now() - planStarted };
+      record.plan = {
+        plan: written.plan,
+        notes: written.notes,
+        prompt: written.prompt,
+        ...(written.error ? { error: written.error } : {}),
+        ms: Date.now() - planStarted,
+      };
       await say(`plan (${((Date.now() - planStarted) / 1000).toFixed(1)} s): ${written.plan.join(' | ')}`);
     }
     let ori = page.orient(obs, { ...orientOpts, ...remembered() });
@@ -1305,6 +1365,7 @@ async function cycles(flags, run) {
       memory.notes = noted.notes;
       if (reviewed.values) memory.values = reviewed.values;
       record.review = {
+        ...(reviewed.error ? { error: reviewed.error } : {}),
         why: due.why,
         load: due.load,
         assessment: reviewed.assessment,
@@ -1481,7 +1542,8 @@ async function cycles(flags, run) {
         rutLimits
       );
     } else if (decision.system !== 'direct') rut = null;
-    const shrugged = decision.system1 && (decision.system1.shrug || decision.system1.oversight);
+    const shrugged =
+      decision.system1 && !decision.system1.system2Error && (decision.system1.shrug || decision.system1.oversight);
     memory.trail.push({
       step,
       describe: action.describe,

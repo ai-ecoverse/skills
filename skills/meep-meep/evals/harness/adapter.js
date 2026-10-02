@@ -199,11 +199,13 @@ async function traceFromLines(lines, screenshot, { shots = 4 } = {}) {
       // A random or rut audit is System 2's decision too.
       const who = !d.system1
         ? d.system || ''
-        : d.system1.oversight
-          ? 'System 2 (audit)'
-          : d.system1.shrug
-            ? 'System 2'
-            : 'System 1';
+        : d.system1.system2Error
+          ? 'System 1 (System 2 failed)'
+          : d.system1.oversight
+            ? 'System 2 (audit)'
+            : d.system1.shrug
+              ? 'System 2'
+              : 'System 1';
       parts.push(`${who}: ${d.action.describe}${d.action.text ? ` "${d.action.text}"` : ''}`);
     }
     if (s.diff && s.diff.changed && s.diff.changed.length) {

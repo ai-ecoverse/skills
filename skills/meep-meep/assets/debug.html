@@ -145,6 +145,7 @@ const WHO = {
 function whoOf(d) {
   if (!d) return null;
   if (d.system === 'direct') return 'direct';
+  if (d.system1 && d.system1.system2Error) return 's1';
   if (d.system1) return d.system1.oversight ? 'audit' : d.system1.shrug ? 's2' : 's1';
   // kev alone, or an agent / System 2 decider without kev
   return /^kev\b/.test(d.system || '') ? 's1' : 's2';
@@ -431,7 +432,8 @@ function renderStep(s) {
       d.confidence != null ? el('span', { class: 'muted' }, ` · confidence ${pct(d.confidence)}`) : ''));
     if (d.system1) {
       const s1 = d.system1;
-      const verdict = s1.shrug ? `unsure (${s1.shrug}), so it handed the step to System 2.`
+      const verdict = s1.system2Error ? `handed over, but System 2 failed (${s1.system2Error}), so System 1's best choice was taken.`
+        : s1.shrug ? `unsure (${s1.shrug}), so it handed the step to System 2.`
         : s1.oversight ? `sure, but System 2 audited the step at random (${s1.oversight.reason}, p=${s1.oversight.chance}).`
         : 'sure: its choice was taken.';
       parts.push(el('div', { class: 'card s1' },
