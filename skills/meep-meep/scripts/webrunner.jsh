@@ -346,7 +346,7 @@ async function kevDecider(flags) {
     model: size,
     from: flags.from || null,
     log: (line) => {
-      if (/phase (ready|session)|runtime|failed/.test(line)) say(line);
+      if (/phase (ready|session)|runtime|adapter|failed/.test(line)) say(line);
     },
     // Named here, in the entry script: see kev-runtime.js loadKev.
     requireBundle: () => require('/shared/cache/kev/bundle.cjs'),

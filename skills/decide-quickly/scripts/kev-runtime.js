@@ -191,6 +191,31 @@ async function openOn(fs, base, dateFacts, providers, log, requireBundle, ortDir
 }
 
 /**
+ * The worker's WebGPU adapter, logged by name, or null (also logged): a
+ * navigator.gpu without an adapter cannot run a session.
+ */
+async function webGpuAdapter(log) {
+  if (!host.hasWebGpu()) return null;
+  let adapter = null;
+  try {
+    adapter = await navigator.gpu.requestAdapter();
+  } catch (err) {
+    log(`kev: webgpu requestAdapter failed (${err.message || err})`);
+    return null;
+  }
+  if (!adapter) {
+    log('kev: webgpu has no adapter in this worker');
+    return null;
+  }
+  const info = adapter.info || {};
+  const name = [info.vendor, info.architecture, info.device, info.description]
+    .filter(Boolean)
+    .join(' ');
+  log(`kev: webgpu adapter ${name || '(no info)'}`);
+  return adapter;
+}
+
+/**
  * Open a model on WebGPU when the worker has it, falling back to wasm.
  * Weights are never downloaded here: a missing file is an error that names
  * `kev pull`. opts: { model, from, ortDir, dateFacts, log, requireBundle }
@@ -204,7 +229,14 @@ async function openModel(fs, exec, opts = {}) {
     base = status.base;
   }
   const dateFacts = opts.dateFacts === true;
-  const providers = host.hasWebGpu() ? ['webgpu', 'wasm'] : ['wasm'];
+  // WebGPU alone, as the kev.js page asks for it: given ['webgpu', 'wasm'],
+  // onnxruntime-web drops a WebGPU it cannot start and quietly runs the
+  // whole session on single-threaded wasm, while this log still said
+  // "runtime webgpu". A hosted L4 leader took 78-80 s per 0.8b ask where
+  // the page took 10 s cold (2026-10-02). Now a WebGPU failure throws, and
+  // the wasm retry below says so in the log.
+  const adapter = await webGpuAdapter(log);
+  const providers = adapter ? ['webgpu'] : ['wasm'];
   try {
     return await openOn(fs, base, dateFacts, providers, log, opts.requireBundle, opts.ortDir);
   } catch (err) {
