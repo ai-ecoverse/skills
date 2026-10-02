@@ -219,10 +219,35 @@ export async function judgeTrace({ own, readText, readBase64 }) {
   });
 }
 
+const lastNumber = (text, re) => {
+  const all = [...String(text).matchAll(re)];
+  return all.length ? Number(all[all.length - 1][1].replace(/,/g, '')) : null;
+};
+
+// Each game's own number on its final page. A Dark Room has none: the
+// rubric alone grades it. Patterns from the pages as probed 2026-10-02; the
+// ones for end screens not yet seen (Drug Wars, Seedship) are the games'
+// documented wording and get checked on the first runs.
+const GAME_METRICS = {
+  'armchair-bike': (text) => gamePoints(text),
+  drugwars: (text) =>
+    lastNumber(text, /(?:SCORE|NET WORTH|Net Worth|Net worth)[:\s]*\$?\s*(-?[\d,]+)/g),
+  // The ending's score table ends with the row "Total: 9511" (seen 2026-10-02).
+  seedship: (text) => lastNumber(text, /Total:\s*(-?[\d,]+)/g),
+  password: (text) => {
+    const rules = [...String(text).matchAll(/Rule (\d+)/g)].map((m) => Number(m[1]));
+    return rules.length ? Math.max(...rules) : null;
+  },
+  paperclips: (text) => lastNumber(text, /Paperclips:\s*([\d,]+)/g),
+  // The resource row reads "kittens 1 /2" (current / capacity), no colon.
+  kittens: (text) => lastNumber(text, /[Kk]ittens?\s*:?\s*(\d+)\s*\//g),
+};
+
 /**
  * Metrics from the final page, for every arm (the driver calls this on the
- * last snapshot, so the bare agent arm gets game points too).
+ * last snapshot, so the bare agent arm gets each game's number too).
  */
-export function metrics(snapshot) {
-  return { points: gamePoints(snapshot) };
+export function metrics(snapshot, goal) {
+  const read = GAME_METRICS[goal && goal.id] || gamePoints;
+  return { points: read(snapshot) };
 }

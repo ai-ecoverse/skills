@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import test, { is, ok } from 'tst';
 import {
   arms,
@@ -180,5 +182,27 @@ test('every arm that runs kev is on the GPU pool', () => {
     const i = (arm.args || []).indexOf('--decider');
     const decidesWithKev = i >= 0 && ['kev', 'hybrid'].includes(arm.args[i + 1]);
     if (pullsKev || decidesWithKev) is([arm.id, arm.pool], [arm.id, 'gpu']);
+  }
+});
+
+test('metrics reads each game’s own number', () => {
+  is(metrics('Paperclips: 1,204\nMake Paperclip', { id: 'paperclips' }), { points: 1204 });
+  is(metrics('Rule 1 ... Rule 9 ... Rule 4', { id: 'password' }), { points: 9 });
+  is(
+    metrics('- row "Planet water: 500" [ref=e34]\n- row "Total: 9511" [ref=e61]', {
+      id: 'seedship',
+    }),
+    { points: 9511 }
+  );
+  is(metrics('SCORE: $48,210', { id: 'drugwars' }), { points: 48210 });
+  is(metrics('light fire', { id: 'darkroom' }), { points: null });
+  is(metrics('catnip 12 /5000\nkittens 1 /2', { id: 'kittens' }), { points: 1 });
+  const goals = JSON.parse(
+    readFileSync(fileURLToPath(new URL('../evals/harness/goals.json', import.meta.url)), 'utf8')
+  ).goals;
+  for (const g of goals.filter((x) => x.rubric)) {
+    is([g.id, Object.values(g.weights).reduce((a, b) => a + b, 0)], [g.id, 100]);
+    for (const id of Object.keys(g.weights))
+      ok(g.rubric.includes(`${id} — `), `${g.id} defines ${id}`);
   }
 });
