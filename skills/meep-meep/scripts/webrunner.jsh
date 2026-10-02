@@ -856,7 +856,23 @@ async function observe(tab, prev, opts) {
   const commands = [];
   const argv = ['playwright-cli', 'snapshot', `--tab=${tab}`];
   if (opts.viewport) argv.push('--boxes');
-  const raw = await sh(argv, commands);
+  // A snapshot of a huge page can time out once (Wikipedia's Kurt Gödel
+  // article: "CDP command timed out", 2026-10-02): try twice more, the
+  // last time without boxes, which cost a CDP call per ref.
+  let raw;
+  for (let attempt = 1; ; attempt++) {
+    const plain = attempt === 3 && opts.viewport;
+    const result = await run(plain ? argv.filter((a) => a !== '--boxes') : argv, commands);
+    if (result.exitCode === 0) {
+      raw = result.stdout || '';
+      break;
+    }
+    const detail = (result.stderr || result.stdout || '').trim().slice(0, 300);
+    if (attempt >= 3 || !/timed? ?out/i.test(detail)) {
+      throw new Error(`playwright-cli snapshot failed (${result.exitCode})${detail ? `: ${detail}` : ''}`);
+    }
+    await say(`         snapshot timed out; retrying${attempt === 2 ? ' without boxes' : ''}`);
+  }
   const shot = page.parseSnapshot(raw);
   let viewport = null;
   if (opts.viewport) {
