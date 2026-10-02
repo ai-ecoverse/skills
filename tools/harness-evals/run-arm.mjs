@@ -12,7 +12,7 @@
  *     the arm's model.
  *
  * Env: HARNESS_SLICC (slicc checkout), HARNESS_SKILL_DIR, HARNESS_ARM_ID, HARNESS_REPEATS,
- * HARNESS_OUT, HARNESS_RUN_S (per-run timeout, default 900), HARNESS_SUITES (comma list, default
+ * HARNESS_REPEAT (this job's one repeat, when the plan shards), HARNESS_OUT, HARNESS_RUN_S (per-run timeout, default 900), HARNESS_SUITES (comma list, default
  * `default`), plus SLICC_GW_HOME / SLICC_CLI.
  */
 import { spawnSync } from 'node:child_process';
@@ -43,7 +43,10 @@ const goals = JSON.parse(readFileSync(goalsPath, 'utf8'));
 const suites = parseSuites(env('HARNESS_SUITES'));
 const goalErrors = validateGoals(goals);
 if (goalErrors.length) throw new Error(`${goalsPath}: ${goalErrors.join('; ')}`);
+// One repeat per job when the plan shards (HARNESS_REPEAT); else every repeat in turn.
+const shard = Number.parseInt(env('HARNESS_REPEAT'), 10);
 const repeats = Math.max(1, Number.parseInt(env('HARNESS_REPEATS', '1'), 10) || 1);
+const reps = shard >= 1 ? [shard] : Array.from({ length: repeats }, (_, i) => i + 1);
 const out = env('HARNESS_OUT');
 const runTimeoutMs = (Number.parseInt(env('HARNESS_RUN_S', '900'), 10) || 900) * 1000;
 /** A goal's own `timeout_s` (long games) overrides the default per-run limit. */
@@ -222,7 +225,7 @@ const agentPrompt = (g) =>
   `Open ${g.url} in a new browser tab and do this there: ${g.goal}\nLeave the final page open in that tab when you are done.`;
 
 const results = [];
-for (let rep = 1; rep <= repeats; rep += 1) {
+for (const rep of reps) {
   for (const raw of selectSuites(goals.goals, suites)) {
     const values = await resolvePlaceholders(
       raw,
