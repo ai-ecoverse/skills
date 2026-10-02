@@ -74,7 +74,7 @@ whenever the user corrects a draft.
 | `comments <activityId>` / `reactions <activityId>` | Comments or reactions on a post |
 | `comment <activityId> <text>` | New top-level comment on a post, as the page |
 | `profile <vanityName\|urn>` | Name, headline and positions of a member |
-| `inbox`, `messages`, `send`, `search-contacts`, `dm` | LinkedIn messaging |
+| `inbox`, `messages`, `send`, `search-contacts`, `dm` | LinkedIn messaging (add `--json`, last, to the reads) |
 | `watch --scoop=<name>`, `unwatch`, `watches` | Poll for new comments, deliver to a scoop |
 | `monday [--limit N] [--date 3d]` | New comments and engagement as monday inbox items |
 | `setup`, `auth setup`, `auth login`, `auth status` | Page and auth configuration |
