@@ -46,6 +46,8 @@ if (goalErrors.length) throw new Error(`${goalsPath}: ${goalErrors.join('; ')}`)
 const repeats = Math.max(1, Number.parseInt(env('HARNESS_REPEATS', '1'), 10) || 1);
 const out = env('HARNESS_OUT');
 const runTimeoutMs = (Number.parseInt(env('HARNESS_RUN_S', '900'), 10) || 900) * 1000;
+/** A goal's own `timeout_s` (long games) overrides the default per-run limit. */
+const timeoutFor = (goal) => (goal.timeout_s ? goal.timeout_s * 1000 : runTimeoutMs);
 
 const io = await import(join(SLICC, 'packages/github-workflow/scripts/gh-io.mjs'));
 const vfs = await import(join(SLICC, 'packages/github-workflow/scripts/vfs-file.mjs'));
@@ -89,6 +91,42 @@ const trySh = (command, timeoutMs) => {
     return { ok: false, out: String(e.message ?? e) };
   }
 };
+/**
+ * One skill run in the leader's shell. Unlike `sh`, a timeout keeps what the command printed, and
+ * the CLI's SIGTERM makes it ask the leader to interrupt the command, so it doesn't keep running
+ * into the next goal.
+ */
+function runSkill(command, timeoutMs) {
+  const r = spawnSync(io.cliPath(), [url, 'exec', command], {
+    timeout: timeoutMs,
+    maxBuffer: 512 * 1024 * 1024,
+    env: { ...process.env, SLICC_NO_TUI: '1', NO_COLOR: '1' },
+  });
+  const out = r.stdout?.toString('utf8') ?? '';
+  const err = r.stderr?.toString('utf8') ?? '';
+  const timedOut = r.error?.code === 'ETIMEDOUT';
+  const ok = !r.error && r.status === 0;
+  const why = timedOut
+    ? `timed out after ${timeoutMs / 1000} s`
+    : r.error
+      ? String(r.error.message)
+      : `exit ${r.status}`;
+  return { ok, out, timedOut, error: ok ? null : `${why}: ${err.trim().slice(-200)}`.trim() };
+}
+
+/** Copy leader files into this run's artifact folder (paths absolute and plain). */
+function keepFiles(paths, dir, what) {
+  for (const path of paths ?? []) {
+    if (typeof path !== 'string' || !/^\/[A-Za-z0-9._/-]+$/.test(path) || path.includes('..'))
+      continue;
+    try {
+      vfs.readVfsFile(url, path, join(dir, path.replace(/^\//, '').replace(/\//g, '__')), 120_000);
+    } catch (e) {
+      console.log(`::warning::${what} ${path}: ${e.message}`);
+    }
+  }
+}
+
 /** A CLI verb on the leader (`slicc <url> <verb> …`), like the bench adapter's cli(). */
 const cli = (args, { input, timeoutMs = 120_000 } = {}) =>
   spawnSync(io.cliPath(), [url, ...args], {
@@ -141,7 +179,7 @@ async function agentRunWithTrace(g, rep) {
   const t0 = Date.now();
   const r = await leader.cli(['prompt', '--allsettled', '2m', '-'], {
     stdin: agentPrompt(g),
-    timeoutMs: runTimeoutMs,
+    timeoutMs: timeoutFor(g),
   });
   const shots = await shooter.stop();
   const { images } = await bench.readShots(leader, shots);
@@ -196,10 +234,15 @@ for (let rep = 1; rep <= repeats; rep += 1) {
     let own = null;
     let runError = null;
     let trace = null;
+    let skillOut = null;
     if (arm.kind === 'skill') {
-      const r = trySh(adapter.command(g, arm, { shellQuote }), runTimeoutMs);
-      own = typeof adapter.result === 'function' ? adapter.result(r.out) : null;
-      if (!r.ok && !own) runError = r.out.slice(0, 300);
+      const r = runSkill(adapter.command(g, arm, { shellQuote }), timeoutFor(g));
+      own = typeof adapter.result === 'function' && r.out ? adapter.result(r.out) : null;
+      // What the command printed is kept whatever happens (bounded), and its tail goes into
+      // the record when the run failed without a result.
+      skillOut = r.out;
+      if (!r.ok && !own)
+        runError = `${r.error}${r.out.trim() ? ` | stdout tail: ${r.out.trim().slice(-300)}` : ''}`;
     } else if (leader && hasRubric(g)) {
       const { r, trace: t } = await agentRunWithTrace(g, rep);
       trace = t;
@@ -208,7 +251,7 @@ for (let rep = 1; rep <= repeats; rep += 1) {
     } else {
       const r = cli(['prompt', '--allsettled', '2m', '-'], {
         input: agentPrompt(g),
-        timeoutMs: runTimeoutMs,
+        timeoutMs: timeoutFor(g),
       });
       if (r.status !== 0)
         runError = `slicc prompt exited ${r.status}: ${String(r.stderr ?? '').slice(-300)}`;
@@ -231,17 +274,23 @@ for (let rep = 1; rep <= repeats; rep += 1) {
         metrics = adapter.metrics(snap.out, g) ?? null;
     }
     for (const id of opened) trySh(`playwright-cli tab-close --tab=${id}`, 30_000);
-    for (const path of own?.artifacts ?? []) {
-      if (!/^\/[A-Za-z0-9._/-]+$/.test(path) || path.includes('..')) continue;
+    const runDir = join(out, 'artifacts', arm.id, `${g.id}-r${rep}`);
+    if (skillOut) {
+      mkdirSync(runDir, { recursive: true });
+      writeFileSync(join(runDir, 'stdout.txt'), skillOut.slice(-2 * 1024 * 1024));
+    }
+    keepFiles(own?.artifacts, runDir, 'artifact');
+    // What the skill wants kept from every run, failed ones included (its own log, the latest
+    // trace): without it a timeout leaves nothing to debug, since the leader is gone afterwards.
+    if (arm.kind === 'skill' && typeof adapter.diagnostics === 'function') {
       try {
-        vfs.readVfsFile(
-          url,
-          path,
-          join(out, 'artifacts', arm.id, path.replace(/^\//, '').replace(/\//g, '__')),
-          120_000
+        keepFiles(
+          await adapter.diagnostics({ goal: g, own, list: vfsReaders.list }),
+          runDir,
+          'diagnostic'
         );
       } catch (e) {
-        console.log(`::warning::artifact ${path}: ${e.message}`);
+        console.log(`::warning::diagnostics: ${e.message}`);
       }
     }
     let rubric = null;

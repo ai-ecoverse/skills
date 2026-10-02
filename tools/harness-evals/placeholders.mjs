@@ -136,6 +136,11 @@ export function validateGoals(doc) {
     // you get) have no pass/fail; they are scored by credit alone.
     if (!(g.expect?.length || g.expect_url?.length || hasRubric(g)))
       errors.push(`${at}: needs expect or expect_url (a check), or a rubric`);
+    if (
+      g.timeout_s != null &&
+      !(Number.isInteger(g.timeout_s) && g.timeout_s > 0 && g.timeout_s <= 7200)
+    )
+      errors.push(`${at}: timeout_s must be an integer from 1 to 7200`);
     if (g.max_steps != null && !(Number.isInteger(g.max_steps) && g.max_steps > 0))
       errors.push(`${at}: max_steps must be a positive integer`);
   }
