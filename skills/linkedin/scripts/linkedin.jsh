@@ -426,11 +426,18 @@ async function registerVideoUpload(tabId, csrfToken, fileSize, filename) {
 // Works fine for ~3.4MB; for larger payloads consider MULTIPART (out of scope).
 //   contentType: MIME type for the Blob and PUT (e.g. 'video/mp4', 'image/jpeg').
 async function uploadMediaBytes(tabId, csrfToken, singleUploadUrl, mediaPath, singleUploadHeaders, contentType) {
-  // Read bytes via fs (returns a latin-1 binary string in this runtime) and
-  // base64-encode in-process. Avoids the GNU-only `base64 -w0` shell-out.
+  // Read raw bytes and base64-encode in-process (avoids the GNU-only
+  // `base64 -w0` shell-out). fs.readFile returns DECODED text in the current
+  // runtime (a 64,488-byte PNG came back as 61,426 chars), which made btoa()
+  // throw InvalidCharacterError, so read with fs.readFileBinary (Uint8Array)
+  // and build the latin-1 binary string in chunks.
   var binStr;
   try {
-    binStr = await fs.readFile(mediaPath);
+    var bytes = await fs.readFileBinary(mediaPath);
+    binStr = '';
+    for (var i = 0; i < bytes.length; i += 8192) {
+      binStr += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+    }
   } catch (e) {
     throw new Error('Failed to read media file ' + mediaPath + ': ' + (e && e.message ? e.message : e));
   }
