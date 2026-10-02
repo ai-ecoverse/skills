@@ -1,0 +1,203 @@
+# Harness evals: run a skill's browser goals against the harness arms its own adapter defines
+# (skills/<skill>/evals/harness/harness.mjs: deciders, model sizes, the bare agent), on hosted
+# SLICC leaders, judged by ONE check (the adapter's `judge`) on every arm's final page.
+#
+# - pull_request: every skill the PR changes that has a harness adapter, at the PR's own code.
+#   To compare a branch, stack a PR on it. Same-repo heads only: forks get no Bedrock key.
+# - workflow_dispatch: `skills` = changed (against main, the default), all, or a comma list.
+#
+# Everything skill-specific (goals, arms, how a goal runs, the check, custom placeholders) lives
+# in the skill's folder; tools/harness-evals only drives it. GPU arms run on `cloud-run-gpu`
+# (L4) with SLICC_CHROME_GPU=1 so the leader's Chrome keeps the GPU and enables WebGPU; other
+# arms run on `cloud-run-bench`. slicc (leader scripts, CLI, node-server) is the latest release.
+name: Harness evals
+
+on:
+  pull_request:
+    paths:
+      - 'skills/**'
+      - 'tools/harness-evals/**'
+      - '.github/workflows/harness-evals.yml'
+  workflow_dispatch:
+    inputs:
+      skills:
+        description: 'Skills: changed (against main), all, or a comma list'
+        default: 'changed'
+      repeats:
+        description: 'Runs per goal and arm (1-10)'
+        default: '3'
+
+# Evals spend money: a newer push waits for the running evals instead of cancelling them.
+concurrency:
+  group: harness-evals-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: [self-hosted, cloud-run]
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      run: ${{ steps.plan.outputs.run }}
+      slicc-version: ${{ steps.plan.outputs.slicc-version }}
+      slicc-ref: ${{ steps.plan.outputs.slicc-ref }}
+      repeats: ${{ steps.plan.outputs.repeats }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - name: Unit-test the harness tools
+        run: node --test tools/harness-evals/harness-evals.test.mjs
+      - name: Plan the skills and arms
+        id: plan
+        env:
+          WHICH: ${{ github.event_name == 'workflow_dispatch' && inputs.skills || 'changed' }}
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || 'origin/main' }}
+          REPEATS: ${{ github.event_name == 'workflow_dispatch' && inputs.repeats || '1' }}
+          HAS_KEY: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK != '' }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$REPEATS" =~ ^([1-9]|10)$ ]]; then echo "::error::repeats must be 1-10"; exit 1; fi
+          matrix="$(node tools/harness-evals/plan.mjs "$WHICH" "$BASE")"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "repeats=$REPEATS" >> "$GITHUB_OUTPUT"
+          n=$(jq '.include | length' <<< "$matrix")
+          jq -r '.include[] | "\(.skill)/\(.arm) on \(.runs_on)"' <<< "$matrix"
+          run=false
+          if [ "$n" -gt 0 ] && [ "$HAS_KEY" = true ]; then run=true; fi
+          if [ "$n" -gt 0 ] && [ "$HAS_KEY" != true ]; then echo "::notice::no Bedrock key (fork PR): validated only"; fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          # The leader's node-server, its scripts and the CLI all come from the latest release.
+          version="$(npm view sliccy@latest version)"
+          echo "slicc-version=$version" >> "$GITHUB_OUTPUT"
+          echo "slicc-ref=v$version" >> "$GITHUB_OUTPUT"
+          echo "slicc v$version, $n arm job(s), $REPEATS repeat(s)" >> "$GITHUB_STEP_SUMMARY"
+
+  arm:
+    name: ${{ matrix.skill }} / ${{ matrix.arm }}
+    needs: plan
+    if: needs.plan.outputs.run == 'true'
+    runs-on: ${{ matrix.runs_on }}
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Check out ai-ecoverse/slicc at the latest release
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ai-ecoverse/slicc
+          ref: ${{ needs.plan.outputs.slicc-ref }}
+          path: slicc
+          sparse-checkout: |
+            packages/bench
+            packages/github-workflow
+            packages/slicc-cli
+            packages/go-optel
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: slicc/packages/slicc-cli/go.mod
+          cache-dependency-path: slicc/packages/slicc-cli/go.sum
+
+      - name: Install the slicc CLI (built from the release)
+        uses: ./slicc/packages/github-workflow/actions/install-cli
+        with:
+          source: build
+          build-dir: ${{ github.workspace }}/slicc/packages/slicc-cli
+
+      - name: Prepare the runner
+        run: |
+          google-chrome --version
+          if [ -w /slicc ] 2>/dev/null; then exit 0; fi
+          sudo mkdir -p /slicc && sudo chown "$(id -u)" /slicc
+
+      - name: Boot the leader and inject the skill
+        env:
+          HARNESS_SLICC: ${{ github.workspace }}/slicc
+          HARNESS_SKILLS_DIR: ${{ github.workspace }}/skills
+          HARNESS_SKILLS: ${{ matrix.inject }}
+          SLICC_CHROME_GPU: ${{ matrix.gpu }}
+          INPUT_SLICC_VERSION: ${{ needs.plan.outputs.slicc-version }}
+          INPUT_PIN_WEBAPP: 'false'
+          INPUT_DURATION: 240m
+          INPUT_PROVIDER: bedrock-camp
+          INPUT_PROVIDER_API_KEY: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
+          INPUT_PROVIDER_BASE_URL: https://bedrock-runtime.${{ vars.RUM_AWS_REGION || 'us-west-2' }}.amazonaws.com
+          INPUT_MODEL: bedrock-camp:global.anthropic.claude-sonnet-5
+          INPUT_MASK_JOIN_URL: 'true'
+        run: node tools/harness-evals/boot.mjs
+
+      - name: Run the goals
+        timeout-minutes: 200
+        env:
+          HARNESS_SLICC: ${{ github.workspace }}/slicc
+          HARNESS_SKILL_DIR: ${{ github.workspace }}/skills/${{ matrix.skill }}
+          HARNESS_ARM_ID: ${{ matrix.arm }}
+          HARNESS_REPEATS: ${{ needs.plan.outputs.repeats }}
+          HARNESS_OUT: ${{ runner.temp }}/harness-out
+        run: node tools/harness-evals/run-arm.mjs
+
+      - name: Collect the leader log
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/harness-out"
+          for log in "$RUNNER_TEMP"/slicc-gw*/leader.log; do
+            [ -f "$log" ] || continue
+            grep -iE 'error|kev|webgpu|gpu|start-leader|stop-leader|tray' "$log" \
+              | sed -E 's#/(join|controller|webhook)/[^ /"?]+#/\1/<token>#g' | cut -c1-400 \
+              > "$RUNNER_TEMP/harness-out/leader.log" || true
+          done
+
+      - name: Stop the leader
+        if: always()
+        timeout-minutes: 5
+        run: |
+          for home in "$RUNNER_TEMP"/slicc-gw*; do
+            [ -f "$home/state.json" ] || continue
+            SLICC_GW_HOME="$home" node slicc/packages/github-workflow/scripts/stop-leader.mjs || true
+          done
+
+      - name: Upload the arm's records and traces
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: harness-evals-part-${{ github.run_id }}-${{ matrix.skill }}-${{ matrix.arm }}
+          path: ${{ runner.temp }}/harness-out
+          retention-days: 14
+          if-no-files-found: ignore
+
+  report:
+    name: Report
+    needs: [plan, arm]
+    if: always() && needs.plan.outputs.run == 'true'
+    runs-on: [self-hosted, cloud-run]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: harness-evals-part-${{ github.run_id }}-*
+          path: ${{ runner.temp }}/parts
+      - name: Report
+        run: node tools/harness-evals/report.mjs "$RUNNER_TEMP/parts" "$RUNNER_TEMP/report" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: harness-evals-${{ github.run_id }}
+          path: ${{ runner.temp }}/report

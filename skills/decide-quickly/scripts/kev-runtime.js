@@ -8,34 +8,31 @@ const host = require('./host.js');
 
 const BUNDLE = '/shared/cache/kev/bundle.cjs';
 const KEV_NAME = '@ai-ecoverse/kev.js';
-const KEV_SPEC = `${KEV_NAME}@0.4.0`;
+const KEV_SPEC = `${KEV_NAME}@0.6.0`;
 const DEST = '/workspace/models/ai-ecoverse/kev.js';
 const MODELS = { '0.8b': 'kev-0.8b', '4b': 'kev-4b', '9b': 'kev-9b' };
-const ORT_DIRS = [
-  '/shared/lib/node_modules/onnxruntime-web/dist',
-  '/workspace/node_modules/onnxruntime-web/dist',
-];
+// Load only the onnxruntime-web copy whose version was checked (host.ensureOrt
+// installs it; pinnedOrtDir finds it). Falling through to another root would
+// load a copy whose version nobody looked at.
+async function pinnedOrtDir(fs) {
+  const copies = await host.listCopies(fs, host.ORT_NAME, host.ORT_BUNDLES);
+  const plan = host.planPinnedCopy(copies, host.versionOfSpec(host.ORT_SPEC));
+  return plan.install ? null : plan.dir;
+}
 
-async function loadOrt(fs, kind) {
+async function loadOrt(fs, kind, ortDir) {
   const fileName = kind === 'webgpu' ? 'ort.webgpu.bundle.min.mjs' : 'ort.wasm.bundle.min.mjs';
-  let last;
-  for (const dir of ORT_DIRS) {
-    const file = `${dir}/${fileName}`;
-    if (!(await fs.exists(file))) continue;
-    try {
-      const loaded = await host.nativeImport(host.previewUrl(file));
-      const ort = loaded.InferenceSession ? loaded : loaded.default;
-      if (!ort || !ort.InferenceSession) throw new Error('ort bundle has no InferenceSession');
-      host.configureOrt(ort, dir);
-      return ort;
-    } catch (err) {
-      if (err && err.name === 'NodeExitError') throw err;
-      last = err;
-    }
-  }
-  throw (
-    last || new Error(`onnxruntime-web ${fileName} is missing. Run kev ask once to install it.`)
-  );
+  const dir = ortDir || (await pinnedOrtDir(fs));
+  if (!dir) throw new Error(`${host.ORT_SPEC} is not installed. Run kev prepare.`);
+  const dist = `${dir}/dist`;
+  const file = `${dist}/${fileName}`;
+  if (!(await fs.exists(file))) throw new Error(`onnxruntime-web: ${file} is missing`);
+  const loaded = await host.nativeImport(host.previewUrl(file));
+  const ort = loaded.InferenceSession ? loaded : loaded.default;
+  if (!ort || !ort.InferenceSession) throw new Error('ort bundle has no InferenceSession');
+  host.checkOrtVersion(ort, dir);
+  host.configureOrt(ort, dist);
+  return ort;
 }
 
 // The realm resolves every literal require() in a nested module when it
@@ -152,10 +149,10 @@ async function pullWeights(fs, exec, model, log = () => {}) {
   return after;
 }
 
-async function openOn(fs, base, dateFacts, providers, log, requireBundle) {
+async function openOn(fs, base, dateFacts, providers, log, requireBundle, ortDir) {
   const kind = providers[0] === 'webgpu' ? 'webgpu' : 'wasm';
   log(`kev: runtime ${kind}${host.hasWebGpu() ? '' : ' (navigator.gpu absent in this worker)'}`);
-  const ort = await loadOrt(fs, kind);
+  const ort = await loadOrt(fs, kind, ortDir);
   const root = base.replace(/\/$/, '');
   let finished = 0;
   // kev.js 0.4 reads a bundle in place through this function: no preview
@@ -180,7 +177,7 @@ async function openOn(fs, base, dateFacts, providers, log, requireBundle) {
 /**
  * Open a model on WebGPU when the worker has it, falling back to wasm.
  * Weights are never downloaded here: a missing file is an error that names
- * `kev pull`. opts: { model, from, dateFacts, log, requireBundle }
+ * `kev pull`. opts: { model, from, ortDir, dateFacts, log, requireBundle }
  */
 async function openModel(fs, exec, opts = {}) {
   const log = opts.log || (() => {});
@@ -193,12 +190,12 @@ async function openModel(fs, exec, opts = {}) {
   const dateFacts = opts.dateFacts === true;
   const providers = host.hasWebGpu() ? ['webgpu', 'wasm'] : ['wasm'];
   try {
-    return await openOn(fs, base, dateFacts, providers, log, opts.requireBundle);
+    return await openOn(fs, base, dateFacts, providers, log, opts.requireBundle, opts.ortDir);
   } catch (err) {
     if (err && err.name === 'NodeExitError') throw err;
     if (providers[0] !== 'webgpu') throw err;
     log(`kev: webgpu failed (${err.message}); retrying on wasm`);
-    return openOn(fs, base, dateFacts, ['wasm'], log, opts.requireBundle);
+    return openOn(fs, base, dateFacts, ['wasm'], log, opts.requireBundle, opts.ortDir);
   }
 }
 
@@ -213,10 +210,7 @@ async function ready(fs) {
     return false;
   }
   if (stamp !== KEV_SPEC) return false;
-  for (const dir of ORT_DIRS) {
-    if (await fs.exists(`${dir}/ort.wasm.bundle.min.mjs`)) return true;
-  }
-  return false;
+  return Boolean(await pinnedOrtDir(fs));
 }
 
 module.exports = {
@@ -226,7 +220,6 @@ module.exports = {
   DEST,
   MODELS,
   SIZES,
-  ORT_DIRS,
   PULL_LOG,
   openModel,
   weightsStatus,

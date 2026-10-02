@@ -19,14 +19,14 @@
 //   eslint [options] [files|dirs...]
 //   echo "code" | eslint --stdin --stdin-filename <path>
 //
-// Requires: ipk add -g eslint @eslint/js esbuild-wasm
+// Requires: ipk add -g eslint @eslint/js esbuild-wasm minimatch
 
 const { exec } = require('sliccy:exec');
 const cli = require('sliccy:cli');
 const color = require('sliccy:color');
 const fs = require('fs');
 
-const INSTALL_HINT = 'ipk add -g eslint @eslint/js esbuild-wasm';
+const INSTALL_HINT = 'ipk add -g eslint @eslint/js esbuild-wasm minimatch';
 
 const CONFIG_NAMES = [
   'eslint.config.js',

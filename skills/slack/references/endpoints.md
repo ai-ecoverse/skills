@@ -4,6 +4,44 @@ Base URL: `/api/` (same-origin XHR from `app.slack.com`)
 Auth: `xoxc-*` token from `localStorage` key `localConfig_v2` → `.teams[<workspaceId>].token`
 Transport: XHR with `Content-Type: application/x-www-form-urlencoded` and `withCredentials: true`
 
+## Contents
+
+- [Authentication](#authentication)
+- [Endpoints](#endpoints)
+  - [POST /api/conversations.history](#post-apiconversationshistory)
+  - [POST /api/conversations.replies](#post-apiconversationsreplies)
+  - [POST /api/chat.postMessage](#post-apichatpostmessage)
+  - [POST /api/reactions.add](#post-apireactionsadd)
+  - [POST /api/conversations.open](#post-apiconversationsopen)
+  - [POST /api/conversations.info](#post-apiconversationsinfo)
+  - [POST /api/auth.test](#post-apiauthtest)
+  - [POST /api/users.info](#post-apiusersinfo)
+  - [POST /api/search.modules](#post-apisearchmodules)
+  - [POST /api/chat.attachmentAction](#post-apichatattachmentaction)
+- [Enterprise Grid Restrictions](#enterprise-grid-restrictions)
+  - [POST /api/activity.feed](#post-apiactivityfeed)
+- [Error Handling](#error-handling)
+- [Admin User-Management Methods (`users.admin.*`)](#admin-user-management-methods-usersadmin)
+  - [POST /api/users.admin.setUltraRestricted](#post-apiusersadminsetultrarestricted)
+  - [POST /api/users.admin.setRestricted](#post-apiusersadminsetrestricted)
+  - [POST /api/users.admin.setRegular](#post-apiusersadminsetregular)
+  - [POST /api/conversations.invite (for guest channel management)](#post-apiconversationsinvite-for-guest-channel-management)
+  - [POST /api/conversations.kick (for guest channel management)](#post-apiconversationskick-for-guest-channel-management)
+- [Enterprise Grid channel search (`admin.conversations.search`)](#enterprise-grid-channel-search-adminconversationssearch)
+  - [POST /api/admin.conversations.search](#post-apiadminconversationssearch)
+- [Slack Connect invites and guest invites](#slack-connect-invites-and-guest-invites)
+  - [POST /api/conversations.sharedApprovals.list](#post-apiconversationssharedapprovalslist)
+  - [POST /api/conversations.revokeSharedInvite](#post-apiconversationsrevokesharedinvite)
+  - [POST /api/users.admin.inviteBulk](#post-apiusersadmininvitebulk)
+  - [Methods observed unavailable with this token (2026-09-29)](#methods-observed-unavailable-with-this-token-2026-09-29)
+- [App Manifest API (`apps.manifest.*`, `tooling.tokens.rotate`)](#app-manifest-api-appsmanifest-toolingtokensrotate)
+  - [POST /api/apps.manifest.export](#post-apiappsmanifestexport)
+  - [POST /api/apps.manifest.validate](#post-apiappsmanifestvalidate)
+  - [POST /api/apps.manifest.update](#post-apiappsmanifestupdate)
+  - [POST /api/tooling.tokens.rotate](#post-apitoolingtokensrotate)
+  - [POST /api/apps.manifest.create, POST /api/apps.manifest.delete — never wired up](#post-apiappsmanifestcreate-post-apiappsmanifestdelete--never-wired-up)
+  - [Probing a method name without a credential](#probing-a-method-name-without-a-credential)
+
 ## Authentication
 
 All requests include:
@@ -550,6 +588,98 @@ Remove a user from a channel. Used by `slack-ext remove-channel`.
 - `not_in_channel` — user is not in the channel (treated as no-op)
 - `cant_kick_self` — cannot kick the token owner
 - `cant_kick_from_general` — some workspaces protect #general
+
+## Enterprise Grid channel search (`admin.conversations.search`)
+
+Endpoint contract used by `slack-ext channel-search` and by `channel-archive` / `channel-unarchive`.
+The archive and unarchive methods, the wire facts measured on this method (the `query=<channel id>`
+lookup, microsecond timestamps, `member_count: -1`, the index lag) and how `slack-ext` uses them:
+`references/enterprise-grid.md`, "Enterprise Grid Channel Admin".
+
+### POST /api/admin.conversations.search
+
+Org-wide channel search; the only state read that sees private channels the
+admin is not in (`conversations.info` answers `channel_not_found` for those).
+
+| Param | Required | Description |
+|-------|----------|-------------|
+| token | yes | org-level xoxc token |
+| query | yes | May be empty. `query=<channel id>` finds that channel (see `references/enterprise-grid.md`) |
+| limit | yes | **1 to 20.** `limit=21` answers `invalid_arguments`. `slack-ext channel-search` defaults to 50 and so fails unless `--limit=20` is passed |
+| search_channel_types | yes | `all`, `exclude_archived`, `private`, `private_exclude`, `archived`. `private_archive` answers `invalid_search_channel_type` |
+| sort | yes | `name`, `member_count`, `created` (`last_activity_ts` answers `invalid_sort`) |
+| sort_dir | yes | `asc` / `desc` |
+| cursor | yes | Empty for the first page; then `next_cursor` |
+
+Response: `{ok, conversations: [...], next_cursor}`. Fields used by
+`channel-archive`: `id`, `name`, `is_private`, `is_archived`, `member_count`,
+`external_user_count`, `is_ext_shared`, `is_pending_ext_shared`,
+`is_org_shared`, `conversation_host_id`, `last_activity_ts`.
+
+## Slack Connect invites and guest invites
+
+Endpoint contracts used by `slack-ext approvals`, `connect-revoke` and `guest-invite`. Measured
+2026-09-29 on an Enterprise Grid, XHR from the `app.slack.com` page with the **org-level** token
+(`localConfig_v2.teams[<E id>]`), the same token path as the other org commands. Ids below are fakes.
+
+### POST /api/conversations.sharedApprovals.list
+
+Read-only. `slack-ext` finds an invite by matching the row `id` (or `invite_id`) against the
+`I…` id, paging until found. Fields shown by `approvals --detail` / `approvals show`:
+
+| Field | Meaning |
+|-------|---------|
+| `home_user` | Inviter (`real_name`, `id`) |
+| `away_user` | Invitee (`real_name`, `id`, `team_id`, `profile.email`) |
+| `connecting_team` | Invitee org: `id`, `name`, `domain`, `requires_sponsorship` |
+| `home_date_approve` | Our side's approval time; `0` = not approved |
+| `away_date_approve` | Other org's approval time; `0` = the other org has NOT approved |
+| `approving_user_id`, `invite_date_created`, `date_expire`, `connection_status`, `status` | As named |
+
+Icon and avatar fields (`connecting_team.icon`, `profile.image_*`) are dropped from all output.
+
+### POST /api/conversations.revokeSharedInvite
+
+| Param | Required | Description |
+|-------|----------|-------------|
+| token | yes | **org-level** xoxc token |
+| invite_id | yes | `I…`, e.g. `I0EXAMPLE01` |
+| channel | yes | `C…`, e.g. `C0EXAMPLE01` |
+
+- Org token: `{"ok":true}`. Afterwards `sharedApprovals.list` shows the invite with
+  `status:"expired"` and `date_expire` ≈ now. `connect-revoke --confirm` re-reads the row and
+  exits 3 unless it shows `expired`.
+- Workspace-scoped token (the one in `<workspace>.slack.com/admin` boot_data):
+  `{"ok":false,"error":"team_is_restricted"}`, and nothing changes.
+
+### POST /api/users.admin.inviteBulk
+
+Invites a guest to a **workspace**.
+
+| Param | Required | Description |
+|-------|----------|-------------|
+| token | yes | org-level xoxc token |
+| team_id | yes (grid) | The workspace id (`T…`), not the org id |
+| invites | yes | JSON string: `[{"email":"guest@example.com","type":"ultra_restricted","mode":"manual"}]` |
+| channels | yes | Channel id (`C…`); the web client sends a comma list |
+| ultra_restricted | yes | `true` |
+| source | yes | `invite_modal` |
+| mode | yes | `manual` |
+
+Response: `{"ok":true,"invites":[{"email":"guest@example.com","ok":true,"invite_id":"I0EXAMPLE01","expiration_ts":<unix>}]}`.
+A top-level `ok:true` can carry a per-invite `ok:false`; `guest-invite` reports each entry and exits 1
+if any failed. Only `type:"ultra_restricted"` (single-channel guest) was tested; multi-channel
+(`restricted`) is not offered. What `expiration_ts` ends (the invite, or the guest account) is
+unverified; it is printed as "Expires".
+
+### Methods observed unavailable with this token (2026-09-29)
+
+| Method | Error |
+|--------|-------|
+| `users.admin.fetchInvites` | `unknown_method` |
+| `users.admin.fetchInvitesHistory` | `enterprise_is_restricted` |
+| `users.lookupByEmail` | `not_allowed_token_type` |
+| `admin.users.list` | `not_allowed_token_type` |
 
 ## App Manifest API (`apps.manifest.*`, `tooling.tokens.rotate`)
 

@@ -52,7 +52,7 @@ If it stops, run it again: `hf` skips files that are already at full size. Progr
 
 After that, the first `kev ask` or `cua-s1 plan` installs its packages, bundles them, and runs again so the bundle can be loaded. `cua-s1` still downloads its 3.3 MB graph with `hf` on that first run.
 
-- Kev: `ipk add -g @ai-ecoverse/kev.js@0.4.0`
+- Kev: `ipk add -g @ai-ecoverse/kev.js@0.6.0`
 - cua-s1: `ipk add -g @ai-ecoverse/cua-s1.js@0.1.1`
 - Both: `esbuild-wasm`, then `esbuild --bundle`, then `ipk add -g onnxruntime-web@1.30.0`
 
@@ -81,7 +81,7 @@ kev ask --json --state ticket.txt --questions questions.json
 
 `questions.json` maps a name to a question. Choice `criteria` is an object. Score `criteria` is an array of strings, low to high.
 
-Stdout is the name, the answer, and a probability, separated by tabs. `--json` prints the System One response. `--date-facts` adds day counts between absolute dates.
+Stdout is the name, the answer, and a probability, separated by tabs. For a score question the answer is the most likely option, and the number is a confidence measured around that same option. `--json` prints the System One response. `--date-facts` adds day counts between absolute dates.
 
 | Model | Variant | Approx size |
 | --- | --- | --- |
@@ -90,6 +90,8 @@ Stdout is the name, the answer, and a probability, separated by tabs. `--json` p
 | `--model 9b` | q8f32 | 8.8 GB |
 
 `kev pull` puts the weights in `/workspace/models/ai-ecoverse/kev.js/kev-<size>`. `--from` uses a directory you already have instead.
+
+Kev reads up to 65,536 tokens of state and truncates the rest. `kev ask` never re-downloads a `manifest.json` it already has. Weights fetched before the kev.js 0.6.0 bundles were published cover only 8,192 positions, so a long state fails with a `RangeError` that names the limit. Delete that `kev-<size>` directory to fetch the current bundle.
 
 Kev does not click. You apply the judgment.
 

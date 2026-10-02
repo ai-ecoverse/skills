@@ -121,10 +121,12 @@ export async function detectSkillIntegration({
   for (const skillPath of skills) {
     targets.push(await classifySkillTests(skillPath, { repoRoot }));
   }
+  const missing_tst = targets.filter((t) => t.action !== 'tst').map((t) => t.name);
   return {
     skills,
     has_skills: skills.length > 0,
     has_tst: targets.some((t) => t.action === 'tst'),
+    missing_tst,
     targets,
   };
 }

@@ -157,3 +157,34 @@ test('parseList with valueless flag (true) is fatal', () => {
   // raw === true means the flag was passed without a value; process.exit(1) throws.
   throws(() => parseList(true, 'scopes'));
 });
+
+test('--allow-shared is boolean and never swallows the next positional', () => {
+  const r = parseArgv(['channel-archive', '--allow-shared', 'C04633RSEDU']);
+  is(r.flags['allow-shared'], true);
+  is(r.positional.join(','), 'channel-archive,C04633RSEDU');
+  is(parseArgv(['x', '--allow-shared=false']).flags['allow-shared'], false);
+});
+
+// ─── jsonInvocation (JSON-mode detection when parseArgv itself throws) ───────
+
+const { jsonInvocation } = argvMod.default || argvMod;
+const ARCH = ['channel-archive', 'channel-unarchive'];
+
+test('jsonInvocation: finds a --json channel-archive call and its channel id', () => {
+  const r = jsonInvocation(['channel-archive', 'C04633RSEDU', '--allow-shared=maybe', '--json'], ARCH);
+  is(r.command, 'channel-archive');
+  is(r.channelId, 'C04633RSEDU');
+});
+
+test('jsonInvocation: --json=true counts, globals before the command are skipped', () => {
+  const r = jsonInvocation(['--ws', 'T0385CHDU9E', 'channel-unarchive', 'C0634KMGW2G', '--json=true'], ARCH);
+  is(r.command, 'channel-unarchive');
+  is(r.channelId, 'C0634KMGW2G');
+});
+
+test('jsonInvocation: null without --json, for other commands, or for --json=garbage', () => {
+  is(jsonInvocation(['channel-archive', 'C1', '--allow-shared=maybe'], ARCH), null);
+  is(jsonInvocation(['eg-status', 'U1', '--json'], ARCH), null);
+  is(jsonInvocation(['channel-archive', 'C04633RSEDU', '--json=maybe'], ARCH), null);
+  is(jsonInvocation(['channel-archive', '--json'], ARCH).channelId, null);
+});

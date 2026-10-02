@@ -1,14 +1,56 @@
-const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const test = require('node:test');
-const { renderFountain } = require('../assets/render-fountain');
+import test, { is, ok, rejects } from 'tst';
+import fs from 'node:fs';
+import path from 'node:path';
+
+// Skill root when `tst` runs from the installed skill dir (CI + local harness).
+// Avoid import.meta.url — some SLICC module graphs reject it when a CJS vendor
+// package is pulled into the static import graph.
+const ROOT = process.cwd();
+
+// fountain-js is CJS with extensionless requires; SLICC's createRequire cannot
+// resolve relative VFS paths. Load the vendor tree by eval, then inject Fountain
+// into render-fountain.js the same way.
+function loadCjsFromDir(dir, rel) {
+  let full = path.join(dir, rel);
+  if (!full.endsWith('.js') && !fs.existsSync(full)) full = `${full}.js`;
+  const src = fs.readFileSync(full, 'utf8');
+  const mod = { exports: {} };
+  const req = (id) => {
+    if (id.startsWith('./')) return loadCjsFromDir(dir, id.slice(2));
+    throw new Error('unexpected require(' + id + ')');
+  };
+  new Function('require', 'module', 'exports', '__dirname', '__filename', src)(
+    req,
+    mod,
+    mod.exports,
+    path.dirname(full),
+    full
+  );
+  return mod.exports;
+}
+
+function loadRenderFountain() {
+  const Fountain = loadCjsFromDir(
+    path.join(ROOT, 'assets/vendor/fountain-js'),
+    'index.js'
+  ).Fountain;
+  const src = fs.readFileSync(path.join(ROOT, 'assets/render-fountain.js'), 'utf8');
+  const module = { exports: {} };
+  const req = (id) => {
+    if (id === './vendor/fountain-js') return { Fountain };
+    throw new Error('unexpected require(' + id + ')');
+  };
+  new Function('require', 'module', 'exports', src)(req, module, module.exports);
+  return module.exports.renderFountain || module.exports;
+}
+const renderFountain = loadRenderFountain();
+
 const source =
   'Title: Last Signal\nAuthor: Example Writer\n\nINT. OBSERVATORY - NIGHT #1#\n\nA **green light** blinks.\n\nMARA\n(quietly)\nSomebody is there.\n\nELI ^\nOr the machine is remembering.\n\n> CUT TO:\n\nEXT. MOUNTAIN - DAWN\n\n===\n\n[[private note]]\n\n/* omitted action */\n';
 
 test('renders screenplay structure, emphasis, dual dialogue and stable review anchors', () => {
   const result = renderFountain(source, '/shared/draft.fountain');
-  assert.equal(result.title, 'Last Signal');
+  is(result.title, 'Last Signal');
   for (const expected of [
     'class="title-page"',
     'data-fountain-type="scene_heading"',
@@ -19,29 +61,29 @@ test('renders screenplay structure, emphasis, dual dialogue and stable review an
     'data-fountain-type="page_break"',
     'data-scene="INT. OBSERVATORY - NIGHT"',
   ])
-    assert.ok(result.html.includes(expected), expected);
-  assert.ok(!result.html.includes('omitted action'));
+    ok(result.html.includes(expected), expected);
+  ok(!result.html.includes('omitted action'));
   const ids = [...result.html.matchAll(/ id="(fountain-\d+)"/g)].map((m) => m[1]);
-  assert.equal(new Set(ids).size, ids.length);
-  assert.equal(renderFountain(source).html, renderFountain(source).html);
+  is(new Set(ids).size, ids.length);
+  is(renderFountain(source).html, renderFountain(source).html);
 });
 
 test('source HTML and scene numbers cannot inject executable markup', () => {
   const result = renderFountain(
     'Title: <img src=x onerror=alert(1)>\n\nINT. ROOM - DAY #" onmouseover="alert(1)#\n\n<script>alert(1)</script>\n'
   );
-  assert.ok(!result.html.includes('<script>'));
-  assert.ok(!result.html.includes('<img src=x'));
-  assert.ok(!result.html.includes('id="" onmouseover'));
-  assert.ok(result.html.includes('&lt;script&gt;'));
+  ok(!result.html.includes('<script>'));
+  ok(!result.html.includes('<img src=x'));
+  ok(!result.html.includes('id="" onmouseover'));
+  ok(result.html.includes('&lt;script&gt;'));
 });
 
 test('empty, CRLF, Unicode, forced headings and dialogue are handled', () => {
-  assert.equal(renderFountain('', '/shared/empty.fountain').title, 'empty.fountain');
+  is(renderFountain('', '/shared/empty.fountain').title, 'empty.fountain');
   const result = renderFountain('.雪の駅\r\n\r\n@ÉLISE\r\nBonjour.\r\n');
-  assert.ok(result.html.includes('data-fountain-type="scene_heading"'));
-  assert.ok(result.html.includes('雪の駅'));
-  assert.ok(result.html.includes('ÉLISE'));
+  ok(result.html.includes('data-fountain-type="scene_heading"'));
+  ok(result.html.includes('雪の駅'));
+  ok(result.html.includes('ÉLISE'));
 });
 
 async function run(args, delivery = 0, env = {}) {
@@ -59,10 +101,31 @@ async function run(args, delivery = 0, env = {}) {
     }
     return { positional, flags };
   };
+  // Provide a full path surface — path.posix alone is undefined in SLICC's
+  // path shim, which made path.resolve throw and every command exit 1.
+  const pathStub = {
+    resolve: (...parts) => {
+      const joined = parts
+        .filter((p) => p != null && p !== '')
+        .map(String)
+        .join('/');
+      if (joined.startsWith('/')) return joined.replace(/\/+/g, '/');
+      return ('/shared/' + joined).replace(/\/+/g, '/');
+    },
+    dirname: (p) => {
+      const s = String(p);
+      const i = s.lastIndexOf('/');
+      return i <= 0 ? '/' : s.slice(0, i);
+    },
+    basename: (p) => String(p).split('/').pop(),
+    join: (...parts) => parts.filter(Boolean).join('/').replace(/\/+/g, '/'),
+    posix: null,
+  };
+  pathStub.posix = pathStub;
   const req = (id) => {
     if (id === 'fs')
       return { readFile: async () => source, writeFile: async (...a) => written.push(a) };
-    if (id === 'path') return path.posix;
+    if (id === 'path') return pathStub;
     if (id === '../assets/render-fountain.js') return { renderFountain };
     if (id === 'sliccy:exec')
       return {
@@ -83,47 +146,52 @@ async function run(args, delivery = 0, env = {}) {
       };
     throw Error('Unexpected dependency: ' + id);
   };
-  const program = fs.readFileSync(path.join(__dirname, '../scripts/fountain.jsh'), 'utf8');
-  await new (Object.getPrototypeOf(async function () {}).constructor)(
-    'require',
-    'process',
-    program
-  )(req, { argv, cwd: () => '/shared', env });
+  const program = fs.readFileSync(path.join(ROOT, 'scripts/fountain.jsh'), 'utf8');
+  try {
+    await new (Object.getPrototypeOf(async function () {}).constructor)(
+      'require',
+      'process',
+      program
+    )(req, { argv, cwd: () => '/shared', env });
+  } catch (err) {
+    if (err?.name === 'NodeExitError') throw err;
+    throw err;
+  }
   return { messages, output, written };
 }
 
 test('render --json returns a complete preview, without queue side effects', async () => {
   const r = await run(['render', 'draft.fountain', '--json']);
-  assert.equal(r.output[0].path, '/shared/draft.fountain');
-  assert.equal(r.output[0].format, 'fountain');
-  assert.equal(r.messages.length, 0);
+  is(r.output[0].path, '/shared/draft.fountain');
+  is(r.output[0].format, 'fountain');
+  is(r.messages.length, 0);
 });
 
 test('review opens the source, preserves literal paths, and reports failed delivery', async () => {
   const name = "a '$(echo test)'.fountain";
   const r = await run(['review', name]);
-  assert.equal(r.messages.length, 2);
+  is(r.messages.length, 2);
   const [item, open] = r.messages.map((a) => JSON.parse(a[3]));
-  assert.equal(item.path, '/shared/' + name);
-  assert.equal(item.action, 'ensure-item');
-  assert.equal(item.cone, undefined);
-  assert.equal(open.path, item.path);
-  assert.equal(open.id, item.id);
-  await assert.rejects(run(['review', 'draft.fountain'], 1), /Open the Review sprinkle/);
+  is(item.path, '/shared/' + name);
+  is(item.action, 'ensure-item');
+  is(item.cone, undefined);
+  is(open.path, item.path);
+  is(open.id, item.id);
+  await rejects(() => run(['review', 'draft.fountain'], 1), /Open the Review sprinkle/);
 });
 
 test('review stamps the filing cone from TMPDIR on ensure-item', async () => {
   const r = await run(['review', 'draft.fountain'], 0, { TMPDIR: '/tmp/cone-helix' });
   const item = JSON.parse(r.messages[0][3]);
-  assert.equal(item.action, 'ensure-item');
-  assert.equal(item.cone, 'cone-helix');
+  is(item.action, 'ensure-item');
+  is(item.cone, 'cone-helix');
   const open = JSON.parse(r.messages[1][3]);
-  assert.equal(open.cone, undefined);
+  is(open.cone, undefined);
 });
 
 test('render refuses to overwrite its Fountain source', async () => {
-  await assert.rejects(
-    run(['render', 'draft.fountain', '--out', 'draft.fountain']),
+  await rejects(
+    () => run(['render', 'draft.fountain', '--out', 'draft.fountain']),
     /different output path/
   );
 });
