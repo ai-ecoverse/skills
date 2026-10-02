@@ -5,15 +5,15 @@ description: >
   GitHub CLI's syntax (--title/--body, -R owner/repo, --json [fields], --jq, --help on every
   command) as well as its own positional forms.
   Use for any GitHub task: listing, viewing, diffing, or editing pull requests, checking CI
-  and failed job logs, merging PRs, posting comments, checking out branches, viewing issues,
-  workflow runs, releases, searching PRs or issues, managing Actions variables,
+  and failed job logs, merging/queueing PRs, posting comments, checking out branches,
+  viewing issues, workflow runs, releases, searching PRs or issues, managing Actions variables,
   creating branches, pushing file content, archiving/cloning repos, marking PRs ready
   for review, managing org-owned Projects (v2), or calling any GitHub API endpoint directly.
   Trigger on "list open PRs", "show the PR diff", "search issues", "check CI",
   "why did CI fail", "merge this PR", "what issues are open", "has this been filed",
   "show the latest release", "comment on PR #42", "set a repo variable",
   "create a branch", "push this file", "list my GitHub projects", "clone this repo",
-  "mark PR ready for review".
+  "mark PR ready for review", "merge queue".
 allowed_tools:
   - bash
 ---
@@ -124,6 +124,24 @@ gh run view <run_id> --log-failed -R owner/repo      # the failing job's log
 ```bash
 gh pr checks <num> -R owner/repo && gh pr merge <num> --squash --delete-branch -R owner/repo
 ```
+
+### Merge through a merge queue, or with auto-merge
+
+```bash
+gh pr merge <num> --auto -R owner/repo           # queue branch: enqueue; otherwise: enable auto-merge
+gh pr merge <num> --disable-auto -R owner/repo   # leave the queue, or disable auto-merge
+gh pr queue [branch] --json -R owner/repo        # position, state, number, headCommit (shim-only)
+```
+
+The base branch has a merge queue when `GET /repos/{o}/{r}/rules/branches/{branch}` lists a
+`merge_queue` rule (rulesets included). There, plain `pr merge` and `--auto` both call
+`enqueuePullRequest` with `expectedHeadOid` set to the head just read, so a head that moved is
+refused, and print the entry's position and state. `--merge/--squash/--rebase` are ignored (the
+queue sets the method) and `--delete-branch` is an error. Without a queue, `--auto` calls
+`enablePullRequestAutoMerge` with the chosen method and prints GitHub's error verbatim if the
+repo disallows auto-merge. `--match-head-commit <sha>` refuses unless the head is that commit;
+`--admin` skips queue routing and issues the direct merge. `pr queue` is not in the real GitHub
+CLI; it exits 1 when the branch has no queue.
 
 ### Stay in the loop on a PR without polling
 
