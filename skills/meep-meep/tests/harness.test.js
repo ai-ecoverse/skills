@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import test, { is, ok } from 'tst';
 import {
   arms,
@@ -11,6 +13,7 @@ import {
   metrics,
   placeholder,
   result,
+  timeLimit,
   traceFromLines,
 } from '../evals/harness/harness.mjs';
 
@@ -51,7 +54,7 @@ test('command quotes the goal and repeats --expect and --expect-url', () => {
   };
   is(
     command(goal, arm, { shellQuote: quote }),
-    `'webrunner' 'run' '--url' 'https://x/' '--goal' 'it'\\''s "here"' '--expect' 'a' '--expect' 'b' '--expect-url' '/p' '--max-steps' '6' '--decider' 'hybrid' '--model' '4b-vision' '--vision' '--json'`
+    `'webrunner' 'run' '--url' 'https://x/' '--goal' 'it'\\''s "here"' '--expect' 'a' '--expect' 'b' '--expect-url' '/p' '--max-steps' '6' '--time-limit' '810' '--decider' 'hybrid' '--model' '4b-vision' '--vision' '--json'`
   );
 });
 
@@ -121,6 +124,10 @@ test('traceFromLines builds the judge trace from webrunner lines and reads point
       step: 2,
       observe: { screenshot: 'step-02.png' },
       orient: { state: state('Riding') },
+      review: {
+        why: 'System 1 handed over the last 5 steps',
+        assessment: 'Kev lacked the food name.',
+      },
       decide: {
         system: 'agent',
         system1: { action: 'click:e1', shrug: 'confidence 0.1 < 0.5' },
@@ -136,6 +143,11 @@ test('traceFromLines builds the judge trace from webrunner lines and reads point
   is(trace.steps.length, 2);
   ok(trace.steps[0].startsWith('System 1: click button "Start Riding"'));
   ok(trace.steps[1].includes('System 2: click link "Rice and Beans"'));
+  ok(
+    trace.steps[1].startsWith(
+      'plan review (System 1 handed over the last 5 steps): Kev lacked the food name.'
+    )
+  );
   ok(trace.steps[1].includes('assessment: Buy and Eat needs a selection first.'));
   ok(trace.finalResult.includes('did not pass (stalled) after 2 steps'));
   ok(trace.finalResult.includes('Riding'));
@@ -181,4 +193,33 @@ test('every arm that runs kev is on the GPU pool', () => {
     const decidesWithKev = i >= 0 && ['kev', 'hybrid'].includes(arm.args[i + 1]);
     if (pullsKev || decidesWithKev) is([arm.id, arm.pool], [arm.id, 'gpu']);
   }
+});
+
+test('metrics reads each game’s own number', () => {
+  is(metrics('Paperclips: 1,204\nMake Paperclip', { id: 'paperclips' }), { points: 1204 });
+  is(metrics('Rule 1 ... Rule 9 ... Rule 4', { id: 'password' }), { points: 9 });
+  is(
+    metrics('- row "Planet water: 500" [ref=e34]\n- row "Total: 9511" [ref=e61]', {
+      id: 'seedship',
+    }),
+    { points: 9511 }
+  );
+  is(metrics('SCORE: $48,210', { id: 'drugwars' }), { points: 48210 });
+  is(metrics('light fire', { id: 'darkroom' }), { points: null });
+  is(metrics('catnip 12 /5000\nkittens 1 /2', { id: 'kittens' }), { points: 1 });
+  const goals = JSON.parse(
+    readFileSync(fileURLToPath(new URL('../evals/harness/goals.json', import.meta.url)), 'utf8')
+  ).goals;
+  for (const g of goals.filter((x) => x.rubric)) {
+    is([g.id, Object.values(g.weights).reduce((a, b) => a + b, 0)], [g.id, 100]);
+    for (const id of Object.keys(g.weights))
+      ok(g.rubric.includes(`${id} — `), `${g.id} defines ${id}`);
+  }
+});
+
+test('webrunner stops itself before the driver times out', () => {
+  is(timeLimit({}), 810, 'the default 900 s run');
+  is(timeLimit({ timeout_s: 3600 }), 3240);
+  is(timeLimit({ timeout_s: 120 }), 60);
+  is(timeLimit({ timeout_s: 20 }), 30, 'never under 30 s');
 });

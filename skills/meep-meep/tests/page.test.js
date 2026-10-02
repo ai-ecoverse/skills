@@ -224,7 +224,10 @@ test('a box is read off the ref line and the value after it still parses', () =>
   const filled = page.parseSnapshot('  - textbox "Name" [ref=e9] [box=1,2,3,4]: "Ada"');
   is(filled.elements[0].value, 'Ada');
   is(filled.elements[0].label, 'Name');
-  is(shot.texts, [{ role: 'alert', text: 'Saved' }]);
+  is(
+    shot.texts.map(({ role, text }) => ({ role, text })),
+    [{ role: 'alert', text: 'Saved' }]
+  );
 });
 
 test('place sorts elements by the viewport', () => {
@@ -274,7 +277,10 @@ test('diffShots matches elements by role and label, not by ref', () => {
   is(diff.changed, [
     { token: 'e522', role: 'combobox', label: 'Where from?', from: '', to: 'Berlin' },
   ]);
-  is(diff.texts, [{ role: 'alert', text: 'Choose a destination' }]);
+  is(
+    diff.texts.map(({ role, text }) => ({ role, text })),
+    [{ role: 'alert', text: 'Choose a destination' }]
+  );
   is(diff.scrolled, 300);
   const lines = page.describeDiff(diff);
   ok(lines.some((l) => l.includes('combobox "Where from?" now = "Berlin"')));
@@ -946,6 +952,341 @@ test('controls that share a label carry the text of their row', () => {
     { shot, viewport: { width: 1024, height: 576, scrollY: 0, scrollHeight: 576 }, diff: null },
     { goal: 'Buy Acid', history: [], candidates: [] }
   );
-  ok(ori.menu.some((a) => a.describe === 'click button "BUY" in row "Acid $2,758"'));
-  ok(ori.state.includes('[e10] button "BUY" in row "Heroin $6,037"'));
+  ok(ori.menu.some((a) => a.describe === 'click button "BUY" for "Acid $2,758"'));
+  ok(ori.state.includes('[e10] button "BUY" for "Heroin $6,037"'));
+});
+
+test('oversight: a small base chance, more after a big change or a long calm', () => {
+  is(page.oversightChance(0.01, []), { chance: 0.01, reason: 'base 0.01' });
+  const big = page.oversightChance(0.01, [0.1, 0.9]);
+  is(big.chance, 0.26);
+  ok(big.reason.includes('the page just changed a lot'));
+  const calm = page.oversightChance(0.01, [0.6, 0, 0.01, 0, 0, 0.02, 0]);
+  is(calm.chance, 0.05, '6 calm turns: base 0.01 + 2 x 0.02');
+  ok(calm.reason.includes('6 turns with almost no change'));
+  is(page.oversightChance(0.01, Array(100).fill(0)).chance, 0.31, 'the calm boost is capped');
+  is(page.oversightChance(0.4, [1, ...Array(40).fill(0)]).chance, 0.5, 'the total is capped');
+  is(page.oversightChance(0, [1]).chance, 0, 'off is off');
+});
+
+test('change magnitude: a new page is 1, a quiet page 0', () => {
+  const shot = page.parseSnapshot(SNAPSHOT);
+  is(page.changeMagnitude(null, 4), 0);
+  is(page.changeMagnitude(page.diffShots(shot, shot), 4), 0);
+  const moved = page.parseSnapshot(SNAPSHOT.replace('[ref=e3]: ""', '[ref=e3]: "London"'));
+  is(page.changeMagnitude(page.diffShots(shot, moved), 4), 0.25);
+  const elsewhere = { ...moved, url: 'https://other.example/' };
+  is(page.changeMagnitude(page.diffShots(shot, elsewhere), 4), 1);
+});
+
+test('the seeded generator replays and the audit hint says System 1 was sure', () => {
+  const a = page.seededRandom(42);
+  const b = page.seededRandom(42);
+  is([a(), a(), a()], [b(), b(), b()]);
+  ok(page.seededRandom(7)() !== page.seededRandom(8)());
+  const menu = page.buildMenu(page.parseSnapshot(SNAPSHOT), 'x', {});
+  const click = menu.find((a) => a.id === 'click:e1');
+  const hint = page.oversightHint({ action: click, confidence: 0.93 }, 'base 0.01', menu);
+  ok(
+    hint.startsWith(
+      'Routine review (base 0.01): the fast model was not unsure; it chose click:e1 at 93%'
+    )
+  );
+  ok(hint.includes('Keep that choice if it is right'));
+});
+
+// Drug Wars live (2026-10-02, run 2026-10-02T09-27-50-drugwars): the drug
+// labels are text nodes without boxes, so System 2 saw a list of identical
+// BUY buttons and gave up. Each row's label comes before its controls.
+test('without boxes, a repeated control takes the text line before it as its row', () => {
+  const shot = page.parseSnapshot(
+    [
+      'Page URL: https://drugwars.online/game',
+      '- rootwebarea',
+      '  - text "CASH $2,000 BANK $0 DEBT $5,500 COAT 0/100 INVENTORY — 0 of 100 units used (0%) MARKET — New York City" [ref=e2]',
+      '  - text "Cocaine $15,236" [ref=e3]',
+      '  - button "Decrease" [ref=e4]',
+      '  - text "1" [ref=e6]',
+      '  - button "MAX" [ref=e9]',
+      '  - button "BUY" [ref=e10]',
+      '  - text "Heroin $6,037" [ref=e11]',
+      '  - button "Decrease" [ref=e12]',
+      '  - button "MAX" [ref=e17]',
+      '  - button "BUY" [ref=e18]',
+    ].join('\n')
+  );
+  const out = page.addRowContext(shot.elements, shot.texts);
+  const ctx = Object.fromEntries(out.map((e) => [e.token, e.context]));
+  is(ctx.e10, 'Cocaine $15,236');
+  is(ctx.e9, 'Cocaine $15,236', 'the digit-only "1" is skipped');
+  is(ctx.e18, 'Heroin $6,037');
+  is(ctx.e12, 'Heroin $6,037');
+});
+
+// The page reports disambiguators (page-scan.js); orient matches them to
+// snapshot controls by box. Checked in Chrome on table, card-grid and
+// link fixtures (2026-10-02).
+test('page disambiguators name repeated controls and win over the layout guess', () => {
+  const shot = page.parseSnapshot(
+    [
+      'Page URL: https://shop.example/',
+      '- rootwebarea',
+      '  - text "Blue T-shirt $19" [ref=e1]',
+      '  - button "Add to cart" [ref=e2] [box=10,100,120,30]',
+      '  - button "Add to cart" [ref=e3] [box=220,100,120,30]',
+      '  - button "Checkout" [ref=e4] [box=10,400,120,30]',
+    ].join('\n')
+  );
+  const items = [
+    { name: 'Add to cart', b: [0, 90, 200, 50], ctx: 'Blue T-shirt $19' },
+    { name: 'Add to cart', b: [210, 90, 200, 50], ctx: 'Red Mug $9' },
+  ];
+  const named = page.applyDisambiguation(shot.elements, items);
+  is(named.find((e) => e.token === 'e2').context, 'Blue T-shirt $19');
+  is(
+    named.find((e) => e.token === 'e3').context,
+    'Red Mug $9',
+    'the layout guess would have said "Blue T-shirt $19"'
+  );
+  is(named.find((e) => e.token === 'e4').context, undefined);
+  const ori = page.orient(
+    {
+      shot,
+      viewport: { width: 1024, height: 576, scrollY: 0, scrollHeight: 576 },
+      diff: null,
+      disambiguation: items,
+    },
+    { goal: 'Add the mug to the cart', history: [], candidates: [] }
+  );
+  ok(ori.menu.some((a) => a.describe === 'click button "Add to cart" for "Red Mug $9"'));
+  is(
+    page.applyDisambiguation(shot.elements, []),
+    shot.elements,
+    'nothing reported, nothing changes'
+  );
+});
+
+test('System 2 values become typing options for System 1', () => {
+  const shot = page.parseSnapshot(SNAPSHOT);
+  const values = page.cleanValues([
+    { text: ' Paris ', field: 'where to?' },
+    { text: 'Rome' },
+    { text: 'Paris', field: 'Where to?' },
+    { text: '' },
+    { text: 'x'.repeat(201) },
+    { text: 'Oslo', field: 'Departure' },
+  ]);
+  is(values, [
+    { text: 'Paris', field: 'where to?' },
+    { text: 'Rome' },
+    { text: 'Oslo', field: 'Departure' },
+  ]);
+  is(page.cleanValues('nope'), null, 'no values: keep the old ones');
+  is(
+    page.cleanValues(Array.from({ length: 9 }, (_, i) => ({ text: `v${i}` }))).length,
+    page.MAX_VALUES
+  );
+
+  const flat = page.buildMenu(shot, 'Search', { candidates: ['Berlin'], values });
+  const typed = flat.filter((a) => a.operation === 'TYPE_TEXT').map((a) => a.describe);
+  is(typed, [
+    'type "Paris" into textbox "Where to?"',
+    'type "Berlin" into textbox "Where to?"',
+    'type "Rome" into textbox "Where to?"',
+  ]);
+
+  const factored = page.buildMenu(shot, 'Search', {
+    candidates: ['Berlin'],
+    values,
+    factorText: true,
+  });
+  const field = factored.filter((a) => a.operation === 'TYPE_TEXT');
+  is(
+    field.map((a) => a.id),
+    ['type:e3:Paris', 'type:e3']
+  );
+  is(field[0].text, 'Paris', 'a value for the field is spelled out, not factored');
+  is(field[1].candidates, ['Berlin', 'Rome']);
+  ok(field[1].describe.endsWith('(a value from the goal or the plan)'));
+  ok(page.textQuestion(field[1]).instructions.startsWith('Which of these texts goes into'));
+
+  // Without goal values, a field value still gives System 1 a complete option.
+  const own = page.buildMenu(shot, 'Search', { values: [{ text: 'Paris', field: 'Where to' }] });
+  ok(own.some((a) => a.id === 'type:e3:Paris' && a.text === 'Paris'));
+  is(
+    page.shrugReason({ action: own.find((a) => a.id === 'type:e3:Paris'), confidence: 0.9 }, 0.5),
+    '',
+    'no shrug: the option carries its text'
+  );
+
+  const el = { label: 'Your name', context: 'Billing' };
+  ok(page.valueFits({ field: 'your  NAME' }, el));
+  ok(page.valueFits({ field: 'name' }, el), 'a label containing the field fits');
+  ok(page.valueFits({ field: 'Your name for Billing' }, el), 'the field may carry the context');
+  ok(!page.valueFits({ field: 'nm' }, el), 'two letters are too short to match inside a label');
+  ok(!page.valueFits({}, el));
+});
+
+test('System 2 load: every prompt says how often System 1 handed over', () => {
+  is(page.system2Load([]), { asked: 0, of: 0, streak: 0 });
+  is(page.system2Load([true, false, true, true]), { asked: 3, of: 4, streak: 2 });
+  is(
+    page.system2Load([...Array(20).fill(true), false]),
+    { asked: 9, of: 10, streak: 0 },
+    'the last 10 only'
+  );
+
+  const menu = page.buildMenu(page.parseSnapshot(SNAPSHOT), 'x', {});
+  const calm = page.system2Prompt({
+    goal: 'g',
+    trail: [],
+    state: 's',
+    menu,
+    load: { asked: 1, of: 10, streak: 1 },
+  });
+  ok(calm.includes('System 1 handed over 1 of the last 10 steps.'));
+  ok(!calm.includes('That is often'));
+  const busy = page.system2Prompt({
+    goal: 'g',
+    trail: [],
+    state: 's',
+    menu,
+    load: { asked: 4, of: 10, streak: 0 },
+  });
+  ok(busy.includes('That is often'));
+  ok(
+    !page.system2Prompt({ goal: 'g', trail: [], state: 's', menu }).includes('handed over'),
+    'no load, no line'
+  );
+  ok(calm.includes('values (optional)') && calm.includes('Values for System 1:\n  (none)'));
+  is(
+    page.system2Schema(menu).required,
+    ['action', 'assessment', 'plan', 'notes'],
+    'values stay optional'
+  );
+});
+
+test('a plan review is due at 6 of 10 hand-overs or 5 in a row, at most every 10 steps', () => {
+  is(page.reviewDue([true, true, true, true], Infinity), null);
+  ok(
+    page.reviewDue([false, true, true, true, true, true], Infinity).why.includes('the last 5 steps')
+  );
+  const rate = page.reviewDue(
+    [true, false, true, false, true, true, false, true, true, false],
+    Infinity
+  );
+  ok(rate.why.includes('6 of the last 10 steps'));
+  is(rate.load.asked, 6);
+  is(page.reviewDue([true, true, true, true, true, true], 9), null, 'cooldown');
+  ok(page.reviewDue([true, true, true, true, true, true], 10));
+});
+
+test('the plan review takes no action and reads the long trail and the values', () => {
+  const menu = page.buildMenu(page.parseSnapshot(SNAPSHOT), 'x', {});
+  const trail = Array.from({ length: 22 }, (_, i) => ({
+    step: i + 1,
+    describe: `click link "step${i + 1}"`,
+    system: 'System 2',
+    confidence: 0.2,
+    shrug: 'confidence 0.20 < 0.5',
+  }));
+  const prompt = page.reviewPrompt({
+    goal: 'g',
+    plan: ['a'],
+    notes: [],
+    values: [{ text: 'foo-bar', field: 'Name' }],
+    trail,
+    why: 'System 1 handed over the last 5 steps',
+    state: 's',
+    menu,
+    imageCount: 1,
+  });
+  ok(prompt.includes('System 1 handed over the last 5 steps: far too often.'));
+  ok(prompt.includes('You take no action this turn'));
+  ok(prompt.includes('The attached image is the page now.'));
+  ok(prompt.includes('  - "foo-bar" into "Name"'));
+  ok(
+    prompt.includes(
+      '  step 3 (System 2 at 20%, System 1 unsure: confidence 0.20 < 0.5): click link "step3"'
+    )
+  );
+  ok(!prompt.includes('"step2"'), 'the last 20 steps only');
+  ok(
+    prompt.includes('click:e1  click link "Incompleteness theorems"'),
+    'the menu, for control names'
+  );
+  is(page.REVIEW_SCHEMA.required, ['assessment', 'plan', 'notes', 'values']);
+  ok(!('action' in page.REVIEW_SCHEMA.properties), 'no action to take');
+});
+
+// Captured 2026-10-02 (Drug Wars at 1024 x 576): the snapshot gave every
+// BUY the first one's box, so matching by box named all of them "Cocaine".
+test('repeated controls pair with the scan by order, which also fixes their boxes', () => {
+  const drugs = ['Cocaine', 'Heroin', 'Acid'];
+  const shot = page.parseSnapshot(
+    [
+      'Page URL: https://drugwars.online/game',
+      '- rootwebarea',
+      ...drugs.flatMap((d, i) => [
+        `  - text "${d}" [ref=t${i}]`,
+        `  - button "BUY" [ref=e${i}] [box=924,212,45,32]`,
+      ]),
+      '  - button "Bogotá" [ref=e9] [box=195,500,68,32]',
+    ].join('\n')
+  );
+  const items = drugs.map((d, i) => ({ name: 'BUY', b: [924, 212 + 60 * i, 45, 32], ctx: d }));
+  const named = page.applyDisambiguation(shot.elements, items);
+  is(
+    named.filter((e) => e.label === 'BUY').map((e) => [e.context, e.box[1]]),
+    [
+      ['Cocaine', 212],
+      ['Heroin', 272],
+      ['Acid', 332],
+    ]
+  );
+  is(
+    named.find((e) => e.token === 'e9').box,
+    [195, 500, 68, 32],
+    'unrepeated controls keep theirs'
+  );
+  is(
+    named.filter((e) => e.label === 'BUY').map((e) => e.nth),
+    [0, 1, 2],
+    'which BUY it is, for the click: a ref reaches only the first'
+  );
+  is(named.find((e) => e.token === 'e9').nth, undefined);
+
+  // A repeated control the page had no name for keeps its place in the order.
+  const gap = page.applyDisambiguation(shot.elements, [
+    { ...items[0] },
+    { ...items[1], ctx: '' },
+    { ...items[2] },
+  ]);
+  is(
+    gap.filter((e) => e.label === 'BUY').map((e) => e.context),
+    ['Cocaine', undefined, 'Acid']
+  );
+
+  // Different counts (a control the scan missed): only a containing box names it.
+  const short = page.applyDisambiguation(shot.elements, [items[1]]);
+  is(
+    short.filter((e) => e.label === 'BUY').map((e) => e.context),
+    [undefined, undefined, undefined]
+  );
+
+  const ori = page.orient(
+    {
+      shot,
+      viewport: { width: 1024, height: 576, scrollY: 0, scrollHeight: 576 },
+      diff: null,
+      disambiguation: items,
+    },
+    { goal: 'Buy Acid', history: [], candidates: [] }
+  );
+  ok(ori.menu.some((a) => a.describe === 'click button "BUY" for "Acid"'));
+  is(
+    ori.menu.find((a) => a.id === 'click:e2').element.box,
+    [924, 332, 45, 32],
+    'the mark goes on the right row'
+  );
 });

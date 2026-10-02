@@ -38,6 +38,14 @@ export const arms = [
 /** Arms on hold. */
 export const heldArms = [];
 
+const RUN_S_DEFAULT = 900;
+
+/** webrunner's --time-limit: the driver's per-run timeout less 10%, at least a minute. */
+export function timeLimit(goal) {
+  const run = Number(goal.timeout_s) > 0 ? Number(goal.timeout_s) : RUN_S_DEFAULT;
+  return Math.max(30, run - Math.max(60, Math.round(run * 0.1)));
+}
+
 /** One goal as a `webrunner run` command line. */
 export function command(goal, arm, { shellQuote }) {
   if (arm.probe) {
@@ -55,6 +63,9 @@ export function command(goal, arm, { shellQuote }) {
   for (const t of goal.expect ?? []) argv.push('--expect', t);
   for (const u of goal.expect_url ?? []) argv.push('--expect-url', u);
   if (goal.max_steps) argv.push('--max-steps', String(goal.max_steps));
+  // webrunner stops itself before the driver's timeout, so a stalled run
+  // still prints its result and says where it stuck.
+  argv.push('--time-limit', String(timeLimit(goal)));
   argv.push(...arm.args, '--json');
   return argv.map(shellQuote).join(' ');
 }
@@ -158,6 +169,7 @@ export async function traceFromLines(lines, screenshot, { shots = 4 } = {}) {
   for (const s of stepLines) {
     const d = s.decide || {};
     const parts = [];
+    if (s.review) parts.push(`plan review (${s.review.why}): ${s.review.assessment || ''}`);
     if (d.action) {
       const who =
         d.system1 && d.system1.shrug ? 'System 2' : d.system1 ? 'System 1' : d.system || '';
@@ -232,12 +244,37 @@ export async function judgeTrace({ own, readText, readBase64 }) {
   });
 }
 
+const lastNumber = (text, re) => {
+  const all = [...String(text).matchAll(re)];
+  return all.length ? Number(all[all.length - 1][1].replace(/,/g, '')) : null;
+};
+
+// Each game's own number on its final page. A Dark Room has none: the
+// rubric alone grades it. Patterns from the pages as probed 2026-10-02; the
+// ones for end screens not yet seen (Drug Wars, Seedship) are the games'
+// documented wording and get checked on the first runs.
+const GAME_METRICS = {
+  'armchair-bike': (text) => gamePoints(text),
+  drugwars: (text) =>
+    lastNumber(text, /(?:SCORE|NET WORTH|Net Worth|Net worth)[:\s]*\$?\s*(-?[\d,]+)/g),
+  // The ending's score table ends with the row "Total: 9511" (seen 2026-10-02).
+  seedship: (text) => lastNumber(text, /Total:\s*(-?[\d,]+)/g),
+  password: (text) => {
+    const rules = [...String(text).matchAll(/Rule (\d+)/g)].map((m) => Number(m[1]));
+    return rules.length ? Math.max(...rules) : null;
+  },
+  paperclips: (text) => lastNumber(text, /Paperclips:\s*([\d,]+)/g),
+  // The resource row reads "kittens 1 /2" (current / capacity), no colon.
+  kittens: (text) => lastNumber(text, /[Kk]ittens?\s*:?\s*(\d+)\s*\//g),
+};
+
 /**
  * Metrics from the final page, for every arm (the driver calls this on the
- * last snapshot, so the bare agent arm gets game points too).
+ * last snapshot, so the bare agent arm gets each game's number too).
  */
-export function metrics(snapshot) {
-  return { points: gamePoints(snapshot) };
+export function metrics(snapshot, goal) {
+  const read = GAME_METRICS[goal && goal.id] || gamePoints;
+  return { points: read(snapshot) };
 }
 
 /** DIAGNOSTIC: what to keep from every run, failed ones included. */

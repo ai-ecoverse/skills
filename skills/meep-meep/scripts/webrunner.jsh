@@ -15,6 +15,7 @@ const exec = require('sliccy:exec');
 const page = require('./page.js');
 const traceLib = require('./trace.js');
 const vision = require('./vision.js');
+const pageScan = require('./page-scan.js');
 const host = require('../../decide-quickly/scripts/host.js');
 const kevRuntime = require('../../decide-quickly/scripts/kev-runtime.js');
 
@@ -24,7 +25,10 @@ const DEBUG_PAGE = `${__dirname}/../assets/debug.html`;
 const READY = 'WEBRUNNER_KEV_READY';
 const MAX_STEPS_DEFAULT = 8;
 // A game tour takes 40 steps a day; 50 cut a 100-mile tour short (2026-10-01).
-const MAX_STEPS_CAP = 200;
+const MAX_STEPS_CAP = 1000;
+const TIME_LIMIT_CAP = 86400;
+// --decider hybrid audits System 1 at this base chance per turn (page.oversightChance).
+const OVERSIGHT_DEFAULT = 0.01;
 const STALL_LIMIT = 3;
 const AGENT_MODEL_DEFAULT = 'claude-sonnet-5-5';
 // Below this kev confidence, --decider hybrid hands the step to the agent.
@@ -43,6 +47,7 @@ USAGE
   webrunner run --url <url> --goal <text> [--expect <text>]... [--expect-url <text>]...
                 [--max-steps 8] [--decider kev|agent|hybrid|system2] [--model <m>] [--from <dir>]
                 [--agent-model <m>] [--agent-thinking low] [--shrug 0.5] [--plan on|off]
+                [--oversight 0.01] [--seed N]
                 [--vision] [--window WxH] [--page-text on|off] [--viewport on|off] [--shots on|off]
                 [--factor-text on|off] [--json]
   webrunner demo link|search|flights [--decider kev|agent|hybrid|system2] [--model <m>] [--json]
@@ -67,9 +72,14 @@ USAGE
                        picks SHRUG, its confidence is below --shrug (default ${SHRUG_DEFAULT}) and
                        under 3x the runner-up, or it picks a field the goal gives no text
                        for. System 2 reads the recent steps, the plan and the notes, looks
-                       at the page, and may rewrite the plan and add notes, which System 1
-                       reads from then on. It writes the first plan before step 1
-                       (--plan off skips that)
+                       at the page, and may rewrite the plan, add notes and leave up to
+                       ${page.MAX_VALUES} values for System 1 to type, all read by System 1 from then on.
+                       It writes the first plan before step 1 (--plan off skips that).
+                       When kev hands over 6 of 10 steps or 5 in a row, System 2 runs a
+                       plan review: no action, a rewritten plan, notes and values, then
+                       kev decides again. Even when kev is sure, System 2 audits
+                       a turn at random: --oversight (default ${OVERSIGHT_DEFAULT}) per turn, more
+                       after a big change or a long calm; --seed makes it repeatable
   --vision             also show the decider the screenshot, each offered control boxed
                        and labelled with its ref. kev needs --model 4b-vision (the
                        default with --vision) or 0.8b-vision; the agent views the
@@ -82,6 +92,9 @@ USAGE
   --factor-text off    kev: one option per field and goal value, instead of picking
                        the field first and its text in a second, small question
   --shots off          skip the per-step screenshot
+  --time-limit S       end the run after S seconds, kev loading included, even
+                       mid-step: the result says which step and what it was
+                       waiting on (a kev decision, an agent call). Default none
   --json               print the run summary as JSON (steps, seconds, result)
 
 Each cycle observes the page, offers one list of actions (type into a field,
@@ -117,6 +130,11 @@ const SEARCH_HTML = `<!doctype html>
 `;
 
 const t0 = Date.now();
+// Where the run is, for a --time-limit that expires mid-step: the reason
+// names the step and what it was waiting on. stopped: the limit ended the
+// run, and a step still in flight must not act or finish again.
+const status = { step: 0, phase: 'starting', stopped: false };
+const stuckAt = () => (status.step ? `step ${status.step}, ${status.phase}` : status.phase);
 async function say(line) {
   const stamped = `[${((Date.now() - t0) / 1000).toFixed(1)}s] ${line}`;
   console.error(stamped);
@@ -171,6 +189,11 @@ function parseWindow(value, vision) {
   return { width: Number(m[1]), height: Number(m[2]) };
 }
 
+function numberFlag(value, fallback, min, max) {
+  const n = Number.parseFloat(value);
+  return Number.isFinite(n) ? Math.min(Math.max(n, min), max) : fallback;
+}
+
 // --flag alone is on; --flag off|false|no|0 is off; absent is the default.
 function onOff(value, fallback) {
   if (value === undefined || value === null || value === '') return fallback;
@@ -203,6 +226,7 @@ async function agentCapabilities() {
 function agentDecider(flags, model = flags.model || AGENT_MODEL_DEFAULT, thinking = 'off') {
   const ask = async (prompt, schema, images = []) => {
     const caps = await agentCapabilities();
+    status.phase = `an agent call (${model})`;
     return agent(prompt, {
       model,
       thinking,
@@ -238,6 +262,21 @@ function agentDecider(flags, model = flags.model || AGENT_MODEL_DEFAULT, thinkin
         assessment: typeof answer.assessment === 'string' ? answer.assessment.trim().slice(0, 800) : '',
         plan: page.cleanList(answer.plan, page.MAX_PLAN),
         notes: page.cleanList(answer.notes, page.MAX_NOTES),
+        values: page.cleanValues(answer.values),
+      };
+    },
+    // The plan review: no action, only a new plan, notes and values.
+    async review(ctx) {
+      const images = await attachable(ctx.imagePaths || []);
+      const prompt = page.reviewPrompt({ ...ctx, imageCount: images.length });
+      const answer = await ask(prompt, page.REVIEW_SCHEMA, images);
+      return {
+        prompt,
+        answer,
+        assessment: typeof answer.assessment === 'string' ? answer.assessment.trim().slice(0, 800) : '',
+        plan: page.cleanList(answer.plan, page.MAX_PLAN),
+        notes: page.cleanList(answer.notes, page.MAX_NOTES),
+        values: page.cleanValues(answer.values),
       };
     },
     async plan(goal, state, imagePath) {
@@ -298,14 +337,16 @@ async function kevDecider(flags) {
     const status = await kevRuntime.weightsStatus(fs, size);
     if (status.missing.length) cli.die(kevRuntime.missingWeightsMessage(status), { prefix: 'webrunner' });
   }
+  status.phase = 'installing the kev runtime';
   await ensureKevRuntime();
+  status.phase = `loading kev ${size}`;
   await say(`loading kev ${size}`);
   const loadStarted = Date.now();
   const model = await kevRuntime.openModel(fs, exec, {
     model: size,
     from: flags.from || null,
     log: (line) => {
-      if (/phase (ready|session)|runtime|failed/.test(line)) say(line);
+      if (/phase (ready|session)|runtime|adapter|failed/.test(line)) say(line);
     },
     // Named here, in the entry script: see kev-runtime.js loadKev.
     requireBundle: () => require('/shared/cache/kev/bundle.cjs'),
@@ -316,6 +357,7 @@ async function kevDecider(flags) {
     name: `kev ${size}`,
     loadMs,
     async decide(state, menu, extra = {}) {
+      status.phase = `a kev ${size} decision`;
       const response = await model.systemOne({
         state,
         ...(extra.image ? { image: extra.image } : {}),
@@ -344,6 +386,7 @@ async function kevDecider(flags) {
       return { action, confidence: answer.confidence, textConfidence, top, probabilities };
     },
     async finished(state) {
+      status.phase = `a kev ${size} DONE check`;
       const response = await model.systemOne({
         state,
         questions: {
@@ -381,6 +424,7 @@ function hybridDecider(fast, slow, threshold) {
     shrugs: true,
     plans: true,
     plan: (goal, state, imagePath) => slow.plan(goal, state, imagePath),
+    review: (ctx) => slow.review(ctx),
     async decide(state, menu, extra = {}) {
       const first = await fast.decide(state, menu, extra);
       const reason = page.shrugReason(first, threshold, { avoid: extra.avoid });
@@ -390,6 +434,28 @@ function hybridDecider(fast, slow, threshold) {
         probabilities: first.probabilities,
         shrug: reason || null,
       };
+      // A random audit: System 1 was sure, System 2 reviews the step anyway.
+      if (!reason && extra.oversight) {
+        system1.oversight = extra.oversight;
+        const rest = menu.filter((action) => action.operation !== 'SHRUG');
+        const slowStarted = Date.now();
+        const second = await slow.deliberate(
+          {
+            ...(extra.context || {}),
+            state,
+            hint: page.oversightHint(first, extra.oversight.reason, menu),
+            imagePaths: extra.imagePaths,
+          },
+          rest
+        );
+        return {
+          ...second,
+          system: slow.name,
+          system1,
+          system2Ms: Date.now() - slowStarted,
+          top: `${first.top}  → audit (${extra.oversight.reason}, p=${extra.oversight.chance})`,
+        };
+      }
       if (!reason) return { ...first, system: fast.name, system1 };
       const slowStarted = Date.now();
       const rest = menu.filter((action) => action.operation !== 'SHRUG');
@@ -469,31 +535,9 @@ function hashBytes(bytes) {
 const VIEWPORT_JS =
   'JSON.stringify({ width: innerWidth, height: innerHeight, scrollY: Math.round(scrollY), scrollHeight: document.documentElement.scrollHeight })';
 
-// Elements that act as buttons without a button role (a pointer cursor, an
-// onclick, a tabindex on a non-control, a button-ish class), with their own
-// text and box. page.promoteClickable makes them synthetic menu entries.
-const CLICKABLE_JS = `JSON.stringify((() => {
-  const out = [];
-  // An <a> without href is not a link to the accessibility tree (Seedship's
-  // "New game" is <a class="link-internal" tabindex="0">), so only real links
-  // and form controls are left to the snapshot.
-  const native = /^(BUTTON|INPUT|SELECT|TEXTAREA|SUMMARY|OPTION|LABEL)$/;
-  for (const el of document.querySelectorAll('body *')) {
-    if (out.length >= 200) break;
-    if (native.test(el.tagName) || (el.tagName === 'A' && el.hasAttribute('href'))) continue;
-    if (el.parentElement && el.parentElement.closest('a[href], button')) continue;
-    const cls = typeof el.className === 'string' ? el.className : '';
-    const pointer = getComputedStyle(el).cursor === 'pointer';
-    const parentPointer = el.parentElement && getComputedStyle(el.parentElement).cursor === 'pointer';
-    if (!((pointer && !parentPointer) || el.hasAttribute('onclick') || (el.tabIndex >= 0 && el.hasAttribute('tabindex')) || /\\b(btn|button|clickable)\\b/i.test(cls))) continue;
-    const text = (el.innerText || el.getAttribute('aria-label') || '').replace(/\\s+/g, ' ').trim();
-    if (!text || text.length > 60) continue;
-    const r = el.getBoundingClientRect();
-    if (!r.width || !r.height || r.bottom < 0 || r.top > innerHeight || r.right < 0 || r.left > innerWidth) continue;
-    out.push({ t: text, b: [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)] });
-  }
-  return out;
-})())`;
+// What the snapshot cannot tell the decider, read in the page each turn:
+// clickable divs and disambiguators for repeated controls (page-scan.js).
+const PAGE_SCAN_JS = `(${pageScan.scan.toString()})()`;
 
 // A synthetic button (page.promoteClickable) has no ref: click the element
 // under its box centre.
@@ -508,13 +552,16 @@ function clickAt(box) {
   })()`;
 }
 
-function parseFound(stdout) {
+function parseScan(stdout) {
   try {
     const value = JSON.parse(String(stdout).trim());
     const found = typeof value === 'string' ? JSON.parse(value) : value;
-    return Array.isArray(found) ? found : [];
+    return {
+      clickable: Array.isArray(found && found.clickable) ? found.clickable : [],
+      disambiguation: Array.isArray(found && found.disambiguation) ? found.disambiguation : [],
+    };
   } catch {
-    return [];
+    return { clickable: [], disambiguation: [] };
   }
 }
 
@@ -547,9 +594,14 @@ async function observe(tab, prev, opts) {
   }
   shot.viewport = viewport;
   let shotWithClicks = shot;
+  let disambiguation = [];
   if (opts.viewport) {
-    const found = await run(['playwright-cli', 'eval', `--tab=${tab}`, CLICKABLE_JS], commands);
-    if (found.exitCode === 0) shotWithClicks = page.promoteClickable(shot, parseFound(found.stdout), viewport);
+    const found = await run(['playwright-cli', 'eval', `--tab=${tab}`, PAGE_SCAN_JS], commands);
+    if (found.exitCode === 0) {
+      const scanned = parseScan(found.stdout);
+      shotWithClicks = page.promoteClickable(shot, scanned.clickable, viewport);
+      disambiguation = scanned.disambiguation;
+    }
   }
   let screenshot = null;
   if (opts.trace && opts.shots && opts.name) {
@@ -562,6 +614,7 @@ async function observe(tab, prev, opts) {
   }
   return {
     shot: shotWithClicks,
+    disambiguation,
     raw,
     viewport,
     diff: page.diffShots(prev && prev.shot, shotWithClicks),
@@ -651,11 +704,24 @@ async function act(tab, action, viewport, commands) {
     return;
   }
   const ref = action.element.token;
+  const keystrokes = action.operation === 'TYPE_TEXT';
+  // A ref of a repeated name reaches only the first control of that name
+  // (page-scan.js), so those are clicked by their place in the page.
+  if (Number.isInteger(action.element.nth)) {
+    const pick = JSON.stringify({ name: action.element.label, nth: action.element.nth });
+    const picked = await sh(['playwright-cli', 'eval', `--tab=${tab}`, `(${pageScan.scan.toString()})(${pick})`], commands);
+    if (picked.includes('ok')) {
+      if (!keystrokes) return;
+      await sh(['sleep', '0.3'], commands);
+      await sh(['playwright-cli', 'eval', `--tab=${tab}`, SELECT_FOCUSED], commands);
+      await sh(['playwright-cli', 'type', `--tab=${tab}`, '--', action.text], commands);
+      return;
+    }
+  }
   // Text goes in as keystrokes. `fill` sets the value, but Google Flights'
   // "Where to?" then opens an empty overlay with no suggestions, and its
   // Return date field drops the value (both seen 2026-09-23). Click the
   // field, select what is there, and type.
-  const keystrokes = action.operation === 'TYPE_TEXT';
   const result = await run(['playwright-cli', 'click', `--tab=${tab}`, ref], commands);
   if (result.exitCode === 0) {
     if (!keystrokes) return;
@@ -688,6 +754,7 @@ function slim(element, viewport) {
   if (element.value) out.value = element.value;
   if (element.box) out.box = element.box;
   if (element.region) out.region = element.region;
+  if (Number.isInteger(element.nth)) out.nth = element.nth;
   if (where !== 'unknown') out.place = where;
   return out;
 }
@@ -727,6 +794,7 @@ async function runGoal(flags) {
   const parsedMax = parseInt(flags['max-steps'], 10);
   const maxSteps = Number.isFinite(parsedMax) ? Math.min(Math.max(parsedMax, 1), MAX_STEPS_CAP) : MAX_STEPS_DEFAULT;
   const hasCheck = Boolean(flags.expect || flags['expect-url']);
+  const timeLimit = numberFlag(flags['time-limit'], 0, 0, TIME_LIMIT_CAP);
   const opts = {
     viewport: onOff(flags.viewport, true),
     shots: onOff(flags.shots, true),
@@ -737,62 +805,100 @@ async function runGoal(flags) {
     factorText: !AGENT_WRITES_TEXT.has(flags.decider) && onOff(flags['factor-text'], true),
     pageText: onOff(flags['page-text'], true),
     plan: onOff(flags.plan, true),
+    oversight: flags.decider === 'hybrid' ? numberFlag(flags.oversight, OVERSIGHT_DEFAULT, 0, 1) : 0,
+    seed: Number.isFinite(Number.parseInt(flags.seed, 10))
+      ? Number.parseInt(flags.seed, 10)
+      : Math.floor(Math.random() * 2 ** 31),
     window: parseWindow(flags.window, onOff(flags.vision, false)),
   };
   if (opts.vision && !opts.shots) cli.die('--vision needs the screenshot: drop --shots off', { prefix: 'webrunner' });
   const started = Date.now();
-  const decider = await makeDecider(flags);
   // The agent writes the text for a type action itself; kev can only pick
   // values that the goal spells out (and hybrid shrugs to the agent for the rest).
   const candidates = AGENT_WRITES_TEXT.has(flags.decider) ? [] : page.textCandidates(flags.goal);
   const result = {
     ok: false,
     reason: '',
-    decider: decider.name,
+    decider: flags.decider || 'kev',
     steps: 0,
     seconds: 0,
-    loadSeconds: decider.loadMs == null ? null : decider.loadMs / 1000,
+    loadSeconds: null,
     decideSeconds: 0,
     url: flags.url,
   };
-  const trace = await traceLib.openTrace(fs, { label: flags.label || hostname });
-  result.run = trace.id;
-  await trace.start({
-    goal: flags.goal,
-    url: flags.url,
-    decider: decider.name,
-    loadSeconds: result.loadSeconds,
-    check: { expect: flags.expect || null, expectUrl: flags['expect-url'] || null },
-    maxSteps,
-    candidates,
-    viewport: opts.viewport,
-    vision: opts.vision,
-  });
-  await say(`run ${trace.id}`);
+  let trace = null;
+  let ended = false;
   const finish = async (ok, reason, url) => {
+    if (ended) return result;
+    ended = true;
     result.ok = ok;
     result.reason = reason;
     if (url) result.url = url;
     result.seconds = (Date.now() - started) / 1000;
     result.decideSeconds = Math.round(result.decideSeconds * 10) / 10;
-    await trace.end(result);
+    if (trace) await trace.end(result);
     return result;
   };
 
-  // A run that throws still ends its trace, so the debug page says why.
-  try {
-    return await cycles(flags, { opts, decider, trace, result, finish, candidates, hasCheck, maxSteps });
-  } catch (err) {
-    if (err && err.name === 'NodeExitError') throw err;
-    result.reason = `error: ${err.message || err}`;
-    result.seconds = (Date.now() - started) / 1000;
-    await trace.end(result);
-    throw err;
-  }
+  const work = (async () => {
+    status.phase = 'loading the decider';
+    const decider = await makeDecider(flags);
+    result.decider = decider.name;
+    result.loadSeconds = decider.loadMs == null ? null : decider.loadMs / 1000;
+    trace = await traceLib.openTrace(fs, { label: flags.label || hostname });
+    result.run = trace.id;
+    await trace.start({
+      goal: flags.goal,
+      url: flags.url,
+      decider: decider.name,
+      loadSeconds: result.loadSeconds,
+      check: { expect: flags.expect || null, expectUrl: flags['expect-url'] || null },
+      maxSteps,
+      timeLimit: timeLimit || null,
+      candidates,
+      viewport: opts.viewport,
+      vision: opts.vision,
+      oversight: opts.oversight,
+      seed: opts.seed,
+    });
+    await say(`run ${trace.id}`);
+    // A run that throws still ends its trace, so the debug page says why.
+    try {
+      return await cycles(flags, { opts, decider, trace, result, finish, candidates, hasCheck, maxSteps });
+    } catch (err) {
+      if (err && err.name === 'NodeExitError') throw err;
+      if (status.stopped) return result;
+      result.reason = `error: ${err.message || err}`;
+      result.seconds = (Date.now() - started) / 1000;
+      ended = true;
+      await trace.end(result);
+      throw err;
+    }
+  })();
+  if (!timeLimit) return work;
+
+  // The time limit covers everything, loading kev included. A step that
+  // never returns (a kev load or decision, an agent call) cannot end the
+  // run itself; the limit does, with the usual result and the place it
+  // stuck. Hosted runs that hit the harness's own timeout left nothing.
+  const EXPIRED = Symbol('expired');
+  let timer;
+  const expired = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(EXPIRED), timeLimit * 1000);
+  });
+  const first = await Promise.race([work, expired]);
+  clearTimeout(timer);
+  if (first !== EXPIRED) return first;
+  status.stopped = true;
+  work.catch(() => {});
+  const reason = `time limit of ${timeLimit} s reached during ${stuckAt()}`;
+  await say(reason);
+  return finish(false, reason);
 }
 
 async function cycles(flags, run) {
   const { opts, decider, trace, result, finish, candidates, hasCheck, maxSteps } = run;
+  status.phase = 'opening the tab';
   const tab = await openTab(flags.url);
   await say(`tab ${tab} ${flags.url}`);
   // Size the browser, not the image: with --vision the viewport is the
@@ -808,17 +914,29 @@ async function cycles(flags, run) {
   const history = [];
   // What System 2 reads and writes: its plan and notes (System 1 sees them
   // in its state) and the trail of recent steps with what each one changed.
-  const memory = { plan: [], notes: [], trail: [] };
+  // values: texts System 2 left for System 1 to type.
+  const memory = { plan: [], notes: [], values: [], trail: [] };
+  const remembered = () => ({ plan: memory.plan, notes: memory.notes, values: memory.values });
+  // System 2's load: per System 1 decision, did it hand over (a shrug)?
+  // Random audits are our choice, not System 1's, and do not count.
+  const asked = [];
+  let lastReview = -Infinity;
   let prevImagePath = null;
   let prevPixels = '';
+  // Oversight: each turn's change magnitude, and the seeded audit roll.
+  const magnitudes = [];
+  const roll = page.seededRandom(opts.seed);
   let prev = null;
   let previousLabels = null;
   let stalls = 0;
   const seenPages = [];
   let pendingDone = false;
   for (let step = 1; step <= maxSteps; step++) {
+    if (status.stopped) return result;
     const name = `step-${String(step).padStart(2, '0')}`;
     const record = { step };
+    status.step = step;
+    status.phase = 'observe';
 
     // Observe. After the first cycle this is the feedback on the last action.
     const obs = await observe(tab, prev, { ...opts, trace, name });
@@ -838,6 +956,11 @@ async function cycles(flags, run) {
     }
     seenPages.push(fp);
     if (cycle) record.cycle = cycle;
+    if (prev) {
+      const m = page.changeMagnitude(obs.diff, obs.shot.elements.length);
+      // A canvas change is a change, not calm.
+      magnitudes.push(pixelsChanged ? Math.max(m, 0.1) : m);
+    }
     // This observation is the outcome of the last step on the trail.
     const lastStep = memory.trail[memory.trail.length - 1];
     if (lastStep) {
@@ -860,6 +983,7 @@ async function cycles(flags, run) {
     }
 
     // Orient.
+    status.phase = 'orient';
     const orientStarted = Date.now();
     const orientOpts = {
       goal: flags.goal,
@@ -888,7 +1012,39 @@ async function cycles(flags, run) {
       record.plan = { plan: written.plan, notes: written.notes, prompt: written.prompt, ms: Date.now() - planStarted };
       await say(`plan (${((Date.now() - planStarted) / 1000).toFixed(1)} s): ${written.plan.join(' | ')}`);
     }
-    const ori = page.orient(obs, { ...orientOpts, plan: memory.plan, notes: memory.notes });
+    let ori = page.orient(obs, { ...orientOpts, ...remembered() });
+    // A plan review when System 1 hands over most steps: System 2 takes no
+    // action, rewrites the plan, notes and values, and System 1 decides on
+    // the menu rebuilt from them (it may still shrug to System 2).
+    // Not while a DONE waits for its confirmation: the run may be over.
+    const due = decider.review && !pendingDone ? page.reviewDue(asked, step - lastReview) : null;
+    if (due) {
+      lastReview = step;
+      const reviewStarted = Date.now();
+      const reviewed = await decider.review({
+        goal: flags.goal,
+        ...remembered(),
+        trail: memory.trail,
+        why: due.why,
+        state: ori.state,
+        menu: ori.menu.filter((action) => action.operation !== 'SHRUG'),
+        imagePaths: opts.vision && obs.screenshot ? [trace.path(obs.screenshot)] : [],
+      });
+      if (reviewed.plan && reviewed.plan.length) memory.plan = reviewed.plan;
+      if (reviewed.notes) memory.notes = reviewed.notes;
+      if (reviewed.values) memory.values = reviewed.values;
+      record.review = {
+        why: due.why,
+        load: due.load,
+        assessment: reviewed.assessment,
+        ...remembered(),
+        prompt: reviewed.prompt,
+        answer: reviewed.answer,
+        ms: Date.now() - reviewStarted,
+      };
+      await say(`step ${step}  plan review (${due.why}, ${((Date.now() - reviewStarted) / 1000).toFixed(1)} s): ${reviewed.assessment}`);
+      ori = page.orient(obs, { ...orientOpts, ...remembered() });
+    }
     // With --vision the decider also sees the screenshot, each offered
     // control boxed and labelled with its ref.
     let image = null;
@@ -950,13 +1106,24 @@ async function cycles(flags, run) {
         imagePath,
         // For System 2: the page now and one step earlier.
         imagePaths: [imagePath, prevImagePath].filter(Boolean),
-        context: { goal: flags.goal, plan: memory.plan, notes: memory.notes, trail: memory.trail },
+        context: {
+          goal: flags.goal,
+          ...remembered(),
+          trail: memory.trail,
+          load: decider.review ? page.system2Load(asked) : null,
+        },
+        oversight: (() => {
+          if (!opts.oversight || !decider.shrugs) return null;
+          const audit = page.oversightChance(opts.oversight, magnitudes);
+          return roll() < audit.chance ? audit : null;
+        })(),
         avoid: ori.avoid,
       };
       const answer = decider.takesHint
         ? await decider.decide(ori.state, ori.menu, null, extra)
         : await decider.decide(ori.state, ori.menu, extra);
       decision = { system: decider.name, ...answer };
+      if (decision.system1) asked.push(Boolean(decision.system1.shrug));
     }
     const decideMs = Date.now() - decideStarted;
     result.decideSeconds += decideMs / 1000;
@@ -977,10 +1144,10 @@ async function cycles(flags, run) {
     if (decision.plan || decision.notes || decision.assessment) {
       if (decision.plan && decision.plan.length) memory.plan = decision.plan;
       if (decision.notes) memory.notes = page.mergeNotes(memory.notes, decision.notes);
+      if (decision.values) memory.values = decision.values;
       record.decide.system2 = {
         assessment: decision.assessment || '',
-        plan: memory.plan,
-        notes: memory.notes,
+        ...remembered(),
       };
       if (decision.assessment) await say(`         system 2: ${decision.assessment}`);
     }
@@ -990,6 +1157,8 @@ async function cycles(flags, run) {
     if (decision.top) await say(`         top ${decision.top}`);
 
     // Act.
+    if (status.stopped) return result;
+    status.phase = 'act';
     const actStarted = Date.now();
     const commands = [];
     if (action.operation === 'DONE') {
@@ -1017,13 +1186,20 @@ async function cycles(flags, run) {
         failed: Boolean(failure),
       });
     }
-    const shrugged = decision.system1 && decision.system1.shrug;
+    const shrugged = decision.system1 && (decision.system1.shrug || decision.system1.oversight);
     memory.trail.push({
       step,
       describe: action.describe,
       text: action.operation === 'TYPE_TEXT' && !/^type "/.test(action.describe) ? action.text : null,
-      system: shrugged ? 'System 2' : decision.system1 ? 'System 1' : decision.system,
+      system: decision.system1 && decision.system1.oversight
+        ? 'System 2 (audit)'
+        : shrugged
+          ? 'System 2'
+          : decision.system1
+            ? 'System 1'
+            : decision.system,
       confidence: shrugged ? decision.system1.confidence : decision.confidence,
+      shrug: decision.system1 && decision.system1.shrug ? decision.system1.shrug : null,
       outcome: record.actError ? `failed: ${record.actError}` : '',
     });
     if (memory.trail.length > 20) memory.trail.shift();
@@ -1121,6 +1297,8 @@ async function demo(name, flags) {
     'agent-model': flags['agent-model'],
     'agent-thinking': flags['agent-thinking'],
     plan: flags.plan,
+    oversight: flags.oversight,
+    seed: flags.seed,
     shrug: flags.shrug,
     vision: flags.vision,
     'factor-text': flags['factor-text'],
@@ -1163,9 +1341,14 @@ async function main() {
     else cli.die(`unknown command: ${sub}`, { prefix: 'webrunner' });
     report(result, flags);
   } catch (err) {
-    if (err && err.name === 'NodeExitError') throw err;
+    // process.exit, not cli.die's exit: only process.exit ends the script
+    // while work is still pending (a step the time limit cut off, a kev or
+    // agent call that never returns). cli.die, and a plain return, wait for
+    // it, and the result printed before stays unseen (measured 2026-10-02).
+    if (err && err.name === 'NodeExitError') process.exit(err.code ?? 1);
     cli.die(err.message || String(err), { prefix: 'webrunner' });
   }
+  if (sub === 'run' || sub === 'demo') process.exit(0);
 }
 
 await main();

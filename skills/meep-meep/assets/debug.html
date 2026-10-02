@@ -157,8 +157,8 @@ function render() {
   $('#steps').replaceChildren(...steps.map((s, i) => {
     const d = s.decide;
     const what = s.outcome ? s.outcome : d ? d.action.describe + (d.action.text && !/^type "/.test(d.action.describe) ? ` "${d.action.text}"` : '') : '';
-    const conf = d?.system1?.shrug ? ` · shrug ${pct(d.system1.confidence)} → S2` : d && d.confidence != null ? ` · ${pct(d.confidence)}` : '';
-    const planned = s.plan ? ' · planned' : '';
+    const conf = d?.system1?.oversight ? ` · audit → S2` : d?.system1?.shrug ? ` · shrug ${pct(d.system1.confidence)} → S2` : d && d.confidence != null ? ` · ${pct(d.confidence)}` : '';
+    const planned = s.plan ? ' · planned' : s.review ? ' · plan review' : '';
     const cls = s.act && s.act.error ? 'bad' : s.outcome && /passed|confirmed/.test(s.outcome) ? 'ok' : '';
     return el('button', { 'aria-current': i + 1 === current ? 'true' : 'false', onclick: () => select(i + 1) },
       el('span', { class: `what ${cls}` }, `${s.step}. ${what}`),
@@ -268,10 +268,11 @@ function commandsView(commands) {
       el('td', { class: `num ${c.exitCode ? 'bad' : ''}` }, c.exitCode), el('td', { class: 'num' }, ms(c.ms))))));
 }
 
-function planView(plan, notes) {
+function planView(plan, notes, values) {
   return el('div', {},
     plan && plan.length ? el('ol', {}, plan.map((p) => el('li', {}, p))) : el('p', { class: 'muted' }, 'No plan.'),
-    notes && notes.length ? el('ul', { class: 'muted' }, notes.map((n) => el('li', {}, n))) : '');
+    notes && notes.length ? el('ul', { class: 'muted' }, notes.map((n) => el('li', {}, n))) : '',
+    values && values.length ? el('p', {}, 'Values for System 1: ', ...values.map((v, i) => el('span', {}, i ? ' · ' : '', el('code', {}, v.text), v.field ? ` into "${v.field}"` : ''))) : '');
 }
 
 function renderStep(s) {
@@ -286,6 +287,13 @@ function renderStep(s) {
     parts.push(el('h2', {}, 'Original plan', el('span', { class: 'ms' }, `System 2 · ${ms(s.plan.ms)}`)));
     parts.push(planView(s.plan.plan, s.plan.notes));
     if (s.plan.prompt) parts.push(el('details', {}, el('summary', {}, 'plan prompt'), el('pre', {}, s.plan.prompt)));
+  }
+  if (s.review) {
+    parts.push(el('div', { class: 'system2' },
+      el('h3', {}, 'Plan review', el('span', { class: 'ms' }, ` ${s.review.why} · ${ms(s.review.ms)}`)),
+      s.review.assessment ? el('p', {}, s.review.assessment) : '',
+      planView(s.review.plan, s.review.notes, s.review.values),
+      s.review.prompt ? el('details', {}, el('summary', {}, 'review prompt'), el('pre', {}, s.review.prompt)) : ''));
   }
   parts.push(el('h2', {}, 'Observe', el('span', { class: 'ms' }, ms(o.ms))));
   parts.push(shotView(s));
@@ -314,13 +322,15 @@ function renderStep(s) {
       const s1 = d.system1;
       parts.push(el('p', { class: s1.shrug ? 'warn' : 'muted' },
         `System 1 chose ${s1.action} at ${pct(s1.confidence)}`,
-        s1.shrug ? ` — shrugged (${s1.shrug}); System 2 decided` : ' — kept'));
+        s1.shrug ? ` — shrugged (${s1.shrug}); System 2 decided`
+          : s1.oversight ? ` — audited at random (${s1.oversight.reason}, p=${s1.oversight.chance}); System 2 decided`
+          : ' — kept'));
     }
     if (d.system2) {
       parts.push(el('div', { class: 'system2' },
         el('h3', {}, 'System 2'),
         d.system2.assessment ? el('p', {}, d.system2.assessment) : '',
-        planView(d.system2.plan, d.system2.notes)));
+        planView(d.system2.plan, d.system2.notes, d.system2.values)));
     }
     if (d.prompt) parts.push(el('details', {}, el('summary', {}, 'prompt'), el('pre', {}, d.prompt)));
     if (d.answer) parts.push(el('details', {}, el('summary', {}, 'answer'), el('pre', {}, JSON.stringify(d.answer, null, 2))));
