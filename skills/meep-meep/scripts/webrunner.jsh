@@ -470,8 +470,10 @@ function hybridDecider(fast, slow, threshold) {
         shrug: reason || null,
       };
       // A random audit: System 1 was sure, System 2 reviews the step anyway.
-      if (!reason && extra.oversight) {
-        system1.oversight = extra.oversight;
+      // A rut audit: kev, sure of itself, is repeating one action again.
+      const rut = !reason && !extra.oversight ? page.rutAudit(extra.rut, first.action.describe) : null;
+      if (!reason && (extra.oversight || rut)) {
+        system1.oversight = extra.oversight || rut;
         // System 2 chooses from every control in view, not System 1's top ones.
         const rest = (extra.menuS2 || menu).filter((action) => action.operation !== 'SHRUG');
         const slowStarted = Date.now();
@@ -479,7 +481,7 @@ function hybridDecider(fast, slow, threshold) {
           {
             ...(extra.context || {}),
             state,
-            hint: page.oversightHint(first, extra.oversight.reason, menu),
+            hint: page.oversightHint(first, system1.oversight.reason, menu, Boolean(system1.oversight.rut)),
             imagePaths: extra.imagePaths,
           },
           rest
@@ -489,7 +491,7 @@ function hybridDecider(fast, slow, threshold) {
           system: slow.name,
           system1,
           system2Ms: Date.now() - slowStarted,
-          top: `${first.top}  → audit (${extra.oversight.reason}, p=${extra.oversight.chance})`,
+          top: `${first.top}  → audit (${system1.oversight.reason}, p=${system1.oversight.chance})`,
         };
       }
       if (!reason) return { ...first, system: fast.name, system1 };
@@ -996,6 +998,10 @@ async function cycles(flags, run) {
   // Oversight: each turn's change magnitude, and the seeded audit roll.
   const magnitudes = [];
   const roll = page.seededRandom(opts.seed);
+  // System 1 repeating one action (see page.trackRut), and per action the
+  // repeats before its next audit.
+  let rut = null;
+  const rutLimits = new Map();
   let prev = null;
   let previousLabels = null;
   let stalls = 0;
@@ -1198,6 +1204,7 @@ async function cycles(flags, run) {
           return roll() < audit.chance ? audit : null;
         })(),
         avoid: ori.avoid,
+        rut,
       };
       const answer = decider.takesHint
         ? await decider.decide(ori.state, ori.menu, null, extra)
@@ -1272,6 +1279,19 @@ async function cycles(flags, run) {
         failed: Boolean(failure),
       });
     }
+    if (decision.system1) {
+      const s1 = decision.system1;
+      rut = page.trackRut(
+        rut,
+        {
+          describe: action.describe,
+          by: s1.oversight ? 'audit' : s1.shrug ? 'other' : 's1',
+          rutAudit: Boolean(s1.oversight && s1.oversight.rut),
+          kept: Boolean(s1.oversight && s1.oversight.rut) && rut && action.describe === rut.describe,
+        },
+        rutLimits
+      );
+    } else if (decision.system !== 'direct') rut = null;
     const shrugged = decision.system1 && (decision.system1.shrug || decision.system1.oversight);
     memory.trail.push({
       step,

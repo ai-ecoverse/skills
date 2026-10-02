@@ -1435,3 +1435,39 @@ test("the plan's next steps rank System 1's menu", () => {
     "System 2's next steps rank before the plan"
   );
 });
+
+// Eval round 37013006178 (2026-10-02): kev-4b clicked "Make Paperclip" 59
+// of 60 steps and "Gather catnip" 74 of 80, sure of itself every time.
+test('a rut of identical System 1 choices brings a System 2 audit, sooner after a disagreement', () => {
+  const limits = new Map();
+  const mk = 'click button "Make Paperclip"';
+  let rut = null;
+  for (let i = 0; i < 7; i++) rut = page.trackRut(rut, { describe: mk, by: 's1' }, limits);
+  is(rut, { describe: mk, count: 7, limit: 8 });
+  is(page.rutAudit(rut, 'click button "AutoClippers"'), null, 'another action is no rut');
+  const audit = page.rutAudit(rut, mk);
+  is(audit.reason, `System 1 chose "${mk}" 8 times in a row`);
+  ok(audit.rut && audit.chance === 1);
+  is(page.rutAudit({ describe: mk, count: 6, limit: 8 }, mk), null, 'not yet');
+
+  // System 2 bought AutoClippers instead: the next audit of Make Paperclip comes after 3.
+  rut = page.trackRut(
+    rut,
+    { describe: 'click button "AutoClippers"', by: 'audit', rutAudit: true, kept: false },
+    limits
+  );
+  is(rut, { describe: mk, count: 0, limit: 3 });
+  for (let i = 0; i < 2; i++) rut = page.trackRut(rut, { describe: mk, by: 's1' }, limits);
+  ok(page.rutAudit(rut, mk), 'three more and System 2 looks again');
+
+  // It kept the click: the gap doubles.
+  rut = page.trackRut(rut, { describe: mk, by: 'audit', rutAudit: true, kept: true }, limits);
+  is(rut, { describe: mk, count: 1, limit: 6 });
+
+  is(page.trackRut(rut, { describe: mk, by: 'other' }, limits), null, 'a hand-over ends the run');
+  ok(
+    page
+      .oversightHint({ action: { id: 'click:e9' }, confidence: 0.9 }, 'x', [], true)
+      .startsWith('Rut check (x)')
+  );
+});

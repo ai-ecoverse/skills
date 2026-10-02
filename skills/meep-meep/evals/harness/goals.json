@@ -95,7 +95,7 @@
     },
     {
       "id": "password",
-      "suite": "games",
+      "suite": "local",
       "url": "https://neal.fun/password-game/",
       "goal": "play the password game: type a password into the password box and keep changing it until it satisfies every rule the game shows. accept the consent dialog first if one appears. new rules appear one at a time as you satisfy the earlier ones, and every earlier rule must stay satisfied, so change the password with care. how it is scored: by the highest rule number you reach. stop when you cannot satisfy the next rule.",
       "expect": [],

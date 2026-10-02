@@ -1199,14 +1199,57 @@ function seededRandom(seed) {
   };
 }
 
+// A rut: System 1, sure of itself, picks the same action again and again.
+// Each click changes a counter, so it is neither a stall nor calm, and the
+// random audit almost never fires: kev-4b clicked "Make Paperclip" 59 of 60
+// steps and "Gather catnip" 74 of 80, with one audit each (eval round
+// 37013006178, 2026-10-02). After RUT_START identical choices System 2
+// audits the step. If it picks something else, the next audit of that
+// action comes after RUT_MIN; if it keeps it, the gap doubles up to RUT_MAX.
+const RUT_START = 8;
+const RUT_MIN = 3;
+const RUT_MAX = 32;
+
+/** An audit is due: System 1 is about to repeat `describe` for the limit-th time. */
+function rutAudit(rut, describe) {
+  if (!rut || rut.describe !== describe || rut.count + 1 < rut.limit) return null;
+  return {
+    reason: `System 1 chose "${describe}" ${rut.count + 1} times in a row`,
+    chance: 1,
+    rut: true,
+  };
+}
+
+/**
+ * The rut after a step. step: { describe, by: 's1' | 'audit' | 'other',
+ * rutAudit: the audit was a rut audit, kept: it kept System 1's choice }.
+ * limits: per action, the repeats before its next audit (kept across runs
+ * of the same action).
+ */
+function trackRut(rut, step, limits) {
+  const limitOf = (d) => limits.get(d) || RUT_START;
+  if (step.rutAudit && rut) {
+    limits.set(rut.describe, step.kept ? Math.min(RUT_MAX, rut.limit * 2) : RUT_MIN);
+    return { describe: rut.describe, count: step.kept ? 1 : 0, limit: limitOf(rut.describe) };
+  }
+  if (step.by !== 's1') return null;
+  if (rut && rut.describe === step.describe) return { ...rut, count: rut.count + 1 };
+  return { describe: step.describe, count: 1, limit: limitOf(step.describe) };
+}
+
 /** What System 2 hears on an audit: System 1 was not unsure, this is a routine review. */
-function oversightHint(first, why, menu) {
+function oversightHint(first, why, menu, rut = false) {
   const describe = new Map(menu.map((action) => [action.id, action.describe]));
   const conf =
     typeof first.confidence === 'number' ? ` at ${(first.confidence * 100).toFixed(0)}%` : '';
   return [
-    `Routine review (${why}): the fast model was not unsure; it chose ${first.action.id}${conf}  ${describe.get(first.action.id) || ''}.`,
-    'Keep that choice if it is right, or pick a better one, and update the plan and notes if the run is off course.',
+    `${rut ? 'Rut check' : 'Routine review'} (${why}): the fast model was not unsure; it chose ${first.action.id}${conf}  ${describe.get(first.action.id) || ''}.`,
+    ...(rut
+      ? [
+          'Repeating one action is right only while it is still the best use of a step. If something else would now pay off more (buying an upgrade or a building, changing a setting, moving on), choose that, and set next steps so the fast model follows up.',
+        ]
+      : []),
+    'Keep that choice if it is right, or pick a better one, and set the next steps and notes if the run is off course.',
   ].join('\n');
 }
 
@@ -1623,6 +1666,8 @@ module.exports = {
   oversightChance,
   seededRandom,
   oversightHint,
+  rutAudit,
+  trackRut,
   avoidKeys,
   planLines,
   trailLines,
