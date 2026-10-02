@@ -22,7 +22,9 @@ const scoopArm = (id, tool, extra = {}) => ({
   pool: tool === 'intent' ? 'gpu' : 'bench',
   tool,
   ...(tool === 'intent' ? { setup: ['intent prepare', `intent pull --model ${KEV_MODEL}`] } : {}),
-  args: ['--tool', tool, '--model', AGENT_MODEL, ...(tool === 'intent' ? ['--s1-model', KEV_MODEL] : [])],
+  // --require-gpu: a leader whose worker gets SwiftShader fails at once,
+  // instead of running kev ~10x slower until the time limit.
+  args: ['--tool', tool, '--model', AGENT_MODEL, ...(tool === 'intent' ? ['--s1-model', KEV_MODEL, '--require-gpu'] : [])],
   ...extra,
 });
 
@@ -79,6 +81,9 @@ function result(stdout) {
     try {
       const r = JSON.parse(text);
       return {
+        // Only a run that could not start says ok:false (System 1 did not
+        // load, e.g. --require-gpu on SwiftShader); the judge decides the rest.
+        ...(r.ok === false ? { ok: false, error: r.error } : {}),
         run: r.run || null,
         steps: r.steps,
         artifacts: r.run ? [`${RUNS}/${r.run}/result.json`, `${RUNS}/${r.run}/calls.jsonl`] : [],

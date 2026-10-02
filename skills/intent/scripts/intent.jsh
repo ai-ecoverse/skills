@@ -55,6 +55,8 @@ FLAGS
                      local kev bundle; clef | clef-flash on Cloudflare Workers AI
                      (needs the CLOUDFLARE_API_TOKEN secret and --cf-account once)
   --from DIR         a kev bundle directory instead of a named one (a fine-tune)
+  --require-gpu      stop when WebGPU is a software adapter (SwiftShader), where
+                     kev runs ~10x slower, instead of carrying on
   --json             print the result as JSON
 
 OUTPUT

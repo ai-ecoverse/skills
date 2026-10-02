@@ -17,7 +17,7 @@ test('command: one intent-arm line with the time limit inside the driver timeout
   const line = adapter.command(goal, adapter.arms[0], { shellQuote: quote });
   ok(line.startsWith("'intent-arm' '--url' 'https://httpbin.org/forms/post'"), line);
   ok(line.includes("'--time-limit' '540'"), line);
-  ok(line.includes("'--tool' 'intent'") && line.includes("'--s1-model' '4b-vision'"), line);
+  ok(line.includes("'--tool' 'intent'") && line.includes("'--s1-model' '4b-vision'") && line.includes("'--require-gpu'"), line);
   is(adapter.timeLimit({}, { HARNESS_RUN_S: '900' }), 810);
 });
 
@@ -27,6 +27,9 @@ test('result: the last JSON object, with its run files', () => {
   is(r.steps, 7);
   is(r.artifacts, ['/tmp/intent-arm/2026-10-03T01-00-00-000Z/result.json', '/tmp/intent-arm/2026-10-03T01-00-00-000Z/calls.jsonl']);
   is(adapter.result('no json here'), null);
+  const failed = adapter.result('{"run": "r1", "tool": "intent", "ok": false, "error": "System 1 did not load: software adapter"}');
+  is([failed.ok, failed.error], [false, 'System 1 did not load: software adapter']);
+  ok(!('ok' in r));
 });
 
 test('judge: URL and texts, and a number must not run on', () => {

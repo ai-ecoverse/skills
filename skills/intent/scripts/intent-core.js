@@ -133,7 +133,7 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
    * bundle directory --from names (a fine-tuned export). A -vision bundle
    * also gets the marked screenshot on ACT.
    */
-  async function kevModel(size, from) {
+  async function kevModel(size, from, requireGpu = false) {
     if (!from && !kevRuntime.MODELS[size]) throw new IntentError(`--model is one of ${lib.MODELS.join(', ')}`);
     if (!from) {
       const status = await kevRuntime.weightsStatus(fs, size);
@@ -149,15 +149,29 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     let vision = /-vision$/.test(size || '');
     if (from) vision = Boolean(JSON.parse(String(await fs.readFile(`${from}/manifest.json`))).vision);
     const started = Date.now();
-    const model = await kevRuntime.openModel(fs, exec, {
-      model: size,
-      from: from || null,
-      // Named in the entry script: see kev-runtime.js loadKev.
-      requireBundle,
-    });
+    let runtime = '';
+    let model;
+    try {
+      model = await kevRuntime.openModel(fs, exec, {
+        model: size,
+        from: from || null,
+        // A software WebGPU adapter (SwiftShader) runs kev ~10x slower:
+        // with requireGpu it stops here instead.
+        requireGpu,
+        log: (line) => {
+          const m = /kev: (webgpu adapter .*|runtime \w+)/.exec(line);
+          if (m) runtime = runtime ? `${runtime}; ${m[1]}` : m[1];
+        },
+        // Named in the entry script: see kev-runtime.js loadKev.
+        requireBundle,
+      });
+    } catch (err) {
+      if (err?.name === 'NodeExitError') throw err;
+      throw new IntentError(String(err?.message || err));
+    }
     const name = from ? `kev ${from.split('/').filter(Boolean).pop()}` : `kev ${size}`;
     const key = from ? from.split('/').filter(Boolean).pop().replace(/^kev-/, '') : size;
-    return { name, key, kev: true, vision, loadMs: Date.now() - started, ask: (body) => model.systemOne(body) };
+    return { name, key, kev: true, vision, runtime, loadMs: Date.now() - started, ask: (body) => model.systemOne(body) };
   }
 
   /**
@@ -181,7 +195,7 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
       const account = await cfAccount(flags, token);
       s1 = { name: asked, key: asked, kev: false, vision: false, ask: system1.remoteSystemOne({ fetchFn: fetch, account, token, size: asked }) };
     } else {
-      s1 = await kevModel(asked, flags.from || null);
+      s1 = await kevModel(asked, flags.from || null, flags['require-gpu'] === true || flags['require-gpu'] === 'true');
     }
     models.set(key, s1);
     return s1;
@@ -675,7 +689,9 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     throw new IntentError('the intent daemon did not answer in time (is `intent serve` still running? jshd ls)');
   }
 
-  return { handle, serve, viaDaemon, IntentError };
+  // warm: load System 1 now, so a missing model or a software GPU fails
+  // before an agent starts depending on it.
+  return { handle, serve, viaDaemon, warm: openSystem1, IntentError };
 }
 
 module.exports = { createIntent, DIR, CALLS, STATE, BEAT, WAIT_DEFAULT_S };

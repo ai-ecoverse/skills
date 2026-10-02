@@ -29,7 +29,7 @@ intent-arm — run one goal with a Sonnet scoop that browses through one tool
 USAGE
   intent-arm --url URL --goal TEXT --tool intent|playwright-cli
                  [--model ID] [--time-limit S] [--json]
-                 [--s1-model M | --s1-from DIR] [--cf-account ID]   intent's System 1
+                 [--s1-model M | --s1-from DIR] [--require-gpu] [--cf-account ID]   intent's System 1
 
 Prints the run's numbers; the files are in ${ARM_DIR}/<run>/.
 `.trim();
@@ -81,6 +81,7 @@ async function main() {
   // A clean intent state: no tab or call log from an earlier run.
   let finished = false;
   let serving = null;
+  let system1Info = null;
   if (tool === 'intent') {
     await fs.mkdir(DIR, { recursive: true });
     await fs.rm(STATE).catch(() => {});
@@ -90,7 +91,21 @@ async function main() {
       ...(flags['cf-account'] ? { 'cf-account': flags['cf-account'] } : {}),
       ...(typeof flags['s1-model'] === 'string' ? { model: flags['s1-model'] } : {}),
       ...(typeof flags['s1-from'] === 'string' ? { from: flags['s1-from'] } : {}),
+      ...(flags['require-gpu'] ? { 'require-gpu': true } : {}),
     };
+    // System 1 loads before the agent starts: a missing bundle or, with
+    // --require-gpu, a software WebGPU adapter ends the run here, at once.
+    try {
+      const loaded = await core.warm(s1);
+      system1Info = { name: loaded.name, runtime: loaded.runtime || null, loadMs: loaded.loadMs ?? null };
+    } catch (err) {
+      if (err?.name === 'NodeExitError') throw err;
+      const failed = { run, tool, ok: false, error: `System 1 did not load: ${String(err?.message || err)}` };
+      await fs.writeFile(`${dir}/result.json`, JSON.stringify(failed, null, 2));
+      if (flags.json) cli.out(failed);
+      else console.error(`intent-arm: ${failed.error}`);
+      process.exit(1);
+    }
     serving = core.serve(s1, { stop: () => finished });
   }
 
@@ -216,6 +231,7 @@ async function main() {
         : null,
     finalUrl,
     tab,
+    system1: system1Info,
     answer: stdout.trim().slice(0, 500),
   };
   await fs.writeFile(`${dir}/result.json`, JSON.stringify(result, null, 2));
