@@ -1215,7 +1215,7 @@ test('the plan review takes no action and reads the long trail and the values', 
     prompt.includes('click:e1  click link "Incompleteness theorems"'),
     'the menu, for control names'
   );
-  is(page.REVIEW_SCHEMA.required, ['assessment', 'plan', 'values']);
+  is(page.REVIEW_SCHEMA.required, ['assessment', 'plan', 'next_steps', 'values']);
   ok(!('action' in page.REVIEW_SCHEMA.properties), 'no action to take');
 });
 
@@ -1342,7 +1342,10 @@ test('a hand-over only edits the plan; a review sees screenshots and earlier pla
     plan: ['a'],
     planFrom: 'written at step 8 by a plan review',
   });
-  ok(s2.includes('- plan_done (optional)') && s2.includes('You do not rewrite the plan here'));
+  ok(
+    s2.includes('- next_steps (optional)') &&
+      s2.includes('you do not change it here, plan reviews do')
+  );
   ok(!('plan' in page.system2Schema(menu).properties), 'a hand-over cannot rewrite the plan');
   ok(s2.includes('Current plan (written at step 8 by a plan review):'));
   ok(s2.includes('note_remove (optional)'));
@@ -1377,30 +1380,27 @@ test('a hand-over only edits the plan; a review sees screenshots and earlier pla
 });
 
 // Drug Wars, 2026-10-02: hand-overs rewrote the plan on 36 of 56 steps,
-// and System 2 copied our numbering into its notes ("N9: SELL sells ...").
-test('plan edits drop finished steps and put next steps on top; numbers are ours', () => {
-  const plan = ['Sell Heroin', 'Pay the debt', 'Bank the rest', 'Travel'];
-  const r = page.applyPlan(
-    plan,
-    [1, 9, 'x'],
-    ['1. Click SELL for Heroin', 'Scroll to PAY', 'a', 'b']
-  );
-  is(r.done, ['Sell Heroin']);
-  is(
-    r.added,
-    ['Click SELL for Heroin', 'Scroll to PAY', 'a'],
-    `at most ${page.MAX_PLAN_NEXT}, our numbering stripped`
-  );
-  is(r.plan, [
+// then, allowed only to edit it, marked every step done and put their next
+// three actions in its place. System 2 also copied our note numbering.
+test('hand-overs set next steps; the plan stays the strategy; numbers are ours', () => {
+  is(page.cleanNext(['1. Click SELL for Heroin', 'Scroll to PAY', 'a', 'b']), [
     'Click SELL for Heroin',
     'Scroll to PAY',
     'a',
-    'Pay the debt',
-    'Bank the rest',
-    'Travel',
   ]);
-  is(page.applyPlan(plan, [], []).plan, plan, 'no edits keep the plan');
-  is(page.applyPlan([], [], ['Start']).plan, ['Start'], 'an empty plan can grow');
+  is(page.cleanNext(undefined), null, 'none given: keep the current next steps');
+  is(page.cleanNext([]), [], 'an empty list clears them');
+  const lines = page
+    .planLines(['Buy low, sell high', 'Pay the debt'], [], ['Click MAX for Speed'])
+    .join('\n');
+  ok(
+    lines.includes(
+      'Plan:\n  1. Buy low, sell high\n  2. Pay the debt\nNext steps:\n  - Click MAX for Speed'
+    )
+  );
+  const menu = page.buildMenu(page.parseSnapshot(SNAPSHOT), 'x', {});
+  ok(!('plan' in page.system2Schema(menu).properties), 'a hand-over cannot touch the plan');
+  is(page.REVIEW_SCHEMA.required, ['assessment', 'plan', 'next_steps', 'values']);
   is(page.applyNotes([], ['N9: SELL sells the whole stack.', '3) Ludes cost $15.'], []).added, [
     'SELL sells the whole stack.',
     'Ludes cost $15.',
@@ -1425,6 +1425,13 @@ test("the plan's next steps rank System 1's menu", () => {
   ok(ids(['Click MAX for Speed']).includes('click:e99'), 'the row context counts');
   ok(
     !ids(['a', 'b', 'c', 'Travel to Lagos']).includes('click:e98'),
-    'only the next three steps rank'
+    'only the first three plan steps rank'
+  );
+  const withNext = page
+    .buildMenu(shot, 'Play the game', { plan: ['Travel to Lagos'], next: ['Click MAX for Speed'] })
+    .map((a) => a.id);
+  ok(
+    withNext.includes('click:e99') && !withNext.includes('click:e98'),
+    "System 2's next steps rank before the plan"
   );
 });

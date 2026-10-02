@@ -226,7 +226,7 @@ function render() {
       el('span', { class: 'meta' },
         s.plan ? chip('plan') : '', s.review ? chip('review') : '',
         who ? chip(who, `${WHO[who].short}${conf}`) : '',
-        d?.system2?.replanned ? el('span', { class: 'who review', title: 'System 2 edited the plan' }, 'plan edit') : '',
+
         ms((s.observe?.ms || 0) + (s.orient?.ms || 0) + (s.review?.ms || 0) + (d?.ms || 0) + (s.act?.ms || 0))));
   }));
   if (!rows.length) $('#steps').append(el('p', { class: 'empty' }, 'No steps of this kind.'));
@@ -338,7 +338,7 @@ function commandsView(commands) {
 
 // The state the decider reads, one coloured band per section.
 const SECTIONS = [
-  [/^Goal:/, 'goal', 'Goal'], [/^Plan:/, 'plan', 'Plan'], [/^Notes:/, 'notes', 'Notes'],
+  [/^Goal:/, 'goal', 'Goal'], [/^(Plan|Next steps):/, 'plan', 'Plan and next steps'], [/^Notes:/, 'notes', 'Notes'],
   [/^(Done so far|Last action changed|Going in circles|Not as typed):?/, 'history', 'History'],
   [/^(Page|Page text):/, 'page', 'Page'], [/^Controls:/, 'controls', 'Controls'],
 ];
@@ -359,12 +359,11 @@ function stateView(text) {
   return el('div', {}, keys, pre);
 }
 
-// What one System 2 hand-over changed in the plan.
-function planDelta(done, added) {
-  if (!(done && done.length) && !(added && added.length)) return el('p', { class: 'muted' }, 'Plan unchanged.');
-  return el('ul', { class: 'delta' },
-    ...(added || []).map((p) => el('li', { class: 'add' }, `next: ${p}`)),
-    ...(done || []).map((p) => el('li', { class: 'rem' }, `done: ${p}`)));
+// The next steps a hand-over left for System 1.
+function nextView(next, changed) {
+  if (!next || !next.length) return el('p', { class: 'muted' }, 'No next steps.');
+  return el('div', {}, el('p', {}, el('strong', {}, changed ? 'Next steps (new):' : 'Next steps (kept):')),
+    el('ol', {}, next.map((n) => el('li', {}, n))));
 }
 
 // What one System 2 call changed in the notes.
@@ -402,6 +401,7 @@ function renderStep(s) {
       s.review.assessment ? el('p', {}, s.review.assessment) : '',
       notesDelta(s.review.notesAdded, s.review.notesRemoved),
       planView(s.review.plan, s.review.notes, s.review.values),
+      s.review.next ? nextView(s.review.next, true) : '',
       el('p', { class: 'muted' }, 'System 1 then decided this step with the new plan.'),
       s.review.prompt ? el('details', {}, el('summary', {}, 'review prompt'), el('pre', {}, s.review.prompt)) : ''));
   }
@@ -447,7 +447,7 @@ function renderStep(s) {
         el('h3', {}, chip(audit ? 'audit' : 's2', null, true),
           audit ? (kept ? 'kept System 1\'s choice' : `changed ${d.system1?.action} to ${d.action.id}`) : `decided ${d.action.id}`),
         d.system2?.assessment ? el('p', {}, d.system2.assessment) : '',
-        d.system2 && d.system2.planDone ? planDelta(d.system2.planDone, d.system2.planAdded) : '',
+        d.system2 && d.system2.next ? nextView(d.system2.next, d.system2.nextChanged) : '',
         d.system2 ? notesDelta(d.system2.notesAdded, d.system2.notesRemoved) : '',
         d.system2 ? el('details', {}, el('summary', {}, 'the plan, notes and values after this step'), planView(d.system2.plan, d.system2.notes, d.system2.values)) : ''));
     }

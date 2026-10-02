@@ -58,7 +58,8 @@ const STOP_WORDS = new Set(
 // option 7% of 44) that it handed over nearly every step (2026-10-02). So:
 // 24, ranked by the plan's next steps first (rankClicks).
 const MAX_CLICKS = 24;
-// Plan steps whose words rank System 1's menu, and their weight.
+// System 2's next steps (or, without them, the plan's first steps) rank
+// System 1's menu; their words count this much more than the goal's.
 const PLAN_RANK_STEPS = 3;
 const PLAN_WORD_WEIGHT = 2;
 // System 2 reads every control in view: it can afford the long menu, and a
@@ -549,9 +550,10 @@ function clickScore(element, goalWords, previousLabels, planWords) {
   return s;
 }
 
-function rankClicks(elements, goal, previousLabels, max = MAX_CLICKS, plan = []) {
+function rankClicks(elements, goal, previousLabels, max = MAX_CLICKS, plan = [], next = []) {
   const goalWords = new Set(words(goal));
-  const planWords = new Set(words((plan || []).slice(0, PLAN_RANK_STEPS).join(' ')));
+  const steps = next && next.length ? next : (plan || []).slice(0, PLAN_RANK_STEPS);
+  const planWords = new Set(words(steps.join(' ')));
   return elements
     .filter((element) => element.kind === 'click')
     .map((element, index) => ({
@@ -608,7 +610,14 @@ function valueFits(value, element) {
  */
 function buildMenu(shot, goal, opts = {}) {
   const fields = shot.elements.filter((element) => element.kind === 'fill').slice(0, MAX_FIELDS);
-  const clicks = rankClicks(shot.elements, goal, opts.previousLabels, opts.maxClicks, opts.plan);
+  const clicks = rankClicks(
+    shot.elements,
+    goal,
+    opts.previousLabels,
+    opts.maxClicks,
+    opts.plan,
+    opts.next
+  );
   const values = opts.values || [];
   // System 2's values without a field are offered like the goal's.
   const general = values.filter((v) => !v.field).map((v) => v.text);
@@ -754,7 +763,7 @@ function compactState(goal, shot, menu, history, extra = {}) {
     : 'nothing yet';
   return [
     `Goal: ${goal}`,
-    ...planLines(extra.plan, extra.notes),
+    ...planLines(extra.plan, extra.notes, extra.next),
     `Done so far: ${done}`,
     ...(history.length
       ? [
@@ -785,9 +794,10 @@ const MAX_DONE_SO_FAR = 10;
  * The plan System 2 wrote and the notes it left, as System 1 reads them:
  * the deliberate system's reasoning steers every later fast decision.
  */
-function planLines(plan, notes) {
+function planLines(plan, notes, next) {
   const lines = [];
   if (plan && plan.length) lines.push('Plan:', ...plan.map((step, i) => `  ${i + 1}. ${step}`));
+  if (next && next.length) lines.push('Next steps:', ...next.map((step) => `  - ${step}`));
   if (notes && notes.length)
     lines.push('Notes:', ...notes.map((note, i) => `  N${i + 1}. ${note}`));
   return lines;
@@ -916,6 +926,7 @@ function orient(obs, opts) {
     scroll: view.scroll,
     values: opts.values,
     plan: opts.plan,
+    next: opts.next,
   });
   // System 2's menu: the same, with every control in view.
   const menuS2 = buildMenu(shot, opts.goal, {
@@ -950,6 +961,7 @@ function orient(obs, opts) {
     pixelsChanged: Boolean(opts.pixelsChanged),
     plan: opts.plan,
     notes: opts.notes,
+    next: opts.next,
   });
   return {
     menu,
@@ -1283,13 +1295,13 @@ function system2Prompt(ctx) {
   ].join('\n');
 }
 
-const PLAN_INSTRUCTION = `- plan_done (optional): the numbers of plan steps that are now finished or no longer apply (2 for step 2); they are removed. plan_next (optional): up to ${MAX_PLAN_NEXT} short steps to put at the top of the plan, naming controls by their labels. You do not rewrite the plan here; plan reviews do. System 1 follows the plan;`;
+const PLAN_INSTRUCTION = `- next_steps (optional): the next 1 to ${MAX_PLAN_NEXT} concrete steps for System 1, naming controls by their labels. They replace the current next steps; leave them out to keep them, [] when there are none. The plan is the long-term strategy: you do not change it here, plan reviews do;`;
+
 const NOTES_INSTRUCTION =
   '- note_add (optional): new lessons about this site for System 1 (for example "select a food item before pressing Buy and Eat"); note_remove (optional): the numbers of notes that are wrong or outdated (2 for N2). Notes stay until removed;';
 
-const PLAN_EDIT_SCHEMA = {
-  plan_done: { type: 'array', items: { type: 'integer' }, maxItems: MAX_PLAN },
-  plan_next: { type: 'array', items: { type: 'string' }, maxItems: MAX_PLAN_NEXT },
+const NEXT_SCHEMA = {
+  next_steps: { type: 'array', items: { type: 'string' }, maxItems: MAX_PLAN_NEXT },
 };
 
 // System 2 imitates the numbering it reads: "N9: SELL sells the whole
@@ -1300,25 +1312,19 @@ const stripNumber = (text) =>
     .trim();
 
 /**
- * A hand-over's plan edits: drop the finished steps by number, then put up
- * to MAX_PLAN_NEXT new steps at the top. Hand-overs used to rewrite the
- * whole plan, 36 times in 56 Drug Wars steps, and a plan review's plan was
- * replaced in the same step (2026-10-02). Returns { plan, done, added }.
+ * System 2's next steps, or null when it gave none (keep the current
+ * ones). Hand-overs once rewrote the whole plan, 36 times in 56 Drug Wars
+ * steps, and then, allowed only to edit it, marked every step done and
+ * put their next three actions in its place (2026-10-02). The plan is the
+ * strategy (the original plan, plan reviews); the next steps are the
+ * hand-over's.
  */
-function applyPlan(old, doneNumbers, next) {
-  const current = [...(old || [])];
-  const drop = new Set(
-    (doneNumbers || [])
-      .map((n) => (typeof n === 'string' ? Number.parseInt(n, 10) : n))
-      .filter((n) => Number.isInteger(n) && n >= 1 && n <= current.length)
-  );
-  const done = current.filter((_, i) => drop.has(i + 1));
-  const rest = current.filter((_, i) => !drop.has(i + 1));
-  const added = (next || [])
+function cleanNext(value) {
+  if (!Array.isArray(value)) return null;
+  return value
     .filter((t) => typeof t === 'string' && stripNumber(t))
     .slice(0, MAX_PLAN_NEXT)
     .map((t) => stripNumber(t).slice(0, 240));
-  return { plan: [...added, ...rest].slice(0, MAX_PLAN), done, added };
 }
 
 const NOTE_SCHEMA = {
@@ -1359,6 +1365,8 @@ function memoryLines(ctx) {
     ...(ctx.plan && ctx.plan.length
       ? ctx.plan.map((step, i) => `  ${i + 1}. ${step}`)
       : ['  (none yet)']),
+    'Next steps:',
+    ...(ctx.next && ctx.next.length ? ctx.next.map((n) => `  - ${n}`) : ['  (none)']),
     'Notes so far:',
     ...(ctx.notes && ctx.notes.length
       ? ctx.notes.map((n, i) => `  N${i + 1}. ${n}`)
@@ -1439,7 +1447,8 @@ function reviewPrompt(ctx) {
     'Read the steps below. Work out why System 1 keeps handing over: a plan step it cannot match to a control, text it has no value for, a loop the plan does not cover, a goal the plan no longer fits.',
     'Then answer with StructuredOutput:',
     '- assessment: what has been happening and what you changed, two to four sentences;',
-    '- plan: the remaining steps, rewritten for System 1: concrete, in order, each naming a control as the menu below labels it. It replaces the current plan, and later hand-overs keep it unless the situation changes;',
+    '- plan: the strategy, the remaining steps to the goal, rewritten for System 1: concrete, in order, each naming a control as the menu below labels it. It replaces the current plan. Hand-overs cannot change it, only the next steps;',
+    `- next_steps: the next 1 to ${MAX_PLAN_NEXT} concrete steps System 1 should take now;`,
     NOTES_INSTRUCTION,
     `- values: up to ${MAX_VALUES} texts System 1 may type, each {text, field}, field the label of the field it belongs in (omit field for any field). Values come from the goal or the page, never invented personal information. They replace the current values.`,
     '',
@@ -1461,10 +1470,11 @@ const REVIEW_SCHEMA = {
   properties: {
     assessment: { type: 'string' },
     plan: { type: 'array', items: { type: 'string' }, maxItems: MAX_PLAN },
+    ...NEXT_SCHEMA,
     ...NOTE_SCHEMA,
     values: VALUES_SCHEMA,
   },
-  required: ['assessment', 'plan', 'values'],
+  required: ['assessment', 'plan', 'next_steps', 'values'],
 };
 
 function system2Schema(menu) {
@@ -1474,7 +1484,7 @@ function system2Schema(menu) {
       action: { type: 'string', enum: menu.map((action) => action.id) },
       text: { type: 'string', description: 'The exact text to type, for a type action only.' },
       assessment: { type: 'string' },
-      ...PLAN_EDIT_SCHEMA,
+      ...NEXT_SCHEMA,
       ...NOTE_SCHEMA,
       values: VALUES_SCHEMA,
     },
@@ -1624,7 +1634,7 @@ module.exports = {
   cleanValues,
   mergeNotes,
   applyNotes,
-  applyPlan,
+  cleanNext,
   MAX_PLAN_NEXT,
   REVIEW_IMAGES,
   REVIEW_TRAIL,

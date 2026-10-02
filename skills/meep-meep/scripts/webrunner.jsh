@@ -267,9 +267,8 @@ function agentDecider(flags, model = flags.model || AGENT_MODEL_DEFAULT, thinkin
         prompt,
         answer,
         assessment: typeof answer.assessment === 'string' ? answer.assessment.trim().slice(0, 800) : '',
-        // A hand-over edits the plan; only a plan review rewrites it.
-        planDone: answer.plan_done,
-        planNext: answer.plan_next,
+        // A hand-over sets the next steps; only a plan review rewrites the plan.
+        next: page.cleanNext(answer.next_steps),
         noteAdd: answer.note_add,
         noteRemove: answer.note_remove,
         values: page.cleanValues(answer.values),
@@ -285,6 +284,7 @@ function agentDecider(flags, model = flags.model || AGENT_MODEL_DEFAULT, thinkin
         answer,
         assessment: typeof answer.assessment === 'string' ? answer.assessment.trim().slice(0, 800) : '',
         plan: page.cleanList(answer.plan, page.MAX_PLAN),
+        next: page.cleanNext(answer.next_steps),
         noteAdd: answer.note_add,
         noteRemove: answer.note_remove,
         values: page.cleanValues(answer.values),
@@ -955,8 +955,10 @@ async function cycles(flags, run) {
   // in its state) and the trail of recent steps with what each one changed.
   // values: texts System 2 left for System 1 to type.
   // planHistory: every plan with the step and who wrote it.
-  const memory = { plan: [], notes: [], values: [], trail: [], planHistory: [] };
-  const remembered = () => ({ plan: memory.plan, notes: memory.notes, values: memory.values });
+  // plan: the strategy (the original plan, plan reviews); next: System 2's
+  // next steps for System 1, replaced by every hand-over.
+  const memory = { plan: [], next: [], notes: [], values: [], trail: [], planHistory: [] };
+  const remembered = () => ({ plan: memory.plan, next: memory.next, notes: memory.notes, values: memory.values });
   const setPlan = (plan, step, by) => {
     memory.plan = plan;
     memory.planHistory.push({ step, by, plan });
@@ -1089,6 +1091,7 @@ async function cycles(flags, run) {
         imageSteps: obs.screenshot ? [step, ...earlier.map((e) => e.step)] : [],
       });
       if (reviewed.plan && reviewed.plan.length) setPlan(reviewed.plan, step, 'a plan review');
+      if (reviewed.next) memory.next = reviewed.next;
       const noted = page.applyNotes(memory.notes, reviewed.noteAdd, reviewed.noteRemove);
       memory.notes = noted.notes;
       if (reviewed.values) memory.values = reviewed.values;
@@ -1204,21 +1207,16 @@ async function cycles(flags, run) {
       ms: decideMs,
     };
     // System 2 may rewrite the plan and add notes; System 1 reads them next.
-    // System 2 may edit the plan (finished steps out, next steps in), change notes and set values.
-    if (decision.assessment != null || decision.planDone || decision.planNext || decision.noteAdd || decision.noteRemove) {
-      const edit = page.applyPlan(memory.plan, decision.planDone, decision.planNext);
-      const replanned = Boolean(edit.done.length || edit.added.length);
-      if (replanned) {
-        setPlan(edit.plan, step, decision.system1 && decision.system1.oversight ? 'a System 2 audit' : 'System 2');
-      }
+    // System 2 may set the next steps, change notes and set values; the plan is the review's.
+    if (decision.assessment != null || decision.next || decision.noteAdd || decision.noteRemove) {
+      const nextChanged = Boolean(decision.next && decision.next.join('\n') !== memory.next.join('\n'));
+      if (decision.next) memory.next = decision.next;
       const noted = page.applyNotes(memory.notes, decision.noteAdd, decision.noteRemove);
       memory.notes = noted.notes;
       if (decision.values) memory.values = decision.values;
       record.decide.system2 = {
         assessment: decision.assessment || '',
-        replanned,
-        planDone: edit.done,
-        planAdded: edit.added,
+        nextChanged,
         notesAdded: noted.added,
         notesRemoved: noted.removed,
         ...remembered(),
