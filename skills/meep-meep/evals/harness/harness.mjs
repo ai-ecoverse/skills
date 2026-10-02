@@ -31,6 +31,8 @@ export const arms = [
   hybridArm('0.8b-vision'),
   hybridArm('4b-vision'),
   { id: 'playwright-agent', kind: 'agent', pool: 'bench', model: AGENT_MODEL },
+  // DIAGNOSTIC (throwaway branch): kev alone, load + one ask, timed, no webrunner.
+  { ...kevArm('probe-0.8b-vision', '0.8b-vision', []), probe: '0.8b-vision' },
 ];
 
 /** Arms on hold. */
@@ -38,6 +40,17 @@ export const heldArms = [];
 
 /** One goal as a `webrunner run` command line. */
 export function command(goal, arm, { shellQuote }) {
+  if (arm.probe) {
+    const m = shellQuote(arm.probe);
+    // Stamps before and after, so a hang still shows how far it got.
+    return [
+      'mkdir -p /tmp/meep',
+      `echo "start $(date +%s)" > /tmp/meep/probe.txt`,
+      `echo 'A pizza order form with a customer name field' | kev ask 'x:noul:Is this about pizza?' --model ${m} --json >> /tmp/meep/probe.txt 2>&1`,
+      `echo "exit $? end $(date +%s)" >> /tmp/meep/probe.txt`,
+      'cat /tmp/meep/probe.txt',
+    ].join('; ');
+  }
   const argv = ['webrunner', 'run', '--url', goal.url, '--goal', goal.goal];
   for (const t of goal.expect ?? []) argv.push('--expect', t);
   for (const u of goal.expect_url ?? []) argv.push('--expect-url', u);
@@ -225,4 +238,16 @@ export async function judgeTrace({ own, readText, readBase64 }) {
  */
 export function metrics(snapshot) {
   return { points: gamePoints(snapshot) };
+}
+
+/** DIAGNOSTIC: what to keep from every run, failed ones included. */
+export async function diagnostics({ list }) {
+  const runs = (await list('/tmp/meep/runs')).sort();
+  const newest = runs.at(-1);
+  return [
+    '/tmp/meep/webrunner.log',
+    '/tmp/meep/probe.txt',
+    '/tmp/kev/pull.log',
+    ...(newest ? [`/tmp/meep/runs/${newest}/trace.jsonl`] : []),
+  ];
 }
