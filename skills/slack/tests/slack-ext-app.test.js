@@ -92,6 +92,13 @@ class NodeExitError extends Error {
  * @param {object}  [opts.config]     skill.config() return value
  * @param {string|null} [opts.refreshToken] value of $SLACK_APP_REFRESH_TOKEN
  * @param {boolean} [opts.configWriteFails] make skill.config(patch) throw
+ * @param {object}  [opts.session]    opt-in Slack tab for the browser-session
+ *                                    path: { tabUrl, teams: {id: {token, user_id}},
+ *                                    authTest }. Absent = every browser use throws.
+ *
+ * A response override may be an ARRAY: the n-th call to that method gets the
+ * n-th element (the last one repeats). That is how a manifest that changes
+ * between the export and the pre-update re-export is simulated.
  */
 async function load(opts) {
   const options = opts || {};
@@ -124,6 +131,16 @@ async function load(opts) {
     return { ok: false, error: 'not_mocked' };
   }
 
+  const callCounts = {};
+  function respond(method) {
+    const responses = options.responses || {};
+    callCounts[method] = (callCounts[method] || 0) + 1;
+    if (!Object.prototype.hasOwnProperty.call(responses, method)) return defaultResponse(method);
+    const r = responses[method];
+    if (!Array.isArray(r)) return r;
+    return r[Math.min(callCounts[method] - 1, r.length - 1)];
+  }
+
   const httpStub = {
     client(clientOpts) {
       return {
@@ -147,10 +164,7 @@ async function load(opts) {
             raw: Boolean(postOpts && postOpts.raw),
           });
           events.push({ type: 'http', method: method });
-          const responses = options.responses || {};
-          const body = Object.prototype.hasOwnProperty.call(responses, method)
-            ? responses[method]
-            : defaultResponse(method);
+          const body = respond(method);
           return { status: options.status || 200, headers: {}, body };
         },
       };
@@ -160,6 +174,53 @@ async function load(opts) {
   // The app commands use a bearer app configuration token over plain HTTPS. If
   // one of them ever reaches for the Slack tab (i.e. falls back to the xoxc
   // session token), these stubs record it and the call throws.
+  // With opts.session the stub plays an open Slack tab instead: findTab returns
+  // it, localStorage serves localConfig_v2, and fetch answers /api/<method>
+  // from the same response table as the HTTP stub, recording each call.
+  const tabCalls = [];
+  const session = options.session || null;
+  const sessionTab = session
+    ? { id: 'TAB1', url: session.tabUrl || 'https://app.slack.com/client/T0SESSION1/C0000000001' }
+    : null;
+  const sessionBrowserStub = {
+    async findTab() {
+      browserUses.push('findTab');
+      return sessionTab;
+    },
+    async localStorage(_tab, key) {
+      browserUses.push('localStorage');
+      if (key !== 'localConfig_v2') return null;
+      return JSON.stringify({ teams: session.teams || {} });
+    },
+    async fetch(tab, reqPath, fetchOpts) {
+      browserUses.push('fetch');
+      const method = String(reqPath).replace(/^\/api\//, '');
+      const bodyText = fetchOpts && typeof fetchOpts.body === 'string' ? fetchOpts.body : '';
+      const params = {};
+      for (const [k, v] of new URLSearchParams(bodyText)) params[k] = v;
+      tabCalls.push({
+        method,
+        path: reqPath,
+        tab,
+        httpMethod: fetchOpts && fetchOpts.method,
+        headers: (fetchOpts && fetchOpts.headers) || {},
+        body: bodyText,
+        params,
+      });
+      events.push({ type: 'tab', method: method });
+      if (method === 'auth.test') {
+        const team = Object.values(session.teams || {}).find((t) => t.token === params.token) || {};
+        const body = session.authTest || {
+          ok: true,
+          user: team.user || 'admin.user',
+          user_id: team.user_id || 'U0ADMIN0001',
+        };
+        return { status: 200, body };
+      }
+      return { status: 200, body: respond(method) };
+    },
+  };
+
   const browserStub = {
     async findTab() {
       browserUses.push('findTab');
@@ -222,7 +283,7 @@ async function load(opts) {
   };
 
   const mocks = {
-    'sliccy:browser': browserStub,
+    'sliccy:browser': session ? sessionBrowserStub : browserStub,
     'sliccy:cli': cliStub,
     'sliccy:color': colorStub,
     'sliccy:http': httpStub,
@@ -265,6 +326,10 @@ return {
   formatLeaf,
   manifestApi,
   getAppConfigToken,
+  resolveAppAuth,
+  configTokenClient,
+  sessionClient,
+  manifestsEqual,
   renderValidationErrors,
   deepClone,
   deepOverlay,
@@ -319,6 +384,7 @@ return {
   return {
     mod,
     httpCalls,
+    tabCalls,
     writes,
     browserUses,
     configWrites,
@@ -329,6 +395,8 @@ return {
     text: () => stdout.join('\n'),
     errText: () => stderr.join('\n'),
     methods: () => httpCalls.map((c) => c.method),
+    tabMethods: () => tabCalls.map((c) => c.method),
+    tabUpdateCalls: () => tabCalls.filter((c) => c.method === 'apps.manifest.update'),
     // Every call that CHANGES something on Slack's side.
     writeCalls: () =>
       httpCalls.filter(
@@ -813,7 +881,7 @@ test('app requests are form-encoded and bearer-authenticated with the config tok
   is(call.token, TEST_TOKEN, 'the app configuration token must authenticate the call');
 });
 
-test('app commands never touch the browser session (no xoxc fallback)', async () => {
+test('with a config token, app commands never touch the browser session', async () => {
   const h = await load({ argv: ['app', 'show', APP_ID] });
   await h.mod.cmdAppShow();
   is(h.browserUses, [], 'no browser/tab/localStorage access from app commands');
@@ -937,7 +1005,8 @@ test('write helper exports the live manifest before updating', async () => {
   });
   await h.mod.cmdAppSetScopes();
   // Order matters: the export is what the payload is built from.
-  is(h.methods(), ['apps.manifest.export', 'apps.manifest.update']);
+  // The second export is the changed-since-diff re-check right before update.
+  is(h.methods(), ['apps.manifest.export', 'apps.manifest.export', 'apps.manifest.update']);
 });
 
 test('write helper refuses to update when the export fails', async () => {
@@ -1248,7 +1317,7 @@ test('the deletion gate blocks a deletion the command did not declare', async ()
   const err = await expectDie(() =>
     h.mod.updateFromLiveManifest({
       appId: APP_ID,
-      token: TEST_TOKEN,
+      auth: TEST_TOKEN,
       action: 'set-scopes',
       summary: [],
       mutate: (manifest) => {
@@ -1269,7 +1338,7 @@ test('the deletion gate allows a deletion the command declared', async () => {
 
   const result = await h.mod.updateFromLiveManifest({
     appId: APP_ID,
-    token: TEST_TOKEN,
+    auth: TEST_TOKEN,
     action: 'set-events',
     summary: [],
     mutate: (manifest) => {
@@ -1292,7 +1361,7 @@ test('an unrequested deletion is blocked even when a requested one is declared',
   const err = await expectDie(() =>
     h.mod.updateFromLiveManifest({
       appId: APP_ID,
-      token: TEST_TOKEN,
+      auth: TEST_TOKEN,
       action: 'set-events',
       summary: [],
       mutate: (manifest) => {
@@ -1318,7 +1387,7 @@ test('--allow-deletions overrides the gate for an unrequested deletion', async (
 
   const result = await h.mod.updateFromLiveManifest({
     appId: APP_ID,
-    token: TEST_TOKEN,
+    auth: TEST_TOKEN,
     action: 'set-scopes',
     summary: [],
     mutate: (manifest) => {
