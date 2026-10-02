@@ -96,7 +96,7 @@ jobs:
     needs: plan
     if: needs.plan.outputs.run == 'true'
     runs-on: ${{ matrix.runs_on }}
-    timeout-minutes: 240
+    timeout-minutes: 270
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
@@ -153,7 +153,8 @@ jobs:
         run: node tools/harness-evals/boot.mjs
 
       - name: Run the goals
-        timeout-minutes: 200
+        # A games pass with big budgets is ~3 h of goals plus judging.
+        timeout-minutes: 230
         env:
           HARNESS_SLICC: ${{ github.workspace }}/slicc
           HARNESS_SKILL_DIR: ${{ github.workspace }}/skills/${{ matrix.skill }}
