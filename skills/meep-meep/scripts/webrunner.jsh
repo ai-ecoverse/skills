@@ -474,10 +474,14 @@ const VIEWPORT_JS =
 // text and box. page.promoteClickable makes them synthetic menu entries.
 const CLICKABLE_JS = `JSON.stringify((() => {
   const out = [];
-  const native = /^(A|BUTTON|INPUT|SELECT|TEXTAREA|SUMMARY|OPTION|LABEL)$/;
+  // An <a> without href is not a link to the accessibility tree (Seedship's
+  // "New game" is <a class="link-internal" tabindex="0">), so only real links
+  // and form controls are left to the snapshot.
+  const native = /^(BUTTON|INPUT|SELECT|TEXTAREA|SUMMARY|OPTION|LABEL)$/;
   for (const el of document.querySelectorAll('body *')) {
     if (out.length >= 200) break;
-    if (native.test(el.tagName) || el.closest('a, button')) continue;
+    if (native.test(el.tagName) || (el.tagName === 'A' && el.hasAttribute('href'))) continue;
+    if (el.parentElement && el.parentElement.closest('a[href], button')) continue;
     const cls = typeof el.className === 'string' ? el.className : '';
     const pointer = getComputedStyle(el).cursor === 'pointer';
     const parentPointer = el.parentElement && getComputedStyle(el.parentElement).cursor === 'pointer';
