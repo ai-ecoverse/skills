@@ -3,9 +3,11 @@ import {
   arms,
   command,
   containsValue,
+  gamePoints,
   heldArms,
   hnTopFromHtml,
   judge,
+  judgeTrace,
   placeholder,
   result,
 } from '../evals/harness/harness.mjs';
@@ -88,4 +90,50 @@ test('hn:top reads the first story row, and refuses unknown names', async () => 
     threw = true;
   }
   ok(threw);
+});
+
+test('the game points come from the last points table', () => {
+  is(gamePoints('Points Scored Today -1825 Total Points All Tours -4,255'), -4255);
+  is(gamePoints('Total Points All Tours -13 ... Total Points All Tours 120'), 120);
+  is(gamePoints('no table'), null);
+});
+
+test('judgeTrace builds the judge trace from webrunner lines and reads points off the final page only', async () => {
+  const state = (text) => `Goal: g\nPage text:\n  ${text}\nControls:\n  [e1] button "x"`;
+  const lines = [
+    { type: 'start', goal: 'g' },
+    {
+      type: 'step',
+      step: 1,
+      observe: { screenshot: 'step-01.png' },
+      orient: { state: state('Total Points All Tours -13') },
+      decide: {
+        system: 'kev',
+        system1: { action: 'click:e1' },
+        action: { describe: 'click button "Start Riding"' },
+      },
+    },
+    {
+      type: 'step',
+      step: 2,
+      observe: { screenshot: 'step-02.png' },
+      orient: { state: state('Riding') },
+      decide: {
+        system: 'agent',
+        system1: { action: 'click:e1', shrug: 'confidence 0.1 < 0.5' },
+        action: { describe: 'click link "Rice and Beans"' },
+        system2: { assessment: 'Buy and Eat needs a selection first.' },
+      },
+    },
+    { type: 'end', ok: false, reason: 'stalled', steps: 2 },
+  ];
+  const trace = await judgeTrace(lines, async (name) => (name === 'step-02.png' ? 'BASE64' : null));
+  is(trace.steps.length, 2);
+  ok(trace.steps[0].startsWith('System 1: click button "Start Riding"'));
+  ok(trace.steps[1].includes('System 2: click link "Rice and Beans"'));
+  ok(trace.steps[1].includes('assessment: Buy and Eat needs a selection first.'));
+  ok(trace.finalResult.includes('did not pass (stalled) after 2 steps'));
+  ok(trace.finalResult.includes('Riding'));
+  is(trace.screenshots, [{ label: 'step-02.png', base64: 'BASE64', format: 'png' }]);
+  is(trace.points, null, 'the -13 on an earlier page is not the result');
 });

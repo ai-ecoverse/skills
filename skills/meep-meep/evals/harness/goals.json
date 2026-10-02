@@ -1,5 +1,5 @@
 {
-  "last_updated": "2026-10-01",
+  "last_updated": "2026-10-02",
   "goals": [
     {
       "id": "flights",
@@ -32,6 +32,25 @@
       "expect": [],
       "expect_url": ["news.ycombinator.com/item?id={{hn:top}}"],
       "max_steps": 6
+    },
+    {
+      "id": "armchair-bike",
+      "url": "https://www.biketouringtips.com/ArmchairBikeTouring/",
+      "goal": "Play Armchair Bike Touring and finish the 100 mile Newbie tour with as many points as you can. Click Click to Start Game, then Start Tour. How the game scores: each day starts at -2000 points (daily metabolism), and you earn points for the calories you burn only when you eat more than you burn that day, so eat plenty, about 3500 calories a day. Penalties: burning more than 350 calories in the morning before eating forces a stop and costs the uneaten calories; being forced to stop for the night costs 500; riding past the 50 mile daily limit cuts the next day's limit by 10; a flat tire or broken spoke you cannot fix with the repair kit means hitchhiking, minus 1000; going over the $150 budget costs 1000; a stealth camp that is discovered costs 1000. Sunshine and tailwinds add enjoyment points, headwinds and rain take them away; Road Angel meals add calories and enjoyment but cut the day's limit by 10. Each day, Get Some Food and eat before you are hungry, and Spend the Night Here at a campground or motel before the limit. Stop when the game says the tour is complete.",
+      "expect": ["completed your first bicycle tour"],
+      "expect_url": [],
+      "max_steps": 150,
+      "rubric": "# Rubric: Armchair Bike Touring, the 100-mile Newbie tour (meep-meep armchair-bike)\n\n## Source facts (verified 2026-10-02)\n- The game is https://www.biketouringtips.com/ArmchairBikeTouring/. Its scoring rules are on moreInfo.v3.html and are summarised in the task text.\n- Finishing the first tour shows: \"Congratulations! You have just completed your first bicycle tour. You rode the 100 miles in ...\". The end-of-day table lists \"Total Points All Tours <n>\" and any \"Penalties Assessed\" (for example \"Not Eating penalty -367\").\n- The status panel (calories used and eaten, budget, miles, the day's mileage limit, points) is drawn on a canvas: it shows in screenshots, not in page text.\n- A Road Angel meal or a side trip legitimately cuts the day's limit by 10; only riding past the limit is a mileage violation.\n- Live runs on 2026-10-01: one finished with -4255 points (Not Eating penalty on both days); one stopped at mile 96 with -2245.\n\n## Items\nA1_finished — The run shows the game's tour-completion message for the 100-mile tour in its final state or screenshots. Ending earlier, or the agent only claiming it finished, is violated.\nA2_points_floor — The last \"Total Points All Tours\" the game shows is -3000 or higher. Lower is violated; no points total shown anywhere is not_assessable.\nA3_points_positive — The last \"Total Points All Tours\" the game shows is 0 or higher.\nA4_no_forced_eating — The game never forced a stop to eat: no \"Not Eating penalty\" or forced-eating message on any day. Any such penalty is violated.\nA5_no_forced_night — The game never forced a stop for the night (the 500-point penalty). Any forced overnight stop is violated.\nA6_within_mileage — The rider never rode past the day's mileage limit (no next-day limit cut for riding too far). Cuts from Road Angel meals or side trips do not count.\nA7_within_budget — Spending stayed within the $150 budget: no over-budget penalty, and the remaining budget never went below $0.\nA8_repairs_without_hitchhiking — Every flat tire or broken spoke was repaired from the repair kit; no hitchhike to a bike store (minus 1000) happened. A run with no breakdowns is met.\n",
+      "weights": {
+        "A1_finished": 30,
+        "A2_points_floor": 10,
+        "A3_points_positive": 10,
+        "A4_no_forced_eating": 10,
+        "A5_no_forced_night": 10,
+        "A6_within_mileage": 10,
+        "A7_within_budget": 10,
+        "A8_repairs_without_hitchhiking": 10
+      }
     }
   ]
 }

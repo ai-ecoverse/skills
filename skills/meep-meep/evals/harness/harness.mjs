@@ -108,3 +108,81 @@ export async function placeholder(name, { fetch }) {
   if (!id) throw new Error('could not read the top story id from the Hacker News front page');
   return id;
 }
+
+// ── judged goals (rubric + weights, graded by the bench's findings judge) ──
+
+/**
+ * The game's own score, read off its last points table: "Total Points All
+ * Tours -4255" (Armchair Bike Touring). null when none is shown.
+ */
+export function gamePoints(text) {
+  const all = [...String(text).matchAll(/Total Points All Tours\s*(-?\d[\d,]*)/g)];
+  return all.length ? Number(all[all.length - 1][1].replace(/,/g, '')) : null;
+}
+
+const pageTextOf = (state) => {
+  const s = String(state || '');
+  const i = s.indexOf('Page text:');
+  if (i < 0) return '';
+  const j = s.indexOf('\nControls:', i);
+  return s.slice(i + 'Page text:'.length, j < 0 ? undefined : j).trim();
+};
+
+/**
+ * A webrunner run as the bench judge's trace ({ steps, finalResult,
+ * outputFilesText, screenshots }): one line per cycle with who decided, the
+ * action, what it changed and System 2's assessment, plus the page text
+ * whenever it changed; the final page in full; the last screenshots.
+ * lines: the parsed trace.jsonl; screenshot(name) → base64 PNG or null.
+ */
+export async function judgeTrace(lines, screenshot, { shots = 4 } = {}) {
+  const steps = [];
+  let lastText = '';
+  let lastState = '';
+  const stepLines = lines.filter((l) => l.type === 'step');
+  for (const s of stepLines) {
+    const d = s.decide || {};
+    const parts = [];
+    if (d.action) {
+      const who =
+        d.system1 && d.system1.shrug ? 'System 2' : d.system1 ? 'System 1' : d.system || '';
+      parts.push(`${who}: ${d.action.describe}${d.action.text ? ` "${d.action.text}"` : ''}`);
+    }
+    if (s.diff && s.diff.changed && s.diff.changed.length) {
+      parts.push(`changed: ${s.diff.changed.map((c) => `${c.label} = "${c.to}"`).join('; ')}`);
+    }
+    if (d.system2 && d.system2.assessment) parts.push(`assessment: ${d.system2.assessment}`);
+    if (s.act && s.act.error) parts.push(`action failed: ${s.act.error}`);
+    if (s.outcome) parts.push(`outcome: ${s.outcome}`);
+    const state = s.orient ? s.orient.state : '';
+    if (state) lastState = state;
+    const text = pageTextOf(state);
+    if (text && text !== lastText) {
+      parts.push(`page text: ${text.replace(/\s+/g, ' ').slice(0, 600)}`);
+      lastText = text;
+    }
+    if (parts.length) steps.push(parts.join(' | '));
+  }
+  const end = lines.find((l) => l.type === 'end') || {};
+  const finalText = pageTextOf(lastState);
+  const finalResult = [
+    `webrunner: ${end.ok ? 'passed' : 'did not pass'} (${end.reason || 'no end record'}) after ${end.steps ?? stepLines.length} steps.`,
+    'Final page text:',
+    finalText || '(none)',
+  ].join('\n');
+  const named = stepLines.map((s) => s.observe && s.observe.screenshot).filter(Boolean);
+  const screenshots = [];
+  for (const name of named.slice(-shots)) {
+    const base64 = await screenshot(name);
+    if (base64) screenshots.push({ label: name, base64, format: 'png' });
+  }
+  return {
+    steps,
+    finalResult,
+    outputFilesText: '',
+    screenshots,
+    // Only the final page counts: an earlier day's table is not the result
+    // (the solo pilot read -13 off day 1 while the game stood at -2245).
+    points: gamePoints(finalText),
+  };
+}
