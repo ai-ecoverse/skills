@@ -185,6 +185,42 @@ async function run(argv, rec) {
   return result;
 }
 
+// Every playwright-cli call costs ~750 ms of fixed overhead, whatever it
+// does; sliccy:browser's eval takes ~1 ms (measured 2026-10-02 by the
+// intent thread). observe made two eval calls per step and act one or two.
+// Page evals go through the bridge, with playwright-cli as the fallback.
+// stdout is the value as JSON, as playwright-cli eval prints it.
+let browserBridge;
+async function pageEval(tab, expr, rec) {
+  const started = Date.now();
+  try {
+    if (browserBridge === undefined) browserBridge = require('sliccy:browser');
+    const value = await browserBridge.eval({ targetId: tab }, expr);
+    const stdout = JSON.stringify(value === undefined ? null : value);
+    if (rec) {
+      rec.push({
+        argv: ['sliccy:browser eval', traceLib.clip(expr, 300)],
+        exitCode: 0,
+        ms: Date.now() - started,
+        stdout: traceLib.clip(stdout, 1200),
+        stderr: '',
+      });
+    }
+    return { exitCode: 0, stdout, stderr: '' };
+  } catch (err) {
+    if (err && err.name === 'NodeExitError') throw err;
+    return run(['playwright-cli', 'eval', `--tab=${tab}`, expr], rec);
+  }
+}
+async function pageEvalOk(tab, expr, rec) {
+  const result = await pageEval(tab, expr, rec);
+  if (result.exitCode !== 0) {
+    const detail = (result.stderr || result.stdout || '').trim().slice(0, 500);
+    throw new Error(`page eval failed (${result.exitCode})${detail ? `: ${detail}` : ''}`);
+  }
+  return result.stdout || '';
+}
+
 async function sh(argv, rec) {
   const result = await run(argv, rec);
   if (result.exitCode !== 0) {
@@ -876,14 +912,14 @@ async function observe(tab, prev, opts) {
   const shot = page.parseSnapshot(raw);
   let viewport = null;
   if (opts.viewport) {
-    const evaluated = await run(['playwright-cli', 'eval', `--tab=${tab}`, VIEWPORT_JS], commands);
+    const evaluated = await pageEval(tab, VIEWPORT_JS, commands);
     viewport = evaluated.exitCode === 0 ? parseViewport(evaluated.stdout) : null;
   }
   shot.viewport = viewport;
   let shotWithClicks = shot;
   let disambiguation = [];
   if (opts.viewport) {
-    const found = await run(['playwright-cli', 'eval', `--tab=${tab}`, PAGE_SCAN_JS], commands);
+    const found = await pageEval(tab, PAGE_SCAN_JS, commands);
     if (found.exitCode === 0) {
       const scanned = parseScan(found.stdout);
       shotWithClicks = page.promoteClickable(shot, scanned.clickable, viewport);
@@ -986,7 +1022,7 @@ async function act(tab, action, viewport, commands) {
     return;
   }
   if (action.element.synthetic) {
-    const clicked = await sh(['playwright-cli', 'eval', `--tab=${tab}`, clickAt(action.element.box)], commands);
+    const clicked = await pageEvalOk(tab, clickAt(action.element.box), commands);
     if (!clicked.includes('ok')) throw new Error(`nothing to click at "${action.element.label}"`);
     return;
   }
@@ -996,11 +1032,11 @@ async function act(tab, action, viewport, commands) {
   // (page-scan.js), so those are clicked by their place in the page.
   if (Number.isInteger(action.element.nth)) {
     const pick = JSON.stringify({ name: action.element.label, nth: action.element.nth });
-    const picked = await sh(['playwright-cli', 'eval', `--tab=${tab}`, `(${pageScan.scan.toString()})(${pick})`], commands);
+    const picked = await pageEvalOk(tab, `(${pageScan.scan.toString()})(${pick})`, commands);
     if (picked.includes('ok')) {
       if (!keystrokes) return;
       await sh(['sleep', '0.3'], commands);
-      await sh(['playwright-cli', 'eval', `--tab=${tab}`, SELECT_FOCUSED], commands);
+      await pageEvalOk(tab, SELECT_FOCUSED, commands);
       await sh(['playwright-cli', 'type', `--tab=${tab}`, '--', action.text], commands);
       return;
     }
@@ -1013,7 +1049,7 @@ async function act(tab, action, viewport, commands) {
   if (result.exitCode === 0) {
     if (!keystrokes) return;
     await sh(['sleep', '0.3'], commands);
-    await sh(['playwright-cli', 'eval', `--tab=${tab}`, SELECT_FOCUSED], commands);
+    await pageEvalOk(tab, SELECT_FOCUSED, commands);
     await sh(['playwright-cli', 'type', `--tab=${tab}`, '--', action.text], commands);
     return;
   }
@@ -1022,10 +1058,7 @@ async function act(tab, action, viewport, commands) {
     throw new Error(`playwright-cli click ${ref} failed: ${detail.trim().slice(0, 300)}`);
   }
   await say(`         ${ref} has no node id; focusing "${action.element.label.trim()}" by name`);
-  const focused = await sh(
-    ['playwright-cli', 'eval', `--tab=${tab}`, focusByName(action.element, action.operation === 'CLICK')],
-    commands
-  );
+  const focused = await pageEvalOk(tab, focusByName(action.element, action.operation === 'CLICK'), commands);
   if (!focused.includes('ok')) throw new Error(`no visible control named "${action.element.label.trim()}"`);
   if (action.operation === 'TYPE_TEXT') {
     await sh(['playwright-cli', 'type', `--tab=${tab}`, '--', action.text], commands);
