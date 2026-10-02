@@ -254,13 +254,25 @@ function agentDecider(flags, model = flags.model || AGENT_MODEL_DEFAULT, thinkin
     // assessment, and may rewrite the plan, change notes and set values.
     async deliberate(ctx, menu) {
       const images = await attachable(ctx.imagePaths || []);
-      const prompt = page.system2Prompt({ ...ctx, menu, imageCount: images.length });
-      const answer = await ask(prompt, page.system2Schema(menu), images);
+      let prompt = page.system2Prompt({ ...ctx, menu, imageCount: images.length });
+      let answer = await ask(prompt, page.system2Schema(menu), images);
       let action = page.pickAction(menu, answer && answer.action);
+      const typed = (a) => (typeof a.text === 'string' ? a.text.trim() : '');
+      // A type action with no text ended the run: "type:e2 came back without
+      // text" on Wikipedia, eval round 37009340905 (2026-10-02). Ask once
+      // more, saying so; then wait rather than fail.
+      if (action.operation === 'TYPE_TEXT' && !action.text && !(typed(answer) && typed(answer).length <= 2000)) {
+        prompt = `${prompt}\n\nYour last answer chose ${action.id} but gave no \`text\`. A type action needs the exact text in \`text\`; or choose another action.`;
+        answer = await ask(prompt, page.system2Schema(menu), images);
+        action = page.pickAction(menu, answer && answer.action);
+      }
       if (action.operation === 'TYPE_TEXT' && !action.text) {
-        const text = typeof answer.text === 'string' ? answer.text.trim() : '';
-        if (!text || text.length > 2000) throw new Error(`${action.id} came back without text`);
-        action = { ...action, text };
+        const text = typed(answer);
+        if (text && text.length <= 2000) action = { ...action, text };
+        else {
+          await say(`         system 2 chose ${action.id} twice without text; waiting instead`);
+          action = menu.find((a) => a.operation === 'WAIT') || action;
+        }
       }
       return {
         action,
@@ -904,6 +916,8 @@ async function runGoal(flags) {
       result.seconds = (Date.now() - started) / 1000;
       ended = true;
       await trace.end(result);
+      // main prints it with --json: the eval reads the run id from it.
+      if (err && typeof err === 'object') err.result = result;
       throw err;
     }
   })();
@@ -1421,8 +1435,15 @@ async function main() {
     // while work is still pending (a step the time limit cut off, a kev or
     // agent call that never returns). cli.die, and a plain return, wait for
     // it, and the result printed before stays unseen (measured 2026-10-02).
+    // Any other error too: cli.die alone left a crashed run hanging until
+    // the eval killed it 13 minutes later (round 37009340905, 2026-10-02).
     if (err && err.name === 'NodeExitError') process.exit(err.code ?? 1);
-    cli.die(err.message || String(err), { prefix: 'webrunner' });
+    if (flags.json && err && err.result) cli.out(err.result);
+    try {
+      cli.die(err.message || String(err), { prefix: 'webrunner' });
+    } catch (exit) {
+      process.exit(exit && Number.isInteger(exit.code) ? exit.code : 1);
+    }
   }
   if (sub === 'run' || sub === 'demo') process.exit(0);
 }
