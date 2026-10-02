@@ -5,7 +5,11 @@ const runtime = runtimeMod.default || runtimeMod;
 
 const BASE = '/workspace/models/ai-ecoverse/kev.js/kev-9b';
 const MANIFEST = {
-  files: { tokenizer: 'tokenizer.json', tokenizer_config: 'tokenizer_config.json', head: 'head.json' },
+  files: {
+    tokenizer: 'tokenizer.json',
+    tokenizer_config: 'tokenizer_config.json',
+    head: 'head.json',
+  },
   variants: {
     q8f32: {
       model: 'r-1/q8f32/model.onnx',
@@ -76,13 +80,31 @@ test('a complete model has nothing missing', async () => {
 });
 
 test('a bundle built from an older kev.js pin is not ready', async () => {
-  const ort = '/shared/lib/node_modules/onnxruntime-web/dist/ort.wasm.bundle.min.mjs';
+  // The pinned onnxruntime-web copy: both bundles and the exact version (kev prepare installs it).
+  const ortDir = '/shared/lib/node_modules/onnxruntime-web';
+  const ort = {
+    [`${ortDir}/dist/ort.wasm.bundle.min.mjs`]: 'ort',
+    [`${ortDir}/dist/ort.webgpu.bundle.min.mjs`]: 'ort',
+    [`${ortDir}/package.json`]: JSON.stringify({ version: '1.30.0' }),
+  };
   const files = (stamp) => ({
     [runtime.BUNDLE]: 'bundle',
     [`${runtime.BUNDLE}.stamp`]: `${stamp}\n`,
-    [ort]: 'ort',
+    ...ort,
   });
   is(await runtime.ready(fakeFs(files('@ai-ecoverse/kev.js@0.2.0'))), false);
   is(await runtime.ready(fakeFs(files(runtime.KEV_SPEC))), true);
-  is(await runtime.ready(fakeFs({ [runtime.BUNDLE]: 'bundle', [ort]: 'ort' })), false, 'no stamp');
+  is(await runtime.ready(fakeFs({ [runtime.BUNDLE]: 'bundle', ...ort })), false, 'no stamp');
+  const oldOrt = { ...ort, [`${ortDir}/package.json`]: JSON.stringify({ version: '1.29.0' }) };
+  is(
+    await runtime.ready(
+      fakeFs({
+        [runtime.BUNDLE]: 'bundle',
+        [`${runtime.BUNDLE}.stamp`]: runtime.KEV_SPEC,
+        ...oldOrt,
+      })
+    ),
+    false,
+    'an unpinned onnxruntime-web copy is not ready'
+  );
 });

@@ -54,6 +54,10 @@ const skill = require('sliccy:skill');
 const fs = require('fs');
 
 const PREFIX = 'slack-ext';
+// Declared up here: the parseArgv catch below uses it at module init, before
+// the channel-archive section would have initialised it (temporal dead zone).
+const CHANNEL_ATTRIBUTION =
+  'xoxc session call: indistinguishable from a direct human action in channel event history.';
 const SLACK_DOMAIN = 'app.slack.com';
 
 // App Manifest API (see the `app` section below). Called over plain HTTPS with a
@@ -190,6 +194,8 @@ Examples:
   slack-ext --ws=T06DUTYDQ set-member W5BPKRLUA --confirm
   slack-ext --ws=T06DUTYDQ add-channel W5BPKRLUA --channel=C0899S7HV0E --confirm
   slack-ext --ws=T06DUTYDQ remove-channel W5BPKRLUA --channel=C0899S7HV0E --confirm
+  slack-ext channel-archive C04633RSEDU --max-members=2 --min-idle-days=180
+  slack-ext channel-archive C04633RSEDU --max-members=2 --min-idle-days=180 --confirm
   slack-ext app show A0123456789
   slack-ext app export A0123456789 --out=./manifest.json
   slack-ext app validate A0123456789 --manifest=./manifest.json
@@ -198,6 +204,9 @@ Examples:
   slack-ext app set-events A0123456789 --remove=team_join --confirm
   slack-ext app set-request-url A0123456789 https://relay.example.com --confirm
   slack-ext app apply A0123456789 --manifest=./manifest.json --confirm
+  slack-ext approvals show I0EXAMPLE01
+  slack-ext connect-revoke I0EXAMPLE01 --channel=C0EXAMPLE01 --confirm
+  slack-ext --ws=T0EXAMPLE01 guest-invite guest@example.com --channel=C0EXAMPLE01 --confirm
 
 Enterprise Grid admin commands (use ORG-LEVEL token; calls look like human actions in
   channel event history — see SKILL.md attribution caveat):
@@ -249,11 +258,65 @@ Channel management commands:
       After conversion, conversations.info returns channel_not_found for non-members
       — this is expected, not an error.
 
-Slack Connect approvals:
+  channel-archive <channel_id> [--confirm] [--max-members=N] [--min-idle-days=N]
+                  [--allow-shared] [--json]
+      Archive a channel (admin.conversations.archive, org token; works on
+      private channels the admin is not in). The dry run READS the channel and
+      prints its state: visibility, archived, members, external users,
+      sharing/host, last activity + days idle, and what --confirm would do.
+      --confirm re-reads the channel immediately before the write and refuses,
+      naming the reason, when a guard does not hold:
+        not-found, sharing-unknown (Slack did not report the sharing flags),
+        ext-shared-hosted-elsewhere, ext-shared-host-unknown,
+        ext-shared-requires-allow-shared (a Slack Connect channel we host:
+        archiving DISCONNECTS every external org, and unarchiving does not
+        reconnect them; pass --allow-shared, and the output then names the
+        external users and orgs that will be cut off), members-over-limit / members-unknown
+        (--max-members; an unknown count is never read as 0),
+        active-recently / activity-unknown (--min-idle-days).
+      already-archived is 'nothing to do' and exits 0.
+      After the write the state is read back, retrying because the search
+      index lags a write (measured up to ~51 s): 10 attempts, 10 s apart.
+      Exit: 0 done/nothing to do/dry run, 1 refused or API error,
+            3 written but the read-back never showed it (unconfirmed).
+      Unknown or misspelled flags (unknown-flag, with a suggestion), a bad
+      guard value (invalid-value) and a stray word (unexpected-argument)
+      are refused before any Slack call, dry run included.
+      --json: stdout is exactly one JSON document on every path (the
+      attribution notice is its 'notice' field); errors also go to stderr.
 
-  approvals [--query=<q>] [--limit=<n>] [--all]
+  channel-unarchive <channel_id> [--confirm] [--json]
+      Unarchive a channel (admin.conversations.unarchive). Same dry run,
+      re-check and read-back as channel-archive. Refuses not-found and
+      ext-shared-hosted-elsewhere; not-archived is 'nothing to do' (exit 0).
+
+Slack Connect approvals and guest invites (ORG-level token):
+
+  approvals [--query=<q>] [--limit=<n>] [--all] [--detail]
       List Slack Connect shared channel invite approvals.
       API: conversations.sharedApprovals.list. Paginates automatically.
+      --detail prints, per invite: inviter, invitee and their org (and whether
+      it requires sponsorship), and BOTH sides' approval state, so "approved
+      on our side, waiting on the other org" is visible. Icons are stripped.
+
+  approvals show <invite_id> [--query=<q>]
+      The --detail view for one invite (I…). Read-only.
+
+  connect-revoke <invite_id> --channel=<channel_id> [--confirm]
+      Revoke a Slack Connect invite (conversations.revokeSharedInvite).
+      The dry run reads the invite from sharedApprovals.list and shows it.
+      --confirm revokes, then re-reads the row and reports its new status
+      (expected: expired). Exit 3 when the re-read does not confirm it.
+      An already-expired invite is 'nothing to do' (exit 0).
+      team_is_restricted means a workspace-scoped token; use the org token.
+
+  guest-invite <email> --channel=<channel_id> [--confirm]
+      Invite <email> as a SINGLE-channel guest of workspace --ws (T…) into one
+      channel (users.admin.inviteBulk). Requires --ws. On --confirm Slack
+      emails the invitee at once. Reports each invite's own result and exits 1
+      if any failed: a top-level ok:true is not enough. "Expires" is Slack's
+      expiration_ts; whether it ends the invite or the guest account is
+      unverified. Multi-channel guest invites are not offered (untested).
 
 App governance commands:
 
@@ -278,7 +341,7 @@ See also: slack user <id> (read-only profile from the standard slack CLI)
 `;
 
 // ── Argument parsing ──────────────────────────────────────────────────────────
-const { BOOL_FLAGS, parseArgv, parseList } = require('./argv.js');
+const { BOOL_FLAGS, parseArgv, parseList, jsonInvocation } = require('./argv.js');
 
 // parseArgv throws on a malformed flag (e.g. --confirm=fasle). This call is at
 // module top level, OUTSIDE the try/catch that wraps main(), so the throw would
@@ -289,7 +352,21 @@ let parsed;
 try {
   parsed = parseArgv(process.argv.slice(2));
 } catch (err) {
-  cli.die((err && err.message) || String(err), { prefix: PREFIX });
+  const message = (err && err.message) || String(err);
+  // channel-archive / channel-unarchive promise ONE JSON document on stdout
+  // in --json mode, including this path (e.g. --allow-shared=maybe).
+  const j = jsonInvocation(process.argv.slice(2), ['channel-archive', 'channel-unarchive']);
+  if (j) {
+    cli.out({
+      notice: CHANNEL_ATTRIBUTION,
+      action: j.command.replace('channel-', ''),
+      channel_id: j.channelId,
+      status: 'invalid-value',
+      error: 'invalid-value: ' + message,
+      exitCode: 1,
+    });
+  }
+  cli.die(message, { prefix: PREFIX });
 }
 const flags = parsed.flags;
 const words = parsed.positional;
@@ -2098,9 +2175,13 @@ async function main() {
   if (cmd === 'channel-search') return cmdChannelSearch();
   if (cmd === 'channel-to-public') return cmdChannelToPublic();
   if (cmd === 'channel-to-private') return cmdChannelToPrivate();
+  if (cmd === 'channel-archive') return cmdChannelArchive();
+  if (cmd === 'channel-unarchive') return cmdChannelUnarchive();
 
   // ── Slack Connect approvals ──
   if (cmd === 'approvals') return cmdApprovals();
+  if (cmd === 'connect-revoke') return cmdConnectRevoke();
+  if (cmd === 'guest-invite') return cmdGuestInvite();
 
   // ── App governance ──
   if (cmd === 'admin-app') return cmdAdminApp();
@@ -2111,12 +2192,6 @@ async function main() {
   );
 }
 
-try {
-  await main();
-} catch (err) {
-  if (err && err.name === 'NodeExitError') throw err;
-  cli.die((err && err.message) || String(err), { prefix: PREFIX });
-}
 
 // ══ Enterprise Grid admin commands (`slack-ext eg-*`, `channel-*`, etc.) ══════
 //
@@ -2161,8 +2236,15 @@ const {
   summarizeApproval,
   classifyUser,
   collectPages,
+  buildGuestInviteParams,
+  summarizeInviteResults,
+  buildRevokeSharedInviteParams,
+  findApprovalPaged,
+  summarizeApprovalDetail,
   VALID_SEARCH_CHANNEL_TYPES,
   VALID_CHANNEL_SORT_FIELDS,
+  runChannelArchiveFlow,
+  checkChannelArchiveArgs,
 } = require('./slack-ext-grid.js');
 
 // The Enterprise Grid org ID. Used as the "workspace" key when looking up the
@@ -2827,20 +2909,265 @@ async function cmdChannelToPrivate() {
   console.log('');
 }
 
+// ── Commands: channel-archive / channel-unarchive ─────────────────────────────
+//
+// The flow lives in slack-ext-grid.js (runChannelArchiveFlow) with call/sleep/
+// now injected; this wrapper wires it to the org token and renders the result.
+//
+// Unlike channel-to-public/-private, the dry run READS the channel and prints
+// its current state; --confirm re-reads it immediately before the write and
+// refuses with a named reason if a guard no longer holds; and the write is read
+// back (with retries, because the search index lags a write by several seconds).
+//
+// id -> state: admin.conversations.search with query=<channel id> and
+// search_channel_types=all, matched on id locally (measured: finds the channel,
+// private non-member and archived included). conversations.info cannot be the
+// read: it answers channel_not_found for a private channel the admin is not in.
+
+function describeSharing(st) {
+  if (st.host === 'sharing-unknown') {
+    if (st.sharing_conflicts && st.sharing_conflicts.length) {
+      return 'UNKNOWN (flags say not shared, but the row reports ' + st.sharing_conflicts.join('; ') + ')';
+    }
+    return 'UNKNOWN (Slack did not report is_ext_shared / is_pending_ext_shared as booleans)';
+  }
+  if (st.host === 'not-shared') return st.is_org_shared ? 'org-shared (internal), not ext-shared' : 'not ext-shared';
+  const pending = st.is_pending_ext_shared && !st.is_ext_shared ? 'ext-share PENDING' : 'ext-shared';
+  const orgs = st.external_team_ids === null ? null : st.external_team_ids.length;
+  const ext = orgs === null ? 'unknown number of external orgs' : orgs + ' external org' + (orgs === 1 ? '' : 's');
+  if (st.host === 'us') return pending + ', hosted by this org (' + st.conversation_host_id + '), ' + ext;
+  if (st.host === 'other') return pending + ', hosted by ANOTHER org (' + st.conversation_host_id + ')';
+  return pending + ', host unknown';
+}
+
+function renderChannelState(st) {
+  kv('Channel', '#' + (st.name || '?') + ' (' + st.id + ')');
+  kv('Visibility', st.is_private ? 'private' : 'public');
+  kv('Archived', st.is_archived === null ? 'unknown' : st.is_archived ? 'yes' : 'no');
+  kv(
+    'Members',
+    st.member_count === null
+      ? 'unknown (Slack reported ' + JSON.stringify(st.member_count_raw) + ')'
+      : String(st.member_count)
+  );
+  kv('External', st.external_user_count === null ? 'unknown' : String(st.external_user_count) + ' users');
+  kv('Shared', describeSharing(st));
+  kv(
+    'Last activity',
+    st.last_activity_date === null
+      ? 'unknown (last_activity_ts=' + JSON.stringify(st.last_activity_ts) + ')'
+      : st.last_activity_date + ' (' + st.idle_days + ' days idle)'
+  );
+}
+
+async function cmdChannelArchiveOrUnarchive(action) {
+  const cmd = 'channel-' + action;
+  const json = flags.json === true;
+  const channelId = words[1] || null;
+  const usage =
+    action === 'archive'
+      ? 'Usage: slack-ext channel-archive <channel_id> [--confirm] [--max-members=N] [--min-idle-days=N] [--allow-shared] [--json]'
+      : 'Usage: slack-ext channel-unarchive <channel_id> [--confirm] [--json]';
+
+  // --json: stdout carries exactly ONE JSON document on every path, and no
+  // human text. Human output goes through say(); errors still reach stderr via
+  // cli.die, which never writes to stdout.
+  let emitted = false;
+  const emit = (obj) => {
+    if (json && !emitted) {
+      emitted = true;
+      cli.out(Object.assign({ notice: CHANNEL_ATTRIBUTION }, obj));
+    }
+  };
+  const say = (line) => {
+    if (!json) console.log(line === undefined ? '' : line);
+  };
+  const fail = (status, message, extra, exitCode) => {
+    const code = exitCode || 1;
+    emit(
+      Object.assign(
+        { action, channel_id: channelId, mode: flags.confirm === true ? 'confirm' : 'dry-run' },
+        extra || {},
+        { status, error: message, exitCode: code }
+      )
+    );
+    cli.die(message, { prefix: PREFIX, exitCode: code });
+  };
+
+  try {
+    // 1. Arguments, before ANY Slack call (dry run and --confirm alike).
+    //    Unknown or misspelled flags and bad guard values fail closed.
+    const args = checkChannelArchiveArgs(action, flags, words);
+    if (!args.ok) {
+      const first = args.errors[0];
+      fail(first.code, args.errors.map((e) => e.message).join('; ') + '\n' + usage, {
+        errors: args.errors,
+      });
+    }
+    if (!channelId) fail('usage', usage);
+    if (!/^[CG][A-Z0-9]{6,}$/.test(channelId)) {
+      fail('usage', 'Invalid channel id "' + channelId + '". Expected e.g. C04633RSEDU.\n' + usage);
+    }
+    // resolveOrg and findSlackTab would cli.die from inside, which cannot
+    // carry a JSON document; check both here first.
+    if (flags.org !== undefined && (typeof flags.org !== 'string' || !/^E[A-Z0-9]+$/.test(flags.org))) {
+      fail('invalid-value', 'invalid-value: --org needs an E-prefixed org id (e.g. E06V3987PMY)');
+    }
+    const tab =
+      (await browser.findTab({ domain: SLACK_DOMAIN, urlMatch: /\/client\/[A-Z0-9]+/ })) ||
+      (await browser.findTab({ domain: SLACK_DOMAIN }));
+    if (!tab) fail('no-slack-tab', 'No Slack tab found. Open app.slack.com in your browser and try again.');
+    const orgId = await resolveOrg(true);
+    const maxMembers = args.maxMembers;
+    const minIdleDays = args.minIdleDays;
+
+    const result = await runChannelArchiveFlow({
+      action,
+      channelId,
+      orgId,
+      confirm: flags.confirm === true,
+      maxMembers,
+      minIdleDays,
+      allowShared: flags['allow-shared'] === true,
+      call: (method, params) => slackApi(method, params, orgId, { fatal: false }),
+      sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+      now: () => Date.now(),
+    });
+
+    const verb = action === 'archive' ? 'archive' : 'unarchive';
+    if (!json) {
+      section(result.mode === 'dry-run' ? 'Dry run: ' + cmd + ' (current state)' : cmd + ' (state re-read just before the write)');
+      if (result.state) renderChannelState(result.state);
+      else kv('Channel', channelId + ' (not found)');
+      kv('Org', orgId);
+      kv('Method', result.method);
+    }
+    say('');
+    say(color.dim('  ' + CHANNEL_ATTRIBUTION));
+    say('');
+
+    if (result.status === 'read-error') fail('read-error', result.error, result);
+
+    const d = result.decision;
+    if (result.mode === 'dry-run') {
+      if (d.outcome === 'noop') {
+        say(color.green('  ' + d.reason + ': nothing to do. --confirm would make no call.'));
+      } else if (d.outcome === 'refuse') {
+        say(color.red('  --confirm would REFUSE: ' + d.reason + ' (' + d.detail + ')'));
+      } else {
+        say(
+          '  --confirm would: re-read this channel, re-apply the guards, call ' + result.method +
+            ' (channel_id=' + channelId + '), then read it back.'
+        );
+        if (result.impact && result.state.host === 'us') say(color.red('  WARNING: ' + result.impact.text));
+        if (action === 'unarchive') {
+          say(color.dim('  If this was a Slack Connect channel, archiving disconnected its external orgs;'));
+          say(color.dim('  unarchiving is not expected to reconnect them (a new invitation is needed).'));
+        }
+      }
+      const guards = [];
+      if (maxMembers !== null) guards.push('--max-members=' + maxMembers);
+      if (minIdleDays !== null) guards.push('--min-idle-days=' + minIdleDays);
+      if (flags['allow-shared'] === true) guards.push('--allow-shared');
+      if (guards.length) say(color.dim('  Guards: ' + guards.join(' ')));
+      say(color.yellow('  No --confirm; nothing changed.'));
+      say(color.dim('  State can change before you confirm; --confirm re-reads it first.'));
+      say('');
+      emit(result);
+      return;
+    }
+
+    if (d.outcome === 'noop') {
+      say(color.green('  ' + d.reason + ': nothing to do. No call made.'));
+      say('');
+      emit(result);
+      return;
+    }
+    if (d.outcome === 'refuse') {
+      fail('refused', 'refused: ' + d.reason + ' (' + d.detail + '). Nothing changed.', result);
+    }
+    if (result.status === 'error') {
+      fail('error', result.method + ' failed: ' + result.write.error, result);
+    }
+
+    if (result.impact && result.state.host === 'us') {
+      say(color.red('  --allow-shared given. ' + result.impact.text));
+      say('');
+    }
+    if (!json) {
+      section(result.status);
+      kv('Channel', '#' + (result.state.name || '?') + ' (' + channelId + ')');
+      kv('Write', result.method + ' -> ok');
+      kv('Read-back', (result.readback.confirmed ? 'confirmed' : 'NOT confirmed') + ' after ' + result.readback.attempts + ' attempt(s)');
+      if (result.readback.state) {
+        kv('Archived now', result.readback.state.is_archived ? 'yes' : 'no');
+        if (result.impact && result.state.host === 'us') kv('Shared now', describeSharing(result.readback.state));
+      }
+    }
+    say('');
+    if (!result.readback.confirmed) {
+      fail(
+        result.status,
+        verb + ' call answered ok:true but the search index did not show the new state after ' +
+          result.readback.attempts + ' attempts. Check again with: slack-ext ' + cmd + ' ' + channelId,
+        result,
+        3
+      );
+    }
+    emit(result);
+  } catch (err) {
+    // Last resort: a failure not anticipated above still yields one JSON
+    // document in --json mode before the error propagates.
+    if (json && !emitted) {
+      emit({
+        action,
+        channel_id: channelId,
+        status: 'error',
+        error:
+          err && err.name === 'NodeExitError'
+            ? 'exited before a result was produced; see stderr'
+            : String((err && err.message) || err),
+        exitCode: (err && (err.exitCode || err.code)) || 1,
+      });
+    }
+    throw err;
+  }
+}
+
+async function cmdChannelArchive() {
+  return cmdChannelArchiveOrUnarchive('archive');
+}
+
+async function cmdChannelUnarchive() {
+  return cmdChannelArchiveOrUnarchive('unarchive');
+}
+
 // ══ Slack Connect approvals ════════════════════════════════════════════════════
 
 // ── Command: approvals ─────────────────────────────────────────────────────────
 
 async function cmdApprovals() {
+  const sub = words[1] || '';
+  if (sub === 'show') return cmdApprovalsShow();
+  if (sub) {
+    cli.die(
+      'Unknown approvals subcommand: ' + sub + '\n  Usage: slack-ext approvals [--detail] | approvals show <invite_id>',
+      { prefix: PREFIX }
+    );
+  }
   const orgId = await resolveOrg(false);
   const limit = parseInt(flags.limit || '25', 10) || 25;
   const query = flags.query || flags.q || '';
   const showAll = flags.all;
+  // --detail --json: stdout is the JSON document only.
+  const detailJson = !!(flags.detail && flags.json);
 
-  section('Slack Connect shared approvals');
-  kv('Org', orgId);
-  if (query) kv('Query', query);
-  console.log('');
+  if (!detailJson) {
+    section('Slack Connect shared approvals');
+    kv('Org', orgId);
+    if (query) kv('Query', query);
+    console.log('');
+  }
 
   // Collect pages
   const collected = await collectPages(
@@ -2854,6 +3181,20 @@ async function cmdApprovals() {
 
   if (collected.error) {
     cli.die('conversations.sharedApprovals.list failed: ' + collected.error, { prefix: PREFIX });
+  }
+
+  // --detail: inviter, invitee + their org, and BOTH sides' approval state.
+  if (flags.detail) {
+    const details = collected.items.map(summarizeApprovalDetail);
+    if (detailJson) {
+      cli.out({ approvals: details, total: collected.total_fetched });
+      return;
+    }
+    kv('Total fetched', String(collected.total_fetched));
+    if (details.length === 0) console.log('\n  (no approvals found)');
+    for (const d of details) printApprovalDetail(d);
+    console.log('');
+    return;
   }
 
   kv('Total fetched', String(collected.total_fetched));
@@ -2891,6 +3232,270 @@ async function cmdApprovals() {
   console.log('');
 
   if (flags.json) cli.out({ approvals: collected.items.map(summarizeApproval), total: collected.total_fetched });
+}
+
+// ── Approval detail rendering ──────────────────────────────────────────────────
+
+function fmtTs(ts) {
+  const n = Number(ts) || 0;
+  if (!n) return '-';
+  return new Date(n * 1000).toISOString().slice(0, 16).replace('T', ' ') + 'Z';
+}
+
+function nameId(name, id) {
+  if (name && id) return name + ' (' + id + ')';
+  return name || id || '-';
+}
+
+function printApprovalDetail(d) {
+  console.log('');
+  console.log('  ' + color.cyan(color.bold(d.id || '(no id)')) + '  ' + color.dim('status:' + (d.status || '?')));
+  kv('Channel', nameId(d.channel.name ? '#' + d.channel.name : null, d.channel.id));
+  kv('Inviter', nameId(d.inviter.real_name, d.inviter.id));
+  kv('Invitee', nameId(d.invitee.real_name, d.invitee.id) + (d.invitee.email ? ' <' + d.invitee.email + '>' : ''));
+  const t = d.connecting_team;
+  kv('Invitee org', nameId(t.name, t.id || d.invitee.team_id) + (t.domain ? ' ' + color.dim(t.domain) : ''));
+  kv('Sponsorship', t.requires_sponsorship === null ? 'unknown' : t.requires_sponsorship ? 'required' : 'not required');
+  kv('Our side', d.home_approved ? color.green('approved ' + fmtTs(d.home_approved)) : color.yellow('NOT approved'));
+  kv('Other org', d.away_approved ? color.green('approved ' + fmtTs(d.away_approved)) : color.yellow('NOT approved'));
+  kv('Approved by', d.approving_user_id || '-');
+  kv('Waiting on', d.waiting_on);
+  kv('Connection', d.connection_status || '-');
+  kv('Created', fmtTs(d.created));
+  kv('Expires', fmtTs(d.expires));
+  if (t.requires_sponsorship && !d.away_approved) {
+    console.log(color.dim('    The other org requires sponsorship and has not approved; such invites can'));
+    console.log(color.dim('    stall with no notice. A single-channel guest (guest-invite) is an alternative.'));
+  }
+}
+
+// Find one approval row by invite id. Dies on a list error.
+async function lookupApproval(orgId, inviteId) {
+  const limit = parseInt(flags.limit || '25', 10) || 25;
+  const query = flags.query || flags.q || '';
+  const found = await findApprovalPaged(
+    (cursor) =>
+      slackApi(
+        'conversations.sharedApprovals.list',
+        buildApprovalsListParams(limit, query, cursor),
+        orgId,
+        { fatal: false }
+      ),
+    inviteId
+  );
+  if (found.error) {
+    cli.die('conversations.sharedApprovals.list failed: ' + found.error, { prefix: PREFIX });
+  }
+  return found;
+}
+
+function checkInviteId(inviteId, usage) {
+  if (!inviteId) cli.die(usage, { prefix: PREFIX });
+  if (!/^I[A-Z0-9]+$/.test(inviteId)) {
+    cli.die('Invalid invite ID "' + inviteId + '". Expected I-prefixed alphanumeric (e.g. I0EXAMPLE01).', { prefix: PREFIX });
+  }
+}
+
+function checkChannelFlag(usage) {
+  const channelId = flags.channel;
+  if (!channelId || channelId === true) cli.die(usage, { prefix: PREFIX });
+  if (!/^[CG][A-Z0-9]+$/.test(channelId)) {
+    cli.die('Invalid channel ID "' + channelId + '". Expected exactly one channel ID (e.g. C0EXAMPLE01).', { prefix: PREFIX });
+  }
+  return channelId;
+}
+
+// ── Command: approvals show ────────────────────────────────────────────────────
+
+async function cmdApprovalsShow() {
+  const inviteId = words[2];
+  checkInviteId(inviteId, 'Usage: slack-ext approvals show <invite_id> [--query=<q>]');
+  const orgId = await resolveOrg(false);
+  const found = await lookupApproval(orgId, inviteId);
+  if (!found.row) {
+    cli.die('Invite ' + inviteId + ' not found in conversations.sharedApprovals.list (' + found.scanned + ' rows scanned).', { prefix: PREFIX });
+  }
+  const d = summarizeApprovalDetail(found.row);
+  if (flags.json) {
+    cli.out({ approval: d });
+    return;
+  }
+  section('Slack Connect invite');
+  kv('Org', orgId);
+  printApprovalDetail(d);
+  console.log('');
+  console.log(color.dim('  Read-only; no --confirm required.'));
+  console.log('');
+}
+
+// ── Command: connect-revoke ────────────────────────────────────────────────────
+//
+// conversations.revokeSharedInvite (invite_id, channel). ORG token only; the
+// workspace-scoped admin token answers team_is_restricted and changes nothing.
+// ok:true is not proof: the row is re-read and its status reported
+// (measured 2026-09-29: status becomes "expired", date_expire ~ now).
+
+async function cmdConnectRevoke() {
+  const usage = 'Usage: slack-ext connect-revoke <invite_id> --channel=<channel_id> [--confirm]';
+  const inviteId = words[1];
+  checkInviteId(inviteId, usage);
+  const channelId = checkChannelFlag(usage);
+  const orgId = await resolveOrg(true);
+
+  const before = await lookupApproval(orgId, inviteId);
+  if (!before.row) {
+    cli.die(
+      'Invite ' + inviteId + ' not found in conversations.sharedApprovals.list (' + before.scanned + ' rows scanned). Nothing to revoke.',
+      { prefix: PREFIX }
+    );
+  }
+  const d = summarizeApprovalDetail(before.row);
+  if (d.channel.id && d.channel.id !== channelId) {
+    cli.die(
+      'Invite ' + inviteId + ' is for channel ' + d.channel.id + ', not ' + channelId + '. Refusing; check --channel.',
+      { prefix: PREFIX }
+    );
+  }
+  const params = buildRevokeSharedInviteParams(inviteId, channelId);
+
+  if (d.status === 'expired') {
+    if (flags.json) {
+      cli.out({ action: 'revoke', status: 'nothing-to-do', approval: d });
+      return;
+    }
+    section('No change needed');
+    printApprovalDetail(d);
+    console.log('');
+    console.log('  Invite is already expired; nothing to revoke.');
+    console.log('');
+    return;
+  }
+
+  if (!flags.confirm) {
+    if (flags.json) {
+      cli.out({ action: 'revoke', dry_run: true, method: 'conversations.revokeSharedInvite', org: orgId, params, approval: d });
+      return;
+    }
+    section('Dry run — would revoke Slack Connect invite');
+    kv('Method', 'conversations.revokeSharedInvite');
+    kv('Org', orgId);
+    printApprovalDetail(d);
+    console.log('');
+    console.log(color.dim('  xoxc session call: indistinguishable from a direct human action in channel event history.'));
+    console.log('');
+    console.log(color.yellow('  No --confirm; nothing changed. Re-run with --confirm to apply.'));
+    console.log('');
+    return;
+  }
+
+  const result = await slackApi('conversations.revokeSharedInvite', params, orgId, { fatal: false });
+  if (!result.ok) {
+    if (result.error === 'team_is_restricted') {
+      cli.die(
+        'conversations.revokeSharedInvite failed: team_is_restricted. Nothing was revoked.\n' +
+          '  The token in use is workspace-scoped. Revoking needs the ORG-level token\n' +
+          '  (localConfig_v2.teams[<E id>] on app.slack.com), selected with --org=<E id>.\n' +
+          '  The token on <workspace>.slack.com/admin is the one that returns this error.',
+        { prefix: PREFIX }
+      );
+    }
+    cli.die('conversations.revokeSharedInvite failed: ' + result.error, { prefix: PREFIX });
+  }
+
+  // Re-read: ok:true alone is not evidence.
+  const after = await lookupApproval(orgId, inviteId);
+  const a = after.row ? summarizeApprovalDetail(after.row) : null;
+  const confirmed = !!a && a.status === 'expired';
+  if (flags.json) {
+    cli.out({ action: 'revoke', result, before: d, after: a, confirmed });
+  } else {
+    section(confirmed ? 'Done' : 'Revoke sent, NOT confirmed');
+    kv('Invite', inviteId);
+    kv('Status before', d.status || '-');
+    kv('Status now', a ? a.status || '-' : '(row not found on re-read)');
+    kv('Expires now', a ? fmtTs(a.expires) : '-');
+    kv('Match', confirmed ? color.green('yes') : color.red('NO — verify manually'));
+    console.log('');
+  }
+  if (!confirmed) {
+    cli.die(
+      'revokeSharedInvite answered ok:true but the re-read shows ' +
+        (a ? 'status ' + (a.status || '(none)') : 'no row') + ', expected expired. Verify manually.',
+      { prefix: PREFIX, exitCode: 3 }
+    );
+  }
+}
+
+// ── Command: guest-invite ──────────────────────────────────────────────────────
+//
+// users.admin.inviteBulk as a single-channel guest (ultra_restricted), the only
+// type tested (2026-09-29). team_id is the WORKSPACE id; the call uses the ORG
+// token. Per-invite ok is checked: the top-level ok can be true while an
+// invite failed.
+
+async function cmdGuestInvite() {
+  const usage = 'Usage: slack-ext --ws=<TEAM_ID> guest-invite <email> --channel=<channel_id> [--confirm]';
+  const email = words[1];
+  if (!email) cli.die(usage, { prefix: PREFIX });
+  if (!/^[^\s@,]+@[^\s@,]+\.[^\s@,]+$/.test(email)) {
+    cli.die('Invalid email "' + email + '". Pass exactly one address.', { prefix: PREFIX });
+  }
+  const channelId = checkChannelFlag(usage);
+  const teamId = await resolveWorkspace(true);
+  if (!/^T[A-Z0-9]+$/.test(teamId)) {
+    cli.die(
+      '--ws must be the WORKSPACE ID (T…) the guest joins, not ' + teamId + '.\n' +
+        '  users.admin.inviteBulk requires team_id=<workspace> on Enterprise Grid.',
+      { prefix: PREFIX }
+    );
+  }
+  const orgId = await resolveOrg(true);
+  const params = buildGuestInviteParams(email, channelId, teamId);
+
+  if (!flags.confirm) {
+    if (flags.json) {
+      cli.out({ action: 'guest-invite', dry_run: true, method: 'users.admin.inviteBulk', org: orgId, params });
+      return;
+    }
+    section('Dry run — would invite a single-channel guest');
+    kv('Email', email);
+    kv('Workspace', teamId);
+    kv('Channel', channelId);
+    kv('Guest type', 'single-channel (ultra_restricted)');
+    kv('Method', 'users.admin.inviteBulk');
+    kv('Org', orgId);
+    console.log('');
+    console.log('  With --confirm, Slack emails the invitation to ' + email + ' immediately.');
+    console.log(color.dim('  xoxc session call: indistinguishable from a direct human action in channel event history.'));
+    console.log('');
+    console.log(color.yellow('  No --confirm; nothing changed. Re-run with --confirm to apply.'));
+    console.log('');
+    return;
+  }
+
+  const result = await slackApi('users.admin.inviteBulk', params, orgId, { fatal: false });
+  if (!result.ok) {
+    cli.die('users.admin.inviteBulk failed: ' + result.error, { prefix: PREFIX });
+  }
+  const s = summarizeInviteResults(result, [email]);
+  if (flags.json) {
+    cli.out({ action: 'guest-invite', result, summary: s });
+  } else {
+    section(s.ok ? 'Done' : 'Invite FAILED');
+    for (const r of s.invites) {
+      kv('Email', r.email || '-');
+      kv('Result', r.ok ? color.green('invited') : color.red('FAILED: ' + r.error));
+      if (r.invite_id) kv('Invite ID', r.invite_id);
+      kv('Expires', fmtTs(r.expires));
+      console.log('');
+    }
+  }
+  if (!s.ok) {
+    cli.die(
+      s.failed + ' of ' + s.invites.length + ' invite(s) failed (top-level ok:true does not mean each invite succeeded).',
+      { prefix: PREFIX }
+    );
+  }
 }
 
 // ══ App governance ════════════════════════════════════════════════════════════
@@ -3183,3 +3788,18 @@ async function cmdAdminApp() {
   );
 }
 
+// ── Entry point ─────────────────────────────────────────────────────────────
+//
+// This MUST stay the last top-level statement in the file. main() runs as soon
+// as it is reached, and function declarations hoist but `const` does not: any
+// top-level `const`/`let` below this point is still in its temporal dead zone
+// when a command reads it. That shipped once - every eg-* and channel-* command
+// died with "Cannot access 'ORG_ID' before initialization" - while the suites
+// passed, because they strip from here to EOF and so never loaded that code.
+// tests/slack-ext.test.js asserts nothing follows this block.
+try {
+  await main();
+} catch (err) {
+  if (err && err.name === 'NodeExitError') throw err;
+  cli.die((err && err.message) || String(err), { prefix: PREFIX });
+}

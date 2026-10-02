@@ -1,10 +1,61 @@
 # Slack watch architecture
 
 This file documents the internals of `slack watch` and of `slack post`'s 1-hour
-reply auto-watch. You do **not** need to read it to use those commands — SKILL.md
-covers the flags and the observable behaviour. Read this when debugging a watch
-that stopped firing, when changing the implementation, or when you need to know
-exactly what state and background tasks a watch leaves behind.
+reply auto-watch. You do **not** need to read it to use those commands: SKILL.md
+covers the flags, and the next section covers the auto-watch's observable
+behaviour. Read the rest when debugging a watch that stopped firing, when changing
+the implementation, or when you need to know exactly what state and background
+tasks a watch leaves behind.
+
+## Contents
+
+- [Auto-watch for replies (user-facing behaviour)](#auto-watch-for-replies-user-facing-behaviour)
+- [Pipeline](#pipeline)
+- [WebSocket observer mechanism and selector shape](#websocket-observer-mechanism-and-selector-shape)
+- [Subscription lifetime, and why deleting the webhook is the kill-switch](#subscription-lifetime-and-why-deleting-the-webhook-is-the-kill-switch)
+- [Socket-capture timing (the first ≤10 seconds)](#socket-capture-timing-the-first-10-seconds)
+- [Genuine-reply webhook filter (auto-watch only)](#genuine-reply-webhook-filter-auto-watch-only)
+- [Scope decision: `conversations.info` `num_members`](#scope-decision-conversationsinfo-num_members)
+- [Routing](#routing)
+- [One-hour TTL and the one-shot teardown crontask](#one-hour-ttl-and-the-one-shot-teardown-crontask)
+- [TTL extension](#ttl-extension)
+- [Shared state across cones](#shared-state-across-cones)
+- [State files](#state-files)
+- [Recovery after a page reload](#recovery-after-a-page-reload)
+
+## Auto-watch for replies (user-facing behaviour)
+
+After a successful post, replies are watched for **one hour**, then the watch
+tears itself down. It is silent when idle: a notification arrives only on a
+genuine new reply — never a tick, never a poll.
+
+- **Where replies go** — **back to the cone that posted**, so they surface in the
+  chat that sent the message. The target is the posting cone's own
+  `SLICC_LICK_TARGET` (set by the runtime for every cone that is not the default
+  root); with it unset the lick is left untargeted and the runtime picks the
+  default root. `--watch-scoop=<name>` routes them to another scoop instead.
+- **One watch per channel, and every cone shares them.** The state files live in
+  the shared `/workspace/skills/slack/`, so if another cone is already watching
+  that channel the post extends that watch and warns you whose it is, printing the
+  `slack watch … --force` command to take it over. `slack watches` names the owner.
+- **Scope** — channels with **more than 100 members** are watched **thread-only**
+  (the thread you replied into, or the new message's own). Everything smaller,
+  and every DM, is watched **whole-channel** — which also catches thread replies.
+- **Your own messages never notify.** Posting again into a live watch silently
+  **extends the hour**.
+- `--no-watch` opts out.
+
+```bash
+# Default: signs + watches for replies for 1h, routing back to this cone
+slack post C087NCG774J "Anyone around to review PR 42?"
+#   Signed with :icecream:
+#   Watching channel+thread for replies for 1h (routes to cone-helix)
+#   (default root, SLICC_LICK_TARGET unset → "routes to the default root cone")
+# Route replies to a specific scoop instead of this cone
+slack post C087NCG774J "ping" --watch-scoop=my-monitor
+# Post without watching
+slack post C087NCG774J "fire and forget" --no-watch
+```
 
 ## Pipeline
 

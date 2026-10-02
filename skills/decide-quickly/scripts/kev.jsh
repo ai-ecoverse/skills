@@ -58,14 +58,8 @@ async function prepareRuntime() {
     outfile: runtime.BUNDLE,
     packages: [{ spec: runtime.KEV_SPEC, name: runtime.KEV_NAME }],
   });
-  const ortReady =
-    (await fs.exists('/shared/lib/node_modules/onnxruntime-web/dist/ort.wasm.bundle.min.mjs')) ||
-    (await fs.exists('/workspace/node_modules/onnxruntime-web/dist/ort.wasm.bundle.min.mjs'));
-  let installedOrt = false;
-  if (!ortReady) {
-    await host.ensurePackage(exec, fs, 'onnxruntime-web@1.30.0', 'onnxruntime-web');
-    installedOrt = true;
-  }
+  const ortCopy = await host.ensureOrt(exec, fs);
+  const installedOrt = ortCopy.installed;
   if (rebuilt || installedOrt) {
     if (process.env[READY] === '1') {
       cli.die('installed the kev bundle but this process cannot require it yet. Run kev ask again.', {
@@ -74,6 +68,7 @@ async function prepareRuntime() {
     }
     await host.reexec(exec, READY);
   }
+  return ortCopy.dir;
 }
 
 async function cmdAsk(flags, positionals) {
@@ -86,7 +81,7 @@ async function cmdAsk(flags, positionals) {
     const status = await runtime.weightsStatus(fs, modelName);
     if (status.missing.length) cli.die(runtime.missingWeightsMessage(status), { prefix: 'kev' });
   }
-  await prepareRuntime();
+  const ortDir = await prepareRuntime();
   const parsedQuestions = flags.questions
     ? questions.parseQuestionsJson(await readArg(flags.questions))
     : questions.parseQuestionPositionals(positionals);
@@ -101,6 +96,7 @@ async function cmdAsk(flags, positionals) {
   const model = await runtime.openModel(fs, exec, {
     model: modelName,
     from: flags.from || null,
+    ortDir,
     dateFacts,
     log: (line) => console.error(line),
     requireBundle: () => require('/shared/cache/kev/bundle.cjs'),

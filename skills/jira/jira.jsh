@@ -12,6 +12,10 @@ const cli = require('sliccy:cli');
 const browser = require('sliccy:browser');
 const c = require('sliccy:color'); // former bare `c` color global
 
+// Pure field-shaping helper, shared with tests/coerce-field.test.js. Written as a literal
+// specifier because this runtime pre-registers modules by scanning literal require strings.
+const { coerceFieldValue } = require('./lib/field-values.js');
+
 // --- Tab management ---
 
 let _tab = null;
@@ -289,9 +293,10 @@ async function create(flags) {
   // required-field validation so these flags can satisfy required custom fields.
   for (const [k, v] of Object.entries(flags)) {
     if (k.startsWith('field-')) {
-      fields[k.slice(6)] = v;
+      fields[k.slice(6)] = coerceFieldValue(rawFields, k.slice(6), v);
     } else if (k.startsWith('cf-')) {
-      fields[`customfield_${k.slice(3)}`] = v;
+      const id = `customfield_${k.slice(3)}`;
+      fields[id] = coerceFieldValue(rawFields, id, v);
     }
   }
 

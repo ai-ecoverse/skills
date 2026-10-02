@@ -1,11 +1,7 @@
-const assert = require('node:assert/strict');
-const test = require('node:test');
-const {
-  buildPrWatchFilter,
-  composePrWatchFilter,
-  findWatchWebhook,
-} = require('../scripts/pr-watch-filter.js');
+import test, { is } from 'tst';
+import * as _mod_0 from '../scripts/pr-watch-filter.js';
 
+const { buildPrWatchFilter, composePrWatchFilter, findWatchWebhook, } = _mod_0.default || _mod_0;
 const HEAD = ['trieloff/topic', 1234, 'abc123'];
 
 function compile(source) {
@@ -24,13 +20,13 @@ test('matches every PR-linked GitHub webhook payload shape', () => {
     { sha: 'abc123', branches: [{ name: 'trieloff/topic' }] },
   ];
 
-  for (const body of bodies) assert.equal(filter({ body }), true);
+  for (const body of bodies) is(filter({ body }), true);
 });
 
 test('uses commit or repository plus branch when check payloads omit pull_requests', () => {
   const filter = compile(buildPrWatchFilter(267, 'topic', 1234, 'abc123'));
 
-  assert.equal(
+  is(
     filter({
       body: {
         check_run: {
@@ -45,7 +41,7 @@ test('uses commit or repository plus branch when check payloads omit pull_reques
     }),
     true
   );
-  assert.equal(
+  is(
     filter({
       body: {
         check_suite: {
@@ -56,7 +52,7 @@ test('uses commit or repository plus branch when check payloads omit pull_reques
     }),
     true
   );
-  assert.equal(filter({ body: { repository: { id: 1234 }, branches: [{ name: 'topic' }] } }), true);
+  is(filter({ body: { repository: { id: 1234 }, branches: [{ name: 'topic' }] } }), true);
 });
 
 test('rejects same-named branches from other forks', () => {
@@ -72,7 +68,7 @@ test('rejects same-named branches from other forks', () => {
     { repository: { id: 9999 }, branches: [{ name: 'topic' }] },
   ];
 
-  for (const body of bodies) assert.equal(filter({ body }), false);
+  for (const body of bodies) is(filter({ body }), false);
 });
 
 test('drops unrelated repository events', () => {
@@ -86,38 +82,38 @@ test('drops unrelated repository events', () => {
     {},
   ];
 
-  for (const body of bodies) assert.equal(filter({ body }), false);
+  for (const body of bodies) is(filter({ body }), false);
 });
 
 test('composes a user predicate with the mandatory PR scope', () => {
   const scoped = buildPrWatchFilter(267, ...HEAD);
   const filter = compile(composePrWatchFilter(scoped, "e => e.body.action !== 'synchronize'"));
 
-  assert.equal(filter({ body: { action: 'opened', pull_request: { number: 267 } } }), true);
-  assert.equal(filter({ body: { action: 'synchronize', pull_request: { number: 267 } } }), false);
-  assert.equal(filter({ body: { action: 'opened', pull_request: { number: 266 } } }), false);
+  is(filter({ body: { action: 'opened', pull_request: { number: 267 } } }), true);
+  is(filter({ body: { action: 'synchronize', pull_request: { number: 267 } } }), false);
+  is(filter({ body: { action: 'opened', pull_request: { number: 266 } } }), false);
 });
 
 test('safely embeds unusual branch names', () => {
   const headRef = 'feature/quote-"-$()';
   const filter = compile(buildPrWatchFilter(267, headRef, 1234, 'abc123'));
-  assert.equal(filter({ body: { repository: { id: 1234 }, branches: [{ name: headRef }] } }), true);
+  is(filter({ body: { repository: { id: 1234 }, branches: [{ name: headRef }] } }), true);
 });
 
 test('distinguishes filtered watches from legacy endpoints', () => {
   const output = `Active webhooks:\n  old-id  pr-owner-repo-267-watch  https://example.test/old-id  -> scoop\n  new-id  pr-owner-repo-268-watch  https://example.test/new-id  -> scoop  [filtered]\n`;
 
-  assert.deepEqual(findWatchWebhook(output, 'pr-owner-repo-267-watch'), {
+  is(findWatchWebhook(output, 'pr-owner-repo-267-watch'), {
     id: 'old-id',
     filtered: false,
     target: 'scoop',
   });
-  assert.deepEqual(findWatchWebhook(output, 'pr-owner-repo-268-watch'), {
+  is(findWatchWebhook(output, 'pr-owner-repo-268-watch'), {
     id: 'new-id',
     filtered: true,
     target: 'scoop',
   });
-  assert.equal(findWatchWebhook(output, 'pr-owner-repo-26-watch'), null);
+  is(findWatchWebhook(output, 'pr-owner-repo-26-watch'), null);
 });
 
 test('reports the delivery target so a watch can be reconciled', () => {
@@ -130,14 +126,14 @@ test('reports the delivery target so a watch can be reconciled', () => {
     '',
   ].join('\n');
 
-  assert.equal(findWatchWebhook(output, 'pr-owner-repo-1-watch').target, 'cone-helix');
-  assert.equal(findWatchWebhook(output, 'pr-owner-repo-2-watch').target, 'gh-watch-scoop-scoop');
+  is(findWatchWebhook(output, 'pr-owner-repo-1-watch').target, 'cone-helix');
+  is(findWatchWebhook(output, 'pr-owner-repo-2-watch').target, 'gh-watch-scoop-scoop');
   // No target column at all, and a target column with nothing in it, must both
   // read as "unknown" rather than as a unit literally named `[filtered]`.
-  assert.equal(findWatchWebhook(output, 'pr-owner-repo-3-watch').target, null);
-  assert.equal(findWatchWebhook(output, 'pr-owner-repo-4-watch').target, null);
+  is(findWatchWebhook(output, 'pr-owner-repo-3-watch').target, null);
+  is(findWatchWebhook(output, 'pr-owner-repo-4-watch').target, null);
   // Parsing the target must not disturb the other two fields.
-  assert.equal(findWatchWebhook(output, 'pr-owner-repo-3-watch').filtered, true);
-  assert.equal(findWatchWebhook(output, 'pr-owner-repo-2-watch').filtered, false);
-  assert.equal(findWatchWebhook(output, 'pr-owner-repo-1-watch').id, 'a1');
+  is(findWatchWebhook(output, 'pr-owner-repo-3-watch').filtered, true);
+  is(findWatchWebhook(output, 'pr-owner-repo-2-watch').filtered, false);
+  is(findWatchWebhook(output, 'pr-owner-repo-1-watch').id, 'a1');
 });

@@ -81,7 +81,7 @@ kev ask --json --state ticket.txt --questions questions.json
 
 `questions.json` maps a name to a question. Choice `criteria` is an object. Score `criteria` is an array of strings, low to high.
 
-Stdout is the name, the answer, and a probability, separated by tabs. `--json` prints the System One response. `--date-facts` adds day counts between absolute dates.
+Stdout is the name, the answer, and a probability, separated by tabs. For a score question the answer is the most likely option, and the number is a confidence measured around that same option. `--json` prints the System One response. `--date-facts` adds day counts between absolute dates.
 
 | Model | Variant | Approx size |
 | --- | --- | --- |
@@ -94,6 +94,8 @@ Stdout is the name, the answer, and a probability, separated by tabs. `--json` p
 A `-vision` bundle is the same model behind Qwen3.5's stock vision tower, so a request may also carry an image (meep-meep's `webrunner --vision` sends the page's screenshot). Text requests answer as the text bundle does.
 
 `kev pull` puts the weights in `/workspace/models/ai-ecoverse/kev.js/kev-<size>`. `--from` uses a directory you already have instead.
+
+Kev reads up to 65,536 tokens of state and truncates the rest. `kev ask` never re-downloads a `manifest.json` it already has. Weights fetched before the kev.js 0.6.0 bundles were published cover only 8,192 positions, so a long state fails with a `RangeError` that names the limit. Delete that `kev-<size>` directory to fetch the current bundle.
 
 Kev does not click. You apply the judgment.
 

@@ -8,12 +8,12 @@
     "format": "biome format --write",
     "lint:jsh": "bash tools/lint-jsh.sh",
     "check": "biome check",
-    "test": "node --test \"skills/*/tests/*.test.js\"",
+    "test": "node --test \"tools/*.test.mjs\"",
     "check:jsh-parse": "node tools/check-jsh-parse.mjs"
   },
   "devDependencies": {
-    "@ai-ecoverse/biome-jsh": "6.144.0",
-    "@biomejs/biome": "2.5.14",
+    "@ai-ecoverse/biome-jsh": "6.203.1",
+    "@biomejs/biome": "2.5.15",
     "minimatch": "10.2.6"
   }
 }

@@ -1,6 +1,6 @@
 ---
 name: loose-ends
-description: "A persistent to-do / follow-up list that lives in a sprinkle panel alongside the chat. Use when the user wants to track loose ends, open follow-ups, waiting-on-others items, or 'things I still need to do' across sessions — a durable backlog the cone maintains and resurfaces. Each item has a title and a rich context blob (why it's open, what to do, links). The panel offers three actions per row: 'Do' (hand the item to the cone to work on now), 'Snooze' (hide it until Tomorrow / Next Monday / Next week / a picked date, then auto-resurface), and 'Done' (remove it). Triggers on 'loose ends', 'my to-do list', 'open follow-ups', 'things I still need to do', 'track this for later', 'add a loose end', 'snooze this until', 'mute until Monday', 'what's still open'."
+description: "Persistent to-do / follow-up list in a sprinkle panel. Use when the user wants to track loose ends, open follow-ups, waiting-on-others items, or things still to do across sessions. Each item has a title plus context; the panel offers Do (hand to the cone now), Snooze (hide until Tomorrow / Next Monday / Next week / a date), and Done. Triggers on 'loose ends', 'my to-do list', 'open follow-ups', 'things I still need to do', 'track this for later', 'add a loose end', 'snooze this until', 'mute until Monday', 'what's still open'."
 allowed-tools: bash
 ---
 
@@ -41,6 +41,9 @@ The scoop is a puppet: the store is what matters. If the scoop dies, recreate it
 and reseed from the store (see [Resurrecting](#resurrecting-in-a-new-session)).
 
 ### CLI — the mutation & reporting API
+
+Implemented by the bundled [`scripts/loose-ends.jsh`](scripts/loose-ends.jsh).
+Flags below are the full reference — other sections link here instead of repeating them.
 
 ```bash
 loose-ends list                     # active + snoozed, human-readable
@@ -145,7 +148,8 @@ loose-ends reseed      # just re-send load-items from the store to an open panel
 
 Options (all `--long` form): `--name <n>` (default `loose-ends`),
 `--store <path>` (default `/shared/loose-ends.json`),
-`--template <path>` (default the skill's `templates/loose-ends.shtml`).
+`--template <path>` (default the skill-bundled [`templates/loose-ends.shtml`](templates/loose-ends.shtml),
+copied into `/shared/sprinkles/loose-ends/` on bootstrap).
 
 `bootstrap`/`reseed` drive `sprinkle` lifecycle — run them from the owning scoop.
 The mutation commands (`create`/`done`/`snooze`/`unsnooze`) and `list`/`monday`
@@ -154,14 +158,15 @@ the panel).
 
 ## Adding, updating, and removing tasks
 
-**Prefer the CLI** — one atomic command writes the store *and* syncs the panel:
+**Prefer the CLI** — one atomic command writes the store *and* syncs the panel.
+Full flag reference is under [CLI — the mutation & reporting API](#cli--the-mutation--reporting-api);
+typical calls:
 
 ```bash
-loose-ends create --title "…" --summary "human what & why" \
-  --detail "agent brief: steps, contacts, paths, links" --skills gmail,outlook
-loose-ends done   le-foo          # remove
-loose-ends snooze le-foo monday   # hide until (tomorrow|monday|week|YYYY-MM-DD)
-loose-ends unsnooze le-foo        # wake now
+loose-ends create --title "…" --summary "…" --detail "…" --skills gmail,outlook
+loose-ends done   le-foo
+loose-ends snooze le-foo monday
+loose-ends unsnooze le-foo
 ```
 
 `create` upserts by `--id` (auto-generated `le-<slug>` when omitted) and accepts
@@ -199,18 +204,23 @@ If you must edit the JSON by hand, do both halves yourself: write
 
 ## Lick events (panel → cone)
 
-The panel fires these licks back to the cone as `[Sprinkle Event: loose-ends]`:
+The panel fires these licks back to the cone as `[Sprinkle Event: loose-ends]`.
+Every lick has the transport shape `{ action, data, target? }`: the SLICC
+runtime forwards only those three keys from a sprinkle lick and silently drops
+any other top-level key. The **Data** column below is the `data` object, so an
+owner reads its fields from `data` (e.g. `data.instanceId`), never from the top
+level of the event.
 
 | Action | Data | When | Cone handler |
 |--------|------|------|--------------|
-| `do`   | `{ id, title, summary, detail, url? }` | User clicks **Do**. When the task has `cone`, the lick also carries `target` set to that filing cone. | Start working the task now, using `detail` as the agent brief (`summary` gives the human framing). If `url` is present (or a clear primary link is in the brief), open it with `open <url>` as the first step so the human sees the artifact immediately. The row stays in the list (a "Do" is not a completion). **When the work is finished, do NOT auto-remove it — report the result and ask the user whether to tie it up** (they may have more to add). See "Always confirm before tying up a loose end". |
+| `do`   | `{ id, title, summary, detail, skills, url }` (`url` is `''` when the task has none) | User clicks **Do**. When the task has `cone`, the lick also carries `target` set to that filing cone. | Start working the task now, using `detail` as the agent brief (`summary` gives the human framing). If `url` is present (or a clear primary link is in the brief), open it with `open <url>` as the first step so the human sees the artifact immediately. The row stays in the list (a "Do" is not a completion). **When the work is finished, do NOT auto-remove it — report the result and ask the user whether to tie it up** (they may have more to add). See "Always confirm before tying up a loose end". |
 | *(panel-local)* | View / Map button | User clicks **View** or **Map** | Handled inside the sprinkle via `slicc.exec('open …')` — **no lick, no cone turn**. |
 | `done` | `{ id, title }` | User clicks **Done** | The panel already removed the row optimistically. Remove that `id` from `/shared/loose-ends.json` and bump `updated`. No panel round-trip needed. |
 | `open-session` | `{ id, file, at }` | User clicks the **"from &lt;date&gt;"** provenance link. When the task has `cone`, the lick also carries `target` set to that filing cone. | Open the originating transcript at `/sessions/<file>` (e.g. `read_file`) and surface it to the user — the conversation this loose end came from. |
 | `snooze` | `{ id, title, until }` | User picks a snooze preset (Tomorrow / Next Monday / Next week / Pick a date) | The panel already moved the row to the snoozed section optimistically. Set that task's `snoozedUntil = until` (ISO) in `/shared/loose-ends.json` and bump `updated`. No panel round-trip needed. |
 | `unsnooze` | `{ id, title }` | User clicks **Wake now** on a snoozed row | The panel already moved the row back to active optimistically. Clear (delete or `null`) that task's `snoozedUntil` in the store and bump `updated`. |
-| `request-load` | `{ instanceId, reason, detail, mountedAt }` — e.g. `{"action":"request-load","instanceId":"a1b2c3d4","reason":"store-unreachable","detail":"exec-timeout","mountedAt":"2026-08-18T16:20:00.000Z"}` | Panel `init` when it could **not** hydrate from the store itself (neither `slicc.readFile` nor `slicc.exec` worked in the sandbox, or the store was unusable) | Reseed the panel from the store: `sprinkle send loose-ends '{"action":"load-items","tasks":[ ...store tasks... ]}'` (delegate to the scoop). This is the safety net behind self-hydration. The payload is **additive** — `action` is still the first key and owners keying only on it are unaffected. Use `instanceId` to triage repeats: **different** `instanceId` values mean repeated *mounts* (normal on multi-runtime setups, where a follower panel's VFS bridges are not backed by the leader's storage, so every mount legitimately asks for a push), while repeats with the **same** `instanceId` mean a real loop in one panel. `reason` is `store-unreachable` \| `store-corrupt` \| `no-bridge`; `detail` is the finer cause (`exec-timeout`, `exec-nonzero`, `exec-threw`, `readfile-timeout`, `readfile-empty`, `readfile-threw`, `no-bridge`, or `null`). The panel rate-limits itself (one ask per 5s, doubling to at most one per minute while unanswered, reset by the next `load-items`) — it is a floor, not a cap, so an instance that never gets data keeps asking slowly rather than going silent. |
-| `load-ack` | `{ instanceId, count, at }` — e.g. `{"action":"load-ack","instanceId":"a1b2c3d4","count":7,"at":"2026-08-18T16:20:01.000Z"}` | The panel finished applying a `load-items` push (after `tasks` is replaced and rendered) | Confirmation of delivery, not a request — nothing to do. Match `instanceId` against the `request-load` you were answering to prove the push reached **that** instance and not another one: `sprinkle send` addresses a panel by name and cannot target a runtime, and a panel on a follower cannot read the leader's store. `count` is the number of tasks the panel now holds. No ack within a few seconds of a push means it did not land. This payload is additive too — owners keying only on `action` are unaffected. |
+| `request-load` | `{ instanceId, reason, detail, mountedAt }` — e.g. `{"action":"request-load","data":{"instanceId":"a1b2c3d4","reason":"store-unreachable","detail":"exec-timeout","mountedAt":"2026-08-18T16:20:00.000Z"}}` | Panel `init` when it could **not** hydrate from the store itself (neither `slicc.readFile` nor `slicc.exec` worked in the sandbox, or the store was unusable) | Reseed the panel from the store: `sprinkle send loose-ends '{"action":"load-items","tasks":[ ...store tasks... ]}'` (delegate to the scoop). This is the safety net behind self-hydration. The diagnostics ride inside `data`, so owners keying only on `action` are unaffected. Use `data.instanceId` to triage repeats: **different** `instanceId` values mean repeated *mounts* (normal on multi-runtime setups, where a follower panel's VFS bridges are not backed by the leader's storage, so every mount legitimately asks for a push), while repeats with the **same** `instanceId` mean a real loop in one panel. `reason` is `store-unreachable` \| `store-corrupt` \| `no-bridge`; `detail` is the finer cause (`exec-timeout`, `exec-nonzero`, `exec-threw`, `readfile-timeout`, `readfile-empty`, `readfile-threw`, `no-bridge`, or `null`). The panel rate-limits itself (one ask per 5s, doubling to at most one per minute while unanswered, reset by the next `load-items`) — it is a floor, not a cap, so an instance that never gets data keeps asking slowly rather than going silent. |
+| `load-ack` | `{ instanceId, count, at }` — e.g. `{"action":"load-ack","data":{"instanceId":"a1b2c3d4","count":7,"at":"2026-08-18T16:20:01.000Z"}}` | The panel finished applying a `load-items` push (after `tasks` is replaced and rendered) | Confirmation of delivery, not a request — nothing to do. Match `data.instanceId` against the `data.instanceId` of the `request-load` you were answering to prove the push reached **that** instance and not another one: `sprinkle send` addresses a panel by name and cannot target a runtime, and a panel on a follower cannot read the leader's store. `data.count` is the number of tasks the panel now holds. No ack within a few seconds of a push means it did not land. Owners keying only on `action` are unaffected. |
 
 > **`snooze`/`unsnooze` are optimistic in the panel** (like `done`): the row moves
 > the instant the user acts, then the lick fires. The cone's only job is to make
@@ -294,36 +304,27 @@ It reads the store and emits one monday item per task. Notes:
   then `loose-ends reseed`.
 - **No emojis in the UI** — the panel uses Lucide icons (`list-checks`, `check`,
   `arrow-right`), per the SLICC style guide.
-- **Template:** `templates/loose-ends.shtml` (full-document mode). On open it
-  **self-hydrates from the store** so closing + reopening never loses the list.
-  Its `init` reads `STORE_PATH` (default `/shared/loose-ends.json`) — trying
-  `slicc.readFile()` first, then `slicc.exec('cat …')` — and renders from that.
-  If **neither** works in the sandbox, it fires a `request-load` lick and the
-  cone reseeds (see the lick table). `slicc.setState`/`getState` is only a
+- **Template:** the skill ships [`templates/loose-ends.shtml`](templates/loose-ends.shtml)
+  (full-document mode); bootstrap installs it under `/shared/sprinkles/loose-ends/`.
+  On open it **self-hydrates from the store** so closing + reopening never loses
+  the list. Its `init` reads `STORE_PATH` (default `/shared/loose-ends.json`) —
+  trying `slicc.readFile()` first, then `slicc.exec('cat …')` — and renders from
+  that. If **neither** works in the sandbox, it fires a `request-load` lick and
+  the cone reseeds (see the lick table). `slicc.setState`/`getState` is only a
   same-session cache and does **not** survive a full close+reopen — that was the
   original "empty after reopen" bug. **Test hydration with `sprinkle close` +
   `sprinkle open`, not `sprinkle reload`** (reload keeps the state cache and
   masks the problem). If your store lives elsewhere, change the `STORE_PATH`
-  constant near the top of the script.
-- **`request-load` diagnostics:** when that safety net fires, the lick says why.
-  `reason` is `store-unreachable` (the store could not be read), `store-corrupt`
-  (read, but the JSON was broken or had no `tasks` array) or `no-bridge`
-  (neither `slicc.exec` nor `slicc.readFile` exists in this sandbox); `detail`
-  narrows a failed read to `exec-timeout`, `exec-nonzero`, `exec-threw`,
-  `readfile-timeout`, `readfile-empty` or `readfile-threw`. A per-mount
-  `instanceId` plus `mountedAt` separate repeated mounts from a repeating panel.
-  Asks are rate-limited (one per 5s, doubling to a one-per-minute ceiling while
-  unanswered, reset by the next `load-items`), so a loop degrades to a slow
-  heartbeat and an instance that never receives data is never silenced.
-  Applying a `load-items` push makes the panel emit `load-ack`
-  (`{ action, instanceId, count, at }`), which is how the owner confirms the
-  push reached the instance that asked.
+  constant near the top of the template.
+- **`request-load` diagnostics:** `reason` / `detail` / `instanceId` / rate limits /
+  `load-ack` ride inside the lick's `data` — see the lick table when triageing a
+  mount that cannot self-hydrate.
   **The panel-side floor cannot stop a remount storm.** It lives inside one
   document, so it only protects against an instance that asks repeatedly. If the
   host recreates the panel document on a timer — observed at roughly 30-second
   intervals on a `slicc-standalone` follower, where each fresh `init` fails its
   store read and asks once — every ask comes from a document with a brand-new
   `instanceId`, and no client-side gap applies. Owners must therefore dedupe on
-  their own side: group by `instanceId`, and read many distinct `instanceId`
-  values with `mountedAt` values marching forward as a remount loop in the host,
-  not a panel defect. Nothing in the template can suppress that.
+  their own side: group by `data.instanceId`, and read many distinct
+  `instanceId` values with `mountedAt` values marching forward as a remount loop
+  in the host, not a panel defect. Nothing in the template can suppress that.
