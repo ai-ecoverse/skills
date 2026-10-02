@@ -102,3 +102,30 @@ export async function withRetry(
     }
   }
 }
+
+/**
+ * `judgeAs(model)` on each model in turn, each with its transient retries, moving on only when a
+ * model keeps failing transiently. Bedrock kept answering 5xx for the same long traces across all
+ * three tries (runs 37013006178 and 37038030725: the bike tour and Drug Wars); the bench's
+ * fallback judge takes over only an invalid judgement, not a failed request.
+ */
+export async function judgeAcrossModels(judgeAs, models, retry = {}) {
+  let last;
+  for (const model of models) {
+    try {
+      return await withRetry(() => judgeAs(model), retry);
+    } catch (err) {
+      if (!(retry.isTransient ?? transientJudgeError)(err)) throw err;
+      last = err;
+    }
+  }
+  throw last;
+}
+
+/** How big a judge trace is, for an error message: steps, characters, screenshots and bytes. */
+export function traceSize(trace) {
+  const chars = (trace?.steps ?? []).reduce((n, x) => n + String(x).length, 0);
+  const shots = trace?.screenshots ?? [];
+  const bytes = shots.reduce((n, x) => n + Math.floor((String(x.base64 ?? '').length * 3) / 4), 0);
+  return `${trace?.steps?.length ?? 0} steps / ${chars} chars, ${shots.length} screenshots / ${Math.round(bytes / 1024)} KiB`;
+}

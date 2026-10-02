@@ -30,7 +30,14 @@ import {
   tabIds,
   validateGoals,
 } from './placeholders.mjs';
-import { checkTrace, hasRubric, rubricRecord, rubricTask, withRetry } from './rubric.mjs';
+import {
+  checkTrace,
+  hasRubric,
+  judgeAcrossModels,
+  rubricRecord,
+  rubricTask,
+  traceSize,
+} from './rubric.mjs';
 
 const env = (k, d) => (process.env[k] ?? d ?? '').trim();
 const SLICC = env('HARNESS_SLICC');
@@ -68,17 +75,22 @@ if (rubricGoals) {
   const apiKey = process.env.AWS_BEARER_TOKEN_BEDROCK || process.env.BEDROCK_API_KEY;
   if (!apiKey) throw new Error('goals with a rubric need AWS_BEARER_TOKEN_BEDROCK for the judge');
   const spec = await upstream.loadFindingsSpec();
+  const primary = judgeMod.DEFAULT_JUDGE_MODEL;
+  const fallback = judgeMod.DEFAULT_JUDGE_FALLBACK_MODEL;
+  // luna (falling back to sol on an invalid judgement); when luna's requests keep failing, sol.
   judgeRubric = (goal, trace) =>
-    withRetry(() =>
-      judgeMod.judgeWithFallback({
-        spec,
-        task: rubricTask(goal),
-        trace,
-        model: judgeMod.DEFAULT_JUDGE_MODEL,
-        fallbackModel: judgeMod.DEFAULT_JUDGE_FALLBACK_MODEL,
-        apiKey,
-        region: process.env.BEDROCK_REGION || 'us-west-2',
-      })
+    judgeAcrossModels(
+      (model) =>
+        judgeMod.judgeWithFallback({
+          spec,
+          task: rubricTask(goal),
+          trace,
+          model,
+          fallbackModel: model === primary ? fallback : undefined,
+          apiKey,
+          region: process.env.BEDROCK_REGION || 'us-west-2',
+        }),
+      [primary, fallback]
     );
   // The bare agent's trace is the bench's: an async leader so screenshots run during the prompt.
   if (arm.kind === 'agent') {
@@ -312,7 +324,10 @@ for (const rep of reps) {
         // A skill adapter may report its numbers with the trace instead of from the page.
         if (!metrics && arm.kind === 'skill' && trace.metrics) metrics = trace.metrics;
       } catch (e) {
-        rubric = { credit: null, error: String(e.message ?? e).slice(0, 300) };
+        rubric = {
+          credit: null,
+          error: `${String(e.message ?? e).slice(0, 240)} (trace: ${traceSize(trace)})`,
+        };
       }
     }
     const record = {
