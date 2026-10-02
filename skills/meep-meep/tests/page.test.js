@@ -1471,3 +1471,37 @@ test('a rut of identical System 1 choices brings a System 2 audit, sooner after 
       .startsWith('Rut check (x)')
   );
 });
+
+// slicc#3760 refuses to resume a session whose schema changed, and the
+// menu (the action enum) changes every step.
+test('a resumed System 2 session gets a stable schema and a short header', () => {
+  const menu = page.buildMenu(page.parseSnapshot(SNAPSHOT), 'x', {});
+  const other = page.buildMenu(page.parseSnapshot(SNAPSHOT.replace('e4', 'e9')), 'x', {});
+  is(page.system2Schema(menu, { stable: true }), page.system2Schema(other, { stable: true }));
+  ok(
+    Array.isArray(page.system2Schema(menu).properties.action.enum),
+    'one-shot calls keep the enum'
+  );
+  const full = page.system2Prompt({ goal: 'g', trail: [], state: 's', menu });
+  const cont = page.system2Prompt({ goal: 'g', trail: [], state: 's', menu, continued: true });
+  ok(full.includes('You are System 2 of a browser agent'));
+  ok(
+    !cont.includes('You are System 2 of a browser agent') &&
+      cont.startsWith('System 1 handed you another step')
+  );
+  ok(
+    cont.includes('Menu:') && cont.includes('What System 1 sees now'),
+    'the step itself is all there'
+  );
+  ok(cont.length < full.length - 1000);
+});
+
+test("System 2's prompt carries System 1's state without its control list", () => {
+  const menu = page.buildMenu(page.parseSnapshot(SNAPSHOT), 'x', {});
+  const state =
+    'Goal: g\nPage text:\n  hello\nControls:\n  [e1] link "a"\n  [e2] button "b"\nScreenshot: each offered control is boxed.';
+  const prompt = page.system2Prompt({ goal: 'g', trail: [], state, menu });
+  ok(prompt.includes('Page text:\n  hello\nScreenshot: each offered control is boxed.'));
+  ok(!prompt.includes('[e2] button "b"'), 'the controls are listed once, in the menu');
+  ok(prompt.includes('click:e1  click link "Incompleteness theorems"'));
+});

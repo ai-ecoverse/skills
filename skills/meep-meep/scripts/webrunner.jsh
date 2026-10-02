@@ -30,6 +30,13 @@ const CHILD_MARGIN_MS = 5000;
 const MAX_STEPS_DEFAULT = 8;
 // A game tour takes 40 steps a day; 50 cut a 100-mile tour short (2026-10-01).
 const MAX_STEPS_CAP = 1000;
+// A trivial agent() call wrote its ~11K-token system prompt and tools to the
+// prompt cache every time and never read them back ($0.027 a call, measured
+// 2026-10-02); a System 2 hand-over came to about $0.05. With slicc#3760,
+// --minimal sends a short decision prompt with only StructuredOutput, and
+// --agent-session keeps one resumed conversation per kind of call, so
+// earlier turns are cache reads.
+const SESSION_TURNS = 15;
 const TIME_LIMIT_CAP = 86400;
 // --decider hybrid audits System 1 at this base chance per turn (page.oversightChance).
 const OVERSIGHT_DEFAULT = 0.01;
@@ -84,6 +91,10 @@ USAGE
                        kev decides again. Even when kev is sure, System 2 audits
                        a turn at random: --oversight (default ${OVERSIGHT_DEFAULT}) per turn, more
                        after a big change or a long calm; --seed makes it repeatable
+  --agent-session      System 2 keeps one resumed agent session per kind of call
+                       (decisions, plan reviews), rotated every ${SESSION_TURNS} turns, so
+                       earlier turns are cache reads (slicc#3760). Without it, each
+                       call is a one-shot; both use agent --minimal when available
   --vision             also show the decider the screenshot, each offered control boxed
                        and labelled with its ref. kev needs --model 4b-vision (the
                        default with --vision) or 0.8b-vision; the agent views the
@@ -222,7 +233,14 @@ async function agentCapabilities() {
   if (agentCaps) return agentCaps;
   const help = await exec.spawn(['agent', '--help']);
   const text = `${help.stdout || ''}${help.stderr || ''}`;
-  agentCaps = { images: /--image\b/.test(text), noEscalate: /--no-escalate\b/.test(text) };
+  agentCaps = {
+    images: /--image\b/.test(text),
+    noEscalate: /--no-escalate\b/.test(text),
+    // slicc#3760: a short system prompt with only StructuredOutput, resumable
+    // sessions, and per-call usage.
+    minimal: /--minimal\b/.test(text),
+    session: /--session\b/.test(text),
+  };
   if (!agentCaps.noEscalate) {
     await say('warning: this slicc cannot stop an agent() scoop from escalating commands to the cone');
   }
@@ -235,11 +253,19 @@ const textOf = (answer) => {
   return text.length <= 2000 ? text : '';
 };
 
+
 function agentDecider(flags, model = flags.model || AGENT_MODEL_DEFAULT, thinking = 'off') {
-  const ask = async (prompt, schema, images = []) => {
+  const useSession = onOff(flags['agent-session'], false);
+  const runTag = `meep-${Date.now().toString(36)}`;
+  const sessions = new Map(); // kind -> { n: generation, turns }
+  // Token use of every call, when this slicc reports it.
+  const usage = { calls: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+  // kind: 'decide' or 'review' share a resumed session of that kind with
+  // --agent-session; anything else is a one-shot call.
+  const ask = async (prompt, schema, images = [], kind = null) => {
     const caps = await agentCapabilities();
     status.phase = `an agent call (${model})`;
-    return agent(prompt, {
+    const opts = {
       model,
       thinking,
       schema,
@@ -248,27 +274,63 @@ function agentDecider(flags, model = flags.model || AGENT_MODEL_DEFAULT, thinkin
       readOnly: '/tmp/meep/',
       ...(caps.noEscalate ? { escalate: false } : {}),
       ...(caps.images && images.length ? { images } : {}),
-    });
+      ...(caps.minimal ? { minimal: true } : {}),
+      ...(caps.session ? { envelope: true } : {}),
+    };
+    if (caps.session && useSession && kind) {
+      const s = sessions.get(kind) || { n: 0, turns: 0 };
+      if (s.turns >= SESSION_TURNS) Object.assign(s, { n: s.n + 1, turns: 0 });
+      s.turns += 1;
+      sessions.set(kind, s);
+      opts.session = `${runTag}-${kind}-${s.n}`;
+    }
+    const reply = await agent(prompt, opts);
+    if (!caps.session || !reply || typeof reply !== 'object' || !('output' in reply)) return reply;
+    if (reply.usage) {
+      usage.calls += 1;
+      for (const k of ['input', 'output', 'cacheRead', 'cacheWrite', 'cost']) {
+        usage[k] += Number(reply.usage[k]) || 0;
+      }
+    }
+    return reply.output;
+  };
+  // Whether the next call of this kind continues a session (the prompt can skip the instructions).
+  const continues = (kind) => {
+    const s = sessions.get(kind);
+    return Boolean(useSession && s && s.turns > 0 && s.turns < SESSION_TURNS);
   };
   // Images only go along when this slicc can attach them.
   const attachable = async (images) => ((await agentCapabilities()).images ? images.filter(Boolean) : []);
   return {
     name: `agent ${model}`,
     takesHint: true,
+    usage,
     // System 2: the trail, the plan and the notes, one or two screenshots,
     // and every control in view. It answers with an action and an
     // assessment, and may rewrite the plan, change notes and set values.
     async deliberate(ctx, menu) {
       const images = await attachable(ctx.imagePaths || []);
-      let prompt = page.system2Prompt({ ...ctx, menu, imageCount: images.length });
-      let answer = await ask(prompt, page.system2Schema(menu), images);
-      let action = page.pickAction(menu, answer && answer.action);
+      const caps = await agentCapabilities();
+      const session = Boolean(caps.session && useSession);
+      const schema = page.system2Schema(menu, { stable: session });
+      let prompt = page.system2Prompt({ ...ctx, menu, imageCount: images.length, continued: continues('decide') });
+      let answer = await ask(prompt, schema, images, 'decide');
+      let action;
+      try {
+        action = page.pickAction(menu, answer && answer.action);
+      } catch (err) {
+        // Without the enum (sessions), an id can miss the menu: ask once more.
+        if (!session) throw err;
+        prompt = `${err.message}. Choose an id from this menu:\n${menu.map((a) => `  ${a.id}  ${a.describe}`).join('\n')}`;
+        answer = await ask(prompt, schema, [], 'decide');
+        action = page.pickAction(menu, answer && answer.action);
+      }
       // A type action with no text ended the run: "type:e2 came back without
       // text" on Wikipedia, eval round 37009340905 (2026-10-02). Ask once
       // more, saying so; then wait rather than fail.
       if (action.operation === 'TYPE_TEXT' && !action.text && !textOf(answer)) {
         prompt = `${prompt}\n\nYour last answer chose ${action.id} but gave no \`text\`. A type action needs the exact text in \`text\`; or choose another action.`;
-        answer = await ask(prompt, page.system2Schema(menu), images);
+        answer = await ask(prompt, schema, images, 'decide');
         action = page.pickAction(menu, answer && answer.action);
       }
       if (action.operation === 'TYPE_TEXT' && !action.text) {
@@ -295,7 +357,7 @@ function agentDecider(flags, model = flags.model || AGENT_MODEL_DEFAULT, thinkin
     async review(ctx) {
       const images = await attachable(ctx.imagePaths || []);
       const prompt = page.reviewPrompt({ ...ctx, imageCount: images.length });
-      const answer = await ask(prompt, page.REVIEW_SCHEMA, images);
+      const answer = await ask(prompt, page.REVIEW_SCHEMA, images, 'review');
       return {
         prompt,
         answer,
@@ -470,6 +532,7 @@ function hybridDecider(fast, slow, threshold) {
     loadMs: fast.loadMs,
     shrugs: true,
     plans: true,
+    usage: slow.usage,
     plan: (goal, state, imagePath) => slow.plan(goal, state, imagePath),
     review: (ctx) => slow.review(ctx),
     async decide(state, menu, extra = {}) {
@@ -547,6 +610,7 @@ async function makeDecider(flags) {
     return {
       name: `system2 ${slow.name.replace(/^agent /, '')}`,
       plans: true,
+      usage: slow.usage,
       plan: (goal, state, imagePath) => slow.plan(goal, state, imagePath),
       decide: (state, menu, extra = {}) =>
         slow.deliberate(
@@ -906,6 +970,8 @@ async function runGoal(flags) {
     status.phase = 'loading the decider';
     const decider = await makeDecider(flags);
     result.decider = decider.name;
+    // Agent token use and cost, when this slicc reports it per call (slicc#3760).
+    if (decider.usage) result.agentUsage = decider.usage;
     result.loadSeconds = decider.loadMs == null ? null : decider.loadMs / 1000;
     trace = await traceLib.openTrace(fs, { label: flags.label || hostname });
     result.run = trace.id;
@@ -1204,8 +1270,9 @@ async function cycles(flags, run) {
       const extra = {
         image,
         imagePath,
-        // For System 2: the page now and one step earlier.
-        imagePaths: [imagePath, prevImagePath].filter(Boolean),
+        // For System 2: the page now. The page a step earlier cost ~800
+        // tokens per hand-over and is in the trail's "what changed" already.
+        imagePaths: [imagePath].filter(Boolean),
         menuS2: ori.menuS2,
         context: {
           goal: flags.goal,
