@@ -296,6 +296,13 @@ for (const rep of reps) {
       mkdirSync(runDir, { recursive: true });
       writeFileSync(join(runDir, 'stdout.txt'), skillOut.slice(-2 * 1024 * 1024));
     }
+    // The bare agent's own record of what it did (every tool call, cone and scoops), so a
+    // reviewer can check how it played: the judge reads the same steps.
+    if (arm.kind === 'agent' && Array.isArray(trace?.steps)) {
+      mkdirSync(runDir, { recursive: true });
+      writeFileSync(join(runDir, 'transcript.md'), `${trace.steps.join('\n\n')}\n`);
+      if (trace.finalResult) writeFileSync(join(runDir, 'final.txt'), `${trace.finalResult}\n`);
+    }
     keepFiles(own?.artifacts, runDir, 'artifact');
     // What the skill wants kept from every run, failed ones included (its own log, the latest
     // trace): without it a timeout leaves nothing to debug, since the leader is gone afterwards.
