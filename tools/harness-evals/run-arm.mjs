@@ -30,7 +30,7 @@ import {
   tabIds,
   validateGoals,
 } from './placeholders.mjs';
-import { checkTrace, hasRubric, rubricRecord, rubricTask } from './rubric.mjs';
+import { checkTrace, hasRubric, rubricRecord, rubricTask, withRetry } from './rubric.mjs';
 
 const env = (k, d) => (process.env[k] ?? d ?? '').trim();
 const SLICC = env('HARNESS_SLICC');
@@ -66,15 +66,17 @@ if (rubricGoals) {
   if (!apiKey) throw new Error('goals with a rubric need AWS_BEARER_TOKEN_BEDROCK for the judge');
   const spec = await upstream.loadFindingsSpec();
   judgeRubric = (goal, trace) =>
-    judgeMod.judgeWithFallback({
-      spec,
-      task: rubricTask(goal),
-      trace,
-      model: judgeMod.DEFAULT_JUDGE_MODEL,
-      fallbackModel: judgeMod.DEFAULT_JUDGE_FALLBACK_MODEL,
-      apiKey,
-      region: process.env.BEDROCK_REGION || 'us-west-2',
-    });
+    withRetry(() =>
+      judgeMod.judgeWithFallback({
+        spec,
+        task: rubricTask(goal),
+        trace,
+        model: judgeMod.DEFAULT_JUDGE_MODEL,
+        fallbackModel: judgeMod.DEFAULT_JUDGE_FALLBACK_MODEL,
+        apiKey,
+        region: process.env.BEDROCK_REGION || 'us-west-2',
+      })
+    );
   // The bare agent's trace is the bench's: an async leader so screenshots run during the prompt.
   if (arm.kind === 'agent') {
     const executors = await import(join(SLICC, 'packages/bench/scripts/executors.mjs'));

@@ -20,7 +20,14 @@ import {
 } from './placeholders.mjs';
 import { plan, touchedSkills } from './plan.mjs';
 import { markdown, readRecords, summarize } from './report.mjs';
-import { checkTrace, rubricRecord, rubricTask, validateRubric } from './rubric.mjs';
+import {
+  checkTrace,
+  rubricRecord,
+  rubricTask,
+  transientJudgeError,
+  validateRubric,
+  withRetry,
+} from './rubric.mjs';
 
 const is = (a, b, m) => assert.deepEqual(a, b, m);
 
@@ -550,4 +557,44 @@ test('timeout_s: a goal may raise its own run limit, within reason', () => {
     is(validateGoals({ last_updated: '2026-10-02', goals: [goal(bad)] }), [
       'goals[0]: timeout_s must be an integer from 1 to 7200',
     ]);
+});
+
+test('the judge is retried on transient Bedrock errors, not on invalid judgements', async () => {
+  const http500 = new Error(
+    'judge HTTP 500: {"message":"The system encountered an unexpected error"}'
+  );
+  is(
+    [transientJudgeError(http500), transientJudgeError(new Error('judge output is invalid: x'))],
+    [true, false]
+  );
+  const waits = [];
+  let calls = 0;
+  const flaky = async () => {
+    calls += 1;
+    if (calls < 3) throw http500;
+    return 'judged';
+  };
+  is(await withRetry(flaky, { sleep: async (ms) => waits.push(ms) }), 'judged');
+  is([calls, waits], [3, [15_000, 45_000]]);
+  calls = 0;
+  await assert.rejects(
+    withRetry(
+      async () => {
+        calls += 1;
+        throw new Error('judge output is invalid: y');
+      },
+      { sleep: async () => {} }
+    ),
+    /invalid/
+  );
+  is(calls, 1);
+  await assert.rejects(
+    withRetry(
+      async () => {
+        throw http500;
+      },
+      { sleep: async () => {} }
+    ),
+    /HTTP 500/
+  );
 });
