@@ -10,7 +10,10 @@ import {
   fillGoal,
   fillText,
   formatDate,
+  hasCheck,
+  parseSuites,
   resolvePlaceholders,
+  selectSuites,
   shellQuote,
   tabIds,
   validateGoals,
@@ -455,4 +458,87 @@ test('plan refuses rubric goals when a skill arm has no judgeTrace', async () =>
     })
   );
   await assert.rejects(plan('demo', 'origin/main', root), /export judgeTrace/);
+});
+
+test('suites: untagged goals are default, a PR runs default, games run when named', () => {
+  const goals = [{ id: 'a' }, { id: 'b', suite: 'games' }, { id: 'c', suite: 'default' }];
+  is(
+    selectSuites(goals).map((g) => g.id),
+    ['a', 'c']
+  );
+  is(
+    selectSuites(goals, ['games']).map((g) => g.id),
+    ['b']
+  );
+  is(
+    selectSuites(goals, parseSuites('default, games')).map((g) => g.id),
+    ['a', 'b', 'c']
+  );
+  is(parseSuites(''), ['default']);
+  assert.throws(() => parseSuites('Games'), /bad suite name/);
+  is(
+    validateGoals({
+      last_updated: '2026-10-02',
+      goals: [{ id: 'g', url: 'https://x', goal: 'go', expect: ['x'], suite: 'Long Games' }],
+    }),
+    ['goals[0]: suite must be lowercase a-z0-9-']
+  );
+  is(
+    validateGoals({
+      last_updated: '2026-10-02',
+      goals: [{ id: 'g', url: 'https://x', goal: 'go', expect: ['x'], suite: 123 }],
+    }),
+    ['goals[0]: suite must be lowercase a-z0-9-'],
+    'a numeric suite could never be selected'
+  );
+});
+
+test('plan: a skill with no goal in the selected suites gets no jobs', async () => {
+  const root = fakeRepo();
+  writeFileSync(
+    join(root, 'skills/demo/evals/harness/goals.json'),
+    JSON.stringify({
+      last_updated: '2026-10-02',
+      goals: [{ id: 'g', url: 'https://x', goal: 'do', expect: ['done'], suite: 'games' }],
+    })
+  );
+  is((await plan('demo', 'origin/main', root)).include, []);
+  is((await plan('demo', 'origin/main', root, ['games'])).include.length, 2);
+});
+
+test('rubric-only goals: valid without a check, pass is null, scored by credit alone', () => {
+  const base = { id: 'darkroom', url: 'https://x', goal: 'play as far as you get' };
+  is(
+    validateGoals({
+      last_updated: '2026-10-02',
+      goals: [{ ...base, rubric: RUBRIC, weights: { finished: 1 } }],
+    }),
+    []
+  );
+  is(validateGoals({ last_updated: '2026-10-02', goals: [base] }), [
+    'goals[0]: needs expect or expect_url (a check), or a rubric',
+  ]);
+  is([hasCheck(base), hasCheck({ expect_url: ['/x'] })], [false, true]);
+  const dir = mkdtempSync(join(tmpdir(), 'harness-'));
+  mkdirSync(join(dir, 'records'), { recursive: true });
+  const rec = (n, goal, pass, credit) => ({
+    skill: 'meep',
+    arm: 'hybrid',
+    goal,
+    repeat: n,
+    pass,
+    self_ok: null,
+    seconds: 1,
+    steps: 1,
+    cost_usd: 0,
+    error: null,
+    invalid: null,
+    rubric: credit == null ? null : { credit },
+  });
+  writeFileSync(join(dir, 'records/1.json'), JSON.stringify(rec(1, 'darkroom', null, 0.85)));
+  writeFileSync(join(dir, 'records/2.json'), JSON.stringify(rec(1, 'hn', true, null)));
+  const s = summarize(readRecords(dir));
+  const [row] = s.skills[0].rows;
+  is([row.passed, row.runs, row.goals.darkroom.runs, row.goals.darkroom.credit], [1, 1, 0, 0.85]);
+  assert.match(markdown(s), /\| hybrid \| 1\/1 \| – · 85% \| 1\/1 \|/);
 });

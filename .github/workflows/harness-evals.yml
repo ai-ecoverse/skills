@@ -26,6 +26,9 @@ on:
       repeats:
         description: 'Runs per goal and arm (1-10)'
         default: '3'
+      suites:
+        description: 'Goal suites, comma list (goals without `suite` are in default; long games name their own)'
+        default: 'default'
 
 # Evals spend money: a newer push waits for the running evals instead of cancelling them.
 concurrency:
@@ -46,6 +49,7 @@ jobs:
       slicc-version: ${{ steps.plan.outputs.slicc-version }}
       slicc-ref: ${{ steps.plan.outputs.slicc-ref }}
       repeats: ${{ steps.plan.outputs.repeats }}
+      suites: ${{ steps.plan.outputs.suites }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -61,13 +65,20 @@ jobs:
           WHICH: ${{ github.event_name == 'workflow_dispatch' && inputs.skills || 'changed' }}
           BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || 'origin/main' }}
           REPEATS: ${{ github.event_name == 'workflow_dispatch' && inputs.repeats || '1' }}
+          # A pull request runs the default suite only; longer suites are dispatched by name.
+          SUITES: ${{ github.event_name == 'workflow_dispatch' && inputs.suites || 'default' }}
           HAS_KEY: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK != '' }}
         run: |
           set -euo pipefail
           if ! [[ "$REPEATS" =~ ^([1-9]|10)$ ]]; then echo "::error::repeats must be 1-10"; exit 1; fi
-          matrix="$(node tools/harness-evals/plan.mjs "$WHICH" "$BASE")"
-          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
-          echo "repeats=$REPEATS" >> "$GITHUB_OUTPUT"
+          SUITES="${SUITES//[[:space:]]/}"  # "default, games" is a fine way to type it
+          if ! [[ "$SUITES" =~ ^[a-z0-9][a-z0-9,-]*$ ]]; then echo "::error::suites must be a comma list of a-z0-9-"; exit 1; fi
+          matrix="$(node tools/harness-evals/plan.mjs "$WHICH" "$BASE" "$SUITES")"
+          {
+            echo "suites=$SUITES"
+            echo "matrix=$matrix"
+            echo "repeats=$REPEATS"
+          } >> "$GITHUB_OUTPUT"
           n=$(jq '.include | length' <<< "$matrix")
           jq -r '.include[] | "\(.skill)/\(.arm) on \(.runs_on)"' <<< "$matrix"
           run=false
@@ -78,7 +89,7 @@ jobs:
           version="$(npm view sliccy@latest version)"
           echo "slicc-version=$version" >> "$GITHUB_OUTPUT"
           echo "slicc-ref=v$version" >> "$GITHUB_OUTPUT"
-          echo "slicc v$version, $n arm job(s), $REPEATS repeat(s)" >> "$GITHUB_STEP_SUMMARY"
+          echo "slicc v$version, $n arm job(s), $REPEATS repeat(s), suites $SUITES" >> "$GITHUB_STEP_SUMMARY"
 
   arm:
     name: ${{ matrix.skill }} / ${{ matrix.arm }}
@@ -148,6 +159,7 @@ jobs:
           HARNESS_SKILL_DIR: ${{ github.workspace }}/skills/${{ matrix.skill }}
           HARNESS_ARM_ID: ${{ matrix.arm }}
           HARNESS_REPEATS: ${{ needs.plan.outputs.repeats }}
+          HARNESS_SUITES: ${{ needs.plan.outputs.suites }}
           HARNESS_OUT: ${{ runner.temp }}/harness-out
           # The rubric judge (goals with `rubric`/`weights`) calls Bedrock like the bench's judge.
           AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
