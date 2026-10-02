@@ -972,6 +972,76 @@ function shrugReason(first, threshold, opts = {}) {
   return `confidence ${first.confidence.toFixed(2)} < ${threshold}, runner-up ${second.toFixed(2)}`;
 }
 
+// ── oversight ─────────────────────────────────────────────────────────
+// Random audits of System 1. kev's confidence does not say whether it is
+// right: in Paperclips it was sure on 57 of 60 steps and played badly
+// (2026-10-02). Each turn has a small chance that System 2 reviews the
+// step anyway, raised when the page just changed a lot (a new screen is a
+// natural moment to look again) or has barely changed for many turns (an
+// idle grind or a slow loop the stall brake does not see).
+
+const OVERSIGHT_BIG_CHANGE = 0.5;
+const OVERSIGHT_BIG_BOOST = 0.25;
+const OVERSIGHT_CALM_CHANGE = 0.05;
+const OVERSIGHT_CALM_AFTER = 5;
+const OVERSIGHT_CALM_STEP = 0.02;
+const OVERSIGHT_CALM_MAX = 0.3;
+const OVERSIGHT_MAX = 0.5;
+
+/** How much of the page the last action changed, 0 (nothing) to 1 (a new page). */
+function changeMagnitude(diff, elementCount) {
+  if (!diff) return 0;
+  if (diff.replaced || diff.url) return 1;
+  const moved = diff.added.length + diff.removed.length + diff.changed.length;
+  return Math.min(1, moved / Math.max(elementCount || 0, 1));
+}
+
+/**
+ * This turn's chance of a System 2 review, and why.
+ * magnitudes: the change magnitude of each turn so far, newest last.
+ */
+function oversightChance(base, magnitudes) {
+  if (!(base > 0)) return { chance: 0, reason: '' };
+  const last = magnitudes.length ? magnitudes[magnitudes.length - 1] : 0;
+  let calm = 0;
+  for (let i = magnitudes.length - 1; i >= 0 && magnitudes[i] < OVERSIGHT_CALM_CHANGE; i--) calm++;
+  let chance = base;
+  const reasons = [`base ${base}`];
+  if (last >= OVERSIGHT_BIG_CHANGE) {
+    chance += OVERSIGHT_BIG_BOOST;
+    reasons.push('the page just changed a lot');
+  }
+  if (calm >= OVERSIGHT_CALM_AFTER) {
+    chance += Math.min(OVERSIGHT_CALM_MAX, (calm - OVERSIGHT_CALM_AFTER + 1) * OVERSIGHT_CALM_STEP);
+    reasons.push(`${calm} turns with almost no change`);
+  }
+  chance = Math.min(OVERSIGHT_MAX, chance);
+  return { chance: Math.round(chance * 1000) / 1000, reason: reasons.join(', ') };
+}
+
+/** A small seeded generator (mulberry32), so a run's audits can be replayed. */
+function seededRandom(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** What System 2 hears on an audit: System 1 was not unsure, this is a routine review. */
+function oversightHint(first, why, menu) {
+  const describe = new Map(menu.map((action) => [action.id, action.describe]));
+  const conf =
+    typeof first.confidence === 'number' ? ` at ${(first.confidence * 100).toFixed(0)}%` : '';
+  return [
+    `Routine review (${why}): the fast model was not unsure; it chose ${first.action.id}${conf}  ${describe.get(first.action.id) || ''}.`,
+    'Keep that choice if it is right, or pick a better one, and update the plan and notes if the run is off course.',
+  ].join('\n');
+}
+
 /** What System 2 hears about System 1's attempt. */
 function shrugHint(first, reason, menu) {
   const describe = new Map(menu.map((action) => [action.id, action.describe]));
@@ -1149,6 +1219,10 @@ module.exports = {
   checkExpect,
   shrugReason,
   shrugHint,
+  changeMagnitude,
+  oversightChance,
+  seededRandom,
+  oversightHint,
   avoidKeys,
   planLines,
   trailLines,

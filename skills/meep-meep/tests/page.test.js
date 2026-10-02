@@ -949,3 +949,42 @@ test('controls that share a label carry the text of their row', () => {
   ok(ori.menu.some((a) => a.describe === 'click button "BUY" in row "Acid $2,758"'));
   ok(ori.state.includes('[e10] button "BUY" in row "Heroin $6,037"'));
 });
+
+test('oversight: a small base chance, more after a big change or a long calm', () => {
+  is(page.oversightChance(0.01, []), { chance: 0.01, reason: 'base 0.01' });
+  const big = page.oversightChance(0.01, [0.1, 0.9]);
+  is(big.chance, 0.26);
+  ok(big.reason.includes('the page just changed a lot'));
+  const calm = page.oversightChance(0.01, [0.6, 0, 0.01, 0, 0, 0.02, 0]);
+  is(calm.chance, 0.05, '6 calm turns: base 0.01 + 2 x 0.02');
+  ok(calm.reason.includes('6 turns with almost no change'));
+  is(page.oversightChance(0.01, Array(100).fill(0)).chance, 0.31, 'the calm boost is capped');
+  is(page.oversightChance(0.4, [1, ...Array(40).fill(0)]).chance, 0.5, 'the total is capped');
+  is(page.oversightChance(0, [1]).chance, 0, 'off is off');
+});
+
+test('change magnitude: a new page is 1, a quiet page 0', () => {
+  const shot = page.parseSnapshot(SNAPSHOT);
+  is(page.changeMagnitude(null, 4), 0);
+  is(page.changeMagnitude(page.diffShots(shot, shot), 4), 0);
+  const moved = page.parseSnapshot(SNAPSHOT.replace('[ref=e3]: ""', '[ref=e3]: "London"'));
+  is(page.changeMagnitude(page.diffShots(shot, moved), 4), 0.25);
+  const elsewhere = { ...moved, url: 'https://other.example/' };
+  is(page.changeMagnitude(page.diffShots(shot, elsewhere), 4), 1);
+});
+
+test('the seeded generator replays and the audit hint says System 1 was sure', () => {
+  const a = page.seededRandom(42);
+  const b = page.seededRandom(42);
+  is([a(), a(), a()], [b(), b(), b()]);
+  ok(page.seededRandom(7)() !== page.seededRandom(8)());
+  const menu = page.buildMenu(page.parseSnapshot(SNAPSHOT), 'x', {});
+  const click = menu.find((a) => a.id === 'click:e1');
+  const hint = page.oversightHint({ action: click, confidence: 0.93 }, 'base 0.01', menu);
+  ok(
+    hint.startsWith(
+      'Routine review (base 0.01): the fast model was not unsure; it chose click:e1 at 93%'
+    )
+  );
+  ok(hint.includes('Keep that choice if it is right'));
+});

@@ -24,7 +24,9 @@ const DEBUG_PAGE = `${__dirname}/../assets/debug.html`;
 const READY = 'WEBRUNNER_KEV_READY';
 const MAX_STEPS_DEFAULT = 8;
 // A game tour takes 40 steps a day; 50 cut a 100-mile tour short (2026-10-01).
-const MAX_STEPS_CAP = 200;
+const MAX_STEPS_CAP = 1000;
+// --decider hybrid audits System 1 at this base chance per turn (page.oversightChance).
+const OVERSIGHT_DEFAULT = 0.01;
 const STALL_LIMIT = 3;
 const AGENT_MODEL_DEFAULT = 'claude-sonnet-5-5';
 // Below this kev confidence, --decider hybrid hands the step to the agent.
@@ -43,6 +45,7 @@ USAGE
   webrunner run --url <url> --goal <text> [--expect <text>]... [--expect-url <text>]...
                 [--max-steps 8] [--decider kev|agent|hybrid|system2] [--model <m>] [--from <dir>]
                 [--agent-model <m>] [--agent-thinking low] [--shrug 0.5] [--plan on|off]
+                [--oversight 0.01] [--seed N]
                 [--vision] [--window WxH] [--page-text on|off] [--viewport on|off] [--shots on|off]
                 [--factor-text on|off] [--json]
   webrunner demo link|search|flights [--decider kev|agent|hybrid|system2] [--model <m>] [--json]
@@ -69,7 +72,9 @@ USAGE
                        for. System 2 reads the recent steps, the plan and the notes, looks
                        at the page, and may rewrite the plan and add notes, which System 1
                        reads from then on. It writes the first plan before step 1
-                       (--plan off skips that)
+                       (--plan off skips that). Even when kev is sure, System 2 audits
+                       a turn at random: --oversight (default ${OVERSIGHT_DEFAULT}) per turn, more
+                       after a big change or a long calm; --seed makes it repeatable
   --vision             also show the decider the screenshot, each offered control boxed
                        and labelled with its ref. kev needs --model 4b-vision (the
                        default with --vision) or 0.8b-vision; the agent views the
@@ -169,6 +174,11 @@ function parseWindow(value, vision) {
   const m = /^(\d{3,4})x(\d{3,4})$/.exec(String(value));
   if (!m) cli.die('--window is WIDTHxHEIGHT, e.g. 1024x576', { prefix: 'webrunner' });
   return { width: Number(m[1]), height: Number(m[2]) };
+}
+
+function numberFlag(value, fallback, min, max) {
+  const n = Number.parseFloat(value);
+  return Number.isFinite(n) ? Math.min(Math.max(n, min), max) : fallback;
 }
 
 // --flag alone is on; --flag off|false|no|0 is off; absent is the default.
@@ -390,6 +400,28 @@ function hybridDecider(fast, slow, threshold) {
         probabilities: first.probabilities,
         shrug: reason || null,
       };
+      // A random audit: System 1 was sure, System 2 reviews the step anyway.
+      if (!reason && extra.oversight) {
+        system1.oversight = extra.oversight;
+        const rest = menu.filter((action) => action.operation !== 'SHRUG');
+        const slowStarted = Date.now();
+        const second = await slow.deliberate(
+          {
+            ...(extra.context || {}),
+            state,
+            hint: page.oversightHint(first, extra.oversight.reason, menu),
+            imagePaths: extra.imagePaths,
+          },
+          rest
+        );
+        return {
+          ...second,
+          system: slow.name,
+          system1,
+          system2Ms: Date.now() - slowStarted,
+          top: `${first.top}  → audit (${extra.oversight.reason}, p=${extra.oversight.chance})`,
+        };
+      }
       if (!reason) return { ...first, system: fast.name, system1 };
       const slowStarted = Date.now();
       const rest = menu.filter((action) => action.operation !== 'SHRUG');
@@ -737,6 +769,10 @@ async function runGoal(flags) {
     factorText: !AGENT_WRITES_TEXT.has(flags.decider) && onOff(flags['factor-text'], true),
     pageText: onOff(flags['page-text'], true),
     plan: onOff(flags.plan, true),
+    oversight: flags.decider === 'hybrid' ? numberFlag(flags.oversight, OVERSIGHT_DEFAULT, 0, 1) : 0,
+    seed: Number.isFinite(Number.parseInt(flags.seed, 10))
+      ? Number.parseInt(flags.seed, 10)
+      : Math.floor(Math.random() * 2 ** 31),
     window: parseWindow(flags.window, onOff(flags.vision, false)),
   };
   if (opts.vision && !opts.shots) cli.die('--vision needs the screenshot: drop --shots off', { prefix: 'webrunner' });
@@ -767,6 +803,8 @@ async function runGoal(flags) {
     candidates,
     viewport: opts.viewport,
     vision: opts.vision,
+    oversight: opts.oversight,
+    seed: opts.seed,
   });
   await say(`run ${trace.id}`);
   const finish = async (ok, reason, url) => {
@@ -811,6 +849,9 @@ async function cycles(flags, run) {
   const memory = { plan: [], notes: [], trail: [] };
   let prevImagePath = null;
   let prevPixels = '';
+  // Oversight: each turn's change magnitude, and the seeded audit roll.
+  const magnitudes = [];
+  const roll = page.seededRandom(opts.seed);
   let prev = null;
   let previousLabels = null;
   let stalls = 0;
@@ -838,6 +879,11 @@ async function cycles(flags, run) {
     }
     seenPages.push(fp);
     if (cycle) record.cycle = cycle;
+    if (prev) {
+      const m = page.changeMagnitude(obs.diff, obs.shot.elements.length);
+      // A canvas change is a change, not calm.
+      magnitudes.push(pixelsChanged ? Math.max(m, 0.1) : m);
+    }
     // This observation is the outcome of the last step on the trail.
     const lastStep = memory.trail[memory.trail.length - 1];
     if (lastStep) {
@@ -951,6 +997,11 @@ async function cycles(flags, run) {
         // For System 2: the page now and one step earlier.
         imagePaths: [imagePath, prevImagePath].filter(Boolean),
         context: { goal: flags.goal, plan: memory.plan, notes: memory.notes, trail: memory.trail },
+        oversight: (() => {
+          if (!opts.oversight || !decider.shrugs) return null;
+          const audit = page.oversightChance(opts.oversight, magnitudes);
+          return roll() < audit.chance ? audit : null;
+        })(),
         avoid: ori.avoid,
       };
       const answer = decider.takesHint
@@ -1017,12 +1068,18 @@ async function cycles(flags, run) {
         failed: Boolean(failure),
       });
     }
-    const shrugged = decision.system1 && decision.system1.shrug;
+    const shrugged = decision.system1 && (decision.system1.shrug || decision.system1.oversight);
     memory.trail.push({
       step,
       describe: action.describe,
       text: action.operation === 'TYPE_TEXT' && !/^type "/.test(action.describe) ? action.text : null,
-      system: shrugged ? 'System 2' : decision.system1 ? 'System 1' : decision.system,
+      system: decision.system1 && decision.system1.oversight
+        ? 'System 2 (audit)'
+        : shrugged
+          ? 'System 2'
+          : decision.system1
+            ? 'System 1'
+            : decision.system,
       confidence: shrugged ? decision.system1.confidence : decision.confidence,
       outcome: record.actError ? `failed: ${record.actError}` : '',
     });
@@ -1121,6 +1178,8 @@ async function demo(name, flags) {
     'agent-model': flags['agent-model'],
     'agent-thinking': flags['agent-thinking'],
     plan: flags.plan,
+    oversight: flags.oversight,
+    seed: flags.seed,
     shrug: flags.shrug,
     vision: flags.vision,
     'factor-text': flags['factor-text'],
