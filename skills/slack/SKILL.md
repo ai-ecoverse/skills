@@ -670,7 +670,7 @@ wire facts, authentication, what remains unverified): `references/enterprise-gri
 - `eg-forget <user_id> [--confirm]` — GDPR identity scrub, **IRREVERSIBLE**; never a flag, never in an unattended loop without per-user confirmation.
 - `eg-bulk-guest [<user_id>...] [--file=<path>] [--confirm]` — many members → multi-channel guests, per-user read-back.
 - `eg-set-ultra-restricted <user_id> [--confirm]` — **UNVERIFIED**; do not use in production.
-- `channel-search [--query=<q>] [--types=<t>] [--limit=<n>] [--json]` — read-only channel enumeration, filtered locally.
+- `channel-search [--query=<q>] [--types=<t>] [--limit=<n>] [--max=<n>] [--json]` — read-only channel enumeration (pages of at most 20), `--query` matched locally as a name substring.
 - `channel-to-public <channel_id> [--confirm]` — private → public.
 - `channel-to-private <channel_id> [--confirm]` — public → private; the channel then looks deleted to non-members.
 - `channel-archive <channel_id> [--confirm] [--max-members=N] [--min-idle-days=N] [--allow-shared] [--json]` — archive; dry run reads state, `--confirm` re-checks every guard then reads back; Slack Connect channels need `--allow-shared` (archiving disconnects every external org).

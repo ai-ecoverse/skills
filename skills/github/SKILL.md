@@ -5,15 +5,15 @@ description: >
   GitHub CLI's syntax (--title/--body, -R owner/repo, --json [fields], --jq, --help on every
   command) as well as its own positional forms.
   Use for any GitHub task: listing, viewing, diffing, or editing pull requests, checking CI
-  and failed job logs, merging PRs, posting comments, checking out branches, viewing issues,
-  workflow runs, releases, searching PRs or issues, managing Actions variables,
+  and failed job logs, merging/queueing PRs, posting comments, checking out branches,
+  viewing issues, workflow runs, releases, searching PRs or issues, managing Actions variables,
   creating branches, pushing file content, archiving/cloning repos, marking PRs ready
   for review, managing org-owned Projects (v2), or calling any GitHub API endpoint directly.
   Trigger on "list open PRs", "show the PR diff", "search issues", "check CI",
   "why did CI fail", "merge this PR", "what issues are open", "has this been filed",
   "show the latest release", "comment on PR #42", "set a repo variable",
   "create a branch", "push this file", "list my GitHub projects", "clone this repo",
-  "mark PR ready for review".
+  "mark PR ready for review", "merge queue".
 allowed_tools:
   - bash
 ---
@@ -124,6 +124,28 @@ gh run view <run_id> --log-failed -R owner/repo      # the failing job's log
 ```bash
 gh pr checks <num> -R owner/repo && gh pr merge <num> --squash --delete-branch -R owner/repo
 ```
+
+### Merge, including through a merge queue
+
+```bash
+gh pr merge <num> -R owner/repo                    # queue if the base has one, else merge directly
+gh pr merge <num> --merge-action direct_merge      # or merge_queue; --admin also bypasses rules
+gh pr merge <num> --auto -R owner/repo             # merge when requirements are met
+gh pr merge-status <num> <uuid> --wait             # follow a request later (shim-only)
+gh pr queue [branch] --json -R owner/repo          # queue entries: position, state (shim-only)
+```
+
+`pr merge` uses GitHub's async merge API, pinned to the head it just read (a push in between
+cancels the merge), and waits up to `--timeout` (120 s) for the result:
+
+| Exit | Result |
+|---|---|
+| `0` | merged (prints the merge commit), or enqueued — in the queue, **not merged yet** |
+| `1` | failed (prints GitHub's message), or not mergeable (closed, draft) |
+| `8` | still pending — prints the `gh pr merge-status` command to check later (24 h) |
+
+`--disable-auto` leaves the queue or disables auto-merge. `--delete-branch` runs only after a
+merge. `--sync` forces the old synchronous merge (e.g. GitHub Enterprise Server).
 
 ### Stay in the loop on a PR without polling
 
