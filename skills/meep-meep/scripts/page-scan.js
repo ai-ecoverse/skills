@@ -21,18 +21,15 @@ function scan() {
     String(s || '')
       .replace(/\s+/g, ' ')
       .trim();
-  const boxOf = (el) => {
+  // Viewport coordinates, as in the snapshot's boxes. `anywhere` keeps
+  // controls scrolled out of view: the menu still lists them (with SCROLL),
+  // and Drug Wars' first BUY, scrolled above the fold, fell back to the
+  // layout guess and read "for DRUGWARS.ONLINE DAY 1 / 30" (2026-10-02).
+  const boxOf = (el, anywhere) => {
     const r = el.getBoundingClientRect();
-    if (
-      !r.width ||
-      !r.height ||
-      r.bottom < 0 ||
-      r.top > innerHeight ||
-      r.right < 0 ||
-      r.left > innerWidth
-    ) {
-      return null;
-    }
+    if (!r.width || !r.height) return null;
+    const visible = r.bottom >= 0 && r.top <= innerHeight && r.right >= 0 && r.left <= innerWidth;
+    if (!visible && !anywhere) return null;
     return [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)];
   };
 
@@ -73,7 +70,8 @@ function scan() {
     );
   const controls = [];
   for (const el of document.querySelectorAll(CONTROLS)) {
-    const b = boxOf(el);
+    if (controls.length >= 1000) break;
+    const b = boxOf(el, true);
     if (!b) continue;
     const name = nameOf(el);
     if (name) controls.push({ el, name, b });
