@@ -138,6 +138,24 @@ function buildConvertChannelParams(channelId) {
 //   sort_dir — 'asc' | 'desc'
 //   query    — may be empty string
 //   cursor   — may be empty string
+//   limit    — 2..20 (measured 2026-10-02 on E06V3987PMY, query=santander):
+//              limit=21 and limit=50 -> invalid_arguments, response_metadata
+//              .messages ["[ERROR] must be less than 20 [json-pointer:/limit]"]
+//              (20 itself is accepted: the message is off by one);
+//              limit=0 -> "[ERROR] must be greater than 1"; limit=1 -> ok:true
+//              with ZERO rows and no next_cursor, a silent empty result.
+//              The page size is clamped into 2..20 here. Clamping is safe
+//              because the caller pages to completion, so it changes the
+//              number of round trips, never the result set.
+//
+// QUERY SEMANTICS (measured 2026-10-02): the server-side query is a
+// word-PREFIX match on the name, split on '-'. query=santander returned 8
+// channels with search_channel_types=all but NOT #aem-gruposantander
+// (C09U7MX5R7X; renamed #aem-santander later that day);
+// query=antander returned 0, query=santander* returned the same 8, and
+// *santander* returned 0. A local substring match over a full enumeration
+// (empty query) is the only way to find infix matches. query=<channel id>
+// finds that channel (40 of 40 on 2026-09-25; C09U7MX5R7X on 2026-10-02).
 //
 // MEASURED DEFECT: channel_ids is SILENTLY IGNORED. Never pass it.
 // Filter results locally; see filterChannels() below.
@@ -147,11 +165,22 @@ const VALID_SEARCH_CHANNEL_TYPES = new Set(
 );
 const VALID_CHANNEL_SORT_FIELDS = new Set(['name', 'member_count', 'created']);
 
+// Slack answers invalid_arguments outside 2..20, and a silent empty page at 1.
+const CHANNEL_SEARCH_PAGE_MIN = 2;
+const CHANNEL_SEARCH_PAGE_MAX = 20;
+
+function clampChannelSearchLimit(limit) {
+  const n = typeof limit === 'number' ? limit : parseInt(String(limit === undefined || limit === null ? '' : limit), 10);
+  if (!Number.isFinite(n) || n <= 0) return CHANNEL_SEARCH_PAGE_MAX;
+  return Math.min(CHANNEL_SEARCH_PAGE_MAX, Math.max(CHANNEL_SEARCH_PAGE_MIN, Math.floor(n)));
+}
+
 function buildChannelSearchParams(query, limit, cursor, searchChannelTypes, sort, sortDir) {
   const p = {
     // Empty string is accepted; must be present.
     query: query || '',
-    limit: String(limit || 50),
+    // 2..20 only. The old default of 50 made every call fail (invalid_arguments).
+    limit: String(clampChannelSearchLimit(limit)),
     // Observed in UI; omitting silently defaults to something — include explicitly.
     search_channel_types: searchChannelTypes || 'exclude_archived',
     sort: sort || 'name',
@@ -160,6 +189,75 @@ function buildChannelSearchParams(query, limit, cursor, searchChannelTypes, sort
     cursor: cursor || '',
   };
   return p;
+}
+
+// "error (message; message)" from a failed Slack body. Slack explains an
+// invalid_arguments in response_metadata.messages (e.g. "[ERROR] must be less
+// than 20 [json-pointer:/limit]"); dropping it leaves the error unexplained.
+function slackErrorDetail(body) {
+  if (!body || typeof body !== 'object') return 'no_response';
+  const error = body.error ? String(body.error) : body.ok === true ? 'ok' : 'unknown_error';
+  const meta = body.response_metadata || {};
+  const notes = []
+    .concat(Array.isArray(meta.messages) ? meta.messages : [])
+    .concat(Array.isArray(meta.warnings) ? meta.warnings : [])
+    .filter((m) => typeof m === 'string' && m);
+  return notes.length ? error + ' (' + notes.join('; ') + ')' : error;
+}
+
+const CHANNEL_ID_RE = /^C[A-Z0-9]+$/i;
+
+// What to send as the server-side query for a channel-search.
+//   - channel id: the id itself (the server finds a channel by its own id);
+//   - name text: '' (full enumeration, matched locally as a substring), unless
+//     serverQuery is set, which trades infix matches for speed (the server
+//     matches word prefixes only, see QUERY SEMANTICS above).
+function channelSearchApiQuery(query, serverQuery) {
+  if (!query) return '';
+  if (CHANNEL_ID_RE.test(query)) return query;
+  return serverQuery ? query : '';
+}
+
+// Page admin.conversations.search to completion and filter locally.
+// `call(method, params)` resolves to a Slack body.
+// opts: { query, limit, types, sort, sortDir, serverQuery, max, maxPages, onPage }
+//   max      — stop once this many MATCHES are collected (never caps rows
+//              fetched before the local match: that dropped matches).
+//   maxPages — hard safety stop (default 500 pages = 10,000 channels).
+// Returns { matches, fetched, pages, totalCount, complete, error }.
+// complete is true only when Slack answered an empty next_cursor.
+async function searchChannels(call, opts) {
+  const o = opts || {};
+  const query = o.query || '';
+  const apiQuery = channelSearchApiQuery(query, !!o.serverQuery);
+  const max = o.max > 0 ? o.max : 0;
+  const maxPages = o.maxPages > 0 ? o.maxPages : 500;
+  const matches = [];
+  let fetched = 0;
+  let pages = 0;
+  let totalCount = null;
+  let cursor = '';
+  while (pages < maxPages) {
+    const params = buildChannelSearchParams(apiQuery, o.limit, cursor, o.types, o.sort, o.sortDir);
+    const r = await call('admin.conversations.search', params);
+    if (!r || typeof r !== 'object' || r.ok !== true || !Array.isArray(r.conversations)) {
+      const error =
+        r && typeof r === 'object' && r.ok === true ? 'malformed_response' : slackErrorDetail(r);
+      return { matches, fetched, pages, totalCount, complete: false, error };
+    }
+    pages += 1;
+    if (totalCount === null && typeof r.total_count === 'number') totalCount = r.total_count;
+    fetched += r.conversations.length;
+    for (const ch of filterChannels(r.conversations, query)) matches.push(ch);
+    const meta = r.response_metadata || {};
+    cursor = r.next_cursor || meta.next_cursor || '';
+    if (typeof o.onPage === 'function') o.onPage({ pages, fetched, totalCount, matches: matches.length });
+    if (!cursor) {
+      return { matches: max > 0 ? matches.slice(0, max) : matches, fetched, pages, totalCount, complete: true, error: null };
+    }
+    if (max > 0 && matches.length >= max) break;
+  }
+  return { matches: max > 0 ? matches.slice(0, max) : matches, fetched, pages, totalCount, complete: false, error: null };
 }
 
 // conversations.sharedApprovals.list
@@ -1084,6 +1182,12 @@ module.exports = {
   buildEgSetUltraRestrictedParams, // UNVERIFIED — see wire facts above
   buildConvertChannelParams,
   buildChannelSearchParams,
+  clampChannelSearchLimit,
+  CHANNEL_SEARCH_PAGE_MIN,
+  CHANNEL_SEARCH_PAGE_MAX,
+  slackErrorDetail,
+  channelSearchApiQuery,
+  searchChannels,
   buildApprovalsListParams,
   buildAppApproveRestrictParams,
   buildAppClearResolutionParams,

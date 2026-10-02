@@ -37,6 +37,12 @@ const {
   summarizeApproval,
   classifyUser,
   collectPages,
+  clampChannelSearchLimit,
+  CHANNEL_SEARCH_PAGE_MIN,
+  CHANNEL_SEARCH_PAGE_MAX,
+  slackErrorDetail,
+  channelSearchApiQuery,
+  searchChannels,
 } = gridMod.default || gridMod;
 
 // ── buildEgSetRestrictedParams ────────────────────────────────────────────────
@@ -130,9 +136,9 @@ test('buildConvertChannelParams has exactly one key', () => {
 
 // ── buildChannelSearchParams ──────────────────────────────────────────────────
 
-test('buildChannelSearchParams defaults: limit=50, search_channel_types=exclude_archived, sort=name, sort_dir=asc', () => {
+test('buildChannelSearchParams defaults: limit=20, search_channel_types=exclude_archived, sort=name, sort_dir=asc', () => {
   const p = buildChannelSearchParams('', 0, '', '', '', '');
-  is(p.limit, '50');
+  is(p.limit, '20');
   is(p.search_channel_types, 'exclude_archived');
   is(p.sort, 'name');
   is(p.sort_dir, 'asc');
@@ -189,6 +195,261 @@ test('buildChannelSearchParams default is exclude_archived not all', () => {
   const p = buildChannelSearchParams('', 10, '', '', '', '');
   ok(p.search_channel_types !== 'all');
   is(p.search_channel_types, 'exclude_archived');
+});
+
+// MUTATION TARGET: the 2026-10-02 bug. Slack rejects limit > 20 with
+// invalid_arguments ("[ERROR] must be less than 20 [json-pointer:/limit]"), so
+// the old default of 50, and any --limit above 20, made every channel-search
+// fail. The builder must never emit a limit Slack rejects.
+test('buildChannelSearchParams never emits a limit above 20 (Slack: invalid_arguments)', () => {
+  for (const lim of [21, 50, 100, 1000, '50', '21']) {
+    const n = Number(buildChannelSearchParams('santander', lim, '', 'all', 'name', 'asc').limit);
+    ok(n <= 20, 'limit ' + lim + ' emitted ' + n);
+    is(n, 20);
+  }
+});
+
+test('buildChannelSearchParams never emits a limit below 2 (0 rejected, 1 answers zero rows)', () => {
+  // limit=0 -> "must be greater than 1"; limit=1 -> ok:true, 0 rows, no cursor.
+  is(buildChannelSearchParams('', 1, '', '', '', '').limit, '2');
+  is(buildChannelSearchParams('', -5, '', '', '', '').limit, '20');
+  is(buildChannelSearchParams('', 'abc', '', '', '', '').limit, '20');
+  is(buildChannelSearchParams('', undefined, '', '', '', '').limit, '20');
+});
+
+test('buildChannelSearchParams keeps an in-range limit as a string', () => {
+  is(buildChannelSearchParams('', 20, '', '', '', '').limit, '20');
+  is(buildChannelSearchParams('', 2, '', '', '', '').limit, '2');
+  is(buildChannelSearchParams('', 7, '', '', '', '').limit, '7');
+  is(typeof buildChannelSearchParams('', 7, '', '', '', '').limit, 'string');
+});
+
+test('clampChannelSearchLimit bounds match the measured 2..20 range', () => {
+  is(CHANNEL_SEARCH_PAGE_MIN, 2);
+  is(CHANNEL_SEARCH_PAGE_MAX, 20);
+  is(clampChannelSearchLimit(20), 20);
+  is(clampChannelSearchLimit(21), 20);
+  is(clampChannelSearchLimit(1), 2);
+  is(clampChannelSearchLimit(0), 20);
+  is(clampChannelSearchLimit(null), 20);
+  is(clampChannelSearchLimit('12'), 12);
+  is(clampChannelSearchLimit(12.9), 12);
+});
+
+// ── slackErrorDetail ──────────────────────────────────────────────────────────
+
+// MUTATION TARGET: dropping response_metadata.messages is what made the
+// 2026-10-02 invalid_arguments unexplained.
+test('slackErrorDetail appends response_metadata.messages', () => {
+  is(
+    slackErrorDetail({
+      ok: false,
+      error: 'invalid_arguments',
+      response_metadata: { messages: ['[ERROR] must be less than 20 [json-pointer:/limit]'] },
+    }),
+    'invalid_arguments ([ERROR] must be less than 20 [json-pointer:/limit])'
+  );
+});
+
+test('slackErrorDetail joins several messages and warnings', () => {
+  is(
+    slackErrorDetail({ ok: false, error: 'invalid_arguments', response_metadata: { messages: ['a', 'b'], warnings: ['w'] } }),
+    'invalid_arguments (a; b; w)'
+  );
+});
+
+test('slackErrorDetail: plain error, missing body, non-string messages', () => {
+  is(slackErrorDetail({ ok: false, error: 'not_allowed' }), 'not_allowed');
+  is(slackErrorDetail(null), 'no_response');
+  is(slackErrorDetail(undefined), 'no_response');
+  is(slackErrorDetail({ ok: false }), 'unknown_error');
+  is(slackErrorDetail({ ok: false, error: 'x', response_metadata: { messages: 'not-an-array' } }), 'x');
+  is(slackErrorDetail({ ok: false, error: 'x', response_metadata: { messages: [null, 3, ''] } }), 'x');
+});
+
+// ── channelSearchApiQuery ─────────────────────────────────────────────────────
+
+// MUTATION TARGET: Slack's query is a word-PREFIX match (2026-10-02:
+// query=santander missed #aem-gruposantander). Sending a name to the server
+// by default would silently drop infix matches.
+test('channelSearchApiQuery: name text enumerates (empty query) by default', () => {
+  is(channelSearchApiQuery('santander', false), '');
+  is(channelSearchApiQuery('', false), '');
+  is(channelSearchApiQuery('', true), '');
+});
+
+test('channelSearchApiQuery: channel id goes to the server; serverQuery sends names', () => {
+  is(channelSearchApiQuery('C09U7MX5R7X', false), 'C09U7MX5R7X');
+  is(channelSearchApiQuery('santander', true), 'santander');
+});
+
+// ── searchChannels ────────────────────────────────────────────────────────────
+
+function searchChan(id, name) {
+  return { id: id, name: name, member_count: 3, is_private: false, is_archived: false };
+}
+
+// Fake admin.conversations.search with Slack's measured contract: limit must
+// be 2..20, otherwise invalid_arguments with the explaining message.
+function fakeSearch(pages) {
+  const seen = [];
+  const call = async (method, params) => {
+    seen.push({ method, params: Object.assign({}, params) });
+    const lim = Number(params.limit);
+    if (!(lim >= 2 && lim <= 20)) {
+      return {
+        ok: false,
+        error: 'invalid_arguments',
+        response_metadata: { messages: ['[ERROR] must be less than 20 [json-pointer:/limit]'] },
+      };
+    }
+    const idx = params.cursor ? Number(params.cursor.replace('cur', '')) : 0;
+    const page = pages[idx];
+    return {
+      ok: true,
+      conversations: page,
+      total_count: pages.reduce((n, p) => n + p.length, 0),
+      next_cursor: idx + 1 < pages.length ? 'cur' + (idx + 1) : '',
+    };
+  };
+  return { call, seen };
+}
+
+const SANTANDER_PAGES = [
+  [searchChan('C06MDH3G9J5', 'aem-santanderemea'), searchChan('C09U7MX5R7X', 'aem-gruposantander'), searchChan('C1', 'general')],
+  [searchChan('C0C5YLFVBDY', 'agents-santander'), searchChan('C2', 'random')],
+  [searchChan('C3', 'zzz'), searchChan('C095J7Z00P5', 'universaleditor-santander')],
+];
+
+// MUTATION TARGET: the end-to-end form of the bug — with the old limit=50
+// default the very first page answers invalid_arguments.
+test('searchChannels: default page size is accepted by the measured contract', async () => {
+  const f = fakeSearch(SANTANDER_PAGES);
+  const r = await searchChannels(f.call, { query: 'santander' });
+  is(r.error, null);
+  is(r.complete, true);
+  for (const c of f.seen) is(c.params.limit, '20');
+});
+
+test('searchChannels: an oversized --limit is clamped, not sent', async () => {
+  const f = fakeSearch(SANTANDER_PAGES);
+  const r = await searchChannels(f.call, { query: 'santander', limit: 50 });
+  is(r.error, null);
+  is(f.seen[0].params.limit, '20');
+});
+
+// MUTATION TARGET: pagination. Every page must be read, following next_cursor.
+test('searchChannels: follows next_cursor to the end and matches across pages', async () => {
+  const f = fakeSearch(SANTANDER_PAGES);
+  const r = await searchChannels(f.call, { query: 'santander' });
+  is(r.pages, 3);
+  is(r.fetched, 7);
+  is(r.totalCount, 7);
+  is(r.complete, true);
+  is(
+    r.matches.map((c) => c.id).join(','),
+    'C06MDH3G9J5,C09U7MX5R7X,C0C5YLFVBDY,C095J7Z00P5'
+  );
+  is(f.seen.map((c) => c.params.cursor).join('|'), '|cur1|cur2');
+});
+
+test('searchChannels: a name query enumerates (query="") and matches infix names locally', async () => {
+  const f = fakeSearch(SANTANDER_PAGES);
+  const r = await searchChannels(f.call, { query: 'santander' });
+  for (const c of f.seen) is(c.params.query, '');
+  ok(r.matches.some((c) => c.name === 'aem-gruposantander'));
+});
+
+test('searchChannels: serverQuery sends the query; an id is always sent', async () => {
+  const a = fakeSearch(SANTANDER_PAGES);
+  await searchChannels(a.call, { query: 'santander', serverQuery: true });
+  is(a.seen[0].params.query, 'santander');
+  const b = fakeSearch(SANTANDER_PAGES);
+  const r = await searchChannels(b.call, { query: 'C09U7MX5R7X' });
+  is(b.seen[0].params.query, 'C09U7MX5R7X');
+  is(r.matches.map((c) => c.id).join(','), 'C09U7MX5R7X');
+});
+
+test('searchChannels: passes types/sort/sort_dir through and never sends channel_ids', async () => {
+  const f = fakeSearch(SANTANDER_PAGES);
+  await searchChannels(f.call, { query: 'x', types: 'all', sort: 'created', sortDir: 'desc' });
+  for (const c of f.seen) {
+    is(c.method, 'admin.conversations.search');
+    is(c.params.search_channel_types, 'all');
+    is(c.params.sort, 'created');
+    is(c.params.sort_dir, 'desc');
+    ok(!('channel_ids' in c.params));
+  }
+});
+
+// MUTATION TARGET: --max used to cap ROWS FETCHED before the local match,
+// which silently dropped matches. It must count matches.
+test('searchChannels: max counts matches, not rows fetched', async () => {
+  const f = fakeSearch(SANTANDER_PAGES);
+  const r = await searchChannels(f.call, { query: 'santander', max: 3 });
+  is(r.matches.length, 3);
+  is(r.matches.map((c) => c.id).join(','), 'C06MDH3G9J5,C09U7MX5R7X,C0C5YLFVBDY');
+  is(r.complete, false);
+  is(r.pages, 2);
+});
+
+test('searchChannels: max larger than the matches still reads every page', async () => {
+  const f = fakeSearch(SANTANDER_PAGES);
+  const r = await searchChannels(f.call, { query: 'santander', max: 50 });
+  is(r.matches.length, 4);
+  is(r.complete, true);
+});
+
+test('searchChannels: a Slack error carries response_metadata.messages', async () => {
+  const call = async () => ({
+    ok: false,
+    error: 'invalid_arguments',
+    response_metadata: { messages: ['[ERROR] must be less than 20 [json-pointer:/limit]'] },
+  });
+  const r = await searchChannels(call, { query: 'santander' });
+  is(r.error, 'invalid_arguments ([ERROR] must be less than 20 [json-pointer:/limit])');
+  is(r.complete, false);
+  is(r.pages, 0);
+});
+
+test('searchChannels: an error mid-pagination is an error, never a short result', async () => {
+  let n = 0;
+  const call = async () => {
+    n += 1;
+    if (n === 1) return { ok: true, conversations: [searchChan('C1', 'santander-a')], next_cursor: 'cur1' };
+    return { ok: false, error: 'xhr_error' };
+  };
+  const r = await searchChannels(call, { query: 'santander' });
+  is(r.error, 'xhr_error');
+  is(r.complete, false);
+  is(r.pages, 1);
+});
+
+test('searchChannels: malformed bodies are errors', async () => {
+  is((await searchChannels(async () => null, {})).error, 'no_response');
+  is((await searchChannels(async () => ({ ok: true }), {})).error, 'malformed_response');
+  is((await searchChannels(async () => ({ ok: 'false', conversations: [] }), {})).error, 'unknown_error');
+});
+
+test('searchChannels: next_cursor in response_metadata is followed too', async () => {
+  let n = 0;
+  const call = async (_m, p) => {
+    n += 1;
+    if (!p.cursor) return { ok: true, conversations: [searchChan('C1', 'a')], response_metadata: { next_cursor: 'x' } };
+    return { ok: true, conversations: [searchChan('C2', 'b')], next_cursor: '' };
+  };
+  const r = await searchChannels(call, {});
+  is(n, 2);
+  is(r.fetched, 2);
+  is(r.complete, true);
+});
+
+test('searchChannels: maxPages stops a cursor that never ends, reported incomplete', async () => {
+  const call = async () => ({ ok: true, conversations: [searchChan('C1', 'a')], next_cursor: 'again' });
+  const r = await searchChannels(call, { maxPages: 4 });
+  is(r.pages, 4);
+  is(r.complete, false);
+  is(r.error, null);
 });
 
 // ── VALID_SEARCH_CHANNEL_TYPES and VALID_CHANNEL_SORT_FIELDS ──────────────────
