@@ -234,10 +234,15 @@ for (let rep = 1; rep <= repeats; rep += 1) {
     let own = null;
     let runError = null;
     let trace = null;
+    let skillOut = null;
     if (arm.kind === 'skill') {
       const r = runSkill(adapter.command(g, arm, { shellQuote }), timeoutFor(g));
       own = typeof adapter.result === 'function' && r.out ? adapter.result(r.out) : null;
-      if (!r.ok && !own) runError = r.error;
+      // What the command printed is kept whatever happens (bounded), and its tail goes into
+      // the record when the run failed without a result.
+      skillOut = r.out;
+      if (!r.ok && !own)
+        runError = `${r.error}${r.out.trim() ? ` | stdout tail: ${r.out.trim().slice(-300)}` : ''}`;
     } else if (leader && hasRubric(g)) {
       const { r, trace: t } = await agentRunWithTrace(g, rep);
       trace = t;
@@ -270,6 +275,10 @@ for (let rep = 1; rep <= repeats; rep += 1) {
     }
     for (const id of opened) trySh(`playwright-cli tab-close --tab=${id}`, 30_000);
     const runDir = join(out, 'artifacts', arm.id, `${g.id}-r${rep}`);
+    if (skillOut) {
+      mkdirSync(runDir, { recursive: true });
+      writeFileSync(join(runDir, 'stdout.txt'), skillOut.slice(-2 * 1024 * 1024));
+    }
     keepFiles(own?.artifacts, runDir, 'artifact');
     // What the skill wants kept from every run, failed ones included (its own log, the latest
     // trace): without it a timeout leaves nothing to debug, since the leader is gone afterwards.
