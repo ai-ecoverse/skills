@@ -223,7 +223,9 @@ for (let rep = 1; rep <= repeats; rep += 1) {
     let metrics = null;
     for (const id of opened.length ? opened : tabs()) {
       const snap = trySh(`playwright-cli snapshot --tab=${id}`, 60_000);
-      judged.push({ tab: id, ok: snap.ok && Boolean(adapter.judge(snap.out, g)) });
+      // A rubric-only goal has no check: the adapter's judge is never asked (its contract
+      // predates optional checks), but the snapshot still feeds metrics.
+      judged.push({ tab: id, ok: hasCheck(g) && snap.ok && Boolean(adapter.judge(snap.out, g)) });
       // The adapter's own numbers from the final page (a game's score), the same for every arm.
       if (snap.ok && !metrics && typeof adapter.metrics === 'function')
         metrics = adapter.metrics(snap.out, g) ?? null;

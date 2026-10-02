@@ -483,6 +483,14 @@ test('suites: untagged goals are default, a PR runs default, games run when name
     }),
     ['goals[0]: suite must be lowercase a-z0-9-']
   );
+  is(
+    validateGoals({
+      last_updated: '2026-10-02',
+      goals: [{ id: 'g', url: 'https://x', goal: 'go', expect: ['x'], suite: 123 }],
+    }),
+    ['goals[0]: suite must be lowercase a-z0-9-'],
+    'a numeric suite could never be selected'
+  );
 });
 
 test('plan: a skill with no goal in the selected suites gets no jobs', async () => {

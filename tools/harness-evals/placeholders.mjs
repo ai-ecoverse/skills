@@ -130,7 +130,7 @@ export function validateGoals(doc) {
       if (g[k] != null && !(Array.isArray(g[k]) && g[k].every((t) => typeof t === 'string' && t)))
         errors.push(`${at}: ${k} must be an array of non-empty strings`);
     errors.push(...validateRubric(g, at));
-    if (g.suite != null && !/^[a-z0-9][a-z0-9-]*$/.test(String(g.suite)))
+    if (g.suite != null && !(typeof g.suite === 'string' && /^[a-z0-9][a-z0-9-]*$/.test(g.suite)))
       errors.push(`${at}: suite must be lowercase a-z0-9-`);
     // A goal needs a deterministic check, a rubric, or both. Rubric-only goals (play as far as
     // you get) have no pass/fail; they are scored by credit alone.

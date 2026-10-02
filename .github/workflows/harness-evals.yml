@@ -71,11 +71,14 @@ jobs:
         run: |
           set -euo pipefail
           if ! [[ "$REPEATS" =~ ^([1-9]|10)$ ]]; then echo "::error::repeats must be 1-10"; exit 1; fi
+          SUITES="${SUITES//[[:space:]]/}"  # "default, games" is a fine way to type it
           if ! [[ "$SUITES" =~ ^[a-z0-9][a-z0-9,-]*$ ]]; then echo "::error::suites must be a comma list of a-z0-9-"; exit 1; fi
           matrix="$(node tools/harness-evals/plan.mjs "$WHICH" "$BASE" "$SUITES")"
-          echo "suites=$SUITES" >> "$GITHUB_OUTPUT"
-          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
-          echo "repeats=$REPEATS" >> "$GITHUB_OUTPUT"
+          {
+            echo "suites=$SUITES"
+            echo "matrix=$matrix"
+            echo "repeats=$REPEATS"
+          } >> "$GITHUB_OUTPUT"
           n=$(jq '.include | length' <<< "$matrix")
           jq -r '.include[] | "\(.skill)/\(.arm) on \(.runs_on)"' <<< "$matrix"
           run=false
@@ -86,7 +89,7 @@ jobs:
           version="$(npm view sliccy@latest version)"
           echo "slicc-version=$version" >> "$GITHUB_OUTPUT"
           echo "slicc-ref=v$version" >> "$GITHUB_OUTPUT"
-          echo "slicc v$version, $n arm job(s), $REPEATS repeat(s)" >> "$GITHUB_STEP_SUMMARY"
+          echo "slicc v$version, $n arm job(s), $REPEATS repeat(s), suites $SUITES" >> "$GITHUB_STEP_SUMMARY"
 
   arm:
     name: ${{ matrix.skill }} / ${{ matrix.arm }}
