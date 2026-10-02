@@ -26,7 +26,7 @@ const MAX_STEPS_DEFAULT = 8;
 // A game tour takes 40 steps a day; 50 cut a 100-mile tour short (2026-10-01).
 const MAX_STEPS_CAP = 200;
 const STALL_LIMIT = 3;
-const AGENT_MODEL_DEFAULT = 'claude-haiku-4-5';
+const AGENT_MODEL_DEFAULT = 'claude-sonnet-5-5';
 // Below this kev confidence, --decider hybrid hands the step to the agent.
 const SHRUG_DEFAULT = 0.5;
 // System 2 deliberates, so it gets a stronger model and room to think.

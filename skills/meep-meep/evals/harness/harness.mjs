@@ -9,7 +9,7 @@
 
 export const goals = './goals.json';
 
-const AGENT_MODEL = 'claude-haiku-4-5';
+const AGENT_MODEL = 'claude-sonnet-5-5';
 const kevArm = (id, model, args) => ({
   id,
   kind: 'skill',
