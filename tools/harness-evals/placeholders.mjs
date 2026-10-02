@@ -6,6 +6,7 @@
  * (`placeholder(name)` in evals/harness/harness.mjs), just before the run. A placeholder nobody
  * resolves fails the run rather than running a check that silently means something else.
  */
+import { validateRubric } from './rubric.mjs';
 
 const MONTHS = [
   'January',
@@ -128,6 +129,7 @@ export function validateGoals(doc) {
     for (const k of ['expect', 'expect_url'])
       if (g[k] != null && !(Array.isArray(g[k]) && g[k].every((t) => typeof t === 'string' && t)))
         errors.push(`${at}: ${k} must be an array of non-empty strings`);
+    errors.push(...validateRubric(g, at));
     if (!(g.expect?.length || g.expect_url?.length))
       errors.push(`${at}: needs expect or expect_url (a check)`);
     if (g.max_steps != null && !(Number.isInteger(g.max_steps) && g.max_steps > 0))
