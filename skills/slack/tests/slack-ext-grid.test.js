@@ -217,6 +217,15 @@ test('buildChannelSearchParams never emits a limit below 2 (0 rejected, 1 answer
   is(buildChannelSearchParams('', undefined, '', '', '', '').limit, '20');
 });
 
+// MUTATION TARGET: Slack's message says "must be less than 20", but 20 was
+// measured to work (20 rows + next_cursor). A clamp tightened to 19 to match
+// the wording costs a page per 380 channels and fails this test.
+test('buildChannelSearchParams keeps 19 and 20 unchanged (20 is the measured max)', () => {
+  is(buildChannelSearchParams('', 19, '', '', '', '').limit, '19');
+  is(buildChannelSearchParams('', 20, '', '', '', '').limit, '20');
+  is(buildChannelSearchParams('', 100, '', '', '', '').limit, '20');
+});
+
 test('buildChannelSearchParams keeps an in-range limit as a string', () => {
   is(buildChannelSearchParams('', 20, '', '', '', '').limit, '20');
   is(buildChannelSearchParams('', 2, '', '', '', '').limit, '2');

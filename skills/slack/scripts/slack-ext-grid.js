@@ -141,9 +141,17 @@ function buildConvertChannelParams(channelId) {
 //   limit    — 2..20 (measured 2026-10-02 on E06V3987PMY, query=santander):
 //              limit=21 and limit=50 -> invalid_arguments, response_metadata
 //              .messages ["[ERROR] must be less than 20 [json-pointer:/limit]"]
-//              (20 itself is accepted: the message is off by one);
+//              (20 itself is accepted: the message is off by one. Re-measured
+//              15:33-15:45 the same day with query='' so pages can fill:
+//              limit=18/19/20 -> 18/19/20 rows + next_cursor; 21 and 100 ->
+//              the same message. The max is 20, NOT 19 — do not tighten it to
+//              match the wording.);
 //              limit=0 -> "[ERROR] must be greater than 1"; limit=1 -> ok:true
 //              with ZERO rows and no next_cursor, a silent empty result.
+//              Every other param was accepted on its own at limit=5: query ''
+//              and 'santander', cursor '', each sort, each sort_dir, each of
+//              the 5 search_channel_types; the full CLI set at limit=5 paged
+//              via next_cursor with no overlap. limit is the only rejected one.
 //              The page size is clamped into 2..20 here. Clamping is safe
 //              because the caller pages to completion, so it changes the
 //              number of round trips, never the result set.
