@@ -469,6 +469,51 @@ function hashBytes(bytes) {
 const VIEWPORT_JS =
   'JSON.stringify({ width: innerWidth, height: innerHeight, scrollY: Math.round(scrollY), scrollHeight: document.documentElement.scrollHeight })';
 
+// Elements that act as buttons without a button role (a pointer cursor, an
+// onclick, a tabindex on a non-control, a button-ish class), with their own
+// text and box. page.promoteClickable makes them synthetic menu entries.
+const CLICKABLE_JS = `JSON.stringify((() => {
+  const out = [];
+  const native = /^(A|BUTTON|INPUT|SELECT|TEXTAREA|SUMMARY|OPTION|LABEL)$/;
+  for (const el of document.querySelectorAll('body *')) {
+    if (out.length >= 200) break;
+    if (native.test(el.tagName) || el.closest('a, button')) continue;
+    const cls = typeof el.className === 'string' ? el.className : '';
+    const pointer = getComputedStyle(el).cursor === 'pointer';
+    const parentPointer = el.parentElement && getComputedStyle(el.parentElement).cursor === 'pointer';
+    if (!((pointer && !parentPointer) || el.hasAttribute('onclick') || (el.tabIndex >= 0 && el.hasAttribute('tabindex')) || /\\b(btn|button|clickable)\\b/i.test(cls))) continue;
+    const text = (el.innerText || el.getAttribute('aria-label') || '').replace(/\\s+/g, ' ').trim();
+    if (!text || text.length > 60) continue;
+    const r = el.getBoundingClientRect();
+    if (!r.width || !r.height || r.bottom < 0 || r.top > innerHeight || r.right < 0 || r.left > innerWidth) continue;
+    out.push({ t: text, b: [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)] });
+  }
+  return out;
+})())`;
+
+// A synthetic button (page.promoteClickable) has no ref: click the element
+// under its box centre.
+function clickAt(box) {
+  const x = Math.round(box[0] + box[2] / 2);
+  const y = Math.round(box[1] + box[3] / 2);
+  return `(() => {
+    const el = document.elementFromPoint(${x}, ${y});
+    if (!el) return 'missing';
+    el.click();
+    return 'ok';
+  })()`;
+}
+
+function parseFound(stdout) {
+  try {
+    const value = JSON.parse(String(stdout).trim());
+    const found = typeof value === 'string' ? JSON.parse(value) : value;
+    return Array.isArray(found) ? found : [];
+  } catch {
+    return [];
+  }
+}
+
 function parseViewport(stdout) {
   try {
     const value = JSON.parse(String(stdout).trim());
@@ -497,6 +542,11 @@ async function observe(tab, prev, opts) {
     viewport = evaluated.exitCode === 0 ? parseViewport(evaluated.stdout) : null;
   }
   shot.viewport = viewport;
+  let shotWithClicks = shot;
+  if (opts.viewport) {
+    const found = await run(['playwright-cli', 'eval', `--tab=${tab}`, CLICKABLE_JS], commands);
+    if (found.exitCode === 0) shotWithClicks = page.promoteClickable(shot, parseFound(found.stdout), viewport);
+  }
   let screenshot = null;
   if (opts.trace && opts.shots && opts.name) {
     const name = `${opts.name}.png`;
@@ -507,10 +557,10 @@ async function observe(tab, prev, opts) {
     if (result.exitCode === 0) screenshot = name;
   }
   return {
-    shot,
+    shot: shotWithClicks,
     raw,
     viewport,
-    diff: page.diffShots(prev && prev.shot, shot),
+    diff: page.diffShots(prev && prev.shot, shotWithClicks),
     screenshot,
     commands,
     ms: Date.now() - started,
@@ -566,9 +616,12 @@ function focusByName(element, click) {
   })()`;
 }
 
+// A rich-text editor (contenteditable, The Password Game) has no select():
+// selectAll through execCommand, so typing replaces the text, not appends.
 const SELECT_FOCUSED = `(() => {
   const el = document.activeElement;
   if (el && typeof el.select === 'function') el.select();
+  else if (el && el.isContentEditable) document.execCommand('selectAll');
   return 'ok';
 })()`;
 
@@ -586,6 +639,11 @@ async function act(tab, action, viewport, commands) {
     const dy = Math.round(height * 0.8) * (action.direction === 'up' ? -1 : 1);
     await sh(['playwright-cli', 'mousemove', `--tab=${tab}`, String(Math.round(width / 2)), String(Math.round(height / 2))], commands);
     await sh(['playwright-cli', 'mousewheel', `--tab=${tab}`, '0', String(dy)], commands);
+    return;
+  }
+  if (action.element.synthetic) {
+    const clicked = await sh(['playwright-cli', 'eval', `--tab=${tab}`, clickAt(action.element.box)], commands);
+    if (!clicked.includes('ok')) throw new Error(`nothing to click at "${action.element.label}"`);
     return;
   }
   const ref = action.element.token;

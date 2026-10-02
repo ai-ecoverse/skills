@@ -883,3 +883,69 @@ test('a change only in the pixels is not "nothing visible" and not a dead contro
   ok(dead.state.includes('nothing visible'));
   ok(dead.avoid.has('button|Buy and Eat'));
 });
+
+// Kittens Game and A Dark Room (probed 2026-10-02): the buttons are divs.
+// The accessibility tree merged "Gather catnip Refine catnip" into one text
+// node with no box, so the page reports its clickable elements instead.
+test('clickable elements the snapshot does not show become synthetic buttons', () => {
+  const shot = page.parseSnapshot(
+    [
+      'Page URL: https://kittensgame.com/web/',
+      '- rootwebarea',
+      '  - text "Gather catnip Refine catnip" [ref=e32]',
+      '  - link "Save" [ref=e3] [box=200,10,40,18]',
+    ].join('\n')
+  );
+  const viewport = { width: 1024, height: 576, scrollY: 0, scrollHeight: 576 };
+  const found = [
+    { t: 'Gather catnip', b: [362, 117, 266, 38] },
+    { t: 'Refine catnip', b: [661, 117, 266, 38] },
+    { t: 'Save', b: [200, 10, 40, 18] },
+    { t: 'whole page', b: [0, 0, 1024, 576] },
+    { t: 'x'.repeat(80), b: [10, 300, 50, 20] },
+  ];
+  const promoted = page.promoteClickable(shot, found, viewport);
+  const added = promoted.elements.filter((e) => e.synthetic);
+  is(
+    added.map((e) => [e.token, e.label, e.role, e.kind]),
+    [
+      ['c1', 'Gather catnip', 'button', 'click'],
+      ['c2', 'Refine catnip', 'button', 'click'],
+    ],
+    'a real control (Save), a page-sized box and a long text are left out'
+  );
+  is(added[0].box, [362, 117, 266, 38]);
+  const menu = page.buildMenu(promoted, 'Gather catnip', {});
+  ok(menu.some((a) => a.id === 'click:c1' && a.describe === 'click button "Gather catnip"'));
+  is(page.promoteClickable(shot, [], viewport), shot, 'nothing found, no change');
+});
+
+// Drug Wars (probed 2026-10-02): every drug row has the same BUY and MAX buttons.
+test('controls that share a label carry the text of their row', () => {
+  const shot = page.parseSnapshot(
+    [
+      'Page URL: https://drugwars.online/game',
+      '- rootwebarea',
+      '  - button "BUY" [ref=e10] [box=600,100,50,20]',
+      '  - text "Heroin $6,037" [ref=e11] [box=60,100,160,20]',
+      '  - button "BUY" [ref=e18] [box=600,140,50,20]',
+      '  - text "Acid $2,758" [ref=e19] [box=60,140,160,20]',
+      '  - text "1" [ref=e14] [box=500,140,10,20]',
+      '  - button "Jet" [ref=e90] [box=60,400,60,20]',
+    ].join('\n')
+  );
+  const out = page.addRowContext(shot.elements, shot.texts);
+  is(out.find((e) => e.token === 'e10').context, 'Heroin $6,037');
+  is(
+    out.find((e) => e.token === 'e18').context,
+    'Acid $2,758',
+    'a digit-only text does not count as the row'
+  );
+  is(out.find((e) => e.token === 'e90').context, undefined, 'a unique label needs no row');
+  const ori = page.orient(
+    { shot, viewport: { width: 1024, height: 576, scrollY: 0, scrollHeight: 576 }, diff: null },
+    { goal: 'Buy Acid', history: [], candidates: [] }
+  );
+  ok(ori.menu.some((a) => a.describe === 'click button "BUY" in row "Acid $2,758"'));
+  ok(ori.state.includes('[e10] button "BUY" in row "Heroin $6,037"'));
+});

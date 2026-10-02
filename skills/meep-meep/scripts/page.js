@@ -122,6 +122,7 @@ function parseSnapshot(text) {
     if (LANDMARKS.has(role) || role === 'listbox') stack.push([indent, role]);
     if (TEXT_ROLES.has(role) && match[3]) {
       const t = { role, text: unescapeYaml(match[3]) };
+      if (match[4]) t.token = match[4];
       if (stack.length) t.region = stack[stack.length - 1][1];
       if (boxMatch) t.box = boxMatch.slice(1, 5).map(Number);
       texts.push(t);
@@ -153,6 +154,99 @@ function shown(label) {
   const text = String(label);
   return text.length > MAX_LABEL ? `${text.slice(0, MAX_LABEL - 1)}…` : text;
 }
+
+// ── clickable text and row context ────────────────────────────────────
+
+// An element bigger than this share of the viewport is a page or panel with
+// cursor:pointer, not a button: its text is not promoted.
+const MAX_CLICKABLE_SHARE = 0.4;
+
+/**
+ * Click targets the snapshot does not show. Games and many sites build
+ * buttons from divs: Kittens Game's "Gather catnip", A Dark Room's "light
+ * fire", Seedship's "New game" (probed 2026-10-02). The accessibility tree
+ * merges their labels into one text node without a box, so they cannot be
+ * clicked by ref. The page reports them instead: `found` is
+ * [{ t: text, b: [x, y, w, h] }] for visible elements with a pointer
+ * cursor, an onclick, a tabindex or a button class. Each becomes a
+ * synthetic button (token c1, c2, …) unless a real control already covers
+ * it; act() clicks the element under its box centre.
+ */
+function promoteClickable(shot, found, viewport) {
+  if (!found || !found.length) return shot;
+  const area = viewport ? viewport.width * viewport.height : Number.POSITIVE_INFINITY;
+  const norm = (text) =>
+    String(text || '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  const covered = (b) =>
+    shot.elements.some((e) => {
+      if (!e.box) return false;
+      const cx = b[0] + b[2] / 2;
+      const cy = b[1] + b[3] / 2;
+      const [x, y, w, h] = e.box;
+      return cx >= x && cx <= x + w && cy >= y && cy <= y + h;
+    });
+  const seen = new Set(shot.elements.map((e) => e.label));
+  const added = [];
+  for (const item of found) {
+    const label = norm(item.t);
+    const b = item.b;
+    if (
+      !label ||
+      label.length > 60 ||
+      !Array.isArray(b) ||
+      b[2] * b[3] > area * MAX_CLICKABLE_SHARE
+    )
+      continue;
+    if (seen.has(label) || covered(b)) continue;
+    seen.add(label);
+    added.push({
+      token: `c${added.length + 1}`,
+      role: 'button',
+      label,
+      kind: 'click',
+      region: '',
+      box: b,
+      synthetic: true,
+    });
+  }
+  if (!added.length) return shot;
+  return { ...shot, elements: [...shot.elements, ...added] };
+}
+
+/**
+ * Controls that share a label (Drug Wars' BUY and MAX in every drug row,
+ * Hacker News' "N comments") get the text on their row as context, so the
+ * decider can tell them apart. Row = vertical overlap with the control's
+ * centre; the nearest text horizontally wins. Needs boxes.
+ */
+function addRowContext(elements, texts) {
+  const count = new Map();
+  for (const e of elements) count.set(e.label, (count.get(e.label) || 0) + 1);
+  const labels = new Set(elements.map((e) => e.label));
+  const candidates = (texts || []).filter((t) => {
+    const text = String(t.text).trim();
+    return t.box && text.length >= 3 && !/^[\d\s.,+$−-]+$/.test(text) && !labels.has(text);
+  });
+  return elements.map((e) => {
+    if ((count.get(e.label) || 0) < 2 || !e.box) return e;
+    const cy = e.box[1] + e.box[3] / 2;
+    const cx = e.box[0] + e.box[2] / 2;
+    let best = null;
+    for (const t of candidates) {
+      const [tx, ty, tw, th] = t.box;
+      if (cy < ty - 2 || cy > ty + th + 2) continue;
+      const d = Math.abs(tx + tw / 2 - cx);
+      if (!best || d < best.d) best = { d, text: String(t.text).replace(/\s+/g, ' ').trim() };
+    }
+    return best ? { ...e, context: shown(best.text) } : e;
+  });
+}
+
+/** How a control is named in the menu and the state: its label, and its row when labels repeat. */
+const named = (element) =>
+  `${element.role} "${shown(element.label)}"${element.context ? ` in row "${element.context}"` : ''}`;
 
 // ── viewport ──────────────────────────────────────────────────────────
 
@@ -417,7 +511,7 @@ function buildMenu(shot, goal, opts = {}) {
           element,
           text: null,
           candidates,
-          describe: `type into ${element.role} "${shown(element.label)}" (a value from the goal)`,
+          describe: `type into ${named(element)} (a value from the goal)`,
         });
       }
     } else if (candidates.length) {
@@ -428,7 +522,7 @@ function buildMenu(shot, goal, opts = {}) {
           operation: 'TYPE_TEXT',
           element,
           text,
-          describe: `type "${text}" into ${element.role} "${shown(element.label)}"`,
+          describe: `type "${text}" into ${named(element)}`,
         });
       }
     } else if (room-- > 0) {
@@ -437,7 +531,7 @@ function buildMenu(shot, goal, opts = {}) {
         operation: 'TYPE_TEXT',
         element,
         text: null,
-        describe: `type into ${element.role} "${shown(element.label)}"`,
+        describe: `type into ${named(element)}`,
       });
     }
   }
@@ -446,7 +540,7 @@ function buildMenu(shot, goal, opts = {}) {
       id: `click:${element.token}`,
       operation: 'CLICK',
       element,
-      describe: `click ${element.role} "${shown(element.label)}"`,
+      describe: `click ${named(element)}`,
     });
   }
   if (scroll.down)
@@ -516,7 +610,7 @@ function compactState(goal, shot, menu, history, extra = {}) {
     if (circling.has(`${element.role}|${element.label}`)) notes.push('part of the circle');
     if (PLACE_NOTE[element.place]) notes.push(PLACE_NOTE[element.place]);
     const note = notes.length ? ` (${notes.join(', ')})` : '';
-    controls.push(`  [${element.token}] ${element.role} "${shown(element.label)}"${value}${note}`);
+    controls.push(`  [${element.token}] ${named(element)}${value}${note}`);
   }
   const drift = driftLines(history, shot);
   // A long run would grow the state every step; the plan carries the rest.
@@ -671,6 +765,7 @@ function checkExpect(obs, expect, expectUrl) {
  */
 function orient(obs, opts) {
   const view = inView(obs.shot, opts.goal, obs.viewport);
+  view.elements = addRowContext(view.elements, obs.shot.texts);
   const shot = { ...obs.shot, elements: view.elements };
   const menu = buildMenu(shot, opts.goal, {
     candidates: opts.candidates,
@@ -1042,6 +1137,8 @@ module.exports = {
   shown,
   place,
   inView,
+  promoteClickable,
+  addRowContext,
   diffShots,
   describeDiff,
   pageTextLines,
