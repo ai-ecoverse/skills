@@ -660,4 +660,10 @@ test('traceSize summarizes what the judge was sent', () => {
     '2 steps / 5 chars, 2 screenshots / 0 KiB'
   );
   is(traceSize(null), '0 steps / 0 chars, 0 screenshots / 0 KiB');
+  is(
+    traceSize({ steps: 'a', screenshots: { x: 1 } }),
+    '0 steps / 0 chars, 0 screenshots / 0 KiB',
+    'malformed'
+  );
+  is(traceSize({ steps: ['x'], screenshots: [null] }), '1 steps / 1 chars, 1 screenshots / 0 KiB');
 });

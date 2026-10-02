@@ -124,8 +124,10 @@ export async function judgeAcrossModels(judgeAs, models, retry = {}) {
 
 /** How big a judge trace is, for an error message: steps, characters, screenshots and bytes. */
 export function traceSize(trace) {
-  const chars = (trace?.steps ?? []).reduce((n, x) => n + String(x).length, 0);
-  const shots = trace?.screenshots ?? [];
-  const bytes = shots.reduce((n, x) => n + Math.floor((String(x.base64 ?? '').length * 3) / 4), 0);
-  return `${trace?.steps?.length ?? 0} steps / ${chars} chars, ${shots.length} screenshots / ${Math.round(bytes / 1024)} KiB`;
+  // Runs on the error path too, so a malformed trace (what checkTrace rejected) must not throw.
+  const steps = Array.isArray(trace?.steps) ? trace.steps : [];
+  const shots = Array.isArray(trace?.screenshots) ? trace.screenshots : [];
+  const chars = steps.reduce((n, x) => n + String(x).length, 0);
+  const bytes = shots.reduce((n, x) => n + Math.floor((String(x?.base64 ?? '').length * 3) / 4), 0);
+  return `${steps.length} steps / ${chars} chars, ${shots.length} screenshots / ${Math.round(bytes / 1024)} KiB`;
 }
