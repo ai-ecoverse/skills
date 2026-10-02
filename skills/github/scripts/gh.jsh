@@ -1401,13 +1401,17 @@ async function prMerge(args) {
   const num = validateNum(values.number, 'PR number');
   const chosen = ['merge', 'squash', 'rebase'].filter(m => flags[m]);
   if (chosen.length > 1) cli.die('pr merge: pick one of --merge, --squash, --rebase (got: ' + chosen.map(m => '--' + m).join(' ') + ')');
-  if (flags.auto && flags['disable-auto']) cli.die('pr merge: --auto and --disable-auto are mutually exclusive');
+  // Same three-way exclusivity, and the same message, as upstream gh (cli/cli
+  // pkg/cmd/pr/merge/merge.go, v2.96.0 and trunk): each flag asks for a
+  // different action (arm auto-merge, disarm it, merge now bypassing rules).
+  if ([flags.auto, flags['disable-auto'], flags.admin].filter(Boolean).length > 1) {
+    cli.die('pr merge: specify only one of `--auto`, `--disable-auto`, or `--admin`');
+  }
   const action = flags['merge-action'];
   if (action !== undefined && !MERGE_ACTIONS.includes(action)) {
     cli.die('pr merge: --merge-action must be one of ' + MERGE_ACTIONS.join(', ') + ' (got: ' + JSON.stringify(action) + ')');
   }
   if (flags.auto && action !== undefined) cli.die('pr merge: --auto chooses the merge action itself; drop --merge-action');
-  if (flags.auto && flags.admin) cli.die('pr merge: --admin merges now, bypassing rules; it cannot be combined with --auto');
   if (flags.sync) {
     const clash = ['auto', 'disable-auto', 'merge-action', 'admin'].filter(f => flags[f] !== undefined && flags[f] !== false);
     if (clash.length) cli.die('pr merge: --sync (synchronous merge) cannot be combined with ' + clash.map(f => '--' + f).join(', '));
@@ -4504,6 +4508,7 @@ const HELP = {
           'Exit: 0 merged/enqueued, 1 failed, 8 still pending (prints the uuid and',
           '`gh pr merge-status <num> <uuid>`). A request already pending (409) is followed, not',
           'duplicated. --delete-branch runs only after a merge.',
+          '--auto, --disable-auto and --admin are mutually exclusive, as in upstream gh.',
         ],
       },
       'merge-status': {

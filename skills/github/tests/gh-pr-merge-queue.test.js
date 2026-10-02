@@ -497,11 +497,32 @@ test('--auto surfaces a repository that disallows auto-merge verbatim', async ()
   ok(/GraphQL error: Auto merge is not allowed for this repository/.test(result.error.message));
 });
 
-test('conflicting flags are rejected before any API call', async () => {
+// Upstream gh (cli/cli pkg/cmd/pr/merge/merge.go, v2.96.0) rejects any two of
+// these with exactly this message; review comment 4166720388 on #464.
+const ONLY_ONE = 'pr merge: specify only one of `--auto`, `--disable-auto`, or `--admin`';
+
+for (const pair of [
+  ['--admin', '--auto'],
+  ['--admin', '--disable-auto'],
+  ['--auto', '--disable-auto'],
+]) {
+  test(`pr merge rejects ${pair.join(' ')} with the upstream message, before any API call`, async () => {
+    const result = await runGh(['pr', 'merge', '42', ...pair, ...R], {
+      gqlPr: gqlPr({
+        isInMergeQueue: true,
+        autoMergeRequest: { enabledAt: '2026-10-02T12:00:00Z', mergeMethod: 'MERGE' },
+      }),
+    });
+    is(result.error && result.error.name, 'NodeExitError');
+    is(result.error.message, ONLY_ONE);
+    is(result.error.exitCode, 1);
+    is(result.calls, [], 'no read and no mutation');
+  });
+}
+
+test('other conflicting flags are rejected before any API call', async () => {
   const cases = [
-    [['--auto', '--disable-auto'], /mutually exclusive/],
     [['--auto', '--merge-action', 'direct_merge'], /--auto chooses the merge action itself/],
-    [['--auto', '--admin'], /cannot be combined with --auto/],
     [['--sync', '--admin'], /--sync .* cannot be combined with --admin/],
   ];
   for (const [flags, re] of cases) {

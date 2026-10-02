@@ -127,6 +127,8 @@ gh pr ready 42 --undo                        # convert back to draft
   (`CLEAN`/`HAS_HOOKS`/`UNSTABLE`) is merged with `direct_merge`; otherwise GraphQL
   `enablePullRequestAutoMerge` arms auto-merge (no REST or async endpoint does). `--disable-auto`
   uses GraphQL `dequeuePullRequest` / `disablePullRequestAutoMerge` (upstream never dequeues).
+- `--auto`, `--disable-auto` and `--admin` are mutually exclusive; any two exit 1 with upstream's
+  message ``specify only one of `--auto`, `--disable-auto`, or `--admin` `` before any API call.
 - `pr merge --sync` is the synchronous `PUT /pulls/{n}/merge` (still sent with `sha`), only on
   request — e.g. GitHub Enterprise Server, whose published 3.22 description has no merge-async.
 - `pr merge-status <n> <uuid> [--wait] [--json]` is **not in the real GitHub CLI**: it reads
