@@ -12,7 +12,10 @@
 //   DOM itself: what the author attached (aria-describedby, title), the
 //   text of the control's row, list item, card, fieldset or form, the
 //   distinctive part of a link's URL, or a readable id or name.
-//   page.applyDisambiguation matches them to the snapshot by box.
+//   Each comes with its box: the snapshot gives every control of a repeated
+//   name the box of the first (all six Drug Wars BUYs at 924,212,
+//   2026-10-02). page.applyDisambiguation pairs them with the snapshot's by
+//   order and fixes their boxes.
 //
 // Self-contained: no closures, no imports, JSON out.
 
@@ -145,7 +148,9 @@ function scan() {
       const id = el.id || el.getAttribute('name') || '';
       if (readable(id)) ctx = id;
     }
-    if (ctx) disambiguation.push({ name: c.name, b: c.b, ctx: ctx.slice(0, 80) });
+    // Every repeated control, with or without a name for it, in page order:
+    // orient pairs them with the snapshot's by order (see applyDisambiguation).
+    disambiguation.push({ name: c.name, b: c.b, ctx: ctx.slice(0, 80) });
   }
 
   return JSON.stringify({ clickable, disambiguation });

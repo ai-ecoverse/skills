@@ -1065,3 +1065,69 @@ test('page disambiguators name repeated controls and win over the layout guess',
     'nothing reported, nothing changes'
   );
 });
+
+// Captured 2026-10-02 (Drug Wars at 1024 x 576): the snapshot gave every
+// BUY the first one's box, so matching by box named all of them "Cocaine".
+test('repeated controls pair with the scan by order, which also fixes their boxes', () => {
+  const drugs = ['Cocaine', 'Heroin', 'Acid'];
+  const shot = page.parseSnapshot(
+    [
+      'Page URL: https://drugwars.online/game',
+      '- rootwebarea',
+      ...drugs.flatMap((d, i) => [
+        `  - text "${d}" [ref=t${i}]`,
+        `  - button "BUY" [ref=e${i}] [box=924,212,45,32]`,
+      ]),
+      '  - button "Bogotá" [ref=e9] [box=195,500,68,32]',
+    ].join('\n')
+  );
+  const items = drugs.map((d, i) => ({ name: 'BUY', b: [924, 212 + 60 * i, 45, 32], ctx: d }));
+  const named = page.applyDisambiguation(shot.elements, items);
+  is(
+    named.filter((e) => e.label === 'BUY').map((e) => [e.context, e.box[1]]),
+    [
+      ['Cocaine', 212],
+      ['Heroin', 272],
+      ['Acid', 332],
+    ]
+  );
+  is(
+    named.find((e) => e.token === 'e9').box,
+    [195, 500, 68, 32],
+    'unrepeated controls keep theirs'
+  );
+
+  // A repeated control the page had no name for keeps its place in the order.
+  const gap = page.applyDisambiguation(shot.elements, [
+    { ...items[0] },
+    { ...items[1], ctx: '' },
+    { ...items[2] },
+  ]);
+  is(
+    gap.filter((e) => e.label === 'BUY').map((e) => e.context),
+    ['Cocaine', undefined, 'Acid']
+  );
+
+  // Different counts (a control the scan missed): only a containing box names it.
+  const short = page.applyDisambiguation(shot.elements, [items[1]]);
+  is(
+    short.filter((e) => e.label === 'BUY').map((e) => e.context),
+    [undefined, undefined, undefined]
+  );
+
+  const ori = page.orient(
+    {
+      shot,
+      viewport: { width: 1024, height: 576, scrollY: 0, scrollHeight: 576 },
+      diff: null,
+      disambiguation: items,
+    },
+    { goal: 'Buy Acid', history: [], candidates: [] }
+  );
+  ok(ori.menu.some((a) => a.describe === 'click button "BUY" for "Acid"'));
+  is(
+    ori.menu.find((a) => a.id === 'click:e2').element.box,
+    [924, 332, 45, 32],
+    'the mark goes on the right row'
+  );
+});

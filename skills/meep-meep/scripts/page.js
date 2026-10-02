@@ -219,25 +219,47 @@ function promoteClickable(shot, found, viewport) {
 }
 
 /**
- * Context for repeated controls from the page itself (page-scan.js):
- * `items` are [{ name, b: box, ctx }] for controls whose name repeats. Each
- * is matched to a snapshot control by box: the item's box holds the
- * control's centre, preferring the same name. The page knows the DOM (the
- * row, card, fieldset or link a control belongs to), so this wins over the
- * layout guess in addRowContext.
+ * The page scan's names for repeated controls (page-scan.js), on the
+ * snapshot's elements. The scan lists every control of a repeated name in
+ * page order, as the snapshot does, so when both count the same number the
+ * k-th scanned one is the k-th in the snapshot. That pairing also replaces
+ * the snapshot's box: playwright-cli gives all controls of one name the
+ * first one's box (all six Drug Wars BUYs at 924,212, so every BUY read
+ * 'for "Cocaine"' and the vision marks piled up on one button, 2026-10-02).
+ * When the counts differ, a scanned box that contains the element's centre
+ * names it.
  */
 function applyDisambiguation(elements, items) {
   if (!items || !items.length) return elements;
+  const scanned = new Map();
+  for (const item of items) {
+    if (!scanned.has(item.name)) scanned.set(item.name, []);
+    scanned.get(item.name).push(item);
+  }
+  const listed = new Map();
+  for (const e of elements) listed.set(e.label, (listed.get(e.label) || 0) + 1);
+  const seen = new Map();
   return elements.map((e) => {
+    const same = scanned.get(e.label);
+    if (same && same.length === listed.get(e.label)) {
+      const k = seen.get(e.label) || 0;
+      seen.set(e.label, k + 1);
+      const item = same[k];
+      return {
+        ...e,
+        ...(item.b ? { box: item.b } : {}),
+        ...(item.ctx && !e.context ? { context: shown(item.ctx) } : {}),
+      };
+    }
     if (e.context || !e.box) return e;
     const cx = e.box[0] + e.box[2] / 2;
     const cy = e.box[1] + e.box[3] / 2;
     const hits = items.filter(
-      ({ b }) => cx >= b[0] && cx <= b[0] + b[2] && cy >= b[1] && cy <= b[1] + b[3]
+      ({ b, ctx }) => ctx && cx >= b[0] && cx <= b[0] + b[2] && cy >= b[1] && cy <= b[1] + b[3]
     );
     if (!hits.length) return e;
-    const same = hits.find((h) => h.name === e.label) || hits[0];
-    return { ...e, context: shown(same.ctx) };
+    const hit = hits.find((h) => h.name === e.label) || hits[0];
+    return { ...e, context: shown(hit.ctx) };
   });
 }
 
@@ -819,11 +841,14 @@ function checkExpect(obs, expect, expectUrl) {
  *         pageText, cycle, plan, notes }
  */
 function orient(obs, opts) {
-  const view = inView(obs.shot, opts.goal, obs.viewport);
-  view.elements = addRowContext(
-    applyDisambiguation(view.elements, obs.disambiguation),
-    obs.shot.texts
-  );
+  // Before the viewport filter: the pairing by order needs every control,
+  // and the corrected boxes decide what is in view.
+  const scanned = {
+    ...obs.shot,
+    elements: applyDisambiguation(obs.shot.elements, obs.disambiguation),
+  };
+  const view = inView(scanned, opts.goal, obs.viewport);
+  view.elements = addRowContext(view.elements, obs.shot.texts);
   const shot = { ...obs.shot, elements: view.elements };
   const menu = buildMenu(shot, opts.goal, {
     candidates: opts.candidates,
