@@ -6,7 +6,7 @@
  * (`placeholder(name)` in evals/harness/harness.mjs), just before the run. A placeholder nobody
  * resolves fails the run rather than running a check that silently means something else.
  */
-import { validateRubric } from './rubric.mjs';
+import { hasRubric, validateRubric } from './rubric.mjs';
 
 const MONTHS = [
   'January',
@@ -130,8 +130,12 @@ export function validateGoals(doc) {
       if (g[k] != null && !(Array.isArray(g[k]) && g[k].every((t) => typeof t === 'string' && t)))
         errors.push(`${at}: ${k} must be an array of non-empty strings`);
     errors.push(...validateRubric(g, at));
-    if (!(g.expect?.length || g.expect_url?.length))
-      errors.push(`${at}: needs expect or expect_url (a check)`);
+    if (g.suite != null && !(typeof g.suite === 'string' && /^[a-z0-9][a-z0-9-]*$/.test(g.suite)))
+      errors.push(`${at}: suite must be lowercase a-z0-9-`);
+    // A goal needs a deterministic check, a rubric, or both. Rubric-only goals (play as far as
+    // you get) have no pass/fail; they are scored by credit alone.
+    if (!(g.expect?.length || g.expect_url?.length || hasRubric(g)))
+      errors.push(`${at}: needs expect or expect_url (a check), or a rubric`);
     if (g.max_steps != null && !(Number.isInteger(g.max_steps) && g.max_steps > 0))
       errors.push(`${at}: max_steps must be a positive integer`);
   }
@@ -152,3 +156,26 @@ export function tabIds(listing) {
   }
   return ids;
 }
+
+/**
+ * Goals in the selected suites. A goal without `suite` is in `default`, the suite a pull request
+ * runs; longer ones (games with big step budgets) name their own and run on dispatch.
+ */
+export function selectSuites(goals, suites = ['default']) {
+  const want = new Set(suites);
+  return goals.filter((g) => want.has(g.suite ?? 'default'));
+}
+
+/** `HARNESS_SUITES`-style text → suite names (empty → default). */
+export function parseSuites(text) {
+  const names = String(text ?? '')
+    .split(',')
+    .map((x) => x.trim())
+    .filter(Boolean);
+  for (const n of names)
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(n)) throw new Error(`bad suite name ${JSON.stringify(n)}`);
+  return names.length ? names : ['default'];
+}
+
+/** Whether a goal has a deterministic check (else `pass` is null and only the rubric scores). */
+export const hasCheck = (goal) => Boolean(goal.expect?.length || goal.expect_url?.length);
