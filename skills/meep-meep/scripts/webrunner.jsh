@@ -671,11 +671,24 @@ async function act(tab, action, viewport, commands) {
     return;
   }
   const ref = action.element.token;
+  const keystrokes = action.operation === 'TYPE_TEXT';
+  // A ref of a repeated name reaches only the first control of that name
+  // (page-scan.js), so those are clicked by their place in the page.
+  if (Number.isInteger(action.element.nth)) {
+    const pick = JSON.stringify({ name: action.element.label, nth: action.element.nth });
+    const picked = await sh(['playwright-cli', 'eval', `--tab=${tab}`, `(${pageScan.scan.toString()})(${pick})`], commands);
+    if (picked.includes('ok')) {
+      if (!keystrokes) return;
+      await sh(['sleep', '0.3'], commands);
+      await sh(['playwright-cli', 'eval', `--tab=${tab}`, SELECT_FOCUSED], commands);
+      await sh(['playwright-cli', 'type', `--tab=${tab}`, '--', action.text], commands);
+      return;
+    }
+  }
   // Text goes in as keystrokes. `fill` sets the value, but Google Flights'
   // "Where to?" then opens an empty overlay with no suggestions, and its
   // Return date field drops the value (both seen 2026-09-23). Click the
   // field, select what is there, and type.
-  const keystrokes = action.operation === 'TYPE_TEXT';
   const result = await run(['playwright-cli', 'click', `--tab=${tab}`, ref], commands);
   if (result.exitCode === 0) {
     if (!keystrokes) return;
@@ -708,6 +721,7 @@ function slim(element, viewport) {
   if (element.value) out.value = element.value;
   if (element.box) out.box = element.box;
   if (element.region) out.region = element.region;
+  if (Number.isInteger(element.nth)) out.nth = element.nth;
   if (where !== 'unknown') out.place = where;
   return out;
 }

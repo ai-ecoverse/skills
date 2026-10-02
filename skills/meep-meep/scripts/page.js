@@ -245,8 +245,10 @@ function applyDisambiguation(elements, items) {
       const k = seen.get(e.label) || 0;
       seen.set(e.label, k + 1);
       const item = same[k];
+      // nth: which of the same-named controls it is, for act (page-scan.js pick).
       return {
         ...e,
+        nth: k,
         ...(item.b ? { box: item.b } : {}),
         ...(item.ctx && !e.context ? { context: shown(item.ctx) } : {}),
       };

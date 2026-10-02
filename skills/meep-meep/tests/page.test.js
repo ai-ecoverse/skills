@@ -1096,6 +1096,12 @@ test('repeated controls pair with the scan by order, which also fixes their boxe
     [195, 500, 68, 32],
     'unrepeated controls keep theirs'
   );
+  is(
+    named.filter((e) => e.label === 'BUY').map((e) => e.nth),
+    [0, 1, 2],
+    'which BUY it is, for the click: a ref reaches only the first'
+  );
+  is(named.find((e) => e.token === 'e9').nth, undefined);
 
   // A repeated control the page had no name for keeps its place in the order.
   const gap = page.applyDisambiguation(shot.elements, [

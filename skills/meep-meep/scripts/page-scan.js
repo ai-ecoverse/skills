@@ -17,9 +17,16 @@
 //   2026-10-02). page.applyDisambiguation pairs them with the snapshot's by
 //   order and fixes their boxes.
 //
+// With `pick` ({ name, nth }), it clicks instead: the nth control (from 0)
+// named `name`, counted as above, scrolled into view and focused first. A
+// ref cannot reach it: playwright-cli resolves a ref of a repeated name to
+// the first control, so every Drug Wars BUY clicked Cocaine's (disabled)
+// one, while a click on the right element bought (2026-10-02). Returns
+// 'ok' or 'missing'.
+//
 // Self-contained: no closures, no imports, JSON out.
 
-function scan() {
+function scan(pick) {
   const norm = (s) =>
     String(s || '')
       .replace(/\s+/g, ' ')
@@ -78,6 +85,14 @@ function scan() {
     if (!b) continue;
     const name = nameOf(el);
     if (name) controls.push({ el, name, b });
+  }
+  if (pick) {
+    const target = controls.filter((c) => c.name === pick.name)[pick.nth];
+    if (!target) return 'missing';
+    target.el.scrollIntoView({ block: 'center' });
+    target.el.focus();
+    target.el.click();
+    return 'ok';
   }
   const counts = new Map();
   for (const c of controls) counts.set(c.name, (counts.get(c.name) || 0) + 1);
