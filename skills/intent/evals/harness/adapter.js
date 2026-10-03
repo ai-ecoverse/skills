@@ -30,9 +30,23 @@ const scoopArm = (id, tool, extra = []) => ({
 
 // Intent variants run side by side, one GPU leader each (Lars, 2026-10-03):
 // how RETRIEVE answers is the first thing tried.
+// EVAL BRANCH ONLY (eval/intent-v3-games): System 1 from the v3 intent bundles on Hugging
+// Face, pulled in setup; intent at 6e8dbc1 reads question wording and thresholds from each
+// bundle's manifest. Same agent, tools and goals as round 37130563705 (kev-4b-vision).
+const V3B = 'https://huggingface.co/ai-ecoverse/kev-0.8b-vision-intent/resolve/main/kev.js';
+const V3_4B = 'https://huggingface.co/ai-ecoverse/kev-4b-vision-intent/resolve/main/kev.js';
+const v3Arm = (id, url, extra = []) => ({
+  id,
+  kind: 'skill',
+  pool: 'gpu',
+  tool: 'intent',
+  setup: ['intent prepare', `intent pull --from ${url}`],
+  args: ['--tool', 'intent', '--model', AGENT_MODEL, '--s1-from', url, '--require-gpu', ...extra],
+});
 const arms = [
-  scoopArm('intent-agent', 'intent'),
-  scoopArm('intent-budget', 'intent', ['--retrieve', 'budget']),
+  v3Arm('intent-agent-v3b', V3B),
+  v3Arm('intent-budget-v3b', V3B, ['--retrieve', 'budget']),
+  v3Arm('intent-budget-v3-4b', V3_4B, ['--retrieve', 'budget']),
   { id: 'playwright-agent', kind: 'agent', pool: 'bench', model: AGENT_MODEL },
 ];
 
