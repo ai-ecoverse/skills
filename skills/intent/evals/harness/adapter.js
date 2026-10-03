@@ -8,7 +8,9 @@
  *   intent-agent      a scoop that may run `intent` and nothing else
  *   playwright-scoop  the same scoop with raw playwright-cli: the control
  *   playwright-agent  the cone with raw playwright-cli, as meep-meep runs it
- * The two scoop arms run through evals/harness/intent-arm.jsh. `judge` is the
+ * The two scoop arms run through scripts/intent-arm.jsh: it is a command of the
+ * skill, because a leader installs a skill without its evals/ folder (the
+ * first smoke round failed with 'intent-arm: command not found'). `judge` is the
  * same self-contained yardstick as meep-meep's: deduplicate once #423 lands.
  */
 

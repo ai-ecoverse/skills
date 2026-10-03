@@ -97,6 +97,6 @@ Each call loads the model again. For many calls in a row, keep it loaded: run `i
 - `playwright-scoop`: the same scoop with raw playwright-cli;
 - `playwright-agent`: the cone with playwright-cli.
 
-`intent-arm` records the tool calls, the characters each call put into context, the scoop's tokens and cost (`agent --usage`), and each intent call's latency. Its files are in `/tmp/intent-arm/<run>/`.
+`intent-arm` (scripts/intent-arm.jsh, so it installs with the skill; a leader gets no evals/ folder) records the tool calls, the characters each call put into context, the scoop's tokens and cost (`agent --usage`), and each intent call's latency. Its files are in `/tmp/intent-arm/<run>/`.
 
 The snapshot parser, page scan and kev loader are copies of meep-meep's and decide-quickly's (ai-ecoverse/skills#423). Deduplicate them once #423 lands.

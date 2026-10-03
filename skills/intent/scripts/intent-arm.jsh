@@ -14,8 +14,8 @@ const cli = require('sliccy:cli');
 const fs = require('fs');
 const exec = require('sliccy:exec');
 const skill = require('sliccy:skill');
-const page = require('../../scripts/snapshot.js');
-const { createIntent, DIR, CALLS, STATE } = require('../../scripts/intent-core.js');
+const page = require('./snapshot.js');
+const { createIntent, DIR, CALLS, STATE } = require('./intent-core.js');
 const { toolCalls, stats } = require('./transcript.js');
 
 const ARM_DIR = '/tmp/intent-arm';

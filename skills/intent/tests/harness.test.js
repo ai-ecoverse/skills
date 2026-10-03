@@ -1,6 +1,7 @@
 import test, { is, ok } from 'tst';
 import * as adapterMod from '../evals/harness/adapter.js';
-import * as transcriptMod from '../evals/harness/transcript.js';
+import * as transcriptMod from '../scripts/transcript.js';
+import { existsSync } from 'fs';
 
 const adapter = adapterMod.default || adapterMod;
 const transcript = transcriptMod.default || transcriptMod;
@@ -69,4 +70,12 @@ test('toolCalls: commands and result sizes from a scoop transcript', () => {
   is(calls[0].chars, '✓ opened https://x'.length);
   is(transcript.stats([3, 1, 2]), { n: 3, mean: 2, p50: 2, max: 3, total: 6 });
   is(transcript.stats([]), null);
+});
+
+test('the arm driver installs with the skill: scripts/, not evals/', () => {
+  // A leader installs a skill without evals/, so a command there is "not found".
+  const at = (rel) => existsSync(rel) || existsSync(`skills/intent/${rel}`);
+  ok(at('scripts/intent-arm.jsh'), 'scripts/intent-arm.jsh');
+  ok(!at('evals/harness/intent-arm.jsh'), 'no driver left in evals/');
+  ok(adapter.command({ url: 'u', goal: 'g' }, adapter.arms[1], { shellQuote: quote }).startsWith("'intent-arm'"));
 });
