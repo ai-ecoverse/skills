@@ -1,0 +1,3456 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Recording setup</title>
+    <link rel="icon" href="video" />
+    <style>
+      :root {
+        color-scheme: light dark;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        /* A <select> sizes to its widest <option>, which once pushed the panel
+           328px past a 360px rail. Labels are capped in JS AND the controls are
+           width-capped below; this is the last line of defence. */
+        overflow-x: hidden;
+        max-width: 100%;
+        background: var(--s2-bg-base);
+        color: var(--s2-content-default);
+        font-family:
+          adobe-clean, 'Source Sans Pro', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        font-size: 14px;
+      }
+      body {
+        padding: var(--s2-spacing-300);
+      }
+      /* Single column always — must survive a ~360px rail. */
+      .wrap {
+        max-width: 720px;
+        margin: 0 auto;
+        display: flex;
+        flex-direction: column;
+        gap: var(--s2-spacing-300);
+      }
+      .item {
+        border: 1px solid var(--s2-border-default, color-mix(in srgb, currentColor 15%, transparent));
+        border-radius: var(--s2-radius-l);
+        background: var(--s2-bg-layer-1);
+        padding: var(--s2-spacing-200);
+        display: flex;
+        flex-direction: column;
+        gap: var(--s2-spacing-100);
+      }
+      .item__top {
+        display: flex;
+        align-items: center;
+        gap: var(--s2-spacing-100);
+      }
+      .item__num {
+        flex: 0 0 auto;
+        width: 22px;
+        height: 22px;
+        border-radius: var(--s2-radius-pill);
+        background: var(--s2-bg-elevated);
+        font-size: 11px;
+        font-weight: 700;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .item__title {
+        font-weight: 600;
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      .req {
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        opacity: 0.7;
+        flex: 0 0 auto;
+      }
+      .rows {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+      .row > .grow {
+        flex: 1 1 140px;
+        min-width: 0;
+      }
+      .src {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        background: var(--s2-bg-layer-2);
+        border-radius: var(--s2-radius-default);
+        padding: 6px 8px;
+      }
+      .src__label {
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 13px;
+      }
+      select,
+      input[type='text'],
+      input[type='number'] {
+        font: inherit;
+        color: inherit;
+        background: var(--s2-bg-elevated);
+        border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+        border-radius: var(--s2-radius-default);
+        padding: 6px 8px;
+        min-width: 0;
+        box-sizing: border-box;
+      }
+      /* min-width:0 does NOT restrain a <select> — only an explicit width does,
+         because its intrinsic size comes from the widest option. */
+      select,
+      input[type='text'] {
+        width: 100%;
+        max-width: 100%;
+      }
+      /* 88+88+gaps+separator = ~196px, fits the ~302px of content in a 360px rail. */
+      input[type='number'] {
+        width: 88px;
+        max-width: 100%;
+        flex: 0 1 88px;
+      }
+      .num-pair {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        flex-wrap: wrap;
+        max-width: 100%;
+      }
+      /* Explicit stepper buttons. Native number spin arrows are hover-only and
+         cramped at 88px inside a sandboxed iframe, so increment/decrement is
+         made visible and clickable rather than left to the UA. No
+         `appearance:none` is set anywhere, so native arrows still show too. */
+      button.step {
+        flex: 0 0 auto;
+        min-width: 34px;
+        font-size: 15px;
+        line-height: 1;
+        padding: 7px 10px;
+        font-variant-numeric: tabular-nums;
+      }
+      input[type='range'] {
+        width: 100%;
+        max-width: 100%;
+        box-sizing: border-box;
+        margin: 4px 0 0;
+        accent-color: var(--s2-accent, #2680eb);
+      }
+      .readout {
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+        overflow-wrap: anywhere;
+      }
+      .hint {
+        font-size: 12px;
+        opacity: 0.7;
+        line-height: 1.4;
+      }
+      /* Drag-invariant height for a text node whose content changes per slider
+         step. The max-duration readout/hint swap between a 33-char string and a
+         144-char one, so the row grew mid-drag and shoved the Start button under
+         the pointer.
+
+         A min-height in lines does NOT work: how many lines a string wraps to
+         depends on the rail width (this panel must survive ~360px as well as its
+         720px max), so any hard-coded reserve is wrong at some width. Instead
+         stack a hidden GHOST holding the longest possible string in the same grid
+         cell as the live text: the cell is then max(ghost, live) at every width,
+         with no magic numbers and no resize listener. Ghost text is assigned in JS
+         from the same constants updateHints() uses, so it cannot drift. */
+      .stack {
+        display: grid;
+      }
+      .stack > * {
+        grid-area: 1 / 1;
+      }
+      .stack__ghost {
+        visibility: hidden;
+        pointer-events: none;
+        user-select: none;
+      }
+      .warn {
+        font-size: 12px;
+        line-height: 1.4;
+        border-radius: var(--s2-radius-default);
+        padding: 8px;
+        background: color-mix(in srgb, var(--s2-notice) 10%, transparent);
+        color: var(--uxc-notice-text, inherit);
+      }
+      .bad {
+        background: color-mix(in srgb, var(--s2-negative) 10%, transparent);
+        color: var(--uxc-negative-text, inherit);
+      }
+      .ok {
+        background: color-mix(in srgb, var(--s2-positive) 10%, transparent);
+        color: var(--uxc-positive-text, inherit);
+      }
+      button {
+        font: inherit;
+        font-weight: 600;
+        border-radius: var(--s2-radius-pill);
+        border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+        background: var(--s2-bg-elevated);
+        color: inherit;
+        padding: 6px 14px;
+        cursor: pointer;
+      }
+      button:hover:not(:disabled) {
+        background: color-mix(in srgb, currentColor 8%, var(--s2-bg-elevated));
+      }
+      button:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+      button.primary {
+        background: var(--s2-accent, #2680eb);
+        border-color: transparent;
+        color: var(--s2-gray-25, #f8f8f8);
+      }
+      button.danger {
+        background: var(--s2-negative, #d31510);
+        border-color: transparent;
+        color: var(--s2-gray-25, #f8f8f8);
+      }
+      button.icon {
+        padding: 4px 9px;
+        font-size: 12px;
+      }
+      .start {
+        display: flex;
+        flex-direction: column;
+        gap: var(--s2-spacing-100);
+      }
+      .start button {
+        padding: 14px;
+        font-size: 16px;
+      }
+      h1 {
+        font-size: 18px;
+        margin: 0;
+      }
+      .sub {
+        font-size: 12px;
+        opacity: 0.7;
+        margin: 2px 0 0;
+      }
+      .count {
+        text-align: center;
+        font-size: 44px;
+        font-weight: 700;
+        font-variant-numeric: tabular-nums;
+        padding: var(--s2-spacing-200) 0;
+      }
+      .live {
+        display: flex;
+        flex-direction: column;
+        gap: var(--s2-spacing-100);
+      }
+      .dot {
+        display: inline-block;
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: var(--s2-negative, #d31510);
+        margin-right: 6px;
+        animation: pulse 1.4s ease-in-out infinite;
+      }
+      @keyframes pulse {
+        50% {
+          opacity: 0.25;
+        }
+      }
+      .log {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+        line-height: 1.5;
+        background: var(--s2-bg-layer-2);
+        border-radius: var(--s2-radius-default);
+        padding: 8px;
+        max-height: 190px;
+        overflow: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      dl.kv {
+        margin: 0;
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 4px var(--s2-spacing-200);
+        font-size: 12px;
+      }
+      dl.kv dt {
+        opacity: 0.7;
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+      dl.kv dd {
+        margin: 0;
+        font-weight: 600;
+        text-align: right;
+        /* A long unbroken value (a folder path) would otherwise force the
+           `auto 1fr` grid wider than the rail. */
+        min-width: 0;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+
+      [hidden] {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div>
+        <h1>Recording setup</h1>
+        <p class="sub">
+          Configure sources, then start. Recording begins immediately; a countdown is trimmed
+          afterwards.
+        </p>
+      </div>
+
+      <!-- ============ SETUP VIEW ============ -->
+      <div id="setup" class="wrap" style="gap: var(--s2-spacing-300); padding: 0">
+        <!-- 1. Video sources 0..n -->
+        <div class="item">
+          <div class="item__top">
+            <span class="item__num">1</span>
+            <span class="item__title">Video sources</span>
+          </div>
+          <div id="camRows" class="rows"></div>
+          <div class="row" id="grantRow">
+            <button id="grantBtn" type="button">Allow camera &amp; mic access</button>
+          </div>
+          <!-- Hidden until access is granted: an empty picker beside a grant
+               button is noise. Revealed by revealDeviceControls(). -->
+          <div class="row" id="camPickRow" hidden>
+            <select id="camPick" class="grow"></select>
+            <button id="camAdd" type="button">Add camera</button>
+          </div>
+          <div class="hint" id="camHint">Zero cameras is fine.</div>
+        </div>
+
+        <!-- 2. Microphone 0..1 -->
+        <div class="item">
+          <div class="item__top">
+            <span class="item__num">2</span>
+            <span class="item__title">Microphone</span>
+          </div>
+          <div id="micPickRow" hidden><select id="micPick"></select></div>
+          <div class="hint" id="micHint">Optional. Grant access above to choose one.</div>
+        </div>
+
+        <!-- 3. Starting URL -->
+        <div class="item">
+          <div class="item__top">
+            <span class="item__num">3</span>
+            <span class="item__title">Starting URL</span>
+          </div>
+          <input id="startUrl" type="text" placeholder="https://…" list="urlSuggest" autocomplete="off" />
+          <!-- Populated from the live tab list (read once at boot). -->
+          <datalist id="urlSuggest"></datalist>
+          <div class="hint" id="urlHint">
+            Opened as its own window at the size below, so the recorded frame is what you asked for.
+          </div>
+        </div>
+
+        <!-- 4. Target Window Size -->
+        <div class="item">
+          <div class="item__top">
+            <span class="item__num">4</span>
+            <span class="item__title">Target Window Size</span>
+          </div>
+          <select id="sizePreset">
+            <option value="">Custom…</option>
+            <option value="1920x1080">1080p landscape — 1920 × 1080</option>
+            <option value="1280x720">720p landscape — 1280 × 720</option>
+            <option value="1080x1920">9:16 vertical — 1080 × 1920</option>
+            <option value="1080x1080">Square — 1080 × 1080</option>
+            <option value="1440x900">Laptop — 1440 × 900</option>
+            <option value="1280x800">Laptop small — 1280 × 800</option>
+            <option value="390x844">iPhone portrait — 390 × 844</option>
+          </select>
+          <div class="num-pair">
+            <input id="tabW" type="number" min="0" step="1" placeholder="width" />
+            <span class="hint">x</span>
+            <input id="tabH" type="number" min="0" step="1" placeholder="height" />
+          </div>
+          
+          
+          <div class="hint" id="presetHint"></div>
+          <div class="warn bad" id="fitWarn" hidden></div>
+          <div class="warn" id="resizeWarn" hidden></div>
+        </div>
+
+        <!-- 5. Driver / clue script -->
+        <div class="item">
+          <div class="item__top">
+            <span class="item__num">5</span>
+            <span class="item__title">Driver script</span>
+          </div>
+          <input
+            id="driver"
+            type="text"
+            placeholder="/workspace/captures/drivers/example-driver.sh"
+          />
+          <!-- Full contract (REC_TAB/REC_DIR/REC_W/REC_H, the say -l en-US + warmup
+               requirement, and why --max-width/--hires must not be used: slicc#3232)
+               lives in /workspace/captures/drivers/README.md. A non-zero driver exit
+               never fails the recording. -->
+          <div class="hint">
+            Runs when recording starts — playwright-cli, sleep, screenshots for hero frames.
+          </div>
+        </div>
+
+        <!-- 6. Countdown -->
+        <div class="item">
+          <div class="item__top">
+            <span class="item__num">6</span>
+            <span class="item__title">Countdown before recording</span>
+          </div>
+          <div class="num-pair">
+            <button id="cdDown" type="button" class="icon step" aria-label="Decrease countdown">
+              −
+            </button>
+            <input id="countdown" type="number" min="0" max="60" step="1" value="0" />
+            <button id="cdUp" type="button" class="icon step" aria-label="Increase countdown">
+              +
+            </button>
+            <span class="hint">seconds</span>
+          </div>
+          <div class="hint">
+            Recorded, then trimmed via the manifest's <code>countdownMs</code>.
+          </div>
+        </div>
+
+        <!-- 7. Max duration -->
+        <div class="item">
+          <div class="item__top">
+            <span class="item__num">7</span>
+            <span class="item__title">Max duration / auto-stop</span>
+          </div>
+          <!-- max MUST equal DURATION_LADDER.length (66) = INFINITY_INDEX. -->
+          <input id="maxDur" type="range" min="0" max="66" step="1" value="0" />
+          <!-- Ghost-stacked so the row height is the tallest of the three regimes
+               (screenshot / numeric / infinity) at ANY rail width — without this
+               the Start button moved under the pointer mid-drag. Ghost text is
+               set by reserveHintHeights() from the same strings updateHints()
+               renders, so the two cannot drift apart. -->
+          <div class="stack">
+            <div class="readout stack__ghost" id="maxDurReadoutGhost" aria-hidden="true"></div>
+            <div class="readout" id="maxDurReadout"></div>
+          </div>
+          <div class="stack">
+            <div class="hint stack__ghost" id="maxDurHintGhost" aria-hidden="true"></div>
+            <div class="hint" id="maxDurHint"></div>
+          </div>
+        </div>
+
+        <!-- The screen/window/tab picker is raised by Chrome inside getDisplayMedia()
+             on Start, so it needs no UI of its own. displaySurface is still read
+             back off the track and recorded in the manifest. -->
+        <div id="sizeWarn" class="warn" hidden></div>
+        <div id="err" class="warn bad" hidden></div>
+
+        <!-- Two actions, in order. Step 1 is optional: recording your screen needs
+             no target window, so the start button is NEVER gated on it. -->
+        <div class="start">
+          <button id="openWinBtn" type="button">Open Target Window</button>
+          <div id="openWinResult" class="warn" hidden></div>
+          <button id="startBtn" type="button" class="primary">Start recording</button>
+          <div class="hint" id="startHint"></div>
+        </div>
+      </div>
+
+      <!-- ============ LIVE VIEW ============ -->
+      <div id="live" class="live" hidden>
+        <div class="item">
+          <div class="item__top">
+            <span class="item__title"><span class="dot"></span><span id="liveState">Starting…</span></span>
+            <span class="req" id="liveClock">0.0s</span>
+          </div>
+          <div id="countBox" class="count" hidden></div>
+          <dl class="kv" id="liveKv"></dl>
+          <div id="driverWarn" class="warn" hidden></div>
+          <div class="row">
+            <button id="stopBtn" type="button" class="danger">Stop recording</button>
+          </div>
+        </div>
+        <div class="log" id="log"></div>
+      </div>
+
+      <!-- ============ DONE VIEW ============ -->
+      <div id="done" hidden>
+        <div class="item">
+          <div class="item__top"><span class="item__title">Recording complete</span></div>
+          <dl class="kv" id="doneKv"></dl>
+          <div class="row">
+            <button id="againBtn" type="button" class="primary">New recording</button>
+          </div>
+        </div>
+        <div class="log" id="doneLog"></div>
+      </div>
+    </div>
+
+    <!-- BEGIN GENERATED BUNDLE -- do not edit; run build.sh -->
+    <!-- Built from src/entry.js by build.sh (esbuild --bundle --format=iife).
+         Bundles chunk-flusher.js IN PLACE from
+         /workspace/skills/interview-me/assets/sprinkle/lib/chunk-flusher.js
+         (not copied, not edited). Exposes window.__rec.
+         A full-document sprinkle cannot load external JS -- see
+         interview-me/references/sprinkle-module-loading.md. -->
+    <script>
+(() => {
+  // workspace/skills/interview-me/assets/sprinkle/lib/chunk-flusher.js
+  var PART_WRITE_TIMEOUT_MS = 15e3;
+  var ASSEMBLE_TIMEOUT_MS = 18e4;
+  var MAX_ATTEMPTS = 3;
+  var RETRY_BACKOFF_MS = 120;
+  var MAX_PENDING_BYTES = 32 * 1024 * 1024;
+  var TARGET_PART_BYTES = 1024 * 1024;
+  var isTransient = (err) => {
+    const name = err && err.name ? String(err.name) : "";
+    const msg = err && err.message ? String(err.message) : "";
+    return name === "NotReadableError" || name === "InvalidStateError" || name === "AbortError" || /NotReadableError|InvalidStateError|invalidated|snapshot|timed out|timeout/i.test(msg);
+  };
+  var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  function createChunkFlusher({
+    slicc: slicc2,
+    withTimeout: withTimeout2,
+    partsDir,
+    name,
+    onDiagnostic,
+    releaseAfterFlush = false,
+    partWriteTimeoutMs = PART_WRITE_TIMEOUT_MS,
+    assembleTimeoutMs = ASSEMBLE_TIMEOUT_MS,
+    maxAttempts = MAX_ATTEMPTS,
+    retryBackoffMs = RETRY_BACKOFF_MS,
+    maxPendingBytes = MAX_PENDING_BYTES,
+    targetPartBytes = TARGET_PART_BYTES
+  }) {
+    const diag = (stage, detail) => {
+      try {
+        if (onDiagnostic) onDiagnostic(stage, detail);
+      } catch (err) {
+      }
+    };
+    const stats = {
+      name,
+      chunksQueued: 0,
+      chunksFlushed: 0,
+      partsWritten: 0,
+      bytesWritten: 0,
+      retries: 0,
+      retriedCalls: 0,
+      failedParts: 0,
+      droppedForBackpressure: 0,
+      peakPendingBytes: 0,
+      maxAttemptsSeen: 0,
+      assembly: null,
+      lastError: null
+    };
+    const queue = [];
+    let pendingBytes = 0;
+    let draining = false;
+    let dirReady = null;
+    let nextPartIndex = 0;
+    let closed = false;
+    let poisoned = false;
+    async function attempt(label, fn, timeoutMs) {
+      let lastErr;
+      for (let n = 1; n <= maxAttempts; n++) {
+        try {
+          const result = await withTimeout2(Promise.resolve().then(fn), timeoutMs, `${name}:${label}`);
+          if (n > 1) {
+            stats.retriedCalls++;
+            stats.maxAttemptsSeen = Math.max(stats.maxAttemptsSeen, n);
+            diag("chunk-flush:retry-succeeded", { name, label, attempts: n, error: lastErr && lastErr.message });
+          }
+          return result;
+        } catch (err) {
+          lastErr = err;
+          const transient = isTransient(err);
+          if (n < maxAttempts && transient) {
+            stats.retries++;
+            stats.maxAttemptsSeen = Math.max(stats.maxAttemptsSeen, n);
+            diag("chunk-flush:retry", { name, label, attempt: n, of: maxAttempts, errorName: err && err.name, message: err && err.message });
+            await sleep(retryBackoffMs * n);
+            continue;
+          }
+          diag("chunk-flush:call-failed", {
+            name,
+            label,
+            attempts: n,
+            transient,
+            errorName: err && err.name,
+            message: err && err.message
+          });
+          throw err;
+        }
+      }
+      throw lastErr;
+    }
+    async function ensureDir() {
+      if (!dirReady) {
+        dirReady = attempt("mkdir", () => slicc2.mkdir(partsDir), partWriteTimeoutMs).catch((err) => {
+          dirReady = null;
+          throw err;
+        });
+      }
+      return dirReady;
+    }
+    const partName = (i) => `${partsDir}/${String(i).padStart(6, "0")}.part`;
+    async function drain() {
+      if (draining) return;
+      draining = true;
+      try {
+        while (queue.length) {
+          const batch = [];
+          let batchBytes = 0;
+          while (queue.length && (batch.length === 0 || batchBytes + queue[0].size <= targetPartBytes)) {
+            const item = queue.shift();
+            pendingBytes -= item.size;
+            batch.push(item);
+            batchBytes += item.size;
+            if (batchBytes >= targetPartBytes) break;
+          }
+          const partIndex = nextPartIndex++;
+          try {
+            await ensureDir();
+            const bytes = new Uint8Array(
+              await new Blob(batch.map((b) => b.blob)).arrayBuffer()
+            );
+            await attempt(`write-part-${partIndex}`, () => slicc2.writeFileBinary(partName(partIndex), bytes), partWriteTimeoutMs);
+            stats.partsWritten++;
+            stats.bytesWritten += bytes.length;
+            stats.chunksFlushed += batch.length;
+            if (releaseAfterFlush) {
+              for (const b of batch) if (b.release) b.release();
+            }
+          } catch (err) {
+            stats.failedParts++;
+            stats.lastError = err && err.message;
+            poisoned = true;
+            diag("chunk-flush:part-lost", { name, partIndex, chunks: batch.length, message: err && err.message });
+          }
+        }
+      } finally {
+        draining = false;
+      }
+    }
+    return {
+      /** Called from MediaRecorder.ondataavailable. Never throws, never awaits. */
+      append(blob, release) {
+        if (closed || !blob || !blob.size) return;
+        if (pendingBytes + blob.size > maxPendingBytes) {
+          stats.droppedForBackpressure++;
+          poisoned = true;
+          diag("chunk-flush:backpressure", { name, pendingBytes, size: blob.size, maxPendingBytes });
+          return;
+        }
+        queue.push({ blob, size: blob.size, release });
+        pendingBytes += blob.size;
+        stats.chunksQueued++;
+        stats.peakPendingBytes = Math.max(stats.peakPendingBytes, pendingBytes);
+        drain();
+      },
+      /** Wait for the queue to empty. Resolves even if some parts were lost. */
+      async settle() {
+        await drain();
+        let guard = 0;
+        while ((queue.length || draining) && guard++ < 600) await sleep(50);
+        return { ...stats, pendingBytes, queueLength: queue.length };
+      },
+      /** True when the on-disk part sequence is complete and safe to assemble. */
+      isUsable() {
+        return !poisoned && stats.partsWritten > 0 && stats.failedParts === 0 && stats.droppedForBackpressure === 0;
+      },
+      getStats() {
+        return { ...stats, pendingBytes, queueLength: queue.length, usable: !poisoned && stats.failedParts === 0 };
+      },
+      /**
+       * Concatenate the parts into `destPath`.
+       * Prefers `exec` (`cat`) so no byte enters the JS heap; falls back to a
+       * page-side read+write that is explicitly reported as degraded.
+       * Verifies the result's size against the sum of the parts.
+       */
+      async assemble(destPath) {
+        closed = true;
+        await this.settle();
+        if (!this.isUsable()) {
+          const why = poisoned ? "part sequence incomplete" : "no parts written";
+          stats.assembly = { ok: false, method: "none", reason: why };
+          diag("chunk-flush:assemble-skipped", { name, reason: why, stats: this.getStats() });
+          return stats.assembly;
+        }
+        const expectedBytes = stats.bytesWritten;
+        let method = null;
+        let err0 = null;
+        if (typeof slicc2.exec === "function") {
+          try {
+            const cmd = `cd ${partsDir} && cat *.part > ${destPath}`;
+            const r = await attempt("assemble-exec", () => slicc2.exec(cmd), assembleTimeoutMs);
+            if (r && r.exitCode === 0) method = "exec-cat";
+            else err0 = new Error(`exec exit ${r && r.exitCode}: ${String(r && r.stderr || "").slice(0, 200)}`);
+          } catch (err) {
+            err0 = err;
+          }
+        } else {
+          err0 = new Error("slicc.exec unavailable");
+        }
+        if (!method) {
+          diag("chunk-flush:assemble-fallback", { name, reason: err0 && err0.message });
+          try {
+            const entries = await attempt("readDir-parts", () => slicc2.readDir(partsDir), assembleTimeoutMs);
+            const names = (entries || []).map((e) => typeof e === "string" ? e : e && e.name).filter((n) => n && n.endsWith(".part")).sort();
+            const buf = new Uint8Array(expectedBytes);
+            let off = 0;
+            for (const n of names) {
+              const part = await attempt(`read-part-${n}`, () => slicc2.readFileBinary(`${partsDir}/${n}`), partWriteTimeoutMs);
+              const u8 = part instanceof Uint8Array ? part : new Uint8Array(part);
+              buf.set(u8, off);
+              off += u8.length;
+            }
+            await attempt("write-assembled", () => slicc2.writeFileBinary(destPath, buf.subarray(0, off)), assembleTimeoutMs);
+            method = "page-fallback";
+          } catch (err) {
+            stats.assembly = { ok: false, method: "failed", reason: err && err.message, expectedBytes };
+            diag("chunk-flush:assemble-failed", { name, message: err && err.message });
+            return stats.assembly;
+          }
+        }
+        let actualBytes = null;
+        try {
+          const st = await attempt("stat-assembled", () => slicc2.stat(destPath), partWriteTimeoutMs);
+          actualBytes = st && (st.size != null ? st.size : st.length);
+        } catch (err) {
+          actualBytes = null;
+        }
+        const ok = actualBytes === expectedBytes;
+        stats.assembly = { ok, method, expectedBytes, actualBytes, parts: stats.partsWritten, degraded: method === "page-fallback" };
+        diag(ok ? "chunk-flush:assembled" : "chunk-flush:assemble-size-mismatch", { name, ...stats.assembly });
+        return stats.assembly;
+      },
+      /**
+       * Remove the scratch parts. Best-effort: never fail a save over cleanup.
+       *
+       * MEASURED: the sprinkle bridge's `rm` does NOT honour a
+       * `{ recursive: true }` option -- `slicc.rm(dir, { recursive: true })` on a
+       * populated directory rejects with
+       * "ENOTEMPTY: directory not empty, rmdir '<dir>'". Found because this very
+       * method reported `chunk-flush:cleanup-failed` in diagnostics, which is
+       * exactly why cleanup failures are reported rather than swallowed: left
+       * unfixed, every save would leak its part files under PARTS_ROOT forever.
+       * So: `exec` `rm -rf` first, then an explicit file-by-file fallback.
+       */
+      async cleanup() {
+        if (typeof slicc2.exec === "function") {
+          try {
+            const r = await attempt("cleanup-exec", () => slicc2.exec(`rm -rf ${partsDir}`), assembleTimeoutMs);
+            if (r && r.exitCode === 0) return true;
+          } catch (err) {
+          }
+        }
+        try {
+          const entries = await attempt("cleanup-readdir", () => slicc2.readDir(partsDir), assembleTimeoutMs);
+          for (const e of entries || []) {
+            const n = typeof e === "string" ? e : e && e.name;
+            if (n) await slicc2.rm(`${partsDir}/${n}`).catch(() => {
+            });
+          }
+          await slicc2.rm(partsDir).catch(() => {
+          });
+          return true;
+        } catch (err) {
+          diag("chunk-flush:cleanup-failed", { name, message: err && err.message });
+          return false;
+        }
+      }
+    };
+  }
+
+  // shared/sprinkles/recording-setup/src/with-timeout.js
+  function withTimeout(promise, ms, label) {
+    return new Promise((resolve, reject) => {
+      let done = false;
+      const t = setTimeout(() => {
+        if (done) return;
+        done = true;
+        reject(new Error(`timeout after ${ms}ms: ${label}`));
+      }, ms);
+      Promise.resolve(promise).then(
+        (v) => {
+          if (done) return;
+          done = true;
+          clearTimeout(t);
+          resolve(v);
+        },
+        (e) => {
+          if (done) return;
+          done = true;
+          clearTimeout(t);
+          reject(e);
+        }
+      );
+    });
+  }
+
+  // shared/sprinkles/recording-setup/src/duration-ladder.js
+  var DURATION_LADDER = (() => {
+    const v = [0];
+    for (let s = 5; s <= 120; s += 5) v.push(s);
+    for (let s = 150; s <= 600; s += 30) v.push(s);
+    for (let s = 720; s <= 3600; s += 120) v.push(s);
+    return v;
+  })();
+  var INFINITY_INDEX = DURATION_LADDER.length;
+  function durationForIndex(i) {
+    const idx = Math.max(0, Math.min(INFINITY_INDEX, i | 0));
+    return idx === INFINITY_INDEX ? null : DURATION_LADDER[idx];
+  }
+  function formatDuration(sec) {
+    if (sec === null) return "\u221E";
+    if (sec === 0) return "0s";
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor(sec % 3600 / 60);
+    const s = sec % 60;
+    const out = [];
+    if (h) out.push(h + "h");
+    if (m) out.push(m + "m");
+    if (s) out.push(s + "s");
+    return out.join(" ");
+  }
+
+  // shared/sprinkles/recording-setup/src/mimes.js
+  var VIDEO_AV_MIMES = [
+    "video/webm;codecs=vp9,opus",
+    "video/webm;codecs=vp8,opus",
+    "video/webm"
+  ];
+  var VIDEO_ONLY_MIMES = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
+  var AUDIO_MIMES = ["audio/webm;codecs=opus", "audio/webm"];
+  function mimesForStream(stream) {
+    const v = stream.getVideoTracks().length;
+    const a = stream.getAudioTracks().length;
+    if (v && a) return VIDEO_AV_MIMES;
+    if (v) return VIDEO_ONLY_MIMES;
+    return AUDIO_MIMES;
+  }
+  function pickMime(cands) {
+    if (typeof MediaRecorder === "undefined" || !MediaRecorder.isTypeSupported) return cands[0];
+    for (const m of cands) if (MediaRecorder.isTypeSupported(m)) return m;
+    return cands[cands.length - 1];
+  }
+
+  // shared/sprinkles/recording-setup/src/beeps.js
+  function createBeeper() {
+    let ctx = null;
+    let unavailable = false;
+    const counters = { ticksScheduled: 0, ticksPlayed: 0, gosScheduled: 0, gosPlayed: 0, stopChimesScheduled: 0, stopChimesPlayed: 0, lastError: null };
+    async function arm() {
+      if (unavailable) return null;
+      try {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) {
+          unavailable = true;
+          return null;
+        }
+        if (!ctx) ctx = new AC();
+        if (ctx.state === "suspended") {
+          try {
+            await ctx.resume();
+          } catch (e) {
+          }
+        }
+        return ctx.state;
+      } catch (err) {
+        unavailable = true;
+        return null;
+      }
+    }
+    function beep(freq, durationSec, when, peak) {
+      if (!ctx || unavailable) {
+        counters.lastError = unavailable ? "audio unavailable" : "context not armed";
+        return false;
+      }
+      try {
+        const t = when == null ? ctx.currentTime : when;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(freq, t);
+        const p = peak == null ? 0.22 : peak;
+        gain.gain.setValueAtTime(1e-4, t);
+        gain.gain.exponentialRampToValueAtTime(p, t + 3e-3);
+        gain.gain.exponentialRampToValueAtTime(1e-4, t + durationSec);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(t);
+        osc.stop(t + durationSec + 0.02);
+        return true;
+      } catch (err) {
+        counters.lastError = err && err.message || String(err);
+        return false;
+      }
+    }
+    function tick() {
+      counters.ticksScheduled++;
+      if (beep(660, 0.09)) counters.ticksPlayed++;
+    }
+    function stopChime() {
+      counters.stopChimesScheduled += 2;
+      if (!ctx || unavailable) {
+        counters.lastError = unavailable ? "audio unavailable" : "context not armed";
+        return;
+      }
+      const t0 = ctx.currentTime;
+      if (beep(880, 0.11, t0, 0.24)) counters.stopChimesPlayed++;
+      if (beep(587, 0.16, t0 + 0.13, 0.24)) counters.stopChimesPlayed++;
+    }
+    function go() {
+      counters.gosScheduled += 3;
+      if (!ctx || unavailable) {
+        counters.lastError = unavailable ? "audio unavailable" : "context not armed";
+        return;
+      }
+      const t0 = ctx.currentTime;
+      for (let i = 0; i < 3; i++) if (beep(1040, 0.07, t0 + i * 0.12, 0.26)) counters.gosPlayed++;
+    }
+    function state() {
+      return unavailable ? "unavailable" : ctx ? ctx.state : "not-armed";
+    }
+    function close() {
+      if (ctx && ctx.close) {
+        try {
+          ctx.close();
+        } catch (e) {
+        }
+      }
+      ctx = null;
+    }
+    function report() {
+      return {
+        state: state(),
+        contextState: ctx ? ctx.state : null,
+        sampleRate: ctx ? ctx.sampleRate : null,
+        outputLatency: ctx && ctx.outputLatency != null ? ctx.outputLatency : null,
+        ticksScheduled: counters.ticksScheduled,
+        ticksPlayed: counters.ticksPlayed,
+        finalBeepsScheduled: counters.gosScheduled,
+        finalBeepsPlayed: counters.gosPlayed,
+        stopChimesScheduled: counters.stopChimesScheduled,
+        stopChimesPlayed: counters.stopChimesPlayed,
+        lastError: counters.lastError
+      };
+    }
+    return { arm, tick, go, stopChime, state, report, close };
+  }
+
+  // shared/sprinkles/recording-setup/src/tabs.js
+  function parseTabList(stdout) {
+    const out = [];
+    for (let line of (stdout || "").split("\n")) {
+      line = line.trim();
+      if (!line) continue;
+      const m = /^\[([^\]]+)\]\s*(.*)$/.exec(line);
+      if (!m) continue;
+      const id = m[1];
+      const rest = m[2];
+      let url = rest;
+      let title = "";
+      const tm = /^(.*?)\s+"([\s\S]*)"\s*$/.exec(rest);
+      if (tm) {
+        url = tm[1].trim();
+        title = tm[2];
+      }
+      out.push({ id, url, title });
+    }
+    return out;
+  }
+  function foregroundTabCmd(targetId) {
+    const id = String(targetId).replace(/[^A-Za-z0-9]/g, "");
+    return "IDX=$(playwright-cli tab-list | grep -n " + id + ' | cut -d: -f1); if [ -n "$IDX" ]; then playwright-cli tab-select "$IDX"; else echo "target ' + id + ' not in tab-list" >&2; exit 3; fi';
+  }
+  function confirmForegrounded(stdout, targetId) {
+    const s = String(stdout || "");
+    return s.toUpperCase().indexOf(String(targetId).toUpperCase()) !== -1;
+  }
+  function readViewportCmd(targetId) {
+    const id = String(targetId).replace(/[^A-Za-z0-9]/g, "");
+    return 'playwright-cli eval "JSON.stringify({iw:innerWidth,ih:innerHeight,ow:outerWidth,oh:outerHeight,dpr:devicePixelRatio,sw:screen.width,sh:screen.height})" --tab=' + id;
+  }
+  function parseViewport(stdout) {
+    const s = String(stdout || "");
+    const m = s.match(/\{[^{}]*"iw"[\s\S]*?\}/);
+    if (!m) return null;
+    try {
+      return JSON.parse(m[0]);
+    } catch (e) {
+      try {
+        return JSON.parse(m[0].replace(/\\"/g, '"'));
+      } catch (e2) {
+        return null;
+      }
+    }
+  }
+  function describeResize(requested, before, after, displaySurface) {
+    const r = {
+      requested: requested || null,
+      viewportAfter: after ? after.iw + "x" + after.ih : null,
+      outerAfter: after ? after.ow + "x" + after.oh : null,
+      dprBefore: before ? before.dpr : null,
+      dprAfter: after ? after.dpr : null,
+      effectiveForCapture: displaySurface === "browser"
+    };
+    const viewportChanged = !!(before && after && (before.iw !== after.iw || before.ih !== after.ih));
+    const outerChanged = !!(before && after && (before.ow !== after.ow || before.oh !== after.oh));
+    r.viewportChanged = viewportChanged;
+    r.osWindowChanged = outerChanged;
+    if (!after) {
+      r.note = "could not read the viewport back \u2014 effect unverified";
+    } else if (viewportChanged && !outerChanged && displaySurface !== "browser") {
+      r.note = "viewport now " + after.iw + "x" + after.ih + ", OS window unchanged at " + after.ow + "x" + after.oh + " \u2014 a " + (displaySurface || "window/monitor") + " capture frames the OS window, so this does NOT change the recording size" + (before && after.dpr < before.dpr ? "; devicePixelRatio dropped " + before.dpr + "\u2192" + after.dpr + ", which LOWERS captured quality" : "");
+    } else if (displaySurface === "browser") {
+      r.note = "tab surface captured, so the viewport IS the frame \u2014 resize applies";
+    } else {
+      r.note = "viewport unchanged \u2014 resize had no measurable effect";
+    }
+    return r;
+  }
+
+  // shared/sprinkles/recording-setup/src/capture-geometry.js
+  async function probeCaptureGeometry(stream, track, withTimeout2, timeoutMs) {
+    const settings = track && track.getSettings && track.getSettings() || {};
+    const out = {
+      width: settings.width || null,
+      height: settings.height || null,
+      frameRate: settings.frameRate || null,
+      settingsWidth: settings.width || null,
+      settingsHeight: settings.height || null,
+      geometrySource: "track-settings"
+    };
+    let video = null;
+    try {
+      video = document.createElement("video");
+      video.muted = true;
+      video.playsInline = true;
+      video.preload = "metadata";
+      const meta = new Promise((resolve, reject) => {
+        video.onloadedmetadata = () => resolve();
+        video.onerror = () => reject(new Error("video element error"));
+      });
+      video.srcObject = stream;
+      await withTimeout2(meta, timeoutMs == null ? 2e3 : timeoutMs, "capture-geometry:loadedmetadata");
+      if (video.videoWidth > 0 && video.videoHeight > 0) {
+        out.width = video.videoWidth;
+        out.height = video.videoHeight;
+        out.geometrySource = "video-metadata";
+      }
+    } catch (err) {
+      out.geometryError = err && err.message || String(err);
+    } finally {
+      if (video) {
+        try {
+          video.srcObject = null;
+        } catch (e) {
+        }
+      }
+    }
+    return out;
+  }
+  function watchCaptureResize(track, originMs, capture) {
+    const changes = [];
+    if (!track || !track.addEventListener) return () => changes;
+    try {
+      track.addEventListener("resize", () => {
+        try {
+          const s = track.getSettings && track.getSettings() || {};
+          changes.push({
+            atMs: Math.round((typeof performance !== "undefined" ? performance.now() : Date.now()) - originMs),
+            // Settings are the only thing available on the event; they are
+            // unreliable for absolute geometry (see above) but a CHANGE in them
+            // still signals that the surface was resized.
+            settingsWidth: s.width || null,
+            settingsHeight: s.height || null
+          });
+        } catch (e) {
+        }
+      });
+    } catch (e) {
+    }
+    return () => changes;
+  }
+
+  // shared/sprinkles/recording-setup/src/track-spread.js
+  function trackDurationSpreadMs(tracks) {
+    const ds = (tracks || []).map((t) => t && typeof t.containerDurationSec === "number" ? t.containerDurationSec : null).filter((d) => d != null && isFinite(d) && d > 0);
+    if (ds.length < 2) return null;
+    return Math.round((Math.max.apply(null, ds) - Math.min.apply(null, ds)) * 1e3);
+  }
+  function shortestTrack(tracks) {
+    let best = null;
+    for (const t of tracks || []) {
+      const d = t && typeof t.containerDurationSec === "number" ? t.containerDurationSec : null;
+      if (d == null || !isFinite(d) || d <= 0) continue;
+      if (!best || d < best.containerDurationSec) best = t;
+    }
+    return best ? { name: best.name, file: best.file, containerDurationSec: best.containerDurationSec } : null;
+  }
+  var TRACK_SPREAD_NOTE = "Tracks do NOT end together. trackDurationSpreadMs is the max-minus-min of the per-track container durations and is INHERENT to capture, not a trim artefact: MediaRecorder stops each recorder independently and the video encoder drops its final partial GOP, so the video track ends first (measured 19.116s video vs 19.919s audio = 803ms, with startOffsetMs ~0 for both, and the gap survives trimming unchanged). Anything muxing these tracks must pad or trim to the SHORTER stream (ffmpeg: -shortest) rather than assume equal length. This is separate from the -c copy keyframe-snap desync noted above.";
+
+  // shared/sprinkles/recording-setup/src/target-window.js
+  function normalizeUrlInput(raw) {
+    const t = String(raw == null ? "" : raw).trim();
+    if (!t) return "";
+    const schemeM = /^([a-zA-Z][a-zA-Z0-9+.-]*):(.*)$/.exec(t);
+    if (schemeM) {
+      const rest = schemeM[2];
+      const looksLikePort = /^\d+(?:[/?#]|$)/.test(rest);
+      if (!looksLikePort) return t;
+    }
+    if (t.slice(0, 2) === "//") return "https:" + t;
+    return "https://" + t;
+  }
+  function urlSuggestions(tabs) {
+    const skip = /^(about:|chrome:|chrome-extension:|devtools:|blob:|data:)/i;
+    const seen = /* @__PURE__ */ new Set();
+    const out = [];
+    for (const t of tabs || []) {
+      const u = t && t.url ? String(t.url) : "";
+      if (!u || skip.test(u)) continue;
+      if (!/^https?:\/\//i.test(u)) continue;
+      if (seen.has(u)) continue;
+      seen.add(u);
+      out.push({ url: u, title: (t.title || "").trim() });
+    }
+    return out;
+  }
+  function validateUrl(raw) {
+    const s = String(raw == null ? "" : raw).trim();
+    if (!s) return { ok: false, reason: "empty" };
+    let u;
+    try {
+      u = new URL(s);
+    } catch (e) {
+      try {
+        u = new URL("https://" + s);
+      } catch (e2) {
+        return { ok: false, reason: "not a URL" };
+      }
+    }
+    if (u.protocol !== "http:" && u.protocol !== "https:") {
+      return { ok: false, reason: "only http/https (got " + u.protocol + ")" };
+    }
+    if (!u.hostname) return { ok: false, reason: "no host" };
+    return { ok: true, url: u.href };
+  }
+  function shellQuoteUrl(url) {
+    return "'" + String(url).replace(/'/g, "'\\''") + "'";
+  }
+  function popupFeatures(w, h) {
+    return "popup=yes,width=" + (w | 0) + ",height=" + (h | 0) + ",left=40,top=60";
+  }
+  function windowGeometryCmd(targetId) {
+    const id = String(targetId).replace(/[^A-Za-z0-9]/g, "");
+    return 'playwright-cli eval "JSON.stringify({ow:outerWidth,oh:outerHeight,iw:innerWidth,ih:innerHeight,dpr:devicePixelRatio})" --tab=' + id;
+  }
+  function geometryIsCoherent(g) {
+    if (!g) return false;
+    const n = (v) => typeof v === "number" && isFinite(v) && v > 0;
+    if (!n(g.ow) || !n(g.oh) || !n(g.iw) || !n(g.ih)) return false;
+    if (g.iw > g.ow || g.ih > g.oh) return false;
+    const chrome = g.oh - g.ih;
+    if (chrome < 0 || chrome > 200) return false;
+    return true;
+  }
+  function parseGeometry(stdout) {
+    const s = String(stdout || "");
+    const m = s.match(/\{[^{}]*"ow"[\s\S]*?\}/);
+    if (!m) return null;
+    try {
+      return JSON.parse(m[0]);
+    } catch (e) {
+      try {
+        return JSON.parse(m[0].replace(/\\"/g, '"'));
+      } catch (e2) {
+        return null;
+      }
+    }
+  }
+  var MIN_WINDOW_WIDTH = 500;
+  function checkDisplayFit(w, h, scr) {
+    const s = scr || (typeof screen !== "undefined" ? screen : null);
+    const availWidth = s && s.availWidth ? s.availWidth : null;
+    const availHeight = s && s.availHeight ? s.availHeight : null;
+    const out = {
+      availWidth,
+      availHeight,
+      fitsDisplay: true,
+      clampedAxes: [],
+      minWidth: MIN_WINDOW_WIDTH,
+      belowMinWidth: false
+    };
+    if (!w || !h) return out;
+    if (w < MIN_WINDOW_WIDTH) {
+      out.belowMinWidth = true;
+      out.clampedAxes.push("width");
+    }
+    if (availWidth == null || availHeight == null) {
+      out.fitsDisplay = out.clampedAxes.length === 0;
+      return out;
+    }
+    if (w > availWidth && !out.clampedAxes.includes("width")) out.clampedAxes.push("width");
+    if (h > availHeight) out.clampedAxes.push("height");
+    out.fitsDisplay = out.clampedAxes.length === 0;
+    return out;
+  }
+  function presetFitness(values, scr) {
+    const out = [];
+    for (const v of values || []) {
+      if (!v) {
+        out.push({ value: v, fits: true, reason: null, suffix: "" });
+        continue;
+      }
+      const m = /^(\d+)x(\d+)$/.exec(v);
+      if (!m) {
+        out.push({ value: v, fits: true, reason: null, suffix: "" });
+        continue;
+      }
+      const w = +m[1], h = +m[2];
+      const fit = checkDisplayFit(w, h, scr);
+      if (fit.fitsDisplay) {
+        out.push({ value: v, fits: true, reason: null, suffix: "" });
+        continue;
+      }
+      const axes = fit.clampedAxes;
+      const reason = fit.belowMinWidth ? axes.length === 2 ? "narrower than Chrome's " + fit.minWidth + "px minimum, and too tall" : "narrower than Chrome's " + fit.minWidth + "px minimum window width" : axes.length === 2 ? "too large for this display" : axes[0] === "height" ? "too tall for this display" : "too wide for this display";
+      out.push({ value: v, fits: false, reason, suffix: " (" + reason + ")" });
+    }
+    return out;
+  }
+  function displayFitWarning(w, h, fit) {
+    if (!fit || fit.fitsDisplay || !fit.clampedAxes.length) return null;
+    const reasons = [];
+    if (fit.belowMinWidth) {
+      reasons.push("width " + w + " is below Chrome's " + fit.minWidth + "px minimum window width");
+    } else if (fit.availWidth != null && w > fit.availWidth) {
+      reasons.push("width " + w + " exceeds the usable " + fit.availWidth);
+    }
+    if (fit.availHeight != null && h > fit.availHeight) {
+      reasons.push("height " + h + " exceeds the usable " + fit.availHeight);
+    }
+    const achievedW = fit.belowMinWidth ? fit.minWidth : fit.availWidth != null ? Math.min(w, fit.availWidth) : w;
+    const achievedH = fit.availHeight != null ? Math.min(h, fit.availHeight) : h;
+    return "Clamped silently: " + reasons.join("; ") + ". You will get about " + achievedW + "x" + achievedH + " and the recording is captured at that size.";
+  }
+  function describeTargetWindow(opts) {
+    const o = opts || {};
+    const g = o.geometry || null;
+    const out = {
+      url: o.url || null,
+      requested: o.requestedW && o.requestedH ? o.requestedW + "x" + o.requestedH : null,
+      openedVia: o.openedVia || null,
+      sized: !!o.sized,
+      targetId: o.targetId || null,
+      outerAfter: g ? g.ow + "x" + g.oh : null,
+      innerAfter: g ? g.iw + "x" + g.ih : null,
+      dpr: g ? g.dpr : null,
+      predictedFrame: g && g.dpr ? Math.round(g.ow * g.dpr) + "x" + Math.round(g.oh * g.dpr) : null
+    };
+    const fit = o.fit || null;
+    out.availWidth = fit ? fit.availWidth : null;
+    out.availHeight = fit ? fit.availHeight : null;
+    out.fitsDisplay = fit ? fit.fitsDisplay : null;
+    if (!o.openedVia) {
+      out.note = "no target window was opened";
+    } else if (!out.sized) {
+      out.note = "window opened UNSIZED via " + out.openedVia + " (no handle, so size features could not apply) \u2014 it inherits the opener\u2019s dimensions; size it manually before recording";
+    } else if (!g) {
+      out.note = "opened, but the achieved geometry could not be measured (no target id)" + (fit && !fit.fitsDisplay ? " \u2014 and the requested " + out.requested + " does NOT fit the usable display " + fit.availWidth + "x" + fit.availHeight + ", so Chrome clamped the " + fit.clampedAxes.join(" and ") + "; `sized: true` means the size features were accepted, not achieved" : "");
+    } else {
+      const exact = out.requested === out.outerAfter;
+      out.note = "opened via " + out.openedVia + "; achieved outer " + out.outerAfter + " at dpr " + g.dpr + " \u2192 frame \u2248 " + out.predictedFrame + (exact ? "" : " (requested " + out.requested + "; " + (fit && !fit.fitsDisplay ? "CLAMPED on " + fit.clampedAxes.join(" and ") + " \u2014 it exceeds the usable display " + fit.availWidth + "x" + fit.availHeight : "Chrome adjusts height for window chrome") + ")");
+    }
+    return out;
+  }
+  async function openTargetWindowApi(url, w, h, api) {
+    const B = api || typeof slicc !== "undefined" && slicc && slicc.browser || null;
+    if (!B || typeof B.openWindow !== "function") {
+      return { handle: null, openedVia: null, sized: false, unavailable: true };
+    }
+    const opts = { decorated: true };
+    if (w && h) {
+      opts.width = w | 0;
+      opts.height = h | 0;
+    }
+    try {
+      const tab = await B.openWindow(url, opts);
+      const targetId = tab && (tab.targetId || tab) || null;
+      if (!targetId) return { handle: null, openedVia: null, sized: false };
+      return {
+        handle: null,
+        targetId,
+        openedVia: "slicc.browser.openWindow",
+        sized: !!(w && h),
+        decorated: true
+      };
+    } catch (e) {
+      return {
+        handle: null,
+        openedVia: null,
+        sized: false,
+        error: e && e.message || String(e)
+      };
+    }
+  }
+  function openTargetWindow(url, w, h, win) {
+    const W = win || window;
+    let handle = null;
+    if (w && h) {
+      try {
+        handle = W.open(url, "sliccTarget", popupFeatures(w, h));
+      } catch (e) {
+        handle = null;
+      }
+      if (handle) return { handle, openedVia: "window.open", sized: true };
+    } else {
+      try {
+        handle = W.open(url, "sliccTarget");
+      } catch (e) {
+        handle = null;
+      }
+      if (handle) return { handle, openedVia: "window.open", sized: false };
+    }
+    try {
+      const a = W.document.createElement("a");
+      a.href = url;
+      a.target = "_blank";
+      a.rel = "noopener";
+      W.document.body.appendChild(a);
+      a.click();
+      W.document.body.removeChild(a);
+      return { handle: null, openedVia: "anchor", sized: false };
+    } catch (e) {
+      return { handle: null, openedVia: null, sized: false, error: e && e.message || String(e) };
+    }
+  }
+  function newTargetId(before, after) {
+    const prev = new Set(before || []);
+    const added = (after || []).filter((id) => !prev.has(id));
+    if (added.length === 1) return added[0];
+    return null;
+  }
+  function tabIds(tabs) {
+    return (tabs || []).map((t) => t.id).filter(Boolean);
+  }
+  function isNavigated(tabs, id) {
+    const t = (tabs || []).find((x) => x.id === id);
+    if (!t) return false;
+    const u = String(t.url || "");
+    return !!u && u !== "about:blank" && u !== "about:newtab" && u !== "chrome://newtab/";
+  }
+  function landedElsewhere(tabs, id, requestedUrl) {
+    const t = (tabs || []).find((x) => x.id === id);
+    if (!t || !t.url) return null;
+    let a, b;
+    try {
+      a = new URL(t.url);
+    } catch (e) {
+      return null;
+    }
+    try {
+      b = new URL(requestedUrl);
+    } catch (e) {
+      return null;
+    }
+    if (a.hostname === b.hostname) return null;
+    return { landed: t.url, requested: requestedUrl, landedHost: a.hostname, requestedHost: b.hostname };
+  }
+  function findTargetId(tabs, url) {
+    if (!tabs || !tabs.length) return null;
+    let target;
+    try {
+      target = new URL(url);
+    } catch (e) {
+      target = null;
+    }
+    const exact = tabs.filter((t) => t.url === url);
+    if (exact.length) return exact[exact.length - 1].id;
+    if (target) {
+      const host = tabs.filter((t) => {
+        try {
+          const u = new URL(t.url);
+          return u.hostname === target.hostname && u.pathname === target.pathname;
+        } catch (e) {
+          return false;
+        }
+      });
+      if (host.length) return host[host.length - 1].id;
+      const byHost = tabs.filter((t) => {
+        try {
+          return new URL(t.url).hostname === target.hostname;
+        } catch (e) {
+          return false;
+        }
+      });
+      if (byHost.length) return byHost[byHost.length - 1].id;
+    }
+    return null;
+  }
+
+  // shared/sprinkles/recording-setup/src/entry.js
+  window.__rec = {
+    createChunkFlusher,
+    withTimeout,
+    DURATION_LADDER,
+    INFINITY_INDEX,
+    durationForIndex,
+    formatDuration,
+    VIDEO_AV_MIMES,
+    VIDEO_ONLY_MIMES,
+    AUDIO_MIMES,
+    mimesForStream,
+    pickMime,
+    createBeeper,
+    parseTabList,
+    foregroundTabCmd,
+    confirmForegrounded,
+    readViewportCmd,
+    parseViewport,
+    describeResize,
+    probeCaptureGeometry,
+    watchCaptureResize,
+    validateUrl,
+    shellQuoteUrl,
+    popupFeatures,
+    windowGeometryCmd,
+    parseGeometry,
+    geometryIsCoherent,
+    MIN_WINDOW_WIDTH,
+    describeTargetWindow,
+    openTargetWindow,
+    openTargetWindowApi,
+    findTargetId,
+    checkDisplayFit,
+    displayFitWarning,
+    newTargetId,
+    tabIds,
+    isNavigated,
+    landedElsewhere,
+    normalizeUrlInput,
+    urlSuggestions,
+    presetFitness,
+    trackDurationSpreadMs,
+    shortestTrack,
+    TRACK_SPREAD_NOTE
+  };
+})();
+    </script>
+    <!-- END GENERATED BUNDLE -->
+    <script>
+      /* ------------------------------------------------------------------
+       * recording-setup — DATA CONTRACT
+       *
+       * OUT (to the cone, via slicc.lick):
+       *   { action: 'recording-complete',
+       *     data: { folder: '/workspace/captures/<slug>', manifest: {...} } }
+       *   { action: 'recording-failed',
+       *     data: { stage: 'getUserMedia'|'getDisplayMedia'|'write'|..., message } }
+       *   NOTE: the cone only reads event.data — top-level extras are dropped.
+       *
+       * manifest.json shape:
+       *   { version, startedAtWallMs, startedAtISO, stopReason, durationMs,
+       *     countdownMs, maxStartSkewMs, displaySurface, mode:'video'|'screenshot',
+       *     config: {...}, tracks: [ { name, file, mime, bytes, chunks,
+       *              videoTracks, audioTracks, startOffsetMs,
+       *              containerDurationSec } ] }
+       *   videoTracks/audioTracks are the container's TRUE composition, read off
+       *   the recorded MediaStream. Prefer them over parsing `mime`.
+       *
+       * IN (from the scoop, via `sprinkle send recording-setup '<json>'`):
+       *   { status: 'reset' }          -> back to the setup view
+       *   { status: 'note', message }  -> append a line to the log
+       * ------------------------------------------------------------------ */
+
+      // ---------- measured constraints this file respects ----------
+      // * ONE getUserMedia for cameras+mic; split the stream for separate files.
+      // * NEVER navigate this page — a navigation kills MediaRecorder.
+      // * startOffsetMs (not firstChunkOffsetMs) is the timeline origin.
+      // * displaySurface as a CONSTRAINT is only a hint, so it is not requested
+      //   at all; the track's settings are the only source of what was picked.
+      // * `screencapture` can wedge (`Invalid state`, slicc#3233 — transient), and
+      //   it needs its own picker gesture per call, so page-side
+      //   getDisplayMedia + ImageCapture.grabFrame() is used instead: no extra
+      //   gesture and it reports displaySurface back.
+      // * Never pass bytes through exec stdout — writeFileBinary only.
+
+      var CHUNK_MS = 1000;
+      // Chunks stream to VFS part files via chunk-flusher (see the generated
+      // bundle above), so recording length is no longer bounded by JS heap.
+
+      var $ = function (id) {
+        return document.getElementById(id);
+      };
+      var state = {
+        targetHandle: null, // window handle when window.open succeeded
+        targetTabId: null, // CDP target id of the opened window
+        targetWindow: null, // manifest targetWindow block
+        startUrl: '',
+        cams: [], // [{deviceId,label}]
+        devices: [],
+        tabs: [], // [{id,url,title}]
+        running: false,
+        session: null,
+      };
+
+      // The log's time origin lives HERE, at module scope -- deliberately NOT on
+      // state.session. It used to read state.session.t0, and start() REPLACES
+      // state.session with a fresh `sess` object that carries `origin` but no
+      // `t0`, so every line after the swap printed [NaNs]. (The truthy check
+      // `state.session ? ... : ...` did not help: the object exists, the field
+      // does not.) A module-scope origin cannot be orphaned by any future
+      // session-object rewrite.
+      var logOrigin = null;
+      function setLogOrigin(t) {
+        logOrigin = t;
+      }
+      function log(msg) {
+        var box = $('log');
+        var prefix = '[--]';
+        if (logOrigin != null) {
+          var el = (performance.now() - logOrigin) / 1000;
+          // A diagnostic surface must NEVER emit NaN: fall back to a
+          // timestamp-free prefix rather than printing garbage.
+          if (isFinite(el)) prefix = '[' + el.toFixed(1) + 's]';
+        }
+        box.textContent += prefix + ' ' + msg + '\n';
+        box.scrollTop = box.scrollHeight;
+      }
+      function showErr(msg) {
+        var e = $('err');
+        e.hidden = false;
+        e.textContent = msg;
+      }
+      function clearErr() {
+        $('err').hidden = true;
+      }
+      function kv(el, obj) {
+        el.innerHTML = '';
+        Object.keys(obj).forEach(function (k) {
+          var dt = document.createElement('dt');
+          dt.textContent = k;
+          var dd = document.createElement('dd');
+          dd.textContent = String(obj[k]);
+          el.appendChild(dt);
+          el.appendChild(dd);
+        });
+      }
+      function view(name) {
+        $('setup').hidden = name !== 'setup';
+        $('live').hidden = name !== 'live';
+        $('done').hidden = name !== 'done';
+      }
+
+      // ---------- 1 & 2: device pickers ----------
+      // DO NOT try to detect grant state. An earlier version enumerated first
+      // and guessed via `every(d => !d.label || !d.deviceId)`, but on macOS the
+      // built-in mic reports a REAL label before any grant, so one labelled
+      // device made the check false and the grant never fired -- while the
+      // deviceIds were still unusable. Following interview-me's device-setup.js:
+      // never enumerate before the grant; make the REQUEST the entry point.
+      //
+      // Default state is a single honest `No camera` / `No microphone` option.
+      // Zero cameras and zero mics are legal final answers, not placeholders.
+      function resetPickers() {
+        var cp = $('camPick');
+        var mp = $('micPick');
+        cp.innerHTML = '';
+        mp.innerHTML = '';
+        cp.appendChild(new Option('No camera', ''));
+        mp.appendChild(new Option('No microphone', ''));
+        cp.disabled = false;
+        mp.disabled = false;
+        $('camAdd').disabled = false;
+        // Ungranted state: only the grant button shows. With the pickers hidden
+        // the dropdown can no longer be the request trigger, so the BUTTON is
+        // the entry point -- still a real user gesture, which is all
+        // getUserMedia requires. (The dropdown handlers stay wired for the case
+        // where the controls are already visible.)
+        $('camPickRow').hidden = true;
+        $('micPickRow').hidden = true;
+        $('grantRow').hidden = false;
+        $('micHint').textContent = 'Optional. Grant access above to choose one.';
+      }
+
+      // Reveal the pickers once the request has resolved and devices are
+      // enumerable. Called after a grant regardless of outcome: a denial still
+      // needs the honest `No camera` / `No microphone` choice to be visible.
+      function revealDeviceControls() {
+        $('camPickRow').hidden = false;
+        $('micPickRow').hidden = false;
+        $('grantRow').hidden = true;
+        $('micHint').textContent = 'Optional.';
+      }
+
+      // Repopulate from a REAL enumeration (only ever called after a grant).
+      // Keeps the No camera / No microphone entry first so zero stays choosable.
+      function fillPickers(devs) {
+        var vids = devs.filter(function (d) {
+          return d.kind === 'videoinput' && d.deviceId;
+        });
+        var mics = devs.filter(function (d) {
+          return d.kind === 'audioinput' && d.deviceId;
+        });
+        var cp = $('camPick');
+        var mp = $('micPick');
+        cp.innerHTML = '';
+        mp.innerHTML = '';
+        cp.appendChild(new Option('No camera', ''));
+        mp.appendChild(new Option('No microphone', ''));
+        vids.forEach(function (d, i) {
+          var o = new Option(d.label || 'Camera ' + (i + 1), d.deviceId);
+          o.title = d.label || '';
+          cp.appendChild(o);
+        });
+        mics.forEach(function (d, i) {
+          var o = new Option(d.label || 'Microphone ' + (i + 1), d.deviceId);
+          o.title = d.label || '';
+          mp.appendChild(o);
+        });
+        cp.disabled = false;
+        mp.disabled = false;
+        $('camAdd').disabled = false;
+        revealDeviceControls();
+        // Never report a count of devices we could not actually open.
+        $('camHint').textContent = vids.length
+          ? vids.length + (vids.length === 1 ? ' camera ready.' : ' cameras ready.')
+          : 'No cameras found — screen-only recording is still possible.';
+      }
+
+      // Requesting devices is triggered by INTERACTING WITH A DROPDOWN
+      // (mousedown/focus is a user gesture, so getUserMedia is allowed; `change`
+      // would be too late -- the list must already hold real options when it
+      // opens). Runs at most once, so re-opening the list never re-prompts.
+      async function ensureDevices() {
+        if (state.deviceRequestDone) return;
+        state.deviceRequestDone = true; // set FIRST: no double-prompt on rapid clicks
+        await grantDevices();
+      }
+
+      // The throwaway grant: open, then release immediately. This exists only to
+      // unlock labels/deviceIds; the capture-time getUserMedia (ONE call + split)
+      // is untouched and re-acquires its own stream.
+      async function grantDevices() {
+        var btn = $('grantBtn');
+        btn.disabled = true;
+        btn.textContent = 'Requesting\u2026';
+        $('camHint').textContent = 'Requesting camera & microphone access\u2026';
+        clearErr();
+        var s = null;
+        try {
+          s = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        } catch (err) {
+          // A NotAllowedError is a DECISION, not a missing device: retrying
+          // would just reprompt (measured 3 prompts before this guard).
+          // Only fall back when the combined request failed for another reason
+          // (e.g. NotFoundError: no camera on this machine, mic-only is fine).
+          if ((err && err.name) !== 'NotAllowedError') {
+            for (var i = 0; i < 2 && !s; i++) {
+              try {
+                s = await navigator.mediaDevices.getUserMedia(
+                  i === 0 ? { audio: true } : { video: true },
+                );
+              } catch (e2) {
+                /* try the next shape */
+              }
+            }
+          }
+          if (!s) {
+            btn.disabled = false;
+            btn.textContent = 'Allow camera & mic access';
+            var denied = (err && err.name) === 'NotAllowedError';
+            // Denial leaves `No camera` / `No microphone` selected, which is a
+            // legal configuration — screen-only recording still works.
+            resetPickers();
+      refreshPresetFitness();
+            revealDeviceControls(); // a denial still needs `No camera` visible
+            $('camHint').textContent = denied
+              ? 'Permission denied — screen-only recording is still possible (zero video sources is legal).'
+              : 'Could not open devices: ' + (err && err.message);
+            return;
+          }
+        } finally {
+          // Release immediately — this grant exists only to unlock labels/ids.
+          // Holding the camera here would fight the capture-time getUserMedia.
+          if (s)
+            s.getTracks().forEach(function (t) {
+              try {
+                t.stop();
+              } catch (e) {}
+            });
+        }
+        btn.textContent = 'Allow camera & mic access';
+        btn.disabled = false;
+        state.granted = true;
+        $('grantRow').hidden = true;
+        // Enumerate ONLY now, with the grant held — labels and deviceIds are
+        // populated at this point.
+        var devs = [];
+        try {
+          devs = await navigator.mediaDevices.enumerateDevices();
+        } catch (err2) {
+          devs = [];
+          $('camHint').textContent = 'enumerateDevices failed: ' + (err2 && err2.message);
+        }
+        state.devices = devs;
+        fillPickers(devs);
+        updateHints();
+      }
+
+      function renderCams() {
+        var box = $('camRows');
+        box.innerHTML = '';
+        state.cams.forEach(function (c, i) {
+          var row = document.createElement('div');
+          row.className = 'src';
+          var lab = document.createElement('span');
+          lab.className = 'src__label';
+          lab.textContent = 'camera' + (i + 1) + ' — ' + (c.label || c.deviceId || 'default');
+          var rm = document.createElement('button');
+          rm.type = 'button';
+          rm.className = 'icon';
+          rm.textContent = 'Remove';
+          rm.onclick = function () {
+            state.cams.splice(i, 1);
+            renderCams();
+            updateHints();
+          };
+          row.appendChild(lab);
+          row.appendChild(rm);
+          box.appendChild(row);
+        });
+        if (!state.cams.length) {
+          var none = document.createElement('div');
+          none.className = 'hint';
+          none.textContent = 'No video sources added (legal — screen capture only).';
+          box.appendChild(none);
+        }
+      }
+
+      // Kept as a visible affordance, but it is no longer the only path and no
+      // longer depends on any grant-state detection.
+      $('grantBtn').onclick = function () {
+        state.deviceRequestDone = true;
+        grantDevices();
+      };
+
+      // Opening EITHER dropdown requests devices. mousedown/focus fire before
+      // the list paints, so real options are there when it opens; `change`
+      // would be too late. Both are real user gestures.
+      ['camPick', 'micPick'].forEach(function (id) {
+        ['mousedown', 'focus'].forEach(function (ev) {
+          $(id).addEventListener(ev, function () {
+            ensureDevices();
+          });
+        });
+      });
+
+      $('camAdd').onclick = function () {
+        // This click IS a user gesture too, so it can carry the request.
+        if (!state.deviceRequestDone) return ensureDevices();
+        var cp = $('camPick');
+        var opt = cp.options[cp.selectedIndex];
+        if (!opt || !cp.value) return; // `No camera` is not an addable source
+        state.cams.push({ deviceId: cp.value, label: opt.textContent });
+        renderCams();
+        updateHints();
+      };
+
+      // ---------- 3: playwright tab list ----------
+      // Each line: [TARGETID] url "title". Anchor on the leading bracket and
+      // the LAST quoted run, because URLs can contain both brackets and quotes.
+
+      // The tab <select> is gone. Target-id discovery still needs the tab list
+      // (set-difference before/after opening the window), and that lives in
+      // openTarget() -- so this is now a no-op kept only so the existing call
+      // sites and the 'reset' update handler do not have to special-case it.
+      async function loadTabs() {
+        return;
+      }
+      // ---------- #1: disable physically-impossible presets ----------
+      // Read from `screen` at RUNTIME; 1470x956 is one machine's, never hard-coded.
+      // Recomputed on every call so reopening on another display re-evaluates.
+      function refreshPresetFitness() {
+        var sel = $('sizePreset');
+        var vals = [];
+        for (var i = 0; i < sel.options.length; i++) vals.push(sel.options[i].value);
+        var fit = presetFitness(vals, window.screen);
+        var blocked = 0;
+        for (var j = 0; j < sel.options.length; j++) {
+          var o = sel.options[j];
+          var f = fit[j];
+          // Keep a pristine label so repeated calls never double-annotate.
+          if (o.dataset.baseLabel == null) o.dataset.baseLabel = o.textContent;
+          o.textContent = o.dataset.baseLabel + (f && f.suffix ? f.suffix : '');
+          o.disabled = !!(f && !f.fits);
+          if (o.disabled) blocked++;
+        }
+        var s2 = window.screen || {};
+        $('presetHint').textContent =
+          blocked
+            ? blocked +
+              ' preset(s) disabled — larger than this display\u2019s usable area (' +
+              (s2.availWidth || '?') +
+              '\u00d7' +
+              (s2.availHeight || '?') +
+              ' CSS px).'
+            : '';
+      }
+
+      // ---------- #4: autocomplete from the live tab list ----------
+      function refreshUrlSuggestions(tabs) {
+        var dl = $('urlSuggest');
+        if (!dl) return;
+        dl.innerHTML = '';
+        var items = urlSuggestions(tabs || []);
+        for (var i = 0; i < items.length; i++) {
+          var o = document.createElement('option');
+          o.value = items[i].url;
+          if (items[i].title) o.label = items[i].title;
+          dl.appendChild(o);
+        }
+      }
+
+      // ---------- #3: prepend https:// on blur ----------
+      // Shows the normalised value back so the user sees what will actually open.
+      // An explicit http:// is left alone -- never silently upgraded.
+      function normalizeUrlField() {
+        var el = $('startUrl');
+        var before = el.value;
+        var after = normalizeUrlInput(before);
+        if (after !== before) {
+          el.value = after;
+          log('URL normalised to ' + after);
+        }
+        updateHints();
+      }
+      $('startUrl').addEventListener('blur', normalizeUrlField);
+      $('startUrl').addEventListener('change', normalizeUrlField);
+
+
+      // ---------- Open Target Window ----------
+      // Runs in a REAL click handler, which is the only context that can open a
+      // popup: CDP eval has no user activation, so `window.open` from
+      // playwright-cli returns null. A full-document sprinkle also renders in a
+      // SANDBOXED iframe that may withhold `allow-popups` entirely -- both cases
+      // arrive as a null handle, and the code degrades honestly instead of
+      // claiming a size it did not get.
+      //
+      // NEVER call `playwright-cli resize` on this window: it would drop dpr 2->1
+      // irreversibly and destroy the quality this path exists to win.
+      $('openWinBtn').onclick = function () {
+        openTarget().catch(function (err) {
+          log('open target window failed: ' + (err && err.message));
+          showOpenResult('warn bad', 'Could not open a target window: ' + (err && err.message));
+        });
+      };
+
+      function showOpenResult(cls, text) {
+        var el = $('openWinResult');
+        el.hidden = false;
+        el.className = cls;
+        el.textContent = text;
+      }
+
+      async function openTarget() {
+        var btn = $('openWinBtn');
+        var c = readConfig();
+        var v = validateUrl($('startUrl').value);
+        if (!v.ok) {
+          showOpenResult('warn bad', 'Enter an http/https URL first (' + v.reason + ').');
+          return;
+        }
+        // Check the display bounds BEFORE opening: Chrome clamps an oversized
+        // request SILENTLY (measured: 1080x1080 requested on a 1470x956 display
+        // became 1080x809 — height short by 271px, no error). `sized:true` only
+        // means the size features were accepted, never that they were achieved.
+        var fit = checkDisplayFit(c.tabW, c.tabH, window.screen);
+        state.displayFit = fit;
+        var fitWarn = displayFitWarning(c.tabW, c.tabH, fit);
+        if (fitWarn) log('display fit: ' + fitWarn);
+        btn.disabled = true;
+        btn.textContent = 'Opening\u2026';
+        // Snapshot the CDP target ids BEFORE opening, so the popup can be found by
+        // SET DIFFERENCE rather than by URL. NOT awaited here: awaiting before
+        // window.open would spend the user activation and the popup would be
+        // blocked. The promise is consumed after the open instead.
+        var beforeIdsP = withTimeout(slicc.exec('playwright-cli tab-list'), 6000, 'tab-list-before')
+          .then(function (rr) {
+            return tabIds(parseTabList(rr && rr.stdout));
+          })
+          .catch(function () {
+            return null; // snapshot unavailable -> fall back to URL matching
+          });
+        // PRIMARY (6.169.0+): slicc.browser.openWindow sizes the FRAME and gives a
+        // DECORATED window (URL bar visible). The frame is the size that matters --
+        // capture resolution follows from it. Needs no user activation (verified
+        // from jsh, which has none), so awaiting here is safe.
+        var opened = await openTargetWindowApi(v.url, c.tabW, c.tabH);
+        if (opened.unavailable) {
+          // FALLBACK (pre-6.169.0). MUST stay synchronous inside the gesture: an
+          // await before window.open spends the user activation and Chrome blocks
+          // the popup. Popup chrome only (67px, no URL bar) -- a browser
+          // limitation, not a setting.
+          log('openWindow unavailable -> window.open fallback (popup chrome)');
+          opened = openTargetWindow(v.url, c.tabW, c.tabH, window);
+        }
+        state.targetHandle = opened.handle || null;
+        if (opened.targetId) state.targetId = opened.targetId;
+        log(
+          'open target: via ' +
+            (opened.openedVia || 'nothing') +
+            (opened.sized ? ' (sized ' + c.tabW + 'x' + c.tabH + ')' : ' (UNSIZED)'),
+        );
+
+        if (!opened.openedVia) {
+          state.targetWindow = describeTargetWindow({ url: v.url, openedVia: null });
+          showOpenResult(
+            'warn bad',
+            'The browser blocked opening a window from this panel. Open ' +
+              v.url +
+              ' yourself, size the window, then pick it in the share picker.',
+          );
+          btn.disabled = false;
+          btn.textContent = 'Open Target Window';
+          return;
+        }
+
+        // Discover the popup's CDP target id. Without it, foregrounding, REC_TAB
+        // and the geometry probe are ALL skipped -- which is exactly what happened
+        // on the 2026-09-18 take: https://www.yahoo.de/ redirected to
+        // consent.yahoo.com, URL matching missed, and targetId/foregroundedTab/
+        // outerAfter/dpr/predictedFrame were all null.
+        //
+        // Primary strategy: SET DIFFERENCE against the pre-open snapshot -- the new
+        // target is the popup whatever it navigates to. Polled, because a popup
+        // still on about:blank is not yet useful. URL matching is last resort.
+        var beforeIds = await beforeIdsP;
+        var targetId = null;
+        var idVia = null;
+        var landed = null;
+        var attempts = 0;
+        for (var att = 0; att < 6 && !targetId; att++) {
+          attempts = att + 1;
+          if (att) await new Promise(function (r2) { setTimeout(r2, 400); });
+          var tabsNow = null;
+          try {
+            var rr2 = await withTimeout(
+              slicc.exec('playwright-cli tab-list'),
+              6000,
+              'tab-list-after',
+            );
+            tabsNow = parseTabList(rr2 && rr2.stdout);
+          } catch (e) {
+            log('tab-list after open failed: ' + (e && e.message));
+            continue;
+          }
+          var cand = beforeIds ? newTargetId(beforeIds, tabIds(tabsNow)) : null;
+          if (cand) {
+            // Wait for it to leave about:blank so the geometry probe is meaningful.
+            if (!isNavigated(tabsNow, cand) && att < 5) continue;
+            targetId = cand;
+            idVia = 'set-difference';
+            landed = landedElsewhere(tabsNow, cand, v.url);
+            break;
+          }
+          // Last resort: URL matching. Cannot survive a cross-host redirect.
+          var byUrl = findTargetId(tabsNow, v.url);
+          if (byUrl) {
+            targetId = byUrl;
+            idVia = 'url-match';
+            break;
+          }
+        }
+        if (targetId) {
+          log('target id ' + targetId + ' resolved via ' + idVia + ' after ' + attempts + ' attempt(s)');
+          if (landed) {
+            log(
+              'note: the popup landed on a DIFFERENT host than requested — ' +
+                landed.requestedHost +
+                ' \u2192 ' +
+                landed.landedHost +
+                ' (' +
+                landed.landed.slice(0, 90) +
+                '); URL matching would have missed this',
+            );
+          }
+        } else {
+          log(
+            'WARNING: could not resolve the target window id after ' +
+              attempts +
+              ' attempt(s) — foregrounding and the geometry probe will be SKIPPED for this take',
+          );
+        }
+
+        // Measure the ACHIEVED geometry over CDP. The sprinkle's own handle cannot
+        // read a cross-origin popup's geometry (SecurityError, measured), and the
+        // request is not honoured exactly anyway (800 -> 843 outer).
+        var geom = null;
+        if (targetId) {
+          try {
+            var g = await withTimeout(
+              slicc.exec(windowGeometryCmd(targetId)),
+              6000,
+              'window-geometry',
+            );
+            geom = parseGeometry(g && g.stdout);
+            // MEASURED: a reading once came back outer 500x841 with inner 1200x714
+            // (the SLICC app tab's viewport) -- inner > outer is impossible, and a
+            // manifest carrying it yields a chrome height of 127 instead of 87.
+            // Refuse it rather than record a self-contradictory artefact.
+            if (geom && !geometryIsCoherent(geom)) {
+              log(
+                'geometry probe INCOHERENT (outer ' + geom.ow + 'x' + geom.oh +
+                  ' vs inner ' + geom.iw + 'x' + geom.ih + ') — discarded',
+              );
+              geom = null;
+            }
+          } catch (e) {
+            log('geometry probe failed: ' + (e && e.message));
+          }
+        }
+
+        var desc = describeTargetWindow({
+          url: v.url,
+          requestedW: c.tabW,
+          requestedH: c.tabH,
+          openedVia: opened.openedVia,
+          sized: opened.sized,
+          targetId: targetId,
+          geometry: geom,
+          fit: fit,
+        });
+        // So the user learns from the manifest WHY foregrounding/geometry were
+        // skipped, instead of discovering it afterwards.
+        desc.targetIdVia = idVia;
+        desc.targetIdAttempts = attempts;
+        desc.landedElsewhere = landed || null;
+        desc.foregroundingAvailable = !!targetId;
+        if (!targetId) {
+          desc.note =
+            (desc.note || '') +
+            ' — target id UNRESOLVED, so foregrounding and the CDP geometry probe were skipped';
+        }
+        state.targetWindow = desc;
+        // Make it the recording target so foregrounding / REC_TAB / driver use it.
+        if (targetId) {
+          state.targetTabId = targetId;
+          log('target window tab id ' + targetId);
+        }
+        log('open target: ' + desc.note);
+        showOpenResult(desc.sized && desc.fitsDisplay !== false ? 'warn ok' : 'warn', desc.note);
+        updateHints();
+        btn.disabled = false;
+        btn.textContent = 'Open Target Window';
+      }
+
+
+      // ---------- modules from the generated bundle (src/*.js) ----------
+      // Single source of truth is src/; the bundle above is build output.
+      // Destructured rather than redefined so there is exactly ONE copy of each.
+      var __rec = window.__rec || {};
+      var createChunkFlusher = __rec.createChunkFlusher;
+      var withTimeout = __rec.withTimeout;
+      var DURATION_LADDER = __rec.DURATION_LADDER;
+      var INFINITY_INDEX = __rec.INFINITY_INDEX;
+      var durationForIndex = __rec.durationForIndex;
+      var formatDuration = __rec.formatDuration;
+      var mimesForStream = __rec.mimesForStream;
+      var pickMime = __rec.pickMime;
+      var createBeeper = __rec.createBeeper;
+      var foregroundTabCmd = __rec.foregroundTabCmd;
+      var confirmForegrounded = __rec.confirmForegrounded;
+      var parseTabList = __rec.parseTabList;
+      var readViewportCmd = __rec.readViewportCmd;
+      var parseViewport = __rec.parseViewport;
+      var describeResize = __rec.describeResize;
+      var validateUrl = __rec.validateUrl;
+      var shellQuoteUrl = __rec.shellQuoteUrl;
+      var windowGeometryCmd = __rec.windowGeometryCmd;
+      var geometryIsCoherent = __rec.geometryIsCoherent;
+      var parseGeometry = __rec.parseGeometry;
+      var describeTargetWindow = __rec.describeTargetWindow;
+      var openTargetWindow = __rec.openTargetWindow;
+      var openTargetWindowApi = __rec.openTargetWindowApi;
+      var findTargetId = __rec.findTargetId;
+      var checkDisplayFit = __rec.checkDisplayFit;
+      var newTargetId = __rec.newTargetId;
+      var tabIds = __rec.tabIds;
+      var isNavigated = __rec.isNavigated;
+      var landedElsewhere = __rec.landedElsewhere;
+      var normalizeUrlInput = __rec.normalizeUrlInput;
+      var urlSuggestions = __rec.urlSuggestions;
+      var presetFitness = __rec.presetFitness;
+      var displayFitWarning = __rec.displayFitWarning;
+      var trackDurationSpreadMs = __rec.trackDurationSpreadMs;
+      var shortestTrack = __rec.shortestTrack;
+      var TRACK_SPREAD_NOTE = __rec.TRACK_SPREAD_NOTE;
+      var probeCaptureGeometry = __rec.probeCaptureGeometry;
+      var watchCaptureResize = __rec.watchCaptureResize;
+
+      // ---------- config read ----------
+      function readConfig() {
+        var num = function (id) {
+          var v = parseInt($(id).value, 10);
+          return isFinite(v) && v > 0 ? v : 0;
+        };
+        // null => record with NO auto-stop; 0 => single screenshot.
+        var maxDurationSec = durationForIndex(parseInt($('maxDur').value, 10) || 0);
+        return {
+          cams: state.cams.slice(),
+          micDeviceId: $('micPick').value || '',
+          micLabel: $('micPick').value ? $('micPick').options[$('micPick').selectedIndex].textContent : '',
+          // Only the window this panel opened is ever a target now -- the
+          // "record an already-open tab" path was removed as unnecessary.
+          tabId: state.targetTabId || '',
+          startUrl: ($('startUrl').value || '').trim(),
+          // Always false now: with the tab picker gone, every target is a window
+          // THIS panel opened, and `resize` on it would drop dpr 2->1 irreversibly.
+          resizeAllowed: false,
+          tabW: num('tabW'),
+          tabH: num('tabH'),
+          driver: ($('driver').value || '').trim(),
+          countdownSec: num('countdown'),
+          maxDurationSec: maxDurationSec,
+        };
+      }
+
+      // Single source of truth for the three max-duration regimes' copy, so the
+      // invisible sizing ghosts below cannot drift from what is actually rendered.
+      var DUR_READOUT = {
+        shot: '0s — single screenshot',
+        infinite: '\u221e — no auto-stop (stop manually or via “Stop sharing”)',
+        numeric: function (secs) {
+          return formatDuration(secs) + ' — auto-stop';
+        },
+      };
+      var DUR_HINT = {
+        shot: 'Takes ONE frame (screen.png) instead of a recording.',
+        infinite:
+          'No max-duration timer is set. The only stop triggers are the screen track ending and the Stop button; the manifest records maxDurationSec: null.',
+        numeric: function (secs) {
+          return 'Records and auto-stops after ' + formatDuration(secs) + '.';
+        },
+      };
+
+      // Reserve the tallest regime in each stacked cell. Longest-by-characters is
+      // the right proxy here because all three strings share one font and the
+      // ghost wraps under the identical width constraint as the live node — so the
+      // browser, not this code, decides the line count at the current rail width.
+      // 3600 is the ladder's largest finite value, i.e. the longest numeric form.
+      function reserveHintHeights() {
+        var longest = function (cands) {
+          return cands.reduce(function (a, b) {
+            return b.length > a.length ? b : a;
+          });
+        };
+        $('maxDurReadoutGhost').textContent = longest([
+          DUR_READOUT.shot,
+          DUR_READOUT.infinite,
+          DUR_READOUT.numeric(3600),
+        ]);
+        $('maxDurHintGhost').textContent = longest([
+          DUR_HINT.shot,
+          DUR_HINT.infinite,
+          DUR_HINT.numeric(3600),
+        ]);
+      }
+
+      function updateHints() {
+        var c = readConfig();
+        var infinite = c.maxDurationSec === null;
+        var shot = c.maxDurationSec === 0;
+
+        // Readout: honest about all three regimes.
+        $('maxDurReadout').textContent = shot
+          ? DUR_READOUT.shot
+          : infinite
+            ? DUR_READOUT.infinite
+            : DUR_READOUT.numeric(c.maxDurationSec);
+        $('maxDurHint').textContent = shot
+          ? DUR_HINT.shot
+          : infinite
+            ? DUR_HINT.infinite
+            : DUR_HINT.numeric(c.maxDurationSec);
+        $('startBtn').textContent = shot
+          ? 'Take screenshot'
+          : c.countdownSec > 0
+            ? 'Start recording (' + c.countdownSec + 's countdown, trimmed)'
+            : 'Start recording';
+
+        // No size guard: chunks stream to VFS part files during the session
+        // (chunk-flusher), so memory no longer grows with recording length and
+        // the unlimited/no-auto-stop mode is genuinely usable.
+        $('sizeWarn').hidden = true;
+        // Warn at CONFIGURE time, not only in the log after the fact: for a
+        // window/monitor capture this cannot change the frame and it drops
+        // devicePixelRatio to 1, which makes the recording look worse.
+        // Display-bounds warning, shown as soon as a size is typed — i.e. BEFORE
+        // the window is opened and before recording starts.
+        var fitNow = checkDisplayFit(c.tabW, c.tabH, window.screen);
+        var fitMsg = displayFitWarning(c.tabW, c.tabH, fitNow);
+        var fw = $('fitWarn');
+        if (fitMsg) {
+          fw.hidden = false;
+          fw.className = 'warn bad';
+          fw.textContent = fitMsg;
+        } else {
+          fw.hidden = true;
+        }
+
+        // The viewport-resize warning is GONE with the tab-picker path: the window
+        // is opened at the requested FRAME size via slicc.browser.openWindow, so
+        // `playwright-cli resize` (and its irreversible dpr 2->1) never applies.
+        var rw = $('resizeWarn');
+        if (rw) rw.hidden = true;
+
+        var parts = [];
+        parts.push(c.cams.length + ' camera(s)');
+        parts.push(c.micDeviceId ? 'mic on' : 'no mic');
+        if (c.tabId) parts.push('tab ' + c.tabId.slice(0, 8));
+        if (c.tabW && c.tabH && c.tabId) parts.push('resize ' + c.tabW + 'x' + c.tabH);
+        parts.push(shot ? 'screenshot' : infinite ? 'unlimited' : formatDuration(c.maxDurationSec));
+        if (c.driver) parts.push('driver ' + c.driver);
+        // Diagnostic, not instruction: dimmed so it reads as debug output rather
+        // than something the operator must act on.
+        $('startHint').style.opacity = '0.5';
+        $('startHint').textContent =
+          parts.join(' · ') + ' · Chrome will ask for permissions on this click.';
+      }
+      // ---------- tab-size presets ----------
+      // #tabW/#tabH stay the single source of truth that readConfig() reads; the
+      // preset only writes into them, so the config plumbing is untouched.
+      $('sizePreset').addEventListener('change', function () {
+        var v = $('sizePreset').value;
+        if (!v) return; // "Custom..." leaves whatever is typed alone
+        var wh = v.split('x');
+        $('tabW').value = wh[0];
+        $('tabH').value = wh[1];
+        updateHints();
+      });
+
+      // Hand-editing either field must not leave the selector disagreeing.
+      function syncPresetFromInputs() {
+        var key = ($('tabW').value || '') + 'x' + ($('tabH').value || '');
+        var sel = $('sizePreset');
+        var match = '';
+        for (var i = 0; i < sel.options.length; i++) {
+          if (sel.options[i].value && sel.options[i].value === key) {
+            match = sel.options[i].value;
+            break;
+          }
+        }
+        sel.value = match; // '' => Custom...
+      }
+      ['tabW', 'tabH'].forEach(function (id) {
+        $(id).addEventListener('input', syncPresetFromInputs);
+      });
+
+      // ---------- countdown stepper ----------
+      // Explicit -/+ because native number spin arrows are hover-only and
+      // cramped at this width inside a sandboxed iframe.
+      function stepCountdown(delta) {
+        var el = $('countdown');
+        var min = parseInt(el.min, 10) || 0;
+        var max = parseInt(el.max, 10);
+        if (!isFinite(max)) max = 60;
+        var v = (parseInt(el.value, 10) || 0) + delta;
+        el.value = String(Math.max(min, Math.min(max, v)));
+        updateHints();
+      }
+      $('cdDown').onclick = function () {
+        stepCountdown(-1);
+      };
+      $('cdUp').onclick = function () {
+        stepCountdown(1);
+      };
+
+      ['micPick', 'tabW', 'tabH', 'driver', 'countdown', 'maxDur'].forEach(
+        function (id) {
+          $(id).addEventListener('change', updateHints);
+          $(id).addEventListener('input', updateHints);
+        },
+      );
+
+      // ---------- recorder ----------
+      function makeRecorder(stream, name, opts) {
+        // Track counts are read at START time, from the stream actually handed to
+        // MediaRecorder, and recorded per file. That makes the container's
+        // composition self-describing: a downstream editor never has to parse a
+        // mime string, and a mislabel cannot silently reappear.
+        var videoTracks = stream.getVideoTracks().length;
+        var audioTracks = stream.getAudioTracks().length;
+        var mime = pickMime(mimesForStream(stream));
+        var rec = new MediaRecorder(stream, Object.assign({ mimeType: mime }, opts || {}));
+        var o = {
+          name: name,
+          mime: mime,
+          videoTracks: videoTracks,
+          audioTracks: audioTracks,
+          chunks: [],
+          recorder: rec,
+          startOffsetMs: null,
+          stopped: null,
+          bytesSeen: 0,
+          flusherError: null,
+        };
+        // A flusher, when attached, streams every timeslice chunk to VFS part
+        // files DURING the session, so memory no longer grows with recording
+        // length. append() never throws and never awaits, so it is safe to call
+        // straight from ondataavailable. The retained Blob is kept as well --
+        // measured ~0 heap for Blobs (the spike is arrayBuffer(), not the array)
+        // -- so a flusher failure can still fall back to the whole-blob write.
+        o.flusher = null;
+        o.attachFlusher = function (f) {
+          o.flusher = f;
+          return f;
+        };
+        rec.ondataavailable = function (e) {
+          if (!e.data || e.data.size <= 0) return;
+          o.chunks.push(e.data);
+          o.bytesSeen += e.data.size;
+          if (o.flusher) {
+            try {
+              o.flusher.append(e.data);
+            } catch (err) {
+              // Documented never to throw; belt-and-braces so a recorder cannot
+              // die mid-take even if that ever changes.
+              o.flusherError = (err && err.message) || String(err);
+            }
+          }
+        };
+        o.stop = function () {
+          if (o.stopped) return o.stopped;
+          o.stopped = new Promise(function (resolve) {
+            if (rec.state === 'inactive') return resolve();
+            rec.onstop = function () {
+              resolve();
+            };
+            try {
+              rec.stop();
+            } catch (err) {
+              resolve();
+            }
+          });
+          return o.stopped;
+        };
+        o.blob = function () {
+          return new Blob(o.chunks, { type: mime });
+        };
+        return o;
+      }
+
+      function slug() {
+        return new Date().toISOString().replace(/[:.]/g, '-');
+      }
+
+      // POSIX single-quote escaping. The driver path and REC_* values are
+      // interpolated into ONE shell string (env-prefix form needs a shell), so
+      // every value is quoted rather than trusted. '' -> '' for empty values,
+      // which is what the contract wants for "not selected".
+      function shq(v) {
+        return "'" + String(v == null ? '' : v).replace(/'/g, "'\\''") + "'";
+      }
+
+      // MEASURED on the first real 60s take: this returned null for BOTH tracks.
+      // Root cause (verified by byte-inspecting the file): MediaRecorder writes
+      // NO EBML Segment Duration element (0x4489) -- the header is emitted before
+      // the length is known and a live stream never backfills it -- so
+      // `<video>.duration` is Infinity and the isFinite() guard rejected it.
+      // ffprobe gets the real value only by scanning to the last cluster.
+      // The fix is the standard one: seek far past the end, which forces the
+      // browser to do that same scan and then report a finite duration.
+      async function containerDuration(blob) {
+        return new Promise(function (resolve) {
+          var url = URL.createObjectURL(blob);
+          var v = document.createElement('video');
+          var settled = false;
+          var done = function (val) {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            v.onloadedmetadata = v.onerror = v.ontimeupdate = null;
+            try {
+              v.src = '';
+            } catch (e) {}
+            URL.revokeObjectURL(url);
+            resolve(val);
+          };
+          var finite = function (d) {
+            return isFinite(d) && d > 0 ? Number(d.toFixed(3)) : null;
+          };
+          var timer = setTimeout(function () {
+            done(finite(v.duration));
+          }, 6000);
+          v.preload = 'metadata';
+          v.muted = true;
+          v.onloadedmetadata = function () {
+            if (isFinite(v.duration) && v.duration > 0) return done(finite(v.duration));
+            // Infinity: force a scan to the final cluster timestamp.
+            v.ontimeupdate = function () {
+              if (isFinite(v.duration) && v.duration > 0) {
+                done(finite(v.duration));
+              } else if (v.currentTime > 0) {
+                // Some builds surface the length as currentTime after the seek.
+                done(finite(v.currentTime));
+              }
+            };
+            try {
+              v.currentTime = 1e101;
+            } catch (e) {
+              done(null);
+            }
+          };
+          v.onerror = function () {
+            done(null);
+          };
+          v.src = url;
+        });
+      }
+
+      async function writeBlob(path, blob) {
+        var buf = await blob.arrayBuffer();
+        var bytes = new Uint8Array(buf);
+        await slicc.writeFileBinary(path, bytes);
+        return bytes.length;
+      }
+
+      // ---------- START ----------
+      $('startBtn').onclick = function () {
+        // Arm WebAudio HERE, inside the gesture. An AudioContext constructed
+        // outside a user gesture starts `suspended` and produces silence with no
+        // error, so this cannot be deferred into start(). Failure is ignored:
+        // audio must never be able to break a recording.
+        state.beeper = createBeeper ? createBeeper() : null;
+        if (state.beeper) {
+          state.beeper
+            .arm()
+            .then(function (st) {
+              state.beepState = st;
+            })
+            .catch(function () {
+              state.beepState = 'failed';
+            });
+        }
+        start().catch(function (err) {
+          state.running = false;
+          view('setup');
+          showErr((err && err.message) || String(err));
+          try {
+            slicc.lick({
+              action: 'recording-failed',
+              data: { stage: 'start', message: (err && err.message) || String(err) },
+            });
+          } catch (e) {}
+        });
+      };
+
+      async function start() {
+        if (state.running) return;
+        clearErr();
+        var cfg = readConfig();
+        state.running = true;
+        // ONE name for the instant: `origin`. The log reads the module-scope
+        // logOrigin; the recording reads sess.origin (the recorders' start mark,
+        // set below). The old duplicate `t0` field is gone -- it was the field
+        // that got orphaned by the session-object swap and produced [NaNs].
+        setLogOrigin(performance.now());
+        state.session = { origin: performance.now() };
+        $('log').textContent = '';
+        // Stale driver warnings must not survive into a new run.
+        $('driverWarn').hidden = true;
+        $('driverWarn').textContent = '';
+        $('countBox').hidden = true;
+        view('live');
+        $('liveState').textContent = 'Requesting permissions…';
+        kv($('liveKv'), {});
+
+        var camStreams = [];
+        var micStream = null;
+        var userStream = null;
+        var screenStream = null;
+
+        // --- ONE getUserMedia for cameras + mic (a second call = a second prompt).
+        // Multiple distinct cameras need one call each (deviceId is exact), so the
+        // ONE-call rule is what matters for the cam+mic pair: the first camera call
+        // carries the audio, and the resulting stream is SPLIT into separate files.
+        try {
+          if (cfg.cams.length || cfg.micDeviceId) {
+            var first = {
+              video: cfg.cams.length
+                ? { deviceId: { exact: cfg.cams[0].deviceId }, width: 1280, height: 720 }
+                : false,
+              audio: cfg.micDeviceId ? { deviceId: { exact: cfg.micDeviceId } } : false,
+            };
+            userStream = await navigator.mediaDevices.getUserMedia(first);
+            log('getUserMedia ok (camera+mic in one call)');
+            var vt = userStream.getVideoTracks();
+            var at = userStream.getAudioTracks();
+            // Split: separate MediaStreams => separate files.
+            if (vt[0]) camStreams.push({ stream: new MediaStream([vt[0]]), track: vt[0] });
+            if (at[0]) micStream = { stream: new MediaStream([at[0]]), track: at[0] };
+            // Additional cameras: video only, one call each.
+            for (var i = 1; i < cfg.cams.length; i++) {
+              try {
+                var s = await navigator.mediaDevices.getUserMedia({
+                  video: { deviceId: { exact: cfg.cams[i].deviceId }, width: 1280, height: 720 },
+                });
+                camStreams.push({ stream: s, track: s.getVideoTracks()[0] });
+                log('camera' + (i + 1) + ' opened');
+              } catch (e2) {
+                log('camera' + (i + 1) + ' FAILED: ' + (e2 && e2.message));
+              }
+            }
+          }
+        } catch (err) {
+          var m = (err && err.name) === 'NotAllowedError'
+            ? 'Camera/microphone permission denied by user — nothing was recorded.'
+            : 'getUserMedia failed: ' + (err && err.message);
+          throw new Error(m);
+        }
+
+        // --- then getDisplayMedia (same gesture). No displaySurface constraint:
+        // it was only ever a HINT (the user can pick anything regardless), so
+        // asking for one promised a choice it could not enforce. Chrome's picker
+        // asks this better; we read the ANSWER back from the track below.
+        try {
+          screenStream = await navigator.mediaDevices.getDisplayMedia({
+            video: { frameRate: 30 },
+            audio: false,
+            surfaceSwitching: 'exclude',
+            selfBrowserSurface: 'exclude',
+          });
+          log('getDisplayMedia ok');
+        } catch (err) {
+          stopTracks([userStream].concat(camStreams.map(function (c) { return c.stream; })));
+          var m2 = (err && err.name) === 'NotAllowedError'
+            ? 'Screen share was denied or cancelled — nothing was recorded.'
+            : 'getDisplayMedia failed: ' + (err && err.message);
+          throw new Error(m2);
+        }
+
+        var screenTrack = screenStream.getVideoTracks()[0];
+        var settings = (screenTrack && screenTrack.getSettings && screenTrack.getSettings()) || {};
+        var displaySurface = settings.displaySurface || null;
+        // TRUE frame geometry from the decoded stream, not getSettings().
+        // MEASURED: getSettings() said 2940x1912 while the encoded frames were a
+        // constant 2848x750 -- for displaySurface:'window' it described the
+        // DISPLAY, not the captured window. Bounded by withTimeout and falls back
+        // to the settings values, so it can never delay or fail the take. Runs
+        // ONCE here on the stream we already hold: no second capture, no extra
+        // permission prompt.
+        var captureGeometry = await probeCaptureGeometry(
+          screenStream,
+          screenTrack,
+          withTimeout,
+          2000,
+        );
+        log(
+          'capture geometry ' +
+            captureGeometry.width +
+            'x' +
+            captureGeometry.height +
+            ' (' +
+            captureGeometry.geometrySource +
+            '; settings said ' +
+            captureGeometry.settingsWidth +
+            'x' +
+            captureGeometry.settingsHeight +
+            ')',
+        );
+        log(
+          'displaySurface=' +
+            displaySurface +
+            ' ' +
+            (settings.width || '?') +
+            'x' +
+            (settings.height || '?') +
+            '@' +
+            (settings.frameRate || '?'),
+        );
+
+        var folder = '/workspace/captures/' + slug();
+        await slicc.mkdir(folder);
+        log('folder ' + folder);
+
+        // ============ SCREENSHOT MODE (max duration 0) ============
+        if (cfg.maxDurationSec === 0) {
+          $('liveState').textContent = 'Grabbing frame…';
+          try {
+            var png = await grabPng(screenTrack);
+            var bytes = await writeBlob(folder + '/screen.png', png.blob);
+            stopTracks([screenStream, userStream].concat(camStreams.map(function (c) { return c.stream; })));
+            var smanifest = {
+              version: 1,
+              mode: 'screenshot',
+              startedAtWallMs: Date.now(),
+              startedAtISO: new Date().toISOString(),
+              stopReason: 'single-frame',
+              durationMs: 0,
+              countdownMs: 0,
+              maxStartSkewMs: 0,
+              displaySurface: displaySurface,
+              config: sanitizeConfig(cfg),
+              tracks: [
+                {
+                  name: 'screen',
+                  file: 'screen.png',
+                  mime: 'image/png',
+                  // A still has no media tracks; stated explicitly so the field
+                  // is present on every track entry rather than sometimes absent.
+                  videoTracks: 0,
+                  audioTracks: 0,
+                  bytes: bytes,
+                  chunks: 1,
+                  startOffsetMs: 0,
+                  containerDurationSec: null,
+                  width: png.width,
+                  height: png.height,
+                },
+              ],
+            };
+            await slicc.writeFile(folder + '/manifest.json', JSON.stringify(smanifest, null, 2));
+            log('screen.png ' + bytes + ' B (' + png.width + 'x' + png.height + ')');
+            finish(folder, smanifest);
+          } catch (err) {
+            stopTracks([screenStream, userStream].concat(camStreams.map(function (c) { return c.stream; })));
+            throw new Error('screenshot failed: ' + (err && err.message));
+          }
+          return;
+        }
+
+        // ============ RECORDING MODE ============
+        var recs = [];
+        recs.push(makeRecorder(screenStream, 'screen', { videoBitsPerSecond: 2500000 }));
+        camStreams.forEach(function (c, i) {
+          recs.push(
+            // Camera video was split into its own MediaStream, so these are
+            // video-only too and would have carried the same wrong ,opus label.
+            makeRecorder(c.stream, 'camera' + (i + 1), { videoBitsPerSecond: 1500000 }),
+          );
+        });
+        if (micStream) {
+          recs.push(makeRecorder(micStream.stream, 'mic', { audioBitsPerSecond: 128000 }));
+        }
+
+        // --- one flusher per recorder, each with its own parts dir under the
+        // capture folder. Attached BEFORE start() so no chunk is missed.
+        var partsRoot = folder + '/.parts';
+        if (createChunkFlusher) {
+          for (var fi = 0; fi < recs.length; fi++) {
+            try {
+              recs[fi].attachFlusher(
+                createChunkFlusher({
+                  slicc: slicc,
+                  withTimeout: withTimeout,
+                  partsDir: partsRoot + '/' + recs[fi].name,
+                  name: recs[fi].name,
+                  onDiagnostic: function (stage, detail) {
+                    // Surfaced in the log so backpressure/retries are visible live.
+                    log('flusher ' + stage + ' ' + JSON.stringify(detail || {}).slice(0, 220));
+                  },
+                }),
+              );
+            } catch (err) {
+              // Streaming is an optimisation, never a precondition for recording.
+              log('flusher setup failed for ' + recs[fi].name + ': ' + (err && err.message));
+            }
+          }
+        } else {
+          log('WARNING: chunk-flusher unavailable (bundle not loaded) — buffering in page');
+        }
+
+        // --- ONE performance.now() origin, recorders started back-to-back.
+        // Measured: 0.1ms start skew, 32ms duration spread with 3 tracks.
+        var startedAtWallMs = Date.now();
+        var marks = [];
+        var origin = performance.now();
+        for (var r = 0; r < recs.length; r++) {
+          var mark = performance.now();
+          marks.push(mark);
+          recs[r].startOffsetMs = Number((mark - origin).toFixed(2));
+          recs[r].recorder.start(CHUNK_MS);
+        }
+        // A window capture CAN be resized mid-take; record the changes so a
+        // consumer can tell the frame size was not constant. Diagnostic only.
+        var getCaptureChanges = watchCaptureResize(screenTrack, origin, captureGeometry);
+        var maxStartSkewMs = marks.length
+          ? Number((Math.max.apply(null, marks) - Math.min.apply(null, marks)).toFixed(2))
+          : 0;
+        log(recs.length + ' recorder(s) started, maxStartSkewMs=' + maxStartSkewMs);
+        // Re-base the log onto the recording's own origin so log timestamps and
+        // the manifest timeline agree. `origin` is the single source of truth;
+        // sess.origin (below) is the same instant.
+        setLogOrigin(origin);
+        $('liveState').textContent = 'Recording';
+
+        var sess = {
+          folder: folder,
+          cfg: cfg,
+          recs: recs,
+          origin: origin,
+          startedAtWallMs: startedAtWallMs,
+          maxStartSkewMs: maxStartSkewMs,
+          displaySurface: displaySurface,
+          // Authoritative frame geometry (videoWidth/videoHeight of the decoded
+          // stream) PLUS the getSettings() numbers, kept side by side so the
+          // discrepancy stays visible. See src/capture-geometry.js for the
+          // measurement that made getSettings() untrustworthy here.
+          capture: captureGeometry,
+          streams: [screenStream, userStream].concat(camStreams.map(function (c) { return c.stream; })),
+          screenTrack: screenTrack,
+          stopReason: null,
+          finished: false,
+          timers: [],
+          // Populated by driverDone/driverErr; stays null when no driver ran.
+          driver: null,
+          getCaptureChanges: getCaptureChanges,
+          beeps: null,
+          resize: null,
+        };
+        state.session = sess;
+
+        // --- post-start side effects, none of them awaited before the recorders ran.
+        // Resize FIRST, then foreground, so the tab is already at its final size
+        // when it comes to the front (and both land during the recorded countdown).
+        // Neither may abort the recording: every failure is logged only.
+        if (cfg.tabId) {
+          var tabChain = Promise.resolve();
+          // HARD PROHIBITION: never resize a window WE opened. window.open already
+          // sized it and preserved dpr 2; `playwright-cli resize` would drop dpr to
+          // 1 irreversibly for that window (no clear-override command exists, and
+          // `resize 0 0` is rejected), destroying the quality the popup path won.
+          // resize stays available ONLY for a tab-picker target.
+          if (cfg.tabW && cfg.tabH && !cfg.resizeAllowed) {
+            log(
+              'resize skipped: target window was opened at ' +
+                cfg.tabW +
+                'x' +
+                cfg.tabH +
+                ' with devicePixelRatio preserved — resizing would halve it',
+            );
+            sess.resize = {
+              requested: cfg.tabW + 'x' + cfg.tabH,
+              skipped: true,
+              effectiveForCapture: false,
+              note:
+                'not attempted: the window was opened at this size via window.open (dpr preserved); ' +
+                'playwright-cli resize would drop devicePixelRatio to 1 irreversibly',
+            };
+          }
+          if (cfg.tabW && cfg.tabH && cfg.resizeAllowed) {
+            // `resize exit 0` is a FALSE SUCCESS: the command is a CDP
+            // device-metrics override that changes the VIEWPORT only. MEASURED:
+            // inner 1200x714->1280x800 (changed), outer 1200x801->1200x801
+            // (UNCHANGED), dpr 2->1 (changed, sticky). So for a window/monitor
+            // capture it cannot alter frame geometry and it halves render
+            // resolution. An exit code is not evidence of effect -- read the
+            // metrics back and report the truth. Bounded by withTimeout so a
+            // hung eval cannot stall the take; any failure logs and continues.
+            var vpBefore = null;
+            tabChain = withTimeout(slicc.exec(readViewportCmd(cfg.tabId)), 4000, 'viewport-before')
+              .then(function (rr) {
+                vpBefore = parseViewport(rr && rr.stdout);
+              })
+              .catch(function () {
+                vpBefore = null;
+              })
+              .then(function () {
+                return slicc.exec(
+                  'playwright-cli resize ' + cfg.tabW + ' ' + cfg.tabH + ' --tab=' + cfg.tabId,
+                );
+              })
+              .then(function (rr) {
+                if (rr && rr.exitCode !== 0) {
+                  log('resize exit ' + rr.exitCode + (rr.stderr ? ' — ' + rr.stderr.trim() : ''));
+                }
+                return withTimeout(
+                  slicc.exec(readViewportCmd(cfg.tabId)),
+                  4000,
+                  'viewport-after',
+                ).catch(function () {
+                  return null;
+                });
+              })
+              .then(function (rr) {
+                var vpAfter = parseViewport(rr && rr.stdout);
+                sess.resize = describeResize(
+                  cfg.tabW + 'x' + cfg.tabH,
+                  vpBefore,
+                  vpAfter,
+                  displaySurface,
+                );
+                log('resize: ' + sess.resize.note);
+                if (vpBefore && vpAfter) {
+                  log(
+                    '  viewport ' + vpBefore.iw + 'x' + vpBefore.ih + '\u2192' + vpAfter.iw + 'x' + vpAfter.ih +
+                      ' · OS window ' + vpBefore.ow + 'x' + vpBefore.oh + '\u2192' + vpAfter.ow + 'x' + vpAfter.oh +
+                      ' · dpr ' + vpBefore.dpr + '\u2192' + vpAfter.dpr,
+                  );
+                }
+              })
+              .catch(function (e) {
+                sess.resize = {
+                  requested: cfg.tabW + 'x' + cfg.tabH,
+                  note: 'resize reporting failed: ' + (e && e.message),
+                  effectiveForCapture: false,
+                };
+                log('resize failed: ' + (e && e.message));
+              });
+          }
+          // MEASURED: `tab-select` takes a 1-BASED LINE INDEX, not a target id, and
+          // `tab-list` prints no index despite --help claiming it does. The index
+          // also SHIFTS if tabs open/close after loadTabs(), so it is derived at
+          // start time inside ONE shell invocation (no race between the two
+          // commands). tab-select echoes the target id, so the result is CHECKED
+          // rather than assumed.
+          tabChain.then(function () {
+            return slicc
+              .exec(foregroundTabCmd(cfg.tabId))
+              .then(function (rr) {
+                var out = (rr.stdout || '') + (rr.stderr || '');
+                if (rr.exitCode === 0 && confirmForegrounded(rr.stdout, cfg.tabId)) {
+                  sess.foregrounded = true;
+                  log('foregrounded tab: ' + (rr.stdout || '').trim());
+                } else {
+                  sess.foregrounded = false;
+                  log(
+                    'foreground FAILED (exit ' +
+                      rr.exitCode +
+                      ') — recording continues: ' +
+                      out.trim().slice(0, 200),
+                  );
+                }
+              })
+              .catch(function (e) {
+                sess.foregrounded = false;
+                log('foreground failed: ' + (e && e.message));
+              });
+          });
+        }
+        // Verified contract (/workspace/captures/drivers/README.md):
+        //   REC_TAB=<id> REC_DIR=<dir> REC_W=<w> REC_H=<h> sh <script>
+        // Fire-and-forget — the recorders are already running above — but the
+        // promise result IS captured so exitCode/stderr reach the manifest.
+        // A driver's non-zero exit is NEVER a recording failure: an unguarded
+        // trailing `say` alone produced rc=1 with empty output.
+        if (cfg.driver) {
+          var dcmd =
+            'REC_TAB=' +
+            shq(cfg.tabId) +
+            ' REC_DIR=' +
+            shq(sess.folder) +
+            ' REC_W=' +
+            shq(cfg.tabW ? String(cfg.tabW) : '') +
+            ' REC_H=' +
+            shq(cfg.tabH ? String(cfg.tabH) : '') +
+            ' sh ' +
+            shq(cfg.driver);
+          log('driver: ' + dcmd);
+          slicc.exec(dcmd).then(driverDone).catch(driverErr);
+        }
+        function driverDone(rr) {
+          sess.driver = {
+            path: cfg.driver,
+            exitCode: typeof rr.exitCode === 'number' ? rr.exitCode : null,
+            stderr: (rr.stderr || '').trim().slice(0, 2000) || null,
+          };
+          log(
+            'driver exit ' + rr.exitCode + (rr.stdout ? ' · ' + rr.stdout.trim().slice(0, 400) : ''),
+          );
+          if (rr.stderr) log('driver stderr: ' + rr.stderr.trim().slice(0, 400));
+          if (rr.exitCode) {
+            log('note: a driver failure does NOT invalidate the recording.');
+            showDriverBadge(sess.driver);
+          }
+        }
+        function driverErr(e) {
+          sess.driver = {
+            path: cfg.driver,
+            exitCode: null,
+            stderr: ('could not launch: ' + (e && e.message)).slice(0, 2000),
+          };
+          log('driver failed to launch: ' + (e && e.message));
+          showDriverBadge(sess.driver);
+        }
+
+        // --- countdown: visual + audible. It is RECORDED, and cut away later via
+        // countdownMs. THE BEEPS ARE RECORDED ON PURPOSE: a selected mic picks
+        // them up acoustically, and the screen track will too if tab/system audio
+        // was shared. They sit inside the trimmed countdownMs region, so they
+        // never reach the finished cut. Do NOT "fix" audible beeps there -- the
+        // performer needs to hear the count during the take.
+        if (cfg.countdownSec > 0) {
+          $('countBox').hidden = false;
+          var left = cfg.countdownSec;
+          $('countBox').textContent = String(left);
+          var beeper = state.beeper;
+          if (beeper) beeper.tick(); // the first second, immediately
+          var ci = setInterval(function () {
+            left -= 1;
+            if (left > 0) {
+              $('countBox').textContent = String(left);
+              if (beeper) beeper.tick();
+            } else {
+              $('countBox').textContent = 'GO';
+              if (beeper) beeper.go(); // three faster, higher beeps
+              clearInterval(ci);
+              setTimeout(function () {
+                $('countBox').hidden = true;
+              }, 700);
+            }
+          }, 1000);
+          sess.timers.push(ci);
+          log(
+            'countdown ' +
+              cfg.countdownSec +
+              's running (recorded, trimmed via countdownMs) · audio ' +
+              (beeper ? beeper.state() : 'unavailable'),
+          );
+        }
+
+        // --- stop triggers: max duration, screen track ended, explicit button.
+        // maxDurationSec === null means INFINITY: set NO timer at all. (Not a
+        // huge timeout -- absent. `null * 1000` would be 0 and stop instantly.)
+        if (cfg.maxDurationSec !== null) {
+          var maxTimer = setTimeout(function () {
+            // Distinct DESCENDING two-tone so "stopped by the timer" is audible
+            // while the operator is watching the RECORDED window, not this panel.
+            // Fired before stopAll so it cannot be mistaken for a teardown sound;
+            // it is outside the captured audio either way.
+            if (state.beeper && state.beeper.stopChime) state.beeper.stopChime();
+            stopAll('max-duration');
+          }, cfg.maxDurationSec * 1000);
+          sess.timers.push(maxTimer);
+        } else {
+          log('no auto-stop timer (unlimited) — stop via Stop button or “Stop sharing”');
+        }
+        screenTrack.addEventListener('ended', function () {
+          stopAll('track-ended');
+        });
+
+        var clock = setInterval(function () {
+          if (!state.session || state.session.finished) return clearInterval(clock);
+          $('liveClock').textContent = ((performance.now() - origin) / 1000).toFixed(1) + 's';
+        }, 100);
+        sess.timers.push(clock);
+
+        kv($('liveKv'), {
+          folder: folder,
+          tracks: recs
+            .map(function (x) {
+              return x.name;
+            })
+            .join(', '),
+          displaySurface: displaySurface || 'unknown',
+          countdownMs: cfg.countdownSec * 1000,
+          maxDuration:
+            cfg.maxDurationSec === null ? '\u221e (no auto-stop)' : formatDuration(cfg.maxDurationSec),
+          maxStartSkewMs: maxStartSkewMs,
+        });
+      }
+
+      $('stopBtn').onclick = function () {
+        stopAll('user-stop');
+      };
+
+      function stopTracks(streams) {
+        (streams || []).forEach(function (s) {
+          if (!s || !s.getTracks) return;
+          s.getTracks().forEach(function (t) {
+            try {
+              t.stop();
+            } catch (e) {}
+          });
+        });
+      }
+
+      async function stopAll(reason) {
+        var sess = state.session;
+        if (!sess || !sess.recs || sess.finished) return;
+        sess.finished = true;
+        sess.stopReason = reason;
+        sess.timers.forEach(function (t) {
+          clearTimeout(t);
+          clearInterval(t);
+        });
+        var durationMs = Math.round(performance.now() - sess.origin);
+        // Beeper's own account, recorded BEFORE teardown.
+        if (state.beeper && state.beeper.report) {
+          try {
+            sess.beeps = state.beeper.report();
+          } catch (e) {
+            sess.beeps = { state: 'report-failed', lastError: (e && e.message) || String(e) };
+          }
+        }
+        $('liveState').textContent = 'Stopping (' + reason + ')…';
+        $('countBox').hidden = true;
+        log('stop: ' + reason + ' at ' + durationMs + 'ms');
+
+        try {
+          await Promise.all(
+            sess.recs.map(function (r) {
+              return r.stop();
+            }),
+          );
+          stopTracks(sess.streams);
+
+          var tracks = [];
+          var flusherStats = {};
+          var failures = []; // any track whose bytes are not provably on disk
+          for (var i = 0; i < sess.recs.length; i++) {
+            var r = sess.recs[i];
+            var blob = r.blob();
+            var isAudio = r.mime.indexOf('audio/') === 0;
+            var ext = r.mime.indexOf('video/mp4') === 0 ? 'mp4' : 'webm';
+            var file = r.name + '.' + ext;
+            var dest = sess.folder + '/' + file;
+            var bytes = 0;
+            var via = null;
+            var asm = null;
+
+            if (r.flusher) {
+              // Streamed path: assemble the ordered part files. assemble() also
+              // stats the result and reports ok=false on a size mismatch -- a
+              // file at the wrong size is worse than no file.
+              try {
+                asm = await r.flusher.assemble(dest);
+              } catch (aerr) {
+                asm = { ok: false, method: 'threw', reason: (aerr && aerr.message) || String(aerr) };
+              }
+              flusherStats[r.name] = r.flusher.getStats ? r.flusher.getStats() : null;
+              if (asm && asm.ok) {
+                via = asm.degraded ? 'stream-assembled-degraded' : 'stream-assembled';
+                bytes = asm.actualBytes;
+              } else {
+                log(
+                  'assembly FAILED for ' + file + ': ' + ((asm && asm.reason) || 'unknown') +
+                    ' — falling back to whole-blob write',
+                );
+              }
+            }
+
+            if (!via) {
+              // Fallback: the retained chunk Blobs are still in the page.
+              try {
+                bytes = await writeBlob(dest, blob);
+                via = r.flusher ? 'whole-blob-fallback' : 'whole-blob';
+              } catch (werr) {
+                log('WRITE FAILED ' + file + ': ' + (werr && werr.message));
+                via = 'failed';
+              }
+            }
+
+            // INDEPENDENT verification before we dare report success: the file
+            // must exist at the byte count we believe we wrote.
+            var onDisk = null;
+            try {
+              var st = await slicc.stat(dest);
+              onDisk = st && (st.size != null ? st.size : st.length);
+            } catch (serr) {
+              onDisk = null;
+            }
+            var verified = onDisk != null && onDisk > 0 && (bytes === 0 || onDisk === bytes);
+            if (!verified) {
+              failures.push(
+                file + ' (expected ' + bytes + ' B, on disk ' + (onDisk == null ? 'missing' : onDisk) + ')',
+              );
+            }
+            if (onDisk != null) bytes = onDisk;
+
+            var dur = await containerDuration(blob);
+            tracks.push({
+              name: r.name,
+              file: file,
+              mime: r.mime,
+              // True composition of THIS container, read off the recorded
+              // MediaStream at start time. Authoritative; do not infer from mime.
+              videoTracks: r.videoTracks,
+              audioTracks: r.audioTracks,
+              bytes: bytes,
+              chunks: r.chunks.length,
+              bytesSeen: r.bytesSeen,
+              writtenVia: via,
+              verified: verified,
+              startOffsetMs: r.startOffsetMs,
+              containerDurationSec: dur,
+              kind: isAudio ? 'audio' : 'video',
+            });
+            log(
+              file + ' ' + bytes + ' B, ' + r.chunks.length + ' chunks, ' + dur + 's · ' + via +
+                (verified ? ' · verified' : ' · UNVERIFIED'),
+            );
+          }
+
+          // Parts are the ONLY copy of the take until assembly is verified.
+          // Clean up only when every track checked out; otherwise LEAVE them and
+          // say so, because deleting them would destroy unrecoverable data.
+          var partsKept = false;
+          if (failures.length === 0) {
+            for (var ci2 = 0; ci2 < sess.recs.length; ci2++) {
+              if (sess.recs[ci2].flusher) await sess.recs[ci2].flusher.cleanup();
+            }
+            // MEASURED: the module's cleanup() removes the *.part files and its
+            // own per-recorder dir, but the parent .parts/ dir survives as an
+            // empty directory. Removing it is OUR job -- the module belongs to
+            // another skill and is never edited. Success path only: on ANY
+            // unverified track everything is retained (see the else branch).
+            // A failed rmdir must never fail a good take.
+            try {
+              var rmp = await slicc.exec('rm -rf ' + shq(sess.folder + '/.parts'));
+              if (rmp && rmp.exitCode !== 0) {
+                log('note: could not remove .parts dir (exit ' + rmp.exitCode + ') — harmless');
+              }
+            } catch (e) {
+              log('note: could not remove .parts dir: ' + (e && e.message) + ' — harmless');
+            }
+          } else {
+            partsKept = true;
+            log('KEEPING ' + sess.folder + '/.parts — assembly did not verify for: ' + failures.join('; '));
+          }
+
+          var manifest = {
+            version: 1,
+            mode: 'video',
+            startedAtWallMs: sess.startedAtWallMs,
+            startedAtISO: new Date(sess.startedAtWallMs).toISOString(),
+            stopReason: reason,
+            durationMs: durationMs,
+            countdownMs: sess.cfg.countdownSec * 1000,
+            maxStartSkewMs: sess.maxStartSkewMs,
+            // Max-minus-min of the per-track container durations. The tracks START
+            // together (maxStartSkewMs ~0) but do NOT END together — see notes[].
+            trackDurationSpreadMs: trackDurationSpreadMs(tracks),
+            shortestTrack: shortestTrack(tracks),
+            displaySurface: sess.displaySurface,
+            capture: (function () {
+              var c = sess.capture || null;
+              if (c && sess.getCaptureChanges) {
+                var ch = sess.getCaptureChanges();
+                c.changes = ch && ch.length ? ch : null;
+              }
+              return c;
+            })(),
+            // Beeper's own account of what it emitted. A mic recording cannot
+            // distinguish "played to headphones" from "never fired"; this can.
+            beeps: sess.beeps || null,
+            // The window we opened for the user to record, and what Chrome
+            // actually gave it. predictedFrame (outerWidth x dpr) cross-checks
+            // capture{}, which stays the authoritative frame geometry.
+            targetWindow: state.targetWindow || null,
+            // What the resize ACTUALLY did (exit 0 proves nothing).
+            // effectiveForCapture is true only for a 'browser' surface, where
+            // the tab viewport IS the frame.
+            resize: sess.resize || null,
+            config: sanitizeConfig(sess.cfg),
+            // {path, exitCode, stderr} once the driver settles, else null. A
+            // driver still running at stop time is reported as such rather than
+            // delaying the save.
+            driver: sess.driver || (sess.cfg.driver ? { path: sess.cfg.driver, exitCode: null, stderr: 'still running when recording stopped' } : null),
+            tracks: tracks,
+            flusher: flusherStats,
+            // Non-empty => at least one track's bytes are NOT provably on disk.
+            // .parts/ is retained in that case and named here.
+            unverifiedTracks: failures.length ? failures : null,
+            partsRetained: partsKept ? sess.folder + '/.parts' : null,
+            foregroundedTab: sess.foregrounded == null ? null : sess.foregrounded,
+            notes: [
+              'countdownMs is the trim-in point: the countdown WAS recorded, cut it away.',
+              'startOffsetMs is the timeline origin (never the first chunk flush).',
+              TRACK_SPREAD_NOTE,
+              'TRIM WITH AN ACCURATE SEEK, NOT -c copy. MEASURED: `ffmpeg -ss 5 -c copy` snaps to the nearest keyframe and yielded 23.845s for screen vs 25.000s for mic on a 30s take -- a ~1.15s A/V desync. Use -ss AFTER -i, or -accurate_seek, or re-encode.',
+              'capture.width/height come from the decoded stream (videoWidth/videoHeight). capture.settingsWidth/Height are track.getSettings(), which reported the DISPLAY (2940x1912) rather than the captured window (2848x750) on a measured take -- prefer width/height, and check geometrySource.',
+              'forcedTabSize (key kept for compatibility; the UI now calls it window size) is the size REQUESTED of window.open. It is not necessarily achieved: Chrome clamps silently to the usable display, so check targetWindow.fitsDisplay/availWidth/availHeight and prefer capture.width/height for the real frame.',
+            ],
+          };
+          await slicc.writeFile(sess.folder + '/manifest.json', JSON.stringify(manifest, null, 2));
+          log('manifest.json written');
+          // A partial assembly must fail HONESTLY rather than announce a
+          // recording whose files are short or missing. The manifest is written
+          // either way (it names the retained .parts/), but the success lick is
+          // withheld unless every track verified on disk.
+          if (failures.length) {
+            $('liveState').textContent = 'Saved with errors';
+            slicc.lick({
+              action: 'recording-failed',
+              data: {
+                stage: 'assembly',
+                message: failures.length + ' track(s) unverified: ' + failures.join('; '),
+                folder: sess.folder,
+                partsRetained: manifest.partsRetained,
+                manifest: manifest,
+              },
+            });
+            kv($('doneKv'), {
+              folder: sess.folder,
+              status: 'UNVERIFIED — parts retained',
+              unverified: failures.join('; '),
+            });
+            $('doneLog').textContent = $('log').textContent;
+            view('done');
+            state.running = false;
+            return;
+          }
+          finish(sess.folder, manifest);
+        } catch (err) {
+          log('FAILED during save: ' + (err && err.message));
+          $('liveState').textContent = 'Failed';
+          try {
+            slicc.lick({
+              action: 'recording-failed',
+              data: { stage: 'write', message: (err && err.message) || String(err) },
+            });
+          } catch (e) {}
+        }
+      }
+
+      function showDriverBadge(d) {
+        if (!d) return;
+        var w = $('driverWarn');
+        if (!w) return;
+        w.hidden = false;
+        w.textContent =
+          'Driver script ' +
+          (d.exitCode === null ? 'could not launch' : 'exited ' + d.exitCode) +
+          ' — the recording is unaffected and was kept.' +
+          (d.stderr ? ' ' + d.stderr.slice(0, 200) : '');
+      }
+
+      function sanitizeConfig(cfg) {
+        return {
+          cameras: cfg.cams.map(function (c) {
+            return c.label;
+          }),
+          mic: cfg.micLabel || null,
+          tabId: cfg.tabId || null,
+          forcedTabSize: cfg.tabW && cfg.tabH ? cfg.tabW + 'x' + cfg.tabH : null,
+          driverScript: cfg.driver || null,
+          countdownSec: cfg.countdownSec,
+          maxDurationSec: cfg.maxDurationSec,
+        };
+      }
+
+      function finish(folder, manifest) {
+        state.running = false;
+        var summary = { folder: folder, mode: manifest.mode, stopReason: manifest.stopReason };
+        if (manifest.mode === 'video') {
+          summary.durationMs = manifest.durationMs;
+          summary.countdownMs = manifest.countdownMs;
+          summary.maxStartSkewMs = manifest.maxStartSkewMs;
+        }
+        summary.displaySurface = manifest.displaySurface || 'unknown';
+        if (manifest.driver) {
+          summary.driver =
+            manifest.driver.exitCode === 0
+              ? 'ok (exit 0)'
+              : 'exit ' + manifest.driver.exitCode + ' — recording kept';
+        }
+        manifest.tracks.forEach(function (t) {
+          summary[t.file] = t.bytes + ' B';
+        });
+        kv($('doneKv'), summary);
+        $('doneLog').textContent = $('log').textContent;
+        view('done');
+        // The cone reads ONLY event.data — never put extras at the top level.
+        try {
+          slicc.lick({ action: 'recording-complete', data: { folder: folder, manifest: manifest } });
+        } catch (e) {}
+      }
+
+      $('againBtn').onclick = function () {
+        state.session = null;
+        state.running = false;
+        clearErr();
+        view('setup');
+        loadTabs();
+      };
+
+      // ---------- single-frame grab (page-side; see note above re screencapture) ----------
+      async function grabPng(track) {
+        var w = 0;
+        var h = 0;
+        var canvas = document.createElement('canvas');
+        if (typeof ImageCapture !== 'undefined') {
+          try {
+            var bmp = await new ImageCapture(track).grabFrame();
+            w = bmp.width;
+            h = bmp.height;
+            canvas.width = w;
+            canvas.height = h;
+            canvas.getContext('2d').drawImage(bmp, 0, 0);
+            return { blob: await canvasToBlob(canvas), width: w, height: h };
+          } catch (err) {
+            log('grabFrame failed (' + (err && err.message) + '), falling back to <video>');
+          }
+        }
+        // Fallback: paint the track through a <video> element.
+        var v = document.createElement('video');
+        v.muted = true;
+        v.srcObject = new MediaStream([track]);
+        await v.play();
+        await new Promise(function (res) {
+          if (v.videoWidth) return res();
+          v.onloadedmetadata = res;
+          setTimeout(res, 3000);
+        });
+        // one extra frame so the first paint is not blank
+        await new Promise(function (res) {
+          requestAnimationFrame(function () {
+            requestAnimationFrame(res);
+          });
+        });
+        w = v.videoWidth;
+        h = v.videoHeight;
+        canvas.width = w;
+        canvas.height = h;
+        canvas.getContext('2d').drawImage(v, 0, 0, w, h);
+        try {
+          v.pause();
+        } catch (e) {}
+        return { blob: await canvasToBlob(canvas), width: w, height: h };
+      }
+      function canvasToBlob(canvas) {
+        return new Promise(function (resolve, reject) {
+          canvas.toBlob(function (b) {
+            b ? resolve(b) : reject(new Error('canvas.toBlob returned null'));
+          }, 'image/png');
+        });
+      }
+
+      // ---------- updates from the scoop ----------
+      slicc.on('update', function (data) {
+        if (!data) return;
+        if (data.status === 'reset') {
+          state.session = null;
+          state.running = false;
+          clearErr();
+          view('setup');
+          loadTabs();
+        }
+        if (data.status === 'note' && data.message) {
+          log('scoop: ' + data.message);
+        }
+        // `screen-recorder config set …` pushes this so an ALREADY-OPEN panel
+        // picks the new values up without a reload.
+        if (data.type === 'reloadconfig') applyConfigFile(true);
+      });
+
+      // ---------- config.json (companion CLI) ----------
+      // ONE place decides where the sprinkle's runtime config lives; the CLI
+      // (scripts/screen-recorder.jsh) has the same constant and the two must
+      // agree. Shape is flat and matches the input ids, so adding a field to the
+      // panel needs no CLI change beyond its allow-list.
+      var CONFIG_FILE = '/shared/sprinkles/recording-setup/config.json';
+
+      // Every key the CLI may set, mapped to the DOM id it fills. Anything not
+      // listed is ignored rather than trusted -- the file is agent-writable.
+      var CONFIG_FIELDS = {
+        startUrl: 'startUrl',
+        width: 'tabW',
+        height: 'tabH',
+        countdownSec: 'countdown',
+        driver: 'driver',
+      };
+
+      async function readConfigFile() {
+        try {
+          var r = await slicc.readFile(CONFIG_FILE);
+          if (!r) return null;
+          return JSON.parse(String(r));
+        } catch (e) {
+          return null; // absent or malformed -> panel defaults, never a hard fail
+        }
+      }
+
+      async function applyConfigFile(announce) {
+        var cfg = await readConfigFile();
+        if (!cfg) return false;
+        var applied = [];
+        Object.keys(CONFIG_FIELDS).forEach(function (key) {
+          if (cfg[key] === undefined || cfg[key] === null || cfg[key] === '') return;
+          var el = $(CONFIG_FIELDS[key]);
+          if (!el) return;
+          el.value = String(cfg[key]);
+          applied.push(key);
+        });
+        // maxDurationSec is a LADDER INDEX in the UI, not seconds, so it cannot be
+        // assigned directly -- map the value back to its index.
+        //
+        // Two bugs lived here. (1) This iterated `sel.options`, but #maxDur is an
+        // <input type="range"> and a range has NO .options collection, so the loop
+        // threw a TypeError for EVERY numeric duration. Because the throw landed
+        // before syncPresetFromInputs()/updateHints() below, a CLI-written config
+        // half-applied: startUrl/width/height took effect while the slider stayed
+        // at index 0 -- i.e. silently in SCREENSHOT mode instead of recording.
+        // (2) `!== null` skipped the infinity step, which is a REAL config value
+        // (the manifest records maxDurationSec: null), so ∞ was unreachable from
+        // the CLI. null now maps to INFINITY_INDEX explicitly.
+        if (cfg.maxDurationSec !== undefined) {
+          var idx =
+            cfg.maxDurationSec === null
+              ? INFINITY_INDEX
+              : DURATION_LADDER.indexOf(cfg.maxDurationSec);
+          // -1 => a value the slider cannot represent; leave the slider alone and
+          // say so, rather than silently recording in the wrong mode.
+          if (idx >= 0) {
+            $('maxDur').value = String(idx);
+            applied.push('maxDurationSec');
+          } else {
+            log('config: maxDurationSec=' + cfg.maxDurationSec + ' is not on the duration ladder — slider unchanged');
+          }
+        }
+        if (applied.length) {
+          syncPresetFromInputs();
+          updateHints();
+          if (announce) log('config applied: ' + applied.join(', '));
+        }
+        return applied.length > 0;
+      }
+
+      // ---------- boot ----------
+      // NO enumerateDevices() at boot: pre-grant it only yields unusable
+      // placeholder entries. The pickers start at `No camera` / `No microphone`
+      // and the real request happens when the user opens a dropdown.
+      resetPickers();
+      renderCams();
+      // Before the first updateHints(): fills the invisible sizing ghosts so the
+      // max-duration row is already at its tallest regime's height, and dragging
+      // the slider to ∞ cannot reflow the Start button under the pointer.
+      reserveHintHeights();
+      updateHints();
+      loadTabs();
+      // Prefill from the companion CLI's config.json, if one exists.
+      applyConfigFile(false);
+      if (window.LucideIcons && LucideIcons.render) LucideIcons.render();
+    </script>
+  </body>
+</html>
