@@ -32,6 +32,8 @@ const SHORTLIST_TEXT = 16;
 const EVIDENCE = 6;
 const WAIT_DEFAULT_S = 15;
 const UNSURE_CANDIDATES = 5;
+const LIST_MAX = 20;
+const REGION_TEXTS = 6;
 
 function createIntent({ exec, fs, browser, skill, requireBundle }) {
   class IntentError extends Error {
@@ -320,13 +322,10 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     throw new IntentError(`ref ${ref} is not on the page any more; ask again without --ref`);
   }
 
-  function remember(candidates) {
-    return candidates.map((c) => ({
-      ref: c.ref,
-      role: c.element.role,
-      label: c.element.label,
-      k: c.rank ? c.rank.k : 1,
-    }));
+  /** What the shortlisted refs mean on this page, for a later --ref (lib.refMemory). */
+  function remember(elements, refs) {
+    const wanted = new Set(refs);
+    return lib.refMemory(elements).filter((m) => wanted.has(m.ref));
   }
 
   /** Do the parsed operation on one control. → a past-tense phrase. */
@@ -433,14 +432,14 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
       p = v.p;
       const list = lib.candidateLines(v.ranked, byId, req.candidates || UNSURE_CANDIDATES);
       if (req.candidates) {
-        return { tab, outcome: 'candidates', remember: remember(shortlist), lines: [`candidates for "${req.intent}":`, ...list], json: { candidates: list } };
+        return { tab, outcome: 'candidates', remember: remember(before.shot.elements, shortlist.map((c) => c.ref)), lines: [`candidates for "${req.intent}":`, ...list], json: { candidates: list } };
       }
       if (!v.sure) {
         return {
           tab,
           outcome: 'unsure',
           p,
-          remember: remember(shortlist),
+          remember: remember(before.shot.elements, shortlist.map((c) => c.ref)),
           lines: [
             `? not sure which control you mean (best ${lib.pct(v.p)}); nothing done. Candidates:`,
             ...list,
@@ -453,7 +452,7 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     }
     const named = `${element.token} ${lib.describeControl({ element, rank: null, place: page.place(element, before.viewport) })}`;
     if (req.dryRun) {
-      return { tab, outcome: 'dry-run', p, remember: remember(candidates), lines: [`would ${parsed.op} ${named}${p != null ? `  ${lib.pct(p)}` : ''}`], json: { ref: element.token } };
+      return { tab, outcome: 'dry-run', p, remember: remember(before.shot.elements, candidates.map((c) => c.ref)), lines: [`would ${parsed.op} ${named}${p != null ? `  ${lib.pct(p)}` : ''}`], json: { ref: element.token } };
     }
     const did = await perform(tab, parsed.op, parsed, element, before.viewport);
     await settle(tab);
@@ -463,7 +462,7 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
       tab,
       outcome: 'acted',
       p,
-      remember: [],
+
       lines: [`✓ ${did} [${element.token}]${p != null ? `  ${lib.pct(p)}` : ''}`, ...lines],
       json: { did, ref: element.token, url: after.shot.url },
     };
@@ -475,19 +474,41 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     const obs = await look(tab, { controls: false });
     const segments = segmentsOf(obs);
     if (!segments.length) throw new IntentError('this page has no text');
+    if (lib.isList(req.intent)) {
+      // A lexical read, no model: the matching links, buttons or rows.
+      const listed = lib.listLines(req.intent, obs.shot.elements, segments, req.candidates || LIST_MAX);
+      return {
+        tab,
+        outcome: 'listed',
+        remember: lib.refMemory(obs.shot.elements),
+        lines: [
+          listed.lines.length
+            ? `${listed.lines.length} of ${listed.total} ${listed.kind} matching, in page order:`
+            : `no ${listed.kind} match "${req.intent}"`,
+          ...listed.lines,
+        ],
+        json: { items: listed.lines.map((l) => l.trim()) },
+      };
+    }
     const shortlist = lib.lexicalRank(segments, req.intent).slice(0, SHORTLIST_TEXT).map((r) => r.candidate);
     const q = lib.choiceQuestion('RETRIEVE', req.intent, shortlist, obs.shot);
     const res = await s1.ask({ state: q.state, questions: { action: q.question } });
     const v = lib.verdict(probabilitiesOf(res.answers.action), policy(req, s1));
     const byId = new Map(shortlist.map((s) => [s.id, s]));
     const list = lib.candidateLines(v.ranked, byId, req.candidates || UNSURE_CANDIDATES);
-    if (req.candidates || !v.sure) {
+    if (req.candidates) {
+      return { tab, outcome: 'candidates', p: v.p, lines: [`matches for "${req.intent}":`, ...list], json: { candidates: list } };
+    }
+    if (!v.sure) {
+      // No single text answers it ("read the game status"): the closest
+      // texts, in page order, are the answer region.
+      const region = lib.regionLines(v.ranked, byId, REGION_TEXTS, req.intent);
       return {
         tab,
-        outcome: req.candidates ? 'candidates' : 'unsure',
+        outcome: 'region',
         p: v.p,
-        lines: [req.candidates ? `matches for "${req.intent}":` : `? not sure where the page says that (best ${lib.pct(v.p)}). Closest texts:`, ...list],
-        json: { candidates: list },
+        lines: [`the page's closest texts, in page order (no single one is sure; best ${lib.pct(v.p)}):`, ...region],
+        json: { region: region.map((l) => l.trim()) },
       };
     }
     const best = byId.get(v.pick);
@@ -578,7 +599,17 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
         const tab = await pickTab(req, state);
         if (!tab) throw new IntentError('no tab yet: start with --intent "open <url>", or pass --tab');
         const r = await pw(['snapshot', `--tab=${tab}`]);
-        result = { tab, outcome: 'full', lines: [String(r.stdout || '').trimEnd()], json: { snapshot: r.stdout } };
+        // Remember every ref it prints: a caller that picks one out of the
+        // snapshot and passes it as --ref after the page has re-rendered
+        // still reaches the same control (by role, label and order).
+        const elements = page.parseSnapshot(String(r.stdout || '')).elements;
+        result = {
+          tab,
+          outcome: 'full',
+          remember: lib.refMemory(elements),
+          lines: [String(r.stdout || '').trimEnd()],
+          json: { snapshot: r.stdout },
+        };
         kind = 'FULL';
       } else if (kind === 'NAVIGATE') {
         result = await navigate(req, state);

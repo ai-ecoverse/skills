@@ -413,6 +413,23 @@ function stateSegments(elements) {
     }));
 }
 
+/**
+ * What a ref means, so a later --ref still finds its control after the page
+ * re-renders and renumbers: role, label, and which of the controls with that
+ * exact role and label it is (k, from 1). → [{ ref, role, label, k }]
+ */
+function refMemory(elements) {
+  const seen = new Map();
+  return elements
+    .filter((e) => e.token)
+    .map((e) => {
+      const key = `${e.role}|${e.label}`;
+      const k = (seen.get(key) || 0) + 1;
+      seen.set(key, k);
+      return { ref: e.token, role: e.role, label: e.label, k };
+    });
+}
+
 /** Which controls an ACT operation can apply to. */
 function fitsOp(c, op) {
   const role = c.element.role;
@@ -795,7 +812,10 @@ const SURE = 0.7;
 const SURE_BY_MODEL = {
   clef: 0.7, // acts on 74.5% of intents, 3.3% wrong
   'clef-flash': 0.7,
-  '4b-vision': 0.7, // 72%, 2.7% wrong
+  // 4b-vision: 0.7 acted on 72% (2.7% wrong), but the hosted smoke round
+  // (2026-10-03) left obvious picks unsure at 0.63-0.69; 0.6 acts on 79.3%
+  // with 4.3% wrong, and the caller sees every result and can recover.
+  '4b-vision': 0.6,
   '0.8b-vision-wr1': 0.7, // the webrunner fine-tune: 74.5%, 5% wrong
   '0.8b-vision': 0.4, // under-confident: 49%, 2.8% wrong
   kev: 0.5, // any other bundle
@@ -901,6 +921,60 @@ function snippet(text, query, max = 240) {
     len += words[j].length + 1;
   }
   return `${start > 0 ? '…' : ''}${out.join(' ')}${start + out.length < words.length ? '…' : ''}`;
+}
+
+// "list the links about drugs", "list the rows that mention calories": a
+// lexical read, no model. Controls when the intent names a kind of control,
+// else the page's text rows.
+const LIST_RE = /^(?:please\s+)?(?:list|show\s+me\s+all|enumerate)\b/i;
+const LIST_CONTROLS = /\b(links?|buttons?|controls?|options?|fields?|tabs?|checkboxes|menu\s+items?)\b/i;
+const isList = (intent) => LIST_RE.test(squash(intent));
+
+/**
+ * The listing for a "list … about X" intent: up to n matches in page order,
+ * one short line each with its ref. With no word to match (list the
+ * buttons), every item of the kind, in page order.
+ */
+function listLines(intent, elements, segments, n = 20) {
+  const text = squash(intent);
+  const wantsControls = LIST_CONTROLS.test(text);
+  const kind = wantsControls ? LIST_CONTROLS.exec(text)[1].toLowerCase() : '';
+  const roleOk = (e) =>
+    /^link/.test(kind)
+      ? e.role === 'link'
+      : /^button/.test(kind)
+        ? e.role === 'button'
+        : /^(field|checkbox)/.test(kind)
+          ? e.kind === 'fill' || e.role === 'checkbox'
+          : /^tab/.test(kind)
+            ? e.role === 'tab'
+            : true;
+  // The words after the kind ("about drugs", "that mention calories").
+  const about = wantsControls ? text.slice(text.search(LIST_CONTROLS) + kind.length) : text.replace(LIST_RE, '');
+  const words = contentWords(about).filter((w) => !['list', 'row', 'item', 'all', 'mention', 'about', 'page'].includes(w));
+  const pool = wantsControls ? controlCandidates(elements.filter(roleOk), null) : segments;
+  const ranked = words.length ? lexicalRank(pool, words.join(' ')).filter((r) => r.score > 0.5) : pool.map((c, index) => ({ candidate: c, index }));
+  const picked = ranked.slice(0, n).map((r) => r.candidate);
+  const order = (c) => (c.type === 'control' ? c.element.seq ?? 0 : c.line ?? 0);
+  picked.sort((a, b) => order(a) - order(b));
+  const lines = picked.map((c) =>
+    c.type === 'control' ? `  ${c.ref} ${describeControl(c)}` : `  ${c.ref || c.id} ${describeText(c, 160)}`
+  );
+  return { lines, total: ranked.length, kind: wantsControls ? kind : 'rows' };
+}
+
+/**
+ * When System 1 cannot point at one text: the best few texts, in the order
+ * they stand on the page, so "read the game status" still gets the part of
+ * the page it is about, compactly.
+ */
+function regionLines(ranked, byId, n = 6, query = '') {
+  const picked = ranked
+    .filter(([id]) => id !== NONE && byId.has(id))
+    .slice(0, n)
+    .map(([id]) => byId.get(id));
+  picked.sort((a, b) => (a.line ?? 0) - (b.line ?? 0));
+  return picked.map((c) => `  ${c.ref || c.id} "${snippet(c.text, query, 220)}"`);
 }
 
 /** The top candidates when System 1 is not sure, for the caller to choose from. */
@@ -1009,6 +1083,10 @@ module.exports = {
   changeLines,
   gist,
   candidateLines,
+  refMemory,
+  isList,
+  listLines,
+  regionLines,
   snippet,
   pct,
 };

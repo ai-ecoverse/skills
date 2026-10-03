@@ -79,3 +79,12 @@ test('the arm driver installs with the skill: scripts/, not evals/', () => {
   ok(!at('evals/harness/intent-arm.jsh'), 'no driver left in evals/');
   ok(adapter.command({ url: 'u', goal: 'g' }, adapter.arms[1], { shellQuote: quote }).startsWith("'intent-arm'"));
 });
+
+test('diagnostics: the newest run of this goal, never one of another goal', async () => {
+  const runs = ['2026-10-03T10-01-12-318Z-news-ycombinator-com', '2026-10-03T10-05-12-873Z-www-biketouringtips-com'];
+  const list = async () => runs;
+  const bike = { url: 'https://www.biketouringtips.com/ArmchairBikeTouring/' };
+  is((await adapter.diagnostics({ goal: bike, own: null, list }))[0], `/tmp/intent-arm/${runs[1]}/result.json`);
+  is(await adapter.diagnostics({ goal: { url: 'https://httpbin.org/forms/post' }, own: null, list }), []);
+  is(adapter.hostSlug('https://news.ycombinator.com/'), 'news-ycombinator-com');
+});

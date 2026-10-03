@@ -54,16 +54,37 @@ function timeLimit(goal, env = typeof process === 'undefined' ? {} : process.env
 
 const RUNS = '/tmp/intent-arm';
 
-/** The run's files, kept after every run, failed or timed out. */
-async function diagnostics({ own, list }) {
+/** A goal URL's hostname as intent-arm slugs it into its run ids. */
+function hostSlug(url) {
+  let host = '';
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    host = '';
+  }
+  return (
+    host
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 40) || 'run'
+  );
+}
+
+/**
+ * The run's files, kept after every run, failed or timed out. Without a run
+ * id in the output (a timeout, a crash), the newest run of this goal's host;
+ * none rather than another goal's (a run that never started once shipped the
+ * previous goal's files, 2026-10-03).
+ */
+async function diagnostics({ goal, own, list }) {
   let run = own && own.run;
-  if (!run) {
-    const ids = (await list(RUNS)).filter((n) => /^\d{4}-\d\d-\d\dT[\w.-]+$/.test(n)).sort();
+  if (!run && goal && goal.url) {
+    const slug = hostSlug(goal.url);
+    const ids = (await list(RUNS)).filter((n) => /^\d{4}-\d\d-\d\dT[\w.-]+$/.test(n) && n.endsWith(`-${slug}`)).sort();
     run = ids[ids.length - 1];
   }
-  return run
-    ? ['result.json', 'transcript.md', 'calls.jsonl', 'judge.json'].map((f) => `${RUNS}/${run}/${f}`)
-    : [];
+  return run ? ['result.json', 'transcript.md', 'calls.jsonl', 'judge.json'].map((f) => `${RUNS}/${run}/${f}`) : [];
 }
 
 /** One goal as an `intent-arm` command line. */
@@ -206,6 +227,7 @@ module.exports = {
   heldArms,
   timeLimit,
   diagnostics,
+  hostSlug,
   command,
   result,
   containsValue,

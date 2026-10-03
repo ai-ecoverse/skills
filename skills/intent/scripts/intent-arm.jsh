@@ -21,7 +21,10 @@ const { toolCalls, stats } = require('./transcript.js');
 const ARM_DIR = '/tmp/intent-arm';
 const MODEL_DEFAULT = 'claude-sonnet-5-5';
 const TOOLS = ['intent', 'playwright-cli'];
-const UTILITIES = ['grep', 'head', 'tail', 'sleep', 'sed', 'awk', 'cut', 'wc', 'sort', 'uniq', 'echo', 'cat', 'tr', 'jq'];
+// Shell loops and helper scripts that batch tool calls are fair play for
+// every arm (Lars, 2026-10-03), so bash and sh are in too; whatever they
+// run is still held to the scoop's grant.
+const UTILITIES = ['grep', 'head', 'tail', 'sleep', 'sed', 'awk', 'cut', 'wc', 'sort', 'uniq', 'echo', 'cat', 'tr', 'jq', 'bash', 'sh'];
 
 const HELP = `
 intent-arm — run one goal with a Sonnet scoop that browses through one tool
@@ -33,6 +36,23 @@ USAGE
 
 Prints the run's numbers; the files are in ${ARM_DIR}/<run>/.
 `.trim();
+
+/** The page's hostname as a run-id slug: news.ycombinator.com → news-ycombinator-com. */
+function hostSlug(url) {
+  let host = '';
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    host = '';
+  }
+  return (
+    host
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 40) || 'run'
+  );
+}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -73,7 +93,9 @@ async function main() {
   if (!url || !goal || !TOOLS.includes(tool)) cli.die('usage: intent-arm --url URL --goal TEXT --tool intent|playwright-cli', { prefix: 'intent-arm' });
   const model = typeof flags.model === 'string' ? flags.model : MODEL_DEFAULT;
   const limitS = Math.max(30, Number.parseFloat(flags['time-limit']) || 900);
-  const run = new Date().toISOString().replace(/[:.]/g, '-');
+  // <time>-<hostname slug>, as meep-meep's trace.js names runs: diagnostics
+  // can tell this goal's run from the one before it.
+  const run = `${new Date().toISOString().replace(/[:.]/g, '-')}-${hostSlug(url)}`;
   const dir = `${ARM_DIR}/${run}`;
   await fs.mkdir(dir, { recursive: true });
   const started = Date.now();

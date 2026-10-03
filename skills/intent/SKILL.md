@@ -41,13 +41,14 @@ The kind is read from the words. `--kind` overrides it.
 | --- | --- | --- |
 | NAVIGATE | `open <url>`, `go back`, `reload` | the address, title, and a page gist: headings, fields, buttons with refs |
 | ACT | `click …`, `type "x" into …`, `select "x" from …`, `check …`, `press Enter`, `scroll down`, `close the banner` | `✓` what was done and what changed: address, field values, checked states, new controls with refs |
-| RETRIEVE | `what is …?`, `read the error message` | the text that answers it (cut around your words), its ref and heading |
+| RETRIEVE | `what is …?`, `read the error message` | the text that answers it (cut around your words), its ref and heading; when no single text is sure, the closest few in page order |
+| RETRIEVE (list) | `list the links about drugs`, `list the rows that mention calories`, `list the buttons` | up to 20 matching links, buttons, fields or text rows with refs, in page order; matched by words, no model |
 | VERIFY | `is the cart empty?`, `verify the order was placed` | `yes` or `no` with p, and the evidence text |
 | WAIT_FOR | `wait until the results load` | when it held (`--timeout S`, default 15) |
 
 Quote text to type and options to select: `type "Sep 30" into Departure`. Unquoted works for the usual phrasings ("fill the name field with Ada Lovelace", "set quantity to 3").
 
-When System 1 is not sure, nothing happens. The answer starts with `?` and lists the candidates, each with its ref and probability. Say more (the label or the row: "the comments link of the second story"), or pass `--ref e41` from the list. `--candidates N` lists without acting, and `--dry-run` says which control an ACT would use.
+When System 1 is not sure of an ACT, nothing happens. The answer starts with `?` and lists the candidates, each with its ref and probability. Say more (the label or the row: "the comments link of the second story"), or pass `--ref e41` from the list. `--candidates N` lists without acting, and `--dry-run` says which control an ACT would use. A ref from `--full` or a list stays usable after the page re-renders: it is found again by role, label and order.
 
 ## How it decides
 
@@ -66,7 +67,7 @@ Measured 2026-10-02/03 on 400 Mind2Web test_website steps (median 129 controls a
 
 | System 1 (`--model`) | ACT: right control, blind / informed | in top 3 | acts on (wrong actions) | RETRIEVE: right text / in top 3 | VERIFY | s per call |
 | --- | --- | --- | --- | --- | --- | --- |
-| `4b-vision` (default, 5.4 GB) | 84.9% / 92.3% (184 intents) | 95.1% | 72% (2.7%) at 0.7 | 86.4% / 92.0% | 93.0% | 2.9 |
+| `4b-vision` (default, 5.4 GB) | 84.9% / 92.3% (184 intents) | 95.1% | 79% (4.3%) at 0.6 | 86.4% / 92.0% | 93.0% | 2.9 |
 | `0.8b-vision` (1 GB) | 69.0% / 83.5% | 94.3% | 49% (2.8%) at 0.4 | 63.6% / 76.1% | 77.9% | 0.7 |
 | `--from …/kev-0.8b-vision-wr1` (a webrunner fine-tune, not published) | 80.0% / 88.5% | 95.0% | 74.5% (5.0%) at 0.7 | 67.0% / 83.0% | 75.6% | 0.7 |
 | `clef` (Workers AI) | 81.5% / 91.5% | 94.3% | 74.5% (3.3%) at 0.7 | 87.5% / 92.0% | 97.7% | 0.7 |
@@ -76,7 +77,7 @@ How the stages were chosen:
 - **A 10-wise tournament over every control** (kev-0.6b-browser-use's method) was no better than the shortlist: kev-0.8b scored 65% vs 64%, and Clef 86.7% vs 86.1%. It was 3 to 9 times slower, and Workers AI rejected the largest pages.
 - **kev gets webrunner's wording:** the intent as a goal, the shortlist as a Controls list, the options as `click …`/`type into …`. With it, 4b-vision scores 88.6%; with a plain "which control does the intent mean" it scores 83.2%.
 - **kev's NONE does not veto:** the best other choice decides.
-- **Thresholds per bundle:** each is set where wrong actions stay at or under 5%.
+- **Thresholds per bundle:** each is set where wrong actions stay at or under 5%. 4b-vision was 0.7 until the first hosted smoke round left obvious picks unsure at 0.63–0.69 (2026-10-03). It is now 0.6; the caller sees every result and can recover from a wrong one.
 
 `--from <dir>` loads any kev bundle directory, such as a fine-tune (`--from /mnt/kev-models/kev-0.8b-vision-wr1`). A missing model stops with the command that gets it; nothing falls back to a guess.
 
@@ -93,7 +94,7 @@ Each call loads the model again. For many calls in a row, keep it loaded: run `i
 ## Evals
 
 `evals/harness` runs meep-meep's goals (the default suite and the games) through tools/harness-evals with three Sonnet 5.5 arms:
-- `intent-agent`: a scoop that may run only `intent`, served by `intent-arm`;
+- `intent-agent`: a scoop that may run `intent` but not playwright-cli, served by `intent-arm`. It also gets the same text utilities as the control (grep, sed, bash, …): shell loops and helper scripts that batch tool calls are fair play for every arm, while reading or changing a game's code or saved state is not;
 - `playwright-scoop`: the same scoop with raw playwright-cli;
 - `playwright-agent`: the cone with playwright-cli.
 

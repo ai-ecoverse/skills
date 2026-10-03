@@ -187,5 +187,41 @@ test('menuQuestion: webrunner wording for kev, ids that map back to refs', () =>
   is(q.question.criteria['click:e29'], 'click button "Submit order"');
   ok(q.state.startsWith('Goal: press submit') && q.state.includes('  [e29] button "Submit order"'), q.state);
   is([lib.refOf('click:e29'), lib.refOf('type:e2'), lib.refOf('e5')], ['e29', 'e2', 'e5']);
-  is(lib.SURE_BY_MODEL['4b-vision'], 0.7);
+  is(lib.SURE_BY_MODEL['4b-vision'], 0.6);
+});
+
+test('refMemory: which of the same-labelled controls a ref is', () => {
+  const mem = lib.refMemory([el('e3', 'button', 'Eat', { seq: 3 }), el('e7', 'link', 'Pasta', { seq: 7 }), el('e9', 'button', 'Eat', { seq: 9 })]);
+  is(mem, [
+    { ref: 'e3', role: 'button', label: 'Eat', k: 1 },
+    { ref: 'e7', role: 'link', label: 'Pasta', k: 1 },
+    { ref: 'e9', role: 'button', label: 'Eat', k: 2 },
+  ]);
+});
+
+test('listLines: a lexical read of links or rows, in page order', () => {
+  const elements = [
+    el('e1', 'link', 'Opium', { seq: 1 }),
+    el('e2', 'link', 'Drug Wars (video game)', { seq: 2 }),
+    el('e3', 'button', 'Search', { seq: 3 }),
+    el('e4', 'link', 'Illegal drug trade', { seq: 4 }),
+  ];
+  const listed = lib.listLines('list the links about drug', elements, [], 10);
+  is(listed.kind, 'links');
+  is(listed.lines, ['  e2 link "Drug Wars (video game)"', '  e4 link "Illegal drug trade"']);
+  // No word to match: every item of the kind.
+  is(lib.listLines('list the buttons', elements, [], 10).lines, ['  e3 button "Search"']);
+  // Rows when no kind of control is named.
+  const rows = lib.textSegments(INFOBOX);
+  ok(lib.listLines('list the rows that mention advisor', [], rows, 5).lines[0].includes('Doctoral advisor Hans Hahn'));
+  ok(lib.isList('list the links about drugs') && !lib.isList('click the list button'));
+});
+
+test('regionLines: the closest texts in page order when no single one is sure', () => {
+  const segs = [
+    { type: 'text', id: 't1', text: 'Mile 12 of 100', line: 10, ref: 'e5' },
+    { type: 'text', id: 't2', text: 'Calories 1200 eaten, 900 burned', line: 20, ref: 'e9' },
+  ];
+  const byId = new Map(segs.map((x) => [x.id, x]));
+  is(lib.regionLines([['t2', 0.3], ['NONE', 0.4], ['t1', 0.2]], byId, 6, 'status'), ['  e5 "Mile 12 of 100"', '  e9 "Calories 1200 eaten, 900 burned"']);
 });
