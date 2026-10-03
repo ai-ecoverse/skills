@@ -2,9 +2,8 @@
 // --boxes`, name controls, pair them with the page scan, place them in the
 // viewport, diff two snapshots, and read the page's text.
 //
-// Copied from meep-meep's scripts/page.js (ai-ecoverse/skills#423), which
-// is not on main yet. Deduplicate once #423 lands: both skills should
-// require one module. No network, no sliccy.
+// Grown from meep-meep's webrunner (ai-ecoverse/skills#423, closed); this
+// is the code now. No network, no sliccy.
 
 const LINE =
   /^(\s*)- ([A-Za-z][\w-]*)(?: "((?:\\.|[^"\\])*)")?(?: \[ref=([^\]]+)\])?(?:: "?((?:\\.|[^"\\])*)"?)?(.*)$/;

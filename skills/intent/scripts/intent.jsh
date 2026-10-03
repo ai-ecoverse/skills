@@ -39,6 +39,20 @@ INTENTS (one per call; the kind is read from the words, --kind overrides)
   WAIT_FOR  "wait until the results load"
   Quote text to type or an option to select: type "Berlin" into Where from.
 
+WRITING INTENTS (specific intents act at once; vague ones come back as ?)
+  - Name the control by the words on it, quoted when it has several:
+    click "Buy and Eat", not "buy the food".
+  - Say which one when a label repeats: its row or neighbour (the "BUY" button
+    in the Cocaine row) or its place (the first result, the top story's
+    comments link).
+  - One action per call. Text to type goes in quotes: type "Ada Lovelace"
+    into the customer name field.
+  - On a ? answer, pass the right ref (--ref e41) instead of rewording.
+  - To find one control among many: "list the links about drugs"; to read
+    several values: "list the rows that mention calories"; for one value,
+    ask a question ("what is the total price?").
+  - A ref from an earlier result (e12) still works after the page changes.
+
 FLAGS
   --intent TEXT      required: what you want, in words
   --tab ID           the tab (default: the one the last call used; NAVIGATE
@@ -57,6 +71,10 @@ FLAGS
   --from DIR         a kev bundle directory instead of a named one (a fine-tune)
   --require-gpu      stop when WebGPU is a software adapter (SwiftShader), where
                      kev runs ~10x slower, instead of carrying on
+  --retrieve MODE    answer (default): the one text that answers, or the closest
+                     few when unsure; budget: the top texts by System 1 until
+                     --retrieve-budget characters (default 1200), in page order;
+                     lexical: the same ranked by words alone, no model
   --json             print the result as JSON
 
 OUTPUT

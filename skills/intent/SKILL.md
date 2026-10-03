@@ -50,6 +50,17 @@ Quote text to type and options to select: `type "Sep 30" into Departure`. Unquot
 
 When System 1 is not sure of an ACT, nothing happens. The answer starts with `?` and lists the candidates, each with its ref and probability. Say more (the label or the row: "the comments link of the second story"), or pass `--ref e41` from the list. `--candidates N` lists without acting, and `--dry-run` says which control an ACT would use. A ref from `--full` or a list stays usable after the page re-renders: it is found again by role, label and order.
 
+## Writing intents
+
+An intent that names its control acts at once; a vague one comes back as `?` with candidates, which costs a second call. On the first hosted round, most of the unsure answers were intents like "fill the customer name field" or "click Stop" that the model had right but not surely; naming the label exactly and the row for repeated controls avoids most of them.
+
+- Name the control by the words on it, quoted when it has several: `click "Buy and Eat"`, not "buy the food".
+- Say which one when a label repeats: its row or neighbour (`the "BUY" button in the Cocaine row`) or its place (`the first result`, `the top story's comments link`).
+- One action per call; text to type in quotes: `type "Ada Lovelace" into the customer name field`.
+- On a `?` answer, pass the right ref (`--ref e41`) instead of rewording.
+- To find one control among many, `list the links about drugs`; to read several values, `list the rows that mention calories`; for one value, ask a question.
+- A ref from an earlier result keeps working after the page changes.
+
 ## How it decides
 
 1. **Classify** the intent by its words.
@@ -93,11 +104,14 @@ Each call loads the model again. For many calls in a row, keep it loaded: run `i
 
 ## Evals
 
-`evals/harness` runs meep-meep's goals (the default suite and the games) through tools/harness-evals with three Sonnet 5.5 arms:
-- `intent-agent`: a scoop that may run `intent` but not playwright-cli, served by `intent-arm`. It also gets the same text utilities as the control (grep, sed, bash, …): shell loops and helper scripts that batch tool calls are fair play for every arm, while reading or changing a game's code or saved state is not;
-- `playwright-scoop`: the same scoop with raw playwright-cli;
-- `playwright-agent`: the cone with playwright-cli.
+`evals/harness` runs the goals in goals.json (the default suite and the games, first written for meep-meep) through tools/harness-evals with Sonnet 5.5 arms:
+- `intent-agent`: a scoop that may run `intent` (not playwright-cli), served by `intent-arm`, with RETRIEVE as described above. It also gets text utilities (grep, sed, bash, …): shell loops and helper scripts that batch intent calls are fair play, while reading or changing a game's code or saved state is not;
+- `intent-budget`: the same, with `--retrieve budget` (the top texts by System 1 up to 1,200 characters, in page order);
+- `intent-lexical`: the same, with `--retrieve lexical` (the top texts by words alone, no model);
+- `playwright-agent`: the cone with raw playwright-cli, the reference.
+
+The intent variants run side by side, one GPU leader each. `playwright-scoop` (the same scoop with raw playwright-cli) was the control of the first smoke rounds and is held.
 
 `intent-arm` (scripts/intent-arm.jsh, so it installs with the skill; a leader gets no evals/ folder) records the tool calls, the characters each call put into context, the scoop's tokens and cost (`agent --usage`), and each intent call's latency. Its files are in `/tmp/intent-arm/<run>/`.
 
-The snapshot parser, page scan and kev loader are copies of meep-meep's and decide-quickly's (ai-ecoverse/skills#423). Deduplicate them once #423 lands.
+The snapshot parser, page scan and kev loader grew out of meep-meep's webrunner and decide-quickly's kev runtime (#423, closed without merging); the copies here are the code.

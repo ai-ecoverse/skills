@@ -2,23 +2,23 @@
 // load an .mjs file. harness.mjs re-exports it for the driver.
 
 /**
- * intent's harness-evals adapter (driven by tools/harness-evals): the goals
- * in goals.json, which are meep-meep's (ai-ecoverse/skills#423), so the
- * numbers compare with webrunner's. Three arms, all Sonnet 5.5:
- *   intent-agent      a scoop that may run `intent` and nothing else
- *   playwright-scoop  the same scoop with raw playwright-cli: the control
- *   playwright-agent  the cone with raw playwright-cli, as meep-meep runs it
+ * intent's harness-evals adapter (driven by tools/harness-evals): the goals in
+ * goals.json, and arms that are all Sonnet 5.5:
+ *   intent-agent      a scoop that may run `intent` (not playwright-cli)
+ *   intent-budget     the same, RETRIEVE returning its top texts up to a budget
+ *   intent-lexical    the same, RETRIEVE ranked by words alone
+ *   playwright-agent  the cone with raw playwright-cli: the reference
  * The two scoop arms run through scripts/intent-arm.jsh: it is a command of the
  * skill, because a leader installs a skill without its evals/ folder (the
  * first smoke round failed with 'intent-arm: command not found'). `judge` is the
- * same self-contained yardstick as meep-meep's: deduplicate once #423 lands.
+ * same self-contained yardstick as meep-meep's (#423, closed).
  */
 
 const AGENT_MODEL = 'claude-sonnet-5-5';
 // System 1 of the intent arm: the shipped kev bundle the tool defaults to.
 const KEV_MODEL = '4b-vision';
 
-const scoopArm = (id, tool, extra = {}) => ({
+const scoopArm = (id, tool, extra = []) => ({
   id,
   kind: 'skill',
   pool: tool === 'intent' ? 'gpu' : 'bench',
@@ -26,18 +26,20 @@ const scoopArm = (id, tool, extra = {}) => ({
   ...(tool === 'intent' ? { setup: ['intent prepare', `intent pull --model ${KEV_MODEL}`] } : {}),
   // --require-gpu: a leader whose worker gets SwiftShader fails at once,
   // instead of running kev ~10x slower until the time limit.
-  args: ['--tool', tool, '--model', AGENT_MODEL, ...(tool === 'intent' ? ['--s1-model', KEV_MODEL, '--require-gpu'] : [])],
-  ...extra,
+  args: ['--tool', tool, '--model', AGENT_MODEL, ...(tool === 'intent' ? ['--s1-model', KEV_MODEL, '--require-gpu'] : []), ...extra],
 });
 
+// Intent variants run side by side, one GPU leader each (Lars, 2026-10-03):
+// how RETRIEVE answers is the first thing tried.
 const arms = [
   scoopArm('intent-agent', 'intent'),
-  scoopArm('playwright-scoop', 'playwright-cli'),
+  scoopArm('intent-budget', 'intent', ['--retrieve', 'budget']),
+  scoopArm('intent-lexical', 'intent', ['--retrieve', 'lexical']),
   { id: 'playwright-agent', kind: 'agent', pool: 'bench', model: AGENT_MODEL },
 ];
 
-/** Arms on hold. */
-const heldArms = [];
+/** Arms on hold: the playwright-cli scoop was the control of the first smoke rounds. */
+const heldArms = [scoopArm('playwright-scoop', 'playwright-cli')];
 
 const RUN_S_DEFAULT = 900;
 

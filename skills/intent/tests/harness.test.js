@@ -7,10 +7,13 @@ const adapter = adapterMod.default || adapterMod;
 const transcript = transcriptMod.default || transcriptMod;
 const quote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 
-test('arms: the intent scoop, its playwright-cli control, and the cone', () => {
-  is(adapter.arms.map((a) => a.id), ['intent-agent', 'playwright-scoop', 'playwright-agent']);
+test('arms: intent variants side by side, the cone as reference', () => {
+  is(adapter.arms.map((a) => a.id), ['intent-agent', 'intent-budget', 'intent-lexical', 'playwright-agent']);
   is(adapter.arms[0].setup, ['intent prepare', 'intent pull --model 4b-vision']);
-  ok(adapter.arms.every((a) => a.kind === 'agent' || a.args.includes('claude-sonnet-5-5')));
+  is(adapter.arms[1].args.slice(-2), ['--retrieve', 'budget']);
+  is(adapter.arms[2].args.slice(-2), ['--retrieve', 'lexical']);
+  ok(adapter.arms.slice(0, 3).every((a) => a.pool === 'gpu' && a.args.includes('--require-gpu')));
+  is(adapter.heldArms.map((a) => a.id), ['playwright-scoop']);
 });
 
 test('command: one intent-arm line with the time limit inside the driver timeout', () => {

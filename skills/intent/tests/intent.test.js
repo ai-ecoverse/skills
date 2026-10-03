@@ -225,3 +225,14 @@ test('regionLines: the closest texts in page order when no single one is sure', 
   const byId = new Map(segs.map((x) => [x.id, x]));
   is(lib.regionLines([['t2', 0.3], ['NONE', 0.4], ['t1', 0.2]], byId, 6, 'status'), ['  e5 "Mile 12 of 100"', '  e9 "Calories 1200 eaten, 900 burned"']);
 });
+
+test('budgetLines: top texts by rank until the budget, shown in page order', () => {
+  const texts = [
+    { type: 'text', id: 't9', text: 'Calories eaten 3000, burned 3795', line: 90, ref: 'e9' },
+    { type: 'text', id: 't2', text: 'Mile 65 of 100', line: 20, ref: 'e2' },
+    { type: 'text', id: 't5', text: 'x'.repeat(500), line: 50, ref: 'e5' },
+  ];
+  const lines = lib.budgetLines(texts, 120, 'calories');
+  is(lines, ['  e2 "Mile 65 of 100"', '  e9 "Calories eaten 3000, burned 3795"']);
+  ok(lib.budgetLines(texts, 600, '').length === 3);
+});

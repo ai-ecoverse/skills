@@ -765,7 +765,7 @@ function choiceQuestion(kind, intent, shortlist, shot, opts = {}) {
 }
 
 /**
- * The ACT question as webrunner asks kev (meep-meep, #423): the intent as
+ * The ACT question as meep-meep's webrunner asked kev (#423): the intent as
  * the goal, the shortlist as a Controls list in the state, and one action
  * per control (click:eN, type:eN). On 400 Mind2Web intents kev-4b-vision
  * picked right 88.6% of the time this way and 83.2% with the plain
@@ -977,6 +977,25 @@ function regionLines(ranked, byId, n = 6, query = '') {
   return picked.map((c) => `  ${c.ref || c.id} "${snippet(c.text, query, 220)}"`);
 }
 
+/**
+ * Texts in rank order until about `budget` characters, then shown in page
+ * order: the top hits of a RETRIEVE, as much of them as the budget allows.
+ * A text longer than what is left is cut around the query's words.
+ */
+function budgetLines(rankedTexts, budget, query = '') {
+  const picked = [];
+  let used = 0;
+  for (const c of rankedTexts) {
+    const left = budget - used;
+    if (left < 60) break;
+    const text = c.text.length > left ? snippet(c.text, query, left) : c.text;
+    picked.push({ c, text });
+    used += text.length + 8;
+  }
+  picked.sort((a, b) => (a.c.line ?? 0) - (b.c.line ?? 0));
+  return picked.map(({ c, text }) => `  ${c.ref || c.id} "${text}"`);
+}
+
 /** The top candidates when System 1 is not sure, for the caller to choose from. */
 function candidateLines(ranked, byId, max = 5) {
   return ranked
@@ -1087,6 +1106,7 @@ module.exports = {
   isList,
   listLines,
   regionLines,
+  budgetLines,
   snippet,
   pct,
 };

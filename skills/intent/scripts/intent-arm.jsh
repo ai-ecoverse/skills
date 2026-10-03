@@ -33,6 +33,7 @@ USAGE
   intent-arm --url URL --goal TEXT --tool intent|playwright-cli
                  [--model ID] [--time-limit S] [--json]
                  [--s1-model M | --s1-from DIR] [--require-gpu] [--cf-account ID]   intent's System 1
+                 [--retrieve answer|budget|lexical] [--retrieve-budget CHARS]  intent's RETRIEVE variant
 
 Prints the run's numbers; the files are in ${ARM_DIR}/<run>/.
 `.trim();
@@ -114,6 +115,9 @@ async function main() {
       ...(typeof flags['s1-model'] === 'string' ? { model: flags['s1-model'] } : {}),
       ...(typeof flags['s1-from'] === 'string' ? { from: flags['s1-from'] } : {}),
       ...(flags['require-gpu'] ? { 'require-gpu': true } : {}),
+      // The RETRIEVE variant this arm tries: answer (default), budget, lexical.
+      ...(typeof flags.retrieve === 'string' ? { retrieve: flags.retrieve } : {}),
+      ...(flags['retrieve-budget'] ? { 'retrieve-budget': Number(flags['retrieve-budget']) } : {}),
     };
     // System 1 loads before the agent starts: a missing bundle or, with
     // --require-gpu, a software WebGPU adapter ends the run here, at once.

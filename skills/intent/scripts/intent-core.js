@@ -34,6 +34,11 @@ const WAIT_DEFAULT_S = 15;
 const UNSURE_CANDIDATES = 5;
 const LIST_MAX = 20;
 const REGION_TEXTS = 6;
+// RETRIEVE modes (intent serve --retrieve, an eval arm's variant): answer is
+// one text, or the closest few when unsure; budget and lexical return the
+// top texts by System 1 or by words until RETRIEVE_BUDGET characters.
+const RETRIEVE_MODES = ['answer', 'budget', 'lexical'];
+const RETRIEVE_BUDGET = 1200;
 
 function createIntent({ exec, fs, browser, skill, requireBundle }) {
   class IntentError extends Error {
@@ -468,7 +473,7 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     };
   }
 
-  async function retrieve(req, state, s1) {
+  async function retrieve(req, state, s1, flags = {}) {
     const tab = await pickTab(req, state);
     if (!tab) throw new IntentError('no tab yet: start with --intent "open <url>", or pass --tab');
     const obs = await look(tab, { controls: false });
@@ -490,12 +495,28 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
         json: { items: listed.lines.map((l) => l.trim()) },
       };
     }
+    const mode = RETRIEVE_MODES.includes(flags.retrieve) ? flags.retrieve : 'answer';
+    const budget = Math.min(Math.max(Number(flags['retrieve-budget']) || RETRIEVE_BUDGET, 200), 6000);
+    if (mode === 'lexical') {
+      // Ranked by the intent's words alone, no model: the best texts until
+      // the budget is spent, in the order they stand on the page.
+      const ranked = lib.lexicalRank(segments, req.intent).filter((r) => r.score > 0);
+      const lines = lib.budgetLines(ranked.map((r) => r.candidate), budget, req.intent);
+      return { tab, outcome: 'budget', lines: [`the page's best matching texts, in page order:`, ...lines], json: { texts: lines.map((l) => l.trim()) } };
+    }
     const shortlist = lib.lexicalRank(segments, req.intent).slice(0, SHORTLIST_TEXT).map((r) => r.candidate);
     const q = lib.choiceQuestion('RETRIEVE', req.intent, shortlist, obs.shot);
     const res = await s1.ask({ state: q.state, questions: { action: q.question } });
     const v = lib.verdict(probabilitiesOf(res.answers.action), policy(req, s1));
     const byId = new Map(shortlist.map((s) => [s.id, s]));
     const list = lib.candidateLines(v.ranked, byId, req.candidates || UNSURE_CANDIDATES);
+    if (mode === 'budget' && !req.candidates) {
+      // Ranked by System 1: the most likely texts until the budget is spent,
+      // in page order, whatever its confidence in any single one.
+      const byRank = v.ranked.filter(([id]) => id !== lib.NONE && byId.has(id)).map(([id]) => byId.get(id));
+      const lines = lib.budgetLines(byRank, budget, req.intent);
+      return { tab, outcome: 'budget', p: v.p, lines: [`the page's most likely texts, in page order (top ${lib.pct(v.p)}):`, ...lines], json: { texts: lines.map((l) => l.trim()) } };
+    }
     if (req.candidates) {
       return { tab, outcome: 'candidates', p: v.p, lines: [`matches for "${req.intent}":`, ...list], json: { candidates: list } };
     }
@@ -613,11 +634,17 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
         kind = 'FULL';
       } else if (kind === 'NAVIGATE') {
         result = await navigate(req, state);
+      } else if (kind === 'ACT' && req.ref && !req.dryRun && !req.candidates) {
+        // An explicit ref needs no choice: no System 1 to load.
+        result = await doAct(req, state, null);
+      } else if (kind === 'RETRIEVE' && (lib.isList(req.intent) || flags.retrieve === 'lexical')) {
+        // A list is read by words alone: no System 1 to load.
+        result = await retrieve(req, state, null, flags);
       } else {
         const s1 = await openSystem1({ ...flags, model: req.model || flags.model });
         s1name = s1.name;
         if (kind === 'ACT') result = await doAct(req, state, s1);
-        else if (kind === 'RETRIEVE') result = await retrieve(req, state, s1);
+        else if (kind === 'RETRIEVE') result = await retrieve(req, state, s1, flags);
         else if (kind === 'VERIFY') result = await verify(req, state, s1);
         else result = await waitFor(req, state, s1);
         if (s1.note) result.lines.push(`  (${s1.note})`);
