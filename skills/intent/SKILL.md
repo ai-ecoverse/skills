@@ -90,7 +90,7 @@ How the stages were chosen:
 - **kev's NONE does not veto:** the best other choice decides.
 - **Thresholds per bundle:** each is set where wrong actions stay at or under 5%. 4b-vision was 0.7 until the first hosted smoke round left obvious picks unsure at 0.63–0.69 (2026-10-03). It is now 0.6; the caller sees every result and can recover from a wrong one.
 
-`--from <dir or URL>` loads any kev bundle, such as a fine-tune: a VFS directory (`--from /mnt/kev-models/kev-0.8b-vision-wr2-intent`) or the URL of a bundle's directory, whose manifest and listed files are fetched once into `/shared/cache/kev/bundles/`. A fine-tune trained on this tool's own question (wr2-intent) gets it plain; the stock bundles get webrunner's wording. A missing model stops with the command that gets it; nothing falls back to a guess.
+`--from <dir or URL>` loads any kev bundle, such as a fine-tune: a VFS directory (`--from /mnt/kev-models/kev-0.8b-vision-wr2-intent`) or the URL of a bundle's directory, whose manifest and listed files are fetched once into `/shared/cache/kev/bundles/`. `intent pull --from <URL>` fetches it ahead of the first call. A fine-tune trained on this tool's own question (wr2-intent) gets it plain; the stock bundles get webrunner's wording. A missing model stops with the command that gets it; nothing falls back to a guess.
 
 Each call loads the model again. For many calls in a row, keep it loaded: run `intent serve` where it may stay, and `intent` hands its requests to it.
 

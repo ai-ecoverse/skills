@@ -949,7 +949,8 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
 
   // warm: load System 1 now, so a missing model or a software GPU fails
   // before an agent starts depending on it.
-  return { handle, serve, viaDaemon, warm: openSystem1, IntentError };
+  // fetchBundle: a bundle URL into the VFS cache, for `intent pull --from`.
+  return { handle, serve, viaDaemon, warm: openSystem1, fetchBundle, IntentError };
 }
 
 module.exports = { createIntent, DIR, CALLS, STATE, BEAT, WAIT_DEFAULT_S };

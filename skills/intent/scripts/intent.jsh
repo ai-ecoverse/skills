@@ -26,6 +26,7 @@ USAGE
   intent --intent "<what you want>" [--tab ID] [flags]
   intent prepare                install the kev runtime (once)
   intent pull [--model M]       download a kev bundle's weights (default 4b-vision)
+  intent pull --from URL        fetch a kev bundle by URL into the cache --from uses
   intent serve [--model M]      keep System 1 loaded and do the browser work for
                                 callers that may not run playwright-cli themselves
 
@@ -85,7 +86,7 @@ OUTPUT
   A result names refs (e12) that the next call can pass as --ref.
 `.trim();
 
-const { handle, serve, viaDaemon } = createIntent({
+const { handle, serve, viaDaemon, fetchBundle } = createIntent({
   exec,
   fs,
   browser,
@@ -138,6 +139,20 @@ async function main() {
     return;
   }
   if (sub === 'pull') {
+    if (flags.from !== undefined) {
+      // A bundle by URL: its manifest and files into the cache --from loads
+      // from, so the first call (or an eval's first goal) skips the download.
+      const url = typeof flags.from === 'string' ? flags.from : '';
+      if (!/^https?:\/\//i.test(url)) cli.die('intent pull --from takes the URL of a kev bundle directory', { prefix: 'intent' });
+      try {
+        const dir = await fetchBundle(url);
+        console.log(`kev bundle ${url}: ready in ${dir}`);
+      } catch (err) {
+        if (err?.name === 'NodeExitError') throw err;
+        cli.die(String(err?.message || err), { prefix: 'intent' });
+      }
+      return;
+    }
     const model = typeof flags.model === 'string' ? flags.model : '4b-vision';
     if (!kevRuntime.MODELS[model]) cli.die(`--model is one of ${Object.keys(kevRuntime.MODELS).join(', ')}`, { prefix: 'intent' });
     const status = await kevRuntime.pullWeights(fs, exec, model, (line) => console.error(line));
