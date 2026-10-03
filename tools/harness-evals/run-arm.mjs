@@ -24,6 +24,7 @@ import {
   fillGoal,
   hasCheck,
   parseSuites,
+  redactSecrets,
   resolvePlaceholders,
   selectSuites,
   shellQuote,
@@ -120,8 +121,9 @@ function runSkill(command, timeoutMs) {
     maxBuffer: 512 * 1024 * 1024,
     env: { ...process.env, SLICC_NO_TUI: '1', NO_COLOR: '1' },
   });
-  const out = r.stdout?.toString('utf8') ?? '';
-  const err = r.stderr?.toString('utf8') ?? '';
+  // Redacted whole, before anything slices it: a cut could separate /join/ from its token.
+  const out = redactSecrets(r.stdout?.toString('utf8') ?? '');
+  const err = redactSecrets(r.stderr?.toString('utf8') ?? '');
   const timedOut = r.error?.code === 'ETIMEDOUT';
   const ok = !r.error && r.status === 0;
   const why = timedOut
@@ -208,7 +210,7 @@ async function agentRunWithTrace(g, rep) {
     finalText: (doc && bench.lastConeAssistantText(doc)) || r.stdout,
     screenshots: images,
     exitCode: r.status,
-    stderr: r.status !== 0 ? String(r.stderr ?? '').slice(-300) : '',
+    stderr: r.status !== 0 ? redactSecrets(r.stderr).slice(-300) : '',
     durationMs: Date.now() - t0,
   });
   return { r, trace };
@@ -220,7 +222,7 @@ mkdirSync(join(out, 'artifacts'), { recursive: true });
 if (arm.kind === 'agent') {
   const m = cli(['model', arm.model]);
   if (m.status !== 0)
-    throw new Error(`slicc model ${arm.model} failed: ${String(m.stderr ?? '').slice(-300)}`);
+    throw new Error(`slicc model ${arm.model} failed: ${redactSecrets(m.stderr).slice(-300)}`);
 }
 // A skill arm's runs only count when escalations can be counted (slicc #3746); stop before
 // setup (model downloads) instead of producing runs nobody can trust.
@@ -265,14 +267,14 @@ for (const rep of reps) {
       const { r, trace: t } = await agentRunWithTrace(g, rep);
       trace = t;
       if (r.status !== 0)
-        runError = `slicc prompt exited ${r.status}: ${String(r.stderr ?? '').slice(-300)}`;
+        runError = `slicc prompt exited ${r.status}: ${redactSecrets(r.stderr).slice(-300)}`;
     } else {
       const r = cli(['prompt', '--allsettled', '2m', '-'], {
         input: agentPrompt(g),
         timeoutMs: timeoutFor(g),
       });
       if (r.status !== 0)
-        runError = `slicc prompt exited ${r.status}: ${String(r.stderr ?? '').slice(-300)}`;
+        runError = `slicc prompt exited ${r.status}: ${redactSecrets(r.stderr).slice(-300)}`;
     }
     const seconds = (Date.now() - t0) / 1000;
     const costAfter = spend();
@@ -334,7 +336,9 @@ for (const rep of reps) {
       } catch (e) {
         rubric = {
           credit: null,
-          error: `${String(e.message ?? e).slice(0, 240)} (trace: ${traceSize(trace)})`,
+          error: redactSecrets(
+            `${redactSecrets(e.message ?? e).slice(0, 240)} (trace: ${traceSize(trace)})`
+          ),
         };
       }
     }
@@ -356,7 +360,7 @@ for (const rep of reps) {
       rubric,
       metrics,
       tabs_judged: judged,
-      error: runError,
+      error: runError == null ? null : redactSecrets(runError),
       at: new Date().toISOString(),
     };
     writeFileSync(
@@ -365,7 +369,7 @@ for (const rep of reps) {
     );
     results.push(record);
     console.log(
-      `[harness] ${skill}/${arm.id} ${g.id} r${rep}: ${record.pass == null ? 'no check' : record.pass ? 'PASS' : 'fail'} (own ${record.self_ok}) ${seconds.toFixed(0)} s${delta.costUsd == null ? '' : ` $${delta.costUsd.toFixed(3)}`}${rubric ? ` credit ${rubric.credit == null ? `error (${rubric.error})` : `${Math.round(rubric.credit * 100)}%`}` : ''}${record.invalid ? ` INVALID: ${record.invalid}` : ''}${runError ? ` ERROR ${runError.slice(0, 120)}` : ''}`
+      `[harness] ${skill}/${arm.id} ${g.id} r${rep}: ${record.pass == null ? 'no check' : record.pass ? 'PASS' : 'fail'} (own ${record.self_ok}) ${seconds.toFixed(0)} s${delta.costUsd == null ? '' : ` $${delta.costUsd.toFixed(3)}`}${rubric ? ` credit ${rubric.credit == null ? `error (${rubric.error})` : `${Math.round(rubric.credit * 100)}%`}` : ''}${record.invalid ? ` INVALID: ${record.invalid}` : ''}${runError ? ` ERROR ${redactSecrets(runError).slice(0, 120)}` : ''}`
     );
   }
 }
