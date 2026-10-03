@@ -1,0 +1,33 @@
+import test, { is, same } from 'tst';
+import { mergeSettings } from './merge.js';
+
+const defaults = { theme: { color: 'blue', font: 'Inter' }, pageSize: 20, beta: false };
+
+test('empty overrides return the defaults', () => {
+  same(mergeSettings(defaults, {}), defaults);
+});
+
+test('a top-level value is overridden', () => {
+  same(mergeSettings(defaults, { pageSize: 50 }), {
+    theme: { color: 'blue', font: 'Inter' },
+    pageSize: 50,
+    beta: false,
+  });
+});
+
+test('a nested value is merged, not replaced', () => {
+  same(mergeSettings(defaults, { theme: { color: 'red' } }), {
+    theme: { color: 'red', font: 'Inter' },
+    pageSize: 20,
+    beta: false,
+  });
+});
+
+test('undefined overrides are ignored', () => {
+  same(mergeSettings(defaults, { beta: undefined }), defaults);
+});
+
+test('the defaults are not mutated', () => {
+  mergeSettings(defaults, { theme: { color: 'red' } });
+  is(defaults.theme.color, 'blue');
+});

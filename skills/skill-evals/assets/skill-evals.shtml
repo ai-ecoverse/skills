@@ -1,0 +1,86 @@
+<title>skill-evals</title>
+<link rel="icon" href="flask-conical" />
+<div class="sprinkle-stack">
+  <div>
+    <h2 class="sprinkle-heading">Skill evals</h2>
+    <p class="sprinkle-detail" id="se-context">Loading reports from /shared/sprinkles/skill-evals/reports/</p>
+  </div>
+  <div class="sprinkle-row">
+    <select id="se-run" aria-label="Run" style="flex:1;min-width:0"></select>
+    <button class="sprinkle-btn sprinkle-btn--secondary" id="se-reload">Reload</button>
+  </div>
+  <div id="se-body"></div>
+</div>
+<script>
+  // DATA CONTRACT: /shared/sprinkles/skill-evals/reports/index.json = { runs: [runId, ...] }
+  // (newest first) and reports/<runId>.json = the report.json written by `skill-evals report`.
+  // `skill-evals present <run-id> --sprinkle` writes both; `sprinkle send skill-evals
+  // '{"run":"<id>"}'` selects a run.
+  (function () {
+    const DIR = '/shared/sprinkles/skill-evals/reports';
+    const $ = (id) => document.getElementById(id);
+    const esc = (s) =>
+      String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+    const num = (x) => typeof x === 'number' && !Number.isNaN(x);
+    const fmt = (x, d) => (num(x) ? x.toFixed(d) : '-');
+    const signed = (x, d) => (num(x) ? (x >= 0 ? '+' : '') + x.toFixed(d) : '-');
+    const BADGE = { pass: 'positive', partial: 'notice', fail: 'negative' };
+
+    function render(r) {
+      $('se-context').textContent =
+        r.run_id + ' · ' + r.skill + ' · model ' + r.config.model + ' · judge ' + r.config.judge_model + ' · ' + r.runs + '/' + r.planned + ' runs';
+      const rows = r.cells
+        .map((c) => {
+          const best = c.outcomes.pass ? 'pass' : c.outcomes.partial ? 'partial' : c.n ? 'fail' : null;
+          const badge = best
+            ? '<span class="sprinkle-badge sprinkle-badge--subtle sprinkle-badge--' + BADGE[best] + '">' + fmt(c.score, 2) + '</span>'
+            : '<span class="sprinkle-badge sprinkle-badge--subtle">' + (c.errors.length ? 'error' : 'no run') + '</span>';
+          return '<tr><td>' + esc(c.task_id) + '</td><td>' + esc(c.condition) + '</td><td>' + badge + '</td><td>' + c.n +
+            '</td><td>' + fmt(c.duration, 0) + ' s</td><td>$' + fmt(c.cost, 3) + '</td></tr>';
+        })
+        .join('');
+      const lift = (r.lift || [])
+        .map((l) =>
+          '<dt>Score</dt><dd>' + signed(l.score.delta, 2) + ' (' + fmt(l.score.from, 2) + ' to ' + fmt(l.score.to, 2) + ', n=' + l.score.n + ')</dd>' +
+          '<dt>Time</dt><dd>' + signed(l.duration.delta, 0) + ' s</dd><dt>Cost</dt><dd>' + signed(l.cost.delta, 3) + ' $</dd>' +
+          '<dt>Conclusive</dt><dd>' + (l.conclusive ? 'yes' : 'no, fewer than 2 repeats per task') + '</dd>')
+        .join('') || '<dt>Lift</dt><dd>no paired runs</dd>';
+      const notes = (r.notes || []).map((n) => '<li>' + esc(n) + '</li>').join('');
+      $('se-body').innerHTML =
+        '<table class="sprinkle-table"><thead><tr><th>Task</th><th>Condition</th><th>Score</th><th>n</th><th>Time</th><th>Cost</th></tr></thead><tbody>' +
+        rows + '</tbody></table><div class="sprinkle-divider"></div><dl class="sprinkle-kv-list">' + lift +
+        '<dt>Spend</dt><dd>$' + fmt(r.spend.total, 3) + ' (tasks $' + fmt(r.spend.tasks, 3) + ', judges $' + fmt(r.spend.judges, 3) +
+        ', probes $' + fmt(r.spend.preflight, 3) + ')</dd></dl>' + (notes ? '<ul class="sprinkle-detail">' + notes + '</ul>' : '');
+    }
+
+    async function show(id) {
+      try {
+        render(JSON.parse(await slicc.readFile(DIR + '/' + id + '.json')));
+      } catch (e) {
+        $('se-body').innerHTML = '<div class="sprinkle-empty-state">Could not read report ' + esc(id) + ': ' + esc(e.message) + '</div>';
+      }
+    }
+
+    async function load(pick) {
+      let runs = [];
+      try {
+        runs = JSON.parse(await slicc.readFile(DIR + '/index.json')).runs || [];
+      } catch (e) {}
+      const sel = $('se-run');
+      sel.innerHTML = runs.map((r) => '<option value="' + esc(r) + '">' + esc(r) + '</option>').join('');
+      if (!runs.length) {
+        $('se-context').textContent = 'No reports yet';
+        $('se-body').innerHTML = '<div class="sprinkle-empty-state">Run skill-evals present &lt;run-id&gt; --sprinkle</div>';
+        return;
+      }
+      const id = pick && runs.includes(pick) ? pick : runs[0];
+      sel.value = id;
+      await show(id);
+    }
+
+    $('se-run').addEventListener('change', (e) => show(e.target.value));
+    $('se-reload').addEventListener('click', () => load($('se-run').value));
+    slicc.on('update', (d) => load(d && d.run));
+    load();
+  })();
+</script>

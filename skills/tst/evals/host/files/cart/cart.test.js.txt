@@ -1,0 +1,38 @@
+// Runs in CI with `node --test`.
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { cartTotal, lineTotal } from './cart.js';
+
+test('a single item costs its unit price', () => {
+  assert.equal(lineTotal({ unitCents: 250, qty: 1 }), 250);
+});
+
+test('two items are not discounted', () => {
+  assert.equal(lineTotal({ unitCents: 250, qty: 2 }), 500);
+});
+
+test('three items get the 10% bulk discount', () => {
+  assert.equal(lineTotal({ unitCents: 1000, qty: 3 }), 2700);
+});
+
+test('four items get the 10% bulk discount', () => {
+  assert.equal(lineTotal({ unitCents: 1000, qty: 4 }), 3600);
+});
+
+test('the cart total sums the lines', () => {
+  assert.equal(
+    cartTotal([
+      { unitCents: 250, qty: 1 },
+      { unitCents: 1000, qty: 3 },
+    ]),
+    2950
+  );
+});
+
+test('a zero quantity is rejected', () => {
+  assert.throws(() => lineTotal({ unitCents: 250, qty: 0 }), RangeError);
+});
+
+test('fractional cents are rejected', () => {
+  assert.throws(() => lineTotal({ unitCents: 2.5, qty: 1 }), TypeError);
+});

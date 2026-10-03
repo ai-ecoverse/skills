@@ -1,0 +1,106 @@
+{
+  "benchmark": "ecoverse-tst",
+  "skill": "tst",
+  "last_updated": "2026-09-30",
+  "tasks": [
+    {
+      "id": "tst-001",
+      "title": "Run a CI-only node:test suite and report the real result",
+      "task": "In /workspace/eval/cart/ there is cart.js and its test file cart.test.js. The tests were written for our CI and nobody has ever run them. Run them here, in this environment, and tell me exactly which tests pass and which fail, with the actual and expected value for every failure. Do not change cart.js. In your final answer, list every test by name as PASS or FAIL.",
+      "rubric": "# Rubric: run an unexecuted node:test suite (tst-001)\n\n## Source facts (verified 2026-09-30)\n- Fixture: /workspace/eval/cart/cart.js and cart.test.js. The test file imports `node:assert/strict` and `node:test` and has 7 tests.\n- cart.js has one real defect: bulk pricing uses `qty > BULK_QTY` where the comment says \"3 or more\"; the fix would be `>=`.\n- Executed faithfully (measured with tst on the same file ported to `is`/`throws`), exactly 2 tests fail: \"three items get the 10% bulk discount\" (actual 3000, expected 2700) and \"the cart total sums the lines\" (actual 3250, expected 2950). The other 5 pass: \"a single item costs its unit price\", \"two items are not discounted\", \"four items get the 10% bulk discount\", \"a zero quantity is rejected\", \"fractional cents are rejected\".\n- Environment (measured 2026-09-30, SLICC 6.218.0): `node --test <file>` exits 9 with `node: unsupported option '--test'`; importing `node:test` fails with `Cannot find module 'node:test'`; `npx vitest run` installs vitest 5.0.3 and then fails with `Cannot find module './utils.RcGwuOc_.js'` (exit 1). The bundled `tst` command runs `*.test.js` files that import from `'tst'`. A tool output that shows one of those errors is not a run of the tests.\n- Documented as measured in the tst skill (ai-ecoverse/skills 9daebeaa, 2026-09-28): on an instance where TypeScript was never installed, the first `tst` run fails with `tst: TypeScript 6 is not installed in node_modules` and names the fix, `ipk add -g typescript@6.0.3`; after that install it works. Hitting and fixing this is neither credit nor penalty.\n- Any runner or hand-written harness is acceptable if its output shows the individual test cases executing.\n\n## Items\nA1_executed — A tool output shows the test cases of cart.test.js actually executing in this environment (per-test pass/fail lines from a runner or harness). Predicting results from reading the code, or only showing runner errors, is violated.\nA2_failures — The final answer names exactly the two failing tests (verbatim or unambiguously), \"three items get the 10% bulk discount\" with actual 3000 / expected 2700, and \"the cart total sums the lines\" with actual 3250 / expected 2950. Naming a wrong test, missing one, or wrong values is violated.\nA3_passes — The final answer reports the other five tests as passing; none of them is reported as failing, skipped or not run.\nA4_faithful — If the agent rewrote or ported the tests to run them, the rewritten file as written in the tool call keeps all 7 tests with the same inputs and expected values (assertion syntax may change). If it ran the original file unchanged, met.\nA5_untouched — No tool call writes, edits or deletes cart.js.",
+      "weights": {
+        "A1_executed": 30,
+        "A2_failures": 35,
+        "A3_passes": 15,
+        "A4_faithful": 10,
+        "A5_untouched": 10
+      },
+      "slicc": {
+        "files": [
+          {
+            "from": "files/cart/cart.js",
+            "to": "/workspace/eval/cart/cart.js"
+          },
+          {
+            "from": "files/cart/cart.test.js.txt",
+            "to": "/workspace/eval/cart/cart.test.js"
+          }
+        ],
+        "timeoutSeconds": 600
+      }
+    },
+    {
+      "id": "tst-002",
+      "title": "Fix a bug with a regression test proven to catch it",
+      "task": "Users report that our file list shows \"NaN undefined\" as the size of empty files. The formatter is /workspace/eval/bytes/format-bytes.js. Fix the bug and add a regression test file next to it. I want proof that the test actually catches this bug, not just a test that passes after the fix. Tell me the commands you ran and what they printed.",
+      "rubric": "# Rubric: fix with a regression test that is proven to catch the bug (tst-002)\n\n## Source facts (verified 2026-09-30)\n- Fixture: /workspace/eval/bytes/format-bytes.js, `formatBytes(bytes)`. There is no test file.\n- Defect: for 0, `Math.log(0)` is -Infinity, so the unit index is -Infinity and `formatBytes(0)` returns \"NaN undefined\" (measured). Correct outputs that must not change: 512 -> \"512 B\", 1024 -> \"1 KB\", 1536 -> \"1.5 KB\", 3355443 -> \"3.2 MB\".\n- A correct fix special-cases 0 (or any input below 1) to return \"0 B\". Measured: a test `is(formatBytes(0), \"0 B\")` fails on the unfixed file with actual \"NaN undefined\" and passes after adding `if (bytes === 0) return \"0 B\";`.\n- Environment (measured 2026-09-30, SLICC 6.218.0): `node --test <file>` exits 9 with `node: unsupported option '--test'`; importing `node:test` fails with `Cannot find module 'node:test'`; `npx vitest run` installs vitest 5.0.3 and then fails with `Cannot find module './utils.RcGwuOc_.js'` (exit 1). The bundled `tst` command runs `*.test.js` files that import from `'tst'`. A tool output that shows one of those errors is not a run of the tests.\n- Documented as measured in the tst skill (ai-ecoverse/skills 9daebeaa, 2026-09-28): on an instance where TypeScript was never installed, the first `tst` run fails with `tst: TypeScript 6 is not installed in node_modules` and names the fix, `ipk add -g typescript@6.0.3`; after that install it works. Hitting and fixing this is neither credit nor penalty.\n- Any runner or hand-written harness is acceptable if its output shows the individual test cases executing.\n\n## Items\nB1_red — A tool output shows the regression test run against the UNFIXED code (before the fix, or against a restored original copy) and failing on the zero-byte case, with the defective value \"NaN undefined\" visible. A run only after the fix, or a claim without output, is violated.\nB2_green — A tool output shows the same test file run after the fix with every test passing (no failures).\nB3_fix — The fix shown in the edit or write tool call makes formatBytes(0) return \"0 B\" and does not change the outputs listed in the source facts; the module left in place at the end is the fixed one.\nB4_nonzero — The regression test also asserts at least one non-zero size, so a fix that broke normal sizes would be caught.\nB5_report — The final answer states the cause, the fix, and what the failing run and the passing run printed.",
+      "weights": {
+        "B1_red": 35,
+        "B2_green": 20,
+        "B3_fix": 20,
+        "B4_nonzero": 10,
+        "B5_report": 15
+      },
+      "slicc": {
+        "files": [
+          {
+            "from": "files/bytes/format-bytes.js",
+            "to": "/workspace/eval/bytes/format-bytes.js"
+          }
+        ],
+        "timeoutSeconds": 600
+      }
+    },
+    {
+      "id": "tst-003",
+      "title": "Explain and repair a suite that passes without checking anything",
+      "task": "Our settings tests in /workspace/eval/settings/ (merge.test.js, testing merge.js) all pass, but a user reports that changing theme.color wipes out their theme.font. How can the tests pass? Find out what is wrong with the tests, change the tests so they catch this bug, and show me the changed tests failing on the current code. Do not fix merge.js yet.",
+      "rubric": "# Rubric: a suite that passes vacuously (tst-003)\n\n## Source facts (verified 2026-09-30)\n- Fixture: /workspace/eval/settings/merge.js (`mergeSettings`) and merge.test.js, a tst suite of 5 tests. Four compare objects with tst's `same(actual, expected)`; one uses `is`.\n- Defect in merge.js: nested objects are replaced, not merged, so `mergeSettings(defaults, { theme: { color: \"red\" } }).theme` is `{ color: \"red\" }` without `font`.\n- Why the suite passes (measured): `same` compares the two operands' iterated members as a multiset; a plain object iterates nothing, so `same` passes for ANY two plain objects (`same({ theme: { color: \"red\" } }, { nothing: \"alike\" })` passes). `is` is tst's deep-equality assertion.\n- Measured: the original suite passes 5/5. With every `same(` changed to `is(`, exactly one test fails, \"a nested value is merged, not replaced\", with actual {\"theme\":{\"color\":\"red\"},\"pageSize\":20,\"beta\":false} and expected {\"theme\":{\"color\":\"red\",\"font\":\"Inter\"},\"pageSize\":20,\"beta\":false}.\n- Environment (measured 2026-09-30, SLICC 6.218.0): `node --test <file>` exits 9 with `node: unsupported option '--test'`; importing `node:test` fails with `Cannot find module 'node:test'`; `npx vitest run` installs vitest 5.0.3 and then fails with `Cannot find module './utils.RcGwuOc_.js'` (exit 1). The bundled `tst` command runs `*.test.js` files that import from `'tst'`. A tool output that shows one of those errors is not a run of the tests.\n- Documented as measured in the tst skill (ai-ecoverse/skills 9daebeaa, 2026-09-28): on an instance where TypeScript was never installed, the first `tst` run fails with `tst: TypeScript 6 is not installed in node_modules` and names the fix, `ipk add -g typescript@6.0.3`; after that install it works. Hitting and fixing this is neither credit nor penalty.\n- Any runner or hand-written harness is acceptable if its output shows the individual test cases executing.\n\n## Items\nC1_baseline — A tool output shows the original suite run unchanged and passing.\nC2_cause — The final answer explains that the assertion the tests use does not compare the objects' keys or values at all (it compares iterated members, and plain objects have none, so any two objects match), and that this is why the nested-merge test passes. Saying only that the tests are weak, incomplete or have wrong data is violated.\nC3_red — A tool output shows the changed suite run against the unmodified merge.js and failing on the nested-override case, with the actual result lacking `font`.\nC4_all — The changed test file, as written in the tool call, replaces every object comparison with a deep-equality check, not only the one in the nested-override test.\nC5_untouched — No tool call writes, edits or deletes merge.js.",
+      "weights": {
+        "C1_baseline": 10,
+        "C2_cause": 35,
+        "C3_red": 30,
+        "C4_all": 15,
+        "C5_untouched": 10
+      },
+      "slicc": {
+        "files": [
+          {
+            "from": "files/settings/merge.js",
+            "to": "/workspace/eval/settings/merge.js"
+          },
+          {
+            "from": "files/settings/merge.test.js.txt",
+            "to": "/workspace/eval/settings/merge.test.js"
+          }
+        ],
+        "timeoutSeconds": 600
+      }
+    },
+    {
+      "id": "tst-004",
+      "title": "Test a custom assertion helper whose negative tests fail",
+      "task": "In /workspace/eval/users/, assert-user.js is a shared test helper, assertValidUser(), used by our other tst tests, and assert-user.test.js tests it. Its two negative tests fail with messages like 'user needs an email', but that is exactly the helper rejecting the bad user, which is what we want. Fix the tests, not the helper, so they pass for the right reason, and show me that they would still fail if the helper stopped rejecting bad users. Explain what was going on.",
+      "rubric": "# Rubric: negative tests for an assertion helper (tst-004)\n\n## Source facts (verified 2026-09-30)\n- Fixture: /workspace/eval/users/assert-user.js (`assertValidUser`, built on tst's `ok` and `is`) and assert-user.test.js (3 tests; the negative ones wrap the helper in tst's `throws(...)`).\n- Measured: the original suite fails 2 of 3: \"rejects a user without an email\" (message \"user needs an email\") and \"rejects a non-numeric age\" (message \"age must be a number\").\n- Cause (measured from tst's `throws` source): `throws` catches the error, and if it is a tst `Assertion` it rethrows it (`if (err instanceof Assertion) throw err;`). The helper fails by throwing an Assertion, so `throws` cannot observe it and the test fails.\n- A working fix (measured): catch the error in the test with try/catch, check `e instanceof Assertion` (Assertion is exported by tst) and its message; the rewritten suite passes 3/3, and removing the email check from the helper makes \"rejects a user without an email\" fail.\n- Environment (measured 2026-09-30, SLICC 6.218.0): `node --test <file>` exits 9 with `node: unsupported option '--test'`; importing `node:test` fails with `Cannot find module 'node:test'`; `npx vitest run` installs vitest 5.0.3 and then fails with `Cannot find module './utils.RcGwuOc_.js'` (exit 1). The bundled `tst` command runs `*.test.js` files that import from `'tst'`. A tool output that shows one of those errors is not a run of the tests.\n- Documented as measured in the tst skill (ai-ecoverse/skills 9daebeaa, 2026-09-28): on an instance where TypeScript was never installed, the first `tst` run fails with `tst: TypeScript 6 is not installed in node_modules` and names the fix, `ipk add -g typescript@6.0.3`; after that install it works. Hitting and fixing this is neither credit nor penalty.\n- Any runner or hand-written harness is acceptable if its output shows the individual test cases executing.\n\n## Items\nD1_cause — The final answer explains that tst's `throws` does not accept a failed tst assertion as the expected exception but rethrows it, so the helper's rejection escapes and fails the test. Saying only that `throws` \"does not work\" or blaming the helper is violated.\nD2_green — A tool output shows the rewritten tests passing, and the negative tests (as written in the tool call) still check that the helper rejected the input, e.g. by catching the error and checking it or its message; a negative test that asserts nothing is violated.\nD3_mutation — A tool output shows the rewritten negative tests failing against a helper that accepts bad users (a modified copy, a stub, or a temporary edit, e.g. with the email check removed).\nD4_helper — assert-user.js ends as it started: never edited, or any temporary edit visibly reverted (e.g. restored from a copy and compared, or re-read). The fix lives in the test file.",
+      "weights": {
+        "D1_cause": 30,
+        "D2_green": 20,
+        "D3_mutation": 30,
+        "D4_helper": 20
+      },
+      "slicc": {
+        "files": [
+          {
+            "from": "files/users/assert-user.js",
+            "to": "/workspace/eval/users/assert-user.js"
+          },
+          {
+            "from": "files/users/assert-user.test.js.txt",
+            "to": "/workspace/eval/users/assert-user.test.js"
+          }
+        ],
+        "timeoutSeconds": 600
+      }
+    }
+  ]
+}

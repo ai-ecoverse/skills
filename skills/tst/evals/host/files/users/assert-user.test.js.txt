@@ -1,0 +1,14 @@
+import test, { throws } from 'tst';
+import { assertValidUser } from './assert-user.js';
+
+test('accepts a valid user', () => {
+  assertValidUser({ name: 'Ada', email: 'ada@example.com', age: 36 });
+});
+
+test('rejects a user without an email', () => {
+  throws(() => assertValidUser({ name: 'Ada', age: 36 }));
+});
+
+test('rejects a non-numeric age', () => {
+  throws(() => assertValidUser({ name: 'Ada', email: 'ada@example.com', age: '36' }));
+});
