@@ -6,7 +6,6 @@
  * goals.json, and arms that are all Sonnet 5.5:
  *   intent-agent      a scoop that may run `intent` (not playwright-cli)
  *   intent-budget     the same, RETRIEVE returning its top texts up to a budget
- *   intent-lexical    the same, RETRIEVE ranked by words alone
  *   playwright-agent  the cone with raw playwright-cli: the reference
  * The two scoop arms run through scripts/intent-arm.jsh: it is a command of the
  * skill, because a leader installs a skill without its evals/ folder (the
@@ -34,12 +33,14 @@ const scoopArm = (id, tool, extra = []) => ({
 const arms = [
   scoopArm('intent-agent', 'intent'),
   scoopArm('intent-budget', 'intent', ['--retrieve', 'budget']),
-  scoopArm('intent-lexical', 'intent', ['--retrieve', 'lexical']),
   { id: 'playwright-agent', kind: 'agent', pool: 'bench', model: AGENT_MODEL },
 ];
 
-/** Arms on hold: the playwright-cli scoop was the control of the first smoke rounds. */
-const heldArms = [scoopArm('playwright-scoop', 'playwright-cli')];
+/**
+ * Arms on hold: the playwright-cli scoop, the control of the first smoke
+ * rounds; intent-lexical, dropped for the games round (Lars, 2026-10-03).
+ */
+const heldArms = [scoopArm('playwright-scoop', 'playwright-cli'), scoopArm('intent-lexical', 'intent', ['--retrieve', 'lexical'])];
 
 const RUN_S_DEFAULT = 900;
 
@@ -140,7 +141,12 @@ function judge(raw, goal) {
   const expect = goal.expect ?? [];
   const expectUrl = goal.expect_url ?? [];
   if (!expect.length && !expectUrl.length) return false;
-  return expectUrl.every((u) => url.includes(u)) && expect.every((t) => containsValue(text, t));
+  if (!expectUrl.every((u) => url.includes(u))) return false;
+  if (expect.every((t) => containsValue(text, t))) return true;
+  // expect_any: other sets of texts that also mean the goal is done. The
+  // bike tour's summary page, one click after the completion page, reads
+  // "You've accumulated N points" (Lars, 2026-10-03).
+  return (goal.expect_any ?? []).some((set) => set.length && set.every((t) => containsValue(text, t)));
 }
 
 /** The first story id in Hacker News front page HTML, or null. */
@@ -162,10 +168,13 @@ async function placeholder(name, { fetch }) {
   return id;
 }
 
-/** "Total Points All Tours -4255" (Armchair Bike Touring); null when none is shown. */
+/** "Total Points All Tours -4255", or the summary page's "You've accumulated N points" (Armchair Bike Touring); null when neither is shown. */
 function gamePoints(text) {
   const all = [...String(text).matchAll(/Total Points All Tours\s*(-?\d[\d,]*)/g)];
-  return all.length ? Number(all[all.length - 1][1].replace(/,/g, '')) : null;
+  if (all.length) return Number(all[all.length - 1][1].replace(/,/g, ''));
+  // The summary page after End This Tour: "You've accumulated 2663 points."
+  const summary = [...String(text).matchAll(/You['’]ve accumulated\s*(-?\d[\d,]*)\s*points/g)];
+  return summary.length ? Number(summary[summary.length - 1][1].replace(/,/g, '')) : null;
 }
 
 const lastNumber = (text, re) => {

@@ -8,12 +8,12 @@ const transcript = transcriptMod.default || transcriptMod;
 const quote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 
 test('arms: intent variants side by side, the cone as reference', () => {
-  is(adapter.arms.map((a) => a.id), ['intent-agent', 'intent-budget', 'intent-lexical', 'playwright-agent']);
+  is(adapter.arms.map((a) => a.id), ['intent-agent', 'intent-budget', 'playwright-agent']);
   is(adapter.arms[0].setup, ['intent prepare', 'intent pull --model 4b-vision']);
   is(adapter.arms[1].args.slice(-2), ['--retrieve', 'budget']);
-  is(adapter.arms[2].args.slice(-2), ['--retrieve', 'lexical']);
-  ok(adapter.arms.slice(0, 3).every((a) => a.pool === 'gpu' && a.args.includes('--require-gpu')));
-  is(adapter.heldArms.map((a) => a.id), ['playwright-scoop']);
+  ok(adapter.arms.slice(0, 2).every((a) => a.pool === 'gpu' && a.args.includes('--require-gpu')));
+  is(adapter.heldArms.map((a) => a.id), ['playwright-scoop', 'intent-lexical']);
+  is(adapter.heldArms[1].args.slice(-2), ['--retrieve', 'lexical']);
 });
 
 test('command: one intent-arm line with the time limit inside the driver timeout', () => {
@@ -90,4 +90,14 @@ test('diagnostics: the newest run of this goal, never one of another goal', asyn
   is((await adapter.diagnostics({ goal: bike, own: null, list }))[0], `/tmp/intent-arm/${runs[1]}/result.json`);
   is(await adapter.diagnostics({ goal: { url: 'https://httpbin.org/forms/post' }, own: null, list }), []);
   is(adapter.hostSlug('https://news.ycombinator.com/'), 'news-ycombinator-com');
+});
+
+test('judge: the bike tour also counts as done on its summary page', () => {
+  const goal = { expect: ['completed your first bicycle tour'], expect_url: [], expect_any: [["You've accumulated", 'What would you like to do next?']] };
+  const done = 'Page URL: https://x/\n- text "Congratulations! You have just completed your first bicycle tour."';
+  const summary = 'Page URL: https://x/\n- row "You\'ve accumulated 2663 points."\n- row "What would you like to do next? Go to Next Tour"';
+  const riding = 'Page URL: https://x/\n- row "Mile 64 of 100"';
+  ok(adapter.judge(done, goal) && adapter.judge(summary, goal) && !adapter.judge(riding, goal));
+  is([adapter.gamePoints(summary), adapter.gamePoints('Total Points All Tours -151'), adapter.gamePoints(riding)], [2663, -151, null]);
+  is(adapter.metrics('You\'ve accumulated -3,190 points.', { id: 'armchair-bike' }), { points: -3190 });
 });

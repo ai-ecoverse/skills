@@ -140,7 +140,52 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
    * bundle directory --from names (a fine-tuned export). A -vision bundle
    * also gets the marked screenshot on ACT.
    */
+  /**
+   * A bundle given by URL: its manifest and every file the manifest lists,
+   * fetched into the VFS cache once (a file already there at its listed size
+   * is kept). → the cached bundle directory.
+   */
+  async function fetchBundle(url) {
+    const dir = lib.bundleCacheDir(url);
+    if (!dir) throw new IntentError(`--from ${url} is not an http(s) URL or a VFS path`);
+    const base = String(url).replace(/\/+$/, '');
+    await fs.mkdir(dir, { recursive: true });
+    // A bundle at a URL does not change: once its manifest is cached, the
+    // cache is used as it is (fetching the manifest on every call cost a
+    // minute or more against a local server, 2026-10-03). Delete the cache
+    // directory to fetch it again.
+    if (!(await fs.exists(`${dir}/manifest.json`))) {
+      try {
+        await fs.fetchToFile(`${base}/manifest.json`, `${dir}/manifest.json`);
+      } catch (err) {
+        throw new IntentError(`could not fetch ${base}/manifest.json: ${String(err?.message || err)}`);
+      }
+    }
+    let manifest;
+    try {
+      manifest = JSON.parse(String(await fs.readFile(`${dir}/manifest.json`)));
+    } catch {
+      throw new IntentError(`${base}/manifest.json is not a kev bundle manifest (not JSON); give the URL of the bundle's directory`);
+    }
+    const { rels, sizes } = kevRuntime.variantFiles(manifest);
+    for (const rel of rels) {
+      const path = `${dir}/${rel}`;
+      const want = sizes[rel];
+      const have = (await fs.exists(path)) ? (await fs.stat(path)).size : -1;
+      if (have >= 0 && (typeof want !== 'number' || have === want)) continue;
+      await fs.mkdir(path.slice(0, path.lastIndexOf('/')), { recursive: true });
+      try {
+        await fs.fetchToFile(`${base}/${rel}`, path);
+      } catch (err) {
+        throw new IntentError(`could not fetch ${base}/${rel}: ${String(err?.message || err)}`);
+      }
+    }
+    return dir;
+  }
+
   async function kevModel(size, from, requireGpu = false) {
+    const url = from && /^https?:\/\//i.test(from) ? from : null;
+    if (url) from = await fetchBundle(url);
     if (!from && !kevRuntime.MODELS[size]) throw new IntentError(`--model is one of ${lib.MODELS.join(', ')}`);
     if (!from) {
       const status = await kevRuntime.weightsStatus(fs, size);
@@ -176,8 +221,10 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
       if (err?.name === 'NodeExitError') throw err;
       throw new IntentError(String(err?.message || err));
     }
-    const name = from ? `kev ${from.split('/').filter(Boolean).pop()}` : `kev ${size}`;
-    const key = from ? from.split('/').filter(Boolean).pop().replace(/^kev-/, '') : size;
+    // A bundle is known by its directory's (or URL's) last segment: kev-0.8b-vision-wr2-intent.
+    const bundleName = (url || from || '').replace(/\/+$/, '').split('/').pop();
+    const name = from ? `kev ${bundleName}` : `kev ${size}`;
+    const key = from ? bundleName.replace(/^kev-/, '') : size;
     return { name, key, kev: true, vision, runtime, loadMs: Date.now() - started, ask: (body) => model.systemOne(body) };
   }
 

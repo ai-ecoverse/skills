@@ -237,3 +237,11 @@ test('budgetLines: top texts by rank until the budget, shown in page order', () 
   is(lines, ['  e2 "Mile 65 of 100"', '  e9 "Calories eaten 3000, burned 3795"']);
   ok(lib.budgetLines(texts, 600, '').length === 3);
 });
+
+test('bundleCacheDir: one cache directory per bundle URL', () => {
+  const a = lib.bundleCacheDir('https://huggingface.co/ai-ecoverse/kev.js/resolve/main/kev-0.8b-vision-wr2-intent');
+  ok(/^\/shared\/cache\/kev\/bundles\/kev-0\.8b-vision-wr2-intent-[0-9a-f]{8}$/.test(a), a);
+  is(lib.bundleCacheDir('https://huggingface.co/ai-ecoverse/kev.js/resolve/main/kev-0.8b-vision-wr2-intent/'), a);
+  ok(lib.bundleCacheDir('https://example.com/other/kev-0.8b-vision-wr2-intent') !== a);
+  is([lib.bundleCacheDir('/mnt/kev-models/x'), lib.bundleCacheDir('file:///etc/passwd')], [null, null]);
+});

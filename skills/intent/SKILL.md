@@ -90,7 +90,7 @@ How the stages were chosen:
 - **kev's NONE does not veto:** the best other choice decides.
 - **Thresholds per bundle:** each is set where wrong actions stay at or under 5%. 4b-vision was 0.7 until the first hosted smoke round left obvious picks unsure at 0.63–0.69 (2026-10-03). It is now 0.6; the caller sees every result and can recover from a wrong one.
 
-`--from <dir>` loads any kev bundle directory, such as a fine-tune (`--from /mnt/kev-models/kev-0.8b-vision-wr1`). A missing model stops with the command that gets it; nothing falls back to a guess.
+`--from <dir or URL>` loads any kev bundle, such as a fine-tune: a VFS directory (`--from /mnt/kev-models/kev-0.8b-vision-wr2-intent`) or the URL of a bundle's directory, whose manifest and listed files are fetched once into `/shared/cache/kev/bundles/`. A fine-tune trained on this tool's own question (wr2-intent) gets it plain; the stock bundles get webrunner's wording. A missing model stops with the command that gets it; nothing falls back to a guess.
 
 Each call loads the model again. For many calls in a row, keep it loaded: run `intent serve` where it may stay, and `intent` hands its requests to it.
 
@@ -107,10 +107,9 @@ Each call loads the model again. For many calls in a row, keep it loaded: run `i
 `evals/harness` runs the goals in goals.json (the default suite and the games, first written for meep-meep) through tools/harness-evals with Sonnet 5.5 arms:
 - `intent-agent`: a scoop that may run `intent` (not playwright-cli), served by `intent-arm`, with RETRIEVE as described above. It also gets text utilities (grep, sed, bash, …): shell loops and helper scripts that batch intent calls are fair play, while reading or changing a game's code or saved state is not;
 - `intent-budget`: the same, with `--retrieve budget` (the top texts by System 1 up to 1,200 characters, in page order);
-- `intent-lexical`: the same, with `--retrieve lexical` (the top texts by words alone, no model);
 - `playwright-agent`: the cone with raw playwright-cli, the reference.
 
-The intent variants run side by side, one GPU leader each. `playwright-scoop` (the same scoop with raw playwright-cli) was the control of the first smoke rounds and is held.
+The intent variants run side by side, one GPU leader each. `playwright-scoop` (the same scoop with raw playwright-cli, the control of the first smoke rounds) and `intent-lexical` (`--retrieve lexical`: the top texts by words alone, no model) are held.
 
 `intent-arm` (scripts/intent-arm.jsh, so it installs with the skill; a leader gets no evals/ folder) records the tool calls, the characters each call put into context, the scoop's tokens and cost (`agent --usage`), and each intent call's latency. Its files are in `/tmp/intent-arm/<run>/`.
 

@@ -281,6 +281,7 @@ async function ready(fs) {
 }
 
 module.exports = {
+  variantFiles,
   BUNDLE,
   KEV_NAME,
   KEV_SPEC,

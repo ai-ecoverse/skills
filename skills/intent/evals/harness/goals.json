@@ -1,5 +1,5 @@
 {
-  "last_updated": "2026-10-02",
+  "last_updated": "2026-10-03",
   "goals": [
     {
       "id": "flights",
@@ -38,6 +38,7 @@
       "url": "https://www.biketouringtips.com/ArmchairBikeTouring/",
       "goal": "Play Armchair Bike Touring and finish the 100 mile Newbie tour with as many points as you can. If the game has not started yet, click Click to Start Game, then Start Tour. How the game scores: each day starts at -2000 points (daily metabolism), and you earn points for the calories you burn only when you eat more than you burn that day, so eat plenty, about 3500 calories a day. Penalties: burning more than 350 calories in the morning before eating forces a stop and costs the uneaten calories; being forced to stop for the night costs 500; riding past the 50 mile daily limit cuts the next day's limit by 10; a flat tire or broken spoke you cannot fix with the repair kit means hitchhiking, minus 1000; going over the $150 budget costs 1000; a stealth camp that is discovered costs 1000. Sunshine and tailwinds add enjoyment points, headwinds and rain take them away; Road Angel meals add calories and enjoyment but cut the day's limit by 10. Each day, Get Some Food and eat before you are hungry, and Spend the Night Here at a campground or motel before the limit. Stop when the game says the tour is complete.",
       "expect": ["completed your first bicycle tour"],
+      "expect_any": [["You've accumulated", "What would you like to do next?"]],
       "expect_url": [],
       "max_steps": 150,
       "timeout_s": 2100,

@@ -1016,6 +1016,32 @@ function candidateLines(ranked, byId, max = 5) {
     });
 }
 
+// ── kev bundles by URL ───────────────────────────────────────────────
+
+const BUNDLE_CACHE = '/shared/cache/kev/bundles';
+
+/**
+ * Where a kev bundle given by URL (--from https://…/kev-0.8b-vision-wr2-intent)
+ * is cached in the VFS: one directory per URL, named by its last path segment
+ * and a short hash of the whole URL. null for anything but http(s).
+ */
+function bundleCacheDir(url) {
+  let u;
+  try {
+    u = new URL(String(url));
+  } catch {
+    return null;
+  }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+  const name = (u.pathname.split('/').filter(Boolean).pop() || 'bundle').replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 60);
+  let h = 0x811c9dc5;
+  for (const ch of u.href.replace(/\/+$/, '')) {
+    h ^= ch.charCodeAt(0);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return `${BUNDLE_CACHE}/${name}-${h.toString(16).padStart(8, '0').slice(0, 8)}`;
+}
+
 // ── requests (CLI flags and the daemon's request files) ──────────────
 
 // playwright-cli refs (e12, a frame's f1e3) and synthetic controls (c4).
@@ -1081,6 +1107,7 @@ module.exports = {
   REF_RE,
   MODELS,
   cleanRequest,
+  bundleCacheDir,
   KINDS,
   NONE,
   SURE,

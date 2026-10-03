@@ -68,7 +68,8 @@ FLAGS
   --model M          System 1: 4b-vision (default) | 0.8b-vision | 4b | 0.8b, a
                      local kev bundle; clef | clef-flash on Cloudflare Workers AI
                      (needs the CLOUDFLARE_API_TOKEN secret and --cf-account once)
-  --from DIR         a kev bundle directory instead of a named one (a fine-tune)
+  --from DIR|URL     a kev bundle instead of a named one (a fine-tune): a VFS
+                     directory, or a bundle directory's URL (fetched once)
   --require-gpu      stop when WebGPU is a software adapter (SwiftShader), where
                      kev runs ~10x slower, instead of carrying on
   --retrieve MODE    answer (default): the one text that answers, or the closest
