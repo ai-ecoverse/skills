@@ -121,8 +121,9 @@ function runSkill(command, timeoutMs) {
     maxBuffer: 512 * 1024 * 1024,
     env: { ...process.env, SLICC_NO_TUI: '1', NO_COLOR: '1' },
   });
-  const out = r.stdout?.toString('utf8') ?? '';
-  const err = r.stderr?.toString('utf8') ?? '';
+  // Redacted whole, before anything slices it: a cut could separate /join/ from its token.
+  const out = redactSecrets(r.stdout?.toString('utf8') ?? '');
+  const err = redactSecrets(r.stderr?.toString('utf8') ?? '');
   const timedOut = r.error?.code === 'ETIMEDOUT';
   const ok = !r.error && r.status === 0;
   const why = timedOut
@@ -209,7 +210,7 @@ async function agentRunWithTrace(g, rep) {
     finalText: (doc && bench.lastConeAssistantText(doc)) || r.stdout,
     screenshots: images,
     exitCode: r.status,
-    stderr: r.status !== 0 ? String(r.stderr ?? '').slice(-300) : '',
+    stderr: r.status !== 0 ? redactSecrets(r.stderr).slice(-300) : '',
     durationMs: Date.now() - t0,
   });
   return { r, trace };
@@ -221,7 +222,7 @@ mkdirSync(join(out, 'artifacts'), { recursive: true });
 if (arm.kind === 'agent') {
   const m = cli(['model', arm.model]);
   if (m.status !== 0)
-    throw new Error(`slicc model ${arm.model} failed: ${String(m.stderr ?? '').slice(-300)}`);
+    throw new Error(`slicc model ${arm.model} failed: ${redactSecrets(m.stderr).slice(-300)}`);
 }
 // A skill arm's runs only count when escalations can be counted (slicc #3746); stop before
 // setup (model downloads) instead of producing runs nobody can trust.
@@ -266,14 +267,14 @@ for (const rep of reps) {
       const { r, trace: t } = await agentRunWithTrace(g, rep);
       trace = t;
       if (r.status !== 0)
-        runError = `slicc prompt exited ${r.status}: ${String(r.stderr ?? '').slice(-300)}`;
+        runError = `slicc prompt exited ${r.status}: ${redactSecrets(r.stderr).slice(-300)}`;
     } else {
       const r = cli(['prompt', '--allsettled', '2m', '-'], {
         input: agentPrompt(g),
         timeoutMs: timeoutFor(g),
       });
       if (r.status !== 0)
-        runError = `slicc prompt exited ${r.status}: ${String(r.stderr ?? '').slice(-300)}`;
+        runError = `slicc prompt exited ${r.status}: ${redactSecrets(r.stderr).slice(-300)}`;
     }
     const seconds = (Date.now() - t0) / 1000;
     const costAfter = spend();
@@ -296,7 +297,7 @@ for (const rep of reps) {
     const runDir = join(out, 'artifacts', arm.id, `${g.id}-r${rep}`);
     if (skillOut) {
       mkdirSync(runDir, { recursive: true });
-      writeFileSync(join(runDir, 'stdout.txt'), redactSecrets(skillOut.slice(-2 * 1024 * 1024)));
+      writeFileSync(join(runDir, 'stdout.txt'), skillOut.slice(-2 * 1024 * 1024));
     }
     // The bare agent's own record of what it did (every tool call, cone and scoops), so a
     // reviewer can check how it played: the judge reads the same steps.
@@ -336,7 +337,7 @@ for (const rep of reps) {
         rubric = {
           credit: null,
           error: redactSecrets(
-            `${String(e.message ?? e).slice(0, 240)} (trace: ${traceSize(trace)})`
+            `${redactSecrets(e.message ?? e).slice(0, 240)} (trace: ${traceSize(trace)})`
           ),
         };
       }

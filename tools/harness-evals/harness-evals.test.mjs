@@ -681,4 +681,9 @@ test('redactSecrets takes join tokens out of errors and artifacts', () => {
     'x /controller/<token>?y=1 /webhook/<token> z'
   );
   is(redactSecrets(null), '');
+  // Redact first, then slice: a slice taken first can start inside the token (Codex P1 on #474).
+  const long = `${'x'.repeat(50)} https://h/join/abcdef0123456789 tail`;
+  const cut = long.slice(-25);
+  is(redactSecrets(cut).includes('0123456789'), true, 'slicing first leaks the token tail');
+  is(redactSecrets(long).slice(-25).includes('0123456789'), false);
 });
