@@ -737,7 +737,10 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
       if (correction) {
         await appendLog(dir, {
           type: 'correction',
-          ...correction,
+          // ref: the caller named the control after an unsure answer;
+          // retry: it asked again.
+          how: correction.type,
+          of: correction.of,
           at: new Date().toISOString(),
           by: id,
           intent: req.intent,
