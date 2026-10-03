@@ -204,7 +204,16 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
       throw new IntentError('the kev runtime is not installed: run `intent prepare` once, then retry');
     }
     let vision = /-vision$/.test(size || '');
-    if (from) vision = Boolean(JSON.parse(String(await fs.readFile(`${from}/manifest.json`))).vision);
+    const manifestPath = from ? `${from}/manifest.json` : `${(await kevRuntime.weightsStatus(fs, size)).base}/manifest.json`;
+    let manifest = null;
+    try {
+      manifest = JSON.parse(String(await fs.readFile(manifestPath)));
+    } catch {
+      manifest = null;
+    }
+    if (from) vision = Boolean(manifest && manifest.vision);
+    // The bundle's own question wording and thresholds, when it declares them.
+    const intentSettings = lib.bundleSettings(manifest);
     const started = Date.now();
     let runtime = '';
     let model;
@@ -230,7 +239,7 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     const bundleName = (url || from || '').replace(/\/+$/, '').split('/').pop();
     const name = from ? `kev ${bundleName}` : `kev ${size}`;
     const key = from ? bundleName.replace(/^kev-/, '') : size;
-    return { name, key, kev: true, vision, runtime, loadMs: Date.now() - started, ask: (body) => model.systemOne(body) };
+    return { name, key, kev: true, vision, intent: intentSettings, runtime, loadMs: Date.now() - started, ask: (body) => model.systemOne(body) };
   }
 
   /**
@@ -322,10 +331,8 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
   }
 
   /** The act-or-ask rule for this System 1, with --sure on top. */
-  function policy(req, s1) {
-    const table = lib.SURE_BY_MODEL;
-    const sure = req.sure ?? table[s1.key] ?? (s1.kev ? table.kev : lib.SURE);
-    return { sure, ignoreNone: Boolean(s1.kev) };
+  function policy(req, s1, kind = 'ACT') {
+    return lib.s1Policy(s1, kind, req.sure);
   }
 
   async function chooseControl(req, s1, obs, parsed) {
@@ -334,7 +341,7 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     const shortlist = ranked.slice(0, SHORTLIST_CONTROLS).map((r) => r.candidate);
     if (!shortlist.length) throw new IntentError('this page has no controls to act on');
     // kev answers webrunner's wording better; Clef was measured on the plain one.
-    const q = lib.choiceQuestion('ACT', req.intent, shortlist, obs.shot, { style: s1.kev ? lib.QUESTION_STYLE[s1.key] || 'menu' : 'plain' });
+    const q = lib.choiceQuestion('ACT', req.intent, shortlist, obs.shot, { style: lib.questionStyle(s1) });
     const shot = s1.vision ? await markedShot(obs.tab, shortlist, obs.viewport) : null;
     const image = shot ? shot.image : null;
     const res = await s1.ask({ state: q.state, questions: { action: q.question }, ...(image ? { image } : {}) });
@@ -346,7 +353,7 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     note({
       kind: 'ACT',
       model: s1.name,
-      style: s1.kev ? lib.QUESTION_STYLE[s1.key] || 'menu' : 'plain',
+      style: lib.questionStyle(s1),
       threshold: rule.sure,
       shortlist: lib.logShortlist(shortlist),
       probabilities: probs,
@@ -581,7 +588,7 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     const shortlist = lib.lexicalRank(segments, req.intent).slice(0, SHORTLIST_TEXT).map((r) => r.candidate);
     const q = lib.choiceQuestion('RETRIEVE', req.intent, shortlist, obs.shot);
     const res = await s1.ask({ state: q.state, questions: { action: q.question } });
-    const rule = policy(req, s1);
+    const rule = policy(req, s1, 'RETRIEVE');
     const v = lib.verdict(probabilitiesOf(res.answers.action), rule);
     note({
       kind: 'RETRIEVE',
@@ -665,7 +672,7 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     const tab = await pickTab(req, state);
     if (!tab) throw new IntentError('no tab yet: start with --intent "open <url>", or pass --tab');
     const { p, evidence, shot } = await judgeClaim(req, tab, s1);
-    const sure = req.sure ?? lib.SURE;
+    const sure = policy(req, s1, 'VERIFY').sure;
     const word = p >= sure ? 'yes' : p <= 1 - sure ? 'no' : 'unsure';
     return {
       tab,
@@ -680,7 +687,7 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     const tab = await pickTab(req, state);
     if (!tab) throw new IntentError('no tab yet: start with --intent "open <url>", or pass --tab');
     const limit = (req.timeout || WAIT_DEFAULT_S) * 1000;
-    const sure = req.sure ?? lib.SURE;
+    const sure = policy(req, s1, 'VERIFY').sure;
     const started = Date.now();
     let last = null;
     for (let round = 0; ; round++) {

@@ -830,6 +830,47 @@ const SURE_BY_MODEL = {
 const QUESTION_STYLE = { '0.8b-vision-wr2-intent': 'plain' };
 
 /**
+ * A kev bundle's own settings for intent, from the "intent" field of its
+ * manifest.json: { question: 'plain' | 'menu', act, retrieve, verify }, the
+ * wording it was trained on and the thresholds it was calibrated at. A bundle
+ * says this itself because its name cannot be relied on (a Hugging Face URL
+ * ends in the repo's name). Anything missing or malformed is left out, and
+ * the name maps decide as before.
+ */
+function bundleSettings(manifest) {
+  const m = manifest && typeof manifest.intent === 'object' && manifest.intent ? manifest.intent : {};
+  const out = {};
+  if (m.question === 'plain' || m.question === 'menu') out.question = m.question;
+  for (const k of ['act', 'retrieve', 'verify']) {
+    const n = Number(m[k]);
+    if (m[k] != null && Number.isFinite(n) && n > 0 && n <= 1) out[k] = n;
+  }
+  return out;
+}
+
+/**
+ * The act-or-ask rule for a System 1 on one kind of call: --sure, else the
+ * bundle's own threshold for that kind (RETRIEVE falls back to its act
+ * threshold), else the name maps. VERIFY's yes/no band keeps SURE unless the
+ * bundle names its own. → { sure, ignoreNone }
+ */
+function s1Policy(s1, kind, reqSure) {
+  const own = (s1 && s1.intent) || {};
+  const ignoreNone = Boolean(s1 && s1.kev);
+  if (kind === 'VERIFY') return { sure: reqSure ?? own.verify ?? SURE, ignoreNone };
+  const byName = SURE_BY_MODEL[s1 && s1.key] ?? (s1 && s1.kev ? SURE_BY_MODEL.kev : SURE);
+  const mine = kind === 'RETRIEVE' ? (own.retrieve ?? own.act) : own.act;
+  return { sure: reqSure ?? mine ?? byName, ignoreNone };
+}
+
+/** The ACT question's wording for a System 1: the bundle's own, else by name. */
+function questionStyle(s1) {
+  const own = (s1 && s1.intent) || {};
+  if (own.question) return own.question;
+  return s1 && s1.kev ? QUESTION_STYLE[s1.key] || 'menu' : 'plain';
+}
+
+/**
  * Whether to act on System 1's answer. → { pick, p, sure, ranked: [[id, p]] }
  * With ignoreNone (kev, whose NONE often wins over a right but unsure
  * choice), the best other choice decides; otherwise a winning NONE means
@@ -1176,6 +1217,9 @@ module.exports = {
   SURE,
   SURE_BY_MODEL,
   QUESTION_STYLE,
+  bundleSettings,
+  s1Policy,
+  questionStyle,
   tokens,
   stem,
   contentWords,
