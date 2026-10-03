@@ -12,6 +12,7 @@ import {
   formatDate,
   hasCheck,
   parseSuites,
+  redactSecrets,
   resolvePlaceholders,
   selectSuites,
   shellQuote,
@@ -666,4 +667,18 @@ test('traceSize summarizes what the judge was sent', () => {
     'malformed'
   );
   is(traceSize({ steps: ['x'], screenshots: [null] }), '1 steps / 1 chars, 1 screenshots / 0 KiB');
+});
+
+test('redactSecrets takes join tokens out of errors and artifacts', () => {
+  const err =
+    'slicc exec: tray signaling network error: Post "https://www.sliccy.ai/join/9400db9a-4450.0d85": c';
+  is(
+    redactSecrets(err),
+    'slicc exec: tray signaling network error: Post "https://www.sliccy.ai/join/<token>": c'
+  );
+  is(
+    redactSecrets('x /controller/abc?y=1 /webhook/def z'),
+    'x /controller/<token>?y=1 /webhook/<token> z'
+  );
+  is(redactSecrets(null), '');
 });

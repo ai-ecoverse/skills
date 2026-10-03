@@ -184,3 +184,12 @@ export function parseSuites(text) {
 
 /** Whether a goal has a deterministic check (else `pass` is null and only the rubric scores). */
 export const hasCheck = (goal) => Boolean(goal.expect?.length || goal.expect_url?.length);
+
+/**
+ * Join/controller/webhook tokens out of text that lands in records and artifacts. The job log
+ * masks the join URL, but uploaded artifacts are not masked: a CLI network error quoted the full
+ * join URL into a record (run 37114746826).
+ */
+export function redactSecrets(text) {
+  return String(text ?? '').replace(/\/(join|controller|webhook)\/[^\s"'/?]+/g, '/$1/<token>');
+}

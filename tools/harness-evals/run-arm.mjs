@@ -24,6 +24,7 @@ import {
   fillGoal,
   hasCheck,
   parseSuites,
+  redactSecrets,
   resolvePlaceholders,
   selectSuites,
   shellQuote,
@@ -295,7 +296,7 @@ for (const rep of reps) {
     const runDir = join(out, 'artifacts', arm.id, `${g.id}-r${rep}`);
     if (skillOut) {
       mkdirSync(runDir, { recursive: true });
-      writeFileSync(join(runDir, 'stdout.txt'), skillOut.slice(-2 * 1024 * 1024));
+      writeFileSync(join(runDir, 'stdout.txt'), redactSecrets(skillOut.slice(-2 * 1024 * 1024)));
     }
     // The bare agent's own record of what it did (every tool call, cone and scoops), so a
     // reviewer can check how it played: the judge reads the same steps.
@@ -334,7 +335,9 @@ for (const rep of reps) {
       } catch (e) {
         rubric = {
           credit: null,
-          error: `${String(e.message ?? e).slice(0, 240)} (trace: ${traceSize(trace)})`,
+          error: redactSecrets(
+            `${String(e.message ?? e).slice(0, 240)} (trace: ${traceSize(trace)})`
+          ),
         };
       }
     }
@@ -356,7 +359,7 @@ for (const rep of reps) {
       rubric,
       metrics,
       tabs_judged: judged,
-      error: runError,
+      error: runError == null ? null : redactSecrets(runError),
       at: new Date().toISOString(),
     };
     writeFileSync(
@@ -365,7 +368,7 @@ for (const rep of reps) {
     );
     results.push(record);
     console.log(
-      `[harness] ${skill}/${arm.id} ${g.id} r${rep}: ${record.pass == null ? 'no check' : record.pass ? 'PASS' : 'fail'} (own ${record.self_ok}) ${seconds.toFixed(0)} s${delta.costUsd == null ? '' : ` $${delta.costUsd.toFixed(3)}`}${rubric ? ` credit ${rubric.credit == null ? `error (${rubric.error})` : `${Math.round(rubric.credit * 100)}%`}` : ''}${record.invalid ? ` INVALID: ${record.invalid}` : ''}${runError ? ` ERROR ${runError.slice(0, 120)}` : ''}`
+      `[harness] ${skill}/${arm.id} ${g.id} r${rep}: ${record.pass == null ? 'no check' : record.pass ? 'PASS' : 'fail'} (own ${record.self_ok}) ${seconds.toFixed(0)} s${delta.costUsd == null ? '' : ` $${delta.costUsd.toFixed(3)}`}${rubric ? ` credit ${rubric.credit == null ? `error (${rubric.error})` : `${Math.round(rubric.credit * 100)}%`}` : ''}${record.invalid ? ` INVALID: ${record.invalid}` : ''}${runError ? ` ERROR ${redactSecrets(runError).slice(0, 120)}` : ''}`
     );
   }
 }
