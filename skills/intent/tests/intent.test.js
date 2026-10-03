@@ -259,3 +259,29 @@ test('training log: redaction, the shortlist as kev saw it, corrections', () => 
   is(lib.correctionOf({ ...last, at: now - 10 * 60 * 1000 }, { ref: 'e4' }, 'ACT', 'T', now), null);
   is(lib.correctionOf(last, { ref: 'e4' }, 'ACT', 'OTHER', now), null);
 });
+
+test('bundle settings: a manifest field overrides, its absence keeps the old rules', () => {
+  // No "intent" field: exactly the name maps of before.
+  is(lib.bundleSettings({ name: 'kev-4b-vision' }), {});
+  is(lib.bundleSettings(null), {});
+  const s1 = (key, kev, intent = {}) => ({ key, kev, intent });
+  const plain = { kev: true };
+  is(lib.s1Policy(s1('4b-vision', true), 'ACT'), { sure: 0.6, ignoreNone: true });
+  is(lib.s1Policy(s1('0.8b-vision-wr2-intent', true), 'ACT').sure, 0.7);
+  is(lib.s1Policy(s1('kev.js', true), 'ACT').sure, 0.5);
+  is(lib.s1Policy(s1('kev.js', true), 'RETRIEVE').sure, 0.5);
+  is(lib.s1Policy(s1('clef', false), 'ACT'), { sure: 0.7, ignoreNone: false });
+  is(lib.s1Policy(s1('4b-vision', true), 'VERIFY').sure, lib.SURE);
+  is([lib.questionStyle(s1('4b-vision', true)), lib.questionStyle(s1('0.8b-vision-wr2-intent', true)), lib.questionStyle(s1('clef', false)), lib.questionStyle(plain)], ['menu', 'plain', 'plain', 'menu']);
+  // The bundle declares its own (an HF URL's last segment is the repo's name).
+  const own = lib.bundleSettings({ intent: { question: 'plain', act: 0.65, verify: 0.8 } });
+  is(own, { question: 'plain', act: 0.65, verify: 0.8 });
+  is(lib.s1Policy(s1('kev.js', true, own), 'ACT').sure, 0.65);
+  is(lib.s1Policy(s1('kev.js', true, own), 'RETRIEVE').sure, 0.65);
+  is(lib.s1Policy(s1('kev.js', true, own), 'VERIFY').sure, 0.8);
+  is(lib.questionStyle(s1('kev.js', true, own)), 'plain');
+  is(lib.s1Policy(s1('kev.js', true, { ...own, retrieve: 0.4 }), 'RETRIEVE').sure, 0.4);
+  // --sure still wins; malformed values are ignored.
+  is(lib.s1Policy(s1('kev.js', true, own), 'ACT', 0.9).sure, 0.9);
+  is(lib.bundleSettings({ intent: { question: 'fancy', act: 2, retrieve: 'x', verify: 0 } }), {});
+});
