@@ -684,11 +684,24 @@ unverified; it is printed as "Expires".
 
 ## App Manifest API (`apps.manifest.*`, `tooling.tokens.rotate`)
 
-A different API surface from everything above: `https://slack.com/api/` over
-plain HTTPS (not same-origin XHR), authenticated with an **app configuration
-token** (`xoxe.xoxp-...`) in an `Authorization: Bearer` header. This is a third
-credential — not the `xoxb` bot token, not the `xoxc` session token used by every
-other endpoint in this document. Used by `slack-ext app`.
+Used by `slack-ext app`. Two credentials are accepted:
+
+- an **app configuration token** (`xoxe.xoxp-...`) in an
+  `Authorization: Bearer` header, sent to `https://slack.com/api/` over plain
+  HTTPS; or
+- **the `xoxc` session token**, sent like every other endpoint in this document:
+  `POST /api/<method>` through the Slack tab (same-origin, with the `d` cookie),
+  token as the `token` form field. Measured 2026-10-02 against app
+  `A0C2DNYR0TF`: `apps.manifest.export` (with both the workspace token
+  `T0385CHDU9E` and the grid token `E06V3987PMY`), `apps.manifest.validate` and
+  `apps.manifest.update` all returned `ok:true`. The user was an org admin and an
+  app collaborator; a non-collaborator's error is unverified.
+  `developer.apps.manifest.export` answers `unknown_method`.
+
+`slack-ext app` tries them in the order `--token` > `$SLACK_APP_CONFIG_TOKEN` >
+config `appConfigToken` > session (`--session` / `--no-session` override) and
+prints which one it used. See `references/app-manifest.md`. The `xoxb` bot token
+is rejected.
 
 Transport: `Content-Type: application/x-www-form-urlencoded`. A JSON request body
 is rejected with `invalid_arguments`. The `manifest` parameter is a JSON
@@ -698,10 +711,11 @@ is rejected with `invalid_arguments`. The `manifest` parameter is a JSON
 returned **HTTP 200** with `{"ok":false,"error":"..."}` — a bogus bearer token
 gave `invalid_auth`, a bad app id gave `invalid_app_id`. Check `body.ok`.
 
-Getting the first token is a manual browser step and cannot be automated:
+Getting a config token is a manual browser step:
 `api.slack.com/apps` → "Your App Configuration Tokens" → Generate Token → pick a
 workspace → Generate. (The workspace picker is a Slack Kit `.c-basic-select`
-that ignores synthetic events entirely.)
+that ignores synthetic events entirely.) The session path needs none.
+`tooling.tokens.rotate` is config-token only.
 
 ### POST /api/apps.manifest.export
 

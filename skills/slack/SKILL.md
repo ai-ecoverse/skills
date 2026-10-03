@@ -613,7 +613,7 @@ proves the token and method are working. This was used to verify all three
 
 ## App manifest management (`slack-ext app`)
 
-`slack-ext app` reads and changes Slack app configuration (App Manifest API, separate app configuration token); every write needs `--confirm`.
+`slack-ext app` reads and changes Slack app configuration (App Manifest API) with an app configuration token if one is set, else the Slack tab's browser session (acts as you; `--session`/`--no-session` override); every write needs `--confirm`.
 Updates have no merge semantics (omitted fields are deleted), so writes export-modify-update. A removal you asked for (`--remove`) needs only
 `--confirm`; an unrequested deletion, including every omission in an `app apply` file, is refused unless `--allow-deletions` is given.
 `permissions_updated: true` means reinstall; `token-rotate` invalidates the old refresh token. Reference: `references/app-manifest.md`.
@@ -625,7 +625,7 @@ Updates have no merge semantics (omitted fields are deleted), so writes export-m
   Manifest API (wire format, update semantics, and the methods deliberately left
   unwired).
 - `references/app-manifest.md` — `slack-ext app`: the export-modify-update rule, the
-  `--allow-deletions` gate, reinstall on `permissions_updated`, the app configuration token, and
+  `--allow-deletions` gate, reinstall on `permissions_updated`, config-token vs browser-session auth, and
   every `app` subcommand.
 - `references/enterprise-grid.md` — the Enterprise Grid admin commands (`eg-*`, `channel-*`,
   `approvals`, `admin-app`): authentication, per-command APIs and parameters, wire facts, and

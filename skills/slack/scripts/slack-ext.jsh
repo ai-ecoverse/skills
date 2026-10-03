@@ -61,8 +61,9 @@ const CHANNEL_ATTRIBUTION =
 const SLACK_DOMAIN = 'app.slack.com';
 
 // App Manifest API (see the `app` section below). Called over plain HTTPS with a
-// bearer app configuration token — NOT through the Slack tab, because this
-// credential is not the tab's xoxc session token.
+// bearer app configuration token when one is configured; otherwise (since
+// 2026-10-02) through the Slack tab with the xoxc session token, like every
+// other command here. See wire fact A in the `app` section.
 const SLACK_API_BASE = 'https://slack.com/api';
 const APP_TOKEN_ENV = 'SLACK_APP_CONFIG_TOKEN';
 const APP_TOKEN_CONFIG_KEY = 'appConfigToken';
@@ -170,13 +171,22 @@ Every mutating app command requires --confirm and prints the full diff first.
 Any deletion the command was not explicitly asked to make is a hard stop, even
 with --confirm: re-run with --allow-deletions once every named deletion is
 intended. Writes always export the live manifest first and send the complete
-result, because apps.manifest.update deletes anything the payload omits.
+result, because apps.manifest.update deletes anything the payload omits. The
+manifest is re-exported immediately before the update; if it changed since the
+diff was shown, the write is refused.
 
-These app commands need an APP CONFIGURATION TOKEN (xoxe.xoxp-...), which is a
-third credential: not a bot xoxb token and not the xoxc session token used by
-every other command here. There is deliberately no fallback between them.
-Set it with --token=<tok>, $SLACK_APP_CONFIG_TOKEN, or in the skill config under
-"appConfigToken". Minting the first one is a human step in the browser:
+App credential, first match wins:
+  --token=<tok>  >  $SLACK_APP_CONFIG_TOKEN  >  skill config "appConfigToken"
+  >  the browser session (xoxc) token of the Slack tab for --ws (default: the
+     active tab's workspace).
+  --session      use the browser session even if a config token is set
+  --no-session   never fall back to the browser session
+Every app command prints which path it used (to stderr): "auth: app
+configuration token" or "auth: browser session (xoxc), acts as <user>". On the
+session path a manifest change is the HUMAN's own action, made as that user.
+The session path needs the Slack user to be able to manage the app (measured
+with an org admin who is an app collaborator). token-rotate is config-token
+only: it rotates that credential. Minting a config token is a human step:
 api.slack.com/apps -> Your App Configuration Tokens -> Generate Token.
 
 Two manifest methods will never be wired up: apps.manifest.create and
@@ -1070,8 +1080,11 @@ async function cmdRemoveChannel() {
 // event (click on the placeholder, click on `.c-select_button`,
 // Enter/Space/ArrowDown KeyboardEvents, and a full
 // pointerdown/mousedown/pointerup/mouseup/click sequence all leave
-// aria-expanded="false"). Verified 2026-09-18. The manifest API replaces all of
-// that, so there is deliberately no browser automation in this section.
+// aria-expanded="false"). Verified 2026-09-18. Re-checked 2026-10-02: the
+// app-settings SPA in a background tab still rendered only its header after
+// 50 s. The manifest API replaces all of that, so there is deliberately no UI
+// automation in this section (the session path below uses the tab only as an
+// authenticated same-origin fetch, never its DOM).
 //
 // ── Wire facts, each verified live 2026-09-18 ────────────────────────────────
 //
@@ -1080,6 +1093,25 @@ async function cmdRemoveChannel() {
 //    session token every other command in this file uses, and NOT a bot xoxb
 //    token. There is deliberately NO fallback between them — a wrong-credential
 //    call either fails confusingly or acts as the wrong identity.
+//    SUPERSEDED IN PART, measured 2026-10-02 (cone, 17:40-17:46 CEST): the App
+//    Manifest API ALSO accepts the Slack tab's xoxc SESSION token, sent the way
+//    every other command here sends it (form field `token`, POST /api/<method>
+//    through browser.fetch on the tab). Against app A0C2DNYR0TF:
+//      apps.manifest.export {app_id}           -> ok:true, full manifest, with the
+//                                                 token of workspace T0385CHDU9E
+//                                                 AND of grid org E06V3987PMY
+//      apps.manifest.validate {app_id,manifest} -> ok:true, errors: []
+//      apps.manifest.update {app_id,manifest}   -> ok:true, permissions_updated:
+//                                                 true; the re-export matched the
+//                                                 candidate exactly
+//      developer.apps.manifest.export           -> unknown_method (not used)
+//    The xoxc user was an org admin AND an app collaborator. What a
+//    non-collaborator gets back is UNVERIFIED, so errors on that path are
+//    reported generically (error + response_metadata.messages).
+//    The config token is therefore no longer the ONLY credential, but the two
+//    are still never substituted silently: resolveAppAuth() picks exactly one
+//    path, in a fixed order, and every command prints which one it used. A
+//    session-path change is the logged-in human's own action.
 // B. Requests are FORM-ENCODED (application/x-www-form-urlencoded); the
 //    `manifest` parameter is a JSON STRING. A JSON request body is rejected:
 //    posting {"refresh_token":"..."} as JSON returned invalid_arguments
@@ -1091,6 +1123,11 @@ async function cmdRemoveChannel() {
 // D. apps.manifest.export and apps.manifest.validate both answer `not_authed` to
 //    an unauthenticated probe (a nonexistent method answers `unknown_method`),
 //    so both method names are real.
+//    Still true on 2026-10-02, but note what it does and does not show: it is a
+//    probe with NO credential, so it proves the method names and nothing about
+//    which credentials are accepted. The "config token only" reading of fact A
+//    was never measured against a session token on 2026-09-18; with one, all
+//    three methods answered ok:true on 2026-10-02 (see A).
 // E. apps.manifest.validate returns structured errors carrying JSON POINTERS,
 //    e.g. {"code":"illegal_bot_scopes","message":"Illegal bot scopes found
 //    ...","pointer":"/oauth_config/scopes/bot"}. A valid manifest returns
@@ -1132,15 +1169,25 @@ const APP_TOKEN_HELP =
   'Provide an app configuration token (xoxe.xoxp-...) with --token=<tok>,\n' +
   '  export ' + APP_TOKEN_ENV + '=<tok>, or store it in the skill config as\n' +
   '  "' + APP_TOKEN_CONFIG_KEY + '".\n' +
-  '  Minting the first one is a human step and cannot be automated:\n' +
+  '  Minting one is a human step in the browser:\n' +
   '  api.slack.com/apps -> "Your App Configuration Tokens" -> Generate Token\n' +
-  '  -> pick a workspace -> Generate.';
+  '  -> pick a workspace -> Generate.\n' +
+  '  Without one, the app commands fall back to the Slack tab\'s browser session\n' +
+  '  (unless --no-session is given).';
 
-// Resolution order mirrors the repo convention (explicit flag, env var, skill
-// config). It never reaches for the xoxc session token: these are different
-// credentials for different APIs, and silently substituting one for the other is
-// how a command ends up acting as the wrong identity.
-async function getAppConfigToken() {
+const APP_SESSION_ATTRIBUTION =
+  "xoxc session call: a manifest change made this way is the human's own action, made as that user.";
+
+// Read the configured app configuration token: explicit flag, env var, skill
+// config (the repo convention). With { optional: true } a missing token returns
+// null so resolveAppAuth() can fall back to the browser session; without it the
+// absence is fatal (the --no-session case).
+//
+// A configured value is never treated as a session token: an xoxc- value here is
+// refused, because the session path reads the token from the Slack tab for the
+// chosen workspace (with its `d` cookie), never from a flag or env var.
+async function getAppConfigToken(opts) {
+  const optional = Boolean(opts && opts.optional);
   let token = typeof flags.token === 'string' && flags.token ? flags.token : '';
   if (!token && process.env && process.env[APP_TOKEN_ENV]) {
     token = process.env[APP_TOKEN_ENV];
@@ -1150,6 +1197,7 @@ async function getAppConfigToken() {
     if (cfg[APP_TOKEN_CONFIG_KEY]) token = cfg[APP_TOKEN_CONFIG_KEY];
   }
   if (!token) {
+    if (optional) return null;
     cli.die('No app configuration token found.\n  ' + APP_TOKEN_HELP, { prefix: PREFIX });
   }
   // Deliberately NO generic shape check on the value beyond the two
@@ -1167,14 +1215,29 @@ async function getAppConfigToken() {
   }
   if (/^xoxc-/.test(token)) {
     cli.die(
-      'That is a Slack SESSION token (xoxc-), used by the user-management\n' +
-        '  commands in this script. The App Manifest API needs a separate app\n' +
-        '  configuration token.\n  ' + APP_TOKEN_HELP,
+      'That is a Slack SESSION token (xoxc-), passed as an app configuration token.\n' +
+        '  The browser-session path reads the session token from the Slack tab itself\n' +
+        '  (it needs the tab\'s cookie); use --session instead of passing the value.\n  ' +
+        APP_TOKEN_HELP,
       { prefix: PREFIX }
     );
   }
   return token;
 }
+
+// ── Transports: one interface, two implementations ────────────────────────────
+//
+// Every app command talks to an "app client": { kind, label, post(method, params) }
+// where post() resolves to the PARSED BODY (never a status) or to an ok:false
+// body for a transport failure. The commands never look at kind except to print
+// it; which credential is in use is decided once, in resolveAppAuth().
+//
+//   kind 'config'  — https://slack.com/api/<method> via sliccy:http, form body,
+//                    `Authorization: Bearer <app configuration token>`.
+//   kind 'session' — POST /api/<method> through browser.fetch on the Slack tab
+//                    (same-origin, so the `d` cookie travels), form body with the
+//                    xoxc token as the `token` field — the transport slackApi()
+//                    uses for every other command in this file.
 
 // A null/absent token builds a client with NO Authorization header. That is not
 // an oversight: tooling.tokens.rotate authenticates BY ARGUMENT (refresh_token),
@@ -1198,9 +1261,152 @@ function appApiClient(token) {
   return http.client(config);
 }
 
+function formBody(params) {
+  const body = new URLSearchParams();
+  for (const [k, v] of Object.entries(params || {})) {
+    body.append(k, String(v));
+  }
+  return body;
+}
+
+function configTokenClient(token) {
+  return {
+    kind: 'config',
+    label: 'app configuration token',
+    async post(method, params) {
+      let res;
+      try {
+        res = await appApiClient(token).post('/' + method, {
+          body: formBody(params).toString(),
+          headers: { 'content-type': 'application/x-www-form-urlencoded; charset=utf-8' },
+          raw: true,
+        });
+      } catch (e) {
+        if (e && e.name === 'NodeExitError') throw e;
+        // A transport/non-2xx failure is rare here (Slack uses 200 + ok:false), so
+        // surface it as an ok:false body and let the caller report it uniformly.
+        return { ok: false, error: 'http_error', detail: (e && e.message) || String(e) };
+      }
+      const data = res && typeof res.body === 'object' && res.body ? res.body : null;
+      return data || { ok: false, error: 'bad_response' };
+    },
+  };
+}
+
+// The token value stays inside this closure: it is never returned, logged or
+// put in an error message.
+function sessionClient(tab, token, workspaceId) {
+  return {
+    kind: 'session',
+    label: 'browser session (xoxc)',
+    workspaceId: workspaceId,
+    user: null,
+    userId: null,
+    async post(method, params) {
+      const body = formBody(params);
+      body.append('token', token);
+      let resp;
+      try {
+        resp = await browser.fetch(tab, '/api/' + method, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: body.toString(),
+        });
+      } catch (e) {
+        if (e && e.name === 'NodeExitError') throw e;
+        return { ok: false, error: 'xhr_error', detail: (e && e.message) || String(e) };
+      }
+      return resp && typeof resp.body === 'object' && resp.body
+        ? resp.body
+        : { ok: false, error: 'bad_response' };
+    },
+  };
+}
+
+let _appAuth = null;
+
+// Pick exactly ONE credential path, in a fixed order, and say which:
+//   --token > $SLACK_APP_CONFIG_TOKEN > config appConfigToken > browser session
+// --session forces the session path (ignoring env/config tokens), --no-session
+// forbids it. The result is cached so a write's export/re-export/update all use
+// the same identity.
+async function resolveAppAuth() {
+  if (_appAuth) return _appAuth;
+  const forceSession = Boolean(flags.session);
+  const noSession = Boolean(flags['no-session']);
+  if (forceSession && noSession) {
+    cli.die('--session and --no-session contradict each other; pass at most one.', {
+      prefix: PREFIX,
+    });
+  }
+  if (forceSession && typeof flags.token === 'string' && flags.token) {
+    cli.die(
+      '--session and --token contradict each other: --token names an app\n' +
+        '  configuration token, --session asks for the browser session. Pass one.',
+      { prefix: PREFIX }
+    );
+  }
+
+  if (!forceSession) {
+    const token = await getAppConfigToken({ optional: !noSession });
+    if (token) {
+      _appAuth = configTokenClient(token);
+      console.error(color.dim('auth: app configuration token'));
+      return _appAuth;
+    }
+  }
+
+  _appAuth = await openSessionClient();
+  return _appAuth;
+}
+
+async function openSessionClient() {
+  const workspaceId = await resolveWorkspace(false);
+  const { tab, token } = await resolveWorkspaceToken(workspaceId);
+  if (!token) {
+    cli.die(
+      'No app configuration token, and no Slack session token for workspace ' +
+        workspaceId + ' in the open Slack tab.\n' +
+        '  Log into app.slack.com (or pass --ws=<id> for a workspace the tab knows),\n' +
+        '  or ' + APP_TOKEN_HELP,
+      { prefix: PREFIX }
+    );
+  }
+  const client = sessionClient(tab, token, workspaceId);
+  // Identity first: the operator has to know WHO a session-path change will be
+  // attributed to before anything else happens. auth.test is read-only.
+  const who = await client.post('auth.test', {});
+  if (!who || !who.ok) {
+    cli.die(
+      'The Slack session for workspace ' + workspaceId + ' was rejected by auth.test (' +
+        slackErrorDetail(who) + ').\n' +
+        '  Log into app.slack.com in your browser and try again.',
+      { prefix: PREFIX }
+    );
+  }
+  client.user = who.user || who.user_id || '(unknown user)';
+  client.userId = who.user_id || null;
+  console.error(
+    color.dim(
+      'auth: browser session (xoxc), acts as ' + client.user +
+        (client.userId ? ' (' + client.userId + ')' : '') + ' on ' + workspaceId
+    )
+  );
+  console.error(color.dim('  ' + APP_SESSION_ATTRIBUTION));
+  return client;
+}
+
+// Callers pass an app client; a bare string/null (legacy call shape, and the
+// token-rotate case, which needs NO bearer) means the config-token transport.
+function asAppClient(auth) {
+  if (auth && typeof auth === 'object' && typeof auth.post === 'function') return auth;
+  return configTokenClient(auth || null);
+}
+
 // Low-level call. Returns the PARSED BODY, never a status code, because Slack
-// signals failure in the body with HTTP 200 (fact C above).
-async function manifestApi(method, params, token) {
+// signals failure in the body with HTTP 200 (fact C above). The create/delete
+// guard runs BEFORE any transport is touched, on both paths.
+async function manifestApi(method, params, auth) {
   if (FORBIDDEN_MANIFEST_METHODS.has(method)) {
     cli.die(
       'Refusing to call ' + method + '.\n' +
@@ -1209,35 +1415,24 @@ async function manifestApi(method, params, token) {
       { prefix: PREFIX }
     );
   }
-
-  const body = new URLSearchParams();
-  for (const [k, v] of Object.entries(params || {})) {
-    body.append(k, String(v));
-  }
-
-  let res;
-  try {
-    res = await appApiClient(token).post('/' + method, {
-      body: body.toString(),
-      headers: { 'content-type': 'application/x-www-form-urlencoded; charset=utf-8' },
-      raw: true,
-    });
-  } catch (e) {
-    if (e && e.name === 'NodeExitError') throw e;
-    // A transport/non-2xx failure is rare here (Slack uses 200 + ok:false), so
-    // surface it as an ok:false body and let the caller report it uniformly.
-    return { ok: false, error: 'http_error', detail: (e && e.message) || String(e) };
-  }
-
-  const data = res && typeof res.body === 'object' && res.body ? res.body : null;
-  if (!data) return { ok: false, error: 'bad_response' };
+  const data = await asAppClient(auth).post(method, params || {});
+  if (!data || typeof data !== 'object') return { ok: false, error: 'bad_response' };
   return data;
 }
 
-// Error mapping for an ok:false App Manifest API body.
-function dieOnManifestError(method, data, what) {
+// Error mapping for an ok:false App Manifest API body. `slackErrorDetail` keeps
+// response_metadata.messages, which is where Slack explains the error.
+function dieOnManifestError(method, data, what, auth) {
   const err = (data && data.error) || 'unknown_error';
+  const session = Boolean(auth && auth.kind === 'session');
   if (err === 'invalid_auth' || err === 'not_authed' || err === 'token_expired') {
+    if (session) {
+      cli.die(
+        'Slack rejected the browser session for ' + method + ' (' + slackErrorDetail(data) + ').\n' +
+          '  Log into app.slack.com in your browser and try again, or\n  ' + APP_TOKEN_HELP,
+        { prefix: PREFIX }
+      );
+    }
     cli.die(
       'App configuration token rejected by Slack (' + err + ').\n' +
         '  These tokens expire and must then be rotated or regenerated.\n  ' + APP_TOKEN_HELP,
@@ -1251,14 +1446,23 @@ function dieOnManifestError(method, data, what) {
       { prefix: PREFIX }
     );
   }
-  cli.die('Could not ' + what + ': ' + method + ' returned ' + err, { prefix: PREFIX });
+  // UNVERIFIED on the session path: what a Slack user who cannot manage the app
+  // (not a collaborator) gets back. Report it generically rather than guess.
+  const hint = session
+    ? '\n  (browser session as ' + (auth.user || 'the logged-in user') + ': the Slack user must be\n' +
+      '  able to manage this app, e.g. as a collaborator. A config token may work instead.)'
+    : '';
+  cli.die(
+    'Could not ' + what + ': ' + method + ' returned ' + slackErrorDetail(data) + hint,
+    { prefix: PREFIX }
+  );
 }
 
 // Single place where an App Manifest API response is judged. The verdict is
 // data.ok — NOT the HTTP status, which is 200 even for invalid_auth.
-async function manifestCall(method, params, token, what) {
-  const data = await manifestApi(method, params, token);
-  if (!data.ok) dieOnManifestError(method, data, what);
+async function manifestCall(method, params, auth, what) {
+  const data = await manifestApi(method, params, auth);
+  if (!data.ok) dieOnManifestError(method, data, what, auth);
   return data;
 }
 
@@ -1277,11 +1481,11 @@ function requireAppId(sub) {
   return appId;
 }
 
-async function exportLiveManifest(appId, token) {
+async function exportLiveManifest(appId, auth) {
   const data = await manifestCall(
     'apps.manifest.export',
     { app_id: appId },
-    token,
+    auth,
     'export the manifest for ' + appId
   );
   if (!data.manifest || typeof data.manifest !== 'object') {
@@ -1333,8 +1537,8 @@ function formatLeaf(value) {
 
 async function cmdAppExport() {
   const appId = requireAppId('export');
-  const token = await getAppConfigToken();
-  const manifest = await exportLiveManifest(appId, token);
+  const auth = await resolveAppAuth();
+  const manifest = await exportLiveManifest(appId, auth);
   const text = JSON.stringify(manifest, null, 2);
 
   const out = flags.out;
@@ -1364,8 +1568,8 @@ async function cmdAppExport() {
 
 async function cmdAppShow() {
   const appId = requireAppId('show');
-  const token = await getAppConfigToken();
-  const manifest = await exportLiveManifest(appId, token);
+  const auth = await resolveAppAuth();
+  const manifest = await exportLiveManifest(appId, auth);
 
   if (flags.json) return cli.out(manifest);
 
@@ -1433,12 +1637,12 @@ function renderValidationErrors(errors) {
 async function cmdAppValidate() {
   const appId = requireAppId('validate');
   const candidate = await readManifestFile('app validate');
-  const token = await getAppConfigToken();
+  const auth = await resolveAppAuth();
 
   const data = await manifestApi(
     'apps.manifest.validate',
     { app_id: appId, manifest: JSON.stringify(candidate) },
-    token
+    auth
   );
 
   const errors = Array.isArray(data.errors) ? data.errors : [];
@@ -1457,7 +1661,7 @@ async function cmdAppValidate() {
     }
     // No errors[] means the call itself failed (auth, bad app id, ...) rather
     // than the manifest being invalid.
-    return dieOnManifestError('apps.manifest.validate', data, 'validate the manifest');
+    return dieOnManifestError('apps.manifest.validate', data, 'validate the manifest', auth);
   }
 
   if (flags.json) return;
@@ -1547,8 +1751,8 @@ function renderDeletionWarning(diff, emit) {
 async function cmdAppDiff() {
   const appId = requireAppId('diff');
   const candidate = await readManifestFile('app diff');
-  const token = await getAppConfigToken();
-  const live = await exportLiveManifest(appId, token);
+  const auth = await resolveAppAuth();
+  const live = await exportLiveManifest(appId, auth);
 
   const diff = diffManifests(live, candidate);
 
@@ -1588,6 +1792,27 @@ const UPDATE_METHOD = 'apps.manifest.update';
 
 function deepClone(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+// Structural equality for two exported manifests: object key order is ignored,
+// array order is NOT (Slack stores and returns arrays as sent).
+function canonicalJson(value) {
+  if (Array.isArray(value)) return '[' + value.map(canonicalJson).join(',') + ']';
+  if (isPlainObject(value)) {
+    return (
+      '{' +
+      Object.keys(value)
+        .sort()
+        .map((k) => JSON.stringify(k) + ':' + canonicalJson(value[k]))
+        .join(',') +
+      '}'
+    );
+  }
+  return JSON.stringify(value === undefined ? null : value);
+}
+
+function manifestsEqual(a, b) {
+  return canonicalJson(a) === canonicalJson(b);
 }
 
 // Walk/create an object path inside an ALREADY-EXPORTED manifest. Used only to
@@ -1664,7 +1889,7 @@ function reinstallWarning(emit, appId) {
  * The single write path. Export -> modify a clone -> diff -> gate -> update.
  *
  * spec.appId       app id to export and update
- * spec.token       app configuration token
+ * spec.auth        app client from resolveAppAuth() (config token or session)
  * spec.action      human label, e.g. 'set-scopes'
  * spec.summary     [[label, value], ...] rendered above the diff
  * spec.mutate      (clone(liveManifest)) => next manifest (must return the WHOLE manifest)
@@ -1683,7 +1908,7 @@ async function updateFromLiveManifest(spec) {
   // 1. ALWAYS export first. No export, no write — a write built on anything else
   //    would delete every field it failed to mention. exportLiveManifest() dies
   //    unless body.ok is true AND a manifest object came back.
-  const live = await exportLiveManifest(spec.appId, spec.token);
+  const live = await exportLiveManifest(spec.appId, spec.auth);
 
   // 2. Mutate a CLONE of the live manifest, never a fresh object.
   const next = spec.mutate(deepClone(live));
@@ -1762,15 +1987,38 @@ async function updateFromLiveManifest(spec) {
     return { updated: false, reason: 'no-confirm', diff: diff, live: live, next: next };
   }
 
-  // 6. Update with the COMPLETE manifest object (a JSON string on the wire).
+  // 6. Re-export IMMEDIATELY before the update and refuse if the live manifest
+  //    changed since step 1. The diff the operator just reviewed (and the
+  //    payload built from it) describe the step-1 export; if someone else edited
+  //    the app in between, sending `next` would silently revert their change.
+  //    The comparison is structural (manifestsEqual), so key order is ignored.
+  const recheck = await exportLiveManifest(spec.appId, spec.auth);
+  if (!manifestsEqual(live, recheck)) {
+    const drift = diffManifests(live, recheck);
+    const named = []
+      .concat(drift.deletions.map((d) => '    - ' + d.pointer))
+      .concat(drift.modifications.map((m) => '    ~ ' + m.pointer))
+      .concat(drift.additions.map((a) => '    + ' + a.pointer))
+      .join('\n');
+    cli.die(
+      'Refusing to update ' + spec.appId + ': live manifest changed since the diff was shown.\n' +
+        (named ? named + '\n' : '') +
+        '  Someone or something changed the app between the export this diff was\n' +
+        '  built from and the update. Sending the payload now would revert that\n' +
+        '  change. Nothing was changed. Re-run to review a fresh diff.',
+      { prefix: PREFIX }
+    );
+  }
+
+  // 7. Update with the COMPLETE manifest object (a JSON string on the wire).
   const result = await manifestCall(
     UPDATE_METHOD,
     { app_id: spec.appId, manifest: JSON.stringify(next) },
-    spec.token,
+    spec.auth,
     'update the manifest for ' + spec.appId
   );
 
-  // 7. permissions_updated is the ONLY signal that the live bot token is now
+  // 8. permissions_updated is the ONLY signal that the live bot token is now
   //    stale. Ignoring it is how "I added the scope but it still 403s" happens.
   const permissionsUpdated = result.permissions_updated === true;
   emit('');
@@ -1827,12 +2075,12 @@ async function cmdAppSetScopes() {
   validateNames(add, SCOPE_PATTERN, 'scope');
   validateNames(remove, SCOPE_PATTERN, 'scope');
 
-  const token = await getAppConfigToken();
+  const auth = await resolveAppAuth();
   let change = null;
 
   return updateFromLiveManifest({
     appId: appId,
-    token: token,
+    auth: auth,
     action: 'set-scopes',
     summary: [
       ['Add', add.length ? add.join(', ') : color.dim('(none)')],
@@ -1877,12 +2125,12 @@ async function cmdAppSetEvents() {
   validateNames(add, EVENT_PATTERN, 'event');
   validateNames(remove, EVENT_PATTERN, 'event');
 
-  const token = await getAppConfigToken();
+  const auth = await resolveAppAuth();
   let change = null;
 
   return updateFromLiveManifest({
     appId: appId,
-    token: token,
+    auth: auth,
     action: 'set-events',
     summary: [
       ['Add', add.length ? add.join(', ') : color.dim('(none)')],
@@ -1928,11 +2176,11 @@ async function cmdAppSetRequestUrl() {
     );
   }
 
-  const token = await getAppConfigToken();
+  const auth = await resolveAppAuth();
 
   return updateFromLiveManifest({
     appId: appId,
-    token: token,
+    auth: auth,
     action: 'set-request-url',
     summary: [
       ['URL', url],
@@ -1956,12 +2204,12 @@ async function cmdAppSetRequestUrl() {
 async function cmdAppApply() {
   const appId = requireAppId('apply');
   const candidate = await readManifestFile('app apply');
-  const token = await getAppConfigToken();
+  const auth = await resolveAppAuth();
   const allowDeletions = Boolean(flags['allow-deletions']);
 
   return updateFromLiveManifest({
     appId: appId,
-    token: token,
+    auth: auth,
     action: 'apply',
     summary: [
       ['Manifest', String(flags.manifest)],
@@ -2003,7 +2251,20 @@ function maskToken(value) {
   return s.slice(0, 10) + '...' + s.slice(-4) + ' (' + s.length + ' chars)';
 }
 
+// token-rotate is CONFIG-TOKEN ONLY on purpose: it rotates the app configuration
+// token pair, and the browser session is not that credential. --session is
+// therefore refused outright rather than silently ignored, and the rotate never
+// falls back to the tab (it authenticates by refresh_token argument alone).
 async function cmdAppTokenRotate() {
+  if (flags.session) {
+    cli.die(
+      'app token-rotate is config-token only: it rotates the app configuration\n' +
+        '  token pair (tooling.tokens.rotate with a refresh token). The browser session\n' +
+        '  (xoxc) is a different credential and is never rotated or used here.\n' +
+        '  Re-run without --session.',
+      { prefix: PREFIX }
+    );
+  }
   let refresh =
     typeof flags['refresh-token'] === 'string' && flags['refresh-token']
       ? flags['refresh-token']
@@ -2025,7 +2286,9 @@ async function cmdAppTokenRotate() {
       'No refresh token. Pass --refresh-token=<tok>, export ' + REFRESH_TOKEN_ENV + ',\n' +
         '  or store one in the skill config as "' + REFRESH_TOKEN_CONFIG_KEY + '".\n' +
         '  The refresh token is issued next to the app configuration token at\n' +
-        '  api.slack.com/apps -> "Your App Configuration Tokens".',
+        '  api.slack.com/apps -> "Your App Configuration Tokens".\n' +
+        '  There is no browser-session fallback for token-rotate: it is config-token\n' +
+        '  only, because it rotates that credential.',
       { prefix: PREFIX }
     );
   }
