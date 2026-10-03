@@ -39,6 +39,11 @@ const REGION_TEXTS = 6;
 // top texts by System 1 or by words until RETRIEVE_BUDGET characters.
 const RETRIEVE_MODES = ['answer', 'budget', 'lexical'];
 const RETRIEVE_BUDGET = 1200;
+// Training log caps: the decisions file, the snapshot and screenshot files
+// kept beside it, and one snapshot's size.
+const LOG_MAX_BYTES = 20 * 1024 * 1024;
+const LOG_MAX_FILES = 1000;
+const LOG_SNAPSHOT_MAX = 256 * 1024;
 
 function createIntent({ exec, fs, browser, skill, requireBundle }) {
   class IntentError extends Error {
@@ -330,12 +335,28 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     if (!shortlist.length) throw new IntentError('this page has no controls to act on');
     // kev answers webrunner's wording better; Clef was measured on the plain one.
     const q = lib.choiceQuestion('ACT', req.intent, shortlist, obs.shot, { style: s1.kev ? lib.QUESTION_STYLE[s1.key] || 'menu' : 'plain' });
-    const image = s1.vision ? await markedShot(obs.tab, shortlist, obs.viewport) : null;
+    const shot = s1.vision ? await markedShot(obs.tab, shortlist, obs.viewport) : null;
+    const image = shot ? shot.image : null;
     const res = await s1.ask({ state: q.state, questions: { action: q.question }, ...(image ? { image } : {}) });
     // Answer ids may be click:eN / type:eN: name them by ref from here on.
     const probs = {};
     for (const [id, p] of Object.entries(probabilitiesOf(res.answers.action))) probs[lib.refOf(id)] = p;
-    const v = lib.verdict(probs, policy(req, s1));
+    const rule = policy(req, s1);
+    const v = lib.verdict(probs, rule);
+    note({
+      kind: 'ACT',
+      model: s1.name,
+      style: s1.kev ? lib.QUESTION_STYLE[s1.key] || 'menu' : 'plain',
+      threshold: rule.sure,
+      shortlist: lib.logShortlist(shortlist),
+      probabilities: probs,
+      pick: v.pick,
+      p: v.p,
+      sure: v.sure,
+      shot: obs.shot,
+      raw: obs.raw,
+      png: shot ? shot.png : null,
+    });
     const byId = new Map(shortlist.map((c) => [c.ref, c]));
     return { v, byId, shortlist };
   }
@@ -351,7 +372,7 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     if (r.exitCode !== 0) return null;
     try {
       const marked = await vision.markedImage(await fs.readFileBinary(path), shortlist, viewport);
-      return marked.image;
+      return { image: marked.image, png: marked.png };
     } catch {
       return null;
     }
@@ -554,7 +575,21 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     const shortlist = lib.lexicalRank(segments, req.intent).slice(0, SHORTLIST_TEXT).map((r) => r.candidate);
     const q = lib.choiceQuestion('RETRIEVE', req.intent, shortlist, obs.shot);
     const res = await s1.ask({ state: q.state, questions: { action: q.question } });
-    const v = lib.verdict(probabilitiesOf(res.answers.action), policy(req, s1));
+    const rule = policy(req, s1);
+    const v = lib.verdict(probabilitiesOf(res.answers.action), rule);
+    note({
+      kind: 'RETRIEVE',
+      model: s1.name,
+      mode,
+      threshold: rule.sure,
+      shortlist: lib.logShortlist(shortlist),
+      probabilities: probabilitiesOf(res.answers.action),
+      pick: v.pick,
+      p: v.p,
+      sure: v.sure,
+      shot: obs.shot,
+      raw: obs.raw,
+    });
     const byId = new Map(shortlist.map((s) => [s.id, s]));
     const list = lib.candidateLines(v.ranked, byId, req.candidates || UNSURE_CANDIDATES);
     if (mode === 'budget' && !req.candidates) {
@@ -604,6 +639,17 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     const res = await s1.ask({ state: q.state, questions: { claim: q.question, ...(evidence.length ? { evidence: which } : {}) } });
     const p = Number(res.answers.claim.noul);
     const pick = res.answers.evidence ? res.answers.evidence.choice : null;
+    note({
+      kind: req.kind === 'WAIT_FOR' || /^(?:wait|until)/i.test(req.intent) ? 'WAIT_FOR' : 'VERIFY',
+      model: s1.name,
+      claim: q.question.instructions,
+      shortlist: lib.logShortlist(evidence),
+      probabilities: res.answers.evidence ? probabilitiesOf(res.answers.evidence) : {},
+      pick,
+      p,
+      shot: obs.shot,
+      raw: obs.raw,
+    });
     return { p, evidence: evidence.find((s) => s.id === pick) || evidence[0] || null, shot: obs.shot };
   }
 
@@ -656,9 +702,96 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
    * Handle one request; never exits the process (the daemon serves many).
    * → { stdout, exitCode }
    */
+  // ── training log (--log-dir or INTENT_LOG_DIR) ───────────────────────
+  // What System 1 was shown and answered on every ACT, RETRIEVE, VERIFY and
+  // WAIT_FOR, and whether the caller then corrected it: real runs become
+  // training data. Never part of what the caller reads; redacted; capped.
+  let decision = null;
+  const note = (d) => {
+    decision = d;
+  };
+  let seq = 0;
+
+  const logDirOf = (flags) =>
+    typeof flags['log-dir'] === 'string' && flags['log-dir'] ? flags['log-dir'] : process.env.INTENT_LOG_DIR || null;
+
+  async function appendLog(dir, entry) {
+    const path = `${dir}/decisions.jsonl`;
+    const line = `${lib.redactSecrets(JSON.stringify(entry))}\n`;
+    const old = (await fs.exists(path)) ? String(await fs.readFile(path)) : '';
+    if (old.length + line.length > LOG_MAX_BYTES) return false;
+    await fs.writeFile(path, `${old}${line}`);
+    return true;
+  }
+
+  /** Write this call's decision (and its files), and the correction it makes of the last one. */
+  async function logDecision(flags, { req, kind, result, started, state, error }) {
+    const dir = logDirOf(flags);
+    if (!dir) return state.lastDecision || null;
+    try {
+      await fs.mkdir(dir, { recursive: true });
+      const tab = result ? result.tab : null;
+      const correction = lib.correctionOf(state.lastDecision, req, kind, tab);
+      const d = decision;
+      const id = d ? `d${Date.now().toString(36)}${(seq++).toString(36)}` : null;
+      if (correction) {
+        await appendLog(dir, {
+          type: 'correction',
+          ...correction,
+          at: new Date().toISOString(),
+          by: id,
+          intent: req.intent,
+          ...(req.ref ? { ref: req.ref } : {}),
+          ...(result && result.json && result.json.did ? { did: result.json.did } : {}),
+          outcome: result ? result.outcome : 'error',
+        });
+      }
+      if (!d) return correction ? null : state.lastDecision || null;
+      const files = {};
+      const kept = (await fs.readDir(dir)).filter((n) => /\.(txt|jpg)$/.test(n)).length;
+      if (kept < LOG_MAX_FILES) {
+        if (d.raw) {
+          const text = lib.redactSecrets(d.raw);
+          await fs.writeFile(`${dir}/${id}.snapshot.txt`, text.length > LOG_SNAPSHOT_MAX ? text.slice(0, LOG_SNAPSHOT_MAX) : text);
+          files.snapshot = `${id}.snapshot.txt`;
+        }
+        if (d.png) {
+          try {
+            await fs.writeFileBinary(`${dir}/${id}.jpg`, await vision.toJpeg(d.png, 0.8));
+            files.image = `${id}.jpg`;
+          } catch {
+            // A worker without OffscreenCanvas keeps the snapshot only.
+          }
+        }
+      }
+      const { raw, png, shot, ...rest } = d;
+      await appendLog(dir, {
+        type: 'decision',
+        id,
+        at: new Date().toISOString(),
+        ...rest,
+        intent: req.intent,
+        ...(req.kind ? { kindForced: req.kind } : {}),
+        url: shot ? shot.url : null,
+        title: shot ? shot.title : null,
+        tab,
+        outcome: result ? result.outcome : 'error',
+        ...(error ? { error } : {}),
+        acted: result && result.json && result.outcome === 'acted' ? result.json.ref || null : null,
+        ms: Date.now() - started,
+        files,
+      });
+      return { id, tab, kind: rest.kind, outcome: result ? result.outcome : 'error', at: Date.now() };
+    } catch {
+      // The training log must never break a call.
+      return state.lastDecision || null;
+    }
+  }
+
   async function handle(req, flags = {}) {
     const started = Date.now();
     const state = await readJson(STATE, {});
+    decision = null;
     let result;
     let kind = req.kind || lib.classify(req.intent).kind;
     let s1name = '';
@@ -700,13 +833,17 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
       if (err?.name === 'NodeExitError') throw err;
       const message = err instanceof IntentError ? err.message : `${kind} failed: ${String(err?.message || err).slice(0, 400)}`;
       await logCall({ at: new Date().toISOString(), kind, intent: req.intent, ms: Date.now() - started, error: message });
+      const lastDecision = await logDecision(flags, { req, kind, result: null, started, state, error: message });
+      if (lastDecision !== (state.lastDecision || null)) await writeJson(STATE, { ...state, lastDecision });
       const text = req.json ? JSON.stringify({ ok: false, kind, error: message }) : `intent: ${message}`;
       return { stdout: '', stderr: text, exitCode: err instanceof IntentError ? err.exitCode : 1 };
     }
+    const lastDecision = await logDecision(flags, { req, kind, result, started, state });
     await writeJson(STATE, {
       tab: result.tab,
       at: Date.now(),
       candidates: result.remember || state.candidates || [],
+      lastDecision,
     });
     const stdout = req.json
       ? JSON.stringify({ ok: true, kind, outcome: result.outcome, p: result.p ?? null, tab: result.tab, ...result.json })

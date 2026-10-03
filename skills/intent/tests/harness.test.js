@@ -89,6 +89,11 @@ test('diagnostics: the newest run of this goal, never one of another goal', asyn
   const bike = { url: 'https://www.biketouringtips.com/ArmchairBikeTouring/' };
   is((await adapter.diagnostics({ goal: bike, own: null, list }))[0], `/tmp/intent-arm/${runs[1]}/result.json`);
   is(await adapter.diagnostics({ goal: { url: 'https://httpbin.org/forms/post' }, own: null, list }), []);
+  const own = { run: runs[0] };
+  const listed = async (dir) => (dir.endsWith('/decisions') ? ['decisions.jsonl', 'd1a.snapshot.txt', 'd1a.jpg', 'notes.md'] : runs);
+  const kept = await adapter.diagnostics({ goal: bike, own, list: listed });
+  ok(kept.includes(`/tmp/intent-arm/${runs[0]}/decisions/decisions.jsonl`) && kept.includes(`/tmp/intent-arm/${runs[0]}/decisions/d1a.jpg`));
+  ok(!kept.some((p) => p.endsWith('notes.md')));
   is(adapter.hostSlug('https://news.ycombinator.com/'), 'news-ycombinator-com');
 });
 

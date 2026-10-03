@@ -1016,6 +1016,64 @@ function candidateLines(ranked, byId, max = 5) {
     });
 }
 
+// ── training log ─────────────────────────────────────────────────────
+
+/**
+ * Secrets out of anything the training log keeps: the join, controller and
+ * webhook path tokens harness-evals redacts (#474), and token-like query
+ * parameters.
+ */
+function redactSecrets(text) {
+  return String(text ?? '')
+    .replace(/\/(join|controller|webhook)\/[^\s"'/?]+/g, '/$1/<token>')
+    .replace(/([?&](?:token|access_token|id_token|key|api_key|apikey|sig|signature|auth|code|session|secret|password)=)[^&\s"'#]+/gi, '$1<redacted>');
+}
+
+const LOG_LABEL = 160;
+const LOG_TEXT = 400;
+const cap = (text, max) => {
+  const t = redactSecrets(text);
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+};
+
+/** A shortlist as the training log keeps it: what System 1 was shown. */
+function logShortlist(shortlist) {
+  return shortlist.map((c) =>
+    c.type === 'control'
+      ? {
+          id: c.ref,
+          role: c.element.role,
+          label: cap(c.element.label, LOG_LABEL),
+          ...(c.element.context ? { context: cap(c.element.context, LOG_LABEL) } : {}),
+          ...(c.element.value ? { value: cap(c.element.value, LOG_LABEL) } : {}),
+          ...(c.element.state ? { state: c.element.state } : {}),
+          ...(c.element.region ? { region: c.element.region } : {}),
+          ...(c.rank ? { rank: c.rank } : {}),
+          ...(c.place && c.place !== 'unknown' ? { place: c.place } : {}),
+          ...(c.element.box ? { box: c.element.box } : {}),
+          describe: cap(describeControl(c), 300),
+        }
+      : { id: c.id, ref: c.ref || null, role: c.role, text: cap(c.text, LOG_TEXT), line: c.line ?? null }
+  );
+}
+
+// An unsure answer followed this soon by a --ref, or by the same kind of
+// call, was corrected by the caller.
+const CORRECTION_MS = 3 * 60 * 1000;
+const UNSURE_OUTCOMES = new Set(['unsure', 'candidates', 'dry-run', 'region']);
+
+/**
+ * Whether this call corrects the last logged decision. → { type: 'ref' |
+ * 'retry', of } or null. last: { id, tab, kind, outcome, at }.
+ */
+function correctionOf(last, req, kind, tab, now = Date.now()) {
+  if (!last || !UNSURE_OUTCOMES.has(last.outcome) || now - last.at > CORRECTION_MS) return null;
+  if (last.tab && tab && last.tab !== tab) return null;
+  if (req.ref && last.kind === 'ACT' && kind === 'ACT') return { type: 'ref', of: last.id };
+  if (!req.ref && kind === last.kind) return { type: 'retry', of: last.id };
+  return null;
+}
+
 // ── kev bundles by URL ───────────────────────────────────────────────
 
 const BUNDLE_CACHE = '/shared/cache/kev/bundles';
@@ -1107,6 +1165,9 @@ module.exports = {
   REF_RE,
   MODELS,
   cleanRequest,
+  redactSecrets,
+  logShortlist,
+  correctionOf,
   bundleCacheDir,
   KINDS,
   NONE,

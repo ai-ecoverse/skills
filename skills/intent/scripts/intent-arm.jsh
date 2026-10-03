@@ -115,6 +115,8 @@ async function main() {
       ...(typeof flags['s1-model'] === 'string' ? { model: flags['s1-model'] } : {}),
       ...(typeof flags['s1-from'] === 'string' ? { from: flags['s1-from'] } : {}),
       ...(flags['require-gpu'] ? { 'require-gpu': true } : {}),
+      // The training log: what System 1 saw and chose on every call (intent-core.js).
+      'log-dir': `${dir}/decisions`,
       // The RETRIEVE variant this arm tries: answer (default), budget, lexical.
       ...(typeof flags.retrieve === 'string' ? { retrieve: flags.retrieve } : {}),
       ...(flags['retrieve-budget'] ? { 'retrieve-budget': Number(flags['retrieve-budget']) } : {}),

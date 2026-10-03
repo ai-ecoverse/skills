@@ -56,6 +56,8 @@ function timeLimit(goal, env = typeof process === 'undefined' ? {} : process.env
 }
 
 const RUNS = '/tmp/intent-arm';
+// How many training-log files a run keeps as artifacts.
+const LOG_FILES_KEPT = 600;
 
 /** A goal URL's hostname as intent-arm slugs it into its run ids. */
 function hostSlug(url) {
@@ -87,7 +89,12 @@ async function diagnostics({ goal, own, list }) {
     const ids = (await list(RUNS)).filter((n) => /^\d{4}-\d\d-\d\dT[\w.-]+$/.test(n) && n.endsWith(`-${slug}`)).sort();
     run = ids[ids.length - 1];
   }
-  return run ? ['result.json', 'transcript.md', 'calls.jsonl', 'judge.json'].map((f) => `${RUNS}/${run}/${f}`) : [];
+  if (!run) return [];
+  const keep = ['result.json', 'transcript.md', 'calls.jsonl', 'judge.json'].map((f) => `${RUNS}/${run}/${f}`);
+  // The training log: decisions.jsonl and the snapshot and screenshot of
+  // each decision (intent-core.js caps them), so hosted rounds yield data.
+  const logs = (await list(`${RUNS}/${run}/decisions`)).filter((n) => /^(decisions\.jsonl|d[0-9a-z]+\.(snapshot\.txt|jpg))$/.test(n));
+  return [...keep, ...logs.slice(0, LOG_FILES_KEPT).map((n) => `${RUNS}/${run}/decisions/${n}`)];
 }
 
 /** One goal as an `intent-arm` command line. */

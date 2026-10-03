@@ -245,3 +245,17 @@ test('bundleCacheDir: one cache directory per bundle URL', () => {
   ok(lib.bundleCacheDir('https://example.com/other/kev-0.8b-vision-wr2-intent') !== a);
   is([lib.bundleCacheDir('/mnt/kev-models/x'), lib.bundleCacheDir('file:///etc/passwd')], [null, null]);
 });
+
+test('training log: redaction, the shortlist as kev saw it, corrections', () => {
+  is(lib.redactSecrets('https://www.sliccy.ai/join/abc.def and https://x.y/z?token=SECRET&q=1'), 'https://www.sliccy.ai/join/<token> and https://x.y/z?token=<redacted>&q=1');
+  const cands = lib.controlCandidates([el('e29', 'button', 'Submit order', { context: 'Pizza', box: [1, 2, 3, 4] })], null);
+  const [logged] = lib.logShortlist(cands);
+  is([logged.id, logged.role, logged.label, logged.context, logged.describe], ['e29', 'button', 'Submit order', 'Pizza', 'button "Submit order" for "Pizza"']);
+  const now = Date.now();
+  const last = { id: 'd1', tab: 'T', kind: 'ACT', outcome: 'unsure', at: now - 1000 };
+  is(lib.correctionOf(last, { ref: 'e4' }, 'ACT', 'T', now), { type: 'ref', of: 'd1' });
+  is(lib.correctionOf(last, {}, 'ACT', 'T', now), { type: 'retry', of: 'd1' });
+  is(lib.correctionOf({ ...last, outcome: 'acted' }, { ref: 'e4' }, 'ACT', 'T', now), null);
+  is(lib.correctionOf({ ...last, at: now - 10 * 60 * 1000 }, { ref: 'e4' }, 'ACT', 'T', now), null);
+  is(lib.correctionOf(last, { ref: 'e4' }, 'ACT', 'OTHER', now), null);
+});
