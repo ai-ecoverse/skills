@@ -92,6 +92,13 @@ class NodeExitError extends Error {
  * @param {object}  [opts.config]     skill.config() return value
  * @param {string|null} [opts.refreshToken] value of $SLACK_APP_REFRESH_TOKEN
  * @param {boolean} [opts.configWriteFails] make skill.config(patch) throw
+ * @param {object}  [opts.session]    opt-in Slack tab for the browser-session
+ *                                    path: { tabUrl, teams: {id: {token, user_id}},
+ *                                    authTest }. Absent = every browser use throws.
+ *
+ * A response override may be an ARRAY: the n-th call to that method gets the
+ * n-th element (the last one repeats). That is how a manifest that changes
+ * between the export and the pre-update re-export is simulated.
  */
 async function load(opts) {
   const options = opts || {};
@@ -124,6 +131,16 @@ async function load(opts) {
     return { ok: false, error: 'not_mocked' };
   }
 
+  const callCounts = {};
+  function respond(method) {
+    const responses = options.responses || {};
+    callCounts[method] = (callCounts[method] || 0) + 1;
+    if (!Object.prototype.hasOwnProperty.call(responses, method)) return defaultResponse(method);
+    const r = responses[method];
+    if (!Array.isArray(r)) return r;
+    return r[Math.min(callCounts[method] - 1, r.length - 1)];
+  }
+
   const httpStub = {
     client(clientOpts) {
       return {
@@ -147,10 +164,7 @@ async function load(opts) {
             raw: Boolean(postOpts && postOpts.raw),
           });
           events.push({ type: 'http', method: method });
-          const responses = options.responses || {};
-          const body = Object.prototype.hasOwnProperty.call(responses, method)
-            ? responses[method]
-            : defaultResponse(method);
+          const body = respond(method);
           return { status: options.status || 200, headers: {}, body };
         },
       };
@@ -160,6 +174,53 @@ async function load(opts) {
   // The app commands use a bearer app configuration token over plain HTTPS. If
   // one of them ever reaches for the Slack tab (i.e. falls back to the xoxc
   // session token), these stubs record it and the call throws.
+  // With opts.session the stub plays an open Slack tab instead: findTab returns
+  // it, localStorage serves localConfig_v2, and fetch answers /api/<method>
+  // from the same response table as the HTTP stub, recording each call.
+  const tabCalls = [];
+  const session = options.session || null;
+  const sessionTab = session
+    ? { id: 'TAB1', url: session.tabUrl || 'https://app.slack.com/client/T0SESSION1/C0000000001' }
+    : null;
+  const sessionBrowserStub = {
+    async findTab() {
+      browserUses.push('findTab');
+      return sessionTab;
+    },
+    async localStorage(_tab, key) {
+      browserUses.push('localStorage');
+      if (key !== 'localConfig_v2') return null;
+      return JSON.stringify({ teams: session.teams || {} });
+    },
+    async fetch(tab, reqPath, fetchOpts) {
+      browserUses.push('fetch');
+      const method = String(reqPath).replace(/^\/api\//, '');
+      const bodyText = fetchOpts && typeof fetchOpts.body === 'string' ? fetchOpts.body : '';
+      const params = {};
+      for (const [k, v] of new URLSearchParams(bodyText)) params[k] = v;
+      tabCalls.push({
+        method,
+        path: reqPath,
+        tab,
+        httpMethod: fetchOpts && fetchOpts.method,
+        headers: (fetchOpts && fetchOpts.headers) || {},
+        body: bodyText,
+        params,
+      });
+      events.push({ type: 'tab', method: method });
+      if (method === 'auth.test') {
+        const team = Object.values(session.teams || {}).find((t) => t.token === params.token) || {};
+        const body = session.authTest || {
+          ok: true,
+          user: team.user || 'admin.user',
+          user_id: team.user_id || 'U0ADMIN0001',
+        };
+        return { status: 200, body };
+      }
+      return { status: 200, body: respond(method) };
+    },
+  };
+
   const browserStub = {
     async findTab() {
       browserUses.push('findTab');
@@ -222,7 +283,7 @@ async function load(opts) {
   };
 
   const mocks = {
-    'sliccy:browser': browserStub,
+    'sliccy:browser': session ? sessionBrowserStub : browserStub,
     'sliccy:cli': cliStub,
     'sliccy:color': colorStub,
     'sliccy:http': httpStub,
@@ -265,6 +326,10 @@ return {
   formatLeaf,
   manifestApi,
   getAppConfigToken,
+  resolveAppAuth,
+  configTokenClient,
+  sessionClient,
+  manifestsEqual,
   renderValidationErrors,
   deepClone,
   deepOverlay,
@@ -319,6 +384,7 @@ return {
   return {
     mod,
     httpCalls,
+    tabCalls,
     writes,
     browserUses,
     configWrites,
@@ -329,6 +395,8 @@ return {
     text: () => stdout.join('\n'),
     errText: () => stderr.join('\n'),
     methods: () => httpCalls.map((c) => c.method),
+    tabMethods: () => tabCalls.map((c) => c.method),
+    tabUpdateCalls: () => tabCalls.filter((c) => c.method === 'apps.manifest.update'),
     // Every call that CHANGES something on Slack's side.
     writeCalls: () =>
       httpCalls.filter(
@@ -813,7 +881,7 @@ test('app requests are form-encoded and bearer-authenticated with the config tok
   is(call.token, TEST_TOKEN, 'the app configuration token must authenticate the call');
 });
 
-test('app commands never touch the browser session (no xoxc fallback)', async () => {
+test('with a config token, app commands never touch the browser session', async () => {
   const h = await load({ argv: ['app', 'show', APP_ID] });
   await h.mod.cmdAppShow();
   is(h.browserUses, [], 'no browser/tab/localStorage access from app commands');
@@ -937,7 +1005,8 @@ test('write helper exports the live manifest before updating', async () => {
   });
   await h.mod.cmdAppSetScopes();
   // Order matters: the export is what the payload is built from.
-  is(h.methods(), ['apps.manifest.export', 'apps.manifest.update']);
+  // The second export is the changed-since-diff re-check right before update.
+  is(h.methods(), ['apps.manifest.export', 'apps.manifest.export', 'apps.manifest.update']);
 });
 
 test('write helper refuses to update when the export fails', async () => {
@@ -1248,7 +1317,7 @@ test('the deletion gate blocks a deletion the command did not declare', async ()
   const err = await expectDie(() =>
     h.mod.updateFromLiveManifest({
       appId: APP_ID,
-      token: TEST_TOKEN,
+      auth: TEST_TOKEN,
       action: 'set-scopes',
       summary: [],
       mutate: (manifest) => {
@@ -1269,7 +1338,7 @@ test('the deletion gate allows a deletion the command declared', async () => {
 
   const result = await h.mod.updateFromLiveManifest({
     appId: APP_ID,
-    token: TEST_TOKEN,
+    auth: TEST_TOKEN,
     action: 'set-events',
     summary: [],
     mutate: (manifest) => {
@@ -1292,7 +1361,7 @@ test('an unrequested deletion is blocked even when a requested one is declared',
   const err = await expectDie(() =>
     h.mod.updateFromLiveManifest({
       appId: APP_ID,
-      token: TEST_TOKEN,
+      auth: TEST_TOKEN,
       action: 'set-events',
       summary: [],
       mutate: (manifest) => {
@@ -1318,7 +1387,7 @@ test('--allow-deletions overrides the gate for an unrequested deletion', async (
 
   const result = await h.mod.updateFromLiveManifest({
     appId: APP_ID,
-    token: TEST_TOKEN,
+    auth: TEST_TOKEN,
     action: 'set-scopes',
     summary: [],
     mutate: (manifest) => {
@@ -1658,6 +1727,358 @@ test('maskToken never reveals the whole value', async () => {
   ok(/chars/.test(masked), 'must match /chars/');
 });
 
+// ══ AUTH PATHS: config token vs browser session (xoxc) ═══════════════════════
+//
+// Measured 2026-10-02: apps.manifest.export / validate / update all answer
+// ok:true with the Slack tab's xoxc session token, sent the slackApi() way
+// (POST /api/<method> through browser.fetch, form field `token`). These tests pin
+// the resolution order, the two transports, and that every write-path safety
+// property holds on BOTH paths.
+
+const SESSION_TOKEN = 'xoxc-session-test-token-0000';
+const GRID_TOKEN = 'xoxc-grid-test-token-1111';
+const SESSION = {
+  tabUrl: 'https://app.slack.com/client/T0SESSION1/C0000000001',
+  teams: {
+    T0SESSION1: { token: SESSION_TOKEN, user: 'admin.user', user_id: 'U0ADMIN0001' },
+    E0GRID0001: { token: GRID_TOKEN, user: 'admin.user', user_id: 'U0ADMIN0001' },
+  },
+};
+
+function noTokenLeak(h) {
+  const all = h.text() + '\n' + h.errText();
+  ok(!all.includes(SESSION_TOKEN), 'the session token value must never be printed');
+  ok(!all.includes(GRID_TOKEN), 'the grid session token value must never be printed');
+}
+
+// ── resolution order ─────────────────────────────────────────────────────────
+
+test('resolveAppAuth: --token beats env, config and the session', async () => {
+  const h = await load({
+    argv: ['app', 'show', APP_ID, '--token=xoxe.xoxp-flag'],
+    config: { appConfigToken: 'xoxe.xoxp-from-config' },
+    session: SESSION,
+  });
+  await h.mod.cmdAppShow();
+  is(h.httpCalls.length, 1);
+  is(h.httpCalls[0].token, 'xoxe.xoxp-flag');
+  is(h.tabCalls.length, 0, 'the tab must not be used when a config token exists');
+  ok(/auth: app configuration token/.test(h.errText()), 'must print the auth path');
+});
+
+test('resolveAppAuth: env beats config, config beats the session', async () => {
+  const fromEnv = await load({
+    argv: ['app', 'show', APP_ID],
+    config: { appConfigToken: 'xoxe.xoxp-from-config' },
+    session: SESSION,
+  });
+  is((await fromEnv.mod.resolveAppAuth()).kind, 'config');
+  await fromEnv.mod.cmdAppShow();
+  is(fromEnv.httpCalls[0].token, TEST_TOKEN);
+
+  const fromConfig = await load({
+    argv: ['app', 'show', APP_ID],
+    token: null,
+    config: { appConfigToken: 'xoxe.xoxp-from-config' },
+    session: SESSION,
+  });
+  await fromConfig.mod.cmdAppShow();
+  is(fromConfig.httpCalls[0].token, 'xoxe.xoxp-from-config');
+  is(fromConfig.tabCalls.length, 0);
+  is(fromConfig.browserUses, [], 'config token present: no browser access at all');
+});
+
+test('resolveAppAuth: with no config token it falls back to the browser session', async () => {
+  const h = await load({ argv: ['app', 'show', APP_ID], token: null, session: SESSION });
+  await h.mod.cmdAppShow();
+  is(h.httpCalls.length, 0, 'the bearer transport must not be used on the session path');
+  is(h.tabMethods(), ['auth.test', 'apps.manifest.export']);
+  is(h.tabCalls[1].params.token, SESSION_TOKEN, 'the active tab workspace token is used');
+  ok(/AEM Ops Automation/.test(h.text()), 'the manifest is rendered as usual');
+  const err = h.errText();
+  ok(/auth: browser session \(xoxc\), acts as admin\.user/.test(err), 'must name the acting user');
+  ok(/U0ADMIN0001/.test(err), 'must print the acting user id');
+  ok(/human's own action/.test(err), 'must print the attribution notice');
+  noTokenLeak(h);
+});
+
+test('resolveAppAuth: --ws picks that workspace session token (grid id works too)', async () => {
+  const h = await load({
+    argv: ['--ws=E0GRID0001', 'app', 'show', APP_ID],
+    token: null,
+    session: SESSION,
+  });
+  await h.mod.cmdAppShow();
+  is(h.tabCalls[1].params.token, GRID_TOKEN);
+  ok(/on E0GRID0001/.test(h.errText()), 'must print the workspace used');
+});
+
+test('--session forces the browser session even when a config token is set', async () => {
+  const h = await load({
+    argv: ['app', 'show', APP_ID, '--session'],
+    config: { appConfigToken: 'xoxe.xoxp-from-config' },
+    session: SESSION,
+  });
+  await h.mod.cmdAppShow();
+  is(h.httpCalls.length, 0, 'env/config tokens are ignored under --session');
+  is(h.tabMethods(), ['auth.test', 'apps.manifest.export']);
+  // --session is a BOOLEAN flag: it must not swallow the app id after it.
+  const before = await load({ argv: ['app', 'show', '--session', APP_ID], token: null, session: SESSION });
+  await before.mod.cmdAppShow();
+  is(before.tabCalls[1].params.app_id, APP_ID);
+});
+
+test('--no-session forbids the fallback and dies with the minting steps', async () => {
+  const h = await load({ argv: ['app', 'show', APP_ID, '--no-session'], token: null, session: SESSION });
+  const err = await expectDie(() => h.mod.cmdAppShow());
+  ok(/No app configuration token found/.test(err.message), 'must match /No app configuration token found/');
+  ok(/Generate Token/.test(err.message), 'must match /Generate Token/');
+  is(h.browserUses, [], '--no-session must not even look at the tab');
+
+  const withToken = await load({ argv: ['app', 'show', APP_ID, '--no-session'], session: SESSION });
+  await withToken.mod.cmdAppShow();
+  is(withToken.httpCalls.length, 1, '--no-session still uses a config token');
+});
+
+test('contradictory auth flags are refused before anything is called', async () => {
+  const both = await load({ argv: ['app', 'show', APP_ID, '--session', '--no-session'], session: SESSION });
+  const e1 = await expectDie(() => both.mod.cmdAppShow());
+  ok(/contradict/.test(e1.message), 'must match /contradict/');
+
+  const tok = await load({ argv: ['app', 'show', APP_ID, '--session', '--token=xoxe.xoxp-x'], session: SESSION });
+  const e2 = await expectDie(() => tok.mod.cmdAppShow());
+  ok(/--session and --token/.test(e2.message), 'must match /--session and --token/');
+
+  is(both.browserUses.concat(tok.browserUses), []);
+  is(both.httpCalls.length + tok.httpCalls.length, 0);
+});
+
+test('session path with no token for the workspace dies naming it, without calling Slack', async () => {
+  const h = await load({
+    argv: ['--ws=T0UNKNOWN1', 'app', 'show', APP_ID],
+    token: null,
+    session: SESSION,
+  });
+  const err = await expectDie(() => h.mod.cmdAppShow());
+  ok(/no Slack session token for workspace T0UNKNOWN1/.test(err.message), 'must name the workspace');
+  is(h.tabCalls.length, 0);
+});
+
+test('session path refuses to continue when auth.test rejects the session', async () => {
+  const h = await load({
+    argv: ['app', 'show', APP_ID],
+    token: null,
+    session: Object.assign({}, SESSION, { authTest: { ok: false, error: 'invalid_auth' } }),
+  });
+  const err = await expectDie(() => h.mod.cmdAppShow());
+  ok(/auth\.test/.test(err.message) && /invalid_auth/.test(err.message), 'must report auth.test failure');
+  is(h.tabMethods(), ['auth.test'], 'no manifest call after a failed identity check');
+});
+
+// ── transport selection ──────────────────────────────────────────────────────
+
+test('session transport: form-encoded POST /api/<method> through the tab, token in the body', async () => {
+  const h = await load({ argv: ['app', 'show', APP_ID], token: null, session: SESSION });
+  await h.mod.cmdAppShow();
+  const call = h.tabCalls[1];
+  is(call.path, '/api/apps.manifest.export');
+  is(call.httpMethod, 'POST');
+  ok(/application\/x-www-form-urlencoded/.test(String(call.headers['Content-Type'])), 'form-encoded');
+  is(call.params.app_id, APP_ID);
+  is(call.params.token, SESSION_TOKEN);
+  ok(!call.headers.Authorization && !call.headers.authorization, 'no bearer on the session path');
+});
+
+test('config transport: bearer over sliccy:http, token NOT in the body', async () => {
+  const h = await load({ argv: ['app', 'show', APP_ID], session: SESSION });
+  await h.mod.cmdAppShow();
+  const call = h.httpCalls[0];
+  is(call.baseUrl, 'https://slack.com/api');
+  is(call.token, TEST_TOKEN);
+  ok(!('token' in call.params), 'the config token travels as a header, not a form field');
+});
+
+test('both transports implement the same post(method, params) interface', async () => {
+  const h = await load({ argv: ['app', 'show', APP_ID], token: null, session: SESSION });
+  const cfg = h.mod.configTokenClient(TEST_TOKEN);
+  const ses = h.mod.sessionClient({ id: 'TAB1' }, SESSION_TOKEN, 'T0SESSION1');
+  is(cfg.kind, 'config');
+  is(ses.kind, 'session');
+  const a = await cfg.post('apps.manifest.export', { app_id: APP_ID });
+  const b = await ses.post('apps.manifest.export', { app_id: APP_ID });
+  is(a.manifest, b.manifest, 'same body shape from either transport');
+  is(h.methods(), ['apps.manifest.export']);
+  is(h.tabMethods(), ['apps.manifest.export']);
+});
+
+test('session-path errors surface error and response_metadata.messages', async () => {
+  const h = await load({
+    argv: ['app', 'show', APP_ID],
+    token: null,
+    session: SESSION,
+    responses: {
+      'apps.manifest.export': {
+        ok: false,
+        error: 'not_allowed',
+        response_metadata: { messages: ['[ERROR] user is not a collaborator'] },
+      },
+    },
+  });
+  const err = await expectDie(() => h.mod.cmdAppShow());
+  ok(/not_allowed/.test(err.message), 'must carry the error code');
+  ok(/user is not a collaborator/.test(err.message), 'must carry response_metadata.messages');
+  ok(/admin\.user/.test(err.message), 'must say which session user was rejected');
+  noTokenLeak(h);
+});
+
+test('apps.manifest.create/delete stay forbidden on the session transport', async () => {
+  const h = await load({ argv: ['app', 'show', APP_ID], token: null, session: SESSION });
+  const ses = h.mod.sessionClient({ id: 'TAB1' }, SESSION_TOKEN, 'T0SESSION1');
+  await expectDie(() => h.mod.manifestApi('apps.manifest.create', {}, ses));
+  await expectDie(() => h.mod.manifestApi('apps.manifest.delete', { app_id: APP_ID }, ses));
+  is(h.tabCalls.length, 0, 'the guard fires before the tab is touched');
+});
+
+// ── writes on the session path keep every safety property ────────────────────
+
+test('session write: export, re-export, update with the complete manifest, through the tab', async () => {
+  const h = await load({
+    argv: ['app', 'set-scopes', APP_ID, '--add=reactions:read', '--confirm'],
+    token: null,
+    session: SESSION,
+    responses: { 'apps.manifest.update': { ok: true, permissions_updated: true } },
+  });
+  await h.mod.cmdAppSetScopes();
+  is(h.httpCalls.length, 0);
+  is(h.tabMethods(), ['auth.test', 'apps.manifest.export', 'apps.manifest.export', 'apps.manifest.update']);
+  const sent = JSON.parse(h.tabUpdateCalls()[0].params.manifest);
+  is(sent.oauth_config.scopes.bot, LIVE_MANIFEST.oauth_config.scopes.bot.concat(['reactions:read']));
+  is(sent.settings, LIVE_MANIFEST.settings, 'untouched fields travel back unchanged');
+  ok(/REINSTALL REQUIRED/.test(h.text()), 'REINSTALL warning on the session path too');
+  noTokenLeak(h);
+});
+
+test('session write without --confirm makes zero update calls', async () => {
+  const h = await load({
+    argv: ['app', 'set-events', APP_ID, '--add=app_mention'],
+    token: null,
+    session: SESSION,
+  });
+  await h.mod.cmdAppSetEvents();
+  is(h.tabUpdateCalls().length, 0);
+  ok(/No --confirm/.test(h.text()), 'must match /No --confirm/');
+});
+
+test('session write: the --allow-deletions gate still blocks an unrequested deletion', async () => {
+  const partial = { display_information: clone(LIVE_MANIFEST.display_information) };
+  const h = await load({
+    argv: ['app', 'apply', APP_ID, '--manifest=/tmp/partial.json', '--confirm'],
+    files: { '/tmp/partial.json': JSON.stringify(partial) },
+    token: null,
+    session: SESSION,
+  });
+  const err = await expectDie(() => h.mod.cmdAppApply());
+  ok(/unrequested deletion/i.test(err.message), 'must match /unrequested deletion/i');
+  is(h.tabUpdateCalls().length, 0);
+});
+
+// ── changed-since-diff refusal ───────────────────────────────────────────────
+
+function driftedManifest() {
+  const m = clone(LIVE_MANIFEST);
+  m.oauth_config.scopes.bot.push('reactions:write');
+  return m;
+}
+
+test('a write refuses when the live manifest changed since the diff (config path)', async () => {
+  const h = await load({
+    argv: ['app', 'set-events', APP_ID, '--add=app_mention', '--confirm'],
+    responses: {
+      'apps.manifest.export': [
+        { ok: true, manifest: clone(LIVE_MANIFEST) },
+        { ok: true, manifest: driftedManifest() },
+      ],
+    },
+  });
+  const err = await expectDie(() => h.mod.cmdAppSetEvents());
+  ok(/live manifest changed since the diff was shown/.test(err.message), 'named reason');
+  ok(/\/oauth_config\/scopes\/bot/.test(err.message), 'names the field that drifted');
+  is(h.methods(), ['apps.manifest.export', 'apps.manifest.export']);
+  is(h.updateCalls().length, 0, 'nothing may be sent over a concurrent change');
+});
+
+test('a write refuses when the live manifest changed since the diff (session path)', async () => {
+  const h = await load({
+    argv: ['app', 'set-request-url', APP_ID, 'https://relay.example.com/x', '--confirm'],
+    token: null,
+    session: SESSION,
+    responses: {
+      'apps.manifest.export': [
+        { ok: true, manifest: clone(LIVE_MANIFEST) },
+        { ok: true, manifest: driftedManifest() },
+      ],
+    },
+  });
+  const err = await expectDie(() => h.mod.cmdAppSetRequestUrl());
+  ok(/live manifest changed since the diff was shown/.test(err.message), 'named reason');
+  is(h.tabUpdateCalls().length, 0);
+});
+
+test('a re-export that differs only in key order is NOT a change', async () => {
+  const reordered = {};
+  for (const k of Object.keys(LIVE_MANIFEST).reverse()) reordered[k] = clone(LIVE_MANIFEST[k]);
+  const h = await load({
+    argv: ['app', 'set-events', APP_ID, '--add=app_mention', '--confirm'],
+    responses: {
+      'apps.manifest.export': [
+        { ok: true, manifest: clone(LIVE_MANIFEST) },
+        { ok: true, manifest: reordered },
+      ],
+    },
+  });
+  await h.mod.cmdAppSetEvents();
+  is(h.updateCalls().length, 1);
+  ok(h.mod.manifestsEqual(LIVE_MANIFEST, reordered));
+  ok(!h.mod.manifestsEqual(LIVE_MANIFEST, driftedManifest()));
+});
+
+test('a failed re-export blocks the update', async () => {
+  const h = await load({
+    argv: ['app', 'set-events', APP_ID, '--add=app_mention', '--confirm'],
+    responses: {
+      'apps.manifest.export': [
+        { ok: true, manifest: clone(LIVE_MANIFEST) },
+        { ok: false, error: 'ratelimited' },
+      ],
+    },
+  });
+  await expectDie(() => h.mod.cmdAppSetEvents());
+  is(h.updateCalls().length, 0);
+});
+
+// ── token-rotate is config-token only ────────────────────────────────────────
+
+test('token-rotate refuses --session and touches nothing', async () => {
+  const h = await load({
+    argv: ['app', 'token-rotate', '--session', '--confirm'],
+    refreshToken: 'xoxe-1-old-refresh-token',
+    session: SESSION,
+  });
+  const err = await expectDie(() => h.mod.cmdAppTokenRotate());
+  ok(/config-token only/.test(err.message), 'must say it is config-token only');
+  is(h.httpCalls.length, 0);
+  is(h.browserUses, []);
+  is(h.configWrites.length, 0);
+});
+
+test('token-rotate never falls back to the browser session', async () => {
+  const h = await load({ argv: ['app', 'token-rotate', '--confirm'], token: null, session: SESSION });
+  const err = await expectDie(() => h.mod.cmdAppTokenRotate());
+  ok(/No refresh token/.test(err.message), 'must match /No refresh token/');
+  ok(/no browser-session fallback/.test(err.message), 'must say there is no session fallback');
+  is(h.browserUses, [], 'the tab is never consulted for a rotate');
+});
+
 // ── Mutation matrix ───────────────────────────────────────────────────────────
 //
 // Each mutation was applied to slack-ext.jsh, the suite was run, the named test
@@ -1684,3 +2105,26 @@ test('maskToken never reveals the whole value', async () => {
 //             (remove the pointer line in renderValidationErrors)
 //   Caught by: "app validate renders each error with its JSON pointer"
 //              "app validate renders multiple errors each with its own pointer"
+//
+// Session-path mutations, measured 2026-10-02. Each was applied to a COPY of the
+// skill under /tmp (the checkout itself was never edited), the copy's suite was
+// run with tst against a green 111/111 baseline, and the copy was deleted.
+//
+// MUTATION 5: the changed-since-diff re-check is ignored
+//             (`if (!manifestsEqual(live, recheck))` -> `if (false && ...)`)
+//   Caught by: "a write refuses when the live manifest changed since the diff (config path)"
+//              "a write refuses when the live manifest changed since the diff (session path)"
+//
+// MUTATION 6: --session is ignored (`forceSession = false`)
+//   Caught by: "--session forces the browser session even when a config token is set"
+//              "contradictory auth flags are refused before anything is called"
+//
+// MUTATION 7: --no-session is ignored (getAppConfigToken always optional)
+//   Caught by: "--no-session forbids the fallback and dies with the minting steps"
+//
+// MUTATION 8: token-rotate's --session guard removed
+//   Caught by: "token-rotate refuses --session and touches nothing"
+//
+// MUTATION 9: the session is tried BEFORE the config token (skip the config branch)
+//   Caught by: 56 tests, among them "resolveAppAuth: --token beats env, config and
+//              the session" and "config transport: bearer over sliccy:http"

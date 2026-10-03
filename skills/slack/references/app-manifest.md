@@ -15,15 +15,19 @@ it renders zero controls and takes 30+ seconds when it renders at all, and its
 workspace picker is a Slack Kit `.c-basic-select` that ignores every synthetic
 event (clicks on the placeholder and on `.c-select_button`, Enter/Space/ArrowDown
 KeyboardEvents, and a full pointerdown/mousedown/pointerup/mouseup/click
-sequence all leave `aria-expanded="false"`). Verified 2026-09-18. There is
-deliberately no browser automation in these commands.
+sequence all leave `aria-expanded="false"`). Verified 2026-09-18. Re-checked
+2026-10-02: the app-settings SPA in a background tab still rendered only its
+header after 50 s, while the manifest API answered immediately with the same
+browser session's token. There is deliberately no UI automation in these
+commands; the session path below uses the Slack tab only as an authenticated
+same-origin `fetch`, never its DOM.
 
 ## Contents
 
 - [The export-modify-update rule](#the-export-modify-update-rule)
 - [The `--allow-deletions` gate](#the---allow-deletions-gate)
 - [`permissions_updated` means REINSTALL](#permissions_updated-means-reinstall)
-- [Authentication (a third, separate credential)](#authentication-a-third-separate-credential)
+- [Authentication (config token, or the browser session)](#authentication-config-token-or-the-browser-session)
 - [Quick start](#quick-start)
 - [Available commands](#available-commands)
   - [slack-ext app export \<app_id\> [--out=\<file\>] [--json]](#slack-ext-app-export-app_id---outfile---json)
@@ -58,6 +62,13 @@ structurally: all five write commands go through one internal helper
 (`updateFromLiveManifest`) that exports first, refuses to continue if the export
 failed or carried no manifest, mutates a clone of it, and is the only call site
 for `apps.manifest.update` in the file.
+
+**Changed since the diff → refused.** Immediately before `apps.manifest.update`
+the helper exports the manifest a second time and compares it structurally (key
+order ignored) with the export the diff was built from. If anything differs, it
+refuses with `live manifest changed since the diff was shown`, names the drifted
+pointers, and sends nothing: the payload would otherwise revert whatever changed
+in between. A write therefore makes two export calls, then the update.
 
 One measured exception: `display_information.background_color` survived being
 omitted, because it can never be null. That is one field, **not** merge
@@ -96,20 +107,65 @@ this prominently; `--json` reports it as `permissions_updated` and
 there is no reason for a CLI to offer it; a guard in the script refuses those
 two method names before any request is made.
 
-### Authentication (a third, separate credential)
+### Authentication (config token, or the browser session)
 
-These commands use an **app configuration token** (`xoxe.xoxp-...`) sent as
-`Authorization: Bearer <token>`. It is **not** the bot `xoxb` token and **not**
-the `xoxc` session token every other command in this skill uses. There is no
-fallback between them: `xoxb-` and `xoxc-` values are rejected with an
-explanatory error rather than being tried.
+The App Manifest API accepts two credentials, and each command uses exactly
+one, picked in this order (first match wins):
 
-Resolution order: `--token=<tok>` → `$SLACK_APP_CONFIG_TOKEN` → skill config key
-`appConfigToken`.
+1. `--token=<tok>` — an **app configuration token** (`xoxe.xoxp-...`)
+2. `$SLACK_APP_CONFIG_TOKEN`
+3. skill config key `appConfigToken`
+4. **the browser session**: the `xoxc` token of the open Slack tab for the
+   workspace given by `--ws` (default: the active tab's workspace), read from
+   `localStorage.localConfig_v2` exactly like every other `slack-ext` command.
 
-Minting the first token is a **human step in the browser and cannot be
-automated** (the workspace picker is the unautomatable Slack Kit control
-described above):
+Overrides: `--session` uses the browser session even when a config token is
+set; `--no-session` forbids step 4, so a missing config token is an error.
+`--session` together with `--no-session`, or with `--token`, is refused.
+
+The two transports differ, and the commands do not care which is in use:
+
+| Path | Transport |
+|------|-----------|
+| config token | `https://slack.com/api/<method>` over plain HTTPS, form body, `Authorization: Bearer <token>` |
+| browser session | `POST /api/<method>` through `browser.fetch` on the Slack tab (same-origin, so the `d` cookie travels), form body with the token as the `token` field |
+
+Every `app` command prints which path it used, to stderr:
+`auth: app configuration token`, or
+`auth: browser session (xoxc), acts as <user> (<user_id>) on <workspace>`, where
+the user comes from a read-only `auth.test`.
+
+**Attribution caveat.** On the session path the command acts **as the logged-in
+human**: a manifest change made this way is that person's own action, exactly as
+if they had clicked through the app-settings UI, and it is printed as such (the
+same notice the other `xoxc` commands print). Use a config token when the change
+should not be attributed to the person whose browser it is.
+
+Measured 2026-10-02 with the session helper against app `A0C2DNYR0TF`:
+`apps.manifest.export` returned `ok:true` with the full manifest using the token
+of workspace `T0385CHDU9E` and of the grid org `E06V3987PMY`;
+`apps.manifest.validate` returned `ok:true, errors: []`; `apps.manifest.update`
+returned `ok:true, permissions_updated: true`, and the re-export matched the
+candidate exactly. (`developer.apps.manifest.export` is `unknown_method`.) The
+Slack user was an org admin and an app collaborator. **Unverified:** what a
+user who cannot manage the app (not a collaborator) gets back. Errors on the
+session path are reported generically, with `error` and
+`response_metadata.messages`.
+
+Every safety property below applies unchanged on both paths: export-modify-update,
+the re-export check before the update, the `--allow-deletions` gate, `--confirm`,
+the REINSTALL notice, and the create/delete guard.
+
+A configured `xoxb-` value is refused (the API rejects bot tokens), and so is an
+`xoxc-` value passed as `--token`/env/config: the session path reads the token
+from the tab itself, because it needs the tab's cookie. Use `--session` instead.
+
+`app token-rotate` is **config-token only**: it rotates that credential. With
+`--session` it refuses, and it never falls back to the tab.
+
+Minting a config token is a **human step in the browser** (the workspace picker
+is the unautomatable Slack Kit control described above). It is no longer
+required for the manifest commands when a logged-in Slack tab is available:
 
 1. Open `api.slack.com/apps`.
 2. Scroll to **Your App Configuration Tokens**.
@@ -127,6 +183,12 @@ the script.
 ```bash
 # Human summary of the live app configuration
 slack-ext app show A0123456789
+
+# No config token? The Slack tab's session is used (prints "acts as <user>").
+# Pin the workspace, or force/forbid the session path explicitly:
+slack-ext --ws=T0123456789 app show A0123456789
+slack-ext app show A0123456789 --session
+slack-ext app show A0123456789 --no-session
 
 # Save the live manifest, edit it, then see exactly what an update would change
 slack-ext app export A0123456789 --out=./manifest.json
