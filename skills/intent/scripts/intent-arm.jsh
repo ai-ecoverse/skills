@@ -222,8 +222,12 @@ async function main() {
   }
 
   // What the bench judge reads for a goal with a rubric.
+  // The scoop's transcript is written when it exits: a run stopped at the
+  // time limit has none (a Paperclips run, 2026-10-03). Its intent calls are
+  // still in the call log, so the judge reads those instead.
+  const fromLog = intentLog.map((e) => `intent ${e.kind} "${String(e.intent).slice(0, 200)}" → ${e.outcome || `error: ${String(e.error || '').slice(0, 200)}`}`);
   const judge = {
-    steps: calls.map((c) => `${c.command.slice(0, 300)} → ${c.result.replace(/\s+/g, ' ').slice(0, 500)}`),
+    steps: calls.length ? calls.map((c) => `${c.command.slice(0, 300)} → ${c.result.replace(/\s+/g, ' ').slice(0, 500)}`) : fromLog,
     finalResult: [`The agent's answer: ${stdout.trim().slice(0, 2000) || '(none)'}`, `Final page (${finalUrl || 'unknown'}):`, finalText || '(none)'].join('\n'),
     screenshots: (await fs.exists(`${dir}/final.png`)) ? ['final.png'] : [],
   };
@@ -237,6 +241,8 @@ async function main() {
     timedOut,
     exitCode: done ? done.exitCode : null,
     steps: browsing.length,
+    // No transcript (stopped at the time limit): the intent calls, as logged.
+    ...(calls.length ? {} : { stepsFromLog: intentLog.length }),
     invocations,
     // The caller's escape hatches: naming a ref after a "not sure", or the raw snapshot.
     refCalls: browsing.filter((c) => /--ref[= ]/.test(c.command)).length,

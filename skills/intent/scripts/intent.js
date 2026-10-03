@@ -937,6 +937,8 @@ function snippet(text, query, max = 240) {
 const LIST_RE = /^(?:please\s+)?(?:list|show\s+me\s+all|enumerate)\b/i;
 const LIST_CONTROLS = /\b(links?|buttons?|controls?|options?|fields?|tabs?|checkboxes|menu\s+items?)\b/i;
 const isList = (intent) => LIST_RE.test(squash(intent));
+/** A list of controls needs the page scan too: games build buttons from divs. */
+const listWantsControls = (intent) => isList(intent) && LIST_CONTROLS.test(squash(intent));
 
 /**
  * The listing for a "list … about X" intent: up to n matches in page order,
@@ -1201,6 +1203,7 @@ module.exports = {
   candidateLines,
   refMemory,
   isList,
+  listWantsControls,
   listLines,
   regionLines,
   budgetLines,

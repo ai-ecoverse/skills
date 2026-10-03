@@ -85,11 +85,40 @@ function tabTools({ exec, say = async () => {}, evalJs = null }) {
 
   // A synthetic button (page.promoteClickable) has no ref: click the element
   // under its box centre.
-  function clickAt(box) {
+  // A synthetic button (page-scan's clickable div) is clicked in the page:
+  // the element under its box centre when that is the control (its text is
+  // the label), else the element with exactly that text nearest the box,
+  // scrolled into view first. The centre alone missed whenever the page had
+  // moved since the scan: Kittens Game's "Refine catnip", 77 times in one
+  // hosted run (2026-10-03).
+  function clickAt(box, label = '') {
     const x = Math.round(box[0] + box[2] / 2);
     const y = Math.round(box[1] + box[3] / 2);
     return `(() => {
-      const el = document.elementFromPoint(${x}, ${y});
+      const want = ${JSON.stringify(String(label).replace(/\s+/g, ' ').trim())};
+      const norm = (s) => String(s || '').replace(/\\s+/g, ' ').trim();
+      const hit = document.elementFromPoint(${x}, ${y});
+      const fits = (el) => el && (!want || norm(el.innerText || el.getAttribute('aria-label')) === want);
+      let el = null;
+      for (let n = hit; n && n !== document.body; n = n.parentElement) {
+        if (fits(n)) { el = n; break; }
+      }
+      if (!el && hit && !want) el = hit;
+      // Live counts change between the scan and the click: numbers aside.
+      const series = (t) => t.replace(/\\d[\\d,.]*/g, '#');
+      if (!el && want) {
+        let best = null;
+        for (const c of document.querySelectorAll('body *')) {
+          if (series(norm(c.innerText || c.getAttribute('aria-label'))) !== series(want)) continue;
+          const r = c.getBoundingClientRect();
+          if (!r.width || !r.height) continue;
+          const d = Math.abs(r.x + r.width / 2 - ${x}) + Math.abs(r.y + r.height / 2 - ${y});
+          // The innermost element with the text: a child beats the panel around it.
+          if (!best || d < best.d || (d === best.d && best.el.contains(c))) best = { el: c, d };
+        }
+        el = best && best.el;
+        if (el) el.scrollIntoView({ block: 'center' });
+      }
       if (!el) return 'missing';
       el.click();
       return 'ok';
@@ -255,7 +284,7 @@ function tabTools({ exec, say = async () => {}, evalJs = null }) {
       return;
     }
     if (action.element.synthetic) {
-      const clicked = await jsOk(tab, clickAt(action.element.box), commands);
+      const clicked = await jsOk(tab, clickAt(action.element.box, action.element.label), commands);
       if (!clicked.includes('ok')) throw new Error(`nothing to click at "${action.element.label}"`);
       return;
     }

@@ -216,6 +216,7 @@ test('listLines: a lexical read of links or rows, in page order', () => {
   const rows = lib.textSegments(INFOBOX);
   ok(lib.listLines('list the rows that mention advisor', [], rows, 5).lines[0].includes('Doctoral advisor Hans Hahn'));
   ok(lib.isList('list the links about drugs') && !lib.isList('click the list button'));
+  ok(lib.listWantsControls('list the buttons') && !lib.listWantsControls('list the rows that mention calories'));
 });
 
 test('regionLines: the closest texts in page order when no single one is sure', () => {

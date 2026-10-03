@@ -391,6 +391,12 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
       const same = obs.shot.elements.filter((e) => e.role === before.role && e.label === before.label);
       const again = same[before.k ? before.k - 1 : 0];
       if (again) return again;
+      // A label with a live count ("Refine catnip (12)") changes between
+      // calls: the same control is the one whose label differs only in its
+      // numbers, when exactly one such control is there.
+      const series = (label) => String(label).replace(/\d[\d,.]*/g, '#');
+      const alike = obs.shot.elements.filter((e) => e.role === before.role && series(e.label) === series(before.label));
+      if (alike.length === 1) return alike[0];
     }
     throw new IntentError(`ref ${ref} is not on the page any more; ask again without --ref`);
   }
@@ -544,7 +550,7 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
   async function retrieve(req, state, s1, flags = {}) {
     const tab = await pickTab(req, state);
     if (!tab) throw new IntentError('no tab yet: start with --intent "open <url>", or pass --tab');
-    const obs = await look(tab, { controls: false });
+    const obs = await look(tab, { controls: lib.listWantsControls(req.intent) });
     const segments = segmentsOf(obs);
     if (!segments.length) throw new IntentError('this page has no text');
     if (lib.isList(req.intent)) {
