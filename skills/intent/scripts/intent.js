@@ -818,8 +818,16 @@ const SURE_BY_MODEL = {
   '4b-vision': 0.6,
   '0.8b-vision-wr1': 0.7, // the webrunner fine-tune: 74.5%, 5% wrong
   '0.8b-vision': 0.4, // under-confident: 49%, 2.8% wrong
+  // A fine-tune on intent-shaped questions (kev-webrunner, local only until
+  // published): 85.5% acted, 3.5% wrong at 0.7 (2026-10-03).
+  '0.8b-vision-wr2-intent': 0.7,
   kev: 0.5, // any other bundle
 };
+
+// The ACT question each kev bundle answers best: 'menu' is webrunner's
+// wording (the stock bundles, +5 points on 4b-vision); a bundle trained on
+// this tool's own question takes it plain.
+const QUESTION_STYLE = { '0.8b-vision-wr2-intent': 'plain' };
 
 /**
  * Whether to act on System 1's answer. → { pick, p, sure, ranked: [[id, p]] }
@@ -1077,6 +1085,7 @@ module.exports = {
   NONE,
   SURE,
   SURE_BY_MODEL,
+  QUESTION_STYLE,
   tokens,
   stem,
   contentWords,

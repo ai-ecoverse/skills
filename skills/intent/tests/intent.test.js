@@ -188,6 +188,7 @@ test('menuQuestion: webrunner wording for kev, ids that map back to refs', () =>
   ok(q.state.startsWith('Goal: press submit') && q.state.includes('  [e29] button "Submit order"'), q.state);
   is([lib.refOf('click:e29'), lib.refOf('type:e2'), lib.refOf('e5')], ['e29', 'e2', 'e5']);
   is(lib.SURE_BY_MODEL['4b-vision'], 0.6);
+  is([lib.SURE_BY_MODEL['0.8b-vision-wr2-intent'], lib.QUESTION_STYLE['0.8b-vision-wr2-intent'], lib.QUESTION_STYLE['4b-vision']], [0.7, 'plain', undefined]);
 });
 
 test('refMemory: which of the same-labelled controls a ref is', () => {

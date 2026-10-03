@@ -282,7 +282,7 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     const shortlist = ranked.slice(0, SHORTLIST_CONTROLS).map((r) => r.candidate);
     if (!shortlist.length) throw new IntentError('this page has no controls to act on');
     // kev answers webrunner's wording better; Clef was measured on the plain one.
-    const q = lib.choiceQuestion('ACT', req.intent, shortlist, obs.shot, { style: s1.kev ? 'menu' : 'plain' });
+    const q = lib.choiceQuestion('ACT', req.intent, shortlist, obs.shot, { style: s1.kev ? lib.QUESTION_STYLE[s1.key] || 'menu' : 'plain' });
     const image = s1.vision ? await markedShot(obs.tab, shortlist, obs.viewport) : null;
     const res = await s1.ask({ state: q.state, questions: { action: q.question }, ...(image ? { image } : {}) });
     // Answer ids may be click:eN / type:eN: name them by ref from here on.
