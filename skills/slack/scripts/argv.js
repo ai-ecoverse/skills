@@ -11,7 +11,19 @@
 // Flags that take no value (presence = true). This explicit set is required
 // because the generic parser cannot distinguish a boolean flag from a
 // value-less flag when the next token looks like a value.
-const BOOL_FLAGS = new Set(['confirm', 'json', 'help', 'h', 'allow-deletions', 'allow-shared', 'detail']);
+// session / no-session pick the `slack-ext app` credential path; as booleans they
+// can never swallow the app id that follows them (`app show --session A0...`).
+const BOOL_FLAGS = new Set([
+  'confirm',
+  'json',
+  'help',
+  'h',
+  'allow-deletions',
+  'allow-shared',
+  'detail',
+  'session',
+  'no-session',
+]);
 
 function parseArgv(argv) {
   const f = Object.create(null);
