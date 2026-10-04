@@ -1,6 +1,13 @@
 // intent-arm's pure parts: the run id, the scoop's prompt, and what the
 // result may print. Kept out of the .jsh so tst can test them.
 
+// The commands a scoop gets beside its browser tool, the same for every
+// arm. Shell loops and helper scripts that batch tool calls are fair play
+// (Lars, 2026-10-03), so bash and sh are in too; whatever they run is still
+// held to the scoop's grant. date: eight BU Bench V2.1 runs were refused the
+// clock and could not give the observation time a task asked for (2026-10-04).
+const UTILITIES = ['grep', 'head', 'tail', 'sleep', 'sed', 'awk', 'cut', 'wc', 'sort', 'uniq', 'echo', 'cat', 'tr', 'jq', 'bash', 'sh', 'date'];
+
 /** The page's hostname as a run-id slug: news.ycombinator.com → news-ycombinator-com; no URL → run. */
 function hostSlug(url) {
   let host = '';
@@ -66,4 +73,4 @@ function printable(result, { private: priv = false } = {}) {
   return out;
 }
 
-module.exports = { hostSlug, runId, checkUrl, prompt, printable, PRIVATE_FIELDS };
+module.exports = { UTILITIES, hostSlug, runId, checkUrl, prompt, printable, PRIVATE_FIELDS };

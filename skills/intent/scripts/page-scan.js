@@ -210,13 +210,52 @@ function states() {
     return norm(el.tagName === 'SELECT' ? el.title || el.name : el.innerText || el.title || el.value);
   };
   const out = [];
+  // Text fields: what the snapshot leaves out of them, the placeholder, the
+  // input type, required, invalid (BU Bench V2.1: four unnamed boxes read
+  // `textbox "textbox"`, 2026-10-04). Their name follows the same sources,
+  // with the placeholder and title last; an unnamed field is ''.
+  const FIELD_ROLE = { search: 'searchbox', number: 'spinbutton' };
+  const PLAIN = new Set(['text', 'search', '']);
+  const fieldName = (el) => {
+    const label = el.getAttribute('aria-label');
+    if (label) return norm(label);
+    if (el.labels && el.labels.length) return norm(el.labels[0].innerText);
+    const by = el.getAttribute('aria-labelledby');
+    if (by) {
+      const text = by
+        .split(/\s+/)
+        .map((id) => document.getElementById(id))
+        .filter(Boolean)
+        .map((n) => n.innerText)
+        .join(' ');
+      if (norm(text)) return norm(text);
+    }
+    return norm(el.getAttribute('placeholder') || el.title);
+  };
+  const FIELDS = 'textarea, input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=submit]):not([type=button]):not([type=reset]):not([type=image]):not([type=file]):not([type=range]):not([type=color])';
+  for (const el of document.querySelectorAll(FIELDS)) {
+    if (out.length >= 200) break;
+    if (!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)) continue;
+    const type = el.tagName === 'TEXTAREA' ? '' : String(el.getAttribute('type') || '').toLowerCase();
+    const parts = [];
+    const placeholder = norm(el.getAttribute('placeholder'));
+    const name = fieldName(el);
+    if (placeholder && placeholder !== name) parts.push(`placeholder "${placeholder.slice(0, 80)}"`);
+    if (el.tagName === 'TEXTAREA') parts.push('multi-line');
+    else if (!PLAIN.has(type)) parts.push(type);
+    if (el.required || el.getAttribute('aria-required') === 'true') parts.push('required');
+    if (el.value && el.validity && !el.validity.valid) parts.push('invalid');
+    if (el.disabled) parts.push('disabled');
+    else if (el.readOnly) parts.push('read-only');
+    if (parts.length) out.push({ role: FIELD_ROLE[type] || 'textbox', name, state: parts.join(', ') });
+  }
   for (const el of document.querySelectorAll(SELECTOR)) {
     if (out.length >= 400) break;
     const parts = [];
     if (el.tagName === 'SELECT') {
       const chosen = [...el.selectedOptions].map((o) => norm(o.text)).join(', ');
       parts.push(chosen ? `"${chosen}" selected` : 'nothing selected');
-    } else if (el.tagName === 'INPUT') {
+    } else if (el.tagName === 'INPUT' && (el.type === 'checkbox' || el.type === 'radio')) {
       parts.push(el.checked ? 'checked' : 'not checked');
     } else {
       const checked = el.getAttribute('aria-checked');
@@ -234,4 +273,64 @@ function states() {
   return JSON.stringify(out);
 }
 
-module.exports = { scan, states };
+// The page's links in page order, for their addresses: slicc's snapshot
+// prints no URLs (BU Bench V2.1: listings returned without their links,
+// 2026-10-04). [{ name, href }]: the name as the accessible name's usual
+// sources give it (aria-label, the text, the title, an image's alt).
+function links() {
+  const norm = (s) =>
+    String(s || '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  const out = [];
+  for (const a of document.querySelectorAll('a[href]')) {
+    if (out.length >= 3000) break;
+    if (!(a.offsetWidth || a.offsetHeight || a.getClientRects().length)) continue;
+    const img = a.querySelector('img[alt]');
+    const name = norm(a.getAttribute('aria-label')) || norm(a.innerText) || norm(a.textContent) || norm(a.title) || norm(img && img.alt);
+    out.push({ name: name.slice(0, 400), href: String(a.href).slice(0, 500) });
+  }
+  return JSON.stringify(out);
+}
+
+// How well a page element's names match a control's accessible name: 3 when
+// one of them is the name; 2 when one contains the other and the shorter is
+// a real part of it (12+ characters, 40%+ of the longer), spacing aside, or
+// when 80%+ of the shorter one's words (4 or more) are in the longer; else 0.
+// A link named by all of its content reads differently in the page: its name
+// may take a hidden button's label ("Report item …"), its text may hold
+// hidden captions, and textContent runs adjacent texts together (product
+// cards, BU Bench V2.1, 2026-10-04). Self-contained: it also runs in the
+// page, as text.
+function nameScore(want, names) {
+  const norm = (s) =>
+    String(s || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase();
+  const words = (s) => s.match(/[\p{L}\p{N}]+/gu) || [];
+  const w = norm(want);
+  if (!w) return 0;
+  const wTight = w.replace(/ /g, '');
+  const wWords = words(w);
+  let best = 0;
+  for (const raw of names) {
+    const n = norm(raw);
+    if (!n) continue;
+    if (n === w) return 3;
+    const nTight = n.replace(/ /g, '');
+    const [short, long] = nTight.length < wTight.length ? [nTight, wTight] : [wTight, nTight];
+    if (short.length >= 12 && short.length >= long.length * 0.4 && long.includes(short)) {
+      best = 2;
+      continue;
+    }
+    const nWords = words(n);
+    const [few, many] = nWords.length < wWords.length ? [nWords, wWords] : [wWords, nWords];
+    if (few.length < 4 || few.length < many.length * 0.4) continue;
+    const have = new Set(many);
+    if (few.filter((x) => have.has(x)).length >= few.length * 0.8) best = 2;
+  }
+  return best;
+}
+
+module.exports = { scan, states, links, nameScore };

@@ -61,6 +61,7 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
   const tools = tabTools({ exec, say: async () => {}, evalJs });
   const { run, js, observe, openTab, act } = tools;
   const STATES_JS = `(${pageScan.states.toString()})()`;
+  const LINKS_JS = `(${pageScan.links.toString()})()`;
 
   // Enter as a browser does it. slicc's \`press Enter\` (and \`type --submit\`)
   // sends a CDP keyDown with only \`key\`, no text or keyCode, so a form is
@@ -477,12 +478,14 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
   async function navigate(req, state) {
     const nav = lib.parseNavigate(req.intent);
     let tab = await pickTab(req, state);
+    let fresh = false;
     if (nav.op === 'goto') {
       if (!nav.url) throw new IntentError('NAVIGATE needs a URL, e.g. --intent "open https://example.com"');
       if (tab) {
         const r = await pw(['goto', nav.url, `--tab=${tab}`]);
         if (r.exitCode !== 0) throw new IntentError(`could not open ${nav.url}: ${(r.stderr || r.stdout).trim().slice(0, 200)}`);
       } else {
+        fresh = true;
         tab = await openTab(nav.url);
         // playwright-cli open returns while the new tab still shows
         // about:blank, whose readyState is already complete: the first open
@@ -505,7 +508,24 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
       `  title: ${after.shot.title || '(none)'}`,
       ...lib.gist(after.shot, after.viewport, lib.textSegments(after.raw)).map((l) => `  ${l}`),
     ];
-    return { tab, outcome: 'navigated', lines, json: { url: after.shot.url, title: after.shot.title, tab } };
+    return { tab, outcome: 'navigated', ...(fresh ? { knownTabs: null } : {}), lines, json: { url: after.shot.url, title: after.shot.title, tab } };
+  }
+
+  /** The browser's tabs, by target id (playwright-cli tab-list). */
+  async function tabList() {
+    const r = await pw(['tab-list']);
+    return r.exitCode === 0 ? lib.tabIds(r.stdout || '') : [];
+  }
+
+  /** The page's links with their addresses (page-scan.js links). */
+  async function linksOf(tab) {
+    const r = await js(tab, LINKS_JS);
+    try {
+      const value = JSON.parse(r.stdout || '[]');
+      return Array.isArray(value) ? value : JSON.parse(value);
+    } catch {
+      return [];
+    }
   }
 
   async function doAct(req, state, s1) {
@@ -528,6 +548,8 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     let candidates = [];
     if (req.ref) {
       element = resolveRef(req.ref, before, state);
+      const conflict = lib.refConflict(req.intent, element, before.shot.elements);
+      if (conflict) throw new IntentError(conflict);
     } else {
       const { v, byId, shortlist } = await chooseControl(req, s1, before, parsed);
       candidates = shortlist;
@@ -556,10 +578,37 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     if (req.dryRun) {
       return { tab, outcome: 'dry-run', p, remember: remember(before.shot.elements, candidates.map((c) => c.ref)), lines: [`would ${parsed.op} ${named}${p != null ? `  ${lib.pct(p)}` : ''}`], json: { ref: element.token } };
     }
+    // A click may open a tab (a link with target=_blank): the tabs there were before it.
+    const clicking = parsed.op === 'click';
+    const tabsBefore = clicking ? state.knownTabs || (await tabList()) : null;
     const did = await perform(tab, parsed.op, parsed, element, before.viewport);
     await settle(tab);
     const after = await look(tab, { controls: true });
     const { lines } = afterLines(before, after);
+    const unchanged = after.shot.url === before.shot.url && lines.length <= 1;
+    if (clicking && (element.role === 'link' || unchanged)) {
+      const tabsAfter = await tabList();
+      const opened = lib.openedTab(tabsBefore, tabsAfter);
+      if (opened) {
+        // The new tab is where the next calls go; the one clicked in stays open.
+        await settle(opened);
+        const there = await look(opened, { controls: true });
+        return {
+          tab: opened,
+          outcome: 'acted',
+          p,
+          knownTabs: tabsAfter,
+          lines: [
+            `✓ ${did} [${element.token}]${p != null ? `  ${lib.pct(p)}` : ''}`,
+            `  opened a new tab: ${there.shot.url}  (tab ${opened}; the next calls use it, the old tab ${tab} stays open)`,
+            `  title: ${there.shot.title || '(none)'}`,
+            ...lib.gist(there.shot, there.viewport, lib.textSegments(there.raw)).map((l) => `  ${l}`),
+          ],
+          json: { did, ref: element.token, url: there.shot.url, tab: opened, openedFrom: tab },
+        };
+      }
+      return { tab, outcome: 'acted', p, knownTabs: tabsAfter, lines: [`✓ ${did} [${element.token}]${p != null ? `  ${lib.pct(p)}` : ''}`, ...lines], json: { did, ref: element.token, url: after.shot.url } };
+    }
     return {
       tab,
       outcome: 'acted',
@@ -578,7 +627,9 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     if (!segments.length) throw new IntentError('this page has no text');
     if (lib.isList(req.intent)) {
       // A lexical read, no model: the matching links, buttons or rows.
-      const listed = lib.listLines(req.intent, obs.shot.elements, segments, req.candidates || LIST_MAX);
+      // Links with their addresses: the snapshot prints none.
+      const elements = lib.listWantsControls(req.intent) ? lib.applyLinks(obs.shot.elements, await linksOf(tab)) : obs.shot.elements;
+      const listed = lib.listLines(req.intent, elements, segments, req.candidates || LIST_MAX);
       return {
         tab,
         outcome: 'listed',
@@ -900,6 +951,9 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     const lastDecision = await logDecision(flags, { req, kind, result, started, state });
     await writeJson(STATE, {
       tab: result.tab,
+      // The tabs known before a click, to tell one it opens. Opening a URL
+      // in a new tab makes them unknown again.
+      knownTabs: 'knownTabs' in result ? result.knownTabs : state.knownTabs || null,
       at: Date.now(),
       candidates: result.remember || state.candidates || [],
       lastDecision,

@@ -42,11 +42,13 @@ The kind is read from the words. `--kind` overrides it.
 | NAVIGATE | `open <url>`, `go back`, `reload` | the address, title, and a page gist: headings, fields, buttons with refs |
 | ACT | `click …`, `type "x" into …`, `select "x" from …`, `check …`, `press Enter`, `scroll down`, `close the banner` | `✓` what was done and what changed: address, field values, checked states, new controls with refs |
 | RETRIEVE | `what is …?`, `read the error message` | the text that answers it (cut around your words), its ref and heading; when no single text is sure, the closest few in page order |
-| RETRIEVE (list) | `list the links about drugs`, `list the rows that mention calories`, `list the buttons` | up to 20 matching links, buttons, fields or text rows with refs, in page order; matched by words, no model |
+| RETRIEVE (list) | `list the links about drugs`, `list the rows that mention calories`, `list the buttons`, `what is the URL of the Sivana link?` | up to 20 matching links (each with its URL), buttons, fields or text rows with refs, in page order; matched by words, no model |
 | VERIFY | `is the cart empty?`, `verify the order was placed` | `yes` or `no` with p, and the evidence text |
 | WAIT_FOR | `wait until the results load` | when it held (`--timeout S`, default 15) |
 
 Quote text to type and options to select: `type "Sep 30" into Departure`. Unquoted works for the usual phrasings ("fill the name field with Ada Lovelace", "set quantity to 3").
+
+A field shows what the page says about it besides its name: its placeholder, its type (email, tel, time, multi-line), required, invalid. A click that opens a new tab says so, and the next calls use that tab; the old one stays open. A `--ref` whose control plainly is not what the intent names (another control on the page matches the words, this one none of them) is refused rather than acted on.
 
 When System 1 is not sure of an ACT, nothing happens. The answer starts with `?` and lists the candidates, each with its ref and probability. Say more (the label or the row: "the comments link of the second story"), or pass `--ref e41` from the list. `--candidates N` lists without acting, and `--dry-run` says which control an ACT would use. A ref from `--full` or a list stays usable after the page re-renders: it is found again by role, label and order.
 

@@ -12,6 +12,7 @@
 // Pure: no I/O, no sliccy. intent.jsh does the observing and acting.
 
 const page = require('./snapshot.js');
+const pageScan = require('./page-scan.js');
 
 const KINDS = ['ACT', 'RETRIEVE', 'VERIFY', 'WAIT_FOR', 'NAVIGATE'];
 
@@ -339,7 +340,11 @@ function controlCandidates(elements, viewport) {
   for (const e of elements) total.set(series(e.label), (total.get(series(e.label)) || 0) + 1);
   const seen = new Map();
   return elements
-    .filter((e) => !(e.kind === 'click' && e.label.length > 200))
+    // A clickable div the page scan found with a huge text is a panel, not a
+    // control. A real link or button keeps its whole name for matching,
+    // however long: a product card is a link named by all of its text
+    // (BU Bench V2.1, 2026-10-04); it is shown cut short (page.shown).
+    .filter((e) => !(e.synthetic && e.label.length > 200))
     .map((e) => {
       const key = series(e.label);
       const k = (seen.get(key) || 0) + 1;
@@ -386,7 +391,8 @@ function applyStates(elements, states) {
   }
   const seen = new Map();
   return elements.map((e) => {
-    const k = key(e.role, e.label);
+    // An unnamed control's label is its role (snapshot.js); the scan names it ''.
+    const k = key(e.role, e.label === e.role ? '' : e.label);
     const n = seen.get(k) || 0;
     seen.set(k, n + 1);
     const hit = (scanned.get(k) || [])[n];
@@ -398,6 +404,78 @@ function applyStates(elements, states) {
 }
 
 /** Control states as text segments, for RETRIEVE and VERIFY ("is Medium selected?"). */
+/**
+ * The snapshot's links with their addresses (page-scan.js links): each link
+ * takes the first anchor still unused, in page order, whose name matches
+ * its label (nameScore 2+: equal, or one containing the other). Links come
+ * in the same order in both, so a repeated name pairs up in turn.
+ */
+/** The target ids in `playwright-cli tab-list` output ("[ID] url "title"" per line). */
+const tabIds = (text) => [...String(text).matchAll(/^\[([0-9A-Za-z]+)\]\s/gm)].map((m) => m[1]);
+
+/** The tab a click opened: the last id in `after` that was not in `before`, or null. */
+function openedTab(before, after) {
+  const known = new Set(before);
+  const fresh = after.filter((id) => !known.has(id));
+  return fresh.length ? fresh[fresh.length - 1] : null;
+}
+
+// Words that name a kind of thing or a place in a list, not one control.
+// Kinds only: "search", "date" or "menu" can be a control's own label.
+const GENERIC_WORDS = new Set(
+  [
+    ...Object.keys(ORDINALS),
+    ...('button btn link hyperlink anchor field box input textbox textfield textarea dropdown combobox checkbox ' +
+      'tickbox radio option item entry cell node card product listing result title heading image photo picture icon ' +
+      'thumbnail row one last next previous again label text tile post article story control element thing').split(' '),
+  ].map(stem)
+);
+
+/**
+ * Whether an ACT's --ref contradicts its own words: the intent names a
+ * control (words other than verbs, kinds and places) that the ref's control
+ * does not match at all, while another control on the page does. Then the
+ * ref is a stale or mistyped one ("click the Search button" with the ref of
+ * a price option clicked the option, BU Bench V2.1, 2026-10-04). → a
+ * message, or null. Words no control has (an arrow icon's meaning) say
+ * nothing against the ref.
+ */
+function refConflict(intent, element, elements = []) {
+  const parsed = parseAct(intent);
+  if (parsed.op === 'press' || parsed.op === 'scroll') return null;
+  const named = parsed.op === 'type' ? parsed.target || '' : parsed.value ? `${parsed.target || ''} ${parsed.value}` : intent;
+  const words = [...new Set(contentWords(named).filter((w) => !GENERIC_WORDS.has(w)))];
+  if (!words.length) return null;
+  const hits = (e) => {
+    const have = tokens(`${e.label === e.role ? '' : e.label} ${e.context || ''} ${e.value || ''}`);
+    return words.some((w) => have.some((t) => t === w || (t.length >= 4 && w.length >= 4 && (t.startsWith(w) || w.startsWith(t)))));
+  };
+  if (hits(element)) return null;
+  const other = elements.find((e) => e.token !== element.token && hits(e));
+  if (!other) return null;
+  return `--ref ${element.token} is ${element.role} "${page.shown(element.label)}", not what "${squash(intent)}" names (${other.role} "${page.shown(other.label)}" [${other.token}] is closer). Pass the ref you mean, or leave --ref out.`;
+}
+
+const LINK_WINDOW = 60;
+
+function applyLinks(elements, anchors) {
+  if (!anchors || !anchors.length) return elements;
+  const used = new Set();
+  let from = 0;
+  return elements.map((e) => {
+    if (e.role !== 'link') return e;
+    // A window ahead, not the whole page: a link with no anchor (hidden,
+    // in a frame) must not cost a scan of every link after it.
+    for (let i = from; i < Math.min(anchors.length, from + LINK_WINDOW); i++) {
+      if (used.has(i) || pageScan.nameScore(e.label, [anchors[i].name]) < 2) continue;
+      used.add(i);
+      from = i + 1;
+      return { ...e, href: anchors[i].href };
+    }
+    return e;
+  });
+}
+
 function stateSegments(elements) {
   return elements
     .filter((e) => e.state)
@@ -976,10 +1054,12 @@ function snippet(text, query, max = 240) {
 // lexical read, no model. Controls when the intent names a kind of control,
 // else the page's text rows.
 const LIST_RE = /^(?:please\s+)?(?:list|show\s+me\s+all|enumerate)\b/i;
+// "What is the URL of the X link?": the links that match, with their addresses.
+const URL_ASK = /\b(?:urls?|hrefs?|link\s+address(?:es)?|web\s+address(?:es)?)\b/i;
 const LIST_CONTROLS = /\b(links?|buttons?|controls?|options?|fields?|tabs?|checkboxes|menu\s+items?)\b/i;
-const isList = (intent) => LIST_RE.test(squash(intent));
+const isList = (intent) => LIST_RE.test(squash(intent)) || URL_ASK.test(squash(intent));
 /** A list of controls needs the page scan too: games build buttons from divs. */
-const listWantsControls = (intent) => isList(intent) && LIST_CONTROLS.test(squash(intent));
+const listWantsControls = (intent) => isList(intent) && (LIST_CONTROLS.test(squash(intent)) || URL_ASK.test(squash(intent)));
 
 /**
  * The listing for a "list … about X" intent: up to n matches in page order,
@@ -987,9 +1067,10 @@ const listWantsControls = (intent) => isList(intent) && LIST_CONTROLS.test(squas
  * buttons), every item of the kind, in page order.
  */
 function listLines(intent, elements, segments, n = 20) {
-  const text = squash(intent);
-  const wantsControls = LIST_CONTROLS.test(text);
-  const kind = wantsControls ? LIST_CONTROLS.exec(text)[1].toLowerCase() : '';
+  const urlAsk = URL_ASK.test(squash(intent));
+  const text = squash(intent).replace(URL_ASK, ' ');
+  const wantsControls = urlAsk || LIST_CONTROLS.test(text);
+  const kind = urlAsk ? 'links' : wantsControls ? LIST_CONTROLS.exec(text)[1].toLowerCase() : '';
   const roleOk = (e) =>
     /^link/.test(kind)
       ? e.role === 'link'
@@ -1001,15 +1082,21 @@ function listLines(intent, elements, segments, n = 20) {
             ? e.role === 'tab'
             : true;
   // The words after the kind ("about drugs", "that mention calories").
-  const about = wantsControls ? text.slice(text.search(LIST_CONTROLS) + kind.length) : text.replace(LIST_RE, '');
-  const words = contentWords(about).filter((w) => !['list', 'row', 'item', 'all', 'mention', 'about', 'page'].includes(w));
+  const about = urlAsk
+    ? text.replace(LIST_CONTROLS, ' ')
+    : wantsControls
+      ? text.slice(text.search(LIST_CONTROLS) + kind.length)
+      : text.replace(LIST_RE, '');
+  const words = contentWords(about).filter((w) => !['list', 'row', 'item', 'all', 'mention', 'about', 'page', 'what', 'which', 'link'].includes(w));
   const pool = wantsControls ? controlCandidates(elements.filter(roleOk), null) : segments;
   const ranked = words.length ? lexicalRank(pool, words.join(' ')).filter((r) => r.score > 0.5) : pool.map((c, index) => ({ candidate: c, index }));
   const picked = ranked.slice(0, n).map((r) => r.candidate);
   const order = (c) => (c.type === 'control' ? c.element.seq ?? 0 : c.line ?? 0);
   picked.sort((a, b) => order(a) - order(b));
   const lines = picked.map((c) =>
-    c.type === 'control' ? `  ${c.ref} ${describeControl(c)}` : `  ${c.ref || c.id} ${describeText(c, 160)}`
+    c.type === 'control'
+      ? `  ${c.ref} ${describeControl(c)}${c.element.href ? ` → ${c.element.href}` : ''}`
+      : `  ${c.ref || c.id} ${describeText(c, 160)}`
   );
   return { lines, total: ranked.length, kind: wantsControls ? kind : 'rows' };
 }
@@ -1206,6 +1293,11 @@ function cleanRequest(raw) {
 
 module.exports = {
   REF_RE,
+  refConflict,
+  applyLinks,
+  tabIds,
+  openedTab,
+  URL_ASK,
   MODELS,
   cleanRequest,
   redactSecrets,

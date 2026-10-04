@@ -17,15 +17,11 @@ const skill = require('sliccy:skill');
 const page = require('./snapshot.js');
 const { createIntent, DIR, CALLS, STATE } = require('./intent-core.js');
 const { toolCalls, lastMessage, stats } = require('./transcript.js');
-const { runId, checkUrl, prompt, printable } = require('./arm.js');
+const { UTILITIES, runId, checkUrl, prompt, printable } = require('./arm.js');
 
 const ARM_DIR = '/tmp/intent-arm';
 const MODEL_DEFAULT = 'claude-sonnet-5-5';
 const TOOLS = ['intent', 'playwright-cli'];
-// Shell loops and helper scripts that batch tool calls are fair play for
-// every arm (Lars, 2026-10-03), so bash and sh are in too; whatever they
-// run is still held to the scoop's grant.
-const UTILITIES = ['grep', 'head', 'tail', 'sleep', 'sed', 'awk', 'cut', 'wc', 'sort', 'uniq', 'echo', 'cat', 'tr', 'jq', 'bash', 'sh'];
 
 const HELP = `
 intent-arm — run one goal with a Sonnet scoop that browses through one tool

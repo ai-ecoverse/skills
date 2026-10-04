@@ -238,22 +238,51 @@ function tabTools({ exec, say = async () => {}, evalJs = null }) {
   // misses too (seen 2026-09-22; fixed in ai-ecoverse/slicc#3417, kept for
   // older builds). Then find the node by its trimmed name, focus it in the
   // page, and let playwright-cli send real keystrokes.
-  function focusByName(element, click) {
+  // A control playwright-cli cannot reach by its ref: found in the page by
+  // its name, else at its place. playwright-cli turns a ref into
+  // a[aria-label=…]/a[title=…], so a link named by its content is "Element
+  // not found"; its innerText may also leave out part of the name (a hidden
+  // button), so the name is matched by what it contains (nameScore) too.
+  // mode: 'locate' scrolls to it and returns its centre {x, y}, for a real
+  // mouse click (a script's click() opens no tab: no user activation);
+  // 'focus' focuses it, for typing.
+  function focusByName(element, mode) {
+    const box = Array.isArray(element.box) ? element.box : null;
     return `(() => {
-      const want = ${JSON.stringify(element.label)}.replace(/\\s+/g, ' ').trim();
+      const nameScore = ${pageScan.nameScore.toString()};
+      const want = ${JSON.stringify(element.label)};
       const role = ${JSON.stringify(element.role)};
+      const box = ${JSON.stringify(box)};
       const norm = (s) => String(s || '').replace(/\\s+/g, ' ').trim();
-      const nameOf = (el) => norm(el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.innerText);
       const visible = (el) => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-      const all = [...document.querySelectorAll('[aria-label], [placeholder], [role], a, button, input')];
-      const hits = all.filter((el) => visible(el) && nameOf(el) === want);
-      hits.sort((a, b) => ((b.getAttribute('role') || b.tagName).toLowerCase() === role) - ((a.getAttribute('role') || a.tagName).toLowerCase() === role));
-      const el = hits[0];
+      const roleOf = (el) => (el.getAttribute('role') || ({ A: 'link', BUTTON: 'button', SELECT: 'combobox', TEXTAREA: 'textbox' })[el.tagName] || (el.tagName === 'INPUT' ? 'textbox' : el.tagName)).toLowerCase();
+      const namesOf = (el) => [el.getAttribute('aria-label'), el.getAttribute('placeholder'), el.innerText, el.textContent, el.getAttribute('title')].map(norm);
+      const dist = (el) => {
+        if (!box) return 0;
+        const r = el.getBoundingClientRect();
+        return Math.abs(r.x + r.width / 2 - (box[0] + box[2] / 2)) + Math.abs(r.y + r.height / 2 - (box[1] + box[3] / 2));
+      };
+      let best = null;
+      for (const el of document.querySelectorAll('[aria-label], [placeholder], [role], a, button, input, select, textarea, [onclick], [tabindex]')) {
+        if (!visible(el)) continue;
+        const score = nameScore(want, namesOf(el)) + (roleOf(el) === role ? 0.5 : 0);
+        if (score < 2) continue;
+        const d = dist(el);
+        if (!best || score > best.score || (score === best.score && d < best.d)) best = { el, score, d };
+      }
+      let el = best && best.el;
+      // No name matches: what stands at the control's place, as the snapshot boxed it.
+      if (!el && box) el = document.elementFromPoint(box[0] + box[2] / 2, box[1] + box[3] / 2);
       if (!el) return 'missing';
       el.scrollIntoView({ block: 'center' });
+      if (${JSON.stringify(mode)} === 'locate') {
+        const r = el.getBoundingClientRect();
+        if (r.width && r.height) return JSON.stringify({ x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) });
+        el.click();
+        return 'ok';
+      }
       el.focus();
-      if (${click ? 'true' : 'false'}) el.click();
-      if ('value' in el && !${click ? 'true' : 'false'}) el.select && el.select();
+      if ('value' in el) el.select && el.select();
       return 'ok';
     })()`;
   }
@@ -320,8 +349,15 @@ function tabTools({ exec, say = async () => {}, evalJs = null }) {
       throw new Error(`playwright-cli click ${ref} failed: ${detail.trim().slice(0, 300)}`);
     }
     await say(`         ${ref} has no node id; focusing "${action.element.label.trim()}" by name`);
-    const focused = await jsOk(tab, focusByName(action.element, action.operation === 'CLICK'), commands);
-    if (!focused.includes('ok')) throw new Error(`no visible control named "${action.element.label.trim()}"`);
+    const clicking = action.operation === 'CLICK';
+    const found = await jsOk(tab, focusByName(action.element, clicking ? 'locate' : 'focus'), commands);
+    if (found.includes('missing')) throw new Error(`no visible control named "${action.element.label.trim()}"`);
+    const at = /"x":(-?\d+),"y":(-?\d+)/.exec(found);
+    if (clicking && at) {
+      await sh(['playwright-cli', 'mousemove', `--tab=${tab}`, at[1], at[2]], commands);
+      await sh(['playwright-cli', 'mousedown', `--tab=${tab}`], commands);
+      await sh(['playwright-cli', 'mouseup', `--tab=${tab}`], commands);
+    }
     if (action.operation === 'TYPE_TEXT') {
       await sh(['playwright-cli', 'type', `--tab=${tab}`, '--', action.text], commands);
     }
