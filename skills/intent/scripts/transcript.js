@@ -20,6 +20,24 @@ function toolCalls(transcript) {
   return calls;
 }
 
+/**
+ * The scoop's last message: the text of its last assistant turn, without
+ * tool calls. '' when it has none. The agent's stdout joins every text turn
+ * ("Opened about:blank; retry.The story …"), and a bench reads its FINAL
+ * ANSWER from the last one.
+ */
+function lastMessage(transcript) {
+  // A turn starts at a line that is only "## user" or "## assistant": an
+  // answer may have headings of its own.
+  const turns = String(transcript).split(/^## (?=(?:user|assistant)[ \t]*$)/m);
+  for (let i = turns.length - 1; i >= 0; i -= 1) {
+    if (!/^assistant[ \t]*\n/.test(turns[i])) continue;
+    const text = turns[i].replace(/^assistant[ \t]*\n/, '').split(/\n### tool: /)[0].trim();
+    if (text) return text;
+  }
+  return '';
+}
+
 /** n, mean, median, max and total of a list of numbers; null when empty. */
 const stats = (xs) => {
   if (!xs.length) return null;
@@ -28,4 +46,4 @@ const stats = (xs) => {
   return { n: s.length, mean: Math.round(sum / s.length), p50: s[s.length >> 1], max: s[s.length - 1], total: sum };
 };
 
-module.exports = { toolCalls, stats };
+module.exports = { toolCalls, lastMessage, stats };

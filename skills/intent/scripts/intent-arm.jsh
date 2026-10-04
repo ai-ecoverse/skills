@@ -16,7 +16,7 @@ const exec = require('sliccy:exec');
 const skill = require('sliccy:skill');
 const page = require('./snapshot.js');
 const { createIntent, DIR, CALLS, STATE } = require('./intent-core.js');
-const { toolCalls, stats } = require('./transcript.js');
+const { toolCalls, lastMessage, stats } = require('./transcript.js');
 const { runId, checkUrl, prompt, printable } = require('./arm.js');
 
 const ARM_DIR = '/tmp/intent-arm';
@@ -171,6 +171,9 @@ async function main() {
   const transcript = await findTranscript(started, prompt(url, goal, tool));
   if (transcript) await fs.writeFile(`${dir}/transcript.md`, transcript);
   const turns = Number((/- turns: (\d+)/.exec(transcript) || [])[1]) || null;
+  // The answer in full: result.json keeps 500 characters of it, which cut a
+  // bench's FINAL ANSWER off (BU Bench V2.1, 2026-10-04).
+  await fs.writeFile(`${dir}/answer.txt`, lastMessage(transcript) || stdout.trim());
   const calls = toolCalls(transcript);
   // A call may chain several commands ("fill …; check …; click …"): count
   // the shell calls that use the tool, and the tool invocations in them.

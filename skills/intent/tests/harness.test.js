@@ -106,3 +106,29 @@ test('judge: the bike tour also counts as done on its summary page', () => {
   is([adapter.gamePoints(summary), adapter.gamePoints('Total Points All Tours -151'), adapter.gamePoints(riding)], [2663, -151, null]);
   is(adapter.metrics('You\'ve accumulated -3,190 points.', { id: 'armchair-bike' }), { points: -3190 });
 });
+
+test('lastMessage: the last assistant text in full, not the joined stdout', () => {
+  const long = `${'x'.repeat(600)}\n\n## Result\n\nFINAL ANSWER: 330 metres`;
+  const md = [
+    '# agent',
+    '## user',
+    'Do the task.',
+    '## assistant',
+    'Opened about:blank; retry.',
+    '### tool: bash',
+    'Input:',
+    '```json\n{"command": "intent --intent \\"open https://example.com\\""}\n```',
+    'Result:',
+    '```\n✓ opened https://example.com/\n```',
+    '## assistant',
+    '### tool: bash',
+    'Input:',
+    '```json\n{"command": "intent --intent \\"what is the height?\\""}\n```',
+    'Result:',
+    '```\n"330 metres"\n```',
+    '## assistant',
+    long,
+  ].join('\n\n');
+  is(transcript.lastMessage(md), long);
+  is(transcript.lastMessage('## user\n\nhi'), '');
+});
