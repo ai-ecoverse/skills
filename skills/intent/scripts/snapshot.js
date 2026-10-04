@@ -125,8 +125,22 @@ function promoteClickable(shot, found, viewport) {
     String(text || '')
       .replace(/\s+/g, ' ')
       .trim();
-  const covered = (b) =>
+  // A snapshot without boxes (the look after an action): a clickable is
+  // covered by a control whose name holds its text, or the other way round,
+  // so it gets the c-ref the next look (with boxes) will give it.
+  const boxed = shot.elements.some((e) => e.box);
+  const lower = (t) => norm(t).toLowerCase();
+  // Nearly the same text only: a container whose name holds several
+  // buttons (Kittens' bonfire list) covers none of them.
+  const coveredByName = (label) =>
     shot.elements.some((e) => {
+      const name = e.label === e.role ? '' : lower(e.label);
+      const l = lower(label);
+      const [short, long] = name.length < l.length ? [name, l] : [l, name];
+      return short.length >= 4 && short.length >= long.length * 0.6 && long.includes(short);
+    });
+  const covered = (b, label) =>
+    !boxed ? coveredByName(label) : shot.elements.some((e) => {
       if (!e.box) return false;
       const cx = b[0] + b[2] / 2;
       const cy = b[1] + b[3] / 2;
@@ -145,7 +159,7 @@ function promoteClickable(shot, found, viewport) {
       b[2] * b[3] > area * MAX_CLICKABLE_SHARE
     )
       continue;
-    if (seen.has(label) || covered(b)) continue;
+    if (seen.has(label) || covered(b, label)) continue;
     seen.add(label);
     added.push({
       token: `c${added.length + 1}`,
@@ -264,6 +278,16 @@ function addRowContext(elements, texts) {
 }
 
 const ROW_LOOKBACK = 16;
+
+/**
+ * Whether the look after an action needs --boxes: only where the page had
+ * synthetic controls (clickable divs, c-refs), whose numbering follows
+ * which of them a real control covers, by box. Elsewhere the after-look
+ * goes without: boxes cost a CDP call per ref, 2.5–3.5× the snapshot on a
+ * large page (Wikipedia 1.27 s against 0.33 s, 2026-10-04), little on the
+ * games' small pages, and the next call looks again with them.
+ */
+const afterLookBoxes = (shot) => shot.elements.some((e) => e.synthetic);
 
 const named = (element) =>
   `${element.role} "${shown(element.label)}"${element.context ? ` for "${element.context}"` : ''}`;
@@ -391,6 +415,7 @@ module.exports = {
   parseSnapshot,
   shown,
   named,
+  afterLookBoxes,
   place,
   promoteClickable,
   applyDisambiguation,

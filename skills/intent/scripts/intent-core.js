@@ -309,8 +309,8 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
    * One look at the tab. With controls: boxes, the viewport and the page scan
    * (clickable divs, names for repeated controls), as webrunner orients.
    */
-  async function lookUntimed(tab, { controls }) {
-    const obs = await observe(tab, null, { viewport: controls });
+  async function lookUntimed(tab, { controls, boxes = true }) {
+    const obs = await observe(tab, null, { viewport: controls, boxes });
     // Inside a look: playwright-cli's snapshot against the page evals.
     for (const c of obs.commands) tick(c.argv[0] === 'playwright-cli' ? 'look.snapshot' : 'look.eval', c.ms);
     let states = [];
@@ -539,7 +539,7 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
           ? (await pressKey(tab, parsed.key), `pressed ${parsed.key}`)
           : await doScroll(tab, parsed.direction, before.viewport);
       await settle(tab);
-      const after = await look(tab, { controls: true });
+      const after = await look(tab, { controls: true, boxes: page.afterLookBoxes(before.shot) });
       const { lines } = afterLines(before, after);
       return { tab, outcome: 'acted', lines: [`✓ ${did}`, ...lines], json: { did, url: after.shot.url } };
     }
@@ -583,7 +583,9 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     const tabsBefore = clicking ? state.knownTabs || (await tabList()) : null;
     const did = await perform(tab, parsed.op, parsed, element, before.viewport);
     await settle(tab);
-    const after = await look(tab, { controls: true });
+    // What changed, read without boxes unless the page has div buttons to
+    // number (page.afterLookBoxes): the next call takes its own look.
+    const after = await look(tab, { controls: true, boxes: page.afterLookBoxes(before.shot) });
     const { lines } = afterLines(before, after);
     const unchanged = after.shot.url === before.shot.url && lines.length <= 1;
     if (clicking && (element.role === 'link' || unchanged)) {

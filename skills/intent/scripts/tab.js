@@ -157,13 +157,16 @@ function tabTools({ exec, say = async () => {}, evalJs = null }) {
     const started = Date.now();
     const commands = [];
     const argv = ['playwright-cli', 'snapshot', `--tab=${tab}`];
-    if (opts.viewport) argv.push('--boxes');
+    // boxes: false, the look after an action: --boxes costs a CDP call per
+    // ref (2.5–3.5× the snapshot, 2026-10-04), and the next call looks again.
+    const boxes = opts.viewport && opts.boxes !== false;
+    if (boxes) argv.push('--boxes');
     // A snapshot of a huge page can time out once (Wikipedia's Kurt Gödel
     // article: "CDP command timed out", 2026-10-02): try twice more, the
     // last time without boxes, which cost a CDP call per ref.
     let raw;
     for (let attempt = 1; ; attempt++) {
-      const plain = attempt === 3 && opts.viewport;
+      const plain = attempt === 3 && boxes;
       const result = await run(plain ? argv.filter((a) => a !== '--boxes') : argv, commands);
       if (result.exitCode === 0) {
         raw = result.stdout || '';
