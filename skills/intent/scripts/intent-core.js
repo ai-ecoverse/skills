@@ -265,6 +265,8 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     } else {
       s1 = await kevModel(asked, flags.from || null, flags['require-gpu'] === true || flags['require-gpu'] === 'true');
     }
+    const ask = s1.ask;
+    s1.ask = (body) => timed('s1', ask)(body);
     models.set(key, s1);
     return s1;
   }
@@ -292,7 +294,7 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
   }
 
   /** Wait for the document to load after an action, then a beat for scripts. */
-  async function settle(tab) {
+  async function settleUntimed(tab) {
     await sleep(150);
     for (let i = 0; i < 40; i++) {
       const r = await js(tab, 'document.readyState');
@@ -306,10 +308,14 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
    * One look at the tab. With controls: boxes, the viewport and the page scan
    * (clickable divs, names for repeated controls), as webrunner orients.
    */
-  async function look(tab, { controls }) {
+  async function lookUntimed(tab, { controls }) {
     const obs = await observe(tab, null, { viewport: controls });
+    // Inside a look: playwright-cli's snapshot against the page evals.
+    for (const c of obs.commands) tick(c.argv[0] === 'playwright-cli' ? 'look.snapshot' : 'look.eval', c.ms);
     let states = [];
+    const evalStarted = Date.now();
     const scanned = await js(tab, STATES_JS);
+    tick('look.eval', Date.now() - evalStarted);
     try {
       const value = JSON.parse(scanned.stdout || '[]');
       states = Array.isArray(value) ? value : JSON.parse(value);
@@ -373,7 +379,7 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
    * ref (set-of-marks), as a kev vision bundle takes it. null when the
    * screenshot or the canvas work fails: the question still has the labels.
    */
-  async function markedShot(tab, shortlist, viewport) {
+  async function markedShotUntimed(tab, shortlist, viewport) {
     const path = `${DIR}/shot.png`;
     const r = await pw(['screenshot', `--tab=${tab}`, `--filename=${path}`]);
     if (r.exitCode !== 0) return null;
@@ -415,7 +421,7 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
   }
 
   /** Do the parsed operation on one control. → a past-tense phrase. */
-  async function perform(tab, op, parsed, element, viewport) {
+  async function performUntimed(tab, op, parsed, element, viewport) {
     const commands = [];
     const named = `${element.role} "${page.shown(element.label)}"`;
     const plain = !element.synthetic && !Number.isInteger(element.nth);
@@ -717,6 +723,29 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
    * Handle one request; never exits the process (the daemon serves many).
    * → { stdout, exitCode }
    */
+  // ── where a call's time goes ────────────────────────────────────────
+  // Each phase's milliseconds, summed over the call (a look before and one
+  // after an action count together), for the call log and the training log:
+  // the hosted games showed ACT at 3–6 s on some pages and 1.5–2.6 s on others.
+  let phases = {};
+  const tick = (name, ms) => {
+    phases[name] = (phases[name] || 0) + ms;
+  };
+  const timed =
+    (name, fn) =>
+    async (...args) => {
+      const started = Date.now();
+      try {
+        return await fn(...args);
+      } finally {
+        tick(name, Date.now() - started);
+      }
+    };
+  const look = timed('look', (...a) => lookUntimed(...a));
+  const markedShot = timed('shot', (...a) => markedShotUntimed(...a));
+  const settle = timed('settle', (...a) => settleUntimed(...a));
+  const perform = timed('act', (...a) => performUntimed(...a));
+
   // ── training log (--log-dir or INTENT_LOG_DIR) ───────────────────────
   // What System 1 was shown and answered on every ACT, RETRIEVE, VERIFY and
   // WAIT_FOR, and whether the caller then corrected it: real runs become
@@ -797,6 +826,7 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
         ...(error ? { error } : {}),
         acted: result && result.json && result.outcome === 'acted' ? result.json.ref || null : null,
         ms: Date.now() - started,
+        phases,
         files,
       });
       return { id, tab, kind: rest.kind, outcome: result ? result.outcome : 'error', at: Date.now() };
@@ -810,6 +840,7 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     const started = Date.now();
     const state = await readJson(STATE, {});
     decision = null;
+    phases = {};
     let result;
     let kind = req.kind || lib.classify(req.intent).kind;
     let s1name = '';
@@ -850,7 +881,7 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     } catch (err) {
       if (err?.name === 'NodeExitError') throw err;
       const message = err instanceof IntentError ? err.message : `${kind} failed: ${String(err?.message || err).slice(0, 400)}`;
-      await logCall({ at: new Date().toISOString(), kind, intent: req.intent, ms: Date.now() - started, error: message });
+      await logCall({ at: new Date().toISOString(), kind, intent: req.intent, ms: Date.now() - started, phases, error: message });
       const lastDecision = await logDecision(flags, { req, kind, result: null, started, state, error: message });
       if (lastDecision !== (state.lastDecision || null)) await writeJson(STATE, { ...state, lastDecision });
       const text = req.json ? JSON.stringify({ ok: false, kind, error: message }) : `intent: ${message}`;
@@ -875,6 +906,7 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
       s1: s1name,
       tab: result.tab,
       ms: Date.now() - started,
+      phases,
       chars: stdout.length,
     });
     return { stdout, exitCode: 0 };
