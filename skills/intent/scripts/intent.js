@@ -1236,7 +1236,103 @@ function bundleCacheDir(url) {
 const REF_RE = /^[a-z]{1,2}\d{1,6}(?:[a-z]\d{1,6})?$/;
 const TAB_RE = /^[A-Za-z0-9_-]{1,80}$/;
 const MAX_INTENT = 2000;
-const REQUEST_FIELDS = new Set(['id', 'intent', 'kind', 'ref', 'tab', 'sure', 'candidates', 'dryRun', 'full', 'timeout', 'json', 'model']);
+// ── playwright-cli through intent ─────────────────────────────────────
+// `intent <playwright-cli command> … --intent "<what and why>"` runs that
+// command as it is, with its intent stated and logged: the eval arm's
+// browser is playwright-cli, every call of which must say why (Lars,
+// 2026-10-04). The names are playwright-cli's own (its --help).
+const PW_COMMANDS = new Set(
+  (
+    'open goto navigate teleport click type fill snapshot find frames screenshot eval eval-file hover select check uncheck ' +
+    'drag press keydown keyup resize dialog-accept dialog-dismiss go-back go-forward reload tab-list tab-select tab-new ' +
+    'tab-close close upload pdf state-save state-load network-state-set record stop-recording cookie-list cookie-get ' +
+    'cookie-set cookie-delete cookie-clear localstorage-list localstorage-get localstorage-set localstorage-delete ' +
+    'localstorage-clear sessionstorage-list sessionstorage-get sessionstorage-set sessionstorage-delete ' +
+    'sessionstorage-clear console requests request request-headers request-body response-headers response-body ' +
+    'mousemove mousedown mouseup mousewheel drop route route-list unroute generate-locator highlight'
+  ).split(' ')
+);
+// Arguments that are files: flags anywhere, and these commands' positionals.
+const PW_PATH_FLAG = /^--(filename|output|path)=(.*)$/s;
+const PW_PATH_ARGS = { upload: 'all', 'eval-file': 1, 'state-load': 1, 'state-save': 1 };
+// The server runs with more rights than the scoop that asks: a file it
+// reads or writes for a request stays where a scoop may read and write.
+const PW_PATH_ROOTS = ['/tmp/', '/shared/', '/scoops/'];
+const MAX_PW_ARGS = 64;
+const MAX_PW_ARG = 4000;
+
+/** Where an argument names a file: [index, value, prefix] for each. */
+function pwPathArgs(sub, args) {
+  const out = [];
+  const positional = args.map((a, i) => [a, i]).filter(([a]) => !a.startsWith('--'));
+  const which = PW_PATH_ARGS[sub];
+  if (which === 'all') {
+    // upload [ref] <file>…: a ref first is not a file.
+    for (const [a, i] of positional) if (!REF_RE.test(a)) out.push([i, a, '']);
+  } else if (which) {
+    const hit = positional[which - 1];
+    if (hit) out.push([hit[1], hit[0], '']);
+  }
+  args.forEach((a, i) => {
+    const m = PW_PATH_FLAG.exec(a);
+    if (m) out.push([i, m[2], `--${m[1]}=`]);
+  });
+  return out;
+}
+
+/**
+ * The playwright-cli call in an intent command line: { sub, args, intent }
+ * with --intent (and intent's own --local) taken out, or null when the
+ * first word is no playwright-cli command. Files resolve against cwd, where
+ * the caller is, not where the server runs.
+ */
+function passthrough(argv, cwd = '/') {
+  const rest = [];
+  let intent;
+  for (let i = 0; i < argv.length; i++) {
+    const a = String(argv[i]);
+    if (a === '--intent') {
+      intent = argv[i + 1];
+      i++;
+    } else if (a.startsWith('--intent=')) intent = a.slice('--intent='.length);
+    else if (a !== '--local') rest.push(a);
+  }
+  const at = rest.findIndex((a) => !a.startsWith('-'));
+  if (at < 0 || !PW_COMMANDS.has(rest[at])) return null;
+  const sub = rest[at];
+  const args = rest.filter((_, i) => i !== at);
+  const base = String(cwd || '/').replace(/\/+$/, '');
+  for (const [i, value, prefix] of pwPathArgs(sub, args)) {
+    if (value && !value.startsWith('/')) args[i] = `${prefix}${base}/${value}`.replace(/\/\.\//g, '/');
+  }
+  return { sub, args, intent: typeof intent === 'string' ? intent : undefined };
+}
+
+/** A passthrough argv as the server checks it. → an error message, or null. */
+function checkArgv(argv) {
+  if (!Array.isArray(argv) || !argv.length) return 'argv is a non-empty list';
+  if (argv.length > MAX_PW_ARGS + 1) return `at most ${MAX_PW_ARGS} arguments`;
+  if (!argv.every((a) => typeof a === 'string' && a.length <= MAX_PW_ARG && !a.includes('\0'))) return 'arguments are strings';
+  const [sub, ...args] = argv;
+  if (!PW_COMMANDS.has(sub)) return `${JSON.stringify(String(sub).slice(0, 40))} is not a playwright-cli command`;
+  for (const [, value] of pwPathArgs(sub, args)) {
+    const path = String(value).replace(/\/+/g, '/');
+    if (path.split('/').includes('..') || !PW_PATH_ROOTS.some((r) => path.startsWith(r))) {
+      return `files go under ${PW_PATH_ROOTS.join(', ')} (got ${JSON.stringify(path.slice(0, 80))})`;
+    }
+  }
+  return null;
+}
+
+/** The tab a playwright-cli call names or opened: --tab=ID, else "targetId: ID" in its output. */
+function rawTab(argv, stdout = '') {
+  const flag = argv.find((a) => /^--tab=/.test(a));
+  if (flag) return flag.slice('--tab='.length);
+  const opened = /targetId:\s*([0-9A-Za-z]+)/.exec(String(stdout));
+  return opened && ['open', 'tab-new'].includes(argv[0]) ? opened[1] : null;
+}
+
+const REQUEST_FIELDS = new Set(['id', 'intent', 'kind', 'ref', 'tab', 'sure', 'candidates', 'dryRun', 'full', 'timeout', 'json', 'model', 'argv']);
 const MODELS = ['4b-vision', '0.8b-vision', '4b', '0.8b', 'clef', 'clef-flash'];
 
 /**
@@ -1288,11 +1384,20 @@ function cleanRequest(raw) {
     if (typeof raw[key] !== 'boolean') return { error: `${key} is true or false` };
     req[key] = raw[key];
   }
+  if (raw.argv != null) {
+    const bad = checkArgv(raw.argv);
+    if (bad) return { error: bad };
+    req.argv = [...raw.argv];
+  }
   return { req };
 }
 
 module.exports = {
   REF_RE,
+  PW_COMMANDS,
+  passthrough,
+  checkArgv,
+  rawTab,
   refConflict,
   applyLinks,
   tabIds,

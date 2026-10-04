@@ -160,6 +160,22 @@ async function main() {
     console.log(`kev-${model}: ready in ${status.base}`);
     return;
   }
+  // A playwright-cli command, run as it is: only with its intent stated.
+  // Read from the raw arguments: parseFlags would take a word after a bare
+  // flag (`--local screenshot`) as that flag's value.
+  const pass = lib.passthrough(process.argv.slice(2), process.cwd());
+  if (pass) {
+    if (typeof pass.intent !== 'string' || !pass.intent.trim()) {
+      cli.die(`playwright-cli ${pass.sub} needs --intent "<what you want and why>": every browser command states its intent`, { prefix: 'intent', exitCode: 2 });
+    }
+    const { req, error } = lib.cleanRequest({ intent: pass.intent, argv: [pass.sub, ...pass.args] });
+    if (error) cli.die(error, { prefix: 'intent' });
+    let answer = flags.local ? null : await viaDaemon(req);
+    if (!answer) answer = await handle(req, flags);
+    if (answer.stdout) console.log(answer.stdout);
+    if (answer.stderr) console.error(answer.stderr);
+    process.exit(answer.exitCode || 0);
+  }
   if (sub) cli.die(`unknown command: ${sub}\nRun 'intent --help' for usage.`, { prefix: 'intent' });
   if (flags.intent === true) {
     cli.die('--intent needs text; an intent that starts with "-" goes as --intent="-…"', { prefix: 'intent' });

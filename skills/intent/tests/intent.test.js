@@ -103,7 +103,9 @@ test('parseAct: the value to type is not part of the target', () => {
 
 test('cleanRequest: intent fields only, strictly checked', () => {
   is(lib.cleanRequest({ intent: '  click   Search ', ref: 'e12', sure: 0.8 }).req, { intent: 'click Search', ref: 'e12', sure: 0.8 });
-  ok(lib.cleanRequest({ intent: 'x', argv: ['rm', '-rf'] }).error.includes('unknown field'));
+  ok(lib.cleanRequest({ intent: 'x', shell: 'rm -rf /' }).error.includes('unknown field'));
+  // An argv is a playwright-cli command, nothing else (passthrough.test.js).
+  ok(lib.cleanRequest({ intent: 'x', argv: ['rm', '-rf'] }).error.includes('not a playwright-cli command'));
   ok(lib.cleanRequest({ intent: 'x', ref: 'e1; rm -rf /' }).error.includes('--ref'));
   ok(lib.cleanRequest({ intent: 'x', tab: '../../etc' }).error.includes('--tab'));
   ok(lib.cleanRequest({ intent: 'x', sure: 2 }).error.includes('--sure'));

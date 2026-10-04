@@ -897,11 +897,45 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     }
   }
 
+  /**
+   * A playwright-cli command as it is (`intent <command> … --intent`): run,
+   * its output returned unchanged, its intent logged. The tab it names or
+   * opens becomes the tab of the next intent call.
+   */
+  async function raw(req, state) {
+    const started = Date.now();
+    const r = await timed('act', pw)(req.argv);
+    const tab = lib.rawTab(req.argv, r.stdout) || state.tab || null;
+    if (tab !== (state.tab || null)) await writeJson(STATE, { ...state, tab, knownTabs: null, at: Date.now() });
+    await logCall({
+      at: new Date().toISOString(),
+      kind: 'RAW',
+      intent: req.intent,
+      cmd: req.argv[0],
+      exitCode: r.exitCode,
+      tab,
+      ms: Date.now() - started,
+      phases,
+      chars: String(r.stdout || '').length,
+    });
+    return { stdout: String(r.stdout || '').trimEnd(), stderr: String(r.stderr || '').trimEnd(), exitCode: r.exitCode };
+  }
+
   async function handle(req, flags = {}) {
     const started = Date.now();
     const state = await readJson(STATE, {});
     decision = null;
     phases = {};
+    if (req.argv) {
+      try {
+        return await raw(req, state);
+      } catch (err) {
+        if (err?.name === 'NodeExitError') throw err;
+        const message = err instanceof IntentError ? err.message : `playwright-cli ${req.argv[0]} failed: ${String(err?.message || err).slice(0, 400)}`;
+        await logCall({ at: new Date().toISOString(), kind: 'RAW', intent: req.intent, cmd: req.argv[0], ms: Date.now() - started, phases, error: message });
+        return { stdout: '', stderr: `intent: ${message}`, exitCode: err instanceof IntentError ? err.exitCode : 1 };
+      }
+    }
     let result;
     let kind = req.kind || lib.classify(req.intent).kind;
     let s1name = '';

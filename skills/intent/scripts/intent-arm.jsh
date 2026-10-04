@@ -17,7 +17,7 @@ const skill = require('sliccy:skill');
 const page = require('./snapshot.js');
 const { createIntent, DIR, CALLS, STATE } = require('./intent-core.js');
 const { toolCalls, lastMessage, stats } = require('./transcript.js');
-const { UTILITIES, runId, checkUrl, prompt, printable } = require('./arm.js');
+const { TOOLSETS, THINKING, commandNames, utilitiesFor, audit, runId, checkUrl, prompt, printable } = require('./arm.js');
 
 const ARM_DIR = '/tmp/intent-arm';
 const MODEL_DEFAULT = 'claude-sonnet-5-5';
@@ -28,12 +28,23 @@ intent-arm — run one goal with a Sonnet scoop that browses through one tool
 
 USAGE
   intent-arm [--url URL] --goal TEXT|--goal-file PATH --tool intent|playwright-cli
-                 [--model ID] [--time-limit S] [--json] [--private]
+                 [--model ID] [--thinking LEVEL] [--time-limit S] [--json] [--private]
+                 [--toolset browser|full]
                  [--s1-model M | --s1-from DIR] [--require-gpu] [--cf-account ID]   intent's System 1
                  [--retrieve answer|budget|lexical] [--retrieve-budget CHARS]  intent's RETRIEVE variant
 
 Without --url no page is open: the scoop opens the site the goal names
 itself (a bench task), and the run id ends in -run.
+
+--toolset full gives the scoop every command the shell lists, as the cone
+has them, except playwright-cli, playwright and puppeteer: their commands go
+through \`intent <command> … --intent "<what and why>"\`. Scripts that drive
+the browser around the tool (sliccy:browser, require('playwright')) are not
+blocked but counted in result.json (bypass), as are bare browser commands
+(barePlaywright). Default: browser, the text utilities only.
+
+--thinking passes the scoop's reasoning level to agent (off, minimal, low,
+medium, high, xhigh).
 
 --goal-file reads the goal from a file, keeping it off the command line.
 --private prints the run id and numbers only: the answer, the final URL and
@@ -66,6 +77,35 @@ async function findTranscript(since, promptText) {
   return '';
 }
 
+/** The scripts a scoop left in its directory (a few hundred at most), for the audit. */
+async function scriptsIn(root, dir = root, depth = 0, out = []) {
+  if (depth > 4 || out.length >= 300) return out;
+  let names = [];
+  try {
+    names = await fs.readDir(dir);
+  } catch {
+    return out;
+  }
+  for (const name of names) {
+    if (out.length >= 300) break;
+    const path = `${dir}/${name}`;
+    let st = null;
+    try {
+      st = await fs.stat(path);
+    } catch {
+      continue;
+    }
+    // The realm's stat: { isDirectory, isFile, size } as booleans and a number.
+    if (st && st.isDirectory === true) await scriptsIn(root, path, depth + 1, out);
+    else if (/\.(m?js|cjs|ts|jsh|py|sh)$/.test(name) && (st?.size ?? 0) <= 512 * 1024) {
+      try {
+        out.push({ name: path.slice(root.length + 1), text: String(await fs.readFile(path)) });
+      } catch {}
+    }
+  }
+  return out;
+}
+
 async function main() {
   const { flags } = process.argv.parseFlags();
   if (flags.help || flags.h) cli.help(HELP);
@@ -85,6 +125,10 @@ async function main() {
   const badUrl = checkUrl(url);
   if (badUrl) cli.die(badUrl, { prefix: 'intent-arm' });
   const priv = Boolean(flags.private);
+  const toolset = typeof flags.toolset === 'string' ? flags.toolset : 'browser';
+  if (!TOOLSETS.includes(toolset)) cli.die(`--toolset is one of ${TOOLSETS.join(', ')}`, { prefix: 'intent-arm' });
+  const thinking = typeof flags.thinking === 'string' ? flags.thinking : null;
+  if (thinking && !THINKING.includes(thinking)) cli.die(`--thinking is one of ${THINKING.join(', ')}`, { prefix: 'intent-arm' });
   const model = typeof flags.model === 'string' ? flags.model : MODEL_DEFAULT;
   const limitS = Math.max(30, Number.parseFloat(flags['time-limit']) || 900);
   const run = runId(url);
@@ -133,8 +177,20 @@ async function main() {
   // Both arms get the same text utilities beside their browser tool: a
   // playwright-cli scoop without grep, head or sleep could not page through
   // a large snapshot and gave up on Wikipedia (2026-10-03).
-  const allowed = [tool, ...UTILITIES].join(',');
-  const job = exec.start(['agent', '--model', model, '--no-escalate', '--usage', cwd, allowed, prompt(url, goal, tool)]);
+  // full: what the shell lists (skills included), read now, less the browser commands.
+  const listed = toolset === 'full' ? commandNames((await exec.spawn(['commands'])).stdout || '') : [];
+  const allowed = [...new Set([tool, ...utilitiesFor(toolset, listed)])].join(',');
+  const job = exec.start([
+    'agent',
+    '--model',
+    model,
+    ...(thinking ? ['--thinking', thinking] : []),
+    '--no-escalate',
+    '--usage',
+    cwd,
+    allowed,
+    prompt(url, goal, tool, toolset),
+  ]);
   // An open stdin keeps \`agent\` waiting before it starts (seen 2026-10-02).
   if (job.stdin && job.stdin.end) job.stdin.end();
   let timedOut = false;
@@ -164,13 +220,15 @@ async function main() {
       usage = null;
     }
   }
-  const transcript = await findTranscript(started, prompt(url, goal, tool));
+  const transcript = await findTranscript(started, prompt(url, goal, tool, toolset));
   if (transcript) await fs.writeFile(`${dir}/transcript.md`, transcript);
   const turns = Number((/- turns: (\d+)/.exec(transcript) || [])[1]) || null;
   // The answer in full: result.json keeps 500 characters of it, which cut a
   // bench's FINAL ANSWER off (BU Bench V2.1, 2026-10-04).
   await fs.writeFile(`${dir}/answer.txt`, lastMessage(transcript) || stdout.trim());
   const calls = toolCalls(transcript);
+  // Around the rules: scripts that drive the browser themselves, bare browser commands.
+  const checked = audit(calls, await scriptsIn(cwd));
   // A call may chain several commands ("fill …; check …; click …"): count
   // the shell calls that use the tool, and the tool invocations in them.
   const word = `(^|[;&|\\s(])${tool.replace('-', '\\-')}\\s`;
@@ -231,6 +289,9 @@ async function main() {
     run,
     tool,
     model,
+    toolset,
+    thinking,
+    ...checked,
     seconds: Math.round(seconds * 10) / 10,
     timedOut,
     exitCode: done ? done.exitCode : null,
