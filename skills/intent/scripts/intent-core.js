@@ -656,6 +656,8 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
       kind: req.kind === 'WAIT_FOR' || /^(?:wait|until)/i.test(req.intent) ? 'WAIT_FOR' : 'VERIFY',
       model: s1.name,
       claim: q.question.instructions,
+      // The yes/no band this System 1 answers with (its manifest's verify, else SURE).
+      threshold: policy(req, s1, 'VERIFY').sure,
       shortlist: lib.logShortlist(evidence),
       probabilities: res.answers.evidence ? probabilitiesOf(res.answers.evidence) : {},
       pick,
