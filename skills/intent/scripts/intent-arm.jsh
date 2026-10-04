@@ -17,6 +17,7 @@ const skill = require('sliccy:skill');
 const page = require('./snapshot.js');
 const { createIntent, DIR, CALLS, STATE } = require('./intent-core.js');
 const { toolCalls, stats } = require('./transcript.js');
+const { runId, checkUrl, prompt, printable } = require('./arm.js');
 
 const ARM_DIR = '/tmp/intent-arm';
 const MODEL_DEFAULT = 'claude-sonnet-5-5';
@@ -30,40 +31,24 @@ const HELP = `
 intent-arm — run one goal with a Sonnet scoop that browses through one tool
 
 USAGE
-  intent-arm --url URL --goal TEXT --tool intent|playwright-cli
-                 [--model ID] [--time-limit S] [--json]
+  intent-arm [--url URL] --goal TEXT|--goal-file PATH --tool intent|playwright-cli
+                 [--model ID] [--time-limit S] [--json] [--private]
                  [--s1-model M | --s1-from DIR] [--require-gpu] [--cf-account ID]   intent's System 1
                  [--retrieve answer|budget|lexical] [--retrieve-budget CHARS]  intent's RETRIEVE variant
+
+Without --url no page is open: the scoop opens the site the goal names
+itself (a bench task), and the run id ends in -run.
+
+--goal-file reads the goal from a file, keeping it off the command line.
+--private prints the run id and numbers only: the answer, the final URL and
+everything else drawn from the task or its pages stay in the run's files,
+${ARM_DIR}/<run>/ (result.json, transcript.md, calls.jsonl, decisions/, …),
+for a bench to read into its encrypted trace.
 
 Prints the run's numbers; the files are in ${ARM_DIR}/<run>/.
 `.trim();
 
-/** The page's hostname as a run-id slug: news.ycombinator.com → news-ycombinator-com. */
-function hostSlug(url) {
-  let host = '';
-  try {
-    host = new URL(url).hostname;
-  } catch {
-    host = '';
-  }
-  return (
-    host
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '')
-      .slice(0, 40) || 'run'
-  );
-}
-
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-function prompt(url, goal, tool) {
-  const how =
-    tool === 'intent'
-      ? 'You browse only through the `intent` command: one call per step, each stating one intent in words, for example `intent --intent "click the Search button"`. Run `intent --help` once for the details.'
-      : 'You browse only through the `playwright-cli` command. Run `playwright-cli --help` once for the details.';
-  return `Open ${url} in a new browser tab and do this there: ${goal}\nLeave the final page open in that tab when you are done.\n${how}`;
-}
 
 /**
  * The scoop's transcript: /tmp/agent-<name>-<UTC time it ended>.md. fs.stat
@@ -89,14 +74,24 @@ async function main() {
   const { flags } = process.argv.parseFlags();
   if (flags.help || flags.h) cli.help(HELP);
   const url = typeof flags.url === 'string' ? flags.url : '';
-  const goal = typeof flags.goal === 'string' ? flags.goal : '';
+  // --goal-file: the task text read from the VFS, so it is not on the
+  // command line a bench runner may log.
+  let goal = typeof flags.goal === 'string' ? flags.goal : '';
+  if (!goal && typeof flags['goal-file'] === 'string') {
+    try {
+      goal = String(await fs.readFile(flags['goal-file'])).trim();
+    } catch {
+      cli.die(`cannot read --goal-file ${flags['goal-file']}`, { prefix: 'intent-arm' });
+    }
+  }
   const tool = flags.tool;
-  if (!url || !goal || !TOOLS.includes(tool)) cli.die('usage: intent-arm --url URL --goal TEXT --tool intent|playwright-cli', { prefix: 'intent-arm' });
+  if (!goal || !TOOLS.includes(tool)) cli.die('usage: intent-arm [--url URL] --goal TEXT|--goal-file PATH --tool intent|playwright-cli', { prefix: 'intent-arm' });
+  const badUrl = checkUrl(url);
+  if (badUrl) cli.die(badUrl, { prefix: 'intent-arm' });
+  const priv = Boolean(flags.private);
   const model = typeof flags.model === 'string' ? flags.model : MODEL_DEFAULT;
   const limitS = Math.max(30, Number.parseFloat(flags['time-limit']) || 900);
-  // <time>-<hostname slug>, as meep-meep's trace.js names runs: diagnostics
-  // can tell this goal's run from the one before it.
-  const run = `${new Date().toISOString().replace(/[:.]/g, '-')}-${hostSlug(url)}`;
+  const run = runId(url);
   const dir = `${ARM_DIR}/${run}`;
   await fs.mkdir(dir, { recursive: true });
   const started = Date.now();
@@ -130,8 +125,8 @@ async function main() {
       if (err?.name === 'NodeExitError') throw err;
       const failed = { run, tool, ok: false, error: `System 1 did not load: ${String(err?.message || err)}` };
       await fs.writeFile(`${dir}/result.json`, JSON.stringify(failed, null, 2));
-      if (flags.json) cli.out(failed);
-      else console.error(`intent-arm: ${failed.error}`);
+      if (flags.json) cli.out(printable(failed, { private: priv }));
+      else console.error(`intent-arm: ${priv ? `System 1 did not load (${dir}/result.json)` : failed.error}`);
       process.exit(1);
     }
     serving = core.serve(s1, { stop: () => finished });
@@ -269,7 +264,7 @@ async function main() {
     answer: stdout.trim().slice(0, 500),
   };
   await fs.writeFile(`${dir}/result.json`, JSON.stringify(result, null, 2));
-  if (flags.json) cli.out(result);
+  if (flags.json) cli.out(printable(result, { private: priv }));
   else {
     console.log(`${tool}: ${result.steps} steps in ${result.seconds} s${timedOut ? ' (time limit)' : ''}, $${usage ? usage.cost.toFixed(3) : '?'}`);
     console.log(`  context per step: ${result.resultChars ? `${result.resultChars.mean} chars mean, ${result.resultChars.max} max` : 'n/a'}`);
@@ -283,5 +278,12 @@ try {
   await main();
 } catch (err) {
   if (err?.name === 'NodeExitError') throw err;
-  cli.die(String(err?.message || err), { prefix: 'intent-arm' });
+  const message = String(err?.message || err);
+  // --private: an error can quote the task or a page, so it stays on the leader.
+  if (process.argv.includes('--private')) {
+    await fs.mkdir(ARM_DIR, { recursive: true }).catch(() => {});
+    await fs.writeFile(`${ARM_DIR}/last-error.txt`, message).catch(() => {});
+    cli.die(`failed; the error is in ${ARM_DIR}/last-error.txt`, { prefix: 'intent-arm' });
+  }
+  cli.die(message, { prefix: 'intent-arm' });
 }

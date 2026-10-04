@@ -482,7 +482,17 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
       if (tab) {
         const r = await pw(['goto', nav.url, `--tab=${tab}`]);
         if (r.exitCode !== 0) throw new IntentError(`could not open ${nav.url}: ${(r.stderr || r.stdout).trim().slice(0, 200)}`);
-      } else tab = await openTab(nav.url);
+      } else {
+        tab = await openTab(nav.url);
+        // playwright-cli open returns while the new tab still shows
+        // about:blank, whose readyState is already complete: the first open
+        // of a run with no page reported "opened about:blank" (2026-10-04).
+        for (let i = 0; i < 40; i++) {
+          const r = await js(tab, 'location.href');
+          if (r.exitCode === 0 && !/^"?about:blank/.test(r.stdout || '')) break;
+          await sleep(250);
+        }
+      }
     } else {
       if (!tab) throw new IntentError('no tab yet: open a URL first');
       const verb = nav.op === 'back' ? 'go-back' : nav.op === 'forward' ? 'go-forward' : 'reload';

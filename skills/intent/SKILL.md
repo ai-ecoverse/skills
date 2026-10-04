@@ -111,6 +111,8 @@ Each call loads the model again. For many calls in a row, keep it loaded: run `i
 
 The intent variants run side by side, one GPU leader each. `playwright-scoop` (the same scoop with raw playwright-cli, the control of the first smoke rounds) and `intent-lexical` (`--retrieve lexical`: the top texts by words alone, no model) are held.
 
-`intent-arm` (scripts/intent-arm.jsh, so it installs with the skill; a leader gets no evals/ folder) records the tool calls, the characters each call put into context, the scoop's tokens and cost (`agent --usage`), and each intent call's latency. Its files are in `/tmp/intent-arm/<run>/`.
+`intent-arm` (scripts/intent-arm.jsh, so it installs with the skill; a leader gets no evals/ folder) records the tool calls, the characters each call put into context, the scoop's tokens and cost (`agent --usage`), and each intent call's latency, split by phase (snapshot, page evals, screenshot, System 1, action, settling). Its files are in `/tmp/intent-arm/<run>/`.
+
+For a benchmark whose tasks name their site in words (BU Bench V2.1), `intent-arm` runs without `--url`: no page is open, the scoop opens the site itself, and the run id ends in `-run`. Those files hold task text and page content. `--private` keeps them out of what it prints: only the run id and the numbers go to stdout, and an error goes to `/tmp/intent-arm/last-error.txt`. The bench reads the files on the leader into its encrypted trace. `--goal-file PATH` keeps the task off the command line.
 
 The snapshot parser, page scan and kev loader grew out of meep-meep's webrunner and decide-quickly's kev runtime (#423, closed without merging); the copies here are the code.
