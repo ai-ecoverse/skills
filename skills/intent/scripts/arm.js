@@ -63,6 +63,29 @@ function audit(calls, files = []) {
   return { bypass: { calls: bypassCalls, files: bypassFiles.length }, barePlaywright, bypassFiles };
 }
 
+/**
+ * A logged intent call's outcome for the result's tally. A playwright-cli
+ * call through intent (kind RAW) is ok or failed by its exit code; it once
+ * had no outcome and was counted an error (135 "errors" on a BU Bench
+ * shard, 2026-10-04). A call that threw is an error.
+ */
+function callOutcome(entry) {
+  if (entry.error) return 'error';
+  if (entry.outcome) return entry.outcome;
+  if (entry.kind === 'RAW') return entry.exitCode === 0 ? 'ok' : 'failed';
+  return 'error';
+}
+
+/** The outcomes of a call log, counted: { acted: 12, ok: 3, … }. */
+function outcomeCounts(entries) {
+  const out = {};
+  for (const e of entries) {
+    const k = callOutcome(e);
+    out[k] = (out[k] || 0) + 1;
+  }
+  return out;
+}
+
 /** The page's hostname as a run-id slug: news.ycombinator.com → news-ycombinator-com; no URL → run. */
 function hostSlug(url) {
   let host = '';
@@ -133,4 +156,4 @@ function printable(result, { private: priv = false } = {}) {
   return out;
 }
 
-module.exports = { UTILITIES, FULL_TOOLS, BROWSER_COMMANDS, TOOLSETS, THINKING, commandNames, utilitiesFor, audit, hostSlug, runId, checkUrl, prompt, printable, PRIVATE_FIELDS };
+module.exports = { callOutcome, outcomeCounts, UTILITIES, FULL_TOOLS, BROWSER_COMMANDS, TOOLSETS, THINKING, commandNames, utilitiesFor, audit, hostSlug, runId, checkUrl, prompt, printable, PRIVATE_FIELDS };

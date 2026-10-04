@@ -17,7 +17,7 @@ const skill = require('sliccy:skill');
 const page = require('./snapshot.js');
 const { createIntent, DIR, CALLS, STATE } = require('./intent-core.js');
 const { toolCalls, lastMessage, stats } = require('./transcript.js');
-const { TOOLSETS, THINKING, commandNames, utilitiesFor, audit, runId, checkUrl, prompt, printable } = require('./arm.js');
+const { TOOLSETS, THINKING, commandNames, outcomeCounts, utilitiesFor, audit, runId, checkUrl, prompt, printable } = require('./arm.js');
 
 const ARM_DIR = '/tmp/intent-arm';
 const MODEL_DEFAULT = 'claude-sonnet-5-5';
@@ -314,7 +314,7 @@ async function main() {
             calls: intentLog.length,
             ms: stats(intentLog.map((e) => e.ms || 0)),
             kinds: count(intentLog, 'kind'),
-            outcomes: count(intentLog.map((e) => ({ ...e, outcome: e.outcome || 'error' })), 'outcome'),
+            outcomes: outcomeCounts(intentLog),
             system1Calls: intentLog.filter((e) => e.s1).length,
           }
         : null,

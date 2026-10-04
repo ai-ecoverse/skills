@@ -914,6 +914,7 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
       kind: 'RAW',
       intent: req.intent,
       cmd: req.argv[0],
+      outcome: r.exitCode === 0 ? 'ok' : 'failed',
       exitCode: r.exitCode,
       tab,
       ms: Date.now() - started,

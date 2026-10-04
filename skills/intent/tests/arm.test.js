@@ -132,3 +132,21 @@ test('printable --private: the audit and the thinking level are numbers to keep'
   );
   is(out, { run: 'r', toolset: 'full', thinking: 'low', bypass: { calls: 0, files: 1 }, barePlaywright: 2 });
 });
+
+test('callOutcome: a passthrough call is ok or failed by its exit code, not an error', () => {
+  // As the core logs them (before and after RAW calls carried an outcome).
+  is(arm.callOutcome({ kind: 'RAW', cmd: 'eval', exitCode: 0 }), 'ok');
+  is(arm.callOutcome({ kind: 'RAW', cmd: 'click', exitCode: 1 }), 'failed');
+  is(arm.callOutcome({ kind: 'RAW', cmd: 'screenshot', outcome: 'ok', exitCode: 0 }), 'ok');
+  is(arm.callOutcome({ kind: 'RAW', cmd: 'snapshot', error: 'files go under /tmp/' }), 'error');
+  is(arm.callOutcome({ kind: 'ACT', outcome: 'acted' }), 'acted');
+  is(arm.callOutcome({ kind: 'ACT', error: 'ref e3 is not on the page any more' }), 'error');
+  const log = [
+    { kind: 'RAW', exitCode: 0 },
+    { kind: 'RAW', exitCode: 0 },
+    { kind: 'RAW', exitCode: 1 },
+    { kind: 'ACT', outcome: 'acted' },
+    { kind: 'ACT', error: 'x' },
+  ];
+  is(arm.outcomeCounts(log), { ok: 2, failed: 1, acted: 1, error: 1 });
+});
