@@ -434,8 +434,8 @@ const GENERIC_WORDS = new Set(
 /**
  * Whether an ACT's --ref contradicts its own words: the intent names a
  * control (words other than verbs, kinds and places) that the ref's control
- * does not match at all, while another control on the page does. Then the
- * ref is a stale or mistyped one ("click the Search button" with the ref of
+ * does not match at all, while another control on the page does by its own
+ * name. Then the ref is a stale or mistyped one ("click the Search button" with the ref of
  * a price option clicked the option, BU Bench V2.1, 2026-10-04). → a
  * message, or null. Words no control has (an arrow icon's meaning) say
  * nothing against the ref.
@@ -446,12 +446,19 @@ function refConflict(intent, element, elements = []) {
   const named = parsed.op === 'type' ? parsed.target || '' : parsed.value ? `${parsed.target || ''} ${parsed.value}` : intent;
   const words = [...new Set(contentWords(named).filter((w) => !GENERIC_WORDS.has(w)))];
   if (!words.length) return null;
-  const hits = (e) => {
-    const have = tokens(`${e.label === e.role ? '' : e.label} ${e.context || ''} ${e.value || ''}`);
+  // An unnamed control is told apart only by its row context, which is a
+  // guess (the text before it: in a radio list whose labels follow the
+  // radios, each radio carries the one before's label, hosted round
+  // 37210057361). Too weak to overrule the caller's ref.
+  if (element.label === element.role) return null;
+  const nameOf = (e) => (e.label === e.role ? '' : e.label);
+  const hits = (e, withContext) => {
+    const have = tokens(`${nameOf(e)} ${withContext ? `${e.context || ''} ${e.value || ''}` : ''}`);
     return words.some((w) => have.some((t) => t === w || (t.length >= 4 && w.length >= 4 && (t.startsWith(w) || w.startsWith(t)))));
   };
-  if (hits(element)) return null;
-  const other = elements.find((e) => e.token !== element.token && hits(e));
+  if (hits(element, true)) return null;
+  // Another control must match by its own name, not its row context.
+  const other = elements.find((e) => e.token !== element.token && hits(e, false));
   if (!other) return null;
   return `--ref ${element.token} is ${element.role} "${page.shown(element.label)}", not what "${squash(intent)}" names (${other.role} "${page.shown(other.label)}" [${other.token}] is closer). Pass the ref you mean, or leave --ref out.`;
 }

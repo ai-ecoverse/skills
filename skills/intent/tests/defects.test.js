@@ -121,6 +121,20 @@ test('6: a --ref that contradicts the words of the intent is refused', () => {
   is(lib.refConflict('press Enter', option, onPage), null);
 });
 
+test('6: unnamed controls and row context never refuse a ref', () => {
+  // A radio list whose labels follow the radios: row context gives each
+  // radio the text before it, so the second radio carries the first one's
+  // label (Armchair Bike Touring, hosted round 37210057361, 2026-10-04).
+  const r1 = { token: 'e19', role: 'radio', label: 'radio', kind: 'click', context: 'Overnight Options' };
+  const r2 = { token: 'e21', role: 'radio', label: 'radio', kind: 'click', context: 'Campsite with shower $15' };
+  const r3 = { token: 'e23', role: 'radio', label: 'radio', kind: 'click', context: 'Deluxe Campground (with shower) $27' };
+  is(lib.refConflict('select the Campsite with shower radio', r1, [r1, r2, r3]), null);
+  // A named control is not refused for another control's row context either.
+  const go = { token: 'e30', role: 'button', label: 'Continue', kind: 'click' };
+  const other = { token: 'e31', role: 'button', label: 'Back', kind: 'click', context: 'Continue to campsite' };
+  is(lib.refConflict('click the campsite button', go, [go, other]), null);
+});
+
 test('date: the arms may read the clock', () => {
   ok(arm.UTILITIES.includes('date'), arm.UTILITIES.join(','));
 });
