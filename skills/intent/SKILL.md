@@ -24,10 +24,11 @@ allowed-tools: bash
 
 ## Setup
 
-1. `intent prepare` installs the kev runtime (once per machine).
-2. `intent pull --model 4b-vision` downloads the default System 1 (5.4 GB; it resumes). `intent pull` with no flag does the same.
-3. Optional, for many calls in a row: `intent serve` in a shell that may stay open keeps the model loaded; every `intent` call is then handed to it.
-4. Check: `intent --intent "open https://example.com"`, then `intent --intent "what is the main heading?"` answers `"Example Domain"`. A missing runtime or model stops with the command that fixes it.
+1. `intent pull` installs onnxruntime-web and downloads System 1, kev-4b-vision (5.4 GB; it resumes). kev.js itself ships with the skill.
+2. Optional, for many calls in a row: `intent serve` in a shell that may stay open keeps the model loaded; every `intent` call is then handed to it.
+3. Check: `intent --intent "open https://example.com"`, then `intent --intent "what is the main heading?"` lists the page's likely texts with `"Example Domain"` among them. A missing runtime or model stops with the command that fixes it.
+
+The defaults are the configuration BU Bench V2.1 measured; nothing needs tuning.
 
 ## Quick start
 
@@ -39,7 +40,7 @@ intent --intent "press the Submit order button"
 intent --intent "what customer name did the server receive?"
 ```
 
-A call without `--tab` uses the tab of the last call. Opening a URL without a tab opens one. `intent --help` lists every flag, including `--json` and `--retrieve budget` (a RETRIEVE returns the most likely texts up to a character budget instead of one answer).
+A call without `--tab` uses the tab of the last call. Opening a URL without a tab opens one. `intent --help` lists every flag, including `--json`.
 
 ## Kinds of intent
 
@@ -49,7 +50,7 @@ The kind is read from the words; `--kind` overrides it.
 | --- | --- | --- |
 | NAVIGATE | `open <url>`, `go back`, `reload` | the address, title, and a page gist: headings, fields, buttons with refs |
 | ACT | `click …`, `type "x" into …`, `select "x" from …`, `check …`, `press Enter`, `scroll down`, `close the banner` | `✓` what was done and what changed: address, field values, checked states, new controls with refs |
-| RETRIEVE | `what is …?`, `read the error message` | the text that answers it, its ref and heading; when no single text is sure, the closest few in page order |
+| RETRIEVE | `what is …?`, `read the error message` | the texts most likely to answer it, in page order, each with its ref, up to 1,200 characters (`--retrieve-budget N`) |
 | RETRIEVE (list) | `list the links about drugs`, `list the rows that mention calories`, `list the buttons`, `what is the URL of the Sivana link?` | up to 20 matching links (with URLs), buttons, fields or rows with refs, in page order; matched by words, no model |
 | VERIFY | `is the cart empty?`, `verify the order was placed` | `yes` or `no` with its probability, and the evidence text |
 | WAIT_FOR | `wait until the results load` | when it held (`--timeout S`, default 15) |
@@ -82,7 +83,7 @@ Any playwright-cli command runs through intent as it is, with its intent stated:
 
 ## System 1
 
-`--model` picks it: `4b-vision` (default), `0.8b-vision` (1 GB, faster, less accurate), `4b`, `0.8b`, or `clef` / `clef-flash` on Cloudflare Workers AI (needs the `CLOUDFLARE_API_TOKEN` secret for api.cloudflare.com and `--cf-account <id>` once). `--from <dir or URL>` loads any kev bundle, such as a fine-tune; `intent pull --from <URL>` fetches it ahead. `--sure P` overrides the act-or-ask threshold. A missing model stops with the command that gets it; nothing falls back to a guess. Accuracy, thresholds and how the pipeline was chosen: [references/system1.md](references/system1.md).
+System 1 is kev-4b-vision, running locally on WebGPU; it acts when its pick reaches 0.6 (`--sure P` overrides). `--require-gpu` stops instead of running on a software adapter, about 10x slower. `--from <dir or URL>` loads another kev bundle, which may declare its own thresholds; `intent pull --from <URL>` fetches it ahead. A missing model stops with the command that gets it; nothing falls back to a guess. Accuracy, thresholds and how the pipeline was chosen: [references/system1.md](references/system1.md).
 
 ## intent serve
 

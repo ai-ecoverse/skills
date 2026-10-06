@@ -8,8 +8,9 @@
       "**/*.cjs",
       "**/*.json",
       "**/*.jsonc",
-      "!**/node_modules/**",
-      "!**/pandoc-core.cjs"
+      "!**/node_modules",
+      "!**/pandoc-core.cjs",
+      "!**/kev-bundle.cjs"
     ]
   },
   "formatter": {

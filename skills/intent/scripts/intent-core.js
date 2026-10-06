@@ -3,13 +3,12 @@
 // serve requests that other processes leave in /tmp/intent/q (serve). See
 // intent.jsh for the command and intent.js for the decision model.
 //
-// createIntent({ exec, fs, browser, skill, requireBundle }) binds it to the
-// sliccy modules of the entry script.
+// createIntent({ exec, fs, browser }) binds it to the
+// sliccy modules of the entry script; `system1` stands in for kev in tests.
 
 const page = require('./snapshot.js');
 const pageScan = require('./page-scan.js');
 const lib = require('./intent.js');
-const system1 = require('./system1.js');
 const { tabTools } = require('./tab.js');
 const kevRuntime = require('./kev/kev-runtime.js');
 const vision = require('./vision.js');
@@ -33,11 +32,8 @@ const EVIDENCE = 6;
 const WAIT_DEFAULT_S = 15;
 const UNSURE_CANDIDATES = 5;
 const LIST_MAX = 20;
-const REGION_TEXTS = 6;
-// RETRIEVE modes (intent serve --retrieve, an eval arm's variant): answer is
-// one text, or the closest few when unsure; budget and lexical return the
-// top texts by System 1 or by words until RETRIEVE_BUDGET characters.
-const RETRIEVE_MODES = ['answer', 'budget', 'lexical'];
+// RETRIEVE returns System 1's most likely texts, in page order, until this
+// many characters (--retrieve-budget): the mode BU Bench V2.1 measured.
 const RETRIEVE_BUDGET = 1200;
 // Training log caps: the decisions file, the snapshot and screenshot files
 // kept beside it, and one snapshot's size.
@@ -45,7 +41,7 @@ const LOG_MAX_BYTES = 20 * 1024 * 1024;
 const LOG_MAX_FILES = 1000;
 const LOG_SNAPSHOT_MAX = 256 * 1024;
 
-function createIntent({ exec, fs, browser, skill, requireBundle }) {
+function createIntent({ exec, fs, browser, system1 = null }) {
   class IntentError extends Error {
     constructor(message, exitCode = 1) {
       super(message);
@@ -121,29 +117,6 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
 
   const models = new Map();
 
-  // The Workers AI account: --cf-account or CLOUDFLARE_ACCOUNT_ID (remembered
-  // in the skill's config), else the remembered one, else the only account
-  // the token can list. A token scoped to Workers AI usually cannot list any.
-  async function cfAccount(flags, token) {
-    const config = (await skill.config()) || {};
-    const given = flags['cf-account'] || process.env.CLOUDFLARE_ACCOUNT_ID;
-    if (given) {
-      if (!/^[a-f0-9]{32}$/.test(String(given)))
-        throw new IntentError('--cf-account is a 32-character Cloudflare account id');
-      if (config.cfAccount !== given) await skill.config({ cfAccount: String(given) });
-      return String(given);
-    }
-    if (config.cfAccount) return config.cfAccount;
-    const found = await system1.cloudflareAccount(fetch, token, null);
-    if (found.error) {
-      throw new IntentError(
-        `${found.error}. Pass --cf-account <account id> once (it is remembered) or set CLOUDFLARE_ACCOUNT_ID.`
-      );
-    }
-    await skill.config({ cfAccount: found.account });
-    return found.account;
-  }
-
   /**
    * A bundle given by URL: its manifest and every file the manifest lists,
    * fetched into the VFS cache once (a file already there at its listed size
@@ -215,7 +188,7 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     }
     if (!(await kevRuntime.ready(fs))) {
       throw new IntentError(
-        'the kev runtime is not installed: run `intent prepare` once, then retry'
+        `${kevRuntime.ORT_SPEC} is not installed: run \`intent pull\` once, then retry`
       );
     }
     let vision = /-vision$/.test(size || '');
@@ -245,21 +218,18 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
           const m = /kev: (webgpu adapter .*|runtime \w+)/.exec(line);
           if (m) runtime = runtime ? `${runtime}; ${m[1]}` : m[1];
         },
-        // Named in the entry script: see kev-runtime.js loadKev.
-        requireBundle,
       });
     } catch (err) {
       if (err?.name === 'NodeExitError') throw err;
       throw new IntentError(String(err?.message || err));
     }
-    // A bundle is known by its directory's (or URL's) last segment: kev-0.8b-vision-wr2-intent.
+    // A bundle is known by its directory's (or URL's) last segment: kev-4b-vision-intent.
     const bundleName = (url || from || '').replace(/\/+$/, '').split('/').pop();
     const name = from ? `kev ${bundleName}` : `kev ${size}`;
     const key = from ? bundleName.replace(/^kev-/, '') : size;
     return {
       name,
       key,
-      kev: true,
       vision,
       intent: intentSettings,
       runtime,
@@ -269,38 +239,20 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
   }
 
   /**
-   * The System 1 for --model: a local kev bundle by default, or Cloudflare's
-   * Clef on Workers AI (--model clef | clef-flash, which needs the
-   * CLOUDFLARE_API_TOKEN secret). A missing model stops with what to set
-   * up; nothing falls back to a lexical guess or to another provider.
+   * System 1: the local kev-4b-vision bundle, or the kev bundle --from names.
+   * A missing model stops with the command that gets it; nothing falls back
+   * to a lexical guess.
    */
   async function openSystem1(flags) {
+    if (system1) return system1;
     const asked = flags.model || DEFAULT_MODEL;
     const key = flags.from ? `from:${flags.from}` : asked;
     if (models.has(key)) return models.get(key);
-    let s1;
-    if (system1.REMOTE_MODELS[asked] && !flags.from) {
-      const token = await system1.cloudflareToken(exec, process.env);
-      if (!token) {
-        throw new IntentError(
-          `--model ${asked} runs on Cloudflare Workers AI: store the token first (secret set CLOUDFLARE_API_TOKEN <token> --domain api.cloudflare.com), or use the local default (--model ${DEFAULT_MODEL}).`
-        );
-      }
-      const account = await cfAccount(flags, token);
-      s1 = {
-        name: asked,
-        key: asked,
-        kev: false,
-        vision: false,
-        ask: system1.remoteSystemOne({ fetchFn: fetch, account, token, size: asked }),
-      };
-    } else {
-      s1 = await kevModel(
-        asked,
-        flags.from || null,
-        flags['require-gpu'] === true || flags['require-gpu'] === 'true'
-      );
-    }
+    const s1 = await kevModel(
+      asked,
+      flags.from || null,
+      flags['require-gpu'] === true || flags['require-gpu'] === 'true'
+    );
     const ask = s1.ask;
     s1.ask = (body) => timed('s1', ask)(body);
     models.set(key, s1);
@@ -389,7 +341,7 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     const ranked = lib.lexicalRank(candidates, lib.actQuery(req.intent, parsed), { op: parsed.op });
     const shortlist = ranked.slice(0, SHORTLIST_CONTROLS).map((r) => r.candidate);
     if (!shortlist.length) throw new IntentError('this page has no controls to act on');
-    // The stock kev bundles answer the menu wording better; Clef was measured on the plain one.
+    // The stock kev bundles answer the menu wording better (questionStyle).
     const q = lib.choiceQuestion('ACT', req.intent, shortlist, obs.shot, {
       style: lib.questionStyle(s1),
     });
@@ -755,27 +707,10 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
         json: { items: listed.lines.map((l) => l.trim()) },
       };
     }
-    const mode = RETRIEVE_MODES.includes(flags.retrieve) ? flags.retrieve : 'answer';
     const budget = Math.min(
       Math.max(Number(flags['retrieve-budget']) || RETRIEVE_BUDGET, 200),
       6000
     );
-    if (mode === 'lexical') {
-      // Ranked by the intent's words alone, no model: the best texts until
-      // the budget is spent, in the order they stand on the page.
-      const ranked = lib.lexicalRank(segments, req.intent).filter((r) => r.score > 0);
-      const lines = lib.budgetLines(
-        ranked.map((r) => r.candidate),
-        budget,
-        req.intent
-      );
-      return {
-        tab,
-        outcome: 'budget',
-        lines: [`the page's best matching texts, in page order:`, ...lines],
-        json: { texts: lines.map((l) => l.trim()) },
-      };
-    }
     const shortlist = lib
       .lexicalRank(segments, req.intent)
       .slice(0, SHORTLIST_TEXT)
@@ -787,7 +722,6 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     note({
       kind: 'RETRIEVE',
       model: s1.name,
-      mode,
       threshold: rule.sure,
       shortlist: lib.logShortlist(shortlist),
       probabilities: probabilitiesOf(res.answers.action),
@@ -799,21 +733,6 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     });
     const byId = new Map(shortlist.map((s) => [s.id, s]));
     const list = lib.candidateLines(v.ranked, byId, req.candidates || UNSURE_CANDIDATES);
-    if (mode === 'budget' && !req.candidates) {
-      // Ranked by System 1: the most likely texts until the budget is spent,
-      // in page order, whatever its confidence in any single one.
-      const byRank = v.ranked
-        .filter(([id]) => id !== lib.NONE && byId.has(id))
-        .map(([id]) => byId.get(id));
-      const lines = lib.budgetLines(byRank, budget, req.intent);
-      return {
-        tab,
-        outcome: 'budget',
-        p: v.p,
-        lines: [`the page's most likely texts, in page order (top ${lib.pct(v.p)}):`, ...lines],
-        json: { texts: lines.map((l) => l.trim()) },
-      };
-    }
     if (req.candidates) {
       return {
         tab,
@@ -823,40 +742,18 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
         json: { candidates: list },
       };
     }
-    if (!v.sure) {
-      // No single text answers it ("read the game status"): the closest
-      // texts, in page order, are the answer region.
-      const region = lib.regionLines(v.ranked, byId, REGION_TEXTS, req.intent);
-      return {
-        tab,
-        outcome: 'region',
-        p: v.p,
-        lines: [
-          `the page's closest texts, in page order (no single one is sure; best ${lib.pct(v.p)}):`,
-          ...region,
-        ],
-        json: { region: region.map((l) => l.trim()) },
-      };
-    }
-    const best = byId.get(v.pick);
-    const also =
-      v.p < 0.9
-        ? lib.candidateLines(
-            v.ranked.filter(([id]) => id !== v.pick),
-            byId,
-            2
-          )
-        : [];
+    // The most likely texts until the budget is spent, in page order,
+    // whatever System 1's confidence in any single one.
+    const byRank = v.ranked
+      .filter(([id]) => id !== lib.NONE && byId.has(id))
+      .map(([id]) => byId.get(id));
+    const lines = lib.budgetLines(byRank, budget, req.intent);
     return {
       tab,
-      outcome: 'answered',
+      outcome: 'budget',
       p: v.p,
-      lines: [
-        `"${lib.snippet(best.text, req.intent)}"`,
-        `  ${best.ref ? `[${best.ref}] ` : ''}${best.heading ? `under "${page.shown(best.heading)}"  ` : ''}${lib.pct(v.p)}`,
-        ...(also.length ? ['  also:', ...also.map((l) => `  ${l}`)] : []),
-      ],
-      json: { text: best.text, ref: best.ref, heading: best.heading },
+      lines: [`the page's most likely texts, in page order (top ${lib.pct(v.p)}):`, ...lines],
+      json: { texts: lines.map((l) => l.trim()) },
     };
   }
 
@@ -1176,7 +1073,7 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
       } else if (kind === 'ACT' && req.ref && !req.dryRun && !req.candidates) {
         // An explicit ref needs no choice: no System 1 to load.
         result = await doAct(req, state, null);
-      } else if (kind === 'RETRIEVE' && (lib.isList(req.intent) || flags.retrieve === 'lexical')) {
+      } else if (kind === 'RETRIEVE' && lib.isList(req.intent)) {
         // A list is read by words alone: no System 1 to load.
         result = await retrieve(req, state, null, flags);
       } else {

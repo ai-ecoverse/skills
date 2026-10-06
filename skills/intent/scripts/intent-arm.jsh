@@ -13,7 +13,7 @@ const browser = require('sliccy:browser');
 const cli = require('sliccy:cli');
 const fs = require('fs');
 const exec = require('sliccy:exec');
-const skill = require('sliccy:skill');
+const lib = require('./intent.js');
 const page = require('./snapshot.js');
 const { createIntent, DIR, CALLS, STATE } = require('./intent-core.js');
 const { toolCalls, lastMessage, stats } = require('./transcript.js');
@@ -30,8 +30,11 @@ USAGE
   intent-arm [--url URL] --goal TEXT|--goal-file PATH --tool intent|playwright-cli
                  [--model ID] [--thinking LEVEL] [--time-limit S] [--json] [--private]
                  [--toolset browser|full]
-                 [--s1-model M | --s1-from DIR] [--require-gpu] [--cf-account ID]   intent's System 1
-                 [--retrieve answer|budget|lexical] [--retrieve-budget CHARS]  intent's RETRIEVE variant
+                 [--s1-from DIR|URL] [--require-gpu] [--retrieve-budget CHARS]
+
+intent's System 1 is kev-4b-vision unless --s1-from names another kev
+bundle; its RETRIEVE returns the most likely texts up to --retrieve-budget
+characters (default 1200). This is the configuration BU Bench V2.1 measured.
 
 Without --url no page is open: the scoop opens the site the goal names
 itself (a bench task), and the run id ends in -run.
@@ -129,6 +132,9 @@ async function main() {
   if (!TOOLSETS.includes(toolset)) cli.die(`--toolset is one of ${TOOLSETS.join(', ')}`, { prefix: 'intent-arm' });
   const thinking = typeof flags.thinking === 'string' ? flags.thinking : null;
   if (thinking && !THINKING.includes(thinking)) cli.die(`--thinking is one of ${THINKING.join(', ')}`, { prefix: 'intent-arm' });
+  // --retrieve budget: kept for command lines that name the default.
+  const badRetrieve = lib.retrieveFlagError(flags.retrieve);
+  if (badRetrieve) cli.die(badRetrieve, { prefix: 'intent-arm' });
   const model = typeof flags.model === 'string' ? flags.model : MODEL_DEFAULT;
   const limitS = Math.max(30, Number.parseFloat(flags['time-limit']) || 900);
   const run = runId(url);
@@ -144,16 +150,14 @@ async function main() {
     await fs.mkdir(DIR, { recursive: true });
     await fs.rm(STATE).catch(() => {});
     await fs.rm(CALLS).catch(() => {});
-    const core = createIntent({ exec, fs, browser, skill, requireBundle: () => require('/shared/cache/kev/bundle.cjs') });
+    const core = createIntent({ exec, fs, browser });
     const s1 = {
-      ...(flags['cf-account'] ? { 'cf-account': flags['cf-account'] } : {}),
+      // --s1-model: kept for command lines that name the default (4b-vision).
       ...(typeof flags['s1-model'] === 'string' ? { model: flags['s1-model'] } : {}),
       ...(typeof flags['s1-from'] === 'string' ? { from: flags['s1-from'] } : {}),
       ...(flags['require-gpu'] ? { 'require-gpu': true } : {}),
       // The training log: what System 1 saw and chose on every call (intent-core.js).
       'log-dir': `${dir}/decisions`,
-      // The RETRIEVE variant this arm tries: answer (default), budget, lexical.
-      ...(typeof flags.retrieve === 'string' ? { retrieve: flags.retrieve } : {}),
       ...(flags['retrieve-budget'] ? { 'retrieve-budget': Number(flags['retrieve-budget']) } : {}),
     };
     // System 1 loads before the agent starts: a missing bundle or, with

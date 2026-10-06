@@ -2,7 +2,7 @@
 // that returns a small result instead of a snapshot.
 //   classify:  ACT, RETRIEVE, VERIFY, WAIT_FOR or NAVIGATE (intent.js)
 //   filter:    the page's controls or text, ranked by the intent's words;
-//              the top few go to System 1 (Clef, or a local kev) as one
+//              the top few go to System 1 (kev-4b-vision, local) as one
 //              choice question
 //   act/reply: act when System 1 is sure, else return the candidates
 // The engine is intent-core.js. `intent serve` runs it as a server for
@@ -13,7 +13,6 @@ const browser = require('sliccy:browser');
 const cli = require('sliccy:cli');
 const fs = require('fs');
 const exec = require('sliccy:exec');
-const skill = require('sliccy:skill');
 const lib = require('./intent.js');
 const { createIntent, WAIT_DEFAULT_S } = require('./intent-core.js');
 const kevHost = require('./kev/host.js');
@@ -24,10 +23,10 @@ intent — one browser step, stated as an intent
 
 USAGE
   intent --intent "<what you want>" [--tab ID] [flags]
-  intent prepare                install the kev runtime (once)
-  intent pull [--model M]       download a kev bundle's weights (default 4b-vision)
-  intent pull --from URL        fetch a kev bundle by URL into the cache --from uses
-  intent serve [--model M]      keep System 1 loaded and do the browser work for
+  intent pull                   once: onnxruntime-web and kev-4b-vision's
+                                weights (5.4 GB; it resumes)
+  intent pull --from URL        fetch another kev bundle by URL into the cache
+  intent serve [--from DIR|URL] keep System 1 loaded and do the browser work for
                                 callers that may not run playwright-cli themselves
   intent <playwright-cli command> [args] --intent "<what and why>"
                                 run that command as it is, its intent logged
@@ -62,27 +61,22 @@ FLAGS
                      to a URL opens a tab when there is none)
   --kind K           act | retrieve | verify | wait_for | navigate
   --ref REF          act on this ref (from an earlier result) instead of choosing
-  --sure P           act or answer only when System 1's top choice has
-                     probability P or more (default ${lib.SURE})
+  --sure P           act only when System 1's top choice has probability P
+                     or more (default ${lib.SURE_BY_MODEL['4b-vision']}; VERIFY says yes or no at ${lib.SURE})
   --candidates N     list the top N candidates with their probabilities; do nothing
   --dry-run          ACT: say which control it would use, without acting
   --full             print the whole page snapshot (the escape hatch)
   --timeout S        WAIT_FOR: give up after S seconds (default ${WAIT_DEFAULT_S})
-  --model M          System 1: 4b-vision (default) | 0.8b-vision | 4b | 0.8b, a
-                     local kev bundle; clef | clef-flash on Cloudflare Workers AI
-                     (needs the CLOUDFLARE_API_TOKEN secret and --cf-account once)
-  --from DIR|URL     a kev bundle instead of a named one (a fine-tune): a VFS
+  --from DIR|URL     another kev bundle instead of kev-4b-vision: a VFS
                      directory, or a bundle directory's URL (fetched once)
   --require-gpu      stop when WebGPU is a software adapter (SwiftShader), where
                      kev runs ~10x slower, instead of carrying on
-  --retrieve MODE    answer (default): the one text that answers, or the closest
-                     few when unsure; budget: the top texts by System 1 until
-                     --retrieve-budget characters (default 1200), in page order;
-                     lexical: the same ranked by words alone, no model
+  --retrieve-budget N  RETRIEVE: return System 1's most likely texts, in page
+                     order, until N characters (default 1200)
   --json             print the result as JSON
   --local            do the work in this process even while an intent serve
                      runs (a call otherwise goes to the server, whose --from,
-                     --retrieve and --require-gpu apply)
+                     --retrieve-budget and --require-gpu apply)
 
 OUTPUT
   ✓ what was done, then what changed (address, values, new controls)
@@ -91,14 +85,7 @@ OUTPUT
   A result names refs (e12) that the next call can pass as --ref.
 `.trim();
 
-const { handle, serve, viaDaemon, fetchBundle } = createIntent({
-  exec,
-  fs,
-  browser,
-  skill,
-  // Named here, in the entry script: see kev-runtime.js loadKev.
-  requireBundle: () => require('/shared/cache/kev/bundle.cjs'),
-});
+const { handle, serve, viaDaemon, fetchBundle } = createIntent({ exec, fs, browser });
 
 // ── main ──────────────────────────────────────────────────────────────
 
@@ -127,42 +114,41 @@ async function main() {
   const flags = parsed.flags;
   const sub = parsed.positional[0] || '';
   if (flags.help || flags.h || sub === 'help') cli.help(HELP);
+  const badRetrieve = lib.retrieveFlagError(flags.retrieve);
+  if (badRetrieve) cli.die(badRetrieve, { prefix: 'intent' });
   if (sub === 'serve') {
     await serve(flags);
     return;
   }
   if (sub === 'prepare') {
-    // A bundle built in this process cannot be required by it: the next
-    // intent call loads it.
-    await kevHost.ensureBundle(exec, fs, {
-      entry: `${__dirname}/kev/kev-entry.mjs`,
-      outfile: kevRuntime.BUNDLE,
-      packages: [{ spec: kevRuntime.KEV_SPEC, name: kevRuntime.KEV_NAME }],
-    });
-    const ort = await kevHost.ensureOrt(exec, fs);
-    console.log(`kev runtime ready: ${kevRuntime.KEV_SPEC}, ${kevHost.ORT_SPEC} (${ort.dir})`);
+    // Nothing to build: kev.js ships with the skill. Kept so setups that
+    // still run `intent prepare` before `intent pull` (the bench arms) pass.
+    console.log('intent prepare: nothing to do; kev.js ships with the skill, and `intent pull` installs the rest');
     return;
   }
   if (sub === 'pull') {
-    if (flags.from !== undefined) {
-      // A bundle by URL: its manifest and files into the cache --from loads
-      // from, so the first call (or an eval's first goal) skips the download.
-      const url = typeof flags.from === 'string' ? flags.from : '';
-      if (!/^https?:\/\//i.test(url)) cli.die('intent pull --from takes the URL of a kev bundle directory', { prefix: 'intent' });
-      try {
+    try {
+      const ort = await kevHost.ensureOrt(exec, fs);
+      console.error(`${kevHost.ORT_SPEC}: ${ort.installed ? 'installed' : 'ready'} in ${ort.dir}`);
+      if (flags.from !== undefined) {
+        // A bundle by URL: its manifest and files into the cache --from loads
+        // from, so the first call (or an eval's first goal) skips the download.
+        const url = typeof flags.from === 'string' ? flags.from : '';
+        if (!/^https?:\/\//i.test(url)) cli.die('intent pull --from takes the URL of a kev bundle directory', { prefix: 'intent' });
         const dir = await fetchBundle(url);
         console.log(`kev bundle ${url}: ready in ${dir}`);
-      } catch (err) {
-        if (err?.name === 'NodeExitError') throw err;
-        cli.die(String(err?.message || err), { prefix: 'intent' });
+        return;
       }
-      return;
+      // --model: kept for setups that name the default (intent pull --model 4b-vision).
+      const model = typeof flags.model === 'string' ? flags.model : '4b-vision';
+      if (!kevRuntime.MODELS[model]) cli.die(`--model is ${Object.keys(kevRuntime.MODELS).join(', ')}; load another kev bundle with --from`, { prefix: 'intent' });
+      const status = await kevRuntime.pullWeights(fs, exec, model, (line) => console.error(line));
+      if (status.missing.length) cli.die(`${status.missing.length} files are still missing; run intent pull again (it resumes)`, { prefix: 'intent' });
+      console.log(`kev-${model}: ready in ${status.base}`);
+    } catch (err) {
+      if (err?.name === 'NodeExitError') throw err;
+      cli.die(String(err?.message || err), { prefix: 'intent' });
     }
-    const model = typeof flags.model === 'string' ? flags.model : '4b-vision';
-    if (!kevRuntime.MODELS[model]) cli.die(`--model is one of ${Object.keys(kevRuntime.MODELS).join(', ')}`, { prefix: 'intent' });
-    const status = await kevRuntime.pullWeights(fs, exec, model, (line) => console.error(line));
-    if (status.missing.length) cli.die(`${status.missing.length} files are still missing; run intent pull again (it resumes)`, { prefix: 'intent' });
-    console.log(`kev-${model}: ready in ${status.base}`);
     return;
   }
   // A playwright-cli command, run as it is: only with its intent stated.

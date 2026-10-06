@@ -16,13 +16,10 @@ Run a server only while such a scoop works, as the eval arm does. `jshd` units h
 
 ## Eval arms (`evals/harness`)
 
-`evals/harness` runs the goals in `goals.json` (a default suite of forms and searches, and browser games) through `tools/harness-evals` with Sonnet 5.5 arms:
+`evals/harness` runs the goals in `goals.json` (a default suite of forms and searches, and browser games) through `tools/harness-evals` with two Sonnet 5.5 arms:
 
-- `intent-agent`: a scoop that may run `intent` (not playwright-cli), served by `intent-arm`. It also gets text utilities (grep, sed, bash, …): shell loops and helper scripts that batch intent calls are fair play, while reading or changing a game's code or saved state is not.
-- `intent-budget`: the same, with `--retrieve budget` (the top texts by System 1 up to 1,200 characters, in page order).
+- `intent-budget`: a scoop that may run `intent` (not playwright-cli), served by `intent-arm` in the shipped configuration (kev-4b-vision, RETRIEVE in budget mode). It also gets text utilities (grep, sed, bash, …): shell loops and helper scripts that batch intent calls are fair play, while reading or changing a game's code or saved state is not.
 - `playwright-agent`: the cone with raw playwright-cli, the reference.
-
-The intent arms run side by side, one GPU leader each. `playwright-scoop` (the same scoop with raw playwright-cli) and `intent-lexical` (`--retrieve lexical`: the top texts by words alone) are held.
 
 ## intent-arm
 
@@ -43,4 +40,4 @@ For a benchmark whose tasks name their site in words, `intent-arm` runs without 
 - Scripts that drive the browser around the tool (`sliccy:browser`, `require('playwright')`) are not blocked but counted in result.json (`bypass`, with `bypassFiles`), as are bare browser commands the grant refused (`barePlaywright`).
 - `--thinking <level>` passes the scoop's reasoning level to `agent`.
 
-The BU Bench V2.1 runs in the README used `intent-arm --tool intent --toolset full --retrieve budget` with kev-4b-vision.
+The BU Bench V2.1 runs in the README used `intent-arm --tool intent --toolset full` in the shipped configuration (they passed `--retrieve budget`, which was not yet the default; intent-arm still accepts it).

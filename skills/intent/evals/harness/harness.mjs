@@ -5,7 +5,6 @@ import adapter from './adapter.js';
 export const goals = './goals.json';
 export const {
   arms,
-  heldArms,
   timeLimit,
   diagnostics,
   command,

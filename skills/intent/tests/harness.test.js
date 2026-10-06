@@ -7,19 +7,14 @@ const adapter = adapterMod.default || adapterMod;
 const transcript = transcriptMod.default || transcriptMod;
 const quote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 
-test('arms: intent variants side by side, the cone as reference', () => {
-  is(
-    adapter.arms.map((a) => a.id),
-    ['intent-agent', 'intent-budget', 'playwright-agent']
-  );
-  is(adapter.arms[0].setup, ['intent prepare', 'intent pull --model 4b-vision']);
-  is(adapter.arms[1].args.slice(-2), ['--retrieve', 'budget']);
-  ok(adapter.arms.slice(0, 2).every((a) => a.pool === 'gpu' && a.args.includes('--require-gpu')));
-  is(
-    adapter.heldArms.map((a) => a.id),
-    ['playwright-scoop', 'intent-lexical']
-  );
-  is(adapter.heldArms[1].args.slice(-2), ['--retrieve', 'lexical']);
+test('arms: the shipped intent configuration and the cone as reference', () => {
+  ok(adapter.arms[0].pool === 'gpu' && adapter.arms[0].args.includes('--require-gpu'));
+  is(adapter.arms[1], {
+    id: 'playwright-agent',
+    kind: 'agent',
+    pool: 'bench',
+    model: 'claude-sonnet-5-5',
+  });
 });
 
 test('command: one intent-arm line with the time limit inside the driver timeout', () => {
@@ -27,12 +22,7 @@ test('command: one intent-arm line with the time limit inside the driver timeout
   const line = adapter.command(goal, adapter.arms[0], { shellQuote: quote });
   ok(line.startsWith("'intent-arm' '--url' 'https://httpbin.org/forms/post'"), line);
   ok(line.includes("'--time-limit' '540'"), line);
-  ok(
-    line.includes("'--tool' 'intent'") &&
-      line.includes("'--s1-model' '4b-vision'") &&
-      line.includes("'--require-gpu'"),
-    line
-  );
+  ok(line.includes("'--tool' 'intent'") && line.includes("'--require-gpu'"), line);
   is(adapter.timeLimit({}, { HARNESS_RUN_S: '900' }), 810);
 });
 
@@ -104,7 +94,7 @@ test('the arm driver installs with the skill: scripts/, not evals/', () => {
   ok(!at('evals/harness/intent-arm.jsh'), 'no driver left in evals/');
   ok(
     adapter
-      .command({ url: 'u', goal: 'g' }, adapter.arms[1], { shellQuote: quote })
+      .command({ url: 'u', goal: 'g' }, adapter.arms[0], { shellQuote: quote })
       .startsWith("'intent-arm'")
   );
 });

@@ -6,19 +6,14 @@
 
 const host = require('./host.js');
 
-const BUNDLE = '/shared/cache/kev/bundle.cjs';
+// kev.js ships prebuilt in kev-bundle.cjs (build.mjs, pinned in package.json).
 const KEV_NAME = '@ai-ecoverse/kev.js';
 const KEV_SPEC = `${KEV_NAME}@0.6.0`;
 const DEST = '/workspace/models/ai-ecoverse/kev.js';
-// A -vision bundle is the same decoder behind Qwen3.5's stock vision tower:
-// a request may then carry a screenshot (kev.js 0.5+). There is no 9b one.
-const MODELS = {
-  '0.8b': 'kev-0.8b',
-  '4b': 'kev-4b',
-  '9b': 'kev-9b',
-  '0.8b-vision': 'kev-0.8b-vision',
-  '4b-vision': 'kev-4b-vision',
-};
+// The named model: kev-4b-vision, the decoder behind Qwen3.5's stock vision
+// tower, so a request may carry a screenshot. Other kev bundles load with
+// --from.
+const MODELS = { '4b-vision': 'kev-4b-vision' };
 // Load only the onnxruntime-web copy whose version was checked (host.ensureOrt
 // installs it; pinnedOrtDir finds it). Falling through to another root would
 // load a copy whose version nobody looked at.
@@ -31,7 +26,7 @@ async function pinnedOrtDir(fs) {
 async function loadOrt(fs, kind, ortDir) {
   const fileName = kind === 'webgpu' ? 'ort.webgpu.bundle.min.mjs' : 'ort.wasm.bundle.min.mjs';
   const dir = ortDir || (await pinnedOrtDir(fs));
-  if (!dir) throw new Error(`${host.ORT_SPEC} is not installed. Run intent prepare.`);
+  if (!dir) throw new Error(`${host.ORT_SPEC} is not installed. Run intent pull.`);
   const dist = `${dir}/dist`;
   const file = `${dist}/${fileName}`;
   if (!(await fs.exists(file))) throw new Error(`onnxruntime-web: ${file} is missing`);
@@ -43,26 +38,17 @@ async function loadOrt(fs, kind, ortDir) {
   return ort;
 }
 
-// The realm resolves every literal require() in a nested module when it
-// loads, and a missing file there is fatal. The bundle may not exist yet, so
-// only the entry script names it: callers pass `requireBundle`, a function
-// around their own require('/shared/cache/kev/bundle.cjs').
-function loadKev(requireBundle) {
-  if (typeof requireBundle !== 'function') throw new Error('openModel needs requireBundle');
-  const bundled = requireBundle();
+// The prebuilt kev.js, required when a model opens (the realm evaluates a
+// module on its first require).
+function loadKev() {
+  const bundled = require('./kev-bundle.cjs');
   const fn = bundled.loadKev || (bundled.default && bundled.default.loadKev);
   if (typeof fn !== 'function') throw new Error('kev bundle has no loadKev export');
   return fn;
 }
 
 const REPO = 'ai-ecoverse/kev.js';
-const SIZES = {
-  '0.8b': '800 MB',
-  '4b': '4.7 GB',
-  '9b': '8.8 GB',
-  '0.8b-vision': '1 GB',
-  '4b-vision': '5.4 GB',
-};
+const SIZES = { '4b-vision': '5.4 GB' };
 // hf prints one line per file and the shell shows output only at exit, so
 // intent pull asks for a batch at a time and logs each batch here.
 const PULL_LOG = '/tmp/kev/pull.log';
@@ -165,7 +151,7 @@ async function pullWeights(fs, exec, model, log = () => {}) {
   return after;
 }
 
-async function openOn(fs, base, dateFacts, providers, log, requireBundle, ortDir) {
+async function openOn(fs, base, dateFacts, providers, log, ortDir) {
   const kind = providers[0] === 'webgpu' ? 'webgpu' : 'wasm';
   log(`kev: runtime ${kind}${host.hasWebGpu() ? '' : ' (navigator.gpu absent in this worker)'}`);
   const ort = await loadOrt(fs, kind, ortDir);
@@ -174,7 +160,7 @@ async function openOn(fs, base, dateFacts, providers, log, requireBundle, ortDir
   // kev.js 0.4+ reads a bundle in place through this function: no preview
   // URL, no fetch, no Cache Storage. A shard shorter than the manifest says
   // fails by name; weightsStatus still runs first so the message names intent pull.
-  return loadKev(requireBundle)((rel) => fs.readFileBinary(`${root}/${rel}`), {
+  return loadKev()((rel) => fs.readFileBinary(`${root}/${rel}`), {
     ort,
     variant: 'q8f32',
     executionProviders: providers,
@@ -236,14 +222,14 @@ function isSoftwareAdapter(adapter) {
 /**
  * Open a model on WebGPU when the worker has it, falling back to wasm.
  * Weights are never downloaded here: a missing file is an error that names
- * `intent pull`. opts: { model, from, ortDir, dateFacts, log, requireBundle,
+ * `intent pull`. opts: { model, from, ortDir, dateFacts, log,
  * requireGpu (refuse a software WebGPU adapter) }
  */
 async function openModel(fs, _exec, opts = {}) {
   const log = opts.log || (() => {});
   let base = opts.from ? host.resolvePath(opts.from) : null;
   if (!base) {
-    const status = await weightsStatus(fs, opts.model || '0.8b');
+    const status = await weightsStatus(fs, opts.model || '4b-vision');
     if (status.missing.length) throw new Error(missingWeightsMessage(status));
     base = status.base;
   }
@@ -257,32 +243,24 @@ async function openModel(fs, _exec, opts = {}) {
   const adapter = await webGpuAdapter(log, opts.requireGpu === true);
   const providers = adapter ? ['webgpu'] : ['wasm'];
   try {
-    return await openOn(fs, base, dateFacts, providers, log, opts.requireBundle, opts.ortDir);
+    return await openOn(fs, base, dateFacts, providers, log, opts.ortDir);
   } catch (err) {
     if (err && err.name === 'NodeExitError') throw err;
     if (providers[0] !== 'webgpu') throw err;
     log(`kev: webgpu failed (${err.message}); retrying on wasm`);
-    return openOn(fs, base, dateFacts, ['wasm'], log, opts.requireBundle, opts.ortDir);
+    return openOn(fs, base, dateFacts, ['wasm'], log, opts.ortDir);
   }
 }
 
-// The bundle's stamp names the kev.js it was built from. A bundle from an
-// older pin is not ready: intent prepare rebuilds it.
+// Ready to open a model: the pinned onnxruntime-web is installed (intent
+// pull installs it; kev.js ships with the skill).
 async function ready(fs) {
-  if (!(await fs.exists(BUNDLE))) return false;
-  let stamp = '';
-  try {
-    stamp = String(await fs.readFile(`${BUNDLE}.stamp`)).trim();
-  } catch {
-    return false;
-  }
-  if (stamp !== KEV_SPEC) return false;
   return Boolean(await pinnedOrtDir(fs));
 }
 
 module.exports = {
   variantFiles,
-  BUNDLE,
+  ORT_SPEC: host.ORT_SPEC,
   KEV_NAME,
   KEV_SPEC,
   DEST,

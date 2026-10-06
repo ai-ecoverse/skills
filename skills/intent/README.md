@@ -13,6 +13,8 @@ intent --intent "what customer name did the server receive?"   # "…custname": 
 
 With intent, Sonnet 5.5 and GPT-6.1 Sol at low effort run the benchmark for **41% and 74% less** than without it, for **4.7 points less score** each. Both join the benchmark's score-vs-cost frontier, and Sonnet 5.5 with intent becomes its cheapest point.
 
+**The skill's defaults are the configuration measured here:** kev-4b-vision as System 1, and RETRIEVE returning its most likely texts up to a 1,200-character budget.
+
 | Configuration | Score | Cost per task |
 | --- | --- | --- |
 | Claude Sonnet 5.5, low effort, **with intent** | 29.6 | $0.101 |
@@ -49,7 +51,7 @@ Score is the mean rubric score × 100; cost is the mean recorded model spend per
   - Sol low: −6.3 (−15.7 to +3.5) at 55% of the cost.
 - **Cost counts the LLM only.** kev runs on the user's GPU. On the benchmark's hosted L4 runners, at an assumed $1 per GPU-hour, it would add roughly $0.03 to $0.23 per task.
 - **Time per task is not comparable.** A run without intent ends with SLICC's 2-minute settle wait, which an intent run does not have. With 120 s taken off each control run, Sonnet 5.5 low with intent is about 18% faster than without it (154 s vs 187 s).
-- **The benchmark configuration:** `intent-arm --toolset full --retrieve budget`, with kev-4b-vision as System 1 (see [references/evals.md](references/evals.md)). The agent had the whole shell, with the browser commands reachable only through `intent`. No run went around intent to the browser, and every run wrote its own answer.
+- **The benchmark configuration:** the defaults, driven by `intent-arm --toolset full` (see [references/evals.md](references/evals.md)). The agent had the whole shell, with the browser commands reachable only through `intent`. No run went around intent to the browser, and every run wrote its own answer.
 
 ## Context per call
 
@@ -67,9 +69,9 @@ Agents with the full shell also ran 1,898 raw playwright-cli commands through in
 
 ## Games
 
-In a hosted harness round (37130563705; 3 repeats per game, kev-4b-vision, an earlier build of this skill), both intent arms matched or beat raw playwright-cli at the same spend. The table shows mean rubric credit; Wikirace shows passes.
+In a hosted harness round (37130563705; 3 repeats per game, kev-4b-vision, an earlier build of this skill), both intent arms matched or beat raw playwright-cli at the same spend. Budget retrieval is what the skill now ships; the single-answer retrieval it was compared with is gone. The table shows mean rubric credit; Wikirace shows passes.
 
-| Game | intent | intent, budget retrieval | playwright-cli agent |
+| Game | intent, single-answer retrieval (removed) | intent, budget retrieval (shipped) | playwright-cli agent |
 | --- | --- | --- | --- |
 | A Dark Room | 85% | 85% | 60% |
 | Drug Wars | 100% | 73% | 70% |
@@ -87,8 +89,7 @@ On the default suite of forms and searches at the current head (round 3724015519
 ## How to use it
 
 ```bash
-intent prepare                       # once: the kev runtime
-intent pull --model 4b-vision        # once: 5.4 GB of weights (resumes)
+intent pull                          # once: onnxruntime-web and 5.4 GB of kev-4b-vision weights (resumes)
 intent --intent "open https://example.com"
 intent --intent "what is the main heading?"
 ```
@@ -97,11 +98,13 @@ intent --intent "what is the main heading?"
 - **Not sure means no action.** The answer starts with `?` and lists candidates with refs; pass the right one with `--ref e41`.
 - **Raw commands still work.** Any playwright-cli command runs through intent with its intent stated: `intent screenshot --tab=ID --filename=page.png --intent "see the result list"`.
 - **Keep the model loaded.** For many calls, `intent serve` keeps System 1 loaded.
+- **Nothing to build.** kev.js ships prebuilt in `scripts/kev/kev-bundle.cjs`; the model weights are downloaded by `intent pull`.
 
 [SKILL.md](SKILL.md) is what an agent reads: the intent kinds, how to phrase intents, and the escape hatches (`--candidates`, `--dry-run`, `--full`). How System 1 decides, and how accurate each model is: [references/system1.md](references/system1.md).
 
 ## Development
 
 - **Tests:** `tests/*.test.js`, run with SLICC's `tst` (CI copies the skill onto a live leader and runs them).
+- **kev.js bundle:** `scripts/kev/kev-bundle.cjs` is generated: `npm install && npm run build` in `scripts/kev` after changing the kev.js pin in its `package.json`. CI (`intent-build.yml`) rebuilds it and fails on drift.
 - **Evals:** `evals/harness` holds the goals and arms for `tools/harness-evals`; a push to the PR starts a hosted round.
 - **Benchmark driver:** `intent-arm` drives both. See [references/evals.md](references/evals.md).

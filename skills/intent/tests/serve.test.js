@@ -43,8 +43,6 @@ function serveOnce(fs, exec, flags = {}) {
     exec,
     fs,
     browser: { eval: async () => null },
-    skill: { config: async () => null },
-    requireBundle: () => ({}),
   });
   let rounds = 0;
   return serve(flags, { stop: () => rounds++ > 0 });

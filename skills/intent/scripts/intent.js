@@ -5,7 +5,7 @@
 // 1. classify: ACT, RETRIEVE, VERIFY, WAIT_FOR or NAVIGATE, from the words.
 // 2. candidates: every control (ACT) or text segment (RETRIEVE, VERIFY,
 //    WAIT_FOR), ranked by a lexical score against the intent; the top few go
-//    to System 1 (kev or Clef) as one choice question with a NONE option.
+//    to System 1 (kev) as one choice question with a NONE option.
 // 3. verdict: act on System 1's pick when it is sure; otherwise return the
 //    top candidates so the caller can say more or name a ref.
 //
@@ -912,7 +912,7 @@ function choiceQuestion(kind, intent, shortlist, shot, opts = {}) {
  * the goal, the shortlist as a Controls list in the state, and one action
  * per control (click:eN, type:eN). On 400 Mind2Web intents kev-4b-vision
  * picked right 88.6% of the time this way and 83.2% with the plain
- * question above; the 0.8b bundles did as well or better (2026-10-03).
+ * question above (2026-10-03).
  * Ids map back to refs with refOf.
  */
 function menuQuestion(intent, shortlist, shot) {
@@ -956,29 +956,15 @@ function claimQuestion(intent, evidence, shot) {
   };
 }
 
-// Act or answer when System 1's top choice is at least this likely. Each
-// System 1 has its own: measured on 400 Mind2Web steps (2026-10-02/03, see
-// references/system1.md), where wrong actions stay at or under 5%.
+// Act or answer when System 1's top choice is at least this likely. SURE is
+// VERIFY's yes/no band. kev-4b-vision acts at 0.6: measured on 400 Mind2Web
+// steps it acts on 79% of intents with 4.3% wrong (0.7 acted on 72%, but
+// left obvious picks unsure at 0.63-0.69 in a hosted round), and the caller
+// sees every result and can recover. See references/system1.md.
 const SURE = 0.7;
-const SURE_BY_MODEL = {
-  clef: 0.7, // acts on 74.5% of intents, 3.3% wrong
-  'clef-flash': 0.7,
-  // 4b-vision: 0.7 acted on 72% (2.7% wrong), but the hosted smoke round
-  // (2026-10-03) left obvious picks unsure at 0.63-0.69; 0.6 acts on 79.3%
-  // with 4.3% wrong, and the caller sees every result and can recover.
-  '4b-vision': 0.6,
-  '0.8b-vision-wr1': 0.7, // the webrunner fine-tune: 74.5%, 5% wrong
-  '0.8b-vision': 0.4, // under-confident: 49%, 2.8% wrong
-  // A fine-tune on intent-shaped questions: 85.5% acted, 3.5% wrong at 0.7
-  // (2026-10-03). Published bundles declare their own thresholds (bundleSettings).
-  '0.8b-vision-wr2-intent': 0.7,
-  kev: 0.5, // any other bundle
-};
-
-// The ACT question each kev bundle answers best: 'menu' is webrunner's
-// wording (the stock bundles, +5 points on 4b-vision); a bundle trained on
-// this tool's own question takes it plain.
-const QUESTION_STYLE = { '0.8b-vision-wr2-intent': 'plain' };
+const SURE_BY_MODEL = { '4b-vision': 0.6 };
+// Any other kev bundle (--from) that declares no threshold of its own.
+const SURE_OTHER = 0.5;
 
 /**
  * A kev bundle's own settings for intent, from the "intent" field of its
@@ -986,7 +972,7 @@ const QUESTION_STYLE = { '0.8b-vision-wr2-intent': 'plain' };
  * wording it was trained on and the thresholds it was calibrated at. A bundle
  * says this itself because its name cannot be relied on (a Hugging Face URL
  * ends in the repo's name). Anything missing or malformed is left out, and
- * the name maps decide as before.
+ * the defaults decide.
  */
 function bundleSettings(manifest) {
   const m =
@@ -1003,23 +989,27 @@ function bundleSettings(manifest) {
 /**
  * The act-or-ask rule for a System 1 on one kind of call: --sure, else the
  * bundle's own threshold for that kind (RETRIEVE falls back to its act
- * threshold), else the name maps. VERIFY's yes/no band keeps SURE unless the
- * bundle names its own. → { sure, ignoreNone }
+ * threshold), else kev-4b-vision's or SURE_OTHER. VERIFY's yes/no band keeps
+ * SURE unless the bundle names its own. kev's NONE never vetoes: the best
+ * other choice decides (ignoreNone). → { sure, ignoreNone }
  */
 function s1Policy(s1, kind, reqSure) {
   const own = (s1 && s1.intent) || {};
-  const ignoreNone = Boolean(s1 && s1.kev);
+  const ignoreNone = true;
   if (kind === 'VERIFY') return { sure: reqSure ?? own.verify ?? SURE, ignoreNone };
-  const byName = SURE_BY_MODEL[s1 && s1.key] ?? (s1 && s1.kev ? SURE_BY_MODEL.kev : SURE);
+  const byName = SURE_BY_MODEL[s1 && s1.key] ?? SURE_OTHER;
   const mine = kind === 'RETRIEVE' ? (own.retrieve ?? own.act) : own.act;
   return { sure: reqSure ?? mine ?? byName, ignoreNone };
 }
 
-/** The ACT question's wording for a System 1: the bundle's own, else by name. */
+/**
+ * The ACT question's wording for a System 1: the bundle's own, else 'menu',
+ * the wording the stock kev bundles were trained on (+5 points on
+ * kev-4b-vision against the plain question).
+ */
 function questionStyle(s1) {
   const own = (s1 && s1.intent) || {};
-  if (own.question) return own.question;
-  return s1 && s1.kev ? QUESTION_STYLE[s1.key] || 'menu' : 'plain';
+  return own.question || 'menu';
 }
 
 /**
@@ -1214,20 +1204,6 @@ function listLines(intent, elements, segments, n = 20) {
 }
 
 /**
- * When System 1 cannot point at one text: the best few texts, in the order
- * they stand on the page, so "read the game status" still gets the part of
- * the page it is about, compactly.
- */
-function regionLines(ranked, byId, n = 6, query = '') {
-  const picked = ranked
-    .filter(([id]) => id !== NONE && byId.has(id))
-    .slice(0, n)
-    .map(([id]) => byId.get(id));
-  picked.sort((a, b) => (a.line ?? 0) - (b.line ?? 0));
-  return picked.map((c) => `  ${c.ref || c.id} "${snippet(c.text, query, 220)}"`);
-}
-
-/**
  * Texts in rank order until about `budget` characters, then shown in page
  * order: the top hits of a RETRIEVE, as much of them as the budget allows.
  * A text longer than what is left is cut around the query's words.
@@ -1311,7 +1287,7 @@ function logShortlist(shortlist) {
 // An unsure answer followed this soon by a --ref, or by the same kind of
 // call, was corrected by the caller.
 const CORRECTION_MS = 3 * 60 * 1000;
-const UNSURE_OUTCOMES = new Set(['unsure', 'candidates', 'dry-run', 'region']);
+const UNSURE_OUTCOMES = new Set(['unsure', 'candidates', 'dry-run']);
 
 /**
  * Whether this call corrects the last logged decision. → { type: 'ref' |
@@ -1330,7 +1306,7 @@ function correctionOf(last, req, kind, tab, now = Date.now()) {
 const BUNDLE_CACHE = '/shared/cache/kev/bundles';
 
 /**
- * Where a kev bundle given by URL (--from https://…/kev-0.8b-vision-wr2-intent)
+ * Where a kev bundle given by URL (--from https://…/kev-4b-vision-intent)
  * is cached in the VFS: one directory per URL, named by its last path segment
  * and a short hash of the whole URL. null for anything but http(s).
  */
@@ -1495,7 +1471,15 @@ const REQUEST_FIELDS = new Set([
   'model',
   'argv',
 ]);
-const MODELS = ['4b-vision', '0.8b-vision', '4b', '0.8b', 'clef', 'clef-flash'];
+// The named System 1: kev-4b-vision, the one measured. Any other kev bundle
+// loads with --from.
+const MODELS = ['4b-vision'];
+
+/** intent's --retrieve: only budget is left, the mode BU Bench V2.1 measured. → an error, or null. */
+const retrieveFlagError = (value) =>
+  value === undefined || value === 'budget'
+    ? null
+    : `--retrieve ${JSON.stringify(String(value))} is gone: RETRIEVE always returns the most likely texts up to --retrieve-budget characters`;
 
 /**
  * One call's request, checked field by field. The daemon (intent serve)
@@ -1587,7 +1571,7 @@ module.exports = {
   NONE,
   SURE,
   SURE_BY_MODEL,
-  QUESTION_STYLE,
+  retrieveFlagError,
   bundleSettings,
   s1Policy,
   questionStyle,
@@ -1620,7 +1604,6 @@ module.exports = {
   isList,
   listWantsControls,
   listLines,
-  regionLines,
   budgetLines,
   snippet,
   pct,

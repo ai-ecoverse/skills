@@ -3,53 +3,29 @@
 
 /**
  * intent's harness-evals adapter (driven by tools/harness-evals): the goals in
- * goals.json, and arms that are all Sonnet 5.5:
- *   intent-agent      a scoop that may run `intent` (not playwright-cli)
- *   intent-budget     the same, RETRIEVE returning its top texts up to a budget
+ * goals.json, and two Sonnet 5.5 arms:
+ *   intent-budget     a scoop that may run `intent` (not playwright-cli), in
+ *                     the shipped configuration: kev-4b-vision as System 1,
+ *                     RETRIEVE returning its most likely texts up to a budget
  *   playwright-agent  the cone with raw playwright-cli: the reference
- * The two scoop arms run through scripts/intent-arm.jsh: it is a command of the
- * skill, because a leader installs a skill without its evals/ folder (the
- * first smoke round failed with 'intent-arm: command not found'). `judge` is the
- * same self-contained yardstick as meep-meep's (#423, closed).
+ * The intent arm runs through scripts/intent-arm.jsh: it is a command of the
+ * skill, because a leader installs a skill without its evals/ folder.
  */
 
 const AGENT_MODEL = 'claude-sonnet-5-5';
-// System 1 of the intent arm: the shipped kev bundle the tool defaults to.
-const KEV_MODEL = '4b-vision';
 
-const scoopArm = (id, tool, extra = []) => ({
-  id,
-  kind: 'skill',
-  pool: tool === 'intent' ? 'gpu' : 'bench',
-  tool,
-  ...(tool === 'intent' ? { setup: ['intent prepare', `intent pull --model ${KEV_MODEL}`] } : {}),
-  // --require-gpu: a leader whose worker gets SwiftShader fails at once,
-  // instead of running kev ~10x slower until the time limit.
-  args: [
-    '--tool',
-    tool,
-    '--model',
-    AGENT_MODEL,
-    ...(tool === 'intent' ? ['--s1-model', KEV_MODEL, '--require-gpu'] : []),
-    ...extra,
-  ],
-});
-
-// Intent variants run side by side, one GPU leader each (Lars, 2026-10-03):
-// how RETRIEVE answers is the first thing tried.
 const arms = [
-  scoopArm('intent-agent', 'intent'),
-  scoopArm('intent-budget', 'intent', ['--retrieve', 'budget']),
+  {
+    id: 'intent-budget',
+    kind: 'skill',
+    pool: 'gpu',
+    tool: 'intent',
+    setup: ['intent pull'],
+    // --require-gpu: a leader whose worker gets SwiftShader fails at once,
+    // instead of running kev ~10x slower until the time limit.
+    args: ['--tool', 'intent', '--model', AGENT_MODEL, '--require-gpu'],
+  },
   { id: 'playwright-agent', kind: 'agent', pool: 'bench', model: AGENT_MODEL },
-];
-
-/**
- * Arms on hold: the playwright-cli scoop, the control of the first smoke
- * rounds; intent-lexical, dropped for the games round (Lars, 2026-10-03).
- */
-const heldArms = [
-  scoopArm('playwright-scoop', 'playwright-cli'),
-  scoopArm('intent-lexical', 'intent', ['--retrieve', 'lexical']),
 ];
 
 const RUN_S_DEFAULT = 900;
@@ -266,7 +242,6 @@ async function judgeTrace({ own, readText, readBase64 }) {
 
 module.exports = {
   arms,
-  heldArms,
   timeLimit,
   diagnostics,
   hostSlug,

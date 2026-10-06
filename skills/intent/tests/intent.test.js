@@ -255,14 +255,6 @@ test('menuQuestion: webrunner wording for kev, ids that map back to refs', () =>
   );
   is([lib.refOf('click:e29'), lib.refOf('type:e2'), lib.refOf('e5')], ['e29', 'e2', 'e5']);
   is(lib.SURE_BY_MODEL['4b-vision'], 0.6);
-  is(
-    [
-      lib.SURE_BY_MODEL['0.8b-vision-wr2-intent'],
-      lib.QUESTION_STYLE['0.8b-vision-wr2-intent'],
-      lib.QUESTION_STYLE['4b-vision'],
-    ],
-    [0.7, 'plain', undefined]
-  );
 });
 
 test('refMemory: which of the same-labelled controls a ref is', () => {
@@ -301,27 +293,6 @@ test('listLines: a lexical read of links or rows, in page order', () => {
   ok(
     lib.listWantsControls('list the buttons') &&
       !lib.listWantsControls('list the rows that mention calories')
-  );
-});
-
-test('regionLines: the closest texts in page order when no single one is sure', () => {
-  const segs = [
-    { type: 'text', id: 't1', text: 'Mile 12 of 100', line: 10, ref: 'e5' },
-    { type: 'text', id: 't2', text: 'Calories 1200 eaten, 900 burned', line: 20, ref: 'e9' },
-  ];
-  const byId = new Map(segs.map((x) => [x.id, x]));
-  is(
-    lib.regionLines(
-      [
-        ['t2', 0.3],
-        ['NONE', 0.4],
-        ['t1', 0.2],
-      ],
-      byId,
-      6,
-      'status'
-    ),
-    ['  e5 "Mile 12 of 100"', '  e9 "Calories 1200 eaten, 900 burned"']
   );
 });
 
@@ -377,36 +348,28 @@ test('training log: redaction, the shortlist as kev saw it, corrections', () => 
   is(lib.correctionOf(last, { ref: 'e4' }, 'ACT', 'OTHER', now), null);
 });
 
-test('bundle settings: a manifest field overrides, its absence keeps the old rules', () => {
-  // No "intent" field: exactly the name maps of before.
+test('bundle settings: a manifest field overrides, its absence keeps the defaults', () => {
+  // No "intent" field: the defaults.
   is(lib.bundleSettings({ name: 'kev-4b-vision' }), {});
   is(lib.bundleSettings(null), {});
-  const s1 = (key, kev, intent = {}) => ({ key, kev, intent });
-  const plain = { kev: true };
-  is(lib.s1Policy(s1('4b-vision', true), 'ACT'), { sure: 0.6, ignoreNone: true });
-  is(lib.s1Policy(s1('0.8b-vision-wr2-intent', true), 'ACT').sure, 0.7);
-  is(lib.s1Policy(s1('kev.js', true), 'ACT').sure, 0.5);
-  is(lib.s1Policy(s1('kev.js', true), 'RETRIEVE').sure, 0.5);
-  is(lib.s1Policy(s1('clef', false), 'ACT'), { sure: 0.7, ignoreNone: false });
-  is(lib.s1Policy(s1('4b-vision', true), 'VERIFY').sure, lib.SURE);
+  const s1 = (key, intent = {}) => ({ key, intent });
+  is(lib.s1Policy(s1('4b-vision'), 'ACT'), { sure: 0.6, ignoreNone: true });
+  is(lib.s1Policy(s1('kev.js'), 'ACT').sure, 0.5);
+  is(lib.s1Policy(s1('kev.js'), 'RETRIEVE').sure, 0.5);
+  is(lib.s1Policy(s1('4b-vision'), 'VERIFY').sure, lib.SURE);
   is(
-    [
-      lib.questionStyle(s1('4b-vision', true)),
-      lib.questionStyle(s1('0.8b-vision-wr2-intent', true)),
-      lib.questionStyle(s1('clef', false)),
-      lib.questionStyle(plain),
-    ],
-    ['menu', 'plain', 'plain', 'menu']
+    [lib.questionStyle(s1('4b-vision')), lib.questionStyle(s1('kev.js')), lib.questionStyle({})],
+    ['menu', 'menu', 'menu']
   );
   // The bundle declares its own (an HF URL's last segment is the repo's name).
   const own = lib.bundleSettings({ intent: { question: 'plain', act: 0.65, verify: 0.8 } });
   is(own, { question: 'plain', act: 0.65, verify: 0.8 });
-  is(lib.s1Policy(s1('kev.js', true, own), 'ACT').sure, 0.65);
-  is(lib.s1Policy(s1('kev.js', true, own), 'RETRIEVE').sure, 0.65);
-  is(lib.s1Policy(s1('kev.js', true, own), 'VERIFY').sure, 0.8);
-  is(lib.questionStyle(s1('kev.js', true, own)), 'plain');
-  is(lib.s1Policy(s1('kev.js', true, { ...own, retrieve: 0.4 }), 'RETRIEVE').sure, 0.4);
+  is(lib.s1Policy(s1('kev.js', own), 'ACT').sure, 0.65);
+  is(lib.s1Policy(s1('kev.js', own), 'RETRIEVE').sure, 0.65);
+  is(lib.s1Policy(s1('kev.js', own), 'VERIFY').sure, 0.8);
+  is(lib.questionStyle(s1('kev.js', own)), 'plain');
+  is(lib.s1Policy(s1('kev.js', { ...own, retrieve: 0.4 }), 'RETRIEVE').sure, 0.4);
   // --sure still wins; malformed values are ignored.
-  is(lib.s1Policy(s1('kev.js', true, own), 'ACT', 0.9).sure, 0.9);
+  is(lib.s1Policy(s1('kev.js', own), 'ACT', 0.9).sure, 0.9);
   is(lib.bundleSettings({ intent: { question: 'fancy', act: 2, retrieve: 'x', verify: 0 } }), {});
 });
