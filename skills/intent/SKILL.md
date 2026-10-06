@@ -1,29 +1,37 @@
 ---
 name: intent
 description: >
-  Drive a browser tab one stated intent at a time with `intent`, a
-  playwright-cli overlay that returns a small result instead of a page
-  snapshot. Each call says what you want in words — open a URL, click the
+  Drives a browser tab one stated intent at a time with `intent`, a
+  playwright-cli overlay that answers in a few lines instead of a page
+  snapshot. Each call says in words what to do: open a URL, click the
   Search button, fill the name field with "Ada Lovelace", select "Medium"
   from the size dropdown, check the terms box, press Enter, scroll down,
-  close the cookie banner, what is the total price, is the cart empty, wait
-  until the results load — and a local decision model (kev) finds the
-  control or the text and acts or answers. Use instead of playwright-cli
-  snapshots when page context is expensive: filling forms, searching a
-  site, reading a value off a page, checking a result, clicking through
-  results, playing a browser game step by step. When it is not sure it does
-  nothing and lists the candidates with refs, so you can say more or name a
-  ref. `--full` prints the snapshot when you really need it.
+  close the cookie banner, read the total price, check whether the cart is
+  empty, wait until the results load, list the links about pricing. A local
+  decision model (kev) finds the control or text and acts or answers; when
+  unsure it does nothing and lists candidates with refs. Use for browser
+  automation where snapshots are expensive: navigating a website, filling
+  out and submitting web forms, automating a login or checkout, searching
+  a site, clicking through results, reading or scraping data off a web
+  page, verifying a page state, playing a browser game step by step.
+  Prefer it over raw playwright-cli snapshots; `--full` still prints one.
 allowed-tools: bash
 ---
 
 # intent
 
-`intent` turns one sentence into one browser step and answers in a few lines. You decide what to do next; `intent` only finds the control or the text your sentence means.
+`intent` turns one sentence into one browser step and answers in a few lines. The caller decides what to do next; `intent` only finds the control or the text the sentence means.
+
+## Setup
+
+1. `intent prepare` installs the kev runtime (once per machine).
+2. `intent pull --model 4b-vision` downloads the default System 1 (5.4 GB; it resumes). `intent pull` with no flag does the same.
+3. Optional, for many calls in a row: `intent serve` in a shell that may stay open keeps the model loaded; every `intent` call is then handed to it.
+4. Check: `intent --intent "open https://example.com"`, then `intent --intent "what is the main heading?"` answers `"Example Domain"`. A missing runtime or model stops with the command that fixes it.
+
+## Quick start
 
 ```bash
-intent prepare                                   # once: the kev runtime
-intent pull --model 4b-vision                    # once: 5.4 GB of weights (resumes)
 intent --intent "open https://httpbin.org/forms/post"
 intent --intent 'fill the customer name with "Ada Lovelace"'
 intent --intent "choose the Medium pizza size"
@@ -31,92 +39,51 @@ intent --intent "press the Submit order button"
 intent --intent "what customer name did the server receive?"
 ```
 
-A call without `--tab` uses the tab of the last call. Opening a URL without a tab opens one.
+A call without `--tab` uses the tab of the last call. Opening a URL without a tab opens one. `intent --help` lists every flag, including `--json` and `--retrieve budget` (a RETRIEVE returns the most likely texts up to a character budget instead of one answer).
 
 ## Kinds of intent
 
-The kind is read from the words. `--kind` overrides it.
+The kind is read from the words; `--kind` overrides it.
 
 | Kind | Say | Returns |
 | --- | --- | --- |
 | NAVIGATE | `open <url>`, `go back`, `reload` | the address, title, and a page gist: headings, fields, buttons with refs |
 | ACT | `click …`, `type "x" into …`, `select "x" from …`, `check …`, `press Enter`, `scroll down`, `close the banner` | `✓` what was done and what changed: address, field values, checked states, new controls with refs |
-| RETRIEVE | `what is …?`, `read the error message` | the text that answers it (cut around your words), its ref and heading; when no single text is sure, the closest few in page order |
-| RETRIEVE (list) | `list the links about drugs`, `list the rows that mention calories`, `list the buttons`, `what is the URL of the Sivana link?` | up to 20 matching links (each with its URL), buttons, fields or text rows with refs, in page order; matched by words, no model |
-| VERIFY | `is the cart empty?`, `verify the order was placed` | `yes` or `no` with p, and the evidence text |
+| RETRIEVE | `what is …?`, `read the error message` | the text that answers it, its ref and heading; when no single text is sure, the closest few in page order |
+| RETRIEVE (list) | `list the links about drugs`, `list the rows that mention calories`, `list the buttons`, `what is the URL of the Sivana link?` | up to 20 matching links (with URLs), buttons, fields or rows with refs, in page order; matched by words, no model |
+| VERIFY | `is the cart empty?`, `verify the order was placed` | `yes` or `no` with its probability, and the evidence text |
 | WAIT_FOR | `wait until the results load` | when it held (`--timeout S`, default 15) |
 
-Quote text to type and options to select: `type "Sep 30" into Departure`. Unquoted works for the usual phrasings ("fill the name field with Ada Lovelace", "set quantity to 3").
-
-A field shows what the page says about it besides its name: its placeholder, its type (email, tel, time, multi-line), required, invalid. A click that opens a new tab says so, and the next calls use that tab; the old one stays open. A `--ref` whose control plainly is not what the intent names (another control on the page matches the words, this one none of them) is refused rather than acted on.
-
-Any playwright-cli command also runs through intent as it is, with its intent stated: `intent screenshot --tab=ID --filename=page.png --intent "see the result list"`, `intent click e5 --intent "open the first result"`. Without `--intent` it is refused. Its output is playwright-cli's own; the tab it names or opens becomes the tab of the next intent call.
-
-When System 1 is not sure of an ACT, nothing happens. The answer starts with `?` and lists the candidates, each with its ref and probability. Say more (the label or the row: "the comments link of the second story"), or pass `--ref e41` from the list. `--candidates N` lists without acting, and `--dry-run` says which control an ACT would use. A ref from `--full` or a list stays usable after the page re-renders: it is found again by role, label and order.
+A field shows what the page says about it besides its name: placeholder, type (email, tel, time, multi-line), required, invalid. A click that opens a new tab says so, and the next calls use that tab.
 
 ## Writing intents
 
-An intent that names its control acts at once; a vague one comes back as `?` with candidates, which costs a second call. On the first hosted round, most of the unsure answers were intents like "fill the customer name field" or "click Stop" that the model had right but not surely; naming the label exactly and the row for repeated controls avoids most of them.
+An intent that names its control acts at once; a vague one comes back as `?` with candidates and costs a second call.
 
 - Name the control by the words on it, quoted when it has several: `click "Buy and Eat"`, not "buy the food".
-- Say which one when a label repeats: its row or neighbour (`the "BUY" button in the Cocaine row`) or its place (`the first result`, `the top story's comments link`).
+- Say which one when a label repeats: its row (`the "BUY" button in the Cocaine row`) or its place (`the first result`, `the top story's comments link`).
 - One action per call; text to type in quotes: `type "Ada Lovelace" into the customer name field`.
-- On a `?` answer, pass the right ref (`--ref e41`) instead of rewording.
-- To find one control among many, `list the links about drugs`; to read several values, `list the rows that mention calories`; for one value, ask a question.
-- A ref from an earlier result keeps working after the page changes.
+- To find one control among many, `list the links about …`; to read several values, `list the rows that mention …`; for one value, ask a question.
 
-## How it decides
+## When it is not sure
 
-1. **Classify** the intent by its words.
-2. **Filter.** Every control (or text segment) on the page is ranked by the intent's words: idf-weighted overlap with labels and row context, a bonus for a whole label, ordinals ("the first", "the top story" pick the 1st of a series like "165 comments", "21 comments", …), and a penalty for header and footer chrome. Typing ranks only fields. Text is cut into segments: the largest row, paragraph or list item under 400 characters, so "Born | April 28, 1906" stays together. Checked, selected and expanded states come from an in-page scan, because the snapshot does not print them (ai-ecoverse/slicc#3766).
-3. **Choose.** The top 24 controls (16 texts) go to System 1 as one choice question with a NONE option. A -vision bundle also sees the screenshot, each candidate boxed and labelled with its ref. VERIFY and WAIT_FOR ask a yes/no question over the top 6 segments.
-4. **Act or answer** when the top choice reaches the model's threshold (`--sure` overrides it); otherwise return the candidates.
+When System 1 is not sure of an ACT, nothing happens. The answer starts with `?` and lists the candidates, each with its ref and probability:
 
-Enter is pressed in the page: slicc's `press Enter` sends no key code, so forms do not submit (ai-ecoverse/slicc#3765).
+1. Pass the right ref: `intent --intent "click Search" --ref e41`. Rewording costs another model call.
+2. Or say more: the label, the row, the place.
+3. `--candidates N` lists without acting; `--dry-run` says which control an ACT would use.
+4. `--full` prints the whole snapshot when nothing else helps.
+
+A ref from an earlier result or from `--full` stays usable after the page re-renders: it is found again by role, label and order. A `--ref` whose control plainly is not what the intent names (another control matches the words, this one none of them) is refused rather than acted on.
+
+## playwright-cli through intent
+
+Any playwright-cli command runs through intent as it is, with its intent stated: `intent screenshot --tab=ID --filename=page.png --intent "see the result list"`, `intent eval "document.title" --tab=ID --intent "read the title"`. Without `--intent` it is refused. The output is playwright-cli's own; the tab it names or opens becomes the tab of the next intent call.
 
 ## System 1
 
-`--model` picks it. The local kev bundles are the default; Clef runs on Cloudflare Workers AI and needs the `CLOUDFLARE_API_TOKEN` secret (domain api.cloudflare.com) and `--cf-account <id>` once (remembered).
-
-Measured 2026-10-02/03 on 400 Mind2Web test_website steps (median 129 controls a page), each with two intents written by Sonnet 5.5: one from a caller that saw the control's label ("informed"), one from a caller that never saw the page ("blind"). RETRIEVE and VERIFY: 88 questions and 86 claims (half false) on 11 live pages. Latency is per System 1 call on this Mac's GPU, shared with other work.
-
-| System 1 (`--model`) | ACT: right control, blind / informed | in top 3 | acts on (wrong actions) | RETRIEVE: right text / in top 3 | VERIFY | s per call |
-| --- | --- | --- | --- | --- | --- | --- |
-| `4b-vision` (default, 5.4 GB) | 84.9% / 92.3% (184 intents) | 95.1% | 79% (4.3%) at 0.6 | 86.4% / 92.0% | 93.0% | 2.9 |
-| `0.8b-vision` (1 GB) | 69.0% / 83.5% | 94.3% | 49% (2.8%) at 0.4 | 63.6% / 76.1% | 77.9% | 0.7 |
-| `--from …/kev-0.8b-vision-wr1` (a webrunner fine-tune, not published) | 80.0% / 88.5% | 95.0% | 74.5% (5.0%) at 0.7 | 67.0% / 83.0% | 75.6% | 0.7 |
-| `clef` (Workers AI) | 81.5% / 91.5% | 94.3% | 74.5% (3.3%) at 0.7 | 87.5% / 92.0% | 97.7% | 0.7 |
-
-How the stages were chosen:
-- **The words alone** rank the right control first for 81% of informed intents but only 54% of blind ones. For blind intents it is in the top 24 95% of the time, so the model gets 24.
-- **A 10-wise tournament over every control** (kev-0.6b-browser-use's method) was no better than the shortlist: kev-0.8b scored 65% vs 64%, and Clef 86.7% vs 86.1%. It was 3 to 9 times slower, and Workers AI rejected the largest pages.
-- **kev gets webrunner's wording:** the intent as a goal, the shortlist as a Controls list, the options as `click …`/`type into …`. With it, 4b-vision scores 88.6%; with a plain "which control does the intent mean" it scores 83.2%.
-- **kev's NONE does not veto:** the best other choice decides.
-- **Thresholds per bundle:** each is set where wrong actions stay at or under 5%. 4b-vision was 0.7 until the first hosted smoke round left obvious picks unsure at 0.63–0.69 (2026-10-03). It is now 0.6; the caller sees every result and can recover from a wrong one.
-
-`--from <dir or URL>` loads any kev bundle, such as a fine-tune: a VFS directory (`--from /mnt/kev-models/kev-0.8b-vision-wr2-intent`) or the URL of a bundle's directory, whose manifest and listed files are fetched once into `/shared/cache/kev/bundles/`. `intent pull --from <URL>` fetches it ahead of the first call. A fine-tune trained on this tool's own question (wr2-intent) gets it plain; the stock bundles get webrunner's wording. A missing model stops with the command that gets it; nothing falls back to a guess.
-
-Each call loads the model again. For many calls in a row, keep it loaded: run `intent serve` where it may stay, and `intent` hands its requests to it.
+`--model` picks it: `4b-vision` (default), `0.8b-vision` (1 GB, faster, less accurate), `4b`, `0.8b`, or `clef` / `clef-flash` on Cloudflare Workers AI (needs the `CLOUDFLARE_API_TOKEN` secret for api.cloudflare.com and `--cf-account <id>` once). `--from <dir or URL>` loads any kev bundle, such as a fine-tune; `intent pull --from <URL>` fetches it ahead. `--sure P` overrides the act-or-ask threshold. A missing model stops with the command that gets it; nothing falls back to a guess. Accuracy, thresholds and how the pipeline was chosen: [references/system1.md](references/system1.md).
 
 ## intent serve
 
-`intent serve` keeps System 1 loaded and takes requests from `/tmp/intent/q`. An `intent` call finds it by its heartbeat (`/tmp/intent/serve.json`) and waits for the answer in `/tmp/intent/a`.
-
-**This deliberately widens what an intent-only agent can do.** A scoop allowed only `intent` may not run playwright-cli: a scoop's grant also binds the commands an allowed `.jsh` runs. The server runs outside the scoop and drives the browser for it. A request is therefore intent fields only (intent, kind, ref, tab, sure, candidates, dry-run, full, timeout, json, model), or a playwright-cli command with its intent (argv). Each field is checked strictly: refs and tabs by pattern, numbers by range, unknown fields refused. An argv must start with a playwright-cli command, and the files it names (--filename, upload, eval-file, state-save/-load) must be under /tmp/, /shared/ or /scoops/, where a scoop may already go. A request is never a shell string or a URL to fetch. Run a server only while such a scoop works, as the eval arm does.
-
-`jshd` units have no browser in slicc, so the server runs in a shell, not as a jshd unit.
-
-## Evals
-
-`evals/harness` runs the goals in goals.json (the default suite and the games, first written for meep-meep) through tools/harness-evals with Sonnet 5.5 arms:
-- `intent-agent`: a scoop that may run `intent` (not playwright-cli), served by `intent-arm`, with RETRIEVE as described above. It also gets text utilities (grep, sed, bash, …): shell loops and helper scripts that batch intent calls are fair play, while reading or changing a game's code or saved state is not;
-- `intent-budget`: the same, with `--retrieve budget` (the top texts by System 1 up to 1,200 characters, in page order);
-- `playwright-agent`: the cone with raw playwright-cli, the reference.
-
-The intent variants run side by side, one GPU leader each. `playwright-scoop` (the same scoop with raw playwright-cli, the control of the first smoke rounds) and `intent-lexical` (`--retrieve lexical`: the top texts by words alone, no model) are held.
-
-`intent-arm` (scripts/intent-arm.jsh, so it installs with the skill; a leader gets no evals/ folder) records the tool calls, the characters each call put into context, the scoop's tokens and cost (`agent --usage`), and each intent call's latency, split by phase (snapshot, page evals, screenshot, System 1, action, settling). Its files are in `/tmp/intent-arm/<run>/`.
-
-For a benchmark whose tasks name their site in words (BU Bench V2.1), `intent-arm` runs without `--url`: no page is open, the scoop opens the site itself, and the run id ends in `-run`. Those files hold task text and page content. `--private` keeps them out of what it prints: only the run id and the numbers go to stdout, and an error goes to `/tmp/intent-arm/last-error.txt`. The bench reads the files on the leader into its encrypted trace; `answer.txt` holds the scoop's last message in full (result.json keeps 500 characters of it). `--goal-file PATH` keeps the task off the command line. `--toolset full` gives the scoop every command the shell lists, as the cone has them (node, open, curl, python3, the skills, …), except `playwright-cli`, `playwright` and `puppeteer`: their commands go through `intent <command> … --intent "<what and why>"` (Lars, 2026-10-04), and the prompt says so up front. `open --view --size medium <file>` is how a scoop sees an image. Scripts that drive the browser around the tool (sliccy:browser, `require('playwright')`) are not blocked but counted in result.json (`bypass`, with `bypassFiles`), as are bare browser commands the grant refused (`barePlaywright`). `--thinking <level>` passes the scoop's reasoning level to `agent`.
-
-The snapshot parser, page scan and kev loader grew out of meep-meep's webrunner and decide-quickly's kev runtime (#423, closed without merging); the copies here are the code.
+`intent serve` keeps System 1 loaded; every `intent` call is then handed to it (`--local` skips it). It also does the browser work for any scoop allowed only `intent`: stop it when no such scoop should browse. What it accepts and the eval driver: [references/evals.md](references/evals.md).
