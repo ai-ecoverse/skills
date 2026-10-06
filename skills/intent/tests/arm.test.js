@@ -6,7 +6,10 @@ const CANARY = 'canary-7f3a-task-text';
 
 test('runId: the host slug, or -run without a URL', () => {
   const now = new Date('2026-10-04T05:06:07.890Z');
-  is(arm.runId('https://news.ycombinator.com/', now), '2026-10-04T05-06-07-890Z-news-ycombinator-com');
+  is(
+    arm.runId('https://news.ycombinator.com/', now),
+    '2026-10-04T05-06-07-890Z-news-ycombinator-com'
+  );
   is(arm.runId('', now), '2026-10-04T05-06-07-890Z-run');
   is(arm.hostSlug(undefined), 'run');
 });
@@ -24,7 +27,10 @@ test('prompt: with a URL the scoop opens it; without one it opens the site itsel
   const bare = arm.prompt('', 'Find the cheapest flight to Lisbon on example.travel', 'intent');
   ok(!/\bOpen undefined|Open {2}/.test(bare), bare);
   ok(bare.startsWith('Do this in the browser: Find the cheapest flight'), bare);
-  ok(bare.includes('No page is open yet') && bare.includes('`intent --intent "open https://…"`'), bare);
+  ok(
+    bare.includes('No page is open yet') && bare.includes('`intent --intent "open https://…"`'),
+    bare
+  );
   ok(arm.prompt('', 'x', 'playwright-cli').includes('`playwright-cli open https://…`'));
 });
 
@@ -52,7 +58,10 @@ test('printable --private: no task text, answer or page URL on stdout', () => {
 });
 
 test('printable --private: a field added to the result later stays off stdout', () => {
-  const out = arm.printable({ run: 'r', steps: 1, notes: CANARY, lastIntent: CANARY }, { private: true });
+  const out = arm.printable(
+    { run: 'r', steps: 1, notes: CANARY, lastIntent: CANARY },
+    { private: true }
+  );
   is(out, { run: 'r', steps: 1 });
 });
 
@@ -83,14 +92,21 @@ const COMMANDS = [
 
 test('toolset full: every command the shell lists, except the browser commands', () => {
   const names = arm.commandNames(COMMANDS);
-  ok(names.includes('curlwright') && names.includes('playwright-cli') && names.includes('intent'), names.join(','));
+  ok(
+    names.includes('curlwright') && names.includes('playwright-cli') && names.includes('intent'),
+    names.join(',')
+  );
   ok(!names.includes('Use') && !names.includes('Available'), names.join(','));
   const full = arm.utilitiesFor('full', names);
-  for (const t of ['curl', 'python3', 'node', 'open', 'convert', 'date', 'grep', 'intent']) ok(full.includes(t), t);
-  for (const t of ['playwright-cli', 'playwright', 'puppeteer', 'intent-arm']) ok(!full.includes(t), t);
+  for (const t of ['curl', 'python3', 'node', 'open', 'convert', 'date', 'grep', 'intent'])
+    ok(full.includes(t), t);
+  for (const t of ['playwright-cli', 'playwright', 'puppeteer', 'intent-arm'])
+    ok(!full.includes(t), t);
   // When `commands` cannot be read: the fallback list, still without the browser commands.
   const fallback = arm.utilitiesFor('full', []);
-  ok(fallback.includes('curl') && fallback.includes('node') && !fallback.includes('playwright-cli'));
+  ok(
+    fallback.includes('curl') && fallback.includes('node') && !fallback.includes('playwright-cli')
+  );
   is(arm.utilitiesFor('browser', names), arm.UTILITIES);
   is(arm.utilitiesFor(), arm.UTILITIES);
 });
@@ -127,10 +143,24 @@ test('audit: browser access around the tool, and bare browser commands', () => {
 
 test('printable --private: the audit and the thinking level are numbers to keep', () => {
   const out = arm.printable(
-    { run: 'r', thinking: 'low', toolset: 'full', bypass: { calls: 0, files: 1 }, bypassFiles: ['task-words.js'], barePlaywright: 2, answer: 'x' },
+    {
+      run: 'r',
+      thinking: 'low',
+      toolset: 'full',
+      bypass: { calls: 0, files: 1 },
+      bypassFiles: ['task-words.js'],
+      barePlaywright: 2,
+      answer: 'x',
+    },
     { private: true }
   );
-  is(out, { run: 'r', toolset: 'full', thinking: 'low', bypass: { calls: 0, files: 1 }, barePlaywright: 2 });
+  is(out, {
+    run: 'r',
+    toolset: 'full',
+    thinking: 'low',
+    bypass: { calls: 0, files: 1 },
+    barePlaywright: 2,
+  });
 });
 
 test('callOutcome: a passthrough call is ok or failed by its exit code, not an error', () => {

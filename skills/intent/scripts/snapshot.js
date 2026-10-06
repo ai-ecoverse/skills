@@ -2,8 +2,7 @@
 // --boxes`, name controls, pair them with the page scan, place them in the
 // viewport, diff two snapshots, and read the page's text.
 //
-// Grown from meep-meep's webrunner (ai-ecoverse/skills#423, closed); this
-// is the code now. No network, no sliccy.
+// No network, no sliccy.
 
 const LINE =
   /^(\s*)- ([A-Za-z][\w-]*)(?: "((?:\\.|[^"\\])*)")?(?: \[ref=([^\]]+)\])?(?:: "?((?:\\.|[^"\\])*)"?)?(.*)$/;
@@ -98,8 +97,6 @@ function parseSnapshot(text) {
 
 const MAX_LABEL = 100;
 
-const MAX_CONTROL_LABEL = 200;
-
 function shown(label) {
   const text = String(label);
   return text.length > MAX_LABEL ? `${text.slice(0, MAX_LABEL - 1)}…` : text;
@@ -116,7 +113,7 @@ const MAX_CLICKABLE_SHARE = 0.4;
  * [{ t: text, b: [x, y, w, h] }] for visible elements with a pointer
  * cursor, an onclick, a tabindex or a button class. Each becomes a
  * synthetic button (token c1, c2, …) unless a real control already covers
- * it; act() clicks the element under its box centre.
+ * it; act() clicks it in the page (tab.js clickAt).
  */
 function promoteClickable(shot, found, viewport) {
   if (!found || !found.length) return shot;
@@ -140,13 +137,15 @@ function promoteClickable(shot, found, viewport) {
       return short.length >= 4 && short.length >= long.length * 0.6 && long.includes(short);
     });
   const covered = (b, label) =>
-    !boxed ? coveredByName(label) : shot.elements.some((e) => {
-      if (!e.box) return false;
-      const cx = b[0] + b[2] / 2;
-      const cy = b[1] + b[3] / 2;
-      const [x, y, w, h] = e.box;
-      return cx >= x && cx <= x + w && cy >= y && cy <= y + h;
-    });
+    !boxed
+      ? coveredByName(label)
+      : shot.elements.some((e) => {
+          if (!e.box) return false;
+          const cx = b[0] + b[2] / 2;
+          const cy = b[1] + b[3] / 2;
+          const [x, y, w, h] = e.box;
+          return cx >= x && cx <= x + w && cy >= y && cy <= y + h;
+        });
   const seen = new Set(shot.elements.map((e) => e.label));
   const added = [];
   for (const item of found) {

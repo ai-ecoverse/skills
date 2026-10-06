@@ -29,6 +29,8 @@ USAGE
   intent pull --from URL        fetch a kev bundle by URL into the cache --from uses
   intent serve [--model M]      keep System 1 loaded and do the browser work for
                                 callers that may not run playwright-cli themselves
+  intent <playwright-cli command> [args] --intent "<what and why>"
+                                run that command as it is, its intent logged
 
 INTENTS (one per call; the kind is read from the words, --kind overrides)
   NAVIGATE  "open https://news.ycombinator.com", "go back", "reload"
@@ -78,6 +80,9 @@ FLAGS
                      --retrieve-budget characters (default 1200), in page order;
                      lexical: the same ranked by words alone, no model
   --json             print the result as JSON
+  --local            do the work in this process even while an intent serve
+                     runs (a call otherwise goes to the server, whose --from,
+                     --retrieve and --require-gpu apply)
 
 OUTPUT
   ✓ what was done, then what changed (address, values, new controls)

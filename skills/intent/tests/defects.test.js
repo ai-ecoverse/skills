@@ -1,10 +1,10 @@
 // The defects the BU Bench V2.1 explore-40 losses showed (2026-10-04), one
 // test each. Fixtures are made up; no task text.
 import test, { is, ok } from 'tst';
-import * as intentMod from '../scripts/intent.js';
-import * as snapshotMod from '../scripts/snapshot.js';
-import * as scanMod from '../scripts/page-scan.js';
 import * as armMod from '../scripts/arm.js';
+import * as intentMod from '../scripts/intent.js';
+import * as scanMod from '../scripts/page-scan.js';
+import * as snapshotMod from '../scripts/snapshot.js';
 
 const lib = intentMod.default || intentMod;
 const page = snapshotMod.default || snapshotMod;
@@ -59,7 +59,12 @@ test('2: a content-named control is found by the text it contains', () => {
   is(scan.nameScore(CARD, [pageText]) > 0, true);
   is(scan.nameScore(CARD, [`${TITLE} $24.994.83,000+ soldFree shipping`]) > 0, true);
   // Another card of the same seller is not this one.
-  is(scan.nameScore(CARD, ['Report item Brass Floor Lamp, Tripod Stand, Linen Shade $89.00 4.6 120 sold Free shipping']), 0);
+  is(
+    scan.nameScore(CARD, [
+      'Report item Brass Floor Lamp, Tripod Stand, Linen Shade $89.00 4.6 120 sold Free shipping',
+    ]),
+    0
+  );
   // The better of two candidates: the card itself over a lone price.
   ok(scan.nameScore(CARD, [shownText]) > scan.nameScore(CARD, ['$24.99']));
 });
@@ -68,7 +73,10 @@ test('3: links carry their URLs, and a URL question lists them', () => {
   const { elements } = page.parseSnapshot(SHOP);
   const anchors = [
     { name: 'Help', href: 'https://shop.example/help' },
-    { name: `${TITLE} $24.99 4.8 3,000+ sold Free shipping`, href: 'https://shop.example/item/1001.html' },
+    {
+      name: `${TITLE} $24.99 4.8 3,000+ sold Free shipping`,
+      href: 'https://shop.example/item/1001.html',
+    },
     { name: 'Plain Lamp $9.99 4.1 20 sold', href: 'https://shop.example/item/1002.html' },
   ];
   const linked = lib.applyLinks(elements, anchors);
@@ -87,7 +95,9 @@ test('4: a tab a click opened is the new one in the tab list', () => {
   is(lib.openedTab(before, ['AAA111', 'BBB222']), null);
   is(lib.openedTab(before, ['AAA111']), null);
   // playwright-cli tab-list: one tab per line, its target id in brackets.
-  const ids = lib.tabIds('[AAA111] https://shop.example/ "Shop"\n[CCC333] https://shop.example/item/1 "Item [new]"');
+  const ids = lib.tabIds(
+    '[AAA111] https://shop.example/ "Shop"\n[CCC333] https://shop.example/item/1 "Item [new]"'
+  );
   is(ids, ['AAA111', 'CCC333']);
 });
 
@@ -108,7 +118,10 @@ test('6: a --ref that contradicts the words of the intent is refused', () => {
   const card = { token: 'e3', role: 'link', label: CARD, kind: 'click' };
   const field = { token: 'e4', role: 'textbox', label: 'textbox', kind: 'fill' };
   const onPage = [option, search, next, card, field];
-  ok(lib.refConflict('click the Search button', option, onPage), 'the page has a Search button, and e53 is not it');
+  ok(
+    lib.refConflict('click the Search button', option, onPage),
+    'the page has a Search button, and e53 is not it'
+  );
   is(lib.refConflict('click this', option, onPage), null);
   is(lib.refConflict('select 2,500,000 as the maximum price', option, onPage), null);
   is(lib.refConflict('click the Search button', search, onPage), null);
@@ -125,13 +138,37 @@ test('6: unnamed controls and row context never refuse a ref', () => {
   // A radio list whose labels follow the radios: row context gives each
   // radio the text before it, so the second radio carries the first one's
   // label (Armchair Bike Touring, hosted round 37210057361, 2026-10-04).
-  const r1 = { token: 'e19', role: 'radio', label: 'radio', kind: 'click', context: 'Overnight Options' };
-  const r2 = { token: 'e21', role: 'radio', label: 'radio', kind: 'click', context: 'Campsite with shower $15' };
-  const r3 = { token: 'e23', role: 'radio', label: 'radio', kind: 'click', context: 'Deluxe Campground (with shower) $27' };
+  const r1 = {
+    token: 'e19',
+    role: 'radio',
+    label: 'radio',
+    kind: 'click',
+    context: 'Overnight Options',
+  };
+  const r2 = {
+    token: 'e21',
+    role: 'radio',
+    label: 'radio',
+    kind: 'click',
+    context: 'Campsite with shower $15',
+  };
+  const r3 = {
+    token: 'e23',
+    role: 'radio',
+    label: 'radio',
+    kind: 'click',
+    context: 'Deluxe Campground (with shower) $27',
+  };
   is(lib.refConflict('select the Campsite with shower radio', r1, [r1, r2, r3]), null);
   // A named control is not refused for another control's row context either.
   const go = { token: 'e30', role: 'button', label: 'Continue', kind: 'click' };
-  const other = { token: 'e31', role: 'button', label: 'Back', kind: 'click', context: 'Continue to campsite' };
+  const other = {
+    token: 'e31',
+    role: 'button',
+    label: 'Back',
+    kind: 'click',
+    context: 'Continue to campsite',
+  };
   is(lib.refConflict('click the campsite button', go, [go, other]), null);
 });
 

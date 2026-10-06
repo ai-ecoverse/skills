@@ -1,4 +1,4 @@
-// Runs in the page (webrunner sends `(${scan})()` through playwright-cli
+// Runs in the page (tab.js sends `(${scan})()` through sliccy:browser's
 // eval): what the accessibility snapshot cannot tell the decider.
 //
 // - clickable: elements that act as buttons without a button role (a
@@ -207,7 +207,9 @@ function states() {
     }
     const wrap = el.closest('label');
     if (wrap) return norm(wrap.innerText);
-    return norm(el.tagName === 'SELECT' ? el.title || el.name : el.innerText || el.title || el.value);
+    return norm(
+      el.tagName === 'SELECT' ? el.title || el.name : el.innerText || el.title || el.value
+    );
   };
   const out = [];
   // Text fields: what the snapshot leaves out of them, the placeholder, the
@@ -232,22 +234,26 @@ function states() {
     }
     return norm(el.getAttribute('placeholder') || el.title);
   };
-  const FIELDS = 'textarea, input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=submit]):not([type=button]):not([type=reset]):not([type=image]):not([type=file]):not([type=range]):not([type=color])';
+  const FIELDS =
+    'textarea, input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=submit]):not([type=button]):not([type=reset]):not([type=image]):not([type=file]):not([type=range]):not([type=color])';
   for (const el of document.querySelectorAll(FIELDS)) {
     if (out.length >= 200) break;
     if (!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)) continue;
-    const type = el.tagName === 'TEXTAREA' ? '' : String(el.getAttribute('type') || '').toLowerCase();
+    const type =
+      el.tagName === 'TEXTAREA' ? '' : String(el.getAttribute('type') || '').toLowerCase();
     const parts = [];
     const placeholder = norm(el.getAttribute('placeholder'));
     const name = fieldName(el);
-    if (placeholder && placeholder !== name) parts.push(`placeholder "${placeholder.slice(0, 80)}"`);
+    if (placeholder && placeholder !== name)
+      parts.push(`placeholder "${placeholder.slice(0, 80)}"`);
     if (el.tagName === 'TEXTAREA') parts.push('multi-line');
     else if (!PLAIN.has(type)) parts.push(type);
     if (el.required || el.getAttribute('aria-required') === 'true') parts.push('required');
     if (el.value && el.validity && !el.validity.valid) parts.push('invalid');
     if (el.disabled) parts.push('disabled');
     else if (el.readOnly) parts.push('read-only');
-    if (parts.length) out.push({ role: FIELD_ROLE[type] || 'textbox', name, state: parts.join(', ') });
+    if (parts.length)
+      out.push({ role: FIELD_ROLE[type] || 'textbox', name, state: parts.join(', ') });
   }
   for (const el of document.querySelectorAll(SELECTOR)) {
     if (out.length >= 400) break;
@@ -259,7 +265,10 @@ function states() {
       parts.push(el.checked ? 'checked' : 'not checked');
     } else {
       const checked = el.getAttribute('aria-checked');
-      if (checked) parts.push(checked === 'true' ? 'checked' : checked === 'mixed' ? 'partly checked' : 'not checked');
+      if (checked)
+        parts.push(
+          checked === 'true' ? 'checked' : checked === 'mixed' ? 'partly checked' : 'not checked'
+        );
       const pressed = el.getAttribute('aria-pressed');
       if (pressed) parts.push(pressed === 'true' ? 'pressed' : 'not pressed');
       const selected = el.getAttribute('aria-selected');
@@ -287,7 +296,12 @@ function links() {
     if (out.length >= 3000) break;
     if (!(a.offsetWidth || a.offsetHeight || a.getClientRects().length)) continue;
     const img = a.querySelector('img[alt]');
-    const name = norm(a.getAttribute('aria-label')) || norm(a.innerText) || norm(a.textContent) || norm(a.title) || norm(img && img.alt);
+    const name =
+      norm(a.getAttribute('aria-label')) ||
+      norm(a.innerText) ||
+      norm(a.textContent) ||
+      norm(a.title) ||
+      norm(img && img.alt);
     out.push({ name: name.slice(0, 400), href: String(a.href).slice(0, 500) });
   }
   return JSON.stringify(out);

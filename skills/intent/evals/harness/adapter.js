@@ -25,7 +25,14 @@ const scoopArm = (id, tool, extra = []) => ({
   ...(tool === 'intent' ? { setup: ['intent prepare', `intent pull --model ${KEV_MODEL}`] } : {}),
   // --require-gpu: a leader whose worker gets SwiftShader fails at once,
   // instead of running kev ~10x slower until the time limit.
-  args: ['--tool', tool, '--model', AGENT_MODEL, ...(tool === 'intent' ? ['--s1-model', KEV_MODEL, '--require-gpu'] : []), ...extra],
+  args: [
+    '--tool',
+    tool,
+    '--model',
+    AGENT_MODEL,
+    ...(tool === 'intent' ? ['--s1-model', KEV_MODEL, '--require-gpu'] : []),
+    ...extra,
+  ],
 });
 
 // Intent variants run side by side, one GPU leader each (Lars, 2026-10-03):
@@ -40,7 +47,10 @@ const arms = [
  * Arms on hold: the playwright-cli scoop, the control of the first smoke
  * rounds; intent-lexical, dropped for the games round (Lars, 2026-10-03).
  */
-const heldArms = [scoopArm('playwright-scoop', 'playwright-cli'), scoopArm('intent-lexical', 'intent', ['--retrieve', 'lexical'])];
+const heldArms = [
+  scoopArm('playwright-scoop', 'playwright-cli'),
+  scoopArm('intent-lexical', 'intent', ['--retrieve', 'lexical']),
+];
 
 const RUN_S_DEFAULT = 900;
 
@@ -86,14 +96,20 @@ async function diagnostics({ goal, own, list }) {
   let run = own && own.run;
   if (!run && goal && goal.url) {
     const slug = hostSlug(goal.url);
-    const ids = (await list(RUNS)).filter((n) => /^\d{4}-\d\d-\d\dT[\w.-]+$/.test(n) && n.endsWith(`-${slug}`)).sort();
+    const ids = (await list(RUNS))
+      .filter((n) => /^\d{4}-\d\d-\d\dT[\w.-]+$/.test(n) && n.endsWith(`-${slug}`))
+      .sort();
     run = ids[ids.length - 1];
   }
   if (!run) return [];
-  const keep = ['result.json', 'transcript.md', 'calls.jsonl', 'judge.json'].map((f) => `${RUNS}/${run}/${f}`);
+  const keep = ['result.json', 'transcript.md', 'calls.jsonl', 'judge.json'].map(
+    (f) => `${RUNS}/${run}/${f}`
+  );
   // The training log: decisions.jsonl and the snapshot and screenshot of
   // each decision (intent-core.js caps them), so hosted rounds yield data.
-  const logs = (await list(`${RUNS}/${run}/decisions`)).filter((n) => /^(decisions\.jsonl|d[0-9a-z]+\.(snapshot\.txt|jpg))$/.test(n));
+  const logs = (await list(`${RUNS}/${run}/decisions`)).filter((n) =>
+    /^(decisions\.jsonl|d[0-9a-z]+\.(snapshot\.txt|jpg))$/.test(n)
+  );
   return [...keep, ...logs.slice(0, LOG_FILES_KEPT).map((n) => `${RUNS}/${run}/decisions/${n}`)];
 }
 
@@ -153,7 +169,9 @@ function judge(raw, goal) {
   // expect_any: other sets of texts that also mean the goal is done. The
   // bike tour's summary page, one click after the completion page, reads
   // "You've accumulated N points" (Lars, 2026-10-03).
-  return (goal.expect_any ?? []).some((set) => set.length && set.every((t) => containsValue(text, t)));
+  return (goal.expect_any ?? []).some(
+    (set) => set.length && set.every((t) => containsValue(text, t))
+  );
 }
 
 /** The first story id in Hacker News front page HTML, or null. */
@@ -217,7 +235,13 @@ function metrics(snapshot, goal) {
  */
 async function judgeTrace({ own, readText, readBase64 }) {
   const dir = own && own.run ? `${RUNS}/${own.run}` : null;
-  const empty = (why) => ({ steps: [], finalResult: why, outputFilesText: '', screenshots: [], metrics: { points: null } });
+  const empty = (why) => ({
+    steps: [],
+    finalResult: why,
+    outputFilesText: '',
+    screenshots: [],
+    metrics: { points: null },
+  });
   if (!dir) return empty('intent-arm printed no run id, so there is no trace to judge.');
   let j;
   try {

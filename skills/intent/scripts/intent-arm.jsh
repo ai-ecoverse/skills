@@ -244,7 +244,11 @@ async function main() {
       .map((l) => JSON.parse(l));
     await fs.writeFile(`${dir}/calls.jsonl`, `${intentLog.map((e) => JSON.stringify(e)).join('\n')}\n`);
   }
-  const count = (xs, key) => xs.reduce((m, x) => ({ ...m, [x[key]]: (m[x[key]] || 0) + 1 }), {});
+  const count = (xs, key) => {
+    const m = {};
+    for (const x of xs) m[x[key]] = (m[x[key]] || 0) + 1;
+    return m;
+  };
 
   // The final page: the intent server's tab, else the last tab the scoop named.
   let tab = null;

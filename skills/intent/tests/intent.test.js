@@ -77,8 +77,14 @@ test('classify: each kind, and the boundary cases that fooled the first rules', 
 });
 
 test('parseNavigate: URLs get a scheme; history words', () => {
-  is(lib.parseNavigate('go to news.ycombinator.com'), { op: 'goto', url: 'https://news.ycombinator.com' });
-  is(lib.parseNavigate('take me to localhost:3000/x'), { op: 'goto', url: 'http://localhost:3000/x' });
+  is(lib.parseNavigate('go to news.ycombinator.com'), {
+    op: 'goto',
+    url: 'https://news.ycombinator.com',
+  });
+  is(lib.parseNavigate('take me to localhost:3000/x'), {
+    op: 'goto',
+    url: 'http://localhost:3000/x',
+  });
   is(lib.parseNavigate('refresh the page'), { op: 'reload' });
   is(lib.parseNavigate('press back').op, 'back');
 });
@@ -93,19 +99,37 @@ test('parseAct: the value to type is not part of the target', () => {
   const search = lib.parseAct('type Kurt Gödel into the search box and press Enter');
   is([search.op, search.value, search.submit], ['type', 'Kurt Gödel', true]);
   is(lib.parseAct('select Medium from the size dropdown').op, 'select');
-  is(lib.parseAct('press Enter'), { op: 'press', value: null, key: 'Enter', direction: null, submit: false, target: '' });
+  is(lib.parseAct('press Enter'), {
+    op: 'press',
+    value: null,
+    key: 'Enter',
+    direction: null,
+    submit: false,
+    target: '',
+  });
   is(lib.parseAct('scroll to the bottom').direction, 'bottom');
   is(lib.parseAct('uncheck the newsletter box').op, 'uncheck');
   is(lib.parseAct('choose the medium pizza size').op, 'click');
   // Typing names the field without its value; a select is named by both.
-  is(lib.actQuery('type "Search" into the box', lib.parseAct('type "Search" into the box')), 'the box');
+  is(
+    lib.actQuery('type "Search" into the box', lib.parseAct('type "Search" into the box')),
+    'the box'
+  );
 });
 
 test('cleanRequest: intent fields only, strictly checked', () => {
-  is(lib.cleanRequest({ intent: '  click   Search ', ref: 'e12', sure: 0.8 }).req, { intent: 'click Search', ref: 'e12', sure: 0.8 });
+  is(lib.cleanRequest({ intent: '  click   Search ', ref: 'e12', sure: 0.8 }).req, {
+    intent: 'click Search',
+    ref: 'e12',
+    sure: 0.8,
+  });
   ok(lib.cleanRequest({ intent: 'x', shell: 'rm -rf /' }).error.includes('unknown field'));
   // An argv is a playwright-cli command, nothing else (passthrough.test.js).
-  ok(lib.cleanRequest({ intent: 'x', argv: ['rm', '-rf'] }).error.includes('not a playwright-cli command'));
+  ok(
+    lib
+      .cleanRequest({ intent: 'x', argv: ['rm', '-rf'] })
+      .error.includes('not a playwright-cli command')
+  );
   ok(lib.cleanRequest({ intent: 'x', ref: 'e1; rm -rf /' }).error.includes('--ref'));
   ok(lib.cleanRequest({ intent: 'x', tab: '../../etc' }).error.includes('--tab'));
   ok(lib.cleanRequest({ intent: 'x', sure: 2 }).error.includes('--sure'));
@@ -125,16 +149,29 @@ test('textSegments: a row keeps its label and value together', () => {
 });
 
 test('lexicalRank: a typing intent only ranks fields first', () => {
-  const elements = [el('e2', 'textbox', 'Customer name:'), el('e4', 'textbox', 'Telephone:'), el('e29', 'button', 'Submit order')];
+  const elements = [
+    el('e2', 'textbox', 'Customer name:'),
+    el('e4', 'textbox', 'Telephone:'),
+    el('e29', 'button', 'Submit order'),
+  ];
   const cands = lib.controlCandidates(elements, null);
   const parsed = lib.parseAct('enter 555-0142 as the telephone number');
-  const ranked = lib.lexicalRank(cands, lib.actQuery('enter 555-0142 as the telephone number', parsed), { op: parsed.op });
+  const ranked = lib.lexicalRank(
+    cands,
+    lib.actQuery('enter 555-0142 as the telephone number', parsed),
+    { op: parsed.op }
+  );
   is(ranked[0].candidate.ref, 'e4');
   ok(ranked[2].score < -50, 'a button cannot take typing');
 });
 
 test('controlCandidates: labels that differ only in numbers are one series', () => {
-  const elements = [el('e1', 'link', 'comments'), el('e2', 'link', '165 comments'), el('e3', 'link', '21 comments'), el('e4', 'link', '35 comments')];
+  const elements = [
+    el('e1', 'link', 'comments'),
+    el('e2', 'link', '165 comments'),
+    el('e3', 'link', '21 comments'),
+    el('e4', 'link', '35 comments'),
+  ];
   const cands = lib.controlCandidates(elements, null);
   is(lib.describeControl(cands[1]), 'link "165 comments" (1st of 3)');
   is(cands[3].rank, { k: 3, n: 3 });
@@ -145,14 +182,21 @@ test('controlCandidates: labels that differ only in numbers are one series', () 
 });
 
 test('applyStates: pairs scanned states by role, name and order', () => {
-  const elements = [el('e9', 'radio', 'Small'), el('e11', 'radio', 'Medium'), el('e17', 'checkbox', 'Bacon')];
+  const elements = [
+    el('e9', 'radio', 'Small'),
+    el('e11', 'radio', 'Medium'),
+    el('e17', 'checkbox', 'Bacon'),
+  ];
   const states = [
     { role: 'radio', name: 'small', state: 'not checked' },
     { role: 'radio', name: 'Medium', state: 'checked' },
     { role: 'checkbox', name: 'Bacon', state: 'not checked' },
   ];
   const out = lib.applyStates(elements, states);
-  is(out.map((e) => e.state), ['not checked', 'checked', 'not checked']);
+  is(
+    out.map((e) => e.state),
+    ['not checked', 'checked', 'not checked']
+  );
   is(out[1].value, 'checked');
   is(lib.stateSegments(out)[1].text, 'radio "Medium": checked');
 });
@@ -164,7 +208,16 @@ test('verdict: act only at or above the threshold, never on NONE', () => {
   is(lib.verdict({ e1: 0.65 }, { sure: 0.6 }).sure, true);
   is(lib.SURE, 0.7);
   // kev: NONE does not veto; the best other choice decides.
-  is(lib.verdict({ NONE: 0.46, e2: 0.41, e6: 0.04 }, { sure: 0.4, ignoreNone: true }), { pick: 'e2', p: 0.41, sure: true, ranked: [['NONE', 0.46], ['e2', 0.41], ['e6', 0.04]] });
+  is(lib.verdict({ NONE: 0.46, e2: 0.41, e6: 0.04 }, { sure: 0.4, ignoreNone: true }), {
+    pick: 'e2',
+    p: 0.41,
+    sure: true,
+    ranked: [
+      ['NONE', 0.46],
+      ['e2', 0.41],
+      ['e6', 0.04],
+    ],
+  });
 });
 
 test('snippet: a long text is cut around the words asked about', () => {
@@ -183,18 +236,41 @@ test('choiceQuestion: one option per candidate and a NONE', () => {
 });
 
 test('menuQuestion: webrunner wording for kev, ids that map back to refs', () => {
-  const cands = lib.controlCandidates([el('e2', 'textbox', 'Customer name:'), el('e29', 'button', 'Submit order')], null);
-  const q = lib.choiceQuestion('ACT', 'press submit', cands, { title: 'Pizza', url: 'https://x' }, { style: 'menu' });
+  const cands = lib.controlCandidates(
+    [el('e2', 'textbox', 'Customer name:'), el('e29', 'button', 'Submit order')],
+    null
+  );
+  const q = lib.choiceQuestion(
+    'ACT',
+    'press submit',
+    cands,
+    { title: 'Pizza', url: 'https://x' },
+    { style: 'menu' }
+  );
   is(Object.keys(q.question.criteria), ['type:e2', 'click:e29', 'NONE']);
   is(q.question.criteria['click:e29'], 'click button "Submit order"');
-  ok(q.state.startsWith('Goal: press submit') && q.state.includes('  [e29] button "Submit order"'), q.state);
+  ok(
+    q.state.startsWith('Goal: press submit') && q.state.includes('  [e29] button "Submit order"'),
+    q.state
+  );
   is([lib.refOf('click:e29'), lib.refOf('type:e2'), lib.refOf('e5')], ['e29', 'e2', 'e5']);
   is(lib.SURE_BY_MODEL['4b-vision'], 0.6);
-  is([lib.SURE_BY_MODEL['0.8b-vision-wr2-intent'], lib.QUESTION_STYLE['0.8b-vision-wr2-intent'], lib.QUESTION_STYLE['4b-vision']], [0.7, 'plain', undefined]);
+  is(
+    [
+      lib.SURE_BY_MODEL['0.8b-vision-wr2-intent'],
+      lib.QUESTION_STYLE['0.8b-vision-wr2-intent'],
+      lib.QUESTION_STYLE['4b-vision'],
+    ],
+    [0.7, 'plain', undefined]
+  );
 });
 
 test('refMemory: which of the same-labelled controls a ref is', () => {
-  const mem = lib.refMemory([el('e3', 'button', 'Eat', { seq: 3 }), el('e7', 'link', 'Pasta', { seq: 7 }), el('e9', 'button', 'Eat', { seq: 9 })]);
+  const mem = lib.refMemory([
+    el('e3', 'button', 'Eat', { seq: 3 }),
+    el('e7', 'link', 'Pasta', { seq: 7 }),
+    el('e9', 'button', 'Eat', { seq: 9 }),
+  ]);
   is(mem, [
     { ref: 'e3', role: 'button', label: 'Eat', k: 1 },
     { ref: 'e7', role: 'link', label: 'Pasta', k: 1 },
@@ -216,9 +292,16 @@ test('listLines: a lexical read of links or rows, in page order', () => {
   is(lib.listLines('list the buttons', elements, [], 10).lines, ['  e3 button "Search"']);
   // Rows when no kind of control is named.
   const rows = lib.textSegments(INFOBOX);
-  ok(lib.listLines('list the rows that mention advisor', [], rows, 5).lines[0].includes('Doctoral advisor Hans Hahn'));
+  ok(
+    lib
+      .listLines('list the rows that mention advisor', [], rows, 5)
+      .lines[0].includes('Doctoral advisor Hans Hahn')
+  );
   ok(lib.isList('list the links about drugs') && !lib.isList('click the list button'));
-  ok(lib.listWantsControls('list the buttons') && !lib.listWantsControls('list the rows that mention calories'));
+  ok(
+    lib.listWantsControls('list the buttons') &&
+      !lib.listWantsControls('list the rows that mention calories')
+  );
 });
 
 test('regionLines: the closest texts in page order when no single one is sure', () => {
@@ -227,7 +310,19 @@ test('regionLines: the closest texts in page order when no single one is sure', 
     { type: 'text', id: 't2', text: 'Calories 1200 eaten, 900 burned', line: 20, ref: 'e9' },
   ];
   const byId = new Map(segs.map((x) => [x.id, x]));
-  is(lib.regionLines([['t2', 0.3], ['NONE', 0.4], ['t1', 0.2]], byId, 6, 'status'), ['  e5 "Mile 12 of 100"', '  e9 "Calories 1200 eaten, 900 burned"']);
+  is(
+    lib.regionLines(
+      [
+        ['t2', 0.3],
+        ['NONE', 0.4],
+        ['t1', 0.2],
+      ],
+      byId,
+      6,
+      'status'
+    ),
+    ['  e5 "Mile 12 of 100"', '  e9 "Calories 1200 eaten, 900 burned"']
+  );
 });
 
 test('budgetLines: top texts by rank until the budget, shown in page order', () => {
@@ -242,18 +337,37 @@ test('budgetLines: top texts by rank until the budget, shown in page order', () 
 });
 
 test('bundleCacheDir: one cache directory per bundle URL', () => {
-  const a = lib.bundleCacheDir('https://huggingface.co/ai-ecoverse/kev.js/resolve/main/kev-0.8b-vision-wr2-intent');
+  const a = lib.bundleCacheDir(
+    'https://huggingface.co/ai-ecoverse/kev.js/resolve/main/kev-0.8b-vision-wr2-intent'
+  );
   ok(/^\/shared\/cache\/kev\/bundles\/kev-0\.8b-vision-wr2-intent-[0-9a-f]{8}$/.test(a), a);
-  is(lib.bundleCacheDir('https://huggingface.co/ai-ecoverse/kev.js/resolve/main/kev-0.8b-vision-wr2-intent/'), a);
+  is(
+    lib.bundleCacheDir(
+      'https://huggingface.co/ai-ecoverse/kev.js/resolve/main/kev-0.8b-vision-wr2-intent/'
+    ),
+    a
+  );
   ok(lib.bundleCacheDir('https://example.com/other/kev-0.8b-vision-wr2-intent') !== a);
-  is([lib.bundleCacheDir('/mnt/kev-models/x'), lib.bundleCacheDir('file:///etc/passwd')], [null, null]);
+  is(
+    [lib.bundleCacheDir('/mnt/kev-models/x'), lib.bundleCacheDir('file:///etc/passwd')],
+    [null, null]
+  );
 });
 
 test('training log: redaction, the shortlist as kev saw it, corrections', () => {
-  is(lib.redactSecrets('https://www.sliccy.ai/join/abc.def and https://x.y/z?token=SECRET&q=1'), 'https://www.sliccy.ai/join/<token> and https://x.y/z?token=<redacted>&q=1');
-  const cands = lib.controlCandidates([el('e29', 'button', 'Submit order', { context: 'Pizza', box: [1, 2, 3, 4] })], null);
+  is(
+    lib.redactSecrets('https://www.sliccy.ai/join/abc.def and https://x.y/z?token=SECRET&q=1'),
+    'https://www.sliccy.ai/join/<token> and https://x.y/z?token=<redacted>&q=1'
+  );
+  const cands = lib.controlCandidates(
+    [el('e29', 'button', 'Submit order', { context: 'Pizza', box: [1, 2, 3, 4] })],
+    null
+  );
   const [logged] = lib.logShortlist(cands);
-  is([logged.id, logged.role, logged.label, logged.context, logged.describe], ['e29', 'button', 'Submit order', 'Pizza', 'button "Submit order" for "Pizza"']);
+  is(
+    [logged.id, logged.role, logged.label, logged.context, logged.describe],
+    ['e29', 'button', 'Submit order', 'Pizza', 'button "Submit order" for "Pizza"']
+  );
   const now = Date.now();
   const last = { id: 'd1', tab: 'T', kind: 'ACT', outcome: 'unsure', at: now - 1000 };
   is(lib.correctionOf(last, { ref: 'e4' }, 'ACT', 'T', now), { type: 'ref', of: 'd1' });
@@ -275,7 +389,15 @@ test('bundle settings: a manifest field overrides, its absence keeps the old rul
   is(lib.s1Policy(s1('kev.js', true), 'RETRIEVE').sure, 0.5);
   is(lib.s1Policy(s1('clef', false), 'ACT'), { sure: 0.7, ignoreNone: false });
   is(lib.s1Policy(s1('4b-vision', true), 'VERIFY').sure, lib.SURE);
-  is([lib.questionStyle(s1('4b-vision', true)), lib.questionStyle(s1('0.8b-vision-wr2-intent', true)), lib.questionStyle(s1('clef', false)), lib.questionStyle(plain)], ['menu', 'plain', 'plain', 'menu']);
+  is(
+    [
+      lib.questionStyle(s1('4b-vision', true)),
+      lib.questionStyle(s1('0.8b-vision-wr2-intent', true)),
+      lib.questionStyle(s1('clef', false)),
+      lib.questionStyle(plain),
+    ],
+    ['menu', 'plain', 'plain', 'menu']
+  );
   // The bundle declares its own (an HF URL's last segment is the repo's name).
   const own = lib.bundleSettings({ intent: { question: 'plain', act: 0.65, verify: 0.8 } });
   is(own, { question: 'plain', act: 0.65, verify: 0.8 });

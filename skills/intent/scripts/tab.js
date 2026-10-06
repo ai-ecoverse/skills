@@ -1,7 +1,6 @@
-// playwright-cli on one tab, shared by webrunner and intent: observe (the
-// snapshot with boxes, the viewport, the page scan, a screenshot) and act
-// (click, type, scroll, by ref or by place). Every playwright-cli call can
-// be recorded for a trace.
+// playwright-cli on one tab: observe (the snapshot with boxes, the
+// viewport, the page scan) and act (click, type, scroll, by ref or by
+// place). Every playwright-cli call of a look is recorded with its time.
 //
 // tabTools({ exec, say, evalJs }) binds the commands to sliccy:exec and a
 // logger. evalJs(tab, expression) runs page JavaScript; by default through
@@ -37,7 +36,9 @@ function tabTools({ exec, say = async () => {}, evalJs = null }) {
     const result = await run(argv, rec);
     if (result.exitCode !== 0) {
       const detail = (result.stderr || result.stdout || '').trim().slice(0, 500);
-      throw new Error(`${argv[0]} ${argv[1] || ''} failed (${result.exitCode})${detail ? `: ${detail}` : ''}`);
+      throw new Error(
+        `${argv[0]} ${argv[1] || ''} failed (${result.exitCode})${detail ? `: ${detail}` : ''}`
+      );
     }
     return result.stdout || '';
   }
@@ -48,33 +49,35 @@ function tabTools({ exec, say = async () => {}, evalJs = null }) {
     let result;
     try {
       const value = await evalJs(tab, expression);
-      result = { exitCode: 0, stdout: typeof value === 'string' ? value : JSON.stringify(value ?? null), stderr: '' };
+      result = {
+        exitCode: 0,
+        stdout: typeof value === 'string' ? value : JSON.stringify(value ?? null),
+        stderr: '',
+      };
     } catch (err) {
       result = { exitCode: 1, stdout: '', stderr: String((err && err.message) || err) };
     }
-    if (rec) rec.push({ argv: ['eval', clip(expression, 300)], exitCode: result.exitCode, ms: Date.now() - started, stdout: clip(result.stdout, 1200), stderr: clip(result.stderr, 1200) });
+    if (rec)
+      rec.push({
+        argv: ['eval', clip(expression, 300)],
+        exitCode: result.exitCode,
+        ms: Date.now() - started,
+        stdout: clip(result.stdout, 1200),
+        stderr: clip(result.stderr, 1200),
+      });
     return result;
   }
 
   async function jsOk(tab, expression, rec) {
     const result = await js(tab, expression, rec);
-    if (result.exitCode !== 0) throw new Error(`eval failed: ${(result.stderr || result.stdout || '').trim().slice(0, 300)}`);
+    if (result.exitCode !== 0)
+      throw new Error(
+        `eval failed: ${(result.stderr || result.stdout || '').trim().slice(0, 300)}`
+      );
     return result.stdout || '';
   }
 
-
   // ── observe ───────────────────────────────────────────────────────────
-
-  // FNV-1a over the screenshot's bytes: equal pixels encode to equal PNGs.
-  function hashBytes(bytes) {
-    const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
-    let h = 0x811c9dc5;
-    for (let i = 0; i < data.length; i++) {
-      h ^= data[i];
-      h = Math.imul(h, 0x01000193) >>> 0;
-    }
-    return `${data.length}:${h.toString(16)}`;
-  }
 
   const VIEWPORT_JS =
     'JSON.stringify({ width: innerWidth, height: innerHeight, scrollY: Math.round(scrollY), scrollHeight: document.documentElement.scrollHeight })';
@@ -83,8 +86,6 @@ function tabTools({ exec, say = async () => {}, evalJs = null }) {
   // clickable divs and disambiguators for repeated controls (page-scan.js).
   const PAGE_SCAN_JS = `(${pageScan.scan.toString()})()`;
 
-  // A synthetic button (page.promoteClickable) has no ref: click the element
-  // under its box centre.
   // A synthetic button (page-scan's clickable div) is clicked in the page:
   // the element under its box centre when that is the control (its text is
   // the label), else the element with exactly that text nearest the box,
@@ -149,7 +150,7 @@ function tabTools({ exec, say = async () => {}, evalJs = null }) {
   }
 
   /**
-   * One look at the tab. → { shot, raw, viewport, diff, screenshot, commands, ms }
+   * One look at the tab. → { shot, disambiguation, raw, viewport, diff, commands, ms }
    * `prev` is the last cycle's observation: the diff against it is the
    * feedback on the last action.
    */
@@ -174,7 +175,9 @@ function tabTools({ exec, say = async () => {}, evalJs = null }) {
       }
       const detail = (result.stderr || result.stdout || '').trim().slice(0, 300);
       if (attempt >= 3 || !/timed? ?out/i.test(detail)) {
-        throw new Error(`playwright-cli snapshot failed (${result.exitCode})${detail ? `: ${detail}` : ''}`);
+        throw new Error(
+          `playwright-cli snapshot failed (${result.exitCode})${detail ? `: ${detail}` : ''}`
+        );
       }
       await say(`         snapshot timed out; retrying${attempt === 2 ? ' without boxes' : ''}`);
     }
@@ -195,35 +198,15 @@ function tabTools({ exec, say = async () => {}, evalJs = null }) {
         disambiguation = scanned.disambiguation;
       }
     }
-    let screenshot = null;
-    if (opts.trace && opts.shots && opts.name) {
-      const name = `${opts.name}.png`;
-      const result = await run(
-        ['playwright-cli', 'screenshot', `--tab=${tab}`, `--filename=${opts.trace.path(name)}`],
-        commands
-      );
-      if (result.exitCode === 0) screenshot = name;
-    }
     return {
       shot: shotWithClicks,
       disambiguation,
       raw,
       viewport,
       diff: page.diffShots(prev && prev.shot, shotWithClicks),
-      screenshot,
       commands,
       ms: Date.now() - started,
     };
-  }
-
-  // playwright-cli open returns while the tab still shows about:blank, and a
-  // step spent there is a model call with nothing to choose (seen 2026-09-23).
-  async function waitForPage(tab) {
-    for (let i = 0; i < 20; i++) {
-      const shot = page.parseSnapshot(await sh(['playwright-cli', 'snapshot', `--tab=${tab}`]));
-      if (shot.url && shot.url !== 'about:blank' && shot.elements.length) return;
-      await sh(['sleep', '0.5']);
-    }
   }
 
   // ── act ───────────────────────────────────────────────────────────────
@@ -301,17 +284,22 @@ function tabTools({ exec, say = async () => {}, evalJs = null }) {
 
   /** Apply one action. Every playwright-cli call lands in `commands`. */
   async function act(tab, action, viewport, commands) {
-    if (action.operation === 'WAIT') {
-      await sh(['sleep', '0.5'], commands);
-      return;
-    }
     if (action.operation === 'SCROLL') {
       // The wheel scrolls whatever is under the mouse, so put the mouse in the
       // middle of the viewport first: at 0,0 it sits on a sticky header.
       const width = viewport ? viewport.width : 1280;
       const height = viewport ? viewport.height : 800;
       const dy = Math.round(height * 0.8) * (action.direction === 'up' ? -1 : 1);
-      await sh(['playwright-cli', 'mousemove', `--tab=${tab}`, String(Math.round(width / 2)), String(Math.round(height / 2))], commands);
+      await sh(
+        [
+          'playwright-cli',
+          'mousemove',
+          `--tab=${tab}`,
+          String(Math.round(width / 2)),
+          String(Math.round(height / 2)),
+        ],
+        commands
+      );
       await sh(['playwright-cli', 'mousewheel', `--tab=${tab}`, '0', String(dy)], commands);
       return;
     }
@@ -353,8 +341,13 @@ function tabTools({ exec, say = async () => {}, evalJs = null }) {
     }
     await say(`         ${ref} has no node id; focusing "${action.element.label.trim()}" by name`);
     const clicking = action.operation === 'CLICK';
-    const found = await jsOk(tab, focusByName(action.element, clicking ? 'locate' : 'focus'), commands);
-    if (found.includes('missing')) throw new Error(`no visible control named "${action.element.label.trim()}"`);
+    const found = await jsOk(
+      tab,
+      focusByName(action.element, clicking ? 'locate' : 'focus'),
+      commands
+    );
+    if (found.includes('missing'))
+      throw new Error(`no visible control named "${action.element.label.trim()}"`);
     const at = /"x":(-?\d+),"y":(-?\d+)/.exec(found);
     if (clicking && at) {
       await sh(['playwright-cli', 'mousemove', `--tab=${tab}`, at[1], at[2]], commands);
@@ -366,7 +359,7 @@ function tabTools({ exec, say = async () => {}, evalJs = null }) {
     }
   }
 
-  return { run, sh, js, observe, waitForPage, openTab, act, hashBytes };
+  return { run, sh, js, observe, openTab, act };
 }
 
 module.exports = { tabTools };

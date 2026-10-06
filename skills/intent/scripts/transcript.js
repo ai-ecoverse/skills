@@ -5,7 +5,9 @@
 /** The scoop's tool calls from its transcript: [{ command, chars }]. */
 function toolCalls(transcript) {
   const calls = [];
-  const blocks = String(transcript).split(/\n### tool: /).slice(1);
+  const blocks = String(transcript)
+    .split(/\n### tool: /)
+    .slice(1);
   for (const block of blocks) {
     const input = /Input:\s*```json\n([\s\S]*?)\n```/.exec(block);
     const result = /Result:\s*```[a-z]*\n([\s\S]*?)\n```/.exec(block);
@@ -32,7 +34,10 @@ function lastMessage(transcript) {
   const turns = String(transcript).split(/^## (?=(?:user|assistant)[ \t]*$)/m);
   for (let i = turns.length - 1; i >= 0; i -= 1) {
     if (!/^assistant[ \t]*\n/.test(turns[i])) continue;
-    const text = turns[i].replace(/^assistant[ \t]*\n/, '').split(/\n### tool: /)[0].trim();
+    const text = turns[i]
+      .replace(/^assistant[ \t]*\n/, '')
+      .split(/\n### tool: /)[0]
+      .trim();
     if (text) return text;
   }
   return '';
@@ -43,7 +48,13 @@ const stats = (xs) => {
   if (!xs.length) return null;
   const s = [...xs].sort((a, b) => a - b);
   const sum = s.reduce((a, b) => a + b, 0);
-  return { n: s.length, mean: Math.round(sum / s.length), p50: s[s.length >> 1], max: s[s.length - 1], total: sum };
+  return {
+    n: s.length,
+    mean: Math.round(sum / s.length),
+    p50: s[s.length >> 1],
+    max: s[s.length - 1],
+    total: sum,
+  };
 };
 
 module.exports = { toolCalls, lastMessage, stats };

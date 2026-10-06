@@ -6,7 +6,25 @@
 // (Lars, 2026-10-03), so bash and sh are in too; whatever they run is still
 // held to the scoop's grant. date: eight BU Bench V2.1 runs were refused the
 // clock and could not give the observation time a task asked for (2026-10-04).
-const UTILITIES = ['grep', 'head', 'tail', 'sleep', 'sed', 'awk', 'cut', 'wc', 'sort', 'uniq', 'echo', 'cat', 'tr', 'jq', 'bash', 'sh', 'date'];
+const UTILITIES = [
+  'grep',
+  'head',
+  'tail',
+  'sleep',
+  'sed',
+  'awk',
+  'cut',
+  'wc',
+  'sort',
+  'uniq',
+  'echo',
+  'cat',
+  'tr',
+  'jq',
+  'bash',
+  'sh',
+  'date',
+];
 
 // --toolset full: every command the shell has, as the cone has them,
 // except the browser's own commands: in the intent arm playwright-cli is
@@ -15,7 +33,27 @@ const UTILITIES = ['grep', 'head', 'tail', 'sleep', 'sed', 'awk', 'cut', 'wc', '
 // but counted (audit). The list comes from the shell's `commands`; this
 // one stands in when it cannot be read.
 const BROWSER_COMMANDS = ['playwright-cli', 'playwright', 'puppeteer'];
-const FULL_TOOLS = ['curl', 'python3', 'python', 'node', 'open', 'convert', 'magick', 'ls', 'mkdir', 'rm', 'cp', 'mv', 'find', 'xargs', 'base64', 'git', 'tar', 'unzip', 'zip'];
+const FULL_TOOLS = [
+  'curl',
+  'python3',
+  'python',
+  'node',
+  'open',
+  'convert',
+  'magick',
+  'ls',
+  'mkdir',
+  'rm',
+  'cp',
+  'mv',
+  'find',
+  'xargs',
+  'base64',
+  'git',
+  'tar',
+  'unzip',
+  'zip',
+];
 const TOOLSETS = ['browser', 'full'];
 const THINKING = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'];
 
@@ -40,13 +78,17 @@ function commandNames(text) {
 function utilitiesFor(toolset = 'browser', listed = []) {
   if (toolset !== 'full') return UTILITIES;
   const all = listed.length >= 20 ? listed : [...UTILITIES, ...FULL_TOOLS];
-  return [...new Set([...all, ...UTILITIES])].filter((c) => !BROWSER_COMMANDS.includes(c) && c !== 'intent-arm');
+  return [...new Set([...all, ...UTILITIES])].filter(
+    (c) => !BROWSER_COMMANDS.includes(c) && c !== 'intent-arm'
+  );
 }
 
 // A way around the tool: a script that drives the browser itself.
-const BYPASS = /sliccy:browser|(?:require|import)\s*\(\s*['"](?:playwright|puppeteer)[^'"]*['"]|from\s+['"](?:playwright|puppeteer)[^'"]*['"]/;
+const BYPASS =
+  /sliccy:browser|(?:require|import)\s*\(\s*['"](?:playwright|puppeteer)[^'"]*['"]|from\s+['"](?:playwright|puppeteer)[^'"]*['"]/;
 // A browser command typed bare, at the start of a pipeline segment.
-const BARE = /(?:^|[;&|(`{]\s*|\$\(\s*|\b(?:then|do|else)\s+)(?:playwright-cli|playwright|puppeteer)(?=\s|$|[;&|)])/g;
+const BARE =
+  /(?:^|[;&|(`{]\s*|\$\(\s*|\b(?:then|do|else)\s+)(?:playwright-cli|playwright|puppeteer)(?=\s|$|[;&|)])/g;
 
 /**
  * What a run did around the rules, from its tool calls ([{ command }]) and
@@ -57,7 +99,10 @@ const BARE = /(?:^|[;&|(`{]\s*|\$\(\s*|\b(?:then|do|else)\s+)(?:playwright-cli|p
 function audit(calls, files = []) {
   const bypassCalls = calls.filter((c) => BYPASS.test(c.command || '')).length;
   const bypassFiles = files.filter((f) => BYPASS.test(f.text || '')).map((f) => f.name);
-  const barePlaywright = calls.reduce((n, c) => n + (String(c.command || '').match(BARE) || []).length, 0);
+  const barePlaywright = calls.reduce(
+    (n, c) => n + (String(c.command || '').match(BARE) || []).length,
+    0
+  );
   // Counts for stdout (--private); the file names, which the scoop chose and
   // may carry task words, only in result.json.
   return { bypass: { calls: bypassCalls, files: bypassFiles.length }, barePlaywright, bypassFiles };
@@ -107,7 +152,8 @@ function hostSlug(url) {
  * <time>-<hostname slug>, as meep-meep's trace.js names runs: diagnostics can
  * tell this goal's run from the one before it. Without a URL: <time>-run.
  */
-const runId = (url, now = new Date()) => `${now.toISOString().replace(/[:.]/g, '-')}-${hostSlug(url)}`;
+const runId = (url, now = new Date()) =>
+  `${now.toISOString().replace(/[:.]/g, '-')}-${hostSlug(url)}`;
 
 /** A start URL, if given, must be http(s). → an error message, or null. */
 function checkUrl(url) {
@@ -136,8 +182,10 @@ function prompt(url, goal, tool, toolset = 'browser') {
       : full
         ? 'Use the `playwright-cli` command for the browser. Run `playwright-cli --help` once for the details. For everything else you may use the shell (curl, python3, convert, …) as you see fit.'
         : 'You browse only through the `playwright-cli` command. Run `playwright-cli --help` once for the details.';
-  if (url) return `Open ${url} in a new browser tab and do this there: ${goal}\nLeave the final page open in that tab when you are done.\n${how}`;
-  const open = tool === 'intent' ? '`intent --intent "open https://…"`' : '`playwright-cli open https://…`';
+  if (url)
+    return `Open ${url} in a new browser tab and do this there: ${goal}\nLeave the final page open in that tab when you are done.\n${how}`;
+  const open =
+    tool === 'intent' ? '`intent --intent "open https://…"`' : '`playwright-cli open https://…`';
   return `Do this in the browser: ${goal}\nNo page is open yet: start by opening the site the task needs with ${open}. Leave the final page open in that tab when you are done.\n${how}`;
 }
 
@@ -145,7 +193,31 @@ function prompt(url, goal, tool, toolset = 'browser') {
 // The answer, the final URL and anything else drawn from the task or the
 // pages stay in the run's result.json on the leader, for the bench to read
 // into its encrypted trace.
-const PRIVATE_FIELDS = ['run', 'tool', 'model', 'toolset', 'thinking', 'bypass', 'barePlaywright', 'ok', 'seconds', 'timedOut', 'exitCode', 'steps', 'stepsFromLog', 'invocations', 'refCalls', 'fullCalls', 'toolCalls', 'turns', 'usage', 'resultChars', 'inputTokensPerTurn', 'intent', 'system1'];
+const PRIVATE_FIELDS = [
+  'run',
+  'tool',
+  'model',
+  'toolset',
+  'thinking',
+  'bypass',
+  'barePlaywright',
+  'ok',
+  'seconds',
+  'timedOut',
+  'exitCode',
+  'steps',
+  'stepsFromLog',
+  'invocations',
+  'refCalls',
+  'fullCalls',
+  'toolCalls',
+  'turns',
+  'usage',
+  'resultChars',
+  'inputTokensPerTurn',
+  'intent',
+  'system1',
+];
 
 /** The result as printed: in full, or with --private only PRIVATE_FIELDS. */
 function printable(result, { private: priv = false } = {}) {
@@ -156,4 +228,21 @@ function printable(result, { private: priv = false } = {}) {
   return out;
 }
 
-module.exports = { callOutcome, outcomeCounts, UTILITIES, FULL_TOOLS, BROWSER_COMMANDS, TOOLSETS, THINKING, commandNames, utilitiesFor, audit, hostSlug, runId, checkUrl, prompt, printable, PRIVATE_FIELDS };
+module.exports = {
+  callOutcome,
+  outcomeCounts,
+  UTILITIES,
+  FULL_TOOLS,
+  BROWSER_COMMANDS,
+  TOOLSETS,
+  THINKING,
+  commandNames,
+  utilitiesFor,
+  audit,
+  hostSlug,
+  runId,
+  checkUrl,
+  prompt,
+  printable,
+  PRIVATE_FIELDS,
+};

@@ -23,7 +23,8 @@ const FOUND = [
   { t: 'Stories of the village (new)', b: [10, 10, 200, 20] },
 ];
 const VIEWPORT = { width: 1280, height: 800, scrollY: 0, scrollHeight: 800 };
-const synthetic = (shot) => shot.elements.filter((e) => e.synthetic).map((e) => `${e.token} ${e.label}`);
+const synthetic = (shot) =>
+  shot.elements.filter((e) => e.synthetic).map((e) => `${e.token} ${e.label}`);
 
 test('promoteClickable: with boxes, as before; without, the same controls by name', () => {
   const boxed = page.promoteClickable(page.parseSnapshot(WITH_BOXES), FOUND, VIEWPORT);
@@ -50,9 +51,11 @@ test('observe: boxes: false takes the snapshot without --boxes, and still scans 
     },
   };
   const evals = [];
-  const evalJs = async (tab, expr) => {
+  const evalJs = async (_tab, expr) => {
     evals.push(expr.slice(0, 40));
-    return expr.includes('innerWidth') ? JSON.stringify({ width: 1280, height: 800, scrollY: 0, scrollHeight: 800 }) : JSON.stringify({ clickable: [], disambiguation: [] });
+    return expr.includes('innerWidth')
+      ? JSON.stringify({ width: 1280, height: 800, scrollY: 0, scrollHeight: 800 })
+      : JSON.stringify({ clickable: [], disambiguation: [] });
   };
   const tools = tabTools({ exec, evalJs });
   await tools.observe('AB12', null, { viewport: true, boxes: false });

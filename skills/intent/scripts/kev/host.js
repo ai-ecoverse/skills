@@ -1,16 +1,16 @@
-// Install, bundle, and weight helpers shared by kev.jsh and cua-s1.jsh.
-// Kept free of a top-level require() of the model: the realm's module graph
-// is fixed when the script starts, so a bundle written during this process
-// is required only by the re-exec'd child.
+// Install, bundle and weight helpers for the kev runtime (`intent prepare`,
+// `intent pull`). Kept free of a top-level require() of the model: the
+// realm's module graph is fixed when the script starts, so a bundle written
+// during this process is required only by the next intent call.
 
 const PACKAGE_ROOTS = ['/shared/lib/node_modules', '/workspace/node_modules'];
 const ESBUILD_FALLBACK = 'esbuild-wasm@0.28.2';
-// kev and cua-s1 load the same global copy, so they share one pin.
+// One global copy, pinned exactly: the version a session runs on is known.
 const ORT_SPEC = 'onnxruntime-web@1.30.0';
 const ORT_NAME = 'onnxruntime-web';
-// Every bundle the scripts may import: kev takes webgpu when navigator.gpu
-// exists and retries on wasm; cua-s1 takes wasm. A root counts as a copy only
-// with all of them, so the copy judged is the copy that serves whichever loads.
+// Every bundle kev may import: webgpu when navigator.gpu exists, wasm as
+// the retry. A root counts as a copy only with both, so the copy judged is
+// the copy that serves whichever loads.
 const ORT_BUNDLES = ['dist/ort.wasm.bundle.min.mjs', 'dist/ort.webgpu.bundle.min.mjs'];
 
 function parentDir(path) {
@@ -204,22 +204,6 @@ async function ensureEsbuild(exec, fs) {
   await ensurePackage(exec, fs, `esbuild-wasm@${version}`, 'esbuild-wasm');
 }
 
-// parseFlags is greedy: `--json billing:noul:…` stores the question as the
-// flag's string value. These names are booleans, so put that word back.
-function normalizeFlags(parsed, boolNames) {
-  for (const name of boolNames) {
-    const value = parsed.flags[name];
-    if (typeof value !== 'string') continue;
-    if (value === 'false' || value === '0') {
-      parsed.flags[name] = false;
-      continue;
-    }
-    parsed.flags[name] = true;
-    if (value !== 'true' && value !== '1' && value !== '') parsed.positional.push(value);
-  }
-  return parsed;
-}
-
 async function readStamp(fs, stampPath) {
   try {
     return String(await fs.readFile(stampPath)).trim();
@@ -265,36 +249,6 @@ async function ensureBundle(exec, fs, opts) {
 async function hfDownload(exec, repo, files, dest) {
   console.error(`hf download ${repo} (${files.length} files) -> ${dest}`);
   await run(exec, ['hf', 'download', repo, ...files, '--to', dest]);
-}
-
-function childEnv(extra) {
-  const env = {};
-  for (const key of Object.keys(process.env)) {
-    const value = process.env[key];
-    if (typeof value === 'string') env[key] = value;
-  }
-  for (const [key, value] of Object.entries(extra)) env[key] = value;
-  return env;
-}
-
-/**
- * Run this script once more, in a child that can require what was just
- * installed, and exit with its output and code. opts.env: more variables
- * for the child; opts.onStart(handle): the running child, so a caller with
- * a time limit can kill it instead of leaving it running.
- */
-async function reexec(exec, envName, opts = {}) {
-  const stdin = process.stdin.read();
-  const handle = exec.start(['node', process.argv[1], ...process.argv.slice(2)], {
-    stdin: stdin == null ? '' : stdin,
-    env: childEnv({ ...(opts.env || {}), [envName]: '1' }),
-  });
-  if (typeof opts.onStart === 'function') opts.onStart(handle);
-  handle.stdin.end();
-  const result = await handle.done;
-  if (result.stdout) process.stdout.write(result.stdout);
-  if (result.stderr) process.stderr.write(result.stderr);
-  process.exit(result.exitCode || 0);
 }
 
 function nativeImport(url) {
@@ -349,10 +303,8 @@ module.exports = {
   ensureOrt,
   checkOrtVersion,
   ensureEsbuild,
-  normalizeFlags,
   ensureBundle,
   hfDownload,
-  reexec,
   nativeImport,
   configureOrt,
   browserForEmscripten,

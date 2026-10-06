@@ -1,7 +1,7 @@
-// Load a Kev model once and keep it. kev.jsh opens one per ask; webrunner
-// opens one per run and asks it every step. Loading kev-9b reads 325 weight
-// files (about 4 s from OPFS on WebGPU with kev.js 0.4, measured 2026-09-23);
-// a warm ask is the forward pass alone.
+// Load a kev model once and keep it: `intent` opens one per call, `intent
+// serve` and intent-arm one per run. Loading kev-9b reads 325 weight files
+// (about 4 s from OPFS on WebGPU with kev.js 0.4, measured 2026-09-23); a
+// warm ask is the forward pass alone.
 // fs is passed in, like host.js, so tests can load this without the realm.
 
 const host = require('./host.js');
@@ -31,7 +31,7 @@ async function pinnedOrtDir(fs) {
 async function loadOrt(fs, kind, ortDir) {
   const fileName = kind === 'webgpu' ? 'ort.webgpu.bundle.min.mjs' : 'ort.wasm.bundle.min.mjs';
   const dir = ortDir || (await pinnedOrtDir(fs));
-  if (!dir) throw new Error(`${host.ORT_SPEC} is not installed. Run kev prepare.`);
+  if (!dir) throw new Error(`${host.ORT_SPEC} is not installed. Run intent prepare.`);
   const dist = `${dir}/dist`;
   const file = `${dist}/${fileName}`;
   if (!(await fs.exists(file))) throw new Error(`onnxruntime-web: ${file} is missing`);
@@ -64,7 +64,7 @@ const SIZES = {
   '4b-vision': '5.4 GB',
 };
 // hf prints one line per file and the shell shows output only at exit, so
-// kev pull asks for a batch at a time and logs each batch here.
+// intent pull asks for a batch at a time and logs each batch here.
 const PULL_LOG = '/tmp/kev/pull.log';
 const PULL_BATCH = 12;
 
@@ -115,7 +115,7 @@ function missingWeightsMessage(status) {
     : `the kev-${status.model} weights are not downloaded`;
   return [
     `${what} (${status.base}, ${SIZES[status.model]} in all).`,
-    `Download them with slicc's hf: kev pull --model ${status.model}`,
+    `Download them: intent pull --model ${status.model}`,
     'It resumes where it stopped: files already at full size are skipped.',
     'Or pass --from <dir> to use weights you already have.',
   ].join('\n');
@@ -173,7 +173,7 @@ async function openOn(fs, base, dateFacts, providers, log, requireBundle, ortDir
   let finished = 0;
   // kev.js 0.4+ reads a bundle in place through this function: no preview
   // URL, no fetch, no Cache Storage. A shard shorter than the manifest says
-  // fails by name; weightsStatus still runs first so the message names kev pull.
+  // fails by name; weightsStatus still runs first so the message names intent pull.
   return loadKev(requireBundle)((rel) => fs.readFileBinary(`${root}/${rel}`), {
     ort,
     variant: 'q8f32',
@@ -236,10 +236,10 @@ function isSoftwareAdapter(adapter) {
 /**
  * Open a model on WebGPU when the worker has it, falling back to wasm.
  * Weights are never downloaded here: a missing file is an error that names
- * `kev pull`. opts: { model, from, ortDir, dateFacts, log, requireBundle,
+ * `intent pull`. opts: { model, from, ortDir, dateFacts, log, requireBundle,
  * requireGpu (refuse a software WebGPU adapter) }
  */
-async function openModel(fs, exec, opts = {}) {
+async function openModel(fs, _exec, opts = {}) {
   const log = opts.log || (() => {});
   let base = opts.from ? host.resolvePath(opts.from) : null;
   if (!base) {
@@ -267,7 +267,7 @@ async function openModel(fs, exec, opts = {}) {
 }
 
 // The bundle's stamp names the kev.js it was built from. A bundle from an
-// older pin is not ready: kev prepare rebuilds it.
+// older pin is not ready: intent prepare rebuilds it.
 async function ready(fs) {
   if (!(await fs.exists(BUNDLE))) return false;
   let stamp = '';

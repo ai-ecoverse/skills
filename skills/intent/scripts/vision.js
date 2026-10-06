@@ -1,7 +1,7 @@
 // The screenshot as a kev vision bundle sees it: scaled to kev.js's pixel
-// cap only when the window is bigger than that (webrunner sizes the window
-// to the cap with --vision), with every control on the menu boxed and labelled with its ref, so
-// an option such as click:e31 points at something visible (set-of-marks).
+// cap when the window is bigger than that, with every shortlisted control
+// boxed and labelled with its ref, so an option such as click:e31 points at
+// something visible (set-of-marks).
 // The canvas work needs a worker's createImageBitmap and OffscreenCanvas;
 // the layout is plain arithmetic and is tested on its own.
 
@@ -64,7 +64,9 @@ function layoutMarks(menu, viewport, size) {
  */
 async function markedImage(bytes, menu, viewport, g = globalThis) {
   if (typeof g.createImageBitmap !== 'function' || typeof g.OffscreenCanvas !== 'function') {
-    throw new Error('this worker has no createImageBitmap / OffscreenCanvas for --vision');
+    throw new Error(
+      'this worker has no createImageBitmap / OffscreenCanvas for the marked screenshot'
+    );
   }
   const bitmap = await g.createImageBitmap(new g.Blob([bytes], { type: 'image/png' }));
   const size = fitSize(bitmap.width, bitmap.height);
@@ -98,9 +100,8 @@ async function markedImage(bytes, menu, viewport, g = globalThis) {
 }
 
 /**
- * The same picture as a JPEG, for a remote decider. Workers AI estimates a
- * request's tokens from its size, and a 240 KB marked PNG as a data URL
- * came to ~81K tokens, past Clef's 64K window (2026-10-02).
+ * The same picture as a JPEG, for the training log (a fraction of the PNG's
+ * size).
  */
 async function toJpeg(pngBytes, quality = 0.7) {
   const g = globalThis;

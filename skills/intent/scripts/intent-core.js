@@ -128,24 +128,22 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     const config = (await skill.config()) || {};
     const given = flags['cf-account'] || process.env.CLOUDFLARE_ACCOUNT_ID;
     if (given) {
-      if (!/^[a-f0-9]{32}$/.test(String(given))) throw new IntentError('--cf-account is a 32-character Cloudflare account id');
+      if (!/^[a-f0-9]{32}$/.test(String(given)))
+        throw new IntentError('--cf-account is a 32-character Cloudflare account id');
       if (config.cfAccount !== given) await skill.config({ cfAccount: String(given) });
       return String(given);
     }
     if (config.cfAccount) return config.cfAccount;
     const found = await system1.cloudflareAccount(fetch, token, null);
     if (found.error) {
-      throw new IntentError(`${found.error}. Pass --cf-account <account id> once (it is remembered) or set CLOUDFLARE_ACCOUNT_ID.`);
+      throw new IntentError(
+        `${found.error}. Pass --cf-account <account id> once (it is remembered) or set CLOUDFLARE_ACCOUNT_ID.`
+      );
     }
     await skill.config({ cfAccount: found.account });
     return found.account;
   }
 
-  /**
-   * A local kev bundle: a named one (`intent pull --model 4b-vision`) or the
-   * bundle directory --from names (a fine-tuned export). A -vision bundle
-   * also gets the marked screenshot on ACT.
-   */
   /**
    * A bundle given by URL: its manifest and every file the manifest lists,
    * fetched into the VFS cache once (a file already there at its listed size
@@ -164,14 +162,18 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
       try {
         await fs.fetchToFile(`${base}/manifest.json`, `${dir}/manifest.json`);
       } catch (err) {
-        throw new IntentError(`could not fetch ${base}/manifest.json: ${String(err?.message || err)}`);
+        throw new IntentError(
+          `could not fetch ${base}/manifest.json: ${String(err?.message || err)}`
+        );
       }
     }
     let manifest;
     try {
       manifest = JSON.parse(String(await fs.readFile(`${dir}/manifest.json`)));
     } catch {
-      throw new IntentError(`${base}/manifest.json is not a kev bundle manifest (not JSON); give the URL of the bundle's directory`);
+      throw new IntentError(
+        `${base}/manifest.json is not a kev bundle manifest (not JSON); give the URL of the bundle's directory`
+      );
     }
     const { rels, sizes } = kevRuntime.variantFiles(manifest);
     for (const rel of rels) {
@@ -189,23 +191,37 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     return dir;
   }
 
+  /**
+   * A local kev bundle: a named one (`intent pull --model 4b-vision`) or the
+   * bundle directory --from names (a fine-tuned export). A -vision bundle
+   * also gets the marked screenshot on ACT.
+   */
   async function kevModel(size, from, requireGpu = false) {
     const url = from && /^https?:\/\//i.test(from) ? from : null;
     if (url) from = await fetchBundle(url);
-    if (!from && !kevRuntime.MODELS[size]) throw new IntentError(`--model is one of ${lib.MODELS.join(', ')}`);
+    if (!from && !kevRuntime.MODELS[size])
+      throw new IntentError(`--model is one of ${lib.MODELS.join(', ')}`);
     if (!from) {
       const status = await kevRuntime.weightsStatus(fs, size);
       if (status.missing.length) {
-        throw new IntentError(`${kevRuntime.missingWeightsMessage(status).split('\n')[0]} Download them: intent pull --model ${size}`);
+        throw new IntentError(
+          `${kevRuntime.missingWeightsMessage(status).split('\n')[0]} Download them: intent pull --model ${size}`
+        );
       }
     } else if (!(await fs.exists(`${from}/manifest.json`))) {
-      throw new IntentError(`--from ${from} has no manifest.json: point it at a kev bundle directory`);
+      throw new IntentError(
+        `--from ${from} has no manifest.json: point it at a kev bundle directory`
+      );
     }
     if (!(await kevRuntime.ready(fs))) {
-      throw new IntentError('the kev runtime is not installed: run `intent prepare` once, then retry');
+      throw new IntentError(
+        'the kev runtime is not installed: run `intent prepare` once, then retry'
+      );
     }
     let vision = /-vision$/.test(size || '');
-    const manifestPath = from ? `${from}/manifest.json` : `${(await kevRuntime.weightsStatus(fs, size)).base}/manifest.json`;
+    const manifestPath = from
+      ? `${from}/manifest.json`
+      : `${(await kevRuntime.weightsStatus(fs, size)).base}/manifest.json`;
     let manifest = null;
     try {
       manifest = JSON.parse(String(await fs.readFile(manifestPath)));
@@ -240,7 +256,16 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     const bundleName = (url || from || '').replace(/\/+$/, '').split('/').pop();
     const name = from ? `kev ${bundleName}` : `kev ${size}`;
     const key = from ? bundleName.replace(/^kev-/, '') : size;
-    return { name, key, kev: true, vision, intent: intentSettings, runtime, loadMs: Date.now() - started, ask: (body) => model.systemOne(body) };
+    return {
+      name,
+      key,
+      kev: true,
+      vision,
+      intent: intentSettings,
+      runtime,
+      loadMs: Date.now() - started,
+      ask: (body) => model.systemOne(body),
+    };
   }
 
   /**
@@ -262,9 +287,19 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
         );
       }
       const account = await cfAccount(flags, token);
-      s1 = { name: asked, key: asked, kev: false, vision: false, ask: system1.remoteSystemOne({ fetchFn: fetch, account, token, size: asked }) };
+      s1 = {
+        name: asked,
+        key: asked,
+        kev: false,
+        vision: false,
+        ask: system1.remoteSystemOne({ fetchFn: fetch, account, token, size: asked }),
+      };
     } else {
-      s1 = await kevModel(asked, flags.from || null, flags['require-gpu'] === true || flags['require-gpu'] === 'true');
+      s1 = await kevModel(
+        asked,
+        flags.from || null,
+        flags['require-gpu'] === true || flags['require-gpu'] === 'true'
+      );
     }
     const ask = s1.ask;
     s1.ask = (body) => timed('s1', ask)(body);
@@ -307,12 +342,13 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
 
   /**
    * One look at the tab. With controls: boxes, the viewport and the page scan
-   * (clickable divs, names for repeated controls), as webrunner orients.
+   * (clickable divs, names for repeated controls).
    */
   async function lookUntimed(tab, { controls, boxes = true }) {
     const obs = await observe(tab, null, { viewport: controls, boxes });
     // Inside a look: playwright-cli's snapshot against the page evals.
-    for (const c of obs.commands) tick(c.argv[0] === 'playwright-cli' ? 'look.snapshot' : 'look.eval', c.ms);
+    for (const c of obs.commands)
+      tick(c.argv[0] === 'playwright-cli' ? 'look.snapshot' : 'look.eval', c.ms);
     let states = [];
     const evalStarted = Date.now();
     const scanned = await js(tab, STATES_JS);
@@ -323,13 +359,19 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     } catch {
       states = [];
     }
-    const named = page.addRowContext(page.applyDisambiguation(obs.shot.elements, obs.disambiguation), obs.shot.texts);
+    const named = page.addRowContext(
+      page.applyDisambiguation(obs.shot.elements, obs.disambiguation),
+      obs.shot.texts
+    );
     const elements = lib.applyStates(named, states);
     return { ...obs, tab, shot: { ...obs.shot, elements } };
   }
 
   /** The page's text as segments, with the control states the snapshot leaves out. */
-  const segmentsOf = (obs) => [...lib.textSegments(obs.raw), ...lib.stateSegments(obs.shot.elements)];
+  const segmentsOf = (obs) => [
+    ...lib.textSegments(obs.raw),
+    ...lib.stateSegments(obs.shot.elements),
+  ];
 
   // ── answers ───────────────────────────────────────────────────────────
 
@@ -347,14 +389,21 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     const ranked = lib.lexicalRank(candidates, lib.actQuery(req.intent, parsed), { op: parsed.op });
     const shortlist = ranked.slice(0, SHORTLIST_CONTROLS).map((r) => r.candidate);
     if (!shortlist.length) throw new IntentError('this page has no controls to act on');
-    // kev answers webrunner's wording better; Clef was measured on the plain one.
-    const q = lib.choiceQuestion('ACT', req.intent, shortlist, obs.shot, { style: lib.questionStyle(s1) });
+    // The stock kev bundles answer the menu wording better; Clef was measured on the plain one.
+    const q = lib.choiceQuestion('ACT', req.intent, shortlist, obs.shot, {
+      style: lib.questionStyle(s1),
+    });
     const shot = s1.vision ? await markedShot(obs.tab, shortlist, obs.viewport) : null;
     const image = shot ? shot.image : null;
-    const res = await s1.ask({ state: q.state, questions: { action: q.question }, ...(image ? { image } : {}) });
+    const res = await s1.ask({
+      state: q.state,
+      questions: { action: q.question },
+      ...(image ? { image } : {}),
+    });
     // Answer ids may be click:eN / type:eN: name them by ref from here on.
     const probs = {};
-    for (const [id, p] of Object.entries(probabilitiesOf(res.answers.action))) probs[lib.refOf(id)] = p;
+    for (const [id, p] of Object.entries(probabilitiesOf(res.answers.action)))
+      probs[lib.refOf(id)] = p;
     const rule = policy(req, s1);
     const v = lib.verdict(probs, rule);
     note({
@@ -402,14 +451,18 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     const before = (state.candidates || []).find((c) => c.ref === ref);
     if (now && (!before || (now.role === before.role && now.label === before.label))) return now;
     if (before) {
-      const same = obs.shot.elements.filter((e) => e.role === before.role && e.label === before.label);
+      const same = obs.shot.elements.filter(
+        (e) => e.role === before.role && e.label === before.label
+      );
       const again = same[before.k ? before.k - 1 : 0];
       if (again) return again;
       // A label with a live count ("Refine catnip (12)") changes between
       // calls: the same control is the one whose label differs only in its
       // numbers, when exactly one such control is there.
       const series = (label) => String(label).replace(/\d[\d,.]*/g, '#');
-      const alike = obs.shot.elements.filter((e) => e.role === before.role && series(e.label) === series(before.label));
+      const alike = obs.shot.elements.filter(
+        (e) => e.role === before.role && series(e.label) === series(before.label)
+      );
       if (alike.length === 1) return alike[0];
     }
     throw new IntentError(`ref ${ref} is not on the page any more; ask again without --ref`);
@@ -441,7 +494,11 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
       await act(tab, { operation: 'TYPE_TEXT', element, text: parsed.value }, viewport, commands);
       return `typed "${parsed.value}" into ${named} (not a plain dropdown: pick the suggestion next)`;
     }
-    if ((op === 'check' || op === 'uncheck') && plain && /^(checkbox|radio|switch|menuitemcheckbox)$/.test(element.role)) {
+    if (
+      (op === 'check' || op === 'uncheck') &&
+      plain &&
+      /^(checkbox|radio|switch|menuitemcheckbox)$/.test(element.role)
+    ) {
       const r = await pw([op, element.token, `--tab=${tab}`]);
       if (r.exitCode === 0) return `${op}ed ${named}`;
     }
@@ -455,7 +512,10 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
 
   async function doScroll(tab, direction, viewport) {
     if (direction === 'top' || direction === 'bottom') {
-      await js(tab, `window.scrollTo(0, ${direction === 'top' ? 0 : 'document.documentElement.scrollHeight'})`);
+      await js(
+        tab,
+        `window.scrollTo(0, ${direction === 'top' ? 0 : 'document.documentElement.scrollHeight'})`
+      );
     } else {
       await act(tab, { operation: 'SCROLL', direction }, viewport, []);
     }
@@ -467,7 +527,9 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     const diff = page.diffShots(before.shot, { ...after.shot, viewport: after.viewport });
     const lines = lib.changeLines(diff).map((l) => `  ${l}`);
     if (diff && (diff.replaced || diff.url)) {
-      lines.push(...lib.gist(after.shot, after.viewport, lib.textSegments(after.raw)).map((l) => `  ${l}`));
+      lines.push(
+        ...lib.gist(after.shot, after.viewport, lib.textSegments(after.raw)).map((l) => `  ${l}`)
+      );
     }
     if (!lines.length) lines.push('  nothing visible changed');
     return { lines, diff };
@@ -480,10 +542,14 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     let tab = await pickTab(req, state);
     let fresh = false;
     if (nav.op === 'goto') {
-      if (!nav.url) throw new IntentError('NAVIGATE needs a URL, e.g. --intent "open https://example.com"');
+      if (!nav.url)
+        throw new IntentError('NAVIGATE needs a URL, e.g. --intent "open https://example.com"');
       if (tab) {
         const r = await pw(['goto', nav.url, `--tab=${tab}`]);
-        if (r.exitCode !== 0) throw new IntentError(`could not open ${nav.url}: ${(r.stderr || r.stdout).trim().slice(0, 200)}`);
+        if (r.exitCode !== 0)
+          throw new IntentError(
+            `could not open ${nav.url}: ${(r.stderr || r.stdout).trim().slice(0, 200)}`
+          );
       } else {
         fresh = true;
         tab = await openTab(nav.url);
@@ -508,7 +574,13 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
       `  title: ${after.shot.title || '(none)'}`,
       ...lib.gist(after.shot, after.viewport, lib.textSegments(after.raw)).map((l) => `  ${l}`),
     ];
-    return { tab, outcome: 'navigated', ...(fresh ? { knownTabs: null } : {}), lines, json: { url: after.shot.url, title: after.shot.title, tab } };
+    return {
+      tab,
+      outcome: 'navigated',
+      ...(fresh ? { knownTabs: null } : {}),
+      lines,
+      json: { url: after.shot.url, title: after.shot.title, tab },
+    };
   }
 
   /** The browser's tabs, by target id (playwright-cli tab-list). */
@@ -534,14 +606,20 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     const parsed = lib.parseAct(req.intent);
     const before = await look(tab, { controls: true });
     if (parsed.op === 'press' || parsed.op === 'scroll') {
-      const did =
-        parsed.op === 'press'
-          ? (await pressKey(tab, parsed.key), `pressed ${parsed.key}`)
-          : await doScroll(tab, parsed.direction, before.viewport);
+      let did;
+      if (parsed.op === 'press') {
+        await pressKey(tab, parsed.key);
+        did = `pressed ${parsed.key}`;
+      } else did = await doScroll(tab, parsed.direction, before.viewport);
       await settle(tab);
       const after = await look(tab, { controls: true, boxes: page.afterLookBoxes(before.shot) });
       const { lines } = afterLines(before, after);
-      return { tab, outcome: 'acted', lines: [`✓ ${did}`, ...lines], json: { did, url: after.shot.url } };
+      return {
+        tab,
+        outcome: 'acted',
+        lines: [`✓ ${did}`, ...lines],
+        json: { did, url: after.shot.url },
+      };
     }
     let element;
     let p = null;
@@ -556,14 +634,26 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
       p = v.p;
       const list = lib.candidateLines(v.ranked, byId, req.candidates || UNSURE_CANDIDATES);
       if (req.candidates) {
-        return { tab, outcome: 'candidates', remember: remember(before.shot.elements, shortlist.map((c) => c.ref)), lines: [`candidates for "${req.intent}":`, ...list], json: { candidates: list } };
+        return {
+          tab,
+          outcome: 'candidates',
+          remember: remember(
+            before.shot.elements,
+            shortlist.map((c) => c.ref)
+          ),
+          lines: [`candidates for "${req.intent}":`, ...list],
+          json: { candidates: list },
+        };
       }
       if (!v.sure) {
         return {
           tab,
           outcome: 'unsure',
           p,
-          remember: remember(before.shot.elements, shortlist.map((c) => c.ref)),
+          remember: remember(
+            before.shot.elements,
+            shortlist.map((c) => c.ref)
+          ),
           lines: [
             `? not sure which control you mean (best ${lib.pct(v.p)}); nothing done. Candidates:`,
             ...list,
@@ -576,7 +666,17 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     }
     const named = `${element.token} ${lib.describeControl({ element, rank: null, place: page.place(element, before.viewport) })}`;
     if (req.dryRun) {
-      return { tab, outcome: 'dry-run', p, remember: remember(before.shot.elements, candidates.map((c) => c.ref)), lines: [`would ${parsed.op} ${named}${p != null ? `  ${lib.pct(p)}` : ''}`], json: { ref: element.token } };
+      return {
+        tab,
+        outcome: 'dry-run',
+        p,
+        remember: remember(
+          before.shot.elements,
+          candidates.map((c) => c.ref)
+        ),
+        lines: [`would ${parsed.op} ${named}${p != null ? `  ${lib.pct(p)}` : ''}`],
+        json: { ref: element.token },
+      };
     }
     // A click may open a tab (a link with target=_blank): the tabs there were before it.
     const clicking = parsed.op === 'click';
@@ -604,18 +704,26 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
             `✓ ${did} [${element.token}]${p != null ? `  ${lib.pct(p)}` : ''}`,
             `  opened a new tab: ${there.shot.url}  (tab ${opened}; the next calls use it, the old tab ${tab} stays open)`,
             `  title: ${there.shot.title || '(none)'}`,
-            ...lib.gist(there.shot, there.viewport, lib.textSegments(there.raw)).map((l) => `  ${l}`),
+            ...lib
+              .gist(there.shot, there.viewport, lib.textSegments(there.raw))
+              .map((l) => `  ${l}`),
           ],
           json: { did, ref: element.token, url: there.shot.url, tab: opened, openedFrom: tab },
         };
       }
-      return { tab, outcome: 'acted', p, knownTabs: tabsAfter, lines: [`✓ ${did} [${element.token}]${p != null ? `  ${lib.pct(p)}` : ''}`, ...lines], json: { did, ref: element.token, url: after.shot.url } };
+      return {
+        tab,
+        outcome: 'acted',
+        p,
+        knownTabs: tabsAfter,
+        lines: [`✓ ${did} [${element.token}]${p != null ? `  ${lib.pct(p)}` : ''}`, ...lines],
+        json: { did, ref: element.token, url: after.shot.url },
+      };
     }
     return {
       tab,
       outcome: 'acted',
       p,
-
       lines: [`✓ ${did} [${element.token}]${p != null ? `  ${lib.pct(p)}` : ''}`, ...lines],
       json: { did, ref: element.token, url: after.shot.url },
     };
@@ -630,7 +738,9 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     if (lib.isList(req.intent)) {
       // A lexical read, no model: the matching links, buttons or rows.
       // Links with their addresses: the snapshot prints none.
-      const elements = lib.listWantsControls(req.intent) ? lib.applyLinks(obs.shot.elements, await linksOf(tab)) : obs.shot.elements;
+      const elements = lib.listWantsControls(req.intent)
+        ? lib.applyLinks(obs.shot.elements, await linksOf(tab))
+        : obs.shot.elements;
       const listed = lib.listLines(req.intent, elements, segments, req.candidates || LIST_MAX);
       return {
         tab,
@@ -646,15 +756,30 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
       };
     }
     const mode = RETRIEVE_MODES.includes(flags.retrieve) ? flags.retrieve : 'answer';
-    const budget = Math.min(Math.max(Number(flags['retrieve-budget']) || RETRIEVE_BUDGET, 200), 6000);
+    const budget = Math.min(
+      Math.max(Number(flags['retrieve-budget']) || RETRIEVE_BUDGET, 200),
+      6000
+    );
     if (mode === 'lexical') {
       // Ranked by the intent's words alone, no model: the best texts until
       // the budget is spent, in the order they stand on the page.
       const ranked = lib.lexicalRank(segments, req.intent).filter((r) => r.score > 0);
-      const lines = lib.budgetLines(ranked.map((r) => r.candidate), budget, req.intent);
-      return { tab, outcome: 'budget', lines: [`the page's best matching texts, in page order:`, ...lines], json: { texts: lines.map((l) => l.trim()) } };
+      const lines = lib.budgetLines(
+        ranked.map((r) => r.candidate),
+        budget,
+        req.intent
+      );
+      return {
+        tab,
+        outcome: 'budget',
+        lines: [`the page's best matching texts, in page order:`, ...lines],
+        json: { texts: lines.map((l) => l.trim()) },
+      };
     }
-    const shortlist = lib.lexicalRank(segments, req.intent).slice(0, SHORTLIST_TEXT).map((r) => r.candidate);
+    const shortlist = lib
+      .lexicalRank(segments, req.intent)
+      .slice(0, SHORTLIST_TEXT)
+      .map((r) => r.candidate);
     const q = lib.choiceQuestion('RETRIEVE', req.intent, shortlist, obs.shot);
     const res = await s1.ask({ state: q.state, questions: { action: q.question } });
     const rule = policy(req, s1, 'RETRIEVE');
@@ -677,12 +802,26 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     if (mode === 'budget' && !req.candidates) {
       // Ranked by System 1: the most likely texts until the budget is spent,
       // in page order, whatever its confidence in any single one.
-      const byRank = v.ranked.filter(([id]) => id !== lib.NONE && byId.has(id)).map(([id]) => byId.get(id));
+      const byRank = v.ranked
+        .filter(([id]) => id !== lib.NONE && byId.has(id))
+        .map(([id]) => byId.get(id));
       const lines = lib.budgetLines(byRank, budget, req.intent);
-      return { tab, outcome: 'budget', p: v.p, lines: [`the page's most likely texts, in page order (top ${lib.pct(v.p)}):`, ...lines], json: { texts: lines.map((l) => l.trim()) } };
+      return {
+        tab,
+        outcome: 'budget',
+        p: v.p,
+        lines: [`the page's most likely texts, in page order (top ${lib.pct(v.p)}):`, ...lines],
+        json: { texts: lines.map((l) => l.trim()) },
+      };
     }
     if (req.candidates) {
-      return { tab, outcome: 'candidates', p: v.p, lines: [`matches for "${req.intent}":`, ...list], json: { candidates: list } };
+      return {
+        tab,
+        outcome: 'candidates',
+        p: v.p,
+        lines: [`matches for "${req.intent}":`, ...list],
+        json: { candidates: list },
+      };
     }
     if (!v.sure) {
       // No single text answers it ("read the game status"): the closest
@@ -692,12 +831,22 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
         tab,
         outcome: 'region',
         p: v.p,
-        lines: [`the page's closest texts, in page order (no single one is sure; best ${lib.pct(v.p)}):`, ...region],
+        lines: [
+          `the page's closest texts, in page order (no single one is sure; best ${lib.pct(v.p)}):`,
+          ...region,
+        ],
         json: { region: region.map((l) => l.trim()) },
       };
     }
     const best = byId.get(v.pick);
-    const also = v.p < 0.9 ? lib.candidateLines(v.ranked.filter(([id]) => id !== v.pick), byId, 2) : [];
+    const also =
+      v.p < 0.9
+        ? lib.candidateLines(
+            v.ranked.filter(([id]) => id !== v.pick),
+            byId,
+            2
+          )
+        : [];
     return {
       tab,
       outcome: 'answered',
@@ -715,10 +864,16 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
   async function judgeClaim(req, tab, s1) {
     const obs = await look(tab, { controls: false });
     const segments = segmentsOf(obs);
-    const evidence = lib.lexicalRank(segments, req.intent).slice(0, EVIDENCE).map((r) => r.candidate);
+    const evidence = lib
+      .lexicalRank(segments, req.intent)
+      .slice(0, EVIDENCE)
+      .map((r) => r.candidate);
     const q = lib.claimQuestion(req.intent, evidence, obs.shot);
     const which = lib.choiceQuestion('VERIFY', req.intent, evidence, obs.shot).question;
-    const res = await s1.ask({ state: q.state, questions: { claim: q.question, ...(evidence.length ? { evidence: which } : {}) } });
+    const res = await s1.ask({
+      state: q.state,
+      questions: { claim: q.question, ...(evidence.length ? { evidence: which } : {}) },
+    });
     const p = Number(res.answers.claim.noul);
     const pick = res.answers.evidence ? res.answers.evidence.choice : null;
     note({
@@ -734,10 +889,17 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
       shot: obs.shot,
       raw: obs.raw,
     });
-    return { p, evidence: evidence.find((s) => s.id === pick) || evidence[0] || null, shot: obs.shot };
+    return {
+      p,
+      evidence: evidence.find((s) => s.id === pick) || evidence[0] || null,
+      shot: obs.shot,
+    };
   }
 
-  const evidenceLine = (e) => (e ? `  evidence: ${lib.describeText(e, 300)}${e.ref ? ` [${e.ref}]` : ''}` : '  evidence: none on the page');
+  const evidenceLine = (e) =>
+    e
+      ? `  evidence: ${lib.describeText(e, 300)}${e.ref ? ` [${e.ref}]` : ''}`
+      : '  evidence: none on the page';
 
   async function verify(req, state, s1) {
     const tab = await pickTab(req, state);
@@ -749,8 +911,17 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
       tab,
       outcome: word,
       p,
-      lines: [`${word} (${lib.pct(p)} yes)`, evidenceLine(evidence), `  page: ${shot.title || shot.url}`],
-      json: { answer: word, p, evidence: evidence ? evidence.text : null, ref: evidence ? evidence.ref : null },
+      lines: [
+        `${word} (${lib.pct(p)} yes)`,
+        evidenceLine(evidence),
+        `  page: ${shot.title || shot.url}`,
+      ],
+      json: {
+        answer: word,
+        p,
+        evidence: evidence ? evidence.text : null,
+        ref: evidence ? evidence.ref : null,
+      },
     };
   }
 
@@ -761,18 +932,27 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     const sure = policy(req, s1, 'VERIFY').sure;
     const started = Date.now();
     let last = null;
-    for (let round = 0; ; round++) {
+    for (;;) {
       last = await judgeClaim(req, tab, s1);
       const seconds = ((Date.now() - started) / 1000).toFixed(1);
       if (last.p >= sure) {
-        return { tab, outcome: 'yes', p: last.p, lines: [`✓ holds after ${seconds} s (${lib.pct(last.p)})`, evidenceLine(last.evidence)], json: { answer: 'yes', seconds: Number(seconds) } };
+        return {
+          tab,
+          outcome: 'yes',
+          p: last.p,
+          lines: [`✓ holds after ${seconds} s (${lib.pct(last.p)})`, evidenceLine(last.evidence)],
+          json: { answer: 'yes', seconds: Number(seconds) },
+        };
       }
       if (Date.now() - started >= limit) {
         return {
           tab,
           outcome: 'timeout',
           p: last.p,
-          lines: [`✗ still not after ${seconds} s (${lib.pct(last.p)} yes)`, evidenceLine(last.evidence)],
+          lines: [
+            `✗ still not after ${seconds} s (${lib.pct(last.p)} yes)`,
+            evidenceLine(last.evidence),
+          ],
           json: { answer: 'timeout', seconds: Number(seconds), p: last.p },
         };
       }
@@ -782,10 +962,6 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
 
   // ── one call ──────────────────────────────────────────────────────────
 
-  /**
-   * Handle one request; never exits the process (the daemon serves many).
-   * → { stdout, exitCode }
-   */
   // ── where a call's time goes ────────────────────────────────────────
   // Each phase's milliseconds, summed over the call (a look before and one
   // after an action count together), for the call log and the training log:
@@ -820,7 +996,9 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
   let seq = 0;
 
   const logDirOf = (flags) =>
-    typeof flags['log-dir'] === 'string' && flags['log-dir'] ? flags['log-dir'] : process.env.INTENT_LOG_DIR || null;
+    typeof flags['log-dir'] === 'string' && flags['log-dir']
+      ? flags['log-dir']
+      : process.env.INTENT_LOG_DIR || null;
 
   async function appendLog(dir, entry) {
     const path = `${dir}/decisions.jsonl`;
@@ -862,7 +1040,10 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
       if (kept < LOG_MAX_FILES) {
         if (d.raw) {
           const text = lib.redactSecrets(d.raw);
-          await fs.writeFile(`${dir}/${id}.snapshot.txt`, text.length > LOG_SNAPSHOT_MAX ? text.slice(0, LOG_SNAPSHOT_MAX) : text);
+          await fs.writeFile(
+            `${dir}/${id}.snapshot.txt`,
+            text.length > LOG_SNAPSHOT_MAX ? text.slice(0, LOG_SNAPSHOT_MAX) : text
+          );
           files.snapshot = `${id}.snapshot.txt`;
         }
         if (d.png) {
@@ -892,7 +1073,13 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
         phases,
         files,
       });
-      return { id, tab, kind: rest.kind, outcome: result ? result.outcome : 'error', at: Date.now() };
+      return {
+        id,
+        tab,
+        kind: rest.kind,
+        outcome: result ? result.outcome : 'error',
+        at: Date.now(),
+      };
     } catch {
       // The training log must never break a call.
       return state.lastDecision || null;
@@ -908,7 +1095,8 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     const started = Date.now();
     const r = await timed('act', pw)(req.argv);
     const tab = lib.rawTab(req.argv, r.stdout) || state.tab || null;
-    if (tab !== (state.tab || null)) await writeJson(STATE, { ...state, tab, knownTabs: null, at: Date.now() });
+    if (tab !== (state.tab || null))
+      await writeJson(STATE, { ...state, tab, knownTabs: null, at: Date.now() });
     await logCall({
       at: new Date().toISOString(),
       kind: 'RAW',
@@ -921,9 +1109,17 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
       phases,
       chars: String(r.stdout || '').length,
     });
-    return { stdout: String(r.stdout || '').trimEnd(), stderr: String(r.stderr || '').trimEnd(), exitCode: r.exitCode };
+    return {
+      stdout: String(r.stdout || '').trimEnd(),
+      stderr: String(r.stderr || '').trimEnd(),
+      exitCode: r.exitCode,
+    };
   }
 
+  /**
+   * Handle one request; never exits the process (the daemon serves many).
+   * → { stdout, stderr?, exitCode }
+   */
   async function handle(req, flags = {}) {
     const started = Date.now();
     const state = await readJson(STATE, {});
@@ -934,9 +1130,24 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
         return await raw(req, state);
       } catch (err) {
         if (err?.name === 'NodeExitError') throw err;
-        const message = err instanceof IntentError ? err.message : `playwright-cli ${req.argv[0]} failed: ${String(err?.message || err).slice(0, 400)}`;
-        await logCall({ at: new Date().toISOString(), kind: 'RAW', intent: req.intent, cmd: req.argv[0], ms: Date.now() - started, phases, error: message });
-        return { stdout: '', stderr: `intent: ${message}`, exitCode: err instanceof IntentError ? err.exitCode : 1 };
+        const message =
+          err instanceof IntentError
+            ? err.message
+            : `playwright-cli ${req.argv[0]} failed: ${String(err?.message || err).slice(0, 400)}`;
+        await logCall({
+          at: new Date().toISOString(),
+          kind: 'RAW',
+          intent: req.intent,
+          cmd: req.argv[0],
+          ms: Date.now() - started,
+          phases,
+          error: message,
+        });
+        return {
+          stdout: '',
+          stderr: `intent: ${message}`,
+          exitCode: err instanceof IntentError ? err.exitCode : 1,
+        };
       }
     }
     let result;
@@ -945,7 +1156,8 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
     try {
       if (req.full) {
         const tab = await pickTab(req, state);
-        if (!tab) throw new IntentError('no tab yet: start with --intent "open <url>", or pass --tab');
+        if (!tab)
+          throw new IntentError('no tab yet: start with --intent "open <url>", or pass --tab');
         const r = await pw(['snapshot', `--tab=${tab}`]);
         // Remember every ref it prints: a caller that picks one out of the
         // snapshot and passes it as --ref after the page has re-rendered
@@ -978,11 +1190,31 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
       }
     } catch (err) {
       if (err?.name === 'NodeExitError') throw err;
-      const message = err instanceof IntentError ? err.message : `${kind} failed: ${String(err?.message || err).slice(0, 400)}`;
-      await logCall({ at: new Date().toISOString(), kind, intent: req.intent, ms: Date.now() - started, phases, error: message });
-      const lastDecision = await logDecision(flags, { req, kind, result: null, started, state, error: message });
-      if (lastDecision !== (state.lastDecision || null)) await writeJson(STATE, { ...state, lastDecision });
-      const text = req.json ? JSON.stringify({ ok: false, kind, error: message }) : `intent: ${message}`;
+      const message =
+        err instanceof IntentError
+          ? err.message
+          : `${kind} failed: ${String(err?.message || err).slice(0, 400)}`;
+      await logCall({
+        at: new Date().toISOString(),
+        kind,
+        intent: req.intent,
+        ms: Date.now() - started,
+        phases,
+        error: message,
+      });
+      const lastDecision = await logDecision(flags, {
+        req,
+        kind,
+        result: null,
+        started,
+        state,
+        error: message,
+      });
+      if (lastDecision !== (state.lastDecision || null))
+        await writeJson(STATE, { ...state, lastDecision });
+      const text = req.json
+        ? JSON.stringify({ ok: false, kind, error: message })
+        : `intent: ${message}`;
       return { stdout: '', stderr: text, exitCode: err instanceof IntentError ? err.exitCode : 1 };
     }
     const lastDecision = await logDecision(flags, { req, kind, result, started, state });
@@ -996,7 +1228,14 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
       lastDecision,
     });
     const stdout = req.json
-      ? JSON.stringify({ ok: true, kind, outcome: result.outcome, p: result.p ?? null, tab: result.tab, ...result.json })
+      ? JSON.stringify({
+          ok: true,
+          kind,
+          outcome: result.outcome,
+          p: result.p ?? null,
+          tab: result.tab,
+          ...result.json,
+        })
       : result.lines.join('\n');
     await logCall({
       at: new Date().toISOString(),
@@ -1018,47 +1257,57 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
   async function serve(flags, { stop = () => false } = {}) {
     await fs.mkdir(QUEUE, { recursive: true });
     await fs.mkdir(ANSWERS, { recursive: true });
-    const beat = () => writeJson(BEAT, { at: Date.now(), model: flags.model || 'clef' }).catch(() => {});
+    const model = flags.from ? `from:${flags.from}` : flags.model || DEFAULT_MODEL;
+    const beat = () => writeJson(BEAT, { at: Date.now(), model }).catch(() => {});
     await beat();
     const beating = setInterval(beat, BEAT_MS);
     console.error(`intent serve: watching ${QUEUE}`);
     const failed = new Map();
-    while (!stop()) {
-      let names = [];
-      try {
-        names = (await fs.readDir(QUEUE)).filter((n) => /^[a-z0-9-]{1,40}\.json$/.test(n)).sort();
-      } catch {
-        names = [];
-      }
-      for (const name of names) {
-        const path = `${QUEUE}/${name}`;
-        let raw;
+    try {
+      while (!stop()) {
+        let names = [];
         try {
-          raw = JSON.parse(String(await fs.readFile(path)));
+          names = (await fs.readDir(QUEUE)).filter((n) => /^[a-z0-9-]{1,40}\.json$/.test(n)).sort();
         } catch {
-          // Half written: give it a few rounds, then drop it.
-          failed.set(name, (failed.get(name) || 0) + 1);
-          if (failed.get(name) > 20) await fs.rm(path).catch(() => {});
-          continue;
+          names = [];
         }
-        await fs.rm(path).catch(() => {});
-        const id = name.slice(0, -5);
-        const { req, error } = lib.cleanRequest(raw);
-        let answer;
-        if (error) answer = { stdout: '', stderr: `intent: ${error}`, exitCode: 1 };
-        else {
+        for (const name of names) {
+          const path = `${QUEUE}/${name}`;
+          let raw;
           try {
-            answer = await handle(req, flags);
-          } catch (err) {
-            answer = { stdout: '', stderr: `intent: ${String(err?.message || err).slice(0, 400)}`, exitCode: 1 };
+            raw = JSON.parse(String(await fs.readFile(path)));
+          } catch {
+            // Half written: give it a few rounds, then drop it.
+            failed.set(name, (failed.get(name) || 0) + 1);
+            if (failed.get(name) > 20) await fs.rm(path).catch(() => {});
+            continue;
           }
+          await fs.rm(path).catch(() => {});
+          const id = name.slice(0, -5);
+          const { req, error } = lib.cleanRequest(raw);
+          let answer;
+          if (error) answer = { stdout: '', stderr: `intent: ${error}`, exitCode: 1 };
+          else {
+            try {
+              answer = await handle(req, flags);
+            } catch (err) {
+              if (err?.name === 'NodeExitError') throw err;
+              answer = {
+                stdout: '',
+                stderr: `intent: ${String(err?.message || err).slice(0, 400)}`,
+                exitCode: 1,
+              };
+            }
+          }
+          await writeJson(`${ANSWERS}/${id}.json`, answer);
         }
-        await writeJson(`${ANSWERS}/${id}.json`, answer);
+        await sleep(POLL_MS);
       }
-      await sleep(POLL_MS);
+    } finally {
+      // A client trusts a fresh heartbeat: none may outlive the server.
+      clearInterval(beating);
+      await fs.rm(BEAT).catch(() => {});
     }
-    clearInterval(beating);
-    await fs.rm(BEAT).catch(() => {});
   }
 
   /** Hand the request to a running daemon. → its answer, or null when none runs. */
@@ -1079,7 +1328,9 @@ function createIntent({ exec, fs, browser, skill, requireBundle }) {
       }
       await sleep(POLL_MS);
     }
-    throw new IntentError('the intent daemon did not answer in time (is `intent serve` still running? jshd ls)');
+    throw new IntentError(
+      'the intent server did not answer in time: is `intent serve` still running? Pass --local to work without it.'
+    );
   }
 
   // warm: load System 1 now, so a missing model or a software GPU fails

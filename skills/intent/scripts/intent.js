@@ -89,7 +89,8 @@ const squash = (text) =>
 const URL_RE =
   /\b((?:https?:\/\/|www\.)[^\s"'<>]+|localhost(?::\d+)?(?:\/[^\s"'<>]*)?|[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|org|net|io|dev|app|edu|gov|de|uk|co|ai|info)(?:\/[^\s"'<>]*)?)/i;
 // Asking politely changes nothing: "could you tell me …" is "tell me …".
-const POLITE = /^(?:(?:please|kindly|now|ok(?:ay)?|then)[\s,]+)*(?:(?:could|can|would|will)\s+you\s+(?:please\s+)?)?/i;
+const POLITE =
+  /^(?:(?:please|kindly|now|ok(?:ay)?|then)[\s,]+)*(?:(?:could|can|would|will)\s+you\s+(?:please\s+)?)?/i;
 const ACT_VERB =
   /^(?:click|tap|press|hit|type|enter|fill|select|choose|pick|check|uncheck|tick|scroll|hover|open|close|dismiss|accept|reject|submit|search|add|remove|expand|collapse|toggle|sort|filter|upload|drag|play|pause|log\s+in|sign\s+in)\b/i;
 const CLICKING = /^(?:click|tap|press|select|choose|pick|hover|follow\s+the)\b/i;
@@ -136,12 +137,14 @@ function classify(intent) {
   if (URL_RE.test(text) && !TYPING.test(text) && !YESNO.test(text) && !CLICKING.test(text)) {
     return { kind: 'NAVIGATE', why: 'url' };
   }
-  if (RETRIEVE_ASK.test(text) || FIND_TEXT.test(text)) return { kind: 'RETRIEVE', why: 'asks for text' };
+  if (RETRIEVE_ASK.test(text) || FIND_TEXT.test(text))
+    return { kind: 'RETRIEVE', why: 'asks for text' };
   if (VERIFY_CLAIM.test(text)) return { kind: 'VERIFY', why: 'a claim to check' };
   if (YESNO.test(text)) return { kind: 'VERIFY', why: 'yes/no question' };
   if (WH.test(text) || RETRIEVE_LEAD.test(text)) return { kind: 'RETRIEVE', why: 'question' };
   // "can you click Load more?" is an action asked as a question.
-  if (/\?\s*$/.test(text) && !ACT_VERB.test(text)) return { kind: 'RETRIEVE', why: 'question mark' };
+  if (/\?\s*$/.test(text) && !ACT_VERB.test(text))
+    return { kind: 'RETRIEVE', why: 'question mark' };
   return { kind: 'ACT', why: 'imperative' };
 }
 
@@ -188,21 +191,26 @@ const KEYS = {
 const KEY_NAMES = Object.keys(KEYS)
   .sort((a, b) => b.length - a.length)
   .join('|');
-const PRESS_KEY = new RegExp(`^(?:press|hit|push|tap)\\s+(?:the\\s+)?(${KEY_NAMES})(?:\\s+key)?\\s*$`, 'i');
-const THEN_SUBMIT = new RegExp(
-  `\\s*(?:,\\s*)?(?:and|then|,)\\s+(?:then\\s+)?(?:press|hit)\\s+(?:the\\s+)?(?:enter|return)(?:\\s+key)?\\s*$|\\s*(?:,\\s*)?(?:and|then)\\s+submit(?:\\s+it)?\\s*$`,
+const PRESS_KEY = new RegExp(
+  `^(?:press|hit|push|tap)\\s+(?:the\\s+)?(${KEY_NAMES})(?:\\s+key)?\\s*$`,
   'i'
 );
+const THEN_SUBMIT =
+  /\s*(?:,\s*)?(?:and|then|,)\s+(?:then\s+)?(?:press|hit)\s+(?:the\s+)?(?:enter|return)(?:\s+key)?\s*$|\s*(?:,\s*)?(?:and|then)\s+submit(?:\s+it)?\s*$/i;
 
 const QUOTED = /"([^"]+)"|“([^”]+)”|'([^']+)'(?!\w)|‘([^’]+)’|`([^`]+)`/g;
-const quotedValues = (text) => [...String(text).matchAll(QUOTED)].map((m) => m[1] ?? m[2] ?? m[3] ?? m[4] ?? m[5]);
+const quotedValues = (text) =>
+  [...String(text).matchAll(QUOTED)].map((m) => m[1] ?? m[2] ?? m[3] ?? m[4] ?? m[5]);
 
 // Unquoted values, in the patterns callers use. Each yields [value, rest].
 const VALUE_PATTERNS = [
   // fill (out) the name field with Lars Trieloff
   [/^(?:fill|complete)(?:\s+(?:out|in))?\s+(.+?)\s+with\s+(.+)$/i, (m) => [m[2], m[1]]],
   // type/enter/write Lars Trieloff into/in the name field
-  [/^(?:type|enter|write|input|put|insert)\s+(.+?)\s+(?:into|in|in\s+to|as)\s+(.+)$/i, (m) => [m[1], m[2]]],
+  [
+    /^(?:type|enter|write|input|put|insert)\s+(.+?)\s+(?:into|in|in\s+to|as)\s+(.+)$/i,
+    (m) => [m[1], m[2]],
+  ],
   // set the quantity to 3 / change the name to Ada
   [/^(?:set|change|update)\s+(.+?)\s+to\s+(.+)$/i, (m) => [m[2], m[1]]],
   // select/choose/pick Medium from/in the size dropdown
@@ -230,7 +238,10 @@ function parseAct(intent) {
   }
   const press = PRESS_KEY.exec(text);
   if (press) return { ...out, op: 'press', key: KEYS[press[1].toLowerCase()], target: '' };
-  const scroll = /^scroll(?:\s+(?:the\s+page\s+)?)?(?:\s+(up|down|to\s+the\s+(top|bottom)|to\s+(top|bottom)))?\s*$/i.exec(text);
+  const scroll =
+    /^scroll(?:\s+(?:the\s+page\s+)?)?(?:\s+(up|down|to\s+the\s+(top|bottom)|to\s+(top|bottom)))?\s*$/i.exec(
+      text
+    );
   if (scroll) {
     const where = (scroll[1] || 'down').toLowerCase();
     const direction = /top/.test(where) ? 'top' : /bottom/.test(where) ? 'bottom' : where;
@@ -239,15 +250,21 @@ function parseAct(intent) {
   const scrollTo = /^scroll\s+(?:down\s+|up\s+)?(?:to|until)\s+(.+)$/i.exec(text);
   if (scrollTo) return { ...out, op: 'hover', target: scrollTo[1] };
   if (/^(?:hover|mouse\s*over)\b/i.test(text)) {
-    return { ...out, op: 'hover', target: text.replace(/^(?:hover|mouse\s*over)(?:\s+(?:over|on))?\s+/i, '') };
+    return {
+      ...out,
+      op: 'hover',
+      target: text.replace(/^(?:hover|mouse\s*over)(?:\s+(?:over|on))?\s+/i, ''),
+    };
   }
   if (/^(?:uncheck|untick|deselect|clear\s+the\s+checkbox|turn\s+off|disable)\b/i.test(text)) {
     return { ...out, op: 'uncheck', target: text };
   }
   // "check the terms box" is an action; "check that …" was VERIFY already.
-  if (/^(?:check|tick|turn\s+on|enable)\b/i.test(text)) return { ...out, op: 'check', target: text };
+  if (/^(?:check|tick|turn\s+on|enable)\b/i.test(text))
+    return { ...out, op: 'check', target: text };
   const quoted = quotedValues(text);
-  const typing = /^(?:type|enter|write|input|put|insert|fill|complete|set|change|update|search)\b/i.test(text);
+  const typing =
+    /^(?:type|enter|write|input|put|insert|fill|complete|set|change|update|search)\b/i.test(text);
   const selecting = /^(?:select|choose|pick)\b/i.test(text);
   for (const [re, take] of VALUE_PATTERNS) {
     const m = re.exec(text);
@@ -339,25 +356,27 @@ function controlCandidates(elements, viewport) {
   const total = new Map();
   for (const e of elements) total.set(series(e.label), (total.get(series(e.label)) || 0) + 1);
   const seen = new Map();
-  return elements
-    // A clickable div the page scan found with a huge text is a panel, not a
-    // control. A real link or button keeps its whole name for matching,
-    // however long: a product card is a link named by all of its text
-    // (BU Bench V2.1, 2026-10-04); it is shown cut short (page.shown).
-    .filter((e) => !(e.synthetic && e.label.length > 200))
-    .map((e) => {
-      const key = series(e.label);
-      const k = (seen.get(key) || 0) + 1;
-      seen.set(key, k);
-      const n = total.get(key);
-      return {
-        type: 'control',
-        element: e,
-        ref: e.token,
-        rank: n > 1 ? { k, n } : null,
-        place: page.place(e, viewport),
-      };
-    });
+  return (
+    elements
+      // A clickable div the page scan found with a huge text is a panel, not a
+      // control. A real link or button keeps its whole name for matching,
+      // however long: a product card is a link named by all of its text
+      // (BU Bench V2.1, 2026-10-04); it is shown cut short (page.shown).
+      .filter((e) => !(e.synthetic && e.label.length > 200))
+      .map((e) => {
+        const key = series(e.label);
+        const k = (seen.get(key) || 0) + 1;
+        seen.set(key, k);
+        const n = total.get(key);
+        return {
+          type: 'control',
+          element: e,
+          ref: e.token,
+          rank: n > 1 ? { k, n } : null,
+          place: page.place(e, viewport),
+        };
+      })
+  );
 }
 
 /** How a control candidate reads to the model and to the caller. */
@@ -403,13 +422,6 @@ function applyStates(elements, states) {
   });
 }
 
-/** Control states as text segments, for RETRIEVE and VERIFY ("is Medium selected?"). */
-/**
- * The snapshot's links with their addresses (page-scan.js links): each link
- * takes the first anchor still unused, in page order, whose name matches
- * its label (nameScore 2+: equal, or one containing the other). Links come
- * in the same order in both, so a repeated name pairs up in turn.
- */
 /** The target ids in `playwright-cli tab-list` output ("[ID] url "title"" per line). */
 const tabIds = (text) => [...String(text).matchAll(/^\[([0-9A-Za-z]+)\]\s/gm)].map((m) => m[1]);
 
@@ -425,9 +437,11 @@ function openedTab(before, after) {
 const GENERIC_WORDS = new Set(
   [
     ...Object.keys(ORDINALS),
-    ...('button btn link hyperlink anchor field box input textbox textfield textarea dropdown combobox checkbox ' +
+    ...(
+      'button btn link hyperlink anchor field box input textbox textfield textarea dropdown combobox checkbox ' +
       'tickbox radio option item entry cell node card product listing result title heading image photo picture icon ' +
-      'thumbnail row one last next previous again label text tile post article story control element thing').split(' '),
+      'thumbnail row one last next previous again label text tile post article story control element thing'
+    ).split(' '),
   ].map(stem)
 );
 
@@ -443,7 +457,12 @@ const GENERIC_WORDS = new Set(
 function refConflict(intent, element, elements = []) {
   const parsed = parseAct(intent);
   if (parsed.op === 'press' || parsed.op === 'scroll') return null;
-  const named = parsed.op === 'type' ? parsed.target || '' : parsed.value ? `${parsed.target || ''} ${parsed.value}` : intent;
+  const named =
+    parsed.op === 'type'
+      ? parsed.target || ''
+      : parsed.value
+        ? `${parsed.target || ''} ${parsed.value}`
+        : intent;
   const words = [...new Set(contentWords(named).filter((w) => !GENERIC_WORDS.has(w)))];
   if (!words.length) return null;
   // An unnamed control is told apart only by its row context, which is a
@@ -454,7 +473,11 @@ function refConflict(intent, element, elements = []) {
   const nameOf = (e) => (e.label === e.role ? '' : e.label);
   const hits = (e, withContext) => {
     const have = tokens(`${nameOf(e)} ${withContext ? `${e.context || ''} ${e.value || ''}` : ''}`);
-    return words.some((w) => have.some((t) => t === w || (t.length >= 4 && w.length >= 4 && (t.startsWith(w) || w.startsWith(t)))));
+    return words.some((w) =>
+      have.some(
+        (t) => t === w || (t.length >= 4 && w.length >= 4 && (t.startsWith(w) || w.startsWith(t)))
+      )
+    );
   };
   if (hits(element, true)) return null;
   // Another control must match by its own name, not its row context.
@@ -465,6 +488,12 @@ function refConflict(intent, element, elements = []) {
 
 const LINK_WINDOW = 60;
 
+/**
+ * The snapshot's links with their addresses (page-scan.js links): each link
+ * takes the first anchor still unused, in page order, whose name matches
+ * its label (nameScore 2+: equal, or one containing the other). Links come
+ * in the same order in both, so a repeated name pairs up in turn.
+ */
 function applyLinks(elements, anchors) {
   if (!anchors || !anchors.length) return elements;
   const used = new Set();
@@ -483,6 +512,7 @@ function applyLinks(elements, anchors) {
   });
 }
 
+/** Control states as text segments, for RETRIEVE and VERIFY ("is Medium selected?"). */
 function stateSegments(elements) {
   return elements
     .filter((e) => e.state)
@@ -519,8 +549,20 @@ function refMemory(elements) {
 function fitsOp(c, op) {
   const role = c.element.role;
   if (op === 'type') return c.element.kind === 'fill';
-  if (op === 'select') return role === 'combobox' || role === 'listbox' || role === 'option' || role === 'radio' || role === 'menuitem' || role === 'button' || role === 'link';
-  if (op === 'check' || op === 'uncheck') return role === 'checkbox' || role === 'radio' || role === 'switch' || role === 'menuitemcheckbox';
+  if (op === 'select')
+    return (
+      role === 'combobox' ||
+      role === 'listbox' ||
+      role === 'option' ||
+      role === 'radio' ||
+      role === 'menuitem' ||
+      role === 'button' ||
+      role === 'link'
+    );
+  if (op === 'check' || op === 'uncheck')
+    return (
+      role === 'checkbox' || role === 'radio' || role === 'switch' || role === 'menuitemcheckbox'
+    );
   return true;
 }
 
@@ -592,7 +634,7 @@ const TEXTY = new Set([
   'spinbutton',
 ]);
 const MAX_SEGMENT = 400;
-const unescape = (v) => v.replace(/\\([\\n"])/g, (_, ch) => (ch === 'n' ? '\n' : ch));
+const unescapeName = (v) => v.replace(/\\([\\n"])/g, (_, ch) => (ch === 'n' ? '\n' : ch));
 
 /** The snapshot as a tree: { role, name, value, ref, box, children, line }. */
 function snapshotTree(raw) {
@@ -609,8 +651,8 @@ function snapshotTree(raw) {
     const box = /\[box=(-?\d+),(-?\d+),(\d+),(\d+)\]/.exec(attrs);
     const node = {
       role: m[2].toLowerCase(),
-      name: m[3] ? unescape(m[3]) : '',
-      value: m[5] ? unescape(m[5]) : '',
+      name: m[3] ? unescapeName(m[3]) : '',
+      value: m[5] ? unescapeName(m[5]) : '',
       ref: ref ? ref[1] : null,
       box: box ? box.slice(1, 5).map(Number) : null,
       children: [],
@@ -666,7 +708,16 @@ function splitLong(text, max = MAX_SEGMENT) {
   return out;
 }
 
-const LANDMARK = new Set(['banner', 'navigation', 'contentinfo', 'main', 'search', 'form', 'dialog', 'complementary']);
+const LANDMARK = new Set([
+  'banner',
+  'navigation',
+  'contentinfo',
+  'main',
+  'search',
+  'form',
+  'dialog',
+  'complementary',
+]);
 
 /**
  * The page's text as segments a question can be answered from: the largest
@@ -817,7 +868,8 @@ function lexicalRank(candidates, query, opts = {}) {
     if (CHROME.has(region) && !mentionsChrome) score -= 0.5;
     // Typing needs a field; a select or check on another kind of control is
     // still possible (a custom dropdown's option, a div styled as a box).
-    if (opts.op && c.type === 'control' && !fitsOp(c, opts.op)) score -= opts.op === 'type' ? 100 : 1.5;
+    if (opts.op && c.type === 'control' && !fitsOp(c, opts.op))
+      score -= opts.op === 'type' ? 100 : 1.5;
     return { candidate: c, score, index };
   });
   return scored.sort((a, b) => b.score - a.score || a.index - b.index);
@@ -834,12 +886,18 @@ const NONE = 'NONE';
  */
 function choiceQuestion(kind, intent, shortlist, shot, opts = {}) {
   if (kind === 'ACT' && opts.style === 'menu') return menuQuestion(intent, shortlist, shot);
-  const state = [`Intent: ${squash(intent)}`, `Page: ${shot.title || ''} (${shot.url || ''})`].join('\n');
+  const state = [`Intent: ${squash(intent)}`, `Page: ${shot.title || ''} (${shot.url || ''})`].join(
+    '\n'
+  );
   const criteria = {};
   for (const c of shortlist) {
-    criteria[c.type === 'control' ? c.ref : c.id] = c.type === 'control' ? describeControl(c) : describeText(c);
+    criteria[c.type === 'control' ? c.ref : c.id] =
+      c.type === 'control' ? describeControl(c) : describeText(c);
   }
-  criteria[NONE] = kind === 'ACT' ? 'none of these controls is the one the intent means' : 'none of these texts answers it';
+  criteria[NONE] =
+    kind === 'ACT'
+      ? 'none of these controls is the one the intent means'
+      : 'none of these texts answers it';
   const instructions =
     kind === 'ACT'
       ? 'Which control does the intent mean?'
@@ -850,7 +908,7 @@ function choiceQuestion(kind, intent, shortlist, shot, opts = {}) {
 }
 
 /**
- * The ACT question as meep-meep's webrunner asked kev (#423): the intent as
+ * The ACT question in the wording kev was trained on (webrunner's): the intent as
  * the goal, the shortlist as a Controls list in the state, and one action
  * per control (click:eN, type:eN). On 400 Mind2Web intents kev-4b-vision
  * picked right 88.6% of the time this way and 83.2% with the plain
@@ -860,7 +918,8 @@ function choiceQuestion(kind, intent, shortlist, shot, opts = {}) {
 function menuQuestion(intent, shortlist, shot) {
   const id = (c) => `${c.element.kind === 'fill' ? 'type' : 'click'}:${c.ref}`;
   const criteria = {};
-  for (const c of shortlist) criteria[id(c)] = `${c.element.kind === 'fill' ? 'type into' : 'click'} ${describeControl(c)}`;
+  for (const c of shortlist)
+    criteria[id(c)] = `${c.element.kind === 'fill' ? 'type into' : 'click'} ${describeControl(c)}`;
   criteria[NONE] = 'none of these controls is the one the intent means';
   const state = [
     `Goal: ${squash(intent)}`,
@@ -868,7 +927,14 @@ function menuQuestion(intent, shortlist, shot) {
     'Controls:',
     ...shortlist.map((c) => `  [${c.ref}] ${describeControl(c)}`),
   ].join('\n');
-  return { state, question: { type: 'choice', instructions: 'Which single action advances the goal next?', criteria } };
+  return {
+    state,
+    question: {
+      type: 'choice',
+      instructions: 'Which single action advances the goal next?',
+      criteria,
+    },
+  };
 }
 
 /** The ref an answer id names: e12 or click:e12. */
@@ -892,7 +958,7 @@ function claimQuestion(intent, evidence, shot) {
 
 // Act or answer when System 1's top choice is at least this likely. Each
 // System 1 has its own: measured on 400 Mind2Web steps (2026-10-02/03, see
-// SKILL.md), at the threshold where about 3% of intents end in a wrong action.
+// references/system1.md), where wrong actions stay at or under 5%.
 const SURE = 0.7;
 const SURE_BY_MODEL = {
   clef: 0.7, // acts on 74.5% of intents, 3.3% wrong
@@ -903,8 +969,8 @@ const SURE_BY_MODEL = {
   '4b-vision': 0.6,
   '0.8b-vision-wr1': 0.7, // the webrunner fine-tune: 74.5%, 5% wrong
   '0.8b-vision': 0.4, // under-confident: 49%, 2.8% wrong
-  // A fine-tune on intent-shaped questions (kev-webrunner, local only until
-  // published): 85.5% acted, 3.5% wrong at 0.7 (2026-10-03).
+  // A fine-tune on intent-shaped questions: 85.5% acted, 3.5% wrong at 0.7
+  // (2026-10-03). Published bundles declare their own thresholds (bundleSettings).
   '0.8b-vision-wr2-intent': 0.7,
   kev: 0.5, // any other bundle
 };
@@ -923,7 +989,8 @@ const QUESTION_STYLE = { '0.8b-vision-wr2-intent': 'plain' };
  * the name maps decide as before.
  */
 function bundleSettings(manifest) {
-  const m = manifest && typeof manifest.intent === 'object' && manifest.intent ? manifest.intent : {};
+  const m =
+    manifest && typeof manifest.intent === 'object' && manifest.intent ? manifest.intent : {};
   const out = {};
   if (m.question === 'plain' || m.question === 'menu') out.question = m.question;
   for (const k of ['act', 'retrieve', 'verify']) {
@@ -967,7 +1034,12 @@ function verdict(probabilities, opts = {}) {
   const pool = opts.ignoreNone ? ranked.filter(([id]) => id !== NONE) : ranked;
   const [top] = pool;
   if (!top) return { pick: null, p: 0, sure: false, ranked };
-  return { pick: top[0] === NONE ? null : top[0], p: top[1], sure: top[0] !== NONE && top[1] >= sure, ranked };
+  return {
+    pick: top[0] === NONE ? null : top[0],
+    p: top[1],
+    sure: top[0] !== NONE && top[1] >= sure,
+    ranked,
+  };
 }
 
 // ── output ────────────────────────────────────────────────────────────
@@ -980,18 +1052,28 @@ function changeLines(diff, max = 6) {
   const lines = [];
   if (diff.url) lines.push(`url: ${diff.url.to}`);
   if (diff.title) lines.push(`title: ${diff.title.to}`);
-  for (const c of diff.changed.slice(0, 3)) lines.push(`${c.role} "${page.shown(c.label)}" now "${page.shown(c.to)}"`);
-  if (diff.scrolled) lines.push(`scrolled ${diff.scrolled > 0 ? 'down' : 'up'} ${Math.abs(diff.scrolled)} px`);
-  const said = diff.texts.filter((t) => ['alert', 'status', 'heading'].includes(t.role)).slice(0, 2);
-  for (const t of said) lines.push(`${t.role === 'heading' ? 'heading' : 'message'}: "${page.shown(t.text)}"`);
+  for (const c of diff.changed.slice(0, 3))
+    lines.push(`${c.role} "${page.shown(c.label)}" now "${page.shown(c.to)}"`);
+  if (diff.scrolled)
+    lines.push(`scrolled ${diff.scrolled > 0 ? 'down' : 'up'} ${Math.abs(diff.scrolled)} px`);
+  const said = diff.texts
+    .filter((t) => ['alert', 'status', 'heading'].includes(t.role))
+    .slice(0, 2);
+  for (const t of said)
+    lines.push(`${t.role === 'heading' ? 'heading' : 'message'}: "${page.shown(t.text)}"`);
   if (diff.replaced) {
     lines.push(`new page: ${diff.added.length} new controls, ${diff.removed.length} gone`);
   } else {
     if (diff.added.length) {
-      const shown = diff.added.slice(0, 5).map((e) => `${e.token} ${e.role} "${page.shown(e.label)}"`);
-      lines.push(`appeared: ${shown.join(', ')}${diff.added.length > 5 ? `, +${diff.added.length - 5} more` : ''}`);
+      const shown = diff.added
+        .slice(0, 5)
+        .map((e) => `${e.token} ${e.role} "${page.shown(e.label)}"`);
+      lines.push(
+        `appeared: ${shown.join(', ')}${diff.added.length > 5 ? `, +${diff.added.length - 5} more` : ''}`
+      );
     }
-    if (diff.removed.length) lines.push(`gone: ${diff.removed.length} control${diff.removed.length === 1 ? '' : 's'}`);
+    if (diff.removed.length)
+      lines.push(`gone: ${diff.removed.length} control${diff.removed.length === 1 ? '' : 's'}`);
   }
   return lines.slice(0, max);
 }
@@ -1003,18 +1085,32 @@ function changeLines(diff, max = 6) {
  */
 function gist(shot, viewport, segments, max = 8) {
   const lines = [];
-  const heads = (segments || []).filter((s) => s.role === 'heading' && !CHROME.has(s.region)).slice(0, 4);
-  if (heads.length) lines.push(`headings: ${heads.map((s) => `"${page.shown(s.text)}"`).join(', ')}`);
+  const heads = (segments || [])
+    .filter((s) => s.role === 'heading' && !CHROME.has(s.region))
+    .slice(0, 4);
+  if (heads.length)
+    lines.push(`headings: ${heads.map((s) => `"${page.shown(s.text)}"`).join(', ')}`);
   const fields = shot.elements.filter((e) => e.kind === 'fill').slice(0, 5);
   if (fields.length) {
-    lines.push(`fields: ${fields.map((e) => `${e.token} ${e.role} "${page.shown(e.label)}"${e.value ? ` = "${page.shown(e.value)}"` : ''}`).join(', ')}`);
+    lines.push(
+      `fields: ${fields.map((e) => `${e.token} ${e.role} "${page.shown(e.label)}"${e.value ? ` = "${page.shown(e.value)}"` : ''}`).join(', ')}`
+    );
   }
   const buttons = shot.elements
-    .filter((e) => e.kind === 'click' && e.role === 'button' && page.place(e, viewport) !== 'hidden' && e.label.length <= 40)
+    .filter(
+      (e) =>
+        e.kind === 'click' &&
+        e.role === 'button' &&
+        page.place(e, viewport) !== 'hidden' &&
+        e.label.length <= 40
+    )
     .slice(0, 6);
-  if (buttons.length) lines.push(`buttons: ${buttons.map((e) => `${e.token} "${e.label}"`).join(', ')}`);
+  if (buttons.length)
+    lines.push(`buttons: ${buttons.map((e) => `${e.token} "${e.label}"`).join(', ')}`);
   const links = shot.elements.filter((e) => e.role === 'link').length;
-  lines.push(`${shot.elements.length} controls (${links} links)${viewport ? `, page ${Math.round((viewport.scrollHeight || 0) / Math.max(1, viewport.height))} screens tall` : ''}`);
+  lines.push(
+    `${shot.elements.length} controls (${links} links)${viewport ? `, page ${Math.round((viewport.scrollHeight || 0) / Math.max(1, viewport.height))} screens tall` : ''}`
+  );
   return lines.slice(0, max);
 }
 
@@ -1063,10 +1159,12 @@ function snippet(text, query, max = 240) {
 const LIST_RE = /^(?:please\s+)?(?:list|show\s+me\s+all|enumerate)\b/i;
 // "What is the URL of the X link?": the links that match, with their addresses.
 const URL_ASK = /\b(?:urls?|hrefs?|link\s+address(?:es)?|web\s+address(?:es)?)\b/i;
-const LIST_CONTROLS = /\b(links?|buttons?|controls?|options?|fields?|tabs?|checkboxes|menu\s+items?)\b/i;
+const LIST_CONTROLS =
+  /\b(links?|buttons?|controls?|options?|fields?|tabs?|checkboxes|menu\s+items?)\b/i;
 const isList = (intent) => LIST_RE.test(squash(intent)) || URL_ASK.test(squash(intent));
 /** A list of controls needs the page scan too: games build buttons from divs. */
-const listWantsControls = (intent) => isList(intent) && (LIST_CONTROLS.test(squash(intent)) || URL_ASK.test(squash(intent)));
+const listWantsControls = (intent) =>
+  isList(intent) && (LIST_CONTROLS.test(squash(intent)) || URL_ASK.test(squash(intent)));
 
 /**
  * The listing for a "list … about X" intent: up to n matches in page order,
@@ -1094,11 +1192,18 @@ function listLines(intent, elements, segments, n = 20) {
     : wantsControls
       ? text.slice(text.search(LIST_CONTROLS) + kind.length)
       : text.replace(LIST_RE, '');
-  const words = contentWords(about).filter((w) => !['list', 'row', 'item', 'all', 'mention', 'about', 'page', 'what', 'which', 'link'].includes(w));
+  const words = contentWords(about).filter(
+    (w) =>
+      !['list', 'row', 'item', 'all', 'mention', 'about', 'page', 'what', 'which', 'link'].includes(
+        w
+      )
+  );
   const pool = wantsControls ? controlCandidates(elements.filter(roleOk), null) : segments;
-  const ranked = words.length ? lexicalRank(pool, words.join(' ')).filter((r) => r.score > 0.5) : pool.map((c, index) => ({ candidate: c, index }));
+  const ranked = words.length
+    ? lexicalRank(pool, words.join(' ')).filter((r) => r.score > 0.5)
+    : pool.map((c, index) => ({ candidate: c, index }));
   const picked = ranked.slice(0, n).map((r) => r.candidate);
-  const order = (c) => (c.type === 'control' ? c.element.seq ?? 0 : c.line ?? 0);
+  const order = (c) => (c.type === 'control' ? (c.element.seq ?? 0) : (c.line ?? 0));
   picked.sort((a, b) => order(a) - order(b));
   const lines = picked.map((c) =>
     c.type === 'control'
@@ -1163,7 +1268,10 @@ function candidateLines(ranked, byId, max = 5) {
 function redactSecrets(text) {
   return String(text ?? '')
     .replace(/\/(join|controller|webhook)\/[^\s"'/?]+/g, '/$1/<token>')
-    .replace(/([?&](?:token|access_token|id_token|key|api_key|apikey|sig|signature|auth|code|session|secret|password)=)[^&\s"'#]+/gi, '$1<redacted>');
+    .replace(
+      /([?&](?:token|access_token|id_token|key|api_key|apikey|sig|signature|auth|code|session|secret|password)=)[^&\s"'#]+/gi,
+      '$1<redacted>'
+    );
 }
 
 const LOG_LABEL = 160;
@@ -1190,7 +1298,13 @@ function logShortlist(shortlist) {
           ...(c.element.box ? { box: c.element.box } : {}),
           describe: cap(describeControl(c), 300),
         }
-      : { id: c.id, ref: c.ref || null, role: c.role, text: cap(c.text, LOG_TEXT), line: c.line ?? null }
+      : {
+          id: c.id,
+          ref: c.ref || null,
+          role: c.role,
+          text: cap(c.text, LOG_TEXT),
+          line: c.line ?? null,
+        }
   );
 }
 
@@ -1228,7 +1342,9 @@ function bundleCacheDir(url) {
     return null;
   }
   if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
-  const name = (u.pathname.split('/').filter(Boolean).pop() || 'bundle').replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 60);
+  const name = (u.pathname.split('/').filter(Boolean).pop() || 'bundle')
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .slice(0, 60);
   let h = 0x811c9dc5;
   for (const ch of u.href.replace(/\/+$/, '')) {
     h ^= ch.charCodeAt(0);
@@ -1259,31 +1375,53 @@ const PW_COMMANDS = new Set(
     'mousemove mousedown mouseup mousewheel drop route route-list unroute generate-locator highlight'
   ).split(' ')
 );
-// Arguments that are files: flags anywhere, and these commands' positionals.
-const PW_PATH_FLAG = /^--(filename|output|path)=(.*)$/s;
-const PW_PATH_ARGS = { upload: 'all', 'eval-file': 1, 'state-load': 1, 'state-save': 1 };
+// Arguments that are files: these flags anywhere (a cookie's --path is a URL
+// path), and these commands' positionals.
+const PW_PATH_FLAGS = new Set(['filename', 'output', 'path']);
+const PW_PATH_ARGS = new Set(['upload', 'eval-file', 'state-load', 'state-save']);
+// playwright-cli's flag parser reads `--filename x` as `--filename=x`: a
+// value flag takes the next word. These take an id, never a file.
+const PW_ID_FLAGS = new Set(['tab', 'frame']);
 // The server runs with more rights than the scoop that asks: a file it
 // reads or writes for a request stays where a scoop may read and write.
 const PW_PATH_ROOTS = ['/tmp/', '/shared/', '/scoops/'];
 const MAX_PW_ARGS = 64;
 const MAX_PW_ARG = 4000;
 
-/** Where an argument names a file: [index, value, prefix] for each. */
+/**
+ * Where an argument names a file: [index, value, prefix] for each. Erring
+ * on the side of a file: the word after any other flag counts as a
+ * positional, and every positional of a file-taking command as a file.
+ */
 function pwPathArgs(sub, args) {
   const out = [];
-  const positional = args.map((a, i) => [a, i]).filter(([a]) => !a.startsWith('--'));
-  const which = PW_PATH_ARGS[sub];
-  if (which === 'all') {
-    // upload [ref] <file>…: a ref first is not a file.
-    for (const [a, i] of positional) if (!REF_RE.test(a)) out.push([i, a, '']);
-  } else if (which) {
-    const hit = positional[which - 1];
-    if (hit) out.push([hit[1], hit[0], '']);
+  const positional = [];
+  const pathFlag = (name) =>
+    PW_PATH_FLAGS.has(name) && !(name === 'path' && sub.startsWith('cookie-'));
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--') {
+      for (let j = i + 1; j < args.length; j++) positional.push([args[j], j]);
+      break;
+    }
+    const m = /^--([^=]+)(?:=(.*))?$/s.exec(a);
+    if (!m) {
+      if (!a.startsWith('-') || a === '-') positional.push([a, i]);
+      continue;
+    }
+    if (m[2] !== undefined) {
+      if (pathFlag(m[1])) out.push([i, m[2], `--${m[1]}=`]);
+    } else if (i + 1 < args.length && pathFlag(m[1])) {
+      out.push([i + 1, args[i + 1], '']);
+      i++;
+    } else if (i + 1 < args.length && PW_ID_FLAGS.has(m[1])) {
+      i++;
+    }
   }
-  args.forEach((a, i) => {
-    const m = PW_PATH_FLAG.exec(a);
-    if (m) out.push([i, m[2], `--${m[1]}=`]);
-  });
+  // upload [ref] <file>…: a ref first is not a file.
+  if (PW_PATH_ARGS.has(sub))
+    for (const [a, i] of positional)
+      if (!(sub === 'upload' && REF_RE.test(a))) out.push([i, a, '']);
   return out;
 }
 
@@ -1310,7 +1448,8 @@ function passthrough(argv, cwd = '/') {
   const args = rest.filter((_, i) => i !== at);
   const base = String(cwd || '/').replace(/\/+$/, '');
   for (const [i, value, prefix] of pwPathArgs(sub, args)) {
-    if (value && !value.startsWith('/')) args[i] = `${prefix}${base}/${value}`.replace(/\/\.\//g, '/');
+    if (value && !value.startsWith('/'))
+      args[i] = `${prefix}${base}/${value}`.replace(/\/\.\//g, '/');
   }
   return { sub, args, intent: typeof intent === 'string' ? intent : undefined };
 }
@@ -1319,9 +1458,11 @@ function passthrough(argv, cwd = '/') {
 function checkArgv(argv) {
   if (!Array.isArray(argv) || !argv.length) return 'argv is a non-empty list';
   if (argv.length > MAX_PW_ARGS + 1) return `at most ${MAX_PW_ARGS} arguments`;
-  if (!argv.every((a) => typeof a === 'string' && a.length <= MAX_PW_ARG && !a.includes('\0'))) return 'arguments are strings';
+  if (!argv.every((a) => typeof a === 'string' && a.length <= MAX_PW_ARG && !a.includes('\0')))
+    return 'arguments are strings';
   const [sub, ...args] = argv;
-  if (!PW_COMMANDS.has(sub)) return `${JSON.stringify(String(sub).slice(0, 40))} is not a playwright-cli command`;
+  if (!PW_COMMANDS.has(sub))
+    return `${JSON.stringify(String(sub).slice(0, 40))} is not a playwright-cli command`;
   for (const [, value] of pwPathArgs(sub, args)) {
     const path = String(value).replace(/\/+/g, '/');
     if (path.split('/').includes('..') || !PW_PATH_ROOTS.some((r) => path.startsWith(r))) {
@@ -1339,7 +1480,21 @@ function rawTab(argv, stdout = '') {
   return opened && ['open', 'tab-new'].includes(argv[0]) ? opened[1] : null;
 }
 
-const REQUEST_FIELDS = new Set(['id', 'intent', 'kind', 'ref', 'tab', 'sure', 'candidates', 'dryRun', 'full', 'timeout', 'json', 'model', 'argv']);
+const REQUEST_FIELDS = new Set([
+  'id',
+  'intent',
+  'kind',
+  'ref',
+  'tab',
+  'sure',
+  'candidates',
+  'dryRun',
+  'full',
+  'timeout',
+  'json',
+  'model',
+  'argv',
+]);
 const MODELS = ['4b-vision', '0.8b-vision', '4b', '0.8b', 'clef', 'clef-flash'];
 
 /**
@@ -1349,27 +1504,38 @@ const MODELS = ['4b-vision', '0.8b-vision', '4b', '0.8b', 'clef', 'clef-flash'];
  * fields are refused. → { req } or { error }
  */
 function cleanRequest(raw) {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { error: 'a request is a JSON object' };
-  for (const key of Object.keys(raw)) if (!REQUEST_FIELDS.has(key)) return { error: `unknown field ${JSON.stringify(key)}` };
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw))
+    return { error: 'a request is a JSON object' };
+  for (const key of Object.keys(raw))
+    if (!REQUEST_FIELDS.has(key)) return { error: `unknown field ${JSON.stringify(key)}` };
   const req = {};
-  if (typeof raw.intent !== 'string' || !squash(raw.intent)) return { error: '--intent is required: say what you want, e.g. --intent "click the Search button"' };
+  if (typeof raw.intent !== 'string' || !squash(raw.intent))
+    return {
+      error: '--intent is required: say what you want, e.g. --intent "click the Search button"',
+    };
   if (raw.intent.length > MAX_INTENT) return { error: `--intent is over ${MAX_INTENT} characters` };
   req.intent = squash(raw.intent);
   if (raw.id != null) {
-    if (typeof raw.id !== 'string' || !/^[a-z0-9-]{1,40}$/.test(raw.id)) return { error: 'bad request id' };
+    if (typeof raw.id !== 'string' || !/^[a-z0-9-]{1,40}$/.test(raw.id))
+      return { error: 'bad request id' };
     req.id = raw.id;
   }
   if (raw.kind != null) {
     const kind = String(raw.kind).toUpperCase().replace(/-/g, '_');
-    if (!KINDS.includes(kind)) return { error: `--kind is one of ${KINDS.join(', ').toLowerCase()}` };
+    if (!KINDS.includes(kind))
+      return { error: `--kind is one of ${KINDS.join(', ').toLowerCase()}` };
     req.kind = kind;
   }
   if (raw.ref != null) {
-    if (typeof raw.ref !== 'string' || !REF_RE.test(raw.ref)) return { error: `--ref takes a ref from an earlier result, such as e12 (got ${JSON.stringify(String(raw.ref).slice(0, 20))})` };
+    if (typeof raw.ref !== 'string' || !REF_RE.test(raw.ref))
+      return {
+        error: `--ref takes a ref from an earlier result, such as e12 (got ${JSON.stringify(String(raw.ref).slice(0, 20))})`,
+      };
     req.ref = raw.ref;
   }
   if (raw.tab != null) {
-    if (typeof raw.tab !== 'string' || !TAB_RE.test(raw.tab)) return { error: '--tab takes a tab id from `playwright-cli tab-list` or an earlier result' };
+    if (typeof raw.tab !== 'string' || !TAB_RE.test(raw.tab))
+      return { error: '--tab takes a tab id from `playwright-cli tab-list` or an earlier result' };
     req.tab = raw.tab;
   }
   if (raw.model != null) {
@@ -1379,7 +1545,8 @@ function cleanRequest(raw) {
   const num = (key, min, max) => {
     if (raw[key] == null) return null;
     const n = Number(raw[key]);
-    if (!Number.isFinite(n) || n < min || n > max) return `--${key} is a number from ${min} to ${max}`;
+    if (!Number.isFinite(n) || n < min || n > max)
+      return `--${key} is a number from ${min} to ${max}`;
     req[key] = n;
     return null;
   };

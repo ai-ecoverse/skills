@@ -5,8 +5,7 @@
 //
 // The token is a slicc secret scoped to api.cloudflare.com: the caller
 // sends its masked value and the fetch proxy swaps in the real one, so the
-// token never reaches the script, its log or its trace. Shared by webrunner
-// (--model clef) and intent.
+// token never reaches the script, its log or its trace.
 
 const REMOTE_MODELS = { clef: '@cf/cloudflare/clef', 'clef-flash': '@cf/cloudflare/clef-flash' };
 const API = 'https://api.cloudflare.com/client/v4';
@@ -78,7 +77,8 @@ function remoteSystemOne({ fetchFn, account, token, size }) {
           `Workers AI refused the token (HTTP ${res.status}); check the CLOUDFLARE_API_TOKEN secret and the account id`
         );
       }
-      const why = data && data.errors && data.errors[0] ? data.errors[0].message : text.slice(0, 200);
+      const why =
+        data && data.errors && data.errors[0] ? data.errors[0].message : text.slice(0, 200);
       throw new Error(`Workers AI ${size}: HTTP ${res.status}: ${why}`);
     }
   };
