@@ -6,12 +6,10 @@
 
 const host = require('./host.js');
 
-const pkg = require('../../package.json');
-
-// kev.js and onnxruntime-web are the skill's npm dependencies (package.json):
-// `intent pull` installs them into the skill's node_modules.
+// kev.js and onnxruntime-web are the skill's npm dependencies: its
+// package.json pins them and `intent pull` installs them into the skill's
+// node_modules.
 const KEV_NAME = '@ai-ecoverse/kev.js';
-const KEV_SPEC = `${KEV_NAME}@${pkg.dependencies[KEV_NAME]}`;
 const DEST = '/workspace/models/ai-ecoverse/kev.js';
 // The named model: kev-4b-vision, the decoder behind Qwen3.5's stock vision
 // tower, so a request may carry a screenshot. Other kev bundles load with
@@ -20,14 +18,25 @@ const MODELS = { '4b-vision': 'kev-4b-vision' };
 
 const ortDirOf = (root) => `${String(root).replace(/\/+$/, '')}/node_modules/${host.ORT_NAME}`;
 
+const trimmed = (root) => String(root).replace(/\/+$/, '');
+
+/**
+ * The dependencies the skill's package.json declares, { name: version },
+ * read through the VFS (a required .json does not load under tst).
+ */
+async function declaredDeps(fs, root) {
+  const pkg = JSON.parse(String(await fs.readFile(`${trimmed(root)}/package.json`)));
+  return { ...(pkg.dependencies || {}) };
+}
+
 /**
  * Whether the skill's dependencies are installed in <root>/node_modules at
  * the versions package.json pins. → { ok, missing: ['name@want (have …)'] }
  */
 async function depsStatus(fs, root) {
-  const nm = `${String(root).replace(/\/+$/, '')}/node_modules`;
+  const nm = `${trimmed(root)}/node_modules`;
   const missing = [];
-  for (const [name, want] of Object.entries(pkg.dependencies)) {
+  for (const [name, want] of Object.entries(await declaredDeps(fs, root))) {
     let have = null;
     try {
       have = await host.readPackageVersion(fs, `${nm}/${name}`);
@@ -46,7 +55,7 @@ async function depsStatus(fs, root) {
 
 async function loadOrt(fs, kind, ortDir) {
   const fileName = kind === 'webgpu' ? 'ort.webgpu.bundle.min.mjs' : 'ort.wasm.bundle.min.mjs';
-  if (!ortDir) throw new Error(`${host.ORT_SPEC} is not installed. Run intent pull.`);
+  if (!ortDir) throw new Error(`${host.ORT_NAME} is not installed. Run intent pull.`);
   const dist = `${ortDir}/dist`;
   const file = `${dist}/${fileName}`;
   if (!(await fs.exists(file)))
@@ -54,7 +63,8 @@ async function loadOrt(fs, kind, ortDir) {
   const loaded = await host.nativeImport(host.previewUrl(file));
   const ort = loaded.InferenceSession ? loaded : loaded.default;
   if (!ort || !ort.InferenceSession) throw new Error('ort bundle has no InferenceSession');
-  host.checkOrtVersion(ort, ortDir);
+  // depsStatus checked this copy against package.json before a model opens.
+  host.checkOrtVersion(ort, ortDir, await host.readPackageVersion(fs, ortDir));
   host.configureOrt(ort, dist);
   return ort;
 }
@@ -68,11 +78,11 @@ function loadKev() {
     mod = require('@ai-ecoverse/kev.js');
   } catch (err) {
     throw new Error(
-      `${KEV_SPEC} is not installed in the skill: run intent pull (${err?.message || err})`
+      `${KEV_NAME} is not installed in the skill: run intent pull (${err?.message || err})`
     );
   }
   const fn = mod.loadKev || (mod.default && mod.default.loadKev);
-  if (typeof fn !== 'function') throw new Error(`${KEV_SPEC} has no loadKev export`);
+  if (typeof fn !== 'function') throw new Error(`${KEV_NAME} has no loadKev export`);
   return fn;
 }
 
@@ -295,9 +305,8 @@ async function openModel(fs, _exec, opts = {}) {
 
 module.exports = {
   variantFiles,
-  ORT_SPEC: host.ORT_SPEC,
   KEV_NAME,
-  KEV_SPEC,
+  declaredDeps,
   DEST,
   MODELS,
   SIZES,

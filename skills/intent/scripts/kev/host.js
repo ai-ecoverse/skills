@@ -4,10 +4,9 @@
 // modules, the hf weight download, and loading ort's browser bundle in the
 // worker.
 
-const pkg = require('../../package.json');
-
+// The versions are the skill's package.json ones, read through the VFS
+// (kev-runtime.js declaredDeps), not required: tst cannot load a .json.
 const ORT_NAME = 'onnxruntime-web';
-const ORT_SPEC = `${ORT_NAME}@${pkg.dependencies[ORT_NAME]}`;
 // Every bundle kev may import: webgpu when navigator.gpu exists, wasm as
 // the retry.
 const ORT_BUNDLES = ['dist/ort.wasm.bundle.min.mjs', 'dist/ort.webgpu.bundle.min.mjs'];
@@ -49,12 +48,6 @@ async function run(exec, argv) {
     throw new Error(`${argv[0]} failed (${result.exitCode})${detail ? `: ${detail}` : ''}`);
   }
   return result;
-}
-
-function versionOfSpec(spec) {
-  const at = String(spec).lastIndexOf('@');
-  if (at <= 0) return null;
-  return spec.slice(at + 1);
 }
 
 async function readPackageVersion(fs, dir) {
@@ -103,8 +96,7 @@ async function ensureEsbuild(exec) {
 
 // ort.env.versions.web is set by onnxruntime-web's own entry point. Absent
 // means an unusual build: the package.json check already ran, so let it pass.
-function checkOrtVersion(ort, dir) {
-  const want = versionOfSpec(ORT_SPEC);
+function checkOrtVersion(ort, dir, want) {
   const versions = ort && ort.env && ort.env.versions;
   const got = versions && versions.web;
   if (typeof got === 'string' && got !== want) {
@@ -155,14 +147,12 @@ module.exports = {
   installDeps,
   ensureEsbuild,
   readPackageVersion,
-  ORT_SPEC,
   ORT_NAME,
   ORT_BUNDLES,
   resolvePath,
   previewUrl,
   hasWebGpu,
   run,
-  versionOfSpec,
   checkOrtVersion,
   hfDownload,
   nativeImport,

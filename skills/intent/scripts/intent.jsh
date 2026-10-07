@@ -136,7 +136,8 @@ async function main() {
       await kevHost.installDeps(exec, ROOT);
       const deps = await kevRuntime.depsStatus(fs, ROOT);
       if (!deps.ok) cli.die(`ipk install left ${deps.missing.join(', ')} missing in ${ROOT}/node_modules`, { prefix: 'intent' });
-      console.error(`${kevRuntime.KEV_SPEC}, ${kevHost.ORT_SPEC}: installed in ${ROOT}/node_modules`);
+      const declared = await kevRuntime.declaredDeps(fs, ROOT);
+      console.error(`${Object.entries(declared).map(([n, v]) => `${n}@${v}`).join(', ')}: installed in ${ROOT}/node_modules`);
       console.error(`esbuild-wasm: ${await kevHost.ensureEsbuild(exec)}`);
       if (flags.from !== undefined) {
         // A bundle by URL: its manifest and files into the cache --from loads

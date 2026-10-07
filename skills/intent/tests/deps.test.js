@@ -14,6 +14,18 @@ const at = (rel) => (existsSync(rel) ? rel : `skills/intent/${rel}`);
 const read = (rel) => readFileSync(at(rel), 'utf8');
 const pkg = () => JSON.parse(read('package.json'));
 
+function vfs(files) {
+  return {
+    async exists(p) {
+      return p in files;
+    },
+    async readFile(p) {
+      if (!(p in files)) throw new Error(`ENOENT ${p}`);
+      return files[p];
+    },
+  };
+}
+
 test('package.json declares kev.js and onnxruntime-web, pinned, and nothing to build', () => {
   const p = pkg();
   ok(/^\d+\.\d+\.\d+$/.test(p.dependencies['@ai-ecoverse/kev.js']), 'kev.js pinned exactly');
@@ -22,10 +34,21 @@ test('package.json declares kev.js and onnxruntime-web, pinned, and nothing to b
   is(p.devDependencies, undefined);
 });
 
-test('the runtime versions are the package.json ones, nowhere else', () => {
+test('the runtime versions are the package.json ones, nowhere else', async () => {
   const deps = pkg().dependencies;
-  is(kev.KEV_SPEC, `@ai-ecoverse/kev.js@${deps['@ai-ecoverse/kev.js']}`);
-  is(host.ORT_SPEC, `onnxruntime-web@${deps['onnxruntime-web']}`);
+  // Read through the VFS at run time: tst cannot load a required .json.
+  is(await kev.declaredDeps(vfs({ '/s/package.json': read('package.json') }), '/s'), deps);
+  for (const rel of [
+    'scripts/kev/host.js',
+    'scripts/kev/kev-runtime.js',
+    'scripts/intent-core.js',
+    'scripts/intent.jsh',
+    'scripts/intent-arm.jsh',
+  ]) {
+    const src = read(rel);
+    for (const v of Object.values(deps)) ok(!src.includes(v), `${rel} names ${v}`);
+    ok(!/require\([^)]*package\.json/.test(src), `${rel} requires a package.json`);
+  }
 });
 
 test('the runtime requires kev.js by its package name: no committed bundle, no build', () => {
@@ -40,23 +63,12 @@ test('the runtime requires kev.js by its package name: no committed bundle, no b
   }
 });
 
-function vfs(files) {
-  return {
-    async exists(p) {
-      return p in files;
-    },
-    async readFile(p) {
-      if (!(p in files)) throw new Error(`ENOENT ${p}`);
-      return files[p];
-    },
-  };
-}
-
 test('ready: both packages installed in the skill at their declared versions', async () => {
   const deps = pkg().dependencies;
   const root = '/workspace/skills/intent';
   const nm = `${root}/node_modules`;
   const files = {
+    [`${root}/package.json`]: read('package.json'),
     [`${nm}/@ai-ecoverse/kev.js/package.json`]: JSON.stringify({
       version: deps['@ai-ecoverse/kev.js'],
     }),
@@ -71,7 +83,11 @@ test('ready: both packages installed in the skill at their declared versions', a
   };
   const s = await kev.depsStatus(vfs(stale), root);
   ok(!s.ok && s.missing[0].includes('@ai-ecoverse/kev.js'), JSON.stringify(s));
-  is((await kev.depsStatus(vfs({}), root)).missing.length, 2);
+  is(
+    (await kev.depsStatus(vfs({ [`${root}/package.json`]: read('package.json') }), root)).missing
+      .length,
+    2
+  );
 });
 
 test('installDeps: ipk install in the skill root, a path no shell can misread', async () => {
