@@ -20,6 +20,18 @@ const cli = require('sliccy:cli');
 const MODES = { driving: 0, bicycling: 1, walking: 2, transit: 3 };
 const ORDER = ['walking', 'transit', 'bicycling', 'driving'];
 const ENDPOINT = 'https://www.google.com/maps/preview/directions';
+// Some requests never answer (measured 2026-10-06: Munich→Freising and London→Oxford driving hung
+// for minutes while other routes answered in ~1 s). The realm fetch ignores AbortSignal, so the
+// whole request+body read is raced against a timer instead.
+const TIMEOUT_MS = Number(process.env.GMAPS_TIMEOUT_MS) || 20000;
+
+function withTimeout(promise, ms) {
+  let timer;
+  const t = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(Object.assign(new Error(`no answer within ${ms / 1000}s`), { name: 'TimeoutError' })), ms);
+  });
+  return Promise.race([promise, t]).finally(() => clearTimeout(timer));
+}
 
 const HELP = `gmaps — Google Maps directions (no browser tab needed)
 
@@ -29,7 +41,7 @@ Usage:
 
 Options:
   --mode <m>       walking | transit | bicycling | driving | all   (default: all)
-  --depart <t>     Leave at <t>: "19:00" (today) or "2026-10-07T08:30"
+  --depart <t>     Leave at <t>: "19:00" (today on this machine) or "2026-10-07T08:30"
   --arrive <t>     Arrive by <t> (same formats)
   --json           Machine-readable output
   --help           This help
@@ -79,6 +91,9 @@ function wallClock(spec, flag) {
   const full = spec.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{1,2}):(\d{2})$/);
   let y, mo, d, h, mi;
   if (hm) {
+    // HH:MM takes TODAY'S DATE ON THIS MACHINE. The trip timezone is unknown until Google answers,
+    // so for a trip in another timezone near midnight this can be the wrong day; the resolved date
+    // is printed in the header and in --json `time`, and an explicit date avoids it (Codex review).
     const now = new Date();
     [y, mo, d] = [now.getFullYear(), now.getMonth() + 1, now.getDate()];
     [h, mi] = [Number(hm[1]), Number(hm[2])];
@@ -87,8 +102,13 @@ function wallClock(spec, flag) {
   } else {
     cli.die(`${flag} '${spec}': use HH:MM or YYYY-MM-DDTHH:MM`, { prefix: 'gmaps', exitCode: 2 });
   }
-  if (h > 23 || mi > 59 || mo < 1 || mo > 12 || d < 1 || d > 31) cli.die(`${flag} '${spec}': not a valid time`, { prefix: 'gmaps', exitCode: 2 });
-  return { secs: Date.UTC(y, mo - 1, d, h, mi) / 1000, label: `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')} ${String(h).padStart(2, '0')}:${String(mi).padStart(2, '0')}` };
+  const ms = Date.UTC(y, mo - 1, d, h, mi);
+  const back = new Date(ms);
+  // Date.UTC normalises 2026-02-31 to March 3; a round-trip check rejects it instead (Codex review).
+  if (h > 23 || mi > 59 || back.getUTCFullYear() !== y || back.getUTCMonth() !== mo - 1 || back.getUTCDate() !== d) {
+    cli.die(`${flag} '${spec}': not a valid date/time`, { prefix: 'gmaps', exitCode: 2 });
+  }
+  return { secs: ms / 1000, label: `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')} ${String(h).padStart(2, '0')}:${String(mi).padStart(2, '0')}` };
 }
 
 // ─── request ────────────────────────────────────────────────────────────────
@@ -106,12 +126,16 @@ function buildPb(from, to, mode, time) {
 async function fetchRoutes(from, to, mode, time) {
   const url = `${ENDPOINT}?hl=en&pb=${urlEnc(buildPb(from, to, mode, time))}`;
   let res;
+  let text;
   try {
-    res = await fetch(url);
+    [res, text] = await withTimeout(
+      fetch(url).then(async (r) => [r, await r.text()]),
+      TIMEOUT_MS
+    );
   } catch (e) {
+    if (e?.name === 'TimeoutError') return { mode, error: `Google gave ${e.message} — try again` };
     return { mode, error: `network error: ${e.message}` };
   }
-  const text = await res.text();
   if (!res.ok) return { mode, error: `Google answered HTTP ${res.status}` };
   let j;
   try {
@@ -159,15 +183,24 @@ function decodeLeg(seg) {
   return leg;
 }
 
+const LAYOUT = 'unexpected response layout — the endpoint may have changed (see references/internals.md)';
+
 function decode(j, mode) {
-  const wps = at(j, 0, 0) || [];
+  // Validate the envelope first. Without this, an error envelope or a moved container decodes as
+  // "no waypoints, no routes" and reports a legitimate-looking "no route" (Codex review, PR #476).
+  const wps = at(j, 0, 0);
+  if (!Array.isArray(wps) || wps.length < 2 || !wps.every((w) => typeof at(w, 0, 0, 0) === 'string')) {
+    return { mode, routes: [], error: LAYOUT };
+  }
+  const routesBox = at(j, 0, 1);
+  if (routesBox != null && !Array.isArray(routesBox)) return { mode, routes: [], error: LAYOUT };
   const from = placeName(wps[0]);
   const to = placeName(wps[1]);
   const unknown = wps.map((w, i) => (at(w, 0, 0, 2) ? null : [at(w, 0, 0, 0), i])).filter(Boolean);
   if (unknown.length) {
     return { mode, from, to, routes: [], error: unknown.map(([q]) => `Google Maps can't find "${q}" — add a city or postcode`).join('; ') };
   }
-  const raw = at(j, 0, 1) || [];
+  const raw = routesBox || [];
   if (!raw.length) return { mode, from, to, routes: [], error: `no ${mode} route between these places` };
   const routes = raw.map(r => {
     const s = r[0];
