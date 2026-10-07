@@ -24,7 +24,7 @@ allowed-tools: bash
 
 ## Setup
 
-1. `intent pull` installs onnxruntime-web and downloads System 1, kev-4b-vision (5.4 GB; it resumes). kev.js itself ships with the skill.
+1. `intent pull` installs the skill's npm dependencies (kev.js and onnxruntime-web, from its `package.json`) into its `node_modules` and downloads System 1, kev-4b-vision (5.4 GB; it resumes).
 2. Optional, for many calls in a row: `intent serve` in a shell that may stay open keeps the model loaded; every `intent` call is then handed to it.
 3. Check: `intent --intent "open https://example.com"`, then `intent --intent "what is the main heading?"` lists the page's likely texts with `"Example Domain"` among them. A missing runtime or model stops with the command that fixes it.
 

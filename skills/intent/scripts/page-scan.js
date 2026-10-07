@@ -17,12 +17,16 @@
 //   2026-10-02). page.applyDisambiguation pairs them with the snapshot's by
 //   order and fixes their boxes.
 //
-// With `pick` ({ name, nth }), it clicks instead: the nth control (from 0)
-// named `name`, counted as above, scrolled into view and focused first. A
-// ref cannot reach it: playwright-cli resolves a ref of a repeated name to
-// the first control, so every Drug Wars BUY clicked Cocaine's (disabled)
-// one, while a click on the right element bought (2026-10-02). Returns
-// 'ok' or 'missing'.
+// With `pick` ({ name, nth, op, value }), it acts instead on the nth control
+// (from 0) named `name`, counted as above, scrolled into view and focused
+// first. A ref cannot reach it: playwright-cli resolves a ref of a repeated
+// name to the first control, so every Drug Wars BUY clicked Cocaine's
+// (disabled) one, while a click on the right element bought (2026-10-02).
+// op: click (default); check / uncheck, which click only when the state
+// differs ('already' when it does not); select, which sets a native
+// <select> to the option whose text is `value` ('not-select', 'no-option');
+// locate, which returns its centre as JSON { x, y }. Otherwise 'ok' or
+// 'missing'.
 //
 // Self-contained: no closures, no imports, JSON out.
 
@@ -89,9 +93,35 @@ function scan(pick) {
   if (pick) {
     const target = controls.filter((c) => c.name === pick.name)[pick.nth];
     if (!target) return 'missing';
-    target.el.scrollIntoView({ block: 'center' });
-    target.el.focus();
-    target.el.click();
+    const el = target.el;
+    el.scrollIntoView({ block: 'center' });
+    if (pick.op === 'locate') {
+      const r = el.getBoundingClientRect();
+      return JSON.stringify({
+        x: Math.round(r.x + r.width / 2),
+        y: Math.round(r.y + r.height / 2),
+      });
+    }
+    el.focus();
+    if (pick.op === 'select') {
+      if (el.tagName !== 'SELECT') return 'not-select';
+      const want = norm(pick.value).toLowerCase();
+      const options = [...el.options];
+      const option =
+        options.find((o) => norm(o.text).toLowerCase() === want) ||
+        options.find((o) => norm(o.text).toLowerCase().includes(want));
+      if (!option) return 'no-option';
+      el.value = option.value;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return 'ok';
+    }
+    if (pick.op === 'check' || pick.op === 'uncheck') {
+      const aria = el.getAttribute('aria-checked');
+      const checked = 'checked' in el && el.tagName === 'INPUT' ? el.checked : aria === 'true';
+      if (checked === (pick.op === 'check')) return 'already';
+    }
+    el.click();
     return 'ok';
   }
   const counts = new Map();

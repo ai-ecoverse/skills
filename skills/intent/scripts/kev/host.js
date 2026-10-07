@@ -1,14 +1,15 @@
 // Install and download helpers for the kev runtime (`intent pull`): the
-// pinned onnxruntime-web copy, the hf weight download, and loading ort's
-// browser bundle in the worker.
+// skill's npm dependencies (package.json, installed with ipk into the
+// skill's node_modules), the transpiler the realm needs for kev.js's ES
+// modules, the hf weight download, and loading ort's browser bundle in the
+// worker.
 
-const PACKAGE_ROOTS = ['/shared/lib/node_modules', '/workspace/node_modules'];
-// One global copy, pinned exactly: the version a session runs on is known.
-const ORT_SPEC = 'onnxruntime-web@1.30.0';
+const pkg = require('../../package.json');
+
 const ORT_NAME = 'onnxruntime-web';
+const ORT_SPEC = `${ORT_NAME}@${pkg.dependencies[ORT_NAME]}`;
 // Every bundle kev may import: webgpu when navigator.gpu exists, wasm as
-// the retry. A root counts as a copy only with both, so the copy judged is
-// the copy that serves whichever loads.
+// the retry.
 const ORT_BUNDLES = ['dist/ort.wasm.bundle.min.mjs', 'dist/ort.webgpu.bundle.min.mjs'];
 
 function resolvePath(path) {
@@ -62,77 +63,42 @@ async function readPackageVersion(fs, dir) {
 }
 
 /**
- * Decide whether a pinned copy has to be installed.
- * copies: [{ dir, hasProbe, version }] in PACKAGE_ROOTS order. hasProbe is true
- * only when the root has every probed file; version is null when package.json
- * is missing or unreadable.
- * The first complete copy is the one loaded, so only that copy is judged: a
- * pinned copy later in the order does not rescue a stale earlier one, and a
- * partial root earlier in the order is skipped.
- * The pin is exact, so a newer copy is replaced too.
+ * Install the skill's dependencies (package.json) into <root>/node_modules:
+ * `ipk install` reads the package.json of the directory it runs in, and
+ * exec.spawn has no cwd, so this goes through a shell. The root is quoted,
+ * and anything but a plain path is refused before a shell sees it.
  */
-function planPinnedCopy(copies, want) {
-  const loaded = copies.find((copy) => copy.hasProbe);
-  if (!loaded) return { install: true, dir: null, version: null };
-  return { install: loaded.version !== want, dir: loaded.dir, version: loaded.version };
-}
-
-function describeCopy(plan, copies, probes) {
-  if (plan.dir) return `${plan.dir} is ${plan.version || 'unknown (no readable package.json)'}`;
-  const roots = copies.map((copy) =>
-    copy.missing.length === probes.length
-      ? `${copy.dir} is absent`
-      : `${copy.dir} lacks ${copy.missing.join(', ')}`
-  );
-  return `no copy has ${probes.join(' and ')}: ${roots.join('; ')}`;
-}
-
-async function listCopies(fs, name, probes) {
-  const copies = [];
-  for (const root of PACKAGE_ROOTS) {
-    const dir = `${root}/${name}`;
-    const missing = [];
-    for (const probe of probes) {
-      if (!(await fs.exists(`${dir}/${probe}`))) missing.push(probe);
-    }
-    const hasProbe = missing.length === 0;
-    let version = null;
-    if (hasProbe) {
-      try {
-        version = (await readPackageVersion(fs, dir)) || null;
-      } catch {
-        version = null;
-      }
-    }
-    copies.push({ dir, hasProbe, version, missing });
+async function installDeps(exec, root) {
+  if (!/^\/[A-Za-z0-9._/-]+$/.test(String(root)) || String(root).split('/').includes('..')) {
+    throw new Error(`not a skill directory: ${JSON.stringify(String(root).slice(0, 80))}`);
   }
-  return copies;
+  const result = await exec(`cd '${root}' && ipk install`);
+  if (result.exitCode !== 0) {
+    const detail = tail(result.stderr || result.stdout);
+    throw new Error(
+      `ipk install in ${root} failed (${result.exitCode})${detail ? `: ${detail}` : ''}`
+    );
+  }
+  return result;
 }
 
 /**
- * Make the copy the loader will pick match spec exactly, installing with
- * ipk add -g when it does not. Returns { dir, installed }. Throws, naming both
- * versions and the path, when the install does not fix the loaded copy.
+ * The realm transpiles kev.js (ES modules) to CommonJS with esbuild-wasm (or
+ * TypeScript) from the VFS. Without either, install the esbuild-wasm the
+ * shell's own `esbuild` names. → 'ready' | 'installed'
  */
-async function ensurePinnedCopy(exec, fs, spec, name, probes) {
-  const want = versionOfSpec(spec);
-  const copiesBefore = await listCopies(fs, name, probes);
-  const before = planPinnedCopy(copiesBefore, want);
-  if (!before.install) return { dir: before.dir, installed: false };
-  const why = describeCopy(before, copiesBefore, probes);
-  console.error(`${name}: ${why}, need ${want}; ipk add -g ${spec}`);
-  await run(exec, ['ipk', 'add', '-g', spec]);
-  const copiesAfter = await listCopies(fs, name, probes);
-  const after = planPinnedCopy(copiesAfter, want);
-  if (after.install) {
-    const still = describeCopy(after, copiesAfter, probes);
-    throw new Error(`${name}: need ${want}, but after ipk add -g ${spec} ${still}`);
+async function ensureEsbuild(exec) {
+  const probe = await exec.spawn(['esbuild', '--version']);
+  if (probe.exitCode === 0) return 'ready';
+  const text = `${probe.stderr || ''}\n${probe.stdout || ''}`;
+  const hinted = /esbuild-wasm@(\d+\.\d+\.\d+)/.exec(text);
+  if (!hinted) {
+    throw new Error(
+      `no esbuild-wasm to load kev.js with, and the shell names no version to install: ${tail(text)}`
+    );
   }
-  return { dir: after.dir, installed: true };
-}
-
-function ensureOrt(exec, fs) {
-  return ensurePinnedCopy(exec, fs, ORT_SPEC, ORT_NAME, ORT_BUNDLES);
+  await run(exec, ['ipk', 'add', '-g', `esbuild-wasm@${hinted[1]}`]);
+  return 'installed';
 }
 
 // ort.env.versions.web is set by onnxruntime-web's own entry point. Absent
@@ -186,7 +152,9 @@ function configureOrt(ort, distDir) {
 }
 
 module.exports = {
-  PACKAGE_ROOTS,
+  installDeps,
+  ensureEsbuild,
+  readPackageVersion,
   ORT_SPEC,
   ORT_NAME,
   ORT_BUNDLES,
@@ -195,10 +163,6 @@ module.exports = {
   hasWebGpu,
   run,
   versionOfSpec,
-  planPinnedCopy,
-  listCopies,
-  ensurePinnedCopy,
-  ensureOrt,
   checkOrtVersion,
   hfDownload,
   nativeImport,

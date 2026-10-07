@@ -89,7 +89,7 @@ On the default suite of forms and searches at the current head (round 3724015519
 ## How to use it
 
 ```bash
-intent pull                          # once: onnxruntime-web and 5.4 GB of kev-4b-vision weights (resumes)
+intent pull                          # once: kev.js and onnxruntime-web from npm, 5.4 GB of kev-4b-vision weights (resumes)
 intent --intent "open https://example.com"
 intent --intent "what is the main heading?"
 ```
@@ -98,13 +98,13 @@ intent --intent "what is the main heading?"
 - **Not sure means no action.** The answer starts with `?` and lists candidates with refs; pass the right one with `--ref e41`.
 - **Raw commands still work.** Any playwright-cli command runs through intent with its intent stated: `intent screenshot --tab=ID --filename=page.png --intent "see the result list"`.
 - **Keep the model loaded.** For many calls, `intent serve` keeps System 1 loaded.
-- **Nothing to build.** kev.js ships prebuilt in `scripts/kev/kev-bundle.cjs`; the model weights are downloaded by `intent pull`.
+- **Nothing to build.** kev.js and onnxruntime-web are npm dependencies in `package.json`; `intent pull` installs them into the skill's `node_modules` with `ipk install` and downloads the model weights.
 
 [SKILL.md](SKILL.md) is what an agent reads: the intent kinds, how to phrase intents, and the escape hatches (`--candidates`, `--dry-run`, `--full`). How System 1 decides, and how accurate each model is: [references/system1.md](references/system1.md).
 
 ## Development
 
 - **Tests:** `tests/*.test.js`, run with SLICC's `tst` (CI copies the skill onto a live leader and runs them).
-- **kev.js bundle:** `scripts/kev/kev-bundle.cjs` is generated: `npm install && npm run build` in `scripts/kev` after changing the kev.js pin in its `package.json`. CI (`intent-build.yml`) rebuilds it and fails on drift.
+- **Dependencies:** `package.json` pins `@ai-ecoverse/kev.js` and `onnxruntime-web` exactly; Renovate proposes the updates. The runtime reads both versions from it, so a bump needs no other change. Run `intent pull` again after one.
 - **Evals:** `evals/harness` holds the goals and arms for `tools/harness-evals`; a push to the PR starts a hosted round.
 - **Benchmark driver:** `intent-arm` drives both. See [references/evals.md](references/evals.md).

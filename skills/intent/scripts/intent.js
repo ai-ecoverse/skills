@@ -1452,6 +1452,9 @@ function checkArgv(argv) {
 function rawTab(argv, stdout = '') {
   const flag = argv.find((a) => /^--tab=/.test(a));
   if (flag) return flag.slice('--tab='.length);
+  // `--tab ID`: playwright-cli reads the next word as the value.
+  const at = argv.indexOf('--tab');
+  if (at >= 0 && at + 1 < argv.length) return argv[at + 1];
   const opened = /targetId:\s*([0-9A-Za-z]+)/.exec(String(stdout));
   return opened && ['open', 'tab-new'].includes(argv[0]) ? opened[1] : null;
 }

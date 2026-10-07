@@ -13,6 +13,7 @@ const browser = require('sliccy:browser');
 const cli = require('sliccy:cli');
 const fs = require('fs');
 const exec = require('sliccy:exec');
+const skill = require('sliccy:skill');
 const lib = require('./intent.js');
 const { createIntent, WAIT_DEFAULT_S } = require('./intent-core.js');
 const kevHost = require('./kev/host.js');
@@ -23,8 +24,8 @@ intent — one browser step, stated as an intent
 
 USAGE
   intent --intent "<what you want>" [--tab ID] [flags]
-  intent pull                   once: onnxruntime-web and kev-4b-vision's
-                                weights (5.4 GB; it resumes)
+  intent pull                   once: kev.js and onnxruntime-web (package.json)
+                                and kev-4b-vision's weights (5.4 GB; resumes)
   intent pull --from URL        fetch another kev bundle by URL into the cache
   intent serve [--from DIR|URL] keep System 1 loaded and do the browser work for
                                 callers that may not run playwright-cli themselves
@@ -85,7 +86,9 @@ OUTPUT
   A result names refs (e12) that the next call can pass as --ref.
 `.trim();
 
-const { handle, serve, viaDaemon, fetchBundle } = createIntent({ exec, fs, browser });
+// The skill's directory: its package.json and node_modules (kev.js).
+const ROOT = skill.dir.replace(/\/scripts\/?$/, '');
+const { handle, serve, viaDaemon, fetchBundle } = createIntent({ exec, fs, browser, root: ROOT });
 
 // ── main ──────────────────────────────────────────────────────────────
 
@@ -121,15 +124,20 @@ async function main() {
     return;
   }
   if (sub === 'prepare') {
-    // Nothing to build: kev.js ships with the skill. Kept so setups that
-    // still run `intent prepare` before `intent pull` (the bench arms) pass.
-    console.log('intent prepare: nothing to do; kev.js ships with the skill, and `intent pull` installs the rest');
+    // Kept so setups that still run `intent prepare` before `intent pull`
+    // (the bench arms) pass: `intent pull` installs everything.
+    console.log('intent prepare: nothing to do; `intent pull` installs the dependencies and the model');
     return;
   }
   if (sub === 'pull') {
     try {
-      const ort = await kevHost.ensureOrt(exec, fs);
-      console.error(`${kevHost.ORT_SPEC}: ${ort.installed ? 'installed' : 'ready'} in ${ort.dir}`);
+      // kev.js and onnxruntime-web, as package.json pins them, into the
+      // skill's node_modules; a transpiler for kev.js's ES modules.
+      await kevHost.installDeps(exec, ROOT);
+      const deps = await kevRuntime.depsStatus(fs, ROOT);
+      if (!deps.ok) cli.die(`ipk install left ${deps.missing.join(', ')} missing in ${ROOT}/node_modules`, { prefix: 'intent' });
+      console.error(`${kevRuntime.KEV_SPEC}, ${kevHost.ORT_SPEC}: installed in ${ROOT}/node_modules`);
+      console.error(`esbuild-wasm: ${await kevHost.ensureEsbuild(exec)}`);
       if (flags.from !== undefined) {
         // A bundle by URL: its manifest and files into the cache --from loads
         // from, so the first call (or an eval's first goal) skips the download.

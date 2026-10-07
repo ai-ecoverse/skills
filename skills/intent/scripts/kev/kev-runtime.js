@@ -6,44 +6,73 @@
 
 const host = require('./host.js');
 
-// kev.js ships prebuilt in kev-bundle.cjs (build.mjs, pinned in package.json).
+const pkg = require('../../package.json');
+
+// kev.js and onnxruntime-web are the skill's npm dependencies (package.json):
+// `intent pull` installs them into the skill's node_modules.
 const KEV_NAME = '@ai-ecoverse/kev.js';
-const KEV_SPEC = `${KEV_NAME}@0.6.0`;
+const KEV_SPEC = `${KEV_NAME}@${pkg.dependencies[KEV_NAME]}`;
 const DEST = '/workspace/models/ai-ecoverse/kev.js';
 // The named model: kev-4b-vision, the decoder behind Qwen3.5's stock vision
 // tower, so a request may carry a screenshot. Other kev bundles load with
 // --from.
 const MODELS = { '4b-vision': 'kev-4b-vision' };
-// Load only the onnxruntime-web copy whose version was checked (host.ensureOrt
-// installs it; pinnedOrtDir finds it). Falling through to another root would
-// load a copy whose version nobody looked at.
-async function pinnedOrtDir(fs) {
-  const copies = await host.listCopies(fs, host.ORT_NAME, host.ORT_BUNDLES);
-  const plan = host.planPinnedCopy(copies, host.versionOfSpec(host.ORT_SPEC));
-  return plan.install ? null : plan.dir;
+
+const ortDirOf = (root) => `${String(root).replace(/\/+$/, '')}/node_modules/${host.ORT_NAME}`;
+
+/**
+ * Whether the skill's dependencies are installed in <root>/node_modules at
+ * the versions package.json pins. → { ok, missing: ['name@want (have …)'] }
+ */
+async function depsStatus(fs, root) {
+  const nm = `${String(root).replace(/\/+$/, '')}/node_modules`;
+  const missing = [];
+  for (const [name, want] of Object.entries(pkg.dependencies)) {
+    let have = null;
+    try {
+      have = await host.readPackageVersion(fs, `${nm}/${name}`);
+    } catch {
+      have = null;
+    }
+    let complete = have === want;
+    if (complete && name === host.ORT_NAME) {
+      for (const rel of host.ORT_BUNDLES)
+        if (!(await fs.exists(`${nm}/${name}/${rel}`))) complete = false;
+    }
+    if (!complete) missing.push(`${name}@${want}${have ? ` (have ${have})` : ''}`);
+  }
+  return { ok: missing.length === 0, missing };
 }
 
 async function loadOrt(fs, kind, ortDir) {
   const fileName = kind === 'webgpu' ? 'ort.webgpu.bundle.min.mjs' : 'ort.wasm.bundle.min.mjs';
-  const dir = ortDir || (await pinnedOrtDir(fs));
-  if (!dir) throw new Error(`${host.ORT_SPEC} is not installed. Run intent pull.`);
-  const dist = `${dir}/dist`;
+  if (!ortDir) throw new Error(`${host.ORT_SPEC} is not installed. Run intent pull.`);
+  const dist = `${ortDir}/dist`;
   const file = `${dist}/${fileName}`;
-  if (!(await fs.exists(file))) throw new Error(`onnxruntime-web: ${file} is missing`);
+  if (!(await fs.exists(file)))
+    throw new Error(`onnxruntime-web: ${file} is missing. Run intent pull.`);
   const loaded = await host.nativeImport(host.previewUrl(file));
   const ort = loaded.InferenceSession ? loaded : loaded.default;
   if (!ort || !ort.InferenceSession) throw new Error('ort bundle has no InferenceSession');
-  host.checkOrtVersion(ort, dir);
+  host.checkOrtVersion(ort, ortDir);
   host.configureOrt(ort, dist);
   return ort;
 }
 
-// The prebuilt kev.js, required when a model opens (the realm evaluates a
-// module on its first require).
+// kev.js from the skill's node_modules. The realm resolves this require when
+// the script starts and transpiles kev.js's ES modules; before `intent pull`
+// it fails only here, when a model opens.
 function loadKev() {
-  const bundled = require('./kev-bundle.cjs');
-  const fn = bundled.loadKev || (bundled.default && bundled.default.loadKev);
-  if (typeof fn !== 'function') throw new Error('kev bundle has no loadKev export');
+  let mod;
+  try {
+    mod = require('@ai-ecoverse/kev.js');
+  } catch (err) {
+    throw new Error(
+      `${KEV_SPEC} is not installed in the skill: run intent pull (${err?.message || err})`
+    );
+  }
+  const fn = mod.loadKev || (mod.default && mod.default.loadKev);
+  if (typeof fn !== 'function') throw new Error(`${KEV_SPEC} has no loadKev export`);
   return fn;
 }
 
@@ -66,6 +95,18 @@ function variantFiles(manifest) {
     ...(variant.data || []),
     ...(tower ? [tower.model, ...(tower.data || [])] : []),
   ];
+  // A bundle given by URL is fetched into its cache directory by these
+  // names: each must stay inside it (no absolute path, no ..).
+  for (const rel of rels) {
+    const ok =
+      typeof rel === 'string' &&
+      rel !== '' &&
+      !rel.startsWith('/') &&
+      !rel.includes('\\') &&
+      !rel.split('/').some((part) => part === '..' || part === '');
+    if (!ok)
+      throw new Error(`the manifest names a file outside its bundle: ${JSON.stringify(rel)}`);
+  }
   return { rels, sizes: { ...(variant.sizes || {}), ...((tower && tower.sizes) || {}) } };
 }
 
@@ -222,7 +263,7 @@ function isSoftwareAdapter(adapter) {
 /**
  * Open a model on WebGPU when the worker has it, falling back to wasm.
  * Weights are never downloaded here: a missing file is an error that names
- * `intent pull`. opts: { model, from, ortDir, dateFacts, log,
+ * `intent pull`. opts: { model, from, root (the skill directory), dateFacts, log,
  * requireGpu (refuse a software WebGPU adapter) }
  */
 async function openModel(fs, _exec, opts = {}) {
@@ -243,19 +284,13 @@ async function openModel(fs, _exec, opts = {}) {
   const adapter = await webGpuAdapter(log, opts.requireGpu === true);
   const providers = adapter ? ['webgpu'] : ['wasm'];
   try {
-    return await openOn(fs, base, dateFacts, providers, log, opts.ortDir);
+    return await openOn(fs, base, dateFacts, providers, log, ortDirOf(opts.root));
   } catch (err) {
     if (err && err.name === 'NodeExitError') throw err;
     if (providers[0] !== 'webgpu') throw err;
     log(`kev: webgpu failed (${err.message}); retrying on wasm`);
-    return openOn(fs, base, dateFacts, ['wasm'], log, opts.ortDir);
+    return openOn(fs, base, dateFacts, ['wasm'], log, ortDirOf(opts.root));
   }
-}
-
-// Ready to open a model: the pinned onnxruntime-web is installed (intent
-// pull installs it; kev.js ships with the skill).
-async function ready(fs) {
-  return Boolean(await pinnedOrtDir(fs));
 }
 
 module.exports = {
@@ -272,5 +307,5 @@ module.exports = {
   weightsStatus,
   missingWeightsMessage,
   pullWeights,
-  ready,
+  depsStatus,
 };

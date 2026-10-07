@@ -13,6 +13,7 @@ const browser = require('sliccy:browser');
 const cli = require('sliccy:cli');
 const fs = require('fs');
 const exec = require('sliccy:exec');
+const skill = require('sliccy:skill');
 const lib = require('./intent.js');
 const page = require('./snapshot.js');
 const { createIntent, DIR, CALLS, STATE } = require('./intent-core.js');
@@ -150,7 +151,7 @@ async function main() {
     await fs.mkdir(DIR, { recursive: true });
     await fs.rm(STATE).catch(() => {});
     await fs.rm(CALLS).catch(() => {});
-    const core = createIntent({ exec, fs, browser });
+    const core = createIntent({ exec, fs, browser, root: skill.dir.replace(/\/scripts\/?$/, '') });
     const s1 = {
       // --s1-model: kept for command lines that name the default (4b-vision).
       ...(typeof flags['s1-model'] === 'string' ? { model: flags['s1-model'] } : {}),

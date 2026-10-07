@@ -3,8 +3,9 @@
 // serve requests that other processes leave in /tmp/intent/q (serve). See
 // intent.jsh for the command and intent.js for the decision model.
 //
-// createIntent({ exec, fs, browser }) binds it to the
-// sliccy modules of the entry script; `system1` stands in for kev in tests.
+// createIntent({ exec, fs, browser, root }) binds it to the
+// sliccy modules of the entry script and the skill's directory (root, whose
+// node_modules hold kev.js); `system1` stands in for kev in tests.
 
 const page = require('./snapshot.js');
 const pageScan = require('./page-scan.js');
@@ -41,7 +42,7 @@ const LOG_MAX_BYTES = 20 * 1024 * 1024;
 const LOG_MAX_FILES = 1000;
 const LOG_SNAPSHOT_MAX = 256 * 1024;
 
-function createIntent({ exec, fs, browser, system1 = null }) {
+function createIntent({ exec, fs, browser, root = '', system1 = null }) {
   class IntentError extends Error {
     constructor(message, exitCode = 1) {
       super(message);
@@ -186,9 +187,10 @@ function createIntent({ exec, fs, browser, system1 = null }) {
         `--from ${from} has no manifest.json: point it at a kev bundle directory`
       );
     }
-    if (!(await kevRuntime.ready(fs))) {
+    const deps = await kevRuntime.depsStatus(fs, root);
+    if (!deps.ok) {
       throw new IntentError(
-        `${kevRuntime.ORT_SPEC} is not installed: run \`intent pull\` once, then retry`
+        `the skill's dependencies are not installed (${deps.missing.join(', ')}): run \`intent pull\` once, then retry`
       );
     }
     let vision = /-vision$/.test(size || '');
@@ -211,6 +213,7 @@ function createIntent({ exec, fs, browser, system1 = null }) {
       model = await kevRuntime.openModel(fs, exec, {
         model: size,
         from: from || null,
+        root,
         // A software WebGPU adapter (SwiftShader) runs kev ~10x slower:
         // with requireGpu it stops here instead.
         requireGpu,
@@ -401,8 +404,10 @@ function createIntent({ exec, fs, browser, system1 = null }) {
   function resolveRef(ref, obs, state) {
     const now = obs.shot.elements.find((e) => e.token === ref);
     const before = (state.candidates || []).find((c) => c.ref === ref);
-    if (now && (!before || (now.role === before.role && now.label === before.label))) return now;
+    if (now && !before) return now;
     if (before) {
+      // The remembered occurrence (the k-th control of that role and
+      // label), not whatever control the ref names after a re-render.
       const same = obs.shot.elements.filter(
         (e) => e.role === before.role && e.label === before.label
       );
@@ -431,6 +436,14 @@ function createIntent({ exec, fs, browser, system1 = null }) {
     const commands = [];
     const named = `${element.role} "${page.shown(element.label)}"`;
     const plain = !element.synthetic && !Number.isInteger(element.nth);
+    // A control whose name repeats is reached in the page by its place among
+    // the same-named ones (page-scan.js pick): its ref names the first.
+    const repeated = !element.synthetic && Number.isInteger(element.nth);
+    const pick = async (extra) => {
+      const spec = JSON.stringify({ name: element.label, nth: element.nth, ...extra });
+      const r = await js(tab, `(${pageScan.scan.toString()})(${spec})`);
+      return r.exitCode === 0 ? String(r.stdout || '').replace(/^"|"$/g, '') : 'failed';
+    };
     if (op === 'type') {
       if (element.kind !== 'fill') throw new IntentError(`${named} is not a field to type into`);
       await act(tab, { operation: 'TYPE_TEXT', element, text: parsed.value }, viewport, commands);
@@ -438,9 +451,19 @@ function createIntent({ exec, fs, browser, system1 = null }) {
       if (parsed.submit) await pressKey(tab, 'Enter');
       return `typed "${parsed.value}" into ${named}${parsed.submit ? ' and pressed Enter' : ''}`;
     }
-    if (op === 'select' && (element.role === 'combobox' || element.role === 'listbox') && plain) {
-      const r = await pw(['select', element.token, parsed.value, `--tab=${tab}`]);
-      if (r.exitCode === 0) return `selected "${parsed.value}" in ${named}`;
+    if (
+      op === 'select' &&
+      (element.role === 'combobox' || element.role === 'listbox') &&
+      (plain || repeated)
+    ) {
+      if (plain) {
+        const r = await pw(['select', element.token, parsed.value, `--tab=${tab}`]);
+        if (r.exitCode === 0) return `selected "${parsed.value}" in ${named}`;
+      } else {
+        const r = await pick({ op: 'select', value: parsed.value });
+        if (r === 'ok') return `selected "${parsed.value}" in ${named}`;
+        if (r === 'no-option') throw new IntentError(`${named} has no option "${parsed.value}"`);
+      }
       // Not a native <select>: an autocomplete. Type the value; its
       // suggestion is the next intent.
       await act(tab, { operation: 'TYPE_TEXT', element, text: parsed.value }, viewport, commands);
@@ -454,9 +477,25 @@ function createIntent({ exec, fs, browser, system1 = null }) {
       const r = await pw([op, element.token, `--tab=${tab}`]);
       if (r.exitCode === 0) return `${op}ed ${named}`;
     }
+    if (
+      (op === 'check' || op === 'uncheck') &&
+      repeated &&
+      /^(checkbox|radio|switch|menuitemcheckbox)$/.test(element.role)
+    ) {
+      const r = await pick({ op });
+      if (r === 'already') return `${named} was already ${op}ed`;
+      if (r === 'ok') return `${op}ed ${named}`;
+    }
     if (op === 'hover' && plain) {
       const r = await pw(['hover', element.token, `--tab=${tab}`]);
       if (r.exitCode === 0) return `hovered over ${named}`;
+    }
+    if (op === 'hover' && repeated) {
+      const at = /"x":(-?\d+),"y":(-?\d+)/.exec(await pick({ op: 'locate' }));
+      if (at) {
+        await pw(['mousemove', `--tab=${tab}`, at[1], at[2]]);
+        return `hovered over ${named}`;
+      }
     }
     await act(tab, { operation: 'CLICK', element }, viewport, commands);
     return `clicked ${named}`;
