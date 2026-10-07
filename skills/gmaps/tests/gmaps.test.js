@@ -44,14 +44,14 @@ function modeOf(url) {
  * Run gmaps.jsh. `serve(url)` returns a fixture name, a raw string, or
  * { status, body }. Returns { exitCode, stdout, stderr, urls }.
  */
-async function run(argv, serve = () => 'walking') {
+async function run(argv, serve = () => 'walking', env = {}) {
   const src = readFileSync(SCRIPT, 'utf8');
   const stdout = [];
   const stderr = [];
   const urls = [];
   const proc = {
     argv: ['node', SCRIPT, ...argv],
-    env: {},
+    env,
     exit(code = 0) {
       throw new NodeExitError(code);
     },
@@ -76,6 +76,7 @@ async function run(argv, serve = () => 'walking') {
   const fetchStub = async (url) => {
     urls.push(String(url));
     const r = serve(String(url));
+    if (r === HANG) return new Promise(() => {});
     const res = typeof r === 'object' ? r : { body: /^[a-z]+$/.test(r) ? FIX(r) : r };
     const status = res.status === undefined ? 200 : res.status;
     return { ok: status < 300, status, text: async () => res.body };
@@ -94,6 +95,7 @@ async function run(argv, serve = () => 'walking') {
   return { exitCode, stdout: stdout.join('\n'), stderr: stderr.join('\n'), urls };
 }
 
+const HANG = Symbol('never answers');
 const O = 'Levelingstraße 2, 81673 München';
 const D = 'August-Everding-Straße 24, 81671 München';
 const byMode = (url) => ({ 0: 'driving', 2: 'walking', 3: 'transit' })[modeOf(url)] || 'walking';
@@ -238,6 +240,35 @@ test('routes without durations are reported as a layout change', async () => {
   ok(r.stdout.includes('layout changed'), r.stdout);
 });
 
+test('valid JSON with a changed envelope is a layout error, not "no route"', async () => {
+  for (const body of [
+    ")]}'\n[]",
+    ')]}\'\n{"error":"x"}',
+    ")]}'\n[[null, []]]",
+    ')]}\'\n[[[[[["A"]]]], {}]]',
+  ]) {
+    const r = await run(['route', O, D, '--mode', 'walking'], () => body);
+    is(r.exitCode, 1, body);
+    ok(r.stdout.includes('unexpected response layout'), `${body} → ${r.stdout}`);
+    ok(!r.stdout.includes('no walking route'), body);
+  }
+});
+
+test('a request that never answers times out instead of hanging', async () => {
+  const r = await run(['route', O, D, '--mode', 'walking'], () => HANG, { GMAPS_TIMEOUT_MS: '50' });
+  is(r.exitCode, 1, r.stderr);
+  ok(r.stdout.includes('no answer within 0.05s'), r.stdout);
+});
+
+test('--depart HH:MM resolves to a date and shows it', async () => {
+  const r = await run(
+    ['route', O, D, '--mode', 'transit', '--depart', '19:00', '--json'],
+    () => 'transit'
+  );
+  is(r.exitCode, 0, r.stderr);
+  ok(/^depart \d{4}-\d{2}-\d{2} 19:00$/.test(JSON.parse(r.stdout)[0].time), r.stdout.slice(0, 200));
+});
+
 // ── argument errors (exit 2, no request) ────────────────────────────────────
 
 test('usage errors exit 2 without any request', async () => {
@@ -248,6 +279,8 @@ test('usage errors exit 2 without any request', async () => {
     ['route', O, D, '--mode'],
     ['route', O, D, '--depart', '25:00'],
     ['route', O, D, '--depart', '2026-13-01T10:00'],
+    ['route', O, D, '--depart', '2026-02-31T10:00'],
+    ['route', O, D, '--arrive', '2026-04-31T10:00'],
     ['route', O, D, '--depart', '19:00', '--arrive', '20:00'],
     ['route', O, D, '--bogus'],
     ['frobnicate', O, D],
