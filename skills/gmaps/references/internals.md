@@ -72,6 +72,13 @@ string, which is locale-formatted.
 
 ## Failure modes, handled
 
+- Envelope check first: `j[0][0]` must be an array of at least two waypoints, each with a
+  query string, and `j[0][1]` must be absent or an array. Otherwise the result is
+  `unexpected response layout`, never a quiet "no route" (Codex review, PR #476).
+- Some requests never answer: measured 2026-10-06, Munich Hbf → Freising and London → Oxford
+  (driving) hung for minutes while other routes answered in ~1 s. The realm `fetch` ignores
+  `AbortSignal.timeout()` (measured: a 4 s signal never fired), so request and body read are raced
+  against a 20 s timer (`GMAPS_TIMEOUT_MS` overrides it, which the tests use).
 - Unknown place: HTTP 200 with routes empty and that waypoint's coordinates
   null → `can't find "<query>"`.
 - No route (Munich → New York by car): coordinates present, routes empty.
