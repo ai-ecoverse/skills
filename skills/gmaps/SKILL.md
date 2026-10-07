@@ -19,8 +19,8 @@ allowed-tools: bash
 
 `gmaps` asks Google Maps for directions through the same backend endpoint the
 Maps web app uses (`/maps/preview/directions`). It needs no API key, cookie or
-browser tab, and answers all four travel modes in about 1.5 s. The command is [`scripts/gmaps.jsh`](scripts/gmaps.jsh);
-offline tests live in `tests/gmaps.test.js` (`tst skills/gmaps/tests/gmaps.test.js`).
+browser tab, and answers all four travel modes in about 1.5 s. The command is
+[`scripts/gmaps.jsh`](scripts/gmaps.jsh).
 
 ## Quick start
 
