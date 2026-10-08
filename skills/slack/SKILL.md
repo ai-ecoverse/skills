@@ -1,16 +1,16 @@
 ---
 name: slack
-description: Slack Web API client — read Slack messages, post to Slack channels, search
-  Slack message text and channels, read Slack threads, find and look up Slack users by
-  name, username, or email, view Slack activity and notifications, manage Slack support
-  requests, and watch Slack channels for new messages in real time. Multi-workspace,
-  auto-detected from the active tab. Use when the user wants to check, post, or search
-  Slack messages or message text, search Slack channels, read Slack threads, get Slack
-  user info, view Slack notifications or activity feed, manage Slack support
+description: Slack Web API client — read Slack messages, post to Slack channels, add or
+  remove an emoji reaction on any message, search Slack message text and channels, read
+  Slack threads, find and look up Slack users by name, username, or email, view Slack
+  activity and notifications, manage Slack support requests, and watch Slack channels
+  for new messages in real time. Multi-workspace, auto-detected from the active tab. Use
+  when the user wants to check, post, react to, or search Slack messages, add a
+  reaction, get Slack user info, view the Slack activity feed, manage Slack support
   tickets/help requests, watch a Slack channel for updates, or automate any Slack task.
   Triggers on mentions of Slack, Slack channels, DMs, threads, or messages, Slackbot,
-  Slack notifications, Slack channel activity, Slack support or help requests,
-  watching/monitoring a Slack channel, or searching Slack message text. Also provides
+  Slack notifications, Slack support or help requests, watching/monitoring a Slack
+  channel, react or emoji reaction, or searching Slack message text. Also provides
   slack-ext for admin user-management (guest conversion, guest channels) and Slack app
   manifest reads and diffs.
 allowed-tools: bash
@@ -284,6 +284,42 @@ slack post C087NCG774J "no sticker please" --no-sign
 After a successful post, replies are watched for **one hour** and routed back to the cone that
 posted (`--watch-scoop=<name>` routes elsewhere, `--no-watch` opts out); your own messages never
 notify. Scope, sharing and routing rules: `references/watch-architecture.md`, "Auto-watch for replies".
+
+### slack react \<channel_id\> \<message_ts\> \<emoji\>
+
+Add an emoji reaction to any message, as you (`reactions.add`). The emoji is a
+shortcode with or without colons (`:ticket:` or `ticket`; skin tones as
+`+1::skin-tone-3`). Use it where a reaction is the trigger, for example a
+`:ticket:` reaction that files a vendor ticket in a support channel. The message ts is
+the `[ts=...]` that `history`, `thread` and `search` print.
+
+Idempotent: if you already reacted with that emoji, Slack's `already_reacted` is
+reported as a note and the command exits 0. Any other Slack error (`invalid_name`,
+`message_not_found`, `channel_not_found`, ...) prints `Error: <error>` and exits 1.
+
+```bash
+slack react C0123456789 1700000000.000100 :ticket:
+# → Reacted :ticket: on C0123456789 ts=1700000000.000100
+# a second run:
+# → Note: C0123456789 ts=1700000000.000100 already has :ticket: from you (already_reacted); nothing to do.
+```
+
+### slack unreact \<channel_id\> \<message_ts\> \<emoji\>
+
+Remove your own emoji reaction (`reactions.remove`). `no_reaction` (you had not
+reacted with it) is reported as a note and exits 0; other errors exit 1. Slack only
+lets you remove your own reactions. Where a reaction triggers a workflow, removing it
+may undo that workflow (for a `:ticket:` reaction, cancel the ticket), so check first.
+
+### slack reactions \<channel_id\> \<message_ts\> [--json]
+
+List the reactions on a message (`reactions.get` with `full=true`): one line per emoji
+with its count and the reacting user ids. `--json` prints the raw API response.
+
+```
+:ticket:                     1  U0AAAAAAA01
+:raised_hands::skin-tone-4:  1  U0BBBBBBB02
+```
 
 ### slack channels [--search=term]
 

@@ -521,6 +521,104 @@ function normalizeEmojiName(value) {
   return trimmed || null;
 }
 
+// Remove an emoji reaction from a message. Same contract as addReaction:
+// `name` is a bare shortcode and the {ok:false,error} shape is returned to the
+// caller. Thin wrapper over reactions.remove.
+async function removeReaction({ channel, timestamp, name }, workspaceId, { fatal = false } = {}) {
+  return slackApi('reactions.remove', { channel, timestamp, name }, workspaceId, { fatal });
+}
+
+// --- react / unreact / reactions commands ---
+
+// A Slack message ts: seconds, a dot, microseconds (e.g. 1791442410.765389).
+const MESSAGE_TS_RE = /^\d+\.\d+$/;
+// A bare shortcode after normalizeEmojiName: no whitespace, commas, or inner
+// colons, except one optional skin-tone modifier ("+1::skin-tone-3").
+const EMOJI_NAME_RE = /^[^\s:,]+(::skin-tone-[2-6])?$/;
+
+// The Slack error each reaction method reports when the requested state
+// already holds. Treated as success so the commands are idempotent.
+const REACTION_NOOP_ERRORS = {
+  'reactions.add': 'already_reacted',
+  'reactions.remove': 'no_reaction',
+};
+
+// Validate `<channel_id> <message_ts> [<emoji>]` (pure; no I/O, no exit).
+// Returns { channel, timestamp, name } or { error } with a one-line reason.
+function parseReactionTarget(positional, { needEmoji = true } = {}) {
+  const [channel, timestamp, emoji] = positional || [];
+  if (!channel || !timestamp || (needEmoji && !emoji)) return { error: 'missing_args' };
+  if (!/^[A-Za-z0-9]+$/.test(channel)) {
+    return { error: `Invalid channel ID "${channel}". Expected format: alphanumeric (e.g. C0899S7HV0E).` };
+  }
+  if (!MESSAGE_TS_RE.test(timestamp)) {
+    return { error: `Invalid message ts "${timestamp}". Expected format: 1791442410.765389 (shown as [ts=...] by history/thread).` };
+  }
+  if (!needEmoji) return { channel, timestamp, name: null };
+  const name = normalizeEmojiName(emoji);
+  if (!name || !EMOJI_NAME_RE.test(name)) {
+    return { error: `Invalid emoji "${emoji}". Expected a shortcode such as :ticket: or ticket.` };
+  }
+  return { channel, timestamp, name };
+}
+
+// Classify a reactions.add / reactions.remove response (pure).
+//   { ok: true,  changed: true }               -> the reaction was added/removed
+//   { ok: true,  changed: false, note: <err> } -> already in the requested state
+//   { ok: false, error: <err> }                -> any other Slack failure
+function interpretReactionResult(method, data) {
+  if (data && data.ok) return { ok: true, changed: true };
+  const error = (data && data.error) || 'unknown_error';
+  if (REACTION_NOOP_ERRORS[method] === error) return { ok: true, changed: false, note: error };
+  return { ok: false, error };
+}
+
+// Shared body of `slack react` and `slack unreact`.
+async function runReactionChange(kind, args, globalFlags) {
+  const { positional } = parseArgs(args);
+  const target = parseReactionTarget(positional);
+  if (target.error) {
+    if (target.error !== 'missing_args') console.error(`Error: ${target.error}`);
+    console.error(`Usage: slack ${kind} <channel_id> <message_ts> <emoji>`);
+    console.error('The emoji may be given with or without colons (:ticket: or ticket).');
+    process.exit(1);
+  }
+  const wsId = await resolveWorkspace(globalFlags);
+  const method = kind === 'react' ? 'reactions.add' : 'reactions.remove';
+  const call = kind === 'react' ? addReaction : removeReaction;
+  // fatal: true only exits on auth failure / rate limiting (with the usual
+  // hint); every other {ok:false} comes back to interpretReactionResult.
+  const data = await call(target, wsId, { fatal: true });
+  const res = interpretReactionResult(method, data);
+  const where = `${target.channel} ts=${target.timestamp}`;
+  if (!res.ok) {
+    console.error(`Error: ${res.error}`);
+    if (res.error === 'invalid_name') console.error(`No emoji named :${target.name}: in this workspace.`);
+    if (res.error === 'message_not_found') console.error(`No message ${target.timestamp} in ${target.channel}.`);
+    process.exit(1);
+  }
+  if (!res.changed) {
+    const state = kind === 'react' ? 'already has' : 'does not have';
+    console.log(`Note: ${where} ${state} :${target.name}: from you (${res.note}); nothing to do.`);
+    return;
+  }
+  console.log(kind === 'react' ? `Reacted :${target.name}: on ${where}` : `Removed :${target.name}: from ${where}`);
+}
+
+// One line per reaction: `:name:  count  user ids`. A Slack reaction's
+// `users` list can be shorter than `count` even with full=true; say so rather
+// than printing a count that the ids do not add up to (pure).
+function formatReactionLines(reactions) {
+  const list = Array.isArray(reactions) ? reactions : [];
+  if (list.length === 0) return ['No reactions.'];
+  const width = Math.max(...list.map((r) => String(r.name || '').length + 2));
+  return list.map((r) => {
+    const users = Array.isArray(r.users) ? r.users : [];
+    const more = typeof r.count === 'number' && r.count > users.length ? ` (+${r.count - users.length} not listed)` : '';
+    return `${(':' + (r.name || '?') + ':').padEnd(width)}  ${String(r.count)}  ${users.join(', ')}${more}`;
+  });
+}
+
 // Decide the auto-watch shape from a channel's member count.
 //   > 100 members            -> watch the THREAD ONLY (thread === threadTs)
 //   <= 100 members / DM / n/a -> watch the CHANNEL (also covers thread replies,
@@ -2518,6 +2616,42 @@ const commands = {
 
 // Aliases for the people-search command.
 commands.users = commands.find;
+
+// Add an emoji reaction to any message (reactions.add). Idempotent: Slack's
+// `already_reacted` is reported as a note and exits 0.
+commands.react = async (args, globalFlags) => runReactionChange('react', args, globalFlags);
+
+// Remove your emoji reaction from a message (reactions.remove). Idempotent:
+// Slack's `no_reaction` is reported as a note and exits 0.
+commands.unreact = async (args, globalFlags) => runReactionChange('unreact', args, globalFlags);
+
+// List the reactions on a message (reactions.get, full=true). --json prints the
+// raw API response.
+commands.reactions = async (args, globalFlags) => {
+  const { flags, positional } = parseArgs(args);
+  const target = parseReactionTarget(positional, { needEmoji: false });
+  if (target.error) {
+    if (target.error !== 'missing_args') console.error(`Error: ${target.error}`);
+    console.error('Usage: slack reactions <channel_id> <message_ts> [--json]');
+    process.exit(1);
+  }
+  const wsId = await resolveWorkspace(globalFlags);
+  const data = await slackApi(
+    'reactions.get',
+    { channel: target.channel, timestamp: target.timestamp, full: 'true' },
+    wsId
+  );
+  if (!data.ok) {
+    console.error('Error:', data.error);
+    process.exit(1);
+  }
+  if (flags.json) {
+    console.log(JSON.stringify(data, null, 2));
+    return;
+  }
+  const item = data.message || data.file || data.comment || {};
+  for (const line of formatReactionLines(item.reactions)) console.log(line);
+};
 commands['find-user'] = commands.find;
 
 // --- Attachment action helper ---
@@ -2715,6 +2849,12 @@ if (!cmd || cmd === 'help' || cmd === '--help') {
   console.log('  upload <channel_id> <file> [--thread_ts=TS] [--comment="..."] [--title="..."]');
   console.log('                                           Upload a file to a channel/DM/thread');
   console.log('  download <file_id> [--out=<path>]         Download a file (e.g. thread image) locally');
+  console.log('  react <channel_id> <message_ts> <emoji>   Add an emoji reaction (:ticket: or ticket);');
+  console.log('                                           already_reacted is a no-op success');
+  console.log('  unreact <channel_id> <message_ts> <emoji> Remove your emoji reaction; no_reaction is a');
+  console.log('                                           no-op success');
+  console.log('  reactions <channel_id> <message_ts> [--json]');
+  console.log('                                           List reactions on a message (name, count, user ids)');
   console.log('  channels --search=<term>                  Search for channels');
   console.log('  search <query> [--limit=N] [--page=N] [--sort=timestamp|score] [--json]');
   console.log('                                           Search message text (not users — see find)');
