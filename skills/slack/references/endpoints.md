@@ -12,6 +12,8 @@ Transport: XHR with `Content-Type: application/x-www-form-urlencoded` and `withC
   - [POST /api/conversations.replies](#post-apiconversationsreplies)
   - [POST /api/chat.postMessage](#post-apichatpostmessage)
   - [POST /api/reactions.add](#post-apireactionsadd)
+  - [POST /api/reactions.remove](#post-apireactionsremove)
+  - [POST /api/reactions.get](#post-apireactionsget)
   - [POST /api/conversations.open](#post-apiconversationsopen)
   - [POST /api/conversations.info](#post-apiconversationsinfo)
   - [POST /api/auth.test](#post-apiauthtest)
@@ -151,8 +153,8 @@ Post a message to a channel or DM.
 
 ### POST /api/reactions.add
 
-Add an emoji reaction to a message. Used by `slack post`'s auto-sign feature to
-"sign" the just-posted message (default `icecream` → 🍦).
+Add an emoji reaction to a message. Used by `slack react`, and by `slack post`'s
+auto-sign feature to "sign" the just-posted message (default `icecream` → 🍦).
 
 **Parameters:**
 | Param | Required | Description |
@@ -171,6 +173,48 @@ Add an emoji reaction to a message. Used by `slack post`'s auto-sign feature to
 - `already_reacted` — the reaction is already present on the message.
 - `invalid_name` — no emoji with that name exists in the workspace.
 - `no_reaction` / permission-style errors — cannot react in this context.
+
+`slack react` treats only `already_reacted` as success (exit 0, with a note); every
+other error exits 1.
+
+### POST /api/reactions.remove
+
+Remove the caller's own emoji reaction from a message. Used by `slack unreact`.
+
+**Parameters:** same as `reactions.add` (`channel`, `timestamp`, `name`).
+
+**Response:** `{ "ok": true }`
+
+**Errors:** `no_reaction` means the caller had not reacted with that emoji; `slack
+unreact` treats it as success (exit 0, with a note). Anything else exits 1.
+
+### POST /api/reactions.get
+
+Read the reactions on a message. Used by `slack reactions`.
+
+**Parameters:**
+| Param | Required | Description |
+|-------|----------|-------------|
+| token | yes | xoxc token |
+| channel | yes | Channel/DM ID |
+| timestamp | yes | Message `ts` |
+| full | no | `true` returns the complete `users` list per reaction |
+
+**Response** (shape measured on an Enterprise Grid workspace, 2026-10-08; ids replaced):
+```json
+{
+  "ok": true,
+  "type": "message",
+  "channel": "C0123456789",
+  "message": {
+    "ts": "1700000000.000100",
+    "reactions": [
+      { "name": "ticket", "users": ["U0AAAAAAA01"], "count": 1 },
+      { "name": "raised_hands::skin-tone-4", "users": ["U0BBBBBBB02"], "count": 1 }
+    ]
+  }
+}
+```
 
 ### POST /api/conversations.open
 
