@@ -1,0 +1,108 @@
+// The shipped configuration is the one BU Bench V2.1 measured: kev-4b-vision
+// as System 1, RETRIEVE in budget mode.
+import test, { is, ok } from 'tst';
+import * as adapterMod from '../evals/harness/adapter.js';
+import * as intentMod from '../scripts/intent.js';
+import * as coreMod from '../scripts/intent-core.js';
+import * as kevMod from '../scripts/kev/kev-runtime.js';
+
+const adapter = adapterMod.default || adapterMod;
+const core = coreMod.default || coreMod;
+const lib = intentMod.default || intentMod;
+const kev = kevMod.default || kevMod;
+
+const PAGE = [
+  'Page URL: https://shop.example/cart',
+  'Page Title: Cart',
+  '- rootwebarea',
+  '  - heading "Your cart" [ref=e1]',
+  '  - paragraph',
+  '    - text "Subtotal: $24.99" [ref=e2]',
+  '  - paragraph',
+  '    - text "Shipping: free" [ref=e3]',
+  '  - button "Check out" [ref=e4]',
+].join('\n');
+
+function fakes() {
+  const files = new Map();
+  const fs = {
+    async exists(p) {
+      return files.has(p);
+    },
+    async readFile(p) {
+      if (!files.has(p)) throw new Error(`ENOENT ${p}`);
+      return files.get(p);
+    },
+    async writeFile(p, v) {
+      files.set(p, String(v));
+    },
+    async mkdir() {},
+    async rm(p) {
+      files.delete(p);
+    },
+    async readDir() {
+      return [];
+    },
+  };
+  const exec = {
+    spawn: async (argv) =>
+      argv[1] === 'snapshot'
+        ? { exitCode: 0, stdout: PAGE, stderr: '' }
+        : { exitCode: 0, stdout: '', stderr: '' },
+  };
+  const browser = { eval: async () => '[]' };
+  const asked = [];
+  const system1 = {
+    name: 'kev test',
+    key: '4b-vision',
+    kev: true,
+    vision: false,
+    intent: {},
+    ask: async (body) => {
+      asked.push(body);
+      // t2 is the subtotal text; unsure (0.5) on purpose.
+      return { answers: { action: { probabilities: { t2: 0.5, t3: 0.3, NONE: 0.2 } } } };
+    },
+  };
+  return { fs, exec, browser, system1, asked };
+}
+
+test('RETRIEVE answers in budget mode by default: the likely texts, in page order', async () => {
+  const f = fakes();
+  const { handle } = core.createIntent({
+    exec: f.exec,
+    fs: f.fs,
+    browser: f.browser,
+    system1: f.system1,
+  });
+  const out = await handle({ intent: 'what is the subtotal?', tab: 'AB12', json: true }, {});
+  const r = JSON.parse(out.stdout);
+  is(r.outcome, 'budget');
+  ok(
+    r.texts.some((t) => t.includes('Subtotal: $24.99')),
+    JSON.stringify(r.texts)
+  );
+  is(f.asked.length, 1);
+});
+
+test('only budget retrieval and the measured System 1 are left', () => {
+  is(lib.retrieveFlagError(undefined), null);
+  is(lib.retrieveFlagError('budget'), null);
+  ok(lib.retrieveFlagError('answer'), 'answer mode is gone');
+  ok(lib.retrieveFlagError('lexical'), 'lexical mode is gone');
+  is(lib.MODELS, ['4b-vision']);
+  is(Object.keys(kev.MODELS), ['4b-vision']);
+  ok(lib.cleanRequest({ intent: 'click Search', model: 'clef' }).error, 'no remote decider');
+  ok(lib.cleanRequest({ intent: 'click Search', model: '0.8b-vision' }).error);
+  is(lib.cleanRequest({ intent: 'click Search', model: '4b-vision' }).req.model, '4b-vision');
+});
+
+test('harness: the budget intent arm and the playwright-cli reference, nothing held', () => {
+  is(
+    adapter.arms.map((a) => a.id),
+    ['intent-budget', 'playwright-agent']
+  );
+  is(adapter.heldArms, undefined);
+  is(adapter.arms[0].setup, ['intent pull']);
+  ok(!adapter.arms[0].args.includes('--retrieve'), 'budget is the default');
+});

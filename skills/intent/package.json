@@ -1,0 +1,10 @@
+{
+  "name": "@ai-ecoverse/intent-skill",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Runtime dependencies of the intent skill. `intent pull` installs them into the skill's node_modules (ipk install); the kev model weights are downloaded separately.",
+  "dependencies": {
+    "@ai-ecoverse/kev.js": "0.6.0",
+    "onnxruntime-web": "1.30.0"
+  }
+}

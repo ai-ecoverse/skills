@@ -1,0 +1,187 @@
+{
+  "last_updated": "2026-10-03",
+  "goals": [
+    {
+      "id": "flights",
+      "url": "https://www.google.com/travel/flights?hl=en&gl=us&curr=USD",
+      "goal": "Search Google Flights from Berlin to London. Type Berlin into Where from and pick the Berlin suggestion, type London into Where to and pick the London suggestion. Type \"{{date:+7:MMM D}}\" into Departure and \"{{date:+14:MMM D}}\" into Return, then press Search. Keep Round trip, Economy and one passenger.",
+      "expect": ["London", "{{date:+7:MMM D}}", "{{date:+14:MMM D}}"],
+      "expect_url": ["/travel/flights/search"],
+      "max_steps": 14
+    },
+    {
+      "id": "wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Main_Page",
+      "goal": "Search Wikipedia for \"Kurt Gödel\" and open his article.",
+      "expect": [],
+      "expect_url": ["/wiki/Kurt_G"],
+      "max_steps": 6
+    },
+    {
+      "id": "httpbin",
+      "url": "https://httpbin.org/forms/post",
+      "goal": "Enter \"Ada Lovelace\" as the customer name and \"555-0142\" as the telephone, choose the Medium pizza size, then press Submit order.",
+      "expect": ["Ada Lovelace", "555-0142", "medium"],
+      "expect_url": ["httpbin.org/post"],
+      "max_steps": 8
+    },
+    {
+      "id": "hackernews",
+      "url": "https://news.ycombinator.com/",
+      "goal": "Open the comments page of the top story on Hacker News.",
+      "expect": [],
+      "expect_url": ["news.ycombinator.com/item?id={{hn:top}}"],
+      "max_steps": 6
+    },
+    {
+      "id": "armchair-bike",
+      "url": "https://www.biketouringtips.com/ArmchairBikeTouring/",
+      "goal": "Play Armchair Bike Touring and finish the 100 mile Newbie tour with as many points as you can. If the game has not started yet, click Click to Start Game, then Start Tour. How the game scores: each day starts at -2000 points (daily metabolism), and you earn points for the calories you burn only when you eat more than you burn that day, so eat plenty, about 3500 calories a day. Penalties: burning more than 350 calories in the morning before eating forces a stop and costs the uneaten calories; being forced to stop for the night costs 500; riding past the 50 mile daily limit cuts the next day's limit by 10; a flat tire or broken spoke you cannot fix with the repair kit means hitchhiking, minus 1000; going over the $150 budget costs 1000; a stealth camp that is discovered costs 1000. Sunshine and tailwinds add enjoyment points, headwinds and rain take them away; Road Angel meals add calories and enjoyment but cut the day's limit by 10. Each day, Get Some Food and eat before you are hungry, and Spend the Night Here at a campground or motel before the limit. Stop when the game says the tour is complete.",
+      "expect": ["completed your first bicycle tour"],
+      "expect_any": [["You've accumulated", "What would you like to do next?"]],
+      "expect_url": [],
+      "max_steps": 150,
+      "timeout_s": 2100,
+      "rubric": "# Rubric: Armchair Bike Touring, the 100-mile Newbie tour (meep-meep armchair-bike)\n\n## Source facts (verified 2026-10-02)\n- The game is https://www.biketouringtips.com/ArmchairBikeTouring/. Its scoring rules are on moreInfo.v3.html and are summarised in the task text.\n- Finishing the first tour shows: \"Congratulations! You have just completed your first bicycle tour. You rode the 100 miles in ...\". The end-of-day table lists \"Total Points All Tours <n>\" and any \"Penalties Assessed\" (for example \"Not Eating penalty -367\").\n- The status panel (calories used and eaten, budget, miles, the day's mileage limit, points) is drawn on a canvas: it shows in screenshots, not in page text.\n- A Road Angel meal or a side trip legitimately cuts the day's limit by 10; only riding past the limit is a mileage violation.\n- Live runs on 2026-10-01: one finished with -4255 points (Not Eating penalty on both days); one stopped at mile 96 with -2245.\n\n## Items\nA1_finished — The run shows the game's tour-completion message for the 100-mile tour in its final state or screenshots. Ending earlier, or the agent only claiming it finished, is violated.\nA2_points_floor — The last \"Total Points All Tours\" the game shows is -3000 or higher. Lower is violated; no points total shown anywhere is not_assessable.\nA3_points_positive — The last \"Total Points All Tours\" the game shows is 0 or higher.\nA4_no_forced_eating — The game never forced a stop to eat: no \"Not Eating penalty\" or forced-eating message on any day. Any such penalty is violated.\nA5_no_forced_night — The game never forced a stop for the night (the 500-point penalty). Any forced overnight stop is violated.\nA6_within_mileage — The rider never rode past the day's mileage limit (no next-day limit cut for riding too far). Cuts from Road Angel meals or side trips do not count.\nA7_within_budget — Spending stayed within the $150 budget: no over-budget penalty, and the remaining budget never went below $0.\nA8_repairs_without_hitchhiking — Every flat tire or broken spoke was repaired from the repair kit; no hitchhike to a bike store (minus 1000) happened. A run with no breakdowns is met.\n",
+      "weights": {
+        "A1_finished": 30,
+        "A2_points_floor": 10,
+        "A3_points_positive": 10,
+        "A4_no_forced_eating": 10,
+        "A5_no_forced_night": 10,
+        "A6_within_mileage": 10,
+        "A7_within_budget": 10,
+        "A8_repairs_without_hitchhiking": 10
+      }
+    },
+    {
+      "id": "drugwars",
+      "suite": "games",
+      "url": "https://drugwars.online/game",
+      "goal": "Play Drug Wars and finish all 30 days with the highest net worth you can. If the game has not started yet, click PLAY NOW. How the game scores: your score is Cash plus Bank minus Debt at the end of day 30. You start owing a $5,500 loan that grows 10% a day, while money in the bank earns 2% a day, so pay the loan back early and bank your profit. Buy a drug where it is cheap, travel to another city and sell it where it is expensive; prices swing a lot between cities. Every trip to another city takes a day. Police, muggings and market crashes happen at random. Keep playing until the game shows its final score page (GAME OVER); day 30 is not the end until that page appears. If the game ends early (arrested or killed), that is the result: choose DONE and do not start a new game. Do not read or change the game's code or its saved state.",
+      "expect": [],
+      "expect_url": [],
+      "max_steps": 250,
+      "timeout_s": 2700,
+      "rubric": "# Rubric: Drug Wars, 30 days (meep-meep drugwars)\n\n## Source facts (verified 2026-10-02)\n- https://drugwars.online/game: after [ PLAY NOW ], the header reads \"DAY 1 / 30 > New York City\"; each drug row has Decrease / Increase / MAX / BUY with the drug and its price (\"Heroin $6,037\").\n- Score = Cash + Bank − Debt at the end of day 30. The game starts with a $5,500 loan at 10% a day; the bank pays 2% a day.\n- Travelling to another city takes a day; police, muggings and market swings happen at random.\n\n## Items\nA1_finished — The run reaches the end of day 30 and the game shows its final result. Ending earlier is violated.\nA2_debt_repaid — The $5,500 loan is paid back before the end (debt shown as $0 or gone).\nA3_net_worth_positive — The final score (cash + bank − debt) is above $0.\nA4_net_worth_50k — The final score is $50,000 or more.\nA5_net_worth_250k — The final score is $250,000 or more.\nA6_profitable_trade — At least one sale was made for more than the drug was bought for, as the trajectory or screenshots show.\nA7_survived — The game did not end early through arrest or death.\n",
+      "weights": {
+        "A1_finished": 30,
+        "A2_debt_repaid": 15,
+        "A3_net_worth_positive": 15,
+        "A4_net_worth_50k": 10,
+        "A5_net_worth_250k": 10,
+        "A6_profitable_trade": 10,
+        "A7_survived": 10
+      }
+    },
+    {
+      "id": "seedship",
+      "suite": "games",
+      "url": "https://philome.la/johnayliff/seedship/play/index.html",
+      "goal": "Play Seedship and found the best colony you can. If the game has not started yet, click New game and continue through the introduction. At each planet, read the scan and decide: Found colony there, or Move on to the next planet. How the game scores: when you found a colony, the final score adds up the planet's atmosphere, gravity, temperature, water and resources, how many colonists are still alive, and how intact the landing, construction, culture and science systems are. Every trip damages systems and kills colonists, so a good planet early beats a perfect planet with a wrecked ship. Stop when the game shows the final score. Do not read or change the game's code or its saved state.",
+      "expect": [],
+      "expect_url": [],
+      "max_steps": 120,
+      "timeout_s": 1400,
+      "rubric": "# Rubric: Seedship, found a colony (meep-meep seedship)\n\n## Source facts (verified 2026-10-02)\n- https://philome.la/johnayliff/seedship/play/index.html is a SugarCube story: its choices are links without href (\"New game\", \"Continue\", \"Found colony\", \"Move on\").\n- Each planet shows atmosphere, gravity, temperature, water and resources as far as the damaged scanners allow; travel between planets damages systems and kills colonists.\n- Founding a colony ends the game with a score breakdown: planet conditions, colonists, landing and construction systems, culture and science.\n\n## Items\nA1_colony_founded — The run founds a colony and the game shows its ending with the score breakdown. Losing every colonist, or stopping before landing, is violated.\nA2_breathable — The colony's planet has a breathable atmosphere, as the scan or the ending shows.\nA3_moderate_temperature — The colony's planet has a moderate temperature (not too hot or too cold), as the scan or the ending shows.\nA4_water — The colony's planet has water (oceans or planet-wide), as the scan or the ending shows.\nA5_colonists_majority — More than half the original colonists are alive at landing.\nA6_systems_intact — The landing and construction systems are at 50% or more at landing.\nA7_score_floor — The final score the game shows is 10,000 or more.\n",
+      "weights": {
+        "A1_colony_founded": 30,
+        "A2_breathable": 10,
+        "A3_moderate_temperature": 10,
+        "A4_water": 10,
+        "A5_colonists_majority": 10,
+        "A6_systems_intact": 10,
+        "A7_score_floor": 20
+      }
+    },
+    {
+      "id": "wikirace",
+      "suite": "games",
+      "url": "https://en.wikipedia.org/wiki/Kurt_G%C3%B6del",
+      "goal": "Play the Wikipedia game: starting from this article, reach the Wikipedia article \"Drug Wars (video game)\" by clicking links inside the article text only. Do not use the search box, the address bar, or the sidebar and navigation menus. Any path counts.",
+      "expect": [],
+      "expect_url": ["Drug_Wars_(video_game)"],
+      "max_steps": 60,
+      "timeout_s": 720
+    },
+    {
+      "id": "password",
+      "suite": "local",
+      "url": "https://neal.fun/password-game/",
+      "goal": "play the password game: type a password into the password box and keep changing it until it satisfies every rule the game shows. accept the consent dialog first if one appears. new rules appear one at a time as you satisfy the earlier ones, and every earlier rule must stay satisfied, so change the password with care. how it is scored: by the highest rule number you reach. stop when you cannot satisfy the next rule.",
+      "expect": [],
+      "expect_url": [],
+      "max_steps": 60,
+      "timeout_s": 1000,
+      "rubric": "# Rubric: The Password Game (meep-meep password)\n\n## Source facts (verified 2026-10-02)\n- https://neal.fun/password-game/ starts behind a consent dialog (Consent); the password field is a rich-text editor.\n- Rules appear one at a time as the earlier ones are satisfied, numbered Rule 1, Rule 2, ...; every rule must stay satisfied.\n- Progress = the highest rule shown with all rules satisfied.\n\n## Items\nA1_rule_5 — The game shows Rule 5 or a later rule.\nA2_rule_8 — The game shows Rule 8 or a later rule.\nA3_rule_12 — The game shows Rule 12 or a later rule.\nA4_rule_16 — The game shows Rule 16 or a later rule.\nA5_rule_20 — The game shows Rule 20 or a later rule.\n",
+      "weights": {
+        "A1_rule_5": 20,
+        "A2_rule_8": 20,
+        "A3_rule_12": 20,
+        "A4_rule_16": 20,
+        "A5_rule_20": 20
+      }
+    },
+    {
+      "id": "paperclips",
+      "suite": "games",
+      "url": "https://www.decisionproblem.com/paperclips/index2.html",
+      "goal": "Play Universal Paperclips and grow the paperclip business as far as you can in the steps you have. Click Make Paperclip to make clips, buy Wire before it runs out, set the price per clip with lower and raise so the clips sell (watch Unsold Inventory and Public Demand), buy AutoClippers as soon as you can afford them, and raise the Marketing level. How it is scored: by the total paperclips made (the Paperclips counter); 1,000 clips earns the first trust and opens projects, which also count. Do not read or change the game's code or its saved state.",
+      "expect": [],
+      "expect_url": [],
+      "max_steps": 200,
+      "timeout_s": 2200,
+      "rubric": "# Rubric: Universal Paperclips, a fixed number of steps (meep-meep paperclips)\n\n## Source facts (verified 2026-10-02)\n- https://www.decisionproblem.com/paperclips/index2.html shows Paperclips, Available Funds, Unsold Inventory, Price per Clip (lower / raise), Public Demand, Marketing Level, Wire with its cost, and later AutoClippers.\n- 1,000 clips made earns the first trust and opens projects; wire runs out unless bought.\n\n## Items\nA1_clips_500 — The Paperclips counter reaches 500 or more.\nA2_clips_1000 — The Paperclips counter reaches 1,000 or more.\nA3_clips_3000 — The Paperclips counter reaches 3,000 or more.\nA4_autoclipper — At least one AutoClipper was bought.\nA5_wire_bought — Wire was bought at least once.\nA6_selling — Clips kept selling: Unsold Inventory did not pile up for good, Available Funds grew.\nA7_marketing — The Marketing Level was raised at least once.\nA8_project — At least one project was bought.\n",
+      "weights": {
+        "A1_clips_500": 15,
+        "A2_clips_1000": 15,
+        "A3_clips_3000": 10,
+        "A4_autoclipper": 15,
+        "A5_wire_bought": 15,
+        "A6_selling": 10,
+        "A7_marketing": 10,
+        "A8_project": 10
+      }
+    },
+    {
+      "id": "kittens",
+      "suite": "games",
+      "url": "https://kittensgame.com/web/",
+      "goal": "Play Kittens Game and grow the village as far as you can in the steps you have. Gather catnip, build Catnip fields, refine catnip into wood, build Huts so kittens arrive, and give the kittens jobs in the Village tab (farmers make catnip, woodcutters make wood). Then build a Library and research a technology in the Science tab. How it is scored: by how far the village gets: catnip fields, huts and kittens, jobs given, the first library and the first technology. Do not read or change the game's code or its saved state.",
+      "expect": [],
+      "expect_url": [],
+      "max_steps": 200,
+      "timeout_s": 2200,
+      "rubric": "# Rubric: Kittens Game, a fixed number of steps (meep-meep kittens)\n\n## Source facts (verified 2026-10-02)\n- https://kittensgame.com/web/ starts in the Bonfire tab with Gather catnip and Refine catnip; its buttons are divs.\n- Catnip fields grow catnip, huts bring kittens, kittens take jobs in the Village tab, a library opens the Science tab.\n\n## Items\nA1_catnip_field — At least one Catnip field was built.\nA2_hut — At least one Hut was built.\nA3_kittens_2 — The village has 2 or more kittens.\nA4_job — A kitten was given a job (farmer, woodcutter, ...).\nA5_library — A Library was built.\nA6_technology — A technology was researched in the Science tab.\nA7_kittens_5 — The village has 5 or more kittens.\n",
+      "weights": {
+        "A1_catnip_field": 15,
+        "A2_hut": 15,
+        "A3_kittens_2": 10,
+        "A4_job": 15,
+        "A5_library": 15,
+        "A6_technology": 15,
+        "A7_kittens_5": 15
+      }
+    },
+    {
+      "id": "darkroom",
+      "suite": "games",
+      "url": "https://adarkroom.doublespeakgames.com/",
+      "goal": "Play A Dark Room and get as far as you can in the steps you have. Light the fire and keep it stoked, wait for the stranger to become the builder, gather wood in the forest, and have the builder build a cart, huts and traps. Check the traps, put villagers to work as gatherers and hunters, and craft a torch. How it is scored: by how far you get: fire lit, builder awake, cart, first hut, traps, villagers working, and crafted items. Do not read or change the game's code or its saved state.",
+      "expect": [],
+      "expect_url": [],
+      "max_steps": 160,
+      "timeout_s": 1800,
+      "rubric": "# Rubric: A Dark Room, a fixed number of steps (meep-meep darkroom)\n\n## Source facts (verified 2026-10-02)\n- https://adarkroom.doublespeakgames.com/ starts with \"light fire\" in a dark room; its buttons are divs.\n- The stranger by the fire becomes the builder; then wood can be gathered and the builder builds carts, huts and traps; villagers can be put to work; items can be crafted.\n\n## Items\nA1_fire_lit — The fire was lit and kept burning.\nA2_builder — The builder (the stranger) is awake and offers to build.\nA3_cart — A cart was built.\nA4_hut — At least one hut was built.\nA5_trap — At least one trap was built.\nA6_workers — At least one villager was put to work (gatherer, hunter, trapper, ...).\nA7_crafted — At least one item was crafted (for example a torch).\n",
+      "weights": {
+        "A1_fire_lit": 10,
+        "A2_builder": 15,
+        "A3_cart": 15,
+        "A4_hut": 15,
+        "A5_trap": 15,
+        "A6_workers": 15,
+        "A7_crafted": 15
+      }
+    }
+  ]
+}

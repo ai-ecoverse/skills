@@ -1,0 +1,1278 @@
+// The intent tool's engine, shared by the `intent` command and the eval
+// arm's driver: observe a tab, ask System 1, act or answer (handle), and
+// serve requests that other processes leave in /tmp/intent/q (serve). See
+// intent.jsh for the command and intent.js for the decision model.
+//
+// createIntent({ exec, fs, browser, root }) binds it to the
+// sliccy modules of the entry script and the skill's directory (root, whose
+// node_modules hold kev.js); `system1` stands in for kev in tests.
+
+const page = require('./snapshot.js');
+const pageScan = require('./page-scan.js');
+const lib = require('./intent.js');
+const { tabTools } = require('./tab.js');
+const kevRuntime = require('./kev/kev-runtime.js');
+const vision = require('./vision.js');
+
+const DIR = '/tmp/intent';
+const STATE = `${DIR}/state.json`;
+const CALLS = `${DIR}/calls.jsonl`;
+const QUEUE = `${DIR}/q`;
+const ANSWERS = `${DIR}/a`;
+const BEAT = `${DIR}/serve.json`;
+// The daemon writes its heartbeat this often; a client trusts one this fresh.
+const BEAT_MS = 2000;
+const BEAT_FRESH_MS = 8000;
+const POLL_MS = 100;
+
+// The local default: see SKILL.md for the measurements behind it.
+const DEFAULT_MODEL = '4b-vision';
+const SHORTLIST_CONTROLS = 24;
+const SHORTLIST_TEXT = 16;
+const EVIDENCE = 6;
+const WAIT_DEFAULT_S = 15;
+const UNSURE_CANDIDATES = 5;
+const LIST_MAX = 20;
+// RETRIEVE returns System 1's most likely texts, in page order, until this
+// many characters (--retrieve-budget): the mode BU Bench V2.1 measured.
+const RETRIEVE_BUDGET = 1200;
+// Training log caps: the decisions file, the snapshot and screenshot files
+// kept beside it, and one snapshot's size.
+const LOG_MAX_BYTES = 20 * 1024 * 1024;
+const LOG_MAX_FILES = 1000;
+const LOG_SNAPSHOT_MAX = 256 * 1024;
+
+function createIntent({ exec, fs, browser, root = '', system1 = null }) {
+  class IntentError extends Error {
+    constructor(message, exitCode = 1) {
+      super(message);
+      this.name = 'IntentError';
+      this.exitCode = exitCode;
+    }
+  }
+
+  // Page JavaScript goes through sliccy:browser: ~1 ms a call, where
+  // `playwright-cli eval` costs ~750 ms (measured 2026-10-02). playwright-cli
+  // stays for the snapshot (its refs) and for real input (click, type, press).
+  const evalJs = (tab, expression) => browser.eval({ targetId: tab }, expression);
+  const tools = tabTools({ exec, say: async () => {}, evalJs });
+  const { run, js, observe, openTab, act } = tools;
+  const STATES_JS = `(${pageScan.states.toString()})()`;
+  const LINKS_JS = `(${pageScan.links.toString()})()`;
+
+  // Enter as a browser does it. slicc's \`press Enter\` (and \`type --submit\`)
+  // sends a CDP keyDown with only \`key\`, no text or keyCode, so a form is
+  // never submitted (Wikipedia's search, 2026-10-02). In the page: keydown,
+  // keypress and keyup on the focused element, then, when no handler took
+  // it, the implicit submission of its form.
+  const PRESS_ENTER_JS = `(() => {
+    const el = document.activeElement || document.body;
+    const opts = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
+    const down = el.dispatchEvent(new KeyboardEvent('keydown', opts));
+    const press = down && el.dispatchEvent(new KeyboardEvent('keypress', { ...opts, charCode: 13 }));
+    el.dispatchEvent(new KeyboardEvent('keyup', opts));
+    if (down && press && el.form && el.tagName === 'INPUT') {
+      if (el.form.requestSubmit) el.form.requestSubmit();
+      else el.form.submit();
+      return 'submitted';
+    }
+    return down && press ? 'pressed' : 'handled';
+  })()`;
+
+  async function pressKey(tab, key) {
+    if (key === 'Enter') {
+      const r = await js(tab, PRESS_ENTER_JS);
+      if (r.exitCode === 0) return;
+    }
+    await pw(['press', key, `--tab=${tab}`]);
+  }
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // ── state ─────────────────────────────────────────────────────────────
+
+  async function readJson(path, fallback) {
+    try {
+      if (!(await fs.exists(path))) return fallback;
+      return JSON.parse(String(await fs.readFile(path)));
+    } catch {
+      return fallback;
+    }
+  }
+
+  async function writeJson(path, value) {
+    await fs.mkdir(path.slice(0, path.lastIndexOf('/')), { recursive: true });
+    await fs.writeFile(path, JSON.stringify(value));
+  }
+
+  async function logCall(entry) {
+    try {
+      await fs.mkdir(DIR, { recursive: true });
+      const old = (await fs.exists(CALLS)) ? String(await fs.readFile(CALLS)) : '';
+      await fs.writeFile(CALLS, `${old}${JSON.stringify(entry)}\n`);
+    } catch {
+      // The call log feeds evals; a call must not fail for it.
+    }
+  }
+
+  // ── System 1 ──────────────────────────────────────────────────────────
+
+  const models = new Map();
+
+  /**
+   * A bundle given by URL: its manifest and every file the manifest lists,
+   * fetched into the VFS cache once (a file already there at its listed size
+   * is kept). → the cached bundle directory.
+   */
+  async function fetchBundle(url) {
+    const dir = lib.bundleCacheDir(url);
+    if (!dir) throw new IntentError(`--from ${url} is not an http(s) URL or a VFS path`);
+    const base = String(url).replace(/\/+$/, '');
+    await fs.mkdir(dir, { recursive: true });
+    // A bundle at a URL does not change: once its manifest is cached, the
+    // cache is used as it is (fetching the manifest on every call cost a
+    // minute or more against a local server, 2026-10-03). Delete the cache
+    // directory to fetch it again.
+    if (!(await fs.exists(`${dir}/manifest.json`))) {
+      try {
+        await fs.fetchToFile(`${base}/manifest.json`, `${dir}/manifest.json`);
+      } catch (err) {
+        throw new IntentError(
+          `could not fetch ${base}/manifest.json: ${String(err?.message || err)}`
+        );
+      }
+    }
+    let manifest;
+    try {
+      manifest = JSON.parse(String(await fs.readFile(`${dir}/manifest.json`)));
+    } catch {
+      throw new IntentError(
+        `${base}/manifest.json is not a kev bundle manifest (not JSON); give the URL of the bundle's directory`
+      );
+    }
+    const { rels, sizes } = kevRuntime.variantFiles(manifest);
+    for (const rel of rels) {
+      const path = `${dir}/${rel}`;
+      const want = sizes[rel];
+      const have = (await fs.exists(path)) ? (await fs.stat(path)).size : -1;
+      if (have >= 0 && (typeof want !== 'number' || have === want)) continue;
+      await fs.mkdir(path.slice(0, path.lastIndexOf('/')), { recursive: true });
+      try {
+        await fs.fetchToFile(`${base}/${rel}`, path);
+      } catch (err) {
+        throw new IntentError(`could not fetch ${base}/${rel}: ${String(err?.message || err)}`);
+      }
+    }
+    return dir;
+  }
+
+  /**
+   * A local kev bundle: a named one (`intent pull --model 4b-vision`) or the
+   * bundle directory --from names (a fine-tuned export). A -vision bundle
+   * also gets the marked screenshot on ACT.
+   */
+  async function kevModel(size, from, requireGpu = false) {
+    const url = from && /^https?:\/\//i.test(from) ? from : null;
+    if (url) from = await fetchBundle(url);
+    if (!from && !kevRuntime.MODELS[size])
+      throw new IntentError(`--model is one of ${lib.MODELS.join(', ')}`);
+    if (!from) {
+      const status = await kevRuntime.weightsStatus(fs, size);
+      if (status.missing.length) {
+        throw new IntentError(
+          `${kevRuntime.missingWeightsMessage(status).split('\n')[0]} Download them: intent pull --model ${size}`
+        );
+      }
+    } else if (!(await fs.exists(`${from}/manifest.json`))) {
+      throw new IntentError(
+        `--from ${from} has no manifest.json: point it at a kev bundle directory`
+      );
+    }
+    const deps = await kevRuntime.depsStatus(fs, root);
+    if (!deps.ok) {
+      throw new IntentError(
+        `the skill's dependencies are not installed (${deps.missing.join(', ')}): run \`intent pull\` once, then retry`
+      );
+    }
+    let vision = /-vision$/.test(size || '');
+    const manifestPath = from
+      ? `${from}/manifest.json`
+      : `${(await kevRuntime.weightsStatus(fs, size)).base}/manifest.json`;
+    let manifest = null;
+    try {
+      manifest = JSON.parse(String(await fs.readFile(manifestPath)));
+    } catch {
+      manifest = null;
+    }
+    if (from) vision = Boolean(manifest && manifest.vision);
+    // The bundle's own question wording and thresholds, when it declares them.
+    const intentSettings = lib.bundleSettings(manifest);
+    const started = Date.now();
+    let runtime = '';
+    let model;
+    try {
+      model = await kevRuntime.openModel(fs, exec, {
+        model: size,
+        from: from || null,
+        root,
+        // A software WebGPU adapter (SwiftShader) runs kev ~10x slower:
+        // with requireGpu it stops here instead.
+        requireGpu,
+        log: (line) => {
+          const m = /kev: (webgpu adapter .*|runtime \w+)/.exec(line);
+          if (m) runtime = runtime ? `${runtime}; ${m[1]}` : m[1];
+        },
+      });
+    } catch (err) {
+      if (err?.name === 'NodeExitError') throw err;
+      throw new IntentError(String(err?.message || err));
+    }
+    // A bundle is known by its directory's (or URL's) last segment: kev-4b-vision-intent.
+    const bundleName = (url || from || '').replace(/\/+$/, '').split('/').pop();
+    const name = from ? `kev ${bundleName}` : `kev ${size}`;
+    const key = from ? bundleName.replace(/^kev-/, '') : size;
+    return {
+      name,
+      key,
+      vision,
+      intent: intentSettings,
+      runtime,
+      loadMs: Date.now() - started,
+      ask: (body) => model.systemOne(body),
+    };
+  }
+
+  /**
+   * System 1: the local kev-4b-vision bundle, or the kev bundle --from names.
+   * A missing model stops with the command that gets it; nothing falls back
+   * to a lexical guess.
+   */
+  async function openSystem1(flags) {
+    if (system1) return system1;
+    const asked = flags.model || DEFAULT_MODEL;
+    const key = flags.from ? `from:${flags.from}` : asked;
+    if (models.has(key)) return models.get(key);
+    const s1 = await kevModel(
+      asked,
+      flags.from || null,
+      flags['require-gpu'] === true || flags['require-gpu'] === 'true'
+    );
+    const ask = s1.ask;
+    s1.ask = (body) => timed('s1', ask)(body);
+    models.set(key, s1);
+    return s1;
+  }
+
+  // ── the tab ───────────────────────────────────────────────────────────
+
+  const DENIED = /approval denied|not permitted for this agent call/i;
+
+  async function pw(argv) {
+    const result = await run(['playwright-cli', ...argv]);
+    if (result.exitCode !== 0 && DENIED.test(`${result.stderr}${result.stdout}`)) {
+      throw new IntentError(
+        'this shell may not run playwright-cli (an agent scoop whose grant leaves it out). Run `intent serve` in a shell that may, outside the scoop, while the scoop works; requests then go through it.'
+      );
+    }
+    return result;
+  }
+
+  /** The tab for this call: --tab, else the last call's while it is open. */
+  async function pickTab(req, state) {
+    if (req.tab) return req.tab;
+    if (!state.tab) return null;
+    const alive = await js(state.tab, 'document.readyState');
+    return alive.exitCode === 0 ? state.tab : null;
+  }
+
+  /** Wait for the document to load after an action, then a beat for scripts. */
+  async function settleUntimed(tab) {
+    await sleep(150);
+    for (let i = 0; i < 40; i++) {
+      const r = await js(tab, 'document.readyState');
+      if (/complete/.test(r.stdout || '')) break;
+      await sleep(125);
+    }
+    await sleep(250);
+  }
+
+  /**
+   * One look at the tab. With controls: boxes, the viewport and the page scan
+   * (clickable divs, names for repeated controls).
+   */
+  async function lookUntimed(tab, { controls, boxes = true }) {
+    const obs = await observe(tab, null, { viewport: controls, boxes });
+    // Inside a look: playwright-cli's snapshot against the page evals.
+    for (const c of obs.commands)
+      tick(c.argv[0] === 'playwright-cli' ? 'look.snapshot' : 'look.eval', c.ms);
+    let states = [];
+    const evalStarted = Date.now();
+    const scanned = await js(tab, STATES_JS);
+    tick('look.eval', Date.now() - evalStarted);
+    try {
+      const value = JSON.parse(scanned.stdout || '[]');
+      states = Array.isArray(value) ? value : JSON.parse(value);
+    } catch {
+      states = [];
+    }
+    const named = page.addRowContext(
+      page.applyDisambiguation(obs.shot.elements, obs.disambiguation),
+      obs.shot.texts
+    );
+    const elements = lib.applyStates(named, states);
+    return { ...obs, tab, shot: { ...obs.shot, elements } };
+  }
+
+  /** The page's text as segments, with the control states the snapshot leaves out. */
+  const segmentsOf = (obs) => [
+    ...lib.textSegments(obs.raw),
+    ...lib.stateSegments(obs.shot.elements),
+  ];
+
+  // ── answers ───────────────────────────────────────────────────────────
+
+  function probabilitiesOf(answer) {
+    return (answer && answer.probabilities) || {};
+  }
+
+  /** The act-or-ask rule for this System 1, with --sure on top. */
+  function policy(req, s1, kind = 'ACT') {
+    return lib.s1Policy(s1, kind, req.sure);
+  }
+
+  async function chooseControl(req, s1, obs, parsed) {
+    const candidates = lib.controlCandidates(obs.shot.elements, obs.viewport);
+    const ranked = lib.lexicalRank(candidates, lib.actQuery(req.intent, parsed), { op: parsed.op });
+    const shortlist = ranked.slice(0, SHORTLIST_CONTROLS).map((r) => r.candidate);
+    if (!shortlist.length) throw new IntentError('this page has no controls to act on');
+    // The stock kev bundles answer the menu wording better (questionStyle).
+    const q = lib.choiceQuestion('ACT', req.intent, shortlist, obs.shot, {
+      style: lib.questionStyle(s1),
+    });
+    const shot = s1.vision ? await markedShot(obs.tab, shortlist, obs.viewport) : null;
+    const image = shot ? shot.image : null;
+    const res = await s1.ask({
+      state: q.state,
+      questions: { action: q.question },
+      ...(image ? { image } : {}),
+    });
+    // Answer ids may be click:eN / type:eN: name them by ref from here on.
+    const probs = {};
+    for (const [id, p] of Object.entries(probabilitiesOf(res.answers.action)))
+      probs[lib.refOf(id)] = p;
+    const rule = policy(req, s1);
+    const v = lib.verdict(probs, rule);
+    note({
+      kind: 'ACT',
+      model: s1.name,
+      style: lib.questionStyle(s1),
+      threshold: rule.sure,
+      shortlist: lib.logShortlist(shortlist),
+      probabilities: probs,
+      pick: v.pick,
+      p: v.p,
+      sure: v.sure,
+      shot: obs.shot,
+      raw: obs.raw,
+      png: shot ? shot.png : null,
+    });
+    const byId = new Map(shortlist.map((c) => [c.ref, c]));
+    return { v, byId, shortlist };
+  }
+
+  /**
+   * The screenshot with each shortlisted control boxed and labelled with its
+   * ref (set-of-marks), as a kev vision bundle takes it. null when the
+   * screenshot or the canvas work fails: the question still has the labels.
+   */
+  async function markedShotUntimed(tab, shortlist, viewport) {
+    const path = `${DIR}/shot.png`;
+    const r = await pw(['screenshot', `--tab=${tab}`, `--filename=${path}`]);
+    if (r.exitCode !== 0) return null;
+    try {
+      const marked = await vision.markedImage(await fs.readFileBinary(path), shortlist, viewport);
+      return { image: marked.image, png: marked.png };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The control a --ref names. A ref is only good for the snapshot it came
+   * from: when the page has changed, the last result's candidate with that
+   * ref is found again by role, label and place among same-named controls.
+   */
+  function resolveRef(ref, obs, state) {
+    const now = obs.shot.elements.find((e) => e.token === ref);
+    const before = (state.candidates || []).find((c) => c.ref === ref);
+    if (now && !before) return now;
+    if (before) {
+      // The remembered occurrence (the k-th control of that role and
+      // label), not whatever control the ref names after a re-render.
+      const same = obs.shot.elements.filter(
+        (e) => e.role === before.role && e.label === before.label
+      );
+      const again = same[before.k ? before.k - 1 : 0];
+      if (again) return again;
+      // A label with a live count ("Refine catnip (12)") changes between
+      // calls: the same control is the one whose label differs only in its
+      // numbers, when exactly one such control is there.
+      const series = (label) => String(label).replace(/\d[\d,.]*/g, '#');
+      const alike = obs.shot.elements.filter(
+        (e) => e.role === before.role && series(e.label) === series(before.label)
+      );
+      if (alike.length === 1) return alike[0];
+    }
+    throw new IntentError(`ref ${ref} is not on the page any more; ask again without --ref`);
+  }
+
+  /** What the shortlisted refs mean on this page, for a later --ref (lib.refMemory). */
+  function remember(elements, refs) {
+    const wanted = new Set(refs);
+    return lib.refMemory(elements).filter((m) => wanted.has(m.ref));
+  }
+
+  /** Do the parsed operation on one control. → a past-tense phrase. */
+  async function performUntimed(tab, op, parsed, element, viewport) {
+    const commands = [];
+    const named = `${element.role} "${page.shown(element.label)}"`;
+    const plain = !element.synthetic && !Number.isInteger(element.nth);
+    // A control whose name repeats is reached in the page by its place among
+    // the same-named ones (page-scan.js pick): its ref names the first.
+    const repeated = !element.synthetic && Number.isInteger(element.nth);
+    const pick = async (extra) => {
+      const spec = JSON.stringify({ name: element.label, nth: element.nth, ...extra });
+      const r = await js(tab, `(${pageScan.scan.toString()})(${spec})`);
+      return r.exitCode === 0 ? String(r.stdout || '').replace(/^"|"$/g, '') : 'failed';
+    };
+    if (op === 'type') {
+      if (element.kind !== 'fill') throw new IntentError(`${named} is not a field to type into`);
+      await act(tab, { operation: 'TYPE_TEXT', element, text: parsed.value }, viewport, commands);
+      if (parsed.value === '') await pw(['press', 'Backspace', `--tab=${tab}`]);
+      if (parsed.submit) await pressKey(tab, 'Enter');
+      return `typed "${parsed.value}" into ${named}${parsed.submit ? ' and pressed Enter' : ''}`;
+    }
+    if (
+      op === 'select' &&
+      (element.role === 'combobox' || element.role === 'listbox') &&
+      (plain || repeated)
+    ) {
+      if (plain) {
+        const r = await pw(['select', element.token, parsed.value, `--tab=${tab}`]);
+        if (r.exitCode === 0) return `selected "${parsed.value}" in ${named}`;
+      } else {
+        const r = await pick({ op: 'select', value: parsed.value });
+        if (r === 'ok') return `selected "${parsed.value}" in ${named}`;
+        if (r === 'no-option') throw new IntentError(`${named} has no option "${parsed.value}"`);
+      }
+      // Not a native <select>: an autocomplete. Type the value; its
+      // suggestion is the next intent.
+      await act(tab, { operation: 'TYPE_TEXT', element, text: parsed.value }, viewport, commands);
+      return `typed "${parsed.value}" into ${named} (not a plain dropdown: pick the suggestion next)`;
+    }
+    if (
+      (op === 'check' || op === 'uncheck') &&
+      plain &&
+      /^(checkbox|radio|switch|menuitemcheckbox)$/.test(element.role)
+    ) {
+      const r = await pw([op, element.token, `--tab=${tab}`]);
+      if (r.exitCode === 0) return `${op}ed ${named}`;
+    }
+    if (
+      (op === 'check' || op === 'uncheck') &&
+      repeated &&
+      /^(checkbox|radio|switch|menuitemcheckbox)$/.test(element.role)
+    ) {
+      const r = await pick({ op });
+      if (r === 'already') return `${named} was already ${op}ed`;
+      if (r === 'ok') return `${op}ed ${named}`;
+    }
+    if (op === 'hover' && plain) {
+      const r = await pw(['hover', element.token, `--tab=${tab}`]);
+      if (r.exitCode === 0) return `hovered over ${named}`;
+    }
+    if (op === 'hover' && repeated) {
+      const at = /"x":(-?\d+),"y":(-?\d+)/.exec(await pick({ op: 'locate' }));
+      if (at) {
+        await pw(['mousemove', `--tab=${tab}`, at[1], at[2]]);
+        return `hovered over ${named}`;
+      }
+    }
+    await act(tab, { operation: 'CLICK', element }, viewport, commands);
+    return `clicked ${named}`;
+  }
+
+  async function doScroll(tab, direction, viewport) {
+    if (direction === 'top' || direction === 'bottom') {
+      await js(
+        tab,
+        `window.scrollTo(0, ${direction === 'top' ? 0 : 'document.documentElement.scrollHeight'})`
+      );
+    } else {
+      await act(tab, { operation: 'SCROLL', direction }, viewport, []);
+    }
+    return `scrolled ${direction === 'top' || direction === 'bottom' ? `to the ${direction}` : direction}`;
+  }
+
+  /** The lines after an action: what changed, and the gist on a new page. */
+  function afterLines(before, after) {
+    const diff = page.diffShots(before.shot, { ...after.shot, viewport: after.viewport });
+    const lines = lib.changeLines(diff).map((l) => `  ${l}`);
+    if (diff && (diff.replaced || diff.url)) {
+      lines.push(
+        ...lib.gist(after.shot, after.viewport, lib.textSegments(after.raw)).map((l) => `  ${l}`)
+      );
+    }
+    if (!lines.length) lines.push('  nothing visible changed');
+    return { lines, diff };
+  }
+
+  // ── the kinds ─────────────────────────────────────────────────────────
+
+  async function navigate(req, state) {
+    const nav = lib.parseNavigate(req.intent);
+    let tab = await pickTab(req, state);
+    let fresh = false;
+    if (nav.op === 'goto') {
+      if (!nav.url)
+        throw new IntentError('NAVIGATE needs a URL, e.g. --intent "open https://example.com"');
+      if (tab) {
+        const r = await pw(['goto', nav.url, `--tab=${tab}`]);
+        if (r.exitCode !== 0)
+          throw new IntentError(
+            `could not open ${nav.url}: ${(r.stderr || r.stdout).trim().slice(0, 200)}`
+          );
+      } else {
+        fresh = true;
+        tab = await openTab(nav.url);
+        // playwright-cli open returns while the new tab still shows
+        // about:blank, whose readyState is already complete: the first open
+        // of a run with no page reported "opened about:blank" (2026-10-04).
+        for (let i = 0; i < 40; i++) {
+          const r = await js(tab, 'location.href');
+          if (r.exitCode === 0 && !/^"?about:blank/.test(r.stdout || '')) break;
+          await sleep(250);
+        }
+      }
+    } else {
+      if (!tab) throw new IntentError('no tab yet: open a URL first');
+      const verb = nav.op === 'back' ? 'go-back' : nav.op === 'forward' ? 'go-forward' : 'reload';
+      await pw([verb, `--tab=${tab}`]);
+    }
+    await settle(tab);
+    const after = await look(tab, { controls: true });
+    const lines = [
+      `✓ ${nav.op === 'goto' ? `opened ${after.shot.url}` : `${nav.op} to ${after.shot.url}`}  (tab ${tab})`,
+      `  title: ${after.shot.title || '(none)'}`,
+      ...lib.gist(after.shot, after.viewport, lib.textSegments(after.raw)).map((l) => `  ${l}`),
+    ];
+    return {
+      tab,
+      outcome: 'navigated',
+      ...(fresh ? { knownTabs: null } : {}),
+      lines,
+      json: { url: after.shot.url, title: after.shot.title, tab },
+    };
+  }
+
+  /** The browser's tabs, by target id (playwright-cli tab-list). */
+  async function tabList() {
+    const r = await pw(['tab-list']);
+    return r.exitCode === 0 ? lib.tabIds(r.stdout || '') : [];
+  }
+
+  /** The page's links with their addresses (page-scan.js links). */
+  async function linksOf(tab) {
+    const r = await js(tab, LINKS_JS);
+    try {
+      const value = JSON.parse(r.stdout || '[]');
+      return Array.isArray(value) ? value : JSON.parse(value);
+    } catch {
+      return [];
+    }
+  }
+
+  async function doAct(req, state, s1) {
+    const tab = await pickTab(req, state);
+    if (!tab) throw new IntentError('no tab yet: start with --intent "open <url>", or pass --tab');
+    const parsed = lib.parseAct(req.intent);
+    const before = await look(tab, { controls: true });
+    if (parsed.op === 'press' || parsed.op === 'scroll') {
+      let did;
+      if (parsed.op === 'press') {
+        await pressKey(tab, parsed.key);
+        did = `pressed ${parsed.key}`;
+      } else did = await doScroll(tab, parsed.direction, before.viewport);
+      await settle(tab);
+      const after = await look(tab, { controls: true, boxes: page.afterLookBoxes(before.shot) });
+      const { lines } = afterLines(before, after);
+      return {
+        tab,
+        outcome: 'acted',
+        lines: [`✓ ${did}`, ...lines],
+        json: { did, url: after.shot.url },
+      };
+    }
+    let element;
+    let p = null;
+    let candidates = [];
+    if (req.ref) {
+      element = resolveRef(req.ref, before, state);
+      const conflict = lib.refConflict(req.intent, element, before.shot.elements);
+      if (conflict) throw new IntentError(conflict);
+    } else {
+      const { v, byId, shortlist } = await chooseControl(req, s1, before, parsed);
+      candidates = shortlist;
+      p = v.p;
+      const list = lib.candidateLines(v.ranked, byId, req.candidates || UNSURE_CANDIDATES);
+      if (req.candidates) {
+        return {
+          tab,
+          outcome: 'candidates',
+          remember: remember(
+            before.shot.elements,
+            shortlist.map((c) => c.ref)
+          ),
+          lines: [`candidates for "${req.intent}":`, ...list],
+          json: { candidates: list },
+        };
+      }
+      if (!v.sure) {
+        return {
+          tab,
+          outcome: 'unsure',
+          p,
+          remember: remember(
+            before.shot.elements,
+            shortlist.map((c) => c.ref)
+          ),
+          lines: [
+            `? not sure which control you mean (best ${lib.pct(v.p)}); nothing done. Candidates:`,
+            ...list,
+            '  Say more in --intent (its label or row), or pass --ref <ref>.',
+          ],
+          json: { candidates: list },
+        };
+      }
+      element = byId.get(v.pick).element;
+    }
+    const named = `${element.token} ${lib.describeControl({ element, rank: null, place: page.place(element, before.viewport) })}`;
+    if (req.dryRun) {
+      return {
+        tab,
+        outcome: 'dry-run',
+        p,
+        remember: remember(
+          before.shot.elements,
+          candidates.map((c) => c.ref)
+        ),
+        lines: [`would ${parsed.op} ${named}${p != null ? `  ${lib.pct(p)}` : ''}`],
+        json: { ref: element.token },
+      };
+    }
+    // A click may open a tab (a link with target=_blank): the tabs there were before it.
+    const clicking = parsed.op === 'click';
+    const tabsBefore = clicking ? state.knownTabs || (await tabList()) : null;
+    const did = await perform(tab, parsed.op, parsed, element, before.viewport);
+    await settle(tab);
+    // What changed, read without boxes unless the page has div buttons to
+    // number (page.afterLookBoxes): the next call takes its own look.
+    const after = await look(tab, { controls: true, boxes: page.afterLookBoxes(before.shot) });
+    const { lines } = afterLines(before, after);
+    const unchanged = after.shot.url === before.shot.url && lines.length <= 1;
+    if (clicking && (element.role === 'link' || unchanged)) {
+      const tabsAfter = await tabList();
+      const opened = lib.openedTab(tabsBefore, tabsAfter);
+      if (opened) {
+        // The new tab is where the next calls go; the one clicked in stays open.
+        await settle(opened);
+        const there = await look(opened, { controls: true });
+        return {
+          tab: opened,
+          outcome: 'acted',
+          p,
+          knownTabs: tabsAfter,
+          lines: [
+            `✓ ${did} [${element.token}]${p != null ? `  ${lib.pct(p)}` : ''}`,
+            `  opened a new tab: ${there.shot.url}  (tab ${opened}; the next calls use it, the old tab ${tab} stays open)`,
+            `  title: ${there.shot.title || '(none)'}`,
+            ...lib
+              .gist(there.shot, there.viewport, lib.textSegments(there.raw))
+              .map((l) => `  ${l}`),
+          ],
+          json: { did, ref: element.token, url: there.shot.url, tab: opened, openedFrom: tab },
+        };
+      }
+      return {
+        tab,
+        outcome: 'acted',
+        p,
+        knownTabs: tabsAfter,
+        lines: [`✓ ${did} [${element.token}]${p != null ? `  ${lib.pct(p)}` : ''}`, ...lines],
+        json: { did, ref: element.token, url: after.shot.url },
+      };
+    }
+    return {
+      tab,
+      outcome: 'acted',
+      p,
+      lines: [`✓ ${did} [${element.token}]${p != null ? `  ${lib.pct(p)}` : ''}`, ...lines],
+      json: { did, ref: element.token, url: after.shot.url },
+    };
+  }
+
+  async function retrieve(req, state, s1, flags = {}) {
+    const tab = await pickTab(req, state);
+    if (!tab) throw new IntentError('no tab yet: start with --intent "open <url>", or pass --tab');
+    const obs = await look(tab, { controls: lib.listWantsControls(req.intent) });
+    const segments = segmentsOf(obs);
+    if (!segments.length) throw new IntentError('this page has no text');
+    if (lib.isList(req.intent)) {
+      // A lexical read, no model: the matching links, buttons or rows.
+      // Links with their addresses: the snapshot prints none.
+      const elements = lib.listWantsControls(req.intent)
+        ? lib.applyLinks(obs.shot.elements, await linksOf(tab))
+        : obs.shot.elements;
+      const listed = lib.listLines(req.intent, elements, segments, req.candidates || LIST_MAX);
+      return {
+        tab,
+        outcome: 'listed',
+        remember: lib.refMemory(obs.shot.elements),
+        lines: [
+          listed.lines.length
+            ? `${listed.lines.length} of ${listed.total} ${listed.kind} matching, in page order:`
+            : `no ${listed.kind} match "${req.intent}"`,
+          ...listed.lines,
+        ],
+        json: { items: listed.lines.map((l) => l.trim()) },
+      };
+    }
+    const budget = Math.min(
+      Math.max(Number(flags['retrieve-budget']) || RETRIEVE_BUDGET, 200),
+      6000
+    );
+    const shortlist = lib
+      .lexicalRank(segments, req.intent)
+      .slice(0, SHORTLIST_TEXT)
+      .map((r) => r.candidate);
+    const q = lib.choiceQuestion('RETRIEVE', req.intent, shortlist, obs.shot);
+    const res = await s1.ask({ state: q.state, questions: { action: q.question } });
+    const rule = policy(req, s1, 'RETRIEVE');
+    const v = lib.verdict(probabilitiesOf(res.answers.action), rule);
+    note({
+      kind: 'RETRIEVE',
+      model: s1.name,
+      threshold: rule.sure,
+      shortlist: lib.logShortlist(shortlist),
+      probabilities: probabilitiesOf(res.answers.action),
+      pick: v.pick,
+      p: v.p,
+      sure: v.sure,
+      shot: obs.shot,
+      raw: obs.raw,
+    });
+    const byId = new Map(shortlist.map((s) => [s.id, s]));
+    const list = lib.candidateLines(v.ranked, byId, req.candidates || UNSURE_CANDIDATES);
+    if (req.candidates) {
+      return {
+        tab,
+        outcome: 'candidates',
+        p: v.p,
+        lines: [`matches for "${req.intent}":`, ...list],
+        json: { candidates: list },
+      };
+    }
+    // The most likely texts until the budget is spent, in page order,
+    // whatever System 1's confidence in any single one.
+    const byRank = v.ranked
+      .filter(([id]) => id !== lib.NONE && byId.has(id))
+      .map(([id]) => byId.get(id));
+    const lines = lib.budgetLines(byRank, budget, req.intent);
+    return {
+      tab,
+      outcome: 'budget',
+      p: v.p,
+      lines: [`the page's most likely texts, in page order (top ${lib.pct(v.p)}):`, ...lines],
+      json: { texts: lines.map((l) => l.trim()) },
+    };
+  }
+
+  /** One yes/no reading of the page. → { p, evidence, shot } */
+  async function judgeClaim(req, tab, s1) {
+    const obs = await look(tab, { controls: false });
+    const segments = segmentsOf(obs);
+    const evidence = lib
+      .lexicalRank(segments, req.intent)
+      .slice(0, EVIDENCE)
+      .map((r) => r.candidate);
+    const q = lib.claimQuestion(req.intent, evidence, obs.shot);
+    const which = lib.choiceQuestion('VERIFY', req.intent, evidence, obs.shot).question;
+    const res = await s1.ask({
+      state: q.state,
+      questions: { claim: q.question, ...(evidence.length ? { evidence: which } : {}) },
+    });
+    const p = Number(res.answers.claim.noul);
+    const pick = res.answers.evidence ? res.answers.evidence.choice : null;
+    note({
+      kind: req.kind === 'WAIT_FOR' || /^(?:wait|until)/i.test(req.intent) ? 'WAIT_FOR' : 'VERIFY',
+      model: s1.name,
+      claim: q.question.instructions,
+      // The yes/no band this System 1 answers with (its manifest's verify, else SURE).
+      threshold: policy(req, s1, 'VERIFY').sure,
+      shortlist: lib.logShortlist(evidence),
+      probabilities: res.answers.evidence ? probabilitiesOf(res.answers.evidence) : {},
+      pick,
+      p,
+      shot: obs.shot,
+      raw: obs.raw,
+    });
+    return {
+      p,
+      evidence: evidence.find((s) => s.id === pick) || evidence[0] || null,
+      shot: obs.shot,
+    };
+  }
+
+  const evidenceLine = (e) =>
+    e
+      ? `  evidence: ${lib.describeText(e, 300)}${e.ref ? ` [${e.ref}]` : ''}`
+      : '  evidence: none on the page';
+
+  async function verify(req, state, s1) {
+    const tab = await pickTab(req, state);
+    if (!tab) throw new IntentError('no tab yet: start with --intent "open <url>", or pass --tab');
+    const { p, evidence, shot } = await judgeClaim(req, tab, s1);
+    const sure = policy(req, s1, 'VERIFY').sure;
+    const word = p >= sure ? 'yes' : p <= 1 - sure ? 'no' : 'unsure';
+    return {
+      tab,
+      outcome: word,
+      p,
+      lines: [
+        `${word} (${lib.pct(p)} yes)`,
+        evidenceLine(evidence),
+        `  page: ${shot.title || shot.url}`,
+      ],
+      json: {
+        answer: word,
+        p,
+        evidence: evidence ? evidence.text : null,
+        ref: evidence ? evidence.ref : null,
+      },
+    };
+  }
+
+  async function waitFor(req, state, s1) {
+    const tab = await pickTab(req, state);
+    if (!tab) throw new IntentError('no tab yet: start with --intent "open <url>", or pass --tab');
+    const limit = (req.timeout || WAIT_DEFAULT_S) * 1000;
+    const sure = policy(req, s1, 'VERIFY').sure;
+    const started = Date.now();
+    let last = null;
+    for (;;) {
+      last = await judgeClaim(req, tab, s1);
+      const seconds = ((Date.now() - started) / 1000).toFixed(1);
+      if (last.p >= sure) {
+        return {
+          tab,
+          outcome: 'yes',
+          p: last.p,
+          lines: [`✓ holds after ${seconds} s (${lib.pct(last.p)})`, evidenceLine(last.evidence)],
+          json: { answer: 'yes', seconds: Number(seconds) },
+        };
+      }
+      if (Date.now() - started >= limit) {
+        return {
+          tab,
+          outcome: 'timeout',
+          p: last.p,
+          lines: [
+            `✗ still not after ${seconds} s (${lib.pct(last.p)} yes)`,
+            evidenceLine(last.evidence),
+          ],
+          json: { answer: 'timeout', seconds: Number(seconds), p: last.p },
+        };
+      }
+      await sleep(1000);
+    }
+  }
+
+  // ── one call ──────────────────────────────────────────────────────────
+
+  // ── where a call's time goes ────────────────────────────────────────
+  // Each phase's milliseconds, summed over the call (a look before and one
+  // after an action count together), for the call log and the training log:
+  // the hosted games showed ACT at 3–6 s on some pages and 1.5–2.6 s on others.
+  let phases = {};
+  const tick = (name, ms) => {
+    phases[name] = (phases[name] || 0) + ms;
+  };
+  const timed =
+    (name, fn) =>
+    async (...args) => {
+      const started = Date.now();
+      try {
+        return await fn(...args);
+      } finally {
+        tick(name, Date.now() - started);
+      }
+    };
+  const look = timed('look', (...a) => lookUntimed(...a));
+  const markedShot = timed('shot', (...a) => markedShotUntimed(...a));
+  const settle = timed('settle', (...a) => settleUntimed(...a));
+  const perform = timed('act', (...a) => performUntimed(...a));
+
+  // ── training log (--log-dir or INTENT_LOG_DIR) ───────────────────────
+  // What System 1 was shown and answered on every ACT, RETRIEVE, VERIFY and
+  // WAIT_FOR, and whether the caller then corrected it: real runs become
+  // training data. Never part of what the caller reads; redacted; capped.
+  let decision = null;
+  const note = (d) => {
+    decision = d;
+  };
+  let seq = 0;
+
+  const logDirOf = (flags) =>
+    typeof flags['log-dir'] === 'string' && flags['log-dir']
+      ? flags['log-dir']
+      : process.env.INTENT_LOG_DIR || null;
+
+  async function appendLog(dir, entry) {
+    const path = `${dir}/decisions.jsonl`;
+    const line = `${lib.redactSecrets(JSON.stringify(entry))}\n`;
+    const old = (await fs.exists(path)) ? String(await fs.readFile(path)) : '';
+    if (old.length + line.length > LOG_MAX_BYTES) return false;
+    await fs.writeFile(path, `${old}${line}`);
+    return true;
+  }
+
+  /** Write this call's decision (and its files), and the correction it makes of the last one. */
+  async function logDecision(flags, { req, kind, result, started, state, error }) {
+    const dir = logDirOf(flags);
+    if (!dir) return state.lastDecision || null;
+    try {
+      await fs.mkdir(dir, { recursive: true });
+      const tab = result ? result.tab : null;
+      const correction = lib.correctionOf(state.lastDecision, req, kind, tab);
+      const d = decision;
+      const id = d ? `d${Date.now().toString(36)}${(seq++).toString(36)}` : null;
+      if (correction) {
+        await appendLog(dir, {
+          type: 'correction',
+          // ref: the caller named the control after an unsure answer;
+          // retry: it asked again.
+          how: correction.type,
+          of: correction.of,
+          at: new Date().toISOString(),
+          by: id,
+          intent: req.intent,
+          ...(req.ref ? { ref: req.ref } : {}),
+          ...(result && result.json && result.json.did ? { did: result.json.did } : {}),
+          outcome: result ? result.outcome : 'error',
+        });
+      }
+      if (!d) return correction ? null : state.lastDecision || null;
+      const files = {};
+      const kept = (await fs.readDir(dir)).filter((n) => /\.(txt|jpg)$/.test(n)).length;
+      if (kept < LOG_MAX_FILES) {
+        if (d.raw) {
+          const text = lib.redactSecrets(d.raw);
+          await fs.writeFile(
+            `${dir}/${id}.snapshot.txt`,
+            text.length > LOG_SNAPSHOT_MAX ? text.slice(0, LOG_SNAPSHOT_MAX) : text
+          );
+          files.snapshot = `${id}.snapshot.txt`;
+        }
+        if (d.png) {
+          try {
+            await fs.writeFileBinary(`${dir}/${id}.jpg`, await vision.toJpeg(d.png, 0.8));
+            files.image = `${id}.jpg`;
+          } catch {
+            // A worker without OffscreenCanvas keeps the snapshot only.
+          }
+        }
+      }
+      const { raw, png, shot, ...rest } = d;
+      await appendLog(dir, {
+        type: 'decision',
+        id,
+        at: new Date().toISOString(),
+        ...rest,
+        intent: req.intent,
+        ...(req.kind ? { kindForced: req.kind } : {}),
+        url: shot ? shot.url : null,
+        title: shot ? shot.title : null,
+        tab,
+        outcome: result ? result.outcome : 'error',
+        ...(error ? { error } : {}),
+        acted: result && result.json && result.outcome === 'acted' ? result.json.ref || null : null,
+        ms: Date.now() - started,
+        phases,
+        files,
+      });
+      return {
+        id,
+        tab,
+        kind: rest.kind,
+        outcome: result ? result.outcome : 'error',
+        at: Date.now(),
+      };
+    } catch {
+      // The training log must never break a call.
+      return state.lastDecision || null;
+    }
+  }
+
+  /**
+   * A playwright-cli command as it is (`intent <command> … --intent`): run,
+   * its output returned unchanged, its intent logged. The tab it names or
+   * opens becomes the tab of the next intent call.
+   */
+  async function raw(req, state) {
+    const started = Date.now();
+    const r = await timed('act', pw)(req.argv);
+    const tab = lib.rawTab(req.argv, r.stdout) || state.tab || null;
+    if (tab !== (state.tab || null))
+      await writeJson(STATE, { ...state, tab, knownTabs: null, at: Date.now() });
+    await logCall({
+      at: new Date().toISOString(),
+      kind: 'RAW',
+      intent: req.intent,
+      cmd: req.argv[0],
+      outcome: r.exitCode === 0 ? 'ok' : 'failed',
+      exitCode: r.exitCode,
+      tab,
+      ms: Date.now() - started,
+      phases,
+      chars: String(r.stdout || '').length,
+    });
+    return {
+      stdout: String(r.stdout || '').trimEnd(),
+      stderr: String(r.stderr || '').trimEnd(),
+      exitCode: r.exitCode,
+    };
+  }
+
+  /**
+   * Handle one request; never exits the process (the daemon serves many).
+   * → { stdout, stderr?, exitCode }
+   */
+  async function handle(req, flags = {}) {
+    const started = Date.now();
+    const state = await readJson(STATE, {});
+    decision = null;
+    phases = {};
+    if (req.argv) {
+      try {
+        return await raw(req, state);
+      } catch (err) {
+        if (err?.name === 'NodeExitError') throw err;
+        const message =
+          err instanceof IntentError
+            ? err.message
+            : `playwright-cli ${req.argv[0]} failed: ${String(err?.message || err).slice(0, 400)}`;
+        await logCall({
+          at: new Date().toISOString(),
+          kind: 'RAW',
+          intent: req.intent,
+          cmd: req.argv[0],
+          ms: Date.now() - started,
+          phases,
+          error: message,
+        });
+        return {
+          stdout: '',
+          stderr: `intent: ${message}`,
+          exitCode: err instanceof IntentError ? err.exitCode : 1,
+        };
+      }
+    }
+    let result;
+    let kind = req.kind || lib.classify(req.intent).kind;
+    let s1name = '';
+    try {
+      if (req.full) {
+        const tab = await pickTab(req, state);
+        if (!tab)
+          throw new IntentError('no tab yet: start with --intent "open <url>", or pass --tab');
+        const r = await pw(['snapshot', `--tab=${tab}`]);
+        // Remember every ref it prints: a caller that picks one out of the
+        // snapshot and passes it as --ref after the page has re-rendered
+        // still reaches the same control (by role, label and order).
+        const elements = page.parseSnapshot(String(r.stdout || '')).elements;
+        result = {
+          tab,
+          outcome: 'full',
+          remember: lib.refMemory(elements),
+          lines: [String(r.stdout || '').trimEnd()],
+          json: { snapshot: r.stdout },
+        };
+        kind = 'FULL';
+      } else if (kind === 'NAVIGATE') {
+        result = await navigate(req, state);
+      } else if (kind === 'ACT' && req.ref && !req.dryRun && !req.candidates) {
+        // An explicit ref needs no choice: no System 1 to load.
+        result = await doAct(req, state, null);
+      } else if (kind === 'RETRIEVE' && lib.isList(req.intent)) {
+        // A list is read by words alone: no System 1 to load.
+        result = await retrieve(req, state, null, flags);
+      } else {
+        const s1 = await openSystem1({ ...flags, model: req.model || flags.model });
+        s1name = s1.name;
+        if (kind === 'ACT') result = await doAct(req, state, s1);
+        else if (kind === 'RETRIEVE') result = await retrieve(req, state, s1, flags);
+        else if (kind === 'VERIFY') result = await verify(req, state, s1);
+        else result = await waitFor(req, state, s1);
+        if (s1.note) result.lines.push(`  (${s1.note})`);
+      }
+    } catch (err) {
+      if (err?.name === 'NodeExitError') throw err;
+      const message =
+        err instanceof IntentError
+          ? err.message
+          : `${kind} failed: ${String(err?.message || err).slice(0, 400)}`;
+      await logCall({
+        at: new Date().toISOString(),
+        kind,
+        intent: req.intent,
+        ms: Date.now() - started,
+        phases,
+        error: message,
+      });
+      const lastDecision = await logDecision(flags, {
+        req,
+        kind,
+        result: null,
+        started,
+        state,
+        error: message,
+      });
+      if (lastDecision !== (state.lastDecision || null))
+        await writeJson(STATE, { ...state, lastDecision });
+      const text = req.json
+        ? JSON.stringify({ ok: false, kind, error: message })
+        : `intent: ${message}`;
+      return { stdout: '', stderr: text, exitCode: err instanceof IntentError ? err.exitCode : 1 };
+    }
+    const lastDecision = await logDecision(flags, { req, kind, result, started, state });
+    await writeJson(STATE, {
+      tab: result.tab,
+      // The tabs known before a click, to tell one it opens. Opening a URL
+      // in a new tab makes them unknown again.
+      knownTabs: 'knownTabs' in result ? result.knownTabs : state.knownTabs || null,
+      at: Date.now(),
+      candidates: result.remember || state.candidates || [],
+      lastDecision,
+    });
+    const stdout = req.json
+      ? JSON.stringify({
+          ok: true,
+          kind,
+          outcome: result.outcome,
+          p: result.p ?? null,
+          tab: result.tab,
+          ...result.json,
+        })
+      : result.lines.join('\n');
+    await logCall({
+      at: new Date().toISOString(),
+      kind,
+      intent: req.intent,
+      outcome: result.outcome,
+      p: result.p ?? null,
+      s1: s1name,
+      tab: result.tab,
+      ms: Date.now() - started,
+      phases,
+      chars: stdout.length,
+    });
+    return { stdout, exitCode: 0 };
+  }
+
+  // ── the daemon ────────────────────────────────────────────────────────
+
+  async function serve(flags, { stop = () => false } = {}) {
+    await fs.mkdir(QUEUE, { recursive: true });
+    await fs.mkdir(ANSWERS, { recursive: true });
+    const model = flags.from ? `from:${flags.from}` : flags.model || DEFAULT_MODEL;
+    const beat = () => writeJson(BEAT, { at: Date.now(), model }).catch(() => {});
+    await beat();
+    const beating = setInterval(beat, BEAT_MS);
+    console.error(`intent serve: watching ${QUEUE}`);
+    const failed = new Map();
+    try {
+      while (!stop()) {
+        let names = [];
+        try {
+          names = (await fs.readDir(QUEUE)).filter((n) => /^[a-z0-9-]{1,40}\.json$/.test(n)).sort();
+        } catch {
+          names = [];
+        }
+        for (const name of names) {
+          const path = `${QUEUE}/${name}`;
+          let raw;
+          try {
+            raw = JSON.parse(String(await fs.readFile(path)));
+          } catch {
+            // Half written: give it a few rounds, then drop it.
+            failed.set(name, (failed.get(name) || 0) + 1);
+            if (failed.get(name) > 20) await fs.rm(path).catch(() => {});
+            continue;
+          }
+          await fs.rm(path).catch(() => {});
+          const id = name.slice(0, -5);
+          const { req, error } = lib.cleanRequest(raw);
+          let answer;
+          if (error) answer = { stdout: '', stderr: `intent: ${error}`, exitCode: 1 };
+          else {
+            try {
+              answer = await handle(req, flags);
+            } catch (err) {
+              if (err?.name === 'NodeExitError') throw err;
+              answer = {
+                stdout: '',
+                stderr: `intent: ${String(err?.message || err).slice(0, 400)}`,
+                exitCode: 1,
+              };
+            }
+          }
+          await writeJson(`${ANSWERS}/${id}.json`, answer);
+        }
+        await sleep(POLL_MS);
+      }
+    } finally {
+      // A client trusts a fresh heartbeat: none may outlive the server.
+      clearInterval(beating);
+      await fs.rm(BEAT).catch(() => {});
+    }
+  }
+
+  /** Hand the request to a running daemon. → its answer, or null when none runs. */
+  async function viaDaemon(req) {
+    const beat = await readJson(BEAT, null);
+    if (!beat || Date.now() - beat.at > BEAT_FRESH_MS) return null;
+    const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    await writeJson(`${QUEUE}/${id}.json`, { ...req, id });
+    const deadline = Date.now() + ((req.timeout || WAIT_DEFAULT_S) + 180) * 1000;
+    const path = `${ANSWERS}/${id}.json`;
+    while (Date.now() < deadline) {
+      if (await fs.exists(path)) {
+        const answer = await readJson(path, null);
+        if (answer) {
+          await fs.rm(path).catch(() => {});
+          return answer;
+        }
+      }
+      await sleep(POLL_MS);
+    }
+    throw new IntentError(
+      'the intent server did not answer in time: is `intent serve` still running? Pass --local to work without it.'
+    );
+  }
+
+  // warm: load System 1 now, so a missing model or a software GPU fails
+  // before an agent starts depending on it.
+  // fetchBundle: a bundle URL into the VFS cache, for `intent pull --from`.
+  return { handle, serve, viaDaemon, warm: openSystem1, fetchBundle, IntentError };
+}
+
+module.exports = { createIntent, DIR, CALLS, STATE, BEAT, WAIT_DEFAULT_S };
