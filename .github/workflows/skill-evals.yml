@@ -1,0 +1,430 @@
+# Skill evals (host): run `skills/<skill>/evals/host/tasks.json` on hosted SLICC leaders with
+# slicc's own benchmark runner (ai-ecoverse/slicc packages/bench, pinned at SLICC_REF), under two
+# conditions, judge every run, and report the per-skill lift (score, time, cost).
+#
+# - pull_request: every skill the PR touches that has `evals/host/tasks.json`; a change to this
+#   workflow, `tools/skill-evals/**` or `skills/skill-evals/scripts/evals-format.js` runs the
+#   pilot skill `tst`. Same-repo heads only: a fork PR gets no Bedrock key, so it validates the
+#   sets and then skips with a notice.
+# - workflow_dispatch: `skills` (comma list or `all`), `repeats`, `model`.
+#
+# Shape: `plan` selects the skills, validates each set with the shared format module
+# (evals-format.js `validateSet`, harness `host`) and with the runner's own loader (`run.mjs
+# --plan`), and emits one matrix entry per skill and condition. Each `eval` job is ONE runner
+# invocation on its own `cloud-run-bench` runner (plan and report stay GitHub-hosted):
+#   - `none`: no skills at all, and the skill is never put on that leader, so the agent cannot
+#     read it;
+#   - `none+<skill>`: `tools/skill-evals/stage.mjs` copies `skills/<skill>/` WITHOUT `evals/`
+#     (the agent must not read the rubrics) to `stage/<skill>/<skill>/` and asserts SKILL.md;
+#     every leader boot injects `stage/<skill>` into the VFS at `/workspace/bench-skills/<skill>`
+#     (tools/skill-evals/leader/start-leader.mjs, which wraps slicc's start-leader.mjs), and the
+#     runner copies it into `/workspace/skills` (slicc-adapter.mjs:215-216). Not a node-server
+#     mount: before slicc #3703 the runner's `cp` from a mount failed, and injecting into the
+#     VFS stays simpler (see that script).
+# `report` merges the out dirs with slicc's merge.mjs into one report and checks that every
+# planned run was judged.
+#
+# The job fails on infrastructure errors (an invalid set, a leader that does not boot, a run that
+# errored or never ran, a judge error: run.mjs exits 1 on those) but never on a low score: evals
+# measure, they do not gate. No publish step: results stay in this run's artifacts.
+#
+# Artifacts: `skill-evals-<run id>` (report.md, report.json, report.html, records/, results/);
+# `skill-evals-traces-<run id>` (transcripts and screenshots, 7 days); `skill-evals-part-*` (each
+# job's raw out dir, which holds traces too, 7 days).
+name: Skill evals
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'skills/**'
+      - '.github/workflows/skill-evals.yml'
+      - 'tools/skill-evals/**'
+  workflow_dispatch:
+    inputs:
+      skills:
+        description: 'Skills with evals/host/tasks.json, comma-separated, or all'
+        default: 'all'
+      repeats:
+        description: 'Runs per task and condition (1-10). A lift from one repeat is not a finding'
+        default: '1'
+      model:
+        description: 'Model under test (runner alias, alias@level sets thinking)'
+        default: 'claude-sonnet-5'
+
+# Evals spend money: a newer push waits for the running evals instead of cancelling them.
+concurrency:
+  group: skill-evals-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # The ONLY place slicc is pinned: the runner, the leader scripts, the CLI and the actions.
+  SLICC_REF: 8931cd52420231a5fcf477db2b3214b7398cc52b
+  EVAL_MODEL: ${{ inputs.model || 'claude-sonnet-5' }}
+  # Debugging only: comma-separated task ids to run instead of whole sets. Keep it empty.
+  EVAL_TASKS: ''
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      run: ${{ steps.gate.outputs.run }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+      slicc-version: ${{ steps.gate.outputs.slicc-version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      # Node 22 on purpose: the format module must load in plain Node 22, not only in SLICC.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      - name: Unit-test the eval tools
+        run: node --test tools/skill-evals/skill-evals.test.mjs
+
+      - name: Select and validate the host eval sets
+        id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          INPUT_SKILLS: ${{ inputs.skills || 'all' }}
+          INPUT_REPEATS: ${{ inputs.repeats || '1' }}
+        run: |
+          set -euo pipefail
+          node --version
+          if ! [[ "$EVAL_MODEL" =~ ^[A-Za-z0-9._@-]+$ ]]; then
+            echo "::error::model must be a runner alias, not '$EVAL_MODEL'"; exit 1
+          fi
+          args=(--repeats "$INPUT_REPEATS" --tasks "$EVAL_TASKS" --out "$RUNNER_TEMP/plan.json")
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            node tools/skill-evals/plan.mjs --skills "$INPUT_SKILLS" "${args[@]}"
+          else
+            git diff --name-only "origin/$BASE_REF...HEAD" | node tools/skill-evals/plan.mjs --changed - "${args[@]}"
+          fi
+          echo "matrix=$(jq -c .matrix "$RUNNER_TEMP/plan.json")" >> "$GITHUB_OUTPUT"
+          echo "entries=$(jq '.matrix.include | length' "$RUNNER_TEMP/plan.json")" >> "$GITHUB_OUTPUT"
+          echo "expected=$(jq .expected_runs "$RUNNER_TEMP/plan.json")" >> "$GITHUB_OUTPUT"
+          jq -r '"Validated with evals-format.js on Node \(.node): " + ([.skills[] | "\(.skill) (\(.tasks) tasks, \(.runs_per_condition) runs per condition)"] | join(", ") | if . == "" then "no skill with host evals" else . end)' \
+            "$RUNNER_TEMP/plan.json" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check out ai-ecoverse/slicc at SLICC_REF
+        if: steps.plan.outputs.entries != '0'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ai-ecoverse/slicc
+          ref: ${{ env.SLICC_REF }}
+          path: slicc
+          sparse-checkout: |
+            packages/bench
+            packages/github-workflow
+
+      # The runner's own loader and validator (run.mjs loadSet, digest checks on) on every set,
+      # and the same number of runs the plan budgets for. No leader, no network.
+      - name: Dry-run the runner
+        if: steps.plan.outputs.entries != '0'
+        env:
+          EXPECTED: ${{ steps.plan.outputs.expected }}
+        run: |
+          set -euo pipefail
+          total=0
+          while IFS=$'\t' read -r set condition repeats tasks; do
+            args=(--plan --set "$set" --skills "$condition" --models "$EVAL_MODEL" --repeats "$repeats")
+            if [ -n "$tasks" ]; then args+=(--tasks "$tasks"); fi
+            n=$(node slicc/packages/bench/scripts/run.mjs "${args[@]}" | tee /dev/stderr | wc -l)
+            total=$((total + n))
+          done < <(jq -r '.matrix.include[] | [.set, .condition, (.repeats | tostring), .tasks] | @tsv' "$RUNNER_TEMP/plan.json")
+          echo "runner plans $total run(s); the matrix budgets $EXPECTED"
+          if [ "$total" != "$EXPECTED" ]; then echo "::error::runner plan ($total) != matrix ($EXPECTED)"; exit 1; fi
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: skill-evals-plan-${{ github.run_id }}
+          path: ${{ runner.temp }}/plan.json
+          retention-days: 7
+
+      # Every job and every leader restart runs the same sliccy node-server, like bench.yml.
+      - name: Gate on the Bedrock key and pin the sliccy version
+        id: gate
+        env:
+          ENTRIES: ${{ steps.plan.outputs.entries }}
+          HAS_KEY: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK != '' }}
+        run: |
+          set -euo pipefail
+          if [ "$ENTRIES" = 0 ]; then
+            echo "::notice::No skill with evals/host/tasks.json is affected; nothing to run."
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ "$HAS_KEY" != true ]; then
+            echo "::notice::AWS_BEARER_TOKEN_BEDROCK is not available (fork PR?); the sets are valid, the evals are skipped."
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          version="$(npm view sliccy@latest version)"
+          echo "slicc-version=$version" >> "$GITHUB_OUTPUT"
+          echo "run=true" >> "$GITHUB_OUTPUT"
+          echo "sliccy $version, slicc runner $SLICC_REF, model $EVAL_MODEL" >> "$GITHUB_STEP_SUMMARY"
+
+  eval:
+    name: ${{ matrix.skill }} / ${{ matrix.condition }}
+    needs: plan
+    if: needs.plan.outputs.run == 'true'
+    # The heavy job (a hosted leader with Chrome, the Bedrock key) runs on the Cloud Run bench
+    # pool (8 vCPU / 32 GiB, Chrome and fonts in the image); plan and report stay GitHub-hosted.
+    runs-on: cloud-run-bench
+    timeout-minutes: ${{ matrix.job_minutes }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      SLICC_VERSION: ${{ needs.plan.outputs.slicc-version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Check out ai-ecoverse/slicc at SLICC_REF
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ai-ecoverse/slicc
+          ref: ${{ env.SLICC_REF }}
+          path: slicc
+          sparse-checkout: |
+            packages/bench
+            packages/github-workflow
+            packages/slicc-cli
+            packages/go-optel
+
+      # node-server needs Node >= 22.19.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+
+      # The runner needs `prompt --allsettled`, `wait --allsettled` and `abort`, which ship with
+      # the pinned CLI source, not necessarily with the last release: build it. go.mod resolves
+      # go-optel from the sibling ../go-optel, hence that directory in the sparse checkout.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: slicc/packages/slicc-cli/go.mod
+          cache-dependency-path: slicc/packages/slicc-cli/go.sum
+
+      - name: Install the slicc CLI (built from SLICC_REF)
+        uses: ./slicc/packages/github-workflow/actions/install-cli
+        with:
+          source: build
+          build-dir: ${{ github.workspace }}/slicc/packages/slicc-cli
+
+      # Hosted bootstrap reads /slicc/cone-config.json; start-leader writes it.
+      - name: Prepare the runner
+        run: |
+          google-chrome --version
+          if [ -w /slicc ] 2>/dev/null; then exit 0; fi
+          sudo mkdir -p /slicc && sudo chown "$(id -u)" /slicc
+
+      - name: Stage the skill without its evals
+        id: stage
+        env:
+          SKILL: ${{ matrix.skill }}
+          ARM: ${{ matrix.arm }}
+        run: |
+          set -euo pipefail
+          if [ "$ARM" != with ]; then
+            echo "seed=" >> "$GITHUB_OUTPUT"
+            echo "condition none: nothing staged, nothing put on the leader"; exit 0
+          fi
+          node tools/skill-evals/stage.mjs "$SKILL" "$RUNNER_TEMP/stage"
+          find "$RUNNER_TEMP/stage" -type f | sort
+          echo "seed=$RUNNER_TEMP/stage/$SKILL:/workspace/bench-skills/$SKILL" >> "$GITHUB_OUTPUT"
+
+      # run.mjs boots the leader itself with the start/stop-leader scripts (here slicc's, wrapped
+      # to inject the staged set), restarts it before EVERY task (--fresh-leader-every 1: the
+      # runner does not delete staged fixtures), and stops it at the end. The INPUT_* are what
+      # slicc's scripts read (bench.yml:304-319).
+      - name: Run and judge
+        timeout-minutes: ${{ matrix.run_minutes }}
+        env:
+          AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
+          BEDROCK_REGION: ${{ vars.RUM_AWS_REGION || 'us-west-2' }}
+          BENCH_LEADER_SCRIPTS: ${{ github.workspace }}/tools/skill-evals/leader
+          SKILL_EVALS_SLICC_SCRIPTS: ${{ github.workspace }}/slicc/packages/github-workflow/scripts
+          SKILL_EVALS_SEED: ${{ steps.stage.outputs.seed }}
+          INPUT_SLICC_VERSION: ${{ needs.plan.outputs.slicc-version }}
+          INPUT_PIN_WEBAPP: 'false'
+          INPUT_DURATION: ${{ matrix.job_minutes }}m
+          INPUT_PROVIDER: bedrock-camp
+          INPUT_PROVIDER_API_KEY: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
+          INPUT_PROVIDER_BASE_URL: https://bedrock-runtime.${{ vars.RUM_AWS_REGION || 'us-west-2' }}.amazonaws.com
+          INPUT_MODEL: bedrock-camp:global.anthropic.claude-sonnet-5
+          INPUT_MASK_JOIN_URL: 'true'
+          OUT: ${{ runner.temp }}/skill-evals-out
+          SET: ${{ matrix.set }}
+          CONDITION: ${{ matrix.condition }}
+          ARM: ${{ matrix.arm }}
+          REPEATS: ${{ matrix.repeats }}
+          TASKS: ${{ matrix.tasks }}
+          TIMEOUT: ${{ matrix.timeout }}
+          DEADLINE: ${{ matrix.deadline }}
+          MAX_TASK_COST: ${{ matrix.max_task_cost }}
+          MAX_COST: ${{ matrix.max_cost }}
+        run: |
+          set -uo pipefail
+          args=(--set "$SET" --skills "$CONDITION" --models "$EVAL_MODEL" --repeats "$REPEATS"
+                --timeout "$TIMEOUT" --leaders 1 --boot-leaders --fresh-leader-every 1
+                --deadline-minutes "$DEADLINE"
+                --max-task-cost "$MAX_TASK_COST" --max-cost "$MAX_COST"
+                --harness "$SLICC_VERSION" --out "$OUT")
+          if [ -n "$TASKS" ]; then args+=(--tasks "$TASKS"); fi
+          # The merged report goes to the summary once, from the report job.
+          env -u GITHUB_STEP_SUMMARY node slicc/packages/bench/scripts/run.mjs "${args[@]}" 2>&1 \
+            | tee "$RUNNER_TEMP/run.log"
+          rc=${PIPESTATUS[0]}
+          if [ "$ARM" = with ]; then
+            # The runner's own check passes an EMPTY staged set as `none`; prove it was not empty.
+            staged=$(grep -oE "skills ${CONDITION//+/\\+}: [0-9]+ entries" "$RUNNER_TEMP/run.log" || true)
+            echo "staging lines: ${staged:-none}"
+            if [ -z "$staged" ] || grep -qE ': 0 entries' <<< "$staged"; then
+              echo "::error::$CONDITION staged no skill into /workspace/skills"; rc=1
+            fi
+          fi
+          exit "$rc"
+
+      # Each leader's side of its connections, for a leader that stops answering (bench.yml).
+      - name: Collect leader diagnostics
+        if: always()
+        env:
+          OUT: ${{ runner.temp }}/skill-evals-out
+        run: |
+          set -uo pipefail
+          mkdir -p "$OUT"
+          for log in "$RUNNER_TEMP"/slicc-gw-lane*/leader.log; do
+            [ -f "$log" ] || continue
+            lane="$(basename "$(dirname "$log")")"
+            grep -v '\[cdp-proxy\]' "$log" \
+              | grep -iE 'bench-event|tray|signal|follower|controller|bootstrap|webrtc|ice|turn|start-leader|stop-leader|error' \
+              | sed -E 's#/(join|controller|webhook)/[^ /"?]+#/\1/<token>#g' \
+              | cut -c1-400 > "$OUT/leader-infra-$lane.log" || true
+          done
+          cp "$RUNNER_TEMP/run.log" "$OUT/run.log" 2>/dev/null || true
+
+      - name: Stop leaders
+        if: always()
+        timeout-minutes: 5
+        run: |
+          for home in "$RUNNER_TEMP"/slicc-gw-lane*; do
+            [ -f "$home/state.json" ] || continue
+            SLICC_GW_HOME="$home" node slicc/packages/github-workflow/scripts/stop-leader.mjs || true
+          done
+
+      # The raw out dir holds traces (plaintext for a file set), so it is kept one week only.
+      - name: Upload the out dir
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: skill-evals-part-${{ github.run_id }}-${{ matrix.skill }}-${{ matrix.arm }}
+          path: ${{ runner.temp }}/skill-evals-out
+          retention-days: 7
+          if-no-files-found: ignore
+
+  report:
+    name: Report
+    needs: [plan, eval]
+    if: always() && needs.plan.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Check out ai-ecoverse/slicc at SLICC_REF
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ai-ecoverse/slicc
+          ref: ${{ env.SLICC_REF }}
+          path: slicc
+          sparse-checkout: |
+            packages/bench
+            packages/github-workflow
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: skill-evals-plan-${{ github.run_id }}
+          path: ${{ runner.temp }}/plan
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: skill-evals-part-${{ github.run_id }}-*
+          path: ${{ runner.temp }}/parts
+
+      - name: Merge, check and summarize
+        id: merge
+        env:
+          OUT: ${{ runner.temp }}/skill-evals-out
+        run: |
+          set -euo pipefail
+          parts=()
+          for d in "$RUNNER_TEMP"/parts/skill-evals-part-*/; do [ -d "$d" ] && parts+=("$d"); done
+          # A single matching artifact is extracted straight into the path.
+          if [ ${#parts[@]} -eq 0 ] && [ -d "$RUNNER_TEMP/parts/records" ]; then parts=("$RUNNER_TEMP/parts"); fi
+          if [ ${#parts[@]} -eq 0 ]; then echo "::error::no eval job left an out dir"; exit 1; fi
+          env -u GITHUB_STEP_SUMMARY node slicc/packages/bench/scripts/merge.mjs --out "$OUT" "${parts[@]}"
+          set +e
+          node tools/skill-evals/check.mjs --plan "$RUNNER_TEMP/plan/plan.json" --out "$OUT" --stamp host \
+            > "$RUNNER_TEMP/check.md"
+          check=$?
+          set -e
+          cat "$RUNNER_TEMP/check.md"
+          node tools/skill-evals/audit.mjs "$OUT" | tee "$RUNNER_TEMP/audit.md"
+          echo "::group::report.md"; cat "$OUT/report.md"; echo "::endgroup::"
+          {
+            echo "## Skill evals (host)"
+            echo
+            echo "slicc runner \`$SLICC_REF\`, model \`$EVAL_MODEL\`. Scores measure; they do not gate this check."
+            echo
+            grep -v '^::' "$RUNNER_TEMP/check.md"
+            echo
+            echo "What each agent's transcript names (isolation audit, informational):"
+            echo
+            cat "$RUNNER_TEMP/audit.md"
+            echo
+            cat "$OUT/report.md"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "check=$check" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: skill-evals-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/skill-evals-out/report.md
+            ${{ runner.temp }}/skill-evals-out/report.json
+            ${{ runner.temp }}/skill-evals-out/report.html
+            ${{ runner.temp }}/skill-evals-out/records
+            ${{ runner.temp }}/skill-evals-out/results
+          if-no-files-found: ignore
+
+      - name: Upload the traces
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: skill-evals-traces-${{ github.run_id }}
+          path: ${{ runner.temp }}/skill-evals-out/traces
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Fail on infrastructure errors
+        if: always()
+        env:
+          EVAL_RESULT: ${{ needs.eval.result }}
+          CHECK: ${{ steps.merge.outputs.check }}
+        run: |
+          if [ "$EVAL_RESULT" != success ]; then
+            echo "::error::an eval job failed ($EVAL_RESULT): a leader, an errored run, a judge error, or a guardrail stop"; exit 1
+          fi
+          if [ "$CHECK" != 0 ]; then echo "::error::not every planned run was judged"; exit 1; fi
