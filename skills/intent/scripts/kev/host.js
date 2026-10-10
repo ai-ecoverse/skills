@@ -105,9 +105,20 @@ function checkOrtVersion(ort, dir, want) {
   return ort;
 }
 
+async function hfDestFlag(exec) {
+  // slicc 6's builtin hf only has --to; huggingface_hub uses --local-dir.
+  // Probe once per process (help is exit 0 on both).
+  if (hfDestFlag.cached) return hfDestFlag.cached;
+  const result = await exec.spawn(['hf', 'download', '--help']);
+  const text = `${result.stdout || ''}\n${result.stderr || ''}`;
+  hfDestFlag.cached = text.includes('--local-dir') ? '--local-dir' : '--to';
+  return hfDestFlag.cached;
+}
+
 async function hfDownload(exec, repo, files, dest) {
+  const flag = await hfDestFlag(exec);
   console.error(`hf download ${repo} (${files.length} files) -> ${dest}`);
-  await run(exec, ['hf', 'download', repo, ...files, '--to', dest]);
+  await run(exec, ['hf', 'download', repo, ...files, flag, dest]);
 }
 
 function nativeImport(url) {
