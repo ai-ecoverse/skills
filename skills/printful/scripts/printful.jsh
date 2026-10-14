@@ -35,6 +35,7 @@ USAGE
   printful auth login --token <tok>     Store a private token (Developer Portal)
   printful auth login                   Mint one from a logged-in printful.com tab
   printful auth status | logout
+  printful auth token                   Print the stored private token (for jerk)
   printful whoami                       Customer stores (token last-4 only)
   printful stores
 
@@ -397,6 +398,16 @@ async function cmdAuthLogin(flags) {
   );
   if (minted.expiresAt) console.log(c.dim(`  expires: ${minted.expiresAt}`));
   console.log(c.dim(`  scopes: ${(minted.scopes || DEFAULT_SCOPES).join(', ')}`));
+}
+
+
+async function cmdAuthToken(flags) {
+  const token = await getToken(flags);
+  if (flags.json) {
+    cli.out({ token });
+    return;
+  }
+  process.stdout.write(token + '\n');
 }
 
 async function cmdAuthLogout() {
@@ -1196,9 +1207,10 @@ async function main() {
 
     if (s === 'auth') {
       if (p0 === 'login' || p0 === 'add') return await cmdAuthLogin(flags);
+      if (p0 === 'token') return await cmdAuthToken(flags);
       if (p0 === 'logout' || p0 === 'revoke' || p0 === 'delete') return await cmdAuthLogout();
       if (p0 === 'status' || p0 === 'show' || !p0) return await cmdAuthStatus(flags);
-      cli.die(`unknown auth subcommand: ${p0}\n  printful auth login | status | logout`, {
+      cli.die(`unknown auth subcommand: ${p0}\n  printful auth login | status | token | logout`, {
         prefix: 'printful',
       });
     }

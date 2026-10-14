@@ -52,7 +52,7 @@ Preferred: a **store-level private token** from
 <https://developers.printful.com/tokens> (scopes `orders`, `file_library`,
 `sync_products`), stored with `printful auth login --token <tok>`. The token is
 validated against `GET /stores` before being saved and **never printed** —
-`printful auth status` shows only the last four characters.
+`printful auth status` shows only the last four characters. `printful auth token` prints the live credential for token brokers such as `jerk`.
 
 Fallback, if a logged-in `www.printful.com` dashboard tab is open:
 `printful auth login` (no `--token`) mints a store token via the dashboard
