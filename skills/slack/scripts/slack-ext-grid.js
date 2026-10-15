@@ -1297,8 +1297,13 @@ function permissionLabel(postOnly) {
   return postOnly ? 'post-only' : 'Post and Invite';
 }
 
+// A list of team ids, or null (UNKNOWN) when it is missing, not an array, or
+// holds ANY entry that is not a non-empty string. Filtering a bad entry out
+// would turn e.g. connected_limited_team_ids:[null] into [], i.e. "nobody is
+// post-only", which is a claim Slack never made.
 function idList(v) {
-  return Array.isArray(v) ? v.filter((t) => typeof t === 'string' && t) : null;
+  if (!Array.isArray(v)) return null;
+  return v.every((t) => typeof t === 'string' && t.length > 0) ? v.slice() : null;
 }
 
 // conversations.info channel -> the Slack Connect state the three commands

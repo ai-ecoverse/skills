@@ -1128,3 +1128,24 @@ test('connect-status: an enterprise-scoped /client/E… tab is not used as the w
   const doc = JSON.parse(h.text());
   ok(/not a T… workspace\. Pass --ws=<T…>/.test(doc.error), doc.error);
 });
+
+test('connect-permissions: a malformed id list ([null]) is UNKNOWN, refused (connections-unknown), not read as []', async () => {
+  for (const over of [{ connected_limited_team_ids: [null] }, { connected_team_ids: [PARTNER, '', ORG] }, { connected_limited_team_ids: [PARTNER, 7] }]) {
+    for (const dir of ['--upgrade', '--downgrade']) {
+      const h = await load({
+        argv: PERM.concat(['--team=' + PARTNER, dir, '--confirm']),
+        channels: { [CHAN]: sharedChan(over) },
+      });
+      is(h.exit(), 1, JSON.stringify(over) + dir);
+      is(mutations(h), 0, JSON.stringify(over) + dir);
+      ok(/refused: connections-unknown/.test(h.errText()), h.errText());
+    }
+  }
+});
+
+test('normalizeConnectState: malformed lists are null, so the Post and Invite / post-only split is unknown', () => {
+  const st = grid.normalizeConnectState(sharedChan({ connected_limited_team_ids: [null] }), [ORG, WS]);
+  is(st.connected_limited_team_ids, null);
+  is(st.post_only_team_ids, null);
+  is(st.post_and_invite_team_ids, null);
+});
