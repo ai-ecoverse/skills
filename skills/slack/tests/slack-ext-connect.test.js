@@ -1149,3 +1149,25 @@ test('normalizeConnectState: malformed lists are null, so the Post and Invite / 
   is(st.post_only_team_ids, null);
   is(st.post_and_invite_team_ids, null);
 });
+
+test('connect-permissions: documented team.info shape (id = workspace, enterprise_id = grid) resolves via enterprise_id', async () => {
+  const h = await load({
+    argv: PERM.concat(['--team=' + PARTNER_WS, '--upgrade', '--confirm', '--json']),
+    channels: { [CHAN]: sharedChan() },
+    teams: { [PARTNER_WS]: { id: PARTNER_WS, name: 'Example Partner WS', enterprise_id: PARTNER } },
+  });
+  is(h.exit(), 0, h.errText());
+  is(h.calls[2].params, { channel: CHAN, target_team: PARTNER, action: 'upgrade' });
+  is(JSON.parse(h.text()).team_resolved_via, 'team.info enterprise_id');
+});
+
+test('connect-permissions: team.info enterprise_id that is NOT connected is still team-not-connected', async () => {
+  const h = await load({
+    argv: PERM.concat(['--team=' + PARTNER_WS, '--upgrade', '--confirm']),
+    channels: { [CHAN]: sharedChan() },
+    teams: { [PARTNER_WS]: { id: PARTNER_WS, enterprise_id: 'E0EXAMPLE08' } },
+  });
+  is(h.exit(), 1);
+  is(mutations(h), 0);
+  ok(/refused: team-not-connected/.test(h.errText()), h.errText());
+});

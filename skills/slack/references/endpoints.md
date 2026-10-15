@@ -794,7 +794,9 @@ they are reported as not present (`null`), never as an empty list.
 
 `team.info` (`team`) resolves an org or workspace id to `{id, name, domain}`. An external
 grid's workspace id resolves to the grid's `E…` id (measured: a `T…` of a partner grid returned
-that grid's `E…`), which is how `connect-permissions --team=<T…>` finds the listed org. An unknown
+that grid's `E…` as `team.id`). Slack's documented shape keeps `team.id` as the workspace and gives
+the grid as `team.enterprise_id`. `connect-permissions --team=<T…>` accepts either candidate, but only
+if it is listed in `connected_team_ids`. An unknown
 id answers `team_not_found`; `connect-status` then prints the bare id.
 
 ### Methods observed unavailable with this token (2026-09-29)

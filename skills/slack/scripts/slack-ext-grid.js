@@ -1223,7 +1223,9 @@ function checkChannelArchiveArgs(action, flags, positional) {
 //
 //   team.info (team) resolves a team or org id to its name; a workspace id of
 //   an external grid resolves to that grid's E id (measured: T9D3QKALD ->
-//   E026KL2NWPK). An unknown id answers team_not_found.
+//   team.id E026KL2NWPK). Slack's docs instead keep team.id = the workspace
+//   and give the grid in team.enterprise_id; both are accepted. An unknown id
+//   answers team_not_found.
 //
 // Only ok === true is success: a missing body, ok:false or a truthy
 // non-boolean ok (e.g. "true") is a failure. Unknown state is refused, never
@@ -1549,8 +1551,20 @@ async function resolveConnectedTeam(call, team, state) {
   const connected = state.connected_team_ids || [];
   if (connected.includes(team)) return { id: team, via: 'listed', error: null };
   const r = await call('team.info', { team: team });
-  if (apiOk(r) && r.team && typeof r.team.id === 'string' && connected.includes(r.team.id)) {
-    return { id: r.team.id, via: 'team.info', error: null };
+  // Two response shapes: MEASURED 2026-10-15, team.info on a partner grid's
+  // T… id answered team.id = the grid's E… id (no enterprise_id). Slack's
+  // documented shape keeps team.id = the workspace and puts the grid in
+  // team.enterprise_id. Either candidate counts, but only if it is listed.
+  if (apiOk(r) && r.team && typeof r.team === 'object') {
+    for (const [key, via] of [
+      ['enterprise_id', 'team.info enterprise_id'],
+      ['id', 'team.info id'],
+    ]) {
+      const cand = r.team[key];
+      if (typeof cand === 'string' && cand && connected.includes(cand)) {
+        return { id: cand, via: via, error: null };
+      }
+    }
   }
   return { id: null, via: null, error: apiOk(r) ? null : apiErrorOf(r) };
 }
