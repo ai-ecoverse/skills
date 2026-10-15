@@ -3946,8 +3946,12 @@ async function connectPrelude(command, out, base, usage, needWs) {
         (ws === undefined ? 'missing' : JSON.stringify(ws)) + '.\n' + usage
     );
   }
-  if (!needWs && ws !== undefined && (typeof ws !== 'string' || !/^[TE][A-Z0-9]+$/.test(ws))) {
-    out.fail(base, 'invalid-value', 'invalid-value: --ws "' + ws + '" (expected a T… workspace id)');
+  if (!needWs && ws !== undefined && (typeof ws !== 'string' || !/^T[A-Z0-9]+$/.test(ws))) {
+    out.fail(
+      base,
+      'invalid-value',
+      'invalid-value: --ws "' + ws + '" (expected a T… WORKSPACE id; an E… org id would select the org token)'
+    );
   }
   const tab =
     (await browser.findTab({ domain: SLACK_DOMAIN, urlMatch: /\/client\/[A-Z0-9]+/ })) ||
@@ -3955,8 +3959,18 @@ async function connectPrelude(command, out, base, usage, needWs) {
   if (!tab) out.fail(base, 'no-slack-tab', 'No Slack tab found. Open app.slack.com in your browser and try again.');
   _cachedTab = _cachedTab || tab;
   _cachedTabUrl = _cachedTabUrl || tab.url;
+  // Every connect-* call uses the WORKSPACE token. An auto-detected id is
+  // held to the same rule: an enterprise-scoped /client/E… tab must not
+  // silently select the org token.
   const workspaceId = ws || getWorkspaceFromTabUrl();
   if (!workspaceId) out.fail(base, 'usage', 'Could not determine the workspace. Pass --ws=<T…>.\n' + usage);
+  if (!/^T[A-Z0-9]+$/.test(workspaceId)) {
+    out.fail(
+      base,
+      'usage',
+      'The Slack tab is on ' + workspaceId + ', not a T… workspace. Pass --ws=<T…> explicitly.\n' + usage
+    );
+  }
   const orgId = flags.org || ORG_ID;
   const call = (method, params) => slackApi(method, params, workspaceId, { fatal: false });
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

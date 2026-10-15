@@ -79,6 +79,7 @@ function approvalRow(over) {
  * @param {object[]} [opts.rows] initial sharedApprovals rows
  * @param {object} [opts.channels] conversations.info channel objects by id
  * @param {object} [opts.teams] team.info team objects by id
+ * @param {string} [opts.tabUrl] override the Slack tab URL
  *
  * setTimeout inside the script is always fake: it fires at once and records
  * the delay in h.sleeps, so retry and read-back waits cost nothing.
@@ -93,7 +94,7 @@ async function load(opts) {
     channels: JSON.parse(JSON.stringify(opts.channels || {})),
     teams: JSON.parse(JSON.stringify(opts.teams || {})),
   };
-  const fakeTab = { id: 'tab1', url: 'https://app.slack.com/client/' + WS + '/' + CHAN };
+  const fakeTab = { id: 'tab1', url: opts.tabUrl || 'https://app.slack.com/client/' + WS + '/' + CHAN };
 
   const browserStub = {
     async findTab() {
@@ -1101,4 +1102,29 @@ test('writeOutcome: ok / failed / unknown classification', () => {
   is(grid.writeOutcome({ ok: false, error: 'fatal_error' }), 'unknown');
   is(grid.writeOutcome({ ok: false, error: 'xhr_error' }), 'unknown');
   is(grid.writeOutcome(null), 'unknown');
+});
+
+test('connect-status: --ws=E… (an org id) is refused before any call; the workspace token is required', async () => {
+  const h = await load({ argv: ['--ws=' + ORG, '--org=' + ORG, 'connect-status', CHAN], channels: { [CHAN]: sharedChan() } });
+  is(h.exit(), 1);
+  is(h.calls.length, 0);
+  ok(/expected a T… WORKSPACE id/.test(h.errText()), h.errText());
+});
+
+test('connect-status: no --ws uses the tab workspace (T…) and its token', async () => {
+  const h = await load({ argv: ['--org=' + ORG, 'connect-status', CHAN], channels: { [CHAN]: sharedChan() } });
+  is(h.exit(), 0, h.errText());
+  is(h.calls[0].token, 'xoxc-test-ws');
+});
+
+test('connect-status: an enterprise-scoped /client/E… tab is not used as the workspace -> asks for --ws', async () => {
+  const h = await load({
+    argv: ['--org=' + ORG, 'connect-status', CHAN, '--json'],
+    channels: { [CHAN]: sharedChan() },
+    tabUrl: 'https://app.slack.com/client/' + ORG + '/' + CHAN,
+  });
+  is(h.exit(), 1);
+  is(h.calls.length, 0);
+  const doc = JSON.parse(h.text());
+  ok(/not a T… workspace\. Pass --ws=<T…>/.test(doc.error), doc.error);
 });
