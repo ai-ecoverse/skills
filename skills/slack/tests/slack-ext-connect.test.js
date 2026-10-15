@@ -1,5 +1,6 @@
-// Tests for the Slack Connect invite commands in skills/slack/scripts/slack-ext.jsh:
-//   guest-invite, connect-revoke, approvals --detail / approvals show.
+// Tests for the Slack Connect commands in skills/slack/scripts/slack-ext.jsh:
+//   guest-invite, connect-revoke, approvals --detail / approvals show,
+//   connect-status, connect-invite, connect-permissions.
 //
 // Run with:
 //   tst <path-to-this-file>
@@ -76,12 +77,22 @@ function approvalRow(over) {
  * @param {string[]} opts.argv
  * @param {function} [opts.api] (method, params, state) => body | undefined
  * @param {object[]} [opts.rows] initial sharedApprovals rows
+ * @param {object} [opts.channels] conversations.info channel objects by id
+ * @param {object} [opts.teams] team.info team objects by id
+ *
+ * setTimeout inside the script is always fake: it fires at once and records
+ * the delay in h.sleeps, so retry and read-back waits cost nothing.
  */
 async function load(opts) {
   const calls = [];
+  const sleeps = [];
   const stdout = [];
   const stderr = [];
-  const state = { rows: (opts.rows || [approvalRow()]).map((r) => JSON.parse(JSON.stringify(r))) };
+  const state = {
+    rows: (opts.rows || [approvalRow()]).map((r) => JSON.parse(JSON.stringify(r))),
+    channels: JSON.parse(JSON.stringify(opts.channels || {})),
+    teams: JSON.parse(JSON.stringify(opts.teams || {})),
+  };
   const fakeTab = { id: 'tab1', url: 'https://app.slack.com/client/' + WS + '/' + CHAN };
 
   const browserStub = {
@@ -116,6 +127,26 @@ async function load(opts) {
           row.status = 'expired';
           row.date_expire = 1790500000;
         }
+        return { body: { ok: true } };
+      }
+      if (method === 'conversations.info') {
+        const c = state.channels[params.channel];
+        return {
+          body: c
+            ? { ok: true, channel: JSON.parse(JSON.stringify(c)) }
+            : { ok: false, error: 'channel_not_found' },
+        };
+      }
+      if (method === 'team.info') {
+        const t = state.teams[params.team];
+        return { body: t ? { ok: true, team: t } : { ok: false, error: 'team_not_found' } };
+      }
+      if (method === 'conversations.inviteShared') return { body: { ok: true } };
+      if (method === 'conversations.externalInvitePermissions.set') {
+        const c = state.channels[params.channel];
+        const lim = c.connected_limited_team_ids.filter((t) => t !== params.target_team);
+        if (params.action === 'downgrade') lim.push(params.target_team);
+        c.connected_limited_team_ids = lim;
         return { body: { ok: true } };
       }
       if (method === 'users.admin.inviteBulk') {
@@ -197,15 +228,21 @@ async function load(opts) {
 
   const source = readFileSync(SCRIPT, 'utf8');
   const factory = new AsyncFunction('require', 'process', 'console', 'setTimeout', source);
+  const fakeSetTimeout = (fn, ms) => {
+    sleeps.push(ms);
+    Promise.resolve().then(fn);
+    return 0;
+  };
   let runError = null;
   try {
-    await factory(mockRequire, mockProcess, mockConsole, setTimeout);
+    await factory(mockRequire, mockProcess, mockConsole, fakeSetTimeout);
   } catch (e) {
     runError = e;
   }
   return {
     runError,
     calls,
+    sleeps,
     state,
     text: () => stdout.join('\n'),
     errText: () => stderr.join('\n'),
@@ -215,7 +252,12 @@ async function load(opts) {
   };
 }
 
-const MUTATING = ['users.admin.inviteBulk', 'conversations.revokeSharedInvite'];
+const MUTATING = [
+  'users.admin.inviteBulk',
+  'conversations.revokeSharedInvite',
+  'conversations.inviteShared',
+  'conversations.externalInvitePermissions.set',
+];
 const mutations = (h) => h.calls.filter((c) => MUTATING.includes(c.method)).length;
 
 // ── guest-invite ──────────────────────────────────────────────────────────────
@@ -456,4 +498,481 @@ test('summarizeInviteResults: case-insensitive email match, per-invite ok only',
   is(s.failed, 0);
   const f = grid.summarizeInviteResults({ ok: true, invites: [{ email: EMAIL, ok: 'true' }] }, [EMAIL]);
   is(f.ok, false);
+});
+
+// ── connect-status / connect-invite / connect-permissions ─────────────────────
+
+const PARTNER = 'E0EXAMPLE02'; // external org (grid)
+const PARTNER_WS = 'T0EXAMPLE09'; // one of PARTNER's workspaces
+const OTHER = 'E0EXAMPLE03'; // a second external org
+
+// A conversations.info channel, shaped as measured 2026-10-15 (fakes): hosted
+// by us, PARTNER post-only, OTHER Post and Invite.
+function sharedChan(over) {
+  return Object.assign(
+    {
+      id: CHAN,
+      name: 'example-shared',
+      is_archived: false,
+      is_private: false,
+      is_shared: true,
+      is_ext_shared: true,
+      is_org_shared: false,
+      is_pending_ext_shared: false,
+      conversation_host_id: ORG,
+      context_team_id: WS,
+      internal_team_ids: [WS],
+      connected_team_ids: [PARTNER, OTHER, ORG],
+      connected_limited_team_ids: [PARTNER],
+      pending_connected_team_ids: [],
+    },
+    over || {}
+  );
+}
+
+// A never-shared channel, as measured: no connected_* lists at all.
+function plainChan(over) {
+  return Object.assign(
+    {
+      id: CHAN,
+      name: 'example-internal',
+      is_archived: false,
+      is_private: false,
+      is_shared: false,
+      is_ext_shared: false,
+      is_org_shared: false,
+      is_pending_ext_shared: false,
+      context_team_id: WS,
+      internal_team_ids: [WS],
+      pending_connected_team_ids: [],
+    },
+    over || {}
+  );
+}
+
+const TEAMS = {
+  [PARTNER]: { id: PARTNER, name: 'Example Partner', domain: 'example-partner' },
+  [PARTNER_WS]: { id: PARTNER, name: 'Example Partner', domain: 'example-partner' },
+  [OTHER]: { id: OTHER, name: 'Other Partner', domain: 'other-partner' },
+  [ORG]: { id: ORG, name: 'Example Home Org', domain: 'example-home' },
+};
+
+const INV = ['--ws=' + WS, '--org=' + ORG, 'connect-invite', CHAN];
+const PERM = ['--ws=' + WS, '--org=' + ORG, 'connect-permissions', CHAN];
+
+// ── connect-invite ──
+
+test('connect-invite dry run: ONE conversations.info read, zero writes, shows emails + state + permission', async () => {
+  const h = await load({
+    argv: INV.concat(['--emails=B@Example.org,a@example.com,b@example.org']),
+    channels: { [CHAN]: plainChan() },
+  });
+  is(h.exit(), 0, h.errText());
+  is(h.methods(), 'conversations.info');
+  is(h.calls[0].params, { channel: CHAN });
+  is(h.calls[0].token, 'xoxc-test-ws');
+  is(mutations(h), 0);
+  const t = h.text();
+  ok(/Dry run: connect-invite/.test(t), t);
+  ok(/Emails:\s+b@example\.org, a@example\.com\n/.test(t), t);
+  ok(/Permission:\s+Post and Invite \(default\)/.test(t), t);
+  ok(/external_limited=false/.test(t), t);
+  ok(/ext_shared:\s+no/.test(t) && /pending_ext:\s+no/.test(t), t);
+  ok(/No --confirm; nothing changed/.test(t), t);
+});
+
+test('connect-invite --confirm: write sends external_limited:"false" EXPLICITLY, then re-reads', async () => {
+  const h = await load({
+    argv: INV.concat(['--emails=a@example.com,b@example.org', '--confirm']),
+    channels: { [CHAN]: plainChan() },
+  });
+  is(h.exit(), 0, h.errText());
+  is(h.methods(), 'conversations.info,conversations.inviteShared,conversations.info');
+  is(h.calls[1].params, { channel: CHAN, emails: 'a@example.com,b@example.org', external_limited: 'false' });
+  is(h.calls[1].token, 'xoxc-test-ws');
+  is(mutations(h), 1);
+  const t = h.text();
+  ok(/Invited/.test(t), t);
+  ok(/An unchanged channel is EXPECTED/.test(t), t);
+  ok(/slack-ext approvals --query=example-internal --detail/.test(t), t);
+});
+
+test('connect-invite --post-only --confirm: external_limited:"true"', async () => {
+  const h = await load({
+    argv: INV.concat(['--emails=a@example.com', '--post-only', '--confirm']),
+    channels: { [CHAN]: plainChan() },
+  });
+  is(h.exit(), 0, h.errText());
+  is(h.calls[1].method, 'conversations.inviteShared');
+  is(h.calls[1].params, { channel: CHAN, emails: 'a@example.com', external_limited: 'true' });
+  ok(/Permission:\s+post-only \(--post-only\)/.test(h.text()), h.text());
+});
+
+test('connect-invite --json dry run: one JSON document, params carry external_limited "false"', async () => {
+  const h = await load({
+    argv: INV.concat(['--emails=a@example.com', '--json']),
+    channels: { [CHAN]: sharedChan() },
+  });
+  is(h.exit(), 0, h.errText());
+  const doc = JSON.parse(h.text());
+  is(doc.status, 'dry-run');
+  is(doc.params, { channel: CHAN, emails: 'a@example.com', external_limited: 'false' });
+  is(doc.permission, 'Post and Invite');
+  is(doc.state.post_only_team_ids, [PARTNER]);
+  is(doc.state.post_and_invite_team_ids, [OTHER]);
+});
+
+test('connect-invite refuses channel not found (named), even with --confirm, no write', async () => {
+  const h = await load({ argv: INV.concat(['--emails=a@example.com', '--confirm']) });
+  is(h.exit(), 1);
+  is(mutations(h), 0);
+  ok(/refused: not-found/.test(h.errText()), h.errText());
+});
+
+test('connect-invite refuses an archived channel (named), no write', async () => {
+  const h = await load({
+    argv: INV.concat(['--emails=a@example.com', '--confirm']),
+    channels: { [CHAN]: plainChan({ is_archived: true }) },
+  });
+  is(h.exit(), 1);
+  is(mutations(h), 0);
+  ok(/refused: archived/.test(h.errText()), h.errText());
+});
+
+test('connect-invite refuses a channel hosted by another org (named), no write', async () => {
+  const h = await load({
+    argv: INV.concat(['--emails=a@example.com', '--confirm']),
+    channels: { [CHAN]: sharedChan({ conversation_host_id: OTHER }) },
+  });
+  is(h.exit(), 1);
+  is(mutations(h), 0);
+  ok(/refused: hosted-elsewhere/.test(h.errText()) && h.errText().includes(OTHER), h.errText());
+});
+
+test('connect-invite refuses missing sharing flags (sharing-unknown), never read as not shared', async () => {
+  const c = plainChan();
+  delete c.is_pending_ext_shared;
+  const h = await load({ argv: INV.concat(['--emails=a@example.com', '--confirm']), channels: { [CHAN]: c } });
+  is(h.exit(), 1);
+  is(mutations(h), 0);
+  ok(/refused: sharing-unknown/.test(h.errText()), h.errText());
+});
+
+test('connect-invite: conversations.info read error is not "not found": exit 1, no write', async () => {
+  const h = await load({
+    argv: INV.concat(['--emails=a@example.com', '--confirm']),
+    api: (m) => (m === 'conversations.info' ? { ok: false, error: 'internal_error' } : undefined),
+  });
+  is(h.exit(), 1);
+  is(mutations(h), 0);
+  ok(/UNKNOWN/.test(h.errText()) && /internal_error/.test(h.errText()), h.errText());
+});
+
+test('connect-invite email validation: bad address, missing --emails, empty list -> no Slack call', async () => {
+  for (const extra of [['--emails=a@example.com,not-an-email'], [], ['--emails=,,'], ['--emails'], ['--emails=a@b']]) {
+    const h = await load({ argv: INV.concat(extra, ['--confirm']), channels: { [CHAN]: plainChan() } });
+    is(h.exit(), 1, extra.join(' '));
+    is(h.calls.length, 0, extra.join(' '));
+  }
+  const bad = await load({ argv: INV.concat(['--emails=a@example.com,not-an-email']) });
+  ok(/invalid email address\(es\): not-an-email/.test(bad.errText()), bad.errText());
+});
+
+test('connect-invite: a misspelt --postonly is refused (would otherwise widen to Post and Invite)', async () => {
+  const h = await load({
+    argv: INV.concat(['--emails=a@example.com', '--postonly', '--confirm']),
+    channels: { [CHAN]: plainChan() },
+  });
+  is(h.exit(), 1);
+  is(h.calls.length, 0);
+  ok(/unknown-flag: --postonly \(did you mean --post-only\?\)/.test(h.errText()), h.errText());
+});
+
+test('connect-invite requires --ws=<T…>: missing or an org id is refused before any call', async () => {
+  const a = await load({ argv: ['connect-invite', CHAN, '--emails=a@example.com', '--confirm'] });
+  is(a.exit(), 1);
+  is(a.calls.length, 0);
+  ok(/--ws=<T…> is required/.test(a.errText()), a.errText());
+  const b = await load({ argv: ['--ws=' + ORG, 'connect-invite', CHAN, '--emails=a@example.com'] });
+  is(b.exit(), 1);
+  is(b.calls.length, 0);
+});
+
+test('connect-invite --confirm: a truthy non-boolean ok ("true") is a FAILURE, exit 1', async () => {
+  const h = await load({
+    argv: INV.concat(['--emails=a@example.com', '--confirm']),
+    channels: { [CHAN]: plainChan() },
+    api: (m) => (m === 'conversations.inviteShared' ? { ok: 'true' } : undefined),
+  });
+  is(h.exit(), 1);
+  ok(/malformed_response/.test(h.errText()), h.errText());
+  is(h.count('conversations.info'), 1);
+});
+
+test('connect-invite --confirm: ok:false is reported and nothing is claimed', async () => {
+  const h = await load({
+    argv: INV.concat(['--emails=a@example.com', '--confirm', '--json']),
+    channels: { [CHAN]: plainChan() },
+    api: (m) => (m === 'conversations.inviteShared' ? { ok: false, error: 'invalid_email' } : undefined),
+  });
+  is(h.exit(), 1);
+  const doc = JSON.parse(h.text());
+  is(doc.status, 'error');
+  ok(/invalid_email/.test(doc.error), doc.error);
+});
+
+test('connect-invite --confirm: ratelimited is retried with a backoff, then succeeds', async () => {
+  let n = 0;
+  const h = await load({
+    argv: INV.concat(['--emails=a@example.com', '--confirm']),
+    channels: { [CHAN]: plainChan() },
+    api: (m) => {
+      if (m !== 'conversations.inviteShared') return undefined;
+      n += 1;
+      return n === 1 ? { ok: false, error: 'ratelimited' } : { ok: true };
+    },
+  });
+  is(h.exit(), 0, h.errText());
+  is(h.count('conversations.inviteShared'), 2);
+  is(h.sleeps.join(','), String(grid.CONNECT_WRITE_RETRY_MS));
+});
+
+// ── connect-permissions ──
+
+test('connect-permissions dry run --upgrade: reads only, zero writes, names the exact call', async () => {
+  const h = await load({ argv: PERM.concat(['--team=' + PARTNER, '--upgrade']), channels: { [CHAN]: sharedChan() } });
+  is(h.exit(), 0, h.errText());
+  is(h.methods(), 'conversations.info');
+  is(mutations(h), 0);
+  const t = h.text();
+  ok(/Now:\s+post-only/.test(t), t);
+  ok(/Target:\s+Post and Invite \(--upgrade\)/.test(t), t);
+  ok(t.includes('target_team=' + PARTNER + ', action=upgrade'), t);
+  ok(/No --confirm; nothing changed/.test(t), t);
+});
+
+test('connect-permissions --upgrade --confirm: exact params on the WORKSPACE token, read-back confirms', async () => {
+  const h = await load({
+    argv: PERM.concat(['--team=' + PARTNER, '--upgrade', '--confirm']),
+    channels: { [CHAN]: sharedChan() },
+  });
+  is(h.exit(), 0, h.errText());
+  is(h.methods(), 'conversations.info,conversations.externalInvitePermissions.set,conversations.info');
+  is(h.calls[1].params, { channel: CHAN, target_team: PARTNER, action: 'upgrade' });
+  is(h.calls[1].token, 'xoxc-test-ws');
+  ok(/upgraded \(confirmed\)/.test(h.text()), h.text());
+  ok(/Read-back:\s+confirmed after 1 attempt/.test(h.text()), h.text());
+});
+
+test('connect-permissions --downgrade --confirm: Post and Invite -> post-only', async () => {
+  const h = await load({
+    argv: PERM.concat(['--team=' + OTHER, '--downgrade', '--confirm']),
+    channels: { [CHAN]: sharedChan() },
+  });
+  is(h.exit(), 0, h.errText());
+  is(h.calls[1].params, { channel: CHAN, target_team: OTHER, action: 'downgrade' });
+  ok(h.state.channels[CHAN].connected_limited_team_ids.includes(OTHER));
+});
+
+test('connect-permissions: --upgrade on a team already Post and Invite is nothing to do (exit 0, no write)', async () => {
+  const h = await load({
+    argv: PERM.concat(['--team=' + OTHER, '--upgrade', '--confirm']),
+    channels: { [CHAN]: sharedChan() },
+  });
+  is(h.exit(), 0, h.errText());
+  is(mutations(h), 0);
+  ok(/already-post-and-invite: nothing to do/.test(h.text()), h.text());
+});
+
+test('connect-permissions: --downgrade on a team already post-only is nothing to do (exit 0, no write)', async () => {
+  const h = await load({
+    argv: PERM.concat(['--team=' + PARTNER, '--downgrade', '--confirm', '--json']),
+    channels: { [CHAN]: sharedChan() },
+  });
+  is(h.exit(), 0, h.errText());
+  is(mutations(h), 0);
+  is(JSON.parse(h.text()).status, 'nothing-to-do');
+});
+
+test('connect-permissions: a team that is not connected is refused (team-not-connected), no write', async () => {
+  const h = await load({
+    argv: PERM.concat(['--team=E0EXAMPLE07', '--upgrade', '--confirm']),
+    channels: { [CHAN]: sharedChan() },
+  });
+  is(h.exit(), 1);
+  is(mutations(h), 0);
+  ok(/refused: team-not-connected/.test(h.errText()) && /team_not_found/.test(h.errText()), h.errText());
+});
+
+test('connect-permissions: a T id of a connected grid is resolved to its E id via team.info', async () => {
+  const h = await load({
+    argv: PERM.concat(['--team=' + PARTNER_WS, '--upgrade', '--confirm']),
+    channels: { [CHAN]: sharedChan() },
+    teams: TEAMS,
+  });
+  is(h.exit(), 0, h.errText());
+  is(h.calls[1].method, 'team.info');
+  is(h.calls[2].params, { channel: CHAN, target_team: PARTNER, action: 'upgrade' });
+});
+
+test('connect-permissions refuses: own org as --team, not-shared, archived, hosted elsewhere', async () => {
+  const cases = [
+    [['--team=' + ORG], sharedChan(), /refused: own-team/],
+    [['--team=' + PARTNER], plainChan(), /refused: not-shared/],
+    [['--team=' + PARTNER], sharedChan({ is_archived: true }), /refused: archived/],
+    [['--team=' + PARTNER], sharedChan({ conversation_host_id: OTHER }), /refused: hosted-elsewhere/],
+    [['--team=' + PARTNER], sharedChan({ connected_limited_team_ids: undefined }), /refused: connections-unknown/],
+  ];
+  for (const [extra, chan, re] of cases) {
+    const h = await load({ argv: PERM.concat(extra, ['--upgrade', '--confirm']), channels: { [CHAN]: chan } });
+    is(h.exit(), 1, String(re));
+    is(mutations(h), 0, String(re));
+    ok(re.test(h.errText()), h.errText());
+  }
+});
+
+test('connect-permissions: --upgrade with --downgrade, or neither, or no --team: refused, no call', async () => {
+  for (const extra of [['--team=' + PARTNER, '--upgrade', '--downgrade'], ['--team=' + PARTNER], ['--upgrade'], ['--team=bogus', '--upgrade']]) {
+    const h = await load({ argv: PERM.concat(extra), channels: { [CHAN]: sharedChan() } });
+    is(h.exit(), 1, extra.join(' '));
+    is(h.calls.length, 0, extra.join(' '));
+  }
+});
+
+test('connect-permissions: ratelimited is retried (bounded, injectable backoff), then confirmed', async () => {
+  let n = 0;
+  const h = await load({
+    argv: PERM.concat(['--team=' + PARTNER, '--upgrade', '--confirm']),
+    channels: { [CHAN]: sharedChan() },
+    api: (m, _params, state) => {
+      if (m !== 'conversations.externalInvitePermissions.set') return undefined;
+      n += 1;
+      if (n < 3) return { ok: false, error: 'ratelimited' };
+      state.channels[CHAN].connected_limited_team_ids = [];
+      return { ok: true };
+    },
+  });
+  is(h.exit(), 0, h.errText());
+  is(h.count('conversations.externalInvitePermissions.set'), 3);
+  is(h.sleeps.join(','), [grid.CONNECT_WRITE_RETRY_MS, grid.CONNECT_WRITE_RETRY_MS].join(','));
+  ok(/attempt 3/.test(h.text()), h.text());
+});
+
+test('connect-permissions: ratelimited on every attempt gives up after CONNECT_WRITE_ATTEMPTS, exit 1', async () => {
+  const h = await load({
+    argv: PERM.concat(['--team=' + PARTNER, '--upgrade', '--confirm']),
+    channels: { [CHAN]: sharedChan() },
+    api: (m) => (m === 'conversations.externalInvitePermissions.set' ? { ok: false, error: 'ratelimited' } : undefined),
+  });
+  is(h.exit(), 1);
+  is(h.count('conversations.externalInvitePermissions.set'), grid.CONNECT_WRITE_ATTEMPTS);
+  is(h.sleeps.length, grid.CONNECT_WRITE_ATTEMPTS - 1);
+  is(h.count('conversations.info'), 1);
+  ok(/gave up after 4 attempts/.test(h.errText()), h.errText());
+});
+
+test('connect-permissions --confirm: ok:true but the read-back never shows it -> exit 3', async () => {
+  const h = await load({
+    argv: PERM.concat(['--team=' + PARTNER, '--upgrade', '--confirm']),
+    channels: { [CHAN]: sharedChan() },
+    api: (m) => (m === 'conversations.externalInvitePermissions.set' ? { ok: true } : undefined),
+  });
+  is(h.exit(), 3);
+  is(h.count('conversations.info'), 1 + grid.CONNECT_READBACK_ATTEMPTS);
+  is(h.sleeps.join(','), Array(grid.CONNECT_READBACK_ATTEMPTS - 1).fill(grid.CONNECT_READBACK_DELAY_MS).join(','));
+  ok(/NOT confirmed/.test(h.text()), h.text());
+  ok(/did not show E0EXAMPLE02 as Post and Invite/.test(h.errText()), h.errText());
+});
+
+test('connect-permissions --confirm: truthy non-boolean ok is a FAILURE, no read-back', async () => {
+  const h = await load({
+    argv: PERM.concat(['--team=' + PARTNER, '--upgrade', '--confirm']),
+    channels: { [CHAN]: sharedChan() },
+    api: (m) => (m === 'conversations.externalInvitePermissions.set' ? { ok: 1 } : undefined),
+  });
+  is(h.exit(), 1);
+  is(h.count('conversations.info'), 1);
+  ok(/malformed_response/.test(h.errText()), h.errText());
+});
+
+// ── connect-status ──
+
+test('connect-status: split Post and Invite vs post-only, names via team.info, read-only', async () => {
+  const h = await load({
+    argv: ['--ws=' + WS, '--org=' + ORG, 'connect-status', CHAN],
+    channels: { [CHAN]: sharedChan({ pending_connected_team_ids: ['E0EXAMPLE05'] }) },
+    teams: TEAMS,
+  });
+  is(h.exit(), 0, h.errText());
+  is(mutations(h), 0);
+  const t = h.text();
+  ok(/Post\+Invite:\s+Other Partner \(E0EXAMPLE03\)/.test(t), t);
+  ok(/Post-only:\s+Example Partner \(E0EXAMPLE02\)/.test(t), t);
+  ok(/Pending:\s+E0EXAMPLE05\n/.test(t), t);
+  ok(/Host:\s+Example Home Org \(E0EXAMPLE01\) — this org/.test(t), t);
+  ok(/team\.info failed for E0EXAMPLE05 \(team_not_found\)/.test(t), t);
+});
+
+test('connect-status --json: one document; a never-shared channel reports lists as unknown, not []', async () => {
+  const h = await load({ argv: ['--ws=' + WS, '--org=' + ORG, 'connect-status', CHAN, '--json'], channels: { [CHAN]: plainChan() } });
+  is(h.exit(), 0, h.errText());
+  const doc = JSON.parse(h.text());
+  is(doc.status, 'ok');
+  is(doc.state.host, 'not-shared');
+  is(doc.state.connected_team_ids, null);
+  is(doc.state.post_only_team_ids, null);
+  is(doc.teams, {});
+});
+
+test('connect-status: team.info failing outright degrades to bare ids, exit 0', async () => {
+  const h = await load({
+    argv: ['--ws=' + WS, '--org=' + ORG, 'connect-status', CHAN],
+    channels: { [CHAN]: sharedChan() },
+    api: (m) => (m === 'team.info' ? { ok: false, error: 'missing_scope' } : undefined),
+  });
+  is(h.exit(), 0, h.errText());
+  ok(/Post-only:\s+E0EXAMPLE02\n/.test(h.text()), h.text());
+});
+
+test('connect-status: not found exits 1; a bad channel id is refused before any call', async () => {
+  const a = await load({ argv: ['--ws=' + WS, '--org=' + ORG, 'connect-status', CHAN] });
+  is(a.exit(), 1);
+  ok(/channel not found/.test(a.errText()), a.errText());
+  const b = await load({ argv: ['--ws=' + WS, 'connect-status', 'general'] });
+  is(b.exit(), 1);
+  is(b.calls.length, 0);
+});
+
+// ── connect pure helpers ──
+
+test('buildInviteSharedParams: external_limited is "false" by default, "true" only for postOnly===true', () => {
+  is(grid.buildInviteSharedParams(CHAN, ['a@example.com']).external_limited, 'false');
+  is(grid.buildInviteSharedParams(CHAN, ['a@example.com'], 'yes').external_limited, 'false');
+  is(grid.buildInviteSharedParams(CHAN, ['a@example.com', 'b@example.org'], true), {
+    channel: CHAN,
+    emails: 'a@example.com,b@example.org',
+    external_limited: 'true',
+  });
+});
+
+test('parseEmailList: lowercases, dedupes, keeps order, rejects bad shapes', () => {
+  is(grid.parseEmailList(' A@Example.com;b@example.org a@example.com ').emails, ['a@example.com', 'b@example.org']);
+  is(grid.parseEmailList('x@y').ok, false);
+  is(grid.parseEmailList('a@@b.com').ok, false);
+  is(grid.parseEmailList('<a@b.com>').ok, false);
+  is(grid.parseEmailList(true).ok, false);
+});
+
+test('writeWithRetry: only ok===true succeeds; non-ratelimit errors are not retried', async () => {
+  const seen = [];
+  const call = async () => {
+    seen.push(1);
+    return { ok: false, error: 'not_allowed' };
+  };
+  const r = await grid.writeWithRetry(call, 'm', {}, { sleep: async () => {}, attempts: 4 });
+  is(r.ok, false);
+  is(seen.length, 1);
+  const r2 = await grid.writeWithRetry(async () => ({ ok: 'yes' }), 'm', {}, { sleep: async () => {} });
+  is(r2.ok, false);
+  ok(/malformed_response/.test(r2.error), r2.error);
 });

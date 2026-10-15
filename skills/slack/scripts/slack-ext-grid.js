@@ -1179,6 +1179,531 @@ function checkChannelArchiveArgs(action, flags, positional) {
   return { ok: errors.length === 0, errors: errors, maxMembers: maxMembers, minIdleDays: minIdleDays };
 }
 
+// ── Slack Connect channel invites and external-invite permissions ─────────────
+// (`connect-invite`, `connect-permissions`, `connect-status`)
+//
+// Wire facts:
+//
+//   conversations.inviteShared (channel, emails, external_limited) invites an
+//   external org into a channel by email. MEASURED live 2026-10-15 with the
+//   tab's xoxc token on workspace T0385CHDU9E: {"ok":true} for C0C844A86UE.
+//   external_limited=true is "post only", false is "Post and Invite". Slack's
+//   own default is true (post only), so the command ALWAYS sends the parameter
+//   explicitly: 'false' unless --post-only is given.
+//
+//   Right after a successful inviteShared the channel STILL reads
+//   is_ext_shared:false, is_pending_ext_shared:false and
+//   pending_connected_team_ids:[] (measured). The invite does not appear in
+//   conversations.sharedApprovals.list until the invitee accepts, and
+//   conversations.listConnectInvites answers not_allowed_token_type with the
+//   xoxc token. "No visible change" is the EXPECTED read-back, not a failure.
+//
+//   conversations.externalInvitePermissions.set (channel, target_team, action)
+//   with action=upgrade turns a post-only org into Post and Invite, and
+//   downgrade the reverse. Sent on the WORKSPACE id (T…). Used live
+//   2026-10-02 to upgrade 57 org connections; it can answer `ratelimited`
+//   (the script then waited 30 s, 4 tries in all). Post-only orgs are the ones
+//   listed in conversations.info connected_limited_team_ids.
+//
+//   team.info (team) resolves a team or org id to its name; a workspace id of
+//   an external grid resolves to that grid's E id (measured: T9D3QKALD ->
+//   E026KL2NWPK). An unknown id answers team_not_found.
+//
+// Only ok === true is success: a missing body, ok:false or a truthy
+// non-boolean ok (e.g. "true") is a failure. Unknown state is refused, never
+// read as false, zero or empty.
+
+const CONNECT_WRITE_ATTEMPTS = 4;
+const CONNECT_WRITE_RETRY_MS = 30000;
+const CONNECT_READBACK_ATTEMPTS = 5;
+const CONNECT_READBACK_DELAY_MS = 3000;
+const CONNECT_EMAIL_RE = /^[^\s@,;<>"]+@[^\s@,;<>".]+(\.[^\s@,;<>".]+)+$/;
+const CONNECT_CHANNEL_RE = /^[CG][A-Z0-9]{6,}$/;
+const CONNECT_TEAM_RE = /^[ET][A-Z0-9]{6,}$/;
+
+function apiOk(r) {
+  return !!r && typeof r === 'object' && r.ok === true;
+}
+
+// The error to report for a response that is not ok === true.
+function apiErrorOf(r) {
+  if (!r || typeof r !== 'object') return 'no_response';
+  if (r.ok === false) return slackErrorDetail(r);
+  return 'malformed_response (ok=' + JSON.stringify(r.ok) + ')';
+}
+
+// --emails value -> { ok, emails, invalid, error }. Lowercased, deduped, order
+// kept. Commas, semicolons and whitespace separate addresses.
+function parseEmailList(raw) {
+  if (raw === undefined || raw === true || raw === false || raw === null) {
+    return { ok: false, emails: [], invalid: [], error: '--emails=<a@x.com,b@y.com> is required' };
+  }
+  const parts = String(raw)
+    .split(/[,;\s]+/)
+    .map((s) => s.trim().toLowerCase())
+    .filter((s) => s.length > 0);
+  const emails = [];
+  const invalid = [];
+  for (const p of parts) {
+    if (!CONNECT_EMAIL_RE.test(p)) {
+      if (!invalid.includes(p)) invalid.push(p);
+    } else if (!emails.includes(p)) {
+      emails.push(p);
+    }
+  }
+  if (invalid.length) {
+    return { ok: false, emails, invalid, error: 'invalid email address(es): ' + invalid.join(', ') };
+  }
+  if (!emails.length) return { ok: false, emails, invalid, error: '--emails has no address in it' };
+  return { ok: true, emails, invalid, error: null };
+}
+
+// conversations.inviteShared. external_limited is ALWAYS sent: Slack's default
+// (true, post only) is not what this command means by default.
+function buildInviteSharedParams(channelId, emails, postOnly) {
+  return {
+    channel: channelId,
+    emails: emails.join(','),
+    external_limited: postOnly === true ? 'true' : 'false',
+  };
+}
+
+// conversations.externalInvitePermissions.set
+function buildExternalInvitePermissionsParams(channelId, targetTeam, action) {
+  return { channel: channelId, target_team: targetTeam, action: action };
+}
+
+function permissionLabel(postOnly) {
+  return postOnly ? 'post-only' : 'Post and Invite';
+}
+
+function idList(v) {
+  return Array.isArray(v) ? v.filter((t) => typeof t === 'string' && t) : null;
+}
+
+// conversations.info channel -> the Slack Connect state the three commands
+// use. ownIds: this org's ids (org id, workspace id). Unknowns are null.
+// host: 'not-shared' | 'us' | 'other' | 'unknown' | 'sharing-unknown'.
+function normalizeConnectState(c, ownIds) {
+  const own = new Set((ownIds || []).filter(Boolean));
+  for (const t of idList(c.internal_team_ids) || []) own.add(t);
+  if (c.context_team_id) own.add(c.context_team_id);
+  const bool = (v) => (typeof v === 'boolean' ? v : null);
+  const connected = idList(c.connected_team_ids);
+  const limited = idList(c.connected_limited_team_ids);
+  const pending = idList(c.pending_connected_team_ids);
+  const extShared = bool(c.is_ext_shared);
+  const pendingShared = bool(c.is_pending_ext_shared);
+  const hostId = c.conversation_host_id || null;
+  let host;
+  if (extShared === null || pendingShared === null) host = 'sharing-unknown';
+  else if (!extShared && !pendingShared) host = hostId && !own.has(hostId) ? 'other' : 'not-shared';
+  else if (!hostId) host = 'unknown';
+  else host = own.has(hostId) ? 'us' : 'other';
+  const external = connected === null ? null : connected.filter((t) => !own.has(t));
+  // The split needs BOTH lists; with connected_limited_team_ids missing it is unknown.
+  const postOnly = external === null || limited === null ? null : external.filter((t) => limited.includes(t));
+  const postAndInvite =
+    external === null || limited === null ? null : external.filter((t) => !limited.includes(t));
+  return {
+    id: c.id || null,
+    name: c.name || null,
+    is_archived: bool(c.is_archived),
+    is_private: bool(c.is_private),
+    is_ext_shared: extShared,
+    is_pending_ext_shared: pendingShared,
+    conversation_host_id: hostId,
+    host: host,
+    own_team_ids: Array.from(own),
+    connected_team_ids: connected,
+    connected_limited_team_ids: limited,
+    pending_connected_team_ids: pending,
+    external_team_ids: external,
+    post_and_invite_team_ids: postAndInvite,
+    post_only_team_ids: postOnly,
+    pending_external_team_ids: pending === null ? null : pending.filter((t) => !own.has(t)),
+  };
+}
+
+// conversations.info -> { found, channel, error }. channel_not_found is a
+// clean "not found"; anything else that is not ok === true is a read error
+// (existence UNKNOWN).
+async function readConnectChannel(call, channelId) {
+  const r = await call('conversations.info', { channel: channelId });
+  if (apiOk(r) && r.channel && typeof r.channel === 'object') {
+    return { found: true, channel: r.channel, error: null };
+  }
+  if (r && typeof r === 'object' && r.ok === false && r.error === 'channel_not_found') {
+    return { found: false, channel: null, error: null };
+  }
+  return { found: false, channel: null, error: apiOk(r) ? 'malformed_response (no channel)' : apiErrorOf(r) };
+}
+
+// A write, retried on `ratelimited` only (nothing was done on that answer).
+// Returns { ok, attempts, response, error }.
+async function writeWithRetry(call, method, params, opts) {
+  const o = opts || {};
+  const attempts = o.attempts || CONNECT_WRITE_ATTEMPTS;
+  const delayMs = o.delayMs === undefined ? CONNECT_WRITE_RETRY_MS : o.delayMs;
+  let r = null;
+  for (let i = 1; i <= attempts; i += 1) {
+    r = await call(method, params);
+    if (apiOk(r)) return { ok: true, attempts: i, response: r, error: null };
+    const limited = r && typeof r === 'object' && r.ok === false && r.error === 'ratelimited';
+    if (!limited) return { ok: false, attempts: i, response: r, error: apiErrorOf(r) };
+    if (i < attempts) await o.sleep(delayMs);
+  }
+  return {
+    ok: false,
+    attempts: attempts,
+    response: r,
+    error: 'ratelimited (gave up after ' + attempts + ' attempts)',
+  };
+}
+
+// Guards shared by connect-invite and connect-permissions. Returns a
+// guardResult or null (all pass).
+function connectChannelGuards(state) {
+  if (!state) return guardResult('refuse', 'not-found', 'conversations.info answered channel_not_found');
+  if (state.is_archived === null) {
+    return guardResult('refuse', 'archived-unknown', 'Slack did not report is_archived as a boolean');
+  }
+  if (state.is_archived) return guardResult('refuse', 'archived', 'the channel is archived');
+  if (state.host === 'sharing-unknown') {
+    return guardResult(
+      'refuse',
+      'sharing-unknown',
+      'Slack did not report is_ext_shared / is_pending_ext_shared as booleans'
+    );
+  }
+  if (state.host === 'other') {
+    return guardResult(
+      'refuse',
+      'hosted-elsewhere',
+      'conversation_host_id ' + state.conversation_host_id + ' is not this org (' +
+        state.own_team_ids.join(', ') + '); only the host org can change who is invited'
+    );
+  }
+  if (state.host === 'unknown') {
+    return guardResult('refuse', 'host-unknown', 'shared channel with no conversation_host_id');
+  }
+  return null;
+}
+
+function connectResultBase(action, spec) {
+  return {
+    action: action,
+    channel_id: spec.channelId,
+    workspace: spec.workspaceId,
+    mode: spec.confirm ? 'confirm' : 'dry-run',
+    method: null,
+    params: null,
+    state: null,
+    decision: null,
+    write: null,
+    readback: null,
+    status: null,
+    exitCode: 0,
+  };
+}
+
+// connect-invite. spec: { channelId, workspaceId, orgId, emails (validated),
+// postOnly, confirm, call, sleep, writeAttempts?, writeDelayMs? }.
+// Dry run: read -> guards -> report. --confirm: read (the pre-write re-check)
+// -> guards -> write (retry on ratelimited) -> read-back (informational: the
+// measured after-state shows no change).
+async function runConnectInviteFlow(spec) {
+  const result = connectResultBase('connect-invite', spec);
+  result.method = 'conversations.inviteShared';
+  result.params = buildInviteSharedParams(spec.channelId, spec.emails, spec.postOnly === true);
+  result.emails = spec.emails.slice();
+  result.permission = permissionLabel(spec.postOnly === true);
+  const ownIds = [spec.orgId, spec.workspaceId];
+
+  const before = await readConnectChannel(spec.call, spec.channelId);
+  if (before.error) {
+    result.status = 'read-error';
+    result.error =
+      'conversations.info failed (' + before.error + '): the channel state is UNKNOWN, so nothing was changed';
+    result.exitCode = 1;
+    return result;
+  }
+  result.state = before.found ? normalizeConnectState(before.channel, ownIds) : null;
+  result.decision = connectChannelGuards(result.state) || guardResult('proceed', 'ok', '');
+  if (result.decision.outcome === 'refuse') {
+    result.status = 'refused';
+    result.exitCode = 1;
+    return result;
+  }
+  if (!spec.confirm) {
+    result.status = 'dry-run';
+    return result;
+  }
+
+  const w = await writeWithRetry(spec.call, result.method, result.params, {
+    attempts: spec.writeAttempts,
+    delayMs: spec.writeDelayMs,
+    sleep: spec.sleep,
+  });
+  result.write = { ok: w.ok, attempts: w.attempts, error: w.error, response: w.response };
+  if (!w.ok) {
+    result.status = 'error';
+    result.exitCode = 1;
+    return result;
+  }
+
+  const after = await readConnectChannel(spec.call, spec.channelId);
+  const st = after.found ? normalizeConnectState(after.channel, ownIds) : null;
+  result.readback = {
+    state: st,
+    error: after.error || (after.found ? null : 'channel_not_found'),
+    changed: st ? connectStateChanged(result.state, st) : null,
+  };
+  result.status = 'invited';
+  return result;
+}
+
+// Did the sharing fields move between two reads?
+function connectStateChanged(a, b) {
+  const keys = [
+    'is_ext_shared',
+    'is_pending_ext_shared',
+    'connected_team_ids',
+    'connected_limited_team_ids',
+    'pending_connected_team_ids',
+  ];
+  return keys.some((k) => JSON.stringify(a[k]) !== JSON.stringify(b[k]));
+}
+
+// The connected id that --team names: the id itself when listed, else the id
+// team.info resolves it to (a workspace of an external grid -> its E id).
+// Returns { id, via, error }.
+async function resolveConnectedTeam(call, team, state) {
+  const connected = state.connected_team_ids || [];
+  if (connected.includes(team)) return { id: team, via: 'listed', error: null };
+  const r = await call('team.info', { team: team });
+  if (apiOk(r) && r.team && typeof r.team.id === 'string' && connected.includes(r.team.id)) {
+    return { id: r.team.id, via: 'team.info', error: null };
+  }
+  return { id: null, via: null, error: apiOk(r) ? null : apiErrorOf(r) };
+}
+
+// connect-permissions. spec: { channelId, workspaceId, orgId, team, action
+// ('upgrade'|'downgrade'), confirm, call, sleep, writeAttempts?,
+// writeDelayMs?, readbackAttempts?, readbackDelayMs? }.
+// exitCode: 0 dry run / nothing to do / confirmed, 1 refused or error,
+// 3 written but the read-back never showed the target state.
+async function runConnectPermissionsFlow(spec) {
+  const result = connectResultBase('connect-permissions', spec);
+  const action = spec.action;
+  const wantLimited = action === 'downgrade';
+  result.method = 'conversations.externalInvitePermissions.set';
+  result.team = spec.team;
+  result.target = permissionLabel(wantLimited);
+  const ownIds = [spec.orgId, spec.workspaceId];
+
+  const before = await readConnectChannel(spec.call, spec.channelId);
+  if (before.error) {
+    result.status = 'read-error';
+    result.error =
+      'conversations.info failed (' + before.error + '): the channel state is UNKNOWN, so nothing was changed';
+    result.exitCode = 1;
+    return result;
+  }
+  const st = before.found ? normalizeConnectState(before.channel, ownIds) : null;
+  result.state = st;
+  const refuse = (reason, detail) => {
+    result.decision = guardResult('refuse', reason, detail);
+    result.status = 'refused';
+    result.exitCode = 1;
+    return result;
+  };
+  const g = connectChannelGuards(st);
+  if (g) return refuse(g.reason, g.detail);
+  if (st.host === 'not-shared') {
+    return refuse('not-shared', 'the channel is not a Slack Connect channel; no org is connected');
+  }
+  if (st.connected_team_ids === null || st.connected_limited_team_ids === null) {
+    return refuse(
+      'connections-unknown',
+      'Slack did not report connected_team_ids / connected_limited_team_ids as lists'
+    );
+  }
+  if (st.own_team_ids.includes(spec.team)) {
+    return refuse('own-team', spec.team + ' is this org; name the EXTERNAL org');
+  }
+  const resolved = await resolveConnectedTeam(spec.call, spec.team, st);
+  if (!resolved.id) {
+    return refuse(
+      'team-not-connected',
+      spec.team + ' is not in connected_team_ids (' + st.connected_team_ids.join(', ') + ')' +
+        (resolved.error ? '; team.info: ' + resolved.error : '')
+    );
+  }
+  if (st.own_team_ids.includes(resolved.id)) {
+    return refuse('own-team', spec.team + ' resolves to this org (' + resolved.id + ')');
+  }
+  result.target_team = resolved.id;
+  result.team_resolved_via = resolved.via;
+  result.params = buildExternalInvitePermissionsParams(spec.channelId, resolved.id, action);
+  const isLimited = st.connected_limited_team_ids.includes(resolved.id);
+  result.current = permissionLabel(isLimited);
+  if (isLimited === wantLimited) {
+    result.decision = guardResult(
+      'noop',
+      'already-' + (wantLimited ? 'post-only' : 'post-and-invite'),
+      resolved.id + ' is already ' + permissionLabel(isLimited)
+    );
+    result.status = 'nothing-to-do';
+    return result;
+  }
+  result.decision = guardResult('proceed', 'ok', '');
+  if (!spec.confirm) {
+    result.status = 'dry-run';
+    return result;
+  }
+
+  const w = await writeWithRetry(spec.call, result.method, result.params, {
+    attempts: spec.writeAttempts,
+    delayMs: spec.writeDelayMs,
+    sleep: spec.sleep,
+  });
+  result.write = { ok: w.ok, attempts: w.attempts, error: w.error, response: w.response };
+  if (!w.ok) {
+    result.status = 'error';
+    result.exitCode = 1;
+    return result;
+  }
+
+  const attempts = spec.readbackAttempts || CONNECT_READBACK_ATTEMPTS;
+  const delayMs = spec.readbackDelayMs === undefined ? CONNECT_READBACK_DELAY_MS : spec.readbackDelayMs;
+  let last = null;
+  let lastError = null;
+  for (let i = 1; i <= attempts; i += 1) {
+    const rb = await readConnectChannel(spec.call, spec.channelId);
+    lastError = rb.error || (rb.found ? null : 'channel_not_found');
+    last = rb.found ? normalizeConnectState(rb.channel, ownIds) : null;
+    const limitedNow = last && last.connected_limited_team_ids;
+    if (Array.isArray(limitedNow) && limitedNow.includes(resolved.id) === wantLimited) {
+      result.readback = { confirmed: true, attempts: i, state: last, error: null };
+      result.status = (action === 'upgrade' ? 'upgraded' : 'downgraded') + ' (confirmed)';
+      return result;
+    }
+    if (i < attempts) await spec.sleep(delayMs);
+  }
+  result.readback = { confirmed: false, attempts: attempts, state: last, error: lastError };
+  result.status =
+    (action === 'upgrade' ? 'upgraded' : 'downgraded') +
+    ' (unconfirmed: conversations.info did not show it after ' + attempts + ' attempts)';
+  result.exitCode = 3;
+  return result;
+}
+
+// connect-status. Reads conversations.info, then team.info for every
+// external, pending and host id. A failed name lookup leaves name null and
+// records the error; it never fails the command.
+async function readConnectStatus(spec) {
+  const ownIds = [spec.orgId, spec.workspaceId];
+  const r = await readConnectChannel(spec.call, spec.channelId);
+  const out = { channel_id: spec.channelId, workspace: spec.workspaceId, found: r.found, state: null, teams: {} };
+  if (r.error) {
+    out.error = 'conversations.info failed: ' + r.error;
+    out.exitCode = 1;
+    return out;
+  }
+  if (!r.found) {
+    out.error = 'channel not found (conversations.info answered channel_not_found)';
+    out.exitCode = 1;
+    return out;
+  }
+  const st = normalizeConnectState(r.channel, ownIds);
+  out.state = st;
+  const ids = [];
+  const add = (t) => {
+    if (t && !ids.includes(t)) ids.push(t);
+  };
+  for (const t of st.external_team_ids || []) add(t);
+  for (const t of st.pending_external_team_ids || []) add(t);
+  add(st.conversation_host_id);
+  for (const t of ids) {
+    const info = await spec.call('team.info', { team: t });
+    out.teams[t] =
+      apiOk(info) && info.team && typeof info.team === 'object'
+        ? { id: t, name: info.team.name || null, domain: info.team.domain || null, error: null }
+        : { id: t, name: null, domain: null, error: apiErrorOf(info) };
+  }
+  out.exitCode = 0;
+  return out;
+}
+
+// Argument validation for the three connect-* commands, before any Slack
+// call. A misspelt --post-only must never fall through to the (wider) Post and
+// Invite default, so unknown flags are refused, as in channel-archive.
+const CONNECT_COMMAND_FLAGS = {
+  'connect-invite': ['emails', 'post-only'],
+  'connect-permissions': ['team', 'upgrade', 'downgrade'],
+  'connect-status': [],
+};
+
+function checkConnectArgs(command, flags, positional) {
+  const allowed = CHANNEL_GLOBAL_FLAGS.concat(CONNECT_COMMAND_FLAGS[command] || []);
+  const errors = [];
+  const f = flags || {};
+  for (const name of Object.keys(f)) {
+    if (allowed.includes(name)) continue;
+    const suggestion = suggestFlag(name, allowed);
+    errors.push({
+      code: 'unknown-flag',
+      flag: '--' + name,
+      suggestion: suggestion ? '--' + suggestion : null,
+      message: 'unknown-flag: --' + name + (suggestion ? ' (did you mean --' + suggestion + '?)' : ''),
+    });
+  }
+  const pos = positional || [];
+  const channelId = pos[1] || null;
+  if (!channelId) errors.push({ code: 'usage', message: 'usage: <channel_id> is required' });
+  else if (!CONNECT_CHANNEL_RE.test(channelId)) {
+    errors.push({
+      code: 'invalid-value',
+      message: 'invalid-value: channel id "' + channelId + '" (expected e.g. C0EXAMPLE01)',
+    });
+  }
+  for (const word of pos.slice(2)) {
+    errors.push({ code: 'unexpected-argument', message: 'unexpected-argument: "' + word + '"' });
+  }
+  const out = { ok: false, errors: errors, channelId: channelId };
+  if (command === 'connect-invite') {
+    const e = parseEmailList(f.emails);
+    if (!e.ok) errors.push({ code: 'invalid-value', flag: '--emails', message: 'invalid-value: ' + e.error });
+    out.emails = e.emails;
+    out.postOnly = f['post-only'] === true;
+  }
+  if (command === 'connect-permissions') {
+    const team = f.team;
+    if (team === undefined || team === true || team === '') {
+      errors.push({ code: 'usage', flag: '--team', message: 'usage: --team=<org_or_team_id> is required' });
+    } else if (!CONNECT_TEAM_RE.test(String(team))) {
+      errors.push({
+        code: 'invalid-value',
+        flag: '--team',
+        message: 'invalid-value: --team "' + team + '" (expected an E… or T… id)',
+      });
+    }
+    const up = f.upgrade === true;
+    const down = f.downgrade === true;
+    if (up === down) {
+      errors.push({
+        code: 'usage',
+        message: 'usage: give exactly one of --upgrade (post-only -> Post and Invite) or --downgrade',
+      });
+    }
+    out.team = typeof team === 'string' ? team : null;
+    out.action = up && !down ? 'upgrade' : down && !up ? 'downgrade' : null;
+  }
+  out.ok = errors.length === 0;
+  return out;
+}
+
 // ── Exports ────────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -1243,4 +1768,22 @@ module.exports = {
   suggestFlag,
   parseGuardCount,
   checkChannelArchiveArgs,
+  // Slack Connect channel invites and permissions
+  CONNECT_WRITE_ATTEMPTS,
+  CONNECT_WRITE_RETRY_MS,
+  CONNECT_READBACK_ATTEMPTS,
+  CONNECT_READBACK_DELAY_MS,
+  CONNECT_COMMAND_FLAGS,
+  parseEmailList,
+  buildInviteSharedParams,
+  buildExternalInvitePermissionsParams,
+  permissionLabel,
+  normalizeConnectState,
+  connectStateChanged,
+  readConnectChannel,
+  writeWithRetry,
+  runConnectInviteFlow,
+  runConnectPermissionsFlow,
+  readConnectStatus,
+  checkConnectArgs,
 };

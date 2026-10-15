@@ -124,6 +124,15 @@ test('BOOL_FLAGS set contains confirm, json, help, h, allow-deletions', () => {
   ok(BOOL_FLAGS.has('allow-deletions'));
 });
 
+test('--post-only, --upgrade and --downgrade are booleans and never swallow the channel id', () => {
+  for (const f of ['post-only', 'upgrade', 'downgrade']) {
+    ok(BOOL_FLAGS.has(f));
+    const r = parseArgv(['connect-invite', '--' + f, 'C0EXAMPLE01']);
+    is(r.flags[f], true);
+    is(r.positional, ['connect-invite', 'C0EXAMPLE01']);
+  }
+});
+
 test('--session and --no-session are booleans and never swallow the app id', () => {
   ok(BOOL_FLAGS.has('session'));
   ok(BOOL_FLAGS.has('no-session'));

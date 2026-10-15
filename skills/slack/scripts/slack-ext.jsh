@@ -217,6 +217,10 @@ Examples:
   slack-ext approvals show I0EXAMPLE01
   slack-ext connect-revoke I0EXAMPLE01 --channel=C0EXAMPLE01 --confirm
   slack-ext --ws=T0EXAMPLE01 guest-invite guest@example.com --channel=C0EXAMPLE01 --confirm
+  slack-ext --ws=T0EXAMPLE01 connect-status C0EXAMPLE01
+  slack-ext --ws=T0EXAMPLE01 connect-invite C0EXAMPLE01 --emails=a@example.com,b@example.org
+  slack-ext --ws=T0EXAMPLE01 connect-invite C0EXAMPLE01 --emails=a@example.com --post-only --confirm
+  slack-ext --ws=T0EXAMPLE01 connect-permissions C0EXAMPLE01 --team=E0EXAMPLE02 --upgrade --confirm
 
 Enterprise Grid admin commands (use ORG-LEVEL token; calls look like human actions in
   channel event history — see SKILL.md attribution caveat):
@@ -335,6 +339,46 @@ Slack Connect approvals and guest invites (ORG-level token):
       expiration_ts; whether it ends the invite or the guest account is
       unverified. Multi-channel guest invites are not offered (untested).
 
+Slack Connect channel invites and permissions (WORKSPACE token, --ws=<T…>):
+
+  connect-status <channel_id> [--json]
+      Read-only. Name, archived, private, is_ext_shared,
+      is_pending_ext_shared, host org, the connected external orgs split into
+      "Post and Invite" and "post-only" (connected_limited_team_ids), and
+      pending orgs. Names come from team.info; an id it cannot resolve is
+      shown bare. The check to run before and after the two commands below.
+
+  connect-invite <channel_id> --emails=a@x.com,b@y.com [--post-only] [--confirm] [--json]
+      Invite people from an external org into a channel by email
+      (conversations.inviteShared). Requires --ws. DEFAULT IS POST AND INVITE:
+      external_limited=false is always sent, because Slack's own default is
+      post-only. --post-only sends external_limited=true. Emails are
+      lowercased, deduped and must look like addresses. The dry run reads the
+      channel (conversations.info) and shows the emails, its sharing state and
+      the permission. Refused, with the reason named: not-found, archived,
+      hosted-elsewhere (conversation_host_id is another org), host-unknown,
+      sharing-unknown. On --confirm Slack emails every address at once; the
+      channel is then re-read and printed.
+      AN UNCHANGED READ-BACK IS EXPECTED: until an invitee accepts, the
+      channel still reads is_ext_shared:false, is_pending_ext_shared:false,
+      pending_connected_team_ids:[], and the invite is not in 'approvals'.
+      Follow up with: slack-ext approvals --query=<channel name> --detail
+      (an invite the other org approved can still wait on OUR side and expire).
+
+  connect-permissions <channel_id> --team=<org_or_team_id> --upgrade|--downgrade [--confirm] [--json]
+      Change one connected external org's permission in a channel
+      (conversations.externalInvitePermissions.set, action=upgrade|downgrade).
+      --upgrade: post-only -> Post and Invite. --downgrade: the reverse.
+      Requires --ws. --team may be the org's E id or one of its T ids (resolved
+      with team.info). The dry run reads the channel. Refused when the team is
+      not connected (team-not-connected), the channel is not shared, archived,
+      or hosted elsewhere. 'Nothing to do' (exit 0, no call) when the team
+      already has the target permission. A ratelimited write is retried (4
+      tries, 30 s apart). --confirm re-reads conversations.info until the team's
+      presence in connected_limited_team_ids matches (5 tries, 3 s apart).
+      Exit: 0 done/nothing to do/dry run, 1 refused or API error,
+            3 written but the read-back never showed it (unconfirmed).
+
 App governance commands:
 
   admin-app approve <app_id|request_id> [--confirm]
@@ -372,7 +416,13 @@ try {
   const message = (err && err.message) || String(err);
   // channel-archive / channel-unarchive promise ONE JSON document on stdout
   // in --json mode, including this path (e.g. --allow-shared=maybe).
-  const j = jsonInvocation(process.argv.slice(2), ['channel-archive', 'channel-unarchive']);
+  const j = jsonInvocation(process.argv.slice(2), [
+    'channel-archive',
+    'channel-unarchive',
+    'connect-invite',
+    'connect-permissions',
+    'connect-status',
+  ]);
   if (j) {
     cli.out({
       notice: CHANNEL_ATTRIBUTION,
@@ -2454,6 +2504,9 @@ async function main() {
   if (cmd === 'approvals') return cmdApprovals();
   if (cmd === 'connect-revoke') return cmdConnectRevoke();
   if (cmd === 'guest-invite') return cmdGuestInvite();
+  if (cmd === 'connect-status') return cmdConnectStatus();
+  if (cmd === 'connect-invite') return cmdConnectInvite();
+  if (cmd === 'connect-permissions') return cmdConnectPermissions();
 
   // ── App governance ──
   if (cmd === 'admin-app') return cmdAdminApp();
@@ -2518,6 +2571,10 @@ const {
   VALID_CHANNEL_SORT_FIELDS,
   runChannelArchiveFlow,
   checkChannelArchiveArgs,
+  checkConnectArgs,
+  runConnectInviteFlow,
+  runConnectPermissionsFlow,
+  readConnectStatus,
 } = require('./slack-ext-grid.js');
 
 // The Enterprise Grid org ID. Used as the "workspace" key when looking up the
@@ -3787,6 +3844,322 @@ async function cmdGuestInvite() {
       s.failed + ' of ' + s.invites.length + ' invite(s) failed (top-level ok:true does not mean each invite succeeded).',
       { prefix: PREFIX }
     );
+  }
+}
+
+// ══ Slack Connect channel invites and permissions ═════════════════════════════
+//
+// connect-invite (conversations.inviteShared), connect-permissions
+// (conversations.externalInvitePermissions.set) and the read-only
+// connect-status (conversations.info + team.info). The flows live in
+// slack-ext-grid.js with call/sleep injected; these wrappers wire them to the
+// WORKSPACE token (--ws=T…, the token both writes were measured with) and
+// render the result. --json: stdout is exactly one JSON document on every path.
+
+function connectOutput(json) {
+  let emitted = false;
+  const emit = (obj) => {
+    if (json && !emitted) {
+      emitted = true;
+      cli.out(Object.assign({ notice: CHANNEL_ATTRIBUTION }, obj));
+    }
+  };
+  const say = (line) => {
+    if (!json) console.log(line === undefined ? '' : line);
+  };
+  const fail = (base, status, message, extra, exitCode) => {
+    const code = exitCode || 1;
+    emit(Object.assign({}, base, extra || {}, { status, error: message, exitCode: code }));
+    cli.die(message, { prefix: PREFIX, exitCode: code });
+  };
+  return { emit, say, fail, emitted: () => emitted };
+}
+
+function fmtIds(ids, names, notShared) {
+  if (ids === null || ids === undefined) {
+    // Measured: a channel that was never shared has no connected_team_ids at
+    // all. Still shown as not reported, never as an empty list.
+    return notShared ? 'none (not shared; Slack omits the list)' : 'unknown (not reported by Slack)';
+  }
+  if (!ids.length) return 'none';
+  return ids
+    .map((t) => {
+      const n = names && names[t] && names[t].name;
+      return n ? n + ' (' + t + ')' : t;
+    })
+    .join(', ');
+}
+
+function fmtBool(v) {
+  return v === null || v === undefined ? 'unknown' : v ? 'yes' : 'no';
+}
+
+function renderConnectState(st, names) {
+  kv('Channel', '#' + (st.name || '?') + ' (' + st.id + ')');
+  kv('Archived', fmtBool(st.is_archived));
+  kv('Private', fmtBool(st.is_private));
+  kv('ext_shared', fmtBool(st.is_ext_shared));
+  kv('pending_ext', fmtBool(st.is_pending_ext_shared));
+  const hostName = st.conversation_host_id && names && names[st.conversation_host_id];
+  const hostLabel = st.conversation_host_id
+    ? (hostName && hostName.name ? hostName.name + ' (' + st.conversation_host_id + ')' : st.conversation_host_id)
+    : '-';
+  const hostWord = {
+    'not-shared': 'not shared',
+    us: 'this org',
+    other: 'ANOTHER org',
+    unknown: 'unknown',
+    'sharing-unknown': 'unknown (sharing flags missing)',
+  }[st.host];
+  kv('Host', st.conversation_host_id ? hostLabel + ' — ' + hostWord : hostWord);
+  const ns = st.host === 'not-shared';
+  kv('Post+Invite', fmtIds(st.post_and_invite_team_ids, names, ns));
+  kv('Post-only', fmtIds(st.post_only_team_ids, names, ns));
+  kv('Pending', fmtIds(st.pending_external_team_ids, names, ns));
+}
+
+// Shared prelude: arguments (before any call), the Slack tab, the workspace.
+async function connectPrelude(command, out, base, usage, needWs) {
+  const args = checkConnectArgs(command, flags, words);
+  if (!args.ok) {
+    out.fail(base, args.errors[0].code, args.errors.map((e) => e.message).join('; ') + '\n' + usage, {
+      errors: args.errors,
+    });
+  }
+  if (flags.org !== undefined && (typeof flags.org !== 'string' || !/^E[A-Z0-9]+$/.test(flags.org))) {
+    out.fail(base, 'invalid-value', 'invalid-value: --org needs an E-prefixed org id (e.g. E06V3987PMY)');
+  }
+  const ws = flags.ws || flags.workspace;
+  if (needWs && (typeof ws !== 'string' || !/^T[A-Z0-9]+$/.test(ws))) {
+    out.fail(
+      base,
+      'usage',
+      '--ws=<T…> is required and must be the WORKSPACE id (e.g. T0385CHDU9E), not ' +
+        (ws === undefined ? 'missing' : JSON.stringify(ws)) + '.\n' + usage
+    );
+  }
+  if (!needWs && ws !== undefined && (typeof ws !== 'string' || !/^[TE][A-Z0-9]+$/.test(ws))) {
+    out.fail(base, 'invalid-value', 'invalid-value: --ws "' + ws + '" (expected a T… workspace id)');
+  }
+  const tab =
+    (await browser.findTab({ domain: SLACK_DOMAIN, urlMatch: /\/client\/[A-Z0-9]+/ })) ||
+    (await browser.findTab({ domain: SLACK_DOMAIN }));
+  if (!tab) out.fail(base, 'no-slack-tab', 'No Slack tab found. Open app.slack.com in your browser and try again.');
+  _cachedTab = _cachedTab || tab;
+  _cachedTabUrl = _cachedTabUrl || tab.url;
+  const workspaceId = ws || getWorkspaceFromTabUrl();
+  if (!workspaceId) out.fail(base, 'usage', 'Could not determine the workspace. Pass --ws=<T…>.\n' + usage);
+  const orgId = flags.org || ORG_ID;
+  const call = (method, params) => slackApi(method, params, workspaceId, { fatal: false });
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  return { args, workspaceId, orgId, call, sleep };
+}
+
+function connectCatch(json, out, base, err) {
+  if (json && !out.emitted()) {
+    out.emit(
+      Object.assign({}, base, {
+        status: 'error',
+        error:
+          err && err.name === 'NodeExitError'
+            ? 'exited before a result was produced; see stderr'
+            : String((err && err.message) || err),
+        exitCode: (err && (err.exitCode || err.code)) || 1,
+      })
+    );
+  }
+  throw err;
+}
+
+// ── Command: connect-status ────────────────────────────────────────────────────
+
+async function cmdConnectStatus() {
+  const usage = 'Usage: slack-ext [--ws=<T…>] connect-status <channel_id> [--json]';
+  const json = flags.json === true;
+  const out = connectOutput(json);
+  const base = { action: 'connect-status', channel_id: words[1] || null };
+  try {
+    const p = await connectPrelude('connect-status', out, base, usage, false);
+    const r = await readConnectStatus({
+      channelId: p.args.channelId,
+      workspaceId: p.workspaceId,
+      orgId: p.orgId,
+      call: p.call,
+    });
+    base.workspace = p.workspaceId;
+    if (r.error) out.fail(base, 'read-error', r.error, { found: r.found });
+    if (json) {
+      out.emit(Object.assign({}, base, r, { status: 'ok' }));
+      return;
+    }
+    section('Slack Connect status');
+    renderConnectState(r.state, r.teams);
+    kv('Workspace', p.workspaceId);
+    const unresolved = Object.values(r.teams).filter((t) => !t.name);
+    if (unresolved.length) {
+      kv('Names', 'team.info failed for ' + unresolved.map((t) => t.id + ' (' + t.error + ')').join(', '));
+    }
+    console.log('');
+    console.log(color.dim('  Post-only = listed in connected_limited_team_ids. Read-only; no --confirm required.'));
+    console.log(color.dim('  A just-sent connect-invite does not show here until the invitee accepts.'));
+    console.log('');
+  } catch (err) {
+    connectCatch(json, out, base, err);
+  }
+}
+
+// ── Command: connect-invite ────────────────────────────────────────────────────
+
+async function cmdConnectInvite() {
+  const usage =
+    'Usage: slack-ext --ws=<T…> connect-invite <channel_id> --emails=a@x.com,b@y.com [--post-only] [--confirm] [--json]';
+  const json = flags.json === true;
+  const out = connectOutput(json);
+  const base = { action: 'connect-invite', channel_id: words[1] || null, mode: flags.confirm === true ? 'confirm' : 'dry-run' };
+  try {
+    const p = await connectPrelude('connect-invite', out, base, usage, true);
+    const result = await runConnectInviteFlow({
+      channelId: p.args.channelId,
+      workspaceId: p.workspaceId,
+      orgId: p.orgId,
+      emails: p.args.emails,
+      postOnly: p.args.postOnly,
+      confirm: flags.confirm === true,
+      call: p.call,
+      sleep: p.sleep,
+    });
+    if (result.status === 'read-error') out.fail(base, 'read-error', result.error, result);
+
+    if (!json) {
+      section(result.mode === 'dry-run' ? 'Dry run: connect-invite (current state)' : 'connect-invite (state read just before the write)');
+      if (result.state) renderConnectState(result.state);
+      else kv('Channel', result.channel_id + ' (not found)');
+      kv('Emails', result.emails.join(', '));
+      kv('Permission', result.permission + (result.params.external_limited === 'true' ? ' (--post-only)' : ' (default)'));
+      kv('Workspace', p.workspaceId);
+      kv('Method', result.method + ' external_limited=' + result.params.external_limited);
+    }
+    out.say('');
+    out.say(color.dim('  ' + CHANNEL_ATTRIBUTION));
+    out.say('');
+
+    const d = result.decision;
+    if (d.outcome === 'refuse') {
+      out.fail(base, 'refused', 'refused: ' + d.reason + ' (' + d.detail + '). Nothing changed.', result);
+    }
+    if (result.mode === 'dry-run') {
+      out.say(
+        '  --confirm would: re-read this channel, call ' + result.method + ' for ' +
+          result.emails.length + ' address(es) as ' + result.permission + ', then read it back.'
+      );
+      out.say('  Slack emails each address an invitation at once.');
+      out.say(color.yellow('  No --confirm; nothing changed.'));
+      out.say('');
+      out.emit(result);
+      return;
+    }
+    if (result.status === 'error') {
+      out.fail(base, 'error', result.method + ' failed: ' + result.write.error + '. Nothing was invited.', result);
+    }
+    if (!json) {
+      section('Invited');
+      kv('Write', result.method + ' -> ok' + (result.write.attempts > 1 ? ' (attempt ' + result.write.attempts + ')' : ''));
+      if (result.readback.state) renderConnectState(result.readback.state);
+      else kv('Read-back', 'failed (' + result.readback.error + ')');
+    }
+    out.say('');
+    out.say('  An unchanged channel is EXPECTED here: Slack shows nothing (not is_pending_ext_shared,');
+    out.say('  not pending_connected_team_ids, not approvals) until an invitee ACCEPTS. Then it');
+    out.say('  appears in: slack-ext approvals --query=' + ((result.state && result.state.name) || result.channel_id) + ' --detail');
+    out.say('  and, once both sides approved, in: slack-ext connect-status ' + result.channel_id);
+    if (result.readback.changed) out.say(color.dim('  (the sharing fields did change on this read-back)'));
+    out.say('');
+    out.emit(result);
+  } catch (err) {
+    connectCatch(json, out, base, err);
+  }
+}
+
+// ── Command: connect-permissions ──────────────────────────────────────────────
+
+async function cmdConnectPermissions() {
+  const usage =
+    'Usage: slack-ext --ws=<T…> connect-permissions <channel_id> --team=<org_or_team_id> --upgrade|--downgrade [--confirm] [--json]';
+  const json = flags.json === true;
+  const out = connectOutput(json);
+  const base = { action: 'connect-permissions', channel_id: words[1] || null, mode: flags.confirm === true ? 'confirm' : 'dry-run' };
+  try {
+    const p = await connectPrelude('connect-permissions', out, base, usage, true);
+    const result = await runConnectPermissionsFlow({
+      channelId: p.args.channelId,
+      workspaceId: p.workspaceId,
+      orgId: p.orgId,
+      team: p.args.team,
+      action: p.args.action,
+      confirm: flags.confirm === true,
+      call: p.call,
+      sleep: p.sleep,
+    });
+    if (result.status === 'read-error') out.fail(base, 'read-error', result.error, result);
+
+    if (!json) {
+      section(result.mode === 'dry-run' ? 'Dry run: connect-permissions (current state)' : 'connect-permissions (state read just before the write)');
+      if (result.state) renderConnectState(result.state);
+      else kv('Channel', result.channel_id + ' (not found)');
+      kv('Team', p.args.team + (result.target_team && result.target_team !== p.args.team ? ' -> ' + result.target_team : ''));
+      if (result.current) kv('Now', result.current);
+      kv('Target', result.target + ' (--' + p.args.action + ')');
+      kv('Workspace', p.workspaceId);
+      kv('Method', result.method);
+    }
+    out.say('');
+    out.say(color.dim('  ' + CHANNEL_ATTRIBUTION));
+    out.say('');
+
+    const d = result.decision;
+    if (d.outcome === 'refuse') {
+      out.fail(base, 'refused', 'refused: ' + d.reason + ' (' + d.detail + '). Nothing changed.', result);
+    }
+    if (d.outcome === 'noop') {
+      out.say(color.green('  ' + d.reason + ': nothing to do (' + d.detail + '). No call made.'));
+      out.say('');
+      out.emit(result);
+      return;
+    }
+    if (result.mode === 'dry-run') {
+      out.say(
+        '  --confirm would: re-read this channel, call ' + result.method + ' (channel=' + result.channel_id +
+          ', target_team=' + result.target_team + ', action=' + p.args.action + '), then read it back.'
+      );
+      out.say(color.yellow('  No --confirm; nothing changed.'));
+      out.say('');
+      out.emit(result);
+      return;
+    }
+    if (result.status === 'error') {
+      out.fail(base, 'error', result.method + ' failed: ' + result.write.error + '. Nothing changed.', result);
+    }
+    if (!json) {
+      section(result.status);
+      kv('Write', result.method + ' -> ok' + (result.write.attempts > 1 ? ' (attempt ' + result.write.attempts + ')' : ''));
+      kv('Read-back', (result.readback.confirmed ? 'confirmed' : 'NOT confirmed') + ' after ' + result.readback.attempts + ' attempt(s)');
+      if (result.readback.state) renderConnectState(result.readback.state);
+    }
+    out.say('');
+    if (!result.readback.confirmed) {
+      out.fail(
+        base,
+        result.status,
+        result.method + ' answered ok:true but conversations.info did not show ' + result.target_team + ' as ' +
+          result.target + ' after ' + result.readback.attempts + ' attempts. Check again with: slack-ext connect-status ' +
+          result.channel_id,
+        result,
+        3
+      );
+    }
+    out.emit(result);
+  } catch (err) {
+    connectCatch(json, out, base, err);
   }
 }
 
