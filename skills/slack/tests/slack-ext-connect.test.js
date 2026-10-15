@@ -1026,3 +1026,79 @@ test('writeWithRetry: only ok===true succeeds; non-ratelimit errors are not retr
   is(r2.ok, false);
   ok(/malformed_response/.test(r2.error), r2.error);
 });
+
+// ── rate-limit variants and ambiguous answers (Codex review on #499) ──
+
+test('connect-invite: the documented "ratelimit" (no d) is retried too', async () => {
+  let n = 0;
+  const h = await load({
+    argv: INV.concat(['--emails=a@example.com', '--confirm']),
+    channels: { [CHAN]: plainChan() },
+    api: (m) => {
+      if (m !== 'conversations.inviteShared') return undefined;
+      n += 1;
+      return n === 1 ? { ok: false, error: 'ratelimit' } : { ok: true };
+    },
+  });
+  is(h.exit(), 0, h.errText());
+  is(h.count('conversations.inviteShared'), 2);
+  is(h.sleeps.join(','), String(grid.CONNECT_WRITE_RETRY_MS));
+});
+
+test('connect-invite: internal_error is outcome UNKNOWN: not retried, not "nothing invited", read back, exit 3', async () => {
+  const h = await load({
+    argv: INV.concat(['--emails=a@example.com', '--confirm']),
+    channels: { [CHAN]: plainChan() },
+    api: (m) => (m === 'conversations.inviteShared' ? { ok: false, error: 'internal_error' } : undefined),
+  });
+  is(h.exit(), 3);
+  is(h.count('conversations.inviteShared'), 1);
+  is(h.count('conversations.info'), 2);
+  ok(/a@example\.com:\s+UNKNOWN: internal_error/.test(h.text()), h.text());
+  ok(!/Nothing was invited/.test(h.errText()), h.errText());
+  ok(/Do not re-send blindly/.test(h.errText()), h.errText());
+});
+
+test('connect-invite --json: fatal_error + a definite failure -> partially-invited, exit 1, both counted', async () => {
+  const h = await load({
+    argv: INV.concat(['--emails=a@example.com,b@example.org', '--confirm', '--json']),
+    channels: { [CHAN]: plainChan() },
+    api: (m, params) => {
+      if (m !== 'conversations.inviteShared') return undefined;
+      return params.emails === 'a@example.com' ? { ok: false, error: 'fatal_error' } : { ok: false, error: 'invalid_email' };
+    },
+  });
+  is(h.exit(), 1);
+  const doc = JSON.parse(h.text());
+  is(doc.status, 'partially-invited');
+  is(doc.write.unknown, 1);
+  is(doc.write.failed, 1);
+  is(doc.write.invited, 0);
+});
+
+test('connect-permissions: internal_error is outcome UNKNOWN even when the read-back matches -> exit 3, no retry', async () => {
+  const h = await load({
+    argv: PERM.concat(['--team=' + PARTNER, '--upgrade', '--confirm']),
+    channels: { [CHAN]: sharedChan() },
+    api: (m, _params, state) => {
+      if (m !== 'conversations.externalInvitePermissions.set') return undefined;
+      state.channels[CHAN].connected_limited_team_ids = [];
+      return { ok: false, error: 'internal_error' };
+    },
+  });
+  is(h.exit(), 3);
+  is(h.count('conversations.externalInvitePermissions.set'), 1);
+  is(h.count('conversations.info'), 2);
+  ok(/outcome UNKNOWN/.test(h.text()), h.text());
+  ok(/The read-back shows E0EXAMPLE02 as Post and Invite/.test(h.errText()), h.errText());
+});
+
+test('writeOutcome: ok / failed / unknown classification', () => {
+  is(grid.writeOutcome({ ok: true }), 'ok');
+  is(grid.writeOutcome({ ok: 'true' }), 'failed');
+  is(grid.writeOutcome({ ok: false, error: 'invalid_email' }), 'failed');
+  is(grid.writeOutcome({ ok: false, error: 'internal_error' }), 'unknown');
+  is(grid.writeOutcome({ ok: false, error: 'fatal_error' }), 'unknown');
+  is(grid.writeOutcome({ ok: false, error: 'xhr_error' }), 'unknown');
+  is(grid.writeOutcome(null), 'unknown');
+});

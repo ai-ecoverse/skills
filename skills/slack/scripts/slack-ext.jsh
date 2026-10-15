@@ -359,8 +359,12 @@ Slack Connect channel invites and permissions (WORKSPACE token, --ws=<T…>):
       the permission. Refused, with the reason named: not-found, archived,
       hosted-elsewhere (conversation_host_id is another org), host-unknown,
       sharing-unknown. On --confirm Slack emails every address at once; each
-      address's result (and invite_id) is printed, exit 1 if any failed, and
-      the channel is then re-read and printed.
+      address's result (and invite_id) is printed and the channel is re-read.
+      ratelimit / ratelimited answers are retried (4 tries, 30 s apart).
+      internal_error / fatal_error (Slack: "some aspect of the operation may
+      have succeeded") and transport errors are outcome UNKNOWN, never
+      retried. Exit: 0 all invited, 1 any address failed or refused,
+            3 an outcome is unknown.
       AN UNCHANGED READ-BACK IS EXPECTED: until an invitee accepts, the
       channel still reads is_ext_shared:false, is_pending_ext_shared:false,
       pending_connected_team_ids:[], and the invite is not in 'approvals'.
@@ -376,7 +380,8 @@ Slack Connect channel invites and permissions (WORKSPACE token, --ws=<T…>):
       not connected (team-not-connected), the channel is not shared, archived,
       or hosted elsewhere. 'Nothing to do' (exit 0, no call) when the team
       already has the target permission. A ratelimited write is retried (4
-      tries, 30 s apart). --confirm re-reads conversations.info until the team
+      tries, 30 s apart); internal_error / fatal_error are outcome UNKNOWN
+      (read back, exit 3), never retried. --confirm re-reads conversations.info until the team
       is still in connected_team_ids and its presence in
       connected_limited_team_ids matches (5 tries, 3 s apart).
       Exit: 0 done/nothing to do/dry run, 1 refused or API error,
@@ -4062,13 +4067,21 @@ async function cmdConnectInvite() {
       return;
     }
     if (!json && result.write) {
-      section(result.status === 'invited' ? 'Invited' : result.status === 'error' ? 'Invite FAILED' : 'Partially invited');
+      const title = {
+        invited: 'Invited',
+        error: 'Invite FAILED',
+        'partially-invited': 'Partially invited',
+        'outcome-unknown': 'Invite outcome UNKNOWN',
+      }[result.status];
+      section(title || result.status);
       for (const w of result.write.results) {
         kv(
           w.email,
-          w.ok
+          w.outcome === 'ok'
             ? color.green('invited') + (w.invite_id ? ' ' + w.invite_id : '') + (w.attempts > 1 ? ' (attempt ' + w.attempts + ')' : '')
-            : color.red('FAILED: ' + w.error)
+            : w.outcome === 'unknown'
+              ? color.yellow('UNKNOWN: ' + w.error + ' (Slack: the invite may have been created; do not re-send blindly)')
+              : color.red('FAILED: ' + w.error)
         );
       }
     }
@@ -4096,8 +4109,21 @@ async function cmdConnectInvite() {
       out.fail(
         base,
         'partially-invited',
-        result.write.failed + ' of ' + result.write.results.length + ' address(es) failed; the others were invited (see above).',
+        result.write.failed + ' of ' + result.write.results.length + ' address(es) failed' +
+          (result.write.unknown ? ', ' + result.write.unknown + ' with an UNKNOWN outcome' : '') +
+          '; see the per-address results above.',
         result
+      );
+    }
+    if (result.status === 'outcome-unknown') {
+      out.fail(
+        base,
+        'outcome-unknown',
+        result.write.unknown + ' of ' + result.write.results.length + ' address(es) got an ambiguous answer ' +
+          '(Slack: the operation may have partly succeeded). Do not re-send blindly; check later with: ' +
+          'slack-ext approvals --query=' + ((result.state && result.state.name) || result.channel_id) + ' --detail',
+        result,
+        3
       );
     }
     out.emit(result);
@@ -4167,11 +4193,27 @@ async function cmdConnectPermissions() {
     }
     if (!json) {
       section(result.status);
-      kv('Write', result.method + ' -> ok' + (result.write.attempts > 1 ? ' (attempt ' + result.write.attempts + ')' : ''));
+      if (result.write.outcome === 'unknown') {
+        kv('Write', color.yellow(result.method + ' -> ' + result.write.error + ' (outcome UNKNOWN: Slack says it may have partly succeeded)'));
+      }
+      else kv('Write', result.method + ' -> ok' + (result.write.attempts > 1 ? ' (attempt ' + result.write.attempts + ')' : ''));
       kv('Read-back', (result.readback.confirmed ? 'confirmed' : 'NOT confirmed') + ' after ' + result.readback.attempts + ' attempt(s)');
       if (result.readback.state) renderConnectState(result.readback.state);
     }
     out.say('');
+    if (result.write.outcome === 'unknown') {
+      out.fail(
+        base,
+        'outcome-unknown',
+        result.method + ' answered ' + result.write.error + ' (Slack: the operation may have partly succeeded). ' +
+          (result.readback.confirmed
+            ? 'The read-back shows ' + result.target_team + ' as ' + result.target + '.'
+            : 'The read-back did not show ' + result.target_team + ' as ' + result.target + '.') +
+          ' Verify with: slack-ext connect-status ' + result.channel_id,
+        result,
+        3
+      );
+    }
     if (!result.readback.confirmed) {
       out.fail(
         base,

@@ -1206,7 +1206,19 @@ function checkChannelArchiveArgs(action, flags, positional) {
 //   with action=upgrade turns a post-only org into Post and Invite, and
 //   downgrade the reverse. Sent on the WORKSPACE id (T…). Used live
 //   2026-10-02 to upgrade 57 org connections; it can answer `ratelimited`
-//   (the script then waited 30 s, 4 tries in all). Post-only orgs are the ones
+//   (the script then waited 30 s, 4 tries in all).
+//
+//   Rate limits: inviteShared documents BOTH `ratelimit` ("applied on a
+//   per-user basis when you pass the emails parameter") and `ratelimited`.
+//   Both are retried. Retry-After is not honoured: slackApi() returns only the
+//   response body, so the header is not visible here; the fixed 30 s backoff
+//   is the fallback.
+//
+//   Ambiguous answers: Slack documents internal_error and fatal_error with
+//   "It's possible some aspect of the operation succeeded before the error was
+//   raised". Those, and a transport failure (xhr_error, no body), are outcome
+//   UNKNOWN: never retried (a retry could send a second invitation), never
+//   reported as "nothing happened", and they exit 3 like an unconfirmed write. Post-only orgs are the ones
 //   listed in conversations.info connected_limited_team_ids.
 //
 //   team.info (team) resolves a team or org id to its name; a workspace id of
@@ -1224,6 +1236,9 @@ const CONNECT_READBACK_DELAY_MS = 3000;
 const CONNECT_EMAIL_RE = /^[^\s@,;<>"]+@[^\s@,;<>".]+(\.[^\s@,;<>".]+)+$/;
 const CONNECT_CHANNEL_RE = /^[CG][A-Z0-9]{6,}$/;
 const CONNECT_TEAM_RE = /^[ET][A-Z0-9]{6,}$/;
+const CONNECT_RATELIMIT_ERRORS = ['ratelimited', 'ratelimit'];
+// The write may have happened: never retried, never reported as "nothing changed".
+const CONNECT_AMBIGUOUS_ERRORS = ['internal_error', 'fatal_error', 'xhr_error'];
 
 function apiOk(r) {
   return !!r && typeof r === 'object' && r.ok === true;
@@ -1344,8 +1359,18 @@ async function readConnectChannel(call, channelId) {
   return { found: false, channel: null, error: apiOk(r) ? 'malformed_response (no channel)' : apiErrorOf(r) };
 }
 
-// A write, retried on `ratelimited` only (nothing was done on that answer).
-// Returns { ok, attempts, response, error }.
+// 'ok' | 'failed' | 'unknown' for one write response. Only ok === true is ok.
+// 'unknown': Slack says the operation may have partly happened, or the
+// request may have reached Slack without an answer coming back.
+function writeOutcome(r) {
+  if (apiOk(r)) return 'ok';
+  if (!r || typeof r !== 'object') return 'unknown';
+  if (r.ok === false && CONNECT_AMBIGUOUS_ERRORS.includes(r.error)) return 'unknown';
+  return 'failed';
+}
+
+// A write, retried on a rate-limit answer only (nothing was done on that
+// answer). Returns { ok, outcome, attempts, response, error }.
 async function writeWithRetry(call, method, params, opts) {
   const o = opts || {};
   const attempts = o.attempts || CONNECT_WRITE_ATTEMPTS;
@@ -1353,16 +1378,19 @@ async function writeWithRetry(call, method, params, opts) {
   let r = null;
   for (let i = 1; i <= attempts; i += 1) {
     r = await call(method, params);
-    if (apiOk(r)) return { ok: true, attempts: i, response: r, error: null };
-    const limited = r && typeof r === 'object' && r.ok === false && r.error === 'ratelimited';
-    if (!limited) return { ok: false, attempts: i, response: r, error: apiErrorOf(r) };
+    const outcome = writeOutcome(r);
+    if (outcome === 'ok') return { ok: true, outcome, attempts: i, response: r, error: null };
+    const limited =
+      r && typeof r === 'object' && r.ok === false && CONNECT_RATELIMIT_ERRORS.includes(r.error);
+    if (!limited) return { ok: false, outcome, attempts: i, response: r, error: apiErrorOf(r) };
     if (i < attempts) await o.sleep(delayMs);
   }
   return {
     ok: false,
+    outcome: 'failed',
     attempts: attempts,
     response: r,
-    error: 'ratelimited (gave up after ' + attempts + ' attempts)',
+    error: r.error + ' (gave up after ' + attempts + ' attempts)',
   };
 }
 
@@ -1458,13 +1486,17 @@ async function runConnectInviteFlow(spec) {
     writes.push({
       email: params.emails,
       ok: w.ok,
+      outcome: w.outcome,
       attempts: w.attempts,
       invite_id: w.ok && typeof w.response.invite_id === 'string' ? w.response.invite_id : null,
       error: w.error,
     });
   }
-  const failed = writes.filter((w) => !w.ok).length;
-  result.write = { ok: failed === 0, invited: writes.length - failed, failed: failed, results: writes };
+  const failed = writes.filter((w) => w.outcome === 'failed').length;
+  const unknown = writes.filter((w) => w.outcome === 'unknown').length;
+  const invited = writes.length - failed - unknown;
+  result.write = { ok: invited === writes.length, invited, failed, unknown, results: writes };
+  // Every address DEFINITELY failed: nothing was invited, no read-back needed.
   if (failed === writes.length) {
     result.status = 'error';
     result.exitCode = 1;
@@ -1478,8 +1510,18 @@ async function runConnectInviteFlow(spec) {
     error: after.error || (after.found ? null : 'channel_not_found'),
     changed: st ? connectStateChanged(result.state, st) : null,
   };
-  result.status = failed ? 'partially-invited' : 'invited';
-  result.exitCode = failed ? 1 : 0;
+  // exit: 1 if any address definitely failed, else 3 if any outcome is
+  // unknown, else 0.
+  if (failed) {
+    result.status = 'partially-invited';
+    result.exitCode = 1;
+  } else if (unknown) {
+    result.status = 'outcome-unknown';
+    result.exitCode = 3;
+  } else {
+    result.status = 'invited';
+    result.exitCode = 0;
+  }
   return result;
 }
 
@@ -1588,13 +1630,16 @@ async function runConnectPermissionsFlow(spec) {
     delayMs: spec.writeDelayMs,
     sleep: spec.sleep,
   });
-  result.write = { ok: w.ok, attempts: w.attempts, error: w.error, response: w.response };
-  if (!w.ok) {
+  result.write = { ok: w.ok, outcome: w.outcome, attempts: w.attempts, error: w.error, response: w.response };
+  if (w.outcome === 'failed') {
     result.status = 'error';
     result.exitCode = 1;
     return result;
   }
 
+  // An ambiguous answer is still read back (the state is the evidence), but
+  // is never reported as a confirmed change: exit 3 either way.
+  const ambiguous = w.outcome === 'unknown';
   const attempts = spec.readbackAttempts || CONNECT_READBACK_ATTEMPTS;
   const delayMs = spec.readbackDelayMs === undefined ? CONNECT_READBACK_DELAY_MS : spec.readbackDelayMs;
   let last = null;
@@ -1615,15 +1660,22 @@ async function runConnectPermissionsFlow(spec) {
       limitedNow.includes(resolved.id) === wantLimited
     ) {
       result.readback = { confirmed: true, attempts: i, state: last, error: null };
+      if (ambiguous) {
+        result.status =
+          'outcome-unknown (' + w.error + '; the read-back shows the team as ' + result.target + ')';
+        result.exitCode = 3;
+        return result;
+      }
       result.status = (action === 'upgrade' ? 'upgraded' : 'downgraded') + ' (confirmed)';
       return result;
     }
     if (i < attempts) await spec.sleep(delayMs);
   }
   result.readback = { confirmed: false, attempts: attempts, state: last, error: lastError };
-  result.status =
-    (action === 'upgrade' ? 'upgraded' : 'downgraded') +
-    ' (unconfirmed: conversations.info did not show it after ' + attempts + ' attempts)';
+  result.status = ambiguous
+    ? 'outcome-unknown (' + w.error + '; the read-back did not show the target after ' + attempts + ' attempts)'
+    : (action === 'upgrade' ? 'upgraded' : 'downgraded') +
+      ' (unconfirmed: conversations.info did not show it after ' + attempts + ' attempts)';
   result.exitCode = 3;
   return result;
 }
@@ -1803,6 +1855,9 @@ module.exports = {
   CONNECT_READBACK_ATTEMPTS,
   CONNECT_READBACK_DELAY_MS,
   CONNECT_COMMAND_FLAGS,
+  CONNECT_RATELIMIT_ERRORS,
+  CONNECT_AMBIGUOUS_ERRORS,
+  writeOutcome,
   parseEmailList,
   buildInviteSharedParams,
   buildExternalInvitePermissionsParams,

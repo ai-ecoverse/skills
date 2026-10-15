@@ -738,6 +738,13 @@ Used by `slack-ext connect-invite`. Invites people from an external org into a c
   invited at a time"; a longer list answers `too_many_emails`. `connect-invite --emails=a,b` makes one
   call per address, prints each result (`invite_id` on success, per the documented success body
   `{"ok":true,"invite_id":"I…"}`), and exits 1 if any address failed.
+- Rate limits: the method documents BOTH `ratelimit` ("applied on a per-user basis when you pass
+  the emails parameter") and `ratelimited`. `connect-invite` retries both (4 tries, 30 s apart).
+  `Retry-After` is not honoured: the tab fetch wrapper returns the body only.
+- Ambiguous answers: `internal_error` and `fatal_error` are documented with "It's possible some
+  aspect of the operation succeeded before the error was raised". `connect-invite` treats them (and a
+  transport `xhr_error`) as outcome UNKNOWN: not retried (a retry could send a second invitation),
+  never reported as "nothing invited", exit 3.
 - Slack's default for `external_limited` is `true` (post-only). `connect-invite` therefore ALWAYS
   sends it: `false` by default, `true` only with `--post-only`.
 - Right after `{"ok":true}` the channel is unchanged in `conversations.info`
@@ -761,7 +768,8 @@ Used by `slack-ext connect-permissions`. Changes what one connected external org
 | action | yes | `upgrade` = post-only → Post and Invite; `downgrade` = the reverse |
 
 - Can answer `{"ok":false,"error":"ratelimited"}` during a batch. `connect-permissions` retries that
-  error only (4 tries, 30 s apart, as the 2026-10-02 batch did).
+  error (and `ratelimit`) only (4 tries, 30 s apart, as the 2026-10-02 batch did). `internal_error` /
+  `fatal_error` are outcome UNKNOWN: not retried, read back, and exit 3 even if the read-back matches.
 - Effect is read from `conversations.info` `connected_limited_team_ids`: after an upgrade the org is
   no longer listed. A team that DISCONNECTED is not listed either, so the read-back only counts
   when the team is still in `connected_team_ids`. `connect-permissions --confirm` re-reads up to 5
