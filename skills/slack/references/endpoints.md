@@ -731,9 +731,13 @@ Used by `slack-ext connect-invite`. Invites people from an external org into a c
 |-------|----------|-------------|
 | token | yes | workspace xoxc token |
 | channel | yes | `C…` |
-| emails | yes | Comma-joined addresses, e.g. `a@example.com,b@example.org` |
+| emails | yes | ONE address, e.g. `a@example.com` (see below) |
 | external_limited | no (Slack default `true`) | `true` = post-only, `false` = Post and Invite |
 
+- **One address per call.** Slack's method documentation: "only one email or one user ID may be
+  invited at a time"; a longer list answers `too_many_emails`. `connect-invite --emails=a,b` makes one
+  call per address, prints each result (`invite_id` on success, per the documented success body
+  `{"ok":true,"invite_id":"I…"}`), and exits 1 if any address failed.
 - Slack's default for `external_limited` is `true` (post-only). `connect-invite` therefore ALWAYS
   sends it: `false` by default, `true` only with `--post-only`.
 - Right after `{"ok":true}` the channel is unchanged in `conversations.info`
@@ -759,8 +763,9 @@ Used by `slack-ext connect-permissions`. Changes what one connected external org
 - Can answer `{"ok":false,"error":"ratelimited"}` during a batch. `connect-permissions` retries that
   error only (4 tries, 30 s apart, as the 2026-10-02 batch did).
 - Effect is read from `conversations.info` `connected_limited_team_ids`: after an upgrade the org is
-  no longer listed. `connect-permissions --confirm` re-reads up to 5 times, 3 s apart, and exits 3 if
-  the list never matches.
+  no longer listed. A team that DISCONNECTED is not listed either, so the read-back only counts
+  when the team is still in `connected_team_ids`. `connect-permissions --confirm` re-reads up to 5
+  times, 3 s apart, and exits 3 if that never holds.
 
 ### Slack Connect state from conversations.info and team.info
 

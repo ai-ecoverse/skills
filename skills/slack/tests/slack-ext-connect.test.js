@@ -581,16 +581,18 @@ test('connect-invite dry run: ONE conversations.info read, zero writes, shows em
   ok(/No --confirm; nothing changed/.test(t), t);
 });
 
-test('connect-invite --confirm: write sends external_limited:"false" EXPLICITLY, then re-reads', async () => {
+test('connect-invite --confirm: ONE call per address, each with external_limited:"false" EXPLICITLY, then re-reads', async () => {
   const h = await load({
     argv: INV.concat(['--emails=a@example.com,b@example.org', '--confirm']),
     channels: { [CHAN]: plainChan() },
   });
   is(h.exit(), 0, h.errText());
-  is(h.methods(), 'conversations.info,conversations.inviteShared,conversations.info');
-  is(h.calls[1].params, { channel: CHAN, emails: 'a@example.com,b@example.org', external_limited: 'false' });
+  is(h.methods(), 'conversations.info,conversations.inviteShared,conversations.inviteShared,conversations.info');
+  is(h.calls[1].params, { channel: CHAN, emails: 'a@example.com', external_limited: 'false' });
+  is(h.calls[2].params, { channel: CHAN, emails: 'b@example.org', external_limited: 'false' });
   is(h.calls[1].token, 'xoxc-test-ws');
-  is(mutations(h), 1);
+  is(mutations(h), 2);
+  ok(/a@example\.com:\s+invited/.test(h.text()), h.text());
   const t = h.text();
   ok(/Invited/.test(t), t);
   ok(/An unchanged channel is EXPECTED/.test(t), t);
@@ -616,7 +618,8 @@ test('connect-invite --json dry run: one JSON document, params carry external_li
   is(h.exit(), 0, h.errText());
   const doc = JSON.parse(h.text());
   is(doc.status, 'dry-run');
-  is(doc.params, { channel: CHAN, emails: 'a@example.com', external_limited: 'false' });
+  is(doc.params, [{ channel: CHAN, emails: 'a@example.com', external_limited: 'false' }]);
+  is(doc.external_limited, 'false');
   is(doc.permission, 'Post and Invite');
   is(doc.state.post_only_team_ids, [PARTNER]);
   is(doc.state.post_and_invite_team_ids, [OTHER]);
@@ -884,6 +887,22 @@ test('connect-permissions --confirm: ok:true but the read-back never shows it ->
   ok(/did not show E0EXAMPLE02 as Post and Invite/.test(h.errText()), h.errText());
 });
 
+test('connect-permissions --confirm: team DISCONNECTED during read-back is not a confirmed upgrade -> exit 3', async () => {
+  const h = await load({
+    argv: PERM.concat(['--team=' + PARTNER, '--upgrade', '--confirm']),
+    channels: { [CHAN]: sharedChan() },
+    api: (m, _params, state) => {
+      if (m !== 'conversations.externalInvitePermissions.set') return undefined;
+      const c = state.channels[CHAN];
+      c.connected_team_ids = [OTHER, ORG];
+      c.connected_limited_team_ids = [];
+      return { ok: true };
+    },
+  });
+  is(h.exit(), 3);
+  is(h.count('conversations.info'), 1 + grid.CONNECT_READBACK_ATTEMPTS);
+});
+
 test('connect-permissions --confirm: truthy non-boolean ok is a FAILURE, no read-back', async () => {
   const h = await load({
     argv: PERM.concat(['--team=' + PARTNER, '--upgrade', '--confirm']),
@@ -945,14 +964,45 @@ test('connect-status: not found exits 1; a bad channel id is refused before any 
 
 // ── connect pure helpers ──
 
-test('buildInviteSharedParams: external_limited is "false" by default, "true" only for postOnly===true', () => {
-  is(grid.buildInviteSharedParams(CHAN, ['a@example.com']).external_limited, 'false');
-  is(grid.buildInviteSharedParams(CHAN, ['a@example.com'], 'yes').external_limited, 'false');
-  is(grid.buildInviteSharedParams(CHAN, ['a@example.com', 'b@example.org'], true), {
+test('buildInviteSharedParams: one address; external_limited "false" by default, "true" only for postOnly===true', () => {
+  is(grid.buildInviteSharedParams(CHAN, 'a@example.com').external_limited, 'false');
+  is(grid.buildInviteSharedParams(CHAN, 'a@example.com', 'yes').external_limited, 'false');
+  is(grid.buildInviteSharedParams(CHAN, 'a@example.com', true), {
     channel: CHAN,
-    emails: 'a@example.com,b@example.org',
+    emails: 'a@example.com',
     external_limited: 'true',
   });
+});
+
+test('connect-invite --confirm: one address fails, the other is invited -> both reported, exit 1', async () => {
+  const h = await load({
+    argv: INV.concat(['--emails=a@example.com,b@example.org', '--confirm']),
+    channels: { [CHAN]: plainChan() },
+    api: (m, params) => {
+      if (m !== 'conversations.inviteShared') return undefined;
+      return params.emails === 'b@example.org' ? { ok: false, error: 'invalid_email' } : { ok: true, invite_id: 'I0EXAMPLE04' };
+    },
+  });
+  is(h.exit(), 1);
+  is(h.count('conversations.inviteShared'), 2);
+  is(h.count('conversations.info'), 2);
+  const t = h.text();
+  ok(/a@example\.com:\s+invited I0EXAMPLE04/.test(t), t);
+  ok(/b@example\.org:\s+FAILED: invalid_email/.test(t), t);
+  ok(/1 of 2 address\(es\) failed/.test(h.errText()), h.errText());
+});
+
+test('connect-invite --confirm --json: every address fails -> status error, exit 1, no read-back', async () => {
+  const h = await load({
+    argv: INV.concat(['--emails=a@example.com,b@example.org', '--confirm', '--json']),
+    channels: { [CHAN]: plainChan() },
+    api: (m) => (m === 'conversations.inviteShared' ? { ok: false, error: 'too_many_emails' } : undefined),
+  });
+  is(h.exit(), 1);
+  is(h.count('conversations.info'), 1);
+  const doc = JSON.parse(h.text());
+  is(doc.status, 'error');
+  is(doc.write.failed, 2);
 });
 
 test('parseEmailList: lowercases, dedupes, keeps order, rejects bad shapes', () => {

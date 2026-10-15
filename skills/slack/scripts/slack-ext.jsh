@@ -350,15 +350,17 @@ Slack Connect channel invites and permissions (WORKSPACE token, --ws=<T…>):
 
   connect-invite <channel_id> --emails=a@x.com,b@y.com [--post-only] [--confirm] [--json]
       Invite people from an external org into a channel by email
-      (conversations.inviteShared). Requires --ws. DEFAULT IS POST AND INVITE:
+      (conversations.inviteShared, ONE call per address: Slack accepts one
+      email per call). Requires --ws. DEFAULT IS POST AND INVITE:
       external_limited=false is always sent, because Slack's own default is
       post-only. --post-only sends external_limited=true. Emails are
       lowercased, deduped and must look like addresses. The dry run reads the
       channel (conversations.info) and shows the emails, its sharing state and
       the permission. Refused, with the reason named: not-found, archived,
       hosted-elsewhere (conversation_host_id is another org), host-unknown,
-      sharing-unknown. On --confirm Slack emails every address at once; the
-      channel is then re-read and printed.
+      sharing-unknown. On --confirm Slack emails every address at once; each
+      address's result (and invite_id) is printed, exit 1 if any failed, and
+      the channel is then re-read and printed.
       AN UNCHANGED READ-BACK IS EXPECTED: until an invitee accepts, the
       channel still reads is_ext_shared:false, is_pending_ext_shared:false,
       pending_connected_team_ids:[], and the invite is not in 'approvals'.
@@ -374,8 +376,9 @@ Slack Connect channel invites and permissions (WORKSPACE token, --ws=<T…>):
       not connected (team-not-connected), the channel is not shared, archived,
       or hosted elsewhere. 'Nothing to do' (exit 0, no call) when the team
       already has the target permission. A ratelimited write is retried (4
-      tries, 30 s apart). --confirm re-reads conversations.info until the team's
-      presence in connected_limited_team_ids matches (5 tries, 3 s apart).
+      tries, 30 s apart). --confirm re-reads conversations.info until the team
+      is still in connected_team_ids and its presence in
+      connected_limited_team_ids matches (5 tries, 3 s apart).
       Exit: 0 done/nothing to do/dry run, 1 refused or API error,
             3 written but the read-back never showed it (unconfirmed).
 
@@ -4035,9 +4038,9 @@ async function cmdConnectInvite() {
       if (result.state) renderConnectState(result.state);
       else kv('Channel', result.channel_id + ' (not found)');
       kv('Emails', result.emails.join(', '));
-      kv('Permission', result.permission + (result.params.external_limited === 'true' ? ' (--post-only)' : ' (default)'));
+      kv('Permission', result.permission + (result.external_limited === 'true' ? ' (--post-only)' : ' (default)'));
       kv('Workspace', p.workspaceId);
-      kv('Method', result.method + ' external_limited=' + result.params.external_limited);
+      kv('Method', result.method + ' external_limited=' + result.external_limited + ', one call per address');
     }
     out.say('');
     out.say(color.dim('  ' + CHANNEL_ATTRIBUTION));
@@ -4049,8 +4052,8 @@ async function cmdConnectInvite() {
     }
     if (result.mode === 'dry-run') {
       out.say(
-        '  --confirm would: re-read this channel, call ' + result.method + ' for ' +
-          result.emails.length + ' address(es) as ' + result.permission + ', then read it back.'
+        '  --confirm would: re-read this channel, call ' + result.method + ' once per address (' +
+          result.emails.length + ' call(s)) as ' + result.permission + ', then read it back.'
       );
       out.say('  Slack emails each address an invitation at once.');
       out.say(color.yellow('  No --confirm; nothing changed.'));
@@ -4058,14 +4061,29 @@ async function cmdConnectInvite() {
       out.emit(result);
       return;
     }
+    if (!json && result.write) {
+      section(result.status === 'invited' ? 'Invited' : result.status === 'error' ? 'Invite FAILED' : 'Partially invited');
+      for (const w of result.write.results) {
+        kv(
+          w.email,
+          w.ok
+            ? color.green('invited') + (w.invite_id ? ' ' + w.invite_id : '') + (w.attempts > 1 ? ' (attempt ' + w.attempts + ')' : '')
+            : color.red('FAILED: ' + w.error)
+        );
+      }
+    }
     if (result.status === 'error') {
-      out.fail(base, 'error', result.method + ' failed: ' + result.write.error + '. Nothing was invited.', result);
+      out.fail(
+        base,
+        'error',
+        result.method + ' failed for every address (' + result.write.results.map((w) => w.email + ': ' + w.error).join('; ') + '). Nothing was invited.',
+        result
+      );
     }
     if (!json) {
-      section('Invited');
-      kv('Write', result.method + ' -> ok' + (result.write.attempts > 1 ? ' (attempt ' + result.write.attempts + ')' : ''));
+      console.log('');
+      kv('Read-back', result.readback.state ? 'conversations.info re-read:' : 'failed (' + result.readback.error + ')');
       if (result.readback.state) renderConnectState(result.readback.state);
-      else kv('Read-back', 'failed (' + result.readback.error + ')');
     }
     out.say('');
     out.say('  An unchanged channel is EXPECTED here: Slack shows nothing (not is_pending_ext_shared,');
@@ -4074,6 +4092,14 @@ async function cmdConnectInvite() {
     out.say('  and, once both sides approved, in: slack-ext connect-status ' + result.channel_id);
     if (result.readback.changed) out.say(color.dim('  (the sharing fields did change on this read-back)'));
     out.say('');
+    if (result.status === 'partially-invited') {
+      out.fail(
+        base,
+        'partially-invited',
+        result.write.failed + ' of ' + result.write.results.length + ' address(es) failed; the others were invited (see above).',
+        result
+      );
+    }
     out.emit(result);
   } catch (err) {
     connectCatch(json, out, base, err);

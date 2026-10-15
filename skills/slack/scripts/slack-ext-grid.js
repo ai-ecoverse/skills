@@ -1187,6 +1187,10 @@ function checkChannelArchiveArgs(action, flags, positional) {
 //   conversations.inviteShared (channel, emails, external_limited) invites an
 //   external org into a channel by email. MEASURED live 2026-10-15 with the
 //   tab's xoxc token on workspace T0385CHDU9E: {"ok":true} for C0C844A86UE.
+//   ONE ADDRESS PER CALL: Slack's method docs say "only one email or one user
+//   ID may be invited at a time" and list too_many_emails for a longer list,
+//   so connect-invite makes one call per address and reports each result. The
+//   documented success body carries invite_id.
 //   external_limited=true is "post only", false is "Post and Invite". Slack's
 //   own default is true (post only), so the command ALWAYS sends the parameter
 //   explicitly: 'false' unless --post-only is given.
@@ -1258,12 +1262,13 @@ function parseEmailList(raw) {
   return { ok: true, emails, invalid, error: null };
 }
 
-// conversations.inviteShared. external_limited is ALWAYS sent: Slack's default
-// (true, post only) is not what this command means by default.
-function buildInviteSharedParams(channelId, emails, postOnly) {
+// conversations.inviteShared for ONE address (Slack accepts one per call).
+// external_limited is ALWAYS sent: Slack's default (true, post only) is not
+// what this command means by default.
+function buildInviteSharedParams(channelId, email, postOnly) {
   return {
     channel: channelId,
-    emails: emails.join(','),
+    emails: String(email),
     external_limited: postOnly === true ? 'true' : 'false',
   };
 }
@@ -1415,7 +1420,8 @@ function connectResultBase(action, spec) {
 async function runConnectInviteFlow(spec) {
   const result = connectResultBase('connect-invite', spec);
   result.method = 'conversations.inviteShared';
-  result.params = buildInviteSharedParams(spec.channelId, spec.emails, spec.postOnly === true);
+  result.params = spec.emails.map((e) => buildInviteSharedParams(spec.channelId, e, spec.postOnly === true));
+  result.external_limited = spec.postOnly === true ? 'true' : 'false';
   result.emails = spec.emails.slice();
   result.permission = permissionLabel(spec.postOnly === true);
   const ownIds = [spec.orgId, spec.workspaceId];
@@ -1440,13 +1446,26 @@ async function runConnectInviteFlow(spec) {
     return result;
   }
 
-  const w = await writeWithRetry(spec.call, result.method, result.params, {
-    attempts: spec.writeAttempts,
-    delayMs: spec.writeDelayMs,
-    sleep: spec.sleep,
-  });
-  result.write = { ok: w.ok, attempts: w.attempts, error: w.error, response: w.response };
-  if (!w.ok) {
+  // One call per address; a failure does not stop the rest (each address is
+  // its own invitation), and every result is reported.
+  const writes = [];
+  for (const params of result.params) {
+    const w = await writeWithRetry(spec.call, result.method, params, {
+      attempts: spec.writeAttempts,
+      delayMs: spec.writeDelayMs,
+      sleep: spec.sleep,
+    });
+    writes.push({
+      email: params.emails,
+      ok: w.ok,
+      attempts: w.attempts,
+      invite_id: w.ok && typeof w.response.invite_id === 'string' ? w.response.invite_id : null,
+      error: w.error,
+    });
+  }
+  const failed = writes.filter((w) => !w.ok).length;
+  result.write = { ok: failed === 0, invited: writes.length - failed, failed: failed, results: writes };
+  if (failed === writes.length) {
     result.status = 'error';
     result.exitCode = 1;
     return result;
@@ -1459,7 +1478,8 @@ async function runConnectInviteFlow(spec) {
     error: after.error || (after.found ? null : 'channel_not_found'),
     changed: st ? connectStateChanged(result.state, st) : null,
   };
-  result.status = 'invited';
+  result.status = failed ? 'partially-invited' : 'invited';
+  result.exitCode = failed ? 1 : 0;
   return result;
 }
 
@@ -1583,8 +1603,17 @@ async function runConnectPermissionsFlow(spec) {
     const rb = await readConnectChannel(spec.call, spec.channelId);
     lastError = rb.error || (rb.found ? null : 'channel_not_found');
     last = rb.found ? normalizeConnectState(rb.channel, ownIds) : null;
+    // Confirmed only while the team is STILL connected: a team that
+    // disconnected is absent from connected_limited_team_ids too, which would
+    // otherwise read as a successful upgrade.
     const limitedNow = last && last.connected_limited_team_ids;
-    if (Array.isArray(limitedNow) && limitedNow.includes(resolved.id) === wantLimited) {
+    const connectedNow = last && last.connected_team_ids;
+    if (
+      Array.isArray(limitedNow) &&
+      Array.isArray(connectedNow) &&
+      connectedNow.includes(resolved.id) &&
+      limitedNow.includes(resolved.id) === wantLimited
+    ) {
       result.readback = { confirmed: true, attempts: i, state: last, error: null };
       result.status = (action === 'upgrade' ? 'upgraded' : 'downgraded') + ' (confirmed)';
       return result;
