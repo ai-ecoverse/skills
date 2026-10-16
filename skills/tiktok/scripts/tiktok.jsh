@@ -1299,11 +1299,20 @@ async function cmdTranscript(args, flags) {
   }
 }
 
+const FILMSTRIP_SOFT = Symbol('filmstrip-soft');
+
 async function cmdFilmstrip(args, flags) {
+  // `info` runs this for its bundle with flags[FILMSTRIP_SOFT]: a failure must
+  // then throw (info records it and carries on) instead of exiting -- under
+  // Node exit semantics (SLICC 7) an exit here would end `info` as well.
+  const fail = (msg) => {
+    if (flags[FILMSTRIP_SOFT]) throw new Error(msg);
+    console.error(msg);
+    process.exit(1);
+  };
   const ref = parseVideoRef(args[0]);
   if (!ref) {
-    console.error('Usage: tiktok filmstrip <videoId|url> [--frames=8] [--width=160] [--out=path] [--seek-wait=700] [--json]');
-    process.exit(1);
+    fail('Usage: tiktok filmstrip <videoId|url> [--frames=8] [--width=160] [--out=path] [--seek-wait=700] [--json]');
   }
   const nFrames = Math.max(1, Math.min(24, parseInt(flags.frames || flags.n || '8', 10) || 8));
   const thumbW = Math.max(64, Math.min(480, parseInt(flags.width || flags.w || '160', 10) || 160));
@@ -1343,20 +1352,17 @@ async function cmdFilmstrip(args, flags) {
   }
 
   if (!probe) {
-    console.error('Could not read <video> on the page: ' + (probeErr || 'unknown'));
-    process.exit(1);
+    fail('Could not read <video> on the page: ' + (probeErr || 'unknown'));
   }
   if (probe.error) {
-    console.error('No playable <video> element found for ' + ref.id
+    fail('No playable <video> element found for ' + ref.id
       + '. Open the video on www.tiktok.com and retry.');
-    process.exit(1);
   }
 
   const duration = Number(probe.duration) || 0;
   if (!(duration > 0)) {
-    console.error('Video duration is still 0/NaN after ~10s — the player never initialised.');
-    console.error('The tab may be showing a login wall or an age gate. Open the video manually and retry.');
-    process.exit(1);
+    fail('Video duration is still 0/NaN after ~10s — the player never initialised.\n'
+      + 'The tab may be showing a login wall or an age gate. Open the video manually and retry.');
   }
   const thumbH = Math.round(thumbW * (probe.h || 16) / (probe.w || 9));
 
@@ -1409,9 +1415,8 @@ async function cmdFilmstrip(args, flags) {
     + "})()");
 
   if (!dataUrl || String(dataUrl).indexOf('data:image') !== 0) {
-    console.error('Filmstrip export failed (empty or non-image data URL).'
+    fail('Filmstrip export failed (empty or non-image data URL).'
       + ' The canvas may be tainted or the player not ready.');
-    process.exit(1);
   }
   const b64 = String(dataUrl).replace(/^data:image\/\w+;base64,/, '');
   const buf = Buffer.from(b64, 'base64');
@@ -1511,7 +1516,7 @@ async function cmdSee(args, flags) {
   let filmstrip = null;
   let filmstripError = null;
   try {
-    const fsFlags = Object.assign({}, flags, { out: dir + '/filmstrip.jpg' });
+    const fsFlags = Object.assign({}, flags, { out: dir + '/filmstrip.jpg', [FILMSTRIP_SOFT]: true });
     const prevLog = console.log;
     const prevErr = console.error;
     if (flags.json) {
