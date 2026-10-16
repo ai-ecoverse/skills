@@ -2,9 +2,24 @@
 
 const THEMES = ['default', 'neutral', 'dark', 'forest', 'base'];
 
-// One expression. playwright-cli eval prints it and appends a newline.
+// One expression. playwright-cli eval prints it and appends a newline. A
+// finished render reports only the SVG's length: the SVG itself is read back
+// in SLICE-sized pieces, so a large diagram is never cut off by the size
+// limit on one eval result.
 const POLL_EXPR =
-  '(() => { const r = (document.body && document.body.dataset && document.body.dataset.ready) || ""; if (!r) return "PENDING"; const t = document.getElementById("out"); return r + "\\n" + (t ? t.textContent : ""); })()';
+  '(() => { const r = (document.body && document.body.dataset && document.body.dataset.ready) || ""; if (!r) return "PENDING"; const t = document.getElementById("out"); const s = t ? t.textContent : ""; return r === "ok" ? "ok\\n" + s.length : r + "\\n" + s; })()';
+
+const SLICE = 65536;
+
+function sliceExpr(start, end) {
+  return `document.getElementById("out").textContent.slice(${Number(start)}, ${Number(end)})`;
+}
+
+// One eval result, minus the newline playwright-cli appends.
+function evalText(stdout) {
+  const text = String(stdout);
+  return text.endsWith('\n') ? text.slice(0, -1) : text;
+}
 
 function parseArgs(argv) {
   const flags = {};
@@ -99,21 +114,41 @@ function targetIdFrom(stdout) {
 }
 
 function splitRenderResult(stdout) {
-  let text = String(stdout);
-  if (text.endsWith('\n')) text = text.slice(0, -1);
+  const text = evalText(stdout);
   if (text === 'PENDING') return { pending: true };
   const nl = text.indexOf('\n');
   if (nl < 0) return { error: text || 'empty render result' };
   const status = text.slice(0, nl);
   const body = text.slice(nl + 1);
-  if (status === 'ok') return { svg: body };
+  if (status === 'ok') {
+    const length = Number(body);
+    if (!Number.isSafeInteger(length) || length < 0) {
+      return { error: `unexpected SVG length: ${body}` };
+    }
+    return { length };
+  }
   if (status === 'err') return { error: body || 'render failed' };
   return { error: `unexpected render status: ${status}` };
+}
+
+// A complete SVG: exactly the length the page reported, closed by </svg>.
+function checkSvg(svg, length) {
+  if (svg.length !== length) {
+    return `read ${svg.length} of ${length} SVG characters back from the browser`;
+  }
+  if (!svg.includes('<svg') || !svg.trimEnd().endsWith('</svg>')) {
+    return 'the browser returned no complete SVG';
+  }
+  return null;
 }
 
 module.exports = {
   THEMES,
   POLL_EXPR,
+  SLICE,
+  sliceExpr,
+  evalText,
+  checkSvg,
   parseArgs,
   sourceJson,
   pageHtml,

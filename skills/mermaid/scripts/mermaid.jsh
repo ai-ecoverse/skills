@@ -14,6 +14,10 @@ const cli = require('sliccy:cli');
 const {
   THEMES,
   POLL_EXPR,
+  SLICE,
+  sliceExpr,
+  evalText,
+  checkSvg,
   parseArgs,
   pageHtml,
   targetIdFrom,
@@ -77,7 +81,12 @@ async function readDiagram(file) {
     return text || '';
   }
   if (!(await exists(file))) cli.die(`no such file: ${file}`, { prefix: 'mermaid' });
-  return await fs.readFile(file);
+  // SLICC's fs.readFile hands back bytes as characters; decode the UTF-8
+  // ourselves so labels with accents, dashes, or emoji survive.
+  if (typeof fs.readFileBinary === 'function') {
+    return new TextDecoder('utf-8').decode(await fs.readFileBinary(file));
+  }
+  return await fs.readFile(file, 'utf8');
 }
 
 async function bundle(entry, version) {
@@ -115,21 +124,28 @@ async function renderInBrowser(htmlPath) {
       prefix: 'mermaid',
     });
   }
+  const evalInTab = async (expr) => {
+    const r = await exec.spawn(['playwright-cli', 'eval', `--tab=${tab}`, expr]);
+    if (r.exitCode !== 0) {
+      cli.die((r.stderr || r.stdout || 'playwright eval failed').trim(), { prefix: 'mermaid' });
+    }
+    return r.stdout || '';
+  };
   try {
     for (let i = 0; i < POLL_LIMIT; i++) {
-      const polled = await exec.spawn(['playwright-cli', 'eval', `--tab=${tab}`, POLL_EXPR]);
-      if (polled.exitCode !== 0) {
-        cli.die((polled.stderr || polled.stdout || 'playwright eval failed').trim(), {
-          prefix: 'mermaid',
-        });
-      }
-      const result = splitRenderResult(polled.stdout || '');
+      const result = splitRenderResult(await evalInTab(POLL_EXPR));
       if (result.pending) {
         await new Promise((resolve) => setTimeout(resolve, POLL_MS));
         continue;
       }
       if (result.error) cli.die(result.error, { prefix: 'mermaid' });
-      return result.svg;
+      let svg = '';
+      for (let start = 0; start < result.length; start += SLICE) {
+        svg += evalText(await evalInTab(sliceExpr(start, start + SLICE)));
+      }
+      const problem = checkSvg(svg, result.length);
+      if (problem) cli.die(problem, { prefix: 'mermaid' });
+      return svg;
     }
     cli.die('the diagram did not finish rendering in the browser', { prefix: 'mermaid' });
   } finally {
@@ -139,7 +155,9 @@ async function renderInBrowser(htmlPath) {
 
 function inputFile(positional) {
   const first = positional[0];
-  if (!first || first === 'help') return { help: true };
+  if (first === 'help') return { help: true };
+  // No file: read stdin. Help only when stdin is empty too.
+  if (!first) return { file: '-', helpWhenEmpty: true };
   if (first === 'render') {
     if (positional.length > 2) return { error: 'mermaid: too many arguments' };
     return { file: positional[1] || '-' };
@@ -165,6 +183,7 @@ async function main() {
   }
 
   const source = await readDiagram(input.file);
+  if (!String(source).trim() && input.helpWhenEmpty) cli.help(HELP);
   if (!String(source).trim()) cli.die('no diagram on stdin or in the file', { prefix: 'mermaid' });
 
   const pkgPath = await findPackageJson();
@@ -181,7 +200,6 @@ async function main() {
   await fs.writeFile(htmlPath, html);
   try {
     const svg = await renderInBrowser(htmlPath);
-    if (!svg || !svg.includes('<svg')) cli.die('the browser returned no SVG', { prefix: 'mermaid' });
     if (flags.output) {
       await fs.writeFile(flags.output, svg);
       console.log(flags.output);

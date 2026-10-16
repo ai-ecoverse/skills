@@ -2,7 +2,7 @@ import test, { is, ok } from 'tst';
 import * as pageMod from '../scripts/render-page.js';
 
 const page = pageMod.default || pageMod;
-const { THEMES, POLL_EXPR, parseArgs, pageHtml, targetIdFrom, splitRenderResult } = page;
+const { THEMES, POLL_EXPR, parseArgs, pageHtml, targetIdFrom, splitRenderResult, checkSvg } = page;
 
 test('parseArgs accepts a bare file, render, theme, and -o', () => {
   const bare = parseArgs(['diagram.mmd', '-o', 'out.svg', '--theme', 'dark']);
@@ -45,11 +45,18 @@ test('targetIdFrom reads the open command suffix', () => {
   is(targetIdFrom('opened /tmp/x.html\n'), null);
 });
 
-test('splitRenderResult distinguishes pending, svg, and errors', () => {
+test('splitRenderResult distinguishes pending, a finished length, and errors', () => {
   is(splitRenderResult('PENDING\n'), { pending: true });
-  is(splitRenderResult('ok\n<svg></svg>\n'), { svg: '<svg></svg>' });
-  is(splitRenderResult('ok\n<svg>\n</svg>\n\n'), { svg: '<svg>\n</svg>\n' });
+  is(splitRenderResult('ok\n12\n'), { length: 12 });
+  is(splitRenderResult('ok\n<svg></svg>\n').error, 'unexpected SVG length: <svg></svg>');
   is(splitRenderResult('err\nParse error\n'), { error: 'Parse error' });
+});
+
+test('checkSvg accepts only the complete SVG the page reported', () => {
+  is(checkSvg('<svg>x</svg>', 12), null);
+  is(checkSvg('<svg>x</svg>\n', 13), null);
+  ok(checkSvg('<svg>x</s', 12).includes('read 9 of 12'));
+  ok(checkSvg('<div></div>', 11).includes('no complete SVG'));
 });
 
 test('POLL_EXPR reads the ready flag the page sets', () => {
