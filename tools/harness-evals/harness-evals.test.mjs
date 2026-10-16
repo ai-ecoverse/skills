@@ -181,7 +181,7 @@ test('plan: only skills with an adapter, one entry per arm, agent arms keep a ba
     ['demo', 'plain']
   );
   const root = fakeRepo();
-  const { include } = await plan('all', 'origin/main', root);
+  const { include } = await plan('all', 'origin/main', root, ['default'], 1, 'cloud-run-job');
   assert.deepEqual(include, [
     {
       skill: 'demo',
@@ -191,7 +191,7 @@ test('plan: only skills with an adapter, one entry per arm, agent arms keep a ba
       gpu: '1',
       inject: 'demo,helper',
     },
-    { skill: 'demo', arm: 'bare', repeat: 1, runs_on: 'cloud-run-bench', gpu: '', inject: '' },
+    { skill: 'demo', arm: 'bare', repeat: 1, runs_on: 'cloud-run-job', gpu: '', inject: '' },
   ]);
   await assert.rejects(plan('plain', 'origin/main', root), /has no evals\/harness\/harness.mjs/);
 });
@@ -520,7 +520,7 @@ test('plan: a skill with no goal in the selected suites gets no jobs', async () 
     })
   );
   is((await plan('demo', 'origin/main', root)).include, []);
-  is((await plan('demo', 'origin/main', root, ['games'])).include.length, 2);
+  is((await plan('demo', 'origin/main', root, ['games'], 1, 'cloud-run-job')).include.length, 2);
 });
 
 test('rubric-only goals: valid without a check, pass is null, scored by credit alone', () => {
@@ -611,17 +611,29 @@ test('the judge is retried on transient Bedrock errors, not on invalid judgement
 
 test("plan shards repeats: one job per arm and repeat, each on its arm's pool", async () => {
   const root = fakeRepo();
-  const { include } = await plan('demo', 'origin/main', root, ['default'], 3);
+  const { include } = await plan('demo', 'origin/main', root, ['default'], 3, 'cloud-run-job');
   is(
     include.map((e) => `${e.arm}/r${e.repeat}@${e.runs_on}`),
     [
       'fast/r1@cloud-run-gpu',
       'fast/r2@cloud-run-gpu',
       'fast/r3@cloud-run-gpu',
-      'bare/r1@cloud-run-bench',
-      'bare/r2@cloud-run-bench',
-      'bare/r3@cloud-run-bench',
+      'bare/r1@cloud-run-job',
+      'bare/r2@cloud-run-job',
+      'bare/r3@cloud-run-job',
     ]
+  );
+});
+
+test('plan refuses a non-GPU arm when no CI pool is named, rather than guessing one', async () => {
+  const root = fakeRepo();
+  await assert.rejects(
+    plan('demo', 'origin/main', root),
+    /set the CERT_RUNNER repository variable/
+  );
+  await assert.rejects(
+    plan('demo', 'origin/main', root, ['default'], 1, ''),
+    /arm demo\/bare needs the CI pool/
   );
 });
 
