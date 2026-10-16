@@ -192,6 +192,7 @@ External-CLI-plus-manual-secret-wiring skills lost historically (#52 abandoned);
 3. **Never post-process `JSON.stringify` output with regex escaping** — single-quote escaping is a no-op and backslash-doubling corrupts `\"`. When hand-escaping is unavoidable, escape backslashes first. Escape XML metacharacters in constructed XML (`&` broke concur).
 4. **No hardcoded IDs, no silent fallback to a default identity.** Resolve the current user/athlete/mailbox dynamically and `die` loudly on failure — the single most repeated P1 (gh, linkedin, strava, slack all shipped the author's own IDs as fallbacks).
 5. Nothing secret to stdout — everything a `.jsh` prints lands in the agent transcript (#203).
+   The one exception is a broker-facing `auth token` subcommand (the `gh auth token` pattern that jerk's providers call). It may print the **stored** token only if it is documented as not for agents, never echoes a `--token` argument, and exits non-zero when the token is missing or expired (`printful auth token`, #495).
 6. Gate spending/destructive operations behind `--confirm` with a preview (navan is the reference; also `--dry-run`, jira). Paginate fully before any destructive operation on the list (#21). Bound fan-out with `pool()` — `Promise.all` over 100+ calls hits rate limits (#53).
 7. Quote (don't rewrite) remote-controlled strings echoed into suggested commands — branch names are attacker-controlled (#48), but sanitizing broke legitimate `feature@2` (#49).
 

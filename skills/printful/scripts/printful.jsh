@@ -35,6 +35,7 @@ USAGE
   printful auth login --token <tok>     Store a private token (Developer Portal)
   printful auth login                   Mint one from a logged-in printful.com tab
   printful auth status | logout
+  printful auth token                   Print the stored private token (for jerk)
   printful whoami                       Customer stores (token last-4 only)
   printful stores
 
@@ -397,6 +398,32 @@ async function cmdAuthLogin(flags) {
   );
   if (minted.expiresAt) console.log(c.dim(`  expires: ${minted.expiresAt}`));
   console.log(c.dim(`  scopes: ${(minted.scopes || DEFAULT_SCOPES).join(', ')}`));
+}
+
+// For token brokers (jerk's `printful` provider runs this, as it runs
+// `gh auth token`): the STORED credential, never a --token echo, and never an
+// expired one -- a broker should hear "log in again" rather than hand out a
+// token that 401s. Whatever this prints lands in the caller's transcript, so
+// agents use the other commands, which never print it (SKILL.md).
+async function cmdAuthToken(flags) {
+  const cfg = await loadConfig();
+  if (!cfg.token) {
+    cli.die(`Not authenticated. Run: printful auth login --token <token>  (create one at ${TOKEN_UI})`, {
+      prefix: 'printful',
+      exitCode: 3,
+    });
+  }
+  if (cfg.token_expires_at && new Date(cfg.token_expires_at) < new Date()) {
+    cli.die(
+      `the stored token expired at ${cfg.token_expires_at}. Run: printful auth login  (or --token <new>)`,
+      { prefix: 'printful', exitCode: 3 },
+    );
+  }
+  if (flags.json) {
+    cli.out({ token: cfg.token, source: cfg.token_source || null, expires_at: cfg.token_expires_at || null });
+    return;
+  }
+  process.stdout.write(`${cfg.token}\n`);
 }
 
 async function cmdAuthLogout() {
@@ -1196,9 +1223,10 @@ async function main() {
 
     if (s === 'auth') {
       if (p0 === 'login' || p0 === 'add') return await cmdAuthLogin(flags);
+      if (p0 === 'token') return await cmdAuthToken(flags);
       if (p0 === 'logout' || p0 === 'revoke' || p0 === 'delete') return await cmdAuthLogout();
       if (p0 === 'status' || p0 === 'show' || !p0) return await cmdAuthStatus(flags);
-      cli.die(`unknown auth subcommand: ${p0}\n  printful auth login | status | logout`, {
+      cli.die(`unknown auth subcommand: ${p0}\n  printful auth login | status | token | logout`, {
         prefix: 'printful',
       });
     }

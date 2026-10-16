@@ -42,6 +42,11 @@ Docs: <https://developers.printful.com/docs/>
 Resolution order: `--token` flag → stored config → GraphQL mint from a
 logged-in dashboard tab (only on `auth login` without `--token`).
 
+The token leaves the script in one place only: `auth token` prints the stored
+credential (never a `--token` override, never an expired one; exit 3 instead)
+for token brokers such as jerk, the way `gh auth token` does. Every other
+command masks it to the last four characters.
+
 Private tokens are minted in the Developer Portal
 (<https://developers.printful.com/tokens>) **or** via dashboard GraphQL.
 The portal itself is a Nuxt app on `developers.printful.com` that talks to
