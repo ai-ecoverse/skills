@@ -262,9 +262,31 @@ async function ensureBundle(exec, fs, opts) {
   return true;
 }
 
+// slicc 6's builtin hf takes --to; huggingface_hub's hf takes --local-dir and
+// rejects --to. Ask `hf download --help` once per exec and pass the flag it
+// lists. A probe that fails or lists neither is an error, not a guess, and is
+// not cached, so the next call asks again.
+const hfDestFlags = new WeakMap();
+function hfDestFlag(exec) {
+  if (!hfDestFlags.has(exec)) {
+    const probe = exec.spawn(['hf', 'download', '--help']).then((result) => {
+      const text = `${result.stdout || ''}\n${result.stderr || ''}`;
+      if (result.exitCode === 0 && /--local-dir\b/.test(text)) return '--local-dir';
+      if (result.exitCode === 0 && /--to\b/.test(text)) return '--to';
+      throw new Error(
+        `hf download --help (exit ${result.exitCode}) lists neither --local-dir nor --to: ${tail(text)}`
+      );
+    });
+    probe.catch(() => hfDestFlags.delete(exec));
+    hfDestFlags.set(exec, probe);
+  }
+  return hfDestFlags.get(exec);
+}
+
 async function hfDownload(exec, repo, files, dest) {
+  const flag = await hfDestFlag(exec);
   console.error(`hf download ${repo} (${files.length} files) -> ${dest}`);
-  await run(exec, ['hf', 'download', repo, ...files, '--to', dest]);
+  await run(exec, ['hf', 'download', repo, ...files, flag, dest]);
 }
 
 function childEnv(extra) {

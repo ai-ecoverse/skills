@@ -1,10 +1,15 @@
 ---
 name: decide-quickly
 description: >
-  Classify, score, and rate a piece of text with `kev ask`, and plan how to
-  fill a web form with `cua-s1`. Use when classifying text, rating urgency
-  or tone, deciding yes or no, or planning form fills (fill, check, click,
-  or skip) from a document. The cone still applies the result.
+  Classify, categorize, label, triage, score, and rate short text such as
+  support tickets, emails, chat messages, or page text with the local `kev ask`
+  model, and plan how to fill an accessibility-snapshotted web form from an
+  intake document with `cua-s1` (fill, check, click, or skip per field). Use
+  when classifying or labelling text, triaging a ticket, rating urgency or
+  tone, answering a yes or no question about a text, or mapping a document's
+  `Label: value` lines onto form fields. Not a general browser automation
+  tool: neither command clicks or submits on its own; it prints a judgment or
+  playwright-cli lines that the caller reviews and runs.
 allowed-tools: bash
 ---
 
@@ -34,17 +39,11 @@ node /workspace/skills/decide-quickly/scripts/cua-s1.jsh --help
 - [scripts/commands.js](scripts/commands.js) turns a plan into `playwright-cli` lines.
 - [scripts/kev-entry.mjs](scripts/kev-entry.mjs) is the esbuild entry for Kev.
 - [scripts/cua-entry.mjs](scripts/cua-entry.mjs) is the esbuild entry for cua-s1.
+- [references/setup.md](references/setup.md) lists package pins, model sizes, and weight recovery.
 
 ## First run
 
-The first `kev ask` or `cua-s1 plan` installs its packages, bundles them, downloads weights, and runs again so the bundle can be loaded.
-
-- Kev: `ipk add -g @ai-ecoverse/kev.js@0.6.0`
-- cua-s1: `ipk add -g @ai-ecoverse/cua-s1.js@0.1.1`
-- Both: `esbuild-wasm`, then `esbuild --bundle`, then `ipk add -g onnxruntime-web@1.30.0`
-- Weights: `hf download` (Kev q8f32, or the 3.3 MB cua-s1 graph)
-
-A package already on disk is reused only when its version matches that pin.
+The first `kev ask` or `cua-s1 plan` installs its pinned packages, bundles them with esbuild, downloads weights with `hf download`, and runs again so the bundle can be loaded. Pins, sizes, and stale-weight recovery: [references/setup.md](references/setup.md).
 
 `--json`, `--date-facts`, and `--allow-submit` are booleans. A question or path written after one of them stays an argument.
 
@@ -65,21 +64,21 @@ computer text | kev ask \
 kev ask --json --state ticket.txt --questions questions.json
 ```
 
-`questions.json` maps a name to a question. Choice `criteria` is an object. Score `criteria` is an array of strings, low to high.
+`questions.json` maps a name to a question:
+
+```json
+{
+  "billing": { "type": "noul", "instructions": "Is this about billing?" },
+  "tone": { "type": "choice", "instructions": "What tone?", "criteria": { "calm": "polite, no complaint", "angry": "insults or threats" } },
+  "urgency": { "type": "score", "instructions": "How urgent?", "criteria": ["can wait", "this week", "today"] }
+}
+```
+
+Choice `criteria` maps each option to what it means. Score `criteria` lists the options low to high.
 
 Stdout is the name, the answer, and a probability, separated by tabs. For a score question the answer is the most likely option, and the number is a confidence measured around that same option. `--json` prints the System One response. `--date-facts` adds day counts between absolute dates.
 
-| Model | Variant | Approx size |
-| --- | --- | --- |
-| `--model 0.8b` (default) | q8f32 | 800 MB |
-| `--model 4b` | q8f32 | 4.7 GB |
-| `--model 9b` | q8f32 | 8.8 GB |
-
-Weights land in `/workspace/models/ai-ecoverse/kev.js/kev-<size>`. `--from` uses a directory you already have and skips the download.
-
-Kev reads up to 65,536 tokens of state and truncates the rest. `kev ask` never re-downloads a `manifest.json` it already has. Weights fetched before the kev.js 0.6.0 bundles were published cover only 8,192 positions, so a long state fails with a `RangeError` that names the limit. Delete that `kev-<size>` directory to fetch the current bundle.
-
-Kev does not click. You apply the judgment.
+`--model 0.8b` (default), `4b`, or `9b` picks the size. Weights land in `/workspace/models/ai-ecoverse/kev.js/kev-<size>`. `--from` uses a directory you already have and skips the download. A long state that fails with a `RangeError` naming a limit means stale weights: see [references/setup.md](references/setup.md).
 
 ## cua-s1 plan
 
