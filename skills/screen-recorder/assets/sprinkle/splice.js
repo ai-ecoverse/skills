@@ -2,7 +2,8 @@
 // Run via build.sh; not meant to be called directly.
 const fs = require('fs');
 
-const DIR = '/shared/sprinkles/recording-setup';
+// The sprinkle dir this file was installed into (build.sh runs it from there).
+const DIR = __dirname;
 const SHTML = DIR + '/recording-setup.shtml';
 const BUNDLE = DIR + '/src/bundle.js';
 

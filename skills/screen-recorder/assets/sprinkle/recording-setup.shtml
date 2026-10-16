@@ -1914,12 +1914,18 @@
         // DECORATED window (URL bar visible). The frame is the size that matters --
         // capture resolution follows from it. Needs no user activation (verified
         // from jsh, which has none), so awaiting here is safe.
-        var opened = await openTargetWindowApi(v.url, c.tabW, c.tabH);
-        if (opened.unavailable) {
-          // FALLBACK (pre-6.169.0). MUST stay synchronous inside the gesture: an
-          // await before window.open spends the user activation and Chrome blocks
-          // the popup. Popup chrome only (67px, no URL bar) -- a browser
-          // limitation, not a setting.
+        //
+        // FALLBACK (pre-6.169.0). MUST stay synchronous inside the gesture: an
+        // await before window.open spends the user activation and Chrome blocks
+        // the popup. So the API is checked WITHOUT awaiting, and window.open runs
+        // before anything is awaited. Popup chrome only (67px, no URL bar) -- a
+        // browser limitation, not a setting.
+        var hasOpenWindow =
+          typeof slicc !== 'undefined' && slicc && slicc.browser && typeof slicc.browser.openWindow === 'function';
+        var opened;
+        if (hasOpenWindow) {
+          opened = await openTargetWindowApi(v.url, c.tabW, c.tabH);
+        } else {
           log('openWindow unavailable -> window.open fallback (popup chrome)');
           opened = openTargetWindow(v.url, c.tabW, c.tabH, window);
         }
@@ -1954,8 +1960,10 @@
         // target is the popup whatever it navigates to. Polled, because a popup
         // still on about:blank is not yet useful. URL matching is last resort.
         var beforeIds = await beforeIdsP;
-        var targetId = null;
-        var idVia = null;
+        // openWindow already returns the new window's id: use it, and only search
+        // tab-list for the window.open fallback (whose handle carries no id).
+        var targetId = opened.targetId || null;
+        var idVia = targetId ? 'openWindow' : null;
         var landed = null;
         var attempts = 0;
         for (var att = 0; att < 6 && !targetId; att++) {
@@ -3393,7 +3401,21 @@
 
       async function applyConfigFile(announce) {
         var cfg = await readConfigFile();
-        if (!cfg) return false;
+        if (!cfg) {
+          // `screen-recorder config clear` deleted the file and sent reloadconfig:
+          // put every CLI-settable field back to the panel's own default, or the
+          // next take would still record with the cleared values.
+          if (!announce) return false;
+          Object.keys(CONFIG_FIELDS).forEach(function (key) {
+            var el = $(CONFIG_FIELDS[key]);
+            if (el) el.value = el.defaultValue;
+          });
+          $('maxDur').value = $('maxDur').defaultValue;
+          syncPresetFromInputs();
+          updateHints();
+          log('config cleared: fields back to their defaults');
+          return true;
+        }
         var applied = [];
         Object.keys(CONFIG_FIELDS).forEach(function (key) {
           if (cfg[key] === undefined || cfg[key] === null || cfg[key] === '') return;

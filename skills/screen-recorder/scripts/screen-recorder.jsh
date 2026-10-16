@@ -11,6 +11,9 @@
 //
 // Mirrors the interview-me CLI's shape: a config.json next to the sprinkle,
 // plus a best-effort `sprinkle send` so an already-open panel live-reloads.
+//
+// fs goes through fs.promises / existsSync only: those behave the same in
+// SLICC 6 and in slicc-jsh (SLICC 7), measured on a hosted leader 2026-10-17.
 
 const cli = require('sliccy:cli');
 const exec = require('sliccy:exec');
@@ -65,13 +68,20 @@ const FIELDS = {
   driver: { type: 'str', help: 'driver script path, run against the target window' },
 };
 
+// Plain decimal integers only: Number('') is 0 (an unset shell variable would
+// silently mean "screenshot"), and Number also takes '0x10' and '1e3'.
+function toInt(raw) {
+  const s = String(raw).trim();
+  return /^-?\d+$/.test(s) ? Number(s) : Number.NaN;
+}
+
 function parseValue(key, raw) {
   const spec = FIELDS[key];
   if (!spec) {
     cli.die(`unknown config key '${key}'. Known: ${Object.keys(FIELDS).join(', ')}`);
   }
   if (spec.type === 'int') {
-    const n = Number(raw);
+    const n = toInt(raw);
     if (!Number.isInteger(n)) cli.die(`${key} must be an integer, got '${raw}'`);
     if (spec.min != null && n < spec.min) cli.die(`${key} must be >= ${spec.min}, got ${n}`);
     if (spec.max != null && n > spec.max) cli.die(`${key} must be <= ${spec.max}, got ${n}`);
@@ -84,7 +94,7 @@ function parseValue(key, raw) {
     // it was previously rejected as a malformed integer, leaving the panel's
     // infinity step reachable by dragging but not from the CLI.
     if (/^(inf|infinity|null|none|unlimited)$/i.test(String(raw).trim())) return null;
-    const n = Number(raw);
+    const n = toInt(raw);
     if (!Number.isInteger(n)) {
       cli.die(`${key} must be an integer, or inf/null for no auto-stop, got '${raw}'`);
     }
@@ -107,17 +117,17 @@ function parseValue(key, raw) {
 
 async function readConfig() {
   try {
-    const raw = await fs.readFile(CONFIG_FILE);
+    const raw = await fs.promises.readFile(CONFIG_FILE, 'utf8');
     if (!raw) return {};
-    return JSON.parse(String(raw));
+    return JSON.parse(raw);
   } catch {
     return {}; // absent or malformed -> empty, never fatal
   }
 }
 
 async function writeConfig(cfg) {
-  await fs.mkdir(SPRINKLE_DIR).catch(() => {});
-  await fs.writeFile(CONFIG_FILE, JSON.stringify(cfg, null, 2) + '\n');
+  await fs.promises.mkdir(SPRINKLE_DIR, { recursive: true });
+  await fs.promises.writeFile(CONFIG_FILE, JSON.stringify(cfg, null, 2) + '\n');
 }
 
 // ─── live-reload notify ──────────────────────────────────────────────────
@@ -136,15 +146,17 @@ function withTimeout(promise, ms, label) {
   });
 }
 
+// exec.start, not exec: a timeout must KILL a hung `sprinkle send`, or the
+// script keeps running until it ends (a .jsh waits for pending work).
 async function notifyPanel() {
+  let job = null;
   try {
-    const r = await withTimeout(
-      exec(`sprinkle send recording-setup '{"type":"reloadconfig"}'`),
-      4000,
-      'sprinkle send'
-    );
+    job = exec.start(['sprinkle', 'send', 'recording-setup', '{"type":"reloadconfig"}']);
+    job.stdin.end();
+    const r = await withTimeout(job.done, 4000, 'sprinkle send');
     return r.exitCode === 0;
   } catch {
+    if (job) await Promise.resolve(job.kill('SIGKILL')).catch(() => {});
     return false;
   }
 }
@@ -162,7 +174,7 @@ async function notifyPanel() {
 async function listCaptures() {
   let entries;
   try {
-    entries = await fs.readDir(CAPTURES_DIR);
+    entries = await fs.promises.readdir(CAPTURES_DIR);
   } catch {
     return [];
   }
@@ -172,7 +184,7 @@ async function listCaptures() {
     // The ISO-ish folder name is what makes a lexical sort chronological; a
     // capture must also actually contain a manifest.
     if (!/^\d{4}-\d{2}-\d{2}T/.test(n)) continue;
-    if (await fs.exists(`${CAPTURES_DIR}/${n}/manifest.json`)) out.push(n);
+    if (fs.existsSync(`${CAPTURES_DIR}/${n}/manifest.json`)) out.push(n);
   }
   return out.sort();
 }
@@ -180,8 +192,7 @@ async function listCaptures() {
 async function readManifest(folder) {
   const path = `${CAPTURES_DIR}/${folder}/manifest.json`;
   try {
-    const raw = await fs.readFile(path);
-    return JSON.parse(String(raw));
+    return JSON.parse(await fs.promises.readFile(path, 'utf8'));
   } catch (e) {
     cli.die(`cannot read ${path}: ${(e && e.message) || e}`);
   }
@@ -213,7 +224,15 @@ function summarise(m, folder) {
   } else {
     lines.push('CAPTURED      (no geometry recorded — check the manifest directly)');
   }
-  if (tw.predictedFrame && tw.predictedFrame !== `${cap.width}x${cap.height}`) {
+  // Compare the prediction with whatever frame WAS recorded; with none, there is
+  // nothing to disagree with.
+  const frame =
+    cap.width && cap.height
+      ? `${cap.width}x${cap.height}`
+      : shot && shot.width && shot.height
+        ? `${shot.width}x${shot.height}`
+        : null;
+  if (tw.predictedFrame && frame && tw.predictedFrame !== frame) {
     lines.push(`  predicted   ${tw.predictedFrame}  (DISAGREES with captured — trust captured)`);
   }
   lines.push(`window        requested ${tw.requested || '-'} -> outer ${tw.outerAfter || '-'} @ dpr ${tw.dpr ?? '-'}`);
@@ -299,7 +318,7 @@ async function main(argv) {
       return;
     }
     if (sub === 'clear') {
-      await fs.rm(CONFIG_FILE).catch(() => {});
+      await fs.promises.rm(CONFIG_FILE, { force: true });
       const notified = await notifyPanel();
       console.log(`config cleared${notified ? ' (live panel updated)' : ''}`);
       return;
@@ -338,21 +357,21 @@ async function main(argv) {
     // fresh install has no panel at all. Copies the skill's own asset tree into
     // the sprinkle dir WITHOUT touching config.json or captures.
     const src = `${skill.dir}/assets/sprinkle`;
-    if (!(await fs.exists(`${src}/recording-setup.shtml`))) {
+    if (!fs.existsSync(`${src}/recording-setup.shtml`)) {
       cli.die(`cannot find the panel at ${src}/recording-setup.shtml`);
     }
-    await fs.mkdir(SPRINKLE_DIR).catch(() => {});
-    await fs.mkdir(`${SPRINKLE_DIR}/src`).catch(() => {});
+    await fs.promises.mkdir(`${SPRINKLE_DIR}/src`, { recursive: true });
+    const copy = async (rel) =>
+      fs.promises.writeFile(`${SPRINKLE_DIR}/${rel}`, await fs.promises.readFile(`${src}/${rel}`, 'utf8'));
     const copied = [];
     for (const rel of ['recording-setup.shtml', 'build.sh', 'splice.js']) {
-      if (!(await fs.exists(`${src}/${rel}`))) continue;
-      await fs.writeFile(`${SPRINKLE_DIR}/${rel}`, await fs.readFile(`${src}/${rel}`));
+      if (!fs.existsSync(`${src}/${rel}`)) continue;
+      await copy(rel);
       copied.push(rel);
     }
-    for (const rel of await fs.readDir(`${src}/src`).catch(() => [])) {
-      const name = typeof rel === 'string' ? rel : rel && rel.name;
-      if (!name || !name.endsWith('.js')) continue;
-      await fs.writeFile(`${SPRINKLE_DIR}/src/${name}`, await fs.readFile(`${src}/src/${name}`));
+    for (const name of await fs.promises.readdir(`${src}/src`).catch(() => [])) {
+      if (!String(name).endsWith('.js')) continue;
+      await copy(`src/${name}`);
       copied.push(`src/${name}`);
     }
     const r = await exec('sprinkle refresh');

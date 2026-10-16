@@ -42,7 +42,7 @@ Separate files per track is deliberate — it is what lets an editor re-cut voic
    silently; the panel greys out presets it cannot deliver and reports what was actually achieved.
 5. **Driver script** — an optional `sh` script that drives the page while recording.
 6. **Countdown** — recorded, then trimmed via `countdownMs`.
-7. **Max duration** — a ladder from 1 s to 1 h, or ∞ (no auto-stop).
+7. **Max duration** — 0 (one screenshot), then 5 s to 1 h on a ladder (5 s steps to 2 min, 30 s steps to 10 min, 2 min steps to 1 h), or ∞ (no auto-stop).
 
 Then **Open Target Window** → **Start recording** / **Take screenshot**.
 
@@ -118,7 +118,7 @@ jq '{dur:.durationMs, trim:.countdownMs, skew:.maxStartSkewMs,
 ## Handing off to an editor
 
 ```sh
-ffmpeg -ss 5 -i screen.webm -i mic.webm -c:v libvpx-vp9 -c:a copy cut.webm
+ffmpeg -ss 5 -i screen.webm -ss 5 -i mic.webm -c:v libvpx-vp9 -c:a copy cut.webm
 ```
 
 `remotion-clipper` consumes the same folder for captioned, composed output.
