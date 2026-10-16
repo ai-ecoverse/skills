@@ -26,6 +26,7 @@ const cli = require('sliccy:cli');
 const skill = require('sliccy:skill');
 const browser = require('sliccy:browser');
 const c = require('sliccy:color');
+const { EXPIRY_SKEW_SECONDS, armUrl, resolveSubscription } = require('./arm-common.js');
 
 // ─── ARM constants ───────────────────────────────────────────────────────────
 
@@ -40,7 +41,6 @@ const PORTAL_URL_MATCH = /portal\.azure\.com/;
 const SUBSCRIPTIONS_API_VERSION = '2022-12-01';
 // Treat a token as unusable this many seconds before its stated expiry, so a
 // long-running command cannot expire mid-flight.
-const EXPIRY_SKEW_SECONDS = 120;
 
 const NO_TAB_HELP =
   'No logged-in portal.azure.com tab found.\n' +
@@ -254,8 +254,10 @@ async function tryHarvest(tab) {
   // token — MSAL refreshes lazily, on demand, not on a timer. Storing it would
   // guarantee a 401 later and report the useless "nothing was stored" instead of
   // the real cause, so reject it here with the actual remedy.
+  // The same skew storedToken() applies: a token stored inside it would be
+  // treated as absent a moment later and fail with a misleading "not logged in".
   const remaining = expiresOn - nowSeconds();
-  if (expiresOn > 0 && remaining < 60) {
+  if (expiresOn > 0 && remaining <= EXPIRY_SKEW_SECONDS) {
     return {
       ok: false,
       fatal: false,
@@ -339,6 +341,15 @@ async function harvestArmToken(tabOverride, waitSeconds) {
  */
 async function armRequest(method, pathOrUrl, body, opts) {
   const options = opts || {};
+  // The token is subscription-wide: it goes to https://management.azure.com and
+  // nowhere else (not another host, not plain http), whatever `az rest --url` says.
+  const url = armUrl(pathOrUrl, ARM_BASE);
+  if (!url) {
+    cli.die(
+      `refusing to send the ARM token to ${JSON.stringify(String(pathOrUrl))}: only https://management.azure.com URLs (or /paths on it) are allowed`,
+      { prefix: 'az' }
+    );
+  }
   let token = await storedToken();
   if (!token) {
     if (options.noHarvest) cli.die(NO_TOKEN_HELP, { prefix: 'az' });
@@ -356,7 +367,6 @@ async function armRequest(method, pathOrUrl, body, opts) {
     }
   }
 
-  const url = /^https?:\/\//.test(pathOrUrl) ? pathOrUrl : ARM_BASE + pathOrUrl;
   let attempted401Refresh = false;
 
   for (;;) {
@@ -443,25 +453,17 @@ async function refreshSubscriptionCache(opts) {
   return subs;
 }
 
-/** Resolve `<id|name>` (case-insensitive name, exact or unique prefix of a
- *  GUID) to a subscription record. */
-function resolveSubscription(subs, wanted) {
-  const needle = String(wanted).trim();
-  const lower = needle.toLowerCase();
-  const byId = subs.find((s) => String(s.id).toLowerCase() === lower);
-  if (byId) return byId;
-  const byName = subs.filter((s) => String(s.name).toLowerCase() === lower);
-  if (byName.length === 1) return byName[0];
-  if (byName.length > 1) return null;
-  const partial = subs.filter(
-    (s) => String(s.name).toLowerCase().includes(lower) || String(s.id).toLowerCase().startsWith(lower)
-  );
-  return partial.length === 1 ? partial[0] : null;
-}
-
 // ─── commands ────────────────────────────────────────────────────────────────
 
 async function cmdLogin(flags) {
+  if (!flags['from-tab'] && !flags['service-principal'] && !flags.username && !flags.password) {
+    cli.die(
+      'az login needs --from-tab: the only login this skill has borrows the ARM token from a\n' +
+        'signed-in portal.azure.com tab (no browser device flow, no client secret).\n' +
+        '  az login --from-tab [--wait 60]',
+      { prefix: 'az', exitCode: 2 }
+    );
+  }
   if (flags['service-principal'] || flags.username || flags.password) {
     cli.die(
       'Service-principal login is not supported — this skill has no client secret.\n' +

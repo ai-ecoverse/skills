@@ -45,6 +45,7 @@ const skill = require('sliccy:skill');
 const c = require('sliccy:color');
 const { exec } = require('sliccy:exec');
 const fs = require('fs');
+const { EXPIRY_SKEW_SECONDS, resolveSubscription, subscriptionMatches } = require('./arm-common.js');
 
 // ─── ARM / Cost Management constants ─────────────────────────────────────────
 
@@ -307,16 +308,17 @@ function chunkRange(fromIso, toIso) {
   if (Date.parse(from) >= Date.parse(to)) {
     return [{ from: from, to: to }];
   }
-  const spanDays = daysBetween(from, to);
-  const count = Math.ceil(spanDays / MAX_QUERY_DAYS);
-  const perWindow = Math.ceil(spanDays / count);
+  // timePeriod.to is INCLUSIVE, so a window covers (to - from) + 1 calendar days
+  // and the next one starts the day AFTER the previous `to`: a shared boundary
+  // day would be billed in both windows and summed twice.
+  const calendarDays = daysBetween(from, to) + 1;
+  const count = Math.ceil(calendarDays / (MAX_QUERY_DAYS + 1));
+  const perWindow = Math.ceil(calendarDays / count);
+  const DAY = 86400000;
   const windows = [];
-  let cursor = from;
-  while (Date.parse(cursor) < Date.parse(to)) {
-    const next = new Date(Date.parse(cursor) + perWindow * 86400000);
-    const end = Date.parse(next) < Date.parse(to) ? isoStart(ymd(next)) : to;
-    windows.push({ from: cursor, to: end });
-    cursor = end;
+  for (let start = Date.parse(from); start <= Date.parse(to); start += perWindow * DAY) {
+    const end = Math.min(start + (perWindow - 1) * DAY, Date.parse(to));
+    windows.push({ from: isoStart(ymd(new Date(start))), to: end === Date.parse(to) ? to : isoStart(ymd(new Date(end))) });
   }
   return windows;
 }
@@ -605,7 +607,7 @@ async function armToken(allowLogin) {
   const cfg = (await skill.config()) || {};
   const token = str(cfg.armToken);
   const expiresOn = num(cfg.armTokenExpiresOn, 0);
-  const usable = token && (!expiresOn || expiresOn - 120 > nowSeconds());
+  const usable = token && (!expiresOn || expiresOn - EXPIRY_SKEW_SECONDS > nowSeconds());
   if (usable) return token;
   if (!allowLogin) return null;
 
@@ -668,7 +670,6 @@ async function costQuery(subscriptionId, body, opts, deps) {
     }
   }
 
-  const token = await getToken(true);
   const url =
     `${ARM_BASE}/subscriptions/${encodeURIComponent(subscriptionId)}` +
     `/providers/Microsoft.CostManagement/query?api-version=${COST_API_VERSION}`;
@@ -677,6 +678,9 @@ async function costQuery(subscriptionId, body, opts, deps) {
   let waited = 0;
   for (let attempt = 0; ; attempt++) {
     requests++;
+    // Per attempt, not once: a 429 backoff can outlast the token's remaining
+    // life, and armToken() re-harvests from the portal tab when it has expired.
+    const token = await getToken(true);
     let resp;
     try {
       resp = await doFetch(url, {
@@ -717,6 +721,11 @@ async function costQuery(subscriptionId, body, opts, deps) {
       const step = BACKOFF_SECONDS[Math.min(attempt, BACKOFF_SECONDS.length - 1)];
       const delay = headerHint || step;
       if (waited + delay > maxWait) {
+        // A best-effort caller (the vendor lookup) asks for a catchable error,
+        // so being throttled there cannot take down the answer it decorates.
+        if (options.soft) {
+          throw Object.assign(new Error(throttleGuidance(waited, maxWait)), { name: 'ThrottledError' });
+        }
         cli.die(throttleGuidance(waited, maxWait), { prefix: 'az-ext' });
       }
       notify(
@@ -787,7 +796,7 @@ function describeQuery(body) {
 // ─── subscription resolution (delegated to `az`) ─────────────────────────────
 
 async function resolveSubscriptionId(flags) {
-  const wanted = str(flags.subscription) || str(flags.s);
+  const wanted = str(flags.subscription);
   const cfg = (await skill.config()) || {};
   if (!wanted) {
     const dflt = str(cfg.subscription);
@@ -820,14 +829,13 @@ async function resolveSubscriptionId(flags) {
       cli.die('Could not parse `az account list --json` output.', { prefix: 'az-ext' });
     }
   }
-  const lower = wanted.toLowerCase();
-  let hit = subs.filter((s) => String(s.name).toLowerCase() === lower);
-  if (hit.length !== 1) hit = subs.filter((s) => String(s.name).toLowerCase().includes(lower));
-  if (hit.length === 1) return { id: hit[0].id, name: hit[0].name };
+  const hit = resolveSubscription(subs, wanted);
+  if (hit) return { id: hit.id, name: hit.name };
+  const near = subscriptionMatches(subs, wanted);
   cli.die(
-    hit.length === 0
+    near.length === 0
       ? `No subscription matches "${wanted}". Known: ${subs.map((s) => s.name).join(', ') || '(none)'}`
-      : `"${wanted}" is ambiguous: ${hit.map((s) => s.name).join(', ')}`,
+      : `"${wanted}" is ambiguous: ${near.map((s) => s.name).join(', ')}`,
     { prefix: 'az-ext' }
   );
 }
@@ -1103,11 +1111,11 @@ async function cmdMarketplace(flags) {
         '(ResourceId grouping), or read them from `az-ext cost sku`';
     } else {
       try {
-        const vres = await runChunked(sub.id, vendorSpec, options);
+        const vres = await runChunked(sub.id, vendorSpec, { ...options, soft: true });
         vendors = attributeVendors(vres.rows);
         vendorNote = `vendors resolved via ResourceId (${vres.networkRequests} extra ARM request(s))`;
       } catch (err) {
-        if (err && err.name === 'NodeExitError') throw err;
+        if (err && err.name !== 'ThrottledError') throw err;
         vendorNote = 'vendor lookup failed (likely throttled); the Azure/Marketplace split above still holds';
       }
     }
@@ -1154,9 +1162,7 @@ async function cmdMarketplace(flags) {
   for (const bucket of split.thirdParty.buckets) {
     console.log(`    ${c.yellow(bucket.publisherType)} ${c.dim(usd(bucket.total))}`);
     for (const item of bucket.items.slice(0, num(flags.limit, 8))) {
-      const vendor = vendors && vendors.byLabel && vendors.byLabel[item.label];
-      const suffix = vendor ? c.dim('  ← ' + vendor) : '';
-      console.log(`      ${c.dim(item.label.slice(0, 38).padEnd(38))} ${usd(item.cost).padStart(10)}${suffix}`);
+      console.log(`      ${c.dim(item.label.slice(0, 38).padEnd(38))} ${usd(item.cost).padStart(10)}`);
     }
   }
   if (split.unknown.total !== 0) {
@@ -1184,9 +1190,11 @@ async function cmdMarketplace(flags) {
   console.log('');
 }
 
+// Vendors per ResourceId. They cannot be matched back to the ServiceName lines
+// above: Cost Management allows two grouping dimensions, and this query's are
+// PublisherType and ResourceId.
 function attributeVendors(rows) {
   const totals = new Map();
-  const byLabel = {};
   for (const row of rows || []) {
     const publisher = str(row.PublisherType) || '';
     if (AZURE_PUBLISHER_TYPES.has(publisher.toLowerCase())) continue;
@@ -1196,13 +1204,8 @@ function attributeVendors(rows) {
     const entry = totals.get(key) || { name: key, cost: 0, provider: vendor.provider };
     entry.cost += costOf(row);
     totals.set(key, entry);
-    const serviceLabel = str(row.ServiceName);
-    if (serviceLabel && !byLabel[serviceLabel]) byLabel[serviceLabel] = key;
   }
-  return {
-    top: [...totals.values()].sort((a, b) => b.cost - a.cost),
-    byLabel: byLabel,
-  };
+  return { top: [...totals.values()].sort((a, b) => b.cost - a.cost) };
 }
 
 async function cmdMtd(flags) {
@@ -1360,9 +1363,11 @@ USAGE
 COMMON FLAGS
   --subscription <id|name>  GUID, exact name, or unique substring. Falls back to
                             the default from \`az account set\`.
-  --months N                Window length in whole months, ending at the 1st of
-                            the current month. Default 12.
-  --from / --to YYYY-MM-DD  Explicit window. Ranges over 366 days are chunked.
+  --months N                The N most recent months, the current partial month
+                            included: from the 1st of the month N-1 back, to today.
+                            Default 12.
+  --from / --to YYYY-MM-DD  Explicit window, both days included. Ranges longer than
+                            ${MAX_QUERY_DAYS + 1} days are split into chunks.
   --refresh                 Ignore the cache and re-query (spends quota).
   --max-wait S              Seconds to spend backing off a 429. Default ${DEFAULT_MAX_WAIT_SECONDS}.
   --limit N                 Rows to print. Default 25.
@@ -1447,6 +1452,8 @@ module.exports = {
   vendorFromResourceId,
   validateDimension,
   chunkRange,
+  attributeVendors,
+  resolveSubscriptionId,
   buildQuery,
   detectRegimeBreak,
   costQuery,

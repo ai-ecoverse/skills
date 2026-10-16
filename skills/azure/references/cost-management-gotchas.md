@@ -170,7 +170,9 @@ month) is 365 days and **ARM rejects it**. Two consequences baked into `az-ext`:
 Longer ranges are chunked automatically, with a warning. Chunks are split
 **evenly**, not greedily: greedy chunking of 365 days gives `[364, 1]` — two
 full-price queries, one for a single day — whereas even splitting gives
-`[183, 182]` for the same price. **Each chunk spends throttle budget**, so a
+`[183, 182]` for the same price. Because `to` is inclusive, each chunk starts
+the day **after** the previous chunk's `to`: a shared boundary day would be
+billed in both chunks and summed twice. **Each chunk spends throttle budget**, so a
 3-year history is 4 queries and, at ~1 query per 5 minutes, a 20-minute job.
 Pull long histories a year at a time over several sittings and let the cache
 accumulate.
