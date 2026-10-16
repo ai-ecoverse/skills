@@ -1,24 +1,34 @@
-// Pure helpers for mermaid.jsh. No sliccy: imports, so node --test can load it.
+// Pure helpers for mermaid.jsh. No sliccy: imports, so a tst suite can load it.
 
 const THEMES = ['default', 'neutral', 'dark', 'forest', 'base'];
 
-// One expression. playwright-cli eval prints it and appends a newline. A
-// finished render reports only the SVG's length: the SVG itself is read back
-// in SLICE-sized pieces, so a large diagram is never cut off by the size
-// limit on one eval result.
-const POLL_EXPR =
-  '(() => { const r = (document.body && document.body.dataset && document.body.dataset.ready) || ""; if (!r) return "PENDING"; const t = document.getElementById("out"); const s = t ? t.textContent : ""; return r === "ok" ? "ok\\n" + s.length : r + "\\n" + s; })()';
+// How long the page may take to lay a diagram out before the command gives up.
+const RENDER_TIMEOUT_MS = 20000;
 
-const SLICE = 65536;
-
-function sliceExpr(start, end) {
-  return `document.getElementById("out").textContent.slice(${Number(start)}, ${Number(end)})`;
+// Runs IN THE PAGE through sliccy:browser.evalAsync, so it must stand alone: no
+// closure, the timeout written out (a test pins it to RENDER_TIMEOUT_MS). It
+// waits for the bootstrap script to set data-ready and returns a plain object;
+// the bridge serializes it once.
+async function awaitRender() {
+  const deadline = Date.now() + 20000;
+  while (!document.body?.dataset?.ready && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  const status = document.body?.dataset?.ready || 'pending';
+  const out = document.getElementById('out');
+  return { status, text: out ? out.textContent : '' };
 }
 
-// One eval result, minus the newline playwright-cli appends.
-function evalText(stdout) {
-  const text = String(stdout);
-  return text.endsWith('\n') ? text.slice(0, -1) : text;
+// The esbuild entry. It imports the ESM entry file of the package.json that was
+// found, so the bundle is built from exactly that copy wherever ipk put it.
+// SLICC's esbuild bundles a file path or a bare name, but a bare DIRECTORY path
+// comes out as an empty wrapper (1.7 kB instead of 13 MB; measured on a hosted
+// leader, mermaid 12.2.0, 2026-10-17). SLICC's esbuild has no --global-name:
+// the page reads globalThis.__sliccMermaid.
+function entrySource(pkgDir, pkg) {
+  const rel = (pkg && (pkg.module || pkg.main)) || 'dist/mermaid.core.mjs';
+  const file = `${pkgDir}/${String(rel).replace(/^\.\//, '')}`;
+  return `import mermaid from ${JSON.stringify(file)};\nglobalThis.__sliccMermaid = mermaid;\n`;
 }
 
 function parseArgs(argv) {
@@ -42,6 +52,7 @@ function parseArgs(argv) {
     }
     if (arg.startsWith('--theme=')) {
       flags.theme = arg.slice('--theme='.length);
+      if (!flags.theme) return { error: 'mermaid: --theme needs a name' };
       continue;
     }
     if (arg === '-o' || arg === '--output') {
@@ -52,6 +63,7 @@ function parseArgs(argv) {
     }
     if (arg.startsWith('--output=')) {
       flags.output = arg.slice('--output='.length);
+      if (!flags.output) return { error: 'mermaid: -o needs a path' };
       continue;
     }
     if (arg.startsWith('-') && arg !== '-') return { error: `mermaid: unknown option: ${arg}` };
@@ -113,30 +125,10 @@ function targetIdFrom(stdout) {
   return match ? match[1] : null;
 }
 
-function splitRenderResult(stdout) {
-  const text = evalText(stdout);
-  if (text === 'PENDING') return { pending: true };
-  const nl = text.indexOf('\n');
-  if (nl < 0) return { error: text || 'empty render result' };
-  const status = text.slice(0, nl);
-  const body = text.slice(nl + 1);
-  if (status === 'ok') {
-    const length = Number(body);
-    if (!Number.isSafeInteger(length) || length < 0) {
-      return { error: `unexpected SVG length: ${body}` };
-    }
-    return { length };
-  }
-  if (status === 'err') return { error: body || 'render failed' };
-  return { error: `unexpected render status: ${status}` };
-}
-
-// A complete SVG: exactly the length the page reported, closed by </svg>.
-function checkSvg(svg, length) {
-  if (svg.length !== length) {
-    return `read ${svg.length} of ${length} SVG characters back from the browser`;
-  }
-  if (!svg.includes('<svg') || !svg.trimEnd().endsWith('</svg>')) {
+// A complete SVG document, or what is wrong with it.
+function checkSvg(svg) {
+  const text = String(svg || '').trim();
+  if (!text.startsWith('<svg') || !text.endsWith('</svg>')) {
     return 'the browser returned no complete SVG';
   }
   return null;
@@ -144,14 +136,12 @@ function checkSvg(svg, length) {
 
 module.exports = {
   THEMES,
-  POLL_EXPR,
-  SLICE,
-  sliceExpr,
-  evalText,
-  checkSvg,
+  RENDER_TIMEOUT_MS,
+  awaitRender,
+  entrySource,
   parseArgs,
   sourceJson,
   pageHtml,
   targetIdFrom,
-  splitRenderResult,
+  checkSvg,
 };

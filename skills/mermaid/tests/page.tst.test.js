@@ -2,7 +2,16 @@ import test, { is, ok } from 'tst';
 import * as pageMod from '../scripts/render-page.js';
 
 const page = pageMod.default || pageMod;
-const { THEMES, POLL_EXPR, parseArgs, pageHtml, targetIdFrom, splitRenderResult, checkSvg } = page;
+const {
+  THEMES,
+  RENDER_TIMEOUT_MS,
+  awaitRender,
+  entrySource,
+  parseArgs,
+  pageHtml,
+  targetIdFrom,
+  checkSvg,
+} = page;
 
 test('parseArgs accepts a bare file, render, theme, and -o', () => {
   const bare = parseArgs(['diagram.mmd', '-o', 'out.svg', '--theme', 'dark']);
@@ -45,22 +54,31 @@ test('targetIdFrom reads the open command suffix', () => {
   is(targetIdFrom('opened /tmp/x.html\n'), null);
 });
 
-test('splitRenderResult distinguishes pending, a finished length, and errors', () => {
-  is(splitRenderResult('PENDING\n'), { pending: true });
-  is(splitRenderResult('ok\n12\n'), { length: 12 });
-  is(splitRenderResult('ok\n<svg></svg>\n').error, 'unexpected SVG length: <svg></svg>');
-  is(splitRenderResult('err\nParse error\n'), { error: 'Parse error' });
+test('checkSvg accepts only a whole SVG document', () => {
+  is(checkSvg('<svg>x</svg>'), null);
+  is(checkSvg('  <svg>x</svg>\n'), null);
+  ok(checkSvg('<svg>x</s').includes('no complete SVG'));
+  ok(checkSvg('<div></div>').includes('no complete SVG'));
+  ok(checkSvg(undefined).includes('no complete SVG'));
 });
 
-test('checkSvg accepts only the complete SVG the page reported', () => {
-  is(checkSvg('<svg>x</svg>', 12), null);
-  is(checkSvg('<svg>x</svg>\n', 13), null);
-  ok(checkSvg('<svg>x</s', 12).includes('read 9 of 12'));
-  ok(checkSvg('<div></div>', 11).includes('no complete SVG'));
+test('awaitRender stands alone (it runs in the page) and waits RENDER_TIMEOUT_MS', () => {
+  const src = awaitRender.toString();
+  ok(src.includes(`Date.now() + ${RENDER_TIMEOUT_MS}`), 'the literal timeout matches the constant');
+  ok(src.includes('dataset') && src.includes('getElementById'));
 });
 
-test('POLL_EXPR reads the ready flag the page sets', () => {
-  ok(POLL_EXPR.includes('dataset.ready'));
-  ok(POLL_EXPR.includes('PENDING'));
-  ok(POLL_EXPR.includes('getElementById("out")'));
+test("entrySource imports the package's own ESM entry file and publishes it", () => {
+  const s = entrySource('/shared/lib/node_modules/mermaid', { module: './dist/mermaid.core.mjs' });
+  ok(
+    s.includes('import mermaid from "/shared/lib/node_modules/mermaid/dist/mermaid.core.mjs";'),
+    s
+  );
+  ok(entrySource('/m', { main: 'index.js' }).includes('from "/m/index.js"'));
+  ok(s.includes('globalThis.__sliccMermaid = mermaid;'));
+});
+
+test('parseArgs refuses empty --theme= and --output=', () => {
+  ok(parseArgs(['--theme=']).error.includes('--theme needs a name'));
+  ok(parseArgs(['--output=']).error.includes('-o needs a path'));
 });

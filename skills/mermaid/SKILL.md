@@ -28,7 +28,8 @@ ipk add -g mermaid esbuild-wasm
 
 `mermaid` is the diagram library. `esbuild-wasm` is the built-in bundler
 that turns it into one script the page can run. The first render writes
-that bundle to `/shared/cache/mermaid-<version>.iife.js` and reuses it.
+that bundle to `/shared/cache/mermaid-<version>.iife.js` (about 13 MB for
+mermaid 12) and reuses it, so only the first render waits for the build.
 
 ## Commands
 
