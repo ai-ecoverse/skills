@@ -35,6 +35,9 @@ Transport: XHR with `Content-Type: application/x-www-form-urlencoded` and `withC
   - [POST /api/conversations.sharedApprovals.list](#post-apiconversationssharedapprovalslist)
   - [POST /api/conversations.revokeSharedInvite](#post-apiconversationsrevokesharedinvite)
   - [POST /api/users.admin.inviteBulk](#post-apiusersadmininvitebulk)
+  - [POST /api/conversations.inviteShared](#post-apiconversationsinviteshared)
+  - [POST /api/conversations.externalInvitePermissions.set](#post-apiconversationsexternalinvitepermissionsset)
+  - [Slack Connect state from conversations.info and team.info](#slack-connect-state-from-conversationsinfo-and-teaminfo)
   - [Methods observed unavailable with this token (2026-09-29)](#methods-observed-unavailable-with-this-token-2026-09-29)
 - [App Manifest API (`apps.manifest.*`, `tooling.tokens.rotate`)](#app-manifest-api-appsmanifest-toolingtokensrotate)
   - [POST /api/apps.manifest.export](#post-apiappsmanifestexport)
@@ -663,7 +666,8 @@ reason is in `response_metadata.messages` (a JSON-pointer to the rejected param)
 
 ## Slack Connect invites and guest invites
 
-Endpoint contracts used by `slack-ext approvals`, `connect-revoke` and `guest-invite`. Measured
+Endpoint contracts used by `slack-ext approvals`, `connect-revoke`, `guest-invite`, `connect-invite`,
+`connect-permissions` and `connect-status`. Measured
 2026-09-29 on an Enterprise Grid, XHR from the `app.slack.com` page with the **org-level** token
 (`localConfig_v2.teams[<E id>]`), the same token path as the other org commands. Ids below are fakes.
 
@@ -717,6 +721,84 @@ if any failed. Only `type:"ultra_restricted"` (single-channel guest) was tested;
 (`restricted`) is not offered. What `expiration_ts` ends (the invite, or the guest account) is
 unverified; it is printed as "Expires".
 
+### POST /api/conversations.inviteShared
+
+Used by `slack-ext connect-invite`. Invites people from an external org into a channel by email.
+**Workspace** token (`localConfig_v2.teams[<T id>]`, selected with `--ws=<T…>`). MEASURED live
+2026-10-15 on workspace `T0385CHDU9E`: `{"ok":true}`.
+
+| Param | Required | Description |
+|-------|----------|-------------|
+| token | yes | workspace xoxc token |
+| channel | yes | `C…` |
+| emails | yes | ONE address, e.g. `a@example.com` (see below) |
+| external_limited | no (Slack default `true`) | `true` = post-only, `false` = Post and Invite |
+
+- **One address per call.** Slack's method documentation: "only one email or one user ID may be
+  invited at a time"; a longer list answers `too_many_emails`. `connect-invite --emails=a,b` makes one
+  call per address, prints each result (`invite_id` on success, per the documented success body
+  `{"ok":true,"invite_id":"I…"}`), and exits 1 if any address failed.
+- Rate limits: the method documents BOTH `ratelimit` ("applied on a per-user basis when you pass
+  the emails parameter") and `ratelimited`. `connect-invite` retries both (4 tries, 30 s apart).
+  `Retry-After` is not honoured: the tab fetch wrapper returns the body only.
+- Ambiguous answers: `internal_error` and `fatal_error` are documented with "It's possible some
+  aspect of the operation succeeded before the error was raised". `connect-invite` treats them (and a
+  transport `xhr_error`) as outcome UNKNOWN: not retried (a retry could send a second invitation),
+  never reported as "nothing invited", exit 3.
+- Slack's default for `external_limited` is `true` (post-only). `connect-invite` therefore ALWAYS
+  sends it: `false` by default, `true` only with `--post-only`.
+- Right after `{"ok":true}` the channel is unchanged in `conversations.info`
+  (`is_ext_shared:false`, `is_pending_ext_shared:false`, `pending_connected_team_ids:[]`), and the
+  invite is not in `conversations.sharedApprovals.list` until the invitee accepts. There is no read
+  that shows a sent, unaccepted invite with this token: `conversations.listConnectInvites` answers
+  `not_allowed_token_type`. "No visible change" is the expected read-back, not a failure.
+- Measured from approvals history: an invite the other org approved can still sit at "Waiting on:
+  our side" and expire. Follow up with `slack-ext approvals --query=<channel name> --detail`.
+
+### POST /api/conversations.externalInvitePermissions.set
+
+Used by `slack-ext connect-permissions`. Changes what one connected external org may do in a channel.
+**Workspace** token. Used live 2026-10-02 to upgrade 57 org connections.
+
+| Param | Required | Description |
+|-------|----------|-------------|
+| token | yes | workspace xoxc token |
+| channel | yes | `C…` |
+| target_team | yes | The connected org id as listed in `connected_team_ids` (e.g. `E…`) |
+| action | yes | `upgrade` = post-only → Post and Invite; `downgrade` = the reverse |
+
+- Can answer `{"ok":false,"error":"ratelimited"}` during a batch. `connect-permissions` retries that
+  error (and `ratelimit`) only (4 tries, 30 s apart, as the 2026-10-02 batch did). `internal_error` /
+  `fatal_error` are outcome UNKNOWN: not retried, read back, and exit 3 even if the read-back matches.
+- Effect is read from `conversations.info` `connected_limited_team_ids`: after an upgrade the org is
+  no longer listed. A team that DISCONNECTED is not listed either, so the read-back only counts
+  when the team is still in `connected_team_ids`. `connect-permissions --confirm` re-reads up to 5
+  times, 3 s apart, and exits 3 if that never holds.
+
+### Slack Connect state from conversations.info and team.info
+
+`connect-status`, `connect-invite` and `connect-permissions` read the channel from
+`conversations.info` with the workspace token. Fields used (measured 2026-10-15):
+
+| Field | Meaning |
+|-------|---------|
+| `is_ext_shared`, `is_pending_ext_shared` | Booleans. Missing or non-boolean = `sharing-unknown`, refused |
+| `conversation_host_id` | Host org; present on shared channels only. Not this org = `hosted-elsewhere`, refused |
+| `connected_team_ids` | Every connected org, ours included (e.g. `["E0EXAMPLE02","E0EXAMPLE01"]`) |
+| `connected_limited_team_ids` | The subset that is **post-only**; the rest of the external orgs are Post and Invite |
+| `pending_connected_team_ids` | Orgs with a pending connection |
+| `internal_team_ids`, `context_team_id` | Our own workspace ids, excluded from "external" |
+
+A channel that was never shared has no `connected_team_ids` or `connected_limited_team_ids` at all;
+they are reported as not present (`null`), never as an empty list.
+
+`team.info` (`team`) resolves an org or workspace id to `{id, name, domain}`. An external
+grid's workspace id resolves to the grid's `E…` id (measured: a `T…` of a partner grid returned
+that grid's `E…` as `team.id`). Slack's documented shape keeps `team.id` as the workspace and gives
+the grid as `team.enterprise_id`. `connect-permissions --team=<T…>` accepts either candidate, but only
+if it is listed in `connected_team_ids`. An unknown
+id answers `team_not_found`; `connect-status` then prints the bare id.
+
 ### Methods observed unavailable with this token (2026-09-29)
 
 | Method | Error |
@@ -725,6 +807,7 @@ unverified; it is printed as "Expires".
 | `users.admin.fetchInvitesHistory` | `enterprise_is_restricted` |
 | `users.lookupByEmail` | `not_allowed_token_type` |
 | `admin.users.list` | `not_allowed_token_type` |
+| `conversations.listConnectInvites` | `not_allowed_token_type` (workspace xoxc token, 2026-10-15) |
 
 ## App Manifest API (`apps.manifest.*`, `tooling.tokens.rotate`)
 

@@ -23,6 +23,11 @@ const BOOL_FLAGS = new Set([
   'detail',
   'session',
   'no-session',
+  // connect-invite / connect-permissions: never swallow the channel id that
+  // follows (`connect-invite --post-only C0…`).
+  'post-only',
+  'upgrade',
+  'downgrade',
 ]);
 
 function parseArgv(argv) {
