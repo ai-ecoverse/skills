@@ -235,7 +235,13 @@ test('the ARM token only ever goes to https://management.azure.com', async () =>
 });
 
 function fakeJwt(claims) {
-  const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+  // base64url by hand: SLICC's Buffer polyfill has no 'base64url' encoding.
+  const b64 = (o) =>
+    Buffer.from(JSON.stringify(o))
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
   return `${b64({ alg: 'RS256', typ: 'JWT' })}.${b64({ ...claims, pad: 'x'.repeat(500) })}.${'s'.repeat(80)}`;
 }
 
