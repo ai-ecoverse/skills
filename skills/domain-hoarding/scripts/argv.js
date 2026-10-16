@@ -95,4 +95,17 @@ function parseList(s) {
     .filter(Boolean);
 }
 
-module.exports = { BOOL_FLAGS, VALUE_FLAGS, parseArgv, parseList };
+/**
+ * The TLD list for `scan`: `all` (the --all list), else --tlds, else `defaults`. An explicitly
+ * empty --tlds (an unset "$TLDS", or ",,,") throws instead of quietly scanning the defaults.
+ */
+function scanTlds(flags, defaults, all) {
+  if (flags.all && flags.tlds !== undefined)
+    throw new Error('--all and --tlds are mutually exclusive');
+  if (flags.all) return all;
+  const list = parseList(flags.tlds === undefined ? defaults : flags.tlds);
+  if (!list.length) throw new Error(`--tlds names no TLD (got ${JSON.stringify(flags.tlds)})`);
+  return list;
+}
+
+module.exports = { BOOL_FLAGS, VALUE_FLAGS, parseArgv, parseList, scanTlds };

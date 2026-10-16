@@ -12,7 +12,7 @@
   const { exec } = require('sliccy:exec');
   const skill = require('sliccy:skill');
   const fs = require('fs');
-  const { parseArgv, parseList } = require('./argv.js');
+  const { parseArgv, parseList, scanTlds } = require('./argv.js');
   const { normalizeLabel, normalizeTld, parseDomainFile, splitDomain } = require('./domains.js');
   const { TIERS } = require('./classify.js');
   const { gather, matrix, summarize } = require('./pipeline.js');
@@ -177,10 +177,7 @@ TIERS available-high-confidence · unregistered-needs-confirmation · inconclusi
         labels = [...new Set(positional.slice(1).map(normalizeLabel))];
         if (!labels.length)
           cli.die('usage: domain-hoarding scan <label>… [--tlds a,b,c | --all]', P);
-        if (flags.all && flags.tlds) cli.die('--all and --tlds are mutually exclusive', P);
-        tlds = flags.all
-          ? universe.tlds
-          : [...new Set(parseList(flags.tlds || DEFAULT_TLDS).map(normalizeTld))];
+        tlds = [...new Set(scanTlds(flags, DEFAULT_TLDS, universe.tlds).map(normalizeTld))];
         items = [];
         for (const label of labels)
           for (const tld of tlds)

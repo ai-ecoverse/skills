@@ -42,6 +42,17 @@ const WHOIS_URL = 'https://api.whois.vu/';
 
 const defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+const BUDGET_ERROR = 'time budget exhausted (--budget)';
+/**
+ * The cap for one call: the source's own cap, cut to what is left of `o.deadline` (epoch ms).
+ * `byBudget` says the deadline is what limits it, so a timeout is reported as the budget.
+ */
+function capFor(capMs, o = {}) {
+  const left = o.deadline ? o.deadline - Date.now() : Infinity;
+  return left < capMs ? { ms: left, byBudget: true } : { ms: capMs, byBudget: false };
+}
+const budgetOr = (cap, err) => (cap.byBudget && err?.timeout ? BUDGET_ERROR : errText(err));
+
 /**
  * Hard wall-clock cap for ONE lookup, retries and Retry-After sleeps included. The http client's
  * timeoutMs is per attempt only, so without this a throttled source (measured: api.whois.vu hung
@@ -410,17 +421,20 @@ function createRdap({
     return { expires: exp?.eventDate || null, state: Array.isArray(b?.status) ? b.status : [] };
   }
 
-  /** lookup(domain, tld, { capMs? }) -> { status, httpStatus?, server?, via?, expires?, state?, error? } */
+  /** lookup(domain, tld, { capMs?, deadline? }) -> { status, httpStatus?, server?, via?, expires?, state?, error? } */
   async function lookup(domain, tld, o = {}) {
-    const cap = o.capMs || capMs;
     const srv = serverFor(tld);
     if (!srv) return { status: 'no-server' };
     const url = `${srv.base}domain/${encodeURIComponent(domain)}`;
     const host = new URL(srv.base).host;
     const res = await gated(host, async () => {
+      // Measured after the host's spacing queue: waiting there spends the budget too.
+      const cap = capFor(o.capMs || capMs, o);
+      if (cap.ms <= 0)
+        return { transient: false, value: { status: 'inconclusive', error: BUDGET_ERROR } };
       stats.calls++;
       try {
-        const r = await timed(cap, (signal) => api.get(url, { raw: true, signal }));
+        const r = await timed(cap.ms, (signal) => api.get(url, { raw: true, signal }));
         return {
           transient: false,
           value: { status: 'registered', httpStatus: r.status, ...parseBody(r.body) },
@@ -433,7 +447,7 @@ function createRdap({
         const transient = !code || code === 429 || code >= 500;
         return {
           transient,
-          value: { status: 'inconclusive', httpStatus: code || null, error: errText(err) },
+          value: { status: 'inconclusive', httpStatus: code || null, error: budgetOr(cap, err) },
         };
       }
     });
@@ -533,7 +547,7 @@ function createWhois({
   let last = 0;
   let failures = 0;
 
-  async function one(domain) {
+  async function one(domain, o) {
     if (stats.broken)
       return {
         status: 'inconclusive',
@@ -550,11 +564,14 @@ function createWhois({
     }
     const wait = last + spacingMs - Date.now();
     if (wait > 0) await sleep(wait);
+    // Measured after the queue and the spacing: both spend the budget.
+    const cap = capFor(capMs, o);
+    if (cap.ms <= 0) return { status: 'inconclusive', server: 'api.whois.vu', error: BUDGET_ERROR };
     last = Date.now();
     stats.calls++;
     stats.sent.push(domain);
     try {
-      const r = await timed(capMs, (signal) => api.get(url, { params: { q: domain }, signal }));
+      const r = await timed(cap.ms, (signal) => api.get(url, { params: { q: domain }, signal }));
       failures = 0;
       return { server: 'api.whois.vu', ...interpretWhois(r, domain) };
     } catch (err) {
@@ -566,14 +583,14 @@ function createWhois({
         status: 'inconclusive',
         server: 'api.whois.vu',
         httpStatus: code || null,
-        error: errText(err),
+        error: budgetOr(cap, err),
       };
     }
   }
 
-  /** lookup(domain) -> { status, server, answer?, httpStatus?, error? }; calls are serialised. */
-  function lookup(domain) {
-    const p = chain.then(() => one(domain));
+  /** lookup(domain, { deadline? }) -> { status, server, answer?, httpStatus?, error? }; calls are serialised. */
+  function lookup(domain, o = {}) {
+    const p = chain.then(() => one(domain, o));
     chain = p.catch(() => {});
     return p;
   }
@@ -605,11 +622,13 @@ function createDns({ run, capMs = 8000 }) {
     return null;
   }
 
-  async function lookup(domain) {
+  async function lookup(domain, o = {}) {
     if (broken) return { status: 'unavailable', error: broken };
+    const cap = capFor(capMs, o);
+    if (cap.ms <= 0) return { status: 'inconclusive', error: BUDGET_ERROR };
     stats.calls++;
     try {
-      const r = await timed(capMs, () => run(['dig', domain, 'NS', '--json']));
+      const r = await timed(cap.ms, () => run(['dig', domain, 'NS', '--json']));
       const verdict = r.exitCode === 0 ? interpret(r.stdout) : null;
       if (verdict) return { status: verdict };
       broken = (r.stderr || r.stdout || `dig exit ${r.exitCode}`)
@@ -618,6 +637,8 @@ function createDns({ run, capMs = 8000 }) {
         .split('\n')[0]
         .slice(0, 100);
     } catch (err) {
+      // Running out of budget says nothing about the DoH path: do not trip the breaker.
+      if (cap.byBudget && err?.timeout) return { status: 'inconclusive', error: BUDGET_ERROR };
       broken = String(err?.message || err).slice(0, 100);
     }
     return { status: 'unavailable', error: broken };

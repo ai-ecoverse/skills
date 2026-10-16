@@ -23,6 +23,13 @@ function normalizeLabel(raw) {
       `label "${raw}" contains a dot — scan takes bare labels; use check for full domains`
     );
   }
+  // URL syntax would make the parser below read a different host ("foo/bar" -> "foo",
+  // "user@host" -> "host"); a label never contains it, so refuse it outright.
+  if (/[/?#@:\\%\s]/.test(s)) {
+    throw new Error(
+      `"${raw}" is not a valid domain label (letters, digits, inner hyphens; max 63)`
+    );
+  }
   const ascii = toAscii(s);
   if (!ascii || !LABEL_RE.test(ascii)) {
     throw new Error(
@@ -149,7 +156,7 @@ function parseDomainFile(text) {
   if (!lines.length) return [];
   const header = splitCsvLine(lines[0]).map((h) => h.toLowerCase());
   const col = header.indexOf('domain');
-  if (header.length > 1 && col !== -1) {
+  if (col !== -1) {
     return lines
       .slice(1)
       .map((l) => splitCsvLine(l)[col] || '')

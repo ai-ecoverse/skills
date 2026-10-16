@@ -14,7 +14,7 @@ import * as pipelineMod from '../scripts/pipeline.js';
 import * as renderMod from '../scripts/render.js';
 import * as sourcesMod from '../scripts/sources.js';
 
-const { parseArgv, parseList } = argvMod.default || argvMod;
+const { parseArgv, parseList, scanTlds } = argvMod.default || argvMod;
 const { TIERS, classify, glyph } = classifyMod.default || classifyMod;
 const {
   hashCode,
@@ -945,4 +945,105 @@ test('RDAP enrichment for IDS-settled names gets a short cap; unsettled names ge
     ['a.com', 123],
     ['b.de', null],
   ]);
+});
+
+// ── review fixes (Codex on ai-ecoverse/skills#482) ─────────────────────────────
+test('normalizeLabel refuses URL syntax instead of reading another host out of it', () => {
+  for (const bad of ['foo/bar', 'foo?bar', 'user@host', 'foo#x', 'foo:80', 'a b', 'foo%2e'])
+    throws(() => normalizeLabel(bad), /not a valid domain label/);
+  is(normalizeLabel('bücher'), 'xn--bcher-kva');
+  is(normalizeLabel('Live'), 'live');
+});
+
+test('scanTlds: an explicitly empty --tlds is an error, not the defaults', () => {
+  is(scanTlds({}, 'com,net', ['x']), ['com', 'net']);
+  is(scanTlds({ tlds: 'zip, dev' }, 'com', ['x']), ['zip', 'dev']);
+  is(scanTlds({ all: true }, 'com', ['a', 'b']), ['a', 'b']);
+  throws(() => scanTlds({ tlds: '' }, 'com', []), /--tlds names no TLD/);
+  throws(() => scanTlds({ tlds: ',,,' }, 'com', []), /--tlds names no TLD/);
+  throws(() => scanTlds({ all: true, tlds: '' }, 'com', []), /mutually exclusive/);
+});
+
+test('parseDomainFile reads a one-column CSV with a domain header', () => {
+  is(parseDomainFile('domain\nlive.zip\npage.tech\n'), ['live.zip', 'page.tech']);
+  is(parseDomainFile('live.zip\npage.tech'), ['live.zip', 'page.tech']);
+});
+
+test('bulk "registered" contradicts every weak unregistered signal: inconclusive, conflict', () => {
+  for (const evidence of [
+    { ids: { availability: 'available', trust: 'medium' } },
+    { ids: { availability: 'unsupported', trust: 'low' }, rdap: { status: 'unregistered' } },
+    { ids: { availability: 'error' }, whois: { status: 'unregistered' } },
+    { ids: { availability: 'error' }, dns: { status: 'undelegated' } },
+  ]) {
+    const c = classify({ ...evidence, bulk: { registered: true, premiumUsd: null } });
+    is(c.tier, TIERS.INCONCLUSIVE, JSON.stringify(evidence));
+    is(c.conflict, true);
+    ok(c.reason.includes('bulk endpoint says registered'), c.reason);
+  }
+  const quiet = classify({
+    ids: { availability: 'available', trust: 'medium' },
+    bulk: { registered: false },
+  });
+  is(quiet.tier, TIERS.UNREGISTERED);
+});
+
+test('the --budget deadline cuts off a lookup already in flight, in every secondary source', async () => {
+  const hang = () => new Promise(() => {});
+  const rdap = createRdap({
+    api: { get: hang },
+    bootstrap: new Map([['de', ['https://rdap.de.example/']]]),
+    spacingMs: 0,
+    sleep: async () => {},
+    capMs: 30000,
+  });
+  const whois = createWhois({
+    api: { get: hang },
+    spacingMs: 0,
+    sleep: async () => {},
+    capMs: 30000,
+  });
+  const dns = createDns({ run: hang, capMs: 30000 });
+  for (const [name, call] of [
+    ['rdap', (o) => rdap.lookup('a.de', 'de', o)],
+    ['whois', (o) => whois.lookup('a.de', o)],
+    ['dns', (o) => dns.lookup('a.de', o)],
+  ]) {
+    const t0 = Date.now();
+    const r = await call({ deadline: Date.now() + 100 });
+    ok(Date.now() - t0 < 1000, `${name} took ${Date.now() - t0} ms against a 100 ms budget`);
+    is(r.status, 'inconclusive', name);
+    is(r.error, 'time budget exhausted (--budget)', name);
+  }
+  // a budget cut is not a DoH failure: the breaker stays closed, the next call asks dig again
+  await dns.lookup('b.de', { deadline: Date.now() + 20 });
+  is(dns.stats.calls, 2);
+});
+
+test('gather hands the deadline to the source, so one hung registry cannot outlast --budget', async () => {
+  const rdap = createRdap({
+    api: { get: () => new Promise(() => {}) },
+    bootstrap: new Map([['de', ['https://rdap.de.example/']]]),
+    spacingMs: 0,
+    sleep: async () => {},
+    capMs: 30000,
+  });
+  const t0 = Date.now();
+  const [r] = await gather(
+    [item('a', 'de')],
+    {
+      pool: seqPool,
+      ids: {
+        check: async (ds) =>
+          new Map(ds.map((d) => [d, { availability: 'unsupported', trust: 'low' }])),
+        bulk: async () => new Map(),
+      },
+      rdap,
+      dns: { lookup: async () => ({ status: 'unavailable' }) },
+    },
+    { ...SCAN, deadline: Date.now() + 150 }
+  );
+  ok(Date.now() - t0 < 2000, `took ${Date.now() - t0} ms against a 150 ms budget`);
+  is(r.tier, TIERS.INCONCLUSIVE);
+  is(r.rdap.error, 'time budget exhausted (--budget)');
 });

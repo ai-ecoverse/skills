@@ -9,7 +9,8 @@
 //   4. DNS NS               — only names still inconclusive after 1–3 (weaker final fallback).
 //   5. IDS /services/bulk-check — names not already taken, per label: premium price + a second
 //                             opinion on registration. Enrichment only.
-// Stages 2–4 stop asking once `opts.deadline` (epoch ms) passes: remaining names stay
+// Stages 2–4 stop asking once `opts.deadline` (epoch ms) passes, and a lookup already running is
+// cut off at it (each source caps its call at the time left): remaining names stay
 // inconclusive with an explicit reason, so a throttled secondary source can never hold a run hostage.
 
 const { TAKEN_IDS, TIERS, classify } = require('./classify.js');
@@ -40,8 +41,10 @@ async function gather(items, deps, opts) {
     await pool(opts.concurrency, targets, async (r) => {
       // When IDS already settled the name, RDAP only adds expiry/cross-checking: give it a short leash so a
       // slow registry cannot hold up an answer we already have.
-      const enrich = idsSettled(r.evidence.ids) ? { capMs: opts.enrichCapMs || 5000 } : undefined;
-      r.evidence.rdap = inBudget() ? await rdap.lookup(r.domain, r.tld, enrich) : { ...NO_BUDGET };
+      const enrich = idsSettled(r.evidence.ids) ? { capMs: opts.enrichCapMs || 5000 } : {};
+      r.evidence.rdap = inBudget()
+        ? await rdap.lookup(r.domain, r.tld, { ...enrich, deadline: opts.deadline })
+        : { ...NO_BUDGET };
     });
   }
 
@@ -59,7 +62,7 @@ async function gather(items, deps, opts) {
     // whois.lookup serialises internally, so a plain loop keeps the order deterministic.
     for (const r of targets)
       r.evidence.whois = inBudget()
-        ? await whois.lookup(r.domain)
+        ? await whois.lookup(r.domain, { deadline: opts.deadline })
         : { ...NO_BUDGET, server: 'api.whois.vu' };
   }
 
@@ -73,9 +76,12 @@ async function gather(items, deps, opts) {
     // First lookup alone: if the DoH path is blocked it fails slowly (~10 s), and we want to pay
     // that once, not once per parallel worker.
     if (targets.length) {
-      targets[0].evidence.dns = inBudget() ? await dns.lookup(targets[0].domain) : { ...NO_BUDGET };
+      const within = { deadline: opts.deadline };
+      targets[0].evidence.dns = inBudget()
+        ? await dns.lookup(targets[0].domain, within)
+        : { ...NO_BUDGET };
       await pool(Math.min(opts.concurrency, 4), targets.slice(1), async (r) => {
-        r.evidence.dns = inBudget() ? await dns.lookup(r.domain) : { ...NO_BUDGET };
+        r.evidence.dns = inBudget() ? await dns.lookup(r.domain, within) : { ...NO_BUDGET };
       });
     }
   }

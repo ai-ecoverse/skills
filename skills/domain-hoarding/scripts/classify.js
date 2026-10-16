@@ -107,7 +107,24 @@ function classify(evidence) {
     );
   }
 
-  // 5–6. Weak "probably unregistered" signals — never promoted to available.
+  // 5–6. Weak "probably unregistered" signals — never promoted to available, and a registration
+  // reported by the bulk endpoint contradicts them just as it contradicts a high-trust answer.
+  if (bulk?.registered === true) {
+    const weak =
+      ids?.availability === 'available'
+        ? `Instant Domain Search check says available (trust ${ids.trust})`
+        : rdap?.status === 'unregistered'
+          ? 'RDAP has no registry record'
+          : whois?.status === 'unregistered'
+            ? 'WHOIS (api.whois.vu) says unregistered'
+            : dns?.status === 'undelegated'
+              ? 'DNS shows no delegation'
+              : null;
+    if (weak)
+      return out(TIERS.INCONCLUSIVE, `${weak}, but the IDS bulk endpoint says registered`, {
+        conflict: true,
+      });
+  }
   if (ids?.availability === 'available') {
     return out(
       TIERS.UNREGISTERED,
