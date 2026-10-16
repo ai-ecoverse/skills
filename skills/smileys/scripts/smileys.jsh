@@ -54,7 +54,10 @@ async function storeSlug() {
   if (s !== undefined && (typeof s !== 'string' || !/^[a-z0-9-]+$/i.test(s.trim()))) {
     cli.die('--store takes one store slug, e.g. --store potsdam', { prefix: PREFIX });
   }
-  if (typeof s === 'string') return (_store = s.trim());
+  if (typeof s === 'string') {
+    _store = s.trim();
+    return _store;
+  }
   const tab = await getTab();
   const m = /\/store\/([a-z0-9-]+)/i.exec(tab.url || '');
   if (!m) {
@@ -63,7 +66,8 @@ async function storeSlug() {
       { prefix: PREFIX }
     );
   }
-  return (_store = m[1]);
+  _store = m[1];
+  return _store;
 }
 
 // Every call runs from a SHOP tab: the cart and checkout writes are credentialed
