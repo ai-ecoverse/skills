@@ -16,19 +16,39 @@ class NodeExitError extends Error {
   }
 }
 
+// The runtime's own parser (slicc-jsh parseFlags, same as SLICC 6): a `--flag`
+// followed by a word takes it as its value, so a flag may swallow a word.
 function parseFlags(args) {
-  const flags = {};
   const positional = [];
+  const flags = {};
+  const set = (k, v) => {
+    if (k in flags) flags[k] = [...[].concat(flags[k]).map(String), String(v)];
+    else flags[k] = v;
+  };
   for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    if (a === '--confirm' || a === '--json') flags[a.slice(2)] = true;
-    else if (a.startsWith('--')) flags[a.slice(2)] = args[++i];
-    else positional.push(a);
+    const arg = args[i];
+    if (arg.startsWith('--')) {
+      const body = arg.slice(2);
+      const eq = body.indexOf('=');
+      if (eq !== -1) set(body.slice(0, eq), body.slice(eq + 1));
+      else if (args[i + 1] !== undefined && !args[i + 1].startsWith('-')) set(body, args[++i]);
+      else set(body, true);
+    } else if (arg.startsWith('-') && arg.length > 1) {
+      for (const ch of arg.slice(1)) set(ch, true);
+    } else positional.push(arg);
   }
-  return { flags, positional, subcommand: positional[0] || '' };
+  const subcommand =
+    positional.length && /^[a-z][\w-]*$/i.test(positional[0]) ? positional[0] : null;
+  return { positional, flags, subcommand };
 }
 
-async function smileys(args, { tabs = ['https://shop.smileys.de/store/potsdam'] } = {}) {
+async function smileys(
+  args,
+  {
+    tabs = ['https://shop.smileys.de/store/potsdam'],
+    reply = () => ({ ok: true, status: 200, body: { data: { ok: true } } }),
+  } = {}
+) {
   const writes = [];
   const out = [];
   const err = [];
@@ -42,8 +62,9 @@ async function smileys(args, { tabs = ['https://shop.smileys.de/store/potsdam'] 
       const url = JSON.parse(/fetch\((".*?"),/.exec(expr)[1]);
       const method = JSON.parse(/method: (".*?"),/.exec(expr)[1]);
       const m = /body: (".*"),\n/.exec(expr);
-      writes.push({ method, url, body: m ? JSON.parse(JSON.parse(m[1])) : undefined });
-      return { ok: true, status: 200, body: { data: { ok: true } } };
+      const w = { method, url, body: m ? JSON.parse(JSON.parse(m[1])) : undefined };
+      writes.push(w);
+      return reply(w);
     },
   };
   const cli = {
@@ -93,6 +114,7 @@ const ADDRESS = [
   'Potsdam',
 ];
 const CHECKOUT = 'https://shop.smileys.de/api/v1/store/potsdam/checkout';
+const CONFIRM_LAST = (extra = []) => ['checkout', ...ADDRESS, ...extra, '--confirm'];
 
 test('checkout without --confirm previews the customer and writes nothing', async () => {
   const r = await smileys(['checkout', ...ADDRESS]);
@@ -104,7 +126,7 @@ test('checkout without --confirm previews the customer and writes nothing', asyn
 });
 
 test('checkout --confirm starts checkout (POST) before saving the customer (PUT)', async () => {
-  const r = await smileys(['checkout', '--confirm', ...ADDRESS]);
+  const r = await smileys(CONFIRM_LAST());
   is(r.code, 0, r.stderr);
   is(
     r.writes.map((w) => `${w.method} ${w.url}`),
@@ -117,7 +139,7 @@ test('checkout --confirm starts checkout (POST) before saving the customer (PUT)
 });
 
 test('checkout names every missing address flag and writes nothing (no default identity)', async () => {
-  const r = await smileys(['checkout', '--confirm', '--firstname', 'Ada']);
+  const r = await smileys(['checkout', '--firstname', 'Ada', '--confirm']);
   is(r.code, 1);
   ok(r.stderr.includes('--lastname --email --phone --street --number --zip --city'), r.stderr);
   is(r.writes, []);
@@ -145,4 +167,89 @@ test('there is no payment command', async () => {
     ok(r.stderr.includes('unknown command'), cmd);
     is(r.writes, []);
   }
+});
+
+test('a valued --confirm (--confirm=false, --confirm no) is refused and writes nothing', async () => {
+  for (const extra of [['--confirm=false'], ['--confirm', 'no']]) {
+    const r = await smileys(['checkout', ...ADDRESS, ...extra]);
+    is(r.code, 1, extra.join(' '));
+    ok(r.stderr.includes('--confirm takes no value'), r.stderr);
+    is(r.writes, []);
+  }
+});
+
+test('the store comes from the shop tab or --store, never a silent default', async () => {
+  const berlin = await smileys(['add', 'sp_x', '--size', 'large'], {
+    tabs: ['https://shop.smileys.de/store/berlin-mitte/category/pizza'],
+  });
+  is(berlin.writes[0].url, 'https://shop.smileys.de/api/v1/store/berlin-mitte/cart/items');
+  const flag = await smileys(['add', 'sp_x', '--size', 'large', '--store', 'hamburg']);
+  is(flag.writes[0].url, 'https://shop.smileys.de/api/v1/store/hamburg/cart/items');
+  const none = await smileys(['add', 'sp_x', '--size', 'large'], {
+    tabs: ['https://shop.smileys.de/'],
+  });
+  is(none.code, 1);
+  ok(none.stderr.includes('which store?'), none.stderr);
+  is(none.writes, []);
+});
+
+test('--qty must be a whole number from 1 to 20', async () => {
+  for (const q of ['0', '21', '2x', 'abc']) {
+    const r = await smileys(['add', 'sp_x', '--size', 'large', '--qty', q]);
+    is(r.code, 1, q);
+    ok(r.stderr.includes('--qty must be a whole number'), r.stderr);
+    is(r.writes, []);
+  }
+  const twice = await smileys(['add', 'sp_x', '--size', 'large', '--qty', '3', '--qty', '4']);
+  is(twice.code, 1);
+  is((await smileys(['add', 'sp_x', '--size', 'large', '--qty', '3'])).writes[0].body.quantity, 3);
+});
+
+test('usage errors are reported before the missing-tab error', async () => {
+  const r = await smileys(['add'], { tabs: [] });
+  is(r.code, 1);
+  ok(r.stderr.includes('usage: smileys add'), r.stderr);
+});
+
+test('a login page in reply to a write is a session error, not "added"', async () => {
+  const r = await smileys(['add', 'sp_x', '--size', 'large'], {
+    reply: () => ({
+      ok: true,
+      status: 200,
+      body: '<!DOCTYPE html><html><body>Anmelden</body></html>',
+    }),
+  });
+  is(r.code, 1);
+  ok(r.stderr.includes('session expired'), r.stderr);
+  ok(!r.stdout.includes('added'));
+});
+
+test('a failed customer save after checkout started points to --resume, which sends only the PUT', async () => {
+  const failPut = await smileys(CONFIRM_LAST(), {
+    reply: (w) =>
+      w.method === 'PUT'
+        ? { ok: false, status: 422, body: {} }
+        : { ok: true, status: 200, body: {} },
+  });
+  is(failPut.code, 1);
+  ok(failPut.stderr.includes('--resume --confirm'), failPut.stderr);
+  const resumed = await smileys(CONFIRM_LAST(['--resume']));
+  is(resumed.code, 0, resumed.stderr);
+  is(
+    resumed.writes.map((w) => w.method),
+    ['PUT']
+  );
+});
+
+test('checkout success does not dump the customer record into the transcript', async () => {
+  const r = await smileys(CONFIRM_LAST(), {
+    reply: () => ({
+      ok: true,
+      status: 200,
+      body: { data: { customer: { email: 'ada@example.org' } } },
+    }),
+  });
+  is(r.code, 0, r.stderr);
+  ok(!r.stdout.includes('ada@example.org'), r.stdout);
+  ok(r.stdout.includes('verify with: smileys delivery'));
 });

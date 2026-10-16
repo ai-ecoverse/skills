@@ -27,7 +27,8 @@ cookies and Origin travel. **No cookie is logged or stored.**
 
 Prerequisite: a `https://shop.smileys.de` tab open and logged in (sign in on
 mein.smileys.de, then open the shop in that tab). Writes are same-origin
-fetches from the shop tab. Default store slug **potsdam** (override `--store`).
+fetches from the shop tab. The store is the `/store/<slug>` page the shop tab
+is on (e.g. `potsdam`); `--store <slug>` overrides it. There is no default.
 
 ## Usage
 
@@ -44,7 +45,8 @@ smileys checkout --confirm --firstname … …              # start checkout, sa
 smileys --help
 ```
 
-`--json` on every command. `--store <slug>` defaults to `potsdam`.
+`--json` on every command. Put `--confirm` last: a value after it is refused.
+`--qty` is 1–20.
 
 `add` POSTs to the live cart. `checkout` is a real order step:
 
@@ -53,8 +55,10 @@ smileys --help
 2. If anything is wrong, fix the flags and preview again.
 3. Run it again with `--confirm`: it starts checkout (POST) and saves the
    customer (PUT), in the order the shop's own client uses.
-4. Verify with `smileys delivery`: it answers only once a checkout exists. If
-   it fails, report the error; do not retry `--confirm` blindly.
+4. Verify with `smileys delivery`: it answers only once a checkout exists.
+   If the customer save (PUT) failed after checkout started, fix the flags and
+   re-run with `--resume --confirm`, which sends only the PUT. Do not re-run a
+   plain `--confirm`: it would start a second checkout.
 
 Address flags are always the user's; nothing is hardcoded. PayPal / Stripe
 wallet endpoints exist (`references/endpoints.md`) and are **not** wired —
