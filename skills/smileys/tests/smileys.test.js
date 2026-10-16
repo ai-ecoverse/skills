@@ -1,81 +1,148 @@
-// Static guards for scripts/smileys.jsh.
-//
-//   node --test skills/smileys/tests/smileys.test.js
-//
-// The .jsh talks to shop.smileys.de through sliccy:browser, so these tests
-// assert source-level contracts (confirm gate, no payment command, no
-// hardcoded identity) rather than live HTTP.
+import fs from 'node:fs';
+import path from 'node:path';
+import test, { is, ok } from 'tst';
 
-const assert = require('node:assert/strict');
-const test = require('node:test');
-const fs = require('node:fs');
-const path = require('node:path');
+// Runs the real smileys.jsh against a fake sliccy:browser: findTab answers
+// from a list of open tab URLs, browser.fetch serves GETs, and evalAsync
+// records every in-page write (method, URL, body) instead of sending it.
+const source = fs.readFileSync(path.join(process.cwd(), 'scripts/smileys.jsh'), 'utf8');
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 
-const SCRIPT = path.join(__dirname, '..', 'scripts', 'smileys.jsh');
-const SKILL_MD = path.join(__dirname, '..', 'SKILL.md');
-const ENDPOINTS_MD = path.join(__dirname, '..', 'references', 'endpoints.md');
-
-const source = fs.readFileSync(SCRIPT, 'utf8');
-const skill = fs.readFileSync(SKILL_MD, 'utf8');
-const endpoints = fs.readFileSync(ENDPOINTS_MD, 'utf8');
-
-test('checkout returns before any write when --confirm is absent', () => {
-  const start = source.indexOf('async function cmdCheckout(');
-  assert.ok(start > 0, 'cmdCheckout not found');
-  const guard = source.indexOf('if (!flags.confirm)', start);
-  const write = source.indexOf('apiWrite(', start);
-  assert.ok(guard > start, 'no !flags.confirm guard');
-  assert.ok(write > guard, 'checkout writes before the --confirm guard');
-});
-
-test('checkout requires address flags and never hardcodes a customer', () => {
-  const start = source.indexOf('async function cmdCheckout(');
-  const body = source.slice(start, source.indexOf('async function main('));
-  for (const flag of ['firstname', 'lastname', 'email', 'phone', 'street', 'number', 'zip', 'city']) {
-    assert.ok(body.includes(`flags.${flag}`), `missing flags.${flag}`);
+class NodeExitError extends Error {
+  constructor(code) {
+    super(`exit ${code}`);
+    this.name = 'NodeExitError';
+    this.code = code;
   }
-  assert.ok(!/lars@trieloff\.net/.test(source), 'script hardcodes an email');
-  assert.ok(!/0151/.test(source), 'script hardcodes a phone');
-  assert.ok(!/Rudolf-Breitscheid/.test(source), 'script hardcodes a street');
+}
+
+function parseFlags(args) {
+  const flags = {};
+  const positional = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--confirm' || a === '--json') flags[a.slice(2)] = true;
+    else if (a.startsWith('--')) flags[a.slice(2)] = args[++i];
+    else positional.push(a);
+  }
+  return { flags, positional, subcommand: positional[0] || '' };
+}
+
+async function smileys(args, { tabs = ['https://shop.smileys.de/store/potsdam'] } = {}) {
+  const writes = [];
+  const out = [];
+  const err = [];
+  const browser = {
+    findTab: async ({ urlMatch }) => {
+      const url = tabs.find((u) => urlMatch.test(u));
+      return url ? { targetId: `T-${url}`, url } : null;
+    },
+    fetch: async () => ({ ok: true, status: 200, body: { data: [] } }),
+    evalAsync: async (_tab, expr) => {
+      const url = JSON.parse(/fetch\((".*?"),/.exec(expr)[1]);
+      const method = JSON.parse(/method: (".*?"),/.exec(expr)[1]);
+      const m = /body: (".*"),\n/.exec(expr);
+      writes.push({ method, url, body: m ? JSON.parse(JSON.parse(m[1])) : undefined });
+      return { ok: true, status: 200, body: { data: { ok: true } } };
+    },
+  };
+  const cli = {
+    die(msg, o = {}) {
+      err.push(String(msg));
+      throw new NodeExitError(o.exitCode ?? 1);
+    },
+    help(t) {
+      out.push(t);
+      throw new NodeExitError(0);
+    },
+    out: (v) => out.push(typeof v === 'string' ? v : JSON.stringify(v)),
+  };
+  const argv = ['node', 'smileys.jsh', ...args];
+  argv.parseFlags = () => parseFlags(args);
+  const modules = { 'sliccy:browser': browser, 'sliccy:cli': cli };
+  let code = 0;
+  try {
+    await new AsyncFunction('require', 'process', 'console', source)(
+      (n) => modules[n],
+      { argv, env: {} },
+      { log: (...a) => out.push(a.join(' ')), error: (...a) => err.push(a.join(' ')) }
+    );
+  } catch (e) {
+    if (e?.name !== 'NodeExitError') throw e;
+    code = e.code;
+  }
+  return { code, stdout: out.join('\n'), stderr: err.join('\n'), writes };
+}
+
+const ADDRESS = [
+  '--firstname',
+  'Ada',
+  '--lastname',
+  'Lovelace',
+  '--email',
+  'ada@example.org',
+  '--phone',
+  '0331 000000',
+  '--street',
+  'Beispielweg',
+  '--number',
+  '1',
+  '--zip',
+  '14467',
+  '--city',
+  'Potsdam',
+];
+const CHECKOUT = 'https://shop.smileys.de/api/v1/store/potsdam/checkout';
+
+test('checkout without --confirm previews the customer and writes nothing', async () => {
+  const r = await smileys(['checkout', ...ADDRESS]);
+  is(r.code, 0, r.stderr);
+  is(r.writes, []);
+  ok(r.stdout.includes('nothing written'));
+  ok(r.stdout.includes('Ada Lovelace <ada@example.org>'));
+  ok(r.stdout.includes('Beispielweg 1, 14467 Potsdam'));
 });
 
-test('payment endpoints are documented but not wired as commands', () => {
-  const help = source.slice(source.indexOf('const HELP = `'), source.indexOf('`;', source.indexOf('const HELP = `')));
-  assert.ok(!/smileys pay/.test(help), 'HELP advertises a pay command');
-  assert.ok(!/subcommand === 'pay'/.test(source));
-  assert.ok(!/subcommand === 'paypal'/.test(source));
-  assert.ok(endpoints.includes('/checkout/payment/paypal'));
-  assert.ok(endpoints.includes('/checkout/payment/wallet'));
-  assert.ok(/\*\*Charges\.\*\*/.test(endpoints));
+test('checkout --confirm starts checkout (POST) before saving the customer (PUT)', async () => {
+  const r = await smileys(['checkout', '--confirm', ...ADDRESS]);
+  is(r.code, 0, r.stderr);
+  is(
+    r.writes.map((w) => `${w.method} ${w.url}`),
+    [`POST ${CHECKOUT}`, `PUT ${CHECKOUT}`]
+  );
+  is(r.writes[0].body, { customer: {}, shipping_time: null, message: null });
+  is(r.writes[1].body.customer.firstname, 'Ada');
+  is(r.writes[1].body.customer.zipcode, '14467');
+  is(r.writes[1].body.customer.telephone_raw, '0331 000000');
 });
 
-test('writes go through in-page eval, reads through browser.fetch', () => {
-  assert.ok(/async function apiGet\(/.test(source));
-  assert.ok(/async function apiWrite\(/.test(source));
-  assert.ok(/browser\.fetch\(tab, url/.test(source));
-  assert.ok(/browser\.evalAsync/.test(source));
-  assert.ok(/credentials: 'include'/.test(source));
-  const add = source.slice(source.indexOf('async function cmdAdd('), source.indexOf('async function cmdSuggestions('));
-  assert.ok(/method: 'POST'/.test(add));
-  assert.ok(/cart\/items/.test(add));
+test('checkout names every missing address flag and writes nothing (no default identity)', async () => {
+  const r = await smileys(['checkout', '--confirm', '--firstname', 'Ada']);
+  is(r.code, 1);
+  ok(r.stderr.includes('--lastname --email --phone --street --number --zip --city'), r.stderr);
+  is(r.writes, []);
 });
 
-test('default store is potsdam and X-Widget-Version is the captured 4.1.0', () => {
-  assert.ok(/'potsdam'/.test(source));
-  assert.ok(/const WIDGET = '4.1.0'/.test(source));
+test('writes come from a shop.smileys.de tab, never from mein/www', async () => {
+  const meinOnly = await smileys(['add', 'sp_x', '--size', 'large'], {
+    tabs: ['https://mein.smileys.de/konto'],
+  });
+  is(meinOnly.code, 1);
+  ok(meinOnly.stderr.includes('not the shop'), meinOnly.stderr);
+  is(meinOnly.writes, []);
+  const both = await smileys(['add', 'sp_x', '--size', 'large'], {
+    tabs: ['https://www.smileys.de/bestellen', 'https://shop.smileys.de/store/potsdam'],
+  });
+  is(both.code, 0, both.stderr);
+  is(both.writes[0].url, 'https://shop.smileys.de/api/v1/store/potsdam/cart/items');
+  is(both.writes[0].body, { item: 'sp_x', options: [], quantity: 1, size: 'large' });
 });
 
-test('SKILL.md frontmatter names the command and the confirm gate', () => {
-  assert.ok(/^name: smileys/m.test(skill));
-  assert.ok(/^command: smileys/m.test(skill));
-  assert.ok(/script: scripts\/smileys.jsh/.test(skill));
-  assert.ok(skill.includes('--confirm'));
-  assert.ok(/shop\.smileys\.de/.test(skill));
-});
-
-test('HELP lists every shipped subcommand', () => {
-  const help = source.slice(source.indexOf('const HELP = `'), source.indexOf('`;', source.indexOf('const HELP = `')));
-  for (const cmd of ['stores', 'autocomplete', 'groups', 'add', 'suggestions', 'delivery', 'checkout']) {
-    assert.ok(help.includes(`smileys ${cmd}`), `HELP missing ${cmd}`);
+test('there is no payment command', async () => {
+  for (const cmd of ['pay', 'paypal', 'wallet', 'payment']) {
+    const r = await smileys([cmd]);
+    is(r.code, 1, cmd);
+    ok(r.stderr.includes('unknown command'), cmd);
+    is(r.writes, []);
   }
 });

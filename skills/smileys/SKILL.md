@@ -7,8 +7,8 @@ description: >
   Smiley's order without clicking the shop UI. Activate on "smileys",
   "Smiley's", "smileys.de", "Smiley's Pizza", "Pizza bestellen Potsdam".
   Cookie session from an open shop.smileys.de tab — no API key. Cart add
-  is unguarded; checkout requires --confirm. Payment (PayPal/Stripe wallet)
-  is documented but not exposed as a command.
+  is unguarded; checkout previews by default and writes only with --confirm.
+  Payment (PayPal/Stripe wallet) is documented but not exposed as a command.
 allowed-tools: bash
 command: smileys
 script: scripts/smileys.jsh
@@ -25,8 +25,9 @@ shop.smileys.de, PayPal at the end (tab closed — payment not automated).
 First-party cookies. Every call is issued from an open Smiley's tab so
 cookies and Origin travel. **No cookie is logged or stored.**
 
-Prerequisite: `https://shop.smileys.de` (or mein.smileys.de) open and
-logged in. Default store slug **potsdam** (override `--store`).
+Prerequisite: a `https://shop.smileys.de` tab open and logged in (sign in on
+mein.smileys.de, then open the shop in that tab). Writes are same-origin
+fetches from the shop tab. Default store slug **potsdam** (override `--store`).
 
 ## Usage
 
@@ -37,18 +38,28 @@ smileys groups <productId>          # e.g. sp_eusIzlcHSil9
 smileys add <productId> --size large [--option group:item] [--qty N]
 smileys suggestions
 smileys delivery
-smileys checkout --confirm --firstname … --lastname … --email … \
-  --phone … --street … --number … --zip … --city …
+smileys checkout --firstname … --lastname … --email … \
+  --phone … --street … --number … --zip … --city …      # preview, writes nothing
+smileys checkout --confirm --firstname … …              # start checkout, save customer
 smileys --help
 ```
 
 `--json` on every command. `--store <slug>` defaults to `potsdam`.
 
-`add` POSTs to the live cart. `checkout` is a real order step and
-requires `--confirm` plus the address flags (never hardcoded). PayPal /
-Stripe wallet endpoints exist (`references/endpoints.md`) and are **not**
-wired — they charge money.
+`add` POSTs to the live cart. `checkout` is a real order step:
+
+1. Run it **without** `--confirm`. It prints the store, customer and address
+   it would send, and writes nothing. Check them against what the user said.
+2. If anything is wrong, fix the flags and preview again.
+3. Run it again with `--confirm`: it starts checkout (POST) and saves the
+   customer (PUT), in the order the shop's own client uses.
+4. Verify with `smileys delivery`: it answers only once a checkout exists. If
+   it fails, report the error; do not retry `--confirm` blindly.
+
+Address flags are always the user's; nothing is hardcoded. PayPal / Stripe
+wallet endpoints exist (`references/endpoints.md`) and are **not** wired —
+they charge money, and paying stays with the human in the shop tab.
 
 ## Requires
 
-Open logged-in tab matching `smileys.de`.
+A logged-in tab on `https://shop.smileys.de`.

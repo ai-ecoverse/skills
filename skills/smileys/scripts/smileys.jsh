@@ -22,7 +22,8 @@ USAGE
   smileys add <productId> --size large [--option group:item] [--qty N]
   smileys suggestions
   smileys delivery
-  smileys checkout --confirm --firstname … --lastname … --email … --phone … --street … --number … --zip … --city …
+  smileys checkout --firstname … --lastname … --email … --phone … --street … --number … --zip … --city …
+                   preview only; add --confirm to start checkout and save the customer
   smileys --help
 
 FLAGS
@@ -31,17 +32,15 @@ FLAGS
   --size <name>    cart line size (e.g. large)
   --qty N          cart quantity (default 1)
   --option g:i     repeatable topping group:item (cpg_…:sp_…)
-  --confirm        required for checkout (writes the order customer)
+  --confirm        required for checkout to write (without it: a preview)
 
 REQUIRES
-  shop.smileys.de (or mein.smileys.de) open and logged in
+  a shop.smileys.de tab open and logged in (log in on mein.smileys.de first)
 `.trim();
 
 const parsed = process.argv.parseFlags();
 const subcommand = parsed.subcommand || parsed.positional[0] || '';
-const positional = parsed.subcommand
-  ? parsed.positional.slice(1)
-  : parsed.positional.slice(1);
+const positional = parsed.positional.slice(1);
 const flags = parsed.flags;
 
 function storeSlug() {
@@ -49,12 +48,21 @@ function storeSlug() {
   return (typeof s === 'string' && s.trim()) ? s.trim() : 'potsdam';
 }
 
+// Every call runs from a SHOP tab: the cart and checkout writes are credentialed
+// in-page fetches to shop.smileys.de, and from a mein.smileys.de / www tab they
+// would be cross-origin (the captured API is same-origin only).
 let _tab = null;
 async function getTab() {
   if (_tab) return _tab;
-  _tab = await browser.findTab({ urlMatch: /smileys\.de/i });
+  _tab = await browser.findTab({ urlMatch: /^https:\/\/shop\.smileys\.de\//i });
   if (!_tab) {
-    cli.die('open https://shop.smileys.de and log in first', { prefix: PREFIX });
+    const other = await browser.findTab({ urlMatch: /^https:\/\/([a-z0-9-]+\.)?smileys\.de\//i });
+    cli.die(
+      other
+        ? 'a smileys.de tab is open, but not the shop — open https://shop.smileys.de/store/potsdam in it (you stay logged in), then retry'
+        : 'open https://shop.smileys.de and log in first',
+      { prefix: PREFIX }
+    );
   }
   return _tab;
 }
@@ -233,9 +241,6 @@ async function cmdDelivery(tab, flags) {
 }
 
 async function cmdCheckout(tab, flags) {
-  if (!flags.confirm) {
-    cli.die('checkout writes the order — pass --confirm plus address flags', { prefix: PREFIX });
-  }
   const need = ['firstname', 'lastname', 'email', 'phone', 'street', 'number', 'zip', 'city'];
   const missing = need.filter((k) => typeof flags[k] !== 'string' || !flags[k].trim());
   if (missing.length) {
@@ -256,12 +261,29 @@ async function cmdCheckout(tab, flags) {
     city: flags.city.trim(),
     extra: null,
   };
-  const body = await apiWrite(tab, `/store/${encodeURIComponent(storeSlug())}/checkout`, {
+  const path = `/store/${encodeURIComponent(storeSlug())}/checkout`;
+  if (!flags.confirm) {
+    // The preview IS the validation step: nothing is sent until --confirm.
+    const preview = { store: storeSlug(), customer, writes: [`POST ${path}`, `PUT ${path}`] };
+    if (flags.json) { cli.out({ preview, written: false }); return; }
+    console.log(`  checkout preview for store ${storeSlug()} — nothing written`);
+    console.log(`  ${customer.firstname} ${customer.lastname} <${customer.email}> ${customer.telephone_raw}`);
+    console.log(`  ${customer.street} ${customer.number}, ${customer.zipcode} ${customer.city}`);
+    console.log('  re-run with --confirm to start checkout and save this customer');
+    return;
+  }
+  // The captured flow (references/endpoints.md) starts checkout with POST, then
+  // saves the customer with PUT; a fresh cart has no checkout to PUT into.
+  await apiWrite(tab, path, {
+    method: 'POST',
+    body: { customer: {}, shipping_time: null, message: null },
+  });
+  const body = await apiWrite(tab, path, {
     method: 'PUT',
     body: { customer, shipping_time: null, message: null },
   });
   if (flags.json) { cli.out(body); return; }
-  console.log('  checkout customer saved');
+  console.log('  checkout started and customer saved — verify with: smileys delivery');
   cli.out(body);
 }
 
