@@ -25,7 +25,7 @@ const {
   splitDomain,
   splitCsvLine,
 } = domainsMod.default || domainsMod;
-const { gather, matrix, summarize } = pipelineMod.default || pipelineMod;
+const { gather, matrix, noAnswer, summarize } = pipelineMod.default || pipelineMod;
 const { toCsv, toJson, humanScan, humanCheck } = renderMod.default || renderMod;
 const { createDns, createIds, createIdsCache, createRdap, createWhois, interpretWhois, timed } =
   sourcesMod.default || sourcesMod;
@@ -320,8 +320,8 @@ test('IDS bulk reads premium cents and isRegistered; failure yields an empty map
   };
   const ids = createIds({ api, sleep: async () => {} });
   const m = await ids.bulk('page', ['dad', 'tech']);
-  is(m.get('dad'), { registered: false, premiumUsd: 499 });
-  is(m.get('tech'), { registered: false, premiumUsd: null });
+  is(m.get('dad'), { registered: false, premium: true, premiumUsd: 499 });
+  is(m.get('tech'), { registered: false, premium: false, premiumUsd: null });
   const bad = createIds({
     api: {
       post: async () => {
@@ -1046,4 +1046,142 @@ test('gather hands the deadline to the source, so one hung registry cannot outla
   ok(Date.now() - t0 < 2000, `took ${Date.now() - t0} ms against a 150 ms budget`);
   is(r.tier, TIERS.INCONCLUSIVE);
   is(r.rdap.error, 'time budget exhausted (--budget)');
+});
+
+// ── review fixes (Claude review on ai-ecoverse/skills#482) ─────────────────────
+test("DNS: SLICC dig's NXDOMAIN (exit 1, rcode on stderr) is undelegated and keeps DNS on", async () => {
+  const replies = {
+    'gone.zz': { exitCode: 1, stdout: '', stderr: 'dig: gone.zz: NXDOMAIN\n' },
+    'odd.zz': { exitCode: 1, stdout: '', stderr: 'dig: odd.zz: SERVFAIL\n' },
+    'held.zz': {
+      exitCode: 0,
+      stdout: JSON.stringify({ Status: 0, Answer: [{ type: 2 }] }),
+      stderr: '',
+    },
+  };
+  const dns = createDns({ run: async (argv) => replies[argv[1]] });
+  is(await dns.lookup('gone.zz'), { status: 'undelegated' });
+  is(await dns.lookup('odd.zz'), { status: 'inconclusive', error: 'dig: SERVFAIL' });
+  is(await dns.lookup('held.zz'), { status: 'delegated' });
+  is(dns.stats.calls, 3);
+  const broken = createDns({
+    run: async () => ({
+      exitCode: 1,
+      stdout: '',
+      stderr: 'dig: lookup failed: 503 Service Unavailable\n',
+    }),
+  });
+  is((await broken.lookup('a.zz')).status, 'unavailable');
+  is((await broken.lookup('b.zz')).status, 'unavailable');
+  is(broken.stats.calls, 1, 'a transport failure trips the breaker');
+});
+
+test('--budget starts after the IDS stage: a slow IDS does not use up the secondary sources', async () => {
+  const rows = await gather(
+    [item('a', 'de'), item('b', 'de')],
+    {
+      pool: seqPool,
+      ids: {
+        check: async (ds) => {
+          await new Promise((res) => setTimeout(res, 250));
+          return new Map(ds.map((d) => [d, { availability: 'unsupported', trust: 'low' }]));
+        },
+        bulk: async () => new Map(),
+      },
+      rdap: {
+        lookup: async () => {
+          await new Promise((res) => setTimeout(res, 300));
+          return { status: 'registered' };
+        },
+      },
+      dns: { lookup: async () => ({ status: 'unavailable' }) },
+    },
+    { ...SCAN, budgetMs: 200 }
+  );
+  is(rows[0].rdap.status, 'registered', 'the budget had not started during the 250 ms IDS stage');
+  is(rows[1].rdap.error, 'time budget exhausted (--budget)', 'and it does run out after it');
+});
+
+test('a premium flag without a price stays premium, priced unknown, never standard', async () => {
+  const ids = createIds({
+    api: {
+      post: async () => ({
+        results: [{ tld: 'dev', isRegistered: false, premium: { is_premium: true } }],
+      }),
+    },
+  });
+  const bulk = (await ids.bulk('live', ['dev'])).get('dev');
+  is(bulk.premium, true);
+  is(bulk.premiumUsd, null);
+  const c = classify({ ids: { availability: 'available', trust: 'high' }, bulk });
+  is(c.tier, TIERS.AVAILABLE);
+  is(c.premium, true);
+  const row = {
+    ...sampleRow({ premium: c.premium, premiumUsd: c.premiumUsd }),
+    domain: 'live.dev',
+  };
+  ok(humanCheck([row]).includes('PREMIUM (price unknown)'), humanCheck([row]));
+});
+
+test('WHOIS "no" with registration data is registered even beside terms-of-use boilerplate', () => {
+  const text =
+    'Domain Name: live.eu\nRegistrar: Example Registrar\nCreation Date: 2001-01-01\n' +
+    'Automated queries are forbidden. For more information see RDAP.';
+  is(interpretWhois(W({ available: 'no', whois: text }), 'live.eu').status, 'registered');
+  is(
+    interpretWhois(W({ available: 'no', whois: 'WHOIS has been retired; use RDAP.' }), 'live.eu')
+      .status,
+    'inconclusive'
+  );
+});
+
+test('IDS answer cache: a later "missing" or no-trust reply does not erase a remembered high answer', async () => {
+  const files = {};
+  const fsStub = {
+    readFile: async (f) => {
+      if (!(f in files)) throw new Error('ENOENT');
+      return files[f];
+    },
+    writeFile: async (f, d) => {
+      files[f] = d;
+    },
+    mkdir: async () => {},
+  };
+  const cache = createIdsCache({ fs: fsStub, file: '/c/ids.json', dir: '/c', ttlMs: 60000 });
+  await cache.merge('live.dev', { availability: 'available', trust: 'high' });
+  const kept = await cache.merge('live.dev', { availability: 'missing', trust: 'none' });
+  is(kept.availability, 'available');
+  is(kept.trust, 'high');
+  const changed = await cache.merge('live.dev', { availability: 'inuse', trust: 'medium' });
+  is(changed.availability, 'inuse', 'a different real answer still replaces it');
+});
+
+test('RDAP: budget cuts neither trip nor reset the host breaker', async () => {
+  let calls = 0;
+  const rdap = createRdap({
+    api: {
+      get: () => {
+        calls++;
+        return new Promise(() => {});
+      },
+    },
+    bootstrap: new Map([['de', ['https://rdap.de.example/']]]),
+    spacingMs: 0,
+    sleep: async () => {},
+    capMs: 30000,
+    breakAfter: 2,
+  });
+  for (const d of ['a.de', 'b.de', 'c.de']) {
+    const r = await rdap.lookup(d, 'de', { deadline: Date.now() + 20 });
+    is(r.error, 'time budget exhausted (--budget)');
+  }
+  is(calls, 3, 'every name was still asked');
+  is([...rdap.stats.skippedHosts], []);
+});
+
+test('exit 2 when no source answered any name, whatever the reason', () => {
+  const row = (tier) => ({ tier });
+  is(noAnswer([row(TIERS.INCONCLUSIVE), row(TIERS.INCONCLUSIVE)]), true);
+  is(noAnswer([row(TIERS.INCONCLUSIVE), row(TIERS.TAKEN)]), false);
+  is(noAnswer([]), false);
 });

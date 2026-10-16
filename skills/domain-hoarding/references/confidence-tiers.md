@@ -36,7 +36,8 @@ produce `unregistered-needs-confirmation`. The gelatiere prompt line "treat 404 
 A premium name is registrable, so it stays `available-high-confidence` and counts as **available**.
 Rows carry `available` (bool), `premium` (`true` / `false` / `null` when the bulk lookup did not run or
 failed — standard price is never claimed without evidence) and `premiumUsd` (IDS `/services/bulk-check`,
-`premium.usd_cents / 100`). The human view shows `✓` or `$` (PREMIUM), and `scan` computes the "all
+`premium.usd_cents / 100`; `null` with `premium: true` when IDS flags a premium name without a price,
+shown as PREMIUM (price unknown)). The human view shows `✓` or `$` (PREMIUM), and `scan` computes the "all
 labels available" intersection **including** premium cells, then splits it:
 `allAvailable` ⊇ `allAvailableStandard` (every cell `premium:false`), `allAvailableButPremium` (≥1 premium
 cell) and `allAvailableUnchecked` (no premium, ≥1 unknown). Measured 2026-10-08: of 10 fresh `page.*`

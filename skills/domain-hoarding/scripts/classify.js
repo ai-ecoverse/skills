@@ -19,6 +19,7 @@
 //   4. IDS available + trust high           -> available (bulk "registered" -> inconclusive+conflict)
 //   5. IDS available (lower trust)          -> unregistered-needs-confirmation
 //   6. RDAP 404 / WHOIS "yes" / DNS none   -> unregistered-needs-confirmation
+//      (5–6 with bulk "registered"         -> inconclusive + conflict)
 //   7. otherwise                            -> inconclusive
 
 const TIERS = {
@@ -36,7 +37,7 @@ const TAKEN_IDS = new Set(['inuse', 'reserved', 'blocked']);
  *   rdap:  { status: 'registered'|'unregistered'|'inconclusive'|'no-server', ... } | undefined
  *   whois: { status: 'registered'|'unregistered'|'inconclusive', ... } | undefined
  *   dns:   { status: 'delegated'|'undelegated'|'unavailable' } | undefined
- *   bulk:  { registered: boolean|null, premiumUsd: number|null } | undefined
+ *   bulk:  { registered: boolean|null, premium?: boolean, premiumUsd: number|null } | undefined
  * }
  * Returns { tier, available, premium, premiumUsd, reason, conflict }.
  *   available = tier is available-high-confidence (registrable; premium names INCLUDED).
@@ -46,7 +47,7 @@ const TAKEN_IDS = new Set(['inuse', 'reserved', 'blocked']);
 function classify(evidence) {
   const { ids, rdap, whois, dns, bulk } = evidence || {};
   const premiumUsd = bulk?.premiumUsd ?? null;
-  const premium = bulk ? premiumUsd != null : null;
+  const premium = bulk ? bulk.premium === true || premiumUsd != null : null;
   const out = (tier, reason, extra = {}) => ({
     tier,
     available: tier === TIERS.AVAILABLE,

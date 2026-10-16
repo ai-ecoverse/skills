@@ -22,17 +22,21 @@ const idsSettled = (ids) =>
 
 /**
  * items: [{ domain, label, tld, tldKnown, input?, note? }]
- * deps:  { ids, rdap, whois?, dns, pool, sleep? }
- * opts:  { mode: 'check'|'scan', rdap, whois, dns, premium, verify, concurrency, delayMs, prices, deadline? }
+ * deps:  { ids, rdap, whois?, dns, pool }
+ * opts:  { mode: 'check'|'scan', rdap, whois, dns, premium, verify, concurrency, prices,
+ *          budgetMs? (from the end of the IDS stage) | deadline? (epoch ms) }
  * Returns rows (one per item, input order).
  */
 async function gather(items, deps, opts) {
   const { ids, rdap, whois, dns, pool } = deps;
-  const inBudget = () => !opts.deadline || Date.now() < opts.deadline;
   const rows = items.map((it) => ({ ...it, evidence: {} }));
 
   const idsRes = await ids.check(rows.map((r) => r.domain));
   for (const r of rows) r.evidence.ids = idsRes.get(r.domain);
+
+  // --budget covers the secondary stages only, so its clock starts here, after IDS.
+  const deadline = opts.budgetMs ? Date.now() + opts.budgetMs : opts.deadline;
+  const inBudget = () => !deadline || Date.now() < deadline;
 
   if (opts.rdap) {
     const targets = rows.filter(
@@ -43,7 +47,7 @@ async function gather(items, deps, opts) {
       // slow registry cannot hold up an answer we already have.
       const enrich = idsSettled(r.evidence.ids) ? { capMs: opts.enrichCapMs || 5000 } : {};
       r.evidence.rdap = inBudget()
-        ? await rdap.lookup(r.domain, r.tld, { ...enrich, deadline: opts.deadline })
+        ? await rdap.lookup(r.domain, r.tld, { ...enrich, deadline })
         : { ...NO_BUDGET };
     });
   }
@@ -62,21 +66,23 @@ async function gather(items, deps, opts) {
     // whois.lookup serialises internally, so a plain loop keeps the order deterministic.
     for (const r of targets)
       r.evidence.whois = inBudget()
-        ? await whois.lookup(r.domain, { deadline: opts.deadline })
+        ? await whois.lookup(r.domain, { deadline })
         : { ...NO_BUDGET, server: 'api.whois.vu' };
   }
 
   if (opts.dns) {
-    const targets = rows.filter(
-      (r) =>
-        classify(r.evidence).tier === TIERS.INCONCLUSIVE &&
-        !classify(r.evidence).conflict &&
+    const targets = rows.filter((r) => {
+      const c = classify(r.evidence);
+      return (
+        c.tier === TIERS.INCONCLUSIVE &&
+        !c.conflict &&
         !(r.evidence.ids?.availability === 'error' && !r.evidence.rdap)
-    );
+      );
+    });
     // First lookup alone: if the DoH path is blocked it fails slowly (~10 s), and we want to pay
     // that once, not once per parallel worker.
     if (targets.length) {
-      const within = { deadline: opts.deadline };
+      const within = { deadline };
       targets[0].evidence.dns = inBudget()
         ? await dns.lookup(targets[0].domain, within)
         : { ...NO_BUDGET };
@@ -189,4 +195,7 @@ function matrix(rows, labels, tlds) {
   };
 }
 
-module.exports = { TIER_ORDER, finalize, gather, idsSettled, matrix, summarize };
+/** Exit 2 case: the run finished but no source placed any name in a tier. */
+const noAnswer = (rows) => rows.length > 0 && rows.every((r) => r.tier === TIERS.INCONCLUSIVE);
+
+module.exports = { TIER_ORDER, finalize, gather, idsSettled, matrix, noAnswer, summarize };

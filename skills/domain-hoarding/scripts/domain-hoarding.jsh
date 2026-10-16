@@ -14,8 +14,7 @@
   const fs = require('fs');
   const { parseArgv, parseList, scanTlds } = require('./argv.js');
   const { normalizeLabel, normalizeTld, parseDomainFile, splitDomain } = require('./domains.js');
-  const { TIERS } = require('./classify.js');
-  const { gather, matrix, summarize } = require('./pipeline.js');
+  const { gather, matrix, noAnswer, summarize } = require('./pipeline.js');
   const {
     createDns,
     createIds,
@@ -222,7 +221,6 @@ TIERS available-high-confidence · unregistered-needs-confirmation · inconclusi
     });
     const whois = createWhois({ api: whoisApi, maxCalls: whoisMax, capMs: Math.min(capMs, 10000) });
     const dns = createDns({ run: (argv) => exec.spawn(argv), capMs: Math.min(capMs, 8000) });
-    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
     const budgetSec = Math.round(
       num(flags.budget, defaultBudgetSec(items.length), 1, 3600, 'budget')
@@ -230,7 +228,7 @@ TIERS available-high-confidence · unregistered-needs-confirmation · inconclusi
     const whoisOn = !flags['no-whois'] && whoisMax > 0;
     const rows = await gather(
       items,
-      { ids, rdap, whois, dns, pool, sleep },
+      { ids, rdap, whois, dns, pool },
       {
         mode: cmd,
         rdap: rdapOn,
@@ -239,9 +237,8 @@ TIERS available-high-confidence · unregistered-needs-confirmation · inconclusi
         premium: !flags['no-premium'],
         verify: !!flags.verify,
         concurrency,
-        delayMs,
         prices: universe.prices,
-        deadline: t0 + budgetSec * 1000,
+        budgetMs: budgetSec * 1000,
       }
     );
 
@@ -285,10 +282,7 @@ TIERS available-high-confidence · unregistered-needs-confirmation · inconclusi
         `${whois.stats.calls} name(s) were sent to the third-party WHOIS service api.whois.vu (Instant Domain Search could not settle them and RDAP had no server/answer): ${whois.stats.sent.join(', ')}. Disable with --no-whois.`
       );
     }
-    if (
-      Date.now() > t0 + budgetSec * 1000 &&
-      rows.some((r) => /time budget exhausted/.test(JSON.stringify([r.rdap, r.whois, r.dns])))
-    ) {
+    if (rows.some((r) => /time budget exhausted/.test(JSON.stringify([r.rdap, r.whois, r.dns])))) {
       warnings.push(
         `the ${budgetSec}s secondary-source budget ran out; some names were left inconclusive (raise --budget, or lower the scope).`
       );
@@ -343,7 +337,7 @@ TIERS available-high-confidence · unregistered-needs-confirmation · inconclusi
       );
     }
     for (const w of warnings) process.stderr.write(`domain-hoarding: warning: ${w}\n`);
-    if (rows.length && rows.every((r) => r.tier === TIERS.INCONCLUSIVE) && ids.stats.errors > 0) {
+    if (noAnswer(rows)) {
       process.stderr.write(
         'domain-hoarding: no source produced an answer for any name — check connectivity, then retry\n'
       );

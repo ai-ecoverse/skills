@@ -51,7 +51,6 @@ function capFor(capMs, o = {}) {
   const left = o.deadline ? o.deadline - Date.now() : Infinity;
   return left < capMs ? { ms: left, byBudget: true } : { ms: capMs, byBudget: false };
 }
-const budgetOr = (cap, err) => (cap.byBudget && err?.timeout ? BUDGET_ERROR : errText(err));
 
 /**
  * Hard wall-clock cap for ONE lookup, retries and Retry-After sleeps included. The http client's
@@ -188,9 +187,12 @@ function createIdsCache({ fs, file, dir, ttlMs, now = Date.now }) {
       const d = await load();
       const old = d[domain];
       const oldFresh = old && now() - old.ts <= ttlMs;
+      // A remembered high answer survives a degraded repeat (lower trust) and a non-answer
+      // ('missing', trust none): only a different real answer replaces it.
+      const nonAnswer = fresh.availability === 'missing' || !rank[fresh.trust];
       if (
         oldFresh &&
-        old.availability === fresh.availability &&
+        (old.availability === fresh.availability || nonAnswer) &&
         (rank[old.trust] ?? 0) > (rank[fresh.trust] ?? 0)
       ) {
         return {
@@ -312,9 +314,12 @@ function createIds({
       );
       for (const r of res?.results || []) {
         const tld = toAscii(String(r.tld || '').toLowerCase()) || String(r.tld || '').toLowerCase();
-        const cents = r.premium?.is_premium ? Number(r.premium.usd_cents) : null;
+        const isPremium = r.premium?.is_premium === true;
+        const cents = isPremium ? Number(r.premium.usd_cents) : Number.NaN;
         out.set(tld, {
           registered: typeof r.isRegistered === 'boolean' ? r.isRegistered : null,
+          // premium without a price is still premium: the price is unknown, not standard.
+          premium: isPremium,
           premiumUsd: Number.isFinite(cents) ? cents / 100 : null,
         });
       }
@@ -394,7 +399,8 @@ function createRdap({
       g.next = Math.max(Date.now(), g.next) + spacingMs;
       if (wait > 0) await sleep(wait);
       const res = await fn();
-      g.failures = res.transient ? g.failures + 1 : 0;
+      // A cut by --budget says nothing about the host: it neither trips nor resets the breaker.
+      if (!res.budget) g.failures = res.transient ? g.failures + 1 : 0;
       if (g.failures >= breakAfter) {
         g.open = true;
         stats.skippedHosts.add(host);
@@ -431,7 +437,7 @@ function createRdap({
       // Measured after the host's spacing queue: waiting there spends the budget too.
       const cap = capFor(o.capMs || capMs, o);
       if (cap.ms <= 0)
-        return { transient: false, value: { status: 'inconclusive', error: BUDGET_ERROR } };
+        return { budget: true, value: { status: 'inconclusive', error: BUDGET_ERROR } };
       stats.calls++;
       try {
         const r = await timed(cap.ms, (signal) => api.get(url, { raw: true, signal }));
@@ -444,10 +450,12 @@ function createRdap({
         if (code === 404)
           return { transient: false, value: { status: 'unregistered', httpStatus: 404 } };
         if (code === 429) stats.throttled++;
+        if (cap.byBudget && err?.timeout)
+          return { budget: true, value: { status: 'inconclusive', error: BUDGET_ERROR } };
         const transient = !code || code === 429 || code >= 500;
         return {
           transient,
-          value: { status: 'inconclusive', httpStatus: code || null, error: budgetOr(cap, err) },
+          value: { status: 'inconclusive', httpStatus: code || null, error: errText(err) },
         };
       }
     });
@@ -506,7 +514,9 @@ function interpretWhois(body, domain) {
   const notice = WHOIS_NOTICE_RE.test(text);
   const av = String(j.available || '').toLowerCase();
   if (av === 'no') {
-    if (!notice && WHOIS_DATA_RE.test(text)) return { status: 'registered', answer: 'no' };
+    // Registration data settles it even beside terms-of-use boilerplate ("automated queries are
+    // forbidden", "see RDAP"); a notice WITHOUT data (live.nagoya) stays inconclusive.
+    if (WHOIS_DATA_RE.test(text)) return { status: 'registered', answer: 'no' };
     return {
       status: 'inconclusive',
       answer: 'no',
@@ -575,6 +585,9 @@ function createWhois({
       failures = 0;
       return { server: 'api.whois.vu', ...interpretWhois(r, domain) };
     } catch (err) {
+      // A cut by --budget says nothing about the service: it neither trips nor resets the breaker.
+      if (cap.byBudget && err?.timeout)
+        return { status: 'inconclusive', server: 'api.whois.vu', error: BUDGET_ERROR };
       const code = err?.status;
       const transient = !code || code === 429 || code >= 500;
       failures = transient ? failures + 1 : 0;
@@ -583,7 +596,7 @@ function createWhois({
         status: 'inconclusive',
         server: 'api.whois.vu',
         httpStatus: code || null,
-        error: budgetOr(cap, err),
+        error: errText(err),
       };
     }
   }
@@ -631,6 +644,11 @@ function createDns({ run, capMs = 8000 }) {
       const r = await timed(cap.ms, () => run(['dig', domain, 'NS', '--json']));
       const verdict = r.exitCode === 0 ? interpret(r.stdout) : null;
       if (verdict) return { status: verdict };
+      // SLICC's dig answers a non-zero rcode with exit 1 and only "dig: <name>: <RCODE>" on
+      // stderr (dig-command.ts). That is an answer about this name, not a broken DoH path.
+      const rcode = /dig: \S+: ([A-Z]+)\s*$/m.exec(String(r.stderr || ''))?.[1];
+      if (rcode === 'NXDOMAIN') return { status: 'undelegated' };
+      if (rcode) return { status: 'inconclusive', error: `dig: ${rcode}` };
       broken = (r.stderr || r.stdout || `dig exit ${r.exitCode}`)
         .toString()
         .trim()

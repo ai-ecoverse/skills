@@ -76,7 +76,8 @@ function evidence(r) {
 
 function verdictLabel(r) {
   if (r.tier === TIERS.AVAILABLE) {
-    if (r.premium === true) return `AVAILABLE · PREMIUM ${money(r.premiumUsd)}`;
+    if (r.premium === true)
+      return `AVAILABLE · PREMIUM ${r.premiumUsd == null ? '(price unknown)' : money(r.premiumUsd)}`;
     return r.premium === false ? 'AVAILABLE' : 'AVAILABLE · premium status unchecked';
   }
   if (r.tier === TIERS.TAKEN) return 'taken';
