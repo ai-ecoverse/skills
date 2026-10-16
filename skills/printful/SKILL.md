@@ -51,8 +51,11 @@ and exit 0.
 Preferred: a **store-level private token** from
 <https://developers.printful.com/tokens> (scopes `orders`, `file_library`,
 `sync_products`), stored with `printful auth login --token <tok>`. The token is
-validated against `GET /stores` before being saved and **never printed** —
-`printful auth status` shows only the last four characters. `printful auth token` prints the live credential for token brokers such as `jerk`.
+validated against `GET /stores` before being saved, and no command an agent
+needs prints it — `printful auth status` shows only the last four characters.
+`printful auth token` is the one exception: it prints the stored, unexpired
+token for token brokers such as `jerk` (exit 3 when there is none or it has
+expired). Don't run it in an agent session: its output lands in the transcript.
 
 Fallback, if a logged-in `www.printful.com` dashboard tab is open:
 `printful auth login` (no `--token`) mints a store token via the dashboard

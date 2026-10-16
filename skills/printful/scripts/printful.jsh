@@ -400,14 +400,30 @@ async function cmdAuthLogin(flags) {
   console.log(c.dim(`  scopes: ${(minted.scopes || DEFAULT_SCOPES).join(', ')}`));
 }
 
-
+// For token brokers (jerk's `printful` provider runs this, as it runs
+// `gh auth token`): the STORED credential, never a --token echo, and never an
+// expired one -- a broker should hear "log in again" rather than hand out a
+// token that 401s. Whatever this prints lands in the caller's transcript, so
+// agents use the other commands, which never print it (SKILL.md).
 async function cmdAuthToken(flags) {
-  const token = await getToken(flags);
+  const cfg = await loadConfig();
+  if (!cfg.token) {
+    cli.die(`Not authenticated. Run: printful auth login --token <token>  (create one at ${TOKEN_UI})`, {
+      prefix: 'printful',
+      exitCode: 3,
+    });
+  }
+  if (cfg.token_expires_at && new Date(cfg.token_expires_at) < new Date()) {
+    cli.die(
+      `the stored token expired at ${cfg.token_expires_at}. Run: printful auth login  (or --token <new>)`,
+      { prefix: 'printful', exitCode: 3 },
+    );
+  }
   if (flags.json) {
-    cli.out({ token });
+    cli.out({ token: cfg.token, source: cfg.token_source || null, expires_at: cfg.token_expires_at || null });
     return;
   }
-  process.stdout.write(token + '\n');
+  process.stdout.write(`${cfg.token}\n`);
 }
 
 async function cmdAuthLogout() {

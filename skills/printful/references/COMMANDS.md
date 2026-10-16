@@ -16,7 +16,7 @@ Global conventions:
 | `printful auth login` | `--token <tok>`, `--name <n>`, `--days N` | Validates with `GET /stores`, then stores. Without `--token`, mints via dashboard GraphQL if a `www.printful.com` tab is logged in. `--days` (default 90) and `--name` apply only to minting. |
 | `printful auth status` | `--json` | Masked token, source (`private-token` / `graphql-mint`), expiry, live validity. |
 | `printful auth logout` | — | Clears the locally stored token. Does not delete it in the Developer Portal. |
-| `printful auth token` | `--json` | Prints the stored private token (for `jerk printful get` / brokers). Not for casual use. |
+| `printful auth token` | `--json` | Prints the **stored** private token for token brokers (`jerk printful get`); `--json` adds `source` and `expires_at`. Ignores `--token`. Exit 3 when nothing is stored or the stored token has expired. Its output is a live credential: not for agent sessions. |
 | `printful whoami` | `--json` | `GET /stores` plus stored metadata. Token last-4 only. |
 | `printful stores` | `--json` | `GET /stores` — id, name, type (`native`, `shopify`, …). |
 
