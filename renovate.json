@@ -4,6 +4,10 @@
     {
       "groupName": "remotion monorepo",
       "matchPackageNames": ["remotion", "@remotion/**"]
+    },
+    {
+      "groupName": "react",
+      "matchPackageNames": ["react", "react-dom"]
     }
   ]
 }
