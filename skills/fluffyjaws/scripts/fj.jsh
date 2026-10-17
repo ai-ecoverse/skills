@@ -42,8 +42,10 @@ const fs = require('fs');
 
 const UI_HOST = 'https://fluffyjaws.adobe.com';
 const UI_DOMAIN = 'fluffyjaws.adobe.com';
-const SKILL_ROOT = '/workspace/skills/fluffyjaws';
-const MCP_SESSION_FILE = '/workspace/skills/fluffyjaws/.mcp-session';
+// The skill's own directory, wherever it is installed (SLICC's /workspace/skills,
+// or anywhere the host jsh runs it from): __dirname is this script's folder.
+const SKILL_ROOT = __dirname.replace(/\/scripts\/?$/, '');
+const MCP_SESSION_FILE = `${SKILL_ROOT}/.mcp-session`;
 
 // Read the cached MCP session id, or '' if the file doesn't exist / is
 // unreadable. Attempt-then-catch (rather than an exists()-then-read()

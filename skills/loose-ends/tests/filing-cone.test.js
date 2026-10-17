@@ -1,7 +1,8 @@
-import test, { is, ok } from 'tst';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import test, { is, ok } from 'tst';
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Filing-cone stamp on `loose-ends create` (slicc#3212 Layer C).
@@ -73,17 +74,23 @@ async function runCreate(args, { env = {}, store = { updated: null, tasks: [] } 
       throw err;
     },
   };
+  // __dirname is the script's own folder, as the runtime provides it.
   const body = new (Object.getPrototypeOf(async function () {}).constructor)(
     'require',
     'process',
+    '__dirname',
     source
   );
   try {
-    await body((name) => {
-      if (name === 'fs') return fakeFs;
-      if (name === 'sliccy:exec') return exec;
-      throw new Error('unexpected require: ' + name);
-    }, proc);
+    await body(
+      (name) => {
+        if (name === 'fs') return fakeFs;
+        if (name === 'sliccy:exec') return exec;
+        throw new Error('unexpected require: ' + name);
+      },
+      proc,
+      path.dirname(SCRIPT)
+    );
   } catch (err) {
     if (err.name !== 'NodeExitError') throw err;
     exitCode = err.exitCode;
@@ -113,9 +120,12 @@ test('create stamps the filing cone from TMPDIR', async () => {
 });
 
 test('create --cone overrides TMPDIR and upsert keeps the original owner', async () => {
-  const first = await runCreate(['create', '--title', 'Ping Marta', '--id', 'le-marta', '--cone', 'cone-helix'], {
-    env: { TMPDIR: '/tmp/cone-adobe' },
-  });
+  const first = await runCreate(
+    ['create', '--title', 'Ping Marta', '--id', 'le-marta', '--cone', 'cone-helix'],
+    {
+      env: { TMPDIR: '/tmp/cone-adobe' },
+    }
+  );
   is(first.stored.tasks[0].cone, 'cone-helix');
 
   const second = await runCreate(['create', '--title', 'Ping Marta again', '--id', 'le-marta'], {
@@ -130,4 +140,65 @@ test('create --cone overrides TMPDIR and upsert keeps the original owner', async
 test('create without TMPDIR leaves cone unset', async () => {
   const r = await runCreate(['create', '--title', 'No cone', '--id', 'le-none']);
   is(r.stored.tasks[0].cone, undefined);
+});
+
+// ai-ecoverse/skills#491: the default template is the skill's own file, found
+// from where the script is installed, not at a literal /workspace path.
+test('bootstrap installs the template that sits next to the installed script', async () => {
+  const src = source;
+  const sh = [];
+  const installedAt = '/opt/skills/loose-ends/scripts';
+  const tmpl = '/opt/skills/loose-ends/templates/loose-ends.shtml';
+  const body = new (Object.getPrototypeOf(async function () {}).constructor)(
+    'require',
+    'process',
+    '__dirname',
+    src
+  );
+  let checked = null;
+  try {
+    await body(
+      (name) => {
+        if (name === 'fs')
+          return {
+            existsSync: (p) => {
+              checked = p;
+              return false;
+            },
+            promises: {
+              readFile: async () => '{}',
+              writeFile: async () => {},
+              mkdir: async () => {},
+            },
+          };
+        if (name === 'sliccy:exec')
+          return Object.assign(
+            async (cmd) => {
+              sh.push(cmd);
+              return { exitCode: 0, stdout: '', stderr: '' };
+            },
+            { spawn: async () => ({ exitCode: 0, stdout: '', stderr: '' }) }
+          );
+        throw new Error('unexpected require: ' + name);
+      },
+      {
+        argv: ['node', `${installedAt}/loose-ends.jsh`, 'bootstrap'],
+        env: {},
+        pid: 1,
+        stdout: { write: () => {} },
+        stderr: { write: () => {} },
+        exit(code = 0) {
+          throw Object.assign(new Error('exit ' + code), { name: 'NodeExitError', exitCode: code });
+        },
+      },
+      installedAt
+    );
+  } catch (err) {
+    is(
+      err.message.includes(`template not found: ${tmpl}`) || err.name === 'NodeExitError',
+      true,
+      err.message
+    );
+  }
+  is(checked, tmpl);
 });

@@ -178,7 +178,7 @@ async function main() {
   const storePath = typeof args.store === 'string' ? args.store : DEFAULT_STORE;
   const template = typeof args.template === 'string'
     ? args.template
-    : '/workspace/skills/loose-ends/templates/loose-ends.shtml';
+    : `${__dirname.replace(/\/scripts\/?$/, '')}/templates/loose-ends.shtml`;
 
   if (cmd === 'reseed') {
     const n = await reseed(name, storePath);

@@ -59,7 +59,10 @@ const color = require('sliccy:color'); // console colours (replaces raw ANSI esc
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
-const CONFIG_FILE = '/workspace/skills/linkedin/.config';
+// The skill's own directory, wherever it is installed (SLICC's /workspace/skills,
+// or anywhere the host jsh runs it from): __dirname is this script's folder.
+const SKILL_ROOT = __dirname.replace(/\/scripts\/?$/, '');
+const CONFIG_FILE = `${SKILL_ROOT}/.config`;
 const LINKEDIN_DOMAIN = 'www.linkedin.com';
 const GRAPHQL_CREATE_QUERY_ID = 'voyagerContentcreationDashShares.279996efa5064c01775d5aff003d9377';
 const VIDEO_UPLOAD_METADATA_PATH = '/voyager/api/voyagerVideoDashMediaUploadMetadata?action=upload';
@@ -1031,8 +1034,8 @@ async function monday() {
 
 // ─── Watch (cron-based comment polling) ──────────────────────────────────────
 
-const WATCH_STATE_FILE = '/workspace/skills/linkedin/.watch-state.json';
-const WATCH_CONFIG_FILE = '/workspace/skills/linkedin/.watch-config.json';
+const WATCH_STATE_FILE = `${SKILL_ROOT}/.watch-state.json`;
+const WATCH_CONFIG_FILE = `${SKILL_ROOT}/.watch-config.json`;
 
 async function loadWatchState() {
   try {

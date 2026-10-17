@@ -107,11 +107,12 @@ async function load(opts = {}) {
     warn: (...a) => stderr.push(a.map(String).join(' ')),
   };
 
-  const factory = new AsyncFunction('require', 'process', 'console', source);
+  // __dirname is the script's own folder, as the runtime provides it.
+  const factory = new AsyncFunction('require', 'process', 'console', '__dirname', source);
   let mod = null;
   let exitCode = 0;
   try {
-    mod = await factory(mockRequire, mockProcess, mockConsole);
+    mod = await factory(mockRequire, mockProcess, mockConsole, SCRIPT.replace(/\/[^/]+$/, ''));
   } catch (e) {
     if (!(e instanceof NodeExitError)) throw e;
     exitCode = e.exitCode;

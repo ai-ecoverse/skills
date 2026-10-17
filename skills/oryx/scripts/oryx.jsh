@@ -67,7 +67,10 @@ function escapeShellArg(value) {
 }
 
 
-const CONFIG_FILE = '/workspace/skills/oryx/.config';
+// The skill's own directory, wherever it is installed (SLICC's /workspace/skills,
+// or anywhere the host jsh runs it from): __dirname is this script's folder.
+const SKILL_ROOT = __dirname.replace(/\/scripts\/?$/, '');
+const CONFIG_FILE = `${SKILL_ROOT}/.config`;
 const ENDPOINT    = 'https://oryx.zsa.io/graphql';
 const ZSA_DOMAIN  = 'zsa.io';
 
@@ -804,8 +807,8 @@ const commands = {
   },
 
   async help() {
-    const r = await exec('cat /workspace/skills/oryx/scripts/oryx.jsh');
-    const src = r.exitCode === 0 ? r.stdout : '';
+    // This script's own source, wherever it is installed.
+    const src = await require('fs').promises.readFile(__filename, 'utf8').catch(() => '');
     const lines = src.split('\n');
     const helpLines = [];
     for (const l of lines) {
