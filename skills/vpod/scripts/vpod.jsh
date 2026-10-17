@@ -240,7 +240,7 @@ function loadSdk() {
 }
 
 async function doLoadSdk() {
-  if (!(await fs.exists(`${PKG_DIR}/dist/index.js`))) cli.die(NOT_INSTALLED, { prefix: TOOL });
+  if (!(fs.existsSync(`${PKG_DIR}/dist/index.js`))) cli.die(NOT_INSTALLED, { prefix: TOOL });
   const sdk = await importEsm(previewUrl(`${PKG_DIR}/dist/index.js`));
   if (typeof sdk?.Sandbox?.create !== 'function') {
     cli.die(`installed ${PACKAGE} does not export Sandbox.create() — reinstall with \`${TOOL} install\``,
@@ -256,8 +256,8 @@ async function doLoadSdk() {
  */
 async function installedVersion() {
   try {
-    if (!(await fs.exists(`${PKG_DIR}/dist/index.js`))) return null;
-    return String(JSON.parse(await fs.readFile(`${PKG_DIR}/package.json`)).version || 'unknown');
+    if (!(fs.existsSync(`${PKG_DIR}/dist/index.js`))) return null;
+    return String(JSON.parse(await fs.promises.readFile(`${PKG_DIR}/package.json`, 'utf8')).version || 'unknown');
   } catch { return null; }
 }
 
@@ -267,12 +267,12 @@ const deltaPath = (name) => `${SESSION_DIR}/${name}.delta`;
 const lockPath = (name) => `${SESSION_DIR}/${name}.lock`;
 
 async function readJson(path) {
-  try { return JSON.parse(await fs.readFile(path)); } catch { return null; }
+  try { return JSON.parse(await fs.promises.readFile(path, 'utf8')); } catch { return null; }
 }
 
 async function listSessions() {
-  if (!(await fs.exists(SESSION_DIR))) return [];
-  const names = (await fs.readDir(SESSION_DIR))
+  if (!(fs.existsSync(SESSION_DIR))) return [];
+  const names = (await fs.promises.readdir(SESSION_DIR))
     .filter((f) => f.endsWith('.json'))
     .map((f) => f.slice(0, -5));
   const out = [];
@@ -280,7 +280,7 @@ async function listSessions() {
     const meta = await readJson(metaPath(name));
     if (!meta) continue;
     let size = 0;
-    try { size = (await fs.stat(deltaPath(name))).size || 0; } catch { /* delta gone */ }
+    try { size = (await fs.promises.stat(deltaPath(name))).size || 0; } catch { /* delta gone */ }
     out.push({ ...meta, name, deltaBytes: size, locked: await isLocked(name) });
   }
   return out.sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
@@ -309,8 +309,8 @@ async function acquireLock(name, holdMs) {
     );
   }
   const token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-  await fs.mkdir(SESSION_DIR, { recursive: true });
-  await fs.writeFile(lockPath(name), JSON.stringify({
+  await fs.promises.mkdir(SESSION_DIR, { recursive: true });
+  await fs.promises.writeFile(lockPath(name), JSON.stringify({
     at: Date.now(), expiresAt: Date.now() + holdMs, token,
   }));
   return token;
@@ -320,7 +320,7 @@ async function releaseLock(name, token) {
   try {
     const lock = await readJson(lockPath(name));
     if (lock && token && lock.token !== token) return; // someone else's lock now
-    await fs.rm(lockPath(name));
+    await fs.promises.rm(lockPath(name));
   } catch { /* best effort */ }
 }
 
@@ -355,7 +355,7 @@ async function openSession(sdk, name, flags) {
       { prefix: TOOL }
     );
   }
-  if (meta && (await fs.exists(deltaPath(name)))) {
+  if (meta && (fs.existsSync(deltaPath(name)))) {
     if (snapshot && snapshot !== meta.snapshotId) {
       cli.die(
         `session '${name}' was created from snapshot '${meta.snapshotId}', not '${snapshot}'.\n` +
@@ -363,7 +363,7 @@ async function openSession(sdk, name, flags) {
         { prefix: TOOL }
       );
     }
-    const delta = await fs.readFileBinary(deltaPath(name));
+    const delta = await fs.promises.readFile(deltaPath(name));
     const sandbox = await sdk.Sandbox.resume({ id: name, snapshotId: meta.snapshotId, delta }, options);
     return { sandbox, resumed: true, snapshotId: meta.snapshotId };
   }
@@ -378,16 +378,16 @@ async function markWedged(name, reason) {
   const meta = (await readJson(metaPath(name))) || { name };
   meta.wedgedAt = Date.now();
   meta.wedgedReason = reason;
-  try { await fs.writeFile(metaPath(name), JSON.stringify(meta, null, 2)); } catch { /* best effort */ }
+  try { await fs.promises.writeFile(metaPath(name), JSON.stringify(meta, null, 2)); } catch { /* best effort */ }
 }
 
 async function saveSession(sandbox, name, snapshotId) {
   const delta = await sandbox.suspend();
-  await fs.mkdir(SESSION_DIR, { recursive: true });
+  await fs.promises.mkdir(SESSION_DIR, { recursive: true });
   // Write the bytes before the manifest: a torn write leaves the OLD manifest
   // pointing at a NEW delta of the same snapshot, which still resumes.
-  await fs.writeFileBinary(deltaPath(name), delta);
-  await fs.writeFile(metaPath(name), JSON.stringify({
+  await fs.promises.writeFile(deltaPath(name), delta);
+  await fs.promises.writeFile(metaPath(name), JSON.stringify({
     name, snapshotId, savedAt: Date.now(), deltaBytes: delta.byteLength,
   }, null, 2));
   return delta.byteLength;
@@ -451,12 +451,12 @@ async function withSession(name, flags, fn, guestTimeoutMs = DEFAULT_TIMEOUT_S *
 const localSnapPath = (name) => `${SNAPSHOT_DIR}/${name}.snap`;
 
 async function listLocalSnapshots() {
-  if (!(await fs.exists(SNAPSHOT_DIR))) return [];
+  if (!(fs.existsSync(SNAPSHOT_DIR))) return [];
   const out = [];
-  for (const file of await fs.readDir(SNAPSHOT_DIR)) {
+  for (const file of await fs.promises.readdir(SNAPSHOT_DIR)) {
     if (!file.endsWith('.snap')) continue;
     let size = 0;
-    try { size = (await fs.stat(`${SNAPSHOT_DIR}/${file}`)).size || 0; } catch { /* raced */ }
+    try { size = (await fs.promises.stat(`${SNAPSHOT_DIR}/${file}`)).size || 0; } catch { /* raced */ }
     out.push({ name: file.slice(0, -5), path: `${SNAPSHOT_DIR}/${file}`, bytes: size });
   }
   return out.sort((a, b) => a.name.localeCompare(b.name));
@@ -469,8 +469,8 @@ async function listLocalSnapshots() {
  */
 async function resolveSnapshot(spec) {
   requireName(spec, 'snapshot name');
-  if (await fs.exists(localSnapPath(spec))) {
-    const bytes = await fs.readFileBinary(localSnapPath(spec));
+  if (fs.existsSync(localSnapPath(spec))) {
+    const bytes = await fs.promises.readFile(localSnapPath(spec));
     return { source: { bytes, name: spec }, origin: 'local' };
   }
   return { source: spec, origin: 'registry' };
@@ -574,9 +574,9 @@ async function cmdPut(argv) {
   const { flags, positional } = parseArgs(argv);
   const [src, dst] = positional;
   if (!src || !dst) cli.die(`usage: ${TOOL} put <vfs-src> <guest-dst> [-n NAME]`, { prefix: TOOL });
-  if (!(await fs.exists(src))) cli.die(`no such file: ${src}`, { prefix: TOOL });
+  if (!(fs.existsSync(src))) cli.die(`no such file: ${src}`, { prefix: TOOL });
   const name = flags.name || flags.n || 'default';
-  const bytes = await fs.readFileBinary(src);
+  const bytes = await fs.promises.readFile(src);
   const timeout = clampTimeout(flags.timeout || flags.t);
 
   const { result } = await withSession(name, flags, async (sandbox) => ({
@@ -613,8 +613,8 @@ async function cmdGet(argv) {
   }
   const bytes = base64ToBytes(result.stdout);
   const parent = dst.slice(0, dst.lastIndexOf('/'));
-  if (parent) await fs.mkdir(parent, { recursive: true });
-  await fs.writeFileBinary(dst, bytes);
+  if (parent) await fs.promises.mkdir(parent, { recursive: true });
+  await fs.promises.writeFile(dst, bytes);
   if (flags.json) { cli.out({ session: name, src, dst, bytes: bytes.length }); return; }
   console.log(`  ${color.green('✓')} ${color.cyan(src)} → ${dst} ${color.dim(`(${fmtBytes(bytes.length)})`)}`);
 }
@@ -645,7 +645,7 @@ async function cmdRm(argv) {
   if (!targets.length) cli.die(`usage: ${TOOL} rm <NAME|--all>`, { prefix: TOOL });
   for (const name of targets) {
     requireName(name, 'session name');
-    if (!(await fs.exists(metaPath(name)))) cli.die(`no such session: ${name}`, { prefix: TOOL });
+    if (!(fs.existsSync(metaPath(name)))) cli.die(`no such session: ${name}`, { prefix: TOOL });
     if (await isLocked(name)) {
       cli.die(`session '${name}' is busy — nothing was removed.\n` +
         `If that command died, clear it with: rm ${lockPath(name)}`, { prefix: TOOL });
@@ -654,7 +654,7 @@ async function cmdRm(argv) {
   const removed = [];
   for (const name of targets) {
     for (const path of [metaPath(name), deltaPath(name), lockPath(name)]) {
-      if (await fs.exists(path)) await fs.rm(path);
+      if (fs.existsSync(path)) await fs.promises.rm(path);
     }
     removed.push(name);
   }
@@ -728,11 +728,11 @@ async function cmdImport(argv) {
     if (!res.ok) cli.die(`download failed: ${res.status} ${res.statusText} for ${source}`, { prefix: TOOL });
     bytes = new Uint8Array(await res.arrayBuffer());
   } else {
-    if (!(await fs.exists(source))) cli.die(`no such file: ${source}`, { prefix: TOOL });
-    bytes = await fs.readFileBinary(source);
+    if (!(fs.existsSync(source))) cli.die(`no such file: ${source}`, { prefix: TOOL });
+    bytes = await fs.promises.readFile(source);
   }
-  await fs.mkdir(SNAPSHOT_DIR, { recursive: true });
-  await fs.writeFileBinary(localSnapPath(name), bytes);
+  await fs.promises.mkdir(SNAPSHOT_DIR, { recursive: true });
+  await fs.promises.writeFile(localSnapPath(name), bytes);
   const digest = await sha256Hex(bytes);
   if (flags.json) { cli.out({ name, path: localSnapPath(name), bytes: bytes.length, sha256: digest }); return; }
   console.log(`  ${color.green('✓')} imported ${color.cyan(color.bold(name))} ${color.dim(`(${fmtBytes(bytes.length)})`)}`);
@@ -877,8 +877,8 @@ async function remotePull(target, positional, flags) {
     cli.die(`sha256 mismatch — remote ${expected}, local ${localDigest}. Nothing was written.`, { prefix: TOOL });
   }
 
-  await fs.mkdir(SNAPSHOT_DIR, { recursive: true });
-  await fs.writeFileBinary(localSnapPath(name), buffer);
+  await fs.promises.mkdir(SNAPSHOT_DIR, { recursive: true });
+  await fs.promises.writeFile(localSnapPath(name), buffer);
   if (flags.json) { cli.out({ target, remotePath, name, bytes: total, sha256: localDigest, verified: Boolean(expected) }); return; }
   console.log(`  ${color.green('✓')} ${color.cyan(color.bold(name))} ${color.dim(`(${fmtBytes(total)})`)}` +
     (expected ? color.dim(' — sha256 verified') : color.yellow(' — UNVERIFIED (no sha256 on the follower)')));
@@ -912,7 +912,7 @@ async function cmdClean(argv) {
     }
     for (const session of sessions) {
       for (const path of [metaPath(session.name), deltaPath(session.name), lockPath(session.name)]) {
-        if (await fs.exists(path)) await fs.rm(path);
+        if (fs.existsSync(path)) await fs.promises.rm(path);
       }
       freed.sessions.push(session.name);
       freed.localBytes += session.deltaBytes || 0;
@@ -925,7 +925,7 @@ async function cmdClean(argv) {
     // this skill never stores sessions there, so the default is right.
     freed.cacheBytes = Number(await sdk.snapshots.clear()) || 0;
     for (const snap of await listLocalSnapshots()) {
-      await fs.rm(snap.path);
+      await fs.promises.rm(snap.path);
       freed.localBytes += snap.bytes;
     }
   }

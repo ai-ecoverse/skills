@@ -51,7 +51,7 @@ async function run(exec, argv) {
 }
 
 async function readPackageVersion(fs, dir) {
-  const pkg = JSON.parse(await fs.readFile(`${dir}/package.json`));
+  const pkg = JSON.parse(await fs.promises.readFile(`${dir}/package.json`, 'utf8'));
   return typeof pkg.version === 'string' ? pkg.version : '';
 }
 

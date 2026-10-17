@@ -13,6 +13,15 @@ const lib = require('./intent.js');
 const { tabTools } = require('./tab.js');
 const kevRuntime = require('./kev/kev-runtime.js');
 const vision = require('./vision.js');
+// SLICC 6's fs.fetchToFile, on Node's fs: throws on a non-2xx answer, writes
+// the bytes, returns how many (ai-ecoverse/skills#487).
+async function fetchToFile(fs, url, path) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`fetch ${res.status} ${res.statusText}`);
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  await fs.promises.writeFile(path, bytes);
+  return bytes.byteLength;
+}
 
 const DIR = '/tmp/intent';
 const STATE = `${DIR}/state.json`;
@@ -92,23 +101,23 @@ function createIntent({ exec, fs, browser, root = '', system1 = null }) {
 
   async function readJson(path, fallback) {
     try {
-      if (!(await fs.exists(path))) return fallback;
-      return JSON.parse(String(await fs.readFile(path)));
+      if (!fs.existsSync(path)) return fallback;
+      return JSON.parse(String(await fs.promises.readFile(path, 'utf8')));
     } catch {
       return fallback;
     }
   }
 
   async function writeJson(path, value) {
-    await fs.mkdir(path.slice(0, path.lastIndexOf('/')), { recursive: true });
-    await fs.writeFile(path, JSON.stringify(value));
+    await fs.promises.mkdir(path.slice(0, path.lastIndexOf('/')), { recursive: true });
+    await fs.promises.writeFile(path, JSON.stringify(value));
   }
 
   async function logCall(entry) {
     try {
-      await fs.mkdir(DIR, { recursive: true });
-      const old = (await fs.exists(CALLS)) ? String(await fs.readFile(CALLS)) : '';
-      await fs.writeFile(CALLS, `${old}${JSON.stringify(entry)}\n`);
+      await fs.promises.mkdir(DIR, { recursive: true });
+      const old = fs.existsSync(CALLS) ? String(await fs.promises.readFile(CALLS, 'utf8')) : '';
+      await fs.promises.writeFile(CALLS, `${old}${JSON.stringify(entry)}\n`);
     } catch {
       // The call log feeds evals; a call must not fail for it.
     }
@@ -127,14 +136,14 @@ function createIntent({ exec, fs, browser, root = '', system1 = null }) {
     const dir = lib.bundleCacheDir(url);
     if (!dir) throw new IntentError(`--from ${url} is not an http(s) URL or a VFS path`);
     const base = String(url).replace(/\/+$/, '');
-    await fs.mkdir(dir, { recursive: true });
+    await fs.promises.mkdir(dir, { recursive: true });
     // A bundle at a URL does not change: once its manifest is cached, the
     // cache is used as it is (fetching the manifest on every call cost a
     // minute or more against a local server, 2026-10-03). Delete the cache
     // directory to fetch it again.
-    if (!(await fs.exists(`${dir}/manifest.json`))) {
+    if (!fs.existsSync(`${dir}/manifest.json`)) {
       try {
-        await fs.fetchToFile(`${base}/manifest.json`, `${dir}/manifest.json`);
+        await fetchToFile(fs, `${base}/manifest.json`, `${dir}/manifest.json`);
       } catch (err) {
         throw new IntentError(
           `could not fetch ${base}/manifest.json: ${String(err?.message || err)}`
@@ -143,7 +152,7 @@ function createIntent({ exec, fs, browser, root = '', system1 = null }) {
     }
     let manifest;
     try {
-      manifest = JSON.parse(String(await fs.readFile(`${dir}/manifest.json`)));
+      manifest = JSON.parse(String(await fs.promises.readFile(`${dir}/manifest.json`, 'utf8')));
     } catch {
       throw new IntentError(
         `${base}/manifest.json is not a kev bundle manifest (not JSON); give the URL of the bundle's directory`
@@ -153,11 +162,11 @@ function createIntent({ exec, fs, browser, root = '', system1 = null }) {
     for (const rel of rels) {
       const path = `${dir}/${rel}`;
       const want = sizes[rel];
-      const have = (await fs.exists(path)) ? (await fs.stat(path)).size : -1;
+      const have = fs.existsSync(path) ? (await fs.promises.stat(path)).size : -1;
       if (have >= 0 && (typeof want !== 'number' || have === want)) continue;
-      await fs.mkdir(path.slice(0, path.lastIndexOf('/')), { recursive: true });
+      await fs.promises.mkdir(path.slice(0, path.lastIndexOf('/')), { recursive: true });
       try {
-        await fs.fetchToFile(`${base}/${rel}`, path);
+        await fetchToFile(fs, `${base}/${rel}`, path);
       } catch (err) {
         throw new IntentError(`could not fetch ${base}/${rel}: ${String(err?.message || err)}`);
       }
@@ -182,7 +191,7 @@ function createIntent({ exec, fs, browser, root = '', system1 = null }) {
           `${kevRuntime.missingWeightsMessage(status).split('\n')[0]} Download them: intent pull --model ${size}`
         );
       }
-    } else if (!(await fs.exists(`${from}/manifest.json`))) {
+    } else if (!fs.existsSync(`${from}/manifest.json`)) {
       throw new IntentError(
         `--from ${from} has no manifest.json: point it at a kev bundle directory`
       );
@@ -199,7 +208,7 @@ function createIntent({ exec, fs, browser, root = '', system1 = null }) {
       : `${(await kevRuntime.weightsStatus(fs, size)).base}/manifest.json`;
     let manifest = null;
     try {
-      manifest = JSON.parse(String(await fs.readFile(manifestPath)));
+      manifest = JSON.parse(String(await fs.promises.readFile(manifestPath, 'utf8')));
     } catch {
       manifest = null;
     }
@@ -389,7 +398,11 @@ function createIntent({ exec, fs, browser, root = '', system1 = null }) {
     const r = await pw(['screenshot', `--tab=${tab}`, `--filename=${path}`]);
     if (r.exitCode !== 0) return null;
     try {
-      const marked = await vision.markedImage(await fs.readFileBinary(path), shortlist, viewport);
+      const marked = await vision.markedImage(
+        await fs.promises.readFile(path),
+        shortlist,
+        viewport
+      );
       return { image: marked.image, png: marked.png };
     } catch {
       return null;
@@ -939,9 +952,9 @@ function createIntent({ exec, fs, browser, root = '', system1 = null }) {
   async function appendLog(dir, entry) {
     const path = `${dir}/decisions.jsonl`;
     const line = `${lib.redactSecrets(JSON.stringify(entry))}\n`;
-    const old = (await fs.exists(path)) ? String(await fs.readFile(path)) : '';
+    const old = fs.existsSync(path) ? String(await fs.promises.readFile(path, 'utf8')) : '';
     if (old.length + line.length > LOG_MAX_BYTES) return false;
-    await fs.writeFile(path, `${old}${line}`);
+    await fs.promises.writeFile(path, `${old}${line}`);
     return true;
   }
 
@@ -950,7 +963,7 @@ function createIntent({ exec, fs, browser, root = '', system1 = null }) {
     const dir = logDirOf(flags);
     if (!dir) return state.lastDecision || null;
     try {
-      await fs.mkdir(dir, { recursive: true });
+      await fs.promises.mkdir(dir, { recursive: true });
       const tab = result ? result.tab : null;
       const correction = lib.correctionOf(state.lastDecision, req, kind, tab);
       const d = decision;
@@ -972,11 +985,11 @@ function createIntent({ exec, fs, browser, root = '', system1 = null }) {
       }
       if (!d) return correction ? null : state.lastDecision || null;
       const files = {};
-      const kept = (await fs.readDir(dir)).filter((n) => /\.(txt|jpg)$/.test(n)).length;
+      const kept = (await fs.promises.readdir(dir)).filter((n) => /\.(txt|jpg)$/.test(n)).length;
       if (kept < LOG_MAX_FILES) {
         if (d.raw) {
           const text = lib.redactSecrets(d.raw);
-          await fs.writeFile(
+          await fs.promises.writeFile(
             `${dir}/${id}.snapshot.txt`,
             text.length > LOG_SNAPSHOT_MAX ? text.slice(0, LOG_SNAPSHOT_MAX) : text
           );
@@ -984,7 +997,7 @@ function createIntent({ exec, fs, browser, root = '', system1 = null }) {
         }
         if (d.png) {
           try {
-            await fs.writeFileBinary(`${dir}/${id}.jpg`, await vision.toJpeg(d.png, 0.8));
+            await fs.promises.writeFile(`${dir}/${id}.jpg`, await vision.toJpeg(d.png, 0.8));
             files.image = `${id}.jpg`;
           } catch {
             // A worker without OffscreenCanvas keeps the snapshot only.
@@ -1191,8 +1204,8 @@ function createIntent({ exec, fs, browser, root = '', system1 = null }) {
   // ── the daemon ────────────────────────────────────────────────────────
 
   async function serve(flags, { stop = () => false } = {}) {
-    await fs.mkdir(QUEUE, { recursive: true });
-    await fs.mkdir(ANSWERS, { recursive: true });
+    await fs.promises.mkdir(QUEUE, { recursive: true });
+    await fs.promises.mkdir(ANSWERS, { recursive: true });
     const model = flags.from ? `from:${flags.from}` : flags.model || DEFAULT_MODEL;
     const beat = () => writeJson(BEAT, { at: Date.now(), model }).catch(() => {});
     await beat();
@@ -1203,7 +1216,9 @@ function createIntent({ exec, fs, browser, root = '', system1 = null }) {
       while (!stop()) {
         let names = [];
         try {
-          names = (await fs.readDir(QUEUE)).filter((n) => /^[a-z0-9-]{1,40}\.json$/.test(n)).sort();
+          names = (await fs.promises.readdir(QUEUE))
+            .filter((n) => /^[a-z0-9-]{1,40}\.json$/.test(n))
+            .sort();
         } catch {
           names = [];
         }
@@ -1211,14 +1226,14 @@ function createIntent({ exec, fs, browser, root = '', system1 = null }) {
           const path = `${QUEUE}/${name}`;
           let raw;
           try {
-            raw = JSON.parse(String(await fs.readFile(path)));
+            raw = JSON.parse(String(await fs.promises.readFile(path, 'utf8')));
           } catch {
             // Half written: give it a few rounds, then drop it.
             failed.set(name, (failed.get(name) || 0) + 1);
-            if (failed.get(name) > 20) await fs.rm(path).catch(() => {});
+            if (failed.get(name) > 20) await fs.promises.rm(path).catch(() => {});
             continue;
           }
-          await fs.rm(path).catch(() => {});
+          await fs.promises.rm(path).catch(() => {});
           const id = name.slice(0, -5);
           const { req, error } = lib.cleanRequest(raw);
           let answer;
@@ -1242,7 +1257,7 @@ function createIntent({ exec, fs, browser, root = '', system1 = null }) {
     } finally {
       // A client trusts a fresh heartbeat: none may outlive the server.
       clearInterval(beating);
-      await fs.rm(BEAT).catch(() => {});
+      await fs.promises.rm(BEAT).catch(() => {});
     }
   }
 
@@ -1255,10 +1270,10 @@ function createIntent({ exec, fs, browser, root = '', system1 = null }) {
     const deadline = Date.now() + ((req.timeout || WAIT_DEFAULT_S) + 180) * 1000;
     const path = `${ANSWERS}/${id}.json`;
     while (Date.now() < deadline) {
-      if (await fs.exists(path)) {
+      if (fs.existsSync(path)) {
         const answer = await readJson(path, null);
         if (answer) {
-          await fs.rm(path).catch(() => {});
+          await fs.promises.rm(path).catch(() => {});
           return answer;
         }
       }

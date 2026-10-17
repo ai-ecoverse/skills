@@ -402,7 +402,7 @@ var renderSlide = async function(pdfDoc, slide, fonts, embeddedImages, useEmbedd
 var convertPptxToPdf = async function(inputPath, outputPath) {
   var lib = await loadPdfLib();
   var JSZip = require('jszip');
-  var zip   = await JSZip.loadAsync(await fs.readFileBinary(inputPath));
+  var zip   = await JSZip.loadAsync(await require('fs').promises.readFile(inputPath));
 
   var slideFiles = Object.keys(zip.files)
     .filter(function(f) { return /^ppt\/slides\/slide\d+\.xml$/.test(f); })
@@ -452,7 +452,7 @@ var convertPptxToPdf = async function(inputPath, outputPath) {
   }
 
   var pdfBytes = await pdfDoc.save();
-  await fs.writeFileBinary(outputPath, pdfBytes);
+  await require('fs').promises.writeFile(outputPath, pdfBytes);
   var check = await exec('wc -c "' + outputPath + '"');
   console.log('PDF written: ' + (check.stdout || '').trim());
   return outputPath;

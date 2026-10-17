@@ -12,26 +12,28 @@ function memFs() {
   return {
     files,
     written,
-    async exists(p) {
-      return files.has(p) || [...files.keys()].some((k) => k.startsWith(`${p}/`));
-    },
-    async readFile(p) {
-      if (!files.has(p)) throw new Error(`ENOENT ${p}`);
-      return files.get(p);
-    },
-    async writeFile(p, v) {
-      files.set(p, String(v));
-      written.push([p, String(v)]);
-    },
-    async mkdir() {},
-    async rm(p) {
-      files.delete(p);
-    },
-    async readDir(d) {
-      return [...files.keys()]
-        .filter((k) => k.startsWith(`${d}/`))
-        .map((k) => k.slice(d.length + 1))
-        .filter((n) => !n.includes('/'));
+    // Node's fs (slicc-jsh, SLICC 7; SLICC 6 serves it too): existsSync and
+    // fs.promises; the SLICC 6 promise dialect is absent (ai-ecoverse/skills#487).
+    existsSync: (p) => files.has(p) || [...files.keys()].some((k) => k.startsWith(`${p}/`)),
+    promises: {
+      async readFile(p, encoding) {
+        if (!files.has(p)) throw new Error(`ENOENT ${p}`);
+        return encoding ? files.get(p) : Buffer.from(files.get(p));
+      },
+      async writeFile(p, v) {
+        files.set(p, String(v));
+        written.push([p, String(v)]);
+      },
+      async mkdir() {},
+      async rm(p) {
+        files.delete(p);
+      },
+      async readdir(d) {
+        return [...files.keys()]
+          .filter((k) => k.startsWith(`${d}/`))
+          .map((k) => k.slice(d.length + 1))
+          .filter((n) => !n.includes('/'));
+      },
     },
   };
 }

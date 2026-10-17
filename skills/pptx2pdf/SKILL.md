@@ -18,7 +18,9 @@ Convert a PPTX file to a PDF using `pdf-lib` (via esm.sh) and the pre-loaded `JS
 Load the library via `new Function` — required to correctly scope the loaded code:
 
 ```js
-var libCode = await fs.readFile('/workspace/skills/pptx2pdf/scripts/pptx2pdf-lib.jsh');
+var fs = require('fs');
+var exec = require('sliccy:exec');
+var libCode = await fs.promises.readFile('/workspace/skills/pptx2pdf/scripts/pptx2pdf-lib.jsh', 'utf8');
 var pptx2pdf = await (new Function(
   'fs','exec','require','btoa','atob','console',
   'Uint8Array','Array','Object','String','parseInt','Math','Promise','fetch',
@@ -26,7 +28,7 @@ var pptx2pdf = await (new Function(
 ))(fs, exec, require, btoa, atob, console, Uint8Array, Array, Object, String, parseInt, Math, Promise, fetch);
 
 await pptx2pdf.convertPptxToPdf('/mnt/deck.pptx', '/shared/deck.pdf');
-open('/shared/deck.pdf', '--download');
+await exec('open /shared/deck.pdf --download');
 ```
 
 ### Verifying output

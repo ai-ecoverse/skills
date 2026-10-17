@@ -71,11 +71,11 @@ async function findTranscript(since, promptText) {
     const m = /-(\d{4}-\d\d-\d\dT\d\d)-(\d\d)-(\d\d)-(\d{3})Z\.md$/.exec(n);
     return m ? Date.parse(`${m[1]}:${m[2]}:${m[3]}.${m[4]}Z`) : 0;
   };
-  const names = (await fs.readDir('/tmp'))
+  const names = (await fs.promises.readdir('/tmp'))
     .filter((n) => /^agent-.*\.md$/.test(n) && stamp(n) >= since - 2000)
     .sort((x, y) => stamp(y) - stamp(x));
   for (const name of names) {
-    const text = String(await fs.readFile(`/tmp/${name}`));
+    const text = String(await fs.promises.readFile(`/tmp/${name}`, 'utf8'));
     if (text.includes(promptText.slice(0, 200))) return text;
   }
   return '';
@@ -86,7 +86,7 @@ async function scriptsIn(root, dir = root, depth = 0, out = []) {
   if (depth > 4 || out.length >= 300) return out;
   let names = [];
   try {
-    names = await fs.readDir(dir);
+    names = await fs.promises.readdir(dir);
   } catch {
     return out;
   }
@@ -95,15 +95,16 @@ async function scriptsIn(root, dir = root, depth = 0, out = []) {
     const path = `${dir}/${name}`;
     let st = null;
     try {
-      st = await fs.stat(path);
+      st = await fs.promises.stat(path);
     } catch {
       continue;
     }
-    // The realm's stat: { isDirectory, isFile, size } as booleans and a number.
-    if (st && st.isDirectory === true) await scriptsIn(root, path, depth + 1, out);
+    // Node's fs.Stats (fs.promises.stat on SLICC 6 and slicc-jsh): isDirectory()
+    // is a method; read as a property it would be a (truthy) function.
+    if (st && st.isDirectory()) await scriptsIn(root, path, depth + 1, out);
     else if (/\.(m?js|cjs|ts|jsh|py|sh)$/.test(name) && (st?.size ?? 0) <= 512 * 1024) {
       try {
-        out.push({ name: path.slice(root.length + 1), text: String(await fs.readFile(path)) });
+        out.push({ name: path.slice(root.length + 1), text: String(await fs.promises.readFile(path, 'utf8')) });
       } catch {}
     }
   }
@@ -119,7 +120,7 @@ async function main() {
   let goal = typeof flags.goal === 'string' ? flags.goal : '';
   if (!goal && typeof flags['goal-file'] === 'string') {
     try {
-      goal = String(await fs.readFile(flags['goal-file'])).trim();
+      goal = String(await fs.promises.readFile(flags['goal-file'], 'utf8')).trim();
     } catch {
       cli.die(`cannot read --goal-file ${flags['goal-file']}`, { prefix: 'intent-arm' });
     }
@@ -140,7 +141,7 @@ async function main() {
   const limitS = Math.max(30, Number.parseFloat(flags['time-limit']) || 900);
   const run = runId(url);
   const dir = `${ARM_DIR}/${run}`;
-  await fs.mkdir(dir, { recursive: true });
+  await fs.promises.mkdir(dir, { recursive: true });
   const started = Date.now();
 
   // A clean intent state: no tab or call log from an earlier run.
@@ -148,9 +149,9 @@ async function main() {
   let serving = null;
   let system1Info = null;
   if (tool === 'intent') {
-    await fs.mkdir(DIR, { recursive: true });
-    await fs.rm(STATE).catch(() => {});
-    await fs.rm(CALLS).catch(() => {});
+    await fs.promises.mkdir(DIR, { recursive: true });
+    await fs.promises.rm(STATE).catch(() => {});
+    await fs.promises.rm(CALLS).catch(() => {});
     const core = createIntent({ exec, fs, browser, root: skill.dir.replace(/\/scripts\/?$/, '') });
     const s1 = {
       // --s1-model: kept for command lines that name the default (4b-vision).
@@ -169,7 +170,7 @@ async function main() {
     } catch (err) {
       if (err?.name === 'NodeExitError') throw err;
       const failed = { run, tool, ok: false, error: `System 1 did not load: ${String(err?.message || err)}` };
-      await fs.writeFile(`${dir}/result.json`, JSON.stringify(failed, null, 2));
+      await fs.promises.writeFile(`${dir}/result.json`, JSON.stringify(failed, null, 2));
       if (flags.json) cli.out(printable(failed, { private: priv }));
       else console.error(`intent-arm: ${priv ? `System 1 did not load (${dir}/result.json)` : failed.error}`);
       process.exit(1);
@@ -178,7 +179,7 @@ async function main() {
   }
 
   const cwd = `${dir}/scoop`;
-  await fs.mkdir(cwd, { recursive: true });
+  await fs.promises.mkdir(cwd, { recursive: true });
   // Both arms get the same text utilities beside their browser tool: a
   // playwright-cli scoop without grep, head or sleep could not page through
   // a large snapshot and gave up on Wikipedia (2026-10-03).
@@ -226,11 +227,11 @@ async function main() {
     }
   }
   const transcript = await findTranscript(started, prompt(url, goal, tool, toolset));
-  if (transcript) await fs.writeFile(`${dir}/transcript.md`, transcript);
+  if (transcript) await fs.promises.writeFile(`${dir}/transcript.md`, transcript);
   const turns = Number((/- turns: (\d+)/.exec(transcript) || [])[1]) || null;
   // The answer in full: result.json keeps 500 characters of it, which cut a
   // bench's FINAL ANSWER off (BU Bench V2.1, 2026-10-04).
-  await fs.writeFile(`${dir}/answer.txt`, lastMessage(transcript) || stdout.trim());
+  await fs.promises.writeFile(`${dir}/answer.txt`, lastMessage(transcript) || stdout.trim());
   const calls = toolCalls(transcript);
   // Around the rules: scripts that drive the browser themselves, bare browser commands.
   const checked = audit(calls, await scriptsIn(cwd));
@@ -242,12 +243,12 @@ async function main() {
 
   // The intent calls as the server logged them: latency and outcome per call.
   let intentLog = [];
-  if (tool === 'intent' && (await fs.exists(CALLS))) {
-    intentLog = String(await fs.readFile(CALLS))
+  if (tool === 'intent' && (fs.existsSync(CALLS))) {
+    intentLog = String(await fs.promises.readFile(CALLS, 'utf8'))
       .split('\n')
       .filter(Boolean)
       .map((l) => JSON.parse(l));
-    await fs.writeFile(`${dir}/calls.jsonl`, `${intentLog.map((e) => JSON.stringify(e)).join('\n')}\n`);
+    await fs.promises.writeFile(`${dir}/calls.jsonl`, `${intentLog.map((e) => JSON.stringify(e)).join('\n')}\n`);
   }
   const count = (xs, key) => {
     const m = {};
@@ -259,7 +260,7 @@ async function main() {
   let tab = null;
   if (tool === 'intent') {
     try {
-      tab = JSON.parse(String(await fs.readFile(STATE))).tab || null;
+      tab = JSON.parse(String(await fs.promises.readFile(STATE, 'utf8'))).tab || null;
     } catch {
       tab = null;
     }
@@ -276,7 +277,7 @@ async function main() {
       const shot = page.parseSnapshot(snap.stdout);
       finalUrl = shot.url;
       finalText = page.pageTextLines(shot, null, 4000).join('\n');
-      await fs.writeFile(`${dir}/final.snapshot.txt`, snap.stdout);
+      await fs.promises.writeFile(`${dir}/final.snapshot.txt`, snap.stdout);
     }
     const shotPath = `${dir}/final.png`;
     await exec.spawn(['playwright-cli', 'screenshot', `--tab=${tab}`, `--filename=${shotPath}`]);
@@ -290,9 +291,9 @@ async function main() {
   const judge = {
     steps: calls.length ? calls.map((c) => `${c.command.slice(0, 300)} → ${c.result.replace(/\s+/g, ' ').slice(0, 500)}`) : fromLog,
     finalResult: [`The agent's answer: ${stdout.trim().slice(0, 2000) || '(none)'}`, `Final page (${finalUrl || 'unknown'}):`, finalText || '(none)'].join('\n'),
-    screenshots: (await fs.exists(`${dir}/final.png`)) ? ['final.png'] : [],
+    screenshots: (fs.existsSync(`${dir}/final.png`)) ? ['final.png'] : [],
   };
-  await fs.writeFile(`${dir}/judge.json`, JSON.stringify(judge));
+  await fs.promises.writeFile(`${dir}/judge.json`, JSON.stringify(judge));
 
   const result = {
     run,
@@ -332,7 +333,7 @@ async function main() {
     system1: system1Info,
     answer: stdout.trim().slice(0, 500),
   };
-  await fs.writeFile(`${dir}/result.json`, JSON.stringify(result, null, 2));
+  await fs.promises.writeFile(`${dir}/result.json`, JSON.stringify(result, null, 2));
   if (flags.json) cli.out(printable(result, { private: priv }));
   else {
     console.log(`${tool}: ${result.steps} steps in ${result.seconds} s${timedOut ? ' (time limit)' : ''}, $${usage ? usage.cost.toFixed(3) : '?'}`);
@@ -350,8 +351,8 @@ try {
   const message = String(err?.message || err);
   // --private: an error can quote the task or a page, so it stays on the leader.
   if (process.argv.includes('--private')) {
-    await fs.mkdir(ARM_DIR, { recursive: true }).catch(() => {});
-    await fs.writeFile(`${ARM_DIR}/last-error.txt`, message).catch(() => {});
+    await fs.promises.mkdir(ARM_DIR, { recursive: true }).catch(() => {});
+    await fs.promises.writeFile(`${ARM_DIR}/last-error.txt`, message).catch(() => {});
     cli.die(`failed; the error is in ${ARM_DIR}/last-error.txt`, { prefix: 'intent-arm' });
   }
   cli.die(message, { prefix: 'intent-arm' });
