@@ -111,6 +111,15 @@ const { applyPrEdit, buildPrEditPlan } = require('./pr-edit.js');
 
 // Single POSIX-shell-quote a value for safe interpolation into an exec()
 // command line (exec runs through the jsh shell bridge).
+// All of stdin as text. fs.readFileSync(0) reads it on SLICC 6, in slicc-jsh
+// (SLICC 7) and in Node alike; process.stdin.read() returns the whole buffer
+// only on SLICC 6 (a stream returns null until data arrives). A terminal is
+// not waited on: it counts as empty stdin.
+function readStdinText() {
+  if (process.stdin && process.stdin.isTTY) return '';
+  return require('fs').readFileSync(0, 'utf8');
+}
+
 function escapeShellArg(value) {
   return "'" + String(value).replace(/'/g, "'\\''") + "'";
 }
@@ -750,7 +759,7 @@ async function bodyFrom(cmdLabel, body, bodyFile) {
       cli.die(`${cmdLabel}: body specified twice — --body and --body-file. Pass only one.`);
     }
     if (bodyFile === '-') {
-      try { return (await process.stdin.read()) ?? ''; }
+      try { return readStdinText(); }
       catch (e) { cli.die(`${cmdLabel}: could not read stdin for --body-file -: ${e.message}`); }
     }
     try { return await fs.readFile(bodyFile); }
@@ -3923,7 +3932,7 @@ async function apiPassthrough(args) {
   const readTypedField = async (value) => {
     if (value === '@-') {
       if (stdinValue === undefined) {
-        try { stdinValue = String((await process.stdin.read()) ?? ''); }
+        try { stdinValue = readStdinText(); }
         catch (e) { cli.die(`api: could not read stdin for -F key=@-: ${e.message}`); }
       }
       return stdinValue;
@@ -3985,7 +3994,7 @@ async function apiPassthrough(args) {
   let inputBody = null;
   if (inputFile !== null) {
     if (inputFile === '-') {
-      try { inputBody = String((await process.stdin.read()) ?? ''); }
+      try { inputBody = readStdinText(); }
       catch (e) { cli.die(`api: could not read stdin for --input -: ${e.message}`); }
     } else {
       try { inputBody = await fs.readFile(inputFile); }
@@ -4323,7 +4332,7 @@ async function cmdMcpRaw(args) {
       const filePath = args[++i];
       try {
         const content = filePath === '-'
-          ? String((await process.stdin.read()) ?? '')
+          ? readStdinText()
           : new TextDecoder().decode(await fs.readFileBinary(filePath));
         params = JSON.parse(content);
       } catch (e) {

@@ -944,9 +944,18 @@ const RPC_PLUGIN_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/u;
 const RPC_METHOD_PATTERN = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/u;
 const RPC_USAGE = 'usage: bb rpc <plugin> <method> [<json> | -] [--json]';
 
+// All of stdin as text. fs.readFileSync(0) reads it on SLICC 6, in slicc-jsh
+// (SLICC 7) and in Node alike; process.stdin.read() returns the whole buffer
+// only on SLICC 6 (a stream returns null until data arrives). A terminal is
+// not waited on: it counts as empty stdin.
+function readStdinText() {
+  if (process.stdin && process.stdin.isTTY) return '';
+  return require('fs').readFileSync(0, 'utf8');
+}
+
 async function readRpcInput(raw) {
   if (raw === undefined) return null;
-  const text = raw === '-' ? await process.stdin.read() : raw;
+  const text = raw === '-' ? readStdinText() : raw;
   if (text === null || text === undefined || String(text).trim() === '') {
     if (raw === '-') return null;
     die(`${RPC_USAGE} — the body is empty`);

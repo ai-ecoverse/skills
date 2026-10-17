@@ -93,7 +93,7 @@ export function threadServer(count, { insertAfterFirstRead = 0 } = {}) {
  * @param {string[]} words argv after the script name
  * @param {object} [opts]
  * @param {(req) => {status:number, body:any}} [opts.server] fake bb server
- * @param {string|null} [opts.stdin] what process.stdin.read() yields
+ * @param {string|null} [opts.stdin] what stdin holds (read with readFileSync(0))
  */
 export async function runBb(words, opts = {}) {
   const calls = [];
@@ -151,6 +151,17 @@ export async function runBb(words, opts = {}) {
       date: (v) => String(v),
     },
   };
+  // stdin: bb reads it whole with readFileSync(0), which works on SLICC 6,
+  // slicc-jsh and Node (ai-ecoverse/skills#488); process.stdin.read() is a
+  // stream read there and has nothing yet.
+  let stdinReads = 0;
+  mocks.fs = {
+    readFileSync: (fd, encoding) => {
+      if (fd !== 0 || encoding !== 'utf8') throw new Error(`unexpected readFileSync(${fd})`);
+      stdinReads += 1;
+      return opts.stdin === undefined || opts.stdin === null ? '' : opts.stdin;
+    },
+  };
   const mockRequire = (id) => {
     if (Object.hasOwn(mocks, id)) return mocks[id];
     throw new Error(`unexpected require(${id})`);
@@ -158,19 +169,13 @@ export async function runBb(words, opts = {}) {
 
   const argv = ['node', SCRIPT, ...words];
   Object.defineProperty(argv, 'parseFlags', { value: () => parseFlags(words) });
-  let stdinReads = 0;
   const proc = {
     argv,
     env: {},
     exit: (code) => {
       throw new NodeExitError('exit', code);
     },
-    stdin: {
-      read: async () => {
-        stdinReads += 1;
-        return opts.stdin === undefined ? null : opts.stdin;
-      },
-    },
+    stdin: { isTTY: false, read: () => null },
   };
   const consoleStub = {
     log: (...args) => stdout.push(args.join(' ')),
