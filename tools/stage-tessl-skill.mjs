@@ -4,6 +4,8 @@ import { copyFile, lstat, mkdir, readdir, realpath, writeFile } from 'node:fs/pr
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { isMain } from './is-main.mjs';
+
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SAFE_SKILL_PATH = /^skills\/[a-z0-9][a-z0-9-]*$/;
 
@@ -116,9 +118,10 @@ async function main() {
     throw new Error('usage: node tools/stage-tessl-skill.mjs <skills/name> <destination>');
   }
   console.log(await stageSkill({ skillPath, destination }));
+  console.error(`stage-tessl-skill: PASS staged ${skillPath}`);
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMain(import.meta.url)) {
   main().catch((error) => {
     console.error(`stage-tessl-skill: ${error.message}`);
     process.exitCode = 1;

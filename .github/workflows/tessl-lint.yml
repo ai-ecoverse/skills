@@ -23,8 +23,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Test CI gate wiring
+        run: node --test tools/is-main.test.mjs tools/expect-verdict.test.mjs
+
       - name: Reject tracked tile skill paths
-        run: git ls-files | node tools/check-tessl-layout.mjs
+        run: git ls-files | bash tools/expect-verdict.sh check-tessl-layout node tools/check-tessl-layout.mjs
 
       - uses: tesslio/setup-tessl@v2
 
@@ -43,7 +46,7 @@ jobs:
             CHANGED_FILES=$(git diff --name-only "$BEFORE..$SHA" 2>/dev/null || true)
           fi
 
-          DETECTED=$(printf '%s\n' "$CHANGED_FILES" | node tools/detect-tessl-changes.mjs)
+          DETECTED=$(printf '%s\n' "$CHANGED_FILES" | bash tools/expect-verdict.sh detect-tessl-changes node tools/detect-tessl-changes.mjs)
           echo "skills=$(jq -c .skills <<< "$DETECTED")" >> "$GITHUB_OUTPUT"
           echo "plugins=$(jq -c .plugins <<< "$DETECTED")" >> "$GITHUB_OUTPUT"
           echo "Detected Tessl targets: $DETECTED"
@@ -68,7 +71,7 @@ jobs:
           while IFS= read -r skill; do
             echo "::group::Lint skill $skill"
             package="$LINT_ROOT/$(basename "$skill")"
-            node tools/stage-tessl-skill.mjs "$skill" "$package"
+            bash tools/expect-verdict.sh stage-tessl-skill node tools/stage-tessl-skill.mjs "$skill" "$package"
             tessl skill lint "$package"
             echo "::endgroup::"
             echo "- ✅ \`$skill\` (isolated package)" >> "$GITHUB_STEP_SUMMARY"
@@ -84,7 +87,7 @@ jobs:
           trap 'rm -rf "$STAGE_ROOT"' EXIT
           while IFS= read -r plugin; do
             echo "::group::Stage and lint plugin $plugin"
-            node tools/stage-tessl-plugin.mjs "$plugin" "$STAGE_ROOT/$plugin"
+            bash tools/expect-verdict.sh stage-tessl-plugin node tools/stage-tessl-plugin.mjs "$plugin" "$STAGE_ROOT/$plugin"
             tessl plugin lint "$STAGE_ROOT/$plugin"
             echo "::endgroup::"
             echo "- ✅ staged plugin \`$plugin\`" >> "$GITHUB_STEP_SUMMARY"

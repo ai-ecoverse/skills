@@ -5,6 +5,7 @@ import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { detectTesslChanges } from './detect-tessl-changes.mjs';
+import { isMain } from './is-main.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const TEST_FILE = /\.test\.(js|ts)$/;
@@ -194,9 +195,10 @@ async function main() {
   if (parsed.tsvFile) await writeFile(parsed.tsvFile, toTsv(result));
   if (parsed.format === 'tsv') process.stdout.write(toTsv(result));
   else console.log(JSON.stringify(result));
+  console.error(`detect-skill-integration: PASS ${result.targets.length} targets`);
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMain(import.meta.url)) {
   main().catch((error) => {
     console.error(`detect-skill-integration: ${error.message}`);
     process.exitCode = 1;

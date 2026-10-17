@@ -24,6 +24,8 @@ on:
       - 'tools/detect-skill-integration.mjs'
       - 'tools/detect-skill-integration.test.mjs'
       - 'tools/detect-tessl-changes.mjs'
+      - 'tools/expect-verdict.sh'
+      - 'tools/is-main.mjs'
       - 'tools/run-skill-integration.sh'
   workflow_dispatch:
     inputs:
@@ -67,17 +69,17 @@ jobs:
           mkdir -p "$RUNNER_TEMP/skill-integration"
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             if [ -n "$DISPATCH_SKILL" ]; then
-              DETECTED=$(node tools/detect-skill-integration.mjs \
+              DETECTED=$(bash tools/expect-verdict.sh detect-skill-integration node tools/detect-skill-integration.mjs \
                 --tsv-file "$RUNNER_TEMP/skill-integration/targets.tsv" \
                 --skill "$DISPATCH_SKILL")
             else
-              DETECTED=$(node tools/detect-skill-integration.mjs \
+              DETECTED=$(bash tools/expect-verdict.sh detect-skill-integration node tools/detect-skill-integration.mjs \
                 --tsv-file "$RUNNER_TEMP/skill-integration/targets.tsv" \
                 --all)
             fi
           else
             CHANGED_FILES=$(git diff --name-only "origin/$BASE_REF...HEAD")
-            DETECTED=$(printf '%s\n' "$CHANGED_FILES" | node tools/detect-skill-integration.mjs \
+            DETECTED=$(printf '%s\n' "$CHANGED_FILES" | bash tools/expect-verdict.sh detect-skill-integration node tools/detect-skill-integration.mjs \
               --tsv-file "$RUNNER_TEMP/skill-integration/targets.tsv")
           fi
           printf '%s\n' "$DETECTED" | tee "$RUNNER_TEMP/skill-integration/targets.json"

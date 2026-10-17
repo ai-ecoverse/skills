@@ -7,6 +7,8 @@ on:
       - 'skills/**'
       - '.github/workflows/tessl-review.yml'
       - 'tools/detect-tessl-changes.mjs'
+      - 'tools/expect-verdict.sh'
+      - 'tools/is-main.mjs'
 
 permissions:
   contents: read
@@ -35,7 +37,7 @@ jobs:
         run: |
           set -euo pipefail
           CHANGED_FILES=$(git diff --name-only "origin/$BASE_REF...HEAD")
-          DETECTED=$(printf '%s\n' "$CHANGED_FILES" | node tools/detect-tessl-changes.mjs)
+          DETECTED=$(printf '%s\n' "$CHANGED_FILES" | bash tools/expect-verdict.sh detect-tessl-changes node tools/detect-tessl-changes.mjs)
           SKILLS=$(jq -c .skills <<< "$DETECTED")
           echo "skills=$SKILLS" >> "$GITHUB_OUTPUT"
           if [ "$SKILLS" = "[]" ]; then
