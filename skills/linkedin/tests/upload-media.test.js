@@ -75,7 +75,13 @@ async function load(bytes) {
   };
   const quiet = { log() {}, error() {}, warn() {}, info() {} };
   const body = src.slice(0, cut) + '\nreturn { uploadMediaBytes };';
-  const mod = await new AsyncFunction('require', 'process', 'console', body)(req, proc, quiet);
+  // __dirname is the script's own folder, as the runtime provides it.
+  const mod = await new AsyncFunction('require', 'process', 'console', '__dirname', body)(
+    req,
+    proc,
+    quiet,
+    SCRIPT.replace(/\/[^/]+$/, '')
+  );
   return { mod, evals, reads };
 }
 

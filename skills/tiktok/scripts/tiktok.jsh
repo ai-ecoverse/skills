@@ -20,7 +20,10 @@ const fs = require('fs');
 const nodeCrypto = require('crypto');
 
 const TT_DOMAIN = 'www.tiktok.com';
-const TMP_DIR = '/workspace/skills/tiktok/.tmp';
+// The skill's own directory, wherever it is installed (SLICC's /workspace/skills,
+// or anywhere the host jsh runs it from): __dirname is this script's folder.
+const SKILL_ROOT = __dirname.replace(/\/scripts\/?$/, '');
+const TMP_DIR = `${SKILL_ROOT}/.tmp`;
 
 // ---------------------------------------------------------------------------
 // Tab management

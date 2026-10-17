@@ -724,7 +724,10 @@ function describeTarget(target) {
 // root and reply into the wrong thread. Writing only this channel's own file
 // removes the shared state entirely; concurrent posts to the SAME channel still
 // race, but there last-write-wins is exactly the intended semantics.
-const LAST_POST_DIR = '/workspace/skills/slack';
+// The skill's own directory, wherever it is installed (SLICC's /workspace/skills,
+// or anywhere the host jsh runs it from): __dirname is this script's folder.
+const SKILL_ROOT = __dirname.replace(/\/scripts\/?$/, '');
+const LAST_POST_DIR = SKILL_ROOT;
 
 function lastPostFile(wsId, channel) {
   // Sanitize: the channel arrives from argv, and the id is interpolated into a
@@ -824,7 +827,7 @@ async function startAutoWatch({ targetChannel, threadTs, selfTs, wsId, watchScoo
   // 2. watchId + state file, mirroring watch()/unwatch() conventions.
   const useThread = scope === 'thread';
   const watchId = useThread ? `${targetChannel}-${threadTs}` : targetChannel;
-  const stateFile = `/workspace/skills/slack/.watch-${watchId}.json`;
+  const stateFile = `${SKILL_ROOT}/.watch-${watchId}.json`;
   const now = Date.now();
   const expiresAt = new Date(now + AUTOWATCH_TTL_MS).toISOString();
 
@@ -1221,13 +1224,13 @@ const commands = {
     // Unknown shortcodes that aren't in either map pass through unchanged.
     let emojiMap = {};
     try {
-      emojiMap = JSON.parse(await fs.promises.readFile('/workspace/skills/slack/scripts/emoji-map.json', 'utf8'));
+      emojiMap = JSON.parse(await fs.promises.readFile(`${__dirname}/emoji-map.json`, 'utf8'));
     } catch (e) {
       // static map unavailable — continue
     }
     // Merge workspace custom emoji (cached, refreshed every hour)
     try {
-      const cacheFile = '/workspace/skills/slack/scripts/emoji-cache.json';
+      const cacheFile = `${__dirname}/emoji-cache.json`;
       let cache = null;
       try {
         cache = JSON.parse(await fs.promises.readFile(cacheFile, 'utf8'));
@@ -1778,7 +1781,7 @@ const commands = {
     validateScoopName(scoop);
 
     const watchId = threadTs ? `${channel}-${threadTs}` : channel;
-    const stateFile = `/workspace/skills/slack/.watch-${watchId}.json`;
+    const stateFile = `${SKILL_ROOT}/.watch-${watchId}.json`;
 
     // Check for existing watch.
     //
@@ -1910,7 +1913,7 @@ const commands = {
     validateChannelId(channel);
 
     const watchId = threadTs ? `${channel}-${threadTs}` : channel;
-    const stateFile = `/workspace/skills/slack/.watch-${watchId}.json`;
+    const stateFile = `${SKILL_ROOT}/.watch-${watchId}.json`;
 
     let state;
     try {
@@ -1942,7 +1945,7 @@ const commands = {
   },
 
   async watches(args, globalFlags) {
-    const globResult = await exec('ls /workspace/skills/slack/.watch-*.json 2>/dev/null');
+    const globResult = await exec('ls ' + escapeShellArg(SKILL_ROOT) + '/.watch-*.json 2>/dev/null');
     if (globResult.exitCode !== 0 || !globResult.stdout.trim()) {
       console.log('No active watches.');
       return;
@@ -1971,7 +1974,7 @@ const commands = {
   },
 
   async reinject(args, globalFlags) {
-    const globResult = await exec('ls /workspace/skills/slack/.watch-*.json 2>/dev/null');
+    const globResult = await exec('ls ' + escapeShellArg(SKILL_ROOT) + '/.watch-*.json 2>/dev/null');
     if (globResult.exitCode !== 0 || !globResult.stdout.trim()) {
       console.log('No active watches to reinject.');
       return;
