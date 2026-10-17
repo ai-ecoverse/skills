@@ -34,7 +34,7 @@ let _tab = null;
 async function loadConfig() {
   if (_config) return _config;
   try {
-    const raw = await fs.readFile(CONFIG_FILE, 'utf8');
+    const raw = await fs.promises.readFile(CONFIG_FILE, 'utf8');
     _config = JSON.parse(raw);
     return _config;
   } catch (e) {
@@ -44,7 +44,7 @@ async function loadConfig() {
 
 async function saveConfig(config) {
   _config = config;
-  await fs.writeFile(CONFIG_FILE, JSON.stringify(config, null, 2));
+  await fs.promises.writeFile(CONFIG_FILE, JSON.stringify(config, null, 2));
 }
 
 function getDomain() {

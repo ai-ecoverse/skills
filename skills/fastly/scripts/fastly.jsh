@@ -617,7 +617,7 @@ async function cmdServicePurge(flags) {
   } else {
     let raw;
     try {
-      raw = await fs.readFile(file);
+      raw = await fs.promises.readFile(file, 'utf8');
     } catch {
       cli.die(`Cannot read --file ${file}`, { prefix: 'fastly' });
     }

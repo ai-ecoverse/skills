@@ -44,7 +44,7 @@ if (cmd === 'write') {
   }
   if (!Array.isArray(newRows)) cli.die('Rows must be a JSON array.');
 
-  const raw = await fs.readFile(filePath);
+  const raw = await fs.promises.readFile(filePath, 'utf8');
   const sheet = JSON.parse(raw);
   const sheetName = flags.sheet;
 
@@ -71,13 +71,13 @@ if (cmd === 'write') {
     setDerived(sheet);
   }
 
-  await fs.writeFile(filePath, JSON.stringify(sheet, null, 2));
+  await fs.promises.writeFile(filePath, JSON.stringify(sheet, null, 2));
   console.log(c.green('✓') + ` Wrote ${newRows.length} row(s) to ${filePath}${sheetName ? ` (sheet: ${sheetName})` : ''}`);
 
 } else if (cmd === 'schema') {
   if (!filePath) cli.die('Usage: da-live schema <path> [--sheet <name>]');
 
-  const raw = await fs.readFile(filePath);
+  const raw = await fs.promises.readFile(filePath, 'utf8');
   const sheet = JSON.parse(raw);
   const sheetName = flags.sheet;
 
@@ -96,7 +96,7 @@ if (cmd === 'write') {
 } else if (cmd === 'recalc') {
   if (!filePath) cli.die('Usage: da-live recalc <path>');
 
-  const raw = await fs.readFile(filePath);
+  const raw = await fs.promises.readFile(filePath, 'utf8');
   const sheet = JSON.parse(raw);
 
   if (sheet[':type'] === 'multi-sheet') {
@@ -107,7 +107,7 @@ if (cmd === 'write') {
     console.log(`Updated total/limit: ${sheet.total}`);
   }
 
-  await fs.writeFile(filePath, JSON.stringify(sheet, null, 2));
+  await fs.promises.writeFile(filePath, JSON.stringify(sheet, null, 2));
   console.log(c.green('✓') + ' ' + filePath);
 
 } else {

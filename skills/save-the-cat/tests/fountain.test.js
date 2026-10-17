@@ -1,6 +1,6 @@
-import test, { is, ok, rejects } from 'tst';
 import fs from 'node:fs';
 import path from 'node:path';
+import test, { is, ok, rejects } from 'tst';
 
 // Skill root when `tst` runs from the installed skill dir (CI + local harness).
 // Avoid import.meta.url — some SLICC module graphs reject it when a CJS vendor
@@ -123,8 +123,21 @@ async function run(args, delivery = 0, env = {}) {
   };
   pathStub.posix = pathStub;
   const req = (id) => {
+    // Node's fs semantics (slicc-jsh, SLICC 7): only fs.promises reads and
+    // writes without a callback; SLICC 6 serves the same (ai-ecoverse/skills#487).
     if (id === 'fs')
-      return { readFile: async () => source, writeFile: async (...a) => written.push(a) };
+      return {
+        readFile: () => {
+          throw new TypeError('The "cb" argument must be of type function. Received undefined');
+        },
+        writeFile: () => {
+          throw new TypeError('The "cb" argument must be of type function. Received undefined');
+        },
+        promises: {
+          readFile: async (_p, enc) => (enc === 'utf8' ? source : Buffer.from(source)),
+          writeFile: async (...a) => written.push(a),
+        },
+      };
     if (id === 'path') return pathStub;
     if (id === '../assets/render-fountain.js') return { renderFountain };
     if (id === 'sliccy:exec')
