@@ -31,11 +31,15 @@ async function remotion(args, files = {}) {
     }
     return { positional, flags, subcommand: positional[0] || '' };
   };
+  // Node's fs shape (existsSync, fs.promises), as slicc-jsh and SLICC 6 both
+  // serve it (ai-ecoverse/skills#487).
   const vfs = {
-    exists: async (p) => Object.hasOwn(files, p),
-    readFile: async (p) => {
-      if (!Object.hasOwn(files, p)) throw new Error(`ENOENT: ${p}`);
-      return files[p];
+    existsSync: (p) => Object.hasOwn(files, p),
+    promises: {
+      readFile: async (p, enc) => {
+        if (!Object.hasOwn(files, p)) throw new Error(`ENOENT: ${p}`);
+        return enc ? files[p] : Buffer.from(files[p]);
+      },
     },
   };
   const exit = (code) => {

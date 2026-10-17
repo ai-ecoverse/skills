@@ -1899,9 +1899,9 @@ async function cmdPost(args, flags) {
   const allowDuet = flags['no-duet'] ? 0 : (visibility === 1 ? null : 1);
   const allowStitch = flags['no-stitch'] ? 0 : (visibility === 1 ? null : 1);
 
-  if (!(await fs.exists(path))) postFail(`file not found: ${path}`);
+  if (!(fs.existsSync(path))) postFail(`file not found: ${path}`);
   let bytes;
-  try { bytes = await fs.readFileBinary(path); } catch (e) { postFail(`could not read ${path}`, e && e.message); }
+  try { bytes = await fs.promises.readFile(path); } catch (e) { postFail(`could not read ${path}`, e && e.message); }
   if (!bytes || !bytes.length) postFail(`${path} is empty`);
   const filename = path.split('/').pop();
 

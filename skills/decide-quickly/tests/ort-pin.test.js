@@ -27,13 +27,17 @@ function copy(dir, version, bundles = [WASM, WEBGPU]) {
   return files;
 }
 
+// Node's fs shape (slicc-jsh, SLICC 7; SLICC 6 serves it too): existsSync and
+// fs.promises. The SLICC 6-only promise dialect is absent (ai-ecoverse/skills#487).
 function fakeFs(files) {
   return {
     files,
-    exists: async (path) => Object.hasOwn(files, path),
-    readFile: async (path) => {
-      if (!Object.hasOwn(files, path)) throw new Error(`ENOENT: ${path}`);
-      return files[path];
+    existsSync: (path) => Object.hasOwn(files, path),
+    promises: {
+      readFile: async (path, encoding) => {
+        if (!Object.hasOwn(files, path)) throw new Error(`ENOENT: ${path}`);
+        return encoding ? files[path] : Buffer.from(files[path]);
+      },
     },
   };
 }
@@ -151,7 +155,7 @@ test('the loaded module is checked against the pin', () => {
 // tst runs with the skill folder as the working directory.
 test('both scripts gate onnxruntime-web through host.ensureOrt only', async () => {
   for (const script of ['scripts/kev.jsh', 'scripts/cua-s1.jsh']) {
-    const source = String(await realFs.readFile(script));
+    const source = realFs.readFileSync(script, 'utf8');
     is([script, source.includes('host.ensureOrt(exec, fs)')], [script, true]);
     is([script, source.includes('onnxruntime-web@')], [script, false]);
     is([script, source.includes('node_modules/onnxruntime-web')], [script, false]);
@@ -169,22 +173,22 @@ test('webgpu: a first root without the webgpu bundle yields to a complete later 
   is(calls, []);
   is(result, { dir: LOCAL, installed: false });
   // What kev loads with navigator.gpu present, then on its wasm retry.
-  is(await fs.exists(`${result.dir}/${bundleFor('webgpu')}`), true);
-  is(await fs.exists(`${result.dir}/${bundleFor('wasm')}`), true);
+  is(fs.existsSync(`${result.dir}/${bundleFor('webgpu')}`), true);
+  is(fs.existsSync(`${result.dir}/${bundleFor('wasm')}`), true);
 });
 
 test('no webgpu: a complete exact copy is used as is', async () => {
   const { result, calls, fs } = await gate(copy(GLOBAL, PIN));
   is(calls, []);
   is(result, { dir: GLOBAL, installed: false });
-  is(await fs.exists(`${result.dir}/${bundleFor('wasm')}`), true);
+  is(fs.existsSync(`${result.dir}/${bundleFor('wasm')}`), true);
 });
 
 test('no webgpu: a wasm-only copy is still reinstalled, so every worker gets one copy', async () => {
   const { result, calls, fs } = await gate(copy(GLOBAL, PIN, [WASM]));
   is(calls, [`ipk add -g ${host.ORT_SPEC}`]);
   is(result, { dir: GLOBAL, installed: true });
-  is(await fs.exists(`${GLOBAL}/${WEBGPU}`), true);
+  is(fs.existsSync(`${GLOBAL}/${WEBGPU}`), true);
 });
 
 test('an install that leaves out the webgpu bundle names the file and the path', async () => {
@@ -197,7 +201,7 @@ test('an install that leaves out the webgpu bundle names the file and the path',
 test('the gate probes every bundle the scripts import', async () => {
   const probed = host.ORT_BUNDLES || [];
   for (const script of ['scripts/kev.jsh', 'scripts/cua-s1.jsh']) {
-    const source = String(await realFs.readFile(script));
+    const source = realFs.readFileSync(script, 'utf8');
     const imported = source.match(/ort\.[a-z]+\.bundle\.min\.mjs/g) || [];
     is([script, imported.length > 0], [script, true]);
     for (const name of imported) {

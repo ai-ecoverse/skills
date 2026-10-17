@@ -72,13 +72,13 @@ function packageSatisfies(installedVersion, spec) {
 async function packageDir(fs, name) {
   for (const root of PACKAGE_ROOTS) {
     const dir = `${root}/${name}`;
-    if (await fs.exists(`${dir}/package.json`)) return dir;
+    if (fs.existsSync(`${dir}/package.json`)) return dir;
   }
   return null;
 }
 
 async function readPackageVersion(fs, dir) {
-  const pkg = JSON.parse(await fs.readFile(`${dir}/package.json`));
+  const pkg = JSON.parse(await fs.promises.readFile(`${dir}/package.json`, 'utf8'));
   return typeof pkg.version === 'string' ? pkg.version : '';
 }
 
@@ -138,7 +138,7 @@ async function listCopies(fs, name, probes) {
     const dir = `${root}/${name}`;
     const missing = [];
     for (const probe of probes) {
-      if (!(await fs.exists(`${dir}/${probe}`))) missing.push(probe);
+      if (!fs.existsSync(`${dir}/${probe}`)) missing.push(probe);
     }
     const hasProbe = missing.length === 0;
     let version = null;
@@ -222,7 +222,7 @@ function normalizeFlags(parsed, boolNames) {
 
 async function readStamp(fs, stampPath) {
   try {
-    return String(await fs.readFile(stampPath)).trim();
+    return String(await fs.promises.readFile(stampPath, 'utf8')).trim();
   } catch {
     return '';
   }
@@ -241,13 +241,13 @@ async function ensureBundle(exec, fs, opts) {
   await ensureEsbuild(exec, fs);
   const versions = [];
   for (let i = 0; i < opts.packages.length; i++) {
-    const pkg = JSON.parse(await fs.readFile(`${dirs[i]}/package.json`));
+    const pkg = JSON.parse(await fs.promises.readFile(`${dirs[i]}/package.json`, 'utf8'));
     versions.push(`${opts.packages[i].name}@${pkg.version}`);
   }
   const stamp = versions.join(' ');
   const stampPath = `${opts.outfile}.stamp`;
-  if ((await fs.exists(opts.outfile)) && (await readStamp(fs, stampPath)) === stamp) return false;
-  await fs.mkdir(parentDir(opts.outfile), { recursive: true });
+  if (fs.existsSync(opts.outfile) && (await readStamp(fs, stampPath)) === stamp) return false;
+  await fs.promises.mkdir(parentDir(opts.outfile), { recursive: true });
   console.error(`esbuild: bundling ${opts.entry}`);
   await run(exec, [
     'esbuild',
@@ -258,7 +258,7 @@ async function ensureBundle(exec, fs, opts) {
     '--format=cjs',
     '--platform=browser',
   ]);
-  await fs.writeFile(stampPath, `${stamp}\n`);
+  await fs.promises.writeFile(stampPath, `${stamp}\n`);
   return true;
 }
 

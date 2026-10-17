@@ -11,6 +11,16 @@ const browser = require('sliccy:browser');
 const exec = require('sliccy:exec');
 const fs = require('fs');
 const c = require('sliccy:color');
+// SLICC 6's fs.fetchToFile, on Node's fs: throws on a non-2xx answer, writes
+// the bytes, returns how many (ai-ecoverse/skills#487).
+async function fetchToFile(url, path) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`fetch ${res.status} ${res.statusText}`);
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  await fs.promises.writeFile(path, bytes);
+  return bytes.byteLength;
+}
+
 
 const API = 'https://api.printful.com';
 const ALLOWED_HOSTS = new Set(['api.printful.com']);
@@ -639,7 +649,7 @@ async function servePublicUrl(filePath) {
   const abs = pathMod.resolve(filePath);
   const dir = pathMod.dirname(abs);
   const base = pathMod.basename(abs);
-  const exists = await fs.exists(abs);
+  const exists = fs.existsSync(abs);
   if (!exists) cli.die(`File not found: ${filePath}`, { prefix: 'printful' });
   const { stdout, stderr, exitCode } = await Promise.resolve(
     exec.spawn(['serve', '--ttl', '1d', '--no-bridge', dir]),
@@ -775,13 +785,13 @@ async function cmdMockup(positional, flags) {
     );
   }
 
-  await fs.mkdir(outDir, { recursive: true });
+  await fs.promises.mkdir(outDir, { recursive: true });
   const saved = [];
   for (const p of previews) {
     const name = `${slug(p.variant)}-${p.fileId || p.variantId}.png`;
     const dest = `${outDir.replace(/\/$/, '')}/${name}`;
-    await fs.fetchToFile(p.url, dest);
-    const st = await fs.stat(dest).catch(() => null);
+    await fetchToFile(p.url, dest);
+    const st = await fs.promises.stat(dest).catch(() => null);
     saved.push({ ...p, path: dest, name, bytes: st ? st.size : null });
   }
 
@@ -806,7 +816,7 @@ async function cmdMockup(positional, flags) {
             `<figcaption>${s.variant}</figcaption></figure>`,
         )
         .join('\n');
-    await fs.writeFile(`${outDir.replace(/\/$/, '')}/index.html`, sheet);
+    await fs.promises.writeFile(`${outDir.replace(/\/$/, '')}/index.html`, sheet);
     const { stdout, stderr, exitCode } = await Promise.resolve(
       exec.spawn(['serve', '--ttl', '7d', '--no-bridge', outDir]),
     );

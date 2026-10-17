@@ -50,7 +50,7 @@ async function main() {
   const { opts, file } = parse(process.argv.slice(2));
   if (opts.help) return cli.help(HELP);
   if (!file) return cli.die('no input file.\n\n' + HELP);
-  if (!(await fs.exists(file))) return cli.die(`file not found: ${file}`);
+  if (!(fs.existsSync(file))) return cli.die(`file not found: ${file}`);
 
   const key = await L.getKey(opts.key);
   const j = await L.stt(key, {

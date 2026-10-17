@@ -57,10 +57,10 @@ function getMediaParser() {
 
 async function inspectMedia(path) {
   const mp = getMediaParser();
-  if (!(await fs.exists(path))) {
+  if (!(fs.existsSync(path))) {
     throw new Error(`file does not exist: ${path}`);
   }
-  const bytes = await fs.readFileBinary(path);
+  const bytes = await fs.promises.readFile(path);
   const blob = new Blob([bytes]);
   const fast = await mp.parseMedia({
     src: blob,
@@ -152,10 +152,10 @@ function searchDirsFor(baseDir, extra) {
 }
 async function locateSrc(src, searchDirs) {
   if (!isPlainString(src)) return null;
-  if (isAbsolute(src)) return (await fs.exists(src)) ? src : null;
+  if (isAbsolute(src)) return (fs.existsSync(src)) ? src : null;
   for (const d of searchDirs) {
     const cand = `${d}/${src}`;
-    if (await fs.exists(cand)) return cand;
+    if (fs.existsSync(cand)) return cand;
   }
   return null;
 }
@@ -298,7 +298,7 @@ function basenameOf(p) {
 
 async function stageEdl(edl, stagingDir, searchDirs = [process.cwd()]) {
   const assetsDir = `${stagingDir}/assets`;
-  await fs.mkdir(assetsDir, { recursive: true }).catch(() => fs.mkdir(assetsDir));
+  await fs.promises.mkdir(assetsDir, { recursive: true });
 
   const uniqueSrcs = new Set();
   for (const seg of edl.segments) {
@@ -321,16 +321,16 @@ async function stageEdl(edl, stagingDir, searchDirs = [process.cwd()]) {
       skipped.push({ src, reason: `does not exist (looked in ${searchDirs.join(', ')})` });
       continue;
     }
-    const srcSize = (await fs.stat(abs)).size;
+    const srcSize = (await fs.promises.stat(abs)).size;
     // Idempotent: a same-size copy is left alone. Re-copying a 66 MB webcam
     // file on every render retry is minutes of pointless byte shuffling.
-    if (abs !== dest && (await fs.exists(dest)) && (await fs.stat(dest)).size === srcSize) {
+    if (abs !== dest && (fs.existsSync(dest)) && (await fs.promises.stat(dest)).size === srcSize) {
       rewriteMap.set(src, `assets/${base}`);
       copied.push({ src, dest, bytes: srcSize, reused: true });
       continue;
     }
-    const bytes = await fs.readFileBinary(abs);
-    if (abs !== dest) await fs.writeFileBinary(dest, bytes);
+    const bytes = await fs.promises.readFile(abs);
+    if (abs !== dest) await fs.promises.writeFile(dest, bytes);
     rewriteMap.set(src, `assets/${base}`);
     copied.push({ src, dest, bytes: bytes.length });
   }
@@ -348,7 +348,7 @@ async function stageEdl(edl, stagingDir, searchDirs = [process.cwd()]) {
     }),
   };
   const edlOutPath = `${stagingDir}/edl.staged.json`;
-  await fs.writeFile(edlOutPath, JSON.stringify(stagedEdl, null, 2));
+  await fs.promises.writeFile(edlOutPath, JSON.stringify(stagedEdl, null, 2));
 
   return { assetsDir, edlOutPath, stagedEdl, copied, skipped };
 }
@@ -413,7 +413,7 @@ function mimeFor(container) {
 // it into a single Blob. Reassembly preserves the original container bytes, so
 // every inSec in the EDL stays exact (no keyframe-snapped trim, no re-encode).
 async function splitIntoParts(absPath, stagingDir, key) {
-  const size = (await fs.stat(absPath)).size;
+  const size = (await fs.promises.stat(absPath)).size;
   const n = Math.max(1, Math.ceil(size / PART_SIZE));
   const names = [];
   for (let i = 0; i < n; i++) names.push(`parts/${safeName(key)}.${String(i).padStart(2, '0')}.bin`);
@@ -426,14 +426,14 @@ async function splitIntoParts(absPath, stagingDir, key) {
   for (let i = 0; i < n && reusable; i++) {
     const partPath = `${stagingDir}/${names[i]}`;
     const want = i === n - 1 ? size - PART_SIZE * i : PART_SIZE;
-    if (!(await fs.exists(partPath)) || (await fs.stat(partPath)).size !== want) reusable = false;
+    if (!(fs.existsSync(partPath)) || (await fs.promises.stat(partPath)).size !== want) reusable = false;
   }
   if (reusable) return { parts: names, size, reused: true };
 
-  const bytes = await fs.readFileBinary(absPath);
+  const bytes = await fs.promises.readFile(absPath);
   for (let i = 0; i < n; i++) {
     const slice = bytes.subarray(i * PART_SIZE, Math.min(size, (i + 1) * PART_SIZE));
-    await fs.writeFileBinary(`${stagingDir}/${names[i]}`, slice);
+    await fs.promises.writeFile(`${stagingDir}/${names[i]}`, slice);
   }
   return { parts: names, size, reused: false };
 }
@@ -442,7 +442,7 @@ async function splitIntoParts(absPath, stagingDir, key) {
 async function buildHarness(opts) {
   const { stagedEdl, stagingDir, focusMap, captionsAbs, captionOffsetSec, render, id } = opts;
   const partsDir = `${stagingDir}/parts`;
-  await fs.mkdir(partsDir, { recursive: true }).catch(() => fs.mkdir(partsDir));
+  await fs.promises.mkdir(partsDir, { recursive: true });
 
   const uniqueSrcs = new Set();
   for (const seg of stagedEdl.segments) {
@@ -489,12 +489,12 @@ async function buildHarness(opts) {
   };
 
   if (captionsAbs) {
-    const capBytes = await fs.readFile(captionsAbs);
-    await fs.writeFile(`${stagingDir}/captions.json`, capBytes);
+    const capBytes = await fs.promises.readFile(captionsAbs, 'utf8');
+    await fs.promises.writeFile(`${stagingDir}/captions.json`, capBytes);
     cfg.captions = 'captions.json';
   }
 
-  await fs.writeFile(`${stagingDir}/cfg.json`, JSON.stringify(cfg, null, 2));
+  await fs.promises.writeFile(`${stagingDir}/cfg.json`, JSON.stringify(cfg, null, 2));
   // Harness lookup must work in BOTH layouts: installed as a skill the files sit
   // under assets/, but a bare checkout keeps
   // them beside the script. Try each and report every path tried on failure --
@@ -516,7 +516,7 @@ async function buildHarness(opts) {
   ].filter(Boolean);
   let harnessDir = null;
   for (const cand of harnessCandidates) {
-    if (await fs.exists(`${cand}/index.html`)) { harnessDir = cand; break; }
+    if (fs.existsSync(`${cand}/index.html`)) { harnessDir = cand; break; }
   }
   if (!harnessDir) {
     throw new Error(
@@ -525,8 +525,8 @@ async function buildHarness(opts) {
   }
   for (const f of ['index.html', 'composition.mjs']) {
     const from = `${harnessDir}/${f}`;
-    if (!(await fs.exists(from))) throw new Error(`harness file missing: ${from}`);
-    await fs.writeFile(`${stagingDir}/${f}`, await fs.readFile(from));
+    if (!(fs.existsSync(from))) throw new Error(`harness file missing: ${from}`);
+    await fs.promises.writeFile(`${stagingDir}/${f}`, await fs.promises.readFile(from, 'utf8'));
   }
   return { cfg, assetReport };
 }
@@ -646,7 +646,7 @@ async function evalTab(tab, expr) {
 async function evalTabToFile(tab, expr, outPath) {
   const r = await run(['playwright-cli', 'eval', expr, `--tab=${tab}`, `--output=${outPath}`]);
   if (r.exitCode !== 0) throw new Error(`eval failed (${expr}): ${(r.stderr || r.stdout || '').trim().slice(-300)}`);
-  let s = (await fs.readFile(outPath)).trim();
+  let s = (await fs.promises.readFile(outPath, 'utf8')).trim();
   // eval --output writes the result JSON-encoded (a quoted string for a string)
   if (s.startsWith('"')) {
     try {
@@ -857,7 +857,7 @@ async function renderInBrowser(stagingDir, opts) {
       const tmp = `/tmp/.remotion-chunk-${i}.b64`;
       const b64 = await evalTabToFile(tab, `window.__chunk(${i},${CHUNK_SIZE})`, tmp);
       slices.push(new Uint8Array(Buffer.from(b64, 'base64')));
-      await fs.unlink(tmp).catch(() => {});
+      await fs.promises.unlink(tmp).catch(() => {});
       console.log(color.dim(`  pulled chunk ${i + 1}/${nChunks} (${b64.length} b64 chars)`));
     }
     const total = slices.reduce((a, s) => a + s.length, 0);
@@ -886,8 +886,8 @@ async function renderInBrowser(stagingDir, opts) {
 // ---------------------------------------------------------------------------
 
 async function readEdl(path) {
-  if (!(await fs.exists(path))) cli.die(`no such file: ${path}`);
-  const text = await fs.readFile(path);
+  if (!(fs.existsSync(path))) cli.die(`no such file: ${path}`);
+  const text = await fs.promises.readFile(path, 'utf8');
   try {
     return JSON.parse(text);
   } catch (e) {
@@ -995,7 +995,7 @@ render notes:
   if (cmd === 'filmstrip') {
     const src = positional[1];
     if (!src) cli.die('usage: remotion filmstrip <file> [--frames=N] [--width=N] [--out=path]');
-    if (!(await fs.exists(src))) cli.die(`no such file: ${src}`);
+    if (!(fs.existsSync(src))) cli.die(`no such file: ${src}`);
 
     const nFrames = Math.max(1, Math.min(24, parseInt(flags.frames || flags.n || '8', 10) || 8));
     const thumbW = Math.max(64, Math.min(480, parseInt(flags.width || flags.w || '170', 10) || 170));
@@ -1012,7 +1012,7 @@ render notes:
 
     const thumbH = Math.max(2, Math.round((thumbW * dims.height) / dims.width) & ~1);
     const tmpDir = `/tmp/.strip-${Date.now().toString(36)}`;
-    await fs.mkdir(tmpDir, { recursive: true });
+    await fs.promises.mkdir(tmpDir, { recursive: true });
 
     // Sample at the MIDPOINT of each Nth of the clip, not at the boundaries:
     // a frame taken exactly on a cut lands on whichever side rounding picks and
@@ -1047,8 +1047,8 @@ render notes:
         `ffmpeg -hide_banner -y -ss ${times[i]} -i ${src} -frames:v 1 -vf "scale=${thumbW}:${thumbH}" ${framePath}`,
       );
       let r = await grab();
-      if (!(await fs.exists(framePath))) r = await grab();
-      if (await fs.exists(framePath)) frames.push(framePath);
+      if (!(fs.existsSync(framePath))) r = await grab();
+      if (fs.existsSync(framePath)) frames.push(framePath);
       else console.error(color.yellow(`  (frame at ${times[i]}s failed: ${String(r.stderr || '').slice(-120)})`));
     }
     if (!frames.length) cli.die('no frames could be extracted');
@@ -1057,10 +1057,10 @@ render notes:
     const tile = await exec(
       `ffmpeg -hide_banner -y ${inputs} -filter_complex "hstack=inputs=${frames.length}" ${out}`,
     );
-    if (!(await fs.exists(out))) cli.die(`tiling failed: ${String(tile.stderr || '').slice(-200)}`);
+    if (!(fs.existsSync(out))) cli.die(`tiling failed: ${String(tile.stderr || '').slice(-200)}`);
 
-    for (const f of frames) { try { await fs.unlink(f); } catch { /* best effort */ } }
-    try { await fs.rmdir(tmpDir); } catch { /* best effort */ }
+    for (const f of frames) { try { await fs.promises.unlink(f); } catch { /* best effort */ } }
+    try { await fs.promises.rm(tmpDir, { recursive: true, force: true }); } catch { /* best effort */ }
 
     if (flags.json) {
       return cli.out({
@@ -1134,7 +1134,7 @@ render notes:
       const cand = typeof flags.captions === 'string' ? flags.captions : edl.captions;
       if (cand) {
         const abs = resolveFrom(baseDir, cand);
-        if (await fs.exists(abs)) captionsAbs = abs;
+        if (fs.existsSync(abs)) captionsAbs = abs;
         else cli.warn(`captions file not found: ${abs} (rendering without captions)`);
       }
     }
@@ -1186,10 +1186,10 @@ render notes:
       loadTimeoutMs: 15 * 60 * 1000,
       renderTimeoutMs: timeoutSec * 1000,
       keep: flags.keep === true,
-      cfgText: await fs.readFile(`${stagingDir}/cfg.json`),
+      cfgText: await fs.promises.readFile(`${stagingDir}/cfg.json`, 'utf8'),
     });
 
-    await fs.writeFileBinary(outPath, bytes);
+    await fs.promises.writeFile(outPath, bytes);
     const wall = (Date.now() - t0) / 1000;
     console.log(
       color.green(
@@ -1226,8 +1226,8 @@ render notes:
     const videoCodec = flags['video-codec'] || (container === 'webm' ? 'vp8' : 'h264');
     const audioCodec = flags['audio-codec'] || (container === 'webm' ? 'opus' : 'aac');
 
-    if (!(await fs.exists(src))) cli.die(`no such file: ${src}`);
-    const bytes = await fs.readFileBinary(src);
+    if (!(fs.existsSync(src))) cli.die(`no such file: ${src}`);
+    const bytes = await fs.promises.readFile(src);
     const t0 = Date.now();
     const result = await wc.convertMedia({
       src: new Blob([bytes]),
@@ -1238,7 +1238,7 @@ render notes:
     });
     const outBlob = await result.save();
     const outBytes = new Uint8Array(await outBlob.arrayBuffer());
-    await fs.writeFileBinary(out, outBytes);
+    await fs.promises.writeFile(out, outBytes);
     await result.remove();
     console.log(
       color.green(`✓ transcoded ${src} (${bytes.length}b) -> ${out} (${outBytes.length}b) in ${Date.now() - t0}ms`),

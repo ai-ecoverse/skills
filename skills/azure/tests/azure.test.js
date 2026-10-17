@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test, { is, ok } from 'tst';
 import * as commonMod from '../scripts/arm-common.js';
+import { nodeFs } from './node-fs.js';
 
 // Runs the real az.jsh / az-ext.jsh. Their own test seams (AZ_NO_MAIN /
 // AZ_EXT_NO_MAIN) expose the helpers; a command run goes through main() with
@@ -36,7 +37,10 @@ function parseFlags(args) {
   return { flags, positional, subcommand: positional[0] || null };
 }
 
-async function load(source, { args = [], env = {}, config = {}, fetchImpl, evalAsync } = {}) {
+async function load(
+  source,
+  { args = [], env = {}, config = {}, fetchImpl, evalAsync, fsImpl } = {}
+) {
   const out = [];
   const err = [];
   const fetches = [];
@@ -69,10 +73,16 @@ async function load(source, { args = [], env = {}, config = {}, fetchImpl, evalA
     'sliccy:exec': { exec: { spawn: async () => ({ exitCode: 1, stdout: '', stderr: 'no az' }) } },
     './arm-common.js': common,
     crypto,
-    fs: {
-      readFile: async () => Promise.reject(new Error('ENOENT')),
-      writeFile: async () => {},
-      mkdir: async () => {},
+    // Node's fs shape, as slicc-jsh and SLICC 6 both serve it (#487).
+    fs: fsImpl || {
+      existsSync: () => false,
+      promises: {
+        readFile: async () => Promise.reject(new Error('ENOENT')),
+        writeFile: async () => {},
+        mkdir: async () => {},
+        readdir: async () => [],
+        rm: async () => {},
+      },
     },
   };
   const argv = ['node', 'x.jsh', ...args];
@@ -284,4 +294,49 @@ test('attributeVendors reports vendors per ResourceId and no unmatchable per-lab
     },
   ]);
   is(Object.keys(v), ['top']);
+});
+
+test('the cost cache round-trips through Node fs (cacheSet, cacheGet, cacheList)', async () => {
+  const vfs = nodeFs();
+  const { cacheSet, cacheGet, cacheList, resolveCacheDir } = (
+    await ext({ fsImpl: vfs, env: { HOME: '/home/t' } })
+  ).exports;
+  await resolveCacheDir({ 'cache-dir': '/home/t/.cache/az-ext/cost' });
+  const body = { type: 'ActualCost', timeframe: 'MonthToDate', dataset: { granularity: 'None' } };
+  const response = { properties: { rows: [[12.5, 'USD']] } };
+  const key = await cacheSet('sub-1', body, response, 900);
+  const hit = await cacheGet('sub-1', body);
+  is(hit?.response, response);
+  is(hit?.key, key);
+  const listed = await cacheList();
+  is(listed.length, 1);
+  is([listed[0].subscriptionId, listed[0].rows], ['sub-1', 1]);
+});
+
+test('az rest --body @file reads the body through Node fs', async () => {
+  const vfs = nodeFs({ '/shared/body.json': '{"properties":{"tags":{"env":"prd"}}}' });
+  const config = { armToken: 'tok', armTokenExpiresOn: now() + 3600 };
+  const r = await load(AZ, {
+    args: [
+      'rest',
+      '--method',
+      'PATCH',
+      '--url',
+      '/subscriptions/s1/tagNames',
+      '--body',
+      '@/shared/body.json',
+    ],
+    config,
+    fsImpl: vfs,
+    fetchImpl: async () => ({
+      status: 200,
+      ok: true,
+      headers: { forEach() {} },
+      text: async () => '{"ok":true}',
+    }),
+  });
+  is(r.code, 0, r.stderr);
+  is(r.fetches.length, 1);
+  is(r.fetches[0].init.body, '{"properties":{"tags":{"env":"prd"}}}');
+  is(r.fetches[0].url, 'https://management.azure.com/subscriptions/s1/tagNames');
 });

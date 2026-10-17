@@ -83,18 +83,18 @@ const errText = (err) =>
 /** Read cache file if fresher than ttlMs; null otherwise (missing, stale, corrupt). */
 async function readCache(fs, file, ttlMs, now) {
   try {
-    const st = await fs.stat(file);
+    const st = await fs.promises.stat(file);
     const mtime = st.mtimeMs ?? (st.mtime ? new Date(st.mtime).getTime() : 0);
     if (!mtime || now() - mtime > ttlMs) return null;
-    return JSON.parse(await fs.readFile(file, 'utf8'));
+    return JSON.parse(await fs.promises.readFile(file, 'utf8'));
   } catch (_) {
     return null;
   }
 }
 async function writeCache(fs, dir, file, data) {
   try {
-    await fs.mkdir(dir, { recursive: true });
-    await fs.writeFile(file, JSON.stringify(data));
+    await fs.promises.mkdir(dir, { recursive: true });
+    await fs.promises.writeFile(file, JSON.stringify(data));
   } catch (_) {
     /* a cache that cannot be written only costs one refetch */
   }
@@ -117,7 +117,7 @@ async function loadTlds({
   capMs = 30000,
 }) {
   if (!live) {
-    const text = await fs.readFile(snapshotPath, 'utf8');
+    const text = await fs.promises.readFile(snapshotPath, 'utf8');
     return { tlds: parseTldList(text), source: 'snapshot:tlds-porkbun-2026-09-24', prices: {} };
   }
   const file = `${cacheDir}/porkbun-pricing.json`;
@@ -159,7 +159,7 @@ function createIdsCache({ fs, file, dir, ttlMs, now = Date.now }) {
     data = {};
     if (ttlMs > 0) {
       try {
-        const j = JSON.parse(await fs.readFile(file, 'utf8'));
+        const j = JSON.parse(await fs.promises.readFile(file, 'utf8'));
         if (j && typeof j === 'object') data = j;
       } catch (_) {
         /* no cache yet */
@@ -209,10 +209,10 @@ function createIdsCache({ fs, file, dir, ttlMs, now = Date.now }) {
     async save() {
       if (!dirty || ttlMs <= 0) return;
       try {
-        await fs.mkdir(dir, { recursive: true });
+        await fs.promises.mkdir(dir, { recursive: true });
         const d = data;
         for (const k of Object.keys(d)) if (now() - d[k].ts > ttlMs) delete d[k];
-        await fs.writeFile(file, JSON.stringify(d));
+        await fs.promises.writeFile(file, JSON.stringify(d));
       } catch (_) {
         /* losing the cache only costs a trust downgrade next time */
       }

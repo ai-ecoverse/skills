@@ -526,7 +526,7 @@ function cacheKeyFor(subscriptionId, body) {
 }
 
 async function ensureCacheDir() {
-  await fs.mkdir(cacheDir(), { recursive: true }).catch(() => {});
+  await fs.promises.mkdir(cacheDir(), { recursive: true }).catch(() => {});
 }
 
 function cachePath(key) {
@@ -542,7 +542,7 @@ async function cacheGet(subscriptionId, body) {
   const key = cacheKeyFor(subscriptionId, body);
   let entry;
   try {
-    entry = JSON.parse(await fs.readFile(cachePath(key), 'utf8'));
+    entry = JSON.parse(await fs.promises.readFile(cachePath(key), 'utf8'));
   } catch {
     return null;
   }
@@ -563,14 +563,14 @@ async function cacheSet(subscriptionId, body, response, ttlSeconds) {
     expiresAt: nowSeconds() + num(ttlSeconds, TTL_HISTORICAL_SECONDS),
     response: response,
   };
-  await fs.writeFile(cachePath(key), JSON.stringify(entry));
+  await fs.promises.writeFile(cachePath(key), JSON.stringify(entry));
   return key;
 }
 
 async function cacheList() {
   let names;
   try {
-    names = await fs.readDir(cacheDir());
+    names = await fs.promises.readdir(cacheDir());
   } catch {
     return [];
   }
@@ -579,7 +579,7 @@ async function cacheList() {
     const fileName = typeof name === 'string' ? name : name && name.name;
     if (!fileName || !fileName.endsWith('.json')) continue;
     try {
-      const entry = JSON.parse(await fs.readFile(cacheDir() + '/' + fileName, 'utf8'));
+      const entry = JSON.parse(await fs.promises.readFile(cacheDir() + '/' + fileName, 'utf8'));
       const q = entry.query || {};
       out.push({
         key: entry.key,
@@ -1282,7 +1282,7 @@ async function cmdCache(flags) {
     let removed = 0;
     for (const entry of entries) {
       try {
-        await fs.rm(cachePath(entry.key));
+        await fs.promises.rm(cachePath(entry.key));
         removed++;
       } catch {
         // A cache file we cannot remove is not fatal — report the count we did.

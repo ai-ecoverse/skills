@@ -510,7 +510,7 @@ async function pickDevice(flags) {
 async function loadKey(flags) {
   const configured = (await skill.config()) || {};
   const path = flags.key || configured.keyPath || '/workspace/.adb/adbkey';
-  if (!(await fs.exists(path))) {
+  if (!(fs.existsSync(path))) {
     cli.die(
       `no private key at ${path}\n` +
       "  Copy the host's ~/.android/adbkey there to inherit its authorization,\n" +
@@ -519,7 +519,7 @@ async function loadKey(flags) {
     );
   }
   try {
-    return parseRsaPrivateKey(pemToDer(await fs.readFile(path)));
+    return parseRsaPrivateKey(pemToDer(await fs.promises.readFile(path, 'utf8')));
   } catch (err) {
     cli.die(`could not parse ${path} as a PKCS#8 RSA private key: ${err.message}`, { prefix: 'adb' });
   }
@@ -643,7 +643,7 @@ async function cmdScreencap(flags, positional) {
   if (bytes.length < 8 || bytes[0] !== 0x89 || bytes[1] !== 0x50) {
     cli.die(`device did not return a PNG (${bytes.length} bytes)`, { prefix: 'adb' });
   }
-  await fs.writeFileBinary(out, bytes);
+  await fs.promises.writeFile(out, bytes);
   if (flags.json) { cli.out({ path: out, bytes: bytes.length }); return; }
   console.log(`  ${color.green('✓')} wrote ${color.cyan(out)} ${color.dim(`(${bytes.length} bytes)`)}`);
 }
@@ -672,7 +672,7 @@ async function cmdPull(flags, positional) {
     cli.die(`could not read ${remote} on the device: ${detail}`, { prefix: 'adb' });
   }
   const bytes = r.stdout;
-  await fs.writeFileBinary(local, bytes);
+  await fs.promises.writeFile(local, bytes);
   if (flags.json) { cli.out({ remote, local, bytes: bytes.length }); return; }
   console.log(`  ${color.green('✓')} pulled ${color.cyan(remote)} → ${color.cyan(local)} ${color.dim(`(${bytes.length} bytes)`)}`);
 }

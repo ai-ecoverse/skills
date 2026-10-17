@@ -47,7 +47,7 @@ The first plan needs onnxruntime-web, installed with ipk on that first run.
 async function loadOrt(ortDir) {
   const dist = `${ortDir}/dist`;
   const file = `${dist}/ort.wasm.bundle.min.mjs`;
-  if (!(await fs.exists(file))) throw new Error(`onnxruntime-web: ${file} is missing`);
+  if (!(fs.existsSync(file))) throw new Error(`onnxruntime-web: ${file} is missing`);
   const loaded = await host.nativeImport(host.previewUrl(file));
   const ort = loaded.InferenceSession ? loaded : loaded.default;
   if (!ort || !ort.InferenceSession) throw new Error('ort bundle has no InferenceSession');
@@ -76,7 +76,7 @@ async function readArg(spec) {
   if (spec == null || spec === '-') {
     return readStdinText();
   }
-  return fs.readFile(host.resolvePath(spec));
+  return fs.promises.readFile(host.resolvePath(spec), 'utf8');
 }
 
 async function prepareRuntime() {
@@ -101,10 +101,10 @@ async function prepareRuntime() {
 async function downloadWeights() {
   const base = `${DEST}/${PREFIX}`;
   const manifestPath = `${base}/manifest.json`;
-  if (!(await fs.exists(manifestPath))) {
+  if (!(fs.existsSync(manifestPath))) {
     await host.hfDownload(exec, 'ai-ecoverse/cua-s1.js', [`${PREFIX}/manifest.json`], DEST);
   }
-  const manifest = JSON.parse(await fs.readFile(manifestPath));
+  const manifest = JSON.parse(await fs.promises.readFile(manifestPath, 'utf8'));
   if (!manifest.model) throw new Error('cua-s1 manifest has no model file');
   await host.hfDownload(exec, 'ai-ecoverse/cua-s1.js', [`${PREFIX}/${manifest.model}`], DEST);
   return base;

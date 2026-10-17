@@ -221,7 +221,7 @@ function shortJobId(jobId) {
 
 async function downloadOutputs(outputs, dir, jobId) {
   const target = dir && typeof dir === 'string' ? dir : '/workspace';
-  try { await fs.mkdir(target); } catch { /* exists */ }
+  try { await fs.promises.mkdir(target, { recursive: true }); } catch { /* exists */ }
   const saved = [];
   const short = shortJobId(jobId);
   for (let i = 0; i < outputs.length; i++) {
@@ -234,7 +234,7 @@ async function downloadOutputs(outputs, dir, jobId) {
     }
     const buf = Buffer.from(await res.arrayBuffer());
     const path = `${target.replace(/\/$/, '')}/firefly-${short}-${i + 1}.png`;
-    await fs.writeFileBinary(path, buf);
+    await fs.promises.writeFile(path, buf);
     saved.push(path);
   }
   return saved;
@@ -295,7 +295,7 @@ async function cmdLogin(flags) {
   if (flags.from) {
     let raw;
     try {
-      raw = await fs.readFile(flags.from);
+      raw = await fs.promises.readFile(flags.from, 'utf8');
     } catch (err) {
       cli.die(`Could not read --from file: ${flags.from}`, { prefix: 'firefly' });
     }
