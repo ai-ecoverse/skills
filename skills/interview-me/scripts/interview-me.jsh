@@ -177,7 +177,7 @@ async function readConfig() {
 async function writeConfig(config) {
   const merged = await skill.config(config);
   try {
-    await fs.writeFile(SPRINKLE_CONFIG_FILE, JSON.stringify(merged, null, 2));
+    await fs.promises.writeFile(SPRINKLE_CONFIG_FILE, JSON.stringify(merged, null, 2));
   } catch {
     // Sprinkle not installed yet (or its directory is otherwise
     // unwritable) -- the skill's own config store above is still the
@@ -203,7 +203,7 @@ async function cmdBrief(args, notify) {
     const path = args[1];
     if (!path) cli.die('Usage: interview-me brief --file <path>', { prefix: 'interview-me' });
     try {
-      text = await fs.readFile(path);
+      text = await fs.promises.readFile(path, 'utf8');
     } catch {
       cli.die(`brief --file: no such file: ${path}`, { prefix: 'interview-me' });
     }
@@ -320,7 +320,7 @@ async function resolveAssetsRoot() {
   const root = skill.dir.replace(/\/scripts\/?$/, '');
   const candidates = [`${root}/assets`, skill.assets];
   for (const c of candidates) {
-    if (await fs.exists(`${c}/sprinkle/interview-me.shtml`)) return c;
+    if (fs.existsSync(`${c}/sprinkle/interview-me.shtml`)) return c;
   }
   throw new Error(
     `could not locate the skill assets. Tried:\n  ${candidates.join('\n  ')}`,
@@ -345,33 +345,33 @@ async function cmdInstall() {
   // directory as "no documents") and `collections create` from the
   // prefilled path fails outright.
   for (const dir of [SPRINKLE_DIR, `${SPRINKLE_DIR}/lib`, KB_DIR]) {
-    await fs.mkdir(dir, { recursive: true });
+    await fs.promises.mkdir(dir, { recursive: true });
   }
 
-  const shtml = await fs.readFile(`${assetsDir}/interview-me.shtml`);
-  await fs.writeFile(`${SPRINKLE_DIR}/interview-me.shtml`, shtml);
+  const shtml = await fs.promises.readFile(`${assetsDir}/interview-me.shtml`, 'utf8');
+  await fs.promises.writeFile(`${SPRINKLE_DIR}/interview-me.shtml`, shtml);
 
   // fs.readDir() in this runtime returns bare filename strings, not
   // {name,type} objects -- matches the pattern already used below in
   // cmdCollectionsIngest for the exact same reason.
-  const libFiles = await fs.readDir(`${assetsDir}/lib`);
+  const libFiles = await fs.promises.readdir(`${assetsDir}/lib`);
   let libCount = 0;
   for (const name of libFiles) {
     if (!/\.js$/i.test(name)) continue;
-    const content = await fs.readFile(`${assetsDir}/lib/${name}`);
-    await fs.writeFile(`${SPRINKLE_DIR}/lib/${name}`, content);
+    const content = await fs.promises.readFile(`${assetsDir}/lib/${name}`, 'utf8');
+    await fs.promises.writeFile(`${SPRINKLE_DIR}/lib/${name}`, content);
     libCount++;
   }
 
   let configExisted = true;
   try {
-    await fs.readFile(SPRINKLE_CONFIG_FILE);
+    await fs.promises.readFile(SPRINKLE_CONFIG_FILE, 'utf8');
   } catch {
     configExisted = false;
   }
   if (!configExisted) {
     const config = await readConfig();
-    await fs.writeFile(SPRINKLE_CONFIG_FILE, JSON.stringify(config, null, 2));
+    await fs.promises.writeFile(SPRINKLE_CONFIG_FILE, JSON.stringify(config, null, 2));
   }
 
   // The bundled kb notes ship as documentation, so they are installed
@@ -382,12 +382,12 @@ async function cmdInstall() {
   // skill's own documentation instead of about the user.
   let kbReadme = '';
   try {
-    kbReadme = await fs.readFile(`${assetsRoot}/kb/README.md`);
+    kbReadme = await fs.promises.readFile(`${assetsRoot}/kb/README.md`, 'utf8');
   } catch {
     // Bundled notes missing (partial checkout) -- kb/ itself still exists,
     // which is the part the sprinkle actually needs.
   }
-  if (kbReadme) await fs.writeFile(`${SPRINKLE_DIR}/KB-README.md`, kbReadme);
+  if (kbReadme) await fs.promises.writeFile(`${SPRINKLE_DIR}/KB-README.md`, kbReadme);
 
   console.log(`Installed interview-me.shtml + ${libCount} lib module(s) to ${SPRINKLE_DIR}`);
   console.log(configExisted ? 'Existing config.json left untouched.' : 'Seeded config.json with defaults.');
@@ -415,7 +415,7 @@ function guessMimeType(filename) {
 
 // Real FormData + Blob body -- requires SLICC >= 6.113.0 (see file header).
 async function uploadFile(key, path) {
-  const fileBytes = Buffer.from(await fs.readFileBinary(path));
+  const fileBytes = Buffer.from(await fs.promises.readFile(path));
   const filename = path.split('/').pop();
 
   const form = new FormData();
@@ -544,7 +544,7 @@ async function cmdCollectionsIngest(args) {
 
   let entries;
   try {
-    entries = await fs.readDir(dir);
+    entries = await fs.promises.readdir(dir);
   } catch {
     cli.die(`No such directory: ${dir}`, { prefix: 'interview-me' });
   }
@@ -575,11 +575,11 @@ async function cmdCollectionsIngest(args) {
     const filePath = dir.endsWith('/') ? `${dir}${name}` : `${dir}/${name}`;
     let stat;
     try {
-      stat = await fs.stat(filePath);
+      stat = await fs.promises.stat(filePath);
     } catch {
       continue;
     }
-    if (!stat.isFile) continue;
+    if (!stat.isFile()) continue;
 
     console.log(`Uploading ${name} ...`);
     let uploadResp;

@@ -425,7 +425,7 @@ var assemblePptxWithImages = function(slideXmls, images, meta) {
 // Write PPTX binary to file via base64 + shell decode
 var writePptx = async function(zipData, outputPath) {
   const b64 = toB64Safe(zipData);
-  await fs.writeFile('/tmp/_pptx_export.b64', b64);
+  await require('fs').promises.writeFile('/tmp/_pptx_export.b64', b64);
   await exec(`cat /tmp/_pptx_export.b64 | base64 -d > ${escapeShellArg(outputPath)}`);
   await exec('rm -f /tmp/_pptx_export.b64');
   const verify = await exec(`wc -c ${escapeShellArg(outputPath)}`);

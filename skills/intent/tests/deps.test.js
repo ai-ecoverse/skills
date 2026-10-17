@@ -14,14 +14,16 @@ const at = (rel) => (existsSync(rel) ? rel : `skills/intent/${rel}`);
 const read = (rel) => readFileSync(at(rel), 'utf8');
 const pkg = () => JSON.parse(read('package.json'));
 
+// Node's fs (slicc-jsh, SLICC 7; SLICC 6 serves it too): existsSync and
+// fs.promises; the SLICC 6 promise dialect is absent (ai-ecoverse/skills#487).
 function vfs(files) {
   return {
-    async exists(p) {
-      return p in files;
-    },
-    async readFile(p) {
-      if (!(p in files)) throw new Error(`ENOENT ${p}`);
-      return files[p];
+    existsSync: (p) => p in files,
+    promises: {
+      async readFile(p, encoding) {
+        if (!(p in files)) throw new Error(`ENOENT ${p}`);
+        return encoding ? files[p] : Buffer.from(files[p]);
+      },
     },
   };
 }

@@ -13,13 +13,13 @@ async function discoverCats(soft) {
   if (CATS) return CATS;
   const root = [], nested = [];
   try {
-    const top = await fs.readDir(WIKI_ROOT);
+    const top = await fs.promises.readdir(WIKI_ROOT);
     for (const e of top) {
       const n = en(e);
       if (!n || n.startsWith('_') || n.startsWith('.')) continue;
       const dp = WIKI_ROOT + '/' + n;
       try {
-        const es = await fs.readDir(dp);
+        const es = await fs.promises.readdir(dp);
         if (es.some(f => { const fn = en(f); return fn && fn.endsWith('.md'); }))
           root.push(n);
         if (n === 'projects') {
@@ -28,7 +28,7 @@ async function discoverCats(soft) {
             if (!pn || pn.startsWith('_') || pn.startsWith('.')) continue;
             const pp = dp + '/' + pn;
             try {
-              const pes = await fs.readDir(pp);
+              const pes = await fs.promises.readdir(pp);
               if (pes.some(f => { const fn = en(f); return fn && fn.endsWith('.md'); }))
                 nested.push('projects/' + pn);
             } catch (_) {}
@@ -99,8 +99,8 @@ function rootLine() {
 async function readConfigObject() {
   const p = configFilePath();
   try {
-    if (!(await fs.exists(p))) return {};
-    const raw = await fs.readFile(p);
+    if (!(fs.existsSync(p))) return {};
+    const raw = await fs.promises.readFile(p, 'utf8');
     const text = String(raw || '');
     if (!text.trim()) return {};
     let parsed;
@@ -124,16 +124,16 @@ async function readConfigObject() {
 async function writeConfigObject(obj) {
   const p = configFilePath();
   const dir = parentDir(p);
-  if (dir && !(await fs.exists(dir))) {
+  if (dir && !(fs.existsSync(dir))) {
     try {
-      await fs.mkdir(dir);
+      await fs.promises.mkdir(dir, { recursive: true });
     } catch (e) {
       console.error('Error: cannot create config directory ' + dir + ': ' + e.message);
       process.exit(1);
     }
   }
   try {
-    await fs.writeFile(p, JSON.stringify(obj, null, 2) + '\n');
+    await fs.promises.writeFile(p, JSON.stringify(obj, null, 2) + '\n');
   } catch (e) {
     console.error('Error: cannot write config file ' + p + ': ' + e.message);
     process.exit(1);
@@ -169,13 +169,13 @@ async function resolveRoot(flag) {
 async function countCategoryMd(root) {
   let n = 0;
   try {
-    const top = await fs.readDir(root);
+    const top = await fs.promises.readdir(root);
     for (const e of top) {
       const name = en(e);
       if (!name || name.startsWith('_') || name.startsWith('.')) continue;
       const dp = root + '/' + name;
       try {
-        const es = await fs.readDir(dp);
+        const es = await fs.promises.readdir(dp);
         for (const f of es) {
           const fn = en(f);
           if (fn && fn.endsWith('.md')) n++;
@@ -185,7 +185,7 @@ async function countCategoryMd(root) {
             const pn = en(pe);
             if (!pn || pn.startsWith('_') || pn.startsWith('.')) continue;
             try {
-              const pes = await fs.readDir(dp + '/' + pn);
+              const pes = await fs.promises.readdir(dp + '/' + pn);
               for (const f of pes) {
                 const fn = en(f);
                 if (fn && fn.endsWith('.md')) n++;
@@ -217,7 +217,7 @@ async function catDirs(cs) {
   const r = [];
   for (const c of cs) {
     try {
-      const es = await fs.readDir(WIKI_ROOT + '/' + c);
+      const es = await fs.promises.readdir(WIKI_ROOT + '/' + c);
       for (const e of es) {
         const n = en(e);
         if (n && n.endsWith('.md')) r.push({ cat: c, file: n, path: WIKI_ROOT + '/' + c + '/' + n });
@@ -249,12 +249,12 @@ async function find(name) {
   const ds = c ? [c] : cats;
   for (const d of ds) {
     const p = WIKI_ROOT + '/' + d + '/' + s + '.md';
-    if (await fs.exists(p)) return { cat: d, file: s + '.md', path: p };
+    if (fs.existsSync(p)) return { cat: d, file: s + '.md', path: p };
   }
   const l = nk(s).toLowerCase();
   for (const d of ds) {
     try {
-      const es = await fs.readDir(WIKI_ROOT + '/' + d);
+      const es = await fs.promises.readdir(WIKI_ROOT + '/' + d);
       for (const e of es) {
         const n = en(e);
         if (n && nk(n).replace(/\.md$/, '').toLowerCase() === l) return { cat: d, file: n, path: WIKI_ROOT + '/' + d + '/' + n };
@@ -285,7 +285,7 @@ async function cmdSearch() {
     const nm = nk(p.file).toLowerCase().includes(lo);
     let lm = null;
     try {
-      const c = await fs.readFile(p.path);
+      const c = await fs.promises.readFile(p.path, 'utf8');
       for (const line of c.split('\n')) {
         if (nk(line).toLowerCase().includes(lo)) { lm = line.trim(); break; }
       }
@@ -320,7 +320,7 @@ async function cmdRead() {
   const n = await find(name);
   if (!n) { await notFound(name); }
   try {
-    const c = await fs.readFile(n.path);
+    const c = await fs.promises.readFile(n.path, 'utf8');
     console.log('[' + n.cat + '/' + n.file + ']\n');
     console.log(c);
   } catch (e) { console.error('Error: ' + e.message); process.exit(1); }
@@ -332,7 +332,7 @@ async function cmdStats() {
   let tot = 0;
   for (const c of cats) {
     try {
-      const es = await fs.readDir(WIKI_ROOT + '/' + c);
+      const es = await fs.promises.readdir(WIKI_ROOT + '/' + c);
       const md = es.filter(e => { const n = en(e); return n && n.endsWith('.md'); });
       if (md.length) rows.push('  ' + c.padEnd(24) + ' ' + md.length);
       tot += md.length;
@@ -340,7 +340,7 @@ async function cmdStats() {
   }
   let rc = 0, ea = null, la = null;
   try {
-    const re = await fs.readDir(RAW_DIR);
+    const re = await fs.promises.readdir(RAW_DIR);
     const mf = re.map(e => en(e)).filter(n => n && n.endsWith('.md'));
     rc = mf.length;
     const ds = [];
@@ -360,7 +360,7 @@ async function cmdStats() {
   if (ea && la) console.log('  Date range: ' + ea + ' to ' + la);
   let tl = 0;
   const pages = await catDirs(cats);
-  for (const p of pages) { try { tl += wl(await fs.readFile(p.path)).length; } catch (_) {} }
+  for (const p of pages) { try { tl += wl(await fs.promises.readFile(p.path, 'utf8')).length; } catch (_) {} }
   console.log('\nTotal wikilinks: ' + tl);
 }
 
@@ -371,7 +371,7 @@ async function cmdLinks() {
   const n = await find(name);
   if (!n) { await notFound(name); }
   let ob = [];
-  try { ob = [...new Set(wl(await fs.readFile(n.path)))]; } catch (e) { console.error('Error: ' + e.message); process.exit(1); }
+  try { ob = [...new Set(wl(await fs.promises.readFile(n.path, 'utf8')))]; } catch (e) { console.error('Error: ' + e.message); process.exit(1); }
   console.log('Links for: ' + n.cat + '/' + n.file + '\n');
   console.log('Outbound (' + ob.length + '):');
   if (!ob.length) console.log('  (none)');
@@ -379,7 +379,7 @@ async function cmdLinks() {
   const nm = nk(n.file).replace(/\.md$/, ''), pages = await catDirs(cats), ib = [];
   for (const p of pages) {
     if (nk(p.path) === nk(n.path)) continue;
-    try { if (wl(await fs.readFile(p.path)).some(l => nk(l) === nm)) ib.push(p.cat + '/' + p.file); } catch (_) {}
+    try { if (wl(await fs.promises.readFile(p.path, 'utf8')).some(l => nk(l) === nm)) ib.push(p.cat + '/' + p.file); } catch (_) {}
   }
   console.log('\nInbound (' + ib.length + '):');
   if (!ib.length) console.log('  (none)');
@@ -392,7 +392,7 @@ async function cmdOrphans() {
   let readable = 0;
   for (const p of pages) {
     try {
-      const c = await fs.readFile(p.path);
+      const c = await fs.promises.readFile(p.path, 'utf8');
       readable++;
       for (const l of wl(c)) linked.add(nk(l));
     } catch (_) {}
@@ -411,7 +411,7 @@ async function cmdOrphans() {
 async function cmdRecent() {
   const n = parseInt(args[1], 10) || 10;
   try {
-    const es = await fs.readDir(RAW_DIR);
+    const es = await fs.promises.readdir(RAW_DIR);
     const mf = es.map(e => en(e)).filter(n => n && n.endsWith('.md'));
     const d = [];
     for (const f of mf) {
@@ -429,8 +429,8 @@ async function cmdLog() {
   const n = parseInt(args[1], 10) || 10;
   const lp = WIKI_ROOT + '/log.md';
   try {
-    if (!(await fs.exists(lp))) { console.log('log.md does not exist yet.'); return; }
-    const c = await fs.readFile(lp), lines = c.split('\n'), entries = [];
+    if (!(fs.existsSync(lp))) { console.log('log.md does not exist yet.'); return; }
+    const c = await fs.promises.readFile(lp, 'utf8'), lines = c.split('\n'), entries = [];
     let cur = null;
     for (const l of lines) {
       if (l.startsWith('## ')) { if (cur) entries.push(cur); cur = { heading: l, body: [] }; }
@@ -445,18 +445,18 @@ async function cmdLog() {
 }
 
 async function configSetRoot(path) {
-  if (!(await fs.exists(path))) {
+  if (!(fs.existsSync(path))) {
     console.error('Error: path does not exist: ' + path);
     process.exit(1);
   }
   let st;
   try {
-    st = await fs.stat(path);
+    st = await fs.promises.stat(path);
   } catch (e) {
     console.error('Error: cannot stat ' + path + ': ' + e.message);
     process.exit(1);
   }
-  if (!st || !st.isDirectory) {
+  if (!st || !st.isDirectory()) {
     console.error('Error: not a directory: ' + path);
     process.exit(1);
   }
@@ -472,7 +472,7 @@ async function configSetRoot(path) {
 
 async function configUnsetRoot() {
   const p = configFilePath();
-  if (!(await fs.exists(p))) {
+  if (!(fs.existsSync(p))) {
     console.log('root is not set (no config file at ' + p + ')');
     return;
   }

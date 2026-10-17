@@ -25,7 +25,9 @@ const trimmed = (root) => String(root).replace(/\/+$/, '');
  * read through the VFS (a required .json does not load under tst).
  */
 async function declaredDeps(fs, root) {
-  const pkg = JSON.parse(String(await fs.readFile(`${trimmed(root)}/package.json`)));
+  const pkg = JSON.parse(
+    String(await fs.promises.readFile(`${trimmed(root)}/package.json`, 'utf8'))
+  );
   return { ...(pkg.dependencies || {}) };
 }
 
@@ -46,7 +48,7 @@ async function depsStatus(fs, root) {
     let complete = have === want;
     if (complete && name === host.ORT_NAME) {
       for (const rel of host.ORT_BUNDLES)
-        if (!(await fs.exists(`${nm}/${name}/${rel}`))) complete = false;
+        if (!fs.existsSync(`${nm}/${name}/${rel}`)) complete = false;
     }
     if (!complete) missing.push(`${name}@${want}${have ? ` (have ${have})` : ''}`);
   }
@@ -58,7 +60,7 @@ async function loadOrt(fs, kind, ortDir) {
   if (!ortDir) throw new Error(`${host.ORT_NAME} is not installed. Run intent pull.`);
   const dist = `${ortDir}/dist`;
   const file = `${dist}/${fileName}`;
-  if (!(await fs.exists(file)))
+  if (!fs.existsSync(file))
     throw new Error(`onnxruntime-web: ${file} is missing. Run intent pull.`);
   const loaded = await host.nativeImport(host.previewUrl(file));
   const ort = loaded.InferenceSession ? loaded : loaded.default;
@@ -129,13 +131,15 @@ async function weightsStatus(fs, model) {
   if (!prefix) throw new Error(`--model must be one of ${Object.keys(MODELS).join(', ')}`);
   const base = `${DEST}/${prefix}`;
   const status = { model, base, manifest: false, files: 0, missing: ['manifest.json'] };
-  if (!(await fs.exists(`${base}/manifest.json`))) return status;
-  const { rels, sizes } = variantFiles(JSON.parse(await fs.readFile(`${base}/manifest.json`)));
+  if (!fs.existsSync(`${base}/manifest.json`)) return status;
+  const { rels, sizes } = variantFiles(
+    JSON.parse(await fs.promises.readFile(`${base}/manifest.json`, 'utf8'))
+  );
   const missing = [];
   for (const rel of rels) {
     let size = -1;
     try {
-      size = (await fs.stat(`${base}/${rel}`)).size;
+      size = (await fs.promises.stat(`${base}/${rel}`)).size;
     } catch {
       missing.push(rel);
       continue;
@@ -160,9 +164,12 @@ function missingWeightsMessage(status) {
 
 async function appendPullLog(fs, line) {
   try {
-    await fs.mkdir('/tmp/kev', { recursive: true });
-    const old = (await fs.exists(PULL_LOG)) ? await fs.readFile(PULL_LOG) : '';
-    await fs.writeFile(PULL_LOG, `${old}${new Date().toISOString().slice(11, 19)} ${line}\n`);
+    await fs.promises.mkdir('/tmp/kev', { recursive: true });
+    const old = fs.existsSync(PULL_LOG) ? await fs.promises.readFile(PULL_LOG, 'utf8') : '';
+    await fs.promises.writeFile(
+      PULL_LOG,
+      `${old}${new Date().toISOString().slice(11, 19)} ${line}\n`
+    );
   } catch {
     // The log only helps someone watching a long download.
   }
@@ -211,7 +218,7 @@ async function openOn(fs, base, dateFacts, providers, log, ortDir) {
   // kev.js 0.4+ reads a bundle in place through this function: no preview
   // URL, no fetch, no Cache Storage. A shard shorter than the manifest says
   // fails by name; weightsStatus still runs first so the message names intent pull.
-  return loadKev()((rel) => fs.readFileBinary(`${root}/${rel}`), {
+  return loadKev()((rel) => fs.promises.readFile(`${root}/${rel}`), {
     ort,
     variant: 'q8f32',
     executionProviders: providers,

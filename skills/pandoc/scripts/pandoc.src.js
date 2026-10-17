@@ -102,7 +102,7 @@ function resolveTo(flags) {
 }
 
 async function loadWasmBytes(path) {
-  const bytes = await fs.readFileBinary(path);
+  const bytes = await fs.promises.readFile(path);
   const buf = new ArrayBuffer(bytes.byteLength);
   new Uint8Array(buf).set(bytes);
   return buf;
@@ -116,7 +116,7 @@ async function compileWasm(path) {
       /* fall through */
     }
   }
-  const bytes = await fs.readFileBinary(path);
+  const bytes = await fs.promises.readFile(path);
   const buf = new ArrayBuffer(bytes.byteLength);
   new Uint8Array(buf).set(bytes);
   return WebAssembly.compile(buf);
@@ -124,9 +124,9 @@ async function compileWasm(path) {
 
 async function depsInstalled() {
   try {
-    await fs.readFile('/workspace/node_modules/pandoc-wasm/package.json');
-    await fs.readFile('/workspace/node_modules/typst-wasm/package.json');
-    await fs.readFile('/workspace/node_modules/@typst-wasm/fonts/package.json');
+    await fs.promises.readFile('/workspace/node_modules/pandoc-wasm/package.json', 'utf8');
+    await fs.promises.readFile('/workspace/node_modules/typst-wasm/package.json', 'utf8');
+    await fs.promises.readFile('/workspace/node_modules/@typst-wasm/fonts/package.json', 'utf8');
     return true;
   } catch {
     return false;
@@ -182,7 +182,7 @@ async function loadDefaultFonts(compiler) {
   ];
   const fonts = [];
   for (const name of names) {
-    fonts.push(await fs.readFileBinary(`${FONT_DIR}/${name}`));
+    fonts.push(await fs.promises.readFile(`${FONT_DIR}/${name}`));
   }
   await compiler.addFonts(...fonts);
 }
@@ -204,7 +204,7 @@ function typstFontDirs() {
 async function collectFontFiles(dir, acc) {
   let names;
   try {
-    names = await fs.readDir(dir);
+    names = await fs.promises.readdir(dir);
   } catch {
     return acc;
   }
@@ -212,12 +212,12 @@ async function collectFontFiles(dir, acc) {
     const path = dir.endsWith('/') ? dir + name : `${dir}/${name}`;
     let st;
     try {
-      st = await fs.stat(path);
+      st = await fs.promises.stat(path);
     } catch {
       continue;
     }
-    if (st.isDirectory) await collectFontFiles(path, acc);
-    else if (st.isFile && FONT_FILE.test(name)) acc.push(path);
+    if (st.isDirectory()) await collectFontFiles(path, acc);
+    else if (st.isFile() && FONT_FILE.test(name)) acc.push(path);
   }
   return acc;
 }
@@ -229,18 +229,18 @@ async function loadFontPathFonts(compiler) {
   for (const dir of dirs) {
     let st;
     try {
-      st = await fs.stat(dir);
+      st = await fs.promises.stat(dir);
     } catch {
       console.error(`pandoc: TYPST_FONT_PATHS: ${dir}: not found`);
       continue;
     }
-    if (st.isDirectory) await collectFontFiles(dir, files);
-    else if (st.isFile && FONT_FILE.test(dir)) files.push(dir);
+    if (st.isDirectory()) await collectFontFiles(dir, files);
+    else if (st.isFile() && FONT_FILE.test(dir)) files.push(dir);
     else console.error(`pandoc: TYPST_FONT_PATHS: ${dir}: not a font directory`);
   }
   if (!files.length) return 0;
   const fonts = [];
-  for (const path of files) fonts.push(await fs.readFileBinary(path));
+  for (const path of files) fonts.push(await fs.promises.readFile(path));
   await compiler.addFonts(...fonts);
   return files.length;
 }
@@ -461,7 +461,7 @@ async function typstCompileSource(typstSource, outPath) {
     const pages = png.pages || [];
     if (!pages.length) throw new Error('typst-wasm produced no PNG pages');
     const pdf = wrapPngPagesToPdf(pages, PDF_PPI);
-    await fs.writeFileBinary(outPath, pdf);
+    await fs.promises.writeFile(outPath, pdf);
     return pdf.byteLength;
   } finally {
     await compiler.dispose();
@@ -472,7 +472,7 @@ async function typstCompileSource(typstSource, outPath) {
 const BINARY_FROM = new Set(['docx', 'odt', 'epub', 'doc', 'pptx', 'rtf', 'odp', 'xlsx', 'fb2']);
 
 async function readInputForConvert(path, fromFmt) {
-  const bytes = await fs.readFileBinary(path);
+  const bytes = await fs.promises.readFile(path);
   const from = String(fromFmt).toLowerCase();
   if (BINARY_FROM.has(from)) {
     const base = path.split('/').pop() || `input.${from}`;
@@ -483,7 +483,7 @@ async function readInputForConvert(path, fromFmt) {
 }
 
 async function readTextInput(path) {
-  const bytes = await fs.readFileBinary(path);
+  const bytes = await fs.promises.readFile(path);
   return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
 }
 
@@ -527,7 +527,7 @@ async function cmdConvert(positional, flags) {
   const outPath = resolveOutput(flags);
 
   if (outPath) {
-    await fs.writeFile(outPath, out, 'utf8');
+    await fs.promises.writeFile(outPath, out, 'utf8');
     console.log(color.green('✓') + ` wrote ${outPath} (${out.length} chars)`);
   } else {
     process.stdout.write(out);

@@ -95,6 +95,6 @@ drawPage(1, 'Getting Started',
 );
 
 var pdfBytes = await pdfDoc.save();
-await fs.writeFileBinary(output, pdfBytes);
-open(output, '--download');
+await require('fs').promises.writeFile(output, pdfBytes);
+await require('sliccy:exec').spawn(['open', output, '--download']);
 console.log('Created: ' + output);

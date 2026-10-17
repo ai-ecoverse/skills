@@ -25,23 +25,25 @@ const PAGE = [
 
 function fakes() {
   const files = new Map();
+  // Node's fs (slicc-jsh, SLICC 7; SLICC 6 serves it too): existsSync and
+  // fs.promises; the SLICC 6 promise dialect is absent (ai-ecoverse/skills#487).
   const fs = {
-    async exists(p) {
-      return files.has(p);
-    },
-    async readFile(p) {
-      if (!files.has(p)) throw new Error(`ENOENT ${p}`);
-      return files.get(p);
-    },
-    async writeFile(p, v) {
-      files.set(p, String(v));
-    },
-    async mkdir() {},
-    async rm(p) {
-      files.delete(p);
-    },
-    async readDir() {
-      return [];
+    existsSync: (p) => files.has(p),
+    promises: {
+      async readFile(p, encoding) {
+        if (!files.has(p)) throw new Error(`ENOENT ${p}`);
+        return encoding ? files.get(p) : Buffer.from(files.get(p));
+      },
+      async writeFile(p, v) {
+        files.set(p, String(v));
+      },
+      async mkdir() {},
+      async rm(p) {
+        files.delete(p);
+      },
+      async readdir() {
+        return [];
+      },
     },
   };
   const exec = {
