@@ -1024,7 +1024,7 @@ function watchIdFor(chat, stableId) {
 
 async function readWatchState(id) {
   try {
-    return JSON.parse(await fs.readFile(watchStatePath(id), 'utf8'));
+    return JSON.parse(await fs.promises.readFile(watchStatePath(id), 'utf8'));
   } catch (e) {
     if (e && e.name === 'NodeExitError') throw e;
     return null;
@@ -1033,7 +1033,7 @@ async function readWatchState(id) {
 
 async function writeWatchState(id, state) {
   await exec('mkdir -p ' + escapeShellArg(WATCH_DIR));
-  await fs.writeFile(watchStatePath(id), JSON.stringify(state, null, 2));
+  await fs.promises.writeFile(watchStatePath(id), JSON.stringify(state, null, 2));
 }
 
 async function listWatchStates() {
@@ -1045,7 +1045,7 @@ async function listWatchStates() {
   const out = [];
   for (const file of files) {
     try {
-      out.push(JSON.parse(await fs.readFile(file, 'utf8')));
+      out.push(JSON.parse(await fs.promises.readFile(file, 'utf8')));
     } catch (e) {
       if (e && e.name === 'NodeExitError') throw e;
       // Skip corrupt state rather than failing the whole listing.

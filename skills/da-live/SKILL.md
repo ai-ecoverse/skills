@@ -1,10 +1,13 @@
 ---
 name: da-live
 description: >
-  Working with Adobe Document Authoring (da.live) content mounted as a VFS filesystem.
-  Use when reading or writing files through a DA mount (da:// source). Non-sheet files
-  use normal file operations; sheet files (.json) must go through the da-live script
-  which handles schema validation, derived fields, and a single atomic write.
+  Read and write Adobe Document Authoring (da.live) content mounted as a VFS
+  filesystem: HTML pages, markdown, images, and spreadsheet-style sheet files
+  (.json). Use when editing pages or data through a DA mount (da:// source),
+  adding or changing rows in a DA sheet, inspecting a sheet's columns, or
+  recalculating its totals. Pages and media use normal file operations; sheets
+  go through `da-live`, which validates rows against the sheet's schema,
+  recalculates total/limit/offset, and writes once.
 allowed_tools:
   - bash
   - read_file
@@ -38,13 +41,13 @@ directly on the VFS path — read, edit, and write as you would any local file.
    # multi-sheet: da-live schema /mnt/<mount-path>/data/sheet.json --sheet <name>
    ```
 
-2. **Write** the updated row set — validates schema, recalculates, and writes in one operation:
+2. **Write** the complete row set (all rows, not only the changed ones):
    ```bash
-   # single-sheet
-   da-live write /mnt/<mount-path>/data/sheet.json '[{"key":"val",...}, ...]'
+   # single-sheet: a sheet whose existing rows have the keys name and role
+   da-live write /mnt/<mount-path>/data/team.json '[{"name":"Ada","role":"dev"},{"name":"Bob","role":"ops"}]'
 
-   # multi-sheet — specify which sheet to update
-   da-live write /mnt/<mount-path>/data/sheet.json --sheet <name> '[{"key":"val",...}, ...]'
+   # multi-sheet: name the sheet to update; the other sheets are kept as they are
+   da-live write /mnt/<mount-path>/data/site.json --sheet people '[{"name":"Ada","role":"dev"}]'
    ```
 
 3. **Verify** by re-reading the file:
@@ -56,8 +59,6 @@ directly on the VFS path — read, edit, and write as you would any local file.
 
 ## Key rules
 
-- **Always** use `da-live write` to modify sheets — never write JSON directly to the VFS path.
-- **Always** pass the complete row set for the target sheet, not just changed rows. For multi-sheet files, other sheets are preserved automatically.
-- Rows must exactly match the existing schema. The script will fail with a clear error
-  if any row has missing or extra keys.
-- For multi-sheet files, unmodified sheets are preserved as-is.
+- Never write sheet JSON directly to the VFS path: only `da-live write` keeps the schema and the derived fields right.
+- Rows must match the existing schema exactly; the script names any missing or extra key.
+- `da-live recalc <path>` fixes total/limit/offset in place after a manual repair.

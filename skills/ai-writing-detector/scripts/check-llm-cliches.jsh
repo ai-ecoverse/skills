@@ -1060,7 +1060,7 @@ try {
     process.exit(USAGE_ERROR);
   }
   const fs = require('fs');
-  const text = await fs.readFile(filePath, 'utf8');
+  const text = await fs.promises.readFile(filePath, 'utf8');
   if (!text.trim()) {
     if (asReview) {
       process.stdout.write(JSON.stringify({

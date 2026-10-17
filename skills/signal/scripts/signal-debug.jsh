@@ -18,7 +18,7 @@ function escapeShellArg(value) {
   const tmp = '/shared/.signal_dbg_' + Date.now() + '.js';
   const code = "(() => JSON.stringify({title: document.title, n: document.querySelectorAll('button.module-conversation-list__item--contact-or-conversation').length}))()";
   try {
-    await fs.writeFile(tmp, code);
+    await fs.promises.writeFile(tmp, code);
     console.log('wrote', tmp);
     const r = await exec('playwright-cli eval-file ' + escapeShellArg(tmp) + ' --tab=' + escapeShellArg(tabId));
     console.log('eval-file exit', r.exitCode);
@@ -28,7 +28,7 @@ function escapeShellArg(value) {
     console.error('ERR', e && e.message ? e.message : e);
     console.error(e);
   } finally {
-    try { await fs.rm(tmp); } catch (e) { console.error('rm err', e.message); }
+    try { await fs.promises.rm(tmp); } catch (e) { console.error('rm err', e.message); }
   }
 
   // Also try plain eval

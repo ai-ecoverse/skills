@@ -1473,7 +1473,7 @@ async function cmdGet() {
   dieOnError(res, `reading ${t.org}/${t.site}/${documentPath(t.path)}`);
   const out = flag('output', 'o');
   if (typeof out === 'string' && out) {
-    await fs.writeFile(out, res.text);
+    await fs.promises.writeFile(out, res.text);
     console.log('');
     // res.text.length is UTF-16 code units, not bytes — a document with em-dashes,
     // curly quotes, etc. undercounts (measured: a real page's footer.html reported
@@ -1498,7 +1498,7 @@ async function cmdPut() {
   // bytes off the VFS, which also avoids holding the file in memory (review: Codex P1).
   // Helix 5's source endpoint additionally needs a multipart 'data' part rather than a
   // raw body, so branch on the backend (review: Codex P1).
-  const bytes = (await fs.readFileBinary(file)).length;
+  const bytes = (await fs.promises.readFile(file)).length;
   const cred = await credential();
   const url = sourceUrl(t.org, t.site, path);
   const curlArgs = ['curl', '-sS', '-X', 'PUT', ...authCurlArgs(cred)];

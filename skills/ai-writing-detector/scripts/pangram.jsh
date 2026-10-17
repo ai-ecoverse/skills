@@ -243,7 +243,7 @@ async function readInput(filePath) {
   if (filePath === '-') {
     return readStdinText();
   }
-  return await fs.readFile(filePath, 'utf8');
+  return await fs.promises.readFile(filePath, 'utf8');
 }
 
 async function analyseFile(filePath, flags) {

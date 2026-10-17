@@ -83,10 +83,10 @@ function resolveBaseUrl() {
 }
 
 async function readCredentialFromFile(path) {
-  if (!(await fs.exists(path))) cli.die('adc-config not found: ' + path, { prefix: 'aem-ef' });
+  if (!(fs.existsSync(path))) cli.die('adc-config not found: ' + path, { prefix: 'aem-ef' });
   let json;
   try {
-    json = JSON.parse(await fs.readFile(path));
+    json = JSON.parse(await fs.promises.readFile(path, 'utf8'));
   } catch (e) {
     cli.die('adc-config is not valid JSON: ' + e.message, { prefix: 'aem-ef' });
   }

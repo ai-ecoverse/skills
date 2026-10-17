@@ -444,7 +444,7 @@ async function cmdGet(args) {
 
   const outputPath = getFlag(args, '--output') || getFlag(args, '-o');
   if (outputPath) {
-    await fs.writeFile(outputPath, html);
+    await fs.promises.writeFile(outputPath, html);
     process.stdout.write(`Saved to ${outputPath} (${html.length} bytes)\n`);
   } else {
     process.stdout.write(html);
@@ -476,14 +476,14 @@ async function cmdPut(args) {
     return;
   }
 
-  const html = await fs.readFile(filePath);
+  const html = await fs.promises.readFile(filePath, 'utf8');
   const url = `${DA_ADMIN_BASE}/source/${target.org}/${target.repo}/${aemPath}`;
 
   // Write HTML to a temp file, then use curl -F to upload
   const tmpPath = process.cwd() + '/_aem_put_' + Date.now() + '.html';
-  await fs.writeFile(tmpPath, html);
+  await fs.promises.writeFile(tmpPath, html);
   await aemFetchMultipart('PUT', url, token, ['-F', `data=@${tmpPath};type=text/html`]);
-  await fs.rm(tmpPath);
+  await fs.promises.rm(tmpPath);
 
   process.stdout.write(`Saved: ${aemPath}\n`);
 }

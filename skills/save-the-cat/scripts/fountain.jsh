@@ -13,12 +13,12 @@ try {
   if (!['render', 'review'].includes(command)) cli.die('Use fountain render or fountain review.');
   if (!positional[1]) cli.die('Provide a .fountain source path.');
   const file = path.resolve(process.cwd(), positional[1]);
-  const result = renderFountain(await fs.readFile(file, 'utf8'), file);
+  const result = renderFountain(await fs.promises.readFile(file, 'utf8'), file);
   if (command === 'render') {
     if (flags.out) {
       const output = path.resolve(process.cwd(), String(flags.out));
       if (output === file) cli.die('Choose a different output path; keep the Fountain source.');
-      await fs.writeFile(output, result.html);
+      await fs.promises.writeFile(output, result.html);
       cli.out(flags.json ? { ...result, html: undefined, output } : output);
     } else cli.out(flags.json ? result : result.html);
   } else {
