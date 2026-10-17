@@ -104,9 +104,9 @@ async function readJsonFile(filePath) {
   try {
     if (!filePath) return null;
     try {
-      if (typeof fs.exists === 'function' && !fs.exists(filePath)) return null;
+      if (typeof fs.exists === 'function' && !fs.existsSync(filePath)) return null;
     } catch { /* exists may throw on gated paths — try read anyway */ }
-    const raw = await fs.readFile(filePath);
+    const raw = await fs.promises.readFile(filePath, 'utf8');
     if (!raw) return null;
     return JSON.parse(String(raw));
   } catch {
@@ -118,7 +118,7 @@ async function readPasswordFile(filePath) {
   const p = expandHome(filePath);
   if (!p) return null;
   try {
-    const raw = String((await fs.readFile(p)) || '');
+    const raw = String((await fs.promises.readFile(p, 'utf8')) || '');
     const line = raw.split(/\r?\n/).find((l) => l.trim().length > 0);
     return line ? line.trim() : null;
   } catch {
@@ -1398,7 +1398,7 @@ function watchStatePath(watchId) {
 async function ensureWatchDir() {
   const dir = watchDir();
   try {
-    await fs.mkdir(dir, { recursive: true });
+    await fs.promises.mkdir(dir, { recursive: true });
   } catch {
     /* exists */
   }
@@ -1408,7 +1408,7 @@ async function ensureWatchDir() {
 async function listWatchStateFiles() {
   const dir = watchDir();
   try {
-    const names = await fs.readDir(dir);
+    const names = await fs.promises.readdir(dir);
     return (names || [])
       .filter((n) => n.endsWith('.json'))
       .map((n) => path.join(dir, n));
@@ -1419,7 +1419,7 @@ async function listWatchStateFiles() {
 
 async function readWatchState(file) {
   try {
-    const raw = await fs.readFile(file);
+    const raw = await fs.promises.readFile(file, 'utf8');
     return JSON.parse(String(raw));
   } catch {
     return null;
@@ -1557,7 +1557,7 @@ async function cmdWatch(flags) {
   // `watches` / `unwatch` once they are on disk. If the write fails, the fresh
   // pair is unreachable, so retire it again rather than leaking a forwarder.
   try {
-    await fs.writeFile(stateFile, JSON.stringify(state, null, 2));
+    await fs.promises.writeFile(stateFile, JSON.stringify(state, null, 2));
   } catch (err) {
     if (err?.name === 'NodeExitError') throw err;
     const sliccGone = await deleteSliccWebhook(slicc.id);
@@ -1650,7 +1650,7 @@ async function cmdUnwatch(positional, flags) {
     await deleteSliccWebhook(st.sliccWebhookId);
     await deleteBbWebhook(st.bbWebhookId);
     try {
-      await fs.rm(file);
+      await fs.promises.rm(file);
     } catch {
       /* ignore */
     }

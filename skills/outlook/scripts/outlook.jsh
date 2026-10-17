@@ -589,14 +589,14 @@ async function extractTokenFromBrowser() {
   // 1. Legacy plaintext MSAL cache.
   const cached = await extractTokenFromCache(tabId);
   if (cached) {
-    await fs.writeFile(TOKEN_PATH, cached);
+    await fs.promises.writeFile(TOKEN_PATH, cached);
     return cached;
   }
 
   // 2. Encrypted-cache clients (outlook.cloud.microsoft): capture from network.
   const captured = await captureTokenFromNetwork(tabId);
   if (captured) {
-    await fs.writeFile(TOKEN_PATH, captured);
+    await fs.promises.writeFile(TOKEN_PATH, captured);
     return captured;
   }
 
@@ -614,7 +614,7 @@ async function getToken() {
   // "open Outlook" guidance below. Mirrors the revalidation already applied to
   // network-captured tokens (see isFreshBearerCandidate).
   try {
-    const saved = (await fs.readFile(TOKEN_PATH)).trim();
+    const saved = (await fs.promises.readFile(TOKEN_PATH, 'utf8')).trim();
     if (saved && isFreshBearerCandidate(saved)) return saved;
   } catch { /* no file */ }
 
@@ -656,8 +656,8 @@ async function reacquireToken(badToken) {
   if (badToken) {
     _rejectedTokens.add(badToken);
     try {
-      if ((await fs.readFile(TOKEN_PATH)).trim() === badToken) {
-        await fs.writeFile(TOKEN_PATH, '');
+      if ((await fs.promises.readFile(TOKEN_PATH, 'utf8')).trim() === badToken) {
+        await fs.promises.writeFile(TOKEN_PATH, '');
       }
     } catch { /* no cache file, or not writable — nothing to invalidate */ }
   }
@@ -784,7 +784,7 @@ async function getTimezone(token) {
   try {
     // Older versions of this script wrote the bare zone name here; that parses as
     // invalid JSON and is simply treated as a miss.
-    const entry = JSON.parse(await fs.readFile(TZ_PATH));
+    const entry = JSON.parse(await fs.promises.readFile(TZ_PATH, 'utf8'));
     const fresh = entry.cachedAt && Date.now() - entry.cachedAt < TZ_CACHE_TTL_MS;
     if (entry.timeZone && fresh && entry.mailbox === mailbox) {
       _timezone = entry.timeZone;
@@ -796,7 +796,7 @@ async function getTimezone(token) {
     if (settings && settings.TimeZone) {
       _timezone = settings.TimeZone;
       try {
-        await fs.writeFile(
+        await fs.promises.writeFile(
           TZ_PATH,
           JSON.stringify({ mailbox, timeZone: _timezone, cachedAt: Date.now() })
         );
@@ -1532,7 +1532,7 @@ async function cmdDownload() {
       if (!a.ContentBytes) continue; // skip item/reference attachments
       const bytes = decodeBase64Bytes(a.ContentBytes);
       const p = asDir ? `${outPath.replace(/\/$/, '')}/${a.Name}` : outPath;
-      await fs.writeFileBinary(p, bytes);
+      await fs.promises.writeFile(p, bytes);
       written.push({ name: a.Name, path: p, bytes: bytes.length });
     }
     if (flags.json === true || flags.json === 'true') { console.log(JSON.stringify(written, null, 2)); return; }

@@ -8,14 +8,14 @@
 // network, no LinkedIn tab: the browser bridge is a stub that records the page
 // script, and the test decodes the base64 payload that script would upload.
 //
-// The mock fs reproduces the runtime: fs.readFile returns DECODED text for a
-// binary file, fs.readFileBinary returns the raw Uint8Array. Against the code
-// that read with fs.readFile, the first test fails (btoa throws
-// InvalidCharacterError on the decoded text); with fs.readFileBinary it passes.
+// The mock fs reproduces the runtime: fs.promises.readFile with an encoding
+// returns DECODED text for a binary file, without one the raw bytes. Against
+// code that read the video as text, the first test fails (btoa throws
+// InvalidCharacterError on the decoded text); reading bytes passes.
 
-import test, { is, ok } from 'tst';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import test, { is, ok } from 'tst';
 
 const SCRIPT = fileURLToPath(new URL('../scripts/linkedin.jsh', import.meta.url));
 const DISPATCH_MARKER = '// ─── CLI Dispatch';
@@ -37,14 +37,25 @@ async function load(bytes) {
   if (cut < 0) throw new Error('CLI Dispatch marker not found in linkedin.jsh');
   const evals = [];
   const reads = [];
+  // Node's fs (slicc-jsh, SLICC 7; SLICC 6 serves it too): fs.promises.readFile
+  // gives bytes without an encoding and DECODED text with one; the SLICC 6-only
+  // readFileBinary is absent (ai-ecoverse/skills#487).
   const fsMock = {
-    readFile: async (p) => { reads.push(['readFile', p]); return new TextDecoder('utf-8').decode(bytes); },
-    readFileBinary: async (p) => { reads.push(['readFileBinary', p]); return bytes; },
-    writeFile: async () => {},
-    exists: async () => false,
+    existsSync: () => false,
+    promises: {
+      readFile: async (p, encoding) => {
+        reads.push([encoding ? 'text' : 'bytes', p]);
+        return encoding ? new TextDecoder('utf-8').decode(bytes) : Buffer.from(bytes);
+      },
+      writeFile: async () => {},
+      stat: async () => ({ isFile: () => true, isDirectory: () => false, size: bytes.length }),
+    },
   };
   const browser = {
-    evalAsync: async (tabId, script) => { evals.push({ tabId, script }); return { status: 201, ok: true }; },
+    evalAsync: async (tabId, script) => {
+      evals.push({ tabId, script });
+      return { status: 201, ok: true };
+    },
   };
   const exec = async () => ({ stdout: '', stderr: 'not found', exitCode: 1 });
   const color = new Proxy({}, { get: () => (s) => s });
@@ -55,7 +66,13 @@ async function load(bytes) {
     if (name === 'sliccy:color') return color;
     throw new Error('unexpected require: ' + name);
   };
-  const proc = { argv: ['node', 'linkedin.jsh'], env: {}, exit: (c) => { throw new Error('process.exit ' + c); } };
+  const proc = {
+    argv: ['node', 'linkedin.jsh'],
+    env: {},
+    exit: (c) => {
+      throw new Error('process.exit ' + c);
+    },
+  };
   const quiet = { log() {}, error() {}, warn() {}, info() {} };
   const body = src.slice(0, cut) + '\nreturn { uploadMediaBytes };';
   const mod = await new AsyncFunction('require', 'process', 'console', body)(req, proc, quiet);
@@ -72,7 +89,14 @@ function sentBytes(script) {
 test('uploadMediaBytes uploads binary file bytes unchanged', async () => {
   const bytes = sampleBytes(20000);
   const { mod, evals } = await load(bytes);
-  const res = await mod.uploadMediaBytes('tab-1', 'csrf-1', 'https://upload.invalid/put', '/shared/chart.png', { 'media-type-family': 'STILLIMAGE' }, 'image/png');
+  const res = await mod.uploadMediaBytes(
+    'tab-1',
+    'csrf-1',
+    'https://upload.invalid/put',
+    '/shared/chart.png',
+    { 'media-type-family': 'STILLIMAGE' },
+    'image/png'
+  );
   is(res.ok, true);
   is(evals.length, 1);
   const sent = sentBytes(evals[0].script);
@@ -83,13 +107,27 @@ test('uploadMediaBytes uploads binary file bytes unchanged', async () => {
 
 test('uploadMediaBytes reads the media file as binary', async () => {
   const { mod, reads } = await load(sampleBytes(10));
-  await mod.uploadMediaBytes('tab-1', 'csrf-1', 'https://upload.invalid/put', '/shared/clip.mp4', {}, 'video/mp4');
-  is(reads, [['readFileBinary', '/shared/clip.mp4']]);
+  await mod.uploadMediaBytes(
+    'tab-1',
+    'csrf-1',
+    'https://upload.invalid/put',
+    '/shared/clip.mp4',
+    {},
+    'video/mp4'
+  );
+  is(reads, [['bytes', '/shared/clip.mp4']]);
 });
 
 test('uploadMediaBytes keeps the upload headers, CSRF token and content type', async () => {
   const { mod, evals } = await load(sampleBytes(10));
-  await mod.uploadMediaBytes('tab-9', 'csrf-xyz', 'https://upload.invalid/put', '/shared/a.jpg', { 'media-type-family': 'STILLIMAGE' }, 'image/jpeg');
+  await mod.uploadMediaBytes(
+    'tab-9',
+    'csrf-xyz',
+    'https://upload.invalid/put',
+    '/shared/a.jpg',
+    { 'media-type-family': 'STILLIMAGE' },
+    'image/jpeg'
+  );
   is(evals[0].tabId, 'tab-9');
   ok(evals[0].script.includes('const CSRF = "csrf-xyz";'));
   ok(evals[0].script.includes('const TYPE = "image/jpeg";'));

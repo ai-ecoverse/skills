@@ -180,7 +180,7 @@ function isMutating(cmd, sub) {
 async function getAttributedToken() {
   // 1. Check cache
   try {
-    const cached = (await fs.readFile(BOT_CACHE)).trim();
+    const cached = (await fs.promises.readFile(BOT_CACHE, 'utf8')).trim();
     if (cached) {
       const check = await fetch('https://api.github.com/user', {
         headers: { 'Authorization': `Bearer ${cached}`, 'User-Agent': 'gh.jsh/1.0' }
@@ -217,7 +217,7 @@ async function getAttributedToken() {
       });
       const result = await p.json();
       if (result.access_token) {
-        await fs.writeFile(BOT_CACHE, result.access_token);
+        await fs.promises.writeFile(BOT_CACHE, result.access_token);
         console.error(`✓ Authenticated — actions will appear as you via as-a-bot.\n`);
         return result.access_token;
       }
@@ -762,7 +762,7 @@ async function bodyFrom(cmdLabel, body, bodyFile) {
       try { return readStdinText(); }
       catch (e) { cli.die(`${cmdLabel}: could not read stdin for --body-file -: ${e.message}`); }
     }
-    try { return await fs.readFile(bodyFile); }
+    try { return await fs.promises.readFile(bodyFile, 'utf8'); }
     catch (e) { cli.die(`${cmdLabel}: could not read --body-file ${bodyFile}: ${e.message}`); }
   }
   return body;
@@ -3323,7 +3323,7 @@ async function authStatus() {
 
   let botStatus = color.gray('not cached — will prompt on first write op');
   try {
-    const cached = (await fs.readFile(BOT_CACHE)).trim();
+    const cached = (await fs.promises.readFile(BOT_CACHE, 'utf8')).trim();
     if (cached) {
       const check = await fetch('https://api.github.com/user', {
         headers: { 'Authorization': `Bearer ${cached}`, 'User-Agent': 'gh.jsh/1.0' }
@@ -3685,10 +3685,10 @@ async function repoClone(args) {
   // Pre-check: destination directory.
   if (dir) {
     try {
-      const st = await fs.stat(dir);
+      const st = await fs.promises.stat(dir);
       if (st) {
         // Check if it's a non-empty directory.
-        const entries = await fs.readDir(dir);
+        const entries = await fs.promises.readdir(dir);
         if (entries && entries.length > 0) {
           cli.die(`repo clone: destination '${dir}' already exists and is not empty`);
         }
@@ -3806,7 +3806,7 @@ async function contentPut(args) {
   // Read local file and base64-encode (unicode-safe)
   let content;
   try {
-    const raw = await fs.readFile(localFile);
+    const raw = await fs.promises.readFile(localFile, 'utf8');
     const encoder = new TextEncoder();
     const bytes = encoder.encode(raw);
     let binary = '';
@@ -3939,7 +3939,7 @@ async function apiPassthrough(args) {
     }
     if (value.startsWith('@')) {
       const filePath = value.slice(1);
-      try { return new TextDecoder().decode(await fs.readFileBinary(filePath)); }
+      try { return new TextDecoder().decode(await fs.promises.readFile(filePath)); }
       catch (e) { cli.die(`api: could not read -F value from ${filePath}: ${e.message}\nUse -f key=@mention for a literal value beginning with @.`); }
     }
     return typedApiField(value);
@@ -3997,7 +3997,7 @@ async function apiPassthrough(args) {
       try { inputBody = readStdinText(); }
       catch (e) { cli.die(`api: could not read stdin for --input -: ${e.message}`); }
     } else {
-      try { inputBody = await fs.readFile(inputFile); }
+      try { inputBody = await fs.promises.readFile(inputFile, 'utf8'); }
       catch (e) { cli.die(`api: could not read --input ${inputFile}: ${e.message}`); }
     }
   }
@@ -4333,7 +4333,7 @@ async function cmdMcpRaw(args) {
       try {
         const content = filePath === '-'
           ? readStdinText()
-          : new TextDecoder().decode(await fs.readFileBinary(filePath));
+          : new TextDecoder().decode(await fs.promises.readFile(filePath));
         params = JSON.parse(content);
       } catch (e) {
         cli.die(`Could not read/parse input: ${e.message}`, { prefix: 'gh mcp' });

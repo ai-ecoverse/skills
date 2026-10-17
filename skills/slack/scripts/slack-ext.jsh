@@ -1559,7 +1559,7 @@ async function readManifestFile(label) {
   }
   let raw;
   try {
-    raw = await fs.readFile(file);
+    raw = await fs.promises.readFile(file, 'utf8');
   } catch (e) {
     cli.die('Could not read manifest file ' + file + ': ' + ((e && e.message) || e), {
       prefix: PREFIX,
@@ -1602,7 +1602,7 @@ async function cmdAppExport() {
   const out = flags.out;
   if (out && out !== true) {
     try {
-      await fs.writeFile(out, text + '\n');
+      await fs.promises.writeFile(out, text + '\n');
     } catch (e) {
       cli.die('Could not write ' + out + ': ' + ((e && e.message) || e), { prefix: PREFIX });
     }

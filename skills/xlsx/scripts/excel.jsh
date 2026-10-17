@@ -65,18 +65,18 @@ function decodeExp(tok) {
 
 async function readCache() {
   try {
-    if (!(await fs.exists(TOKEN_CACHE))) return null;
-    return JSON.parse(await fs.readFile(TOKEN_CACHE));
+    if (!(fs.existsSync(TOKEN_CACHE))) return null;
+    return JSON.parse(await fs.promises.readFile(TOKEN_CACHE, 'utf8'));
   } catch { return null; }
 }
 async function writeCache(obj) {
   try {
-    await fs.writeFile(TOKEN_CACHE, JSON.stringify(obj));
+    await fs.promises.writeFile(TOKEN_CACHE, JSON.stringify(obj));
     // The cache holds a live Files.ReadWrite.All bearer token, so restrict it to
     // owner-only. Under real Node this applies 0600; SLICC's single-tenant VFS
     // does not expose fs.chmod (and ignores POSIX modes), so the guard no-ops
     // there — same best-effort pattern as the cloudflare skill's cache.
-    if (typeof fs.chmod === 'function') await fs.chmod(TOKEN_CACHE, 0o600).catch(() => {});
+    if (fs.promises && typeof fs.promises.chmod === 'function') await fs.promises.chmod(TOKEN_CACHE, 0o600).catch(() => {});
   } catch { /* best effort */ }
 }
 
@@ -264,16 +264,16 @@ async function cmdDownload(target) {
   // /content 302-redirects to a pre-signed download URL; fetch follows it and
   // handles files of any size. The bearer is ignored by the pre-signed host.
   const buf = await graph(r.content, { binary: true });
-  await fs.writeFileBinary(outPath, buf);
+  await fs.promises.writeFile(outPath, buf);
   ok(`downloaded ${c.bold(it.name)} \u2192 ${outPath} (${human(it.size)})`);
 }
 
 async function cmdUpload(localFile, remote) {
   if (!localFile) cli.die('a local file is required: excel upload <localfile> [remotepath]');
-  if (!(await fs.exists(localFile))) cli.die(`no such local file: ${localFile}`);
+  if (!(fs.existsSync(localFile))) cli.die(`no such local file: ${localFile}`);
   const base = String(localFile).split('/').pop();
   const remotePath = remote || `/${base}`;
-  const size = (await fs.stat(localFile).catch(() => ({}))).size;
+  const size = (await fs.promises.stat(localFile).catch(() => ({}))).size;
   const token = await getToken();
   const url = GRAPH + ref(remotePath).content + '?' + SELECT;
   // The jsh proxied `fetch` cannot send a raw binary request body (every body
@@ -332,7 +332,7 @@ async function cmdNew(remote) {
   const r = await exec(`xlsx create ${tmp} --data '${dataArg}'${sheetArg}`);
   if (r.exitCode !== 0) cli.die(`xlsx create failed:\n${r.stderr || r.stdout}`);
   await cmdUpload(tmp, remote);
-  await fs.rm(tmp).catch(() => {});
+  await fs.promises.rm(tmp).catch(() => {});
 }
 
 async function cmdToken() {

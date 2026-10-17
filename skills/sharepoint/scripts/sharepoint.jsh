@@ -319,13 +319,13 @@ async function extractTokenFromBrowser() {
 
   const cached = await extractTokenFromCache(tabId);
   if (cached) {
-    await fs.writeFile(TOKEN_PATH, cached);
+    await fs.promises.writeFile(TOKEN_PATH, cached);
     return cached;
   }
 
   const captured = await captureTokenFromNetwork(tabId);
   if (captured) {
-    await fs.writeFile(TOKEN_PATH, captured);
+    await fs.promises.writeFile(TOKEN_PATH, captured);
     return captured;
   }
 
@@ -337,7 +337,7 @@ async function getToken() {
   if (browserToken) return browserToken;
 
   try {
-    const saved = (await fs.readFile(TOKEN_PATH)).trim();
+    const saved = (await fs.promises.readFile(TOKEN_PATH, 'utf8')).trim();
     if (saved && isFreshBearerCandidate(saved)) return saved;
   } catch { /* no file */ }
 
@@ -365,8 +365,8 @@ async function reacquireToken(badToken) {
   if (badToken) {
     _rejectedTokens.add(badToken);
     try {
-      if ((await fs.readFile(TOKEN_PATH)).trim() === badToken) {
-        await fs.writeFile(TOKEN_PATH, '');
+      if ((await fs.promises.readFile(TOKEN_PATH, 'utf8')).trim() === badToken) {
+        await fs.promises.writeFile(TOKEN_PATH, '');
       }
     } catch { /* no cache file, or not writable */ }
   }
@@ -663,7 +663,7 @@ async function cmdDownload() {
 
   const res = await graphGetBinary(token, `/sites/${siteId}/drives/${driveId}/items/${itemId}/content`);
   const buf = Buffer.from(await res.arrayBuffer());
-  await fs.writeFileBinary(outPath, buf);
+  await fs.promises.writeFile(outPath, buf);
   console.log(`Downloaded ${fmtBytes(buf.length)} to ${outPath}`);
 }
 
