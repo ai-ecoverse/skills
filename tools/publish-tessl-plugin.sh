@@ -25,7 +25,8 @@ trap cleanup EXIT
 
 STAGED_PLUGIN="$STAGE_ROOT/$PLUGIN"
 STAGED_MANIFEST="$STAGED_PLUGIN/.tessl-plugin/plugin.json"
-node "$REPO_ROOT/tools/stage-tessl-plugin.mjs" "$PLUGIN" "$STAGED_PLUGIN"
+bash "$REPO_ROOT/tools/expect-verdict.sh" stage-tessl-plugin \
+  node "$REPO_ROOT/tools/stage-tessl-plugin.mjs" "$PLUGIN" "$STAGED_PLUGIN"
 
 NAME=$(jq -er .name "$STAGED_MANIFEST")
 echo "Publishing $NAME with collision-aware $BUMP bumping"

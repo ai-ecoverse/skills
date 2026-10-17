@@ -4,6 +4,8 @@ import { lstat } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { isMain } from './is-main.mjs';
+
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SKILL_FILE = /^skills\/([a-z0-9][a-z0-9-]*)\//;
 const PLUGIN_MANIFEST = /^tiles\/([a-z0-9][a-z0-9-]*)\/\.tessl-plugin\/plugin\.json$/;
@@ -56,10 +58,14 @@ async function main() {
     .split(/\r?\n/)
     .map((file) => file.trim())
     .filter(Boolean);
-  console.log(JSON.stringify(await detectTesslChanges({ changedFiles })));
+  const result = await detectTesslChanges({ changedFiles });
+  console.log(JSON.stringify(result));
+  console.error(
+    `detect-tessl-changes: PASS ${result.skills.length} skills, ${result.plugins.length} plugins changed`
+  );
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMain(import.meta.url)) {
   main().catch((error) => {
     console.error(`detect-tessl-changes: ${error.message}`);
     process.exitCode = 1;

@@ -17,6 +17,8 @@ async function fixture(t) {
     join(toolsRoot, 'stage-tessl-plugin.mjs'),
     join(repoRoot, 'tools/stage-tessl-plugin.mjs')
   );
+  await cp(join(toolsRoot, 'is-main.mjs'), join(repoRoot, 'tools/is-main.mjs'));
+  await cp(join(toolsRoot, 'expect-verdict.sh'), join(repoRoot, 'tools/expect-verdict.sh'));
   await cp(
     join(toolsRoot, 'publish-tessl-plugin.sh'),
     join(repoRoot, 'tools/publish-tessl-plugin.sh')

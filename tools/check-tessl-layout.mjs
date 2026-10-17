@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
-import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { isMain } from './is-main.mjs';
 
 const TILE_SKILL_PATH = /^tiles\/[^/]+\/skills(?:\/|$)/;
 
@@ -17,10 +16,12 @@ async function main() {
   let input = '';
   process.stdin.setEncoding('utf8');
   for await (const chunk of process.stdin) input += chunk;
-  assertNoTrackedTileSkillPaths(input.split(/\r?\n/).filter(Boolean));
+  const trackedFiles = input.split(/\r?\n/).filter(Boolean);
+  assertNoTrackedTileSkillPaths(trackedFiles);
+  console.error(`check-tessl-layout: PASS ${trackedFiles.length} tracked files`);
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMain(import.meta.url)) {
   main().catch((error) => {
     console.error(`check-tessl-layout: ${error.message}`);
     process.exitCode = 1;

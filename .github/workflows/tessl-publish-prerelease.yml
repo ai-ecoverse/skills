@@ -42,6 +42,6 @@ jobs:
           STAGE_ROOT=$(mktemp -d)
           trap 'rm -rf "$STAGE_ROOT"' EXIT
           STAGED_PLUGIN="$STAGE_ROOT/$PLUGIN"
-          node tools/stage-tessl-plugin.mjs "$PLUGIN" "$STAGED_PLUGIN"
+          bash tools/expect-verdict.sh stage-tessl-plugin node tools/stage-tessl-plugin.mjs "$PLUGIN" "$STAGED_PLUGIN"
           echo "Publishing $NAME@$VERSION from staged plugin $PLUGIN"
           tessl plugin publish "$STAGED_PLUGIN"
