@@ -1,11 +1,12 @@
-import test, { fail, is, ok } from 'tst';
-import { createRequire } from 'node:module';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import * as _prWatchFilterMod from '../scripts/pr-watch-filter.js';
+import test, { fail, is, ok } from 'tst';
 import * as _assignFieldMod from '../scripts/assign-field.js';
 import * as _prEditMod from '../scripts/pr-edit.js';
+import * as _prWatchFilterMod from '../scripts/pr-watch-filter.js';
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const target = path.resolve(__dirname, '../scripts/gh.jsh');
@@ -83,22 +84,25 @@ async function runGh(args, scenario = {}) {
     return { stdout: '', stderr: '', exitCode: 0 };
   };
   exec.start = exec;
+  // Node's fs (slicc-jsh, SLICC 7; SLICC 6 serves it too): fs.promises only;
+  // the SLICC 6-only promise dialect is absent (ai-ecoverse/skills#487).
+  const enoent = () => Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
   const fileSystem = {
-    readFile: async () => {
-      throw new Error('ENOENT');
-    },
-    readFileBinary: async () => {
-      throw new Error('ENOENT');
-    },
-    writeFile: async () => {},
-    stat: async (filePath) => {
-      if (scenario.existingDirs && scenario.existingDirs[filePath]) return { isDirectory: true };
-      throw new Error('ENOENT');
-    },
-    readDir: async (filePath) => {
-      if (scenario.existingDirs && scenario.existingDirs[filePath])
-        return scenario.existingDirs[filePath];
-      throw new Error('ENOENT');
+    promises: {
+      readFile: async () => {
+        throw enoent();
+      },
+      writeFile: async () => {},
+      stat: async (filePath) => {
+        if (scenario.existingDirs && scenario.existingDirs[filePath])
+          return { isDirectory: () => true, isFile: () => false };
+        throw enoent();
+      },
+      readdir: async (filePath) => {
+        if (scenario.existingDirs && scenario.existingDirs[filePath])
+          return scenario.existingDirs[filePath];
+        throw enoent();
+      },
     },
   };
   const mocks = {
@@ -114,9 +118,9 @@ async function runGh(args, scenario = {}) {
   // Relative script siblings are pre-loaded via static ESM imports (tst's
   // createRequire shim resolves node: builtins but not relative VFS paths).
   const relativeModules = {
-    './pr-watch-filter.js': () => (_prWatchFilterMod.default || _prWatchFilterMod),
-    './assign-field.js': () => (_assignFieldMod.default || _assignFieldMod),
-    './pr-edit.js': () => (_prEditMod.default || _prEditMod),
+    './pr-watch-filter.js': () => _prWatchFilterMod.default || _prWatchFilterMod,
+    './assign-field.js': () => _assignFieldMod.default || _assignFieldMod,
+    './pr-edit.js': () => _prEditMod.default || _prEditMod,
   };
   const realRequire = createRequire(target);
   const mockRequire = (id) => {
@@ -167,9 +171,9 @@ test('pr ready: marks a draft PR ready for review via GraphQL', async () => {
   });
   const graphqlCall = result.calls.find((c) => c.path === '/graphql');
   ok(graphqlCall, 'should call /graphql');
-  ok((/markPullRequestReadyForReview/).test(graphqlCall.options.body.query));
+  ok(/markPullRequestReadyForReview/.test(graphqlCall.options.body.query));
   is(graphqlCall.options.body.variables.id, 'PR_test123');
-  ok((/ready for review/).test(result.stdout.join('\n')));
+  ok(/ready for review/.test(result.stdout.join('\n')));
 });
 
 test('pr ready --undo: converts a non-draft PR to draft via GraphQL', async () => {
@@ -179,9 +183,9 @@ test('pr ready --undo: converts a non-draft PR to draft via GraphQL', async () =
   });
   const graphqlCall = result.calls.find((c) => c.path === '/graphql');
   ok(graphqlCall, 'should call /graphql');
-  ok((/convertPullRequestToDraft/).test(graphqlCall.options.body.query));
+  ok(/convertPullRequestToDraft/.test(graphqlCall.options.body.query));
   is(graphqlCall.options.body.variables.id, 'PR_test123');
-  ok((/back to draft/).test(result.stdout.join('\n')));
+  ok(/back to draft/.test(result.stdout.join('\n')));
 });
 
 test('pr ready: skips when PR is already ready', async () => {
@@ -190,7 +194,7 @@ test('pr ready: skips when PR is already ready', async () => {
   });
   const graphqlCalls = result.calls.filter((c) => c.path === '/graphql');
   is(graphqlCalls.length, 0, 'should not call GraphQL when already ready');
-  ok((/already marked ready/).test(result.stdout.join('\n')));
+  ok(/already marked ready/.test(result.stdout.join('\n')));
 });
 
 test('pr ready --undo: skips when PR is already a draft', async () => {
@@ -199,20 +203,20 @@ test('pr ready --undo: skips when PR is already a draft', async () => {
   });
   const graphqlCalls = result.calls.filter((c) => c.path === '/graphql');
   is(graphqlCalls.length, 0, 'should not call GraphQL when already draft');
-  ok((/already a draft/).test(result.stdout.join('\n')));
+  ok(/already a draft/.test(result.stdout.join('\n')));
 });
 
 test('pr ready: requires a PR number', async () => {
   const result = await runGh(['pr', 'ready', '-R', 'octo/repo']);
   is(result.error.name, 'NodeExitError');
-  ok((/PR number required/).test(result.error.message));
+  ok(/PR number required/.test(result.error.message));
   is(writes(result), []);
 });
 
 test('pr ready: rejects invalid PR numbers', async () => {
   const result = await runGh(['pr', 'ready', 'nope', '-R', 'octo/repo']);
   is(result.error.name, 'NodeExitError');
-  ok((/positive integer/).test(result.error.message));
+  ok(/positive integer/.test(result.error.message));
   is(writes(result), []);
 });
 
@@ -222,7 +226,7 @@ test('pr ready: reports GraphQL errors', async () => {
     graphqlResponse: { errors: [{ message: 'Token lacks scope' }] },
   });
   is(result.error.name, 'NodeExitError');
-  ok((/GraphQL error.*Token lacks scope/).test(result.error.message));
+  ok(/GraphQL error.*Token lacks scope/.test(result.error.message));
 });
 
 test('pr ready: reports not found errors', async () => {
@@ -230,28 +234,28 @@ test('pr ready: reports not found errors', async () => {
     failPrGet: { status: 404, body: { message: 'Not Found' } },
   });
   is(result.error.name, 'NodeExitError');
-  ok((/not found/).test(result.error.message));
+  ok(/not found/.test(result.error.message));
 });
 
 test('pr ready: exposes help with --help', async () => {
   const result = await runGh(['pr', 'ready', '--help']);
   is(result.error.exitCode, 0);
   const help = result.stdout.join('\n');
-  ok((/--undo/).test(help));
-  ok((/--repo/).test(help));
-  ok((/GraphQL/).test(help));
+  ok(/--undo/.test(help));
+  ok(/--repo/.test(help));
+  ok(/GraphQL/.test(help));
 });
 
 test('pr ready: appears in pr group help', async () => {
   const result = await runGh(['pr', '--help']);
   is(result.error.exitCode, 0);
-  ok((/ready/).test(result.stdout.join('\n')));
+  ok(/ready/.test(result.stdout.join('\n')));
 });
 
 test('pr ready: appears in top-level help', async () => {
   const result = await runGh(['--help']);
   is(result.error.exitCode, 0);
-  ok((/pr ready/).test(result.stdout.join('\n')));
+  ok(/pr ready/.test(result.stdout.join('\n')));
 });
 
 // ─── repo clone ──────────────────────────────────────────────────────────────
@@ -265,7 +269,7 @@ test('repo clone: clones a repository via exec.spawn', async () => {
   is(cloneCall[0], 'git');
   is(cloneCall[1], 'clone');
   ok(cloneCall.includes('https://github.com/octo/repo.git'), 'should use HTTPS URL');
-  ok((/Cloned.*octo\/repo/).test(result.stdout.join('\n')));
+  ok(/Cloned.*octo\/repo/.test(result.stdout.join('\n')));
 });
 
 test('repo clone: supports --depth flag', async () => {
@@ -308,7 +312,7 @@ test('repo clone: passes flags after -- to git', async () => {
 test('repo clone: rejects missing owner/repo', async () => {
   const result = await runGh(['repo', 'clone']);
   is(result.error.name, 'NodeExitError');
-  ok((/owner\/repo required/).test(result.error.message));
+  ok(/owner\/repo required/.test(result.error.message));
 });
 
 test('repo clone: rejects non-empty destination', async () => {
@@ -317,7 +321,7 @@ test('repo clone: rejects non-empty destination', async () => {
     existingDirs: { '/existing': ['file1.txt', 'file2.txt'] },
   });
   is(result.error.name, 'NodeExitError');
-  ok((/already exists and is not empty/).test(result.error.message));
+  ok(/already exists and is not empty/.test(result.error.message));
   is(result.execResults.length, 0, 'should not spawn git');
 });
 
@@ -326,7 +330,7 @@ test('repo clone: reports nonexistent repo', async () => {
     failRepoGet: { status: 404, body: { message: 'Not Found' } },
   });
   is(result.error.name, 'NodeExitError');
-  ok((/not found/).test(result.error.message));
+  ok(/not found/.test(result.error.message));
 });
 
 test('repo clone: reports git clone failure', async () => {
@@ -335,7 +339,7 @@ test('repo clone: reports git clone failure', async () => {
     spawnResult: { stdout: '', stderr: 'fatal: something went wrong', exitCode: 128 },
   });
   is(result.error.name, 'NodeExitError');
-  ok((/git clone failed/).test(result.error.message));
+  ok(/git clone failed/.test(result.error.message));
 });
 
 test('repo clone: adds upstream remote for forks', async () => {
@@ -351,7 +355,7 @@ test('repo clone: adds upstream remote for forks', async () => {
   const upstreamCall = result.execResults[1];
   ok(upstreamCall.includes('remote'), 'second call should be git remote');
   ok(upstreamCall.includes('upstream'), 'should add upstream remote');
-  ok((/upstream.*upstream\/repo/).test(result.stdout.join('\n')));
+  ok(/upstream.*upstream\/repo/.test(result.stdout.join('\n')));
 });
 
 test('repo clone: does not embed token in URL', async () => {
@@ -361,26 +365,26 @@ test('repo clone: does not embed token in URL', async () => {
   const cloneCall = result.execResults[0];
   const urlArg = cloneCall.find((a) => a.includes('github.com'));
   ok(urlArg, 'should have a GitHub URL argument');
-  ok(!(/fake|token|Bearer/).test(urlArg), 'should not embed token in URL');
+  ok(!/fake|token|Bearer/.test(urlArg), 'should not embed token in URL');
 });
 
 test('repo clone: exposes help with --help', async () => {
   const result = await runGh(['repo', 'clone', '--help']);
   is(result.error.exitCode, 0);
   const help = result.stdout.join('\n');
-  ok((/--depth/).test(help));
-  ok((/--branch/).test(help));
-  ok((/upstream/).test(help));
+  ok(/--depth/.test(help));
+  ok(/--branch/.test(help));
+  ok(/upstream/.test(help));
 });
 
 test('repo clone: appears in repo group help', async () => {
   const result = await runGh(['repo', '--help']);
   is(result.error.exitCode, 0);
-  ok((/clone/).test(result.stdout.join('\n')));
+  ok(/clone/.test(result.stdout.join('\n')));
 });
 
 test('repo clone: appears in top-level help', async () => {
   const result = await runGh(['--help']);
   is(result.error.exitCode, 0);
-  ok((/repo clone/).test(result.stdout.join('\n')));
+  ok(/repo clone/.test(result.stdout.join('\n')));
 });

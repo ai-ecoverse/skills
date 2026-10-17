@@ -743,7 +743,7 @@ function lastPostFile(wsId, channel) {
 // message a DIFFERENT cone posted.
 async function readLastPost(wsId, channel) {
   try {
-    const raw = await fs.readFile(lastPostFile(wsId, channel), 'utf8');
+    const raw = await fs.promises.readFile(lastPostFile(wsId, channel), 'utf8');
     const state = JSON.parse(raw);
     const val = state && state.ts;
     if (typeof val !== 'string' || !val) return null;
@@ -763,7 +763,7 @@ async function rememberLastPostTs(wsId, channel, ts, postingCone) {
       lickTarget: postingCone || null,
       updatedAt: new Date().toISOString(),
     };
-    await fs.writeFile(lastPostFile(wsId, channel), JSON.stringify(state));
+    await fs.promises.writeFile(lastPostFile(wsId, channel), JSON.stringify(state));
   } catch (_) { /* best-effort only */ }
 }
 
@@ -839,7 +839,7 @@ async function startAutoWatch({ targetChannel, threadTs, selfTs, wsId, watchScoo
   // notify, which is exactly what makes this TTL extension silent (previously a
   // second post into a live watch matched the filter and woke the watch scoop).
   let existing = null;
-  try { existing = JSON.parse(await fs.readFile(stateFile, 'utf8')); } catch (_) {}
+  try { existing = JSON.parse(await fs.promises.readFile(stateFile, 'utf8')); } catch (_) {}
   const lickTarget = resolveLickTarget(watchScoop);
   if (existing && existing.autowatch) {
     const { at } = computeTeardownCron(AUTOWATCH_TTL_MS);
@@ -857,7 +857,7 @@ async function startAutoWatch({ targetChannel, threadTs, selfTs, wsId, watchScoo
     const newTeardown = await scheduleTeardown({ watchId, at, useThread, threadTs, targetChannel, scoop });
     existing.expiresAt = expiresAt;
     existing.teardownTaskId = newTeardown || null;
-    await fs.writeFile(stateFile, JSON.stringify(existing, null, 2)).catch(() => {});
+    await fs.promises.writeFile(stateFile, JSON.stringify(existing, null, 2)).catch(() => {});
     console.log(`Extended reply watch for ${watchId} to 1h (routes to ${describeTarget(scoop)})`);
     if (owner !== undefined && owner !== lickTarget) {
       console.error(`Warning: ${watchId} is watched by ${describeTarget(owner)}, not ${describeTarget(lickTarget)} — replies will wake ${describeTarget(owner)}.`);
@@ -943,7 +943,7 @@ async function startAutoWatch({ targetChannel, threadTs, selfTs, wsId, watchScoo
     watchId, at, useThread, threadTs, targetChannel, scoop: state.lickTarget,
   });
 
-  await fs.writeFile(stateFile, JSON.stringify(state, null, 2)).catch(() => {});
+  await fs.promises.writeFile(stateFile, JSON.stringify(state, null, 2)).catch(() => {});
 
   const scopeMsg = scope === 'thread' ? 'thread' : 'channel+thread';
   console.log(`Watching ${scopeMsg} for replies for 1h (routes to ${describeTarget(state.lickTarget)})`);
@@ -1221,7 +1221,7 @@ const commands = {
     // Unknown shortcodes that aren't in either map pass through unchanged.
     let emojiMap = {};
     try {
-      emojiMap = JSON.parse(await fs.readFile('/workspace/skills/slack/scripts/emoji-map.json', 'utf8'));
+      emojiMap = JSON.parse(await fs.promises.readFile('/workspace/skills/slack/scripts/emoji-map.json', 'utf8'));
     } catch (e) {
       // static map unavailable — continue
     }
@@ -1230,7 +1230,7 @@ const commands = {
       const cacheFile = '/workspace/skills/slack/scripts/emoji-cache.json';
       let cache = null;
       try {
-        cache = JSON.parse(await fs.readFile(cacheFile, 'utf8'));
+        cache = JSON.parse(await fs.promises.readFile(cacheFile, 'utf8'));
       } catch (_) {}
       const now = Date.now();
       const TTL = 60 * 60 * 1000; // 1 hour
@@ -1252,7 +1252,7 @@ const commands = {
             // URL entries are uploaded images — Slack renders them natively, no conversion needed
           }
           cache = { ts: now, map: customMap };
-          await fs.writeFile(cacheFile, JSON.stringify(cache)).catch(() => {});
+          await fs.promises.writeFile(cacheFile, JSON.stringify(cache)).catch(() => {});
         }
       }
       if (cache && cache.map) Object.assign(emojiMap, cache.map);
@@ -1427,7 +1427,7 @@ const commands = {
     const code = `(async()=>{const r=await fetch(${JSON.stringify(url)},{credentials:'include'});if(!r.ok)return JSON.stringify({ok:false,status:r.status});const u=new Uint8Array(await r.arrayBuffer());let s='';for(let i=0;i<u.length;i+=8192){s+=String.fromCharCode.apply(null,u.subarray(i,i+8192));}return JSON.stringify({ok:true,b64:btoa(s),len:u.length});})()`;
     const res = await evalInSlackTab(code, { fatal: false });
     if (!res || !res.ok) { console.error('Error: fetch failed', res && res.status ? `(HTTP ${res.status})` : ''); process.exit(1); }
-    await fs.writeFileBinary(out, Buffer.from(res.b64, 'base64'));
+    await fs.promises.writeFile(out, Buffer.from(res.b64, 'base64'));
     console.log(`Downloaded ${res.len} bytes to ${out}`);
   },
 
@@ -1441,9 +1441,9 @@ const commands = {
       console.error('Usage: slack upload <channel_id> <file> [--thread_ts=TS] [--comment="text"] [--title="..."]');
       process.exit(1);
     }
-    if (!(await fs.exists(file))) { console.error(`Error: file not found: ${file}`); process.exit(1); }
+    if (!(fs.existsSync(file))) { console.error(`Error: file not found: ${file}`); process.exit(1); }
     const wsId = await resolveWorkspace(globalFlags);
-    const size = (await fs.stat(file)).size;
+    const size = (await fs.promises.stat(file)).size;
     const filename = file.split('/').pop();
 
     // Resolve a user ID to a DM channel, mirroring `post`.
@@ -1799,7 +1799,7 @@ const commands = {
     // fix. NodeExitError must be re-thrown here so it actually propagates
     // instead of being caught by this unrelated catch.
     try {
-      const existing = JSON.parse(await fs.readFile(stateFile, 'utf8'));
+      const existing = JSON.parse(await fs.promises.readFile(stateFile, 'utf8'));
       if (!flags.force) {
         // Name the owner: the state file is keyed by workspace+channel only and
         // /workspace/skills is shared by every cone, so "already watching" often
@@ -1890,7 +1890,7 @@ const commands = {
       process.exit(1);
     }
     state.subId = sub.id;
-    await fs.writeFile(stateFile, JSON.stringify(state, null, 2));
+    await fs.promises.writeFile(stateFile, JSON.stringify(state, null, 2));
 
     console.log(`Watching ${watchId} → scoop "${scoop}"`);
     console.log(`  Webhook: ${webhook.id}`);
@@ -1914,7 +1914,7 @@ const commands = {
 
     let state;
     try {
-      state = JSON.parse(await fs.readFile(stateFile, 'utf8'));
+      state = JSON.parse(await fs.promises.readFile(stateFile, 'utf8'));
     } catch (_) {
       console.error(`No active watch for ${watchId}.`);
       process.exit(1);
@@ -1936,7 +1936,7 @@ const commands = {
     }
 
     // Remove state file
-    await fs.rm(stateFile).catch(() => {});
+    await fs.promises.rm(stateFile).catch(() => {});
 
     console.log(`Stopped watching ${watchId} (was → scoop "${state.scoop}").`);
   },
@@ -1955,7 +1955,7 @@ const commands = {
     console.log(`Active watches (${files.length}):\n`);
     for (const file of files) {
       try {
-        const state = JSON.parse(await fs.readFile(file.trim(), 'utf8'));
+        const state = JSON.parse(await fs.promises.readFile(file.trim(), 'utf8'));
         const thread = state.thread_ts ? ` thread=${state.thread_ts}` : '';
         const via = state.webhookId ? `webhook: ${state.webhookId}` : 'unknown delivery';
         // Watches from every cone share this directory, so name the owning cone
@@ -1984,7 +1984,7 @@ const commands = {
     const states = [];
     for (const file of files) {
       try {
-        states.push({ file: file.trim(), state: JSON.parse(await fs.readFile(file.trim(), 'utf8')) });
+        states.push({ file: file.trim(), state: JSON.parse(await fs.promises.readFile(file.trim(), 'utf8')) });
       } catch (_) {}
     }
 
@@ -2001,7 +2001,7 @@ const commands = {
     for (const { file, state } of states) {
       const sub = await subscribeWatch(tab, state);
       state.subId = sub.id;
-      await fs.writeFile(file, JSON.stringify(state, null, 2)).catch(() => {});
+      await fs.promises.writeFile(file, JSON.stringify(state, null, 2)).catch(() => {});
     }
     console.log(`Re-injected interceptor with ${states.length} watch(es).`);
   },

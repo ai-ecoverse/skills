@@ -15,10 +15,10 @@
 //
 // The mutation matrix verified against these tests is recorded at the bottom.
 
-import test, { is, ok, not, fail } from 'tst';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import test, { fail, is, not, ok } from 'tst';
 import * as _argvMod from '../scripts/argv.js';
 import * as _manifestDiffMod from '../scripts/manifest-diff.js';
 import * as _gridMod from '../scripts/slack-ext-grid.js';
@@ -31,8 +31,7 @@ const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const LIVE_MANIFEST = {
   display_information: {
     name: 'AEM Ops Automation',
-    description:
-      'Channel naming and membership governance notices for the AEM support workspace.',
+    description: 'Channel naming and membership governance notices for the AEM support workspace.',
     background_color: '#d32600',
   },
   features: {
@@ -135,7 +134,7 @@ async function load(opts) {
   function respond(method) {
     const responses = options.responses || {};
     callCounts[method] = (callCounts[method] || 0) + 1;
-    if (!Object.prototype.hasOwnProperty.call(responses, method)) return defaultResponse(method);
+    if (!Object.hasOwn(responses, method)) return defaultResponse(method);
     const r = responses[method];
     if (!Array.isArray(r)) return r;
     return r[Math.min(callCounts[method] - 1, r.length - 1)];
@@ -146,8 +145,7 @@ async function load(opts) {
       return {
         async post(reqPath, postOpts) {
           const method = String(reqPath).replace(/^\//, '');
-          const bodyText =
-            postOpts && typeof postOpts.body === 'string' ? postOpts.body : '';
+          const bodyText = postOpts && typeof postOpts.body === 'string' ? postOpts.body : '';
           const params = {};
           for (const [k, v] of new URLSearchParams(bodyText)) params[k] = v;
           httpCalls.push({
@@ -259,14 +257,20 @@ async function load(opts) {
     }
   );
 
+  // Node's fs (slicc-jsh, SLICC 7; SLICC 6 serves it too): fs.promises only;
+  // the SLICC 6 promise dialect is absent (ai-ecoverse/skills#487).
   const fsStub = {
-    async readFile(p) {
-      const files = options.files || {};
-      if (Object.prototype.hasOwnProperty.call(files, p)) return files[p];
-      throw new Error('ENOENT: no such file ' + p);
-    },
-    async writeFile(p, contents) {
-      writes.push({ path: p, contents: String(contents) });
+    promises: {
+      async readFile(p, encoding) {
+        const files = options.files || {};
+        if (Object.hasOwn(files, p)) {
+          return encoding ? files[p] : Buffer.from(files[p]);
+        }
+        throw new Error('ENOENT: no such file ' + p);
+      },
+      async writeFile(p, contents) {
+        writes.push({ path: p, contents: String(contents) });
+      },
     },
   };
 
@@ -296,17 +300,17 @@ async function load(opts) {
   // pre-loaded via static ESM imports above (the tst realm resolves imports statically
   // but its createRequire shim does not resolve relative file-system paths).
   const relativeModules = {
-    './argv.js': () => (_argvMod.default || _argvMod),
-    './manifest-diff.js': () => (_manifestDiffMod.default || _manifestDiffMod),
-    './slack-ext-grid.js': () => (_gridMod.default || _gridMod)
+    './argv.js': () => _argvMod.default || _argvMod,
+    './manifest-diff.js': () => _manifestDiffMod.default || _manifestDiffMod,
+    './slack-ext-grid.js': () => _gridMod.default || _gridMod,
   };
   const scriptRequire = (id) => {
     const key = id.replace(/^\.\.\/(scripts\/)?/, './');
-    if (Object.prototype.hasOwnProperty.call(relativeModules, key)) return relativeModules[key]();
+    if (Object.hasOwn(relativeModules, key)) return relativeModules[key]();
     throw new Error('unexpected relative require(' + id + ') — add a static import');
   };
   const mockRequire = (id) => {
-    if (Object.prototype.hasOwnProperty.call(mocks, id)) return mocks[id];
+    if (Object.hasOwn(mocks, id)) return mocks[id];
     if (id.startsWith('./') || id.startsWith('../')) return scriptRequire(id);
     throw new Error('unexpected require(' + id + ')');
   };
@@ -440,10 +444,7 @@ test('manifestLeaves flattens the live fixture to its 14 leaf fields', async () 
   ok(keys.includes('/settings/event_subscriptions/bot_events'));
   ok(keys.includes('/settings/is_mcp_enabled'));
   // An array is ONE leaf: apps.manifest.update replaces arrays wholesale.
-  is(leaves['/settings/event_subscriptions/bot_events'], [
-    'channel_created',
-    'team_join',
-  ]);
+  is(leaves['/settings/event_subscriptions/bot_events'], ['channel_created', 'team_join']);
 });
 
 test('pointerJoin escapes ~ and / per RFC 6901', async () => {
@@ -567,8 +568,14 @@ test('app diff output flags deletions distinctly and warns they would be REMOVED
 
   const text = h.text();
   ok(/DELETIONS \(2\)/.test(text), 'deletions must have their own labelled section');
-  ok(/- \/display_information\/description/.test(text), 'must match /- \/display_information\/description/');
-  ok(/- \/settings\/event_subscriptions\/bot_events/.test(text), 'must match /- \/settings\/event_subscriptions\/bot_events/');
+  ok(
+    /- \/display_information\/description/.test(text),
+    'must match /- /display_information/description/'
+  );
+  ok(
+    /- \/settings\/event_subscriptions\/bot_events/.test(text),
+    'must match /- /settings/event_subscriptions/bot_events/'
+  );
   ok(/team_join/.test(text), 'the dropped array entry must be named');
   ok(/would be DELETED/.test(text), 'must warn loudly about deletions');
   ok(/REPLACED WHOLESALE/.test(text), 'must explain array replacement');
@@ -585,8 +592,8 @@ test('app diff on an identical manifest prints no-changes and no deletion warnin
 
   const text = h.text();
   ok(/No changes/i.test(text), 'must match /No changes/i');
-  ok(!(/DELETIONS/.test(text)), 'must not match /DELETIONS/');
-  ok(!(/would be DELETED/.test(text)), 'must not match /would be DELETED/');
+  ok(!/DELETIONS/.test(text), 'must not match /DELETIONS/');
+  ok(!/would be DELETED/.test(text), 'must not match /would be DELETED/');
 });
 
 test('app diff --json emits separate deletions/additions/modifications buckets', async () => {
@@ -618,7 +625,10 @@ test('app diff notes the measured background_color exception when it is dropped'
   await h.mod.cmdAppDiff();
 
   const text = h.text();
-  ok(/- \/display_information\/background_color/.test(text), 'must match /- \/display_information\/background_color/');
+  ok(
+    /- \/display_information\/background_color/.test(text),
+    'must match /- /display_information/background_color/'
+  );
   ok(/can never be null/.test(text), 'the one measured exception must be called out');
   ok(/do not generalise/i.test(text), 'must match /do not generalise/i');
 });
@@ -638,10 +648,13 @@ test('app show renders all 6 bot scopes and both bot events', async () => {
 
   const text = h.text();
   for (const scope of LIVE_MANIFEST.oauth_config.scopes.bot) {
-    ok(new RegExp(scope.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).test(text), 'scope ' + scope + ' must appear in output');
+    ok(
+      new RegExp(scope.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).test(text),
+      'scope ' + scope + ' must appear in output'
+    );
   }
-  ok(/Bot scopes \(6\)/.test(text), 'must match /Bot scopes \(6\)/');
-  ok(/Event subscriptions \(2\)/.test(text), 'must match /Event subscriptions \(2\)/');
+  ok(/Bot scopes \(6\)/.test(text), 'must match /Bot scopes (6)/');
+  ok(/Event subscriptions \(2\)/.test(text), 'must match /Event subscriptions (2)/');
   ok(/channel_created/.test(text), 'must match /channel_created/');
   ok(/team_join/.test(text), 'must match /team_join/');
   is(h.methods().length, 1);
@@ -654,7 +667,10 @@ test('app show renders name, bot user, request URL and the notable booleans', as
 
   const text = h.text();
   ok(/AEM Ops Automation/.test(text), 'must match /AEM Ops Automation/');
-  ok(/slack-automation-relay\.adobeaem\.workers\.dev/.test(text), 'must match /slack-automation-relay\.adobeaem\.workers\.dev/');
+  ok(
+    /slack-automation-relay\.adobeaem\.workers\.dev/.test(text),
+    'must match /slack-automation-relay.adobeaem.workers.dev/'
+  );
   ok(/Socket mode/.test(text), 'must match /Socket mode/');
   ok(/Org deploy/.test(text), 'must match /Org deploy/');
   ok(/MCP/.test(text), 'must match /MCP/');
@@ -673,7 +689,7 @@ test('app show handles a manifest with no bot user and no events without crashin
 
   const text = h.text();
   ok(/Bare App/.test(text), 'must match /Bare App/');
-  ok(/Bot scopes \(0\)/.test(text), 'must match /Bot scopes \(0\)/');
+  ok(/Bot scopes \(0\)/.test(text), 'must match /Bot scopes (0)/');
   ok(/no bot user/i.test(text), 'must match /no bot user/i');
 });
 
@@ -745,7 +761,10 @@ test('app validate renders each error with its JSON pointer', async () => {
   // The pointer is the only thing that says WHERE the problem is.
   ok(/pointer/i.test(text), 'the pointer must be labelled in the output');
   ok(/\/oauth_config\/scopes\/bot/.test(text), 'the JSON pointer itself must be printed');
-  ok(/rejected by apps\.manifest\.validate/.test(err.message), 'must match /rejected by apps\.manifest\.validate/');
+  ok(
+    /rejected by apps\.manifest\.validate/.test(err.message),
+    'must match /rejected by apps.manifest.validate/'
+  );
 });
 
 test('app validate renders multiple errors each with its own pointer', async () => {
@@ -756,7 +775,11 @@ test('app validate renders multiple errors each with its own pointer', async () 
       'apps.manifest.validate': {
         ok: false,
         errors: [
-          { code: 'requires_a_bot_scope', message: 'Bot user requires a scope', pointer: '/features/bot_user' },
+          {
+            code: 'requires_a_bot_scope',
+            message: 'Bot user requires a scope',
+            pointer: '/features/bot_user',
+          },
           {
             code: 'target_component_is_null',
             message: 'Event subscription target is null',
@@ -769,9 +792,9 @@ test('app validate renders multiple errors each with its own pointer', async () 
 
   await expectDie(() => h.mod.cmdAppValidate());
   const text = h.text();
-  ok(/INVALID \(2 error\(s\)\)/.test(text), 'must match /INVALID \(2 error\(s\)\)/');
-  ok(/\/features\/bot_user/.test(text), 'must match /\/features\/bot_user/');
-  ok(/\/settings\/event_subscriptions/.test(text), 'must match /\/settings\/event_subscriptions/');
+  ok(/INVALID \(2 error\(s\)\)/.test(text), 'must match /INVALID (2 error(s))/');
+  ok(/\/features\/bot_user/.test(text), 'must match //features/bot_user/');
+  ok(/\/settings\/event_subscriptions/.test(text), 'must match //settings/event_subscriptions/');
 });
 
 test('app validate sends the manifest as a JSON string with the app_id', async () => {
@@ -798,7 +821,10 @@ test('app validate on a valid manifest still warns that valid does not mean safe
   const text = h.text();
   ok(/Manifest valid/.test(text), 'must match /Manifest valid/');
   ok(/VALID DOES NOT MEAN SAFE/.test(text), 'must match /VALID DOES NOT MEAN SAFE/');
-  ok(/partial manifest validates ok=true/i.test(text), 'must match /partial manifest validates ok=true/i');
+  ok(
+    /partial manifest validates ok=true/i.test(text),
+    'must match /partial manifest validates ok=true/i'
+  );
   ok(/app diff/.test(text), 'must point at the diff command');
 });
 
@@ -835,7 +861,7 @@ test('ok:false with HTTP 200 fails the export even when a manifest is present', 
   });
   const err = await expectDie(() => h.mod.cmdAppShow());
   ok(/ratelimited/.test(err.message), 'the Slack error code must be surfaced');
-  ok(!(/Bot scopes/.test(h.text())), 'nothing may be rendered from a failed response');
+  ok(!/Bot scopes/.test(h.text()), 'nothing may be rendered from a failed response');
 });
 
 test('ok:false invalid_auth with HTTP 200 is reported as a token failure', async () => {
@@ -858,7 +884,7 @@ test('ok:false with HTTP 200 fails validate even when errors[] is absent', async
   });
   const err = await expectDie(() => h.mod.cmdAppValidate());
   ok(/app_not_found|app id/i.test(err.message), 'must match /app_not_found|app id/i');
-  ok(!(/Manifest valid/.test(h.text())), 'must not match /Manifest valid/');
+  ok(!/Manifest valid/.test(h.text()), 'must not match /Manifest valid/');
 });
 
 test('every app request is read with raw:true so body.ok is available', async () => {
@@ -876,7 +902,10 @@ test('app requests are form-encoded and bearer-authenticated with the config tok
 
   const call = h.httpCalls[0];
   const ct = call.headers['content-type'] || call.headers['Content-Type'];
-  ok(/application\/x-www-form-urlencoded/.test(String(ct)), 'must match /application\/x-www-form-urlencoded/');
+  ok(
+    /application\/x-www-form-urlencoded/.test(String(ct)),
+    'must match /application/x-www-form-urlencoded/'
+  );
   is(call.body, 'app_id=' + APP_ID, 'body must be form-encoded, not JSON');
   is(call.token, TEST_TOKEN, 'the app configuration token must authenticate the call');
 });
@@ -916,7 +945,7 @@ test('getAppConfigToken dies with the manual minting steps when nothing is set',
   const h = await load({ argv: ['app', 'show', APP_ID], token: null });
   const err = await expectDie(() => h.mod.getAppConfigToken());
   ok(/No app configuration token/.test(err.message), 'must match /No app configuration token/');
-  ok(/api\.slack\.com\/apps/.test(err.message), 'must match /api\.slack\.com\/apps/');
+  ok(/api\.slack\.com\/apps/.test(err.message), 'must match /api.slack.com/apps/');
   ok(/Generate Token/.test(err.message), 'must match /Generate Token/');
 });
 
@@ -928,7 +957,7 @@ test('manifestApi refuses apps.manifest.create and apps.manifest.delete', async 
   const createErr = await expectDie(() =>
     h.mod.manifestApi('apps.manifest.create', {}, TEST_TOKEN)
   );
-  ok(/apps\.manifest\.create/.test(createErr.message), 'must match /apps\.manifest\.create/');
+  ok(/apps\.manifest\.create/.test(createErr.message), 'must match /apps.manifest.create/');
   const deleteErr = await expectDie(() =>
     h.mod.manifestApi('apps.manifest.delete', { app_id: APP_ID }, TEST_TOKEN)
   );
@@ -970,9 +999,15 @@ test('no app subcommand issues apps.manifest.create or apps.manifest.delete', as
 test('an unknown app subcommand lists the available ones and calls nothing', async () => {
   const h = await load({ argv: ['app', 'set-colour', APP_ID] });
   const err = await expectDie(() => h.mod.cmdApp());
-  ok(/Unknown app subcommand: set-colour/.test(err.message), 'must match /Unknown app subcommand: set-colour/');
+  ok(
+    /Unknown app subcommand: set-colour/.test(err.message),
+    'must match /Unknown app subcommand: set-colour/'
+  );
   ok(/export, show, validate, diff/.test(err.message), 'must match /export, show, validate, diff/');
-  ok(/set-scopes, set-events, set-request-url, apply/.test(err.message), 'must match /set-scopes, set-events, set-request-url, apply/');
+  ok(
+    /set-scopes, set-events, set-request-url, apply/.test(err.message),
+    'must match /set-scopes, set-events, set-request-url, apply/'
+  );
   is(h.httpCalls.length, 0);
 });
 
@@ -986,10 +1021,12 @@ test('app subcommands reject a malformed app id before calling the API', async (
 test('app show with no app id prints a usage line', async () => {
   const h = await load({ argv: ['app', 'show'] });
   const err = await expectDie(() => h.mod.cmdApp());
-  ok(/Usage: slack-ext app show <app_id>/.test(err.message), 'must match /Usage: slack-ext app show <app_id>/');
+  ok(
+    /Usage: slack-ext app show <app_id>/.test(err.message),
+    'must match /Usage: slack-ext app show <app_id>/'
+  );
   is(h.httpCalls.length, 0);
 });
-
 
 // ══ WRITES ════════════════════════════════════════════════════════════════════
 //
@@ -1044,11 +1081,7 @@ test('every untouched leaf of the 14-field manifest survives a write', async () 
   is(Object.keys(after).length, 14);
   for (const pointer of Object.keys(before)) {
     if (pointer === '/oauth_config/scopes/bot') continue;
-    is(
-      after[pointer],
-      before[pointer],
-      'leaf ' + pointer + ' must survive the write untouched'
-    );
+    is(after[pointer], before[pointer], 'leaf ' + pointer + ' must survive the write untouched');
   }
 });
 
@@ -1090,7 +1123,13 @@ test('set-scopes --add keeps all six scopes and appends the new one', async () =
 
 test('set-scopes --add accepts a comma-separated list and ignores duplicates', async () => {
   const h = await load({
-    argv: ['app', 'set-scopes', APP_ID, '--add=reactions:read,chat:write,reactions:read', '--confirm'],
+    argv: [
+      'app',
+      'set-scopes',
+      APP_ID,
+      '--add=reactions:read,chat:write,reactions:read',
+      '--confirm',
+    ],
   });
   await h.mod.cmdAppSetScopes();
   const scopes = h.sentManifest().oauth_config.scopes.bot;
@@ -1163,7 +1202,10 @@ test('set-events --remove removes only the named event and leaves scopes untouch
   // The team_join case must not take the scopes with it.
   is(sent.oauth_config.scopes.bot, LIVE_MANIFEST.oauth_config.scopes.bot);
   is(sent.oauth_config.scopes.bot.length, 6);
-  is(sent.settings.event_subscriptions.request_url, LIVE_MANIFEST.settings.event_subscriptions.request_url);
+  is(
+    sent.settings.event_subscriptions.request_url,
+    LIVE_MANIFEST.settings.event_subscriptions.request_url
+  );
 });
 
 test('set-events --add appends without disturbing the existing events or scopes', async () => {
@@ -1225,7 +1267,10 @@ test('set-request-url rejects a non-https URL and a missing URL', async () => {
 
   const missing = await load({ argv: ['app', 'set-request-url', APP_ID, '--confirm'] });
   const missingErr = await expectDie(() => missing.mod.cmdAppSetRequestUrl());
-  ok(/Usage: slack-ext app set-request-url/.test(missingErr.message), 'must match /Usage: slack-ext app set-request-url/');
+  ok(
+    /Usage: slack-ext app set-request-url/.test(missingErr.message),
+    'must match /Usage: slack-ext app set-request-url/'
+  );
   is(missing.httpCalls.length, 0);
 });
 
@@ -1241,9 +1286,15 @@ test('apply with a display_information-only file REFUSES and names what would be
   const err = await expectDie(() => h.mod.cmdAppApply());
   // The refusal itself must name the casualties.
   ok(/unrequested deletion/i.test(err.message), 'must match /unrequested deletion/i');
-  ok(/\/features\/bot_user\/display_name/.test(err.message), 'must match /\/features\/bot_user\/display_name/');
-  ok(/\/oauth_config\/scopes\/bot/.test(err.message), 'must match /\/oauth_config\/scopes\/bot/');
-  ok(/\/settings\/event_subscriptions\/bot_events/.test(err.message), 'must match /\/settings\/event_subscriptions\/bot_events/');
+  ok(
+    /\/features\/bot_user\/display_name/.test(err.message),
+    'must match //features/bot_user/display_name/'
+  );
+  ok(/\/oauth_config\/scopes\/bot/.test(err.message), 'must match //oauth_config/scopes/bot/');
+  ok(
+    /\/settings\/event_subscriptions\/bot_events/.test(err.message),
+    'must match //settings/event_subscriptions/bot_events/'
+  );
   ok(/--allow-deletions/.test(err.message), 'must match /--allow-deletions/');
   is(h.updateCalls().length, 0, 'nothing may be written when deletions are refused');
 });
@@ -1329,7 +1380,10 @@ test('the deletion gate blocks a deletion the command did not declare', async ()
     })
   );
   ok(/unrequested deletion/i.test(err.message), 'must match /unrequested deletion/i');
-  ok(/\/display_information\/description/.test(err.message), 'must match /\/display_information\/description/');
+  ok(
+    /\/display_information\/description/.test(err.message),
+    'must match //display_information/description/'
+  );
   is(h.updateCalls().length, 0);
 });
 
@@ -1375,8 +1429,14 @@ test('an unrequested deletion is blocked even when a requested one is declared',
       rerun: 'x',
     })
   );
-  ok(/\/settings\/event_subscriptions\/request_url/.test(err.message), 'must match /\/settings\/event_subscriptions\/request_url/');
-  ok(!(/- \/settings\/event_subscriptions\/bot_events/.test(err.message)), 'must not match /- \/settings\/event_subscriptions\/bot_events/');
+  ok(
+    /\/settings\/event_subscriptions\/request_url/.test(err.message),
+    'must match //settings/event_subscriptions/request_url/'
+  );
+  ok(
+    !/- \/settings\/event_subscriptions\/bot_events/.test(err.message),
+    'must not match /- /settings/event_subscriptions/bot_events/'
+  );
   is(h.updateCalls().length, 0);
 });
 
@@ -1476,7 +1536,7 @@ test('permissions_updated false produces no reinstall warning', async () => {
   await h.mod.cmdAppSetEvents();
 
   const text = h.text();
-  ok(!(/REINSTALL REQUIRED/.test(text)), 'must not match /REINSTALL REQUIRED/');
+  ok(!/REINSTALL REQUIRED/.test(text), 'must not match /REINSTALL REQUIRED/');
   ok(/permissions_updated = false/.test(text), 'must match /permissions_updated = false/');
 });
 
@@ -1486,7 +1546,7 @@ test('a missing permissions_updated is treated as false, not as a reinstall', as
     responses: { 'apps.manifest.update': { ok: true } },
   });
   await h.mod.cmdAppSetEvents();
-  ok(!(/REINSTALL REQUIRED/.test(h.text())), 'must not match /REINSTALL REQUIRED/');
+  ok(!/REINSTALL REQUIRED/.test(h.text()), 'must not match /REINSTALL REQUIRED/');
 });
 
 test('write --json emits a machine-readable result including reinstall_required', async () => {
@@ -1518,8 +1578,8 @@ test('ok:false with HTTP 200 fails the update even when the body looks usable', 
   });
   const err = await expectDie(() => h.mod.cmdAppSetScopes());
   ok(/invalid_manifest/.test(err.message), 'must match /invalid_manifest/');
-  ok(!(/Updated /.test(h.text())), 'nothing may be reported as updated');
-  ok(!(/REINSTALL REQUIRED/.test(h.text())), 'must not match /REINSTALL REQUIRED/');
+  ok(!/Updated /.test(h.text()), 'nothing may be reported as updated');
+  ok(!/REINSTALL REQUIRED/.test(h.text()), 'must not match /REINSTALL REQUIRED/');
 });
 
 // ── token-rotate ──────────────────────────────────────────────────────────────
@@ -1533,7 +1593,10 @@ test('token-rotate sends refresh_token form-encoded with no Authorization header
   is(h.methods(), ['tooling.tokens.rotate']);
   const call = h.httpCalls[0];
   is(call.params.refresh_token, 'xoxe-1-old-refresh-token');
-  ok(/application\/x-www-form-urlencoded/.test(String(call.headers['content-type'])), 'must match /application\/x-www-form-urlencoded/');
+  ok(
+    /application\/x-www-form-urlencoded/.test(String(call.headers['content-type'])),
+    'must match /application/x-www-form-urlencoded/'
+  );
   // Measured: a bearer header alongside refresh_token produced invalid_auth.
   is(call.hasTokenConfig, false, 'the rotate call must carry no bearer token');
 });
@@ -1575,7 +1638,7 @@ test('token-rotate prints the new pair when persisting fails instead of swallowi
   ok(/EACCES/.test(text), 'must match /EACCES/');
   // Last resort: the old refresh token is already dead, so losing this is worse
   // than printing it.
-  ok(/xoxe\.xoxp-rotated-access-token/.test(text), 'must match /xoxe\.xoxp-rotated-access-token/');
+  ok(/xoxe\.xoxp-rotated-access-token/.test(text), 'must match /xoxe.xoxp-rotated-access-token/');
   ok(/xoxe-1-rotated-refresh-token/.test(text), 'must match /xoxe-1-rotated-refresh-token/');
   ok(/NOT STORED/.test(text), 'must match /NOT STORED/');
 });
@@ -1587,9 +1650,12 @@ test('token-rotate masks the tokens on the success path', async () => {
   await h.mod.cmdAppTokenRotate();
   const text = h.text();
   ok(/Rotated app configuration token/.test(text), 'must match /Rotated app configuration token/');
-  ok(!(/xoxe\.xoxp-rotated-access-token/.test(text)), 'no full token in the transcript');
+  ok(!/xoxe\.xoxp-rotated-access-token/.test(text), 'no full token in the transcript');
   ok(/xoxe\.xoxp-\.\.\./.test(text), 'masked form shown instead');
-  ok(/previous refresh token is now invalid/i.test(text), 'must match /previous refresh token is now invalid/i');
+  ok(
+    /previous refresh token is now invalid/i.test(text),
+    'must match /previous refresh token is now invalid/i'
+  );
 });
 
 test('token-rotate reads the refresh token from env then skill config', async () => {
@@ -1612,7 +1678,7 @@ test('token-rotate dies with minting instructions when no refresh token exists',
   const h = await load({ argv: ['app', 'token-rotate', '--confirm'] });
   const err = await expectDie(() => h.mod.cmdAppTokenRotate());
   ok(/No refresh token/.test(err.message), 'must match /No refresh token/');
-  ok(/api\.slack\.com\/apps/.test(err.message), 'must match /api\.slack\.com\/apps/');
+  ok(/api\.slack\.com\/apps/.test(err.message), 'must match /api.slack.com/apps/');
   is(h.httpCalls.length, 0);
 });
 
@@ -1658,7 +1724,11 @@ test('no write path issues apps.manifest.create or apps.manifest.delete', async 
   }
 
   ok(observed.length >= 9, 'each command must have reached the API');
-  const allowed = new Set(['apps.manifest.export', 'apps.manifest.update', 'tooling.tokens.rotate']);
+  const allowed = new Set([
+    'apps.manifest.export',
+    'apps.manifest.update',
+    'tooling.tokens.rotate',
+  ]);
   for (const method of observed) {
     ok(allowed.has(method), 'unexpected method called: ' + method);
   }
@@ -1722,8 +1792,8 @@ test('parseList splits on commas and whitespace and rejects a valueless flag', a
 test('maskToken never reveals the whole value', async () => {
   const h = await load({ argv: ['app', 'show', APP_ID] });
   const masked = h.mod.maskToken('xoxe.xoxp-1234567890-abcdefghij');
-  ok(!(/1234567890-abcdefghij/.test(masked)), 'must not match /1234567890-abcdefghij/');
-  ok(/^xoxe\.xoxp/.test(masked), 'must match /^xoxe\.xoxp/');
+  ok(!/1234567890-abcdefghij/.test(masked), 'must not match /1234567890-abcdefghij/');
+  ok(/^xoxe\.xoxp/.test(masked), 'must match /^xoxe.xoxp/');
   ok(/chars/.test(masked), 'must match /chars/');
 });
 
@@ -1823,15 +1893,26 @@ test('--session forces the browser session even when a config token is set', asy
   is(h.httpCalls.length, 0, 'env/config tokens are ignored under --session');
   is(h.tabMethods(), ['auth.test', 'apps.manifest.export']);
   // --session is a BOOLEAN flag: it must not swallow the app id after it.
-  const before = await load({ argv: ['app', 'show', '--session', APP_ID], token: null, session: SESSION });
+  const before = await load({
+    argv: ['app', 'show', '--session', APP_ID],
+    token: null,
+    session: SESSION,
+  });
   await before.mod.cmdAppShow();
   is(before.tabCalls[1].params.app_id, APP_ID);
 });
 
 test('--no-session forbids the fallback and dies with the minting steps', async () => {
-  const h = await load({ argv: ['app', 'show', APP_ID, '--no-session'], token: null, session: SESSION });
+  const h = await load({
+    argv: ['app', 'show', APP_ID, '--no-session'],
+    token: null,
+    session: SESSION,
+  });
   const err = await expectDie(() => h.mod.cmdAppShow());
-  ok(/No app configuration token found/.test(err.message), 'must match /No app configuration token found/');
+  ok(
+    /No app configuration token found/.test(err.message),
+    'must match /No app configuration token found/'
+  );
   ok(/Generate Token/.test(err.message), 'must match /Generate Token/');
   is(h.browserUses, [], '--no-session must not even look at the tab');
 
@@ -1841,11 +1922,17 @@ test('--no-session forbids the fallback and dies with the minting steps', async 
 });
 
 test('contradictory auth flags are refused before anything is called', async () => {
-  const both = await load({ argv: ['app', 'show', APP_ID, '--session', '--no-session'], session: SESSION });
+  const both = await load({
+    argv: ['app', 'show', APP_ID, '--session', '--no-session'],
+    session: SESSION,
+  });
   const e1 = await expectDie(() => both.mod.cmdAppShow());
   ok(/contradict/.test(e1.message), 'must match /contradict/');
 
-  const tok = await load({ argv: ['app', 'show', APP_ID, '--session', '--token=xoxe.xoxp-x'], session: SESSION });
+  const tok = await load({
+    argv: ['app', 'show', APP_ID, '--session', '--token=xoxe.xoxp-x'],
+    session: SESSION,
+  });
   const e2 = await expectDie(() => tok.mod.cmdAppShow());
   ok(/--session and --token/.test(e2.message), 'must match /--session and --token/');
 
@@ -1860,7 +1947,10 @@ test('session path with no token for the workspace dies naming it, without calli
     session: SESSION,
   });
   const err = await expectDie(() => h.mod.cmdAppShow());
-  ok(/no Slack session token for workspace T0UNKNOWN1/.test(err.message), 'must name the workspace');
+  ok(
+    /no Slack session token for workspace T0UNKNOWN1/.test(err.message),
+    'must name the workspace'
+  );
   is(h.tabCalls.length, 0);
 });
 
@@ -1871,7 +1961,10 @@ test('session path refuses to continue when auth.test rejects the session', asyn
     session: Object.assign({}, SESSION, { authTest: { ok: false, error: 'invalid_auth' } }),
   });
   const err = await expectDie(() => h.mod.cmdAppShow());
-  ok(/auth\.test/.test(err.message) && /invalid_auth/.test(err.message), 'must report auth.test failure');
+  ok(
+    /auth\.test/.test(err.message) && /invalid_auth/.test(err.message),
+    'must report auth.test failure'
+  );
   is(h.tabMethods(), ['auth.test'], 'no manifest call after a failed identity check');
 });
 
@@ -1883,7 +1976,10 @@ test('session transport: form-encoded POST /api/<method> through the tab, token 
   const call = h.tabCalls[1];
   is(call.path, '/api/apps.manifest.export');
   is(call.httpMethod, 'POST');
-  ok(/application\/x-www-form-urlencoded/.test(String(call.headers['Content-Type'])), 'form-encoded');
+  ok(
+    /application\/x-www-form-urlencoded/.test(String(call.headers['Content-Type'])),
+    'form-encoded'
+  );
   is(call.params.app_id, APP_ID);
   is(call.params.token, SESSION_TOKEN);
   ok(!call.headers.Authorization && !call.headers.authorization, 'no bearer on the session path');
@@ -1950,9 +2046,17 @@ test('session write: export, re-export, update with the complete manifest, throu
   });
   await h.mod.cmdAppSetScopes();
   is(h.httpCalls.length, 0);
-  is(h.tabMethods(), ['auth.test', 'apps.manifest.export', 'apps.manifest.export', 'apps.manifest.update']);
+  is(h.tabMethods(), [
+    'auth.test',
+    'apps.manifest.export',
+    'apps.manifest.export',
+    'apps.manifest.update',
+  ]);
   const sent = JSON.parse(h.tabUpdateCalls()[0].params.manifest);
-  is(sent.oauth_config.scopes.bot, LIVE_MANIFEST.oauth_config.scopes.bot.concat(['reactions:read']));
+  is(
+    sent.oauth_config.scopes.bot,
+    LIVE_MANIFEST.oauth_config.scopes.bot.concat(['reactions:read'])
+  );
   is(sent.settings, LIVE_MANIFEST.settings, 'untouched fields travel back unchanged');
   ok(/REINSTALL REQUIRED/.test(h.text()), 'REINSTALL warning on the session path too');
   noTokenLeak(h);
@@ -2072,7 +2176,11 @@ test('token-rotate refuses --session and touches nothing', async () => {
 });
 
 test('token-rotate never falls back to the browser session', async () => {
-  const h = await load({ argv: ['app', 'token-rotate', '--confirm'], token: null, session: SESSION });
+  const h = await load({
+    argv: ['app', 'token-rotate', '--confirm'],
+    token: null,
+    session: SESSION,
+  });
   const err = await expectDie(() => h.mod.cmdAppTokenRotate());
   ok(/No refresh token/.test(err.message), 'must match /No refresh token/');
   ok(/no browser-session fallback/.test(err.message), 'must say there is no session fallback');

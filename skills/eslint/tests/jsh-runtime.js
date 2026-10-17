@@ -52,32 +52,31 @@ function makeFs(files, dirs) {
     return false;
   };
 
-  const fs = {
-    async readFile(p) {
+  const promises = {
+    async readFile(p, encoding) {
       if (!store.has(p)) throw enoent(p);
-      return store.get(p);
+      const text = store.get(p);
+      return encoding ? text : Buffer.from(text);
     },
     async writeFile(p, data) {
       store.set(p, String(data));
     },
     async rm(p) {
+      if (!store.has(p) && !isDir(p)) throw enoent(p);
       store.delete(p);
     },
     async mkdir(p) {
       extraDirs.add(p);
     },
-    async exists(p) {
-      return store.has(p) || isDir(p);
-    },
     async stat(p) {
-      // The SLICC shell fs exposes isFile/isDirectory as booleans, not as the
-      // predicate methods node:fs uses. Getting this wrong makes every path look
-      // like a directory, since a function is truthy.
-      if (store.has(p)) return { isFile: true, isDirectory: false, size: store.get(p).length };
-      if (isDir(p)) return { isFile: false, isDirectory: true, size: 0 };
+      // Node's fs.Stats: isFile/isDirectory are METHODS. Reading them as
+      // properties makes every path look like a directory (a function is truthy).
+      if (store.has(p))
+        return { isFile: () => true, isDirectory: () => false, size: store.get(p).length };
+      if (isDir(p)) return { isFile: () => false, isDirectory: () => true, size: 0 };
       throw enoent(p);
     },
-    async readDir(p) {
+    async readdir(p) {
       const prefix = p.endsWith('/') ? p : `${p}/`;
       const names = new Set();
       for (const key of store.keys()) {
@@ -91,21 +90,27 @@ function makeFs(files, dirs) {
       return [...names];
     },
   };
+  const fs = {
+    existsSync: (p) => store.has(p) || isDir(p),
+    promises,
+  };
 
-  // Only the methods the VFS bridge documents are exposed (readFile, writeFile,
-  // readDir, exists, stat, mkdir, rm). The bridge happens to carry lowercase
-  // node aliases such as `readdir` and `unlink`, but a skill that reaches for
-  // one is relying on something undocumented, so it must fail here rather than
-  // pass in tests and drift when the alias goes away.
-  return {
-    fs: new Proxy(fs, {
-      get(target, prop) {
-        if (typeof prop === 'string' && !(prop in target)) {
-          throw new Error(`jsh-runtime: fs.${prop} is not part of the VFS bridge`);
+  // Only Node's fs surface that both slicc-jsh (SLICC 7) and SLICC 6 serve is
+  // exposed: existsSync and fs.promises (ai-ecoverse/skills#487). The SLICC 6
+  // promise dialect (fs.readFile without a callback, readDir, exists, ...) must
+  // fail here, as it fails on slicc-jsh, rather than pass in tests.
+  const guard = (target, where) =>
+    new Proxy(target, {
+      get(t, prop) {
+        if (typeof prop === 'string' && !(prop in t)) {
+          throw new Error(`jsh-runtime: ${where}${prop} is not part of Node's fs as used here`);
         }
-        return target[prop];
+        return t[prop];
       },
-    }),
+    });
+  fs.promises = guard(promises, 'fs.promises.');
+  return {
+    fs: guard(fs, 'fs.'),
     store,
   };
 }
@@ -126,7 +131,7 @@ function makeFs(files, dirs) {
 async function runEslint(opts = {}) {
   const { fs, store } = makeFs(opts.files || {}, opts.dirs);
   if (opts.breakReadDir) {
-    fs.readDir = async () => {
+    fs.promises.readdir = async () => {
       throw new Error(opts.breakReadDir);
     };
   }
@@ -331,5 +336,5 @@ async function runGeneratedHelper(helperSrc, request, verify, config, opts = {})
   return JSON.parse(out);
 }
 
-export { runEslint, compileHelper, runGeneratedHelper, NodeExitError };
+export { compileHelper, NodeExitError, runEslint, runGeneratedHelper };
 export default { runEslint, compileHelper, runGeneratedHelper, NodeExitError };

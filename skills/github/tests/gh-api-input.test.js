@@ -71,19 +71,19 @@ async function runGh(args, scenario = {}) {
       if (scenario.stdinError) throw scenario.stdinError;
       return scenario.stdin ?? '';
     },
-    readFile: async (filePath) => {
-      if (scenario.bodyFiles && Object.hasOwn(scenario.bodyFiles, filePath)) {
-        return scenario.bodyFiles[filePath];
-      }
-      throw new Error('ENOENT');
+    // Node's fs (slicc-jsh, SLICC 7; SLICC 6 serves it too): files come from
+    // fs.promises; the SLICC 6-only readFile-without-callback and readFileBinary
+    // are absent (ai-ecoverse/skills#487).
+    promises: {
+      readFile: async (filePath, encoding) => {
+        if (scenario.bodyFiles && Object.hasOwn(scenario.bodyFiles, filePath)) {
+          const text = scenario.bodyFiles[filePath];
+          return encoding ? text : Buffer.from(text);
+        }
+        throw new Error('ENOENT');
+      },
+      writeFile: async () => {},
     },
-    readFileBinary: async (filePath) => {
-      if (scenario.bodyFiles && Object.hasOwn(scenario.bodyFiles, filePath)) {
-        return new TextEncoder().encode(scenario.bodyFiles[filePath]);
-      }
-      throw new Error('ENOENT');
-    },
-    writeFile: async () => {},
   };
   const mocks = {
     'sliccy:skill': { token: async () => 'fake' },

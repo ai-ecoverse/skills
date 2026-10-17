@@ -433,7 +433,7 @@ async function uploadMediaBytes(tabId, csrfToken, singleUploadUrl, mediaPath, si
   // and build the latin-1 binary string in chunks.
   var binStr;
   try {
-    var bytes = await fs.readFileBinary(mediaPath);
+    var bytes = await fs.promises.readFile(mediaPath);
     binStr = '';
     for (var i = 0; i < bytes.length; i += 8192) {
       binStr += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
@@ -504,8 +504,8 @@ async function createVideoPost(text, videoPath) {
   // paths like '/shared/$(rm -rf).mp4').
   var fileSize;
   try {
-    var st = await fs.stat(videoPath);
-    if (!st || !st.isFile) throw new Error('not a regular file');
+    var st = await fs.promises.stat(videoPath);
+    if (!st || !st.isFile()) throw new Error('not a regular file');
     fileSize = st.size;
   } catch (e) {
     throw new Error('Cannot stat video file ' + videoPath + ': ' + (e && e.message ? e.message : e));
@@ -567,8 +567,8 @@ async function createImagePost(text, imagePath, options) {
   // paths like '/shared/$(rm -rf).jpg').
   var fileSize;
   try {
-    var st = await fs.stat(imagePath);
-    if (!st || !st.isFile) throw new Error('not a regular file');
+    var st = await fs.promises.stat(imagePath);
+    if (!st || !st.isFile()) throw new Error('not a regular file');
     fileSize = st.size;
   } catch (e) {
     throw new Error('Cannot stat image file ' + imagePath + ': ' + (e && e.message ? e.message : e));
@@ -1043,7 +1043,7 @@ async function loadWatchState() {
 }
 
 async function saveWatchState(state) {
-  await fs.writeFile(WATCH_STATE_FILE, JSON.stringify(state, null, 2));
+  await fs.promises.writeFile(WATCH_STATE_FILE, JSON.stringify(state, null, 2));
 }
 
 async function loadWatchConfig() {
@@ -1055,7 +1055,7 @@ async function loadWatchConfig() {
 }
 
 async function saveWatchConfig(config) {
-  await fs.writeFile(WATCH_CONFIG_FILE, JSON.stringify(config, null, 2));
+  await fs.promises.writeFile(WATCH_CONFIG_FILE, JSON.stringify(config, null, 2));
 }
 
 async function setupWatch(scoop, interval) {
@@ -1145,8 +1145,8 @@ async function teardownWatch() {
   }
 
   // Remove config and state files
-  await fs.rm(WATCH_CONFIG_FILE).catch(function() {});
-  await fs.rm(WATCH_STATE_FILE).catch(function() {});
+  await fs.promises.rm(WATCH_CONFIG_FILE).catch(function() {});
+  await fs.promises.rm(WATCH_STATE_FILE).catch(function() {});
 
   return { stopped: true, was: config };
 }
@@ -1849,7 +1849,7 @@ if (cmd === 'post') {
   config.companyUrn = 'urn:li:fsd_company:' + companyId;
   if (companyName) config.companyName = companyName;
   config.auth = config.auth || 'session';
-  await fs.writeFile(CONFIG_FILE, JSON.stringify(config, null, 2));
+  await fs.promises.writeFile(CONFIG_FILE, JSON.stringify(config, null, 2));
   result = { configured: true, companyId: companyId, companyUrn: config.companyUrn, auth: config.auth };
 } else if (cmd === 'auth') {
   // OAuth configuration
@@ -1867,7 +1867,7 @@ if (cmd === 'post') {
     config.oauth = config.oauth || {};
     config.oauth.clientId = clientId;
     config.oauth.clientSecret = clientSecret;
-    await fs.writeFile(CONFIG_FILE, JSON.stringify(config, null, 2));
+    await fs.promises.writeFile(CONFIG_FILE, JSON.stringify(config, null, 2));
     result = { oauth: 'configured', clientId: clientId, nextStep: 'Run: linkedin auth login' };
   } else if (subCmd === 'login') {
     // Initiate OAuth flow using oauth-token --intercept
@@ -1917,7 +1917,7 @@ if (cmd === 'post') {
     config.oauth.refreshToken = tokenData.refresh_token || null;
     config.oauth.tokenExpiry = Date.now() + (tokenData.expires_in * 1000);
     config.auth = 'oauth';
-    await fs.writeFile(CONFIG_FILE, JSON.stringify(config, null, 2));
+    await fs.promises.writeFile(CONFIG_FILE, JSON.stringify(config, null, 2));
     
     result = { authenticated: true, expiresIn: tokenData.expires_in + 's', mode: 'oauth' };
   } else if (subCmd === 'status') {

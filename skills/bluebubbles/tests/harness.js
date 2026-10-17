@@ -57,23 +57,29 @@ return {
   };
 
   const stubs = {
+    // Node's fs (slicc-jsh, SLICC 7; SLICC 6 serves it too): existsSync and
+    // fs.promises; the SLICC 6 promise dialect is absent (ai-ecoverse/skills#487).
     fs: {
-      readFile: async (file) => {
-        if (!files.has(file)) throw Object.assign(new Error(`ENOENT: ${file}`), { code: 'ENOENT' });
-        return files.get(file);
+      existsSync: (file) => files.has(file),
+      promises: {
+        readFile: async (file, encoding) => {
+          if (!files.has(file))
+            throw Object.assign(new Error(`ENOENT: ${file}`), { code: 'ENOENT' });
+          const data = files.get(file);
+          return encoding ? data : Buffer.from(data);
+        },
+        writeFile: async (file, data) => {
+          log.push({ kind: 'writeFile', file });
+          if (opts.onWriteFile) opts.onWriteFile(file, data);
+          files.set(file, data);
+        },
+        rm: async (file) => {
+          log.push({ kind: 'rm', file });
+          files.delete(file);
+        },
+        mkdir: async () => {},
+        readdir: async () => [...files.keys()].map((f) => path.basename(f)),
       },
-      writeFile: async (file, data) => {
-        log.push({ kind: 'writeFile', file });
-        if (opts.onWriteFile) opts.onWriteFile(file, data);
-        files.set(file, data);
-      },
-      rm: async (file) => {
-        log.push({ kind: 'rm', file });
-        files.delete(file);
-      },
-      mkdir: async () => {},
-      readDir: async () => [...files.keys()].map((f) => path.basename(f)),
-      exists: (file) => files.has(file),
     },
     os: { homedir: () => '/home/test' },
     path,

@@ -236,7 +236,7 @@ function resolvePath(path) {
 
 async function statOrNull(path) {
   try {
-    return await fs.stat(path);
+    return await fs.promises.stat(path);
   } catch {
     return null;
   }
@@ -251,13 +251,13 @@ async function walkDir(dir, extensions, out) {
   // happens to exist, but the documented surface is `readDir` and a read that
   // fails must not be mistaken for an empty directory: silently returning here
   // reports "no lintable files" and exits 0, which reads as a clean tree.
-  const names = await fs.readDir(dir);
+  const names = await fs.promises.readdir(dir);
   for (const name of names) {
     if (name === 'node_modules' || name === '.git') continue;
     const full = dir === '/' ? `/${name}` : `${dir}/${name}`;
     const st = await statOrNull(full);
     if (!st) continue;
-    if (st.isDirectory) await walkDir(full, extensions, out);
+    if (st.isDirectory()) await walkDir(full, extensions, out);
     else if (hasLintableExtension(full, extensions)) out.push(full);
   }
 }
@@ -279,7 +279,7 @@ async function expandTargets(paths, extensions) {
       missing.push(raw);
       continue;
     }
-    if (st.isDirectory) await walkDir(abs, extensions, walked);
+    if (st.isDirectory()) await walkDir(abs, extensions, walked);
     else explicit.add(abs);
   }
   const all = [...new Set([...explicit, ...walked])].sort();
@@ -294,7 +294,7 @@ async function discoverConfig(startDir) {
     for (const name of CONFIG_NAMES) {
       const candidate = dir === '/' ? `/${name}` : `${dir}/${name}`;
       const st = await statOrNull(candidate);
-      if (st && !st.isDirectory) return candidate;
+      if (st && !st.isDirectory()) return candidate;
     }
     if (dir === '/') return null;
     dir = dirOf(dir);
@@ -658,8 +658,8 @@ const tmpDir = process.env.TMPDIR || '/tmp';
 const helperPath = `${tmpDir}/.eslint-helper-${Date.now()}-${Math.random().toString(36).slice(2)}.js`;
 
 async function runHelper(request, configPath) {
-  await fs.mkdir(tmpDir, { recursive: true }).catch(() => {});
-  await fs.writeFile(helperPath, helperSource(configPath));
+  await fs.promises.mkdir(tmpDir, { recursive: true }).catch(() => {});
+  await fs.promises.writeFile(helperPath, helperSource(configPath));
   try {
     // `exec.spawn` and NOT `exec(string)`: the request carries content this
     // command does not control — stdin bytes and every target's path — and the
@@ -670,7 +670,7 @@ async function runHelper(request, configPath) {
     return await exec.spawn(['node', helperPath, JSON.stringify(request)]);
   } finally {
     // `rm` is the bridge's documented removal call; `unlink` is only an alias.
-    await fs.rm(helperPath).catch(() => {});
+    await fs.promises.rm(helperPath).catch(() => {});
   }
 }
 
@@ -709,7 +709,7 @@ async function configSearchStart() {
   }
   const first = resolvePath(args.paths[0]);
   const st = await statOrNull(first);
-  return st?.isDirectory ? first : dirOf(first);
+  return st?.isDirectory() ? first : dirOf(first);
 }
 
 const searchFrom = await configSearchStart();
@@ -718,7 +718,7 @@ let configPath = null;
 if (args.config !== null) {
   configPath = resolvePath(args.config);
   const st = await statOrNull(configPath);
-  if (!st || st.isDirectory) {
+  if (!st || st.isDirectory()) {
     fail(`--config ${args.config}: no such file`, 2);
     return;
   }
@@ -826,7 +826,7 @@ if (args.quiet) {
 // `--fix` with stdin is rejected outright; `--fix-dry-run` prints instead.
 if (args.fix && !args.stdin) {
   for (const result of results) {
-    if (result.output !== null) await fs.writeFile(result.path, result.output);
+    if (result.output !== null) await fs.promises.writeFile(result.path, result.output);
   }
 }
 for (const result of results) {
