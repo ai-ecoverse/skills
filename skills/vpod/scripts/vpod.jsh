@@ -416,10 +416,13 @@ async function withSession(name, flags, fn, guestTimeoutMs = DEFAULT_TIMEOUT_S *
       // A boot that runs long is a slow or failing download, NOT a dead guest
       // shell -- do not mark the session wedged and send the user to --fresh
       // for something that is not broken.
+      // Throw, never cli.die, inside this try: under Node exit semantics (SLICC 7)
+      // a die here would end the program before `finally` closes the sandbox and
+      // releases the lock. main() turns the error into the same exit 1.
       if (err instanceof DeadlineError) {
-        cli.die(`${err.message} for session '${name}'.\n` +
+        throw new Error(`${err.message} for session '${name}'.\n` +
           `Check the connection and the registry, then retry; ${TOOL} pull <SNAPSHOT> ` +
-          `downloads on its own so you can see it make progress.`, { prefix: TOOL });
+          `downloads on its own so you can see it make progress.`);
       }
       throw err;
     }
@@ -434,7 +437,7 @@ async function withSession(name, flags, fn, guestTimeoutMs = DEFAULT_TIMEOUT_S *
         // NEXT call fails in milliseconds instead of burning another full
         // deadline against the same dead shell.
         await markWedged(name, err.message);
-        cli.die(`${err.message} for session '${name}'.\n${WEDGED_HINT(name)}`, { prefix: TOOL });
+        throw new Error(`${err.message} for session '${name}'.\n${WEDGED_HINT(name)}`);
       }
       throw err;
     }

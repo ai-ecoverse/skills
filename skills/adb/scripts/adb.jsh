@@ -655,12 +655,14 @@ async function cmdPull(flags, positional) {
   // exit frame is what makes a missing/unreadable path detectable. Without it
   // a failed read would be written to `local`, silently clobbering a good file.
   const r = await withDevice(flags, async (t, { features }) => {
+    // Throw, never cli.die, inside withDevice: under Node exit semantics (SLICC 7)
+    // a die here ends the program before `finally` releases the USB interface.
+    // main() turns the error into the same `adb:` message and exit 1.
     if (!features.has('shell_v2')) {
-      cli.die(
+      throw new Error(
         'this device does not advertise shell_v2, so a failed read cannot be\n' +
         '  distinguished from a successful one — refusing to risk overwriting\n' +
-        `  ${local}. Use \`adb shell cat ...\` and redirect if you accept that.`,
-        { prefix: 'adb' }
+        `  ${local}. Use \`adb shell cat ...\` and redirect if you accept that.`
       );
     }
     return runCommand(t, features, `cat ${shellQuote(remote)}`);
