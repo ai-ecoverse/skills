@@ -162,7 +162,7 @@ TIERS available-high-confidence · unregistered-needs-confirmation · inconclusi
       if (cmd === 'check') {
         let inputs = positional.slice(1);
         if (flags.from)
-          inputs = inputs.concat(parseDomainFile(await fs.readFile(flags.from, 'utf8')));
+          inputs = inputs.concat(parseDomainFile(await fs.promises.readFile(flags.from, 'utf8')));
         if (!inputs.length) cli.die('usage: domain-hoarding check <domain>… [--from FILE]', P);
         items = [];
         const seen = new Set();
@@ -318,7 +318,7 @@ TIERS available-high-confidence · unregistered-needs-confirmation · inconclusi
     if (flags.json || flags.csv) {
       const body = flags.json ? `${JSON.stringify(doc, null, 2)}\n` : render.toCsv(rows);
       if (flags.out) {
-        await fs.writeFile(flags.out, body);
+        await fs.promises.writeFile(flags.out, body);
         process.stdout.write(human());
         if (!flags.quiet)
           process.stderr.write(

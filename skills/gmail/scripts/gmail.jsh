@@ -816,7 +816,7 @@ async function cmdDownload() {
       const att = await gmailGet(`/messages/${id}/attachments/${a.attachmentId}`);
       const bytes = decodeBase64UrlBytes(att.data);
       const path = asDir ? `${out.replace(/\/$/, '')}/${a.filename}` : out;
-      await fs.writeFileBinary(path, bytes);
+      await fs.promises.writeFile(path, bytes);
       written.push({ filename: a.filename, path, bytes: bytes.length });
     }
     if (flags.json === true || flags.json === 'true') { process.stdout.write(JSON.stringify(written, null, 2) + '\n'); return; }

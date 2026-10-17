@@ -1,9 +1,10 @@
 ---
 name: wavespeed
 description: |
-  Generate images, videos, and speech using the WaveSpeed AI API via curl.
-  Use when the user wants to generate images from text prompts, create videos from images,
-  synthesize speech, or work with any WaveSpeed AI model. Triggers on requests like
+  Generate and edit images, create videos, and synthesize speech with WaveSpeed AI's
+  hosted models, through the bundled `wavespeed` CLI (raw curl as a fallback). Use when
+  the user wants to generate images from text prompts, edit an image, create videos from
+  images, synthesize speech, or work with any WaveSpeed AI model. Triggers on requests like
   "generate an image of...", "create a video from this image", "make speech audio",
   "use wavespeed to...", "text to image", "image to video", "text to speech",
   or any mention of WaveSpeed AI, Flux, Wan 2.6, Seedream, or other WaveSpeed-hosted models.
@@ -337,22 +338,7 @@ open --view /workspace/wavespeed_output.png
 ## Complete Example: Text-to-Image
 
 ```bash
-# Prerequisite: define wavespeed_poll (see Step 6) once per shell session.
-wavespeed_poll() {
-  local task_id="$1" interval="${2:-2}" timeout="${3:-300}" status result
-  SECONDS=0
-  while [ $SECONDS -lt "$timeout" ]; do
-    result=$(curl -s -H "Authorization: Bearer $WAVESPEED_API_KEY" \
-      "https://api.wavespeed.ai/api/v3/predictions/$task_id/result")
-    if ! status=$(echo "$result" | jq -r '.data.status // empty'); then
-      echo "Could not parse the poll response (is jq installed?):"; echo "$result"; return 4; fi
-    if [ "$status" = "completed" ]; then echo "$result" | jq -r '.data.outputs[]'; return 0
-    elif [ "$status" = "failed" ]; then echo "Task failed:"; echo "$result"; return 1
-    elif [ -z "$status" ]; then echo "Unexpected poll response:"; echo "$result"; return 3; fi
-    sleep "$interval"
-  done
-  echo "Timed out after ${timeout}s"; return 2
-}
+# Prerequisite: define wavespeed_poll from Step 6 once per shell session.
 
 # 1. Submit
 RESPONSE=$(curl -s -X POST \
@@ -370,9 +356,7 @@ wavespeed_poll "$TASK_ID"
 ## Complete Example: Image-to-Video
 
 ```bash
-# Prerequisite: requires wavespeed_poll from Step 6 (or the Text-to-Image example above)
-# to be defined in the current shell session. If running this block standalone, copy the
-# wavespeed_poll definition from Step 6 first.
+# Prerequisite: define wavespeed_poll from Step 6 once per shell session.
 
 # 1. Upload source image
 UPLOAD=$(curl -s -X POST \

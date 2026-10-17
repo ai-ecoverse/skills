@@ -43,7 +43,7 @@ async function loadOrt(kind, ortDir) {
   const fileName = kind === 'webgpu' ? 'ort.webgpu.bundle.min.mjs' : 'ort.wasm.bundle.min.mjs';
   const dist = `${ortDir}/dist`;
   const file = `${dist}/${fileName}`;
-  if (!(await fs.exists(file))) throw new Error(`onnxruntime-web: ${file} is missing`);
+  if (!(fs.existsSync(file))) throw new Error(`onnxruntime-web: ${file} is missing`);
   const loaded = await host.nativeImport(host.previewUrl(file));
   const ort = loaded.InferenceSession ? loaded : loaded.default;
   if (!ort || !ort.InferenceSession) throw new Error('ort bundle has no InferenceSession');
@@ -72,7 +72,7 @@ async function readArg(spec) {
   if (spec == null || spec === '-') {
     return readStdinText();
   }
-  return fs.readFile(host.resolvePath(spec));
+  return fs.promises.readFile(host.resolvePath(spec), 'utf8');
 }
 
 async function prepareRuntime() {
@@ -100,10 +100,10 @@ async function ensureWeights(model, from) {
   if (!prefix) throw new Error('--model must be 0.8b, 4b, or 9b');
   const base = `${DEST}/${prefix}`;
   const manifestPath = `${base}/manifest.json`;
-  if (!(await fs.exists(manifestPath))) {
+  if (!(fs.existsSync(manifestPath))) {
     await host.hfDownload(exec, 'ai-ecoverse/kev.js', [`${prefix}/manifest.json`], DEST);
   }
-  const manifest = JSON.parse(await fs.readFile(manifestPath));
+  const manifest = JSON.parse(await fs.promises.readFile(manifestPath, 'utf8'));
   const variant = manifest.variants && manifest.variants.q8f32;
   if (!variant) throw new Error(`${prefix} manifest has no q8f32 variant`);
   const rels = [

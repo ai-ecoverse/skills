@@ -40,7 +40,7 @@ function parseArgs(av) {
 }
 
 async function ensureDirs() {
-  await fs.mkdir(CONFIG_DIR, { recursive: true }).catch(function() {});
+  await fs.promises.mkdir(CONFIG_DIR, { recursive: true }).catch(function() {});
 }
 
 async function ensureTab(override) {
@@ -74,15 +74,17 @@ async function restGet(tab, path) {
 // --- zones cache ---
 
 async function loadZones() {
-  try { return JSON.parse(await fs.readFile(ZONES_FILE, 'utf8')); }
+  try { return JSON.parse(await fs.promises.readFile(ZONES_FILE, 'utf8')); }
   catch (e) { return null; }
 }
 
 async function saveZones(list) {
   await ensureDirs();
-  await fs.writeFile(ZONES_FILE, JSON.stringify(list, null, 2));
-  if (typeof fs.chmod === 'function') {
-    await fs.chmod(ZONES_FILE, 0o600).catch(function() {});
+  await fs.promises.writeFile(ZONES_FILE, JSON.stringify(list, null, 2));
+  // Node's fs.chmod needs a callback; fs.promises.chmod is the awaitable one
+  // (on SLICC 6 too). Best effort: a VFS without modes just keeps the file.
+  if (fs.promises && typeof fs.promises.chmod === 'function') {
+    await fs.promises.chmod(ZONES_FILE, 0o600).catch(function() {});
   }
 }
 
@@ -380,7 +382,7 @@ async function cmdQuery(av) {
   const zone = await resolveZone(tab, opts.zone);
   let query;
   if (opts.file) {
-    query = await fs.readFile(opts.file, 'utf8');
+    query = await fs.promises.readFile(opts.file, 'utf8');
   } else {
     query = await readStdin();
     if (!query || !query.trim()) {

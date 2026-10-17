@@ -54,6 +54,16 @@ const skill = require('sliccy:skill');
 const time = require('sliccy:time');
 const { exec } = require('sliccy:exec');
 const fs = require('fs');
+// SLICC 6's fs.fetchToFile, on Node's fs: throws on a non-2xx answer, writes
+// the bytes, returns how many (ai-ecoverse/skills#487).
+async function fetchToFile(url, path) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`fetch ${res.status} ${res.statusText}`);
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  await fs.promises.writeFile(path, bytes);
+  return bytes.byteLength;
+}
+
 
 const BASE = 'https://api.wavespeed.ai';
 const SECRETS_FALLBACK = '/shared/.secrets/wavespeed-api-key';
@@ -97,7 +107,7 @@ function scrubWebhookUrl(value, url) {
 // mojibakes a non-ASCII prompt before it is ever submitted. Read the bytes and
 // decode them explicitly so correctness does not depend on the build.
 async function readTextUtf8(path) {
-  const bytes = await fs.readFileBinary(path);
+  const bytes = await fs.promises.readFile(path);
   return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
 }
 
@@ -155,7 +165,7 @@ async function getKey(explicit) {
   const cfg = await loadConfig();
   if (cfg.apiKey) return cfg.apiKey;
   try {
-    const fromFile = (await fs.readFile(SECRETS_FALLBACK)).trim();
+    const fromFile = (await fs.promises.readFile(SECRETS_FALLBACK, 'utf8')).trim();
     if (fromFile) return fromFile;
   } catch { /* no fallback file — fall through to the error below */ }
   throw new Error(
@@ -494,12 +504,12 @@ async function main() {
         '  -F "file=@' + file + '"',
         '',
       ].join('\n');
-      await fs.writeFile(shPath, script);
+      await fs.promises.writeFile(shPath, script);
       let up;
       try {
         up = await exec('sh ' + shPath);
       } finally {
-        try { await fs.unlink(shPath); } catch { /* best effort cleanup */ }
+        try { await fs.promises.unlink(shPath); } catch { /* best effort cleanup */ }
       }
       if (up.exitCode !== 0) {
         return cli.die('upload failed: curl exit ' + up.exitCode + ' ' + String(up.stderr || '').slice(0, 200));
@@ -637,7 +647,7 @@ async function main() {
       cli.out(data.outputs && data.outputs[0]);
       const outPath = str(flags.out);
       if (outPath && data.outputs && typeof data.outputs[0] === 'string' && /^https?:\/\//.test(data.outputs[0])) {
-        await fs.fetchToFile(data.outputs[0], outPath);
+        await fetchToFile(data.outputs[0], outPath);
         console.error(color.gray(`Saved to ${outPath}`));
       }
       return;
@@ -669,7 +679,7 @@ async function main() {
       if (flags.json) return cli.out({ ...j, selected: output });
       if (typeof output === 'string' && /^https?:\/\//.test(output)) {
         const outPath = str(flags.out) || `/tmp/wavespeed-${id}${extFromUrl(output) || ''}`;
-        await fs.fetchToFile(output, outPath);
+        await fetchToFile(output, outPath);
         return cli.out(`Saved ${outPath}`);
       }
       return cli.out(output);

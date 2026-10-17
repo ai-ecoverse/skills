@@ -71,12 +71,12 @@ async function main() {
   const buf = await L.tts(key, { text, voiceId, modelId: opts.model || cfg.defaultModel, voiceSettings, languageCode: opts.lang });
 
   if (opts.out) {
-    await fs.writeFileBinary(opts.out, buf);
+    await fs.promises.writeFile(opts.out, buf);
     return cli.out(`Wrote ${buf.length} bytes (MP3) to ${opts.out}`);
   }
 
   const tmp = `/tmp/say-11-${Date.now()}.mp3`;
-  await fs.writeFileBinary(tmp, buf);
+  await fs.promises.writeFile(tmp, buf);
   const rate = opts.rate != null ? Number(opts.rate) : undefined;
   await L.play(tmp, { rate: Number.isFinite(rate) ? rate : undefined });
   // stay quiet on success, like `say` (no stdout); comment for the agent:

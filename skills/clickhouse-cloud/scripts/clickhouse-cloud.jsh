@@ -85,10 +85,10 @@ let _tabId = null;
 async function tabHasToken(tabId) {
   const probe = '(() => { try { const k = Object.keys(localStorage).find(k => k.startsWith("@@auth0spajs@@") && k.includes("control-plane-web")); return k && JSON.parse(localStorage.getItem(k)).body.access_token ? "yes" : "no"; } catch (e) { return "no"; } })()';
   const tmp = '/shared/.chc_probe_' + Date.now() + '_' + Math.floor(Math.random() * 1e6) + '.js';
-  await fs.writeFile(tmp, probe);
+  await fs.promises.writeFile(tmp, probe);
   let r;
   try { r = await exec('playwright-cli eval-file ' + tmp + ' --tab=' + tabId); }
-  finally { await fs.rm(tmp).catch(function () {}); }
+  finally { await fs.promises.rm(tmp).catch(function () {}); }
   return r.exitCode === 0 && /yes/.test(r.stdout || '');
 }
 
@@ -147,12 +147,12 @@ async function apiCall(method, url, body, ctype) {
   ].join('\n');
 
   const tmp = '/shared/.chc_eval_' + Date.now() + '_' + Math.floor(Math.random() * 1e6) + '.js';
-  await fs.writeFile(tmp, code);
+  await fs.promises.writeFile(tmp, code);
   let result;
   try {
     result = await exec('playwright-cli eval-file ' + tmp + ' --tab=' + tabId);
   } finally {
-    await fs.rm(tmp).catch(function () {});
+    await fs.promises.rm(tmp).catch(function () {});
   }
   if (result.exitCode !== 0) {
     throw new Error('page-context eval failed: ' + (result.stderr || result.stdout || 'unknown'));
@@ -546,7 +546,7 @@ function parseRowStream(body) {
 
 async function cmdQuery(pos, opts) {
   let sql = pos.join(' ').trim();
-  if (typeof opts.file === 'string' && opts.file) sql = (await fs.readFile(opts.file, 'utf8')).trim();
+  if (typeof opts.file === 'string' && opts.file) sql = (await fs.promises.readFile(opts.file, 'utf8')).trim();
   if (!sql) {
     console.error('Usage: clickhouse-cloud query "<SQL>" [--service=ID] [--org=ID] [--database=default] [--json|--tsv]');
     console.error('   or: clickhouse-cloud query --file=query.sql [--service=ID]');

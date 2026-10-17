@@ -194,7 +194,7 @@ async function dashTab(explicit) {
 
 async function loadCachedAccount() {
   try {
-    const j = JSON.parse(await fs.readFile(ACCOUNT_FILE, 'utf8'));
+    const j = JSON.parse(await fs.promises.readFile(ACCOUNT_FILE, 'utf8'));
     return str(j.id) || null;
   } catch {
     return null;
@@ -203,9 +203,9 @@ async function loadCachedAccount() {
 
 async function saveCachedAccount(id, name) {
   try {
-    await fs.mkdir(CONFIG_DIR, { recursive: true });
-    await fs.writeFile(ACCOUNT_FILE, JSON.stringify({ id: id, name: name || null }, null, 2));
-    if (typeof fs.chmod === 'function') await fs.chmod(ACCOUNT_FILE, 0o600).catch(function () {});
+    await fs.promises.mkdir(CONFIG_DIR, { recursive: true });
+    await fs.promises.writeFile(ACCOUNT_FILE, JSON.stringify({ id: id, name: name || null }, null, 2));
+    if (fs.promises && typeof fs.promises.chmod === 'function') await fs.promises.chmod(ACCOUNT_FILE, 0o600).catch(function () {});
   } catch {
     /* cache is best-effort */
   }
@@ -473,8 +473,8 @@ async function scratchWrite(buf) {
     if (!d) continue;
     const p = d.replace(/\/$/, '') + '/' + name;
     try {
-      await fs.mkdir(d, { recursive: true }).catch(function () {});
-      await fs.writeFileBinary(p, buf);
+      await fs.promises.mkdir(d, { recursive: true }).catch(function () {});
+      await fs.promises.writeFile(p, buf);
       return p;
     } catch {
       /* try the next candidate */
@@ -493,7 +493,7 @@ async function extractText(buf, label) {
     try {
       local = await tryLocal(scratch);
     } finally {
-      await fs.rm(scratch).catch(function () {});
+      await fs.promises.rm(scratch).catch(function () {});
     }
   }
   if (local.text) return { text: local.text, method: local.method };
@@ -771,7 +771,7 @@ function mergeByContract(families) {
 async function loadFixture(path) {
   let raw;
   try {
-    raw = await fs.readFile(path, 'utf8');
+    raw = await fs.promises.readFile(path, 'utf8');
   } catch {
     cli.die('cannot read fixture ' + path, { prefix: 'wrangler-ext' });
   }
@@ -1069,7 +1069,7 @@ async function cmdPdf(positional, flags) {
   const rec = resolveReceipt(ctx.rows, str(positional[0]));
   const buf = await fetchPdf(ctx.tab, ctx.acct, rec.id);
   const out = str(flags.out) || './' + (rec.receipt_id || rec.id) + '.pdf';
-  await fs.writeFileBinary(out, buf);
+  await fs.promises.writeFile(out, buf);
   if (flags.json) {
     cli.out({ receipt_id: rec.receipt_id, uuid: rec.id, path: out, bytes: buf.length, magic: buf.slice(0, 8).toString('latin1') });
     return;

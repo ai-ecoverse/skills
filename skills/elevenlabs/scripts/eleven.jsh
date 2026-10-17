@@ -106,10 +106,10 @@ async function main() {
       const cfg = await L.loadConfig();
       const buf = await L.tts(key, { text, voiceId, modelId: str(flags.model) || cfg.defaultModel, outputFormat: str(flags.format), voiceSettings: cfg.voiceSettings, languageCode: str(flags.lang) || str(flags.l) });
       const out = str(flags.out) || str(flags.o);
-      if (out) { await fs.writeFileBinary(out, buf); return cli.out(`Wrote ${buf.length} bytes to ${out}`); }
+      if (out) { await fs.promises.writeFile(out, buf); return cli.out(`Wrote ${buf.length} bytes to ${out}`); }
       // no --out: write temp and (optionally) play
       const tmp = `/tmp/eleven-tts-${Date.now()}.mp3`;
-      await fs.writeFileBinary(tmp, buf);
+      await fs.promises.writeFile(tmp, buf);
       if (flags.play) { await L.play(tmp); return cli.out(`Played (${buf.length} bytes).`); }
       return cli.out(`Wrote ${buf.length} bytes to ${tmp}  (add --play to hear it, or use say-11)`);
     }
@@ -140,7 +140,7 @@ async function main() {
       if (j && j.__binary) {
         const ext = /mpeg|mp3/.test(j.contentType) ? 'mp3' : /wav/.test(j.contentType) ? 'wav' : /json/.test(j.contentType) ? 'json' : 'bin';
         const out = str(flags.out) || str(flags.o) || `/tmp/eleven-api-${Date.now()}.${ext}`;
-        await fs.writeFileBinary(out, j.buffer);
+        await fs.promises.writeFile(out, j.buffer);
         return cli.out(`Wrote ${j.buffer.length} bytes (${j.contentType}) to ${out}`);
       }
       return cli.out(j);

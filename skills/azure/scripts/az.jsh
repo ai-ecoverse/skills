@@ -622,7 +622,7 @@ async function cmdRest(flags) {
   if (bodyFlag) {
     if (bodyFlag.startsWith('@')) {
       const fs = require('fs');
-      body = await fs.readFile(bodyFlag.slice(1), 'utf8');
+      body = await fs.promises.readFile(bodyFlag.slice(1), 'utf8');
     } else {
       body = bodyFlag;
     }

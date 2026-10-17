@@ -1,14 +1,14 @@
-import test, { is, ok, rejects } from 'tst';
 import fs from 'node:fs';
 import path from 'node:path';
-import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
+import vm from 'node:vm';
+import test, { is, ok, rejects } from 'tst';
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // SLICC's test realm has no setImmediate (browser DedicatedWorker). Polyfill
 // before any test schedules on it — Node provides the real one.
-const setImmediate =
-  globalThis.setImmediate || ((fn, ...args) => setTimeout(fn, 0, ...args));
+const setImmediate = globalThis.setImmediate || ((fn, ...args) => setTimeout(fn, 0, ...args));
 
 const source = fs.readFileSync(path.join(__dirname, '../phone-view.shtml'), 'utf8');
 // SLICC's node:vm keeps `let`/`const` in a per-script lexical env, so a later
@@ -32,8 +32,7 @@ function panel(list = async () => [], usb = {}, timers = {}) {
       textContent: 'No device connected',
       className: '',
       classList: {
-        contains: (name) =>
-          elements.status.className.split(/\s+/).filter(Boolean).includes(name),
+        contains: (name) => elements.status.className.split(/\s+/).filter(Boolean).includes(name),
       },
     },
     screen: { hidden: true, getContext: () => ({}), addEventListener() {} },
@@ -110,7 +109,7 @@ function panel(list = async () => [], usb = {}, timers = {}) {
 test('no granted device leaves a useful error and enables retry', async () => {
   const p = panel();
   await p.run('start()');
-  ok((/usb request/).test(p.elements.status.textContent));
+  ok(/usb request/.test(p.elements.status.textContent));
   is(p.elements.status.className, 'err');
   is(p.elements['connect-btn'].disabled, false);
   is(p.elements['empty-state'].hidden, false);
@@ -164,7 +163,7 @@ test('a rejected mid-stream read retains its cause and enables retry', async () 
     await pump(adb, session.size);
   })()`);
   is(reads, 2);
-  ok((/Stream ended: transport lost/).test(p.elements.status.textContent));
+  ok(/Stream ended: transport lost/.test(p.elements.status.textContent));
   is(p.elements.status.className, 'err');
   is(p.elements['connect-btn'].disabled, false);
   is(p.calls, ['release', 'close']);
@@ -227,7 +226,7 @@ test('a warn status survives the pump finally path', async () => {
           reportStreamStatus('test phone');
         `);
         is(p.elements.status.className, 'warn');
-        ok((/no data for/).test(p.elements.status.textContent));
+        ok(/no data for/.test(p.elements.status.textContent));
         // A_CLSE — clean stream end (no error). This makes stream() resolve
         // without rejection, so pump's catch is skipped and only finally runs.
         const bytes = new Uint8Array(24);
@@ -254,7 +253,7 @@ test('a warn status survives the pump finally path', async () => {
   // pump's finally has now run. The warn status must have survived.
   is(reads, 2);
   is(p.elements.status.className, 'warn');
-  ok((/no data for/).test(p.elements.status.textContent));
+  ok(/no data for/.test(p.elements.status.textContent));
   is(p.elements['connect-btn'].disabled, false);
   is(p.calls, ['release', 'close']);
 });
@@ -268,8 +267,8 @@ test('lack of byte progress changes the streaming status', () => {
     };
     reportStreamStatus('test phone');
   `);
-  ok((/no data for 45s/).test(p.elements.status.textContent));
-  ok((/disconnected or claimed elsewhere/).test(p.elements.status.textContent));
+  ok(/no data for 45s/.test(p.elements.status.textContent));
+  ok(/disconnected or claimed elsewhere/.test(p.elements.status.textContent));
   is(p.elements.status.className, 'warn');
 });
 
@@ -293,7 +292,7 @@ test('Stop releases the connection and restores the disconnected controls', asyn
   ok(p.controls.every((button) => !button.disabled));
   await p.run('stop()');
   is(p.calls, ['release', 'close']);
-  ok((/stopped after 7 frames/).test(p.elements.status.textContent));
+  ok(/stopped after 7 frames/.test(p.elements.status.textContent));
   is(p.elements.screen.hidden, true);
   is(p.elements['connect-btn'].disabled, false);
   ok(p.controls.every((button) => button.disabled));

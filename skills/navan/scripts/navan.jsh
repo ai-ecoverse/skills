@@ -176,7 +176,7 @@ async function apiDownload(path) {
 
 // Write base64 content to a file via the VFS binary bridge.
 async function writeBase64(path, b64) {
-  await fs.writeFileBinary(path, Buffer.from(b64, 'base64'));
+  await fs.promises.writeFile(path, Buffer.from(b64, 'base64'));
 }
 
 // ----------------- small helpers -----------------

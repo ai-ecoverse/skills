@@ -886,15 +886,18 @@ test('WHOIS client: a hung service is capped, not waited on', async () => {
 });
 test('IDS answer cache: a repeat ask never downgrades a remembered high answer', async () => {
   const files = {};
+  // Node's fs shape (fs.promises), as slicc-jsh and SLICC 6 both serve it (#487).
   const fs = {
-    readFile: async (f) => {
-      if (!(f in files)) throw new Error('ENOENT');
-      return files[f];
+    promises: {
+      readFile: async (f) => {
+        if (!(f in files)) throw new Error('ENOENT');
+        return files[f];
+      },
+      writeFile: async (f, d) => {
+        files[f] = d;
+      },
+      mkdir: async () => {},
     },
-    writeFile: async (f, d) => {
-      files[f] = d;
-    },
-    mkdir: async () => {},
   };
   const cache = createIdsCache({ fs, file: '/c/ids.json', dir: '/c', ttlMs: 60000 });
   let calls = 0;
@@ -1137,15 +1140,18 @@ test('WHOIS "no" with registration data is registered even beside terms-of-use b
 
 test('IDS answer cache: a later "missing" or no-trust reply does not erase a remembered high answer', async () => {
   const files = {};
+  // Node's fs shape (fs.promises), as slicc-jsh and SLICC 6 both serve it (#487).
   const fsStub = {
-    readFile: async (f) => {
-      if (!(f in files)) throw new Error('ENOENT');
-      return files[f];
+    promises: {
+      readFile: async (f) => {
+        if (!(f in files)) throw new Error('ENOENT');
+        return files[f];
+      },
+      writeFile: async (f, d) => {
+        files[f] = d;
+      },
+      mkdir: async () => {},
     },
-    writeFile: async (f, d) => {
-      files[f] = d;
-    },
-    mkdir: async () => {},
   };
   const cache = createIdsCache({ fs: fsStub, file: '/c/ids.json', dir: '/c', ttlMs: 60000 });
   await cache.merge('live.dev', { availability: 'available', trust: 'high' });

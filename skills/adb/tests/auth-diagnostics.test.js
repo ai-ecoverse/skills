@@ -1,7 +1,8 @@
-import test, { is, ok, rejects } from 'tst';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import test, { is, ok, rejects } from 'tst';
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const source = fs.readFileSync(path.join(__dirname, '../scripts/adb.jsh'), 'utf8');
@@ -41,20 +42,23 @@ for (const repeated of [false, true]) {
         return messages.shift();
       },
     };
-    await rejects(() => handshake(transport, null), (error) => {
-      ok((/after 4 A_AUTH TOKEN frames/).test(error.message));
-      ok((/Either this key is not trusted by the device/).test(error.message));
-      ok((/USB transport\n {2}is desynced with stale A_AUTH frames/).test(error.message));
-      ok((/previous killed session/).test(error.message));
-      ok((/retry \(optionally with --no-reset\) may clear a stale transport/).test(error.message));
-      ok((/--key/).test(error.message));
-      ok((/~\/\.android\/adbkey/).test(error.message));
-      ok((/Enrolling a NEW key is not\n {2}supported/).test(error.message));
-      ok((/AUTH RSAPUBLICKEY frame, which this\n {2}client does not send/).test(error.message));
-      ok((/no on-device approval prompt will appear/).test(error.message));
-      ok(!(/device rejected the signature — this key is not authorized/).test(error.message));
-      return true;
-    });
+    await rejects(
+      () => handshake(transport, null),
+      (error) => {
+        ok(/after 4 A_AUTH TOKEN frames/.test(error.message));
+        ok(/Either this key is not trusted by the device/.test(error.message));
+        ok(/USB transport\n {2}is desynced with stale A_AUTH frames/.test(error.message));
+        ok(/previous killed session/.test(error.message));
+        ok(/retry \(optionally with --no-reset\) may clear a stale transport/.test(error.message));
+        ok(/--key/.test(error.message));
+        ok(/~\/\.android\/adbkey/.test(error.message));
+        ok(/Enrolling a NEW key is not\n {2}supported/.test(error.message));
+        ok(/AUTH RSAPUBLICKEY frame, which this\n {2}client does not send/.test(error.message));
+        ok(/no on-device approval prompt will appear/.test(error.message));
+        ok(!/device rejected the signature — this key is not authorized/.test(error.message));
+        return true;
+      }
+    );
     is(messages.length, 0);
     is(
       writes.map(([cmd, arg0]) => [cmd, arg0]),
@@ -84,16 +88,11 @@ for (const reset of ['failed', 'successful', 'skipped']) {
     const transport = new AdbTransport(device, 100, { reset: reset !== 'skipped' });
     await transport.open();
     is(transport.claimed, true);
-    is(calls, [
-      'open',
-      'configure',
-      ...(reset === 'skipped' ? [] : ['reset']),
-      'claim 0',
-    ]);
+    is(calls, ['open', 'configure', ...(reset === 'skipped' ? [] : ['reset']), 'claim 0']);
     if (reset === 'failed') {
       is(warnings.length, 1);
-      ok((/warning: USB reset failed to clear endpoint buffers/).test(warnings[0]));
-      ok((/handshake may encounter stale frames/).test(warnings[0]));
+      ok(/warning: USB reset failed to clear endpoint buffers/.test(warnings[0]));
+      ok(/handshake may encounter stale frames/.test(warnings[0]));
     } else {
       is(warnings, []);
     }
