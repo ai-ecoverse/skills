@@ -63,9 +63,18 @@ function loadApi() {
   return root;
 }
 
+// All of stdin as text. fs.readFileSync(0) reads it on SLICC 6, in slicc-jsh
+// (SLICC 7) and in Node alike; process.stdin.read() returns the whole buffer
+// only on SLICC 6 (a stream returns null until data arrives). A terminal is
+// not waited on: it counts as empty stdin.
+function readStdinText() {
+  if (process.stdin && process.stdin.isTTY) return '';
+  return require('fs').readFileSync(0, 'utf8');
+}
+
 async function readArg(spec) {
   if (spec == null || spec === '-') {
-    return process.stdin.read();
+    return readStdinText();
   }
   return fs.readFile(host.resolvePath(spec));
 }

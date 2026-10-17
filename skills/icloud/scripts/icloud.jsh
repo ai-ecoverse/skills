@@ -72,6 +72,15 @@ const subcommand = args[0];
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+// All of stdin as text. fs.readFileSync(0) reads it on SLICC 6, in slicc-jsh
+// (SLICC 7) and in Node alike; process.stdin.read() returns the whole buffer
+// only on SLICC 6 (a stream returns null until data arrives). A terminal is
+// not waited on: it counts as empty stdin.
+function readStdinText() {
+  if (process.stdin && process.stdin.isTTY) return '';
+  return require('fs').readFileSync(0, 'utf8');
+}
+
 function usageText() {
   return `icloud — iCloud Calendar & Notes CLI for SLICC
 
@@ -634,7 +643,7 @@ async function cmdCalendarCreate(flags) {
     } else {
       // Read from stdin
       try {
-        jsonInput = (await process.stdin.read()) || '';
+        jsonInput = readStdinText();
       } catch (e) {
         cli.die(`icloud calendar create: failed to read stdin: ${e.message}`, { prefix: '' });
       }

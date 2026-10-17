@@ -364,23 +364,13 @@ async function cmdTopCountries(av) {
   for (const [c, n] of sorted) console.log(pad(fmtNum(n), 10) + c);
 }
 
+// All of stdin as text. fs.readFileSync(0) reads it on SLICC 6, in slicc-jsh
+// (SLICC 7) and in Node alike; process.stdin.read() returns the whole buffer
+// only on SLICC 6 (a stream returns null until data arrives). A terminal is
+// not waited on: it counts as empty stdin.
 async function readStdin() {
-  // Try multiple jsh stdin shapes.
-  if (process && process.stdin && typeof process.stdin.read === 'function') {
-    try {
-      const v = await process.stdin.read();
-      if (typeof v === 'string') return v;
-      if (v && v.toString) return v.toString();
-    } catch (e) { /* fall through */ }
-  }
-  return new Promise(function(resolve, reject) {
-    let buf = '';
-    if (!process.stdin || !process.stdin.on) return resolve('');
-    try { process.stdin.setEncoding('utf8'); } catch (e) {}
-    process.stdin.on('data', function(c){ buf += c; });
-    process.stdin.on('end', function(){ resolve(buf); });
-    process.stdin.on('error', reject);
-  });
+  if (process.stdin && process.stdin.isTTY) return '';
+  return require('fs').readFileSync(0, 'utf8');
 }
 
 async function cmdQuery(av) {

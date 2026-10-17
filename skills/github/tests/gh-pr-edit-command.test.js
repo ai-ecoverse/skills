@@ -1,11 +1,12 @@
-import test, { fail, is, not, ok } from 'tst';
-import { createRequire } from 'node:module';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import * as _prWatchFilterMod from '../scripts/pr-watch-filter.js';
+import test, { fail, is, not, ok } from 'tst';
 import * as _assignFieldMod from '../scripts/assign-field.js';
 import * as _prEditMod from '../scripts/pr-edit.js';
+import * as _prWatchFilterMod from '../scripts/pr-watch-filter.js';
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const target = path.resolve(__dirname, '../scripts/gh.jsh');
@@ -83,6 +84,15 @@ async function runGh(args, scenario = {}) {
   exec.spawn = exec;
   exec.start = exec;
   const fileSystem = {
+    // stdin: gh reads it whole with readFileSync(0), which works on SLICC 6,
+    // slicc-jsh and Node (ai-ecoverse/skills#488).
+    readFileSync: (fd, encoding) => {
+      if (fd !== 0 || encoding !== 'utf8') throw new Error(`unexpected readFileSync(${fd})`);
+      stdinReadCount++;
+      if (stdinReadCount > 1) throw new Error('stdin already consumed');
+      if (scenario.stdinError) throw scenario.stdinError;
+      return scenario.stdin ?? '';
+    },
     readFile: async (filePath) => {
       if (scenario.bodyFiles && Object.hasOwn(scenario.bodyFiles, filePath)) {
         return scenario.bodyFiles[filePath];
@@ -111,9 +121,9 @@ async function runGh(args, scenario = {}) {
   // Relative script siblings are pre-loaded via static ESM imports (tst's
   // createRequire shim resolves node: builtins but not relative VFS paths).
   const relativeModules = {
-    './pr-watch-filter.js': () => (_prWatchFilterMod.default || _prWatchFilterMod),
-    './assign-field.js': () => (_assignFieldMod.default || _assignFieldMod),
-    './pr-edit.js': () => (_prEditMod.default || _prEditMod),
+    './pr-watch-filter.js': () => _prWatchFilterMod.default || _prWatchFilterMod,
+    './assign-field.js': () => _assignFieldMod.default || _assignFieldMod,
+    './pr-edit.js': () => _prEditMod.default || _prEditMod,
   };
   const realRequire = createRequire(target);
   const mockRequire = (id) => {
@@ -124,14 +134,8 @@ async function runGh(args, scenario = {}) {
   const mockProcess = {
     argv: ['node', target, ...args],
     env: {},
-    stdin: {
-      read: async () => {
-        stdinReadCount++;
-        if (stdinReadCount > 1) throw new Error('stdin already consumed');
-        if (scenario.stdinError) throw scenario.stdinError;
-        return scenario.stdin ?? '';
-      },
-    },
+    // Node semantics (slicc-jsh): a stream, whose read() has nothing yet.
+    stdin: { isTTY: false, read: () => null },
     exit: (code) => {
       throw new NodeExitError('exit', code);
     },
@@ -186,7 +190,7 @@ test('exposes pr edit in top-level, group, and scoped help', async () => {
   for (const args of [['--help'], ['pr', '--help']]) {
     const result = await runGh(args);
     is(result.error.exitCode, 0);
-    ok((/pr edit/).test(result.stdout.join('\n')));
+    ok(/pr edit/.test(result.stdout.join('\n')));
   }
 
   const result = await runGh(['pr', 'edit', '--help']);
@@ -209,10 +213,10 @@ test('exposes pr edit in top-level, group, and scoped help', async () => {
     '--json',
     '--jq',
   ])
-    ok((new RegExp(flag)).test(help));
-  ok((/use "-" for stdin/).test(help));
-  ok((/use @me for yourself/).test(help));
-  ok(!(/--(?:add|remove)-project/).test(help));
+    ok(new RegExp(flag).test(help));
+  ok(/use "-" for stdin/.test(help));
+  ok(/use @me for yourself/.test(help));
+  ok(!/--(?:add|remove)-project/.test(help));
 
   const terseHelp = await runGh(['pr', 'edit', '42', '--title', 'T', '-h', '-R', 'octo/repo']);
   is(terseHelp.error.exitCode, 0);
@@ -270,7 +274,7 @@ test('rejects parser and validation errors before any write', async () => {
     const result = await runGh(args, scenario);
     is(result.error.name, 'NodeExitError');
     not(result.error.exitCode, 0);
-    ok((message).test(result.error.message));
+    ok(message.test(result.error.message));
     is(writes(result), []);
   }
 });
@@ -335,14 +339,14 @@ test('rejects stdin conflicts and read failures before any write', async () => {
     ['pr', 'edit', '42', '--body', 'inline', '--body-file', '-', '-R', 'octo/repo'],
     { stdin: 'must not be read' }
   );
-  ok((/body specified twice/).test(result.error.message));
+  ok(/body specified twice/.test(result.error.message));
   is(result.stdinReadCount, 0);
   is(writes(result), []);
 
   result = await runGh(['pr', 'edit', '42', '--body-file', '-', '-R', 'octo/repo'], {
     stdinError: new Error('stdin unavailable'),
   });
-  ok((/could not read stdin.*stdin unavailable/).test(result.error.message));
+  ok(/could not read stdin.*stdin unavailable/.test(result.error.message));
   is(result.stdinReadCount, 1);
   is(writes(result), []);
 });
@@ -401,7 +405,7 @@ test('fails authenticated-user lookup before any assignee write', async () => {
     failUserLookup: true,
   });
   is(result.error.name, 'NodeExitError');
-  ok((/could not resolve @me.*viewer unavailable/).test(result.error.message));
+  ok(/could not resolve @me.*viewer unavailable/.test(result.error.message));
   is(writes(result), []);
   is(result.calls, [{ method: 'get', path: '/user', options: undefined }]);
 });
@@ -490,20 +494,20 @@ test('reports semantic no-ops without a PATCH', async () => {
     pull: { title: 'Same', body: '', base: { ref: 'main' } },
   });
   is(writes(result), []);
-  ok((/No changes/).test(result.stdout.join('\n')));
-  ok(!(/Edited PR/).test(result.stdout.join('\n')));
+  ok(/No changes/.test(result.stdout.join('\n')));
+  ok(!/Edited PR/.test(result.stdout.join('\n')));
 
   result = await runGh(['pr', 'edit', '42', '--add-label', 'ready', '-R', 'octo/repo'], {
     pull: { title: 'Same', body: '', base: { ref: 'main' } },
     issue: { labels: [{ name: 'ready' }], assignees: [] },
   });
   is(writes(result), []);
-  ok((/No changes/).test(result.stdout.join('\n')));
+  ok(/No changes/.test(result.stdout.join('\n')));
 });
 
 test('repo inference failure recommends the explicit -R form', async () => {
   const result = await runGh(['pr', 'edit', '42', '--title', 'T']);
-  ok((/-R owner\/repo/).test(result.error.message));
+  ok(/-R owner\/repo/.test(result.error.message));
   is(writes(result), []);
 });
 
@@ -665,8 +669,8 @@ test('gh api reports -F file errors with the literal-mention alternative', async
   const result = await runGh(['api', '/repos/octo/repo/issues', '-F', 'body=@octocat']);
 
   is(result.error.name, 'NodeExitError');
-  ok((/could not read -F value from octocat/).test(result.error.message));
-  ok((/Use -f key=@mention/).test(result.error.message));
+  ok(/could not read -F value from octocat/.test(result.error.message));
+  ok(/Use -f key=@mention/.test(result.error.message));
   is(writes(result), []);
 });
 
@@ -680,13 +684,13 @@ test('gh api help documents field behavior and the -F collision', async () => {
   const result = await runGh(['api', '--help']);
   is(result.error.exitCode, 0);
   const help = result.stdout.join('\n');
-  ok((/fields imply POST/).test(help));
-  ok((/@file reads UTF-8 and @- reads stdin/).test(help));
-  ok((/-f, --raw-field/).test(help));
-  ok((/-F, --field/).test(help));
-  ok((/-i, --include/).test(help));
-  ok((/--body-file for gh issue\/pr/).test(help));
-  ok((/-f key=@mention/).test(help));
+  ok(/fields imply POST/.test(help));
+  ok(/@file reads UTF-8 and @- reads stdin/.test(help));
+  ok(/-f, --raw-field/.test(help));
+  ok(/-F, --field/.test(help));
+  ok(/-i, --include/.test(help));
+  ok(/--body-file for gh issue\/pr/.test(help));
+  ok(/-f key=@mention/.test(help));
 });
 
 test('propagates API failures as command errors', async () => {
