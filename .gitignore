@@ -5,3 +5,5 @@ skills/fastly/scripts/.config
 node_modules/
 skills/*/.config
 skills/*/scripts/.config
+test/unit/
+coverage/

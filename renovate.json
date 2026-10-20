@@ -8,6 +8,10 @@
     {
       "groupName": "react",
       "matchPackageNames": ["react", "react-dom"]
+    },
+    {
+      "matchPackageNames": ["@ai-ecoverse/slicc-shared-web"],
+      "allowedVersions": "<2"
     }
   ]
 }

@@ -40,6 +40,10 @@ source manifest: `tiles/basic/.tessl-plugin/plugin.json` or
 do not create a symlink or copy under `tiles/`. CI and publishing assemble concrete plugin trees
 with `tools/stage-tessl-plugin.mjs`.
 
+## Pre-commit hooks
+
+Run `npm install` once per checkout or worktree; it installs the shared pre-commit hooks from `@ai-ecoverse/slicc-shared-web`. Install [uv](https://docs.astral.sh/uv/) for the diff-coverage check: staged lines in `tools/` need unit tests in the gitignored `test/unit/`, run with `npm run test:unit`. `.jsh` scripts are not measured.
+
 ## SKILL.md frontmatter
 
 Every `SKILL.md` starts with YAML frontmatter that defines the skill metadata:
