@@ -11,6 +11,9 @@ var path   = require('path');
 var zlib   = require('zlib');
 var crypto = require('crypto');
 
+if (process.argv.slice(2).some(function (a) { return a === '--help' || a === '-h'; })) {
+  require('sliccy:cli').help('make-fixtures — build the deterministic PDF fixtures used by run-tests.sh\n\nUsage: make-fixtures [outdir]     (default: current directory)');
+}
 var argOut = process.argv.slice(2)[0];
 var OUT = argOut ? (path.isAbsolute(argOut) ? argOut : path.join(process.cwd(), argOut)) : process.cwd();
 

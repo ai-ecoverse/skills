@@ -72,7 +72,7 @@ const OUTLOOK_DOMAINS = ['outlook.office.com', 'outlook.cloud.microsoft', 'outlo
 // ─── Argument Parsing ────────────────────────────────────────────────────────
 
 const { positional: _allPositional, flags } = process.argv.parseFlags();
-const subcommand = _allPositional[0] || '';
+const subcommand = flags.help || flags.h ? 'help' : _allPositional[0] || '';
 const positional = _allPositional.slice(1);
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

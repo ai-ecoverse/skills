@@ -26,6 +26,7 @@
 // ─────────────────────────────────────────────────────────────────────────
 
 const exec = require('sliccy:exec');
+const cli = require('sliccy:cli');
 const fs = require('fs');
 
 const DEFAULT_STORE = '/shared/loose-ends.json';
@@ -169,8 +170,22 @@ async function reseed(name, storePath) {
   return store.tasks.length;
 }
 
+const USAGE =
+  `usage:\n` +
+  `  loose-ends bootstrap [--name <n>] [--store <path>] [--template <path>]\n` +
+  `  loose-ends reseed    [--name <n>] [--store <path>]\n` +
+  `  loose-ends list      [--snoozed] [--json]\n` +
+  `  loose-ends create --title <t> [--summary <s>] [--detail <d>] [--url <href>] [--skills a,b] [--id <id>] [--snooze <when>] [--cone <folder>]\n` +
+  `  loose-ends done <id>\n` +
+  `  loose-ends snooze <id> <tomorrow|monday|week|YYYY-MM-DD>\n` +
+  `  loose-ends unsnooze <id>\n` +
+  `  loose-ends monday    [--limit N]\n`;
+
 async function main() {
   const argv = process.argv.slice(2);
+  if (argv.some((a) => a === '--help' || a === '-h')) {
+    cli.help(`loose-ends — store + sprinkle management for the loose-ends panel\n\n${USAGE}`);
+  }
   const args = parseArgs(argv);
   const cmd = args._[0] || 'bootstrap';
 
@@ -371,20 +386,13 @@ async function main() {
 
   process.stderr.write(
     `loose-ends: unknown command '${cmd}'\n` +
-    `usage:\n` +
-    `  loose-ends bootstrap [--name <n>] [--store <path>] [--template <path>]\n` +
-    `  loose-ends reseed    [--name <n>] [--store <path>]\n` +
-    `  loose-ends list      [--snoozed] [--json]\n` +
-    `  loose-ends create --title <t> [--summary <s>] [--detail <d>] [--url <href>] [--skills a,b] [--id <id>] [--snooze <when>] [--cone <folder>]\n` +
-    `  loose-ends done <id>\n` +
-    `  loose-ends snooze <id> <tomorrow|monday|week|YYYY-MM-DD>\n` +
-    `  loose-ends unsnooze <id>\n` +
-    `  loose-ends monday    [--limit N]\n`
+    USAGE
   );
   process.exit(1);
 }
 
 await main().catch((e) => {
+  if (e?.name === 'NodeExitError') throw e;
   process.stderr.write(`loose-ends: ${e.message}\n`);
   process.exit(1);
 });

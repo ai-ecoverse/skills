@@ -83,4 +83,7 @@ async function main() {
   process.stderr.write(`spoke ${buf.length} bytes via ElevenLabs\n`);
 }
 
-await main().catch((e) => cli.die(e.message + (e.status ? ` (HTTP ${e.status})` : ''), { prefix: 'say-11' }));
+await main().catch((e) => {
+  if (e?.name === 'NodeExitError') throw e;
+  cli.die(e.message + (e.status ? ` (HTTP ${e.status})` : ''), { prefix: 'say-11' });
+});

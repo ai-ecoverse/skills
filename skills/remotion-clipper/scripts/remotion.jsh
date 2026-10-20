@@ -905,7 +905,7 @@ async function main() {
   const { positional, flags } = process.argv.parseFlags();
   const [cmd, ...rest] = positional;
 
-  if (!cmd || cmd === 'help' || flags.help) {
+  if (!cmd || cmd === 'help' || flags.help || flags.h) {
     cli.help(`remotion -- EDL tooling for the interview-clipping pipeline (runs in SLICC)
 
 Usage:

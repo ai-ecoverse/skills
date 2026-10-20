@@ -916,7 +916,7 @@ const args = rawArgs.slice(1);
 // Load config early (non-fatal if missing — login will create it)
 await loadConfig();
 
-if (!cmd || cmd === 'help' || cmd === '--help') {
+if (!cmd || cmd === 'help' || rawArgs.some((a) => a === '--help' || a === '-h')) {
   showHelp();
   process.exit(cmd ? 0 : 1);
 }

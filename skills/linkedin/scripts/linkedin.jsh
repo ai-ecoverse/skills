@@ -95,6 +95,7 @@ var AUTH_MODE = config.auth || 'session'; // 'session' or 'oauth'
 
 const rawArgs = process.argv.slice(2);
 const cmd = rawArgs[0] || '';
+const wantsHelp = rawArgs.some((a) => a === '--help' || a === '-h');
 const positional = [];
 const flags = {};
 
@@ -1698,7 +1699,7 @@ async function directMessage(profileUrn, messageText) {
 
 // ─── CLI Dispatch ────────────────────────────────────────────────────────────
 
-if (!cmd || cmd === 'help') {
+if (!cmd || cmd === 'help' || wantsHelp) {
   console.log('Usage: linkedin <command> [args] [--flags]');
   console.log('');
   console.log('Setup:');
@@ -1752,7 +1753,7 @@ if (!cmd || cmd === 'help') {
   console.log('  linkedin send "urn:li:msg_conversation:..." "Hello!"');
   console.log('  linkedin search-contacts "karl"');
   console.log('  linkedin dm "urn:li:fsd_profile:ACoAA..." "Hey, quick question..."');
-  process.exit(cmd === 'help' ? 0 : 1);
+  process.exit(cmd === 'help' || wantsHelp ? 0 : 1);
 }
 
 var result;

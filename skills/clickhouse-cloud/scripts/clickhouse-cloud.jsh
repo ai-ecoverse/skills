@@ -618,7 +618,7 @@ const raw = process.argv.slice(2);
 const cmd = raw[0];
 const { opts, pos } = parseArgs(raw.slice(1));
 
-if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') { showHelp(); process.exit(cmd ? 0 : 1); }
+if (!cmd || cmd === 'help' || raw.some((a) => a === '--help' || a === '-h')) { showHelp(); process.exit(cmd ? 0 : 1); }
 
 try {
   switch (cmd) {

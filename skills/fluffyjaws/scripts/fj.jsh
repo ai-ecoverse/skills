@@ -677,7 +677,7 @@ function bodyPreview(body) {
 // ---------- entry ----------
 
 const [, , cmd, ...args] = process.argv;
-if (!cmd || cmd === 'help' || cmd === '-h' || cmd === '--help') {
+if (!cmd || cmd === 'help' || [cmd, ...args].some((a) => a === '-h' || a === '--help')) {
   await commands.help();
   process.exit(0);
 }

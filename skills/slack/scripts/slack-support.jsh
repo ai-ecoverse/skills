@@ -635,7 +635,7 @@ SUPPORT_DOMAIN = await resolveSupportDomain(flags);
 BASE_URL = `https://${SUPPORT_DOMAIN}`;
 REQUESTS_URL = `${BASE_URL}/help/requests`;
 
-if (!cmd || cmd === 'help') {
+if (!cmd || cmd === 'help' || flags.help || flags.h) {
   console.log('Slack Support Portal — manage help requests from the command line.\n');
   console.log('Usage: slack-support <command> [args]\n');
   console.log('Commands:');

@@ -68,9 +68,9 @@ const OAUTH_SCOPE = 'https://mail.google.com/';
 // leading subcommand from `positional` so downstream index math (view/reply
 // message IDs) matches the previous hand-rolled parser exactly.
 const parsed = process.argv.parseFlags();
-const subcommand = parsed.subcommand || '';
-const positional = parsed.positional.slice(1);
 const flags = parsed.flags;
+const subcommand = flags.help || flags.h ? 'help' : parsed.subcommand || '';
+const positional = parsed.positional.slice(1);
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 

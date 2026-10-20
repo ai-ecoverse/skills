@@ -777,7 +777,8 @@ const argv = process.argv.slice(2);
 const cmd = argv[0];
 const rest = argv.slice(1);
 try {
-  if (cmd === 'whoami') await cmdWhoami(rest);
+  if (!cmd || cmd === 'help' || argv.some((a) => a === '--help' || a === '-h')) cmdHelp();
+  else if (cmd === 'whoami') await cmdWhoami(rest);
   else if (cmd === 'trips') await cmdTrips(rest);
   else if (cmd === 'trip') await cmdTrip(rest);
   else if (cmd === 'airports') await cmdAirports(rest);
@@ -786,6 +787,5 @@ try {
   else if (cmd === 'book') await cmdBook(rest);
   else if (cmd === 'invoice') await cmdInvoice(rest);
   else if (cmd === 'push-expense') await cmdPushExpense(rest);
-  else if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') cmdHelp();
   else { console.error('Unknown command: ' + cmd); cmdHelp(); process.exit(2); }
 } catch (e) { console.error('Error:', e && e.message ? e.message : String(e)); process.exit(1); }

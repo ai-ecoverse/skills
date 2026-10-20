@@ -68,7 +68,10 @@ function parseArgs(args) {
   while (i < args.length) {
     const arg = args[i];
 
-    if (arg.startsWith('--')) {
+    if (arg === '-h') {
+      flags.h = 'true';
+      i++;
+    } else if (arg.startsWith('--')) {
       // Handle --flag=value
       const eqIdx = arg.indexOf('=');
       if (eqIdx !== -1) {
