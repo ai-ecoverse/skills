@@ -19,7 +19,7 @@
     "@biomejs/biome": "2.5.15",
     "lefthook": "2.2.2",
     "minimatch": "10.2.6",
-    "monocart-coverage-reports": "2.13.2"
+    "monocart-coverage-reports": "3.0.0"
   },
   "slicc": {
     "unitSources": [
