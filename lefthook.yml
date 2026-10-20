@@ -1,0 +1,22 @@
+assert_lefthook_installed: true
+extends:
+  - node_modules/@ai-ecoverse/slicc-shared-web/lefthook.yml
+
+pre-commit:
+  jobs:
+    - name: shared hooks
+      run: test -f node_modules/@ai-ecoverse/slicc-shared-web/lefthook.yml || { echo 'slicc-shared-web hooks missing, run npm install'; exit 1; }
+    - name: typecheck
+      skip: true
+    - name: no comments
+      skip: true
+    - name: AGENTS.md
+      skip: true
+    - name: no unit tests in git
+      skip: true
+    - name: no unit tests in skills git
+      run: 'found=$(git ls-files --cached test/unit); [ -z "$found" ] || { printf "Unit tests stay out of git; keep them in the gitignored test/unit/:\n%s\n" "$found" >&2; exit 1; }'
+    - name: diff coverage
+      exclude:
+        - "tools/*.test.mjs"
+        - "tools/**/*.test.mjs"
