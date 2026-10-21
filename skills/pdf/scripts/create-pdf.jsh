@@ -4,6 +4,9 @@
 // If called with no arguments, creates a sample document.
 
 var args    = (process && process.argv) ? process.argv.slice(2) : [];
+if (args.some(function(a) { return a === '--help' || a === '-h'; })) {
+  require('sliccy:cli').help('create-pdf — create a PDF from scratch with pdf-lib\n\nUsage: create-pdf [title] [--output=/shared/out.pdf]\n\nWith no title, creates a sample document. Default output: /shared/<title>.pdf');
+}
 var title   = args.filter(function(a) { return !a.startsWith('--'); }).join(' ') || 'My Document';
 var outArg  = args.find(function(a) { return a.startsWith('--output='); });
 var output  = outArg ? outArg.replace('--output=', '') : '/shared/' + title.toLowerCase().replace(/\s+/g, '-') + '.pdf';

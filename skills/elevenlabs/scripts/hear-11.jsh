@@ -82,4 +82,7 @@ async function main() {
   return cli.out(j.text || '');
 }
 
-await main().catch((e) => cli.die(e.message + (e.status ? ` (HTTP ${e.status})` : ''), { prefix: 'hear-11' }));
+await main().catch((e) => {
+  if (e?.name === 'NodeExitError') throw e;
+  cli.die(e.message + (e.status ? ` (HTTP ${e.status})` : ''), { prefix: 'hear-11' });
+});

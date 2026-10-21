@@ -2034,7 +2034,7 @@ function parseArgs(argv) {
 const rawArgs = process.argv.slice(2);
 const [cmd, ...rest] = rawArgs;
 
-if (!cmd || cmd === 'help' || cmd === '--help') {
+if (!cmd || cmd === 'help' || rawArgs.some((a) => a === '--help' || a === '-h')) {
   console.log('TikTok web API client — drive TikTok from the command line.\n');
   console.log('Requires a logged-in www.tiktok.com tab open in your browser.\n');
   console.log('Usage: tiktok <command> [args] [flags]\n');

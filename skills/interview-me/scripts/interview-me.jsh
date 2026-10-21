@@ -667,7 +667,7 @@ ${color.bold('AUTH')}
 
 const argv = process.argv.slice(2);
 
-if (!argv.length || argv[0] === 'help' || argv[0] === '--help' || argv[0] === '-h') {
+if (!argv.length || argv[0] === 'help' || argv.some((a) => a === '--help' || a === '-h')) {
   showHelp();
   process.exit(0); // defensive: cli.help() already exits 0
 }

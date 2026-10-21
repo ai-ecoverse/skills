@@ -169,7 +169,7 @@ async function cmdStats(tab) {
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
-if (!command || command === '--help' || command === '-h') {
+if (!command || flags.help || flags.h) {
   cli.help(`${c.bold('swarm')} — Foursquare/Swarm check-in history
 
 Usage:

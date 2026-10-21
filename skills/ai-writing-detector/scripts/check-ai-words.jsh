@@ -7,6 +7,9 @@ const fs = require('fs');
 const skill = require('sliccy:skill');
 
 const args = process.argv.slice(2);
+if (args.some((a) => a === '--help' || a === '-h')) {
+  require('sliccy:cli').help(`check-ai-words — detect overused AI vocabulary against corpus base rates\n\nUsage: check-ai-words <file> [multiplier]\n\n  multiplier  flag words used this many times more than expected (default: 3)`);
+}
 
 // Load AI word base rates from reference file (references/ai_word_rates.txt)
 const _ratesText = await fs.promises.readFile(`${skill.dir}/../references/ai_word_rates.txt`, 'utf8');

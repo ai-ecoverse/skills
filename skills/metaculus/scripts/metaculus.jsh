@@ -350,4 +350,7 @@ async function main() {
   }
 }
 
-await main().catch((e) => cli.die(e.message + (e.status ? ` (HTTP ${e.status})` : ''), { prefix: 'metaculus' }));
+await main().catch((e) => {
+  if (e?.name === 'NodeExitError') throw e;
+  cli.die(e.message + (e.status ? ` (HTTP ${e.status})` : ''), { prefix: 'metaculus' });
+});

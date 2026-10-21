@@ -279,4 +279,7 @@ async function main() {
   }
 }
 
-await main().catch((e) => cli.die(e.message, { prefix: 'metaculus-ext' }));
+await main().catch((e) => {
+  if (e?.name === 'NodeExitError') throw e;
+  cli.die(e.message, { prefix: 'metaculus-ext' });
+});

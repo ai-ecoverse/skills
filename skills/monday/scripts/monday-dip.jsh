@@ -20,10 +20,16 @@
 //     monday; present it in that order.
 
 const fs = require('fs');
+const cli = require('sliccy:cli');
+
+const USAGE = 'usage: monday-dip <plan.json>   (a JSON array from `monday`)';
+if (process.argv.slice(2).some((a) => a === '--help' || a === '-h')) {
+  cli.help(`monday-dip — render a \`monday\` JSON plan as a dip (inline shtml widget)\n\n${USAGE}\n\nPrints the shtml block to stdout.`);
+}
 
 const path = process.argv.find((a, i) => i >= 2 && !a.startsWith('-'));
 if (!path) {
-  console.error('usage: monday-dip <plan.json>   (a JSON array from `monday`)');
+  console.error(USAGE);
   process.exit(2);
 }
 

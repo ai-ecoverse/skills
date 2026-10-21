@@ -8,7 +8,7 @@ const args = process.argv.slice(2);
 const command = args[0];
 const tabId = args[1];
 
-const isHelp = command === '--help' || command === '-h';
+const isHelp = args.some((a) => a === '--help' || a === '-h');
 if (!command || isHelp || !tabId) {
   console.log(`speck — element annotation layer for local HTML pages
 

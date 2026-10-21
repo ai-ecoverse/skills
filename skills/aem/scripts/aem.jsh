@@ -844,7 +844,7 @@ Examples:
 // ── Main ───────────────────────────────────────────────────────
 
 const args = process.argv.slice(2); // argv[0] is interpreter, argv[1] is script path
-const command = args[0] || 'help';
+const command = args.some((a) => a === '--help' || a === '-h') ? 'help' : args[0] || 'help';
 const subArgs = args.slice(1);
 
 switch (command) {

@@ -724,7 +724,8 @@ function parseInvocation(argv) {
 const { flags, subcommand, tail: rawTail } = parseInvocation(process.argv.slice(2));
 
 async function main() {
-  if (flags.help || flags.h || !subcommand || subcommand === 'help') cli.help(HELP);
+  const tailHelp = subcommand !== 'shell' && rawTail.some((a) => a === '--help' || a === '-h');
+  if (flags.help || flags.h || tailHelp || !subcommand || subcommand === 'help') cli.help(HELP);
   try {
     if (subcommand === 'devices') await cmdDevices(flags);
     else if (subcommand === 'connect') await cmdConnect(flags);

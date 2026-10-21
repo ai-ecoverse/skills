@@ -49,8 +49,8 @@ Use a title or guid from this list as `--calendar` when creating.
 
 ### Calendar
 
-Lists events. Default range is the next 7 days from today. There is no 30-day
-cap on `--date`. Use `--start` / `--end` for far windows (2027, multi-year).
+Lists events. Default range is the next 7 days from today. Use `--start` /
+`--end` for far windows (2027, multi-year).
 
 ```bash
 icloud calendar                            # Next 7 days
@@ -115,6 +115,11 @@ Flags:
 `--dry-run` is the only safe way to inspect a write. Do not POST a calendar
 event unless the user asked to create one.
 
+After a create, verify it landed: list the same window
+(`icloud calendar --start <start> --end <end>`) and check the new event is
+there. If it is missing or the create failed, report the error to the user
+and re-run with `--dry-run` to inspect the payload before retrying.
+
 ## Architecture
 
 - Uses `playwright-cli eval` / `sliccy:browser` to execute `fetch()` in the
@@ -131,7 +136,7 @@ event unless the user asked to create one.
   never leaves the browser.
 
 See [references/api-notes.md](references/api-notes.md) for the date-array
-layout, all-day exclusive-end contract, and the 2026-08-24 Familie write.
+layout and the all-day exclusive-end contract.
 
 ## Limitations
 
