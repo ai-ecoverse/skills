@@ -1,0 +1,4 @@
+#!/bin/sh
+hook="${0%/*}/../node_modules/.git-hooks/${0##*/}"
+[ -x "$hook" ] || { echo "${0##*/}: run npm install" >&2; exit 1; }
+exec "$hook" "$@"
