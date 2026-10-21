@@ -2827,7 +2827,7 @@ for (let i = 0; i < rawArgs.length; i++) {
 }
 const [cmd, ...args] = filteredArgs;
 
-if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
+if (!cmd || cmd === 'help' || filteredArgs.some((a) => a === '--help' || a === '-h')) {
   console.log('Slack API client — interact with Slack from the command line.\n');
   console.log('Usage: slack [--workspace=<ID>] <command> [args]\n');
   console.log('Global flags:');

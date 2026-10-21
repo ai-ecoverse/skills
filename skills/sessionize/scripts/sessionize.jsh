@@ -923,7 +923,7 @@ async function main() {
   const rawArgs = process.argv.slice(2);
   const [cmd, ...rest] = rawArgs;
 
-  if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
+  if (!cmd || cmd === 'help' || rawArgs.some((a) => a === '--help' || a === '-h')) {
     console.log('Sessionize CFP / speaker client — same-origin via your logged-in browser tab.\n');
     console.log('Usage: sessionize <command> [args] [flags]\n');
     console.log('Commands:');

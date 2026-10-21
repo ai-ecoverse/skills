@@ -7,6 +7,11 @@ const cases = [
     ['-h'],
     'Sessionize CFP / speaker client — same-origin via your logged-in browser tab.',
   ],
+  [
+    'scripts/sessionize.jsh',
+    ['archive', '0f2c', '-h'],
+    'Sessionize CFP / speaker client — same-origin via your logged-in browser tab.',
+  ],
 ];
 
 for (const [script, words, usage] of cases) {
