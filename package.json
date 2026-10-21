@@ -15,7 +15,7 @@
   },
   "devDependencies": {
     "@ai-ecoverse/biome-jsh": "6.243.1",
-    "@ai-ecoverse/slicc-shared-web": "1.29.7",
+    "@ai-ecoverse/slicc-shared-web": "1.29.10",
     "@biomejs/biome": "2.5.15",
     "lefthook": "2.2.2",
     "minimatch": "10.2.6",
