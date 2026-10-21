@@ -14,6 +14,11 @@ const cases = [
   ],
   ['scripts/monday.jsh', ['-h'], 'monday — aggregate and rank inbox items across tools'],
   ['scripts/monday.jsh', ['done', '-h'], 'monday — aggregate and rank inbox items across tools'],
+  [
+    'scripts/monday.jsh',
+    ['done', 'x', '--limit', '-h'],
+    'monday — aggregate and rank inbox items across tools',
+  ],
 ];
 
 for (const [script, words, usage] of cases) {
