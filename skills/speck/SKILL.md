@@ -36,6 +36,10 @@ Before speck can work end-to-end, the cone must ensure:
 3. **A single webhook named `speck-lick`** routes to the scoop. The `speck inject`
    command creates this automatically if it doesn't exist.
 
+`<tabId>` is the CDP target ID of the page's tab and `<preview-url>` is the URL
+open in it. Get both from `playwright-cli tab-list`, and pass the same values to
+the scoop.
+
 ## Commands
 
 ```bash
@@ -86,22 +90,26 @@ The cone sends a chat message when the speck-worker scoop completes each edit,
 summarizing what was applied. This gives the user immediate feedback in the
 conversation without needing a separate UI panel.
 
-## Key design decisions
+## Constraints
 
-- **Single webhook**: `speck inject` reuses a single webhook named `speck-lick`
-  rather than creating one per tab/injection. This prevents duplicate webhook
-  accumulation.
-- **Re-injection after edit**: the scoop MUST re-inject speck after reloading
-  the page, otherwise the overlay is lost.
-- **No sprinkle UI**: progress is shown via chat messages from the cone. A
-  sprinkle panel was tried but the rail icon cannot show dynamic status, making
-  it less useful than inline chat feedback.
+- **Single webhook**: `speck inject` reuses one webhook named `speck-lick`
+  (creating it only if missing), so never create more webhooks per tab or
+  injection.
+- **Re-inject after every edit**: the scoop MUST re-inject speck after reloading
+  the page, or the overlay is lost. Don't call `speck inject` twice on the same
+  tab without `speck remove` first (the script guards with an `already injected`
+  check, but avoid it anyway).
 - **Preview pages only**: the injection uses `playwright-cli eval` on the
-  extension's preview service worker pages. Remote/third-party pages will block
-  it via CSP.
+  extension's preview service worker pages. Remote/third-party pages block it
+  via CSP.
 - **`/tmp/` write access**: the scoop needs `/tmp/` to run `speck inject`
   (which writes a temp file for playwright-cli eval). Include it in
   `writablePaths` when creating the scoop.
+- **No sprinkle UI**: progress is shown via chat messages from the cone. A
+  sprinkle panel was tried and removed because the rail icon cannot show
+  dynamic status.
+- **No shift-reload**: it bypasses the service worker and gives
+  ERR_FILE_NOT_FOUND. Use a regular reload or `playwright-cli goto`.
 
 ## Cone workflow on scoop completion
 
@@ -109,16 +117,8 @@ When the cone receives `[@speck-worker-scoop completed]`:
 1. Read the notification preview to see what was applied.
 2. Send a short chat message to the user: "Speck applied: <summary>"
 
-## Don't
-
-- Don't inject into remote/third-party pages (CSP will block it). Use only on
-  locally served or preview pages.
-- Don't call `speck inject` twice on the same tab without `speck remove` first —
-  you'll get duplicate listeners. (The script guards against this with an
-  `already injected` check, but avoid it anyway.)
-- Don't create multiple webhooks — `speck inject` looks for an existing
-  `speck-lick` webhook before creating one.
-- Don't use shift-reload on the preview page — it bypasses the service worker
-  and gives ERR_FILE_NOT_FOUND. Use regular reload or `playwright-cli goto`.
-- Don't create a sprinkle for speck progress — it was tried and removed because
-  the rail icon can't show dynamic state.
+If the scoop reports a failure (it could not find the element, or the edit or
+reload failed), tell the user what failed and ask them to click the element
+again. If the overlay is gone, re-run `speck inject <tabId> --file <path>`; if
+licks stop arriving, check that the `speck-lick` webhook still routes to
+`speck-worker`.

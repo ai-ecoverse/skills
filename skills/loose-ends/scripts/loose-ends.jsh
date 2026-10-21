@@ -26,7 +26,6 @@
 // ─────────────────────────────────────────────────────────────────────────
 
 const exec = require('sliccy:exec');
-const cli = require('sliccy:cli');
 const fs = require('fs');
 
 const DEFAULT_STORE = '/shared/loose-ends.json';
@@ -184,7 +183,7 @@ const USAGE =
 async function main() {
   const argv = process.argv.slice(2);
   if (argv.some((a) => a === '--help' || a === '-h')) {
-    cli.help(`loose-ends — store + sprinkle management for the loose-ends panel\n\n${USAGE}`);
+    require('sliccy:cli').help(`loose-ends — store + sprinkle management for the loose-ends panel\n\n${USAGE}`);
   }
   const args = parseArgs(argv);
   const cmd = args._[0] || 'bootstrap';

@@ -4,11 +4,10 @@
 
 const fs = require('fs');
 const skill = require('sliccy:skill');
-const cli = require('sliccy:cli');
 
 const args = process.argv.slice(2);
 if (args.some((a) => a === '--help' || a === '-h')) {
-  cli.help(`check-ai-patterns — AI pattern checker (vocabulary rates, em-dash usage, structural patterns)\n\nUsage: check-ai-patterns <file> [multiplier]\n\n  multiplier  flag words used this many times more than expected (default: 3)`);
+  require('sliccy:cli').help(`check-ai-patterns — AI pattern checker (vocabulary rates, em-dash usage, structural patterns)\n\nUsage: check-ai-patterns <file> [multiplier]\n\n  multiplier  flag words used this many times more than expected (default: 3)`);
 }
 
 // Load AI word base rates from reference file (references/ai_word_rates.txt)

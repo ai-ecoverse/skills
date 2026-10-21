@@ -55,7 +55,21 @@ loose-ends create --title "Ping Marta re: Code Europe slot" \
 loose-ends done   <id>              # remove
 loose-ends snooze <id> <tomorrow|monday|week|YYYY-MM-DD>   # hide until (09:00 local)
 loose-ends unsnooze <id>            # wake now
+loose-ends monday [--limit N]       # monday-source JSON array on stdout (snoozed items excluded)
+loose-ends bootstrap                # scoop-side: copy template → sprinkle refresh → open → reseed
+loose-ends reseed                   # scoop-side: re-send load-items from the store to an open panel
+loose-ends --help                   # usage
 ```
+
+Options (all `--long` form): `--name <n>` (default `loose-ends`),
+`--store <path>` (default `/shared/loose-ends.json`),
+`--template <path>` (default the skill-bundled [`templates/loose-ends.shtml`](templates/loose-ends.shtml),
+copied into `/shared/sprinkles/loose-ends/` on bootstrap).
+
+`bootstrap`/`reseed` drive `sprinkle` lifecycle — run them from the owning scoop.
+The mutation commands (`create`/`done`/`snooze`/`unsnooze`) and `list`/`monday`
+can run from either process (they write the store atomically and only *message*
+the panel).
 
 `create` upserts when `--id` matches an existing task. Every mutating command
 writes the store atomically (bumps `updated`) then best-effort `sprinkle send`s
@@ -80,22 +94,9 @@ the template, open the panel, and reseed it from the store in one step:
 > If the store doesn't exist yet, `loose-ends bootstrap` opens an empty panel
 > (the cone creates `/shared/loose-ends.json` on the first `add-item`).
 
-### The `loose-ends` helper (scoop-side, read-only on the store)
-
-```
-loose-ends bootstrap   # copy template → sprinkle refresh → sprinkle open → reseed from store
-loose-ends reseed      # just re-send load-items from the store to an open panel
-```
-
-Options (all `--long` form): `--name <n>` (default `loose-ends`),
-`--store <path>` (default `/shared/loose-ends.json`),
-`--template <path>` (default the skill-bundled [`templates/loose-ends.shtml`](templates/loose-ends.shtml),
-copied into `/shared/sprinkles/loose-ends/` on bootstrap).
-
-`bootstrap`/`reseed` drive `sprinkle` lifecycle — run them from the owning scoop.
-The mutation commands (`create`/`done`/`snooze`/`unsnooze`) and `list`/`monday`
-can run from either process (they write the store atomically and only *message*
-the panel).
+If the panel does not appear, have the scoop run `sprinkle list` to check it is
+registered, then re-run `loose-ends bootstrap`. A panel that opens empty while
+the store has tasks needs only `loose-ends reseed`.
 
 ## Adding, updating, and removing tasks
 
