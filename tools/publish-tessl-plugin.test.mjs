@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -44,7 +45,7 @@ async function fakeTessl(repoRoot, body) {
 }
 
 function environment(bin, extra = {}) {
-  return { ...process.env, ...extra, PATH: `${bin}:${process.env.PATH}` };
+  return { ...process.env, TESSL_PUBLISH_WAIT: '0', ...extra, PATH: `${bin}:${process.env.PATH}` };
 }
 
 const REGISTRY = [
@@ -53,7 +54,7 @@ const REGISTRY = [
   '  case "$4" in',
   '    *@*)',
   '      wanted=${4#*@}',
-  '      for v in $EXISTING; do [ "$v" = "$wanted" ] && { printf \'{"version":{"version":"%s"}}\\n\' "$v"; exit 0; }; done',
+  '      for v in $EXISTING $(cat "$LANDED" 2>/dev/null); do [ "$v" = "$wanted" ] && { printf \'{"version":{"version":"%s"}}\\n\' "$v"; exit 0; }; done',
   '      echo "no version $wanted" >&2',
   '      exit 1 ;;',
   '    *) printf \'{"tile":{"latestVersion":"%s"}}\\n\' "$LATEST"; exit 0 ;;',
@@ -63,12 +64,19 @@ const REGISTRY = [
   'test -f "$3/skills/slack/SKILL.md"',
   'version=$(jq -r .version "$3/.tessl-plugin/plugin.json")',
   'for v in $EXISTING; do [ "$v" = "$version" ] && { echo "version $version already exists" >&2; exit 1; }; done',
+  'n=$(($(cat "$ATTEMPTS_LOG" 2>/dev/null || echo 0) + 1)); echo "$n" > "$ATTEMPTS_LOG"',
+  'if [ "$n" -le "${TIMEOUTS:-0}" ]; then',
+  '  [ "${LANDS:-}" = 1 ] && echo "$version" >> "$LANDED"',
+  '  echo "Publish timed out after 20 seconds" >&2',
+  '  exit 1',
+  'fi',
+  'echo "$version" >> "$LANDED"',
   'echo "$3" > "$PUBLISHED"',
 ].join('\n');
 
 async function publish(
   t,
-  { bump = 'patch', floor, manifest = '0.2.13', existing = '', latest = '' }
+  { bump = 'patch', floor, manifest = '0.2.13', existing = '', latest = '', extra = {} }
 ) {
   const repoRoot = await fixture(t);
   const source = join(repoRoot, 'tiles/advanced/.tessl-plugin/plugin.json');
@@ -86,6 +94,9 @@ async function publish(
       PUBLISHED: published,
       EXISTING: existing,
       LATEST: latest,
+      LANDED: join(repoRoot, 'landed'),
+      ATTEMPTS_LOG: join(repoRoot, 'attempts'),
+      ...extra,
     }),
   });
   const written = JSON.parse(await readFile(source, 'utf8'));
@@ -94,7 +105,8 @@ async function publish(
     version: written.version,
     skills: written.skills,
     calls: (await readFile(callLog, 'utf8')).trimEnd().split('\n'),
-    stagedPath: (await readFile(published, 'utf8')).trim(),
+    stagedPath: existsSync(published) ? (await readFile(published, 'utf8')).trim() : '',
+    attempts: Number(await readFile(join(repoRoot, 'attempts'), 'utf8')),
   };
 }
 
@@ -163,4 +175,23 @@ test('workflow diffs from the last publish tag and checks that the new tag reach
   assert.doesNotMatch(workflow, /outputs\.previous/);
   assert.match(job, /git push origin "\$GITHUB_SHA:refs\/tags\/\$TAG"/);
   assert.match(job, /git ls-remote --tags origin "refs\/tags\/\$TAG"/);
+});
+
+test('a publish that timed out but reached the registry counts and is not repeated', async (t) => {
+  const result = await publish(t, { extra: { TIMEOUTS: '1', LANDS: '1' } });
+  assert.equal(result.version, '0.2.14');
+  assert.equal(result.attempts, 1);
+});
+
+test('a publish that timed out before reaching the registry is retried', async (t) => {
+  const result = await publish(t, { extra: { TIMEOUTS: '1' } });
+  assert.equal(result.version, '0.2.14');
+  assert.equal(result.attempts, 2);
+});
+
+test('gives up after the last attempt and leaves the manifest alone', async (t) => {
+  await assert.rejects(
+    publish(t, { extra: { TIMEOUTS: '9', TESSL_PUBLISH_ATTEMPTS: '3' } }),
+    (error) => error.code === 1 && /attempt 3 of 3/.test(error.stderr)
+  );
 });

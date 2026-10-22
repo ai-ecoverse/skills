@@ -86,7 +86,28 @@ jq --arg version "$VERSION" '.version = $version' "$STAGED_MANIFEST" > "$STAGED_
 mv "$STAGED_TMP" "$STAGED_MANIFEST"
 
 echo "Publishing $NAME@$VERSION ($BUMP above $BASE, the highest published version found)"
-tessl plugin publish "$STAGED_PLUGIN"
+ATTEMPTS=${TESSL_PUBLISH_ATTEMPTS:-3}
+WAIT=${TESSL_PUBLISH_WAIT:-10}
+landed=0
+for attempt in $(seq 1 "$ATTEMPTS"); do
+  status=0
+  tessl plugin publish "$STAGED_PLUGIN" || status=$?
+  if [[ "$status" -eq 0 ]]; then
+    landed=1
+    break
+  fi
+  for _ in 1 2 3 4 5 6; do
+    if published "$VERSION"; then
+      echo "$NAME@$VERSION is in the registry although publish exited $status"
+      landed=1
+      break 2
+    fi
+    sleep "$WAIT"
+  done
+  echo "publish attempt $attempt of $ATTEMPTS failed with $status and $NAME@$VERSION is not in the registry" >&2
+  [[ "$attempt" -lt "$ATTEMPTS" ]] || exit "$status"
+done
+[[ "$landed" -eq 1 ]] || exit 1
 
 PUBLISHED_VERSION=$(jq -er '.version | strings | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"))' "$STAGED_MANIFEST")
 SOURCE_TMP=$(mktemp "$SOURCE_MANIFEST.tmp.XXXXXX")
