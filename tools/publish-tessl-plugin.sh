@@ -2,7 +2,8 @@
 set -euo pipefail
 
 PLUGIN=${1:?usage: publish-tessl-plugin.sh PLUGIN BUMP}
-BUMP=${2:?usage: publish-tessl-plugin.sh PLUGIN BUMP}
+BUMP=${2:?usage: publish-tessl-plugin.sh PLUGIN BUMP [FLOOR]}
+FLOOR=${3:-}
 
 case "$PLUGIN" in
   basic|advanced) ;;
@@ -12,6 +13,10 @@ case "$BUMP" in
   patch|minor|major) ;;
   *) echo "unsupported bump: $BUMP" >&2; exit 2 ;;
 esac
+if [[ -n "$FLOOR" && ! "$FLOOR" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "unsupported floor: $FLOOR" >&2
+  exit 2
+fi
 
 REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 SOURCE_MANIFEST="$REPO_ROOT/tiles/$PLUGIN/.tessl-plugin/plugin.json"
@@ -22,6 +27,16 @@ cleanup() {
   if [[ -n "$SOURCE_TMP" ]]; then rm -f "$SOURCE_TMP"; fi
 }
 trap cleanup EXIT
+
+if [[ -n "$FLOOR" ]]; then
+  CURRENT=$(jq -er .version "$SOURCE_MANIFEST")
+  if [[ "$CURRENT" != "$FLOOR" && "$(printf '%s\n' "$CURRENT" "$FLOOR" | sort -V | tail -1)" == "$FLOOR" ]]; then
+    SOURCE_TMP=$(mktemp "$SOURCE_MANIFEST.tmp.XXXXXX")
+    jq --arg version "$FLOOR" '.version = $version' "$SOURCE_MANIFEST" > "$SOURCE_TMP"
+    mv "$SOURCE_TMP" "$SOURCE_MANIFEST"
+    SOURCE_TMP=
+  fi
+fi
 
 STAGED_PLUGIN="$STAGE_ROOT/$PLUGIN"
 STAGED_MANIFEST="$STAGED_PLUGIN/.tessl-plugin/plugin.json"

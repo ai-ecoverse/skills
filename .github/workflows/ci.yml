@@ -1,0 +1,472 @@
+name: CI
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  actions: read
+  issues: write
+  pull-requests: write
+  statuses: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  ci:
+    uses: ai-ecoverse/slicc-shared-web/.github/workflows/pipeline.yml@v2.8.4
+    secrets: inherit
+    with:
+      test-glob: test/integration/*.test.mjs
+      shards: 4
+      timeout-minutes: 30
+      review-prompt: |
+        AI-ECOVERSE SKILLS
+
+        This repository is ai-ecoverse/skills: agent skills for the SLICC runtime. Each skill is `skills/<name>/` with a `SKILL.md` (its frontmatter `description` is the activation prompt), optional `.jsh` scripts, `.bsh` page observers, sprinkle UIs (`.shtml`), references and assets, and an in-SLICC `tst` suite. `tiles/` lists which skills the Tessl plugins publish. CLAUDE.md is the ground truth for `.jsh` scripts, observers and sprinkles: read the sections the change touches first. `git diff origin/main...HEAD`, or `$RUNNER_TEMP/review/context/pr.diff`, is the change.
+
+        Skills install straight from `main` with `upskill ai-ecoverse/skills`, and releases publish the Tessl plugins. Review it as the last check before it ships.
+
+        Look for real defects, in this order:
+        1. Security (CLAUDE.md §7 and §8): shell injection through `exec()` with an interpolated value, values concatenated into page-eval JS instead of `JSON.stringify`, secrets or tokens printed to stdout, hardcoded IDs or a silent fallback to a default identity, destructive or spending operations without `--confirm`, attacker-controlled strings rewritten instead of quoted.
+        2. Runtime correctness: a `catch` around dispatch or a `cli.die` that doesn't re-throw `NodeExitError`, `skill.config()` used without `await`, SLICC 6's fs dialect instead of Node's `fs`, paths hardcoded to `/workspace/skills/<name>` instead of `__dirname`/`skill.dir`, double serialization across `evalAsync`, a bare function expression passed as a string to `evalAsync`.
+        3. Contract drift: a flag that parses but changes nothing, help text, `SKILL.md` and code out of step, a `--json` mode that exits 0 on failure.
+        4. Tests: every behaviour change in a skill has a `tst` suite (`import test, { is } from 'tst'`) that fails without the fix; `same()` doesn't compare object values, so a deep check uses `is()`. The integration tests in `test/integration/` run every skill's suite on a hosted SLICC leader; their artifacts are in `$RUNNER_TEMP/review/integration/`.
+        5. Repo rules: no new comments in code, YAML, HTML or CSS, no new `.md` files except README.md and a skill's own SKILL.md and references, no unit tests in git (`test/unit/` is ignored), and a conventional-commit title (`fix`, `feat` and `perf` release, the rest don't).
+
+        Don't report style preferences, or anything you haven't confirmed in the code or by a run. Severity: deny for a confirmed P1 or P2: a security defect from item 1, a script that no longer runs in SLICC, a regression in a common command without a workaround, a behaviour change without its test, or a fix whose test passes without it. A narrow problem with a workaround is P3: comment with a repro and approve.
+
+  tessl-changes:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      skills: ${{ steps.detect.outputs.skills }}
+      plugins: ${{ steps.detect.outputs.plugins }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - id: detect
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          DETECTED=$(git diff --name-only "origin/$BASE_REF...HEAD" | bash tools/expect-verdict.sh detect-tessl-changes node tools/detect-tessl-changes.mjs)
+          echo "skills=$(jq -c .skills <<< "$DETECTED")" >> "$GITHUB_OUTPUT"
+          echo "plugins=$(jq -c .plugins <<< "$DETECTED")" >> "$GITHUB_OUTPUT"
+          echo "Tessl targets: $DETECTED" >> "$GITHUB_STEP_SUMMARY"
+
+  tessl-lint:
+    needs: tessl-changes
+    if: needs.tessl-changes.outputs.skills != '[]' || needs.tessl-changes.outputs.plugins != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - uses: tesslio/setup-tessl@v2
+
+      - name: Lint changed skills
+        env:
+          SKILLS: ${{ needs.tessl-changes.outputs.skills }}
+        run: |
+          set -euo pipefail
+          LINT_ROOT=$(mktemp -d)
+          trap 'rm -rf "$LINT_ROOT"' EXIT
+          while IFS= read -r skill; do
+            package="$LINT_ROOT/$(basename "$skill")"
+            bash tools/expect-verdict.sh stage-tessl-skill node tools/stage-tessl-skill.mjs "$skill" "$package"
+            tessl skill lint "$package"
+            echo "- \`$skill\` linted" >> "$GITHUB_STEP_SUMMARY"
+          done < <(jq -r '.[]' <<< "$SKILLS")
+
+      - name: Lint changed plugins
+        env:
+          PLUGINS: ${{ needs.tessl-changes.outputs.plugins }}
+        run: |
+          set -euo pipefail
+          STAGE_ROOT=$(mktemp -d)
+          trap 'rm -rf "$STAGE_ROOT"' EXIT
+          while IFS= read -r plugin; do
+            bash tools/expect-verdict.sh stage-tessl-plugin node tools/stage-tessl-plugin.mjs "$plugin" "$STAGE_ROOT/$plugin"
+            tessl plugin lint "$STAGE_ROOT/$plugin"
+            echo "- plugin \`$plugin\` linted" >> "$GITHUB_STEP_SUMMARY"
+          done < <(jq -r '.[]' <<< "$PLUGINS")
+
+  tessl-review:
+    needs: tessl-changes
+    if: needs.tessl-changes.outputs.skills != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        skill: ${{ fromJSON(needs.tessl-changes.outputs.skills) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - uses: tesslio/setup-tessl@v2
+        with:
+          token: ${{ secrets.TESSLIO_TOKEN }}
+
+      - name: Review skill (threshold 90%)
+        env:
+          SKILL: ${{ matrix.skill }}
+        run: |
+          set -euo pipefail
+          tessl review run "$SKILL" --workspace ai-ecoverse --json --threshold 90
+          echo "- \`$SKILL\` passed the 90% review threshold" >> "$GITHUB_STEP_SUMMARY"
+
+  pandoc-build:
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: skills/pandoc/scripts
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+
+      - run: npm install --no-audit --no-fund
+
+      - run: npm run build
+
+      - name: Drift check
+        run: |
+          if ! git diff --exit-code -- pandoc-core.cjs; then
+            echo "::error::skills/pandoc/scripts/pandoc-core.cjs is stale. Run 'npm run build' in skills/pandoc/scripts and commit."
+            exit 1
+          fi
+
+  xlsx-build:
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: skills/xlsx/scripts
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+
+      - run: npm install --no-audit --no-fund
+
+      - run: npm run build
+
+      - name: Smoke test the fresh bundle
+        run: |
+          set -euo pipefail
+          x="$RUNNER_TEMP/xlsx.cjs"
+          book="$RUNNER_TEMP/t.xlsx"
+          cp xlsx.jsh "$x"
+          node "$x" create "$book" --data '[["Name","Value"],["foo",42],["bar",100]]'
+          node "$x" set-cell "$book" C2 '=SUM(B2:B3)' --formula
+          node "$x" add-sheet "$book" Extra --data '[["k","v"],["a",1]]'
+          out=$(node "$x" read "$book" --json)
+          echo "$out"
+          grep -q '"Name": "foo"' <<< "$out" || { echo "::error::read did not round-trip"; exit 1; }
+          node "$x" info "$book" | grep -q Extra || { echo "::error::add-sheet did not persist"; exit 1; }
+
+      - name: Drift check
+        run: |
+          if ! git diff --exit-code -- xlsx.jsh; then
+            echo "::error::skills/xlsx/scripts/xlsx.jsh is stale. Run 'npm run build' in skills/xlsx/scripts and commit."
+            exit 1
+          fi
+
+  evals-plan:
+    needs: ci
+    if: github.event_name == 'pull_request' && !cancelled()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      run: ${{ steps.plan.outputs.run }}
+      slicc-version: ${{ steps.plan.outputs.slicc-version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+
+      - id: plan
+        env:
+          BASE: origin/${{ github.base_ref }}
+          HAS_KEY: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK != '' }}
+          CERT_RUNNER: ${{ vars.CERT_RUNNER }}
+        run: |
+          set -euo pipefail
+          matrix="$(node tools/harness-evals/plan.mjs changed "$BASE" default 1)"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          n=$(jq '.include | length' <<< "$matrix")
+          jq -r '.include[] | "\(.skill)/\(.arm) r\(.repeat) on \(.runs_on)"' <<< "$matrix"
+          run=false
+          if [ "$n" -gt 0 ] && [ "$HAS_KEY" = true ]; then run=true; fi
+          if [ "$n" -gt 0 ] && [ "$HAS_KEY" != true ]; then echo "::notice::no Bedrock key: validated only"; fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          version="$(npm view sliccy@latest version)"
+          echo "slicc-version=$version" >> "$GITHUB_OUTPUT"
+          echo "slicc v$version, $n eval job(s)" >> "$GITHUB_STEP_SUMMARY"
+
+  evals-arm:
+    name: evals / ${{ matrix.skill }} / ${{ matrix.arm }}
+    needs: evals-plan
+    if: needs.evals-plan.outputs.run == 'true'
+    runs-on: ${{ matrix.runs_on }}
+    timeout-minutes: 270
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.evals-plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ai-ecoverse/slicc
+          ref: v${{ needs.evals-plan.outputs.slicc-version }}
+          path: slicc
+          persist-credentials: false
+          sparse-checkout: |
+            packages/bench
+            packages/github-workflow
+            packages/slicc-cli
+            packages/go-optel
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: slicc/packages/slicc-cli/go.mod
+          cache-dependency-path: slicc/packages/slicc-cli/go.sum
+
+      - uses: ./slicc/packages/github-workflow/actions/install-cli
+        with:
+          source: build
+          build-dir: ${{ github.workspace }}/slicc/packages/slicc-cli
+
+      - name: Prepare the runner
+        run: |
+          google-chrome --version
+          if [ -w /slicc ] 2>/dev/null; then exit 0; fi
+          sudo mkdir -p /slicc && sudo chown "$(id -u)" /slicc
+
+      - name: Boot the leader and inject the skill
+        env:
+          HARNESS_SLICC: ${{ github.workspace }}/slicc
+          HARNESS_SKILLS_DIR: ${{ github.workspace }}/skills
+          HARNESS_SKILLS: ${{ matrix.inject }}
+          SLICC_CHROME_GPU: ${{ matrix.gpu }}
+          INPUT_SLICC_VERSION: ${{ needs.evals-plan.outputs.slicc-version }}
+          INPUT_PIN_WEBAPP: 'false'
+          INPUT_DURATION: 240m
+          INPUT_PROVIDER: bedrock-camp
+          INPUT_PROVIDER_API_KEY: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
+          INPUT_PROVIDER_BASE_URL: https://bedrock-runtime.${{ vars.RUM_AWS_REGION || 'us-west-2' }}.amazonaws.com
+          INPUT_MODEL: bedrock-camp:global.anthropic.claude-sonnet-5
+          INPUT_MASK_JOIN_URL: 'true'
+        run: node tools/harness-evals/boot.mjs
+
+      - name: Run the goals
+        timeout-minutes: 230
+        env:
+          HARNESS_SLICC: ${{ github.workspace }}/slicc
+          HARNESS_SKILL_DIR: ${{ github.workspace }}/skills/${{ matrix.skill }}
+          HARNESS_ARM_ID: ${{ matrix.arm }}
+          HARNESS_REPEAT: ${{ matrix.repeat }}
+          HARNESS_SUITES: default
+          HARNESS_OUT: ${{ runner.temp }}/harness-out
+          AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
+        run: node tools/harness-evals/run-arm.mjs
+
+      - name: Collect the leader log
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/harness-out"
+          for log in "$RUNNER_TEMP"/slicc-gw*/leader.log; do
+            [ -f "$log" ] || continue
+            grep -iE 'error|kev|webgpu|gpu|start-leader|stop-leader|tray' "$log" \
+              | sed -E 's#/(join|controller|webhook)/[^ /"?]+#/\1/<token>#g' | cut -c1-400 \
+              > "$RUNNER_TEMP/harness-out/leader.log" || true
+          done
+
+      - name: Stop the leader
+        if: always()
+        timeout-minutes: 5
+        run: |
+          for home in "$RUNNER_TEMP"/slicc-gw*; do
+            [ -f "$home/state.json" ] || continue
+            SLICC_GW_HOME="$home" node slicc/packages/github-workflow/scripts/stop-leader.mjs || true
+          done
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: harness-evals-part-${{ github.run_id }}-${{ matrix.skill }}-${{ matrix.arm }}-r${{ matrix.repeat }}
+          path: ${{ runner.temp }}/harness-out
+          retention-days: 14
+          if-no-files-found: ignore
+
+  evals-report:
+    needs: [evals-plan, evals-arm]
+    if: always() && needs.evals-plan.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          pattern: harness-evals-part-${{ github.run_id }}-*
+          path: ${{ runner.temp }}/parts
+
+      - run: node tools/harness-evals/report.mjs "$RUNNER_TEMP/parts" "$RUNNER_TEMP/report" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: harness-evals-${{ github.run_id }}
+          path: ${{ runner.temp }}/report
+
+  released:
+    needs: ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      previous: ${{ steps.version.outputs.previous }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - id: version
+        run: |
+          git fetch --tags --force --quiet origin
+          version=$(git tag --points-at HEAD --list 'v*' | sed 's/^v//' | sort -V | tail -1)
+          previous=$(git describe --tags --abbrev=0 --match 'v*' HEAD^ 2>/dev/null || true)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "previous=$previous" >> "$GITHUB_OUTPUT"
+          echo "release: ${version:-none} at $GITHUB_SHA (previous ${previous:-none})" >> "$GITHUB_STEP_SUMMARY"
+
+  tessl-publish:
+    needs: released
+    if: needs.released.outputs.version != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: ${{ matrix.plugin == 'advanced' }}
+    permissions:
+      contents: write
+      id-token: write
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        plugin: [basic, advanced]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+
+      - id: changed
+        env:
+          PLUGIN: ${{ matrix.plugin }}
+          PREVIOUS: ${{ needs.released.outputs.previous }}
+        run: |
+          set -euo pipefail
+          mapfile -t SKILL_PATHS < <(jq -r '.skills[]' "tiles/$PLUGIN/.tessl-plugin/plugin.json")
+          WATCHED=("tiles/$PLUGIN" "${SKILL_PATHS[@]}")
+          if [ -z "$PREVIOUS" ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "bump=patch" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git diff --quiet "$PREVIOUS" HEAD -- "${WATCHED[@]}"; then
+            echo "$PLUGIN is unchanged since $PREVIOUS" >> "$GITHUB_STEP_SUMMARY"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          MESSAGES=$(git log --format='%B' "$PREVIOUS..HEAD" -- "${WATCHED[@]}")
+          BUMP="patch"
+          if grep -Eq 'BREAKING CHANGE|^[a-zA-Z]+(\([^)]*\))?!:' <<< "$MESSAGES"; then
+            BUMP="major"
+          elif grep -Eiq '^feat(\([^)]*\))?:' <<< "$MESSAGES"; then
+            BUMP="minor"
+          fi
+          echo "bump=$BUMP" >> "$GITHUB_OUTPUT"
+
+      - uses: tesslio/setup-tessl@v2
+        if: steps.changed.outputs.skip != 'true'
+        with:
+          token: ${{ secrets.TESSLIO_TOKEN }}
+
+      - if: steps.changed.outputs.skip != 'true'
+        env:
+          PLUGIN: ${{ matrix.plugin }}
+          BUMP: ${{ steps.changed.outputs.bump }}
+        run: |
+          set -euo pipefail
+          git fetch --tags --force --quiet origin
+          FLOOR=$(git tag --list "tessl-$PLUGIN-v*" | sed "s/^tessl-$PLUGIN-v//" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
+          bash tools/publish-tessl-plugin.sh "$PLUGIN" "$BUMP" "$FLOOR"
+          VERSION=$(jq -er .version "tiles/$PLUGIN/.tessl-plugin/plugin.json")
+          git push origin "$GITHUB_SHA:refs/tags/tessl-$PLUGIN-v$VERSION"
+          echo "published $(jq -er .name "tiles/$PLUGIN/.tessl-plugin/plugin.json")@$VERSION from ${FLOOR:-the manifest}, tagged tessl-$PLUGIN-v$VERSION" >> "$GITHUB_STEP_SUMMARY"

@@ -9,16 +9,19 @@ import { fileURLToPath } from 'node:url';
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SILENT_EXIT_0 = 'process.exit(0);\n';
 
+const ENV = Object.fromEntries(
+  Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))
+);
+
 function runStep(script, cwd) {
-  return spawnSync('bash', ['-euo', 'pipefail', '-c', script], { cwd, encoding: 'utf8' });
+  return spawnSync('bash', ['-euo', 'pipefail', '-c', script], { cwd, env: ENV, encoding: 'utf8' });
 }
 
-// The single-line `run:` of a named step, read from the committed workflow.
-async function stepCommand(workflow, name) {
-  const yaml = await readFile(join(REPO_ROOT, '.github/workflows', workflow), 'utf8');
-  const match = yaml.match(new RegExp(`- name: ${name}\\n\\s+run: (.+)\\n`));
-  assert.ok(match, `${workflow} has a one-line step named ${name}`);
-  return match[1];
+async function layoutCommand() {
+  const pkg = JSON.parse(await readFile(join(REPO_ROOT, 'package.json'), 'utf8'));
+  const match = pkg.scripts.lint.match(/git ls-files \| bash tools\/expect-verdict\.sh [^&]+/);
+  assert.ok(match, 'npm run lint runs the tessl layout check through expect-verdict');
+  return match[0].trim();
 }
 
 // A scratch git repo holding the gate wrapper and the given check-tessl-layout.
@@ -36,13 +39,13 @@ async function checkout(t, tool) {
     ['init', '-q'],
     ['add', ...files],
   ]) {
-    assert.equal(spawnSync('git', args, { cwd: root }).status, 0);
+    assert.equal(spawnSync('git', args, { cwd: root, env: ENV }).status, 0);
   }
   return root;
 }
 
-test('tessl-lint layout step fails when the tool exits 0 without a verdict', async (t) => {
-  const script = await stepCommand('tessl-lint.yml', 'Reject tracked tile skill paths');
+test('lint layout step fails when the tool exits 0 without a verdict', async (t) => {
+  const script = await layoutCommand();
   const root = await checkout(t, SILENT_EXIT_0);
 
   const result = runStep(script, root);
@@ -54,8 +57,8 @@ test('tessl-lint layout step fails when the tool exits 0 without a verdict', asy
   );
 });
 
-test('tessl-lint layout step passes when the real tool prints its verdict', async (t) => {
-  const script = await stepCommand('tessl-lint.yml', 'Reject tracked tile skill paths');
+test('lint layout step passes when the real tool prints its verdict', async (t) => {
+  const script = await layoutCommand();
   const tool = await readFile(join(REPO_ROOT, 'tools/check-tessl-layout.mjs'), 'utf8');
   const root = await checkout(t, tool);
 
