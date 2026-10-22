@@ -1,6 +1,6 @@
 // xlsx.src.js — SOURCE for the xlsx skill CLI (non-bundled).
 //
-// This file requires the SheetJS `xlsx` package as a bare specifier. It is
+// This file requires the SheetJS `@e965/xlsx` package as a bare specifier. It is
 // bundled by scripts/build.mjs (esbuild) into the sibling `xlsx.jsh`, which
 // rolls SheetJS + its sub-deps in-line so the shipped skill needs no install.
 //
@@ -15,13 +15,17 @@
 //  • This entry deliberately avoids `sliccy:*` modules so the esbuild CLI
 //    (which cannot mark them external — ai-ecoverse/slicc#1632) bundles cleanly.
 
-const XLSX = require('xlsx');
+const XLSX = require('@e965/xlsx');
 const fs = require('fs');
 
 // ---- tiny ANSI (self-contained; no sliccy:color to keep the bundle clean) ---
 const TTY = !process.env.NO_COLOR && process.stdout && process.stdout.isTTY;
 const c = (n) => (s) => (TTY ? `\x1b[${n}m${s}\x1b[0m` : String(s));
-const bold = c(1), dim = c(2), red = c(31), green = c(32), cyan = c(36), yellow = c(33);
+const bold = c(1),
+  dim = c(2),
+  red = c(31),
+  green = c(32),
+  cyan = c(36);
 
 function die(msg, code = 1) {
   process.stderr.write(red('Error:') + ' ' + msg + '\n');
@@ -97,17 +101,20 @@ function pickSheet(wb, sel) {
   if (sel === undefined || sel === null || sel === '') return wb.SheetNames[0];
   if (/^\d+$/.test(String(sel))) {
     const i = Number(sel);
-    if (i < 0 || i >= wb.SheetNames.length) die(`sheet index ${i} out of range (0..${wb.SheetNames.length - 1})`);
+    if (i < 0 || i >= wb.SheetNames.length)
+      die(`sheet index ${i} out of range (0..${wb.SheetNames.length - 1})`);
     return wb.SheetNames[i];
   }
-  if (!wb.SheetNames.includes(sel)) die(`no sheet named "${sel}" (have: ${wb.SheetNames.join(', ')})`);
+  if (!wb.SheetNames.includes(sel))
+    die(`no sheet named "${sel}" (have: ${wb.SheetNames.join(', ')})`);
   return sel;
 }
 
 // Parse --data into an array-of-arrays (aoa) suitable for aoa_to_sheet.
 function loadData(spec) {
   if (!spec) die('--data is required (JSON, @file.json, or @file.csv)');
-  let text = spec, isCsv = false;
+  let text = spec,
+    isCsv = false;
   if (spec.startsWith('@')) {
     const path = spec.slice(1);
     if (!fs.existsSync(path)) die(`no such data file: ${path}`);
@@ -120,7 +127,11 @@ function loadData(spec) {
     return XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true });
   }
   let json;
-  try { json = JSON.parse(text); } catch (e) { die(`--data is not valid JSON: ${e.message}`); }
+  try {
+    json = JSON.parse(text);
+  } catch (e) {
+    die(`--data is not valid JSON: ${e.message}`);
+  }
   if (!Array.isArray(json)) die('--data JSON must be an array (of arrays or of objects)');
   if (json.length === 0) return [];
   if (Array.isArray(json[0])) return json; // already aoa
@@ -137,8 +148,12 @@ function sheetToOutput(ws, flags) {
   const withRange = (fn) => {
     if (!flags.range) return fn();
     const saved = ws['!ref'];
-    try { ws['!ref'] = flags.range; return fn(); }
-    finally { ws['!ref'] = saved; }
+    try {
+      ws['!ref'] = flags.range;
+      return fn();
+    } finally {
+      ws['!ref'] = saved;
+    }
   };
   if (flags.json) {
     return withRange(() => {
@@ -159,10 +174,12 @@ function cmdInfo(file) {
   for (const name of wb.SheetNames) {
     const ws = wb.Sheets[name];
     const ref = ws['!ref'] || '(empty)';
-    let rows = 0, cols = 0;
+    let rows = 0,
+      cols = 0;
     if (ws['!ref']) {
       const r = XLSX.utils.decode_range(ws['!ref']);
-      rows = r.e.r - r.s.r + 1; cols = r.e.c - r.s.c + 1;
+      rows = r.e.r - r.s.r + 1;
+      cols = r.e.c - r.s.c + 1;
     }
     process.stdout.write(`  ${cyan(name)}  ${dim(`${rows}×${cols}`)}  ${dim('range ' + ref)}\n`);
   }
@@ -181,7 +198,9 @@ function cmdCreate(out, flags) {
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   XLSX.utils.book_append_sheet(wb, ws, flags.sheet || 'Sheet1');
   writeWorkbook(wb, out);
-  process.stdout.write(green('✓') + ` wrote ${out} (${aoa.length} row${aoa.length === 1 ? '' : 's'})\n`);
+  process.stdout.write(
+    green('✓') + ` wrote ${out} (${aoa.length} row${aoa.length === 1 ? '' : 's'})\n`
+  );
 }
 
 function cmdAddSheet(file, name, flags) {
@@ -214,17 +233,25 @@ function cmdSetCell(file, addr, value, flags) {
     cell = { t: 'n', v: n };
   } else if (flags.bool) {
     cell = { t: 'b', v: /^(true|1|yes)$/i.test(String(value)) };
-  } else if (typeof value !== 'string' || value === '' ? false : !Number.isNaN(Number(value)) && /^-?\d/.test(value)) {
+  } else if (
+    typeof value !== 'string' || value === ''
+      ? false
+      : !Number.isNaN(Number(value)) && /^-?\d/.test(value)
+  ) {
     cell = { t: 'n', v: Number(value) };
   } else {
     cell = { t: 's', v: String(value) };
   }
   ws[A1] = cell;
   // widen !ref if the edited cell is outside the current used range
-  const rng = ws['!ref'] ? XLSX.utils.decode_range(ws['!ref']) : { s: { r: 0, c: 0 }, e: { r: 0, c: 0 } };
+  const rng = ws['!ref']
+    ? XLSX.utils.decode_range(ws['!ref'])
+    : { s: { r: 0, c: 0 }, e: { r: 0, c: 0 } };
   const cc = XLSX.utils.decode_cell(A1);
-  rng.s.r = Math.min(rng.s.r, cc.r); rng.s.c = Math.min(rng.s.c, cc.c);
-  rng.e.r = Math.max(rng.e.r, cc.r); rng.e.c = Math.max(rng.e.c, cc.c);
+  rng.s.r = Math.min(rng.s.r, cc.r);
+  rng.s.c = Math.min(rng.s.c, cc.c);
+  rng.e.r = Math.max(rng.e.r, cc.r);
+  rng.e.c = Math.max(rng.e.c, cc.c);
   ws['!ref'] = XLSX.utils.encode_range(rng);
   writeWorkbook(wb, file);
   process.stdout.write(green('✓') + ` set ${name}!${A1} in ${file}\n`);
@@ -236,29 +263,43 @@ function main() {
     ? process.argv.parseFlags()
     : fallbackParse(process.argv.slice(2));
   const [cmd] = positional;
-  if (!cmd || flags.help || flags.h || cmd === 'help') { process.stdout.write(HELP); return; }
+  if (!cmd || flags.help || flags.h || cmd === 'help') {
+    process.stdout.write(HELP);
+    return;
+  }
   switch (cmd) {
-    case 'info': return cmdInfo(positional[1]);
-    case 'read': return cmdRead(positional[1], flags);
-    case 'to-csv': return cmdRead(positional[1], { ...flags, json: false, tsv: false });
-    case 'to-json': return cmdRead(positional[1], { ...flags, json: true });
-    case 'create': return cmdCreate(positional[1], flags);
-    case 'add-sheet': return cmdAddSheet(positional[1], positional[2], flags);
-    case 'set-cell': return cmdSetCell(positional[1], positional[2], positional[3], flags);
-    default: die(`unknown command "${cmd}" (run \`xlsx help\`)`);
+    case 'info':
+      return cmdInfo(positional[1]);
+    case 'read':
+      return cmdRead(positional[1], flags);
+    case 'to-csv':
+      return cmdRead(positional[1], { ...flags, json: false, tsv: false });
+    case 'to-json':
+      return cmdRead(positional[1], { ...flags, json: true });
+    case 'create':
+      return cmdCreate(positional[1], flags);
+    case 'add-sheet':
+      return cmdAddSheet(positional[1], positional[2], flags);
+    case 'set-cell':
+      return cmdSetCell(positional[1], positional[2], positional[3], flags);
+    default:
+      die(`unknown command "${cmd}" (run \`xlsx help\`)`);
   }
 }
 
 // Minimal parseFlags shim for plain `node xlsx.src.js` runs (jsh provides its own).
 function fallbackParse(argv) {
-  const positional = [], flags = {};
+  const positional = [],
+    flags = {};
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith('--')) {
       const eq = a.indexOf('=');
-      if (eq !== -1) { flags[a.slice(2, eq)] = a.slice(eq + 1); }
-      else if (i + 1 < argv.length && !argv[i + 1].startsWith('--')) { flags[a.slice(2)] = argv[++i]; }
-      else flags[a.slice(2)] = true;
+      if (eq !== -1) {
+        flags[a.slice(2, eq)] = a.slice(eq + 1);
+      } else if (i + 1 < argv.length && !argv[i + 1].startsWith('--')) {
+        flags[a.slice(2)] = argv[++i];
+      } else flags[a.slice(2)] = true;
     } else positional.push(a);
   }
   return { positional, flags };
