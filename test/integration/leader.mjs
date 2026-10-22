@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const CACHE = join(REPO_ROOT, 'node_modules', '.cache', 'slicc-gw');
 export const CONNECT_FAILURE =
-  /tray connect timed out|tray attach|signaling|dial|connection closed/i;
+  /tray connect timed out|tray attach|signaling|dial|connection closed|terminal-open timed out/i;
 
 export function redact(text) {
   return String(text ?? '').replace(/\/(join|controller|webhook)\/[^\s/"'?]+/g, '/$1/<token>');
@@ -101,6 +101,17 @@ function sleep(ms) {
   return new Promise((done) => setTimeout(done, ms));
 }
 
+export async function withRetries(fn, { attempts = 3, delayMs = 20_000, wait = sleep } = {}) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await fn(attempt);
+    } catch (error) {
+      if (attempt >= attempts) throw error;
+      await wait(delayMs * attempt);
+    }
+  }
+}
+
 export async function startLeader({ name, port, mounts, artifacts }) {
   const version = latestSlicc();
   const scripts = workflowScripts(version);
@@ -118,17 +129,19 @@ export async function startLeader({ name, port, mounts, artifacts }) {
   delete base.NODE_OPTIONS;
   delete base.NODE_TEST_CONTEXT;
   const cli = join(home, 'cli', 'slicc');
-  await runScript(
-    join(scripts, 'install-cli.mjs'),
-    {
-      ...base,
-      INPUT_SOURCE: 'release',
-      INPUT_VERSION: 'latest',
-      INPUT_INSTALL_DIR: dirname(cli),
-      INPUT_TOKEN: checkoutToken(),
-      INPUT_TELEMETRY: 'false',
-    },
-    log
+  await withRetries(() =>
+    runScript(
+      join(scripts, 'install-cli.mjs'),
+      {
+        ...base,
+        INPUT_SOURCE: 'release',
+        INPUT_VERSION: 'latest',
+        INPUT_INSTALL_DIR: dirname(cli),
+        INPUT_TOKEN: checkoutToken(),
+        INPUT_TELEMETRY: 'false',
+      },
+      log
+    )
   );
   if (!existsSync(cli)) throw new Error(`install-cli left no binary at ${cli}`);
   const chrome = await chromePath();
