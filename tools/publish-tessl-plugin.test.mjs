@@ -47,37 +47,79 @@ function environment(bin, extra = {}) {
   return { ...process.env, ...extra, PATH: `${bin}:${process.env.PATH}` };
 }
 
-test('records the staged version after CLI bumping clears many occupied versions', async (t) => {
+const REGISTRY = [
+  'printf "%s\\n" "$*" >> "$CALL_LOG"',
+  'if [ "$1 $2" = "plugin info" ]; then',
+  '  case "$4" in',
+  '    *@*)',
+  '      wanted=${4#*@}',
+  '      for v in $EXISTING; do [ "$v" = "$wanted" ] && { printf \'{"version":{"version":"%s"}}\\n\' "$v"; exit 0; }; done',
+  '      echo "no version $wanted" >&2',
+  '      exit 1 ;;',
+  '    *) printf \'{"tile":{"latestVersion":"%s"}}\\n\' "$LATEST"; exit 0 ;;',
+  '  esac',
+  'fi',
+  'test "$1 $2 $#" = "plugin publish 3"',
+  'test -f "$3/skills/slack/SKILL.md"',
+  'version=$(jq -r .version "$3/.tessl-plugin/plugin.json")',
+  'for v in $EXISTING; do [ "$v" = "$version" ] && { echo "version $version already exists" >&2; exit 1; }; done',
+  'echo "$3" > "$PUBLISHED"',
+].join('\n');
+
+async function publish(
+  t,
+  { bump = 'patch', floor, manifest = '0.2.13', existing = '', latest = '' }
+) {
   const repoRoot = await fixture(t);
-  const callLog = join(repoRoot, 'tessl-call');
-  const bin = await fakeTessl(
-    repoRoot,
-    'printf "%s\\n" "$@" > "$CALL_LOG"\n' +
-      'test "$1 $2 $3" = "plugin publish --bump"\n' +
-      'test "$4" = "patch"\n' +
-      'test -f "$5/skills/slack/SKILL.md"\n' +
-      'test "$OCCUPIED_COUNT" -ge 100\n' +
-      'IFS=. read -r major minor patch <<< "$(jq -r .version "$5/.tessl-plugin/plugin.json")"\n' +
-      'published_version="$major.$minor.$((patch + OCCUPIED_COUNT + 1))"\n' +
-      'tmp=$(mktemp)\n' +
-      'jq --arg version "$published_version" ".version = \\$version" "$5/.tessl-plugin/plugin.json" > "$tmp"\n' +
-      'mv "$tmp" "$5/.tessl-plugin/plugin.json"'
-  );
-
-  await execFileAsync('bash', ['tools/publish-tessl-plugin.sh', 'advanced', 'patch'], {
+  const source = join(repoRoot, 'tiles/advanced/.tessl-plugin/plugin.json');
+  const doc = JSON.parse(await readFile(source, 'utf8'));
+  await writeFile(source, `${JSON.stringify({ ...doc, version: manifest }, null, 2)}\n`);
+  const bin = await fakeTessl(repoRoot, REGISTRY);
+  const callLog = join(repoRoot, 'tessl-calls');
+  const published = join(repoRoot, 'published');
+  const args = ['tools/publish-tessl-plugin.sh', 'advanced', bump];
+  if (floor !== undefined) args.push(floor);
+  await execFileAsync('bash', args, {
     cwd: repoRoot,
-    env: environment(bin, { CALL_LOG: callLog, OCCUPIED_COUNT: '100' }),
+    env: environment(bin, {
+      CALL_LOG: callLog,
+      PUBLISHED: published,
+      EXISTING: existing,
+      LATEST: latest,
+    }),
   });
+  const written = JSON.parse(await readFile(source, 'utf8'));
+  return {
+    repoRoot,
+    version: written.version,
+    skills: written.skills,
+    calls: (await readFile(callLog, 'utf8')).trimEnd().split('\n'),
+    stagedPath: (await readFile(published, 'utf8')).trim(),
+  };
+}
 
-  const manifest = JSON.parse(
-    await readFile(join(repoRoot, 'tiles/advanced/.tessl-plugin/plugin.json'), 'utf8')
-  );
-  assert.equal(manifest.version, '0.2.114');
-  assert.deepEqual(manifest.skills, ['skills/slack']);
-  const call = (await readFile(callLog, 'utf8')).trimEnd().split('\n');
-  assert.deepEqual(call.slice(0, 4), ['plugin', 'publish', '--bump', 'patch']);
-  assert.match(call[4], /\/advanced$/);
-  assert.notEqual(call[4], join(repoRoot, 'tiles/advanced'));
+test('publishes above every published version the registry reports, not one bump above the manifest', async (t) => {
+  const result = await publish(t, {
+    manifest: '0.4.12',
+    existing: '0.4.12 0.4.13 0.5.0',
+    latest: '0.3.1',
+  });
+  assert.equal(result.version, '0.5.1');
+  assert.deepEqual(result.skills, ['skills/slack']);
+  assert.match(result.stagedPath, /\/advanced$/);
+  assert.notEqual(result.stagedPath, join(result.repoRoot, 'tiles/advanced'));
+  assert.ok(result.calls.includes(`plugin publish ${result.stagedPath}`));
+  assert.ok(!result.calls.some((call) => call.includes('--bump')));
+});
+
+test('a minor bump climbs past occupied patches first', async (t) => {
+  const result = await publish(t, { bump: 'minor', existing: '0.2.13 0.2.14 0.2.15' });
+  assert.equal(result.version, '0.3.0');
+});
+
+test('starts from the registry latest version when it is above the manifest', async (t) => {
+  const result = await publish(t, { existing: '0.9.0', latest: '0.9.0' });
+  assert.equal(result.version, '0.9.1');
 });
 
 test('workflow cannot restore public lookup or bounded manual retries', async () => {
@@ -101,33 +143,24 @@ test('leaves the source manifest unchanged when publish fails', async (t) => {
   assert.equal(await readFile(source, 'utf8'), before);
 });
 
-async function publishWithFloor(t, floor) {
-  const repoRoot = await fixture(t);
-  const bin = await fakeTessl(
-    repoRoot,
-    'IFS=. read -r major minor patch <<< "$(jq -r .version "$5/.tessl-plugin/plugin.json")"\n' +
-      'tmp=$(mktemp)\n' +
-      'jq --arg version "$major.$minor.$((patch + 1))" ".version = \\$version" "$5/.tessl-plugin/plugin.json" > "$tmp"\n' +
-      'mv "$tmp" "$5/.tessl-plugin/plugin.json"'
-  );
-  await execFileAsync('bash', ['tools/publish-tessl-plugin.sh', 'advanced', 'patch', floor], {
-    cwd: repoRoot,
-    env: environment(bin),
-  });
-  const manifest = JSON.parse(
-    await readFile(join(repoRoot, 'tiles/advanced/.tessl-plugin/plugin.json'), 'utf8')
-  );
-  return manifest.version;
-}
-
-test('bumps from the last published version when it is above the manifest', async (t) => {
-  assert.equal(await publishWithFloor(t, '0.11.0'), '0.11.1');
+test('bumps from the last published tag when it is above the manifest', async (t) => {
+  assert.equal((await publish(t, { floor: '0.11.0' })).version, '0.11.1');
 });
 
-test('bumps from the manifest when the last published version is below it', async (t) => {
-  assert.equal(await publishWithFloor(t, '0.2.9'), '0.2.14');
+test('bumps from the manifest when the last published tag is below it', async (t) => {
+  assert.equal((await publish(t, { floor: '0.2.9' })).version, '0.2.14');
 });
 
 test('refuses a floor that is not a release version', async (t) => {
-  await assert.rejects(publishWithFloor(t, '1.0.0; rm -rf /'), (error) => error.code === 2);
+  await assert.rejects(publish(t, { floor: '1.0.0; rm -rf /' }), (error) => error.code === 2);
+});
+
+test('workflow diffs from the last publish tag and checks that the new tag reached origin', async () => {
+  const workflow = await readFile(join(toolsRoot, '../.github/workflows/ci.yml'), 'utf8');
+  const job = workflow.slice(workflow.indexOf('  tessl-publish:'));
+  assert.match(job, /LAST="tessl-\$PLUGIN-v\$FLOOR"/);
+  assert.match(job, /git diff --quiet "\$LAST" HEAD/);
+  assert.doesNotMatch(workflow, /outputs\.previous/);
+  assert.match(job, /git push origin "\$GITHUB_SHA:refs\/tags\/\$TAG"/);
+  assert.match(job, /git ls-remote --tags origin "refs\/tags\/\$TAG"/);
 });

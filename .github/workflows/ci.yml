@@ -389,7 +389,6 @@ jobs:
       contents: read
     outputs:
       version: ${{ steps.version.outputs.version }}
-      previous: ${{ steps.version.outputs.previous }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -400,10 +399,8 @@ jobs:
         run: |
           git fetch --tags --force --quiet origin
           version=$(git tag --points-at HEAD --list 'v*' | sed 's/^v//' | sort -V | tail -1)
-          previous=$(git describe --tags --abbrev=0 --match 'v*' HEAD^ 2>/dev/null || true)
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "previous=$previous" >> "$GITHUB_OUTPUT"
-          echo "release: ${version:-none} at $GITHUB_SHA (previous ${previous:-none})" >> "$GITHUB_STEP_SUMMARY"
+          echo "release: ${version:-none} at $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
 
   tessl-publish:
     needs: released
@@ -427,23 +424,27 @@ jobs:
       - id: changed
         env:
           PLUGIN: ${{ matrix.plugin }}
-          PREVIOUS: ${{ needs.released.outputs.previous }}
         run: |
           set -euo pipefail
-          mapfile -t SKILL_PATHS < <(jq -r '.skills[]' "tiles/$PLUGIN/.tessl-plugin/plugin.json")
-          WATCHED=("tiles/$PLUGIN" "${SKILL_PATHS[@]}")
-          if [ -z "$PREVIOUS" ]; then
+          git fetch --tags --force --quiet origin
+          FLOOR=$(git tag --list "tessl-$PLUGIN-v*" | sed "s/^tessl-$PLUGIN-v//" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
+          echo "floor=$FLOOR" >> "$GITHUB_OUTPUT"
+          if [ -z "$FLOOR" ]; then
+            echo "$PLUGIN has no tessl-$PLUGIN-v* tag yet, so it publishes" >> "$GITHUB_STEP_SUMMARY"
             echo "skip=false" >> "$GITHUB_OUTPUT"
             echo "bump=patch" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if git diff --quiet "$PREVIOUS" HEAD -- "${WATCHED[@]}"; then
-            echo "$PLUGIN is unchanged since $PREVIOUS" >> "$GITHUB_STEP_SUMMARY"
+          LAST="tessl-$PLUGIN-v$FLOOR"
+          mapfile -t SKILL_PATHS < <(jq -r '.skills[]' "tiles/$PLUGIN/.tessl-plugin/plugin.json")
+          WATCHED=("tiles/$PLUGIN" "${SKILL_PATHS[@]}")
+          if git diff --quiet "$LAST" HEAD -- "${WATCHED[@]}"; then
+            echo "$PLUGIN is unchanged since $LAST" >> "$GITHUB_STEP_SUMMARY"
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           echo "skip=false" >> "$GITHUB_OUTPUT"
-          MESSAGES=$(git log --format='%B' "$PREVIOUS..HEAD" -- "${WATCHED[@]}")
+          MESSAGES=$(git log --format='%B' "$LAST..HEAD" -- "${WATCHED[@]}")
           BUMP="patch"
           if grep -Eq 'BREAKING CHANGE|^[a-zA-Z]+(\([^)]*\))?!:' <<< "$MESSAGES"; then
             BUMP="major"
@@ -461,11 +462,15 @@ jobs:
         env:
           PLUGIN: ${{ matrix.plugin }}
           BUMP: ${{ steps.changed.outputs.bump }}
+          FLOOR: ${{ steps.changed.outputs.floor }}
         run: |
           set -euo pipefail
-          git fetch --tags --force --quiet origin
-          FLOOR=$(git tag --list "tessl-$PLUGIN-v*" | sed "s/^tessl-$PLUGIN-v//" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
           bash tools/publish-tessl-plugin.sh "$PLUGIN" "$BUMP" "$FLOOR"
           VERSION=$(jq -er .version "tiles/$PLUGIN/.tessl-plugin/plugin.json")
-          git push origin "$GITHUB_SHA:refs/tags/tessl-$PLUGIN-v$VERSION"
-          echo "published $(jq -er .name "tiles/$PLUGIN/.tessl-plugin/plugin.json")@$VERSION from ${FLOOR:-the manifest}, tagged tessl-$PLUGIN-v$VERSION" >> "$GITHUB_STEP_SUMMARY"
+          TAG="tessl-$PLUGIN-v$VERSION"
+          git push origin "$GITHUB_SHA:refs/tags/$TAG"
+          if [ "$(git ls-remote --tags origin "refs/tags/$TAG" | cut -f1)" != "$GITHUB_SHA" ]; then
+            echo "::error::published $VERSION but $TAG is not on origin at $GITHUB_SHA"
+            exit 1
+          fi
+          echo "published $(jq -er .name "tiles/$PLUGIN/.tessl-plugin/plugin.json")@$VERSION, tagged $TAG" >> "$GITHUB_STEP_SUMMARY"
