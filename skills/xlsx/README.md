@@ -15,8 +15,8 @@ npm install        # xlsx (SheetJS) + esbuild, pinned in package.json
 npm run build      # regenerates xlsx.jsh from xlsx.src.js
 ```
 
-CI (`.github/workflows/xlsx-build.yml`) runs the same build, smoke-tests the
-result, and warns if the committed bundle is stale.
+CI (the `xlsx-build` job in `.github/workflows/ci.yml`) runs the same build,
+smoke-tests the result, and fails if the committed bundle is stale.
 
 To rebuild from **within SLICC** (whose `esbuild` CLI wrapper lacks
 `--external`/`--platform` — see ai-ecoverse/slicc#1632 — and whose esbuild-wasm

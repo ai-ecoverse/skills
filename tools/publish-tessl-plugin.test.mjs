@@ -81,10 +81,7 @@ test('records the staged version after CLI bumping clears many occupied versions
 });
 
 test('workflow cannot restore public lookup or bounded manual retries', async () => {
-  const workflow = await readFile(
-    join(toolsRoot, '../.github/workflows/tessl-publish.yml'),
-    'utf8'
-  );
+  const workflow = await readFile(join(toolsRoot, '../.github/workflows/ci.yml'), 'utf8');
   assert.match(workflow, /bash tools\/publish-tessl-plugin\.sh "\$PLUGIN" "\$BUMP"/);
   assert.doesNotMatch(workflow, /api\.tessl\.io|latestVersion|seq 1 25|plugin publish --version/);
 });

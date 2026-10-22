@@ -1,5 +1,6 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["github>ai-ecoverse/slicc-shared-web"],
   "packageRules": [
     {
       "groupName": "remotion monorepo",
@@ -8,10 +9,6 @@
     {
       "groupName": "react",
       "matchPackageNames": ["react", "react-dom"]
-    },
-    {
-      "matchPackageNames": ["@ai-ecoverse/slicc-shared-web"],
-      "allowedVersions": "<2"
     }
   ]
 }
