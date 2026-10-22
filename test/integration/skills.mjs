@@ -37,6 +37,58 @@ export function tapVerdict({ status, stdout }) {
   return { pass: true, why: `${ran} passed, ${skipped.length} skipped` };
 }
 
+export const PACKAGES = [
+  ['typescript', '6.0.3'],
+  ['minimatch', '9.0.5'],
+];
+const GLOBAL_MODULES = '/shared/lib/node_modules';
+
+export function brokenManifests(listing) {
+  const broken = [];
+  for (const block of String(listing ?? '')
+    .split('\n==> ')
+    .filter(Boolean)) {
+    const [header, ...body] = block.replace(/^==> /, '').split('\n');
+    const path = header.replace(/ <==$/, '');
+    try {
+      const doc = JSON.parse(body.join('\n'));
+      if (!doc || typeof doc.name !== 'string') broken.push(path);
+    } catch {
+      broken.push(path);
+    }
+  }
+  return broken;
+}
+
+async function installPackages(leader, artifacts) {
+  const log = [];
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const add = await leader.run(
+      `ipk add -g ${PACKAGES.map(([name, version]) => `${name}@${version}`).join(' ')}`,
+      { timeoutMs: 600_000 }
+    );
+    log.push(`attempt ${attempt}: ipk add exited ${add.status}\n${add.stdout}\n${add.stderr}`);
+    const listing = await leader.run(
+      `for f in ${GLOBAL_MODULES}/*/package.json ${GLOBAL_MODULES}/@*/*/package.json; do [ -f "$f" ] && { echo "==> $f <=="; cat "$f"; echo; }; done; true`
+    );
+    const broken = brokenManifests(listing.stdout);
+    const missing = PACKAGES.filter(
+      ([name]) => !listing.stdout.includes(`==> ${GLOBAL_MODULES}/${name}/package.json <==`)
+    ).map(([name]) => name);
+    log.push(`broken: ${broken.join(', ') || 'none'}; missing: ${missing.join(', ') || 'none'}`);
+    if (add.status === 0 && listing.status === 0 && !broken.length && !missing.length) {
+      writeFileSync(join(artifacts, 'setup.txt'), log.join('\n'));
+      return;
+    }
+    const dirs = broken
+      .map((path) => path.replace(/\/package\.json$/, ''))
+      .filter((dir) => dir.startsWith(`${GLOBAL_MODULES}/`) && /^[A-Za-z0-9@._/-]+$/.test(dir));
+    if (dirs.length) await leader.run(`rm -rf ${dirs.join(' ')}`);
+  }
+  writeFileSync(join(artifacts, 'setup.txt'), log.join('\n'));
+  throw new Error(`the leader's global packages did not install cleanly:\n${log.join('\n')}`);
+}
+
 export function runPartition(index) {
   const skills = partition(index);
   const artifacts = join(REPO_ROOT, 'artifacts', `skills-${index}`);
@@ -67,12 +119,7 @@ export function runPartition(index) {
   });
 
   test(`skills-${index}: tst runs on the leader`, async () => {
-    const setup = await leader.run(
-      'ipk add -g typescript@6.0.3 && (ipk add -g minimatch@9.0.5 || true)',
-      { timeoutMs: 600_000 }
-    );
-    writeFileSync(join(artifacts, 'setup.txt'), `${setup.stdout}\n${setup.stderr}`);
-    if (setup.status !== 0) throw new Error(`ipk add exited ${setup.status}: ${setup.stderr}`);
+    await installPackages(leader, artifacts);
     const canary = await leader.run(
       'rm -rf /tmp/tst-canary && mkdir -p /tmp/tst-canary && cp /mnt/work/canary/canary.test.js /tmp/tst-canary/ && cd /tmp/tst-canary && tst --reporter=tap'
     );

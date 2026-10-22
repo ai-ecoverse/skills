@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const CACHE = join(REPO_ROOT, 'node_modules', '.cache', 'slicc-gw');
 export const CONNECT_FAILURE =
-  /tray connect timed out|tray attach|signaling|dial|connection closed/i;
+  /tray connect timed out|tray attach|signaling|dial|connection closed|terminal-open timed out/i;
 
 export function redact(text) {
   return String(text ?? '').replace(/\/(join|controller|webhook)\/[^\s/"'?]+/g, '/$1/<token>');

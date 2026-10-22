@@ -4,7 +4,7 @@ import test from 'node:test';
 
 import { detectSkillIntegration } from '../../tools/detect-skill-integration.mjs';
 import { CONNECT_FAILURE, REPO_ROOT } from './leader.mjs';
-import { allSkills, PARTITIONS, partition, tapVerdict } from './skills.mjs';
+import { allSkills, brokenManifests, PARTITIONS, partition, tapVerdict } from './skills.mjs';
 
 function git(...args) {
   return execFileSync('git', args, { cwd: REPO_ROOT, encoding: 'utf8' }).trim();
@@ -53,5 +53,23 @@ test('a tst run passes only when a test ran and none failed', () => {
 test('a leader exec that lost its connection is retried', () => {
   assert.equal(CONNECT_FAILURE.test('slicc exec: connection closed\n'), true);
   assert.equal(CONNECT_FAILURE.test('tray connect timed out'), true);
+  assert.equal(CONNECT_FAILURE.test('slicc exec: terminal-open timed out after 10000ms'), true);
   assert.equal(CONNECT_FAILURE.test('Error: fastly: tst exited 1'), false);
+});
+
+test('a global package whose package.json is not JSON counts as broken', () => {
+  const listing = [
+    '==> /shared/lib/node_modules/minimatch/package.json <==',
+    '{"name":"minimatch","version":"9.0.5"}',
+    '==> /shared/lib/node_modules/brace-expansion/package.json <==',
+    '\u0000\u0000\u0000\u0000',
+    '==> /shared/lib/node_modules/@scope/pkg/package.json <==',
+    '{"version":"1.0.0"}',
+    '',
+  ].join('\n');
+  assert.deepEqual(brokenManifests(listing), [
+    '/shared/lib/node_modules/brace-expansion/package.json',
+    '/shared/lib/node_modules/@scope/pkg/package.json',
+  ]);
+  assert.deepEqual(brokenManifests(''), []);
 });
