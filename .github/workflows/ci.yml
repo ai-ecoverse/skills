@@ -234,7 +234,6 @@ jobs:
         env:
           BASE: origin/${{ github.base_ref }}
           HAS_KEY: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK != '' }}
-          CERT_RUNNER: ${{ vars.CERT_RUNNER }}
         run: |
           set -euo pipefail
           matrix="$(node tools/harness-evals/plan.mjs changed "$BASE" default 1)"

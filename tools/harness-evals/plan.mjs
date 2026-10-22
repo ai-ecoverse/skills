@@ -27,14 +27,7 @@ export function touchedSkills(paths) {
   return [...names].sort();
 }
 
-export async function plan(
-  which,
-  base,
-  root = process.cwd(),
-  suites = ['default'],
-  repeats = 1,
-  runner = ''
-) {
+export async function plan(which, base, root = process.cwd(), suites = ['default'], repeats = 1) {
   const withAdapter = (name) => existsSync(join(root, 'skills', name, ADAPTER));
   let skills;
   if (which === 'all') skills = readdirSync(join(root, 'skills')).filter(withAdapter).sort();
@@ -67,20 +60,15 @@ export async function plan(
     // A skill with no goal in the selected suites gets no jobs.
     if (!selectSuites(doc.goals, suites).length) continue;
     // One job per arm and repeat: repeats run in parallel, on as many machines as the arm's pool
-    // has (GPU arms on cloud-run-gpu, the rest on the CI pool named by vars.CERT_RUNNER), and a
-    // job holds one pass over the goals, so a long suite with several repeats stays under the
-    // job's time limit. No fallback runner: cloud-run-bench is retired.
+    // has (GPU arms on cloud-run-gpu, the rest on cloud-run-job), and a job holds one pass over
+    // the goals, so a long suite with several repeats stays under the job's time limit.
     for (const arm of adapter.arms) {
-      if (arm.pool !== 'gpu' && !runner)
-        throw new Error(
-          `arm ${skill}/${arm.id} needs the CI pool: set the CERT_RUNNER repository variable`
-        );
       for (let repeat = 1; repeat <= repeats; repeat += 1)
         include.push({
           skill,
           arm: arm.id,
           repeat,
-          runs_on: arm.pool === 'gpu' ? 'cloud-run-gpu' : runner,
+          runs_on: arm.pool === 'gpu' ? 'cloud-run-gpu' : 'cloud-run-job',
           gpu: arm.pool === 'gpu' ? '1' : '',
           // Only the skill under test and what its arm needs: an agent arm keeps the bare leader.
           inject: arm.kind === 'agent' ? '' : [skill, ...(arm.skills ?? [])].join(','),
@@ -97,6 +85,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
   const n = Number.parseInt(repeats, 10);
   if (!(n >= 1 && n <= 10)) throw new Error('repeats must be 1-10');
   process.stdout.write(
-    `${JSON.stringify(await plan(which, base, process.cwd(), parseSuites(suites), n, process.env.CERT_RUNNER))}\n`
+    `${JSON.stringify(await plan(which, base, process.cwd(), parseSuites(suites), n))}\n`
   );
 }
