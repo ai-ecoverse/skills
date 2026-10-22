@@ -181,7 +181,7 @@ test('plan: only skills with an adapter, one entry per arm, agent arms keep a ba
     ['demo', 'plain']
   );
   const root = fakeRepo();
-  const { include } = await plan('all', 'origin/main', root, ['default'], 1, 'cloud-run-job');
+  const { include } = await plan('all', 'origin/main', root, ['default'], 1);
   assert.deepEqual(include, [
     {
       skill: 'demo',
@@ -520,7 +520,7 @@ test('plan: a skill with no goal in the selected suites gets no jobs', async () 
     })
   );
   is((await plan('demo', 'origin/main', root)).include, []);
-  is((await plan('demo', 'origin/main', root, ['games'], 1, 'cloud-run-job')).include.length, 2);
+  is((await plan('demo', 'origin/main', root, ['games'], 1)).include.length, 2);
 });
 
 test('rubric-only goals: valid without a check, pass is null, scored by credit alone', () => {
@@ -611,7 +611,7 @@ test('the judge is retried on transient Bedrock errors, not on invalid judgement
 
 test("plan shards repeats: one job per arm and repeat, each on its arm's pool", async () => {
   const root = fakeRepo();
-  const { include } = await plan('demo', 'origin/main', root, ['default'], 3, 'cloud-run-job');
+  const { include } = await plan('demo', 'origin/main', root, ['default'], 3);
   is(
     include.map((e) => `${e.arm}/r${e.repeat}@${e.runs_on}`),
     [
@@ -625,15 +625,12 @@ test("plan shards repeats: one job per arm and repeat, each on its arm's pool", 
   );
 });
 
-test('plan refuses a non-GPU arm when no CI pool is named, rather than guessing one', async () => {
+test('plan puts non-GPU arms on cloud-run-job without a runner variable', async () => {
   const root = fakeRepo();
-  await assert.rejects(
-    plan('demo', 'origin/main', root),
-    /set the CERT_RUNNER repository variable/
-  );
-  await assert.rejects(
-    plan('demo', 'origin/main', root, ['default'], 1, ''),
-    /arm demo\/bare needs the CI pool/
+  const { include } = await plan('demo', 'origin/main', root);
+  is(
+    include.map((e) => `${e.arm}@${e.runs_on}`),
+    ['fast@cloud-run-gpu', 'bare@cloud-run-job']
   );
 });
 
