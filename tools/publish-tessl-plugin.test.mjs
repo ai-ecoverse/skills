@@ -100,3 +100,34 @@ test('leaves the source manifest unchanged when publish fails', async (t) => {
   );
   assert.equal(await readFile(source, 'utf8'), before);
 });
+
+async function publishWithFloor(t, floor) {
+  const repoRoot = await fixture(t);
+  const bin = await fakeTessl(
+    repoRoot,
+    'IFS=. read -r major minor patch <<< "$(jq -r .version "$5/.tessl-plugin/plugin.json")"\n' +
+      'tmp=$(mktemp)\n' +
+      'jq --arg version "$major.$minor.$((patch + 1))" ".version = \\$version" "$5/.tessl-plugin/plugin.json" > "$tmp"\n' +
+      'mv "$tmp" "$5/.tessl-plugin/plugin.json"'
+  );
+  await execFileAsync('bash', ['tools/publish-tessl-plugin.sh', 'advanced', 'patch', floor], {
+    cwd: repoRoot,
+    env: environment(bin),
+  });
+  const manifest = JSON.parse(
+    await readFile(join(repoRoot, 'tiles/advanced/.tessl-plugin/plugin.json'), 'utf8')
+  );
+  return manifest.version;
+}
+
+test('bumps from the last published version when it is above the manifest', async (t) => {
+  assert.equal(await publishWithFloor(t, '0.11.0'), '0.11.1');
+});
+
+test('bumps from the manifest when the last published version is below it', async (t) => {
+  assert.equal(await publishWithFloor(t, '0.2.9'), '0.2.14');
+});
+
+test('refuses a floor that is not a release version', async (t) => {
+  await assert.rejects(publishWithFloor(t, '1.0.0; rm -rf /'), (error) => error.code === 2);
+});

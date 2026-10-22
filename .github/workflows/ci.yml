@@ -413,7 +413,7 @@ jobs:
     timeout-minutes: 15
     continue-on-error: ${{ matrix.plugin == 'advanced' }}
     permissions:
-      contents: read
+      contents: write
       id-token: write
     strategy:
       fail-fast: false
@@ -424,7 +424,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
-          persist-credentials: false
 
       - id: changed
         env:
@@ -465,5 +464,9 @@ jobs:
           BUMP: ${{ steps.changed.outputs.bump }}
         run: |
           set -euo pipefail
-          bash tools/publish-tessl-plugin.sh "$PLUGIN" "$BUMP"
-          echo "published $(jq -er .name "tiles/$PLUGIN/.tessl-plugin/plugin.json")@$(jq -er .version "tiles/$PLUGIN/.tessl-plugin/plugin.json")" >> "$GITHUB_STEP_SUMMARY"
+          git fetch --tags --force --quiet origin
+          FLOOR=$(git tag --list "tessl-$PLUGIN-v*" | sed "s/^tessl-$PLUGIN-v//" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
+          bash tools/publish-tessl-plugin.sh "$PLUGIN" "$BUMP" "$FLOOR"
+          VERSION=$(jq -er .version "tiles/$PLUGIN/.tessl-plugin/plugin.json")
+          git push origin "$GITHUB_SHA:refs/tags/tessl-$PLUGIN-v$VERSION"
+          echo "published $(jq -er .name "tiles/$PLUGIN/.tessl-plugin/plugin.json")@$VERSION from ${FLOOR:-the manifest}, tagged tessl-$PLUGIN-v$VERSION" >> "$GITHUB_STEP_SUMMARY"
