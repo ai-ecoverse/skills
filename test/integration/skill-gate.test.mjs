@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import test from 'node:test';
 
 import { detectSkillIntegration } from '../../tools/detect-skill-integration.mjs';
-import { CONNECT_FAILURE, REPO_ROOT } from './leader.mjs';
+import { CONNECT_FAILURE, REPO_ROOT, withRetries } from './leader.mjs';
 import { allSkills, brokenManifests, PARTITIONS, partition, tapVerdict } from './skills.mjs';
 
 function git(...args) {
@@ -72,4 +72,28 @@ test('a global package whose package.json is not JSON counts as broken', () => {
     '/shared/lib/node_modules/@scope/pkg/package.json',
   ]);
   assert.deepEqual(brokenManifests(''), []);
+});
+
+test('leader setup retries a failing step and rethrows the last error', async () => {
+  let calls = 0;
+  const wait = async () => {};
+  const value = await withRetries(
+    async () => {
+      calls += 1;
+      if (calls < 3) throw new Error(`no published release (${calls})`);
+      return 'ok';
+    },
+    { wait }
+  );
+  assert.equal(value, 'ok');
+  assert.equal(calls, 3);
+  await assert.rejects(
+    withRetries(
+      async (attempt) => {
+        throw new Error(`failed ${attempt}`);
+      },
+      { attempts: 2, wait }
+    ),
+    /failed 2/
+  );
 });
