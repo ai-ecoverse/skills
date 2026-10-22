@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import test from 'node:test';
 
 import { detectSkillIntegration } from '../../tools/detect-skill-integration.mjs';
-import { REPO_ROOT } from './leader.mjs';
+import { CONNECT_FAILURE, REPO_ROOT } from './leader.mjs';
 import { allSkills, PARTITIONS, partition, tapVerdict } from './skills.mjs';
 
 function git(...args) {
@@ -48,4 +48,10 @@ test('a tst run passes only when a test ran and none failed', () => {
   assert.equal(pass('1..0\n# tests 0\n'), false);
   assert.equal(pass('ok 1 - a # SKIP skip\nok 2 - b # SKIP todo\n'), false);
   assert.equal(pass('ok 1 - a\nnot ok 2 - b\n'), false);
+});
+
+test('a leader exec that lost its connection is retried', () => {
+  assert.equal(CONNECT_FAILURE.test('slicc exec: connection closed\n'), true);
+  assert.equal(CONNECT_FAILURE.test('tray connect timed out'), true);
+  assert.equal(CONNECT_FAILURE.test('Error: fastly: tst exited 1'), false);
 });
