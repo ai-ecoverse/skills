@@ -182,7 +182,7 @@ export async function startLeader({ name, port, mounts, artifacts }) {
     SLICC_NO_UPDATE_CHECK: '1',
     SLICC_NO_TELEMETRY: '1',
   };
-  const home = await bootLeader(
+  const state = await bootLeader(
     async (dir) => {
       Object.assign(env, commandFiles(dir), { SLICC_GW_HOME: dir });
       await runScript(
@@ -200,12 +200,12 @@ export async function startLeader({ name, port, mounts, artifacts }) {
         },
         log
       );
-      return dir;
+      const booted = JSON.parse(readFileSync(join(dir, 'state.json'), 'utf8'));
+      if (!booted.joinUrl) throw new Error('start-leader left no join URL');
+      return booted;
     },
     { root, artifacts }
   );
-  const state = JSON.parse(readFileSync(join(home, 'state.json'), 'utf8'));
-  if (!state.joinUrl) throw new Error('start-leader left no join URL');
   const url = state.joinUrl;
 
   function exec(command, { timeoutMs = 300_000 } = {}) {
