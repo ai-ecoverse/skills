@@ -11,7 +11,7 @@ Turn any web app into a direct API integration. Discover the underlying API, val
 ## Discovery priority
 
 1. **Known public API** — GitHub, Slack, Jira, Linear, Notion, etc. Dry-run a call with the user's session. Cheapest path.
-2. **HAR capture** — `playwright-cli record` + filter, then extract API patterns from the recording.
+2. **HAR capture** — `playwright-cli record` + filter (a URL glob on SLICC 7, a JS predicate on SLICC 6), then extract API patterns from the recording.
 3. **DOM observation** — Last resort: inject MutationObserver/PerformanceObserver via `playwright-cli eval-file`.
 
 ## Runtime constraints (critical)
@@ -100,16 +100,36 @@ If 200 → move to Phase 4. If 401/403 → dig into auth. If 404 → HAR capture
 
 ### HAR capture
 
+`record` differs between runtimes. Check which one you are on first:
+
 ```bash
-# Paste the JS filter expression from references/har-filter.md in place of <FILTER>.
-# Minimal working filter — headers are [{name,value},…] NOT a map; map lookup
-# silently drops every entry and stop-recording leaves an empty directory.
+playwright-cli --version   # SLICC 7 prints "playwright-cli 1.41.0" (or newer); SLICC 6 answers "Unknown command: --version"
+```
+
+**SLICC 7** (slicc-cdp >= 1.41.0): `--filter` is a URL glob. A filter containing `=>`, `function` or `;` is refused. `record` is a foreground holder that runs until its stdin closes or `stop-recording` runs in the same session, so give it a stdin that stays open and run it in the background:
+
+```bash
+(sleep 1800 | playwright-cli -s capture record https://app.example.com --filter='**/api/**' --content embed > /tmp/har-events.jsonl 2>&1 &)
+head -1 /tmp/har-events.jsonl   # {"event":"ready","recordingId":"rec-…","path":"/recordings/rec-…/recording.har","tab":"…"}
+```
+
+The user browses in the new tab. When they are done, stop it from the same session:
+
+```bash
+playwright-cli -s capture stop-recording   # prints the "stopped" event with path and entry count
+```
+
+The HAR is one cumulative file, `/recordings/<recordingId>/recording.har`, rewritten on each main-frame navigation and on stop. Add `--content embed` when you need bodies for schemas; without it bodies are omitted. A body is kept only while the page that requested it is still the current document. Cookie, Set-Cookie and Authorization headers are stripped unless you add `--include-credentials`; that HAR then holds live credentials, so never print it, and delete it when you are done. Use globs such as `'**/api/**'`, `'**/graphql*'` or `'https://api.example.com/**'`, or no filter at all and filter offline. If `record` fails with `Read-only file system` (no `/recordings`), `playwright-cli -s capture open about:blank`, then hold `har-start --tab <targetId> --url-filter '<glob>' --content embed /tmp/capture.har` the same way and `playwright-cli -s capture goto <url> --tab <targetId>`.
+
+**SLICC 6**: `--filter` is a JavaScript predicate, and `record` returns at once with `Recording started (targetId: …, recordingId: rec-…)`:
+
+```bash
+# Headers are [{name,value},…] NOT a map; a map lookup silently drops every
+# entry and stop-recording leaves an empty directory.
 playwright-cli record https://app.example.com --filter="(e) => { if (!e.response) return false; const hs=e.response.headers||[]; const ct=String((Array.isArray(hs)?(hs.find(h=>String(h.name||'').toLowerCase()==='content-type')||{}).value:hs['content-type'])||(e.response.content&&e.response.content.mimeType)||'').toLowerCase(); return /application\/(json|graphql)/.test(ct) || /\/(api|graphql|v\d+)\b/i.test((e.request&&e.request.url)||''); }"
 ```
 
-The full annotated filter (drops static assets and analytics, keeps JSON/form/API-path responses, documents the header-shape pitfall) is in `references/har-filter.md`. Copy it verbatim for a more thorough capture.
-
-After the first navigation, verify `/recordings/<recordingId>/` contains a non-empty `001-…-navigation-….har`. Empty dir = broken filter; fall back to unfiltered `playwright-cli record <url>` and filter offline.
+The full annotated filter (drops static assets and analytics, keeps JSON/form/API-path responses, documents the header-shape pitfall) is in `references/har-filter.md`, with the SLICC 7 globs that come closest to it. Six writes bodies by default and one chunk per navigation. After the first navigation, verify `/recordings/<recordingId>/` contains a non-empty `001-…-navigation-….har`. Empty dir = broken filter; fall back to unfiltered `playwright-cli record <url>` and filter offline.
 
 Tell the user to perform the actions they want to automate, then:
 ```bash

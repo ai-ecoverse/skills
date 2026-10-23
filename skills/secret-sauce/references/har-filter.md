@@ -1,11 +1,37 @@
 # HAR capture filter
 
-Annotated filter expression for `playwright-cli record --filter=...`.
+Run `playwright-cli --version` first. It prints `playwright-cli 1.41.0` (or
+newer) on SLICC 7 and fails with `Unknown command: --version` on SLICC 6.
+
+## SLICC 7: URL globs
+
+Seven's `record --filter=<glob>` (and `har-start --url-filter <glob>`) takes a
+Playwright URL glob and refuses anything containing `=>`, `function` or `;`, so
+the JavaScript predicate below does not work there. A glob matches the request
+URL only, not the content-type, so pick the API's path or host:
+
+| Want | Glob |
+| --- | --- |
+| REST under `/api/` | `'**/api/**'` |
+| GraphQL endpoint | `'**/graphql*'` |
+| A separate API host | `'https://api.example.com/**'` |
+| Versioned paths | `'**/v1/**'` |
+| Several at once | `'**/{api,graphql,rest}/**'` |
+
+When the traffic shares no pattern, record without `--filter` and filter the
+HAR offline with the same rules as the predicate below. Add `--content embed` for bodies. Headers in seven's HAR have
+the same `[{name, value}]` shape. Seven writes one cumulative
+`/recordings/<recordingId>/recording.har`; check the `entries` count in the
+`checkpoint` and `stopped` events instead of listing chunk files.
+
+## SLICC 6: JavaScript predicate
+
+Annotated filter expression for six's `playwright-cli record --filter=...`.
 
 Drops static assets and analytics noise; keeps JSON / form / GraphQL / API-path
 responses so the resulting HAR is small and easy to read.
 
-## Critical: header shape
+### Critical: header shape
 
 Playwright HAR (and the live filter event) exposes `response.headers` as an
 **array of `{name, value}`**, not a plain object. This is wrong and yields an
@@ -72,7 +98,7 @@ working capture produces `001-…-navigation-….har` chunks as you browse.
 }
 ```
 
-## Usage
+### Usage (SLICC 6)
 
 ```bash
 # Copy the filter into a single line (or use a heredoc) and pass via --filter.

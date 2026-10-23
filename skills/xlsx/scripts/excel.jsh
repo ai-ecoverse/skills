@@ -31,10 +31,14 @@ const cli = require('sliccy:cli');
 const c = require('sliccy:color');
 const { exec } = require('sliccy:exec');
 const fs = require('fs');
+const childProcess = require('child_process');
 
 const GRAPH = 'https://graph.microsoft.com/v1.0';
 const CAPTURE_URL = 'https://excel.cloud.microsoft/';
 const TOKEN_CACHE = '/tmp/.slicc-excel-token.json';
+const GRAPH_ORIGIN = 'https://graph.microsoft.com';
+const HAR_DIR = '/tmp/.slicc-excel-har';
+const PW_SESSION = 'excel-token';
 
 // ---------------------------------------------------------------- arg parse ---
 const { positional, flags } = process.argv.parseFlags();
@@ -81,7 +85,7 @@ async function writeCache(obj) {
 }
 
 // Capture a fresh Graph bearer token from a throwaway Excel-for-the-Web tab.
-async function captureToken() {
+async function captureTokenSix() {
   const rec = await exec(`playwright-cli record ${CAPTURE_URL}`);
   const m = (rec.stdout || '').match(/targetId:\s*([A-F0-9]+).*?recordingId:\s*(rec-[\w-]+)/s);
   if (!m) cli.die(`could not start a recording tab:\n${rec.stdout || rec.stderr}`);
@@ -110,7 +114,96 @@ async function captureToken() {
     await exec(`playwright-cli stop-recording ${recordingId}`).catch(() => {});
     await exec(`playwright-cli tab-close --tab=${targetId}`).catch(() => {});
   }
+  return token;
+}
 
+async function isSeven() {
+  const r = await exec.spawn(['playwright-cli', '--version']).catch(() => null);
+  return !!r && r.exitCode === 0 && /^playwright-cli \d/.test((r.stdout || '').trim());
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function within(promise, ms, fallback) {
+  let timer;
+  const late = new Promise((r) => { timer = setTimeout(() => r(fallback), ms); });
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+}
+
+function pw(...args) {
+  return exec.spawn(['playwright-cli', '-s', PW_SESSION, ...args]);
+}
+
+function bearerFromHar(har) {
+  const entries = (har && har.log && har.log.entries) || [];
+  for (const e of entries) {
+    const req = e.request || {};
+    if (req.method === 'OPTIONS' || !String(req.url || '').startsWith(GRAPH_ORIGIN + '/')) continue;
+    for (const h of req.headers || []) {
+      if (String(h.name || '').toLowerCase() !== 'authorization') continue;
+      const bear = String(h.value || '').trim().match(/^Bearer\s+([A-Za-z0-9._-]+)$/);
+      if (bear) return bear[1];
+    }
+  }
+  return null;
+}
+
+function startHarHolder(tab, file) {
+  const args = ['-s', PW_SESSION, 'har-start', '--tab', tab, '--url-filter', `${GRAPH_ORIGIN}/**`, '--include-credentials', file];
+  const child = childProcess.spawn('playwright-cli', args, { stdio: ['pipe', 'pipe', 'pipe'] });
+  let out = '';
+  let err = '';
+  let markReady;
+  const ready = new Promise((r) => { markReady = r; });
+  child.stdout.on('data', (chunk) => {
+    out += chunk;
+    for (const line of out.split('\n')) {
+      try { if (JSON.parse(line).event === 'ready') markReady(true); } catch {}
+    }
+  });
+  child.stderr.on('data', (chunk) => { err += chunk; });
+  const done = new Promise((r) => {
+    const finish = () => { markReady(false); r(); };
+    child.on('error', (e) => { err += String(e && e.message); finish(); });
+    child.on('close', finish);
+  });
+  return { ready, done, child, stderr: () => err };
+}
+
+async function captureTokenSeven() {
+  const opened = await pw('open', 'about:blank');
+  const tab = ((opened.stdout || '').match(/targetId:\s*([A-F0-9]+)/) || [])[1];
+  if (!tab) cli.die(`could not open a capture tab:\n${opened.stderr || opened.stdout}`);
+  await fs.promises.mkdir(HAR_DIR, { recursive: true });
+  const har = `${HAR_DIR}/${tab}.har`;
+  const holder = startHarHolder(tab, har);
+  try {
+    if (!(await within(holder.ready, 30000, false))) {
+      await within(holder.done, 2000);
+      cli.die(`could not start a HAR recording:\n${holder.stderr()}`);
+    }
+    await pw('eval', `location.href = ${JSON.stringify(CAPTURE_URL)}`, '--tab', tab);
+    const probe = `performance.getEntriesByType('resource').some((e) => e.name.startsWith(${JSON.stringify(GRAPH_ORIGIN + '/')}))`;
+    for (let i = 0; i < 40; i++) {
+      await sleep(1500);
+      const seen = await pw('eval', probe, '--tab', tab);
+      if ((seen.stdout || '').trim() === 'true') { await sleep(1500); break; }
+    }
+    holder.child.stdin.end();
+    await within(holder.done, 15000);
+    if (!fs.existsSync(har)) return null;
+    return bearerFromHar(JSON.parse(await fs.promises.readFile(har, 'utf8')));
+  } finally {
+    holder.child.kill();
+    await fs.promises.rm(har, { force: true }).catch(() => {});
+    await pw('tab-close', '--tab', tab).catch(() => {});
+  }
+}
+
+async function captureToken() {
+  const token = (await isSeven()) ? await captureTokenSeven() : await captureTokenSix();
   if (!token) {
     cli.die(
       'could not capture a Graph token. Make sure you are signed into Microsoft 365\n' +
