@@ -43,7 +43,7 @@ function graphEntry(method, value) {
   };
 }
 
-function seven(harText) {
+function seven(harText, hang = false) {
   const vfs = nodeFs();
   const calls = [];
   const spawned = [];
@@ -83,7 +83,7 @@ function seven(harText) {
             if (harText !== null)
               vfs.files[args[args.length - 1]] = new TextEncoder().encode(harText);
             child.ended = true;
-            events.emit('close', 0);
+            if (!hang) events.emit('close', 0);
           },
         },
       };
@@ -104,6 +104,7 @@ function seven(harText) {
     fs: vfs,
     cli: exit,
     sleep: async () => {},
+    setTimeout: (fn, ms) => (ms === 15000 ? fn() : globalThis.setTimeout(fn, ms)),
     CAPTURE_URL: 'https://excel.cloud.microsoft/',
     GRAPH_ORIGIN: 'https://graph.microsoft.com',
     HAR_DIR,
@@ -161,6 +162,21 @@ test('on seven a missing token dies with the sign-in hint and still cleans up', 
   ok(run.calls.includes(`playwright-cli -s excel-token tab-close --tab ${TAB}`));
   is(HAR in run.vfs.files, false);
   ok(run.spawned[0].child.killed);
+});
+
+test('on seven a holder that misses its shutdown deadline is not read', async () => {
+  const run = seven(harWith([graphEntry('GET', 'Bearer eyJ.a.b')]), true);
+  let err = null;
+  try {
+    await run.fns.captureToken();
+  } catch (e) {
+    err = e;
+  }
+  is(err?.name, 'NodeExitError');
+  ok(run.exit.dies[0].startsWith('the HAR recording did not finish writing'));
+  ok(run.spawned[0].child.killed);
+  is(HAR in run.vfs.files, false);
+  ok(run.calls.includes(`playwright-cli -s excel-token tab-close --tab ${TAB}`));
 });
 
 test('bearerFromHar ignores preflights and other origins', () => {

@@ -192,7 +192,9 @@ async function captureTokenSeven() {
       if ((seen.stdout || '').trim() === 'true') { await sleep(1500); break; }
     }
     holder.child.stdin.end();
-    await within(holder.done, 15000);
+    if ((await within(holder.done, 15000, 'late')) === 'late') {
+      cli.die('the HAR recording did not finish writing within 15s; retry with --refresh, or pass --token <jwt> / EXCEL_GRAPH_TOKEN.');
+    }
     if (!fs.existsSync(har)) return null;
     return bearerFromHar(JSON.parse(await fs.promises.readFile(har, 'utf8')));
   } finally {
