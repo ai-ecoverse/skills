@@ -137,7 +137,11 @@ Pages" client already minted for the signed-in user inside Excel for the Web: on
 first use (and after the token's ~1h expiry) it opens a throwaway
 `excel.cloud.microsoft` recording tab, lifts the `Authorization: Bearer` header
 off the on-load Graph call, caches it to `/tmp/.slicc-excel-token.json`, and
-closes the tab. **You must be signed into Microsoft 365 in the browser.** The
+closes the tab. On SLICC 6 it reads the header from the tab's request list; on
+SLICC 7 (`playwright-cli --version` answers) it holds a
+`har-start --url-filter 'https://graph.microsoft.com/**' --include-credentials`
+recording in session `excel-token`, reads the header from the HAR, and deletes
+the HAR. **You must be signed into Microsoft 365 in the browser.** The
 token carries `Files.ReadWrite.All`, `Sites.*`, `Calendars.Read`, `User.Read.All`
 (enough for all OneDrive file CRUD) — but NO Teams/OnlineMeetings scopes.
 
