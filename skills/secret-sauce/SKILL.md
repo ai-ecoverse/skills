@@ -110,7 +110,7 @@ playwright-cli --version   # SLICC 7 prints "playwright-cli 1.41.0" (or newer); 
 
 ```bash
 (sleep 1800 | playwright-cli -s capture record https://app.example.com --filter='**/api/**' --content embed > /tmp/har-events.jsonl 2>&1 &)
-head -1 /tmp/har-events.jsonl   # {"event":"ready","recordingId":"rec-…","path":"/recordings/rec-…/recording.har","tab":"…"}
+for i in $(seq 30); do [ -s /tmp/har-events.jsonl ] && break; sleep 1; done; head -1 /tmp/har-events.jsonl   # {"event":"ready","recordingId":"rec-…","path":"/recordings/rec-…/recording.har","tab":"…"}
 ```
 
 The user browses in the new tab. When they are done, stop it from the same session:

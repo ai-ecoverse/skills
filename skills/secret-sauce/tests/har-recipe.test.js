@@ -37,6 +37,7 @@ test('every SLICC 7 record filter in SKILL.md is a URL glob seven accepts', () =
 test('the SLICC 7 holder keeps stdin open and is stopped in the same session', () => {
   const seven = section(SKILL, '**SLICC 7**', '**SLICC 6**');
   ok(/\(sleep \d+ \| playwright-cli -s capture record /.test(seven));
+  ok(/do \[ -s \/tmp\/har-events\.jsonl \] && break; sleep 1; done; head -1/.test(seven));
   ok(seven.includes('playwright-cli -s capture stop-recording'));
   ok(seven.includes('/recordings/<recordingId>/recording.har'));
   ok(seven.includes('--include-credentials'));
