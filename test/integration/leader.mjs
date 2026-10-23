@@ -97,6 +97,16 @@ function runScript(script, env, log) {
   });
 }
 
+function commandFiles(dir) {
+  const files = {
+    GITHUB_OUTPUT: join(dir, 'github-output'),
+    GITHUB_ENV: join(dir, 'github-env'),
+    GITHUB_PATH: join(dir, 'github-path'),
+  };
+  for (const file of Object.values(files)) writeFileSync(file, '');
+  return files;
+}
+
 function sleep(ms) {
   return new Promise((done) => setTimeout(done, ms));
 }
@@ -112,28 +122,48 @@ export async function withRetries(fn, { attempts = 3, delayMs = 20_000, wait = s
   }
 }
 
+export async function bootLeader(boot, { root, artifacts, attempts = 3, wait } = {}) {
+  let attempt = 0;
+  return withRetries(
+    async () => {
+      attempt += 1;
+      const home = join(root, `leader-${attempt}`);
+      mkdirSync(home, { recursive: true });
+      try {
+        return await boot(home);
+      } catch (error) {
+        const leaderLog = join(home, 'leader.log');
+        if (existsSync(leaderLog)) {
+          writeFileSync(
+            join(artifacts, `leader-failed-${attempt}.log`),
+            redact(readFileSync(leaderLog, 'utf8'))
+          );
+        }
+        throw error;
+      }
+    },
+    { attempts, delayMs: 5_000, wait }
+  );
+}
+
 export async function startLeader({ name, port, mounts, artifacts }) {
-  const version = latestSlicc();
-  const scripts = workflowScripts(version);
-  const home = mkdtempSync(join(tmpdir(), `slicc-gw-${name}-`));
+  const root = mkdtempSync(join(tmpdir(), `slicc-gw-${name}-`));
   mkdirSync(artifacts, { recursive: true });
   const log = join(artifacts, 'leader-setup.log');
   writeFileSync(log, '');
-  const commandFiles = {
-    GITHUB_OUTPUT: join(home, 'github-output'),
-    GITHUB_ENV: join(home, 'github-env'),
-    GITHUB_PATH: join(home, 'github-path'),
-  };
-  for (const file of Object.values(commandFiles)) writeFileSync(file, '');
-  const base = { ...process.env, ...commandFiles, SLICC_GW_HOME: home };
+  const base = { ...process.env };
   delete base.NODE_OPTIONS;
   delete base.NODE_TEST_CONTEXT;
-  const cli = join(home, 'cli', 'slicc');
+  const cli = join(root, 'cli', 'slicc');
+  const latest = latestSlicc();
+  const scripts = workflowScripts(latest);
   await withRetries(() =>
     runScript(
       join(scripts, 'install-cli.mjs'),
       {
         ...base,
+        ...commandFiles(root),
+        SLICC_GW_HOME: root,
         INPUT_SOURCE: 'release',
         INPUT_VERSION: 'latest',
         INPUT_INSTALL_DIR: dirname(cli),
@@ -152,23 +182,30 @@ export async function startLeader({ name, port, mounts, artifacts }) {
     SLICC_NO_UPDATE_CHECK: '1',
     SLICC_NO_TELEMETRY: '1',
   };
-  await runScript(
-    join(scripts, 'start-leader.mjs'),
-    {
-      ...env,
-      INPUT_SLICC_VERSION: version,
-      INPUT_PORT: String(port),
-      INPUT_DURATION: '40m',
-      INPUT_MOUNTS: mounts.map(([host, path]) => `${host}:${path}`).join('\n'),
-      INPUT_PIN_WEBAPP: 'false',
-      INPUT_BOOT_TIMEOUT: '240s',
-      INPUT_CDP_LAUNCH_TIMEOUT: '90s',
-      INPUT_MASK_JOIN_URL: 'true',
+  const state = await bootLeader(
+    async (dir) => {
+      Object.assign(env, commandFiles(dir), { SLICC_GW_HOME: dir });
+      await runScript(
+        join(scripts, 'start-leader.mjs'),
+        {
+          ...env,
+          INPUT_SLICC_VERSION: latest,
+          INPUT_PORT: String(port),
+          INPUT_DURATION: '40m',
+          INPUT_MOUNTS: mounts.map(([host, path]) => `${host}:${path}`).join('\n'),
+          INPUT_PIN_WEBAPP: 'false',
+          INPUT_BOOT_TIMEOUT: '240s',
+          INPUT_CDP_LAUNCH_TIMEOUT: '90s',
+          INPUT_MASK_JOIN_URL: 'true',
+        },
+        log
+      );
+      const booted = JSON.parse(readFileSync(join(dir, 'state.json'), 'utf8'));
+      if (!booted.joinUrl) throw new Error('start-leader left no join URL');
+      return booted;
     },
-    log
+    { root, artifacts }
   );
-  const state = JSON.parse(readFileSync(join(home, 'state.json'), 'utf8'));
-  if (!state.joinUrl) throw new Error('start-leader left no join URL');
   const url = state.joinUrl;
 
   function exec(command, { timeoutMs = 300_000 } = {}) {
@@ -220,9 +257,9 @@ export async function startLeader({ name, port, mounts, artifacts }) {
       if (existsSync(state.logPath)) {
         writeFileSync(join(artifacts, 'leader.log'), redact(readFileSync(state.logPath, 'utf8')));
       }
-      rmSync(home, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
     }
   }
 
-  return { version: state.sliccVersion ?? version, run, stop };
+  return { version: state.sliccVersion ?? latest, run, stop };
 }

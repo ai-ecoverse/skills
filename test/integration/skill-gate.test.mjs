@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import { detectSkillIntegration } from '../../tools/detect-skill-integration.mjs';
-import { CONNECT_FAILURE, REPO_ROOT, withRetries } from './leader.mjs';
+import * as leader from './leader.mjs';
 import { allSkills, brokenManifests, PARTITIONS, partition, tapVerdict } from './skills.mjs';
+
+const { CONNECT_FAILURE, REPO_ROOT, withRetries } = leader;
 
 function git(...args) {
   return execFileSync('git', args, { cwd: REPO_ROOT, encoding: 'utf8' }).trim();
@@ -96,4 +101,45 @@ test('leader setup retries a failing step and rethrows the last error', async ()
     ),
     /failed 2/
   );
+});
+
+test('a leader that fails to boot is booted again in a fresh home and its log is kept', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'boot-leader-'));
+  try {
+    const artifacts = join(root, 'artifacts');
+    mkdirSync(artifacts);
+    const homes = [];
+    const home = await leader.bootLeader(
+      async (dir) => {
+        homes.push(dir);
+        if (homes.length === 1) {
+          writeFileSync(join(dir, 'leader.log'), 'POST https://www.sliccy.ai/join/s3cret ← 503\n');
+        }
+        if (homes.length < 3) throw new Error(`no join URL (${homes.length})`);
+        return dir;
+      },
+      { root, artifacts, wait: async () => {} }
+    );
+    assert.equal(home, join(root, 'leader-3'));
+    assert.deepEqual(
+      homes,
+      [1, 2, 3].map((n) => join(root, `leader-${n}`))
+    );
+    assert.deepEqual(readdirSync(artifacts), ['leader-failed-1.log']);
+    assert.equal(
+      readFileSync(join(artifacts, 'leader-failed-1.log'), 'utf8'),
+      'POST https://www.sliccy.ai/join/<token> ← 503\n'
+    );
+    await assert.rejects(
+      leader.bootLeader(
+        async () => {
+          throw new Error('tray 503');
+        },
+        { root: join(root, 'again'), artifacts, attempts: 2, wait: async () => {} }
+      ),
+      /tray 503/
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
