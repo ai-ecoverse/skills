@@ -186,13 +186,16 @@ inert, and are the ones worth persisting as standing approvals.
 ### `curl` first, browser when the page is a shell
 
 `curl` plus `html-to-markdown` is right for text-heavy documentation and legal
-pages, and stays the default. Switch to `playwright-cli` when:
+pages, and stays the default. Pipe the page in (`curl -sL <url> | html-to-markdown`),
+which works on SLICC 6 and 7; SLICC 7's converter reads a file only with
+`--input <file>`, and keeps tables as Markdown tables only with `--plugin-table`
+(SLICC 6's has no table option and rejects the flag). Switch to `playwright-cli` when:
 
 | Symptom | Observed |
 |---|---|
 | Body arrives empty or as a JS shell | A vendor trust portal served `curl` an empty shell; the decisive PDF was two clicks away in a real tab. |
 | Numbers are rendered client-side | A benchmark site's per-task dollar figures and another vendor's chart were unreachable any other way. |
-| A table's meaning lives in per-cell markup | `html-to-markdown` flattened per-plan checkmark tables — exactly the information being researched. |
+| A table's meaning lives in per-cell markup | `html-to-markdown` flattened per-plan checkmark tables — exactly the information being researched. On SLICC 7 try `--plugin-table` first; icon-only cells still come back empty. |
 
 The productive hybrid is a tab for the DOM and `curl` for the asset:
 
