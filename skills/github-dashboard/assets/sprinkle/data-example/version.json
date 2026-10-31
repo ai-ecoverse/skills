@@ -1,0 +1,9 @@
+{
+  "generatedAt": "2026-01-15T09:00:00.000Z",
+  "snapshotHash": "c9697c5d3e5653df8c423381081fb7da32ba0625ac7f6ddbf228b61afd4e1ef8",
+  "hashAlgorithm": "sha256 over the snapshot file bytes",
+  "records": 4,
+  "snapshotBytes": 4271,
+  "writtenBy": "hand-written example fixture",
+  "note": "The panel polls this file and reads the snapshot only when snapshotHash changes."
+}
