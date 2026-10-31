@@ -19,7 +19,7 @@
     "@ai-ecoverse/biome-jsh": "6.243.1",
     "@ai-ecoverse/slicc-cdp": "1.43.1",
     "@ai-ecoverse/slicc-shared-web": "2.13.7",
-    "@biomejs/biome": "2.6.2",
+    "@biomejs/biome": "2.6.3",
     "lefthook": "2.2.2",
     "minimatch": "10.2.6",
     "monocart-coverage-reports": "3.0.0",
