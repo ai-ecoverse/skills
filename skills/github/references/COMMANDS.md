@@ -39,9 +39,9 @@ Field sets (see `gh <cmd> <sub> --help` for the authoritative list):
 
 | Command | Fields |
 |---|---|
-| `pr list` | `number title body state isDraft author headRefName baseRefName headRefOid url createdAt updatedAt closedAt mergedAt labels assignees reviewRequests milestone id` |
-| `pr edit` | same as `pr list` (the updated PR) |
-| `pr view` | all of `pr list` plus `merged mergeable mergeStateStatus mergeCommit additions deletions changedFiles commits commitsCount statusCheckRollup reviews reviewDecision comments` |
+| `pr list` | `number title body state isDraft author headRefName baseRefName headRefOid url createdAt updatedAt closedAt mergedAt labels assignees reviewRequests milestone id files` |
+| `pr edit` | same as `pr list` except `files` (the updated PR) |
+| `pr view` | all of `pr list` plus `merged mergeable mergeStateStatus mergeCommit additions deletions changedFiles commits commitsCount statusCheckRollup reviews reviewDecision comments files` |
 | `pr checks` | `name state bucket status conclusion link workflow startedAt completedAt description` |
 | `pr merge-status` | `status details` (the API result; shim-only) |
 | `pr queue` | `position state number title url headCommit enqueuedAt estimatedTimeToMerge` (shim-only) |
@@ -58,6 +58,11 @@ Field sets (see `gh <cmd> <sub> --help` for the authoritative list):
   `messageBody`, `authoredDate`, `committedDate`, `authors`, `url`) — upstream's shape, so
   `--jq '.commits[].oid'` works. The REST integer count is `commitsCount`. The commit list is
   only fetched when the field is requested.
+- `pr view --json files` / `pr list --json files` is upstream's shape: an array of
+  `{path, additions, deletions, changeType}`, with `changeType` mapped from the REST file `status`
+  (`ADDED`, `DELETED`, `MODIFIED`, `RENAMED`, `COPIED`, `CHANGED`). It pages
+  `GET /repos/{o}/{r}/pulls/{n}/files` (the same fetch as `pr diff`) only when requested. On
+  `pr list` that is one extra API call per PR (more past 100 files), and a bare `--json` omits it.
 - `release list --json isLatest` marks exactly one entry — the repository's actual latest
   release (`/releases/latest`), not "every stable release".
 

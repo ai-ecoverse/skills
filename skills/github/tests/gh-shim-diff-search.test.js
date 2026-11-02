@@ -369,3 +369,142 @@ test('issue list without --search still uses the issues list endpoint', async ()
   ok((/#10/).test(result.stdout.join('\n')));
   ok(!(/#11/).test(result.stdout.join('\n')));
 });
+
+const FILES_PR = {
+  number: 42,
+  title: 'feat: files field',
+  state: 'open',
+  user: { login: 'octocat' },
+  head: { ref: 'feat', sha: 'abc123' },
+  base: { ref: 'main' },
+  html_url: 'https://github.com/octo/repo/pull/42',
+  labels: [],
+  node_id: 'PR_42',
+};
+const FILES_FIXTURE = [
+  { filename: 'src/a.js', status: 'modified', additions: 3, deletions: 1 },
+  { filename: 'src/new.js', status: 'added', additions: 10, deletions: 0 },
+  { filename: 'old.txt', status: 'removed', additions: 0, deletions: 4 },
+  { filename: 'b.js', previous_filename: 'a-old.js', status: 'renamed', additions: 0, deletions: 0 },
+  { filename: 'c.js', status: 'copied', additions: 1, deletions: 0 },
+  { filename: 'd.bin', status: 'changed', additions: 0, deletions: 0 },
+];
+const prGet = (path) => (path === '/repos/octo/repo/pulls/42' ? FILES_PR : undefined);
+const fileCalls = (result) => result.calls.filter((c) => c.path.includes('/files'));
+
+test('pr view --json files returns upstream-shaped file objects', async () => {
+  const result = await runGh(['pr', 'view', '42', '-R', 'octo/repo', '--json', 'number,files'], {
+    get: prGet,
+    files: FILES_FIXTURE,
+  });
+  is(result.error, undefined);
+  is(JSON.parse(result.stdout.join('\n')), {
+    number: 42,
+    files: [
+      { path: 'src/a.js', additions: 3, deletions: 1, changeType: 'MODIFIED' },
+      { path: 'src/new.js', additions: 10, deletions: 0, changeType: 'ADDED' },
+      { path: 'old.txt', additions: 0, deletions: 4, changeType: 'DELETED' },
+      { path: 'b.js', additions: 0, deletions: 0, changeType: 'RENAMED' },
+      { path: 'c.js', additions: 1, deletions: 0, changeType: 'COPIED' },
+      { path: 'd.bin', additions: 0, deletions: 0, changeType: 'CHANGED' },
+    ],
+  });
+  is(fileCalls(result).length, 1);
+});
+
+test('pr view --json files pages past 100 files', async () => {
+  const page1 = Array.from({ length: 100 }, (_, i) => ({
+    filename: `f${i}.txt`, status: 'modified', additions: 1, deletions: 1,
+  }));
+  const result = await runGh(['pr', 'view', '42', '-R', 'octo/repo', '--json', 'files'], {
+    get: prGet,
+    filesByPage: { 1: page1, 2: [{ filename: 'tail.txt', status: 'added', additions: 1, deletions: 0 }] },
+  });
+  is(result.error, undefined);
+  const out = JSON.parse(result.stdout.join('\n'));
+  is(out.files.length, 101);
+  is(out.files[100], { path: 'tail.txt', additions: 1, deletions: 0, changeType: 'ADDED' });
+  is(fileCalls(result).length, 2);
+});
+
+test('pr view --json without files does not call the files endpoint', async () => {
+  const result = await runGh(['pr', 'view', '42', '-R', 'octo/repo', '--json', 'number,title'], {
+    get: prGet,
+    files: FILES_FIXTURE,
+  });
+  is(result.error, undefined);
+  is(JSON.parse(result.stdout.join('\n')), { number: 42, title: 'feat: files field' });
+  is(fileCalls(result).length, 0);
+});
+
+test('pr view --json files reports a failed files fetch instead of an empty list', async () => {
+  const result = await runGh(['pr', 'view', '42', '-R', 'octo/repo', '--json', 'files'], {
+    get: prGet,
+    filesError: { status: 500, body: { message: 'boom' } },
+  });
+  is(result.error.name, 'NodeExitError');
+  ok((/pr view failed: boom/).test(result.error.message));
+  is(result.stdout.join(''), '');
+});
+
+test('bare pr view --json fetches files once and includes them', async () => {
+  const result = await runGh(['pr', 'view', '42', '-R', 'octo/repo', '--json'], {
+    get: prGet,
+    files: FILES_FIXTURE.slice(0, 2),
+  });
+  is(result.error, undefined);
+  const out = JSON.parse(result.stdout.join('\n'));
+  is(out.number, 42);
+  is(out.files, [
+    { path: 'src/a.js', additions: 3, deletions: 1, changeType: 'MODIFIED' },
+    { path: 'src/new.js', additions: 10, deletions: 0, changeType: 'ADDED' },
+  ]);
+  is(fileCalls(result).map((c) => c.path), ['/repos/octo/repo/pulls/42/files']);
+});
+
+test('bare pr view --json fails when the files fetch fails', async () => {
+  const result = await runGh(['pr', 'view', '42', '-R', 'octo/repo', '--json'], {
+    get: prGet,
+    filesError: { status: 502, body: { message: 'Bad Gateway' } },
+  });
+  is(result.error.name, 'NodeExitError');
+  is(result.error.exitCode, 1);
+  ok((/pr view failed: Bad Gateway/).test(result.error.message));
+  is(result.stdout.join(''), '');
+  is(fileCalls(result).length, 1);
+});
+
+test('pr list --json files fetches files per PR, and only when named', async () => {
+  const pulls = [FILES_PR, { ...FILES_PR, number: 43, node_id: 'PR_43' }];
+  const get = (path) => (path === '/repos/octo/repo/pulls' ? pulls : undefined);
+
+  const withFiles = await runGh(['pr', 'list', '-R', 'octo/repo', '--json', 'number,files'], {
+    get,
+    files: FILES_FIXTURE.slice(0, 1),
+  });
+  is(withFiles.error, undefined);
+  is(JSON.parse(withFiles.stdout.join('\n')), [
+    { number: 42, files: [{ path: 'src/a.js', additions: 3, deletions: 1, changeType: 'MODIFIED' }] },
+    { number: 43, files: [{ path: 'src/a.js', additions: 3, deletions: 1, changeType: 'MODIFIED' }] },
+  ]);
+  is(fileCalls(withFiles).map((c) => c.path), [
+    '/repos/octo/repo/pulls/42/files',
+    '/repos/octo/repo/pulls/43/files',
+  ]);
+
+  const without = await runGh(['pr', 'list', '-R', 'octo/repo', '--json', 'number'], { get });
+  is(without.error, undefined);
+  is(fileCalls(without).length, 0);
+
+  const bare = await runGh(['pr', 'list', '-R', 'octo/repo', '--json'], { get });
+  is(bare.error, undefined);
+  is(fileCalls(bare).length, 0);
+  ok(!('files' in JSON.parse(bare.stdout.join('\n'))[0]));
+});
+
+test('pr list help notes the per-PR cost of the files field', async () => {
+  const help = await runGh(['pr', 'list', '--help']);
+  is(help.error.exitCode, 0);
+  ok((/files/).test(help.stdout.join('\n')));
+  ok((/one extra API call per PR/).test(help.stdout.join('\n')));
+});

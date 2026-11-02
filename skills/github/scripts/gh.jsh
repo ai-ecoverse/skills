@@ -851,6 +851,8 @@ const PR_LIST_FIELDS = [
   'assignees', 'reviewRequests', 'milestone', 'id',
 ];
 
+const PR_LIST_JSON_FIELDS = [...PR_LIST_FIELDS, 'files'];
+
 function prListJson(pr) {
   return {
     number: pr.number,
@@ -902,9 +904,19 @@ async function prList(args) {
   if (state === 'merged') prs = prs.filter(pr => pr.merged_at);
   if (flags.draft) prs = prs.filter(pr => pr.draft);
 
-  const fields = parseFields('pr list', flags.json, PR_LIST_FIELDS);
+  const fields = parseFields('pr list', flags.json, PR_LIST_JSON_FIELDS);
   if (fields !== undefined) {
-    await outputJson(prs.map(pr => pickFields(prListJson(pr), fields)), flags);
+    const wantFiles = !!fields && fields.includes('files');
+    const out = [];
+    for (const pr of prs) {
+      const data = prListJson(pr);
+      if (wantFiles) {
+        try { data.files = await fetchFilesField(repo, pr.number); }
+        catch (e) { fail('pr list', e); }
+      }
+      out.push(pickFields(data, fields));
+    }
+    await outputJson(out, flags);
     return;
   }
 
@@ -928,8 +940,27 @@ const PR_VIEW_FIELDS = [
   ...PR_LIST_FIELDS,
   'merged', 'mergeable', 'mergeStateStatus', 'mergeCommit', 'additions', 'deletions',
   'changedFiles', 'commits', 'commitsCount', 'statusCheckRollup', 'reviews', 'reviewDecision',
-  'comments',
+  'comments', 'files',
 ];
+
+const FILE_CHANGE_TYPES = {
+  added: 'ADDED',
+  removed: 'DELETED',
+  modified: 'MODIFIED',
+  renamed: 'RENAMED',
+  copied: 'COPIED',
+  changed: 'CHANGED',
+};
+
+async function fetchFilesField(repo, num) {
+  const files = await fetchPrFiles(repo, num);
+  return files.map(f => ({
+    path: f.filename,
+    additions: f.additions,
+    deletions: f.deletions,
+    changeType: FILE_CHANGE_TYPES[f.status] || upper(f.status) || null,
+  }));
+}
 
 // Normalises check-runs + commit statuses into upstream's statusCheckRollup shape.
 function rollupEntries(checkRuns, statuses) {
@@ -1093,6 +1124,10 @@ async function prViewJson(repo, pr, fields, flags) {
     data.reviewDecision = reviewDecision(reviews);
   }
   if (wants(fields, 'comments')) data.comments = await fetchComments(repo, pr.number);
+  if (wants(fields, 'files')) {
+    try { data.files = await fetchFilesField(repo, pr.number); }
+    catch (e) { fail('pr view', e); }
+  }
 
   await outputJson(pickFields(data, fields), flags);
 }
@@ -2107,6 +2142,20 @@ function fileToUnifiedDiff(file) {
   return lines.join('\n');
 }
 
+async function fetchPrFiles(repo, num) {
+  const files = [];
+  // The files API caps at 100 per page and 3000 files total.
+  for (let page = 1; page <= 30; page++) {
+    const batch = await api.get(`/repos/${repo}/pulls/${num}/files`, {
+      params: { per_page: 100, page },
+    });
+    const list = Array.isArray(batch) ? batch : [];
+    files.push(...list);
+    if (list.length < 100) break;
+  }
+  return files;
+}
+
 async function prDiff(args) {
   const { flags, positional } = parseArgs('pr diff', args, FLAG_SPECS['pr diff']);
   const { values, repoArg } = distribute('pr diff', positional, ['number'], flags);
@@ -2114,17 +2163,9 @@ async function prDiff(args) {
   const num = validateNum(values.number, 'PR number');
   const repo = await repoFrom('pr diff', flags, repoArg);
 
-  const files = [];
+  let files;
   try {
-    // The files API caps at 100 per page and 3000 files total.
-    for (let page = 1; page <= 30; page++) {
-      const batch = await api.get(`/repos/${repo}/pulls/${num}/files`, {
-        params: { per_page: 100, page },
-      });
-      const list = Array.isArray(batch) ? batch : [];
-      files.push(...list);
-      if (list.length < 100) break;
-    }
+    files = await fetchPrFiles(repo, num);
   } catch (e) {
     if (isNotFound(e)) cli.die('pr diff: pull request #' + num + ' not found in ' + repo);
     fail('pr diff', e);
@@ -4425,6 +4466,11 @@ const HELP = {
           '-B, --base <branch>       filter by base branch',
           '-H, --head <branch>       filter by head branch',
           '-d, --draft               only draft PRs'],
+        notes: [
+          'JSON fields: ' + PR_LIST_JSON_FIELDS.join(', '),
+          '`files` costs one extra API call per PR (more for PRs over 100 files) and is only',
+          'fetched when named explicitly; a bare --json omits it.',
+        ],
       },
       view: {
         usage: [
@@ -4433,7 +4479,10 @@ const HELP = {
         ],
         desc: 'View a PR: title, author, branches, check summary, body',
         flags: [REPO_HELP, JSON_HELP, JQ_HELP, '-c, --comments            also print the PR comments'],
-        notes: ['JSON fields: ' + PR_VIEW_FIELDS.join(', ')],
+        notes: [
+          'JSON fields: ' + PR_VIEW_FIELDS.join(', '),
+          '`files` is [{path, additions, deletions, changeType}], fetched only when requested.',
+        ],
       },
       checks: {
         usage: ['gh pr checks <num> [--json] [--watch]', 'gh pr checks <num> [repo]'],
