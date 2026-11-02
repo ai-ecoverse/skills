@@ -851,10 +851,6 @@ const PR_LIST_FIELDS = [
   'assignees', 'reviewRequests', 'milestone', 'id',
 ];
 
-// `pr list --json` also accepts `files`. It is kept out of PR_LIST_FIELDS
-// because `pr edit` reuses that list and has no files fetch. The list endpoint
-// carries no file data, so `files` costs one extra API call (or more, paged)
-// per PR and is only fetched when named explicitly, never for a bare `--json`.
 const PR_LIST_JSON_FIELDS = [...PR_LIST_FIELDS, 'files'];
 
 function prListJson(pr) {
@@ -947,7 +943,6 @@ const PR_VIEW_FIELDS = [
   'comments', 'files',
 ];
 
-// REST `status` of a pull-request file -> upstream's GraphQL PatchStatus.
 const FILE_CHANGE_TYPES = {
   added: 'ADDED',
   removed: 'DELETED',
@@ -957,9 +952,6 @@ const FILE_CHANGE_TYPES = {
   changed: 'CHANGED',
 };
 
-// Upstream's `files` JSON field: [{ path, additions, deletions, changeType }].
-// Reuses the paged files fetcher behind `pr diff`. Errors propagate so a
-// failed fetch is reported instead of masquerading as a PR with no files.
 async function fetchFilesField(repo, num) {
   const files = await fetchPrFiles(repo, num);
   return files.map(f => ({
@@ -2150,8 +2142,6 @@ function fileToUnifiedDiff(file) {
   return lines.join('\n');
 }
 
-// Pages GET /repos/{owner}/{repo}/pulls/{n}/files. Shared by `pr diff` and the
-// `files` JSON field of `pr view` / `pr list`. Throws on API errors.
 async function fetchPrFiles(repo, num) {
   const files = [];
   // The files API caps at 100 per page and 3000 files total.

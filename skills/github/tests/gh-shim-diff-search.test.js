@@ -447,6 +447,33 @@ test('pr view --json files reports a failed files fetch instead of an empty list
   is(result.stdout.join(''), '');
 });
 
+test('bare pr view --json fetches files once and includes them', async () => {
+  const result = await runGh(['pr', 'view', '42', '-R', 'octo/repo', '--json'], {
+    get: prGet,
+    files: FILES_FIXTURE.slice(0, 2),
+  });
+  is(result.error, undefined);
+  const out = JSON.parse(result.stdout.join('\n'));
+  is(out.number, 42);
+  is(out.files, [
+    { path: 'src/a.js', additions: 3, deletions: 1, changeType: 'MODIFIED' },
+    { path: 'src/new.js', additions: 10, deletions: 0, changeType: 'ADDED' },
+  ]);
+  is(fileCalls(result).map((c) => c.path), ['/repos/octo/repo/pulls/42/files']);
+});
+
+test('bare pr view --json fails when the files fetch fails', async () => {
+  const result = await runGh(['pr', 'view', '42', '-R', 'octo/repo', '--json'], {
+    get: prGet,
+    filesError: { status: 502, body: { message: 'Bad Gateway' } },
+  });
+  is(result.error.name, 'NodeExitError');
+  is(result.error.exitCode, 1);
+  ok((/pr view failed: Bad Gateway/).test(result.error.message));
+  is(result.stdout.join(''), '');
+  is(fileCalls(result).length, 1);
+});
+
 test('pr list --json files fetches files per PR, and only when named', async () => {
   const pulls = [FILES_PR, { ...FILES_PR, number: 43, node_id: 'PR_43' }];
   const get = (path) => (path === '/repos/octo/repo/pulls' ? pulls : undefined);
