@@ -39,7 +39,14 @@ const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
  * Parse one source string as an AsyncFunction body.
  * @returns {null|string} null when it parses, else the error message.
  */
+export function stripShebang(source) {
+  if (!source.startsWith('#!')) return source;
+  const newline = source.indexOf('\n');
+  return newline === -1 ? '' : `\n${source.slice(newline + 1)}`;
+}
+
 export function parseFailure(source) {
+  source = stripShebang(source);
   try {
     // eslint-disable-next-line no-new
     new AsyncFunction(source);
