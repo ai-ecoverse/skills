@@ -9,7 +9,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync as require0 } from 'node:fs';
-import { parseFailure, collectFiles } from './check-jsh-parse.mjs';
+import { parseFailure, collectFiles, stripShebang } from './check-jsh-parse.mjs';
 
 test('a plain script parses', () => {
   assert.equal(parseFailure('const a = 1; console.log(a);'), null);
@@ -30,6 +30,17 @@ test('an apostrophe inside a single-quoted string is caught', () => {
   const msg = parseFailure(src);
   assert.ok(msg, 'expected a parse failure');
   assert.match(msg, /missing \)|Unexpected|Invalid or unexpected/);
+});
+
+test('a leading shebang parses, as the jsh executor strips it (slicc stripShebang)', () => {
+  assert.equal(parseFailure('#!/usr/bin/env jsh\nconst a = await Promise.resolve(1);'), null);
+});
+
+test('only a leading shebang is stripped, and its line is kept for line numbers', () => {
+  assert.equal(stripShebang('#!/usr/bin/env jsh\nx'), '\nx');
+  assert.equal(stripShebang('#!/usr/bin/env jsh'), '');
+  assert.equal(stripShebang('x\n#!/bin/sh'), 'x\n#!/bin/sh');
+  assert.ok(parseFailure('const a = 1;\n#!/bin/sh'));
 });
 
 test('an unterminated string is caught', () => {
