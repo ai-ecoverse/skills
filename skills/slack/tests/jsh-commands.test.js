@@ -118,6 +118,7 @@ async function slack(argv, o = {}) {
   // o.tabs: the Slack tabs, in Chrome's order; findTab returns the first match.
   const tabs = o.tabs || [{ targetId: 'tab1', url: `https://app.slack.com/client/${WS}/${CH}` }];
   const hanging = new Map();
+  const groups = new Set();
   const api = { 'auth.test': { ok: true, user_id: SELF }, ...(o.api || {}) };
 
   const browser = {
@@ -181,7 +182,13 @@ async function slack(argv, o = {}) {
       const emit = (ev, ...a) => handlers[ev] && handlers[ev](...a);
       if (bin !== 'jsh' && o.hang) {
         // A callback that never ends by itself: only a signal to its group does.
-        hanging.set(child.pid, () => emit('close', null, 'SIGTERM'));
+        // o.stubborn: a child in its group ignores SIGTERM, so the group lives
+        // on after the shell closes, until SIGKILL.
+        groups.add(child.pid);
+        hanging.set(child.pid, (sig) => {
+          emit('close', null, sig);
+          if (!o.stubborn || sig === 'SIGKILL') groups.delete(child.pid);
+        });
       } else if (bin !== 'jsh') {
         setTimeout(() => emit('close', 0, null), 5);
       } else if (o.child === 'missing') {
@@ -252,12 +259,13 @@ async function slack(argv, o = {}) {
     },
     kill: (pid, sig) => {
       if (sig === 0 || sig === undefined) {
-        if (pid === 4242 || alive.has(pid)) return true;
+        if (pid < 0 ? groups.has(-pid) : pid === 4242 || alive.has(pid)) return true;
         throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' });
       }
       killed.push({ pid, sig });
       killedAt.push(Date.now());
-      if (pid < 0 && hanging.has(-pid)) hanging.get(-pid)();
+      if (pid < 0 && !groups.has(-pid)) throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' });
+      if (pid < 0 && hanging.has(-pid)) hanging.get(-pid)(sig);
       return true;
     },
   };
@@ -508,6 +516,24 @@ test('a watch of a workspace no tab knows fails instead of watching another tab'
   ok(r.err.includes('T0NOTSIGNED1 is not signed in'));
   ok(!r.calls.some((c) => c.method === 'websocket'), 'no subscription');
   ok(!Object.keys(r.vfs.files).some((f) => f.startsWith(STATE)), 'not registered');
+});
+
+test('a callback whose child ignores SIGTERM gets SIGKILL before the watch exits', async () => {
+  const r = await slack(['--ws', WS, 'watch', CH, 'sh -c "trap \\"\\" TERM; sleep 1000"'], {
+    hang: true,
+    stubborn: true,
+    fastClock: true,
+    during: async ({ framesPath, vfs, signal }) => {
+      await vfs.promises.appendFile(framesPath, frame({ ts: '5.000002' }));
+      await tick(400);
+      signal('SIGTERM');
+    },
+  });
+  is(r.exitCode, 143);
+  is(r.killed, [
+    { pid: -5151, sig: 'SIGTERM' },
+    { pid: -5151, sig: 'SIGKILL' },
+  ]);
 });
 
 test('a watch stopped while an author lookup hangs ends at once', async () => {

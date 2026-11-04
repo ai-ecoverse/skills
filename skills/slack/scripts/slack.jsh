@@ -3030,17 +3030,33 @@ function runWatchCommand(command, env) {
 }
 
 // End a running callback when the watch ends (a signal, `unwatch`, `--for`):
-// SIGTERM to its process group, then SIGKILL if it is still there after the
-// grace period, so a hung callback can't keep the watch alive.
+// SIGTERM to its process group, then SIGKILL once the grace period is over if
+// anything in the group is still there. The shell can exit on SIGTERM while a
+// child it started ignores it, so this follows the group, not the shell.
+// Resolves when the group is gone or has been sent SIGKILL; the watch waits
+// for it before it exits.
 function stopWatchCommand(run) {
-  const signal = (sig) => {
-    try { process.kill(-run.child.pid, sig); } catch (_) {
-      try { run.child.kill(sig); } catch (_e) { /* already gone */ }
+  const pid = run.child.pid;
+  // true: delivered (or the group is still there, for signal 0); false: gone.
+  const group = (sig) => {
+    try {
+      process.kill(-pid, sig);
+      return true;
+    } catch (e) {
+      if (e && e.code === 'ESRCH') return false;
+      // No process groups here: fall back to the shell itself.
+      try { run.child.kill(sig || 0); return true; } catch (_) { return false; }
     }
   };
-  signal('SIGTERM');
-  const timer = setTimeout(() => signal('SIGKILL'), WATCH_KILL_GRACE_MS);
-  run.done.then(() => clearTimeout(timer));
+  group('SIGTERM');
+  return (async () => {
+    const until = Date.now() + WATCH_KILL_GRACE_MS;
+    while (Date.now() < until) {
+      if (!group(0)) return;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    group('SIGKILL');
+  })();
 }
 
 // --- The watch registry (STATE_DIR/watch-<pid>.json) ---
@@ -3278,7 +3294,8 @@ async function watchForeground(args, globalFlags) {
   const onSignal = (sig) => finish(sig === 'SIGINT' ? 130 : 143);
   // A callback still running when the watch ends is stopped with it.
   let running = null;
-  finished.then(() => { if (running) stopWatchCommand(running); });
+  let stopping = null;
+  finished.then(() => { if (running) stopping = stopWatchCommand(running); });
   process.on('SIGINT', onSignal);
   process.on('SIGTERM', onSignal);
   const deadline = forMs === null ? null : setTimeout(() => finish(count === null ? 0 : 124), forMs);
@@ -3336,6 +3353,7 @@ async function watchForeground(args, globalFlags) {
     process.off('SIGINT', onSignal);
     process.off('SIGTERM', onSignal);
     await sub.close().catch(() => {});
+    if (stopping) await stopping;
     await frames.close();
     await removeFrames();
     await fs.promises.rm(registry, { force: true }).catch(() => {});
