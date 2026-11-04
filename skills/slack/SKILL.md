@@ -12,7 +12,9 @@ description: Slack Web API client — read Slack messages, post to Slack channel
   Slack notifications, Slack support or help requests, watching/monitoring a Slack
   channel, react or emoji reaction, or searching Slack message text. Also provides
   slack-ext for admin user-management (guest conversion, guest channels) and Slack app
-  manifest reads and diffs.
+  manifest reads and diffs. Also runs outside SLICC, on macOS or Linux under jsh,
+  driving a logged-in Slack tab over an existing Chrome DevTools (CDP) connection
+  (SLICC_CDP_URL).
 allowed-tools: bash
 ---
 
@@ -94,6 +96,57 @@ asks the user to open Slack.
 Workspace resolution order:
 1. `--workspace=<ID>` or `--ws=<ID>` flag if provided
 2. Auto-detected from the active Slack tab URL (`/client/<ID>/...`)
+
+## On a host: jsh over an existing Chrome DevTools connection
+
+`slack`, `slack-ext` and `slack-support` also run outside SLICC, on macOS or
+Linux, under [jsh](https://github.com/ai-ecoverse/slicc-jsh). They drive a
+logged-in Slack tab in a Chrome that is already running with a DevTools port.
+They don't launch Chrome themselves. There, `sliccy:browser` is
+[`@ai-ecoverse/sliccy-browser`](https://www.npmjs.com/package/@ai-ecoverse/sliccy-browser)
+(a dependency in this folder's `package.json`, which needs Node 24 or later). It
+connects to `SLICC_CDP_URL`, which the installed commands default to
+`http://127.0.0.1:9222`.
+
+```bash
+# once: jsh, and this folder as a global package (puts slack, slack-ext and
+# slack-support on PATH; installs sliccy-browser with it)
+curl -fsSL https://raw.githubusercontent.com/ai-ecoverse/slicc-jsh/main/install.sh | sh
+npm install -g ./skills/slack          # or: pnpm add -g ./skills/slack
+
+# Chrome must listen on a DevTools port (chrome --remote-debugging-port=9222),
+# with app.slack.com open and logged in. For another port or host:
+#   export SLICC_CDP_URL=http://127.0.0.1:9333   (or the ws:// URL from /json/version)
+slack workspaces
+slack-ext --ws=T06DUTYDQ status W5BPKRLUA
+```
+
+`npm install -g <folder>` links to the folder, so moving or deleting the
+checkout breaks the commands. To install a copy instead:
+`npm install -g "$(npm pack ./skills/slack)"`. Some Homebrew installs have a
+`slack` command already: the Slack CLI (cask `slack-cli`). The command that
+comes first on `PATH` wins.
+
+How the host differs from SLICC 6 (`process.versions.jsh` is set: on a host,
+and in SLICC 7's kernel):
+
+- **`slack watch` runs in the foreground** and prints each new message. Without
+  SLICC's webhooks and licks, there is nothing to route replies to. See
+  [slack watch under jsh](#slack-watch-under-jsh). `unwatch`, `watches` and
+  `reinject` have nothing to act on. `--scoop`, `--filter` and `--force` are
+  refused.
+- **`slack post` doesn't auto-watch.** It prints the command that waits for a
+  reply instead: `wait for a reply: slack watch <channel> --thread=<ts>
+  --count=1 --for=1h`.
+- **`slack download`** fetches from this process, not from the page, and sends
+  the tab's `d` session cookie (the page's own fetch of `files.slack.com` fails
+  there). The cookie goes only to `https://*.slack.com` URLs, and is never
+  printed.
+- **State** (`--thread_ts=last`, the custom emoji cache) lives in
+  `$SLACK_STATE_DIR`, else `$XDG_STATE_HOME/slack`, else
+  `~/.local/state/slack`. It isn't kept in the skill folder. `slack-ext` and
+  `slack-support` keep their config in `scripts/.config`, as `skill.config()`
+  does under jsh.
 
 ## Global flags
 
@@ -284,6 +337,8 @@ slack post C087NCG774J "no sticker please" --no-sign
 After a successful post, replies are watched for **one hour** and routed back to the cone that
 posted (`--watch-scoop=<name>` routes elsewhere, `--no-watch` opts out); your own messages never
 notify. Scope, sharing and routing rules: `references/watch-architecture.md`, "Auto-watch for replies".
+Under jsh (a host) there is no auto-watch: `post` prints a `slack watch … --count=1` command
+that waits for the first reply.
 
 ### slack react \<channel_id\> \<message_ts\> \<emoji\>
 
@@ -378,7 +433,9 @@ Download a file (e.g. a screenshot shared in a thread) to a local path so you ca
 view it. Get the `<file_id>` from `slack thread` / `slack history` output (shown as
 `[F...]`), or pass `--url=<url_private>` directly. Resolves via `files.info`, then
 fetches the bytes authenticated inside the Slack tab (`files.slack.com` needs the
-session cookie). Without `--out` the file lands in `/tmp/<original-name>`.
+session cookie). Without `--out` the file lands in `/tmp/<original-name>`. Under
+jsh the bytes are fetched from this process with the tab's session cookie; see
+[On a host](#on-a-host-jsh-over-an-existing-chrome-devtools-connection).
 
 ### slack upload \<channel_id\> \<file\> [--thread_ts=TS] [--comment="..."] [--title="..."]
 
@@ -483,6 +540,38 @@ Each watch keeps one SLICC webhook plus a state file at
 `/workspace/skills/slack/.watch-<id>.json`. Delivery depends on the Slack tab: if
 the page reloads, run `slack reinject`. Internals:
 `references/watch-architecture.md`.
+
+### slack watch under jsh
+
+`slack watch <channel_id> [--thread=<ts>] [--for=<duration>] [--count=N] [--json] [--include-own]`
+
+On a host (and in SLICC 7), `watch` observes the Slack tab's WebSocket over CDP
+with the same channel/thread selector, and **prints each new message as it
+arrives**. It runs until it is stopped, `--for` ends, or `--count` is reached.
+The subscription belongs to the process, so nothing is left behind when it ends.
+
+- `--thread=<ts>` — only replies in that thread. Without it, the channel's
+  messages and every thread reply in it.
+- `--for=<duration>` — `30s`, `10m`, `1h`, `2d`.
+- `--count=N` — stop after N messages. With `--for` too, a watch that ends
+  before N messages arrive exits **124**, as `timeout(1)` does.
+- `--json` — one raw Slack `message` frame per line (JSON Lines).
+- `--include-own` — also report your own messages, which are dropped by
+  default, as in SLICC's auto-watch.
+
+It reports messages from people, plus `bot_message`, `thread_broadcast`,
+`file_share` and `me_message`. Edits, deletions, joins and `message_replied`
+parent updates are dropped. The "Watching …" line goes to stderr, so stdout
+carries only messages. Exit: 0 when `--count` is reached or `--for` ends
+without `--count`; 124 as above; 130 on Ctrl-C; 143 on SIGTERM; 2 for a usage
+error.
+
+```bash
+# block until someone answers in the thread (or give up after an hour)
+slack watch C087NCG774J --thread=1774539502.747989 --count=1 --for=1h
+# stream a channel as JSON Lines
+slack watch C087NCG774J --json | jq -r .text
+```
 
 ### slack unwatch \<channel_id\> [--thread=\<thread_ts\>]
 

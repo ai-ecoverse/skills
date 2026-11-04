@@ -17,6 +17,19 @@ function escapeShellArg(value) {
 
 const browser = require('sliccy:browser');
 
+// --- Runtime: SLICC 6 or jsh ---
+//
+// SLICC 6's realm has the `webhook` and `crontask` shell commands, and its
+// browser bridge has a `webhook` sink, so `watch` and the post auto-watch hand
+// Slack frames to a lick and return. jsh (on a host, where sliccy:browser is
+// @ai-ecoverse/sliccy-browser over SLICC_CDP_URL, and in SLICC 7's kernel) has
+// neither: that package's `webhook` sink throws ENOTSUP. Under jsh, `watch`
+// runs in the foreground and prints messages (watchForeground), and state goes
+// to a per-user directory instead of the skill folder (stateDir).
+// `process.versions.jsh` is set by both jsh runtimes; SLICC 6's realm reports
+// only `process.versions.node` (slicc realm-node-shims.ts, checked 2026-11-04).
+const JSH = Boolean(process.versions && process.versions.jsh);
+
 // --- Tab management ---
 
 let _tab = null;
@@ -727,7 +740,20 @@ function describeTarget(target) {
 // The skill's own directory, wherever it is installed (SLICC's /workspace/skills,
 // or anywhere the host jsh runs it from): __dirname is this script's folder.
 const SKILL_ROOT = __dirname.replace(/\/scripts\/?$/, '');
-const LAST_POST_DIR = SKILL_ROOT;
+const LAST_POST_DIR = stateDir(process.env || {}, JSH, SKILL_ROOT);
+
+// Where per-user state (last posts, the custom emoji cache) is kept. SLICC 6:
+// the skill's own folder, as before. jsh: $SLACK_STATE_DIR, else
+// $XDG_STATE_HOME/slack, else ~/.local/state/slack. `npm install -g` of this
+// folder is a symlink to a checkout, so state kept next to the scripts would
+// land in a git working tree.
+function stateDir(env, jsh, root) {
+  if (!jsh) return root;
+  if (env.SLACK_STATE_DIR) return env.SLACK_STATE_DIR;
+  if (env.XDG_STATE_HOME) return `${env.XDG_STATE_HOME}/slack`;
+  const home = env.HOME || require('os').homedir();
+  return `${home}/.local/state/slack`;
+}
 
 function lastPostFile(wsId, channel) {
   // Sanitize: the channel arrives from argv, and the id is interpolated into a
@@ -766,6 +792,7 @@ async function rememberLastPostTs(wsId, channel, ts, postingCone) {
       lickTarget: postingCone || null,
       updatedAt: new Date().toISOString(),
     };
+    await fs.promises.mkdir(LAST_POST_DIR, { recursive: true });
     await fs.promises.writeFile(lastPostFile(wsId, channel), JSON.stringify(state));
   } catch (_) { /* best-effort only */ }
 }
@@ -1230,7 +1257,7 @@ const commands = {
     }
     // Merge workspace custom emoji (cached, refreshed every hour)
     try {
-      const cacheFile = `${__dirname}/emoji-cache.json`;
+      const cacheFile = JSH ? `${LAST_POST_DIR}/emoji-cache.json` : `${__dirname}/emoji-cache.json`;
       let cache = null;
       try {
         cache = JSON.parse(await fs.promises.readFile(cacheFile, 'utf8'));
@@ -1255,6 +1282,7 @@ const commands = {
             // URL entries are uploaded images — Slack renders them natively, no conversion needed
           }
           cache = { ts: now, map: customMap };
+          await fs.promises.mkdir(cacheFile.replace(/\/[^/]+$/, ''), { recursive: true }).catch(() => {});
           await fs.promises.writeFile(cacheFile, JSON.stringify(cache)).catch(() => {});
         }
       }
@@ -1388,7 +1416,11 @@ const commands = {
     // scoop (default: this cone's own SLICC_LICK_TARGET, so replies come back to
     // whoever posted). Thread root = the thread we replied into, else the fresh
     // message's own ts. Entirely non-fatal.
-    if (flags['no-watch'] !== true && flags.watch !== false) {
+    if (flags['no-watch'] !== true && flags.watch !== false && JSH) {
+      // No lick to route replies to under jsh: name the command that waits for one.
+      const wsPrefix = globalFlags.workspace ? `--ws=${globalFlags.workspace} ` : '';
+      console.log(`wait for a reply: slack ${wsPrefix}watch ${targetChannel} --thread=${threadTsFlag || sentTs} --count=1 --for=1h`);
+    } else if (flags['no-watch'] !== true && flags.watch !== false) {
       const threadTs = threadTsFlag || sentTs;
       try {
         await startAutoWatch({ targetChannel, threadTs, selfTs: data.ts, wsId, watchScoop: watchScoopFlag });
@@ -1422,9 +1454,40 @@ const commands = {
       const info = await slackApi('files.info', { file: fileId }, wsId);
       if (!info.ok) { console.error('Error:', info.error); process.exit(1); }
       url = info.file.url_private_download || info.file.url_private;
-      if (!name) name = `/tmp/${info.file.name || (info.file.id + '.' + (info.file.filetype || 'bin'))}`;
+      // The name is the uploader's: keep it inside /tmp (no `/`, no leading dots),
+      // since on a host /tmp/../ is the real filesystem.
+      const remoteName = String(info.file.name || (info.file.id + '.' + (info.file.filetype || 'bin')));
+      if (!name) name = `/tmp/${remoteName.replace(/[/\\]/g, '_').replace(/^\.+/, '_')}`;
     }
     const out = name || `/tmp/slack-download-${Date.now()}`;
+    if (JSH) {
+      // Under jsh the Slack page cannot read files.slack.com: its fetch fails
+      // with "Failed to fetch" (no CSP report; measured on Enterprise Grid,
+      // 2026-11-04). So fetch from this process with the tab's session cookie
+      // `d`, which files.slack.com accepts. The cookie goes into this one request
+      // header and is never printed, and only ever to an https Slack host:
+      // --url is caller-supplied, and the cookie is the whole session.
+      let host = '';
+      try { const u = new URL(url); host = u.protocol === 'https:' ? u.hostname : ''; } catch (_) {}
+      if (!/(^|\.)slack\.com$/.test(host)) {
+        console.error(`Error: refusing to send the Slack session to ${host || url}; only https://*.slack.com file URLs can be downloaded.`);
+        process.exit(1);
+      }
+      const tab = await findSlackTab();
+      const d = await browser.cookie(tab, 'd');
+      if (!d) { console.error('Error: the Slack tab has no session cookie; log in to Slack in that tab and retry.'); process.exit(1); }
+      const r = await fetch(url, { headers: { Cookie: `d=${d}` } });
+      const type = r.headers.get('content-type') || '';
+      if (!r.ok) { console.error(`Error: fetch failed (HTTP ${r.status})`); process.exit(1); }
+      if (/^text\/html/.test(type) && !/\.html?$/i.test(url)) {
+        console.error('Error: Slack answered with a web page instead of the file; the session may have expired. Log in to Slack in the tab and retry.');
+        process.exit(1);
+      }
+      const bytes = Buffer.from(await r.arrayBuffer());
+      await fs.promises.writeFile(out, bytes);
+      console.log(`Downloaded ${bytes.length} bytes to ${out}`);
+      return;
+    }
     // Route through evalInSlackTab so a double-encoded JSON eval result is parsed
     // correctly (a single JSON.parse would leave `res` a string and misreport failure).
     const code = `(async()=>{const r=await fetch(${JSON.stringify(url)},{credentials:'include'});if(!r.ok)return JSON.stringify({ok:false,status:r.status});const u=new Uint8Array(await r.arrayBuffer());let s='';for(let i=0;i<u.length;i+=8192){s+=String.fromCharCode.apply(null,u.subarray(i,i+8192));}return JSON.stringify({ok:true,b64:btoa(s),len:u.length});})()`;
@@ -1757,6 +1820,7 @@ const commands = {
   },
 
   async watch(args, globalFlags) {
+    if (JSH) return watchForeground(args, globalFlags);
     const { flags, positional } = parseArgs(args);
     const channel = positional[0];
     const threadTs = flags.thread || null;
@@ -1902,6 +1966,11 @@ const commands = {
   },
 
   async unwatch(args, globalFlags) {
+    if (JSH) {
+      console.error(JSH_NO_BACKGROUND_WATCHES);
+      console.error('Stop a watch with Ctrl-C, or end its process.');
+      process.exit(1);
+    }
     const { flags, positional } = parseArgs(args);
     const channel = positional[0];
     const threadTs = flags.thread || null;
@@ -1945,6 +2014,10 @@ const commands = {
   },
 
   async watches(args, globalFlags) {
+    if (JSH) {
+      console.log(JSH_NO_BACKGROUND_WATCHES);
+      return;
+    }
     const globResult = await exec('ls ' + escapeShellArg(SKILL_ROOT) + '/.watch-*.json 2>/dev/null');
     if (globResult.exitCode !== 0 || !globResult.stdout.trim()) {
       console.log('No active watches.');
@@ -1974,6 +2047,10 @@ const commands = {
   },
 
   async reinject(args, globalFlags) {
+    if (JSH) {
+      console.log(JSH_NO_BACKGROUND_WATCHES);
+      return;
+    }
     const globResult = await exec('ls ' + escapeShellArg(SKILL_ROOT) + '/.watch-*.json 2>/dev/null');
     if (globResult.exitCode !== 0 || !globResult.stdout.trim()) {
       console.log('No active watches to reinject.');
@@ -2800,6 +2877,151 @@ async function subscribeWatch(tab, state) {
     .forward({ sink: 'webhook', webhookId: state.webhookId });
 }
 
+// --- Foreground watch (jsh) ---
+//
+// Under jsh there is no webhook to hand frames to (see JSH at the top), so
+// `slack watch` stays in the foreground. It observes the Slack tab's WebSocket
+// over CDP with the same selector as SLICC's watch, has sliccy-browser append
+// each matched frame to a temporary file (its `vfs` sink), and prints every new
+// message from that file as it arrives. The subscription belongs to this
+// process and ends with it: there is nothing to unwatch or leak.
+
+const JSH_NO_BACKGROUND_WATCHES =
+  'No background watches under jsh: `slack watch` runs in the foreground and stops with its process.';
+const WATCH_USAGE =
+  'Usage: slack watch <channel_id> [--thread=<ts>] [--for=<duration>] [--count=N] [--json] [--include-own]';
+const WATCH_POLL_MS = 250;
+
+// Message subtypes a watch reports. Slack sends people's messages without a
+// subtype; these carry a message too. Everything else (message_changed,
+// message_deleted, message_replied parent updates, channel_join, …) is a change
+// to something already said, and is dropped as SLICC's auto-watch filter does.
+const WATCH_SUBTYPES = new Set(['bot_message', 'thread_broadcast', 'file_share', 'me_message']);
+
+// `30s`, `10m`, `1h`, `2d` (or a bare number of seconds) → milliseconds, or
+// null when the value is not one of those.
+function parseWatchDuration(value) {
+  const m = /^(\d+)([smhd]?)$/.exec(String(value).trim());
+  if (!m) return null;
+  const unit = { '': 1000, s: 1000, m: 60000, h: 3600000, d: 86400000 }[m[2]];
+  const ms = Number(m[1]) * unit;
+  return ms > 0 ? ms : null;
+}
+
+// Whether a matched frame is a new message to report. `seen` holds the ts of
+// every message reported so far (Slack can deliver a frame twice).
+function isWatchedMessage(frame, selfUser, seen) {
+  if (!frame || frame.type !== 'message' || typeof frame.ts !== 'string') return false;
+  if (frame.subtype && !WATCH_SUBTYPES.has(frame.subtype)) return false;
+  if (selfUser && frame.user === selfUser) return false;
+  if (seen.has(frame.ts)) return false;
+  seen.add(frame.ts);
+  return true;
+}
+
+async function watchForeground(args, globalFlags) {
+  const { flags, positional } = parseArgs(args);
+  const channel = positional[0];
+  if (!channel) {
+    console.error(WATCH_USAGE);
+    process.exit(2);
+  }
+  for (const name of ['scoop', 'filter', 'force']) {
+    if (flags[name] !== undefined) {
+      console.error(`Error: --${name} routes a watch to a SLICC 6 lick; under jsh, slack watch prints messages in the foreground.`);
+      console.error(WATCH_USAGE);
+      process.exit(2);
+    }
+  }
+  validateChannelId(channel);
+  const threadTs = flags.thread === undefined ? null : String(flags.thread);
+  if (threadTs !== null && !/^\d+\.\d+$/.test(threadTs)) {
+    console.error(`Error: --thread expects a message ts like 1774539502.747989, got "${threadTs}".`);
+    process.exit(2);
+  }
+  const forMs = flags.for === undefined ? null : parseWatchDuration(flags.for);
+  if (flags.for !== undefined && forMs === null) {
+    console.error(`Error: --for expects a duration like 30s, 10m, 1h or 2d, got "${flags.for}".`);
+    process.exit(2);
+  }
+  const count = flags.count === undefined ? null : Number(flags.count);
+  if (count !== null && !(Number.isInteger(count) && count > 0)) {
+    console.error(`Error: --count expects a positive whole number, got "${flags.count}".`);
+    process.exit(2);
+  }
+  const json = flags.json === true;
+
+  const wsId = await resolveWorkspace(globalFlags);
+  const selfUser = flags['include-own'] === true ? null : await resolveSelfUserId(wsId);
+  const tab = await findSlackTab();
+
+  const os = require('os');
+  const path = require('path');
+  const file = path.join(os.tmpdir(), `slack-watch-${process.pid}-${Date.now().toString(36)}.jsonl`);
+  await fs.promises.writeFile(file, '');
+  let sub;
+  try {
+    sub = await browser.websocket
+      .on(tab, { urlMatch: SLACK_WS_URL_MATCH })
+      .filter(buildWatchSelector({ channel, thread_ts: threadTs }))
+      .forward({ sink: 'vfs', path: file });
+  } catch (e) {
+    await fs.promises.rm(file, { force: true }).catch(() => {});
+    console.error(`Error: could not observe the Slack tab's WebSocket: ${e && e.message ? e.message : e}`);
+    process.exit(1);
+  }
+
+  // One promise settles the watch: --count reached, --for elapsed, or a signal.
+  let finish;
+  const finished = new Promise((resolve) => { finish = resolve; });
+  const onSignal = (sig) => finish(sig === 'SIGINT' ? 130 : 143);
+  process.on('SIGINT', onSignal);
+  process.on('SIGTERM', onSignal);
+  const deadline = forMs === null ? null : setTimeout(() => finish(count === null ? 0 : 124), forMs);
+
+  const scope = threadTs ? `thread ${threadTs} in ${channel}` : `${channel} (messages and thread replies)`;
+  const limits = [forMs !== null ? `for ${flags.for}` : '', count !== null ? `until ${count} message(s)` : '']
+    .filter(Boolean).join(', ');
+  console.error(`Watching ${scope}${limits ? `, ${limits}` : ''}. Ctrl-C stops.`);
+
+  const seen = new Set();
+  let consumed = 0;
+  let reported = 0;
+  let code = null;
+  finished.then((c) => { if (code === null) code = c; });
+  while (code === null) {
+    const text = await fs.promises.readFile(file, 'utf8').catch(() => '');
+    const end = text.lastIndexOf('\n') + 1;
+    const lines = text.slice(consumed, end).split('\n').filter(Boolean);
+    consumed = Math.max(consumed, end);
+    for (const line of lines) {
+      let frame;
+      try { frame = JSON.parse(line); } catch (_) { continue; }
+      if (!isWatchedMessage(frame, selfUser, seen)) continue;
+      if (json) {
+        console.log(JSON.stringify(frame));
+      } else {
+        await hydrateMessageEntities([frame], wsId);
+        console.log(formatMessage(frame));
+        if (frame.thread_ts && frame.thread_ts !== frame.ts) {
+          console.log(`    ↳ in thread ${frame.thread_ts}  → slack thread ${channel} ${frame.thread_ts}`);
+        }
+      }
+      reported += 1;
+      if (count !== null && reported >= count) { code = 0; break; }
+    }
+    if (code === null) await Promise.race([finished, new Promise((r) => setTimeout(r, WATCH_POLL_MS))]);
+  }
+
+  clearTimeout(deadline);
+  process.off('SIGINT', onSignal);
+  process.off('SIGTERM', onSignal);
+  await sub.close().catch(() => {});
+  await fs.promises.rm(file, { force: true }).catch(() => {});
+  if (code === 124) console.error(`No ${count === 1 ? 'message' : `${count} messages`} within ${flags.for}.`);
+  process.exit(code);
+}
+
 // --- Main ---
 
 const rawArgs = process.argv.slice(2);
@@ -2849,6 +3071,7 @@ if (!cmd || cmd === 'help' || filteredArgs.some((a) => a === '--help' || a === '
   console.log('                                           the cone that posted; --watch-scoop=<name> overrides)');
   console.log('                                           --thread_ts=last threads onto the last message');
   console.log('                                           this CLI posted in that channel');
+  console.log('                                           (jsh: no auto-watch; prints the watch command instead)');
   console.log('  upload <channel_id> <file> [--thread_ts=TS] [--comment="..."] [--title="..."]');
   console.log('                                           Upload a file to a channel/DM/thread');
   console.log('  download <file_id> [--out=<path>]         Download a file (e.g. thread image) locally');
@@ -2869,6 +3092,10 @@ if (!cmd || cmd === 'help' || filteredArgs.some((a) => a === '--help' || a === '
   console.log('  slackbot                                  Find Slackbot DM channel');
   console.log('  watch <channel_id> [--scoop=<name>]       Watch channel for new messages (defaults to the');
   console.log('                                           calling cone; required if it has no lick target)');
+  console.log('  watch <channel_id> [--thread=<ts>] [--for=<duration>] [--count=N] [--json] [--include-own]');
+  console.log('                                           jsh (host, SLICC 7): watch in the foreground and print');
+  console.log('                                           each new message; --for ends it (exit 124 if --count');
+  console.log('                                           was not reached), --json prints one frame per line');
   console.log('  unwatch <channel_id> [--thread=<ts>]      Stop watching a channel');
   console.log('  watches                                   List active watches');
   console.log('  reinject                                  Re-inject WebSocket interceptor');
