@@ -3244,16 +3244,23 @@ async function watchForeground(args, globalFlags) {
   // sees it half-written (and takes it for a stale entry to remove).
   const register = async () => {
     const tmp = `${registry}.tmp`;
-    try {
-      await fs.promises.writeFile(tmp, JSON.stringify(entry, null, 2), { mode: 0o600 });
-      await fs.promises.rename(tmp, registry);
-    } catch (_) { /* best effort; the next heartbeat tries again */ }
+    await fs.promises.writeFile(tmp, JSON.stringify(entry, null, 2), { mode: 0o600 });
+    await fs.promises.rename(tmp, registry);
   };
-  await fs.promises.mkdir(STATE_DIR, { recursive: true, mode: 0o700 }).catch(() => {});
-  await register();
+  // The first entry is required: an unregistered watch could not be listed or
+  // stopped with `slack unwatch`. Later heartbeats are best effort.
+  try {
+    await fs.promises.mkdir(STATE_DIR, { recursive: true, mode: 0o700 });
+    await register();
+  } catch (e) {
+    await sub.close().catch(() => {});
+    await removeFrames();
+    console.error(`Error: could not register the watch in ${STATE_DIR} (${e && e.message ? e.message : e}). Set SLACK_STATE_DIR to a writable directory.`);
+    process.exit(1);
+  }
   const heartbeat = setInterval(() => {
     entry.heartbeatAt = new Date().toISOString();
-    register();
+    register().catch(() => { /* the next heartbeat tries again */ });
   }, WATCH_HEARTBEAT_MS);
 
   // One promise settles the watch: --count reached, --for elapsed, or a signal.

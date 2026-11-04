@@ -74,6 +74,10 @@ async function slack(argv, o = {}) {
       }),
       writeFile: async (file, data, opts) => {
         writes.push({ file, opts });
+        if (o.failWrite && o.failWrite(file))
+          throw Object.assign(new Error(`EACCES: permission denied, open '${file}'`), {
+            code: 'EACCES',
+          });
         if (opts && opts.flag === 'wx' && file in vfs.files)
           throw Object.assign(new Error('EEXIST'), { code: 'EEXIST' });
         return p.writeFile(file, data);
@@ -532,6 +536,14 @@ test('a watch whose workspace or org tab is closed says which tab to open', asyn
     ok(r.err.includes(`https://app.slack.com/client/${home}`), ws);
     ok(!r.calls.some((c) => c.method === 'websocket'), `${ws}: no subscription`);
   }
+});
+
+test('a watch that cannot register stops instead of running unlisted', async () => {
+  const r = await slack(['--ws', WS, 'watch', CH], { failWrite: (f) => f.startsWith(STATE) });
+  is(r.exitCode, 1);
+  ok(r.err.includes('could not register the watch') && r.err.includes('SLACK_STATE_DIR'));
+  ok(r.closed(), 'subscription closed');
+  is(Object.keys(r.vfs.files), [], 'frames removed');
 });
 
 test('a watch records the workspace it resolved, so --ws finds an auto-detected watch', async () => {
