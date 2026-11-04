@@ -52,6 +52,7 @@ async function slack(argv, o = {}) {
   const opens = [];
   const reads = [];
   const renames = [];
+  const chmods = [];
   const p = vfs.promises;
   const fs = {
     ...vfs,
@@ -85,6 +86,9 @@ async function slack(argv, o = {}) {
       rename: async (from, to) => {
         renames.push({ from, to });
         return p.rename(from, to);
+      },
+      chmod: async (target, mode) => {
+        chmods.push({ target, mode });
       },
       mkdir: async (dir, opts) => {
         mkdirs.push({ dir, opts });
@@ -319,6 +323,7 @@ async function slack(argv, o = {}) {
     opens,
     reads,
     renames,
+    chmods,
     killed,
     killedAt,
     signals,
@@ -742,6 +747,21 @@ test('post takes the callback from $SLACK_WATCH_COMMAND, watches a small convers
   is(bg.args, [SCRIPT, `--ws=${WS}`, 'watch', CH, '--for=1h', 'cb']);
   is(r.killed, [{ pid: 111, sig: 'SIGTERM' }], 'the old watch stops after the new one starts');
   ok(r.out.includes('Restarted'));
+});
+
+test('post keeps its state private: the directory forced to 0700, its files 0600', async () => {
+  const r = await slack(['--ws', WS, 'post', CH, 'hi', '--no-sign', '--no-watch'], {
+    api: { ...posted, 'emoji.list': { ok: true, emoji: { party: 'alias:tada' } } },
+  });
+  is(r.exitCode, 0);
+  ok(
+    r.chmods.some((c) => c.target === STATE && c.mode === 0o700),
+    'chmod 0700 even if it existed'
+  );
+  const last = r.writes.find((w) => w.file.startsWith(`${STATE}/.last-post-`));
+  const cache = r.writes.find((w) => w.file === `${STATE}/emoji-cache.json`);
+  is(last.opts, { mode: 0o600 });
+  is(cache.opts, { mode: 0o600 });
 });
 
 test('post without a callback starts nothing and names the watch command', async () => {

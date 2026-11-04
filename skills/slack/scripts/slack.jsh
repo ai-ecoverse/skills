@@ -751,6 +751,15 @@ const STATE_DIR = stateDir(process.env || {}, JSH, SKILL_ROOT);
 // $XDG_STATE_HOME/slack, else ~/.local/state/slack. `npm install -g` of this
 // folder is a symlink to a checkout, so state kept next to the scripts would
 // land in a git working tree.
+// Create the state directory, and under jsh make it private (0700) even when it
+// already exists: mkdir's mode applies only to a directory it creates, and the
+// files in it name channels, timestamps and the cone that posted. In SLICC 6
+// STATE_DIR is the skill folder, which is left as it is.
+async function ensureStateDir() {
+  await fs.promises.mkdir(STATE_DIR, { recursive: true, mode: 0o700 });
+  if (JSH) await fs.promises.chmod(STATE_DIR, 0o700);
+}
+
 function stateDir(env, jsh, root) {
   if (!jsh) return root;
   if (env.SLACK_STATE_DIR) return env.SLACK_STATE_DIR;
@@ -796,8 +805,8 @@ async function rememberLastPostTs(wsId, channel, ts, postingCone) {
       lickTarget: postingCone || null,
       updatedAt: new Date().toISOString(),
     };
-    await fs.promises.mkdir(STATE_DIR, { recursive: true, mode: 0o700 });
-    await fs.promises.writeFile(lastPostFile(wsId, channel), JSON.stringify(state));
+    await ensureStateDir();
+    await fs.promises.writeFile(lastPostFile(wsId, channel), JSON.stringify(state), { mode: 0o600 });
   } catch (_) { /* best-effort only */ }
 }
 
@@ -1286,8 +1295,8 @@ const commands = {
             // URL entries are uploaded images — Slack renders them natively, no conversion needed
           }
           cache = { ts: now, map: customMap };
-          await fs.promises.mkdir(cacheFile.replace(/\/[^/]+$/, ''), { recursive: true }).catch(() => {});
-          await fs.promises.writeFile(cacheFile, JSON.stringify(cache)).catch(() => {});
+          if (JSH) await ensureStateDir().catch(() => {});
+          await fs.promises.writeFile(cacheFile, JSON.stringify(cache), { mode: 0o600 }).catch(() => {});
         }
       }
       if (cache && cache.map) Object.assign(emojiMap, cache.map);
@@ -3250,7 +3259,7 @@ async function watchForeground(args, globalFlags) {
   // The first entry is required: an unregistered watch could not be listed or
   // stopped with `slack unwatch`. Later heartbeats are best effort.
   try {
-    await fs.promises.mkdir(STATE_DIR, { recursive: true, mode: 0o700 });
+    await ensureStateDir();
     await register();
   } catch (e) {
     await sub.close().catch(() => {});
@@ -3358,7 +3367,7 @@ async function startBackgroundWatch({ targetChannel, threadTs, wsId, command }) 
   const target = { workspace: wsId, channel: targetChannel, threadTs: watchThread };
   const previous = (await liveWatches()).filter((e) => sameWatchTarget(e, target) && e.command === command);
 
-  await fs.promises.mkdir(STATE_DIR, { recursive: true, mode: 0o700 });
+  await ensureStateDir();
   const log = `${STATE_DIR}/watch-${targetChannel}${watchThread ? `-${watchThread}` : ''}.log`;
   const out = fs.openSync(log, 'a', 0o600);
   const argv = [__filename];
