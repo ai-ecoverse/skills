@@ -168,7 +168,9 @@ async function slack(argv, o = {}) {
       } else {
         setTimeout(() => emit('spawn'), 5);
         if (o.child === 'exits') setTimeout(() => emit('exit', 1, null), 30);
-        else
+        else if (o.child === 'slow') {
+          /* starts, never registers */
+        } else
           setTimeout(() => {
             readyAt = Date.now();
             vfs.files[`${STATE}/watch-5151.json`] = new TextEncoder().encode(entry(5151));
@@ -247,13 +249,27 @@ async function slack(argv, o = {}) {
     '__dirname',
     '__filename',
     'fetch',
+    'Date',
     readScript(SCRIPT)
   );
+  // o.fastClock: Date.now() runs a second ahead on every call, so a 20 s
+  // startup timeout passes in a few polls.
+  let clock = Date.now();
+  const ScriptDate = o.fastClock
+    ? class extends Date {
+        static now() {
+          clock += 1000;
+          return clock;
+        }
+      }
+    : Date;
   let exitCode = 0;
-  const done = run(req, proc, cons, path.dirname(SCRIPT), SCRIPT, recordingFetch).catch((e) => {
-    if (e && e.name === 'NodeExitError') exitCode = e.exitCode;
-    else throw e;
-  });
+  const done = run(req, proc, cons, path.dirname(SCRIPT), SCRIPT, recordingFetch, ScriptDate).catch(
+    (e) => {
+      if (e && e.name === 'NodeExitError') exitCode = e.exitCode;
+      else throw e;
+    }
+  );
   if (o.during) {
     while (!framesPath) {
       if ((await Promise.race([done.then(() => 'done'), tick(5)])) === 'done') break;
@@ -610,6 +626,27 @@ test('a restart stops the old watch only after the new one has registered', asyn
     ok(f.err.includes('The running watch keeps running'), child);
     ok(!f.out.includes('in the background'), `${child}: no claim that a watch runs`);
   }
+});
+
+test('a background watch that misses the startup timeout is stopped; the old one runs on', async () => {
+  const files = { [`${STATE}/watch-111.json`]: entry(111, { thread_ts: null, command: 'cb' }) };
+  const small = { ...posted, 'conversations.info': { ok: true, channel: { num_members: 2 } } };
+  const r = await slack(['--ws', WS, 'post', CH, 'hi', '--no-sign', '--watch-command', 'cb'], {
+    api: small,
+    files,
+    alive: new Set([111]),
+    child: 'slow',
+    fastClock: true,
+  });
+  is(r.exitCode, 0);
+  is(r.killed, [{ pid: 5151, sig: 'SIGTERM' }], 'only the new child is stopped');
+  ok(r.err.includes('was stopped') && r.err.includes('The running watch keeps running'));
+});
+
+test('--for refuses what setTimeout cannot wait for', async () => {
+  const r = await slack(['--ws', WS, 'watch', CH, '--for', '25d']);
+  is(r.exitCode, 2);
+  ok(r.err.includes('at most 24d'));
 });
 
 test('an entry whose heartbeat is stale is not a watch, even when its pid is alive', async () => {

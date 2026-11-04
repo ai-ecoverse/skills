@@ -2954,13 +2954,16 @@ const WATCH_BOOL_FLAGS = ['json', 'include-own'];
 const WATCH_SUBTYPES = new Set(['bot_message', 'thread_broadcast', 'file_share', 'me_message']);
 
 // `30s`, `10m`, `1h`, `2d` (or a bare number of seconds) → milliseconds, or
-// null when the value is not one of those.
+// null when the value is not one of those. At most 24 days (setTimeout's
+// 2^31-1 ms): a longer delay overflows and fires at once.
+const WATCH_MAX_MS = 2 ** 31 - 1;
+
 function parseWatchDuration(value) {
   const m = /^(\d+)([smhd]?)$/.exec(String(value).trim());
   if (!m) return null;
   const unit = { '': 1000, s: 1000, m: 60000, h: 3600000, d: 86400000 }[m[2]];
   const ms = Number(m[1]) * unit;
-  return ms > 0 ? ms : null;
+  return ms > 0 && ms <= WATCH_MAX_MS ? ms : null;
 }
 
 // Whether a matched frame is a new message to report. `seen` holds the ts of
@@ -3129,7 +3132,7 @@ async function watchForeground(args, globalFlags) {
   }
   const forMs = flags.for === undefined ? null : parseWatchDuration(flags.for);
   if (flags.for !== undefined && forMs === null) {
-    console.error(`Error: --for expects a duration like 30s, 10m, 1h or 2d, got "${flags.for}".`);
+    console.error(`Error: --for expects a duration like 30s, 10m, 1h or 2d, at most 24d, got "${flags.for}".`);
     process.exit(2);
   }
   const count = flags.count === undefined ? null : Number(flags.count);
@@ -3317,7 +3320,12 @@ async function startBackgroundWatch({ targetChannel, threadTs, wsId, command }) 
     if (!isReady) await new Promise((r) => setTimeout(r, 100));
   }
   if (!isReady) {
-    const why = exited !== null ? `it exited (${exited})` : `it was not ready within ${WATCH_START_TIMEOUT_MS / 1000}s`;
+    // A child still starting is ended, so it can't come up later and run
+    // beside the watch that keeps running.
+    if (exited === null) {
+      try { process.kill(child.pid, 'SIGTERM'); } catch (_) {}
+    }
+    const why = exited !== null ? `it exited (${exited})` : `it was not ready within ${WATCH_START_TIMEOUT_MS / 1000}s, and was stopped`;
     console.error(`Warning: the reply watch did not start: ${why}. See ${log}.`);
     if (previous.length) console.error('  The running watch keeps running.');
     return;

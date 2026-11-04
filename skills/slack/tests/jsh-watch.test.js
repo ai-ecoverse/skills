@@ -7,11 +7,12 @@ import { load } from './extract.js';
 // prints messages itself (watchForeground). These run the shipped helpers that
 // decide what it reports and how long it runs.
 const SOURCE = fs.readFileSync(path.join(process.cwd(), 'scripts/slack.jsh'), 'utf8');
+const WATCH_MAX_MS = 2 ** 31 - 1;
 const WATCH_SUBTYPES = new Set(['bot_message', 'thread_broadcast', 'file_share', 'me_message']);
 const { parseWatchDuration, isWatchedMessage } = load(
   SOURCE,
   ['parseWatchDuration', 'isWatchedMessage'],
-  { WATCH_SUBTYPES }
+  { WATCH_SUBTYPES, WATCH_MAX_MS }
 );
 
 test('--for takes seconds, minutes, hours and days', () => {
@@ -20,6 +21,7 @@ test('--for takes seconds, minutes, hours and days', () => {
   is(parseWatchDuration('10m'), 600000);
   is(parseWatchDuration('1h'), 3600000);
   is(parseWatchDuration('2d'), 172800000);
+  is(parseWatchDuration('24d'), 2073600000);
 });
 
 test('--for rejects what is not a duration', () => {
@@ -27,6 +29,7 @@ test('--for rejects what is not a duration', () => {
   is(parseWatchDuration('1.5h'), null);
   is(parseWatchDuration('-1m'), null);
   is(parseWatchDuration('abc'), null);
+  is(parseWatchDuration('25d'), null, 'beyond setTimeout’s 2^31-1 ms');
   is(parseWatchDuration(true), null);
 });
 

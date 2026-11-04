@@ -108,7 +108,7 @@ privileges and environment.
 
 - `--thread=<ts>`: only replies in that thread. Without it, the channel's
   messages and every thread reply in it.
-- `--for=<duration>`: `30s`, `10m`, `1h`, `2d`.
+- `--for=<duration>`: `30s`, `10m`, `1h`, `2d`, at most `24d` (setTimeout's limit).
 - `--count=N`: stop after N messages. A watch that reaches `--for` before N
   messages arrive exits **124**, as `timeout(1)` does.
 - `--json`: print each frame as a line of JSON. Not with a command, which reads
@@ -144,7 +144,8 @@ thread. A post into a conversation already watched with the same command starts
 a fresh hour. It stops the old watch only once the new one has registered,
 which it does after its subscription is installed. A reply in that moment can
 arrive twice, but is not lost. If the new watch doesn't start (`jsh` not on
-`PATH`, or it exits), `post` says so, and the old one keeps running.
+`PATH`, it exits, or it isn't ready within 20 seconds, in which case it is
+stopped), `post` says so, and the old one keeps running.
 
 ### The registry
 
