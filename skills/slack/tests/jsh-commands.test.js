@@ -91,12 +91,15 @@ async function slack(argv, o = {}) {
   let framesPath = null;
   let readyAt = null;
   let closed = false;
-  const tab = { targetId: 'tab1', url: `https://app.slack.com/client/${WS}/${CH}` };
+  // o.tabs: the Slack tabs, in Chrome's order; findTab returns the first match.
+  const tabs = o.tabs || [{ targetId: 'tab1', url: `https://app.slack.com/client/${WS}/${CH}` }];
+  const hanging = new Map();
   const api = { 'auth.test': { ok: true, user_id: SELF }, ...(o.api || {}) };
 
   const browser = {
-    async findTab() {
-      return tab;
+    async findTab(query = {}) {
+      const re = query.urlMatch ? new RegExp(query.urlMatch) : null;
+      return tabs.find((t) => !re || re.test(t.url)) || null;
     },
     async localStorage(_tab, key) {
       return key === 'localConfig_v2'
@@ -111,16 +114,17 @@ async function slack(argv, o = {}) {
       const params = {};
       for (const [k, v] of new URLSearchParams(opts && opts.body)) if (k !== 'token') params[k] = v;
       calls.push({ method, params });
+      if (o.slowApi && method === 'users.info') await tick(o.slowApi);
       return {
         body: Object.hasOwn(api, method) ? api[method] : { ok: false, error: 'not_mocked' },
       };
     },
     websocket: {
-      on: (_tab, onOpts) => ({
+      on: (onTab, onOpts) => ({
         filter: (selector) => ({
           forward: async (sink) => {
             framesPath = sink.path;
-            calls.push({ method: 'websocket', onOpts, selector, sink });
+            calls.push({ method: 'websocket', tab: onTab, onOpts, selector, sink });
             return {
               id: 'sub-1',
               close: async () => {
@@ -151,7 +155,10 @@ async function slack(argv, o = {}) {
       };
       spawns.push({ bin, args, opts });
       const emit = (ev, ...a) => handlers[ev] && handlers[ev](...a);
-      if (bin !== 'jsh') {
+      if (bin !== 'jsh' && o.hang) {
+        // A callback that never ends by itself: only a signal to its group does.
+        hanging.set(child.pid, () => emit('close', null, 'SIGTERM'));
+      } else if (bin !== 'jsh') {
         setTimeout(() => emit('close', 0, null), 5);
       } else if (o.child === 'missing') {
         setTimeout(
@@ -212,6 +219,7 @@ async function slack(argv, o = {}) {
       }
       killed.push({ pid, sig });
       killedAt.push(Date.now());
+      if (pid < 0 && hanging.has(-pid)) hanging.get(-pid)();
       return true;
     },
   };
@@ -417,6 +425,68 @@ test('a running watch is registered for `slack watches`', async () => {
   );
   is(listed.heartbeatAt, listed.startedAt, 'the first heartbeat is the start');
   is(r.writes.find((w) => w.file === `${STATE}/watch-4242.json`).opts, { mode: 0o600 });
+});
+
+test('watch observes the tab of the workspace it watches, not the first Slack tab', async () => {
+  const tabs = [
+    { targetId: 'other', url: 'https://app.slack.com/client/T06V9L18205/C1' },
+    { targetId: 'mine', url: `https://app.slack.com/client/${WS}/${CH}` },
+  ];
+  const r = await slack(['--ws', WS, 'watch', CH, '--for', '1s'], { tabs });
+  is(r.calls.find((c) => c.method === 'websocket').tab.targetId, 'mine');
+});
+
+test('a watch records the workspace it resolved, so --ws finds an auto-detected watch', async () => {
+  let listed = null;
+  await slack(['watch', CH], {
+    during: async ({ signal, vfs }) => {
+      await tick(20);
+      listed = JSON.parse(new TextDecoder().decode(vfs.files[`${STATE}/watch-4242.json`]));
+      signal('SIGTERM');
+    },
+  });
+  is(listed.workspace, WS, 'from the tab URL, without --ws');
+  const files = { [`${STATE}/watch-111.json`]: entry(111) };
+  for (const argv of [
+    ['--ws', WS, 'unwatch', CH, '--thread', ROOT],
+    ['unwatch', CH, '--thread', ROOT],
+  ]) {
+    const u = await slack(argv, { files, alive: new Set([111]) });
+    is(u.killed, [{ pid: 111, sig: 'SIGTERM' }], argv.join(' '));
+  }
+  const other = await slack(['--ws', 'T06V9L18205', 'unwatch', CH, '--thread', ROOT], {
+    files,
+    alive: new Set([111]),
+  });
+  is(other.killed, [], 'another workspace is another target');
+});
+
+test('stopping a watch stops a callback that is still running', async () => {
+  const r = await slack(['--ws', WS, 'watch', CH, 'sleep 1000'], {
+    hang: true,
+    during: async ({ framesPath, vfs, signal }) => {
+      await vfs.promises.appendFile(framesPath, frame({ ts: '5.000001' }));
+      await tick(400);
+      signal('SIGTERM');
+    },
+  });
+  is(r.exitCode, 143);
+  is(r.killed, [{ pid: -5151, sig: 'SIGTERM' }], 'SIGTERM to the callback’s process group');
+  is(r.spawns[0].opts.detached, true, 'the callback leads its own group');
+  is(Object.keys(r.vfs.files), []);
+});
+
+test('a watch that ends while it looks up a message author runs no callback', async () => {
+  const r = await slack(['--ws', WS, 'watch', CH, 'echo late'], {
+    slowApi: 600,
+    during: async ({ framesPath, vfs, signal }) => {
+      await vfs.promises.appendFile(framesPath, frame({ ts: '6.000001' }));
+      await tick(350);
+      signal('SIGTERM');
+    },
+  });
+  is(r.exitCode, 143);
+  is(r.spawns, [], 'no callback starts after the watch was told to stop');
 });
 
 // ─── slack watches / unwatch ─────────────────────────────────────────────────

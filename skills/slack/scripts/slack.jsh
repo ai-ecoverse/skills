@@ -1430,7 +1430,7 @@ const commands = {
       if (watchCommand) {
         try {
           await startBackgroundWatch({
-            targetChannel, threadTs: threadTsFlag || sentTs, wsId, workspaceFlag: globalFlags.workspace || null, command: watchCommand,
+            targetChannel, threadTs: threadTsFlag || sentTs, wsId, command: watchCommand,
           });
         } catch (e) {
           if (e && e.name === 'NodeExitError') throw e;
@@ -2001,7 +2001,7 @@ const commands = {
       }
       validateChannelId(channel);
       const threadTs = typeof flags.thread === 'string' ? flags.thread : null;
-      const target = { workspace: globalFlags.workspace || null, channel, threadTs };
+      const target = { workspace: globalFlags.workspace || null, channel, threadTs };  // null: any workspace
       const hits = (await liveWatches()).filter((e) => sameWatchTarget(e, target));
       if (!hits.length) {
         console.error(`No running watch for ${threadTs ? `${channel} thread ${threadTs}` : channel}${target.workspace ? ` in ${target.workspace}` : ''}. See: slack watches`);
@@ -2991,17 +2991,35 @@ function watchCommandEnv(frame, { workspace, author }) {
 }
 
 // Run one callback, as ntfy does: `sh -c '<command>'`, the watch's own stdio,
-// one at a time and in order. Resolves with its exit status.
+// one at a time and in order. `done` resolves with its exit status. The shell
+// leads its own process group, so stopWatchCommand reaches whatever it started.
+const WATCH_KILL_GRACE_MS = 5000;
+
 function runWatchCommand(command, env) {
   const { spawn } = require('child_process');
-  return new Promise((resolve) => {
-    const child = spawn('sh', ['-c', command], { stdio: 'inherit', env: { ...process.env, ...env } });
+  const child = spawn('sh', ['-c', command], { stdio: 'inherit', detached: true, env: { ...process.env, ...env } });
+  const done = new Promise((resolve) => {
     child.on('error', (e) => {
       console.error(`slack watch: could not run the command: ${e.message}`);
       resolve(127);
     });
     child.on('close', (code, signal) => resolve(code === null ? (signal ? 128 : 1) : code));
   });
+  return { child, done };
+}
+
+// End a running callback when the watch ends (a signal, `unwatch`, `--for`):
+// SIGTERM to its process group, then SIGKILL if it is still there after the
+// grace period, so a hung callback can't keep the watch alive.
+function stopWatchCommand(run) {
+  const signal = (sig) => {
+    try { process.kill(-run.child.pid, sig); } catch (_) {
+      try { run.child.kill(sig); } catch (_e) { /* already gone */ }
+    }
+  };
+  signal('SIGTERM');
+  const timer = setTimeout(() => signal('SIGKILL'), WATCH_KILL_GRACE_MS);
+  run.done.then(() => clearTimeout(timer));
 }
 
 // --- The watch registry (STATE_DIR/watch-<pid>.json) ---
@@ -3054,11 +3072,24 @@ async function liveWatches() {
   return out.sort((x, y) => String(x.startedAt).localeCompare(String(y.startedAt)));
 }
 
-// Whether a watch entry is the one for this target: same workspace, channel and
-// thread (null thread_ts = the whole channel).
+// Whether a watch entry is the one for this target: same channel and thread
+// (null thread_ts = the whole channel), and the same workspace when one is
+// given. Entries record the workspace the watch resolved, flag or not, so an
+// auto-detected watch and `--ws=<it>` name the same target.
 function sameWatchTarget(entry, { workspace, channel, threadTs }) {
-  return entry.workspace === (workspace || null) && entry.channel === channel &&
+  return (!workspace || entry.workspace === workspace) && entry.channel === channel &&
     (entry.thread_ts || null) === (threadTs || null);
+}
+
+// The tab to observe for a workspace: the one whose /client/<id>/ URL is that
+// workspace, when there is one. findSlackTab's first tab can belong to another
+// workspace, and its localConfig_v2 still answers for every signed-in one, so
+// API calls succeed while its WebSocket never carries this workspace's
+// messages. A team inside an Enterprise Grid org has no tab of its own; it
+// falls back to the active tab, which is the org's.
+async function watchTab(wsId) {
+  const own = await browser.findTab({ domain: SLACK_DOMAIN, urlMatch: new RegExp(`/client/${wsId}(?![A-Z0-9])`) });
+  return own || findSlackTab();
 }
 
 function describeWatch(entry) {
@@ -3118,7 +3149,7 @@ async function watchForeground(args, globalFlags) {
 
   const wsId = await resolveWorkspace(globalFlags);
   const selfUser = flags['include-own'] === true ? null : await resolveSelfUserId(wsId);
-  const tab = await findSlackTab();
+  const tab = await watchTab(wsId);
 
   // The frames are private messages: keep them in a directory only this user
   // can read (0700), in a file created fresh (0600, `wx`), never in shared /tmp.
@@ -3147,7 +3178,7 @@ async function watchForeground(args, globalFlags) {
   const registry = watchRegistryFile(process.pid);
   const entry = {
     pid: process.pid,
-    workspace: globalFlags.workspace || null,
+    workspace: wsId,
     channel,
     thread_ts: threadTs,
     command,
@@ -3167,6 +3198,9 @@ async function watchForeground(args, globalFlags) {
   let finish;
   const finished = new Promise((resolve) => { finish = resolve; });
   const onSignal = (sig) => finish(sig === 'SIGINT' ? 130 : 143);
+  // A callback still running when the watch ends is stopped with it.
+  let running = null;
+  finished.then(() => { if (running) stopWatchCommand(running); });
   process.on('SIGINT', onSignal);
   process.on('SIGTERM', onSignal);
   const deadline = forMs === null ? null : setTimeout(() => finish(count === null ? 0 : 124), forMs);
@@ -3198,9 +3232,13 @@ async function watchForeground(args, globalFlags) {
           console.log(JSON.stringify(frame));
         } else {
           await hydrateMessageEntities([frame], wsId);
+          // The watch can end during that lookup: then no callback starts.
+          if (code !== null) break;
           if (command !== null) {
             const env = watchCommandEnv(frame, { workspace: wsId, author: authorFromMessage(frame) });
-            const status = await runWatchCommand(command, env);
+            running = runWatchCommand(command, env);
+            const status = await running.done;
+            running = null;
             if (status !== 0) console.error(`slack watch: the command exited ${status} for ts=${frame.ts}`);
           } else {
             console.log(formatMessage(frame));
@@ -3234,21 +3272,21 @@ async function watchForeground(args, globalFlags) {
 // A post into a watched target starts a fresh hour and then stops the old watch,
 // once the new one is ready, so a reply in between can arrive twice but is not
 // lost. If the new watch doesn't start, the old one keeps running.
-async function startBackgroundWatch({ targetChannel, threadTs, wsId, workspaceFlag, command }) {
+async function startBackgroundWatch({ targetChannel, threadTs, wsId, command }) {
   let numMembers = null;
   try {
     const info = await slackApi('conversations.info', { channel: targetChannel }, wsId, { fatal: false });
     if (info && info.ok && info.channel && info.channel.num_members != null) numMembers = info.channel.num_members;
   } catch (_) { /* a DM, or the lookup failed: treat as small */ }
   const watchThread = decideWatchScope(numMembers) === 'thread' ? threadTs : null;
-  const target = { workspace: workspaceFlag, channel: targetChannel, threadTs: watchThread };
+  const target = { workspace: wsId, channel: targetChannel, threadTs: watchThread };
   const previous = (await liveWatches()).filter((e) => sameWatchTarget(e, target) && e.command === command);
 
   await fs.promises.mkdir(STATE_DIR, { recursive: true, mode: 0o700 });
   const log = `${STATE_DIR}/watch-${targetChannel}${watchThread ? `-${watchThread}` : ''}.log`;
   const out = fs.openSync(log, 'a', 0o600);
   const argv = [__filename];
-  if (workspaceFlag) argv.push(`--ws=${workspaceFlag}`);
+  argv.push(`--ws=${wsId}`);
   argv.push('watch', targetChannel);
   if (watchThread) argv.push(`--thread=${watchThread}`);
   argv.push('--for=1h', command);
