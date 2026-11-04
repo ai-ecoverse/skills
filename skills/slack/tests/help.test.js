@@ -8,16 +8,6 @@ const cases = [
     ['post', 'C123', 'hello', '--help'],
     'Slack API client — interact with Slack from the command line.',
   ],
-  [
-    'scripts/slack-support.jsh',
-    ['list', '--help'],
-    'Slack Support Portal — manage help requests from the command line.',
-  ],
-  [
-    'scripts/slack-support.jsh',
-    ['view', '-h'],
-    'Slack Support Portal — manage help requests from the command line.',
-  ],
 ];
 
 for (const [script, words, usage] of cases) {

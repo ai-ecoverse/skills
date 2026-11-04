@@ -14,7 +14,7 @@ test('the last post a cone made round-trips with its owner', async () => {
   const vfs = nodeFs();
   const s = load(SOURCE, ['rememberLastPostTs', 'readLastPost', 'lastPostFile', 'stateOwner'], {
     fs: vfs,
-    LAST_POST_DIR: '/workspace/skills/slack/.state',
+    STATE_DIR: '/workspace/skills/slack/.state',
   });
   await s.rememberLastPostTs('T1', 'C1', '1791442410.765389', 'cone-a');
   is(await s.readLastPost('T1', 'C1'), { ts: '1791442410.765389', owner: 'cone-a' });

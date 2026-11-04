@@ -1,3 +1,4 @@
+#!/usr/bin/env jsh
 // slack-ext.jsh — Slack admin user-management commands
 //
 // Exposes Slack's legacy users.admin.* namespace for converting users between
@@ -47,6 +48,11 @@
 // Bots are always refused; already-in-state is a no-op.
 
 const browser = require('sliccy:browser');
+// Under jsh on a host (process.versions.jsh), Chrome's default DevTools port
+// unless SLICC_CDP_URL names another; sliccy-browser reads it when it connects.
+if (process.versions && process.versions.jsh && process.env && !process.env.SLICC_CDP_URL) {
+  process.env.SLICC_CDP_URL = 'http://127.0.0.1:9222';
+}
 const cli = require('sliccy:cli');
 const color = require('sliccy:color');
 const http = require('sliccy:http');

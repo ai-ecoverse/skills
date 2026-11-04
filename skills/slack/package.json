@@ -2,14 +2,12 @@
   "name": "@ai-ecoverse/slack",
   "version": "1.0.0",
   "private": true,
-  "description": "The slack, slack-ext and slack-support CLIs for jsh on a host. They drive a logged-in Slack tab in Chrome over an existing DevTools Protocol connection (SLICC_CDP_URL). `npm install -g` or `pnpm add -g` this folder to put them on PATH.",
+  "description": "The slack and slack-ext CLIs for jsh on a host. They drive a logged-in Slack tab in Chrome over an existing DevTools Protocol connection (SLICC_CDP_URL, default http://127.0.0.1:9222). `npm install -g` or `pnpm add -g` this folder to put them on PATH.",
   "bin": {
-    "slack": "bin/slack",
-    "slack-ext": "bin/slack-ext",
-    "slack-support": "bin/slack-support"
+    "slack": "scripts/slack.jsh",
+    "slack-ext": "scripts/slack-ext.jsh"
   },
   "files": [
-    "bin",
     "scripts",
     "references",
     "SKILL.md"

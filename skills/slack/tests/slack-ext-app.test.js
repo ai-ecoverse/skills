@@ -15,13 +15,13 @@
 //
 // The mutation matrix verified against these tests is recorded at the bottom.
 
-import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import test, { fail, is, not, ok } from 'tst';
 import * as _argvMod from '../scripts/argv.js';
 import * as _manifestDiffMod from '../scripts/manifest-diff.js';
 import * as _gridMod from '../scripts/slack-ext-grid.js';
+import { readScript } from './script.js';
 
 const SCRIPT = fileURLToPath(new URL('../scripts/slack-ext.jsh', import.meta.url));
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
@@ -315,7 +315,7 @@ async function load(opts) {
     throw new Error('unexpected require(' + id + ')');
   };
 
-  let source = readFileSync(SCRIPT, 'utf8');
+  let source = readScript(SCRIPT);
   // Anchor on the actual trailer (`try { await main(); }`), NOT on the first
   // top-level `try {` in the file. The greedy form truncated the module at the
   // first top-level try block, which silently discarded ~1800 lines and made

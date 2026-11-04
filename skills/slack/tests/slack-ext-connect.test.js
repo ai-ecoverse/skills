@@ -10,12 +10,12 @@
 // sliccy:* modules and a stub browser whose fetch plays the Slack API. Every id,
 // name and address here is a fake.
 
-import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import test, { is, ok } from 'tst';
 import * as _argvMod from '../scripts/argv.js';
 import * as _manifestDiffMod from '../scripts/manifest-diff.js';
 import * as _gridMod from '../scripts/slack-ext-grid.js';
+import { readScript } from './script.js';
 
 const SCRIPT = fileURLToPath(new URL('../scripts/slack-ext.jsh', import.meta.url));
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
@@ -94,7 +94,10 @@ async function load(opts) {
     channels: JSON.parse(JSON.stringify(opts.channels || {})),
     teams: JSON.parse(JSON.stringify(opts.teams || {})),
   };
-  const fakeTab = { id: 'tab1', url: opts.tabUrl || 'https://app.slack.com/client/' + WS + '/' + CHAN };
+  const fakeTab = {
+    id: 'tab1',
+    url: opts.tabUrl || 'https://app.slack.com/client/' + WS + '/' + CHAN,
+  };
 
   const browserStub = {
     async findTab() {
@@ -102,7 +105,9 @@ async function load(opts) {
     },
     async localStorage(_tab, key) {
       if (key !== 'localConfig_v2') return null;
-      return JSON.stringify({ teams: { [WS]: { token: 'xoxc-test-ws' }, [ORG]: { token: 'xoxc-test-org' } } });
+      return JSON.stringify({
+        teams: { [WS]: { token: 'xoxc-test-ws' }, [ORG]: { token: 'xoxc-test-org' } },
+      });
     },
     async fetch(_tab, url, fetchOpts) {
       const method = url.replace('/api/', '');
@@ -120,7 +125,13 @@ async function load(opts) {
         if (custom !== undefined) return { body: custom };
       }
       if (method === 'conversations.sharedApprovals.list') {
-        return { body: { ok: true, approvals: JSON.parse(JSON.stringify(state.rows)), response_metadata: { next_cursor: '' } } };
+        return {
+          body: {
+            ok: true,
+            approvals: JSON.parse(JSON.stringify(state.rows)),
+            response_metadata: { next_cursor: '' },
+          },
+        };
       }
       if (method === 'conversations.revokeSharedInvite') {
         const row = state.rows.find((r) => r.id === params.invite_id);
@@ -155,7 +166,12 @@ async function load(opts) {
         return {
           body: {
             ok: true,
-            invites: invites.map((i) => ({ email: i.email, ok: true, invite_id: 'I0EXAMPLE02', expiration_ts: 1791000000 })),
+            invites: invites.map((i) => ({
+              email: i.email,
+              ok: true,
+              invite_id: 'I0EXAMPLE02',
+              expiration_ts: 1791000000,
+            })),
           },
         };
       }
@@ -227,7 +243,7 @@ async function load(opts) {
     warn: (m) => stderr.push(String(m === undefined ? '' : m)),
   };
 
-  const source = readFileSync(SCRIPT, 'utf8');
+  const source = readScript(SCRIPT);
   const factory = new AsyncFunction('require', 'process', 'console', 'setTimeout', source);
   const fakeSetTimeout = (fn, ms) => {
     sleeps.push(ms);
@@ -247,7 +263,12 @@ async function load(opts) {
     state,
     text: () => stdout.join('\n'),
     errText: () => stderr.join('\n'),
-    exit: () => (runError ? (runError.name === 'NodeExitError' ? runError.exitCode : 'THROW:' + runError.message) : 0),
+    exit: () =>
+      runError
+        ? runError.name === 'NodeExitError'
+          ? runError.exitCode
+          : 'THROW:' + runError.message
+        : 0,
     methods: () => calls.map((c) => c.method).join(','),
     count: (m) => calls.filter((c) => c.method === m).length,
   };
@@ -264,7 +285,9 @@ const mutations = (h) => h.calls.filter((c) => MUTATING.includes(c.method)).leng
 // ── guest-invite ──────────────────────────────────────────────────────────────
 
 test('guest-invite dry run: makes no Slack call at all, shows the payload target', async () => {
-  const h = await load({ argv: ['--ws=' + WS, '--org=' + ORG, 'guest-invite', EMAIL, '--channel=' + CHAN] });
+  const h = await load({
+    argv: ['--ws=' + WS, '--org=' + ORG, 'guest-invite', EMAIL, '--channel=' + CHAN],
+  });
   is(h.exit(), 0);
   is(h.calls.length, 0);
   is(mutations(h), 0);
@@ -275,7 +298,9 @@ test('guest-invite dry run: makes no Slack call at all, shows the payload target
 });
 
 test('guest-invite dry run --json: one JSON document with the exact params, no call', async () => {
-  const h = await load({ argv: ['--ws=' + WS, '--org=' + ORG, 'guest-invite', EMAIL, '--channel=' + CHAN, '--json'] });
+  const h = await load({
+    argv: ['--ws=' + WS, '--org=' + ORG, 'guest-invite', EMAIL, '--channel=' + CHAN, '--json'],
+  });
   is(h.exit(), 0);
   is(h.calls.length, 0);
   const doc = JSON.parse(h.text());
@@ -284,7 +309,9 @@ test('guest-invite dry run --json: one JSON document with the exact params, no c
 });
 
 test('guest-invite --confirm: exactly one inviteBulk with exactly the measured fields, ORG token', async () => {
-  const h = await load({ argv: ['--ws=' + WS, '--org=' + ORG, 'guest-invite', EMAIL, '--channel=' + CHAN, '--confirm'] });
+  const h = await load({
+    argv: ['--ws=' + WS, '--org=' + ORG, 'guest-invite', EMAIL, '--channel=' + CHAN, '--confirm'],
+  });
   is(h.exit(), 0, h.errText());
   is(h.methods(), 'users.admin.inviteBulk');
   const c = h.calls[0];
@@ -306,7 +333,10 @@ test('guest-invite --confirm: exactly one inviteBulk with exactly the measured f
 test('guest-invite --confirm: top-level ok:true with a failed per-invite result exits non-zero', async () => {
   const h = await load({
     argv: ['--ws=' + WS, '--org=' + ORG, 'guest-invite', EMAIL, '--channel=' + CHAN, '--confirm'],
-    api: (m) => (m === 'users.admin.inviteBulk' ? { ok: true, invites: [{ email: EMAIL, ok: false, error: 'already_invited' }] } : undefined),
+    api: (m) =>
+      m === 'users.admin.inviteBulk'
+        ? { ok: true, invites: [{ email: EMAIL, ok: false, error: 'already_invited' }] }
+        : undefined,
   });
   is(h.exit(), 1);
   ok(/FAILED: already_invited/.test(h.text()), h.text());
@@ -324,8 +354,19 @@ test('guest-invite --confirm: ok:true with no per-invite entry is a failure, not
 
 test('guest-invite --confirm --json: failure still exits non-zero', async () => {
   const h = await load({
-    argv: ['--ws=' + WS, '--org=' + ORG, 'guest-invite', EMAIL, '--channel=' + CHAN, '--confirm', '--json'],
-    api: (m) => (m === 'users.admin.inviteBulk' ? { ok: true, invites: [{ email: EMAIL, ok: false, error: 'invalid_email' }] } : undefined),
+    argv: [
+      '--ws=' + WS,
+      '--org=' + ORG,
+      'guest-invite',
+      EMAIL,
+      '--channel=' + CHAN,
+      '--confirm',
+      '--json',
+    ],
+    api: (m) =>
+      m === 'users.admin.inviteBulk'
+        ? { ok: true, invites: [{ email: EMAIL, ok: false, error: 'invalid_email' }] }
+        : undefined,
   });
   is(h.exit(), 1);
   const doc = JSON.parse(h.text());
@@ -333,24 +374,46 @@ test('guest-invite --confirm --json: failure still exits non-zero', async () => 
 });
 
 test('guest-invite without --ws is refused before any call', async () => {
-  const h = await load({ argv: ['--org=' + ORG, 'guest-invite', EMAIL, '--channel=' + CHAN, '--confirm'] });
+  const h = await load({
+    argv: ['--org=' + ORG, 'guest-invite', EMAIL, '--channel=' + CHAN, '--confirm'],
+  });
   is(h.exit(), 1);
   is(h.calls.length, 0);
   ok(/--ws=<TEAM_ID> is required/.test(h.errText()), h.errText());
 });
 
 test('guest-invite with the org id as --ws is refused (team_id must be the workspace)', async () => {
-  const h = await load({ argv: ['--ws=' + ORG, '--org=' + ORG, 'guest-invite', EMAIL, '--channel=' + CHAN, '--confirm'] });
+  const h = await load({
+    argv: ['--ws=' + ORG, '--org=' + ORG, 'guest-invite', EMAIL, '--channel=' + CHAN, '--confirm'],
+  });
   is(h.exit(), 1);
   is(h.calls.length, 0);
   ok(/WORKSPACE ID/.test(h.errText()), h.errText());
 });
 
 test('guest-invite refuses a channel list and a bad email', async () => {
-  const a = await load({ argv: ['--ws=' + WS, '--org=' + ORG, 'guest-invite', EMAIL, '--channel=C0EXAMPLE01,C0EXAMPLE02', '--confirm'] });
+  const a = await load({
+    argv: [
+      '--ws=' + WS,
+      '--org=' + ORG,
+      'guest-invite',
+      EMAIL,
+      '--channel=C0EXAMPLE01,C0EXAMPLE02',
+      '--confirm',
+    ],
+  });
   is(a.exit(), 1);
   is(a.calls.length, 0);
-  const b = await load({ argv: ['--ws=' + WS, '--org=' + ORG, 'guest-invite', 'not-an-email', '--channel=' + CHAN, '--confirm'] });
+  const b = await load({
+    argv: [
+      '--ws=' + WS,
+      '--org=' + ORG,
+      'guest-invite',
+      'not-an-email',
+      '--channel=' + CHAN,
+      '--confirm',
+    ],
+  });
   is(b.exit(), 1);
   is(b.calls.length, 0);
 });
@@ -369,9 +432,14 @@ test('connect-revoke dry run: reads sharedApprovals.list only and shows the invi
 });
 
 test('connect-revoke --confirm: revokes, RE-READS the row and reports the new status', async () => {
-  const h = await load({ argv: ['--org=' + ORG, 'connect-revoke', INVITE, '--channel=' + CHAN, '--confirm'] });
+  const h = await load({
+    argv: ['--org=' + ORG, 'connect-revoke', INVITE, '--channel=' + CHAN, '--confirm'],
+  });
   is(h.exit(), 0, h.errText());
-  is(h.methods(), 'conversations.sharedApprovals.list,conversations.revokeSharedInvite,conversations.sharedApprovals.list');
+  is(
+    h.methods(),
+    'conversations.sharedApprovals.list,conversations.revokeSharedInvite,conversations.sharedApprovals.list'
+  );
   is(h.calls[1].params, { invite_id: INVITE, channel: CHAN });
   is(h.calls[1].token, 'xoxc-test-org');
   const t = h.text();
@@ -393,7 +461,10 @@ test('connect-revoke --confirm: ok:true but the re-read still shows pending -> e
 test('connect-revoke --confirm: team_is_restricted -> clear error and org-token hint, no re-read', async () => {
   const h = await load({
     argv: ['--org=' + ORG, 'connect-revoke', INVITE, '--channel=' + CHAN, '--confirm'],
-    api: (m) => (m === 'conversations.revokeSharedInvite' ? { ok: false, error: 'team_is_restricted' } : undefined),
+    api: (m) =>
+      m === 'conversations.revokeSharedInvite'
+        ? { ok: false, error: 'team_is_restricted' }
+        : undefined,
   });
   is(h.exit(), 1);
   const e = h.errText();
@@ -403,21 +474,28 @@ test('connect-revoke --confirm: team_is_restricted -> clear error and org-token 
 });
 
 test('connect-revoke: unknown invite is refused without a revoke call', async () => {
-  const h = await load({ argv: ['--org=' + ORG, 'connect-revoke', 'I0EXAMPLE09', '--channel=' + CHAN, '--confirm'] });
+  const h = await load({
+    argv: ['--org=' + ORG, 'connect-revoke', 'I0EXAMPLE09', '--channel=' + CHAN, '--confirm'],
+  });
   is(h.exit(), 1);
   is(mutations(h), 0);
   ok(/not found in conversations\.sharedApprovals\.list/.test(h.errText()), h.errText());
 });
 
 test('connect-revoke: --channel that does not match the row is refused', async () => {
-  const h = await load({ argv: ['--org=' + ORG, 'connect-revoke', INVITE, '--channel=C0EXAMPLE02', '--confirm'] });
+  const h = await load({
+    argv: ['--org=' + ORG, 'connect-revoke', INVITE, '--channel=C0EXAMPLE02', '--confirm'],
+  });
   is(h.exit(), 1);
   is(mutations(h), 0);
   ok(/is for channel C0EXAMPLE01, not C0EXAMPLE02/.test(h.errText()), h.errText());
 });
 
 test('connect-revoke: already expired is nothing to do, no revoke call', async () => {
-  const h = await load({ rows: [approvalRow({ status: 'expired' })], argv: ['--org=' + ORG, 'connect-revoke', INVITE, '--channel=' + CHAN, '--confirm'] });
+  const h = await load({
+    rows: [approvalRow({ status: 'expired' })],
+    argv: ['--org=' + ORG, 'connect-revoke', INVITE, '--channel=' + CHAN, '--confirm'],
+  });
   is(h.exit(), 0);
   is(mutations(h), 0);
   ok(/already expired; nothing to revoke/.test(h.text()), h.text());
@@ -430,7 +508,12 @@ test('connect-revoke: finds the row on a later page', async () => {
     api: (m) => {
       if (m !== 'conversations.sharedApprovals.list') return undefined;
       page += 1;
-      if (page === 1) return { ok: true, approvals: [approvalRow({ id: 'I0EXAMPLE05' })], response_metadata: { next_cursor: 'c2' } };
+      if (page === 1)
+        return {
+          ok: true,
+          approvals: [approvalRow({ id: 'I0EXAMPLE05' })],
+          response_metadata: { next_cursor: 'c2' },
+        };
       return { ok: true, approvals: [approvalRow()], response_metadata: { next_cursor: '' } };
     },
   });
@@ -466,8 +549,18 @@ test('approvals --detail --json: stdout is one JSON document, both sides present
   is(d.home_approved, 1790000000);
   is(d.away_approved, 0);
   is(d.waiting_on, 'other org');
-  is(d.invitee, { id: 'U0EXAMPLE02', real_name: 'Example Guest', email: EMAIL, team_id: 'T0EXAMPLE02' });
-  is(d.connecting_team, { id: 'T0EXAMPLE02', name: 'Example Partner Org', domain: 'example-partner', requires_sponsorship: true });
+  is(d.invitee, {
+    id: 'U0EXAMPLE02',
+    real_name: 'Example Guest',
+    email: EMAIL,
+    team_id: 'T0EXAMPLE02',
+  });
+  is(d.connecting_team, {
+    id: 'T0EXAMPLE02',
+    name: 'Example Partner Org',
+    domain: 'example-partner',
+    requires_sponsorship: true,
+  });
   ok(!/example\.invalid|image_|"icon"/.test(raw), raw);
 });
 
@@ -486,7 +579,9 @@ test('approvals with an unknown subcommand is refused', async () => {
 // ── pure helpers ──────────────────────────────────────────────────────────────
 
 test('summarizeApprovalDetail: waiting_on covers all four states', () => {
-  const w = (h, a) => grid.summarizeApprovalDetail(approvalRow({ home_date_approve: h, away_date_approve: a })).waiting_on;
+  const w = (h, a) =>
+    grid.summarizeApprovalDetail(approvalRow({ home_date_approve: h, away_date_approve: a }))
+      .waiting_on;
   is(w(1, 0), 'other org');
   is(w(0, 1), 'our side');
   is(w(0, 0), 'both sides');
@@ -494,10 +589,15 @@ test('summarizeApprovalDetail: waiting_on covers all four states', () => {
 });
 
 test('summarizeInviteResults: case-insensitive email match, per-invite ok only', () => {
-  const s = grid.summarizeInviteResults({ ok: true, invites: [{ email: 'Guest@Example.com', ok: true, invite_id: 'I0EXAMPLE03' }] }, [EMAIL]);
+  const s = grid.summarizeInviteResults(
+    { ok: true, invites: [{ email: 'Guest@Example.com', ok: true, invite_id: 'I0EXAMPLE03' }] },
+    [EMAIL]
+  );
   is(s.ok, true);
   is(s.failed, 0);
-  const f = grid.summarizeInviteResults({ ok: true, invites: [{ email: EMAIL, ok: 'true' }] }, [EMAIL]);
+  const f = grid.summarizeInviteResults({ ok: true, invites: [{ email: EMAIL, ok: 'true' }] }, [
+    EMAIL,
+  ]);
   is(f.ok, false);
 });
 
@@ -588,7 +688,10 @@ test('connect-invite --confirm: ONE call per address, each with external_limited
     channels: { [CHAN]: plainChan() },
   });
   is(h.exit(), 0, h.errText());
-  is(h.methods(), 'conversations.info,conversations.inviteShared,conversations.inviteShared,conversations.info');
+  is(
+    h.methods(),
+    'conversations.info,conversations.inviteShared,conversations.inviteShared,conversations.info'
+  );
   is(h.calls[1].params, { channel: CHAN, emails: 'a@example.com', external_limited: 'false' });
   is(h.calls[2].params, { channel: CHAN, emails: 'b@example.org', external_limited: 'false' });
   is(h.calls[1].token, 'xoxc-test-ws');
@@ -656,7 +759,10 @@ test('connect-invite refuses a channel hosted by another org (named), no write',
 test('connect-invite refuses missing sharing flags (sharing-unknown), never read as not shared', async () => {
   const c = plainChan();
   delete c.is_pending_ext_shared;
-  const h = await load({ argv: INV.concat(['--emails=a@example.com', '--confirm']), channels: { [CHAN]: c } });
+  const h = await load({
+    argv: INV.concat(['--emails=a@example.com', '--confirm']),
+    channels: { [CHAN]: c },
+  });
   is(h.exit(), 1);
   is(mutations(h), 0);
   ok(/refused: sharing-unknown/.test(h.errText()), h.errText());
@@ -673,8 +779,17 @@ test('connect-invite: conversations.info read error is not "not found": exit 1, 
 });
 
 test('connect-invite email validation: bad address, missing --emails, empty list -> no Slack call', async () => {
-  for (const extra of [['--emails=a@example.com,not-an-email'], [], ['--emails=,,'], ['--emails'], ['--emails=a@b']]) {
-    const h = await load({ argv: INV.concat(extra, ['--confirm']), channels: { [CHAN]: plainChan() } });
+  for (const extra of [
+    ['--emails=a@example.com,not-an-email'],
+    [],
+    ['--emails=,,'],
+    ['--emails'],
+    ['--emails=a@b'],
+  ]) {
+    const h = await load({
+      argv: INV.concat(extra, ['--confirm']),
+      channels: { [CHAN]: plainChan() },
+    });
     is(h.exit(), 1, extra.join(' '));
     is(h.calls.length, 0, extra.join(' '));
   }
@@ -717,7 +832,8 @@ test('connect-invite --confirm: ok:false is reported and nothing is claimed', as
   const h = await load({
     argv: INV.concat(['--emails=a@example.com', '--confirm', '--json']),
     channels: { [CHAN]: plainChan() },
-    api: (m) => (m === 'conversations.inviteShared' ? { ok: false, error: 'invalid_email' } : undefined),
+    api: (m) =>
+      m === 'conversations.inviteShared' ? { ok: false, error: 'invalid_email' } : undefined,
   });
   is(h.exit(), 1);
   const doc = JSON.parse(h.text());
@@ -744,7 +860,10 @@ test('connect-invite --confirm: ratelimited is retried with a backoff, then succ
 // ── connect-permissions ──
 
 test('connect-permissions dry run --upgrade: reads only, zero writes, names the exact call', async () => {
-  const h = await load({ argv: PERM.concat(['--team=' + PARTNER, '--upgrade']), channels: { [CHAN]: sharedChan() } });
+  const h = await load({
+    argv: PERM.concat(['--team=' + PARTNER, '--upgrade']),
+    channels: { [CHAN]: sharedChan() },
+  });
   is(h.exit(), 0, h.errText());
   is(h.methods(), 'conversations.info');
   is(mutations(h), 0);
@@ -761,7 +880,10 @@ test('connect-permissions --upgrade --confirm: exact params on the WORKSPACE tok
     channels: { [CHAN]: sharedChan() },
   });
   is(h.exit(), 0, h.errText());
-  is(h.methods(), 'conversations.info,conversations.externalInvitePermissions.set,conversations.info');
+  is(
+    h.methods(),
+    'conversations.info,conversations.externalInvitePermissions.set,conversations.info'
+  );
   is(h.calls[1].params, { channel: CHAN, target_team: PARTNER, action: 'upgrade' });
   is(h.calls[1].token, 'xoxc-test-ws');
   ok(/upgraded \(confirmed\)/.test(h.text()), h.text());
@@ -805,7 +927,10 @@ test('connect-permissions: a team that is not connected is refused (team-not-con
   });
   is(h.exit(), 1);
   is(mutations(h), 0);
-  ok(/refused: team-not-connected/.test(h.errText()) && /team_not_found/.test(h.errText()), h.errText());
+  ok(
+    /refused: team-not-connected/.test(h.errText()) && /team_not_found/.test(h.errText()),
+    h.errText()
+  );
 });
 
 test('connect-permissions: a T id of a connected grid is resolved to its E id via team.info', async () => {
@@ -824,11 +949,22 @@ test('connect-permissions refuses: own org as --team, not-shared, archived, host
     [['--team=' + ORG], sharedChan(), /refused: own-team/],
     [['--team=' + PARTNER], plainChan(), /refused: not-shared/],
     [['--team=' + PARTNER], sharedChan({ is_archived: true }), /refused: archived/],
-    [['--team=' + PARTNER], sharedChan({ conversation_host_id: OTHER }), /refused: hosted-elsewhere/],
-    [['--team=' + PARTNER], sharedChan({ connected_limited_team_ids: undefined }), /refused: connections-unknown/],
+    [
+      ['--team=' + PARTNER],
+      sharedChan({ conversation_host_id: OTHER }),
+      /refused: hosted-elsewhere/,
+    ],
+    [
+      ['--team=' + PARTNER],
+      sharedChan({ connected_limited_team_ids: undefined }),
+      /refused: connections-unknown/,
+    ],
   ];
   for (const [extra, chan, re] of cases) {
-    const h = await load({ argv: PERM.concat(extra, ['--upgrade', '--confirm']), channels: { [CHAN]: chan } });
+    const h = await load({
+      argv: PERM.concat(extra, ['--upgrade', '--confirm']),
+      channels: { [CHAN]: chan },
+    });
     is(h.exit(), 1, String(re));
     is(mutations(h), 0, String(re));
     ok(re.test(h.errText()), h.errText());
@@ -836,7 +972,12 @@ test('connect-permissions refuses: own org as --team, not-shared, archived, host
 });
 
 test('connect-permissions: --upgrade with --downgrade, or neither, or no --team: refused, no call', async () => {
-  for (const extra of [['--team=' + PARTNER, '--upgrade', '--downgrade'], ['--team=' + PARTNER], ['--upgrade'], ['--team=bogus', '--upgrade']]) {
+  for (const extra of [
+    ['--team=' + PARTNER, '--upgrade', '--downgrade'],
+    ['--team=' + PARTNER],
+    ['--upgrade'],
+    ['--team=bogus', '--upgrade'],
+  ]) {
     const h = await load({ argv: PERM.concat(extra), channels: { [CHAN]: sharedChan() } });
     is(h.exit(), 1, extra.join(' '));
     is(h.calls.length, 0, extra.join(' '));
@@ -866,7 +1007,10 @@ test('connect-permissions: ratelimited on every attempt gives up after CONNECT_W
   const h = await load({
     argv: PERM.concat(['--team=' + PARTNER, '--upgrade', '--confirm']),
     channels: { [CHAN]: sharedChan() },
-    api: (m) => (m === 'conversations.externalInvitePermissions.set' ? { ok: false, error: 'ratelimited' } : undefined),
+    api: (m) =>
+      m === 'conversations.externalInvitePermissions.set'
+        ? { ok: false, error: 'ratelimited' }
+        : undefined,
   });
   is(h.exit(), 1);
   is(h.count('conversations.externalInvitePermissions.set'), grid.CONNECT_WRITE_ATTEMPTS);
@@ -883,7 +1027,12 @@ test('connect-permissions --confirm: ok:true but the read-back never shows it ->
   });
   is(h.exit(), 3);
   is(h.count('conversations.info'), 1 + grid.CONNECT_READBACK_ATTEMPTS);
-  is(h.sleeps.join(','), Array(grid.CONNECT_READBACK_ATTEMPTS - 1).fill(grid.CONNECT_READBACK_DELAY_MS).join(','));
+  is(
+    h.sleeps.join(','),
+    Array(grid.CONNECT_READBACK_ATTEMPTS - 1)
+      .fill(grid.CONNECT_READBACK_DELAY_MS)
+      .join(',')
+  );
   ok(/NOT confirmed/.test(h.text()), h.text());
   ok(/did not show E0EXAMPLE02 as Post and Invite/.test(h.errText()), h.errText());
 });
@@ -934,7 +1083,10 @@ test('connect-status: split Post and Invite vs post-only, names via team.info, r
 });
 
 test('connect-status --json: one document; a never-shared channel reports lists as unknown, not []', async () => {
-  const h = await load({ argv: ['--ws=' + WS, '--org=' + ORG, 'connect-status', CHAN, '--json'], channels: { [CHAN]: plainChan() } });
+  const h = await load({
+    argv: ['--ws=' + WS, '--org=' + ORG, 'connect-status', CHAN, '--json'],
+    channels: { [CHAN]: plainChan() },
+  });
   is(h.exit(), 0, h.errText());
   const doc = JSON.parse(h.text());
   is(doc.status, 'ok');
@@ -981,7 +1133,9 @@ test('connect-invite --confirm: one address fails, the other is invited -> both 
     channels: { [CHAN]: plainChan() },
     api: (m, params) => {
       if (m !== 'conversations.inviteShared') return undefined;
-      return params.emails === 'b@example.org' ? { ok: false, error: 'invalid_email' } : { ok: true, invite_id: 'I0EXAMPLE04' };
+      return params.emails === 'b@example.org'
+        ? { ok: false, error: 'invalid_email' }
+        : { ok: true, invite_id: 'I0EXAMPLE04' };
     },
   });
   is(h.exit(), 1);
@@ -997,7 +1151,8 @@ test('connect-invite --confirm --json: every address fails -> status error, exit
   const h = await load({
     argv: INV.concat(['--emails=a@example.com,b@example.org', '--confirm', '--json']),
     channels: { [CHAN]: plainChan() },
-    api: (m) => (m === 'conversations.inviteShared' ? { ok: false, error: 'too_many_emails' } : undefined),
+    api: (m) =>
+      m === 'conversations.inviteShared' ? { ok: false, error: 'too_many_emails' } : undefined,
   });
   is(h.exit(), 1);
   is(h.count('conversations.info'), 1);
@@ -1007,7 +1162,10 @@ test('connect-invite --confirm --json: every address fails -> status error, exit
 });
 
 test('parseEmailList: lowercases, dedupes, keeps order, rejects bad shapes', () => {
-  is(grid.parseEmailList(' A@Example.com;b@example.org a@example.com ').emails, ['a@example.com', 'b@example.org']);
+  is(grid.parseEmailList(' A@Example.com;b@example.org a@example.com ').emails, [
+    'a@example.com',
+    'b@example.org',
+  ]);
   is(grid.parseEmailList('x@y').ok, false);
   is(grid.parseEmailList('a@@b.com').ok, false);
   is(grid.parseEmailList('<a@b.com>').ok, false);
@@ -1023,7 +1181,12 @@ test('writeWithRetry: only ok===true succeeds; non-ratelimit errors are not retr
   const r = await grid.writeWithRetry(call, 'm', {}, { sleep: async () => {}, attempts: 4 });
   is(r.ok, false);
   is(seen.length, 1);
-  const r2 = await grid.writeWithRetry(async () => ({ ok: 'yes' }), 'm', {}, { sleep: async () => {} });
+  const r2 = await grid.writeWithRetry(
+    async () => ({ ok: 'yes' }),
+    'm',
+    {},
+    { sleep: async () => {} }
+  );
   is(r2.ok, false);
   ok(/malformed_response/.test(r2.error), r2.error);
 });
@@ -1050,7 +1213,8 @@ test('connect-invite: internal_error is outcome UNKNOWN: not retried, not "nothi
   const h = await load({
     argv: INV.concat(['--emails=a@example.com', '--confirm']),
     channels: { [CHAN]: plainChan() },
-    api: (m) => (m === 'conversations.inviteShared' ? { ok: false, error: 'internal_error' } : undefined),
+    api: (m) =>
+      m === 'conversations.inviteShared' ? { ok: false, error: 'internal_error' } : undefined,
   });
   is(h.exit(), 3);
   is(h.count('conversations.inviteShared'), 1);
@@ -1066,7 +1230,9 @@ test('connect-invite --json: fatal_error + a definite failure -> partially-invit
     channels: { [CHAN]: plainChan() },
     api: (m, params) => {
       if (m !== 'conversations.inviteShared') return undefined;
-      return params.emails === 'a@example.com' ? { ok: false, error: 'fatal_error' } : { ok: false, error: 'invalid_email' };
+      return params.emails === 'a@example.com'
+        ? { ok: false, error: 'fatal_error' }
+        : { ok: false, error: 'invalid_email' };
     },
   });
   is(h.exit(), 1);
@@ -1105,14 +1271,20 @@ test('writeOutcome: ok / failed / unknown classification', () => {
 });
 
 test('connect-status: --ws=E… (an org id) is refused before any call; the workspace token is required', async () => {
-  const h = await load({ argv: ['--ws=' + ORG, '--org=' + ORG, 'connect-status', CHAN], channels: { [CHAN]: sharedChan() } });
+  const h = await load({
+    argv: ['--ws=' + ORG, '--org=' + ORG, 'connect-status', CHAN],
+    channels: { [CHAN]: sharedChan() },
+  });
   is(h.exit(), 1);
   is(h.calls.length, 0);
   ok(/expected a T… WORKSPACE id/.test(h.errText()), h.errText());
 });
 
 test('connect-status: no --ws uses the tab workspace (T…) and its token', async () => {
-  const h = await load({ argv: ['--org=' + ORG, 'connect-status', CHAN], channels: { [CHAN]: sharedChan() } });
+  const h = await load({
+    argv: ['--org=' + ORG, 'connect-status', CHAN],
+    channels: { [CHAN]: sharedChan() },
+  });
   is(h.exit(), 0, h.errText());
   is(h.calls[0].token, 'xoxc-test-ws');
 });
@@ -1130,7 +1302,11 @@ test('connect-status: an enterprise-scoped /client/E… tab is not used as the w
 });
 
 test('connect-permissions: a malformed id list ([null]) is UNKNOWN, refused (connections-unknown), not read as []', async () => {
-  for (const over of [{ connected_limited_team_ids: [null] }, { connected_team_ids: [PARTNER, '', ORG] }, { connected_limited_team_ids: [PARTNER, 7] }]) {
+  for (const over of [
+    { connected_limited_team_ids: [null] },
+    { connected_team_ids: [PARTNER, '', ORG] },
+    { connected_limited_team_ids: [PARTNER, 7] },
+  ]) {
     for (const dir of ['--upgrade', '--downgrade']) {
       const h = await load({
         argv: PERM.concat(['--team=' + PARTNER, dir, '--confirm']),
@@ -1144,7 +1320,10 @@ test('connect-permissions: a malformed id list ([null]) is UNKNOWN, refused (con
 });
 
 test('normalizeConnectState: malformed lists are null, so the Post and Invite / post-only split is unknown', () => {
-  const st = grid.normalizeConnectState(sharedChan({ connected_limited_team_ids: [null] }), [ORG, WS]);
+  const st = grid.normalizeConnectState(sharedChan({ connected_limited_team_ids: [null] }), [
+    ORG,
+    WS,
+  ]);
   is(st.connected_limited_team_ids, null);
   is(st.post_only_team_ids, null);
   is(st.post_and_invite_team_ids, null);
