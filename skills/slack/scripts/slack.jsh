@@ -3253,8 +3253,20 @@ async function watchForeground(args, globalFlags) {
   }
 
   const wsId = await resolveWorkspace(globalFlags);
-  const selfUser = flags['include-own'] === true ? null : await resolveSelfUserId(wsId);
   const tab = await watchTab(wsId);
+  // Without our own user id the own-message filter is off, and a callback that
+  // posts back as us would wake itself: retry, then refuse to start.
+  let selfUser = null;
+  if (flags['include-own'] !== true) {
+    for (let i = 0; i < 3 && !selfUser; i++) {
+      if (i) await new Promise((r) => setTimeout(r, 1000));
+      selfUser = await resolveSelfUserId(wsId);
+    }
+    if (!selfUser) {
+      console.error(`Error: could not tell who you are in ${wsId} (auth.test failed), so your own messages can't be filtered out. Retry, log in to Slack in the tab, or pass --include-own.`);
+      process.exit(1);
+    }
+  }
 
   // The frames are private messages: keep them in a directory only this user
   // can read (0700), in a file created fresh (0600, `wx`), never in shared /tmp.

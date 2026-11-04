@@ -584,6 +584,20 @@ test('a watch that cannot register stops instead of running unlisted', async () 
   is(Object.keys(r.vfs.files), [], 'frames removed');
 });
 
+test('a watch that cannot learn our own user id refuses to start, unless --include-own', async () => {
+  const noAuth = { 'auth.test': { ok: false, error: 'fatal_error' } };
+  const r = await slack(['--ws', WS, 'watch', CH, 'cb'], { api: noAuth });
+  is(r.exitCode, 1);
+  ok(r.err.includes('--include-own'));
+  is(r.calls.filter((c) => c.method === 'auth.test').length, 3, 'retried');
+  ok(!r.calls.some((c) => c.method === 'websocket'), 'no subscription');
+  const own = await slack(['--ws', WS, 'watch', CH, '--include-own', '--for', '1s'], {
+    api: noAuth,
+  });
+  is(own.exitCode, 0);
+  ok(!own.calls.some((c) => c.method === 'auth.test'), 'not even asked');
+});
+
 test('a watch records the workspace it resolved, so --ws finds an auto-detected watch', async () => {
   let listed = null;
   await slack(['watch', CH], {
