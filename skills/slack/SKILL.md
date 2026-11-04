@@ -8,7 +8,8 @@ description: Slack Web API client — read Slack messages, post to Slack channel
   auto-detected from the active tab. Use when the user wants to check, post, react to,
   or search Slack messages, get Slack user info, view the Slack activity feed, watch a
   Slack channel or thread for replies, or automate any Slack task. Triggers on mentions
-  of Slack, Slack channels, DMs, threads, messages, Slackbot, or Slack notifications. Also provides slack-ext for
+  of Slack, Slack channels, DMs, threads, messages, @mentions, emoji reactions, Slackbot, or
+  Slack notifications. Also provides slack-ext for
   admin user-management (guest conversion, guest channels) and Slack app manifest reads
   and diffs. Runs in SLICC, and on macOS or Linux under jsh over an existing Chrome
   DevTools (CDP) connection.
@@ -260,14 +261,9 @@ slack post C087NCG774J "part 3" --thread_ts=last   # same thread, no bookkeeping
 **Post flags:**
 
 - `--thread_ts=<ts>` — post as a threaded reply to the message with that timestamp.
-- `--thread_ts=last` — reply into the thread root of the most recent message this
-  CLI posted in that channel (remembered in a per-workspace-and-channel
-  `.last-post-<workspace>-<channel>.json` state file, alongside the `.watch-*.json`
-  files). Errors if nothing has been posted there yet, or if the remembered post
-  was made by a *different* cone — it prints that timestamp so you can pass
-  `--thread_ts=<ts>` deliberately instead of threading under someone else's message.
-  Ownership is the posting cone itself, so using `--watch-scoop` on an earlier post
-  does not stop you chaining onto it.
+- `--thread_ts=last` — reply into the thread of the last message this CLI posted in that
+  channel. Errors if there is none, or if another cone posted it (the error prints its ts).
+  State file and ownership: `references/watch-architecture.md`, "Shared state across cones".
 - `--sign[=<emoji>]` / `--no-sign` — control the auto-sign reaction (see below).
 - `--no-watch` — skip the auto reply-watch (see below).
 - `--watch-scoop=<name>` — override the scoop the reply-watch routes to (default:
@@ -467,19 +463,12 @@ Watch a channel or thread for new messages **in real time**. Each new message is
 delivered as a lick event to the target scoop within seconds.
 
 **Options:**
-- `--scoop=<name>` — the scoop that receives lick events. Defaults to the calling
-  cone (`SLICC_LICK_TARGET`), so plain `slack watch <channel>` wakes whoever ran
-  it. **Required** when that variable is unset (the default root), because
-  `webhook create` needs a concrete scoop and guessing one could route silently
-  wrong.
+- `--scoop=<name>` — the scoop that receives lick events. Defaults to the calling cone
+  (`SLICC_LICK_TARGET`); **required** when that is unset. Why: `references/watch-architecture.md`, "Routing".
 - `--thread=<thread_ts>` — watch a specific thread instead of the whole channel
-- `--filter=<js>` — a JS filter (`(event) => …`, `event.body` is the Slack message
-  frame) evaluated per forwarded message; a falsy result drops it *before it wakes
-  the scoop*, so the scoop only wakes on messages worth waking for. Example:
-  `--filter='(e)=>/deploy failed/i.test(JSON.stringify(e.body))'`
-- `--force` — replace an existing watch on the same target, deleting its webhook
-  and its `+1h` teardown task (leaving that task alive would tear the replacement
-  down an hour later)
+- `--filter=<js>` — drop messages before they wake the scoop; `event.body` is the Slack
+  frame: `--filter='(e)=>/deploy failed/i.test(JSON.stringify(e.body))'`
+- `--force` — replace an existing watch on the same target (its webhook and `+1h` teardown task too)
 
 **Lick payload:** the raw Slack `message` frame that matched the filter, e.g.:
 ```json
@@ -698,56 +687,29 @@ Updates have no merge semantics (omitted fields are deleted), so writes export-m
 - `references/jsh-host.md` — running on a host under jsh: install, `slack watch` with a
   callback command, `post --watch-command`, and what differs from SLICC 6.
 
-## Enterprise Grid admin commands (`slack-ext eg-*`, `channel-*`, `approvals`, `admin-app`)
+## Enterprise Grid admin commands (`slack-ext eg-*`, `channel-*`, `approvals`, `connect-*`, `admin-app`)
 
-These commands use Slack's internal admin API namespaces — `enterprise.users.admin.*`,
-`admin.conversations.*`, `conversations.sharedApprovals.list`, and `admin.apps.*` — all
-observed returning `{"ok":true}` in a live browser session (2026-09-22). They operate at
-the **org level** (`E06V3987PMY`, "Adobe Enterprise Support") rather than the workspace level.
+Org-level admin commands (`enterprise.users.admin.*`, `admin.conversations.*`,
+`conversations.sharedApprovals.list`, `admin.apps.*`), for the org `E06V3987PMY` rather than one
+workspace. Full reference, with APIs, parameters, exit codes, wire facts and what remains
+unverified: `references/enterprise-grid.md`.
 
-### CRITICAL: audit attribution
+**Audit attribution:** `xoxc` calls are **indistinguishable from the human's own actions** in
+Slack's channel event history, and no working API tells them apart. Running any write here is the
+human doing it, as far as any Slack record shows. Evidence: `references/enterprise-grid.md`,
+"Audit attribution evidence".
 
-Session-token (`xoxc`) calls are **indistinguishable from the human's own direct actions**
-in Slack's channel event history. A concrete, verified case: `#aem-fedex` (`C0C2CUUDWLE`)
-was archived by Zapier at 2026-09-17T00:17:04Z — the channel event log records Lars Trieloff
-as the actor, not Zapier, because Zapier's Slack action ran on his user OAuth token and
-carries no bot identity. Running `eg-deactivate`, `eg-set-restricted`, `channel-to-private`,
-or any other write command in this skill looks identical to the human performing the action
-themselves in the Slack UI.
+**Safety gates:** every write is a dry run unless `--confirm` is given, and reads the state back
+after it. `eg-forget` is **irreversible** (never in an unattended loop).
+`eg-set-ultra-restricted` is **unverified**: don't use it in production.
 
-The Enterprise Audit Logs API (`auditlogs:read` scope) **would** record the acting app and
-distinguish automation from a human click — but `admin.audit.*` methods all return
-`unknown_method` (six variants probed on 2026-09-22; none exist). There is currently no
-working API call that distinguishes an `xoxc`-based script from a human in the channel
-event log. Do not document these calls as "attributed to the human in the audit log" —
-they ARE the human as far as any observable Slack record is concerned.
-
-### Commands
-
-Every write is a dry run unless `--confirm` is given. Full per-command reference (APIs, parameters,
-wire facts, authentication, what remains unverified): `references/enterprise-grid.md`.
-
-- `eg-status <user_id> [--json]` — read-only: the user's type, org and workspaces; no `--confirm`.
-- `eg-set-restricted <user_id> [--confirm]` — full member → multi-channel guest; reads the state back.
-- `eg-set-regular <user_id> [--confirm]` — guest → full member; reads the state back.
-- `eg-deactivate <user_id> [--confirm]` — deactivate (reversible); the wire value `status=delete` does not delete.
-- `eg-forget <user_id> [--confirm]` — GDPR identity scrub, **IRREVERSIBLE**; never a flag, never in an unattended loop without per-user confirmation.
-- `eg-bulk-guest [<user_id>...] [--file=<path>] [--confirm]` — many members → multi-channel guests, per-user read-back.
-- `eg-set-ultra-restricted <user_id> [--confirm]` — **UNVERIFIED**; do not use in production.
-- `channel-search [--query=<q>] [--types=<t>] [--limit=<n>] [--max=<n>] [--json]` — read-only channel enumeration (pages of at most 20), `--query` matched locally as a name substring.
-- `channel-to-public <channel_id> [--confirm]` — private → public.
-- `channel-to-private <channel_id> [--confirm]` — public → private; the channel then looks deleted to non-members.
-- `channel-archive <channel_id> [--confirm] [--max-members=N] [--min-idle-days=N] [--allow-shared] [--json]` — archive; dry run reads state, `--confirm` re-checks every guard then reads back; Slack Connect channels need `--allow-shared` (archiving disconnects every external org).
-- `channel-unarchive <channel_id> [--confirm] [--json]` — unarchive, with the same dry run, re-check and read-back.
-- `approvals [--query=<q>] [--all] [--detail] [--json]` — read-only list of Slack Connect invite approvals; `--detail` adds inviter, invitee + org, sponsorship, and both sides' approval state (`Other org: NOT approved` = stalled on their side).
-- `approvals show <invite_id> [--json]` — the `--detail` view for one invite.
-- `connect-revoke <invite_id> --channel=<C…> [--confirm]` — revoke a Slack Connect invite; dry run shows the row, `--confirm` re-reads it (expects `expired`, else exit 3). `team_is_restricted` = workspace-scoped token; use the org token.
-- `--ws=<T…> guest-invite <email> --channel=<C…> [--confirm]` — invite a single-channel guest (`users.admin.inviteBulk`); emails the invitee on `--confirm`; exits 1 if any per-invite result failed. Wire contract: `references/endpoints.md`.
-- `[--ws=<T…>] connect-status <C…> [--json]` — read-only: archived, private, `is_ext_shared`, `is_pending_ext_shared`, host org, connected external orgs split into **Post and Invite** vs **post-only** (`connected_limited_team_ids`), pending orgs; names via `team.info`, bare ids when that fails. Run it before and after the two commands below.
-- `--ws=<T…> connect-invite <C…> --emails=a@x.com,b@y.com [--post-only] [--confirm] [--json]` — invite an external org's people into a channel (`conversations.inviteShared`, one call per address: Slack accepts one email per call; exit 1 if any address failed, 3 if an `internal_error`/`fatal_error` left the outcome unknown). **Default is Post and Invite**: `external_limited=false` is always sent, because Slack's own default is post-only; `--post-only` sends `true`. Emails are lowercased, deduped, shape-checked. Refuses `not-found`, `archived`, `hosted-elsewhere`, `host-unknown`, `sharing-unknown`. **An unchanged read-back after `--confirm` is expected**: until an invitee accepts, the channel still reads `is_ext_shared:false`, `is_pending_ext_shared:false`, `pending_connected_team_ids:[]`, and the invite is not in `approvals` (`conversations.listConnectInvites` answers `not_allowed_token_type`). Follow up with `slack-ext approvals --query=<channel name> --detail`: an invite the other org approved can still sit at "Waiting on: our side" and expire.
-- `--ws=<T…> connect-permissions <C…> --team=<E…|T…> --upgrade|--downgrade [--confirm] [--json]` — change one connected org's permission (`conversations.externalInvitePermissions.set`, `action=upgrade` = post-only → Post and Invite, `downgrade` = the reverse). Refuses a team that is not connected (`team-not-connected`; a `T…` id is resolved to its grid via `team.info`). Already at the target = nothing to do, exit 0. Retries `ratelimited`/`ratelimit` (4 tries, 30 s apart); `internal_error`/`fatal_error` = outcome unknown, exit 3; `--confirm` re-reads until the team is still connected and `connected_limited_team_ids` matches, else exit 3.
-- `admin-app approve <app_id|request_id> [--confirm]` — approve an app; a `request_id` is single-use.
-- `admin-app restrict <app_id|request_id> [--confirm]` — restrict an app; same single-use `request_id` caveat.
-- `admin-app clear <app_id> [--confirm]` — clear an app's approval or restriction.
-- `admin-app permissions <app_id> --type=<no_one|everyone|named_entities> [--confirm]` — install policy.
-- `admin-app list [--restricted] [--json]` — read-only list of approved or restricted apps.
+- Users: `eg-status` (read-only), `eg-set-restricted`, `eg-set-regular`, `eg-deactivate` (reversible;
+  the wire's `status=delete` does not delete), `eg-forget`, `eg-bulk-guest`, `eg-set-ultra-restricted`.
+- Channels: `channel-search` (read-only), `channel-to-public`, `channel-to-private`, `channel-archive`
+  (guards: `--max-members`, `--min-idle-days`; Slack Connect channels need `--allow-shared`),
+  `channel-unarchive`.
+- Slack Connect: `approvals [--detail]` and `approvals show <invite_id>` (read-only),
+  `connect-revoke`, `guest-invite`, `connect-status` (read-only; run before and after the next two),
+  `connect-invite` (defaults to Post and Invite; `--post-only`), `connect-permissions --upgrade|--downgrade`.
+  An unchanged read-back after `connect-invite --confirm` is expected until an invitee accepts.
+- Apps: `admin-app approve|restrict|clear|permissions|list`; a `request_id` is single-use.
