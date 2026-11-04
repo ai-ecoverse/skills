@@ -50,6 +50,7 @@ async function slack(argv, o = {}) {
   const writes = [];
   const mkdirs = [];
   const opens = [];
+  const reads = [];
   const p = vfs.promises;
   const fs = {
     ...vfs,
@@ -60,6 +61,16 @@ async function slack(argv, o = {}) {
     closeSync: () => {},
     promises: {
       ...p,
+      open: async (file) => ({
+        stat: async () => ({ size: (vfs.files[file] || new Uint8Array()).length }),
+        read: async (buf, off, len, pos) => {
+          const src = (vfs.files[file] || new Uint8Array()).subarray(pos, pos + len);
+          buf.set(src, off);
+          reads.push({ pos, len: src.length });
+          return { bytesRead: src.length, buffer: buf };
+        },
+        close: async () => {},
+      }),
       writeFile: async (file, data, opts) => {
         writes.push({ file, opts });
         if (opts && opts.flag === 'wx' && file in vfs.files)
@@ -285,6 +296,7 @@ async function slack(argv, o = {}) {
     writes,
     mkdirs,
     opens,
+    reads,
     killed,
     killedAt,
     signals,
@@ -503,6 +515,51 @@ test('a watch that ends while it looks up a message author runs no callback', as
   });
   is(r.exitCode, 143);
   is(r.spawns, [], 'no callback starts after the watch was told to stop');
+});
+
+test('watch reads only the bytes appended since its last read', async () => {
+  const r = await slack(['--ws', WS, 'watch', CH, '--count', '3', 'cb'], {
+    during: async ({ framesPath, vfs }) => {
+      for (const ts of ['7.000001', '7.000002', '7.000003']) {
+        await vfs.promises.appendFile(framesPath, frame({ ts }));
+        await tick(300);
+      }
+    },
+  });
+  is(r.exitCode, 0);
+  is(r.spawns.length, 3);
+  const size = r.reads.reduce((n, x) => n + x.len, 0);
+  is(size, 3 * frame({ ts: '7.000001' }).length, 'every byte read once');
+  ok(
+    r.reads.every((x, i) => i === 0 || x.pos === r.reads[i - 1].pos + r.reads[i - 1].len),
+    'each read starts where the last one ended'
+  );
+});
+
+test('a line cut inside a multi-byte character is read whole', async () => {
+  const bytes = new TextEncoder().encode(frame({ ts: '8.000001', text: 'ship it 🚀 now' }));
+  const cut = bytes.indexOf(0xf0) + 2;
+  const r = await slack(['--ws', WS, 'watch', CH, '--count', '1', 'cb'], {
+    during: async ({ framesPath, vfs }) => {
+      await vfs.promises.appendFile(framesPath, bytes.subarray(0, cut));
+      await tick(300);
+      await vfs.promises.appendFile(framesPath, bytes.subarray(cut));
+    },
+  });
+  is(r.exitCode, 0);
+  is(r.spawns[0].opts.env.SLACK_TEXT, 'ship it 🚀 now');
+});
+
+test('a --count watch stopped while its last callback runs keeps the signal’s status', async () => {
+  const r = await slack(['--ws', WS, 'watch', CH, '--count', '1', 'sleep 1000'], {
+    hang: true,
+    during: async ({ framesPath, vfs, signal }) => {
+      await vfs.promises.appendFile(framesPath, frame({ ts: '9.000001' }));
+      await tick(400);
+      signal('SIGTERM');
+    },
+  });
+  is(r.exitCode, 143, 'not 0: the count was not reached by a finished callback');
 });
 
 // ─── slack watches / unwatch ─────────────────────────────────────────────────

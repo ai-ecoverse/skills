@@ -3102,6 +3102,30 @@ function describeWatch(entry) {
   return `pid ${entry.pid}  ${where}${entry.workspace ? ` (${entry.workspace})` : ''}  ${until}  ${then}`;
 }
 
+// Read the frames file incrementally: each call returns the complete lines
+// appended since the last one, reading only the new bytes (a busy channel's file
+// grows for the whole watch). Lines are split on bytes, so a multi-byte
+// character cut by a partial write is decoded once it is whole.
+async function openFrames(file) {
+  const handle = await fs.promises.open(file, 'r');
+  let offset = 0;
+  let carry = Buffer.alloc(0);
+  return {
+    async next() {
+      const { size } = await handle.stat();
+      if (size <= offset) return [];
+      const fresh = Buffer.alloc(size - offset);
+      const { bytesRead } = await handle.read(fresh, 0, fresh.length, offset);
+      offset += bytesRead;
+      const bytes = Buffer.concat([carry, fresh.subarray(0, bytesRead)]);
+      const end = bytes.lastIndexOf(0x0a) + 1;
+      carry = bytes.subarray(end);
+      return bytes.subarray(0, end).toString('utf8').split('\n').filter(Boolean);
+    },
+    close: () => handle.close().catch(() => {}),
+  };
+}
+
 async function watchForeground(args, globalFlags) {
   const { flags, positional } = parseArgs(args);
   // parseArgs gives `--json <command>` the command as the flag's value.
@@ -3214,7 +3238,7 @@ async function watchForeground(args, globalFlags) {
   console.error(`Watching ${scope}${limits ? `, ${limits}` : ''}${command ? `, running: ${command}` : ''}. Ctrl-C stops.`);
 
   const seen = new Set();
-  let consumed = 0;
+  const frames = await openFrames(file);
   let reported = 0;
   let code = null;
   finished.then((c) => { if (code === null) code = c; });
@@ -3222,10 +3246,7 @@ async function watchForeground(args, globalFlags) {
   // fails while formatting), so no frames file or registry entry is left.
   try {
     while (code === null) {
-      const text = await fs.promises.readFile(file, 'utf8').catch(() => '');
-      const end = text.lastIndexOf('\n') + 1;
-      const lines = text.slice(consumed, end).split('\n').filter(Boolean);
-      consumed = Math.max(consumed, end);
+      const lines = await frames.next();
       for (const line of lines) {
         if (code !== null) break;
         let frame;
@@ -3250,6 +3271,8 @@ async function watchForeground(args, globalFlags) {
             }
           }
         }
+        // A watch stopped while the callback ran keeps its 124/130/143.
+        if (code !== null) break;
         reported += 1;
         if (count !== null && reported >= count) { code = 0; break; }
       }
@@ -3261,6 +3284,7 @@ async function watchForeground(args, globalFlags) {
     process.off('SIGINT', onSignal);
     process.off('SIGTERM', onSignal);
     await sub.close().catch(() => {});
+    await frames.close();
     await removeFrames();
     await fs.promises.rm(registry, { force: true }).catch(() => {});
   }
