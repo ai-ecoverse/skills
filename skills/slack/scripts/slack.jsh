@@ -3098,7 +3098,8 @@ function sameWatchTarget(entry, { workspace, channel, threadTs }) {
 // (localConfig_v2 names it as the team's `enterprise_id`; a team has no tab of
 // its own). findSlackTab's first tab can belong to another org, and its
 // localConfig_v2 still answers for every signed-in workspace, so API calls
-// succeed while its WebSocket never carries this workspace's messages.
+// succeed while its WebSocket never carries this workspace's messages. With
+// neither tab open, the watch refuses to start.
 async function watchTab(wsId) {
   const tabFor = (id) => browser.findTab({ domain: SLACK_DOMAIN, urlMatch: new RegExp(`/client/${id}(?![A-Z0-9])`) });
   const own = await tabFor(wsId);
@@ -3113,7 +3114,12 @@ async function watchTab(wsId) {
   }
   const org = typeof team.enterprise_id === 'string' && /^E[A-Z0-9]+$/.test(team.enterprise_id) ? team.enterprise_id : null;
   const orgTab = org ? await tabFor(org) : null;
-  return orgTab || findSlackTab();
+  if (orgTab) return orgTab;
+  // Signed in, but the tab that carries its messages is closed: another tab's
+  // socket never sees them, so say which tab to open rather than wait forever.
+  const home = org || wsId;
+  console.error(`Error: no open Slack tab carries ${wsId}'s messages. Open https://app.slack.com/client/${home} in the browser, then retry.`);
+  process.exit(1);
 }
 
 function describeWatch(entry) {

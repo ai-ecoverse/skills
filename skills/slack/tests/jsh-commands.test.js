@@ -517,6 +517,23 @@ test('a watch stopped while an author lookup hangs ends at once', async () => {
   is(Object.keys(r.vfs.files), [], 'cleaned up');
 });
 
+test('a watch whose workspace or org tab is closed says which tab to open', async () => {
+  const tabs = [{ targetId: 'other-org', url: 'https://app.slack.com/client/E0OTHERORG1/C1' }];
+  const teams = {
+    T0385CHDU9E: { token: 'x', enterprise_id: WS },
+    T0STANDALONE: { token: 'y' },
+  };
+  for (const [ws, home] of [
+    ['T0385CHDU9E', WS],
+    ['T0STANDALONE', 'T0STANDALONE'],
+  ]) {
+    const r = await slack(['--ws', ws, 'watch', CH, '--for', '1s'], { tabs, teams });
+    is(r.exitCode, 1, ws);
+    ok(r.err.includes(`https://app.slack.com/client/${home}`), ws);
+    ok(!r.calls.some((c) => c.method === 'websocket'), `${ws}: no subscription`);
+  }
+});
+
 test('a watch records the workspace it resolved, so --ws finds an auto-detected watch', async () => {
   let listed = null;
   await slack(['watch', CH], {
