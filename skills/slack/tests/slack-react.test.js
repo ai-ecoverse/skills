@@ -14,9 +14,9 @@
 // The browser bridge is a stub: every Slack API call is recorded and answered
 // from a per-test table, so the suite is offline and deterministic.
 
-import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import test, { is, ok } from 'tst';
+import { readScript } from './script.js';
 
 const SCRIPT = fileURLToPath(new URL('../scripts/slack.jsh', import.meta.url));
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
@@ -84,7 +84,7 @@ async function load(opts = {}) {
     throw new Error('unexpected require(' + id + ')');
   };
 
-  let source = readFileSync(SCRIPT, 'utf8');
+  let source = readScript(SCRIPT);
   if (!opts.argv) {
     const cut = source.indexOf('\n// --- Main ---');
     if (cut < 0) throw new Error('slack.jsh: "// --- Main ---" marker not found');

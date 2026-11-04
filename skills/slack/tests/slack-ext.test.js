@@ -11,13 +11,13 @@
 // Mutation verification is documented inline: each test names the mutation that
 // would break it, and the section at the bottom records the verification matrix.
 
-import test, { is, ok, not, fail } from 'tst';
-import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import test, { fail, is, not, ok } from 'tst';
 import * as _argvMod from '../scripts/argv.js';
 import * as _manifestDiffMod from '../scripts/manifest-diff.js';
 import * as _gridMod from '../scripts/slack-ext-grid.js';
+import { readScript } from './script.js';
 
 const SCRIPT = fileURLToPath(new URL('../scripts/slack-ext.jsh', import.meta.url));
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
@@ -142,7 +142,10 @@ async function load(opts) {
 
   const cliStub = {
     die(message, options) {
-      const code = options && typeof options === 'object' && options.exitCode !== undefined ? options.exitCode : 1;
+      const code =
+        options && typeof options === 'object' && options.exitCode !== undefined
+          ? options.exitCode
+          : 1;
       throw new NodeExitError(String(message), code);
     },
     help(message) {
@@ -197,23 +200,23 @@ async function load(opts) {
   // pre-loaded via static ESM imports above (the tst realm resolves imports statically
   // but its createRequire shim does not resolve relative file-system paths).
   const relativeModules = {
-    './argv.js': () => (_argvMod.default || _argvMod),
-    './manifest-diff.js': () => (_manifestDiffMod.default || _manifestDiffMod),
-    './slack-ext-grid.js': () => (_gridMod.default || _gridMod)
+    './argv.js': () => _argvMod.default || _argvMod,
+    './manifest-diff.js': () => _manifestDiffMod.default || _manifestDiffMod,
+    './slack-ext-grid.js': () => _gridMod.default || _gridMod,
   };
   const scriptRequire = (id) => {
     const key = id.replace(/^\.\.\/(scripts\/)?/, './');
-    if (Object.prototype.hasOwnProperty.call(relativeModules, key)) return relativeModules[key]();
+    if (Object.hasOwn(relativeModules, key)) return relativeModules[key]();
     throw new Error('unexpected relative require(' + id + ') — add a static import');
   };
   const mockRequire = (id) => {
-    if (Object.prototype.hasOwnProperty.call(mocks, id)) return mocks[id];
+    if (Object.hasOwn(mocks, id)) return mocks[id];
     if (id.startsWith('./') || id.startsWith('../')) return scriptRequire(id);
     throw new Error('unexpected require(' + id + ')');
   };
 
   // Strip the trailing `await main()` so the module does not auto-execute
-  let source = readFileSync(SCRIPT, 'utf8');
+  let source = readScript(SCRIPT);
   // Anchor on the actual trailer (`try { await main(); }`), NOT on the first
   // top-level `try {` in the file. The greedy form truncated the module at the
   // first top-level try block, which silently discarded ~1800 lines and made
@@ -222,10 +225,10 @@ async function load(opts) {
   // when a user types the command. That is the only mode that can see a
   // top-level ordering bug such as a const read in its temporal dead zone.
   if (!opts.runMain) {
-  source = source.replace(/\ntry \{\s*\n\s*await main\(\);[\s\S]*$/, '\n');
+    source = source.replace(/\ntry \{\s*\n\s*await main\(\);[\s\S]*$/, '\n');
 
-  // Append exports of the key internal functions for direct testing
-  source += `
+    // Append exports of the key internal functions for direct testing
+    source += `
 return {
   parseArgv,
   userTypeLabel,
@@ -301,31 +304,71 @@ return {
 test('userTypeLabel: regular member', async () => {
   const h = await load({ argv: ['status', 'U1'] });
   const { userTypeLabel } = h.mod;
-  is(userTypeLabel({ is_bot: false, is_restricted: false, is_ultra_restricted: false, deleted: false }), 'regular');
+  is(
+    userTypeLabel({
+      is_bot: false,
+      is_restricted: false,
+      is_ultra_restricted: false,
+      deleted: false,
+    }),
+    'regular'
+  );
 });
 
 test('userTypeLabel: multi-channel guest', async () => {
   const h = await load({ argv: ['status', 'U1'] });
   const { userTypeLabel } = h.mod;
-  is(userTypeLabel({ is_bot: false, is_restricted: true, is_ultra_restricted: false, deleted: false }), 'multi-channel guest');
+  is(
+    userTypeLabel({
+      is_bot: false,
+      is_restricted: true,
+      is_ultra_restricted: false,
+      deleted: false,
+    }),
+    'multi-channel guest'
+  );
 });
 
 test('userTypeLabel: single-channel guest', async () => {
   const h = await load({ argv: ['status', 'U1'] });
   const { userTypeLabel } = h.mod;
-  is(userTypeLabel({ is_bot: false, is_restricted: true, is_ultra_restricted: true, deleted: false }), 'single-channel guest');
+  is(
+    userTypeLabel({
+      is_bot: false,
+      is_restricted: true,
+      is_ultra_restricted: true,
+      deleted: false,
+    }),
+    'single-channel guest'
+  );
 });
 
 test('userTypeLabel: bot', async () => {
   const h = await load({ argv: ['status', 'U1'] });
   const { userTypeLabel } = h.mod;
-  is(userTypeLabel({ is_bot: true, is_restricted: false, is_ultra_restricted: false, deleted: false }), 'bot');
+  is(
+    userTypeLabel({
+      is_bot: true,
+      is_restricted: false,
+      is_ultra_restricted: false,
+      deleted: false,
+    }),
+    'bot'
+  );
 });
 
 test('userTypeLabel: deactivated', async () => {
   const h = await load({ argv: ['status', 'U1'] });
   const { userTypeLabel } = h.mod;
-  is(userTypeLabel({ is_bot: false, is_restricted: false, is_ultra_restricted: false, deleted: true }), 'deactivated');
+  is(
+    userTypeLabel({
+      is_bot: false,
+      is_restricted: false,
+      is_ultra_restricted: false,
+      deleted: true,
+    }),
+    'deactivated'
+  );
 });
 
 // ── Parameter name tests — these are the most safety-critical ─────────────────
@@ -372,7 +415,9 @@ test('set-single without --confirm makes no admin API call', async () => {
     });
     await h.mod.cmdSetSingle();
   } catch (e) {
-    if (e.name === 'NodeExitError' && e.exitCode === 0) { /* ok */ } else throw e;
+    if (e.name === 'NodeExitError' && e.exitCode === 0) {
+      /* ok */
+    } else throw e;
   }
   is(h.adminCalls().length, 0, 'no admin API call without --confirm');
   const text = h.text();
@@ -385,7 +430,9 @@ test('set-multi without --confirm makes no admin API call', async () => {
     h = await load({ argv: ['--ws=T06DUTYDQ', 'set-multi', 'U12345'] });
     await h.mod.cmdSetMulti();
   } catch (e) {
-    if (e.name === 'NodeExitError' && e.exitCode === 0) { /* ok */ } else throw e;
+    if (e.name === 'NodeExitError' && e.exitCode === 0) {
+      /* ok */
+    } else throw e;
   }
   is(h.adminCalls().length, 0, 'no admin API call without --confirm');
 });
@@ -399,7 +446,9 @@ test('set-member without --confirm makes no admin API call', async () => {
     });
     await h.mod.cmdSetMember();
   } catch (e) {
-    if (e.name === 'NodeExitError' && e.exitCode === 0) { /* ok */ } else throw e;
+    if (e.name === 'NodeExitError' && e.exitCode === 0) {
+      /* ok */
+    } else throw e;
   }
   is(h.adminCalls().length, 0, 'no admin API call without --confirm');
 });
@@ -410,7 +459,9 @@ test('add-channel without --confirm makes no mutating API call', async () => {
     h = await load({ argv: ['--ws=T06DUTYDQ', 'add-channel', 'U12345', '--channel=C456'] });
     await h.mod.cmdAddChannel();
   } catch (e) {
-    if (e.name === 'NodeExitError' && e.exitCode === 0) { /* ok */ } else throw e;
+    if (e.name === 'NodeExitError' && e.exitCode === 0) {
+      /* ok */
+    } else throw e;
   }
   is(h.mutatingCalls().length, 0, 'no mutating call without --confirm');
 });
@@ -421,7 +472,9 @@ test('remove-channel without --confirm makes no mutating API call', async () => 
     h = await load({ argv: ['--ws=T06DUTYDQ', 'remove-channel', 'U12345', '--channel=C456'] });
     await h.mod.cmdRemoveChannel();
   } catch (e) {
-    if (e.name === 'NodeExitError' && e.exitCode === 0) { /* ok */ } else throw e;
+    if (e.name === 'NodeExitError' && e.exitCode === 0) {
+      /* ok */
+    } else throw e;
   }
   is(h.mutatingCalls().length, 0, 'no mutating call without --confirm');
 });
@@ -478,7 +531,6 @@ test('set-member refuses bot user', async () => {
 
 // ── Already-in-state tests ────────────────────────────────────────────────────
 
-
 test('set-multi is no-op when user is already a multi-channel guest', async () => {
   const h = await load({
     argv: ['--ws=T06DUTYDQ', 'set-multi', 'U12345', '--confirm'],
@@ -514,7 +566,7 @@ test('set-single with --confirm calls users.admin.setUltraRestricted with channe
   const body = adminCall.opts && adminCall.opts.body;
   ok(body, 'call must have a body');
   ok(/channel=C456/.test(body), 'body must contain channel=C456');
-  ok(!(/channels=/.test(body)), 'body must NOT contain channels= (plural)');
+  ok(!/channels=/.test(body), 'body must NOT contain channels= (plural)');
   ok(/user=U12345/.test(body), 'body must contain user=U12345');
   ok(/team_id=T06DUTYDQ/.test(body), 'body must contain team_id=T06DUTYDQ');
 });
@@ -654,11 +706,7 @@ test('--confirm=false does NOT authorize a mutation (admin call must not happen)
       throw e;
     }
   }
-  is(
-    h.adminCalls().length,
-    0,
-    '--confirm=false must NOT issue the admin API call'
-  );
+  is(h.adminCalls().length, 0, '--confirm=false must NOT issue the admin API call');
 });
 
 test('--confirm=false dry-run still mentions what would happen', async () => {
@@ -682,11 +730,7 @@ test('--confirm=true (equals form) DOES authorize the mutation', async () => {
     argv: ['--ws=T06DUTYDQ', 'set-single', 'U12345', '--channel=C456', '--confirm=true'],
   });
   await h.mod.cmdSetSingle();
-  is(
-    h.adminCalls().length,
-    1,
-    '--confirm=true must issue the admin API call'
-  );
+  is(h.adminCalls().length, 1, '--confirm=true must issue the admin API call');
 });
 
 test('--confirm=fasle (typo) is a fatal error, not an authorization', async () => {
@@ -807,11 +851,7 @@ test('set-single: channel-change path respects --confirm gate', async () => {
       throw e;
     }
   }
-  is(
-    h.adminCalls().length,
-    0,
-    'channel-change path must still require --confirm'
-  );
+  is(h.adminCalls().length, 0, 'channel-change path must still require --confirm');
 });
 
 // ── Finding 3: cmdStatus users.conversations failure handling ─────────────────
@@ -824,10 +864,7 @@ test('status: failed users.conversations does NOT print "(none found)"', async (
   });
   await h.mod.cmdStatus();
   const out = h.text();
-  ok(
-    !/(none found)/i.test(out),
-    'must NOT print "(none found)" when the API call failed'
-  );
+  ok(!/(none found)/i.test(out), 'must NOT print "(none found)" when the API call failed');
 });
 
 test('status: failed users.conversations prints the actual Slack error code', async () => {
@@ -857,10 +894,7 @@ test('status: success with zero channels prints a distinct empty-state message',
     'empty-success path must use a different message from the old "(none found)" bucket'
   );
   // Should say something about "none" or "no channel" but NOT "(none found)"
-  ok(
-    /none|no channel/i.test(out),
-    'should still describe the empty state'
-  );
+  ok(/none|no channel/i.test(out), 'should still describe the empty state');
 });
 
 test('status --json: failed users.conversations produces channels_error in output', async () => {
@@ -872,7 +906,12 @@ test('status --json: failed users.conversations produces channels_error in outpu
   await h.mod.cmdStatus();
   // Find the JSON line in stdout
   const jsonLine = h.stdout.find((l) => {
-    try { JSON.parse(l); return true; } catch (e) { return false; }
+    try {
+      JSON.parse(l);
+      return true;
+    } catch (e) {
+      return false;
+    }
   });
   ok(jsonLine, 'should have a JSON output line');
   const parsed = JSON.parse(jsonLine);
@@ -890,7 +929,12 @@ test('status --json: success with channels produces channels array in output', a
   });
   await h.mod.cmdStatus();
   const jsonLine = h.stdout.find((l) => {
-    try { JSON.parse(l); return true; } catch (e) { return false; }
+    try {
+      JSON.parse(l);
+      return true;
+    } catch (e) {
+      return false;
+    }
   });
   ok(jsonLine, 'should have JSON output');
   const parsed = JSON.parse(jsonLine);
@@ -937,18 +981,25 @@ test('status --json: success with channels produces channels array in output', a
 const ENTRY_TRAILER = /\ntry \{\s*\n\s*await main\(\);\s*\n\} catch \(err\) \{[\s\S]*?\n\}\n/;
 
 test('entry point: nothing but whitespace follows the await main() trailer', () => {
-  const src = readFileSync(SCRIPT, 'utf8');
+  const src = readScript(SCRIPT);
   const m = ENTRY_TRAILER.exec(src);
   ok(m, 'the await main() trailer must exist');
   const after = src.slice(m.index + m[0].length);
-  is(after.trim(), '', 'no top-level statement may follow the trailer (found: ' + after.trim().slice(0, 60) + ')');
+  is(
+    after.trim(),
+    '',
+    'no top-level statement may follow the trailer (found: ' + after.trim().slice(0, 60) + ')'
+  );
 });
 
 test('entry point: every top-level const/let is declared before main() runs', () => {
-  const src = readFileSync(SCRIPT, 'utf8');
+  const src = readScript(SCRIPT);
   const m = ENTRY_TRAILER.exec(src);
   ok(m, 'the await main() trailer must exist');
-  const late = src.slice(m.index).split('\n').filter((l) => /^(const|let) /.test(l));
+  const late = src
+    .slice(m.index)
+    .split('\n')
+    .filter((l) => /^(const|let) /.test(l));
   is(late.length, 0, 'top-level declarations after the trailer: ' + late.join(' | '));
 });
 
@@ -957,7 +1008,10 @@ test('eg-status runs end to end from the real entry point', async () => {
   const msg = h.runError ? String(h.runError.message) : '';
   ok(!/before initialization/.test(msg), 'must not hit a temporal dead zone: ' + msg);
   ok(!h.runError || h.runError.exitCode === 0, 'must not exit non-zero: ' + msg);
-  ok(h.apiCalls().includes('users.info'), 'must call users.info; calls were ' + h.apiCalls().join(','));
+  ok(
+    h.apiCalls().includes('users.info'),
+    'must call users.info; calls were ' + h.apiCalls().join(',')
+  );
   ok(/Enterprise user: U12345/.test(h.text()), 'must print the enterprise user section');
 });
 
@@ -985,7 +1039,10 @@ test('the stripped harness now includes Grid code', async () => {
   const h = await load({ argv: ['eg-status', 'U12345'] });
   is(typeof h.mod.cmdEgStatus, 'function', 'cmdEgStatus must survive the strip');
   await h.mod.cmdEgStatus();
-  ok(/Enterprise user: U12345/.test(h.text()), 'cmdEgStatus must print the enterprise user section');
+  ok(
+    /Enterprise user: U12345/.test(h.text()),
+    'cmdEgStatus must print the enterprise user section'
+  );
 });
 
 // ── channel-archive / channel-unarchive through the real entry point ──────────
@@ -1040,20 +1097,37 @@ const errOf = (h) => (h.runError ? String(h.runError.message) : '');
 // --json contract: stdout is exactly ONE JSON document and nothing else. The
 // whole of stdout must parse; a human line anywhere breaks the parse.
 function onlyJson(h) {
-  is(h.stdout.length, 1, 'stdout must hold exactly one write in --json mode, got ' + h.stdout.length + ': ' + JSON.stringify(h.stdout).slice(0, 300));
+  is(
+    h.stdout.length,
+    1,
+    'stdout must hold exactly one write in --json mode, got ' +
+      h.stdout.length +
+      ': ' +
+      JSON.stringify(h.stdout).slice(0, 300)
+  );
   const whole = h.stdout.join('\n');
   let parsed = null;
   try {
     parsed = JSON.parse(whole);
   } catch (e) {
-    fail('entire stdout must parse as JSON: ' + e.message + ' -- stdout was: ' + whole.slice(0, 300));
+    fail(
+      'entire stdout must parse as JSON: ' + e.message + ' -- stdout was: ' + whole.slice(0, 300)
+    );
   }
-  ok(parsed && typeof parsed === 'object' && !Array.isArray(parsed), 'stdout must be a JSON object');
+  ok(
+    parsed && typeof parsed === 'object' && !Array.isArray(parsed),
+    'stdout must be a JSON object'
+  );
   return parsed;
 }
 
 test('channel-archive dry run (entry point): reads state, prints it, makes no write', async () => {
-  const h = await load({ runMain: true, fakeTimers: true, argv: ['channel-archive', 'C04633RSEDU'], api: archApi([archChan()]) });
+  const h = await load({
+    runMain: true,
+    fakeTimers: true,
+    argv: ['channel-archive', 'C04633RSEDU'],
+    api: archApi([archChan()]),
+  });
   is(errOf(h), '');
   is(exitOf(h), 0);
   is(archSeq(h), 'admin.conversations.search');
@@ -1071,21 +1145,37 @@ test('channel-archive dry run (entry point): reads state, prints it, makes no wr
 });
 
 test('channel-archive dry run (entry point) with --max-members=2 shows the members-over-limit refusal', async () => {
-  const h = await load({ runMain: true, argv: ['channel-archive', 'C04633RSEDU', '--max-members=2'], api: archApi([archChan()]) });
+  const h = await load({
+    runMain: true,
+    argv: ['channel-archive', 'C04633RSEDU', '--max-members=2'],
+    api: archApi([archChan()]),
+  });
   is(exitOf(h), 0);
   is(archWrites(h), 0);
-  ok(/--confirm would REFUSE: members-over-limit \(6 members > --max-members=2\)/.test(h.text()), h.text());
+  ok(
+    /--confirm would REFUSE: members-over-limit \(6 members > --max-members=2\)/.test(h.text()),
+    h.text()
+  );
 });
 
 test('channel-archive --confirm (entry point): re-check, archive, read-back, confirmed', async () => {
   const h = await load({
     runMain: true,
     fakeTimers: true,
-    argv: ['channel-archive', 'C04633RSEDU', '--confirm', '--max-members=10', '--min-idle-days=365'],
+    argv: [
+      'channel-archive',
+      'C04633RSEDU',
+      '--confirm',
+      '--max-members=10',
+      '--min-idle-days=365',
+    ],
     api: archApi([archChan(), archChan({ is_archived: true, member_count: -1 })]),
   });
   is(errOf(h), '');
-  is(archSeq(h), 'admin.conversations.search,admin.conversations.archive,admin.conversations.search');
+  is(
+    archSeq(h),
+    'admin.conversations.search,admin.conversations.archive,admin.conversations.search'
+  );
   const w = h.calls.find((c) => c.method === 'admin.conversations.archive');
   is(JSON.stringify(w.params), '{"channel_id":"C04633RSEDU"}');
   ok(/archived \(confirmed\)/.test(h.text()));
@@ -1103,7 +1193,11 @@ test('channel-archive --confirm uses the ORG token, not a workspace token', asyn
 });
 
 test('channel-archive --confirm members-over-limit (entry point): exit 1, named, no write', async () => {
-  const h = await load({ runMain: true, argv: ['channel-archive', 'C04633RSEDU', '--confirm', '--max-members=2'], api: archApi([archChan()]) });
+  const h = await load({
+    runMain: true,
+    argv: ['channel-archive', 'C04633RSEDU', '--confirm', '--max-members=2'],
+    api: archApi([archChan()]),
+  });
   is(exitOf(h), 1);
   ok(/refused: members-over-limit/.test(errOf(h)), errOf(h));
   is(archWrites(h), 0);
@@ -1124,7 +1218,15 @@ test('channel-archive --confirm already-archived (entry point): exit 0, no write
   const h = await load({
     runMain: true,
     argv: ['channel-archive', 'C0634KMGW2G', '--confirm'],
-    api: archApi([archChan({ id: 'C0634KMGW2G', name: 'aem-axeno1', is_private: false, is_archived: true, member_count: -1 })]),
+    api: archApi([
+      archChan({
+        id: 'C0634KMGW2G',
+        name: 'aem-axeno1',
+        is_private: false,
+        is_archived: true,
+        member_count: -1,
+      }),
+    ]),
   });
   is(errOf(h), '');
   is(exitOf(h), 0);
@@ -1133,10 +1235,18 @@ test('channel-archive --confirm already-archived (entry point): exit 0, no write
 });
 
 test('channel-archive --confirm read-back exhausted (entry point): unconfirmed, exit 3, 10 s apart', async () => {
-  const h = await load({ runMain: true, fakeTimers: true, argv: ['channel-archive', 'C04633RSEDU', '--confirm'], api: archApi([archChan()]) });
+  const h = await load({
+    runMain: true,
+    fakeTimers: true,
+    argv: ['channel-archive', 'C04633RSEDU', '--confirm'],
+    api: archApi([archChan()]),
+  });
   is(exitOf(h), 3);
   is(archWrites(h), 1);
-  ok(/archived \(unconfirmed: search index did not reflect it after 10 attempts\)/.test(h.text()), h.text());
+  ok(
+    /archived \(unconfirmed: search index did not reflect it after 10 attempts\)/.test(h.text()),
+    h.text()
+  );
   is(h.sleeps.join(','), '10000,10000,10000,10000,10000,10000,10000,10000,10000');
 });
 
@@ -1148,13 +1258,20 @@ test('channel-archive --confirm read-back lag (entry point): confirms on a later
     api: archApi([archChan(), archChan(), archChan({ is_archived: true })]),
   });
   is(exitOf(h), 0);
-  is(archSeq(h), 'admin.conversations.search,admin.conversations.archive,admin.conversations.search,admin.conversations.search');
+  is(
+    archSeq(h),
+    'admin.conversations.search,admin.conversations.archive,admin.conversations.search,admin.conversations.search'
+  );
   is(h.sleeps.join(','), '10000');
   ok(/after 2 attempt/.test(h.text()));
 });
 
 test('channel-archive --confirm not-found (entry point): exit 1, named, no write', async () => {
-  const h = await load({ runMain: true, argv: ['channel-archive', 'C0NOTHERE01', '--confirm'], api: archApi([null]) });
+  const h = await load({
+    runMain: true,
+    argv: ['channel-archive', 'C0NOTHERE01', '--confirm'],
+    api: archApi([null]),
+  });
   is(exitOf(h), 1);
   ok(/refused: not-found/.test(errOf(h)), errOf(h));
   is(archWrites(h), 0);
@@ -1171,7 +1288,11 @@ test('channel-archive --confirm write error (entry point): API error surfaced, e
 });
 
 test('channel-archive --json (entry point) emits the result object', async () => {
-  const h = await load({ runMain: true, argv: ['channel-archive', 'C04633RSEDU', '--json'], api: archApi([archChan()]) });
+  const h = await load({
+    runMain: true,
+    argv: ['channel-archive', 'C04633RSEDU', '--json'],
+    api: archApi([archChan()]),
+  });
   const j = onlyJson(h);
   is(j.mode, 'dry-run');
   is(j.state.member_count, 6);
@@ -1179,7 +1300,11 @@ test('channel-archive --json (entry point) emits the result object', async () =>
 });
 
 test('channel-archive rejects a malformed --max-members before any API call', async () => {
-  const h = await load({ runMain: true, argv: ['channel-archive', 'C04633RSEDU', '--max-members=lots', '--confirm'], api: archApi([archChan()]) });
+  const h = await load({
+    runMain: true,
+    argv: ['channel-archive', 'C04633RSEDU', '--max-members=lots', '--confirm'],
+    api: archApi([archChan()]),
+  });
   is(exitOf(h), 1);
   ok(/--max-members needs a non-negative integer/.test(errOf(h)), errOf(h));
   is(h.calls.length, 0);
@@ -1190,18 +1315,32 @@ test('channel-unarchive --confirm (entry point): re-check, unarchive, read-back'
     runMain: true,
     fakeTimers: true,
     argv: ['channel-unarchive', 'C0634KMGW2G', '--confirm'],
-    api: archApi([archChan({ id: 'C0634KMGW2G', is_archived: true }), archChan({ id: 'C0634KMGW2G', is_archived: false })]),
+    api: archApi([
+      archChan({ id: 'C0634KMGW2G', is_archived: true }),
+      archChan({ id: 'C0634KMGW2G', is_archived: false }),
+    ]),
   });
   is(errOf(h), '');
-  is(archSeq(h), 'admin.conversations.search,admin.conversations.unarchive,admin.conversations.search');
+  is(
+    archSeq(h),
+    'admin.conversations.search,admin.conversations.unarchive,admin.conversations.search'
+  );
   ok(/unarchived \(confirmed\)/.test(h.text()));
 });
 
 test('channel-unarchive dry run (entry point): no write; --max-members is refused as archive-only', async () => {
-  const dry = await load({ runMain: true, argv: ['channel-unarchive', 'C0634KMGW2G'], api: archApi([archChan({ id: 'C0634KMGW2G', is_archived: true })]) });
+  const dry = await load({
+    runMain: true,
+    argv: ['channel-unarchive', 'C0634KMGW2G'],
+    api: archApi([archChan({ id: 'C0634KMGW2G', is_archived: true })]),
+  });
   is(exitOf(dry), 0);
   is(archWrites(dry), 0);
-  const bad = await load({ runMain: true, argv: ['channel-unarchive', 'C0634KMGW2G', '--max-members=1'], api: archApi([archChan()]) });
+  const bad = await load({
+    runMain: true,
+    argv: ['channel-unarchive', 'C0634KMGW2G', '--max-members=1'],
+    api: archApi([archChan()]),
+  });
   is(exitOf(bad), 1);
   is(bad.calls.length, 0);
 });
@@ -1258,7 +1397,11 @@ test('channel-archive --confirm (entry point): ARCHIVED channel with -1 and --ma
 });
 
 test('channel-archive dry run (entry point) on a Slack Connect channel: refusal names the disconnect', async () => {
-  const h = await load({ runMain: true, argv: ['channel-archive', 'C03GXBSC72T'], api: archApi([connectArch()]) });
+  const h = await load({
+    runMain: true,
+    argv: ['channel-archive', 'C03GXBSC72T'],
+    api: archApi([connectArch()]),
+  });
   is(exitOf(h), 0);
   is(archWrites(h), 0);
   const t = h.text();
@@ -1267,17 +1410,30 @@ test('channel-archive dry run (entry point) on a Slack Connect channel: refusal 
 });
 
 test('channel-archive dry run --allow-shared (entry point): plain-words warning, still no write', async () => {
-  const h = await load({ runMain: true, argv: ['channel-archive', 'C03GXBSC72T', '--allow-shared'], api: archApi([connectArch()]) });
+  const h = await load({
+    runMain: true,
+    argv: ['channel-archive', 'C03GXBSC72T', '--allow-shared'],
+    api: archApi([connectArch()]),
+  });
   is(exitOf(h), 0);
   is(archWrites(h), 0);
   const t = h.text();
-  ok(/WARNING: Archiving will disconnect 41 external users from 2 external organisations \(T0BQQL6FJ, E08CP5WPXGT\)/.test(t), t);
+  ok(
+    /WARNING: Archiving will disconnect 41 external users from 2 external organisations \(T0BQQL6FJ, E08CP5WPXGT\)/.test(
+      t
+    ),
+    t
+  );
   ok(/Unarchiving will NOT reconnect them/.test(t), t);
   ok(/--confirm would: re-read this channel/.test(t), t);
 });
 
 test('channel-archive --confirm without --allow-shared (entry point): Slack Connect channel refused, no write', async () => {
-  const h = await load({ runMain: true, argv: ['channel-archive', 'C03GXBSC72T', '--confirm'], api: archApi([connectArch()]) });
+  const h = await load({
+    runMain: true,
+    argv: ['channel-archive', 'C03GXBSC72T', '--confirm'],
+    api: archApi([connectArch()]),
+  });
   is(exitOf(h), 1);
   ok(/refused: ext-shared-requires-allow-shared/.test(errOf(h)), errOf(h));
   is(archWrites(h), 0);
@@ -1287,7 +1443,14 @@ test('channel-archive --confirm --allow-shared (entry point): archives, says wha
   // The measured post-archive row (5 of 5): flags false, 0 external users, no connected
   // teams. Whether conversation_host_id survives an archive was not measured; see the
   // next test for a row that keeps it.
-  const after = connectArch({ is_archived: true, member_count: -1, is_ext_shared: false, external_user_count: 0, connected_team_ids: [], conversation_host_id: undefined });
+  const after = connectArch({
+    is_archived: true,
+    member_count: -1,
+    is_ext_shared: false,
+    external_user_count: 0,
+    connected_team_ids: [],
+    conversation_host_id: undefined,
+  });
   const h = await load({
     runMain: true,
     fakeTimers: true,
@@ -1295,15 +1458,27 @@ test('channel-archive --confirm --allow-shared (entry point): archives, says wha
     api: archApi([connectArch(), after]),
   });
   is(errOf(h), '');
-  is(archSeq(h), 'admin.conversations.search,admin.conversations.archive,admin.conversations.search');
+  is(
+    archSeq(h),
+    'admin.conversations.search,admin.conversations.archive,admin.conversations.search'
+  );
   const t = h.text();
-  ok(/--allow-shared given\. Archiving will disconnect 41 external users from 2 external organisations/.test(t), t);
+  ok(
+    /--allow-shared given\. Archiving will disconnect 41 external users from 2 external organisations/.test(
+      t
+    ),
+    t
+  );
   ok(/Unarchiving will NOT reconnect them/.test(t), t);
   ok(/Shared now:\s+not ext-shared/.test(t), t);
 });
 
 test('channel-unarchive dry run (entry point) warns that connections are not restored', async () => {
-  const h = await load({ runMain: true, argv: ['channel-unarchive', 'C0634KMGW2G'], api: archApi([archChan({ id: 'C0634KMGW2G', is_archived: true })]) });
+  const h = await load({
+    runMain: true,
+    argv: ['channel-unarchive', 'C0634KMGW2G'],
+    api: archApi([archChan({ id: 'C0634KMGW2G', is_archived: true })]),
+  });
   is(exitOf(h), 0);
   ok(/unarchiving is not expected to reconnect them/.test(h.text()), h.text());
 });
@@ -1347,7 +1522,11 @@ test('channel-archive --json (entry point): a failed lookup still emits a JSON r
 });
 
 test('channel-archive --json (entry point): a genuine not-found also emits JSON', async () => {
-  const h = await load({ runMain: true, argv: ['channel-archive', 'C0NOTHERE01', '--json'], api: archApi([null]) });
+  const h = await load({
+    runMain: true,
+    argv: ['channel-archive', 'C0NOTHERE01', '--json'],
+    api: archApi([null]),
+  });
   is(exitOf(h), 0);
   const j = onlyJson(h);
   is(j.decision.reason, 'not-found');
@@ -1361,43 +1540,98 @@ test('channel-archive --json (entry point): a genuine not-found also emits JSON'
 // error and make ZERO Slack API calls, on the dry run and with --confirm.
 
 const REFUSED_ARGS = [
-  ['--max-member=2', ['--max-member=2'], /unknown-flag: --max-member \(did you mean --max-members\?\)/],
-  ['--min-idle-day=180', ['--min-idle-day=180'], /unknown-flag: --min-idle-day \(did you mean --min-idle-days\?\)/],
-  ['--allowshared', ['--allowshared'], /unknown-flag: --allowshared \(did you mean --allow-shared\?\)/],
-  ['--max-members=abc', ['--max-members=abc'], /invalid-value: --max-members needs a non-negative integer, got "abc"/],
-  ['--max-members= (empty)', ['--max-members='], /invalid-value: --max-members needs a non-negative integer, got ""/],
-  ['--min-idle-days=-3', ['--min-idle-days=-3'], /invalid-value: --min-idle-days needs a non-negative integer, got "-3"/],
-  ['--max-members (no value)', ['--max-members'], /invalid-value: --max-members needs a non-negative integer, got \(no value\)/],
+  [
+    '--max-member=2',
+    ['--max-member=2'],
+    /unknown-flag: --max-member \(did you mean --max-members\?\)/,
+  ],
+  [
+    '--min-idle-day=180',
+    ['--min-idle-day=180'],
+    /unknown-flag: --min-idle-day \(did you mean --min-idle-days\?\)/,
+  ],
+  [
+    '--allowshared',
+    ['--allowshared'],
+    /unknown-flag: --allowshared \(did you mean --allow-shared\?\)/,
+  ],
+  [
+    '--max-members=abc',
+    ['--max-members=abc'],
+    /invalid-value: --max-members needs a non-negative integer, got "abc"/,
+  ],
+  [
+    '--max-members= (empty)',
+    ['--max-members='],
+    /invalid-value: --max-members needs a non-negative integer, got ""/,
+  ],
+  [
+    '--min-idle-days=-3',
+    ['--min-idle-days=-3'],
+    /invalid-value: --min-idle-days needs a non-negative integer, got "-3"/,
+  ],
+  [
+    '--max-members (no value)',
+    ['--max-members'],
+    /invalid-value: --max-members needs a non-negative integer, got \(no value\)/,
+  ],
   ['--max-members=2.5', ['--max-members=2.5'], /invalid-value: --max-members/],
-  ['--confrm (typo of --confirm)', ['--confrm'], /unknown-flag: --confrm \(did you mean --confirm\?\)/],
+  [
+    '--confrm (typo of --confirm)',
+    ['--confrm'],
+    /unknown-flag: --confrm \(did you mean --confirm\?\)/,
+  ],
   ['stray positional max-members=2', ['max-members=2'], /unexpected-argument: "max-members=2"/],
 ];
 
 for (const [label, extra, want] of REFUSED_ARGS) {
   for (const confirm of [true, false]) {
-    test('channel-archive ' + label + (confirm ? ' --confirm' : ' (dry run)') + ' (entry point): refused, no Slack call', async () => {
-      const argv = ['channel-archive', 'C04633RSEDU'].concat(extra, confirm ? ['--confirm'] : []);
-      const h = await load({ runMain: true, fakeTimers: true, argv, api: archApi([archChan(), archChan({ is_archived: true })]) });
-      ok(exitOf(h) !== 0, 'must exit non-zero, got ' + exitOf(h));
-      ok(want.test(errOf(h)), 'named error expected, got: ' + errOf(h));
-      is(h.calls.length, 0, 'no Slack call may be made; calls were ' + archSeq(h));
-    });
+    test(
+      'channel-archive ' +
+        label +
+        (confirm ? ' --confirm' : ' (dry run)') +
+        ' (entry point): refused, no Slack call',
+      async () => {
+        const argv = ['channel-archive', 'C04633RSEDU'].concat(extra, confirm ? ['--confirm'] : []);
+        const h = await load({
+          runMain: true,
+          fakeTimers: true,
+          argv,
+          api: archApi([archChan(), archChan({ is_archived: true })]),
+        });
+        ok(exitOf(h) !== 0, 'must exit non-zero, got ' + exitOf(h));
+        ok(want.test(errOf(h)), 'named error expected, got: ' + errOf(h));
+        is(h.calls.length, 0, 'no Slack call may be made; calls were ' + archSeq(h));
+      }
+    );
   }
 }
 
 test('channel-archive --allowshared before the id (entry point): refused, the id is not silently swallowed', async () => {
   // parseArgv hands the next word to an unknown flag as its value.
-  const h = await load({ runMain: true, argv: ['channel-archive', '--allowshared', 'C04633RSEDU', '--confirm'], api: archApi([archChan()]) });
+  const h = await load({
+    runMain: true,
+    argv: ['channel-archive', '--allowshared', 'C04633RSEDU', '--confirm'],
+    api: archApi([archChan()]),
+  });
   ok(exitOf(h) !== 0);
   ok(/unknown-flag: --allowshared/.test(errOf(h)), errOf(h));
   is(h.calls.length, 0);
 });
 
 test('channel-unarchive --confrm / --max-members (entry point): refused, no Slack call', async () => {
-  const a = await load({ runMain: true, argv: ['channel-unarchive', 'C0634KMGW2G', '--confrm'], api: archApi([archChan({ is_archived: true })]) });
+  const a = await load({
+    runMain: true,
+    argv: ['channel-unarchive', 'C0634KMGW2G', '--confrm'],
+    api: archApi([archChan({ is_archived: true })]),
+  });
   ok(/unknown-flag: --confrm \(did you mean --confirm\?\)/.test(errOf(a)), errOf(a));
   is(a.calls.length, 0);
-  const b = await load({ runMain: true, argv: ['channel-unarchive', 'C0634KMGW2G', '--max-members=2', '--confirm'], api: archApi([archChan({ is_archived: true })]) });
+  const b = await load({
+    runMain: true,
+    argv: ['channel-unarchive', 'C0634KMGW2G', '--max-members=2', '--confirm'],
+    api: archApi([archChan({ is_archived: true })]),
+  });
   ok(/archive-only-flag: --max-members applies to channel-archive only/.test(errOf(b)), errOf(b));
   is(b.calls.length, 0);
 });
@@ -1408,15 +1642,31 @@ test('channel-archive correctly spelled guards --confirm (entry point): CONTROL,
   const h = await load({
     runMain: true,
     fakeTimers: true,
-    argv: ['--ws=T0385CHDU9E', 'channel-archive', 'C04633RSEDU', '--max-members=10', '--min-idle-days=180', '--allow-shared', '--confirm', '--org=E06V3987PMY'],
+    argv: [
+      '--ws=T0385CHDU9E',
+      'channel-archive',
+      'C04633RSEDU',
+      '--max-members=10',
+      '--min-idle-days=180',
+      '--allow-shared',
+      '--confirm',
+      '--org=E06V3987PMY',
+    ],
     api: archApi([archChan(), archChan({ is_archived: true })]),
   });
   is(errOf(h), '');
-  is(archSeq(h), 'admin.conversations.search,admin.conversations.archive,admin.conversations.search');
+  is(
+    archSeq(h),
+    'admin.conversations.search,admin.conversations.archive,admin.conversations.search'
+  );
 });
 
 test('channel-archive correctly spelled guards, dry run (entry point): CONTROL, reads state', async () => {
-  const h = await load({ runMain: true, argv: ['channel-archive', 'C04633RSEDU', '--max-members=10', '--min-idle-days=180'], api: archApi([archChan()]) });
+  const h = await load({
+    runMain: true,
+    argv: ['channel-archive', 'C04633RSEDU', '--max-members=10', '--min-idle-days=180'],
+    api: archApi([archChan()]),
+  });
   is(exitOf(h), 0);
   is(archSeq(h), 'admin.conversations.search');
 });
@@ -1425,34 +1675,116 @@ test('channel-archive correctly spelled guards, dry run (entry point): CONTROL, 
 
 const JSON_PATHS = [
   ['dry run, proceed', ['channel-archive', 'C04633RSEDU'], [archChan()], {}, 0, 'dry-run'],
-  ['dry run, would refuse', ['channel-archive', 'C04633RSEDU', '--max-members=2'], [archChan()], {}, 0, 'dry-run'],
-  ['confirm, refused', ['channel-archive', 'C04633RSEDU', '--confirm', '--max-members=2'], [archChan()], {}, 1, 'refused'],
-  ['confirm, already-archived', ['channel-archive', 'C04633RSEDU', '--confirm'], [archChan({ is_archived: true, member_count: -1 })], {}, 0, 'already-archived'],
-  ['confirm, success', ['channel-archive', 'C04633RSEDU', '--confirm'], [archChan(), archChan({ is_archived: true })], {}, 0, 'archived (confirmed)'],
-  ['confirm, unconfirmed', ['channel-archive', 'C04633RSEDU', '--confirm'], [archChan()], {}, 3, 'archived (unconfirmed: search index did not reflect it after 10 attempts)'],
-  ['confirm, write error', ['channel-archive', 'C04633RSEDU', '--confirm'], [archChan()], { writeResult: { ok: false, error: 'restricted_action' } }, 1, 'error'],
+  [
+    'dry run, would refuse',
+    ['channel-archive', 'C04633RSEDU', '--max-members=2'],
+    [archChan()],
+    {},
+    0,
+    'dry-run',
+  ],
+  [
+    'confirm, refused',
+    ['channel-archive', 'C04633RSEDU', '--confirm', '--max-members=2'],
+    [archChan()],
+    {},
+    1,
+    'refused',
+  ],
+  [
+    'confirm, already-archived',
+    ['channel-archive', 'C04633RSEDU', '--confirm'],
+    [archChan({ is_archived: true, member_count: -1 })],
+    {},
+    0,
+    'already-archived',
+  ],
+  [
+    'confirm, success',
+    ['channel-archive', 'C04633RSEDU', '--confirm'],
+    [archChan(), archChan({ is_archived: true })],
+    {},
+    0,
+    'archived (confirmed)',
+  ],
+  [
+    'confirm, unconfirmed',
+    ['channel-archive', 'C04633RSEDU', '--confirm'],
+    [archChan()],
+    {},
+    3,
+    'archived (unconfirmed: search index did not reflect it after 10 attempts)',
+  ],
+  [
+    'confirm, write error',
+    ['channel-archive', 'C04633RSEDU', '--confirm'],
+    [archChan()],
+    { writeResult: { ok: false, error: 'restricted_action' } },
+    1,
+    'error',
+  ],
   ['dry run, not-found', ['channel-archive', 'C0NOTHERE01'], [null], {}, 0, 'dry-run'],
-  ['unarchive, success', ['channel-unarchive', 'C04633RSEDU', '--confirm'], [archChan({ is_archived: true }), archChan()], {}, 0, 'unarchived (confirmed)'],
-  ['unknown flag', ['channel-archive', 'C04633RSEDU', '--max-member=2', '--confirm'], [archChan()], {}, 1, 'unknown-flag'],
-  ['invalid value', ['channel-archive', 'C04633RSEDU', '--min-idle-days=-3'], [archChan()], {}, 1, 'invalid-value'],
+  [
+    'unarchive, success',
+    ['channel-unarchive', 'C04633RSEDU', '--confirm'],
+    [archChan({ is_archived: true }), archChan()],
+    {},
+    0,
+    'unarchived (confirmed)',
+  ],
+  [
+    'unknown flag',
+    ['channel-archive', 'C04633RSEDU', '--max-member=2', '--confirm'],
+    [archChan()],
+    {},
+    1,
+    'unknown-flag',
+  ],
+  [
+    'invalid value',
+    ['channel-archive', 'C04633RSEDU', '--min-idle-days=-3'],
+    [archChan()],
+    {},
+    1,
+    'invalid-value',
+  ],
   ['missing channel id', ['channel-archive'], [archChan()], {}, 1, 'usage'],
   ['invalid channel id', ['channel-archive', 'not-an-id'], [archChan()], {}, 1, 'usage'],
-  ['invalid --org', ['channel-archive', 'C04633RSEDU', '--org=bogus'], [archChan()], {}, 1, 'invalid-value'],
+  [
+    'invalid --org',
+    ['channel-archive', 'C04633RSEDU', '--org=bogus'],
+    [archChan()],
+    {},
+    1,
+    'invalid-value',
+  ],
 ];
 
 for (const [label, argv, states, extra, code, status] of JSON_PATHS) {
   test('--json ' + label + ' (entry point): entire stdout is one JSON document', async () => {
-    const h = await load({ runMain: true, fakeTimers: true, argv: argv.concat(['--json']), api: archApi(states, extra) });
+    const h = await load({
+      runMain: true,
+      fakeTimers: true,
+      argv: argv.concat(['--json']),
+      api: archApi(states, extra),
+    });
     is(exitOf(h), code, 'exit code; error was: ' + errOf(h));
     const j = onlyJson(h);
     is(j.status, status);
     is(j.exitCode, code);
-    is(j.notice, 'xoxc session call: indistinguishable from a direct human action in channel event history.');
+    is(
+      j.notice,
+      'xoxc session call: indistinguishable from a direct human action in channel event history.'
+    );
   });
 }
 
 test('--json read-error (entry point): entire stdout is one JSON document', async () => {
-  const h = await load({ runMain: true, argv: ['channel-archive', 'C04633RSEDU', '--json'], api: (m) => (m === 'admin.conversations.search' ? { ok: true } : undefined) });
+  const h = await load({
+    runMain: true,
+    argv: ['channel-archive', 'C04633RSEDU', '--json'],
+    api: (m) => (m === 'admin.conversations.search' ? { ok: true } : undefined),
+  });
   is(exitOf(h), 1);
   const j = onlyJson(h);
   is(j.status, 'read-error');
@@ -1460,7 +1792,12 @@ test('--json read-error (entry point): entire stdout is one JSON document', asyn
 });
 
 test('--json with no Slack tab (entry point): entire stdout is one JSON document', async () => {
-  const h = await load({ runMain: true, noTab: true, argv: ['channel-archive', 'C04633RSEDU', '--json'], api: archApi([archChan()]) });
+  const h = await load({
+    runMain: true,
+    noTab: true,
+    argv: ['channel-archive', 'C04633RSEDU', '--json'],
+    api: archApi([archChan()]),
+  });
   is(exitOf(h), 1);
   const j = onlyJson(h);
   is(j.status, 'no-slack-tab');
@@ -1468,15 +1805,26 @@ test('--json with no Slack tab (entry point): entire stdout is one JSON document
 });
 
 test('--json unknown flag lists every error with its suggestion', async () => {
-  const h = await load({ runMain: true, argv: ['channel-archive', 'C04633RSEDU', '--max-member=2', '--allowshared', '--json'], api: archApi([archChan()]) });
+  const h = await load({
+    runMain: true,
+    argv: ['channel-archive', 'C04633RSEDU', '--max-member=2', '--allowshared', '--json'],
+    api: archApi([archChan()]),
+  });
   const j = onlyJson(h);
   is(j.status, 'unknown-flag');
-  is(j.errors.map((e) => e.flag + '>' + e.suggestion).join(','), '--max-member>--max-members,--allowshared>--allow-shared');
+  is(
+    j.errors.map((e) => e.flag + '>' + e.suggestion).join(','),
+    '--max-member>--max-members,--allowshared>--allow-shared'
+  );
   is(h.calls.length, 0);
 });
 
 test('without --json the human output is unchanged (attribution notice still printed)', async () => {
-  const h = await load({ runMain: true, argv: ['channel-archive', 'C04633RSEDU'], api: archApi([archChan()]) });
+  const h = await load({
+    runMain: true,
+    argv: ['channel-archive', 'C04633RSEDU'],
+    api: archApi([archChan()]),
+  });
   ok(/indistinguishable from a direct human action/.test(h.text()));
   ok(/Dry run: channel-archive/.test(h.text()));
   ok(h.stdout.length > 5);
@@ -1497,36 +1845,63 @@ test('without --json the human output is unchanged (attribution notice still pri
 // the JSON error document for channel-archive / channel-unarchive.
 
 const PARSE_FAILURES = [
-  ['--allow-shared=maybe', ['channel-archive', 'C04633RSEDU', '--allow-shared=maybe', '--json'], 'archive'],
+  [
+    '--allow-shared=maybe',
+    ['channel-archive', 'C04633RSEDU', '--allow-shared=maybe', '--json'],
+    'archive',
+  ],
   ['--confirm=fasle', ['channel-archive', 'C04633RSEDU', '--confirm=fasle', '--json'], 'archive'],
-  ['unarchive --confirm=maybe', ['channel-unarchive', 'C0634KMGW2G', '--confirm=maybe', '--json'], 'unarchive'],
-  ['--json=true form', ['--ws=T0385CHDU9E', 'channel-archive', 'C04633RSEDU', '--allow-shared=2', '--json=true'], 'archive'],
+  [
+    'unarchive --confirm=maybe',
+    ['channel-unarchive', 'C0634KMGW2G', '--confirm=maybe', '--json'],
+    'unarchive',
+  ],
+  [
+    '--json=true form',
+    ['--ws=T0385CHDU9E', 'channel-archive', 'C04633RSEDU', '--allow-shared=2', '--json=true'],
+    'archive',
+  ],
 ];
 
 for (const [label, argv, action] of PARSE_FAILURES) {
-  test('--json parse failure ' + label + ' (entry point): entire stdout is one JSON document, no Slack call', async () => {
-    const h = await load({ runMain: true, argv, api: archApi([archChan()]) });
-    is(exitOf(h), 1);
-    ok(/is not a valid boolean value/.test(errOf(h)), errOf(h));
-    const j = onlyJson(h);
-    is(j.status, 'invalid-value');
-    is(j.action, action);
-    ok(/^invalid-value: --[a-z-]+=\S+ is not a valid boolean value/.test(j.error), j.error);
-    is(j.exitCode, 1);
-    is(j.notice, 'xoxc session call: indistinguishable from a direct human action in channel event history.');
-    is(h.calls.length, 0);
-  });
+  test(
+    '--json parse failure ' +
+      label +
+      ' (entry point): entire stdout is one JSON document, no Slack call',
+    async () => {
+      const h = await load({ runMain: true, argv, api: archApi([archChan()]) });
+      is(exitOf(h), 1);
+      ok(/is not a valid boolean value/.test(errOf(h)), errOf(h));
+      const j = onlyJson(h);
+      is(j.status, 'invalid-value');
+      is(j.action, action);
+      ok(/^invalid-value: --[a-z-]+=\S+ is not a valid boolean value/.test(j.error), j.error);
+      is(j.exitCode, 1);
+      is(
+        j.notice,
+        'xoxc session call: indistinguishable from a direct human action in channel event history.'
+      );
+      is(h.calls.length, 0);
+    }
+  );
 }
 
 test('parse failure WITHOUT --json (entry point): plain error only, nothing on stdout', async () => {
-  const h = await load({ runMain: true, argv: ['channel-archive', 'C04633RSEDU', '--allow-shared=maybe'], api: archApi([archChan()]) });
+  const h = await load({
+    runMain: true,
+    argv: ['channel-archive', 'C04633RSEDU', '--allow-shared=maybe'],
+    api: archApi([archChan()]),
+  });
   is(exitOf(h), 1);
   is(h.stdout.length, 0);
   is(h.calls.length, 0);
 });
 
 test('parse failure on another command with --json is unchanged (scope: archive commands only)', async () => {
-  const h = await load({ runMain: true, argv: ['eg-status', 'U12345', '--confirm=fasle', '--json'] });
+  const h = await load({
+    runMain: true,
+    argv: ['eg-status', 'U12345', '--confirm=fasle', '--json'],
+  });
   is(exitOf(h), 1);
   is(h.stdout.length, 0);
 });
@@ -1549,7 +1924,11 @@ test('channel-archive --confirm --allow-shared (entry point): missing is_ext_sha
 });
 
 test('channel-archive dry run --json (entry point): missing is_pending_ext_shared reported as would-refuse sharing-unknown', async () => {
-  const h = await load({ runMain: true, argv: ['channel-archive', 'C04633RSEDU', '--json'], api: archApi([archChan({ is_pending_ext_shared: undefined })]) });
+  const h = await load({
+    runMain: true,
+    argv: ['channel-archive', 'C04633RSEDU', '--json'],
+    api: archApi([archChan({ is_pending_ext_shared: undefined })]),
+  });
   is(exitOf(h), 0);
   const j = onlyJson(h);
   is(j.decision.reason, 'sharing-unknown');
@@ -1607,10 +1986,19 @@ test('channel-archive --json (entry point): malformed conversations.info is a re
 // ── Codex round 5 (P2): missing connected-team lists (entry point) ────────────
 
 test('channel-archive dry run --allow-shared (entry point): missing connected_team_ids warns "unknown", never 0', async () => {
-  const h = await load({ runMain: true, argv: ['channel-archive', 'C03GXBSC72T', '--allow-shared'], api: archApi([connectArch({ connected_team_ids: undefined })]) });
+  const h = await load({
+    runMain: true,
+    argv: ['channel-archive', 'C03GXBSC72T', '--allow-shared'],
+    api: archApi([connectArch({ connected_team_ids: undefined })]),
+  });
   is(exitOf(h), 0);
   const t = h.text();
-  ok(/WARNING: Archiving will disconnect 41 external users from an unknown number of external organisations/.test(t), t);
+  ok(
+    /WARNING: Archiving will disconnect 41 external users from an unknown number of external organisations/.test(
+      t
+    ),
+    t
+  );
   ok(/could not be determined/.test(t), t);
   ok(!/0 external organisations/.test(t), t);
   ok(/unknown number of external orgs/.test(t), 'the Shared: line says unknown too');
@@ -1621,7 +2009,9 @@ test('channel-archive --json dry run (entry point): impact.external_team_ids is 
   const h = await load({
     runMain: true,
     argv: ['channel-archive', 'C03GXBSC72T', '--allow-shared', '--json'],
-    api: archApi([connectArch({ connected_team_ids: undefined, pending_connected_team_ids: 'bogus' })]),
+    api: archApi([
+      connectArch({ connected_team_ids: undefined, pending_connected_team_ids: 'bogus' }),
+    ]),
   });
   const j = onlyJson(h);
   is(j.impact.external_team_ids, null);
@@ -1635,7 +2025,10 @@ test('channel-archive --confirm (entry point): search {ok:"false"} with a matchi
   const h = await load({
     runMain: true,
     argv: ['channel-archive', 'C04633RSEDU', '--confirm'],
-    api: (m) => (m === 'admin.conversations.search' ? { ok: 'false', conversations: [archChan()], next_cursor: '' } : undefined),
+    api: (m) =>
+      m === 'admin.conversations.search'
+        ? { ok: 'false', conversations: [archChan()], next_cursor: '' }
+        : undefined,
   });
   is(exitOf(h), 1);
   ok(/channel lookup failed \(malformed_response\)/.test(errOf(h)), errOf(h));
@@ -1646,7 +2039,10 @@ test('channel-archive --json (entry point): search {ok:"false"} is a read-error 
   const h = await load({
     runMain: true,
     argv: ['channel-archive', 'C04633RSEDU', '--json'],
-    api: (m) => (m === 'admin.conversations.search' ? { ok: 'false', conversations: [archChan()], next_cursor: '' } : undefined),
+    api: (m) =>
+      m === 'admin.conversations.search'
+        ? { ok: 'false', conversations: [archChan()], next_cursor: '' }
+        : undefined,
   });
   is(exitOf(h), 1);
   const j = onlyJson(h);
@@ -1660,10 +2056,22 @@ test('channel-archive --confirm --allow-shared (entry point): flags false but ex
   const h = await load({
     runMain: true,
     argv: ['channel-archive', 'C04633RSEDU', '--confirm', '--allow-shared'],
-    api: archApi([archChan({ is_ext_shared: false, is_pending_ext_shared: false, external_user_count: 3, conversation_host_id: 'E06V3987PMY' })]),
+    api: archApi([
+      archChan({
+        is_ext_shared: false,
+        is_pending_ext_shared: false,
+        external_user_count: 3,
+        conversation_host_id: 'E06V3987PMY',
+      }),
+    ]),
   });
   is(exitOf(h), 1);
-  ok(/refused: sharing-unknown \(is_ext_shared and is_pending_ext_shared are false, but the same row reports external_user_count 3/.test(errOf(h)), errOf(h));
+  ok(
+    /refused: sharing-unknown \(is_ext_shared and is_pending_ext_shared are false, but the same row reports external_user_count 3/.test(
+      errOf(h)
+    ),
+    errOf(h)
+  );
   is(archWrites(h), 0);
 });
 
@@ -1679,7 +2087,13 @@ test('channel-archive dry run --json (entry point): contradictory row reports sh
 });
 
 test('channel-archive --confirm --allow-shared (entry point): a read-back row that keeps conversation_host_id prints Shared now UNKNOWN', async () => {
-  const after = connectArch({ is_archived: true, member_count: -1, is_ext_shared: false, external_user_count: 0, connected_team_ids: [] });
+  const after = connectArch({
+    is_archived: true,
+    member_count: -1,
+    is_ext_shared: false,
+    external_user_count: 0,
+    connected_team_ids: [],
+  });
   const h = await load({
     runMain: true,
     fakeTimers: true,
@@ -1688,7 +2102,12 @@ test('channel-archive --confirm --allow-shared (entry point): a read-back row th
   });
   is(errOf(h), '');
   ok(/archived \(confirmed\)/.test(h.text()));
-  ok(/Shared now:\s+UNKNOWN \(flags say not shared, but the row reports conversation_host_id E06V3987PMY\)/.test(h.text()), h.text());
+  ok(
+    /Shared now:\s+UNKNOWN \(flags say not shared, but the row reports conversation_host_id E06V3987PMY\)/.test(
+      h.text()
+    ),
+    h.text()
+  );
 });
 
 // ── channel-search (entry point): the 2026-10-02 invalid_arguments bug ───────
@@ -1718,7 +2137,11 @@ function csApi(pages) {
 }
 const csRow = (id, name) => ({ id, name, member_count: 4, is_private: false, is_archived: false });
 const CS_PAGES = [
-  [csRow('C06MDH3G9J5', 'aem-santanderemea'), csRow('C09U7MX5R7X', 'aem-gruposantander'), csRow('C1', 'general')],
+  [
+    csRow('C06MDH3G9J5', 'aem-santanderemea'),
+    csRow('C09U7MX5R7X', 'aem-gruposantander'),
+    csRow('C1', 'general'),
+  ],
   [csRow('C0C5YLFVBDY', 'agents-santander'), csRow('C2', 'random')],
 ];
 const csCalls = (h) => h.calls.filter((c) => c.method === 'admin.conversations.search');
@@ -1726,7 +2149,11 @@ const csCalls = (h) => h.calls.filter((c) => c.method === 'admin.conversations.s
 // MUTATION TARGET: restore `limit: String(limit || 50)` and the default
 // --limit of 50, and this fails exactly as the live command did.
 test('channel-search --query=santander (entry point): succeeds, pages to the end, lists infix matches', async () => {
-  const h = await load({ runMain: true, argv: ['channel-search', '--query=santander'], api: csApi(CS_PAGES) });
+  const h = await load({
+    runMain: true,
+    argv: ['channel-search', '--query=santander'],
+    api: csApi(CS_PAGES),
+  });
   is(errOf(h), '');
   is(exitOf(h), 0);
   const calls = csCalls(h);
@@ -1741,7 +2168,11 @@ test('channel-search --query=santander (entry point): succeeds, pages to the end
 });
 
 test('channel-search --limit=50 --types=all (entry point): the page size is clamped to 20', async () => {
-  const h = await load({ runMain: true, argv: ['channel-search', '--query=santander', '--limit=50', '--types=all'], api: csApi(CS_PAGES) });
+  const h = await load({
+    runMain: true,
+    argv: ['channel-search', '--query=santander', '--limit=50', '--types=all'],
+    api: csApi(CS_PAGES),
+  });
   is(errOf(h), '');
   for (const c of csCalls(h)) {
     is(c.params.limit, '20');
@@ -1757,22 +2188,39 @@ test('channel-search (entry point): a Slack error prints response_metadata.messa
     argv: ['channel-search', '--query=santander'],
     api: (m) =>
       m === 'admin.conversations.search'
-        ? { ok: false, error: 'invalid_arguments', response_metadata: { messages: ['[ERROR] must be less than 20 [json-pointer:/limit]'] } }
+        ? {
+            ok: false,
+            error: 'invalid_arguments',
+            response_metadata: { messages: ['[ERROR] must be less than 20 [json-pointer:/limit]'] },
+          }
         : undefined,
   });
   is(exitOf(h), 1);
-  ok(/admin\.conversations\.search failed: invalid_arguments \(\[ERROR\] must be less than 20 \[json-pointer:\/limit\]\)/.test(errOf(h)), errOf(h));
+  ok(
+    /admin\.conversations\.search failed: invalid_arguments \(\[ERROR\] must be less than 20 \[json-pointer:\/limit\]\)/.test(
+      errOf(h)
+    ),
+    errOf(h)
+  );
 });
 
 test('channel-search --max=1 (entry point): max caps matches, not rows scanned', async () => {
-  const h = await load({ runMain: true, argv: ['channel-search', '--query=santander', '--max=1'], api: csApi(CS_PAGES) });
+  const h = await load({
+    runMain: true,
+    argv: ['channel-search', '--query=santander', '--max=1'],
+    api: csApi(CS_PAGES),
+  });
   is(errOf(h), '');
   ok(/Matching:\s+1/.test(h.text()), h.text());
   ok(/--max reached/.test(h.text()), h.text());
 });
 
 test('channel-search --json with zero matches (entry point) still emits JSON', async () => {
-  const h = await load({ runMain: true, argv: ['channel-search', '--query=nomatch-xyz', '--json'], api: csApi(CS_PAGES) });
+  const h = await load({
+    runMain: true,
+    argv: ['channel-search', '--query=nomatch-xyz', '--json'],
+    api: csApi(CS_PAGES),
+  });
   is(errOf(h), '');
   const j = JSON.parse(h.stdout[h.stdout.length - 1]);
   is(j.total, 0);

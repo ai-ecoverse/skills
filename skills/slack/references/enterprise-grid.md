@@ -1,12 +1,13 @@
 # Slack Enterprise Grid admin commands (`slack-ext`)
 
 Reference for the `slack-ext eg-*`, `channel-*`, `approvals` and `admin-app` commands
-summarised in SKILL.md ("Enterprise Grid admin commands"). Read SKILL.md's
-"CRITICAL: audit attribution" first: every write here is indistinguishable from the
-human doing it by hand.
+summarised in SKILL.md ("Enterprise Grid admin commands"). Read
+[Audit attribution evidence](#audit-attribution-evidence) first: every write here is
+indistinguishable from the human doing it by hand.
 
 ## Contents
 
+- [Audit attribution evidence](#audit-attribution-evidence)
 - [Authentication](#authentication)
 - [Dry-run default](#dry-run-default)
 - [Enterprise user lifecycle](#enterprise-user-lifecycle)
@@ -30,6 +31,7 @@ human doing it by hand.
   - [How `slack-ext channel-archive` / `channel-unarchive` use these](#how-slack-ext-channel-archive--channel-unarchive-use-these)
 - [Slack Connect approvals](#slack-connect-approvals)
   - [`approvals [--query=<q>] [--limit=<n>] [--all] [--json]`](#approvals---queryq---limitn---all---json)
+  - [Slack Connect invite and permission commands](#slack-connect-invite-and-permission-commands)
 - [App governance](#app-governance)
   - [`admin-app approve <app_id|request_id> [--confirm]`](#admin-app-approve-app_idrequest_id---confirm)
   - [`admin-app restrict <app_id|request_id> [--confirm]`](#admin-app-restrict-app_idrequest_id---confirm)
@@ -37,6 +39,23 @@ human doing it by hand.
   - [`admin-app permissions <app_id> --type=<no_one|everyone|named_entities> [--confirm]`](#admin-app-permissions-app_id---typeno_oneeveryonenamed_entities---confirm)
   - [`admin-app list [--restricted] [--json]`](#admin-app-list---restricted---json)
 - [What remains unverified](#what-remains-unverified)
+
+### Audit attribution evidence
+
+Session-token (`xoxc`) calls are **indistinguishable from the human's own direct actions**
+in Slack's channel event history. A concrete, verified case: `#aem-fedex` (`C0C2CUUDWLE`)
+was archived by Zapier at 2026-09-17T00:17:04Z — the channel event log records Lars Trieloff
+as the actor, not Zapier, because Zapier's Slack action ran on his user OAuth token and
+carries no bot identity. Running `eg-deactivate`, `eg-set-restricted`, `channel-to-private`,
+or any other write command in this skill looks identical to the human performing the action
+themselves in the Slack UI.
+
+The Enterprise Audit Logs API (`auditlogs:read` scope) **would** record the acting app and
+distinguish automation from a human click — but `admin.audit.*` methods all return
+`unknown_method` (six variants probed on 2026-09-22; none exist). There is currently no
+working API call that distinguishes an `xoxc`-based script from a human in the channel
+event log. Do not document these calls as "attributed to the human in the audit log" —
+they ARE the human as far as any observable Slack record is concerned.
 
 ### Authentication
 
@@ -412,6 +431,14 @@ List Slack Connect shared channel invite approvals.
 - `--detail` (and `approvals show <invite_id>`) print inviter, invitee + org and both sides'
   approval state; `connect-revoke` and `guest-invite` act on invites. Contracts, measured
   2026-09-29: `references/endpoints.md`, "Slack Connect invites and guest invites".
+
+#### Slack Connect invite and permission commands
+
+- `connect-revoke <invite_id> --channel=<C…> [--confirm]` — revoke a Slack Connect invite; dry run shows the row, `--confirm` re-reads it (expects `expired`, else exit 3). `team_is_restricted` = workspace-scoped token; use the org token.
+- `--ws=<T…> guest-invite <email> --channel=<C…> [--confirm]` — invite a single-channel guest (`users.admin.inviteBulk`); emails the invitee on `--confirm`; exits 1 if any per-invite result failed. Wire contract: `references/endpoints.md`.
+- `[--ws=<T…>] connect-status <C…> [--json]` — read-only: archived, private, `is_ext_shared`, `is_pending_ext_shared`, host org, connected external orgs split into **Post and Invite** vs **post-only** (`connected_limited_team_ids`), pending orgs; names via `team.info`, bare ids when that fails. Run it before and after the two commands below.
+- `--ws=<T…> connect-invite <C…> --emails=a@x.com,b@y.com [--post-only] [--confirm] [--json]` — invite an external org's people into a channel (`conversations.inviteShared`, one call per address: Slack accepts one email per call; exit 1 if any address failed, 3 if an `internal_error`/`fatal_error` left the outcome unknown). **Default is Post and Invite**: `external_limited=false` is always sent, because Slack's own default is post-only; `--post-only` sends `true`. Emails are lowercased, deduped, shape-checked. Refuses `not-found`, `archived`, `hosted-elsewhere`, `host-unknown`, `sharing-unknown`. **An unchanged read-back after `--confirm` is expected**: until an invitee accepts, the channel still reads `is_ext_shared:false`, `is_pending_ext_shared:false`, `pending_connected_team_ids:[]`, and the invite is not in `approvals` (`conversations.listConnectInvites` answers `not_allowed_token_type`). Follow up with `slack-ext approvals --query=<channel name> --detail`: an invite the other org approved can still sit at "Waiting on: our side" and expire.
+- `--ws=<T…> connect-permissions <C…> --team=<E…|T…> --upgrade|--downgrade [--confirm] [--json]` — change one connected org's permission (`conversations.externalInvitePermissions.set`, `action=upgrade` = post-only → Post and Invite, `downgrade` = the reverse). Refuses a team that is not connected (`team-not-connected`; a `T…` id is resolved to its grid via `team.info`). Already at the target = nothing to do, exit 0. Retries `ratelimited`/`ratelimit` (4 tries, 30 s apart); `internal_error`/`fatal_error` = outcome unknown, exit 3; `--confirm` re-reads until the team is still connected and `connected_limited_team_ids` matches, else exit 3.
 
 ---
 

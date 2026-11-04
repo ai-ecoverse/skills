@@ -210,6 +210,12 @@ Replies route back to **the cone that posted**. The target resolution order is:
 3. Nothing — no explicit target, and the runtime dispatches the lick to the
    untargeted destination itself.
 
+A manual `slack watch` with no `--scoop` takes the calling cone from
+`SLICC_LICK_TARGET`. When that is unset (the default root), `--scoop` is
+**required**: `webhook create` needs a concrete scoop, and the untargeted
+destination is the oldest root, so guessing one could route replies silently to
+the wrong cone.
+
 Case 3 matters: the untargeted destination is `rootsOf(scoops)[0]`, the **oldest**
 root, which is deliberately not necessarily whichever cone currently holds the
 reserved `cone` folder (that folder is recycled to the next new cone when the
