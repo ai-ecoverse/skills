@@ -493,6 +493,30 @@ test('a watch of a Grid team observes its org’s tab, not the first Slack tab',
   is(r.calls.find((c) => c.method === 'websocket').tab.targetId, 'our-org');
 });
 
+test('a watch of a workspace no tab knows fails instead of watching another tab', async () => {
+  const r = await slack(['--ws', 'T0NOTSIGNED1', 'watch', CH, '--for', '1s']);
+  is(r.exitCode, 1);
+  ok(r.err.includes('T0NOTSIGNED1 is not signed in'));
+  ok(!r.calls.some((c) => c.method === 'websocket'), 'no subscription');
+  ok(!Object.keys(r.vfs.files).some((f) => f.startsWith(STATE)), 'not registered');
+});
+
+test('a watch stopped while an author lookup hangs ends at once', async () => {
+  const started = Date.now();
+  const r = await slack(['--ws', WS, 'watch', CH, 'echo late'], {
+    slowApi: 4000,
+    during: async ({ framesPath, vfs, signal }) => {
+      await vfs.promises.appendFile(framesPath, frame({ ts: '6.000002' }));
+      await tick(350);
+      signal('SIGTERM');
+    },
+  });
+  is(r.exitCode, 143);
+  ok(Date.now() - started < 2500, 'did not wait for the lookup');
+  is(r.spawns, []);
+  is(Object.keys(r.vfs.files), [], 'cleaned up');
+});
+
 test('a watch records the workspace it resolved, so --ws finds an auto-detected watch', async () => {
   let listed = null;
   await slack(['watch', CH], {

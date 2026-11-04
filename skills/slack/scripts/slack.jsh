@@ -3105,7 +3105,13 @@ async function watchTab(wsId) {
   if (own) return own;
   const cfg = await readLocalConfig(await findSlackTab());
   const team = cfg && cfg.teams && cfg.teams[wsId];
-  const org = team && typeof team.enterprise_id === 'string' && /^E[A-Z0-9]+$/.test(team.enterprise_id) ? team.enterprise_id : null;
+  // A workspace the tabs don't know (a typo, or signed out) has no socket to
+  // watch: say so, instead of watching a tab that never carries its messages.
+  if (!team) {
+    console.error(`Error: workspace ${wsId} is not signed in in this browser's Slack tabs. Run "slack workspaces" for the ids, or log in to it at app.slack.com.`);
+    process.exit(1);
+  }
+  const org = typeof team.enterprise_id === 'string' && /^E[A-Z0-9]+$/.test(team.enterprise_id) ? team.enterprise_id : null;
   const orgTab = org ? await tabFor(org) : null;
   return orgTab || findSlackTab();
 }
@@ -3278,7 +3284,8 @@ async function watchForeground(args, globalFlags) {
         if (json) {
           console.log(JSON.stringify(frame));
         } else {
-          await hydrateMessageEntities([frame], wsId);
+          // A lookup that hangs must not keep a stopped watch alive.
+          await Promise.race([hydrateMessageEntities([frame], wsId), finished]);
           // The watch can end during that lookup: then no callback starts.
           if (code !== null) break;
           if (command !== null) {
