@@ -53,6 +53,7 @@ async function slack(argv, o = {}) {
   const reads = [];
   const renames = [];
   const chmods = [];
+  const mkdtemps = [];
   const p = vfs.promises;
   const fs = {
     ...vfs,
@@ -86,6 +87,11 @@ async function slack(argv, o = {}) {
       rename: async (from, to) => {
         renames.push({ from, to });
         return p.rename(from, to);
+      },
+      mkdtemp: async (prefix) => {
+        const dir = `${prefix}Ab12Cd`;
+        mkdtemps.push(dir);
+        return dir;
       },
       chmod: async (target, mode) => {
         chmods.push({ target, mode });
@@ -332,6 +338,7 @@ async function slack(argv, o = {}) {
     reads,
     renames,
     chmods,
+    mkdtemps,
     killed,
     killedAt,
     signals,
@@ -934,16 +941,33 @@ test('download refuses to send the session anywhere but https://*.slack.com', as
   }
 });
 
-test('download keeps an uploader’s file name inside /tmp', async () => {
+test('download without --out writes a 0600 file into a fresh private directory', async () => {
   const r = await slack(['--ws', WS, 'download', 'F1'], {
     api: fileInfo('../../home/tester/.zshrc'),
     fetch: async () => new Response('x', { headers: { 'content-type': 'text/plain' } }),
   });
   is(r.exitCode, 0);
+  is(r.mkdtemps, [path.join(os.tmpdir(), 'slack-download-Ab12Cd')], 'mkdtemp: 0700, unpredictable');
   const written = Object.keys(r.vfs.files);
   is(written.length, 1);
-  ok(written[0].startsWith('/tmp/') && !written[0].slice(5).includes('/'), written[0]);
+  is(
+    path.dirname(written[0]),
+    r.mkdtemps[0],
+    'directly inside it: the uploader’s name has no path'
+  );
   ok(!written[0].includes('/../'), 'no traversal');
+  is(r.writes.find((w) => w.file === written[0]).opts, { mode: 0o600, flag: 'wx' });
+  ok(r.out.includes(written[0]));
+});
+
+test('download --out writes a new file 0600', async () => {
+  const r = await slack(['--ws', WS, 'download', 'F1', '--out', '/home/tester/shot.png'], {
+    api: fileInfo('shot.png'),
+    fetch: async () => new Response('x', { headers: { 'content-type': 'image/png' } }),
+  });
+  is(r.exitCode, 0);
+  is(r.mkdtemps, []);
+  is(r.writes.find((w) => w.file === '/home/tester/shot.png').opts, { mode: 0o600 });
 });
 
 test('download treats a login page as an expired session', async () => {

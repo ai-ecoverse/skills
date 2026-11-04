@@ -1481,17 +1481,20 @@ const commands = {
     }
     const wsId = await resolveWorkspace(globalFlags);
     let url = typeof flags.url === 'string' ? flags.url : null;
-    let name = typeof flags.out === 'string' ? flags.out : null;
+    const explicitOut = typeof flags.out === 'string' ? flags.out : null;
+    let name = explicitOut;
+    let remoteName = null;
     if (fileId && !url) {
       const info = await slackApi('files.info', { file: fileId }, wsId);
       if (!info.ok) { console.error('Error:', info.error); process.exit(1); }
       url = info.file.url_private_download || info.file.url_private;
       // The name is the uploader's: keep it inside /tmp (no `/`, no leading dots),
       // since on a host /tmp/../ is the real filesystem.
-      const remoteName = String(info.file.name || (info.file.id + '.' + (info.file.filetype || 'bin')));
-      if (!name) name = `/tmp/${remoteName.replace(/[/\\]/g, '_').replace(/^\.+/, '_')}`;
+      remoteName = String(info.file.name || (info.file.id + '.' + (info.file.filetype || 'bin')))
+        .replace(/[/\\]/g, '_').replace(/^\.+/, '_');
+      if (!name) name = `/tmp/${remoteName}`;
     }
-    const out = name || `/tmp/slack-download-${Date.now()}`;
+    let out = name || `/tmp/slack-download-${Date.now()}`;
     if (JSH) {
       // Under jsh the Slack page cannot read files.slack.com: its fetch fails
       // with "Failed to fetch" (no CSP report; measured on Enterprise Grid,
@@ -1516,7 +1519,19 @@ const commands = {
         process.exit(1);
       }
       const bytes = Buffer.from(await r.arrayBuffer());
-      await fs.promises.writeFile(out, bytes);
+      // A private attachment on a shared host: without --out it goes into a
+      // fresh directory only this user can read (mkdtemp, 0700), never to a
+      // predictable /tmp path another user could read or plant a symlink at.
+      // A new file is 0600 either way.
+      if (!explicitOut) {
+        const os = require('os');
+        const path = require('path');
+        const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'slack-download-'));
+        out = path.join(dir, remoteName || 'download');
+        await fs.promises.writeFile(out, bytes, { mode: 0o600, flag: 'wx' });
+      } else {
+        await fs.promises.writeFile(out, bytes, { mode: 0o600 });
+      }
       console.log(`Downloaded ${bytes.length} bytes to ${out}`);
       return;
     }

@@ -53,6 +53,9 @@ and keeps its webhook and lick behaviour.
 - **`slack download`** fetches from this process, not from the page, because
   the page's own fetch of `files.slack.com` fails here. It sends the tab's `d`
   session cookie, only to `https://*.slack.com` URLs, and never prints it.
+  Without `--out` the file goes into a fresh private directory
+  (`$TMPDIR/slack-download-XXXXXX/<name>`, 0700, the file 0600), not to a
+  predictable `/tmp/<name>`. With `--out`, a new file is created 0600.
 - **State** lives in `$SLACK_STATE_DIR`, else `$XDG_STATE_HOME/slack`, else
   `~/.local/state/slack` (mode 0700), not in the skill folder. That covers
   `--thread_ts=last`, the custom emoji cache, `watch-<pid>.json` for each running
