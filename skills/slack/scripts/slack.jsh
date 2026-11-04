@@ -1522,7 +1522,7 @@ const commands = {
       // A private attachment on a shared host: without --out it goes into a
       // fresh directory only this user can read (mkdtemp, 0700), never to a
       // predictable /tmp path another user could read or plant a symlink at.
-      // A new file is 0600 either way.
+      // The file is 0600 either way.
       if (!explicitOut) {
         const os = require('os');
         const path = require('path');
@@ -1530,7 +1530,18 @@ const commands = {
         out = path.join(dir, remoteName || 'download');
         await fs.promises.writeFile(out, bytes, { mode: 0o600, flag: 'wx' });
       } else {
-        await fs.promises.writeFile(out, bytes, { mode: 0o600 });
+        // An existing --out keeps its own mode under writeFile, and may be a
+        // symlink: write a new 0600 file next to it and rename it into place,
+        // which replaces the name (symlink included) rather than writing through it.
+        const tmp = `${out}.slack-${process.pid}.tmp`;
+        try {
+          await fs.promises.writeFile(tmp, bytes, { mode: 0o600, flag: 'wx' });
+          await fs.promises.rename(tmp, out);
+        } catch (e) {
+          await fs.promises.rm(tmp, { force: true }).catch(() => {});
+          console.error(`Error: could not write ${out}: ${e && e.message ? e.message : e}`);
+          process.exit(1);
+        }
       }
       console.log(`Downloaded ${bytes.length} bytes to ${out}`);
       return;

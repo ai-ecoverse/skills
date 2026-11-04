@@ -55,7 +55,9 @@ and keeps its webhook and lick behaviour.
   session cookie, only to `https://*.slack.com` URLs, and never prints it.
   Without `--out` the file goes into a fresh private directory
   (`$TMPDIR/slack-download-XXXXXX/<name>`, 0700, the file 0600), not to a
-  predictable `/tmp/<name>`. With `--out`, a new file is created 0600.
+  predictable `/tmp/<name>`. With `--out`, a new 0600 file is written next to
+  the path and renamed over it, so an existing file (or a symlink there) is
+  replaced, not written through.
 - **State** lives in `$SLACK_STATE_DIR`, else `$XDG_STATE_HOME/slack`, else
   `~/.local/state/slack` (mode 0700), not in the skill folder. That covers
   `--thread_ts=last`, the custom emoji cache, `watch-<pid>.json` for each running

@@ -960,14 +960,20 @@ test('download without --out writes a 0600 file into a fresh private directory',
   ok(r.out.includes(written[0]));
 });
 
-test('download --out writes a new file 0600', async () => {
-  const r = await slack(['--ws', WS, 'download', 'F1', '--out', '/home/tester/shot.png'], {
+test('download --out replaces the file with a new 0600 one, never writing through it', async () => {
+  const out = '/home/tester/shot.png';
+  const r = await slack(['--ws', WS, 'download', 'F1', '--out', out], {
     api: fileInfo('shot.png'),
+    files: { [out]: 'old, 0644' },
     fetch: async () => new Response('x', { headers: { 'content-type': 'image/png' } }),
   });
   is(r.exitCode, 0);
   is(r.mkdtemps, []);
-  is(r.writes.find((w) => w.file === '/home/tester/shot.png').opts, { mode: 0o600 });
+  const tmp = `${out}.slack-4242.tmp`;
+  is(r.writes.find((w) => w.file === tmp).opts, { mode: 0o600, flag: 'wx' });
+  ok(!r.writes.some((w) => w.file === out), 'the existing file is not written through');
+  is(r.renames, [{ from: tmp, to: out }]);
+  is(new TextDecoder().decode(r.vfs.files[out]), 'x');
 });
 
 test('download treats a login page as an expired session', async () => {
