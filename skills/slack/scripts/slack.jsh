@@ -3094,14 +3094,20 @@ function sameWatchTarget(entry, { workspace, channel, threadTs }) {
 }
 
 // The tab to observe for a workspace: the one whose /client/<id>/ URL is that
-// workspace, when there is one. findSlackTab's first tab can belong to another
-// workspace, and its localConfig_v2 still answers for every signed-in one, so
-// API calls succeed while its WebSocket never carries this workspace's
-// messages. A team inside an Enterprise Grid org has no tab of its own; it
-// falls back to the active tab, which is the org's.
+// workspace, else, for a team inside an Enterprise Grid org, the org's tab
+// (localConfig_v2 names it as the team's `enterprise_id`; a team has no tab of
+// its own). findSlackTab's first tab can belong to another org, and its
+// localConfig_v2 still answers for every signed-in workspace, so API calls
+// succeed while its WebSocket never carries this workspace's messages.
 async function watchTab(wsId) {
-  const own = await browser.findTab({ domain: SLACK_DOMAIN, urlMatch: new RegExp(`/client/${wsId}(?![A-Z0-9])`) });
-  return own || findSlackTab();
+  const tabFor = (id) => browser.findTab({ domain: SLACK_DOMAIN, urlMatch: new RegExp(`/client/${id}(?![A-Z0-9])`) });
+  const own = await tabFor(wsId);
+  if (own) return own;
+  const cfg = await readLocalConfig(await findSlackTab());
+  const team = cfg && cfg.teams && cfg.teams[wsId];
+  const org = team && typeof team.enterprise_id === 'string' && /^E[A-Z0-9]+$/.test(team.enterprise_id) ? team.enterprise_id : null;
+  const orgTab = org ? await tabFor(org) : null;
+  return orgTab || findSlackTab();
 }
 
 function describeWatch(entry) {

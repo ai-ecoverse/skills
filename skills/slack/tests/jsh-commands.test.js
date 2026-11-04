@@ -119,7 +119,7 @@ async function slack(argv, o = {}) {
     },
     async localStorage(_tab, key) {
       return key === 'localConfig_v2'
-        ? JSON.stringify({ teams: { [WS]: { token: 'xoxc-test' } } })
+        ? JSON.stringify({ teams: { [WS]: { token: 'xoxc-test' }, ...(o.teams || {}) } })
         : null;
     },
     async cookie(_tab, name) {
@@ -480,6 +480,17 @@ test('watch observes the tab of the workspace it watches, not the first Slack ta
   ];
   const r = await slack(['--ws', WS, 'watch', CH, '--for', '1s'], { tabs });
   is(r.calls.find((c) => c.method === 'websocket').tab.targetId, 'mine');
+});
+
+test('a watch of a Grid team observes its org’s tab, not the first Slack tab', async () => {
+  const TEAM = 'T0385CHDU9E';
+  const tabs = [
+    { targetId: 'other-org', url: 'https://app.slack.com/client/E0OTHERORG1/C1' },
+    { targetId: 'our-org', url: `https://app.slack.com/client/${WS}/${CH}` },
+  ];
+  const teams = { [TEAM]: { token: 'xoxc-team', enterprise_id: WS } };
+  const r = await slack(['--ws', TEAM, 'watch', CH, '--for', '1s'], { tabs, teams });
+  is(r.calls.find((c) => c.method === 'websocket').tab.targetId, 'our-org');
 });
 
 test('a watch records the workspace it resolved, so --ws finds an auto-detected watch', async () => {
