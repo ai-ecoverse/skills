@@ -687,6 +687,29 @@ test('post without a callback starts nothing and names the watch command', async
   ok(r.out.includes(`watch ${CH} --thread=4.000001 --count=1 --for=1h`));
 });
 
+test('the suggested watch takes the conversation scope a background watch would', async () => {
+  const small = { ...posted, 'conversations.info': { ok: true, channel: { num_members: 2 } } };
+  const r = await slack(['--ws', WS, 'post', CH, 'hi', '--no-sign'], { api: small });
+  is(r.exitCode, 0);
+  ok(
+    r.out.includes(`wait for a reply: slack --ws=${WS} watch ${CH} --count=1 --for=1h`),
+    'no --thread in a DM'
+  );
+});
+
+test('unwatch refuses a --thread without a timestamp instead of stopping the channel watch', async () => {
+  const files = { [`${STATE}/watch-333.json`]: entry(333, { thread_ts: null }) };
+  for (const argv of [
+    ['--ws', WS, 'unwatch', CH, '--thread'],
+    ['unwatch', CH, '--thread', '--ws', WS],
+    ['unwatch', CH, '--thread=abc'],
+  ]) {
+    const r = await slack(argv, { files, alive: new Set([333]) });
+    is(r.exitCode, 2, argv.join(' '));
+    is(r.killed, [], `${argv.join(' ')}: nothing stopped`);
+  }
+});
+
 test('a restart stops the old watch only after the new one has registered', async () => {
   const files = { [`${STATE}/watch-111.json`]: entry(111, { thread_ts: null, command: 'cb' }) };
   const args = ['--ws', WS, 'post', CH, 'hi', '--no-sign', '--watch-command', 'cb'];

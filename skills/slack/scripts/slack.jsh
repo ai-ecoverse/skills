@@ -1437,8 +1437,11 @@ const commands = {
           console.error(`Warning: could not start the reply watch (${e && e.message ? e.message : e})`);
         }
       } else {
+        // The same scope a background watch would take: the thread in a big
+        // channel, else the whole conversation (in a DM, replies come top-level).
+        const watchThread = await replyWatchThread(targetChannel, threadTsFlag || sentTs, wsId);
         const wsPrefix = globalFlags.workspace ? `--ws=${globalFlags.workspace} ` : '';
-        console.log(`wait for a reply: slack ${wsPrefix}watch ${targetChannel} --thread=${threadTsFlag || sentTs} --count=1 --for=1h`);
+        console.log(`wait for a reply: slack ${wsPrefix}watch ${targetChannel}${watchThread ? ` --thread=${watchThread}` : ''} --count=1 --for=1h`);
       }
     } else if (flags['no-watch'] !== true && flags.watch !== false) {
       const threadTs = threadTsFlag || sentTs;
@@ -2000,7 +2003,13 @@ const commands = {
         process.exit(2);
       }
       validateChannelId(channel);
-      const threadTs = typeof flags.thread === 'string' ? flags.thread : null;
+      // A bare --thread (no ts) must not fall back to the whole-channel watch.
+      if (flags.thread !== undefined && !(typeof flags.thread === 'string' && /^\d+\.\d+$/.test(flags.thread))) {
+        console.error(`Error: --thread expects a message ts like 1774539502.747989, got "${flags.thread === true ? '' : flags.thread}".`);
+        console.error('Usage: slack unwatch <channel_id> [--thread=<ts>]');
+        process.exit(2);
+      }
+      const threadTs = flags.thread === undefined ? null : flags.thread;
       const target = { workspace: globalFlags.workspace || null, channel, threadTs };  // null: any workspace
       const hits = (await liveWatches()).filter((e) => sameWatchTarget(e, target));
       if (!hits.length) {
@@ -3307,13 +3316,19 @@ async function watchForeground(args, globalFlags) {
 // A post into a watched target starts a fresh hour and then stops the old watch,
 // once the new one is ready, so a reply in between can arrive twice but is not
 // lost. If the new watch doesn't start, the old one keeps running.
-async function startBackgroundWatch({ targetChannel, threadTs, wsId, command }) {
+// The thread a reply watch takes for a post (decideWatchScope), or null for the
+// whole conversation.
+async function replyWatchThread(targetChannel, threadTs, wsId) {
   let numMembers = null;
   try {
     const info = await slackApi('conversations.info', { channel: targetChannel }, wsId, { fatal: false });
     if (info && info.ok && info.channel && info.channel.num_members != null) numMembers = info.channel.num_members;
   } catch (_) { /* a DM, or the lookup failed: treat as small */ }
-  const watchThread = decideWatchScope(numMembers) === 'thread' ? threadTs : null;
+  return decideWatchScope(numMembers) === 'thread' ? threadTs : null;
+}
+
+async function startBackgroundWatch({ targetChannel, threadTs, wsId, command }) {
+  const watchThread = await replyWatchThread(targetChannel, threadTs, wsId);
   const target = { workspace: wsId, channel: targetChannel, threadTs: watchThread };
   const previous = (await liveWatches()).filter((e) => sameWatchTarget(e, target) && e.command === command);
 
