@@ -2944,6 +2944,7 @@ async function subscribeWatch(tab, state) {
 const WATCH_USAGE =
   'Usage: slack watch <channel_id> [--thread=<ts>] [--for=<duration>] [--count=N] [--json] [--include-own] [<command>]';
 const WATCH_POLL_MS = 250;
+const WATCH_START_TIMEOUT_MS = 20000;
 const WATCH_BOOL_FLAGS = ['json', 'include-own'];
 
 // Message subtypes a watch reports. Slack sends people's messages without a
@@ -3009,6 +3010,20 @@ function watchRegistryFile(pid) {
   return `${STATE_DIR}/watch-${pid}.json`;
 }
 
+// A running watch rewrites its entry's heartbeatAt every WATCH_HEARTBEAT_MS,
+// on a timer that a long-running callback does not hold up. An entry is live
+// only while its pid answers AND its heartbeat is recent: a watch killed with
+// SIGKILL, or lost in a reboot, leaves its file behind, and once its pid is
+// reused by another process the stale heartbeat keeps `watches` from listing
+// that process and `unwatch` or a restart from sending it SIGTERM.
+const WATCH_HEARTBEAT_MS = 30000;
+const WATCH_STALE_MS = 3 * WATCH_HEARTBEAT_MS;
+
+function watchEntryFresh(entry, now = Date.now()) {
+  const beat = Date.parse(entry && (entry.heartbeatAt || entry.startedAt));
+  return Number.isFinite(beat) && now - beat < WATCH_STALE_MS;
+}
+
 function processAlive(pid) {
   try {
     process.kill(pid, 0);
@@ -3030,7 +3045,7 @@ async function liveWatches() {
     let entry = null;
     try { entry = JSON.parse(await fs.promises.readFile(file, 'utf8')); } catch (_) {}
     const pid = Number(m[1]);
-    if (!entry || entry.pid !== pid || !processAlive(pid)) {
+    if (!entry || entry.pid !== pid || !watchEntryFresh(entry) || !processAlive(pid)) {
       await fs.promises.rm(file, { force: true }).catch(() => {});
       continue;
     }
@@ -3126,18 +3141,27 @@ async function watchForeground(args, globalFlags) {
     process.exit(1);
   }
 
+  // Registered only now that the subscription is installed: `post` waits for
+  // this file before it stops the watch this one replaces.
   const startedAt = new Date();
   const registry = watchRegistryFile(process.pid);
-  await fs.promises.mkdir(STATE_DIR, { recursive: true, mode: 0o700 }).catch(() => {});
-  await fs.promises.writeFile(registry, JSON.stringify({
+  const entry = {
     pid: process.pid,
     workspace: globalFlags.workspace || null,
     channel,
     thread_ts: threadTs,
     command,
     startedAt: startedAt.toISOString(),
+    heartbeatAt: startedAt.toISOString(),
     expiresAt: forMs === null ? null : new Date(startedAt.getTime() + forMs).toISOString(),
-  }, null, 2)).catch(() => {});
+  };
+  const register = () => fs.promises.writeFile(registry, JSON.stringify(entry, null, 2), { mode: 0o600 }).catch(() => {});
+  await fs.promises.mkdir(STATE_DIR, { recursive: true, mode: 0o700 }).catch(() => {});
+  await register();
+  const heartbeat = setInterval(() => {
+    entry.heartbeatAt = new Date().toISOString();
+    register();
+  }, WATCH_HEARTBEAT_MS);
 
   // One promise settles the watch: --count reached, --for elapsed, or a signal.
   let finish;
@@ -3191,6 +3215,7 @@ async function watchForeground(args, globalFlags) {
       if (code === null) await Promise.race([finished, new Promise((r) => setTimeout(r, WATCH_POLL_MS))]);
     }
   } finally {
+    clearInterval(heartbeat);
     clearTimeout(deadline);
     process.off('SIGINT', onSignal);
     process.off('SIGTERM', onSignal);
@@ -3207,7 +3232,8 @@ async function watchForeground(args, globalFlags) {
 // as there (decideWatchScope): the thread in a channel of more than 100 members,
 // else the whole conversation, because in a DM people answer without a thread.
 // A post into a watched target starts a fresh hour and then stops the old watch,
-// so a reply in between can arrive twice but is not lost.
+// once the new one is ready, so a reply in between can arrive twice but is not
+// lost. If the new watch doesn't start, the old one keeps running.
 async function startBackgroundWatch({ targetChannel, threadTs, wsId, workspaceFlag, command }) {
   let numMembers = null;
   try {
@@ -3228,9 +3254,36 @@ async function startBackgroundWatch({ targetChannel, threadTs, wsId, workspaceFl
   argv.push('--for=1h', command);
   const { spawn } = require('child_process');
   const child = spawn('jsh', argv, { detached: true, stdio: ['ignore', out, out] });
-  child.on('error', () => {});
-  child.unref();
   fs.closeSync(out);
+  // Started, or not: a missing `jsh` gives a child with no pid and an `error`.
+  const started = await new Promise((resolve) => {
+    child.once('spawn', () => resolve(null));
+    child.once('error', (e) => resolve(e));
+  });
+  if (started) {
+    console.error(`Warning: could not start the reply watch: jsh: ${started.message} (jsh must be on PATH).`);
+    if (previous.length) console.error('  The running watch keeps running.');
+    return;
+  }
+  let exited = null;
+  child.once('exit', (code, signal) => { exited = signal || code; });
+  child.unref();
+
+  // The old watch stops only once the new one has installed its subscription
+  // (its registry entry appears), so no reply falls between the two.
+  const ready = watchRegistryFile(child.pid);
+  const until = Date.now() + WATCH_START_TIMEOUT_MS;
+  let isReady = false;
+  while (!isReady && exited === null && Date.now() < until) {
+    isReady = await fs.promises.readFile(ready, 'utf8').then(() => true, () => false);
+    if (!isReady) await new Promise((r) => setTimeout(r, 100));
+  }
+  if (!isReady) {
+    const why = exited !== null ? `it exited (${exited})` : `it was not ready within ${WATCH_START_TIMEOUT_MS / 1000}s`;
+    console.error(`Warning: the reply watch did not start: ${why}. See ${log}.`);
+    if (previous.length) console.error('  The running watch keeps running.');
+    return;
+  }
   for (const old of previous) {
     try { process.kill(old.pid, 'SIGTERM'); } catch (_) {}
   }

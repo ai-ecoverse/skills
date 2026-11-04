@@ -85,9 +85,11 @@ async function slack(argv, o = {}) {
   const fetches = [];
   const signals = {};
   const killed = [];
+  const killedAt = [];
   const stdout = [];
   const stderr = [];
   let framesPath = null;
+  let readyAt = null;
   let closed = false;
   const tab = { targetId: 'tab1', url: `https://app.slack.com/client/${WS}/${CH}` };
   const api = { 'auth.test': { ok: true, user_id: SELF }, ...(o.api || {}) };
@@ -132,19 +134,39 @@ async function slack(argv, o = {}) {
     },
   };
 
+  // `sh` (a watch callback) closes with 0. `jsh` (a background watch) behaves as
+  // o.child says: 'ready' starts and registers like a real watch, 'missing' is
+  // jsh not on PATH (no pid, an `error`), 'exits' starts and dies unregistered.
   const childProcess = {
     spawn: (bin, args, opts) => {
       const handlers = {};
       const child = {
-        pid: 5151,
+        pid: bin === 'jsh' && o.child === 'missing' ? undefined : 5151,
         on: (ev, fn) => {
           handlers[ev] = fn;
           return child;
         },
+        once: (ev, fn) => child.on(ev, fn),
         unref: () => {},
       };
       spawns.push({ bin, args, opts });
-      setTimeout(() => handlers.close && handlers.close(0, null), 5);
+      const emit = (ev, ...a) => handlers[ev] && handlers[ev](...a);
+      if (bin !== 'jsh') {
+        setTimeout(() => emit('close', 0, null), 5);
+      } else if (o.child === 'missing') {
+        setTimeout(
+          () => emit('error', Object.assign(new Error('spawn jsh ENOENT'), { code: 'ENOENT' })),
+          5
+        );
+      } else {
+        setTimeout(() => emit('spawn'), 5);
+        if (o.child === 'exits') setTimeout(() => emit('exit', 1, null), 30);
+        else
+          setTimeout(() => {
+            readyAt = Date.now();
+            vfs.files[`${STATE}/watch-5151.json`] = new TextEncoder().encode(entry(5151));
+          }, 60);
+      }
       return child;
     },
   };
@@ -189,6 +211,7 @@ async function slack(argv, o = {}) {
         throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' });
       }
       killed.push({ pid, sig });
+      killedAt.push(Date.now());
       return true;
     },
   };
@@ -239,10 +262,12 @@ async function slack(argv, o = {}) {
     mkdirs,
     opens,
     killed,
+    killedAt,
     signals,
     vfs,
     framesPath,
     closed: () => closed,
+    readyAt: () => readyAt,
     out: stdout.join('\n'),
     err: stderr.join('\n'),
   };
@@ -390,6 +415,8 @@ test('a running watch is registered for `slack watches`', async () => {
     ],
     [4242, WS, CH, ROOT, 'bb thread tell x "$SLACK_TEXT"', null]
   );
+  is(listed.heartbeatAt, listed.startedAt, 'the first heartbeat is the start');
+  is(r.writes.find((w) => w.file === `${STATE}/watch-4242.json`).opts, { mode: 0o600 });
 });
 
 // ─── slack watches / unwatch ─────────────────────────────────────────────────
@@ -402,6 +429,7 @@ const entry = (pid, extra) =>
     thread_ts: ROOT,
     command: 'cmd',
     startedAt: `2026-11-04T1${pid % 10}:00:00Z`,
+    heartbeatAt: new Date().toISOString(),
     ...extra,
   });
 
@@ -496,6 +524,36 @@ test('post without a callback starts nothing and names the watch command', async
   is(r.exitCode, 0);
   is(r.spawns, []);
   ok(r.out.includes(`watch ${CH} --thread=4.000001 --count=1 --for=1h`));
+});
+
+test('a restart stops the old watch only after the new one has registered', async () => {
+  const files = { [`${STATE}/watch-111.json`]: entry(111, { thread_ts: null, command: 'cb' }) };
+  const args = ['--ws', WS, 'post', CH, 'hi', '--no-sign', '--watch-command', 'cb'];
+  const small = { ...posted, 'conversations.info': { ok: true, channel: { num_members: 2 } } };
+  const r = await slack(args, { api: small, files, alive: new Set([111]) });
+  is(r.killed, [{ pid: 111, sig: 'SIGTERM' }]);
+  ok(r.readyAt() !== null && r.killedAt[0] >= r.readyAt(), 'SIGTERM after the new entry exists');
+  for (const child of ['missing', 'exits']) {
+    const f = await slack(args, { api: small, files, alive: new Set([111]), child });
+    is(f.exitCode, 0, `${child}: the post itself succeeded`);
+    is(f.killed, [], `${child}: the running watch is left alone`);
+    ok(f.err.includes('The running watch keeps running'), child);
+    ok(!f.out.includes('in the background'), `${child}: no claim that a watch runs`);
+  }
+});
+
+test('an entry whose heartbeat is stale is not a watch, even when its pid is alive', async () => {
+  const stale = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  const files = { [`${STATE}/watch-111.json`]: entry(111, { heartbeatAt: stale }) };
+  const w = await slack(['watches'], { files, alive: new Set([111]) });
+  ok(w.out.includes('No running watches'));
+  ok(!(`${STATE}/watch-111.json` in w.vfs.files), 'the stale entry is removed');
+  const u = await slack(['--ws', WS, 'unwatch', CH, '--thread', ROOT], {
+    files,
+    alive: new Set([111]),
+  });
+  is(u.exitCode, 1);
+  is(u.killed, [], 'a reused pid gets no SIGTERM');
 });
 
 // ─── slack download ──────────────────────────────────────────────────────────

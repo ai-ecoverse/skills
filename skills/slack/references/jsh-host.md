@@ -141,5 +141,17 @@ is removed when the watch ends, however it ends.
 The scope is as in SLICC 6: in a channel of more than 100 members the thread
 only, otherwise the whole conversation, because in a DM people answer without a
 thread. A post into a conversation already watched with the same command starts
-a fresh hour, then stops the old watch. A reply in that moment can arrive twice,
-but is not lost.
+a fresh hour. It stops the old watch only once the new one has registered,
+which it does after its subscription is installed. A reply in that moment can
+arrive twice, but is not lost. If the new watch doesn't start (`jsh` not on
+`PATH`, or it exits), `post` says so, and the old one keeps running.
+
+### The registry
+
+Each running watch keeps `STATE_DIR/watch-<pid>.json` (0600) and rewrites its
+`heartbeatAt` every 30 seconds. An entry counts as a running watch only while
+its pid is alive and its heartbeat is under 90 seconds old. A watch killed with
+SIGKILL, or lost in a reboot, leaves a file behind, and its pid may later belong
+to another process. The stale heartbeat keeps `watches` from listing that
+process, and `unwatch` or a restart from sending it SIGTERM. Stale entries are
+removed when they are found.
