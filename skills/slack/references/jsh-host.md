@@ -146,11 +146,15 @@ which it does after its subscription is installed. A reply in that moment can
 arrive twice, but is not lost. If the new watch doesn't start (`jsh` not on
 `PATH`, it exits, or it isn't ready within 20 seconds, in which case it is
 stopped), `post` says so, and the old one keeps running.
+Two posts that start watches on the same conversation at the same time end
+with one watch: once its own watch is ready, each post looks again, and all of
+them keep the newest watch and stop the rest.
 
 ### The registry
 
 Each running watch keeps `STATE_DIR/watch-<pid>.json` (0600) and rewrites its
-`heartbeatAt` every 30 seconds. An entry counts as a running watch only while
+`heartbeatAt` every 30 seconds, through a temporary file renamed into place, so
+it is never read half-written. An entry counts as a running watch only while
 its pid is alive and its heartbeat is under 90 seconds old. A watch killed with
 SIGKILL, or lost in a reboot, leaves a file behind, and its pid may later belong
 to another process. The stale heartbeat keeps `watches` from listing that

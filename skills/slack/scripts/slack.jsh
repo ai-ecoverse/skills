@@ -3213,7 +3213,15 @@ async function watchForeground(args, globalFlags) {
     heartbeatAt: startedAt.toISOString(),
     expiresAt: forMs === null ? null : new Date(startedAt.getTime() + forMs).toISOString(),
   };
-  const register = () => fs.promises.writeFile(registry, JSON.stringify(entry, null, 2), { mode: 0o600 }).catch(() => {});
+  // Written to a temporary name and renamed over the entry, so a reader never
+  // sees it half-written (and takes it for a stale entry to remove).
+  const register = async () => {
+    const tmp = `${registry}.tmp`;
+    try {
+      await fs.promises.writeFile(tmp, JSON.stringify(entry, null, 2), { mode: 0o600 });
+      await fs.promises.rename(tmp, registry);
+    } catch (_) { /* best effort; the next heartbeat tries again */ }
+  };
   await fs.promises.mkdir(STATE_DIR, { recursive: true, mode: 0o700 }).catch(() => {});
   await register();
   const heartbeat = setInterval(() => {
@@ -3354,10 +3362,22 @@ async function startBackgroundWatch({ targetChannel, threadTs, wsId, command }) 
     if (previous.length) console.error('  The running watch keeps running.');
     return;
   }
-  for (const old of previous) {
-    try { process.kill(old.pid, 'SIGTERM'); } catch (_) {}
+  // Look again now that ours is ready: another `post` may have started a watch
+  // on this target meanwhile. Every post picks the same survivor (the newest,
+  // then the highest pid) and stops the rest, so one callback runs per reply.
+  const rivals = (await liveWatches()).filter((e) => sameWatchTarget(e, target) && e.command === command);
+  const newest = (a, b) => String(a.startedAt).localeCompare(String(b.startedAt)) || a.pid - b.pid;
+  const keep = rivals.reduce((best, e) => (!best || newest(e, best) > 0 ? e : best), null);
+  for (const e of rivals) {
+    if (keep && e.pid === keep.pid) continue;
+    try { process.kill(e.pid, 'SIGTERM'); } catch (_) {}
   }
   const scope = watchThread ? 'thread' : 'conversation';
+  if (keep && keep.pid !== child.pid) {
+    console.log(`Watching the ${scope} for replies: a watch another post just started (pid ${keep.pid}) takes over; each reply runs: ${command}`);
+    console.log(`  stop: slack unwatch ${targetChannel}${watchThread ? ` --thread=${watchThread}` : ''}`);
+    return;
+  }
   console.log(`${previous.length ? 'Restarted' : 'Watching'} the ${scope} for replies for 1h in the background (pid ${child.pid}); each reply runs: ${command}`);
   console.log(`  log: ${log}   stop: slack unwatch ${targetChannel}${watchThread ? ` --thread=${watchThread}` : ''}`);
 }

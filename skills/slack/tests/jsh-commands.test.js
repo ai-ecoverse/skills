@@ -51,6 +51,7 @@ async function slack(argv, o = {}) {
   const mkdirs = [];
   const opens = [];
   const reads = [];
+  const renames = [];
   const p = vfs.promises;
   const fs = {
     ...vfs,
@@ -76,6 +77,10 @@ async function slack(argv, o = {}) {
         if (opts && opts.flag === 'wx' && file in vfs.files)
           throw Object.assign(new Error('EEXIST'), { code: 'EEXIST' });
         return p.writeFile(file, data);
+      },
+      rename: async (from, to) => {
+        renames.push({ from, to });
+        return p.rename(from, to);
       },
       mkdir: async (dir, opts) => {
         mkdirs.push({ dir, opts });
@@ -184,7 +189,19 @@ async function slack(argv, o = {}) {
         } else
           setTimeout(() => {
             readyAt = Date.now();
-            vfs.files[`${STATE}/watch-5151.json`] = new TextEncoder().encode(entry(5151));
+            alive.add(5151);
+            // Registers what it was asked to watch, as the real watch does.
+            const thread = args.find((a) => a.startsWith('--thread='));
+            vfs.files[`${STATE}/watch-5151.json`] = new TextEncoder().encode(
+              entry(5151, {
+                channel: args[3],
+                thread_ts: thread ? thread.slice('--thread='.length) : null,
+                command: args[args.length - 1],
+              })
+            );
+            // o.concurrent: another post's watch registers at the same moment.
+            if (o.concurrent)
+              vfs.files[`${STATE}/watch-222.json`] = new TextEncoder().encode(o.concurrent);
           }, 60);
       }
       return child;
@@ -297,6 +314,7 @@ async function slack(argv, o = {}) {
     mkdirs,
     opens,
     reads,
+    renames,
     killed,
     killedAt,
     signals,
@@ -452,7 +470,7 @@ test('a running watch is registered for `slack watches`', async () => {
     [4242, WS, CH, ROOT, 'bb thread tell x "$SLACK_TEXT"', null]
   );
   is(listed.heartbeatAt, listed.startedAt, 'the first heartbeat is the start');
-  is(r.writes.find((w) => w.file === `${STATE}/watch-4242.json`).opts, { mode: 0o600 });
+  is(r.writes.find((w) => w.file === `${STATE}/watch-4242.json.tmp`).opts, { mode: 0o600 });
 });
 
 test('watch observes the tab of the workspace it watches, not the first Slack tab', async () => {
@@ -704,6 +722,32 @@ test('--for refuses what setTimeout cannot wait for', async () => {
   const r = await slack(['--ws', WS, 'watch', CH, '--for', '25d']);
   is(r.exitCode, 2);
   ok(r.err.includes('at most 24d'));
+});
+
+test('two posts starting watches at once leave one: the newest', async () => {
+  const small = { ...posted, 'conversations.info': { ok: true, channel: { num_members: 2 } } };
+  const args = ['--ws', WS, 'post', CH, 'hi', '--no-sign', '--watch-command', 'cmd'];
+  const alive = new Set([222]);
+  const newer = entry(222, { thread_ts: null, startedAt: '2026-11-04T19:00:00Z' });
+  const a = await slack(args, { api: small, alive, concurrent: newer });
+  is(a.killed, [{ pid: 5151, sig: 'SIGTERM' }], 'ours yields to the newer one');
+  ok(a.out.includes('(pid 222) takes over'));
+  const older = entry(222, { thread_ts: null, startedAt: '2026-11-04T10:00:00Z' });
+  const b = await slack(args, { api: small, alive, concurrent: older });
+  is(b.killed, [{ pid: 222, sig: 'SIGTERM' }], 'the older one yields to ours');
+  ok(b.out.includes('(pid 5151)'));
+});
+
+test('a registry entry is written to a temporary name and renamed into place', async () => {
+  const r = await slack(['--ws', WS, 'watch', CH], {
+    during: async ({ signal }) => {
+      await tick(20);
+      signal('SIGTERM');
+    },
+  });
+  is(r.renames, [{ from: `${STATE}/watch-4242.json.tmp`, to: `${STATE}/watch-4242.json` }]);
+  is(r.writes.find((w) => w.file === `${STATE}/watch-4242.json.tmp`).opts, { mode: 0o600 });
+  ok(!r.writes.some((w) => w.file === `${STATE}/watch-4242.json`), 'never written in place');
 });
 
 test('an entry whose heartbeat is stale is not a watch, even when its pid is alive', async () => {
