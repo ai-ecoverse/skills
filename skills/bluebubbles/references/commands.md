@@ -45,6 +45,10 @@ Every command accepts `--json`.
 
 - Env: `BLUEBUBBLES_URL`, `BLUEBUBBLES_PASSWORD`, `BLUEBUBBLES_PASSWORD_FILE`, `BLUEBUBBLES_CONFIG`
 - File: `~/.bluebubbles.json` (also `/home/lars/.bluebubbles.json`) — `{ "url", "urlLocal", "passwordFile" }`
+- A `fnox_proxy_<24 hex>` value is not a password. On SLICC 7, seal the password
+  as `BLUEBUBBLES_PASSWORD` and set `[exec] BLUEBUBBLES_PASSWORD = { shell = true }`
+  in `/etc/slicc/secrets-policy.toml`. With no usable password the CLI re-execs
+  once under `fnox exec --shell-grants`. The vault will not fill a URL.
 - Watch state: `~/.bluebubbles-watches/*.json` — webhook ids only, never the password
 - The password is never echoed or written by this CLI; every error string is
   redacted by `safeErrorText()` first.
