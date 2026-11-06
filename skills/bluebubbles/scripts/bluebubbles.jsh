@@ -49,6 +49,10 @@ CONFIG
         BLUEBUBBLES_CONFIG
   File: ~/.bluebubbles.json  (also /home/lars/.bluebubbles.json)
         { "url", "urlLocal", "passwordFile" }
+  SLICC 7: seal the password as BLUEBUBBLES_PASSWORD and grant the shell
+        ([exec] BLUEBUBBLES_PASSWORD = { shell = true }). A fnox_proxy_
+        placeholder is ignored. With no usable password this CLI re-execs
+        once under 'fnox exec --shell-grants'. The vault will not fill a URL.
   Watch state: ~/.bluebubbles-watches/*.json  (not in the skill repo)
   Password is never echoed or written by this CLI.
 
@@ -137,6 +141,46 @@ async function loadFileConfig() {
   return { cfg: {}, path: null };
 }
 
+const FNOX_PLACEHOLDER_RE = /^fnox_proxy_[0-9a-f]{24}$/;
+const FNOX_TRIED = 'BLUEBUBBLES_FNOX_TRIED';
+
+function isFnoxPlaceholder(value) {
+  return typeof value === 'string' && FNOX_PLACEHOLDER_RE.test(value.trim());
+}
+
+function usablePassword(value) {
+  if (typeof value !== 'string') return null;
+  const v = value.trim();
+  if (!v || isFnoxPlaceholder(v)) return null;
+  return v;
+}
+
+function fnoxReexecArgv(script, args) {
+  return [
+    'env', '-u', 'BLUEBUBBLES_PASSWORD',
+    'fnox', 'exec', '--shell-grants', '--',
+    'env', `${FNOX_TRIED}=1`,
+    'jsh', script, ...args,
+  ];
+}
+
+async function reexecViaFnox() {
+  if (process.env[FNOX_TRIED] === '1') return false;
+  const script = process.argv[1];
+  if (!script || typeof script !== 'string') return false;
+  const which = await exec.spawn(['which', 'fnox']).catch(() => null);
+  if (!which || which.exitCode !== 0) return false;
+  const args = process.argv.slice(2).map((a) => String(a));
+  const res = await exec.spawn(fnoxReexecArgv(script, args));
+  const out = res && res.stdout ? String(res.stdout) : '';
+  const err = res && res.stderr ? String(res.stderr) : '';
+  const code = res && Number.isInteger(res.exitCode) ? res.exitCode : 1;
+  if (code !== 0 && !out) return false;
+  if (out) process.stdout.write(out);
+  if (err) process.stderr.write(err);
+  process.exit(code);
+}
+
 async function resolveConfig() {
   const { cfg, path: configPath } = await loadFileConfig();
   const preferLocal = !!(flags.local || flags.L);
@@ -153,10 +197,10 @@ async function resolveConfig() {
     DEFAULT_URL;
 
   const password =
-    str(flags.password) ||
-    process.env.BLUEBUBBLES_PASSWORD ||
-    (await readPasswordFile(str(flags['password-file']) || process.env.BLUEBUBBLES_PASSWORD_FILE)) ||
-    (await readPasswordFile(cfg.passwordFile)) ||
+    usablePassword(str(flags.password)) ||
+    usablePassword(process.env.BLUEBUBBLES_PASSWORD) ||
+    usablePassword(await readPasswordFile(str(flags['password-file']) || process.env.BLUEBUBBLES_PASSWORD_FILE)) ||
+    usablePassword(await readPasswordFile(cfg.passwordFile)) ||
     null;
 
   if (password) registerSecret(password);
@@ -269,9 +313,13 @@ function rawBbErrorMessage(err) {
 function authDie(detail) {
   die(
     (detail ? detail + '\n' : '') +
-      '  Set BLUEBUBBLES_PASSWORD or passwordFile in ~/.bluebubbles.json\n' +
-      '  Config: ~/.bluebubbles.json → { "url", "urlLocal", "passwordFile" }\n' +
-      '  Never put the password in SKILL docs or commits.',
+      '  The server only accepts the password as a query parameter, and seven will not fill a secret into a URL.\n' +
+      '  Seal it as BLUEBUBBLES_PASSWORD and grant the shell (sudo) in\n' +
+      '  /etc/slicc/secrets-policy.toml:\n' +
+      '    [exec]\n' +
+      '    BLUEBUBBLES_PASSWORD = { shell = true }\n' +
+      '  This CLI then re-execs once under fnox exec --shell-grants.\n' +
+      '  A password file still works. Never put the password in docs, commits, or the URL.',
     { prefix: 'bluebubbles' },
   );
 }
@@ -283,6 +331,7 @@ async function getCfg() {
   if (_cfg) return _cfg;
   _cfg = await resolveConfig();
   if (!_cfg.password) {
+    await reexecViaFnox();
     authDie('No BlueBubbles password found.');
   }
   if (!_cfg.url) {

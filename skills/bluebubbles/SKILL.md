@@ -5,8 +5,11 @@ description: |
   browser session). Use when the user wants to text someone, send an iMessage or SMS,
   check iPhone messages from the desktop, list conversations/inbox, read a thread,
   search message history, look up contacts or handles, or verify that a message was
-  delivered. Triggers on BlueBubbles, iMessage, SMS, text message, chat guid,
-  iMessage;-;, Messages.app, or "text <person>". Not Slack, not Signal, not Teams.
+  delivered. On SLICC 7 the password is the vault secret BLUEBUBBLES_PASSWORD,
+  read through a fnox shell grant, because the server only accepts it as a query
+  parameter and the vault will not fill a URL. Triggers on BlueBubbles, iMessage,
+  SMS, text message, chat guid, iMessage;-;, Messages.app, fnox, or "text <person>".
+  Not Slack, not Signal, not Teams.
 allowed-tools: bash
 command: bluebubbles
 script: scripts/bluebubbles.jsh
@@ -52,7 +55,7 @@ Resolution order:
 | What | Order |
 | --- | --- |
 | **URL** | `--url` → `BLUEBUBBLES_URL` → `--local` ? `urlLocal` : `url` in config → `urlLocal` → `http://localhost:1234` |
-| **Password** | `BLUEBUBBLES_PASSWORD` → `--password-file` / `BLUEBUBBLES_PASSWORD_FILE` → `passwordFile` from config |
+| **Password** | usable `BLUEBUBBLES_PASSWORD` → `--password-file` / `BLUEBUBBLES_PASSWORD_FILE` → `passwordFile` from config → one `fnox exec --shell-grants` retry |
 | **Config file** | `BLUEBUBBLES_CONFIG` → `~/.bluebubbles.json` → `/home/lars/.bluebubbles.json` |
 
 Example `~/.bluebubbles.json` (no secrets inline):
@@ -67,6 +70,24 @@ Example `~/.bluebubbles.json` (no secrets inline):
 
 Password file is a single line. **Do not** commit it, paste it into chat logs, or
 put it in this skill.
+
+### SLICC 7 / fnox
+
+The server authenticates with `?password=`. Seven fills a sealed secret only into
+a listed header, and refuses a `fnox_proxy_<24 hex>` placeholder in a URL, so the
+password cannot travel as a placeholder. Keep the URL in `~/.bluebubbles.json`.
+Seal the password as `BLUEBUBBLES_PASSWORD` and grant the shell (sudo) in
+`/etc/slicc/secrets-policy.toml`:
+
+```toml
+[exec]
+BLUEBUBBLES_PASSWORD = { shell = true }
+```
+
+A placeholder in the environment is ignored. If no usable password is set, the
+CLI re-execs itself once under `fnox exec --shell-grants` and uses the value
+that grant puts in the child. It never prints the password. A password file
+still works when there is no vault.
 
 ## Commands
 
@@ -109,6 +130,7 @@ Prefer guids returned by `chats` / `messages` over hand-built ones when reading 
 ## Agent notes
 
 - Prefer `bluebubbles …` over raw `curl`. Never echo the password; prefer `--json` when chaining.
+- Do not put `BLUEBUBBLES_PASSWORD` in the request URL yourself. On SLICC 7 that value is a placeholder until a shell grant materializes it, and the kernel refuses the placeholder in a URL.
 - **`send` is fire-once, then check.** One POST, detached after ~25s wall clock (jsh has no working `setTimeout`/`AbortController`; an awaited hang would pin the HTTP/1 connection). `private_api: false` often returns **HTTP 5xx after the iMessage already left the Mac**, or never returns at all — both are soft. The CLI verifies the thread (companion `urlLocal` only when it matches the selected server, so verify is not starved by the in-flight POST; each verify fetch is bounded) and prints `delivered` / `soft_5xx_unverified` / `timeout_unverified` / `duplicate`.
 - **Send GUID:** wire as `iMessage;-;<address>`. The real thread guid `any;-;<address>` breaks Messages.app AppleScript (`Can't make any into type constant`).
 - **Never re-run `send` because of 5xx, timeout, or a hung shell.** Read the thread first: `bluebubbles messages <target> --limit 5`. Identical text inside 5 minutes is refused unless `--force`.
