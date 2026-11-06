@@ -4,10 +4,7 @@
 // string that leaves this script passes through safeErrorText() / die(), which
 // redact `password=…`, JSON `"password": "…"` and the literal secret value.
 // Config order: flags/env → ~/.bluebubbles.json (or BLUEBUBBLES_CONFIG) → defaults.
-// Password: a usable BLUEBUBBLES_PASSWORD, then a password file. A fnox
-// placeholder (fnox_proxy_<24 hex>) is not a password — seven refuses it in a
-// URL, and this server only accepts ?password=. If nothing usable is set, the
-// CLI re-execs once under `fnox exec --shell-grants` (see reexecViaFnox).
+// Password: BLUEBUBBLES_PASSWORD → passwordFile from config → BLUEBUBBLES_PASSWORD_FILE.
 
 const fs = require('fs');
 const os = require('os');
@@ -144,9 +141,6 @@ async function loadFileConfig() {
   return { cfg: {}, path: null };
 }
 
-// Seven shows a sealed secret as this placeholder until `fnox exec --shell-grants`
-// materializes it. The kernel refuses the placeholder in a URL, and BlueBubbles
-// has no header to put it in, so it must never be sent as the password.
 const FNOX_PLACEHOLDER_RE = /^fnox_proxy_[0-9a-f]{24}$/;
 const FNOX_TRIED = 'BLUEBUBBLES_FNOX_TRIED';
 
@@ -180,9 +174,11 @@ async function reexecViaFnox() {
   const res = await exec.spawn(fnoxReexecArgv(script, args));
   const out = res && res.stdout ? String(res.stdout) : '';
   const err = res && res.stderr ? String(res.stderr) : '';
+  const code = res && Number.isInteger(res.exitCode) ? res.exitCode : 1;
+  if (code !== 0 && !out) return false;
   if (out) process.stdout.write(out);
   if (err) process.stderr.write(err);
-  process.exit(res && Number.isInteger(res.exitCode) ? res.exitCode : 1);
+  process.exit(code);
 }
 
 async function resolveConfig() {
