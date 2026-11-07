@@ -13,7 +13,7 @@
     "SKILL.md"
   ],
   "dependencies": {
-    "@ai-ecoverse/sliccy-browser": "0.1.38"
+    "@ai-ecoverse/sliccy-browser": "0.1.42"
   },
   "license": "Apache-2.0",
   "engines": {
