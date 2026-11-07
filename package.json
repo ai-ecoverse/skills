@@ -16,7 +16,7 @@
     "release": "semantic-release"
   },
   "devDependencies": {
-    "@ai-ecoverse/biome-jsh": "6.257.5",
+    "@ai-ecoverse/biome-jsh": "6.258.2",
     "@ai-ecoverse/slicc-cdp": "1.46.5",
     "@ai-ecoverse/slicc-shared-web": "2.13.10",
     "@biomejs/biome": "2.6.4",
