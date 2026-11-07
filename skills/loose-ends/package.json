@@ -1,0 +1,9 @@
+{
+  "name": "@ai-ecoverse/loose-ends",
+  "version": "2.0.0",
+  "private": true,
+  "description": "The loose-ends CLI: a plain to-do list for open follow-ups in one JSON file. `pnpm add -g` or `npm install -g` this folder to put `loose-ends` on PATH.",
+  "bin": { "loose-ends": "scripts/loose-ends.jsh" },
+  "files": ["scripts", "templates"],
+  "license": "Apache-2.0"
+}
