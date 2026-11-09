@@ -30,11 +30,12 @@ USAGE
   bluebubbles watch --scoop=<name> [--chat=<guid>] [--events=a,b] [--force]
   bluebubbles unwatch [watchId|all]
   bluebubbles watches
+  bluebubbles login <url> [--url-local <url>] [--replace] [--dry-run]
+                                       Pin the server and grant the vault password
 
 FLAGS
   --json              Raw JSON response
   --limit N           Max rows (default varies by command)
-  --url <url>         Override server URL
   --local             Prefer urlLocal from config (LAN)
   --direct / --group  chats: only 1:1 or only group threads
   --in <scope>        search: messages (default), chats, or contacts
@@ -44,17 +45,22 @@ FLAGS
   --events <list>     watch: BB event names (default: new-message)
   --force             watch: replace existing watch with same id
   --name <name>       watch: optional SLICC webhook display name
+  --url-local <url>   login: also pin a LAN address of the same server
+  --replace           login: ask for the password even if the vault has one
+  --dry-run           login: print the files and commands, change nothing
 
 CONFIG
   Env:  BLUEBUBBLES_URL, BLUEBUBBLES_PASSWORD, BLUEBUBBLES_PASSWORD_FILE,
         BLUEBUBBLES_CONFIG
   File: ~/.bluebubbles.json  (also /home/lars/.bluebubbles.json)
         { "url", "urlLocal", "passwordFile" }
-  SLICC 7: seal the password as BLUEBUBBLES_PASSWORD and grant it to this
-        CLI only ([exec] BLUEBUBBLES_PASSWORD = { argv = [["<this script>"]] }).
-        A fnox_proxy_ placeholder is ignored. With no usable password this CLI
-        re-execs itself once under 'fnox exec --only BLUEBUBBLES_PASSWORD'.
-        The vault will not fill a URL.
+  SLICC 7: run 'bluebubbles login <url>'. It seals the password in the vault
+        as BLUEBUBBLES_PASSWORD, grants it to this CLI only, and pins the
+        server in /etc/bluebubbles/config.json (root-owned). With that file
+        present, the URL comes only from it: BLUEBUBBLES_URL, BLUEBUBBLES_CONFIG
+        and ~/.bluebubbles.json are ignored, so the vault password cannot be
+        sent to another host. BLUEBUBBLES_PASSWORD in the environment is used
+        only with the pinned URL. There is no --url flag.
   Watch state: ~/.bluebubbles-watches/*.json  (not in the skill repo)
   Password is never echoed or written by this CLI.
 
@@ -64,6 +70,12 @@ GUIDS
 `.trim();
 
 const DEFAULT_URL = 'http://localhost:1234';
+// Root-owned server pin, written by `bluebubbles login` through sudo. Not
+// overridable from the environment or a flag: that is the point of it.
+const PINNED_CONFIG = '/etc/bluebubbles/config.json';
+const FNOX_CONFIG = '/etc/fnox/config.toml';
+const SECRETS_POLICY = '/etc/slicc/secrets-policy.toml';
+const SECRET_NAME = 'BLUEBUBBLES_PASSWORD';
 const CONFIG_CANDIDATES = () => {
   const home = (typeof os.homedir === 'function' && os.homedir()) || process.env.HOME || '';
   const out = [];
@@ -143,6 +155,57 @@ async function loadFileConfig() {
   return { cfg: {}, path: null };
 }
 
+// A file only root can change: owned by root and not group- or other-writable,
+// in a directory with the same property. Anything else could be swapped by the
+// caller, so it is not a pin.
+function rootOnly(st) {
+  return !!st && st.uid === 0 && (st.mode & 0o022) === 0;
+}
+
+function statOrNull(p) {
+  try {
+    return fs.statSync(p);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeServerUrl(raw) {
+  let u;
+  try {
+    u = new URL(String(raw || '').trim());
+  } catch {
+    return null;
+  }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+  if (u.username || u.password || u.search || u.hash) return null;
+  return `${u.origin}${u.pathname}`.replace(/\/+$/, '');
+}
+
+/**
+ * The pinned server, or null when there is no pin. A pin that exists but is
+ * not root-only, or does not hold a valid url, is fatal: falling back to the
+ * caller's URL is exactly what the pin prevents.
+ */
+async function loadPinnedConfig() {
+  const st = statOrNull(PINNED_CONFIG);
+  if (!st) return null;
+  if (!rootOnly(st) || !rootOnly(statOrNull(path.dirname(PINNED_CONFIG)))) {
+    die(
+      `${PINNED_CONFIG} must be owned by root and not group- or other-writable ` +
+        '(and so must its directory). Run bluebubbles login again.',
+      { prefix: 'bluebubbles' },
+    );
+  }
+  const cfg = await readJsonFile(PINNED_CONFIG);
+  const url = cfg && normalizeServerUrl(cfg.url);
+  if (!url) {
+    die(`${PINNED_CONFIG} has no valid "url". Run bluebubbles login <url>.`, { prefix: 'bluebubbles' });
+  }
+  const urlLocal = cfg.urlLocal ? normalizeServerUrl(cfg.urlLocal) : null;
+  return { url, urlLocal, path: PINNED_CONFIG };
+}
+
 const FNOX_PLACEHOLDER_RE = /^fnox_proxy_[0-9a-f]{24}$/;
 const FNOX_TRIED = 'BLUEBUBBLES_FNOX_TRIED';
 
@@ -190,33 +253,58 @@ async function reexecViaFnox() {
 }
 
 async function resolveConfig() {
-  const { cfg, path: configPath } = await loadFileConfig();
+  if (flags.url !== undefined) {
+    die(
+      '--url was removed: the server is pinned by bluebubbles login <url>, ' +
+        'or set BLUEBUBBLES_URL / ~/.bluebubbles.json when you use a password file.',
+      { prefix: 'bluebubbles' },
+    );
+  }
   const preferLocal = !!(flags.local || flags.L);
-  const urlOverridden = !!(str(flags.url) || process.env.BLUEBUBBLES_URL);
-  const fileUrl = cfg.url ? String(cfg.url).replace(/\/+$/, '') : null;
-  const fileLocal = cfg.urlLocal ? String(cfg.urlLocal).replace(/\/+$/, '') : null;
-
-  const url =
-    str(flags.url) ||
-    process.env.BLUEBUBBLES_URL ||
-    (preferLocal && cfg.urlLocal) ||
-    cfg.url ||
-    cfg.urlLocal ||
-    DEFAULT_URL;
-
-  const password =
+  const pinned = await loadPinnedConfig();
+  const filePassword = async (cfg) =>
     usablePassword(str(flags.password)) ||
-    usablePassword(process.env.BLUEBUBBLES_PASSWORD) ||
     usablePassword(await readPasswordFile(str(flags['password-file']) || process.env.BLUEBUBBLES_PASSWORD_FILE)) ||
     usablePassword(await readPasswordFile(cfg.passwordFile)) ||
     null;
 
+  let primary;
+  let fileUrl;
+  let fileLocal;
+  let configPath;
+  let password;
+  let urlOverridden = false;
+  let envPasswordIgnored = false;
+
+  if (pinned) {
+    // The pin decides the host. The environment password (the vault's, under
+    // fnox exec) is only ever sent there.
+    fileUrl = pinned.url;
+    fileLocal = pinned.urlLocal;
+    configPath = pinned.path;
+    primary = (preferLocal && fileLocal) || fileUrl;
+    password = usablePassword(process.env.BLUEBUBBLES_PASSWORD) || (await filePassword({}));
+  } else {
+    const loaded = await loadFileConfig();
+    const cfg = loaded.cfg;
+    configPath = loaded.path;
+    urlOverridden = !!process.env.BLUEBUBBLES_URL;
+    fileUrl = cfg.url ? String(cfg.url).replace(/\/+$/, '') : null;
+    fileLocal = cfg.urlLocal ? String(cfg.urlLocal).replace(/\/+$/, '') : null;
+    primary = String(
+      process.env.BLUEBUBBLES_URL || (preferLocal && cfg.urlLocal) || cfg.url || cfg.urlLocal || DEFAULT_URL,
+    ).replace(/\/+$/, '');
+    // Without a pin, a password in the environment may be the vault's, and the
+    // URL is the caller's to choose: never pair the two.
+    envPasswordIgnored = !!usablePassword(process.env.BLUEBUBBLES_PASSWORD);
+    password = await filePassword(cfg);
+  }
+
   if (password) registerSecret(password);
 
-  const primary = String(url).replace(/\/+$/, '');
   // Second base known to be the SAME BlueBubbles server as primary. Used only
   // so send can POST on one host and verify/yield on another (HTTP/1 pin).
-  // Never use a stale urlLocal when --url / BLUEBUBBLES_URL pointed elsewhere.
+  // Never use a stale urlLocal when BLUEBUBBLES_URL pointed elsewhere.
   let companionLocal = null;
   if (!urlOverridden && fileLocal && fileLocal !== primary) {
     if (fileUrl && primary === fileUrl) companionLocal = fileLocal;
@@ -227,6 +315,8 @@ async function resolveConfig() {
     url: primary,
     password,
     configPath,
+    pinned: !!pinned,
+    envPasswordIgnored,
     urlLocal: fileLocal,
     urlOverridden,
     companionLocal,
@@ -323,18 +413,22 @@ function grantPath() {
   return typeof script === 'string' && script ? path.resolve(script) : '/usr/share/skills/bluebubbles/scripts/bluebubbles';
 }
 
-function authDie(detail) {
-  die(
-    (detail ? detail + '\n' : '') +
-      '  The server only accepts the password as a query parameter, and seven will not fill a secret into a URL.\n' +
-      '  Seal it as BLUEBUBBLES_PASSWORD and grant it to this CLI only (sudo) in\n' +
-      '  /etc/slicc/secrets-policy.toml:\n' +
-      '    [exec]\n' +
-      `    BLUEBUBBLES_PASSWORD = { argv = [["${grantPath()}"]] }\n` +
-      '  This CLI then re-execs itself once under fnox exec --only BLUEBUBBLES_PASSWORD.\n' +
-      '  A password file still works. Never put the password in docs, commits, or the URL.',
-    { prefix: 'bluebubbles' },
+function authDie(detail, cfg) {
+  const lines = [detail || 'No BlueBubbles password found.'];
+  if (cfg && cfg.envPasswordIgnored) {
+    lines.push(
+      `  ${SECRET_NAME} is set, but there is no ${PINNED_CONFIG}, so it is not used:`,
+      '  without a pinned server it could be sent to any host.',
+    );
+  }
+  lines.push(
+    '  On SLICC 7, run: bluebubbles login <server url>',
+    `  It seals the password in the vault, grants it to ${grantPath()} only,`,
+    `  and pins the server in ${PINNED_CONFIG}.`,
+    '  Elsewhere, use a password file (--password-file, BLUEBUBBLES_PASSWORD_FILE or passwordFile).',
+    '  Never put the password in docs, commits, or the URL.',
   );
+  die(lines.join('\n'), { prefix: 'bluebubbles' });
 }
 
 let _client = null;
@@ -344,8 +438,9 @@ async function getCfg() {
   if (_cfg) return _cfg;
   _cfg = await resolveConfig();
   if (!_cfg.password) {
-    await reexecViaFnox();
-    authDie('No BlueBubbles password found.');
+    // Only with a pin: the vault's password goes to the pinned server alone.
+    if (_cfg.pinned) await reexecViaFnox();
+    authDie('No BlueBubbles password found.', _cfg);
   }
   if (!_cfg.url) {
     die('No BlueBubbles URL configured.', { prefix: 'bluebubbles' });
@@ -412,7 +507,7 @@ async function api(method, apiPath, { body, params, timeoutMs, raw, noRetry } = 
       }
       die(
         `Could not reach BlueBubbles at ${cfg.url} (${msg}).\n` +
-          '  Is the server running? Try --local or set BLUEBUBBLES_URL / config url.',
+          '  Is the server running? Try --local, or check the url in the config file.',
         { prefix: 'bluebubbles' },
       );
     }
@@ -1775,6 +1870,180 @@ async function cmdWatches(flags) {
 
 // ── main ───────────────────────────────────────────────────────────────────
 
+// ── login ──────────────────────────────────────────────────────────────────
+// `bluebubbles login <url>`: seal the password in seven's vault, grant it to
+// this script alone, and pin the server in a root-owned file. Every system
+// file is written through `sudo install`, so the user approves each one.
+
+const TOML_HEADER_RE = /^\s*\[\s*([^\]]+?)\s*\]\s*(?:#.*)?$/;
+
+/** The sealed provider's name in the fnox config (default "seven"). */
+function sealedProviderName(toml) {
+  let section = null;
+  for (const line of String(toml || '').split('\n')) {
+    const h = line.match(TOML_HEADER_RE);
+    if (h) {
+      section = h[1];
+      continue;
+    }
+    const m = section && section.match(/^providers\.([A-Za-z0-9_-]+)$/);
+    if (m && /^\s*type\s*=\s*"sealed"\s*$/.test(line)) return m[1];
+  }
+  return 'seven';
+}
+
+/**
+ * Set `[secrets.NAME] value = "<placeholder>"` in a fnox config, keeping the
+ * rest of the file. Returns the new text (unchanged when already right).
+ */
+function setFnoxSecret(toml, name, placeholder) {
+  const text = String(toml || '');
+  const lines = text.split('\n');
+  const header = `secrets.${name}`;
+  const valueLine = `value = ${JSON.stringify(placeholder)}`;
+  const start = lines.findIndex((l) => (l.match(TOML_HEADER_RE) || [])[1] === header);
+  if (start === -1) {
+    const block = `[${header}]\nprovider = ${JSON.stringify(sealedProviderName(text))}\n${valueLine}\n`;
+    const base = text.replace(/\n*$/, '');
+    return base ? `${base}\n\n${block}` : block;
+  }
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (TOML_HEADER_RE.test(lines[i])) {
+      end = i;
+      break;
+    }
+  }
+  const at = lines.slice(start + 1, end).findIndex((l) => /^\s*value\s*=/.test(l));
+  if (at === -1) lines.splice(start + 1, 0, valueLine);
+  else lines[start + 1 + at] = valueLine;
+  return lines.join('\n');
+}
+
+/** Set `[exec] NAME = { argv = [["<script>"]] }` in the secrets policy. */
+function setExecGrant(toml, name, script) {
+  const text = String(toml || '');
+  const grant = `${name} = { argv = [[${JSON.stringify(script)}]] }`;
+  const lines = text.split('\n');
+  let section = null;
+  let execAt = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const h = lines[i].match(TOML_HEADER_RE);
+    if (h) {
+      section = h[1];
+      if (section === 'exec') execAt = i;
+      continue;
+    }
+    if (section === 'exec' && new RegExp(`^\\s*${name}\\s*=`).test(lines[i])) {
+      lines[i] = grant;
+      return lines.join('\n');
+    }
+  }
+  if (execAt !== -1) {
+    lines.splice(execAt + 1, 0, grant);
+    return lines.join('\n');
+  }
+  const base = text.replace(/\n*$/, '');
+  return base ? `${base}\n\n[exec]\n${grant}\n` : `[exec]\n${grant}\n`;
+}
+
+async function readTextOrEmpty(p) {
+  try {
+    return String((await fs.promises.readFile(p, 'utf8')) || '');
+  } catch {
+    return '';
+  }
+}
+
+async function sudoInstall(content, dest) {
+  const tmp = `/tmp/bluebubbles-login-${process.pid || 'p'}-${path.basename(dest)}`;
+  await fs.promises.writeFile(tmp, content, { mode: 0o600 });
+  try {
+    const res = await exec.spawn(['sudo', 'install', '-D', '-o', 'root', '-g', 'root', '-m', '644', tmp, dest]);
+    if (!res || res.exitCode !== 0) {
+      const why = res && res.stderr ? String(res.stderr).trim() : 'declined or failed';
+      die(`could not write ${dest}: ${why}`, { prefix: 'bluebubbles login' });
+    }
+  } finally {
+    try {
+      await fs.promises.unlink(tmp);
+    } catch {
+      /* already gone */
+    }
+  }
+}
+
+async function sealedPlaceholder(name) {
+  const res = await exec.spawn(['sealed', 'placeholder', name]).catch(() => null);
+  const out = res && res.exitCode === 0 ? String(res.stdout || '').trim() : '';
+  return isFnoxPlaceholder(out) ? out : null;
+}
+
+async function cmdLogin(pos, opts) {
+  const url = normalizeServerUrl(pos[0]);
+  if (!url) {
+    die('usage: bluebubbles login <https://server> [--url-local <url>] [--replace] [--dry-run]\n' +
+      '  The url must be http(s), without a query, fragment or credentials.', { prefix: 'bluebubbles login' });
+  }
+  const urlLocalRaw = str(opts['url-local']);
+  const urlLocal = urlLocalRaw ? normalizeServerUrl(urlLocalRaw) : null;
+  if (urlLocalRaw && !urlLocal) die('--url-local must be an http(s) url', { prefix: 'bluebubbles login' });
+  const dryRun = !!opts['dry-run'];
+  const script = grantPath();
+
+  // The vault matches the grant only when fnox execs a root-owned script.
+  if (!rootOnly(statOrNull(script)) || !rootOnly(statOrNull(path.dirname(script)))) {
+    const msg = `${script} must be owned by root and not group- or other-writable for the vault grant to match. ` +
+      'Install the skill with: sudo install -m 755 <skill>/scripts/bluebubbles ' + script;
+    if (!dryRun) die(msg, { prefix: 'bluebubbles login' });
+    console.log(color.yellow(`warning: ${msg}`));
+  }
+
+  let placeholder = await sealedPlaceholder(SECRET_NAME);
+  if (dryRun) {
+    placeholder = placeholder || '<placeholder from sealed ask>';
+  } else if (!placeholder || opts.replace) {
+    const ask = ['sealed', 'ask', SECRET_NAME, '--prompt', `BlueBubbles server password for ${new URL(url).host}`];
+    if (placeholder) ask.push('--replace');
+    const res = await exec.spawn(ask);
+    const got = res && res.exitCode === 0 ? String(res.stdout || '').trim().split('\n').pop().trim() : '';
+    if (!isFnoxPlaceholder(got)) die('the password was not stored (declined or expired)', { prefix: 'bluebubbles login' });
+    placeholder = got;
+  }
+
+  const pin = `${JSON.stringify(urlLocal ? { url, urlLocal } : { url }, null, 2)}\n`;
+  const fnoxOld = await readTextOrEmpty(FNOX_CONFIG);
+  const fnoxNew = setFnoxSecret(fnoxOld, SECRET_NAME, placeholder);
+  const policyOld = await readTextOrEmpty(SECRETS_POLICY);
+  const policyNew = setExecGrant(policyOld, SECRET_NAME, script);
+  const pinOld = await readTextOrEmpty(PINNED_CONFIG);
+
+  const writes = [
+    [PINNED_CONFIG, pinOld, pin],
+    [FNOX_CONFIG, fnoxOld, fnoxNew],
+    [SECRETS_POLICY, policyOld, policyNew],
+  ].filter(([, before, after]) => before !== after);
+
+  for (const [dest, , content] of writes) {
+    if (dryRun) {
+      console.log(color.bold(`would write ${dest} (sudo install -m 644):`));
+      console.log(content.replace(/\n$/, ''));
+      console.log('');
+    } else {
+      await sudoInstall(content, dest);
+      console.log(`${color.green('wrote')} ${dest}`);
+    }
+  }
+  if (!writes.length) console.log('nothing to change: server, vault entry and grant are already in place');
+  if (dryRun) return;
+
+  console.log(`checking ${url} …`);
+  const res = await exec.spawn([script, 'status']);
+  if (res && res.stdout) process.stdout.write(String(res.stdout));
+  if (res && res.stderr) process.stderr.write(String(res.stderr));
+  process.exit(res && Number.isInteger(res.exitCode) ? res.exitCode : 1);
+}
+
 async function main() {
   if (flags.help || flags.h || !subcommand || subcommand === 'help') {
     cli.help(HELP);
@@ -1801,6 +2070,8 @@ async function main() {
       await cmdUnwatch(positional, flags);
     } else if (subcommand === 'watches' || subcommand === 'watch-list') {
       await cmdWatches(flags);
+    } else if (subcommand === 'login') {
+      await cmdLogin(positional, flags);
     } else {
       die(`unknown command: ${subcommand}\nRun 'bluebubbles --help' for usage.`, {
         prefix: 'bluebubbles',

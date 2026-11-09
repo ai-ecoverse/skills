@@ -5,9 +5,9 @@ description: |
   browser session). Use when the user wants to text someone, send an iMessage or SMS,
   check iPhone messages from the desktop, list conversations/inbox, read a thread,
   search message history, look up contacts or handles, or verify that a message was
-  delivered. On SLICC 7 the password is the vault secret BLUEBUBBLES_PASSWORD,
-  granted by fnox to this CLI only, because the server only accepts it as a query
-  parameter and the vault will not fill a URL. Triggers on BlueBubbles, iMessage,
+  delivered. On SLICC 7, `bluebubbles login <url>` seals the password in the
+  vault, grants it to this CLI only and pins the server in a root-owned file.
+  Triggers on BlueBubbles, iMessage,
   SMS, text message, chat guid, iMessage;-;, Messages.app, fnox, or "text <person>".
   Not Slack, not Signal, not Teams.
 allowed-tools: bash
@@ -54,9 +54,13 @@ Resolution order:
 
 | What | Order |
 | --- | --- |
-| **URL** | `--url` → `BLUEBUBBLES_URL` → `--local` ? `urlLocal` : `url` in config → `urlLocal` → `http://localhost:1234` |
-| **Password** | usable `BLUEBUBBLES_PASSWORD` → `--password-file` / `BLUEBUBBLES_PASSWORD_FILE` → `passwordFile` from config → one `fnox exec --only BLUEBUBBLES_PASSWORD` retry |
-| **Config file** | `BLUEBUBBLES_CONFIG` → `~/.bluebubbles.json` → `/home/lars/.bluebubbles.json` |
+| **URL, pinned** | `/etc/bluebubbles/config.json` (root-owned, written by `login`): `--local` ? `urlLocal` : `url`. Nothing else is read. |
+| **URL, not pinned** | `BLUEBUBBLES_URL` → `--local` ? `urlLocal` : `url` in config → `urlLocal` → `http://localhost:1234` |
+| **Password, pinned** | usable `BLUEBUBBLES_PASSWORD` → `--password-file` / `BLUEBUBBLES_PASSWORD_FILE` → one `fnox exec --only BLUEBUBBLES_PASSWORD` retry |
+| **Password, not pinned** | `--password-file` / `BLUEBUBBLES_PASSWORD_FILE` → `passwordFile` from config. `BLUEBUBBLES_PASSWORD` is not used. |
+| **Config file** | `BLUEBUBBLES_CONFIG` → `~/.bluebubbles.json` → `/home/lars/.bluebubbles.json` (not pinned only) |
+
+There is no `--url` flag.
 
 Example `~/.bluebubbles.json` (no secrets inline):
 
@@ -71,32 +75,40 @@ Example `~/.bluebubbles.json` (no secrets inline):
 Password file is a single line. **Do not** commit it, paste it into chat logs, or
 put it in this skill.
 
-### SLICC 7 / fnox
+### SLICC 7 / fnox: `bluebubbles login`
 
-The server authenticates with `?password=`. Seven fills a sealed secret only into
-a listed header, and refuses a `fnox_proxy_<24 hex>` placeholder in a URL, so the
-password cannot travel as a placeholder. Keep the URL in `~/.bluebubbles.json`.
-Seal the password as `BLUEBUBBLES_PASSWORD` and grant it to this CLI only
-(sudo) in `/etc/slicc/secrets-policy.toml`, naming the installed script by its
-absolute path:
-
-```toml
-[exec]
-BLUEBUBBLES_PASSWORD = { argv = [["/usr/share/skills/bluebubbles/scripts/bluebubbles"]] }
+```bash
+bluebubbles login https://bb.example.com            # one-time setup
+bluebubbles login https://bb.example.com --url-local http://10.0.0.2:1234
+bluebubbles login https://bb.example.com --dry-run  # show what it would write
 ```
 
-Do not use `{ shell = true }`: it hands the password to every command the agent
-runs. The script is executable with a `#!/usr/bin/env jsh` line, so the grant
-names the script, not `jsh`. A placeholder in the environment is ignored. If no
-usable password is set, the CLI re-execs itself once under
-`fnox exec --only BLUEBUBBLES_PASSWORD -- <script>` and uses the value the grant
-puts in the child. It never prints the password. A password file
-still works when there is no vault.
+The server only accepts the password as `?password=`, and seven never fills a
+secret into a URL, so the vault hands the real value to this CLI as an
+environment variable instead. `login`:
+
+1. asks for the password in the vault dialog (`sealed ask BLUEBUBBLES_PASSWORD`;
+   it keeps an existing one unless `--replace`);
+2. writes, each with `sudo install` (one approval per file):
+   - `/etc/bluebubbles/config.json`, the pinned server: `{ "url", "urlLocal"? }`;
+   - the `[secrets.BLUEBUBBLES_PASSWORD]` placeholder in `/etc/fnox/config.toml`;
+   - the grant in `/etc/slicc/secrets-policy.toml`, to the installed script alone:
+     `BLUEBUBBLES_PASSWORD = { argv = [["/usr/share/skills/bluebubbles/scripts/bluebubbles"]] }`;
+3. runs `bluebubbles status` to check.
+
+The script must be root-owned and not writable by others (`sudo install -m 755`),
+or the grant does not match and `login` refuses. With the pin present, the
+password is only ever sent to the pinned server: `BLUEBUBBLES_URL`,
+`BLUEBUBBLES_CONFIG` and `~/.bluebubbles.json` are ignored, and a pin that is
+not root-only is refused. Without the pin, `BLUEBUBBLES_PASSWORD` is not used at
+all. Never grant it with `{ shell = true }`: that hands the password to every
+command the agent runs. A password file still works when there is no vault.
 
 ## Commands
 
 `status`/`ping`, `chats`/`inbox`, `messages`, `send`, `search`, `contacts`,
 `handles`, `watch`, `watches`, `unwatch` — every command accepts `--json`.
+`login` sets up the vault password and the pinned server (above).
 Full subcommand/flag reference and per-command caveats: `references/commands.md`.
 
 ### Watch architecture

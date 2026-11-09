@@ -13,7 +13,11 @@ function loadHelpers(opts = {}) {
   let source = fs.readFileSync(SCRIPT, 'utf8').replace(/^#![^\n]*/, '');
   source = source.replace(/\nawait main\(\);\s*$/, '\n');
   source += `
-return { isFnoxPlaceholder, usablePassword, fnoxReexecArgv, getCfg, FNOX_TRIED };
+return {
+  isFnoxPlaceholder, usablePassword, fnoxReexecArgv, getCfg, FNOX_TRIED,
+  resolveConfig, normalizeServerUrl, rootOnly, setExecGrant, setFnoxSecret,
+  sealedProviderName, cmdLogin,
+};
 `;
 
   const spawns = [];
@@ -32,15 +36,36 @@ return { isFnoxPlaceholder, usablePassword, fnoxReexecArgv, getCfg, FNOX_TRIED }
     return spawnImpl(argv);
   };
 
+  // opts.files: path -> text; opts.stats: path -> { uid, mode }. A pinned
+  // server (opts.pinned: url) adds a root-owned /etc/bluebubbles/config.json.
+  const files = { ...(opts.files || {}) };
+  const stats = { ...(opts.stats || {}) };
+  if (opts.pinned) {
+    files['/etc/bluebubbles/config.json'] = JSON.stringify({ url: opts.pinned });
+    stats['/etc/bluebubbles/config.json'] ??= { uid: 0, mode: 0o100644 };
+    stats['/etc/bluebubbles'] ??= { uid: 0, mode: 0o40755 };
+  }
+  const written = [];
+  const enoent = () => Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
   const stubs = {
     fs: {
       readFile: async () => null,
       exists: () => false,
-      existsSync: () => false,
+      existsSync: (p) => p in files,
+      statSync: (p) => {
+        if (p in stats) return stats[p];
+        throw enoent();
+      },
       promises: {
-        readFile: async () => {
-          throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+        readFile: async (p) => {
+          if (p in files) return files[p];
+          throw enoent();
         },
+        writeFile: async (p, data) => {
+          written.push([p, String(data)]);
+          files[p] = String(data);
+        },
+        unlink: async () => {},
       },
     },
     os: { homedir: () => '/home/test' },
@@ -64,11 +89,11 @@ return { isFnoxPlaceholder, usablePassword, fnoxReexecArgv, getCfg, FNOX_TRIED }
     if (id in stubs) return stubs[id];
     throw new Error(`unexpected require(${id})`);
   };
-  const argv = ['node', SCRIPT, ...(opts.argv || ['status'])];
+  const argv = ['node', opts.script || SCRIPT, ...(opts.argv || ['status'])];
   argv.parseFlags = () => ({
     subcommand: opts.argv?.[0] || 'status',
     positional: opts.argv || ['status'],
-    flags: {},
+    flags: { ...(opts.flags || {}) },
   });
   const env = { ...(opts.env || {}) };
   const proc = {
@@ -91,6 +116,8 @@ return { isFnoxPlaceholder, usablePassword, fnoxReexecArgv, getCfg, FNOX_TRIED }
     stdout,
     stderr,
     env,
+    files,
+    written,
   }));
 }
 
@@ -126,6 +153,7 @@ test('getCfg re-execs via fnox when credentials are missing and propagates child
   const childOut = 'server ok\n';
   const childErr = 'fnox: granted\n';
   const h = await loadHelpers({
+    pinned: 'https://bb.example.com',
     env: {},
     spawn: async (argv) => {
       if (argv[0] === 'which') return { exitCode: 0, stdout: '/usr/bin/fnox\n', stderr: '' };
@@ -151,6 +179,7 @@ test('getCfg re-execs via fnox when credentials are missing and propagates child
 
 test('getCfg re-execs via fnox when the env password is only a placeholder', async () => {
   const h = await loadHelpers({
+    pinned: 'https://bb.example.com',
     env: { BLUEBUBBLES_PASSWORD: PLACEHOLDER },
     spawn: async (argv) => {
       if (argv[0] === 'which') return { exitCode: 0, stdout: '/usr/bin/fnox\n', stderr: '' };
@@ -171,6 +200,7 @@ test('getCfg re-execs via fnox when the env password is only a placeholder', asy
 
 test('BLUEBUBBLES_FNOX_TRIED prevents a second fnox dispatch and reaches authDie', async () => {
   const h = await loadHelpers({
+    pinned: 'https://bb.example.com',
     env: { BLUEBUBBLES_FNOX_TRIED: '1' },
   });
   let caught;
@@ -181,7 +211,7 @@ test('BLUEBUBBLES_FNOX_TRIED prevents a second fnox dispatch and reaches authDie
   }
   ok(caught && caught.name === 'NodeExitError');
   is(caught.code, 1);
-  ok(String(caught.message).includes('argv = [['));
+  ok(String(caught.message).includes('bluebubbles login'));
   ok(!String(caught.message).includes('shell = true'));
   is(h.spawns.length, 0);
 });
@@ -189,6 +219,7 @@ test('BLUEBUBBLES_FNOX_TRIED prevents a second fnox dispatch and reaches authDie
 test('a child error on stderr only is shown with its exit code, not replaced by the auth help', async () => {
   const childErr = 'bluebubbles: Could not reach BlueBubbles at http://localhost:1234 (fetch failed).\n';
   const h = await loadHelpers({
+    pinned: 'https://bb.example.com',
     env: {},
     spawn: async (argv) => {
       if (argv[0] === 'which') return { exitCode: 0, stdout: '/usr/bin/fnox\n', stderr: '' };
@@ -209,6 +240,7 @@ test('a child error on stderr only is shown with its exit code, not replaced by 
 
 test('fnox exec failure with no output at all falls through to authDie', async () => {
   const h = await loadHelpers({
+    pinned: 'https://bb.example.com',
     env: {},
     spawn: async (argv) => {
       if (argv[0] === 'which') return { exitCode: 0, stdout: '/usr/bin/fnox\n', stderr: '' };
@@ -224,7 +256,7 @@ test('fnox exec failure with no output at all falls through to authDie', async (
   ok(caught && caught.name === 'NodeExitError');
   is(caught.code, 1);
   ok(String(caught.message).includes('No BlueBubbles password found'));
-  ok(String(caught.message).includes('argv = [['));
+  ok(String(caught.message).includes('bluebubbles login'));
   ok(!String(caught.message).includes('shell = true'));
   ok(h.spawns.some((a) => a.includes('--only') && a.includes('BLUEBUBBLES_PASSWORD')));
 });
@@ -233,4 +265,175 @@ test('fnox exec failure with no output at all falls through to authDie', async (
 test('the script starts with a #!/usr/bin/env jsh line', () => {
   const source = fs.readFileSync(SCRIPT, 'utf8');
   is(source.split('\n')[0], '#!/usr/bin/env jsh');
+});
+
+// ── the pinned server: the vault password goes to one host only ───────────
+
+async function exitOf(fn) {
+  try {
+    await fn();
+  } catch (err) {
+    return err;
+  }
+  return null;
+}
+
+test('with a pin, the URL comes from it, not BLUEBUBBLES_URL or a user config', async () => {
+  const h = await loadHelpers({
+    pinned: 'https://bb.example.com/',
+    env: {
+      BLUEBUBBLES_PASSWORD: 'vault-value-123',
+      BLUEBUBBLES_URL: 'https://attacker.invalid',
+      BLUEBUBBLES_CONFIG: '/tmp/evil.json',
+    },
+    files: { '/tmp/evil.json': JSON.stringify({ url: 'https://attacker2.invalid' }) },
+  });
+  const cfg = await h.resolveConfig();
+  is(cfg.url, 'https://bb.example.com');
+  is(cfg.password, 'vault-value-123');
+  is(cfg.pinned, true);
+});
+
+test('without a pin, a password in the environment is not used and fnox is not asked', async () => {
+  const h = await loadHelpers({
+    env: { BLUEBUBBLES_PASSWORD: 'vault-value-123', BLUEBUBBLES_URL: 'https://attacker.invalid' },
+  });
+  const err = await exitOf(() => h.getCfg());
+  ok(err && err.name === 'NodeExitError');
+  is(err.code, 1);
+  ok(String(err.message).includes('is set, but there is no /etc/bluebubbles/config.json'));
+  is(h.spawns.length, 0);
+});
+
+test('without a pin, a password file and BLUEBUBBLES_URL still work', async () => {
+  const h = await loadHelpers({
+    env: { BLUEBUBBLES_PASSWORD_FILE: '/home/test/pw', BLUEBUBBLES_URL: 'https://mine.example.com/' },
+    files: { '/home/test/pw': 'file-password-1\n' },
+  });
+  const cfg = await h.resolveConfig();
+  is(cfg.url, 'https://mine.example.com');
+  is(cfg.password, 'file-password-1');
+  is(cfg.pinned, false);
+});
+
+test('a pin that is not root-only is refused, not skipped', async () => {
+  for (const st of [{ uid: 1034, mode: 0o100644 }, { uid: 0, mode: 0o100666 }]) {
+    const h = await loadHelpers({
+      pinned: 'https://bb.example.com',
+      stats: { '/etc/bluebubbles/config.json': st },
+      env: { BLUEBUBBLES_PASSWORD: 'vault-value-123' },
+    });
+    const err = await exitOf(() => h.resolveConfig());
+    ok(err && err.name === 'NodeExitError', `refused for ${JSON.stringify(st)}`);
+    ok(String(err.message).includes('must be owned by root'));
+  }
+});
+
+test('--url is gone', async () => {
+  const h = await loadHelpers({ pinned: 'https://bb.example.com', flags: { url: 'https://attacker.invalid' } });
+  const err = await exitOf(() => h.resolveConfig());
+  ok(err && err.name === 'NodeExitError');
+  ok(String(err.message).includes('--url was removed'));
+});
+
+test('normalizeServerUrl accepts plain http(s) only', async () => {
+  const { normalizeServerUrl } = await loadHelpers();
+  is(normalizeServerUrl('https://bb.example.com/'), 'https://bb.example.com');
+  is(normalizeServerUrl(' http://10.0.0.2:1234 '), 'http://10.0.0.2:1234');
+  is(normalizeServerUrl('https://bb.example.com/base/'), 'https://bb.example.com/base');
+  is(normalizeServerUrl('https://u:p@bb.example.com'), null);
+  is(normalizeServerUrl('https://bb.example.com/?password=x'), null);
+  is(normalizeServerUrl('file:///etc/passwd'), null);
+  is(normalizeServerUrl('not a url'), null);
+});
+
+// ── login's file edits ─────────────────────────────────────────────────────
+
+test('setExecGrant replaces a shell grant, keeps other lines and sections', async () => {
+  const { setExecGrant } = await loadHelpers();
+  const S = '/usr/share/skills/bluebubbles/scripts/bluebubbles';
+  is(
+    setExecGrant('[exec]\nBLUEBUBBLES_PASSWORD = { shell = true }\nNPM_TOKEN = true\n\n[limits]\nshell_per_day = 5\n', 'BLUEBUBBLES_PASSWORD', S),
+    `[exec]\nBLUEBUBBLES_PASSWORD = { argv = [["${S}"]] }\nNPM_TOKEN = true\n\n[limits]\nshell_per_day = 5\n`,
+  );
+  is(setExecGrant('', 'BLUEBUBBLES_PASSWORD', S), `[exec]\nBLUEBUBBLES_PASSWORD = { argv = [["${S}"]] }\n`);
+  is(
+    setExecGrant('[exec]\nNPM_TOKEN = true\n', 'BLUEBUBBLES_PASSWORD', S),
+    `[exec]\nBLUEBUBBLES_PASSWORD = { argv = [["${S}"]] }\nNPM_TOKEN = true\n`,
+  );
+  // the same key in another section is not the grant
+  is(
+    setExecGrant('[exits]\nBLUEBUBBLES_PASSWORD = ["page"]\n', 'BLUEBUBBLES_PASSWORD', S),
+    `[exits]\nBLUEBUBBLES_PASSWORD = ["page"]\n\n[exec]\nBLUEBUBBLES_PASSWORD = { argv = [["${S}"]] }\n`,
+  );
+});
+
+test('setFnoxSecret sets the placeholder and adds the entry under the sealed provider', async () => {
+  const { setFnoxSecret } = await loadHelpers();
+  const base = 'default_provider = "vault"\n\n[providers.vault]\ntype = "sealed"\n';
+  is(
+    setFnoxSecret(base, 'BLUEBUBBLES_PASSWORD', PLACEHOLDER),
+    `${base}\n[secrets.BLUEBUBBLES_PASSWORD]\nprovider = "vault"\nvalue = "${PLACEHOLDER}"\n`,
+  );
+  const old = `[secrets.BLUEBUBBLES_PASSWORD]\nprovider = "seven"\nvalue = "fnox_proxy_${'b'.repeat(24)}"\n\n[secrets.OTHER]\nvalue = "x"\n`;
+  is(
+    setFnoxSecret(old, 'BLUEBUBBLES_PASSWORD', PLACEHOLDER),
+    `[secrets.BLUEBUBBLES_PASSWORD]\nprovider = "seven"\nvalue = "${PLACEHOLDER}"\n\n[secrets.OTHER]\nvalue = "x"\n`,
+  );
+  const same = `[secrets.BLUEBUBBLES_PASSWORD]\nprovider = "seven"\nvalue = "${PLACEHOLDER}"\n`;
+  is(setFnoxSecret(same, 'BLUEBUBBLES_PASSWORD', PLACEHOLDER), same);
+});
+
+test('login seals the password, writes the three root files with sudo install, then checks status', async () => {
+  const SCRIPT_PATH = '/usr/share/skills/bluebubbles/scripts/bluebubbles';
+  const h = await loadHelpers({
+    script: SCRIPT_PATH,
+    argv: ['login', 'https://bb.example.com/'],
+    files: {
+      '/etc/fnox/config.toml': 'default_provider = "seven"\n\n[providers.seven]\ntype = "sealed"\n',
+      '/etc/slicc/secrets-policy.toml': '[exec]\nBLUEBUBBLES_PASSWORD = { shell = true }\n',
+    },
+    stats: {
+      [SCRIPT_PATH]: { uid: 0, mode: 0o100755 },
+      '/usr/share/skills/bluebubbles/scripts': { uid: 0, mode: 0o40755 },
+    },
+    spawn: async (argv) => {
+      if (argv[0] === 'sealed' && argv[1] === 'placeholder') return { exitCode: 1, stdout: '', stderr: 'no record' };
+      if (argv[0] === 'sealed' && argv[1] === 'ask') return { exitCode: 0, stdout: `${PLACEHOLDER}\n`, stderr: '' };
+      if (argv[0] === 'sudo') return { exitCode: 0, stdout: '', stderr: '' };
+      return { exitCode: 0, stdout: 'status ok\n', stderr: '' };
+    },
+  });
+  const err = await exitOf(() => h.cmdLogin(['https://bb.example.com/'], {}));
+  ok(err && err.name === 'NodeExitError');
+  is(err.code, 0);
+  const asks = h.spawns.filter((a) => a[0] === 'sealed' && a[1] === 'ask');
+  is(asks.length, 1);
+  ok(!asks[0].includes('--replace'));
+  const installs = h.spawns.filter((a) => a[0] === 'sudo');
+  is(installs.map((a) => a.slice(0, 9)), Array(3).fill(['sudo', 'install', '-D', '-o', 'root', '-g', 'root', '-m', '644']));
+  ok(installs.every((a) => a[9].startsWith('/tmp/bluebubbles-login-') && a.length === 11));
+  is(installs.map((a) => a[10]), ['/etc/bluebubbles/config.json', '/etc/fnox/config.toml', '/etc/slicc/secrets-policy.toml']);
+  // what each sudo install copied, by destination
+  const tmpData = Object.fromEntries(h.written);
+  const content = Object.fromEntries(installs.map((a) => [a[10], tmpData[a[9]]]));
+  is(JSON.parse(content['/etc/bluebubbles/config.json']), { url: 'https://bb.example.com' });
+  ok(content['/etc/fnox/config.toml'].includes(`[secrets.BLUEBUBBLES_PASSWORD]\nprovider = "seven"\nvalue = "${PLACEHOLDER}"`));
+  is(content['/etc/slicc/secrets-policy.toml'], `[exec]\nBLUEBUBBLES_PASSWORD = { argv = [["${SCRIPT_PATH}"]] }\n`);
+  ok(!h.written.some(([, d]) => d.includes('shell = true')));
+  is(h.spawns[h.spawns.length - 1], [SCRIPT_PATH, 'status']);
+});
+
+test('login refuses a script the vault grant could not match', async () => {
+  const h = await loadHelpers({
+    script: '/usr/share/skills/bluebubbles/scripts/bluebubbles',
+    stats: {
+      '/usr/share/skills/bluebubbles/scripts/bluebubbles': { uid: 1034, mode: 0o100755 },
+      '/usr/share/skills/bluebubbles/scripts': { uid: 0, mode: 0o40755 },
+    },
+  });
+  const err = await exitOf(() => h.cmdLogin(['https://bb.example.com'], {}));
+  ok(err && err.name === 'NodeExitError');
+  ok(String(err.message).includes('must be owned by root'));
+  ok(!h.spawns.some((a) => a[0] === 'sudo' || a[0] === 'sealed'));
 });
