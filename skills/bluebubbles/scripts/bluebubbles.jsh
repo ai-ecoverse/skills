@@ -1,3 +1,4 @@
+#!/usr/bin/env jsh
 // bluebubbles.jsh — BlueBubbles REST client (iMessage/SMS via local server)
 //
 // Auth: server password as ?password= query param. It is never printed: every
@@ -49,10 +50,11 @@ CONFIG
         BLUEBUBBLES_CONFIG
   File: ~/.bluebubbles.json  (also /home/lars/.bluebubbles.json)
         { "url", "urlLocal", "passwordFile" }
-  SLICC 7: seal the password as BLUEBUBBLES_PASSWORD and grant the shell
-        ([exec] BLUEBUBBLES_PASSWORD = { shell = true }). A fnox_proxy_
-        placeholder is ignored. With no usable password this CLI re-execs
-        once under 'fnox exec --shell-grants'. The vault will not fill a URL.
+  SLICC 7: seal the password as BLUEBUBBLES_PASSWORD and grant it to this
+        CLI only ([exec] BLUEBUBBLES_PASSWORD = { argv = [["<this script>"]] }).
+        A fnox_proxy_ placeholder is ignored. With no usable password this CLI
+        re-execs itself once under 'fnox exec --only BLUEBUBBLES_PASSWORD'.
+        The vault will not fill a URL.
   Watch state: ~/.bluebubbles-watches/*.json  (not in the skill repo)
   Password is never echoed or written by this CLI.
 
@@ -155,12 +157,15 @@ function usablePassword(value) {
   return v;
 }
 
+// The grant names this script by its absolute path ({ argv = [[path]] }), so
+// fnox must exec the script itself: no `jsh` in front and no `env` wrapper
+// after `--`, or the vault keeps the placeholder. The loop guard is set on
+// fnox's own environment instead, and the child inherits it.
 function fnoxReexecArgv(script, args) {
   return [
-    'env', '-u', 'BLUEBUBBLES_PASSWORD',
-    'fnox', 'exec', '--shell-grants', '--',
-    'env', `${FNOX_TRIED}=1`,
-    'jsh', script, ...args,
+    'env', '-u', 'BLUEBUBBLES_PASSWORD', `${FNOX_TRIED}=1`,
+    'fnox', 'exec', '--only', 'BLUEBUBBLES_PASSWORD', '--',
+    path.resolve(script), ...args,
   ];
 }
 
@@ -175,7 +180,10 @@ async function reexecViaFnox() {
   const out = res && res.stdout ? String(res.stdout) : '';
   const err = res && res.stderr ? String(res.stderr) : '';
   const code = res && Number.isInteger(res.exitCode) ? res.exitCode : 1;
-  if (code !== 0 && !out) return false;
+  // The child ran with BLUEBUBBLES_FNOX_TRIED=1, so if the grant was refused it
+  // already printed the auth help itself. Its error is the real one (an
+  // unreachable server, say); fall back here only when it printed nothing.
+  if (code !== 0 && !out && !err) return false;
   if (out) process.stdout.write(out);
   if (err) process.stderr.write(err);
   process.exit(code);
@@ -310,15 +318,20 @@ function rawBbErrorMessage(err) {
   return err.message || `HTTP ${err.status || '?'}`;
 }
 
+function grantPath() {
+  const script = process.argv[1];
+  return typeof script === 'string' && script ? path.resolve(script) : '/usr/share/skills/bluebubbles/scripts/bluebubbles.jsh';
+}
+
 function authDie(detail) {
   die(
     (detail ? detail + '\n' : '') +
       '  The server only accepts the password as a query parameter, and seven will not fill a secret into a URL.\n' +
-      '  Seal it as BLUEBUBBLES_PASSWORD and grant the shell (sudo) in\n' +
+      '  Seal it as BLUEBUBBLES_PASSWORD and grant it to this CLI only (sudo) in\n' +
       '  /etc/slicc/secrets-policy.toml:\n' +
       '    [exec]\n' +
-      '    BLUEBUBBLES_PASSWORD = { shell = true }\n' +
-      '  This CLI then re-execs once under fnox exec --shell-grants.\n' +
+      `    BLUEBUBBLES_PASSWORD = { argv = [["${grantPath()}"]] }\n` +
+      '  This CLI then re-execs itself once under fnox exec --only BLUEBUBBLES_PASSWORD.\n' +
       '  A password file still works. Never put the password in docs, commits, or the URL.',
     { prefix: 'bluebubbles' },
   );

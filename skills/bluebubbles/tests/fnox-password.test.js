@@ -9,7 +9,8 @@ const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const PLACEHOLDER = 'fnox_proxy_' + 'a'.repeat(24);
 
 function loadHelpers(opts = {}) {
-  let source = fs.readFileSync(SCRIPT, 'utf8');
+  // jsh strips the `#!/usr/bin/env jsh` line; an AsyncFunction body cannot hold it.
+  let source = fs.readFileSync(SCRIPT, 'utf8').replace(/^#![^\n]*/, '');
   source = source.replace(/\nawait main\(\);\s*$/, '\n');
   source += `
 return { isFnoxPlaceholder, usablePassword, fnoxReexecArgv, getCfg, FNOX_TRIED };
@@ -105,16 +106,18 @@ test('a fnox placeholder is not a usable password', async () => {
   ok(!isFnoxPlaceholder('fnox_proxy_' + 'g'.repeat(24)));
 });
 
-test('the fnox retry asks the vault for the shell grant and does not pass the password', async () => {
+test('the fnox retry execs the script itself, so an argv grant on its path matches', async () => {
   const { fnoxReexecArgv } = await loadHelpers();
-  const argv = fnoxReexecArgv('/skills/bluebubbles/scripts/bluebubbles.jsh', ['status', '--json']);
-  is(argv[0], 'env');
-  is(argv[1], '-u');
-  is(argv[2], 'BLUEBUBBLES_PASSWORD');
-  ok(argv.includes('--shell-grants'));
-  ok(argv.includes('BLUEBUBBLES_FNOX_TRIED=1'));
-  ok(argv.includes('jsh'));
-  ok(argv.includes('status'));
+  const script = '/usr/share/skills/bluebubbles/scripts/bluebubbles.jsh';
+  const argv = fnoxReexecArgv(script, ['status', '--json']);
+  is(argv, [
+    'env', '-u', 'BLUEBUBBLES_PASSWORD', 'BLUEBUBBLES_FNOX_TRIED=1',
+    'fnox', 'exec', '--only', 'BLUEBUBBLES_PASSWORD', '--',
+    script, 'status', '--json',
+  ]);
+  ok(!argv.includes('--shell-grants'));
+  // nothing may sit between `--` and the script: a jsh or env there breaks the grant
+  is(argv[argv.indexOf('--') + 1], script);
   ok(!argv.some((part) => String(part).includes('fnox_proxy_')));
   ok(!argv.some((part) => String(part).includes('password=')));
 });
@@ -139,7 +142,7 @@ test('getCfg re-execs via fnox when credentials are missing and propagates child
   is(caught.code, 42);
   is(h.stdout.join(''), childOut);
   is(h.stderr.join(''), childErr);
-  const fnox = h.spawns.find((a) => a.includes('fnox') && a.includes('--shell-grants'));
+  const fnox = h.spawns.find((a) => a.includes('fnox') && a.includes('--only'));
   ok(fnox);
   ok(fnox.includes('BLUEBUBBLES_FNOX_TRIED=1'));
   ok(fnox.includes('-u'));
@@ -163,7 +166,7 @@ test('getCfg re-execs via fnox when the env password is only a placeholder', asy
   ok(caught && caught.name === 'NodeExitError');
   is(caught.code, 0);
   is(h.stdout.join(''), 'ok\n');
-  ok(h.spawns.some((a) => a.includes('--shell-grants')));
+  ok(h.spawns.some((a) => a.includes('--only') && a.includes('BLUEBUBBLES_PASSWORD')));
 });
 
 test('BLUEBUBBLES_FNOX_TRIED prevents a second fnox dispatch and reaches authDie', async () => {
@@ -178,20 +181,38 @@ test('BLUEBUBBLES_FNOX_TRIED prevents a second fnox dispatch and reaches authDie
   }
   ok(caught && caught.name === 'NodeExitError');
   is(caught.code, 1);
-  ok(String(caught.message).includes('shell = true'));
+  ok(String(caught.message).includes('argv = [['));
+  ok(!String(caught.message).includes('shell = true'));
   is(h.spawns.length, 0);
 });
 
-test('fnox exec failure with empty stdout falls through to authDie', async () => {
+test('a child error on stderr only is shown with its exit code, not replaced by the auth help', async () => {
+  const childErr = 'bluebubbles: Could not reach BlueBubbles at http://localhost:1234 (fetch failed).\n';
   const h = await loadHelpers({
     env: {},
     spawn: async (argv) => {
       if (argv[0] === 'which') return { exitCode: 0, stdout: '/usr/bin/fnox\n', stderr: '' };
-      return {
-        exitCode: 1,
-        stdout: '',
-        stderr: 'fnox: no shell grant for BLUEBUBBLES_PASSWORD\n',
-      };
+      return { exitCode: 1, stdout: '', stderr: childErr };
+    },
+  });
+  let caught;
+  try {
+    await h.getCfg();
+  } catch (err) {
+    caught = err;
+  }
+  ok(caught && caught.name === 'NodeExitError');
+  is(caught.code, 1);
+  is(h.stderr.join(''), childErr);
+  ok(!String(caught.message).includes('No BlueBubbles password found'));
+});
+
+test('fnox exec failure with no output at all falls through to authDie', async () => {
+  const h = await loadHelpers({
+    env: {},
+    spawn: async (argv) => {
+      if (argv[0] === 'which') return { exitCode: 0, stdout: '/usr/bin/fnox\n', stderr: '' };
+      return { exitCode: 1, stdout: '', stderr: '' };
     },
   });
   let caught;
@@ -203,6 +224,13 @@ test('fnox exec failure with empty stdout falls through to authDie', async () =>
   ok(caught && caught.name === 'NodeExitError');
   is(caught.code, 1);
   ok(String(caught.message).includes('No BlueBubbles password found'));
-  ok(String(caught.message).includes('shell = true'));
-  ok(h.spawns.some((a) => a.includes('--shell-grants')));
+  ok(String(caught.message).includes('argv = [['));
+  ok(!String(caught.message).includes('shell = true'));
+  ok(h.spawns.some((a) => a.includes('--only') && a.includes('BLUEBUBBLES_PASSWORD')));
+});
+
+// The vault's grant names this script, so it must run by its own path.
+test('the script starts with a #!/usr/bin/env jsh line', () => {
+  const source = fs.readFileSync(SCRIPT, 'utf8');
+  is(source.split('\n')[0], '#!/usr/bin/env jsh');
 });
