@@ -1958,8 +1958,12 @@ function setExecGrant(toml, name, script) {
 async function readTextOrEmpty(p) {
   try {
     return String((await fs.promises.readFile(p, 'utf8')) || '');
-  } catch {
-    return '';
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return '';
+    const code = (err && err.code) || 'unreadable';
+    die(`cannot read ${p} (${code}), and login won't replace a file it can't read: fix its permissions, then run login again`, {
+      prefix: 'bluebubbles login',
+    });
   }
 }
 
@@ -2023,6 +2027,10 @@ async function cmdLogin(pos, opts) {
     console.log(color.yellow(`warning: ${msg}`));
   }
 
+  const fnoxOld = await readTextOrEmpty(FNOX_CONFIG);
+  const policyOld = await readTextOrEmpty(SECRETS_POLICY);
+  const pinOld = await readTextOrEmpty(PINNED_CONFIG);
+
   let placeholder = await sealedPlaceholder(SECRET_NAME);
   if (dryRun) {
     placeholder = placeholder || '<placeholder from sealed ask>';
@@ -2036,11 +2044,8 @@ async function cmdLogin(pos, opts) {
   }
 
   const pin = `${JSON.stringify(urlLocal ? { url, urlLocal } : { url }, null, 2)}\n`;
-  const fnoxOld = await readTextOrEmpty(FNOX_CONFIG);
   const fnoxNew = setFnoxSecret(fnoxOld, SECRET_NAME, placeholder);
-  const policyOld = await readTextOrEmpty(SECRETS_POLICY);
   const policyNew = setExecGrant(policyOld, SECRET_NAME, script);
-  const pinOld = await readTextOrEmpty(PINNED_CONFIG);
 
   const writes = [
     [PINNED_CONFIG, pinOld, pin],
