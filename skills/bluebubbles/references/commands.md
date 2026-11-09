@@ -1,6 +1,6 @@
 # BlueBubbles CLI reference
 
-Full command and flag surface of `bluebubbles` (`scripts/bluebubbles.jsh`).
+Full command and flag surface of `bluebubbles` (`scripts/bluebubbles`).
 The Quick start lives in `SKILL.md`; endpoint map in `references/endpoints.md`.
 
 ## Commands
@@ -47,7 +47,7 @@ Every command accepts `--json`.
 - File: `~/.bluebubbles.json` (also `/home/lars/.bluebubbles.json`) — `{ "url", "urlLocal", "passwordFile" }`
 - A `fnox_proxy_<24 hex>` value is not a password. On SLICC 7, seal the password
   as `BLUEBUBBLES_PASSWORD` and grant it to the script only:
-  `[exec] BLUEBUBBLES_PASSWORD = { argv = [["/usr/share/skills/bluebubbles/scripts/bluebubbles.jsh"]] }`
+  `[exec] BLUEBUBBLES_PASSWORD = { argv = [["/usr/share/skills/bluebubbles/scripts/bluebubbles"]] }`
   in `/etc/slicc/secrets-policy.toml`. With no usable password the CLI re-execs
   itself once under `fnox exec --only BLUEBUBBLES_PASSWORD`. The vault will not fill a URL.
 - Watch state: `~/.bluebubbles-watches/*.json` — webhook ids only, never the password

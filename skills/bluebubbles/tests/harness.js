@@ -11,7 +11,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SCRIPT = path.resolve(__dirname, '../scripts/bluebubbles.jsh');
+const SCRIPT = path.resolve(__dirname, '../scripts/bluebubbles');
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 
 /**
