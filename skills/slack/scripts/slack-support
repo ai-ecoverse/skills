@@ -61,7 +61,10 @@ function die(msg, code = 1) {
 let _tab = null;
 async function getTab() {
   if (_tab) return _tab;
-  if (typeof flags.tab === 'string') return (_tab = { targetId: flags.tab });
+  if (typeof flags.tab === 'string') {
+    _tab = { targetId: flags.tab };
+    return _tab;
+  }
   _tab = await browser.findTab({ urlMatch: aura.TAB_MATCH });
   if (!_tab) die(`no Salesforce Help tab: open ${aura.CASES_URL} and sign in, or pass --tab=<targetId>`, 4);
   return _tab;
