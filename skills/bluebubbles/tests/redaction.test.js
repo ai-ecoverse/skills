@@ -25,7 +25,8 @@ const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const SECRET = 'sup3r-s3cret-pw';
 
 function loadHelpers() {
-  let source = fs.readFileSync(SCRIPT, 'utf8');
+  // jsh strips the `#!/usr/bin/env jsh` line; an AsyncFunction body cannot hold it.
+  let source = fs.readFileSync(SCRIPT, 'utf8').replace(/^#![^\n]*/, '');
   source = source.replace(/\nawait main\(\);\s*$/, '\n');
   source += `
 return {
