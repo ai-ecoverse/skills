@@ -53,6 +53,8 @@ return {
       exists: () => false,
       existsSync: (p) => p in files,
       statSync: (p) => {
+        const code = (opts.statErrors || {})[p];
+        if (code) throw Object.assign(new Error(code), { code });
         if (p in stats) return stats[p];
         throw enoent();
       },
@@ -396,6 +398,9 @@ test('login seals the password, writes the three root files with sudo install, t
     stats: {
       [SCRIPT_PATH]: { uid: 0, mode: 0o100755 },
       '/usr/share/skills/bluebubbles/scripts': { uid: 0, mode: 0o40755 },
+      '/etc/fnox': { uid: 0, mode: 0o40755 },
+      '/etc/slicc': { uid: 0, mode: 0o40755 },
+      // /etc/bluebubbles is missing
     },
     spawn: async (argv) => {
       if (argv[0] === 'sealed' && argv[1] === 'placeholder') return { exitCode: 1, stdout: '', stderr: 'no record' };
@@ -410,13 +415,17 @@ test('login seals the password, writes the three root files with sudo install, t
   const asks = h.spawns.filter((a) => a[0] === 'sealed' && a[1] === 'ask');
   is(asks.length, 1);
   ok(!asks[0].includes('--replace'));
-  const installs = h.spawns.filter((a) => a[0] === 'sudo');
-  is(installs.map((a) => a.slice(0, 9)), Array(3).fill(['sudo', 'install', '-D', '-o', 'root', '-g', 'root', '-m', '644']));
-  ok(installs.every((a) => a[9].startsWith('/tmp/bluebubbles-login-') && a.length === 11));
-  is(installs.map((a) => a[10]), ['/etc/bluebubbles/config.json', '/etc/fnox/config.toml', '/etc/slicc/secrets-policy.toml']);
+  const sudos = h.spawns.filter((a) => a[0] === 'sudo');
+  // the missing directory is created readable, before its file
+  is(sudos[0], ['sudo', 'install', '-d', '-o', 'root', '-g', 'root', '-m', '755', '/etc/bluebubbles']);
+  is(sudos.length, 4);
+  const installs = sudos.slice(1);
+  is(installs.map((a) => a.slice(0, 8)), Array(3).fill(['sudo', 'install', '-o', 'root', '-g', 'root', '-m', '644']));
+  ok(installs.every((a) => a[8].startsWith('/tmp/bluebubbles-login-') && a.length === 10));
+  is(installs.map((a) => a[9]), ['/etc/bluebubbles/config.json', '/etc/fnox/config.toml', '/etc/slicc/secrets-policy.toml']);
   // what each sudo install copied, by destination
   const tmpData = Object.fromEntries(h.written);
-  const content = Object.fromEntries(installs.map((a) => [a[10], tmpData[a[9]]]));
+  const content = Object.fromEntries(installs.map((a) => [a[9], tmpData[a[8]]]));
   is(JSON.parse(content['/etc/bluebubbles/config.json']), { url: 'https://bb.example.com' });
   ok(content['/etc/fnox/config.toml'].includes(`[secrets.BLUEBUBBLES_PASSWORD]\nprovider = "seven"\nvalue = "${PLACEHOLDER}"`));
   is(content['/etc/slicc/secrets-policy.toml'], `[exec]\nBLUEBUBBLES_PASSWORD = { argv = [["${SCRIPT_PATH}"]] }\n`);
@@ -436,4 +445,14 @@ test('login refuses a script the vault grant could not match', async () => {
   ok(err && err.name === 'NodeExitError');
   ok(String(err.message).includes('must be owned by root'));
   ok(!h.spawns.some((a) => a[0] === 'sudo' || a[0] === 'sealed'));
+});
+
+test('a pin that exists but cannot be read is fatal, not "no pin"', async () => {
+  const h = await loadHelpers({
+    env: { BLUEBUBBLES_PASSWORD: 'vault-value-123' },
+    statErrors: { '/etc/bluebubbles/config.json': 'EACCES' },
+  });
+  const err = await exitOf(() => h.resolveConfig());
+  ok(err && err.name === 'NodeExitError');
+  ok(String(err.message).includes('cannot read /etc/bluebubbles/config.json (EACCES)'));
 });

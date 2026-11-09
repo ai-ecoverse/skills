@@ -188,8 +188,16 @@ function normalizeServerUrl(raw) {
  * caller's URL is exactly what the pin prevents.
  */
 async function loadPinnedConfig() {
-  const st = statOrNull(PINNED_CONFIG);
-  if (!st) return null;
+  let st;
+  try {
+    st = fs.statSync(PINNED_CONFIG);
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return null;
+    // It may exist: an unreadable pin must not fall back to the caller's URL.
+    die(`cannot read ${PINNED_CONFIG} (${(err && err.code) || err}). Run bluebubbles login again.`, {
+      prefix: 'bluebubbles',
+    });
+  }
   if (!rootOnly(st) || !rootOnly(statOrNull(path.dirname(PINNED_CONFIG)))) {
     die(
       `${PINNED_CONFIG} must be owned by root and not group- or other-writable ` +
@@ -1955,11 +1963,27 @@ async function readTextOrEmpty(p) {
   }
 }
 
+async function sudoRun(argv, what) {
+  const res = await exec.spawn(['sudo', ...argv]);
+  if (!res || res.exitCode !== 0) {
+    const why = res && res.stderr ? String(res.stderr).trim() : 'declined or failed';
+    die(`could not ${what}: ${why}`, { prefix: 'bluebubbles login' });
+  }
+}
+
 async function sudoInstall(content, dest) {
+  // `install -D` would create a missing directory with root's umask, which can
+  // leave it unreadable to everyone else, so the pin's directory is made 0755
+  // first when it is missing or not root-only.
+  const dir = path.dirname(dest);
+  const dst = statOrNull(dir);
+  if (!dst || !rootOnly(dst) || (dst.mode & 0o055) !== 0o055) {
+    await sudoRun(['install', '-d', '-o', 'root', '-g', 'root', '-m', '755', dir], `create ${dir}`);
+  }
   const tmp = `/tmp/bluebubbles-login-${process.pid || 'p'}-${path.basename(dest)}`;
   await fs.promises.writeFile(tmp, content, { mode: 0o600 });
   try {
-    const res = await exec.spawn(['sudo', 'install', '-D', '-o', 'root', '-g', 'root', '-m', '644', tmp, dest]);
+    const res = await exec.spawn(['sudo', 'install', '-o', 'root', '-g', 'root', '-m', '644', tmp, dest]);
     if (!res || res.exitCode !== 0) {
       const why = res && res.stderr ? String(res.stderr).trim() : 'declined or failed';
       die(`could not write ${dest}: ${why}`, { prefix: 'bluebubbles login' });
