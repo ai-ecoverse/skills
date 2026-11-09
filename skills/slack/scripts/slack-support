@@ -1,0 +1,248 @@
+#!/usr/bin/env jsh
+// slack-support — Slack support cases on the Salesforce Help portal (help.salesforce.com),
+// where Slack moved its support in 2026. Cases are read and commented on through the
+// portal's Aura/Apex endpoints (sfhelp-aura.js); new cases are opened by the portal's AI
+// agent, Fin, over Intercom (intercom-messenger.js). Both run inside the signed-in tab.
+const browser = require('sliccy:browser');
+const cli = require('sliccy:cli');
+const color = require('sliccy:color');
+const aura = require('./sfhelp-aura.js');
+const messenger = require('./intercom-messenger.js');
+
+const SEVERITIES = {
+  1: 'Severity 1 - Critical production issue - business completely stopped or revenue impacted',
+  2: 'Severity 2 - Major functionality impacted and time-sensitive',
+  3: 'Severity 3 - Minor functionality impacted and time-sensitive',
+  4: 'Severity 4 - General inquiry, how-to or routine technical issue',
+};
+
+// What we tell Fin when it offers live chat or asks whether to involve the team instead of
+// opening a case. Captured live 2026-11-09: this wording got case #400000002 created.
+const NUDGE = "Thanks, but I'd prefer a case I can follow up on asynchronously rather than live chat. Please create the case.";
+
+const HELP = `
+slack-support — Slack support cases on Salesforce Help (help.salesforce.com)
+
+USAGE
+  slack-support whoami                     Signed-in user and Slack org
+  slack-support list [--closed|--all] [--search=TEXT] [--limit=N]
+                                           Your cases (default: open, 20)
+  slack-support view <case>                A case with its details and comments
+  slack-support comment <case> <text|-> --confirm
+                                           Add a comment (- reads stdin)
+  slack-support create --subject=TEXT --severity=1-4 <description|-> --confirm
+                       [--no-comment] [--wait=SECONDS]
+                                           Open a case through the portal's AI agent (Fin),
+                                           then post the description verbatim as a comment
+
+  <case> is a case number (400000002) or a record id (500…).
+
+FLAGS
+  --json        Print JSON
+  --confirm     Required for comment and create; without it they print what would be sent
+  --tab=<id>    Use this tab (default: the open help.salesforce.com tab)
+
+REQUIRES
+  ${aura.CASES_URL} open and signed in (My Cases on the old Slack help page signs you in).
+
+NOTES
+  The portal has no case form: Fin writes the case's subject and description from the
+  chat, and its summary can drop details, hence the verbatim comment. Requests from the
+  old Slack portal (*.enterprise.slack.com/help/requests) are read-only there.
+`.trim();
+
+const { parseArgs, boolFlag } = require('./support-args.js');
+const { sub, pos, flags } = parseArgs(process.argv.slice(2));
+
+function die(msg, code = 1) {
+  cli.die(msg, { prefix: 'slack-support', exitCode: code });
+}
+
+let _tab = null;
+async function getTab() {
+  if (_tab) return _tab;
+  if (typeof flags.tab === 'string') {
+    _tab = { targetId: flags.tab };
+    return _tab;
+  }
+  _tab = await browser.findTab({ urlMatch: aura.TAB_MATCH });
+  if (!_tab) die(`no Salesforce Help tab: open ${aura.CASES_URL} and sign in, or pass --tab=<targetId>`, 4);
+  return _tab;
+}
+
+async function evalInPage(src) {
+  return browser.evalAsync(await getTab(), src);
+}
+const sf = aura.makeClient(evalInPage);
+const ic = messenger.makeClient(evalInPage);
+
+async function readText(args) {
+  if (args.length === 1 && args[0] === '-') return require('fs').readFileSync(0, 'utf8');
+  return args.join(' ');
+}
+
+function clamp(v, lo, hi, dflt) {
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) ? Math.min(Math.max(n, lo), hi) : dflt;
+}
+
+function caseLink(caseId) {
+  return `${aura.ORIGIN}/s/case-view?caseId=${caseId}`;
+}
+
+function printLines(text, indent = '  ') {
+  for (const line of String(text || '').split('\n')) console.log(`${indent}${line}`);
+}
+
+// ── commands ─────────────────────────────────────────────────────────────────
+
+async function cmdWhoami() {
+  const c = (await sf.context()) || {};
+  const out = { username: c.username ?? null, orgId: c.orgId ?? null, orgName: c.orgName ?? null, cloud: c.cloud ?? null };
+  if (boolFlag(flags, 'json')) return cli.out(out);
+  console.log(`\n  ${color.cyan(color.bold(out.username || '?'))}  ${color.dim(`org:${out.orgId || '?'}`)}  ${out.orgName || ''}  ${color.dim(out.cloud || '')}`);
+}
+
+async function cmdList() {
+  const limit = clamp(flags.limit, 1, 100, 20);
+  const search = typeof flags.search === 'string' ? flags.search : '';
+  const which = boolFlag(flags, 'all') ? ['open', 'closed'] : boolFlag(flags, 'closed') ? ['closed'] : ['open'];
+  const results = [];
+  for (const filter of which) {
+    const r = await sf.listCases({ filter, search, limit });
+    results.push({ filter, total: r.total, cases: r.cases });
+  }
+  if (boolFlag(flags, 'json')) return cli.out(which.length === 1 ? results[0] : results);
+  for (const r of results) {
+    console.log(`\n  ${color.bold(r.filter === 'open' ? 'Open cases' : 'Closed cases')}${r.total != null ? color.dim(`  (${r.total})`) : ''}`);
+    if (!r.cases.length) console.log(color.dim('  None.'));
+    for (const c of r.cases) {
+      console.log(`  ${color.cyan(color.bold(`#${c.caseNumber}`))}  ${c.subject || ''}`);
+      console.log(color.dim(`    ${c.status || ''} · opened ${c.openDate || '?'} · id:${c.caseId}`));
+    }
+  }
+}
+
+async function cmdView() {
+  if (!pos[0]) die('usage: slack-support view <case>', 2);
+  const id = await sf.resolveCaseId(pos[0]);
+  const c = await sf.getCase(id);
+  if (boolFlag(flags, 'json')) return cli.out(c);
+  console.log(`\n  ${color.cyan(color.bold(`Case #${c.caseNumber}`))}  ${c.subject || ''}`);
+  console.log(color.dim(`  ${c.status} · ${c.severity || 'no severity'} · ${c.product || ''}${c.topic ? ` / ${c.topic}` : ''} · id:${c.caseId}`));
+  console.log(color.dim(`  ${caseLink(c.caseId)}`));
+  if (c.description) {
+    console.log(`\n  ${color.bold('Description')}`);
+    printLines(c.description);
+  }
+  if (c.files.length) {
+    console.log(`\n  ${color.bold('Files')}`);
+    for (const f of c.files) console.log(`  ${f.name}  ${color.dim(`doc:${f.documentId}`)}`);
+  }
+  console.log(`\n  ${color.bold('Comments')}${color.dim(` (${c.comments.length})`)}`);
+  if (!c.comments.length) console.log(color.dim('  None yet.'));
+  for (const m of c.comments) {
+    console.log(color.dim(`  ${'─'.repeat(52)}`));
+    console.log(`  ${color.bold(m.author || '?')}${m.fromSupport ? color.yellow(' (support)') : ''}  ${color.dim(m.created || m.createdAt || '')}`);
+    printLines(m.text);
+    for (const a of m.attachments) console.log(color.dim(`  📎 ${a.name}`));
+  }
+}
+
+async function cmdComment() {
+  if (!pos[0]) die('usage: slack-support comment <case> <text|-> --confirm', 2);
+  const text = (await readText(pos.slice(1))).trim();
+  if (!text) die('usage: slack-support comment <case> <text|-> --confirm', 2);
+  const id = await sf.resolveCaseId(pos[0]);
+  if (!boolFlag(flags, 'confirm')) {
+    console.log(`\n  Would comment on case ${pos[0]} (${id}):\n`);
+    printLines(text);
+    console.log(color.dim('\n  Nothing sent. Add --confirm to post it as you.'));
+    process.exit(3);
+  }
+  const r = await sf.addComment(id, aura.textToCommentHtml(text));
+  if (boolFlag(flags, 'json')) return cli.out(r);
+  console.log(`  ${color.green('✓')} comment posted  ${color.dim(`id:${r.caseComment && r.caseComment.id}`)}`);
+}
+
+function createMessage(subject, severity, description) {
+  return `I'd like to open a support case (Severity ${severity}). Subject: ${subject}\n\n${description}`;
+}
+
+async function cmdCreate() {
+  const subject = typeof flags.subject === 'string' ? flags.subject.trim() : '';
+  const severity = clamp(flags.severity, 1, 4, NaN);
+  const description = (await readText(pos)).trim();
+  if (!subject || !Number.isFinite(severity) || !description) die('usage: slack-support create --subject=TEXT --severity=1-4 <description|-> --confirm', 2);
+  const opening = createMessage(subject, severity, description);
+  const comment = flags.comment === undefined || boolFlag(flags, 'comment');
+  if (!boolFlag(flags, 'confirm')) {
+    console.log(`\n  Would start a chat with the portal's AI agent (Fin) and send:\n`);
+    printLines(opening, '    ');
+    console.log(`\n  If Fin offers live chat or asks whether to get the team, reply:\n\n    ${NUDGE}`);
+    if (comment) console.log('\n  Then post the description verbatim as a comment on the new case.');
+    console.log(color.dim(`\n  ${SEVERITIES[severity]}\n  Nothing sent. Add --confirm to send it as you.`));
+    process.exit(3);
+  }
+
+  const waitMs = clamp(flags.wait, 30, 900, 180) * 1000;
+  const started = await ic.start(opening);
+  const convId = String((started && (started.conversation_id || started.id || (started.conversation && started.conversation.id))) || '');
+  if (!convId) die('the messenger did not return a conversation id; check the chat in the tab', 1);
+  const log = [];
+  let seen = 1;
+  let caseNumber = null;
+  let conv = null;
+  for (let turn = 0; turn < 3 && !caseNumber; turn++) {
+    conv = await ic.waitForReply(convId, { afterCount: seen, timeoutMs: waitMs });
+    const replies = conv.messages.slice(seen).filter((m) => !m.isUser);
+    seen = conv.messages.length;
+    log.push(...replies);
+    for (const m of replies) caseNumber = caseNumber || messenger.findCaseNumber(m.text);
+    if (caseNumber || !conv.open || !replies.length) break;
+    await ic.reply(convId, NUDGE);
+    seen += 1;
+  }
+  if (!caseNumber) {
+    const msg = { conversationId: convId, caseNumber: null, fin: log };
+    if (boolFlag(flags, 'json')) cli.out(msg);
+    else {
+      console.log(`  Fin did not report a case number. Conversation ${convId}:`);
+      for (const m of log) printLines(`${m.from}: ${m.text}`);
+      console.log(color.dim(`  Continue with: intercom read ${convId} / intercom reply ${convId} "…" --confirm`));
+    }
+    process.exit(1);
+  }
+  const caseId = await sf.resolveCaseId(caseNumber);
+  let commentId = null;
+  if (comment) {
+    const r = await sf.addComment(caseId, aura.textToCommentHtml(`${subject}\n\n${description}`));
+    commentId = r.caseComment && r.caseComment.id;
+  }
+  const out = { caseNumber, caseId, link: caseLink(caseId), conversationId: convId, commentId };
+  if (boolFlag(flags, 'json')) return cli.out(out);
+  console.log(`  ${color.green('✓')} case ${color.bold(`#${caseNumber}`)} opened  ${color.dim(`id:${caseId}`)}`);
+  if (commentId) console.log(`  ${color.green('✓')} description posted verbatim  ${color.dim(`comment:${commentId}`)}`);
+  console.log(color.dim(`  ${out.link}`));
+}
+
+async function main() {
+  if (flags.help === true || flags.h || !sub || sub === 'help') cli.help(HELP);
+  try {
+    if (sub === 'whoami') await cmdWhoami();
+    else if (sub === 'list') await cmdList();
+    else if (sub === 'view') await cmdView();
+    else if (sub === 'comment' || sub === 'reply') await cmdComment();
+    else if (sub === 'create') await cmdCreate();
+    else die(`unknown command: ${sub}\nRun 'slack-support --help' for usage.`, 2);
+  } catch (err) {
+    if (err?.name === 'NodeExitError') throw err;
+    if (/is not a boolean/.test(err?.message || '')) die(err.message, 2);
+    if (err?.name === 'AuraError' || err?.name === 'MessengerError') {
+      const hint = aura.hintFor(err);
+      die(hint ? `${err.message} — ${hint}` : err.message, err.code === 'usage' ? 2 : 1);
+    }
+    die(err?.message || String(err));
+  }
+}
+await main();
