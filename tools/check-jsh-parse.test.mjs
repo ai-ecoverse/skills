@@ -9,7 +9,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync as require0 } from 'node:fs';
-import { parseFailure, collectFiles, stripShebang } from './check-jsh-parse.mjs';
+import { parseFailure, collectFiles, stripShebang, isJshHashbang } from './check-jsh-parse.mjs';
 
 test('a plain script parses', () => {
   assert.equal(parseFailure('const a = 1; console.log(a);'), null);
@@ -69,7 +69,26 @@ test("the tool's OWN discovery finds the repo scripts", () => {
   // mutation testing; the surviving mutation was pointing at untested code.
   const files = collectFiles([], "");
   assert.ok(files.length > 50, `expected many .jsh files, found ${files.length}`);
-  assert.ok(files.every((f) => /\.(jsh|bsh)$/.test(f)), "every result ends .jsh/.bsh");
+  assert.ok(
+    files.every((f) => /\.(jsh|bsh)$/.test(f) || isJshHashbang(require0(f, "utf8"))),
+    "every result is a .jsh/.bsh or an extensionless jsh-hashbang command",
+  );
+});
+
+test("discovery includes extensionless jsh-hashbang commands", () => {
+  // SLICC 7 ships commands as `#!/usr/bin/env jsh` files without an extension
+  // (skills/slack/scripts/slack-support). Before this, discovery matched only
+  // .jsh/.bsh and such a command was never parse-checked.
+  const files = collectFiles([], "");
+  assert.ok(files.includes("skills/slack/scripts/slack-support"), "slack-support is checked");
+});
+
+test("isJshHashbang: env jsh and an absolute jsh path match; other interpreters don't", () => {
+  assert.equal(isJshHashbang("#!/usr/bin/env jsh\nx"), true);
+  assert.equal(isJshHashbang("#!/usr/local/bin/jsh\n"), true);
+  assert.equal(isJshHashbang("#!/usr/bin/env node\n"), false);
+  assert.equal(isJshHashbang("#!/usr/bin/env jshell\n"), false);
+  assert.equal(isJshHashbang("// no hashbang"), false);
 });
 
 test("explicit argv overrides discovery", () => {

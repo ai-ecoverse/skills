@@ -30,6 +30,24 @@ while IFS= read -r f; do
   fi
   files+=("$f")
 done < <(git ls-files '*.jsh' '*.bsh')
+
+# Extensionless commands that start with a jsh hashbang (the SLICC 7 way to ship one,
+# e.g. skills/slack/scripts/slack-support). biome-jsh picks its parser by extension, so
+# each is linted as a same-directory `.<name>.lint.jsh` copy (so biome.json and relative
+# paths resolve as for the real file); the copies are removed on exit and diagnostics are
+# mapped back to the real path.
+copies=()
+cleanup() { [ "${#copies[@]}" -eq 0 ] || rm -f "${copies[@]}"; }
+trap cleanup EXIT
+while IFS= read -r f; do
+  case "$f" in */*.*|*.*) continue ;; esac
+  [ -f "$f" ] || continue
+  head -c 64 "$f" | head -n 1 | grep -Eq '^#![[:space:]]*(/usr/bin/env[[:space:]]+jsh|[^[:space:]]*/jsh)([[:space:]]|$)' || continue
+  copy="$(dirname "$f")/.$(basename "$f").lint.jsh"
+  cp "$f" "$copy"
+  copies+=("$copy")
+  files+=("$copy")
+done < <(git ls-files)
 if [ "${#files[@]}" -eq 0 ]; then
   echo "lint-jsh: no .jsh/.bsh files found"
   exit 0
@@ -38,4 +56,11 @@ fi
 # BIOME_JSH overrides the runner (e.g. a local checkout) for testing.
 biomejsh="${BIOME_JSH:-npx --no-install @ai-ecoverse/biome-jsh}"
 # shellcheck disable=SC2086
-exec $biomejsh lint "${files[@]}"
+if [ "${#copies[@]}" -eq 0 ]; then
+  exec $biomejsh lint "${files[@]}"
+fi
+set +e
+# shellcheck disable=SC2086
+$biomejsh lint "${files[@]}" 2>&1 | sed -E 's#(^|[^[:alnum:]_./-])((\./)?([^[:space:]:]*/)?)\.([^/[:space:]:]+)\.lint\.jsh#\1\2\5#g'
+status=${PIPESTATUS[0]}
+exit "$status"

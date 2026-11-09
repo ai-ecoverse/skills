@@ -1,18 +1,16 @@
 ---
 name: slack
-description: Slack Web API client — read Slack messages, post to Slack channels, add or
-  remove an emoji reaction on any message, search Slack message text and channels, read
-  Slack threads, find and look up Slack users by name, username, or email, view Slack
-  activity and notifications, and watch Slack channels for new messages, running a
-  command (an agent callback) for each one. Multi-workspace,
-  auto-detected from the active tab. Use when the user wants to check, post, react to,
-  or search Slack messages, get Slack user info, view the Slack activity feed, watch a
-  Slack channel or thread for replies, or automate any Slack task. Triggers on mentions
-  of Slack, Slack channels, DMs, threads, messages, @mentions, emoji reactions, Slackbot, or
-  Slack notifications. Also provides slack-ext for
-  admin user-management (guest conversion, guest channels) and Slack app manifest reads
-  and diffs. Runs in SLICC, and on macOS or Linux under jsh over an existing Chrome
-  DevTools (CDP) connection.
+description: Slack Web API client — read and post Slack messages, add or remove emoji
+  reactions, search messages and channels, read threads, look up users by name or email,
+  view the activity feed, and watch channels, running a command for each new message.
+  Multi-workspace, auto-detected from the active tab. Also slack-support for Slack support
+  cases on Salesforce Help (list, view, comment on, open a case through the Fin agent) and
+  intercom for its Intercom chats; slack-ext for admin user management (guests) and app
+  manifest reads and diffs. Use when the user wants to check, post, react to or search Slack
+  messages, watch a channel or thread, or file or follow up a Slack support ticket. Triggers
+  on Slack, channels, DMs, threads, @mentions, reactions, Slackbot, notifications, Slack
+  support, help request, support case, Salesforce Help, Fin, Intercom. Runs in SLICC, and on
+  macOS or Linux under jsh over Chrome DevTools (CDP).
 allowed-tools: bash
 ---
 
@@ -537,6 +535,37 @@ one is skipped rather than aborting the run.
   thread fetching, leaving `body` empty for mentions and thread items)
 - `--date=Nd` — how far back to look: `Nh`, `Nd` or `Nw` (default `7d`)
 
+## Slack support cases (`slack-support`, `intercom`)
+
+Slack support moved to Salesforce Help (`help.salesforce.com`) in 2026; the old portal
+(`<org>.enterprise.slack.com/help/requests`) keeps only legacy requests, read-only, and its
+**My Cases** link signs you in to the new one. Keep a `help.salesforce.com/s/cases` tab
+open and signed in. Both commands run inside that tab and never print its session.
+
+```bash
+slack-support whoami                              # signed-in user and Slack org
+slack-support list [--closed|--all] [--search=TEXT]
+slack-support view 400000002                      # details, files, comments (--json)
+slack-support comment 400000002 "Any update?" --confirm
+slack-support create --subject="Link previews show &amp; on mobile" --severity=3 - --confirm < report.txt
+intercom conversations                            # the Fin / support chats behind the cases
+intercom read 215000000000002 [--limit=N]
+intercom reply 215000000000002 "Thanks" --confirm [--wait]
+```
+
+- `comment`, `create`, `intercom reply` and `intercom new` print what they would send and
+  exit 3 without `--confirm`. Ask the user before confirming: they post as the user.
+- There is no case form. `create` asks the portal's AI agent (Fin) over Intercom for a
+  case, declines live chat if offered, waits for the case number, then posts the
+  description verbatim as a comment, because Fin writes its own summary as the case
+  description and drops details (`--no-comment` skips that). If Fin reports no case
+  number, it prints the chat and exits 1; continue with `intercom`.
+- `<case>` is the number shown in the portal or the `500…` record id.
+- Flags take `--name=value`; a bare `--flag` never consumes the next word, so free text
+  can follow it.
+- Not yet covered: close, reopen, escalate, severity changes and attachments. Wire
+  formats, the auth details and what is verified live: `references/support-portal.md`.
+
 ## Enterprise grid notes
 
 Some Slack workspaces use Enterprise Grid (e.g. Adobe's `E23RE8G4F`). Some
@@ -686,6 +715,8 @@ Updates have no merge semantics (omitted fields are deleted), so writes export-m
   `slack post`'s reply auto-watch (observer, filter, TTL teardown, state files).
 - `references/jsh-host.md` — running on a host under jsh: install, `slack watch` with a
   callback command, `post --watch-command`, and what differs from SLICC 6.
+- `references/support-portal.md` — `slack-support` and `intercom`: the Salesforce Help
+  Aura methods, the Intercom messenger calls, the Fin create flow, and what is verified live.
 
 ## Enterprise Grid admin commands (`slack-ext eg-*`, `channel-*`, `approvals`, `connect-*`, `admin-app`)
 

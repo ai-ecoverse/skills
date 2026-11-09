@@ -56,8 +56,24 @@ export function parseFailure(source) {
   }
 }
 
-/** Files to check: explicit argv, stdin list, or every tracked .jsh/.bsh. */
-export function collectFiles(argv, stdinText) {
+/** True for an extensionless jsh command: a file whose first line is a jsh hashbang. */
+export function isJshHashbang(head) {
+  return /^#!\s*(?:\/usr\/bin\/env\s+jsh|\S*\/jsh)(?:\s|$)/.test(String(head || ''));
+}
+
+function readHead(file) {
+  try {
+    return readFileSync(file, 'utf8').slice(0, 64);
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Files to check: explicit argv, stdin list, or every tracked .jsh/.bsh plus every tracked
+ * extensionless file that starts with a jsh hashbang (the SLICC 7 way to ship a command).
+ */
+export function collectFiles(argv, stdinText, headOf = readHead) {
   const explicit = argv.filter((a) => a !== '--stdin' && !a.startsWith('-'));
   if (explicit.length > 0) return explicit;
   if (argv.includes('--stdin')) {
@@ -73,7 +89,7 @@ export function collectFiles(argv, stdinText) {
   return out
     .split('\n')
     .map((l) => l.trim())
-    .filter((l) => /\.(jsh|bsh)$/.test(l));
+    .filter((l) => /\.(jsh|bsh)$/.test(l) || (!/\.[^/]+$/.test(l) && isJshHashbang(headOf(l))));
 }
 
 function main() {

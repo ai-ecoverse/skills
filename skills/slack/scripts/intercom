@@ -1,0 +1,165 @@
+#!/usr/bin/env jsh
+// intercom — read and answer the Intercom Messenger conversations of a signed-in page,
+// as that page's end user. Built for help.salesforce.com, where Slack support's AI agent
+// (Fin) and support engineers answer through Intercom.
+const browser = require('sliccy:browser');
+const cli = require('sliccy:cli');
+const color = require('sliccy:color');
+const messenger = require('./intercom-messenger.js');
+
+const DEFAULT_MATCH = /^https:\/\/help\.salesforce\.com\//;
+const DEFAULT_URL = 'https://help.salesforce.com/s/cases';
+
+const HELP = `
+intercom — Intercom Messenger conversations of a signed-in page (Salesforce Help by default)
+
+USAGE
+  intercom conversations                 List your conversations, newest first
+  intercom read <id> [--limit=N]         Show a conversation's messages (last N, default all)
+  intercom reply <id> <text|-> --confirm Send a reply as you (- reads stdin)
+                 [--wait[=SECONDS]]      then wait for an answer (default 120 s)
+  intercom new <text|-> --confirm        Start a new conversation as you
+                 [--wait[=SECONDS]]
+
+FLAGS
+  --tab=<targetId>  Use this tab (default: the open help.salesforce.com tab)
+  --json            Print JSON
+  --confirm         Required for reply and new: they send a message as you
+
+REQUIRES
+  A browser tab with the messenger loaded for a signed-in user, by default
+  ${DEFAULT_URL}. The messenger's session never leaves that tab.
+
+NOTES
+  reply and new use the messenger's own endpoints as its code names them; the
+  first live send confirms the field format (see references/support-portal.md).
+`.trim();
+
+const { parseArgs, boolFlag } = require('./support-args.js');
+const { sub, pos, flags } = parseArgs(process.argv.slice(2));
+
+function die(msg, code = 1) {
+  cli.die(msg, { prefix: 'intercom', exitCode: code });
+}
+
+let _tab = null;
+async function getTab() {
+  if (_tab) return _tab;
+  if (typeof flags.tab === 'string') {
+    _tab = { targetId: flags.tab };
+    return _tab;
+  }
+  _tab = await browser.findTab({ urlMatch: DEFAULT_MATCH });
+  if (!_tab) die(`no ${DEFAULT_URL} tab: open it and sign in, or pass --tab=<targetId>`, 4);
+  return _tab;
+}
+
+async function client() {
+  const tab = await getTab();
+  return messenger.makeClient((src) => browser.evalAsync(tab, src));
+}
+
+async function readText(args) {
+  if (args.length === 1 && args[0] === '-') {
+    const fs = require('fs');
+    return fs.readFileSync(0, 'utf8');
+  }
+  return args.join(' ');
+}
+
+function waitSeconds() {
+  if (flags.wait === undefined) return 0;
+  if (flags.wait === true) return 120;
+  const n = parseInt(flags.wait, 10);
+  return Number.isFinite(n) ? Math.min(Math.max(n, 5), 900) : 120;
+}
+
+function printConversation(c, limit) {
+  console.log(`\n  ${color.cyan(color.bold(c.title || '(untitled)'))}  ${color.dim(`id:${c.id}`)}  ${c.open ? color.green('open') : color.dim('closed')}`);
+  const msgs = limit ? c.messages.slice(-limit) : c.messages;
+  for (const m of msgs) {
+    console.log(color.dim(`  ${'─'.repeat(52)}`));
+    console.log(`  ${color.bold(m.from || m.authorType || '?')}  ${color.dim(m.at || '')}`);
+    for (const line of (m.text || '').split('\n')) console.log(`  ${line}`);
+  }
+  if (!msgs.length) console.log(color.dim('  No messages.'));
+}
+
+async function cmdConversations() {
+  const list = await (await client()).conversations();
+  if (boolFlag(flags, 'json')) return cli.out(list);
+  if (!list.length) return console.log(color.dim('  No conversations.'));
+  console.log('');
+  for (const c of list) console.log(`  ${c.open ? color.green('●') : color.dim('○')} ${color.cyan(c.title || '(untitled)')}  ${color.dim(`id:${c.id}  ${c.updatedAt || ''}`)}`);
+}
+
+async function cmdRead() {
+  const id = pos[0];
+  if (!id) die('usage: intercom read <id>', 2);
+  const c = await (await client()).conversation(id);
+  if (boolFlag(flags, 'json')) return cli.out(c);
+  const n = parseInt(flags.limit, 10);
+  printConversation(c, Number.isFinite(n) && n > 0 ? n : 0);
+}
+
+async function send(kind) {
+  const id = kind === 'reply' ? pos[0] : null;
+  const text = (await readText(kind === 'reply' ? pos.slice(1) : pos)).trim();
+  if (kind === 'reply' && !id) die('usage: intercom reply <id> <text|-> --confirm', 2);
+  if (!text) die(`usage: intercom ${kind} ${kind === 'reply' ? '<id> ' : ''}<text|-> --confirm`, 2);
+  if (!boolFlag(flags, 'confirm')) {
+    console.log(`\n  Would send ${kind === 'reply' ? `to conversation ${id}` : 'a new conversation'}:\n`);
+    for (const line of text.split('\n')) console.log(`  ${line}`);
+    console.log(color.dim('\n  Nothing sent. Add --confirm to send it as you.'));
+    process.exit(3);
+  }
+  const c = await client();
+  let before = 0;
+  if (kind === 'reply') {
+    const cur = await c.conversation(id);
+    if (!cur.canReply) die(`conversation ${id} is closed to replies; start a new one with 'intercom new'`, 1);
+    before = cur.messages.length;
+  }
+  const sent = kind === 'reply' ? await c.reply(id, text) : await c.start(text);
+  const convId = String((sent && (sent.conversation_id || sent.id || (sent.conversation && sent.conversation.id))) || id || '');
+  const secs = waitSeconds();
+  let result = { conversationId: convId || null, sent: true };
+  if (secs && convId) {
+    if (kind === 'new') before = 1;
+    const conv = await c.waitForReply(convId, { afterCount: before, timeoutMs: secs * 1000 });
+    result = { ...result, conversation: conv, replies: conv.messages.slice(before).filter((m) => !m.isUser) };
+  }
+  if (boolFlag(flags, 'json')) return cli.out(result);
+  console.log(`  ${color.green('✓')} sent  ${color.dim(`id:${convId || '?'}`)}`);
+  if (result.replies) {
+    if (!result.replies.length) console.log(color.dim(`  No answer within ${secs} s. Check later: intercom read ${convId}`));
+    for (const m of result.replies) {
+      console.log(`\n  ${color.bold(m.from || '?')}  ${color.dim(m.at || '')}`);
+      for (const line of m.text.split('\n')) console.log(`  ${line}`);
+    }
+  }
+}
+
+async function main() {
+  if (flags.help === true || flags.h || !sub || sub === 'help') cli.help(HELP);
+  try {
+    if (sub === 'conversations' || sub === 'list') await cmdConversations();
+    else if (sub === 'read' || sub === 'show') await cmdRead();
+    else if (sub === 'reply') await send('reply');
+    else if (sub === 'new') await send('new');
+    else die(`unknown command: ${sub}\nRun 'intercom --help' for usage.`, 2);
+  } catch (err) {
+    if (err?.name === 'NodeExitError') throw err;
+    if (/is not a boolean/.test(err?.message || '')) die(err.message, 2);
+    if (err?.name === 'MessengerError') {
+      const hint = {
+        'no-messenger': `open ${DEFAULT_URL} (or pass --tab) and sign in`,
+        'no-session': `reload ${DEFAULT_URL}, sign in, and retry`,
+        auth: `the messenger session was rejected; reload ${DEFAULT_URL} and retry`,
+      }[err.code];
+      die(hint ? `${err.message} — ${hint}` : err.message, err.code === 'usage' ? 2 : 1);
+    }
+    die(err?.message || String(err));
+  }
+}
+await main();
