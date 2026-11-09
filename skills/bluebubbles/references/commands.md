@@ -26,7 +26,6 @@ Every command accepts `--json`.
 | --- | --- | --- |
 | `--json` | all | Raw JSON instead of the formatted view |
 | `--limit N` | list/search | Max rows (default varies by command) |
-| `--url <url>` | all | Override server URL |
 | `--local` | all | Prefer `urlLocal` from config (LAN) |
 | `--password-file P` | all | Read password from file (single line) |
 | `--direct` / `--group` | `chats` | Only 1:1 or only group threads |
@@ -40,15 +39,25 @@ Every command accepts `--json`.
 | `--force` | `watch` | Replace an existing watch with the same id |
 | `--name <name>` | `watch` | SLICC webhook display name |
 | `--id <watchId>` | `unwatch` | Alternative to the positional target |
+| `--url-local <url>` | `login` | Also pin a LAN address of the same server |
+| `--replace` | `login` | Ask for the password even if the vault has one |
+| `--dry-run` | `login` | Print the files and commands, change nothing |
+
+There is no `--url` flag: on SLICC 7 the server is pinned by `login`; elsewhere
+use `BLUEBUBBLES_URL` or the config file.
 
 ## Config
 
-- Env: `BLUEBUBBLES_URL`, `BLUEBUBBLES_PASSWORD`, `BLUEBUBBLES_PASSWORD_FILE`, `BLUEBUBBLES_CONFIG`
-- File: `~/.bluebubbles.json` (also `/home/lars/.bluebubbles.json`) — `{ "url", "urlLocal", "passwordFile" }`
-- A `fnox_proxy_<24 hex>` value is not a password. On SLICC 7, seal the password
-  as `BLUEBUBBLES_PASSWORD` and set `[exec] BLUEBUBBLES_PASSWORD = { shell = true }`
-  in `/etc/slicc/secrets-policy.toml`. With no usable password the CLI re-execs
-  once under `fnox exec --shell-grants`. The vault will not fill a URL.
+- Pinned (SLICC 7, written by `bluebubbles login <url>`): `/etc/bluebubbles/config.json`
+  `{ "url", "urlLocal"? }`, root-owned. When it exists it is the only URL source,
+  and the password is `BLUEBUBBLES_PASSWORD` (the vault's, granted to the script
+  by `[exec] BLUEBUBBLES_PASSWORD = { argv = [["<script>"]] }`) or a password file.
+  With no usable password the CLI re-execs itself once under
+  `fnox exec --only BLUEBUBBLES_PASSWORD`. A pin that is not root-only is refused.
+- Not pinned: env `BLUEBUBBLES_URL`, `BLUEBUBBLES_PASSWORD_FILE`, `BLUEBUBBLES_CONFIG`;
+  file `~/.bluebubbles.json` (also `/home/lars/.bluebubbles.json`) — `{ "url", "urlLocal", "passwordFile" }`.
+  `BLUEBUBBLES_PASSWORD` is ignored here, since nothing pins where it would go.
+- A `fnox_proxy_<24 hex>` value is not a password. The vault will not fill a URL.
 - Watch state: `~/.bluebubbles-watches/*.json` — webhook ids only, never the password
 - The password is never echoed or written by this CLI; every error string is
   redacted by `safeErrorText()` first.
@@ -61,7 +70,7 @@ service type `any`). jsh has no working timers/abort, so the CLI **detaches**
 the POST after ~25s wall clock (macrotask yields via `MessageChannel`, never an
 awaited same-host ping) and verifies delivery on a **companion** host — the
 config `urlLocal` only when it is known to be the same server as the selected
-`url` (ignored under `--url` / `BLUEBUBBLES_URL`). Each verify fetch is itself
+`url` (ignored under `BLUEBUBBLES_URL`). Each verify fetch is itself
 bounded (~5s). Outcomes:
 
 | `status` (also in `--json`) | Meaning | Resend? |

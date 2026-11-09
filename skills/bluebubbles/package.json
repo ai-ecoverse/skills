@@ -1,0 +1,18 @@
+{
+  "name": "@ai-ecoverse/bluebubbles",
+  "version": "1.0.0",
+  "private": true,
+  "description": "The bluebubbles CLI for jsh: a BlueBubbles REST client for iMessage and SMS through a local BlueBubbles server. `pnpm add` it in /opt/user on SLICC 7, or `npm install -g` this folder to put `bluebubbles` on PATH.",
+  "bin": {
+    "bluebubbles": "scripts/bluebubbles.jsh"
+  },
+  "files": [
+    "scripts",
+    "references",
+    "SKILL.md"
+  ],
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22"
+  }
+}
