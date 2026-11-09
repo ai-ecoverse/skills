@@ -1,5 +1,5 @@
 #!/usr/bin/env jsh
-// bluebubbles.jsh — BlueBubbles REST client (iMessage/SMS via local server)
+// bluebubbles — BlueBubbles REST client (iMessage/SMS via local server)
 //
 // Auth: server password as ?password= query param. It is never printed: every
 // string that leaves this script passes through safeErrorText() / die(), which
@@ -320,7 +320,7 @@ function rawBbErrorMessage(err) {
 
 function grantPath() {
   const script = process.argv[1];
-  return typeof script === 'string' && script ? path.resolve(script) : '/usr/share/skills/bluebubbles/scripts/bluebubbles.jsh';
+  return typeof script === 'string' && script ? path.resolve(script) : '/usr/share/skills/bluebubbles/scripts/bluebubbles';
 }
 
 function authDie(detail) {

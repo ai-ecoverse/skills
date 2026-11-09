@@ -12,7 +12,7 @@ description: |
   Not Slack, not Signal, not Teams.
 allowed-tools: bash
 command: bluebubbles
-script: scripts/bluebubbles.jsh
+script: scripts/bluebubbles
 ---
 
 # BlueBubbles
@@ -82,7 +82,7 @@ absolute path:
 
 ```toml
 [exec]
-BLUEBUBBLES_PASSWORD = { argv = [["/usr/share/skills/bluebubbles/scripts/bluebubbles.jsh"]] }
+BLUEBUBBLES_PASSWORD = { argv = [["/usr/share/skills/bluebubbles/scripts/bluebubbles"]] }
 ```
 
 Do not use `{ shell = true }`: it hands the password to every command the agent

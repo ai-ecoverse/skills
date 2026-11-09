@@ -6,7 +6,11 @@
 # function" error), discovers this repo's biome.json, and shifts diagnostics
 # back onto the real file.
 #
-# Scoped to `.jsh`/`.bsh`; the `.js`/`.ts` tooling is not gated here. `lint`
+# Scoped to jsh scripts: `.jsh`/`.bsh`, and extensionless files with a jsh
+# hashbang (the list comes from tools/check-jsh-parse.mjs --list, so both
+# checks see the same files). biome-jsh picks its wrapper by extension, so an
+# extensionless script is linted through a `.jsh` copy next to it and the
+# copy's path is mapped back in the output. The `.js`/`.ts` tooling is not gated here. `lint`
 # (not `check`) is used deliberately — it runs only the linter, so legacy skills
 # are not failed on formatting.
 #
@@ -29,13 +33,39 @@ while IFS= read -r f; do
     continue
   fi
   files+=("$f")
-done < <(git ls-files '*.jsh' '*.bsh')
+done < <(node tools/check-jsh-parse.mjs --list)
 if [ "${#files[@]}" -eq 0 ]; then
-  echo "lint-jsh: no .jsh/.bsh files found"
-  exit 0
+  echo "lint-jsh: no jsh scripts found" >&2
+  exit 1
 fi
 
 # BIOME_JSH overrides the runner (e.g. a local checkout) for testing.
 biomejsh="${BIOME_JSH:-npx --no-install @ai-ecoverse/biome-jsh}"
+
+# Extensionless scripts: lint a `.lint-jsh-<name>.jsh` copy beside each one.
+copies=()
+sed_args=()
+targets=()
+cleanup() { [ "${#copies[@]}" -eq 0 ] || rm -f "${copies[@]}"; }
+trap cleanup EXIT
+for f in "${files[@]}"; do
+  case "$f" in
+    *.jsh | *.bsh) targets+=("$f") ;;
+    *)
+      copy="$(dirname "$f")/.lint-jsh-$(basename "$f").jsh"
+      cp "$f" "$copy"
+      copies+=("$copy")
+      targets+=("$copy")
+      sed_args+=(-e "s|$copy|$f|g")
+      ;;
+  esac
+done
+
+if [ "${#copies[@]}" -eq 0 ]; then
+  # shellcheck disable=SC2086
+  $biomejsh lint "${targets[@]}"
+  exit $?
+fi
 # shellcheck disable=SC2086
-exec $biomejsh lint "${files[@]}"
+$biomejsh lint "${targets[@]}" 2>&1 | sed "${sed_args[@]}"
+exit "${PIPESTATUS[0]}"

@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import test, { is, ok } from 'tst';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SCRIPT = path.resolve(__dirname, '../scripts/bluebubbles.jsh');
+const SCRIPT = path.resolve(__dirname, '../scripts/bluebubbles');
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const PLACEHOLDER = 'fnox_proxy_' + 'a'.repeat(24);
 
@@ -108,7 +108,7 @@ test('a fnox placeholder is not a usable password', async () => {
 
 test('the fnox retry execs the script itself, so an argv grant on its path matches', async () => {
   const { fnoxReexecArgv } = await loadHelpers();
-  const script = '/usr/share/skills/bluebubbles/scripts/bluebubbles.jsh';
+  const script = '/usr/share/skills/bluebubbles/scripts/bluebubbles';
   const argv = fnoxReexecArgv(script, ['status', '--json']);
   is(argv, [
     'env', '-u', 'BLUEBUBBLES_PASSWORD', 'BLUEBUBBLES_FNOX_TRIED=1',
