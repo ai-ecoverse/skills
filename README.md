@@ -42,7 +42,7 @@ with `tools/stage-tessl-plugin.mjs`.
 
 ## CI and releases
 
-`.github/workflows/ci.yml` calls [slicc-shared-web's pipeline](https://github.com/ai-ecoverse/slicc-shared-web#pipeline): `npm run lint`, then `npm test` sharded over four runners (`ci / integration`), then the Claude and Codex reviews (`ci / review`). `npm test` runs the `tools/` tests and `test/integration/`, where each skill's `tst` suite runs on a live SLICC leader. On `main`, semantic-release tags `vX.Y.Z` and creates the GitHub release from the conventional commits; nothing goes to npm. A new tag publishes the Tessl plugins whose skills changed since the previous one. Pull requests also get Tessl lint and review, the pandoc and xlsx bundle checks, and, for a skill with a harness adapter, its harness evals.
+`.github/workflows/ci.yml` calls [slicc-shared-web's pipeline](https://github.com/ai-ecoverse/slicc-shared-web#pipeline): `npm run lint`, then `npm test` sharded over four runners (`ci / integration`), then the Claude and Codex reviews (`ci / review`). `npm test` runs the `tools/` tests and `test/integration/`, where each skill's `tst` suite runs on slicc-kernel's `node` in Chrome and every packaged skill is installed with pnpm, as SLICC 7 does. On `main`, semantic-release tags `vX.Y.Z` and creates the GitHub release from the conventional commits; nothing goes to npm. A new tag publishes the Tessl plugins whose skills changed since the previous one. Pull requests also get Tessl lint and review, the pandoc and xlsx bundle checks, and, for a skill with a harness adapter, its harness evals.
 
 ## Pre-commit hooks
 

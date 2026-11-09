@@ -12,14 +12,15 @@
 // and the real minimatch, because its ignore-ordering and wrapper-filtering
 // logic is where the subtle bugs were.
 
+import { minimatch as realMinimatch } from 'minimatch';
 import test, { is, ok } from 'tst';
 import * as _mod_0 from './jsh-runtime.js';
 
-const { runEslint, compileHelper, runGeneratedHelper: runGeneratedHelperRaw } =
-  _mod_0.default || _mod_0;
-// Bare require in this ESM test sees ipk packages; jsh-runtime's require
-// (createRequire from its own path) does not. Inject the real minimatch.
-const { minimatch: realMinimatch } = require('minimatch');
+const {
+  runEslint,
+  compileHelper,
+  runGeneratedHelper: runGeneratedHelperRaw,
+} = _mod_0.default || _mod_0;
 const runGeneratedHelper = (helperSrc, request, verify, config, opts = {}) =>
   runGeneratedHelperRaw(helperSrc, request, verify, config, {
     ...opts,
@@ -50,15 +51,15 @@ function withMessages(messages, output = null) {
 test('--help prints usage and the install line, and exits 0', async () => {
   const r = await runEslint({ argv: ['--help'] });
   is(r.exitCode, 0);
-  ok((/Usage:/).test(r.stdout));
-  ok((/ipk add -g eslint @eslint\/js esbuild-wasm/).test(r.stdout));
+  ok(/Usage:/.test(r.stdout));
+  ok(/ipk add -g eslint @eslint\/js esbuild-wasm/.test(r.stdout));
   is(r.argvCalls, [], 'help must not invoke the helper');
 });
 
 test('an unknown option exits 2 and names it', async () => {
   const r = await runEslint({ argv: ['--nope', 'a.js'], files: BASE_FILES });
   is(r.exitCode, 2);
-  ok((/unknown option: --nope/).test(r.stderr));
+  ok(/unknown option: --nope/.test(r.stderr));
 });
 
 test('--version answers before target or config resolution', async () => {
@@ -77,7 +78,7 @@ test('--version answers before target or config resolution', async () => {
 test('--fix and --fix-dry-run are mutually exclusive', async () => {
   const r = await runEslint({ argv: ['--fix', '--fix-dry-run', 'a.js'], files: BASE_FILES });
   is(r.exitCode, 2);
-  ok((/cannot be used together/).test(r.stderr));
+  ok(/cannot be used together/.test(r.stderr));
 });
 
 /* ---------------------------- config discovery ---------------------------- */
@@ -91,7 +92,7 @@ test('discovery walks toward / and embeds the config as a require literal', asyn
     },
   });
   is(r.exitCode, 0);
-  ok((/require\("\/workspace\/proj\/eslint\.config\.js"\)/).test(r.helperSources[0]));
+  ok(/require\("\/workspace\/proj\/eslint\.config\.js"\)/.test(r.helperSources[0]));
 });
 
 test('a directory target starts discovery AT the directory', async () => {
@@ -104,7 +105,7 @@ test('a directory target starts discovery AT the directory', async () => {
     },
   });
   is(r.exitCode, 0);
-  ok((/require\("\/workspace\/proj\/eslint\.config\.js"\)/).test(r.helperSources[0]));
+  ok(/require\("\/workspace\/proj\/eslint\.config\.js"\)/.test(r.helperSources[0]));
 });
 
 test('a TypeScript config is rejected with a precise message', async () => {
@@ -116,13 +117,13 @@ test('a TypeScript config is rejected with a precise message', async () => {
     },
   });
   is(r.exitCode, 2);
-  ok((/TypeScript/).test(r.stderr));
+  ok(/TypeScript/.test(r.stderr));
 });
 
 test('no config and no --rule exits 2 naming the search start', async () => {
   const r = await runEslint({ argv: ['a.js'], files: { '/workspace/proj/a.js': 'var a = 1\n' } });
   is(r.exitCode, 2);
-  ok((/no flat config found from \/workspace\/proj/).test(r.stderr));
+  ok(/no flat config found from \/workspace\/proj/.test(r.stderr));
 });
 
 test('--no-config-lookup with --rule derives concrete file patterns', async () => {
@@ -168,8 +169,8 @@ test('an unreadable directory fails loudly instead of looking clean', async () =
     breakReadDir: 'EIO: device is on fire',
   });
   is(r.exitCode, 2);
-  ok((/could not read the target tree/).test(r.stderr));
-  ok((/device is on fire/).test(r.stderr));
+  ok(/could not read the target tree/.test(r.stderr));
+  ok(/device is on fire/.test(r.stderr));
   ok(!/no lintable files/.test(r.stderr));
 });
 
@@ -189,7 +190,7 @@ test('--ext narrows which extensions are walked', async () => {
 test('a missing target is reported and exits 2', async () => {
   const r = await runEslint({ argv: ['nope.js'], files: BASE_FILES });
   is(r.exitCode, 2);
-  ok((/nope\.js: no such file or directory/).test(r.stderr));
+  ok(/nope\.js: no such file or directory/.test(r.stderr));
 });
 
 test('a named file is marked explicit; a walked one is not', async () => {
@@ -209,9 +210,9 @@ const ONE_ERROR = [
 test('stylish reports the finding and exits 1', async () => {
   const r = await runEslint({ argv: ['a.js'], files: BASE_FILES, helper: withMessages(ONE_ERROR) });
   is(r.exitCode, 1);
-  ok((/\/workspace\/proj\/a\.js/).test(r.stdout));
-  ok((/1:10\s+error\s+Missing semicolon\s+semi/).test(r.stdout));
-  ok((/1 problem \(1 error, 0 warnings\)/).test(r.stdout));
+  ok(/\/workspace\/proj\/a\.js/.test(r.stdout));
+  ok(/1:10\s+error\s+Missing semicolon\s+semi/.test(r.stdout));
+  ok(/1 problem \(1 error, 0 warnings\)/.test(r.stdout));
 });
 
 test('--json writes one document and nothing to stderr', async () => {
@@ -248,16 +249,13 @@ test('compact prints one line per finding', async () => {
     files: BASE_FILES,
     helper: withMessages(ONE_ERROR),
   });
-  is(
-    r.stdout.trim(),
-    '/workspace/proj/a.js: line 1, col 10, error - Missing semicolon (semi)'
-  );
+  is(r.stdout.trim(), '/workspace/proj/a.js: line 1, col 10, error - Missing semicolon (semi)');
 });
 
 test('an unknown formatter exits 2', async () => {
   const r = await runEslint({ argv: ['--format', 'nope', 'a.js'], files: BASE_FILES });
   is(r.exitCode, 2);
-  ok((/unknown formatter: nope/).test(r.stderr));
+  ok(/unknown formatter: nope/.test(r.stderr));
 });
 
 test('a clean run prints nothing and exits 0', async () => {
@@ -276,7 +274,7 @@ test('--quiet drops warnings but keeps a fatal parse error', async () => {
     ]),
   });
   ok(!r.stdout.includes('unused'), 'warning should be dropped');
-  ok((/Parsing error: boom/).test(r.stdout));
+  ok(/Parsing error: boom/.test(r.stdout));
   is(r.exitCode, 1);
 });
 
@@ -294,7 +292,7 @@ test('--max-warnings turns warnings into a failure', async () => {
     helper: withMessages(warning),
   });
   is(over.exitCode, 1);
-  ok((/exceeded the --max-warnings limit of 0/).test(over.stderr));
+  ok(/exceeded the --max-warnings limit of 0/.test(over.stderr));
 });
 
 /* --------------------------------- fixes ---------------------------------- */
@@ -316,7 +314,7 @@ test('--fix-dry-run reports the rewrite and writes nothing', async () => {
     helper: withMessages([], 'var a = 1;\n'),
   });
   is(r.read('/workspace/proj/a.js'), 'var a = 1\n');
-  ok((/--fix would rewrite/).test(r.stderr));
+  ok(/--fix would rewrite/.test(r.stderr));
 });
 
 test('a fix that rewrote the .jsh wrapper leaves the file alone', async () => {
@@ -337,7 +335,7 @@ test('a fix that rewrote the .jsh wrapper leaves the file alone', async () => {
       ),
     }),
   });
-  ok((/rewrote the script wrapper/).test(r.stderr));
+  ok(/rewrote the script wrapper/.test(r.stderr));
   is(r.read('/workspace/proj/s.jsh'), 'return 1\n');
 });
 
@@ -404,8 +402,8 @@ test('a missing module is rewritten into the ipk install line', async () => {
     }),
   });
   is(r.exitCode, 2);
-  ok((/eslint is not installed/).test(r.stderr));
-  ok((/ipk add -g eslint @eslint\/js esbuild-wasm/).test(r.stderr));
+  ok(/eslint is not installed/.test(r.stderr));
+  ok(/ipk add -g eslint @eslint\/js esbuild-wasm/.test(r.stderr));
 });
 
 test('a missing scoped module is named', async () => {
@@ -417,7 +415,7 @@ test('a missing scoped module is named', async () => {
       exitCode: 1,
     }),
   });
-  ok((/@eslint\/js is not installed/).test(r.stderr));
+  ok(/@eslint\/js is not installed/.test(r.stderr));
 });
 
 test('unparseable helper output surfaces with the helper stderr attached', async () => {
@@ -427,15 +425,15 @@ test('unparseable helper output surfaces with the helper stderr attached', async
     helper: () => ({ stdout: 'not json', stderr: 'something went sideways' }),
   });
   is(r.exitCode, 2);
-  ok((/could not parse helper output/).test(r.stderr));
-  ok((/something went sideways/).test(r.stderr));
+  ok(/could not parse helper output/.test(r.stderr));
+  ok(/something went sideways/.test(r.stderr));
 });
 
 test('the generated helper is removed from the VFS afterwards', async () => {
   const r = await runEslint({ argv: ['a.js'], files: BASE_FILES });
   const helperPath = r.argvCalls[0][1];
-  ok((/^\/tmp\/\.eslint-helper-/).test(helperPath));
-  ok((/require\('eslint\/universal'\)/).test(r.helperSources[0]));
+  ok(/^\/tmp\/\.eslint-helper-/.test(helperPath));
+  ok(/require\('eslint\/universal'\)/.test(r.helperSources[0]));
   is(r.read(helperPath), undefined, 'helper must not outlive the run');
 });
 
@@ -487,7 +485,7 @@ test('--fix with --stdin is refused rather than writing the virtual filename', a
     stdin: 'var piped = 1\n',
   });
   is(r.exitCode, 2);
-  ok((/not available for piped-in code/).test(r.stderr));
+  ok(/not available for piped-in code/.test(r.stderr));
   is(r.read('/workspace/proj/src/app.js'), 'const real = 1;\n');
   is(r.argvCalls, [], 'it never reached the helper');
 });
@@ -499,7 +497,7 @@ test('--fix-dry-run with --stdin prints the fixed buffer and writes nothing', as
     stdin: 'var piped = 1\n',
     helper: withMessages([], 'var piped = 1;\n'),
   });
-  ok((/var piped = 1;/).test(r.stdout));
+  ok(/var piped = 1;/.test(r.stdout));
   is(r.read('/workspace/proj/src/app.js'), 'const real = 1;\n');
 });
 
@@ -525,7 +523,7 @@ test('a bare --stdin creates no stdin.js placeholder', async () => {
 test('--stdin cannot be combined with file arguments', async () => {
   const r = await runEslint({ argv: ['--stdin', 'a.js'], files: BASE_FILES, stdin: 'x' });
   is(r.exitCode, 2);
-  ok((/cannot be combined with file arguments/).test(r.stderr));
+  ok(/cannot be combined with file arguments/.test(r.stderr));
 });
 
 /* ------------------ the helper's own global-ignore logic ------------------ */
@@ -586,7 +584,7 @@ test('an explicitly named ignored file is reported, not silently skipped', async
     [{ ignores: ['skipme.js'] }, { files: ['**/*.js'], rules: {} }]
   );
   is(results.length, 1);
-  ok((/ignored because of a matching ignore pattern/).test(results[0].messages[0].message));
+  ok(/ignored because of a matching ignore pattern/.test(results[0].messages[0].message));
 });
 
 /* ---------------- the helper's own wrapper-message filtering -------------- */

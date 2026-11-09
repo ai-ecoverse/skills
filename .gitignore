@@ -7,3 +7,4 @@ skills/*/.config
 skills/*/scripts/.config
 test/unit/
 coverage/
+artifacts/
