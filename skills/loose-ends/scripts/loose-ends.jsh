@@ -36,6 +36,7 @@ const LEGACY_STORE = '/shared/loose-ends.json';
 const DAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
 const SHORT = { s: 'summary', d: 'detail', u: 'url', t: 'tags', a: 'all', h: 'help', n: 'limit' };
 const BOOL = new Set(['all', 'json', 'snoozed', 'done', 'help']);
+const VALUED = new Set(['title', 'summary', 'detail', 'url', 'tags', 'snooze', 'id', 'limit', 'cone', 'date', 'depth']);
 const CGI_ACTIONS = ['items', 'done', 'reopen', 'snooze', 'wake'];
 const env = process.env || {};
 
@@ -105,6 +106,7 @@ function parseArgs(argv) {
       opts._.push(a);
       continue;
     }
+    if (!BOOL.has(key) && !VALUED.has(key)) throw new UsageError(`unknown option --${key}`);
     if (BOOL.has(key)) {
       opts[key] = true;
       continue;
@@ -187,7 +189,11 @@ function parseWhen(when, now = new Date()) {
   }
   m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(w);
   if (m) {
-    d.setFullYear(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    const [year, month, date] = [Number(m[1]), Number(m[2]) - 1, Number(m[3])];
+    d.setFullYear(year, month, date);
+    if (d.getFullYear() !== year || d.getMonth() !== month || d.getDate() !== date) {
+      throw new UsageError(`there is no date ${m[0]}`);
+    }
     return at9();
   }
   throw new UsageError(
@@ -304,15 +310,29 @@ function cgiBody() {
     got += n;
   }
   const text = buf.toString('utf8', 0, got);
-  const type = String(env.CONTENT_TYPE || '').toLowerCase();
-  if (type.startsWith('application/x-www-form-urlencoded'))
-    return Object.fromEntries(new URLSearchParams(text));
   try {
     const body = JSON.parse(text);
     return body && typeof body === 'object' && !Array.isArray(body) ? body : {};
   } catch {
     throw new LookupError('the body is not JSON', 400);
   }
+}
+
+function crossSite() {
+  if (String(env.HTTP_SEC_FETCH_SITE || '').toLowerCase() === 'cross-site') return true;
+  const origin = env.HTTP_ORIGIN;
+  if (origin === undefined || origin === '') return false;
+  const host = String(env.HTTP_HOST || '').toLowerCase();
+  try {
+    return !host || new URL(origin).host.toLowerCase() !== host;
+  } catch {
+    return true;
+  }
+}
+
+function jsonBody() {
+  const type = String(env.CONTENT_TYPE || '').toLowerCase().split(';')[0].trim();
+  return type === 'application/json';
 }
 
 function notifyOwner(action, task) {
@@ -333,7 +353,7 @@ function notifyOwner(action, task) {
 
 function cgi(action, file, write) {
   const reply = (status, body) => {
-    const reason = { 200: 'OK', 400: 'Bad Request', 404: 'Not Found', 405: 'Method Not Allowed', 409: 'Conflict', 413: 'Payload Too Large', 500: 'Internal Server Error' }[status];
+    const reason = { 200: 'OK', 400: 'Bad Request', 403: 'Forbidden', 404: 'Not Found', 405: 'Method Not Allowed', 409: 'Conflict', 413: 'Payload Too Large', 415: 'Unsupported Media Type', 500: 'Internal Server Error' }[status];
     write(
       `Status: ${status} ${reason}\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nX-Loose-Ends: 2\r\n\r\n${JSON.stringify(body)}\n`
     );
@@ -343,6 +363,10 @@ function cgi(action, file, write) {
   if (!CGI_ACTIONS.includes(action)) return reply(404, { ok: false, error: `no action '${action}'` });
   const wants = action === 'items' ? 'GET' : 'POST';
   if (method !== wants) return reply(405, { ok: false, error: `${action} takes ${wants}` });
+  if (wants === 'POST') {
+    if (crossSite()) return reply(403, { ok: false, error: 'cross-site requests may not change the store' });
+    if (!jsonBody()) return reply(415, { ok: false, error: `${action} takes an application/json body` });
+  }
   try {
     const store = readStore(file);
     if (action === 'items') return reply(200, { ok: true, updated: store.updated, tasks: store.tasks });

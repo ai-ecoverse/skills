@@ -20,8 +20,10 @@ they also run under any CGI server.
 ## Request
 
 - `REQUEST_METHOD`, `CONTENT_TYPE` and `CONTENT_LENGTH`, with the body on
-  stdin, at most 64 KB. The body is JSON (`application/json`) or a form
-  (`application/x-www-form-urlencoded`), so an HTML `<form>` works too.
+  stdin, at most 64 KB. The body must be JSON (`application/json`); anything
+  else gets 415. A form or a cross-origin page can't send that without a CORS
+  preflight, which this CGI never grants. A request with `Sec-Fetch-Site:
+  cross-site`, or an `Origin` that isn't `Host`, gets 403 and changes nothing.
 - `id` is matched like the CLI's: an exact id, or a unique prefix with or
   without `le-`.
 - `SLICC_OWNER`, when the host sets it, names the cone to tell.

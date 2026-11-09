@@ -6,7 +6,11 @@ import { run, sandbox } from './run.js';
 async function withStore(fn) {
   const box = sandbox();
   const le = (words, opts = {}) =>
-    run(words, { root: box.root, ...opts, env: { HOME: box.home, LOOSE_ENDS_FILE: box.store, ...(opts.env || {}) } });
+    run(words, {
+      root: box.root,
+      ...opts,
+      env: { HOME: box.home, LOOSE_ENDS_FILE: box.store, ...(opts.env || {}) },
+    });
   try {
     await fn(le, box);
   } finally {
@@ -14,7 +18,11 @@ async function withStore(fn) {
   }
 }
 
-const ids = (r) => r.stdout.split('\n').filter(Boolean).map((l) => l.split('\t')[0]);
+const ids = (r) =>
+  r.stdout
+    .split('\n')
+    .filter(Boolean)
+    .map((l) => l.split('\t')[0]);
 
 test('--help and -h print usage and exit 0', async () => {
   for (const words of [['--help'], ['-h'], ['help'], ['done', '--help']]) {
@@ -35,13 +43,20 @@ test('an empty store lists nothing and exits 0', async () => {
 
 test('add prints a slug id, and a repeated title gets a suffix', async () => {
   await withStore(async (le, box) => {
-    is((await le(['add', 'Call', 'the', 'bank', '-s', 'about the card', '-t', 'outlook, slack'])).stdout, 'le-call-the-bank\n');
+    is(
+      (await le(['add', 'Call', 'the', 'bank', '-s', 'about the card', '-t', 'outlook, slack']))
+        .stdout,
+      'le-call-the-bank\n'
+    );
     is((await le(['add', 'Call the bank'])).stdout, 'le-call-the-bank-2\n');
     const store = JSON.parse(fs.readFileSync(box.store, 'utf8'));
     is(store.version, 1);
     is(store.tasks[0].summary, 'about the card');
     is(store.tasks[0].skills, ['outlook', 'slack']);
-    is(fs.readdirSync(box.root).filter((f) => f.endsWith('.tmp')), []);
+    is(
+      fs.readdirSync(box.root).filter((f) => f.endsWith('.tmp')),
+      []
+    );
   });
 });
 
@@ -135,11 +150,50 @@ test('snooze understands weekdays, +Nd, +Nw and dates, and refuses the rest with
   });
 });
 
+test('a date that does not exist is refused with exit 2 and changes nothing', async () => {
+  await withStore(async (le, box) => {
+    await le(['add', 'Call mom']);
+    const before = fs.readFileSync(box.store, 'utf8');
+    for (const when of ['2026-02-30', '2026-13-01', '2026-00-10', '2026-04-31']) {
+      const r = await le(['snooze', 'call-mom', when]);
+      is(r.exitCode, 2, when);
+      ok(r.stderr.includes(`there is no date ${when}`), r.stderr);
+    }
+    is(fs.readFileSync(box.store, 'utf8'), before);
+    is((await le(['snooze', 'call-mom', '2028-02-29'])).exitCode, 0, 'a leap day is a date');
+  });
+});
+
+test('an unknown long option exits 2 and changes nothing; --date and --depth are accepted for monday', async () => {
+  await withStore(async (le, box) => {
+    await le(['add', 'Call mom', '-s', 'old summary']);
+    const before = fs.readFileSync(box.store, 'utf8');
+    const typo = await le(['edit', 'call-mom', '--sumary', 'hi']);
+    is(typo.exitCode, 2);
+    ok(typo.stderr.includes('unknown option --sumary'), typo.stderr);
+    is((await le(['ls', '--store', '/tmp/elsewhere.json'])).exitCode, 2);
+    is((await le(['ls', '--jsno'])).exitCode, 2);
+    is(fs.readFileSync(box.store, 'utf8'), before);
+    const monday = await le(['monday', '--date', '2026-11-09', '--depth', '3', '--limit', '5']);
+    is(monday.exitCode, 0, monday.stderr);
+    is(JSON.parse(monday.stdout).length, 1);
+  });
+});
+
 test('an expired snooze counts as open again', async () => {
   await withStore(async (le, box) => {
     fs.writeFileSync(
       box.store,
-      JSON.stringify({ tasks: [{ id: 'le-old', title: 'Old', created: '2026-10-01T00:00:00Z', snoozedUntil: '2026-10-02T07:00:00Z' }] })
+      JSON.stringify({
+        tasks: [
+          {
+            id: 'le-old',
+            title: 'Old',
+            created: '2026-10-01T00:00:00Z',
+            snoozedUntil: '2026-10-02T07:00:00Z',
+          },
+        ],
+      })
     );
     is(ids(await le(['ls'])), ['le-old']);
   });
@@ -173,7 +227,10 @@ test('add stamps the filing cone from SLICC_AGENT, else from a SLICC 6 TMPDIR', 
     await le(['add', 'Six'], { env: { TMPDIR: '/tmp/cone-helix/scoop-a' } });
     await le(['add', 'Mac']);
     const tasks = JSON.parse(fs.readFileSync(box.store, 'utf8')).tasks;
-    is(tasks.map((t) => t.cone), ['cone-2', 'cone-helix', undefined]);
+    is(
+      tasks.map((t) => t.cone),
+      ['cone-2', 'cone-helix', undefined]
+    );
   });
 });
 
@@ -183,16 +240,29 @@ test('monday prints open items in the source protocol shape', async () => {
     await le(['add', 'Later', '--snooze', '2099-01-01']);
     const items = JSON.parse((await le(['monday', '--limit', '5'])).stdout);
     is(items.length, 1);
-    is([items[0].id, items[0].source, items[0].body], ['le-call-mom', 'loose-ends', 'about Sunday']);
+    is(
+      [items[0].id, items[0].source, items[0].body],
+      ['le-call-mom', 'loose-ends', 'about Sunday']
+    );
   });
 });
 
 test('the store defaults to $XDG_DATA_HOME, then ~/.local/share, then %LOCALAPPDATA% on Windows', async () => {
   const box = sandbox();
   try {
-    is((await run(['path'], { root: box.root, env: { HOME: '/h' } })).stdout, '/h/.local/share/loose-ends/loose-ends.json\n');
-    is((await run(['path'], { root: box.root, env: { HOME: '/h', XDG_DATA_HOME: '/x' } })).stdout, '/x/loose-ends/loose-ends.json\n');
-    const win = await run(['path'], { root: box.root, platform: 'win32', env: { USERPROFILE: 'C:/u', LOCALAPPDATA: '/appdata' } });
+    is(
+      (await run(['path'], { root: box.root, env: { HOME: '/h' } })).stdout,
+      '/h/.local/share/loose-ends/loose-ends.json\n'
+    );
+    is(
+      (await run(['path'], { root: box.root, env: { HOME: '/h', XDG_DATA_HOME: '/x' } })).stdout,
+      '/x/loose-ends/loose-ends.json\n'
+    );
+    const win = await run(['path'], {
+      root: box.root,
+      platform: 'win32',
+      env: { USERPROFILE: 'C:/u', LOCALAPPDATA: '/appdata' },
+    });
     is(win.stdout, `${path.join('/appdata', 'loose-ends', 'loose-ends.json')}\n`);
   } finally {
     box.cleanup();
@@ -205,7 +275,18 @@ test('a SLICC 6 store at /shared/loose-ends.json is used until the default store
     fs.mkdirSync(path.join(box.root, 'shared'), { recursive: true });
     fs.writeFileSync(
       path.join(box.root, 'shared', 'loose-ends.json'),
-      JSON.stringify({ updated: '2026-10-28T10:29:56.737Z', tasks: [{ id: 'le-six', title: 'From six', created: '2026-10-27T10:18:47.053Z', skills: [], cone: 'cone' }] })
+      JSON.stringify({
+        updated: '2026-10-28T10:29:56.737Z',
+        tasks: [
+          {
+            id: 'le-six',
+            title: 'From six',
+            created: '2026-10-27T10:18:47.053Z',
+            skills: [],
+            cone: 'cone',
+          },
+        ],
+      })
     );
     const env = { HOME: box.home };
     is((await run(['path'], { root: box.root, env })).stdout, '/shared/loose-ends.json\n');
