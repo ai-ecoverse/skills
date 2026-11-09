@@ -1,6 +1,6 @@
 # BlueBubbles CLI reference
 
-Full command and flag surface of `bluebubbles` (`scripts/bluebubbles`).
+Full command and flag surface of `bluebubbles` (`scripts/bluebubbles.jsh`).
 The Quick start lives in `SKILL.md`; endpoint map in `references/endpoints.md`.
 
 ## Commands

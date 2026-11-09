@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Regression test for the `?password=` leak in scripts/bluebubbles.
+// Regression test for the `?password=` leak in scripts/bluebubbles.jsh.
 //
 // The password is sent as a query parameter, so it lands inside the request URL
 // *and* inside error strings composed by the HTTP layer
@@ -19,7 +19,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // `await main()` is dropped, and the redaction helpers are returned so they can
 // be exercised directly.
 
-const SCRIPT = path.resolve(__dirname, '../scripts/bluebubbles');
+const SCRIPT = path.resolve(__dirname, '../scripts/bluebubbles.jsh');
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 
 const SECRET = 'sup3r-s3cret-pw';

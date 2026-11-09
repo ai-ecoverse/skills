@@ -9,13 +9,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync as require0 } from 'node:fs';
-import {
-  parseFailure,
-  collectFiles,
-  stripShebang,
-  hasJshHashbang,
-  isJshScript,
-} from './check-jsh-parse.mjs';
+import { parseFailure, collectFiles, stripShebang } from './check-jsh-parse.mjs';
 
 test('a plain script parses', () => {
   assert.equal(parseFailure('const a = 1; console.log(a);'), null);
@@ -75,32 +69,7 @@ test("the tool's OWN discovery finds the repo scripts", () => {
   // mutation testing; the surviving mutation was pointing at untested code.
   const files = collectFiles([], "");
   assert.ok(files.length > 50, `expected many .jsh files, found ${files.length}`);
-  assert.ok(files.every((f) => isJshScript(f)), "every result is a jsh script");
-});
-
-test('a file without an extension counts when its first line is a jsh hashbang', () => {
-  const heads = {
-    'skills/a/scripts/a': '#!/usr/bin/env jsh\nconsole.log(1)\n',
-    'skills/b/scripts/b': '#!/bin/env jsh\n',
-    'skills/c/scripts/c': '#!/usr/bin/jsh\n',
-    'skills/d/scripts/d': '#!/usr/bin/env -S jsh\n',
-    'skills/e/scripts/e': '#!/usr/bin/env bash\n',
-    'skills/f/scripts/f': '#!/usr/bin/env jshell\n',
-    'skills/g/scripts/g': 'console.log(1)\n',
-    'skills/h/scripts/h.js': '#!/usr/bin/env jsh\n',
-  };
-  const head = (f) => heads[f];
-  assert.deepEqual(
-    Object.keys(heads).filter((f) => isJshScript(f, head)),
-    ['skills/a/scripts/a', 'skills/b/scripts/b', 'skills/c/scripts/c', 'skills/d/scripts/d']
-  );
-  assert.equal(isJshScript('x/y.jsh', () => ''), true);
-  assert.equal(hasJshHashbang('#!/usr/bin/env jsh'), true);
-  assert.equal(hasJshHashbang(''), false);
-});
-
-test('discovery includes the extensionless bluebubbles CLI', () => {
-  assert.ok(collectFiles([], '').includes('skills/bluebubbles/scripts/bluebubbles'));
+  assert.ok(files.every((f) => /\.(jsh|bsh)$/.test(f)), "every result ends .jsh/.bsh");
 });
 
 test("explicit argv overrides discovery", () => {

@@ -12,7 +12,7 @@ description: |
   Not Slack, not Signal, not Teams.
 allowed-tools: bash
 command: bluebubbles
-script: scripts/bluebubbles
+script: scripts/bluebubbles.jsh
 ---
 
 # BlueBubbles
@@ -93,7 +93,7 @@ environment variable instead. `login`:
    - `/etc/bluebubbles/config.json`, the pinned server: `{ "url", "urlLocal"? }`;
    - the `[secrets.BLUEBUBBLES_PASSWORD]` placeholder in `/etc/fnox/config.toml`;
    - the grant in `/etc/slicc/secrets-policy.toml`, to the installed script alone:
-     `BLUEBUBBLES_PASSWORD = { argv = [["/usr/share/skills/bluebubbles/scripts/bluebubbles"]] }`;
+     `BLUEBUBBLES_PASSWORD = { argv = [["/usr/share/skills/bluebubbles/scripts/bluebubbles.jsh"]] }`;
 3. runs `bluebubbles status` to check.
 
 The script must be root-owned and not writable by others (`sudo install -m 755`),

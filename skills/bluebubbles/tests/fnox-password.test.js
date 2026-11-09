@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import test, { is, ok } from 'tst';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SCRIPT = path.resolve(__dirname, '../scripts/bluebubbles');
+const SCRIPT = path.resolve(__dirname, '../scripts/bluebubbles.jsh');
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const PLACEHOLDER = 'fnox_proxy_' + 'a'.repeat(24);
 
@@ -137,7 +137,7 @@ test('a fnox placeholder is not a usable password', async () => {
 
 test('the fnox retry execs the script itself, so an argv grant on its path matches', async () => {
   const { fnoxReexecArgv } = await loadHelpers();
-  const script = '/usr/share/skills/bluebubbles/scripts/bluebubbles';
+  const script = '/usr/share/skills/bluebubbles/scripts/bluebubbles.jsh';
   const argv = fnoxReexecArgv(script, ['status', '--json']);
   is(argv, [
     'env', '-u', 'BLUEBUBBLES_PASSWORD', 'BLUEBUBBLES_FNOX_TRIED=1',
@@ -353,7 +353,7 @@ test('normalizeServerUrl accepts plain http(s) only', async () => {
 
 test('setExecGrant replaces a shell grant, keeps other lines and sections', async () => {
   const { setExecGrant } = await loadHelpers();
-  const S = '/usr/share/skills/bluebubbles/scripts/bluebubbles';
+  const S = '/usr/share/skills/bluebubbles/scripts/bluebubbles.jsh';
   is(
     setExecGrant('[exec]\nBLUEBUBBLES_PASSWORD = { shell = true }\nNPM_TOKEN = true\n\n[limits]\nshell_per_day = 5\n', 'BLUEBUBBLES_PASSWORD', S),
     `[exec]\nBLUEBUBBLES_PASSWORD = { argv = [["${S}"]] }\nNPM_TOKEN = true\n\n[limits]\nshell_per_day = 5\n`,
@@ -387,7 +387,7 @@ test('setFnoxSecret sets the placeholder and adds the entry under the sealed pro
 });
 
 test('login seals the password, writes the three root files with sudo install, then checks status', async () => {
-  const SCRIPT_PATH = '/usr/share/skills/bluebubbles/scripts/bluebubbles';
+  const SCRIPT_PATH = '/usr/share/skills/bluebubbles/scripts/bluebubbles.jsh';
   const h = await loadHelpers({
     script: SCRIPT_PATH,
     argv: ['login', 'https://bb.example.com/'],
@@ -435,9 +435,9 @@ test('login seals the password, writes the three root files with sudo install, t
 
 test('login refuses a script the vault grant could not match', async () => {
   const h = await loadHelpers({
-    script: '/usr/share/skills/bluebubbles/scripts/bluebubbles',
+    script: '/usr/share/skills/bluebubbles/scripts/bluebubbles.jsh',
     stats: {
-      '/usr/share/skills/bluebubbles/scripts/bluebubbles': { uid: 1034, mode: 0o100755 },
+      '/usr/share/skills/bluebubbles/scripts/bluebubbles.jsh': { uid: 1034, mode: 0o100755 },
       '/usr/share/skills/bluebubbles/scripts': { uid: 0, mode: 0o40755 },
     },
   });

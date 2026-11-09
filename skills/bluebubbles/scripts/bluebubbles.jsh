@@ -1,5 +1,5 @@
 #!/usr/bin/env jsh
-// bluebubbles — BlueBubbles REST client (iMessage/SMS via local server)
+// bluebubbles.jsh — BlueBubbles REST client (iMessage/SMS via local server)
 //
 // Auth: server password as ?password= query param. It is never printed: every
 // string that leaves this script passes through safeErrorText() / die(), which
@@ -418,7 +418,7 @@ function rawBbErrorMessage(err) {
 
 function grantPath() {
   const script = process.argv[1];
-  return typeof script === 'string' && script ? path.resolve(script) : '/usr/share/skills/bluebubbles/scripts/bluebubbles';
+  return typeof script === 'string' && script ? path.resolve(script) : '/usr/share/skills/bluebubbles/scripts/bluebubbles.jsh';
 }
 
 function authDie(detail, cfg) {
@@ -2018,7 +2018,7 @@ async function cmdLogin(pos, opts) {
   // The vault matches the grant only when fnox execs a root-owned script.
   if (!rootOnly(statOrNull(script)) || !rootOnly(statOrNull(path.dirname(script)))) {
     const msg = `${script} must be owned by root and not group- or other-writable for the vault grant to match. ` +
-      'Install the skill with: sudo install -m 755 <skill>/scripts/bluebubbles ' + script;
+      'Install the skill with: sudo install -m 755 <skill>/scripts/bluebubbles.jsh ' + script;
     if (!dryRun) die(msg, { prefix: 'bluebubbles login' });
     console.log(color.yellow(`warning: ${msg}`));
   }

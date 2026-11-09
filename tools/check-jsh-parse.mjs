@@ -1,9 +1,6 @@
 #!/usr/bin/env node
 //
-// Parse-check every .jsh / .bsh script in the repo, and every tracked file
-// without an extension whose first line is a jsh hashbang (`#!/usr/bin/env jsh`,
-// `#!/bin/env jsh`, `#!/usr/bin/jsh`): a skill script can be named like the
-// command it provides, such as skills/bluebubbles/scripts/bluebubbles.
+// Parse-check every .jsh / .bsh script in the repo.
 //
 // WHY THIS EXISTS, separately from `lint:jsh`:
 //
@@ -27,14 +24,13 @@
 // in this repo uses ESM `import`, which an AsyncFunction body cannot contain.
 //
 // Usage:
-//   node tools/check-jsh-parse.mjs                 # all tracked jsh scripts
-//   node tools/check-jsh-parse.mjs --list          # print them, one per line
+//   node tools/check-jsh-parse.mjs                 # all tracked .jsh/.bsh
 //   node tools/check-jsh-parse.mjs a.jsh b.jsh     # only those files
 //   git ls-files '*.jsh' | node tools/check-jsh-parse.mjs --stdin
 //
 // Exit 0 when every file parses, 1 when any file does not (or cannot be read).
 
-import { openSync, readSync, closeSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
@@ -60,41 +56,7 @@ export function parseFailure(source) {
   }
 }
 
-// A jsh hashbang: `#!/usr/bin/env jsh`, `#!/bin/env jsh` (optionally `env -S`),
-// or jsh by its path. `jshell` and `jsh-foo` are other programs.
-const JSH_HASHBANG_RE = /^#!\s*(?:(?:\/usr)?\/bin\/env\s+(?:-S\s+)?jsh|\S*\/jsh)(?:\s|$)/;
-
-/** True when the first line of `head` is a jsh hashbang. */
-export function hasJshHashbang(head) {
-  return JSH_HASHBANG_RE.test(String(head || '').split('\n', 1)[0]);
-}
-
-function readHead(file, bytes = 128) {
-  let fd;
-  try {
-    fd = openSync(file, 'r');
-    const buf = Buffer.alloc(bytes);
-    const n = readSync(fd, buf, 0, bytes, 0);
-    return buf.subarray(0, n).toString('utf8');
-  } catch {
-    return '';
-  } finally {
-    if (fd !== undefined) closeSync(fd);
-  }
-}
-
-/**
- * True for a jsh script: a `.jsh`/`.bsh` file, or a file with no extension
- * whose first line is a jsh hashbang. `head` reads a file's first bytes.
- */
-export function isJshScript(file, head = readHead) {
-  if (/\.(jsh|bsh)$/.test(file)) return true;
-  const base = file.slice(file.lastIndexOf('/') + 1);
-  if (base.includes('.')) return false;
-  return hasJshHashbang(head(file));
-}
-
-/** Files to check: explicit argv, stdin list, or every tracked jsh script. */
+/** Files to check: explicit argv, stdin list, or every tracked .jsh/.bsh. */
 export function collectFiles(argv, stdinText) {
   const explicit = argv.filter((a) => a !== '--stdin' && !a.startsWith('-'));
   if (explicit.length > 0) return explicit;
@@ -111,7 +73,7 @@ export function collectFiles(argv, stdinText) {
   return out
     .split('\n')
     .map((l) => l.trim())
-    .filter((l) => l && isJshScript(l));
+    .filter((l) => /\.(jsh|bsh)$/.test(l));
 }
 
 function main() {
@@ -120,10 +82,6 @@ function main() {
   if (argv.includes('--stdin')) stdinText = readFileSync(0, 'utf8');
 
   const files = collectFiles(argv, stdinText);
-  if (argv.includes('--list')) {
-    for (const f of files) console.log(f);
-    return 0;
-  }
   if (files.length === 0) {
     console.log('check-jsh-parse: no .jsh/.bsh files found');
     return 0;
