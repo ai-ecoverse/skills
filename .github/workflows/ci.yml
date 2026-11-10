@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   ci:
-    uses: ai-ecoverse/slicc-shared-web/.github/workflows/pipeline.yml@v2.13.10
+    uses: ai-ecoverse/slicc-shared-web/.github/workflows/pipeline.yml@v2.14.0
     secrets: inherit
     with:
       test-glob: test/integration/*.test.mjs
