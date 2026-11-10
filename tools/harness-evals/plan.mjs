@@ -6,8 +6,9 @@
  *
  * `changed` (the default for pull requests and dispatches) takes every skill the diff against
  * the base touches that has an evals/harness/harness.mjs, so a PR only evaluates what it
- * changed. Each adapter and goals file is validated here, before any leader boots.
- * Prints the matrix JSON (`{ include: [...] }`) on stdout.
+ * changed. Each adapter and goals file is validated here, before any kernel session boots.
+ * Agent arms are omitted: they need the SLICC product cone, which the kernel harness does not
+ * provide. Prints the matrix JSON (`{ include: [...] }`) on stdout.
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
@@ -63,6 +64,7 @@ export async function plan(which, base, root = process.cwd(), suites = ['default
     // has (GPU arms on cloud-run-gpu, the rest on cloud-run-job), and a job holds one pass over
     // the goals, so a long suite with several repeats stays under the job's time limit.
     for (const arm of adapter.arms) {
+      if (arm.kind === 'agent') continue;
       for (let repeat = 1; repeat <= repeats; repeat += 1)
         include.push({
           skill,
@@ -70,8 +72,7 @@ export async function plan(which, base, root = process.cwd(), suites = ['default
           repeat,
           runs_on: arm.pool === 'gpu' ? 'cloud-run-gpu' : 'cloud-run-job',
           gpu: arm.pool === 'gpu' ? '1' : '',
-          // Only the skill under test and what its arm needs: an agent arm keeps the bare leader.
-          inject: arm.kind === 'agent' ? '' : [skill, ...(arm.skills ?? [])].join(','),
+          inject: [skill, ...(arm.skills ?? [])].join(','),
         });
     }
   }

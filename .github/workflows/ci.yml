@@ -246,7 +246,7 @@ jobs:
           echo "run=$run" >> "$GITHUB_OUTPUT"
           version="$(npm view sliccy@latest version)"
           echo "slicc-version=$version" >> "$GITHUB_OUTPUT"
-          echo "slicc v$version, $n eval job(s)" >> "$GITHUB_STEP_SUMMARY"
+          echo "kernel harness, slicc bench v$version, $n eval job(s)" >> "$GITHUB_STEP_SUMMARY"
 
   evals-arm:
     name: evals / ${{ matrix.skill }} / ${{ matrix.arm }}
@@ -272,47 +272,17 @@ jobs:
           persist-credentials: false
           sparse-checkout: |
             packages/bench
-            packages/github-workflow
-            packages/slicc-cli
-            packages/go-optel
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: 26
+          cache: npm
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
-        with:
-          go-version-file: slicc/packages/slicc-cli/go.mod
-          cache-dependency-path: slicc/packages/slicc-cli/go.sum
+      - run: npm ci
 
-      - uses: ./slicc/packages/github-workflow/actions/install-cli
-        with:
-          source: build
-          build-dir: ${{ github.workspace }}/slicc/packages/slicc-cli
+      - run: npx slicc-cdp install-browser --with-deps
 
-      - name: Prepare the runner
-        run: |
-          google-chrome --version
-          if [ -w /slicc ] 2>/dev/null; then exit 0; fi
-          sudo mkdir -p /slicc && sudo chown "$(id -u)" /slicc
-
-      - name: Boot the leader and inject the skill
-        env:
-          HARNESS_SLICC: ${{ github.workspace }}/slicc
-          HARNESS_SKILLS_DIR: ${{ github.workspace }}/skills
-          HARNESS_SKILLS: ${{ matrix.inject }}
-          SLICC_CHROME_GPU: ${{ matrix.gpu }}
-          INPUT_SLICC_VERSION: ${{ needs.evals-plan.outputs.slicc-version }}
-          INPUT_PIN_WEBAPP: 'false'
-          INPUT_DURATION: 240m
-          INPUT_PROVIDER: bedrock-camp
-          INPUT_PROVIDER_API_KEY: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
-          INPUT_PROVIDER_BASE_URL: https://bedrock-runtime.${{ vars.RUM_AWS_REGION || 'us-west-2' }}.amazonaws.com
-          INPUT_MODEL: bedrock-camp:global.anthropic.claude-sonnet-5
-          INPUT_MASK_JOIN_URL: 'true'
-        run: node tools/harness-evals/boot.mjs
-
-      - name: Run the goals
+      - name: Run the goals on the kernel harness
         timeout-minutes: 230
         env:
           HARNESS_SLICC: ${{ github.workspace }}/slicc
@@ -323,26 +293,6 @@ jobs:
           HARNESS_OUT: ${{ runner.temp }}/harness-out
           AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
         run: node tools/harness-evals/run-arm.mjs
-
-      - name: Collect the leader log
-        if: always()
-        run: |
-          mkdir -p "$RUNNER_TEMP/harness-out"
-          for log in "$RUNNER_TEMP"/slicc-gw*/leader.log; do
-            [ -f "$log" ] || continue
-            grep -iE 'error|kev|webgpu|gpu|start-leader|stop-leader|tray' "$log" \
-              | sed -E 's#/(join|controller|webhook)/[^ /"?]+#/\1/<token>#g' | cut -c1-400 \
-              > "$RUNNER_TEMP/harness-out/leader.log" || true
-          done
-
-      - name: Stop the leader
-        if: always()
-        timeout-minutes: 5
-        run: |
-          for home in "$RUNNER_TEMP"/slicc-gw*; do
-            [ -f "$home/state.json" ] || continue
-            SLICC_GW_HOME="$home" node slicc/packages/github-workflow/scripts/stop-leader.mjs || true
-          done
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
