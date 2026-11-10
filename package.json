@@ -20,7 +20,7 @@
     "@ai-ecoverse/slicc-cdp": "1.47.5",
     "@ai-ecoverse/slicc-jsh": "0.64.0",
     "@ai-ecoverse/slicc-kernel": "1.178.2",
-    "@ai-ecoverse/slicc-shared-web": "2.13.10",
+    "@ai-ecoverse/slicc-shared-web": "2.14.0",
     "@ai-ecoverse/wasi-pnpm": "12.9.1-21",
     "@ai-ecoverse/wasm-bash": "5.3.0-23",
     "@ai-ecoverse/wasm-coreutils": "9.12.0-15",
