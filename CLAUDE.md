@@ -16,7 +16,7 @@ This file covers `.jsh` scripts, page observers, and sprinkle UIs. The script gu
 
 ## 2. Globals and require()
 
-CI's realm is **SLICC 7**: slicc-jsh on slicc-kernel (probed 2026-11-11 on the pinned packages: kernel node **Node 22.22.0**, `process.versions.jsh` **0.64.0**). Write new code for that realm. Scripts must still run on SLICC 6 where noted below (Lars keeps dual support; the `NodeExitError` re-throw guards from #489 stay).
+CI's realm is **SLICC 7**: slicc-jsh on slicc-kernel (probed 2026-11-11 on the pinned packages: kernel node **Node 22.22.0**, `process.versions.jsh` **0.64.0**). Write new code for that realm. Scripts must still run on both SLICC 6 and SLICC 7 where noted below (the `NodeExitError` re-throw guards from #489 stay).
 
 **`.jsh` globals (observed):** `process` (`argv` with non-enumerable `argv.parseFlags()`, `argv0` is `'jsh'`, `env`, `cwd()`/`chdir`, `exit()`, `platform`, `arch`, `pid`, `on`, `nextTick`, stdio streams), `console` (Node's own, including `debug`/`table`/`dir`), `fetch` (bridged through the kernel — CORS bypass and server-side secret unmasking; not the page's fetch), `Buffer`, `__dirname`/`__filename`, and web globals (`URL`, `URLSearchParams`, `TextEncoder`/`TextDecoder`, `Blob`, `FormData`, `Headers`/`Request`/`Response`, `atob`/`btoa`, `AbortController`, `WebSocket`, `crypto`, `structuredClone`, timers). Bare `fs`/`path`/`exec` globals are not present (hard-cut to `require(...)`, issue #168).
 

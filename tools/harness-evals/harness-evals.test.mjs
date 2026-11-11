@@ -170,7 +170,7 @@ test('loadAdapter imports a skill adapter and resolves its goals file', async ()
   await assert.rejects(loadAdapter(join(root, 'skills/plain')), /does not exist/);
 });
 
-test('plan: only skills with an adapter, skill arms only (agent arms need the SLICC cone)', async () => {
+test('plan: only skills with an adapter, one entry per arm, agent arms keep a bare leader', async () => {
   assert.deepEqual(
     touchedSkills([
       'skills/demo/SKILL.md',
@@ -191,6 +191,7 @@ test('plan: only skills with an adapter, skill arms only (agent arms need the SL
       gpu: '1',
       inject: 'demo,helper',
     },
+    { skill: 'demo', arm: 'bare', repeat: 1, runs_on: 'cloud-run-job', gpu: '', inject: '' },
   ]);
   await assert.rejects(plan('plain', 'origin/main', root), /has no evals\/harness\/harness.mjs/);
 });
@@ -519,7 +520,7 @@ test('plan: a skill with no goal in the selected suites gets no jobs', async () 
     })
   );
   is((await plan('demo', 'origin/main', root)).include, []);
-  is((await plan('demo', 'origin/main', root, ['games'], 1)).include.length, 1);
+  is((await plan('demo', 'origin/main', root, ['games'], 1)).include.length, 2);
 });
 
 test('rubric-only goals: valid without a check, pass is null, scored by credit alone', () => {
@@ -608,32 +609,28 @@ test('the judge is retried on transient Bedrock errors, not on invalid judgement
   );
 });
 
-test("plan shards repeats: one job per skill arm and repeat, each on its arm's pool", async () => {
+test("plan shards repeats: one job per arm and repeat, each on its arm's pool", async () => {
   const root = fakeRepo();
   const { include } = await plan('demo', 'origin/main', root, ['default'], 3);
   is(
     include.map((e) => `${e.arm}/r${e.repeat}@${e.runs_on}`),
-    ['fast/r1@cloud-run-gpu', 'fast/r2@cloud-run-gpu', 'fast/r3@cloud-run-gpu']
+    [
+      'fast/r1@cloud-run-gpu',
+      'fast/r2@cloud-run-gpu',
+      'fast/r3@cloud-run-gpu',
+      'bare/r1@cloud-run-job',
+      'bare/r2@cloud-run-job',
+      'bare/r3@cloud-run-job',
+    ]
   );
 });
 
-test('plan puts non-GPU skill arms on cloud-run-job without a runner variable', async () => {
+test('plan puts non-GPU arms on cloud-run-job without a runner variable', async () => {
   const root = fakeRepo();
-  writeFileSync(
-    join(root, 'skills/demo/evals/harness/harness.mjs'),
-    `export const goals = './goals.json';
-export const arms = [
-  { id: 'cpu', kind: 'skill', pool: 'bench' },
-  { id: 'bare', kind: 'agent', pool: 'bench', model: 'm' },
-];
-export function command(goal, arm, { shellQuote }) { return 'demo ' + shellQuote(goal.goal); }
-export function judge(raw, goal) { return goal.expect.every((t) => raw.includes(t)); }
-`
-  );
   const { include } = await plan('demo', 'origin/main', root);
   is(
     include.map((e) => `${e.arm}@${e.runs_on}`),
-    ['cpu@cloud-run-job']
+    ['fast@cloud-run-gpu', 'bare@cloud-run-job']
   );
 });
 
