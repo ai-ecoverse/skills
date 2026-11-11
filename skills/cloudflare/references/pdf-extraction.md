@@ -100,7 +100,7 @@ ssh <id> "command -v pdftotext"   # if empty: brew install poppler
 ### 3. Nothing else — fail loudly
 
 If neither route yields text, **say so and stop**. Never emit glyph noise as if
-it were line items. `wrangler-ext` names both attempted routes, names the poppler
+it were line items. `cf-ext` names both attempted routes, names the poppler
 requirement, and points at `billing pdf <id> --out ./inv.pdf` so a human can read
 the file directly.
 
@@ -138,7 +138,7 @@ What works — append ~25 KB at a time (the base64 alphabet `A-Za-z0-9+/=` is sa
 inside single quotes), then decode remotely and **verify the byte count**:
 
 ```bash
-D=/tmp/wrangler-ext-$$
+D=/tmp/cf-ext-$$
 ssh <id> "mkdir -p $D"
 # first chunk truncates, the rest append
 ssh <id> "printf '%s' '<chunk-0>'  > $D/f.b64"

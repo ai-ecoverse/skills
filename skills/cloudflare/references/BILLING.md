@@ -11,8 +11,8 @@ Cloudflare publishes no billing API. No `CLOUDFLARE_API_TOKEN` scope reaches
 invoices, and `/api/v4/user/billing/history` answers **403 code 10000
 "Authentication error"** even to a fully signed-in session. The only door is a
 **same-origin request from a logged-in `dash.cloudflare.com` tab**, which is why
-`wrangler-ext` runs every call through the `sliccy:browser` page-context bridge —
-the same mechanism `wrangler.jsh` already uses for GraphQL analytics.
+`cf-ext` runs every call through the `sliccy:browser` page-context bridge —
+the same mechanism every dashboard-session skill in this repo uses.
 
 The account id is a 32-hex string. Every account-scoped dashboard URL contains
 it (`https://dash.cloudflare.com/<32-hex>/billing/invoices`), so read it off the
@@ -151,7 +151,7 @@ Measured on one real account, 2026 YTD:
 Account 2026 YTD totalled **$3,146,348.73**; the team's actual slice was roughly
 **$159k-421k** depending on how `IC-168642` is attributed. **Summing the account
 instead of your own contract families overstates a team's Cloudflare cost by
-about 20x.** That error is the entire reason `wrangler-ext billing contracts`
+about 20x.** That error is the entire reason `cf-ext billing contracts`
 exists.
 
 Practical notes on grouping:
@@ -193,7 +193,7 @@ extra `pdf_text` string, which stands in for that invoice's extracted PDF text s
 ]
 ```
 
-Save a real dump with `wrangler-ext billing invoices --limit 1000 --json`, or capture
+Save a real dump with `cf-ext billing invoices --limit 1000 --json`, or capture
 one page verbatim from `billing/history`. `billing pdf` is the one command that
 still requires a live session (a fixture has no PDFs) and says so.
 

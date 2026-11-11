@@ -1,18 +1,16 @@
-// Wrangler — Cloudflare zone analytics via authenticated dash.cloudflare.com tab.
-// Issues GraphQL through `browser.fetch` against the open dash tab so the
-// browser session cookies are picked up automatically.
+// cf-ext analytics: zone analytics through GraphQL, sent from the open
+// dash.cloudflare.com tab with browser.fetch so its session cookies apply.
 //
 // Queries are built with single-quoted concatenation (not template literals)
 // so the raw GraphQL $variables stay intact.
 
-const browser = require('sliccy:browser');
+// sliccy:* modules resolve only in the .jsh, so cf-ext passes browser in.
+let browser = null;
 const fs = require('fs');
 
 const HOME = (process.env && (process.env.HOME || process.env.USERPROFILE)) || '/root';
 const CONFIG_DIR = HOME + '/.config/wrangler';
 const ZONES_FILE = CONFIG_DIR + '/zones.json';
-
-const argv = process.argv.slice(2);
 
 function parseArgs(av) {
   const opts = { hours: 3, limit: 25, zone: null, tab: null, file: null, json: false };
@@ -33,14 +31,14 @@ function parseArgs(av) {
     else if (a === '--file') opts.file = av[++i];
     else positional.push(a);
   }
-  if (isNaN(opts.hours)) opts.hours = 3;
+  if (Number.isNaN(opts.hours)) opts.hours = 3;
   opts.hours = Math.max(1, Math.min(72, opts.hours));
-  if (isNaN(opts.limit)) opts.limit = 25;
+  if (Number.isNaN(opts.limit)) opts.limit = 25;
   return { opts, positional };
 }
 
 async function ensureDirs() {
-  await fs.promises.mkdir(CONFIG_DIR, { recursive: true }).catch(function() {});
+  await fs.promises.mkdir(CONFIG_DIR, { recursive: true }).catch(function () {});
 }
 
 async function ensureTab(override) {
@@ -48,7 +46,7 @@ async function ensureTab(override) {
   try {
     const tab = await browser.ensureTab('https://dash.cloudflare.com');
     return tab.targetId;
-  } catch (e) {
+  } catch {
     console.error('Could not find or open a dash.cloudflare.com tab.');
     process.exit(1);
   }
@@ -74,8 +72,11 @@ async function restGet(tab, path) {
 // --- zones cache ---
 
 async function loadZones() {
-  try { return JSON.parse(await fs.promises.readFile(ZONES_FILE, 'utf8')); }
-  catch (e) { return null; }
+  try {
+    return JSON.parse(await fs.promises.readFile(ZONES_FILE, 'utf8'));
+  } catch {
+    return null;
+  }
 }
 
 async function saveZones(list) {
@@ -84,7 +85,7 @@ async function saveZones(list) {
   // Node's fs.chmod needs a callback; fs.promises.chmod is the awaitable one
   // (on SLICC 6 too). Best effort: a VFS without modes just keeps the file.
   if (fs.promises && typeof fs.promises.chmod === 'function') {
-    await fs.promises.chmod(ZONES_FILE, 0o600).catch(function() {});
+    await fs.promises.chmod(ZONES_FILE, 0o600).catch(function () {});
   }
 }
 
@@ -92,23 +93,32 @@ async function fetchZonesViaTab(tabId, name) {
   const path = '/api/v4/zones?per_page=50' + (name ? '&name=' + encodeURIComponent(name) : '');
   const data = await restGet(tabId, path);
   if (!data || !data.success) {
-    console.error('zones API failure: ' + JSON.stringify((data && data.errors) || data).slice(0, 500));
+    console.error(
+      'zones API failure: ' + JSON.stringify((data && data.errors) || data).slice(0, 500)
+    );
     process.exit(1);
   }
-  return (data.result || []).map(function(z) {
+  return (data.result || []).map(function (z) {
     return {
-      id: z.id, name: z.name, status: z.status,
+      id: z.id,
+      name: z.name,
+      status: z.status,
       account: z.account ? { id: z.account.id, name: z.account.name } : null,
     };
   });
 }
 
 async function resolveZone(tabId, arg) {
-  if (!arg) { console.error('zone is required'); process.exit(1); }
+  if (!arg) {
+    console.error('zone is required');
+    process.exit(1);
+  }
   if (/^[0-9a-f]{32}$/i.test(arg)) return { id: arg, name: arg };
   const cache = await loadZones();
   if (cache) {
-    const hit = cache.find(function(z){ return z.name === arg; });
+    const hit = cache.find(function (z) {
+      return z.name === arg;
+    });
     if (hit) return hit;
   }
   const list = await fetchZonesViaTab(tabId, arg);
@@ -121,8 +131,13 @@ async function resolveZone(tabId, arg) {
   }
   const all = await fetchZonesViaTab(tabId, null);
   await saveZones(all);
-  const hit = all.find(function(z){ return z.name === arg; });
-  if (!hit) { console.error('Zone not found: ' + arg); process.exit(1); }
+  const hit = all.find(function (z) {
+    return z.name === arg;
+  });
+  if (!hit) {
+    console.error('Zone not found: ' + arg);
+    process.exit(1);
+  }
   return hit;
 }
 
@@ -143,35 +158,61 @@ function trunc(s, n) {
 }
 function fmtNum(n) {
   if (n == null) return '0';
-  if (n >= 1e9) return (n/1e9).toFixed(2) + 'B';
-  if (n >= 1e6) return (n/1e6).toFixed(2) + 'M';
-  if (n >= 1e3) return (n/1e3).toFixed(2) + 'K';
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(2) + 'K';
   return String(n);
 }
 
 // --- GraphQL queries (single-quote concatenation; never template literals) ---
 
 function qHttpReq1h() {
-  return 'query(' + '$z:String!,' + '$s:Time!,' + '$e:Time!' + '){' +
-    'viewer{zones(filter:{zoneTag:' + '$z' + '}){' +
-    'httpRequests1hGroups(limit:200,filter:{datetime_geq:' + '$s' + ',datetime_leq:' + '$e' +
+  return (
+    'query(' +
+    '$z:String!,' +
+    '$s:Time!,' +
+    '$e:Time!' +
+    '){' +
+    'viewer{zones(filter:{zoneTag:' +
+    '$z' +
+    '}){' +
+    'httpRequests1hGroups(limit:200,filter:{datetime_geq:' +
+    '$s' +
+    ',datetime_leq:' +
+    '$e' +
     '},orderBy:[datetime_ASC]){' +
     'dimensions{datetime} ' +
     'sum{requests pageViews bytes cachedRequests threats ' +
     'countryMap{clientCountryName requests} ' +
     'responseStatusMap{edgeResponseStatus requests}} ' +
-    'uniq{uniques}}}}}';
+    'uniq{uniques}}}}}'
+  );
 }
 
 function qAdaptive(orderBy) {
-  return 'query(' + '$z:String!,' + '$s:Time!,' + '$e:Time!,' + '$lim:Int!' + '){' +
-    'viewer{zones(filter:{zoneTag:' + '$z' + '}){' +
-    'httpRequestsAdaptiveGroups(limit:' + '$lim' +
-    ',filter:{datetime_geq:' + '$s' + ',datetime_leq:' + '$e' +
-    '},orderBy:[' + orderBy + ']){' +
+  return (
+    'query(' +
+    '$z:String!,' +
+    '$s:Time!,' +
+    '$e:Time!,' +
+    '$lim:Int!' +
+    '){' +
+    'viewer{zones(filter:{zoneTag:' +
+    '$z' +
+    '}){' +
+    'httpRequestsAdaptiveGroups(limit:' +
+    '$lim' +
+    ',filter:{datetime_geq:' +
+    '$s' +
+    ',datetime_leq:' +
+    '$e' +
+    '},orderBy:[' +
+    orderBy +
+    ']){' +
     'count ' +
     'dimensions{clientRequestPath edgeResponseStatus userAgent clientCountryName}' +
-    '}}}}';
+    '}}}}'
+  );
 }
 
 async function runHourly(tab, zoneId, hours) {
@@ -187,8 +228,12 @@ async function runHourly(tab, zoneId, hours) {
 
 async function runAdaptive(tab, zoneId, hours, limit, orderBy) {
   const w = timeWindow(hours);
-  const j = await gqlFetch(tab, qAdaptive(orderBy),
-    { z: zoneId, s: w.start, e: w.end, lim: limit });
+  const j = await gqlFetch(tab, qAdaptive(orderBy), {
+    z: zoneId,
+    s: w.start,
+    e: w.end,
+    lim: limit,
+  });
   if (j.errors) {
     console.error('GraphQL errors: ' + JSON.stringify(j.errors).slice(0, 800));
     process.exit(1);
@@ -210,49 +255,87 @@ async function cmdZones(av) {
   const tab = await ensureTab(opts.tab);
   const zones = await fetchZonesViaTab(tab, null);
   await saveZones(zones);
-  if (opts.json) { console.log(JSON.stringify(zones, null, 2)); return; }
+  if (opts.json) {
+    console.log(JSON.stringify(zones, null, 2));
+    return;
+  }
   console.log(pad('id', 34) + pad('name', 32) + pad('account', 30) + 'status');
   for (const z of zones) {
-    console.log(pad(z.id, 34) + pad(z.name, 32) +
-      pad((z.account && z.account.name) || '-', 30) + (z.status || '-'));
+    console.log(
+      pad(z.id, 34) +
+        pad(z.name, 32) +
+        pad((z.account && z.account.name) || '-', 30) +
+        (z.status || '-')
+    );
   }
 }
 
 async function cmdStatus(av) {
   const { opts, positional } = parseArgs(av);
   const zarg = positional[1];
-  if (!zarg) { console.error('Usage: wrangler status <zone> [--hours=N]'); process.exit(1); }
+  if (!zarg) {
+    console.error('Usage: cf-ext analytics status <zone> [--hours=N]');
+    process.exit(1);
+  }
   const tab = await ensureTab(opts.tab);
   const zone = await resolveZone(tab, zarg);
   const { groups, raw } = await runHourly(tab, zone.id, opts.hours);
-  if (opts.json) { console.log(JSON.stringify(raw, null, 2)); return; }
+  if (opts.json) {
+    console.log(JSON.stringify(raw, null, 2));
+    return;
+  }
 
-  let totalReq=0, totalPV=0, totalBytes=0, totalCached=0, totalThreats=0, totalUniq=0;
-  const statusMix = {}; const countryAgg = {};
+  let totalReq = 0,
+    totalPV = 0,
+    totalBytes = 0,
+    totalCached = 0,
+    totalThreats = 0,
+    totalUniq = 0;
+  const statusMix = {};
+  const countryAgg = {};
   for (const g of groups) {
-    const s = g.sum || {}; const u = g.uniq || {};
-    totalReq += s.requests || 0; totalPV += s.pageViews || 0;
-    totalBytes += s.bytes || 0; totalCached += s.cachedRequests || 0;
-    totalThreats += s.threats || 0; totalUniq += u.uniques || 0;
-    for (const r of (s.responseStatusMap || []))
+    const s = g.sum || {};
+    const u = g.uniq || {};
+    totalReq += s.requests || 0;
+    totalPV += s.pageViews || 0;
+    totalBytes += s.bytes || 0;
+    totalCached += s.cachedRequests || 0;
+    totalThreats += s.threats || 0;
+    totalUniq += u.uniques || 0;
+    for (const r of s.responseStatusMap || [])
       statusMix[r.edgeResponseStatus] = (statusMix[r.edgeResponseStatus] || 0) + (r.requests || 0);
-    for (const c of (s.countryMap || []))
+    for (const c of s.countryMap || [])
       countryAgg[c.clientCountryName] = (countryAgg[c.clientCountryName] || 0) + (c.requests || 0);
   }
 
   console.log('Zone:     ' + zone.name + '  (' + zone.id + ')');
   console.log('Window:   last ' + opts.hours + 'h  [' + groups.length + ' hourly buckets]');
-  console.log('Requests: ' + fmtNum(totalReq) + '   PageViews: ' + fmtNum(totalPV) +
-              '   Cached: ' + fmtNum(totalCached) + '   Threats: ' + fmtNum(totalThreats) +
-              '   Uniques: ' + fmtNum(totalUniq));
+  console.log(
+    'Requests: ' +
+      fmtNum(totalReq) +
+      '   PageViews: ' +
+      fmtNum(totalPV) +
+      '   Cached: ' +
+      fmtNum(totalCached) +
+      '   Threats: ' +
+      fmtNum(totalThreats) +
+      '   Uniques: ' +
+      fmtNum(totalUniq)
+  );
   console.log('Bytes:    ' + fmtNum(totalBytes));
   console.log('');
   console.log('Status mix:');
-  const sm = Object.entries(statusMix).sort(function(a,b){ return b[1]-a[1]; });
+  const sm = Object.entries(statusMix).sort(function (a, b) {
+    return b[1] - a[1];
+  });
   for (const [code, n] of sm) console.log('  ' + pad(code, 6) + fmtNum(n));
   console.log('');
   console.log('Top countries:');
-  const cc = Object.entries(countryAgg).sort(function(a,b){ return b[1]-a[1]; }).slice(0, 8);
+  const cc = Object.entries(countryAgg)
+    .sort(function (a, b) {
+      return b[1] - a[1];
+    })
+    .slice(0, 8);
   for (const [c, n] of cc) console.log('  ' + pad(c, 6) + fmtNum(n));
 
   const ad = await runAdaptive(tab, zone.id, opts.hours, 6, 'count_DESC');
@@ -261,88 +344,149 @@ async function cmdStatus(av) {
   console.log('  ' + pad('count', 9) + pad('status', 7) + pad('country', 8) + 'path');
   for (const r of ad.rows) {
     const d = r.dimensions || {};
-    console.log('  ' + pad(fmtNum(r.count), 9) + pad(d.edgeResponseStatus, 7) +
-                pad(d.clientCountryName || '-', 8) + trunc(d.clientRequestPath || '-', 60));
+    console.log(
+      '  ' +
+        pad(fmtNum(r.count), 9) +
+        pad(d.edgeResponseStatus, 7) +
+        pad(d.clientCountryName || '-', 8) +
+        trunc(d.clientRequestPath || '-', 60)
+    );
   }
 }
 
 async function cmdTimeseries(av) {
   const { opts, positional } = parseArgs(av);
   const zarg = positional[1];
-  if (!zarg) { console.error('Usage: wrangler timeseries <zone> [--hours=N]'); process.exit(1); }
+  if (!zarg) {
+    console.error('Usage: cf-ext analytics timeseries <zone> [--hours=N]');
+    process.exit(1);
+  }
   const tab = await ensureTab(opts.tab);
   const zone = await resolveZone(tab, zarg);
   const { groups, raw } = await runHourly(tab, zone.id, opts.hours);
-  if (opts.json) { console.log(JSON.stringify(raw, null, 2)); return; }
-  console.log(pad('datetime', 22) + pad('requests', 10) + pad('pageViews', 11) +
-              pad('uniques', 9) + pad('threats', 9) + 'cached');
+  if (opts.json) {
+    console.log(JSON.stringify(raw, null, 2));
+    return;
+  }
+  console.log(
+    pad('datetime', 22) +
+      pad('requests', 10) +
+      pad('pageViews', 11) +
+      pad('uniques', 9) +
+      pad('threats', 9) +
+      'cached'
+  );
   for (const g of groups) {
-    const s = g.sum || {}; const u = g.uniq || {};
+    const s = g.sum || {};
+    const u = g.uniq || {};
     console.log(
       pad((g.dimensions && g.dimensions.datetime) || '-', 22) +
-      pad(fmtNum(s.requests), 10) + pad(fmtNum(s.pageViews), 11) +
-      pad(fmtNum(u.uniques), 9) + pad(fmtNum(s.threats), 9) +
-      fmtNum(s.cachedRequests));
+        pad(fmtNum(s.requests), 10) +
+        pad(fmtNum(s.pageViews), 11) +
+        pad(fmtNum(u.uniques), 9) +
+        pad(fmtNum(s.threats), 9) +
+        fmtNum(s.cachedRequests)
+    );
   }
 }
 
 async function cmdStatuscodes(av) {
   const { opts, positional } = parseArgs(av);
   const zarg = positional[1];
-  if (!zarg) { console.error('Usage: wrangler statuscodes <zone> [--hours=N]'); process.exit(1); }
+  if (!zarg) {
+    console.error('Usage: cf-ext analytics statuscodes <zone> [--hours=N]');
+    process.exit(1);
+  }
   const tab = await ensureTab(opts.tab);
   const zone = await resolveZone(tab, zarg);
   const { groups, raw } = await runHourly(tab, zone.id, opts.hours);
-  if (opts.json) { console.log(JSON.stringify(raw, null, 2)); return; }
+  if (opts.json) {
+    console.log(JSON.stringify(raw, null, 2));
+    return;
+  }
   const codes = new Set();
-  for (const g of groups) for (const r of ((g.sum || {}).responseStatusMap || [])) codes.add(r.edgeResponseStatus);
-  const codesArr = [...codes].sort(function(a,b){ return a-b; });
-  console.log(pad('datetime', 22) + pad('total', 10) + codesArr.map(function(c){ return pad(String(c), 8); }).join(''));
+  for (const g of groups)
+    for (const r of (g.sum || {}).responseStatusMap || []) codes.add(r.edgeResponseStatus);
+  const codesArr = [...codes].sort(function (a, b) {
+    return a - b;
+  });
+  console.log(
+    pad('datetime', 22) +
+      pad('total', 10) +
+      codesArr
+        .map(function (c) {
+          return pad(String(c), 8);
+        })
+        .join('')
+  );
   for (const g of groups) {
     const map = {};
-    for (const r of ((g.sum || {}).responseStatusMap || [])) map[r.edgeResponseStatus] = r.requests;
+    for (const r of (g.sum || {}).responseStatusMap || []) map[r.edgeResponseStatus] = r.requests;
     const total = (g.sum && g.sum.requests) || 0;
     console.log(
       pad((g.dimensions && g.dimensions.datetime) || '-', 22) +
-      pad(fmtNum(total), 10) +
-      codesArr.map(function(c){ return pad(fmtNum(map[c] || 0), 8); }).join(''));
+        pad(fmtNum(total), 10) +
+        codesArr
+          .map(function (c) {
+            return pad(fmtNum(map[c] || 0), 8);
+          })
+          .join('')
+    );
   }
 }
 
 async function cmdTopPaths(av) {
   const { opts, positional } = parseArgs(av);
   const zarg = positional[1];
-  if (!zarg) { console.error('Usage: wrangler top-paths <zone> [--hours=N] [--limit=N]'); process.exit(1); }
+  if (!zarg) {
+    console.error('Usage: cf-ext analytics top-paths <zone> [--hours=N] [--limit=N]');
+    process.exit(1);
+  }
   const tab = await ensureTab(opts.tab);
   const zone = await resolveZone(tab, zarg);
   const { rows, raw } = await runAdaptive(tab, zone.id, opts.hours, opts.limit, 'count_DESC');
-  if (opts.json) { console.log(JSON.stringify(raw, null, 2)); return; }
+  if (opts.json) {
+    console.log(JSON.stringify(raw, null, 2));
+    return;
+  }
   console.log(pad('count', 9) + pad('status', 7) + pad('country', 8) + pad('path', 62) + 'ua');
   for (const r of rows) {
     const d = r.dimensions || {};
     console.log(
-      pad(fmtNum(r.count), 9) + pad(d.edgeResponseStatus, 7) +
-      pad(d.clientCountryName || '-', 8) +
-      pad(trunc(d.clientRequestPath || '-', 60), 62) +
-      trunc(d.userAgent || '-', 60));
+      pad(fmtNum(r.count), 9) +
+        pad(d.edgeResponseStatus, 7) +
+        pad(d.clientCountryName || '-', 8) +
+        pad(trunc(d.clientRequestPath || '-', 60), 62) +
+        trunc(d.userAgent || '-', 60)
+    );
   }
 }
 
 async function cmdTopUAs(av) {
   const { opts, positional } = parseArgs(av);
   const zarg = positional[1];
-  if (!zarg) { console.error('Usage: wrangler top-uas <zone> [--hours=N] [--limit=N]'); process.exit(1); }
+  if (!zarg) {
+    console.error('Usage: cf-ext analytics top-uas <zone> [--hours=N] [--limit=N]');
+    process.exit(1);
+  }
   const tab = await ensureTab(opts.tab);
   const zone = await resolveZone(tab, zarg);
   const sampleLimit = Math.max(opts.limit * 20, 200);
   const { rows, raw } = await runAdaptive(tab, zone.id, opts.hours, sampleLimit, 'count_DESC');
-  if (opts.json) { console.log(JSON.stringify(raw, null, 2)); return; }
+  if (opts.json) {
+    console.log(JSON.stringify(raw, null, 2));
+    return;
+  }
   const agg = {};
   for (const r of rows) {
     const ua = (r.dimensions && r.dimensions.userAgent) || '-';
     agg[ua] = (agg[ua] || 0) + (r.count || 0);
   }
-  const sorted = Object.entries(agg).sort(function(a,b){ return b[1]-a[1]; }).slice(0, opts.limit);
+  const sorted = Object.entries(agg)
+    .sort(function (a, b) {
+      return b[1] - a[1];
+    })
+    .slice(0, opts.limit);
   console.log(pad('count', 10) + 'userAgent');
   for (const [ua, n] of sorted) console.log(pad(fmtNum(n), 10) + trunc(ua, 60));
 }
@@ -350,18 +494,28 @@ async function cmdTopUAs(av) {
 async function cmdTopCountries(av) {
   const { opts, positional } = parseArgs(av);
   const zarg = positional[1];
-  if (!zarg) { console.error('Usage: wrangler top-countries <zone> [--hours=N] [--limit=N]'); process.exit(1); }
+  if (!zarg) {
+    console.error('Usage: cf-ext analytics top-countries <zone> [--hours=N] [--limit=N]');
+    process.exit(1);
+  }
   const tab = await ensureTab(opts.tab);
   const zone = await resolveZone(tab, zarg);
   const sampleLimit = Math.max(opts.limit * 20, 200);
   const { rows, raw } = await runAdaptive(tab, zone.id, opts.hours, sampleLimit, 'count_DESC');
-  if (opts.json) { console.log(JSON.stringify(raw, null, 2)); return; }
+  if (opts.json) {
+    console.log(JSON.stringify(raw, null, 2));
+    return;
+  }
   const agg = {};
   for (const r of rows) {
     const c = (r.dimensions && r.dimensions.clientCountryName) || '-';
     agg[c] = (agg[c] || 0) + (r.count || 0);
   }
-  const sorted = Object.entries(agg).sort(function(a,b){ return b[1]-a[1]; }).slice(0, opts.limit);
+  const sorted = Object.entries(agg)
+    .sort(function (a, b) {
+      return b[1] - a[1];
+    })
+    .slice(0, opts.limit);
   console.log(pad('count', 10) + 'country');
   for (const [c, n] of sorted) console.log(pad(fmtNum(n), 10) + c);
 }
@@ -377,7 +531,10 @@ async function readStdin() {
 
 async function cmdQuery(av) {
   const { opts } = parseArgs(av);
-  if (!opts.zone) { console.error('Usage: wrangler query --zone=<name|id> [--file=path]'); process.exit(1); }
+  if (!opts.zone) {
+    console.error('Usage: cf-ext analytics query --zone=<name|id> [--file=path]');
+    process.exit(1);
+  }
   const tab = await ensureTab(opts.tab);
   const zone = await resolveZone(tab, opts.zone);
   let query;
@@ -395,12 +552,14 @@ async function cmdQuery(av) {
 }
 
 function showHelp() {
-  console.log('wrangler — Cloudflare zone analytics via authenticated dash tab');
+  console.log('cf-ext analytics — Cloudflare zone analytics via an authenticated dash tab');
   console.log('');
   console.log('Commands:');
   console.log('  open                              Open or focus dash.cloudflare.com tab');
   console.log('  zones                             List zones the dash session can see');
-  console.log('  status <zone>                     Summary: requests, status mix, countries, top paths');
+  console.log(
+    '  status <zone>                     Summary: requests, status mix, countries, top paths'
+  );
   console.log('  timeseries <zone>                 Hourly requests/pageViews/uniques/threats');
   console.log('  statuscodes <zone>                Hourly breakdown by edgeResponseStatus');
   console.log('  top-paths <zone>                  Most-requested paths (sampled)');
@@ -418,24 +577,37 @@ function showHelp() {
   console.log('Auth: piggybacks on the open dash.cloudflare.com tab cookies — no token.');
 }
 
-const cmd = argv[0];
-if (!cmd || cmd === '--help' || cmd === '-h' || cmd === 'help') {
-  showHelp();
-  process.exit(cmd ? 0 : 1);
+async function run(argv, deps) {
+  browser = deps.browser;
+  const cmd = argv[0];
+  if (!cmd || cmd === '--help' || cmd === '-h' || cmd === 'help') {
+    showHelp();
+    process.exit(cmd ? 0 : 1);
+  }
+  switch (cmd) {
+    case 'open':
+      return cmdOpen(argv);
+    case 'zones':
+      return cmdZones(argv);
+    case 'status':
+      return cmdStatus(argv);
+    case 'timeseries':
+      return cmdTimeseries(argv);
+    case 'statuscodes':
+      return cmdStatuscodes(argv);
+    case 'top-paths':
+      return cmdTopPaths(argv);
+    case 'top-uas':
+      return cmdTopUAs(argv);
+    case 'top-countries':
+      return cmdTopCountries(argv);
+    case 'query':
+      return cmdQuery(argv);
+    default:
+      console.error('Unknown command: ' + cmd);
+      showHelp();
+      process.exit(1);
+  }
 }
 
-switch (cmd) {
-  case 'open':           await cmdOpen(argv); break;
-  case 'zones':          await cmdZones(argv); break;
-  case 'status':         await cmdStatus(argv); break;
-  case 'timeseries':     await cmdTimeseries(argv); break;
-  case 'statuscodes':    await cmdStatuscodes(argv); break;
-  case 'top-paths':      await cmdTopPaths(argv); break;
-  case 'top-uas':        await cmdTopUAs(argv); break;
-  case 'top-countries':  await cmdTopCountries(argv); break;
-  case 'query':          await cmdQuery(argv); break;
-  default:
-    console.error('Unknown command: ' + cmd);
-    showHelp();
-    process.exit(1);
-}
+module.exports = { run };

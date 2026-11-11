@@ -5,8 +5,8 @@ import test, { is } from 'tst';
 // stdin under Node semantics (slicc-jsh, SLICC 7): process.stdin is a stream
 // whose read() has nothing yet, so the script must take all of stdin from
 // fs.readFileSync(0), which SLICC 6 serves as well (ai-ecoverse/skills#488).
-// The functions run are the shipped ones, cut out of the .jsh.
-const SOURCE = fs.readFileSync(path.join(process.cwd(), 'scripts/wrangler.jsh'), 'utf8');
+// The functions run are the shipped ones, cut out of scripts/lib/analytics.js.
+const SOURCE = fs.readFileSync(path.join(process.cwd(), 'scripts/lib/analytics.js'), 'utf8');
 
 function extract(signature) {
   const start = SOURCE.indexOf(signature);

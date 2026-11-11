@@ -1,7 +1,7 @@
 # Zone analytics: sampling, plan limits and the spike workflow
 
-Detail moved out of `SKILL.md`. Applies to the `wrangler` binary only; billing
-lives in `wrangler-ext` (see [BILLING.md](BILLING.md)).
+Detail moved out of `SKILL.md`. Applies to the `cf-ext analytics` binary only; billing
+lives in `cf-ext billing` (see [BILLING.md](BILLING.md)).
 
 ## Architecture
 
@@ -11,7 +11,7 @@ lives in `wrangler-ext` (see [BILLING.md](BILLING.md)).
   tab, which serializes the GraphQL response back to the script.
 - **Auth model**: none of our own — we ride the dashboard cookies.
 - **Zone cache**: resolved zones are cached in `~/.config/wrangler/zones.json`
-  (mode 600) so a zone name does not cost a lookup every run. `wrangler-ext`
+  (mode 600) so a zone name does not cost a lookup every run. `cf-ext billing`
   caches the billing account id beside it as `billing-account.json`.
 - **GraphQL queries are built with single-quoted concatenation, never template
   literals**, so the raw `$variables` survive into the query string.
@@ -50,7 +50,7 @@ Combining both sources is the right move:
   be missing on free plans; the CLI degrades gracefully rather than failing.
 - `--hours` is clamped to 1-72 regardless of plan.
 
-## Command reference (`wrangler`)
+## Command reference (`cf-ext analytics`)
 
 | Command | Purpose |
 |---|---|
@@ -69,3 +69,11 @@ resolved through the cache, then via `/api/v4/zones?name=…`, then by listing a
 zones. `--hours` is the window ending now (1-72, default 3) and `--limit` caps
 `top-*` rows (default 25). `--tab` overrides the auto-picked dashboard tab and
 `--json` emits the raw GraphQL response.
+
+## "Attention Required!" instead of JSON
+
+A tab on an OAuth consent page (`/oauth/consent-form/device/success`, where
+`cf auth login` leaves it) is answered with Cloudflare's challenge HTML, and the
+table commands print headers with no rows. Verified 2026-11-11 on Helix: the same
+`statuscodes aem.live` call returned data as soon as the tab was navigated to
+`https://dash.cloudflare.com/`.
