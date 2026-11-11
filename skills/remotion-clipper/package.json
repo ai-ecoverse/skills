@@ -1,6 +1,23 @@
 {
+  "name": "@ai-ecoverse/remotion-clipper",
+  "version": "1.0.0",
+  "private": true,
+  "description": "The remotion CLI for jsh: EDL tooling for the interview-clipping pipeline (inspect, validate, stage, transcode, render, filmstrip) running entirely in SLICC. `pnpm add` it in /opt/user on SLICC 7, or `npm install -g` this folder to put `remotion` on PATH.",
+  "bin": {
+    "remotion": "scripts/remotion.jsh"
+  },
+  "files": [
+    "scripts",
+    "references",
+    "assets",
+    "SKILL.md"
+  ],
   "dependencies": {
     "@remotion/media-parser": "4.0.540",
     "@remotion/webcodecs": "4.0.540"
+  },
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22"
   }
 }

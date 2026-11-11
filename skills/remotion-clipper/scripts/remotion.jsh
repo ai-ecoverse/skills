@@ -1,3 +1,4 @@
+#!/usr/bin/env jsh
 // remotion.jsh -- EDL tooling for the interview-clipping pipeline, running
 // INSIDE SLICC. Subcommands: validate, inspect, stage, render, transcode.
 //
