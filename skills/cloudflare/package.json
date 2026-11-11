@@ -1,0 +1,22 @@
+{
+  "name": "@ai-ecoverse/cloudflare",
+  "version": "1.0.0",
+  "private": true,
+  "description": "The cf-ext CLI for jsh: Cloudflare invoices, spend and contract numbers from a logged-in dash.cloudflare.com tab, which Cloudflare's own cf CLI cannot reach. Everything else in the skill uses cf. `pnpm add` it in /opt/user on SLICC 7, or `npm install -g` this folder to put `cf-ext` on PATH.",
+  "bin": {
+    "cf-ext": "scripts/cf-ext.jsh"
+  },
+  "files": [
+    "scripts",
+    "references",
+    "assets",
+    "SKILL.md"
+  ],
+  "dependencies": {
+    "@ai-ecoverse/sliccy-browser": "0.1.42"
+  },
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22"
+  }
+}

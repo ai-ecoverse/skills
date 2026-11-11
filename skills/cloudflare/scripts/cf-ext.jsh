@@ -1,15 +1,15 @@
-// wrangler-ext.jsh — SLICC-only extensions to the `cloudflare` skill: billing.
+#!/usr/bin/env jsh
+// cf-ext — SLICC-only extensions to the `cloudflare` skill: billing.
 //
-// The real `wrangler` CLI (github.com/cloudflare/workers-sdk) has NO billing
-// command group — it manages Workers, KV, D1, R2 and secrets, and never touches
-// invoices. To keep the sibling `wrangler` command-compatible with the upstream
-// tool, billing lives here in a separate binary, exactly as the `fastly` skill
-// splits invoices into `fastly-ext billing` and `gcloud` into `gcloud-ext
-// billing cost`.
+// Cloudflare's `cf` CLI (github.com/cloudflare/cf) mirrors the public API,
+// and the public API has no invoices: `cf billing` covers profiles, rate
+// plans, spend policies and usage, never invoice history or PDFs. So billing
+// lives in this sibling binary, as the `fastly` skill splits invoices into
+// `fastly-ext billing` and `gcloud` into `gcloud-ext billing cost`.
 //
 // Transport: the *dashboard* REST API (`/api/v4/...`), issued same-origin from
 // an open, logged-in `dash.cloudflare.com` tab through the `sliccy:browser`
-// bridge — the identical auth model `wrangler.jsh` uses for GraphQL analytics.
+// bridge.
 // There is no public Cloudflare billing API and no API-token scope that reaches
 // invoices; the dashboard session is the only door.
 //
@@ -181,12 +181,12 @@ async function dashTab(explicit) {
         DASH +
         ' tab found — billing has no API-token path.\n' +
         '  Open the dashboard and sign in, then retry:\n' +
-        '    wrangler open          # opens/focuses ' +
+        '    playwright-cli tab-new https://' +
         DASH +
         '\n' +
         '  Cloudflare exposes invoices only to a dashboard session: there is no\n' +
         '  CLOUDFLARE_API_TOKEN scope that reaches /billing/history.',
-      { prefix: 'wrangler-ext' },
+      { prefix: 'cf-ext' },
     );
   }
   return tab;
@@ -214,7 +214,7 @@ async function saveCachedAccount(id, name) {
 async function resolveAccount(tab, explicit) {
   if (explicit) {
     if (!/^[0-9a-f]{32}$/i.test(explicit)) {
-      cli.die('--account must be a 32-hex account id, got: ' + explicit, { prefix: 'wrangler-ext' });
+      cli.die('--account must be a 32-hex account id, got: ' + explicit, { prefix: 'cf-ext' });
     }
     return explicit;
   }
@@ -235,7 +235,7 @@ async function resolveAccount(tab, explicit) {
     return list[0].id;
   }
   if (!list.length) {
-    cli.die('the dashboard session sees no accounts — is it fully signed in?', { prefix: 'wrangler-ext' });
+    cli.die('the dashboard session sees no accounts — is it fully signed in?', { prefix: 'cf-ext' });
   }
   cli.die(
     'this session sees ' +
@@ -246,7 +246,7 @@ async function resolveAccount(tab, explicit) {
           return '    ' + a.id + '  ' + (a.name || '');
         })
         .join('\n'),
-    { prefix: 'wrangler-ext' },
+    { prefix: 'cf-ext' },
   );
 }
 
@@ -267,7 +267,7 @@ async function get(tab, path) {
         (first.code ? ' code ' + first.code : '') +
         (first.message ? ' ' + first.message : '') +
         '\n  See references/BILLING.md for the endpoints that do and do not exist.',
-      { prefix: 'wrangler-ext' },
+      { prefix: 'cf-ext' },
     );
   }
   return body;
@@ -301,7 +301,7 @@ async function fetchPdf(tab, acct, uuid) {
         '\n  Expected the doctype/isLegacy query string:\n' +
         '    /billing/receipts/<uuid>/pdf?doctype=invoice&isLegacy=false\n' +
         '  and <uuid> must be the record `id`, not the human receipt_id (IN…).',
-      { prefix: 'wrangler-ext' },
+      { prefix: 'cf-ext' },
     );
   }
   const buf = Buffer.from(r.body, 'base64');
@@ -314,7 +314,7 @@ async function fetchPdf(tab, acct, uuid) {
         buf.length +
         ' bytes).\n' +
         '  A JSON error body here usually means the session lost its billing scope.',
-      { prefix: 'wrangler-ext' },
+      { prefix: 'cf-ext' },
     );
   }
   return buf;
@@ -426,7 +426,7 @@ async function tryFollower(buf) {
   // A single ssh call with a ~129 KB argument fails, and `split` is not
   // available, so stream the base64 across in ~25 KB appends. The base64
   // alphabet (A-Za-z0-9+/=) is safe inside single quotes.
-  const dir = '/tmp/wrangler-ext-' + Math.random().toString(36).slice(2, 10);
+  const dir = '/tmp/cf-ext-' + Math.random().toString(36).slice(2, 10);
   const b64 = buf.toString('base64');
   const CHUNK = 25000;
   let rc = await exec.spawn(['ssh', id, 'mkdir -p ' + dir]);
@@ -467,7 +467,7 @@ async function tryFollower(buf) {
  *  `/tmp` is not guaranteed to exist inside every SLICC sandbox — try the
  *  obvious homes in order and give up on the local route rather than crashing. */
 async function scratchWrite(buf) {
-  const name = 'wrangler-ext-' + Math.random().toString(36).slice(2, 10) + '.pdf';
+  const name = 'cf-ext-' + Math.random().toString(36).slice(2, 10) + '.pdf';
   const dirs = [str(process.env.TMPDIR), '/tmp', HOME + '/.cache', '.'];
   for (const d of dirs) {
     if (!d) continue;
@@ -519,12 +519,12 @@ async function extractText(buf, label) {
       '    * connect a `slicc … follow` exec follower with poppler installed\n' +
       '      (`brew install poppler`; verified with poppler 26.08.0), then retry — see\n' +
       '      `ssh --list` / `host`; or\n' +
-      "    * save the PDF with `wrangler-ext billing pdf " +
+      "    * save the PDF with `cf-ext billing pdf " +
       (label || '<id>') +
       ' --out ./inv.pdf`\n' +
       '      and read it by hand.\n' +
       '  Refusing to print glyph noise as line items. See references/pdf-extraction.md.',
-    { prefix: 'wrangler-ext' },
+    { prefix: 'cf-ext' },
   );
 }
 
@@ -773,16 +773,16 @@ async function loadFixture(path) {
   try {
     raw = await fs.promises.readFile(path, 'utf8');
   } catch {
-    cli.die('cannot read fixture ' + path, { prefix: 'wrangler-ext' });
+    cli.die('cannot read fixture ' + path, { prefix: 'cf-ext' });
   }
   let j;
   try {
     j = JSON.parse(raw);
   } catch (e) {
-    cli.die('fixture ' + path + ' is not valid JSON: ' + e.message, { prefix: 'wrangler-ext' });
+    cli.die('fixture ' + path + ' is not valid JSON: ' + e.message, { prefix: 'cf-ext' });
   }
   const arr = Array.isArray(j) ? j : j && Array.isArray(j.result) ? j.result : null;
-  if (!arr) cli.die('fixture must be a JSON array of billing/history records (or {result:[…]})', { prefix: 'wrangler-ext' });
+  if (!arr) cli.die('fixture must be a JSON array of billing/history records (or {result:[…]})', { prefix: 'cf-ext' });
   return arr;
 }
 
@@ -797,7 +797,7 @@ async function records(flags) {
 
 function resolveReceipt(rows, key) {
   if (!key) {
-    cli.die('need an invoice: a receipt_id like IN706358 or the 36-char record uuid', { prefix: 'wrangler-ext' });
+    cli.die('need an invoice: a receipt_id like IN706358 or the 36-char record uuid', { prefix: 'cf-ext' });
   }
   const hit =
     rows.find(function (r) {
@@ -815,8 +815,8 @@ function resolveReceipt(rows, key) {
     });
     cli.die(
       'no invoice ' + key + ' on this account.\n  Recent receipt ids: ' + recent.join(', ') +
-        '\n  (list them all with `wrangler-ext billing invoices`)',
-      { prefix: 'wrangler-ext' },
+        '\n  (list them all with `cf-ext billing invoices`)',
+      { prefix: 'cf-ext' },
     );
   }
   return hit;
@@ -1065,7 +1065,7 @@ async function cmdSummary(flags) {
 
 async function cmdPdf(positional, flags) {
   const ctx = await records(flags);
-  if (ctx.offline) cli.die('billing pdf needs a live dashboard session (a fixture has no PDFs)', { prefix: 'wrangler-ext' });
+  if (ctx.offline) cli.die('billing pdf needs a live dashboard session (a fixture has no PDFs)', { prefix: 'cf-ext' });
   const rec = resolveReceipt(ctx.rows, str(positional[0]));
   const buf = await fetchPdf(ctx.tab, ctx.acct, rec.id);
   const out = str(flags.out) || './' + (rec.receipt_id || rec.id) + '.pdf';
@@ -1089,7 +1089,7 @@ async function cmdLineitems(positional, flags) {
   const ctx = await records(flags);
   const rec = resolveReceipt(ctx.rows, str(positional[0]));
   const got = await invoiceText(rec, ctx);
-  if (!got.text) cli.die('no invoice text available: ' + (got.note || 'unknown'), { prefix: 'wrangler-ext' });
+  if (!got.text) cli.die('no invoice text available: ' + (got.note || 'unknown'), { prefix: 'cf-ext' });
   const p = parseInvoice(got.text);
 
   if (flags.json) {
@@ -1136,7 +1136,7 @@ async function cmdUsage(positional, flags) {
   const ctx = await records(flags);
   const rec = resolveReceipt(ctx.rows, str(positional[0]));
   const got = await invoiceText(rec, ctx);
-  if (!got.text) cli.die('no invoice text available: ' + (got.note || 'unknown'), { prefix: 'wrangler-ext' });
+  if (!got.text) cli.die('no invoice text available: ' + (got.note || 'unknown'), { prefix: 'cf-ext' });
   const p = parseInvoice(got.text);
   if (!p.excess_usage && !p.usage.length) {
     cli.die(
@@ -1144,7 +1144,7 @@ async function cmdUsage(positional, flags) {
         ' is not an Excess Usage Billing invoice' +
         (p.contract ? ' — it is contract ' + p.contract + ' (' + (p.order_type || 'unknown type') + ').' : '.') +
         '\n  `billing contracts` shows which invoices carry usage overage.',
-      { prefix: 'wrangler-ext' },
+      { prefix: 'cf-ext' },
     );
   }
   if (flags.json) {
@@ -1242,7 +1242,7 @@ async function cmdContracts(flags) {
         return String(r.occurred_at).startsWith(year);
       })
     : invoices;
-  if (!scoped.length) cli.die('no invoices' + (year ? ' in ' + year : '') + ' to group', { prefix: 'wrangler-ext' });
+  if (!scoped.length) cli.die('no invoices' + (year ? ' in ' + year : '') + ' to group', { prefix: 'cf-ext' });
 
   const grouped = groupFamilies(scoped);
   let families = grouped.families;
@@ -1514,42 +1514,40 @@ async function cmdContracts(flags) {
 // ─── help + dispatch ─────────────────────────────────────────────────────────
 
 const HELP = [
-  'wrangler-ext — SLICC-only extensions to the cloudflare skill. The upstream',
-  '               wrangler CLI has no billing command group, so billing lives',
-  '               here and `wrangler` stays command-compatible with',
-  '               github.com/cloudflare/workers-sdk.',
+  'cf-ext — SLICC-only extensions to the cloudflare skill. The cf CLI mirrors',
+  '         the public API, which has no invoices, so billing lives here.',
   '',
   'USAGE',
-  '  wrangler-ext billing invoices [--limit N] [--year YYYY] [--json]',
+  '  cf-ext billing invoices [--limit N] [--year YYYY] [--json]',
   '      Invoice history, newest first: date, receipt_id (IN…), amount, status',
   '      and the record uuid that `billing pdf` needs. Credits are listed',
   '      separately because their amounts are NEGATIVE.',
   '',
-  '  wrangler-ext billing summary [--year YYYY] [--json]',
+  '  cf-ext billing summary [--year YYYY] [--json]',
   '      Per-month totals for a year, per-year totals for the whole history, and',
   '      an explicit list of invoices not marked paid (status OPEN or',
   '      amount_to_pay > 0) with the caveat that OPEN ≠ money owed.',
   '',
-  '  wrangler-ext billing contracts [--year YYYY] [--pdf-limit N] [--no-pdf] [--json]',
+  '  cf-ext billing contracts [--year YYYY] [--pdf-limit N] [--no-pdf] [--json]',
   '      THE useful one. Groups invoices into recurring contract families and',
   '      reads the contract number (IC-…) off each PDF, so you can tell your',
   '      spend from a parent org\'s on a shared enterprise account. Variable',
   '      "Excess Usage Billing" invoices have no contract number and are flagged',
   '      as their own family — those are definitively yours.',
   '',
-  '  wrangler-ext billing pdf <receipt_id|uuid> [--out PATH]',
+  '  cf-ext billing pdf <receipt_id|uuid> [--out PATH]',
   '      Download one invoice PDF and verify its %PDF magic bytes. A human',
   '      receipt_id (IN706358) is resolved to its uuid automatically.',
   '',
-  '  wrangler-ext billing lineitems <receipt_id|uuid> [--json]',
+  '  cf-ext billing lineitems <receipt_id|uuid> [--json]',
   '      Download the PDF, extract its text and print contract number, order',
   '      type, service period, totals and any usage detail.',
   '',
-  '  wrangler-ext billing usage <receipt_id|uuid> [--json]',
+  '  cf-ext billing usage <receipt_id|uuid> [--json]',
   '      Parse an "Excess Usage Billing" invoice into cap / rate / actual usage /',
   '      cost per metric, so cap-vs-actual is visible.',
   '',
-  '  wrangler-ext billing subscriptions [--json]',
+  '  cf-ext billing subscriptions [--json]',
   '      Account subscriptions. On enterprise accounts every entry reports',
   '      price: 0 / intent: ENTERPRISE_CONTRACT — the API exposes no per-product',
   '      cost, which is why invoice PDFs are the only route to real line items.',
@@ -1568,7 +1566,7 @@ const HELP = [
   '                     PDF, which is how the grouping logic is tested offline.',
   '',
   'REQUIRES',
-  '  An open, logged-in dash.cloudflare.com tab (`wrangler open`). Cloudflare',
+  '  An open, logged-in dash.cloudflare.com tab (open one and sign in). Cloudflare',
   '  exposes invoices ONLY to a dashboard session — no CLOUDFLARE_API_TOKEN',
   '  scope reaches /billing/history. PDF text extraction uses `pdftk',
   '  dump_data_utf8` locally and falls back to `pdftotext -layout` on an `ssh`',
@@ -1584,8 +1582,8 @@ async function main() {
   if (flags.help || flags.h || !group || group === 'help') cli.help(HELP);
   try {
     if (group !== 'billing') {
-      cli.die("unknown command: " + group + "\n  Only `wrangler-ext billing …` exists. Zone analytics live in `wrangler`.", {
-        prefix: 'wrangler-ext',
+      cli.die("unknown command: " + group + "\n  Only `cf-ext billing …` exists. Everything else is in `cf`.", {
+        prefix: 'cf-ext',
       });
     }
     const sub = str(positional[1]);
@@ -1600,13 +1598,13 @@ async function main() {
     cli.die(
       'unknown billing subcommand: ' +
         (sub || '(none)') +
-        '\n  wrangler-ext billing invoices | summary | contracts | pdf <id> |\n' +
+        '\n  cf-ext billing invoices | summary | contracts | pdf <id> |\n' +
         '                       lineitems <id> | usage <id> | subscriptions',
-      { prefix: 'wrangler-ext' },
+      { prefix: 'cf-ext' },
     );
   } catch (err) {
     if (err && err.name === 'NodeExitError') throw err; // MANDATORY re-throw
-    cli.die(err.message, { prefix: 'wrangler-ext' });
+    cli.die(err.message, { prefix: 'cf-ext' });
   }
 }
 
