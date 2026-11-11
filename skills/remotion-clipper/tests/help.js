@@ -5,6 +5,12 @@ import { fileURLToPath } from 'node:url';
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 const WRITES = /write|mkdir|rm|unlink|rename|chmod|append|copy|symlink|truncate|open/i;
 
+function stripShebang(source) {
+  if (!source.startsWith('#!')) return source;
+  const newline = source.indexOf('\n');
+  return newline === -1 ? '' : `\n${source.slice(newline + 1)}`;
+}
+
 class NodeExitError extends Error {
   constructor(code) {
     super(`Process exited with code ${code}`);
@@ -80,7 +86,7 @@ const identity = new Proxy((s) => String(s ?? ''), {
 
 export async function runHelp(script, words, { denyFs = false, timeoutMs = 5000 } = {}) {
   const file = fileURLToPath(new URL(`../${script}`, import.meta.url));
-  const source = fs.readFileSync(file, 'utf8');
+  const source = stripShebang(fs.readFileSync(file, 'utf8'));
   const out = [];
   const err = [];
   const argv = ['node', file, ...words];

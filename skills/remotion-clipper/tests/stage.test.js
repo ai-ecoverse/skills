@@ -6,7 +6,8 @@ import { nodeFs } from './node-fs.js';
 // Skill root: tst runs from the installed skill dir (CI + local harness).
 const ROOT = process.cwd();
 const SCRIPT = path.join(ROOT, 'scripts/remotion.jsh');
-const source = fs.readFileSync(SCRIPT, 'utf8');
+const raw = fs.readFileSync(SCRIPT, 'utf8');
+const source = raw.startsWith('#!') ? `\n${raw.slice(raw.indexOf('\n') + 1)}` : raw;
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 
 class NodeExitError extends Error {

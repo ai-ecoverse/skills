@@ -14,6 +14,8 @@ description: |
   this to inspect a video/audio file's dimensions, duration, or codec WITHOUT
   ffmpeg (`@remotion/media-parser` does it natively in SLICC).
 allowed-tools: bash
+command: remotion
+script: scripts/remotion.jsh
 ---
 
 # remotion-clipper
@@ -33,14 +35,15 @@ every subcommand runs entirely in-browser, no external host, no ffmpeg.
 
 ## Setup (one time)
 
+On SLICC 7, add the skill package under `/opt/user` (Your packages) so `remotion` lands
+on PATH and `@remotion/media-parser` / `@remotion/webcodecs` install with it:
+
 ```bash
-cd /workspace/skills/remotion-clipper   # wherever this skill landed
-ipk install                              # reads package.json, installs @remotion/media-parser + @remotion/webcodecs
+cd /opt/user && pnpm add /home/skills/remotion-clipper
 ```
 
-Module resolution for `.jsh` scripts walks up from the script's own directory, not the
-shell's cwd — install from inside this skill's directory (or run `ipk install` with no
-args from here), not from wherever you happen to be when you first use it.
+On a host with [slicc-jsh](https://github.com/ai-ecoverse/slicc-jsh):
+`npm install -g ./skills/remotion-clipper`.
 
 ## End-to-end workflow
 
