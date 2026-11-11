@@ -1,5 +1,4 @@
-// SLICC: route undici's fetch API to the runtime's global fetch (undici 7/8 over
-// TLS exits the process mid-body in slicc-jsh). Only these names are imported by cf's deps.
+// undici's fetch API over the runtime's global fetch (ai-ecoverse/slicc-jsh#1270).
 export const fetch = (...a) => globalThis.fetch(...a);
 export const Headers = globalThis.Headers;
 export const Response = globalThis.Response;

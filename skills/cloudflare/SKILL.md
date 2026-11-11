@@ -1,35 +1,36 @@
 ---
 name: cloudflare
 description: >-
-  Manage and query Cloudflare with `cf`, Cloudflare's own agentic CLI that
-  mirrors the entire Cloudflare API (3,000+ operations: zones, DNS records,
-  cache purge, WAF and rulesets, Workers, KV, D1, R2, Queues, Access and Zero
-  Trust, API tokens, accounts and members, analytics), with JSON output by
-  default and `cf cli search` to find the right command. Covers building cf
-  for SLICC, logging in with the OAuth device flow, and moving to a vault-sealed
-  API token through fnox so no Cloudflare credential sits on disk. Also
-  `cf-ext billing` for what the API cannot reach: invoice history, invoice
-  PDFs, per-month and per-year spend, contract numbers and Workers
-  excess-usage overage, from a logged-in `dash.cloudflare.com` tab. Use when
-  the user mentions Cloudflare, cf, wrangler, zones, DNS on Cloudflare, purge
-  the Cloudflare cache, Cloudflare API token, Workers, R2, D1, KV, WAF rules,
-  "cloudflare traffic", "list my Cloudflare zones", "cloudflare invoice",
-  "cloudflare bill", "how much are we spending on Cloudflare", "Workers
-  overage" or "cloudflare contract". Not Fastly, not AWS CloudFront, not Akamai.
+  Manage and query Cloudflare with `cf`, Cloudflare's own CLI for the
+  entire API (zones, DNS, cache purge, WAF, Workers, KV, D1, R2, Access, API
+  tokens, accounts), JSON by default, with `cf cli search` to find commands.
+  Covers building cf for SLICC, the OAuth device login, and sealing a
+  read-only API token with fnox so no credential sits on disk. Plus `cf-ext`
+  for what the API cannot reach, from a logged-in dash.cloudflare.com tab:
+  zone traffic analytics (requests, status codes, top paths, user agents,
+  countries) and billing (invoices, invoice PDFs, spend, contract numbers,
+  Workers overage). Triggers on Cloudflare, cf, wrangler, "list my Cloudflare
+  zones", "purge the Cloudflare cache", "Cloudflare API token", "cloudflare
+  traffic", "why did traffic spike", "404 rate", "top paths for example.com",
+  "cloudflare invoice", "cloudflare bill", "Workers overage". Not Fastly, not
+  CloudFront, not Akamai.
 allowed-tools: bash
 ---
 
-# Cloudflare: `cf` for the API, `cf-ext billing` for invoices
+# Cloudflare: `cf` for the API, `cf-ext` for analytics and invoices
 
 - **`cf`** is Cloudflare's CLI ([cloudflare/cf](https://github.com/cloudflare/cf),
   [launch post](https://blog.cloudflare.com/cloudflare-cf-cli-launch/)). Its
   commands are generated from the OpenAPI schema, so it covers the whole API.
   It prints JSON by default and replaces Wrangler for anything that isn't an
   existing Wrangler project.
-- **`cf-ext billing`** reads invoices, spend and contract numbers from a logged-in
-  `dash.cloudflare.com` tab. The public API has no invoices (`cf billing` covers
-  profiles, rate plans, spend policies and usage only), so this is the one place
-  in the skill that needs a browser tab.
+- **`cf-ext`** covers two things `cf` can't, both from a logged-in
+  `dash.cloudflare.com` tab:
+  - `cf-ext analytics`: zone traffic analytics via the GraphQL Analytics API,
+    which has no `cf` command.
+  - `cf-ext billing`: invoices, spend and contract numbers. The public API has
+    no invoices; `cf billing` covers profiles, rate plans, spend policies and
+    usage only.
 
 ## Find the command, don't guess it
 
@@ -65,7 +66,8 @@ cf auth whoami | jq '{authenticated, authSource, email, accounts: [.accounts[].n
   top-level await"), which kills `cf auth login` in its poll loop.
 
 [`assets/cf-slicc/build.sh`](assets/cf-slicc/build.sh) builds it from source. It
-clones `cloudflare/cf` to `~/src/cf`, installs its dependencies (about 5 minutes),
+fetches `cloudflare/cf` at a pinned, verified commit (`CF_REV` overrides it) into
+`~/src/cf`, installs its dependencies (about 5 minutes),
 and bundles it with `@ai-ecoverse/wasi-esbuild`. That bundle avoids the first
 bug. It also aliases `undici` to
 [`undici-shim.mjs`](assets/cf-slicc/undici-shim.mjs), which avoids the second:
@@ -73,12 +75,14 @@ cf's dependencies only take `fetch`, `Headers`, `Response` and `FormData` from
 undici, and the shim hands those to the runtime's global `fetch`.
 
 ```bash
-sh <skill>/assets/cf-slicc/build.sh      # asks for sudo once; rerun after `git -C ~/src/cf pull`
+sh <skill>/assets/cf-slicc/build.sh      # asks for sudo once
 cf --version
 ```
 
 The script installs a root-owned copy in `/usr/local/lib/cf-slicc` and a `cf`
-wrapper in `/usr/local/bin`. It has to be root-owned because the vault grant in
+wrapper ([`cf-wrapper.sh`](assets/cf-slicc/cf-wrapper.sh)) in `/usr/local/bin`.
+The wrapper runs cf through `fnox exec` once `CLOUDFLARE_API_TOKEN` is sealed,
+and on cf's own login before that. It has to be root-owned because the vault grant in
 step 3 names that path, and the vault refuses programs a non-root user could
 change. Once both issues are fixed, `pnpm add -g cf` should be enough, but the
 vault grant still needs a root-owned path.
@@ -106,15 +110,18 @@ logged-in `cf` to do five things:
 2. Pipe the token value straight from `cf user tokens create` into
    `sudo fnox set CLOUDFLARE_API_TOKEN --global`. It is never printed or written
    to a file.
-3. Add an `[exec]` grant to `/etc/slicc/secrets-policy.toml`, so the vault hands
-   the real value only to this exact argv:
+3. Set the `[exec]` grant in `/etc/slicc/secrets-policy.toml` to exactly this
+   argv, replacing any broader `CLOUDFLARE_API_TOKEN` grant already there, so the
+   vault hands the real value only to cf:
 
    ```toml
    [exec]
    CLOUDFLARE_API_TOKEN = { argv = [["/usr/bin/node", "/usr/local/lib/cf-slicc/bin/cf"]] }
    ```
 4. Run `cf auth logout`, which deletes the on-disk OAuth tokens.
-5. Check the result with `cf auth whoami`.
+
+The policy edit is prepared before the token is minted. If cf returns no token or
+`fnox set` fails, the script stops without touching the policy or the login.
 
 ```bash
 sh <skill>/assets/cf-slicc/seal-token.sh --dry-run   # shows the token request and the grant
@@ -164,9 +171,29 @@ placeholder before the model sees it.
   is read-only).
 - `cf dev` and `--local` need workerd (miniflare) and are not expected to run in
   the browser.
-- Zone traffic analytics: `cf sql query` needs schema-qualified dataset names
-  (`events.…`, `logs.…`, `states.…`) that weren't found yet. The GraphQL
-  Analytics API (`/client/v4/graphql`) has no `cf` command.
+
+## `cf-ext analytics`: zone traffic
+
+```bash
+cf-ext analytics open                                # print (or open) the dash tab id
+cf-ext analytics zones                               # zones this session can see
+cf-ext analytics status aem.live --hours=24          # requests, status mix, countries, paths
+cf-ext analytics timeseries aem.live --hours=72      # hourly requests/pageViews/uniques/threats
+cf-ext analytics statuscodes aem.live --hours=24     # spot a 404 storm
+cf-ext analytics top-paths aem.live --hours=6 --limit=30
+cf-ext analytics top-uas aem.live --hours=6          # also: top-countries
+cf-ext analytics query --zone=aem.live --file=q.graphql   # arbitrary GraphQL (stdin works too)
+```
+
+Flags: `--hours=N` (1-72, default 3), `--limit=N` (default 25), `--zone=<name|id>`,
+`--tab=<targetId>`, `--json`. `timeseries` and `statuscodes` are unsampled;
+`top-*` is sampled, so its counts are proportional.
+
+**The tab must be on a dashboard page.** A tab still on an OAuth consent page
+(`/oauth/consent-form/…`, where `cf auth login` leaves it) gets Cloudflare's
+"Attention Required!" HTML instead of JSON, and every query prints empty tables.
+Navigate it to `https://dash.cloudflare.com/` and retry. Sampling, plan limits
+and the spike workflow: [references/analytics.md](references/analytics.md).
 
 ## `cf-ext billing`: invoices, spend, contracts
 

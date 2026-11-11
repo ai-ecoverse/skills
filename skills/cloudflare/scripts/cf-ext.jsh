@@ -1514,10 +1514,13 @@ async function cmdContracts(flags) {
 // ─── help + dispatch ─────────────────────────────────────────────────────────
 
 const HELP = [
-  'cf-ext — SLICC-only extensions to the cloudflare skill. The cf CLI mirrors',
-  '         the public API, which has no invoices, so billing lives here.',
+  'cf-ext — SLICC-only extensions to the cloudflare skill, for what the cf CLI',
+  '         cannot reach: zone analytics (GraphQL) and invoices.',
   '',
   'USAGE',
+  '  cf-ext analytics <status|timeseries|statuscodes|top-paths|top-uas|top-countries> <zone>',
+  '  cf-ext analytics <open|zones|query --zone=Z>   (cf-ext analytics --help for flags)',
+  '',
   '  cf-ext billing invoices [--limit N] [--year YYYY] [--json]',
   '      Invoice history, newest first: date, receipt_id (IN…), amount, status',
   '      and the record uuid that `billing pdf` needs. Credits are listed',
@@ -1579,10 +1582,11 @@ const positional = parsed.positional;
 const group = positional[0] || '';
 
 async function main() {
+  if (group === 'analytics') return await require('./lib/analytics.js').run(process.argv.slice(3), { browser });
   if (flags.help || flags.h || !group || group === 'help') cli.help(HELP);
   try {
     if (group !== 'billing') {
-      cli.die("unknown command: " + group + "\n  Only `cf-ext billing …` exists. Everything else is in `cf`.", {
+      cli.die("unknown command: " + group + "\n  Only `cf-ext analytics …` and `cf-ext billing …` exist. Everything else is in `cf`.", {
         prefix: 'cf-ext',
       });
     }

@@ -4,11 +4,27 @@ import test, { is } from 'tst';
 import { exitStub, load } from './extract.js';
 import { nodeFs } from './node-fs.js';
 
-// cf-ext keeps its account cache, scratch files and fixtures with
+// cf-ext keeps its zones and account caches, scratch files and fixtures with
 // Node's fs (fs.promises, including chmod), which slicc-jsh (SLICC 7) and
 // SLICC 6 both serve; the SLICC 6 promise dialect, and fs.chmod without a
 // callback, fail under Node semantics (#487).
+const ANALYTICS = fs.readFileSync(path.join(process.cwd(), 'scripts/lib/analytics.js'), 'utf8');
 const EXT = fs.readFileSync(path.join(process.cwd(), 'scripts/cf-ext.jsh'), 'utf8');
+
+test('the zones cache round-trips (saveZones, loadZones)', async () => {
+  const vfs = nodeFs();
+  const chmods = [];
+  vfs.promises.chmod = async (p, mode) => chmods.push([p, mode]);
+  const z = load(ANALYTICS, ['ensureDirs', 'loadZones', 'saveZones'], {
+    fs: vfs,
+    CONFIG_DIR: '/shared/.cf',
+    ZONES_FILE: '/shared/.cf/zones.json',
+  });
+  is(await z.loadZones(), null);
+  await z.saveZones([{ id: 'z1', name: 'example.com' }]);
+  is(await z.loadZones(), [{ id: 'z1', name: 'example.com' }]);
+  is(chmods, [['/shared/.cf/zones.json', 0o600]]);
+});
 
 test('cf-ext: account cache, scratch PDF and fixtures', async () => {
   const vfs = nodeFs({

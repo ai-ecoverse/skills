@@ -1,20 +1,24 @@
 #!/bin/sh
-# Mint a read-only Cloudflare API token with the logged-in cf, seal it in SLICC's
-# vault without printing it, grant it to the cf binary only, then log cf out.
-#
+# Seals a read-only cf token in the vault (see SKILL.md, step 3).
 # Usage: sh seal-token.sh [--dry-run] [--days N] [--name NAME]
-# Needs: `cf auth login` done first (OAuth device flow), and sudo approvals.
 set -e
 DRY=; DAYS=90; NAME="slicc cf CLI (read-only)"
 while [ $# -gt 0 ]; do case "$1" in
   --dry-run) DRY=1 ;; --days) DAYS=$2; shift ;; --name) NAME=$2; shift ;;
   *) echo "unknown option $1" >&2; exit 2 ;; esac; shift; done
-CF=${CF:-"/usr/bin/node /usr/local/lib/cf-slicc/bin/cf"}   # bypass the wrapper: use the OAuth login
-W=$(mktemp -d 2>/dev/null || { d="$HOME/tmp/seal-$$"; mkdir -p "$d"; echo "$d"; })
+HERE=$(cd "$(dirname "$0")" && pwd)
+CF=${CF:-"/usr/bin/node /usr/local/lib/cf-slicc/bin/cf"}
+POLICY=${SECRETS_POLICY:-/etc/slicc/secrets-policy.toml}
+GRANT='{ argv = [["/usr/bin/node", "/usr/local/lib/cf-slicc/bin/cf"]] }'
+W="$HOME/.cache/seal-token-$$"
+mkdir -p "$W"
+trap_rm() { rm -rf "$W"; }
+jget() { node -e 'let d; try { d = JSON.parse(require("fs").readFileSync(0, "utf8")); } catch { d = null; } for (const k of process.argv[1].split(".")) d = d == null ? d : d[k]; process.stdout.write(d == null ? "" : typeof d === "object" ? JSON.stringify(d) : String(d));' "$1"; }
 
 $CF auth whoami > "$W/me.json"
-$CF user get 2>/dev/null > "$W/user.json"
-$CF user tokens permission-groups list 2>/dev/null > "$W/pg.json"
+$CF user get > "$W/user.json" 2>/dev/null || true
+[ -n "$(jget id < "$W/user.json")" ] || { trap_rm; echo "seal-token: cf user get returned no user id; run cf auth login" >&2; exit 1; }
+$CF user tokens permission-groups list > "$W/pg.json" 2>/dev/null
 EPOCH=$(date +%s); EXP=$(date -u -d "@$((EPOCH + DAYS * 86400))" +%Y-%m-%dT%H:%M:%SZ)
 node -e '
 const fs = require("fs"), [W, name, exp] = process.argv.slice(1);
@@ -29,31 +33,32 @@ const policies = [
   { effect: "allow", permission_groups: by("com.cloudflare.api.account.zone"), resources: Z },
   { effect: "allow", permission_groups: by("com.cloudflare.api.user"), resources: { ["com.cloudflare.api.user." + user.id]: "*" } },
 ].filter(p => p.permission_groups.length);
+if (!policies.length) { console.error("seal-token: no Read permission groups found"); process.exit(1); }
 fs.writeFileSync(W + "/body.json", JSON.stringify({ name, expires_on: exp, policies }));
 console.error(`token "${name}": ${policies.map(p => p.permission_groups.length).join(" + ")} read permission groups on ${me.accounts.map(a => a.name).join(", ")}, expires ${exp}`);
-' "$W" "$NAME" "$EXP"
-[ -n "$(jq -r '.id // empty' "$W/user.json")" ] || { echo "cf user get returned no user id; run cf auth login" >&2; exit 1; }
+' "$W" "$NAME" "$EXP" || { trap_rm; exit 1; }
 
-GRANT='CLOUDFLARE_API_TOKEN = { argv = [["/usr/bin/node", "/usr/local/lib/cf-slicc/bin/cf"]] }'
 if [ -n "$DRY" ]; then
-  $CF user tokens create --body "@$W/body.json" --dry-run | jq '{method, url, name: .body.name, expires_on: .body.expires_on}'
-  echo "would add to /etc/slicc/secrets-policy.toml [exec]: $GRANT"
-  rm -rf "$W"; exit 0
+  $CF user tokens create --body "@$W/body.json" --dry-run | jget url
+  echo
+  echo "would set in $POLICY [exec]: CLOUDFLARE_API_TOKEN = $GRANT"
+  trap_rm; exit 0
 fi
 
-# The value goes straight from cf's stdout into the vault; it is never printed or written.
-$CF user tokens create --body "@$W/body.json" 2>/dev/null | jq -j '.value // empty' \
-  | sudo fnox set CLOUDFLARE_API_TOKEN --global -d "$NAME, expires $EXP"
-rm -rf "$W"
+sudo cat "$POLICY" 2>/dev/null | node "$HERE/exec-grant.mjs" CLOUDFLARE_API_TOKEN "$GRANT" > "$W/policy.toml" \
+  || { trap_rm; echo "seal-token: could not prepare $POLICY; nothing was created" >&2; exit 1; }
 
-P=/etc/slicc/secrets-policy.toml
-if ! sudo grep -q '^CLOUDFLARE_API_TOKEN *=' "$P" 2>/dev/null; then
-  if sudo grep -q '^\[exec\]' "$P" 2>/dev/null; then
-    sudo sed -i "/^\[exec\]/a $GRANT" "$P"
-  else
-    printf '\n[exec]\n%s\n' "$GRANT" | sudo tee -a "$P" >/dev/null
-  fi
+TOKEN=$($CF user tokens create --body "@$W/body.json" | jget value) || TOKEN=
+if [ -z "$TOKEN" ]; then
+  trap_rm; echo "seal-token: cf user tokens create returned no token; nothing was sealed and cf is still logged in" >&2; exit 1
 fi
+if ! printf '%s' "$TOKEN" | sudo fnox set CLOUDFLARE_API_TOKEN --global -d "$NAME, expires $EXP"; then
+  TOKEN=; trap_rm
+  echo "seal-token: fnox set failed; delete the new token \"$NAME\" with cf user tokens list / delete" >&2; exit 1
+fi
+TOKEN=
+
+sudo tee "$POLICY" < "$W/policy.toml" > /dev/null
+trap_rm
 sealed list | grep CLOUDFLARE_API_TOKEN
-$CF auth logout >/dev/null 2>&1 || true   # drop the on-disk OAuth access + refresh token
-cf auth whoami | jq -c '{authenticated, authSource, email}'
+$CF auth logout > /dev/null 2>&1 || true
