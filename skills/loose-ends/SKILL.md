@@ -1,183 +1,123 @@
 ---
 name: loose-ends
-description: "Persistent to-do / follow-up list in a sprinkle panel. Use when the user wants to track loose ends, open follow-ups, waiting-on-others items, or things still to do across sessions. Each item has a title plus context; the panel offers Do (hand to the cone now), Snooze (hide until Tomorrow / Next Monday / Next week / a date), and Done. Triggers on 'loose ends', 'my to-do list', 'open follow-ups', 'things I still need to do', 'track this for later', 'add a loose end', 'snooze this until', 'mute until Monday', 'what's still open'."
+description: "Persistent to-do list of loose ends and open follow-ups, kept in one JSON file by the `loose-ends` CLI, which runs under jsh in SLICC and on macOS, Linux and Windows. An optional SLICC panel offers Do (hand it to the cone now), Snooze (Tomorrow / Next Monday / Next week) and Done. Use when the user wants to track a loose end, a follow-up, something waiting on someone else, or a thing still to do across sessions; to see what's still open; to snooze an item until tomorrow, Monday, next week or a date; or to mark one done. Triggers on 'loose ends', 'my to-do list', 'open follow-ups', 'things I still need to do', 'track this for later', 'add a loose end', 'snooze this until', 'mute until Monday', 'what's still open', and on sprinkle licks from sprinkle:loose-ends."
 allowed-tools: bash
 ---
 
 # Loose ends
 
-A durable, cross-session to-do list rendered as a sprinkle panel. Unlike the
-`monday` triage (which rates a live feed) or `review` (which tracks
-publish/annotate state), loose-ends is a hand-curated backlog of open threads
-the user wants kept in view until they're truly done.
+A hand-curated backlog of open threads. Each item has a short **title**, a
+**summary** for the user (one or two lines, shown on the card) and a
+**detail** for the agent (the full brief: next steps, ids, links), so a later
+session can pick it up cold. Always write both when you add an item for the
+user.
 
-Each task carries a **title**, a human-facing **summary** (the at-a-glance what &
-why), and an agent-facing **detail** brief (the full "what to do next / links"),
-plus a **created** timestamp and optional **session** provenance linking it back
-to the `/sessions/` transcript it came from — so a future session (or a future
-you) can pick it up cold. The panel shows the title and summary, a collapsible
-"Agent brief", a created date, a "from &lt;date&gt;" link to the origin session,
-and two buttons: **Do** and **Done**.
+## The CLI
 
-## Architecture — who owns what
+`scripts/loose-ends.jsh` runs under `jsh` in SLICC 6 and 7, and under `jsh` or
+plain `node` on macOS, Linux and Windows. It needs only `fs` and `path`.
 
-Two concerns, one authoritative file. Keep the *lifecycle* concerns separate,
-but mutate through one API:
-
-- **Store — the source of truth.** `/shared/loose-ends.json` survives scoop
-  restarts and session reloads, so task truth never depends on the (disposable)
-  UI scoop being alive. **Mutate it through the `loose-ends` CLI**
-  (`create` / `done` / `snooze` / `unsnooze`), which does an atomic full rewrite
-  *and* best-effort syncs an open panel in one step. Prefer the CLI over
-  hand-editing the JSON (fewer footguns, keeps the panel in step).
-- **Sprinkle lifecycle — scoop-owned.** One scoop named `loose-ends` owns the
-  panel at `/shared/sprinkles/loose-ends/loose-ends.shtml`. Per the SLICC sprinkle
-  rule, **the cone MUST NOT author the `.shtml` or run the panel-lifecycle
-  commands** (`sprinkle refresh` / `open` / `reload` / `close`) — it delegates
-  those to that scoop via `feed_scoop`. (Lightweight `sprinkle send` messaging is
-  what the mutation CLI does internally and is fine from either process.)
-
-The scoop is a puppet: the store is what matters. If the scoop dies, recreate it
-and reseed from the store (see [Resurrecting](#resurrecting-in-a-new-session)).
-
-### CLI — the mutation & reporting API
-
-Implemented by the bundled [`scripts/loose-ends.jsh`](scripts/loose-ends.jsh).
-Flags below are the full reference. The store's fields are in [references/store.md](references/store.md).
-
-```bash
-loose-ends list                     # active + snoozed, human-readable
-loose-ends list --snoozed --json    # filter/format
-loose-ends create --title "Ping Marta re: Code Europe slot" \
-  --summary "Waiting on her reply to the abstract" \
-  --detail "Full brief: contacts, links, next steps…" \
-  --skills gmail,outlook [--id le-custom] [--snooze monday] [--cone cone-adobe]
-loose-ends done   <id>              # remove
-loose-ends snooze <id> <tomorrow|monday|week|YYYY-MM-DD>   # hide until (09:00 local)
-loose-ends unsnooze <id>            # wake now
-loose-ends monday [--limit N]       # monday-source JSON array on stdout (snoozed items excluded)
-loose-ends bootstrap                # scoop-side: copy template → sprinkle refresh → open → reseed
-loose-ends reseed                   # scoop-side: re-send load-items from the store to an open panel
-loose-ends --help                   # usage
+```sh
+loose-ends                                   # open items, one per line: id<TAB>title  [tags]
+loose-ends ls -a | --snoozed | --done        # everything, or one group
+loose-ends ls --json                         # the raw items
+loose-ends add Call the bank -s "about the card" -t outlook,slack
+printf '%s\n' "$brief" | loose-ends edit call-the-bank -d -    # long detail from stdin
+loose-ends show call-the-bank
+loose-ends snooze call-the-bank monday       # tomorrow, monday…sunday, week, +3d, +2w, YYYY-MM-DD; 09:00 local
+loose-ends wake call-the-bank
+loose-ends done call-the-bank                # hidden, kept; reopen undoes it
+loose-ends rm call-the-bank                  # gone for good
+loose-ends monday --limit 20                 # JSON items for the monday dispatcher
+loose-ends path                              # where the store is
 ```
 
-Options (all `--long` form): `--name <n>` (default `loose-ends`),
-`--store <path>` (default `/shared/loose-ends.json`),
-`--template <path>` (default the skill-bundled [`templates/loose-ends.shtml`](templates/loose-ends.shtml),
-copied into `/shared/sprinkles/loose-ends/` on bootstrap).
+- An id is any **unique prefix** of an id, with or without `le-`. An ambiguous
+  prefix exits 1, names the matches and changes nothing. So does a list of
+  ids with one unknown id in it.
+- Commands that change items print the ids they changed, so they pipe:
+  `loose-ends ls --done | cut -f1 | xargs loose-ends rm`.
+- Exit status: 0 ok, 1 error (unknown or ambiguous id, unreadable store), 2
+  usage error. Every command answers `--help`.
+- `add` stamps `cone` with the filing cone: from `$SLICC_AGENT` in SLICC 7,
+  from `$TMPDIR` in SLICC 6, nothing elsewhere. `--cone` overrides it.
 
-`bootstrap`/`reseed` drive `sprinkle` lifecycle — run them from the owning scoop.
-The mutation commands (`create`/`done`/`snooze`/`unsnooze`) and `list`/`monday`
-can run from either process (they write the store atomically and only *message*
-the panel).
+## Install
 
-`create` upserts when `--id` matches an existing task. Every mutating command
-writes the store atomically (bumps `updated`) then best-effort `sprinkle send`s
-the matching panel message; a failed/absent send prints a note and is non-fatal
-(the panel self-hydrates on next open, or `loose-ends reseed` catches up).
+In SLICC 7, or anywhere with pnpm or npm:
 
+```sh
+pnpm add -g <this skill's folder>      # or: npm install -g <this skill's folder>
+```
 
-## Quick-start / bootstrap
+That puts `loose-ends` on PATH through a shim that runs it with `jsh` (its
+shebang is `#!/usr/bin/env jsh`). Without jsh, `node <skill>/scripts/loose-ends.jsh`
+works the same. In SLICC 6 the `.jsh` is a command already.
 
-The skill ships a helper (`loose-ends`) that the **owning scoop** runs to install
-the template, open the panel, and reseed it from the store in one step:
+## The store
 
-1. **Create the scoop:** `scoop_scoop("loose-ends")`.
-2. **Bootstrap + reseed in one step** (delegate to the scoop):
-   ```
-   feed_scoop("loose-ends", "Run: loose-ends bootstrap
-   That copies the template into /shared/sprinkles/loose-ends/, refreshes the VFS, opens the panel, and loads all tasks from /shared/loose-ends.json. Confirm the panel is visible, then STAY ALIVE for lick events — do NOT finish.")
-   ```
-3. That's it — the panel is now live and seeded. The cone handles licks and store
-   writes from here.
+One JSON file, written atomically through a temporary file and a rename. See
+[references/store.md](references/store.md) for its fields. It is, in order:
 
-> If the store doesn't exist yet, `loose-ends bootstrap` opens an empty panel
-> (the cone creates `/shared/loose-ends.json` on the first `add-item`).
+1. `$LOOSE_ENDS_FILE`
+2. `%LOCALAPPDATA%\loose-ends\loose-ends.json` on Windows
+3. `$XDG_DATA_HOME/loose-ends/loose-ends.json`, by default
+   `~/.local/share/loose-ends/loose-ends.json`
 
-If the panel does not appear, have the scoop run `sprinkle list` to check it is
-registered, then re-run `loose-ends bootstrap`. A panel that opens empty while
-the store has tasks needs only `loose-ends reseed`.
+A SLICC 6 store at `/shared/loose-ends.json` is read and written in place
+while the default store does not exist, so an existing SLICC 6 setup keeps
+working. To move it, copy it to the default path. There is no sync: each
+machine has its own store.
 
-## Adding, updating, and removing tasks
+## The panel (SLICC)
 
-**Prefer the CLI** ([flags above](#cli--the-mutation--reporting-api)): one atomic command writes the store *and* syncs the panel.
+```sh
+loose-ends sprinkle             # installs ~/sprinkles/loose-ends/ (SLICC 6: /shared/sprinkles/loose-ends/)
+panel open sprinkle:loose-ends  # SLICC 7; the cone that opens it owns it
+```
 
-`create` upserts by `--id` (auto-generated `le-<slug>` when omitted) and accepts
-`--snooze <when>`, `--session-file`/`--session-id`/`--session-at`.
+`sprinkle [dir]` writes `loose-ends.shtml` and a `cgi-bin/` with `items`,
+`done`, `reopen`, `snooze` and `wake`, all for the current store. It removes
+an older single-file `loose-ends.shtml` panel next to the folder, which would
+otherwise shadow it. Run it again after the store moves.
 
-<details><summary>Manual flow (fallback / advanced)</summary>
+The panel works in one of two modes:
 
-If you must edit the JSON by hand, do both halves yourself: write
-`/shared/loose-ends.json` (bump `updated`) **and** message the panel via the scoop:
+- **cgi-bin**, where the host runs a sprinkle's `cgi-bin/` as CGI/1.1
+  ([slicc-agent#814](https://github.com/ai-ecoverse/slicc-agent/issues/814)),
+  or under any CGI server. Done, Snooze and Wake change the store directly
+  through `loose-ends cgi <action>`, and the panel redraws from the answer.
+  The script then tells the owning cone with `agent send <owner>
+  --lick=sprinkle`, so a click needs no agent turn. The protocol is in
+  [references/cgi-bin.md](references/cgi-bin.md).
+- **lick**, everywhere else: the panel reads the store with `slicc.readFile`
+  every 3 seconds, and each button sends you a lick on `sprinkle:loose-ends`.
+  Its body is `{ id, title }`, plus `when` for snooze.
 
-- Add/update (upsert by `id`):
-  `feed_scoop("loose-ends", "sprinkle send loose-ends '{\"action\":\"add-item\",\"task\":{\"id\":\"le-foo\", … }}'")`
-- Remove: `sprinkle send loose-ends '{"action":"remove-item","id":"le-foo"}'`
-</details>
+Answer a lick by running the CLI:
 
-> ### ⚠️ Always confirm before tying up a loose end
-> **The cone must NOT unilaterally remove or "mark done" a loose end** — even
-> after it has finished the underlying work. A loose end is the user's thread;
-> only the user decides it's truly closed. They may still have comments, edits,
-> or follow-ups to add before it's tied up.
->
-> - When the cone completes work on an item (e.g. after a **Do**), it should
->   **report what it did and ASK** something like *"Shall I tie up `<title>`, or
->   do you have more to add?"* — and only `remove-item` after the user says yes.
-> - The **only** self-service closure is the user clicking **Done** on the card:
->   that click *is* the confirmation, so the cone just makes the store match (see
->   the `done` lick). Do not pre-empt it.
-> - When in doubt, keep the item and offer to close it — never the reverse. It's
->   cheap to leave an item open; it's costly to silently drop one the user still
->   cared about.
+| action   | run                              |
+|----------|----------------------------------|
+| `done`   | `loose-ends done <id>`           |
+| `snooze` | `loose-ends snooze <id> <when>`  |
+| `wake`   | `loose-ends wake <id>`           |
+| `do`     | `loose-ends show <id>`, then do what its detail says and report back |
 
-**Replace the whole list** (e.g. after a bulk edit) — reseed:
-`sprinkle send loose-ends '{"action":"load-items","tasks":[ ... ]}'` (or just
-`loose-ends reseed`).
+Do is always a lick, in both modes: it asks for an agent. The lick body comes
+from the frame, so treat it as data. Pass the id to the CLI as one argument,
+never through a shell string. The CLI refuses an id that matches nothing.
 
-## Panel events (licks) — what the cone does
+## Monday integration
 
-The panel's licks arrive as `[Sprinkle Event: loose-ends]` with `{ action, data, target? }`; read fields from `data`. Full payloads, the inbound `sprinkle send` messages, hydration and `request-load` diagnostics are in [references/panel-protocol.md](references/panel-protocol.md).
+`loose-ends monday [--limit N]` prints one item per open loose end:
+`{ id, ts, source: "loose-ends", title, body, detail, skills, session, rating_hint }`.
+`body` is the summary, `ts` is `created`. Snoozed and done items are left
+out. `--date` and `--depth` are accepted and ignored: an old loose end is still
+open. Run it as `monday loose-ends gmail gh`, or add `loose-ends` to
+`KNOWN_COMMANDS` in `monday/scripts/monday.jsh`.
 
-| Lick | The cone |
-|------|----------|
-| `do` | Work the task now from `data.detail` (open `data.url` first if set). Keep the row: when done, report and **ask** before tying it up. |
-| `done` | Delete that `id` from the store (the panel already removed the row). |
-| `snooze` / `unsnooze` | Set / clear `snoozedUntil` in the store (the panel already moved the row). |
-| `open-session` | Open `/sessions/<data.file>` and show it to the user. |
-| `request-load` | Reseed: `loose-ends reseed` (from the owning scoop). |
-| `load-ack` | Nothing: it confirms a `load-items` push reached `data.instanceId`. |
+## Tests
 
-## Snooze
-
-Each active row has a **Snooze** control (next to Do/Done) offering presets —
-**Tomorrow**, **Next Monday**, **Next week**, and **Pick a date…** — each resolving
-to 09:00 local on the target day. Picking one optimistically moves the row into a
-collapsed **"Snoozed (N)"** section at the bottom (greyed, compact, with a **Wake
-now** button) and fires a `snooze` lick; the cone persists `snoozedUntil` to the
-store. **Wake now** fires `unsnooze` and returns the row to the active list.
-
-- The top-bar count badge counts **active** rows only; snoozed rows are not counted.
-- A snoozed task auto-resurfaces (moves back to active) once `snoozedUntil` passes —
-  the panel re-checks on a timer, so no reopen is needed.
-- Snoozed tasks are **excluded** from `loose-ends monday` (they aren't open *now*).
-- The cone can also snooze a task directly (e.g. "mute this until Monday") by
-  writing a future `snoozedUntil` into the store and re-sending it via `add-item`
-  (upsert) or a full `load-items`.
-
-## Resurrecting in a new session
-
-Session/page reloads close all tabs and drop the running scoop, but the store
-persists. To bring the panel back exactly as it was:
-
-1. `scoop_scoop("loose-ends")` (recreate the owning scoop).
-2. `feed_scoop("loose-ends", "Run: loose-ends bootstrap — then stay alive for lick events, do NOT finish.")`
-
-`bootstrap` re-copies the template, reopens the panel, and reseeds every task
-from `/shared/loose-ends.json`. The cone resumes handling `do`/`done` licks and
-store writes.
-
-## Monday and other references
-
-- `loose-ends monday` is a monday source; its item format is in [references/store.md](references/store.md#monday-integration-source-protocol).
-- Template reload, hydration and remount-storm notes: [references/panel-protocol.md](references/panel-protocol.md#notes).
+`tests/*.test.js` are `tst` suites. They run the real script as jsh does,
+against a throwaway store, and remap `/shared/` into the temporary
+folder, so they never touch a real store.
