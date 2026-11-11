@@ -39,10 +39,12 @@ On SLICC 7, add the skill package under `/opt/user` (Your packages) so `remotion
 on PATH and `@remotion/media-parser` / `@remotion/webcodecs` install with it:
 
 ```bash
-cd /opt/user && pnpm add /home/skills/remotion-clipper
+cd /opt/user && pnpm add <path-to>/remotion-clipper
 ```
 
-On a host with [slicc-jsh](https://github.com/ai-ecoverse/slicc-jsh):
+`<path-to>/remotion-clipper` is wherever this skill landed (the directory that
+contains this `package.json`). On a host with
+[slicc-jsh](https://github.com/ai-ecoverse/slicc-jsh):
 `npm install -g ./skills/remotion-clipper`.
 
 ## End-to-end workflow
