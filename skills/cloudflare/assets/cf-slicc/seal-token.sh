@@ -60,5 +60,5 @@ TOKEN=
 
 sudo tee "$POLICY" < "$W/policy.toml" > /dev/null
 trap_rm
-sealed list | grep CLOUDFLARE_API_TOKEN
+sealed placeholder CLOUDFLARE_API_TOKEN
 $CF auth logout > /dev/null 2>&1 || true
