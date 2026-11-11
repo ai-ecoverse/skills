@@ -41,6 +41,7 @@ test('exec grant: a multi-line value is refused, not half-replaced', () => {
 function sandbox({
   create = '{"value":"cf-token-value-123456"}',
   fnoxFails = false,
+  denyCat = false,
   policy = '',
 } = {}) {
   const dir = fs.mkdtempSync(path.join(process.env.HOME || '/tmp', '.seal-test-'));
@@ -50,7 +51,7 @@ function sandbox({
     fs.writeFileSync(path.join(bin, name), `#!/bin/sh\n${body}\n`);
     fs.chmodSync(path.join(bin, name), 0o755);
   };
-  stub('sudo', 'exec "$@"');
+  stub('sudo', `${denyCat ? '[ "$1" = cat ] && exit 1\n' : ''}exec "$@"`);
   stub('sealed', `echo "${KEY}\tfnox_proxy_x\tactive"`);
   stub(
     'fnox',
@@ -113,6 +114,17 @@ test('seal-token: a failed fnox set leaves the policy and the login alone', () =
   ok(r.status !== 0);
   ok(/fnox set failed/.test(r.stderr));
   is(s.read('secrets-policy.toml'), '');
+  is(s.read('logged-out'), null);
+});
+
+test('seal-token: an unreadable policy stops it before anything is minted or written', () => {
+  const before = `[exec]\nNPM_TOKEN = true\n\n[limits]\nmaterialize_per_minute = 10\n`;
+  const s = sandbox({ denyCat: true, policy: before });
+  const r = s.run();
+  ok(r.status !== 0);
+  ok(/could not read/.test(r.stderr));
+  is(s.read('secrets-policy.toml'), before);
+  is(s.read('fnox-stdin'), null);
   is(s.read('logged-out'), null);
 });
 

@@ -45,7 +45,12 @@ if [ -n "$DRY" ]; then
   trap_rm; exit 0
 fi
 
-sudo cat "$POLICY" 2>/dev/null | node "$HERE/exec-grant.mjs" CLOUDFLARE_API_TOKEN "$GRANT" > "$W/policy.toml" \
+if sudo test -e "$POLICY"; then
+  sudo cat "$POLICY" > "$W/policy.old" || { trap_rm; echo "seal-token: could not read $POLICY; nothing was created" >&2; exit 1; }
+else
+  : > "$W/policy.old"
+fi
+node "$HERE/exec-grant.mjs" CLOUDFLARE_API_TOKEN "$GRANT" < "$W/policy.old" > "$W/policy.toml" \
   || { trap_rm; echo "seal-token: could not prepare $POLICY; nothing was created" >&2; exit 1; }
 
 TOKEN=$($CF user tokens create --body "@$W/body.json" | jget value) || TOKEN=
@@ -60,5 +65,5 @@ TOKEN=
 
 sudo tee "$POLICY" < "$W/policy.toml" > /dev/null
 trap_rm
-sealed placeholder CLOUDFLARE_API_TOKEN
 $CF auth logout > /dev/null 2>&1 || true
+sealed placeholder CLOUDFLARE_API_TOKEN
