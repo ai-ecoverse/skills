@@ -24,7 +24,7 @@
     "@ai-ecoverse/wasi-pnpm": "12.9.1-21",
     "@ai-ecoverse/wasm-bash": "5.3.0-23",
     "@ai-ecoverse/wasm-coreutils": "9.12.0-15",
-    "@biomejs/biome": "2.6.4",
+    "@biomejs/biome": "2.6.5",
     "lefthook": "2.2.2",
     "minimatch": "11.0.4",
     "monocart-coverage-reports": "3.2.0",
