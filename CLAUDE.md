@@ -16,31 +16,30 @@ This file covers `.jsh` scripts, page observers, and sprinkle UIs. The script gu
 
 ## 2. Globals and require()
 
-Available globals: `process` (`argv` + non-enumerable `argv.parseFlags()`, `env`, `cwd()`, `exit()`, one-shot buffered `stdin`, `stdout`/`stderr` with `isTTY`), `console` (**only** `log`/`info` → stdout, `warn`/`error` → stderr; objects are `JSON.stringify`'d, not inspected), `fetch` (bridged through the kernel — CORS bypass and server-side secret unmasking; not the page's fetch), `Buffer` (polyfill), `__dirname`/`__filename`, and the worker's web globals (`URL`, `URLSearchParams`, `TextEncoder`/`TextDecoder`, `Blob`, `FormData`, `Headers`/`Request`/`Response`, `atob`/`btoa`, Web Crypto, `AbortController`, `setTimeout`/`setInterval`/`queueMicrotask`).
+CI's realm is **SLICC 7**: slicc-jsh on slicc-kernel (probed 2026-11-11 on the pinned packages: kernel node **Node 22.22.0**, `process.versions.jsh` **0.64.0**). Write new code for that realm. Scripts must still run on both SLICC 6 and SLICC 7 where noted below (the `NodeExitError` re-throw guards from #489 stay).
 
-NOT present: `process.platform`/`.arch`/`.version`/`.pid`/`.on`/`.nextTick`, `console.debug`/`.table`/`.dir`, bare `fs`/`path`/`exec` globals (all bare capability globals were hard-cut to `require('sliccy:*')`, issue #168).
+**`.jsh` globals (observed on SLICC 7):** `process` (`argv` with non-enumerable `argv.parseFlags()`, `argv0` is `'jsh'`, `env`, `cwd()`/`chdir`, `exit()`, stdio streams; seven also has `platform`/`arch`/`pid`/`on`/`nextTick`), `console` (Node's own on seven, including `debug`/`table`/`dir` — on SLICC 6 only `log`/`info`/`warn`/`error`), `fetch` (bridged through the kernel — CORS bypass and server-side secret unmasking; not the page's fetch), `Buffer`, `__dirname`/`__filename`, and web globals (`URL`, `URLSearchParams`, `TextEncoder`/`TextDecoder`, `Blob`, `FormData`, `Headers`/`Request`/`Response`, `atob`/`btoa`, `AbortController`, `WebSocket`, `crypto`, `structuredClone`, timers). Bare `fs`/`path`/`exec` globals are not present (hard-cut to `require(...)`, issue #168).
 
-`require()` resolves, in order: `sliccy:*` → served node builtins → everything else.
+**`require` vs ESM (aligns with §16):** inside a `.jsh` (and CJS run with the kernel's `node`), `require` is a function and resolves `sliccy:*` → Node builtins → `node_modules`. An ES module (`.mjs`, or a `.js` file the loader treats as ESM) has **no** `require` (`typeof require === 'undefined'`) — use `import`. Type-annotated `.ts` fails with `SyntaxError` on the kernel's node; a `.ts` file that is plain ESM can load, but suites should be `.js` with `import` (§16).
 
-- Served builtins (`kernel/realm/node-builtins.ts`): `fs`, `fs/promises`, `path`, `crypto`, `child_process`, `process`, `buffer`, `assert`, `assert/strict`, `util`, `events`, `os`, `stream`, `url`, `tty`, `readline`, `readline/promises`, `module`, `vm`. **Use Node's `fs` only**: `fs.promises.readFile(p, 'utf8')` (text) or `fs.promises.readFile(p)` (bytes), `fs.promises.writeFile`/`mkdir(p, { recursive: true })`/`readdir`/`stat` (`isDirectory()`/`isFile()` are methods)/`rm`/`chmod`, `fs.existsSync`, and `fs.readFileSync(0, 'utf8')` for stdin. SLICC 6 serves all of these, and so does slicc-jsh (SLICC 7). SLICC 6's own promise dialect (`await fs.readFile(p)`, `readFileBinary`, `writeFileBinary`, `exists`, `readDir`, `fetchToFile`, `fs.chmod` without a callback, `stat()` booleans) throws on SLICC 7; the repo moved off it in #487. Find the skill's own files from `__dirname`, not `/workspace/skills/<name>` (#491). Sync reads cap at 1 MB on SLICC 6 (`ENOSYNC`), so read large files with `fs.promises`. Tests fake `fs` with Node's semantics (`tests/node-fs.js`) so a regression to the old dialect fails.
-- Every other built-in throws (`http`/`https`/`net`/`tls`/`dns`/`zlib`/`worker_threads`, …): use `fetch()` for HTTP.
-- npm packages resolve only from ipk-installed VFS `node_modules` (`ipk install x`) — **no CDN fallback**. Native packages (`sharp`, `sqlite3`, `puppeteer`, `canvas`, …) hard-throw. `require('playwright')` returns a CDP-backed shim.
-- Shim gaps vs real Node: `crypto.createHash` supports only md5/sha1/sha256; `util` has only `format`/`formatWithOptions`/`inspect`/`inherits`/`promisify`; `assert` lacks `rejects`/`match`.
+**Builtins (observed on SLICC 7):** `fs`, `fs/promises`, `path`, `crypto`, `child_process`, `process`, `buffer`, `assert`, `assert/strict`, `util`, `events`, `os`, `stream`, `url`, `tty`, `readline`, `readline/promises`, `module`, `vm`, `zlib`, `http`, `https`, `net`, `tls`, `dns`, `worker_threads`, `perf_hooks`, `async_hooks`, `v8`, `constants`, `querystring`, `string_decoder`, `timers`, `stream/web`, `stream/consumers` all resolve. Prefer `fetch()` for HTTP from scripts anyway. **Use Node's `fs` only**: `fs.promises.readFile(p, 'utf8')` (text) or `fs.promises.readFile(p)` (bytes), `writeFile`/`mkdir(p, { recursive: true })`/`readdir`/`stat` (`isDirectory()`/`isFile()` are methods)/`rm`/`chmod`, `fs.existsSync`, `fs.readFileSync(0, 'utf8')` for stdin. `await fs.readFile(p)` without a callback throws `ERR_INVALID_ARG_TYPE` on SLICC 7.
+
+**Dual-runtime (SLICC 6 still matters for `.jsh`):** SLICC 6's promise `fs` dialect (`await fs.readFile(p)`, `readFileBinary`, `writeFileBinary`, `exists`, `readDir`, `fetchToFile`, `stat()` booleans) and its catchable `process.exit`/`cli.die` (`NodeExitError`) differ from seven. Keep the §6 `NodeExitError` re-throw so the same script exits cleanly on both. Do not use the v6 `fs` helpers — the repo moved off them in #487. Sync reads still cap at 1 MB on SLICC 6 (`ENOSYNC`); prefer `fs.promises`. Find the skill's own files from `__dirname` / `skill.dir`, not `/workspace/skills/<name>` (#491). On SLICC 6, `process.platform`/`arch`/`pid`/`on`/`nextTick` and `console.debug`/`table`/`dir` are absent — do not call them in dual-runtime scripts. On SLICC 6, `require('playwright')` was a CDP shim and many builtins threw; do not rely on that shim in new code.
+
+**Packages:** on seven, npm packages resolve from VFS `node_modules` (pnpm / the skill's deps). Native packages that need host binaries are unavailable in the kernel. `sliccy:browser` is not built into jsh — install `@ai-ecoverse/sliccy-browser` (see §3).
 
 ## 3. sliccy: module quick reference
 
+Built into [slicc-jsh](https://github.com/ai-ecoverse/slicc-jsh) (observed `require('sliccy:<name>')` keys): `cli`, `color`, `exec`, `fmt`, `http`, `pool`, `skill`, `time`. Anything else is either `@ai-ecoverse/sliccy-<name>` from `node_modules`, or SLICC-product-only (`agent`, `usb`, `serial`, `hid`, `computer` → `only available inside SLICC` on bare jsh/kernel).
+
 ```js
 const exec = require('sliccy:exec');
-exec(cmd)                    // → {stdout, stderr, exitCode} — runs a REAL shell (injection risk, §7)
+exec(cmd)                    // → {stdout, stderr, exitCode} — real shell (injection risk, §7)
 exec.spawn(argv[])           // no shell parsing — use for anything containing a variable
-exec.start(cmd|argv, {stdin, stdinKind, args})  // → {kill(sig), stdin:{write,end}, done}
-
-const agent = require('sliccy:agent');
-agent(prompt, {model, thinking, schema, cwd, allowedCommands, readOnly})  // throws on non-zero exit / schema failure
-agent.spawn(prompt, opts)    // → {finalText, exitCode, stderr}, never throws
+exec.start(cmd|argv, {stdin, args})  // → {kill(sig), stdin:{write,end}, done}
 
 const skill = require('sliccy:skill');
-skill.dir; skill.refs; skill.assets          // script-relative paths — never hardcode /workspace/skills/...
+skill.dir; skill.root; skill.refs; skill.assets   // script-relative — never hardcode /workspace/skills/...
 await skill.config()                          // null if absent — Promise is truthy, so ALWAYS (await skill.config()) || {}
 await skill.config({key: val})                // shallow-merge + persist
 await skill.token(providerId)                 // OAuth broker
@@ -54,7 +53,7 @@ await api.get(path, {raw: true})              // → {body, headers, status} ins
 // retry shape is {on, maxAttempts} — {attempts, backoff} is silently ignored;
 // repeated query params: pass an array in params — never comma-join (Gmail metadataHeaders bug)
 
-const browser = require('sliccy:browser');
+const browser = require('sliccy:browser');     // needs @ai-ecoverse/sliccy-browser in dependencies
 await browser.findTab({urlMatch: /strava\.com/})   // → tab | null; prefer urlMatch over {domain} —
                                                     // domain:'icloud.com' missed www.icloud.com; escape dots
 await browser.ensureTab(url, {matchUrl})
@@ -71,12 +70,14 @@ cli.die(msg, {exitCode, prefix})   // "Error: msg" red to stderr, exits (default
 cli.out(value)                     // string → stdout; else pretty JSON — the --json output primitive
 cli.warn(msg); cli.help(text)      // help → stdout, exit 0
 
-const color = require('sliccy:color');   // .green .red .yellow .gray .bold .cyan .dim
-                                          // identity functions when !TTY or NO_COLOR — never gate logic on color
+const color = require('sliccy:color');   // .green .red .yellow .gray .bold .cyan .dim (+ .enabled)
+                                          // identity when !TTY or NO_COLOR — never gate logic on color
 const time = require('sliccy:time');      // parseDuration/ago/range/future — 'm' = MINUTES, 'M' = months
 const fmt = require('sliccy:fmt');        // trunc/col/table (ANSI-aware), date(v, 'short'|'iso'|'human'|'locale')
 const pool = require('sliccy:pool');      // pool(concurrency, items, fn) — bounded fan-out, results in order
 ```
+
+`sliccy:agent` exists only inside the full SLICC product (not on the kernel harness jsh). Skill packages that need `sliccy:browser` must list `@ai-ecoverse/sliccy-browser` in `dependencies` (§16).
 
 ## 4. Canonical script skeleton
 
