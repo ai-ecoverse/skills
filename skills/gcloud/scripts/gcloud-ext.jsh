@@ -1,23 +1,11 @@
-// gcloud-ext.jsh — SLICC-only extensions to the `gcloud` skill that are NOT part
-// of the real gcloud CLI, so `gcloud` itself stays command-compatible with the
-// upstream tool. Kept in a separate binary (`gcloud-ext`) for that reason.
-//
-// billing cost — per-service / per-SKU cost AND usage (e.g. DNS query counts)
-// for a project, over a date range. Google exposes cost/usage reports ONLY
-// through the Cloud Console (there is no public REST endpoint), so this command
-// replays the Console's own private first-party GraphQL API
-// (cloudconsole-pa.clients6.google.com … BillingReportsEntityService) from
-// inside your logged-in console.cloud.google.com browser tab, signing the call
-// with a session-derived SAPISIDHASH. It therefore needs an open, logged-in GCP
-// console tab and only project-level `billing.resourceCosts.get` (the same
-// permission the Console UI uses) — no billing-account IAM, no BigQuery export.
-//
-// Caveat: this is a private, undocumented API. Google may change the query
-// signature, API key, or schema without notice; if this breaks, re-capture the
-// request from the console (Billing → Reports) and update the constants below.
+#!/usr/bin/env jsh
+// gcloud-ext: what the real gcloud CLI cannot do. `billing cost` reports per-service
+// or per-SKU cost and usage by replaying the Cloud Console's private billing-report
+// API from a logged-in console.cloud.google.com tab (SAPISIDHASH-signed). It needs
+// only project-level billing.resourceCosts.get. The API is undocumented: if it breaks,
+// re-capture the BillingData request from Billing → Reports and update the constants.
 
 const cli     = require('sliccy:cli');
-const skill   = require('sliccy:skill');
 const exec    = require('sliccy:exec');
 const c       = require('sliccy:color');
 const browser = require('sliccy:browser');
@@ -33,7 +21,11 @@ const COST_VIEW     = 'cloud_billing_data.public.costs.v2';
 
 function str(v) { return typeof v === 'string' ? v : undefined; }
 
-async function loadConfig() { return (await skill.config()) || {}; }
+async function defaultProject() {
+  const { stdout, exitCode } = await exec.spawn(['gcloud', 'config', 'get-value', 'project']);
+  const p = exitCode === 0 ? stdout.trim() : '';
+  return p && p !== '(unset)' ? p : undefined;
+}
 
 // YYYY-MM-DD helpers (UTC, no Date-math surprises).
 function ymd(d) { return d.toISOString().slice(0, 10); }
@@ -45,10 +37,10 @@ function addDays(iso, n) {
 function firstOfMonth(iso) { return iso.slice(0, 8) + '01'; }
 
 /** Resolve the project's billing account via the public API (works with
- *  project-level access) by shelling out to the sibling `gcloud` command. */
+ *  project-level access) through the real gcloud CLI. */
 async function resolveBillingAccount(project) {
   const { stdout, exitCode } = await exec.spawn([
-    'gcloud', 'billing', 'projects', 'describe', project, '--json',
+    'gcloud', 'billing', 'projects', 'describe', project, '--format=json',
   ]);
   if (exitCode !== 0) return undefined;
   try {
@@ -91,10 +83,9 @@ function columnsFor(groupBy) {
 }
 
 async function cmdBillingCost(flags) {
-  const cfg = await loadConfig();
-  const project = str(flags.project) || cfg.project;
+  const project = str(flags.project) || (await defaultProject());
   if (!project) {
-    cli.die('No project set. Pass --project <id> or set one via: gcloud config set-project <id>',
+    cli.die('No project set. Pass --project <id> or run: gcloud config set project <id>',
       { prefix: 'gcloud-ext' });
   }
 
@@ -261,7 +252,7 @@ async function cmdBillingCost(flags) {
 // ─── args + main ─────────────────────────────────────────────────────────────
 
 const HELP = `
-gcloud-ext — SLICC-only extensions to the gcloud skill (not part of real gcloud).
+gcloud-ext: what the real gcloud CLI cannot do.
 
 USAGE
   gcloud-ext billing cost [--project P] [--group-by service|sku]
@@ -274,7 +265,7 @@ USAGE
   Requires an open, logged-in console.cloud.google.com browser tab. It replays
   the Cloud Console's private billing-report API from that session (project-level
   billing.resourceCosts.get is enough — no billing-account IAM). Defaults to the
-  current month if no dates are given.
+  current month if no dates are given, and to gcloud's configured project.
 
 EXAMPLES
   gcloud-ext billing cost --project helix-225321
