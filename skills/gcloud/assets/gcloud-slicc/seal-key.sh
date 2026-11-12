@@ -9,7 +9,7 @@ while [ $# -gt 0 ]; do case "$1" in
 [ -n "$KEY" ] && [ -f "$KEY" ] || { echo "usage: sh seal-key.sh [--dry-run] [--keep] KEY.json" >&2; exit 2; }
 HERE=$(cd "$(dirname "$0")" && pwd)
 POLICY=${SECRETS_POLICY:-/etc/slicc/secrets-policy.toml}
-GRANT='{ argv = [["/usr/bin/python3", "/usr/local/lib/gcloud-sealed/run.py"]] }'
+GRANT='{ argv = [["/usr/bin/python3", "-I", "/usr/local/lib/gcloud-sealed/run.py"]] }'
 DESC=$(node -e '
 let k; try { k = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); } catch { process.exit(3); }
 if (k.type === "service_account" && k.client_email && k.private_key) console.log("gcloud key for " + k.client_email + " (" + String(k.private_key_id || "").slice(0, 8) + "), base64");

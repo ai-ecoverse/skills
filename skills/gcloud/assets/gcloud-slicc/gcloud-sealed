@@ -1,2 +1,2 @@
 #!/bin/sh
-exec fnox exec -- /usr/bin/python3 /usr/local/lib/gcloud-sealed/run.py gcloud "$@"
+exec fnox exec -- /usr/bin/python3 -I /usr/local/lib/gcloud-sealed/run.py gcloud "$@"

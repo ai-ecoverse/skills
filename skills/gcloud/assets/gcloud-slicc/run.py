@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python3 -I
 """Run gcloud or bq with a credential sealed in the SLICC vault as GCLOUD_CREDENTIALS.
 
 The sealed value is the credential JSON (a service-account key or an

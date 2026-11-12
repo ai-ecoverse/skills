@@ -106,7 +106,7 @@ gcloud-sealed projects describe PROJECT
 - **`seal-key.sh`** checks that the file is a service-account key (or an
   `authorized_user` credential). It stores the file **base64-encoded** as
   `GCLOUD_CREDENTIALS` with `fnox set --global`. It sets the `[exec]` grant to
-  exactly `/usr/bin/python3 /usr/local/lib/gcloud-sealed/run.py`, then shreds
+  exactly `/usr/bin/python3 -I /usr/local/lib/gcloud-sealed/run.py`, then shreds
   the file (`--keep` keeps it, `--dry-run` changes nothing). It asks for sudo
   once.
 - **Always seal base64, never the raw JSON.** The vault scrubs every sealed
@@ -121,6 +121,9 @@ gcloud-sealed projects describe PROJECT
   caught: the next run removes what a killed run left. With no user login,
   `bq-sealed` first prints gcloud's "You do not currently have an active
   account selected" error, then runs on the key: that message is harmless.
+- **`-I` is part of the grant:** `fnox exec` passes the caller's environment
+  through, and isolated mode stops `PYTHONPATH`, `PYTHONSTARTUP` and the user
+  site from running the caller's code next to the key.
 - **While a sealed call runs, the decoded key is a file your own user can
   read,** and the vault doesn't scrub it, because it only knows the base64
   form. Never `cat` or list the contents of `gcloud-cred-*` directories.

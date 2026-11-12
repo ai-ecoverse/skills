@@ -5,7 +5,7 @@ import test, { is, ok } from 'tst';
 import { setExecGrant } from '../assets/gcloud-slicc/exec-grant.mjs';
 
 const ASSETS = path.join(process.cwd(), 'assets/gcloud-slicc');
-const RUNNER = ['/usr/bin/python3', '/usr/local/lib/gcloud-sealed/run.py'];
+const RUNNER = ['/usr/bin/python3', '-I', '/usr/local/lib/gcloud-sealed/run.py'];
 const GRANT = `{ argv = [${JSON.stringify(RUNNER).replace(/,/g, ', ')}] }`;
 const KEY = 'GCLOUD_CREDENTIALS';
 const PRIVATE = '-----BEGIN PRIVATE KEY-----\\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\\n-----END PRIVATE KEY-----\\n';
@@ -130,11 +130,11 @@ function runner() {
     ...(cred === undefined ? {} : { GCLOUD_CREDENTIALS: cred }),
   });
   const run = (cred, ...args) =>
-    spawnSync('python3', [path.join(dir, 'run.py'), ...args], { encoding: 'utf8', env: env(cred) });
-  const start = (cred, ...args) => spawn('python3', [path.join(dir, 'run.py'), ...args], { env: env(cred) });
+    spawnSync('python3', ['-I', path.join(dir, 'run.py'), ...args], { encoding: 'utf8', env: env(cred) });
+  const start = (cred, ...args) => spawn('python3', ['-I', path.join(dir, 'run.py'), ...args], { env: env(cred) });
   const out = () => JSON.parse(fs.readFileSync(path.join(dir, 'out.json'), 'utf8'));
   const left = () => fs.readdirSync(tmp).filter((n) => n.startsWith('gcloud-cred-'));
-  return { run, start, out, left, tmp, outFile: path.join(dir, 'out.json') };
+  return { dir, env, run, start, out, left, tmp, outFile: path.join(dir, 'out.json') };
 }
 
 const B64 = Buffer.from(SA_JSON).toString('base64');
@@ -203,4 +203,22 @@ test('run.py: a directory left by a killed run is removed; a live run is left al
   is(r.run(B64, 'bq', 'q').status, 0);
   ok(!fs.existsSync(dead));
   ok(fs.existsSync(live));
+});
+
+test('run.py: caller startup code (PYTHONPATH, PYTHONSTARTUP, user site) cannot run under the granted -I invocation', PY, () => {
+  const r = runner();
+  const evil = path.join(r.dir, 'evil');
+  fs.mkdirSync(evil);
+  const leak = path.join(r.dir, 'leaked');
+  const steal = `import os\nopen(${JSON.stringify(leak)}, "w").write(os.environ.get("GCLOUD_CREDENTIALS", ""))\n`;
+  fs.writeFileSync(path.join(evil, 'sitecustomize.py'), steal);
+  fs.writeFileSync(path.join(evil, 'usercustomize.py'), steal);
+  fs.writeFileSync(path.join(evil, 'startup.py'), steal);
+  const hostile = { ...r.env(B64), PYTHONPATH: evil, PYTHONSTARTUP: path.join(evil, 'startup.py'), PYTHONUSERBASE: evil, PYTHONINSPECT: '' };
+  const granted = spawnSync('python3', ['-I', path.join(r.dir, 'run.py'), 'bq', 'q'], { encoding: 'utf8', env: hostile });
+  is(granted.status, 0, granted.stderr);
+  ok(!fs.existsSync(leak), 'caller code ran under -I and saw the credential');
+  const bare = spawnSync('python3', [path.join(r.dir, 'run.py'), 'bq', 'q'], { encoding: 'utf8', env: hostile });
+  is(bare.status, 0, bare.stderr);
+  ok(fs.existsSync(leak), 'control: without -I the injected sitecustomize runs, so this test can catch a regression');
 });
