@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import test, { is, ok } from 'tst';
@@ -100,11 +100,104 @@ test('wrappers run fnox exec on exactly the granted runner argv', () => {
   }
 });
 
-test('run.py decodes base64, refuses a placeholder, and points both credential variables at its temp file', () => {
+function runner() {
+  const dir = fs.mkdtempSync(path.join(process.env.HOME || '/tmp', '.runner-test-'));
+  const bin = path.join(dir, 'bin');
+  const tmp = path.join(dir, 'tmp');
+  fs.mkdirSync(bin);
+  fs.mkdirSync(tmp);
   const src = fs.readFileSync(path.join(ASSETS, 'run.py'), 'utf8');
-  ok(src.startsWith(`#!${RUNNER[0]}\n`));
-  ok(src.includes('base64.b64decode(cred, validate=True)'));
-  ok(src.includes('cred.startswith("fnox_proxy_")'));
-  ok(src.includes('CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE') && src.includes('GOOGLE_APPLICATION_CREDENTIALS'));
-  ok(src.includes('BIN = "/usr/local/lib/gcloud-cli/bin"'));
+  const fixed = 'BIN = "/usr/local/lib/gcloud-cli/bin"';
+  ok(src.includes(fixed));
+  fs.writeFileSync(path.join(dir, 'run.py'), src.replace(fixed, `BIN = ${JSON.stringify(bin)}`));
+  const stub = [
+    'import json, os, sys, time',
+    'p = os.environ.get("CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE", "")',
+    'out = {"argv": sys.argv[1:], "same": p == os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"), "path": p}',
+    'if p:',
+    '    out["mode"] = oct(os.stat(p).st_mode & 0o777)',
+    '    out["dirmode"] = oct(os.stat(os.path.dirname(p)).st_mode & 0o777)',
+    '    out["body"] = open(p).read()',
+    'open(os.environ["STUB_OUT"], "w").write(json.dumps(out))',
+    'if "--sleep" in sys.argv: time.sleep(30)',
+    'if "--fail" in sys.argv: raise SystemExit(7)',
+  ].join('\n');
+  for (const tool of ['gcloud', 'bq']) fs.writeFileSync(path.join(bin, tool), stub);
+  const env = (cred) => ({
+    ...process.env,
+    TMPDIR: tmp,
+    STUB_OUT: path.join(dir, 'out.json'),
+    ...(cred === undefined ? {} : { GCLOUD_CREDENTIALS: cred }),
+  });
+  const run = (cred, ...args) =>
+    spawnSync('python3', [path.join(dir, 'run.py'), ...args], { encoding: 'utf8', env: env(cred) });
+  const start = (cred, ...args) => spawn('python3', [path.join(dir, 'run.py'), ...args], { env: env(cred) });
+  const out = () => JSON.parse(fs.readFileSync(path.join(dir, 'out.json'), 'utf8'));
+  const left = () => fs.readdirSync(tmp).filter((n) => n.startsWith('gcloud-cred-'));
+  return { run, start, out, left, tmp, outFile: path.join(dir, 'out.json') };
+}
+
+const B64 = Buffer.from(SA_JSON).toString('base64');
+
+test('run.py: decodes the key into a private 0600 file named by both variables, and removes it after', () => {
+  const r = runner();
+  for (const tool of ['gcloud', 'bq']) {
+    const p = r.run(B64, tool, 'a b', '--x');
+    is(p.status, 0, p.stderr);
+    const o = r.out();
+    is(o.argv, ['a b', '--x']);
+    ok(o.same && o.path.startsWith(r.tmp));
+    is(o.body, SA_JSON);
+    is(o.mode, '0o600');
+    is(o.dirmode, '0o700');
+    is(r.left(), []);
+  }
+});
+
+test('run.py: removes the file when the tool fails, and passes no credential when none is set', () => {
+  const r = runner();
+  is(r.run(B64, 'bq', '--fail').status, 7);
+  is(r.left(), []);
+  is(r.run(undefined, 'bq', 'q').status, 0);
+  is(r.out().path, '');
+});
+
+test('run.py: refuses a placeholder, a non-base64 value and raw JSON, writing nothing', () => {
+  const r = runner();
+  for (const cred of ['fnox_proxy_d5cb63850b60d46da720bf44', 'not base64!', SA_JSON]) {
+    const p = r.run(cred, 'bq', 'q');
+    is(p.status, 2);
+    ok(!(p.stdout + p.stderr).includes('MIIEvQIBADANBgkqhkiG9w0BAQEFAASC'));
+    ok(!fs.existsSync(r.outFile));
+    is(r.left(), []);
+  }
+});
+
+test('run.py: SIGTERM, SIGHUP and SIGINT during a run remove the credential file', async () => {
+  for (const sig of ['SIGTERM', 'SIGHUP', 'SIGINT']) {
+    const r = runner();
+    const child = r.start(B64, 'bq', '--sleep');
+    for (let n = 0; !fs.existsSync(r.outFile); n += 1) {
+      ok(n < 200, 'the stub never started');
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    is(r.left().length, 1);
+    const done = new Promise((resolve) => child.on('exit', (code, signal) => resolve(signal || code)));
+    child.kill(sig);
+    is(await done, sig);
+    is(r.left(), [], `${sig} left the key behind`);
+  }
+});
+
+test('run.py: a directory left by a killed run is removed; a live run is left alone', () => {
+  const r = runner();
+  const dead = path.join(r.tmp, 'gcloud-cred-999999-abc');
+  const live = path.join(r.tmp, `gcloud-cred-${process.pid}-abc`);
+  for (const d of [dead, live]) {
+    fs.mkdirSync(d);
+    fs.writeFileSync(path.join(d, 'credentials.json'), '{}');
+  }
+  is(r.run(B64, 'bq', 'q').status, 0);
+  ok(!fs.existsSync(dead));
+  ok(fs.existsSync(live));
 });

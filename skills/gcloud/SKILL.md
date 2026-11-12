@@ -114,11 +114,16 @@ gcloud-sealed projects describe PROJECT
   (`-----BEGIN PRIVATE KEY-----`, `.googleapis.com/`) makes that scrubbing
   corrupt the requests, so every model call fails.
 - **The wrappers** run `fnox exec`, which hands the real value to `run.py`
-  only. `run.py` decodes it into a `0600` temporary file named by
-  `CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE` and `GOOGLE_APPLICATION_CREDENTIALS`,
-  runs gcloud or bq, and deletes the file when they exit. With no user login,
+  only. `run.py` decodes it into a `0600` file in a private `0700` directory,
+  named by `CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE` and
+  `GOOGLE_APPLICATION_CREDENTIALS`, and runs gcloud or bq. It removes the file
+  when they exit or fail, and on SIGTERM, SIGHUP or SIGINT. SIGKILL can't be
+  caught: the next run removes what a killed run left. With no user login,
   `bq-sealed` first prints gcloud's "You do not currently have an active
   account selected" error, then runs on the key: that message is harmless.
+- **While a sealed call runs, the decoded key is a file your own user can
+  read,** and the vault doesn't scrub it, because it only knows the base64
+  form. Never `cat` or list the contents of `gcloud-cred-*` directories.
 - **To make a key expire on its own,** upload a certificate with an end date
   (`gcloud iam service-accounts keys upload`) instead of letting Google
   generate the key. Table-level BigQuery IAM takes no conditions, so a key's

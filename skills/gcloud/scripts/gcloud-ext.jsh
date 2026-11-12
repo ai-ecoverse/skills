@@ -9,6 +9,7 @@ const cli     = require('sliccy:cli');
 const exec    = require('sliccy:exec');
 const c       = require('sliccy:color');
 const browser = require('sliccy:browser');
+const gc      = require('./lib/gcloud-config.js');
 
 // ─── Reverse-engineered Console billing-report API (may rotate) ───────────────
 const GQL_URL =
@@ -21,12 +22,6 @@ const COST_VIEW     = 'cloud_billing_data.public.costs.v2';
 
 function str(v) { return typeof v === 'string' ? v : undefined; }
 
-async function defaultProject() {
-  const { stdout, exitCode } = await exec.spawn(['gcloud', 'config', 'get-value', 'project']);
-  const p = exitCode === 0 ? stdout.trim() : '';
-  return p && p !== '(unset)' ? p : undefined;
-}
-
 // YYYY-MM-DD helpers (UTC, no Date-math surprises).
 function ymd(d) { return d.toISOString().slice(0, 10); }
 function addDays(iso, n) {
@@ -35,19 +30,6 @@ function addDays(iso, n) {
   return ymd(d);
 }
 function firstOfMonth(iso) { return iso.slice(0, 8) + '01'; }
-
-/** Resolve the project's billing account via the public API (works with
- *  project-level access) through the real gcloud CLI. */
-async function resolveBillingAccount(project) {
-  const { stdout, exitCode } = await exec.spawn([
-    'gcloud', 'billing', 'projects', 'describe', project, '--format=json',
-  ]);
-  if (exitCode !== 0) return undefined;
-  try {
-    const j = JSON.parse(stdout);
-    return j.billingAccountName || undefined; // "billingAccounts/XXXX-…"
-  } catch { return undefined; }
-}
 
 async function findConsoleTab() {
   const tab = await browser.findTab({ urlMatch: /console\.cloud\.google\.com/ });
@@ -83,7 +65,7 @@ function columnsFor(groupBy) {
 }
 
 async function cmdBillingCost(flags) {
-  const project = str(flags.project) || (await defaultProject());
+  const project = await gc.resolveProject(str(flags.project), exec.spawn);
   if (!project) {
     cli.die('No project set. Pass --project <id> or run: gcloud config set project <id>',
       { prefix: 'gcloud-ext' });
@@ -109,7 +91,7 @@ async function cmdBillingCost(flags) {
     billingAccount = 'billingAccounts/' + billingAccount;
   }
   if (!billingAccount) {
-    billingAccount = await resolveBillingAccount(project);
+    billingAccount = await gc.resolveBillingAccount(project, exec.spawn);
     if (!billingAccount) {
       cli.die(
         `Could not resolve the billing account for ${project}.\n` +
