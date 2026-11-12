@@ -1,0 +1,21 @@
+{
+  "name": "@ai-ecoverse/gcloud",
+  "version": "1.0.0",
+  "private": true,
+  "description": "The gcloud-ext CLI for jsh: per-service and per-SKU Google Cloud cost and usage from a logged-in Cloud Console tab, which the real gcloud CLI cannot report. Everything else in the skill uses Google's own gcloud and bq from @ai-ecoverse/gcloud-cli. `pnpm add` it in /opt/user on SLICC 7, or `npm install -g` this folder to put `gcloud-ext` on PATH.",
+  "bin": {
+    "gcloud-ext": "scripts/gcloud-ext.jsh"
+  },
+  "files": [
+    "scripts",
+    "assets",
+    "SKILL.md"
+  ],
+  "dependencies": {
+    "@ai-ecoverse/sliccy-browser": "0.1.42"
+  },
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22"
+  }
+}
