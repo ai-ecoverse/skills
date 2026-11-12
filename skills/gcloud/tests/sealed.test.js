@@ -138,8 +138,11 @@ function runner() {
 }
 
 const B64 = Buffer.from(SA_JSON).toString('base64');
+const HAS_PYTHON = spawnSync('python3', ['-c', 'pass']).status === 0;
+if (!HAS_PYTHON) console.log('# run.py tests skipped: no python3 here (gcloud needs @ai-ecoverse/wasix-python)');
+const PY = { skip: !HAS_PYTHON, timeout: 60000 };
 
-test('run.py: decodes the key into a private 0600 file named by both variables, and removes it after', () => {
+test('run.py: decodes the key into a private 0600 file named by both variables, and removes it after', PY, () => {
   const r = runner();
   for (const tool of ['gcloud', 'bq']) {
     const p = r.run(B64, tool, 'a b', '--x');
@@ -154,7 +157,7 @@ test('run.py: decodes the key into a private 0600 file named by both variables, 
   }
 });
 
-test('run.py: removes the file when the tool fails, and passes no credential when none is set', () => {
+test('run.py: removes the file when the tool fails, and passes no credential when none is set', PY, () => {
   const r = runner();
   is(r.run(B64, 'bq', '--fail').status, 7);
   is(r.left(), []);
@@ -162,7 +165,7 @@ test('run.py: removes the file when the tool fails, and passes no credential whe
   is(r.out().path, '');
 });
 
-test('run.py: refuses a placeholder, a non-base64 value and raw JSON, writing nothing', () => {
+test('run.py: refuses a placeholder, a non-base64 value and raw JSON, writing nothing', PY, () => {
   const r = runner();
   for (const cred of ['fnox_proxy_d5cb63850b60d46da720bf44', 'not base64!', SA_JSON]) {
     const p = r.run(cred, 'bq', 'q');
@@ -173,7 +176,7 @@ test('run.py: refuses a placeholder, a non-base64 value and raw JSON, writing no
   }
 });
 
-test('run.py: SIGTERM, SIGHUP and SIGINT during a run remove the credential file', async () => {
+test('run.py: SIGTERM, SIGHUP and SIGINT during a run remove the credential file', PY, async () => {
   for (const sig of ['SIGTERM', 'SIGHUP', 'SIGINT']) {
     const r = runner();
     const child = r.start(B64, 'bq', '--sleep');
@@ -189,7 +192,7 @@ test('run.py: SIGTERM, SIGHUP and SIGINT during a run remove the credential file
   }
 });
 
-test('run.py: a directory left by a killed run is removed; a live run is left alone', () => {
+test('run.py: a directory left by a killed run is removed; a live run is left alone', PY, () => {
   const r = runner();
   const dead = path.join(r.tmp, 'gcloud-cred-999999-abc');
   const live = path.join(r.tmp, `gcloud-cred-${process.pid}-abc`);
