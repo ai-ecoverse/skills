@@ -26,7 +26,7 @@
     "@ai-ecoverse/wasm-coreutils": "9.12.0-15",
     "@biomejs/biome": "2.6.5",
     "lefthook": "2.2.2",
-    "minimatch": "11.0.4",
+    "minimatch": "11.0.5",
     "monocart-coverage-reports": "3.2.0",
     "semantic-release": "25.0.9",
     "tst": "9.5.0"
