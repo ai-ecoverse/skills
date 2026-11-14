@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "reports": {
+    "example-org/example-app#102": {
+      "status": "working",
+      "thread": {
+        "kind": "bb",
+        "id": "thr_example01",
+        "url": "https://bb.example.invalid/projects/proj_example01/threads/thr_example01"
+      },
+      "pr": "example-org/example-app#105",
+      "note": "retry policy drafted, PR open",
+      "at": "2026-01-15T08:30:00.000Z",
+      "history": [
+        { "at": "2026-01-15T08:10:00.000Z", "status": "working", "thread": "bb:thr_example01" },
+        {
+          "at": "2026-01-15T08:30:00.000Z",
+          "pr": "example-org/example-app#105",
+          "note": "retry policy drafted, PR open"
+        }
+      ]
+    },
+    "example-org/example-app#101": {
+      "status": "needs-attention",
+      "thread": { "kind": "scoop", "name": "example-scoop" },
+      "pr": null,
+      "note": "Second reviewer is away; reassign the review?",
+      "at": "2026-01-15T08:00:00.000Z",
+      "history": [
+        {
+          "at": "2026-01-15T08:00:00.000Z",
+          "status": "needs-attention",
+          "thread": "scoop:example-scoop",
+          "note": "Second reviewer is away; reassign the review?"
+        }
+      ]
+    },
+    "example-org/example-app#104": {
+      "status": "done",
+      "thread": { "kind": "scoop", "name": "example-scoop" },
+      "pr": null,
+      "note": null,
+      "at": "2026-01-14T12:00:00.000Z",
+      "history": [
+        { "at": "2026-01-14T12:00:00.000Z", "status": "done", "thread": "scoop:example-scoop" }
+      ]
+    }
+  }
+}
