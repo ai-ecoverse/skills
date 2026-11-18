@@ -13,8 +13,8 @@
     "SKILL.md"
   ],
   "dependencies": {
-    "@remotion/media-parser": "4.0.542",
-    "@remotion/webcodecs": "4.0.542"
+    "@remotion/media-parser": "4.0.543",
+    "@remotion/webcodecs": "4.0.543"
   },
   "license": "Apache-2.0",
   "engines": {
