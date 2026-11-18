@@ -1,0 +1,21 @@
+{
+  "name": "@ai-ecoverse/apple-developer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "The apple-developer CLI for jsh: Apple Developer portal Certificates, Identifiers & Profiles from a logged-in developer.apple.com tab (teams, certificates, App IDs and capabilities, provisioning profiles: list, download, create). `pnpm add` it in /opt/user on SLICC 7, or `npm install -g` this folder to put `apple-developer` on PATH.",
+  "bin": {
+    "apple-developer": "scripts/apple-developer.jsh"
+  },
+  "files": [
+    "scripts",
+    "references",
+    "SKILL.md"
+  ],
+  "dependencies": {
+    "@ai-ecoverse/sliccy-browser": "0.1.42"
+  },
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22"
+  }
+}
