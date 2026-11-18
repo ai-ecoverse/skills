@@ -1,9 +1,4 @@
 #!/usr/bin/env jsh
-// apple-developer — Certificates, Identifiers & Profiles from a logged-in
-// developer.apple.com tab: teams, certificates, App IDs and their capabilities,
-// provisioning profiles (list, download, create) and App ID registration.
-// Built with secret-sauce from a recorded portal session; the API notes are in
-// references/endpoints.md. Runs in SLICC and, on a host, under jsh over CDP.
 
 const browser = require('sliccy:browser');
 const cli = require('sliccy:cli');
@@ -50,7 +45,6 @@ REQUIRES
   On a host: Chrome with a DevTools port (SLICC_CDP_URL, default http://127.0.0.1:9222).
 `.trim();
 
-// On a host, Chrome's default DevTools port unless SLICC_CDP_URL names another.
 if (process.versions && process.versions.jsh && process.env && !process.env.SLICC_CDP_URL) {
   process.env.SLICC_CDP_URL = 'http://127.0.0.1:9222';
 }
@@ -63,7 +57,6 @@ const flags = parsed.flags;
 const list = (v) => (v === undefined || v === true ? [] : (Array.isArray(v) ? v : [v])).map(String);
 const str = (v) => (typeof v === 'string' && v ? v : undefined);
 
-// ── session ────────────────────────────────────────────────────────────────
 let _tab = null;
 async function getTab() {
   if (_tab) return _tab;
@@ -94,13 +87,29 @@ async function team() {
 
 const read = async (resource, params) => call(portal.readRequest(await team(), resource, params));
 
+const MAX_PAGES = 50;
+async function readAll(resource, params) {
+  const first = portal.readRequest(await team(), resource, params);
+  const out = [];
+  const seen = new Set();
+  let req = first;
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const json = await call(req);
+    out.push(...portal.rows(json));
+    const next = portal.nextQuery(json);
+    if (!next || seen.has(next)) return out;
+    seen.add(next);
+    req = { ...first, query: next };
+  }
+  cli.die(`more than ${MAX_PAGES} pages of ${resource}; narrow the request`, { prefix: PREFIX });
+}
+
 function show(rows, columns) {
   if (!rows.length) { console.log(color.dim('  none')); return; }
   const body = rows.map((r) => columns.map((c) => (r[c] === undefined || r[c] === null ? '' : String(r[c]))));
   console.log(fmt.table([columns.map((c) => color.dim(c)), ...body]));
 }
 
-// ── commands ───────────────────────────────────────────────────────────────
 async function cmdTeams() {
   const teams = portal.teamsFrom(await call({ kind: 'teams' }));
   if (flags.json) return cli.out(teams);
@@ -108,8 +117,7 @@ async function cmdTeams() {
 }
 
 async function certificates(type) {
-  const json = await read('certificates', { 'filter[certificateType]': type, limit: 200 });
-  return portal.rows(json);
+  return readAll('certificates', { 'filter[certificateType]': type, limit: 200 });
 }
 
 async function cmdCerts() {
@@ -128,14 +136,12 @@ async function cmdCapabilities() {
 
 async function findBundleId(identifier) {
   const json = await read('bundleIds', { 'filter[identifier]': identifier, include: 'bundleIdCapabilities', limit: 20 });
-  // The filter matches prefixes too (ai.example matches ai.example.mac); keep the exact one.
   const hit = portal.rows(json).find((b) => b.attributes && b.attributes.identifier === identifier);
   return hit ? { bundle: hit, json } : null;
 }
 
 async function cmdBundleIds() {
-  const json = await read('bundleIds', { 'filter[identifier]': str(flags.identifier), limit: 200 });
-  const rows = portal.rows(json).map(portal.bundleIdRow);
+  const rows = (await readAll('bundleIds', { 'filter[identifier]': str(flags.identifier), limit: 200 })).map(portal.bundleIdRow);
   if (flags.json) return cli.out(rows);
   show(rows, ['id', 'identifier', 'name', 'platform']);
 }
@@ -152,7 +158,7 @@ async function cmdBundleId(identifier) {
 }
 
 async function profiles(params) {
-  return portal.rows(await read('profiles', { limit: 200, ...params }));
+  return readAll('profiles', { limit: 200, ...params });
 }
 
 async function cmdProfiles() {
@@ -186,10 +192,15 @@ async function cmdProfileDownload(ref) {
     const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'apple-developer-'));
     out = path.join(dir, `${p.attributes.uuid || p.id}.provisionprofile`);
   }
-  // A new 0600 file renamed over the target, so a symlink there is replaced, not written through.
   const tmp = `${out}.${process.pid}.tmp`;
   await fs.promises.writeFile(tmp, bytes, { mode: 0o600, flag: 'wx' });
-  await fs.promises.rename(tmp, out);
+  try {
+    await fs.promises.rename(tmp, out);
+  } catch (err) {
+    if (err && err.name === 'NodeExitError') throw err;
+    await fs.promises.unlink(tmp).catch(() => {});
+    throw err;
+  }
   if (flags.json) return cli.out({ ...portal.profileRow(p), path: out, bytes: bytes.length });
   console.log(out);
 }
@@ -234,7 +245,6 @@ async function cmdProfileCreate() {
   console.log(color.dim(`  download: apple-developer profile download ${row.id}`));
 }
 
-// ── main ───────────────────────────────────────────────────────────────────
 async function main() {
   if (flags.help || flags.h || !subcommand || subcommand === 'help') cli.help(HELP);
   const [first, second] = positional;

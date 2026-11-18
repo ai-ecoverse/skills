@@ -1,20 +1,3 @@
-// portal.js — Apple Developer portal (Certificates, Identifiers & Profiles) API helpers.
-//
-// The portal's web app talks to a JSON:API backend under
-// https://developer.apple.com/services-account/v1/, which mirrors the App Store
-// Connect API's provisioning resources (bundleIds, bundleIdCapabilities,
-// certificates, profiles, capabilities). It is the web app's own backend, so
-// every call runs inside a logged-in developer.apple.com tab (cookies + origin).
-//
-// Two quirks, both read from the portal's own bundle (main.*.js) and confirmed
-// against the live API (see references/endpoints.md):
-//  - Reads are POSTs with `X-HTTP-Method-Override: GET` and a body of
-//    {urlEncodedQueryParams, teamId}. A plain GET answers 403 "Please select a team".
-//  - Writes need the `csrf` and `csrf_ts` headers. The portal reads them from the
-//    response headers of any API call; without them a write answers 421.
-//
-// Everything here is pure (no sliccy: modules) so tests run under plain node.
-
 const API = '/services-account/v1/';
 const ORIGIN = 'https://developer.apple.com';
 const TEAM_RE = /^[A-Z0-9]{10}$/;
@@ -22,9 +5,6 @@ const RESOURCE_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const BUNDLE_ID_RE = /^[A-Za-z0-9.-]+(\.\*)?$/;
 const CAPABILITY_RE = /^[A-Z0-9_]{2,64}$/;
 
-// Runs IN THE PAGE, via browser.evalAsync(tab, `(${pageRequest})(${JSON.stringify(req)})`).
-// Must be self-contained: no closures over module scope. Returns plain data;
-// the host parses `text`.
 async function pageRequest(req) {
   const api = '/services-account/v1/';
   const base = { 'content-type': 'application/vnd.api+json', 'x-requested-with': 'XMLHttpRequest' };
@@ -49,7 +29,6 @@ async function pageRequest(req) {
   } else if (req.method === 'GET') {
     res = await read(req.path, req.query);
   } else {
-    // Any read hands out the CSRF pair the portal expects on writes.
     const prime = await read('certificates', 'limit=1');
     const csrf = prime.headers.get('csrf');
     const csrfTs = prime.headers.get('csrf_ts');
@@ -67,7 +46,6 @@ async function pageRequest(req) {
 }
 
 function query(params) {
-  // Apple expects literal brackets and commas (filter[platform]=IOS,MACOS); encode values only.
   return Object.entries(params)
     .filter(([, v]) => v !== undefined && v !== null && v !== '')
     .map(([k, v]) => `${k}=${encodeURIComponent(String(v)).replace(/%2C/gi, ',')}`)
@@ -82,8 +60,6 @@ function writeRequest(teamId, method, path, body) {
   return { kind: 'v1', method, teamId, path, body };
 }
 
-// Parse a pageRequest result. Returns {ok, status, json, error}. `error` is a
-// human message for the CLI; the caller decides whether to die.
 function parseResponse(res) {
   const status = res && typeof res.status === 'number' ? res.status : 0;
   const text = res && typeof res.text === 'string' ? res.text : '';
@@ -154,13 +130,11 @@ function describeErrors(json) {
   return errors.map((e) => [e.code, e.detail || e.title].filter(Boolean).join(': ')).join('; ');
 }
 
-// ── teams ──────────────────────────────────────────────────────────────────
 function teamsFrom(json) {
   const teams = json && Array.isArray(json.teams) ? json.teams : [];
   return teams.map((t) => ({ teamId: t.teamId, name: t.name, type: t.type, status: t.status }));
 }
 
-// --team wins, then APPLE_TEAM_ID, then the only active team. Never a built-in default.
 function chooseTeam(flagTeam, envTeam, teams) {
   const explicit = flagTeam || envTeam;
   if (explicit) {
@@ -178,9 +152,20 @@ function chooseTeam(flagTeam, envTeam, teams) {
   };
 }
 
-// ── resources ──────────────────────────────────────────────────────────────
 function rows(json) {
   return json && Array.isArray(json.data) ? json.data : json && json.data ? [json.data] : [];
+}
+
+function nextQuery(json) {
+  const next = json && json.links && json.links.next;
+  if (typeof next !== 'string' || !next) return null;
+  let url;
+  try {
+    url = new URL(next, ORIGIN);
+  } catch {
+    return null;
+  }
+  return url.search.replace(/^\?/, '') || null;
 }
 
 function included(json, type) {
@@ -238,7 +223,6 @@ function profileRow(p) {
   };
 }
 
-// A name, a 10-char resource ID, or a UUID picks exactly one profile.
 function pickProfile(profiles, ref) {
   const byId = profiles.filter((p) => p.id === ref || (p.attributes && p.attributes.uuid === ref));
   if (byId.length === 1) return { profile: byId[0] };
@@ -251,17 +235,14 @@ function pickProfile(profiles, ref) {
   return { error: `no profile matches "${ref}"` };
 }
 
-// profileContent is the signed .provisionprofile (CMS), base64. Reject anything else.
 function profileBytes(profile) {
   const b64 = profile && profile.attributes && profile.attributes.profileContent;
   if (typeof b64 !== 'string' || !/^[A-Za-z0-9+/=\s]+$/.test(b64)) return null;
   const bytes = Buffer.from(b64, 'base64');
-  // DER SEQUENCE with a long-form length: every CMS SignedData blob starts 0x30 0x8x.
   if (bytes.length < 64 || bytes[0] !== 0x30 || (bytes[1] & 0x80) === 0) return null;
   return bytes;
 }
 
-// ── write bodies (shapes from the portal's own submit handlers) ──────────────
 function bundleIdCreateBody({ teamId, identifier, name, capabilities }) {
   if (!TEAM_RE.test(teamId || '')) throw new Error('a team ID is required');
   if (!BUNDLE_ID_RE.test(identifier || ''))
@@ -326,7 +307,6 @@ function profileCreateBody({ teamId, name, profileType, bundleIdId, certificateI
   };
 }
 
-// A certificate is chosen by resource ID or serial number, never by "the newest one".
 function pickCertificates(certs, refs) {
   const out = [];
   for (const ref of refs) {
@@ -358,6 +338,7 @@ module.exports = {
   teamsFrom,
   chooseTeam,
   rows,
+  nextQuery,
   included,
   certificateRow,
   bundleIdRow,

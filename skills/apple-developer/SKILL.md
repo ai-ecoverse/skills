@@ -1,19 +1,16 @@
 ---
 name: apple-developer
 description: Apple Developer portal (Certificates, Identifiers & Profiles) from the
-  browser session — list developer teams, signing certificates (Developer ID
+  browser session. Lists developer teams, signing certificates (Developer ID
   Application, Apple Distribution, Apple Development) with serials and expiry, App IDs
-  (bundle identifiers) and their capabilities (iCloud, push, app groups), and
-  provisioning profiles; download a .provisionprofile or print it as base64 for a CI
-  secret; register a new App ID with capabilities; create a Developer ID, App Store or
-  development provisioning profile. Use when the user wants to create or renew a
-  provisioning profile, enable iCloud for an app, register a bundle ID, check which
-  certificate a profile uses or when it expires, or put a profile into a GitHub Actions
-  secret without clicking through developer.apple.com. Triggers on Apple Developer,
-  developer.apple.com, Certificates Identifiers & Profiles, provisioning profile,
-  embedded.provisionprofile, Developer ID, App ID, bundle ID, team ID, entitlements,
-  iCloud key-value storage, ubiquity-kvstore, codesign profile, notarization setup.
-  Runs in SLICC, and on macOS or Linux under jsh over Chrome DevTools (CDP).
+  and their capabilities (iCloud, push, app groups), and provisioning profiles;
+  downloads a .provisionprofile or prints it as base64 for a CI secret; registers an App
+  ID with capabilities; creates Developer ID, App Store or development profiles. Use
+  when the user wants to create or renew a provisioning profile, enable iCloud for an
+  app, register a bundle ID, check which certificate a profile uses or when it expires,
+  or put a profile into a GitHub Actions secret. Triggers on developer.apple.com,
+  provisioning profile, embedded.provisionprofile, Developer ID, App ID, bundle ID, team
+  ID, entitlements, ubiquity-kvstore, codesign profile, notarization setup.
 allowed-tools: bash
 ---
 

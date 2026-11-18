@@ -4,7 +4,6 @@ import test, { is, ok } from 'tst';
 const require = createRequire(import.meta.url);
 const portal = require('../scripts/lib/portal.js');
 
-// A fetch stub that records calls and answers in order.
 function stubFetch(answers) {
   const calls = [];
   globalThis.fetch = async (url, init) => {
